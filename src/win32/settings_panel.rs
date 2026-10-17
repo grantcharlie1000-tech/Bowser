@@ -76,9 +76,10 @@ const BLOCKER_HEADING: &str = "Ad and tracker blocker";
 const LAYOUT_HEADING: &str = "Browser layout";
 const LAYOUT_HELP: &str =
     "Click to step through the layouts: toolbar above tabs, tabs above toolbar, single row or vertical sidebar. Sidebar width is measured in logical pixels.";
-const BLOCKER_TOGGLE: &str = "Block ads and trackers";
+// --- wave-1 fixes --- this switch is only the None choice of the blocking level; it does not choose the level.
+const BLOCKER_TOGGLE: &str = "Blocking on (off is the None level)";
 const BLOCKER_HELP: &str =
-    "Blocks known ad and tracking requests on every site except the ones listed below.";
+    "Off blocks nothing. On uses the blocking level chosen on the settings page (Trackers, or Trackers and ads), on every site except the ones listed below.";
 const ALLOW_LABEL: &str = "Allowed sites";
 const ALLOW_HELP: &str = "Separate sites with commas, for example example.com, other.org.";
 const TAB_GROUPS_HEADING: &str = "Tab groups";
@@ -92,7 +93,8 @@ const ACCENT_ERROR: &str = "Enter a colour as #rrggbb, or leave it blank.";
 const UI_FONT_LABEL: &str = "Font (blank for system font)";
 const UI_FONT_ERROR: &str = "Enter a font name of up to 64 characters, with no control characters.";
 const CHROME_HEADING: &str = "Toolbar & chrome";
-const TOOLBAR_HEADING: &str = "Toolbar buttons";
+/// --- settings slim --- only the omnibox's site-information and split buttons read this list (GDI chrome).
+const TOOLBAR_HEADING: &str = "Toolbar buttons (only Site information and Split view act yet)";
 const BEHAVIOUR_HEADING: &str = "Browsing behaviour";
 const ZOOM_LABEL: &str = "Default zoom for new tabs (25-500%)";
 const DEFAULT_BROWSER_BUTTON: &str = "Make Bowser the default browser";
@@ -1087,7 +1089,7 @@ unsafe fn create_children(hwnd: HWND) -> windows::core::Result<()> {
             ),
             (
                 ID_FRAMELESS,
-                "Hide toolbar and tabs until the pointer nears the edge",
+                FRAMELESS_TOGGLE,
                 l.chrome_toggles[3],
                 button,
                 ButtonKind::Owner,
@@ -1387,6 +1389,10 @@ fn layout_label(layout: settings::TabLayout) -> &'static str {
         settings::TabLayout::TabsTop => "Tabs above toolbar",
         settings::TabLayout::SingleRow => "Single row",
         settings::TabLayout::Vertical => "Vertical",
+        // --- layout (thread T6) ---
+        settings::TabLayout::VerticalRight => "Vertical, on the right",
+        settings::TabLayout::TabsBottom => "Tabs along the bottom",
+        // --- end layout ---
     }
 }
 
@@ -1582,9 +1588,29 @@ fn make_default_browser(hwnd: HWND) {
 }
 
 fn search_text(panel: &Panel) -> &'static str {
-    match panel.search_engine {
+    search_selector_text(engine_list_in_use(), panel.search_engine, panel.search_fallback)
+}
+
+/// The frameless key is the master "Auto-hide toolbars and tabs" switch (thread T11, `src/auto_hide.rs`).
+const FRAMELESS_TOGGLE: &str = "Auto-hide toolbars and tabs until the pointer rests at the window edge";
+/// Shown in the search selector once the settings page's engine list decides searches.
+const SEARCH_MANAGED: &str = "Set in Settings > Search";
+
+/// Whether the profile has the settings page's engine list, which decides searches instead of the
+/// `search_engine` key this form edits.
+fn engine_list_in_use() -> bool {
+    crate::profile::active().is_ok_and(|profile| profile.root().join(crate::search_engines::FILE_NAME).exists())
+}
+
+/// The selector's text: the older engine choice, unless the engine list is in use (then the selector
+/// says where the engine is chosen and does nothing).
+fn search_selector_text(list_in_use: bool, engine: Option<SearchEngine>, fallback: &'static str) -> &'static str {
+    if list_in_use {
+        return SEARCH_MANAGED;
+    }
+    match engine {
         Some(engine) => engine.label(),
-        None => panel.search_fallback,
+        None => fallback,
     }
 }
 
@@ -1605,6 +1631,10 @@ fn engine_description(engine: SearchEngine) -> &'static str {
 /// Opens the themed engine list under the selector. The list runs its own message loop, so the
 /// panel is read before it opens and changed only after it closes. Nothing is saved until Save.
 fn choose_search_engine(hwnd: HWND) {
+    // --- wave-1 fixes --- the engine list decides searches: this older choice would do nothing.
+    if engine_list_in_use() {
+        return;
+    }
     let Some(button) = child_of(hwnd, ID_SEARCH_ENGINE) else {
         return;
     };
@@ -1813,16 +1843,22 @@ fn save_form(hwnd: HWND) {
             return;
         }
     };
+    // The GDI form has no controls for these; the file's current values are kept.
+    let current = Settings::load(&path);
     // This native window has no drag-reordering, so the checked buttons are written back in their
     // fixed catalog order, matching `settings::KNOWN_TOOLBAR_BUTTONS`.
-    let toolbar_buttons: Vec<String> = settings::KNOWN_TOOLBAR_BUTTONS
+    let mut toolbar_buttons: Vec<String> = settings::KNOWN_TOOLBAR_BUTTONS
         .iter()
         .zip(form.toolbar_buttons)
         .filter(|(_, checked)| *checked)
         .map(|(&id, _)| id.to_owned())
         .collect();
-    // The GDI form has no controls for these; the file's current values are kept.
-    let current = Settings::load(&path);
+    // --- toolbars and feeds (thread T13) --- the form lists only the original eight buttons. The others
+    // (Downloads, Extensions, command buttons) belong to the HTML chrome's toolbar editor and are kept.
+    let kept: Vec<String> = current.toolbar_buttons.iter().filter(|id| !settings::KNOWN_TOOLBAR_BUTTONS.contains(&id.as_str())).cloned().collect();
+    toolbar_buttons.extend(kept);
+    let toolbar_buttons = settings::parse_toolbar_buttons(&toolbar_buttons.join(",")).unwrap_or(current.toolbar_buttons.clone());
+    // --- end toolbars and feeds ---
     let settings = Settings {
         tab_layout: form.tab_layout,
         sidebar_width,
@@ -1839,6 +1875,10 @@ fn save_form(hwnd: HWND) {
         theme: form.theme,
         theme_accent,
         toolbar_buttons,
+        toolbar_tabs: current.toolbar_tabs.clone(),
+        toolbar_panel: current.toolbar_panel.clone(),
+        feeds_detect: current.feeds_detect,
+        feeds_refresh_minutes: current.feeds_refresh_minutes,
         centred_address_bar: form.centred_address_bar,
         minimal_url: form.minimal_url,
         show_load_progress: form.show_load_progress,
@@ -1868,6 +1908,37 @@ fn save_form(hwnd: HWND) {
         translate_offer: current.translate_offer,
         translate_auto: current.translate_auto,
         translate_target: current.translate_target,
+        auto_hide: current.auto_hide, // --- auto-hide (T11): the GDI form has only the master switch ---
+        // --- privacy, history and website appearance (thread T3): kept as the file has them ---
+        blocker_level: current.blocker_level,
+        cookie_notices: current.cookie_notices,
+        history_retention: current.history_retention,
+        website_appearance: current.website_appearance,
+        force_dark_websites: current.force_dark_websites,
+        private_theme: current.private_theme,
+        // --- end privacy, history and website appearance ---
+        // The GDI form has no start page controls; the file's values are kept.
+        start: current.start,
+        // Address bar, search and bookmark options have no GDI controls; the file's values are kept.
+        address: current.address,
+        // Page tools (T7) have no GDI controls; the file's values are kept.
+        page_tools: current.page_tools,
+        // The GDI form has no controls for the tab options (the HTML settings page has them).
+        tabs: current.tabs,
+        // --- layout (thread T6): the Layout block's other options have no GDI controls; kept as the file has them ---
+        tab_bar_visible: current.tab_bar_visible,
+        address_bar_position: current.address_bar_position,
+        address_bar_visible: current.address_bar_visible,
+        show_title_bar: current.show_title_bar,
+        status_bar: current.status_bar,
+        ui_density: current.ui_density,
+        compact_menus: current.compact_menus,
+        ui_zoom: current.ui_zoom,
+        layout_saved: current.layout_saved,
+        // --- end layout ---
+        // The GDI form has no controls for the theme options (the HTML settings page has them).
+        themes: current.themes,
+        window: current.window, // --- window and panels (thread T9) --- no GDI controls; the file's values are kept
     };
     match settings::save(&path, &settings) {
         Ok(()) => {
@@ -1894,24 +1965,22 @@ fn window_text_of(hwnd: HWND, id: i32) -> String {
 fn reset(hwnd: HWND) {
     if !confirm(
         hwnd,
-        "Reset all settings to their defaults? Comments and other lines in settings.txt are kept.",
+        "Reset all settings to their defaults? How long history is kept stays as it is, as do comments and other lines in settings.txt.",
     ) {
         return;
     }
     let Some(path) = state(hwnd).map(|panel| panel.path.clone()) else {
         return;
     };
-    match settings::save(&path, &Settings::default()) {
+    // --- wave-1 fixes --- the same reset as the settings page: history retention is kept.
+    let defaults = settings::reset_defaults(&Settings::load(&path));
+    match settings::save(&path, &defaults) {
         Ok(()) => {
-            populate(hwnd, &Settings::default());
+            populate(hwnd, &defaults);
             let app = state(hwnd).map(|panel| panel.app.clone());
             if let Some(app) = app {
-                crate::app::App::apply_tab_layout_settings(
-                    &app,
-                    Settings::default().tab_layout,
-                    Settings::default().sidebar_width,
-                );
-                crate::app::App::apply_live_settings(&app, &Settings::default());
+                crate::app::App::apply_tab_layout_settings(&app, defaults.tab_layout, defaults.sidebar_width);
+                crate::app::App::apply_live_settings(&app, &defaults);
             }
             set_status(
                 hwnd,
@@ -2304,6 +2373,18 @@ unsafe extern "system" fn settings_proc(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// --- wave-1 fixes --- the native form does not claim more than it does.
+    #[test]
+    fn the_native_form_says_what_its_blocker_search_and_frameless_controls_do() {
+        assert!(BLOCKER_TOGGLE.contains("None"), "the switch is the None level, not the whole level");
+        assert!(BLOCKER_HELP.contains("blocking level"));
+        assert!(FRAMELESS_TOGGLE.starts_with("Auto-hide"), "the switch does what the settings page's row does");
+        assert!(TOOLBAR_HEADING.contains("only Site information and Split view act"), "the checklist says which buttons it moves");
+        assert_eq!(search_selector_text(true, Some(SearchEngine::Google), SEARCH_DEFAULT), SEARCH_MANAGED, "the engine list decides");
+        assert_eq!(search_selector_text(false, Some(SearchEngine::Google), SEARCH_DEFAULT), SearchEngine::Google.label());
+        assert_eq!(search_selector_text(false, None, SEARCH_DEFAULT), SEARCH_DEFAULT);
+    }
 
     #[test]
     fn theme_cycles_between_both_values() {

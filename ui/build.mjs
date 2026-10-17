@@ -31,7 +31,7 @@ await esbuild.build({
 // Each page is self-contained: what it shares with app.js is bundled again rather than split into
 // chunks, so assets.rs serves a fixed set of files. Every file here must be listed in assets.rs.
 await esbuild.build({
-  entryPoints: [join(srcDir, 'settings-page.ts'), join(srcDir, 'history-page.ts')],
+  entryPoints: [join(srcDir, 'settings-page.ts'), join(srcDir, 'history-page.ts'), join(srcDir, 'start-page.ts')],
   bundle: true,
   minify: true,
   format: 'esm',

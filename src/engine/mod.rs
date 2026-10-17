@@ -14,6 +14,16 @@ pub use download::{cancel as cancel_download, pause as pause_download, resume as
 
 use windows::Win32::Foundation::RECT;
 
+pub type TabMemoryUsageCallback = Box<dyn FnOnce(Vec<(crate::tabs::TabId, u64)>)>;
+pub type FullscreenChangedCallback = std::rc::Rc<dyn Fn(crate::tabs::TabId, bool, Option<url::Url>)>;
+pub type LinkNavigationCallback = std::rc::Rc<dyn Fn(crate::tabs::TabId, &url::Url) -> bool>;
+pub type BlockedChangedCallback = std::rc::Rc<dyn Fn(crate::tabs::TabId, u32, String)>;
+pub type PermissionDeniedCallback =
+    std::rc::Rc<dyn Fn(crate::tabs::TabId, crate::permissions::Permission, String)>;
+pub type DownloadPlanCallback =
+    std::rc::Rc<dyn Fn(&crate::downloads::DownloadRequest) -> crate::downloads::DownloadPlan>;
+pub type ContextNotesCallback = std::rc::Rc<dyn Fn(crate::tabs::TabId) -> Vec<(u64, String)>>;
+
 pub type FaviconChangedCallback = std::rc::Rc<dyn Fn(crate::tabs::TabId, Vec<u8>)>;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -40,6 +50,16 @@ pub enum BrowsingDataKind {
     SiteData,
     Cache,
     History,
+    // --- Delete Browsing Data (thread T3) ---
+    /// Cookies alone.
+    Cookies,
+    /// Local storage, IndexedDB and the other DOM storage, service workers and cache storage.
+    Storage,
+    /// Form autofill entries (names, addresses and the like) the browser engine saved.
+    Autofill,
+    /// The engine's per-site settings (its own saved permissions and content settings).
+    SiteSettings,
+    // --- end Delete Browsing Data ---
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -47,7 +67,23 @@ pub enum BrowsingDataRange {
     LastHour,
     LastDay,
     LastSevenDays,
+    // --- Delete Browsing Data (thread T3) ---
+    LastFourWeeks,
+    // --- end Delete Browsing Data ---
     AllTime,
+}
+
+impl BrowsingDataRange {
+    /// How far back the range reaches, in seconds, or `None` for everything.
+    pub fn seconds(self) -> Option<u64> {
+        match self {
+            Self::LastHour => Some(60 * 60),
+            Self::LastDay => Some(24 * 60 * 60),
+            Self::LastSevenDays => Some(7 * 24 * 60 * 60),
+            Self::LastFourWeeks => Some(28 * 24 * 60 * 60),
+            Self::AllTime => None,
+        }
+    }
 }
 
 pub trait EngineAdapter {
@@ -58,6 +94,16 @@ pub trait EngineAdapter {
         url: &url::Url,
     ) -> windows::core::Result<()> {
         self.navigate(url)
+    }
+    /// Navigates a tab by POSTing `body` (percent-encoded form fields) to an https address. Used for
+    /// searches with an engine that takes its query that way. Engines that cannot refuse.
+    fn navigate_tab_post(
+        &mut self,
+        _tab: crate::tabs::TabId,
+        _url: &url::Url,
+        _body: &str,
+    ) -> windows::core::Result<()> {
+        Err(windows::core::Error::from(windows::Win32::Foundation::E_NOTIMPL))
     }
     /// Executes a native-requested script only if the live top-level origin still matches.
     fn execute_script_for_origin(
@@ -86,6 +132,17 @@ pub trait EngineAdapter {
     /// result, under the same rules as `run_reader_script` (http(s) pages only, checked at the moment
     /// of the call) but with a larger answer limit, because the answer carries a batch of text.
     fn run_translate_script(
+        &mut self,
+        _tab: crate::tabs::TabId,
+        _script: &str,
+        done: Box<dyn FnOnce(Option<String>)>,
+    ) {
+        done(None);
+    }
+    /// Runs the feed-detection script (`app::feed_features`) in a tab and hands back its raw result,
+    /// under the same rules as `run_reader_script` (http(s) pages only, checked at the moment of the
+    /// call) with an answer limit of a few kilobytes: the answer is a short list of `<link>` tags.
+    fn run_feed_script(
         &mut self,
         _tab: crate::tabs::TabId,
         _script: &str,
@@ -184,6 +241,23 @@ pub trait EngineAdapter {
     ) -> windows::core::Result<()> {
         Ok(())
     }
+    /// Captures the tab's page as a JPEG no larger than `max_w` x `max_h` (a thumbnail for the tab
+    /// hover card). Only a tab that is on screen can be captured; any other, and any failure, reports
+    /// `None`. `done` may run later. Nothing is stored by the engine.
+    fn capture_tab_thumbnail(
+        &mut self,
+        _tab: crate::tabs::TabId,
+        _max_w: u32,
+        _max_h: u32,
+        done: Box<dyn FnOnce(Option<Vec<u8>>)>,
+    ) {
+        done(None);
+    }
+    /// The working set in bytes of the page process of each tab that can be told apart (the tab hover
+    /// card's memory line). Tabs the engine cannot match to a process are left out. `done` may run later.
+    fn tab_memory_usage(&mut self, done: TabMemoryUsageCallback) {
+        done(Vec::new());
+    }
     /// Asks whether sleeping a hidden tab could lose the user's work or interrupt media: unsaved
     /// form input, playing video, picture-in-picture or a live camera/microphone stream.
     /// `done(true)` means "keep it awake". It may run later (after the page answers) but never
@@ -276,6 +350,26 @@ pub trait EngineAdapter {
             "This browser engine cannot clear browsing data.".to_owned()
         ));
     }
+    /// Clears several categories in one request (Delete Browsing Data). Saved passwords are never
+    /// part of it: they live in Bowser's own vault.
+    fn clear_browsing_data_set(
+        &mut self,
+        _tab: crate::tabs::TabId,
+        _kinds: &[BrowsingDataKind],
+        _range: BrowsingDataRange,
+        done: Box<dyn FnOnce(Result<(), String>)>,
+    ) {
+        done(Err(
+            "This browser engine cannot clear browsing data.".to_owned()
+        ));
+    }
+    /// Applies the website look (`website_look::current`: the colour scheme sites are told and
+    /// forced dark mode) to every open tab. Tabs created later start with it.
+    fn apply_website_look(&mut self) {}
+    /// --- layout (thread T6) --- applies the status-bar choice (`layout_prefs::status_overlay_shown`:
+    /// whether a page may show the link-address overlay) to every open tab. Tabs created later
+    /// start with it.
+    fn apply_status_overlay(&mut self) {}
     /// The profile's tracking-prevention level as the browser reports it now, or `None` when the
     /// engine cannot say.
     fn tracking_prevention_level(&self, _tab: crate::tabs::TabId) -> Option<&'static str> {
@@ -298,6 +392,35 @@ pub trait EngineAdapter {
     fn smart_screen_enabled(&self, _tab: crate::tabs::TabId) -> Option<bool> {
         None
     }
+    // --- page tools (T7) ---
+    /// Calls one DevTools method of a tab and hands back the raw answer, for page capture only: the
+    /// engine refuses every method but `crate::capture::METHOD_METRICS` and `METHOD_SHOT`, never runs
+    /// for a page that is not http(s) (checked against the live address at the moment of the call) and
+    /// drops an answer over the capture limit. `None` is a refusal or a failure. `done` may run later.
+    fn devtools_call(
+        &mut self,
+        _tab: crate::tabs::TabId,
+        _method: &str,
+        _params: &str,
+        done: Box<dyn FnOnce(Option<String>)>,
+    ) {
+        done(None);
+    }
+    /// Runs one read-only page-tools script (the selection) in a tab, under the same rules as
+    /// `run_reader_script` (http(s) pages only) but with the answer limit the caller names.
+    fn run_page_script(
+        &mut self,
+        _tab: crate::tabs::TabId,
+        _script: &str,
+        _limit: usize,
+        done: Box<dyn FnOnce(Option<String>)>,
+    ) {
+        done(None);
+    }
+    /// Applies Settings > Page tools to every open tab (spatial navigation, Ctrl+scroll zoom). Tabs
+    /// created later start with them.
+    fn apply_page_tools(&mut self) {}
+    // --- end page tools ---
 }
 
 /// Operations against one logical tab. Implementations may share an environment across tabs.
@@ -321,6 +444,10 @@ pub struct EngineEvents {
     pub page_loaded: Option<std::rc::Rc<dyn Fn(crate::tabs::TabId)>>,
     pub page_usable: Option<std::rc::Rc<dyn Fn(crate::tabs::TabId)>>,
     pub controller_ready: Option<std::rc::Rc<dyn Fn(crate::tabs::TabId)>>,
+    /// A page element went full screen or left it (a video's full-screen button). The window then
+    /// fills its monitor and every bar hides (auto-hide, `src/auto_hide.rs`). The optional URL
+    /// is the native top-level WebView2 Source at the event, never an optimistic navigation target.
+    pub fullscreen_changed: Option<FullscreenChangedCallback>,
     /// A WebView2 pane received focus from the user.
     pub focus_changed: Option<std::rc::Rc<dyn Fn(crate::tabs::TabId)>>,
     pub navigation_started: Option<std::rc::Rc<dyn Fn(crate::tabs::TabId, u64)>>,
@@ -331,10 +458,14 @@ pub struct EngineEvents {
     pub login_message:
         Option<std::rc::Rc<dyn Fn(crate::tabs::TabId, crate::passwords::LoginMessage)>>,
     pub new_window_requested: Option<std::rc::Rc<dyn Fn(crate::tabs::TabId, url::Url)>>,
+    /// A link the user followed is about to load in this tab (a new document, not a redirect or a typed
+    /// address). Returning true cancels it: the app opened the page in a new tab instead ("Keep pinned
+    /// tabs on their site").
+    pub link_navigation: Option<LinkNavigationCallback>,
     /// A tab's render process exited or crashed; the browser itself and other tabs are fine.
     pub render_process_failed: Option<std::rc::Rc<dyn Fn(crate::tabs::TabId)>>,
     /// A blocker stopped a request; includes the current-page count and page host when known.
-    pub blocked_changed: Option<std::rc::Rc<dyn Fn(crate::tabs::TabId, u32, String)>>,
+    pub blocked_changed: Option<BlockedChangedCallback>,
     /// A top-level navigation in this tab finished with an error. The flag is true for certificate
     /// errors, which the Site information panel reports as a problem.
     pub navigation_failed: Option<std::rc::Rc<dyn Fn(crate::tabs::TabId, bool)>>,
@@ -345,8 +476,7 @@ pub struct EngineEvents {
     /// A camera, microphone, location or notification request, or a script popup, from this tab's
     /// page was denied (no stored Allow). The origin is the page's canonical origin only.
     /// Bowser never prompts; the toolbar shows a passive indicator.
-    pub permission_denied:
-        Option<std::rc::Rc<dyn Fn(crate::tabs::TabId, crate::permissions::Permission, String)>>,
+    pub permission_denied: Option<PermissionDeniedCallback>,
     /// The tab's zoom changed (our own set or the page's Ctrl+wheel). The value is in percent.
     pub zoom_changed: Option<std::rc::Rc<dyn Fn(crate::tabs::TabId, u16)>>,
     pub policy_event: Option<std::rc::Rc<dyn Fn(&'static str)>>,
@@ -354,12 +484,49 @@ pub struct EngineEvents {
     /// Without this and `download_plan`, every download is cancelled.
     pub download_event: Option<std::rc::Rc<dyn Fn(crate::downloads::DownloadEvent)>>,
     /// Where a download from a normal tab goes (a path, the Save dialog, or none).
-    pub download_plan:
-        Option<std::rc::Rc<dyn Fn(&crate::downloads::DownloadRequest) -> crate::downloads::DownloadPlan>>,
+    pub download_plan: Option<DownloadPlanCallback>,
     // --- split view ---
     /// "Open link in split view" was picked on an http(s) link in this tab's page context menu.
     pub open_in_split: Option<std::rc::Rc<dyn Fn(crate::tabs::TabId, url::Url)>>,
     // --- end split view ---
+    // --- address bar, search and bookmarks ---
+    /// The page context menu is about to open on a selection or an image: the labels of the search
+    /// items to add (none for nothing to add).
+    pub context_search: Option<ContextSearchLabelsFn>,
+    /// One of those items was picked.
+    pub context_search_pick: Option<std::rc::Rc<dyn Fn(crate::tabs::TabId, ContextSearchPick)>>,
+    // --- end address bar, search and bookmarks ---
+    // --- page tools (T7) ---
+    /// The page context menu opened on a text field: the notes it may insert, as (id, menu label).
+    pub context_notes: Option<ContextNotesCallback>,
+    /// One of those notes was picked.
+    pub context_note_pick: Option<std::rc::Rc<dyn Fn(crate::tabs::TabId, u64)>>,
+    // --- end page tools ---
+}
+
+/// Asks for the labels of the search items a page context menu gets.
+pub type ContextSearchLabelsFn = std::rc::Rc<dyn Fn(crate::tabs::TabId, &ContextSearchInfo) -> ContextSearchLabels>;
+
+/// What the page context menu was opened on.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ContextSearchInfo {
+    /// The selected text, trimmed and cut, when there is a selection.
+    pub selection: Option<String>,
+    /// The address of the image under the pointer (http or https only).
+    pub image: Option<url::Url>,
+}
+
+/// The labels of the search items to add to that menu.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ContextSearchLabels {
+    pub selection: Option<String>,
+    pub image: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ContextSearchPick {
+    Selection(String),
+    Image(url::Url),
 }
 
 /// Per-site permission decisions, shared between the UI (Site information) and the WebView2 request

@@ -111,6 +111,13 @@ use windows::{
 };
 
 const CLASS_NAME: windows::core::PCWSTR = w!("BowserNativeWindow");
+// --- auto-hide (T11) --- the window's side of auto-hide and full screen (window/auto_hide.rs).
+mod auto_hide;
+mod fullscreen_notice;
+// --- end auto-hide ---
+// --- look state (fix group B) --- the page and panel hosts' `state` (window/host_state.rs).
+mod host_state;
+// --- end look state ---
 const WM_NCUAHDRAWCAPTION: u32 = 0x00AE;
 const WM_NCUAHDRAWFRAME: u32 = 0x00AF;
 const WM_MOUSELEAVE: u32 = 0x02A3;
@@ -134,6 +141,17 @@ const WM_CHROME_SYNC: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 0x
 const WM_HTML_HOVER_START: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 0x85;
 // --- popup host (lane M) ---
 const WM_HTML_POPUP_PREWARM_TIMER: usize = 0xB059;
+// --- tab options ---
+/// The one-second tick of periodic tab reload and the audio rule; set only while one needs it.
+const WM_TAB_TICK_TIMER: usize = 0xB0A1;
+/// A moment after a page settles or a tab is shown: capture its thumbnail for the hover card.
+const WM_TAB_THUMB_TIMER: usize = 0xB0A2;
+const WM_TAB_LINK_TIMER: usize = 0xB0A3;
+// --- end tab options ---
+// --- theme options ---
+/// Twice a minute while the theme follows a time schedule: is it time to switch between light and dark?
+const WM_THEME_SCHEDULE_TIMER: usize = 0xB0A4;
+// --- end theme options ---
 pub(super) const WM_HTML_POPUP_FAILED: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 0x81;
 // --- end popup host ---
 /// Posted from the first paint to start the HTML chrome. Posted, not called, so the paint finishes
@@ -168,12 +186,17 @@ enum DeferredChromeCommand {
     SiteInfo,
     SplitMenu,
     TabMenu { id: TabId, x: i32, y: i32 },
+    // --- tab options --- the strip's Closed tabs button: the list of closed tabs at the point.
+    ClosedTabs { x: i32, y: i32 },
+    // --- end tab options ---
     IslandMenu { id: TabId, x: i32, y: i32 },
     BeginDrag,
     ToggleMaximize,
     SystemMenu,
     /// A left click on a rail button: what a native click does. May open a modal prompt.
     RailClick { key: RailKey },
+    /// A command button of the address bar or the tab bar (thread T13): the item at `index` of that bar's list.
+    Tool { bar: chrome_host::protocol::ToolBar, index: u8 },
     /// A right click on a rail button: the native rail context menu at the client point.
     RailMenu { key: RailKey, x: i32, y: i32 },
     /// The pointer rested on a flyout button while a flyout is open: switch to it.
@@ -223,6 +246,11 @@ struct RailEntryData {
     /// The favicon's source bytes, as the HTML rail sends them (it sends only PNGs that pass the
     /// protocol gate).
     png: Option<Rc<Vec<u8>>>,
+    /// A web app panel whose page title announces a count (thread T9): the rail button shows its dot.
+    dot: bool,
+    /// --- tab stacks and workspaces (T10) --- the tab count badge (0: none) and the emoji.
+    count: u32,
+    emoji: Option<String>,
 }
 
 #[derive(Clone, Copy)]
@@ -385,25 +413,54 @@ fn file_stamp(path: &Path) -> Option<FileStamp> {
 struct RelayoutInputs {
     active: TabId,
     maximised: bool,
-    tab_layout: crate::settings::TabLayout,
+    // --- layout (thread T6) --- the whole arrangement and the list density, not just the tab layout.
+    arrangement: layout::Arrangement,
+    density: crate::layout_prefs::UiDensity,
+    // --- end layout ---
     centred_address_bar: bool,
-    font_size: crate::settings::FontSize,
+    /// The chrome's text scale in percent (`layout_prefs::chrome_scale_percent`).
+    font_scale: u32,
     ui_font: String,
 }
+
+struct RelayoutRequest<'a> {
+    w: i32,
+    h: i32,
+    dpi: u32,
+    active: TabId,
+    maximised: bool,
+    arrangement: layout::Arrangement,
+    density: crate::layout_prefs::UiDensity,
+    sidebar_width: u16,
+    centred_address_bar: bool,
+    font_scale: u32,
+    ui_font: &'a str,
+}
+
+type HtmlTabSnapshot = (TabId, String, bool, Option<Marker>, bool, bool, bool);
 
 #[derive(Clone, PartialEq, Eq)]
 struct HtmlTabsInputs {
     mode: chrome_host::protocol::LayoutMode,
     workspace: (String, String),
     active: TabId,
-    snapshot: Vec<(TabId, String, bool, Option<Marker>, bool, bool, bool)>,
+    snapshot: Vec<HtmlTabSnapshot>,
     group_inputs: Vec<tab_groups::TabGroupInput>,
     group_preferences: tab_groups::GroupPreferences,
     favicons: Vec<(TabId, Option<FaviconKey>)>,
     generation: u64,
+    // --- tab options ---
+    extras: Vec<crate::app::TabStripExtra>,
+    options: chrome_host::protocol::StripOptions,
+    // --- end tab options ---
 }
 
 struct WindowChrome {
+    /// Auto-hide: which bars are out of the layout, what is revealed (`auto_hide.rs`).
+    ah: auto_hide::Runtime, // --- auto-hide (T11) ---
+    /// The bookmarks bar's share of the page, in physical pixels, and whether it is at the bottom
+    /// (src/win32/bookmark_bar.rs); `relayout` takes it off the viewport.
+    bar_reserve: (i32, bool),
     surface: ChromeSurface,
     overlay: HWND,
     /// Client size in physical pixels. The surface only keeps the chrome rows.
@@ -412,12 +469,18 @@ struct WindowChrome {
     palette: &'static Palette,
     tabs: Vec<TabSnapshot>,
     slots: Vec<StripSlot>,
+    /// --- two-level stacks (T10b) --- the second row's tabs (the stack in use), left to right;
+    /// empty while no second row is laid out.
+    stack_tabs: Vec<TabId>,
     sidebar: Option<crate::vertical_tabs::SidebarLayout>,
     sidebar_rows: Vec<crate::chrome::vertical_paint::SidebarRow>,
     sidebar_scroll: i32,
     sidebar_scroll_target: i32,
     sidebar_hover_row: Option<usize>,
     sidebar_resizing: bool,
+    /// --- layout (thread T6) --- a hidden address bar brought back by Ctrl+L, until the address
+    /// field loses focus again.
+    address_bar_revealed: bool,
     /// The width a sidebar drag has reached, laid out once per frame and saved to the settings when
     /// the drag ends, and whether a frame for it is due.
     sidebar_drag_width: Option<u16>,
@@ -473,6 +536,9 @@ struct WindowChrome {
     hover: Hit,
     pressed: Hit,
     drag: Option<(TabId, usize)>,
+    /// --- tab stacks (T10) --- the slot the held tab rests over the middle of, and since when
+    /// ("Stack tabs by dragging one onto another" in the native strip).
+    stack_hover: Option<(usize, Instant)>,
     split_drag_companion: Option<TabId>,
     split_drop: Option<crate::split_view::DropZone>,
     dpi: u32,
@@ -524,6 +590,13 @@ struct WindowChrome {
     html_ext_slot: i32,
     html_ext_last: Option<String>,
     html_ext_rect: Option<chrome_host::protocol::HoverRect>,
+    // --- toolbars and feeds (thread T13) --- what the address bar's list (`toolbar_buttons`) does to the
+    // toolbar's slots: whether Downloads and Extensions may take theirs, and the room the always-there
+    // buttons at the end of the bar take (set by `html_sync`, read by `toolbar_slot`).
+    html_dl_allowed: bool,
+    html_ext_allowed: bool,
+    html_bar_extra: i32,
+    // --- end toolbars and feeds ---
     html_tabs_last_state: Option<String>,
     html_rail_last_state: Option<String>,
     /// Incremented for each page `ready`, so a re-entrant post cannot cache a prior page's state.
@@ -548,6 +621,9 @@ struct WindowChrome {
     html_tabs_last: Option<String>,
     // --- vertical sidebar (lane S) ---
     html_tabs_layout: Option<chrome_host::protocol::LayoutMode>,
+    // --- tab options --- the last `tabopts` message the strip was sent.
+    html_tabs_opts: Option<String>,
+    // --- end tab options ---
     html_tabs_workspace: Option<(String, String)>,
     // --- end vertical sidebar ---
     /// Group wire key to the tab a group command acts on, from the last strip sent.
@@ -610,6 +686,8 @@ struct HtmlFavicon {
 impl WindowChrome {
     fn new(width: i32, height: i32, dpi: u32, overlay: HWND) -> Self {
         Self {
+            ah: auto_hide::Runtime::default(), // --- auto-hide (T11) ---
+            bar_reserve: (0, false),
             surface: {
                 let mut surface = ChromeSurface::new(width, height, dpi);
                 let _ = surface.set_rail_snap(!animations_enabled(), Instant::now());
@@ -618,15 +696,17 @@ impl WindowChrome {
             overlay,
             client: (width, height),
             layout: layout::compute_in_frame(width, height, dpi, 1, 0, false),
-            palette: glass::palette(),
+            palette: auto_hide::chrome_palette(), // --- auto-hide (T11) --- the solid palette while a bar is auto-hidden
             tabs: Vec::with_capacity(8),
             slots: Vec::with_capacity(8),
+            stack_tabs: Vec::new(), // --- two-level stacks (T10b) ---
             sidebar: None,
             sidebar_rows: Vec::new(),
             sidebar_scroll: 0,
             sidebar_scroll_target: 0,
             sidebar_hover_row: None,
             sidebar_resizing: false,
+            address_bar_revealed: false,
             sidebar_drag_width: None,
             sidebar_drag_pending: false,
             last_relayout: None,
@@ -667,6 +747,7 @@ impl WindowChrome {
             pressed: Hit::None,
             drag: None,
             split_drag_companion: None,
+            stack_hover: None, // --- tab stacks (T10) ---
             split_drop: None,
             dpi,
             motion: Motion::new(!animations_enabled()),
@@ -695,6 +776,9 @@ impl WindowChrome {
             html_ext_slot: 0,
             html_ext_last: None,
             html_ext_rect: None,
+            html_dl_allowed: true,
+            html_ext_allowed: true,
+            html_bar_extra: 0,
             html_tabs_last_state: None,
             html_rail_last_state: None,
             html_state_generation: [0; 3],
@@ -708,6 +792,7 @@ impl WindowChrome {
             html_tabs_last: None,
             // --- vertical sidebar (lane S) ---
             html_tabs_layout: None,
+            html_tabs_opts: None, // --- tab options ---
             html_tabs_workspace: None,
             // --- end vertical sidebar ---
             html_tabs_groups: HashMap::new(),
@@ -747,7 +832,12 @@ impl WindowChrome {
         let worker = path.clone();
         match std::thread::Builder::new()
             .name("history-load".into())
-            .spawn(move || read_suggestion_history(&worker))
+            .spawn(move || {
+                // Visits older than the retention setting are dropped before the list is read, so
+                // suggestions never offer them (thread T3).
+                let _ = crate::history_retention::prune_now(&worker);
+                read_suggestion_history(&worker)
+            })
         {
             Ok(handle) => self.history_load = Some(handle),
             Err(_) => self.history = read_suggestion_history(&path),
@@ -763,18 +853,7 @@ impl WindowChrome {
         let Some(inputs) = self.last_relayout.clone() else {
             return false;
         };
-        self.relayout(
-            self.client.0,
-            self.client.1,
-            self.dpi,
-            inputs.active,
-            inputs.maximised,
-            inputs.tab_layout,
-            width,
-            inputs.centred_address_bar,
-            inputs.font_size,
-            &inputs.ui_font,
-        );
+        self.relayout(RelayoutRequest { w: self.client.0, h: self.client.1, dpi: self.dpi, active: inputs.active, maximised: inputs.maximised, arrangement: inputs.arrangement, density: inputs.density, sidebar_width: width, centred_address_bar: inputs.centred_address_bar, font_scale: inputs.font_scale, ui_font: &inputs.ui_font });
         true
     }
     fn refresh(&mut self, app: &AppRef, structural: bool) {
@@ -806,11 +885,15 @@ impl WindowChrome {
         for &id in &ids {
             let old = previous.get(&id).copied();
             let raw_title = App::tab_title(app, id).unwrap_or_default();
-            let title = if raw_title.trim().is_empty() {
+            // --- tab options --- a name the user gave the tab wins over the page's title.
+            let title = if let Some(name) = App::tab_name(app, id) {
+                name
+            } else if raw_title.trim().is_empty() {
                 "New tab".to_owned()
             } else {
                 raw_title.clone()
             };
+            // --- end tab options ---
             let loading = App::tab_loading(app, id);
             // The sidebar rows are only rebuilt on a reprojection, so only then are they collected.
             if reproject {
@@ -872,6 +955,21 @@ impl WindowChrome {
             }
             _ => self.slots.clone(),
         };
+        // --- two-level stacks (T10b) --- with a second row, the stack in use is only its ball in the
+        // tab row and its tabs are the second row.
+        let mut slots = slots;
+        if reproject {
+            let row = App::arrangement(app).stack_row != layout::StackRow::None;
+            self.stack_tabs = if row { App::stack_row_tabs(app) } else { Vec::new() };
+            if !self.stack_tabs.is_empty() {
+                for slot in slots.iter_mut().filter(|slot| slot.collapsed) {
+                    if ids.get(slot.tab_index).is_some_and(|id| self.stack_tabs.contains(id)) {
+                        slot.marker_only = true;
+                    }
+                }
+            }
+        }
+        // --- end two-level stacks ---
         if reproject {
             self.sidebar_rows = crate::chrome::vertical_paint::rows(
                 &sidebar_tabs,
@@ -920,42 +1018,22 @@ impl WindowChrome {
         if reproject {
             let settings = App::settings(app);
             let sidebar_width = self.sidebar_width(app);
-            self.relayout(
-                self.client.0,
-                self.client.1,
-                self.dpi,
-                App::active_tab_id(app),
-                self.layout.maximised,
-                App::tab_layout(app),
-                sidebar_width,
-                settings.centred_address_bar,
-                settings.font_size,
-                &settings.ui_font,
-            );
+            let arrangement = App::arrangement(app).with_address_bar_revealed(self.address_bar_revealed); // --- layout (thread T6) ---
+            self.relayout(RelayoutRequest { w: self.client.0, h: self.client.1, dpi: self.dpi, active: App::active_tab_id(app), maximised: self.layout.maximised, arrangement, density: settings.ui_density, sidebar_width, centred_address_bar: settings.centred_address_bar, font_scale: crate::layout_prefs::chrome_scale_percent(&settings), ui_font: &settings.ui_font });
         }
         self.motion.sync_groups(&self.group_specs(), now);
     }
-    fn relayout(
-        &mut self,
-        w: i32,
-        h: i32,
-        dpi: u32,
-        active: TabId,
-        maximised: bool,
-        tab_layout: crate::settings::TabLayout,
-        sidebar_width: u16,
-        centred_address_bar: bool,
-        font_size: crate::settings::FontSize,
-        ui_font: &str,
-    ) {
+    fn relayout(&mut self, request: RelayoutRequest<'_>) {
+        let RelayoutRequest { w, h, dpi, active, maximised, arrangement, density, sidebar_width, centred_address_bar, font_scale, ui_font } = request;
         self.client = (w, h);
         self.dpi = dpi.max(96);
         self.last_relayout = Some(RelayoutInputs {
             active,
             maximised,
-            tab_layout,
+            arrangement,
+            density,
             centred_address_bar,
-            font_size,
+            font_scale,
             ui_font: ui_font.to_owned(),
         });
         let was_vertical = self.sidebar.is_some();
@@ -968,20 +1046,56 @@ impl WindowChrome {
                     .is_some_and(|tab| tab.id == active)
             })
             .unwrap_or(0);
-        let (layout, sidebar) = if tab_layout.is_vertical() {
-            let (layout, sidebar) = layout::compute_vertical_in_frame_with(
-                w, h, self.dpi, self.slots.len().max(1), i, maximised,
-                i32::from(sidebar_width), centred_address_bar,
-            );
-            (layout, Some(sidebar.with_tab_count(self.sidebar_rows.len(), self.dpi)))
+        // --- layout (thread T6) --- one geometry for every arrangement: tab bar edge or hidden,
+        // address bar edge or hidden, title row, sidebar side and the list density.
+        // --- auto-hide (T11) --- with nothing hidden this is exactly that geometry; with bars out
+        // the page widens over them (`layout::compute_arranged_auto_hide`), and the layout with
+        // every bar shown says where a revealed bar floats.
+        let plan = crate::auto_hide::plan(self.ah.hidden, arrangement.tabs);
+        let hide = plan.layout();
+        let (layout, sidebar) = layout::compute_arranged_auto_hide(
+            arrangement, w, h, self.dpi, self.slots.len().max(1), i, maximised,
+            i32::from(sidebar_width), centred_address_bar, density.sidebar_row_height(), hide,
+        );
+        let shown = if hide.is_off() {
+            None
         } else {
-            (layout::compute_in_frame_for_with(tab_layout, w, h, self.dpi, self.slots.len().max(1), i, maximised, centred_address_bar), None)
+            Some(layout::compute_arranged_in_frame(
+                arrangement, w, h, self.dpi, self.slots.len().max(1), i, maximised,
+                i32::from(sidebar_width), centred_address_bar, density.sidebar_row_height(),
+            ).0)
         };
+        let sidebar = sidebar.map(|sidebar| sidebar.with_tab_count(self.sidebar_rows.len(), self.dpi));
+        // --- end layout ---
         self.layout = layout.with_group_slots(
             self.slots.iter().map(|slot| slot.marker_only),
             self.slots.iter().map(|slot| slot.group_control && !slot.collapsed),
             self.slots.iter().map(|slot| slot.collapsed && !slot.marker_only),
         );
+        // --- auto-hide (T11) --- where the revealed bars float, and the page's rectangle with the bars out.
+        self.ah.plan = plan;
+        self.ah.page = self.layout.viewport;
+        self.ah.overlay = layout::auto_hide_overlay_arranged(
+            shown.as_ref().unwrap_or(&self.layout), &self.layout, sidebar.as_ref(), arrangement, self.dpi, plan.sidebar,
+        );
+        {
+            let normal = shown.as_ref().map(|shown| shown.viewport).unwrap_or(self.layout.viewport);
+            let (bar, bottom) = self.bar_reserve;
+            self.ah.bar_bottom = bottom;
+            self.ah.bar_float = if bar <= 0 {
+                Rect::default()
+            } else if bottom {
+                Rect::new(normal.left, normal.bottom - bar, normal.right, normal.bottom)
+            } else {
+                Rect::new(normal.left, normal.top, normal.right, normal.top + bar)
+            };
+        }
+        // The bookmarks bar takes its row off the top (or bottom) of the page area, unless auto-hide
+        // has it out of the layout (then it floats over the page).
+        if !plan.bookmarks {
+            self.layout.viewport = super::bookmark_bar::reserved_viewport(self.layout.viewport, self.bar_reserve);
+        }
+        // --- end auto-hide ---
         if let Some(sidebar) = sidebar {
             self.sidebar_scroll = self.sidebar_scroll.clamp(0, sidebar.max_scroll);
             self.sidebar_scroll_target = self.sidebar_scroll_target.clamp(0, sidebar.max_scroll);
@@ -991,6 +1105,7 @@ impl WindowChrome {
         }
         if was_vertical != self.sidebar.is_some() {
             self.html_tabs_layout = None;
+            self.html_tabs_opts = None; // --- tab options ---
             self.html_tabs_workspace = None;
         }
         self.split_divider = if self.split_orientation.is_stacked() {
@@ -1007,12 +1122,12 @@ impl WindowChrome {
         self.sync_html_tabs_bounds();
         self.sync_html_rail_bounds();
         self.surface.resize(w, h, self.dpi);
-        self.surface.set_font(font_size.scale_percent(), ui_font);
+        self.surface.set_font(font_scale, ui_font);
     }
     /// The toolbar region the HTML chrome covers, in client pixels. `None` while it is inactive or
     /// the toolbar is too narrow for its region.
     fn html_region(&self) -> Option<Rect> {
-        if !self.html_toolbar_active {
+        if !self.html_toolbar_active || self.ah.top_hidden() {
             return None;
         }
         chrome_host::toolbar_bounds(&self.layout).map(Rect::from)
@@ -1030,9 +1145,15 @@ impl WindowChrome {
         }
         // --- vertical sidebar (lane S) ---
         if self.sidebar.is_some() {
+            if self.ah.sidebar_hidden() {
+                return None; // --- auto-hide (T11) ---
+            }
             return sidebar_html_region(self.sidebar.as_ref(), true);
         }
         // --- end vertical sidebar ---
+        if self.ah.top_hidden() {
+            return None; // --- auto-hide (T11) ---
+        }
         chrome_host::tab_row_bounds(&self.layout).map(Rect::from)
     }
     /// The left rail the HTML rail covers, in client pixels. `None` until its page is ready, so the
@@ -1063,18 +1184,20 @@ impl WindowChrome {
     fn sync_html_tabs_bounds(&mut self) {
         let region = self.html_tab_region();
         self.surface.set_html_tabs(region.is_some());
-        self.surface.set_html_pending(1, chrome_host::html_ui_enabled() && !self.html_failed[1] && region.is_none());
+        let hidden = if self.sidebar.is_some() { self.ah.sidebar_hidden() } else { self.ah.top_hidden() }; // --- auto-hide (T11) ---
+        self.surface.set_html_pending(1, chrome_host::html_ui_enabled() && !self.html_failed[1] && region.is_none() && !hidden);
     }
     /// CSS px the toolbar page's buttons beside the pill (downloads, extensions) take from it.
     fn toolbar_slot(&self) -> i32 {
-        self.html_dl_slot + self.html_ext_slot
+        // --- toolbars and feeds (thread T13) --- a button taken off the bar gives its room back.
+        (if self.html_dl_allowed { self.html_dl_slot } else { 0 }) + (if self.html_ext_allowed { self.html_ext_slot } else { 0 }) + self.html_bar_extra
     }
     /// Moves the HTML chrome over the toolbar region and hides it when there is none. Also tells
     /// the surface to leave the region to the page.
     fn sync_html_bounds(&mut self) {
         let region = self.html_region();
         self.surface.set_html_toolbar(region.is_some());
-        self.surface.set_html_pending(0, chrome_host::html_ui_enabled() && !self.html_failed[0] && region.is_none());
+        self.surface.set_html_pending(0, chrome_host::html_ui_enabled() && !self.html_failed[0] && region.is_none() && !self.ah.top_hidden()); // --- auto-hide (T11) ---
     }
     /// The tab under the pointer, by identity, so its emphasis follows it across reorders.
     fn hovered_tab(&self) -> Option<TabId> {
@@ -1285,11 +1408,15 @@ fn rebuild_rail_entries_with(state: &mut WindowChrome, app: &AppRef, icons: bool
     let shown = |kind| config.items.iter().find(|item| item.kind == kind).is_none_or(|item| item.visible);
     let mut entries = Vec::new();
     if App::settings(app).show_home_button {
-        entries.push(RailEntryData { key: RailKey::Home, icon: RailIcon::Home, label: "Home".into(), active: false, accent: None, favicon: None, png: None });
+        entries.push(RailEntryData { key: RailKey::Home, icon: RailIcon::Home, label: "Home".into(), active: false, accent: None, favicon: None, png: None, dot: false, count: 0, emoji: None });
     }
-    entries.push(RailEntryData { key: RailKey::Customize, icon: RailIcon::Customize, label: "Customize".into(), active: false, accent: None, favicon: None, png: None });
-    if shown(SidebarKind::Workspaces) {
-        for (id, name, icon, colour, _, active) in App::workspace_entries(app) {
+    entries.push(RailEntryData { key: RailKey::Customize, icon: RailIcon::Customize, label: "Customize".into(), active: false, accent: None, favicon: None, png: None, dot: false, count: 0, emoji: None });
+    // --- tab stacks and workspaces (T10) --- "Workspaces" off hides them; the counts are an option.
+    let workspace_options = App::tab_options(app);
+    if shown(SidebarKind::Workspaces) && workspace_options.workspaces {
+        for (id, name, icon, colour, tab_count, active) in App::workspace_entries(app) {
+            let count = if workspace_options.workspace_counts { u32::try_from(tab_count).unwrap_or(u32::MAX) } else { 0 };
+            let emoji = App::workspace_emoji(app, id);
             let glyph = match icon {
                 WorkspaceIcon::Briefcase => WorkspaceGlyph::Briefcase,
                 WorkspaceIcon::Home => WorkspaceGlyph::Home,
@@ -1314,9 +1441,9 @@ fn rebuild_rail_entries_with(state: &mut WindowChrome, app: &AppRef, icons: bool
                 WorkspaceColour::Green => 0x56A36B,
                 WorkspaceColour::Slate => 0x778394,
             }, 0xFF));
-            entries.push(RailEntryData { key: RailKey::Workspace(id.0 as u64), icon: RailIcon::Glyph(glyph), label: name, active, accent, favicon: None, png: None });
+            entries.push(RailEntryData { key: RailKey::Workspace(id.0 as u64), icon: RailIcon::Glyph(glyph), label: name, active, accent, favicon: None, png: None, dot: false, count, emoji });
         }
-        entries.push(RailEntryData { key: RailKey::AddWorkspace, icon: RailIcon::Plus, label: "New workspace".into(), active: false, accent: None, favicon: None, png: None });
+        entries.push(RailEntryData { key: RailKey::AddWorkspace, icon: RailIcon::Plus, label: "New workspace".into(), active: false, accent: None, favicon: None, png: None, dot: false, count: 0, emoji: None });
     }
     if shown(SidebarKind::Apps) {
         // Only a native rail paints the decoded bitmap; the HTML rail takes the file's bytes.
@@ -1336,9 +1463,9 @@ fn rebuild_rail_entries_with(state: &mut WindowChrome, app: &AppRef, icons: bool
                 (None, None)
             };
             let icon = if favicon.is_some() || (!native_rail && png.is_some()) { RailIcon::AppTile } else { RailIcon::Letter };
-            entries.push(RailEntryData { key: RailKey::App(app_entry.id), icon, label: app_entry.name.clone(), active: false, accent: None, favicon, png });
+            entries.push(RailEntryData { key: RailKey::App(app_entry.id), icon, label: app_entry.name.clone(), active: false, accent: None, favicon, png, dot: super::panel_webapp::unread_count(app_entry.id) > 0, count: 0, emoji: None });
         }
-        entries.push(RailEntryData { key: RailKey::AddApp, icon: RailIcon::Plus, label: "Add web app".into(), active: false, accent: None, favicon: None, png: None });
+        entries.push(RailEntryData { key: RailKey::AddApp, icon: RailIcon::Plus, label: "Add web app".into(), active: false, accent: None, favicon: None, png: None, dot: false, count: 0, emoji: None });
     }
     for item in &config.items {
         let (key, icon, label) = match item.kind {
@@ -1346,9 +1473,15 @@ fn rebuild_rail_entries_with(state: &mut WindowChrome, app: &AppRef, icons: bool
             SidebarKind::History if item.visible => (RailKey::History, RailIcon::Clock, "History"),
             _ => continue,
         };
-        entries.push(RailEntryData { key, icon, label: label.into(), active: key == RailKey::Bookmarks && bookmark_active, accent: None, favicon: None, png: None });
+        entries.push(RailEntryData { key, icon, label: label.into(), active: key == RailKey::Bookmarks && bookmark_active, accent: None, favicon: None, png: None, dot: false, count: 0, emoji: None });
     }
-    entries.push(RailEntryData { key: RailKey::Menu, icon: RailIcon::Dots, label: "Menu".into(), active: false, accent: None, favicon: None, png: None });
+    // --- toolbars and feeds (thread T13) --- the panel bar's extra buttons (`toolbar_panel`), after the
+    // built-in ones: the Feeds button and command buttons (a letter tile, the command's name as its tooltip).
+    for (index, label, icon) in panel_tools(&App::settings(app).toolbar_panel) {
+        entries.push(RailEntryData { key: RailKey::Tool(index), icon, label, active: false, accent: None, favicon: None, png: None, dot: false, count: 0, emoji: None });
+    }
+    // --- end toolbars and feeds ---
+    entries.push(RailEntryData { key: RailKey::Menu, icon: RailIcon::Dots, label: "Menu".into(), active: false, accent: None, favicon: None, png: None, dot: false, count: 0, emoji: None });
     state.rail_scroll = state.rail_scroll.max(0);
     if same_rail(&state.rail_entries, &entries) {
         return false;
@@ -1418,6 +1551,7 @@ fn same_rail(a: &[RailEntryData], b: &[RailEntryData]) -> bool {
                 && a.accent == b.accent
                 && same(&a.favicon, &b.favicon)
                 && same(&a.png, &b.png)
+                && a.dot == b.dot
         })
 }
 
@@ -1433,9 +1567,11 @@ fn rail_view_of(entries: &[RailEntryData]) -> Vec<RailEntry<'static>> {
                 icon: entry.icon,
                 label: entry.label.clone(),
                 active: entry.active,
-                dot: false,
+                dot: entry.dot,
                 accent: entry.accent,
                 favicon: entry.favicon.as_deref(),
+                count: entry.count,
+                emoji: entry.emoji.clone(),
             };
             // SAFETY: as documented above, the bitmap outlives every use of the view.
             unsafe { std::mem::transmute::<RailEntry<'_>, RailEntry<'static>>(view) }
@@ -1497,6 +1633,7 @@ fn run_chrome_sync(hwnd: HWND, app: Option<&AppRef>) {
     super::downloads_page::sync(hwnd, app);
     // --- end split view ---
     track_idle_pages(hwnd);
+    auto_hide::after_layout(hwnd); // --- auto-hide (T11) --- the bookmarks bar and page hosts just synced
     let prefs = PaintPrefs::read(app);
     let changed = with_chrome(hwnd, |s| {
         let changed = s.paint_prefs != prefs;
@@ -1569,6 +1706,8 @@ fn flush_for_exit(hwnd: HWND, app: &AppRef) {
         let _ = App::privacy_stats_save_now(app);
     }
     crate::productivity::flush_pending_history();
+    // A session-only history ends with the session (thread T3).
+    crate::history_retention::finish_at_exit();
     App::session_finish(app);
 }
 
@@ -1638,7 +1777,33 @@ fn sync_html_host_bounds(hwnd: HWND) {
         }
         let _ = host.set_visible(bounds.is_some());
     }
+    auto_hide::after_layout(hwnd); // --- auto-hide (T11) --- sensors, and raising what is shown
 }
+// --- auto-hide (T11) --- what the rest of the app calls (window/auto_hide.rs does the work).
+pub(crate) fn auto_hide_sync(hwnd: HWND, app: &AppRef) {
+    auto_hide::sync_config(hwnd, app);
+}
+pub(crate) fn auto_hide_page_created(hwnd: HWND) {
+    if !hwnd.is_invalid() {
+        auto_hide::page_created(hwnd);
+    }
+}
+pub(crate) fn auto_hide_effective(hwnd: HWND, settings: &crate::settings::Settings) -> crate::auto_hide::Effective {
+    auto_hide::effective_for(hwnd, settings)
+}
+pub(crate) fn zoomed_or_full(hwnd: HWND) -> bool {
+    auto_hide::zoomed_or_full(hwnd)
+}
+pub(crate) fn toggle_fullscreen(hwnd: HWND, app: &AppRef) {
+    auto_hide::toggle_fullscreen(hwnd, app);
+}
+pub(crate) fn page_fullscreen(hwnd: HWND, app: &AppRef, on: bool, source: Option<&url::Url>) {
+    auto_hide::page_fullscreen(hwnd, app, on, source);
+}
+pub(super) fn bookmark_bar_placement(hwnd: HWND) -> Option<(RECT, bool)> {
+    auto_hide::bookmark_bar_placement(hwnd)
+}
+// --- end auto-hide ---
 /// Moves the owned chrome popup with the client origin without repainting its pixels.
 fn sync_overlay_position(hwnd: HWND) {
     unsafe {
@@ -1693,6 +1858,66 @@ pub(crate) fn schedule_power_timer(hwnd: HWND, enabled: bool) {
         }
     }
 }
+// --- theme options ---
+/// Starts or stops the half-minute timer the time schedule of the theme runs on.
+pub(crate) fn set_theme_timer(hwnd: HWND, on: bool) {
+    if hwnd.is_invalid() {
+        return;
+    }
+    unsafe {
+        if on {
+            let _ = SetTimer(Some(hwnd), WM_THEME_SCHEDULE_TIMER, 30_000, None);
+        } else {
+            let _ = KillTimer(Some(hwnd), WM_THEME_SCHEDULE_TIMER);
+        }
+    }
+}
+
+/// Has the window take a changed light/dark look or palette: the backdrop, the chrome and the
+/// hosts follow, as they do when Windows changes its colours.
+pub(crate) fn refresh_theme(hwnd: HWND) {
+    if hwnd.is_invalid() {
+        return;
+    }
+    unsafe {
+        let _ = PostMessageW(Some(hwnd), WM_THEMECHANGED, WPARAM(0), LPARAM(0));
+    }
+}
+// --- end theme options ---
+// --- tab options ---
+/// Starts or stops the window's one-second tab tick.
+pub(crate) fn set_tab_tick(hwnd: HWND, on: bool) {
+    if hwnd.is_invalid() {
+        return;
+    }
+    unsafe {
+        if on {
+            let _ = SetTimer(Some(hwnd), WM_TAB_TICK_TIMER, 1000, None);
+        } else {
+            let _ = KillTimer(Some(hwnd), WM_TAB_TICK_TIMER);
+        }
+    }
+}
+/// Arms the one-shot timer that opens links a pinned tab refused in tabs of their own.
+pub(crate) fn set_link_timer(hwnd: HWND) {
+    if hwnd.is_invalid() {
+        return;
+    }
+    unsafe {
+        let _ = SetTimer(Some(hwnd), WM_TAB_LINK_TIMER, 10, None);
+    }
+}
+/// Arms the one-shot thumbnail timer (a newer request replaces an older one).
+pub(crate) fn set_thumbnail_timer(hwnd: HWND) {
+    if hwnd.is_invalid() {
+        return;
+    }
+    unsafe {
+        let _ = SetTimer(Some(hwnd), WM_TAB_THUMB_TIMER, 1200, None);
+    }
+}
+// --- end tab options ---
+
 pub(crate) fn schedule_idle_timer(hwnd: HWND, action: IdleTimerAction) {
     unsafe {
         match action {
@@ -1725,7 +1950,8 @@ fn animations_enabled() -> bool {
             SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
         )
     };
-    read.is_err() || enabled.as_bool()
+    // --- window and panels (thread T9) --- Bowser's own "Use animation" setting also has to allow it.
+    crate::window_prefs::animate(read.is_err() || enabled.as_bool())
 }
 fn dpi(hwnd: HWND) -> u32 {
     unsafe { GetDpiForWindow(hwnd) }.max(96)
@@ -1735,7 +1961,7 @@ fn dpi(hwnd: HWND) -> u32 {
 pub(crate) fn refresh_edit_font(hwnd: HWND, app: &AppRef) {
     let settings = App::settings(app);
     let ui_font = (!settings.ui_font.is_empty()).then_some(settings.ui_font.as_str());
-    let font = paint::create_message_font_with(dpi(hwnd), DEFAULT_QUALITY, settings.font_size.scale_percent(), ui_font);
+    let font = paint::create_message_font_with(dpi(hwnd), DEFAULT_QUALITY, crate::layout_prefs::chrome_scale_percent(&settings), ui_font); // --- layout (thread T6) ---
     let (edit, old) = {
         let mut a = app.borrow_mut();
         (a.edit, std::mem::replace(&mut a.input_font, font))
@@ -1837,6 +2063,14 @@ fn invalidate_caret(hwnd: HWND, caret: Rect) {
 /// It runs on every activation message and on the foreground hook, because a window launched behind another
 /// one can miss the activation message when it is brought forward. Checking GetForegroundWindow is what
 /// makes the result reliable.
+// --- window and panels (thread T9) ---
+/// Whether this window is not the foreground window (the chrome's "fade colours in background
+/// windows" option reads it).
+fn window_in_background(hwnd: HWND) -> bool {
+    with_chrome(hwnd, |s| !s.foreground).unwrap_or(false)
+}
+// --- end window and panels ---
+
 fn sync_foreground(hwnd: HWND, app: Option<&AppRef>) {
     let foreground = foreground_is_ours(hwnd);
     let minimised = unsafe { IsIconic(hwnd).as_bool() };
@@ -1844,15 +2078,29 @@ fn sync_foreground(hwnd: HWND, app: Option<&AppRef>) {
         hwnd,
         caret_blink_allowed(foreground, minimised, edit_focused(hwnd)),
     );
-    let gained = with_chrome(hwnd, |s| {
+    let (changed, gained) = with_chrome(hwnd, |s| {
+        let changed = foreground != s.foreground;
         let gained = foreground && !s.foreground;
         s.foreground = foreground;
-        gained
+        (changed, gained)
     })
-    .unwrap_or(false);
+    .unwrap_or((false, false));
     if !foreground {
         card::cancel(hwnd);
     }
+    // --- window and panels (thread T9) --- the chrome's `look.bg` changed: send the state again (a
+    // no-op when the JSON is the same). Skipped while the app state is borrowed (a modal loop).
+    if app.is_some_and(|app| app.try_borrow_mut().is_ok()) {
+        let faded = app.is_some_and(|app| App::settings(app).window.fade_background);
+        if faded && changed {
+            html_sync(hwnd);
+            // State-only updates: ordinary chrome sync also reaches existing page hosts and
+            // the bookmarks bar without setting their content/draft snapshots dirty.
+            mark_chrome_dirty(hwnd);
+            html_panel::settings_changed(hwnd);
+        }
+    }
+    // --- end window and panels ---
     // Returning to the window counts as activity: restore the page's memory target and resume the idle cadence
     // that stopped while another application was active. Activation can arrive from a modal loop that already
     // holds the app state, so the borrow is checked first.
@@ -1888,7 +2136,8 @@ fn app_icon(instance: HINSTANCE, size: i32) -> HICON {
     unsafe {
         LoadImageW(
             Some(instance),
-            windows::core::PCWSTR(1 as *const u16),
+            // MAKEINTRESOURCEW(1): integer resource ID, not an aligned/dereferenceable pointer.
+            windows::core::PCWSTR(std::ptr::without_provenance(1)),
             IMAGE_ICON,
             size,
             size,
@@ -1905,6 +2154,13 @@ pub fn run(app: App) -> windows::core::Result<()> {
     let _ = std::thread::Builder::new()
         .name("text-prewarm".into())
         .spawn(move || paint::prewarm_text(dpi));
+    // The shortcut and chain files (`crate::commands`) are read off the UI thread, so the first key press
+    // and the first palette find them loaded.
+    let _ = std::thread::Builder::new()
+        .name("commands-prewarm".into())
+        .spawn(|| {
+            let _ = crate::commands::live();
+        });
     unsafe {
         let instance = HINSTANCE(GetModuleHandleW(None)?.0);
         let big_icon = app_icon(instance, GetSystemMetrics(SM_CXICON));
@@ -1965,6 +2221,7 @@ pub fn run(app: App) -> windows::core::Result<()> {
         super::panel_customize::register(&app);
         let _ = glass::apply(hwnd);
         app.borrow_mut().hwnd = hwnd;
+        super::set_blocker_wake(hwnd); // --- latency (fix E) --- blocker lists built off-thread
         super::panel_webapp::register(&app);
         super::panel_webapp::set_on_icon_changed(Box::new(move || {
             RAIL_ICON_EPOCH.with(|epoch| epoch.set(epoch.get().wrapping_add(1)));
@@ -1988,6 +2245,7 @@ pub fn run(app: App) -> windows::core::Result<()> {
             app.borrow().log.record("input_ready").ok();
         }
         // Take the URL first so the app borrow ends before submit_url borrows it again.
+        let launch_decided = App::launch_has_target(&app); // --- start page ---
         App::restore_pending_session(&app);
         sync_split_ratio(hwnd, App::split_view(&app));
         if App::split_view(&app).is_some()
@@ -1996,6 +2254,7 @@ pub fn run(app: App) -> windows::core::Result<()> {
             App::update_split_bounds(&app, panes);
         }
         App::submit_initial_url(&app);
+        App::apply_startup_plan(&app, launch_decided); // --- start page --- homepage or specific pages
         // Restored and initial tabs exist now, so a standing rule for a site with no open tab is stale.
         App::release_unused_site_rules(&app);
         let benchmark_url = app.borrow_mut().benchmark_url.take();
@@ -2041,6 +2300,11 @@ unsafe extern "system" fn window_proc(
         let app = raw.as_ref();
         match message {
             WM_NCCALCSIZE => {
+                // --- auto-hide (T11) --- a full-screen window has no frame at all: the client is the window.
+                if auto_hide::fullscreen_of(hwnd) != crate::auto_hide::Fullscreen::No {
+                    return LRESULT(if wparam.0 != 0 { WVR_REDRAW as isize } else { 0 });
+                }
+                // --- end auto-hide ---
                 let d = dpi(hwnd);
                 let mx = IsZoomed(hwnd).as_bool();
                 let fx = windows::Win32::UI::HiDpi::GetSystemMetricsForDpi(SM_CXFRAME, d)
@@ -2093,17 +2357,22 @@ unsafe extern "system" fn window_proc(
                         | Hit::Omnibox
                         | Hit::SiteInfo
                         | Hit::Split
+                        | Hit::StackTab(_) // --- two-level stacks (T10b) ---
+                        | Hit::StackTabClose(_)
                 );
-                frame::frame_hit_test(
+                // --- layout (thread T6) --- a row along the bottom edge keeps the bottom grip thin.
+                let thin_bottom = with_chrome(hwnd, |s| s.last_relayout.as_ref().is_some_and(|inputs| inputs.arrangement.thin_bottom_edge())).unwrap_or(false);
+                frame::frame_hit_test_with(
                     p,
                     (r.right, r.bottom),
                     dpi(hwnd),
-                    IsZoomed(hwnd).as_bool(),
+                    auto_hide::zoomed_or_full(hwnd), // --- auto-hide (T11) --- no resize rim in full screen
                     if ih {
                         frame::ChromeHit::Interactive
                     } else {
                         frame::ChromeHit::None
                     },
+                    thin_bottom,
                 )
                 .lresult()
             }
@@ -2186,7 +2455,7 @@ unsafe extern "system" fn window_proc(
                 if message == WM_SETTINGCHANGE {
                     // lParam is the changed setting's name, or null.
                     let name = (lparam.0 != 0)
-                        .then(|| windows::core::PCWSTR(lparam.0 as *const u16))
+                        .then_some(windows::core::PCWSTR(lparam.0 as *const u16))
                         .and_then(|name| name.to_string().ok());
                     if !glass::setting_change_is_relevant(wparam.0, name.as_deref())
                         && !glass::refresh_system_state_changed()
@@ -2194,10 +2463,15 @@ unsafe extern "system" fn window_proc(
                         return LRESULT(0);
                     }
                 }
+                // --- theme options --- the person's colours follow the Windows accent they were made with.
+                if let Some(app) = app {
+                    App::refresh_theme_install(app);
+                }
+                // --- end theme options ---
                 glass::refresh_system_state();
                 let _ = glass::apply(hwnd);
                 let settled = with_chrome(hwnd, |s| {
-                    s.palette = glass::palette();
+                    s.palette = auto_hide::chrome_palette(); // --- auto-hide (T11) ---
                     let settled = s.motion.set_snap(!animations_enabled(), Instant::now());
                     let rail_settled = s.surface.set_rail_snap(!animations_enabled(), Instant::now());
                     let settled = settled || rail_settled;
@@ -2229,6 +2503,7 @@ unsafe extern "system" fn window_proc(
             }
             WM_CREATE => {
                 if let Some(app) = app {
+                    App::theme_window_created(app, hwnd); // --- theme options ---
                     let instance = HINSTANCE(GetModuleHandleW(None).unwrap_or_default().0);
                     let edit = match CreateWindowExW(
                         windows::Win32::UI::WindowsAndMessaging::WS_EX_TRANSPARENT,
@@ -2299,6 +2574,7 @@ unsafe extern "system" fn window_proc(
                         all.borrow_mut().insert(hwnd.0 as isize, s);
                     });
                     super::post(hwnd, WM_RAIL_CHANGED, WPARAM(0), LPARAM(0));
+                    auto_hide::sync_config(hwnd, app); // --- auto-hide (T11) --- a window opened with the setting on starts hidden
                     let _ = SetFocus(Some(edit));
                     sync_foreground(hwnd, Some(app));
                 }
@@ -2324,21 +2600,12 @@ unsafe extern "system" fn window_proc(
                     let mut r = RECT::default();
                     let _ = GetClientRect(hwnd, &mut r);
                     apply_window_region(hwnd, r.right, r.bottom, IsZoomed(hwnd).as_bool());
+                    let maximised_now = auto_hide::zoomed_or_full(hwnd); // --- auto-hide (T11) ---
                     let active = App::active_tab_id(app);
                     let settings = App::settings(app);
+                    let arrangement = App::arrangement(app); // --- layout (thread T6) ---
                     let _ = with_chrome(hwnd, |s| {
-                        s.relayout(
-                            r.right,
-                            r.bottom,
-                            dpi(hwnd),
-                            active,
-                            IsZoomed(hwnd).as_bool(),
-                            App::tab_layout(app),
-                            App::sidebar_width(app),
-                            settings.centred_address_bar,
-                            settings.font_size,
-                            &settings.ui_font,
-                        );
+                        s.relayout(RelayoutRequest { w: r.right, h: r.bottom, dpi: dpi(hwnd), active, maximised: maximised_now, arrangement: arrangement.with_address_bar_revealed(s.address_bar_revealed), density: settings.ui_density, sidebar_width: App::sidebar_width(app), centred_address_bar: settings.centred_address_bar, font_scale: crate::layout_prefs::chrome_scale_percent(&settings), ui_font: &settings.ui_font });
                     });
                     sync_html_host_bounds(hwnd);
                     html_sync(hwnd);
@@ -2407,18 +2674,8 @@ unsafe extern "system" fn window_proc(
                             tab.favicon = None;
                         }
                         let settings = App::settings(app);
-                        s.relayout(
-                            r.right,
-                            r.bottom,
-                            dpi(hwnd),
-                            App::active_tab_id(app),
-                            IsZoomed(hwnd).as_bool(),
-                            App::tab_layout(app),
-                            App::sidebar_width(app),
-                            settings.centred_address_bar,
-                            settings.font_size,
-                            &settings.ui_font,
-                        );
+                        let arrangement = App::arrangement(app).with_address_bar_revealed(s.address_bar_revealed); // --- layout (thread T6) ---
+                        s.relayout(RelayoutRequest { w: r.right, h: r.bottom, dpi: dpi(hwnd), active: App::active_tab_id(app), maximised: auto_hide::zoomed_or_full(hwnd), arrangement, density: settings.ui_density, sidebar_width: App::sidebar_width(app), centred_address_bar: settings.centred_address_bar, font_scale: crate::layout_prefs::chrome_scale_percent(&settings), ui_font: &settings.ui_font });
                         s.refresh(app, true)
                     });
                     sync_html_host_bounds(hwnd);
@@ -2448,6 +2705,16 @@ unsafe extern "system" fn window_proc(
                         },
                     );
                     repaint(hwnd);
+                }
+                LRESULT(0)
+            }
+            // Alt pressed and released on its own (or F10): Bowser's main menu when the "Alt opens the
+            // menu" option is on; otherwise nothing, instead of Windows' hidden system-menu mode.
+            WM_SYSCOMMAND if (wparam.0 & 0xFFF0) == SC_KEYMENU as usize && lparam.0 == 0 => {
+                if crate::commands::behaviour::alt_tap(&crate::commands::live().store.options) == crate::commands::behaviour::AltTap::OpenMenu {
+                    if let Some(app) = app {
+                        show_main_menu(hwnd, app);
+                    }
                 }
                 LRESULT(0)
             }
@@ -2576,10 +2843,25 @@ unsafe extern "system" fn window_proc(
                 }
                 LRESULT(0)
             }
+            // --- tab stacks (T10) --- the tile look changed: lay the shown split out again.
+            super::WM_SPLIT_LOOK => {
+                if let Some(app) = app {
+                    apply_sidebar_bounds(hwnd, app);
+                    mark_chrome_dirty(hwnd);
+                }
+                LRESULT(0)
+            }
             super::WM_SETTINGS_COMMAND => {
                 if let Some(app) = app {
                     super::settings_page::run_queued(hwnd, app);
                     mark_chrome_dirty(hwnd);
+                }
+                LRESULT(0)
+            }
+            // One step of a running command chain (`command_actions`): its delay has passed.
+            super::WM_CHAIN_STEP => {
+                if let Some(app) = app {
+                    super::command_actions::chain_step(hwnd, app, wparam.0 as u32, lparam.0 as usize);
                 }
                 LRESULT(0)
             }
@@ -2610,6 +2892,17 @@ unsafe extern "system" fn window_proc(
                 super::settings_page::extensions_changed(hwnd);
                 LRESULT(0)
             }
+            super::bookmark_bar::WM_BOOKMARK_BAR_COMMAND => {
+                if let Some(app) = app {
+                    super::bookmark_bar::run_queued(hwnd, app);
+                }
+                LRESULT(0)
+            }
+            // Engine suggestions for the address field or the search field arrived.
+            super::address_bar::WM_ADDRESS_SUGGEST => {
+                super::address_bar::suggestions_ready(hwnd);
+                LRESULT(0)
+            }
             // --- end split view ---
             WM_PANE_FOCUSED => {
                 if let Some(app) = app
@@ -2629,6 +2922,9 @@ unsafe extern "system" fn window_proc(
             }
             WM_TABS_CHANGED => {
                 if let Some(app) = app {
+                    if !fullscreen_notice::belongs_to_active_tab(hwnd, app) {
+                        auto_hide::page_fullscreen(hwnd, app, false, None);
+                    }
                     let (structural, persisted) = App::take_tab_change_flags();
                     if structural {
                         card::cancel_card(hwnd);
@@ -2645,6 +2941,11 @@ unsafe extern "system" fn window_proc(
                     if refreshed.as_ref().is_some_and(|(_, changed)| *changed) {
                         sync_split_ratio(hwnd, App::split_view(app));
                         apply_sidebar_bounds(hwnd, app);
+                    }
+                    // --- tab stacks (T10) --- the rail's tab counts follow tabs opening and closing
+                    // (the rail sends nothing when the rebuilt entries are the same).
+                    if structural && App::tab_options(app).workspace_counts {
+                        App::rail_changed(app);
                     }
                     // A visit was just written: an open History flyout shows it without reopening,
                     // and so does a shown bowser://history page.
@@ -2753,8 +3054,14 @@ unsafe extern "system" fn window_proc(
                     let handled = dispatch(hwnd, app, key, ctrl, shift, alt);
                     if handled
                         && m & (SHORTCUT_FROM_CHROME as u8) != 0
-                        && shortcuts::command_for(key, ctrl, shift, alt)
-                            .is_some_and(changes_active_tab)
+                        && crate::commands::resolve(
+                            key,
+                            ctrl,
+                            shift,
+                            alt,
+                            &crate::commands::ResolveContext { gated: App::gated_chords(app), ..Default::default() },
+                        )
+                        .is_some_and(changes_active_tab)
                     {
                         App::focus_page(app);
                     }
@@ -2773,7 +3080,7 @@ unsafe extern "system" fn window_proc(
                 }
                 if drag.active {
                     let entries = rail_entries(s);
-                    let geometry = crate::chrome::rail::geometry(s.layout.rail, &entries, s.rail_scroll, s.dpi);
+                    let geometry = crate::chrome::rail::geometry(s.layout.rail, entries, s.rail_scroll, s.dpi);
                     drag.target = crate::chrome::rail::drop_indicator(&geometry, drag.key, p.x, p.y);
                 }
                 s.rail_drag = Some(drag);
@@ -2784,7 +3091,9 @@ unsafe extern "system" fn window_proc(
             } else {
                 let resizing = with_chrome(hwnd, |s| s.sidebar_resizing).unwrap_or(false);
                     if resizing {
-                        let width = ((p.x * 96) / dpi(hwnd).max(96) as i32).clamp(
+                        // --- layout (thread T6) --- measured from the sidebar's own edge, whichever side it is on.
+                        let drag_px = with_chrome(hwnd, |s| s.sidebar.map_or(p.x, |sidebar| sidebar.drag_width_px(p.x))).unwrap_or(p.x);
+                        let width = ((drag_px * 96) / dpi(hwnd).max(96) as i32).clamp(
                             i32::from(crate::settings::MIN_SIDEBAR_WIDTH),
                             i32::from(crate::settings::MAX_SIDEBAR_WIDTH),
                         ) as u16;
@@ -2835,6 +3144,25 @@ unsafe extern "system" fn window_proc(
                             if changed {
                                 let _ = InvalidateRect(Some(hwnd), None, false);
                             }
+                            // --- tab stacks (T10) --- the held tab resting over the middle of another
+                            // tab: a release after the stacking delay stacks the two.
+                            let _ = with_chrome(hwnd, |s| {
+                                let Some((_, from)) = s.drag else {
+                                    s.stack_hover = None;
+                                    return;
+                                };
+                                let over = (0..s.slots.len()).find(|&slot| {
+                                    slot != from
+                                        && s.layout.tab(slot).is_some_and(|rect| {
+                                            rect.contains(point.x, point.y) && crate::stacks::over_middle(rect.left, rect.right, point.x)
+                                        })
+                                });
+                                s.stack_hover = match (over, s.stack_hover) {
+                                    (Some(slot), Some((held, since))) if held == slot => Some((held, since)),
+                                    (Some(slot), _) => Some((slot, Instant::now())),
+                                    (None, _) => None,
+                                };
+                            });
                         }
                         if let Some(app) = app
                             && with_chrome(hwnd, |s| s.pressed == Hit::Omnibox).unwrap_or(false)
@@ -2909,6 +3237,15 @@ unsafe extern "system" fn window_proc(
                 let mut point = frame::point_from_lparam(lparam);
                 let _ = windows::Win32::Graphics::Gdi::ScreenToClient(hwnd, &mut point);
                 let in_rail = with_chrome(hwnd, |s| s.layout.rail.contains(point.x, point.y)).unwrap_or(false);
+                // --- tab stacks (T10) --- "Switch workspaces by scrolling" over the rail's workspaces.
+                if in_rail
+                    && let Some(app) = app
+                    && App::tab_options(app).workspace_scroll
+                    && matches!(hit(hwnd, point.x, point.y), Hit::Rail(RailKey::Workspace(_) | RailKey::AddWorkspace))
+                {
+                    let _ = App::scroll_workspaces(app, -((wparam.0 >> 16) as i16 as i32).signum());
+                    return LRESULT(0);
+                }
                 if in_rail {
                     let delta = -((wparam.0 >> 16) as i16 as i32).signum()
                         * Metrics::new(dpi(hwnd)).px(36);
@@ -2933,9 +3270,7 @@ unsafe extern "system" fn window_proc(
                         let Some(sidebar) = s.sidebar else {
                             return false;
                         };
-                        let row_height = crate::chrome::layout::Metrics::new(s.dpi)
-                            .px(crate::vertical_tabs::TAB_ROW_HEIGHT)
-                            .max(1);
+                        let row_height = sidebar.row_height().max(1); // --- layout (thread T6) ---
                         s.sidebar_scroll_target = s
                             .sidebar_scroll_target
                             .saturating_sub(delta * row_height * 3)
@@ -3042,14 +3377,16 @@ unsafe extern "system" fn window_proc(
                         }
                     }
                     Hit::SidebarWorkspace => {
-                        if let Some(app) = app {
+                        // --- tab stacks (T10) --- no workspace menu while workspaces are off.
+                        if let Some(app) = app
+                            && App::workspaces_enabled(app)
+                        {
                             show_workspaces_menu(hwnd, app);
                         }
                     }
                     Hit::SidebarNewTab => {
                         if let Some(app) = app {
-                            App::new_tab(app);
-                            focus_omni(hwnd, app, true);
+                            open_user_tab(hwnd, app); // --- tab options ---
                         }
                     }
                     Hit::SidebarResize => {
@@ -3092,6 +3429,19 @@ unsafe extern "system" fn window_proc(
                         set_pressed(hwnd, Hit::SidebarTabClose(index));
                         let _ = SetCapture(hwnd);
                     }
+                    // --- two-level stacks (T10b) --- a second-row tab selects; its close button
+                    // closes on release, as the tab row's does.
+                    Hit::StackTab(index) => {
+                        if let Some(app) = app
+                            && let Some(id) = stack_tab_id(hwnd, index)
+                        {
+                            let _ = App::select_tab(app, id);
+                        }
+                    }
+                    Hit::StackTabClose(index) => {
+                        set_pressed(hwnd, Hit::StackTabClose(index));
+                        let _ = SetCapture(hwnd);
+                    }
                     Hit::TabClose(i) => {
                         set_pressed(hwnd, Hit::TabClose(i));
                         let _ = with_chrome(hwnd, |s| s.drag = None);
@@ -3104,8 +3454,7 @@ unsafe extern "system" fn window_proc(
                     }
                     Hit::NewTab => {
                         if let Some(app) = app {
-                            App::new_tab(app);
-                            focus_omni(hwnd, app, true)
+                            open_user_tab(hwnd, app) // --- tab options ---
                         }
                     }
                     Hit::TabMenu => {
@@ -3270,12 +3619,18 @@ unsafe extern "system" fn window_proc(
                                     App::update_split_bounds(app, panes);
                                 }
                             }
+                        } else if let Some(target) = native_stack_target(hwnd, app)
+                            && App::stack_onto(app, id, target)
+                        {
+                            // --- tab stacks (T10) --- held over another tab long enough: a stack.
+                            super::stack_ui::stack_made(hwnd, app, target);
                         } else {
                             let to = layout::reorder_target(&l, from, p.x);
                             let model_to = slot_model_index(hwnd, to).unwrap_or(to);
                             let _ = App::drop_tab(app, id, model_to);
                         }
                     }
+                    let _ = with_chrome(hwnd, |s| s.stack_hover = None);
                     repaint(hwnd);
                     set_pressed(hwnd, Hit::None);
                     let _ = ReleaseCapture();
@@ -3290,16 +3645,22 @@ unsafe extern "system" fn window_proc(
                         if let Hit::TabClose(i) = was {
                             if let Some(app) = app {
                                 if let Some(id) = slot_tab_id(hwnd, i) {
-                                    let _ = App::close_tab(app, id);
+                                    user_close(hwnd, app, id); // --- tab options ---
                                 }
                             }
                         }
                         if let Hit::SidebarTabClose(i) = was {
                             if let Some(app) = app {
                                 if let Some(id) = sidebar_tab_id(hwnd, i) {
-                                    let _ = App::close_tab(app, id);
+                                    user_close(hwnd, app, id); // --- tab options ---
                                 }
                             }
+                        }
+                        // --- two-level stacks (T10b) ---
+                        if let (Hit::StackTabClose(i), Some(app)) = (was, app)
+                            && let Some(id) = stack_tab_id(hwnd, i)
+                        {
+                            user_close(hwnd, app, id);
                         }
                         if let (Hit::Back | Hit::Forward | Hit::Reload, Some(app)) = (was, app) {
                             // App::history checks the engine itself, so a click on a dimmed
@@ -3358,12 +3719,13 @@ unsafe extern "system" fn window_proc(
                 let target = match hit(hwnd, p.x, p.y) {
                     Hit::Tab(i) | Hit::TabClose(i) => slot_tab_id(hwnd, i),
                     Hit::SidebarTab(i) | Hit::SidebarTabClose(i) => sidebar_tab_id(hwnd, i),
+                    Hit::StackTab(i) | Hit::StackTabClose(i) => stack_tab_id(hwnd, i), // --- two-level stacks (T10b) ---
                     _ => None,
                 };
                 if let Some(id) = target {
                     card::cancel(hwnd);
                     if let Some(app) = app {
-                        let _ = App::close_tab(app, id);
+                        user_close(hwnd, app, id); // --- tab options --- middle click
                     }
                 }
                 LRESULT(0)
@@ -3373,7 +3735,11 @@ unsafe extern "system" fn window_proc(
                 let p = frame::point_from_lparam(lparam);
                 if let Some(app) = app {
                     let target = hit(hwnd, p.x, p.y);
-                    if opens_bowser_menu(target) && system_menu_requested(app) {
+                    if right_click_shows_system_menu(
+                        target,
+                        App::shift_right_click_context(app),
+                        GetKeyState(VK_SHIFT.0 as i32) < 0,
+                    ) {
                         card::cancel(hwnd);
                         html_system_menu(hwnd);
                         return LRESULT(0);
@@ -3431,8 +3797,9 @@ unsafe extern "system" fn window_proc(
                                 island_menu::open_now(hwnd, app, id, anchor);
                             }
                         }
-                        Hit::SidebarTab(i) | Hit::SidebarTabClose(i) => {
-                            if let Some(id) = sidebar_tab_id(hwnd, i) {
+                        Hit::SidebarTab(i) | Hit::SidebarTabClose(i) | Hit::StackTab(i) | Hit::StackTabClose(i) => {
+                            let id = if matches!(target, Hit::StackTab(_) | Hit::StackTabClose(_)) { stack_tab_id(hwnd, i) } else { sidebar_tab_id(hwnd, i) };
+                            if let Some(id) = id {
                                 card::cancel(hwnd);
                                 let app = app.clone();
                                 let menu_app = app.clone();
@@ -3453,6 +3820,12 @@ unsafe extern "system" fn window_proc(
                 LRESULT(0)
             }
             WM_KEYDOWN | WM_SYSKEYDOWN => {
+                if wparam.0 == windows::Win32::UI::Input::KeyboardAndMouse::VK_ESCAPE.0 as usize
+                    && auto_hide::fullscreen_of(hwnd) == crate::auto_hide::Fullscreen::Page
+                {
+                    if let Some(app) = app { auto_hide::page_fullscreen(hwnd, app, false, None); }
+                    return LRESULT(0);
+                }
                 if wparam.0 == windows::Win32::UI::Input::KeyboardAndMouse::VK_ESCAPE.0 as usize
                     && with_chrome(hwnd, |s| s.rail_drag.is_some()).unwrap_or(false)
                 {
@@ -3484,7 +3857,7 @@ unsafe extern "system" fn window_proc(
                             let keys: Vec<_> = s.rail_entries.iter().map(|entry| entry.key).collect();
                             s.rail_focus = crate::chrome::rail::step_focus(&keys, s.rail_focus, if key == VK_UP.0 as u32 { -1 } else { 1 });
                             let entries = rail_entries(s);
-                            let geometry = crate::chrome::rail::geometry(s.layout.rail, &entries, s.rail_scroll, s.dpi);
+                            let geometry = crate::chrome::rail::geometry(s.layout.rail, entries, s.rail_scroll, s.dpi);
                             if let Some(focus) = s.rail_focus
                                 && matches!(focus, RailKey::Workspace(_) | RailKey::AddWorkspace | RailKey::App(_) | RailKey::AddApp)
                                 && let Some(item) = geometry.item(focus)
@@ -3510,32 +3883,16 @@ unsafe extern "system" fn window_proc(
                         let previous = with_chrome(hwnd, |s| {
                             s.rail_keyboard_focus = false;
                             s.rail_focus = None;
-                            std::mem::replace(&mut s.rail_previous_focus, HWND::default())
+                            std::mem::take(&mut s.rail_previous_focus)
                         }).unwrap_or_default();
                         if !previous.0.is_null() { let _ = SetFocus(Some(previous)); }
                         let _ = InvalidateRect(Some(hwnd), None, false);
                         return LRESULT(0);
                     }
                 }
-                if GetKeyState(VK_CONTROL.0 as i32) < 0 && GetKeyState(VK_SHIFT.0 as i32) >= 0 {
-                    if let Some(app) = app {
-                        match wparam.0 as u32 {
-                            0x42 => { rail_activate(hwnd, app, side_panel::PanelId::Bookmarks); return LRESULT(0); }
-                            // bowser://downloads in a tab (docs/design/downloads.md).
-                            0x4A => { super::downloads_page::open(hwnd, app, false); return LRESULT(0); }
-                            // bowser://history in a tab (the side panel without the HTML chrome).
-                            0x48 => {
-                                if super::history_page::available(hwnd) {
-                                    super::history_page::open(hwnd, app, false);
-                                } else {
-                                    rail_activate(hwnd, app, side_panel::PanelId::History);
-                                }
-                                return LRESULT(0);
-                            }
-                            _ => {}
-                        }
-                    }
-                }
+                // --- latency (fix E) --- Ctrl+B / Ctrl+J / Ctrl+H are registry commands
+                // ("bookmarks-panel", "downloads", "history") run by `dispatch_current` below, so
+                // rebinding, clearing and "shortcuts off" apply to them like every other chord.
                 if wparam.0 == windows::Win32::UI::Input::KeyboardAndMouse::VK_ESCAPE.0 as usize
                     && side_panel::is_open(hwnd)
                     && !crate::win32::menu::is_tracking()
@@ -3567,7 +3924,7 @@ unsafe extern "system" fn window_proc(
                     let key = s.rail_tooltip_key;
                     if key.is_some() && s.hover == Hit::Rail(key.unwrap()) && s.rail_drag.is_none() {
                         let entries = rail_entries(s);
-                        let _ = key.map(|key| crate::chrome::rail::rail_tooltip(key, &entries));
+                        let _ = key.map(|key| crate::chrome::rail::rail_tooltip(key, entries));
                         s.rail_tooltip_visible = true;
                         true
                     } else { false }
@@ -3644,6 +4001,50 @@ unsafe extern "system" fn window_proc(
                 }
                 LRESULT(0)
             }
+            // --- theme options --- the time schedule (App::theme_tick).
+            WM_TIMER if wparam.0 == WM_THEME_SCHEDULE_TIMER => {
+                if let Some(app) = app {
+                    App::theme_tick(app);
+                } else {
+                    let _ = KillTimer(Some(hwnd), WM_THEME_SCHEDULE_TIMER);
+                }
+                LRESULT(0)
+            }
+            // --- end theme options ---
+            // --- auto-hide (T11) --- a pointer sensor, and the reveal / hide clock.
+            auto_hide::WM_AUTOHIDE_SENSOR => {
+                auto_hide::on_sensor(hwnd, wparam, lparam);
+                LRESULT(0)
+            }
+            WM_TIMER if wparam.0 == auto_hide::TIMER_ID => {
+                auto_hide::on_timer(hwnd);
+                LRESULT(0)
+            }
+            // --- end auto-hide ---
+            // --- tab options --- periodic reload and the audio rule (App::tab_tick).
+            WM_TIMER if wparam.0 == WM_TAB_TICK_TIMER => {
+                if let Some(app) = app {
+                    App::tab_tick(app);
+                } else {
+                    let _ = KillTimer(Some(hwnd), WM_TAB_TICK_TIMER);
+                }
+                LRESULT(0)
+            }
+            WM_TIMER if wparam.0 == WM_TAB_THUMB_TIMER => {
+                let _ = KillTimer(Some(hwnd), WM_TAB_THUMB_TIMER);
+                if let Some(app) = app {
+                    App::thumbnail_timer_fired(app);
+                }
+                LRESULT(0)
+            }
+            WM_TIMER if wparam.0 == WM_TAB_LINK_TIMER => {
+                let _ = KillTimer(Some(hwnd), WM_TAB_LINK_TIMER);
+                if let Some(app) = app {
+                    App::run_deferred_links(app);
+                }
+                LRESULT(0)
+            }
+            // --- end tab options ---
             // --- popup host (lane M) ---
             WM_TIMER if wparam.0 == WM_HTML_POPUP_PREWARM_TIMER => {
                 let _ = KillTimer(Some(hwnd), WM_HTML_POPUP_PREWARM_TIMER);
@@ -3828,6 +4229,12 @@ unsafe extern "system" fn window_proc(
                 }
                 LRESULT(0)
             }
+            // --- window and panels (thread T9) --- periodic reload of web panels
+            WM_TIMER if wparam.0 == super::panel_webapp::RELOAD_TIMER => {
+                if !super::panel_webapp::reload_timer(hwnd) { let _ = KillTimer(Some(hwnd), super::panel_webapp::RELOAD_TIMER); }
+                LRESULT(0)
+            }
+            // --- end window and panels ---
             WM_TIMER if wparam.0 == super::panel_webapp::IDLE_TIMER => {
                 let running = super::panel_webapp::idle_timer(hwnd);
                 if !running { let _ = KillTimer(Some(hwnd), super::panel_webapp::IDLE_TIMER); }
@@ -3957,6 +4364,7 @@ unsafe extern "system" fn window_proc(
                 LRESULT(0)
             }
             WM_DESTROY => {
+                auto_hide::forget(hwnd); // --- auto-hide (T11) ---
                 super::panel_webapp::shutdown();
                 passwords_panel::clear_password_clipboard_timer(hwnd);
                 let _ = KillTimer(Some(hwnd), super::WM_POWER_TIMER);
@@ -4028,6 +4436,14 @@ fn hit(hwnd: HWND, x: i32, y: i32) -> Hit {
                 crate::vertical_tabs::SidebarHit::TabClose(index) => Hit::SidebarTabClose(index),
             };
         }
+        // --- two-level stacks (T10b) --- the second row: its tabs and their close buttons; the
+        // rest of the row is nothing (not a drag band).
+        if s.layout.stack_row.contains(x, y) {
+            let islands = s.layout.stack_tabs(s.stack_tabs.len());
+            return islands.iter().position(|island| island.contains(x, y)).map_or(Hit::None, |index| {
+                if s.layout.tab_parts(islands[index]).close.contains(x, y) { Hit::StackTabClose(index) } else { Hit::StackTab(index) }
+            });
+        }
         let now = Instant::now();
         let balls = s
             .slots
@@ -4081,6 +4497,7 @@ fn hit_tab(hwnd: HWND, h: Hit) -> Option<TabId> {
     match h {
         Hit::Tab(i) | Hit::TabClose(i) | Hit::GroupBall(i) => slot_tab_id(hwnd, i),
         Hit::SidebarTab(i) | Hit::SidebarTabClose(i) => sidebar_tab_id(hwnd, i),
+        Hit::StackTab(i) | Hit::StackTabClose(i) => stack_tab_id(hwnd, i), // --- two-level stacks (T10b) ---
         _ => None,
     }
 }
@@ -4168,6 +4585,28 @@ fn ball_anchor(hwnd: HWND, id: TabId) -> Option<Rect> {
     })
     .flatten()
 }
+/// --- tab stacks (T10) --- opens the stack editor (the island menu: name, colour and members) of
+/// the stack `id` is in. Deferred, so the strip has drawn a stack that was just made before the
+/// editor anchors to it: at its ball when the native strip draws one, else under the pointer.
+pub(super) fn open_stack_editor(hwnd: HWND, app: &AppRef, id: TabId) {
+    let _ = with_chrome(hwnd, |s| s.refresh(app, true));
+    let anchor = ball_anchor(hwnd, id)
+        .map(|ball| (ball.left + ball.width() / 2, ball.bottom))
+        .or_else(|| cursor_client_point(hwnd));
+    if let Some((x, y)) = anchor {
+        defer_html_command(hwnd, DeferredChromeCommand::IslandMenu { id, x, y });
+    }
+}
+/// --- tab stacks (T10) --- the tab a native tab drag released now stacks onto: the one the held tab
+/// rested over the middle of for the stacking delay, while the option is on.
+fn native_stack_target(hwnd: HWND, app: &AppRef) -> Option<TabId> {
+    let options = App::tab_options(app);
+    let (slot, since) = with_chrome(hwnd, |s| s.stack_hover.take()).flatten()?;
+    let rested = u64::try_from(since.elapsed().as_millis()).unwrap_or(u64::MAX);
+    crate::stacks::drop_stacks(options.stack_drag, rested, options.stack_drop_delay.0)
+        .then(|| slot_tab_id(hwnd, slot))
+        .flatten()
+}
 /// Favicon of a tab for the island menu's rows: the chrome's decoded bitmap, or, while a live HTML
 /// tab strip left it undecoded, one decoded now through the same cache.
 pub(crate) fn tab_favicon(hwnd: HWND, id: TabId) -> Option<Rc<crate::favicon::FaviconBitmap>> {
@@ -4243,6 +4682,10 @@ fn slot_tab_id(hwnd: HWND, index: usize) -> Option<TabId> {
             .map(|tab| tab.id)
     })
     .flatten()
+}
+/// --- two-level stacks (T10b) --- the tab at `index` of the second row.
+fn stack_tab_id(hwnd: HWND, index: usize) -> Option<TabId> {
+    with_chrome(hwnd, |s| s.stack_tabs.get(index).copied()).flatten()
 }
 fn slot_model_index(hwnd: HWND, index: usize) -> Option<usize> {
     with_chrome(hwnd, |s| s.slots.get(index).map(|slot| slot.tab_index)).flatten()
@@ -4350,11 +4793,34 @@ fn split_rects_at(hwnd: HWND, divider: Option<i32>, cross: Option<i32>) -> Optio
     let viewport = adjusted_viewport(hwnd, to_win_rect(layout.viewport), dpi(hwnd));
     let viewport = Rect::new(viewport.left, viewport.top, viewport.right, viewport.bottom);
     let panes = layout::split_panes(viewport, view, divider.unwrap_or(saved_divider), cross.unwrap_or(saved_cross), layout.metrics)?;
-    Some(bounds_of(&panes))
+    Some(bounds_of(&panes, layout.metrics))
 }
 
-fn bounds_of(panes: &layout::SplitPanes) -> crate::app::SplitBounds {
-    crate::split_view::PaneMap(panes.panes.map(|pane| pane.map(to_win_rect)))
+/// The pages' rectangles of a split: each pane, less its title bar when tiles carry one
+/// (--- tab stacks (T10) ---, `stacks::tile_parts`).
+fn bounds_of(panes: &layout::SplitPanes, m: Metrics) -> crate::app::SplitBounds {
+    let title = m.px(crate::stacks::title_dip());
+    crate::split_view::PaneMap(panes.panes.map(|pane| {
+        pane.map(|rect| {
+            let ((left, top, right, bottom), _) = crate::stacks::tile_parts((rect.left, rect.top, rect.right, rect.bottom), title);
+            RECT { left, top, right, bottom }
+        })
+    }))
+}
+
+/// --- tab stacks (T10) --- the title bars of the shown split's tiles, with the tab each one names,
+/// in client coordinates. Empty without title bars.
+fn tile_title_bars(hwnd: HWND, s: &WindowChrome) -> Vec<(Rect, TabId)> {
+    let title = s.layout.metrics.px(crate::stacks::title_dip());
+    let (Some(view), true) = (s.split_layout, title > 0) else { return Vec::new() };
+    let Some(panes) = split_panes_now(hwnd, s) else { return Vec::new() };
+    view.panes()
+        .filter_map(|(pane, tab)| {
+            let rect = panes.panes[pane.index()]?;
+            let (_, bar) = crate::stacks::tile_parts((rect.left, rect.top, rect.right, rect.bottom), title);
+            bar.map(|(left, top, right, bottom)| (Rect::new(left, top, right, bottom), tab))
+        })
+        .collect()
 }
 
 /// The overlay layout of the shown split at the saved dividers, or `None` (no split, or too small).
@@ -4394,7 +4860,7 @@ pub(super) fn sync_split_ratio(hwnd: HWND, split: Option<crate::split_view::Spli
         let page = (viewport.left, viewport.top, viewport.right, viewport.bottom);
         state.split_orientation = split.orientation;
         state.split_layout = Some(split);
-        let (primary, cross) = crate::split_view::dividers_for_ratios(split, page, state.layout.metrics.px(crate::split_view::GAP_DIP));
+        let (primary, cross) = crate::split_view::dividers_for_ratios(split, page, state.layout.metrics.px(crate::stacks::gap_dip()));
         state.split_divider = primary;
         state.split_cross = cross;
     });
@@ -4404,13 +4870,13 @@ pub(super) fn sync_split_ratio(hwnd: HWND, split: Option<crate::split_view::Spli
 /// clamped by the layout's minimum pane sizes, stored, and turned into the app's ratios. Returns the
 /// new pane rectangles, or `None` when the layout does not fit.
 fn drag_split_divider(hwnd: HWND, app: &AppRef, held: crate::split_view::Divider, p: POINT) -> Option<crate::app::SplitBounds> {
-    use crate::split_view::{axis_coord, axis_span, ratio_for_divider, Divider, GAP_DIP};
+    use crate::split_view::{axis_coord, axis_span, ratio_for_divider, Divider};
     let (layout, view, orientation, saved_primary, saved_cross) =
         with_chrome(hwnd, |s| (s.layout, s.split_layout, s.split_orientation, s.split_divider, s.split_cross))?;
     let view = view?;
     let viewport = adjusted_viewport(hwnd, to_win_rect(layout.viewport), dpi(hwnd));
     let page = (viewport.left, viewport.top, viewport.right, viewport.bottom);
-    let gap = layout.metrics.px(GAP_DIP);
+    let gap = layout.metrics.px(crate::stacks::gap_dip());
     let moves_primary = !matches!(held, Divider::Cross(_));
     let moves_cross = held != Divider::Primary;
     let primary_at = if moves_primary { axis_coord(orientation, p.x, p.y) - gap / 2 } else { saved_primary };
@@ -4433,7 +4899,7 @@ fn drag_split_divider(hwnd: HWND, app: &AppRef, held: crate::split_view::Divider
         let (start, end) = axis_span(page, orientation.other());
         App::set_split_cross_ratio(app, ratio_for_divider(start, end, cross, gap));
     }
-    Some(bounds_of(&panes))
+    Some(bounds_of(&panes, layout.metrics))
 }
 
 /// The divider of the shown split at client point `p`, if any (for the divider menu).
@@ -4473,7 +4939,9 @@ fn to_win_rect(rect: Rect) -> RECT {
 
 fn adjusted_viewport(hwnd: HWND, viewport: RECT, window_dpi: u32) -> RECT {
     let viewport = notes_panel::adjust_viewport(viewport, hwnd, window_dpi);
-    let viewport = side_panel::adjust_viewport(viewport, hwnd);
+    // --- auto-hide (T11) --- a floating side panel takes no room from the page.
+    let viewport = if auto_hide::panel_floats(hwnd) { viewport } else { side_panel::adjust_viewport(viewport, hwnd) };
+    // --- end auto-hide ---
     devtools_dock::adjust_viewport(viewport, hwnd)
 }
 
@@ -4510,6 +4978,8 @@ fn finish_sidebar_drag(hwnd: HWND, app: &AppRef) {
         // as after every drag frame.
         apply_sidebar_bounds(hwnd, app);
         App::save_settings(app);
+        // --- fix group C --- an open settings page reads the new width, so its next Save keeps it.
+        super::settings_page::refresh(hwnd);
     }
 }
 
@@ -4582,9 +5052,9 @@ pub(super) fn split_rects_for_view(hwnd: HWND, view: crate::split_view::SplitVie
     let viewport = split_viewport(hwnd)?;
     let page = (viewport.left, viewport.top, viewport.right, viewport.bottom);
     let m = with_chrome(hwnd, |s| s.layout.metrics)?;
-    let (primary, cross) = crate::split_view::dividers_for_ratios(view, page, m.px(crate::split_view::GAP_DIP));
+    let (primary, cross) = crate::split_view::dividers_for_ratios(view, page, m.px(crate::stacks::gap_dip()));
     let panes = layout::split_panes(Rect::new(page.0, page.1, page.2, page.3), view, primary, cross, m)?;
-    Some(bounds_of(&panes))
+    Some(bounds_of(&panes, m))
 }
 
 /// The shown split's overlay geometry and focused pane, for the split host (picker placement).
@@ -4636,35 +5106,48 @@ pub(super) fn tab_ghost_post(hwnd: HWND, json: &str) {
 pub(super) fn split_host_state(hwnd: HWND, accent: Option<crate::theme::Rgba>) -> String {
     let (palette, dpi) = with_chrome(hwnd, |state| (state.palette, state.dpi))
         .unwrap_or_else(|| (crate::theme::palette(glass::appearance(), true), 96));
-    let mut palette = crate::theme::with_accent(palette, accent);
+    // --- wave-1 integration --- the hosts that use this state (the bookmarks bar, the private landing,
+    // the start page) take T3's private theme while a private tab is shown, like the toolbar does.
+    let system_look = glass::appearance();
+    let private_theme = app_of(hwnd).map(|app| (App::private_theme(&app), App::active_tab_private(&app)));
+    let (palette, dark) = match private_theme {
+        Some((theme, private)) => private_host_look(theme, private, system_look, palette),
+        None => (palette, system_look == crate::theme::Appearance::Dark),
+    };
+    // --- end wave-1 integration ---
+    // --- theme options --- the person's colours and accent (the page's, when asked) for this host too.
+    let look = if dark { crate::theme::Appearance::Dark } else { crate::theme::Appearance::Light };
+    let mut palette = match app_of(hwnd) {
+        Some(app) => App::themed_palette(&app, look, !palette.translucent).0,
+        None => crate::theme::with_accent(palette, accent),
+    };
+    // --- end theme options ---
     palette.window.a = 255;
-    ViewState {
-        scale: dpi as f32 / 96.0,
-        pillx: 0,
-        pillw: 0,
-        menux: 0,
-        solid: true,
-        dark: glass::appearance() == crate::theme::Appearance::Dark,
-        back: false,
-        forward: false,
-        loading: false,
-        split: false,
-        bookmarked: false,
-        progress: 0,
-        show_progress: true,
-        security: crate::chrome_host::protocol::Security::None,
-        label: String::new(),
-        permblocked: false,
-        zoom: 100,
-        show_zoom: false,
-        private: false,
-        reader: crate::reader::Pill::Hidden,
-        translate: crate::translate::Pill::Hidden,
-        font_scale: 100,
-        ui_font: String::new(),
-        theme: chrome_host::theme_tokens(&palette),
+    // --- look state (fix group B) --- the person's text size, font, density, menus and window look.
+    let look = host_look(hwnd);
+    host_state::page_host_view(dpi as f32 / 96.0, true, dark, look, chrome_host::theme_tokens(&palette)).to_json()
+}
+
+/// The settings-driven part of a page or panel host's `state`, as `html_sync` builds it for the toolbar.
+fn host_look(hwnd: HWND) -> host_state::HostLook {
+    match app_of(hwnd) {
+        Some(app) => host_state::HostLook::of(&App::settings(&app), window_in_background(hwnd)),
+        None => host_state::HostLook::neutral(),
     }
-    .to_json()
+}
+// --- end look state ---
+
+/// The palette and dark flag a page host takes: the window's own, or the private theme's light or
+/// dark look while a private tab is shown (the same rule as `html_sync`).
+fn private_host_look(
+    theme: crate::settings::PrivateTheme,
+    private: bool,
+    system: crate::theme::Appearance,
+    palette: &'static crate::theme::Palette,
+) -> (&'static crate::theme::Palette, bool) {
+    let look = theme.appearance(private, system);
+    let palette = if look == system { palette } else { crate::theme::palette(look, true) };
+    (palette, look == crate::theme::Appearance::Dark)
 }
 
 pub(super) fn html_split_accelerator(hwnd: HWND, accel: Accel) -> bool {
@@ -4672,6 +5155,11 @@ pub(super) fn html_split_accelerator(hwnd: HWND, accel: Accel) -> bool {
 }
 
 pub(super) fn html_settings_accelerator(hwnd: HWND, accel: Accel) -> bool {
+    // The keyboard editor is waiting for a new shortcut: the page gets the key, so Ctrl+T is captured
+    // as a shortcut instead of opening a tab.
+    if crate::commands::capturing() {
+        return false;
+    }
     html_accelerator(hwnd, accel, View::Settings)
 }
 
@@ -4751,7 +5239,7 @@ fn flyout_button(id: side_panel::PanelId) -> RailKey {
 fn flyout_anchor(hwnd: HWND, key: RailKey) -> Option<html_panel::Anchor> {
     let (html_rail, reported, layout_rail, native, dpi) = with_chrome(hwnd, |s| {
         let entries = rail_entries(s);
-        let geometry = crate::chrome::rail::geometry(s.layout.rail, &entries, s.rail_scroll, s.dpi);
+        let geometry = crate::chrome::rail::geometry(s.layout.rail, entries, s.rail_scroll, s.dpi);
         let native = geometry.items.iter().find(|item| item.key == key).map(|item| to_win_rect(item.rect));
         (s.html_rail.clone().filter(|_| s.html_rail_page_ready), s.html_rail_anchors.get(&key).copied(), to_win_rect(s.layout.rail), native, s.dpi)
     })?;
@@ -4833,7 +5321,15 @@ fn activate_rail(hwnd: HWND, app: &AppRef, key: RailKey) {
     }
     // --- end rail flyouts ---
     match key {
-        RailKey::Home => { App::new_tab(app); focus_omni(hwnd, app, true); }
+        // --- start page --- Home opens the homepage when one is set, else a new tab (the start page)
+        RailKey::Home => {
+            if let Some(url) = App::settings(app).start.home_target() {
+                App::navigate_current(app, &url);
+            } else {
+                open_user_tab(hwnd, app); // --- tab options --- the new tab page choice
+            }
+        }
+        // --- end start page ---
         RailKey::Customize | RailKey::Menu => { rail_activate_at(hwnd, app, side_panel::PanelId::Customize, Some(key)); }
         RailKey::Workspace(id) => { let _ = App::switch_workspace(app, crate::workspaces::WorkspaceId(id as u32)); }
         // A composer below the button; nothing is created until it is confirmed.
@@ -4853,6 +5349,14 @@ fn activate_rail(hwnd: HWND, app: &AppRef, key: RailKey) {
         // The History button opens bowser://history; without it, it toggles the flyout or panel.
         RailKey::History if super::history_page::available(hwnd) => super::history_page::open(hwnd, app, false),
         RailKey::History => { rail_activate_at(hwnd, app, side_panel::PanelId::History, Some(key)); }
+        // --- toolbars and feeds (thread T13) --- the item at that place of the panel bar's list, if it is still there.
+        RailKey::Tool(index) => {
+            let settings = App::settings(app);
+            if let Some(item) = settings.toolbar_panel.get(usize::from(index)) {
+                run_bar_item(hwnd, app, item);
+            }
+        }
+        // --- end toolbars and feeds ---
     }
 
     let _ = with_chrome(hwnd, |state| rebuild_rail_entries(state, app));
@@ -4868,7 +5372,7 @@ fn rail_entries(state: &WindowChrome) -> &[RailEntry<'_>] {
 fn rail_drop_target(hwnd: HWND, key: RailKey, x: i32, y: i32) -> Option<(usize, RailDropIndicator)> {
     with_chrome(hwnd, |state| {
         let entries = rail_entries(state);
-        let geometry = crate::chrome::rail::geometry(state.layout.rail, &entries, state.rail_scroll, state.dpi);
+        let geometry = crate::chrome::rail::geometry(state.layout.rail, entries, state.rail_scroll, state.dpi);
         crate::chrome::rail::drop_indicator(&geometry, key, x, y)
     }).flatten()
 }
@@ -4903,7 +5407,7 @@ fn rail_composer_anchor(hwnd: HWND, key: RailKey) -> POINT {
     }
 }
 
-/// Edit… on a rail web app: the composer opens where the menu was (`at`, screen pixels).
+/// Editâ€¦ on a rail web app: the composer opens where the menu was (`at`, screen pixels).
 fn edit_rail_app(hwnd: HWND, app: &AppRef, id: u32, at: POINT) {
     if super::composer::open(hwnd, app, super::composer::Composer::AppEdit(id), None, at) {
         return;
@@ -5068,12 +5572,12 @@ fn show_rail_context_menu(hwnd: HWND, app: &AppRef, key: RailKey, x: i32, y: i32
             let name = name.clone();
             let (can_up, can_down) = workspace_move_enabled(set.all().iter().position(|workspace| workspace.id() == id), set.workspace_count());
             let menu_entries = vec![
-                Entry::Item(Item::new(1, "Rename…", Icon::Person).glyph("edit")),
-                Entry::Item(Item::new(2, "Change icon…", Icon::Grid).glyph("workspace")),
-                Entry::Item(Item::new(3, "Change colour…", Icon::Grid).glyph("droplet")),
+                Entry::Item(Item::new(1, "Renameâ€¦", Icon::Person).glyph("edit")),
+                Entry::Item(Item::new(2, "Change iconâ€¦", Icon::Grid).glyph("workspace")),
+                Entry::Item(Item::new(3, "Change colourâ€¦", Icon::Grid).glyph("droplet")),
                 Entry::Item(Item::new(4, "Move up", Icon::Grid).glyph("chevron-up").disabled_if(!can_up)),
                 Entry::Item(Item::new(5, "Move down", Icon::Grid).glyph("chevron-down").disabled_if(!can_down)),
-                Entry::Item(Item::new(6, "Delete…", Icon::Close).glyph("trash").disabled_if(set.workspace_count() == 1)),
+                Entry::Item(Item::new(6, "Deleteâ€¦", Icon::Close).glyph("trash").disabled_if(set.workspace_count() == 1)),
             ];
             let kind = format!("rail-ws:{raw_id}");
             menu::show(hwnd, point, menu::Placement::BelowLeft, Menu { header: None, entries: menu_entries, footer: name.clone() }, &kind, move |app, chosen| {
@@ -5090,10 +5594,24 @@ fn show_rail_context_menu(hwnd: HWND, app: &AppRef, key: RailKey, x: i32, y: i32
                     }
                     2 => {
                         let choices = ["Briefcase", "Home", "Code", "Book", "Shopping", "Game", "Music", "Heart", "Star", "Bolt", "Globe", "Leaf"];
-                        let entries = choices.iter().enumerate().map(|(i, label)| Entry::Item(Item::new(20 + i, *label, Icon::Grid).glyph(WORKSPACE_GLYPH_NAMES[i]))).collect();
+                        let mut entries: Vec<Entry> = choices.iter().enumerate().map(|(i, label)| Entry::Item(Item::new(20 + i, *label, Icon::Grid).glyph(WORKSPACE_GLYPH_NAMES[i]))).collect();
+                        // --- tab stacks and workspaces (T10) --- "icon or emoji".
+                        const EMOJI: usize = 34;
+                        const NO_EMOJI: usize = 35;
+                        let emoji = App::workspace_emoji(app, id);
+                        entries.push(Entry::Separator);
+                        entries.push(Entry::Item(Item::new(EMOJI, emoji.as_deref().map_or_else(|| "Emojiâ€¦".to_owned(), |emoji| format!("Emoji: {emoji}â€¦")), Icon::Grid).glyph("edit").checked(emoji.is_some())));
+                        if emoji.is_some() {
+                            entries.push(Entry::Item(Item::new(NO_EMOJI, "Use the icon", Icon::Grid).glyph("reset")));
+                        }
                         let icons = [crate::workspaces::WorkspaceIcon::Briefcase, crate::workspaces::WorkspaceIcon::Home, crate::workspaces::WorkspaceIcon::Code, crate::workspaces::WorkspaceIcon::Book, crate::workspaces::WorkspaceIcon::Cart, crate::workspaces::WorkspaceIcon::Game, crate::workspaces::WorkspaceIcon::Music, crate::workspaces::WorkspaceIcon::Heart, crate::workspaces::WorkspaceIcon::Star, crate::workspaces::WorkspaceIcon::Bolt, crate::workspaces::WorkspaceIcon::Globe, crate::workspaces::WorkspaceIcon::Leaf];
                         menu::show(hwnd, point, menu::Placement::BelowLeft, Menu { header: None, entries, footer: "Workspace icon".into() }, "rail-ws-icon", move |app, chosen| {
-                            if let Some(icon) = chosen.and_then(|item| icons.get(item.id.saturating_sub(20)).copied()) { let _ = App::workspace_set_icon(app, id, icon); }
+                            let Some(picked) = chosen.map(|item| item.id) else { return };
+                            match picked {
+                                EMOJI => workspace_emoji_prompt(hwnd, app, id),
+                                NO_EMOJI => { let _ = App::workspace_set_emoji(app, id, None); }
+                                _ => if let Some(icon) = icons.get(picked.saturating_sub(20)).copied() { let _ = App::workspace_set_icon(app, id, icon); },
+                            }
                         });
                     }
                     3 => {
@@ -5107,13 +5625,35 @@ fn show_rail_context_menu(hwnd: HWND, app: &AppRef, key: RailKey, x: i32, y: i32
                     4 => if let Some(index) = set.all().iter().position(|workspace| workspace.id() == id) && workspace_move_enabled(Some(index), set.workspace_count()).0 { let _ = App::workspace_move(app, id, index - 1); },
                     5 => if let Some(index) = set.all().iter().position(|workspace| workspace.id() == id) && workspace_move_enabled(Some(index), set.workspace_count()).1 { let _ = App::workspace_move(app, id, index + 1); },
                     // --- popup surfaces (lane PP) --- confirm in the HTML popup, not a MessageBox
-                    6 => if set.workspace_count() > 1 { confirm_rail_workspace_delete(hwnd, point, id, &name); },
+                    6 if set.workspace_count() > 1 => { confirm_rail_workspace_delete(hwnd, point, id, &name); },
                     _ => {}
                 }
             });
         }
         RailKey::App(id) => {
-            let entries = vec![Entry::Item(Item::new(1, "Open", Icon::Grid).glyph("app-tile")), Entry::Item(Item::new(2, "Edit…", Icon::Person).glyph("edit")), Entry::Item(Item::new(3, "Remove…", Icon::Close).glyph("trash"))];
+            // --- window and panels (thread T9) --- this panel's own options live here, not on the settings page.
+            let prefs = crate::panel_prefs::current(id);
+            let reload_choices: Vec<Entry> = crate::panel_prefs::RELOAD_CHOICES.iter()
+                .map(|minutes| Entry::Item(Item::new(100 + usize::from(*minutes), crate::panel_prefs::reload_label(*minutes), Icon::None).checked(prefs.reload_minutes == *minutes)))
+                .collect();
+            let entries = vec![
+                Entry::Item(Item::new(1, "Open", Icon::Grid).glyph("app-tile")),
+                Entry::Item(Item::new(2, "Editâ€¦", Icon::Person).glyph("edit")),
+                Entry::Separator,
+                Entry::Item(Item::new(10, "Zoom in", Icon::Grid).glyph("zoom-in").disabled_if(prefs.zoom >= crate::site_prefs::ZOOM_MAX)),
+                Entry::Item(Item::new(11, "Zoom out", Icon::Grid).glyph("zoom-out").disabled_if(prefs.zoom <= crate::site_prefs::ZOOM_MIN)),
+                Entry::Item(Item::new(12, crate::panel_prefs::zoom_label(prefs.zoom), Icon::Grid).glyph("reset").disabled_if(prefs.zoom == crate::site_prefs::ZOOM_DEFAULT)),
+                Entry::Item(Item::new(13, "Mute audio", Icon::Grid).glyph("mute").checked(prefs.muted)),
+                Entry::Item(Item::new(14, "Reload page everyâ€¦", Icon::Grid).glyph("reload").submenu_with(reload_choices)),
+                Entry::Item(Item::new(15, "Show unread count from the page title", Icon::Grid).glyph("bell").checked(prefs.notify)),
+                Entry::Separator,
+                Entry::Item(Item::new(16, "Open page in a tab", Icon::Grid).glyph("external")),
+                Entry::Item(Item::new(17, "Open page in a new window", Icon::Grid).glyph("window")),
+                Entry::Item(Item::new(18, "Open page in a private tab", Icon::Grid).glyph("private")),
+                Entry::Separator,
+                Entry::Item(Item::new(3, "Removeâ€¦", Icon::Close).glyph("trash")),
+            ];
+            // --- end window and panels ---
             let kind = format!("rail-app:{id}");
             menu::show(hwnd, point, menu::Placement::BelowLeft, Menu { header: None, entries, footer: "Web app".into() }, &kind, move |app, chosen| {
                 let Some(chosen) = chosen else { return; };
@@ -5122,10 +5662,38 @@ fn show_rail_context_menu(hwnd: HWND, app: &AppRef, key: RailKey, x: i32, y: i32
                 match chosen.id {
                     1 => activate_rail(hwnd, app, key),
                     2 => edit_rail_app(hwnd, app, id, point),
+                    // --- window and panels (thread T9) --- per-panel options (src/panel_prefs.rs)
+                    10 | 11 | 12 | 13 | 15 | 100..=130 => {
+                        let _ = crate::panel_prefs::update(|file| {
+                            let mut now = file.get(id);
+                            match chosen.id {
+                                10 => now.zoom = crate::site_prefs::zoom_in(now.zoom),
+                                11 => now.zoom = crate::site_prefs::zoom_out(now.zoom),
+                                12 => now.zoom = crate::site_prefs::ZOOM_DEFAULT,
+                                13 => now.muted = !now.muted,
+                                15 => now.notify = !now.notify,
+                                minutes => now.reload_minutes = (minutes - 100) as u8,
+                            }
+                            file.set(id, now);
+                        });
+                        super::panel_webapp::prefs_changed(id);
+                        let _ = with_chrome(hwnd, |state| rebuild_rail_entries(state, app));
+                        repaint(hwnd);
+                    }
+                    16..=18 => {
+                        let Some(address) = super::panel_webapp::page_url(id) else { return; };
+                        let Ok(target) = url::Url::parse(&address) else { return; };
+                        match chosen.id {
+                            16 => { App::new_tab(app); App::navigate_current(app, &target); }
+                            17 => { if let Ok(profile) = crate::profile::active() { let _ = crate::profile::spawn_window_with_url(&profile, &target); } }
+                            _ => { App::new_private_tab(app); App::navigate_current(app, &target); }
+                        }
+                    }
+                    // --- end window and panels ---
                     3 if crate::win32::ask_yes_no("Remove this web app from the rail?") => {
                         if let Ok(profile) = crate::profile::active() {
                             let mut config = crate::sidebar::SidebarConfig::load(profile.root()).unwrap_or_default();
-                            config.remove_app(id);
+                            config.remove_app_remembered(id); // --- window and panels (thread T9) --- kept for "Restore" ---
                             let _ = config.save(profile.root());
                             super::panel_webapp::forget_app(id);
                             let _ = with_chrome(hwnd, |state| rebuild_rail_entries(state, app));
@@ -5136,6 +5704,33 @@ fn show_rail_context_menu(hwnd: HWND, app: &AppRef, key: RailKey, x: i32, y: i32
                 }
             });
         }
+        // --- window and panels (thread T9) --- the web apps removed from the rail come back from here.
+        RailKey::AddApp => {
+            let removed = crate::profile::active().ok().map(|profile| crate::panel_prefs::PanelPrefsFile::load(profile.root()).removed).unwrap_or_default();
+            let entries: Vec<Entry> = if removed.is_empty() {
+                vec![Entry::Item(Item::new(1, "No removed web apps", Icon::Grid).disabled())]
+            } else {
+                removed.iter().enumerate().map(|(index, entry)| Entry::Item(Item::new(200 + index, entry.name.clone(), Icon::Grid).glyph("app-tile"))).collect()
+            };
+            menu::show(hwnd, point, menu::Placement::BelowLeft, Menu { header: None, entries, footer: "Restore a removed web app".into() }, "rail-app-restore", move |app, chosen| {
+                let Some(index) = chosen.and_then(|item| item.id.checked_sub(200)) else { return; };
+                let Ok(profile) = crate::profile::active() else { return; };
+                let Some(entry) = crate::panel_prefs::update(|file| file.take_removed(index)).flatten() else { return; };
+                let mut config = crate::sidebar::SidebarConfig::load(profile.root()).unwrap_or_default();
+                match config.add_app(&entry.name, &entry.url) {
+                    Ok(new_id) => {
+                        if config.save(profile.root()).is_ok() {
+                            if let Some(web_app) = config.apps.iter().find(|item| item.id == new_id).cloned() { super::panel_webapp::register_app(app, web_app); }
+                        }
+                    }
+                    // Not restorable now (the address is on the rail again, or the rail is full): keep it listed.
+                    Err(_) => { let _ = crate::panel_prefs::update(|file| file.remember_removed(&entry.name, &entry.url)); }
+                }
+                let _ = with_chrome(hwnd, |state| rebuild_rail_entries(state, app));
+                repaint(hwnd);
+            });
+        }
+        // --- end window and panels ---
         _ => {}
     }
 }
@@ -5166,6 +5761,7 @@ fn show_tab_context_menu(hwnd: HWND, app: &AppRef, id: TabId, x: i32, y: i32, pi
     const CLOSE_LEFT: usize = 14;
     const CLOSE_RIGHT: usize = 15;
     const PICTURE_IN_PICTURE: usize = 18;
+    let targets = App::selection_targets(app, id); // --- tab options ---
     let pinned = App::tab_pinned(app, id);
     let private = App::tab_private(app, id);
     let url = App::tab_committed_url(app, id);
@@ -5217,6 +5813,7 @@ fn show_tab_context_menu(hwnd: HWND, app: &AppRef, id: TabId, x: i32, y: i32, pi
     entries.extend(super::split_ui::tab_menu_entries(app, id));
     entries.push(Entry::Separator);
     // --- end split view ---
+    entries.extend(super::stack_ui::tab_menu_entries(app, id)); // --- tab stacks (T10) ---
     if let Some(key) = &key {
         // The site's standing mode is marked with a check, as the other choice lists do.
         let mode = App::tab_group_preferences(app).mode(key);
@@ -5268,7 +5865,8 @@ fn show_tab_context_menu(hwnd: HWND, app: &AppRef, id: TabId, x: i32, y: i32, pi
                 Icon::None,
             )
             .glyph(if collapsed { "chevron-down" } else { "chevron-up" })
-            .disabled_if(!has_group),
+            // --- tab stacks (T10) --- Compact and Accordion fold stacks by themselves.
+            .disabled_if(!has_group || App::stack_style(app) != crate::tab_options::StackStyle::Islands),
         ));
     }
     entries.push(Entry::Item(
@@ -5335,7 +5933,8 @@ fn show_tab_context_menu(hwnd: HWND, app: &AppRef, id: TabId, x: i32, y: i32, pi
                 ),
         ),
     ]);
-    if pip_available {
+    // Settings > Page tools > "Offer picture in picture in the tab menu" (the Ctrl+Shift+Y command works either way).
+    if crate::page_tools::pip_menu_entry(pip_available, App::settings(app).page_tools.pip_menu) {
         entries.push(Entry::Item(Item::new(
             PICTURE_IN_PICTURE,
             "Picture in picture",
@@ -5343,6 +5942,9 @@ fn show_tab_context_menu(hwnd: HWND, app: &AppRef, id: TabId, x: i32, y: i32, pi
         )
         .glyph("pip")));
     }
+    // --- tab options --- periodic reload, rename and the actions on a selection.
+    entries.extend(tab_options_menu_entries(app, id, url.as_ref(), targets.len()));
+    // --- end tab options ---
     entries.push(Entry::Separator);
     entries.extend([
         Entry::Item(Item::new(CLOSE, "Close tab", Icon::Close).glyph("close")),
@@ -5369,7 +5971,7 @@ fn show_tab_context_menu(hwnd: HWND, app: &AppRef, id: TabId, x: i32, y: i32, pi
         entries,
         footer: "Actions for this tab".to_owned(),
     };
-    menu::show(hwnd, point, menu::Placement::BelowLeft, menu, &kind, move |app, chosen| unsafe {
+    menu::show(hwnd, point, menu::Placement::BelowLeft, menu, &kind, move |app, chosen| {
         let command = chosen.map_or(0, |chosen| chosen.id);
         // The tab may have closed while the menu was open.
         if command == 0 || !App::tab_ids(app).contains(&id) {
@@ -5398,6 +6000,10 @@ fn show_tab_context_menu(hwnd: HWND, app: &AppRef, id: TabId, x: i32, y: i32, pi
             // --- split view ---
             split if super::split_ui::tab_menu_pick(hwnd, app, id, split) => {}
             // --- end split view ---
+            stack if super::stack_ui::tab_menu_pick(hwnd, app, id, stack) => {} // --- tab stacks (T10) ---
+            // --- tab options ---
+            tab if tab_options_menu_pick(hwnd, app, id, tab, &targets) => {}
+            // --- end tab options ---
             GROUP_NEW => {
                 let _ = App::set_tab_group_mode(app, id, tab_groups::GroupMode::Always);
             }
@@ -5437,11 +6043,9 @@ fn show_tab_context_menu(hwnd: HWND, app: &AppRef, id: TabId, x: i32, y: i32, pi
                         App::set_tab_muted(app, created, true);
                     }
                     let current = App::tab_ids(app);
-                    let after = current
-                        .iter()
-                        .position(|candidate| *candidate == id)
-                        .unwrap_or(index)
-                        + 1;
+                    // --- tab options --- "Duplicated tab position": next to the original, or last.
+                    let after = duplicate_index(App::tab_options(app).duplicate_position, &current, id, index);
+                    // --- end tab options ---
                     let _ = App::move_tab(app, created, after);
                 }
             }
@@ -5471,24 +6075,18 @@ fn show_tab_context_menu(hwnd: HWND, app: &AppRef, id: TabId, x: i32, y: i32, pi
                     }
                 }
             }
-            CLOSE => {
-                let _ = App::close_tab(app, id);
-            }
+            CLOSE => user_close(hwnd, app, id), // --- tab options ---
+            // --- tab options --- a bulk close asks first at the configured count.
             CLOSE_OTHERS => {
-                for other in ids.iter().copied().filter(|other| *other != id) {
-                    let _ = App::close_tab(app, other);
-                }
+                close_many(hwnd, app, ids.iter().copied().filter(|other| *other != id).collect());
             }
             CLOSE_LEFT => {
-                for left in ids[..index].iter().copied() {
-                    let _ = App::close_tab(app, left);
-                }
+                close_many(hwnd, app, ids[..index].to_vec());
             }
             CLOSE_RIGHT => {
-                for right in ids[index + 1..].iter().copied() {
-                    let _ = App::close_tab(app, right);
-                }
+                close_many(hwnd, app, ids[index + 1..].to_vec());
             }
+            // --- end tab options ---
             CLOSE_PRIVATE => {
                 App::close_private_tabs(app);
             }
@@ -5881,13 +6479,22 @@ const WORKSPACE_DELETE: usize = 6302;
 fn workspace_menu_entries(app: &AppRef) -> Vec<Entry> {
     let workspaces = App::workspaces(app);
     let active = workspaces.active_id();
+    // --- tab stacks and workspaces (T10) --- the tab counts and emoji show here too.
+    let counts = App::tab_options(app).workspace_counts;
     let mut entries = workspaces
         .all()
         .iter()
         .enumerate()
         .map(|(index, workspace)| {
+            let mut label = match workspace.emoji() {
+                Some(emoji) => format!("{emoji}  {}", workspace.name()),
+                None => workspace.name().to_owned(),
+            };
+            if counts {
+                label = format!("{label} Â· {}", crate::stacks::tab_count_label(workspace.tabs().len()));
+            }
             Entry::Item(
-                Item::new(WORKSPACE_SELECT_BASE + index, workspace.name(), Icon::Grid)
+                Item::new(WORKSPACE_SELECT_BASE + index, label, Icon::Grid)
                     .glyph(workspace_glyph_name(workspace.icon()))
                     .checked(workspace.id() == active),
             )
@@ -5896,18 +6503,18 @@ fn workspace_menu_entries(app: &AppRef) -> Vec<Entry> {
     entries.push(Entry::Separator);
     entries.push(Entry::Item(Item::new(
         WORKSPACE_CREATE,
-        "New workspace…",
+        "New workspaceâ€¦",
         Icon::Plus,
     )
     .glyph("plus")));
     entries.push(Entry::Item(Item::new(
         WORKSPACE_RENAME,
-        "Rename current workspace…",
+        "Rename current workspaceâ€¦",
         Icon::Person,
     )
     .glyph("edit")));
     entries.push(Entry::Item(
-        Item::new(WORKSPACE_DELETE, "Delete current workspace…", Icon::Close)
+        Item::new(WORKSPACE_DELETE, "Delete current workspaceâ€¦", Icon::Close)
             .glyph("trash")
             .disabled_if(workspaces.workspace_count() == 1),
     ));
@@ -6051,6 +6658,7 @@ fn show_main_menu(hwnd: HWND, app: &AppRef) {
     const GROUP_AUTO: usize = 5061;
     const GROUP_NEVER: usize = 5062;
     const RECENT_BASE: usize = 5300;
+    const REOPEN_CLOSED: usize = 5290; // --- tab options ---
     // Submenu parents need an id distinct from any leaf below them, since html_popup's
     // menu_json rejects a menu with any repeated item id (validate_entries, seen.insert) -
     // including a parent sharing an id with its own child - and falls back to the native GDI
@@ -6082,6 +6690,14 @@ fn show_main_menu(hwnd: HWND, app: &AppRef) {
             .glyph("history")
             .shortcut("Ctrl+H"),
     )];
+    // --- tab options --- Ctrl+Shift+T.
+    history_entries.push(Entry::Item(
+        Item::new(REOPEN_CLOSED, "Reopen closed tab", Icon::None)
+            .glyph("reset")
+            .shortcut("Ctrl+Shift+T")
+            .disabled_if(recent.is_empty()),
+    ));
+    // --- end tab options ---
     history_entries.push(Entry::Separator);
     if recent.is_empty() {
         history_entries.push(Entry::Item(
@@ -6179,9 +6795,12 @@ fn show_main_menu(hwnd: HWND, app: &AppRef) {
                 ),
             ]),
     ));
-    entries.push(Entry::Item(
-        Item::new(WORKSPACES, "Workspaces", Icon::Grid).glyph("workspace").submenu_with(workspace_menu_entries(app)),
-    ));
+    // --- tab stacks and workspaces (T10) --- "Workspaces" off takes them out of the menu too.
+    if App::workspaces_enabled(app) {
+        entries.push(Entry::Item(
+            Item::new(WORKSPACES, "Workspaces", Icon::Grid).glyph("workspace").submenu_with(workspace_menu_entries(app)),
+        ));
+    }
     entries.push(Entry::Separator);
     let blocker = Item::new(BLOCKER, "Block ads & trackers", Icon::Shield)
         .glyph("shield")
@@ -6224,9 +6843,9 @@ fn show_main_menu(hwnd: HWND, app: &AppRef) {
     // (the profile, import, privacy dashboard and update rows) is the page they moved to.
     let guest = crate::profile::active().is_ok_and(|profile| profile.is_guest());
     let mut more_tools = vec![
-            Entry::Item(Item::new(NOTES, "Notes & Tasks…", Icon::Info).glyph("notes").shortcut("Ctrl+Shift+N")),
-            Entry::Item(Item::new(PALETTE, "Command palette…", Icon::Grid).glyph("command").shortcut("Ctrl+Shift+K")),
-            Entry::Item(Item::new(SESSIONS, "Saved sessions…", Icon::Check).glyph("folder").disabled_if(guest)),
+            Entry::Item(Item::new(NOTES, "Notes & Tasksâ€¦", Icon::Info).glyph("notes").shortcut("Ctrl+Shift+N")),
+            Entry::Item(Item::new(PALETTE, "Command paletteâ€¦", Icon::Grid).glyph("command").shortcut("Ctrl+Shift+K")),
+            Entry::Item(Item::new(SESSIONS, "Saved sessionsâ€¦", Icon::Check).glyph("folder").disabled_if(guest)),
             Entry::Item(
                 Item::new(CALM, "Hide distractions", Icon::Info)
                     .glyph("eye")
@@ -6234,7 +6853,7 @@ fn show_main_menu(hwnd: HWND, app: &AppRef) {
                     .disabled_if(!readable),
             ),
             Entry::Separator,
-            Entry::Item(Item::new(EXTENSIONS, "Extensions…", Icon::Grid).glyph("puzzle").shortcut("Ctrl+Shift+E")),
+            Entry::Item(Item::new(EXTENSIONS, "Extensionsâ€¦", Icon::Grid).glyph("puzzle").shortcut("Ctrl+Shift+E")),
             Entry::Item(Item::new(PASSWORDS, "Passwords & passkeys", Icon::Key).glyph("key").shortcut("Ctrl+,").disabled_if(guest)),
             Entry::Item(Item::new(DEVTOOLS, "Developer tools", Icon::Info).glyph("workspace-code").shortcut("F12")),
     ];
@@ -6257,16 +6876,16 @@ fn show_main_menu(hwnd: HWND, app: &AppRef) {
     ));
     entries.push(Entry::Separator);
     entries.push(Entry::Item(
-        Item::new(ZOOM_MENU, format!("Zoom · {zoom}%"), Icon::Grid)
+        Item::new(ZOOM_MENU, format!("Zoom Â· {zoom}%"), Icon::Grid)
             .glyph("zoom-in")
             .submenu_with(vec![
                 Entry::Item(Item::new(ZOOM_IN, "Zoom in", Icon::Plus).glyph("zoom-in").shortcut("Ctrl++")),
-                Entry::Item(Item::new(ZOOM_OUT, "Zoom out", Icon::None).glyph("zoom-out").shortcut("Ctrl+−")),
+                Entry::Item(Item::new(ZOOM_OUT, "Zoom out", Icon::None).glyph("zoom-out").shortcut("Ctrl+âˆ’")),
                 Entry::Item(Item::new(ZOOM_RESET, "Reset zoom", Icon::Reset).glyph("reset").shortcut("Ctrl+0")),
             ]),
     ));
     entries.push(Entry::Item(
-        Item::new(CLEAR_DATA, "Delete browsing data…", Icon::Close)
+        Item::new(CLEAR_DATA, "Delete browsing dataâ€¦", Icon::Close)
             .glyph("trash")
             .shortcut("Ctrl+Shift+Del"),
     ));
@@ -6317,10 +6936,7 @@ fn show_main_menu(hwnd: HWND, app: &AppRef) {
 
     if let Some(chosen) = chosen {
         match chosen.id {
-            NEW_TAB => {
-                App::new_tab(app);
-                focus_omni(hwnd, app, true);
-            }
+            NEW_TAB => open_user_tab(hwnd, app), // --- tab options ---
             NEW_WINDOW => open_another_window(false),
             NEW_PRIVATE_WINDOW => open_another_window(true),
             NEW_PRIVATE_TAB => {
@@ -6331,18 +6947,26 @@ fn show_main_menu(hwnd: HWND, app: &AppRef) {
                 App::close_private_tabs(app);
             }
             PROFILE | MORE_TOOLS => {}
-            // The same path as Ctrl+H, so the menu follows wherever History opens.
+            // --- wave-1 fixes --- the registry's commands, not their keys: rebinding or switching off
+            // Ctrl+H / Ctrl+J never breaks the menu, and it still opens wherever History opens.
             HISTORY => {
-                dispatch(hwnd, app, 0x48, true, false, false);
+                run_registered(hwnd, app, MENU_HISTORY_COMMAND);
             }
             DOWNLOADS => {
-                dispatch(hwnd, app, 0x4A, true, false, false);
+                run_registered(hwnd, app, MENU_DOWNLOADS_COMMAND);
             }
             id if (RECENT_BASE..RECENT_BASE + recent.len()).contains(&id) => {
-                if let Some((_, url)) = recent.get(id - RECENT_BASE) {
-                    App::submit(app, url);
+                // --- tab options --- reopened as a tab, where it was, and gone from the list.
+                if recent.get(id - RECENT_BASE).is_some_and(|(_, url)| App::closed_tabs(app).get(id - RECENT_BASE).is_some_and(|closed| closed.url == *url)) {
+                    let _ = App::reopen_closed_at(app, id - RECENT_BASE);
                 }
+                // --- end tab options ---
             }
+            // --- tab options ---
+            REOPEN_CLOSED => {
+                let _ = App::reopen_closed_tab(app);
+            }
+            // --- end tab options ---
             SHOW_BOOKMARKS => {
                 let _ = rail_activate(hwnd, app, side_panel::PanelId::Bookmarks);
             }
@@ -6377,7 +7001,7 @@ fn show_main_menu(hwnd: HWND, app: &AppRef) {
             }
             PALETTE => run_command_palette(hwnd, app),
             BOOKMARK => add_current_bookmark(hwnd, app),
-            SESSIONS => show_sessions(hwnd, app),
+            SESSIONS => super::sessions_panel::open(hwnd, app), // --- tab options --- the Sessions panel
             WORKSPACES => show_workspaces_menu(hwnd, app),
             READER => run_reader(hwnd, app, crate::reader::Mode::Reader),
             CALM => run_reader(hwnd, app, crate::reader::Mode::Calm),
@@ -6457,7 +7081,7 @@ fn update_footer(status: &crate::updater::Status) -> String {
         Status::Idle { .. } | Status::Unavailable => None,
     };
     match note {
-        Some(note) => format!("Bowser {running} · {note}"),
+        Some(note) => format!("Bowser {running} Â· {note}"),
         None => format!("Bowser {running}"),
     }
 }
@@ -6569,6 +7193,8 @@ fn run_command_palette(hwnd: HWND, app: &AppRef) {
     let Ok(profile) = crate::profile::active() else {
         return;
     };
+    let live = crate::commands::live();
+    let options = live.store.options.clone();
     let tabs: Vec<_> = App::tab_ids(app)
         .into_iter()
         .map(|id| {
@@ -6579,33 +7205,55 @@ fn run_command_palette(hwnd: HWND, app: &AppRef) {
             )
         })
         .collect();
-    let bookmarks = if !crate::productivity::profile_allows_productivity(&profile) {
+    let productive = crate::productivity::profile_allows_productivity(&profile);
+    let bookmarks = if !productive {
         Vec::new()
     } else {
         crate::productivity::read_bookmarks(&profile.bookmarks_file())
     };
-    let history = if !crate::productivity::profile_allows_productivity(&profile)
-        || !profile.history_enabled()
-    {
+    let history = if !productive || !profile.history_enabled() {
         Vec::new()
     } else {
         crate::productivity::read_history(&profile.history_file())
     };
-    let commands = crate::productivity::browser_commands();
+    // Every result type reads a store that already exists; nothing is cached for the palette.
+    let notes = if !productive {
+        Vec::new()
+    } else {
+        crate::productivity::read_note_list(&profile.notes_file()).into_iter().map(|note| (note.id, note.title, note.body)).collect()
+    };
+    let data = command_palette::PaletteData {
+        tabs,
+        closed: App::recently_closed(app).into_iter().map(|closed| (closed.title, closed.url)).collect(),
+        // --- tab stacks and workspaces (T10) --- none while workspaces are off.
+        workspaces: if App::workspaces_enabled(app) {
+            App::workspace_entries(app).into_iter().map(|(id, name, _, _, count, _)| (id.0, name, count)).collect()
+        } else {
+            Vec::new()
+        },
+        bookmarks,
+        notes,
+        history,
+        commands: crate::commands::palette_commands(&live),
+        // T2's bookmark nicknames (cached, re-read only when a bookmark file changed); none for a guest.
+        nicknames: if productive {
+            super::html_suggest::marks().iter().filter(|(_, _, nick)| !nick.is_empty()).map(|(url, _, nick)| (url.clone(), nick.clone())).collect()
+        } else {
+            Vec::new()
+        },
+    };
     // --- popup surfaces (lane PP) ---
     if html_popup::page_ready(hwnd) {
         if html_popup::is_active(hwnd) {
             html_popup::cancel(hwnd, app);
         }
         let items = command_palette::html_items_with_favicons(
-            &tabs,
-            &bookmarks,
-            &history,
-            &commands,
+            &data,
+            &options,
             |id| App::tab_favicon(app, TabId(id)),
             |host| crate::favicon::load_favicon_bytes(host).ok().flatten(),
         );
-        let page = command_palette::html_page(&items);
+        let page = command_palette::html_page(&items, &options);
         let mut window = RECT::default();
         unsafe {
             let _ = GetWindowRect(hwnd, &mut window);
@@ -6632,65 +7280,136 @@ fn run_command_palette(hwnd: HWND, app: &AppRef) {
     }
     // NATIVE FALLBACK: HTML chrome off, or the popup host is not ready yet.
     // --- end popup surfaces ---
-    let Some(item) = command_palette::show(hwnd, tabs, bookmarks, history, commands) else {
+    let Some(item) = command_palette::show(hwnd, data, options) else {
         return;
     };
     run_palette_item(hwnd, app, &item.action);
 }
 
-/// Runs one palette result: a tab id that is still open, an http(s) address, or a command.
+/// Shows the keyboard cheat sheet (Ctrl+F1): the palette page in `shortcuts` mode.
+pub(crate) fn show_shortcuts_sheet(hwnd: HWND, app: &AppRef) {
+    let live = crate::commands::live();
+    if !html_popup::page_ready(hwnd) {
+        // No HTML popup host (the GDI chrome): the Keyboard section of Settings lists the same
+        // shortcuts and lets the user change them.
+        super::settings_page::open(hwnd, app, Some(crate::internal_page::Section::Keyboard), false);
+        return;
+    }
+    if html_popup::is_active(hwnd) {
+        html_popup::cancel(hwnd, app);
+    }
+    let items = command_palette::shortcuts_items(&live);
+    let page = command_palette::shortcuts_page(&items, live.store.options.shortcuts_enabled);
+    let mut window = RECT::default();
+    unsafe {
+        let _ = GetWindowRect(hwnd, &mut window);
+    }
+    let _ = html_popup::show_page(
+        hwnd,
+        html_popup::Anchor::TopCenter(window),
+        "shortcuts",
+        popup_context(hwnd),
+        page,
+        Box::new(|_, _| {}),
+        None,
+    );
+}
+
+/// Runs one palette result: a tab id that is still open, an http(s) address, a closed tab, a
+/// workspace, a note, a calculator result, or a command.
 fn run_palette_item(hwnd: HWND, app: &AppRef, action: &str) {
+    let options = crate::commands::live().store.options.clone();
+    let web = |text: &str| url::Url::parse(text).ok().filter(|url| matches!(url.scheme(), "http" | "https"));
     if let Some(id) = action.strip_prefix("tab:").and_then(|s| s.parse::<u32>().ok()) {
         if App::tab_ids(app).contains(&TabId(id)) {
             let _ = App::select_tab(app, TabId(id));
         }
-    } else if let Some(url) = action
-        .strip_prefix("url:")
-        .and_then(|s| url::Url::parse(s).ok())
-        .filter(|url| matches!(url.scheme(), "http" | "https"))
-    {
+    } else if let Some(url) = action.strip_prefix("url:").or_else(|| action.strip_prefix("reopen:")).and_then(web) {
+        // "Open links in a new tab" decides between a new tab and the current one; a closed tab always
+        // comes back in a tab of its own (`commands::behaviour::link_open`).
+        if crate::commands::behaviour::link_open(&options, action) == Some(crate::commands::behaviour::LinkOpen::NewTab) {
+            App::new_tab(app);
+        }
         App::navigate_current(app, &url);
-    } else {
+    } else if let Some(id) = action.strip_prefix("workspace:").and_then(|s| s.parse::<u32>().ok()) {
+        let _ = App::switch_workspace(app, crate::workspaces::WorkspaceId(id));
+    } else if let Some(id) = action.strip_prefix("note:").and_then(|s| s.parse::<u64>().ok()) {
+        if crate::commands::behaviour::note_pick(&options) == crate::commands::behaviour::NotePick::OpenPanel {
+            notes_panel::show(hwnd); // --- wave-1 fixes --- never closes an open panel
+            apply_sidebar_bounds(hwnd, app);
+        } else if let Ok(profile) = crate::profile::active() {
+            // Off: the note's text goes to the clipboard to paste where it is wanted.
+            if let Some(note) = crate::productivity::read_note_list(&profile.notes_file()).into_iter().find(|note| note.id == id) {
+                let text = if note.title.trim().is_empty() { note.body } else { format!("{}\n{}", note.title, note.body) };
+                let _ = copy_text_to_clipboard(hwnd, text.trim_end());
+            }
+        }
+    } else if let Some(text) = action.strip_prefix("copy:") {
+        let _ = copy_text_to_clipboard(hwnd, text);
+    } else if !run_registered(hwnd, app, action) {
         run_palette_command(hwnd, app, action);
     }
 }
 
+/// The registry's `Handler::Action` commands: the ones with no chord-dispatched `Command` of their
+/// own. Everything else a registry command can do runs through `run_key_command`.
 fn run_palette_command(hwnd: HWND, app: &AppRef, action: &str) {
     match action {
-        "new-tab" => {
-            App::new_tab(app);
-            focus_omni(hwnd, app, true);
-        }
-        "new-private-tab" => {
-            App::new_private_tab(app);
-            focus_omni(hwnd, app, true);
-        }
         "close-private-tabs" => {
             App::close_private_tabs(app);
         }
-        "close-tab" => {
-            let _ = App::close_tab(app, App::active_tab_id(app));
+        // --- tab options --- the tab and session commands of Quick Commands.
+        "reopen-tab" => {
+            let _ = App::reopen_closed_tab(app);
         }
+        "closed-tabs" => {
+            let point = main_menu_anchor(hwnd);
+            show_closed_tabs_menu(hwnd, app, point.x, point.y);
+        }
+        "save-all-session" => save_session_prompt(hwnd, app, &App::tab_ids(app)),
+        "open-session" => show_open_session_menu(hwnd, app),
+        // --- end tab options ---
         "settings" => super::settings_page::open(hwnd, app, None, false),
-        "toggle-sidebar" => {
-            notes_panel::open(hwnd);
-            apply_sidebar_bounds(hwnd, app);
-        }
-        "passwords" => {
-            let _ = passwords_panel::open(hwnd);
-        }
-        "profiles" => show_profile_menu(hwnd),
-        "save-session" | "sessions" => show_sessions(hwnd, app),
-        "add-bookmark" => add_current_bookmark(hwnd, app),
-        "reload" => App::reload(app),
-        "back" => navigate_back_for_focused_pane(app),
-        "forward" => navigate_forward_for_focused_pane(app),
-        "extensions" => show_extensions_menu(hwnd, app),
-        "reader" => run_reader(hwnd, app, crate::reader::Mode::Reader),
+        "save-session" | "sessions" => super::sessions_panel::open(hwnd, app), // --- tab options ---
         "calm" => run_reader(hwnd, app, crate::reader::Mode::Calm),
         "translate" => run_translate(hwnd, app, TranslateAction::Toggle),
         _ => {}
     }
+}
+
+/// A short list of notes to pick one from (page tools: "Add selection to an existing note"). `picked` gets
+/// the note's id; it runs only if the pick is still one of the listed notes.
+pub(crate) fn show_note_pick_menu(hwnd: HWND, notes: Vec<(u64, String)>, picked: Box<dyn FnOnce(u64)>) {
+    const BASE: usize = 0x5500;
+    let entries: Vec<Entry> = notes
+        .iter()
+        .enumerate()
+        .map(|(index, (_, label))| Entry::Item(Item::new(BASE + index, label.clone(), Icon::None).glyph("notes")))
+        .collect();
+    let point = screen_point(hwnd, main_menu_anchor(hwnd));
+    let menu = Menu { header: None, entries, footer: "Add to a note".into() };
+    menu::show(hwnd, point, menu::Placement::AboveLeft, menu, "note-pick", move |_app, chosen| {
+        let Some(chosen) = chosen else { return };
+        if let Some((id, _)) = notes.get(chosen.id.wrapping_sub(BASE)) {
+            picked(*id);
+        }
+    });
+}
+
+/// A passive one-line message in the same toast the reader and bookmark commands use.
+pub(crate) fn show_toast(hwnd: HWND, message: &str, footer: &str) {
+    menu::show(
+        hwnd,
+        screen_point(hwnd, main_menu_anchor(hwnd)),
+        menu::Placement::AboveLeft,
+        Menu {
+            header: None,
+            entries: vec![Entry::Item(Item::new(0, message, Icon::Info).glyph("command").disabled())],
+            footer: footer.into(),
+        },
+        "command-toast",
+        |_, _| {},
+    );
 }
 
 /// Reader view or distraction hiding for the active page. Shared by Ctrl+Alt+R, the toolbar button,
@@ -6767,7 +7486,7 @@ fn show_translate_toast(hwnd: HWND, message: String) {
 fn translate_message(notice: &crate::app::TranslateNotice, available: bool) -> Option<String> {
     use crate::app::TranslateNotice as N;
     match notice {
-        N::Started => Some("Translating with Google Translate…".to_owned()),
+        N::Started => Some("Translating with Google Translateâ€¦".to_owned()),
         N::Unavailable if !available => Some("Translation works on web pages".to_owned()),
         N::Unavailable => Some("Translation is not available on this page".to_owned()),
         N::InProgress => Some("This page is already being translated".to_owned()),
@@ -6842,6 +7561,15 @@ fn start_translate(hwnd: HWND, app: &AppRef, tab: TabId, confirmed: bool) {
 }
 
 fn add_current_bookmark(hwnd: HWND, app: &AppRef) {
+    // The bookmark dialog, or the page's own details first (src/win32/address_dialog.rs).
+    if super::address_dialog::defer_quick_add(hwnd, app) {
+        return;
+    }
+    add_bookmark_now(hwnd, app);
+}
+
+/// Saves (or removes) the shown page's bookmark at once, with the toast.
+pub(super) fn add_bookmark_now(hwnd: HWND, app: &AppRef) {
     let Ok(profile) = crate::profile::active() else {
         return;
     };
@@ -6854,6 +7582,7 @@ fn add_current_bookmark(hwnd: HWND, app: &AppRef) {
     };
     let title =
         App::tab_title(app, id).unwrap_or_else(|| url.host_str().unwrap_or("Bookmark").to_owned());
+    let (title, page_description) = super::address_dialog::apply_metadata(title, App::tab_name(app, id).as_deref(), url.as_str());
     let mut store = match crate::bookmarks::BookmarkStore::load(profile.root()) {
         Ok(store) => store,
         Err(error) => { show_error_message(&format!("Bookmarks could not be loaded: {error}")); return; }
@@ -6865,6 +7594,9 @@ fn add_current_bookmark(hwnd: HWND, app: &AppRef) {
         Err(error) => show_error_message(&format!("Bookmark could not be saved: {error}")),
         Ok(added) => {
         super::post(hwnd, super::WM_RAIL_CHANGED, WPARAM(0), LPARAM(0));
+        if added && !page_description.is_empty() {
+            super::address_dialog::save_description(&profile, url.as_str(), &page_description);
+        }
         let mirror = if added {
             crate::productivity::add_bookmark(&profile.bookmarks_file(), url.as_str(), &title).map(|_| ())
         } else {
@@ -6893,7 +7625,286 @@ fn add_current_bookmark(hwnd: HWND, app: &AppRef) {
     }
 }
 
-fn show_sessions(hwnd: HWND, _app: &AppRef) {
+// --- tab options (src/tab_options.rs, src/app/tab_features.rs) ---
+
+/// A new tab from the user's hand (Ctrl+T, the new tab buttons, the menus): what the new tab page
+/// option says opens, and the keyboard goes to the page or the address bar as the options say.
+fn open_user_tab(hwnd: HWND, app: &AppRef) {
+    let id = App::open_new_tab(app);
+    if new_tab_focuses_page(App::tab_is_blank(app, id), App::tab_options(app).focus_page) {
+        App::focus_page(app);
+    } else {
+        focus_omni(hwnd, app, true);
+    }
+}
+
+/// --- wave-1 fixes (testable rules of the Tabs options) ---
+/// "Focus page content on new tab": the page takes the keyboard only when the option is on and the
+/// tab shows a page; a blank tab (the start page) keeps the address bar.
+fn new_tab_focuses_page(blank: bool, focus_page: bool) -> bool {
+    focus_page && !blank
+}
+
+/// "Duplicated tab position": where the copy of tab `original` goes in `order`, which already holds
+/// the copy at its end; `fallback` is the original's index when it is no longer found.
+fn duplicate_index(position: crate::tab_options::DuplicatePosition, order: &[TabId], original: TabId, fallback: usize) -> usize {
+    match position {
+        crate::tab_options::DuplicatePosition::Last => order.len(),
+        crate::tab_options::DuplicatePosition::Beside => order.iter().position(|candidate| *candidate == original).unwrap_or(fallback) + 1,
+    }
+}
+
+/// What a double click on a tab does ("Double click on a tab").
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TabDoubleClick {
+    Nothing,
+    Close,
+    Rename,
+}
+
+fn tab_double_click(option: crate::tab_options::DoubleClick) -> TabDoubleClick {
+    match option {
+        crate::tab_options::DoubleClick::Ignore => TabDoubleClick::Nothing,
+        crate::tab_options::DoubleClick::Close => TabDoubleClick::Close,
+        crate::tab_options::DoubleClick::Rename => TabDoubleClick::Rename,
+    }
+}
+// --- end wave-1 fixes ---
+
+/// Closes a tab the user asked to close (the close button, middle click, Ctrl+W, the tab menu, a
+/// double click): the pinned and last tab options decide, and the last tab may take the window.
+fn user_close(hwnd: HWND, app: &AppRef, id: TabId) {
+    if App::user_close_tab(app, id) == crate::tab_options::CloseKind::CloseWindow {
+        unsafe {
+            let _ = PostMessageW(Some(hwnd), WM_CLOSE, WPARAM(0), LPARAM(0));
+        }
+    }
+}
+
+/// Closes several tabs at once (Close other tabs, to the left, to the right, the selection), asking
+/// first when their count reaches "Confirm when closing many tabs". A pinned tab that is set not to
+/// close stays, and one set to minimise goes to sleep instead (wave-1 fixes). Returns how many closed.
+fn close_many(hwnd: HWND, app: &AppRef, ids: Vec<TabId>) -> usize {
+    let (close, minimise) = App::bulk_close_split(app, &ids);
+    if !close.is_empty() && App::close_needs_confirmation(app, close.len()) && !super::ask_yes_no(&crate::tab_options::confirm_close_text(close.len())) {
+        let _ = hwnd;
+        return 0;
+    }
+    for id in minimise {
+        let _ = App::user_close_tab(app, id);
+    }
+    close.into_iter().filter(|id| App::close_tab(app, *id)).count()
+}
+
+/// The strip's selection (Ctrl and Shift click): wire ids in strip order, kept for the tab menu.
+fn html_tab_selection(hwnd: HWND, wire_ids: &[u32]) {
+    let Some(app) = app_of(hwnd) else { return };
+    let open = App::tab_ids(&app);
+    let ids: Vec<TabId> = wire_ids.iter().filter_map(|raw| chrome_host::tab_from_wire(*raw, &open)).collect();
+    App::set_tab_selection(&app, &ids);
+}
+
+/// The names Quick Commands, the tab menu and the Sessions panel give the actions.
+const TAB_RELOAD_PARENT: usize = 0x5200;
+const TAB_RELOAD_OFF: usize = 0x5201;
+const TAB_RELOAD_ALL_OFF: usize = 0x5202;
+const TAB_RENAME: usize = 0x5203;
+const TAB_CLOSE_SELECTED: usize = 0x5204;
+const TAB_SESSION_SELECTED: usize = 0x5205;
+const TAB_RELOAD_BASE: usize = 0x5210;
+
+/// The tab menu's rows for periodic reload, renaming and a selection of several tabs.
+fn tab_options_menu_entries(app: &AppRef, id: TabId, url: Option<&url::Url>, selected: usize) -> Vec<Entry> {
+    let current = App::tab_reload_secs(app, id);
+    let web = url.is_some_and(|url| matches!(url.scheme(), "http" | "https"));
+    let mut reload = crate::tab_state::RELOAD_PRESETS
+        .iter()
+        .enumerate()
+        .map(|(index, secs)| {
+            Entry::Item(
+                Item::new(TAB_RELOAD_BASE + index, crate::tab_state::interval_label(*secs), Icon::None).checked(current == Some(*secs)),
+            )
+        })
+        .collect::<Vec<_>>();
+    if current.is_some() {
+        reload.push(Entry::Separator);
+        reload.push(Entry::Item(Item::new(TAB_RELOAD_OFF, "Stop reloading this tab", Icon::None)));
+    }
+    if App::reloading_tab_count(app) > 0 {
+        reload.push(Entry::Item(Item::new(TAB_RELOAD_ALL_OFF, "Stop reloading all tabs", Icon::None)));
+    }
+    let mut entries = vec![
+        Entry::Item(Item::new(TAB_RELOAD_PARENT, "Reload every", Icon::None).glyph("reload").submenu_with(reload).disabled_if(!web)),
+        Entry::Item(Item::new(TAB_RENAME, "Rename tabâ€¦", Icon::None).glyph("edit")),
+    ];
+    if selected > 1 {
+        entries.push(Entry::Separator);
+        entries.push(Entry::Item(Item::new(TAB_CLOSE_SELECTED, format!("Close {selected} selected tabs"), Icon::Close).glyph("close")));
+        entries.push(Entry::Item(Item::new(TAB_SESSION_SELECTED, format!("Save {selected} selected tabs as sessionâ€¦"), Icon::None).glyph("save")));
+    }
+    entries
+}
+
+/// Runs a row of [`tab_options_menu_entries`]. False for any other row.
+fn tab_options_menu_pick(hwnd: HWND, app: &AppRef, id: TabId, command: usize, targets: &[TabId]) -> bool {
+    let presets = crate::tab_state::RELOAD_PRESETS;
+    match command {
+        c if (TAB_RELOAD_BASE..TAB_RELOAD_BASE + presets.len()).contains(&c) => {
+            let _ = App::set_tab_reload(app, id, Some(presets[c - TAB_RELOAD_BASE]));
+        }
+        TAB_RELOAD_OFF => {
+            let _ = App::set_tab_reload(app, id, None);
+        }
+        TAB_RELOAD_ALL_OFF => {
+            let _ = App::disable_all_reloads(app);
+        }
+        TAB_RENAME => rename_tab_prompt(hwnd, app, id),
+        TAB_CLOSE_SELECTED => {
+            close_many(hwnd, app, targets.to_vec());
+        }
+        TAB_SESSION_SELECTED => save_session_prompt(hwnd, app, targets),
+        _ => return false,
+    }
+    true
+}
+
+/// --- wave-1 integration --- the "Reload this tab everyâ€¦" registry command: the tab menu's reload
+/// presets for the tab in front, as a menu under the main menu button.
+pub(crate) fn show_periodic_reload_menu(hwnd: HWND, app: &AppRef) {
+    let id = App::active_tab_id(app);
+    let url = App::tab_committed_url(app, id);
+    if !url.as_ref().is_some_and(|url| matches!(url.scheme(), "http" | "https")) {
+        show_toast(hwnd, "Periodic reload works on web pages", "Periodic reload");
+        return;
+    }
+    // The tab menu's own rows, so both menus offer the same presets and stop rows.
+    let entries = tab_options_menu_entries(app, id, url.as_ref(), 1)
+        .into_iter()
+        .find_map(|entry| match entry {
+            Entry::Item(item) if item.id == TAB_RELOAD_PARENT => item.submenu_entries,
+            _ => None,
+        })
+        .unwrap_or_default();
+    let menu = Menu { header: None, entries, footer: "Reload this tab every".to_owned() };
+    menu::show(hwnd, screen_point(hwnd, main_menu_anchor(hwnd)), menu::Placement::BelowLeft, menu, "tabreload", move |app, chosen| {
+        if let Some(chosen) = chosen {
+            let _ = tab_options_menu_pick(hwnd, app, id, chosen.id, &[]);
+        }
+    });
+}
+// --- end wave-1 integration ---
+
+/// --- tab stacks and workspaces (T10) --- "Emojiâ€¦" for a workspace: asks for an emoji (or a short
+/// text) to show instead of its icon. Empty goes back to the icon.
+fn workspace_emoji_prompt(hwnd: HWND, app: &AppRef, id: crate::workspaces::WorkspaceId) {
+    let current = App::workspace_emoji(app, id).unwrap_or_default();
+    let validate: super::profile_rename::Validator = Box::new(|text| {
+        if text.trim().is_empty() || crate::workspaces::clean_emoji(text).is_some() {
+            Ok(())
+        } else {
+            Err(format!("Use one emoji, or up to {} characters without spaces.", crate::workspaces::MAX_EMOJI_CHARS))
+        }
+    });
+    let Some(text) = super::profile_rename::prompt_validated(hwnd, &current, "Workspace emoji", "Use", "Shown instead of the icon. Leave it empty to show the icon. Win+. opens the emoji panel.", validate) else {
+        return;
+    };
+    let _ = App::workspace_set_emoji(app, id, Some(&text));
+}
+
+/// "Rename tab": asks for a name. An empty name goes back to the page's title.
+fn rename_tab_prompt(hwnd: HWND, app: &AppRef, id: TabId) {
+    let current = App::tab_name(app, id).unwrap_or_default();
+    let validate: super::profile_rename::Validator = Box::new(|name| {
+        if name.chars().any(char::is_control) {
+            Err("Names cannot contain control characters.".to_owned())
+        } else if name.chars().count() > crate::app::MAX_TAB_NAME_CHARS {
+            Err(format!("Use at most {} characters.", crate::app::MAX_TAB_NAME_CHARS))
+        } else {
+            Ok(())
+        }
+    });
+    let Some(name) = super::profile_rename::prompt_validated(hwnd, &current, "Rename tab", "Rename", "Leave it empty to show the pageâ€™s title.", validate) else {
+        return;
+    };
+    let _ = App::set_tab_name(app, id, &name);
+}
+
+/// The list of tabs closed this session at `(x, y)` (client pixels); a pick reopens it where it was.
+fn show_closed_tabs_menu(hwnd: HWND, app: &AppRef, x: i32, y: i32) {
+    const BASE: usize = 0x5300;
+    const REOPEN: usize = 0x52FF;
+    let closed = App::closed_tabs(app);
+    let urls: Vec<String> = closed.iter().map(|tab| tab.url.clone()).collect();
+    let mut entries = vec![Entry::Item(
+        Item::new(REOPEN, "Reopen closed tab", Icon::None).glyph("reset").shortcut("Ctrl+Shift+T").disabled_if(closed.is_empty()),
+    )];
+    entries.push(Entry::Separator);
+    if closed.is_empty() {
+        entries.push(Entry::Item(Item::new(BASE, "Nothing closed in this session", Icon::None).glyph("clock").disabled()));
+    }
+    entries.extend(closed.iter().enumerate().map(|(index, tab)| {
+        let label = if tab.title.trim().is_empty() { tab.url.clone() } else { tab.title.clone() };
+        Entry::Item(Item::new(BASE + index, label, Icon::None).glyph("clock"))
+    }));
+    let point = screen_point(hwnd, windows::Win32::Foundation::POINT { x, y });
+    let menu = Menu { header: None, entries, footer: "Closed tabs this session".to_owned() };
+    menu::show(hwnd, point, menu::Placement::BelowLeft, menu, "closedtabs", move |app, chosen| {
+        let Some(chosen) = chosen else { return };
+        if chosen.id == REOPEN {
+            let _ = App::reopen_closed_tab(app);
+        } else if (BASE..BASE + urls.len()).contains(&chosen.id) {
+            let n = chosen.id - BASE;
+            // The list may have changed while the menu was open: reopen only the entry that was shown.
+            if App::closed_tabs(app).get(n).is_some_and(|tab| tab.url == urls[n]) {
+                let _ = App::reopen_closed_at(app, n);
+            }
+        }
+    });
+}
+
+/// "Save all tabs as session" and "Save selected tabs as session": asks for a name and saves the
+/// web pages among `ids`.
+fn save_session_prompt(hwnd: HWND, app: &AppRef, ids: &[TabId]) {
+    let Some(name) = super::profile_rename::prompt(hwnd, "", "Save tabs as session", "Save") else {
+        return;
+    };
+    if let Err(message) = App::save_session(app, &name, ids) {
+        show_error_message(&message);
+    }
+    super::sessions_panel::refresh(hwnd);
+}
+
+/// "Open saved session": a menu of the saved sessions; a pick opens it.
+fn show_open_session_menu(hwnd: HWND, _app: &AppRef) {
+    let Ok(profile) = crate::profile::active() else { return };
+    if !crate::productivity::profile_allows_productivity(&profile) {
+        return;
+    }
+    let sessions = crate::productivity::read_sessions(&profile.saved_sessions_file());
+    const BASE: usize = 0x5400;
+    let mut entries: Vec<Entry> = sessions
+        .iter()
+        .enumerate()
+        .map(|(index, session)| Entry::Item(Item::new(BASE + index, format!("{} ({})", session.name, session.urls.len()), Icon::None).glyph("folder")))
+        .collect();
+    if entries.is_empty() {
+        entries.push(Entry::Item(Item::new(BASE, "No saved sessions", Icon::None).glyph("folder").disabled()));
+    }
+    let point = screen_point(hwnd, main_menu_anchor(hwnd));
+    let menu = Menu { header: None, entries, footer: "Saved sessions".into() };
+    menu::show(hwnd, point, menu::Placement::AboveLeft, menu, "sessions", move |app, chosen| {
+        let Some(chosen) = chosen else { return };
+        let live = crate::productivity::read_sessions(&profile.saved_sessions_file());
+        let Some(session) = sessions.get(chosen.id.wrapping_sub(BASE)).filter(|session| live.iter().any(|other| other.name == session.name)) else {
+            return;
+        };
+        App::open_session(app, session, false);
+    });
+}
+
+// --- end tab options ---
+
+pub(super) fn show_sessions(hwnd: HWND, _app: &AppRef) {
     let Ok(profile) = crate::profile::active() else {
         return;
     };
@@ -6906,7 +7917,7 @@ fn show_sessions(hwnd: HWND, _app: &AppRef) {
     const DELETE_BASE: usize = 200;
     let mut entries = vec![Entry::Item(Item::new(
         SAVE,
-        "Save current tabs…",
+        "Save current tabsâ€¦",
         Icon::Plus,
     )
     .glyph("plus"))];
@@ -7146,13 +8157,13 @@ fn show_extensions_menu(hwnd: HWND, _app: &AppRef) {
             )
         })
         .collect();
-    let popup = Item::new(POPUP_MENU, "Open extension popup…", Icon::Grid).glyph("puzzle");
+    let popup = Item::new(POPUP_MENU, "Open extension popupâ€¦", Icon::Grid).glyph("puzzle");
     entries.push(Entry::Item(if popup_entries.is_empty() {
         popup.disabled()
     } else {
         popup.submenu_with(popup_entries)
     }));
-    let remove = Item::new(REMOVE_MENU, "Remove extension…", Icon::Close).glyph("trash");
+    let remove = Item::new(REMOVE_MENU, "Remove extensionâ€¦", Icon::Close).glyph("trash");
     entries.push(Entry::Item(if records.is_empty() {
         remove.disabled()
     } else {
@@ -7162,13 +8173,13 @@ fn show_extensions_menu(hwnd: HWND, _app: &AppRef) {
     entries.push(Entry::Item(Item::new(MANAGE, "Manage extensions", Icon::Grid).glyph("gear")));
     entries.push(Entry::Item(Item::new(
         INSTALL,
-        "Install unpacked extension…",
+        "Install unpacked extensionâ€¦",
         Icon::Plus,
     )
     .glyph("folder")));
     entries.push(Entry::Item(Item::new(
         INSTALL_CRX,
-        "Install CRX file…",
+        "Install CRX fileâ€¦",
         Icon::Plus,
     )
     .glyph("puzzle")));
@@ -7638,6 +8649,14 @@ fn monitor_work_area(hwnd: HWND) -> Option<RECT> {
 }
 
 fn apply_window_region(hwnd: HWND, client_width: i32, client_height: i32, maximised: bool) {
+    // --- auto-hide (T11) --- a full-screen window is a plain rectangle.
+    if auto_hide::fullscreen_of(hwnd) != crate::auto_hide::Fullscreen::No {
+        unsafe {
+            let _ = SetWindowRgn(hwnd, None, true);
+        }
+        return;
+    }
+    // --- end auto-hide ---
     let radius = Metrics::new(dpi(hwnd)).window_radius();
     let (left, top, right, bottom) = if maximised {
         let mut window = RECT::default();
@@ -7688,6 +8707,7 @@ fn rect_for(l: &Layout, h: Hit) -> Rect {
     match h {
         Hit::Rail(_) | Hit::RailBackground => l.rail,
         Hit::Tab(i) | Hit::TabClose(i) | Hit::GroupBall(i) => l.tab(i).unwrap_or_default(),
+        Hit::StackTab(_) | Hit::StackTabClose(_) => l.stack_row, // --- two-level stacks (T10b) ---
         Hit::NewTab => l.new_tab_button,
         Hit::TabMenu => l.tab_menu_button,
         Hit::MainMenu => l.main_menu_button,
@@ -7953,6 +8973,8 @@ fn close_html_chrome(hwnd: HWND) {
     super::history_page::close(hwnd);
     super::downloads_page::close(hwnd);
     super::downloads_ui::close(hwnd);
+    super::bookmark_bar::close(hwnd);
+    super::address_bar::forget(hwnd);
     let hosts = with_chrome(hwnd, |s| {
         s.html_requested = true;
         s.html_tabs_requested = true;
@@ -8003,16 +9025,7 @@ fn start_html_toolbar(hwnd: HWND, env: &ChromeEnv) {
             LPARAM(0),
         );
     });
-    let created = ChromeHost::create(
-        env,
-        hwnd,
-        bounds,
-        View::Toolbar,
-        on_command,
-        on_failed,
-        Some(on_accelerator),
-        move |result| html_created(hwnd, result),
-    );
+    let created = ChromeHost::create(env, crate::chrome_host::host::ChromeHostOptions { parent: hwnd, bounds, view: View::Toolbar, on_command, on_failed, on_accelerator: Some(on_accelerator) }, move |result| html_created(hwnd, result));
     if created.is_err() {
         html_failed(hwnd);
     }
@@ -8130,7 +9143,7 @@ fn html_refresh(hwnd: HWND) {
 
 /// The application state behind this window, if it is still alive. The clone is an `Rc` handle, so
 /// no borrow of the window table or the app is held by the caller.
-fn app_of(hwnd: HWND) -> Option<AppRef> {
+pub(super) fn app_of(hwnd: HWND) -> Option<AppRef> {
     let raw = unsafe { (GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *const AppRef).as_ref() }?;
     Some(raw.clone())
 }
@@ -8144,7 +9157,7 @@ fn html_sync(hwnd: HWND) {
     let Some(app) = app_of(hwnd) else {
         return;
     };
-    let Some((palette, dpi, layout)) = with_chrome(hwnd, |s| {
+    let Some((_chrome_palette, dpi, layout)) = with_chrome(hwnd, |s| {
         if !(s.html_page_ready || s.html_tabs_page_ready || s.html_rail_page_ready) { return None; }
         Some((s.palette, s.dpi, s.layout))
     })
@@ -8153,17 +9166,34 @@ fn html_sync(hwnd: HWND) {
     };
     let id = App::active_tab_id(&app);
     let site = App::site_security(&app);
+    let settings = App::settings(&app);
+    // --- toolbars and feeds (thread T13) --- the address bar's own list decides which buttons take room.
+    let bar_extra = crate::toolbar_prefs::right_static_px(&settings);
+    let (dl_allowed, ext_allowed) = (crate::toolbar_prefs::address_has(&settings, "downloads"), crate::toolbar_prefs::address_has(&settings, "extensions"));
+    let _ = with_chrome(hwnd, |s| {
+        s.html_bar_extra = bar_extra;
+        s.html_dl_allowed = dl_allowed;
+        s.html_ext_allowed = ext_allowed;
+    });
+    // --- end toolbars and feeds ---
     let slot = with_chrome(hwnd, |s| s.toolbar_slot()).unwrap_or(0);
     let (pillx, pillw, menux) = chrome_host::toolbar_css_placement_with_slot(&layout, dpi, slot).unwrap_or_default();
-    let palette = crate::theme::with_accent(palette, App::settings_accent(&app));
-    let settings = App::settings(&app);
+    // While a private tab is shown, the chrome takes its own light or dark look when the private
+    // theme asks for one (thread T3); otherwise it follows the normal appearance.
+    let system_look = glass::appearance();
+    let look = settings.private_theme.appearance(App::tab_private(&app, id), system_look);
+    // --- theme options --- the person's colours, the accent (the page's, when asked) and the tint.
+    // --- auto-hide (T11) --- solid while a bar is out of the layout: a revealed bar floats over the page.
+    let (palette, _) = App::themed_palette(&app, look, glass::backdrop_mode() == glass::BackdropMode::Solid || auto_hide::solid());
+    // --- end theme options ---
+    let dark = look == crate::theme::Appearance::Dark;
     let state = ViewState {
         scale: dpi as f32 / 96.0,
         pillx,
         pillw,
         menux,
-        solid: glass::backdrop_mode() == glass::BackdropMode::Solid,
-        dark: glass::appearance() == crate::theme::Appearance::Dark,
+        solid: glass::backdrop_mode() == glass::BackdropMode::Solid || auto_hide::solid(), // --- auto-hide (T11) ---
+        dark,
         back: App::tab_can_go_back(&app, id),
         forward: App::tab_can_go_forward(&app, id),
         loading: App::tab_loading(&app, id),
@@ -8182,8 +9212,12 @@ fn html_sync(hwnd: HWND) {
         private: App::tab_private(&app, id),
         reader: App::active_reader_pill(&app),
         translate: App::active_translate_pill(&app),
-        font_scale: settings.font_size.scale_percent(),
+        font_scale: crate::layout_prefs::chrome_scale_percent(&settings), // --- layout (thread T6) --- font_size times ui_zoom
         ui_font: settings.ui_font.clone(),
+        density: settings.ui_density,
+        compact_menus: settings.compact_menus,
+        look: crate::window_prefs::Look::of(&settings.window, window_in_background(hwnd)), // --- window and panels (thread T9) ---
+        bar: address_bar_items(&app, &settings), // --- toolbars and feeds (thread T13) ---
         theme: chrome_host::theme_tokens(&palette),
     };
     let json = state.to_json();
@@ -8193,6 +9227,10 @@ fn html_sync(hwnd: HWND) {
     let Some(host) = with_chrome(hwnd, |s| s.html_toolbar_active.then(|| s.html.clone()).flatten()).flatten() else {
         return;
     };
+    // The address field's and the search field's options (src/win32/address_bar.rs).
+    let generation = with_chrome(hwnd, |s| s.html_state_generation[0]).unwrap_or_default();
+    super::address_bar::sync(hwnd, &app, generation);
+    super::bookmark_bar::sync(hwnd, &app);
     let display =
         with_chrome(hwnd, |s| s.urls.get(&id).cloned().unwrap_or_default()).unwrap_or_default();
     let (send_text, select, generation) = with_chrome(hwnd, |s| {
@@ -8212,8 +9250,7 @@ fn html_sync(hwnd: HWND) {
         (send_text, select, s.html_state_generation[0])
     })
     .unwrap_or_default();
-    if send_text {
-        if host.post_json(&set_text_json(&display, select)).is_ok() {
+    if send_text && host.post_json(&set_text_json(&display, select)).is_ok() {
             let _ = with_chrome(hwnd, |s| {
                 if s.html_state_generation[0] != generation { return; }
                 s.html_synced_tab = Some(id);
@@ -8221,7 +9258,6 @@ fn html_sync(hwnd: HWND) {
                 s.edit_text.clone_from(&display);
                 s.completion = None;
             });
-        }
     }
 }
 
@@ -8300,6 +9336,86 @@ pub(super) fn downloads_anchor(hwnd: HWND, rect: Option<chrome_host::protocol::H
     Some(windows::Win32::Foundation::POINT { x: button.right, y: button.bottom + (4.0 * scale).round() as i32 })
 }
 
+/// The screen point a popup under the toolbar element at `rect` (toolbar CSS pixels) hangs from: the
+/// element's bottom left edge. `None` while the toolbar host is not up.
+pub(super) fn toolbar_anchor(hwnd: HWND, rect: chrome_host::protocol::HoverRect) -> Option<windows::Win32::Foundation::POINT> {
+    let (host, dpi) = with_chrome(hwnd, |s| Some((s.html.clone()?, s.dpi)))??;
+    let screen = host.screen_bounds()?;
+    let scale = dpi as f32 / 96.0;
+    let element = super::html_hover::anchor_to_screen(screen, scale, rect);
+    Some(windows::Win32::Foundation::POINT { x: element.left, y: element.bottom + (4.0 * scale).round() as i32 })
+}
+
+/// Gives the bookmarks bar `reserve` (physical pixels, bottom?) of the page area. `true` when that
+/// changed it: the window is laid out again at once, and the caller's sync runs again with the room
+/// in place.
+// --- layout (thread T6) ---
+/// Shows a hidden address bar (Ctrl+L and the other ways into the address field) or hides it again
+/// (the field lost focus). Nothing changes while the setting shows the bar anyway. True when the
+/// chrome was laid out again.
+pub(super) fn set_address_bar_revealed(hwnd: HWND, app: &AppRef, on: bool) -> bool {
+    let arrangement = App::arrangement(app);
+    let on = on && !arrangement.address_bar_visible;
+    let relaid = with_chrome(hwnd, |s| {
+        if s.address_bar_revealed == on {
+            return false;
+        }
+        s.address_bar_revealed = on;
+        if let Some(inputs) = s.last_relayout.as_mut() {
+            inputs.arrangement = arrangement.with_address_bar_revealed(on);
+        }
+        s.relayout_sidebar(App::sidebar_width(app))
+    })
+    .unwrap_or(false);
+    if relaid {
+        sync_html_host_bounds(hwnd);
+        html_sync(hwnd);
+        apply_sidebar_bounds(hwnd, app);
+        repaint(hwnd);
+    }
+    relaid
+}
+// --- end layout ---
+
+pub(super) fn apply_bar_reserve(hwnd: HWND, app: &AppRef, reserve: (i32, bool)) -> bool {
+    let relaid = with_chrome(hwnd, |s| {
+        if s.bar_reserve == reserve {
+            return false;
+        }
+        s.bar_reserve = reserve;
+        s.relayout_sidebar(App::sidebar_width(app))
+    })
+    .unwrap_or(false);
+    if relaid {
+        sync_html_host_bounds(hwnd);
+        apply_sidebar_bounds(hwnd, app);
+        repaint(hwnd);
+    }
+    relaid
+}
+
+/// Runs the chrome sync now (the options a menu pick changed reach the toolbar).
+pub(super) fn html_sync_now(hwnd: HWND) {
+    html_sync(hwnd);
+}
+
+/// Replaces the text of the toolbar's address field and puts the caret at its end.
+pub(super) fn set_toolbar_text(hwnd: HWND, text: &str) {
+    let Some(host) = with_chrome(hwnd, |s| s.html.clone()).flatten() else { return };
+    let _ = with_chrome(hwnd, |s| {
+        s.edit_text.clear();
+        s.edit_text.push_str(text);
+        s.html_text_sent = None;
+    });
+    let _ = host.post_json(&set_text_json(text, false));
+    let _ = host.post_json(&focus_json(false));
+}
+
+/// Remembers the address as typed, for the unfocused field (the same call a plain Enter makes).
+pub(super) fn remember_typed_url(hwnd: HWND, app: &AppRef, text: &str) {
+    remember_url(hwnd, App::active_tab_id(app), text, App::settings(app).minimal_url);
+}
+
 /// Falls back to the native toolbar: the HTML region is released, the native address input comes
 /// back and the host is closed. Safe to call more than once.
 fn html_failed(hwnd: HWND) {
@@ -8357,6 +9473,8 @@ fn html_command(hwnd: HWND, command: ChromeCommand) {
             }
         }
         ChromeCommand::Edit { seq, text } => html_edit(hwnd, seq, &text),
+        // The address field's options and the search field (src/win32/address_bar.rs).
+        ChromeCommand::Panel { kind: chrome_host::protocol::PanelType::Address, f } => super::address_bar::on_toolbar_command(hwnd, &f),
         // --- omnibox suggest ---
         ChromeCommand::SuggestPick { seq, i } => {
             if let Some(target) = super::html_hover::suggest_take(hwnd, seq, i) {
@@ -8425,6 +9543,10 @@ fn html_command(hwnd: HWND, command: ChromeCommand) {
                     s.completion = None;
                 }
             });
+            // --- layout (thread T6) --- a hidden address bar goes away with the focus.
+            if !on && let Some(app) = app_of(hwnd) {
+                set_address_bar_revealed(hwnd, &app, false);
+            }
         }
         ChromeCommand::Open(OpenTarget::Menu) => {
             defer_html_command(hwnd, DeferredChromeCommand::MainMenu);
@@ -8434,8 +9556,7 @@ fn html_command(hwnd: HWND, command: ChromeCommand) {
         }
         ChromeCommand::Open(OpenTarget::NewTab) => {
             if let Some(app) = app_of(hwnd) {
-                App::new_tab(&app);
-                focus_omni(hwnd, &app, true);
+                open_user_tab(hwnd, &app); // --- tab options ---
             }
         }
         ChromeCommand::Open(OpenTarget::ZoomReset) => {
@@ -8470,9 +9591,34 @@ fn html_command(hwnd: HWND, command: ChromeCommand) {
                 run_translate(hwnd, &app, TranslateAction::Toggle);
             }
         }
+        // --- toolbars and feeds (thread T13) ---
+        // The feed button in the address field: the Feeds panel opens with the feeds this page offers.
+        ChromeCommand::Open(OpenTarget::Feeds) => {
+            if let Some(app) = app_of(hwnd) {
+                open_feeds_panel(hwnd, &app);
+            }
+        }
+        // A command button: only an item the user put at that place in that bar's list runs.
+        ChromeCommand::Tool { bar, item, index } => {
+            if let Some(app) = app_of(hwnd) {
+                let settings = App::settings(&app);
+                let list = match bar {
+                    chrome_host::protocol::ToolBar::Address => crate::toolbar_prefs::Bar::Address.list(&settings),
+                    chrome_host::protocol::ToolBar::Tabs => crate::toolbar_prefs::Bar::Tabs.list(&settings),
+                };
+                if list.get(usize::from(index)) == Some(&item) {
+                    defer_html_command(hwnd, DeferredChromeCommand::Tool { bar, index });
+                }
+            }
+        }
+        // --- end toolbars and feeds ---
         // Tab strip and rail commands are handled by their own views, not the toolbar.
         ChromeCommand::Tab { .. }
         | ChromeCommand::TabMove { .. }
+        | ChromeCommand::TabStack { .. } // --- tab stacks (T10) ---
+        | ChromeCommand::RailWheel { .. } // --- tab stacks (T10) ---
+        | ChromeCommand::TabSelection { .. } // --- tab options ---
+        | ChromeCommand::ClosedTabs // --- tab options ---
         | ChromeCommand::Group { .. }
         | ChromeCommand::Rail { .. }
         | ChromeCommand::RailMove { .. }
@@ -8555,36 +9701,26 @@ pub(super) fn html_panel_accelerator(hwnd: HWND, accel: Accel) -> bool {
 pub(super) fn html_panel_state(hwnd: HWND) -> String {
     let (palette, dpi) = with_chrome(hwnd, |state| (state.palette, state.dpi))
         .unwrap_or_else(|| (crate::theme::palette(glass::appearance(), true), 96));
-    let accent = app_of(hwnd).and_then(|app| App::settings_accent(&app));
-    let palette = crate::theme::with_accent(palette, accent);
-    ViewState {
-        scale: dpi as f32 / 96.0,
-        pillx: 0,
-        pillw: 0,
-        menux: 0,
-        // The flyout window is transparent around its surface (shadow room); the page paints the
-        // opaque surface itself, so the body must not fill the window.
-        solid: false,
-        dark: glass::appearance() == crate::theme::Appearance::Dark,
-        back: false,
-        forward: false,
-        loading: false,
-        split: false,
-        bookmarked: false,
-        progress: 0,
-        show_progress: true,
-        security: crate::chrome_host::protocol::Security::None,
-        label: String::new(),
-        permblocked: false,
-        zoom: 100,
-        show_zoom: false,
-        private: false,
-        reader: crate::reader::Pill::Hidden,
-        translate: crate::translate::Pill::Hidden,
-        font_scale: 100,
-        ui_font: String::new(),
-        theme: chrome_host::theme_tokens(&palette),
-    }.to_json()
+    // --- look state (fix group B) --- the private theme's look while a private tab is shown, as
+    // the toolbar (html_sync) and the page hosts (split_host_state) take it.
+    let system_look = glass::appearance();
+    let (look, dark) = match app_of(hwnd) {
+        Some(app) => {
+            let look = App::private_theme(&app).appearance(App::active_tab_private(&app), system_look);
+            (look, look == crate::theme::Appearance::Dark)
+        }
+        None => (system_look, system_look == crate::theme::Appearance::Dark),
+    };
+    // --- end look state ---
+    // --- theme options ---
+    let palette = match app_of(hwnd) {
+        Some(app) => App::themed_palette(&app, look, !palette.translucent).0,
+        None => palette.clone(),
+    };
+    // --- end theme options ---
+    // The flyout window is transparent around its surface (shadow room); the page paints the
+    // opaque surface itself, so the body must not fill the window (solid false).
+    host_state::page_host_view(dpi as f32 / 96.0, false, dark, host_look(hwnd), chrome_host::theme_tokens(&palette)).to_json() // --- look state (fix group B) ---
 }
 
 /// The page area (below the toolbar, right of the rail) in client coordinates, before any panel
@@ -8592,6 +9728,13 @@ pub(super) fn html_panel_state(hwnd: HWND) -> String {
 pub(super) fn page_viewport(hwnd: HWND) -> Option<RECT> {
     with_chrome(hwnd, |state| to_win_rect(state.layout.viewport))
 }
+
+// --- layout (thread T6) ---
+/// Whether a hidden address bar is shown right now because Ctrl+L asked for it.
+pub(crate) fn address_bar_revealed(hwnd: HWND) -> bool {
+    with_chrome(hwnd, |state| state.address_bar_revealed).unwrap_or(false)
+}
+// --- end layout ---
 
 pub(super) fn html_environment(hwnd: HWND) -> Option<ChromeEnv> {
     with_chrome(hwnd, |state| state.html_env.clone()).flatten()
@@ -8700,16 +9843,7 @@ fn start_html_tabs(hwnd: HWND) {
             LPARAM(0),
         );
     });
-    let created = ChromeHost::create(
-        &env,
-        hwnd,
-        bounds,
-        View::Tabs,
-        on_command,
-        on_failed,
-        Some(on_accelerator),
-        move |result| html_tabs_created(hwnd, result),
-    );
+    let created = ChromeHost::create(&env, crate::chrome_host::host::ChromeHostOptions { parent: hwnd, bounds, view: View::Tabs, on_command, on_failed, on_accelerator: Some(on_accelerator) }, move |result| html_tabs_created(hwnd, result));
     if created.is_err() {
         html_tabs_failed(hwnd);
     }
@@ -8750,6 +9884,7 @@ fn html_tabs_refresh(hwnd: HWND) {
         s.html_tabs_last_state = None;
         // --- vertical sidebar (lane S) ---
         s.html_tabs_layout = None;
+        s.html_tabs_opts = None; // --- tab options ---
         s.html_tabs_workspace = None;
         // --- end vertical sidebar ---
         s.html_state_generation[1] = s.html_state_generation[1].wrapping_add(1);
@@ -8770,6 +9905,7 @@ fn html_tabs_failed(hwnd: HWND) {
         s.html_tabs_last = None;
         // --- vertical sidebar (lane S) ---
         s.html_tabs_layout = None;
+        s.html_tabs_opts = None; // --- tab options ---
         s.html_tabs_workspace = None;
         // --- end vertical sidebar ---
         s.html_tabs_groups.clear();
@@ -8808,17 +9944,55 @@ fn html_tabs_command(hwnd: HWND, command: ChromeCommand) {
         // --- end hover layer ---
         ChromeCommand::Tab { action, id } => html_tab_action(hwnd, action, id),
         ChromeCommand::TabMove { id, before } => html_tab_move(hwnd, id, before),
+        // --- tab stacks (T10) --- a held tab dropped on another after resting over it.
+        ChromeCommand::TabStack { id, onto } => {
+            let Some(app) = app_of(hwnd) else { return };
+            let open = App::tab_ids(&app);
+            let (Some(dragged), Some(target)) = (chrome_host::tab_from_wire(id, &open), chrome_host::tab_from_wire(onto, &open)) else {
+                return;
+            };
+            if App::stack_onto(&app, dragged, target) {
+                super::stack_ui::stack_made(hwnd, &app, target);
+            }
+        }
+        // The vertical sidebar's workspace header takes the wheel like the rail's workspaces.
+        ChromeCommand::RailWheel { d } => {
+            if let Some(app) = app_of(hwnd) {
+                let _ = App::scroll_workspaces(&app, d);
+            }
+            return;
+        }
+        // --- end tab stacks ---
+        // --- tab options ---
+        ChromeCommand::TabSelection { ids } => {
+            html_tab_selection(hwnd, &ids);
+            return;
+        }
+        ChromeCommand::ClosedTabs => {
+            if let Some((x, mut y)) = cursor_client_point(hwnd) {
+                if let Some(bottom) = with_chrome(hwnd, |s| (!s.layout.tab_row.is_empty()).then_some(s.layout.tab_row.bottom)).flatten() {
+                    y = y.max(bottom);
+                }
+                defer_html_command(hwnd, DeferredChromeCommand::ClosedTabs { x, y });
+            }
+            return;
+        }
+        // --- end tab options ---
         ChromeCommand::Group { action, key } => html_group_action(hwnd, action, key),
         // --- vertical sidebar (lane S) ---
         ChromeCommand::Side(action) => {
             let vertical = with_chrome(hwnd, |s| s.sidebar.is_some() && s.html_tab_region().is_some()).unwrap_or(false);
             if !vertical { return; }
             match action {
-                SideAction::Workspace => defer_html_command(hwnd, DeferredChromeCommand::SidebarWorkspaceMenu),
+                SideAction::Workspace => {
+                    // --- tab stacks (T10) --- the switcher is hidden while workspaces are off.
+                    if app_of(hwnd).is_some_and(|app| App::workspaces_enabled(&app)) {
+                        defer_html_command(hwnd, DeferredChromeCommand::SidebarWorkspaceMenu);
+                    }
+                }
                 SideAction::NewTab => {
                     if let Some(app) = app_of(hwnd) {
-                        App::new_tab(&app);
-                        focus_omni(hwnd, &app, true);
+                        open_user_tab(hwnd, &app); // --- tab options ---
                     }
                 }
                 SideAction::Collapse => {
@@ -8855,7 +10029,7 @@ fn html_window_command(hwnd: HWND, command: ChromeCommand, view: View) {
         View::Toolbar => s.html_region(),
         View::Tabs => s.html_tab_region(),
         View::Rail => s.html_rail_region(),
-        View::Panel | View::Popup | View::Dialog | View::DialogNotes | View::DialogPrivacy | View::DialogRename | View::Hover | View::Split | View::Settings | View::HistoryPage | View::DownloadsPage => None,
+        View::Panel | View::Popup | View::Dialog | View::DialogNotes | View::DialogPrivacy | View::DialogRename | View::DialogAddress | View::BookmarkBar | View::DialogSessions | View::DialogFeeds | View::Hover | View::Split | View::Settings | View::HistoryPage | View::DownloadsPage => None,
     })
     .flatten();
     let Some(region) = region else {
@@ -8966,10 +10140,8 @@ pub(super) fn html_popup_command(hwnd: HWND, command: ChromeCommand) {
                 defer_html_command(hwnd, DeferredChromeCommand::PopupCompose { tok });
             }
         }
-        ChromeCommand::DownloadsAct { tok, id, n } => {
-            if super::downloads_ui::valid_act(hwnd, tok) {
-                defer_html_command(hwnd, DeferredChromeCommand::DownloadsAct { tok, id, n });
-            }
+        ChromeCommand::DownloadsAct { tok, id, n } if super::downloads_ui::valid_act(hwnd, tok) => {
+            defer_html_command(hwnd, DeferredChromeCommand::DownloadsAct { tok, id, n });
         }
         // --- end popup surfaces ---
         _ => {}
@@ -9007,7 +10179,9 @@ pub(super) fn request_composer(
 pub(super) fn popup_state_json(hwnd: HWND) -> Option<String> {
     let app = app_of(hwnd)?;
     let (palette, dpi) = with_chrome(hwnd, |s| (s.palette, s.dpi))?;
-    let palette = crate::theme::with_accent(palette, App::settings_accent(&app));
+    // --- theme options ---
+    let palette = App::themed_palette(&app, glass::appearance(), !palette.translucent).0;
+    // --- end theme options ---
     let id = App::active_tab_id(&app);
     let site = App::site_security(&app);
     let settings = App::settings(&app);
@@ -9016,7 +10190,7 @@ pub(super) fn popup_state_json(hwnd: HWND) -> Option<String> {
         pillx: 0,
         pillw: 0,
         menux: 0,
-        solid: glass::backdrop_mode() == glass::BackdropMode::Solid,
+        solid: glass::backdrop_mode() == glass::BackdropMode::Solid || auto_hide::solid(), // --- auto-hide (T11) ---
         dark: glass::appearance() == crate::theme::Appearance::Dark,
         back: App::tab_can_go_back(&app, id),
         forward: App::tab_can_go_forward(&app, id),
@@ -9033,8 +10207,12 @@ pub(super) fn popup_state_json(hwnd: HWND) -> Option<String> {
         private: App::tab_private(&app, id),
         reader: crate::reader::Pill::Hidden,
         translate: crate::translate::Pill::Hidden,
-        font_scale: settings.font_size.scale_percent(),
+        font_scale: crate::layout_prefs::chrome_scale_percent(&settings), // --- layout (thread T6) --- font_size times ui_zoom
         ui_font: settings.ui_font.clone(),
+        density: settings.ui_density,
+        compact_menus: settings.compact_menus,
+        look: crate::window_prefs::Look::of(&settings.window, window_in_background(hwnd)), // --- window and panels (thread T9) ---
+        bar: Default::default(), // --- toolbars and feeds (thread T13) ---
         theme: chrome_host::theme_tokens(&palette),
     };
     Some(state.to_json())
@@ -9064,6 +10242,12 @@ fn run_deferred_html_command(hwnd: HWND) {
                 show_html_tab_menu(hwnd, &app, id, x, y);
             }
         }
+        // --- tab options ---
+        DeferredChromeCommand::ClosedTabs { x, y } => {
+            card::cancel(hwnd);
+            show_closed_tabs_menu(hwnd, &app, x, y);
+        }
+        // --- end tab options ---
         DeferredChromeCommand::IslandMenu { id, x, y } => {
             if App::tab_ids(&app).contains(&id) {
                 card::cancel(hwnd);
@@ -9082,6 +10266,17 @@ fn run_deferred_html_command(hwnd: HWND) {
         DeferredChromeCommand::RailMenu { key, x, y } => {
             if rail_model_keys(hwnd).contains(&key) {
                 show_rail_context_menu(hwnd, &app, key, x, y);
+            }
+        }
+        // The list may have changed while the command waited: the item must still be where it was.
+        DeferredChromeCommand::Tool { bar, index } => {
+            let settings = App::settings(&app);
+            let list = match bar {
+                chrome_host::protocol::ToolBar::Address => crate::toolbar_prefs::Bar::Address.list(&settings),
+                chrome_host::protocol::ToolBar::Tabs => crate::toolbar_prefs::Bar::Tabs.list(&settings),
+            };
+            if let Some(item) = list.get(usize::from(index)) {
+                run_bar_item(hwnd, &app, item);
             }
         }
         DeferredChromeCommand::RailHover { key } => {
@@ -9155,11 +10350,22 @@ fn html_tab_action(hwnd: HWND, action: TabAction, raw: u32) {
     };
     match action {
         TabAction::Select => {
-            let _ = App::select_tab(&app, id);
+            // --- tab options --- "Minimise the active tab": a click on it goes back to the last tab.
+            if id == App::active_tab_id(&app) && App::tab_options(&app).minimise_active {
+                let _ = App::minimise_active_tab(&app);
+            } else {
+                let _ = App::select_tab(&app, id);
+            }
+            // --- end tab options ---
         }
-        TabAction::Close => {
-            let _ = App::close_tab(&app, id);
-        }
+        TabAction::Close => user_close(hwnd, &app, id), // --- tab options ---
+        // --- tab options --- "Double click on a tab".
+        TabAction::DoubleClick => match tab_double_click(App::tab_options(&app).double_click) {
+            TabDoubleClick::Nothing => {}
+            TabDoubleClick::Close => user_close(hwnd, &app, id),
+            TabDoubleClick::Rename => rename_tab_prompt(hwnd, &app, id),
+        },
+        // --- end tab options ---
         TabAction::Pin => {
             let pinned = App::tab_pinned(&app, id);
             let _ = App::set_tab_pinned(&app, id, !pinned);
@@ -9270,6 +10476,134 @@ fn html_tabs_favicons(hwnd: HWND, app: &AppRef, ids: &[TabId]) -> HashSet<TabId>
     .unwrap_or_default()
 }
 
+// --- tab options ---
+/// The Tabs settings the strip needs, with the window facts it cannot know itself.
+fn html_strip_options(hwnd: HWND, app: &AppRef) -> chrome_host::protocol::StripOptions {
+    use crate::tab_options::LoadIndicator;
+    let options = App::tab_options(app);
+    let settings = App::settings(app); // --- toolbars and feeds (thread T13) ---
+    chrome_host::protocol::StripOptions {
+        close_left: options.close_button_left,
+        close_always: options.close_button_always,
+        scroll: options.scroll_tabs,
+        min_width: options.active_min_width.0,
+        indicator: match options.load_indicator {
+            LoadIndicator::Spinner => "spinner",
+            LoadIndicator::Bar => "bar",
+            LoadIndicator::Favicon => "favicon",
+            LoadIndicator::None => "none",
+        },
+        wheel: options.wheel_switch,
+        separator: options.pinned_separator,
+        align_close: options.align_close_button,
+        selection: options.selection,
+        selection_active: options.selection_active,
+        remove_spacing: options.remove_spacing_maximised,
+        maximised: with_chrome(hwnd, |s| s.layout.maximised).unwrap_or(false),
+        closed: App::closed_tabs(app).len() as u32,
+        // --- tab stacks (T10) --- stacking by drag needs stacks to be on.
+        stack_drag: options.stack_drag && crate::stacks::stacks_on(options.stack_style),
+        stack_delay: options.stack_drop_delay.0,
+        // --- two-level stacks (T10b) --- the second row the window laid out, so the strip page
+        // and its host bounds always agree.
+        stack_row: with_chrome(hwnd, |s| {
+            if s.layout.stack_row.is_empty() { "off" } else { s.last_relayout.as_ref().map_or("off", |inputs| inputs.arrangement.stack_row.key()) }
+        })
+        .unwrap_or("off"),
+        // --- toolbars and feeds (thread T13) ---
+        closed_button: crate::toolbar_prefs::Bar::Tabs.list(&settings).iter().any(|item| item == "closed-tabs"),
+        tools: tool_buttons(crate::toolbar_prefs::Bar::Tabs.list(&settings)),
+    }
+}
+
+// --- toolbars and feeds (thread T13) ---
+/// The command buttons among `items`, with the names the registry gives them. A chain that was deleted
+/// since the button was placed, or a command that no longer exists, simply shows no button.
+fn tool_buttons(items: &[String]) -> Vec<chrome_host::protocol::ToolButton> {
+    if !items.iter().any(|item| crate::toolbar_prefs::command_of(item).is_some()) {
+        return Vec::new();
+    }
+    let live = crate::commands::live();
+    let entries = live.store.entries();
+    items
+        .iter()
+        .enumerate()
+        .filter_map(|(index, item)| {
+            let id = crate::toolbar_prefs::command_of(item)?;
+            let entry = entries.iter().find(|entry| entry.id == id)?;
+            Some(chrome_host::protocol::ToolButton { item: item.clone(), label: entry.label.clone(), index: index as u8 })
+        })
+        .collect()
+}
+
+/// What the toolbar page needs to lay out the address bar: its list, the command buttons' names, the room
+/// the always-there buttons at its end take, and how many feeds the page in front offers.
+fn address_bar_items(app: &AppRef, settings: &crate::settings::Settings) -> chrome_host::protocol::BarItems {
+    chrome_host::protocol::BarItems {
+        items: Some(settings.toolbar_buttons.join(",")),
+        tools: tool_buttons(&settings.toolbar_buttons),
+        extra: crate::toolbar_prefs::right_static_px(settings).max(0) as u32,
+        feeds: App::active_feed_links(app).len() as u32,
+    }
+}
+
+/// The panel bar's extra buttons as the rail draws them: `(place in the list, name, icon)`. The Feeds button
+/// has its own icon; a command button is a letter tile named after its command. A command or chain that no
+/// longer exists shows no button.
+fn panel_tools(items: &[String]) -> Vec<(u8, String, RailIcon)> {
+    let buttons = tool_buttons(items);
+    items
+        .iter()
+        .enumerate()
+        .filter_map(|(index, item)| {
+            if item == "feeds" {
+                return Some((index as u8, "Feeds".to_owned(), RailIcon::Feed));
+            }
+            let button = buttons.iter().find(|button| &button.item == item)?;
+            Some((index as u8, button.label.clone(), RailIcon::Letter))
+        })
+        .collect()
+}
+
+/// Runs the command behind a bar item: the bar's own buttons that are commands (`bookmark`, `newtab`,
+/// `feeds`) and the command and chain buttons. False for an item that is not a command (the other buttons
+/// have their own wire).
+fn run_bar_item(hwnd: HWND, app: &AppRef, item: &str) -> bool {
+    let id = match item {
+        "bookmark" => "add-bookmark",
+        "newtab" => "new-tab",
+        "feeds" => "feeds",
+        other => match crate::toolbar_prefs::command_of(other) {
+            Some(id) => id,
+            None => return false,
+        },
+    };
+    run_registered(hwnd, app, id)
+}
+
+/// The Feeds panel from the address bar's feed button (`OpenTarget::Feeds`) and the `feeds` command: with
+/// the feeds the page in front offers.
+pub(crate) fn open_feeds_panel(hwnd: HWND, app: &AppRef) {
+    super::feeds_panel::open(hwnd, app, App::active_feed_links(app));
+}
+// --- end toolbars and feeds ---
+
+/// What the strip marks on tab `id`, from the one pass `App::tab_strip_extras` made.
+fn html_tab_marks(extras: &[crate::app::TabStripExtra], id: TabId) -> chrome_host::protocol::TabMarks {
+    let Some(extra) = extras.iter().find(|extra| extra.id == id) else {
+        return Default::default();
+    };
+    chrome_host::protocol::TabMarks {
+        unread: extra.unread,
+        notify: extra.notify,
+        asleep: extra.asleep,
+        progress: extra.progress,
+        reload: extra.reload.map(|(_, next)| next.saturating_duration_since(Instant::now()).as_secs_f64().ceil() as u32),
+        idle: extra.idle,
+    }
+}
+// --- end tab options ---
+
 /// Posts the tab strip's tabs and any favicon that is new for its tab. Does nothing while the strip
 /// is not active (not ready, or the tabs are vertical), and posts nothing that is unchanged. Holds no
 /// chrome borrow while calling App, which may re-enter this window.
@@ -9308,8 +10642,13 @@ fn html_tabs_sync(hwnd: HWND) {
     let workspace_set = App::workspaces(&app);
     let workspace = workspace_set.active();
     let workspace_name = workspace.name().to_owned();
-    let workspace_icon = format!("g:{}", format!("{:?}", workspace.icon()).to_lowercase());
-    if let Some(json) = chrome_host::protocol::workspace_json(&workspace_name, &workspace_icon) {
+    let glyph = format!("g:{}", format!("{:?}", workspace.icon()).to_lowercase());
+    // --- tab stacks and workspaces (T10) --- the header shows the workspace's emoji when it has one;
+    // the emoji is part of what was sent, so a change of it is sent again.
+    let emoji = workspace.emoji().map(str::to_owned);
+    let workspaces_on = App::workspaces_enabled(&app);
+    let workspace_icon = format!("{glyph}|{}|{workspaces_on}", emoji.as_deref().unwrap_or(""));
+    if let Some(json) = chrome_host::protocol::workspace_json_with(&workspace_name, &glyph, emoji.as_deref(), workspaces_on) {
         let already_sent = with_chrome(hwnd, |s| {
             s.html_tabs_workspace.as_ref().is_some_and(|(name, icon)| name == &workspace_name && icon == &workspace_icon)
         }).unwrap_or(false);
@@ -9318,9 +10657,20 @@ fn html_tabs_sync(hwnd: HWND) {
         }
     }
     // --- end vertical sidebar ---
+    // --- tab options --- what the strip draws beyond the model, and how it draws it.
+    let strip_options = html_strip_options(hwnd, &app);
+    let strip_extras = App::tab_strip_extras(&app, &ids);
+    {
+        let json = chrome_host::protocol::tabopts_json(&strip_options);
+        let pending = with_chrome(hwnd, |s| s.html_tabs_opts.as_deref() != Some(json.as_str())).unwrap_or(false);
+        if pending && host.post_json(&json).is_ok() {
+            let _ = with_chrome(hwnd, |s| s.html_tabs_opts = Some(json));
+        }
+    }
+    // --- end tab options ---
     let inputs = App::tab_group_inputs(&app);
     let preferences = App::tab_group_preferences(&app);
-    let tab_states: Vec<(TabId, String, bool, Option<Marker>, bool, bool, bool)> = snapshot
+    let tab_states: Vec<HtmlTabSnapshot> = snapshot
         .iter()
         .map(|(id, title, loading, marker)| {
             (
@@ -9347,6 +10697,8 @@ fn html_tabs_sync(hwnd: HWND) {
         group_preferences: preferences.clone(),
         favicons: favicon_keys,
         generation: with_chrome(hwnd, |s| s.html_state_generation[1]).unwrap_or(0),
+        extras: strip_extras,
+        options: strip_options,
     };
     let is_unchanged = with_chrome(hwnd, |s| {
         s.html_tabs_last.is_some()
@@ -9380,6 +10732,7 @@ fn html_tabs_sync(hwnd: HWND) {
                 .flatten()
                 .map(|key| chrome_host::row_group(&key, &preferences)),
             has_favicon: with_png.contains(&id),
+            marks: html_tab_marks(&current_inputs.extras, id),
         })
         .collect();
     let items = chrome_host::tab_items(&rows);
@@ -9494,16 +10847,7 @@ fn start_html_rail(hwnd: HWND) {
             LPARAM(0),
         );
     });
-    let created = ChromeHost::create(
-        &env,
-        hwnd,
-        bounds,
-        View::Rail,
-        on_command,
-        on_failed,
-        Some(on_accelerator),
-        move |result| html_rail_created(hwnd, result),
-    );
+    let created = ChromeHost::create(&env, crate::chrome_host::host::ChromeHostOptions { parent: hwnd, bounds, view: View::Rail, on_command, on_failed, on_accelerator: Some(on_accelerator) }, move |result| html_rail_created(hwnd, result));
     if created.is_err() {
         html_rail_failed(hwnd);
     }
@@ -9590,6 +10934,12 @@ fn html_rail_command(hwnd: HWND, command: ChromeCommand) {
         }
         ChromeCommand::Rail { action, key, rect } => html_rail_action(hwnd, action, key, rect),
         ChromeCommand::RailMove { key, before } => html_rail_move(hwnd, key, before),
+        // --- tab stacks (T10) --- "Switch workspaces by scrolling" (Rust checks the option).
+        ChromeCommand::RailWheel { d } => {
+            if let Some(app) = app_of(hwnd) {
+                let _ = App::scroll_workspaces(&app, d);
+            }
+        }
         // --- hover layer ---
         ChromeCommand::Tip { .. } | ChromeCommand::TipOff => {
             html_hover_command(hwnd, View::Rail, command);
@@ -9679,7 +11029,7 @@ fn html_rail_sync(hwnd: HWND) {
         let host = s.html_rail.clone()?;
         let items = {
             let entries = rail_entries(s);
-            chrome_host::rail_items(&entries, open, |key| {
+            chrome_host::rail_items(entries, open, |key| {
                 s.rail_entries
                     .iter()
                     .find(|entry| entry.key == key)
@@ -9788,28 +11138,70 @@ pub(super) fn html_toolbar_post(hwnd: HWND, json: &str) {
 /// the inline completion, so the default row follows it. Nothing here touches the disk except one
 /// `stat` of the bookmark file.
 fn html_suggest_edit(hwnd: HWND, app: &AppRef, seq: u32, text: &str) {
-    use super::html_suggest::{self as suggest, Target};
-    let started = Instant::now();
+    if !super::address_bar::list_on_typing(app) {
+        super::html_hover::suggest_close(hwnd);
+        return;
+    }
+    html_suggest_with(hwnd, app, seq, text, false);
+}
+
+/// The list for `text` although typing does not open it (Down arrow with the list closed).
+pub(super) fn html_suggest_forced(hwnd: HWND, app: &AppRef, seq: u32, text: &str) {
+    if text.trim().is_empty() {
+        super::html_hover::suggest_close(hwnd);
+        return;
+    }
+    html_suggest_with(hwnd, app, seq, text, true);
+}
+
+/// A late engine answer: the list for `text` again, from what is now known.
+pub(super) fn html_suggest_refresh(hwnd: HWND, seq: u32, text: &str) {
+    if let Some(app) = app_of(hwnd) {
+        html_suggest_with(hwnd, &app, seq, text, true);
+    }
+}
+
+/// The rows `typed` would show now, for picking the first of them (a scoped nickname's Enter).
+pub(super) fn html_suggest_rows_for(hwnd: HWND, app: &AppRef, typed: &str) -> Vec<super::html_suggest::Row> {
+    html_suggest_compute(hwnd, app, 0, typed, true).map(|(rows, _)| rows).unwrap_or_default()
+}
+
+fn html_suggest_compute(hwnd: HWND, app: &AppRef, seq: u32, text: &str, forced: bool) -> Option<(Vec<super::html_suggest::Row>, Vec<super::html_suggest::TabSource>)> {
+    use super::html_suggest as suggest;
     let typed_url = App::typed_address(app, text);
     let active = App::active_tab_id(app);
     let tabs: Vec<_> =
         App::tab_suggest_sources(app).into_iter().filter(|(id, ..)| *id != active).collect();
-    let bookmarks = suggest::bookmarks();
-    let Some(mut rows) = with_chrome(hwnd, |s| {
+    let rows = with_chrome(hwnd, |s| {
         let history = loaded_history(&mut s.history, &mut s.history_load);
-        suggest::rows(history, s.completion.as_ref(), text, typed_url.as_ref(), &tabs, &bookmarks)
-    }) else {
-        return;
-    };
+        super::address_bar::rows(hwnd, app, history, s.completion.as_ref(), &super::address_bar::Query { text, typed_url: typed_url.as_ref(), tabs: &tabs, seq, forced })
+    })?;
+    let mut rows = rows;
     // A favicon is known for a row's page only through an open tab on the same site.
     for row in &mut rows {
         let tab = match row.target {
-            Target::Tab(id) => Some(id),
+            suggest::Target::Tab(id) => Some(id),
             _ if row.fav_url.is_empty() => None,
             _ => suggest::tab_with_host(&tabs, &row.fav_url),
         };
         row.item.png = tab.and_then(|id| App::tab_favicon(app, id)).filter(|png| chrome_host::favicon_sendable(png));
     }
+    Some((rows, tabs))
+}
+
+fn html_suggest_with(hwnd: HWND, app: &AppRef, seq: u32, text: &str, forced: bool) {
+    let started = Instant::now();
+    let Some((rows, _)) = html_suggest_compute(hwnd, app, seq, text, forced) else { return };
+    html_suggest_show(hwnd, app, seq, text, rows, started);
+}
+
+/// Shows ready-made rows under the pill (the typed-history list, the search field's list).
+pub(super) fn html_suggest_present(hwnd: HWND, app: &AppRef, seq: u32, text: &str, rows: Vec<super::html_suggest::Row>) {
+    html_suggest_show(hwnd, app, seq, text, rows, Instant::now());
+}
+
+fn html_suggest_show(hwnd: HWND, app: &AppRef, seq: u32, text: &str, rows: Vec<super::html_suggest::Row>, started: Instant) {
+    let _ = app;
     // The dropdown continues the pill as one surface: it is exactly as wide as the pill the toolbar
     // page paints, and attaches to that pill's device-pixel edges (see html_hover::place).
     let Some((anchor, width)) = with_chrome(hwnd, |s| {
@@ -9841,6 +11233,13 @@ fn html_suggest_edit(hwnd: HWND, app: &AppRef, seq: u32, text: &str) {
 pub(super) fn html_suggest_run(hwnd: HWND, target: super::html_suggest::Target) {
     use super::html_suggest::Target;
     let Some(app) = app_of(hwnd) else { return };
+    if super::address_bar::run_target(hwnd, &app, &target) {
+        // A calculator answer stays in the field; a search-field row opened its page.
+        if matches!(target, Target::EngineSearch { .. }) {
+            html_sync(hwnd);
+        }
+        return;
+    }
     match target {
         Target::Tab(id) => {
             let _ = App::select_tab(&app, id);
@@ -9849,6 +11248,7 @@ pub(super) fn html_suggest_run(hwnd: HWND, target: super::html_suggest::Target) 
             remember_url(hwnd, App::active_tab_id(&app), &text, App::settings(&app).minimal_url);
             App::submit(&app, &text);
         }
+        Target::Fill(_) | Target::EngineSearch { .. } => {}
     }
     App::focus_page(&app);
     html_sync(hwnd);
@@ -10136,6 +11536,28 @@ fn paint_chrome(hwnd: HWND, app: Option<&AppRef>) {
                     s.views
                         .push(std::mem::transmute::<TabView<'_>, TabView<'static>>(v));
                 }
+                // --- two-level stacks (T10b) --- the second row's tabs follow the tab row's views.
+                let main_views = s.views.len();
+                for id in &s.stack_tabs {
+                    let Some(t) = s.tabs.iter().find(|tab| tab.id == *id) else {
+                        continue;
+                    };
+                    let v = TabView {
+                        title: &t.title,
+                        loading: t.loading,
+                        favicon: t.favicon.as_deref(),
+                        emphasis: Emphasis::resting(false, false, now),
+                        group_size: None,
+                        group_control: false,
+                        marker: t.marker,
+                        group_colour: None,
+                        group_frame: None,
+                    };
+                    s.views
+                        .push(std::mem::transmute::<TabView<'_>, TabView<'static>>(v));
+                }
+                let stack_active = s.stack_tabs.iter().position(|id| *id == active);
+                // --- end two-level stacks ---
                 let active_i = s
                     .slots
                     .iter()
@@ -10174,8 +11596,10 @@ fn paint_chrome(hwnd: HWND, app: Option<&AppRef>) {
                 let view = ChromeView {
                     layout: l,
                     palette: p,
-                    tabs: views,
+                    tabs: &views[..main_views],
                     active: active_i,
+                    stack_tabs: &views[main_views..], // --- two-level stacks (T10b) ---
+                    stack_active,
                     hover: s.hover,
                     pressed: s.pressed,
                     caption_maximised: maximised,
@@ -10209,6 +11633,14 @@ fn paint_chrome(hwnd: HWND, app: Option<&AppRef>) {
                     sidebar_viewport.right,
                     sidebar_viewport.bottom,
                 );
+                // --- auto-hide (T11) --- the page's frame is drawn below a bar that floats over its top.
+                let sidebar_viewport = s.ah.paint_viewport(sidebar_viewport);
+                let dirty = if s.surface.set_auto_hidden_top(s.ah.top_hidden()) {
+                    Rect::new(0, 0, s.client.0, s.client.1)
+                } else {
+                    dirty
+                };
+                // --- end auto-hide ---
                 let page_regions = if active_has_controller {
                     if let Some(split) = split_view {
                         layout::split_panes(sidebar_viewport, split, s.split_divider, s.split_cross, s.layout.metrics)
@@ -10252,29 +11684,32 @@ fn paint_chrome(hwnd: HWND, app: Option<&AppRef>) {
                 };
                 let t0 = std::time::Instant::now();
                 s.surface.paint(&view, dirty);
-                if let Some(sidebar) = s.sidebar {
-                    s.surface.paint_vertical_sidebar(
-                        &sidebar,
-                        &s.sidebar_rows,
-                        &s.paint_prefs.workspace_name,
-                        active,
-                        s.sidebar_scroll,
-                        s.sidebar_hover_row,
-                        // --- vertical sidebar (lane S) ---
-                        s.html_tab_region().is_some(),
-                        // --- end vertical sidebar ---
-                        dirty,
-                        p,
-                    );
+                if let Some(sidebar) = s.sidebar.filter(|_| !s.ah.sidebar_hidden()) { // --- auto-hide (T11) ---
+                    s.surface.paint_vertical_sidebar(crate::chrome::paint::SidebarPaintView { layout: &sidebar, rows: &s.sidebar_rows, workspace: &s.paint_prefs.workspace_name, active, scroll: s.sidebar_scroll, hover_row: s.sidebar_hover_row, html_sidebar: s.html_tab_region().is_some() }, dirty, p);
                 }
                 // --- split view --- the native strip's half, or the HTML card's fallback rectangle
                 let native_drop = s.split_drop.map(|zone| {
-                    let gap = s.layout.metrics.px(crate::split_view::GAP_DIP);
+                    let gap = s.layout.metrics.px(crate::stacks::gap_dip());
                     let (l, t, r, b) = crate::split_view::drop_rect((sidebar_viewport.left, sidebar_viewport.top, sidebar_viewport.right, sidebar_viewport.bottom), zone, gap);
                     Rect::new(l, t, r, b)
                 });
                 if let Some(target) = native_drop.or(split_drop_fallback.map(|rect| Rect::new(rect.left, rect.top, rect.right, rect.bottom))) {
                     s.surface.paint_split_drop(target, p, dirty);
+                }
+                // --- tab stacks (T10) --- "Show a title bar on each tile", in both chromes: the bars
+                // sit in the window, above each tile's page.
+                if active_has_controller {
+                    let focused = split_view.map(|view| view.focused_tab());
+                    let bars: Vec<(Rect, String, bool)> = tile_title_bars(hwnd, s)
+                        .into_iter()
+                        .map(|(bar, tab)| {
+                            let title = s.tabs.iter().find(|shown| shown.id == tab).map(|shown| shown.title.clone()).unwrap_or_default();
+                            (bar, title, focused == Some(tab))
+                        })
+                        .collect();
+                    if !bars.is_empty() {
+                        s.surface.paint_tile_titles(&bars, p, dirty);
+                    }
                 }
                 let t1 = std::time::Instant::now();
                 let mut origin = windows::Win32::Foundation::POINT { x: 0, y: 0 };
@@ -10382,6 +11817,9 @@ fn remember_url(hwnd: HWND, id: TabId, value: &str, minimal_url: bool) {
     }
 }
 pub(super) fn focus_omni(hwnd: HWND, app: &AppRef, all: bool) {
+    // --- layout (thread T6) --- a hidden address bar comes back for as long as it has the focus.
+    set_address_bar_revealed(hwnd, app, true);
+    auto_hide::reveal_for_keyboard(hwnd); // --- auto-hide (T11) --- Ctrl+L, Ctrl+T and friends bring the bars back first
     let _ = with_chrome(hwnd, |s| {
         s.omnibox_claimed = true;
         s.omnibox_edited = false;
@@ -10552,13 +11990,26 @@ fn opens_bowser_menu(hit: Hit) -> bool {
             | Hit::SidebarGroup(_)
             | Hit::SidebarTab(_)
             | Hit::SidebarTabClose(_)
+            | Hit::StackTab(_) // --- two-level stacks (T10b) ---
+            | Hit::StackTabClose(_)
     )
 }
 
 /// `shift_right_click_context`: with the setting on and Shift held, a right click shows the window's
 /// system menu instead of Bowser's own tab and rail menus. Off, or without Shift, nothing changes.
 fn system_menu_requested(app: &AppRef) -> bool {
-    App::shift_right_click_context(app) && unsafe { GetKeyState(VK_SHIFT.0 as i32) < 0 }
+    system_menu_wanted(App::shift_right_click_context(app), unsafe { GetKeyState(VK_SHIFT.0 as i32) < 0 })
+}
+
+/// The decision behind `system_menu_requested`: the setting is on and Shift is held.
+fn system_menu_wanted(setting: bool, shift_held: bool) -> bool {
+    setting && shift_held
+}
+
+/// Whether a right click over `hit` shows the window's system menu instead of one of Bowser's own:
+/// only over something that has a Bowser menu, with the setting on and Shift held.
+fn right_click_shows_system_menu(hit: Hit, setting: bool, shift_held: bool) -> bool {
+    opens_bowser_menu(hit) && system_menu_wanted(setting, shift_held)
 }
 
 /// The setting-gated chords bound for this window, for the key filters that decide whether a chord
@@ -10576,28 +12027,45 @@ fn dispatch_current(hwnd: HWND, app: &AppRef, key: u32) -> bool {
     dispatch(hwnd, app, key, c, s, a)
 }
 fn dispatch(hwnd: HWND, app: &AppRef, key: u32, ctrl: bool, shift: bool, alt: bool) -> bool {
-    let Some(cmd) =
-        shortcuts::command_for_gated(key, ctrl, shift, alt, App::gated_chords(app))
-    else {
+    // The key filters upstream (page, chrome) already decided who owns the key; this resolves it
+    // once more against the same live keymap (`crate::commands`).
+    let context = crate::commands::ResolveContext {
+        gated: App::gated_chords(app),
+        typing: edit_focused(hwnd) || omnibox_focused(hwnd),
+        ..Default::default()
+    };
+    let Some(cmd) = crate::commands::resolve(key, ctrl, shift, alt, &context) else {
         return false;
     };
     // While the address field has focus, the field's own redo keeps Ctrl+Shift+Z.
     if cmd == Command::UndoTabOrganisation && edit_focused(hwnd) {
         return false;
     }
+    run_key_command(hwnd, app, cmd, key);
+    true
+}
+
+/// Runs one command and refreshes the chrome. `key` is the key that triggered it (0 when a menu, the
+/// palette or a chain did), which F6 focus cycling needs.
+fn run_key_command(hwnd: HWND, app: &AppRef, cmd: Command, key: u32) {
     match cmd {
-        Command::NewTab => {
-            App::new_tab(app);
-            focus_omni(hwnd, app, true)
+        Command::Registered(handle) => {
+            if let Some(id) = crate::commands::id_of(handle) {
+                run_registered(hwnd, app, &id);
+            }
         }
+        Command::NewTab => open_user_tab(hwnd, app), // --- tab options ---
+        // --- tab options --- Ctrl+Shift+T.
+        Command::ReopenClosedTab => {
+            let _ = App::reopen_closed_tab(app);
+        }
+        // --- end tab options ---
         Command::NewWindow => open_another_window(false),
         Command::NewPrivateTab => {
             App::new_private_tab(app);
             focus_omni(hwnd, app, true)
         }
-        Command::CloseTab => {
-            let _ = App::close_tab(app, App::active_tab_id(app));
-        }
+        Command::CloseTab => user_close(hwnd, app, App::active_tab_id(app)), // --- tab options ---
         Command::NextTab => {
             App::select_next(app);
         }
@@ -10613,6 +12081,17 @@ fn dispatch(hwnd: HWND, app: &AppRef, key: u32, ctrl: bool, shift: bool, alt: bo
             if let Some(id) = App::tab_ids(app).last() {
                 let _ = App::select_tab(app, *id);
             }
+        }
+        // With the focus-cycling option on, F6 moves the keyboard between the address bar and the page.
+        Command::FocusOmnibox
+            if key == 0x75
+                && crate::commands::behaviour::f6_moves_to_page(
+                    &crate::commands::live().store.options,
+                    key,
+                    edit_focused(hwnd) || omnibox_focused(hwnd),
+                ) =>
+        {
+            App::focus_page(app)
         }
         Command::FocusOmnibox => focus_omni(hwnd, app, true),
         Command::Reload => App::reload(app),
@@ -10671,7 +12150,12 @@ fn dispatch(hwnd: HWND, app: &AppRef, key: u32, ctrl: bool, shift: bool, alt: bo
         Command::ZoomOut => App::zoom_active(app, crate::site_prefs::ZoomStep::Out),
         Command::ZoomReset => App::zoom_active(app, crate::site_prefs::ZoomStep::Reset),
         // bowser://history in a tab; the flyout or the docked panel without the HTML chrome.
-        Command::ShowHistory => super::history_page::open(hwnd, app, false),
+        // bowser://history in a tab; the History side panel without the HTML chrome (fix E: this
+        // fallback was in the hardcoded Ctrl+H block).
+        Command::ShowHistory if super::history_page::available(hwnd) => super::history_page::open(hwnd, app, false),
+        Command::ShowHistory => {
+            rail_activate(hwnd, app, side_panel::PanelId::History);
+        }
         // bowser://downloads in a tab (Ctrl+J, the main menu).
         Command::ShowDownloads => super::downloads_page::open(hwnd, app, false),
         Command::ToggleReader => run_reader(hwnd, app, crate::reader::Mode::Reader),
@@ -10682,6 +12166,26 @@ fn dispatch(hwnd: HWND, app: &AppRef, key: u32, ctrl: bool, shift: bool, alt: bo
     let _ = with_chrome(hwnd, |s| s.refresh(app, true));
     repaint(hwnd);
     arm_motion(hwnd);
+}
+
+/// --- wave-1 fixes --- the registry commands the main menu's History and Downloads items run.
+const MENU_HISTORY_COMMAND: &str = "history";
+const MENU_DOWNLOADS_COMMAND: &str = "downloads";
+
+/// Runs a registry command by id: the one entry point for the palette, shortcuts, chains and (later)
+/// mouse gestures and toolbar buttons. False when the id is not a command.
+pub(crate) fn run_registered(hwnd: HWND, app: &AppRef, id: &str) -> bool {
+    use crate::commands::{registry::Handler, store::EntryHandler};
+    let live = crate::commands::live();
+    let Some(entry) = crate::commands::entry(&live, id) else {
+        return false;
+    };
+    match entry.handler {
+        EntryHandler::Builtin(Handler::Key(command)) => run_key_command(hwnd, app, command, 0),
+        EntryHandler::Builtin(Handler::Action(action)) => run_palette_command(hwnd, app, action),
+        EntryHandler::Builtin(Handler::Run(run)) => run(&crate::commands::registry::Context { hwnd, app }),
+        EntryHandler::Chain(number) => super::command_actions::start_chain(hwnd, &live.store, number),
+    }
     true
 }
 
@@ -10690,9 +12194,14 @@ fn persist_profile_history(url: String, title: String) -> bool {
     let Ok(profile) = crate::profile::active() else {
         return false;
     };
-    crate::productivity::profile_allows_productivity(&profile)
+    let kept = crate::productivity::profile_allows_productivity(&profile)
         && profile.history_enabled()
-        && crate::productivity::add_history_entry(&profile.history_file(), &url, &title).is_ok()
+        && crate::productivity::add_history_entry(&profile.history_file(), &url, &title).is_ok();
+    if kept {
+        // Expired visits are dropped every few hours while Bowser stays open (thread T3).
+        crate::history_retention::after_visit(&profile.history_file());
+    }
+    kept
 }
 
 unsafe extern "system" fn edit_subclass(
@@ -10773,6 +12282,10 @@ unsafe extern "system" fn edit_subclass(
                 s.edit_text.push_str(&display);
             });
             invalidate_omni(main);
+            // --- layout (thread T6) --- a hidden address bar goes away with the focus.
+            if let Some(app) = app {
+                set_address_bar_revealed(main, app, false);
+            }
             return r;
         }
         if msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN {
@@ -10896,6 +12409,130 @@ fn selection(hwnd: HWND) -> (usize, usize) {
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    /// --- final --- every private message the main window's procedure matches has its own number, so
+    /// no thread's message is taken for another's after the merges.
+    #[test]
+    fn the_main_window_private_messages_are_unique() {
+        let ids = [
+            WM_CHROME_SYNC, WM_FOREGROUND_SYNC, WM_HISTORY_BACK, WM_HISTORY_FORWARD, WM_HTML_CHROME_ENV,
+            WM_HTML_CHROME_FAILED, WM_HTML_CHROME_START, WM_HTML_DEFERRED, WM_HTML_HOVER_START, WM_HTML_PANEL_FAILED,
+            WM_HTML_POPUP_FAILED, WM_HTML_RAIL_FAILED, WM_HTML_TABS_FAILED, WM_LOGIN_MESSAGE, WM_NAVIGATION_PROGRESS,
+            WM_PANE_FOCUSED, WM_RAIL_CHANGED, WM_SHORTCUT_KEY, WM_SUBMIT, WM_TABS_CHANGED, WM_UPDATE_CHECKED,
+            auto_hide::WM_AUTOHIDE_SENSOR, notes_panel::WM_SIDEBAR_RESIZED, side_panel::WM_RESIZED,
+            super::super::WM_CHAIN_STEP, super::super::WM_DOWNLOADS_CHANGED, super::super::WM_DOWNLOADS_PAGE_COMMAND,
+            super::super::WM_EXTENSIONS_CHANGED, super::super::WM_HISTORY_PAGE_COMMAND, super::super::WM_SETTINGS_COMMAND,
+            super::super::WM_SPLIT_COMMAND, super::super::WM_SPLIT_LINK, super::super::WM_SPLIT_LOOK,
+            super::super::WM_TRANSLATE_NET, super::super::address_bar::WM_ADDRESS_SUGGEST,
+            super::super::bookmark_bar::WM_BOOKMARK_BAR_COMMAND,
+        ];
+        let mut seen = std::collections::HashSet::new();
+        for id in ids {
+            assert!(id >= windows::Win32::UI::WindowsAndMessaging::WM_APP, "{id:#x} is a private message");
+            assert!(seen.insert(id), "WM_APP + {:#x} is used twice", id - windows::Win32::UI::WindowsAndMessaging::WM_APP);
+        }
+    }
+
+    /// Timers are scoped to the main HWND, not to each feature's module. Dispatch order must
+    /// never redirect auto-hide to themes, split bounds to statistics, or reader probes to panels.
+    #[test]
+    fn the_main_window_timer_ids_are_unique_and_outside_hover_ranges() {
+        let ids = [
+            WM_IDLE_TRIM_TIMER, WM_CARET_BLINK_TIMER, WM_ANIMATION_TIMER, WM_SESSION_SAVE_TIMER,
+            super::super::WM_PRIVACY_STATS_TIMER, WM_PROGRESS_TIMER, WM_SPLIT_BOUNDS_TIMER,
+            super::super::WM_POWER_TIMER, super::super::WM_IMPORT_OFFER_TIMER,
+            super::super::WM_READER_PROBE_TIMER, super::super::WM_TRANSLATE_WATCH_TIMER,
+            super::super::WM_DOWNLOADS_TIMER, crate::app::BLOCKED_TITLE_TIMER,
+            WM_SIDEBAR_SCROLL_TIMER, WM_RAIL_TOOLTIP_TIMER, WM_NEWTAB_TOOLTIP_TIMER,
+            WM_SIDEBAR_RESIZE_TIMER, WM_PAGE_IDLE_TIMER, WM_HTML_POPUP_PREWARM_TIMER,
+            WM_TAB_TICK_TIMER, WM_TAB_THUMB_TIMER, WM_TAB_LINK_TIMER, WM_THEME_SCHEDULE_TIMER,
+            auto_hide::TIMER_ID, side_panel::TIMER_ID, super::super::panel_webapp::RELOAD_TIMER,
+            super::super::panel_webapp::IDLE_TIMER, devtools_dock::TIMER_ID,
+            super::super::passwords_panel::CLIPBOARD_CLEAR_TIMER,
+        ];
+        let mut seen = std::collections::HashSet::new();
+        for id in ids {
+            assert!(seen.insert(id), "main window timer {id:#x} is used twice");
+            assert!(!card::is_hover_timer(id), "timer {id:#x} is claimed by tab-card dispatch");
+            assert!(!island_menu::is_timer(id), "timer {id:#x} is claimed by island-menu dispatch");
+        }
+    }
+
+    /// --- wave-1 fixes --- the main menu's History and Downloads run registry commands, so they still
+    /// work with shortcuts switched off or Ctrl+H / Ctrl+J bound elsewhere.
+    #[test]
+    fn the_main_menu_history_and_downloads_do_not_depend_on_their_shortcuts() {
+        use crate::commands::{registry::Handler, store::EntryHandler};
+        let mut store = crate::commands::store::Store::default();
+        store.options.shortcuts_enabled = false;
+        let live = crate::commands::Live::new(store);
+        let cx = crate::commands::ResolveContext::default();
+        assert_eq!(crate::commands::resolve_in(&live, 0x48, true, false, false, &cx), None, "Ctrl+H does nothing now");
+        assert_eq!(crate::commands::resolve_in(&live, 0x4A, true, false, false, &cx), None, "Ctrl+J does nothing now");
+        for (id, command) in [(MENU_HISTORY_COMMAND, Command::ShowHistory), (MENU_DOWNLOADS_COMMAND, Command::ShowDownloads)] {
+            let entry = crate::commands::entry(&live, id).expect("a registry command");
+            assert!(matches!(entry.handler, EntryHandler::Builtin(Handler::Key(found)) if found == command), "{id}");
+        }
+    }
+
+    #[test]
+    fn the_tab_options_decide_focus_duplicate_position_and_double_click() {
+        use crate::tab_options::{DoubleClick, DuplicatePosition};
+        assert!(new_tab_focuses_page(false, true), "a page, option on: the page");
+        assert!(!new_tab_focuses_page(true, true), "the start page keeps the address bar");
+        assert!(!new_tab_focuses_page(false, false), "off: the address bar");
+        let order = [TabId(1), TabId(2), TabId(3), TabId(9)];
+        assert_eq!(duplicate_index(DuplicatePosition::Beside, &order, TabId(2), 0), 2, "right of the original");
+        assert_eq!(duplicate_index(DuplicatePosition::Last, &order, TabId(2), 0), 4, "at the end");
+        assert_eq!(duplicate_index(DuplicatePosition::Beside, &order, TabId(7), 1), 2, "a gone original uses its old place");
+        assert_eq!(tab_double_click(DoubleClick::Ignore), TabDoubleClick::Nothing);
+        assert_eq!(tab_double_click(DoubleClick::Close), TabDoubleClick::Close);
+        assert_eq!(tab_double_click(DoubleClick::Rename), TabDoubleClick::Rename);
+    }
+
+    /// Integration (T2 bookmarks bar, T3 private theme): the page hosts beside the toolbar take the
+    /// private look while a private tab is shown, and the window's own look otherwise.
+    #[test]
+    fn page_hosts_take_the_private_theme_while_a_private_tab_is_shown() {
+        use crate::{settings::PrivateTheme, theme::Appearance};
+        let light = crate::theme::palette(Appearance::Light, true);
+        let (palette, dark) = private_host_look(PrivateTheme::Dark, true, Appearance::Light, light);
+        assert!(dark);
+        assert!(std::ptr::eq(palette, crate::theme::palette(Appearance::Dark, true)));
+        let (palette, dark) = private_host_look(PrivateTheme::Dark, false, Appearance::Light, light);
+        assert!(!dark, "a normal tab keeps the window's look");
+        assert!(std::ptr::eq(palette, light));
+        let (_, dark) = private_host_look(PrivateTheme::Follow, true, Appearance::Dark, crate::theme::palette(Appearance::Dark, true));
+        assert!(dark, "follow keeps the window's dark look");
+        let (_, dark) = private_host_look(PrivateTheme::Light, true, Appearance::Dark, crate::theme::palette(Appearance::Dark, true));
+        assert!(!dark);
+    }
+
+    #[test]
+    fn shift_right_click_shows_the_system_menu_only_with_the_setting_on_shift_held_and_a_bowser_menu_under_the_pointer() {
+        // Every place a right click opens one of Bowser's tab, group, rail or split menus.
+        for hit in [Hit::Tab(0), Hit::TabClose(1), Hit::SidebarGroup(0), Hit::SidebarTab(2), Hit::SidebarTabClose(0), Hit::GroupBall(0), Hit::SplitDivider] {
+            assert!(right_click_shows_system_menu(hit, true, true), "{hit:?}: setting on, Shift held");
+            assert!(!right_click_shows_system_menu(hit, false, true), "{hit:?}: setting off, Bowser's own menu stays");
+            assert!(!right_click_shows_system_menu(hit, true, false), "{hit:?}: no Shift, Bowser's own menu stays");
+            assert!(!right_click_shows_system_menu(hit, false, false), "{hit:?}");
+        }
+        // Over the page, the address bar or empty strip there is no Bowser menu to replace.
+        for hit in [Hit::None, Hit::Viewport, Hit::Omnibox, Hit::CaptionArea, Hit::Back, Hit::MainMenu] {
+            assert!(!right_click_shows_system_menu(hit, true, true), "{hit:?}");
+        }
+        assert!(system_menu_wanted(true, true));
+        assert!(!system_menu_wanted(true, false) && !system_menu_wanted(false, true));
+    }
+
+    #[test]
+    fn the_shift_right_click_setting_is_read_from_the_saved_file() {
+        let mut settings = crate::settings::Settings::default();
+        assert!(!settings.shift_right_click_context, "off by default: a plain right click is always Bowser's menu");
+        settings.shift_right_click_context = true;
+        let again = crate::settings::Settings::parse(&crate::settings::render_updated("", &settings));
+        assert!(again.shift_right_click_context);
+    }
 
     #[test]
     fn rail_menu_opens_right_of_the_rail_and_keeps_the_pointer_height() {
@@ -11070,7 +12707,8 @@ mod tests {
                 crate::settings::TabLayout::TabsTop,
                 crate::settings::TabLayout::SingleRow,
             ] {
-                s.relayout(1000, 700, dpi, TabId(0), false, tab_layout, 260, true, crate::settings::FontSize::Medium, "");
+                let arrangement = layout::Arrangement { tabs: tab_layout, ..Default::default() };
+                s.relayout(RelayoutRequest { w: 1000, h: 700, dpi, active: TabId(0), maximised: false, arrangement, density: crate::layout_prefs::UiDensity::Regular, sidebar_width: 260, centred_address_bar: true, font_scale: 100, ui_font: "" });
                 let chrome = layout::chrome_height(tab_layout, dpi);
                 assert_eq!(s.surface.height(), 700, "surface height at dpi {dpi}");
                 assert_eq!(s.surface.width(), 1000, "surface width at dpi {dpi}");
@@ -11078,6 +12716,107 @@ mod tests {
             }
         }
     }
+
+    // --- auto-hide (T11) ---
+    fn relaid(s: &mut WindowChrome, dpi: u32, maximised: bool, tab_layout: crate::settings::TabLayout) {
+        let arrangement = layout::Arrangement { tabs: tab_layout, ..Default::default() };
+        s.relayout(RelayoutRequest { w: 1280, h: 720, dpi, active: TabId(0), maximised, arrangement, density: crate::layout_prefs::UiDensity::Regular, sidebar_width: 260, centred_address_bar: true, font_scale: 100, ui_font: "" });
+    }
+
+    /// The user's rule: with auto-hide off the window lays out exactly as it always did, and no sensor,
+    /// timer or window exists.
+    #[test]
+    fn with_auto_hide_off_the_window_layout_is_unchanged_and_nothing_is_created() {
+        for tab_layout in crate::settings::TabLayout::ALL {
+            for dpi in [96, 144] {
+                for maximised in [false, true] {
+                    let mut s = WindowChrome::new(1280, 720, dpi, HWND::default());
+                    relaid(&mut s, dpi, maximised, tab_layout);
+                    let context = format!("{tab_layout:?} dpi {dpi} max {maximised}");
+                    // --- layout (thread T6) --- the arranged geometry is what every layout is laid out with.
+                    let expected = layout::compute_arranged_in_frame(
+                        layout::Arrangement { tabs: tab_layout, ..Default::default() }, 1280, 720, dpi, 1, 0, maximised, 260, true,
+                        crate::layout_prefs::UiDensity::Regular.sidebar_row_height(),
+                    ).0;
+                    assert_eq!(s.layout.viewport, expected.viewport, "{context}");
+                    assert_eq!(s.layout.strip, expected.strip, "{context}");
+                    assert_eq!(s.layout.tab_row, expected.tab_row, "{context}");
+                    assert_eq!(s.ah.plan, crate::auto_hide::Plan::default(), "{context}");
+                    assert!(!s.ah.top_hidden() && !s.ah.sidebar_hidden(), "{context}");
+                    assert!(!s.ah.machine.active(), "{context}: no timer to run");
+                    assert!(s.ah.paint_viewport(s.layout.viewport) == s.layout.viewport, "{context}");
+                }
+            }
+        }
+    }
+
+    /// Each bar of "Bars to hide" changes the window's layout the way the plan says, and revealing a
+    /// bar never moves the page.
+    #[test]
+    fn hiding_the_bars_widens_the_page_and_a_reveal_leaves_it_where_it_is() {
+        use crate::auto_hide::{Bars, Zone, Zones};
+        let tab_layout = crate::settings::TabLayout::ToolbarTop;
+        let mut shown = WindowChrome::new(1280, 720, 96, HWND::default());
+        relaid(&mut shown, 96, false, tab_layout);
+        let normal = shown.layout.viewport;
+
+        let mut s = WindowChrome::new(1280, 720, 96, HWND::default());
+        s.ah.hidden = Bars::ADDRESS;
+        relaid(&mut s, 96, false, tab_layout);
+        assert!(s.ah.plan.top);
+        assert_eq!(s.layout.viewport.top, layout::auto_hide_top(96, false), "the page rose to the top");
+        assert_eq!((s.layout.viewport.left, s.layout.viewport.right, s.layout.viewport.bottom), (normal.left, normal.right, normal.bottom));
+        assert!(s.ah.top_hidden());
+        assert_eq!(s.ah.overlay.top.bottom, normal.top, "the bars float exactly where they sit when shown");
+        let hidden_viewport = s.layout.viewport;
+
+        // A reveal changes what is drawn, never the page's rectangle.
+        assert!(s.ah.machine.reveal(Zones::NONE.with(Zone::Top), 0));
+        relaid(&mut s, 96, false, tab_layout);
+        assert_eq!(s.layout.viewport, hidden_viewport, "no relayout of the page when a bar appears");
+        assert!(!s.ah.top_hidden());
+        assert_eq!(s.ah.paint_viewport(s.layout.viewport).top, normal.top, "the page's frame is drawn below the floating bars");
+
+        // The bookmarks bar: in the layout it takes room; out of it, the page keeps the room and the bar floats.
+        let mut with_bar = WindowChrome::new(1280, 720, 96, HWND::default());
+        with_bar.bar_reserve = (28, false);
+        relaid(&mut with_bar, 96, false, tab_layout);
+        assert_eq!(with_bar.layout.viewport.top, normal.top + 28, "shown: the bar takes its row");
+        assert!(with_bar.ah.bar_float.is_empty() == false, "its floating place is known either way");
+        assert_eq!(with_bar.ah.bar_float, Rect::new(normal.left, normal.top, normal.right, normal.top + 28));
+        let mut floating = WindowChrome::new(1280, 720, 96, HWND::default());
+        floating.bar_reserve = (28, false);
+        floating.ah.hidden = Bars::BOOKMARKS;
+        relaid(&mut floating, 96, false, tab_layout);
+        assert_eq!(floating.layout.viewport.top, normal.top, "hidden: the page keeps the bar's row");
+        assert!(floating.ah.plan.bookmarks && !floating.ah.plan.top);
+        assert!(!floating.ah.bookmarks_revealed());
+        assert!(floating.ah.machine.reveal(Zones::NONE.with(Zone::Bookmarks), 0));
+        assert!(floating.ah.bookmarks_revealed());
+
+        // The vertical layout: tabs are the sidebar, which has its own edge.
+        let mut v = WindowChrome::new(1280, 720, 96, HWND::default());
+        v.ah.hidden = Bars::TABS;
+        relaid(&mut v, 96, false, crate::settings::TabLayout::Vertical);
+        assert!(v.ah.plan.sidebar && !v.ah.plan.top);
+        assert!(v.ah.sidebar_hidden() && !v.ah.top_hidden());
+        assert_eq!(v.layout.viewport.left, layout::left_rail_inset(96) + Metrics::new(96).px(Metrics::RESIZE_RIM));
+        assert!(v.sidebar.is_some(), "the sidebar keeps its rectangle: it floats there");
+    }
+
+    /// An open side panel floats (takes nothing from the page) when "Side panel" is among the hidden bars.
+    #[test]
+    fn the_side_panel_row_decides_whether_an_open_panel_takes_room() {
+        use crate::auto_hide::{effective, plan, AutoHideSettings, Bars, Fullscreen};
+        let on = AutoHideSettings { bars: Bars::PANEL, in_fullscreen: true };
+        let off = AutoHideSettings { bars: Bars::TABS, in_fullscreen: true };
+        let tab_layout = crate::settings::TabLayout::ToolbarTop;
+        assert!(plan(effective(true, &on, Fullscreen::No).hidden, tab_layout).panel);
+        assert!(!plan(effective(true, &off, Fullscreen::No).hidden, tab_layout).panel);
+        assert!(!plan(effective(false, &on, Fullscreen::No).hidden, tab_layout).panel, "the master switch off: panels take room as ever");
+        assert!(plan(effective(false, &off, Fullscreen::Window).hidden, tab_layout).panel, "full screen floats every bar");
+    }
+    // --- end auto-hide ---
 
     #[test]
     fn unchanged_chrome_sync_does_not_rebuild() {
@@ -11133,6 +12872,9 @@ mod tests {
             accent: None,
             favicon: None,
             png: None,
+            dot: false,
+            count: 0,
+            emoji: None,
         };
         let mut rail = vec![entry(RailKey::Customize, "Customize"), entry(RailKey::App(1), "Mail")];
         rail[1].png = Some(Rc::new(vec![1u8, 2, 3]));
@@ -11171,7 +12913,8 @@ mod tests {
     fn a_sidebar_drag_frame_lays_out_again_with_only_the_width_changed() {
         let mut s = WindowChrome::new(1200, 700, 96, HWND::default());
         assert!(!s.relayout_sidebar(300), "nothing to repeat before the first layout");
-        s.relayout(1200, 700, 96, TabId(0), false, crate::settings::TabLayout::Vertical, 200, true, crate::settings::FontSize::Medium, "");
+        let vertical = layout::Arrangement { tabs: crate::settings::TabLayout::Vertical, ..Default::default() };
+        s.relayout(RelayoutRequest { w: 1200, h: 700, dpi: 96, active: TabId(0), maximised: false, arrangement: vertical, density: crate::layout_prefs::UiDensity::Regular, sidebar_width: 200, centred_address_bar: true, font_scale: 100, ui_font: "" });
         let narrow = s.sidebar.expect("a vertical layout has a sidebar").sidebar;
         let top = s.layout.viewport.top;
         assert!(s.relayout_sidebar(320));
@@ -11204,3 +12947,45 @@ fn main_menu_anchor(hwnd: HWND) -> windows::Win32::Foundation::POINT {
     })
     .unwrap_or_default()
 }
+
+// --- toolbars and feeds (thread T13) ---
+#[cfg(test)]
+mod bar_tests {
+    use super::*;
+
+    fn list(text: &str) -> Vec<String> {
+        text.split(',').filter(|id| !id.is_empty()).map(str::to_owned).collect()
+    }
+
+    #[test]
+    fn command_buttons_take_their_commands_name_and_their_place_in_the_list() {
+        let buttons = tool_buttons(&list("closed-tabs,cmd:new-private-tab,cmd:no-such,chain:9,cmd:history"));
+        let named: Vec<(&str, &str, u8)> = buttons.iter().map(|b| (b.item.as_str(), b.label.as_str(), b.index)).collect();
+        assert_eq!(named, [("cmd:new-private-tab", "New private tab", 1), ("cmd:history", "History", 4)], "a deleted chain or unknown command shows no button");
+        assert!(tool_buttons(&list("back,reload")).is_empty());
+    }
+
+    #[test]
+    fn the_panel_bar_shows_feeds_with_its_own_glyph_and_command_buttons_as_letter_tiles() {
+        let tools = panel_tools(&list("feeds,cmd:toggle-notes,cmd:no-such"));
+        assert_eq!(tools.len(), 2);
+        assert_eq!((tools[0].0, tools[0].1.as_str(), tools[0].2), (0, "Feeds", RailIcon::Feed));
+        assert_eq!((tools[1].0, tools[1].1.as_str(), tools[1].2), (1, "Toggle notes and tasks", RailIcon::Letter));
+        assert!(panel_tools(&[]).is_empty());
+    }
+
+    #[test]
+    fn the_rail_wire_names_a_tool_by_its_place_and_the_feed_glyph_by_name() {
+        assert_eq!(chrome_host::rail_key_to_wire(RailKey::Tool(3)).to_wire(), "tool:3");
+        assert_eq!(chrome_host::rail_icon_wire(RailIcon::Feed), "feed");
+    }
+
+    #[test]
+    fn a_bar_item_runs_the_command_the_registry_names() {
+        // The commands the bar's own buttons stand for exist, so a button can never be a dead end.
+        for command in ["add-bookmark", "new-tab", "feeds", "subscribe-feed"] {
+            assert!(crate::commands::registry::builtin(command).is_some(), "{command}");
+        }
+    }
+}
+// --- end toolbars and feeds ---

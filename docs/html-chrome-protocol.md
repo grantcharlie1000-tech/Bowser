@@ -360,6 +360,46 @@ blocked (the default). An allow never widens the scheme gate: `javascript:`, `da
 `about:`, `blob:` and `bowser-ui:` targets stay blocked. A blocked script popup is logged to the denied
 list and sets `permblocked` like a refused permission request.
 
+### Blocking, history and website appearance (`protection`, `priv`, `src/chrome_host/panels/protection.rs`)
+
+The Privacy and security section's blocking level, cookie notices, per-site choices, rule lists, history
+retention, Delete Browsing Data and the website-appearance rows are driven by their own snapshot, so their size
+never counts against the permissions table's 4096-key budget. It is sent with every `privacy` snapshot (the
+settings page and the dashboard window) and carries the same exact-key discipline:
+
+`{v:1,t:"snap",p:"protection",d:{level,cookieNotices,retention,websiteAppearance,forceDark,privateTheme,readable,guest,current,sites,allow,sources,blocked,result,busy}}`
+
+- `level` `none|trackers|ads` is `blocker_enabled` and `blocker_level` read together (`none` is the old switch off);
+  `retention` is `session|1d|1w|1m|3m|6m|1y|forever`; `websiteAppearance` is `auto|light|dark`; `privateTheme` is
+  `follow|light|dark`. `readable` is false when `settings.txt` could not be read (every control is then disabled).
+- `current` is the active normal tab's site `{host,level,cookies,private}` or `null`. `sites` is the saved per-site
+  choices (<= 200 shown, `{site,level:none|trackers|ads|default,cookies:show|hide|default}`); `allow` the
+  `blocker_allow` sites (<= 100 shown).
+- `sources` (<= 24) are the rule lists: `{id,name,kind:trackers|ads|cookies,enabled,origin:builtin|filters|file|url,url,rules,removable}`;
+  `url` is non-empty exactly when `origin` is `url` and is always `https://`.
+- `result` is `null` or `{seq,ok,text}`: how the last command went, kept until the next one, with a sequence number
+  so the page shows each result once. `busy` is true while a list is being fetched.
+
+Commands (`{v:1,t:"priv",...}`, validated in `panels::protection::map_command`; each carries exactly its own fields):
+
+| `a` | fields | meaning |
+|---|---|---|
+| `blocklevel` | `text` `none`/`trackers`/`ads` | the global level (`none` writes `blocker_enabled=false` and keeps the chosen level) |
+| `cookienotices` | `on` | hide cookie-consent banners, with or without blocking |
+| `site-level` | `text` site, `n` 0 none / 1 trackers / 2 trackers and ads / 3 follow the global level | a site's own level |
+| `site-cookies` | `text` site, `n` 0 show / 1 hide / 2 follow | a site's cookie-notice choice |
+| `site-remove` | `text` site | forget a site's choices |
+| `src-toggle` / `src-update` / `src-remove` | `text` list id (`on` for the switch) | switch a list, fetch it again, remove one the user added |
+| `src-add-url` | `url` https address, `text` kind | fetch a list once, now (a worker thread; HTTPS only, <= 3 redirects, <= 8 MB, 60 s, public host names only, content checked before it is kept) |
+| `src-add-file` | `text` kind | Bowser opens its own file picker; the page never names a file |
+| `retention` | `text` | history retention |
+| `webappearance`, `forcedark`, `privatetheme` | `text` / `on` | the colour scheme sites are asked for, forced dark mode, the private-tab look |
+| `delete-data` | `id` kinds bitmask (bit order `browsing_data::DataKind::ALL`), `n` period 0..=4 (`Range::ALL`), `on` | Delete Browsing Data. Saved logins are in the mask only with `on:true`, and Rust asks natively as well |
+
+Nothing here fetches a list by itself: a list is fetched only by `src-add-url` or `src-update`, never at start-up or
+on a timer. The site information page's `blocker` object carries `level` and `notices` too, and `act 11` now picks a
+level (`n` 0..=2) while `act 14` hides or shows cookie notices (`n` 1 / 0).
+
 ### Private tabs: `tabs[].private`, `state.private`
 
 A private (InPrivate) tab is an ordinary tab whose controller Rust creates with
@@ -446,6 +486,22 @@ test writes. Tab ids are wire ids (`TabId + 1`). A pair has a *first* and a *sec
 The tabs host may send only `over`, `drop` and `end`; the split host only the others. Commands are
 queued and run from `WM_SPLIT_COMMAND`.
 
+## Start page (`spage`, `?view=split`, shown over a blank normal tab)
+
+Behaviour is in docs/design/start-page.md. The split host shows the page the way it shows the private
+landing; the page code is the lazily imported bundle `start-page.js`. Rust writes it
+(`src/chrome_host/start_page.rs`); `ui/src/start-page-logic.ts` parses it strictly, against
+`ui/test/fixtures/start-page-messages.json`, which Rust's own test writes.
+
+| Direction | Message | Meaning |
+|---|---|---|
+| Rust -> page | `{v:1,t:"snap",p:"startpage",d:{kind:"page",...}}` | exactly the keys `kind guest settings groups group folder path dials more pickable folders widgets favs ack error`. `settings`: the display settings (`columns thumbSize titles addButton dragReorder widgets widgetColumns widgetHeight widgetBg widgetColor widgetDrag`); `groups` `{id,title,n}`; `path` `{id,title}` from the group down to `folder`; `dials` `{id,title,kind,url,host,n,thumb}` (`kind` `link` with an http(s) `url`, or `folder` with `n` entries; `thumb`: a chosen image exists); `pickable` bookmark folders that could become a group, `folders` every bookmark folder (both `{id,path}` / `{id,title}`, at most 200); `widgets` (`[]` unless the dashboard is on) each `{id,kind,...}` with its data (`topsites` `sites`, `bookmarks` `folder view links` with `{id,title,url,host,thumb}`, `notes` `text`, `date`, `privacy` `today total topHost topCount`, `webpage` `url`); `favs` host -> PNG data URI (at most 80 hosts, 100 KiB); `ack` `none` or `failed` with `error` (<= 200 characters), sent once. Under 200 KiB |
+| Rust -> page | `{v:1,t:"snap",p:"startpage",d:{kind:"thumbs",thumbs:{"<id>":"data:image/jpeg;base64,..."}}}` | chosen images, at most 100 per message and 160 KiB; sent after the page |
+| page -> Rust | `{v:1,t:"spage",a,...}` | the panel family's fields (`id parent before n on text url`, at most four with `a`), each action only with exactly its own: `open` (`id`, optional `on` = new tab), `openurl` (`url`, optional `on`), `show` (`id`), `addgroup` (`text`), `flaggroup` (`id`), `renamegroup` (`id`,`text`), `removegroup` (`id`), `movegroup` (`id`, optional `before`), `add` (`parent`,`url`, optional `text`), `addfolder` (`parent`,`text`), `edit` (`id`,`text`, optional `url`), `remove` (`id`), `move` (`id`, optional `before`), `movein` (`id`,`parent`), `thumb` (`id`), `thumbclear` (`id`), `wadd` (`text` = widget kind), `wremove` (`id`), `wmove` (`id`, optional `before`), `wfolder` (`id`,`parent`), `wview` (`id`,`text` `list`/`tiles`), `wurl` (`id`,`url`, empty clears), `wnote` (`id`,`text`), `wsavenote` (`id`), bare `settings`, `refresh`. Only `View::Split` accepts `spage` |
+
+The split host's document alone is served with `frame-src http: https:` and lets a subframe navigate to
+an http(s) address (the webpage widget's sandboxed frame); see the Security notes of the design doc.
+
 ## Tab drag ghost (`tabdrag` / `tabghost`, `View::Tabs`)
 
 A held tab is drawn by a native layered window that follows the cursor in screen coordinates
@@ -481,9 +537,9 @@ holds for its whole life. It accepts `ready` and the `set` family only (no `pane
 | Direction | Message | Meaning |
 |---|---|---|
 | Rust -> page | `state` | the split host's state: opaque window colour, `solid: true` |
-| Rust -> page | `{v:1,t:"snap",p:"settings",d:{...}}` | every key required, including `downloadDir` (display path, <= 260) and `downloadAsk` (bool) (`settings-page-logic.ts` `parseSettingsSnapshot`, `chrome_host/settings.rs`) |
-| Rust -> page | `{v:1,t:"settingsgo",s}` | `s`: `""` or one of `profile appearance privacy performance search downloads media updates about`; sent when Bowser moves the tab, never as an echo |
-| page -> Rust | `{v:1,t:"set",a:"save",text}` | every profile setting once, exact keys and values (`apply_settings_text`) |
+| Rust -> page | `{v:1,t:"snap",p:"settings",d:{...}}` | every key required, including `downloadDir` (display path, <= 260), `downloadAsk` (bool) and `start` (an object of the 15 start page and startup settings, `start-page-logic.ts` `parseStartSettings`) (`settings-page-logic.ts` `parseSettingsSnapshot`, `chrome_host/settings.rs`) |
+| Rust -> page | `{v:1,t:"settingsgo",s}` | `s`: `""` or one of `profile appearance startpage privacy performance search downloads media extensions updates about`; sent when Bowser moves the tab, never as an echo |
+| page -> Rust | `{v:1,t:"set",a:"save",text}` | every profile setting once, exact keys and values (`apply_settings_text`); the 15 start page keys (`start_*`, `homepage`, `startup`, `startup_pages`) are optional in the payload |
 | page -> Rust | `{v:1,t:"set",a:"autoupdate"\|"history"\|"downloadask",on}` | install-wide update switch; the profile's history switch (never for a guest); "Ask where to save each file before downloading" |
 | page -> Rust | `{v:1,t:"set",a:"downloadfolder"}` | no other field: Rust shows the native folder picker, then sends the next snapshot (`downloadDir`) |
 | page -> Rust | `{v:1,t:"set",a:"section",text}` | the page moved to a section; the tab's address follows |
@@ -575,3 +631,41 @@ recorded path or address of the id).
 - **Limits.** Bubble message <= 240 KiB (`html_popup::MAX_PAGE_BYTES`), five rows; page snapshot <= 240 KiB
   (`downloads::MAX_SNAPSHOT_BYTES`, oldest rows dropped with `more: true`); search text <= 256 characters;
   `downloadDir` <= 260 characters. Chrome webviews keep cancelling their own downloads.
+
+## Address bar, search and bookmarks (`addr`, `sfield`, `?view=bar`, `View::BookmarkBar`, `View::DialogAddress`)
+
+Options live as extra `key=value` lines of the profile's `settings.txt` (`src/address_settings.rs`, one
+`AddressSettings` in `Settings.address`; changed one key at a time, never part of the exact-match
+`save`). The engine list is `search-engines.txt` (`src/search_engines.rs`), typed history is
+`typed-history.txt`, bookmark nicknames and descriptions are `bookmark-extras.txt` (so
+`bookmarks-v2.txt` keeps its format). Everything below is validated in `src/chrome_host/address_page.rs`.
+
+### Rust -> JS
+
+- `{"t":"addr","show","full","select","encoded","qr","hbtn","typed","typing","badge","strip","highlight","base"}`
+  (toolbar): the address field's options, twelve required fields, eleven booleans and `base` (the shown page's
+  registrable domain, at most 253 characters). Sent at start, after a reload of the page and when they change.
+- `{"t":"sfield","mode","icon","nick","suggest","keep","engine","engines":[{"n","k"}]}` (toolbar): the search
+  field's mode (`off`, `field`, `button`) and engine list (at most 40). `engine` indexes `engines`.
+- `{"t":"snap","p":"address","d":{"s":{<key>:<value>},"engines":[..],"def","priv","img","folders":[..],"guest","ack","error"}}`
+  (settings page): every option typed (booleans, integers, strings), the engines, the default, private-window
+  and image engine ids and the bookmark folders.
+- `{"t":"snap","p":"addressdlg","d":{"kind":"qr"|"bookmark",..}}` (`View::DialogAddress`) and
+  `{"t":"snap","p":"bookmarkbar","d":{"display","items":[..],"groups":[..]}}` (`View::BookmarkBar`).
+- `suggest` rows may carry kind `calc` and an optional `"bd":true` (always show the badge); a list holds up to 20 rows.
+
+### JS -> Rust (`{"t":"addr","a":...}`, the flat panel family)
+
+Toolbar: `submit` (`text`, `n` 0 plain, 1 new tab for Alt/Shift+Enter, 2 domain expansion for Ctrl+Enter), `typed`
+(`n` seq), `suggest` (`text`, `n` seq), `qr`, `search` (`text`, `id` engine index, `n` new tab), `sedit` (`text`,
+`id`, `n` seq), `engines` (`text` rect). Settings page, through `set`: `addrset` (`text` `key=value`) and `engine`
+(`text` the operation and tab-separated fields: `add`, `update`, `remove`, `move`, `default`, `private`, `image`,
+`restore`). Dialogs: `qrcopy`, `bmsave` (`text` `name\tnickname\tdescription`, `parent` folder), `bmremove`. Bar:
+`baropen`, `barfolder`, `barctx`, `bargroup`, `bargctx`, `baroverflow`. Each action takes exactly its own fields.
+
+### Behaviour that is not on the wire
+
+The bookmarks bar takes its row from `Layout.viewport` in `window::relayout` (`bookmark_bar::reserved_viewport`),
+so the page, split panes and side panels end where the bar begins and `--bw-toolbar-h` is untouched. Search
+suggestions are fetched only for an engine nickname typed in the address field, or in the search field, from
+the engine's own suggestions address through `translate::net::get_https`; never in a private tab.

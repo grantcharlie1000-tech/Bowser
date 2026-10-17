@@ -88,6 +88,7 @@ pub(crate) struct Shadow {
 
 impl Shadow {
     /// No shadow at all: the backdrop is then the corner fringe alone.
+    #[cfg(test)]
     pub(crate) const NONE: Shadow = Shadow { ambient_sigma: 1.0, ambient_alpha: 0.0, key_drop: 0.0, key_sigma: 1.0, key_alpha: 0.0 };
 
     /// Room the shadow needs beside the list (each side) and below it, in whole pixels: three
@@ -215,6 +216,8 @@ pub(crate) struct Backdrop {
     pub shadow: Shadow,
 }
 
+type PaintedBackdrop = (i32, i32, i32, (u8, u8, u8), Shadow);
+
 struct Fringe {
     window: HWND,
     dc: HDC,
@@ -223,7 +226,7 @@ struct Fringe {
     /// The bitmap's size in pixels.
     capacity: (i32, i32),
     /// What the bitmap currently holds: (width, visible, radius, surface, shadow).
-    painted: Option<(i32, i32, i32, (u8, u8, u8), Shadow)>,
+    painted: Option<PaintedBackdrop>,
     shown: bool,
 }
 
@@ -259,11 +262,13 @@ pub(crate) fn show(owner: HWND, after: HWND, spec: Backdrop) {
     FRINGES.with(|all| {
         let mut all = all.borrow_mut();
         let key = owner.0 as isize;
-        if !all.contains_key(&key) {
-            let Some(fringe) = create(owner) else { return };
-            all.insert(key, fringe);
-        }
-        let Some(fringe) = all.get_mut(&key) else { return };
+        let fringe = match all.entry(key) {
+            std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                let Some(fringe) = create(owner) else { return };
+                entry.insert(fringe)
+            }
+        };
         unsafe {
             let wanted = (spec.width, spec.visible, spec.radius, spec.surface, spec.shadow);
             if fringe.painted != Some(wanted) {

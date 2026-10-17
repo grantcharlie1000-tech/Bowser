@@ -308,7 +308,7 @@ fn notify_resized(owner: HWND) {
 
 fn lookup(owner: HWND) -> Option<HWND> {
     let raw = HOSTS.with(|hosts| hosts.borrow().get(&(owner.0 as isize)).copied())?;
-    (raw != 0).then(|| HWND(raw as *mut c_void))
+    (raw != 0).then_some(HWND(raw as *mut c_void))
 }
 
 fn shown_width(owner: HWND) -> i32 {

@@ -38,8 +38,8 @@ use windows::{
 use zeroize::{Zeroize, Zeroizing};
 
 use super::{
-    BrowsingDataKind, BrowsingDataRange, EngineAdapter, EngineEvents, MemoryTargetApply,
-    MemoryUsageTarget, PermissionsHandle, TrackingPreventionLevel,
+    BlockedChangedCallback, BrowsingDataKind, BrowsingDataRange, EngineAdapter, EngineEvents,
+    MemoryTargetApply, MemoryUsageTarget, PermissionsHandle, TrackingPreventionLevel,
 };
 use crate::permissions::Permission;
 use crate::tabs::TabId;
@@ -124,6 +124,15 @@ fn run_translate_script(
     run_capped_script(webview, script, crate::translate::MAX_ANSWER_BYTES, done);
 }
 
+/// The same for the feed-detection script, whose answer is a short list of `<link>` tags.
+fn run_feed_script(
+    webview: &ICoreWebView2,
+    script: &str,
+    done: Box<dyn FnOnce(Option<String>)>,
+) {
+    run_capped_script(webview, script, crate::app::MAX_FEED_ANSWER_BYTES, done);
+}
+
 fn run_capped_script(
     webview: &ICoreWebView2,
     script: &str,
@@ -153,6 +162,95 @@ fn run_capped_script(
         done(None);
     }
 }
+
+// --- page tools (T7) ---
+/// Calls a capture DevTools method. Only the two methods page capture needs are allowed, only on a page
+/// whose live address is http(s), and an answer past the capture limit is dropped unread.
+fn devtools_capture_call(
+    webview: &ICoreWebView2,
+    method: &str,
+    params: &str,
+    done: Box<dyn FnOnce(Option<String>)>,
+) {
+    if !matches!(method, crate::capture::METHOD_METRICS | crate::capture::METHOD_SHOT)
+        || current_web_url(webview).is_none()
+    {
+        done(None);
+        return;
+    }
+    let slot = Rc::new(RefCell::new(Some(done)));
+    let completion = slot.clone();
+    let handler = CallDevToolsProtocolMethodCompletedHandler::create(Box::new(move |error, result| {
+        let answer = (error.is_ok()
+            && !devtools_protocol_error(&result)
+            && result.len() <= crate::page_tools::MAX_SLICE_BASE64 + 4096)
+            .then_some(result);
+        if let Some(done) = completion.borrow_mut().take() {
+            done(answer);
+        }
+        Ok(())
+    }));
+    let method = HSTRING::from(method);
+    let params = HSTRING::from(params);
+    let queued = unsafe {
+        webview.CallDevToolsProtocolMethod(PCWSTR(method.as_ptr()), PCWSTR(params.as_ptr()), &handler)
+    };
+    if queued.is_err()
+        && let Some(done) = slot.borrow_mut().take()
+    {
+        done(None);
+    }
+}
+
+/// Runs a script that needs no answer in whatever the tab shows now.
+fn run_quiet_script(webview: &ICoreWebView2, script: &str) {
+    let wide = CoTaskMemPWSTR::from(script);
+    let handler = ExecuteScriptCompletedHandler::create(Box::new(|_, _| Ok(())));
+    let _ = unsafe { webview.ExecuteScript(*wide.as_ref().as_pcwstr(), &handler) };
+}
+
+/// Makes one tab match Settings > Page tools: Ctrl+scroll zoom, and the spatial navigation script (added
+/// for every document the tab loads from now on and run in the one it shows, or taken away again).
+/// `spatial_id` holds the id WebView2 gave the added script while it is in place.
+fn apply_page_tools_to(webview: &ICoreWebView2, spatial_id: &Rc<RefCell<Option<String>>>) {
+    if let Ok(settings) = unsafe { webview.Settings() } {
+        let _ = unsafe { settings.SetIsZoomControlEnabled(crate::page_tools::wheel_zoom_on()) };
+    }
+    let want = crate::page_tools::spatial_on();
+    let have = spatial_id.borrow().is_some();
+    if want && !have {
+        // An empty id marks "being added", so a second apply before the answer does not add it twice.
+        *spatial_id.borrow_mut() = Some(String::new());
+        let slot = spatial_id.clone();
+        let target = webview.clone();
+        let script = CoTaskMemPWSTR::from(crate::page_tools::SPATIAL_SCRIPT);
+        let handler = AddScriptToExecuteOnDocumentCreatedCompletedHandler::create(Box::new(move |status, id| {
+            if status.is_err() {
+                *slot.borrow_mut() = None;
+            } else if crate::page_tools::spatial_on() {
+                *slot.borrow_mut() = Some(id);
+            } else {
+                // Switched off while it was being added.
+                *slot.borrow_mut() = None;
+                let wide = HSTRING::from(id);
+                let _ = unsafe { target.RemoveScriptToExecuteOnDocumentCreated(PCWSTR(wide.as_ptr())) };
+            }
+            Ok(())
+        }));
+        if unsafe { webview.AddScriptToExecuteOnDocumentCreated(*script.as_ref().as_pcwstr(), &handler) }.is_err() {
+            *spatial_id.borrow_mut() = None;
+            return;
+        }
+        run_quiet_script(webview, crate::page_tools::SPATIAL_SCRIPT);
+    } else if !want && have {
+        if let Some(id) = spatial_id.borrow_mut().take().filter(|id| !id.is_empty()) {
+            let wide = HSTRING::from(id);
+            let _ = unsafe { webview.RemoveScriptToExecuteOnDocumentCreated(PCWSTR(wide.as_ptr())) };
+        }
+        run_quiet_script(webview, crate::page_tools::SPATIAL_OFF_SCRIPT);
+    }
+}
+// --- end page tools ---
 
 fn toggle_native_picture_in_picture(webview: &ICoreWebView2) {
     let handler = CallDevToolsProtocolMethodCompletedHandler::create(Box::new(|_, _| Ok(())));
@@ -198,6 +296,7 @@ impl ShortcutForward {
 /// Only mapped chords are returned, so typing, clipboard and other page keys always reach the page.
 /// Escape is excluded: it stops a load only while the tab is loading, which this handler cannot see,
 /// so it is left to the page. A setting-gated chord (`gated`) is mapped only while its setting is on.
+#[cfg_attr(not(test), allow(dead_code))]
 fn shortcut_forward(
     key: u32,
     kind: COREWEBVIEW2_KEY_EVENT_KIND,
@@ -206,10 +305,33 @@ fn shortcut_forward(
     alt: bool,
     gated: shortcuts::GatedChords,
 ) -> Option<ShortcutForward> {
+    shortcut_forward_on_page(key, kind, ctrl, shift, alt, gated, || None)
+}
+
+/// [`shortcut_forward`] for a page whose host `page_host` reads only when a site list exists: a site
+/// that prioritises its own shortcuts keeps every key but the browser priority list
+/// (`crate::commands`), and a typing key is never a shortcut from a page.
+fn shortcut_forward_on_page(
+    key: u32,
+    kind: COREWEBVIEW2_KEY_EVENT_KIND,
+    ctrl: bool,
+    shift: bool,
+    alt: bool,
+    gated: shortcuts::GatedChords,
+    page_host: impl Fn() -> Option<String>,
+) -> Option<ShortcutForward> {
     if !is_key_down(kind) || key == u32::from(VK_ESCAPE.0) {
         return None;
     }
-    shortcuts::command_for_gated(key, ctrl, shift, alt, gated)?;
+    let live = crate::commands::live();
+    let host = if live.store.sites.is_empty() { None } else { page_host() };
+    let context = crate::commands::ResolveContext {
+        gated,
+        source: crate::commands::Source::Page,
+        typing: false,
+        host: host.as_deref(),
+    };
+    crate::commands::resolve_in(&live, key, ctrl, shift, alt, &context)?;
     Some(ShortcutForward {
         key,
         ctrl,
@@ -373,12 +495,7 @@ unsafe fn bounded_wide_len(value: PWSTR, max_units: usize) -> Option<usize> {
     if value.is_null() {
         return None;
     }
-    for index in 0..=max_units {
-        if unsafe { *value.0.add(index) } == 0 {
-            return Some(index);
-        }
-    }
-    None
+    (0..=max_units).find(|&index| unsafe { *value.0.add(index) } == 0)
 }
 
 struct ZeroizingWebMessage<'a> {
@@ -399,7 +516,7 @@ impl ZeroizingWebMessage<'_> {
         }
     }
 
-    fn to_string(&self) -> String {
+    fn owned_text(&self) -> String {
         self._allocation.to_string()
     }
 }
@@ -420,9 +537,7 @@ fn current_web_url(webview: &ICoreWebView2) -> Option<Url> {
     unsafe { webview.Source(&mut source) }.ok()?;
     let source_pointer = source;
     let source = CoTaskMemPWSTR::from(source);
-    if unsafe { bounded_wide_len(source_pointer, 4096) }.is_none() {
-        return None;
-    }
+    unsafe { bounded_wide_len(source_pointer, 4096) }?;
     web_url_from_source(&source.to_string())
 }
 
@@ -444,6 +559,94 @@ fn sync_top_host(webview: &ICoreWebView2, block: &TabBlockState) {
     };
     *block.top_host.borrow_mut() = host;
 }
+
+// --- tab options ---
+/// Reads a captured page image back out of the memory stream it was written to.
+fn read_capture_stream(stream: &IStream) -> Option<Vec<u8>> {
+    let mut result = Vec::new();
+    unsafe { stream.Seek(0, windows::Win32::System::Com::STREAM_SEEK_SET, None) }.ok()?;
+    loop {
+        let mut chunk = [0u8; 16384];
+        let mut read = 0u32;
+        unsafe { stream.Read(chunk.as_mut_ptr().cast(), chunk.len() as u32, Some(&mut read)).ok().ok()? };
+        if read == 0 {
+            break;
+        }
+        if result.len().saturating_add(read as usize) > crate::thumbnail::MAX_CAPTURE_BYTES {
+            return None;
+        }
+        result.extend_from_slice(&chunk[..read as usize]);
+    }
+    (!result.is_empty()).then_some(result)
+}
+
+/// The working set of the page process behind each tab: a renderer process whose frames include the
+/// tab's own address belongs to that tab. Tabs of the same address share an answer, and a tab whose
+/// process cannot be told apart is left out, never guessed.
+fn renderer_memory(infos: &ICoreWebView2ProcessExtendedInfoCollection, sources: &[(TabId, String)]) -> Vec<(TabId, u64)> {
+    let mut count = 0u32;
+    if unsafe { infos.Count(&mut count) }.is_err() {
+        return Vec::new();
+    }
+    let mut best: HashMap<TabId, u64> = HashMap::new();
+    for index in 0..count.min(512) {
+        let Ok(info) = (unsafe { infos.GetValueAtIndex(index) }) else { continue };
+        let Ok(process) = (unsafe { info.ProcessInfo() }) else { continue };
+        let mut kind = COREWEBVIEW2_PROCESS_KIND::default();
+        let mut pid = 0i32;
+        if unsafe { process.Kind(&mut kind) }.is_err() || kind != COREWEBVIEW2_PROCESS_KIND_RENDERER || unsafe { process.ProcessId(&mut pid) }.is_err() || pid <= 0 {
+            continue;
+        }
+        let Ok(frames) = (unsafe { info.AssociatedFrameInfos() }) else { continue };
+        let Ok(iterator) = (unsafe { frames.GetIterator() }) else { continue };
+        let mut owned: Vec<TabId> = Vec::new();
+        loop {
+            let mut has = BOOL::default();
+            if unsafe { iterator.HasCurrent(&mut has) }.is_err() || !has.as_bool() {
+                break;
+            }
+            if let Ok(frame) = unsafe { iterator.GetCurrent() } {
+                let mut source = PWSTR::null();
+                if unsafe { frame.Source(&mut source) }.is_ok() {
+                    let source = CoTaskMemPWSTR::from(source).to_string();
+                    owned.extend(sources.iter().filter(|(_, tab)| *tab == source).map(|(id, _)| *id));
+                }
+            }
+            let mut more = BOOL::default();
+            if unsafe { iterator.MoveNext(&mut more) }.is_err() || !more.as_bool() {
+                break;
+            }
+        }
+        if owned.is_empty() {
+            continue;
+        }
+        let Some(bytes) = process_working_set(pid as u32) else { continue };
+        for id in owned {
+            let entry = best.entry(id).or_insert(0);
+            *entry = (*entry).max(bytes);
+        }
+    }
+    best.into_iter().collect()
+}
+
+/// The working set of process `pid` in bytes, when the process can be queried.
+fn process_working_set(pid: u32) -> Option<u64> {
+    use windows::Win32::{
+        Foundation::CloseHandle,
+        System::{
+            ProcessStatus::{K32GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS},
+            Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION},
+        },
+    };
+    unsafe {
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
+        let mut counters = PROCESS_MEMORY_COUNTERS { cb: size_of::<PROCESS_MEMORY_COUNTERS>() as u32, ..Default::default() };
+        let ok = K32GetProcessMemoryInfo(handle, &mut counters, counters.cb).as_bool();
+        let _ = CloseHandle(handle);
+        ok.then_some(counters.WorkingSetSize as u64)
+    }
+}
+// --- end tab options ---
 
 fn read_favicon_stream(stream: IStream) -> Option<Vec<u8>> {
     const MAX_FAVICON_BYTES: usize = 1024 * 1024;
@@ -487,7 +690,7 @@ impl std::fmt::Display for RuntimeUnavailable {
 struct TabBlockState {
     top_host: RefCell<String>,
     count: Cell<u32>,
-    doc_filter: RefCell<Option<(String, bool, bool)>>,
+    doc_filter: RefCell<Option<(String, crate::blocker::Level, bool, u32)>>,
     /// `Fetch.requestPaused` is subscribed, so `Fetch.enable` will not pause requests nobody answers.
     fetch_listener: Cell<bool>,
     /// `Network.enable` has been accepted, so later refreshes only update `setBlockedURLs`.
@@ -618,6 +821,67 @@ fn call_devtools(webview: &ICoreWebView2, method: &str, params: &str) {
     let _ = unsafe {
         webview.CallDevToolsProtocolMethod(PCWSTR(method.as_ptr()), PCWSTR(params.as_ptr()), &handler)
     };
+}
+
+/// The WebView2 data kinds `kinds` stand for, all in one mask (Delete Browsing Data). Saved
+/// passwords are not a kind here: they live in Bowser's own vault.
+fn browsing_data_mask(kinds: &[BrowsingDataKind]) -> COREWEBVIEW2_BROWSING_DATA_KINDS {
+    let mut mask = COREWEBVIEW2_BROWSING_DATA_KINDS(0);
+    for kind in kinds {
+        mask |= match kind {
+            BrowsingDataKind::SiteData => {
+                COREWEBVIEW2_BROWSING_DATA_KINDS_COOKIES | COREWEBVIEW2_BROWSING_DATA_KINDS_ALL_DOM_STORAGE
+            }
+            BrowsingDataKind::Cache => {
+                COREWEBVIEW2_BROWSING_DATA_KINDS_DISK_CACHE | COREWEBVIEW2_BROWSING_DATA_KINDS_CACHE_STORAGE
+            }
+            BrowsingDataKind::History => COREWEBVIEW2_BROWSING_DATA_KINDS_BROWSING_HISTORY,
+            BrowsingDataKind::Cookies => COREWEBVIEW2_BROWSING_DATA_KINDS_COOKIES,
+            BrowsingDataKind::Storage => {
+                COREWEBVIEW2_BROWSING_DATA_KINDS_ALL_DOM_STORAGE | COREWEBVIEW2_BROWSING_DATA_KINDS_SERVICE_WORKERS
+            }
+            BrowsingDataKind::Autofill => COREWEBVIEW2_BROWSING_DATA_KINDS_GENERAL_AUTOFILL,
+            BrowsingDataKind::SiteSettings => COREWEBVIEW2_BROWSING_DATA_KINDS_SETTINGS,
+        };
+    }
+    mask
+}
+
+/// Tells the browsing profile which colour scheme sites should be shown (`prefers-color-scheme`).
+fn apply_preferred_colour_scheme(webview: &ICoreWebView2, appearance: crate::settings::WebsiteAppearance) {
+    use crate::settings::WebsiteAppearance;
+    let scheme = match appearance {
+        WebsiteAppearance::Auto => COREWEBVIEW2_PREFERRED_COLOR_SCHEME_AUTO,
+        WebsiteAppearance::Light => COREWEBVIEW2_PREFERRED_COLOR_SCHEME_LIGHT,
+        WebsiteAppearance::Dark => COREWEBVIEW2_PREFERRED_COLOR_SCHEME_DARK,
+    };
+    let _ = unsafe {
+        webview
+            .cast::<ICoreWebView2_13>()
+            .and_then(|webview| webview.Profile())
+            .and_then(|profile| profile.SetPreferredColorScheme(scheme))
+    };
+}
+
+/// Gives a new tab the website look in force: the profile's colour scheme, and Chromium's automatic
+/// dark mode for the page when `force_dark_websites` is on. A look never changed from its defaults
+/// sends nothing, so a profile that never changed it pays no cost; after a change (even back to Auto)
+/// it is sent, so a private profile that kept an older Dark is put right (`website_look::new_tab_needs`).
+fn start_website_look(webview: &ICoreWebView2) {
+    let look = crate::website_look::current();
+    if crate::website_look::new_tab_needs_now() {
+        apply_preferred_colour_scheme(webview, look.appearance);
+        call_devtools(webview, "Emulation.setAutoDarkModeOverride", look.auto_dark_params());
+    }
+}
+
+/// Sent again for each document: forced dark mode is a per-page override, and a navigation to a new
+/// process must not lose it. Nothing is sent while the option is off.
+fn refresh_force_dark(webview: &ICoreWebView2) {
+    let look = crate::website_look::current();
+    if look.force_dark {
+        call_devtools(webview, "Emulation.setAutoDarkModeOverride", look.auto_dark_params());
+    }
 }
 
 /// `Network.enable` keeps almost no response bytes. The domain is on only so
@@ -951,7 +1215,7 @@ fn install_fetch_listener(
 fn note_blocked_request(
     block: &TabBlockState,
     tab_id: TabId,
-    blocked_callback: &Option<Rc<dyn Fn(TabId, u32, String)>>,
+    blocked_callback: &Option<BlockedChangedCallback>,
     policy_log: &Option<Rc<dyn Fn(&'static str)>>,
 ) {
     let count = block.count.get().saturating_add(1);
@@ -971,7 +1235,7 @@ fn install_loading_failed_listener(
     webview: &ICoreWebView2,
     block: &Rc<TabBlockState>,
     tab_id: TabId,
-    blocked_callback: Option<Rc<dyn Fn(TabId, u32, String)>>,
+    blocked_callback: Option<BlockedChangedCallback>,
     policy_log: Option<Rc<dyn Fn(&'static str)>>,
 ) {
     let receiver = match unsafe { webview.GetDevToolsProtocolEventReceiver(w!("Network.loadingFailed")) }
@@ -1017,13 +1281,16 @@ fn refresh_blocked_urls(
     let stored_host = block.top_host.borrow().clone();
     let top_host = page_host.unwrap_or(&stored_host);
     let state = blocker.borrow();
-    let blocking = state.is_blocking(top_host, private);
+    // The level and the rule generation decide the patterns: a change of either (a level chosen
+    // for the site, a list switched on or off) is sent even on the same site.
+    let (level, generation) = state.filter_signature(top_host, private);
     // Only a YouTube page pauses player responses; anywhere else Fetch.enable pauses nothing.
     let responses = state.response_patterns(top_host, private);
     let signature = (
         crate::blocker::registrable_domain(top_host).to_owned(),
-        blocking,
+        level,
         !responses.is_empty(),
+        generation,
     );
     if block.doc_filter.borrow().as_ref() == Some(&signature) {
         return;
@@ -1073,10 +1340,16 @@ fn apply_cosmetic_css(
     } else {
         state.cosmetic_css_for_host(&top_host)
     };
+    let x_script = state.x_promoted_script(&top_host, private);
     drop(state);
     let installed = block.cosmetic_installed.replace(css.is_some());
     let Some(script) = cosmetic_script(css.as_deref(), installed) else {
         return;
+    };
+    // X promoted posts: the marker script runs after the style it depends on.
+    let script = match x_script {
+        Some(marker) => format!("{script};\n{marker}"),
+        None => script,
     };
     // Fire-and-forget: a cosmetic touch-up must never gate on the completion handler (see
     // `engine_never_blocks_on_a_webview2_completion`).
@@ -1134,6 +1407,8 @@ struct WebView2Tab {
     visible: Rc<Cell<bool>>,
     /// Bounds last accepted by `controller`, so an unchanged resize skips the SetBounds call.
     applied_bounds: Option<RECT>,
+    /// The id of the spatial navigation script while it is added to this tab (page tools, T7).
+    spatial_id: Rc<RefCell<Option<String>>>,
 }
 
 pub struct WebView2Engine {
@@ -1168,6 +1443,9 @@ struct EngineCore {
     prewarm_waiting: Option<TabId>,
     waiting_controllers: VecDeque<TabId>,
     pending: HashMap<TabId, Url>,
+    /// Form fields to POST to the `pending` address of a tab whose controller is still being made
+    /// (a search with an engine that posts its query).
+    pending_post: HashMap<TabId, String>,
     hidden_since: HashMap<TabId, Instant>,
     suspended: HashSet<TabId>,
     closed: bool,
@@ -1546,6 +1824,7 @@ impl WebView2Engine {
                         (None, MemoryUsageTarget::Low, false)
                     }
                 };
+                let pending_post = core.borrow_mut().pending_post.remove(&tab_id);
                 if !still_open {
                     let mut tab = tab;
                     let _ = EngineAdapter::close(&mut tab);
@@ -1590,12 +1869,16 @@ impl WebView2Engine {
                         .get(&tab_id)
                         .map(|tab| (tab.webview.clone(), tab.allowed_file.clone()));
                     if let Some((webview, allowed_file)) = handles
-                        && let Err(error) = navigate_with_timing(
-                            &completion_events,
-                            webview.as_ref(),
-                            allowed_file.as_ref(),
-                            &url,
-                        )
+                        && let Err(error) = match pending_post.as_deref() {
+                            // A search that posts its query: the same request the page would send.
+                            Some(body) => post_webview(webview.as_ref(), Some(&controller_environment), &url, body),
+                            None => navigate_with_timing(
+                                &completion_events,
+                                webview.as_ref(),
+                                allowed_file.as_ref(),
+                                &url,
+                            ),
+                        }
                         && let Some(failed) = completion_events.failed.as_ref()
                     {
                         failed(error);
@@ -2477,6 +2760,7 @@ impl WebView2Engine {
                         prewarm_waiting: None,
                         waiting_controllers: VecDeque::new(),
                         pending: HashMap::new(),
+                        pending_post: HashMap::new(),
                         hidden_since: HashMap::new(),
                         suspended: HashSet::new(),
                         closed: false,
@@ -2710,6 +2994,81 @@ impl EngineAdapter for WebView2Engine {
         range: BrowsingDataRange,
         done: Box<dyn FnOnce(std::result::Result<(), String>)>,
     ) {
+        self.clear_browsing_data_set(tab, &[kind], range, done);
+    }
+
+    // --- page tools (T7) ---
+    fn devtools_call(&mut self, tab: TabId, method: &str, params: &str, done: Box<dyn FnOnce(Option<String>)>) {
+        let webview = self.core.borrow().tabs.get(&tab).and_then(|tab| tab.webview.clone());
+        match webview {
+            Some(webview) => devtools_capture_call(&webview, method, params, done),
+            None => done(None),
+        }
+    }
+
+    fn run_page_script(&mut self, tab: TabId, script: &str, limit: usize, done: Box<dyn FnOnce(Option<String>)>) {
+        let webview = self.core.borrow().tabs.get(&tab).and_then(|tab| tab.webview.clone());
+        match webview {
+            Some(webview) => run_capped_script(&webview, script, limit, done),
+            None => done(None),
+        }
+    }
+
+    fn apply_page_tools(&mut self) {
+        let tabs: Vec<(ICoreWebView2, Rc<RefCell<Option<String>>>)> = self
+            .core
+            .borrow()
+            .tabs
+            .values()
+            .filter_map(|tab| Some((tab.webview.clone()?, tab.spatial_id.clone())))
+            .collect();
+        for (webview, spatial_id) in &tabs {
+            apply_page_tools_to(webview, spatial_id);
+        }
+    }
+    // --- end page tools ---
+
+    fn apply_website_look(&mut self) {
+        let look = crate::website_look::current();
+        let webviews: Vec<ICoreWebView2> = self
+            .core
+            .borrow()
+            .tabs
+            .values()
+            .filter_map(|tab| tab.webview.clone())
+            .collect();
+        // --- wave-1 fixes --- the preferred colour scheme belongs to the browsing profile, and normal and
+        // private tabs have different profiles, so each tab sets it (a repeat on the same profile is a
+        // no-op); the dark-mode override is per page.
+        for webview in &webviews {
+            apply_preferred_colour_scheme(webview, look.appearance);
+            call_devtools(webview, "Emulation.setAutoDarkModeOverride", look.auto_dark_params());
+        }
+    }
+
+    // --- layout (thread T6) ---
+    fn apply_status_overlay(&mut self) {
+        let shown = crate::layout_prefs::status_overlay_shown();
+        let webviews: Vec<ICoreWebView2> = self
+            .core
+            .borrow()
+            .tabs
+            .values()
+            .filter_map(|tab| tab.webview.clone())
+            .collect();
+        for webview in &webviews {
+            let _ = unsafe { webview.Settings().and_then(|settings| settings.SetIsStatusBarEnabled(shown)) };
+        }
+    }
+    // --- end layout ---
+
+    fn clear_browsing_data_set(
+        &mut self,
+        tab: TabId,
+        kinds: &[BrowsingDataKind],
+        range: BrowsingDataRange,
+        done: Box<dyn FnOnce(std::result::Result<(), String>)>,
+    ) {
         let webview = self
             .core
             .borrow()
@@ -2735,17 +3094,11 @@ impl EngineAdapter for WebView2Engine {
                 return;
             }
         };
-        let kinds = match kind {
-            BrowsingDataKind::SiteData => {
-                COREWEBVIEW2_BROWSING_DATA_KINDS_COOKIES
-                    | COREWEBVIEW2_BROWSING_DATA_KINDS_ALL_DOM_STORAGE
-            }
-            BrowsingDataKind::Cache => {
-                COREWEBVIEW2_BROWSING_DATA_KINDS_DISK_CACHE
-                    | COREWEBVIEW2_BROWSING_DATA_KINDS_CACHE_STORAGE
-            }
-            BrowsingDataKind::History => COREWEBVIEW2_BROWSING_DATA_KINDS_BROWSING_HISTORY,
-        };
+        let kinds = browsing_data_mask(kinds);
+        if kinds.0 == 0 {
+            done(Ok(()));
+            return;
+        }
         let completion = Rc::new(RefCell::new(Some(done)));
         let callback = completion.clone();
         let handler = ClearBrowsingDataCompletedHandler::create(Box::new(move |status| {
@@ -2755,20 +3108,15 @@ impl EngineAdapter for WebView2Engine {
             Ok(())
         }));
         let result = unsafe {
-            if range == BrowsingDataRange::AllTime {
-                profile.ClearBrowsingData(kinds, &handler)
-            } else {
-                let end = SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs_f64();
-                let seconds = match range {
-                    BrowsingDataRange::LastHour => 60 * 60,
-                    BrowsingDataRange::LastDay => 24 * 60 * 60,
-                    BrowsingDataRange::LastSevenDays => 7 * 24 * 60 * 60,
-                    BrowsingDataRange::AllTime => unreachable!(),
-                } as f64;
-                profile.ClearBrowsingDataInTimeRange(kinds, (end - seconds).max(0.0), end, &handler)
+            match range.seconds() {
+                None => profile.ClearBrowsingData(kinds, &handler),
+                Some(seconds) => {
+                    let end = SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs_f64();
+                    profile.ClearBrowsingDataInTimeRange(kinds, (end - seconds as f64).max(0.0), end, &handler)
+                }
             }
         };
         if let Err(error) = result {
@@ -2849,6 +3197,22 @@ impl EngineAdapter for WebView2Engine {
         }
         self.navigate_tab_internal(tab, url)
     }
+    fn navigate_tab_post(&mut self, tab: TabId, url: &Url, body: &str) -> Result<()> {
+        let live = {
+            let state = self.core.borrow();
+            state.tabs.get(&tab).map(|tab| (tab.webview.clone(), tab.environment.clone()))
+        };
+        if let Some((webview, environment)) = live {
+            return post_webview(webview.as_ref(), environment.as_ref(), url, body);
+        }
+        // No controller yet: it is made as for any navigation, and the POST is sent when it is ready.
+        self.navigate_tab_internal(tab, url)?;
+        let mut state = self.core.borrow_mut();
+        if state.pending.contains_key(&tab) {
+            state.pending_post.insert(tab, body.to_owned());
+        }
+        Ok(())
+    }
     fn execute_script_for_origin(
         &mut self,
         tab: TabId,
@@ -2905,6 +3269,23 @@ impl EngineAdapter for WebView2Engine {
             .and_then(|tab| tab.webview.clone());
         match webview {
             Some(webview) => run_translate_script(&webview, script, done),
+            None => done(None),
+        }
+    }
+    fn run_feed_script(
+        &mut self,
+        tab: TabId,
+        script: &str,
+        done: Box<dyn FnOnce(Option<String>)>,
+    ) {
+        let webview = self
+            .core
+            .borrow()
+            .tabs
+            .get(&tab)
+            .and_then(|tab| tab.webview.clone());
+        match webview {
+            Some(webview) => run_feed_script(&webview, script, done),
             None => done(None),
         }
     }
@@ -3257,6 +3638,69 @@ impl EngineAdapter for WebView2Engine {
         }
         Ok(())
     }
+    // --- tab options --- the tab hover card's thumbnail and memory line.
+    fn capture_tab_thumbnail(&mut self, tab_id: TabId, max_w: u32, max_h: u32, done: Box<dyn FnOnce(Option<Vec<u8>>)>) {
+        let (webview, on_screen) = {
+            let state = self.core.borrow();
+            (
+                state.tabs.get(&tab_id).and_then(|tab| tab.webview.clone()),
+                state.active_tab == Some(tab_id) || state.visible_tabs.contains(&tab_id),
+            )
+        };
+        // A hidden controller paints nothing, so only a tab on screen is captured.
+        let (Some(webview), true) = (webview, on_screen) else {
+            done(None);
+            return;
+        };
+        let Some(stream) = (unsafe { windows::Win32::UI::Shell::SHCreateMemStream(None) }) else {
+            done(None);
+            return;
+        };
+        let keep = stream.clone();
+        let done = std::cell::RefCell::new(Some(done));
+        let handler = webview2_com::CapturePreviewCompletedHandler::create(Box::new(move |status| {
+            let bytes = if status.is_ok() { read_capture_stream(&keep) } else { None };
+            if let Some(done) = done.borrow_mut().take() {
+                done(bytes.and_then(|bytes| crate::thumbnail::downscale_jpeg(&bytes, max_w, max_h)));
+            }
+            Ok(())
+        }));
+        let _ = unsafe { webview.CapturePreview(COREWEBVIEW2_CAPTURE_PREVIEW_IMAGE_FORMAT_JPEG, &stream, &handler) };
+    }
+    fn tab_memory_usage(&mut self, done: Box<dyn FnOnce(Vec<(TabId, u64)>)>) {
+        let (environment, webviews) = {
+            let state = self.core.borrow();
+            (
+                state.environment.clone(),
+                state.tabs.iter().filter_map(|(id, tab)| tab.webview.clone().map(|webview| (*id, webview))).collect::<Vec<_>>(),
+            )
+        };
+        let sources: Vec<(TabId, String)> = webviews
+            .into_iter()
+            .filter_map(|(id, webview)| {
+                let mut source = PWSTR::null();
+                unsafe { webview.Source(&mut source) }.ok()?;
+                Some((id, CoTaskMemPWSTR::from(source).to_string()))
+            })
+            .collect();
+        let Some(environment) = environment.and_then(|environment| environment.cast::<ICoreWebView2Environment13>().ok()) else {
+            done(Vec::new());
+            return;
+        };
+        let done = std::cell::RefCell::new(Some(done));
+        let handler = webview2_com::GetProcessExtendedInfosCompletedHandler::create(Box::new(move |status, infos| {
+            let usage = match (status.is_ok(), infos) {
+                (true, Some(infos)) => renderer_memory(&infos, &sources),
+                _ => Vec::new(),
+            };
+            if let Some(done) = done.borrow_mut().take() {
+                done(usage);
+            }
+            Ok(())
+        }));
+        let _ = unsafe { environment.GetProcessExtendedInfos(&handler) };
+    }
+    // --- end tab options ---
     fn check_sleep_blocked(&mut self, tab_id: TabId, done: Box<dyn FnOnce(bool)>) {
         // A download dies with its webview, so a tab that is downloading stays awake.
         if super::download::owner_downloading(super::download::tab_owner(tab_id.0)) {
@@ -3459,6 +3903,31 @@ fn navigate_webview(
     }
 }
 
+/// Navigates a webview with a POST of form fields (`body`, already percent-encoded) to an https
+/// address: a search with an engine that takes its query that way.
+fn post_webview(
+    webview: Option<&ICoreWebView2>,
+    environment: Option<&ICoreWebView2Environment>,
+    url: &Url,
+    body: &str,
+) -> Result<()> {
+    if url.scheme() != "https" {
+        return Err(Error::from(windows::Win32::Foundation::E_INVALIDARG));
+    }
+    let webview: ICoreWebView2_2 = webview.ok_or_else(|| Error::from(windows::Win32::Foundation::E_POINTER))?.cast()?;
+    let environment: ICoreWebView2Environment2 =
+        environment.ok_or_else(|| Error::from(windows::Win32::Foundation::E_POINTER))?.cast()?;
+    let stream = unsafe { windows::Win32::UI::Shell::SHCreateMemStream(Some(body.as_bytes())) }
+        .ok_or_else(|| Error::from(windows::Win32::Foundation::E_OUTOFMEMORY))?;
+    let uri = HSTRING::from(url.as_str());
+    let headers = HSTRING::from("Content-Type: application/x-www-form-urlencoded
+");
+    let request = unsafe {
+        environment.CreateWebResourceRequest(PCWSTR(uri.as_ptr()), w!("POST"), &stream, PCWSTR(headers.as_ptr()))?
+    };
+    unsafe { webview.NavigateWithWebResourceRequest(&request) }
+}
+
 fn navigate_with_timing(
     events: &EngineEvents,
     webview: Option<&ICoreWebView2>,
@@ -3638,6 +4107,9 @@ unsafe fn configure_controller(
         // menu item and F12 / Ctrl+Shift+I open it). This is the DevTools UI only; it does not
         // touch the ad blocker's `CallDevToolsProtocolMethod` Fetch/Network session.
         settings.SetAreDevToolsEnabled(true)?;
+        // --- layout (thread T6) --- the link-address overlay at the bottom of the page follows the
+        // status bar setting (Bowser has no status bar of its own).
+        settings.SetIsStatusBarEnabled(crate::layout_prefs::status_overlay_shown())?;
         match settings.cast::<ICoreWebView2Settings4>() {
             Ok(settings4) => {
                 settings4.SetIsPasswordAutosaveEnabled(false)?;
@@ -3711,7 +4183,7 @@ unsafe fn configure_controller(
                     if !raw_message.within_limit {
                         return Ok(());
                     }
-                    let json = Zeroizing::new(raw_message.to_string());
+                    let json = Zeroizing::new(raw_message.owned_text());
                     let mut source = PWSTR::null();
                     if args.Source(&mut source).is_err() {
                         return Ok(());
@@ -3754,6 +4226,10 @@ unsafe fn configure_controller(
             )?;
         }
         enable_smart_screen(&settings, events.policy_event.as_ref())?;
+        start_website_look(&webview);
+        // Page tools (T7): Ctrl+scroll zoom and spatial navigation, as Settings > Page tools has them.
+        let spatial_id = Rc::new(RefCell::new(None::<String>));
+        apply_page_tools_to(&webview, &spatial_id);
         if let Some(level) = tracking_policy.level {
             let verified = apply_tracking_prevention(
                 &webview,
@@ -3777,6 +4253,7 @@ unsafe fn configure_controller(
         let block_tab = Rc::new(TabBlockState::default());
         let navigation_start_log = events.policy_event.clone();
         let navigation_started = events.navigation_started.clone();
+        let link_navigation = events.link_navigation.clone(); // --- tab options ---
         let nav_blocker = blocker.clone();
         let nav_block_tab = block_tab.clone();
         webview.add_NavigationStarting(
@@ -3820,6 +4297,26 @@ unsafe fn configure_controller(
                                     );
                                 }
                             }
+                            // --- tab options --- "Keep pinned tabs on their site": a followed link to another
+                            // site opens in a new tab and this navigation is cancelled.
+                            if let (Some(hook), Some(destination)) = (link_navigation.as_ref(), parsed.as_ref()) {
+                                let (mut user, mut redirected) = (BOOL::default(), BOOL::default());
+                                let _ = args.IsUserInitiated(&mut user);
+                                let _ = args.IsRedirected(&mut redirected);
+                                let mut kind = COREWEBVIEW2_NAVIGATION_KIND_NEW_DOCUMENT;
+                                if let Ok(args3) = args.cast::<ICoreWebView2NavigationStartingEventArgs3>() {
+                                    let _ = args3.NavigationKind(&mut kind);
+                                }
+                                if user.as_bool()
+                                    && !redirected.as_bool()
+                                    && kind == COREWEBVIEW2_NAVIGATION_KIND_NEW_DOCUMENT
+                                    && hook(tab_id, destination)
+                                {
+                                    let _ = args.SetCancel(true);
+                                    return Ok(());
+                                }
+                            }
+                            // --- end tab options ---
                             // The first-party host is set when the navigation commits (see
                             // sync_top_host), not here: a navigation can still be superseded.
                             let mut navigation_id = 0;
@@ -3858,7 +4355,7 @@ unsafe fn configure_controller(
                     };
                     let allowed = parsed
                         .as_ref()
-                        .is_some_and(|url| frame_navigation_scheme_allowed(url));
+                        .is_some_and(frame_navigation_scheme_allowed);
                     // blob:, data: and about:srcdoc frames are left alone: only an http(s) frame
                     // destination is ever checked against the blocker.
                     let blocked = allowed
@@ -3892,6 +4389,7 @@ unsafe fn configure_controller(
             &ContentLoadingEventHandler::create(Box::new(move |sender, args| {
                 if let Some(sender) = sender.as_ref() {
                     sync_top_host(sender, &content_block_tab);
+                    refresh_force_dark(sender);
                     if let Some(blocker) = content_blocker.as_ref() {
                         refresh_blocked_urls(sender, &content_block_tab, blocker, private, None);
                         apply_cosmetic_css(sender, &content_block_tab, blocker, private);
@@ -3920,8 +4418,16 @@ unsafe fn configure_controller(
         )?;
         if let Ok(webview2_2) = webview.cast::<ICoreWebView2_2>() {
             let dom_progress = events.navigation_progress.clone();
+            let dom_block_tab = block_tab.clone();
+            let dom_blocker = blocker.clone();
             webview2_2.add_DOMContentLoaded(
-                &DOMContentLoadedEventHandler::create(Box::new(move |_sender, args| {
+                &DOMContentLoadedEventHandler::create(Box::new(move |sender, args| {
+                    // The page's own scripts have started by now: install the cosmetic style and
+                    // the X promoted-post marker again (both idempotent) in case the early one ran
+                    // before the document was ready.
+                    if let (Some(sender), Some(blocker)) = (sender.as_ref(), dom_blocker.as_ref()) {
+                        apply_cosmetic_css(sender, &dom_block_tab, blocker, private);
+                    }
                     if let (Some(args), Some(callback)) = (args, dom_progress.as_ref()) {
                         let mut navigation_id = 0;
                         if args.NavigationId(&mut navigation_id).is_ok() {
@@ -4035,6 +4541,24 @@ unsafe fn configure_controller(
             })),
             &mut token,
         )?;
+
+        // --- auto-hide (T11) --- a page element (a video) asks for full screen or leaves it. Only
+        // installed when the app listens, so nothing runs otherwise.
+        if let Some(fullscreen_changed) = events.fullscreen_changed.clone() {
+            webview.add_ContainsFullScreenElementChanged(
+                &webview2_com::ContainsFullScreenElementChangedEventHandler::create(Box::new(move |sender, _| {
+                    if let Some(sender) = sender {
+                        let mut on = BOOL(0);
+                        if sender.ContainsFullScreenElement(&mut on).is_ok() {
+                            fullscreen_changed(tab_id, on.as_bool(), current_web_url(&sender));
+                        }
+                    }
+                    Ok(())
+                })),
+                &mut token,
+            )?;
+        }
+        // --- end auto-hide ---
 
         let policy_event = events.policy_event.clone();
         let permission_store = permissions.clone();
@@ -4260,6 +4784,154 @@ unsafe fn configure_controller(
         }
         // --- end split view ---
 
+        // --- address bar, search and bookmarks ---
+        // "Search <engine> for <selection>" and "Search for this image with <engine>" in the page's
+        // context menu. The labels and the action come from the window (it knows the engines).
+        if let (Some(labels), Some(picked), Ok(webview11), Ok(environment9)) = (
+            events.context_search.clone(),
+            events.context_search_pick.clone(),
+            webview.cast::<ICoreWebView2_11>(),
+            environment.cast::<ICoreWebView2Environment9>(),
+        ) {
+            webview11.add_ContextMenuRequested(
+                &ContextMenuRequestedEventHandler::create(Box::new(move |_sender, args| {
+                    let Some(args) = args else { return Ok(()) };
+                    let target = args.ContextMenuTarget()?;
+                    let mut has_selection = BOOL::default();
+                    target.HasSelection(&mut has_selection)?;
+                    let mut selection = None;
+                    if has_selection.as_bool() {
+                        let mut text = PWSTR::null();
+                        target.SelectionText(&mut text)?;
+                        let text = CoTaskMemPWSTR::from(text).to_string();
+                        let text: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
+                        let text: String = text.chars().take(256).collect();
+                        if !text.is_empty() {
+                            selection = Some(text);
+                        }
+                    }
+                    let mut kind = COREWEBVIEW2_CONTEXT_MENU_TARGET_KIND::default();
+                    target.Kind(&mut kind)?;
+                    let mut image = None;
+                    if kind == COREWEBVIEW2_CONTEXT_MENU_TARGET_KIND_IMAGE {
+                        let mut source = PWSTR::null();
+                        target.SourceUri(&mut source)?;
+                        image = Url::parse(&CoTaskMemPWSTR::from(source).to_string()).ok().filter(|url| matches!(url.scheme(), "http" | "https"));
+                    }
+                    let info = super::ContextSearchInfo { selection, image };
+                    if info.selection.is_none() && info.image.is_none() {
+                        return Ok(());
+                    }
+                    let names = labels(tab_id, &info);
+                    let items = args.MenuItems()?;
+                    let mut count = 0u32;
+                    items.Count(&mut count)?;
+                    let position = |wanted: &[&str], fallback: u32| {
+                        let mut at = fallback;
+                        for index in 0..count {
+                            let mut name = PWSTR::null();
+                            if items.GetValueAtIndex(index).and_then(|entry| entry.Name(&mut name)).is_ok()
+                                && wanted.contains(&CoTaskMemPWSTR::from(name).to_string().as_str())
+                            {
+                                at = index + 1;
+                            }
+                        }
+                        at
+                    };
+                    let add = |label: &str, pick: super::ContextSearchPick, after: &[&str]| -> windows::core::Result<()> {
+                        let wide = HSTRING::from(label);
+                        let item = environment9.CreateContextMenuItem(PCWSTR(wide.as_ptr()), None::<&IStream>, COREWEBVIEW2_CONTEXT_MENU_ITEM_KIND_COMMAND)?;
+                        let picked = picked.clone();
+                        let mut item_token = 0i64;
+                        item.add_CustomItemSelected(
+                            &CustomItemSelectedEventHandler::create(Box::new(move |_item, _args| {
+                                picked(tab_id, pick.clone());
+                                Ok(())
+                            })),
+                            &mut item_token,
+                        )?;
+                        let at = position(after, 0);
+                        items.InsertValueAtIndex(at, &item)
+                    };
+                    if let (Some(label), Some(text)) = (names.selection, info.selection) {
+                        add(&label, super::ContextSearchPick::Selection(text), &["copy"])?;
+                    }
+                    if let (Some(label), Some(url)) = (names.image, info.image) {
+                        add(&label, super::ContextSearchPick::Image(url), &["copyImage", "saveImageAs", "copyImageLocation"])?;
+                    }
+                    Ok(())
+                })),
+                &mut token,
+            )?;
+        }
+        // --- end address bar, search and bookmarks ---
+
+        // --- page tools (T7) ---
+        // "Insert note" in the context menu of a text field. The labels and the action come from the app,
+        // which knows the notes; the page is only told the text of the one the user picks, by a script
+        // the app runs through `execute_script_for_origin`.
+        if let (Some(labels), Some(picked), Ok(webview11), Ok(environment9)) = (
+            events.context_notes.clone(),
+            events.context_note_pick.clone(),
+            webview.cast::<ICoreWebView2_11>(),
+            environment.cast::<ICoreWebView2Environment9>(),
+        ) {
+            webview11.add_ContextMenuRequested(
+                &ContextMenuRequestedEventHandler::create(Box::new(move |_sender, args| {
+                    let Some(args) = args else { return Ok(()) };
+                    let target = args.ContextMenuTarget()?;
+                    let mut editable = BOOL::default();
+                    target.IsEditable(&mut editable)?;
+                    if !editable.as_bool() {
+                        return Ok(());
+                    }
+                    let notes = labels(tab_id);
+                    if notes.is_empty() {
+                        return Ok(());
+                    }
+                    let parent = environment9.CreateContextMenuItem(
+                        w!("Insert note"),
+                        None::<&IStream>,
+                        COREWEBVIEW2_CONTEXT_MENU_ITEM_KIND_SUBMENU,
+                    )?;
+                    let children = parent.Children()?;
+                    for (index, (note, label)) in notes.into_iter().enumerate() {
+                        let wide = HSTRING::from(label);
+                        let child = environment9.CreateContextMenuItem(
+                            PCWSTR(wide.as_ptr()),
+                            None::<&IStream>,
+                            COREWEBVIEW2_CONTEXT_MENU_ITEM_KIND_COMMAND,
+                        )?;
+                        let picked = picked.clone();
+                        let mut item_token = 0i64;
+                        child.add_CustomItemSelected(
+                            &CustomItemSelectedEventHandler::create(Box::new(move |_item, _args| {
+                                picked(tab_id, note);
+                                Ok(())
+                            })),
+                            &mut item_token,
+                        )?;
+                        children.InsertValueAtIndex(index as u32, &child)?;
+                    }
+                    let items = args.MenuItems()?;
+                    let mut count = 0u32;
+                    items.Count(&mut count)?;
+                    let mut at = count;
+                    for index in 0..count {
+                        let mut name = PWSTR::null();
+                        if items.GetValueAtIndex(index).and_then(|entry| entry.Name(&mut name)).is_ok()
+                            && CoTaskMemPWSTR::from(name).to_string() == "paste"
+                        {
+                            at = index + 1;
+                        }
+                    }
+                    items.InsertValueAtIndex(at, &parent)
+                })),
+                &mut token,
+            )?;
+        }
+        // --- end page tools ---
+
         let external_webview: ICoreWebView2_18 = webview.cast()?;
         let external_policy_event = events.policy_event.clone();
         let external_handler: ICoreWebView2LaunchingExternalUriSchemeEventHandler =
@@ -4405,6 +5077,7 @@ unsafe fn configure_controller(
         }
 
         let escape_pressed = events.escape_pressed.clone();
+        let key_webview = webview.clone();
         controller.add_AcceleratorKeyPressed(
             &AcceleratorKeyPressedEventHandler::create(Box::new(move |_sender, args| {
                 if let Some(args) = args {
@@ -4421,12 +5094,11 @@ unsafe fn configure_controller(
                     {
                         callback(tab_id);
                     }
-                    let gated = if ctrl {
-                        win32::gated_chords(parent)
-                    } else {
-                        shortcuts::GatedChords::default()
-                    };
-                    if let Some(forward) = shortcut_forward(key, kind, ctrl, shift, alt, gated) {
+                    // A user can bind a gated command to any chord, so the gates are read for every key.
+                    let gated = win32::gated_chords(parent);
+                    if let Some(forward) = shortcut_forward_on_page(key, kind, ctrl, shift, alt, gated, || {
+                        current_web_url(&key_webview).and_then(|url| url.host_str().map(str::to_owned))
+                    }) {
                         win32::post(
                             parent,
                             win32::WM_SHORTCUT_KEY,
@@ -4494,6 +5166,7 @@ unsafe fn configure_controller(
             memory_target_api: None,
             visible: Rc::new(Cell::new(visible)),
             applied_bounds: Some(bounds),
+            spatial_id,
         })
     }
 }
@@ -5983,7 +6656,13 @@ mod tests {
                         (modifiers & 1 != 0, modifiers & 2 != 0, modifiers & 4 != 0);
                     let expected = if is_key_down(kind)
                         && key != u32::from(VK_ESCAPE.0)
-                        && shortcuts::command_for(key, ctrl, shift, alt).is_some()
+                        // Chords the command registry adds for commands with no `Command` of their own
+                        // (Ctrl+F1, the cheat sheet; page tools' capture and notes; F11 and Ctrl+F11 for
+                        // full screen and auto-hide; Ctrl+F7, F8 and F9, the tilings) are forwarded too.
+                        && (shortcuts::command_for(key, ctrl, shift, alt).is_some()
+                            || [(0x42, true, false, false), (0x70, true, false, false), (0x53, true, true, false), (0x4F, true, true, false), (0x7A, false, false, false), (0x7A, true, false, false),
+                                (0x76, true, false, false), (0x77, true, false, false), (0x78, true, false, false)]
+                                .contains(&(key, ctrl, shift, alt)))
                     {
                         forward(key, ctrl, shift, alt)
                     } else {
@@ -6316,6 +6995,7 @@ mod tests {
             prewarm_waiting: None,
             waiting_controllers: VecDeque::new(),
             pending: HashMap::new(),
+            pending_post: HashMap::new(),
             hidden_since: HashMap::from([(TabId(2), Instant::now() - Duration::from_secs(60))]),
             suspended: HashSet::new(),
             closed: false,

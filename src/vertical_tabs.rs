@@ -1,7 +1,7 @@
 //! Pure vertical sidebar geometry, in physical pixels.
 
 use crate::chrome::layout::{self, Metrics, Rect};
-use crate::settings::TabLayout;
+use crate::settings::{SidePanelPosition, TabLayout};
 
 pub const MIN_WIDTH: i32 = 180;
 /// Width of the collapsed, icons-only sidebar strip.
@@ -11,6 +11,8 @@ pub const DEFAULT_WIDTH: i32 = 260;
 pub const RESIZE_HANDLE_WIDTH: i32 = 5;
 pub const HEADER_HEIGHT: i32 = 46;
 pub const TAB_ROW_HEIGHT: i32 = 36;
+/// --- layout (thread T6) --- the row height at the compact UI density.
+pub const COMPACT_TAB_ROW_HEIGHT: i32 = 30;
 pub const NEW_TAB_BUTTON_SIZE: i32 = 28;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -32,9 +34,99 @@ pub struct SidebarLayout {
     pub viewport: Rect,
     pub max_scroll: i32,
     row_height: i32,
+    /// --- layout (thread T6) --- which edge the sidebar is docked to. The resize handle is on
+    /// its inner edge: the right edge of a left sidebar, the left edge of a right one.
+    pub side: SidePanelPosition,
 }
 
 impl SidebarLayout {
+    // --- layout (thread T6) ---
+    /// The sidebar docked to `side`, spanning `top` to `bottom` (client y), with rows `row_height`
+    /// logical pixels tall. A left sidebar sits right of the rail; a right one ends at the window's
+    /// right edge (inside the resize rim). `viewport` is the page area beside it, which
+    /// `layout::compute_arranged_in_frame` settles against the rows at the top and bottom.
+    #[allow(clippy::too_many_arguments)]
+    pub fn compute_in_frame_at(
+        client_w: i32,
+        client_h: i32,
+        dpi: u32,
+        requested_width: i32,
+        maximised: bool,
+        side: SidePanelPosition,
+        top: i32,
+        bottom: i32,
+        row_height: i32,
+    ) -> Self {
+        let m = Metrics::new(dpi);
+        let client_w = client_w.max(0);
+        let client_h = client_h.max(0);
+        let inset = layout::left_rail_inset(dpi);
+        let top = top.clamp(0, client_h);
+        let bottom = bottom.clamp(top, client_h);
+        let rim = if maximised { 0 } else { m.px(Metrics::RESIZE_RIM).min(client_w / 2) };
+        let available_width = (client_w - inset - rim).saturating_sub(1).max(0);
+        let floor = if requested_width <= COLLAPSED_WIDTH { COLLAPSED_WIDTH } else { MIN_WIDTH };
+        let min_width = m.px(floor).min(available_width);
+        let max_width = m.px(MAX_WIDTH).min(available_width);
+        let side_width = m.px(requested_width).clamp(min_width, max_width);
+        let (left, right) = match side {
+            SidePanelPosition::Left => (inset, inset + side_width),
+            SidePanelPosition::Right => ((client_w - rim - side_width).max(inset), (client_w - rim).max(inset)),
+        };
+        let sidebar = Rect::new(left, top, right, bottom);
+        let header_height = m.px(HEADER_HEIGHT).min(bottom - top);
+        let header = Rect::new(left, top, right, top + header_height);
+        let rows = Rect::new(left, header.bottom, right, bottom);
+        let handle_width = m.px(RESIZE_HANDLE_WIDTH).max(1);
+        let handle = match side {
+            SidePanelPosition::Left => Rect::new(right - handle_width, top, right, bottom),
+            SidePanelPosition::Right => Rect::new(left, top, left + handle_width, bottom),
+        };
+        let viewport = match side {
+            SidePanelPosition::Left => Rect::new(right, top, (client_w - rim).max(right), bottom),
+            SidePanelPosition::Right => Rect::new(inset, top, left.max(inset), bottom),
+        };
+        Self {
+            sidebar,
+            header,
+            rows,
+            handle,
+            viewport,
+            max_scroll: 0,
+            row_height: m.px(row_height).max(1),
+            side,
+        }
+    }
+
+    /// Physical height of one tab row.
+    pub fn row_height(&self) -> i32 {
+        self.row_height
+    }
+
+    /// The row area's inner edges, clear of the resize handle whichever side it is on.
+    pub fn content_left(&self) -> i32 {
+        match self.side {
+            SidePanelPosition::Left => self.rows.left,
+            SidePanelPosition::Right => self.handle.right,
+        }
+    }
+
+    pub fn content_right(&self) -> i32 {
+        match self.side {
+            SidePanelPosition::Left => self.handle.left,
+            SidePanelPosition::Right => self.rows.right,
+        }
+    }
+
+    /// The width (physical pixels) a drag of the resize handle to client `x` asks for.
+    pub fn drag_width_px(&self, x: i32) -> i32 {
+        match self.side {
+            SidePanelPosition::Left => x,
+            SidePanelPosition::Right => self.sidebar.right - x,
+        }
+    }
+    // --- end layout ---
+
     pub fn compute(
         width: i32,
         height: i32,
@@ -77,6 +169,7 @@ impl SidebarLayout {
             viewport,
             max_scroll,
             row_height,
+            side: SidePanelPosition::Left,
         }
     }
 
@@ -105,7 +198,9 @@ impl SidebarLayout {
     }
 
     pub fn with_tab_count(mut self, count: usize, dpi: u32) -> Self {
-        let row_height = Metrics::new(dpi).px(TAB_ROW_HEIGHT).max(1);
+        // The row height set by the constructor (the density's); `compute` and `compute_in_frame`
+        // use the regular one, which is what this read before.
+        let row_height = if self.row_height > 0 { self.row_height } else { Metrics::new(dpi).px(TAB_ROW_HEIGHT).max(1) };
         let content_height = self.rows.height();
         self.row_height = row_height;
         self.max_scroll = (count.min(i32::MAX as usize) as i32)

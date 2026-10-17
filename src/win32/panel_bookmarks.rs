@@ -1023,7 +1023,8 @@ impl Content {
         let Ok(url) = url::Url::parse(url) else {
             return;
         };
-        if new_tab {
+        // "Open bookmarks in a new tab" (bm_open_new_tab).
+        if new_tab || App::settings(&self.app).address.bookmark_new_tab {
             App::new_tab(&self.app);
         }
         App::navigate_current(&self.app, &url);
@@ -1420,7 +1421,7 @@ impl PanelContent for Content {
     fn on_mouse_wheel(&mut self, delta: i16) {
         let geometry = self.geometry();
         let m = self.list_metrics(&geometry);
-        let step = geometry.row * 3 * delta.signum() as i32 * -1;
+        let step = -(geometry.row * 3 * delta.signum() as i32);
         self.model.scroll_by(step, m);
         self.surface.invalidate();
     }

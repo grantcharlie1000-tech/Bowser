@@ -97,7 +97,10 @@
   animation: sp-turn 640ms var(--bw-ease-out) 80ms both;
 }
 
-.sp-title {
+/* The start page (start.css) also has .sp-title, .sp-row, .sp-note, .sp-empty, .sp-sr, .sp-tiles and
+   .sp-toast. Those rules here are held to the settings page by :where(#app.sp-root), which adds no
+   specificity, so nothing changes inside settings and nothing leaks onto the start page. */
+:where(#app.sp-root) .sp-title {
   margin: 0;
   font-size: var(--bw-text-subtitle);
   line-height: var(--bw-leading-subtitle);
@@ -299,8 +302,96 @@
 }
 
 /* Extensions: the Installed card sits right under its lead, there is no long list to introduce. */
-.sp-sec[data-section="extensions"] > .sp-lead {
+.sp-sec[data-area="extensions"] > .sp-lead {
   margin-bottom: var(--bw-space-2);
+}
+
+/* ---- settings slim: parts, "More options", sub-pages ----
+   An area holds one part per Rust section; a merged area's parts read as groups of one list. The
+   disclosure is one row in a card, the same height, inset and type as every other row; its body is
+   ordinary groups. A sub-page is a section of its own with a quiet way back above its title. */
+.sp-part + .sp-part {
+  margin-top: var(--sp-gap-group);
+}
+
+.sp-more {
+  margin-top: var(--sp-gap-group);
+}
+
+.sp-more-btn {
+  display: flex;
+  align-items: center;
+  gap: var(--bw-space-6);
+  width: 100%;
+  min-height: 56px;
+  margin: 0;
+  padding: var(--bw-space-3) var(--sp-row-x);
+  border: 0;
+  border-radius: inherit;
+  background: transparent;
+  color: var(--bw-text);
+  font: var(--bw-text-body) / var(--bw-leading-body) var(--bw-font);
+  text-align: start;
+  cursor: default;
+  transition: background-color var(--bw-dur-fast) var(--bw-ease-fade);
+}
+
+.sp-more-btn:hover {
+  background: color-mix(in srgb, var(--bw-text) 4%, transparent);
+}
+
+.sp-more-btn:focus-visible {
+  outline: 2px solid var(--bw-focus);
+  outline-offset: -2px;
+  box-shadow: inset 0 0 0 3px var(--bw-focus-inner);
+}
+
+.sp-more-chev {
+  flex: none;
+  margin-inline-start: auto;
+  color: var(--bw-text-2);
+  transition: transform var(--bw-dur-fast) var(--bw-ease-move);
+}
+
+.sp-more.is-open .sp-more-chev {
+  transform: rotate(180deg);
+}
+
+.sp-more-body {
+  margin-top: var(--sp-gap-group);
+}
+
+/* The opened list settles in from just above: a short, finite fade and lift. */
+@keyframes sp-more-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+}
+
+.sp-more.is-open > .sp-more-body {
+  animation: sp-more-in var(--bw-dur-slow) var(--bw-ease-out) both;
+}
+
+.sp.is-searching .sp-more.is-open > .sp-more-body {
+  animation: none;
+}
+
+.sp-more-body > .sp-group + .sp-dash,
+.sp-more-body > .sp-dash + .sp-group {
+  margin-top: var(--sp-gap-group);
+}
+
+.sp-sec.sp-page {
+  margin-top: 0;
+}
+
+.sp-back {
+  margin: 0 0 var(--bw-space-3);
+}
+
+.sp-page .sp-row.is-page > .sp-text {
+  display: none;
 }
 
 /* A group: its heading, an optional "no effect yet" note, then the card. */
@@ -352,7 +443,7 @@
   pointer-events: none;
 }
 
-.sp-row {
+:where(#app.sp-root) .sp-row {
   position: relative;
   display: flex;
   align-items: center;
@@ -362,7 +453,7 @@
 }
 
 /* Rows are divided by an inset rule, so the card reads as one object, not a stack of strips. */
-.sp-row + .sp-row::before {
+:where(#app.sp-root) .sp-row + .sp-row::before {
   content: "";
   position: absolute;
   top: 0;
@@ -371,18 +462,18 @@
   background: var(--sp-rule);
 }
 
-.sp-row.is-stack {
+:where(#app.sp-root) .sp-row.is-stack {
   flex-direction: column;
   align-items: stretch;
   gap: var(--bw-space-3);
   padding-block: var(--bw-space-4);
 }
 
-.sp-row.is-stack > .sp-ctl {
+:where(#app.sp-root) .sp-row.is-stack > .sp-ctl {
   margin-inline-start: 0;
 }
 
-.sp-row.is-stack > .sp-ctl > * {
+:where(#app.sp-root) .sp-row.is-stack > .sp-ctl > * {
   flex: 1 1 auto;
 }
 
@@ -480,7 +571,7 @@
   color: inherit;
 }
 
-.sp-note {
+:where(#app.sp-root) .sp-note {
   margin: 0;
   color: var(--bw-text-2);
   font-size: var(--bw-text-caption);
@@ -495,7 +586,7 @@
   background: color-mix(in srgb, var(--sp-warn) 12%, transparent);
 }
 
-.sp-empty {
+:where(#app.sp-root) .sp-empty {
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -505,11 +596,11 @@
   text-align: center;
 }
 
-.sp-empty p {
+:where(#app.sp-root) .sp-empty p {
   margin: 0;
 }
 
-.sp-sr {
+:where(#app.sp-root) .sp-sr {
   position: absolute;
   width: 1px;
   height: 1px;
@@ -549,13 +640,13 @@
 }
 
 /* ---- Profile: the one row that introduces someone, so it is set larger ---- */
-.sp-row.is-profile {
+:where(#app.sp-root) .sp-row.is-profile {
   gap: var(--bw-space-4);
   min-height: 80px;
   padding-block: var(--bw-space-4);
 }
 
-.sp-row.is-profile .sp-label {
+:where(#app.sp-root) .sp-row.is-profile .sp-label {
   font-size: 16px;
   line-height: 22px;
   font-weight: var(--bw-weight-strong);
@@ -573,12 +664,12 @@
   font-weight: var(--bw-weight-strong);
 }
 
-.sp-row.is-profile > .sp-ctl {
+:where(#app.sp-root) .sp-row.is-profile > .sp-ctl {
   margin-inline-start: 0;
 }
 
 /* ---- Layout tiles ---- */
-.sp-tiles {
+:where(#app.sp-root) .sp-tiles {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: var(--bw-space-3);
@@ -823,21 +914,21 @@
 
 /* ---- Allow list: the field sits beside the label; skipped sites and errors wrap beneath ---- */
 /* A row whose control is small and sits beside its text: no taller than it needs to be. */
-.sp-row.is-tight {
+:where(#app.sp-root) .sp-row.is-tight {
   min-height: 48px;
   padding-block: var(--bw-space-2);
 }
 
-.sp-row.is-wrap {
+:where(#app.sp-root) .sp-row.is-wrap {
   flex-wrap: wrap;
   row-gap: var(--bw-space-2);
 }
 
-.sp-row.is-wrap > .sp-text {
+:where(#app.sp-root) .sp-row.is-wrap > .sp-text {
   flex: 1 1 200px;
 }
 
-.sp-row.is-wrap > :is(.sp-sites, .sp-field-error) {
+:where(#app.sp-root) .sp-row.is-wrap > :is(.sp-sites, .sp-field-error) {
   flex: 1 1 100%;
 }
 
@@ -872,6 +963,11 @@
   border-radius: var(--bw-r-pill);
 }
 
+/* --- tab stacks (T10) --- a workspace rule whose workspace no longer exists rests, shown quieter. */
+.sp-site.is-muted .sp-site-name {
+  color: var(--bw-text-dim);
+}
+
 .sp-allow-add {
   display: flex;
   gap: var(--bw-space-2);
@@ -896,7 +992,7 @@
 }
 
 /* ---- Updates ---- */
-.sp-row.is-status {
+:where(#app.sp-root) .sp-row.is-status {
   padding-block: var(--bw-space-4);
 }
 
@@ -1022,7 +1118,51 @@
   opacity: 0.5;
 }
 
-/* ---- Toolbar buttons: a two-column grid in a recessed well, each with its own glyph ---- */
+/* ---- Theme options: the schedule note, the two times, the three custom colours ---- */
+.sp-schedule-note {
+  display: block;
+}
+
+.sp-theme-times {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--bw-space-2) var(--bw-space-4);
+}
+
+.sp-theme-colours {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: var(--bw-space-2);
+}
+
+.sp-theme-field {
+  display: flex;
+  align-items: center;
+  gap: var(--bw-space-3);
+}
+
+.sp-theme-colours .sp-theme-field > .sp-value:first-child {
+  min-width: 68px;
+}
+
+.sp-theme-hex {
+  min-width: 64px;
+  font-variant-numeric: tabular-nums;
+}
+
+.sp-time-input {
+  width: 104px;
+}
+
+.sp-theme-file {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+/* ---- Switch lists (Auto-hide > Bars to hide): a two-column grid in a recessed well ---- */
 .sp-toolbar-list {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1044,13 +1184,129 @@
   min-width: 0;
 }
 
-.sp-toolbar-glyph {
+/* ---- Toolbar editor (ui/src/toolbar-editor.ts; Settings > Edit toolbars) ----
+   One group per bar: a heading with its Reset, a line about the bar, then a card of rows. A row is the button's
+   glyph, its name and a note, and (at the end) move up, move down and remove. The rows are the page's own .sp-row,
+   so the hairlines and spacing match every other card; the address bar's rows are grouped by where they sit. */
+.sp-tbe {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-gap-group);
+  min-width: 0;
+}
+
+.sp-tbe-head {
+  display: flex;
+  align-items: center;
+  gap: var(--bw-space-3);
+  margin: 0 0 var(--bw-space-1);
+}
+
+.sp-tbe-title {
+  flex: 1;
+  margin: 0;
+}
+
+.sp-tbe-lead {
+  max-width: 62ch;
+  margin: 0 0 var(--bw-space-2);
+  padding-inline-start: var(--bw-space-0_5);
+  color: var(--bw-text-2);
+  font-size: var(--bw-text-caption);
+  line-height: var(--bw-leading-caption);
+}
+
+.sp-tbe-card {
+  overflow: hidden;
+}
+
+.sp-tb-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: var(--bw-space-3);
+  min-height: 48px;
+  padding: var(--bw-space-2) var(--sp-row-x);
+}
+
+/* Rows are divided by the same inset rule as the page's own rows. */
+.sp-tb-row + .sp-tb-row::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  inset-inline: var(--sp-row-x);
+  height: 1px;
+  background: var(--sp-rule);
+}
+
+.sp-tb-glyph {
+  display: grid;
   flex: none;
+  place-items: center;
+  width: 20px;
+  height: 20px;
   color: var(--bw-text-2);
 }
 
+.sp-tb-item.is-fixed {
+  color: var(--bw-text-2);
+}
+
+.sp-tb-tools {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--bw-space-1);
+  margin-inline-start: auto;
+}
+
+.sp-tb-tools .bw-icon-btn:disabled {
+  opacity: 0.35;
+}
+
+.sp-tb-zone {
+  margin: 0;
+  padding: var(--bw-space-2) var(--sp-row-x) var(--bw-space-1);
+  color: var(--bw-text-2);
+  font-size: var(--bw-text-caption);
+  line-height: var(--bw-leading-caption);
+  font-weight: var(--bw-weight-strong);
+}
+
+.sp-tb-zone:not(:first-child) {
+  border-top: 1px solid var(--sp-rule);
+}
+
+.sp-tb-none {
+  margin: 0;
+  padding: var(--bw-space-1) var(--sp-row-x) var(--bw-space-2);
+  color: var(--bw-text-2);
+  font-size: var(--bw-text-caption);
+  line-height: var(--bw-leading-caption);
+}
+
+.sp-tbe-foot {
+  display: flex;
+  align-items: center;
+  gap: var(--bw-space-3);
+  margin-top: var(--bw-space-2);
+  padding-inline-start: var(--bw-space-0_5);
+}
+
+.sp-tbe-note {
+  flex: 1;
+  margin: 0;
+  color: var(--bw-text-2);
+  font-size: var(--bw-text-caption);
+  line-height: var(--bw-leading-caption);
+}
+
+.sp-tbe-note:empty {
+  display: none;
+}
+
 /* A button in the card's top corner, on the title line (Toolbar: Reset to default). */
-.sp-row > .sp-corner {
+:where(#app.sp-root) .sp-row > .sp-corner {
   position: absolute;
   inset-block-start: var(--bw-space-3);
   inset-inline-end: var(--sp-row-x);
@@ -1076,6 +1332,48 @@
   background: var(--sp-field);
   font-variant-numeric: tabular-nums;
   text-align: end;
+}
+
+/* ---- Layout block (thread T6): preset thumbnails, the three edges, the UI zoom value ---- */
+/* Six preset tiles: two rows of three, the same tile as the top-style tiles. */
+:where(#app.sp-root) .sp-tiles.is-presets {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.sp-tile[aria-disabled="true"] {
+  opacity: 0.5;
+}
+
+/* The three edges on one line, each a captioned segmented control; they wrap when narrow. */
+.sp-bars {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--bw-space-3) var(--bw-space-4);
+}
+
+.sp-bar {
+  display: flex;
+  flex-direction: column;
+  gap: var(--bw-space-1);
+}
+
+.sp-bar-label {
+  color: var(--bw-text-2);
+  font-size: var(--bw-text-caption);
+  line-height: var(--bw-leading-caption);
+}
+
+/* The UI zoom value is a field (select it to type), beside the slider and before Reset. */
+.sp-ui-zoom {
+  flex-wrap: wrap;
+}
+
+.sp-ui-zoom .sp-range {
+  flex: 1 1 160px;
+}
+
+.sp-ui-zoom-value {
+  width: 64px;
 }
 
 /* ---- Privacy dashboard (the settings page hosts it; panels.css styles its rows) ---- */
@@ -1105,12 +1403,23 @@
   border-bottom: 0;
 }
 
+/* Inset hairlines between rows, drawn like .sp-row's, so a dashboard block reads as the same card. */
 .sp-card .pg-row + .pg-row {
-  border-top: 1px solid var(--sp-rule);
+  position: relative;
+}
+
+.sp-card .pg-row + .pg-row::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  inset-inline: var(--sp-row-x);
+  height: 1px;
+  background: var(--sp-rule);
 }
 
 .sp-card .pg-bar,
-.sp-card .pg-confirm {
+.sp-card .pg-confirm,
+.sp-card .pg-protect-error {
   padding-inline: var(--sp-row-x);
   border-bottom-color: var(--sp-rule);
 }
@@ -1407,7 +1716,7 @@
 }
 
 /* ---- "Saved" toast ---- */
-.sp-toast {
+:where(#app.sp-root) .sp-toast {
   position: fixed;
   bottom: var(--bw-space-6);
   left: 50%;
@@ -1429,11 +1738,11 @@
 }
 
 /* Centred under the content column, not the whole window. */
-.sp:not(.is-narrow) .sp-toast {
+:where(#app.sp-root) .sp:not(.is-narrow) .sp-toast {
   left: calc(var(--sp-side-w) + (100% - var(--sp-side-w)) / 2);
 }
 
-.sp-toast.is-on {
+:where(#app.sp-root) .sp-toast.is-on {
   opacity: 1;
   transform: translate(-50%, 0);
 }
@@ -1444,7 +1753,7 @@
   color: var(--bw-accent);
 }
 
-.sp-toast.is-error .sp-toast-icon {
+:where(#app.sp-root) .sp-toast.is-error .sp-toast-icon {
   color: var(--sp-warn);
 }
 
@@ -1508,22 +1817,19 @@
     grid-column: 1 / -1;
   }
 
-  .sp-tiles {
+  :where(#app.sp-root) .sp-tiles,
+  :where(#app.sp-root) .sp-tiles.is-presets {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  .sp-toolbar-list {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
   /* Wide controls go under their label; a switch stays at the end of its row. */
-  .sp-row:not(.is-profile, .is-status, :has(> .sp-ctl > .sp-switch)) {
+  :where(#app.sp-root) .sp-row:not(.is-profile, .is-status, :has(> .sp-ctl > .sp-switch)) {
     flex-direction: column;
     align-items: stretch;
     gap: var(--bw-space-2);
   }
 
-  .sp-row:not(.is-profile, .is-status, :has(> .sp-ctl > .sp-switch)) > .sp-ctl {
+  :where(#app.sp-root) .sp-row:not(.is-profile, .is-status, :has(> .sp-ctl > .sp-switch)) > .sp-ctl {
     margin-inline-start: 0;
   }
 
@@ -1540,12 +1846,13 @@
 
 @media (prefers-reduced-motion: reduce) {
   .sp-mark.is-turn svg,
-  .sp-card.is-flash::after {
+  .sp-card.is-flash::after,
+  .sp-more.is-open > .sp-more-body {
     animation: none;
   }
 
-  .sp-toast,
-  .sp-toast.is-on {
+  :where(#app.sp-root) .sp-toast,
+  :where(#app.sp-root) .sp-toast.is-on {
     transform: translate(-50%, 0);
   }
 
@@ -1556,3 +1863,316 @@
     transform: none;
   }
 }
+
+/* ---- Keyboard and Quick commands (docs/commands.md; built by ui/src/commands-section.ts) ----
+   The option rows are ordinary .sp-row rows. The shortcut list, the result types and the chain editor are
+   blocks of their own, made from the same card, rule, pill and field surfaces as the allow list above. */
+.sp-cmd-note {
+  margin: var(--bw-space-2) 0 0;
+  padding-inline-start: var(--bw-space-0_5);
+}
+
+.sp-kb,
+.sp-chains {
+  margin-top: var(--sp-gap-group);
+}
+
+.sp-kb-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--bw-space-3);
+  margin-bottom: var(--bw-space-2);
+}
+
+.sp-kb-head > .sp-group-h {
+  margin: 0;
+}
+
+.sp-kb-tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--bw-space-2);
+}
+
+.sp-kb-lead {
+  margin: 0 0 var(--bw-space-3);
+  padding-inline-start: var(--bw-space-0_5);
+}
+
+.sp-kb-filter {
+  width: 100%;
+  margin-bottom: var(--bw-space-4);
+  border-color: var(--sp-field-edge);
+  background: var(--sp-field);
+}
+
+.sp-kb-cat + .sp-kb-cat {
+  margin-top: var(--bw-space-4);
+}
+
+.sp-kb-cat > .sp-card-h {
+  margin: 0 0 var(--bw-space-1_5);
+  padding-inline-start: var(--bw-space-0_5);
+}
+
+.sp-kb-row {
+  position: relative;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--bw-space-2) var(--bw-space-4);
+  padding: var(--bw-space-3) var(--sp-row-x);
+}
+
+.sp-kb-row + .sp-kb-row::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  inset-inline: var(--sp-row-x);
+  height: 1px;
+  background: var(--sp-rule);
+}
+
+.sp-kb-name {
+  flex: 1 1 140px;
+  min-width: 0;
+}
+
+.sp-kb-keylist {
+  display: flex;
+  flex: 0 1 auto;
+  max-width: 100%;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--bw-space-1_5);
+}
+
+.sp-kb-none {
+  color: var(--bw-text-2);
+  font-size: var(--bw-text-caption);
+  line-height: var(--bw-leading-caption);
+}
+
+.sp-kb-chip,
+.sp-kb-capture {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--bw-space-1);
+  height: 28px;
+  padding: 0 var(--bw-space-1) 0 var(--bw-space-3);
+  border: 1px solid var(--sp-field-edge);
+  border-radius: var(--bw-r-pill);
+  background: var(--sp-field);
+}
+
+.sp-kb-keys {
+  font: inherit;
+  font-size: var(--bw-text-caption);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.sp-kb-capture {
+  border-style: dashed;
+  border-color: var(--bw-accent);
+  color: var(--bw-text-2);
+  font-size: var(--bw-text-caption);
+  outline: none;
+}
+
+.sp-kb-rowtools {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--bw-space-0_5);
+}
+
+.sp-kb-rowtools:empty {
+  display: none;
+}
+
+.sp-kb-priority:not([aria-pressed="true"]) {
+  opacity: 0.55;
+}
+
+.sp-kb-conflict {
+  display: flex;
+  flex: 1 1 100%;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--bw-space-2);
+  color: var(--sp-warn);
+  font-size: var(--bw-text-caption);
+  line-height: var(--bw-leading-caption);
+}
+
+.sp-kb-empty {
+  margin: 0;
+  padding: var(--bw-space-3) var(--bw-space-0_5);
+}
+
+/* Quick commands: result types, each with move buttons and a switch, in the inset well the toolbar
+   list and the address bar's suggestion sources use. */
+.sp-qc-types {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0 var(--bw-space-3);
+  border-radius: var(--bw-r-row);
+  background: var(--sp-well);
+  list-style: none;
+}
+
+.sp-qc-type {
+  display: flex;
+  align-items: center;
+  gap: var(--bw-space-3);
+  min-height: 40px;
+  padding: var(--bw-space-1) 0;
+}
+
+.sp-qc-type + .sp-qc-type {
+  border-top: 1px solid var(--sp-rule);
+}
+
+.sp-qc-type.is-off .sp-label {
+  color: var(--bw-text-2);
+}
+
+.sp-qc-type-text {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: baseline;
+  gap: var(--bw-space-3);
+  min-width: 0;
+}
+
+/* Command chains: the list, then the editor under it. */
+.sp-chain-line {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: var(--bw-space-6);
+  min-height: 56px;
+  padding: var(--bw-space-3) var(--sp-row-x);
+}
+
+.sp-chain-line + .sp-chain-line::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  inset-inline: var(--sp-row-x);
+  height: 1px;
+  background: var(--sp-rule);
+}
+
+.sp-chain-line.is-tight {
+  min-height: 48px;
+  padding-block: var(--bw-space-2);
+}
+
+.sp-chain-line.is-stack {
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--bw-space-3);
+  padding-block: var(--bw-space-4);
+}
+
+.sp-chain-tools {
+  gap: var(--bw-space-1);
+}
+
+.sp-chain-editor {
+  margin-top: var(--bw-space-3);
+}
+
+.sp-chain-name {
+  width: 240px;
+  border-color: var(--sp-field-edge);
+  background: var(--sp-field);
+}
+
+.sp-chain-steps {
+  display: flex;
+  flex-direction: column;
+  gap: var(--bw-space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.sp-chain-step {
+  display: flex;
+  align-items: center;
+  gap: var(--bw-space-2);
+}
+
+.sp-chain-step > .bw-select {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.sp-chain-num {
+  flex: none;
+  width: 20px;
+  color: var(--bw-text-2);
+  font-variant-numeric: tabular-nums;
+  text-align: end;
+}
+
+.sp-chain-delay {
+  flex: none;
+  width: 88px;
+  border-color: var(--sp-field-edge);
+  background: var(--sp-field);
+}
+
+.sp-chain-lead,
+.sp-chain-none {
+  margin: 0;
+}
+
+.sp-chain-footer {
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: var(--bw-space-3);
+}
+
+.sp-chain-actions {
+  display: flex;
+  gap: var(--bw-space-2);
+  margin-inline-start: auto;
+}
+
+@media (max-width: 879px) {
+  .sp-chain-name {
+    width: 100%;
+  }
+
+  .sp-chain-line {
+    flex-wrap: wrap;
+    gap: var(--bw-space-3);
+  }
+}
+
+/* --- window and panels (thread T9) --- */
+.sp-stepper {
+  display: none;
+  align-items: center;
+  gap: var(--bw-space-1_5);
+}
+
+.sp-range-wrap.is-steps .sp-stepper {
+  display: flex;
+}
+
+.sp-range-wrap.is-steps .sp-range {
+  display: none;
+}
+
+:root[data-icons="mono"] .sp-nav-item[aria-current="true"] svg {
+  color: var(--bw-text);
+}
+/* --- end window and panels --- */

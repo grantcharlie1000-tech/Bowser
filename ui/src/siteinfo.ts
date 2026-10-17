@@ -15,8 +15,8 @@
 import { icon, type IconName } from './icons';
 import { sendPopupAct, sendPopupDismiss, sendPopupSize, type Security } from './protocol';
 import {
-  ACT_BLOCKER, ACT_CLEAR_COOKIES, ACT_RESET, ACT_ZOOM_RESET, CHOICES, CHOICE_LABEL, PRIVATE_SITE_NOTE, blockedNoticeText, blockerText,
-  cookieText, validSiteInfoPayload, type PermissionKey, type SiteInfoMessage,
+  ACT_BLOCKER, ACT_CLEAR_COOKIES, ACT_NOTICES, ACT_RESET, ACT_ZOOM_RESET, CHOICES, CHOICE_LABEL, PRIVATE_SITE_NOTE, SHIELD_LEVELS, SHIELD_LEVEL_LABELS,
+  blockedNoticeText, blockerText, cookieText, noticesText, validSiteInfoPayload, type PermissionKey, type SiteInfoMessage,
 } from './siteinfo-logic';
 import type { PageView } from './palette';
 import { isZoomed, zoomText } from './zoom-logic';
@@ -163,23 +163,53 @@ export function createSiteInfoView(root: HTMLElement): PageView {
     nodes.push(row('cookie', 'Cookies', cookieText(msg.cookies), clear, 'cookies'));
 
     // Private tab: the blocker is always on and Rust declares no blocker act, so the row is plain
-    // text ("Always on") with no switch that could flip and then sit pending.
-    let toggle: HTMLButtonElement | null = null;
+    // text ("Always on") with no choice that could change and then sit pending. A normal tab
+    // chooses a level for this site; choosing the one in force does nothing.
+    let levels: HTMLElement | null = null;
     if (!priv) {
-      const control = button('bw-toggle', '', 'blocker');
-      control.setAttribute('role', 'switch');
-      control.setAttribute('aria-label', 'Tracker blocker on this site');
-      control.setAttribute('aria-checked', String(msg.blocker.state === 'on'));
-      control.disabled = msg.blocker.state === 'unavailable';
-      control.addEventListener('click', () => {
-        if (busy()) return;
-        const on = control.getAttribute('aria-checked') !== 'true';
-        control.setAttribute('aria-checked', String(on));
-        act(ACT_BLOCKER, on ? 1 : 0, control);
+      const group = el('div', 'bw-segmented bw-siteinfo-levels');
+      group.setAttribute('role', 'radiogroup');
+      group.setAttribute('aria-label', 'Blocking on this site');
+      SHIELD_LEVELS.forEach((level, n) => {
+        const option = button('', level === 'ads' ? 'Trackers + ads' : SHIELD_LEVEL_LABELS[level], `blocker-${level}`);
+        option.setAttribute('aria-label', SHIELD_LEVEL_LABELS[level]);
+        option.setAttribute('role', 'radio');
+        option.setAttribute('aria-checked', String(msg.blocker.level === level));
+        option.disabled = msg.blocker.state === 'unavailable';
+        option.addEventListener('click', () => {
+          if (busy() || msg.blocker.level === level) return;
+          for (const other of Array.from(group.querySelectorAll('button'))) other.setAttribute('aria-checked', String(other === option));
+          act(ACT_BLOCKER, n, option);
+        });
+        group.append(option);
       });
-      toggle = control;
+      group.addEventListener('keydown', (event) => {
+        if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
+        event.preventDefault();
+        const options = Array.from(group.querySelectorAll('button'));
+        const at = options.indexOf(document.activeElement as HTMLButtonElement);
+        const next = options[(at + (event.key === 'ArrowRight' ? 1 : options.length - 1)) % options.length];
+        next?.focus();
+      });
+      levels = group;
     }
-    nodes.push(row('shield', 'Tracker blocker', blockerText(msg.blocker, priv), toggle, 'blocker'));
+    const blockerRow = row('shield', 'Blocking', blockerText(msg.blocker, priv), levels, 'blocker');
+    blockerRow.classList.toggle('is-wide', levels !== null);
+    nodes.push(blockerRow);
+    if (!priv && msg.blocker.state !== 'unavailable') {
+      // Cookie notices on this site: a switch for the wanted state, hidden or shown.
+      const notices = button('bw-toggle', '', 'notices');
+      notices.setAttribute('role', 'switch');
+      notices.setAttribute('aria-label', 'Hide cookie notices on this site');
+      notices.setAttribute('aria-checked', String(msg.blocker.notices));
+      notices.addEventListener('click', () => {
+        if (busy()) return;
+        const on = notices.getAttribute('aria-checked') !== 'true';
+        notices.setAttribute('aria-checked', String(on));
+        act(ACT_NOTICES, on ? 1 : 0, notices);
+      });
+      nodes.push(row('cookie', 'Cookie notices', noticesText(msg.blocker), notices, 'notices'));
+    }
     nodes.push(row('eye', 'Tracking prevention', msg.tracking === '' ? 'Unavailable' : msg.tracking.charAt(0).toUpperCase() + msg.tracking.slice(1), null, 'tracking'));
     if (isZoomed(msg.zoom)) {
       const zoomReset = button('bw-button is-subtle', 'Reset', 'zoom');

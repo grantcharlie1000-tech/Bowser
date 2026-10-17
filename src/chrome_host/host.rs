@@ -36,11 +36,11 @@ use windows::{
 use super::{
     assets::{
         self, Asset, DIALOG_START_URL, HOVER_START_URL, NOTES_DIALOG_START_URL, PANEL_START_URL, POPUP_START_URL,
-        PRIVACY_DIALOG_START_URL, RAIL_START_URL, RENAME_DIALOG_START_URL, RESPONSE_HEADERS, SCHEME,
+        PRIVACY_DIALOG_START_URL, RAIL_START_URL, RENAME_DIALOG_START_URL, ADDRESS_DIALOG_START_URL, BOOKMARK_BAR_START_URL, RESPONSE_HEADERS, SCHEME, SESSIONS_DIALOG_START_URL, FEEDS_DIALOG_START_URL,
         SETTINGS_START_URL, START_URL, TABS_START_URL, HISTORY_PAGE_START_URL, DOWNLOADS_PAGE_START_URL,
     },
     protocol::{
-        Command, PanelType, MESSAGE_BURST, MESSAGE_RATE_PER_SEC, POPUP_COMMAND_INTERVAL, Throttle,
+        Command, PanelType, ToolBar, MESSAGE_BURST, MESSAGE_RATE_PER_SEC, POPUP_COMMAND_INTERVAL, Throttle,
         TokenBucket, is_popup_command, parse_command,
     },
 };
@@ -106,8 +106,14 @@ pub fn accel_command_gated(
     if omnibox_editing && is_editing_chord(accel) {
         return None;
     }
-    let command =
-        shortcuts::command_for_gated(accel.vk, accel.ctrl, accel.shift, accel.alt, gated)?;
+    // The live keymap (`crate::commands`): the defaults plus the user's assignments and options.
+    let context = crate::commands::ResolveContext {
+        gated,
+        source: crate::commands::Source::Chrome,
+        typing: omnibox_editing,
+        host: None,
+    };
+    let command = crate::commands::resolve(accel.vk, accel.ctrl, accel.shift, accel.alt, &context)?;
     if accel.repeat && shortcuts::is_toggle(command) {
         return None;
     }
@@ -176,6 +182,14 @@ pub enum View {
     DialogNotes,
     DialogPrivacy,
     DialogRename,
+    /// The address bar's QR code and bookmark dialogs (src/win32/address_dialog.rs).
+    DialogAddress,
+    /// The bookmarks bar under the toolbar (src/win32/bookmark_bar.rs).
+    BookmarkBar,
+    /// The Sessions panel (Settings > Tabs): saved sessions, saving the open tabs as one.
+    DialogSessions,
+    /// The Feeds panel: subscriptions, items, preview, OPML import (src/win32/feeds_panel.rs).
+    DialogFeeds,
     /// The no-activate hover layer: tooltips, the tab hover card and the island menu.
     Hover,
     // --- split view ---
@@ -205,6 +219,10 @@ impl View {
             Self::DialogNotes => NOTES_DIALOG_START_URL,
             Self::DialogPrivacy => PRIVACY_DIALOG_START_URL,
             Self::DialogRename => RENAME_DIALOG_START_URL,
+            Self::DialogAddress => ADDRESS_DIALOG_START_URL,
+            Self::BookmarkBar => BOOKMARK_BAR_START_URL,
+            Self::DialogSessions => SESSIONS_DIALOG_START_URL,
+            Self::DialogFeeds => FEEDS_DIALOG_START_URL,
             Self::Hover => HOVER_START_URL,
             Self::Split => SPLIT_START_URL,
             Self::Settings => SETTINGS_START_URL,
@@ -344,6 +362,16 @@ pub struct ChromeHost {
     state: Rc<RefCell<State>>,
 }
 
+/// Parent, geometry and callbacks used to create one HTML chrome controller.
+pub struct ChromeHostOptions {
+    pub parent: HWND,
+    pub bounds: RECT,
+    pub view: View,
+    pub on_command: Rc<dyn Fn(Command)>,
+    pub on_failed: Rc<dyn Fn()>,
+    pub on_accelerator: Option<AccelHandler>,
+}
+
 impl ChromeHost {
     /// Starts creating a controller for `view` in the shared `env`, as a child of `parent`. `on_ready`
     /// runs once, with the host or the reason creation failed. The controller stays hidden until the
@@ -352,14 +380,10 @@ impl ChromeHost {
     /// `on_ready` never runs.
     pub fn create(
         env: &ChromeEnv,
-        parent: HWND,
-        bounds: RECT,
-        view: View,
-        on_command: Rc<dyn Fn(Command)>,
-        on_failed: Rc<dyn Fn()>,
-        on_accelerator: Option<AccelHandler>,
+        options: ChromeHostOptions,
         on_ready: impl FnOnce(Result<ChromeHost>) + 'static,
     ) -> Result<()> {
+        let ChromeHostOptions { parent, bounds, view, on_command, on_failed, on_accelerator } = options;
         let setup = Setup {
             env: env.clone(),
             parent,
@@ -405,6 +429,43 @@ impl ChromeHost {
             bottom: origin.y + bounds.bottom,
         })
     }
+
+    // --- auto-hide (T11) ---
+    /// Puts this view's window above its siblings (the tab pages, which are created later and so
+    /// start on top). Auto-hide floats a revealed bar over the page with it. The controller does not
+    /// expose its window, so it is found among the parent's children by its bounds; nothing happens
+    /// when no child has exactly them. Never activates anything and moves and resizes nothing.
+    pub fn raise_to_top(&self) {
+        use windows::Win32::UI::WindowsAndMessaging::{
+            GetWindow, GetWindowRect, HWND_TOP, GW_CHILD, GW_HWNDNEXT, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SetWindowPos,
+        };
+        let (parent, revealed) = match self.state.try_borrow() {
+            Ok(state) if !state.closed && state.revealed && state.applied_visible != Some(false) => (state.parent, true),
+            _ => return,
+        };
+        let Some(want) = self.screen_bounds().filter(|_| revealed) else { return };
+        let mut child = unsafe { GetWindow(parent, GW_CHILD) }.ok();
+        let mut first = true;
+        while let Some(window) = child {
+            let mut rect = RECT::default();
+            if unsafe { GetWindowRect(window, &mut rect) }.is_ok()
+                && rect.left == want.left
+                && rect.top == want.top
+                && rect.right == want.right
+                && rect.bottom == want.bottom
+            {
+                if !first {
+                    unsafe {
+                        let _ = SetWindowPos(window, Some(HWND_TOP), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+                    }
+                }
+                return;
+            }
+            first = false;
+            child = unsafe { GetWindow(window, GW_HWNDNEXT) }.ok();
+        }
+    }
+    // --- end auto-hide ---
 
     /// Sends one JSON message to the page and reports failure to the caller.
     pub fn post_json(&self, json: &str) -> Result<()> {
@@ -733,6 +794,10 @@ fn install_handlers(
         }));
 
         // Subframes never navigate: each frame created gets a NavigationStarting that cancels.
+        // --- start page --- The split host alone lets a frame load an http(s) address: the start
+        // page's webpage widget (a sandboxed iframe). Every other host, and every other scheme, cancels.
+        let frames_allowed = view == View::Split;
+        // --- end start page ---
         let webview4: ICoreWebView2_4 = webview.cast()?;
         webview4.add_FrameCreated(
             &FrameCreatedEventHandler::create(Box::new(move |_sender, args| {
@@ -743,7 +808,13 @@ fn install_handlers(
                         &FrameNavigationStartingEventHandler::create(Box::new(
                             move |_frame, args| {
                                 if let Some(args) = args {
-                                    args.SetCancel(true)?;
+                                    let mut uri = PWSTR::null();
+                                    let allowed = frames_allowed
+                                        && args.Uri(&mut uri).is_ok()
+                                        && assets::split_frame_may_navigate(&CoTaskMemPWSTR::from(uri).to_string());
+                                    if !allowed {
+                                        args.SetCancel(true)?;
+                                    }
                                 }
                                 Ok(())
                             },
@@ -919,7 +990,7 @@ fn install_handlers(
                     })
                     .unwrap_or_default();
                 let asset = request_path(&uri).and_then(|path| assets::lookup(&path));
-                respond(&env, &args, asset)
+                respond(&env, &args, asset, assets::response_headers_for(&uri))
             })),
             &mut token,
         )?;
@@ -944,8 +1015,9 @@ fn respond(
     environment: &ICoreWebView2Environment,
     args: &ICoreWebView2WebResourceRequestedEventArgs,
     asset: Option<Asset>,
+    headers: &str,
 ) -> Result<()> {
-    let found = asset.and_then(|asset| asset_response(environment, asset).ok());
+    let found = asset.and_then(|asset| asset_response(environment, asset, headers).ok());
     let response = match found {
         Some(response) => response,
         None => {
@@ -967,11 +1039,12 @@ fn respond(
 fn asset_response(
     environment: &ICoreWebView2Environment,
     asset: Asset,
+    response_headers: &str,
 ) -> Result<ICoreWebView2WebResourceResponse> {
     // SHCreateMemStream copies the bytes, so the embedded slice is not referenced afterwards.
     let stream = unsafe { SHCreateMemStream(Some(asset.bytes)) }
         .ok_or_else(|| fail("Could not create the asset stream"))?;
-    let headers = wide(&format!("Content-Type: {}\r\n{RESPONSE_HEADERS}", asset.mime));
+    let headers = wide(&format!("Content-Type: {}\r\n{response_headers}", asset.mime));
     let reason = wide("OK");
     unsafe {
         environment.CreateWebResourceResponse(
@@ -1020,22 +1093,29 @@ fn is_trusted_message(view: View, sender_uri: &str, message_uri: &str) -> bool {
 fn view_accepts_command(view: View, command: &Command) -> bool {
     if matches!(command, Command::Ready) { return true; }
     match view {
-        View::Toolbar => matches!(command, Command::DownloadsToggle { .. } | Command::ExtensionsButton { .. } | Command::Nav(_) | Command::Edit { .. } | Command::Submit(_) | Command::Escape | Command::Focus(_) | Command::Open(_) | Command::BeginDrag | Command::Caption(_) | Command::Tip { .. } | Command::TipOff | Command::SuggestPick { .. } | Command::SuggestPreview { .. } | Command::SuggestEnd),
-        View::Tabs => matches!(command, Command::Tab { .. } | Command::TabMove { .. } | Command::Group { .. } | Command::Side(_) | Command::BeginDrag | Command::Caption(_) | Command::Tip { .. } | Command::TipOff | Command::Hover(_))
+        View::Toolbar => matches!(command, Command::Tool { bar: ToolBar::Address, .. } | Command::DownloadsToggle { .. } | Command::ExtensionsButton { .. } | Command::Nav(_) | Command::Edit { .. } | Command::Submit(_) | Command::Escape | Command::Focus(_) | Command::Open(_) | Command::BeginDrag | Command::Caption(_) | Command::Tip { .. } | Command::TipOff | Command::SuggestPick { .. } | Command::SuggestPreview { .. } | Command::SuggestEnd | Command::Panel { kind: PanelType::Address, .. }),
+        View::Tabs => matches!(command, Command::Tool { bar: ToolBar::Tabs, .. } | Command::Tab { .. } | Command::TabMove { .. } | Command::TabSelection { .. } | Command::ClosedTabs | Command::Group { .. } | Command::Side(_) | Command::BeginDrag | Command::Caption(_) | Command::Tip { .. } | Command::TipOff | Command::Hover(_))
             // --- split view ---
             || matches!(command, Command::Split(SplitCommand::DragOver { .. } | SplitCommand::Drop { .. } | SplitCommand::DragEnd { .. }))
             // --- end split view ---
-            || matches!(command, Command::TabDrag(_)), // --- tab ghost ---
-        View::Rail => matches!(command, Command::Rail { .. } | Command::RailMove { .. } | Command::Tip { .. } | Command::TipOff),
+            || matches!(command, Command::TabDrag(_)) // --- tab ghost ---
+            || matches!(command, Command::TabStack { .. } | Command::RailWheel { .. }), // --- tab stacks (T10): the sidebar's workspace header too ---
+        View::Rail => matches!(command, Command::Rail { .. } | Command::RailMove { .. } | Command::Tip { .. } | Command::TipOff | Command::RailWheel { .. }),
         View::Panel => matches!(command, Command::Panel { kind: PanelType::Panel | PanelType::History | PanelType::Bookmarks | PanelType::Customize, .. } | Command::ComposerOpen { .. }),
         View::Popup => matches!(command, Command::PopupSize { .. } | Command::PopupPick { .. } | Command::PopupDismiss { .. } | Command::PopupAct { .. } | Command::PopupCompose { .. } | Command::DownloadsAct { .. }),
         View::Dialog => matches!(command, Command::Panel { kind: PanelType::Panel, .. }),
         View::DialogNotes => matches!(command, Command::Panel { kind: PanelType::Panel | PanelType::Notes, .. }),
         View::DialogPrivacy => matches!(command, Command::Panel { kind: PanelType::Panel | PanelType::Privacy, .. }),
         View::DialogRename => matches!(command, Command::Panel { kind: PanelType::Panel | PanelType::Rename, .. }),
+        View::DialogAddress => matches!(command, Command::Panel { kind: PanelType::Panel | PanelType::Address, .. }),
+        View::BookmarkBar => matches!(command, Command::Panel { kind: PanelType::Address, .. } | Command::Tip { .. } | Command::TipOff),
+        View::DialogSessions => matches!(command, Command::Panel { kind: PanelType::Panel | PanelType::Sessions, .. }),
+        View::DialogFeeds => matches!(command, Command::Panel { kind: PanelType::Panel | PanelType::Feeds, .. }),
         View::Hover => matches!(command, Command::PopupSize { .. } | Command::HoverAct { .. } | Command::SuggestPick { .. }),
         // --- split view ---
-        View::Split => matches!(command, Command::Split(SplitCommand::Pick { .. } | SplitCommand::Reopen { .. } | SplitCommand::Go(_) | SplitCommand::Close | SplitCommand::Focus | SplitCommand::ClosePrivate)),
+        View::Split => matches!(command, Command::Split(SplitCommand::Pick { .. } | SplitCommand::Reopen { .. } | SplitCommand::Go(_) | SplitCommand::Close | SplitCommand::Focus | SplitCommand::ClosePrivate))
+            // --- start page --- the start page's own family (`spage`), nothing else of the panel family
+            || matches!(command, Command::Panel { kind: PanelType::StartPage, .. }),
         // --- end split view ---
         // No `panel` family (dismiss): the page is a tab, closed like one.
         // The Privacy dashboard is a section of the page, so its `priv` family reaches this host too.
@@ -1257,6 +1337,56 @@ mod tests {
         let privacy = parse_command(r#"{"v":1,"t":"priv","a":"clear-stats"}"#).unwrap();
         assert!(view_accepts_command(View::Settings, &privacy));
         assert!(view_accepts_command(View::Settings, &Command::Ready));
+    }
+
+    // --- start page (docs/design/start-page.md) ---
+    #[test]
+    fn the_start_page_family_reaches_only_the_split_host_and_is_trusted_only_from_its_exact_url() {
+        let url = View::Split.start_url();
+        assert!(is_trusted_message(View::Split, url, url));
+        // A frame inside the page (the webpage widget) posts from its own address: dropped.
+        for foreign in ["https://widget.example/", "https://evil.example/index.html?view=split", "about:blank", "", "bowser-ui://app/index.html?view=split#x", "bowser-ui://app/index.html?view=settings"] {
+            assert!(!is_trusted_message(View::Split, foreign, url), "sender {foreign}");
+            assert!(!is_trusted_message(View::Split, url, foreign), "message {foreign}");
+        }
+        let commands = [
+            r#"{"v":1,"t":"spage","a":"open","id":3}"#,
+            r#"{"v":1,"t":"spage","a":"add","parent":1,"text":"A","url":"https://a.example/"}"#,
+            r#"{"v":1,"t":"spage","a":"wurl","id":2,"url":"https://widget.example/"}"#,
+            r#"{"v":1,"t":"spage","a":"refresh"}"#,
+        ];
+        for text in commands {
+            let command = parse_command(text).unwrap_or_else(|e| panic!("{text}: {e:?}"));
+            assert!(view_accepts_command(View::Split, &command), "{text}");
+            for view in [View::Toolbar, View::Tabs, View::Rail, View::Panel, View::Popup, View::Dialog, View::DialogNotes, View::DialogPrivacy, View::DialogRename, View::Hover, View::Settings, View::HistoryPage, View::DownloadsPage] {
+                assert!(!view_accepts_command(view, &command), "{view:?} accepted {text}");
+            }
+        }
+        // The split host takes the start page's family and its own, not another page's.
+        for foreign in [
+            r#"{"v":1,"t":"hpage","a":"open","id":1}"#,
+            r#"{"v":1,"t":"dpage","a":"refresh"}"#,
+            r#"{"v":1,"t":"set","a":"reset"}"#,
+            r#"{"v":1,"t":"panel","a":"dismiss"}"#,
+            r#"{"v":1,"t":"hist","a":"open","id":1}"#,
+            r#"{"v":1,"t":"notes","a":"add-note"}"#,
+            r#"{"v":1,"t":"nav","a":"back"}"#,
+        ] {
+            let command = parse_command(foreign).unwrap();
+            assert!(!view_accepts_command(View::Split, &command), "{foreign}");
+        }
+        assert!(view_accepts_command(View::Split, &parse_command(r#"{"v":1,"t":"split","a":"close"}"#).unwrap()));
+        // Strictness of the family's grammar: a fifth field, a bad type or a number where text goes.
+        for bad in [
+            r#"{"v":1,"t":"spage"}"#,
+            r#"{"v":1,"t":"spage","a":"Open","id":1}"#,
+            r#"{"v":1,"t":"spage","a":"open","id":-1}"#,
+            r#"{"v":1,"t":"spage","a":"add","parent":1,"text":5,"url":"https://a.example/"}"#,
+            r#"{"v":1,"t":"spage","a":"open","id":1,"extra":1}"#,
+            r#"{"v":2,"t":"spage","a":"refresh"}"#,
+        ] {
+            assert!(parse_command(bad).is_err(), "{bad}");
+        }
     }
 
     // --- history page (docs/design/history-page.md) ---
@@ -1642,7 +1772,8 @@ mod tests {
     fn accelerator_modifiers_must_match_exactly() {
         // Ctrl+Alt (AltGr) and extra Shift never run a command.
         assert_eq!(accel_command(key(0x54, true, false, true), false), None);
-        assert_eq!(accel_command(key(0x54, true, true, false), false), None);
+        assert_eq!(accel_command(key(0x54, true, true, true), false), None);
+        assert_eq!(accel_command(key(0x54, true, true, false), false), Some(Shortcut::ReopenClosedTab), "Ctrl+Shift+T reopens the closed tab");
         assert_eq!(accel_command(key(0x74, false, true, false), false), None);
         // A bare letter is never a shortcut.
         assert_eq!(accel_command(key(0x54, false, false, false), false), None);
@@ -1778,3 +1909,41 @@ mod tests {
         assert!(page.is_some());
     }
 }
+
+// --- toolbars and feeds (thread T13) ---
+#[cfg(test)]
+mod toolbar_view_tests {
+    use super::*;
+
+    #[test]
+    fn a_command_button_is_accepted_only_from_the_bar_it_belongs_to() {
+        let address = parse_command(r#"{"v":1,"t":"tool","b":"address","k":"cmd:new-tab","i":0}"#).unwrap();
+        let tabs = parse_command(r#"{"v":1,"t":"tool","b":"tabs","k":"cmd:new-tab","i":0}"#).unwrap();
+        assert!(view_accepts_command(View::Toolbar, &address));
+        assert!(!view_accepts_command(View::Toolbar, &tabs));
+        assert!(view_accepts_command(View::Tabs, &tabs));
+        assert!(!view_accepts_command(View::Tabs, &address));
+        for view in [View::Rail, View::Panel, View::Popup, View::Dialog, View::DialogFeeds, View::DialogSessions, View::Hover, View::Split, View::Settings, View::HistoryPage, View::DownloadsPage] {
+            assert!(!view_accepts_command(view, &address), "{view:?}");
+            assert!(!view_accepts_command(view, &tabs), "{view:?}");
+        }
+    }
+
+    #[test]
+    fn the_feeds_window_takes_its_own_family_and_the_dismiss_and_nothing_else() {
+        let feed = parse_command(r#"{"v":1,"t":"feed","a":"refresh"}"#).unwrap();
+        let dismiss = parse_command(r#"{"v":1,"t":"panel","a":"dismiss"}"#).unwrap();
+        assert!(view_accepts_command(View::DialogFeeds, &feed));
+        assert!(view_accepts_command(View::DialogFeeds, &dismiss));
+        for foreign in [r#"{"v":1,"t":"sess","a":"save","text":"x","n":0}"#, r#"{"v":1,"t":"set","a":"reset"}"#, r#"{"v":1,"t":"notes","a":"add-note"}"#, r#"{"v":1,"t":"open","a":"feeds"}"#, r#"{"v":1,"t":"nav","a":"back"}"#] {
+            assert!(!view_accepts_command(View::DialogFeeds, &parse_command(foreign).unwrap()), "{foreign}");
+        }
+        for view in [View::Toolbar, View::Tabs, View::Rail, View::Panel, View::Popup, View::Dialog, View::DialogNotes, View::DialogSessions, View::Settings] {
+            assert!(!view_accepts_command(view, &feed), "{view:?} accepted the feed family");
+        }
+        // The address bar's feed button is the toolbar's own `open` command.
+        assert!(view_accepts_command(View::Toolbar, &parse_command(r#"{"v":1,"t":"open","a":"feeds"}"#).unwrap()));
+        assert!(!view_accepts_command(View::Tabs, &parse_command(r#"{"v":1,"t":"open","a":"feeds"}"#).unwrap()));
+    }
+}
+// --- end toolbars and feeds ---

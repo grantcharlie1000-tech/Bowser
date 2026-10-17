@@ -19,6 +19,9 @@ use crate::{
 thread_local! {
     static TAB_CHANGE_POSTED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static TAB_CHANGE_FLAGS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+    /// The form fields of a search with an engine that POSTs its query, for the one navigation to
+    /// that address that follows (see `App::open_destination`).
+    static POST_BODY: std::cell::RefCell<Option<(url::Url, String)>> = const { std::cell::RefCell::new(None) };
 }
 
 use windows::{
@@ -646,6 +649,8 @@ pub struct App {
     pub user_data_dir: PathBuf,
     pub benchmark_url: Option<url::Url>,
     initial_url: Option<url::Url>,
+    /// --- tab stacks (T10) --- further `--open-url` addresses, opened after `initial_url`.
+    more_initial_urls: Vec<url::Url>,
     pub allowed_benchmark_file: Option<url::Url>,
     pub benchmark_tracking_prevention: Option<TrackingPreventionLevel>,
     pub benchmark_memory_pressure: bool,
@@ -671,6 +676,8 @@ pub struct App {
     /// The reader probe waiting on `WM_READER_PROBE_TIMER`: the tab and its reader epoch when the
     /// probe was scheduled. A newer schedule replaces it.
     reader_probe_pending: Option<(TabId, u32)>,
+    /// The feeds each tab's page offered, for the address bar's feed button (thread T13). In memory only.
+    feed_pages: HashMap<TabId, feed_features::PageFeeds>,
     /// Visible pane relationship. Session recovery intentionally restores its tabs as a normal view.
     split_view: Option<SplitView>,
     // --- split view ---
@@ -680,6 +687,10 @@ pub struct App {
     /// Recently closed tabs for the split view's empty side (newest first, http(s) only, never a
     /// private tab). In memory only.
     recently_closed: std::collections::VecDeque<ClosedTab>,
+    // --- tab options (src/tab_state.rs) ---
+    /// Strip selection, the one-second tick and hover thumbnails.
+    tab_state: crate::tab_state::TabState,
+    // --- end tab options ---
     /// A split side's controller became ready; the window re-applies the panes.
     split_refresh: bool,
     // --- end split view ---
@@ -702,6 +713,9 @@ pub struct App {
     /// A deferred workspace change waits for the debounce timer or the exit flush.
     workspaces_dirty: bool,
     settings: crate::settings::Settings,
+    /// --- wave-1 fixes --- what `settings` last agreed with the file: a save from memory writes only the
+    /// keys that differ from this (`settings::merge_changed`), so it never reverts a newer file value.
+    settings_synced: crate::settings::Settings,
     session: Option<crate::session::SessionWriter>,
     session_save_pending: bool,
     last_session_snapshot: Option<crate::session::Session>,
@@ -732,6 +746,8 @@ pub struct App {
     downloads: crate::downloads::DownloadManager,
     /// Told after every change to `downloads` (set by the window; see `set_downloads_observer`).
     downloads_observer: Option<Rc<dyn Fn(crate::downloads::Change)>>,
+    /// --- tab stacks (T10) --- sites that open in a named workspace (`workspace-rules.txt`).
+    workspace_rules: Vec<crate::workspace_rules::Rule>,
 }
 
 // --- split view ---
@@ -744,6 +760,11 @@ pub type SplitBounds = crate::split_view::PaneMap<windows::Win32::Foundation::RE
 pub struct ClosedTab {
     pub url: String,
     pub title: String,
+    // --- tab options --- what "Reopen closed tab" needs to put the tab back as it was.
+    pub pinned: bool,
+    /// Its place in the strip when it closed (the strip may be shorter by now).
+    pub index: usize,
+    // --- end tab options ---
 }
 // --- end split view ---
 
@@ -778,6 +799,8 @@ struct AppTab {
     permission_blocked: bool,
     /// The page zoom in percent this tab last showed or was set to (100 for a new controller).
     zoom: u16,
+    /// The user gave this tab its zoom (page tools, "tab zoom"): it then keeps it across pages.
+    zoom_set: bool,
     /// Outcome of the last top-level navigation, for the connection state in Site information.
     load: LoadState,
     /// A private (InPrivate) tab: see `crate::private`. Fixed when the tab is created.
@@ -787,6 +810,10 @@ struct AppTab {
     /// Page translation: the page's language, whether it is translated, and the epoch that makes
     /// work for an earlier document stale (`crate::translate`).
     translate: crate::translate::TabState,
+    // --- tab options ---
+    /// Unread mark, notification count, audio-rule mute, reload timer, custom name, last use.
+    extra: crate::tab_state::TabExtra,
+    // --- end tab options ---
 }
 
 impl AppTab {
@@ -814,15 +841,31 @@ impl AppTab {
             blocked: 0,
             permission_blocked: false,
             zoom: crate::site_prefs::ZOOM_DEFAULT,
+            zoom_set: false,
             load: LoadState::Loaded,
             reader: crate::reader::TabState::default(),
             translate: crate::translate::TabState::default(),
+            extra: crate::tab_state::TabExtra::fresh(), // --- tab options ---
         }
     }
 }
 
 mod page_translate;
+mod page_actions; // page tools: capture, selection, applying the settings (thread T7)
+pub use page_actions::{CaptureResult, Selected, capture_busy};
 pub use page_translate::Notice as TranslateNotice;
+mod feed_features; // toolbar and feed options at work (thread T13)
+pub(crate) use feed_features::MAX_FEED_ANSWER_BYTES;
+mod privacy; // privacy, history and website appearance (thread T3)
+pub use privacy::DeleteReport;
+// --- tab options --- tab behaviour that follows the settings page's Tabs section.
+mod tab_features;
+pub use tab_features::{TabStripExtra, MAX_SESSION_NAME_CHARS, MAX_TAB_NAME_CHARS};
+// --- end tab options ---
+// --- theme options --- colours, accent mode, schedule and the theme file (thread T8).
+mod theme_features;
+// --- end theme options ---
+mod stacks; // --- tab stacks, tiling and workspaces (T10) ---
 
 pub type AppRef = Rc<RefCell<App>>;
 
@@ -895,6 +938,19 @@ fn extension_records(
         .extensions_file()
         .with_file_name(EXTENSION_IDS_FILE_NAME);
     Some((known, ids_file))
+}
+
+/// --- wave-1 integration --- `App::save_settings` writes the in-memory settings, but these keys are
+/// saved by the settings page straight to the file and read at startup or from the file, so memory
+/// holds their startup value. Without this, any later save (a Tabs option, a sidebar drag, the
+/// translate or download settings) put the old value back in the file.
+fn keep_file_owned_keys(settings: &mut crate::settings::Settings, file: &crate::settings::Settings) {
+    settings.automatic_tab_grouping = file.automatic_tab_grouping;
+    settings.tracking_prevention = file.tracking_prevention;
+    settings.block_youtube_video_ads = file.block_youtube_video_ads;
+    // --- layout (thread T6) --- `side_panel_position` is live now (`apply_live_settings`), so memory holds it.
+    // --- auto-hide (T11) --- so is `frameless` (the auto-hide master switch).
+    settings.search_engine = file.search_engine;
 }
 
 impl App {
@@ -1028,6 +1084,9 @@ impl App {
             .unwrap_or("");
         if blocker.borrow().site_allowed(host) {
             " [blocker off for this site]".to_owned()
+        } else if !blocker.borrow().is_blocking(host, false) {
+            // Blocking is off everywhere (level none): nothing was blocked, so nothing to say.
+            String::new()
         } else if tab.blocked > 0 {
             format!(" [{} blocked]", tab.blocked)
         } else {
@@ -1054,12 +1113,26 @@ impl App {
             .find(|tab| tab.id == state.tab_model.active())
             .and_then(|tab| tab.url.as_ref())
             .and_then(|url| url.host_str())?;
-        Some(!blocker.borrow().site_allowed(host))
+        // At any level above none (thread T3); a site at none, or global none, reads as off.
+        Some(blocker.borrow().is_blocking(host, false))
     }
 
     pub fn tab_layout(app: &AppRef) -> crate::settings::TabLayout {
         app.borrow().settings.tab_layout
     }
+
+    // --- layout (thread T6) ---
+    /// How the chrome is arranged, from the layout settings (the window folds in its Ctrl+L reveal).
+    pub fn arrangement(app: &AppRef) -> crate::chrome::layout::Arrangement {
+        app.borrow().arranged() // --- two-level stacks (T10b) ---
+    }
+
+    /// --- two-level stacks (T10b) --- the layout settings plus the second tab row two-level
+    /// stacks want now: the one arrangement the window and the page bounds both lay out.
+    fn arranged(&self) -> crate::chrome::layout::Arrangement {
+        crate::chrome::layout::Arrangement::from_settings(&self.settings).with_stack_row(self.stack_row())
+    }
+    // --- end layout ---
 
     /// Layout width of the vertical sidebar: 48 when collapsed, else the saved width.
     pub fn sidebar_width(app: &AppRef) -> u16 {
@@ -1121,13 +1194,36 @@ impl App {
 
     pub fn save_settings(app: &AppRef) {
         if let Ok(profile) = crate::profile::active() {
-            let mut settings = app.borrow().settings.clone();
-            settings.side_panel_width =
-                crate::settings::Settings::load(&profile.settings_file()).side_panel_width;
-            if let Err(error) = crate::settings::save(&profile.settings_file(), &settings) {
+            if let Err(error) = Self::save_settings_to(app, &profile.settings_file()) {
                 win32::show_error_message(&format!("Settings could not be saved: {error}"));
             }
         }
+    }
+
+    /// --- wave-1 fixes --- [`App::save_settings`] into `path`: only the keys the running app changed since
+    /// memory last agreed with the file are written; every other key keeps the file's (newer) value.
+    pub(crate) fn save_settings_to(app: &AppRef, path: &std::path::Path) -> std::io::Result<()> {
+        let (memory, synced) = {
+            let state = app.borrow();
+            (state.settings.clone(), state.settings_synced.clone())
+        };
+        let file = crate::settings::Settings::load(path);
+        let mut settings = crate::settings::merge_changed(&synced, &memory, &file);
+        // The side panel writes its own width straight to the file.
+        settings.side_panel_width = file.side_panel_width;
+        // --- wave-1 integration --- keys the running app never changes itself keep the file's value.
+        keep_file_owned_keys(&mut settings, &file);
+        crate::settings::save(path, &settings)?;
+        app.borrow_mut().settings_synced = memory;
+        Ok(())
+    }
+
+    /// --- wave-1 fixes --- after memory took values from the file (`apply_live_settings`), those keys count
+    /// as agreed with the file, so a later save from memory does not push them over a newer file value.
+    fn mark_synced_from(app: &AppRef, before: &crate::settings::Settings) {
+        let mut state = app.borrow_mut();
+        let now = state.settings.clone();
+        state.settings_synced = crate::settings::merge_changed(before, &now, &state.settings_synced);
     }
 
     pub fn workspaces(app: &AppRef) -> crate::workspaces::WorkspaceSet {
@@ -1523,6 +1619,14 @@ impl App {
     }
 
     fn new_tab_in_mode(app: &AppRef, private: bool) -> TabId {
+        Self::spawn_tab(app, private, None)
+    }
+
+    /// A new tab shown at once. `opener` is the tab whose page asked for it (a link or a script),
+    /// which the "New tab position" option can keep it next to.
+    pub(crate) fn spawn_tab(app: &AppRef, private: bool, opener: Option<TabId>) -> TabId {
+        let hwnd = app.borrow().hwnd;
+        win32::page_fullscreen(hwnd, app, false, None);
         let (id, hwnd, old, old_has_controller, in_split) = {
             let mut state = app.borrow_mut();
             let old = state.tab_model.active();
@@ -1532,10 +1636,11 @@ impl App {
                 .iter()
                 .find(|tab| tab.id == old)
                 .is_some_and(|tab| tab.controller_created);
-            let beside_active = state.settings.new_tab_beside_active;
-            let id = state.tab_model.add(beside_active);
+            let placement = tab_features::placement(&state.settings);
+            let id = state.tab_model.add_placed(placement, opener);
             state.tab_model.select(id);
             let _ = state.workspaces.add_tab(id);
+            tab_features::place_in_workspace(&mut state, id); // --- tab options ---
             let _ = state.workspaces.select_tab(id);
             // --- split view ---
             // A new tab is shown alone, as in Chrome; the pair stays together (parked) in the strip.
@@ -1543,7 +1648,10 @@ impl App {
             // --- end split view ---
             let mut fresh = AppTab::empty(id);
             fresh.private = private;
-            state.tabs.push(fresh);
+            // --- tab options --- the strip's list follows the model's order, as `set_tab_pinned` expects.
+            let at = state.tab_model.index_of(id).map_or(state.tabs.len(), |at| at.min(state.tabs.len()));
+            state.tabs.insert(at, fresh);
+            // --- end tab options ---
             state.navigation_progress.reset();
             state.page_loaded = false;
             state.desired_memory_target = MemoryUsageTarget::Normal;
@@ -1570,6 +1678,7 @@ impl App {
             Self::save_workspaces(app, WorkspaceChange::TabOpen);
             Self::sync_window_title(app);
             Self::schedule_tab_idle_timer(app);
+            Self::on_tab_shown(app, old, id); // --- tab options ---
             return id;
         }
         let now = Instant::now();
@@ -1595,10 +1704,13 @@ impl App {
         Self::save_workspaces(app, WorkspaceChange::TabOpen);
         Self::sync_window_title(app);
         Self::schedule_tab_idle_timer(app);
+        Self::on_tab_shown(app, old, id); // --- tab options ---
         id
     }
 
     pub fn close_tab(app: &AppRef, id: TabId) -> bool {
+        let hwnd = app.borrow().hwnd;
+        win32::page_fullscreen(hwnd, app, false, None);
         let mut dissolved_split = false;
         let (changed, hwnd, active, was_active, last_tab) = {
             let mut state = app.borrow_mut();
@@ -1659,6 +1771,11 @@ impl App {
                 (true, state.hwnd, outcome.new_active, true, true)
             } else {
                 let was_active = state.tab_model.active() == id;
+                // --- tab options --- what the close-activation options decide from.
+                let order_before: Vec<TabId> = state.workspaces.active().tabs().to_vec();
+                let opener_before = state.tab_model.get(id).and_then(|tab| tab.opener);
+                state.tab_state.forget(id);
+                // --- end tab options ---
                 let outcome = state.tab_model.close(id);
                 if let Some(workspace_id) = state.workspaces.workspace_for(id) {
                     let is_last_member = state
@@ -1672,11 +1789,20 @@ impl App {
                     }
                 }
                 state.tabs.remove(index);
-                let active = if was_active {
+                let mut active = if was_active {
                     state.workspaces.active().active_tab()
                 } else {
                     outcome.new_active
                 };
+                // --- tab options --- "Close tab activation": a related, recent, left or right tab.
+                if was_active
+                    && let Some(target) =
+                        tab_features::close_target_for(&state, &order_before, id, opener_before)
+                {
+                    let _ = state.workspaces.select_tab(target);
+                    active = target;
+                }
+                // --- end tab options ---
                 if was_active {
                     let _ = state.tab_model.select(active);
                 }
@@ -1744,10 +1870,13 @@ impl App {
         Self::save_workspaces(app, WorkspaceChange::TabClose);
         Self::sync_window_title(app);
         Self::schedule_tab_idle_timer(app);
+        Self::on_tab_closed(app, active, was_active); // --- tab options ---
         changed
     }
 
     pub fn select_tab(app: &AppRef, id: TabId) -> bool {
+        let hwnd = app.borrow().hwnd;
+        win32::page_fullscreen(hwnd, app, false, None);
         let _ = Self::expand_group_for_tab(app, id);
         // --- split view ---
         let (shown, parked, known) = {
@@ -1843,6 +1972,7 @@ impl App {
         // --- end split view ---
         Self::restore_discarded_tab(app, id);
         Self::reader_probe_if_needed(app, id);
+        Self::on_tab_shown(app, previous, id); // --- tab options ---
         Self::post_tab_changed(hwnd, id);
         Self::save_workspaces(app, WorkspaceChange::TabSelect);
         Self::sync_window_title(app);
@@ -1914,6 +2044,7 @@ impl App {
         };
         Self::apply_visible_panes(app);
         Self::restore_discarded_tab(app, active);
+        Self::on_tab_shown(app, active, active); // --- tab options ---
         Self::post_tab_changed(hwnd, active);
         Self::sync_window_title(app);
         Self::schedule_tab_idle_timer(app);
@@ -2024,6 +2155,7 @@ impl App {
             if !state.tab_model.set_pinned(id, pinned) {
                 return false;
             }
+            App::note_pinned_site(&mut state, id, pinned, None); // --- tab options ---
             let tab = state.tabs.remove(from);
             let target = state
                 .tab_model
@@ -2143,8 +2275,10 @@ impl App {
         })
     }
 
+    /// The group preferences the strip, the sidebar and the bookmarks bar draw from: folded the way
+    /// the stack style says (--- tab stacks (T10) ---, `stacks::collapse_rule`).
     pub fn tab_group_preferences(app: &AppRef) -> crate::tab_groups::GroupPreferences {
-        app.borrow().group_preferences.clone()
+        app.borrow().styled_group_preferences()
     }
 
     /// Projection inputs for the tab strip, in model order, with manual placement applied.
@@ -2182,6 +2316,11 @@ impl App {
     }
 
     pub fn set_tab_group_collapsed(app: &AppRef, id: TabId, collapsed: bool) -> bool {
+        // --- tab stacks (T10) --- Compact and Accordion fold stacks by themselves: a click on the
+        // ball goes to a member instead of storing a collapse.
+        if !matches!(Self::stack_style(app), crate::tab_options::StackStyle::Islands | crate::tab_options::StackStyle::Off) {
+            return Self::stack_ball(app, id);
+        }
         let (hwnd, active, changed) = {
             let mut state = app.borrow_mut();
             if state.mirror(id).is_some_and(|tab| tab.private) {
@@ -2375,7 +2514,8 @@ impl App {
     fn expand_group_for_tab(app: &AppRef, id: TabId) -> bool {
         let (hwnd, active, changed) = {
             let mut state = app.borrow_mut();
-            if state.tab_model.active() == id {
+            // --- tab stacks (T10) --- only Islands keeps a stored collapse to undo.
+            if state.tab_model.active() == id || state.settings.tabs.stack_style != crate::tab_options::StackStyle::Islands {
                 return false;
             }
             let Some(url) = state.tab_model.get(id).and_then(|tab| tab.url.as_deref()) else {
@@ -2443,12 +2583,23 @@ impl App {
             .into_iter()
             .map(|input| (input.id, input))
             .collect();
-        self.workspaces
+        let mut inputs: Vec<tab_groups::TabGroupInput> = self
+            .workspaces
             .active()
             .tabs()
             .iter()
             .filter_map(|id| all.remove(id))
-            .collect()
+            .collect();
+        // --- tab stacks (T10) --- "Tab stacks: Off": nothing forms a stack. Only this view of the
+        // inputs: the site rules (which span workspaces) still see every tab's site.
+        if !crate::stacks::stacks_on(self.settings.tabs.stack_style) {
+            for input in &mut inputs {
+                input.domain = None;
+                input.opener = None;
+                input.manual = false;
+            }
+        }
+        inputs
     }
 
     /// Inputs for every tab of every workspace, in model order, from the same state the strip
@@ -2744,7 +2895,8 @@ impl App {
 
     /// Remembers a closing tab for the empty side's "Recently closed" list.
     fn remember_closed_tab(&mut self, index: usize) {
-        const KEEP: usize = 8;
+        // The split view's empty side shows the newest eight; "Closed tabs" lists all of them.
+        const KEEP: usize = 25;
         let Some(tab) = self.tabs.get(index) else {
             return;
         };
@@ -2757,6 +2909,8 @@ impl App {
         let entry = ClosedTab {
             url: url.as_str().to_owned(),
             title: tab.title.clone(),
+            pinned: self.tab_model.get(tab.id).is_some_and(|model| model.pinned),
+            index,
         };
         self.recently_closed.retain(|closed| closed.url != entry.url);
         self.recently_closed.push_front(entry);
@@ -3089,9 +3243,7 @@ impl App {
         orientation: crate::split_view::Orientation,
         bounds: Option<SplitBounds>,
     ) -> Option<TabId> {
-        if app.borrow().tab_model.get(tab).is_none() {
-            return None;
-        }
+        app.borrow().tab_model.get(tab)?;
         let empty = Self::new_tab(app);
         let (left, right) = match side {
             Pane::Left => (empty, tab),
@@ -3485,15 +3637,15 @@ impl App {
 
     pub fn tab_muted(app: &AppRef, id: TabId) -> bool {
         let state = app.borrow();
-        state
-            .tabs
-            .iter()
-            .find(|tab| tab.id == id)
-            .is_some_and(|tab| tab.muted)
-            || state
-                .engine
-                .as_ref()
-                .is_some_and(|engine| engine.tab_muted(id))
+        let tab = state.tabs.iter().find(|tab| tab.id == id);
+        // The audio rule's own mute (Settings > Tabs > Mute tab audio) is not the user's: the engine
+        // reports it as muted, the tab menu and the strip must not.
+        tab.is_some_and(|tab| tab.muted)
+            || (!tab.is_some_and(|tab| tab.extra.auto_muted)
+                && state
+                    .engine
+                    .as_ref()
+                    .is_some_and(|engine| engine.tab_muted(id)))
     }
 
     pub fn tab_supports_muting(app: &AppRef, id: TabId) -> bool {
@@ -3504,12 +3656,15 @@ impl App {
     }
 
     pub fn set_tab_muted(app: &AppRef, id: TabId, muted: bool) {
-        if let Some(tab) = app.borrow_mut().tabs.iter_mut().find(|tab| tab.id == id) {
+        let effective = if let Some(tab) = app.borrow_mut().tabs.iter_mut().find(|tab| tab.id == id) {
             tab.muted = muted;
+            muted || tab.extra.auto_muted // --- tab options ---
         } else {
             return;
-        }
-        if let Some(Err(error)) = Self::with_engine(app, |engine| engine.set_tab_muted(id, muted)) {
+        };
+        if let Some(Err(error)) =
+            Self::with_engine(app, |engine| engine.set_tab_muted(id, effective))
+        {
             win32::show_error_message(&format!("Audio control failed: {error}"));
         }
     }
@@ -3523,7 +3678,9 @@ impl App {
             && !state
                 .split_view
                 .is_some_and(|split| split.pane_for(id).is_some())
-            && !state.tab_model.get(id).is_some_and(|model| model.pinned)
+            // --- tab options --- a pinned tab "minimised" instead of closed may sleep.
+            && (tab.extra.allow_pinned_sleep
+                || !state.tab_model.get(id).is_some_and(|model| model.pinned))
             && !tab.loading
             && tab.controller_created
             && !tab.discarded
@@ -3571,6 +3728,9 @@ impl App {
 
     fn finish_hibernate_check(app: &AppRef, id: TabId, blocked: bool) {
         let eligible = Self::tab_hibernate_eligible(app, id);
+        if let Some(tab) = app.borrow_mut().tabs.iter_mut().find(|tab| tab.id == id) {
+            tab.extra.allow_pinned_sleep = false; // --- tab options ---
+        }
         let playing_audio = eligible && Self::tab_playing_audio(app, id);
         if !eligible || blocked || playing_audio {
             if let Some(tab) = app.borrow_mut().tabs.iter_mut().find(|tab| tab.id == id) {
@@ -3592,6 +3752,7 @@ impl App {
             };
             tab.sleep_check_started = None;
             tab.suspended = true;
+            tab.extra.hibernated = true; // --- tab options --- "dim icon when hibernated"
             tab.hidden_since.get_or_insert_with(Instant::now);
             state.hwnd
         };
@@ -3694,18 +3855,23 @@ impl App {
 
     /// Records a tab's zoom, optionally stores it for the page's origin, and refreshes the toolbar.
     fn note_tab_zoom(app: &AppRef, tab: TabId, percent: u16, persist: bool) {
-        let (url, store, hwnd) = {
+        let (url, store, hwnd, scope) = {
             let mut state = app.borrow_mut();
             let store = state.site_prefs.clone();
             let hwnd = state.hwnd;
+            let scope = state.settings.page_tools.zoom_scope;
             let Some(entry) = state.tabs.iter_mut().find(|entry| entry.id == tab) else {
                 return;
             };
             entry.zoom = percent;
-            (entry.url.clone(), store, hwnd)
+            if persist {
+                entry.zoom_set = true; // the user's own change (page tools: tab zoom keeps it)
+            }
+            (entry.url.clone(), store, hwnd, scope)
         };
-        // A private tab's zoom lives in the tab only: nothing is written to the site store.
-        let persist = persist && !Self::tab_private(app, tab);
+        // A private tab's zoom lives in the tab only: nothing is written to the site store. Neither
+        // does a zoom kept per tab (Settings > Page tools > Page zoom).
+        let persist = persist && !Self::tab_private(app, tab) && crate::page_tools::zoom_is_stored(scope);
         if persist
             && let (Some(store), Some(origin)) = (
                 store,
@@ -3726,20 +3892,20 @@ impl App {
             // A private tab neither reads nor writes stored zoom; it keeps its own level.
             return;
         }
-        let (store, current, default_zoom) = {
+        let (store, current, default_zoom, scope, tab_set) = {
             let state = app.borrow();
             let Some(entry) = state.tabs.iter().find(|entry| entry.id == tab) else {
                 return;
             };
-            (state.site_prefs.clone(), entry.zoom, state.settings.default_zoom)
+            (state.site_prefs.clone(), entry.zoom, state.settings.default_zoom, state.settings.page_tools.zoom_scope, entry.zoom_set)
         };
         let Some(store) = store else {
             return;
         };
-        let target = store.borrow().zoom_for_uri(url.as_str(), default_zoom);
-        if target == current {
+        let stored = store.borrow().zoom_for_uri(url.as_str(), default_zoom);
+        let Some(target) = crate::page_tools::zoom_on_commit(scope, tab_set, current, stored, default_zoom) else {
             return;
-        }
+        };
         let applied = Self::call_engine(app, |engine| engine.set_zoom_percent(tab, target))
             .and_then(Result::ok)
             .unwrap_or(false);
@@ -4238,12 +4404,16 @@ impl App {
 
     /// The script call for `action` with the session's reader settings and Bowser's current colours.
     fn reader_invocation(app: &AppRef, action: crate::reader::Action) -> String {
-        let prefs = app.borrow().reader_prefs;
+        let (prefs, typography) = {
+            let state = app.borrow();
+            (state.reader_prefs, state.settings.page_tools.reader())
+        };
         let appearance = win32::glass::appearance();
         let palette = crate::theme::palette(appearance, true);
-        crate::reader::invocation(
+        crate::reader::invocation_with(
             action,
             prefs,
+            typography,
             appearance == crate::theme::Appearance::Dark,
             &crate::reader::Colours::from_palette(palette),
         )
@@ -4494,6 +4664,12 @@ impl App {
 
     /// Escape went down in a tab's page: leave reader view if it is on.
     pub fn reader_escape(app: &AppRef, tab: TabId) {
+        // Browser chrome exits page full screen even if page JavaScript intercepts Escape.
+        let active_window = app.try_borrow().ok().and_then(|state|
+            (state.tab_model.active() == tab).then_some(state.hwnd));
+        if let Some(hwnd) = active_window {
+            win32::page_fullscreen(hwnd, app, false, None);
+        }
         let reading = app.try_borrow().is_ok_and(|state| {
             state
                 .tabs
@@ -4714,6 +4890,11 @@ impl App {
         }
         crate::profile::set_active(profile.clone());
         let settings = crate::settings::Settings::load(&profile.settings_file());
+        // Address bar options read wherever an address is shown or completed.
+        crate::omnibox::set_show_full_address(settings.address.show_full);
+        crate::omnibox::set_autocomplete(settings.address.autocomplete);
+        // --- tab stacks (T10) --- the split view's tile look, read by its geometry.
+        crate::stacks::set_tile_look(settings.tabs.tile_titles, settings.tabs.tile_tight);
         let provider =
             SearchProvider::from_config(settings.search_engine, &profile.search_provider_file());
         let user_data_dir = options
@@ -4738,7 +4919,22 @@ impl App {
             log,
             Some(profile.tab_groups_file()),
         );
+        app.settings_synced = settings.clone();
         app.settings = settings;
+        // Retention and the website look are read by code that runs before any window setting is
+        // applied (the history load, the first tab), so they are set here (thread T3).
+        crate::history_retention::set_current(app.settings.history_retention);
+        // --- latency (fix E) --- join the profile's running set; the first process clears a
+        // session-only history a crash left behind.
+        if track_privacy {
+            crate::history_retention::start_session();
+        }
+        crate::page_tools::apply_runtime(&app.settings.page_tools); // --- page tools (T7) ---
+        app.reader_prefs = app.settings.page_tools.reader_prefs();
+        crate::website_look::set(crate::website_look::WebsiteLook::from_settings(&app.settings));
+        crate::layout_prefs::set_status_overlay(app.settings.status_bar); // --- layout (thread T6) ---
+        theme_features::install_launch_theme(&app.settings); // --- theme options ---
+        crate::window_prefs::publish(&app.settings.window); // --- window and panels (thread T9) ---
         if track_privacy {
             // A guest's list lives in memory only; so does one the profile folder cannot hold.
             app.downloads = if profile.is_guest() {
@@ -4747,18 +4943,24 @@ impl App {
                 crate::downloads::DownloadManager::open(&profile.downloads_file())
             };
         }
-        if track_privacy && app.settings.blocker_enabled {
-            let mut state = crate::blocker::BlockerState::load(
+        if track_privacy {
+            // Always built, even with blocking off: cookie-notice hiding and per-site levels work
+            // without the global switch (thread T3). A "none" level adds no request work.
+            // --- latency (fix E) --- the built-in lists now, every other list from a worker
+            // thread (up to 24 lists of 8 MB): launch never waits on parsing them.
+            let mut state = crate::blocker::BlockerState::load_deferred(
                 &profile.blocker_dir(),
                 &app.settings.blocker_allow,
+                win32::blocker_built_wake,
             );
-            state.enabled = true;
+            state.apply_settings(&app.settings);
             app.blocker = Some(Rc::new(RefCell::new(state)));
         }
         if allow_private_tabs {
             app.private_blocker = Some(app.blocker.clone().unwrap_or_else(|| {
-                Rc::new(RefCell::new(crate::blocker::BlockerState::matcher_only(
+                Rc::new(RefCell::new(crate::blocker::BlockerState::matcher_only_deferred(
                     &profile.blocker_dir(),
+                    win32::blocker_built_wake,
                 )))
             }));
         }
@@ -4799,6 +5001,7 @@ impl App {
     ) -> Self {
         let benchmark_url = options.benchmark_url;
         let initial_url = options.open_url;
+        let more_initial_urls = options.more_urls; // --- tab stacks (T10) ---
         let allowed_benchmark_file = benchmark_url.clone();
         let tab_model = crate::tabs::TabList::new();
         let initial_tab = tab_model.active();
@@ -4827,6 +5030,7 @@ impl App {
             allowed_benchmark_file,
             benchmark_url,
             initial_url,
+            more_initial_urls,
             benchmark_tracking_prevention: options.benchmark_tracking_prevention,
             benchmark_memory_pressure: options.benchmark_memory_pressure,
             provider,
@@ -4845,9 +5049,11 @@ impl App {
             tab_model,
             tab_mru: Vec::new(),
             reader_probe_pending: None,
+            feed_pages: HashMap::new(),
             split_view: None,
             split_parked: None,
             recently_closed: std::collections::VecDeque::new(),
+            tab_state: crate::tab_state::TabState::default(), // --- tab options ---
             split_refresh: false,
             split_bounds: None,
             group_preferences: group_preferences_path
@@ -4864,6 +5070,7 @@ impl App {
             workspaces_path,
             workspaces_dirty: false,
             settings: crate::settings::Settings::default(),
+            settings_synced: crate::settings::Settings::default(),
             session: None,
             session_save_pending: false,
             last_session_snapshot: None,
@@ -4880,6 +5087,12 @@ impl App {
             translate: page_translate::Runtime::default(),
             downloads: crate::downloads::DownloadManager::in_memory(false),
             downloads_observer: None,
+            // --- tab stacks (T10) --- a guest window keeps no rules.
+            workspace_rules: crate::profile::active()
+                .ok()
+                .filter(|profile| !profile.is_guest())
+                .map(|profile| crate::workspace_rules::load(profile.root()))
+                .unwrap_or_default(),
         }
     }
 
@@ -4893,7 +5106,11 @@ impl App {
         if let Ok(Some(workspaces)) = crate::workspaces::WorkspaceSet::load(&workspace_path) {
             self.workspaces = workspaces;
         }
-        let Some((mut store, offer)) = crate::session::SessionStore::open(dir) else {
+        // --- start page --- "continue where you left off": a clean exit's tabs come back too, unless the
+        // launch carries an address of its own.
+        let restore_clean = self.settings.start.startup == crate::start_page::Startup::LastSession && self.initial_url.is_none();
+        // --- end start page ---
+        let Some((mut store, offer)) = crate::session::SessionStore::open_with(dir, restore_clean) else {
             return false; // another Bowser is running; leave its files alone
         };
         let accepted = offer.filter(|offer| {
@@ -4946,6 +5163,12 @@ impl App {
                 };
                 state.tab_model.set_url(id, Some(url.as_str()));
                 state.tab_model.set_title(id, &saved.title);
+                if saved.used != 0 {
+                    // --- tab options --- keeps "inactive days" across restarts.
+                    if let Some(tab) = state.tabs.iter_mut().find(|tab| tab.id == id) {
+                        tab.extra.last_used = saved.used;
+                    }
+                }
                 if saved.pinned {
                     state.tab_model.set_pinned(id, true);
                 }
@@ -4959,7 +5182,13 @@ impl App {
                         tab.favicon_key = Some(crate::favicon::key_for(page.favicon()));
                     }
                 }
+                App::note_pinned_site(&mut state, id, saved.pinned, Some(&url)); // --- tab options ---
                 restored_ids.push(Some(id));
+                // --- tab options --- "Load restored tabs when first selected" / "Always load pinned tabs".
+                if (!state.settings.tabs.lazy_restore || (state.settings.tabs.load_pinned && saved.pinned)) && index != session.active {
+                    state.tab_state.eager.push(id);
+                }
+                // --- end tab options ---
                 // The saved active tab wins; otherwise the first tab that restored.
                 if index == session.active || active_id.is_none() {
                     active_id = Some(id);
@@ -5030,6 +5259,7 @@ impl App {
         Self::post_tab_changed(hwnd, app.borrow().tab_model.active());
         Self::sync_window_title(app);
         Self::submit_url(app, url, None);
+        Self::load_eager_tabs(app); // --- tab options ---
     }
 
     /// Notes a tab-state change. Returns true when the caller should arm the one-shot save
@@ -5108,6 +5338,13 @@ impl App {
                 });
             }
         }
+        // --- tab options --- when each saved tab was last used, for "inactive days".
+        for model in state.tab_model.iter() {
+            if let (Some(&saved), Some(tab)) = (saved_indexes.get(&model.id), state.tabs.iter().find(|tab| tab.id == model.id)) {
+                session.tabs[saved].used = tab.extra.last_used;
+            }
+        }
+        // --- end tab options ---
         Some(session)
     }
 
@@ -5215,6 +5452,11 @@ impl App {
     }
 
     pub fn submit(app: &AppRef, input: &str) {
+        Self::submit_with(app, input, crate::address_input::Options::default());
+    }
+
+    /// [`App::submit`] with how the text was submitted (new tab, domain expansion, the search field).
+    pub fn submit_with(app: &AppRef, input: &str, options: crate::address_input::Options<'_>) {
         // `bowser://settings...` opens the settings page (a blank tab becomes it); other internal
         // hosts fall through and are reported as an unsupported address, as before.
         if let Some(page) = crate::internal_page::parse_input(input) {
@@ -5228,25 +5470,111 @@ impl App {
             }
             return;
         }
-        let target = {
+        // Address bar, search and bookmark options (src/address_input.rs): scoped nicknames, engine
+        // nicknames, the private-window engine, HTTPS upgrade, domain expansion, new-tab searches.
+        let address = {
             let mut state = app.borrow_mut();
             state.refresh_search_provider();
-            match resolve_input(input, &state.provider) {
-                Ok(target) => target,
-                Err(error) => {
-                    drop(state);
-                    win32::show_error_message(&format!(
-                        "This address or search could not be used: {error}"
-                    ));
-                    return;
+            state.settings.address.clone()
+        };
+        let private = Self::active_tab_private(app);
+        let engines = crate::address_runtime::engines();
+        let options = crate::address_input::Options { private, ..options };
+        match crate::address_input::resolve(input, &address, &engines, options) {
+            crate::address_input::Outcome::Empty => {}
+            crate::address_input::Outcome::Refused(message) => {
+                win32::show_error_message(&format!("This address or search could not be used: {message}"));
+            }
+            crate::address_input::Outcome::Scoped { scope, rest } => {
+                let hwnd = app.borrow().hwnd;
+                win32::address_scoped_submit(hwnd, app, scope, &rest);
+            }
+            crate::address_input::Outcome::Open { destination, new_tab } => {
+                Self::open_destination(app, input, destination, new_tab, private);
+            }
+        }
+    }
+
+    /// The search items a page's context menu gets for a selection or an image: the default engine
+    /// (the private-window one in a private tab) searching for the selection, the image engine
+    /// searching for the image. Nothing is offered when no engine can.
+    fn context_search_labels(app: &AppRef, tab: TabId, info: &engine::ContextSearchInfo) -> engine::ContextSearchLabels {
+        let Ok(state) = app.try_borrow() else { return Default::default() };
+        let private = state.tabs.iter().any(|candidate| candidate.id == tab && candidate.private);
+        let show_nickname = state.settings.address.show_nickname;
+        drop(state);
+        let engines = crate::address_runtime::engines();
+        let selection = info.selection.as_ref().map(|text| {
+            let engine = engines.effective(private);
+            let shown: String = if text.chars().count() > 28 { format!("{}…", text.chars().take(28).collect::<String>()) } else { text.clone() };
+            let _ = show_nickname;
+            format!("Search {} for “{shown}”", engine.name)
+        });
+        let image = info.image.as_ref().and_then(|url| {
+            let engine = engines.image_engine()?;
+            engine.image_request(url.as_str())?;
+            Some(format!("Search for this image with {}", engine.name))
+        });
+        engine::ContextSearchLabels { selection, image }
+    }
+
+    /// A search item of a page's context menu was picked.
+    fn context_search_run(app: &AppRef, pick: engine::ContextSearchPick) {
+        use crate::address_input::Destination;
+        let (private, background) = {
+            let state = app.borrow();
+            (state.tabs.iter().any(|tab| tab.id == state.tab_model.active() && tab.private), state.settings.address.selection_background)
+        };
+        let engines = crate::address_runtime::engines();
+        match pick {
+            engine::ContextSearchPick::Selection(text) => {
+                let before = app.borrow().tab_model.active();
+                let options = crate::address_input::Options { new_tab: true, from_search_field: true, ..Default::default() };
+                Self::submit_with(app, &text, options);
+                // "Search for selected text in a background tab": the page you were reading stays shown.
+                if background {
+                    let _ = Self::select_tab(app, before);
                 }
             }
-        };
-        let url = match target {
-            NavigationTarget::Empty => return,
-            NavigationTarget::Web(url) | NavigationTarget::Search { url, .. } => url,
-        };
-        Self::submit_url(app, url, None);
+            engine::ContextSearchPick::Image(url) => {
+                let Some(engine) = engines.image_engine() else { return };
+                let Some(request) = engine.image_request(url.as_str()) else { return };
+                let destination = Destination::Search { request, query: url.to_string(), engine: engine.id.clone() };
+                Self::open_destination(app, "", destination, true, private);
+            }
+        }
+    }
+
+    /// Opens what Enter resolved to, in the shown tab or a new one, and remembers the typed text.
+    fn open_destination(app: &AppRef, typed: &str, destination: crate::address_input::Destination, new_tab: bool, private: bool) {
+        use crate::address_input::Destination;
+        crate::address_runtime::record_typed(typed, matches!(destination, Destination::Search { .. }), private);
+        if new_tab {
+            if private {
+                Self::new_private_tab(app);
+            } else {
+                Self::new_tab(app);
+            }
+        }
+        match destination {
+            Destination::Navigate { url, upgraded_from } => {
+                let tab = app.borrow().tab_model.active();
+                match upgraded_from {
+                    Some(original) => crate::address_runtime::note_upgrade(tab, original),
+                    None => crate::address_runtime::forget_upgrade(tab),
+                }
+                Self::submit_url(app, url, None)
+            }
+            Destination::Search { request, .. } => {
+                match request.post {
+                    Some(body) => POST_BODY.with(|slot| *slot.borrow_mut() = Some((request.url.clone(), body))),
+                    None => POST_BODY.with(|slot| *slot.borrow_mut() = None),
+                }
+                Self::submit_url(app, request.url, None);
+                // Whatever did not reach the engine this time must not ride on a later navigation.
+                POST_BODY.with(|slot| *slot.borrow_mut() = None);
+            }
+        }
     }
 
     pub fn submit_benchmark_url(app: &AppRef, url: url::Url) {
@@ -5258,7 +5586,59 @@ impl App {
         if let Some(url) = url {
             Self::submit_url(app, url, None);
         }
+        // --- tab stacks (T10) --- the rest of a stack moved to this new window: one tab each, asleep
+        // until selected, as restored tabs are.
+        let more = std::mem::take(&mut app.borrow_mut().more_initial_urls);
+        let shown = Self::active_tab_id(app);
+        for url in more {
+            let id = Self::new_background_tab(app, false, None);
+            Self::make_asleep(app, id, &url);
+            let _ = Self::move_tab(app, id, usize::MAX);
+        }
+        let _ = Self::select_tab(app, shown);
     }
+
+    // --- start page ---
+    /// The start page settings alone (a window syncs this often; cloning every setting for it would not be cheap).
+    pub fn start_settings(app: &AppRef) -> crate::start_page::StartSettings {
+        app.borrow().settings.start.clone()
+    }
+
+    /// Whether the launch already decided what the first window shows: a session to restore, an address
+    /// on the command line or a benchmark URL. Read before any of them is taken.
+    pub fn launch_has_target(app: &AppRef) -> bool {
+        let state = app.borrow();
+        state.pending_restore.is_some() || state.initial_url.is_some() || state.benchmark_url.is_some()
+    }
+
+    /// The `startup` setting's plan for the first window (docs/design/start-page.md): the homepage, or
+    /// the specific pages, one tab each. The start page itself needs nothing here (the first tab is
+    /// blank and shows it) and "continue where you left off" is the session restore.
+    pub fn apply_startup_plan(app: &AppRef, launch_decided: bool) {
+        use crate::start_page::StartupPlan;
+        let plan = crate::start_page::startup_plan(&app.borrow().settings.start, launch_decided);
+        match plan {
+            StartupPlan::ShowStartPage => {}
+            StartupPlan::Homepage(url) => Self::navigate_current(app, &url),
+            StartupPlan::Pages(urls) => {
+                let mut first = None;
+                for (index, url) in urls.iter().enumerate() {
+                    if index == 0 {
+                        Self::navigate_current(app, url);
+                        first = Some(Self::active_tab_id(app));
+                    } else {
+                        Self::new_tab(app);
+                        Self::navigate_current(app, url);
+                    }
+                }
+                // The first page stays the one shown.
+                if let Some(first) = first {
+                    let _ = Self::select_tab(app, first);
+                }
+            }
+        }
+    }
+    // --- end start page ---
 
     fn submit_url(app: &AppRef, url: url::Url, allowed_file: Option<url::Url>) {
         // An internal address (a restored settings tab; the engine never produces one) never
@@ -5268,6 +5648,10 @@ impl App {
             Self::navigate_internal(app, active, &url);
             return;
         }
+        // --- tab stacks (T10) --- a site with a workspace rule opens in its workspace, which the
+        // window switches to.
+        let active = app.borrow().tab_model.active();
+        let _ = Self::apply_workspace_rule(app, active, &url, true);
         // The address bar shows the target now, not after the engine starts and the page commits.
         let (hwnd, edit, active) = {
             let state = app.borrow();
@@ -5518,9 +5902,14 @@ impl App {
             title_changed: Some(Rc::new(move |tab_id, title| {
                 if let Some(app) = title_events_app.upgrade() {
                     let mut state = app.borrow_mut();
+                    // --- tab options --- a count in the title ("(3) Inbox") is a notification.
+                    let detect = state.settings.tabs.title_notifications;
+                    let shown = state.tab_model.active() == tab_id;
+                    // --- end tab options ---
                     let found =
                         if let Some(tab) = state.tabs.iter_mut().find(|tab| tab.id == tab_id) {
                             tab.title.clone_from(&title);
+                            tab_features::note_title(tab, &title, detect, shown); // --- tab options ---
                             true
                         } else {
                             false
@@ -5542,10 +5931,13 @@ impl App {
                 Some(Rc::new(move |tab_id| {
                     if let Some(app) = loaded_events_app.upgrade() {
                         App::tab_page_loaded(&app, tab_id);
+                        App::sample_page_accent(&app, tab_id); // --- theme options ---
                         // One read-only probe decides whether the toolbar offers reader view.
                         if app.borrow().tab_model.active() == tab_id {
                             App::schedule_reader_probe(&app, tab_id);
                         }
+                        // One small script reads the feeds the page offers (the address bar's feed button).
+                        App::feed_probe(&app, tab_id);
                     }
                 }))
             },
@@ -5557,6 +5949,22 @@ impl App {
                     }
                 }))
             },
+            // --- auto-hide (T11) --- a page element (a video) asks for full screen, or leaves it.
+            fullscreen_changed: {
+                let events_app = Rc::downgrade(app);
+                Some(Rc::new(move |tab_id, on, source| {
+                    if let Some(app) = events_app.upgrade() {
+                        let (hwnd, active) = {
+                            let state = app.borrow();
+                            (state.hwnd, state.tab_model.active() == tab_id)
+                        };
+                        if active || !on {
+                            win32::page_fullscreen(hwnd, &app, on, source.as_ref());
+                        }
+                    }
+                }))
+            },
+            // --- end auto-hide ---
             controller_ready: {
                 let events_app = Rc::downgrade(app);
                 Some(Rc::new(move |tab_id| {
@@ -5568,6 +5976,7 @@ impl App {
                                 || state
                                     .split_view
                                     .is_some_and(|split| split.pane_for(tab_id).is_some());
+                            win32::auto_hide_page_created(state.hwnd); // --- auto-hide (T11) --- a page created later starts above the bars
                             if let Some(tab) = state.tabs.iter_mut().find(|tab| tab.id == tab_id) {
                                 tab.controller_created = true;
                                 // A new controller starts at 100%; the next commit re-applies
@@ -5575,13 +5984,13 @@ impl App {
                                 tab.zoom = crate::site_prefs::ZOOM_DEFAULT;
                                 tab.hidden_since = (!visible).then(Instant::now);
                                 tab.suspended = false;
-                                tab.muted
+                                tab.muted || tab.extra.auto_muted // --- tab options ---
                             } else {
                                 false
                             }
                         };
                         if should_mute {
-                            Self::set_tab_muted(&app, tab_id, true);
+                            Self::push_effective_mute(&app, tab_id); // --- tab options ---
                         }
                         // --- split view ---
                         // A side's page now exists: put it at its pane (outside this callback).
@@ -5618,6 +6027,11 @@ impl App {
                             if let Some(tab) = state.tabs.iter_mut().find(|tab| tab.id == tab_id) {
                                 tab.page_usable = true;
                                 tab.loading = false;
+                                // --- tab options --- finished loading while out of sight: unread.
+                                if !active {
+                                    tab.extra.loaded_in_background();
+                                }
+                                // --- end tab options ---
                             } else {
                                 return;
                             }
@@ -5630,6 +6044,7 @@ impl App {
                             let action = App::page_usable(&app);
                             let action = App::combine_idle_and_suspend_timers(&app, action);
                             win32::schedule_idle_timer(app.borrow().hwnd, action);
+                            App::schedule_thumbnail(&app); // --- tab options ---
                         } else {
                             Self::post_tab_changed_kind(app.borrow().hwnd, tab_id, false, false);
                         }
@@ -5668,6 +6083,8 @@ impl App {
                             NavigationProgressEvent::Started(navigation_id),
                         );
                         if found && app.borrow().tab_model.active() == tab_id {
+                            // A new document must never inherit another document's fullscreen identity.
+                            win32::page_fullscreen(progress_hwnd, &app, false, None);
                             win32::post(
                                 progress_hwnd,
                                 win32::WM_NAVIGATION_PROGRESS,
@@ -5733,6 +6150,7 @@ impl App {
                     };
                     if found {
                         Self::post_tab_changed_kind(app.borrow().hwnd, tab_id, false, false);
+                        Self::note_favicon_colour(&app, tab_id); // --- theme options ---
                     }
                 }
             })),
@@ -5744,13 +6162,21 @@ impl App {
                             let private = crate::private::inherits_privacy(
                                 App::tab_private(&app, source_tab),
                             );
-                            let child = App::new_tab_in_mode(&app, private);
-                            let _ = app.borrow_mut().tab_model.set_opener(child, source_tab);
-                            App::submit_url(&app, url, None);
+                            // --- tab options --- position, related tabs and background loading.
+                            App::open_link_tab(&app, source_tab, private, url);
+                            // --- end tab options ---
                         }
                     }
                 }))
             },
+            // --- tab options --- pinned tabs stay on their site.
+            link_navigation: {
+                let link_app = Rc::downgrade(app);
+                Some(Rc::new(move |tab, url: &url::Url| {
+                    link_app.upgrade().is_some_and(|app| App::pinned_link(&app, tab, url))
+                }))
+            },
+            // --- end tab options ---
             // --- split view ---
             open_in_split: {
                 let split_app = Rc::downgrade(app);
@@ -5763,6 +6189,33 @@ impl App {
                 }))
             },
             // --- end split view ---
+            // --- address bar, search and bookmarks ---
+            context_search: {
+                let search_app = Rc::downgrade(app);
+                Some(Rc::new(move |tab, info: &engine::ContextSearchInfo| {
+                    search_app.upgrade().map(|app| App::context_search_labels(&app, tab, info)).unwrap_or_default()
+                }))
+            },
+            context_search_pick: {
+                let search_app = Rc::downgrade(app);
+                Some(Rc::new(move |_tab, pick| {
+                    if let Some(app) = search_app.upgrade() {
+                        App::context_search_run(&app, pick);
+                    }
+                }))
+            },
+            // --- end address bar, search and bookmarks ---
+            // --- page tools (T7): "Insert note" in a text field's context menu ---
+            context_notes: Some(Rc::new(move |_tab| win32::context_note_items())),
+            context_note_pick: {
+                let note_app = Rc::downgrade(app);
+                Some(Rc::new(move |tab, note| {
+                    if let Some(app) = note_app.upgrade() {
+                        win32::insert_note_into_page(&app, tab, note);
+                    }
+                }))
+            },
+            // --- end page tools ---
             render_process_failed: {
                 let crash_app = Rc::downgrade(app);
                 Some(Rc::new(move |tab_id| {
@@ -5797,6 +6250,19 @@ impl App {
                 let failed_app = Rc::downgrade(app);
                 Some(Rc::new(move |tab_id, certificate| {
                     if let Some(app) = failed_app.upgrade() {
+                        // "Always use HTTPS": a site that cannot be reached securely is tried once over
+                        // plain http (never after a certificate problem, which must not be bypassed).
+                        if !certificate {
+                            if let Some(original) = crate::address_runtime::take_upgrade(tab_id) {
+                                // Only when the page that failed is the one that was upgraded.
+                                let same_site = app.borrow().tabs.iter().find(|tab| tab.id == tab_id).and_then(|tab| tab.url.as_ref())
+                                    .is_some_and(|shown| shown.scheme() == "https" && shown.host_str() == original.host_str());
+                                if same_site {
+                                    Self::navigate_tab(&app, tab_id, &original);
+                                    return;
+                                }
+                            }
+                        }
                         let found = {
                             let mut state = app.borrow_mut();
                             match state.tabs.iter_mut().find(|tab| tab.id == tab_id) {
@@ -6026,6 +6492,7 @@ impl App {
             }
             Self::apply_visible_panes(app);
         }
+        Self::load_eager_tabs(app); // --- tab options ---
     }
 
     pub fn navigate_current(app: &AppRef, url: &url::Url) {
@@ -6071,7 +6538,18 @@ impl App {
         let Some(mut engine) = engine.take() else {
             return;
         };
-        let result = engine.navigate_tab(tab_id, url);
+        // A search with an engine that posts its query goes out as that POST, once.
+        let post = POST_BODY.with(|slot| {
+            let mut slot = slot.borrow_mut();
+            match slot.as_ref() {
+                Some((target, _)) if target == url => slot.take().map(|(_, body)| body),
+                _ => None,
+            }
+        });
+        let result = match post {
+            Some(body) => engine.navigate_tab_post(tab_id, url, &body),
+            None => engine.navigate_tab(tab_id, url),
+        };
         let mut state = app.borrow_mut();
         if state.tab_model.active() == tab_id {
             state.page_loaded = false;
@@ -6439,16 +6917,38 @@ impl App {
     /// resize or reschedule). Everything else here only changes `settings.txt`'s file-committed value
     /// and takes effect on the next start, matching the page's "Applies after restart" rows.
     pub fn apply_live_settings(app: &AppRef, settings: &crate::settings::Settings) {
+        let before = app.borrow().settings.clone(); // --- wave-1 fixes ---
+        // The blocker, retention and website-look settings take effect without a restart.
+        Self::apply_privacy_settings(app, settings);
+        Self::apply_page_tools_settings(app, settings); // --- page tools (T7) ---
         let (hwnd, edit) = {
             let mut state = app.borrow_mut();
+            // --- wave-1 fixes --- the Downloads and Translation options the page saves through the app
+            // (and Reset settings puts back), so memory never holds an older value than the file.
+            state.settings.download_dir = settings.download_dir.clone();
+            state.settings.ask_download_location = settings.ask_download_location;
+            state.settings.translate_offer = settings.translate_offer;
+            state.settings.translate_auto = settings.translate_auto;
+            state.settings.translate_target = settings.translate_target.clone();
+            // --- end wave-1 fixes ---
             state.settings.theme = settings.theme;
             state.settings.theme_accent = settings.theme_accent.clone();
+            state.settings.themes = settings.themes.clone(); // --- theme options ---
             state.settings.centred_address_bar = settings.centred_address_bar;
             state.settings.minimal_url = settings.minimal_url;
             state.settings.show_load_progress = settings.show_load_progress;
             state.settings.rounded_content_frame = settings.rounded_content_frame;
             state.settings.show_home_button = settings.show_home_button;
             state.settings.toolbar_buttons = settings.toolbar_buttons.clone();
+            // --- toolbars and feeds (thread T13) ---
+            state.settings.toolbar_tabs = settings.toolbar_tabs.clone();
+            state.settings.toolbar_panel = settings.toolbar_panel.clone();
+            state.settings.feeds_detect = settings.feeds_detect;
+            state.settings.feeds_refresh_minutes = settings.feeds_refresh_minutes;
+            if !settings.feeds_detect {
+                state.feed_pages.clear();
+            }
+            // --- end toolbars and feeds ---
             state.settings.font_size = settings.font_size;
             state.settings.ui_font = settings.ui_font.clone();
             state.settings.default_zoom = settings.default_zoom;
@@ -6460,8 +6960,64 @@ impl App {
             state.settings.ctrl_s_vertical_tabs = settings.ctrl_s_vertical_tabs;
             state.settings.split_edge_drop = settings.split_edge_drop;
             state.settings.pin_new_tab_groups = settings.pin_new_tab_groups;
+            state.settings.start = settings.start.clone(); // --- start page ---
+            // --- auto-hide (T11) --- the master switch and its two rows take effect at once.
+            state.settings.frameless = settings.frameless;
+            state.settings.auto_hide = settings.auto_hide;
+            // --- end auto-hide ---
+            // Address bar, search and bookmark options (src/address_settings.rs).
+            state.settings.address = settings.address.clone();
+            crate::omnibox::set_show_full_address(settings.address.show_full);
+            crate::omnibox::set_autocomplete(settings.address.autocomplete);
+            state.settings.bookmarks_bar = settings.bookmarks_bar;
+            state.settings.bookmarks_bar_tab_groups = settings.bookmarks_bar_tab_groups;
+            // --- tab options --- the hover card's thumbnail and memory line.
+            state.settings.tab_preview_images = settings.tab_preview_images;
+            state.settings.tab_preview_memory = settings.tab_preview_memory;
+            // --- end tab options ---
+            // --- layout (thread T6) --- the Layout block: every row acts at once (the window lays
+            // the chrome out again below from `App::arrangement`).
+            state.settings.side_panel_position = settings.side_panel_position;
+            state.settings.tab_bar_visible = settings.tab_bar_visible;
+            state.settings.address_bar_position = settings.address_bar_position;
+            state.settings.address_bar_visible = settings.address_bar_visible;
+            state.settings.show_title_bar = settings.show_title_bar;
+            state.settings.status_bar = settings.status_bar;
+            state.settings.ui_density = settings.ui_density;
+            state.settings.compact_menus = settings.compact_menus;
+            state.settings.ui_zoom = settings.ui_zoom;
+            state.settings.layout_saved = settings.layout_saved.clone();
+            // --- end layout ---
+            // --- window and panels (thread T9) --- the HTML chrome reads these from its next state push
+            state.settings.window = settings.window;
+            crate::window_prefs::publish(&settings.window);
+            // --- end window and panels ---
             (state.hwnd, state.edit)
         };
+        // --- layout (thread T6) --- the docked panel moves edge at once; the link-address overlay
+        // follows the status bar choice in every open tab and the ones opened next.
+        if !hwnd.is_invalid() {
+            win32::side_panel::set_position(hwnd, settings.side_panel_position);
+        }
+        crate::layout_prefs::set_status_overlay(settings.status_bar);
+        Self::call_engine(app, |engine| engine.apply_status_overlay());
+        // --- end layout ---
+        // --- wave-1 integration --- the Tabs options as the file has them (Reset settings, the GDI form):
+        // the strip, the audio rule and the tick follow at once.
+        let tabs_before = {
+            let mut state = app.borrow_mut();
+            (state.settings.tabs != settings.tabs).then(|| std::mem::replace(&mut state.settings.tabs, settings.tabs.clone()))
+        };
+        if let Some(before) = tabs_before {
+            Self::tab_options_changed(app, &before);
+        }
+        Self::mark_synced_from(app, &before); // --- wave-1 fixes ---
+        Self::apply_theme_options(app); // --- theme options ---
+        // --- auto-hide (T11) --- lays the window out with the bars in or out and resizes the page.
+        if !hwnd.is_invalid() {
+            win32::auto_hide_sync(hwnd, app);
+        }
+        // --- end auto-hide ---
         let bounds = app.borrow_mut().latest_viewport_bounds();
         Self::resize_current(app, bounds);
         // The address field's own font follows font_size and ui_font (the painted chrome and the
@@ -6475,6 +7031,8 @@ impl App {
         }
         Self::notify_rail_changed(app);
         Self::post_tab_changed(hwnd, active);
+        win32::start_ui::settings_changed(hwnd); // --- start page --- a shown start page redraws with the new settings
+        win32::panel_settings_changed(hwnd); // --- look state (fix group B) --- an open flyout follows too
     }
 
     /// Applies a changed `efficiency_mode` setting without a restart.
@@ -6962,17 +7520,33 @@ impl App {
         }
         // The chrome layout takes raw DPI; a scale factor here would clamp to 96 at 144 DPI.
         let dpi = unsafe { windows::Win32::UI::HiDpi::GetDpiForWindow(self.hwnd) }.max(96);
-        let maximised =
-            unsafe { windows::Win32::UI::WindowsAndMessaging::IsZoomed(self.hwnd) }.as_bool();
-        let bounds = chrome_viewport_bounds(
+        // --- auto-hide (T11) --- maximised or full screen; and the bars out of the layout, which the
+        // window lays out the same way (`chrome::layout::compute_arranged_auto_hide`).
+        let maximised = crate::win32::zoomed_or_full(self.hwnd);
+        let hidden = crate::win32::auto_hide_effective(self.hwnd, &self.settings).hidden;
+        let plan = crate::auto_hide::plan(hidden, self.settings.tab_layout);
+        // --- end auto-hide ---
+        // --- layout (thread T6) --- the whole arrangement, with a hidden address bar shown while
+        // Ctrl+L has it revealed, and the docked panel on the edge it is actually on (none of its
+        // width when auto-hide floats it over the page).
+        let arrangement = self
+            .arranged() // --- two-level stacks (T10b) ---
+            .with_address_bar_revealed(crate::win32::address_bar_revealed(self.hwnd));
+        let side_panel = (
+            if plan.panel { 0 } else { crate::win32::side_panel::active_width_px(self.hwnd) },
+            crate::win32::side_panel::active_position(self.hwnd),
+        );
+        let bounds = chrome_viewport_bounds_arranged(
             rect.right - rect.left,
             rect.bottom - rect.top,
             dpi,
             self.tabs.len(),
             maximised,
-            self.settings.tab_layout,
+            arrangement,
             self.settings.effective_sidebar_width(),
-            crate::win32::side_panel::active_width_px(self.hwnd),
+            side_panel,
+            self.settings.ui_density,
+            plan.layout(),
         );
         if valid_viewport_bounds(bounds) {
             self.last_valid_viewport_bounds = Some(bounds);
@@ -6981,15 +7555,17 @@ impl App {
             if let Some(bounds) = self.last_valid_viewport_bounds {
                 bounds
             } else {
-                let fallback = chrome_viewport_bounds(
+                let fallback = chrome_viewport_bounds_arranged(
                     1000,
                     720,
                     dpi,
                     self.tabs.len(),
                     maximised,
-                    self.settings.tab_layout,
+                    arrangement,
                     self.settings.effective_sidebar_width(),
-                    crate::win32::side_panel::active_width_px(self.hwnd),
+                    side_panel,
+                    self.settings.ui_density,
+                    plan.layout(),
                 );
                 self.last_valid_viewport_bounds = Some(fallback);
                 fallback
@@ -6998,41 +7574,119 @@ impl App {
     }
 }
 
+/// The page bounds for a plain tab layout (the tests' older entry point; the window uses
+/// [`chrome_viewport_bounds_arranged`]).
+#[cfg(test)]
+#[allow(clippy::too_many_arguments)]
 fn chrome_viewport_bounds(
     width: i32,
     height: i32,
     dpi: u32,
-    _tab_count: usize,
+    tab_count: usize,
     maximised: bool,
     tab_layout: crate::settings::TabLayout,
     sidebar_width: u16,
     side_panel_width: i32,
 ) -> windows::Win32::Foundation::RECT {
-    let mut viewport = match tab_layout {
-        crate::settings::TabLayout::ToolbarTop
-        | crate::settings::TabLayout::TabsTop
-        | crate::settings::TabLayout::SingleRow => {
-            let inset = crate::chrome::layout::left_rail_inset(dpi);
-            crate::chrome::layout::content_rect(tab_layout, width.max(0) - inset, height, dpi, maximised)
-                .shifted_right(inset)
-        }
-        crate::settings::TabLayout::Vertical => {
-            crate::vertical_tabs::SidebarLayout::compute_in_frame(
-                width,
-                height,
-                dpi,
-                i32::from(sidebar_width),
-                maximised,
-            )
-            .viewport
-        }
-    };
-    viewport.left = (viewport.left + side_panel_width.max(0)).min(viewport.right);
+    chrome_viewport_bounds_hiding(
+        width,
+        height,
+        dpi,
+        tab_count,
+        maximised,
+        tab_layout,
+        sidebar_width,
+        side_panel_width,
+        crate::chrome::layout::AutoHide::OFF,
+    )
+}
+
+/// [`chrome_viewport_bounds`] with the chrome in `hide` out of the page's rectangle (auto-hide).
+#[cfg(test)]
+#[allow(clippy::too_many_arguments)]
+fn chrome_viewport_bounds_hiding(
+    width: i32,
+    height: i32,
+    dpi: u32,
+    tab_count: usize,
+    maximised: bool,
+    tab_layout: crate::settings::TabLayout,
+    sidebar_width: u16,
+    side_panel_width: i32,
+    hide: crate::chrome::layout::AutoHide,
+) -> windows::Win32::Foundation::RECT {
+    chrome_viewport_bounds_arranged(
+        width,
+        height,
+        dpi,
+        tab_count,
+        maximised,
+        crate::chrome::layout::Arrangement { tabs: tab_layout, ..Default::default() },
+        sidebar_width,
+        (side_panel_width, crate::settings::SidePanelPosition::Left),
+        crate::layout_prefs::UiDensity::Regular,
+        hide,
+    )
+}
+
+/// --- layout (thread T6) --- the page bounds for the whole arrangement (tab bar, address bar,
+/// title row, sidebar side and density), from the same geometry the window lays its chrome out
+/// with, less the docked side panel on its own edge. --- auto-hide (T11) --- `hide` takes the
+/// hidden bars out of it the way the window does (`layout::compute_arranged_auto_hide`).
+#[allow(clippy::too_many_arguments)]
+fn chrome_viewport_bounds_arranged(
+    width: i32,
+    height: i32,
+    dpi: u32,
+    tab_count: usize,
+    maximised: bool,
+    arrangement: crate::chrome::layout::Arrangement,
+    sidebar_width: u16,
+    side_panel: (i32, crate::settings::SidePanelPosition),
+    density: crate::layout_prefs::UiDensity,
+    hide: crate::chrome::layout::AutoHide,
+) -> windows::Win32::Foundation::RECT {
+    let (layout, _) = crate::chrome::layout::compute_arranged_auto_hide(
+        arrangement,
+        width,
+        height,
+        dpi,
+        tab_count.max(1),
+        0,
+        maximised,
+        i32::from(sidebar_width),
+        true,
+        density.sidebar_row_height(),
+        hide,
+    );
+    let mut viewport = layout.viewport;
+    let (panel_width, position) = side_panel;
+    match position {
+        crate::settings::SidePanelPosition::Left => viewport.left = (viewport.left + panel_width.max(0)).min(viewport.right),
+        crate::settings::SidePanelPosition::Right => viewport.right = (viewport.right - panel_width.max(0)).max(viewport.left),
+    }
     windows::Win32::Foundation::RECT {
         left: viewport.left,
         top: viewport.top,
         right: viewport.right,
         bottom: viewport.bottom,
+    }
+}
+
+/// --- wave-1 fixes --- a windowless app for tests outside this module (the win32 glue's rules).
+#[cfg(test)]
+pub(crate) fn test_app() -> AppRef {
+    tests::app_with_pending(windows::Win32::Foundation::RECT { left: 0, top: 0, right: 800, bottom: 600 })
+}
+
+/// --- wave-1 fixes --- tab `id` shows `address`, as if it had loaded (for [`test_app`]).
+#[cfg(test)]
+pub(crate) fn test_show_page(app: &AppRef, id: TabId, address: &str) {
+    let mut state = app.borrow_mut();
+    state.tab_model.set_url(id, Some(address));
+    if let Some(tab) = state.tabs.iter_mut().find(|tab| tab.id == id) {
+        tab.url = url::Url::parse(address).ok();
+        tab.controller_created = true;
     }
 }
 
@@ -7043,6 +7697,13 @@ mod tests {
     use std::{cell::RefCell, collections::VecDeque, path::Path, rc::Rc};
 
     mod translate_flow;
+    mod start_page_flow; // the startup setting's first-window plan (docs/design/start-page.md)
+    mod tab_flow; // --- tab options ---
+    mod feed_flow; // --- toolbars and feeds (thread T13) ---
+    mod wave1_fixes; // --- wave-1 fixes ---
+    mod page_tools_flow; // --- page tools (T7) ---
+    mod theme_flow; // --- theme options ---
+    mod stack_flow; // --- tab stacks, tiling and workspaces (T10) ---
 
     #[test]
     fn reader_probe_due_table() {
@@ -7645,6 +8306,7 @@ mod tests {
             url: url.to_owned(),
             title: title.to_owned(),
             pinned,
+            used: 0,
         };
         app.borrow_mut().pending_restore = Some(crate::session::Session {
             tabs: vec![
@@ -9187,7 +9849,7 @@ mod tests {
         }
     }
 
-    fn app_with_pending(bounds: windows::Win32::Foundation::RECT) -> AppRef {
+    pub(super) fn app_with_pending(bounds: windows::Win32::Foundation::RECT) -> AppRef {
         Rc::new(RefCell::new(App {
             hwnd: HWND::default(),
             edit: HWND::default(),
@@ -9208,6 +9870,7 @@ mod tests {
             user_data_dir: PathBuf::new(),
             benchmark_url: None,
             initial_url: None,
+            more_initial_urls: Vec::new(), // --- tab stacks (T10) ---
             allowed_benchmark_file: None,
             benchmark_tracking_prevention: None,
             benchmark_memory_pressure: false,
@@ -9227,9 +9890,11 @@ mod tests {
             tab_model: crate::tabs::TabList::new(),
             tab_mru: Vec::new(),
             reader_probe_pending: None,
+            feed_pages: HashMap::new(),
             split_view: None,
             split_parked: None,
             recently_closed: std::collections::VecDeque::new(),
+            tab_state: crate::tab_state::TabState::default(), // --- tab options ---
             split_refresh: false,
             split_bounds: None,
             group_preferences: crate::tab_groups::GroupPreferences::default(),
@@ -9247,6 +9912,7 @@ mod tests {
                 sleep_enabled: false,
                 ..Default::default()
             },
+            settings_synced: crate::settings::Settings::default(),
             session: None,
             session_save_pending: false,
             last_session_snapshot: None,
@@ -9263,6 +9929,7 @@ mod tests {
             translate: page_translate::Runtime::default(),
             downloads: crate::downloads::DownloadManager::in_memory(false),
             downloads_observer: None,
+            workspace_rules: Vec::new(), // --- tab stacks (T10) ---
         }))
     }
 
@@ -9824,6 +10491,63 @@ mod tests {
         assert!(valid_viewport_bounds(bounds));
         assert_eq!(app.borrow().last_valid_viewport_bounds, Some(bounds));
     }
+
+    // --- auto-hide (T11) ---
+    /// The page rectangle the app sizes a tab to is the one the window lays out, for every layout, DPI,
+    /// window state and set of hidden bars: switching auto-hide on or off resizes the page to it.
+    #[test]
+    fn the_apps_page_rectangle_is_the_windows_for_every_set_of_hidden_bars() {
+        use crate::auto_hide::{plan, Bars, ALL_BARS, BAR_TABLE};
+        use crate::chrome::layout::{self, AutoHide};
+        let mut sets = vec![Bars::NONE, ALL_BARS];
+        sets.extend(BAR_TABLE.iter().map(|(_, bar)| *bar));
+        for tab_layout in crate::settings::TabLayout::ALL {
+            for dpi in [96, 144, 192] {
+                for maximised in [false, true] {
+                    for hidden in &sets {
+                        let hide = plan(*hidden, tab_layout).layout();
+                        let context = format!("{tab_layout:?} dpi {dpi} max {maximised} hidden {}", hidden.text());
+                        let app = chrome_viewport_bounds_hiding(1600, 1000, dpi, 3, maximised, tab_layout, 260, 0, hide);
+                        // --- layout (thread T6) --- the window lays every layout out with the arranged geometry.
+                        let arrangement = layout::Arrangement { tabs: tab_layout, ..Default::default() };
+                        let row_h = crate::layout_prefs::UiDensity::Regular.sidebar_row_height();
+                        let window = layout::compute_arranged_auto_hide(arrangement, 1600, 1000, dpi, 3, 0, maximised, 260, true, row_h, hide).0.viewport;
+                        if matches!(tab_layout, crate::settings::TabLayout::ToolbarTop | crate::settings::TabLayout::TabsTop | crate::settings::TabLayout::SingleRow) {
+                            let plain = layout::compute_in_frame_auto_hide(tab_layout, 1600, 1000, dpi, 3, 0, maximised, true, hide).viewport;
+                            assert_eq!(window, plain, "{context}: the arranged geometry is the plain one");
+                        } else if tab_layout == crate::settings::TabLayout::Vertical {
+                            let plain = layout::compute_vertical_in_frame_auto_hide(1600, 1000, dpi, 3, 0, maximised, 260, true, hide).0.viewport;
+                            assert_eq!(window, plain, "{context}: the arranged geometry is the plain one");
+                        }
+                        assert_eq!((app.left, app.top, app.right, app.bottom), (window.left, window.top, window.right, window.bottom), "{context}");
+                        if hide == AutoHide::OFF {
+                            let before = chrome_viewport_bounds(1600, 1000, dpi, 3, maximised, tab_layout, 260, 0);
+                            assert_eq!((app.left, app.top, app.right, app.bottom), (before.left, before.top, before.right, before.bottom), "{context}: off is as it was");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// The saved settings decide what hides: off hides nothing, on hides the chosen bars, full screen all.
+    #[test]
+    fn the_saved_settings_decide_which_part_of_the_window_the_page_may_use() {
+        use crate::auto_hide::{effective, plan, AutoHideSettings, Bars, Fullscreen};
+        let layout_of = |frameless: bool, bars: &str, fullscreen: Fullscreen, in_fullscreen: bool| {
+            let settings = AutoHideSettings { bars: Bars::parse(bars).unwrap(), in_fullscreen };
+            plan(effective(frameless, &settings, fullscreen).hidden, crate::settings::TabLayout::Vertical).layout()
+        };
+        use crate::chrome::layout::AutoHide;
+        assert_eq!(layout_of(false, "tabs,address", Fullscreen::No, true), AutoHide::OFF);
+        assert_eq!(layout_of(true, "tabs", Fullscreen::No, true), AutoHide { top: false, sidebar: true });
+        assert_eq!(layout_of(true, "address", Fullscreen::No, true), AutoHide { top: true, sidebar: false });
+        assert_eq!(layout_of(true, "bookmarks,panel", Fullscreen::No, true), AutoHide::OFF, "those two are not part of the page rectangle");
+        assert_eq!(layout_of(false, "", Fullscreen::Window, true), AutoHide { top: true, sidebar: true });
+        assert_eq!(layout_of(false, "", Fullscreen::Window, false), AutoHide::OFF);
+        assert_eq!(layout_of(false, "", Fullscreen::Page, false), AutoHide { top: true, sidebar: true });
+    }
+    // --- end auto-hide ---
 
     #[test]
     fn webview_bounds_match_chrome_viewport_in_physical_pixels() {

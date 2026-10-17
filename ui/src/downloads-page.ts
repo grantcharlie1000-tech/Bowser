@@ -499,7 +499,7 @@ export function startDownloadsPage(root: HTMLElement): void {
 
   // ---- Bowser's messages ----
   const receive = (message: Inbound): void => {
-    if (message.t === 'state') { applyTheme(message.theme, message.solid, message.dark); return; }
+    if (message.t === 'state') { applyTheme(message.theme, message.solid, message.dark, message.fontScale, message.uiFont, message.density, message.compactMenus, message.look); return; }
     if (message.t !== 'snap' || message.p !== 'downloadspage') return;
     const parsed = parseDownloadsSnapshot(message.d);
     if (!parsed) return;

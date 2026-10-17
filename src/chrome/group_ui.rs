@@ -272,9 +272,7 @@ fn content_inset(state: GroupState, members: usize, diameter: i32, metrics: Metr
     if state == GroupState::CollapsedWithoutSelection {
         return 0;
     }
-    let balls = ball_count(state, members)
-        .min(MAX_VISIBLE_STACK_BALLS)
-        .max(1);
+    let balls = ball_count(state, members).clamp(1, MAX_VISIBLE_STACK_BALLS);
     diameter + metrics.px(6) * (balls as i32 - 1) + metrics.px(4)
 }
 

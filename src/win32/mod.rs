@@ -1,5 +1,11 @@
 mod card;
+// --- address bar, search and bookmarks (src/address_settings.rs) ---
+mod address_bar;
+mod address_dialog;
+mod bookmark_bar;
+// --- end address bar, search and bookmarks ---
 mod corner_fringe;
+mod command_actions; // run_registered helpers: command chains, the cheat sheet, per-site shortcut priority
 mod command_palette;
 mod composer;
 mod devtools_dock;
@@ -19,6 +25,11 @@ mod html_suggest;
 // --- end hover layer ---
 // --- end popup host ---
 mod notes_panel;
+mod page_tools_ui; // capture and notes-from-the-page commands (thread T7)
+// --- tab options --- the Sessions panel.
+mod sessions_panel;
+mod feeds_panel; // the Feeds panel's host side and its fetch workers (thread T13)
+// --- end tab options ---
 mod panel_bookmarks;
 mod panel_customize;
 mod panel_history;
@@ -37,6 +48,7 @@ pub mod panel_webapp;
 pub mod passwords_import;
 mod passwords_panel;
 pub(crate) mod privacy_panel;
+mod protection; // blocking, cookie notices, history retention, website appearance (thread T3)
 mod profile_rename;
 mod settings_page;
 mod history_page; // bowser://history (docs/design/history-page.md)
@@ -48,19 +60,34 @@ mod site_info;
 mod smooth;
 // --- split view ---
 mod split_ui;
+pub(crate) mod start_ui; // the start page over a blank new tab (docs/design/start-page.md)
 // --- end split view ---
 mod tab_ghost; // the native ghost of a held tab (docs/design/tab-drag.md)
 mod window;
 
 pub(crate) use window::{
-    gated_chords, refresh_edit_font, schedule_idle_timer, schedule_power_timer,
-    show_pending_address, sync_address_input,
+    gated_chords, refresh_edit_font, refresh_theme, schedule_idle_timer, schedule_power_timer, set_link_timer, set_tab_tick, set_theme_timer,
+    set_thumbnail_timer, show_pending_address, sync_address_input,
+};
+pub(crate) use window::address_bar_revealed; // --- layout (thread T6) ---
+pub(crate) use html_panel::settings_changed as panel_settings_changed; // --- look state (fix group B) ---
+pub(crate) use glass::{local_minutes, set_scheduled_look};
+// Registry handlers (`crate::commands::registry`) that need a window.
+pub(crate) use command_actions::{run_cheat_sheet, run_keyboard_settings, run_open_feeds, run_toggle_site_shortcuts};
+pub(crate) use command_actions::run_bookmarks_panel; // --- latency (fix E) ---
+// --- wave-1 integration --- T1, T2 and T3 commands in the registry.
+// --- auto-hide (T11) --- Auto-hide and full screen (registry commands).
+pub(crate) use command_actions::{run_toggle_auto_hide, run_toggle_fullscreen};
+pub(crate) use window::{auto_hide_effective, auto_hide_page_created, auto_hide_sync, page_fullscreen, zoomed_or_full};
+// --- end auto-hide ---
+pub(crate) use command_actions::{
+    run_cycle_blocking_level, run_delete_browsing_data, run_periodic_reload, run_qr_code, run_stop_all_reloads, run_toggle_address_bar,
 };
 
 use windows::{
     Win32::{
         Foundation::HWND,
-        UI::WindowsAndMessaging::{MB_ICONERROR, MB_OK, MessageBoxW},
+        UI::WindowsAndMessaging::MessageBoxW,
     },
     core::w,
 };
@@ -71,6 +98,13 @@ pub fn show_runtime_error(error: &crate::engine::RuntimeUnavailable) {
     show_error_message(&format!("{error}"));
 }
 
+/// Unit tests must surface errors, not wait forever for a human to dismiss a native dialog.
+#[cfg(test)]
+pub fn show_error_message(message: &str) {
+    panic!("Unexpected native error dialog in unit test: {message}");
+}
+
+#[cfg(not(test))]
 pub fn show_error_message(message: &str) {
     let text: Vec<u16> = message.encode_utf16().chain(std::iter::once(0)).collect();
     unsafe {
@@ -78,7 +112,8 @@ pub fn show_error_message(message: &str) {
             Some(HWND::default()),
             windows::core::PCWSTR(text.as_ptr()),
             w!("Bowser"),
-            MB_OK | MB_ICONERROR,
+            windows::Win32::UI::WindowsAndMessaging::MB_OK
+                | windows::Win32::UI::WindowsAndMessaging::MB_ICONERROR,
         );
     }
 }
@@ -151,6 +186,8 @@ pub(crate) const WM_DOWNLOADS_CHANGED: u32 = windows::Win32::UI::WindowsAndMessa
 /// The installed extensions changed (installed, turned on or off, removed, or a load result came
 /// in): the toolbar's extensions button and the settings page's Extensions section read them again.
 pub(crate) const WM_EXTENSIONS_CHANGED: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 0x5C5;
+/// A step of a running command chain is due (`command_actions::chain_step` runs it).
+pub(crate) const WM_CHAIN_STEP: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 0x5E1;
 /// Trailing flush of a throttled progress update (`downloads_ui`).
 pub(crate) const WM_DOWNLOADS_TIMER: usize = 0xB070;
 /// Posted by the foreground WinEvent hook so the UI thread re-checks whether Bowser is in front.
@@ -166,13 +203,13 @@ pub(crate) const WM_PRIVACY_STATS_TIMER: usize = 7;
 /// Advances the address bar navigation progress transition while it is visible.
 pub(crate) const WM_PROGRESS_TIMER: usize = 6;
 /// Coalesces split divider moves to one controller bounds update per frame.
-pub(crate) const WM_SPLIT_BOUNDS_TIMER: usize = 7;
+pub(crate) const WM_SPLIT_BOUNDS_TIMER: usize = 8;
 /// Slow fallback that re-reads the power source for efficiency mode (Auto only).
 pub(crate) const WM_POWER_TIMER: usize = 0xB060;
 /// Delays the first-run import offer until after the first chrome paint.
 pub(crate) const WM_IMPORT_OFFER_TIMER: usize = 0xB055;
 /// Defers the active tab's reader probe until after the page's first paint.
-pub(crate) const WM_READER_PROBE_TIMER: usize = 0xB05E;
+pub(crate) const WM_READER_PROBE_TIMER: usize = 0xB073;
 /// Google Translate answered a batch (posted from its worker thread); `WPARAM` is the job id and
 /// `LPARAM` the request id whose result is waiting in `app::page_translate`.
 pub(crate) const WM_TRANSLATE_NET: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 0x5D1;
@@ -205,6 +242,11 @@ pub(crate) fn settings_page_focus(hwnd: HWND) {
 // --- history page (docs/design/history-page.md) ---
 /// Opens `bowser://history` in window `hwnd` (the History side panel when the window has no HTML
 /// chrome). `reuse_blank`: a blank normal shown tab becomes the page.
+/// An `@bookmarks` / `@history` / `@tabs` nickname was submitted: open the scope's first result.
+pub(crate) fn address_scoped_submit(hwnd: HWND, app: &crate::app::AppRef, scope: crate::address_settings::Scope, rest: &str) {
+    address_bar::scoped_submit(hwnd, app, scope, rest);
+}
+
 pub(crate) fn open_history_page(hwnd: HWND, app: &crate::app::AppRef, reuse_blank: bool) {
     history_page::open(hwnd, app, reuse_blank);
 }
@@ -251,6 +293,17 @@ pub(crate) fn queue_split_link(owner: HWND, url: url::Url) {
 }
 // --- end split view ---
 
+// --- tab stacks, tiling and workspaces (T10) ---
+mod stack_ui;
+pub(crate) use stack_ui::{run_stack_all_by_site, run_stack_site, run_tile_grid, run_tile_horizontal, run_tile_vertical, run_unstack, run_untile, run_next_workspace, run_previous_workspace};
+/// The tile look changed ("Show a title bar on each tile", "Remove the space around tiles"): the
+/// window lays the shown split out again once its procedure runs.
+pub(crate) const WM_SPLIT_LOOK: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 0x5B3;
+pub(crate) fn split_look_changed(hwnd: HWND) {
+    post(hwnd, WM_SPLIT_LOOK, Default::default(), Default::default());
+}
+// --- end tab stacks, tiling and workspaces ---
+
 // --- developer tools dock ---
 /// Snapshot of every top-level window, taken right before `OpenDevToolsWindow` so the DevTools
 /// window it creates can be found afterwards by diffing against it.
@@ -275,6 +328,28 @@ pub(crate) fn dev_tools_dock_tab_closed(hwnd: HWND, tab: crate::tabs::TabId) {
     devtools_dock::tab_closed(hwnd, tab);
 }
 // --- end developer tools dock ---
+
+// --- latency (fix E) --- the blocker builds its lists on a worker thread.
+/// The main window, once it exists: where a finished blocker build is announced.
+static BLOCKER_WAKE: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
+
+/// Called by the blocker's build worker: asks the main window to swap the new rules in (the
+/// window's `WM_SETTINGS_COMMAND` runs `protection::take_built`). Before the window exists the
+/// build waits; [`set_blocker_wake`] collects it.
+pub(crate) fn blocker_built_wake() {
+    let raw = BLOCKER_WAKE.load(std::sync::atomic::Ordering::Acquire);
+    if raw != 0 {
+        post(HWND(raw as *mut _), WM_SETTINGS_COMMAND, Default::default(), Default::default());
+    }
+}
+
+/// The main window exists: later builds are announced to it, and one that finished before it
+/// existed is collected now.
+pub(crate) fn set_blocker_wake(hwnd: HWND) {
+    BLOCKER_WAKE.store(hwnd.0 as isize, std::sync::atomic::Ordering::Release);
+    blocker_built_wake();
+}
+// --- end latency ---
 
 pub(crate) fn post(
     hwnd: HWND,
@@ -308,5 +383,22 @@ pub(crate) fn set_input_text(hwnd: HWND, value: &str) -> bool {
         copied >= 0
             && copied as usize == value.len() - 1
             && readback[..copied as usize] == value[..value.len() - 1]
+    }
+}
+
+// --- page tools (T7) ---
+pub(crate) use page_tools_ui::{
+    context_note_items, insert_note_into_page, run_capture_full, run_capture_full_copy, run_capture_full_note,
+    run_capture_selection, run_capture_selection_copy, run_capture_selection_note, run_capture_visible,
+    run_capture_visible_copy, run_capture_visible_note, run_note_append, run_note_from_selection,
+};
+// --- end page tools ---
+
+#[cfg(test)]
+mod error_dialog_tests {
+    #[test]
+    #[should_panic(expected = "Unexpected native error dialog in unit test: settings write failed")]
+    fn unexpected_error_dialog_fails_instead_of_waiting_for_desktop_input() {
+        super::show_error_message("settings write failed");
     }
 }

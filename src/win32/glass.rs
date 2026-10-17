@@ -10,7 +10,7 @@
 //! falls back to solid on its own when transparency is disabled, in a remote session, or in
 //! high-contrast mode. Debug builds additionally honour `BOWSER_FORCE_THEME=light|dark`.
 
-use std::sync::atomic::{AtomicIsize, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicIsize, AtomicU32, AtomicU8, Ordering};
 
 use windows::Win32::{
     Foundation::{COLORREF, HWND},
@@ -86,6 +86,34 @@ static APPEARANCE: AtomicU8 = AtomicU8::new(UNKNOWN);
 
 static LIGHT_BRUSH: AtomicIsize = AtomicIsize::new(0);
 static DARK_BRUSH: AtomicIsize = AtomicIsize::new(0);
+// --- theme options --- the colour each solid brush was made with, so a changed theme remakes it.
+static LIGHT_BRUSH_COLOUR: AtomicU32 = AtomicU32::new(u32::MAX);
+static DARK_BRUSH_COLOUR: AtomicU32 = AtomicU32::new(u32::MAX);
+/// The look the theme schedule asks for: `UNKNOWN` follows Windows, else light or dark. Under test it
+/// is per thread, so a test that sets one never changes what other tests read.
+#[cfg(not(test))]
+static SCHEDULED: AtomicU8 = AtomicU8::new(UNKNOWN);
+#[cfg(test)]
+thread_local! {
+    static SCHEDULED: std::cell::Cell<u8> = const { std::cell::Cell::new(UNKNOWN) };
+}
+#[cfg(not(test))]
+fn scheduled() -> u8 {
+    SCHEDULED.load(Ordering::Relaxed)
+}
+#[cfg(not(test))]
+fn swap_scheduled(value: u8) -> u8 {
+    SCHEDULED.swap(value, Ordering::Relaxed)
+}
+#[cfg(test)]
+fn scheduled() -> u8 {
+    SCHEDULED.with(std::cell::Cell::get)
+}
+#[cfg(test)]
+fn swap_scheduled(value: u8) -> u8 {
+    SCHEDULED.with(|cell| cell.replace(value))
+}
+// --- end theme options ---
 
 /// Forgets the cached appearance and transparency state. Call on `WM_SETTINGCHANGE`,
 /// `WM_THEMECHANGED` and `WM_DWMCOLORIZATIONCOLORCHANGED`, before `apply`.
@@ -122,6 +150,29 @@ pub fn refresh_system_state_changed() -> bool {
     before != after
 }
 
+// --- theme options ---
+/// Sets the look the theme schedule asks for (`None` follows Windows) and forgets the cached
+/// appearance. Returns whether the setting changed.
+pub fn set_scheduled_look(look: Option<Appearance>) -> bool {
+    let value = match look {
+        None => UNKNOWN,
+        Some(Appearance::Light) => APPEARANCE_LIGHT,
+        Some(Appearance::Dark) => APPEARANCE_DARK,
+    };
+    let changed = swap_scheduled(value) != value;
+    if changed {
+        refresh_system_state();
+    }
+    changed
+}
+
+/// Minutes since local midnight, for the theme schedule.
+pub fn local_minutes() -> u16 {
+    let now = unsafe { windows::Win32::System::SystemInformation::GetLocalTime() };
+    now.wHour * 60 + now.wMinute
+}
+// --- end theme options ---
+
 pub fn backdrop_mode() -> BackdropMode {
     if !system_allows_glass() {
         BackdropMode::Solid
@@ -136,11 +187,17 @@ pub fn backdrop_mode() -> BackdropMode {
 /// The app colour mode. The debug-only override is applied here so the glass tint, the immersive
 /// title mode and the chrome palette can never disagree.
 pub fn appearance() -> Appearance {
+    // Under test the schedule and the installed theme are per thread, so nothing is cached across them.
+    #[cfg(test)]
+    {
+        return compute_appearance();
+    }
+    #[cfg(not(test))]
     match APPEARANCE.load(Ordering::Relaxed) {
         APPEARANCE_LIGHT => Appearance::Light,
         APPEARANCE_DARK => Appearance::Dark,
         _ => {
-            let value = forced_appearance().unwrap_or_else(theme::system_appearance);
+            let value = compute_appearance();
             APPEARANCE.store(
                 if value == Appearance::Dark {
                     APPEARANCE_DARK
@@ -153,6 +210,18 @@ pub fn appearance() -> Appearance {
         }
     }
 }
+
+// --- theme options --- the schedule picks light or dark instead of Windows, and a custom
+// background brings the family that reads on it.
+fn compute_appearance() -> Appearance {
+    let scheduled = match scheduled() {
+        APPEARANCE_LIGHT => Some(Appearance::Light),
+        APPEARANCE_DARK => Some(Appearance::Dark),
+        _ => None,
+    };
+    theme::effective_appearance(forced_appearance().or(scheduled).unwrap_or_else(theme::system_appearance))
+}
+// --- end theme options ---
 
 /// The palette for the current appearance and backdrop mode.
 pub fn palette() -> &'static Palette {
@@ -208,11 +277,18 @@ pub fn solid_background(appearance: Appearance) -> COLORREF {
 }
 
 pub fn solid_brush(appearance: Appearance) -> HBRUSH {
-    let storage = if appearance == Appearance::Dark {
-        &DARK_BRUSH
+    let (storage, made_with) = if appearance == Appearance::Dark {
+        (&DARK_BRUSH, &DARK_BRUSH_COLOUR)
     } else {
-        &LIGHT_BRUSH
+        (&LIGHT_BRUSH, &LIGHT_BRUSH_COLOUR)
     };
+    // --- theme options --- a theme with its own background changes this colour: the old brush is
+    // dropped from the cache (not deleted: a window class may still hold it).
+    let wanted = solid_background(appearance).0;
+    if made_with.swap(wanted, Ordering::Relaxed) != wanted {
+        storage.store(0, Ordering::Relaxed);
+    }
+    // --- end theme options ---
     let mut raw = storage.load(Ordering::Relaxed);
     if raw == 0 {
         let created = unsafe { CreateSolidBrush(solid_background(appearance)) };

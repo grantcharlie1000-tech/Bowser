@@ -372,11 +372,6 @@ pub unsafe fn stroke_ellipse(dc: HDC, rect: RECT, colour: Rgba, width: i32) {
     }
 }
 
-/// Outlined rectangle inside the GDI box `rect`, with a pen of `width` pixels.
-pub unsafe fn stroke_rect(dc: HDC, rect: RECT, colour: Rgba, width: i32) {
-    unsafe { stroke_round_rect(dc, rect, 0, colour, width) }
-}
-
 /// Outlined polygon through `points`, in device pixels, with a pen of `width` pixels.
 pub unsafe fn stroke_polygon(dc: HDC, points: &[POINT], colour: Rgba, width: i32) {
     unsafe {

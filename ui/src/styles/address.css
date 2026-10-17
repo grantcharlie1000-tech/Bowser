@@ -1,0 +1,396 @@
+/*
+ * The address bar, search engine and bookmark sections of the settings page, the toolbar's search
+ * field and history button, and the QR code and bookmark dialogs (owner: address bar thread).
+ * Tokens and components only; nothing here defines a colour or a duration of its own.
+ */
+
+/* ---- Settings: suggestion sources and the engine list ---- */
+/* One inset well with hairline rules between rows, like the toolbar list on Appearance (no card in a card). */
+.ad-sources,
+.ad-engines {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0 var(--bw-space-3);
+  border-radius: var(--bw-r-row);
+  background: var(--sp-well);
+  list-style: none;
+}
+
+.ad-source,
+.ad-engine {
+  display: flex;
+  align-items: center;
+  gap: var(--bw-space-3);
+  min-height: 48px;
+  padding: var(--bw-space-2) 0;
+  transition: opacity var(--bw-dur-fast) var(--bw-ease-fade);
+}
+
+.ad-source + .ad-source,
+.ad-engine + .ad-engine {
+  border-top: 1px solid var(--sp-rule);
+}
+
+.ad-source.is-off {
+  opacity: 0.7;
+}
+
+.ad-source > .sp-text,
+.ad-engine > .sp-text {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.ad-tools {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--bw-space-1);
+  margin-inline-start: auto;
+}
+
+.ad-icon-btn:disabled {
+  opacity: 0.35;
+}
+
+.ad-tile {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--bw-r-control);
+  /* The placeholder favicon tile every other list uses (bookmarks panel, history). */
+  background: var(--bw-glyph-fill);
+  color: var(--bw-on-glyph);
+  font-weight: var(--bw-weight-strong);
+}
+
+.ad-badges {
+  display: flex;
+  flex: none;
+  gap: var(--bw-space-1);
+}
+
+.ad-engine-url {
+  overflow: hidden;
+  max-width: 34ch;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ad-engine-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--bw-space-2);
+  margin-top: var(--bw-space-2);
+}
+
+.ad-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--bw-space-3);
+  margin-top: var(--bw-space-3);
+  padding: var(--bw-space-3);
+  border: 1px solid var(--sp-card-edge);
+  border-radius: var(--bw-r-island);
+  background: var(--sp-well);
+}
+
+.ad-form[hidden] {
+  display: none;
+}
+
+.ad-form-title {
+  margin: 0;
+  font-size: var(--bw-text-body);
+  font-weight: var(--bw-weight-strong);
+}
+
+.ad-field {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.ad-form-actions {
+  display: flex;
+  gap: var(--bw-space-2);
+}
+
+.ad-number {
+  width: 76px;
+}
+
+.ad-text {
+  width: 140px;
+}
+
+.ad-scope {
+  display: flex;
+  align-items: center;
+  gap: var(--bw-space-2);
+}
+
+.ad-at {
+  color: var(--bw-text-2);
+}
+
+.ad-scope-input {
+  width: 140px;
+}
+
+/* ---- Toolbar: the search field, the typed-history button and the QR button ---- */
+.pill .tb-hist,
+.pill .tb-qr {
+  flex: none;
+}
+
+/* The address bar is hidden: the pill stays in place (and focusable, so Ctrl+L brings the field back)
+   but is not drawn until it has focus. */
+.pill[data-hidden="true"]:not(:focus-within, .is-open) {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.omni-search {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--bw-space-0_5);
+  min-width: 0;
+  max-width: 190px;
+  height: 100%;
+  margin-inline-start: 2px;
+  padding-inline-start: 6px;
+  border-inline-start: 1px solid var(--bw-omni-edge);
+}
+
+.omni-search[hidden] {
+  display: none;
+}
+
+.omni-search-engine {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 2px;
+  height: 22px;
+  padding: 0 4px;
+  border: 0;
+  border-radius: var(--bw-r-control);
+  background: transparent;
+  color: var(--bw-text);
+  font: inherit;
+  font-size: 11px;
+  font-weight: var(--bw-weight-strong);
+  cursor: default;
+}
+
+.omni-search-engine:hover {
+  background: var(--bw-hover);
+}
+
+.omni-search-engine .tb-tile {
+  display: grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--bw-text) 12%, transparent);
+  font-size: 10px;
+  line-height: 1;
+}
+
+.omni-search-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  width: 110px;
+  height: 22px;
+  padding: 0 4px;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--bw-text);
+  font: inherit;
+}
+
+.omni-search-input::placeholder {
+  color: var(--bw-text-2);
+}
+
+.omni-search.is-button .omni-search-input {
+  width: 0;
+  padding: 0;
+  opacity: 0;
+}
+
+.omni-search.is-button.is-open .omni-search-input {
+  width: 110px;
+  padding: 0 4px;
+  opacity: 1;
+}
+
+/* ---- Dialogs: QR code and bookmark ---- */
+.dlg-address {
+  display: flex;
+  flex-direction: column;
+  gap: var(--bw-space-3);
+  height: 100%;
+  padding: var(--bw-space-4);
+  box-sizing: border-box;
+  overflow: auto;
+}
+
+.dlg-address h1 {
+  margin: 0;
+  font-size: var(--bw-text-subtitle);
+  font-weight: var(--bw-weight-strong);
+}
+
+.dlg-qr-box {
+  display: grid;
+  place-items: center;
+  padding: var(--bw-space-3);
+  border-radius: var(--bw-r-island);
+  background: #fff;
+  color: #000;
+}
+
+/* A QR code is read by machines: black on white in every theme. */
+.dlg-qr-paper {
+  fill: #fff;
+}
+
+.dlg-qr-ink {
+  fill: #000;
+}
+
+.dlg-desc {
+  min-height: 64px;
+  resize: vertical;
+}
+
+.dlg-qr-box svg {
+  display: block;
+  width: 100%;
+  max-width: 280px;
+  height: auto;
+}
+
+.dlg-address .sp-desc {
+  overflow-wrap: anywhere;
+}
+
+.dlg-field {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.dlg-actions {
+  display: flex;
+  gap: var(--bw-space-2);
+  margin-top: auto;
+}
+
+/* ---- Bookmarks bar (view=bar, one 28px row of the chrome's glass) ---- */
+.bm-root {
+  background: transparent;
+}
+
+.bm-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--bw-space-0_5);
+  height: 100%;
+  padding: 0 var(--bw-space-2);
+  box-sizing: border-box;
+  overflow: hidden;
+  color: var(--bw-text);
+  font-size: var(--bw-text-caption);
+}
+
+.bm-list {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: var(--bw-space-0_5);
+  min-width: 0;
+  overflow: hidden;
+}
+
+.bm-item {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--bw-space-1_5);
+  max-width: 180px;
+  height: 22px;
+  padding: 0 var(--bw-space-2);
+  border: 0;
+  border-radius: var(--bw-r-control);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: default;
+  transition: background-color var(--bw-dur-fast) var(--bw-ease-fade);
+}
+
+.bm-item[hidden] {
+  display: none;
+}
+
+.bm-item:hover,
+.bm-item:focus-visible {
+  background: var(--bw-hover);
+}
+
+.bm-label {
+  /* A caption line box, so descenders (g, p, y) are not clipped by the ellipsis' overflow. */
+  line-height: var(--bw-leading-caption);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bm-fav {
+  flex: none;
+  width: 16px;
+  height: 16px;
+}
+
+.bm-glyph {
+  flex: none;
+  color: var(--bw-text-2);
+}
+
+.bm-sep {
+  flex: none;
+  width: 1px;
+  height: 14px;
+  margin: 0 var(--bw-space-1);
+  background: var(--bw-omni-edge);
+}
+
+.bm-dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--bw-accent);
+}
+
+.bm-item.is-group:not(.is-live) {
+  opacity: 0.7;
+}
+
+.bm-overflow {
+  flex: none;
+  padding: 0 6px;
+}
+
+.bm-empty {
+  color: var(--bw-text-2);
+}

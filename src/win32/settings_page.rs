@@ -33,6 +33,9 @@ use crate::{
         protocol::{Command, PanelFields, PanelType},
         settings::{self as wire, Ack, Action},
         extensions_page as ext,
+        commands_page as cmdpage,
+        address_page as address_wire,
+        page_tools_page as pt_wire, // --- page tools (T7) ---
     },
     internal_page::{InternalPage, Section},
     split_view::Pane,
@@ -66,6 +69,9 @@ struct Runtime {
     /// Last Privacy dashboard snapshot sent (the dashboard is a section of the page).
     privacy: Option<String>,
     privacy_due: bool,
+    /// Last `protection` snapshot sent (the Privacy section's blocking, history and appearance
+    /// controls; thread T3). It is read afresh whenever the Privacy dashboard is.
+    protection: Option<String>,
     /// Last Extensions section snapshot sent, whether a fresh one is due, the extension being
     /// removed (the engine answers later) and how the last extension command went.
     extensions: Option<String>,
@@ -73,7 +79,18 @@ struct Runtime {
     ext_busy: String,
     ext_ack: ext::Ack,
     ext_error: String,
+    /// Last Keyboard and Quick Commands snapshot sent, whether a fresh one is due, and how the last
+    /// command in those sections went (`chrome_host::commands_page`).
+    commands: Option<String>,
+    cmd_due: bool,
+    cmd_ack: cmdpage::Ack,
+    cmd_error: String,
+    cmd_conflict: Option<(String, String, String)>,
     dirty: bool,
+    /// Last address bar, search and bookmark snapshot sent (src/chrome_host/address_page.rs).
+    address: Option<String>,
+    /// Last Page tools snapshot sent (src/chrome_host/page_tools_page.rs).
+    pagetools: Option<String>,
     /// A section to show (`settingsgo`), sent once the page is ready and shown.
     go: Option<Option<Section>>,
     focus_pending: bool,
@@ -176,6 +193,13 @@ pub(crate) fn extensions_changed(owner: HWND) {
     super::window::split_ui_invalidate(owner);
 }
 
+/// The shortcut or option store changed outside the page (the per-site switch, another window): the
+/// Keyboard and Quick Commands sections read it again the next time the page syncs.
+pub(crate) fn commands_changed(owner: HWND) {
+    let _ = with(owner, |rt| rt.cmd_due = true);
+    super::window::split_ui_invalidate(owner);
+}
+
 /// The page's "Check for updates" finished with `result` (`staged`, `uptodate`, ...).
 pub(crate) fn update_checked(owner: HWND, result: &'static str) {
     let _ = with(owner, |rt| {
@@ -254,7 +278,12 @@ fn ensure_host(owner: HWND) {
                     rt.ready = true;
                     rt.state = None;
                     rt.snapshot = None;
+                    rt.address = None;
+                    rt.pagetools = None;
                     rt.privacy = None;
+                    rt.commands = None;
+                    crate::commands::set_capturing(false); // a reloaded page is not waiting for a key
+                    rt.protection = None;
                     rt.dirty = true;
                     // A reloaded page starts at the top: show the tab's section again.
                     if rt.go.is_none() {
@@ -270,7 +299,7 @@ fn ensure_host(owner: HWND) {
     });
     let on_failed: Rc<dyn Fn()> = Rc::new(move || fail(HWND(raw as *mut _)));
     let on_accelerator: AccelHandler = Rc::new(move |accel: Accel| super::window::html_settings_accelerator(HWND(raw as *mut _), accel));
-    let created = ChromeHost::create(&env, container, RECT { left: 0, top: 0, right: 1, bottom: 1 }, View::Settings, on_command, on_failed, Some(on_accelerator), move |result| {
+    let created = ChromeHost::create(&env, crate::chrome_host::host::ChromeHostOptions { parent: container, bounds: RECT { left: 0, top: 0, right: 1, bottom: 1 }, view: View::Settings, on_command, on_failed, on_accelerator: Some(on_accelerator) }, move |result| {
         let owner = HWND(raw as *mut _);
         match result {
             Ok(host) => {
@@ -364,6 +393,7 @@ pub(crate) fn sync(owner: HWND, app: &AppRef) {
     };
     let Some(want) = want else {
         if shown.is_some() {
+            crate::commands::set_capturing(false);
             let _ = host.set_visible(false);
             unsafe {
                 let _ = ShowWindow(container, SW_HIDE);
@@ -404,11 +434,26 @@ pub(crate) fn sync(owner: HWND, app: &AppRef) {
         let _ = with(owner, |rt| {
             rt.privacy_due = true;
             rt.ext_due = true;
+            rt.cmd_due = true;
         });
+        let (address_ack, address_error) = with(owner, |rt| (rt.ack, rt.error.clone())).unwrap_or((Ack::None, String::new()));
         let snapshot = snapshot(owner, app);
         // An answer is always delivered, even when the values did not change (a second identical
         // save still gets its "Saved").
         let fresh = with(owner, |rt| rt.ack != Ack::None || rt.snapshot.as_deref() != Some(snapshot.as_str())).unwrap_or(false);
+        // The address bar, search and bookmark section reads the same answer.
+        let address_snapshot = address_snapshot(app, address_ack, &address_error);
+        let address_fresh = with(owner, |rt| address_ack != Ack::None || rt.address.as_deref() != Some(address_snapshot.as_str())).unwrap_or(false);
+        if address_fresh && host.post_json(&address_snapshot).is_ok() {
+            let _ = with(owner, |rt| rt.address = Some(address_snapshot));
+        }
+        // --- page tools (T7) --- the Page tools section reads the same answer.
+        let pt_snapshot = pagetools_snapshot(address_ack, &address_error);
+        let pt_fresh = with(owner, |rt| address_ack != Ack::None || rt.pagetools.as_deref() != Some(pt_snapshot.as_str())).unwrap_or(false);
+        if pt_fresh && host.post_json(&pt_snapshot).is_ok() {
+            let _ = with(owner, |rt| rt.pagetools = Some(pt_snapshot));
+        }
+        // --- end page tools ---
         if fresh && host.post_json(&snapshot).is_ok() {
             let _ = with(owner, |rt| {
                 rt.snapshot = Some(snapshot);
@@ -426,6 +471,13 @@ pub(crate) fn sync(owner: HWND, app: &AppRef) {
                 let _ = with(owner, |rt| rt.privacy = Some(privacy));
             }
         }
+        // The blocking, history and appearance controls beside it (thread T3).
+        if let Some(protection) = super::html_dialog::protection_snapshot_json(app) {
+            let fresh = with(owner, |rt| rt.protection.as_deref() != Some(protection.as_str())).unwrap_or(false);
+            if fresh && host.post_json(&protection).is_ok() {
+                let _ = with(owner, |rt| rt.protection = Some(protection));
+            }
+        }
     }
     // The Extensions section: read afresh with the page or after a change, sent when it changed or
     // carries an answer.
@@ -437,6 +489,27 @@ pub(crate) fn sync(owner: HWND, app: &AppRef) {
                 rt.extensions = Some(extensions);
                 rt.ext_ack = ext::Ack::None;
                 rt.ext_error.clear();
+            });
+        }
+    }
+    // The Keyboard and Quick Commands sections: the live store (`crate::commands`), sent when it
+    // changed or carries an answer.
+    if with(owner, |rt| std::mem::take(&mut rt.cmd_due)).unwrap_or(false) {
+        let (ack, error, conflict) = with(owner, |rt| (rt.cmd_ack, rt.cmd_error.clone(), rt.cmd_conflict.clone())).unwrap_or_default();
+        let live = crate::commands::live();
+        let status = cmdpage::Status {
+            ack,
+            error: &error,
+            conflict: conflict.as_ref().map(|(chord, id, label)| (chord.as_str(), id.as_str(), label.as_str())),
+        };
+        let commands = cmdpage::snapshot_json(status, &live.store);
+        let fresh = with(owner, |rt| rt.cmd_ack != cmdpage::Ack::None || rt.commands.as_deref() != Some(commands.as_str())).unwrap_or(false);
+        if fresh && host.post_json(&commands).is_ok() {
+            let _ = with(owner, |rt| {
+                rt.commands = Some(commands);
+                rt.cmd_ack = cmdpage::Ack::None;
+                rt.cmd_error.clear();
+                rt.cmd_conflict = None;
             });
         }
     }
@@ -517,6 +590,9 @@ fn snapshot(owner: HWND, app: &AppRef) -> String {
         },
         download_dir: &download_dir,
         download_ask: App::settings(app).ask_download_location,
+        // --- tab stacks (T10) --- the workspace rules editor.
+        workspace_rules: App::workspace_rules(app).into_iter().map(|rule| (rule.site, rule.workspace)).collect(),
+        workspace_names: App::workspace_entries(app).into_iter().map(|(_, name, ..)| name).collect(),
     })
 }
 
@@ -540,6 +616,14 @@ fn answer(owner: HWND, result: Result<(), String>) {
 /// Runs the queued commands for `owner` (from `WM_SETTINGS_COMMAND`). A command acts only while
 /// the page is shown over a settings tab; anything else is dropped.
 pub(crate) fn run_queued(owner: HWND, app: &AppRef) {
+    // A filter list a worker fetched for the Privacy section is stored first (thread T3).
+    if super::protection::apply_fetched(app, owner) {
+        let _ = with(owner, |rt| rt.dirty = true);
+    }
+    // A blocker build a worker finished is swapped in (fix E).
+    if super::protection::take_built(app) {
+        let _ = with(owner, |rt| rt.dirty = true);
+    }
     let commands: Vec<Queued> = QUEUE.with(|queue| {
         let mut queue = queue.borrow_mut();
         let (mine, rest): (Vec<_>, Vec<_>) = queue.drain(..).partition(|(id, _)| *id == owner.0 as isize);
@@ -557,6 +641,12 @@ pub(crate) fn run_queued(owner: HWND, app: &AppRef) {
                     run(owner, app, tab, action);
                 } else if let Some(action) = ext::map_command(&fields) {
                     run_extension(owner, app, action);
+                } else if let Some(action) = cmdpage::map_command(&fields) {
+                    run_commands(owner, app, action);
+                } else if let Some(action) = address_wire::map_command(&fields) {
+                    run_address(owner, app, action);
+                } else if let Some(change) = pt_wire::map_command(&fields) {
+                    run_pagetools(owner, app, change); // --- page tools (T7) ---
                 }
             }
             Queued::Privacy(fields) => {
@@ -578,7 +668,7 @@ fn run(owner: HWND, app: &AppRef, tab: TabId, action: Action) {
             let Ok(mut settings) = crate::settings::read_strict(&path) else {
                 return answer(owner, Err("settings.txt could not be read, so nothing was saved. Open the settings file to fix it.".into()));
             };
-            if !wire::apply_settings_text(&mut settings, &text) {
+            if !wire::apply_page_save(&mut settings, &text) {
                 return answer(owner, Err("That value is not allowed. Nothing was saved.".into()));
             }
             let saved = crate::settings::save(&path, &settings);
@@ -592,9 +682,12 @@ fn run(owner: HWND, app: &AppRef, tab: TabId, action: Action) {
         }
         Action::Reset => {
             let Ok(profile) = profile else { return answer(owner, Err("The profile is not ready.".into())) };
-            let defaults = crate::settings::Settings::default();
+            // --- wave-1 fixes --- everything but history retention, as the row's description says.
+            let defaults = crate::settings::reset_defaults(&crate::settings::Settings::load(&profile.settings_file()));
             let saved = crate::settings::save(&profile.settings_file(), &defaults);
             if saved.is_ok() {
+                // Search goes back to its defaults too: the engine list is put back as shipped.
+                let _ = std::fs::remove_file(profile.root().join(crate::search_engines::FILE_NAME));
                 App::apply_tab_layout_settings(app, defaults.tab_layout, defaults.sidebar_width);
                 App::apply_efficiency_mode(app, defaults.efficiency_mode);
                 App::apply_sleep_settings(app, defaults.sleep_enabled, defaults.sleep_after_secs);
@@ -664,6 +757,66 @@ fn run(owner: HWND, app: &AppRef, tab: TabId, action: Action) {
             App::set_translate_target(app, &target);
             answer(owner, Ok(()));
         }
+        // --- tab options ---
+        Action::TabOption(text) => {
+            if App::set_tab_option(app, &text) {
+                answer(owner, Ok(()));
+            } else {
+                answer(owner, Err("That value is not allowed. Nothing was saved.".into()));
+            }
+        }
+        // --- end tab options ---
+        // --- theme options ---
+        Action::ThemeOption(text) => {
+            if App::set_theme_option(app, &text) {
+                answer(owner, Ok(()));
+            } else {
+                answer(owner, Err("That value is not allowed. Nothing was saved.".into()));
+            }
+        }
+        Action::ThemeReset => {
+            App::reset_theme(app);
+            answer(owner, Ok(()));
+        }
+        Action::ThemeExport => match export_theme_file(owner, app) {
+            Ok(true) => answer(owner, Ok(())),
+            Ok(false) => {
+                let _ = with(owner, |rt| rt.dirty = true);
+            }
+            Err(message) => answer(owner, Err(message)),
+        },
+        Action::ThemeImport => match import_theme_file(owner, app) {
+            Ok(true) => answer(owner, Ok(())),
+            Ok(false) => {
+                let _ = with(owner, |rt| rt.dirty = true);
+            }
+            Err(message) => answer(owner, Err(message)),
+        },
+        // --- end theme options ---
+        // --- tab stacks (T10) --- workspace rules.
+        Action::WorkspaceRuleAdd { site, workspace } => {
+            let mut rules = App::workspace_rules(app);
+            let result = crate::workspace_rules::add(&mut rules, &site, &workspace)
+                .map_err(|error| error.message().to_owned())
+                .and_then(|()| App::set_workspace_rules(app, rules));
+            answer(owner, result);
+        }
+        Action::WorkspaceRuleRemove(site) => {
+            let mut rules = App::workspace_rules(app);
+            crate::workspace_rules::remove(&mut rules, &site);
+            answer(owner, App::set_workspace_rules(app, rules));
+        }
+        // --- end tab stacks ---
+        // --- toolbars and feeds (thread T13) ---
+        Action::BarOption(text) => {
+            if App::set_bar_option(app, &text) {
+                answer(owner, Ok(()));
+            } else {
+                answer(owner, Err("That value is not allowed. Nothing was saved.".into()));
+            }
+        }
+        Action::OpenFeeds => super::window::open_feeds_panel(owner, app),
+        // --- end toolbars and feeds ---
         Action::DownloadFolder => {
             // The native folder picker, parented to the window; Bowser keeps the choice itself, so the
             // page never names a path. Cancelling changes nothing and says nothing.
@@ -680,6 +833,201 @@ fn run(owner: HWND, app: &AppRef, tab: TabId, action: Action) {
             answer(owner, crate::default_browser::make_default(&exe));
         }
     }
+}
+
+// --- theme options --- the theme file: the person picks the file in Windows' own dialog; the page never
+// names a path. What is read is checked by `theme_custom::parse_theme_file` before anything is applied.
+
+/// "Export theme": `Ok(false)` when the dialog was cancelled.
+fn export_theme_file(owner: HWND, app: &AppRef) -> Result<bool, String> {
+    let dir = crate::download_shell::default_downloads_dir().unwrap_or_default();
+    let Some(path) = crate::download_shell::save_dialog(owner, &dir, crate::theme_custom::FILE_NAME) else {
+        return Ok(false);
+    };
+    let text = App::export_theme_text(app);
+    std::fs::write(&path, text).map_err(|error| format!("The theme could not be saved: {error}."))?;
+    Ok(true)
+}
+
+/// "Import theme": `Ok(false)` when the dialog was cancelled.
+fn import_theme_file(owner: HWND, app: &AppRef) -> Result<bool, String> {
+    let Some(path) = crate::download_shell::open_dialog(owner, "Choose a Bowser theme file", "Bowser theme files", crate::theme_custom::FILE_EXTENSION) else {
+        return Ok(false);
+    };
+    let bytes = read_theme_file(&path)?;
+    App::import_theme(app, &bytes)?;
+    Ok(true)
+}
+
+/// The bytes of a theme file, read only if it is a regular file no larger than the cap (and never
+/// more than the cap plus one byte, whatever the file grows to while it is read).
+fn read_theme_file(path: &std::path::Path) -> Result<Vec<u8>, String> {
+    use std::io::Read;
+    let cap = crate::theme_custom::MAX_THEME_FILE_BYTES;
+    let file = std::fs::File::open(path).map_err(|error| format!("The theme file could not be opened: {error}."))?;
+    let meta = file.metadata().map_err(|error| format!("The theme file could not be read: {error}."))?;
+    if !meta.is_file() {
+        return Err(crate::theme_custom::FileError::NotATheme.to_string());
+    }
+    if meta.len() > cap as u64 {
+        return Err(crate::theme_custom::FileError::TooLarge.to_string());
+    }
+    let mut bytes = Vec::new();
+    file.take(cap as u64 + 1).read_to_end(&mut bytes).map_err(|error| format!("The theme file could not be read: {error}."))?;
+    Ok(bytes)
+}
+// --- end theme options ---
+
+// ----- the Keyboard and Quick Commands sections (docs/commands.md) -----
+
+/// Records how a Keyboard or Quick Commands command went; the next snapshot reports it once.
+fn cmd_answer(owner: HWND, ack: cmdpage::Ack, error: String, conflict: Option<(String, String, String)>) {
+    let _ = with(owner, |rt| {
+        rt.cmd_ack = ack;
+        rt.cmd_error = error;
+        rt.cmd_conflict = conflict;
+        rt.cmd_due = true;
+        rt.commands = None;
+    });
+}
+
+/// Applies one command to a copy of the live store, saves it with the profile and makes it live (the
+/// key handlers read it from the next key press). Test Chain runs the draft and saves nothing.
+fn run_commands(owner: HWND, app: &AppRef, action: cmdpage::Action) {
+    let mut store = crate::commands::live().store.clone();
+    match cmdpage::apply(&mut store, &action) {
+        cmdpage::Outcome::Saved => match crate::commands::save_and_install(store) {
+            Ok(_) => cmd_answer(owner, cmdpage::Ack::Saved, String::new(), None),
+            Err(error) => cmd_answer(owner, cmdpage::Ack::Failed, error, None),
+        },
+        cmdpage::Outcome::Conflict { chord, owner: holder, label } => cmd_answer(owner, cmdpage::Ack::Conflict, String::new(), Some((chord, holder, label))),
+        cmdpage::Outcome::Failed(error) => cmd_answer(owner, cmdpage::Ack::Failed, error, None),
+        cmdpage::Outcome::Test(chain) => {
+            super::command_actions::start(owner, &chain);
+            cmd_answer(owner, cmdpage::Ack::Ran, String::new(), None);
+        }
+        cmdpage::Outcome::CheatSheet => super::window::show_shortcuts_sheet(owner, app),
+        // While the editor waits for a key, the page gets every key (`html_settings_accelerator`).
+        cmdpage::Outcome::Capture(on) => crate::commands::set_capturing(on),
+    }
+}
+
+// ----- the address bar, search and bookmark sections (src/chrome_host/address_page.rs) -----
+
+/// The section's snapshot: every option, the engine list and the bookmark folders, read now.
+fn address_snapshot(app: &AppRef, ack: Ack, error: &str) -> String {
+    let profile = crate::profile::active().ok();
+    let settings = profile.as_ref().and_then(|profile| crate::settings::read_strict(&profile.settings_file()).ok()).unwrap_or_default();
+    let engines = crate::address_runtime::engines();
+    let folders = profile
+        .as_ref()
+        .filter(|profile| crate::productivity::profile_allows_productivity(profile))
+        .and_then(|profile| crate::bookmarks::BookmarkStore::load(profile.root()).ok())
+        .map(|store| super::address_dialog::folders_of(&store))
+        .unwrap_or_default();
+    let _ = app;
+    address_wire::snapshot_json(&address_wire::Snapshot {
+        settings: &settings.address,
+        engines: &engines,
+        folders: &folders,
+        guest: profile.as_ref().is_some_and(|profile| profile.is_guest()),
+        ack: match ack {
+            Ack::None => address_wire::Ack::None,
+            Ack::Saved => address_wire::Ack::Saved,
+            Ack::Failed => address_wire::Ack::Failed,
+        },
+        error,
+    })
+}
+
+/// Runs one change from the address bar, search or bookmark sections.
+fn run_address(owner: HWND, app: &AppRef, action: address_wire::Action) {
+    use address_wire::{Action as Change, EngineOp};
+    let Ok(profile) = crate::profile::active() else { return answer(owner, Err("The profile is not ready.".into())) };
+    let path = profile.settings_file();
+    match action {
+        Change::Set { key, value } => {
+            let Ok(mut settings) = crate::settings::read_strict(&path) else {
+                return answer(owner, Err("settings.txt could not be read, so nothing was saved. Open the settings file to fix it.".into()));
+            };
+            if !settings.address.set(&key, &value) {
+                return answer(owner, Err("That value is not allowed. Nothing was saved.".into()));
+            }
+            let saved = crate::settings::save(&path, &settings);
+            if saved.is_ok() {
+                App::apply_live_settings(app, &settings);
+            }
+            answer(owner, saved.map_err(|error| format!("Settings could not be saved: {error}. Nothing was saved.")));
+        }
+        Change::Engine(op) => {
+            let mut store = (*crate::address_runtime::engines()).clone();
+            let result = match op {
+                EngineOp::Add(engine) => store.add(engine).map(|_| ()),
+                EngineOp::Update(id, engine) => store.update(&id, engine),
+                EngineOp::Remove(id) => store.remove(&id),
+                EngineOp::Move(id, index) => store.move_to(&id, index),
+                EngineOp::Default(id) => store.set_default(&id),
+                EngineOp::Private(id) => store.set_private(&id),
+                EngineOp::Image(id) => store.set_image(&id),
+                EngineOp::Restore => {
+                    store.restore_defaults();
+                    Ok(())
+                }
+            };
+            if let Err(error) = result {
+                return answer(owner, Err(error.to_string()));
+            }
+            if let Err(error) = crate::address_runtime::save_engines(&store) {
+                return answer(owner, Err(format!("Search engines could not be saved: {error}.")));
+            }
+            // The older `search_engine` key follows a default that it can name, so a settings file read
+            // by an earlier Bowser still points at the same engine.
+            if let (Some(legacy), Ok(mut settings)) = (crate::search_engines::legacy_of_id(store.default_id()), crate::settings::read_strict(&path)) {
+                if settings.search_engine != Some(legacy) {
+                    settings.search_engine = Some(legacy);
+                    if crate::settings::save(&path, &settings).is_ok() {
+                        App::apply_live_settings(app, &settings);
+                    }
+                }
+            }
+            answer(owner, Ok(()));
+        }
+    }
+}
+
+// ----- the Page tools section (src/chrome_host/page_tools_page.rs) -----
+
+/// The section's snapshot, read now.
+fn pagetools_snapshot(ack: Ack, error: &str) -> String {
+    let profile = crate::profile::active().ok();
+    let settings = profile.as_ref().and_then(|profile| crate::settings::read_strict(&profile.settings_file()).ok()).unwrap_or_default();
+    pt_wire::snapshot_json(
+        &settings.page_tools,
+        profile.as_ref().is_some_and(|profile| profile.is_guest()),
+        match ack {
+            Ack::None => pt_wire::Ack::None,
+            Ack::Saved => pt_wire::Ack::Saved,
+            Ack::Failed => pt_wire::Ack::Failed,
+        },
+        error,
+    )
+}
+
+/// Runs one change from the Page tools section: saved to the profile's file, then applied live.
+fn run_pagetools(owner: HWND, app: &AppRef, change: pt_wire::Change) {
+    let Ok(profile) = crate::profile::active() else { return answer(owner, Err("The profile is not ready.".into())) };
+    let path = profile.settings_file();
+    let Ok(mut settings) = crate::settings::read_strict(&path) else {
+        return answer(owner, Err("settings.txt could not be read, so nothing was saved. Open the settings file to fix it.".into()));
+    };
+    if !settings.page_tools.set(&change.key, &change.value) {
+        return answer(owner, Err("That value is not allowed. Nothing was saved.".into()));
+    }
+    let saved = crate::settings::save(&path, &settings);
+    if saved.is_ok() {
+        App::apply_live_settings(app, &settings);
+    }
+    answer(owner, saved.map_err(|error| format!("Settings could not be saved: {error}. Nothing was saved.")));
 }
 
 // ----- the Extensions section (docs/extensions.md "Managing extensions") -----

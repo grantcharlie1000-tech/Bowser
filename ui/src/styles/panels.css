@@ -135,7 +135,7 @@
 .pn-row {
   position: relative;
   gap: var(--bw-space-2);
-  height: 32px;
+  height: var(--bw-row-h); /* 32px; 28px at the compact density (thread T6) */
   padding: 0 var(--bw-space-2);
   transition: background-color var(--bw-dur-fast) var(--bw-ease-fade);
 }
@@ -427,6 +427,118 @@
   resize: vertical;
 }
 
+/* ---- Notes: sort, folders, files, Markdown preview (page tools) ---- */
+.pn-tools-wrap {
+  display: flex;
+  flex-direction: column;
+}
+
+.pn-tools-wrap[hidden],
+.pn-folder-input[hidden] {
+  display: none;
+}
+
+.pn-notes-tools {
+  align-items: center;
+  gap: var(--bw-space-1);
+}
+
+.pn-notes-tools .bw-select {
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+.pn-folder-input {
+  margin: 0 var(--bw-space-2) var(--bw-space-1);
+}
+
+.pn-folder-actions {
+  display: flex;
+  gap: var(--bw-space-1);
+  margin-left: auto;
+}
+
+.pn-note-addr {
+  margin: 0;
+  color: var(--bw-text-2);
+  font-size: var(--bw-text-caption);
+  line-height: var(--bw-leading-caption);
+}
+
+.pn-note-addr[hidden],
+.pn-md[hidden],
+.pn-textarea[hidden] {
+  display: none;
+}
+
+.pn-note-tools {
+  display: flex;
+  align-items: center;
+  gap: var(--bw-space-1);
+  margin-top: var(--bw-space-1);
+}
+
+.pn-note-tools .bw-select {
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+.pn-md {
+  min-height: 96px;
+  padding: var(--bw-space-1_5) var(--bw-space-2);
+  border: 1px solid var(--bw-hairline);
+  border-radius: var(--bw-r-control);
+  color: var(--bw-text);
+  overflow-wrap: anywhere;
+}
+
+.pn-md-p,
+.pn-md-h,
+.pn-md-quote,
+.pn-md-code,
+.pn-md-list {
+  margin: 0 0 var(--bw-space-2);
+}
+
+.pn-md-h {
+  font-weight: var(--bw-weight-strong);
+}
+
+.pn-md-h1 {
+  font-size: 1.25em;
+}
+
+.pn-md-h2 {
+  font-size: 1.1em;
+}
+
+.pn-md-quote {
+  padding-left: var(--bw-space-2);
+  border-left: 2px solid var(--bw-hairline);
+  color: var(--bw-text-2);
+}
+
+.pn-md-code,
+.pn-md code {
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 0.92em;
+}
+
+.pn-md-code {
+  padding: var(--bw-space-1) var(--bw-space-2);
+  border-radius: var(--bw-r-control);
+  background: var(--bw-hairline);
+  white-space: pre-wrap;
+}
+
+.pn-md-list {
+  padding-left: 1.4em;
+}
+
+.pn-md .pn-md-link {
+  color: var(--bw-accent);
+}
+
 .pn-task {
   padding: 0 var(--bw-space-2);
   min-height: 36px;
@@ -669,6 +781,248 @@
   justify-content: flex-end;
   gap: var(--bw-space-2);
 }
+
+/* Blocking, history and website appearance (protection.ts): the blocks reuse the dashboard's rows.
+   Only the add forms (a field, a choice and a button in one row), a list that is switched off and
+   an inline problem need their own rules. */
+.pg-protect-add {
+  flex-wrap: wrap;
+}
+
+.pg-protect-input {
+  flex: 1 1 160px;
+  width: 200px;
+  min-width: 0;
+}
+
+.pg-protect-site-controls,
+.pg-protect-source {
+  flex-wrap: wrap;
+}
+
+.pg-protect .pg-row.is-off .pg-label {
+  color: var(--bw-text-2);
+}
+
+.pg-protect-error {
+  margin: 0;
+  padding: var(--bw-space-1) var(--bw-space-2);
+  color: var(--sp-warn, var(--bw-group-1));
+  font-size: var(--bw-text-caption);
+  line-height: var(--bw-leading-caption);
+}
+
+.pg-seg-host {
+  display: flex;
+  justify-content: flex-end;
+}
+
+/* ---- Sessions panel (ui/src/panels/sessions.ts): the notes panel's rows, two lines tall ---- */
+.ps-bar { align-items: flex-start; }
+
+.ps-form {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  gap: var(--bw-space-2);
+  padding: 0 var(--bw-space-3) var(--bw-space-3);
+}
+
+.ps-form[hidden],
+.ps-which[hidden] { display: none; }
+
+.ps-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--bw-space-2);
+}
+
+.ps-error {
+  padding: 0;
+  color: var(--bw-text);
+}
+
+.ps-error:empty { display: none; }
+
+.ps-row {
+  height: 48px;
+  align-items: center;
+}
+
+.ps-row .bw-row-title,
+.ps-row .bw-row-meta {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ps-row .pn-trail { min-width: 72px; max-width: none; }
+.ps-row.is-confirming { background: var(--bw-accent-soft); }
+.ps-row.is-confirming .pn-actions { opacity: 1; }
+
+/* ---- Feeds panel (ui/src/panels/feeds.ts): the Sessions panel's parts, with a subscription list above the items ---- */
+.pf-add {
+  display: flex;
+  gap: var(--bw-space-2);
+}
+
+.pf-add .bw-input {
+  flex: 1;
+}
+
+.pf-error { color: var(--bw-text); }
+.pf-error[hidden],
+.pf-status[hidden],
+.pf-page[hidden],
+.pf-preview[hidden],
+.pf-feeds[hidden],
+.pf-note[hidden] { display: none; }
+
+.pf.is-busy .pf-status::before {
+  content: "";
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-inline-end: var(--bw-space-1);
+  border-radius: var(--bw-r-pill);
+  background: var(--bw-accent);
+  vertical-align: middle;
+  opacity: 0.7;
+}
+
+.pf-page,
+.pf-preview {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  max-height: 44%;
+  margin: 0 var(--bw-space-2) var(--bw-space-2);
+  padding-bottom: var(--bw-space-1);
+  border: 1px solid var(--bw-hairline);
+  border-radius: var(--bw-r-island);
+  background: var(--bw-fill);
+}
+
+.pf-preview-head {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--bw-space-2);
+}
+
+.pf-preview-title {
+  position: static;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  background: transparent;
+}
+
+.pf-preview-actions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--bw-space-1);
+  padding-inline-end: var(--bw-space-2);
+}
+
+.pf-preview-list {
+  flex: none;
+  max-height: 280px;
+  overflow-y: auto;
+  padding: 0 var(--bw-space-1);
+}
+
+.pf-offer .bw-row-title,
+.pf-offer .bw-row-meta { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.pf-feeds {
+  flex: none;
+  max-height: 30%;
+  padding: 0 var(--bw-space-2) var(--bw-space-1);
+}
+
+.pf-feed { font-weight: var(--bw-weight-strong); }
+.pf-feed .pn-trail { min-width: 56px; max-width: none; margin-inline-start: auto; }
+.pf-all .pn-trail { margin-inline-start: auto; }
+.pf-feed.is-confirming { background: var(--bw-accent-soft); }
+.pf-feed.is-confirming .pn-actions { opacity: 1; }
+
+.pf-count {
+  display: inline-grid;
+  min-width: 18px;
+  height: 18px;
+  place-items: center;
+  padding: 0 var(--bw-space-1);
+  border-radius: var(--bw-r-pill);
+  background: var(--bw-accent-soft);
+  color: var(--bw-text);
+  font-size: var(--bw-text-caption);
+  font-weight: var(--bw-weight-strong);
+  line-height: 1;
+}
+
+.pf-count[hidden] { display: none; }
+
+.pf-warn {
+  display: inline-grid;
+  place-items: center;
+  color: var(--bw-text);
+}
+
+.pf-note {
+  padding-top: var(--bw-space-1);
+  padding-bottom: 0;
+}
+
+.pf-items { padding-top: var(--bw-space-1); }
+
+.pf-item,
+.pf-peek-item {
+  align-items: flex-start;
+  padding-block: var(--bw-space-1_5);
+  font-weight: 400;
+}
+
+.pf-item .pn-lead { margin-top: 2px; }
+
+.pf-dot {
+  display: block;
+  width: 8px;
+  height: 8px;
+  border-radius: var(--bw-r-pill);
+  background: var(--bw-accent);
+}
+
+.pf-item.is-unread .pf-title { font-weight: var(--bw-weight-strong); }
+.pf-item:not(.is-unread) .pf-title { color: var(--bw-text-2); }
+
+.pf-text { gap: 2px; }
+.pf-text > * { flex: none; }
+.pf-preview-list .pn-row { height: auto; }
+
+.pf-summary {
+  display: -webkit-box;
+  overflow: hidden;
+  color: var(--bw-text-2);
+  font-size: var(--bw-text-caption);
+  line-height: var(--bw-leading-caption);
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+}
+
+.pf-tools {
+  display: flex;
+  flex: none;
+  gap: var(--bw-space-1);
+  opacity: 0;
+  transition: opacity var(--bw-dur-fast) var(--bw-ease-fade);
+}
+
+.pf-item:is(:hover, :focus-within) .pf-tools { opacity: 1; }
 
 @media (max-width: 640px) {
   .pg-row {

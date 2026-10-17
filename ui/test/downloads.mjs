@@ -187,7 +187,7 @@ test('commands: dl toggle, dlact, dpage and set stay within six keys and their r
     assert.ok(Object.keys(message).length <= 6, JSON.stringify(message));
     assert.ok(JSON.stringify(message).length < 16 * 1024);
   }
-  assert.deepEqual([...protocol.SETTINGS_SECTIONS], ['profile', 'appearance', 'privacy', 'performance', 'search', 'downloads', 'media', 'extensions', 'updates', 'about']);
+  assert.deepEqual([...protocol.SETTINGS_SECTIONS], ['profile', 'appearance', 'tabs', 'stacks', 'startpage', 'privacy', 'performance', 'pagetools', 'address', 'search', 'bookmarks', 'keyboard', 'commands', 'downloads', 'media', 'extensions', 'updates', 'about']);
   assert.deepEqual(protocol.parseInbound({ v: 1, t: 'settingsgo', s: 'downloads' }), { t: 'settingsgo', s: 'downloads' });
 });
 

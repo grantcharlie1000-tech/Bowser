@@ -24,6 +24,7 @@ use std::{
 };
 
 use crate::navigation::SearchEngine;
+pub use crate::settings_privacy::{BlockerLevel, HistoryRetention, PrivateTheme, WebsiteAppearance};
 use crate::site_prefs::{ZOOM_MAX as DEFAULT_ZOOM_MAX, ZOOM_MIN as DEFAULT_ZOOM_MIN};
 
 pub const FILE_NAME: &str = "settings.txt";
@@ -42,11 +43,13 @@ pub const TEMPLATE: &str = "# Bowser settings. Restart Bowser after editing.\r\n
     # tracking_prevention=balanced\r\n\
     # theme=helium\r\n\
     # theme_accent=\r\n\
-    # toolbar_buttons=back,forward,reload,site-info,bookmark,newtab,split,reader\r\n\
+    # toolbar_buttons=back,forward,reload,site-info,split,reader,extensions,downloads\r\n\
     # centred_address_bar=true\r\n\
     # minimal_url=true\r\n\
     # show_load_progress=true\r\n\
     # frameless=false\r\n\
+    # auto_hide_bars=tabs,address,bookmarks\r\n\
+    # auto_hide_fullscreen=true\r\n\
     # rounded_content_frame=true\r\n\
     # show_home_button=true\r\n\
     # bookmarks_bar=never\r\n\
@@ -70,7 +73,46 @@ pub const TEMPLATE: &str = "# Bowser settings. Restart Bowser after editing.\r\n
     # ask_download_location=false\r\n\
     # translate_offer=true\r\n\
     # translate_auto=false\r\n\
-    # translate_target=\r\n";
+    # translate_target=\r\n\
+    # blocker_level=ads\r\n\
+    # cookie_notices=false\r\n\
+    # history_retention=3m\r\n\
+    # website_appearance=auto\r\n\
+    # force_dark_websites=false\r\n\
+    # private_theme=follow\r\n\
+    # tab_bar_visible=true\r\n\
+    # address_bar_position=top\r\n\
+    # address_bar_visible=true\r\n\
+    # show_title_bar=false\r\n\
+    # status_bar=overlay\r\n\
+    # ui_density=regular\r\n\
+    # compact_menus=false\r\n\
+    # ui_zoom=100\r\n\
+    # toolbar_tabs=closed-tabs\r\n\
+    # toolbar_panel=\r\n\
+    # feeds_detect=true\r\n\
+    # feeds_refresh_minutes=60\r\n\
+    # start_group_reopen=last\r\n\
+    # start_titles=always\r\n\
+    # start_add_button=true\r\n\
+    # start_columns=6\r\n\
+    # start_thumb_size=3\r\n\
+    # start_drag_reorder=true\r\n\
+    # homepage=\r\n\
+    # startup=start_page\r\n\
+    # startup_pages=\r\n\
+    # start_widgets=false\r\n\
+    # start_widget_columns=2\r\n\
+    # start_widget_height=regular\r\n\
+    # start_widget_bg=translucent\r\n\
+    # start_widget_color=#1f2933\r\n\
+    # start_widget_drag=true\r\n\
+    # tabs_new_tab_page=start\r\n\
+    # tabs_close_activation=right\r\n\
+    # tabs_keep_window=true\r\n\
+    # (more tabs_* options: see Settings > Tabs)\r\n\
+    # theme_schedule=system\r\n\
+    # (more theme_* options: see Settings > Appearance)\r\n";
 /// Largest settings file that will be read; a larger file is ignored entirely.
 pub const MAX_FILE_BYTES: usize = 16 * 1024;
 pub const DEFAULT_SLEEP_AFTER_SECS: u64 = 300;
@@ -149,11 +191,17 @@ pub enum TabLayout {
     SingleRow,
     /// Sidebar tab list at the left; the top tab row is absent.
     Vertical,
+    // --- layout (thread T6) ---
+    /// Sidebar tab list at the right, under the toolbar row; the top tab row is absent.
+    VerticalRight,
+    /// Toolbar row on top, full-width tab row along the bottom edge of the window.
+    TabsBottom,
+    // --- end layout ---
 }
 
 impl TabLayout {
     /// Every layout, in the order the settings dropdown lists them.
-    pub const ALL: [TabLayout; 4] = [Self::ToolbarTop, Self::TabsTop, Self::SingleRow, Self::Vertical];
+    pub const ALL: [TabLayout; 6] = [Self::ToolbarTop, Self::TabsTop, Self::SingleRow, Self::Vertical, Self::VerticalRight, Self::TabsBottom];
 
     /// The value saved in `settings.txt` and exchanged with the settings page.
     pub fn key(self) -> &'static str {
@@ -162,6 +210,8 @@ impl TabLayout {
             Self::TabsTop => "tabs-top",
             Self::SingleRow => "single-row",
             Self::Vertical => "vertical",
+            Self::VerticalRight => "vertical-right",
+            Self::TabsBottom => "bottom",
         }
     }
 
@@ -170,10 +220,34 @@ impl TabLayout {
         Self::ALL.into_iter().find(|layout| layout.key().eq_ignore_ascii_case(key))
     }
 
-    /// Whether the tab list is the left sidebar rather than a row of tabs in the top chrome.
+    /// Whether the tab list is a sidebar (left or right) rather than a row of tabs in the chrome.
     pub fn is_vertical(self) -> bool {
-        self == Self::Vertical
+        matches!(self, Self::Vertical | Self::VerticalRight)
     }
+
+    // --- layout (thread T6) ---
+    /// Which edge the sidebar is docked to, for the two sidebar layouts.
+    pub fn sidebar_side(self) -> Option<SidePanelPosition> {
+        match self {
+            Self::Vertical => Some(SidePanelPosition::Left),
+            Self::VerticalRight => Some(SidePanelPosition::Right),
+            _ => None,
+        }
+    }
+
+    /// Where the tab bar sits: `top`, `left`, `right` or `bottom` (the settings page's Tab bar row).
+    pub fn tab_bar_edge(self) -> &'static str {
+        match self {
+            Self::ToolbarTop | Self::TabsTop | Self::SingleRow => "top",
+            Self::Vertical => "left",
+            Self::VerticalRight => "right",
+            Self::TabsBottom => "bottom",
+        }
+    }
+
+    /// The layouts whose tab bar is a row at the top, in page order: the "top style" sub-choice.
+    pub const TOP_STYLES: [TabLayout; 3] = [Self::ToolbarTop, Self::TabsTop, Self::SingleRow];
+    // --- end layout ---
 }
 
 /// `theme=helium|system` (default `helium`): Bowser's own fixed colours, or the Windows accent and
@@ -220,32 +294,20 @@ pub fn parse_theme_accent(value: &str) -> Option<Option<String>> {
     is_hex_colour(value).then(|| Some(value.to_ascii_lowercase()))
 }
 
-/// Toolbar buttons the "Customise your toolbar" row can show or hide, in the order they appear
-/// when every one of them is on (the default).
+/// The buttons the native (GDI) settings window lists for the toolbar. The HTML chrome's toolbar
+/// editor (`crate::toolbar_prefs`) offers more, and keeps them when this window saves.
 pub const KNOWN_TOOLBAR_BUTTONS: [&str; 8] = [
     "back", "forward", "reload", "site-info", "bookmark", "newtab", "split", "reader",
 ];
 
-/// Parses a `toolbar_buttons` value: a comma-separated list of [`KNOWN_TOOLBAR_BUTTONS`], each at
-/// most once. `None` for an unknown id, a repeated id, or more entries than known buttons exist.
+/// Parses a `toolbar_buttons` value (the address bar's items, `crate::toolbar_prefs`): known button ids
+/// and command buttons, each at most once. `None` for an unknown id, a repeated id or too many.
 pub fn parse_toolbar_buttons(value: &str) -> Option<Vec<String>> {
-    let mut seen = std::collections::HashSet::new();
-    let mut buttons = Vec::new();
-    for raw in value.split(',') {
-        let id = raw.trim();
-        if id.is_empty() {
-            continue;
-        }
-        if !KNOWN_TOOLBAR_BUTTONS.contains(&id) || !seen.insert(id) {
-            return None;
-        }
-        buttons.push(id.to_owned());
-    }
-    (buttons.len() <= KNOWN_TOOLBAR_BUTTONS.len()).then_some(buttons)
+    crate::toolbar_prefs::parse_list(crate::toolbar_prefs::Bar::Address, value)
 }
 
 fn default_toolbar_buttons() -> Vec<String> {
-    KNOWN_TOOLBAR_BUTTONS.iter().map(|&id| id.to_owned()).collect()
+    crate::toolbar_prefs::Bar::Address.default_list()
 }
 
 /// Parses a `ui_font` value: any text up to [`MAX_UI_FONT_CHARS`] characters with no control
@@ -325,6 +387,8 @@ pub enum SidePanelPosition {
 }
 
 impl SidePanelPosition {
+    pub const ALL: [SidePanelPosition; 2] = [Self::Left, Self::Right]; // --- layout (thread T6) ---
+
     pub fn key(self) -> &'static str {
         match self {
             Self::Left => "left",
@@ -420,8 +484,17 @@ pub struct Settings {
     pub theme: Theme,
     /// `theme_accent`: an override colour, or `None` for the theme's own. Applies immediately.
     pub theme_accent: Option<String>,
-    /// `toolbar_buttons`: the toolbar's optional buttons, in the order shown. Applies after restart.
+    /// `toolbar_buttons`: the address bar's buttons, in the order shown (`crate::toolbar_prefs`). Applies at once.
     pub toolbar_buttons: Vec<String>,
+    /// `toolbar_tabs`: the tab bar's buttons. Applies at once.
+    pub toolbar_tabs: Vec<String>,
+    /// `toolbar_panel`: the extra buttons on the panel bar. Applies at once.
+    pub toolbar_panel: Vec<String>,
+    /// `feeds_detect` (default true): the address bar shows a button when the page offers a feed.
+    pub feeds_detect: bool,
+    /// `feeds_refresh_minutes` (0, 15, 30, 60, 180 or 720; default 60): the Feeds panel fetches the
+    /// feeds older than this when it opens; 0 fetches only when Refresh is pressed.
+    pub feeds_refresh_minutes: u32,
     /// `centred_address_bar` (default true). Applies immediately.
     pub centred_address_bar: bool,
     /// `minimal_url` (default true): the registrable host (and a path when useful) while unfocused,
@@ -429,8 +502,9 @@ pub struct Settings {
     pub minimal_url: bool,
     /// `show_load_progress` (default true). Applies immediately.
     pub show_load_progress: bool,
-    /// `frameless` (default false): hide the browser chrome until the pointer nears the window
-    /// edge. Applies after restart.
+    /// `frameless` (default false): the master "Auto-hide toolbars and tabs" switch. The bars chosen in
+    /// `auto_hide` leave the page's layout and float over it when the pointer rests at their edge
+    /// (`src/auto_hide.rs`). The key keeps its name so a saved value carries over. Applies immediately.
     pub frameless: bool,
     /// `rounded_content_frame` (default true). Applies immediately.
     pub rounded_content_frame: bool,
@@ -440,11 +514,12 @@ pub struct Settings {
     pub bookmarks_bar: BookmarksBar,
     /// `bookmarks_bar_tab_groups` (default false). Applies after restart.
     pub bookmarks_bar_tab_groups: bool,
-    /// `side_panel_position=left|right` (default left). Applies after restart.
+    /// `side_panel_position=left|right` (default left). Read from the file each time the side panel
+    /// opens, so it applies from the next panel opened; memory keeps the startup value.
     pub side_panel_position: SidePanelPosition,
-    /// `tab_preview_images` (default true). Applies after restart.
+    /// `tab_preview_images` (default true): the hover card's thumbnail. Applies immediately.
     pub tab_preview_images: bool,
-    /// `tab_preview_memory` (default true). Applies after restart.
+    /// `tab_preview_memory` (default true): the hover card's memory line. Applies immediately.
     pub tab_preview_memory: bool,
     /// `font_size=small|medium|large` (default medium). Applies immediately.
     pub font_size: FontSize,
@@ -489,6 +564,72 @@ pub struct Settings {
     /// `translate_target` (default empty: the Windows display language): the language pages are
     /// translated into, as a primary subtag such as `en`.
     pub translate_target: String,
+    // --- privacy, history and website appearance (thread T3) ---
+    /// `blocker_level` (default ads): what the blocker stops while `blocker_enabled` is on.
+    pub blocker_level: BlockerLevel,
+    /// `cookie_notices` (default false): hide cookie-consent banners with the bundled and added
+    /// cookie lists, with or without the ad blocker. A site can switch it off on its own.
+    pub cookie_notices: bool,
+    /// `history_retention` (default 3m): how long the history list keeps a visit.
+    pub history_retention: HistoryRetention,
+    /// `website_appearance` (default auto): the colour scheme sites are told the browser prefers.
+    pub website_appearance: WebsiteAppearance,
+    /// `force_dark_websites` (default false): darken pages that have no dark theme of their own.
+    pub force_dark_websites: bool,
+    /// `private_theme` (default follow): the light or dark look while a private tab is shown.
+    pub private_theme: PrivateTheme,
+    // --- end privacy, history and website appearance ---
+    // --- auto-hide (T11) ---
+    /// Which bars auto-hide and whether full screen always hides them (`src/auto_hide.rs`).
+    pub auto_hide: crate::auto_hide::AutoHideSettings,
+    // --- end auto-hide ---
+    // --- start page ---
+    /// The start page, speed dials, dashboard widgets, homepage and startup (`src/start_page.rs`).
+    pub start: crate::start_page::StartSettings,
+    // --- end start page ---
+    // --- address bar, search and bookmarks (src/address_settings.rs) ---
+    /// The address bar, drop-down, search field, scoped nickname and bookmark options. Stored as
+    /// further `key=value` lines of this file; changed one key at a time by the settings page.
+    pub address: crate::address_settings::AddressSettings,
+    // --- end address bar, search and bookmarks ---
+    // --- page tools (T7): capture, spatial navigation, reader defaults, zoom scope, pop-out video ---
+    /// The `pt_*` options (src/page_tools.rs), one line each in `settings.txt`.
+    pub page_tools: crate::page_tools::PageTools,
+    // --- end page tools ---
+    // --- tab options (src/tab_options.rs) ---
+    /// The `tabs_*` options of the settings page's Tabs section.
+    pub tabs: crate::tab_options::TabOptions,
+    // --- end tab options ---
+    // --- layout (thread T6, src/layout_prefs.rs) ---
+    /// `tab_bar_visible` (default true): off, the tab row or sidebar is not laid out at all.
+    pub tab_bar_visible: bool,
+    /// `address_bar_position=top|bottom` (default top): the toolbar row's edge.
+    pub address_bar_position: crate::layout_prefs::BarPosition,
+    /// `address_bar_visible` (default true): off, the toolbar row is not laid out; Ctrl+L brings it
+    /// back until the address field loses focus.
+    pub address_bar_visible: bool,
+    /// `show_title_bar` (default false): with the tab bar on a side, a title row above the
+    /// toolbar holds the page title and the window buttons.
+    pub show_title_bar: bool,
+    /// `status_bar=overlay|hidden` (default overlay): the page's link-address overlay.
+    pub status_bar: crate::layout_prefs::StatusBar,
+    /// `ui_density=regular|compact` (default regular): list row heights in the chrome.
+    pub ui_density: crate::layout_prefs::UiDensity,
+    /// `compact_menus` (default false): shorter menu rows.
+    pub compact_menus: bool,
+    /// `ui_zoom` (50 to 200, default 100): scales the chrome's text with `font_size`.
+    pub ui_zoom: u16,
+    /// `layout_saved`: the user's own layout as `LayoutConfig::key`, or empty. The settings page's
+    /// Saved tile.
+    pub layout_saved: String,
+    // --- end layout ---
+    // --- theme options (src/theme_custom.rs) ---
+    /// The `theme_*` options of the settings page's Appearance area: colours, accent mode, schedule.
+    pub themes: crate::theme_custom::ThemeOptions,
+    // --- end theme options ---
+    // --- window and panels (thread T9) --- src/window_prefs.rs
+    pub window: crate::window_prefs::WindowPrefs,
+    // --- end window and panels ---
 }
 
 impl Default for Settings {
@@ -509,6 +650,10 @@ impl Default for Settings {
             theme: Theme::Helium,
             theme_accent: None,
             toolbar_buttons: default_toolbar_buttons(),
+            toolbar_tabs: crate::toolbar_prefs::Bar::Tabs.default_list(),
+            toolbar_panel: crate::toolbar_prefs::Bar::Panel.default_list(),
+            feeds_detect: true,
+            feeds_refresh_minutes: crate::feeds::DEFAULT_REFRESH_MINUTES,
             centred_address_bar: true,
             minimal_url: true,
             show_load_progress: true,
@@ -537,6 +682,30 @@ impl Default for Settings {
             translate_offer: true,
             translate_auto: false,
             translate_target: String::new(),
+            blocker_level: BlockerLevel::Ads,
+            cookie_notices: false,
+            history_retention: HistoryRetention::Months3,
+            website_appearance: WebsiteAppearance::Auto,
+            force_dark_websites: false,
+            private_theme: PrivateTheme::Follow,
+            auto_hide: crate::auto_hide::AutoHideSettings::default(),
+            start: crate::start_page::StartSettings::default(),
+            address: crate::address_settings::AddressSettings::default(),
+            page_tools: crate::page_tools::PageTools::default(),
+            tabs: crate::tab_options::TabOptions::default(),
+            // --- layout (thread T6) ---
+            tab_bar_visible: true,
+            address_bar_position: crate::layout_prefs::BarPosition::Top,
+            address_bar_visible: true,
+            show_title_bar: false,
+            status_bar: crate::layout_prefs::StatusBar::Overlay,
+            ui_density: crate::layout_prefs::UiDensity::Regular,
+            compact_menus: false,
+            ui_zoom: crate::layout_prefs::DEFAULT_UI_ZOOM,
+            layout_saved: String::new(),
+            // --- end layout ---
+            themes: crate::theme_custom::ThemeOptions::default(),
+            window: crate::window_prefs::WindowPrefs::default(), // --- window and panels (thread T9) ---
         }
     }
 }
@@ -653,6 +822,14 @@ impl Settings {
                         settings.toolbar_buttons = buttons;
                     }
                 }
+                // --- toolbars and feeds (thread T13) --- a bad value keeps the previous one.
+                "toolbar_tabs" | "toolbar_panel" | "feeds_detect" | "feeds_refresh_minutes" => {
+                    let mut probe = settings.clone();
+                    if crate::toolbar_prefs::apply_assignment(&mut probe, &format!("{key}={value}")) {
+                        settings = probe;
+                    }
+                }
+                // --- end toolbars and feeds ---
                 "centred_address_bar" => {
                     if let Some(on) = parse_bool(value) {
                         settings.centred_address_bar = on;
@@ -793,9 +970,116 @@ impl Settings {
                         settings.translate_target = target;
                     }
                 }
-                _ => {}
+                // --- tab options ---
+                key if key.starts_with("tabs_") => {
+                    crate::tab_options::read_file_line(&mut settings.tabs, key, value);
+                }
+                // --- end tab options ---
+                // --- theme options ---
+                key if crate::theme_custom::KEYS.contains(&key) => {
+                    crate::theme_custom::read_file_line(&mut settings.themes, key, value);
+                }
+                // --- end theme options ---
+                // --- privacy, history and website appearance (thread T3) ---
+                "blocker_level" => {
+                    if let Some(level) = BlockerLevel::parse(value) {
+                        settings.blocker_level = level;
+                    }
+                }
+                "cookie_notices" => {
+                    if let Some(on) = parse_bool(value) {
+                        settings.cookie_notices = on;
+                    }
+                }
+                "history_retention" => {
+                    if let Some(retention) = HistoryRetention::parse(value) {
+                        settings.history_retention = retention;
+                    }
+                }
+                "website_appearance" => {
+                    if let Some(appearance) = WebsiteAppearance::parse(value) {
+                        settings.website_appearance = appearance;
+                    }
+                }
+                "force_dark_websites" => {
+                    if let Some(on) = parse_bool(value) {
+                        settings.force_dark_websites = on;
+                    }
+                }
+                "private_theme" => {
+                    if let Some(theme) = PrivateTheme::parse(value) {
+                        settings.private_theme = theme;
+                    }
+                }
+                // --- end privacy, history and website appearance ---
+                // --- layout (thread T6) ---
+                "tab_bar_visible" => {
+                    if let Some(on) = parse_bool(value) {
+                        settings.tab_bar_visible = on;
+                    }
+                }
+                "address_bar_position" => {
+                    if let Some(position) = crate::layout_prefs::BarPosition::parse(value) {
+                        settings.address_bar_position = position;
+                    }
+                }
+                "address_bar_visible" => {
+                    if let Some(on) = parse_bool(value) {
+                        settings.address_bar_visible = on;
+                    }
+                }
+                "show_title_bar" => {
+                    if let Some(on) = parse_bool(value) {
+                        settings.show_title_bar = on;
+                    }
+                }
+                "status_bar" => {
+                    if let Some(status) = crate::layout_prefs::StatusBar::parse(value) {
+                        settings.status_bar = status;
+                    }
+                }
+                "ui_density" => {
+                    if let Some(density) = crate::layout_prefs::UiDensity::parse(value) {
+                        settings.ui_density = density;
+                    }
+                }
+                "compact_menus" => {
+                    if let Some(on) = parse_bool(value) {
+                        settings.compact_menus = on;
+                    }
+                }
+                "ui_zoom" => {
+                    if let Ok(percent) = value.parse::<u16>() {
+                        settings.ui_zoom = percent.clamp(crate::layout_prefs::MIN_UI_ZOOM, crate::layout_prefs::MAX_UI_ZOOM);
+                    }
+                }
+                "layout_saved" => {
+                    if crate::layout_prefs::is_layout_saved(value) {
+                        settings.layout_saved = value.to_owned();
+                    }
+                }
+                // --- end layout ---
+                // --- start page --- (`start_*`, `homepage`, `startup`, `startup_pages`)
+                // Address bar, search and bookmark options (src/address_settings.rs) take what the start page does not.
+                _ => {
+                    if !settings.auto_hide.parse_key(key, value) /* --- auto-hide (T11) --- */
+                        && !settings.start.parse_key(key, value)
+                        && !settings.window.parse_key(key, value) // --- window and panels (thread T9) ---
+                    {
+                        if crate::page_tools::PageTools::owns(key) {
+                            settings.page_tools.parse_line(key, value); // --- page tools (T7) ---
+                        } else {
+                            settings.address.parse_line(key, value);
+                        }
+                    }
+                }
+                // --- end start page ---
             }
         }
+        // --- fix group C: checks across keys, made once the whole file is read ---
+        settings.themes.check_schedule();
+        settings.address.dedupe_scope_words();
+        // --- end fix group C ---
         settings
     }
 
@@ -884,7 +1168,7 @@ pub fn render_updated(existing: &str, settings: &Settings) -> String {
     } else {
         "\n"
     };
-    let values: [(&str, Option<String>); 43] = [
+    let values: [(&str, Option<String>); _] = [
         ("tab_layout", Some(settings.tab_layout.key().to_owned())),
         ("sidebar_width", Some(settings.sidebar_width.to_string())),
         (
@@ -924,6 +1208,10 @@ pub fn render_updated(existing: &str, settings: &Settings) -> String {
         ("theme", Some(settings.theme.key().to_owned())),
         ("theme_accent", Some(settings.theme_accent.clone().unwrap_or_default())),
         ("toolbar_buttons", Some(settings.toolbar_buttons.join(","))),
+        ("toolbar_tabs", Some(settings.toolbar_tabs.join(","))),
+        ("toolbar_panel", Some(settings.toolbar_panel.join(","))),
+        ("feeds_detect", Some(bool_text(settings.feeds_detect).to_owned())),
+        ("feeds_refresh_minutes", Some(settings.feeds_refresh_minutes.to_string())),
         ("centred_address_bar", Some(bool_text(settings.centred_address_bar).to_owned())),
         ("minimal_url", Some(bool_text(settings.minimal_url).to_owned())),
         ("show_load_progress", Some(bool_text(settings.show_load_progress).to_owned())),
@@ -952,8 +1240,32 @@ pub fn render_updated(existing: &str, settings: &Settings) -> String {
         ("translate_offer", Some(bool_text(settings.translate_offer).to_owned())),
         ("translate_auto", Some(bool_text(settings.translate_auto).to_owned())),
         ("translate_target", Some(settings.translate_target.clone())),
+        // --- privacy, history and website appearance (thread T3) ---
+        ("blocker_level", Some(settings.blocker_level.key().to_owned())),
+        ("cookie_notices", Some(bool_text(settings.cookie_notices).to_owned())),
+        ("history_retention", Some(settings.history_retention.key().to_owned())),
+        ("website_appearance", Some(settings.website_appearance.key().to_owned())),
+        ("force_dark_websites", Some(bool_text(settings.force_dark_websites).to_owned())),
+        ("private_theme", Some(settings.private_theme.key().to_owned())),
+        // --- end privacy, history and website appearance ---
+        // --- layout (thread T6) ---
+        ("tab_bar_visible", Some(bool_text(settings.tab_bar_visible).to_owned())),
+        ("address_bar_position", Some(settings.address_bar_position.key().to_owned())),
+        ("address_bar_visible", Some(bool_text(settings.address_bar_visible).to_owned())),
+        ("show_title_bar", Some(bool_text(settings.show_title_bar).to_owned())),
+        ("status_bar", Some(settings.status_bar.key().to_owned())),
+        ("ui_density", Some(settings.ui_density.key().to_owned())),
+        ("compact_menus", Some(bool_text(settings.compact_menus).to_owned())),
+        ("ui_zoom", Some(settings.ui_zoom.to_string())),
+        ("layout_saved", Some(settings.layout_saved.clone())),
+        // --- end layout ---
     ];
-    let mut written = [false; 43];
+    // --- start page ---
+    let mut values = Vec::from(values);
+    values.extend(settings.auto_hide.pairs().into_iter().map(|(key, value)| (key, Some(value)))); // --- auto-hide (T11) ---
+    values.extend(settings.start.pairs().into_iter().map(|(key, value)| (key, Some(value))));
+    // --- end start page ---
+    let mut written = vec![false; values.len()];
     let mut out = String::with_capacity(existing.len() + 128);
     for line in existing.lines() {
         let trimmed = line.trim();
@@ -983,8 +1295,67 @@ pub fn render_updated(existing: &str, settings: &Settings) -> String {
             out.push_str(&format!("{name}={value}{newline}"));
         }
     }
-    out
+    // --- tab options ---
+    let out = crate::tab_options::render_into(&out, &settings.tabs, newline);
+    // --- end tab options ---
+    // --- theme options ---
+    let out = crate::theme_custom::render_into(&out, &settings.themes, newline);
+    // --- end theme options ---
+    // --- window and panels (thread T9) ---
+    let out = crate::window_prefs::render_into(&out, &settings.window, newline);
+    // --- end window and panels ---
+    // Address bar, search and bookmark options (src/address_settings.rs).
+    let out = settings.address.render_into(&out, newline);
+    // Page tools (src/page_tools.rs).
+    settings.page_tools.render_into(&out, newline)
 }
+
+// --- wave-1 fixes: key-level merge for saves from memory ---
+/// The `key=value` lines `settings` renders to, by key. A key with no line (an unset search
+/// engine) is absent.
+fn rendered_keys(settings: &Settings) -> std::collections::BTreeMap<String, String> {
+    render_updated("", settings)
+        .lines()
+        .filter_map(|line| line.split_once('='))
+        .map(|(key, value)| (key.trim().to_owned(), value.to_owned()))
+        .collect()
+}
+
+/// A three-way merge for a save from memory: each key the running app changed since `base` (what
+/// memory last agreed with the file) takes `memory`'s value; every other key keeps `file`'s, so a
+/// value the settings page wrote straight to the file is never put back to an older one.
+pub fn merge_changed(base: &Settings, memory: &Settings, file: &Settings) -> Settings {
+    let (base, memory, file) = (rendered_keys(base), rendered_keys(memory), rendered_keys(file));
+    let keys: std::collections::BTreeSet<&String> = base.keys().chain(memory.keys()).chain(file.keys()).collect();
+    let mut text = String::new();
+    for key in keys {
+        let mine = memory.get(key);
+        let pick = if mine != base.get(key) { mine } else { file.get(key) };
+        if let Some(value) = pick {
+            text.push_str(key);
+            text.push('=');
+            text.push_str(value);
+            text.push('\n');
+        }
+    }
+    Settings::parse(&text)
+}
+
+/// Reset settings: every option in the file goes back to its default except how long history is
+/// kept and the three Keyboard-section options, which the page's description promises it leaves
+/// alone (history itself and the shortcuts are not in this file).
+pub fn reset_defaults(current: &Settings) -> Settings {
+    Settings {
+        history_retention: current.history_retention,
+        // --- fix group C: the Keyboard section is not reset ---
+        ctrl_shift_c_copy_link: current.ctrl_shift_c_copy_link,
+        shift_right_click_context: current.shift_right_click_context,
+        ctrl_s_vertical_tabs: current.ctrl_s_vertical_tabs,
+        // --- end fix group C ---
+        ..Settings::default()
+    }
+}
+// --- end wave-1 fixes ---
 
 /// Reads the file as text, refusing anything over `MAX_FILE_BYTES` or not valid UTF-8. Unlike
 /// `load`, the reason is returned, so the settings window can say what is wrong with the file.
@@ -1215,6 +1586,18 @@ mod tests {
         Settings {
             tab_layout: TabLayout::Vertical,
             sidebar_width: 300,
+            // --- layout (thread T6) ---
+            tab_bar_visible: true,
+            address_bar_position: crate::layout_prefs::BarPosition::Bottom,
+            address_bar_visible: true,
+            show_title_bar: true,
+            status_bar: crate::layout_prefs::StatusBar::Hidden,
+            ui_density: crate::layout_prefs::UiDensity::Compact,
+            compact_menus: true,
+            ui_zoom: 125,
+            layout_saved: String::new(),
+            // --- end layout ---
+            window: crate::window_prefs::WindowPrefs::default(), // --- window and panels (thread T9) ---
             sidebar_collapsed: false,
             side_panel_width: 340,
             sleep_enabled: false,
@@ -1228,6 +1611,10 @@ mod tests {
             theme: Theme::System,
             theme_accent: Some("#1a2b3c".to_owned()),
             toolbar_buttons: vec!["back".to_owned(), "reload".to_owned()],
+            toolbar_tabs: vec!["closed-tabs".to_owned(), "cmd:new-tab".to_owned()],
+            toolbar_panel: vec!["feeds".to_owned()],
+            feeds_detect: false,
+            feeds_refresh_minutes: 180,
             centred_address_bar: false,
             minimal_url: false,
             show_load_progress: false,
@@ -1256,7 +1643,112 @@ mod tests {
             translate_offer: false,
             translate_auto: true,
             translate_target: "fr".to_owned(),
+            blocker_level: BlockerLevel::Trackers,
+            cookie_notices: true,
+            history_retention: HistoryRetention::Week,
+            website_appearance: WebsiteAppearance::Dark,
+            force_dark_websites: true,
+            private_theme: PrivateTheme::Dark,
+            auto_hide: crate::auto_hide::AutoHideSettings { bars: crate::auto_hide::Bars::PANEL, in_fullscreen: false },
+            start: crate::start_page::StartSettings {
+                group_reopen: crate::start_page::GroupReopen::First,
+                titles: crate::start_page::TitleMode::Auto,
+                add_button: false,
+                columns: 9,
+                thumb_size: 5,
+                drag_reorder: false,
+                homepage: "https://home.example/".to_owned(),
+                startup: crate::start_page::Startup::SpecificPages,
+                startup_pages: vec!["https://a.example/".to_owned(), "https://b.example/".to_owned()],
+                widgets: true,
+                widget_columns: 4,
+                widget_height: crate::start_page::WidgetHeight::Tall,
+                widget_bg: crate::start_page::WidgetBackground::Custom,
+                widget_color: "#336699".to_owned(),
+                widget_drag: false,
+            },
+            address: crate::address_settings::AddressSettings::default(),
+            page_tools: crate::page_tools::PageTools::default(),
+            tabs: crate::tab_options::TabOptions::default(),
+            themes: crate::theme_custom::ThemeOptions::default(),
         }
+    }
+
+    #[test]
+    fn theme_options_round_trip_through_the_file_and_leave_other_lines_alone() {
+        let mut custom = Settings { theme: Theme::System, theme_accent: Some("#aa5500".to_owned()), ..sample() };
+        for (key, value) in [
+            ("theme_schedule", "time"), ("theme_look", "dark"), ("theme_light_from", "06:15"), ("theme_dark_from", "21:45"),
+            ("theme_background", "#102030"), ("theme_foreground", "#eeeeee"), ("theme_highlight", "#336699"),
+            ("theme_colouring", "unified"), ("theme_accent_page", "true"), ("theme_saturation", "45"), ("theme_contrast", "high"),
+        ] {
+            assert!(custom.themes.set(key, value), "{key}");
+        }
+        let written = render_updated("# kept\nunknown_key=1\n", &custom);
+        assert!(written.starts_with("# kept\nunknown_key=1\n"));
+        assert!(written.contains("theme_background=#102030\n") && written.contains("theme_saturation=45\n") && written.contains("theme_schedule=time\n"));
+        assert_eq!(Settings::parse(&written), custom);
+        assert_eq!(render_updated(&written, &Settings::parse(&written)), written, "saving again repeats nothing");
+        // A profile that never touched the theme options has none of their lines.
+        assert_eq!(render_updated("", &sample()).matches("theme_").count(), 1, "only the older theme_accent line");
+        // A hand-written file may use the usual spellings; bad values keep the default.
+        let hand = Settings::parse("theme_colouring=Unified\ntheme_accent_page=ON\ntheme_saturation=500\ntheme_background=blue\ntheme_light_from=7:00\n");
+        assert_eq!(hand.themes.colouring, crate::theme_custom::Colouring::Unified);
+        assert!(hand.themes.accent_from_page);
+        assert_eq!((hand.themes.saturation, hand.themes.background, hand.themes.light_from), (100, None, 7 * 60));
+    }
+
+    #[test]
+    fn tab_options_round_trip_through_the_file_and_leave_other_lines_alone() {
+        let custom = Settings {
+            tabs: crate::tab_options::TabOptions {
+                close_activation: crate::tab_options::CloseActivation::Recent,
+                keep_window: false,
+                confirm_close: crate::tab_options::Bounded(4),
+                new_tab_url: crate::tab_options::PageUrl("https://example.com/new".to_owned()),
+                new_tab_page: crate::tab_options::NewTabPage::Url,
+                mute_mode: crate::tab_options::MuteMode::Prioritise,
+                ..Default::default()
+            },
+            ..sample()
+        };
+        let written = render_updated("# kept
+unknown_key=1
+", &custom);
+        assert!(written.contains("# kept
+unknown_key=1
+"));
+        assert!(written.contains("tabs_close_activation=recent
+"));
+        assert!(written.contains("tabs_keep_window=false
+"));
+        assert!(written.contains("tabs_confirm_close=4
+"));
+        assert!(!written.contains("tabs_scroll"), "an option still at its default is not written");
+        let back = Settings::parse(&written);
+        assert_eq!(back.tabs, custom.tabs);
+        assert_eq!(back, custom);
+        // Saving again does not repeat the lines.
+        let again = render_updated(&written, &back);
+        assert_eq!(again, written);
+        // An option set back to its default keeps its line, now with the default value.
+        let mut reset = back.clone();
+        reset.tabs.keep_window = true;
+        assert!(render_updated(&written, &reset).contains("tabs_keep_window=true
+"));
+        // A file of all-default options gets no tab lines at all.
+        assert_eq!(render_updated("", &sample()).matches("tabs_").count(), 0);
+        // A hand-written file may use the usual spellings, and bad values keep the default.
+        let hand = Settings::parse("tabs_keep_window=OFF
+tabs_close_activation=Left
+tabs_confirm_close=500
+tabs_new_tab_url=javascript:1
+");
+        assert!(!hand.tabs.keep_window);
+        assert_eq!(hand.tabs.close_activation, crate::tab_options::CloseActivation::Left);
+        assert_eq!(hand.tabs.confirm_close.0, 0, "out of range keeps the default");
+        assert_eq!(hand.tabs.new_tab_url.0, "", "a script address is never kept");
+        assert_eq!(Settings::parse("").tabs, crate::tab_options::TabOptions::default());
     }
 
     #[test]
@@ -1436,6 +1928,21 @@ mod tests {
     }
 
     #[test]
+    fn start_page_keys_load_from_the_file_and_a_bad_value_keeps_the_default() {
+        let settings = Settings::parse("start_columns=4\nstart_titles=never\nhomepage=https://home.example/\nstartup=homepage\nstart_widgets=true\nstart_widget_bg=transparent\nstart_thumb_size=banana\nstartup_pages=javascript:alert(1)\n");
+        assert_eq!(settings.start.columns, 4);
+        assert_eq!(settings.start.titles, crate::start_page::TitleMode::Never);
+        assert_eq!(settings.start.homepage, "https://home.example/");
+        assert_eq!(settings.start.startup, crate::start_page::Startup::Homepage);
+        assert!(settings.start.widgets);
+        assert_eq!(settings.start.widget_bg, crate::start_page::WidgetBackground::Transparent);
+        assert_eq!(settings.start.thumb_size, crate::start_page::DEFAULT_THUMB_SIZE, "a value that does not parse is ignored");
+        assert!(settings.start.startup_pages.is_empty(), "a non-web address never becomes a startup page");
+        assert_eq!(Settings::parse(&render_updated("", &settings)).start, settings.start);
+        assert_eq!(Settings::default().start, crate::start_page::StartSettings::default());
+    }
+
+    #[test]
     fn render_into_empty_text_roundtrips() {
         let text = render_updated("", &sample());
         assert_eq!(Settings::parse(&text), sample());
@@ -1453,6 +1960,7 @@ mod tests {
              blocker_enabled=false\r\nblocker_allow=a.com,b.org\r\nsearch_engine=duckduckgo\r\n\
              automatic_tab_grouping=false\r\nefficiency_mode=on\r\ntracking_prevention=strict\r\n\
              theme=system\r\ntheme_accent=#1a2b3c\r\ntoolbar_buttons=back,reload\r\n\
+             toolbar_tabs=closed-tabs,cmd:new-tab\r\ntoolbar_panel=feeds\r\nfeeds_detect=false\r\nfeeds_refresh_minutes=180\r\n\
              centred_address_bar=false\r\nminimal_url=false\r\nshow_load_progress=false\r\n\
              frameless=true\r\nrounded_content_frame=false\r\nshow_home_button=false\r\n\
              bookmarks_bar=always\r\nbookmarks_bar_tab_groups=true\r\nside_panel_position=right\r\n\
@@ -1461,10 +1969,150 @@ mod tests {
              shift_right_click_context=true\r\nctrl_shift_c_copy_link=false\r\nctrl_s_vertical_tabs=true\r\n\
              pin_new_tab_groups=true\r\nsplit_edge_drop=false\r\nblock_youtube_video_ads=false\r\n\
              download_dir=D:\\Downloads\\Bowser\r\nask_download_location=true\r\n\
-             translate_offer=false\r\ntranslate_auto=true\r\ntranslate_target=fr\r\n"
+             translate_offer=false\r\ntranslate_auto=true\r\ntranslate_target=fr\r\n\
+             blocker_level=trackers\r\ncookie_notices=true\r\nhistory_retention=1w\r\n\
+             website_appearance=dark\r\nforce_dark_websites=true\r\nprivate_theme=dark\r\n\
+             tab_bar_visible=true\r\naddress_bar_position=bottom\r\naddress_bar_visible=true\r\nshow_title_bar=true\r\n\
+             status_bar=hidden\r\nui_density=compact\r\ncompact_menus=true\r\nui_zoom=125\r\nlayout_saved=\r\n\
+             auto_hide_bars=panel\r\nauto_hide_fullscreen=false\r\n\
+             start_group_reopen=first\r\nstart_titles=auto\r\nstart_add_button=false\r\nstart_columns=9\r\nstart_thumb_size=5\r\n\
+             start_drag_reorder=false\r\nhomepage=https://home.example/\r\nstartup=specific_pages\r\n\
+             startup_pages=https://a.example/ https://b.example/\r\nstart_widgets=true\r\nstart_widget_columns=4\r\n\
+             start_widget_height=tall\r\nstart_widget_bg=custom\r\nstart_widget_color=#336699\r\nstart_widget_drag=false\r\n".to_owned()
+                // The address bar, search and bookmark options follow, one line each (address_settings.rs).
+                + &crate::address_settings::AddressSettings::default().render_into("", "\r\n")
+                + &crate::page_tools::PageTools::default().render_into("", "\r\n")
         );
         assert_eq!(Settings::parse(&text), sample());
     }
+
+    // --- wave-1 fixes: key-level merge ---
+    #[test]
+    fn merge_with_no_changes_keeps_every_value() {
+        assert_eq!(merge_changed(&sample(), &sample(), &sample()), sample());
+        assert_eq!(merge_changed(&Settings::default(), &Settings::default(), &sample()), sample());
+        assert_eq!(merge_changed(&sample(), &sample(), &Settings::default()), Settings::default());
+    }
+
+    /// The reported revert: the page changes Tracking prevention in the file, then the app saves
+    /// "Ask where to save" from memory. Several pairs: one key the app changed, one the page changed.
+    #[test]
+    fn merge_keeps_the_files_newer_value_for_keys_memory_did_not_change() {
+        let base = Settings::default();
+        type Change = fn(&mut Settings);
+        let pairs: [(Change, Change); 5] = [
+            (|s| s.ask_download_location = true, |s| s.tracking_prevention = TrackingLevel::Strict),
+            (|s| s.translate_offer = false, |s| s.blocker_level = BlockerLevel::Trackers),
+            (|s| s.sidebar_collapsed = true, |s| s.minimal_url = false),
+            (|s| s.tabs.keep_window = !s.tabs.keep_window, |s| s.theme = Theme::System),
+            (|s| s.download_dir = "D:\\Saved".into(), |s| s.address.select_on_activate = !s.address.select_on_activate),
+        ];
+        for (app_change, page_change) in pairs {
+            let mut memory = base.clone();
+            app_change(&mut memory);
+            let mut file = base.clone();
+            page_change(&mut file);
+            let mut want = file.clone();
+            app_change(&mut want);
+            assert_eq!(merge_changed(&base, &memory, &file), want);
+        }
+    }
+
+    #[test]
+    fn merge_lets_a_key_memory_changed_win_over_the_file() {
+        let base = Settings::default();
+        let memory = Settings { ask_download_location: true, ..Settings::default() };
+        let file = Settings { ask_download_location: false, search_engine: Some(SearchEngine::Google), ..Settings::default() };
+        let merged = merge_changed(&base, &memory, &file);
+        assert!(merged.ask_download_location);
+        assert_eq!(merged.search_engine, Some(SearchEngine::Google), "an engine only the file names stays");
+    }
+
+    #[test]
+    fn reset_puts_every_option_back_but_keeps_history_retention() {
+        let reset = reset_defaults(&sample());
+        assert_eq!(reset.history_retention, sample().history_retention);
+        assert_ne!(sample().history_retention, Settings::default().history_retention, "the sample proves it");
+        let defaults = Settings::default();
+        assert_eq!(
+            Settings {
+                history_retention: defaults.history_retention,
+                ctrl_shift_c_copy_link: defaults.ctrl_shift_c_copy_link,
+                shift_right_click_context: defaults.shift_right_click_context,
+                ctrl_s_vertical_tabs: defaults.ctrl_s_vertical_tabs,
+                ..reset
+            },
+            defaults
+        );
+    }
+
+    // --- fix group C ---
+    #[test]
+    fn reset_keeps_the_three_keyboard_section_options() {
+        let defaults = Settings::default();
+        let current = Settings {
+            ctrl_shift_c_copy_link: !defaults.ctrl_shift_c_copy_link,
+            shift_right_click_context: !defaults.shift_right_click_context,
+            ctrl_s_vertical_tabs: !defaults.ctrl_s_vertical_tabs,
+            minimal_url: !defaults.minimal_url,
+            ..Settings::default()
+        };
+        let reset = reset_defaults(&current);
+        assert_eq!(reset.ctrl_shift_c_copy_link, current.ctrl_shift_c_copy_link);
+        assert_eq!(reset.shift_right_click_context, current.shift_right_click_context);
+        assert_eq!(reset.ctrl_s_vertical_tabs, current.ctrl_s_vertical_tabs);
+        assert_eq!(reset.minimal_url, defaults.minimal_url, "other options are reset");
+    }
+
+    /// The saved pair dark 06:00 then light 19:00: the light start equals the default dark start, so
+    /// a check made while the file is read in key order refused it, and a save from memory (which
+    /// re-reads its merged text in sorted key order, dark before light) wrote the reverted value back.
+    #[test]
+    fn a_saved_schedule_survives_load_and_merge_in_any_key_order() {
+        for text in [
+            "theme_light_from=19:00
+theme_dark_from=06:00
+",
+            "theme_dark_from=06:00
+theme_light_from=19:00
+",
+            "theme_dark_from=07:00
+theme_light_from=20:00
+",
+        ] {
+            let file = Settings::parse(text);
+            let (light, dark) = text.lines().fold((0, 0), |(light, dark), line| {
+                let (key, value) = line.split_once('=').unwrap();
+                let minutes = crate::theme_custom::parse_clock(value).unwrap();
+                if key == "theme_light_from" { (minutes, dark) } else { (light, minutes) }
+            });
+            assert_eq!((file.themes.light_from, file.themes.dark_from), (light, dark), "{text}");
+            let merged = merge_changed(&file, &file, &file);
+            assert_eq!(merged.themes, file.themes, "{text}");
+            let memory = Settings { minimal_url: !file.minimal_url, ..file.clone() };
+            assert_eq!(merge_changed(&file, &memory, &file).themes, file.themes, "{text}");
+        }
+        let equal = Settings::parse("theme_light_from=08:00
+theme_dark_from=08:00
+");
+        let defaults = crate::theme_custom::ThemeOptions::default();
+        assert_eq!((equal.themes.light_from, equal.themes.dark_from), (defaults.light_from, defaults.dark_from));
+    }
+
+    #[test]
+    fn scope_words_survive_load_and_merge_in_any_key_order() {
+        for text in ["nick_tabs=t
+nick_history=tabs
+", "nick_history=tabs
+nick_tabs=t
+"] {
+            let file = Settings::parse(text);
+            assert_eq!((file.address.nick_history.as_str(), file.address.nick_tabs.as_str()), ("tabs", "t"), "{text}");
+            assert_eq!(merge_changed(&file, &file, &file).address, file.address, "{text}");
+        }
+    }
+    // --- end fix group C ---
+    // --- end wave-1 fixes ---
 
     #[test]
     fn render_collapses_duplicate_setting_lines() {

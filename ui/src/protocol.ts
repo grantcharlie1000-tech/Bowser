@@ -6,8 +6,12 @@ import { validZoom } from './zoom-logic';
 import { parseSplitInbound, type SplitCommand, type SplitInbound } from './split-protocol';
 export type { PairMsg, PrivatePageMsg, SplitCommand, SplitDropMsg, SplitInbound, SplitPickMsg } from './split-protocol';
 // --- end split view ---
+// --- address bar, search and bookmarks (src/chrome_host/address_page.rs) ---
+import { ADDR_FLAG_KEYS, SEARCH_FIELD_MODES, type AddrFlags, type SearchFieldMode } from './address-logic';
+// --- end address bar, search and bookmarks ---
 // --- tab ghost (docs/design/tab-drag.md) ---
 import { parseTabGhost, type TabDragCommand, type TabGhostMsg } from './tab-drag-protocol';
+import { parseLook, type Look } from './window-logic'; // --- window and panels (thread T9) ---
 export type { TabDragCommand, TabGhostMsg } from './tab-drag-protocol';
 // --- end tab ghost ---
 
@@ -31,18 +35,18 @@ export const MAX_FAV_URI = 24 * 1024;
 const BASE64_RE = /^[A-Za-z0-9+/]+={0,2}$/;
 
 export type NavAction = 'back' | 'forward' | 'reload' | 'stop';
-export type OpenTarget = 'menu' | 'site' | 'newtab' | 'split' | 'zoomreset' | 'reader' | 'translate';
+export type OpenTarget = 'menu' | 'site' | 'newtab' | 'split' | 'zoomreset' | 'reader' | 'translate' | 'feeds';
 /** The reader view button: hidden, offered (the page looks like an article) or on. */
 export type ReaderPill = 'none' | 'available' | 'on';
 /** The translate button: hidden, offered (the page is in another language) or on (showing the translation). */
 export type TranslatePill = 'none' | 'available' | 'on';
 export type CaptionAction = 'toggleMaximize' | 'systemMenu';
 export type Security = 'secure' | 'notsecure' | 'certproblem' | 'internal' | 'unknown' | 'none';
-export type TabAction = 'select' | 'close' | 'menu' | 'pin' | 'mute';
+export type TabAction = 'select' | 'close' | 'menu' | 'pin' | 'mute' | 'dblclick';
 export type GroupAction = 'toggle' | 'menu';
 export type RailAction = 'click' | 'menu' | 'hover';
-export type PanelKind = 'panel' | 'hist' | 'bm' | 'cust' | 'notes' | 'set' | 'priv' | 'ren' | 'hpage' | 'dpage';
-export type PanelToken = 'history' | 'bookmarks' | 'customize' | 'notes' | 'settings' | 'privacy' | 'rename' | 'historypage' | 'downloadspage' | 'extensions';
+export type PanelKind = 'panel' | 'hist' | 'bm' | 'cust' | 'notes' | 'set' | 'priv' | 'ren' | 'hpage' | 'dpage' | 'spage' | 'addr' | 'sess' | 'feed';
+export type PanelToken = 'history' | 'bookmarks' | 'customize' | 'notes' | 'settings' | 'privacy' | 'rename' | 'historypage' | 'downloadspage' | 'extensions' | 'commands' | 'protection' | 'startpage' | 'address' | 'addressdlg' | 'bookmarkbar' | 'sessions' | 'pagetools' | 'feeds';
 export interface PanelFields {
   a: string;
   id?: number;
@@ -82,10 +86,20 @@ export type Command =
   | { v: 1; t: 'caption'; a: CaptionAction }
   | { v: 1; t: 'tab'; a: TabAction; id: number }
   | { v: 1; t: 'tabmove'; id: number; before: number }
+  // --- tab stacks (T10) --- a held tab dropped on another after resting over it; the wheel over the workspaces.
+  | { v: 1; t: 'tabstack'; id: number; onto: number }
+  | { v: 1; t: 'railwheel'; d: number }
+  // --- tab options --- the strip's selection (comma-separated wire ids) and its Closed tabs button.
+  | { v: 1; t: 'tabsel'; ids: string }
+  | { v: 1; t: 'closedtabs' }
+  // --- end tab options ---
   | { v: 1; t: 'group'; a: GroupAction; key: number }
   // --- vertical sidebar (lane S) ---
   | { v: 1; t: 'side'; a: 'workspace' | 'newtab' | 'collapse' }
   // --- end vertical sidebar ---
+  // --- toolbars and feeds (thread T13) --- a command button of the address bar or the tab bar: its item id and its place in the bar's list.
+  | { v: 1; t: 'tool'; b: 'address' | 'tabs'; k: string; i: number }
+  // --- end toolbars and feeds ---
   | { v: 1; t: 'rail'; a: RailAction; k: string; r?: string }
   | { v: 1; t: 'railmove'; k: string; before: string }
   | ({ v: 1; t: PanelKind } & PanelFields)
@@ -162,6 +176,12 @@ export interface HoverCardMsg {
   readonly fav: string;
   readonly rows: readonly HoverRowMsg[];
   readonly more: number;
+  // --- tab options --- sent only when "Show a thumbnail in tab previews" / "Show memory use" are on and known.
+  /** A small JPEG of the page as a data: URI. */
+  readonly thumb?: string;
+  /** Memory of the tab's page process in megabytes. */
+  readonly mem?: number;
+  // --- end tab options ---
 }
 export interface HoverIslandMsg {
   readonly t: 'hover';
@@ -218,8 +238,44 @@ export interface StateMsg {
   readonly fontScale?: number;
   /** `ui_font`; empty or absent means the page's own default font-family. */
   readonly uiFont?: string;
+  // --- layout (thread T6) ---
+  /** `ui_density`: list rows in the sidebar, panels and pages. Absent in older hosts (regular). */
+  readonly density?: UiDensity;
+  /** `compact_menus`: shorter menu rows. Absent in older hosts (off). */
+  readonly compactMenus?: boolean;
+  // --- end layout ---
+  /** Window appearance options and whether the window is in the background (window-logic.ts). Absent in older hosts (stock look). */
+  readonly look?: Look; // --- window and panels (thread T9) ---
+  // --- toolbars and feeds (thread T13) --- the address bar's buttons; all four absent in older hosts (every button, in its usual place).
+  /** `toolbar_buttons`: the buttons in order, as a comma list. */
+  readonly items?: string;
+  /** The command buttons among `items`, with the names the registry gives them. */
+  readonly tools?: readonly ToolButtonMsg[];
+  /** CSS px the always-there buttons at the end of the bar take from the address field. */
+  readonly extra?: number;
+  /** How many feeds the page in front offers; 0 hides the feed button. */
+  readonly feeds?: number;
+  // --- end toolbars and feeds ---
   readonly theme: Theme;
 }
+/** A command button on a bar: its item id (`cmd:new-tab`, `chain:2`) and the name it shows. */
+export interface ToolButtonMsg { readonly k: string; readonly l: string; readonly i: number }
+/** Most command buttons on one bar (Rust `MAX_COMMAND_ITEMS`). */
+export const MAX_TOOLS = 4;
+const TOOL_ITEM_RE = /^[a-z0-9:-]{1,64}$/;
+function parseTools(value: unknown): ToolButtonMsg[] | null {
+  if (!Array.isArray(value) || value.length > MAX_TOOLS) return null;
+  const out: ToolButtonMsg[] = [];
+  for (const row of value) {
+    if (!isRecord(row) || !hasOnlyKeys(row, ['k', 'l', 'i']) || typeof row.k !== 'string' || !TOOL_ITEM_RE.test(row.k) || !isStr(row.l, 64) || !isInt(row.i, 0, 13)) return null;
+    out.push({ k: row.k, l: row.l, i: row.i });
+  }
+  return out;
+}
+// --- layout (thread T6) ---
+export const UI_DENSITIES = ['regular', 'compact'] as const;
+export type UiDensity = typeof UI_DENSITIES[number];
+// --- end layout ---
 export interface SetTextMsg {
   readonly t: 'setText';
   readonly text: string;
@@ -231,10 +287,10 @@ export interface FocusOmniboxMsg {
 }
 // --- omnibox suggest ---
 /** Most rows in one `suggest` message, the default row included (Rust MAX_SUGGEST_ITEMS). */
-export const MAX_SUGGEST_ITEMS = 8;
+export const MAX_SUGGEST_ITEMS = 20;
 const MAX_SUGGEST_TEXT = 256;
 const MAX_SUGGEST_WIDTH = 4000;
-export const SUGGEST_KINDS = ['search', 'url', 'hist', 'bm', 'tab'] as const;
+export const SUGGEST_KINDS = ['search', 'url', 'hist', 'bm', 'tab', 'calc'] as const;
 export type SuggestKind = (typeof SUGGEST_KINDS)[number];
 export interface SuggestItem {
   readonly k: SuggestKind;
@@ -245,6 +301,8 @@ export interface SuggestItem {
   readonly url: string;
   /** A PNG data: URI, or '' when none is known. */
   readonly fav: string;
+  /** Show the kind badge on this row (`dd_always_badge`). */
+  readonly bd?: boolean;
 }
 /** The row list for edit `seq`. `tok` is 0 for the toolbar's copy; no items closes the list. */
 export interface SuggestMsg {
@@ -273,6 +331,50 @@ export interface SuggestOpenMsg {
   readonly on: boolean;
 }
 // --- end omnibox suggest ---
+// --- address bar, search and bookmarks (src/chrome_host/address_page.rs) ---
+/** How the address field behaves and looks (toolbar only); sent at start and whenever it changes. */
+export type AddrMsg = { readonly t: 'addr' } & AddrFlags;
+/** One engine in the search field's list. */
+export interface FieldEngine { readonly n: string; readonly k: string }
+/** The search field's mode and engine list (toolbar only). `engine` indexes `engines`. */
+export interface SearchFieldMsg {
+  readonly t: 'sfield';
+  readonly mode: SearchFieldMode;
+  readonly icon: boolean;
+  readonly nick: boolean;
+  readonly suggest: boolean;
+  readonly keep: boolean;
+  readonly engine: number;
+  readonly engines: readonly FieldEngine[];
+}
+/** Most engines the search field lists (Rust `MAX_FIELD_ENGINES`). */
+export const MAX_FIELD_ENGINES = 40;
+function parseAddr(raw: Record<string, unknown>): AddrMsg | null {
+  const keys = ['v', 't', ...ADDR_FLAG_KEYS];
+  if (!hasOnlyKeys(raw, keys) || !hasAllKeys(raw, keys) || raw.v !== 1) return null;
+  for (const key of ADDR_FLAG_KEYS) {
+    if (key === 'base' ? !isStr(raw.base, 253) : !isBool(raw[key])) return null;
+  }
+  return { t: 'addr', ...(Object.fromEntries(ADDR_FLAG_KEYS.map((key) => [key, raw[key]])) as unknown as AddrFlags) };
+}
+function parseSearchField(raw: Record<string, unknown>): SearchFieldMsg | null {
+  const keys = ['v', 't', 'mode', 'icon', 'nick', 'suggest', 'keep', 'engine', 'engines'];
+  if (!hasOnlyKeys(raw, keys) || !hasAllKeys(raw, keys) || raw.v !== 1) return null;
+  const { mode, icon, nick, suggest, keep, engine, engines } = raw;
+  if (!isOneOf(mode, SEARCH_FIELD_MODES) || !isBool(icon) || !isBool(nick) || !isBool(suggest) || !isBool(keep)) return null;
+  if (!Array.isArray(engines) || engines.length === 0 || engines.length > MAX_FIELD_ENGINES || !isInt(engine, 0, engines.length - 1)) return null;
+  const list: FieldEngine[] = [];
+  for (const item of engines) {
+    if (!isRecord(item) || !hasOnlyKeys(item, ['n', 'k']) || !hasAllKeys(item, ['n', 'k']) || !isStr(item.n, 80) || !isStr(item.k, 32)) return null;
+    list.push({ n: item.n, k: item.k });
+  }
+  return { t: 'sfield', mode, icon, nick, suggest, keep, engine, engines: list };
+}
+/** A command of the address field or the search field (`{t:"addr",a,...}`), checked like every panel command. */
+export function sendAddr(fields: PanelFields): boolean {
+  return sendPanel('addr', fields);
+}
+// --- end address bar, search and bookmarks ---
 // --- extensions (docs/extensions.md "Managing extensions") ---
 /** The toolbar's extensions button (toolbar only): shown while an enabled extension has a popup. */
 export interface ExtButtonMsg {
@@ -337,6 +439,20 @@ export interface TabItem {
   readonly gsize?: number;
   /** A favicon is cached for this id (see the `fav` message). */
   readonly fav: boolean;
+  // --- tab options --- each is sent only when set (Settings > Tabs).
+  /** Changed while out of sight and not looked at since. */
+  readonly unread?: boolean;
+  /** The count a page title announces ("(3) Inbox"), 1 to 999. */
+  readonly notify?: number;
+  /** The page is asleep: the icon is dimmed. */
+  readonly asleep?: boolean;
+  /** Page load progress, 0 to 100. */
+  readonly pct?: number;
+  /** Seconds until the tab's periodic reload. */
+  readonly rl?: number;
+  /** Not used for longer than the inactive threshold. */
+  readonly idle?: boolean;
+  // --- end tab options ---
 }
 export interface TabsMsg {
   readonly t: 'tabs';
@@ -360,6 +476,10 @@ export interface RailItem {
   readonly accent: string;
   /** A favicon is cached for this key (see the `railfav` message). */
   readonly fav: boolean;
+  /** --- tab stacks and workspaces (T10) --- the workspace's tab count badge (absent: none). */
+  readonly n?: number;
+  /** The emoji a workspace shows instead of its glyph. */
+  readonly emoji?: string;
 }
 export interface RailMsg {
   readonly t: 'rail';
@@ -377,12 +497,85 @@ export interface FlyoutMsg { readonly t: 'flyout'; readonly caret: number }
 export const MAX_FLYOUT_CARET = 4000;
 // --- end rail flyouts ---
 export interface LayoutMsg { readonly t: 'layout'; readonly mode: 'vertical' | 'horizontal' }
+// --- tab options ---
+export const LOAD_INDICATORS = ['spinner', 'bar', 'favicon', 'none'] as const;
+export type LoadIndicator = typeof LOAD_INDICATORS[number];
+/** What the strip needs from the Tabs settings; sent again whenever any of it changes. */
+export interface TabOptsMsg {
+  readonly t: 'tabopts';
+  readonly closeLeft: boolean;
+  readonly closeAlways: boolean;
+  readonly scroll: boolean;
+  /** Narrowest the active tab gets, in pixels; 0 leaves it to the strip. */
+  readonly minWidth: number;
+  readonly indicator: LoadIndicator;
+  readonly wheel: boolean;
+  readonly separator: boolean;
+  readonly alignClose: boolean;
+  readonly selection: boolean;
+  /** --- wave-1 fixes --- the active tab joins a Ctrl or Shift click selection. */
+  readonly selectionActive: boolean;
+  readonly removeSpacing: boolean;
+  readonly maximised: boolean;
+  /** Tabs in the closed-tabs list; 0 hides the Closed tabs button. */
+  readonly closed: number;
+  /** --- tab stacks (T10) --- a held tab resting over another for `stackDelay` ms stacks on drop. */
+  readonly stackDrag: boolean;
+  readonly stackDelay: number;
+  /** --- two-level stacks (T10b) --- the second tab row Rust laid out (`chrome::layout::StackRow`). */
+  readonly stackRow: StackRowSize;
+  // --- toolbars and feeds (thread T13) ---
+  /** `toolbar_tabs` lists `closed-tabs`: the Closed tabs button may show at all. */
+  readonly closedButton: boolean;
+  /** The tab bar's command buttons, in order. */
+  readonly tools: readonly ToolButtonMsg[];
+  // --- end toolbars and feeds ---
+}
+export const STACK_ROWS = ['off', 'regular', 'compact'] as const;
+export type StackRowSize = typeof STACK_ROWS[number];
+export const MAX_SELECTION = 512;
+/** The strip's selection, as the comma list Rust parses. False when the ids are not tab ids. */
+export function sendTabSelection(ids: readonly number[]): boolean {
+  if (ids.length > MAX_SELECTION || !ids.every((id) => isInt(id, 0, MAX_ID))) return false;
+  return send({ v: 1, t: 'tabsel', ids: ids.join(',') });
+}
+export function sendClosedTabs(): boolean {
+  return send({ v: 1, t: 'closedtabs' });
+}
+// --- tab stacks (T10) ---
+/** Most notches one `railwheel` carries (Rust's `MAX_RAIL_WHEEL`). */
+export const MAX_RAIL_WHEEL = 8;
+/** The held tab `id` was dropped on tab `onto` after resting over it. */
+export function sendTabStack(id: number, onto: number): boolean {
+  return isInt(id, 1, MAX_ID) && isInt(onto, 1, MAX_ID) && id !== onto && send({ v: 1, t: 'tabstack', id, onto });
+}
+/** The wheel turned `d` notches (down positive) over the workspaces. */
+export function sendRailWheel(d: number): boolean {
+  return Number.isInteger(d) && d !== 0 && Math.abs(d) <= MAX_RAIL_WHEEL && send({ v: 1, t: 'railwheel', d });
+}
+// --- end tab stacks ---
+// --- toolbars and feeds (thread T13) ---
+/** A command button of the address bar or the tab bar: Rust runs it only if `item` is at `index` in that bar's list. */
+export function sendTool(bar: 'address' | 'tabs', item: string, index: number): boolean {
+  if (!TOOL_ITEM_RE.test(item) || !isInt(index, 0, 13)) return false;
+  return send({ v: 1, t: 'tool', b: bar, k: item, i: index });
+}
+// --- end toolbars and feeds ---
+// --- end tab options ---
 // --- vertical sidebar (lane S) ---
-export interface WorkspaceMsg { readonly t: 'workspace'; readonly name: string; readonly icon: RailIconName }
+export interface WorkspaceMsg {
+  readonly t: 'workspace';
+  readonly name: string;
+  readonly icon: RailIconName;
+  /** --- tab stacks and workspaces (T10) --- shown instead of the glyph. */
+  readonly emoji?: string;
+  /** Workspaces are off: the switcher hides. */
+  readonly off?: boolean;
+}
 // --- end vertical sidebar ---
 // --- settings page (docs/design/settings-page.md) ---
 /** Sections of `bowser://settings/<section>`, the same list as `internal_page::Section` in Rust. */
-export const SETTINGS_SECTIONS = ['profile', 'appearance', 'privacy', 'performance', 'search', 'downloads', 'media', 'extensions', 'updates', 'about'] as const;
+export const SETTINGS_SECTIONS = ['profile', 'appearance', 'tabs', 'stacks', 'startpage', 'privacy', 'performance', 'pagetools', 'address', 'search', 'bookmarks', 'keyboard', 'commands', 'downloads', 'media', 'extensions', 'updates', 'about'] as const;
 export type SettingsSection = typeof SETTINGS_SECTIONS[number];
 /** Show `s` on the settings page (`''` is the top). Sent when Bowser navigates the tab, never as an echo. */
 export interface SettingsGoMsg { readonly t: 'settingsgo'; readonly s: SettingsSection | '' }
@@ -395,6 +588,7 @@ export type Inbound =
   | FocusOmniboxMsg
   | CompletionMsg
   | TabsMsg
+  | TabOptsMsg // --- tab options ---
   | FavMsg
   | RailMsg
   | RailFavMsg
@@ -416,6 +610,8 @@ export type Inbound =
   | MenuOpenMsg
   | DlButtonMsg // --- downloads ---
   | ExtButtonMsg // --- extensions ---
+  | AddrMsg // --- address bar, search and bookmarks ---
+  | SearchFieldMsg
   // --- split view ---
   | SplitInbound
   // --- end split view ---
@@ -474,7 +670,7 @@ function hasAllKeys(v: Record<string, unknown>, keys: readonly string[]): boolea
 const READER_PILL: readonly ReaderPill[] = ['none', 'available', 'on'];
 const TRANSLATE_PILL: readonly TranslatePill[] = ['none', 'available', 'on'];
 const SECURITY: readonly Security[] = ['secure', 'notsecure', 'certproblem', 'internal', 'unknown', 'none'];
-const PANEL_TOKENS: readonly PanelToken[] = ['history', 'bookmarks', 'customize', 'notes', 'settings', 'privacy', 'rename', 'historypage', 'downloadspage', 'extensions'];
+const PANEL_TOKENS: readonly PanelToken[] = ['history', 'bookmarks', 'customize', 'notes', 'settings', 'privacy', 'rename', 'historypage', 'downloadspage', 'extensions', 'commands', 'protection', 'startpage', 'address', 'addressdlg', 'bookmarkbar', 'sessions', 'pagetools', 'feeds'];
 /** Lower-case words joined by single hyphens (`workspace-create`), at most 24 characters. */
 const PANEL_ACTION_RE = /^(?=.{1,24}$)[a-z]+(?:-[a-z]+)*$/;
 const MAX_SNAPSHOT_DEPTH = 8;
@@ -685,7 +881,7 @@ export function sendHoverAct(tok: number, fields: HoverActFields): boolean {
 }
 
 // --- omnibox suggest ---
-const SUGGEST_ITEM_KEYS = ['k', 'text', 'title', 'url', 'fav'];
+const SUGGEST_ITEM_KEYS = ['k', 'text', 'title', 'url', 'fav', 'bd'];
 function parseSuggestItem(v: unknown): SuggestItem | null {
   if (!isRecord(v) || !hasOnlyKeys(v, SUGGEST_ITEM_KEYS) || !['k', 'text', 'title', 'url'].every(key => key in v)) return null;
   const { k, text, title, url } = v;
@@ -693,7 +889,8 @@ function parseSuggestItem(v: unknown): SuggestItem | null {
   if (!isStr(text, MAX_SUGGEST_TEXT) || !isStr(title, MAX_TITLE) || !isStr(url, MAX_SUGGEST_TEXT)) return null;
   const fav = 'fav' in v ? v.fav : '';
   if (fav !== '' && !isFavUri(fav)) return null;
-  return { k, text, title, url, fav: fav as string };
+  if ('bd' in v && !isBool(v.bd)) return null;
+  return { k, text, title, url, fav: fav as string, ...(v.bd === true ? { bd: true } : {}) };
 }
 
 /** Strict validation of a `suggest` message. */
@@ -754,6 +951,12 @@ function parseColours(v: unknown, max: number): string[] | null {
 }
 const TOOLTIP_KEYS = ['v', 't', 'tok', 'kind', 'text'];
 const CARD_KEYS = ['v', 't', 'tok', 'kind', 'title', 'host', 'marker', 'markers', 'sleeping', 'fav', 'rows', 'more'];
+/** Longest thumbnail data: URI Rust sends (36,000 bytes of JPEG as base64). */
+export const MAX_THUMB_URI = 48 * 1024;
+const THUMB_PREFIX = 'data:image/jpeg;base64,';
+function isThumbUri(v: unknown): v is string {
+  return typeof v === 'string' && v.length <= MAX_THUMB_URI && v.startsWith(THUMB_PREFIX) && BASE64_RE.test(v.slice(THUMB_PREFIX.length));
+}
 const ISLAND_KEYS = ['v', 't', 'tok', 'kind', 'name', 'hint', 'slot', 'swatches', 'rows', 'more', 'close'];
 
 /** Strict validation of a Rust `hover` message (tooltip, card or island content). */
@@ -766,13 +969,18 @@ export function parseHoverMsg(raw: Record<string, unknown>): HoverMsg | null {
       return { t: 'hover', tok, kind: 'tooltip', text: raw.text };
     }
     case 'card': {
-      if (!hasOnlyKeys(raw, CARD_KEYS) || !hasAllKeys(raw, CARD_KEYS)) return null;
+      if (!hasOnlyKeys(raw, [...CARD_KEYS, 'thumb', 'mem']) || !hasAllKeys(raw, CARD_KEYS)) return null;
+      if (('thumb' in raw && !isThumbUri(raw.thumb)) || ('mem' in raw && !isInt(raw.mem, 0, 99999))) return null; // --- tab options ---
       const { title, host, marker, sleeping, fav, more } = raw;
       const markers = parseColours(raw.markers, HOVER_MARKERS);
       const rows = parseHoverRows(raw.rows);
       if (!isStr(title, MAX_TITLE) || !isStr(host, MAX_HOVER_HOST) || !isInt(marker, -1, HOVER_MARKERS - 1)) return null;
       if (!isBool(sleeping) || (fav !== '' && !isFavUri(fav)) || !isInt(more, 0, MAX_ID) || !markers || !rows) return null;
-      return { t: 'hover', tok, kind: 'card', title, host, marker, markers, sleeping, fav: fav as string, rows, more };
+      return {
+        t: 'hover', tok, kind: 'card', title, host, marker, markers, sleeping, fav: fav as string, rows, more,
+        ...(typeof raw.thumb === 'string' ? { thumb: raw.thumb } : {}), // --- tab options ---
+        ...(typeof raw.mem === 'number' ? { mem: raw.mem } : {}),
+      };
     }
     case 'island': {
       if (!hasOnlyKeys(raw, ISLAND_KEYS) || !hasAllKeys(raw, ISLAND_KEYS)) return null;
@@ -836,7 +1044,7 @@ function parseTheme(v: unknown): Theme {
   return out;
 }
 
-const TAB_KEYS = ['id', 'title', 'loading', 'pinned', 'muted', 'private', 'marker', 'g', 'gl', 'fav', 'gname', 'gcol', 'gcollapsed', 'gsize'];
+const TAB_KEYS = ['id', 'title', 'loading', 'pinned', 'muted', 'private', 'marker', 'g', 'gl', 'fav', 'gname', 'gcol', 'gcollapsed', 'gsize', 'unread', 'notify', 'asleep', 'pct', 'rl', 'idle'];
 const LEADER_KEYS = ['gname', 'gcol', 'gcollapsed', 'gsize'];
 
 /** Strict validation of one `tabs` item. Ids must be new within the message (`seen`). */
@@ -846,7 +1054,19 @@ function parseTabItem(v: unknown, seen: ReadonlySet<number>): TabItem | null {
   if (!isInt(id, 0, MAX_ID) || seen.has(id)) return null;
   if (!isStr(title, MAX_TITLE) || !isBool(loading) || !isBool(pinned) || !isBool(muted) || !isBool(priv) || !isBool(fav)) return null;
   if (!isInt(marker, -1, 7) || !isInt(g, 0, MAX_ID) || !isBool(gl)) return null;
-  const base = { id, title, loading, pinned, muted, private: priv, marker, g, gl, fav };
+  // --- tab options --- optional marks: absent means off.
+  if (('unread' in v && !isBool(v.unread)) || ('asleep' in v && !isBool(v.asleep)) || ('idle' in v && !isBool(v.idle))) return null;
+  if (('notify' in v && !isInt(v.notify, 1, 999)) || ('pct' in v && !isInt(v.pct, 0, 100)) || ('rl' in v && !isInt(v.rl, 0, 86400))) return null;
+  const marks = {
+    ...(v.unread === true ? { unread: true } : {}),
+    ...(typeof v.notify === 'number' ? { notify: v.notify } : {}),
+    ...(v.asleep === true ? { asleep: true } : {}),
+    ...(typeof v.pct === 'number' ? { pct: v.pct } : {}),
+    ...(typeof v.rl === 'number' ? { rl: v.rl } : {}),
+    ...(v.idle === true ? { idle: true } : {}),
+  };
+  // --- end tab options ---
+  const base = { id, title, loading, pinned, muted, private: priv, marker, g, gl, fav, ...marks };
   if (!gl) {
     // Group fields are leader-only: a member must not carry them.
     if (LEADER_KEYS.some((k) => k in v)) return null;
@@ -859,6 +1079,14 @@ function parseTabItem(v: unknown, seen: ReadonlySet<number>): TabItem | null {
 }
 
 const RAIL_ITEM_KEYS = ['k', 'icon', 'label', 'active', 'dot', 'accent', 'fav'];
+/** --- tab stacks and workspaces (T10) --- keys an item carries only when set. */
+const RAIL_ITEM_OPTIONAL = ['n', 'emoji'];
+/** Longest workspace emoji in bytes (Rust's `MAX_EMOJI_BYTES`; at most eight characters). */
+const MAX_EMOJI = 32;
+/** A workspace emoji: short, no spaces or control characters (Rust's `clean_emoji`). */
+export function isWorkspaceEmoji(v: unknown): v is string {
+  return typeof v === 'string' && v.length > 0 && new TextEncoder().encode(v).length <= MAX_EMOJI && Array.from(v).length <= 8 && !/[\s\u0000-\u001f\u007f]/.test(v);
+}
 
 /** A PNG data: URI with base64 payload, at most MAX_FAV_URI characters. */
 function isFavUri(v: unknown): v is string {
@@ -868,12 +1096,15 @@ function isFavUri(v: unknown): v is string {
 
 /** Strict validation of one `rail` item: every key present, none extra, key unique within the message. */
 function parseRailItem(v: unknown, seen: ReadonlySet<string>): RailItem | null {
-  if (!isRecord(v) || !hasOnlyKeys(v, RAIL_ITEM_KEYS) || !hasAllKeys(v, RAIL_ITEM_KEYS)) return null;
+  if (!isRecord(v) || !hasOnlyKeys(v, [...RAIL_ITEM_KEYS, ...RAIL_ITEM_OPTIONAL]) || !hasAllKeys(v, RAIL_ITEM_KEYS)) return null;
   const { k, icon, label, active, dot, accent, fav } = v;
   if (typeof k !== 'string' || !isRailKey(k) || seen.has(k)) return null;
   if (!isRailIcon(icon) || !isStr(label, MAX_RAIL_LABEL) || !isBool(active) || !isBool(dot) || !isBool(fav)) return null;
   if (!isStr(accent, MAX_COLOR) || (accent !== '' && !isSafeColour(accent))) return null;
-  return { k, icon, label, active, dot, accent, fav };
+  // --- tab stacks and workspaces (T10) ---
+  if ('n' in v && !isInt(v.n, 1, 9999)) return null;
+  if ('emoji' in v && !isWorkspaceEmoji(v.emoji)) return null;
+  return { k, icon, label, active, dot, accent, fav, ...('n' in v ? { n: v.n as number } : {}), ...('emoji' in v ? { emoji: v.emoji as string } : {}) };
 }
 
 /** Strictly validates a host message. Accepts an object or its JSON text; returns null for anything unexpected. */
@@ -910,8 +1141,11 @@ export function parseInbound(data: unknown): Inbound | null {
     }
     // --- vertical sidebar (lane S) ---
     case 'workspace': {
-      if (!hasOnlyKeys(raw, ['v', 't', 'name', 'icon']) || raw.v !== 1 || !isStr(raw.name, MAX_RAIL_LABEL) || !isRailIcon(raw.icon) || !raw.icon.startsWith('g:')) return null;
-      return { t: 'workspace', name: raw.name, icon: raw.icon };
+      if (!hasOnlyKeys(raw, ['v', 't', 'name', 'icon', 'emoji', 'off']) || raw.v !== 1 || !isStr(raw.name, MAX_RAIL_LABEL) || !isRailIcon(raw.icon) || !raw.icon.startsWith('g:')) return null;
+      // --- tab stacks and workspaces (T10) --- optional emoji and off flag.
+      if ('emoji' in raw && !isWorkspaceEmoji(raw.emoji)) return null;
+      if ('off' in raw && raw.off !== true) return null;
+      return { t: 'workspace', name: raw.name, icon: raw.icon, ...('emoji' in raw ? { emoji: raw.emoji as string } : {}), ...('off' in raw ? { off: true } : {}) };
     }
     // --- end vertical sidebar ---
     // --- hover layer ---
@@ -941,6 +1175,12 @@ export function parseInbound(data: unknown): Inbound | null {
       return parseDlButton(raw);
     case 'extbtn':
       return parseExtButton(raw);
+    // --- address bar, search and bookmarks ---
+    case 'addr':
+      return parseAddr(raw);
+    case 'sfield':
+      return parseSearchField(raw);
+    // --- end address bar, search and bookmarks ---
     // --- end downloads ---
     // --- split view ---
     case 'pair':
@@ -965,7 +1205,13 @@ export function parseInbound(data: unknown): Inbound | null {
       return { t: 'snap', p: raw.p, d: raw.d as SnapshotMsg['d'] };
     }
     case 'state': {
-      if (!hasOnlyKeys(raw, ['t', 'scale', 'pillx', 'pillw', 'menux', 'solid', 'dark', 'back', 'forward', 'loading', 'split', 'bookmarked', 'progress', 'security', 'label', 'showProgress', 'permblocked', 'zoom', 'showZoom', 'private', 'reader', 'translate', 'fontScale', 'uiFont', 'theme'])) return null;
+      if (!hasOnlyKeys(raw, ['t', 'scale', 'pillx', 'pillw', 'menux', 'solid', 'dark', 'back', 'forward', 'loading', 'split', 'bookmarked', 'progress', 'security', 'label', 'showProgress', 'permblocked', 'zoom', 'showZoom', 'private', 'reader', 'translate', 'fontScale', 'uiFont', 'density', 'compactMenus', 'look', 'items', 'tools', 'extra', 'feeds', 'theme'])) return null;
+      // --- toolbars and feeds (thread T13) --- the four come together or not at all.
+      const barKeys = ['items', 'tools', 'extra', 'feeds'] as const;
+      const barCount = barKeys.filter((key) => key in raw).length;
+      if (barCount !== 0 && barCount !== barKeys.length) return null;
+      if (barCount !== 0 && (!isStr(raw.items, 512) || parseTools(raw.tools) === null || !isInt(raw.extra, 0, 400) || !isInt(raw.feeds, 0, 9))) return null;
+      // --- end toolbars and feeds ---
       if ('showProgress' in raw && !isBool(raw.showProgress)) return null;
       if ('permblocked' in raw && !isBool(raw.permblocked)) return null;
       if ('zoom' in raw && !validZoom(raw.zoom)) return null;
@@ -975,6 +1221,9 @@ export function parseInbound(data: unknown): Inbound | null {
       if ('translate' in raw && !isOneOf(raw.translate, TRANSLATE_PILL)) return null;
       if ('fontScale' in raw && !isInt(raw.fontScale, 50, 200)) return null;
       if ('uiFont' in raw && !isStr(raw.uiFont, 64)) return null;
+      if ('density' in raw && !isOneOf(raw.density, UI_DENSITIES)) return null; // --- layout (thread T6) ---
+      if ('compactMenus' in raw && !isBool(raw.compactMenus)) return null;
+      if ('look' in raw && parseLook(raw.look) === null) return null; // --- window and panels (thread T9) ---
       const { scale, solid, dark, back, forward, loading, progress, security, label } = raw;
       if (typeof scale !== 'number' || !Number.isFinite(scale)) return null;
       const placementKeys = ['pillx', 'pillw', 'menux'] as const;
@@ -1009,6 +1258,10 @@ export function parseInbound(data: unknown): Inbound | null {
         ...(isOneOf(raw.translate, TRANSLATE_PILL) ? { translate: raw.translate } : {}),
         ...(isInt(raw.fontScale, 50, 200) ? { fontScale: raw.fontScale } : {}),
         ...(isStr(raw.uiFont, 64) ? { uiFont: raw.uiFont } : {}),
+        ...(isOneOf(raw.density, UI_DENSITIES) ? { density: raw.density } : {}), // --- layout (thread T6) ---
+        ...(isBool(raw.compactMenus) ? { compactMenus: raw.compactMenus } : {}),
+        ...('look' in raw ? { look: parseLook(raw.look)! } : {}), // --- window and panels (thread T9) ---
+        ...(barCount === 4 ? { items: raw.items as string, tools: parseTools(raw.tools) as ToolButtonMsg[], extra: raw.extra as number, feeds: raw.feeds as number } : {}), // --- toolbars and feeds ---
         theme: parseTheme(raw.theme),
       };
     }
@@ -1041,6 +1294,19 @@ export function parseInbound(data: unknown): Inbound | null {
       }
       return { t: 'tabs', active, items: out };
     }
+    // --- tab options ---
+    case 'tabopts': {
+      const keys = ['v', 't', 'closeLeft', 'closeAlways', 'scroll', 'minWidth', 'indicator', 'wheel', 'separator', 'alignClose', 'selection', 'selectionActive', 'removeSpacing', 'maximised', 'closed', 'stackDrag', 'stackDelay', 'stackRow', 'closedButton', 'tools'];
+      if (!hasOnlyKeys(raw, keys) || !hasAllKeys(raw, keys) || raw.v !== 1) return null;
+      const { closeLeft, closeAlways, scroll, minWidth, indicator, wheel, separator, alignClose, selection, selectionActive, removeSpacing, maximised, closed, stackDrag, stackDelay, stackRow, closedButton } = raw;
+      if (![closeLeft, closeAlways, scroll, wheel, separator, alignClose, selection, selectionActive, removeSpacing, maximised, stackDrag, closedButton].every(isBool)) return null;
+      if (!isInt(minWidth, 0, 400) || !isOneOf(indicator, LOAD_INDICATORS) || !isInt(closed, 0, 99) || !isInt(stackDelay, 0, 2000)) return null;
+      if (!isOneOf(stackRow, STACK_ROWS)) return null; // --- two-level stacks (T10b) ---
+      const tools = parseTools(raw.tools); // --- toolbars and feeds (thread T13) ---
+      if (tools === null) return null;
+      return { t: 'tabopts', closeLeft, closeAlways, scroll, minWidth, indicator, wheel, separator, alignClose, selection, selectionActive, removeSpacing, maximised, closed, stackDrag, stackDelay, stackRow, closedButton, tools } as TabOptsMsg;
+    }
+    // --- end tab options ---
     case 'fav': {
       if (!hasOnlyKeys(raw, ['v', 't', 'id', 'uri']) || raw.v !== 1) return null;
       const { id, uri } = raw;

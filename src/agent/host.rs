@@ -813,8 +813,10 @@ fn arm(reply: mpsc::Sender<String>, session: String, after: After) -> u64 {
     })
 }
 
+type ScriptCompletedCallback = Box<dyn FnOnce(Result<String, String>)>;
+
 fn execute(webview: &ICoreWebView2, script: &str, navigation: bool, id: u64) {
-    let slot: Rc<RefCell<Option<Box<dyn FnOnce(Result<String, String>)>>>> =
+    let slot: Rc<RefCell<Option<ScriptCompletedCallback>>> =
         Rc::new(RefCell::new(Some(Box::new(move |result| {
             on_script(id, result, navigation);
         }))));

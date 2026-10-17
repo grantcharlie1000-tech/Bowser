@@ -133,7 +133,7 @@ pub fn video_ads_blocked_in_file(path: &std::path::Path, cap: usize) -> bool {
         .ok()
         .and_then(|bytes| String::from_utf8(bytes).ok())
         .filter(|text| text.len() <= cap)
-        .map_or(true, |text| video_ads_blocked(&text));
+        .is_none_or(|text| video_ads_blocked(&text));
     *last = modified.map(|modified| (path.to_path_buf(), len, modified, blocked));
     blocked
 }

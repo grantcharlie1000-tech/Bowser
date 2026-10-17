@@ -118,7 +118,8 @@ pub(crate) fn animations_enabled() -> bool {
     let mut enabled = BOOL(1);
     let read = unsafe { SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION, 0,
         Some((&mut enabled as *mut BOOL).cast()), SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0)) };
-    read.is_err() || enabled.as_bool()
+    // --- window and panels (thread T9) --- Bowser's own "Use animation" setting also has to allow it.
+    crate::window_prefs::animate(read.is_err() || enabled.as_bool())
 }
 
 thread_local! {
@@ -1458,9 +1459,7 @@ unsafe fn draw(dc: HDC, hwnd: HWND, client: &RECT, dpi: u32, state: &State) {
                         item,
                         (highlighted, held),
                         (hover, press, active),
-                        palette,
-                        dpi,
-                        favicon_dc,
+                        MenuPaintContext { palette, dpi, favicon_dc },
                     );
                 }
             }
@@ -1503,16 +1502,21 @@ fn chevron_offset(hover: f32, dpi: u32) -> i32 {
 
 /// One row: optional hover or pressed fill, the icon or check colour, the label, and the shortcut
 /// or chevron on the right.
+struct MenuPaintContext<'a> {
+    palette: &'a theme::Palette,
+    dpi: u32,
+    favicon_dc: Option<HDC>,
+}
+
 unsafe fn draw_item(
     dc: HDC,
     row: RECT,
     item: &Item,
     (highlighted, held): (bool, bool),
     (hover, press, active): (f32, f32, f32),
-    palette: &theme::Palette,
-    dpi: u32,
-    favicon_dc: Option<HDC>,
+    context: MenuPaintContext<'_>,
 ) {
+    let MenuPaintContext { palette, dpi, favicon_dc } = context;
     unsafe {
         let s = |v: i32| scaled(v, dpi);
         let inner = rect(row.left + s(PAD), row.top, row.right - s(PAD), row.bottom);

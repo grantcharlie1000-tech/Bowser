@@ -98,12 +98,27 @@ pub struct OmniboxView<'a> {
     pub site: SiteSecurity,
 }
 
+/// Read-only state needed to paint the independent vertical tab sidebar.
+pub struct SidebarPaintView<'a> {
+    pub layout: &'a crate::vertical_tabs::SidebarLayout,
+    pub rows: &'a [crate::chrome::vertical_paint::SidebarRow],
+    pub workspace: &'a str,
+    pub active: crate::tabs::TabId,
+    pub scroll: i32,
+    pub hover_row: Option<usize>,
+    pub html_sidebar: bool,
+}
+
 /// A complete read-only snapshot of the chrome state for one paint.
 pub struct ChromeView<'a> {
     pub layout: &'a Layout,
     pub palette: &'a Palette,
     pub tabs: &'a [TabView<'a>],
     pub active: usize,
+    /// --- two-level stacks (T10b) --- the second row's tabs (`Layout::stack_tabs`), and which of
+    /// them is in use. Empty without a second row.
+    pub stack_tabs: &'a [TabView<'a>],
+    pub stack_active: Option<usize>,
     pub hover: Hit,
     pub pressed: Hit,
     pub caption_maximised: bool,
@@ -161,6 +176,9 @@ pub struct ChromeSurface {
     /// The viewport of a tab that has no page (a new tab), painted as an opaque themed surface so
     /// it never shows the desktop through the glass. `None` while a page is on screen.
     empty_viewport: Option<Rect>,
+    /// Auto-hide has taken the top chrome out of the window (and not brought it back): the toolbar,
+    /// tab row, captions and the chrome backdrop are not painted, and the page owns the space.
+    auto_hidden_top: bool,
     // --- split view ---
     /// How the divider grip is drawn, and the empty side's pane when no HTML surface covers it.
     split_grip: SplitGrip,
@@ -241,6 +259,12 @@ pub enum SplitGrip {
 }
 // --- end split view ---
 
+/// --- wave-1 fixes --- the page and new-tab surface's corner radius: `rounded` (from
+/// `rounded_content_frame`) keeps the theme's `radius`, off draws square corners.
+fn content_corner_radius(rounded: bool, radius: i32) -> i32 {
+    if rounded { radius } else { 0 }
+}
+
 impl ChromeSurface {
     /// Creates a surface for a client size. `height` is the client height; only chrome rows are kept.
     pub fn new(width: i32, height: i32, dpi: u32) -> Self {
@@ -258,6 +282,7 @@ impl ChromeSurface {
             last_presented: None,
             page_regions: None,
             empty_viewport: None,
+            auto_hidden_top: false,
             split_grip: SplitGrip::Idle,
             split_grip_divider: None,
             split_empty: [None; 4],
@@ -349,6 +374,12 @@ impl ChromeSurface {
         std::mem::replace(&mut self.empty_viewport, viewport) != viewport
     }
 
+    /// Tells the painter whether auto-hide has the top chrome out of the window. Returns whether that
+    /// changed, so the caller repaints everything.
+    pub fn set_auto_hidden_top(&mut self, hidden: bool) -> bool {
+        std::mem::replace(&mut self.auto_hidden_top, hidden) != hidden
+    }
+
     /// Hands the toolbar's back, forward, reload, omnibox and main menu to the HTML chrome.
     pub fn set_html_toolbar(&mut self, on: bool) {
         self.html_toolbar = on;
@@ -396,6 +427,32 @@ impl ChromeSurface {
         self.round(target, radius, tint, dirty);
         self.border(target, radius, m.px(2) as f32, palette.omnibox_focus_border, dirty);
     }
+
+    /// --- tab stacks (T10) --- the title bars of a split's tiles ("Show a title bar on each tile"):
+    /// each a tab face across the top of its tile with the page's title, the focused tile's lifted
+    /// like the active tab. `bars` holds `(bar, title, focused)`.
+    pub fn paint_tile_titles(&mut self, bars: &[(Rect, String, bool)], palette: &Palette, dirty: Rect) {
+        let m = Metrics::new(self.dpi);
+        let inset = m.px(10);
+        for (bar, title, focused) in bars {
+            if bar.intersect(dirty).is_empty() || bar.width() <= inset * 3 || bar.height() <= m.px(4) {
+                continue;
+            }
+            let face = Rect::new(bar.left, bar.top + m.px(2), bar.right, bar.bottom - m.px(2));
+            let radius = m.px(6).min(face.height() / 2).max(0);
+            let fill = if *focused { palette.tab_active } else { palette.tab_inactive };
+            self.round(face, radius, fill, dirty);
+            if *focused {
+                self.border(face, radius, m.px(1) as f32, palette.tab_active_border, dirty);
+            }
+            // An empty string must never reach DrawTextW.
+            let text = if title.trim().is_empty() { "New tab" } else { title.as_str() };
+            let colour = if *focused { palette.tab_text_active } else { palette.tab_text_inactive };
+            let label = Rect::new(face.left + inset, face.top, face.right - inset, face.bottom);
+            self.draw_text(text, label, colour, true, face, dirty);
+        }
+    }
+    // --- end tab stacks ---
     pub fn width(&self) -> i32 {
         self.width
     }
@@ -406,16 +463,11 @@ impl ChromeSurface {
     /// Draws the independent vertical list into the same layered surface as the toolbar.
     pub fn paint_vertical_sidebar(
         &mut self,
-        layout: &crate::vertical_tabs::SidebarLayout,
-        rows: &[crate::chrome::vertical_paint::SidebarRow],
-        workspace: &str,
-        active: crate::tabs::TabId,
-        scroll: i32,
-        hover_row: Option<usize>,
-        html_sidebar: bool,
+        view: SidebarPaintView<'_>,
         dirty: Rect,
         palette: &Palette,
     ) {
+        let SidebarPaintView { layout, rows, workspace, active, scroll, hover_row, html_sidebar } = view;
         let clip = layout.sidebar.intersect(dirty);
         if clip.is_empty() {
             return;
@@ -578,18 +630,23 @@ impl ChromeSurface {
             let start = y as usize * stride + dirty.left as usize * 4;
             pixels[start..start + dirty.width() as usize * 4].fill(0);
         }
-        if !view.palette.translucent {
+        if !view.palette.translucent && !self.auto_hidden_top {
+            // --- layout (thread T6) --- the chrome bands: above the page (title row, toolbar, tab
+            // row, whichever are at the top) and below it (a tab row or the toolbar along the
+            // bottom edge; nothing when there is none). --- auto-hide (T11) --- neither while the
+            // top chrome is out of the layout (the page is there).
             self.fill_rect(
-                Rect::new(
-                    0,
-                    0,
-                    self.width,
-                    layout::chrome_height(view.layout.variant, view.layout.metrics.dpi()),
-                ),
+                Rect::new(0, 0, self.width, view.layout.top_chrome),
+                view.palette.window,
+                dirty,
+            );
+            self.fill_rect(
+                Rect::new(0, view.layout.bottom_chrome, self.width, self.height),
                 view.palette.window,
                 dirty,
             );
         }
+        self.paint_title_bar(view, dirty); // --- layout (thread T6) ---
         // Each HTML region is cleared here: the overlay sits above the HTML chrome's child window, so
         // the page shows through. The native paint of that region is then skipped.
         if self.html_toolbar {
@@ -603,19 +660,23 @@ impl ChromeSurface {
         } else if !self.html_pending[2] {
             self.paint_left_rail(view, dirty);
         }
-        if !self.html_tabs {
-            self.paint_departures(view, dirty);
-            self.paint_tabs(view, dirty);
-        }
-        self.paint_tab_menu(view, dirty);
-        self.paint_new_tab(view, dirty);
-        if !self.html_toolbar && !self.html_pending[0] {
-            self.paint_main_menu(view, dirty);
-            self.paint_nav(view, dirty);
-        }
-        self.paint_caption(view, dirty);
-        if !self.html_toolbar && !self.html_pending[0] {
-            self.paint_omnibox(view, dirty);
+        // Auto-hide: the top chrome is out of the window, so none of it is painted over the page.
+        if !self.auto_hidden_top {
+            if !self.html_tabs {
+                self.paint_departures(view, dirty);
+                self.paint_tabs(view, dirty);
+                self.paint_stack_row(view, dirty); // --- two-level stacks (T10b) ---
+            }
+            self.paint_tab_menu(view, dirty);
+            self.paint_new_tab(view, dirty);
+            if !self.html_toolbar && !self.html_pending[0] {
+                self.paint_main_menu(view, dirty);
+                self.paint_nav(view, dirty);
+            }
+            self.paint_caption(view, dirty);
+            if !self.html_toolbar && !self.html_pending[0] {
+                self.paint_omnibox(view, dirty);
+            }
         }
         self.paint_page_boundary(view, dirty);
         self.paint_empty_viewport(view, dirty);
@@ -637,7 +698,7 @@ impl ChromeSurface {
         }
         let m = view.layout.metrics;
         let palette = view.palette;
-        let radius = if view.content_rounded { m.px(9) } else { 0 };
+        let radius = content_corner_radius(view.content_rounded, m.px(9));
         let base = Rgba { a: 255, ..palette.window };
         self.round(region, radius, base, dirty);
         self.border(region, radius, 1.0, palette.omnibox_border, dirty);
@@ -648,7 +709,7 @@ impl ChromeSurface {
             return;
         };
         let m = view.layout.metrics;
-        let radius = if view.content_rounded { m.px(9) } else { 0 };
+        let radius = content_corner_radius(view.content_rounded, m.px(9));
         let colour = view.palette.omnibox_border;
         if let Some(panes) = panes {
             // --- split view ---
@@ -1125,6 +1186,11 @@ impl ChromeSurface {
                 let text = letter.to_uppercase().collect::<String>();
                 self.draw_centred(&text, tile, Rgba::hex(0xFFFFFF, 0xFF), clip);
             }
+        } else if let Some(emoji) = entry.emoji.as_deref().filter(|emoji| !emoji.trim().is_empty()) {
+            // --- tab stacks and workspaces (T10) --- a workspace's emoji in place of its glyph. GDI
+            // draws it in the ink colour, as it draws the letter tiles.
+            let square = rail::centred(button, m.px(rail::ICON) + m.px(4));
+            self.draw_centred(emoji, square, ink, clip);
         } else {
             // A workspace glyph already wears its colour, so its draw-on is a lighter pass of it.
             let (colour, trace) = match entry.icon {
@@ -1142,6 +1208,17 @@ impl ChromeSurface {
             let centre_x = (button.right - m.px(6)) as f32;
             let centre_y = (button.top + m.px(6)) as f32;
             self.line_f(centre_x, centre_y, centre_x, centre_y, size, accent, clip);
+        }
+        // --- tab stacks and workspaces (T10) --- "Show tab counts on workspaces": a small pill at
+        // the button's lower right, a tab face's fill and text so it reads on any backdrop.
+        if entry.count > 0 {
+            let text = if entry.count > 99 { "99+".to_owned() } else { entry.count.to_string() };
+            let height = m.px(12);
+            let width = (height + m.px(5) * (text.len() as i32 - 1)).max(height);
+            let pill = Rect::new(button.right - width, button.bottom - height, button.right, button.bottom);
+            self.round(pill, height / 2, palette.tab_active, clip);
+            self.border(pill, height / 2, 1.0, palette.tab_active_border, clip);
+            self.draw_centred(&text, pill, palette.tab_text_active, clip);
         }
     }
 
@@ -1559,6 +1636,78 @@ impl ChromeSurface {
         }
     }
 
+    // --- two-level stacks (T10b) ---
+    /// The second tab row: the tabs of the stack in use as plain islands, drawn the way the tab
+    /// row draws an ungrouped tab (fill, hairline, the selected outline, favicon, title, and the
+    /// close glyph on the hovered or selected island).
+    fn paint_stack_row(&mut self, view: &ChromeView<'_>, dirty: Rect) {
+        let row = view.layout.stack_row;
+        if row.is_empty() || row.intersect(dirty).is_empty() {
+            return;
+        }
+        let m = view.layout.metrics;
+        let radius = m.tab_radius().min(row.height() / 2);
+        let islands = view.layout.stack_tabs(view.stack_tabs.len());
+        for (index, (island, tab)) in islands.iter().zip(view.stack_tabs).enumerate() {
+            if island.intersect(dirty).is_empty() {
+                continue;
+            }
+            let active = view.stack_active == Some(index);
+            let hovered = matches!(view.hover, Hit::StackTab(i) | Hit::StackTabClose(i) if i == index);
+            let pressed_close = view.pressed == Hit::StackTabClose(index);
+            let base = if hovered { view.palette.tab_hover } else { view.palette.tab_inactive };
+            let fill = if active { view.palette.tab_active } else { base };
+            self.round_sides(*island, radius, radius, fill, dirty);
+            self.border_sides(*island, radius, radius, 1.0, scale_alpha(view.palette.hairline, 0.62), dirty);
+            if active {
+                let stroke = if view.palette.translucent { 0.25 } else { 1.0 };
+                self.border_sides(*island, radius, radius, 1.0, scale_alpha(view.palette.tab_active_border, stroke), dirty);
+            }
+            let mut parts = view.layout.tab_parts(*island);
+            let title = if tab.title.is_empty() { "New tab" } else { tab.title };
+            if !parts.title.is_empty() {
+                // The favicon and title sit centred in the island as a group, as in the tab row.
+                let length = encode_into(&mut self.label_units, title);
+                let text_width = self.text.measure(&self.label_units[..length], length);
+                let group = parts.favicon.width() + m.px(Metrics::TEXT_GAP) + text_width.min(parts.title.width());
+                let start = ((parts.favicon.left + parts.title.right - group) / 2).max(parts.favicon.left);
+                let shift = start - parts.favicon.left;
+                parts.favicon.left += shift;
+                parts.favicon.right += shift;
+                parts.title.left += shift;
+            }
+            if island.contains_rect(parts.favicon) && !(active && parts.active_close) {
+                if let Some(favicon) = tab.favicon {
+                    self.blit_favicon(parts.favicon, favicon, dirty);
+                } else {
+                    self.round(parts.favicon, m.px(4), Rgba::hex(if active { 0x6B7785 } else { 0x84909D }, 210), dirty);
+                    let (cx, cy) = center(parts.favicon);
+                    self.line(cx - 2, cy, cx + 2, cy, 1.3, Rgba::hex(0xFFFFFF, 230), dirty);
+                    self.line(cx, cy - 2, cx, cy + 2, 1.3, Rgba::hex(0xFFFFFF, 230), dirty);
+                }
+            }
+            if !parts.title.is_empty() {
+                let colour = if active { view.palette.tab_text_active } else { view.palette.tab_text_inactive };
+                self.draw_text(title, parts.title, colour, true, *island, dirty);
+            }
+            let close = if active && parts.active_close { parts.favicon } else { parts.close };
+            if close.is_empty() || !island.contains_rect(close) || !(hovered || active) {
+                continue;
+            }
+            if view.hover == Hit::StackTabClose(index) || pressed_close {
+                self.round(close, m.px(6), if pressed_close { view.palette.tab_active_border } else { view.palette.caption_hover }, dirty);
+            }
+            let c = if hovered || active { view.palette.tab_text_active } else { view.palette.tab_text_inactive };
+            let (cx, cy) = center(close);
+            let scale = m.px(16) as f32 / 24.0;
+            let half = 6.0 * scale;
+            let (cx, cy) = (cx as f32, cy as f32);
+            self.line_f(cx - half, cy - half, cx + half, cy + half, 1.5 * scale, c, dirty);
+            self.line_f(cx - half, cy + half, cx + half, cy - half, 1.5 * scale, c, dirty);
+        }
+    }
+    // --- end two-level stacks ---
+
     fn paint_group_balls(
         &mut self,
         index: usize,
@@ -1807,6 +1956,30 @@ impl ChromeSurface {
         }
     }
 
+    // --- layout (thread T6) ---
+    /// The title row: the active page's title at its left end, clear of the window buttons (which
+    /// `paint_caption` draws). Nothing when the arrangement has no title row.
+    fn paint_title_bar(&mut self, view: &ChromeView<'_>, dirty: Rect) {
+        let bar = view.layout.title_bar;
+        if bar.is_empty() || bar.intersect(dirty).is_empty() {
+            return;
+        }
+        let m = view.layout.metrics;
+        let title = view.tabs.get(view.active).map_or("", |tab| tab.title);
+        // An empty string must never reach the text painter (DrawTextW faults on it).
+        if title.trim().is_empty() {
+            return;
+        }
+        let pad = m.px(Metrics::TAB_PADDING + Metrics::OUTER_MARGIN);
+        let buttons_left = if view.layout.caption_area.is_empty() { bar.right } else { view.layout.caption_area.left };
+        let rect = Rect::new(bar.left + pad, bar.top, (buttons_left - pad).max(bar.left + pad), bar.bottom);
+        if rect.is_empty() {
+            return;
+        }
+        self.draw_text(title, rect, view.palette.tab_text_active, true, bar, dirty);
+    }
+    // --- end layout ---
+
     fn paint_caption(&mut self, view: &ChromeView<'_>, dirty: Rect) {
         let m = view.layout.metrics;
         for i in 0..3 {
@@ -1903,7 +2076,7 @@ impl ChromeSurface {
         let left_inset = m.px(if view.show_site_info { Metrics::OMNIBOX_TEXT_LEFT } else { Metrics::OMNIBOX_TEXT_INSET });
         let line = self.text.line_height();
         let top = rect.top + (rect.height() - line) / 2;
-        let split_button = view.show_split.then(|| view.layout.split_button()).unwrap_or_default();
+        let split_button = if view.show_split { view.layout.split_button() } else { Rect::default() };
         let text_right_limit = if view.show_split {
             split_button.left - m.px(4)
         } else {
@@ -2308,38 +2481,6 @@ impl ChromeSurface {
             y0,
             x1,
             y1,
-            width,
-            color,
-            dirty,
-        );
-    }
-    fn outline_rect(&mut self, rect: Rect, width: f32, color: Rgba, dirty: Rect) {
-        self.line(
-            rect.left, rect.top, rect.right, rect.top, width, color, dirty,
-        );
-        self.line(
-            rect.right,
-            rect.top,
-            rect.right,
-            rect.bottom,
-            width,
-            color,
-            dirty,
-        );
-        self.line(
-            rect.right,
-            rect.bottom,
-            rect.left,
-            rect.bottom,
-            width,
-            color,
-            dirty,
-        );
-        self.line(
-            rect.left,
-            rect.bottom,
-            rect.left,
-            rect.top,
             width,
             color,
             dirty,
@@ -3219,7 +3360,32 @@ unsafe extern "system" {
 #[cfg(test)]
 #[allow(clippy::items_after_test_module)]
 mod tests {
+    /// These pixel fixtures exercise the native renderer even in shipping HTML-default builds.
+    /// HTML pending/live behavior is opted into explicitly by its dedicated tests below.
+    fn native_surface(width: i32, height: i32, dpi: u32) -> super::ChromeSurface {
+        let mut surface = super::ChromeSurface::new(width, height, dpi);
+        surface.html_pending = [false; 3];
+        surface
+    }
+
+    #[test]
+    fn native_pixel_fixture_does_not_change_shipping_html_defaults() {
+        let shipping = super::ChromeSurface::new(320, 100, 96);
+        assert_eq!(shipping.html_pending, [crate::chrome_host::html_ui_enabled(); 3]);
+        assert_eq!(native_surface(320, 100, 96).html_pending, [false; 3]);
+    }
+
     use super::*;
+
+    /// --- wave-1 fixes --- `rounded_content_frame` off squares the page and new-tab corners.
+    #[test]
+    fn the_rounded_content_frame_option_gates_the_corner_radius() {
+        let m = crate::chrome::layout::Metrics::new(96);
+        assert!(content_corner_radius(true, m.px(9)) > 0);
+        assert_eq!(content_corner_radius(false, m.px(9)), 0);
+        let m = crate::chrome::layout::Metrics::new(144);
+        assert_eq!(content_corner_radius(true, m.px(9)), m.px(9), "scaled with DPI");
+    }
     use crate::{
         chrome::motion::{self, Motion},
         tabs::TabId,
@@ -3416,6 +3582,8 @@ mod tests {
             palette: palette(Appearance::Light, false),
             tabs: &tabs,
             active: 0,
+            stack_tabs: &[],
+            stack_active: None,
             hover: Hit::None,
             pressed: Hit::None,
             caption_maximised: false,
@@ -3439,7 +3607,7 @@ mod tests {
             show_split: true,
         };
         let dirty = Rect::new(0, 0, 240, 84);
-        let mut surface = ChromeSurface::new(500, 120, 96);
+        let mut surface = native_surface(500, 120, 96);
         surface.paint(&view, dirty);
         let once = surface.pixels().to_vec();
         surface.paint(&view, dirty);
@@ -3466,10 +3634,10 @@ mod tests {
                 .map(|(y, x, c)| s.pixels()[y as usize * s.stride() + x as usize * 4 + c])
                 .collect()
         };
-        let mut native = ChromeSurface::new(800, 120, 96);
+        let mut native = native_surface(800, 120, 96);
         native.set_html_pending(0, false);
         native.paint(&view, Rect::new(0, 0, 800, native.height()));
-        let mut waiting = ChromeSurface::new(800, 120, 96);
+        let mut waiting = native_surface(800, 120, 96);
         waiting.set_html_pending(0, true);
         waiting.paint(&view, Rect::new(0, 0, 800, waiting.height()));
         for r in [layout.back_button, layout.omnibox, layout.main_menu_button] {
@@ -3511,10 +3679,10 @@ mod tests {
                 .collect()
         };
 
-        let mut native = ChromeSurface::new(800, 120, 96);
+        let mut native = native_surface(800, 120, 96);
         native.set_html_pending(1, false);
         native.paint(&view, Rect::new(0, 0, 800, native.height()));
-        let mut waiting = ChromeSurface::new(800, 120, 96);
+        let mut waiting = native_surface(800, 120, 96);
         waiting.set_html_pending(1, true);
         waiting.paint(&view, Rect::new(0, 0, 800, waiting.height()));
 
@@ -3534,7 +3702,7 @@ mod tests {
 
     #[test]
     fn empty_and_huge_text_measurement_is_bounded() {
-        let mut s = ChromeSurface::new(320, 100, 96);
+        let mut s = native_surface(320, 100, 96);
         assert_eq!(s.caret_x("", 0), 0);
         let huge = "x".repeat(100_000);
         let capped = s.caret_x(&huge, usize::MAX);
@@ -3551,7 +3719,7 @@ mod tests {
 
     #[test]
     fn text_mask_is_released_when_all_three_html_regions_are_live() {
-        let mut s = ChromeSurface::new(320, 100, 96);
+        let mut s = native_surface(320, 100, 96);
         s.set_html_toolbar(true);
         s.set_html_tabs(true);
         s.set_html_rail(true);
@@ -3568,7 +3736,7 @@ mod tests {
 
     #[test]
     fn text_mask_grows_with_the_surface_only_when_allocated() {
-        let mut s = ChromeSurface::new(320, 100, 96);
+        let mut s = native_surface(320, 100, 96);
         s.resize(640, 200, 96);
         assert!(s.text.dib.allocated.0 <= 64 && s.text.dib.allocated.1 <= 64, "not allocated yet");
         assert_eq!(s.text.wanted, (640, 200));
@@ -3616,13 +3784,13 @@ mod tests {
         }];
         let pal = palette(Appearance::Dark, false);
         let small = crate::chrome::layout::compute(800, 120, 96, 1, false);
-        let mut resized = ChromeSurface::new(800, 120, 96);
+        let mut resized = native_surface(800, 120, 96);
         resized.paint(&test_view(&small, &tabs, pal, omnibox("other.test", (0, 0), "")), Rect::new(0, 0, 800, 120));
         // 812 x 120 fits the 800 x 120 surface's bitmap, so its old pixels are still there.
         resized.resize(812, 120, 96);
         let big = crate::chrome::layout::compute(812, 120, 96, 1, false);
         let view = test_view(&big, &tabs, pal, omnibox("example.com", (0, 0), ""));
-        let mut fresh = ChromeSurface::new(812, 120, 96);
+        let mut fresh = native_surface(812, 120, 96);
         for surface in [&mut resized, &mut fresh] {
             surface.paint(&view, Rect::new(0, 0, 812, 120));
         }
@@ -3648,6 +3816,8 @@ mod tests {
             palette,
             tabs,
             active: 0,
+            stack_tabs: &[],
+            stack_active: None,
             hover: Hit::None,
             pressed: Hit::None,
             caption_maximised: false,
@@ -3703,6 +3873,8 @@ mod tests {
             palette: palette(Appearance::Dark, false),
             tabs: &tabs,
             active: 0,
+            stack_tabs: &[],
+            stack_active: None,
             hover: Hit::None,
             pressed: Hit::None,
             caption_maximised: false,
@@ -3717,7 +3889,7 @@ mod tests {
             show_site_info: true,
             show_split: true,
         };
-        let mut surface = ChromeSurface::new(1000, 120, 96);
+        let mut surface = native_surface(1000, 120, 96);
         surface.paint(&view, Rect::new(0, 0, 1000, surface.height()));
         surface
     }
@@ -3733,6 +3905,8 @@ mod tests {
             dot: false,
             accent: None,
             favicon: None,
+            count: 0,
+            emoji: None,
         }
     }
 
@@ -3771,6 +3945,8 @@ mod tests {
             palette: palette(Appearance::Light, false),
             tabs: &[],
             active: 0,
+            stack_tabs: &[],
+            stack_active: None,
             hover,
             pressed,
             caption_maximised: false,
@@ -3806,7 +3982,7 @@ mod tests {
     ) -> ChromeSurface {
         let m = Metrics::new(dpi);
         let (width, height) = (m.px(300), m.px(400));
-        let mut surface = ChromeSurface::new(width, height, dpi);
+        let mut surface = native_surface(width, height, dpi);
         let whole = Rect::new(0, 0, width, height);
         paint_rail_with(
             &mut surface,
@@ -3968,6 +4144,8 @@ mod tests {
             palette: palette(Appearance::Light, false),
             tabs: &[],
             active: 0,
+            stack_tabs: &[],
+            stack_active: None,
             hover,
             pressed,
             caption_maximised: false,
@@ -4035,7 +4213,7 @@ mod tests {
         let entries = [rail_entry(key, RailIcon::Plus)];
         let button = button_rect(&entries, 96, key);
         let start = Instant::now();
-        let mut surface = ChromeSurface::new(300, 400, 96);
+        let mut surface = native_surface(300, 400, 96);
 
         paint_rail_at(&mut surface, &entries, Hit::None, Hit::None, &[], start);
         let rest = ink_mass(&surface, button);
@@ -4066,8 +4244,8 @@ mod tests {
         let entries = [rail_entry(key, RailIcon::Plus)];
         let button = button_rect(&entries, 96, key);
         let now = Instant::now();
-        let mut rest = ChromeSurface::new(300, 400, 96);
-        let mut hovered = ChromeSurface::new(300, 400, 96);
+        let mut rest = native_surface(300, 400, 96);
+        let mut hovered = native_surface(300, 400, 96);
         paint_rail_at(&mut rest, &entries, Hit::None, Hit::None, &[], now);
         let full = [RailFade { key, amount: 1.0 }];
         paint_rail_at(&mut hovered, &entries, Hit::Rail(key), Hit::None, &full, now);
@@ -4084,7 +4262,7 @@ mod tests {
         let button = button_rect(std::slice::from_ref(&entry), 96, key);
         let accent = palette(Appearance::Light, false).tab_group_accent;
         let start = Instant::now();
-        let mut surface = ChromeSurface::new(300, 400, 96);
+        let mut surface = native_surface(300, 400, 96);
 
         paint_rail_at(&mut surface, std::slice::from_ref(&entry), Hit::None, Hit::None, &[], start);
         assert_eq!(accent_pixels(&surface, button, accent), 0, "idle has no accent stroke");
@@ -4102,7 +4280,7 @@ mod tests {
         assert!(counts[2] > 0 && counts[2] < counts[4], "it is part-drawn midway: {counts:?}");
         assert!(!surface.rail_animating(at_ms(on, 400)), "settled");
 
-        let mut fresh = ChromeSurface::new(300, 400, 96);
+        let mut fresh = native_surface(300, 400, 96);
         paint_rail_at(&mut fresh, &entries, Hit::None, Hit::None, &[], start);
         assert!(
             pixels_in(&surface, button) == pixels_in(&fresh, button),
@@ -4125,7 +4303,7 @@ mod tests {
                 .count()
         };
         let start = Instant::now();
-        let mut surface = ChromeSurface::new(300, 400, 96);
+        let mut surface = native_surface(300, 400, 96);
         paint_rail_at(&mut surface, std::slice::from_ref(&entry), Hit::None, Hit::None, &[], start);
         let full = bar_rows(&surface);
         assert!(full > 0);
@@ -4148,7 +4326,7 @@ mod tests {
         let mut entry = rail_entry(key, RailIcon::Home);
         let button = button_rect(std::slice::from_ref(&entry), 96, key);
         let start = Instant::now();
-        let mut snapped = ChromeSurface::new(300, 400, 96);
+        let mut snapped = native_surface(300, 400, 96);
         let _ = snapped.set_rail_snap(true, start);
         paint_rail_at(&mut snapped, std::slice::from_ref(&entry), Hit::None, Hit::None, &[], start);
 
@@ -4160,7 +4338,7 @@ mod tests {
         let frame = snapped.rail_step(later);
         assert!(!frame.running && !frame.repaint);
 
-        let mut settled = ChromeSurface::new(300, 400, 96);
+        let mut settled = native_surface(300, 400, 96);
         paint_rail_at(&mut settled, &entries, Hit::Rail(key), Hit::Rail(key), &[], start);
         assert!(
             pixels_in(&snapped, button) == pixels_in(&settled, button),
@@ -4173,7 +4351,7 @@ mod tests {
         let key = RailKey::Home;
         let mut entry = rail_entry(key, RailIcon::Home);
         let start = Instant::now();
-        let mut surface = ChromeSurface::new(300, 400, 96);
+        let mut surface = native_surface(300, 400, 96);
         paint_rail_at(&mut surface, std::slice::from_ref(&entry), Hit::None, Hit::None, &[], start);
         assert!(!surface.rail_animating(start), "an idle rail has no timer");
 
@@ -4205,8 +4383,8 @@ mod tests {
         let layout = layout::compute_in_frame(m.px(300), m.px(400), 96, 0, 0, false);
         let rect = button_rect(&entries, 96, key);
         let whole = Rect::new(0, 0, m.px(300), m.px(400));
-        let mut base = ChromeSurface::new(whole.right, whole.bottom, 96);
-        let mut decorated = ChromeSurface::new(whole.right, whole.bottom, 96);
+        let mut base = native_surface(whole.right, whole.bottom, 96);
+        let mut decorated = native_surface(whole.right, whole.bottom, 96);
         paint_rail_with(&mut base, &entries, 96, Hit::None, Hit::None, &[], None, whole);
         paint_rail_decorated(
             &mut decorated,
@@ -4239,7 +4417,7 @@ mod tests {
         assert!(dirty.contains_rect(rect), "the dirty rect covers the whole button");
 
         let full = paint_rail(&entries, 144, Hit::Rail(key), Hit::None, &[], None);
-        let mut incremental = ChromeSurface::new(width, height, 144);
+        let mut incremental = native_surface(width, height, 144);
         let whole = Rect::new(0, 0, width, height);
         paint_rail_with(
             &mut incremental,
@@ -4278,6 +4456,8 @@ mod tests {
         let letter = [rail_entry(key, RailIcon::Letter)];
         let with_favicon = [RailEntry {
             favicon: Some(&favicon),
+            count: 0,
+            emoji: None,
             ..rail_entry(key, RailIcon::Letter)
         }];
         let rect = button_rect(&letter, 96, key);
@@ -4383,7 +4563,7 @@ mod tests {
             group_frame: None,
         }];
         let text = "https://en.wikipedia.org/wi";
-        let mut surface = ChromeSurface::new(1000, 120, 96);
+        let mut surface = native_surface(1000, 120, 96);
         let pal = palette(Appearance::Dark, false);
         let end = text.encode_utf16().count();
         let dirty = Rect::new(0, 0, 1000, surface.height());
@@ -4407,7 +4587,7 @@ mod tests {
             group_colour: None,
             group_frame: None,
         }; 2];
-        let mut surface = ChromeSurface::new(1000, 700, 96);
+        let mut surface = native_surface(1000, 700, 96);
         let dirty = Rect::new(0, 0, 1000, surface.height());
         let glass = palette(Appearance::Dark, false);
         surface.paint(
@@ -4476,7 +4656,7 @@ mod tests {
             group_frame: None,
         }];
         let pal = palette(Appearance::Light, true);
-        let mut surface = ChromeSurface::new(600, 120, 96);
+        let mut surface = native_surface(600, 120, 96);
         let dirty = Rect::new(0, 0, 600, surface.height());
         let long = "https://example.com/".to_owned() + &"segment/".repeat(60);
         let end = long.encode_utf16().count();
@@ -4554,7 +4734,7 @@ mod tests {
             40
         ];
         let pal = palette(Appearance::Dark, false);
-        let mut surface = ChromeSurface::new(768, 700, 96);
+        let mut surface = native_surface(768, 700, 96);
         let mut view = test_view(&layout, &tabs, pal, omnibox("", (0, 0), ""));
         view.active = 39;
         view.hover = Hit::TabClose(39);
@@ -4586,8 +4766,8 @@ mod tests {
         }];
         let palette = palette(Appearance::Dark, false);
         let dirty = Rect::new(0, 0, 768, 64);
-        let mut resting = ChromeSurface::new(768, 64, 96);
-        let mut hovered = ChromeSurface::new(768, 64, 96);
+        let mut resting = native_surface(768, 64, 96);
+        let mut hovered = native_surface(768, 64, 96);
         let resting_view = test_view(&layout, &tabs, palette, omnibox("", (0, 0), ""));
         let mut hovered_view = test_view(&layout, &tabs, palette, omnibox("", (0, 0), ""));
         hovered_view.hover = Hit::Tab(0);
@@ -4619,7 +4799,7 @@ mod tests {
             group_frame: None,
         }; 40];
         let palette = palette(Appearance::Dark, false);
-        let mut resting = ChromeSurface::new(768, 64, 96);
+        let mut resting = native_surface(768, 64, 96);
         let view = test_view(&layout, &tabs, palette, omnibox("", (0, 0), ""));
         resting.paint(&view, Rect::new(0, 0, 768, 64));
         let parts = layout.tab_parts(layout.tab(0).unwrap());
@@ -4678,7 +4858,7 @@ mod tests {
             },
         ];
         let palette = palette(Appearance::Dark, false);
-        let mut surface = ChromeSurface::new(1024, 64, 96);
+        let mut surface = native_surface(1024, 64, 96);
         surface.paint(
             &test_view(&layout, &tabs, palette, omnibox("", (0, 0), "")),
             Rect::new(0, 0, 1024, 64),
@@ -4848,7 +5028,7 @@ mod tests {
                 group_frame: None,
             }];
             let view = test_view(&layout, &tabs, pal, omnibox("", (0, 0), ""));
-            let mut surface = ChromeSurface::new(1024, 700, dpi);
+            let mut surface = native_surface(1024, 700, dpi);
             surface.paint(&view, Rect::new(0, 0, 1024, surface.height()));
             let stride = surface.stride();
             let pixels = surface.pixels();
@@ -4923,7 +5103,7 @@ mod tests {
                         let mut view = test_view(&layout, &tabs, pal, omnibox("", (0, 0), ""));
                         view.hover = hover;
                         view.pressed = pressed;
-                        let mut surface = ChromeSurface::new(1024, 700, dpi);
+                        let mut surface = native_surface(1024, 700, dpi);
                         surface.paint(&view, Rect::new(0, 0, 1024, surface.height()));
                         let rgba = composite_on_background(
                             surface.pixels(),
@@ -5034,7 +5214,7 @@ mod tests {
                     Some(GroupFrame::resting(shell, state, member_count));
                 let mut view = test_view(&layout, &tabs, pal, omnibox("", (0, 0), ""));
                 view.active = 0;
-                let mut surface = ChromeSurface::new(420, 120, dpi);
+                let mut surface = native_surface(420, 120, dpi);
                 surface.paint(&view, Rect::new(0, 0, 420, surface.height()));
                 let rgba = composite_on_background(
                     surface.pixels(),
@@ -5104,6 +5284,8 @@ mod tests {
                                     palette: pal,
                                     tabs: &tabs,
                                     active: count - 1,
+                                    stack_tabs: &[],
+                                    stack_active: None,
                                     hover: Hit::Tab(0),
                                     pressed: Hit::None,
                                     caption_maximised: false,
@@ -5118,7 +5300,7 @@ mod tests {
                                     show_site_info: true,
                                     show_split: true,
                                 };
-                                let mut surface = ChromeSurface::new(width, 120, dpi);
+                                let mut surface = native_surface(width, 120, dpi);
                                 surface.paint(&view, Rect::new(0, 0, width, surface.height()));
                                 let rgba = composite_on_background(
                                     surface.pixels(),
@@ -5139,6 +5321,105 @@ mod tests {
             }
         }
     }
+
+    // --- two-level stacks (T10b) ---
+    /// The native strip with the second row of two-level stacks (`row`), three stacked tabs in it.
+    fn paint_two_level(pal: &'static Palette, dpi: u32, width: i32, height: i32, row: crate::chrome::layout::StackRow, hover: Hit) -> (ChromeSurface, Layout) {
+        use crate::chrome::layout::{compute_arranged_in_frame, Arrangement};
+        let (layout, _) = compute_arranged_in_frame(Arrangement::default().with_stack_row(row), width, height, dpi, 3, 1, false, 260, true, 28);
+        let now = Instant::now();
+        let view_of = |title: &'static str, selected: bool, favicon: bool| TabView { title, loading: false, favicon: favicon.then_some(&QA_FAVICON), emphasis: Emphasis::resting(false, selected, now), group_size: None, group_control: false, marker: None, group_colour: None, group_frame: None };
+        let tabs = [view_of("Inbox", false, true), view_of("Docs", true, false), view_of("News", false, true)];
+        let stack = [view_of("Docs - Design notes", false, true), view_of("Docs - Release plan", true, false), view_of("Docs - Weekly review", false, true)];
+        let omni = OmniboxView { text: "https://docs.example/plan", selection: (0, 0), caret_visible: false, focused: false, completion_suffix: "", progress: None, site: SiteSecurity::Secure };
+        let view = ChromeView {
+            layout: &layout,
+            palette: pal,
+            tabs: &tabs,
+            active: 1,
+            stack_tabs: if layout.stack_row.is_empty() { &[] } else { &stack },
+            stack_active: Some(1),
+            hover,
+            pressed: Hit::None,
+            caption_maximised: false,
+            can_back: true,
+            can_forward: false,
+            omnibox: omni,
+            now,
+            departures: &[],
+            rail: None,
+            icon_motion: None,
+            content_rounded: true,
+            show_site_info: true,
+            show_split: true,
+        };
+        let mut surface = native_surface(width, height, dpi);
+        surface.paint(&view, Rect::new(0, 0, width, surface.height()));
+        (surface, layout)
+    }
+
+    #[test]
+    fn the_native_strip_paints_the_second_row_only_when_it_is_laid_out() {
+        use crate::chrome::layout::StackRow;
+        let pal = palette(Appearance::Dark, true);
+        let opaque_in = |surface: &ChromeSurface, rect: Rect| {
+            let mut count = 0;
+            for y in rect.top.max(0)..rect.bottom.min(surface.height()) {
+                for x in rect.left.max(0)..rect.right.min(surface.width()) {
+                    if surface.pixels()[y as usize * surface.stride() + x as usize * 4 + 3] > 0 {
+                        count += 1;
+                    }
+                }
+            }
+            count
+        };
+        for dpi in [96, 120, 144, 192] {
+            let (with_row, layout) = paint_two_level(pal, dpi, 1024, 240, StackRow::Regular, Hit::None);
+            let islands = layout.stack_tabs(3);
+            assert_eq!(islands.len(), 3, "dpi {dpi}");
+            for island in &islands {
+                assert!(opaque_in(&with_row, *island) > island.width() * island.height() / 2, "dpi {dpi}: the island {island:?} is painted");
+            }
+            let (compact, compact_layout) = paint_two_level(pal, dpi, 1024, 240, StackRow::Compact, Hit::StackTab(0));
+            assert!(compact_layout.stack_row.height() < layout.stack_row.height());
+            assert!(opaque_in(&compact, compact_layout.stack_tabs(3)[0]) > 0, "dpi {dpi}: compact");
+            let (without, plain) = paint_two_level(pal, dpi, 1024, 240, StackRow::None, Hit::None);
+            assert!(plain.stack_row.is_empty());
+            // Without the row nothing of it is drawn: the pixels where its islands were differ.
+            let pixels_in = |surface: &ChromeSurface, rect: Rect| -> Vec<u8> {
+                (rect.top..rect.bottom).flat_map(|y| {
+                    let start = y as usize * surface.stride() + rect.left as usize * 4;
+                    surface.pixels()[start..start + rect.width() as usize * 4].to_vec()
+                }).collect()
+            };
+            assert_ne!(pixels_in(&with_row, islands[0]), pixels_in(&without, islands[0]), "dpi {dpi}");
+            assert!(plain.viewport.top < layout.viewport.top, "dpi {dpi}: the page gave the row its room");
+        }
+    }
+
+    #[ignore = "set BOWSER_DUMP_TWO_LEVEL to render the native two-level strip before and after"]
+    #[test]
+    fn dump_two_level_native_strip() {
+        use crate::chrome::layout::StackRow;
+        let Ok(dir) = std::env::var("BOWSER_DUMP_TWO_LEVEL") else {
+            return;
+        };
+        let dir = PathBuf::from(dir);
+        fs::create_dir_all(&dir).unwrap();
+        for (appearance, name) in [(Appearance::Light, "light"), (Appearance::Dark, "dark")] {
+            let pal = palette(appearance, true);
+            for (dpi, scale) in [(96, 100), (144, 150)] {
+                for (row, label) in [(StackRow::None, "before"), (StackRow::Regular, "after"), (StackRow::Compact, "after-compact")] {
+                    let width = 900 * dpi as i32 / 96;
+                    let height = 110 * dpi as i32 / 96;
+                    let (surface, _) = paint_two_level(pal, dpi, width, height, row, Hit::StackTab(2));
+                    let rgba = composite_on_background(surface.pixels(), width, surface.height(), surface.stride(), Some([pal.window.r, pal.window.g, pal.window.b]));
+                    write_png(&dir.join(format!("gdi-{label}-{name}-{scale}.png")), width as u32, surface.height() as u32, &rgba);
+                }
+            }
+        }
+    }
+    // --- end two-level stacks ---
 
     #[ignore = "set BOWSER_DUMP_MOTION to render transition frames"]
     #[test]
@@ -5184,6 +5465,8 @@ mod tests {
                 palette: palette(Appearance::Dark, false),
                 tabs: &tabs_hover,
                 active: 0,
+                stack_tabs: &[],
+                stack_active: None,
                 hover: Hit::None,
                 pressed: Hit::None,
                 caption_maximised: false,
@@ -5198,7 +5481,7 @@ mod tests {
                 show_site_info: true,
                 show_split: true,
             };
-            let mut surface = ChromeSurface::new(width, 120, 96);
+            let mut surface = native_surface(width, 120, 96);
             surface.paint(&view, Rect::new(0, 0, width, surface.height()));
             let rgba =
                 composite_stripes(surface.pixels(), width, surface.height(), surface.stride());
@@ -5224,6 +5507,8 @@ mod tests {
                 palette: palette(Appearance::Dark, false),
                 tabs: &tabs_select,
                 active: 4,
+                stack_tabs: &[],
+                stack_active: None,
                 hover: Hit::None,
                 pressed: Hit::None,
                 caption_maximised: false,
@@ -5238,7 +5523,7 @@ mod tests {
                 show_site_info: true,
                 show_split: true,
             };
-            let mut surface = ChromeSurface::new(width, 120, 96);
+            let mut surface = native_surface(width, 120, 96);
             surface.paint(&view, Rect::new(0, 0, width, surface.height()));
             let rgba =
                 composite_stripes(surface.pixels(), width, surface.height(), surface.stride());
@@ -5274,6 +5559,8 @@ mod tests {
             palette: palette(Appearance::Light, false),
             tabs: &tabs,
             active: 0,
+            stack_tabs: &[],
+            stack_active: None,
             hover: Hit::Tab(1),
             pressed: Hit::None,
             caption_maximised: false,
@@ -5296,7 +5583,7 @@ mod tests {
             show_site_info: true,
             show_split: true,
         };
-        let mut s = ChromeSurface::new(1000, 800, 96);
+        let mut s = native_surface(1000, 800, 96);
         let full_dirty = Rect::new(0, 0, 1000, s.height());
         for _ in 0..20 {
             s.paint(&view, full_dirty);

@@ -414,6 +414,16 @@ impl Profile {
         self.root.join(SETTINGS_FILE_NAME)
     }
 
+    /// Shortcut assignments and the keyboard / Quick Commands options (`crate::commands::store`).
+    pub fn keybindings_file(&self) -> PathBuf {
+        self.root.join("keybindings.txt")
+    }
+
+    /// Command chains (`crate::commands::chains`).
+    pub fn chains_file(&self) -> PathBuf {
+        self.root.join("chains.txt")
+    }
+
     pub fn metadata_file(&self) -> PathBuf {
         self.root.join(METADATA_FILE_NAME)
     }
@@ -536,11 +546,49 @@ pub fn set_active(profile: Profile) {
 
 /// The profile this process runs with; the default profile when none was set.
 pub fn active() -> Result<Profile, ProfileError> {
+    #[cfg(test)]
+    if let Some(profile) = TEST_ACTIVE.with(|active| active.borrow().clone()) {
+        return Ok(profile);
+    }
     if let Some(profile) = ACTIVE.get() {
         return Ok(profile.clone());
     }
     let app_data = app_data_dir().ok_or(ProfileError::NoLocalAppData)?;
     Ok(Profile::default_in(&app_data))
+}
+
+// A scoped, thread-local profile for app-flow unit tests. It never redirects another test or
+// touches the runner/user's real LOCALAPPDATA profile, unlike process-wide environment overrides.
+#[cfg(test)]
+thread_local! {
+    static TEST_ACTIVE: std::cell::RefCell<Option<Profile>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub(crate) struct TestProfileGuard {
+    previous: Option<Profile>,
+    root: PathBuf,
+    _same_thread: std::marker::PhantomData<std::rc::Rc<()>>,
+}
+
+#[cfg(test)]
+impl TestProfileGuard {
+    pub(crate) fn isolated() -> Self {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let id = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let root = std::env::temp_dir().join(format!("bowser-app-test-{}-{id}", std::process::id()));
+        fs::create_dir_all(&root).expect("create isolated app test profile");
+        let previous = TEST_ACTIVE.with(|active| active.replace(Some(Profile::default_in(&root))));
+        Self { previous, root, _same_thread: std::marker::PhantomData }
+    }
+}
+
+#[cfg(test)]
+impl Drop for TestProfileGuard {
+    fn drop(&mut self) {
+        TEST_ACTIVE.with(|active| { active.replace(self.previous.take()); });
+        let _ = fs::remove_dir_all(&self.root);
+    }
 }
 
 pub fn profiles_dir(app_data: &Path) -> PathBuf {
@@ -852,6 +900,31 @@ pub fn spawn_window_with_url(profile: &Profile, url: &url::Url) -> bool {
     spawn_window_inner(profile, Some(url))
 }
 
+/// --- tab stacks (T10) --- "Move the stack to a new window": a new Bowser process for `profile`
+/// with one tab per address (the first shown, the rest asleep). Addresses a new window cannot take
+/// are left out; false when none is left or the process did not start.
+pub fn spawn_window_with_urls(profile: &Profile, urls: &[url::Url]) -> bool {
+    let urls: Vec<&url::Url> = urls.iter().filter(|url| can_open_in_new_window(url)).take(crate::performance::MAX_OPEN_URLS).collect();
+    let Some((first, rest)) = urls.split_first() else {
+        return false;
+    };
+    let Ok(exe) = std::env::current_exe() else {
+        return false;
+    };
+    let mut command = std::process::Command::new(exe);
+    command.arg("--new-window");
+    if let Some(root) = data_root_override() {
+        command.arg("--data-dir").arg(root);
+    }
+    if let Some(name) = profile.name() {
+        command.arg("--profile").arg(name);
+    }
+    for url in std::iter::once(first).chain(rest) {
+        command.arg("--open-url").arg(url.as_str());
+    }
+    command.spawn().is_ok()
+}
+
 fn spawn_window_inner(profile: &Profile, url: Option<&url::Url>) -> bool {
     let Ok(exe) = std::env::current_exe() else {
         return false;
@@ -924,6 +997,47 @@ fn is_locked_by_running_session(profile_root: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn isolated_app_profiles_restore_scope_and_remove_only_their_owned_root() {
+        let outer = TestProfileGuard::isolated();
+        let outer_path = active().unwrap().settings_file();
+        let inner_root;
+        {
+            let inner = TestProfileGuard::isolated();
+            inner_root = inner.root.clone();
+            assert_ne!(active().unwrap().settings_file(), outer_path);
+        }
+        assert!(!inner_root.exists());
+        assert_eq!(active().unwrap().settings_file(), outer_path);
+        let outer_root = outer.root.clone();
+        drop(outer);
+        assert!(!outer_root.exists());
+    }
+
+    #[test]
+    fn parallel_app_profiles_keep_real_settings_writes_separate() {
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let workers: Vec<_> = (0..2).map(|_| {
+            let barrier = barrier.clone();
+            std::thread::spawn(move || {
+                let profile = TestProfileGuard::isolated();
+                let path = active().unwrap().settings_file();
+                barrier.wait();
+                for _ in 0..8 {
+                    crate::settings::save(&path, &crate::settings::Settings::default()).unwrap();
+                    crate::settings::read_strict(&path).unwrap();
+                }
+                assert!(path.is_file());
+                (path, profile.root.clone())
+            })
+        }).collect();
+        let paths: Vec<_> = workers.into_iter().map(|worker| worker.join().unwrap()).collect();
+        assert_ne!(paths[0].0, paths[1].0);
+        assert!(paths.iter().all(|(_, root)| !root.exists()));
+    }
+
+
 
     fn temp_root(name: &str) -> PathBuf {
         let dir =

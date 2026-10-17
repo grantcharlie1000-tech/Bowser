@@ -1281,7 +1281,7 @@ impl Content {
                     return;
                 };
                 if ask_yes_no_owned(self.surface.owner(), &format!("Remove \"{}\" from the rail? Its saved data stays in its own window.", app.name)) {
-                    self.config.remove_app(id);
+                    self.config.remove_app_remembered(id);
                     self.model.selected_app = None;
                     self.finish_sidebar(Ok(()));
                 }

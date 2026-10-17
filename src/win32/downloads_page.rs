@@ -241,7 +241,7 @@ fn ensure_host(owner: HWND) {
     });
     let on_failed: Rc<dyn Fn()> = Rc::new(move || fail(HWND(raw as *mut _)));
     let on_accelerator: AccelHandler = Rc::new(move |accel: Accel| super::window::html_downloads_page_accelerator(HWND(raw as *mut _), accel));
-    let created = ChromeHost::create(&env, container, RECT { left: 0, top: 0, right: 1, bottom: 1 }, View::DownloadsPage, on_command, on_failed, Some(on_accelerator), move |result| {
+    let created = ChromeHost::create(&env, crate::chrome_host::host::ChromeHostOptions { parent: container, bounds: RECT { left: 0, top: 0, right: 1, bottom: 1 }, view: View::DownloadsPage, on_command, on_failed, on_accelerator: Some(on_accelerator) }, move |result| {
         let owner = HWND(raw as *mut _);
         match result {
             Ok(host) => {

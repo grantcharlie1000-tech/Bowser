@@ -176,6 +176,11 @@ html[data-scheme="dark"] #app {
 #app.placed .actions {
   position: absolute;
   left: var(--menu-x);
+  /* --tb-extra: the room the always-there buttons at the end of the bar (bookmark, new tab, command buttons)
+     take from the pill, set from the bar's list (view.ts applyBar); Rust shrinks the pill by the same amount.
+     The group moves left by it (on top of the download and extensions slots below) and the menu button, last
+     in the group, stays where the native layout puts it. */
+  translate: calc(var(--tb-extra, 0px) * -1) 0;
 }
 
 /* Hover: the fill takes a wash of the hover colour and the hairline firms up (83ms). */
@@ -364,6 +369,32 @@ html[data-scheme="dark"] #app {
   display: none;
 }
 
+/* Feed: shown only while the page offers a feed (Settings > Address bar > Feeds), same slot rules as the reader
+   button. It opens the Feeds panel with the page's feeds, to preview and subscribe. */
+.tb-feed {
+  margin-right: var(--bw-space-0_5);
+}
+
+.tb-feed[hidden] {
+  display: none;
+}
+
+/* A button taken off the address bar's list leaves no gap: the site button's room goes back to the text. */
+.pill.no-site .omni,
+.pill.no-site .omni-display {
+  padding-left: var(--bw-space-2);
+}
+
+/* The buttons the address bar's list adds at its end (bookmark, new tab, command buttons): the same 28px
+   button and 4px gap as the download and extensions buttons, so each one is a 32px slot. */
+.tb-extra {
+  margin-inline-end: var(--bw-space-0_5);
+}
+
+.tb-extra[hidden] {
+  display: none;
+}
+
 /* Security state: the lock stays neutral, a problem is warm. */
 .pill[data-security="notsecure"] .tb-site,
 .pill[data-security="certproblem"] .tb-site {
@@ -411,6 +442,13 @@ html[data-scheme="dark"] #app {
   .tb-split,
   .tb-reader,
   .tb-translate {
+    display: none;
+  }
+}
+
+/* The feed button goes with them (its own rule: the list above is the one the reader and translate buttons share). */
+@container (max-width: 190px) {
+  .tb-feed {
     display: none;
   }
 }

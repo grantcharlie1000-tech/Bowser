@@ -128,7 +128,7 @@ fn start(runtime: &Rc<RefCell<Runtime>>, env: &ChromeEnv) {
     let accel: AccelHandler = Rc::new(move |accel: Accel| super::window::html_panel_accelerator(owner, accel));
     let ready_runtime = Rc::downgrade(runtime);
     let bounds = RECT { left: 0, top: 0, right: 360, bottom: 600 };
-    if ChromeHost::create(env, window, bounds, View::Panel, commands, failed, Some(accel), move |result| match result {
+    if ChromeHost::create(env, crate::chrome_host::host::ChromeHostOptions { parent: window, bounds, view: View::Panel, on_command: commands, on_failed: failed, on_accelerator: Some(accel) }, move |result| match result {
         Ok(host) => {
             let Some(runtime) = ready_runtime.upgrade() else { host.close(); return; };
             let Ok(mut state) = runtime.try_borrow_mut() else { host.close(); return; };
@@ -247,6 +247,9 @@ pub(crate) fn note_context(owner: HWND, now: Context) {
 /// does not depend on how fast the click reaches Rust. If no rail command comes (a press that
 /// became a drag), the flyout closes after `flyout::RAIL_SETTLE_MS`.
 pub(crate) fn flyout_deactivated(owner: HWND) {
+    // --- window and panels (thread T9) --- "Close floating panels when you click elsewhere" off: it stays
+    // until Escape, its close button or its rail button closes it.
+    if !crate::window_prefs::auto_close_panels() { return; }
     let Some(runtime) = runtime(owner) else { return; };
     let (close, window) = match runtime.try_borrow() {
         Ok(state) => (state.open && state.hold == 0 && unsafe { GetForegroundWindow() } != state.window, state.window),
@@ -269,6 +272,7 @@ pub(crate) fn flyout_deactivated(owner: HWND) {
 /// A rail press kept the flyout open but no rail command followed: close it now unless the flyout
 /// took the activation back.
 pub(crate) fn flyout_rail_settled(owner: HWND) {
+    if !crate::window_prefs::auto_close_panels() { return; } // --- window and panels (thread T9) ---
     let Some(runtime) = runtime(owner) else { return; };
     let close = runtime.try_borrow_mut().is_ok_and(|mut state| {
         let pending = std::mem::take(&mut state.rail_press);
@@ -338,7 +342,9 @@ fn open_panel(runtime: &Rc<RefCell<Runtime>>, id: PanelId, anchor: Anchor, conte
     let centre = POINT { x: anchor.button.left, y: (anchor.button.top + anchor.button.bottom) / 2 };
     let (dpi, work) = super::html_popup::monitor_data(centre);
     let size = if id == PanelId::Customize { flyout::CUSTOMIZE_SIZE } else { flyout::LIST_SIZE };
-    let placement = flyout::place(anchor.rail_right, anchor.button, client_on_screen(owner), work, dpi, size);
+    // --- layout (thread T6) --- the flyout follows `side_panel_position` like the docked panels.
+    let side = runtime.try_borrow().ok().map_or(crate::settings::SidePanelPosition::Left, |state| crate::app::App::settings(&state.app).side_panel_position);
+    let placement = flyout::place_at(anchor.rail_right, anchor.button, client_on_screen(owner), work, dpi, size, side);
     {
         let Ok(mut state) = runtime.try_borrow_mut() else { return; };
         if !state.open {
@@ -425,6 +431,22 @@ pub(crate) fn history_changed(owner: HWND) {
     let _ = post(&runtime, &host, &chrome_host::panels::history::snapshot(&entries, &query, history_now_secs(), history_local_offset()));
 }
 
+// --- look state (fix group B) ---
+/// Settings were saved: an open flyout takes the new text size, density and window look at once
+/// (only the `state` is posted, so its list, search text and placement stay).
+pub(crate) fn settings_changed(owner: HWND) {
+    let Some(runtime) = runtime(owner) else { return; };
+    let host = {
+        let Ok(state) = runtime.try_borrow() else { return; };
+        if state.closed || !state.ready || !state.open { return; }
+        state.host.clone()
+    };
+    if let Some(host) = host {
+        let _ = post(&runtime, &host, &super::window::html_panel_state(owner));
+    }
+}
+// --- end look state ---
+
 fn send_current(runtime: &Rc<RefCell<Runtime>>) {
     let (host, owner, open, panel, query, path, profile_dir, app) = {
         let Ok(state) = runtime.try_borrow() else { return; };
@@ -444,7 +466,7 @@ fn send_current(runtime: &Rc<RefCell<Runtime>>) {
         }
         PanelId::Bookmarks => {
             let store = profile_dir.as_deref().and_then(|dir| BookmarkStore::load(dir).ok()).unwrap_or_default();
-            chrome_host::panels::bookmarks::snapshot(&store, &query)
+            chrome_host::panels::bookmarks::snapshot(&store, &query, crate::app::App::settings(&app).address.panel_single_click)
         }
         PanelId::Customize => {
             let Some(dir) = profile_dir.as_deref() else { return; };
@@ -582,11 +604,18 @@ fn run_command(runtime: &Rc<RefCell<Runtime>>, command: Command) {
                     if let Ok(mut state) = runtime.try_borrow_mut() { state.bookmarks_query = query; }
                 }
                 chrome_host::panels::bookmarks::Action::Open { url, new_tab } => {
+                    // "Open bookmarks in a new tab" (bm_open_new_tab).
+                    let new_tab = new_tab || crate::app::App::settings(&app).address.bookmark_new_tab;
                     let _ = execute_history_action(&app, owner, Action::Open { url, new_tab });
                     if !new_tab {
                         dismiss_runtime(runtime, Dismissal::FocusPage);
                         return;
                     }
+                }
+                chrome_host::panels::bookmarks::Action::OpenAll(urls) => {
+                    // Asks first from "confirm when opening N or more bookmarks" (bm_confirm_open).
+                    holding(runtime, || super::address_bar::open_many(owner, &app, &urls));
+                    return;
                 }
                 chrome_host::panels::bookmarks::Action::Delete(id) => { store.delete(id); }
                 chrome_host::panels::bookmarks::Action::Rename { id, title } => { let _ = store.rename(id, &title); }
@@ -624,7 +653,7 @@ fn run_command(runtime: &Rc<RefCell<Runtime>>, command: Command) {
                     if sidebar.set_visible(kind, visible).is_ok() { changed_sidebar = true; }
                 }
                 CustomizeAction::AppRemove(id) => {
-                    if sidebar.remove_app(id) { super::panel_webapp::forget_app(id); changed_sidebar = true; }
+                    if sidebar.remove_app_remembered(id) { super::panel_webapp::forget_app(id); changed_sidebar = true; }
                 }
                 CustomizeAction::AppMove(id, before) => {
                     let Some(from) = sidebar.apps.iter().position(|item| item.id == id) else { send_current(runtime); return; };

@@ -132,7 +132,6 @@ impl Page {
 pub(crate) enum ActOutcome {
     Refresh(Page),
     Close,
-    Keep,
 }
 
 pub(crate) type ActHandler = Rc<dyn Fn(&AppRef, u32, u8) -> ActOutcome>;
@@ -213,23 +212,12 @@ thread_local! { static POPUPS: RefCell<HashMap<isize, Popup>> = RefCell::new(Has
 thread_local! { static PAGE_READY: RefCell<HashSet<isize>> = RefCell::new(HashSet::new()); }
 thread_local! { static CLASS_REGISTERED: RefCell<bool> = const { RefCell::new(false) }; }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct DismissState {
     active: bool,
     kind: String,
     closed_kind: String,
     closed_at: Option<Instant>,
-}
-
-impl Default for DismissState {
-    fn default() -> Self {
-        Self {
-            active: false,
-            kind: String::new(),
-            closed_kind: String::new(),
-            closed_at: None,
-        }
-    }
 }
 
 impl DismissState {
@@ -329,17 +317,19 @@ pub(crate) fn prewarm(owner: HWND, env: ChromeEnv) {
     };
     let created = ChromeHost::create(
         &env,
-        window,
-        RECT {
-            left: 0,
-            top: 0,
-            right: 800,
-            bottom: 800,
+        crate::chrome_host::host::ChromeHostOptions {
+            parent: window,
+            bounds: RECT {
+                left: 0,
+                top: 0,
+                right: 800,
+                bottom: 800,
+            },
+            view: View::Popup,
+            on_command: command,
+            on_failed: failed,
+            on_accelerator: Some(Rc::new(move |accel: Accel| popup_accelerator(owner, accel))),
         },
-        View::Popup,
-        command,
-        failed,
-        Some(Rc::new(move |accel: Accel| popup_accelerator(owner, accel))),
         on_ready,
     );
     if created.is_err() {
@@ -854,7 +844,6 @@ pub(crate) fn run_compose(owner: HWND, token: u32, app: &AppRef) {
 
 fn apply_outcome(owner: HWND, token: u32, outcome: ActOutcome, app: &AppRef) {
     match outcome {
-        ActOutcome::Keep => {}
         ActOutcome::Close => run_result(owner, token, None, app),
         ActOutcome::Refresh(page) => {
             let key = owner.0 as isize;
@@ -1640,7 +1629,7 @@ mod tests {
     #[test]
     fn a_composer_page_declares_no_pick_or_act_and_its_submit_handler_never_reaches_the_wire() {
         let mut page = Page::new("composer", |out| out.string("mode", "app-add"));
-        page.compose(Rc::new(|_, _, _| ActOutcome::Keep));
+        page.compose(Rc::new(|_, _, _| ActOutcome::Close));
         assert!(page.compose.is_some());
         let (json, picks, acts) = page_json(9, "composer:app-add", page).expect("small page");
         assert_eq!(json, "{\"v\":1,\"t\":\"composer\",\"tok\":9,\"kind\":\"composer:app-add\",\"mode\":\"app-add\"}");

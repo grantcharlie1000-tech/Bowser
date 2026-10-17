@@ -1,6 +1,6 @@
 // Tab strip view (?view=tabs): keyed reconciliation of the tab list, favicons, groups, pointer and keyboard input.
 // Page-controlled text is written with textContent only; favicons are data: URIs set as img.src.
-import { onInbound, send, type TabAction, type TabItem, type TabsMsg } from './protocol';
+import { onInbound, send, sendClosedTabs, sendTabSelection, sendTabStack, sendTool, type TabAction, type TabItem, type TabOptsMsg, type TabsMsg } from './protocol';
 import { el, icon, place } from './dom';
 import { applyTheme, DRAG_ATTR } from './view';
 import { setTip } from './tooltip';
@@ -14,7 +14,7 @@ import { createSidebarRenderer, type SidebarWorkspace } from './sidebar';
 // --- end vertical sidebar ---
 // --- tab ghost (docs/design/tab-drag.md) ---
 import { announce, GhostSession, routeGhostMessage } from './tab-drag';
-import { DRAG_START_PX, dragAnnouncement, dropOutcome, gapShifts, grabOffset, nextPhase, stripBand, type DragPhase } from './tab-drag-logic';
+import { DRAG_START_PX, dragAnnouncement, dropOutcome, gapShifts, grabOffset, nextPhase, stackAnnouncement, stackCandidate, stripBand, type DragPhase } from './tab-drag-logic';
 // --- end tab ghost ---
 import {
   beforeSlotId,
@@ -33,9 +33,17 @@ import {
   rememberFav,
   stepMoveBefore,
   scrollDeltaForWheel,
+  ballOnly,
+  stackRowGroup,
   type Entry,
   type GroupEntry,
 } from './tabs-logic';
+// --- tab options (Settings > Tabs) ---
+import {
+  clickSelection, loadMark, lockedWidth, markedName, notifyLabel, pruneSelection, reloadLabel, reloadRemaining, stepTab, stripClasses, wheelSteps,
+  type LoadIndicatorChoice,
+} from './tab-marks-logic';
+// --- end tab options ---
 
 /** Fixed island accents, indexed by the host's colour ids (-1 means the theme accent). */
 const ISLAND: readonly string[] = [
@@ -76,6 +84,41 @@ export interface TabNode {
   readonly close: HTMLButtonElement;
   uri: string;
   shift: number;
+  // --- tab options --- created only while a tab needs them, so a plain tab keeps its plain DOM.
+  bar?: HTMLSpanElement;
+  ring?: HTMLSpanElement;
+  dot?: HTMLSpanElement;
+  badge?: HTMLSpanElement;
+  rl?: HTMLSpanElement;
+  /** Seconds left in the tab's reload when the strip last heard (and when), so the label can count down locally. */
+  rlFrom?: number;
+  rlAt?: number;
+  // --- end tab options ---
+}
+
+/** What one tab needs from the strip's options when it is drawn. */
+export interface TabView {
+  readonly indicator: LoadIndicatorChoice;
+  /** Part of the selection made with Ctrl or Shift click. */
+  readonly picked: boolean;
+  readonly now: number;
+}
+const PLAIN_VIEW: TabView = { indicator: 'spinner', picked: false, now: 0 };
+/** Before the host's first `tabopts`: Bowser's own defaults. */
+const DEFAULT_OPTS: TabOptsMsg = {
+  t: 'tabopts', closeLeft: false, closeAlways: false, scroll: false, minWidth: 0, indicator: 'spinner', wheel: false, separator: false,
+  alignClose: false, selection: true, selectionActive: true, removeSpacing: false, maximised: false, closed: 0,
+  stackDrag: true, stackDelay: 400, // --- tab stacks (T10) ---
+  stackRow: 'off', // --- two-level stacks (T10b) ---
+  closedButton: true, tools: [], // --- toolbars and feeds (thread T13) ---
+};
+const STRIP_OPTION_CLASSES = ['close-left', 'close-always', 'scrolling', 'pin-sep', 'flush'] as const;
+
+/** Counts every reload label down by the time since the host last said how long was left. Exported for test/tab-options.mjs. */
+export function tickReloads(nodes: Iterable<TabNode>, now: number): void {
+  for (const n of nodes) {
+    if (n.rl && n.rlFrom !== undefined && n.rlAt !== undefined) n.rl.textContent = reloadLabel(reloadRemaining(n.rlFrom, now - n.rlAt));
+  }
 }
 
 interface GroupNode {
@@ -115,6 +158,11 @@ interface Drag {
   lastX: number;
   lastY: number;
   // --- end tab ghost ---
+  // --- tab stacks (T10) --- the tab the held tab rests over the middle of, since when, and whether
+  // the stacking delay has run (a release then stacks the two).
+  stackOn: TabNode | null;
+  stackArmed: boolean;
+  stackTimer: number;
 }
 
 function colourOf(index: number): string {
@@ -170,10 +218,26 @@ export function createTab(id: number): TabNode {
   return { id, root, img, title, marker, audio, close, uri: '', shift: 0 };
 }
 
-export function updateTab(n: TabNode, item: TabItem, selected: boolean, uri: string): void {
+/** A mark node of a tab: created and put before `before` the first time, dropped when the mark goes. */
+function mark(n: TabNode, key: 'bar' | 'ring' | 'dot' | 'badge' | 'rl', on: boolean, parent: HTMLElement, before: Node | null): HTMLSpanElement | undefined {
+  const have = n[key];
+  if (!on) {
+    if (have) { have.remove(); delete n[key]; }
+    return undefined;
+  }
+  if (have) return have;
+  const node = el('span', key === 'bar' ? 'loadbar' : key === 'ring' ? 'ring' : key === 'dot' ? 'unread' : key === 'badge' ? 'notify' : 'rl');
+  node.setAttribute('aria-hidden', 'true');
+  parent.insertBefore(node, before);
+  n[key] = node;
+  return node;
+}
+
+export function updateTab(n: TabNode, item: TabItem, selected: boolean, uri: string, view: TabView = PLAIN_VIEW): void {
   if (n.title.textContent !== item.title) n.title.textContent = item.title;
   const label = item.title !== '' ? item.title : 'Tab';
-  const name = item.private ? privateTabName(label) : label;
+  const base = item.private ? privateTabName(label) : label;
+  const name = markedName(base, item.notify, item.unread, item.rl);
   if (n.root.getAttribute('aria-label') !== name) {
     // No data-tip on the tab itself: the hover card shows the title, and a plain tooltip would flash before it.
     n.root.setAttribute('aria-label', name);
@@ -193,8 +257,30 @@ export function updateTab(n: TabNode, item: TabItem, selected: boolean, uri: str
   n.root.classList.toggle('pinned', item.pinned);
   n.root.classList.toggle('muted', item.muted);
 
-  const mode = item.loading ? 'spin' : uri !== '' ? 'fav' : 'glyph';
+  // --- tab options --- the page load indicator, and the marks a tab can carry.
+  const loading = loadMark(view.indicator, item.loading, item.pct);
+  const mode = loading === 'spin' ? 'spin' : uri !== '' ? 'fav' : 'glyph';
   if (n.root.dataset.icon !== mode) n.root.dataset.icon = mode;
+  const ring = mark(n, 'ring', loading === 'ring', n.img.parentElement ?? n.root, null);
+  if (ring) ring.style.setProperty('--pct', String(item.pct ?? 0));
+  const bar = mark(n, 'bar', loading === 'bar', n.root, null);
+  if (bar) bar.style.setProperty('--pct', String((item.pct ?? 0) / 100));
+  mark(n, 'dot', item.unread === true, n.root, n.audio);
+  const badge = mark(n, 'badge', item.notify !== undefined, n.root, n.audio);
+  if (badge) badge.textContent = notifyLabel(item.notify ?? 0);
+  const rl = mark(n, 'rl', item.rl !== undefined, n.root, n.audio);
+  if (rl && item.rl !== undefined) {
+    n.rlFrom = item.rl;
+    n.rlAt = view.now;
+    rl.textContent = reloadLabel(item.rl);
+  } else {
+    delete n.rlFrom;
+    delete n.rlAt;
+  }
+  n.root.classList.toggle('asleep', item.asleep === true);
+  n.root.classList.toggle('idle', item.idle === true);
+  n.root.classList.toggle('picked', view.picked);
+  // --- end tab options ---
   if (n.uri !== uri) {
     n.uri = uri;
     if (uri !== '') n.img.src = uri;
@@ -271,8 +357,12 @@ function setShift(n: TabNode, px: number): void {
   n.root.style.transform = px === 0 ? '' : `translateX(${px}px)`;
 }
 
-/** Builds the tab strip into `strip` (the #app element) and wires it to the host. */
-export function startTabs(strip: HTMLElement): void {
+/**
+ * Builds the tab strip into `strip` (the #app element) and wires it to the host. Returns the second
+ * row of two-level stacks (a sibling after `strip`, hidden until Rust lays one out), so the page can
+ * give it the same tooltips and hover cards as the strip.
+ */
+export function startTabs(strip: HTMLElement): HTMLElement {
   // --- vertical sidebar (lane S) ---
   const sidebar = createSidebarRenderer(strip);
   let layoutMode: 'horizontal' | 'vertical' = 'horizontal';
@@ -285,6 +375,25 @@ export function startTabs(strip: HTMLElement): void {
   strip.setAttribute('aria-label', 'Tabs');
   strip.setAttribute(DRAG_ATTR, '');
   strip.replaceChildren();
+  // --- two-level stacks (T10b) --- the second row: the tabs of the stack in use, under the tab row.
+  const row2 = el('div', 'strip stack-row');
+  row2.setAttribute('role', 'tablist');
+  row2.setAttribute('aria-label', 'Tabs in this stack');
+  row2.hidden = true;
+  (strip.parentElement ?? document.body).insertBefore(row2, strip.nextSibling);
+  const showRow2 = (size: TabOptsMsg['stackRow'] | null): void => {
+    const on = size !== null && size !== 'off';
+    row2.hidden = !on;
+    if (on) {
+      if (row2.dataset.size !== size) row2.dataset.size = size;
+      if (document.body.dataset.stackRow !== size) document.body.dataset.stackRow = size;
+    } else {
+      delete row2.dataset.size;
+      delete document.body.dataset.stackRow;
+      if (row2.firstChild) row2.replaceChildren();
+    }
+  };
+  // --- end two-level stacks ---
 
   const tabNodes = new Map<number, TabNode>();
   const groups = new Map<number, GroupNode>();
@@ -306,6 +415,77 @@ export function startTabs(strip: HTMLElement): void {
    */
   let landing: Landing | null = null;
   const reduced = (): boolean => matchMedia('(prefers-reduced-motion: reduce)').matches;
+  // --- tab options ---
+  let ui: TabOptsMsg = DEFAULT_OPTS;
+  /** Tabs selected with Ctrl or Shift click, and the tab the next Shift click ranges from. */
+  let picked: number[] = [];
+  let anchor = 0;
+  let wheelTotal = 0;
+  let wheelAt = 0;
+  let locked = false;
+  let reloadTimer = 0;
+  const closedBtn = el('button', 'closed-btn bw-icon-btn');
+  closedBtn.type = 'button';
+  closedBtn.setAttribute('aria-label', 'Closed tabs');
+  closedBtn.append(icon('tab-restore'));
+  setTip(closedBtn, 'Closed tabs');
+  closedBtn.addEventListener('click', () => { sendClosedTabs(); });
+  // --- toolbars and feeds (thread T13) --- the end of the strip: the Closed tabs button (when `toolbar_tabs` lists it)
+  // and the command buttons the user put on the tab bar, in one box so they stay together while the strip scrolls.
+  const stripTools = el('div', 'strip-tools');
+  let toolSig = '';
+  const toolButtons: HTMLButtonElement[] = [];
+  const syncTools = (): void => {
+    const sig = ui.tools.map((tool) => `${tool.k}|${tool.i}|${tool.l}`).join('\n');
+    if (sig === toolSig) return;
+    toolSig = sig;
+    toolButtons.length = 0;
+    for (const tool of ui.tools) {
+      const button = el('button', 'closed-btn tab-tool bw-icon-btn');
+      button.type = 'button';
+      button.setAttribute('aria-label', tool.l);
+      button.append(icon('command'));
+      setTip(button, tool.l);
+      button.addEventListener('click', () => { sendTool('tabs', tool.k, tool.i); });
+      toolButtons.push(button);
+    }
+  };
+  // --- end toolbars and feeds ---
+  const pinSep = el('span', 'pinsep');
+  pinSep.setAttribute('aria-hidden', 'true');
+  pinSep.setAttribute('role', 'presentation');
+  const applyUi = (): void => {
+    syncTools(); // --- toolbars and feeds (thread T13) ---
+    const wanted = stripClasses(ui);
+    for (const name of STRIP_OPTION_CLASSES) strip.classList.toggle(name, wanted.includes(name));
+    strip.style.setProperty('--tab-active-min', ui.minWidth > 0 ? `${ui.minWidth}px` : '');
+    if (!ui.alignClose) unlockWidths();
+  };
+  /** Holds every tab at `tab`'s width until the pointer leaves, so the next close button lands under it. */
+  const lockWidths = (tab: HTMLElement): void => {
+    strip.style.setProperty('--tab-lock', `${lockedWidth(tab.getBoundingClientRect().width)}px`);
+    strip.classList.add('locked');
+    locked = true;
+  };
+  const unlockWidths = (): void => {
+    if (!locked) return;
+    locked = false;
+    strip.classList.remove('locked');
+    strip.style.setProperty('--tab-lock', '');
+  };
+  const setPicked = (ids: readonly number[]): void => {
+    if (ids.length === picked.length && ids.every((id, i) => id === picked[i])) return;
+    picked = [...ids];
+    if (sendTabSelection(picked)) { /* Rust keeps the same list for the tab menu */ }
+    dirty = true;
+    schedule();
+  };
+  const ensureReloadTick = (): void => {
+    const need = [...tabNodes.values()].some((n) => n.rl !== undefined);
+    if (need && reloadTimer === 0) reloadTimer = window.setInterval(() => tickReloads(tabNodes.values(), Date.now()), 1000);
+    else if (!need && reloadTimer !== 0) { window.clearInterval(reloadTimer); reloadTimer = 0; }
+  };
+  // --- end tab options ---
   // --- split view ---
   // The window's split pair (joined capsule) and a tab drag that left the strip for the page.
   let pair: PairMsg | null = null;
@@ -352,22 +532,26 @@ export function startTabs(strip: HTMLElement): void {
 
   const syncTab = (item: TabItem): TabNode => {
     const n = tabFor(item);
-    updateTab(n, item, item.id === activeId, item.fav ? (favs.get(item.id) ?? '') : '');
+    updateTab(n, item, item.id === activeId, item.fav ? (favs.get(item.id) ?? '') : '', { indicator: ui.indicator, picked: picked.includes(item.id), now: Date.now() }); // --- tab options ---
     return n;
   };
 
-  const visibleTabs = (): TabNode[] => {
+  /** The shown tabs of one row, left to right: the strip's, or (two-level stacks) the second row's. */
+  const tabsIn = (scope: HTMLElement): TabNode[] => {
     const list: TabNode[] = [];
-    for (const node of Array.from(strip.querySelectorAll<HTMLElement>('.tab:not([hidden])'))) {
+    for (const node of Array.from(scope.querySelectorAll<HTMLElement>('.tab:not([hidden])'))) {
       const n = tabNodes.get(Number(node.dataset.id));
       if (n) list.push(n);
     }
     return list;
   };
+  const visibleTabs = (): TabNode[] => tabsIn(strip);
+  /** --- two-level stacks (T10b) --- the row a tab element is in. */
+  const rowOf = (tab: Element): HTMLElement => (tab.parentElement === row2 ? row2 : strip);
 
   // Roving tabindex: one tab in the tab order, the active one unless the keyboard moved focus.
   const applyRoving = (focus?: TabNode): void => {
-    const list = visibleTabs();
+    const list = row2.hidden ? visibleTabs() : [...visibleTabs(), ...tabsIn(row2)]; // --- two-level stacks (T10b) ---
     const target = focus ?? list.find((n) => n.id === activeId) ?? list[0];
     for (const n of tabNodes.values()) {
       const t = n === target ? 0 : -1;
@@ -379,6 +563,7 @@ export function startTabs(strip: HTMLElement): void {
     // --- vertical sidebar (lane S) ---
     if (layoutMode === 'vertical') {
       activeId = msg.active;
+      showRow2(null); // --- two-level stacks (T10b) --- the sidebar shows stacks its own way.
       sidebar.render(msg, favs, workspace);
       return;
     }
@@ -389,6 +574,10 @@ export function startTabs(strip: HTMLElement): void {
     activeId = msg.active;
     const entries: Entry[] = buildEntries(msg.items, msg.active);
     const live = new Set<number>(msg.items.map((it) => it.id));
+    // --- tab options --- a closed tab leaves the selection.
+    const kept = pruneSelection(picked, live);
+    if (kept.length !== picked.length) { picked = kept; sendTabSelection(picked); }
+    // --- end tab options ---
     const keys = new Set<number>();
     for (const e of entries) if (e.kind === 'group') keys.add(e.key);
 
@@ -399,12 +588,16 @@ export function startTabs(strip: HTMLElement): void {
     // A stale render (the layout the drop left) updates content only: no transform is touched.
     const changed = nextSignature !== signature && phase !== 'stale';
     const animate = rendered && !reduced() && tabNodes.size <= FLIP_MAX_TABS && changed;
+    // --- two-level stacks (T10b) --- the stack whose tabs are the second row, and the tabs that were
+    // there: a tab changing rows does not slide along the row it left.
+    const second = stackRowGroup(entries, msg.active, ui.stackRow);
+    const wasRow2 = new Set<TabNode>(tabsIn(row2));
     const before = new Map<TabNode, number>();
     const ghosts: HTMLElement[] = [];
     const landed = phase === 'reorder' ? landing : null;
     if (animate) {
       for (const n of tabNodes.values()) {
-        if (n.root.isConnected && !n.root.hidden) before.set(n, n.root.getBoundingClientRect().left);
+        if (n.root.isConnected && !n.root.hidden && !wasRow2.has(n)) before.set(n, n.root.getBoundingClientRect().left);
       }
       strip.classList.add('settle');
       // The dropped tab still carries its drag offset: its "first" is home + offset, not a scaled rect.
@@ -453,11 +646,13 @@ export function startTabs(strip: HTMLElement): void {
     pruneFavs(favs, live);
 
     const top: HTMLElement[] = [];
+    let lastPinned = -1; // --- tab options ---
     for (const e of entries) {
       if (e.kind === 'tab') {
         const n = syncTab(e.slot.item);
         n.root.hidden = false;
         top.push(n.root);
+        if (e.slot.item.pinned) lastPinned = top.length - 1; // --- tab options ---
         continue;
       }
       let g = groups.get(e.key);
@@ -465,6 +660,24 @@ export function startTabs(strip: HTMLElement): void {
         g = createGroup(e.key);
         groups.set(e.key, g);
       }
+      // --- two-level stacks (T10b) --- the stack in use is its ball in the tab row (shown open) and
+      // its tabs are the second row.
+      if (e === second) {
+        syncGroup(g, ballOnly(e), activeId, splitWeight);
+        g.ball.setAttribute('aria-expanded', 'true');
+        g.shell.classList.remove('collapsed');
+        const members: HTMLElement[] = [];
+        for (const slot of e.members) {
+          const n = syncTab(slot.item);
+          n.root.hidden = false;
+          members.push(n.root);
+        }
+        place(g.shell, [g.ball]);
+        place(row2, members);
+        top.push(g.shell);
+        continue;
+      }
+      // --- end two-level stacks ---
       syncGroup(g, e, activeId, splitWeight); // --- split view ---
       const nodes: HTMLElement[] = [g.ball];
       for (const slot of e.members) {
@@ -475,8 +688,20 @@ export function startTabs(strip: HTMLElement): void {
       place(g.shell, nodes);
       top.push(g.shell);
     }
+    showRow2(second === null ? null : ui.stackRow); // --- two-level stacks (T10b) ---
+    // --- tab options --- a thin line where the pinned tabs end, and the Closed tabs button at the end.
+    if (ui.separator && lastPinned >= 0 && lastPinned < top.length - 1) top.splice(lastPinned + 1, 0, pinSep);
+    // --- toolbars and feeds (thread T13) --- Closed tabs only when the bar lists it; command buttons after it.
+    const tools: HTMLElement[] = [...(ui.closed > 0 && ui.closedButton ? [closedBtn] : []), ...toolButtons];
+    if (tools.length > 0) {
+      place(stripTools, tools);
+      top.push(stripTools);
+    }
+    // --- end toolbars and feeds ---
+    // --- end tab options ---
     place(strip, top);
     strip.append(...ghosts);
+    ensureReloadTick(); // --- tab options ---
     // --- tab ghost --- the host has laid out the released tab's slot: the ghost glides there.
     if (ghostLand !== null && ghostLand.session.landing && ghostLand.node.root.isConnected && ghostLand.node.root.style.transform === '') {
       const r = ghostLand.node.root.getBoundingClientRect();
@@ -488,7 +713,7 @@ export function startTabs(strip: HTMLElement): void {
       // FLIP "last, invert, play": jump each moved tab back to where it was, then release.
       let moved = false;
       for (const [n, left] of before) {
-        if (!n.root.isConnected || n.root.hidden || n.root.classList.contains('ghost')) continue;
+        if (!n.root.isConnected || n.root.hidden || n.root.classList.contains('ghost') || n.root.parentElement === row2) continue;
         const dx = flipInvert(left, n.root.getBoundingClientRect().left);
         const lifted = n === landed?.node;
         if (Math.abs(dx) < 0.5 && !lifted) continue;
@@ -639,6 +864,27 @@ export function startTabs(strip: HTMLElement): void {
   });
 
   /**
+   * --- tab stacks (T10) --- marks `target` as the tab the held tab rests over the middle of. Once it
+   * has rested there for the stacking delay the tab shows it, and a release stacks the two.
+   */
+  const setStackOn = (d: Drag, target: TabNode | null): void => {
+    if (d.stackOn === target) return;
+    window.clearTimeout(d.stackTimer);
+    d.stackOn?.root.classList.remove('stack-target');
+    d.stackOn = target;
+    d.stackArmed = false;
+    if (target === null) return;
+    const arm = (): void => {
+      if (drag !== d || d.stackOn !== target) return;
+      d.stackArmed = true;
+      target.root.classList.add('stack-target');
+      announce(stackAnnouncement(titleOf(target)));
+    };
+    if (ui.stackDelay <= 0) arm();
+    else d.stackTimer = window.setTimeout(arm, ui.stackDelay);
+  };
+
+  /**
    * Lays the strip out for the held tab at the last pointer position: attached, the neighbours open
    * the gap under the pointer (the ghost, or the tab itself without one, rides above); floating, the
    * gap closes and, over the page, Rust shows the split drop zone.
@@ -685,6 +931,7 @@ export function startTabs(strip: HTMLElement): void {
     }
     // --- end split view ---
     if (phase === 'floating') {
+      setStackOn(d, null); // --- tab stacks (T10) ---
       // Off the strip: no slot. With a ghost the gap closes up behind it; without one the tab stays
       // under the pointer and its neighbours go home.
       d.dest = d.from;
@@ -702,6 +949,14 @@ export function startTabs(strip: HTMLElement): void {
       d.centers = home.centers;
       d.lefts = home.lefts;
     }
+    // --- tab stacks (T10) --- over the middle of another tab the strip holds still, so that tab stays
+    // under the pointer; resting there for the stacking delay marks it, and a release stacks the two.
+    // Where each tab is drawn now (home plus its gap shift), so the tab marked is the one under the pointer.
+    const shown = d.lefts.map((left, i) => left + (d.order[i]?.shift ?? 0));
+    const over = ui.stackDrag && !d.node.root.classList.contains('pinned') ? stackCandidate(shown, d.widths, d.from, x) : -1;
+    const target = over >= 0 ? d.order[over] ?? null : null;
+    setStackOn(d, target !== null && !target.root.classList.contains('pinned') ? target : null);
+    if (d.stackOn !== null) return;
     // The slot comes from the pointer, not from the dragged tab's centre: grabbing a wide tab by its edge
     // must not shift the drop by the grab offset.
     d.dest = dropIndex(d.centers, d.from, x);
@@ -719,7 +974,16 @@ export function startTabs(strip: HTMLElement): void {
     drag = null;
     window.removeEventListener('keydown', onDragKey, true);
     try { if (d.node.root.hasPointerCapture(d.pointerId)) d.node.root.releasePointerCapture(d.pointerId); } catch { /* capture may already be lost */ }
+    // --- tab stacks (T10) --- a release over a marked tab stacks the two; the held tab goes home.
+    window.clearTimeout(d.stackTimer);
+    const stackOnto = commit && d.stackArmed && !splitOut ? d.stackOn : null;
+    d.stackOn?.root.classList.remove('stack-target');
+    d.stackOn = null;
     if (!d.active) return;
+    if (stackOnto !== null) {
+      sendTabStack(d.node.id, stackOnto.id);
+      d.dest = d.from;
+    }
     ignoreClick = true;
     const ghost = d.ghost;
     const outcome = dropOutcome(commit, d.phase, splitOut, d.from, d.dest);
@@ -787,7 +1051,8 @@ export function startTabs(strip: HTMLElement): void {
   const onPointerDown = (ev: PointerEvent): void => {
     ignoreClick = false;
     if (ev.button !== 0 || drag !== null || !(ev.target instanceof Element)) return;
-    if (ev.target.closest('.close, .audio, .ball')) return;
+    if (!ev.target.closest('.close')) unlockWidths(); // --- tab options ---
+    if (ev.target.closest('.close, .audio, .ball, .closed-btn')) return;
     const tab = ev.target.closest<HTMLElement>('.tab');
     if (!tab) {
       if (ev.target instanceof HTMLElement && ev.target.hasAttribute(DRAG_ATTR)) send({ v: 1, t: 'drag' });
@@ -807,6 +1072,7 @@ export function startTabs(strip: HTMLElement): void {
       pointerId: ev.pointerId, startX: ev.clientX, node, order, centers: home.centers, from, active: false, dest: from, dx: 0,
       startY: ev.clientY, pointerType: ev.pointerType, lefts: home.lefts, widths: home.widths, phase: 'attached', ghost: null,
       lastX: ev.clientX, lastY: ev.clientY,
+      stackOn: null, stackArmed: false, stackTimer: 0, // --- tab stacks (T10) ---
     };
     try { node.root.setPointerCapture(ev.pointerId); } catch { /* window listeners still end the drag */ }
   };
@@ -843,6 +1109,8 @@ export function startTabs(strip: HTMLElement): void {
   // ----- events -----
 
   strip.addEventListener('pointerdown', onPointerDown);
+  // --- two-level stacks (T10b) --- a press in the second row is a fresh click (no drag starts there).
+  row2.addEventListener('pointerdown', () => { ignoreClick = false; });
   strip.addEventListener('pointermove', onPointerMove);
   strip.addEventListener('pointerup', (ev) => onPointerEnd(ev, true));
   strip.addEventListener('pointercancel', (ev) => onPointerEnd(ev, false));
@@ -852,11 +1120,27 @@ export function startTabs(strip: HTMLElement): void {
   window.addEventListener('blur', () => endDrag(false));
   strip.addEventListener('scroll', updateEdges, { passive: true });
   strip.addEventListener('wheel', (ev) => {
+    // --- tab options --- "Switch tabs by scrolling": a wheel over the strip steps through the tabs.
+    if (ui.wheel && layoutMode === 'horizontal') {
+      ev.preventDefault();
+      const now = Date.now();
+      if (now - wheelAt > 400) wheelTotal = 0;
+      wheelAt = now;
+      const moved = wheelSteps(wheelTotal, ev.deltaY !== 0 ? ev.deltaY : ev.deltaX);
+      wheelTotal = moved.rest;
+      const target = moved.steps === 0 ? null : stepTab(visibleTabs().map((n) => n.id), activeId, moved.steps);
+      if (target !== null) send({ v: 1, t: 'tab', a: 'select', id: target });
+      return;
+    }
+    // --- end tab options ---
     const delta = scrollDeltaForWheel(ev.deltaX, ev.deltaY, ev.shiftKey);
     if (delta !== 0) { ev.preventDefault(); strip.scrollLeft += delta; }
   }, { passive: false });
 
-  strip.addEventListener('click', (ev) => {
+  // --- two-level stacks (T10b) --- the second row's tabs answer clicks, the keyboard and menus as
+  // the strip's do (it has no drag reorder and no window drag of its own).
+  for (const host of [strip, row2]) {
+  host.addEventListener('click', (ev) => {
     const t = ev.target;
     if (!(t instanceof Element)) return;
     const ball = t.closest<HTMLElement>('.ball');
@@ -872,10 +1156,23 @@ export function startTabs(strip: HTMLElement): void {
     }
     const id = Number(tab.dataset.id);
     const a: TabAction = t.closest('.close') ? 'close' : t.closest('.audio') ? 'mute' : 'select';
+    // --- tab options ---
+    if (a === 'select') {
+      // Ctrl and Shift click select tabs without leaving the one being read; a plain click clears the selection.
+      const outcome = ui.selection
+        ? clickSelection(picked, tabsIn(rowOf(tab)).map((n) => n.id), anchor, activeId, id, { ctrl: ev.ctrlKey || ev.metaKey, shift: ev.shiftKey }, ui.selectionActive)
+        : { selected: [] as number[], anchor: id, activate: true };
+      anchor = outcome.anchor;
+      setPicked(outcome.selected);
+      if (!outcome.activate) return;
+    } else if (a === 'close' && ui.alignClose && ev.detail > 0) {
+      lockWidths(tab);
+    }
+    // --- end tab options ---
     send({ v: 1, t: 'tab', a, id });
   });
 
-  strip.addEventListener('auxclick', (ev) => {
+  host.addEventListener('auxclick', (ev) => {
     if (ev.button !== 1 || !(ev.target instanceof Element)) return;
     const tab = ev.target.closest<HTMLElement>('.tab');
     if (!tab) return;
@@ -884,11 +1181,11 @@ export function startTabs(strip: HTMLElement): void {
   });
 
   // Middle button on a tab closes it; stop the browser's autoscroll cursor from starting.
-  strip.addEventListener('mousedown', (ev) => {
+  host.addEventListener('mousedown', (ev) => {
     if (ev.button === 1 && ev.target instanceof Element && ev.target.closest('.tab')) ev.preventDefault();
   });
 
-  strip.addEventListener('contextmenu', (ev) => {
+  host.addEventListener('contextmenu', (ev) => {
     const t = ev.target;
     if (!(t instanceof Element)) return;
     const ball = t.closest<HTMLElement>('.ball');
@@ -909,21 +1206,36 @@ export function startTabs(strip: HTMLElement): void {
     }
   });
 
-  strip.addEventListener('dblclick', (ev) => {
+  host.addEventListener('dblclick', (ev) => {
     if (ev.target instanceof HTMLElement && ev.target.hasAttribute(DRAG_ATTR)) {
       send({ v: 1, t: 'caption', a: 'toggleMaximize' });
+      return;
     }
+    // --- tab options --- "Double click on a tab": Rust decides (rename, close or nothing).
+    if (ev.target instanceof Element && !ev.target.closest('.close, .audio')) {
+      const tab = ev.target.closest<HTMLElement>('.tab');
+      if (tab) send({ v: 1, t: 'tab', a: 'dblclick', id: Number(tab.dataset.id) });
+    }
+    // --- end tab options ---
   });
+  } // --- end two-level stacks: both rows ---
+  // --- tab options --- the pointer leaving the strip ends a width lock.
+  strip.addEventListener('pointerleave', unlockWidths);
+  // --- end tab options ---
 
-  strip.addEventListener('keydown', (ev) => {
+  for (const host of [strip, row2]) { // --- two-level stacks (T10b) --- each row walks its own tabs.
+  host.addEventListener('keydown', (ev) => {
     const t = ev.target;
     if (!(t instanceof Element)) return;
+    // --- tab options --- Escape drops the selection.
+    if (ev.key === 'Escape' && picked.length > 0) { ev.preventDefault(); setPicked([]); return; }
+    // --- end tab options ---
     const tab = t.closest<HTMLElement>('.tab');
     if (!tab) return;
     // Enter/Space on the close or mute button activates that button (click), not the tab.
     if ((ev.key === 'Enter' || ev.key === ' ') && t.closest('.close, .audio')) return;
     const id = Number(tab.dataset.id);
-    const list = visibleTabs();
+    const list = tabsIn(rowOf(tab));
     const at = list.findIndex((n) => n.id === id);
     if (at < 0) return;
     let next: number;
@@ -969,6 +1281,7 @@ export function startTabs(strip: HTMLElement): void {
     target.root.focus();
     target.root.scrollIntoView({ block: 'nearest', inline: 'nearest' });
   });
+  } // --- end two-level stacks ---
 
   onInbound((msg) => {
     switch (msg.t) {
@@ -989,19 +1302,29 @@ export function startTabs(strip: HTMLElement): void {
         }
         break;
       case 'workspace':
-        workspace = { name: msg.name, icon: msg.icon };
+        // --- tab stacks and workspaces (T10) --- the emoji and the off flag ride along.
+        workspace = { name: msg.name, icon: msg.icon, ...(msg.emoji !== undefined ? { emoji: msg.emoji } : {}), ...(msg.off ? { off: true } : {}) };
         if (layoutMode === 'vertical') sidebar.workspace(workspace);
         break;
       // --- end vertical sidebar ---
       case 'state':
         // Only the theme and mode reach the tab strip; scale and page state are toolbar concerns.
-        applyTheme(msg.theme, msg.solid, msg.dark);
+        applyTheme(msg.theme, msg.solid, msg.dark, msg.fontScale, msg.uiFont, msg.density, msg.compactMenus, msg.look);
         break;
       case 'tabs':
         latest = msg;
         dirty = true;
         schedule();
         break;
+      // --- tab options ---
+      case 'tabopts':
+        ui = msg;
+        applyUi();
+        sidebar.options(msg);
+        dirty = true;
+        schedule();
+        break;
+      // --- end tab options ---
       case 'fav':
         rememberFav(favs, msg.id, msg.uri, new Set(latest?.items.map((item) => item.id) ?? []));
         dirty = true;
@@ -1022,4 +1345,5 @@ export function startTabs(strip: HTMLElement): void {
 
   // Registered before ready so no tabs message can be missed.
   send({ v: 1, t: 'ready' });
+  return row2; // --- two-level stacks (T10b) ---
 }

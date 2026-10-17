@@ -146,3 +146,38 @@ test('keyboardMoveBefore gives the key to drop before, and null at the edges', (
   assert.equal(keyboardMoveBefore(keys, 'ws:3', 1), null);
   assert.equal(keyboardMoveBefore(keys, 'ws:9', 1), null);
 });
+
+// --- tab stacks and workspaces (T10) ---
+test('a workspace tab count reads as a badge and the wheel counts whole notches', () => {
+  const { countBadge, wheelNotches, WHEEL_NOTCH_PX } = logic;
+  assert.equal(countBadge(undefined), '');
+  assert.equal(countBadge(0), '');
+  assert.equal(countBadge(7), '7');
+  assert.equal(countBadge(99), '99');
+  assert.equal(countBadge(100), '99+');
+  assert.deepEqual(wheelNotches(0, WHEEL_NOTCH_PX, 0), { notches: 1, rest: 0 }, 'one mouse notch down');
+  assert.deepEqual(wheelNotches(0, -WHEEL_NOTCH_PX * 2, 0), { notches: -2, rest: 0 }, 'two notches up');
+  assert.deepEqual(wheelNotches(0, 40, 0), { notches: 0, rest: 40 }, 'a slow trackpad swipe waits');
+  assert.deepEqual(wheelNotches(40, 60, 0), { notches: 1, rest: 0 }, 'and arrives');
+  assert.equal(wheelNotches(0, 3, 1).notches, 1, 'three lines are a notch');
+  assert.equal(wheelNotches(0, 50, 0).notches, 0);
+  assert.equal(wheelNotches(0, 100_000, 0).notches, 8, 'capped to what Rust takes');
+  assert.equal(wheelNotches(0, Number.NaN, 0).notches, 0);
+});
+
+test('rail items carry a tab count and an emoji only when Rust sends them, and only valid ones', async () => {
+  const { parseInbound } = await import(`data:text/javascript;base64,${Buffer.from(esbuild.buildSync({ entryPoints: [join(here, '..', 'src', 'protocol.ts')], bundle: true, format: 'esm', platform: 'neutral', write: false, logLevel: 'silent' }).outputFiles[0].contents).toString('base64')}`);
+  const rail = (extra) => JSON.stringify({ v: 1, t: 'rail', items: [{ k: 'ws:4', icon: 'g:code', label: 'Work', active: true, dot: false, accent: '', fav: false, ...extra }] });
+  assert.deepEqual(parseInbound(rail({})).items[0].n, undefined);
+  assert.equal(parseInbound(rail({ n: 12, emoji: '🚀' })).items[0].n, 12);
+  assert.equal(parseInbound(rail({ n: 12, emoji: '🚀' })).items[0].emoji, '🚀');
+  for (const bad of [{ n: 0 }, { n: 10000 }, { n: 1.5 }, { emoji: '' }, { emoji: 'a b' }, { emoji: 'nine char' }, { emoji: 'x\u0007' }, { count: 1 }]) {
+    assert.equal(parseInbound(rail(bad)), null, JSON.stringify(bad));
+  }
+  const workspace = (extra) => JSON.stringify({ v: 1, t: 'workspace', name: 'Work', icon: 'g:code', ...extra });
+  assert.deepEqual(parseInbound(workspace({ emoji: '🚀', off: true })), { t: 'workspace', name: 'Work', icon: 'g:code', emoji: '🚀', off: true });
+  assert.equal(parseInbound(workspace({ off: false })), null, 'off is only ever true');
+  const src = readFileSync(join(here, '..', 'src', 'rail.ts'), 'utf8');
+  assert.match(src, /sendRailWheel\(step\.notches\)/, 'the rail reports the wheel over its workspaces');
+  assert.match(src, /'rb-emoji'/);
+});

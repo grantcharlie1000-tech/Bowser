@@ -4,11 +4,15 @@
 //   #app.sidebar (role=none)
 //     .side-top      workspace switcher row + new-tab row (never scrolls)
 //     .side-list     role=tree scroller: group headers, tab rows, pinned separator, empty state
-import { send, sendSide, type TabItem, type TabsMsg } from './protocol';
+import { send, sendClosedTabs, sendRailWheel, sendSide, sendTabSelection, sendTool, type TabItem, type TabOptsMsg, type TabsMsg } from './protocol';
+import { wheelNotches } from './rail-logic'; // --- tab stacks and workspaces (T10) ---
 import { setTip } from './tooltip';
 import { el, icon, place, type IconName } from './dom';
 import { DRAG_ATTR } from './view';
 import { beforeId, dragScrollDelta, privateTabName } from './tabs-logic';
+// --- tab options ---
+import { clickSelection, markedName, notifyLabel, pruneSelection } from './tab-marks-logic';
+// --- end tab options ---
 import {
   buildSidebarEntries, dropIndexVertical, nearestTile, pinnedBeforeId, rovingTarget, scrollIntoViewDelta, tileShift,
   verticalSlotShift, workspaceIconName, type TilePoint,
@@ -41,6 +45,10 @@ export interface SidebarTabNode {
   readonly close: HTMLButtonElement;
   readonly face: HTMLSpanElement;
   shift: number;
+  // --- tab options --- created only while the row needs them.
+  dot?: HTMLSpanElement;
+  badge?: HTMLSpanElement;
+  // --- end tab options ---
 }
 interface SidebarGroupNode {
   readonly root: HTMLDivElement;
@@ -70,7 +78,13 @@ interface SidebarDrag {
   lastY: number;
   // --- end tab ghost ---
 }
-export interface SidebarWorkspace { readonly name: string; readonly icon: string }
+export interface SidebarWorkspace {
+  readonly name: string;
+  readonly icon: string;
+  /** --- tab stacks and workspaces (T10) --- shown instead of the glyph; `off` hides the switcher. */
+  readonly emoji?: string;
+  readonly off?: boolean;
+}
 
 function colour(index: number): string { return index < 0 ? 'var(--bw-accent)' : ISLAND[index & 7] ?? 'var(--bw-accent)'; }
 
@@ -81,16 +95,40 @@ function setFace(node: SidebarTabNode, uri: string | undefined): void {
   else node.image.removeAttribute('src');
 }
 
-export function syncTab(node: SidebarTabNode, item: TabItem, active: boolean, favs: ReadonlyMap<number, string>): void {
+/** The marks a row can carry (Settings > Tabs): the unread dot and the notification count live beside the mute and marker flags. */
+function sideMark(node: SidebarTabNode, key: 'dot' | 'badge', on: boolean): HTMLSpanElement | undefined {
+  const have = node[key];
+  if (!on) {
+    if (have) { have.remove(); delete node[key]; }
+    return undefined;
+  }
+  if (have) return have;
+  const made = el('span', key === 'dot' ? 'side-unread' : 'side-notify');
+  node.mute.parentElement?.insertBefore(made, node.mute);
+  node[key] = made;
+  return made;
+}
+
+export function syncTab(node: SidebarTabNode, item: TabItem, active: boolean, favs: ReadonlyMap<number, string>, picked = false): void {
   node.item = item;
   const label = item.title || 'New tab';
   node.title.textContent = label;
+  // --- tab options ---
+  sideMark(node, 'dot', item.unread === true);
+  const badge = sideMark(node, 'badge', item.notify !== undefined);
+  if (badge) badge.textContent = notifyLabel(item.notify ?? 0);
+  node.root.classList.toggle('asleep', item.asleep === true);
+  node.root.classList.toggle('idle', item.idle === true);
+  node.root.classList.toggle('picked', picked);
+  const marked = markedName(label, item.notify, item.unread, item.rl);
+  // --- end tab options ---
   // No data-tip: the hover card shows the title, and a tooltip would flash before it.
   if (item.private) {
-    node.root.setAttribute('aria-label', privateTabName(label));
+    node.root.setAttribute('aria-label', privateTabName(marked));
     node.root.dataset.private = 'true';
   } else {
-    node.root.removeAttribute('aria-label');
+    if (marked !== label) node.root.setAttribute('aria-label', marked);
+    else node.root.removeAttribute('aria-label');
     delete node.root.dataset.private;
   }
   node.root.setAttribute('aria-selected', String(active));
@@ -169,6 +207,7 @@ function makeGroup(key: number): SidebarGroupNode {
 export function createSidebarRenderer(root: HTMLElement): {
   render(msg: TabsMsg, favs: ReadonlyMap<number, string>, workspace: SidebarWorkspace): void;
   workspace(value: SidebarWorkspace): void;
+  options(value: TabOptsMsg): void; // --- tab options ---
 } {
   const tabs = new Map<number, SidebarTabNode>();
   const groups = new Map<number, SidebarGroupNode>();
@@ -179,6 +218,25 @@ export function createSidebarRenderer(root: HTMLElement): {
   let pendingRender: { readonly msg: TabsMsg; readonly favs: ReadonlyMap<number, string>; readonly workspace: SidebarWorkspace } | null = null;
   let ignoreClick = false;
   let rendered = false;
+  // --- tab options --- the strip's selection (Ctrl and Shift click) and the Closed tabs row.
+  let picked: number[] = [];
+  let anchor = 0;
+  let selectionOn = true;
+  let selectionActive = true; // --- wave-1 fixes ---
+  const closedRow = el('button', 'side-closed bw-focus-inset');
+  closedRow.type = 'button';
+  closedRow.hidden = true;
+  setTip(closedRow, 'Closed tabs');
+  const closedLabel = el('span', 'side-closed-label');
+  closedLabel.textContent = 'Closed tabs';
+  closedRow.append(icon('tab-restore', { size: 16 }), closedLabel);
+  const setPicked = (ids: readonly number[]): void => {
+    if (ids.length === picked.length && ids.every((id, i) => id === picked[i])) return;
+    picked = [...ids];
+    sendTabSelection(picked);
+    for (const [id, node] of tabs) node.root.classList.toggle('picked', picked.includes(id));
+  };
+  // --- end tab options ---
   // --- split view ---
   // A row or tile dragged out of the sidebar to the right is over the page: Rust shows which half
   // (left, right, top or bottom) it would open in, as for a tab dragged below the horizontal strip.
@@ -197,6 +255,13 @@ export function createSidebarRenderer(root: HTMLElement): {
   workspaceIcon.setAttribute('aria-hidden', 'true');
   const workspaceName = el('span', 'side-workspace-name');
   header.append(workspaceIcon, workspaceName, icon('chevron-down', { size: 12, fine: true, className: 'side-workspace-chevron' }));
+  // --- tab stacks and workspaces (T10) --- "Switch workspaces by scrolling" over the switcher too.
+  let headerWheel = 0;
+  header.addEventListener('wheel', (ev) => {
+    const step = wheelNotches(headerWheel, ev.deltaY, ev.deltaMode);
+    headerWheel = step.rest;
+    if (step.notches !== 0) sendRailWheel(step.notches);
+  }, { passive: true });
   const add = el('button', 'side-newtab bw-focus-inset');
   add.type = 'button';
   setTip(add, 'New tab');
@@ -211,7 +276,27 @@ export function createSidebarRenderer(root: HTMLElement): {
   head.append(header, collapse);
   const top = el('div', 'side-top');
   top.setAttribute(DRAG_ATTR, '');
-  top.append(head, add);
+  // --- toolbars and feeds (thread T13) --- the command buttons of the tab bar, as rows under Closed tabs.
+  const toolRows = el('div', 'side-tools');
+  let toolSig = '';
+  const syncTools = (tools: TabOptsMsg['tools']): void => {
+    const sig = tools.map((tool) => `${tool.k}|${tool.i}|${tool.l}`).join('\n');
+    if (sig === toolSig) return;
+    toolSig = sig;
+    const rows = tools.map((tool) => {
+      const row = el('button', 'side-tool bw-focus-inset');
+      row.type = 'button';
+      setTip(row, tool.l);
+      const label = el('span', 'side-tool-label');
+      label.textContent = tool.l;
+      row.append(icon('command', { size: 16 }), label);
+      row.addEventListener('click', () => { sendTool('tabs', tool.k, tool.i); });
+      return row;
+    });
+    toolRows.replaceChildren(...rows);
+  };
+  // --- end toolbars and feeds ---
+  top.append(head, add, closedRow, toolRows); // --- tab options ---
   const pinGrid = el('div', 'side-pinned');
   pinGrid.setAttribute('role', 'none');
   const COLLAPSED_MAX_PX = 72;
@@ -296,13 +381,25 @@ export function createSidebarRenderer(root: HTMLElement): {
     }
     applyRoot();
     workspaceName.textContent = workspace.name;
-    workspaceIcon.replaceChildren(icon(workspaceIconName(workspace.icon) as IconName, { size: 14 }));
+    // --- tab stacks and workspaces (T10) --- the emoji in place of the glyph; workspaces off hide the switcher.
+    if (workspace.emoji !== undefined) {
+      const glyph = el('span', 'side-workspace-emoji');
+      glyph.textContent = workspace.emoji;
+      workspaceIcon.replaceChildren(glyph);
+    } else {
+      workspaceIcon.replaceChildren(icon(workspaceIconName(workspace.icon) as IconName, { size: 14 }));
+    }
+    header.hidden = workspace.off === true;
     setTip(header, `${workspace.name} - workspace menu`);
     header.setAttribute('aria-label', `${workspace.name} workspace menu`);
 
     const rows: HTMLElement[] = [];
     const live = new Set(msg.items.map((item) => item.id));
     for (const id of tabs.keys()) if (!live.has(id)) tabs.delete(id);
+    // --- tab options --- a closed tab leaves the selection.
+    const keptPicked = pruneSelection(picked, live);
+    if (keptPicked.length !== picked.length) { picked = keptPicked; sendTabSelection(picked); }
+    // --- end tab options ---
     const entries = buildSidebarEntries(msg.items, msg.active);
     const keys = new Set<number>();
     const groupColour = new Map<number, string>();
@@ -332,7 +429,7 @@ export function createSidebarRenderer(root: HTMLElement): {
           node = makeTab(item, active, favs);
           tabs.set(item.id, node);
         } else {
-          syncTab(node, item, active, favs);
+          syncTab(node, item, active, favs, picked.includes(item.id)); // --- tab options ---
         }
         const gc = item.g > 0 && !item.pinned ? groupColour.get(item.g) : undefined;
         if (gc) node.root.style.setProperty('--gc', gc);
@@ -606,6 +703,12 @@ export function createSidebarRenderer(root: HTMLElement): {
       sendSide('collapse');
       return;
     }
+    // --- tab options ---
+    if (event.target.closest('.side-closed')) {
+      sendClosedTabs();
+      return;
+    }
+    // --- end tab options ---
     const group = event.target.closest<HTMLElement>('.side-group');
     if (group) {
       toggleGroup(group);
@@ -615,8 +718,27 @@ export function createSidebarRenderer(root: HTMLElement): {
     if (!row || row.classList.contains('leaving')) return;
     if (ignoreClick) { ignoreClick = false; return; }
     const a = event.target.closest('.side-close') ? 'close' : 'select';
+    // --- tab options --- Ctrl and Shift click select tabs; a plain click clears the selection.
+    if (a === 'select') {
+      const id = Number(row.dataset.id);
+      const order = Array.from(root.querySelectorAll<HTMLElement>('.side-tab:not(.leaving)')).map((tab) => Number(tab.dataset.id));
+      const outcome = selectionOn
+        ? clickSelection(picked, order, anchor, latest?.active ?? 0, id, { ctrl: event.ctrlKey || event.metaKey, shift: event.shiftKey }, selectionActive)
+        : { selected: [] as number[], anchor: id, activate: true };
+      anchor = outcome.anchor;
+      setPicked(outcome.selected);
+      if (!outcome.activate) return;
+    }
+    // --- end tab options ---
     send({ v: 1, t: 'tab', a, id: Number(row.dataset.id) });
   });
+  // --- tab options --- "Double click on a tab".
+  root.addEventListener('dblclick', (event) => {
+    if (!(event.target instanceof Element) || event.target.closest('.side-close')) return;
+    const row = event.target.closest<HTMLElement>('.side-tab');
+    if (row && !row.classList.contains('leaving')) send({ v: 1, t: 'tab', a: 'dblclick', id: Number(row.dataset.id) });
+  });
+  // --- end tab options ---
   root.addEventListener('contextmenu', (event) => {
     if (!(event.target instanceof Element)) return;
     const group = event.target.closest<HTMLElement>('.side-group');
@@ -736,5 +858,14 @@ export function createSidebarRenderer(root: HTMLElement): {
       currentWorkspace = value;
       if (latest) render(latest, latestFavs, currentWorkspace);
     },
+    // --- tab options ---
+    options(value) {
+      selectionOn = value.selection;
+      selectionActive = value.selectionActive;
+      closedRow.hidden = value.closed === 0 || !value.closedButton; // --- toolbars and feeds (thread T13) ---
+      syncTools(value.tools);
+      if (!selectionOn && picked.length > 0) setPicked([]);
+    },
+    // --- end tab options ---
   };
 }

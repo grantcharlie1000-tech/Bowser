@@ -33,7 +33,7 @@ use crate::{
     chrome_host::{
         self,
         host::{Accel, AccelHandler, ChromeHost, View},
-        protocol::{Command, SplitCommand},
+        protocol::{Command, PanelType, SplitCommand},
         split::{self as wire, PickClosed, PickTab},
     },
     split_view::{self, Divider, DropZone, Orientation, Pane},
@@ -54,6 +54,11 @@ enum Shown {
     Drop { zone: DropZone, rect: RECT },
     /// The private landing over blank private tab `tab` (no split), at the whole viewport `rect`.
     Private { tab: TabId, rect: RECT },
+    // --- start page ---
+    /// The start page over blank normal tab `tab` (no split), at the whole viewport `rect`
+    /// (docs/design/start-page.md, `start_ui.rs`).
+    Start { tab: TabId, rect: RECT },
+    // --- end start page ---
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -192,6 +197,10 @@ fn ensure_host(owner: HWND) {
         }
         if let Command::Split(split) = command {
             queue(owner, split);
+        // --- start page --- the start page's own `spage` family
+        } else if let Command::Panel { kind: PanelType::StartPage, f } = command {
+            super::start_ui::queue(owner, f);
+        // --- end start page ---
         }
     });
     let on_failed: Rc<dyn Fn()> = Rc::new(move || {
@@ -200,7 +209,14 @@ fn ensure_host(owner: HWND) {
         super::window::split_ui_invalidate(owner);
     });
     let on_accelerator: AccelHandler = Rc::new(move |accel: Accel| super::window::html_split_accelerator(HWND(raw as *mut _), accel));
-    let created = ChromeHost::create(&env, container, RECT { left: 0, top: 0, right: 1, bottom: 1 }, View::Split, on_command, on_failed, Some(on_accelerator), move |result| {
+    let created = ChromeHost::create(&env, crate::chrome_host::host::ChromeHostOptions {
+        parent: container,
+        bounds: RECT { left: 0, top: 0, right: 1, bottom: 1 },
+        view: View::Split,
+        on_command,
+        on_failed,
+        on_accelerator: Some(on_accelerator),
+    }, move |result| {
         let owner = HWND(raw as *mut _);
         match result {
             Ok(host) => {
@@ -278,6 +294,7 @@ pub(crate) fn drop_zone_showing(owner: HWND) -> bool {
 
 /// Runs the queued commands for `owner` (from `WM_SPLIT_COMMAND`).
 pub(crate) fn run_queued(owner: HWND, app: &AppRef) {
+    super::start_ui::run_queued(owner, app); // --- start page ---
     let commands: Vec<SplitCommand> = QUEUE.with(|queue| {
         let mut queue = queue.borrow_mut();
         let (mine, rest): (Vec<_>, Vec<_>) = queue.drain(..).partition(|(id, _)| *id == owner.0 as isize);
@@ -394,10 +411,10 @@ pub(crate) fn picker_pane(owner: HWND) -> Option<Pane> {
     .flatten()
 }
 
-/// Whether the private landing covers the viewport right now (the overlay then frames it like a
-/// page instead of painting the opaque new-tab surface over it).
+/// Whether the private landing or the start page covers the viewport right now (the overlay then
+/// frames it like a page instead of painting the opaque new-tab surface over it).
 pub(crate) fn private_page_shown(owner: HWND) -> bool {
-    with(owner, |rt| rt.ready && !rt.failed && matches!(rt.shown, Some(Shown::Private { .. }))).unwrap_or(false)
+    with(owner, |rt| rt.ready && !rt.failed && matches!(rt.shown, Some(Shown::Private { .. } | Shown::Start { .. }))).unwrap_or(false)
 }
 
 /// The rectangle a dragged tab would land in, when the HTML card cannot show it (overlay fallback).
@@ -419,7 +436,7 @@ fn drop_card(owner: HWND, app: &AppRef, tab: TabId, zone: DropZone) -> Option<(D
     let viewport = super::window::split_viewport(owner)?;
     let page = (viewport.left, viewport.top, viewport.right, viewport.bottom);
     let px = |dip| super::window::split_px(owner, dip);
-    let (gap, min_w, min_h) = (px(split_view::GAP_DIP), px(split_view::MIN_PANE_DIP), px(split_view::MIN_PANE_HEIGHT_DIP));
+    let (gap, min_w, min_h) = (px(crate::stacks::gap_dip()), px(split_view::MIN_PANE_DIP), px(split_view::MIN_PANE_HEIGHT_DIP));
     let (shown, (left, top, right, bottom)) = match drop_plan(app, tab, zone) {
         Some(plan) => (
             split_view::drop_target_zone(plan, tab, zone),
@@ -448,6 +465,16 @@ fn wanted(owner: HWND, app: &AppRef) -> Shown {
         {
             return Shown::Private { tab, rect };
         }
+        // --- start page --- a blank normal tab shows the start page (not before the window has settled)
+        if !App::tab_private(app, tab)
+            && App::tab_is_blank(app, tab)
+            && super::start_ui::enabled(app)
+            && super::start_ui::ready(owner)
+            && let Some(rect) = super::window::split_viewport(owner)
+        {
+            return Shown::Start { tab, rect };
+        }
+        // --- end start page ---
         return Shown::Hidden;
     };
     // One host: the first empty pane (in tree order) gets the picker; any other empty pane keeps
@@ -522,7 +549,7 @@ pub(crate) fn sync(owner: HWND, app: &AppRef) {
         let _ = with(owner, |rt| rt.suspended = false);
     }
     let rect = match want {
-        Shown::Picker { rect, .. } | Shown::Drop { rect, .. } | Shown::Private { rect, .. } => rect,
+        Shown::Picker { rect, .. } | Shown::Drop { rect, .. } | Shown::Private { rect, .. } | Shown::Start { rect, .. } => rect,
         Shown::Hidden => return,
     };
     // Theme first, then content, then show: the page never appears unthemed or stale.
@@ -549,8 +576,21 @@ pub(crate) fn sync(owner: HWND, app: &AppRef) {
         }
         // Cheap enough for every paint: the post below is skipped while the text is unchanged.
         Shown::Private { tab, .. } => Some(wire::private_json(wire_id(tab), private_tab_count(app))),
+        // --- start page --- a snapshot only when what the page shows changed (start_ui::due reads no file otherwise)
+        Shown::Start { tab, .. } => {
+            let appeared = !matches!(shown, Some(Shown::Start { tab: old, .. }) if old == tab);
+            super::start_ui::due(owner, app, tab, appeared)
+        }
+        // --- end start page ---
         Shown::Hidden => None,
     };
+    // --- start page --- an identical snapshot is not posted twice, and then the page is as delivered as it gets
+    if matches!(want, Shown::Start { .. })
+        && content.as_ref().is_some_and(|c| with(owner, |rt| rt.content.as_deref() == Some(c.as_str())).unwrap_or(false))
+    {
+        super::start_ui::settled(owner);
+    }
+    // --- end start page ---
     if let Some(content) = content
         && with(owner, |rt| rt.content.as_deref() != Some(content.as_str())).unwrap_or(false)
         && host.post_json(&content).is_ok()
@@ -559,6 +599,11 @@ pub(crate) fn sync(owner: HWND, app: &AppRef) {
             rt.content = Some(content);
             rt.dirty = false;
         });
+        // --- start page --- the chosen images follow the page, each in its own message
+        if matches!(want, Shown::Start { .. }) {
+            super::start_ui::posted(owner, &host);
+        }
+        // --- end start page ---
     }
     let moved = !matches!(shown, Some(old) if old == want);
     if moved {
@@ -709,20 +754,23 @@ fn drag(owner: HWND, app: &AppRef, command: SplitCommand) {
             }
             drop_tab(owner, app, tab, zone);
         }
-        SplitCommand::DragEnd { .. } => {
-            if with(owner, |rt| rt.drag.take()).flatten().is_some() {
-                super::window::split_ui_invalidate(owner);
-            }
+        SplitCommand::DragEnd { .. } if with(owner, |rt| rt.drag.take()).flatten().is_some() => {
+            super::window::split_ui_invalidate(owner);
         }
         _ => {}
     }
+}
+
+/// --- wave-1 fixes --- the `split_edge_drop` option, as the running app has it.
+fn edge_drop_enabled(app: &AppRef) -> bool {
+    App::settings(app).split_edge_drop
 }
 
 /// The edge zone of the page under the dragged tab (`split_view::drop_zone`, which keeps `previous`
 /// near the diagonals and in the middle), or `None` when the pointer is not over the page or the
 /// drop would change nothing (a half dropped where it already is).
 fn drop_target(owner: HWND, app: &AppRef, tab: TabId, x: u32, y: u32, previous: Option<DropZone>, intent: &mut crate::drop_intent::DropIntent) -> Option<DropZone> {
-    if !App::settings(app).split_edge_drop {
+    if !edge_drop_enabled(app) {
         return None;
     }
     let (screen, dpi) = super::window::tabs_host_screen(owner)?;
@@ -930,7 +978,7 @@ fn layout_entries(view: split_view::SplitView, divider: Option<Divider>) -> Vec<
         };
         if beside {
             let zone = view.zone_of(pane);
-            entries.push(Entry::Item(Item::new(CLOSE_PANE + pane.index(), &format!("Close {} tab", zone_word(zone)), Icon::Close).glyph(zone_glyph(zone))));
+            entries.push(Entry::Item(Item::new(CLOSE_PANE + pane.index(), format!("Close {} tab", zone_word(zone)), Icon::Close).glyph(zone_glyph(zone))));
         }
     }
     entries
@@ -1107,6 +1155,19 @@ pub(crate) fn pair_sent(owner: HWND, index: usize, generation: u64, json: &str) 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// --- wave-1 fixes --- "Split by dropping a tab on the page's edge" off: no drop zone at all, before
+    /// the pointer is even looked at; on, the gate lets the zone logic run.
+    #[test]
+    fn the_split_edge_drop_option_gates_every_drop_zone() {
+        let app = crate::app::test_app();
+        App::apply_live_settings(&app, &crate::settings::Settings { split_edge_drop: false, ..crate::settings::Settings::default() });
+        assert!(!edge_drop_enabled(&app));
+        let mut intent = crate::drop_intent::DropIntent::default();
+        assert_eq!(drop_target(HWND::default(), &app, App::active_tab_id(&app), 5, 5, None, &mut intent), None);
+        App::apply_live_settings(&app, &crate::settings::Settings::default());
+        assert!(edge_drop_enabled(&app), "on by default");
+    }
 
     #[test]
     fn container_rect_is_never_empty() {

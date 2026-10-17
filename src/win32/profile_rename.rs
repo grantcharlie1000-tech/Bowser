@@ -221,7 +221,10 @@ pub(crate) fn prompt_validated(
         show_native(hwnd, state.edit);
     }
     // --- end popup surfaces ---
-    while !state.done {
+    loop {
+        // DispatchMessageW invokes the window procedure, which mutates this owned state.
+        // Re-read after each dispatch; do not cache the callback-controlled completion flag.
+        if state.done { break; }
         let mut msg = MSG::default();
         let got = unsafe { GetMessageW(&mut msg, None, 0, 0).0 };
         if got <= 0 {
@@ -589,8 +592,8 @@ fn paint(hwnd: HWND) {
             &caption,
             palette.tab_text_active,
         );
-        fill_button(dc, CANCEL, "Cancel", &palette, hwnd);
-        fill_button(dc, SAVE, &save_label, &palette, hwnd);
+        fill_button(dc, CANCEL, "Cancel", palette, hwnd);
+        fill_button(dc, SAVE, &save_label, palette, hwnd);
         let _ = EndPaint(hwnd, &ps);
     }
 }

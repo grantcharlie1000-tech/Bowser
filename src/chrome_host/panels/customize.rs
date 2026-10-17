@@ -11,7 +11,9 @@ pub(crate) enum Action {
     SwitchProfile, ClearAppData,
 }
 
-pub(crate) fn snapshot(sidebar: &SidebarConfig, workspaces: &[(u32, String, WorkspaceIcon, Option<WorkspaceColour>, usize, bool)]) -> String {
+pub(crate) type WorkspaceSnapshot = (u32, String, WorkspaceIcon, Option<WorkspaceColour>, usize, bool);
+
+pub(crate) fn snapshot(sidebar: &SidebarConfig, workspaces: &[WorkspaceSnapshot]) -> String {
     protocol::snap_json("customize", |out| {
         out.object("visible", |visible| {
             visible.bool("workspaces", sidebar.is_visible(SidebarKind::Workspaces));

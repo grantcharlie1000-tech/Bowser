@@ -17,7 +17,9 @@ use std::{
 pub const MAX_NOTES_BYTES: usize = 64 * 1024;
 pub const MAX_TASKS: usize = 500;
 pub const MAX_SESSIONS: usize = 32;
-pub const MAX_HISTORY: usize = 500;
+/// Most visits kept. History retention (Settings) drops older ones first; this cap only matters for
+/// a very busy profile that keeps history "forever".
+pub const MAX_HISTORY: usize = 5_000;
 pub const MAX_BOOKMARKS: usize = 500;
 const MAX_FILE_BYTES: usize = 256 * 1024;
 
@@ -78,53 +80,12 @@ impl CommandRegistry {
     }
 }
 
+/// The commands the palette lists, from the one command registry (`crate::commands`): built-ins and
+/// the user's chains. The action of each is the command id.
 pub fn browser_commands() -> CommandRegistry {
     let mut commands = CommandRegistry::default();
-    for (label, detail, action) in [
-        ("New tab", "Open a blank tab", "new-tab"),
-        (
-            "New private tab",
-            "Browse without saving history, cookies or site data",
-            "new-private-tab",
-        ),
-        ("Close tab", "Close the current tab", "close-tab"),
-        (
-            "Close all private tabs",
-            "Close every private tab in this window",
-            "close-private-tabs",
-        ),
-        ("Settings", "Open browser settings", "settings"),
-        (
-            "Toggle notes and tasks",
-            "Show or hide the productivity sidebar",
-            "toggle-sidebar",
-        ),
-        (
-            "Passwords and passkeys",
-            "Manage saved credentials",
-            "passwords",
-        ),
-        ("Profiles", "Switch or manage profiles", "profiles"),
-        (
-            "Save session",
-            "Save the open tabs as a named session",
-            "save-session",
-        ),
-        (
-            "Saved sessions",
-            "Restore or delete a saved session",
-            "sessions",
-        ),
-        ("Add bookmark", "Save the current page", "add-bookmark"),
-        ("Reload", "Reload the current page", "reload"),
-        ("Back", "Go back", "back"),
-        ("Forward", "Go forward", "forward"),
-        ("Extensions", "Manage installed extensions", "extensions"),
-        ("Reader view", "Read this page without the clutter", "reader"),
-        ("Hide distractions", "Hide overlays, cookie banners and sticky bars", "calm"),
-        ("Translate page", "Translate this page with Google Translate, or show the original", "translate"),
-    ] {
-        commands.register(label, detail, action);
+    for command in crate::commands::palette_commands(&crate::commands::live()) {
+        commands.register(command.label, command.detail, command.id);
     }
     commands
 }
@@ -161,10 +122,9 @@ pub fn rank_items<'a>(
                 1000 - detail.len().min(500) as i32
             } else if let Some(gap) = subsequence_gap(&needle, &label) {
                 500 - gap.min(400) as i32
-            } else if let Some(gap) = subsequence_gap(&needle, &detail) {
-                250 - gap.min(200) as i32
             } else {
-                return None;
+                let gap = subsequence_gap(&needle, &detail)?;
+                250 - gap.min(200) as i32
             };
             Some((item, score))
         })
@@ -474,7 +434,7 @@ pub fn add_history_entry_at(
     url: &str,
     title: &str,
 ) -> std::io::Result<()> {
-    let url = valid_http_url(url).ok_or_else(|| invalid_url_error())?;
+    let url = valid_http_url(url).ok_or_else(invalid_url_error)?;
     // The caller only queues the visit: the read-merge-rewrite of the file runs on the history
     // writer thread, and every history read or edit flushes the queue first. A file that exists
     // but cannot be read is still refused here, cheaply, and again by the writer.
@@ -728,7 +688,7 @@ pub fn add_bookmark(path: &Path, url: &str, title: &str) -> std::io::Result<()> 
 
 /// Removes a bookmark from the established flat file and the additive v2 tree.
 pub fn remove_bookmark(path: &Path, url: &str) -> std::io::Result<bool> {
-    let url = valid_http_url(url).ok_or_else(|| invalid_url_error())?;
+    let url = valid_http_url(url).ok_or_else(invalid_url_error)?;
     let mut entries = read_bookmarks(path);
     let old_len = entries.len();
     entries.retain(|(_, existing, _)| existing != &url);
@@ -762,7 +722,7 @@ pub fn add_bookmark_in_folder(
     title: &str,
     folder: &str,
 ) -> std::io::Result<()> {
-    let url = valid_http_url(url).ok_or_else(|| invalid_url_error())?;
+    let url = valid_http_url(url).ok_or_else(invalid_url_error)?;
     let mut entries = read_bookmarks(path);
     entries.retain(|(_, existing, _)| existing != &url);
     entries.push((
@@ -786,7 +746,7 @@ pub fn add_bookmark_in_folder(
         let mut tree = crate::bookmarks::BookmarkStore::load(profile_dir)?;
         let parent = folder_path(&mut tree, folder)?;
         if let Some(old) = tree.items().iter().find(|item| matches!(&item.kind, crate::bookmarks::BookmarkKind::Link { url: old, .. } if old == &url)).map(|item| item.id) { tree.delete(old); }
-        tree.add_bookmark(parent, &title, &url)?;
+        tree.add_bookmark(parent, title, &url)?;
         tree.save(profile_dir)?;
     }
     Ok(())
@@ -836,7 +796,7 @@ pub fn read_bookmarks(path: &Path) -> Vec<(String, String, String)> {
 
 /// Largest history file that is read at all. The file is capped at `MAX_HISTORY` lines of at most
 /// a couple of kilobytes each, so this is only a guard against a foreign file.
-const MAX_HISTORY_FILE_BYTES: u64 = 8 * 1024 * 1024;
+const MAX_HISTORY_FILE_BYTES: u64 = 16 * 1024 * 1024;
 
 /// History for display. An unreadable file shows as empty; mutators use [`read_history_strict`] so
 /// that never turns into a rewrite.
@@ -1060,7 +1020,7 @@ pub(crate) fn file_holds(path: &Path, bytes: &[u8]) -> bool {
         && fs::read(path).is_ok_and(|current| current == bytes)
 }
 
-fn read_bounded(path: &Path) -> Option<String> {
+pub(crate) fn read_bounded(path: &Path) -> Option<String> {
     let metadata = fs::metadata(path).ok()?;
     if metadata.len() as usize > MAX_FILE_BYTES {
         return None;
@@ -1125,14 +1085,14 @@ fn valid_http_url(url: &str) -> Option<String> {
     Some(parsed.to_string())
 }
 
-fn escape(value: &str) -> String {
+pub(crate) fn escape(value: &str) -> String {
     value
         .replace('\\', "\\\\")
         .replace('\t', "\\t")
         .replace('\n', "\\n")
         .replace('\r', "\\r")
 }
-fn unescape(value: &str) -> String {
+pub(crate) fn unescape(value: &str) -> String {
     let mut out = String::with_capacity(value.len());
     let mut chars = value.chars();
     while let Some(c) = chars.next() {
@@ -1215,9 +1175,14 @@ mod tests {
             "settings",
             "passwords",
             "profiles",
+            "toggle-notes",
             "toggle-sidebar",
             "save-session",
             "sessions",
+            "save-all-session",
+            "open-session",
+            "reopen-tab",
+            "closed-tabs",
             "add-bookmark",
             "extensions",
         ] {

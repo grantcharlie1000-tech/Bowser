@@ -3,9 +3,10 @@ import { applyTheme } from './view';
 import { installTooltips } from './tooltip';
 import { panels } from './panels';
 import { startRenameDialog } from './rename';
+import { startAddressDialog } from './address-dialog'; // --- address bar, search and bookmarks ---
 
 const isPanelToken = (value: string | null): value is PanelToken =>
-  value === 'notes' || value === 'privacy' || value === 'rename';
+  value === 'notes' || value === 'privacy' || value === 'rename' || value === 'address' || value === 'sessions' || value === 'feeds';
 
 export function startDialog(root: HTMLElement): void {
   root.classList.add('panel-root');
@@ -21,11 +22,11 @@ export function startDialog(root: HTMLElement): void {
   const token = new URLSearchParams(location.search).get('p');
   if (!isPanelToken(token)) return;
   // --- popup surfaces (lane PP) --- the name prompt is its own small dialog, not a panel.
-  const receive = token === 'rename' ? startRenameDialog(root) : panels[token]?.(root);
+  const receive = token === 'rename' ? startRenameDialog(root) : token === 'address' ? startAddressDialog(root) : panels[token]?.(root);
   // --- end popup surfaces ---
   onInbound(message => {
-    if (message.t === 'state') applyTheme(message.theme, message.solid, message.dark);
-    else if (message.t === 'snap' && message.p === token) receive?.(message);
+    if (message.t === 'state') applyTheme(message.theme, message.solid, message.dark, message.fontScale, message.uiFont, message.density, message.compactMenus, message.look);
+    else if (message.t === 'snap' && (message.p === token || (token === 'address' && message.p === 'addressdlg'))) receive?.(message);
   });
   send({ v: 1, t: 'ready' });
 }

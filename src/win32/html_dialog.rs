@@ -25,11 +25,11 @@ use crate::{
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Kind { Notes, Privacy, Rename }
+pub(crate) enum Kind { Notes, Privacy, Rename, Sessions, Feeds }
 impl Kind {
-    fn view(self) -> View { match self { Self::Notes => View::DialogNotes, Self::Privacy => View::DialogPrivacy, Self::Rename => View::DialogRename } }
-    fn token(self) -> &'static str { match self { Self::Notes => "notes", Self::Privacy => "privacy", Self::Rename => "rename" } }
-    fn title(self) -> &'static str { match self { Self::Notes => "Notes and Tasks", Self::Privacy => "Privacy dashboard", Self::Rename => "Name prompt" } }
+    fn view(self) -> View { match self { Self::Notes => View::DialogNotes, Self::Privacy => View::DialogPrivacy, Self::Rename => View::DialogRename, Self::Sessions => View::DialogSessions, Self::Feeds => View::DialogFeeds } }
+    fn token(self) -> &'static str { match self { Self::Notes => "notes", Self::Privacy => "privacy", Self::Rename => "rename", Self::Sessions => "sessions", Self::Feeds => "feeds" } }
+    fn title(self) -> &'static str { match self { Self::Notes => "Notes and Tasks", Self::Privacy => "Privacy dashboard", Self::Rename => "Name prompt", Self::Sessions => "Sessions", Self::Feeds => "Feeds" } }
 }
 
 struct Runtime { app: AppRef, owner: HWND, parent: HWND, kind: Kind, host: Option<ChromeHost>, ready: bool, closed: bool }
@@ -38,6 +38,10 @@ thread_local! {
     static CLASS_READY: Cell<bool> = const { Cell::new(false) };
     /// The open Privacy dashboard window, so a second request focuses it instead of stacking one.
     static PRIVACY: Cell<isize> = const { Cell::new(0) };
+    /// The open Sessions panel, so a second request focuses it instead of stacking one.
+    static SESSIONS: Cell<isize> = const { Cell::new(0) };
+    /// The open Feeds panel (thread T13), likewise.
+    static FEEDS: Cell<isize> = const { Cell::new(0) };
     /// An HTML dialog host could not be created: later dialogs use their native windows.
     static FAILED: Cell<bool> = const { Cell::new(false) };
 }
@@ -46,6 +50,12 @@ const DIALOG_CLASS: PCWSTR = w!("BowserHtmlDialog");
 /// Logical (96 DPI) size of the Privacy dashboard window.
 const PRIVACY_WIDTH: i32 = 640;
 const PRIVACY_HEIGHT: i32 = 760;
+/// Logical (96 DPI) size of the Sessions panel.
+const SESSIONS_WIDTH: i32 = 420;
+const SESSIONS_HEIGHT: i32 = 560;
+/// Logical (96 DPI) size of the Feeds panel.
+const FEEDS_WIDTH: i32 = 480;
+const FEEDS_HEIGHT: i32 = 680;
 /// The Notes window keeps its native resize strip on the left edge, so the page starts after it.
 const NOTES_RESIZE_STRIP_DIP: i32 = 9;
 
@@ -103,10 +113,14 @@ unsafe extern "system" fn dialog_proc(hwnd: HWND, message: u32, wparam: WPARAM, 
                 LRESULT(1)
             }
             WM_SIZE => { resize(hwnd); LRESULT(0) }
+            // A feed worker left an answer (thread T13).
+            m if m == super::feeds_panel::WM_FEEDS_DONE => { feeds_done(hwnd); LRESULT(0) }
             WM_CLOSE => { let _ = DestroyWindow(hwnd); LRESULT(0) }
             WM_NCDESTROY => {
                 close(hwnd);
                 PRIVACY.with(|slot| if slot.get() == hwnd.0 as isize { slot.set(0); });
+                SESSIONS.with(|slot| if slot.get() == hwnd.0 as isize { slot.set(0); });
+                FEEDS.with(|slot| if slot.get() == hwnd.0 as isize { slot.set(0); });
                 DefWindowProcW(hwnd, message, wparam, lparam)
             }
             _ => DefWindowProcW(hwnd, message, wparam, lparam),
@@ -166,7 +180,14 @@ pub(crate) fn attach(app: &AppRef, owner: HWND, parent: HWND, env: ChromeEnv, ki
     let accel: AccelHandler = Rc::new(move |key: Accel| super::window::html_panel_accelerator(accel_owner, key));
     let ready_weak = Rc::downgrade(&runtime);
     let view = kind.view();
-    if let Err(error) = ChromeHost::create(&env, parent, bounds, view, commands, failed, Some(accel), move |result| match result {
+    if let Err(error) = ChromeHost::create(&env, crate::chrome_host::host::ChromeHostOptions {
+        parent,
+        bounds,
+        view,
+        on_command: commands,
+        on_failed: failed,
+        on_accelerator: Some(accel),
+    }, move |result| match result {
         Ok(host) => if let Some(state) = ready_weak.upgrade() {
             if let Ok(mut runtime) = state.try_borrow_mut() {
                 if runtime.closed { host.close(); return; }
@@ -213,6 +234,67 @@ pub(crate) fn open_privacy(owner: HWND, app: &AppRef, env: ChromeEnv) {
     unsafe { let _ = ShowWindow(window, SW_SHOW); let _ = SetForegroundWindow(window); }
 }
 
+/// Opens the Sessions panel in its own owned window, or brings the open one to the front.
+pub(crate) fn open_sessions(owner: HWND, app: &AppRef, env: ChromeEnv) {
+    let existing = SESSIONS.with(Cell::get);
+    if existing != 0 {
+        let window = HWND(existing as *mut std::ffi::c_void);
+        if unsafe { IsWindow(Some(window)) }.as_bool() {
+            unsafe { let _ = ShowWindow(window, SW_SHOW); let _ = SetForegroundWindow(window); }
+            send_to(window);
+            return;
+        }
+        SESSIONS.with(|slot| slot.set(0));
+    }
+    let Some(window) = create_window(owner, Kind::Sessions.title(), SESSIONS_WIDTH, SESSIONS_HEIGHT) else {
+        show_error_message("The Sessions panel could not be opened.");
+        return;
+    };
+    SESSIONS.with(|slot| slot.set(window.0 as isize));
+    attach(app, owner, window, env, Kind::Sessions);
+    unsafe { let _ = ShowWindow(window, SW_SHOW); let _ = SetForegroundWindow(window); }
+}
+
+/// Opens the Feeds panel in its own owned window, or brings the open one to the front with a fresh snapshot.
+pub(crate) fn open_feeds(owner: HWND, app: &AppRef, env: ChromeEnv) {
+    let existing = FEEDS.with(Cell::get);
+    if existing != 0 {
+        let window = HWND(existing as *mut std::ffi::c_void);
+        if unsafe { IsWindow(Some(window)) }.as_bool() {
+            unsafe { let _ = ShowWindow(window, SW_SHOW); let _ = SetForegroundWindow(window); }
+            send_to(window);
+            return;
+        }
+        FEEDS.with(|slot| slot.set(0));
+    }
+    let Some(window) = create_window(owner, Kind::Feeds.title(), FEEDS_WIDTH, FEEDS_HEIGHT) else {
+        show_error_message("The Feeds panel could not be opened.");
+        return;
+    };
+    FEEDS.with(|slot| slot.set(window.0 as isize));
+    attach(app, owner, window, env, Kind::Feeds);
+    unsafe { let _ = ShowWindow(window, SW_SHOW); let _ = SetForegroundWindow(window); }
+}
+
+/// A feed worker's answer arrived for the Feeds window `parent`: apply it and redraw the panel.
+fn feeds_done(parent: HWND) {
+    if super::feeds_panel::apply_done(parent)
+        && let Some(runtime) = RUNTIMES.with(|map| map.borrow().get(&(parent.0 as isize)).cloned())
+    {
+        send_current(&runtime);
+    }
+}
+
+/// Sends the open Sessions panel a fresh snapshot (its list changed from outside).
+pub(crate) fn refresh_sessions() {
+    let existing = SESSIONS.with(Cell::get);
+    if existing != 0 { send_to(HWND(existing as *mut std::ffi::c_void)); }
+}
+
+fn send_to(window: HWND) {
+    if let Some(runtime) = RUNTIMES.with(|map| map.borrow().get(&(window.0 as isize)).cloned()) { send_current(&runtime); }
+}
+
 pub(crate) fn resize(parent: HWND) {
     let runtime = RUNTIMES.with(|map| map.borrow().get(&(parent.0 as isize)).cloned());
     let Some(runtime) = runtime else { return; };
@@ -241,6 +323,12 @@ fn handle(runtime: &Rc<RefCell<Runtime>>, command: Command) {
             send_current(runtime);
             // --- popup surfaces (lane PP) ---
             let (kind, parent, host) = { let state = runtime.borrow(); (state.kind, state.parent, state.host.clone()) };
+            // The Feeds panel fetches the subscriptions that are older than the user's refresh choice.
+            if kind == Kind::Feeds {
+                let app = runtime.borrow().app.clone();
+                super::feeds_panel::on_ready(&app, parent);
+                send_current(runtime);
+            }
             if kind == Kind::Rename {
                 if super::profile_rename::html_ready(parent) {
                     if let Some(host) = host { let _ = host.focus(); }
@@ -264,6 +352,8 @@ fn handle(runtime: &Rc<RefCell<Runtime>>, command: Command) {
         }
         Command::Panel { kind: PanelType::Notes, f } if runtime.borrow().kind == Kind::Notes => handle_notes(runtime, f),
         Command::Panel { kind: PanelType::Privacy, f } if runtime.borrow().kind == Kind::Privacy => handle_privacy(runtime, f),
+        Command::Panel { kind: PanelType::Sessions, f } if runtime.borrow().kind == Kind::Sessions => handle_sessions(runtime, f),
+        Command::Panel { kind: PanelType::Feeds, f } if runtime.borrow().kind == Kind::Feeds => handle_feeds(runtime, f),
         _ => {}
     }
 }
@@ -273,8 +363,12 @@ fn send_current(runtime: &Rc<RefCell<Runtime>>) {
     let Some(host) = host.filter(|_| ready) else { return; };
     let _ = host.post_json(&super::window::html_panel_state(owner));
     if let Some(message) = protocol::panelshow_json(kind.token()) { let _ = host.post_json(&message); }
-    let snapshot = match kind { Kind::Notes => notes_snapshot(), Kind::Privacy => privacy_snapshot(runtime), Kind::Rename => rename_snapshot(runtime) };
+    let snapshot = match kind { Kind::Notes => notes_snapshot(), Kind::Privacy => privacy_snapshot(runtime), Kind::Rename => rename_snapshot(runtime), Kind::Sessions => sessions_snapshot(runtime), Kind::Feeds => feeds_snapshot(runtime) };
     if let Some(snapshot) = snapshot { let _ = host.post_json(&snapshot); }
+    if kind == Kind::Privacy {
+        let app = runtime.try_borrow().ok().map(|state| state.app.clone());
+        if let Some(snapshot) = app.and_then(|app| protection_snapshot_json(&app)) { let _ = host.post_json(&snapshot); }
+    }
 }
 
 fn privacy_snapshot(runtime: &Rc<RefCell<Runtime>>) -> Option<String> {
@@ -285,7 +379,7 @@ fn privacy_snapshot(runtime: &Rc<RefCell<Runtime>>) -> Option<String> {
 /// The Privacy dashboard's `privacy` snapshot, for its own window and for the settings page.
 pub(crate) fn privacy_snapshot_json(app: &AppRef) -> Option<String> {
     let profile = profile::active().ok();
-    let snapshot = super::privacy_panel::gather(&app, profile.as_ref(), None);
+    let snapshot = super::privacy_panel::gather(app, profile.as_ref(), None);
     protocol::snap_json("privacy", |out| {
         out.string("profile", &snapshot.profile); out.bool("guest", snapshot.guest);
         out.object("stats", |stats| {
@@ -301,14 +395,14 @@ pub(crate) fn privacy_snapshot_json(app: &AppRef) -> Option<String> {
         out.string("trackingSetting", snapshot.tracking_setting); out.bool("efficiencyActive", snapshot.efficiency_active);
         if let Some(enabled) = snapshot.smart_screen { out.bool("smartScreen", enabled); } else { out.null("smartScreen"); }
         out.bool("blockerSetting", snapshot.blocker_setting); out.bool("sleeping", snapshot.sleeping); out.uint("sleepAfter", snapshot.sleep_after);
-        let denied = App::denied_requests(&app);
+        let denied = App::denied_requests(app);
         let sites = {
             // A private tab's site is never offered as "current": a stored decision made here would
             // be written to the shared permission store.
-            let current = App::active_site(&app)
-                .filter(|(tab, _)| !App::tab_private(&app, *tab))
+            let current = App::active_site(app)
+                .filter(|(tab, _)| !App::tab_private(app, *tab))
                 .and_then(|(_, url)| crate::permissions::origin_of(url.as_str()));
-            let store = App::permissions_handle(&app);
+            let store = App::permissions_handle(app);
             let guard = store.as_ref().map(|store| store.borrow());
             let empty = crate::permissions::PermissionStore::default();
             let also: Vec<&str> = denied.iter().map(|attempt| attempt.origin.as_str()).collect();
@@ -317,6 +411,14 @@ pub(crate) fn privacy_snapshot_json(app: &AppRef) -> Option<String> {
         panels::privacy::write_permissions(out, &sites, &denied, crate::permissions::now_secs());
         if let Some(status) = &snapshot.status { out.string("status", status); } else { out.null("status"); }
     })
+}
+
+/// The Privacy section's `protection` snapshot (blocking, cookie notices, history retention,
+/// website appearance, Delete Browsing Data; thread T3), for the settings page and the dashboard
+/// window. It has its own snapshot, so its size never counts against the permissions table's.
+pub(crate) fn protection_snapshot_json(app: &AppRef) -> Option<String> {
+    let view = super::protection::gather(app);
+    protocol::snap_json("protection", |out| panels::protection::write(out, &view))
 }
 
 fn handle_privacy(runtime: &Rc<RefCell<Runtime>>, f: PanelFields) {
@@ -333,12 +435,15 @@ pub(crate) fn run_privacy_command(app: &AppRef, owner: HWND, f: &PanelFields) ->
         apply_permission_action(app, action);
         return true;
     }
-    let no_extra = f.parent.is_none() && f.before.is_none() && f.on.is_none() && f.text.is_none() && f.url.is_none();
+    // Blocking, cookie notices, history retention, website appearance and Delete Browsing Data
+    // (thread T3) are validated in `panels::protection::map_command`. The answer to a command
+    // arrives in the next `protection` snapshot, which the page is always sent after one.
+    if let Some(action) = panels::protection::map_command(f) {
+        super::protection::run(app, owner, action);
+        return true;
+    }
     let id = match f.a.as_str() {
         "clear-stats" if empty_fields(f, false) => Some(8_800),
-        "clear-data" if no_extra && f.id.is_some_and(|kind| kind <= 2) && f.n.is_some_and(|range| (0..=3).contains(&range)) => {
-            Some(8_900 + f.id.unwrap_or_default() as usize * 4 + f.n.unwrap_or_default() as usize)
-        }
         _ => None,
     };
     let Some(id) = id else { return false; };
@@ -394,29 +499,133 @@ fn handle_rename(runtime: &Rc<RefCell<Runtime>>, f: PanelFields) {
 }
 // --- end popup surfaces ---
 
+// --- toolbars and feeds (thread T13) --- the Feeds panel (win32/feeds_panel.rs).
+fn feeds_snapshot(runtime: &Rc<RefCell<Runtime>>) -> Option<String> {
+    let app = runtime.try_borrow().ok()?.app.clone();
+    Some(super::feeds_panel::snapshot_json(&app))
+}
+
+/// A validated `feed` command (`panels::feeds::map_command`).
+fn handle_feeds(runtime: &Rc<RefCell<Runtime>>, f: PanelFields) {
+    let (app, parent) = match runtime.try_borrow() { Ok(state) => (state.app.clone(), state.parent), Err(_) => return };
+    let Some(action) = panels::feeds::map_command(&f) else { return; };
+    super::feeds_panel::handle(&app, parent, action);
+    send_current(runtime);
+}
+// --- end toolbars and feeds ---
+
+// --- tab options --- the Sessions panel: saved sessions, saving the open tabs, opening and deleting.
+fn sessions_snapshot(runtime: &Rc<RefCell<Runtime>>) -> Option<String> {
+    let app = runtime.try_borrow().ok()?.app.clone();
+    let profile = profile::active().ok()?;
+    let allowed = crate::productivity::profile_allows_productivity(&profile);
+    let sessions = if allowed { crate::productivity::read_sessions(&profile.saved_sessions_file()) } else { Vec::new() };
+    Some(panels::sessions::snapshot_json(allowed, App::tab_ids(&app).len(), App::selected_tab_count(&app), &sessions))
+}
+
+/// A validated `sess` command (`panels::sessions::map_command`) acts on the profile's saved sessions. A
+/// session is found in the file again by its name, so a stale list in the page never opens or deletes the
+/// wrong one.
+fn handle_sessions(runtime: &Rc<RefCell<Runtime>>, f: PanelFields) {
+    let app = match runtime.try_borrow() { Ok(state) => state.app.clone(), Err(_) => return };
+    let Some(action) = panels::sessions::map_command(&f) else { return; };
+    let Ok(profile) = profile::active() else { return; };
+    if !crate::productivity::profile_allows_productivity(&profile) { return; }
+    let file = profile.saved_sessions_file();
+    match action {
+        panels::sessions::Action::Save { name, selected } => {
+            let ids = if selected { App::selected_tabs(&app) } else { App::tab_ids(&app) };
+            if let Err(message) = App::save_session(&app, &name, &ids) { show_error_message(&message); }
+        }
+        panels::sessions::Action::Open { name, replace } => {
+            if let Some(session) = crate::productivity::read_sessions(&file).into_iter().find(|session| session.name == name) {
+                App::open_session(&app, &session, replace);
+            }
+        }
+        panels::sessions::Action::Delete { name } => {
+            if let Err(error) = crate::productivity::delete_session(&file, &name) { show_error_message(&format!("The session could not be deleted: {error}")); }
+        }
+    }
+    send_current(runtime);
+}
+// --- end tab options ---
+
 fn notes_snapshot() -> Option<String> {
     let profile = profile::active().ok()?;
-    let notes = notes_panel::html_notes(&profile);
+    let book = notes_panel::html_book(&profile);
     let tasks = notes_panel::html_tasks(&profile);
     protocol::snap_json("notes", |out| {
-        out.array("notes", |items| for note in &notes { items.object(|item| { item.uint("id", note.id); item.string("title", &note.title); item.string("body", &note.body); }); });
+        out.string("sort", book.sort.key());
+        out.array("folders", |items| for folder in &book.folders { items.object(|item| { item.uint("id", folder.id); item.string("name", &folder.name); }); });
+        out.array("notes", |items| for note in book.ordered(book.sort) {
+            let meta = book.meta_of(note.id);
+            items.object(|item| { item.uint("id", note.id); item.string("title", &note.title); item.string("body", &note.body); item.string("addr", &meta.addr); item.uint("created", meta.created); item.uint("folder", meta.folder); });
+        });
         out.array("tasks", |items| for task in &tasks { items.object(|item| { item.uint("id", task.id); item.string("text", &task.text); item.bool("complete", task.complete); }); });
     })
 }
 
 fn handle_notes(runtime: &Rc<RefCell<Runtime>>, f: PanelFields) {
     let Ok(profile) = profile::active() else { return; };
-    let mut notes = notes_panel::html_notes(&profile);
+    let parent = runtime.borrow().parent;
+    let mut book = notes_panel::html_book(&profile);
     let mut tasks = notes_panel::html_tasks(&profile);
+    let text_len_ok = |max: usize| f.text.as_ref().is_some_and(|s| s.chars().count() <= max);
+    let only = |id: bool, parent_f: bool, n: bool, on: bool, text: bool| (f.id.is_some() == id) && (f.parent.is_some() == parent_f) && (f.n.is_some() == n) && (f.on.is_some() == on) && (f.text.is_some() == text) && f.before.is_none() && f.url.is_none();
+    let now = || { let since = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default(); (since.as_secs(), since.as_micros() as u64) };
+    let book_result = |book: &crate::notes_book::Book, refused: Result<(), crate::notes_book::Refused>| -> std::io::Result<()> {
+        match refused { Ok(()) => notes_panel::save_html_book(&profile, book), Err(why) => { show_error_message(&why.to_string()); Ok(()) } }
+    };
+    let id = f.id.unwrap_or_default();
     let result = match f.a.as_str() {
-        "add-note" if empty_fields(&f, false) => { let id = next_id(notes.iter().map(|n| n.id)); notes.push(crate::productivity::Note { id, title: "New note".into(), body: String::new() }); notes_panel::save_html_notes(&profile, &notes) }
-        "save-title" if f.parent.is_none() && f.before.is_none() && f.n.is_none() && f.on.is_none() && f.url.is_none() && f.id.is_some() && f.text.as_ref().is_some_and(|s| s.chars().count() <= 2048) => {
-            let Some(note) = notes.iter_mut().find(|item| item.id == f.id.unwrap_or_default()) else { return; }; note.title = f.text.unwrap_or_default(); notes_panel::save_html_notes(&profile, &notes)
+        "add-note" if empty_fields(&f, false) => { let (secs, micros) = now(); let added = book.add("New note", "", "", 0, secs, micros).map(|_| ()); book_result(&book, added) }
+        "save-title" if only(true, false, false, false, true) && text_len_ok(2048) => {
+            let Some(note) = book.notes.iter_mut().find(|item| item.id == id) else { return; };
+            let title = crate::notes_book::clip_chars(f.text.as_deref().unwrap_or_default(), crate::notes_book::MAX_TITLE_CHARS);
+            note.title = title; notes_panel::save_html_book(&profile, &book)
         }
-        "save-body" if f.parent.is_none() && f.before.is_none() && f.n.is_none() && f.on.is_none() && f.url.is_none() && f.id.is_some() && f.text.as_ref().is_some_and(|s| s.chars().count() <= 2048) => {
-            let Some(note) = notes.iter_mut().find(|item| item.id == f.id.unwrap_or_default()) else { return; }; note.body = f.text.unwrap_or_default(); notes_panel::save_html_notes(&profile, &notes)
+        "save-body" if only(true, false, false, false, true) && text_len_ok(crate::notes_book::MAX_BODY_CHARS) => {
+            let Some(note) = book.notes.iter_mut().find(|item| item.id == id) else { return; }; note.body = f.text.unwrap_or_default(); notes_panel::save_html_book(&profile, &book)
         }
-        "delete-note" if id_only(&f) => { notes.retain(|item| item.id != f.id.unwrap_or_default()); notes_panel::save_html_notes(&profile, &notes) }
+        "delete-note" if id_only(&f) => { book.delete_note(id); notes_panel::save_html_book(&profile, &book) }
+        // Sort order (manual, title, address, content, date), kept with the notes.
+        "sort" if only(false, false, false, false, true) => {
+            let Some(sort) = f.text.as_deref().and_then(crate::notes_book::Sort::parse) else { return; };
+            book.sort = sort; notes_panel::save_html_book(&profile, &book)
+        }
+        // Manual order: the note `id` goes before the note `n` (the end when there is none).
+        "move-note" if f.id.is_some() && f.parent.is_none() && f.on.is_none() && f.text.is_none() && f.url.is_none() && f.n.is_none() => { let before = f.before; let moved = book.move_note(id, before); book_result(&book, moved)
+        }
+        // The folder of a note: `parent` is the folder's id, 0 for none.
+        "note-folder" if only(true, true, false, false, false) => { let moved = book.set_folder(id, f.parent.unwrap_or_default()); book_result(&book, moved) }
+        "folder-add" if only(false, false, false, false, true) && text_len_ok(120) => { let (_, micros) = now(); let added = book.add_folder(f.text.as_deref().unwrap_or_default(), micros).map(|_| ()); book_result(&book, added) }
+        "folder-rename" if only(true, false, false, false, true) && text_len_ok(120) => { let renamed = book.rename_folder(id, f.text.as_deref().unwrap_or_default()); book_result(&book, renamed) }
+        "folder-delete" if id_only(&f) => { let removed = book.delete_folder(id); book_result(&book, removed) }
+        // Export: `text` is "md" or "txt"; `n` is 0 for every note, 1 for the folder `id`, 2 for the note `id`.
+        "export" if f.parent.is_none() && f.on.is_none() && f.before.is_none() && f.url.is_none() && matches!(f.text.as_deref(), Some("md" | "txt")) && matches!(f.n, Some(0..=2)) => {
+            let kind = if f.text.as_deref() == Some("txt") { crate::notes_book::FileKind::Text } else { crate::notes_book::FileKind::Markdown };
+            let scope = match f.n { Some(1) => crate::notes_book::Scope::Folder(id), Some(2) => crate::notes_book::Scope::One(id), _ => crate::notes_book::Scope::All };
+            let name = format!("Notes.{}", kind.extension());
+            let dir = crate::capture::default_dir().and_then(|d| d.parent().map(std::path::Path::to_path_buf)).unwrap_or_default();
+            if let Some(mut path) = crate::download_shell::save_dialog(parent, &dir, &name) {
+                if crate::notes_book::FileKind::of_path(&path).is_none() { path.set_extension(kind.extension()); }
+                let kind = crate::notes_book::FileKind::of_path(&path).unwrap_or(kind);
+                match std::fs::write(&path, book.export(scope, kind)) { Ok(()) => {}, Err(error) => show_error_message(&format!("The notes could not be exported: {error}")) }
+            }
+            return;
+        }
+        "import" if empty_fields(&f, false) => {
+            let Some(path) = crate::download_shell::open_notes_dialog(parent) else { return; };
+            let Some(kind) = crate::notes_book::FileKind::of_path(&path) else { show_error_message("Choose a .md or .txt file."); return; };
+            let too_big = std::fs::metadata(&path).map(|m| m.len() > crate::notes_book::MAX_IMPORT_BYTES).unwrap_or(true);
+            let text = if too_big { None } else { std::fs::read(&path).ok().and_then(|bytes| String::from_utf8(bytes).ok()) };
+            let Some(text) = text else { show_error_message("That file could not be read as text, or it is larger than 256 KB."); return; };
+            let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("Imported note").to_owned();
+            let (secs, micros) = now();
+            let (added, left_out) = book.import(crate::notes_book::parse_import(&text, kind, &stem), secs, micros);
+            if left_out > 0 { show_error_message(&format!("Imported {added} notes. {left_out} did not fit: there is room for 100 notes.")); }
+            notes_panel::save_html_book(&profile, &book)
+        }
         "add-task" if empty_fields(&f, false) => { let id = next_id(tasks.iter().map(|task| task.id)); tasks.push(crate::productivity::Task { id, complete: false, text: "New task".into() }); notes_panel::save_html_tasks(&profile, &tasks) }
         "save-task" if f.parent.is_none() && f.before.is_none() && f.n.is_none() && f.on.is_none() && f.url.is_none() && f.id.is_some() && f.text.as_ref().is_some_and(|s| s.chars().count() <= 2048) => {
             let Some(task) = tasks.iter_mut().find(|item| item.id == f.id.unwrap_or_default()) else { return; }; task.text = f.text.unwrap_or_default(); notes_panel::save_html_tasks(&profile, &tasks)

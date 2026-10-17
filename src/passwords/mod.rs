@@ -426,6 +426,21 @@ impl PasswordStore {
         Ok(())
     }
 
+    /// Deletes every saved login (Delete Browsing Data, after the user confirmed it) and restores
+    /// them in memory if the atomic write fails. The "never save for this site" choices stay.
+    /// Returns how many logins were removed.
+    pub fn delete_all(&mut self) -> Result<usize, PasswordError> {
+        if self.records.is_empty() {
+            return Ok(0);
+        }
+        let removed = std::mem::take(&mut self.records);
+        if let Err(error) = self.persist() {
+            self.records = removed;
+            return Err(error);
+        }
+        Ok(removed.len())
+    }
+
     pub fn is_never_for_site(&self, value: &str) -> bool {
         secure_origin(value).is_some_and(|origin| self.never_sites.contains(&origin))
     }
@@ -1550,6 +1565,25 @@ mod tests {
         reopened.delete(id).unwrap();
         assert!(reopened.is_empty());
         assert!(PasswordStore::open(&path).unwrap().is_empty());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn delete_all_removes_every_login_on_disk_and_keeps_the_never_save_sites() {
+        let root = temp_vault_root();
+        let path = root.join("Passwords.dat");
+        let mut vault = PasswordStore::open(&path).unwrap();
+        assert_eq!(vault.delete_all().unwrap(), 0, "an empty vault has nothing to delete");
+        vault.add("https://a.test/", "alice", "pw-a").unwrap();
+        vault.add("https://b.test/", "bob", "pw-b").unwrap();
+        vault.mark_never_for_site("https://never.test", true).unwrap();
+        assert_eq!(vault.delete_all().unwrap(), 2);
+        assert!(vault.is_empty());
+        drop(vault);
+        let reopened = PasswordStore::open(&path).unwrap();
+        assert!(reopened.is_empty(), "the file holds no login any more");
+        assert!(reopened.is_never_for_site("https://never.test"));
         fs::remove_dir_all(root).unwrap();
     }
 

@@ -355,6 +355,9 @@ impl BookmarkStore {
             return Err(invalid_data("bad bookmarks header"));
         }
         let mut s = Self::new();
+        // Ids kept so far, so a repeated id is found without scanning the list (the start page parses
+        // this file for every new tab it rebuilds for).
+        let mut seen = std::collections::HashSet::new();
         for line in lines.take(MAX_ITEMS) {
             let mut f = line.splitn(7, '\t');
             let id = f
@@ -373,7 +376,7 @@ impl BookmarkStore {
                 .next()
                 .and_then(|x| x.parse().ok())
                 .ok_or_else(|| invalid_data("bad timestamp"))?;
-            if id == 0 || s.items.iter().any(|i| i.id == id) || title.len() > MAX_FIELD {
+            if id == 0 || seen.contains(&id) || title.len() > MAX_FIELD {
                 continue;
             }
             let kind = match kind {
@@ -389,6 +392,7 @@ impl BookmarkStore {
                 _ => continue,
             };
             s.next_id = s.next_id.max(id.saturating_add(1));
+            seen.insert(id);
             s.items.push(Bookmark {
                 id,
                 parent,

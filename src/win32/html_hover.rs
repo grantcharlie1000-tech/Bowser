@@ -314,16 +314,7 @@ pub(crate) fn prewarm(owner: HWND, env: ChromeEnv) {
     let on_failed = Rc::new(move || {
         crate::win32::post(HWND(failed_window as *mut _), WM_HOVER_FAILED, WPARAM(0), LPARAM(0));
     });
-    let created = ChromeHost::create(
-        &env,
-        window,
-        RECT { left: 0, top: 0, right: 480, bottom: 640 },
-        View::Hover,
-        on_command,
-        on_failed,
-        None,
-        move |result| *ready_slot.borrow_mut() = Some(result),
-    );
+    let created = ChromeHost::create(&env, crate::chrome_host::host::ChromeHostOptions { parent: window, bounds: RECT { left: 0, top: 0, right: 480, bottom: 640 }, view: View::Hover, on_command, on_failed, on_accelerator: None }, move |result| *ready_slot.borrow_mut() = Some(result));
     if created.is_err() {
         unsafe {
             let _ = DestroyWindow(window);
@@ -689,6 +680,10 @@ fn card_content(app: &AppRef, tab: TabId) -> Option<Content> {
             })
             .collect(),
         more: model.rows.len().saturating_sub(tab_card::MAX_ROWS),
+        // --- tab options ---
+        thumb: App::tab_thumbnail(app, tab),
+        memory_mb: App::tab_memory_mb(app, tab),
+        // --- end tab options ---
     };
     let rows = rows.into_iter().take(tab_card::MAX_ROWS).collect();
     Some(Content::Card { tab, rows, model: card })
@@ -737,6 +732,9 @@ fn show_card(owner: HWND, app: &AppRef, tab: TabId, anchor: RECT) {
     if App::active_tab_id(app) == tab {
         return;
     }
+    // --- tab options --- the memory line fills in when the measurement arrives.
+    App::refresh_tab_memory(app);
+    // --- end tab options ---
     if let Some(content) = card_content(app, tab) {
         present(owner, content, anchor);
     }
@@ -771,6 +769,10 @@ fn theme_json(like_toolbar: bool) -> String {
         translate: crate::translate::Pill::Hidden,
         font_scale: 100,
         ui_font: String::new(),
+        density: crate::layout_prefs::UiDensity::Regular, // --- layout (thread T6) ---
+        compact_menus: false,
+        look: crate::window_prefs::Look::default(), // --- window and panels (thread T9) ---
+        bar: Default::default(), // --- toolbars and feeds (thread T13) ---
         theme: chrome_host::theme_tokens(palette),
     }
     .to_json()

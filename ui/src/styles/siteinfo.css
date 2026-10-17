@@ -124,6 +124,22 @@
   flex: none;
 }
 
+/* The blocking level has three long choices: they sit on their own line under the label. */
+.bw-siteinfo-row.is-wide {
+  flex-wrap: wrap;
+}
+
+.bw-siteinfo-row.is-wide > .bw-siteinfo-levels {
+  flex: 1 1 100%;
+  margin-inline-start: calc(var(--bw-icon) + var(--bw-space-3));
+}
+
+/* Each choice keeps its words on one line (a 340px popup is the narrowest); spare room is shared out. */
+.bw-siteinfo-levels > button {
+  flex: 1 1 auto;
+  white-space: nowrap;
+}
+
 .bw-siteinfo .bw-separator {
   margin: var(--bw-space-1) 0;
 }

@@ -65,14 +65,10 @@ impl PipState {
             (Self::Entering(_), PipEvent::EnterFailed | PipEvent::Exited) => Self::Idle,
             (Self::Active(tab), PipEvent::ExitRequested) => Self::Exiting(tab),
             (Self::Exiting(_), PipEvent::Exited | PipEvent::EnterFailed) => Self::Idle,
-            (Self::Entering(tab) | Self::Active(tab) | Self::Exiting(tab), event)
-                if matches!(
-                    event,
-                    PipEvent::Navigated(owner)
-                        | PipEvent::TabClosed(owner)
-                        | PipEvent::MediaStopped(owner)
-                        if owner == tab
-                ) =>
+            (
+                Self::Entering(tab) | Self::Active(tab) | Self::Exiting(tab),
+                PipEvent::Navigated(owner) | PipEvent::TabClosed(owner) | PipEvent::MediaStopped(owner),
+            ) if owner == tab =>
             {
                 Self::Idle
             }

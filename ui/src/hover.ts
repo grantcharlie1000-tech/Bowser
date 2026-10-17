@@ -77,6 +77,11 @@ function renderTooltip(text: string): HTMLElement {
   return tip;
 }
 
+/** "41 MB", or "1.2 GB" from 1000 MB up. */
+export function memoryText(mb: number): string {
+  return mb >= 1000 ? `${(mb / 1024).toFixed(1)} GB` : `${mb} MB`;
+}
+
 function renderCard(msg: HoverCardMsg, act: Act): HTMLElement {
   const card = el('div', 'bw-card');
   const markers = el('div', 'bw-card-markers');
@@ -102,7 +107,7 @@ function renderCard(msg: HoverCardMsg, act: Act): HTMLElement {
   title.dir = 'auto';
   title.textContent = msg.title;
   text.append(title);
-  if (msg.host !== '' || msg.sleeping) {
+  if (msg.host !== '' || msg.sleeping || msg.mem !== undefined) {
     const meta = el('div', 'bw-card-meta');
     if (msg.host !== '') {
       const host = el('span', 'bw-card-host');
@@ -115,11 +120,28 @@ function renderCard(msg: HoverCardMsg, act: Act): HTMLElement {
       badge.textContent = 'Sleeping';
       meta.append(badge);
     }
+    // --- tab options --- "Show memory use in tab previews".
+    if (msg.mem !== undefined) {
+      const memory = el('span', 'bw-card-badge bw-card-memory');
+      memory.textContent = memoryText(msg.mem);
+      meta.append(memory);
+    }
+    // --- end tab options ---
     text.append(meta);
   }
   const head = el('div', 'bw-card-head');
   head.append(favicon(msg.fav, 'bw-card-fav'), text);
-  card.append(markers, head, ...rowList(msg.rows, msg.more, 'bw-card', act));
+  card.append(markers, head);
+  // --- tab options --- "Show a thumbnail in tab previews".
+  if (msg.thumb !== undefined) {
+    const thumb = el('img', 'bw-card-thumb');
+    thumb.alt = '';
+    thumb.draggable = false;
+    thumb.src = msg.thumb;
+    card.append(thumb);
+  }
+  // --- end tab options ---
+  card.append(...rowList(msg.rows, msg.more, 'bw-card', act));
   return card;
 }
 
@@ -171,7 +193,7 @@ function renderSuggest(msg: SuggestMsg): HTMLElement {
     const title = item.title !== '' ? item.title : item.text;
     const text = el('span', 'bw-suggest-text');
     text.append(matchedText('bw-suggest-title', title, needle));
-    const badge = suggestBadge(item.k, item.fav !== '');
+    const badge = suggestBadge(item.k, item.fav !== '', item.bd === true);
     if (badge) text.append(icon(badge.icon, { size: 12, fine: true, label: badge.label, className: 'bw-suggest-mark' }));
     if (item.url !== '' && item.url !== title) text.append(matchedText('bw-suggest-url', item.url, needle));
     row.append(lead, text);

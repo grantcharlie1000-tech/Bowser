@@ -167,7 +167,7 @@ test('toolbar pill: data-private and the private chip follow state.private', () 
   assert.equal(view.privateChip.find('tb-private-label').textContent, 'Private');
   // The chips and the reader button sit between the address field and the split button, never next to the site button.
   const at = (name) => view.pill.children.findIndex((c) => c.classList.contains(name));
-  assert.deepEqual(['tb-site', 'omni-field', 'tb-private', 'tb-zoom', 'tb-reader', 'tb-translate', 'tb-split'].map(at), [0, 1, 2, 3, 4, 5, 6]);
+  assert.deepEqual(['tb-site', 'omni-field', 'tb-hist', 'tb-qr', 'omni-search', 'tb-private', 'tb-zoom', 'tb-reader', 'tb-translate', 'tb-split'].map(at), [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
 
   ui.applyState(view, { ...STATE, private: true });
   assert.equal(view.pill.dataset.private, 'true');
@@ -291,19 +291,21 @@ const SITE = {
   v: 1, t: 'siteinfo', tok: 7, kind: 'site-info', host: 'example.test', origin: 'https://example.test',
   security: 'secure', summary: 'Secure connection (HTTPS)',
   perms: [{ id: 2, k: 'camera', label: 'Camera', state: 'allow' }],
-  cookies: { state: 'count', n: 2, clear: true }, blocker: { state: 'on', n: 3 }, tracking: 'balanced', zoom: 100,
+  cookies: { state: 'count', n: 2, clear: true }, blocker: { state: 'on', n: 3, level: 'trackers', notices: true }, tracking: 'balanced', zoom: 100,
   reset: true, blockedHere: true,
 };
 const rowOf = (page, key) => page.children.find((c) => c.classList.contains('bw-siteinfo-row') && c.dataset.k === key);
 
-test('site info: a normal page keeps permission rows and the blocker switch', () => {
+test('site info: a normal page keeps permission rows and offers the blocking level and the cookie notice switch', () => {
   const root = new FakeElement('div');
   assert.equal(ui.createSiteInfoView(root).show(SITE), true);
   const page = root.children[0];
   assert.equal(page.classList.contains('is-private'), false);
   assert.ok(rowOf(page, 'camera').find('bw-segmented'));
-  assert.ok(rowOf(page, 'blocker').find('bw-toggle'));
-  assert.equal(rowOf(page, 'blocker').find('bw-siteinfo-meta').textContent, 'On · 3 requests blocked here');
+  assert.ok(rowOf(page, 'blocker').find('bw-siteinfo-levels'));
+  assert.ok(rowOf(page, 'notices').find('bw-toggle'));
+  assert.equal(rowOf(page, 'notices').find('bw-siteinfo-meta').textContent, 'Hidden on this site');
+  assert.equal(rowOf(page, 'blocker').find('bw-siteinfo-meta').textContent, 'Trackers · 3 requests blocked here');
   assert.equal(page.find('bw-siteinfo-private'), null);
 });
 
@@ -318,7 +320,8 @@ test('site info: a private page shows the note instead of permission rows and no
   assert.equal(note.textContent, ui.PRIVATE_SITE_NOTE);
   assert.equal(page.children.filter((c) => c.classList.contains('bw-siteinfo-row') && ['camera', 'mic', 'location', 'notifications'].includes(c.dataset.k)).length, 0);
   const blocker = rowOf(page, 'blocker');
-  assert.equal(blocker.find('bw-toggle'), null, 'no switch: Rust declares no blocker act');
+  assert.equal(blocker.find('bw-siteinfo-levels'), null, 'no choice: Rust declares no blocker act');
+  assert.equal(rowOf(page, 'notices'), undefined, 'and no cookie notice choice either');
   assert.equal(blocker.find('bw-siteinfo-meta').textContent, 'Always on · 3 requests blocked here');
   assert.ok(rowOf(page, 'cookies').find('bw-button'), 'clearing the in-memory cookies stays available');
   assert.doesNotMatch(page.find('bw-siteinfo-notice').children[1].textContent, /Allow it below/);

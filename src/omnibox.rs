@@ -41,6 +41,17 @@ impl History {
         self.entries.is_empty()
     }
 
+    /// Every entry as (address, title, visits, sequence of the last visit), for
+    /// `address_suggest`. Order is unspecified.
+    pub(crate) fn iter(&self) -> impl Iterator<Item = (&str, &str, u32, u64)> {
+        self.entries.iter().map(|entry| (entry.url.as_str(), entry.title.as_str(), entry.visits, entry.last_visit))
+    }
+
+    /// The sequence number of the most recent visit; `last_visit` values count up to it.
+    pub(crate) fn sequence(&self) -> u64 {
+        self.sequence
+    }
+
     /// Records a visit. Only credential-free http(s) URLs of at most `MAX_URL_BYTES` are kept, and
     /// titles are cut to `MAX_TITLE_CHARS`. A repeat visit increments the count, and a non-empty
     /// title replaces the stored one. When the history is full, the entry with the fewest visits
@@ -102,7 +113,7 @@ pub struct Completion {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum SchemeFilter {
+pub(crate) enum SchemeFilter {
     Any,
     Http,
     Https,
@@ -115,7 +126,7 @@ enum SchemeFilter {
 /// the typed host already has a dot: the suggestion then extends only the last label, so it never
 /// adds a registrable-looking domain. Among matches, the most visited wins, then the most recent.
 pub fn inline_completion(history: &History, typed: &str, allow: bool) -> Option<Completion> {
-    if !allow {
+    if !allow || !AUTOCOMPLETE.with(std::cell::Cell::get) {
         return None;
     }
     let (scheme, needle) = strip_typed_prefixes(typed);
@@ -188,10 +199,32 @@ pub fn minimal_display_form(url: &Url) -> String {
     }
 }
 
+// `address_show_full`: the unfocused address shows everything (see [`set_show_full_address`]).
+thread_local! {
+    static SHOW_FULL_ADDRESS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// `address_autocomplete`: inline completion is offered (on by default).
+    static AUTOCOMPLETE: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
+}
+
+/// Turns inline completion of the typed text on or off ("Complete addresses as you type").
+pub fn set_autocomplete(on: bool) {
+    AUTOCOMPLETE.with(|flag| flag.set(on));
+}
+
+/// Turns "show the full address" on or off (on the UI thread, which draws every address). The next
+/// address shown follows it.
+pub fn set_show_full_address(on: bool) {
+    SHOW_FULL_ADDRESS.with(|flag| flag.set(on));
+}
+
 /// [`display_form`], condensed through [`minimal_display_form`] when `minimal` is set. The unfocused
 /// address display calls this with `minimal_url`; the suggestion dropdown and the focused field
 /// always want the full form, so they call `display_form` directly.
 pub fn address_display(url: &Url, minimal: bool) -> String {
+    // "Show the full address": the whole address, scheme and `www.` included, whatever `minimal` says.
+    if SHOW_FULL_ADDRESS.with(std::cell::Cell::get) {
+        return url.as_str().to_owned();
+    }
     if minimal {
         minimal_display_form(url)
     } else {
@@ -236,7 +269,7 @@ pub fn click_count(previous: Option<(Instant, u8)>, now: Instant, window: Durati
     }
 }
 
-fn strip_typed_prefixes(typed: &str) -> (SchemeFilter, &str) {
+pub(crate) fn strip_typed_prefixes(typed: &str) -> (SchemeFilter, &str) {
     let (scheme, rest) = if let Some(rest) = strip_prefix_ignore_case(typed, HTTPS_PREFIX) {
         (SchemeFilter::Https, rest)
     } else if let Some(rest) = strip_prefix_ignore_case(typed, HTTP_PREFIX) {
@@ -276,7 +309,7 @@ fn suffix_after<'a>(body: &'a str, needle: &str) -> Option<&'a str> {
 }
 
 /// The text before the first path, query or fragment delimiter.
-fn host_part(text: &str) -> &str {
+pub(crate) fn host_part(text: &str) -> &str {
     text.split(['/', '?', '#']).next().unwrap_or("")
 }
 
@@ -292,6 +325,8 @@ pub enum SuggestKind {
     History,
     Bookmark,
     Tab,
+    /// The local calculator's answer (`address_suggest`).
+    Calc,
 }
 
 impl SuggestKind {
@@ -302,6 +337,7 @@ impl SuggestKind {
             Self::History => "hist",
             Self::Bookmark => "bm",
             Self::Tab => "tab",
+            Self::Calc => "calc",
         }
     }
 }
@@ -359,7 +395,7 @@ pub fn find_ignore_ascii_case(hay: &str, needle: &str) -> Option<usize> {
 /// Relevance of one candidate for `needle` (already stripped of scheme and `www.`), or `None`
 /// when it does not match. Host prefix beats a later host label, which beats a title word, which
 /// beats any other substring.
-fn match_score(url: &str, title: &str, needle: &str) -> Option<u32> {
+pub(crate) fn match_score(url: &str, title: &str, needle: &str) -> Option<u32> {
     let body = match_body(url);
     let host = host_part(body);
     let url_score = match find_ignore_ascii_case(body, needle) {
@@ -376,13 +412,13 @@ fn match_score(url: &str, title: &str, needle: &str) -> Option<u32> {
 }
 
 /// Fragment-free key for de-duplicating rows that point at the same page.
-fn dedupe_key(url: &str) -> &str {
+pub(crate) fn dedupe_key(url: &str) -> &str {
     let body = match_body(url);
     let body = body.split('#').next().unwrap_or(body);
     body.strip_suffix('/').unwrap_or(body)
 }
 
-fn display_of(url: &str) -> String {
+pub(crate) fn display_of(url: &str) -> String {
     Url::parse(url).map_or_else(|_| url.to_owned(), |parsed| display_form(&parsed))
 }
 
@@ -628,6 +664,28 @@ mod tests {
 
     fn url(text: &str) -> Url {
         Url::parse(text).unwrap()
+    }
+
+    #[test]
+    fn show_full_address_keeps_scheme_and_www_and_wins_over_the_minimal_form() {
+        let url = Url::parse("https://www.example.com/a/b?q=1").unwrap();
+        set_show_full_address(false);
+        assert_eq!(address_display(&url, false), "example.com/a/b?q=1");
+        assert_eq!(address_display(&url, true), "example.com/a/b");
+        set_show_full_address(true);
+        assert_eq!(address_display(&url, false), "https://www.example.com/a/b?q=1");
+        assert_eq!(address_display(&url, true), "https://www.example.com/a/b?q=1");
+        set_show_full_address(false);
+    }
+
+    #[test]
+    fn autocomplete_off_offers_no_completion() {
+        let history = history_of(&[("https://www.wikipedia.org/", "Wikipedia")]);
+        assert!(inline_completion(&history, "wiki", true).is_some());
+        set_autocomplete(false);
+        assert_eq!(inline_completion(&history, "wiki", true), None);
+        set_autocomplete(true);
+        assert!(inline_completion(&history, "wiki", true).is_some());
     }
 
     #[test]

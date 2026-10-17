@@ -44,9 +44,17 @@ use crate::{
 /// [`Permission::ALL`] and `choice` follows [`CHOICES`].
 const PERMISSION: usize = 7000;
 const CLEAR_COOKIES: usize = 7100;
-const BLOCKER: usize = 7101;
 const RESET_PERMISSIONS: usize = 7102;
 const RESET_ZOOM: usize = 7103;
+/// The shield's blocking level for this site (thread T3): `BLOCKER_LEVEL + n`, `n` following
+/// [`SHIELD_LEVELS`]. Cookie notices on this site: `COOKIE_NOTICES + n`, 0 show them, 1 hide them.
+const BLOCKER_LEVEL: usize = 7110;
+const COOKIE_NOTICES: usize = 7120;
+
+/// The levels the shield offers, in the order of its choices.
+const SHIELD_LEVELS: [crate::blocker::Level; 3] =
+    [crate::blocker::Level::None, crate::blocker::Level::Trackers, crate::blocker::Level::Ads];
+const SHIELD_LEVEL_LABELS: [&str; 3] = ["None", "Trackers", "Trackers and ads"];
 /// Rows that are not commands, such as informational lines. Never chosen.
 const INFO: usize = 0;
 
@@ -73,6 +81,10 @@ struct Snapshot {
     blocked: u32,
     /// `Some(true)` while the blocker acts on the site, `None` when the blocker is disabled.
     blocking: Option<bool>,
+    /// The blocking level in force on the site (`None` when there is no blocker).
+    level: Option<crate::blocker::Level>,
+    /// Whether cookie notices are hidden on the site.
+    notices: bool,
     /// The profile's tracking-prevention level as WebView2 reports it.
     tracking: Option<&'static str>,
     /// The tab is private: no permission is ever allowed or stored, and nothing is saved.
@@ -100,6 +112,9 @@ const ACT_CLEAR_COOKIES: u32 = 10;
 const ACT_BLOCKER: u32 = 11;
 const ACT_RESET: u32 = 12;
 const ACT_ZOOM_RESET: u32 = 13;
+/// Cookie notices on this site: 0 show them, 1 hide them (the wanted state, so a repeated click
+/// never flips it back).
+const ACT_NOTICES: u32 = 14;
 /// Display order of the permission rows.
 const ROW_ORDER: [Permission; PERMISSION_COUNT] = [
     Permission::Camera,
@@ -140,6 +155,8 @@ fn html_page(snapshot: &Snapshot, blocked_here: bool) -> super::html_popup::Page
     let decisions = snapshot.decisions;
     let cookies = snapshot.cookies.clone();
     let blocking = snapshot.blocking;
+    let level = snapshot.level.unwrap_or(crate::blocker::Level::None);
+    let notices = snapshot.notices;
     let blocked = snapshot.blocked;
     let tracking = snapshot.tracking.unwrap_or("");
     let zoom = snapshot.zoom;
@@ -181,6 +198,9 @@ fn html_page(snapshot: &Snapshot, blocked_here: bool) -> super::html_popup::Page
         out.object("blocker", |b| {
             b.string("state", match blocking { Some(true) => "on", Some(false) => "off", None => "unavailable" });
             b.uint("n", u64::from(blocked));
+            // The level in force on the site and whether its cookie notices are hidden (thread T3).
+            b.string("level", level.key());
+            b.bool("notices", notices);
         });
         out.string("tracking", tracking);
         out.uint("zoom", u64::from(zoom));
@@ -206,8 +226,10 @@ fn html_page(snapshot: &Snapshot, blocked_here: bool) -> super::html_popup::Page
         page.act(ACT_CLEAR_COOKIES, 0);
     }
     if snapshot.blocking.is_some() && !snapshot.private {
-        // Always on in a private tab: there is nothing to toggle.
-        page.act(ACT_BLOCKER, 1);
+        // Always on in a private tab: there is nothing to choose. The blocking level is one of
+        // three; the cookie notices switch is the wanted state.
+        page.act(ACT_BLOCKER, (SHIELD_LEVELS.len() - 1) as u8);
+        page.act(ACT_NOTICES, 1);
     }
     page
 }
@@ -219,7 +241,14 @@ fn act_command(snapshot: &Snapshot, id: u32, n: u8) -> Option<usize> {
         ACT_CLEAR_COOKIES => Some(CLEAR_COOKIES),
         ACT_RESET => Some(RESET_PERMISSIONS),
         ACT_ZOOM_RESET => (snapshot.zoom != crate::site_prefs::ZOOM_DEFAULT).then_some(RESET_ZOOM),
-        ACT_BLOCKER => (snapshot.blocking.is_some_and(|on| on != (n == 1))).then_some(BLOCKER),
+        // The level is the wanted one, so choosing the level already in force does nothing.
+        ACT_BLOCKER => {
+            let wanted = *SHIELD_LEVELS.get(usize::from(n))?;
+            snapshot.level.is_some_and(|level| level != wanted).then_some(BLOCKER_LEVEL + usize::from(n))
+        }
+        ACT_NOTICES => {
+            (n < 2 && snapshot.level.is_some() && snapshot.notices != (n == 1)).then_some(COOKIE_NOTICES + usize::from(n))
+        }
         id if (PERMISSION_ROW..PERMISSION_ROW + Permission::ALL.len() as u32).contains(&id)
             && usize::from(n) < CHOICES.len() =>
         {
@@ -282,6 +311,8 @@ fn gather_light(shown: &Snapshot) -> Snapshot {
         cookies: None,
         blocked: shown.blocked,
         blocking: shown.blocking,
+        level: shown.level,
+        notices: shown.notices,
         tracking: shown.tracking,
         zoom: shown.zoom,
         private: shown.private,
@@ -338,6 +369,13 @@ fn gather(app: &AppRef) -> Snapshot {
     let tracking = tab.and_then(|tab| {
         App::call_engine(app, |engine| engine.tracking_prevention_level(tab)).flatten()
     });
+    // The blocking level in force on the site and its cookie notices (thread T3).
+    let (level, notices) = url
+        .as_ref()
+        .and_then(|url| url.host_str())
+        .filter(|_| origin.is_some())
+        .and_then(|host| App::blocker_state_for(app, &host.to_ascii_lowercase(), private))
+        .unzip();
     Snapshot {
         tab,
         url,
@@ -347,6 +385,8 @@ fn gather(app: &AppRef) -> Snapshot {
         cookies,
         blocked: App::active_blocked_count(app),
         blocking: App::blocker_active_for_site(app),
+        level,
+        notices: notices.unwrap_or(false),
         tracking,
         zoom: App::active_zoom_percent(app),
         private,
@@ -448,17 +488,47 @@ fn panel(snapshot: &Snapshot) -> Menu {
         )
         .glyph("trash")));
     }
-    let blocker_label = match snapshot.blocking {
-        Some(true) => format!("Blocker: on ({} blocked requests here)", snapshot.blocked),
-        Some(false) => "Blocker: off for this site".to_owned(),
-        None => "Blocker: unavailable".to_owned(),
-    };
-    entries.push(Entry::Item(
-        Item::new(BLOCKER, blocker_label, Icon::Shield)
+    match snapshot.level {
+        Some(level) if !snapshot.private => {
+            let blocker_label = format!(
+                "Blocking here: {} ({} blocked requests here)",
+                SHIELD_LEVEL_LABELS[SHIELD_LEVELS.iter().position(|known| *known == level).unwrap_or(0)].to_lowercase(),
+                snapshot.blocked
+            );
+            let choices = SHIELD_LEVELS
+                .into_iter()
+                .enumerate()
+                .map(|(n, choice)| {
+                    Entry::Item(Item::new(BLOCKER_LEVEL + n, SHIELD_LEVEL_LABELS[n], Icon::None).checked(choice == level))
+                })
+                .collect();
+            entries.push(Entry::Item(
+                Item::new(INFO, blocker_label, Icon::Shield).glyph("shield").submenu_with(choices),
+            ));
+            let hide_next = !snapshot.notices;
+            entries.push(Entry::Item(
+                Item::new(
+                    COOKIE_NOTICES + usize::from(hide_next),
+                    if snapshot.notices { "Cookie notices: hidden on this site" } else { "Cookie notices: shown on this site" },
+                    Icon::Cookie,
+                )
+                .glyph("cookie")
+                .checked(snapshot.notices),
+            ));
+        }
+        Some(_) => entries.push(Entry::Item(
+            Item::new(
+                INFO,
+                format!("Blocker: always on in private tabs ({} blocked requests here)", snapshot.blocked),
+                Icon::Shield,
+            )
             .glyph("shield")
-            .checked(snapshot.blocking == Some(true))
-            .disabled_if(snapshot.blocking.is_none()),
-    ));
+            .disabled(),
+        )),
+        None => entries.push(Entry::Item(
+            Item::new(INFO, "Blocker: unavailable", Icon::Shield).glyph("shield").disabled(),
+        )),
+    }
     let tracking_label = match snapshot.tracking {
         Some(level) => format!("Tracking prevention: {level}"),
         None => "Tracking prevention: unavailable".to_owned(),
@@ -523,7 +593,14 @@ fn apply(app: &AppRef, snapshot: &Snapshot, id: usize) {
                 ),
             }
         }
-        BLOCKER => App::toggle_blocker(app),
+        id if !snapshot.private && (BLOCKER_LEVEL..BLOCKER_LEVEL + SHIELD_LEVELS.len()).contains(&id) => {
+            if App::choose_site_level(app, SHIELD_LEVELS[id - BLOCKER_LEVEL]) == crate::blocker::SiteChoice::ConfiguredInSettings {
+                show_error_message("This site is exempted by blocker_allow in settings.txt. Edit that file to change it.");
+            }
+        }
+        id if !snapshot.private && (COOKIE_NOTICES..COOKIE_NOTICES + 2).contains(&id) => {
+            App::choose_site_cookie_notices(app, id == COOKIE_NOTICES + 1);
+        }
         RESET_ZOOM => App::zoom_active(app, crate::site_prefs::ZoomStep::Reset),
         RESET_PERMISSIONS if snapshot.private => {}
         RESET_PERMISSIONS => {
@@ -646,6 +723,8 @@ mod tests {
             cookies,
             blocked: 3,
             blocking,
+            level: blocking.map(|on| if on { crate::blocker::Level::Ads } else { crate::blocker::Level::None }),
+            notices: false,
             tracking: Some("balanced"),
             zoom: 100,
             private: false,
@@ -694,10 +773,67 @@ mod tests {
         let mut zoomed = snapshot([None; PERMISSION_COUNT], None, None);
         zoomed.zoom = 125;
         assert_eq!(act_command(&zoomed, ACT_ZOOM_RESET, 0), Some(RESET_ZOOM));
-        // The blocker choice is the wanted state.
-        assert_eq!(act_command(&shown, ACT_BLOCKER, 1), None, "already on");
-        assert_eq!(act_command(&shown, ACT_BLOCKER, 0), Some(BLOCKER));
-        assert_eq!(act_command(&snapshot([None; PERMISSION_COUNT], None, None), ACT_BLOCKER, 0), None);
+        // The blocking level is the wanted level: 0 none, 1 trackers, 2 trackers and ads. The
+        // sample site is at the full level, so choosing it again does nothing.
+        assert_eq!(act_command(&shown, ACT_BLOCKER, 2), None, "already at that level");
+        assert_eq!(act_command(&shown, ACT_BLOCKER, 0), Some(BLOCKER_LEVEL));
+        assert_eq!(act_command(&shown, ACT_BLOCKER, 1), Some(BLOCKER_LEVEL + 1));
+        assert_eq!(act_command(&shown, ACT_BLOCKER, 3), None, "there are three levels");
+        assert_eq!(act_command(&snapshot([None; PERMISSION_COUNT], None, None), ACT_BLOCKER, 0), None, "no blocker, no choice");
+        // Cookie notices: the wanted state, hidden or shown.
+        assert_eq!(act_command(&shown, ACT_NOTICES, 0), None, "already shown");
+        assert_eq!(act_command(&shown, ACT_NOTICES, 1), Some(COOKIE_NOTICES + 1));
+        let mut hidden = snapshot([None; PERMISSION_COUNT], Some(Ok(2)), Some(true));
+        hidden.notices = true;
+        assert_eq!(act_command(&hidden, ACT_NOTICES, 0), Some(COOKIE_NOTICES));
+        assert_eq!(act_command(&hidden, ACT_NOTICES, 1), None);
+        assert_eq!(act_command(&hidden, ACT_NOTICES, 2), None);
+    }
+
+    #[test]
+    fn the_shield_page_reports_the_level_the_notice_choice_and_declares_both_controls() {
+        let mut shown = snapshot([None; PERMISSION_COUNT], Some(Ok(2)), Some(true));
+        shown.level = Some(crate::blocker::Level::Trackers);
+        shown.notices = true;
+        let json = crate::win32::html_popup::Page::debug_json(html_page(&shown, false), 5);
+        assert!(json.contains("\"blocker\":{\"state\":\"on\",\"n\":3,\"level\":\"trackers\",\"notices\":true}"), "{json}");
+        let off = crate::win32::html_popup::Page::debug_json(html_page(&snapshot([None; PERMISSION_COUNT], None, Some(false)), false), 5);
+        assert!(off.contains("\"blocker\":{\"state\":\"off\",\"n\":3,\"level\":\"none\",\"notices\":false}"), "{off}");
+        let none = crate::win32::html_popup::Page::debug_json(html_page(&snapshot([None; PERMISSION_COUNT], None, None), false), 5);
+        assert!(none.contains("\"blocker\":{\"state\":\"unavailable\",\"n\":3,\"level\":\"none\",\"notices\":false}"), "{none}");
+        // The wire level names are the ones the page and the settings use.
+        for (level, key) in [(crate::blocker::Level::None, "none"), (crate::blocker::Level::Trackers, "trackers"), (crate::blocker::Level::Ads, "ads")] {
+            assert_eq!(level.key(), key);
+        }
+        assert_eq!(SHIELD_LEVELS.map(crate::blocker::Level::key), ["none", "trackers", "ads"]);
+    }
+
+    #[test]
+    fn the_shield_menu_offers_the_three_levels_and_the_notice_switch_for_a_normal_tab_only() {
+        let mut shown = snapshot([None; PERMISSION_COUNT], Some(Ok(2)), Some(true));
+        shown.level = Some(crate::blocker::Level::Trackers);
+        let menu = panel(&shown);
+        let labels: Vec<String> = menu
+            .entries
+            .iter()
+            .filter_map(|entry| match entry {
+                Entry::Item(item) => Some(item.label.clone()),
+                _ => None,
+            })
+            .collect();
+        assert!(labels.iter().any(|label| label == "Blocking here: trackers (3 blocked requests here)"), "{labels:?}");
+        assert!(labels.iter().any(|label| label == "Cookie notices: shown on this site"), "{labels:?}");
+        shown.private = true;
+        let private_labels: Vec<String> = panel(&shown)
+            .entries
+            .iter()
+            .filter_map(|entry| match entry {
+                Entry::Item(item) => Some(item.label.clone()),
+                _ => None,
+            })
+            .collect();
+        assert!(private_labels.iter().any(|label| label.starts_with("Blocker: always on in private tabs")), "{private_labels:?}");
+        assert!(!private_labels.iter().any(|label| label.starts_with("Cookie notices")), "no choice to make in a private tab");
     }
 
     #[test]
@@ -731,13 +867,19 @@ mod tests {
         shown.zoom = 125;
         let page = html_page(&shown, false);
         let siteinfo = crate::win32::html_popup::Page::debug_json(page, 7);
-        let palette_items = super::super::command_palette::html_items(
-            &[(3, "Wikipedia".into(), "https://en.wikipedia.org/".into())],
-            &[("Docs".into(), "https://docs.example/".into(), "Work".into())],
-            &[(1, "https://news.example/".into(), "News".into())],
-            &crate::productivity::browser_commands(),
-        );
-        let palette = crate::win32::html_popup::Page::debug_json(super::super::command_palette::html_page(&palette_items), 8);
+        let palette_data = super::super::command_palette::PaletteData {
+            tabs: vec![(3, "Wikipedia".into(), "https://en.wikipedia.org/".into())],
+            closed: vec![("Old".into(), "https://old.example/".into())],
+            workspaces: vec![(1, "Work".into(), 2)],
+            bookmarks: vec![("Docs".into(), "https://docs.example/".into(), "Work".into())],
+            notes: vec![(5, "Shopping".into(), "milk and tea".into())],
+            history: vec![(1, "https://news.example/".into(), "News".into())],
+            commands: crate::commands::palette_commands(&crate::commands::Live::new(crate::commands::store::Store::default())),
+            nicknames: vec![("https://docs.example/".into(), "dx".into())],
+        };
+        let palette_options = crate::commands::store::Options::default();
+        let palette_items = super::super::command_palette::html_items(&palette_data, &palette_options);
+        let palette = crate::win32::html_popup::Page::debug_json(super::super::command_palette::html_page(&palette_items, &palette_options), 8);
         let fixture = format!(
             "{{\"siteinfo\":{siteinfo},\"palette\":{palette},\"act\":{{\"v\":1,\"t\":\"act\",\"tok\":7,\"id\":2,\"n\":0}}}}\n"
         );

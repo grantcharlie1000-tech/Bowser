@@ -1,0 +1,159 @@
+! Bowser built-in cookie-notice list. Bundled with the program; Bowser never downloads it or
+! updates it by itself. Each line hides one cookie-consent banner or its page-darkening overlay.
+!
+! Syntax (a subset of the EasyList Cookie List's element-hiding rules):
+!   ##selector              hide the element on every page
+!   a.com,b.org##selector   hide it on those sites (and their subdomains) only
+!   ##@scroll:selector      give the element back its scrolling when a banner left it locked
+! A selector may use tag names, .classes, #ids, [attribute] tests (=, ^=, $=, *=, ~=, |=),
+! descendant spaces, > and + combinators and commas. Nothing else is accepted, so a rule can
+! only hide or unlock what it names. A hiding rule never ends in html, body or *, so a page
+! cannot be blanked; only the scroll rules name html and body, and they only restore scrolling.
+!
+! --- Consent platforms ---
+##.onetrust-pc-dark-filter
+###onetrust-banner-sdk
+###onetrust-consent-sdk
+###CybotCookiebotDialog
+###CybotCookiebotDialogBodyUnderlay
+###CookiebotWidget
+##.qc-cmp2-container
+###qc-cmp2-container
+###didomi-host
+##.didomi-popup-backdrop
+###truste-consent-track
+##.truste_overlay
+##.truste_box_overlay
+##.truste-banner
+##.osano-cm-window
+##.osano-cm-dialog
+##.osano-cm-widget
+###usercentrics-root
+##.uc-banner-content
+###uc-banner
+###cookie-law-info-bar
+###cookie-law-info-again
+##.cli-modal-backdrop
+##.cli-modal-dialog
+###cookie-notice
+###cookieNotice
+##.cookie-notice-container
+###cmplz-cookiebanner-container
+##.cmplz-cookiebanner
+###BorlabsCookieBox
+##.borlabs-cookie
+###iubenda-cs-banner
+##.iubenda-cs-container
+###termly-code-snippet-support
+##.termly-styles-root
+###cookiefirst-root
+##.cookiefirst-root
+###cookie-script
+###cookiescript_injected
+###cookiescript_injected_wrapper
+##.cc-window
+##.cc-banner
+##.cc-revoke
+##.cc-grower
+###cookieconsent
+##.cookieconsent
+##.fc-consent-root
+##.fc-dialog-overlay
+##div[id^="sp_message_container_"]
+##.sp_veil
+###sp-cc
+###hs-eu-cookie-confirmation
+###hs-en-cookie-confirmation
+###_evidon_banner
+###_evidon-barrier-wrapper
+###ez-cookie-dialog
+###ez-cookie-notification
+###CookieConsent
+###cookie-consent
+##.cookie-consent
+##.cookie-consent-banner
+##.cookie-consent-popup
+##.cookie-consent-container
+###cookie-consent-banner
+###cookie-consent-popup
+! --- Common banner names ---
+###cookie-banner
+##.cookie-banner
+###cookiebanner
+##.cookiebanner
+###cookieBanner
+##.cookieBanner
+###cookie-bar
+##.cookie-bar
+###cookiebar
+##.cookiebar
+###cookie-popup
+##.cookie-popup
+###cookie-policy-banner
+##.cookie-policy-banner
+###cookie-message
+##.cookie-message
+###cookie-warning
+##.cookie-warning
+###cookie-law
+##.cookie-law
+###cookies-banner
+##.cookies-banner
+###cookies-notification
+##.cookies-notification
+###cookies-popup
+##.cookies-popup
+###gdpr-cookie-notice
+##.gdpr-cookie-notice
+###gdpr-banner
+##.gdpr-banner
+###gdpr-consent
+##.gdpr-consent
+###gdpr-cookie-message
+##.gdpr-cookie-message
+###privacy-consent-banner
+##.privacy-consent-banner
+###consent-banner
+##.consent-banner
+###consent-popup
+##.consent-popup
+##div[id^="cookie-banner-"]
+##div[role="dialog"][aria-label="Cookie banner"]
+##div[role="dialog"][aria-label="Cookie consent"]
+##div[role="dialog"][aria-label="Cookie Consent"]
+##div[role="dialog"][aria-label="Cookie notice"]
+##div[role="dialog"][aria-label="Cookie Notice"]
+##div[role="dialog"][aria-label="Cookie Policy"]
+##div[role="dialog"][aria-label="Cookie preferences"]
+##div[role="dialog"][aria-label="Cookie Preferences"]
+##div[role="dialog"][aria-label="Consent banner"]
+##div[data-testid="cookie-banner"]
+##div[data-testid="cookie-policy-manage-dialog"]
+##div[data-nosnippet="cookie-banner"]
+! --- Specific sites ---
+youtube.com,youtube-nocookie.com##ytd-consent-bump-v2-lightbox
+youtube.com##ytd-consent-bump-lightbox
+google.com,google.co.uk##div[aria-label="Before you continue to Google"]
+facebook.com##div[data-testid="cookie-policy-manage-dialog"]
+linkedin.com##.artdeco-global-alert--cookie-policy
+stackoverflow.com,stackexchange.com##.js-consent-banner
+github.com##.js-cookie-consent-banner
+bbc.co.uk,bbc.com##.fides-banner
+bbc.co.uk,bbc.com##.fides-modal-overlay
+theguardian.com##div[data-component="cookie-banner"]
+ebay.co.uk,ebay.com##.gdpr-banner
+! --- Scrolling left locked by a banner ---
+##@scroll:html.sp-message-open
+##@scroll:body.sp-message-open
+##@scroll:body.didomi-popup-open
+##@scroll:html.didomi-popup-open
+##@scroll:body.cmplz-blocked
+##@scroll:body.modal-cookie-open
+##@scroll:body.cookie-modal-open
+##@scroll:body.qc-cmp-ui-showing
+##@scroll:html.qc-cmp-ui-showing
+##@scroll:html.truste_overflow
+##@scroll:body.truste_overflow
+##@scroll:body.CybotCookiebotDialogActive
+##@scroll:html.cookie-consent-open
+##@scroll:body.cookie-consent-open

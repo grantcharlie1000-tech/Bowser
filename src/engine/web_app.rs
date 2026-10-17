@@ -48,8 +48,7 @@ pub struct WebAppEvents {
     /// Downloads from a web app panel are tracked like a tab's (engine/download.rs); without both
     /// hooks they are cancelled.
     pub download_event: Option<Rc<dyn Fn(crate::downloads::DownloadEvent)>>,
-    pub download_plan:
-        Option<Rc<dyn Fn(&crate::downloads::DownloadRequest) -> crate::downloads::DownloadPlan>>,
+    pub download_plan: Option<super::DownloadPlanCallback>,
     pub policy_event: Option<Rc<dyn Fn(&'static str)>>,
 }
 
@@ -94,7 +93,7 @@ impl WebAppHost {
         std::fs::create_dir_all(web_apps_user_data_dir).map_err(|error| {
             Error::new(
                 windows::core::HRESULT(0x80070005u32 as i32),
-                &format!("Could not create isolated WebApps profile: {error}"),
+                format!("Could not create isolated WebApps profile: {error}"),
             )
         })?;
         let profile: Vec<u16> = web_apps_user_data_dir
@@ -181,7 +180,7 @@ impl WebAppHost {
                 unsafe { app.webview.Source(&mut current)?; }
                 let current = CoTaskMemPWSTR::from(current).to_string();
                 if current.is_empty() {
-                    unsafe { app.webview.Navigate(PCWSTR::from_raw(wide(&url.to_string()).as_ptr()))?; }
+                    unsafe { app.webview.Navigate(PCWSTR::from_raw(wide(url.as_ref()).as_ptr()))?; }
                 }
                 return Ok(());
             }
@@ -310,6 +309,38 @@ impl WebAppHost {
         })?;
         unsafe { app.webview.Reload() }
     }
+
+    // --- window and panels (thread T9) --- per-panel zoom, mute and reload (src/panel_prefs.rs)
+    /// Whether the app's page has been created (a panel nobody has opened has no page to touch).
+    pub fn has_app(&self, app_id: &str) -> bool {
+        self.state.borrow().apps.contains_key(app_id)
+    }
+
+    /// Sets the app's zoom (percent) and returns whether a page was there to take it.
+    pub fn set_zoom_percent(&self, app_id: &str, percent: u16) -> Result<bool> {
+        let state = self.state.borrow();
+        let Some(app) = state.apps.get(app_id) else { return Ok(false); };
+        unsafe { app.controller.SetZoomFactor(crate::site_prefs::factor_of_percent(percent))?; }
+        Ok(true)
+    }
+
+    /// Mutes or unmutes the app's page and returns whether a page was there to take it.
+    pub fn set_muted(&self, app_id: &str, muted: bool) -> Result<bool> {
+        let state = self.state.borrow();
+        let Some(app) = state.apps.get(app_id) else { return Ok(false); };
+        let audio: ICoreWebView2_8 = app.webview.cast()?;
+        unsafe { audio.SetIsMuted(muted)?; }
+        Ok(true)
+    }
+
+    /// Reloads the app's current page when it exists. Hidden pages reload too, so the next look is fresh.
+    pub fn reload_if_open(&self, app_id: &str) -> bool {
+        let state = self.state.borrow();
+        let Some(app) = state.apps.get(app_id) else { return false; };
+        // A suspended page is asleep on purpose; it loads fresh when it is next shown.
+        !app.suspended && unsafe { app.webview.Reload() }.is_ok()
+    }
+    // --- end window and panels ---
 
     pub fn navigate_app(&self, app_id: &str, url: &str) -> Result<()> {
         let url = validate_app_url(url).map_err(|_| Error::new(

@@ -92,3 +92,69 @@ pub fn post_form(host: &str, path: &str, body: &[u8], max_answer: usize) -> Resu
         answer.extend_from_slice(&buffer[..read as usize]);
     }
 }
+
+/// GETs `url` (https only) and returns the answer's bytes, at most `max_answer` of them. Redirects
+/// are refused and the timeouts are short: this is for the address bar's search suggestions, which
+/// are worth nothing if they arrive late. Meant for a background thread.
+pub fn get_https(url: &url::Url, max_answer: usize) -> Result<Vec<u8>, NetError> {
+    if url.scheme() != "https" {
+        return Err(NetError::Network);
+    }
+    let host = url.host_str().ok_or(NetError::Network)?;
+    let port = url.port_or_known_default().unwrap_or(443);
+    let mut path = url.path().to_owned();
+    if let Some(query) = url.query() {
+        path.push('?');
+        path.push_str(query);
+    }
+    let agent = HSTRING::from(concat!("Bowser/", env!("CARGO_PKG_VERSION")));
+    let session = Handle(unsafe { WinHttpOpen(&agent, WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, PCWSTR::null(), PCWSTR::null(), 0) });
+    if session.0.is_null() {
+        return Err(NetError::Network);
+    }
+    unsafe { WinHttpSetTimeouts(session.0, 3_000, 3_000, 3_000, 4_000) }.map_err(|_| NetError::Network)?;
+    let connection = Handle(unsafe { WinHttpConnect(session.0, &HSTRING::from(host), port, 0) });
+    if connection.0.is_null() {
+        return Err(NetError::Network);
+    }
+    let request = Handle(unsafe {
+        WinHttpOpenRequest(connection.0, w!("GET"), &HSTRING::from(path), PCWSTR::null(), PCWSTR::null(), std::ptr::null(), WINHTTP_FLAG_SECURE)
+    });
+    if request.0.is_null() {
+        return Err(NetError::Network);
+    }
+    unsafe { WinHttpSetOption(Some(request.0 as *const c_void), WINHTTP_OPTION_DISABLE_FEATURE, Some(&WINHTTP_DISABLE_REDIRECTS.to_ne_bytes())) }
+        .map_err(|_| NetError::Network)?;
+    let headers: Vec<u16> = "Accept: application/json, text/plain\r\n".encode_utf16().collect();
+    unsafe { WinHttpSendRequest(request.0, Some(&headers), None, 0, 0, 0) }.map_err(|_| NetError::Network)?;
+    unsafe { WinHttpReceiveResponse(request.0, std::ptr::null_mut()) }.map_err(|_| NetError::Network)?;
+    let mut status = 0u32;
+    let mut size = 4u32;
+    unsafe {
+        WinHttpQueryHeaders(
+            request.0,
+            WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+            PCWSTR::null(),
+            Some(&mut status as *mut u32 as *mut c_void),
+            &mut size,
+            std::ptr::null_mut(),
+        )
+    }
+    .map_err(|_| NetError::Network)?;
+    if status != 200 {
+        return Err(NetError::Status(status));
+    }
+    let mut answer = Vec::new();
+    let mut buffer = vec![0u8; 8 * 1024];
+    loop {
+        let mut read = 0u32;
+        unsafe { WinHttpReadData(request.0, buffer.as_mut_ptr() as *mut c_void, buffer.len() as u32, &mut read) }.map_err(|_| NetError::Network)?;
+        if read == 0 {
+            return Ok(answer);
+        }
+        if answer.len() + read as usize > max_answer {
+            return Err(NetError::TooLarge);
+        }
+        answer.extend_from_slice(&buffer[..read as usize]);
+    }
+}

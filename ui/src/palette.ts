@@ -1,8 +1,14 @@
 // Command palette page in the popup host (`{t:"palette"}`). Styles: styles/palette.css.
 //
+// One page, two modes. `palette` is Quick Commands: search open tabs, recently closed tabs,
+// workspaces, bookmarks, notes, history, commands and page actions, with filter prefixes
+// (`bkm:`, `tb:`, `cmd:` ...), a calculator row and an inline completion that Shift or Right arrow
+// accepts. `shortcuts` is the Ctrl+F1 cheat sheet: every command with a shortcut, grouped by
+// category and filtered as you type; nothing in it can be picked.
+//
 // Markup contract:
 //   .popup-page.bw-palette                 page root (child of #app.popup-pages)
-//     .bw-palette-search > svg, input.bw-palette-input[role=combobox]
+//     .bw-palette-search > svg, .bw-palette-field > (.bw-palette-ghost, input.bw-palette-input[role=combobox])
 //     .bw-palette-list[role=listbox].bw-scroll
 //       .bw-palette-section                section heading (sentence case)
 //       .bw-palette-row[role=option][aria-selected][data-id] > svg, .bw-palette-text >
@@ -12,24 +18,29 @@
 import { icon, type IconName } from './icons';
 import { sendPopupDismiss, sendPopupPick, sendPopupSize } from './protocol';
 import {
-  commandGlyph, filterPalette, flatten, moveSelection, MAX_QUERY, rowLabel, validPalettePayload,
-  type PaletteItem, type PaletteMessage, type PaletteSection,
+  CALC_ID, commandGlyph, completion, filterPalette, filterShortcuts, flatten, moveSelection, MAX_QUERY, nicknameMatch, rowLabel, validPalettePayload,
+  type FilterOptions, type PaletteGroup, type PaletteItem, type PaletteMessage, type ResultType,
 } from './palette-logic';
 
 /** Width from the reference spec; Rust centres the popup 12% down the window. */
 export const PALETTE_WIDTH = 560;
 
 /** Fallback glyph while a row has no favicon (commands pick their own, see commandGlyph). */
-const SECTION_ICON: Readonly<Record<PaletteSection, IconName>> = {
+const SECTION_ICON: Readonly<Record<ResultType, IconName>> = {
   tab: 'workspace-globe',
+  closed: 'tab-close',
+  workspace: 'workspace',
   command: 'command',
+  action: 'window',
   bookmark: 'bookmark',
+  note: 'notes',
   history: 'clock',
+  calc: 'grid',
 };
 
 /** Leading visual of a row: the cached favicon for pages, else the command's or section's glyph. */
 function leading(item: PaletteItem): Element {
-  if (item.fav !== undefined && item.s !== 'command') {
+  if (item.fav !== undefined && item.s !== 'command' && item.s !== 'action') {
     const img = el('img', 'bw-palette-fav');
     img.alt = '';
     img.draggable = false;
@@ -51,15 +62,49 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, className: string): H
   return node;
 }
 
+/** Puts `text` on the clipboard: the async API first, then the old copy command from a hidden field. */
+export async function copyText(text: string): Promise<boolean> {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    // fall through to the copy command
+  }
+  try {
+    const field = document.createElement('textarea');
+    field.value = text;
+    field.setAttribute('aria-hidden', 'true');
+    field.style.cssText = 'position:fixed;opacity:0;pointer-events:none';
+    document.body.append(field);
+    field.select();
+    const ok = document.execCommand('copy');
+    field.remove();
+    return ok;
+  } catch {
+    return false;
+  }
+}
+
+/** What the palette typed last, for the "keep the last typed value" option. Lives as long as the window. */
+let lastQuery = '';
+
 export function createPaletteView(root: HTMLElement): PageView {
   let message: PaletteMessage | null = null;
   let rows: PaletteItem[] = [];
   let selected = -1;
   let closed = true;
   let lastSize = '';
+  let ghost: string | null = null;
+  let shiftTap = false;
 
   const page = el('div', 'popup-page bw-palette');
   const search = el('div', 'bw-palette-search');
+  const field = el('div', 'bw-palette-field');
+  const ghostText = el('span', 'bw-palette-ghost');
+  ghostText.setAttribute('aria-hidden', 'true');
+  const ghostTyped = el('span', 'bw-palette-ghost-typed');
+  const ghostRest = el('span', 'bw-palette-ghost-rest');
+  ghostText.append(ghostTyped, ghostRest);
   const input = el('input', 'bw-palette-input');
   input.type = 'text';
   input.spellcheck = false;
@@ -67,11 +112,12 @@ export function createPaletteView(root: HTMLElement): PageView {
   input.maxLength = MAX_QUERY;
   input.dir = 'auto';
   input.setAttribute('role', 'combobox');
-  input.setAttribute('aria-autocomplete', 'list');
+  input.setAttribute('aria-autocomplete', 'both');
   input.setAttribute('aria-expanded', 'true');
   input.setAttribute('aria-controls', 'bw-palette-list');
   input.setAttribute('aria-label', 'Command palette');
-  search.append(icon('search'), input);
+  field.append(ghostText, input);
+  search.append(icon('search'), field);
   const list = el('div', 'bw-palette-list bw-scroll');
   list.id = 'bw-palette-list';
   list.setAttribute('role', 'listbox');
@@ -80,6 +126,12 @@ export function createPaletteView(root: HTMLElement): PageView {
   empty.textContent = 'No matches';
   empty.setAttribute('role', 'status');
   page.append(search, list);
+
+  const filterOptions = (): FilterOptions => ({
+    types: message?.types ?? [],
+    ranked: message?.ranked ?? true,
+    limit: message?.limit ?? 12,
+  });
 
   const measure = (): void => {
     if (!message) return;
@@ -107,11 +159,13 @@ export function createPaletteView(root: HTMLElement): PageView {
     }
   };
 
-  const pick = (index: number): void => {
-    const item = rows[index];
-    if (!message || closed || !item) return;
-    closed = true;
-    sendPopupPick(message.tok, item.id);
+  const paintGhost = (): void => {
+    const top = rows[0];
+    const next = message?.mode === 'palette' && top && top.s !== 'calc' && input.value !== '' ? completion(input.value, rowLabel(top)) : null;
+    ghost = next;
+    ghostText.hidden = next === null;
+    ghostTyped.textContent = next === null ? '' : input.value;
+    ghostRest.textContent = next === null ? '' : next.slice(input.value.length);
   };
 
   const dismiss = (): void => {
@@ -120,9 +174,27 @@ export function createPaletteView(root: HTMLElement): PageView {
     sendPopupDismiss(message.tok);
   };
 
-  const render = (): void => {
+  const pick = (index: number): void => {
+    const item = rows[index];
+    if (!message || closed || !item || message.mode === 'shortcuts') return;
+    if (item.id === CALC_ID) {
+      // The calculator row is the page's own: copy the result and leave.
+      const value = item.label;
+      void copyText(value).then((ok) => {
+        if (ok) dismiss();
+        else { input.value = value; input.select(); render(); }
+      });
+      return;
+    }
+    closed = true;
+    sendPopupPick(message.tok, item.id);
+  };
+
+  function render(): void {
     if (!message) return;
-    const groups = filterPalette(message.items, input.value);
+    const groups: PaletteGroup[] = message.mode === 'shortcuts'
+      ? filterShortcuts(message.items, input.value)
+      : filterPalette(message.items, input.value, filterOptions());
     rows = flatten(groups);
     selected = rows.length > 0 ? 0 : -1;
     const nodes: HTMLElement[] = [];
@@ -170,12 +242,38 @@ export function createPaletteView(root: HTMLElement): PageView {
     if (nodes.length === 0) nodes.push(empty);
     list.replaceChildren(...nodes);
     markSelected();
+    paintGhost();
     measure();
+  }
+
+  /** Completes the box to the top result (Shift tapped, or Right arrow at the end). */
+  const accept = (): void => {
+    if (ghost === null) return;
+    input.value = ghost;
+    input.setSelectionRange(ghost.length, ghost.length);
+    remember();
+    render();
   };
 
-  input.addEventListener('input', render);
+  /** Keeps what was typed for the next opening (used only when the option is on). */
+  const remember = (): void => {
+    if (message?.mode === 'palette') lastQuery = input.value;
+  };
+
+  input.addEventListener('input', () => {
+    remember();
+    render();
+    // A bookmark's nickname typed whole opens it at once when the option is on (only on typing:
+    // a kept query shown on opening never opens anything by itself).
+    if (message?.mode !== 'palette') return;
+    const hit = nicknameMatch(message.items, input.value, message.autonick, message.types);
+    const at = hit ? rows.indexOf(hit) : -1;
+    if (at >= 0) pick(at);
+  });
   page.addEventListener('keydown', (event) => {
     if (event.isComposing) return;
+    if (event.key === 'Shift') shiftTap = !event.repeat;
+    else shiftTap = false;
     switch (event.key) {
       case 'ArrowDown':
       case 'ArrowUp':
@@ -184,6 +282,12 @@ export function createPaletteView(root: HTMLElement): PageView {
         event.preventDefault();
         selected = moveSelection(selected, rows.length, event.key);
         markSelected();
+        break;
+      case 'ArrowRight':
+        if (ghost !== null && input.selectionStart === input.value.length && input.selectionEnd === input.value.length) {
+          event.preventDefault();
+          accept();
+        }
         break;
       case 'Enter':
         event.preventDefault();
@@ -198,6 +302,12 @@ export function createPaletteView(root: HTMLElement): PageView {
         break;
     }
     // Keys stay on this page; the menu view listening on #app never sees them.
+    event.stopPropagation();
+  });
+  // Shift pressed and released on its own completes the box (a Shift held for a capital letter does not).
+  page.addEventListener('keyup', (event) => {
+    if (event.key === 'Shift' && shiftTap) accept();
+    shiftTap = false;
     event.stopPropagation();
   });
   for (const type of ['mousedown', 'mouseup', 'contextmenu'] as const) {
@@ -215,8 +325,9 @@ export function createPaletteView(root: HTMLElement): PageView {
       message = raw;
       closed = false;
       lastSize = '';
+      shiftTap = false;
       input.placeholder = raw.placeholder;
-      input.value = '';
+      input.value = raw.mode === 'palette' && raw.keep ? lastQuery : '';
       root.className = 'popup-pages';
       root.removeAttribute('role');
       root.removeAttribute('aria-activedescendant');
@@ -228,6 +339,8 @@ export function createPaletteView(root: HTMLElement): PageView {
       page.classList.add('bw-enter', 'is-rise');
       render();
       input.focus({ preventScroll: true });
+      // A kept query is selected, so the first key typed replaces it.
+      if (input.value !== '') input.select();
       return true;
     },
   };

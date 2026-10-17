@@ -1,0 +1,801 @@
+/*
+ * Surface: START PAGE (?view=split over a blank new tab, the speed dials and the dashboard widgets).
+ * Owner: start page.
+ * Built by ui/src/start-page.ts; words and decisions in ui/src/start-page-logic.ts. Spec:
+ * docs/design/start-page.md. The host is the split view's one HTML host (split.css), shown over the new
+ * tab; this file only adds what the page itself draws, scoped under #app.split-view.is-start.
+ *
+ * Tokens only: the page takes the theme's window, island, hairline and accent tokens, so it follows
+ * light/dark and the user's accent like every surface. Motion is the shared enter (a short fade) and
+ * transform/translate while a tile is dragged; nothing waits for an animation and reduced motion falls
+ * back to the base layer's short fade. The one dynamic colour is the widget background the user picks
+ * (--sp-widget-custom, set from TS through CSSOM, and --sp-widget-custom-fg, the text that reads on it).
+ */
+
+#app.split-view.is-start {
+  overflow-x: hidden;
+  overflow-y: auto;
+  background: var(--bw-window-opaque);
+  scrollbar-width: thin;
+}
+
+#app.split-view.is-start .sp-page {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 100%;
+  padding: max(24px, 8vh) var(--bw-space-6) var(--bw-space-6);
+}
+
+/* The hidden attribute wins over every display this file sets. */
+#app.split-view.is-start .sp-page [hidden] {
+  display: none;
+}
+
+#app.split-view.is-start .sp-column {
+  display: flex;
+  flex-direction: column;
+  gap: var(--bw-space-6);
+  width: min(1180px, 100%);
+  margin: 0 auto;
+}
+
+#app.split-view.is-start .sp-sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* ---- Groups ---- */
+#app.split-view.is-start .sp-dials {
+  display: flex;
+  flex-direction: column;
+  gap: var(--bw-space-4);
+}
+
+#app.split-view.is-start .sp-groups {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--bw-space-1);
+  min-height: 32px;
+}
+
+#app.split-view.is-start .sp-tabs {
+  display: flex;
+  align-items: center;
+  flex: 0 1 auto;
+  gap: var(--bw-space-1);
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+#app.split-view.is-start .sp-tab {
+  flex: none;
+  max-width: 220px;
+  height: 28px;
+  margin: 0;
+  padding: 0 var(--bw-space-3);
+  overflow: hidden;
+  border: 1px solid transparent;
+  border-radius: var(--bw-r-pill);
+  background: transparent;
+  color: var(--bw-text-dim);
+  font: inherit;
+  font-size: var(--bw-text-caption);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: default;
+  transition: background-color var(--bw-dur-fast) var(--bw-ease-fade), color var(--bw-dur-fast) var(--bw-ease-fade);
+}
+
+#app.split-view.is-start .sp-tab:hover {
+  background: var(--bw-island-hover);
+  color: var(--bw-text);
+}
+
+#app.split-view.is-start .sp-tab[aria-selected="true"] {
+  border-color: var(--bw-island-edge);
+  background: var(--bw-island-active);
+  color: var(--bw-text);
+  font-weight: var(--bw-weight-strong);
+}
+
+#app.split-view.is-start .sp-group-tools {
+  display: flex;
+  flex: none;
+}
+
+/* ---- Folder path ---- */
+#app.split-view.is-start .sp-crumbs {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--bw-space-1);
+  min-height: 28px;
+  color: var(--bw-text-2);
+  font-size: var(--bw-text-caption);
+}
+
+#app.split-view.is-start .sp-crumb {
+  max-width: 220px;
+  margin: 0;
+  padding: 2px var(--bw-space-2);
+  overflow: hidden;
+  border: 0;
+  border-radius: var(--bw-r-control);
+  background: transparent;
+  color: var(--bw-text-2);
+  font: inherit;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#app.split-view.is-start .sp-crumb:hover:not([aria-current]) {
+  background: var(--bw-island-hover);
+  color: var(--bw-text);
+}
+
+#app.split-view.is-start .sp-crumb[aria-current] {
+  color: var(--bw-text);
+  font-weight: var(--bw-weight-strong);
+}
+
+/* ---- Dials ---- */
+#app.split-view.is-start .sp-grid {
+  display: grid;
+  grid-template-columns: repeat(var(--sp-cols, 6), var(--sp-tile, 148px));
+  justify-content: center;
+  gap: var(--bw-space-4) var(--bw-space-4);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+#app.split-view.is-start .sp-dial {
+  position: relative;
+  min-width: 0;
+}
+
+#app.split-view.is-start .sp-open {
+  display: flex;
+  flex-direction: column;
+  gap: var(--bw-space-2);
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--bw-text);
+  font: inherit;
+  text-align: center;
+  cursor: default;
+}
+
+#app.split-view.is-start .sp-open:focus-visible {
+  outline: none;
+}
+
+#app.split-view.is-start .sp-open:focus-visible .sp-face {
+  outline: 2px solid var(--bw-focus);
+  outline-offset: 2px;
+  box-shadow: 0 0 0 1px var(--bw-focus-inner);
+}
+
+#app.split-view.is-start .sp-face {
+  position: relative;
+  display: grid;
+  place-items: center;
+  box-sizing: border-box;
+  width: 100%;
+  aspect-ratio: 16 / 10;
+  overflow: hidden;
+  border: 1px solid var(--bw-island-edge);
+  border-radius: var(--bw-r-island);
+  background: var(--bw-island);
+  color: var(--bw-text-2);
+  transition: background-color var(--bw-dur-fast) var(--bw-ease-fade), border-color var(--bw-dur-fast) var(--bw-ease-fade);
+}
+
+#app.split-view.is-start .sp-open:hover .sp-face {
+  border-color: var(--bw-pill-edge);
+  background: var(--bw-island-hover);
+}
+
+#app.split-view.is-start .sp-thumb {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+#app.split-view.is-start .sp-fav {
+  width: clamp(24px, calc(var(--sp-tile, 148px) * 0.26), 56px);
+  height: clamp(24px, calc(var(--sp-tile, 148px) * 0.26), 56px);
+  object-fit: contain;
+}
+
+#app.split-view.is-start .sp-face[data-tone] {
+  background: color-mix(in srgb, var(--sp-tone, var(--bw-glyph-fill)) 24%, transparent);
+}
+
+#app.split-view.is-start .sp-face[data-tone="0"] { --sp-tone: var(--bw-group-0); }
+#app.split-view.is-start .sp-face[data-tone="1"] { --sp-tone: var(--bw-group-1); }
+#app.split-view.is-start .sp-face[data-tone="2"] { --sp-tone: var(--bw-group-2); }
+#app.split-view.is-start .sp-face[data-tone="3"] { --sp-tone: var(--bw-group-3); }
+#app.split-view.is-start .sp-face[data-tone="4"] { --sp-tone: var(--bw-group-4); }
+#app.split-view.is-start .sp-face[data-tone="5"] { --sp-tone: var(--bw-group-5); }
+#app.split-view.is-start .sp-face[data-tone="6"] { --sp-tone: var(--bw-group-6); }
+#app.split-view.is-start .sp-face[data-tone="7"] { --sp-tone: var(--bw-group-7); }
+
+#app.split-view.is-start .sp-letter {
+  color: var(--bw-text);
+  font-size: clamp(20px, calc(var(--sp-tile, 148px) * 0.24), 44px);
+  font-weight: var(--bw-weight-strong);
+  line-height: 1;
+}
+
+#app.split-view.is-start .sp-face.is-folder,
+#app.split-view.is-start .sp-face.is-add {
+  color: var(--bw-text-2);
+}
+
+#app.split-view.is-start .sp-add .sp-face {
+  border-style: dashed;
+  background: transparent;
+}
+
+#app.split-view.is-start .sp-add .sp-open:hover .sp-face {
+  background: var(--bw-island-hover);
+  color: var(--bw-text);
+}
+
+#app.split-view.is-start .sp-title {
+  display: -webkit-box;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--bw-text);
+  font-size: var(--bw-text-caption);
+  line-height: var(--bw-leading-caption);
+  overflow-wrap: anywhere;
+  text-overflow: ellipsis;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+/* Titles: always, never, or only when needed (on hover and focus for a tile that shows an image). */
+#app.split-view.is-start .sp-dial[data-labels="hide"] .sp-title {
+  display: none;
+}
+
+#app.split-view.is-start .sp-dial[data-labels="hover"] .sp-title {
+  opacity: 0;
+  transition: opacity var(--bw-dur-fast) var(--bw-ease-fade);
+}
+
+#app.split-view.is-start .sp-dial[data-labels="hover"]:hover .sp-title,
+#app.split-view.is-start .sp-dial[data-labels="hover"]:focus-within .sp-title {
+  opacity: 1;
+}
+
+#app.split-view.is-start .sp-tools {
+  position: absolute;
+  top: var(--bw-space-1);
+  right: var(--bw-space-1);
+  display: flex;
+  gap: var(--bw-space-0_5);
+  padding: var(--bw-space-0_5);
+  border: 1px solid var(--bw-hairline);
+  border-radius: var(--bw-r-control);
+  background: var(--bw-overlay);
+  box-shadow: var(--bw-sh-tip);
+  opacity: 0;
+  transition: opacity var(--bw-dur-fast) var(--bw-ease-fade);
+}
+
+#app.split-view.is-start .sp-dial:hover > .sp-tools,
+#app.split-view.is-start .sp-dial:focus-within > .sp-tools {
+  opacity: 1;
+}
+
+#app.split-view.is-start .sp-dial:not(.is-editable) > .sp-tools {
+  display: none;
+}
+
+#app.split-view.is-start .sp-more {
+  grid-column: 1 / -1;
+  color: var(--bw-text-2);
+  font-size: var(--bw-text-caption);
+  text-align: center;
+}
+
+#app.split-view.is-start .sp-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--bw-space-3);
+  padding: var(--bw-space-6) 0;
+  color: var(--bw-text-2);
+  text-align: center;
+}
+
+#app.split-view.is-start .sp-empty-text,
+#app.split-view.is-start .sp-widget-note,
+#app.split-view.is-start .sp-widget-empty,
+#app.split-view.is-start .sp-confirm {
+  max-width: 420px;
+  margin: 0;
+  color: var(--bw-text-2);
+}
+
+/* ---- Dragging a dial or a widget ---- */
+#app.split-view.is-start .is-dragging {
+  z-index: 3;
+  opacity: 0.92;
+  pointer-events: none;
+  scale: 1.03;
+  translate: var(--sp-dx, 0) var(--sp-dy, 0);
+  transition: none;
+}
+
+#app.split-view.is-start .is-dragging .sp-tools {
+  display: none;
+}
+
+#app.split-view.is-start .sp-dial.is-drop-before::before,
+#app.split-view.is-start .sp-dial.is-drop-after::after,
+#app.split-view.is-start .sp-widget.is-drop-before::before,
+#app.split-view.is-start .sp-widget.is-drop-after::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  border-radius: 2px;
+  background: var(--bw-accent);
+}
+
+#app.split-view.is-start .sp-dial.is-drop-before::before,
+#app.split-view.is-start .sp-widget.is-drop-before::before {
+  left: calc(var(--bw-space-2) * -1);
+}
+
+#app.split-view.is-start .sp-dial.is-drop-after::after,
+#app.split-view.is-start .sp-widget.is-drop-after::after {
+  right: calc(var(--bw-space-2) * -1);
+}
+
+#app.split-view.is-start .sp-dial.is-drop-into .sp-face {
+  border-color: var(--bw-accent);
+  background: var(--bw-accent-soft);
+}
+
+/* ---- Widgets ---- */
+#app.split-view.is-start .sp-widgets {
+  display: flex;
+  flex-direction: column;
+  gap: var(--bw-space-3);
+}
+
+#app.split-view.is-start .sp-widget-grid {
+  display: grid;
+  grid-template-columns: repeat(var(--sp-wcols, 2), minmax(0, 1fr));
+  gap: var(--bw-space-4);
+}
+
+#app.split-view.is-start .sp-widget {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: var(--bw-space-2);
+  box-sizing: border-box;
+  min-width: 0;
+  padding: var(--bw-space-3);
+  overflow: hidden;
+  border: 1px solid var(--bw-island-edge);
+  border-radius: var(--bw-r-island);
+  color: var(--bw-text);
+}
+
+#app.split-view.is-start .is-regular .sp-widget {
+  height: 208px;
+}
+
+#app.split-view.is-start .is-tall .sp-widget {
+  height: 384px;
+}
+
+#app.split-view.is-start .is-bg-solid .sp-widget {
+  border-color: var(--bw-hairline);
+  background: var(--bw-overlay);
+}
+
+#app.split-view.is-start .is-bg-translucent .sp-widget {
+  background: var(--bw-island);
+}
+
+#app.split-view.is-start .is-bg-transparent .sp-widget {
+  border-color: var(--bw-hairline);
+  background: transparent;
+}
+
+#app.split-view.is-start .is-bg-custom .sp-widget {
+  border-color: transparent;
+  background: var(--sp-widget-custom);
+  color: var(--sp-widget-custom-fg);
+  --bw-text: var(--sp-widget-custom-fg);
+  --bw-text-2: color-mix(in srgb, var(--sp-widget-custom-fg) 78%, transparent);
+}
+
+#app.split-view.is-start .sp-widget-head {
+  display: flex;
+  align-items: center;
+  gap: var(--bw-space-1);
+  min-height: 24px;
+}
+
+#app.split-view.is-start .sp-widget-title {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: var(--bw-space-2);
+  min-width: 0;
+  margin: 0;
+  color: var(--bw-text-2);
+  font-size: var(--bw-text-caption);
+  font-weight: var(--bw-weight-strong);
+  line-height: var(--bw-leading-caption);
+}
+
+#app.split-view.is-start .sp-widget-title > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#app.split-view.is-start .sp-widget-tools {
+  display: flex;
+  flex: none;
+}
+
+#app.split-view.is-start .sp-widget-tool,
+#app.split-view.is-start .sp-grip {
+  opacity: 0;
+  transition: opacity var(--bw-dur-fast) var(--bw-ease-fade);
+}
+
+#app.split-view.is-start .sp-widget:hover .sp-widget-tool,
+#app.split-view.is-start .sp-widget:hover .sp-grip,
+#app.split-view.is-start .sp-widget:focus-within .sp-widget-tool,
+#app.split-view.is-start .sp-widget:focus-within .sp-grip {
+  opacity: 1;
+}
+
+#app.split-view.is-start .sp-grip {
+  cursor: grab;
+}
+
+#app.split-view.is-start .sp-widget-body {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: var(--bw-space-2);
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
+
+#app.split-view.is-start .sp-widget-bar {
+  display: flex;
+  justify-content: center;
+}
+
+#app.split-view.is-start .sp-list,
+#app.split-view.is-start .sp-tiles {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+#app.split-view.is-start .sp-tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(72px, 1fr));
+  gap: var(--bw-space-2);
+}
+
+#app.split-view.is-start .sp-row,
+#app.split-view.is-start .sp-mini {
+  display: flex;
+  align-items: center;
+  gap: var(--bw-space-2);
+  width: 100%;
+  margin: 0;
+  padding: var(--bw-space-1) var(--bw-space-2);
+  border: 0;
+  border-radius: var(--bw-r-row);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: default;
+}
+
+#app.split-view.is-start .sp-row:hover,
+#app.split-view.is-start .sp-mini:hover {
+  background: var(--bw-island-hover);
+}
+
+#app.split-view.is-start .sp-row:focus-visible,
+#app.split-view.is-start .sp-mini:focus-visible {
+  outline: 2px solid var(--bw-focus);
+  outline-offset: -2px;
+}
+
+#app.split-view.is-start .sp-row-face {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  overflow: hidden;
+  border-radius: var(--bw-r-control);
+}
+
+#app.split-view.is-start .sp-row-face .sp-fav {
+  width: 16px;
+  height: 16px;
+}
+
+#app.split-view.is-start .sp-row-face .sp-letter {
+  font-size: 12px;
+}
+
+#app.split-view.is-start .sp-row-face.is-letter[data-tone] {
+  background: color-mix(in srgb, var(--sp-tone, var(--bw-glyph-fill)) 24%, transparent);
+}
+
+#app.split-view.is-start .sp-row-face[data-tone="0"] { --sp-tone: var(--bw-group-0); }
+#app.split-view.is-start .sp-row-face[data-tone="1"] { --sp-tone: var(--bw-group-1); }
+#app.split-view.is-start .sp-row-face[data-tone="2"] { --sp-tone: var(--bw-group-2); }
+#app.split-view.is-start .sp-row-face[data-tone="3"] { --sp-tone: var(--bw-group-3); }
+#app.split-view.is-start .sp-row-face[data-tone="4"] { --sp-tone: var(--bw-group-4); }
+#app.split-view.is-start .sp-row-face[data-tone="5"] { --sp-tone: var(--bw-group-5); }
+#app.split-view.is-start .sp-row-face[data-tone="6"] { --sp-tone: var(--bw-group-6); }
+#app.split-view.is-start .sp-row-face[data-tone="7"] { --sp-tone: var(--bw-group-7); }
+
+#app.split-view.is-start .sp-row-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+#app.split-view.is-start .sp-row-title,
+#app.split-view.is-start .sp-row-meta,
+#app.split-view.is-start .sp-mini-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#app.split-view.is-start .sp-row-meta {
+  color: var(--bw-text-2);
+  font-size: var(--bw-text-caption);
+  line-height: var(--bw-leading-caption);
+}
+
+#app.split-view.is-start .sp-tiles > li {
+  position: relative;
+}
+
+#app.split-view.is-start .sp-mini-tools {
+  position: absolute;
+  top: var(--bw-space-0_5);
+  right: var(--bw-space-0_5);
+  display: flex;
+  gap: var(--bw-space-0_5);
+  padding: var(--bw-space-0_5);
+  border: 1px solid var(--bw-hairline);
+  border-radius: var(--bw-r-control);
+  background: var(--bw-overlay);
+  box-shadow: var(--bw-sh-tip);
+}
+
+#app.split-view.is-start .sp-mini {
+  flex-direction: column;
+  padding: var(--bw-space-2);
+  text-align: center;
+}
+
+#app.split-view.is-start .sp-mini-face {
+  width: 56px;
+  aspect-ratio: 16 / 10;
+  border-radius: var(--bw-r-control);
+}
+
+#app.split-view.is-start .sp-mini-face .sp-fav {
+  width: 20px;
+  height: 20px;
+}
+
+/* The letter sits at the favicon's size here; the speed dial's letter scale is for 148px tiles. */
+#app.split-view.is-start .sp-mini-face .sp-letter {
+  font-size: var(--bw-text-body);
+}
+
+#app.split-view.is-start .sp-mini-title {
+  max-width: 100%;
+  font-size: var(--bw-text-caption);
+}
+
+#app.split-view.is-start .sp-config {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--bw-space-2);
+}
+
+#app.split-view.is-start .sp-config .bw-input {
+  flex: 1 1 140px;
+  min-width: 0;
+}
+
+#app.split-view.is-start .sp-note {
+  box-sizing: border-box;
+  flex: 1 1 auto;
+  width: 100%;
+  min-height: 64px;
+  padding: var(--bw-space-2);
+  border: 1px solid var(--bw-island-edge);
+  border-radius: var(--bw-r-control);
+  background: var(--bw-fill);
+  color: var(--bw-text);
+  font: inherit;
+  resize: none;
+}
+
+#app.split-view.is-start .sp-note:focus {
+  border-color: var(--bw-accent);
+  outline: none;
+}
+
+#app.split-view.is-start .sp-note-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--bw-space-2);
+}
+
+#app.split-view.is-start .sp-note-status {
+  color: var(--bw-text-2);
+  font-size: var(--bw-text-caption);
+}
+
+/* The largest type in Bowser is the private page's 28/36 title; the widgets' figures use it too. */
+#app.split-view.is-start .sp-date-day {
+  margin: 0;
+  font-size: 28px;
+  font-weight: var(--bw-weight-strong);
+  line-height: 36px;
+  letter-spacing: -0.01em;
+  font-variant-numeric: tabular-nums;
+}
+
+#app.split-view.is-start .sp-date-line {
+  margin: 0;
+  font-size: var(--bw-text-subtitle);
+  line-height: var(--bw-leading-subtitle);
+}
+
+#app.split-view.is-start .sp-date-month {
+  margin: 0;
+  color: var(--bw-text-2);
+}
+
+#app.split-view.is-start .sp-stat {
+  margin: 0;
+  font-size: 28px;
+  font-weight: var(--bw-weight-strong);
+  line-height: 36px;
+  letter-spacing: -0.01em;
+  font-variant-numeric: tabular-nums;
+}
+
+#app.split-view.is-start .sp-stat-caption,
+#app.split-view.is-start .sp-stat-line {
+  margin: 0;
+  color: var(--bw-text-2);
+}
+
+#app.split-view.is-start .sp-frame {
+  flex: 1 1 auto;
+  width: 100%;
+  min-height: 0;
+  border: 0;
+  border-radius: var(--bw-r-control);
+  background: #ffffff;
+}
+
+/* ---- Menus, dialogs, messages ---- */
+#app.split-view.is-start .sp-menu {
+  position: fixed;
+  z-index: var(--bw-z-menu);
+  top: var(--sp-menu-y, 0);
+  left: var(--sp-menu-x, 0);
+}
+
+#app.split-view.is-start .sp-scrim {
+  position: fixed;
+  z-index: var(--bw-z-dialog);
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: var(--bw-scrim);
+}
+
+#app.split-view.is-start .sp-dialog {
+  box-sizing: border-box;
+  width: min(420px, calc(100% - 2 * var(--bw-space-4)));
+  min-width: 0;
+}
+
+#app.split-view.is-start .sp-dialog-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--bw-space-3);
+}
+
+#app.split-view.is-start .sp-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--bw-space-1);
+}
+
+#app.split-view.is-start .sp-field-label {
+  color: var(--bw-text-2);
+  font-size: var(--bw-text-caption);
+}
+
+#app.split-view.is-start .sp-error {
+  flex-basis: 100%;
+  margin: 0;
+  color: var(--bw-text);
+  font-size: var(--bw-text-caption);
+}
+
+#app.split-view.is-start .sp-error::before {
+  content: "";
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-right: var(--bw-space-1_5);
+  border-radius: 50%;
+  background: var(--bw-private);
+}
+
+#app.split-view.is-start .sp-toast {
+  position: fixed;
+  z-index: var(--bw-z-popup);
+  bottom: var(--bw-space-6);
+  left: 50%;
+  max-width: min(480px, calc(100% - 2 * var(--bw-space-4)));
+  margin: 0;
+  padding: var(--bw-space-2) var(--bw-space-3);
+  border: 1px solid var(--bw-hairline);
+  border-radius: var(--bw-r-overlay);
+  background: var(--bw-overlay);
+  box-shadow: var(--bw-sh-flyout);
+  translate: -50% 0;
+}
+
+@media (max-width: 600px) {
+  #app.split-view.is-start .sp-page {
+    padding-inline: var(--bw-space-4);
+  }
+
+  #app.split-view.is-start .sp-widget-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

@@ -27,13 +27,13 @@ export interface MenuMessage {
  * drift, and when a Rust `.glyph("...")` is not in the family).
  */
 export const MENU_ICONS: readonly string[] = [
-  'app-tile', 'archive', 'arrow-left', 'arrow-right', 'back', 'bell', 'bookmark', 'camera', 'caption-close', 'caption-maximize',
+  'address-bar', 'app-tile', 'archive', 'arrow-left', 'arrow-right', 'back', 'bell', 'bookmark', 'calculator', 'calendar', 'camera', 'caption-close', 'caption-maximize',
   'caption-minimize', 'caption-restore', 'cast', 'check', 'chevron-down', 'chevron-left', 'chevron-right', 'chevron-up', 'clock',
-  'close', 'close-others', 'command', 'cookie', 'copy', 'customize', 'dots', 'download', 'droplet', 'edit', 'enter', 'extensions', 'external', 'eye',
+  'close', 'close-others', 'command', 'cookie', 'copy', 'customize', 'dots', 'download', 'droplet', 'edit', 'enter', 'extensions', 'external', 'eye', 'feed',
   'file', 'file-text', 'find', 'folder', 'folder-download', 'folder-open', 'forward', 'gear', 'glasses', 'glint', 'globe', 'grid', 'grip', 'heart', 'history', 'home', 'image', 'info', 'key', 'link', 'location', 'lock', 'menu', 'menu-dots',
   'mic', 'more', 'more-horizontal', 'more-vertical', 'mute', 'new-tab', 'notes', 'palette', 'package', 'pause', 'pencil', 'person',
-  'picture-in-picture', 'play', 'pin', 'pip', 'plus', 'print', 'private', 'private-window', 'profile', 'puzzle', 'reader', 'refresh', 'reload', 'reset', 'save', 'search', 'settings', 'share',
-  'shield', 'sidebar', 'sidebar-toggle', 'split', 'split-bottom', 'split-bottom-left', 'split-bottom-right', 'split-left', 'split-right', 'split-stacked', 'split-top', 'split-top-left', 'split-top-right', 'split-view', 'star', 'stop', 'swap', 'tab-close', 'tab-group', 'tab-switch', 'translate', 'trash', 'unlock', 'unsplit',
+  'picture-in-picture', 'play', 'pin', 'pip', 'plus', 'print', 'private', 'private-window', 'profile', 'puzzle', 'qr-code', 'quick-commands', 'reader', 'refresh', 'reload', 'reset', 'save', 'search', 'settings', 'share',
+  'shield', 'sidebar', 'sidebar-toggle', 'split', 'split-bottom', 'split-bottom-left', 'split-bottom-right', 'split-left', 'split-right', 'split-stacked', 'split-top', 'split-top-left', 'split-top-right', 'split-view', 'star', 'stop', 'swap', 'tab-close', 'tab-group', 'tab-restore', 'tab-switch', 'translate', 'trash', 'unlock', 'unsplit',
   'video', 'volume', 'warning', 'window', 'workspace', 'workspace-add', 'workspace-bolt', 'workspace-book', 'workspace-briefcase', 'workspace-cart',
   'workspace-code', 'workspace-game', 'workspace-globe', 'workspace-heart', 'workspace-home', 'workspace-leaf',
   'workspace-music', 'workspace-star', 'zoom-in', 'zoom-out',

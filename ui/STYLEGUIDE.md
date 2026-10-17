@@ -45,6 +45,7 @@ npm test           # includes test/styles.mjs (CSS contract) and test/icons.mjs 
 | `src/styles/settings.css` | settings | `?view=settings`, the `bowser://settings` page (`settings-page.ts`, docs/design/settings-page.md) |
 | `src/styles/history.css` | history | `?view=history`, the `bowser://history` page (`history-page.ts`, docs/design/history-page.md) |
 | `src/styles/downloads.css` | downloads | the download bubble (`?view=popup` page `downloads`, `downloads-bubble.ts`) and the `bowser://downloads` page (`?view=downloads`, `downloads-page.ts`); shared row `downloads-view.ts`; docs/design/downloads.md. The toolbar's download button lives in `toolbar.css` |
+| `src/styles/start.css` | start page | the start page over a blank new tab (`?view=split`, `start-page.ts` and `start-page-logic.ts`, its own bundle `dist/start-page.js`) and the Start page settings section (`settings-start.ts`); docs/design/start-page.md |
 | `src/icons.ts`, `scripts/gen-icons.mjs`, `icons/` | foundation | Icon family |
 
 Each surface file starts with a `Surface: NAME ... Owner:` header (enforced by `test/styles.mjs`).
@@ -200,13 +201,13 @@ status.append(icon('warning', { label: 'Not secure' })); // role="img" + aria-la
 - Strokes use `vector-effect: non-scaling-stroke`, so a 14px and a 16px glyph have the same weight
   at every DPI (1.5px = 1.5/1.875/2.25/3 device px at 100/125/150/200%). Shapes keep antialiasing
   (`shape-rendering: geometricPrecision`); never use `crispEdges` (it breaks diagonals and curves).
-- Glyphs (106): app-tile, archive, back, bell, bookmark, camera, caption-maximize, caption-minimize,
+- Glyphs (116): address-bar, app-tile, archive, back, bell, bookmark, calculator, calendar, camera, caption-maximize, caption-minimize,
   caption-restore, cast, check, chevron-down/left/right/up, clock, close, close-others, command, cookie, copy,
   customize, download, droplet, edit, enter, external, eye, file, file-text, folder, folder-download, folder-open,
   forward, gear, glasses, glint, grid, grip, heart, home, image, info, key, link, location, lock, menu, menu-dots,
   mic, more-horizontal, more-vertical, mute, notes, package, pause, person, pin, pip, play, plus, print, private,
-  private-window, puzzle, reader, reload, reset, save, search, share, shield, sidebar, split,
-  split-bottom, split-bottom-left, split-bottom-right, split-left, split-right, split-stacked, split-top, split-top-left, split-top-right, swap, tab-group, tab-switch, translate, trash, unlock, unsplit, video, volume, warning, window, workspace, workspace-add, workspace-{bolt, book,
+  private-window, puzzle, qr-code, quick-commands, reader, reload, reset, save, search, share, shield, sidebar, split,
+  split-bottom, split-bottom-left, split-bottom-right, split-left, split-right, split-stacked, split-top, split-top-left, split-top-right, swap, tab-group, tab-restore, tab-switch, translate, trash, unlock, unsplit, video, volume, warning, window, workspace, workspace-add, workspace-{bolt, book,
   briefcase, cart, code, game, globe, heart, home, leaf, music, star}, zoom-in, zoom-out.
 - Aliases (21): arrow-left/right, caption-close, dots, extensions, find, globe, history, more,
   new-tab, palette, pencil, picture-in-picture, profile, refresh, settings, sidebar-toggle,

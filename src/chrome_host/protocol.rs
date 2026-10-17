@@ -65,7 +65,66 @@ pub enum OpenTarget {
     Reader,
     /// Translates the active page with Google Translate, or shows its original (`crate::translate`).
     Translate,
+    /// The address bar's feed button: the Feeds panel, at the feeds this page offers (docs/feeds.md).
+    Feeds,
 }
+
+// --- toolbars and feeds (thread T13) ---
+/// Which bar a command button was pressed on (the rail's buttons come as `tool:<n>` rail keys).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ToolBar {
+    Address,
+    Tabs,
+}
+
+/// A command button on a bar: the item id (`cmd:new-tab`, `chain:2`), the name it shows and its place in
+/// the bar's list (what a press sends back).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ToolButton {
+    pub item: String,
+    pub label: String,
+    pub index: u8,
+}
+
+/// How the toolbar page lays out its buttons (`crate::toolbar_prefs`, docs/toolbars.md). `items` is
+/// the address bar's list in order; `None` (a state for another view) leaves it out.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct BarItems {
+    pub items: Option<String>,
+    /// The command buttons among `items`, with their names.
+    pub tools: Vec<ToolButton>,
+    /// CSS px the right end's always-there buttons take from the address field.
+    pub extra: u32,
+    /// How many feeds the page in front offers (`0` hides the feed button).
+    pub feeds: u32,
+}
+
+/// Longest item id and button name accepted or sent.
+pub const MAX_TOOL_ITEM_CHARS: usize = 64;
+pub const MAX_TOOL_LABEL_CHARS: usize = 60;
+
+fn tool_item_ok(item: &str) -> bool {
+    !item.is_empty() && item.chars().count() <= MAX_TOOL_ITEM_CHARS && item.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'-' | b':'))
+}
+
+/// `[{"k":item,"l":label},...]`.
+fn tools_json(tools: &[ToolButton]) -> String {
+    let mut out = String::from("[");
+    for (index, tool) in tools.iter().take(crate::toolbar_prefs::MAX_COMMAND_ITEMS).enumerate() {
+        if index > 0 {
+            out.push(',');
+        }
+        out.push_str(&format!(
+            "{{\"k\":{},\"l\":{},\"i\":{}}}",
+            json_string(truncate_utf16(&tool.item, MAX_TOOL_ITEM_CHARS)),
+            json_string(truncate_utf16(&tool.label, MAX_TOOL_LABEL_CHARS)),
+            tool.index
+        ));
+    }
+    out.push(']');
+    out
+}
+// --- end toolbars and feeds ---
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CaptionAction {
@@ -81,6 +140,9 @@ pub enum TabAction {
     Menu,
     Pin,
     Mute,
+    // --- tab options --- a double click on the tab (the "Double click on a tab" option decides).
+    DoubleClick,
+    // --- end tab options ---
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -106,7 +168,7 @@ pub enum RailAction {
 pub enum ComposerMode { WorkspaceNew, AppAdd, AppEdit }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PanelType { Panel, History, Bookmarks, Customize, Notes, Settings, Privacy, Rename, HistoryPage, DownloadsPage }
+pub enum PanelType { Panel, History, Bookmarks, Customize, Notes, Settings, Privacy, Rename, HistoryPage, DownloadsPage, StartPage, Address, Sessions, Feeds }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PanelFields {
@@ -146,6 +208,8 @@ pub enum RailKeyWire {
     Menu,
     Workspace(u64),
     App(u32),
+    /// `tool:<n>`: an extra button of the panel bar (thread T13), `n` its place in `toolbar_panel`.
+    Tool(u8),
 }
 
 /// Longest rail key on the wire, in bytes.
@@ -175,7 +239,8 @@ impl RailKeyWire {
                 } else if let Some(digits) = raw.strip_prefix("app:") {
                     Self::App(u32::try_from(canonical_decimal(digits, 10)?).ok()?)
                 } else {
-                    return None;
+                    let digits = raw.strip_prefix("tool:")?;
+                    Self::Tool(u8::try_from(canonical_decimal(digits, 2)?).ok().filter(|n| usize::from(*n) < crate::toolbar_prefs::MAX_ITEMS)?)
                 }
             }
         })
@@ -193,6 +258,7 @@ impl RailKeyWire {
             Self::Menu => "menu".to_owned(),
             Self::Workspace(id) => format!("ws:{id}"),
             Self::App(id) => format!("app:{id}"),
+            Self::Tool(n) => format!("tool:{n}"),
         }
     }
 }
@@ -240,10 +306,29 @@ pub enum Command {
     Tab { action: TabAction, id: u32 },
     /// Drag-reorder drop: move tab `id` before tab `before` (`0` = end of strip).
     TabMove { id: u32, before: u32 },
+    // --- tab stacks (T10) ---
+    /// The held tab `id` was dropped on tab `onto` after resting over it ("Stack tabs by dragging one
+    /// onto another"): Rust stacks the two.
+    TabStack { id: u32, onto: u32 },
+    /// The wheel turned over the rail's workspaces: `d` notches, down positive ("Switch workspaces
+    /// by scrolling"; Rust acts only while the option is on).
+    RailWheel { d: i32 },
+    // --- end tab stacks ---
+    // --- tab options ---
+    /// The strip's selection after a Ctrl or Shift click, as wire ids in strip order (empty clears it).
+    TabSelection { ids: Vec<u32> },
+    /// The strip's Closed tabs button: Rust shows the list of closed tabs at the cursor.
+    ClosedTabs,
+    // --- end tab options ---
     Group { action: GroupAction, key: u32 },
     // --- vertical sidebar (lane S) ---
     Side(SideAction),
     // --- end vertical sidebar ---
+    // --- toolbars and feeds (thread T13) ---
+    /// A command button of the address bar or the tab bar: Rust checks `item` is at `index` in that bar's
+    /// list (what the user put there) before running its command.
+    Tool { bar: ToolBar, item: String, index: u8 },
+    // --- end toolbars and feeds ---
     /// A click, right click or flyout hover on a rail button. `rect` is the button in rail CSS
     /// pixels (optional for clicks and menus, required for hover); it anchors a flyout.
     Rail { action: RailAction, key: RailKeyWire, rect: Option<HoverRect> },
@@ -812,6 +897,34 @@ fn str_field<'a>(
     }
 }
 
+// --- tab options ---
+/// Most ids a `tabsel` list may carry (the strip never shows more than `MAX_TABS` tabs).
+pub const MAX_TAB_SELECTION: usize = 512;
+
+/// A comma-separated list of tab wire ids: digits only, no empty items, at most [`MAX_TAB_SELECTION`].
+/// The empty string is the empty list.
+fn id_list_field(fields: &[(String, Value)], name: &'static str) -> Result<Vec<u32>, ProtocolError> {
+    let text = str_field(fields, name)?;
+    if text.is_empty() {
+        return Ok(Vec::new());
+    }
+    if text.len() > MAX_TAB_SELECTION * 11 {
+        return Err(ProtocolError::TooLong(name));
+    }
+    let mut ids = Vec::new();
+    for item in text.split(',') {
+        if item.is_empty() || item.len() > 10 || !item.bytes().all(|byte| byte.is_ascii_digit()) {
+            return Err(ProtocolError::InvalidValue(name));
+        }
+        ids.push(item.parse::<u32>().map_err(|_| ProtocolError::InvalidValue(name))?);
+        if ids.len() > MAX_TAB_SELECTION {
+            return Err(ProtocolError::TooLong(name));
+        }
+    }
+    Ok(ids)
+}
+// --- end tab options ---
+
 fn text_field(fields: &[(String, Value)]) -> Result<String, ProtocolError> {
     let text = str_field(fields, "text")?;
     if text.chars().count() > MAX_TEXT_CHARS {
@@ -890,6 +1003,24 @@ fn uint_field(fields: &[(String, Value)], name: &'static str) -> Result<u32, Pro
         None => Err(ProtocolError::MissingField(name)),
     }
 }
+
+/// --- tab stacks (T10) --- a plain, possibly negative, integer that fits an `i32`.
+fn int_field(fields: &[(String, Value)], name: &'static str) -> Result<i32, ProtocolError> {
+    match field(fields, name) {
+        Some(Value::Number(raw)) => {
+            let digits = raw.strip_prefix('-').unwrap_or(raw);
+            if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+                return Err(ProtocolError::WrongType(name));
+            }
+            raw.parse::<i32>().map_err(|_| ProtocolError::InvalidValue(name))
+        }
+        Some(_) => Err(ProtocolError::WrongType(name)),
+        None => Err(ProtocolError::MissingField(name)),
+    }
+}
+
+/// Most notches one `railwheel` message carries (a fast wheel is reported once per frame).
+pub const MAX_RAIL_WHEEL: u32 = 8;
 
 /// `seq` must be a plain integer in `0..=u32::MAX`.
 fn seq_field(fields: &[(String, Value)]) -> Result<u32, ProtocolError> {
@@ -1002,14 +1133,21 @@ fn build_command(fields: &[(String, Value)]) -> Result<Command, ProtocolError> {
         "caption" => &["a"],
         "tab" => &["a", "id"],
         "tabmove" => &["id", "before"],
+        "tabstack" => &["id", "onto"], // --- tab stacks (T10) ---
+        "railwheel" => &["d"], // --- tab stacks (T10) ---
+        // --- tab options ---
+        "tabsel" => &["ids"],
+        "closedtabs" => &[],
+        // --- end tab options ---
         "group" => &["a", "key"],
         // --- vertical sidebar (lane S) ---
         "side" => &["a"],
         // --- end vertical sidebar ---
+        "tool" => &["b", "k", "i"], // --- toolbars and feeds (thread T13) ---
         "rail" => &["a", "k", "r"],
         "railmove" => &["k", "before"],
         // `a` is required; at most three more fields fit beside `v` and `t`.
-        "panel" | "hist" | "bm" | "cust" | "notes" | "set" | "priv" | "ren" | "hpage" | "dpage" =>
+        "panel" | "hist" | "bm" | "cust" | "notes" | "set" | "priv" | "ren" | "hpage" | "dpage" | "spage" | "addr" | "sess" | "feed" =>
             &["a", "id", "parent", "before", "n", "on", "text", "url"],
         "size" => &["tok", "w", "h", "c"],
         "pick" => &["tok", "id"],
@@ -1072,6 +1210,7 @@ fn build_command(fields: &[(String, Value)]) -> Result<Command, ProtocolError> {
             "zoomreset" => OpenTarget::ZoomReset,
             "reader" => OpenTarget::Reader,
             "translate" => OpenTarget::Translate,
+            "feeds" => OpenTarget::Feeds,
             _ => return Err(ProtocolError::InvalidValue("a")),
         }),
         "tab" => Command::Tab {
@@ -1081,14 +1220,32 @@ fn build_command(fields: &[(String, Value)]) -> Result<Command, ProtocolError> {
                 "menu" => TabAction::Menu,
                 "pin" => TabAction::Pin,
                 "mute" => TabAction::Mute,
+                "dblclick" => TabAction::DoubleClick, // --- tab options ---
                 _ => return Err(ProtocolError::InvalidValue("a")),
             },
             id: uint_field(fields, "id")?,
         },
+        // --- tab options ---
+        "tabsel" => Command::TabSelection { ids: id_list_field(fields, "ids")? },
+        "closedtabs" => Command::ClosedTabs,
+        // --- end tab options ---
         "tabmove" => Command::TabMove {
             id: uint_field(fields, "id")?,
             before: uint_field(fields, "before")?,
         },
+        // --- tab stacks (T10) ---
+        "tabstack" => Command::TabStack {
+            id: uint_field(fields, "id")?,
+            onto: uint_field(fields, "onto")?,
+        },
+        "railwheel" => {
+            let d = int_field(fields, "d")?;
+            if d == 0 || d.unsigned_abs() > MAX_RAIL_WHEEL {
+                return Err(ProtocolError::InvalidValue("d"));
+            }
+            Command::RailWheel { d }
+        }
+        // --- end tab stacks ---
         "group" => Command::Group {
             action: match str_field(fields, "a")? {
                 "toggle" => GroupAction::Toggle,
@@ -1105,6 +1262,24 @@ fn build_command(fields: &[(String, Value)]) -> Result<Command, ProtocolError> {
             _ => return Err(ProtocolError::InvalidValue("a")),
         }),
         // --- end vertical sidebar ---
+        // --- toolbars and feeds (thread T13) ---
+        "tool" => {
+            let bar = match str_field(fields, "b")? {
+                "address" => ToolBar::Address,
+                "tabs" => ToolBar::Tabs,
+                _ => return Err(ProtocolError::InvalidValue("b")),
+            };
+            let item = str_field(fields, "k")?;
+            if !tool_item_ok(item) {
+                return Err(ProtocolError::InvalidValue("k"));
+            }
+            let index = uint_field(fields, "i")?;
+            if index >= crate::toolbar_prefs::MAX_ITEMS as u32 {
+                return Err(ProtocolError::InvalidValue("i"));
+            }
+            Command::Tool { bar, item: item.to_owned(), index: index as u8 }
+        }
+        // --- end toolbars and feeds ---
         "rail" => {
             let action = match str_field(fields, "a")? {
                 "click" => RailAction::Click,
@@ -1131,7 +1306,7 @@ fn build_command(fields: &[(String, Value)]) -> Result<Command, ProtocolError> {
             };
             Command::RailMove { key, before }
         }
-        "panel" | "hist" | "bm" | "cust" | "notes" | "set" | "priv" | "ren" | "hpage" | "dpage" => {
+        "panel" | "hist" | "bm" | "cust" | "notes" | "set" | "priv" | "ren" | "hpage" | "dpage" | "spage" | "addr" | "sess" | "feed" => {
             let a = str_field(fields, "a")?;
             if !panel_action(a) { return Err(ProtocolError::InvalidValue("a")); }
             let kind = match kind {
@@ -1141,8 +1316,16 @@ fn build_command(fields: &[(String, Value)]) -> Result<Command, ProtocolError> {
                 "ren" => PanelType::Rename,
                 // The bowser://downloads page (docs/design/downloads.md).
                 "dpage" => PanelType::DownloadsPage,
+                // The address field's own commands and the search field (address_page.rs).
+                "addr" => PanelType::Address,
                 // The bowser://history page (docs/design/history-page.md); not the rail panel's `hist`.
                 "hpage" => PanelType::HistoryPage,
+                // The start page over a blank new tab (docs/design/start-page.md).
+                "spage" => PanelType::StartPage,
+                // The Sessions panel (Settings > Tabs, docs/design/sessions.md).
+                "sess" => PanelType::Sessions,
+                // The Feeds panel (docs/feeds.md).
+                "feed" => PanelType::Feeds,
                 _ => PanelType::Privacy,
             };
             let on = match field(fields, "on") {
@@ -1270,10 +1453,19 @@ pub fn layout_json(mode: LayoutMode) -> String {
 // --- vertical sidebar (lane S) ---
 /// Active workspace metadata for the vertical sidebar. Only the known glyph tokens are emitted.
 pub fn workspace_json(name: &str, icon: &str) -> Option<String> {
+    workspace_json_with(name, icon, None, true)
+}
+
+/// --- tab stacks and workspaces (T10) --- [`workspace_json`] with the emoji the workspace shows
+/// instead of its glyph (`emoji` rides only when there is one the emoji check accepts), and
+/// `"off":true` while workspaces are off, which hides the sidebar's workspace switcher.
+pub fn workspace_json_with(name: &str, icon: &str, emoji: Option<&str>, on: bool) -> Option<String> {
     const ICONS: [&str; 12] = ["g:briefcase", "g:home", "g:code", "g:book", "g:cart", "g:game", "g:music", "g:heart", "g:star", "g:bolt", "g:globe", "g:leaf"];
     if !ICONS.contains(&icon) { return None; }
+    let emoji = emoji.and_then(crate::workspaces::clean_emoji).map(|emoji| format!(",\"emoji\":{}", json_string(&emoji))).unwrap_or_default();
+    let off = if on { "" } else { ",\"off\":true" };
     Some(format!(
-        "{{\"v\":1,\"t\":\"workspace\",\"name\":{},\"icon\":{}}}",
+        "{{\"v\":1,\"t\":\"workspace\",\"name\":{},\"icon\":{}{emoji}{off}}}",
         json_string(truncate_utf16(name, MAX_RAIL_LABEL_CHARS)),
         json_string(icon),
     ))
@@ -1361,6 +1553,16 @@ pub struct ViewState {
     pub font_scale: u32,
     /// `ui_font`; empty means the page's own default font-family.
     pub ui_font: String,
+    // --- layout (thread T6) ---
+    /// `ui_density`: the page sets `data-density` on its root, which its list rows read.
+    pub density: crate::layout_prefs::UiDensity,
+    /// `compact_menus`: shorter menu rows (`data-compact-menus`).
+    pub compact_menus: bool,
+    // --- end layout ---
+    /// Window appearance options (thread T9): animation, scrollbars, icons, fading, panel buttons.
+    pub look: crate::window_prefs::Look,
+    /// The address bar's buttons and the feed button (docs/toolbars.md); neutral for the other views.
+    pub bar: BarItems, // --- toolbars and feeds (thread T13) ---
     /// Colour tokens. Entries whose key is not in `THEME_TOKENS`, or whose value fails
     /// `is_safe_css_colour`, are dropped by `to_json`.
     pub theme: Vec<(&'static str, String)>,
@@ -1395,6 +1597,10 @@ impl ViewState {
             translate: crate::translate::Pill::Hidden,
             font_scale: self.font_scale,
             ui_font: self.ui_font.clone(),
+            density: self.density, // --- layout (thread T6) ---
+            compact_menus: self.compact_menus,
+            look: self.look, // --- window and panels (thread T9) ---
+            bar: BarItems::default(),
             theme: self.theme.clone(),
         }
     }
@@ -1443,6 +1649,25 @@ impl ViewState {
         out.push_str(&self.font_scale.clamp(50, 200).to_string());
         out.push_str(",\"uiFont\":");
         out.push_str(&json_string(truncate_utf16(&self.ui_font, crate::settings::MAX_UI_FONT_CHARS)));
+        // --- layout (thread T6) ---
+        out.push_str(",\"density\":");
+        out.push_str(&json_string(self.density.key()));
+        out.push_str(",\"compactMenus\":");
+        out.push_str(if self.compact_menus { "true" } else { "false" });
+        // --- end layout ---
+        // --- window and panels (thread T9) ---
+        out.push_str(",\"look\":");
+        out.push_str(&self.look.to_json());
+        // --- end window and panels ---
+        // --- toolbars and feeds (thread T13) ---
+        if let Some(items) = &self.bar.items {
+            out.push_str(",\"items\":");
+            out.push_str(&json_string(truncate_utf16(items, 512)));
+            out.push_str(",\"tools\":");
+            out.push_str(&tools_json(&self.bar.tools));
+            out.push_str(&format!(",\"extra\":{},\"feeds\":{}", self.bar.extra.min(400), self.bar.feeds.min(9)));
+        }
+        // --- end toolbars and feeds ---
         out.push_str(",\"theme\":{");
         let mut written: Vec<&str> = Vec::new();
         for (token, value) in &self.theme {
@@ -1518,7 +1743,129 @@ pub struct TabItem {
     pub group_size: u32,
     /// A favicon is cached for this tab id.
     pub has_favicon: bool,
+    // --- tab options ---
+    pub marks: TabMarks,
+    // --- end tab options ---
 }
+
+// --- tab options ---
+/// What a tab shows beyond the model's own fields (Settings > Tabs): each is sent only when set, so
+/// a strip with none of them reads exactly as before.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TabMarks {
+    /// Changed while out of sight and not looked at since.
+    pub unread: bool,
+    /// The count a page title announces; `0` for none.
+    pub notify: u32,
+    /// The page is asleep (the icon is dimmed).
+    pub asleep: bool,
+    /// Page load progress, 0 to 100.
+    pub progress: Option<u8>,
+    /// Seconds until the tab's periodic reload.
+    pub reload: Option<u32>,
+    /// Not used for longer than the inactive threshold.
+    pub idle: bool,
+}
+
+/// Largest notification count sent.
+pub const MAX_NOTIFY: u32 = 999;
+
+/// What the strip needs from the Tabs settings, sent as `{"t":"tabopts",...}` whenever any of it
+/// changes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StripOptions {
+    pub close_left: bool,
+    pub close_always: bool,
+    pub scroll: bool,
+    pub min_width: u32,
+    /// `spinner`, `bar`, `favicon` or `none`.
+    pub indicator: &'static str,
+    pub wheel: bool,
+    pub separator: bool,
+    pub align_close: bool,
+    pub selection: bool,
+    /// --- wave-1 fixes --- the active tab joins a Ctrl or Shift click selection (`tabs_selection_active`).
+    pub selection_active: bool,
+    pub remove_spacing: bool,
+    pub maximised: bool,
+    /// Tabs in the closed-tabs list; `0` hides the Closed tabs button.
+    pub closed: u32,
+    /// --- tab stacks (T10) --- a held tab resting over another for `stack_delay` ms stacks on drop.
+    pub stack_drag: bool,
+    pub stack_delay: u32,
+    /// --- two-level stacks (T10b) --- the second tab row the host laid out: `off`, `regular` or
+    /// `compact` (`chrome::layout::StackRow::key`). The strip draws the stack in use there.
+    pub stack_row: &'static str,
+    // --- toolbars and feeds (thread T13) ---
+    /// `toolbar_tabs` lists `closed-tabs`: the Closed tabs button may show at all.
+    pub closed_button: bool,
+    /// The tab bar's command buttons, in order.
+    pub tools: Vec<ToolButton>,
+    // --- end toolbars and feeds ---
+}
+
+impl Default for StripOptions {
+    fn default() -> Self {
+        Self {
+            close_left: false,
+            close_always: false,
+            scroll: false,
+            min_width: 0,
+            indicator: "spinner",
+            wheel: false,
+            separator: false,
+            align_close: false,
+            selection: true,
+            selection_active: true,
+            remove_spacing: false,
+            maximised: false,
+            closed: 0,
+            stack_drag: true,
+            stack_delay: 400,
+            stack_row: "off",
+            closed_button: true,
+            tools: Vec::new(),
+        }
+    }
+}
+
+/// `{"v":1,"t":"tabopts",...}`: every key always present.
+pub fn tabopts_json(options: &StripOptions) -> String {
+    super::json::Json::object(|out| {
+        out.int("v", 1);
+        out.string("t", "tabopts");
+        out.bool("closeLeft", options.close_left);
+        out.bool("closeAlways", options.close_always);
+        out.bool("scroll", options.scroll);
+        out.uint("minWidth", u64::from(options.min_width.min(400)));
+        out.string("indicator", options.indicator);
+        out.bool("wheel", options.wheel);
+        out.bool("separator", options.separator);
+        out.bool("alignClose", options.align_close);
+        out.bool("selection", options.selection);
+        out.bool("selectionActive", options.selection_active);
+        out.bool("removeSpacing", options.remove_spacing);
+        out.bool("maximised", options.maximised);
+        out.uint("closed", u64::from(options.closed.min(99)));
+        out.bool("stackDrag", options.stack_drag); // --- tab stacks (T10) ---
+        out.uint("stackDelay", u64::from(options.stack_delay.min(2000)));
+        // --- two-level stacks (T10b) --- only the three words the strip knows.
+        out.string("stackRow", if matches!(options.stack_row, "regular" | "compact") { options.stack_row } else { "off" });
+        // --- toolbars and feeds (thread T13) ---
+        out.bool("closedButton", options.closed_button);
+        out.array("tools", |list| {
+            for tool in options.tools.iter().take(crate::toolbar_prefs::MAX_COMMAND_ITEMS) {
+                list.object(|o| {
+                    o.string("k", truncate_utf16(&tool.item, MAX_TOOL_ITEM_CHARS));
+                    o.string("l", truncate_utf16(&tool.label, MAX_TOOL_LABEL_CHARS));
+                    o.uint("i", u64::from(tool.index));
+                });
+            }
+        });
+        // --- end toolbars and feeds ---
+    })
+}
+// --- end tab options ---
 
 /// `{"v":1,"t":"tabs","active":...,"items":[...]}`: the whole tab strip. Titles are capped at
 /// `MAX_TAB_TITLE_CHARS` and group names at `MAX_GROUP_NAME_CHARS`, both on character boundaries.
@@ -1551,7 +1898,29 @@ pub fn tabs_json(active: u32, items: &[TabItem]) -> String {
                 item.group_size,
             ));
         }
-        out.push_str(&format!(",\"fav\":{}}}", item.has_favicon));
+        out.push_str(&format!(",\"fav\":{}", item.has_favicon));
+        // --- tab options --- only what is set.
+        let marks = &item.marks;
+        if marks.unread {
+            out.push_str(",\"unread\":true");
+        }
+        if marks.notify > 0 {
+            out.push_str(&format!(",\"notify\":{}", marks.notify.min(MAX_NOTIFY)));
+        }
+        if marks.asleep {
+            out.push_str(",\"asleep\":true");
+        }
+        if let Some(progress) = marks.progress {
+            out.push_str(&format!(",\"pct\":{}", progress.min(100)));
+        }
+        if let Some(reload) = marks.reload {
+            out.push_str(&format!(",\"rl\":{}", reload.min(86_400)));
+        }
+        if marks.idle {
+            out.push_str(",\"idle\":true");
+        }
+        // --- end tab options ---
+        out.push('}');
     }
     out.push_str("]}");
     out
@@ -1634,6 +2003,12 @@ pub struct HoverCard {
     pub rows: Vec<HoverRow>,
     /// Rows the card does not draw.
     pub more: usize,
+    // --- tab options --- Settings > Appearance: "Show a thumbnail in tab previews" and "Show memory use".
+    /// A JPEG thumbnail of the page (`crate::thumbnail`), sent only when it is small enough.
+    pub thumb: Option<Vec<u8>>,
+    /// Memory of the tab's page process in megabytes.
+    pub memory_mb: Option<u32>,
+    // --- end tab options ---
 }
 
 /// The island menu: name field, colour swatches, member rows and the close button.
@@ -1709,6 +2084,14 @@ pub fn card_json(tok: u32, card: &HoverCard) -> String {
         out.string("fav", &budgeted_uri(card.png.as_deref(), &mut budget));
         write_hover_rows(out, &card.rows, &mut budget);
         out.uint("more", (card.more + hidden) as u64);
+        // --- tab options --- only what is there, so a card without them reads as before.
+        if let Some(uri) = card.thumb.as_deref().and_then(crate::thumbnail::data_uri) {
+            out.string("thumb", &uri);
+        }
+        if let Some(memory) = card.memory_mb {
+            out.uint("mem", u64::from(memory.min(99_999)));
+        }
+        // --- end tab options ---
     })
 }
 
@@ -1745,7 +2128,7 @@ pub fn hover_hide_json() -> String {
 
 // --- omnibox suggest ---
 /// Most rows in one `suggest` message, the default row included.
-pub const MAX_SUGGEST_ITEMS: usize = 8;
+pub const MAX_SUGGEST_ITEMS: usize = 20;
 /// Longest suggestion text and URL sent to the page, in UTF-16 code units: the unit the page
 /// validates in (JavaScript string length), so an emoji-heavy row is cut here instead of rejected
 /// there. Cuts fall on character boundaries.
@@ -1753,7 +2136,7 @@ pub const MAX_SUGGEST_TEXT_CHARS: usize = 256;
 /// Widest dropdown Rust may ask for, in CSS pixels.
 pub const MAX_SUGGEST_WIDTH: u32 = 4000;
 /// Row kinds on the wire: a search, a typed or completed address, history, a bookmark, an open tab.
-pub const SUGGEST_KINDS: [&str; 5] = ["search", "url", "hist", "bm", "tab"];
+pub const SUGGEST_KINDS: [&str; 6] = ["search", "url", "hist", "bm", "tab", "calc"];
 
 /// One dropdown row as the page shows it.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -1767,9 +2150,11 @@ pub struct SuggestItem {
     pub url: String,
     /// A favicon PNG, when one is known.
     pub png: Option<Vec<u8>>,
+    /// Show the kind badge on this row (`dd_always_badge`); sent as `"bd":true` only when set.
+    pub badge: bool,
 }
 
-/// `{"v":1,"t":"suggest","tok":..,"seq":..,"w":..,"sel":..,"q":..,"items":[{"k","text","title","url","fav"?}]}`.
+/// `{"v":1,"t":"suggest","tok":..,"seq":..,"w":..,"sel":..,"q":..,"items":[{"k","text","title","url","fav"?,"bd"?}]}`.
 /// `seq` is the edit the list answers; `tok` is the hover layer's content token (`0` for the
 /// toolbar's copy, which carries no favicons); `w` is the dropdown width in CSS pixels; `q` is the
 /// typed text the rows answer (capped at twice `MAX_SUGGEST_TEXT_CHARS` UTF-16 units), used to emphasise
@@ -1798,6 +2183,9 @@ pub fn suggest_json(tok: u32, seq: u32, w: u32, sel: usize, q: &str, items: &[Su
                     let fav = budgeted_uri(item.png.as_deref(), &mut budget);
                     if !fav.is_empty() {
                         row.string("fav", &fav);
+                    }
+                    if item.badge {
+                        row.bool("bd", true);
                     }
                 });
             }
@@ -1848,11 +2236,18 @@ pub struct RailItem {
     pub accent: String,
     /// A favicon is cached for this key (`railfav` follows).
     pub has_favicon: bool,
+    /// --- tab stacks and workspaces (T10) --- a workspace's tab count badge, 0 for none (`n`).
+    pub count: u32,
+    /// The emoji a workspace shows instead of its glyph, `""` for none.
+    pub emoji: String,
 }
+
+/// Largest tab count a rail badge carries (it shows "99+" beyond 99).
+pub const MAX_RAIL_COUNT: u32 = 9999;
 
 /// `{"v":1,"t":"rail","items":[...]}`: the whole rail, in order. At most `MAX_RAIL_ITEMS` items are
 /// sent. Labels are capped at `MAX_RAIL_LABEL_CHARS` characters; an accent that is not a safe CSS
-/// colour is sent as `""`.
+/// colour is sent as `""`. `n` and `emoji` ride only on items that have them.
 pub fn rail_json(items: &[RailItem]) -> String {
     let mut out = String::from("{\"v\":1,\"t\":\"rail\",\"items\":[");
     for (index, item) in items.iter().take(MAX_RAIL_ITEMS).enumerate() {
@@ -1861,7 +2256,7 @@ pub fn rail_json(items: &[RailItem]) -> String {
         }
         let accent = if is_safe_css_colour(&item.accent) { item.accent.as_str() } else { "" };
         out.push_str(&format!(
-            "{{\"k\":{},\"icon\":{},\"label\":{},\"active\":{},\"dot\":{},\"accent\":{},\"fav\":{}}}",
+            "{{\"k\":{},\"icon\":{},\"label\":{},\"active\":{},\"dot\":{},\"accent\":{},\"fav\":{}",
             json_string(&item.key),
             json_string(&item.icon),
             json_string(truncate_chars(&item.label, MAX_RAIL_LABEL_CHARS)),
@@ -1870,6 +2265,14 @@ pub fn rail_json(items: &[RailItem]) -> String {
             json_string(accent),
             item.has_favicon,
         ));
+        // --- tab stacks and workspaces (T10) ---
+        if item.count > 0 {
+            out.push_str(&format!(",\"n\":{}", item.count.min(MAX_RAIL_COUNT)));
+        }
+        if let Some(emoji) = crate::workspaces::clean_emoji(&item.emoji) {
+            out.push_str(&format!(",\"emoji\":{}", json_string(&emoji)));
+        }
+        out.push('}');
     }
     out.push_str("]}");
     out
@@ -1907,7 +2310,8 @@ pub fn is_popup_command(command: &Command) -> bool {
         command,
         Command::BeginDrag
             | Command::Caption(_)
-            | Command::Open(OpenTarget::Menu | OpenTarget::Site | OpenTarget::Split | OpenTarget::Reader | OpenTarget::Translate)
+            | Command::Open(OpenTarget::Menu | OpenTarget::Site | OpenTarget::Split | OpenTarget::Reader | OpenTarget::Translate | OpenTarget::Feeds)
+            | Command::Tool { .. } // --- toolbars and feeds (thread T13) ---
             | Command::DownloadsToggle { .. }
             | Command::ExtensionsButton { .. }
             | Command::Tab { action: TabAction::Menu, .. }
@@ -2005,7 +2409,7 @@ fn truncate_utf16(text: &str, max: usize) -> &str {
 }
 
 /// Standard base64 (RFC 4648 section 4) with `=` padding.
-fn base64_encode(bytes: &[u8]) -> String {
+pub fn base64_encode(bytes: &[u8]) -> String {
     const ALPHABET: &[u8; 64] =
         b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
@@ -2167,6 +2571,10 @@ mod tests {
             translate: crate::translate::Pill::Hidden,
             font_scale: 100,
             ui_font: String::new(),
+            density: crate::layout_prefs::UiDensity::Regular,
+            compact_menus: false,
+            look: crate::window_prefs::Look::default(), // --- window and panels (thread T9) ---
+            bar: BarItems::default(),
             theme: Vec::new(),
         }
     }
@@ -2343,6 +2751,10 @@ mod tests {
         // --- vertical sidebar (lane S) ---
         assert_eq!(workspace_json("Work & Play", "g:code").as_deref(), Some(r#"{"v":1,"t":"workspace","name":"Work & Play","icon":"g:code"}"#));
         assert_eq!(workspace_json("Work", "javascript:alert(1)"), None);
+        // --- T10 --- the emoji rides only when set and clean.
+        assert_eq!(workspace_json_with("Work", "g:code", Some("🚀"), true).as_deref(), Some(r#"{"v":1,"t":"workspace","name":"Work","icon":"g:code","emoji":"🚀"}"#));
+        assert_eq!(workspace_json_with("Work", "g:code", Some("a b"), true), workspace_json("Work", "g:code"));
+        assert_eq!(workspace_json_with("Work", "g:code", None, false).as_deref(), Some(r#"{"v":1,"t":"workspace","name":"Work","icon":"g:code","off":true}"#));
         // --- end vertical sidebar ---
         assert_eq!(snap_json("history", |d| d.int("count", 0)).as_deref(), Some(r#"{"v":1,"t":"snap","p":"history","d":{"count":0}}"#));
         assert_eq!(snap_json("History", |_| {}), None);
@@ -3220,6 +3632,15 @@ mod tests {
             translate: crate::translate::Pill::On,
             font_scale: 115,
             ui_font: "Consolas".to_string(),
+            density: crate::layout_prefs::UiDensity::Compact,
+            compact_menus: true,
+            look: crate::window_prefs::Look::default(), // --- window and panels (thread T9) ---
+            bar: BarItems {
+                items: Some("back,reload,cmd:new-tab".to_owned()),
+                tools: vec![ToolButton { item: "cmd:new-tab".to_owned(), label: "New tab".to_owned(), index: 2 }],
+                extra: 32,
+                feeds: 2,
+            },
             theme: vec![
                 ("bg", "#101010".to_string()),
                 ("text", "rgba(1, 2, 3, 0.5)".to_string()),
@@ -3227,14 +3648,14 @@ mod tests {
         };
         assert_eq!(
             state.to_json(),
-            r##"{"t":"state","scale":1,"pillx":0,"pillw":624,"menux":627,"solid":true,"dark":false,"back":true,"forward":false,"loading":true,"split":true,"bookmarked":false,"progress":42,"showProgress":false,"security":"secure","label":"Secure","permblocked":true,"zoom":125,"showZoom":true,"private":true,"reader":"available","translate":"on","fontScale":115,"uiFont":"Consolas","theme":{"bg":"#101010","text":"rgba(1, 2, 3, 0.5)"}}"##
+            r##"{"t":"state","scale":1,"pillx":0,"pillw":624,"menux":627,"solid":true,"dark":false,"back":true,"forward":false,"loading":true,"split":true,"bookmarked":false,"progress":42,"showProgress":false,"security":"secure","label":"Secure","permblocked":true,"zoom":125,"showZoom":true,"private":true,"reader":"available","translate":"on","fontScale":115,"uiFont":"Consolas","density":"compact","compactMenus":true,"look":{"motion":true,"scroll":false,"mono":false,"fade":false,"bg":false,"panelClose":true,"folderCounts":true},"items":"back,reload,cmd:new-tab","tools":[{"k":"cmd:new-tab","l":"New tab","i":2}],"extra":32,"feeds":2,"theme":{"bg":"#101010","text":"rgba(1, 2, 3, 0.5)"}}"##
         );
     }
 
     #[test]
     fn state_json_with_empty_theme() {
         let json = sample_state().to_json();
-        assert!(json.ends_with(r#""label":"Secure","permblocked":false,"zoom":100,"showZoom":true,"private":false,"reader":"none","translate":"none","fontScale":100,"uiFont":"","theme":{}}"#), "{json}");
+        assert!(json.ends_with(r#""label":"Secure","permblocked":false,"zoom":100,"showZoom":true,"private":false,"reader":"none","translate":"none","fontScale":100,"uiFont":"","density":"regular","compactMenus":false,"look":{"motion":true,"scroll":false,"mono":false,"fade":false,"bg":false,"panelClose":true,"folderCounts":true},"theme":{}}"#), "{json}");
         assert!(json.contains(r#""dark":true"#));
     }
 
@@ -3530,6 +3951,19 @@ mod tests {
         );
     }
 
+    /// --- tab stacks (T10) ---
+    #[test]
+    fn tab_stack_and_rail_wheel_carry_exactly_their_fields() {
+        assert_eq!(ok(r#"{"v":1,"t":"tabstack","id":3,"onto":7}"#), Command::TabStack { id: 3, onto: 7 });
+        assert_eq!(err(r#"{"v":1,"t":"tabstack","id":3}"#), ProtocolError::MissingField("onto"));
+        assert_eq!(ok(r#"{"v":1,"t":"railwheel","d":-2}"#), Command::RailWheel { d: -2 });
+        assert_eq!(ok(r#"{"v":1,"t":"railwheel","d":8}"#), Command::RailWheel { d: 8 });
+        assert_eq!(err(r#"{"v":1,"t":"railwheel","d":0}"#), ProtocolError::InvalidValue("d"), "no turn, no message");
+        assert_eq!(err(r#"{"v":1,"t":"railwheel","d":9}"#), ProtocolError::InvalidValue("d"));
+        assert_eq!(err(r#"{"v":1,"t":"railwheel","d":1.5}"#), ProtocolError::WrongType("d"));
+        assert_eq!(err(r#"{"v":1,"t":"railwheel","d":1,"x":2}"#), ProtocolError::UnknownKey("x".into()), "no extra fields");
+    }
+
     #[test]
     fn tab_move_requires_both_ids_as_u32() {
         assert_eq!(
@@ -3662,6 +4096,7 @@ mod tests {
             collapsed: false,
             group_size: 0,
             has_favicon: false,
+            marks: Default::default(),
         }
     }
 
@@ -3682,6 +4117,7 @@ mod tests {
             private: true,
             marker: 2,
             has_favicon: true,
+            marks: Default::default(),
             ..plain_tab(7, "Home")
         };
         assert_eq!(
@@ -3985,6 +4421,8 @@ mod tests {
             dot: false,
             accent: accent.to_owned(),
             has_favicon: false,
+            count: 0,
+            emoji: String::new(),
         }
     }
 
@@ -4155,6 +4593,8 @@ mod tests {
                 dot: true,
                 accent: String::new(),
                 has_favicon: false,
+                count: 0,
+                emoji: String::new(),
             },
             RailItem {
                 key: "ws:4".to_owned(),
@@ -4164,6 +4604,8 @@ mod tests {
                 dot: false,
                 accent: "#4385d1".to_owned(),
                 has_favicon: false,
+                count: 0,
+                emoji: String::new(),
             },
         ];
         assert_eq!(
@@ -4176,6 +4618,21 @@ mod tests {
             )
         );
         assert_eq!(rail_json(&[]), r#"{"v":1,"t":"rail","items":[]}"#);
+    }
+
+    /// --- tab stacks and workspaces (T10) --- a workspace's tab count and emoji ride only when set.
+    #[test]
+    fn rail_items_carry_a_tab_count_and_an_emoji_only_when_they_have_one() {
+        let mut work = rail_item("ws:4", "Work", "");
+        work.count = 12;
+        work.emoji = "🚀".to_owned();
+        let json = rail_json(&[work.clone()]);
+        assert!(json.ends_with(r#""fav":false,"n":12,"emoji":"🚀"}]}"#), "{json}");
+        work.count = 100_000;
+        work.emoji = "not an emoji at all".to_owned();
+        let json = rail_json(&[work]);
+        assert!(json.contains(r#""n":9999"#) && !json.contains("emoji"), "a capped count, and text no emoji check passes is left out: {json}");
+        assert!(!rail_json(&[rail_item("home", "Home", "")]).contains("\"n\""));
     }
 
     #[test]
@@ -4354,6 +4811,7 @@ mod tests {
             png: Some(vec![1, 2, 3]),
             rows: rows.clone(),
             more: 1,
+            ..HoverCard::default() // --- tab options ---
         });
         assert!(card.contains(&format!("\"title\":\"{}\"", "x".repeat(MAX_TAB_TITLE_CHARS))));
         assert!(card.contains("\"marker\":-1"));
@@ -4403,6 +4861,7 @@ mod tests {
             png: None,
             rows: vec![HoverRow { title: "Other".into(), active: true, linked: true, png: None }],
             more: 0,
+            ..HoverCard::default() // --- tab options ---
         });
         let island = island_json(8, &HoverIsland {
             name: String::new(),
@@ -4432,17 +4891,18 @@ mod tests {
 
     // --- omnibox suggest ---
     fn item(kind: &str, text: &str, title: &str, url: &str) -> SuggestItem {
-        SuggestItem { kind: kind.into(), text: text.into(), title: title.into(), url: url.into(), png: None }
+        SuggestItem { kind: kind.into(), text: text.into(), title: title.into(), url: url.into(), png: None, badge: false }
     }
 
     #[test]
     fn suggest_commands_parse_with_exact_fields() {
         let ok = |text: &str| parse_command(text).unwrap();
         assert_eq!(ok(r#"{"v":1,"t":"suggestPick","seq":9,"i":7}"#), Command::SuggestPick { seq: 9, i: 7 });
+        assert_eq!(ok(r#"{"v":1,"t":"suggestPick","seq":9,"i":19}"#), Command::SuggestPick { seq: 9, i: 19 }, "the drop-down holds up to twenty rows");
         assert_eq!(ok(r#"{"v":1,"t":"suggestPreview","seq":0,"i":0}"#), Command::SuggestPreview { seq: 0, i: 0 });
         assert_eq!(ok(r#"{"v":1,"t":"suggestEnd"}"#), Command::SuggestEnd);
         for bad in [
-            r#"{"v":1,"t":"suggestPick","seq":9,"i":8}"#,
+            r#"{"v":1,"t":"suggestPick","seq":9,"i":20}"#,
             r#"{"v":1,"t":"suggestPick","seq":9,"i":-1}"#,
             r#"{"v":1,"t":"suggestPick","seq":9,"i":"1"}"#,
             r#"{"v":1,"t":"suggestPick","seq":9}"#,
@@ -4518,14 +4978,14 @@ mod tests {
 
     #[test]
     fn suggest_json_caps_rows_clamps_selection_and_width() {
-        let rows: Vec<SuggestItem> = (0..12).map(|i| item("hist", &format!("h{i}"), "t", "u")).collect();
+        let rows: Vec<SuggestItem> = (0..25).map(|i| item("hist", &format!("h{i}"), "t", "u")).collect();
         let json = suggest_json(1, 2, 999_999, 40, &"q".repeat(600), &rows);
         assert_eq!(json.matches(r#""k":"hist""#).count(), MAX_SUGGEST_ITEMS);
         assert!(json.contains(&format!(r#""w":{MAX_SUGGEST_WIDTH},"sel":{}"#, MAX_SUGGEST_ITEMS - 1)), "{json}");
         assert!(json.contains(&format!(r#""q":"{}""#, "q".repeat(MAX_SUGGEST_TEXT_CHARS * 2))), "the query is capped");
         let empty = suggest_json(0, 5, 0, 3, "", &[]);
         assert_eq!(empty, r#"{"v":1,"t":"suggest","tok":0,"seq":5,"w":0,"sel":0,"q":"","items":[]}"#);
-        assert_eq!(suggest_sel_json(5, 99), r#"{"v":1,"t":"suggestSel","seq":5,"sel":7}"#);
+        assert_eq!(suggest_sel_json(5, 99), r#"{"v":1,"t":"suggestSel","seq":5,"sel":19}"#);
     }
 
     #[test]
@@ -4602,4 +5062,165 @@ mod tests {
         );
     }
     // --- end omnibox suggest ---
+
+    // --- tab options ---
+    #[test]
+    fn a_tab_carries_only_the_marks_that_are_set() {
+        let plain = tabs_json(1, &[plain_tab(1, "Plain")]);
+        assert!(!plain.contains("unread") && !plain.contains("notify") && !plain.contains("asleep") && !plain.contains("\"pct\"") && !plain.contains("\"rl\"") && !plain.contains("idle"), "{plain}");
+        let mut marked = plain_tab(2, "Marked");
+        marked.marks = TabMarks { unread: true, notify: 1200, asleep: true, progress: Some(150), reload: Some(90_000), idle: true };
+        let json = tabs_json(1, &[marked]);
+        assert!(json.ends_with(r#""fav":false,"unread":true,"notify":999,"asleep":true,"pct":100,"rl":86400,"idle":true}]}"#), "counts and times are capped: {json}");
+        let mut zero = plain_tab(3, "Zero");
+        zero.marks = TabMarks { notify: 0, progress: Some(0), reload: Some(0), ..TabMarks::default() };
+        let json = tabs_json(1, &[zero]);
+        assert!(json.ends_with(r#""fav":false,"pct":0,"rl":0}]}"#), "no count of zero, but a progress of 0 and a reload due now are values: {json}");
+    }
+
+    #[test]
+    fn the_strip_options_message_always_carries_every_key() {
+        let json = tabopts_json(&StripOptions::default());
+        assert_eq!(
+            json,
+            r#"{"v":1,"t":"tabopts","closeLeft":false,"closeAlways":false,"scroll":false,"minWidth":0,"indicator":"spinner","wheel":false,"separator":false,"alignClose":false,"selection":true,"selectionActive":true,"removeSpacing":false,"maximised":false,"closed":0,"stackDrag":true,"stackDelay":400,"stackRow":"off","closedButton":true,"tools":[]}"#
+        );
+        // --- tab stacks (T10) --- the delay is capped like the setting.
+        assert!(tabopts_json(&StripOptions { stack_drag: false, stack_delay: 9_000, ..StripOptions::default() }).contains(r#""stackDrag":false,"stackDelay":2000,"stackRow":"off","#));
+        // --- two-level stacks (T10b) --- the second row's word, and nothing the strip does not know.
+        assert!(tabopts_json(&StripOptions { stack_row: "compact", ..StripOptions::default() }).contains(r#""stackRow":"compact","#));
+        assert!(tabopts_json(&StripOptions { stack_row: "huge", ..StripOptions::default() }).contains(r#""stackRow":"off","#));
+        let set = StripOptions { close_left: true, min_width: 900, indicator: "bar", closed: 500, maximised: true, ..StripOptions::default() };
+        let json = tabopts_json(&set);
+        assert!(json.contains(r#""closeLeft":true"#) && json.contains(r#""minWidth":400"#) && json.contains(r#""indicator":"bar""#) && json.contains(r#""closed":99"#), "{json}");
+    }
+
+    #[test]
+    fn tab_options_messages_match_committed_fixture() {
+        let mut plain = plain_tab(1, "Plain");
+        plain.has_favicon = false;
+        let mut marked = plain_tab(2, "(3) Inbox");
+        marked.marks = TabMarks { unread: true, notify: 3, asleep: true, progress: Some(45), reload: Some(30), idle: true };
+        let mut bar = plain_tab(3, "Loading");
+        bar.marks = TabMarks { progress: Some(75), ..TabMarks::default() };
+        let options = StripOptions { close_left: true, close_always: true, scroll: true, min_width: 180, indicator: "bar", wheel: true, separator: true, align_close: true, selection: true, selection_active: false, remove_spacing: true, maximised: true, closed: 4, stack_drag: false, stack_delay: 250, stack_row: "regular", closed_button: true, tools: vec![ToolButton { item: "cmd:new-tab".to_owned(), label: "New tab".to_owned(), index: 1 }] };
+        let content = format!("{{\"tabs\":{},\"opts\":{},\"defaults\":{}}}\n", tabs_json(2, &[plain, marked, bar]), tabopts_json(&options), tabopts_json(&StripOptions::default()));
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/test/fixtures/tab-options-messages.json");
+        if std::env::var_os("BOWSER_WRITE_FIXTURES").is_some_and(|value| value == "1") {
+            std::fs::write(&path, content).expect("write tab options fixture");
+        } else {
+            assert_eq!(std::fs::read_to_string(path).expect("committed tab options fixture").replace("\r\n", "\n"), content);
+        }
+    }
+
+    #[test]
+    fn the_hover_card_carries_a_thumbnail_and_memory_only_when_it_has_them() {
+        let plain = HoverCard { title: "T".into(), host: "example.com".into(), ..HoverCard::default() };
+        let json = card_json(3, &plain);
+        assert!(!json.contains("thumb") && !json.contains("\"mem\""), "{json}");
+        let jpeg = vec![0xFF, 0xD8, 1, 2, 3, 4, 0xFF, 0xD9];
+        let full = HoverCard { thumb: Some(jpeg.clone()), memory_mb: Some(412), ..plain.clone() };
+        let json = card_json(3, &full);
+        assert!(json.contains(r#""thumb":"data:image/jpeg;base64,/9gBAgME/9k=""#), "{json}");
+        assert!(json.ends_with(r#""more":0,"thumb":"data:image/jpeg;base64,/9gBAgME/9k=","mem":412}"#), "{json}");
+        // Not a JPEG, or too big: no thumbnail rather than a broken one.
+        let png = HoverCard { thumb: Some(vec![0x89, b'P', b'N', b'G']), ..plain.clone() };
+        assert!(!card_json(3, &png).contains("thumb"));
+        let mut big = vec![0xFF, 0xD8];
+        big.resize(crate::thumbnail::MAX_THUMB_BYTES + 10, 0);
+        big.extend([0xFF, 0xD9]);
+        assert!(!card_json(3, &HoverCard { thumb: Some(big), ..plain.clone() }).contains("thumb"));
+        assert!(card_json(3, &HoverCard { memory_mb: Some(10_000_000), ..plain }).contains(r#""mem":99999"#), "memory is capped");
+    }
+
+    #[test]
+    fn hover_preview_messages_match_committed_fixture() {
+        let card = HoverCard { title: "Docs".into(), host: "example.com".into(), thumb: Some(vec![0xFF, 0xD8, 1, 2, 3, 4, 0xFF, 0xD9]), memory_mb: Some(412), ..HoverCard::default() };
+        let memory_only = HoverCard { title: "Mail".into(), host: "mail.example".into(), memory_mb: Some(88), ..HoverCard::default() };
+        let content = format!("{{\"card\":{},\"memory\":{}}}\n", card_json(5, &card), card_json(6, &memory_only));
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/test/fixtures/hover-preview-messages.json");
+        if std::env::var_os("BOWSER_WRITE_FIXTURES").is_some_and(|value| value == "1") {
+            std::fs::write(&path, content).expect("write hover preview fixture");
+        } else {
+            assert_eq!(std::fs::read_to_string(path).expect("committed hover preview fixture").replace("\r\n", "\n"), content);
+        }
+    }
+
+    #[test]
+    fn the_strip_selection_and_closed_tabs_commands_are_validated() {
+        assert_eq!(ok(r#"{"v":1,"t":"tabsel","ids":"3,9,12"}"#), Command::TabSelection { ids: vec![3, 9, 12] });
+        assert_eq!(ok(r#"{"v":1,"t":"tabsel","ids":""}"#), Command::TabSelection { ids: vec![] }, "empty clears the selection");
+        assert_eq!(ok(r#"{"v":1,"t":"closedtabs"}"#), Command::ClosedTabs);
+        assert_eq!(ok(r#"{"v":1,"t":"tab","a":"dblclick","id":4}"#), Command::Tab { action: TabAction::DoubleClick, id: 4 });
+        for bad in [r#"{"v":1,"t":"tabsel","ids":"1,,2"}"#, r#"{"v":1,"t":"tabsel","ids":"1,x"}"#, r#"{"v":1,"t":"tabsel","ids":"-1"}"#, r#"{"v":1,"t":"tabsel","ids":" 1"}"#, r#"{"v":1,"t":"tabsel","ids":"99999999999"}"#, r#"{"v":1,"t":"tabsel","ids":1}"#, r#"{"v":1,"t":"tabsel"}"#] {
+            assert!(parse_command(bad).is_err(), "{bad}");
+        }
+        let many = (0..=MAX_TAB_SELECTION).map(|n| n.to_string()).collect::<Vec<_>>().join(",");
+        assert!(parse_command(&format!(r#"{{"v":1,"t":"tabsel","ids":"{many}"}}"#)).is_err(), "more than the strip can show");
+        let most = (0..MAX_TAB_SELECTION).map(|n| n.to_string()).collect::<Vec<_>>().join(",");
+        assert!(parse_command(&format!(r#"{{"v":1,"t":"tabsel","ids":"{most}"}}"#)).is_ok());
+        assert!(parse_command(r#"{"v":1,"t":"closedtabs","id":1}"#).is_err(), "no extra fields");
+        assert!(parse_command(r#"{"v":1,"t":"tab","a":"rename","id":4}"#).is_err());
+    }
+
+    #[test]
+    fn the_sessions_panel_family_is_its_own_kind() {
+        assert_eq!(
+            ok(r#"{"v":1,"t":"sess","a":"save","text":"Work","n":0}"#),
+            Command::Panel { kind: PanelType::Sessions, f: PanelFields { a: "save".into(), text: Some("Work".into()), n: Some(0), ..PanelFields::default() } }
+        );
+        assert!(parse_command(r#"{"v":1,"t":"sess","a":"Save"}"#).is_err(), "actions are lower-case words");
+    }
+    // --- end tab options ---
 }
+
+// --- toolbars and feeds (thread T13) ---
+#[cfg(test)]
+mod toolbar_wire_tests {
+    use super::*;
+
+    #[test]
+    fn a_tool_command_names_its_bar_item_and_place_and_nothing_else() {
+        let ok = parse_command(r#"{"v":1,"t":"tool","b":"address","k":"cmd:new-tab","i":2}"#).unwrap();
+        assert_eq!(ok, Command::Tool { bar: ToolBar::Address, item: "cmd:new-tab".into(), index: 2 });
+        let tabs = parse_command(r#"{"v":1,"t":"tool","b":"tabs","k":"chain:3","i":0}"#).unwrap();
+        assert_eq!(tabs, Command::Tool { bar: ToolBar::Tabs, item: "chain:3".into(), index: 0 });
+        for bad in [
+            r#"{"v":1,"t":"tool","b":"panel","k":"cmd:a","i":0}"#,
+            r#"{"v":1,"t":"tool","b":"address","k":"Cmd:A","i":0}"#,
+            r#"{"v":1,"t":"tool","b":"address","k":"","i":0}"#,
+            r#"{"v":1,"t":"tool","b":"address","k":"a b","i":0}"#,
+            r#"{"v":1,"t":"tool","b":"address","k":"cmd:a","i":14}"#,
+            r#"{"v":1,"t":"tool","b":"address","k":"cmd:a","i":-1}"#,
+            r#"{"v":1,"t":"tool","b":"address","k":"cmd:a"}"#,
+            r#"{"v":1,"t":"tool","b":"address","k":"cmd:a","i":0,"x":1}"#,
+        ] {
+            assert!(parse_command(bad).is_err(), "{bad}");
+        }
+        assert!(is_popup_command(&ok), "rate limited like the other toolbar buttons that can open something");
+    }
+
+    #[test]
+    fn the_feed_button_is_an_open_target_and_a_panel_family_of_its_own() {
+        assert_eq!(parse_command(r#"{"v":1,"t":"open","a":"feeds"}"#).unwrap(), Command::Open(OpenTarget::Feeds));
+        let panel = parse_command(r#"{"v":1,"t":"feed","a":"refresh"}"#).unwrap();
+        assert!(matches!(panel, Command::Panel { kind: PanelType::Feeds, .. }));
+        assert!(parse_command(r#"{"v":1,"t":"feed","a":"preview","text":"https://a.example/","extra":1}"#).is_err());
+    }
+
+    #[test]
+    fn the_panel_bars_extra_buttons_are_rail_keys_of_their_own() {
+        for n in [0u8, 1, 13] {
+            let key = RailKeyWire::Tool(n);
+            assert_eq!(key.to_wire(), format!("tool:{n}"));
+            assert_eq!(RailKeyWire::parse(&key.to_wire()), Some(key));
+        }
+        for bad in ["tool:", "tool:14", "tool:01", "tool:-1", "tool:x", "tool:100", "tools:1"] {
+            assert_eq!(RailKeyWire::parse(bad), None, "{bad}");
+        }
+        // A tool can be clicked but never dragged: a rail move names only workspaces and apps.
+        assert!(parse_command(r#"{"v":1,"t":"railmove","k":"tool:1","before":""}"#).is_err());
+        assert!(parse_command(r#"{"v":1,"t":"rail","a":"click","k":"tool:1"}"#).is_ok());
+    }
+}
+// --- end toolbars and feeds ---

@@ -1,6 +1,24 @@
 // Cross-language contract test: the exact strings below are copied from the Rust unit tests in
 // src/chrome_host/protocol.rs (tabs_json_*, fav_json_*). If Rust output changes, update both sides.
 import { test } from 'node:test';
+import { readFileSync as readSource } from 'node:fs';
+import { dirname as dirOf, join as joinPath } from 'node:path';
+import { fileURLToPath as pathOf } from 'node:url';
+
+// --- look state (fix group B) --- every surface that applies a `state` passes the text size, font,
+// density, menu rows and window look on, so those settings reach the pages, panels, menus and dialogs.
+test('every applyTheme call passes fontScale, uiFont, density, compactMenus and look from its state', () => {
+  const src = joinPath(dirOf(pathOf(import.meta.url)), '..', 'src');
+  const files = ['main.ts', 'bookmark-bar.ts', 'tabs.ts', 'rail.ts', 'shell.ts', 'panel.ts', 'settings-page.ts', 'history-page.ts', 'downloads-page.ts', 'dialog.ts', 'split.ts'];
+  for (const file of files) {
+    const text = readSource(joinPath(src, file), 'utf8');
+    const calls = [...text.matchAll(/applyTheme\((\w+)\.theme,[^)]*\)/g)];
+    assert.ok(calls.length > 0, `${file} applies the state`);
+    for (const [call, m] of calls) {
+      for (const field of ['fontScale', 'uiFont', 'density', 'compactMenus', 'look']) assert.ok(call.includes(`${m}.${field}`), `${file}: ${call} passes ${field}`);
+    }
+  }
+});
 import assert from 'node:assert/strict';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -25,7 +43,7 @@ test('foundation Rust fixture messages parse across the bridge', () => {
   assert.deepEqual(parseInbound(fixture.state), {
     t: 'state', scale: 1.25, pillx: 0, pillw: 624, menux: 627,
     solid: true, dark: true, back: false, forward: false, loading: false, split: false, bookmarked: false,
-    progress: 0, security: 'secure', label: 'Secure', showProgress: true, permblocked: false, zoom: 100, showZoom: true, private: true, reader: 'none', translate: 'none', fontScale: 100, uiFont: '', theme: { bg: '#123456', text: '#fff' },
+    progress: 0, security: 'secure', label: 'Secure', showProgress: true, permblocked: false, zoom: 100, showZoom: true, private: true, reader: 'none', translate: 'none', fontScale: 100, uiFont: '', density: 'regular', compactMenus: false, look: { motion: true, scroll: false, mono: false, fade: false, bg: false, panelClose: true, folderCounts: true }, compactMenus: false, theme: { bg: '#123456', text: '#fff' },
   });
   assert.deepEqual(parseInbound(fixture.tabs), {
     t: 'tabs', active: 7, items: [

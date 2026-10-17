@@ -137,6 +137,23 @@ pub struct Workspace {
     active_tab: TabId,
     icon: WorkspaceIcon,
     colour: Option<WorkspaceColour>,
+    /// --- tab stacks and workspaces (T10) --- an emoji (or a short text) shown instead of the icon.
+    emoji: Option<String>,
+}
+
+/// Longest workspace emoji, in characters (a family or flag sequence is several).
+pub const MAX_EMOJI_CHARS: usize = 8;
+const MAX_EMOJI_BYTES: usize = 32;
+
+/// A workspace emoji as typed: trimmed, short, no control characters. `None` for an empty or
+/// unusable text, which leaves the workspace with its icon.
+pub fn clean_emoji(text: &str) -> Option<String> {
+    let text = text.trim();
+    (!text.is_empty()
+        && text.chars().count() <= MAX_EMOJI_CHARS
+        && text.len() <= MAX_EMOJI_BYTES
+        && !text.chars().any(|c| c.is_control() || c.is_whitespace()))
+    .then(|| text.to_owned())
 }
 
 impl Workspace {
@@ -163,6 +180,10 @@ impl Workspace {
     }
     pub fn set_colour(&mut self, colour: Option<WorkspaceColour>) {
         self.colour = colour;
+    }
+    /// The emoji shown instead of the icon, if any.
+    pub fn emoji(&self) -> Option<&str> {
+        self.emoji.as_deref()
     }
 }
 
@@ -206,6 +227,7 @@ impl WorkspaceSet {
                 active_tab: first_tab,
                 icon: WorkspaceIcon::default(),
                 colour: None,
+                emoji: None,
             }],
             active: WorkspaceId(0),
             next_id: 1,
@@ -316,6 +338,27 @@ impl WorkspaceSet {
             .tabs
             .insert(new_index.min(workspace.tabs.len()), tab);
         Ok(())
+    }
+
+    /// --- tab stacks and workspace rules (T10) --- moves `tab` to the end of workspace `target`. A
+    /// workspace keeps at least one tab, so moving its last one is refused (`LastTab`). Moving a tab
+    /// to the workspace it is in changes nothing.
+    pub fn move_tab_to(&mut self, tab: TabId, target: WorkspaceId) -> Result<(), WorkspaceError> {
+        let source = self.workspace_for(tab).ok_or(WorkspaceError::NotFound)?;
+        if self.get(target).is_none() {
+            return Err(WorkspaceError::NotFound);
+        }
+        if source == target {
+            return Ok(());
+        }
+        self.remove_tab(tab)?;
+        self.get_mut(target)?.tabs.push(tab);
+        Ok(())
+    }
+
+    /// The workspace named `name` (names are unique, compared without case).
+    pub fn find_by_name(&self, name: &str) -> Option<WorkspaceId> {
+        self.workspaces.iter().find(|workspace| workspace.name.eq_ignore_ascii_case(name.trim())).map(|workspace| workspace.id)
     }
 
     pub fn sync_order(&mut self, ordered: &[TabId]) {
@@ -452,6 +495,7 @@ impl WorkspaceSet {
             active_tab: first_tab,
             icon,
             colour: Some(colour),
+            emoji: None,
         });
         Ok(id)
     }
@@ -484,9 +528,19 @@ impl WorkspaceSet {
         Ok(())
     }
 
+    /// Choosing an icon also puts the icon back in place of an emoji (--- T10 ---).
     pub fn set_icon(&mut self, id: WorkspaceId, icon: WorkspaceIcon) -> Result<(), WorkspaceError> {
-        self.get_mut(id)?.icon = icon;
+        let workspace = self.get_mut(id)?;
+        workspace.icon = icon;
+        workspace.emoji = None;
         Ok(())
+    }
+    /// --- T10 --- shows `emoji` instead of the icon (`None`, or text [`clean_emoji`] refuses, goes
+    /// back to the icon). Returns whether the workspace now has an emoji.
+    pub fn set_emoji(&mut self, id: WorkspaceId, emoji: Option<&str>) -> Result<bool, WorkspaceError> {
+        let workspace = self.get_mut(id)?;
+        workspace.emoji = emoji.and_then(clean_emoji);
+        Ok(workspace.emoji.is_some())
     }
     pub fn set_colour(
         &mut self,
@@ -589,7 +643,7 @@ impl WorkspaceSet {
                 .collect::<Vec<_>>()
                 .join(",");
             out.push_str(&format!(
-                "workspace={}\t{}\t{}\t{}\t{}\t{}\n",
+                "workspace={}\t{}\t{}\t{}\t{}\t{}",
                 workspace.id.0,
                 encode(&workspace.name),
                 workspace.active_tab.0,
@@ -597,6 +651,12 @@ impl WorkspaceSet {
                 workspace.icon.key(),
                 workspace.colour.map_or("-", WorkspaceColour::key),
             ));
+            // --- T10 --- the emoji only when there is one, so files without one read as before.
+            if let Some(emoji) = &workspace.emoji {
+                out.push('\t');
+                out.push_str(&encode(emoji));
+            }
+            out.push('\n');
         }
         out
     }
@@ -657,6 +717,8 @@ impl WorkspaceSet {
                 .and_then(WorkspaceIcon::parse)
                 .unwrap_or_default();
             let colour = fields.next().and_then(WorkspaceColour::parse);
+            // --- T10 --- an optional seventh field; older files have none, and older builds ignore it.
+            let emoji = fields.next().filter(|field| *field != "-").and_then(|field| decode(field).ok()).and_then(|text| clean_emoji(&text));
             if !ids.insert(id)
                 || workspaces
                     .iter()
@@ -687,6 +749,7 @@ impl WorkspaceSet {
                 active_tab,
                 icon,
                 colour,
+                emoji,
             });
         }
         if workspaces.is_empty() || workspaces.len() > MAX_WORKSPACES {
@@ -1005,5 +1068,43 @@ mod tests {
             set.remove_workspace(set.active_id()),
             Err(WorkspaceError::LastWorkspace)
         );
+    }
+
+    /// --- tab stacks and workspace rules (T10) ---
+    #[test]
+    fn a_tab_moves_to_another_workspace_but_never_leaves_one_empty() {
+        let mut set = WorkspaceSet::new("Default", TabId(1));
+        set.add_tab(TabId(2)).unwrap();
+        let work = set.create("Work", TabId(3)).unwrap();
+        assert_eq!(set.find_by_name(" work "), Some(work), "names compare without case");
+        assert_eq!(set.find_by_name("Play"), None);
+        set.move_tab_to(TabId(2), work).unwrap();
+        assert_eq!(set.get(work).unwrap().tabs(), [TabId(3), TabId(2)]);
+        assert_eq!(set.workspace_for(TabId(2)), Some(work));
+        assert_eq!(set.move_tab_to(TabId(1), work), Err(WorkspaceError::LastTab), "Default would be left empty");
+        assert_eq!(set.move_tab_to(TabId(2), work), Ok(()), "already there");
+        assert_eq!(set.move_tab_to(TabId(9), work), Err(WorkspaceError::NotFound));
+        assert_eq!(set.move_tab_to(TabId(2), WorkspaceId(77)), Err(WorkspaceError::NotFound));
+    }
+
+    /// --- T10 --- "icon or emoji".
+    #[test]
+    fn a_workspace_shows_an_emoji_instead_of_its_icon_and_keeps_it_in_the_file() {
+        let mut set = WorkspaceSet::new("Default", TabId(1));
+        let work = set.create("Work", TabId(2)).unwrap();
+        assert_eq!(set.set_emoji(work, Some(" 🚀 ")), Ok(true));
+        assert_eq!(set.get(work).unwrap().emoji(), Some("🚀"));
+        let text = set.serialize();
+        assert!(text.contains("\t%F0%9F%9A%80\n"), "{text}");
+        let parsed = WorkspaceSet::parse(&text).unwrap();
+        assert_eq!(parsed.get(work).unwrap().emoji(), Some("🚀"));
+        assert_eq!(parsed.get(WorkspaceId(0)).unwrap().emoji(), None, "a line without the field has none");
+        set.set_icon(work, WorkspaceIcon::Leaf).unwrap();
+        assert_eq!(set.get(work).unwrap().emoji(), None, "choosing an icon puts it back");
+        assert_eq!(set.set_emoji(work, Some("too long for a badge")), Ok(false));
+        assert_eq!(clean_emoji("👨‍👩‍👧"), Some("👨‍👩‍👧".to_owned()), "a family sequence fits");
+        assert_eq!(clean_emoji("a\u{7}"), None);
+        assert_eq!(clean_emoji("   "), None);
+        assert!(!set.serialize().lines().any(|line| line.split('\t').count() > 6), "no emoji: the six fields older builds write");
     }
 }

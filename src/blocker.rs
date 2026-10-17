@@ -50,7 +50,12 @@
 //!   the hook strips (see [`youtube`]), under the same switch, site exceptions and private-tab
 //!   rule as every request rule.
 
+pub mod cookies;
+pub mod fetch;
 pub(crate) mod json;
+pub mod site_rules;
+pub mod sources;
+pub mod x_promoted;
 pub mod youtube;
 
 use std::{
@@ -72,9 +77,114 @@ pub const MAX_PATH_RULES: usize = 25_000;
 pub const MAX_SUBSTRING_RULES: usize = 256;
 pub const MAX_COSMETIC_RULES: usize = 2_048;
 const MAX_PATTERN_BYTES: usize = 160;
-const MAX_ALLOWED_SITES: usize = 1000;
+/// How much the blocker stops on a page: nothing, trackers only, or trackers and ads.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Ord, PartialOrd, Hash)]
+pub enum Level {
+    None,
+    Trackers,
+    #[default]
+    Ads,
+}
 
-#[derive(Debug, Eq, PartialEq)]
+impl Level {
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Trackers => "trackers",
+            Self::Ads => "ads",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "none" => Some(Self::None),
+            "trackers" => Some(Self::Trackers),
+            "ads" => Some(Self::Ads),
+            _ => None,
+        }
+    }
+
+    /// The level after this one, for the "next blocking level for this site" command: none, trackers,
+    /// trackers and ads, then none again.
+    pub fn next(self) -> Self {
+        match self {
+            Self::None => Self::Trackers,
+            Self::Trackers => Self::Ads,
+            Self::Ads => Self::None,
+        }
+    }
+
+    /// The global level the settings describe: `blocker_enabled=false` is "none".
+    pub fn from_settings(enabled: bool, level: crate::settings::BlockerLevel) -> Self {
+        match (enabled, level) {
+            (false, _) => Self::None,
+            (true, crate::settings::BlockerLevel::Trackers) => Self::Trackers,
+            (true, crate::settings::BlockerLevel::Ads) => Self::Ads,
+        }
+    }
+}
+
+/// Which kind of rule a list line is: set by `! @kind trackers|ads` marker lines inside the
+/// built-in list, or by the kind of the source a list was added as.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ListKind {
+    Trackers,
+    Ads,
+}
+
+/// Which lines of a list [`add_kinded`] reads.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum KindSelect {
+    /// Honour the list's `! @kind` markers (ads until the first one) and keep only this kind.
+    Markers(ListKind),
+    /// Ignore markers: every rule is of this kind.
+    All(ListKind),
+}
+
+fn marker_kind(line: &str) -> Option<ListKind> {
+    match line.trim().strip_prefix("! @kind ")?.trim() {
+        "trackers" => Some(ListKind::Trackers),
+        "ads" => Some(ListKind::Ads),
+        _ => None,
+    }
+}
+
+/// Adds the rules of `text` selected by `select` to `all` (the trackers-and-ads matcher) and, for a
+/// tracker rule, to `trackers` too. Returns how many rules went into `all`.
+pub(crate) fn add_kinded(all: &mut Blocker, trackers: &mut Blocker, text: &str, select: KindSelect) -> usize {
+    let mut current = match select {
+        KindSelect::Markers(_) => ListKind::Ads,
+        KindSelect::All(kind) => kind,
+    };
+    let mut added = 0;
+    for line in text.lines() {
+        if matches!(select, KindSelect::Markers(_)) {
+            if let Some(kind) = marker_kind(line) {
+                current = kind;
+                continue;
+            }
+        }
+        let wanted = match select {
+            KindSelect::Markers(only) => current == only,
+            KindSelect::All(_) => true,
+        };
+        if !wanted {
+            continue;
+        }
+        let Some(rule) = parse_line(line) else {
+            continue;
+        };
+        if current == ListKind::Trackers {
+            trackers.add_rule(rule.clone());
+        }
+        if all.add_rule(rule) {
+            added += 1;
+        }
+    }
+    added
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 enum Rule {
     Host(String),
     Path {
@@ -677,63 +787,62 @@ impl Blocker {
 
     /// Adds every supported rule in `text`; returns how many were added.
     pub fn add_list(&mut self, text: &str) -> usize {
-        let mut added = 0;
-        for line in text.lines() {
-            let Some(rule) = parse_line(line) else {
-                continue;
-            };
-            match rule {
-                Rule::Host(host) => {
-                    if self.hosts.len() < MAX_HOST_RULES && self.hosts.insert(host.into()) {
-                        added += 1;
-                    }
+        text.lines()
+            .filter_map(parse_line)
+            .filter(|rule| self.add_rule(rule.clone()))
+            .count()
+    }
+
+    /// Stores one parsed rule; `false` when a cap is full or the rule is already stored.
+    fn add_rule(&mut self, rule: Rule) -> bool {
+        match rule {
+            Rule::Host(host) => self.hosts.len() < MAX_HOST_RULES && self.hosts.insert(host.into()),
+            Rule::Path { host, pattern } => {
+                if self.path_count >= MAX_PATH_RULES {
+                    return false;
                 }
-                Rule::Path { host, pattern } => {
-                    if self.path_count < MAX_PATH_RULES {
-                        self.paths
-                            .entry(host.into())
-                            .or_default()
-                            .push(pattern.into());
-                        self.path_count += 1;
-                        added += 1;
-                    }
+                self.paths.entry(host.into()).or_default().push(pattern.into());
+                self.path_count += 1;
+                true
+            }
+            Rule::Exact { host, path } => {
+                if self.path_count >= MAX_PATH_RULES {
+                    return false;
                 }
-                Rule::Exact { host, path } => {
-                    if self.path_count < MAX_PATH_RULES {
-                        let paths = self.exact.entry(host.into()).or_default();
-                        if !paths.iter().any(|known| **known == *path) {
-                            paths.push(path.into());
-                            self.path_count += 1;
-                            added += 1;
-                        }
-                    }
+                let paths = self.exact.entry(host.into()).or_default();
+                if paths.iter().any(|known| **known == *path) {
+                    return false;
                 }
-                Rule::Substring {
-                    pattern,
+                paths.push(path.into());
+                self.path_count += 1;
+                true
+            }
+            Rule::Substring {
+                pattern,
+                third_party_only,
+                domains,
+            } => {
+                if self.substrings.len() >= MAX_SUBSTRING_RULES {
+                    return false;
+                }
+                self.substrings.push(SubstringRule {
+                    pattern: pattern.into(),
                     third_party_only,
-                    domains,
-                } => {
-                    if self.substrings.len() < MAX_SUBSTRING_RULES {
-                        self.substrings.push(SubstringRule {
-                            pattern: pattern.into(),
-                            third_party_only,
-                            domains: domains.into_iter().map(Into::into).collect(),
-                        });
-                        added += 1;
-                    }
+                    domains: domains.into_iter().map(Into::into).collect(),
+                });
+                true
+            }
+            Rule::Cosmetic { domains, selector } => {
+                if self.cosmetics.len() >= MAX_COSMETIC_RULES {
+                    return false;
                 }
-                Rule::Cosmetic { domains, selector } => {
-                    if self.cosmetics.len() < MAX_COSMETIC_RULES {
-                        self.cosmetics.push(CosmeticRule {
-                            domains: domains.into_iter().map(Into::into).collect(),
-                            selector: selector.into(),
-                        });
-                        added += 1;
-                    }
-                }
+                self.cosmetics.push(CosmeticRule {
+                    domains: domains.into_iter().map(Into::into).collect(),
+                    selector: selector.into(),
+                });
+                true
             }
         }
-        added
     }
 
     pub fn rule_count(&self) -> usize {
@@ -879,13 +988,31 @@ pub enum BlockHit {
 /// Matcher plus exceptions plus the enable switch; shared (behind `Rc<RefCell<..>>`) by the
 /// WebView2 hook and the UI toggle.
 pub struct BlockerState {
+    /// The master switch (`blocker_enabled`): off means the global level is "none".
     pub enabled: bool,
+    /// The level while `enabled` (`blocker_level`).
+    pub level: Level,
+    /// Trackers and ads: what the "trackers and ads" level matches with.
     matcher: Blocker,
+    /// Trackers only: what the "trackers" level matches with.
+    trackers: Blocker,
+    cookies: cookies::CookieRules,
+    /// Rules each enabled source contributed to the last build, by source id.
+    source_counts: HashMap<String, usize>,
+    /// Cookie-notice hiding (`cookie_notices`); a site's own choice wins.
+    pub cookie_notices: bool,
     config_allow: HashSet<String>,
-    user_allow: HashSet<String>,
+    site_rules: site_rules::SiteRules,
     sites_path: Option<PathBuf>,
-    /// Built on first use: the rules do not change after load.
+    /// Built on first use and rebuilt after the rules change.
     devtools: OnceCell<DevtoolsPatterns>,
+    devtools_trackers: OnceCell<DevtoolsPatterns>,
+    /// Bumped whenever the rules or the per-site choices change, so a tab that already pushed its
+    /// DevTools patterns knows to push them again.
+    generation: u32,
+    /// A full build of the sources running on a worker thread ([`Self::load_deferred`],
+    /// [`Self::reload_sources_deferred`]); [`Self::take_built`] swaps it in on the UI thread.
+    pending: Option<std::sync::mpsc::Receiver<sources::Built>>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -900,52 +1027,341 @@ pub enum SiteToggle {
     NoSite,
 }
 
+/// How a level or cookie-notice choice made in the shield ended.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SiteChoice {
+    /// Saved (or, when it equals the global choice, the site's own choice was cleared).
+    Saved,
+    /// The site is exempted by `blocker_allow` in settings.txt; edit that file instead.
+    ConfiguredInSettings,
+    /// The host has no usable site, or the list of sites is full.
+    NoSite,
+}
+
 impl BlockerState {
+    /// A state around one matcher that holds both trackers and ads (no kind information): the
+    /// "trackers" level then matches nothing. `load` builds the real split.
     pub fn new(matcher: Blocker, config_allow: &[String]) -> Self {
         Self {
             enabled: true,
+            level: Level::Ads,
             matcher,
+            trackers: Blocker::default(),
+            cookies: cookies::CookieRules::default(),
+            source_counts: HashMap::new(),
+            cookie_notices: false,
             config_allow: config_allow
                 .iter()
                 .filter_map(|site| normalise_site(site))
                 .collect(),
-            user_allow: HashSet::new(),
+            site_rules: site_rules::SiteRules::default(),
             sites_path: None,
             devtools: OnceCell::new(),
+            devtools_trackers: OnceCell::new(),
+            generation: 0,
+            pending: None,
         }
     }
 
-    /// Loads the user list and persisted site exceptions from `dir`, plus the built-in list.
+    /// Loads the enabled rule sources (see [`sources`]) and the persisted per-site choices from
+    /// `dir`.
     pub fn load(dir: &Path, config_allow: &[String]) -> Self {
-        let user_list = read_capped(&dir.join(USER_LIST_NAME), MAX_USER_LIST_BYTES);
-        let mut state = Self::new(Blocker::from_lists(user_list.as_deref()), config_allow);
-        let path = dir.join(SITES_FILE_NAME);
-        if let Some(text) = read_capped(&path, MAX_SITES_BYTES) {
-            state.user_allow = text
-                .lines()
-                .filter_map(normalise_site)
-                .take(MAX_ALLOWED_SITES)
-                .collect();
-        }
-        state.sites_path = Some(path);
+        let mut state = Self::matcher_only(dir);
+        state.load_site_choices(dir, config_allow);
         state
     }
 
-    /// A state with only the rule lists from `dir` (the built-in list and the user list): no
-    /// site exceptions are read or saved. Private tabs use it when the global blocker is off.
+    fn load_site_choices(&mut self, dir: &Path, config_allow: &[String]) {
+        self.set_config_allow(config_allow);
+        let path = dir.join(SITES_FILE_NAME);
+        if let Some(text) = read_capped(&path, MAX_SITES_BYTES) {
+            self.site_rules = site_rules::SiteRules::parse(&text);
+        }
+        self.sites_path = Some(path);
+    }
+
+    /// [`Self::load`] for the UI thread at launch: it starts with the built-in lists only (nothing
+    /// but the small registry and site files is read) and builds every enabled source, `filters.txt`
+    /// and added lists of up to 8 MB each included, on a worker thread. The worker calls `wake` when
+    /// the build is ready; the UI thread then calls [`Self::take_built`] to swap it in.
+    pub fn load_deferred(dir: &Path, config_allow: &[String], wake: fn()) -> Self {
+        let mut state = Self::matcher_only_deferred(dir, wake);
+        state.load_site_choices(dir, config_allow);
+        state
+    }
+
+    /// [`Self::matcher_only`] with the disk-backed sources built on a worker thread, as in
+    /// [`Self::load_deferred`].
+    pub fn matcher_only_deferred(dir: &Path, wake: fn()) -> Self {
+        let registry = sources::Registry::load(dir);
+        let mut state = Self::new(Blocker::default(), &[]);
+        state.install(sources::build_builtin(&registry));
+        if sources::reads_disk(&registry) {
+            state.spawn_build(dir, registry, wake);
+        }
+        state
+    }
+
+    /// [`Self::reload_sources`] off the UI thread: the current rules stay in force until the new
+    /// build is ready (`wake`, then [`Self::take_built`]). A newer reload replaces an older one that
+    /// has not arrived yet, so a stale build is never swapped in.
+    pub fn reload_sources_deferred(&mut self, dir: &Path, wake: fn()) {
+        let registry = sources::Registry::load(dir);
+        self.spawn_build(dir, registry, wake);
+    }
+
+    fn spawn_build(&mut self, dir: &Path, registry: sources::Registry, wake: fn()) {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let worker_dir = dir.to_path_buf();
+        let spawned = std::thread::Builder::new().name("bowser-blocker-build".into()).spawn(move || {
+            let built = sources::build(&worker_dir, &registry);
+            if sender.send(built).is_ok() {
+                wake();
+            }
+        });
+        match spawned {
+            Ok(_) => self.pending = Some(receiver),
+            // No thread: build here rather than run without the user's lists.
+            Err(_) => {
+                self.pending = None;
+                let built = sources::build(dir, &sources::Registry::load(dir));
+                self.install(built);
+            }
+        }
+    }
+
+    /// Swaps in a build a worker finished, if there is one. `true` when the rules changed.
+    pub fn take_built(&mut self) -> bool {
+        let Some(receiver) = &self.pending else { return false };
+        match receiver.try_recv() {
+            Ok(built) => {
+                self.pending = None;
+                self.install(built);
+                true
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => false,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.pending = None;
+                false
+            }
+        }
+    }
+
+    /// A worker is still building the rules.
+    pub fn building(&self) -> bool {
+        self.pending.is_some()
+    }
+
+    fn install(&mut self, built: sources::Built) {
+        self.matcher = built.all;
+        self.trackers = built.trackers;
+        self.cookies = built.cookies;
+        self.source_counts = built.counts;
+        self.rules_changed();
+    }
+
+    /// A state with only the rule sources from `dir`: no site choices are read or saved. Private
+    /// tabs use it when the global blocker is off.
     pub fn matcher_only(dir: &Path) -> Self {
-        let user_list = read_capped(&dir.join(USER_LIST_NAME), MAX_USER_LIST_BYTES);
-        Self::new(Blocker::from_lists(user_list.as_deref()), &[])
+        let built = sources::build(dir, &sources::Registry::load(dir));
+        let mut state = Self::new(built.all, &[]);
+        state.trackers = built.trackers;
+        state.cookies = built.cookies;
+        state.source_counts = built.counts;
+        state
+    }
+
+    /// How many rules the enabled source `id` contributed to the last build (0 when it is off).
+    pub fn source_rule_count(&self, id: &str) -> usize {
+        self.source_counts.get(id).copied().unwrap_or(0)
+    }
+
+    /// Replaces the rules with a fresh build of the enabled sources in `dir` (after a source was
+    /// switched, added or removed). Per-site choices and switches stay.
+    pub fn reload_sources(&mut self, dir: &Path) {
+        self.pending = None;
+        self.install(sources::build(dir, &sources::Registry::load(dir)));
+    }
+
+    /// Forget what was derived from the rules, and tell tabs to push their patterns again.
+    fn rules_changed(&mut self) {
+        self.devtools = OnceCell::new();
+        self.devtools_trackers = OnceCell::new();
+        self.generation = self.generation.wrapping_add(1);
+    }
+
+    /// Takes the blocker settings (`blocker_enabled`, `blocker_level`, `cookie_notices` and the
+    /// `blocker_allow` sites) from `settings`. Pages already open keep what they loaded; tabs push
+    /// new DevTools patterns on their next navigation.
+    pub fn apply_settings(&mut self, settings: &crate::settings::Settings) {
+        let level = match settings.blocker_level {
+            crate::settings::BlockerLevel::Trackers => Level::Trackers,
+            crate::settings::BlockerLevel::Ads => Level::Ads,
+        };
+        let allow: HashSet<String> = settings.blocker_allow.iter().filter_map(|site| normalise_site(site)).collect();
+        let changed = self.enabled != settings.blocker_enabled || self.level != level || self.config_allow != allow;
+        self.enabled = settings.blocker_enabled;
+        self.level = level;
+        self.cookie_notices = settings.cookie_notices;
+        self.config_allow = allow;
+        if changed {
+            self.generation = self.generation.wrapping_add(1);
+        }
+    }
+
+    /// Replaces the sites `blocker_allow` in settings.txt exempts.
+    pub fn set_config_allow(&mut self, config_allow: &[String]) {
+        self.config_allow = config_allow.iter().filter_map(|site| normalise_site(site)).collect();
+        self.rules_changed();
     }
 
     pub fn rule_count(&self) -> usize {
         self.matcher.rule_count()
     }
 
-    /// True when blocking is switched off for the page on `top_host`.
+    pub fn cookie_rule_count(&self) -> usize {
+        self.cookies.rule_count()
+    }
+
+    /// Changes when the rules or any site choice change: a tab compares it with the value it last
+    /// pushed DevTools patterns for.
+    pub fn generation(&self) -> u32 {
+        self.generation
+    }
+
+    /// The global level: the switch and the chosen level together.
+    pub fn global_level(&self) -> Level {
+        if self.enabled { self.level } else { Level::None }
+    }
+
+    /// How much the blocker stops for a document on `top_host`. A private tab always gets the full
+    /// level and ignores every exception; a normal tab takes the site's `blocker_allow` entry
+    /// first, then its own saved level, then the global level.
+    pub fn level_for(&self, top_host: &str, private: bool) -> Level {
+        if private {
+            return Level::Ads;
+        }
+        if self.config_allow_hit(top_host) {
+            return Level::None;
+        }
+        self.site_rules.level_for(top_host).unwrap_or_else(|| self.global_level())
+    }
+
+    fn config_allow_hit(&self, top_host: &str) -> bool {
+        host_suffixes(top_host).any(|suffix| self.config_allow.contains(suffix))
+    }
+
+    /// Whether cookie notices are hidden on a document on `top_host`. A private tab follows the
+    /// global switch only: a site's saved choice is a preference Bowser keeps, and a private tab
+    /// ignores those.
+    pub fn cookie_notices_for(&self, top_host: &str, private: bool) -> bool {
+        if private {
+            return self.cookie_notices;
+        }
+        self.site_rules.cookies_for(top_host).unwrap_or(self.cookie_notices)
+    }
+
+    /// True when blocking is switched off for the page on `top_host` by a `blocker_allow` entry or
+    /// the site's own saved level (the old per-site exception).
     pub fn site_allowed(&self, top_host: &str) -> bool {
-        host_suffixes(top_host)
-            .any(|suffix| self.config_allow.contains(suffix) || self.user_allow.contains(suffix))
+        self.config_allow_hit(top_host) || self.site_rules.level_for(top_host) == Some(Level::None)
+    }
+
+    /// Every site with a saved choice, as (site, rule), in site order.
+    pub fn site_rules(&self) -> Vec<(String, site_rules::SiteRule)> {
+        self.site_rules.iter().map(|(site, rule)| (site.to_owned(), rule)).collect()
+    }
+
+    /// The sites `blocker_allow` exempts, sorted.
+    pub fn config_allowed_sites(&self) -> Vec<String> {
+        let mut sites: Vec<String> = self.config_allow.iter().cloned().collect();
+        sites.sort();
+        sites
+    }
+
+    /// Saves a level for one site (`None` goes back to the global level). `false` when the site
+    /// is not a usable one or the list is full.
+    pub fn set_site_level(&mut self, site: &str, level: Option<Level>) -> bool {
+        let Some(site) = normalise_site(site) else {
+            return false;
+        };
+        let changed = self.site_rules.set_level(&site, level);
+        if changed {
+            self.sites_changed();
+        }
+        changed
+    }
+
+    /// Saves the cookie-notice choice for one site (`None` goes back to the global switch).
+    pub fn set_site_cookies(&mut self, site: &str, cookies: Option<bool>) -> bool {
+        let Some(site) = normalise_site(site) else {
+            return false;
+        };
+        let changed = self.site_rules.set_cookies(&site, cookies);
+        if changed {
+            self.sites_changed();
+        }
+        changed
+    }
+
+    /// Forgets every saved choice for a site. `true` when there was one.
+    pub fn remove_site_rule(&mut self, site: &str) -> bool {
+        let Some(site) = normalise_site(site) else {
+            return false;
+        };
+        let removed = self.site_rules.remove(&site);
+        if removed {
+            self.sites_changed();
+        }
+        removed
+    }
+
+    /// The shield's level choice for the page on `top_host`: what this site should get from now on.
+    /// A level that equals the global one clears the site's own choice instead of saving a copy of
+    /// it, so the site follows the global level again; any other level is saved. The rule in force
+    /// (it may be for a subdomain) is the one that changes, else the site's own.
+    pub fn choose_level_for_page(&mut self, top_host: &str, level: Level) -> SiteChoice {
+        let top_host = top_host.to_ascii_lowercase();
+        if top_host.is_empty() || !top_host.contains('.') {
+            return SiteChoice::NoSite;
+        }
+        if self.config_allow_hit(&top_host) {
+            return SiteChoice::ConfiguredInSettings;
+        }
+        let key = host_suffixes(&top_host)
+            .find(|suffix| self.site_rules.get(suffix).is_some_and(|rule| rule.level.is_some()))
+            .map_or_else(|| registrable_domain(&top_host).to_owned(), str::to_owned);
+        let wanted = (level != self.global_level()).then_some(level);
+        if self.site_rules.set_level(&key, wanted) {
+            self.sites_changed();
+            SiteChoice::Saved
+        } else {
+            SiteChoice::NoSite
+        }
+    }
+
+    /// The shield's cookie-notice choice for the page on `top_host`: hide them or leave them. A
+    /// choice that equals the global switch clears the site's own choice.
+    pub fn choose_cookie_notices_for_page(&mut self, top_host: &str, hide: bool) -> SiteChoice {
+        let top_host = top_host.to_ascii_lowercase();
+        if top_host.is_empty() || !top_host.contains('.') {
+            return SiteChoice::NoSite;
+        }
+        let key = host_suffixes(&top_host)
+            .find(|suffix| self.site_rules.get(suffix).is_some_and(|rule| rule.cookies.is_some()))
+            .map_or_else(|| registrable_domain(&top_host).to_owned(), str::to_owned);
+        let wanted = (hide != self.cookie_notices).then_some(hide);
+        if self.site_rules.set_cookies(&key, wanted) {
+            self.sites_changed();
+            SiteChoice::Saved
+        } else {
+            SiteChoice::NoSite
+        }
+    }
+
+    fn sites_changed(&mut self) {
+        self.generation = self.generation.wrapping_add(1);
+        let _ = self.save_sites();
     }
 
     /// The decision for one subresource request made by a page on `top_host`.
@@ -974,34 +1390,40 @@ impl BlockerState {
     }
 
     fn classify(&self, request_url: &str, top_host: &str, private: bool) -> BlockHit {
-        if !self.is_blocking(top_host, private) {
-            return BlockHit::None;
-        }
+        let matcher = match self.level_for(top_host, private) {
+            Level::None => return BlockHit::None,
+            Level::Trackers => &self.trackers,
+            Level::Ads => &self.matcher,
+        };
         let Some((host, path)) = split_url(request_url) else {
             return BlockHit::None;
         };
         let first_party = !top_host.is_empty() && same_site(&host, top_host);
-        if !first_party && self.matcher.host_listed(&host) {
+        if !first_party && matcher.host_listed(&host) {
             return BlockHit::Host;
         }
-        if self
-            .matcher
-            .matches_parts(&host, path, request_url, first_party, top_host)
-        {
+        if matcher.matches_parts(&host, path, request_url, first_party, top_host) {
             BlockHit::Rule
         } else {
             BlockHit::None
         }
     }
 
-    /// Whether the blocker is in effect at all for a document on `top_host`: honours the enable
-    /// switch and site exceptions for a normal tab, and is always true for a private one.
+    /// Whether the blocker stops anything at all for a document on `top_host`: its level is not
+    /// "none". Always true for a private tab.
     pub fn is_blocking(&self, top_host: &str, private: bool) -> bool {
-        crate::private::blocker_applies(private, self.enabled, self.site_allowed(top_host))
+        self.level_for(top_host, private) != Level::None
     }
 
-    /// The cosmetic CSS to inject for a normal tab's document on `page_host`, or `None` when the
-    /// blocker does not apply (disabled, or the site is excepted) or no rule matches the page.
+    /// What changes the DevTools patterns and cosmetic rules of a document on `top_host`: its
+    /// level and the rule generation. A tab sends them again only when this changes.
+    pub fn filter_signature(&self, top_host: &str, private: bool) -> (Level, u32) {
+        (self.level_for(top_host, private), self.generation)
+    }
+
+    /// The CSS to inject for a normal tab's document on `page_host`: the element-hiding rules of
+    /// the "trackers and ads" level when the site is at that level, then the cookie-notice rules
+    /// when they apply to the site. `None` when neither adds anything.
     pub fn cosmetic_css_for_host(&self, page_host: &str) -> Option<String> {
         self.cosmetic(page_host, false)
     }
@@ -1013,33 +1435,57 @@ impl BlockerState {
     }
 
     fn cosmetic(&self, page_host: &str, private: bool) -> Option<String> {
-        if !self.is_blocking(page_host, private) {
-            return None;
+        let mut css = String::new();
+        if self.level_for(page_host, private) == Level::Ads {
+            if let Some(ads) = self.matcher.cosmetic_css_for_host(page_host) {
+                css.push_str(&ads);
+            }
+            if x_promoted::is_x_host(page_host) {
+                css.push_str(x_promoted::CSS);
+            }
         }
-        self.matcher.cosmetic_css_for_host(page_host)
+        if self.cookie_notices_for(page_host, private) {
+            if let Some(notices) = self.cookies.css_for_host(page_host) {
+                css.push_str(&notices);
+            }
+        }
+        (!css.is_empty()).then_some(css)
+    }
+
+    /// The page script that marks X promoted posts for the cosmetic rule, for a document on
+    /// `page_host`: only on x.com / twitter.com where the blocker is at the "trackers and ads" level
+    /// (always for a private tab; a normal tab honours the switch and site exceptions).
+    pub fn x_promoted_script(&self, page_host: &str, private: bool) -> Option<&'static str> {
+        (x_promoted::is_x_host(page_host) && self.level_for(page_host, private) == Level::Ads)
+            .then_some(x_promoted::SCRIPT)
     }
 
     /// DevTools `Network.setBlockedURLs` patterns for a normal tab's document on `page_host`
     /// (empty when the blocker does not apply there).
     pub fn blocked_url_patterns(&self, page_host: &str) -> Vec<String> {
-        self.devtools_patterns(page_host, self.is_blocking(page_host, false))
+        self.devtools_patterns(page_host, self.level_for(page_host, false))
     }
 
     /// As [`Self::blocked_url_patterns`], but for a private tab.
     pub fn blocked_url_patterns_private(&self, page_host: &str) -> Vec<String> {
-        self.devtools_patterns(page_host, self.is_blocking(page_host, true))
+        self.devtools_patterns(page_host, self.level_for(page_host, true))
     }
 
     /// Host patterns, then the exact-URL patterns, then the prefix-rule patterns, each sorted,
-    /// minus those for `page_host`'s own site. The full list is built once (see
+    /// minus those for `page_host`'s own site. Each level's full list is built once (see
     /// [`DevtoolsPatterns`]); each call only filters it.
-    fn devtools_patterns(&self, page_host: &str, blocking: bool) -> Vec<String> {
-        if !blocking {
-            return Vec::new();
+    fn devtools_patterns(&self, page_host: &str, level: Level) -> Vec<String> {
+        match level {
+            Level::None => Vec::new(),
+            Level::Trackers => self
+                .devtools_trackers
+                .get_or_init(|| DevtoolsPatterns::new(&self.trackers))
+                .for_page(page_host),
+            Level::Ads => self
+                .devtools
+                .get_or_init(|| DevtoolsPatterns::new(&self.matcher))
+                .for_page(page_host),
         }
-        self.devtools
-            .get_or_init(|| DevtoolsPatterns::new(&self.matcher))
-            .for_page(page_host)
     }
 
     /// WebView2 request filters for the rules DevTools cannot enforce; see
@@ -1075,10 +1521,12 @@ impl BlockerState {
         private: bool,
         video_ads_on: bool,
     ) -> &'static [youtube::ResponsePattern] {
-        if video_ads_on
-            && youtube::is_youtube_host(page_host)
-            && crate::private::blocker_applies(private, self.enabled, false)
-        {
+        // Ads are only stripped at the "trackers and ads" level; a site's own level may raise or
+        // lower the global one, so any site at that level keeps the pause available.
+        let ads_possible = private
+            || self.global_level() == Level::Ads
+            || self.site_rules.any_level(Level::Ads);
+        if video_ads_on && youtube::is_youtube_host(page_host) && ads_possible {
             &youtube::RESPONSE_PATTERNS
         } else {
             &[]
@@ -1116,33 +1564,40 @@ impl BlockerState {
         let blocking = match payload {
             youtube::PlayerPayload::WatchPage => {
                 let (host, _) = split_url(url)?;
-                self.is_blocking(&host, private)
+                self.level_for(&host, private) == Level::Ads
             }
-            youtube::PlayerPayload::Json => self.is_blocking(top_host, private),
+            youtube::PlayerPayload::Json => self.level_for(top_host, private) == Level::Ads,
         };
         blocking.then_some(payload)
     }
 
-    /// Flips blocking for the site of `top_host` and persists the choice.
+    /// Flips blocking for the site of `top_host` (Ctrl+Shift+B) and persists the choice: a site
+    /// that is being blocked is switched to "none"; a site that is not goes back to the global
+    /// level, or to the full level when the global one is "none".
     pub fn toggle_site(&mut self, top_host: &str) -> SiteToggle {
         let top_host = top_host.to_ascii_lowercase();
         if top_host.is_empty() || !top_host.contains('.') {
             return SiteToggle::NoSite;
         }
         let site = registrable_domain(&top_host).to_owned();
-        if host_suffixes(&top_host).any(|suffix| self.config_allow.contains(suffix)) {
+        if self.config_allow_hit(&top_host) {
             return SiteToggle::ConfiguredInSettings;
         }
-        let result = if self.user_allow.remove(&site) {
-            SiteToggle::Blocking
+        let (level, result) = if self.level_for(&top_host, false) != Level::None {
+            (Some(Level::None), SiteToggle::Allowed)
+        } else if self.global_level() == Level::None {
+            (Some(Level::Ads), SiteToggle::Blocking)
         } else {
-            if self.user_allow.len() >= MAX_ALLOWED_SITES {
-                return SiteToggle::NoSite;
-            }
-            self.user_allow.insert(site);
-            SiteToggle::Allowed
+            (None, SiteToggle::Blocking)
         };
-        let _ = self.save_sites();
+        // Change the saved rule that is in force (it may be for a subdomain), else the site's own.
+        let key = host_suffixes(&top_host)
+            .find(|suffix| self.site_rules.get(suffix).is_some_and(|rule| rule.level.is_some()))
+            .map_or(site, str::to_owned);
+        if !self.site_rules.set_level(&key, level) {
+            return SiteToggle::NoSite;
+        }
+        self.sites_changed();
         result
     }
 
@@ -1150,15 +1605,7 @@ impl BlockerState {
         let Some(path) = &self.sites_path else {
             return Ok(());
         };
-        let mut sites: Vec<&str> = self.user_allow.iter().map(String::as_str).collect();
-        sites.sort_unstable();
-        let mut text =
-            String::from("# Sites where Bowser's blocker is switched off (Ctrl+Shift+B).\n");
-        for site in sites {
-            text.push_str(site);
-            text.push('\n');
-        }
-        write_atomic(path, text.as_bytes())
+        write_atomic(path, self.site_rules.render().as_bytes())
     }
 }
 
@@ -1210,6 +1657,20 @@ mod tests {
         matcher.add_list(list);
         let allow: Vec<String> = allow.iter().map(|s| (*s).to_owned()).collect();
         BlockerState::new(matcher, &allow)
+    }
+
+    /// Integration (the "next blocking level" registry command): the cycle visits every level, and the
+    /// chosen level is what the site then gets.
+    #[test]
+    fn the_blocking_level_command_cycles_through_every_level_for_the_site() {
+        assert_eq!([Level::None.next(), Level::Trackers.next(), Level::Ads.next()], [Level::Trackers, Level::Ads, Level::None]);
+        let mut blocker = state("||ads.example^\n", &[]);
+        let mut level = blocker.level_for("news.example", false);
+        for _ in 0..3 {
+            level = level.next();
+            assert_eq!(blocker.choose_level_for_page("news.example", level), SiteChoice::Saved);
+            assert_eq!(blocker.level_for("news.example", false), level);
+        }
     }
 
     #[test]
@@ -1433,6 +1894,36 @@ mod tests {
         s.enabled = false;
         assert_eq!(s.cosmetic_css_for_host("other.example"), None);
         assert!(s.cosmetic_css_for_host_private("other.example").is_some());
+    }
+
+    #[test]
+    fn x_promoted_posts_are_hidden_only_on_x_hosts_at_the_ads_level() {
+        let mut s = state("", &[]);
+        for host in ["x.com", "www.x.com", "twitter.com", "mobile.twitter.com"] {
+            assert_eq!(s.cosmetic_css_for_host(host).as_deref(), Some(x_promoted::CSS), "{host}");
+            assert!(s.x_promoted_script(host, false).is_some(), "{host}");
+        }
+        for host in ["news.example", "box.com", "x.com.evil.example", ""] {
+            assert_eq!(s.cosmetic_css_for_host(host), None, "{host}");
+            assert!(s.x_promoted_script(host, false).is_none(), "{host}");
+        }
+        // A lower level, a site exception and the master switch each turn it off.
+        s.level = Level::Trackers;
+        assert_eq!(s.cosmetic_css_for_host("x.com"), None);
+        assert!(s.x_promoted_script("x.com", false).is_none());
+        s.level = Level::Ads;
+        assert!(s.set_site_level("x.com", Some(Level::Trackers)));
+        assert!(s.x_promoted_script("x.com", false).is_none());
+        assert!(s.x_promoted_script("twitter.com", false).is_some(), "other X host keeps its own level");
+        assert!(s.set_site_level("x.com", None));
+        s.toggle_site("twitter.com");
+        assert!(s.x_promoted_script("twitter.com", false).is_none());
+        assert_eq!(s.cosmetic_css_for_host("twitter.com"), None);
+        s.enabled = false;
+        assert!(s.x_promoted_script("x.com", false).is_none());
+        // A private tab always blocks, exceptions and the switch notwithstanding.
+        assert!(s.x_promoted_script("twitter.com", true).is_some());
+        assert_eq!(s.cosmetic_css_for_host_private("twitter.com").as_deref(), Some(x_promoted::CSS));
     }
 
     #[test]
@@ -2574,5 +3065,373 @@ mod tests {
             assert!(s.response_patterns(page, false).is_empty(), "{page}");
             assert!(s.response_patterns(page, true).is_empty(), "{page}");
         }
+    }
+}
+
+/// Levels, per-site choices, cookie notices and the sources, on the real built-in lists (thread T3).
+#[cfg(test)]
+mod level_tests {
+    use super::*;
+
+    const TRACKER: &str = "https://www.google-analytics.com/collect?v=1";
+    const AD: &str = "https://securepubads.g.doubleclick.net/tag/js/gpt.js";
+    const PAGE: &str = "news.example.com";
+
+    fn dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("bowser-levels-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn state(name: &str) -> (BlockerState, PathBuf) {
+        let dir = dir(name);
+        let mut state = BlockerState::load(&dir, &[]);
+        state.cookie_notices = false;
+        (state, dir)
+    }
+
+    #[test]
+    fn the_three_global_levels_block_nothing_trackers_or_trackers_and_ads() {
+        let (mut s, _dir) = state("global");
+        s.enabled = true;
+        s.level = Level::Ads;
+        assert_eq!(s.level_for(PAGE, false), Level::Ads);
+        assert!(s.should_block(TRACKER, PAGE) && s.should_block(AD, PAGE), "trackers and ads");
+        s.level = Level::Trackers;
+        assert_eq!(s.level_for(PAGE, false), Level::Trackers);
+        assert!(s.should_block(TRACKER, PAGE), "a tracker is blocked at the trackers level");
+        assert!(!s.should_block(AD, PAGE), "an ad is not");
+        s.enabled = false;
+        assert_eq!(s.global_level(), Level::None);
+        assert!(!s.should_block(TRACKER, PAGE) && !s.should_block(AD, PAGE), "none blocks nothing");
+        assert_eq!(s.block_hit(TRACKER, PAGE), BlockHit::None);
+    }
+
+    #[test]
+    fn a_site_level_overrides_the_global_one_both_ways_and_the_nearer_site_wins() {
+        let (mut s, _dir) = state("site");
+        s.level = Level::Ads;
+        assert!(s.set_site_level("example.com", Some(Level::None)));
+        assert!(!s.should_block(TRACKER, PAGE), "blocking is off on that site");
+        assert!(s.should_block(TRACKER, "other.org"), "and still on elsewhere");
+        assert!(s.set_site_level("news.example.com", Some(Level::Trackers)));
+        assert!(s.should_block(TRACKER, PAGE) && !s.should_block(AD, PAGE), "the subdomain's own level wins");
+        // A site can be stricter than the global level, even when blocking is off globally.
+        s.enabled = false;
+        assert!(!s.should_block(TRACKER, "other.org"));
+        assert!(s.set_site_level("strict.test", Some(Level::Ads)));
+        assert!(s.should_block(TRACKER, "strict.test") && s.should_block(AD, "www.strict.test"));
+        // Following the global level again.
+        assert!(s.set_site_level("strict.test", None));
+        assert!(!s.should_block(TRACKER, "strict.test"));
+        assert!(!s.set_site_level("not a site", Some(Level::None)), "text that is not a site is refused");
+        assert!(!s.set_site_level("localhost", Some(Level::None)));
+    }
+
+    #[test]
+    fn the_exceptions_list_and_private_tabs_follow_their_old_rules() {
+        let dir = dir("exceptions");
+        let mut s = BlockerState::load(&dir, &["example.com".to_owned()]);
+        assert_eq!(s.level_for(PAGE, false), Level::None, "blocker_allow turns blocking off for a site and its subdomains");
+        assert!(s.site_allowed(PAGE));
+        assert!(!s.should_block(TRACKER, PAGE));
+        assert!(s.set_site_level("example.com", Some(Level::Ads)));
+        assert_eq!(s.level_for(PAGE, false), Level::None, "the settings exception still wins");
+        // A private tab always gets the full level and ignores every exception and the switch.
+        s.enabled = false;
+        assert_eq!(s.level_for(PAGE, true), Level::Ads);
+        assert!(s.should_block_private(TRACKER, PAGE) && s.should_block_private(AD, PAGE));
+        assert!(s.is_blocking(PAGE, true));
+    }
+
+    #[test]
+    fn the_devtools_patterns_follow_the_level() {
+        let (mut s, _dir) = state("patterns");
+        let host_pattern = |patterns: &[String], host: &str| patterns.iter().any(|pattern| pattern.contains(host));
+        s.level = Level::Ads;
+        let ads = s.blocked_url_patterns(PAGE);
+        assert!(host_pattern(&ads, "google-analytics.com") && host_pattern(&ads, "doubleclick.net"));
+        s.level = Level::Trackers;
+        let trackers = s.blocked_url_patterns(PAGE);
+        assert!(host_pattern(&trackers, "google-analytics.com"));
+        assert!(!host_pattern(&trackers, "doubleclick.net"), "an ad host is not network-blocked at the trackers level");
+        assert!(trackers.len() < ads.len());
+        s.enabled = false;
+        assert!(s.blocked_url_patterns(PAGE).is_empty());
+        // A site at the full level gets the full list while the global level is none.
+        assert!(s.set_site_level(PAGE, Some(Level::Ads)));
+        assert!(host_pattern(&s.blocked_url_patterns(PAGE), "doubleclick.net"));
+        // A private tab gets it too.
+        assert!(host_pattern(&s.blocked_url_patterns_private("other.org"), "doubleclick.net"));
+    }
+
+    #[test]
+    fn element_hiding_of_ads_needs_the_full_level_but_cookie_notices_do_not() {
+        let (mut s, _dir) = state("cosmetic");
+        let youtube = "www.youtube.com";
+        s.level = Level::Ads;
+        assert!(s.cosmetic_css_for_host(youtube).is_some_and(|css| css.contains("#masthead-ad")), "the ad rule at the full level");
+        s.level = Level::Trackers;
+        assert_eq!(s.cosmetic_css_for_host(youtube), None, "no ad hiding at the trackers level");
+        // Cookie notices work with no blocking at all.
+        s.enabled = false;
+        assert_eq!(s.cosmetic_css_for_host(PAGE), None, "off by default");
+        s.cookie_notices = true;
+        let css = s.cosmetic_css_for_host(PAGE).expect("cookie notices hidden without the ad blocker");
+        assert!(css.contains("#onetrust-banner-sdk{display:none!important}"));
+        assert!(!css.contains("#masthead-ad"), "and no ad rules came with them");
+        // The per-site off switch, then the per-site on switch with the global one off.
+        assert!(s.set_site_cookies("example.com", Some(false)));
+        assert_eq!(s.cosmetic_css_for_host(PAGE), None, "switched off for this site");
+        assert!(s.cosmetic_css_for_host("other.org").is_some());
+        assert!(s.set_site_cookies("example.com", None));
+        assert!(s.cosmetic_css_for_host(PAGE).is_some(), "following the global switch again");
+        s.cookie_notices = false;
+        assert!(s.set_site_cookies("shown.test", Some(true)));
+        assert!(s.cosmetic_css_for_host("shown.test").is_some(), "a site can opt in");
+        assert_eq!(s.cosmetic_css_for_host("other.org"), None);
+        // A private tab follows the global switch only.
+        assert_eq!(s.cosmetic_css_for_host_private("shown.test").is_some(), s.cookie_notices);
+        s.cookie_notices = true;
+        assert!(s.set_site_cookies("example.com", Some(false)));
+        assert!(s.cosmetic_css_for_host_private(PAGE).is_some(), "a private tab ignores the site's saved choice");
+    }
+
+    static WOKEN: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    fn count_wake() {
+        WOKEN.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Waits (bounded) for the worker's build and swaps it in.
+    fn wait_built(s: &mut BlockerState) {
+        let start = std::time::Instant::now();
+        while !s.take_built() {
+            assert!(s.building(), "the worker went away without a build");
+            assert!(start.elapsed() < std::time::Duration::from_secs(120), "the build never arrived");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
+    /// A big added list (`count` host rules, about 8 MB at 300 000) stored as a source of `dir`.
+    fn add_big_list(dir: &Path, tag: &str, count: usize) {
+        let mut text = String::with_capacity(count * 30);
+        for n in 0..count {
+            text.push_str(&format!("||ad{n}.{tag}.example^\n"));
+        }
+        let mut registry = sources::Registry::load(dir);
+        registry.add(dir, tag, sources::SourceKind::Ads, sources::Origin::File, &text).unwrap();
+    }
+
+    /// Fix E: launch reads only the small registry and site files on the UI thread; every big
+    /// list is parsed on a worker and swapped in afterwards, and then blocks exactly as a
+    /// synchronous load does.
+    #[test]
+    fn launch_starts_with_the_built_in_lists_and_builds_big_lists_on_a_worker() {
+        let dir = dir("deferred");
+        for tag in ["biga", "bigb"] {
+            add_big_list(&dir, tag, 300_000);
+        }
+        assert!(fs::metadata(dir.join(sources::LISTS_DIR).join("u1.txt")).unwrap().len() > 7_000_000);
+        let before = WOKEN.load(std::sync::atomic::Ordering::SeqCst);
+        let start = std::time::Instant::now();
+        let mut s = BlockerState::load_deferred(&dir, &[], count_wake);
+        let elapsed = start.elapsed();
+        eprintln!("load_deferred with 2 x 7.5 MB lists returned in {elapsed:?}");
+        assert!(elapsed < std::time::Duration::from_millis(50), "{elapsed:?}");
+        assert!(s.building(), "the big lists are still being built");
+        assert!(s.should_block(AD, PAGE), "the built-in lists block from the start");
+        assert!(!s.should_block("https://ad7.bigb.example/x.js", PAGE), "not yet");
+        let generation = s.generation();
+        let waited = std::time::Instant::now();
+        wait_built(&mut s);
+        eprintln!("the worker's build arrived {:?} later", waited.elapsed());
+        assert!(WOKEN.load(std::sync::atomic::Ordering::SeqCst) > before, "the worker woke the UI thread");
+        assert_ne!(s.generation(), generation, "tabs push their patterns again");
+        assert!(!s.building());
+        let sync = BlockerState::load(&dir, &[]);
+        assert_eq!(s.rule_count(), sync.rule_count());
+        for url in [AD, TRACKER, "https://ad7.bigb.example/x.js", "https://ad299999.bigb.example/", "https://fine.example/"] {
+            assert_eq!(s.should_block(url, PAGE), sync.should_block(url, PAGE), "{url}");
+        }
+        assert_eq!(s.source_rule_count("u2"), sync.source_rule_count("u2"));
+    }
+
+    /// Fix E: a reload keeps the current rules until the worker's build arrives, and only the
+    /// latest of two quick reloads is swapped in.
+    #[test]
+    fn a_deferred_reload_keeps_the_old_rules_until_the_newest_build_arrives() {
+        let dir = dir("deferred-reload");
+        add_big_list(&dir, "bigr", 1_000);
+        let mut s = BlockerState::load(&dir, &[]);
+        assert!(s.should_block("https://ad5.bigr.example/", PAGE));
+        let mut registry = sources::Registry::load(&dir);
+        registry.set_enabled("u1", false);
+        registry.save(&dir).unwrap();
+        s.reload_sources_deferred(&dir, count_wake);
+        // Switched back on before the first build was taken: the second build wins.
+        registry.set_enabled("u1", true);
+        registry.set_enabled(sources::ID_ADS, false);
+        registry.save(&dir).unwrap();
+        s.reload_sources_deferred(&dir, count_wake);
+        assert!(s.should_block("https://ad5.bigr.example/", PAGE), "old rules stay meanwhile");
+        wait_built(&mut s);
+        assert!(s.should_block("https://ad5.bigr.example/", PAGE), "the newest build: list on");
+        assert!(!s.should_block(AD, PAGE), "the newest build: built-in ads off");
+        assert!(!s.take_built(), "nothing else is swapped in");
+    }
+
+    #[test]
+    fn the_signature_changes_when_the_level_the_rules_or_a_site_choice_change() {
+        let (mut s, dir) = state("signature");
+        let before = s.filter_signature(PAGE, false);
+        assert_eq!(before.0, Level::Ads);
+        assert_eq!(s.filter_signature(PAGE, false), before, "stable while nothing changes");
+        s.level = Level::Trackers;
+        assert_ne!(s.filter_signature(PAGE, false), before, "a new level");
+        let trackers = s.filter_signature(PAGE, false);
+        assert!(s.set_site_level("example.com", Some(Level::None)));
+        let none = s.filter_signature(PAGE, false);
+        assert_ne!(none, trackers);
+        assert_eq!(none.0, Level::None);
+        let mut registry = sources::Registry::load(&dir);
+        registry.set_enabled(sources::ID_ADS, false);
+        registry.save(&dir).unwrap();
+        s.reload_sources(&dir);
+        assert_ne!(s.filter_signature(PAGE, false).1, none.1, "a list switched off");
+        let generation = s.generation();
+        let settings = crate::settings::Settings { blocker_allow: vec!["other.org".to_owned()], ..Default::default() };
+        s.apply_settings(&settings);
+        assert_ne!(s.generation(), generation, "the exceptions changed");
+        let applied = s.generation();
+        s.apply_settings(&settings);
+        assert_eq!(s.generation(), applied, "the same settings change nothing");
+    }
+
+    #[test]
+    fn the_settings_set_the_switch_the_level_the_cookie_switch_and_the_exceptions() {
+        let (mut s, _dir) = state("apply");
+        let mut settings = crate::settings::Settings {
+            blocker_enabled: true,
+            blocker_level: crate::settings::BlockerLevel::Trackers,
+            cookie_notices: true,
+            blocker_allow: vec!["skip.test".to_owned()],
+            ..Default::default()
+        };
+        s.apply_settings(&settings);
+        assert_eq!(s.global_level(), Level::Trackers);
+        assert!(s.cookie_notices);
+        assert_eq!(s.level_for("skip.test", false), Level::None);
+        assert_eq!(s.config_allowed_sites(), ["skip.test"]);
+        settings.blocker_enabled = false;
+        s.apply_settings(&settings);
+        assert_eq!(s.global_level(), Level::None, "blocker_enabled=false is the none level");
+        assert_eq!(Level::from_settings(true, crate::settings::BlockerLevel::Ads), Level::Ads);
+        assert_eq!(Level::from_settings(false, crate::settings::BlockerLevel::Ads), Level::None);
+    }
+
+    #[test]
+    fn ctrl_shift_b_flips_the_site_between_none_and_the_global_level() {
+        let (mut s, dir) = state("toggle");
+        assert_eq!(s.toggle_site(PAGE), SiteToggle::Allowed);
+        assert_eq!(s.level_for(PAGE, false), Level::None);
+        assert_eq!(s.toggle_site(PAGE), SiteToggle::Blocking);
+        assert_eq!(s.level_for(PAGE, false), Level::Ads);
+        assert!(s.site_rules().is_empty(), "going back to the global level removes the saved rule");
+        // With blocking off globally, the toggle turns it on for the site instead.
+        s.enabled = false;
+        assert_eq!(s.toggle_site(PAGE), SiteToggle::Blocking);
+        assert_eq!(s.level_for(PAGE, false), Level::Ads);
+        assert!(s.should_block(TRACKER, PAGE));
+        assert_eq!(s.toggle_site(PAGE), SiteToggle::Allowed);
+        assert_eq!(s.toggle_site("localhost"), SiteToggle::NoSite);
+        // The choices persist: a state loaded from the same folder sees them.
+        s.enabled = true;
+        assert!(s.set_site_level("kept.test", Some(Level::Trackers)));
+        assert!(s.set_site_cookies("kept.test", Some(true)));
+        let reloaded = BlockerState::load(&dir, &[]);
+        assert_eq!(reloaded.level_for("www.kept.test", false), Level::Trackers);
+        assert_eq!(reloaded.site_rules().iter().find(|(site, _)| site == "kept.test").map(|(_, rule)| rule.cookies), Some(Some(true)));
+    }
+
+    #[test]
+    fn an_old_blocker_sites_file_still_means_blocking_is_off_for_those_sites() {
+        let dir = dir("legacy");
+        fs::write(dir.join(SITES_FILE_NAME), "# Sites where Bowser's blocker is switched off (Ctrl+Shift+B).\nold-exception.test\n").unwrap();
+        let s = BlockerState::load(&dir, &[]);
+        assert_eq!(s.level_for("www.old-exception.test", false), Level::None);
+        assert!(!s.should_block(TRACKER, "old-exception.test"));
+        assert!(s.should_block(TRACKER, PAGE));
+    }
+
+    #[test]
+    fn youtube_ad_stripping_needs_the_full_level() {
+        let (mut s, _dir) = state("youtube");
+        let player = "https://www.youtube.com/youtubei/v1/player?key=x";
+        s.level = Level::Ads;
+        assert!(s.player_ads_rewrite_gated(player, "www.youtube.com", false, true).is_some());
+        s.level = Level::Trackers;
+        assert_eq!(s.player_ads_rewrite_gated(player, "www.youtube.com", false, true), None, "video ads are ads");
+        assert!(s.response_patterns_gated("www.youtube.com", false, true).is_empty());
+        assert!(s.player_ads_rewrite_gated(player, "www.youtube.com", true, true).is_some(), "private tabs always strip");
+        assert!(s.set_site_level("youtube.com", Some(Level::Ads)));
+        assert!(s.player_ads_rewrite_gated(player, "www.youtube.com", false, true).is_some(), "a site at the full level strips");
+        assert!(!s.response_patterns_gated("www.youtube.com", false, true).is_empty());
+    }
+
+    #[test]
+    fn the_shield_saves_a_level_only_when_it_differs_from_the_global_one() {
+        let (mut s, dir) = state("shield");
+        s.level = Level::Ads;
+        assert_eq!(s.choose_level_for_page(PAGE, Level::Trackers), SiteChoice::Saved);
+        assert_eq!(s.level_for(PAGE, false), Level::Trackers);
+        assert_eq!(s.site_rules().len(), 1, "one saved choice, for the site");
+        assert_eq!(s.site_rules()[0].0, "example.com", "keyed by the registrable domain");
+        assert!(s.should_block(TRACKER, PAGE) && !s.should_block(AD, PAGE));
+        // Choosing the global level again forgets the site's own choice instead of saving a copy.
+        assert_eq!(s.choose_level_for_page(PAGE, Level::Ads), SiteChoice::Saved);
+        assert!(s.site_rules().is_empty());
+        assert_eq!(s.level_for(PAGE, false), Level::Ads);
+        // None on this site, then back: persisted in between.
+        assert_eq!(s.choose_level_for_page(PAGE, Level::None), SiteChoice::Saved);
+        assert_eq!(BlockerState::load(&dir, &[]).level_for(PAGE, false), Level::None);
+        // A rule for a parent is the one that changes when the page is on a subdomain.
+        assert_eq!(s.choose_level_for_page("shop.example.com", Level::Trackers), SiteChoice::Saved);
+        assert_eq!(s.site_rules().len(), 1, "the parent's rule changed; no second rule appeared");
+        assert_eq!(s.level_for("example.com", false), Level::Trackers);
+        // The settings exception and unusable hosts are refused.
+        let mut excepted = BlockerState::load(&dir, &["skip.test".to_owned()]);
+        assert_eq!(excepted.choose_level_for_page("skip.test", Level::Ads), SiteChoice::ConfiguredInSettings);
+        assert_eq!(s.choose_level_for_page("localhost", Level::Ads), SiteChoice::NoSite);
+        assert_eq!(s.choose_level_for_page("", Level::Ads), SiteChoice::NoSite);
+    }
+
+    #[test]
+    fn the_shield_cookie_choice_follows_the_global_switch_unless_it_differs() {
+        let (mut s, dir) = state("shield-cookies");
+        s.cookie_notices = true;
+        assert!(s.cookie_notices_for(PAGE, false));
+        assert_eq!(s.choose_cookie_notices_for_page(PAGE, false), SiteChoice::Saved);
+        assert!(!s.cookie_notices_for(PAGE, false), "hidden everywhere, shown here");
+        assert!(s.cosmetic_css_for_host(PAGE).is_none(), "no notice rule is injected on that site");
+        assert_eq!(BlockerState::load(&dir, &[]).site_rules().len(), 1, "persisted");
+        assert_eq!(s.choose_cookie_notices_for_page(PAGE, true), SiteChoice::Saved);
+        assert!(s.site_rules().is_empty(), "back to the global choice");
+        assert!(s.cookie_notices_for(PAGE, false));
+        s.cookie_notices = false;
+        assert_eq!(s.choose_cookie_notices_for_page("news.test", true), SiteChoice::Saved);
+        assert!(s.cookie_notices_for("www.news.test", false) && !s.cookie_notices_for(PAGE, false));
+        assert_eq!(s.choose_cookie_notices_for_page("localhost", true), SiteChoice::NoSite);
+    }
+
+    #[test]
+    fn the_tracker_level_is_a_real_subset_of_the_list() {
+        let (s, _dir) = state("subset");
+        let trackers = s.trackers.rule_count();
+        let everything = s.matcher.rule_count();
+        assert!(trackers > 150, "{trackers}");
+        assert!(everything > trackers + 150, "{everything} vs {trackers}");
+        // Every tracker host is also in the full matcher.
+        assert!(s.trackers.hosts().all(|host| s.matcher.host_listed(host)));
     }
 }

@@ -1,6 +1,8 @@
 //! HTML chrome host: the WebView2 toolbar bridge, its wire protocol and embedded assets.
 //! See docs/html-chrome-protocol.md.
 
+pub mod page_tools_page; // the settings page's Page tools section (src/page_tools.rs)
+pub mod address_page; // the address bar, search and bookmark options (src/address_settings.rs)
 pub mod assets;
 #[cfg(test)]
 mod fingerprint;
@@ -12,6 +14,8 @@ pub mod protocol;
 pub mod settings;
 pub mod history_page; // bowser://history (docs/design/history-page.md)
 pub mod downloads_page; // bowser://downloads (docs/design/downloads.md)
+pub mod commands_page; // the settings page's Keyboard and Quick Commands sections (docs/commands.md)
+pub mod start_page; // the new-tab start page's wire (docs/design/start-page.md)
 pub mod extensions_page; // the settings page's Extensions section and the toolbar button (docs/extensions.md)
 // --- split view ---
 pub mod split;
@@ -240,11 +244,15 @@ pub fn tab_row_bounds(layout: &Layout) -> Option<RECT> {
     if right <= row.left {
         return None;
     }
+    // --- two-level stacks (T10b) --- the strip page draws the second tab row too: the host grows
+    // down (tabs at the top) or up (tabs at the bottom) over it and the gap between the rows.
+    let stack = layout.stack_row;
+    let (top, bottom) = if stack.is_empty() { (row.top, row.bottom) } else { (row.top.min(stack.top), row.bottom.max(stack.bottom)) };
     Some(RECT {
         left: row.left,
-        top: row.top,
+        top,
         right,
-        bottom: row.bottom,
+        bottom,
     })
 }
 
@@ -252,9 +260,10 @@ pub fn tab_row_bounds(layout: &Layout) -> Option<RECT> {
 /// Client-relative HTML sidebar bounds, stopping at the native resize handle's left edge.
 pub fn sidebar_bounds(layout: &crate::vertical_tabs::SidebarLayout) -> Option<RECT> {
     let bounds = layout.sidebar;
-    let right = layout.handle.left;
-    if right <= bounds.left || bounds.bottom <= bounds.top { return None; }
-    Some(RECT { left: bounds.left, top: bounds.top, right, bottom: bounds.bottom })
+    // --- layout (thread T6) --- the handle is on the inner edge: right of a left sidebar, left of a right one.
+    let (left, right) = (layout.content_left(), layout.content_right());
+    if right <= left || bounds.bottom <= bounds.top { return None; }
+    Some(RECT { left, top: bounds.top, right, bottom: bounds.bottom })
 }
 // --- end vertical sidebar ---
 
@@ -355,6 +364,9 @@ pub struct TabRow {
     /// Pinned tabs never join a group, so a pinned row's group is ignored.
     pub group: Option<RowGroup>,
     pub has_favicon: bool,
+    // --- tab options ---
+    pub marks: protocol::TabMarks,
+    // --- end tab options ---
 }
 
 /// Wire items for the strip, in the order given. The first unpinned member of each group is its
@@ -399,6 +411,7 @@ pub fn tab_items(rows: &[TabRow]) -> Vec<TabItem> {
                 collapsed,
                 group_size: size,
                 has_favicon: row.has_favicon,
+                marks: row.marks.clone(), // --- tab options ---
             })
         })
         .collect()
@@ -431,6 +444,7 @@ pub fn rail_key_to_wire(key: RailKey) -> RailKeyWire {
         RailKey::Bookmarks => RailKeyWire::Bookmarks,
         RailKey::History => RailKeyWire::History,
         RailKey::Menu => RailKeyWire::Menu,
+        RailKey::Tool(n) => RailKeyWire::Tool(n),
     }
 }
 
@@ -452,6 +466,7 @@ pub fn rail_icon_wire(icon: RailIcon) -> String {
         RailIcon::Heart => "heart",
         RailIcon::Clock => "clock",
         RailIcon::Dots => "dots",
+        RailIcon::Feed => "feed",
         RailIcon::AppTile => "apptile",
         RailIcon::Letter => "letter",
         RailIcon::Glyph(glyph) => {
@@ -501,6 +516,8 @@ pub fn rail_items<'a>(
                 dot: entry.dot,
                 accent: entry.accent.map(css_colour).unwrap_or_default(),
                 has_favicon,
+                count: entry.count, // --- tab stacks and workspaces (T10) ---
+                emoji: entry.emoji.clone().unwrap_or_default(),
             }
         })
         .collect()
@@ -947,6 +964,7 @@ mod tests {
             marker: None,
             group,
             has_favicon: id == 1,
+            marks: Default::default(),
         };
         let rows = vec![
             row(0, Some(group.clone()), false),
@@ -986,6 +1004,8 @@ mod tests {
             dot: false,
             accent: None,
             favicon: None,
+            count: 0,
+            emoji: None,
         }
     }
 

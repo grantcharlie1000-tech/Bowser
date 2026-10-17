@@ -40,9 +40,22 @@ pub const DOWNLOADS_FAVICON: &[u8] = include_bytes!("../icons/downloads-favicon.
 pub enum Section {
     Profile,
     Appearance,
+    Tabs,
+    /// --- T10 --- tab stacks, tiling and workspaces (src/stacks.rs).
+    Stacks,
+    /// The start page, speed dials, homepage and startup (docs/design/start-page.md).
+    StartPage,
     Privacy,
     Performance,
+    /// Page capture, spatial navigation, reader defaults, zoom and pop-out video (src/page_tools.rs).
+    PageTools,
+    /// The address bar and its drop-down (src/address_settings.rs).
+    Address,
     Search,
+    /// Bookmark options and the bookmarks bar.
+    Bookmarks,
+    Keyboard,
+    Commands,
     Downloads,
     Media,
     Extensions,
@@ -51,12 +64,20 @@ pub enum Section {
 }
 
 impl Section {
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 18] = [
         Self::Profile,
         Self::Appearance,
+        Self::Tabs,
+        Self::Stacks,
+        Self::StartPage,
         Self::Privacy,
         Self::Performance,
+        Self::PageTools,
+        Self::Address,
         Self::Search,
+        Self::Bookmarks,
+        Self::Keyboard,
+        Self::Commands,
         Self::Downloads,
         Self::Media,
         Self::Extensions,
@@ -69,9 +90,17 @@ impl Section {
         match self {
             Self::Profile => "profile",
             Self::Appearance => "appearance",
+            Self::Tabs => "tabs",
+            Self::Stacks => "stacks",
+            Self::StartPage => "startpage",
             Self::Privacy => "privacy",
             Self::Performance => "performance",
+            Self::PageTools => "pagetools",
+            Self::Address => "address",
             Self::Search => "search",
+            Self::Bookmarks => "bookmarks",
+            Self::Keyboard => "keyboard",
+            Self::Commands => "commands",
             Self::Downloads => "downloads",
             Self::Media => "media",
             Self::Extensions => "extensions",
@@ -246,7 +275,7 @@ mod tests {
             assert_eq!(parse(&page.url()), Some(page));
             assert_eq!(Section::from_key(section.key()), Some(section));
         }
-        assert_eq!(Section::ALL.len(), 10);
+        assert_eq!(Section::ALL.len(), 18, "page tools (T7) and stacks (T10) joined the sixteen");
         assert_eq!(parse_input("bowser://settings/downloads"), Some(InternalPage::Settings(Some(Section::Downloads))));
     }
 
