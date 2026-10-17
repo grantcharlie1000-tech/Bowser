@@ -1388,6 +1388,10 @@ fn layout_label(layout: settings::TabLayout) -> &'static str {
         settings::TabLayout::TabsTop => "Tabs above toolbar",
         settings::TabLayout::SingleRow => "Single row",
         settings::TabLayout::Vertical => "Vertical",
+        // --- layout (thread T6) ---
+        settings::TabLayout::VerticalRight => "Vertical, on the right",
+        settings::TabLayout::TabsBottom => "Tabs along the bottom",
+        // --- end layout ---
     }
 }
 
@@ -1907,6 +1911,17 @@ fn save_form(hwnd: HWND) {
         address: current.address,
         // The GDI form has no controls for the tab options (the HTML settings page has them).
         tabs: current.tabs,
+        // --- layout (thread T6): the Layout block's other options have no GDI controls; kept as the file has them ---
+        tab_bar_visible: current.tab_bar_visible,
+        address_bar_position: current.address_bar_position,
+        address_bar_visible: current.address_bar_visible,
+        show_title_bar: current.show_title_bar,
+        status_bar: current.status_bar,
+        ui_density: current.ui_density,
+        compact_menus: current.compact_menus,
+        ui_zoom: current.ui_zoom,
+        layout_saved: current.layout_saved,
+        // --- end layout ---
     };
     match settings::save(&path, &settings) {
         Ok(()) => {

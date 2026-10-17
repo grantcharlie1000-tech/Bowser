@@ -395,7 +395,10 @@ fn file_stamp(path: &Path) -> Option<FileStamp> {
 struct RelayoutInputs {
     active: TabId,
     maximised: bool,
-    tab_layout: crate::settings::TabLayout,
+    // --- layout (thread T6) --- the whole arrangement and the list density, not just the tab layout.
+    arrangement: layout::Arrangement,
+    density: crate::layout_prefs::UiDensity,
+    // --- end layout ---
     centred_address_bar: bool,
     font_size: crate::settings::FontSize,
     ui_font: String,
@@ -435,6 +438,9 @@ struct WindowChrome {
     sidebar_scroll_target: i32,
     sidebar_hover_row: Option<usize>,
     sidebar_resizing: bool,
+    /// --- layout (thread T6) --- a hidden address bar brought back by Ctrl+L, until the address
+    /// field loses focus again.
+    address_bar_revealed: bool,
     /// The width a sidebar drag has reached, laid out once per frame and saved to the settings when
     /// the drag ends, and whether a frame for it is due.
     sidebar_drag_width: Option<u16>,
@@ -648,6 +654,7 @@ impl WindowChrome {
             sidebar_scroll_target: 0,
             sidebar_hover_row: None,
             sidebar_resizing: false,
+            address_bar_revealed: false,
             sidebar_drag_width: None,
             sidebar_drag_pending: false,
             last_relayout: None,
@@ -796,7 +803,8 @@ impl WindowChrome {
             self.dpi,
             inputs.active,
             inputs.maximised,
-            inputs.tab_layout,
+            inputs.arrangement,
+            inputs.density,
             width,
             inputs.centred_address_bar,
             inputs.font_size,
@@ -951,13 +959,15 @@ impl WindowChrome {
         if reproject {
             let settings = App::settings(app);
             let sidebar_width = self.sidebar_width(app);
+            let arrangement = App::arrangement(app).with_address_bar_revealed(self.address_bar_revealed); // --- layout (thread T6) ---
             self.relayout(
                 self.client.0,
                 self.client.1,
                 self.dpi,
                 App::active_tab_id(app),
                 self.layout.maximised,
-                App::tab_layout(app),
+                arrangement,
+                settings.ui_density,
                 sidebar_width,
                 settings.centred_address_bar,
                 settings.font_size,
@@ -973,7 +983,8 @@ impl WindowChrome {
         dpi: u32,
         active: TabId,
         maximised: bool,
-        tab_layout: crate::settings::TabLayout,
+        arrangement: layout::Arrangement,
+        density: crate::layout_prefs::UiDensity,
         sidebar_width: u16,
         centred_address_bar: bool,
         font_size: crate::settings::FontSize,
@@ -984,7 +995,8 @@ impl WindowChrome {
         self.last_relayout = Some(RelayoutInputs {
             active,
             maximised,
-            tab_layout,
+            arrangement,
+            density,
             centred_address_bar,
             font_size,
             ui_font: ui_font.to_owned(),
@@ -999,15 +1011,14 @@ impl WindowChrome {
                     .is_some_and(|tab| tab.id == active)
             })
             .unwrap_or(0);
-        let (layout, sidebar) = if tab_layout.is_vertical() {
-            let (layout, sidebar) = layout::compute_vertical_in_frame_with(
-                w, h, self.dpi, self.slots.len().max(1), i, maximised,
-                i32::from(sidebar_width), centred_address_bar,
-            );
-            (layout, Some(sidebar.with_tab_count(self.sidebar_rows.len(), self.dpi)))
-        } else {
-            (layout::compute_in_frame_for_with(tab_layout, w, h, self.dpi, self.slots.len().max(1), i, maximised, centred_address_bar), None)
-        };
+        // --- layout (thread T6) --- one geometry for every arrangement: tab bar edge or hidden,
+        // address bar edge or hidden, title row, sidebar side and the list density.
+        let (layout, sidebar) = layout::compute_arranged_in_frame(
+            arrangement, w, h, self.dpi, self.slots.len().max(1), i, maximised,
+            i32::from(sidebar_width), centred_address_bar, density.sidebar_row_height(),
+        );
+        let sidebar = sidebar.map(|sidebar| sidebar.with_tab_count(self.sidebar_rows.len(), self.dpi));
+        // --- end layout ---
         self.layout = layout.with_group_slots(
             self.slots.iter().map(|slot| slot.marker_only),
             self.slots.iter().map(|slot| slot.group_control && !slot.collapsed),
@@ -2173,7 +2184,9 @@ unsafe extern "system" fn window_proc(
                         | Hit::SiteInfo
                         | Hit::Split
                 );
-                frame::frame_hit_test(
+                // --- layout (thread T6) --- a row along the bottom edge keeps the bottom grip thin.
+                let thin_bottom = with_chrome(hwnd, |s| s.last_relayout.as_ref().is_some_and(|inputs| inputs.arrangement.thin_bottom_edge())).unwrap_or(false);
+                frame::frame_hit_test_with(
                     p,
                     (r.right, r.bottom),
                     dpi(hwnd),
@@ -2183,6 +2196,7 @@ unsafe extern "system" fn window_proc(
                     } else {
                         frame::ChromeHit::None
                     },
+                    thin_bottom,
                 )
                 .lresult()
             }
@@ -2405,6 +2419,7 @@ unsafe extern "system" fn window_proc(
                     apply_window_region(hwnd, r.right, r.bottom, IsZoomed(hwnd).as_bool());
                     let active = App::active_tab_id(app);
                     let settings = App::settings(app);
+                    let arrangement = App::arrangement(app); // --- layout (thread T6) ---
                     let _ = with_chrome(hwnd, |s| {
                         s.relayout(
                             r.right,
@@ -2412,7 +2427,8 @@ unsafe extern "system" fn window_proc(
                             dpi(hwnd),
                             active,
                             IsZoomed(hwnd).as_bool(),
-                            App::tab_layout(app),
+                            arrangement.with_address_bar_revealed(s.address_bar_revealed),
+                            settings.ui_density,
                             App::sidebar_width(app),
                             settings.centred_address_bar,
                             settings.font_size,
@@ -2486,13 +2502,15 @@ unsafe extern "system" fn window_proc(
                             tab.favicon = None;
                         }
                         let settings = App::settings(app);
+                        let arrangement = App::arrangement(app).with_address_bar_revealed(s.address_bar_revealed); // --- layout (thread T6) ---
                         s.relayout(
                             r.right,
                             r.bottom,
                             dpi(hwnd),
                             App::active_tab_id(app),
                             IsZoomed(hwnd).as_bool(),
-                            App::tab_layout(app),
+                            arrangement,
+                            settings.ui_density,
                             App::sidebar_width(app),
                             settings.centred_address_bar,
                             settings.font_size,
@@ -2897,7 +2915,9 @@ unsafe extern "system" fn window_proc(
             } else {
                 let resizing = with_chrome(hwnd, |s| s.sidebar_resizing).unwrap_or(false);
                     if resizing {
-                        let width = ((p.x * 96) / dpi(hwnd).max(96) as i32).clamp(
+                        // --- layout (thread T6) --- measured from the sidebar's own edge, whichever side it is on.
+                        let drag_px = with_chrome(hwnd, |s| s.sidebar.map_or(p.x, |sidebar| sidebar.drag_width_px(p.x))).unwrap_or(p.x);
+                        let width = ((drag_px * 96) / dpi(hwnd).max(96) as i32).clamp(
                             i32::from(crate::settings::MIN_SIDEBAR_WIDTH),
                             i32::from(crate::settings::MAX_SIDEBAR_WIDTH),
                         ) as u16;
@@ -3046,9 +3066,7 @@ unsafe extern "system" fn window_proc(
                         let Some(sidebar) = s.sidebar else {
                             return false;
                         };
-                        let row_height = crate::chrome::layout::Metrics::new(s.dpi)
-                            .px(crate::vertical_tabs::TAB_ROW_HEIGHT)
-                            .max(1);
+                        let row_height = sidebar.row_height().max(1); // --- layout (thread T6) ---
                         s.sidebar_scroll_target = s
                             .sidebar_scroll_target
                             .saturating_sub(delta * row_height * 3)
@@ -9197,6 +9215,13 @@ pub(super) fn page_viewport(hwnd: HWND) -> Option<RECT> {
     with_chrome(hwnd, |state| to_win_rect(state.layout.viewport))
 }
 
+// --- layout (thread T6) ---
+/// Whether a hidden address bar is shown right now because Ctrl+L asked for it.
+pub(crate) fn address_bar_revealed(hwnd: HWND) -> bool {
+    with_chrome(hwnd, |state| state.address_bar_revealed).unwrap_or(false)
+}
+// --- end layout ---
+
 pub(super) fn html_environment(hwnd: HWND) -> Option<ChromeEnv> {
     with_chrome(hwnd, |state| state.html_env.clone()).flatten()
 }
@@ -11954,7 +11979,8 @@ mod tests {
                 crate::settings::TabLayout::TabsTop,
                 crate::settings::TabLayout::SingleRow,
             ] {
-                s.relayout(1000, 700, dpi, TabId(0), false, tab_layout, 260, true, crate::settings::FontSize::Medium, "");
+                let arrangement = layout::Arrangement { tabs: tab_layout, ..Default::default() };
+                s.relayout(1000, 700, dpi, TabId(0), false, arrangement, crate::layout_prefs::UiDensity::Regular, 260, true, crate::settings::FontSize::Medium, "");
                 let chrome = layout::chrome_height(tab_layout, dpi);
                 assert_eq!(s.surface.height(), 700, "surface height at dpi {dpi}");
                 assert_eq!(s.surface.width(), 1000, "surface width at dpi {dpi}");

@@ -78,6 +78,14 @@ pub const TEMPLATE: &str = "# Bowser settings. Restart Bowser after editing.\r\n
     # website_appearance=auto\r\n\
     # force_dark_websites=false\r\n\
     # private_theme=follow\r\n\
+    # tab_bar_visible=true\r\n\
+    # address_bar_position=top\r\n\
+    # address_bar_visible=true\r\n\
+    # show_title_bar=false\r\n\
+    # status_bar=overlay\r\n\
+    # ui_density=regular\r\n\
+    # compact_menus=false\r\n\
+    # ui_zoom=100\r\n\
     # start_group_reopen=last\r\n\
     # start_titles=always\r\n\
     # start_add_button=true\r\n\
@@ -175,11 +183,17 @@ pub enum TabLayout {
     SingleRow,
     /// Sidebar tab list at the left; the top tab row is absent.
     Vertical,
+    // --- layout (thread T6) ---
+    /// Sidebar tab list at the right, under the toolbar row; the top tab row is absent.
+    VerticalRight,
+    /// Toolbar row on top, full-width tab row along the bottom edge of the window.
+    TabsBottom,
+    // --- end layout ---
 }
 
 impl TabLayout {
     /// Every layout, in the order the settings dropdown lists them.
-    pub const ALL: [TabLayout; 4] = [Self::ToolbarTop, Self::TabsTop, Self::SingleRow, Self::Vertical];
+    pub const ALL: [TabLayout; 6] = [Self::ToolbarTop, Self::TabsTop, Self::SingleRow, Self::Vertical, Self::VerticalRight, Self::TabsBottom];
 
     /// The value saved in `settings.txt` and exchanged with the settings page.
     pub fn key(self) -> &'static str {
@@ -188,6 +202,8 @@ impl TabLayout {
             Self::TabsTop => "tabs-top",
             Self::SingleRow => "single-row",
             Self::Vertical => "vertical",
+            Self::VerticalRight => "vertical-right",
+            Self::TabsBottom => "bottom",
         }
     }
 
@@ -196,10 +212,34 @@ impl TabLayout {
         Self::ALL.into_iter().find(|layout| layout.key().eq_ignore_ascii_case(key))
     }
 
-    /// Whether the tab list is the left sidebar rather than a row of tabs in the top chrome.
+    /// Whether the tab list is a sidebar (left or right) rather than a row of tabs in the chrome.
     pub fn is_vertical(self) -> bool {
-        self == Self::Vertical
+        matches!(self, Self::Vertical | Self::VerticalRight)
     }
+
+    // --- layout (thread T6) ---
+    /// Which edge the sidebar is docked to, for the two sidebar layouts.
+    pub fn sidebar_side(self) -> Option<SidePanelPosition> {
+        match self {
+            Self::Vertical => Some(SidePanelPosition::Left),
+            Self::VerticalRight => Some(SidePanelPosition::Right),
+            _ => None,
+        }
+    }
+
+    /// Where the tab bar sits: `top`, `left`, `right` or `bottom` (the settings page's Tab bar row).
+    pub fn tab_bar_edge(self) -> &'static str {
+        match self {
+            Self::ToolbarTop | Self::TabsTop | Self::SingleRow => "top",
+            Self::Vertical => "left",
+            Self::VerticalRight => "right",
+            Self::TabsBottom => "bottom",
+        }
+    }
+
+    /// The layouts whose tab bar is a row at the top, in page order: the "top style" sub-choice.
+    pub const TOP_STYLES: [TabLayout; 3] = [Self::ToolbarTop, Self::TabsTop, Self::SingleRow];
+    // --- end layout ---
 }
 
 /// `theme=helium|system` (default `helium`): Bowser's own fixed colours, or the Windows accent and
@@ -351,6 +391,8 @@ pub enum SidePanelPosition {
 }
 
 impl SidePanelPosition {
+    pub const ALL: [SidePanelPosition; 2] = [Self::Left, Self::Right]; // --- layout (thread T6) ---
+
     pub fn key(self) -> &'static str {
         match self {
             Self::Left => "left",
@@ -544,6 +586,29 @@ pub struct Settings {
     /// The `tabs_*` options of the settings page's Tabs section.
     pub tabs: crate::tab_options::TabOptions,
     // --- end tab options ---
+    // --- layout (thread T6, src/layout_prefs.rs) ---
+    /// `tab_bar_visible` (default true): off, the tab row or sidebar is not laid out at all.
+    pub tab_bar_visible: bool,
+    /// `address_bar_position=top|bottom` (default top): the toolbar row's edge.
+    pub address_bar_position: crate::layout_prefs::BarPosition,
+    /// `address_bar_visible` (default true): off, the toolbar row is not laid out; Ctrl+L brings it
+    /// back until the address field loses focus.
+    pub address_bar_visible: bool,
+    /// `show_title_bar` (default false): with the tab bar on a side, a title row above the
+    /// toolbar holds the page title and the window buttons.
+    pub show_title_bar: bool,
+    /// `status_bar=overlay|hidden` (default overlay): the page's link-address overlay.
+    pub status_bar: crate::layout_prefs::StatusBar,
+    /// `ui_density=regular|compact` (default regular): list row heights in the chrome.
+    pub ui_density: crate::layout_prefs::UiDensity,
+    /// `compact_menus` (default false): shorter menu rows.
+    pub compact_menus: bool,
+    /// `ui_zoom` (50 to 200, default 100): scales the chrome's text with `font_size`.
+    pub ui_zoom: u16,
+    /// `layout_saved`: the user's own layout as `LayoutConfig::key`, or empty. The settings page's
+    /// Saved tile.
+    pub layout_saved: String,
+    // --- end layout ---
 }
 
 impl Default for Settings {
@@ -601,6 +666,17 @@ impl Default for Settings {
             start: crate::start_page::StartSettings::default(),
             address: crate::address_settings::AddressSettings::default(),
             tabs: crate::tab_options::TabOptions::default(),
+            // --- layout (thread T6) ---
+            tab_bar_visible: true,
+            address_bar_position: crate::layout_prefs::BarPosition::Top,
+            address_bar_visible: true,
+            show_title_bar: false,
+            status_bar: crate::layout_prefs::StatusBar::Overlay,
+            ui_density: crate::layout_prefs::UiDensity::Regular,
+            compact_menus: false,
+            ui_zoom: crate::layout_prefs::DEFAULT_UI_ZOOM,
+            layout_saved: String::new(),
+            // --- end layout ---
         }
     }
 }
@@ -894,6 +970,53 @@ impl Settings {
                     }
                 }
                 // --- end privacy, history and website appearance ---
+                // --- layout (thread T6) ---
+                "tab_bar_visible" => {
+                    if let Some(on) = parse_bool(value) {
+                        settings.tab_bar_visible = on;
+                    }
+                }
+                "address_bar_position" => {
+                    if let Some(position) = crate::layout_prefs::BarPosition::parse(value) {
+                        settings.address_bar_position = position;
+                    }
+                }
+                "address_bar_visible" => {
+                    if let Some(on) = parse_bool(value) {
+                        settings.address_bar_visible = on;
+                    }
+                }
+                "show_title_bar" => {
+                    if let Some(on) = parse_bool(value) {
+                        settings.show_title_bar = on;
+                    }
+                }
+                "status_bar" => {
+                    if let Some(status) = crate::layout_prefs::StatusBar::parse(value) {
+                        settings.status_bar = status;
+                    }
+                }
+                "ui_density" => {
+                    if let Some(density) = crate::layout_prefs::UiDensity::parse(value) {
+                        settings.ui_density = density;
+                    }
+                }
+                "compact_menus" => {
+                    if let Some(on) = parse_bool(value) {
+                        settings.compact_menus = on;
+                    }
+                }
+                "ui_zoom" => {
+                    if let Ok(percent) = value.parse::<u16>() {
+                        settings.ui_zoom = percent.clamp(crate::layout_prefs::MIN_UI_ZOOM, crate::layout_prefs::MAX_UI_ZOOM);
+                    }
+                }
+                "layout_saved" => {
+                    if crate::layout_prefs::is_layout_saved(value) {
+                        settings.layout_saved = value.to_owned();
+                    }
+                }
+                // --- end layout ---
                 // --- start page --- (`start_*`, `homepage`, `startup`, `startup_pages`)
                 // Address bar, search and bookmark options (src/address_settings.rs) take what the start page does not.
                 _ => {
@@ -1068,6 +1191,17 @@ pub fn render_updated(existing: &str, settings: &Settings) -> String {
         ("force_dark_websites", Some(bool_text(settings.force_dark_websites).to_owned())),
         ("private_theme", Some(settings.private_theme.key().to_owned())),
         // --- end privacy, history and website appearance ---
+        // --- layout (thread T6) ---
+        ("tab_bar_visible", Some(bool_text(settings.tab_bar_visible).to_owned())),
+        ("address_bar_position", Some(settings.address_bar_position.key().to_owned())),
+        ("address_bar_visible", Some(bool_text(settings.address_bar_visible).to_owned())),
+        ("show_title_bar", Some(bool_text(settings.show_title_bar).to_owned())),
+        ("status_bar", Some(settings.status_bar.key().to_owned())),
+        ("ui_density", Some(settings.ui_density.key().to_owned())),
+        ("compact_menus", Some(bool_text(settings.compact_menus).to_owned())),
+        ("ui_zoom", Some(settings.ui_zoom.to_string())),
+        ("layout_saved", Some(settings.layout_saved.clone())),
+        // --- end layout ---
     ];
     // --- start page ---
     let mut values = Vec::from(values);

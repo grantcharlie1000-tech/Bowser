@@ -72,11 +72,26 @@ pub fn frame_hit_test(
     maximised: bool,
     chrome_hit: ChromeHit,
 ) -> FrameHit {
+    frame_hit_test_with(point, client_size, dpi, maximised, chrome_hit, false)
+}
+
+/// --- layout (thread T6) --- [`frame_hit_test`] with the bottom grip as thin as the top one when
+/// `thin_bottom` is set: a tab row or the toolbar along the bottom edge would otherwise lose its
+/// lower part to the resize edge, as the tabs at the top would.
+pub fn frame_hit_test_with(
+    point: POINT,
+    client_size: (i32, i32),
+    dpi: u32,
+    maximised: bool,
+    chrome_hit: ChromeHit,
+    thin_bottom: bool,
+) -> FrameHit {
     let m = Metrics::new(dpi);
     let (width, height) = (client_size.0.max(0), client_size.1.max(0));
     let (x, y) = (point.x, point.y);
     let edge = m.px(RESIZE_GRIP);
     let top_edge = m.px(Metrics::ISLAND_MARGIN);
+    let bottom_edge = if thin_bottom { top_edge } else { edge };
     if x < -edge || y < -edge || x >= width.saturating_add(edge) || y >= height.saturating_add(edge)
     {
         return FrameHit::Client;
@@ -87,7 +102,7 @@ pub fn frame_hit_test(
         let right = x >= width.saturating_sub(edge);
         let top_corner = y < edge;
         let top = y < top_edge;
-        let bottom = y >= height.saturating_sub(edge);
+        let bottom = y >= height.saturating_sub(bottom_edge);
         match (top_corner, bottom, left, right) {
             (true, _, true, _) => return FrameHit::TopLeft,
             (true, _, _, true) => return FrameHit::TopRight,

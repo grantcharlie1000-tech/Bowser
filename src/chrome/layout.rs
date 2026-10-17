@@ -28,7 +28,8 @@
 use windows::Win32::Foundation::RECT;
 
 use crate::chrome::rail::{self, RailKey, RailView};
-use crate::settings::TabLayout;
+use crate::layout_prefs::BarPosition; // --- layout (thread T6) ---
+use crate::settings::{SidePanelPosition, TabLayout};
 
 /// Logical (96 dpi) chrome metrics, scaled to physical pixels with [`Metrics::px`].
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -270,6 +271,17 @@ pub struct Layout {
     pub viewport: Rect,
     /// Full-height pill at the left edge of the client. Everything else starts to its right.
     pub rail: Rect,
+    // --- layout (thread T6) ---
+    /// A row above everything else holding only the window buttons and the page title: shown when
+    /// the user asks for one with the tabs on a side, or when neither a tab row nor the toolbar is
+    /// at the top to hold the window buttons. Empty otherwise.
+    pub title_bar: Rect,
+    /// Where the page area starts and ends vertically before the bookmarks bar takes its share:
+    /// `viewport.top` as laid out, and the top of the rows along the bottom edge (`client.bottom`
+    /// when there are none). The native paint fills the chrome bands between these and the edges.
+    pub top_chrome: i32,
+    pub bottom_chrome: i32,
+    // --- end layout ---
     tab_count: usize,
     inactive_tab_width: i32,
     active_tab_width: i32,
@@ -300,11 +312,27 @@ pub const fn chrome_height(variant: TabLayout, dpi: u32) -> i32 {
         TabLayout::ToolbarTop => top_row + m.px(Metrics::STRIP_GAP) + m.px(Metrics::TAB_ROW_HEIGHT),
         // The top row holds the tabs and the captions; the toolbar is a second, equally tall row.
         TabLayout::TabsTop => top_row + m.px(Metrics::STRIP_HEIGHT),
-        // One row, or a toolbar with the tabs in the sidebar: nothing reserved for a tab row.
-        TabLayout::SingleRow | TabLayout::Vertical => top_row,
+        // One row, or a toolbar with the tabs in a sidebar or along the bottom edge: nothing
+        // reserved for a tab row at the top.
+        TabLayout::SingleRow | TabLayout::Vertical | TabLayout::VerticalRight | TabLayout::TabsBottom => top_row,
     };
     rows + m.px(Metrics::OUTER_MARGIN) + m.px(Metrics::VIEWPORT_GAP)
 }
+
+// --- layout (thread T6) ---
+/// Height of the chrome along the bottom edge for `variant`: the tab row of `TabsBottom` with its
+/// margin below and the gap above it; zero for every other variant. The viewport ends this far
+/// above the client's bottom edge.
+pub const fn bottom_chrome_height(variant: TabLayout, dpi: u32) -> i32 {
+    let m = Metrics::new(dpi);
+    match variant {
+        TabLayout::TabsBottom => {
+            m.px(Metrics::TAB_ROW_HEIGHT) + 2 * m.px(Metrics::OUTER_MARGIN) + m.px(Metrics::VIEWPORT_GAP)
+        }
+        _ => 0,
+    }
+}
+// --- end layout ---
 
 /// Logical width of the left rail. The rail is a pill, rounded at both ends. It is exactly as wide as the omnibox is tall
 /// and holds 22-pixel buttons with a 2-pixel margin either side, which fits the 16-pixel icons.
@@ -401,7 +429,9 @@ pub fn content_rect(variant: TabLayout, client_w: i32, client_h: i32, dpi: u32, 
     } else {
         m.px(Metrics::RESIZE_RIM).min(width / 2)
     };
-    Rect::new(rim, top, (width - rim).max(rim), (height - rim).max(top))
+    // --- layout (thread T6) --- a tab row along the bottom edge takes its band off the page.
+    let bottom_inset = rim.max(bottom_chrome_height(variant, dpi));
+    Rect::new(rim, top, (width - rim).max(rim), (height - bottom_inset).max(top))
 }
 
 /// The three adjacent rectangles used by a split view. `divider_left` is clamped so both panes
@@ -694,8 +724,9 @@ pub fn compute_for_with(
                 Rect::default()
             }
         };
-        // In `ToolbarTop` "+" is at the end of the tab row instead, so the toolbar keeps its width.
-        let strip_new_tab = if matches!(variant, TabLayout::TabsTop | TabLayout::ToolbarTop) { Rect::default() } else { place(new_tab_size) };
+        // In `ToolbarTop` (and `TabsBottom`) "+" is at the end of the tab row instead, so the
+        // toolbar keeps its width.
+        let strip_new_tab = if matches!(variant, TabLayout::TabsTop | TabLayout::ToolbarTop | TabLayout::TabsBottom) { Rect::default() } else { place(new_tab_size) };
         let group_right = right_edge.max(omnibox_min);
         // The bubble only fits when the omnibox keeps a non-negative width beside it.
         let menu_fits = toolbar_fits && group_right - menu_w - gap >= omnibox_min;
@@ -755,8 +786,14 @@ pub fn compute_for_with(
             }
             tab_row = Rect::new(0, tab_top, row_right, tab_top + tab_row_h);
         } else {
-            let tab_top = strip.bottom + m.px(Metrics::STRIP_GAP);
-            if variant == TabLayout::ToolbarTop {
+            // --- layout (thread T6) --- `TabsBottom` is the full-width row of `ToolbarTop` laid
+            // along the bottom edge: its margin below, and the viewport ends above it.
+            let tab_top = if variant == TabLayout::TabsBottom {
+                (client_h - margin - tab_row_h).max(strip.bottom + m.px(Metrics::STRIP_GAP))
+            } else {
+                strip.bottom + m.px(Metrics::STRIP_GAP)
+            };
+            if matches!(variant, TabLayout::ToolbarTop | TabLayout::TabsBottom) {
                 // The full-width tab row: tabs, tab list, then "+" pinned to the right end. Like in
                 // `TabsTop`, "+" drops out once it would leave less than one minimum-width tab.
                 let right_limit = (client_w - margin).max(tabs_left);
@@ -854,6 +891,11 @@ pub fn compute_for_with(
         main_menu_button,
         viewport,
         rail: Rect::default(),
+        // --- layout (thread T6) ---
+        title_bar: Rect::default(),
+        top_chrome: viewport.top,
+        bottom_chrome: if variant == TabLayout::TabsBottom { viewport.bottom } else { client_h },
+        // --- end layout ---
         tab_count,
         inactive_tab_width,
         active_tab_width,
@@ -1279,7 +1321,9 @@ impl Layout {
 
         let mut rects = Vec::new();
         // The band above the toolbar: the inset, or in `TabsTop` the row of tabs and captions.
-        let above = Rect::new(self.client.left, self.client.top, self.client.right, self.strip.top);
+        // --- layout (thread T6) --- never past where the page starts: a toolbar along the bottom
+        // edge has the page above it, and that is not a drag band.
+        let above = Rect::new(self.client.left, self.client.top, self.client.right, self.strip.top.min(self.top_chrome));
         append_drag_regions(above, &controls, &mut rects);
         append_drag_regions(self.strip, &controls, &mut rects);
         // `SingleRow` and `TabsTop` keep the tab row inside a band swept above.
@@ -1469,6 +1513,10 @@ pub fn hit_test_native(
         }
         return Hit::CaptionMinimize;
     }
+    // --- layout (thread T6) --- the title row is all drag handle outside its buttons.
+    if layout.title_bar.contains(x, y) {
+        return Hit::CaptionArea;
+    }
     if y >= 0 && y < layout.strip.top {
         return Hit::CaptionArea;
     }
@@ -1493,6 +1541,304 @@ pub fn hit_test_with_group_balls(layout: &Layout, balls: &[(usize, Rect)], x: i3
 /// Target index for a tab dragged to horizontal position `x`. `x` is the dragged island's
 /// centre. The tab moves past a neighbour once its centre crosses that neighbour's centre. The
 /// result is an index in the list after the move, which suits [`crate::tabs::TabList::move_tab`].
+// --- layout (thread T6) ---
+/// How the chrome is arranged, from the layout settings: which tab layout and whether the tab bar
+/// shows at all, which edge the toolbar sits on and whether it shows, and whether a title row is
+/// wanted with the tabs on a side. [`compute_arranged_in_frame`] builds the geometry from it; the
+/// window, the page host bounds and the native paint all read the same result.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Arrangement {
+    pub tabs: TabLayout,
+    pub tab_bar: bool,
+    pub address_bar: BarPosition,
+    pub address_bar_visible: bool,
+    pub title_bar: bool,
+}
+
+impl Default for Arrangement {
+    fn default() -> Self {
+        Self { tabs: TabLayout::ToolbarTop, tab_bar: true, address_bar: BarPosition::Top, address_bar_visible: true, title_bar: false }
+    }
+}
+
+impl Arrangement {
+    pub fn from_settings(settings: &crate::settings::Settings) -> Self {
+        Self {
+            tabs: settings.tab_layout,
+            tab_bar: settings.tab_bar_visible,
+            address_bar: settings.address_bar_position,
+            address_bar_visible: settings.address_bar_visible,
+            title_bar: settings.show_title_bar,
+        }
+    }
+
+    /// [`Arrangement::from_settings`] with the toolbar shown whatever the setting says: Ctrl+L on a
+    /// hidden address bar brings it back until the address field loses focus.
+    pub fn with_address_bar_revealed(self, revealed: bool) -> Self {
+        Self { address_bar_visible: self.address_bar_visible || revealed, ..self }
+    }
+
+    /// The toolbar is away from the top: along the bottom edge, or not shown.
+    fn address_bar_moved(self) -> bool {
+        !self.address_bar_visible || self.address_bar == BarPosition::Bottom
+    }
+
+    /// The variant the geometry starts from. A hidden tab bar is `Vertical` without a sidebar: the
+    /// toolbar row alone, "+" in it. With the toolbar away from the top, a tab row at the top must
+    /// hold the window buttons, so the two toolbar-first layouts become `TabsTop` for the purpose.
+    pub fn base_variant(self) -> TabLayout {
+        if !self.tab_bar {
+            return TabLayout::Vertical;
+        }
+        match self.tabs {
+            TabLayout::ToolbarTop | TabLayout::SingleRow if self.address_bar_moved() => TabLayout::TabsTop,
+            tabs => tabs,
+        }
+    }
+
+    /// Which edge the tab sidebar is on, when the tab bar is a shown sidebar.
+    pub fn sidebar_side(self) -> Option<SidePanelPosition> {
+        if self.tab_bar { self.tabs.sidebar_side() } else { None }
+    }
+
+    /// Whether a title row is laid out above everything: asked for (`show_title_bar`) with the tabs
+    /// on a side, or needed because the toolbar is away from the top and no tab row is there to
+    /// hold the window buttons.
+    pub fn has_title_row(self) -> bool {
+        if self.address_bar_moved() {
+            self.base_variant() != TabLayout::TabsTop
+        } else {
+            self.title_bar && self.sidebar_side().is_some()
+        }
+    }
+
+    pub fn address_bar_at_bottom(self) -> bool {
+        self.address_bar_visible && self.address_bar == BarPosition::Bottom
+    }
+
+    /// The tab row is along the bottom edge (shown, `TabsBottom`).
+    pub fn tabs_at_bottom(self) -> bool {
+        self.tab_bar && self.tabs == TabLayout::TabsBottom
+    }
+
+    /// The frame's bottom resize grip must stay thin (like the top one) when a row of controls sits
+    /// along the bottom edge, or the grip would swallow the bottom of every tab or button there.
+    pub fn thin_bottom_edge(self) -> bool {
+        self.tabs_at_bottom() || self.address_bar_at_bottom()
+    }
+}
+
+impl Layout {
+    /// Moves the toolbar row and everything in it by `dy`. The tab row follows only when it sits
+    /// inside the toolbar row (`SingleRow`).
+    fn shift_toolbar(&mut self, dy: i32) {
+        let in_strip = |rect: Rect| !rect.is_empty() && self.strip.contains_rect(rect);
+        let row_in_strip = in_strip(self.tab_row);
+        let plus_in_strip = in_strip(self.new_tab_button);
+        let shift = |rect: &mut Rect| {
+            if !rect.is_empty() {
+                *rect = Rect::new(rect.left, rect.top + dy, rect.right, rect.bottom + dy);
+            }
+        };
+        shift(&mut self.strip);
+        shift(&mut self.back_button);
+        shift(&mut self.forward_button);
+        shift(&mut self.reload_button);
+        shift(&mut self.omnibox);
+        shift(&mut self.main_menu_button);
+        if plus_in_strip {
+            shift(&mut self.new_tab_button);
+        }
+        if row_in_strip {
+            self.shift_tab_row(dy);
+        }
+    }
+
+    /// Moves the tab row and everything in it by `dy` ("+" only when it is in the row).
+    fn shift_tab_row(&mut self, dy: i32) {
+        let plus_in_row = !self.new_tab_button.is_empty() && self.tab_row.contains_rect(self.new_tab_button);
+        let shift = |rect: &mut Rect| {
+            if !rect.is_empty() {
+                *rect = Rect::new(rect.left, rect.top + dy, rect.right, rect.bottom + dy);
+            }
+        };
+        shift(&mut self.tab_row);
+        shift(&mut self.tab_zone);
+        shift(&mut self.tab_menu_button);
+        if plus_in_row {
+            shift(&mut self.new_tab_button);
+        }
+        self.island_top += dy;
+        self.island_bottom += dy;
+    }
+
+    /// Puts a title row across the top (from `left` to the client's right edge; the rail keeps its
+    /// space) and moves every row at the top down by its height. The caption buttons stay where
+    /// they are: they now sit in the title row.
+    fn with_title_row(mut self, left: i32) -> Self {
+        let m = self.metrics;
+        let height = m.px(Metrics::TOP_MARGIN) + m.px(Metrics::STRIP_HEIGHT);
+        self.title_bar = Rect::new(left.min(self.client.right), 0, self.client.right, height.min(self.client.bottom));
+        let strip_at_top = !self.strip.is_empty() && self.strip.top < self.client.height() / 2;
+        let row_at_top = !self.tab_row.is_empty() && self.tab_row.top < self.client.height() / 2;
+        if strip_at_top {
+            self.shift_toolbar(height);
+        }
+        if row_at_top && !self.strip.contains_rect(self.tab_row) {
+            self.shift_tab_row(height);
+        }
+        self
+    }
+
+    /// Moves the toolbar row to the bottom edge (its margin below it). A `TabsBottom` tab row goes
+    /// just above it.
+    fn with_toolbar_at_bottom(mut self) -> Self {
+        let m = self.metrics;
+        let margin = m.px(Metrics::OUTER_MARGIN);
+        let gap = m.px(Metrics::STRIP_GAP);
+        let strip_h = self.strip.height();
+        let strip_top = (self.client.bottom - margin - strip_h).max(self.strip.top);
+        self.shift_toolbar(strip_top - self.strip.top);
+        if self.variant == TabLayout::TabsBottom && !self.tab_row.is_empty() {
+            let row_top = (self.strip.top - gap - self.tab_row.height()).max(self.tab_row.top.min(self.strip.top));
+            self.shift_tab_row(row_top - self.tab_row.top);
+        }
+        self
+    }
+
+    /// Removes the toolbar row: no navigation, no address field, no main menu button ("+" too when
+    /// it was in the row). The HTML toolbar host hides with it (`toolbar_bounds` is `None`).
+    fn with_toolbar_hidden(mut self) -> Self {
+        if !self.new_tab_button.is_empty() && self.strip.contains_rect(self.new_tab_button) {
+            self.new_tab_button = Rect::default();
+        }
+        self.strip = Rect::default();
+        self.back_button = Rect::default();
+        self.forward_button = Rect::default();
+        self.reload_button = Rect::default();
+        self.omnibox = Rect::default();
+        self.main_menu_button = Rect::default();
+        self
+    }
+
+    /// Recomputes the page area from where the rows ended up: below the lowest row at the top,
+    /// above the highest row at the bottom, between the rail (or a left sidebar) and the window's
+    /// right edge (or a right sidebar). `top_chrome` and `bottom_chrome` follow.
+    fn settle_viewport(&mut self, sidebar: Option<&crate::vertical_tabs::SidebarLayout>, left_edge: i32) {
+        let m = self.metrics;
+        let margin = m.px(Metrics::OUTER_MARGIN);
+        let gap = m.px(Metrics::VIEWPORT_GAP);
+        let rim = if self.maximised { 0 } else { m.px(Metrics::RESIZE_RIM).min(self.client.width() / 2) };
+        let middle = self.client.height() / 2;
+        let mut top = self.title_bar.bottom;
+        let mut bottom = self.client.bottom;
+        for row in [self.strip, self.tab_row] {
+            if row.is_empty() {
+                continue;
+            }
+            if row.top < middle {
+                top = top.max(row.bottom);
+            } else {
+                bottom = bottom.min(row.top);
+            }
+        }
+        let top = if top > 0 { top + margin + gap } else { rim }.min(self.client.bottom);
+        let bottom = if bottom < self.client.bottom { bottom - margin - gap } else { self.client.bottom - rim }.max(top);
+        let (left, right) = match sidebar.map(|s| (s.side, s.sidebar)) {
+            Some((SidePanelPosition::Left, rect)) => (rect.right, (self.client.right - rim).max(rect.right)),
+            Some((SidePanelPosition::Right, rect)) => ((left_edge + rim).min(rect.left), rect.left),
+            None => (left_edge + rim, (self.client.right - rim).max(left_edge + rim)),
+        };
+        self.viewport = Rect::new(left, top, right, bottom);
+        self.top_chrome = top;
+        self.bottom_chrome = if bottom < self.client.bottom - rim { bottom } else { self.client.bottom };
+    }
+
+    /// Whether the toolbar row is along the bottom edge (below the page).
+    pub fn toolbar_at_bottom(&self) -> bool {
+        !self.strip.is_empty() && self.strip.top >= self.viewport.top
+    }
+}
+
+/// The chrome for `arrangement` in a window with the left rail: the geometry every consumer (the
+/// window's hit tests and paint, the HTML host bounds, the page bounds) shares. The sidebar comes
+/// back with it for the two sidebar layouts.
+#[allow(clippy::too_many_arguments)]
+pub fn compute_arranged_in_frame(
+    arrangement: Arrangement,
+    client_w: i32,
+    client_h: i32,
+    dpi: u32,
+    tab_count: usize,
+    active_index: usize,
+    maximised: bool,
+    sidebar_width: i32,
+    centred: bool,
+    sidebar_row_height: i32,
+) -> (Layout, Option<crate::vertical_tabs::SidebarLayout>) {
+    use crate::vertical_tabs::SidebarLayout;
+    let client_w = client_w.max(0);
+    let client_h = client_h.max(0);
+    let m = Metrics::new(dpi);
+    let inset = left_rail_inset(dpi);
+    let base = arrangement.base_variant();
+    let title = arrangement.has_title_row();
+    let title_h = if title { m.px(Metrics::TOP_MARGIN) + m.px(Metrics::STRIP_HEIGHT) } else { 0 };
+    let rim = if maximised { 0 } else { m.px(Metrics::RESIZE_RIM).min(client_w / 2) };
+    let (mut layout, mut sidebar) = match arrangement.sidebar_side() {
+        Some(SidePanelPosition::Left) => {
+            // The sidebar spans the window's height under the title row; the toolbar sits right of it.
+            let sidebar = SidebarLayout::compute_in_frame_at(
+                client_w, client_h, dpi, sidebar_width, maximised, SidePanelPosition::Left, title_h, client_h - rim, sidebar_row_height,
+            );
+            let offset = sidebar.sidebar.right;
+            let mut layout = compute_for_with(TabLayout::Vertical, client_w.saturating_sub(offset), client_h, dpi, tab_count, active_index, maximised, centred)
+                .shifted_right(offset);
+            layout.client = Rect::new(0, 0, client_w, client_h);
+            layout.rail = left_rail(client_h, dpi);
+            (layout, Some(sidebar))
+        }
+        Some(SidePanelPosition::Right) => {
+            // The toolbar keeps the full width (the window buttons stay at the top right); the
+            // sidebar hangs under the top rows, down to the bottom rows.
+            let mut layout = compute_in_frame_for_with(TabLayout::Vertical, client_w, client_h, dpi, tab_count, active_index, maximised, centred);
+            layout.variant = TabLayout::VerticalRight;
+            (layout, None)
+        }
+        None => (compute_in_frame_for_with(base, client_w, client_h, dpi, tab_count, active_index, maximised, centred), None),
+    };
+    if title {
+        layout = layout.with_title_row(inset);
+    }
+    if arrangement.address_bar_at_bottom() {
+        layout = layout.with_toolbar_at_bottom();
+    } else if !arrangement.address_bar_visible {
+        layout = layout.with_toolbar_hidden();
+    }
+    if arrangement.sidebar_side() == Some(SidePanelPosition::Right) {
+        // Between the rows at the top and the rows at the bottom, now that they are placed.
+        let gap = m.px(Metrics::STRIP_GAP);
+        let middle = client_h / 2;
+        let mut top = title_h;
+        let mut bottom = client_h - rim;
+        for row in [layout.strip, layout.tab_row] {
+            if row.is_empty() {
+                continue;
+            }
+            if row.top < middle { top = top.max(row.bottom + gap); } else { bottom = bottom.min(row.top - gap); }
+        }
+        sidebar = Some(SidebarLayout::compute_in_frame_at(
+            client_w, client_h, dpi, sidebar_width, maximised, SidePanelPosition::Right, top, bottom.max(top), sidebar_row_height,
+        ));
+    }
+    layout.settle_viewport(sidebar.as_ref(), inset);
+    if let Some(sidebar) = sidebar.as_mut() {
+        sidebar.viewport = layout.viewport;
+    }
+    (layout, sidebar)
+}
+// --- end layout ---
+
 pub fn reorder_target(layout: &Layout, dragged_index: usize, x: i32) -> usize {
     let count = layout.tab_count;
     if count <= 1 {

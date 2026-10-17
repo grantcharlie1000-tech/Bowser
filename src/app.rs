@@ -1104,6 +1104,13 @@ impl App {
         app.borrow().settings.tab_layout
     }
 
+    // --- layout (thread T6) ---
+    /// How the chrome is arranged, from the layout settings (the window folds in its Ctrl+L reveal).
+    pub fn arrangement(app: &AppRef) -> crate::chrome::layout::Arrangement {
+        crate::chrome::layout::Arrangement::from_settings(&app.borrow().settings)
+    }
+    // --- end layout ---
+
     /// Layout width of the vertical sidebar: 48 when collapsed, else the saved width.
     pub fn sidebar_width(app: &AppRef) -> u16 {
         app.borrow().settings.effective_sidebar_width()
@@ -7334,15 +7341,24 @@ impl App {
         let dpi = unsafe { windows::Win32::UI::HiDpi::GetDpiForWindow(self.hwnd) }.max(96);
         let maximised =
             unsafe { windows::Win32::UI::WindowsAndMessaging::IsZoomed(self.hwnd) }.as_bool();
-        let bounds = chrome_viewport_bounds(
+        // --- layout (thread T6) --- the whole arrangement, with a hidden address bar shown while
+        // Ctrl+L has it revealed, and the docked panel on the edge it is actually on.
+        let arrangement = crate::chrome::layout::Arrangement::from_settings(&self.settings)
+            .with_address_bar_revealed(crate::win32::address_bar_revealed(self.hwnd));
+        let side_panel = (
+            crate::win32::side_panel::active_width_px(self.hwnd),
+            crate::win32::side_panel::active_position(self.hwnd),
+        );
+        let bounds = chrome_viewport_bounds_arranged(
             rect.right - rect.left,
             rect.bottom - rect.top,
             dpi,
             self.tabs.len(),
             maximised,
-            self.settings.tab_layout,
+            arrangement,
             self.settings.effective_sidebar_width(),
-            crate::win32::side_panel::active_width_px(self.hwnd),
+            side_panel,
+            self.settings.ui_density,
         );
         if valid_viewport_bounds(bounds) {
             self.last_valid_viewport_bounds = Some(bounds);
@@ -7351,15 +7367,16 @@ impl App {
             if let Some(bounds) = self.last_valid_viewport_bounds {
                 bounds
             } else {
-                let fallback = chrome_viewport_bounds(
+                let fallback = chrome_viewport_bounds_arranged(
                     1000,
                     720,
                     dpi,
                     self.tabs.len(),
                     maximised,
-                    self.settings.tab_layout,
+                    arrangement,
                     self.settings.effective_sidebar_width(),
-                    crate::win32::side_panel::active_width_px(self.hwnd),
+                    side_panel,
+                    self.settings.ui_density,
                 );
                 self.last_valid_viewport_bounds = Some(fallback);
                 fallback
@@ -7372,32 +7389,58 @@ fn chrome_viewport_bounds(
     width: i32,
     height: i32,
     dpi: u32,
-    _tab_count: usize,
+    tab_count: usize,
     maximised: bool,
     tab_layout: crate::settings::TabLayout,
     sidebar_width: u16,
     side_panel_width: i32,
 ) -> windows::Win32::Foundation::RECT {
-    let mut viewport = match tab_layout {
-        crate::settings::TabLayout::ToolbarTop
-        | crate::settings::TabLayout::TabsTop
-        | crate::settings::TabLayout::SingleRow => {
-            let inset = crate::chrome::layout::left_rail_inset(dpi);
-            crate::chrome::layout::content_rect(tab_layout, width.max(0) - inset, height, dpi, maximised)
-                .shifted_right(inset)
-        }
-        crate::settings::TabLayout::Vertical => {
-            crate::vertical_tabs::SidebarLayout::compute_in_frame(
-                width,
-                height,
-                dpi,
-                i32::from(sidebar_width),
-                maximised,
-            )
-            .viewport
-        }
-    };
-    viewport.left = (viewport.left + side_panel_width.max(0)).min(viewport.right);
+    chrome_viewport_bounds_arranged(
+        width,
+        height,
+        dpi,
+        tab_count,
+        maximised,
+        crate::chrome::layout::Arrangement { tabs: tab_layout, ..Default::default() },
+        sidebar_width,
+        (side_panel_width, crate::settings::SidePanelPosition::Left),
+        crate::layout_prefs::UiDensity::Regular,
+    )
+}
+
+/// --- layout (thread T6) --- the page bounds for the whole arrangement (tab bar, address bar,
+/// title row, sidebar side and density), from the same geometry the window lays its chrome out
+/// with, less the docked side panel on its own edge.
+#[allow(clippy::too_many_arguments)]
+fn chrome_viewport_bounds_arranged(
+    width: i32,
+    height: i32,
+    dpi: u32,
+    tab_count: usize,
+    maximised: bool,
+    arrangement: crate::chrome::layout::Arrangement,
+    sidebar_width: u16,
+    side_panel: (i32, crate::settings::SidePanelPosition),
+    density: crate::layout_prefs::UiDensity,
+) -> windows::Win32::Foundation::RECT {
+    let (layout, _) = crate::chrome::layout::compute_arranged_in_frame(
+        arrangement,
+        width,
+        height,
+        dpi,
+        tab_count.max(1),
+        0,
+        maximised,
+        i32::from(sidebar_width),
+        true,
+        density.sidebar_row_height(),
+    );
+    let mut viewport = layout.viewport;
+    let (panel_width, position) = side_panel;
+    match position {
+        crate::settings::SidePanelPosition::Left => viewport.left = (viewport.left + panel_width.max(0)).min(viewport.right),
+        crate::settings::SidePanelPosition::Right => viewport.right = (viewport.right - panel_width.max(0)).max(viewport.left),
+    }
     windows::Win32::Foundation::RECT {
         left: viewport.left,
         top: viewport.top,
