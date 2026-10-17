@@ -135,7 +135,7 @@
 .pn-row {
   position: relative;
   gap: var(--bw-space-2);
-  height: 32px;
+  height: var(--bw-row-h); /* 32px; 28px at the compact density (thread T6) */
   padding: 0 var(--bw-space-2);
   transition: background-color var(--bw-dur-fast) var(--bw-ease-fade);
 }

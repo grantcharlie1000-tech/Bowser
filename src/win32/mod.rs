@@ -67,6 +67,7 @@ pub(crate) use window::{
     gated_chords, refresh_edit_font, schedule_idle_timer, schedule_power_timer, set_link_timer, set_tab_tick, set_thumbnail_timer,
     show_pending_address, sync_address_input,
 };
+pub(crate) use window::address_bar_revealed; // --- layout (thread T6) ---
 // Registry handlers (`crate::commands::registry`) that need a window.
 pub(crate) use command_actions::{run_cheat_sheet, run_keyboard_settings, run_toggle_site_shortcuts};
 // --- wave-1 integration --- T1, T2 and T3 commands in the registry.
@@ -274,6 +275,17 @@ pub(crate) fn queue_split_link(owner: HWND, url: url::Url) {
     split_ui::queue_link(owner, url);
 }
 // --- end split view ---
+
+// --- tab stacks, tiling and workspaces (T10) ---
+mod stack_ui;
+pub(crate) use stack_ui::{run_stack_all_by_site, run_stack_site, run_tile_grid, run_tile_horizontal, run_tile_vertical, run_unstack, run_untile, run_next_workspace, run_previous_workspace};
+/// The tile look changed ("Show a title bar on each tile", "Remove the space around tiles"): the
+/// window lays the shown split out again once its procedure runs.
+pub(crate) const WM_SPLIT_LOOK: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 0x5B3;
+pub(crate) fn split_look_changed(hwnd: HWND) {
+    post(hwnd, WM_SPLIT_LOOK, Default::default(), Default::default());
+}
+// --- end tab stacks, tiling and workspaces ---
 
 // --- developer tools dock ---
 /// Snapshot of every top-level window, taken right before `OpenDevToolsWindow` so the DevTools

@@ -649,6 +649,8 @@ pub struct App {
     pub user_data_dir: PathBuf,
     pub benchmark_url: Option<url::Url>,
     initial_url: Option<url::Url>,
+    /// --- tab stacks (T10) --- further `--open-url` addresses, opened after `initial_url`.
+    more_initial_urls: Vec<url::Url>,
     pub allowed_benchmark_file: Option<url::Url>,
     pub benchmark_tracking_prevention: Option<TrackingPreventionLevel>,
     pub benchmark_memory_pressure: bool,
@@ -742,6 +744,8 @@ pub struct App {
     downloads: crate::downloads::DownloadManager,
     /// Told after every change to `downloads` (set by the window; see `set_downloads_observer`).
     downloads_observer: Option<Rc<dyn Fn(crate::downloads::Change)>>,
+    /// --- tab stacks (T10) --- sites that open in a named workspace (`workspace-rules.txt`).
+    workspace_rules: Vec<crate::workspace_rules::Rule>,
 }
 
 // --- split view ---
@@ -849,6 +853,7 @@ pub use privacy::DeleteReport;
 mod tab_features;
 pub use tab_features::{TabStripExtra, MAX_SESSION_NAME_CHARS, MAX_TAB_NAME_CHARS};
 // --- end tab options ---
+mod stacks; // --- tab stacks, tiling and workspaces (T10) ---
 
 pub type AppRef = Rc<RefCell<App>>;
 
@@ -931,7 +936,7 @@ fn keep_file_owned_keys(settings: &mut crate::settings::Settings, file: &crate::
     settings.automatic_tab_grouping = file.automatic_tab_grouping;
     settings.tracking_prevention = file.tracking_prevention;
     settings.block_youtube_video_ads = file.block_youtube_video_ads;
-    settings.side_panel_position = file.side_panel_position;
+    // --- layout (thread T6) --- `side_panel_position` is live now (`apply_live_settings`), so memory holds it.
     settings.frameless = file.frameless;
     settings.search_engine = file.search_engine;
 }
@@ -1103,6 +1108,19 @@ impl App {
     pub fn tab_layout(app: &AppRef) -> crate::settings::TabLayout {
         app.borrow().settings.tab_layout
     }
+
+    // --- layout (thread T6) ---
+    /// How the chrome is arranged, from the layout settings (the window folds in its Ctrl+L reveal).
+    pub fn arrangement(app: &AppRef) -> crate::chrome::layout::Arrangement {
+        app.borrow().arranged() // --- two-level stacks (T10b) ---
+    }
+
+    /// --- two-level stacks (T10b) --- the layout settings plus the second tab row two-level
+    /// stacks want now: the one arrangement the window and the page bounds both lay out.
+    fn arranged(&self) -> crate::chrome::layout::Arrangement {
+        crate::chrome::layout::Arrangement::from_settings(&self.settings).with_stack_row(self.stack_row())
+    }
+    // --- end layout ---
 
     /// Layout width of the vertical sidebar: 48 when collapsed, else the saved width.
     pub fn sidebar_width(app: &AppRef) -> u16 {
@@ -2239,8 +2257,10 @@ impl App {
         })
     }
 
+    /// The group preferences the strip, the sidebar and the bookmarks bar draw from: folded the way
+    /// the stack style says (--- tab stacks (T10) ---, `stacks::collapse_rule`).
     pub fn tab_group_preferences(app: &AppRef) -> crate::tab_groups::GroupPreferences {
-        app.borrow().group_preferences.clone()
+        app.borrow().styled_group_preferences()
     }
 
     /// Projection inputs for the tab strip, in model order, with manual placement applied.
@@ -2278,6 +2298,11 @@ impl App {
     }
 
     pub fn set_tab_group_collapsed(app: &AppRef, id: TabId, collapsed: bool) -> bool {
+        // --- tab stacks (T10) --- Compact and Accordion fold stacks by themselves: a click on the
+        // ball goes to a member instead of storing a collapse.
+        if !matches!(Self::stack_style(app), crate::tab_options::StackStyle::Islands | crate::tab_options::StackStyle::Off) {
+            return Self::stack_ball(app, id);
+        }
         let (hwnd, active, changed) = {
             let mut state = app.borrow_mut();
             if state.mirror(id).is_some_and(|tab| tab.private) {
@@ -2471,7 +2496,8 @@ impl App {
     fn expand_group_for_tab(app: &AppRef, id: TabId) -> bool {
         let (hwnd, active, changed) = {
             let mut state = app.borrow_mut();
-            if state.tab_model.active() == id {
+            // --- tab stacks (T10) --- only Islands keeps a stored collapse to undo.
+            if state.tab_model.active() == id || state.settings.tabs.stack_style != crate::tab_options::StackStyle::Islands {
                 return false;
             }
             let Some(url) = state.tab_model.get(id).and_then(|tab| tab.url.as_deref()) else {
@@ -2539,12 +2565,23 @@ impl App {
             .into_iter()
             .map(|input| (input.id, input))
             .collect();
-        self.workspaces
+        let mut inputs: Vec<tab_groups::TabGroupInput> = self
+            .workspaces
             .active()
             .tabs()
             .iter()
             .filter_map(|id| all.remove(id))
-            .collect()
+            .collect();
+        // --- tab stacks (T10) --- "Tab stacks: Off": nothing forms a stack. Only this view of the
+        // inputs: the site rules (which span workspaces) still see every tab's site.
+        if !crate::stacks::stacks_on(self.settings.tabs.stack_style) {
+            for input in &mut inputs {
+                input.domain = None;
+                input.opener = None;
+                input.manual = false;
+            }
+        }
+        inputs
     }
 
     /// Inputs for every tab of every workspace, in model order, from the same state the strip
@@ -4825,6 +4862,8 @@ impl App {
         // Address bar options read wherever an address is shown or completed.
         crate::omnibox::set_show_full_address(settings.address.show_full);
         crate::omnibox::set_autocomplete(settings.address.autocomplete);
+        // --- tab stacks (T10) --- the split view's tile look, read by its geometry.
+        crate::stacks::set_tile_look(settings.tabs.tile_titles, settings.tabs.tile_tight);
         let provider =
             SearchProvider::from_config(settings.search_engine, &profile.search_provider_file());
         let user_data_dir = options
@@ -4855,6 +4894,7 @@ impl App {
         // applied (the history load, the first tab), so they are set here (thread T3).
         crate::history_retention::set_current(app.settings.history_retention);
         crate::website_look::set(crate::website_look::WebsiteLook::from_settings(&app.settings));
+        crate::layout_prefs::set_status_overlay(app.settings.status_bar); // --- layout (thread T6) ---
         if track_privacy {
             // A guest's list lives in memory only; so does one the profile folder cannot hold.
             app.downloads = if profile.is_guest() {
@@ -4917,6 +4957,7 @@ impl App {
     ) -> Self {
         let benchmark_url = options.benchmark_url;
         let initial_url = options.open_url;
+        let more_initial_urls = options.more_urls; // --- tab stacks (T10) ---
         let allowed_benchmark_file = benchmark_url.clone();
         let tab_model = crate::tabs::TabList::new();
         let initial_tab = tab_model.active();
@@ -4945,6 +4986,7 @@ impl App {
             allowed_benchmark_file,
             benchmark_url,
             initial_url,
+            more_initial_urls,
             benchmark_tracking_prevention: options.benchmark_tracking_prevention,
             benchmark_memory_pressure: options.benchmark_memory_pressure,
             provider,
@@ -5000,6 +5042,12 @@ impl App {
             translate: page_translate::Runtime::default(),
             downloads: crate::downloads::DownloadManager::in_memory(false),
             downloads_observer: None,
+            // --- tab stacks (T10) --- a guest window keeps no rules.
+            workspace_rules: crate::profile::active()
+                .ok()
+                .filter(|profile| !profile.is_guest())
+                .map(|profile| crate::workspace_rules::load(profile.root()))
+                .unwrap_or_default(),
         }
     }
 
@@ -5493,6 +5541,16 @@ impl App {
         if let Some(url) = url {
             Self::submit_url(app, url, None);
         }
+        // --- tab stacks (T10) --- the rest of a stack moved to this new window: one tab each, asleep
+        // until selected, as restored tabs are.
+        let more = std::mem::take(&mut app.borrow_mut().more_initial_urls);
+        let shown = Self::active_tab_id(app);
+        for url in more {
+            let id = Self::new_background_tab(app, false, None);
+            Self::make_asleep(app, id, &url);
+            let _ = Self::move_tab(app, id, usize::MAX);
+        }
+        let _ = Self::select_tab(app, shown);
     }
 
     // --- start page ---
@@ -5545,6 +5603,10 @@ impl App {
             Self::navigate_internal(app, active, &url);
             return;
         }
+        // --- tab stacks (T10) --- a site with a workspace rule opens in its workspace, which the
+        // window switches to.
+        let active = app.borrow().tab_model.active();
+        let _ = Self::apply_workspace_rule(app, active, &url, true);
         // The address bar shows the target now, not after the engine starts and the page commits.
         let (hwnd, edit, active) = {
             let state = app.borrow();
@@ -6819,8 +6881,29 @@ impl App {
             state.settings.tab_preview_images = settings.tab_preview_images;
             state.settings.tab_preview_memory = settings.tab_preview_memory;
             // --- end tab options ---
+            // --- layout (thread T6) --- the Layout block: every row acts at once (the window lays
+            // the chrome out again below from `App::arrangement`).
+            state.settings.side_panel_position = settings.side_panel_position;
+            state.settings.tab_bar_visible = settings.tab_bar_visible;
+            state.settings.address_bar_position = settings.address_bar_position;
+            state.settings.address_bar_visible = settings.address_bar_visible;
+            state.settings.show_title_bar = settings.show_title_bar;
+            state.settings.status_bar = settings.status_bar;
+            state.settings.ui_density = settings.ui_density;
+            state.settings.compact_menus = settings.compact_menus;
+            state.settings.ui_zoom = settings.ui_zoom;
+            state.settings.layout_saved = settings.layout_saved.clone();
+            // --- end layout ---
             (state.hwnd, state.edit)
         };
+        // --- layout (thread T6) --- the docked panel moves edge at once; the link-address overlay
+        // follows the status bar choice in every open tab and the ones opened next.
+        if !hwnd.is_invalid() {
+            win32::side_panel::set_position(hwnd, settings.side_panel_position);
+        }
+        crate::layout_prefs::set_status_overlay(settings.status_bar);
+        Self::call_engine(app, |engine| engine.apply_status_overlay());
+        // --- end layout ---
         // --- wave-1 integration --- the Tabs options as the file has them (Reset settings, the GDI form):
         // the strip, the audio rule and the tick follow at once.
         let tabs_before = {
@@ -7334,15 +7417,25 @@ impl App {
         let dpi = unsafe { windows::Win32::UI::HiDpi::GetDpiForWindow(self.hwnd) }.max(96);
         let maximised =
             unsafe { windows::Win32::UI::WindowsAndMessaging::IsZoomed(self.hwnd) }.as_bool();
-        let bounds = chrome_viewport_bounds(
+        // --- layout (thread T6) --- the whole arrangement, with a hidden address bar shown while
+        // Ctrl+L has it revealed, and the docked panel on the edge it is actually on.
+        let arrangement = self
+            .arranged() // --- two-level stacks (T10b) ---
+            .with_address_bar_revealed(crate::win32::address_bar_revealed(self.hwnd));
+        let side_panel = (
+            crate::win32::side_panel::active_width_px(self.hwnd),
+            crate::win32::side_panel::active_position(self.hwnd),
+        );
+        let bounds = chrome_viewport_bounds_arranged(
             rect.right - rect.left,
             rect.bottom - rect.top,
             dpi,
             self.tabs.len(),
             maximised,
-            self.settings.tab_layout,
+            arrangement,
             self.settings.effective_sidebar_width(),
-            crate::win32::side_panel::active_width_px(self.hwnd),
+            side_panel,
+            self.settings.ui_density,
         );
         if valid_viewport_bounds(bounds) {
             self.last_valid_viewport_bounds = Some(bounds);
@@ -7351,15 +7444,16 @@ impl App {
             if let Some(bounds) = self.last_valid_viewport_bounds {
                 bounds
             } else {
-                let fallback = chrome_viewport_bounds(
+                let fallback = chrome_viewport_bounds_arranged(
                     1000,
                     720,
                     dpi,
                     self.tabs.len(),
                     maximised,
-                    self.settings.tab_layout,
+                    arrangement,
                     self.settings.effective_sidebar_width(),
-                    crate::win32::side_panel::active_width_px(self.hwnd),
+                    side_panel,
+                    self.settings.ui_density,
                 );
                 self.last_valid_viewport_bounds = Some(fallback);
                 fallback
@@ -7368,36 +7462,66 @@ impl App {
     }
 }
 
+/// The page bounds for a plain tab layout (the tests' older entry point; the window uses
+/// [`chrome_viewport_bounds_arranged`]).
+#[cfg(test)]
+#[allow(clippy::too_many_arguments)]
 fn chrome_viewport_bounds(
     width: i32,
     height: i32,
     dpi: u32,
-    _tab_count: usize,
+    tab_count: usize,
     maximised: bool,
     tab_layout: crate::settings::TabLayout,
     sidebar_width: u16,
     side_panel_width: i32,
 ) -> windows::Win32::Foundation::RECT {
-    let mut viewport = match tab_layout {
-        crate::settings::TabLayout::ToolbarTop
-        | crate::settings::TabLayout::TabsTop
-        | crate::settings::TabLayout::SingleRow => {
-            let inset = crate::chrome::layout::left_rail_inset(dpi);
-            crate::chrome::layout::content_rect(tab_layout, width.max(0) - inset, height, dpi, maximised)
-                .shifted_right(inset)
-        }
-        crate::settings::TabLayout::Vertical => {
-            crate::vertical_tabs::SidebarLayout::compute_in_frame(
-                width,
-                height,
-                dpi,
-                i32::from(sidebar_width),
-                maximised,
-            )
-            .viewport
-        }
-    };
-    viewport.left = (viewport.left + side_panel_width.max(0)).min(viewport.right);
+    chrome_viewport_bounds_arranged(
+        width,
+        height,
+        dpi,
+        tab_count,
+        maximised,
+        crate::chrome::layout::Arrangement { tabs: tab_layout, ..Default::default() },
+        sidebar_width,
+        (side_panel_width, crate::settings::SidePanelPosition::Left),
+        crate::layout_prefs::UiDensity::Regular,
+    )
+}
+
+/// --- layout (thread T6) --- the page bounds for the whole arrangement (tab bar, address bar,
+/// title row, sidebar side and density), from the same geometry the window lays its chrome out
+/// with, less the docked side panel on its own edge.
+#[allow(clippy::too_many_arguments)]
+fn chrome_viewport_bounds_arranged(
+    width: i32,
+    height: i32,
+    dpi: u32,
+    tab_count: usize,
+    maximised: bool,
+    arrangement: crate::chrome::layout::Arrangement,
+    sidebar_width: u16,
+    side_panel: (i32, crate::settings::SidePanelPosition),
+    density: crate::layout_prefs::UiDensity,
+) -> windows::Win32::Foundation::RECT {
+    let (layout, _) = crate::chrome::layout::compute_arranged_in_frame(
+        arrangement,
+        width,
+        height,
+        dpi,
+        tab_count.max(1),
+        0,
+        maximised,
+        i32::from(sidebar_width),
+        true,
+        density.sidebar_row_height(),
+    );
+    let mut viewport = layout.viewport;
+    let (panel_width, position) = side_panel;
+    match position {
+        crate::settings::SidePanelPosition::Left => viewport.left = (viewport.left + panel_width.max(0)).min(viewport.right),
+        crate::settings::SidePanelPosition::Right => viewport.right = (viewport.right - panel_width.max(0)).max(viewport.left),
+    }
     windows::Win32::Foundation::RECT {
         left: viewport.left,
         top: viewport.top,
@@ -7433,6 +7557,7 @@ mod tests {
     mod start_page_flow; // the startup setting's first-window plan (docs/design/start-page.md)
     mod tab_flow; // --- tab options ---
     mod wave1_fixes; // --- wave-1 fixes ---
+    mod stack_flow; // --- tab stacks, tiling and workspaces (T10) ---
 
     #[test]
     fn reader_probe_due_table() {
@@ -9599,6 +9724,7 @@ mod tests {
             user_data_dir: PathBuf::new(),
             benchmark_url: None,
             initial_url: None,
+            more_initial_urls: Vec::new(), // --- tab stacks (T10) ---
             allowed_benchmark_file: None,
             benchmark_tracking_prevention: None,
             benchmark_memory_pressure: false,
@@ -9656,6 +9782,7 @@ mod tests {
             translate: page_translate::Runtime::default(),
             downloads: crate::downloads::DownloadManager::in_memory(false),
             downloads_observer: None,
+            workspace_rules: Vec::new(), // --- tab stacks (T10) ---
         }))
     }
 

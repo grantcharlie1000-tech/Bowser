@@ -165,6 +165,40 @@
   line-height: 1;
 }
 
+/* --- tab stacks and workspaces (T10) --- a workspace's emoji takes the glyph's box. */
+.rb-emoji {
+  display: grid;
+  place-items: center;
+  width: var(--bw-icon);
+  height: var(--bw-icon);
+  font-family: "Segoe UI Emoji", var(--bw-font);
+  font-size: 15px;
+  line-height: 1;
+}
+
+/* The tab count badge ("Show tab counts on workspaces"): a small pill at the lower right, like the
+   dot sits at the upper right, in the tab strip's notification-count colours. */
+.rb-count {
+  position: absolute;
+  right: -7px;
+  bottom: -4px;
+  display: none;
+  min-width: 11px;
+  height: 11px;
+  padding: 0 2px;
+  border-radius: var(--bw-r-pill);
+  background: var(--bw-accent);
+  box-shadow: 0 0 0 1.5px var(--bw-island-idle);
+  color: var(--bw-on-accent);
+  font-size: 8px;
+  font-weight: var(--bw-weight-strong);
+  line-height: 11px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+}
+.rb.count-on .rb-count { display: block; }
+
 /* One 2px accent bar for the active workspace, on the rail's left edge. It slides with transform;
    the first placement does not animate. */
 .rail-indicator {

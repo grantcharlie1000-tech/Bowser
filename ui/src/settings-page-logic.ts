@@ -17,15 +17,13 @@ export type SearchEngine = typeof SEARCH_ENGINES[number];
 export const EFFICIENCY_MODES = ['auto', 'on', 'off'] as const;
 export type EfficiencyMode = typeof EFFICIENCY_MODES[number];
 export type TrackingPrevention = 'balanced' | 'strict';
-/** Browser layouts, in the order the page lists them. `horizontal` is the saved key of "toolbar above tabs". */
-export const TAB_LAYOUTS = ['horizontal', 'tabs-top', 'single-row', 'vertical'] as const;
-export type TabLayout = typeof TAB_LAYOUTS[number];
-export const TAB_LAYOUT_LABELS: Readonly<Record<TabLayout, string>> = {
-  horizontal: 'Toolbar above tabs',
-  'tabs-top': 'Tabs above toolbar',
-  'single-row': 'Single row',
-  vertical: 'Vertical',
-};
+// --- layout (thread T6) --- the layouts (six now), the Layout block's `layout` object and its presets live in layout-logic.ts.
+import {
+  LAYOUT_HINTS, SIDE_PANEL_POSITIONS, TAB_LAYOUTS, TAB_LAYOUT_LABELS, layoutSaveLines, parseLayoutSettings,
+  type LayoutSettings, type SidePanelPosition, type TabLayout,
+} from './layout-logic';
+export { LAYOUT_HINTS, SIDE_PANEL_POSITIONS, TAB_LAYOUTS, TAB_LAYOUT_LABELS, type LayoutSettings, type SidePanelPosition, type TabLayout };
+// --- end layout ---
 export const MIN_SIDEBAR = 180;
 export const MAX_SIDEBAR = 360;
 export const MIN_SLEEP = 30;
@@ -40,8 +38,6 @@ export type ToolbarButton = typeof TOOLBAR_BUTTONS[number];
 export const DEFAULT_TOOLBAR_BUTTONS = TOOLBAR_BUTTONS.join(',');
 export const BOOKMARKS_BAR_MODES = ['always', 'never', 'newtab'] as const;
 export type BookmarksBarMode = typeof BOOKMARKS_BAR_MODES[number];
-export const SIDE_PANEL_POSITIONS = ['left', 'right'] as const;
-export type SidePanelPosition = typeof SIDE_PANEL_POSITIONS[number];
 export const FONT_SIZES = ['small', 'medium', 'large'] as const;
 export type FontSize = typeof FONT_SIZES[number];
 export const DEFAULT_BROWSER_STATES = ['yes', 'no', 'unknown'] as const;
@@ -163,7 +159,59 @@ export interface SettingsSnapshot {
   /** The start page, speed dial, widget, homepage and startup settings (`start_*` keys of settings.txt). */
   start: StartSettings;
   // --- end start page ---
+  // --- tab stacks, tiling and workspaces (T10) ---
+  /** Sites that open in a named workspace, and the workspaces a rule can name. Each change is its own `wsrule` command. */
+  workspaceRules: WorkspaceRules;
+  // --- end tab stacks ---
+  // --- layout (thread T6) ---
+  /** The Layout block's own options (`layout_prefs.rs`); the tab layout and panel side are the older keys above. */
+  layout: LayoutSettings;
+  // --- end layout ---
 }
+
+// --- tab stacks, tiling and workspaces (T10) ---
+export interface WorkspaceRule { readonly site: string; readonly workspace: string }
+export interface WorkspaceRules { readonly rules: readonly WorkspaceRule[]; readonly workspaces: readonly string[] }
+/** Most rules (Rust's `workspace_rules::MAX_RULES`). */
+export const MAX_WORKSPACE_RULES = 64;
+const MAX_WORKSPACE_NAME = 128;
+const isWorkspaceName = (value: unknown): value is string => typeof value === 'string' && value.length > 0 && value.length <= MAX_WORKSPACE_NAME && !/[\u0000-\u001f\u007f]/.test(value);
+/** Strict check of the snapshot's `workspaceRules`. */
+export function parseWorkspaceRules(value: unknown): WorkspaceRules | null {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  if (Object.keys(record).length !== 2 || !Array.isArray(record.rules) || !Array.isArray(record.workspaces)) return null;
+  if (record.rules.length > MAX_WORKSPACE_RULES || record.workspaces.length > 128) return null;
+  const rules: WorkspaceRule[] = [];
+  for (const raw of record.rules as unknown[]) {
+    if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return null;
+    const rule = raw as Record<string, unknown>;
+    if (Object.keys(rule).length !== 2 || typeof rule.site !== 'string' || normaliseSite(rule.site) !== rule.site || !isWorkspaceName(rule.workspace)) return null;
+    rules.push({ site: rule.site, workspace: rule.workspace });
+  }
+  if (!(record.workspaces as unknown[]).every(isWorkspaceName)) return null;
+  return { rules, workspaces: [...(record.workspaces as string[])] };
+}
+/** The `wsrule` text that adds a rule (`null` for a site or workspace Bowser would refuse). */
+export function addRuleText(site: string, workspace: string): string | null {
+  const plain = ruleSite(site);
+  return plain === null || !isWorkspaceName(workspace.trim()) ? null : `add\t${plain}\t${workspace.trim()}`;
+}
+/** A typed site a rule can hold: a plain host with a dot (Rust's `workspace_rules::normalise_site`), or `null`. */
+export function ruleSite(site: string): string | null {
+  const plain = normaliseSite(site);
+  return plain !== null && plain.includes('.') ? plain : null;
+}
+/** The `wsrule` text that removes the rule for `site`. */
+export function removeRuleText(site: string): string {
+  return `del\t${site}`;
+}
+/** Whether a typed site already has a rule. */
+export function ruleExists(rules: readonly WorkspaceRule[], site: string): boolean {
+  const plain = ruleSite(site);
+  return plain !== null && rules.some((rule) => rule.site === plain);
+}
+// --- end tab stacks ---
 
 type RecordValue = Record<string, unknown>;
 const isRecord = (value: unknown): value is RecordValue => typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -177,7 +225,7 @@ const KEYS = ['tabLayout', 'sidebarWidth', 'sleepEnabled', 'sleepAfterSecs', 'bl
   'bookmarksBar', 'bookmarksBarTabGroups', 'sidePanelPosition', 'tabPreviewImages', 'tabPreviewMemory', 'fontSize', 'uiFont', 'defaultZoom',
   'showZoomIndicator', 'newTabBesideActive', 'ctrlTabMru', 'shiftRightClickContext', 'ctrlShiftCCopyLink', 'ctrlSVerticalTabs', 'pinNewTabGroups',
   'splitEdgeDrop', 'blockYoutubeVideoAds', 'defaultBrowser', 'downloadDir', 'downloadAsk',
-  'translateOffer', 'translateAuto', 'translateTarget', 'translateTargets', 'start', 'tabOptions'];
+  'translateOffer', 'translateAuto', 'translateTarget', 'translateTargets', 'start', 'tabOptions', 'workspaceRules', 'layout' /* --- layout (thread T6) --- */];
 /** A language code the translation settings carry: two or three lower-case letters. */
 const LANGUAGE_RE = /^[a-z]{2,3}$/;
 /** The most target languages Rust may list. */
@@ -245,6 +293,10 @@ export function parseSettingsSnapshot(value: unknown): SettingsSnapshot | null {
   if (start === null) return null;
   const tabOptions = parseTabOptions(v.tabOptions);
   if (!tabOptions) return null;
+  const workspaceRules = parseWorkspaceRules(v.workspaceRules); // --- tab stacks (T10) ---
+  if (!workspaceRules) return null;
+  const layout = parseLayoutSettings(v.layout); // --- layout (thread T6) ---
+  if (layout === null) return null;
   return {
     tabLayout: v.tabLayout,
     sidebarWidth: v.sidebarWidth,
@@ -306,6 +358,8 @@ export function parseSettingsSnapshot(value: unknown): SettingsSnapshot | null {
     translateTargets: [...(v.translateTargets as string[])],
     start,
     tabOptions,
+    workspaceRules,
+    layout, // --- layout (thread T6) ---
   };
 }
 
@@ -316,6 +370,7 @@ export type Draft = Pick<SettingsSnapshot,
   | 'frameless' | 'roundedContentFrame' | 'showHomeButton' | 'bookmarksBar' | 'bookmarksBarTabGroups' | 'sidePanelPosition' | 'tabPreviewImages'
   | 'tabPreviewMemory' | 'fontSize' | 'uiFont' | 'defaultZoom' | 'showZoomIndicator' | 'newTabBesideActive' | 'ctrlTabMru' | 'shiftRightClickContext'
   | 'ctrlShiftCCopyLink' | 'ctrlSVerticalTabs' | 'pinNewTabGroups' | 'splitEdgeDrop' | 'blockYoutubeVideoAds' | 'start'
+  | 'layout' // --- layout (thread T6) ---
 >;
 
 export function draftOf(snapshot: SettingsSnapshot): Draft {
@@ -324,7 +379,7 @@ export function draftOf(snapshot: SettingsSnapshot): Draft {
     trackingPrevention, theme, themeAccent, toolbarButtons, centredAddressBar, minimalUrl, showLoadProgress, frameless, roundedContentFrame,
     showHomeButton, bookmarksBar, bookmarksBarTabGroups, sidePanelPosition, tabPreviewImages, tabPreviewMemory, fontSize, uiFont, defaultZoom,
     showZoomIndicator, newTabBesideActive, ctrlTabMru, shiftRightClickContext, ctrlShiftCCopyLink, ctrlSVerticalTabs, pinNewTabGroups, splitEdgeDrop,
-    blockYoutubeVideoAds, start,
+    blockYoutubeVideoAds, start, layout,
   } = snapshot;
   return {
     tabLayout, sidebarWidth, sleepEnabled, sleepAfterSecs, blockerEnabled, blockerAllow: [...blockerAllow], searchEngine, automaticTabGrouping,
@@ -332,6 +387,7 @@ export function draftOf(snapshot: SettingsSnapshot): Draft {
     roundedContentFrame, showHomeButton, bookmarksBar, bookmarksBarTabGroups, sidePanelPosition, tabPreviewImages, tabPreviewMemory, fontSize, uiFont,
     defaultZoom, showZoomIndicator, newTabBesideActive, ctrlTabMru, shiftRightClickContext, ctrlShiftCCopyLink, ctrlSVerticalTabs, pinNewTabGroups,
     splitEdgeDrop, blockYoutubeVideoAds, start: { ...start, startupPages: [...start.startupPages] },
+    layout: { ...layout }, // --- layout (thread T6) ---
   };
 }
 
@@ -393,6 +449,11 @@ export function saveText(draft: Draft): string | null {
   if (startLines === null) return null;
   lines.push(...startLines);
   // --- end start page ---
+  // --- layout (thread T6) --- the Layout block's options follow
+  const layoutLines = layoutSaveLines(draft.layout);
+  if (layoutLines === null) return null;
+  lines.push(...layoutLines);
+  // --- end layout ---
   const text = lines.join('\n');
   return text.length <= MAX_TEXT ? text : null;
 }
@@ -404,6 +465,8 @@ export const SECTIONS: readonly SectionSpec[] = [
   { key: 'profile', title: 'You and Bowser', nav: 'You and Bowser', lead: 'The profile these settings belong to.' },
   { key: 'appearance', title: 'Appearance', nav: 'Appearance', lead: 'Layout, colours, the toolbar, tabs, text size and page translation.' },
   { key: 'tabs', title: 'Tabs', nav: 'Tabs', lead: 'How tabs open, close, show their state and come back after a restart.' },
+  // --- T10 ---
+  { key: 'stacks', title: 'Tab stacks, tiling and workspaces', nav: 'Tab stacks, tiling and workspaces', lead: 'How tabs stack, how tiled tabs look, and how workspaces behave.' },
   { key: 'startpage', title: 'Start page', nav: 'Start page', lead: 'Speed dials and widgets on a new tab, your homepage, and what Bowser opens at startup.' },
   { key: 'privacy', title: 'Privacy and security', nav: 'Privacy and security', lead: 'Blocking, tracking prevention, history, site permissions and browsing data.' },
   { key: 'performance', title: 'Performance', nav: 'Performance', lead: 'Save memory and power in the background.' },
@@ -465,7 +528,7 @@ const single = (key: SettingsSection): AreaSpec => {
 export const AREAS: readonly AreaSpec[] = [
   single('profile'),
   single('appearance'),
-  { key: 'tabs', title: 'Tabs and start page', nav: 'Tabs and start page', lead: 'How tabs open and close, and what a new tab and a new window show.', parts: ['tabs', 'startpage'] },
+  { key: 'tabs', title: 'Tabs and start page', nav: 'Tabs and start page', lead: 'How tabs open and close, and what a new tab and a new window show.', parts: ['tabs', 'stacks', 'startpage'] },
   single('privacy'),
   single('performance'),
   { key: 'address', title: 'Address bar and search', nav: 'Address bar and search', lead: 'How the address field behaves, the engines it searches with, and how bookmarks open.', parts: ['address', 'search', 'bookmarks'] },
@@ -500,8 +563,10 @@ export function moreCountText(count: number): string {
 /** Rows a person changes often enough to see without opening anything. Every other row is `more`. */
 const CORE_ROWS: ReadonlySet<string> = new Set([
   'profile', 'profiles', 'import',
-  'layout', 'theme', 'themeAccent', 'websiteAppearance', 'showHomeButton', 'bookmarksBar', 'fontSize', 'defaultZoom', 'translateOffer',
+  'layoutPreset', 'layoutBars' /* --- layout (thread T6): the presets and the three edges; the rest of the block is `more` --- */,
+  'theme', 'themeAccent', 'websiteAppearance', 'showHomeButton', 'bookmarksBar', 'fontSize', 'defaultZoom', 'translateOffer',
   'tabs_new_tab_page', 'tabs_new_tab_url', 'tabs_new_tab_position', 'tabs_link_background',
+  'tabs_stack_style', 'tabs_workspaces', // --- T10 ---
   'startupMode', 'startupPages', 'startHomepage',
   'blocker', 'cookieNotices', 'tracking', 'history', 'historyRetention',
   'efficiency', 'sleep', 'sleepAfter',
@@ -526,6 +591,7 @@ export const PAGE_ROWS: Readonly<Record<string, PageSpec>> = {
   dashboard: { button: 'Open dashboard…', after: 'deleteData' },
   kbEditor: { button: 'Edit shortcuts…' },
   chains: { button: 'Edit chains…' },
+  workspaceRules: { button: 'Edit rules…' }, // --- T10 ---
 };
 
 /** Where a row is drawn. A row Bowser does not act on yet is always `later`, whatever else it says. */
@@ -563,8 +629,19 @@ export const ROWS: readonly RowSpec[] = [
   { id: 'profile', section: 'profile', label: 'Profile', description: 'Settings on this page apply to this profile only.', keywords: 'account person name avatar guest' },
   { id: 'profiles', section: 'profile', label: 'Manage profiles', description: 'Switch, create, rename or delete profiles.', keywords: 'switch new guest delete rename' },
   { id: 'import', section: 'profile', label: 'Import from another browser', description: 'Bring bookmarks and other data over from a browser on this PC.', keywords: 'chrome edge firefox migrate transfer bookmarks' },
-  { id: 'layout', section: 'appearance', label: 'Browser layout', description: 'Where the toolbar and the tabs sit.', keywords: 'tabs toolbar vertical horizontal sidebar single row top' },
-  { id: 'sidebarWidth', section: 'appearance', label: 'Sidebar width', description: 'Width of the tab sidebar in the vertical layout.', keywords: 'vertical tabs size wide narrow pixels' },
+  // --- layout (thread T6) --- the Layout block: presets and the three edges in view, the rest behind More options.
+  { id: 'layoutPreset', section: 'appearance', label: 'Layout', description: 'A starting point for where the tabs, the address bar and the panels sit. Change any of them and the arrangement becomes your own, kept as Saved.', keywords: 'layout preset simple classic vertical left right bottom saved thumbnails arrangement' },
+  { id: 'layoutBars', section: 'appearance', label: 'Tab bar, address bar and panels', description: 'Which edge each one sits on. The address bar along the bottom keeps a title row at the top for the window buttons.', keywords: 'tab bar position top left right bottom address bar side panel dock helium edge' },
+  { id: 'layout', section: 'appearance', label: 'Tab bar style at the top', description: 'How the tabs and the address bar share the top of the window.', keywords: 'tabs toolbar horizontal single row top browser layout' },
+  { id: 'sidebarWidth', section: 'appearance', label: 'Sidebar width', description: 'Width of the tab sidebar in the vertical layouts.', keywords: 'vertical tabs size wide narrow pixels' },
+  { id: 'tabBarVisible', section: 'appearance', label: 'Show the tab bar', description: 'Off, the tabs are reached with Ctrl+Tab, the tab list and Quick commands.', keywords: 'tab bar show hide tabs visible' },
+  { id: 'addressBarVisible', section: 'appearance', label: 'Show the address bar row', description: 'The whole row: navigation, the address field and the menu. Off, Ctrl+L brings it back until the address field loses focus.', keywords: 'address bar show hide toolbar row visible ctrl l' },
+  { id: 'showTitleBar', section: 'appearance', label: 'Show the title bar when the tab bar is on a side', description: 'A row above the address bar with the page title and the window buttons. With the address bar along the bottom, the row is always there.', keywords: 'title bar window buttons caption vertical side page title' },
+  { id: 'statusBar', section: 'appearance', label: 'Status bar', description: 'Bowser has no status bar of its own. The address of a link under the pointer shows in a small overlay at the bottom of the page; Hidden turns that off.', keywords: 'status bar info overlay link address hover hide' },
+  { id: 'uiDensity', section: 'appearance', label: 'User interface density', description: 'Compact shortens the rows of the tab sidebar, the panels and Bowser’s own pages.', keywords: 'density regular compact rows spacing dense' },
+  { id: 'compactMenus', section: 'appearance', label: 'Compact menu layout', description: 'Shorter rows in Bowser’s menus.', keywords: 'compact menus dense rows menu layout' },
+  { id: 'uiZoom', section: 'appearance', label: 'User interface zoom', description: 'Scales the text of Bowser’s bars, panels and pages, on top of the font size. Select the value to type one.', keywords: 'ui zoom scale interface size percent slider text' },
+  // --- end layout ---
   { id: 'theme', section: 'appearance', label: 'Theme', description: 'Helium colours is Bowser’s own palette. System follows Windows light, dark and accent.', keywords: 'dark light colour scheme helium system' },
   { id: 'themeAccent', section: 'appearance', label: 'Accent colour', description: 'Overrides the theme’s accent colour. Reset to use the default.', keywords: 'colour accent override custom theme reset' },
   { id: 'websiteAppearance', section: 'appearance', label: 'Website appearance', description: 'The colour scheme websites are asked to use: light, dark, or what Windows uses.', keywords: 'dark light auto mode prefers color scheme websites page theme' },
@@ -579,7 +656,8 @@ export const ROWS: readonly RowSpec[] = [
   // --- wave-1 integration --- "Open new tabs next to the active tab" is Tabs > New tab position (the
   // same `new_tab_beside_active` key), and the Ctrl+Tab order and tab previews sit in Tabs > Tab bar
   // (TABS_SECTION_ROWS below).
-  { id: 'splitEdgeDrop', section: 'appearance', label: 'Allow dropping a dragged tab on the window edge to split', description: 'Dragging a tab to the edge of the window opens it in a split view.', keywords: 'split view drag drop edge tab' },
+  // --- T10 --- drag and drop tiling, beside the other tiling options.
+  { id: 'splitEdgeDrop', section: 'stacks', label: 'Allow dropping a dragged tab on the window edge to split', description: 'Dragging a tab to the edge of the window opens it in a split view.', keywords: 'split view drag drop edge tab tiling tile' },
   { id: 'pinNewTabGroups', section: 'appearance', label: 'Pin new tab groups to the bookmarks bar', description: 'A tab group formed from now on is pinned to the bookmarks bar. Needs “Show tab groups in the bookmarks bar”.', keywords: 'pin tab groups bookmarks bar' },
   { id: 'ctrlSVerticalTabs', section: 'keyboard', label: 'Ctrl+S collapses or expands the sidebar in the vertical layout', description: 'Only does anything in the vertical layout; otherwise Ctrl+S reaches the page as normal.', keywords: 'ctrl s sidebar collapse expand vertical layout shortcut' },
   { id: 'roundedContentFrame', section: 'appearance', label: 'Rounded corners around the page', description: 'Rounds the corners of the page area.', keywords: 'rounded corners content frame page' },
@@ -587,7 +665,7 @@ export const ROWS: readonly RowSpec[] = [
   { id: 'bookmarksBar', section: 'appearance', label: 'Bookmarks bar', description: 'Choose when the bookmarks bar is shown.', keywords: 'bookmarks bar show hide newtab always never' },
   { id: 'bookmarksBarTabGroups', section: 'appearance', label: 'Show tab groups in the bookmarks bar', description: 'Tab groups pinned to the bar appear after the bookmarks. Select one to go to it.', keywords: 'tab groups bookmarks bar islands' },
   ...ADDRESS_ROWS.filter((row) => row.section === 'appearance'),
-  { id: 'sidePanelPosition', section: 'appearance', label: 'Side panel position', description: 'Which edge the side panels (history, bookmarks, notes and more) are docked to. Applies the next time a side panel opens.', keywords: 'side panel left right dock position helium' },
+  // --- layout (thread T6) --- the side panel's edge is the Panels choice of the "Tab bar, address bar and panels" row (layoutBars) above; it acts at once.
   { id: 'fontSize', section: 'appearance', label: 'Font size', description: 'The base text size across Bowser’s own pages.', keywords: 'font size small medium large text' },
   { id: 'uiFont', section: 'appearance', label: 'Customise fonts', description: 'A font family to use instead of the system font.', keywords: 'font family typeface custom ui' },
   { id: 'defaultZoom', section: 'appearance', label: 'Default zoom', description: 'The starting zoom for new pages, not the current page’s own zoom, which is set separately.', keywords: 'zoom default starting percent' },
@@ -599,6 +677,8 @@ export const ROWS: readonly RowSpec[] = [
   { id: 'ctrlShiftCCopyLink', section: 'keyboard', label: 'Ctrl+Shift+C copies the address', description: 'Ctrl+Shift+C copies the current page’s address.', keywords: 'ctrl shift c copy link address shortcut' },
   // The Tabs section's rows come from its own table (tab-options-logic.ts).
   ...TABS_SECTION_ROWS,
+  // --- tab stacks, tiling and workspaces (T10) ---
+  { id: 'workspaceRules', section: 'stacks', label: 'Workspace rules', description: 'Sites that open in a workspace of their own: a link, an address or a bookmark of the site moves its tab there.', keywords: 'workspace rules sites open automatically named workspace domain' },
   // --- start page --- (docs/design/start-page.md)
   { id: 'startGroupReopen', section: 'startpage', label: 'Open the start page on', description: 'Which speed dial group a new tab shows first.', keywords: 'speed dial group last first new tab start page reopen' },
   { id: 'startTitles', section: 'startpage', label: 'Show titles', description: 'When a speed dial shows its name. When needed shows it under tiles without a chosen image, and on hover for the rest.', keywords: 'speed dial titles names always never needed labels' },
@@ -784,9 +864,3 @@ export function updateView(s: Pick<SettingsSnapshot, 'update' | 'updateVersion' 
   return { title, detail, action: 'check', busy: false, tone: s.lastCheck === 'failed' ? 'warn' : 'ok' };
 }
 
-export const LAYOUT_HINTS: Readonly<Record<TabLayout, string>> = {
-  horizontal: 'The address bar on top, tabs underneath.',
-  'tabs-top': 'Tabs on top, the address bar underneath.',
-  'single-row': 'Everything in one row, for small screens.',
-  vertical: 'Tabs in a sidebar on the left.',
-};

@@ -1,6 +1,6 @@
 // Left rail view (?view=rail): keyed reconciliation of the rail buttons, favicons, pointer reorder and keyboard.
 // Labels reach the DOM only through textContent and attributes; favicons are validated data: URIs set as img.src.
-import { onInbound, send, sendRail, type RailItem, type RailMsg } from './protocol';
+import { onInbound, send, sendRail, sendRailWheel, type RailItem, type RailMsg } from './protocol';
 import { setTip } from './tooltip';
 import {
   ADD_BUTTONS,
@@ -10,6 +10,8 @@ import {
   hoverSwitches,
   initialOf,
   isDraggable,
+  countBadge,
+  wheelNotches,
   keyboardMoveBefore,
   pruneRailFavs,
   rememberRailFav,
@@ -37,6 +39,9 @@ interface RailNode {
   uri: string;
   accent: string;
   label: string | null;
+  /** --- tab stacks and workspaces (T10) --- the tab count badge and its last text. */
+  readonly badge: HTMLSpanElement;
+  count: string;
 }
 
 interface Drag {
@@ -84,8 +89,10 @@ function createNode(key: string): RailNode {
   img.draggable = false;
   const swatch = el('span', 'rb-swatch');
   swatch.setAttribute('aria-hidden', 'true');
-  root.append(face, swatch, dot);
-  return { key, root, face, img, faceSig: '', uri: '', accent: '', label: null };
+  const badge = el('span', 'rb-count');
+  badge.setAttribute('aria-hidden', 'true');
+  root.append(face, swatch, dot, badge);
+  return { key, root, face, img, faceSig: '', uri: '', accent: '', label: null, badge, count: '' };
 }
 
 function faceFor(n: RailNode, item: RailItem, uri: string): HTMLElement | SVGSVGElement {
@@ -97,24 +104,36 @@ function faceFor(n: RailNode, item: RailItem, uri: string): HTMLElement | SVGSVG
     tile.textContent = initialOf(item.label);
     return tile;
   }
+  // --- tab stacks and workspaces (T10) --- a workspace's emoji in place of its glyph.
+  if (item.emoji !== undefined) {
+    const glyph = el('span', 'rb-emoji');
+    glyph.textContent = item.emoji;
+    return glyph;
+  }
   return railIcon(item.icon);
 }
 
 function updateNode(n: RailNode, item: RailItem, uri: string): void {
   const btn = n.root;
-  if (n.label !== item.label) {
+  const count = countBadge(item.n);
+  if (n.label !== item.label || n.count !== count) {
     n.label = item.label;
+    n.count = count;
     const own = ADD_BUTTONS[n.key]?.label;
     const name = own ?? (item.label.trim() !== '' ? item.label : FALLBACK_LABEL);
-    setAttr(btn, 'aria-label', name);
-    setTip(btn, name);
+    // --- tab stacks and workspaces (T10) --- the count is part of the name a reader hears.
+    const spoken = item.n !== undefined ? `${name}, ${item.n === 1 ? '1 tab' : `${item.n} tabs`}` : name;
+    setAttr(btn, 'aria-label', spoken);
+    setTip(btn, spoken);
+    n.badge.textContent = count;
+    btn.classList.toggle('count-on', count !== '');
   }
   if (n.uri !== uri) {
     n.uri = uri;
     if (uri !== '') n.img.src = uri;
     else n.img.removeAttribute('src');
   }
-  const sig = ADD_BUTTONS[n.key] ? `add:${n.key}` : uri !== '' ? 'fav' : item.icon === 'letter' ? `letter:${initialOf(item.label)}` : `icon:${item.icon}`;
+  const sig = ADD_BUTTONS[n.key] ? `add:${n.key}` : uri !== '' ? 'fav' : item.icon === 'letter' ? `letter:${initialOf(item.label)}` : item.emoji !== undefined ? `emoji:${item.emoji}` : `icon:${item.icon}`;
   if (n.faceSig !== sig) {
     n.faceSig = sig;
     n.face.replaceChildren(faceFor(n, item, uri));
@@ -198,6 +217,15 @@ export function startRail(root: HTMLElement): void {
     scroll.classList.toggle('can-down', scroll.scrollTop + scroll.clientHeight < scroll.scrollHeight - 1);
   };
   scroll.addEventListener('scroll', syncEdges, { passive: true });
+  // --- tab stacks and workspaces (T10) --- "Switch workspaces by scrolling": a wheel turn over the
+  // workspaces is reported in whole notches; Rust switches only while the option is on.
+  let wheelRest = 0;
+  scroll.addEventListener('wheel', (ev) => {
+    if (!(ev.target instanceof Element) || !ev.target.closest('.rb.ws, .rb[data-k="addws"]')) return;
+    const step = wheelNotches(wheelRest, ev.deltaY, ev.deltaMode);
+    wheelRest = step.rest;
+    if (step.notches !== 0) sendRailWheel(step.notches);
+  }, { passive: true });
   if (typeof ResizeObserver !== 'undefined') new ResizeObserver(syncEdges).observe(scroll);
 
   const nodesOf = (items: readonly RailItem[]): HTMLElement[] => {
@@ -454,7 +482,7 @@ export function startRail(root: HTMLElement): void {
     switch (msg.t) {
       case 'state':
         // Only the theme and mode reach the rail; scale and page state are toolbar concerns.
-        applyTheme(msg.theme, msg.solid, msg.dark);
+        applyTheme(msg.theme, msg.solid, msg.dark, undefined, undefined, msg.density, msg.compactMenus);
         break;
       case 'rail':
         latest = msg;

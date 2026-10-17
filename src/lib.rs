@@ -43,6 +43,7 @@ pub mod settings_privacy; // blocker level, history retention, website appearanc
 pub mod browsing_data; // Delete Browsing Data: kinds, ranges and the plan (T3)
 pub mod history_retention; // drops visits older than the retention setting (T3)
 pub mod website_look; // the colour scheme sites are told, and forced dark mode (T3)
+pub mod layout_prefs; // bar positions, presets, density, UI zoom (T6)
 pub mod shortcuts;
 pub mod sidebar;
 pub mod site_prefs;
@@ -61,3 +62,5 @@ pub mod updater;
 pub mod vertical_tabs;
 pub mod win32;
 pub mod workspaces;
+pub mod stacks; // tab stacks, tiling and workspace rules: the pure rules (T10)
+pub mod workspace_rules; // sites that open in a named workspace (T10)

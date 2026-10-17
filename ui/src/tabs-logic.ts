@@ -110,6 +110,25 @@ export function buildEntries(items: readonly TabItem[], active: number): Entry[]
   return entries;
 }
 
+// --- two-level stacks (T10b) ---
+/**
+ * The stack the second row shows: the folded stack holding the tab in use, while Rust laid a second
+ * row out (`stackRow` other than `off`). Null otherwise, and then the strip is drawn as before.
+ */
+export function stackRowGroup(entries: readonly Entry[], active: number, stackRow: 'off' | 'regular' | 'compact'): GroupEntry | null {
+  if (stackRow === 'off') return null;
+  for (const e of entries) {
+    if (e.kind === 'group' && e.collapsed && e.members.some((m) => m.item.id === active)) return e;
+  }
+  return null;
+}
+
+/** The tab row's view of the stack whose tabs are the second row: its ball alone. */
+export function ballOnly(e: GroupEntry): GroupEntry {
+  return { ...e, members: e.members.map((m) => ({ item: m.item, hidden: true })), visible: 0 };
+}
+// --- end two-level stacks ---
+
 /**
  * Destination index of the dragged tab. `centers` holds the centre x of every visible tab in strip
  * order (the dragged one at `from`); `x` is the dragged tab's current centre. The result is the

@@ -286,6 +286,25 @@ pub fn sync(owner: HWND, viewport: RECT, window_dpi: u32) {
     });
 }
 
+// --- layout (thread T6) ---
+/// Moves an open docked panel to `position` at once (the settings page changed it). A panel opened
+/// later reads the setting from the file as before.
+pub fn set_position(owner: HWND, position: SidePanelPosition) {
+    let moved = HOSTS.with(|hosts| unsafe {
+        let raw = hosts.borrow().get(&(owner.0 as isize)).copied().unwrap_or(0);
+        let hwnd = HWND(raw as *mut c_void);
+        let Some(state) = host(hwnd).filter(|h| h.owner == owner) else { return false };
+        if state.position == position { return false; }
+        state.position = position;
+        true
+    });
+    if moved {
+        sync(owner, base_viewport(owner), dpi(owner));
+        let _ = unsafe { windows::Win32::UI::WindowsAndMessaging::PostMessageW(Some(owner), WM_RESIZED, WPARAM(0), LPARAM(0)) };
+    }
+}
+// --- end layout ---
+
 pub fn adjust_viewport(viewport: RECT, owner: HWND) -> RECT {
     let width = active_width_px(owner);
     if width == 0 { return viewport; }
