@@ -65,6 +65,9 @@ pub enum RailKey {
     Bookmarks,
     History,
     Menu,
+    /// An extra button the user put on the panel bar (`toolbar_panel`, thread T13): the Feeds button or a
+    /// command button. The number is the item's place in that list.
+    Tool(u8),
 }
 
 /// Workspace glyphs the user can pick from. Each is drawn as an outline in the workspace colour.
@@ -113,6 +116,8 @@ pub enum RailIcon {
     Clock,
     /// The menu.
     Dots,
+    /// The Feeds button on the panel bar (thread T13).
+    Feed,
     /// The generic tile for an app with no favicon and no usable label.
     AppTile,
     /// The first letter of the label, on a coloured tile.
@@ -182,7 +187,7 @@ fn section(key: RailKey) -> Section {
         RailKey::Home | RailKey::Customize => Section::Top,
         RailKey::Workspace(_) | RailKey::AddWorkspace => Section::Workspaces,
         RailKey::App(_) | RailKey::AddApp => Section::Apps,
-        RailKey::Bookmarks | RailKey::History | RailKey::Menu => Section::Bottom,
+        RailKey::Bookmarks | RailKey::History | RailKey::Menu | RailKey::Tool(_) => Section::Bottom,
     }
 }
 
@@ -777,6 +782,7 @@ pub fn rail_tooltip(key: RailKey, entries: &[RailEntry<'_>]) -> String {
         RailKey::Bookmarks => "Bookmarks".to_owned(),
         RailKey::History => "History".to_owned(),
         RailKey::Menu => "More".to_owned(),
+        RailKey::Tool(_) => label.unwrap_or("Button").to_owned(),
     }
 }
 

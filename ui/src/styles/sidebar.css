@@ -40,7 +40,7 @@
   flex: none;
   place-items: center;
   width: 28px;
-  height: var(--bw-tab-h);
+  height: var(--bw-side-row-h); /* the pill height; 22px at the compact density (thread T6) */
   margin: 0;
   padding: 0;
   border: 0;
@@ -63,7 +63,7 @@
   flex: none;
   gap: var(--bw-space-2);
   min-width: 0;
-  height: var(--bw-tab-h);
+  height: var(--bw-side-row-h); /* the pill height; 22px at the compact density (thread T6) */
   margin: 0;
   padding: 0 var(--bw-space-2);
   border: 0;
@@ -134,7 +134,7 @@
   flex: none;
   column-gap: var(--bw-space-2);
   width: auto;
-  height: var(--bw-tab-h);
+  height: var(--bw-side-row-h); /* the pill height; 22px at the compact density (thread T6) */
   padding: 0 var(--bw-space-1) 0 var(--bw-space-2);
   font-size: var(--bw-text-chrome);
   line-height: 1;
@@ -292,7 +292,7 @@
   flex: none;
   gap: var(--bw-space-2);
   min-width: 0;
-  height: var(--bw-tab-h);
+  height: var(--bw-side-row-h); /* the pill height; 22px at the compact density (thread T6) */
   margin-top: var(--bw-space-1);
   padding: 0 var(--bw-space-2);
   border-radius: var(--bw-r-tab);
@@ -392,14 +392,15 @@
 #app.sidebar.is-collapsed .side-empty-label { display: none; }
 
 /* ---- Tab options (Settings > Tabs): the same marks as the horizontal strip, and the Closed tabs row ---- */
-.side-closed {
+.side-closed,
+.side-tool {
   box-sizing: border-box;
   display: flex;
   align-items: center;
   flex: none;
   gap: var(--bw-space-2);
   min-width: 0;
-  height: var(--bw-tab-h);
+  height: var(--bw-side-row-h); /* the pill height; 22px at the compact density (thread T6) */
   margin: 0;
   padding: 0 var(--bw-space-2);
   border: 0;
@@ -414,12 +415,19 @@
   transition: background-color var(--bw-dur-fast) var(--bw-ease-fade);
 }
 .side-closed[hidden] { display: none; }
-.side-closed:hover { background: var(--bw-hover); color: var(--bw-text); }
-.side-closed:active { background: var(--bw-island); }
-.side-closed > svg { flex: none; width: 16px; height: 16px; }
-.side-closed-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-#app.sidebar.is-collapsed .side-closed { justify-content: center; width: 32px; height: 32px; padding: 0; border-radius: var(--bw-r-row); }
-#app.sidebar.is-collapsed .side-closed-label { display: none; }
+.side-closed:hover,
+.side-tool:hover { background: var(--bw-hover); color: var(--bw-text); }
+.side-closed:active,
+.side-tool:active { background: var(--bw-island); }
+.side-closed > svg,
+.side-tool > svg { flex: none; width: 16px; height: 16px; }
+.side-closed-label,
+.side-tool-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.side-tools { display: flex; flex-direction: column; flex: none; }
+#app.sidebar.is-collapsed .side-closed,
+#app.sidebar.is-collapsed .side-tool { justify-content: center; width: 32px; height: 32px; padding: 0; border-radius: var(--bw-r-row); }
+#app.sidebar.is-collapsed .side-closed-label,
+#app.sidebar.is-collapsed .side-tool-label { display: none; }
 
 .side-tab.asleep .side-face { opacity: 0.5; }
 .side-tab.idle { opacity: 0.6; }

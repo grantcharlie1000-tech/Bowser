@@ -129,6 +129,17 @@ pub trait EngineAdapter {
     ) {
         done(None);
     }
+    /// Runs the feed-detection script (`app::feed_features`) in a tab and hands back its raw result,
+    /// under the same rules as `run_reader_script` (http(s) pages only, checked at the moment of the
+    /// call) with an answer limit of a few kilobytes: the answer is a short list of `<link>` tags.
+    fn run_feed_script(
+        &mut self,
+        _tab: crate::tabs::TabId,
+        _script: &str,
+        done: Box<dyn FnOnce(Option<String>)>,
+    ) {
+        done(None);
+    }
     /// Checks for a visible, currently playing video without installing page scripts or polling.
     fn picture_in_picture_eligible(
         &mut self,
@@ -345,6 +356,10 @@ pub trait EngineAdapter {
     /// Applies the website look (`website_look::current`: the colour scheme sites are told and
     /// forced dark mode) to every open tab. Tabs created later start with it.
     fn apply_website_look(&mut self) {}
+    /// --- layout (thread T6) --- applies the status-bar choice (`layout_prefs::status_overlay_shown`:
+    /// whether a page may show the link-address overlay) to every open tab. Tabs created later
+    /// start with it.
+    fn apply_status_overlay(&mut self) {}
     /// The profile's tracking-prevention level as the browser reports it now, or `None` when the
     /// engine cannot say.
     fn tracking_prevention_level(&self, _tab: crate::tabs::TabId) -> Option<&'static str> {

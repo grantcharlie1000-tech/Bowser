@@ -1,5 +1,6 @@
 // Builds the toolbar DOM and applies state/theme messages to it.
-import { MAX_TEXT, THEME_TOKENS, type DlButtonMsg, type ExtButtonMsg, type ReaderPill, type Security, type StateMsg, type Theme, type ThemeToken, type TranslatePill } from './protocol';
+import { MAX_TEXT, THEME_TOKENS, sendTool, type DlButtonMsg, type ExtButtonMsg, type ReaderPill, type Security, type StateMsg, type Theme, type ThemeToken, type ToolButtonMsg, type TranslatePill } from './protocol';
+import { DEFAULT_ADDRESS, itemsOf, zoneOf } from './bars-logic'; // --- toolbars and feeds (thread T13) ---
 import { el, icon, type IconName } from './dom';
 import { setTip } from './tooltip';
 import { isZoomed, zoomChipLabel, zoomChipTip, zoomText } from './zoom-logic';
@@ -38,6 +39,27 @@ export interface View {
   readonly qr: HTMLButtonElement;
   readonly search: SearchBox;
   // --- end address bar, search and bookmarks ---
+  // --- toolbars and feeds (thread T13) ---
+  /** The buttons the address bar's list can add (docs/toolbars.md): bookmark and new tab at the end of the bar, and the feed button in the address field. */
+  readonly bookmark: HTMLButtonElement;
+  readonly newtab: HTMLButtonElement;
+  readonly feed: HTMLButtonElement;
+  /** The containers `applyBar` fills, and what it last laid out. */
+  readonly nav: HTMLElement;
+  readonly navGroup: HTMLElement;
+  readonly actions: HTMLElement;
+  readonly bar: BarState;
+  // --- end toolbars and feeds ---
+}
+
+/** What `applyBar` last laid out. `items` is the address bar's list in order (the default before the host's first state). */
+export interface BarState {
+  items: readonly string[];
+  /** The buttons the list says are shown (reader view, split view and the site button read it). */
+  has: ReadonlySet<string>;
+  sig: string;
+  /** Command buttons by item id, kept between layouts so a button keeps its focus. */
+  readonly tools: Map<string, HTMLButtonElement>;
 }
 
 /** The search field next to the address field. */
@@ -131,6 +153,12 @@ export function buildView(root: HTMLElement): View {
   const reload = iconButton('Reload', 'reload', 'tb-nav is-lg is-round', 'Reload (Ctrl+R)');
   const site = iconButton('Site information', 'info', 'tb-site bw-focus-inset is-round');
   const split = iconButton('Split view', 'split', 'tb-split bw-focus-inset is-round');
+  // --- toolbars and feeds (thread T13) ---
+  const feed = iconButton('Subscribe to this page’s feed', 'feed', 'tb-feed bw-focus-inset is-round', 'This page has a feed');
+  feed.hidden = true;
+  const bookmark = iconButton('Bookmark this page', 'bookmark', 'tb-nav is-lg is-round tb-extra tb-bookmark', 'Bookmark this page (Ctrl+D)');
+  const newtab = iconButton('New tab', 'plus', 'tb-nav is-lg is-round tb-extra tb-newtab', 'New tab (Ctrl+T)');
+  // --- end toolbars and feeds ---
   const zoom = el('button', 'tb-zoom bw-focus-inset');
   zoom.type = 'button';
   zoom.hidden = true;
@@ -193,7 +221,7 @@ export function buildView(root: HTMLElement): View {
   privateChip.append(icon('private', { size: 14 }), privateText);
 
   const pill = el('div', 'pill');
-  pill.append(site, field, history, qr, searchRoot, privateChip, zoom, reader, translate, split, progress);
+  pill.append(site, field, history, qr, searchRoot, privateChip, zoom, reader, translate, split, feed, progress); // --- toolbars and feeds (thread T13): feed, after split ---
 
   // Three dots (menu-dots, drawn at 24px by toolbar.css .tb-menu); each is its own <circle>, so
   // they can ripple.
@@ -219,7 +247,104 @@ export function buildView(root: HTMLElement): View {
   root.style.setProperty('-webkit-user-select', 'none');
 
   root.replaceChildren(nav, pill, actions);
-  return { back, forward, reload, site, split, zoom, reader, translate, input, display, pill, progress, privateChip, menu, downloads, extensions, history, qr, search };
+  // --- toolbars and feeds (thread T13) ---
+  const bar: BarState = { items: DEFAULT_ADDRESS, has: new Set(DEFAULT_ADDRESS), sig: '', tools: new Map() };
+  return { back, forward, reload, site, split, zoom, reader, translate, input, display, pill, progress, privateChip, menu, downloads, extensions, history, qr, search, bookmark, newtab, feed, nav, navGroup, actions, bar };
+  // --- end toolbars and feeds ---
+}
+
+// ---- The address bar's buttons (docs/toolbars.md; the list is `toolbar_buttons`, edited in Settings > Toolbars) ----
+//
+// Rust sends the list as `items` (a comma list in order) with `tools` (the command buttons' names and their
+// places in the list). The toolbar lays its buttons out from it: back, forward and reload before the address
+// field (back and forward share their rounded box when they are neighbours), the site button, split and reader
+// buttons inside the field, and at the end of the bar, before the menu button, the bookmark and new tab
+// buttons, the command buttons, and (when there is something to show) downloads and extensions. The menu
+// button is always the last one. Nothing here moves the field: Rust reserves the room (`extra`).
+
+function toolButton(tool: ToolButtonMsg): HTMLButtonElement {
+  const button = iconButton(tool.l, 'command', 'tb-nav is-lg is-round tb-extra tb-tool');
+  button.addEventListener('click', () => { sendTool('address', tool.k, tool.i); });
+  return button;
+}
+
+/** Lays the address bar's buttons out from the host's list. Cheap when nothing changed. */
+export function applyBar(view: View, state: Pick<StateMsg, 'items' | 'tools' | 'extra' | 'feeds'>): void {
+  const root = document.getElementById('app');
+  const items = state.items === undefined ? DEFAULT_ADDRESS : itemsOf(state.items);
+  const tools = state.tools ?? [];
+  const sig = `${items.join(',')}|${tools.map((tool) => `${tool.k}:${tool.i}:${tool.l}`).join(';')}`;
+  const bar = view.bar;
+  if (sig !== bar.sig) {
+    bar.sig = sig;
+    bar.items = items;
+    bar.has = new Set(items);
+    const left = items.filter((id) => zoneOf(id) === 'left');
+    const leftButtons: Record<string, HTMLButtonElement> = { back: view.back, forward: view.forward, reload: view.reload };
+    const nodes: HTMLElement[] = [];
+    for (let at = 0; at < left.length; at += 1) {
+      const id = left[at] as string;
+      if (id === 'back' && left[at + 1] === 'forward') {
+        view.navGroup.replaceChildren(view.back, view.forward);
+        nodes.push(view.navGroup);
+        at += 1;
+      } else if (id === 'forward' && left[at + 1] === 'back') {
+        view.navGroup.replaceChildren(view.forward, view.back);
+        nodes.push(view.navGroup);
+        at += 1;
+      } else {
+        const button = leftButtons[id];
+        if (button) nodes.push(button);
+      }
+    }
+    view.nav.replaceChildren(...nodes);
+    // Inside the address field.
+    view.site.hidden = !bar.has.has('site-info');
+    view.pill.classList.toggle('no-site', view.site.hidden);
+    view.split.hidden = !bar.has.has('split');
+    // At the end of the bar: the list's right-zone buttons in order, the menu last.
+    const byTool = new Map(tools.map((tool) => [tool.k, tool] as const));
+    const right: HTMLElement[] = [];
+    const live = new Set<string>();
+    for (const id of items) {
+      if (zoneOf(id) !== 'right') continue;
+      if (id === 'bookmark') right.push(view.bookmark);
+      else if (id === 'newtab') right.push(view.newtab);
+      else if (id === 'downloads') right.push(view.downloads.button);
+      else if (id === 'extensions') right.push(view.extensions.button);
+      else {
+        const tool = byTool.get(id);
+        if (!tool) continue;
+        live.add(id);
+        let button = bar.tools.get(id);
+        if (!button || button.dataset.label !== tool.l || button.dataset.index !== String(tool.i)) {
+          button = toolButton(tool);
+          button.dataset.label = tool.l;
+          button.dataset.index = String(tool.i);
+          bar.tools.set(id, button);
+        }
+        right.push(button);
+      }
+    }
+    for (const id of [...bar.tools.keys()]) if (!live.has(id)) bar.tools.delete(id);
+    view.actions.replaceChildren(...right, view.menu);
+    // Downloads and extensions that are off the bar never show, and never take room.
+    if (root) {
+      root.classList.toggle('bar-no-dl', !bar.has.has('downloads'));
+      root.classList.toggle('bar-no-ext', !bar.has.has('extensions'));
+      if (!bar.has.has('downloads')) root.classList.remove('has-dl');
+      if (!bar.has.has('extensions')) root.classList.remove('has-ext');
+    }
+    if (!bar.has.has('downloads')) view.downloads.button.hidden = true;
+    if (!bar.has.has('extensions')) view.extensions.button.hidden = true;
+  }
+  root?.style.setProperty('--tb-extra', `${state.extra ?? 0}px`);
+  const feeds = state.feeds ?? 0;
+  view.feed.hidden = feeds === 0;
+  if (feeds > 0) {
+    const text = feeds === 1 ? 'Subscribe to this page’s feed' : `This page offers ${feeds} feeds`;
+    label(view.feed, text, text);
+  }
 }
 
 // ---- Extensions button (docs/extensions.md "Managing extensions", styles in toolbar.css) ----
@@ -250,6 +375,7 @@ function buildExtensionsButton(root: HTMLElement): ExtensionsButton {
       if (text.menu) button.setAttribute('aria-haspopup', 'menu');
       else button.removeAttribute('aria-haspopup');
       if (msg.on) {
+        if (root.classList.contains('bar-no-ext')) return; // taken off the bar (docs/toolbars.md)
         button.classList.remove('is-out');
         if (button.hidden) {
           button.hidden = false;
@@ -351,6 +477,7 @@ function buildDownloadButton(root: HTMLElement): DownloadButton {
   const show = (on: boolean): void => {
     window.clearTimeout(outTimer);
     if (on) {
+      if (root.classList.contains('bar-no-dl')) return; // taken off the bar (docs/toolbars.md)
       button.classList.remove('is-out');
       if (button.hidden) {
         button.hidden = false;
@@ -500,8 +627,14 @@ export function applyState(view: View, state: StateMsg): void {
     }
   }
   if (state.split !== undefined) view.split.setAttribute('aria-pressed', String(state.split)); // --- omnibox suggest ---
+  applyBar(view, state); // --- toolbars and feeds (thread T13) ---
   applyReader(view.reader, state.reader ?? 'none');
+  if (!view.bar.has.has('reader')) view.reader.hidden = true; // taken off the bar
   applyTranslate(view.translate, state.translate ?? 'none');
+  // The bookmark button reads as on while the page is bookmarked.
+  view.bookmark.setAttribute('aria-pressed', String(state.bookmarked === true));
+  if (state.bookmarked === true) label(view.bookmark, 'Edit this bookmark', 'Edit this bookmark (Ctrl+D)');
+  else label(view.bookmark, 'Bookmark this page', 'Bookmark this page (Ctrl+D)');
   view.back.disabled = !state.back;
   view.forward.disabled = !state.forward;
   setReloadMode(view.reload, state.loading);
@@ -543,8 +676,13 @@ export function applyState(view: View, state: StateMsg): void {
   }
 }
 
-export function applyTheme(theme: Theme, solid: boolean, dark: boolean, fontScale?: number, uiFont?: string): void {
+export function applyTheme(theme: Theme, solid: boolean, dark: boolean, fontScale?: number, uiFont?: string, density?: 'regular' | 'compact', compactMenus?: boolean): void {
   const root = document.documentElement;
+  // --- layout (thread T6) --- `ui_density` / `compact_menus`: the row-height tokens read these.
+  // Absent (an older host, a view that does not send them) leaves the regular heights.
+  if (density !== undefined) root.dataset.density = density;
+  if (compactMenus !== undefined) root.dataset.compactMenus = String(compactMenus);
+  // --- end layout ---
   for (const token of THEME_TOKENS) {
     const value = theme[token];
     if (value !== undefined) root.style.setProperty(THEME_VAR[token], value);

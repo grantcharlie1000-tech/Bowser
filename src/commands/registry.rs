@@ -212,6 +212,10 @@ pub static BUILTINS: &[CommandDef] = &[
     def("qr-code", "QR code for this page", "Show the page's address as a QR code", C::Page, &[], Page, Run(crate::win32::run_qr_code)),
     def("toggle-address-bar", "Show or hide the address bar", "Turn Settings > Address bar > Show the address bar on or off", C::Navigation, &[], Cmd, Run(crate::win32::run_toggle_address_bar)),
     // --- end wave-1 integration ---
+    // --- toolbars and feeds (T13): the Feeds panel; also the panel bar's Feeds button and a command button's target ---
+    def("feeds", "Feeds", "Read the feeds you subscribed to, and subscribe to this page's feed", C::Panels, &[], Cmd, Run(crate::win32::run_open_feeds)),
+    def("subscribe-feed", "Subscribe to this page's feed", "Open Feeds with the feeds this page offers, to preview and subscribe", C::Page, &[], Page, Run(crate::win32::run_open_feeds)),
+    // --- end toolbars and feeds ---
 ];
 
 /// The command with this id, if it is a built-in.

@@ -29,7 +29,7 @@ export interface MenuMessage {
 export const MENU_ICONS: readonly string[] = [
   'address-bar', 'app-tile', 'archive', 'arrow-left', 'arrow-right', 'back', 'bell', 'bookmark', 'calculator', 'calendar', 'camera', 'caption-close', 'caption-maximize',
   'caption-minimize', 'caption-restore', 'cast', 'check', 'chevron-down', 'chevron-left', 'chevron-right', 'chevron-up', 'clock',
-  'close', 'close-others', 'command', 'cookie', 'copy', 'customize', 'dots', 'download', 'droplet', 'edit', 'enter', 'extensions', 'external', 'eye',
+  'close', 'close-others', 'command', 'cookie', 'copy', 'customize', 'dots', 'download', 'droplet', 'edit', 'enter', 'extensions', 'external', 'eye', 'feed',
   'file', 'file-text', 'find', 'folder', 'folder-download', 'folder-open', 'forward', 'gear', 'glasses', 'glint', 'globe', 'grid', 'grip', 'heart', 'history', 'home', 'image', 'info', 'key', 'link', 'location', 'lock', 'menu', 'menu-dots',
   'mic', 'more', 'more-horizontal', 'more-vertical', 'mute', 'new-tab', 'notes', 'palette', 'package', 'pause', 'pencil', 'person',
   'picture-in-picture', 'play', 'pin', 'pip', 'plus', 'print', 'private', 'private-window', 'profile', 'puzzle', 'qr-code', 'quick-commands', 'reader', 'refresh', 'reload', 'reset', 'save', 'search', 'settings', 'share',

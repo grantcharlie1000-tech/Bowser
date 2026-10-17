@@ -22,6 +22,7 @@ pub mod efficiency;
 pub mod engine;
 pub mod extensions;
 pub mod favicon;
+pub mod feeds; // the feed reader: reading, finding, storing and fetching feeds (T13)
 pub mod import;
 pub mod internal_page;
 pub mod navigation;
@@ -43,6 +44,7 @@ pub mod settings_privacy; // blocker level, history retention, website appearanc
 pub mod browsing_data; // Delete Browsing Data: kinds, ranges and the plan (T3)
 pub mod history_retention; // drops visits older than the retention setting (T3)
 pub mod website_look; // the colour scheme sites are told, and forced dark mode (T3)
+pub mod layout_prefs; // bar positions, presets, density, UI zoom (T6)
 pub mod shortcuts;
 pub mod sidebar;
 pub mod site_prefs;
@@ -57,6 +59,7 @@ pub mod thumbnail;
 pub mod tab_organisation;
 pub mod tabs;
 pub mod theme;
+pub mod toolbar_prefs; // the address, tab and panel bars' buttons and the feed settings (T13)
 pub mod updater;
 pub mod vertical_tabs;
 pub mod win32;

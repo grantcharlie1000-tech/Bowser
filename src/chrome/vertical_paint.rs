@@ -105,12 +105,13 @@ pub fn rows(
 
 /// Row rectangle for `index` after `scroll`, inset from the sidebar edges and the row gap.
 pub fn row_bounds(layout: &SidebarLayout, index: usize, metrics: Metrics, scroll: i32) -> Rect {
-    let row_height = metrics.px(vertical_tabs::TAB_ROW_HEIGHT).max(1);
+    // --- layout (thread T6) --- the density's row height, clear of the handle on either side.
+    let row_height = layout.row_height().max(1);
     let top = layout.rows.top + index as i32 * row_height - scroll.max(0);
     Rect::new(
-        layout.rows.left + metrics.px(7),
+        layout.content_left() + metrics.px(7),
         top + metrics.px(2),
-        layout.handle.left - metrics.px(7),
+        layout.content_right() - metrics.px(7),
         top + row_height - metrics.px(2),
     )
 }

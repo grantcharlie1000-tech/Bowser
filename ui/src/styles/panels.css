@@ -135,7 +135,7 @@
 .pn-row {
   position: relative;
   gap: var(--bw-space-2);
-  height: 32px;
+  height: var(--bw-row-h); /* 32px; 28px at the compact density (thread T6) */
   padding: 0 var(--bw-space-2);
   transition: background-color var(--bw-dur-fast) var(--bw-ease-fade);
 }
@@ -747,6 +747,170 @@
 .ps-row .pn-trail { min-width: 72px; max-width: none; }
 .ps-row.is-confirming { background: var(--bw-accent-soft); }
 .ps-row.is-confirming .pn-actions { opacity: 1; }
+
+/* ---- Feeds panel (ui/src/panels/feeds.ts): the Sessions panel's parts, with a subscription list above the items ---- */
+.pf-add {
+  display: flex;
+  gap: var(--bw-space-2);
+}
+
+.pf-add .bw-input {
+  flex: 1;
+}
+
+.pf-error { color: var(--bw-text); }
+.pf-error[hidden],
+.pf-status[hidden],
+.pf-page[hidden],
+.pf-preview[hidden],
+.pf-feeds[hidden],
+.pf-note[hidden] { display: none; }
+
+.pf.is-busy .pf-status::before {
+  content: "";
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-inline-end: var(--bw-space-1);
+  border-radius: var(--bw-r-pill);
+  background: var(--bw-accent);
+  vertical-align: middle;
+  opacity: 0.7;
+}
+
+.pf-page,
+.pf-preview {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  max-height: 44%;
+  margin: 0 var(--bw-space-2) var(--bw-space-2);
+  padding-bottom: var(--bw-space-1);
+  border: 1px solid var(--bw-hairline);
+  border-radius: var(--bw-r-island);
+  background: var(--bw-fill);
+}
+
+.pf-preview-head {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--bw-space-2);
+}
+
+.pf-preview-title {
+  position: static;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  background: transparent;
+}
+
+.pf-preview-actions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--bw-space-1);
+  padding-inline-end: var(--bw-space-2);
+}
+
+.pf-preview-list {
+  flex: none;
+  max-height: 280px;
+  overflow-y: auto;
+  padding: 0 var(--bw-space-1);
+}
+
+.pf-offer .bw-row-title,
+.pf-offer .bw-row-meta { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.pf-feeds {
+  flex: none;
+  max-height: 30%;
+  padding: 0 var(--bw-space-2) var(--bw-space-1);
+}
+
+.pf-feed { font-weight: var(--bw-weight-strong); }
+.pf-feed .pn-trail { min-width: 56px; max-width: none; margin-inline-start: auto; }
+.pf-all .pn-trail { margin-inline-start: auto; }
+.pf-feed.is-confirming { background: var(--bw-accent-soft); }
+.pf-feed.is-confirming .pn-actions { opacity: 1; }
+
+.pf-count {
+  display: inline-grid;
+  min-width: 18px;
+  height: 18px;
+  place-items: center;
+  padding: 0 var(--bw-space-1);
+  border-radius: var(--bw-r-pill);
+  background: var(--bw-accent-soft);
+  color: var(--bw-text);
+  font-size: var(--bw-text-caption);
+  font-weight: var(--bw-weight-strong);
+  line-height: 1;
+}
+
+.pf-count[hidden] { display: none; }
+
+.pf-warn {
+  display: inline-grid;
+  place-items: center;
+  color: var(--bw-text);
+}
+
+.pf-note {
+  padding-top: var(--bw-space-1);
+  padding-bottom: 0;
+}
+
+.pf-items { padding-top: var(--bw-space-1); }
+
+.pf-item,
+.pf-peek-item {
+  align-items: flex-start;
+  padding-block: var(--bw-space-1_5);
+  font-weight: 400;
+}
+
+.pf-item .pn-lead { margin-top: 2px; }
+
+.pf-dot {
+  display: block;
+  width: 8px;
+  height: 8px;
+  border-radius: var(--bw-r-pill);
+  background: var(--bw-accent);
+}
+
+.pf-item.is-unread .pf-title { font-weight: var(--bw-weight-strong); }
+.pf-item:not(.is-unread) .pf-title { color: var(--bw-text-2); }
+
+.pf-text { gap: 2px; }
+.pf-text > * { flex: none; }
+.pf-preview-list .pn-row { height: auto; }
+
+.pf-summary {
+  display: -webkit-box;
+  overflow: hidden;
+  color: var(--bw-text-2);
+  font-size: var(--bw-text-caption);
+  line-height: var(--bw-leading-caption);
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+}
+
+.pf-tools {
+  display: flex;
+  flex: none;
+  gap: var(--bw-space-1);
+  opacity: 0;
+  transition: opacity var(--bw-dur-fast) var(--bw-ease-fade);
+}
+
+.pf-item:is(:hover, :focus-within) .pf-tools { opacity: 1; }
 
 @media (max-width: 640px) {
   .pg-row {

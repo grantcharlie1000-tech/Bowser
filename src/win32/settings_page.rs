@@ -746,6 +746,16 @@ fn run(owner: HWND, app: &AppRef, tab: TabId, action: Action) {
             }
         }
         // --- end tab options ---
+        // --- toolbars and feeds (thread T13) ---
+        Action::BarOption(text) => {
+            if App::set_bar_option(app, &text) {
+                answer(owner, Ok(()));
+            } else {
+                answer(owner, Err("That value is not allowed. Nothing was saved.".into()));
+            }
+        }
+        Action::OpenFeeds => super::window::open_feeds_panel(owner, app),
+        // --- end toolbars and feeds ---
         Action::DownloadFolder => {
             // The native folder picker, parented to the window; Bowser keeps the choice itself, so the
             // page never names a path. Cancelling changes nothing and says nothing.

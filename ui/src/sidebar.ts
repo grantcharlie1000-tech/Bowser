@@ -4,7 +4,7 @@
 //   #app.sidebar (role=none)
 //     .side-top      workspace switcher row + new-tab row (never scrolls)
 //     .side-list     role=tree scroller: group headers, tab rows, pinned separator, empty state
-import { send, sendClosedTabs, sendSide, sendTabSelection, type TabItem, type TabOptsMsg, type TabsMsg } from './protocol';
+import { send, sendClosedTabs, sendSide, sendTabSelection, sendTool, type TabItem, type TabOptsMsg, type TabsMsg } from './protocol';
 import { setTip } from './tooltip';
 import { el, icon, place, type IconName } from './dom';
 import { DRAG_ATTR } from './view';
@@ -262,7 +262,27 @@ export function createSidebarRenderer(root: HTMLElement): {
   head.append(header, collapse);
   const top = el('div', 'side-top');
   top.setAttribute(DRAG_ATTR, '');
-  top.append(head, add, closedRow); // --- tab options ---
+  // --- toolbars and feeds (thread T13) --- the command buttons of the tab bar, as rows under Closed tabs.
+  const toolRows = el('div', 'side-tools');
+  let toolSig = '';
+  const syncTools = (tools: TabOptsMsg['tools']): void => {
+    const sig = tools.map((tool) => `${tool.k}|${tool.i}|${tool.l}`).join('\n');
+    if (sig === toolSig) return;
+    toolSig = sig;
+    const rows = tools.map((tool) => {
+      const row = el('button', 'side-tool bw-focus-inset');
+      row.type = 'button';
+      setTip(row, tool.l);
+      const label = el('span', 'side-tool-label');
+      label.textContent = tool.l;
+      row.append(icon('command', { size: 16 }), label);
+      row.addEventListener('click', () => { sendTool('tabs', tool.k, tool.i); });
+      return row;
+    });
+    toolRows.replaceChildren(...rows);
+  };
+  // --- end toolbars and feeds ---
+  top.append(head, add, closedRow, toolRows); // --- tab options ---
   const pinGrid = el('div', 'side-pinned');
   pinGrid.setAttribute('role', 'none');
   const COLLAPSED_MAX_PX = 72;
@@ -820,7 +840,8 @@ export function createSidebarRenderer(root: HTMLElement): {
     options(value) {
       selectionOn = value.selection;
       selectionActive = value.selectionActive;
-      closedRow.hidden = value.closed === 0;
+      closedRow.hidden = value.closed === 0 || !value.closedButton; // --- toolbars and feeds (thread T13) ---
+      syncTools(value.tools);
       if (!selectionOn && picked.length > 0) setPicked([]);
     },
     // --- end tab options ---

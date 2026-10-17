@@ -184,6 +184,8 @@ enum DeferredChromeCommand {
     SystemMenu,
     /// A left click on a rail button: what a native click does. May open a modal prompt.
     RailClick { key: RailKey },
+    /// A command button of the address bar or the tab bar (thread T13): the item at `index` of that bar's list.
+    Tool { bar: chrome_host::protocol::ToolBar, index: u8 },
     /// A right click on a rail button: the native rail context menu at the client point.
     RailMenu { key: RailKey, x: i32, y: i32 },
     /// The pointer rested on a flyout button while a flyout is open: switch to it.
@@ -395,9 +397,13 @@ fn file_stamp(path: &Path) -> Option<FileStamp> {
 struct RelayoutInputs {
     active: TabId,
     maximised: bool,
-    tab_layout: crate::settings::TabLayout,
+    // --- layout (thread T6) --- the whole arrangement and the list density, not just the tab layout.
+    arrangement: layout::Arrangement,
+    density: crate::layout_prefs::UiDensity,
+    // --- end layout ---
     centred_address_bar: bool,
-    font_size: crate::settings::FontSize,
+    /// The chrome's text scale in percent (`layout_prefs::chrome_scale_percent`).
+    font_scale: u32,
     ui_font: String,
 }
 
@@ -435,6 +441,9 @@ struct WindowChrome {
     sidebar_scroll_target: i32,
     sidebar_hover_row: Option<usize>,
     sidebar_resizing: bool,
+    /// --- layout (thread T6) --- a hidden address bar brought back by Ctrl+L, until the address
+    /// field loses focus again.
+    address_bar_revealed: bool,
     /// The width a sidebar drag has reached, laid out once per frame and saved to the settings when
     /// the drag ends, and whether a frame for it is due.
     sidebar_drag_width: Option<u16>,
@@ -541,6 +550,13 @@ struct WindowChrome {
     html_ext_slot: i32,
     html_ext_last: Option<String>,
     html_ext_rect: Option<chrome_host::protocol::HoverRect>,
+    // --- toolbars and feeds (thread T13) --- what the address bar's list (`toolbar_buttons`) does to the
+    // toolbar's slots: whether Downloads and Extensions may take theirs, and the room the always-there
+    // buttons at the end of the bar take (set by `html_sync`, read by `toolbar_slot`).
+    html_dl_allowed: bool,
+    html_ext_allowed: bool,
+    html_bar_extra: i32,
+    // --- end toolbars and feeds ---
     html_tabs_last_state: Option<String>,
     html_rail_last_state: Option<String>,
     /// Incremented for each page `ready`, so a re-entrant post cannot cache a prior page's state.
@@ -648,6 +664,7 @@ impl WindowChrome {
             sidebar_scroll_target: 0,
             sidebar_hover_row: None,
             sidebar_resizing: false,
+            address_bar_revealed: false,
             sidebar_drag_width: None,
             sidebar_drag_pending: false,
             last_relayout: None,
@@ -716,6 +733,9 @@ impl WindowChrome {
             html_ext_slot: 0,
             html_ext_last: None,
             html_ext_rect: None,
+            html_dl_allowed: true,
+            html_ext_allowed: true,
+            html_bar_extra: 0,
             html_tabs_last_state: None,
             html_rail_last_state: None,
             html_state_generation: [0; 3],
@@ -796,10 +816,11 @@ impl WindowChrome {
             self.dpi,
             inputs.active,
             inputs.maximised,
-            inputs.tab_layout,
+            inputs.arrangement,
+            inputs.density,
             width,
             inputs.centred_address_bar,
-            inputs.font_size,
+            inputs.font_scale,
             &inputs.ui_font,
         );
         true
@@ -951,16 +972,18 @@ impl WindowChrome {
         if reproject {
             let settings = App::settings(app);
             let sidebar_width = self.sidebar_width(app);
+            let arrangement = App::arrangement(app).with_address_bar_revealed(self.address_bar_revealed); // --- layout (thread T6) ---
             self.relayout(
                 self.client.0,
                 self.client.1,
                 self.dpi,
                 App::active_tab_id(app),
                 self.layout.maximised,
-                App::tab_layout(app),
+                arrangement,
+                settings.ui_density,
                 sidebar_width,
                 settings.centred_address_bar,
-                settings.font_size,
+                crate::layout_prefs::chrome_scale_percent(&settings),
                 &settings.ui_font,
             );
         }
@@ -973,10 +996,11 @@ impl WindowChrome {
         dpi: u32,
         active: TabId,
         maximised: bool,
-        tab_layout: crate::settings::TabLayout,
+        arrangement: layout::Arrangement,
+        density: crate::layout_prefs::UiDensity,
         sidebar_width: u16,
         centred_address_bar: bool,
-        font_size: crate::settings::FontSize,
+        font_scale: u32,
         ui_font: &str,
     ) {
         self.client = (w, h);
@@ -984,9 +1008,10 @@ impl WindowChrome {
         self.last_relayout = Some(RelayoutInputs {
             active,
             maximised,
-            tab_layout,
+            arrangement,
+            density,
             centred_address_bar,
-            font_size,
+            font_scale,
             ui_font: ui_font.to_owned(),
         });
         let was_vertical = self.sidebar.is_some();
@@ -999,15 +1024,14 @@ impl WindowChrome {
                     .is_some_and(|tab| tab.id == active)
             })
             .unwrap_or(0);
-        let (layout, sidebar) = if tab_layout.is_vertical() {
-            let (layout, sidebar) = layout::compute_vertical_in_frame_with(
-                w, h, self.dpi, self.slots.len().max(1), i, maximised,
-                i32::from(sidebar_width), centred_address_bar,
-            );
-            (layout, Some(sidebar.with_tab_count(self.sidebar_rows.len(), self.dpi)))
-        } else {
-            (layout::compute_in_frame_for_with(tab_layout, w, h, self.dpi, self.slots.len().max(1), i, maximised, centred_address_bar), None)
-        };
+        // --- layout (thread T6) --- one geometry for every arrangement: tab bar edge or hidden,
+        // address bar edge or hidden, title row, sidebar side and the list density.
+        let (layout, sidebar) = layout::compute_arranged_in_frame(
+            arrangement, w, h, self.dpi, self.slots.len().max(1), i, maximised,
+            i32::from(sidebar_width), centred_address_bar, density.sidebar_row_height(),
+        );
+        let sidebar = sidebar.map(|sidebar| sidebar.with_tab_count(self.sidebar_rows.len(), self.dpi));
+        // --- end layout ---
         self.layout = layout.with_group_slots(
             self.slots.iter().map(|slot| slot.marker_only),
             self.slots.iter().map(|slot| slot.group_control && !slot.collapsed),
@@ -1041,7 +1065,7 @@ impl WindowChrome {
         self.sync_html_tabs_bounds();
         self.sync_html_rail_bounds();
         self.surface.resize(w, h, self.dpi);
-        self.surface.set_font(font_size.scale_percent(), ui_font);
+        self.surface.set_font(font_scale, ui_font);
     }
     /// The toolbar region the HTML chrome covers, in client pixels. `None` while it is inactive or
     /// the toolbar is too narrow for its region.
@@ -1101,7 +1125,8 @@ impl WindowChrome {
     }
     /// CSS px the toolbar page's buttons beside the pill (downloads, extensions) take from it.
     fn toolbar_slot(&self) -> i32 {
-        self.html_dl_slot + self.html_ext_slot
+        // --- toolbars and feeds (thread T13) --- a button taken off the bar gives its room back.
+        (if self.html_dl_allowed { self.html_dl_slot } else { 0 }) + (if self.html_ext_allowed { self.html_ext_slot } else { 0 }) + self.html_bar_extra
     }
     /// Moves the HTML chrome over the toolbar region and hides it when there is none. Also tells
     /// the surface to leave the region to the page.
@@ -1382,6 +1407,12 @@ fn rebuild_rail_entries_with(state: &mut WindowChrome, app: &AppRef, icons: bool
         };
         entries.push(RailEntryData { key, icon, label: label.into(), active: key == RailKey::Bookmarks && bookmark_active, accent: None, favicon: None, png: None });
     }
+    // --- toolbars and feeds (thread T13) --- the panel bar's extra buttons (`toolbar_panel`), after the
+    // built-in ones: the Feeds button and command buttons (a letter tile, the command's name as its tooltip).
+    for (index, label, icon) in panel_tools(&App::settings(app).toolbar_panel) {
+        entries.push(RailEntryData { key: RailKey::Tool(index), icon, label, active: false, accent: None, favicon: None, png: None });
+    }
+    // --- end toolbars and feeds ---
     entries.push(RailEntryData { key: RailKey::Menu, icon: RailIcon::Dots, label: "Menu".into(), active: false, accent: None, favicon: None, png: None });
     state.rail_scroll = state.rail_scroll.max(0);
     if same_rail(&state.rail_entries, &entries) {
@@ -1805,7 +1836,7 @@ fn dpi(hwnd: HWND) -> u32 {
 pub(crate) fn refresh_edit_font(hwnd: HWND, app: &AppRef) {
     let settings = App::settings(app);
     let ui_font = (!settings.ui_font.is_empty()).then_some(settings.ui_font.as_str());
-    let font = paint::create_message_font_with(dpi(hwnd), DEFAULT_QUALITY, settings.font_size.scale_percent(), ui_font);
+    let font = paint::create_message_font_with(dpi(hwnd), DEFAULT_QUALITY, crate::layout_prefs::chrome_scale_percent(&settings), ui_font); // --- layout (thread T6) ---
     let (edit, old) = {
         let mut a = app.borrow_mut();
         (a.edit, std::mem::replace(&mut a.input_font, font))
@@ -2173,7 +2204,9 @@ unsafe extern "system" fn window_proc(
                         | Hit::SiteInfo
                         | Hit::Split
                 );
-                frame::frame_hit_test(
+                // --- layout (thread T6) --- a row along the bottom edge keeps the bottom grip thin.
+                let thin_bottom = with_chrome(hwnd, |s| s.last_relayout.as_ref().is_some_and(|inputs| inputs.arrangement.thin_bottom_edge())).unwrap_or(false);
+                frame::frame_hit_test_with(
                     p,
                     (r.right, r.bottom),
                     dpi(hwnd),
@@ -2183,6 +2216,7 @@ unsafe extern "system" fn window_proc(
                     } else {
                         frame::ChromeHit::None
                     },
+                    thin_bottom,
                 )
                 .lresult()
             }
@@ -2405,6 +2439,7 @@ unsafe extern "system" fn window_proc(
                     apply_window_region(hwnd, r.right, r.bottom, IsZoomed(hwnd).as_bool());
                     let active = App::active_tab_id(app);
                     let settings = App::settings(app);
+                    let arrangement = App::arrangement(app); // --- layout (thread T6) ---
                     let _ = with_chrome(hwnd, |s| {
                         s.relayout(
                             r.right,
@@ -2412,10 +2447,11 @@ unsafe extern "system" fn window_proc(
                             dpi(hwnd),
                             active,
                             IsZoomed(hwnd).as_bool(),
-                            App::tab_layout(app),
+                            arrangement.with_address_bar_revealed(s.address_bar_revealed),
+                            settings.ui_density,
                             App::sidebar_width(app),
                             settings.centred_address_bar,
-                            settings.font_size,
+                            crate::layout_prefs::chrome_scale_percent(&settings),
                             &settings.ui_font,
                         );
                     });
@@ -2486,16 +2522,18 @@ unsafe extern "system" fn window_proc(
                             tab.favicon = None;
                         }
                         let settings = App::settings(app);
+                        let arrangement = App::arrangement(app).with_address_bar_revealed(s.address_bar_revealed); // --- layout (thread T6) ---
                         s.relayout(
                             r.right,
                             r.bottom,
                             dpi(hwnd),
                             App::active_tab_id(app),
                             IsZoomed(hwnd).as_bool(),
-                            App::tab_layout(app),
+                            arrangement,
+                            settings.ui_density,
                             App::sidebar_width(app),
                             settings.centred_address_bar,
-                            settings.font_size,
+                            crate::layout_prefs::chrome_scale_percent(&settings),
                             &settings.ui_font,
                         );
                         s.refresh(app, true)
@@ -2897,7 +2935,9 @@ unsafe extern "system" fn window_proc(
             } else {
                 let resizing = with_chrome(hwnd, |s| s.sidebar_resizing).unwrap_or(false);
                     if resizing {
-                        let width = ((p.x * 96) / dpi(hwnd).max(96) as i32).clamp(
+                        // --- layout (thread T6) --- measured from the sidebar's own edge, whichever side it is on.
+                        let drag_px = with_chrome(hwnd, |s| s.sidebar.map_or(p.x, |sidebar| sidebar.drag_width_px(p.x))).unwrap_or(p.x);
+                        let width = ((drag_px * 96) / dpi(hwnd).max(96) as i32).clamp(
                             i32::from(crate::settings::MIN_SIDEBAR_WIDTH),
                             i32::from(crate::settings::MAX_SIDEBAR_WIDTH),
                         ) as u16;
@@ -3046,9 +3086,7 @@ unsafe extern "system" fn window_proc(
                         let Some(sidebar) = s.sidebar else {
                             return false;
                         };
-                        let row_height = crate::chrome::layout::Metrics::new(s.dpi)
-                            .px(crate::vertical_tabs::TAB_ROW_HEIGHT)
-                            .max(1);
+                        let row_height = sidebar.row_height().max(1); // --- layout (thread T6) ---
                         s.sidebar_scroll_target = s
                             .sidebar_scroll_target
                             .saturating_sub(delta * row_height * 3)
@@ -4810,6 +4848,9 @@ pub(super) fn split_host_state(hwnd: HWND, accent: Option<crate::theme::Rgba>) -
         translate: crate::translate::Pill::Hidden,
         font_scale: 100,
         ui_font: String::new(),
+        density: crate::layout_prefs::UiDensity::Regular, // --- layout (thread T6) ---
+        compact_menus: false,
+        bar: Default::default(), // --- toolbars and feeds (thread T13) ---
         theme: chrome_host::theme_tokens(&palette),
     }
     .to_json()
@@ -5027,6 +5068,14 @@ fn activate_rail(hwnd: HWND, app: &AppRef, key: RailKey) {
         // The History button opens bowser://history; without it, it toggles the flyout or panel.
         RailKey::History if super::history_page::available(hwnd) => super::history_page::open(hwnd, app, false),
         RailKey::History => { rail_activate_at(hwnd, app, side_panel::PanelId::History, Some(key)); }
+        // --- toolbars and feeds (thread T13) --- the item at that place of the panel bar's list, if it is still there.
+        RailKey::Tool(index) => {
+            let settings = App::settings(app);
+            if let Some(item) = settings.toolbar_panel.get(usize::from(index)) {
+                run_bar_item(hwnd, app, item);
+            }
+        }
+        // --- end toolbars and feeds ---
     }
 
     let _ = with_chrome(hwnd, |state| rebuild_rail_entries(state, app));
@@ -8688,9 +8737,18 @@ fn html_sync(hwnd: HWND) {
     };
     let id = App::active_tab_id(&app);
     let site = App::site_security(&app);
+    let settings = App::settings(&app);
+    // --- toolbars and feeds (thread T13) --- the address bar's own list decides which buttons take room.
+    let bar_extra = crate::toolbar_prefs::right_static_px(&settings);
+    let (dl_allowed, ext_allowed) = (crate::toolbar_prefs::address_has(&settings, "downloads"), crate::toolbar_prefs::address_has(&settings, "extensions"));
+    let _ = with_chrome(hwnd, |s| {
+        s.html_bar_extra = bar_extra;
+        s.html_dl_allowed = dl_allowed;
+        s.html_ext_allowed = ext_allowed;
+    });
+    // --- end toolbars and feeds ---
     let slot = with_chrome(hwnd, |s| s.toolbar_slot()).unwrap_or(0);
     let (pillx, pillw, menux) = chrome_host::toolbar_css_placement_with_slot(&layout, dpi, slot).unwrap_or_default();
-    let settings = App::settings(&app);
     // While a private tab is shown, the chrome takes its own light or dark look when the private
     // theme asks for one (thread T3); otherwise it follows the normal appearance.
     let system_look = glass::appearance();
@@ -8727,8 +8785,11 @@ fn html_sync(hwnd: HWND) {
         private: App::tab_private(&app, id),
         reader: App::active_reader_pill(&app),
         translate: App::active_translate_pill(&app),
-        font_scale: settings.font_size.scale_percent(),
+        font_scale: crate::layout_prefs::chrome_scale_percent(&settings), // --- layout (thread T6) --- font_size times ui_zoom
         ui_font: settings.ui_font.clone(),
+        density: settings.ui_density,
+        compact_menus: settings.compact_menus,
+        bar: address_bar_items(&app, &settings),
         theme: chrome_host::theme_tokens(&palette),
     };
     let json = state.to_json();
@@ -8862,6 +8923,34 @@ pub(super) fn toolbar_anchor(hwnd: HWND, rect: chrome_host::protocol::HoverRect)
 /// Gives the bookmarks bar `reserve` (physical pixels, bottom?) of the page area. `true` when that
 /// changed it: the window is laid out again at once, and the caller's sync runs again with the room
 /// in place.
+// --- layout (thread T6) ---
+/// Shows a hidden address bar (Ctrl+L and the other ways into the address field) or hides it again
+/// (the field lost focus). Nothing changes while the setting shows the bar anyway. True when the
+/// chrome was laid out again.
+pub(super) fn set_address_bar_revealed(hwnd: HWND, app: &AppRef, on: bool) -> bool {
+    let arrangement = App::arrangement(app);
+    let on = on && !arrangement.address_bar_visible;
+    let relaid = with_chrome(hwnd, |s| {
+        if s.address_bar_revealed == on {
+            return false;
+        }
+        s.address_bar_revealed = on;
+        if let Some(inputs) = s.last_relayout.as_mut() {
+            inputs.arrangement = arrangement.with_address_bar_revealed(on);
+        }
+        s.relayout_sidebar(App::sidebar_width(app))
+    })
+    .unwrap_or(false);
+    if relaid {
+        sync_html_host_bounds(hwnd);
+        html_sync(hwnd);
+        apply_sidebar_bounds(hwnd, app);
+        repaint(hwnd);
+    }
+    relaid
+}
+// --- end layout ---
+
 pub(super) fn apply_bar_reserve(hwnd: HWND, app: &AppRef, reserve: (i32, bool)) -> bool {
     let relaid = with_chrome(hwnd, |s| {
         if s.bar_reserve == reserve {
@@ -9028,6 +9117,10 @@ fn html_command(hwnd: HWND, command: ChromeCommand) {
                     s.completion = None;
                 }
             });
+            // --- layout (thread T6) --- a hidden address bar goes away with the focus.
+            if !on && let Some(app) = app_of(hwnd) {
+                set_address_bar_revealed(hwnd, &app, false);
+            }
         }
         ChromeCommand::Open(OpenTarget::Menu) => {
             defer_html_command(hwnd, DeferredChromeCommand::MainMenu);
@@ -9072,6 +9165,27 @@ fn html_command(hwnd: HWND, command: ChromeCommand) {
                 run_translate(hwnd, &app, TranslateAction::Toggle);
             }
         }
+        // --- toolbars and feeds (thread T13) ---
+        // The feed button in the address field: the Feeds panel opens with the feeds this page offers.
+        ChromeCommand::Open(OpenTarget::Feeds) => {
+            if let Some(app) = app_of(hwnd) {
+                open_feeds_panel(hwnd, &app);
+            }
+        }
+        // A command button: only an item the user put at that place in that bar's list runs.
+        ChromeCommand::Tool { bar, item, index } => {
+            if let Some(app) = app_of(hwnd) {
+                let settings = App::settings(&app);
+                let list = match bar {
+                    chrome_host::protocol::ToolBar::Address => crate::toolbar_prefs::Bar::Address.list(&settings),
+                    chrome_host::protocol::ToolBar::Tabs => crate::toolbar_prefs::Bar::Tabs.list(&settings),
+                };
+                if list.get(usize::from(index)) == Some(&item) {
+                    defer_html_command(hwnd, DeferredChromeCommand::Tool { bar, index });
+                }
+            }
+        }
+        // --- end toolbars and feeds ---
         // Tab strip and rail commands are handled by their own views, not the toolbar.
         ChromeCommand::Tab { .. }
         | ChromeCommand::TabMove { .. }
@@ -9187,6 +9301,9 @@ pub(super) fn html_panel_state(hwnd: HWND) -> String {
         translate: crate::translate::Pill::Hidden,
         font_scale: 100,
         ui_font: String::new(),
+        density: crate::layout_prefs::UiDensity::Regular, // --- layout (thread T6) ---
+        compact_menus: false,
+        bar: Default::default(), // --- toolbars and feeds (thread T13) ---
         theme: chrome_host::theme_tokens(&palette),
     }.to_json()
 }
@@ -9196,6 +9313,13 @@ pub(super) fn html_panel_state(hwnd: HWND) -> String {
 pub(super) fn page_viewport(hwnd: HWND) -> Option<RECT> {
     with_chrome(hwnd, |state| to_win_rect(state.layout.viewport))
 }
+
+// --- layout (thread T6) ---
+/// Whether a hidden address bar is shown right now because Ctrl+L asked for it.
+pub(crate) fn address_bar_revealed(hwnd: HWND) -> bool {
+    with_chrome(hwnd, |state| state.address_bar_revealed).unwrap_or(false)
+}
+// --- end layout ---
 
 pub(super) fn html_environment(hwnd: HWND) -> Option<ChromeEnv> {
     with_chrome(hwnd, |state| state.html_env.clone()).flatten()
@@ -9475,7 +9599,7 @@ fn html_window_command(hwnd: HWND, command: ChromeCommand, view: View) {
         View::Toolbar => s.html_region(),
         View::Tabs => s.html_tab_region(),
         View::Rail => s.html_rail_region(),
-        View::Panel | View::Popup | View::Dialog | View::DialogNotes | View::DialogPrivacy | View::DialogRename | View::DialogAddress | View::BookmarkBar | View::DialogSessions | View::Hover | View::Split | View::Settings | View::HistoryPage | View::DownloadsPage => None,
+        View::Panel | View::Popup | View::Dialog | View::DialogNotes | View::DialogPrivacy | View::DialogRename | View::DialogAddress | View::BookmarkBar | View::DialogSessions | View::DialogFeeds | View::Hover | View::Split | View::Settings | View::HistoryPage | View::DownloadsPage => None,
     })
     .flatten();
     let Some(region) = region else {
@@ -9653,8 +9777,11 @@ pub(super) fn popup_state_json(hwnd: HWND) -> Option<String> {
         private: App::tab_private(&app, id),
         reader: crate::reader::Pill::Hidden,
         translate: crate::translate::Pill::Hidden,
-        font_scale: settings.font_size.scale_percent(),
+        font_scale: crate::layout_prefs::chrome_scale_percent(&settings), // --- layout (thread T6) --- font_size times ui_zoom
         ui_font: settings.ui_font.clone(),
+        density: settings.ui_density,
+        compact_menus: settings.compact_menus,
+        bar: Default::default(), // --- toolbars and feeds (thread T13) ---
         theme: chrome_host::theme_tokens(&palette),
     };
     Some(state.to_json())
@@ -9708,6 +9835,17 @@ fn run_deferred_html_command(hwnd: HWND) {
         DeferredChromeCommand::RailMenu { key, x, y } => {
             if rail_model_keys(hwnd).contains(&key) {
                 show_rail_context_menu(hwnd, &app, key, x, y);
+            }
+        }
+        // The list may have changed while the command waited: the item must still be where it was.
+        DeferredChromeCommand::Tool { bar, index } => {
+            let settings = App::settings(&app);
+            let list = match bar {
+                chrome_host::protocol::ToolBar::Address => crate::toolbar_prefs::Bar::Address.list(&settings),
+                chrome_host::protocol::ToolBar::Tabs => crate::toolbar_prefs::Bar::Tabs.list(&settings),
+            };
+            if let Some(item) = list.get(usize::from(index)) {
+                run_bar_item(hwnd, &app, item);
             }
         }
         DeferredChromeCommand::RailHover { key } => {
@@ -9912,6 +10050,7 @@ fn html_tabs_favicons(hwnd: HWND, app: &AppRef, ids: &[TabId]) -> HashSet<TabId>
 fn html_strip_options(hwnd: HWND, app: &AppRef) -> chrome_host::protocol::StripOptions {
     use crate::tab_options::LoadIndicator;
     let options = App::tab_options(app);
+    let settings = App::settings(app); // --- toolbars and feeds (thread T13) ---
     chrome_host::protocol::StripOptions {
         close_left: options.close_button_left,
         close_always: options.close_button_always,
@@ -9931,8 +10070,83 @@ fn html_strip_options(hwnd: HWND, app: &AppRef) -> chrome_host::protocol::StripO
         remove_spacing: options.remove_spacing_maximised,
         maximised: with_chrome(hwnd, |s| s.layout.maximised).unwrap_or(false),
         closed: App::closed_tabs(app).len() as u32,
+        // --- toolbars and feeds (thread T13) ---
+        closed_button: crate::toolbar_prefs::Bar::Tabs.list(&settings).iter().any(|item| item == "closed-tabs"),
+        tools: tool_buttons(crate::toolbar_prefs::Bar::Tabs.list(&settings)),
     }
 }
+
+// --- toolbars and feeds (thread T13) ---
+/// The command buttons among `items`, with the names the registry gives them. A chain that was deleted
+/// since the button was placed, or a command that no longer exists, simply shows no button.
+fn tool_buttons(items: &[String]) -> Vec<chrome_host::protocol::ToolButton> {
+    if !items.iter().any(|item| crate::toolbar_prefs::command_of(item).is_some()) {
+        return Vec::new();
+    }
+    let live = crate::commands::live();
+    let entries = live.store.entries();
+    items
+        .iter()
+        .enumerate()
+        .filter_map(|(index, item)| {
+            let id = crate::toolbar_prefs::command_of(item)?;
+            let entry = entries.iter().find(|entry| entry.id == id)?;
+            Some(chrome_host::protocol::ToolButton { item: item.clone(), label: entry.label.clone(), index: index as u8 })
+        })
+        .collect()
+}
+
+/// What the toolbar page needs to lay out the address bar: its list, the command buttons' names, the room
+/// the always-there buttons at its end take, and how many feeds the page in front offers.
+fn address_bar_items(app: &AppRef, settings: &crate::settings::Settings) -> chrome_host::protocol::BarItems {
+    chrome_host::protocol::BarItems {
+        items: Some(settings.toolbar_buttons.join(",")),
+        tools: tool_buttons(&settings.toolbar_buttons),
+        extra: crate::toolbar_prefs::right_static_px(settings).max(0) as u32,
+        feeds: App::active_feed_links(app).len() as u32,
+    }
+}
+
+/// The panel bar's extra buttons as the rail draws them: `(place in the list, name, icon)`. The Feeds button
+/// has its own icon; a command button is a letter tile named after its command. A command or chain that no
+/// longer exists shows no button.
+fn panel_tools(items: &[String]) -> Vec<(u8, String, RailIcon)> {
+    let buttons = tool_buttons(items);
+    items
+        .iter()
+        .enumerate()
+        .filter_map(|(index, item)| {
+            if item == "feeds" {
+                return Some((index as u8, "Feeds".to_owned(), RailIcon::Feed));
+            }
+            let button = buttons.iter().find(|button| &button.item == item)?;
+            Some((index as u8, button.label.clone(), RailIcon::Letter))
+        })
+        .collect()
+}
+
+/// Runs the command behind a bar item: the bar's own buttons that are commands (`bookmark`, `newtab`,
+/// `feeds`) and the command and chain buttons. False for an item that is not a command (the other buttons
+/// have their own wire).
+fn run_bar_item(hwnd: HWND, app: &AppRef, item: &str) -> bool {
+    let id = match item {
+        "bookmark" => "add-bookmark",
+        "newtab" => "new-tab",
+        "feeds" => "feeds",
+        other => match crate::toolbar_prefs::command_of(other) {
+            Some(id) => id,
+            None => return false,
+        },
+    };
+    run_registered(hwnd, app, id)
+}
+
+/// The Feeds panel from the address bar's feed button (`OpenTarget::Feeds`) and the `feeds` command: with
+/// the feeds the page in front offers.
+pub(crate) fn open_feeds_panel(hwnd: HWND, app: &AppRef) {
+    super::feeds_panel::open(hwnd, app, App::active_feed_links(app));
+}
+// --- end toolbars and feeds ---
 
 /// What the strip marks on tab `id`, from the one pass `App::tab_strip_extras` made.
 fn html_tab_marks(extras: &[crate::app::TabStripExtra], id: TabId) -> chrome_host::protocol::TabMarks {
@@ -11126,6 +11340,8 @@ fn remember_url(hwnd: HWND, id: TabId, value: &str, minimal_url: bool) {
     }
 }
 pub(super) fn focus_omni(hwnd: HWND, app: &AppRef, all: bool) {
+    // --- layout (thread T6) --- a hidden address bar comes back for as long as it has the focus.
+    set_address_bar_revealed(hwnd, app, true);
     let _ = with_chrome(hwnd, |s| {
         s.omnibox_claimed = true;
         s.omnibox_edited = false;
@@ -11581,6 +11797,10 @@ unsafe extern "system" fn edit_subclass(
                 s.edit_text.push_str(&display);
             });
             invalidate_omni(main);
+            // --- layout (thread T6) --- a hidden address bar goes away with the focus.
+            if let Some(app) = app {
+                set_address_bar_revealed(main, app, false);
+            }
             return r;
         }
         if msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN {
@@ -11954,7 +12174,8 @@ mod tests {
                 crate::settings::TabLayout::TabsTop,
                 crate::settings::TabLayout::SingleRow,
             ] {
-                s.relayout(1000, 700, dpi, TabId(0), false, tab_layout, 260, true, crate::settings::FontSize::Medium, "");
+                let arrangement = layout::Arrangement { tabs: tab_layout, ..Default::default() };
+                s.relayout(1000, 700, dpi, TabId(0), false, arrangement, crate::layout_prefs::UiDensity::Regular, 260, true, 100, "");
                 let chrome = layout::chrome_height(tab_layout, dpi);
                 assert_eq!(s.surface.height(), 700, "surface height at dpi {dpi}");
                 assert_eq!(s.surface.width(), 1000, "surface width at dpi {dpi}");
@@ -12055,7 +12276,8 @@ mod tests {
     fn a_sidebar_drag_frame_lays_out_again_with_only_the_width_changed() {
         let mut s = WindowChrome::new(1200, 700, 96, HWND::default());
         assert!(!s.relayout_sidebar(300), "nothing to repeat before the first layout");
-        s.relayout(1200, 700, 96, TabId(0), false, crate::settings::TabLayout::Vertical, 200, true, crate::settings::FontSize::Medium, "");
+        let vertical = layout::Arrangement { tabs: crate::settings::TabLayout::Vertical, ..Default::default() };
+        s.relayout(1200, 700, 96, TabId(0), false, vertical, crate::layout_prefs::UiDensity::Regular, 200, true, 100, "");
         let narrow = s.sidebar.expect("a vertical layout has a sidebar").sidebar;
         let top = s.layout.viewport.top;
         assert!(s.relayout_sidebar(320));
@@ -12088,3 +12310,45 @@ fn main_menu_anchor(hwnd: HWND) -> windows::Win32::Foundation::POINT {
     })
     .unwrap_or_default()
 }
+
+// --- toolbars and feeds (thread T13) ---
+#[cfg(test)]
+mod bar_tests {
+    use super::*;
+
+    fn list(text: &str) -> Vec<String> {
+        text.split(',').filter(|id| !id.is_empty()).map(str::to_owned).collect()
+    }
+
+    #[test]
+    fn command_buttons_take_their_commands_name_and_their_place_in_the_list() {
+        let buttons = tool_buttons(&list("closed-tabs,cmd:new-private-tab,cmd:no-such,chain:9,cmd:history"));
+        let named: Vec<(&str, &str, u8)> = buttons.iter().map(|b| (b.item.as_str(), b.label.as_str(), b.index)).collect();
+        assert_eq!(named, [("cmd:new-private-tab", "New private tab", 1), ("cmd:history", "History", 4)], "a deleted chain or unknown command shows no button");
+        assert!(tool_buttons(&list("back,reload")).is_empty());
+    }
+
+    #[test]
+    fn the_panel_bar_shows_feeds_with_its_own_glyph_and_command_buttons_as_letter_tiles() {
+        let tools = panel_tools(&list("feeds,cmd:toggle-notes,cmd:no-such"));
+        assert_eq!(tools.len(), 2);
+        assert_eq!((tools[0].0, tools[0].1.as_str(), tools[0].2), (0, "Feeds", RailIcon::Feed));
+        assert_eq!((tools[1].0, tools[1].1.as_str(), tools[1].2), (1, "Toggle notes and tasks", RailIcon::Letter));
+        assert!(panel_tools(&[]).is_empty());
+    }
+
+    #[test]
+    fn the_rail_wire_names_a_tool_by_its_place_and_the_feed_glyph_by_name() {
+        assert_eq!(chrome_host::rail_key_to_wire(RailKey::Tool(3)).to_wire(), "tool:3");
+        assert_eq!(chrome_host::rail_icon_wire(RailIcon::Feed), "feed");
+    }
+
+    #[test]
+    fn a_bar_item_runs_the_command_the_registry_names() {
+        // The commands the bar's own buttons stand for exist, so a button can never be a dead end.
+        for command in ["add-bookmark", "new-tab", "feeds", "subscribe-feed"] {
+            assert!(crate::commands::registry::builtin(command).is_some(), "{command}");
+        }
+    }
+}
+// --- end toolbars and feeds ---

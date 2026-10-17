@@ -249,6 +249,7 @@ test('the strip options message is whole or refused', () => {
   assert.deepEqual(opts, {
     t: 'tabopts', closeLeft: true, closeAlways: true, scroll: true, minWidth: 180, indicator: 'bar', wheel: true, separator: true, alignClose: true,
     selection: true, selectionActive: false, removeSpacing: true, maximised: true, closed: 4,
+    closedButton: true, tools: [{ k: 'cmd:new-tab', l: 'New tab', i: 1 }],
   });
   const defaults = parseInbound(JSON.stringify(stripFixture.defaults));
   assert.equal(defaults.indicator, 'spinner');

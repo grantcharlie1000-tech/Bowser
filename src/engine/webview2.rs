@@ -124,6 +124,15 @@ fn run_translate_script(
     run_capped_script(webview, script, crate::translate::MAX_ANSWER_BYTES, done);
 }
 
+/// The same for the feed-detection script, whose answer is a short list of `<link>` tags.
+fn run_feed_script(
+    webview: &ICoreWebView2,
+    script: &str,
+    done: Box<dyn FnOnce(Option<String>)>,
+) {
+    run_capped_script(webview, script, crate::app::MAX_FEED_ANSWER_BYTES, done);
+}
+
 fn run_capped_script(
     webview: &ICoreWebView2,
     script: &str,
@@ -2916,6 +2925,22 @@ impl EngineAdapter for WebView2Engine {
         }
     }
 
+    // --- layout (thread T6) ---
+    fn apply_status_overlay(&mut self) {
+        let shown = crate::layout_prefs::status_overlay_shown();
+        let webviews: Vec<ICoreWebView2> = self
+            .core
+            .borrow()
+            .tabs
+            .values()
+            .filter_map(|tab| tab.webview.clone())
+            .collect();
+        for webview in &webviews {
+            let _ = unsafe { webview.Settings().and_then(|settings| settings.SetIsStatusBarEnabled(shown)) };
+        }
+    }
+    // --- end layout ---
+
     fn clear_browsing_data_set(
         &mut self,
         tab: TabId,
@@ -3123,6 +3148,23 @@ impl EngineAdapter for WebView2Engine {
             .and_then(|tab| tab.webview.clone());
         match webview {
             Some(webview) => run_translate_script(&webview, script, done),
+            None => done(None),
+        }
+    }
+    fn run_feed_script(
+        &mut self,
+        tab: TabId,
+        script: &str,
+        done: Box<dyn FnOnce(Option<String>)>,
+    ) {
+        let webview = self
+            .core
+            .borrow()
+            .tabs
+            .get(&tab)
+            .and_then(|tab| tab.webview.clone());
+        match webview {
+            Some(webview) => run_feed_script(&webview, script, done),
             None => done(None),
         }
     }
@@ -3944,6 +3986,9 @@ unsafe fn configure_controller(
         // menu item and F12 / Ctrl+Shift+I open it). This is the DevTools UI only; it does not
         // touch the ad blocker's `CallDevToolsProtocolMethod` Fetch/Network session.
         settings.SetAreDevToolsEnabled(true)?;
+        // --- layout (thread T6) --- the link-address overlay at the bottom of the page follows the
+        // status bar setting (Bowser has no status bar of its own).
+        settings.SetIsStatusBarEnabled(crate::layout_prefs::status_overlay_shown())?;
         match settings.cast::<ICoreWebView2Settings4>() {
             Ok(settings4) => {
                 settings4.SetIsPasswordAutosaveEnabled(false)?;

@@ -88,7 +88,7 @@ test('browser-customizability fields: parse, draftOf and save', () => {
   const s = logic.parseSettingsSnapshot(d);
   assert.equal(s.theme, 'helium');
   assert.equal(s.themeAccent, '');
-  assert.equal(s.toolbarButtons, 'back,forward,reload,site-info,bookmark,newtab,split,reader');
+  assert.equal(s.toolbarButtons, 'back,forward,reload,site-info,split,reader,extensions,downloads');
   assert.equal(s.defaultBrowser, 'yes');
   assert.ok(logic.parseSettingsSnapshot({ ...d, themeAccent: '#1a2b3c' }));
   assert.ok(logic.parseSettingsSnapshot({ ...d, toolbarButtons: '' }));
@@ -107,7 +107,7 @@ test('browser-customizability fields: parse, draftOf and save', () => {
 
   const text = logic.saveText(draft);
   for (const line of [
-    'theme=helium', 'theme_accent=', 'toolbar_buttons=back,forward,reload,site-info,bookmark,newtab,split,reader', 'centred_address_bar=true',
+    'theme=helium', 'theme_accent=', 'toolbar_buttons=back,forward,reload,site-info,split,reader,extensions,downloads', 'centred_address_bar=true',
     'minimal_url=true', 'show_load_progress=true', 'frameless=false', 'rounded_content_frame=true', 'show_home_button=true', 'bookmarks_bar=never',
     'bookmarks_bar_tab_groups=false', 'side_panel_position=left', 'tab_preview_images=true', 'tab_preview_memory=true', 'font_size=medium',
     'ui_font=', 'default_zoom=100', 'show_zoom_indicator=true', 'new_tab_beside_active=true', 'ctrl_tab_mru=true', 'shift_right_click_context=false',
@@ -164,9 +164,10 @@ test('sections match the Rust routes, in page order, and every row belongs to on
   // The side panel position is read each time a panel opens (side_panel.rs), so it needs no restart.
   assert.deepEqual(restart, ['grouping', 'tracking']);
   // Rows Bowser saves but does not act on yet say so in plain words, never "Applies after restart".
-  // --- settings slim --- the toolbar checklist joins it: the HTML toolbar reads none of its ids.
+  // --- toolbars and feeds (thread T13) --- the toolbar editor acts on the HTML toolbar, tab strip and rail, so only
+  // the frameless window is left that saves a choice and does nothing.
   const notYet = logic.ROWS.filter((row) => row.notYet).map((row) => row.id).sort();
-  assert.deepEqual(notYet, ['frameless', 'toolbarButtons']);
+  assert.deepEqual(notYet, ['frameless']);
   for (const row of logic.ROWS) {
     assert.ok(!(row.notYet && row.restart), `${row.id}: one note, not two`);
     assert.doesNotMatch(row.description, /restart/i, `${row.id}: the note says it, not the description`);
@@ -176,7 +177,7 @@ test('sections match the Rust routes, in page order, and every row belongs to on
 test('save sends every profile setting exactly once in the order Rust expects', () => {
   const s = logic.parseSettingsSnapshot(fixture.snap.d);
   const draft = logic.draftOf(s);
-  assert.equal(logic.saveText(draft), 'tab_layout=horizontal\nsidebar_width=260\nsleep_enabled=true\nsleep_after_secs=300\nblocker_enabled=true\nblocker_allow=example.com,news.example\nautomatic_tab_grouping=true\nefficiency_mode=auto\ntracking_prevention=balanced\nsearch_engine=optimised\ntheme=helium\ntheme_accent=\ntoolbar_buttons=back,forward,reload,site-info,bookmark,newtab,split,reader\ncentred_address_bar=true\nminimal_url=true\nshow_load_progress=true\nframeless=false\nrounded_content_frame=true\nshow_home_button=true\nbookmarks_bar=never\nbookmarks_bar_tab_groups=false\nside_panel_position=left\ntab_preview_images=true\ntab_preview_memory=true\nfont_size=medium\nui_font=\ndefault_zoom=100\nshow_zoom_indicator=true\nnew_tab_beside_active=true\nctrl_tab_mru=true\nshift_right_click_context=false\nctrl_shift_c_copy_link=true\nctrl_s_vertical_tabs=false\npin_new_tab_groups=false\nsplit_edge_drop=true\nblock_youtube_video_ads=true\nstart_group_reopen=last\nstart_titles=always\nstart_add_button=true\nstart_columns=6\nstart_thumb_size=3\nstart_drag_reorder=true\nhomepage=\nstartup=start_page\nstartup_pages=\nstart_widgets=false\nstart_widget_columns=2\nstart_widget_height=regular\nstart_widget_bg=translucent\nstart_widget_color=#1f2933\nstart_widget_drag=true');
+  assert.equal(logic.saveText(draft), 'tab_layout=horizontal\nsidebar_width=260\nsleep_enabled=true\nsleep_after_secs=300\nblocker_enabled=true\nblocker_allow=example.com,news.example\nautomatic_tab_grouping=true\nefficiency_mode=auto\ntracking_prevention=balanced\nsearch_engine=optimised\ntheme=helium\ntheme_accent=\ntoolbar_buttons=back,forward,reload,site-info,split,reader,extensions,downloads\ncentred_address_bar=true\nminimal_url=true\nshow_load_progress=true\nframeless=false\nrounded_content_frame=true\nshow_home_button=true\nbookmarks_bar=never\nbookmarks_bar_tab_groups=false\nside_panel_position=left\ntab_preview_images=true\ntab_preview_memory=true\nfont_size=medium\nui_font=\ndefault_zoom=100\nshow_zoom_indicator=true\nnew_tab_beside_active=true\nctrl_tab_mru=true\nshift_right_click_context=false\nctrl_shift_c_copy_link=true\nctrl_s_vertical_tabs=false\npin_new_tab_groups=false\nsplit_edge_drop=true\nblock_youtube_video_ads=true\nstart_group_reopen=last\nstart_titles=always\nstart_add_button=true\nstart_columns=6\nstart_thumb_size=3\nstart_drag_reorder=true\nhomepage=\nstartup=start_page\nstartup_pages=\nstart_widgets=false\nstart_widget_columns=2\nstart_widget_height=regular\nstart_widget_bg=translucent\nstart_widget_color=#1f2933\nstart_widget_drag=true\ntab_bar_visible=true\naddress_bar_position=top\naddress_bar_visible=true\nshow_title_bar=false\nstatus_bar=overlay\nui_density=regular\ncompact_menus=false\nui_zoom=100\nlayout_saved=');
   const none = logic.saveText({ ...draft, searchEngine: null });
   assert.doesNotMatch(none, /search_engine/);
   assert.doesNotMatch(logic.saveText(draft), /auto_update|history|efficiencyActive/);
@@ -403,7 +404,7 @@ test('Downloads: the location and Change, the ask switch, each its own command',
   ask.click();
   assert.deepEqual(sent, [{ v: 1, t: 'set', a: 'downloadfolder' }, { v: 1, t: 'set', a: 'downloadask', on: true }]);
   assert.ok(!sent.some((m) => m.a === 'save'), 'never part of save');
-  assert.doesNotMatch(logic.saveText(logic.draftOf(logic.parseSettingsSnapshot(fixture.snap.d))), /download/);
+  assert.doesNotMatch(logic.saveText(logic.draftOf(logic.parseSettingsSnapshot(fixture.snap.d))), /download_dir|ask_download|downloadDir/);
   deliver(fixture.snap);
   const s = logic.parseSettingsSnapshot(fixture.guest.d);
   assert.equal(s.downloadDir, '');
@@ -490,7 +491,8 @@ test('rows that do nothing yet say so; a group of only such rows says it once', 
 
 test('a change saves the whole draft; a toggle answer shows "Saved"', () => {
   sent.length = 0;
-  const vertical = app.querySelectorAll('.sp-tile')[3];
+  // --- layout (thread T6) --- the Vertical left preset tile (the preset tiles come first).
+  const vertical = app.querySelector('.sp-tile[data-preset="vertical-left"]');
   vertical.click();
   assert.equal(sent.length, 1);
   assert.equal(sent[0].t, 'set');
@@ -535,25 +537,108 @@ test('a guest cannot switch history on', () => {
   assert.deepEqual(sent, []);
 });
 
-// --- settings slim --- the HTML toolbar reads none of `toolbar_buttons`, so the checklist sits in
-// "Not active yet": it shows the saved choice, offers no live control, and the choice is kept.
-test('the toolbar checklist shows the saved choice in "Not active yet", locked, and the choice is kept', () => {
+// --- toolbars and feeds (thread T13) --- the toolbar editor: the three bars' lists as rows, each change saved as the
+// whole new list (the address bar's through Save, the other two through `baropt`), reset per bar, locked when the
+// file cannot be read. The HTML toolbar, strip and rail drawing them is tested in test/bars.mjs.
+const editorRows = (bar) => app.querySelector(`section.sp-tbe-bar[data-bar="${bar}"]`).querySelectorAll('.sp-tb-item').filter((row) => row.dataset.item !== undefined);
+const editorButton = (row, name) => row.querySelectorAll('button').find((b) => b.getAttribute('aria-label')?.startsWith(name));
+const barReset = (bar) => app.querySelector(`section.sp-tbe-bar[data-bar="${bar}"]`).querySelector('.sp-tbe-head').querySelector('button');
+const toolbarSave = () => sent.filter((m) => m.a === 'save').map((m) => /\ntoolbar_buttons=([^\n]*)\n/.exec(m.text)?.[1]);
+const commandsFixture0 = JSON.parse(readFileSync(join(here, 'fixtures', 'commands-snapshot.json'), 'utf8'));
+
+test('the toolbar editor opens from one row, lists each bar and is no longer in "Not active yet"', () => {
   deliver(fixture.snap);
-  const toolbarRow = app.querySelector('.sp-row[data-row="toolbarButtons"]');
-  assert.ok(app.querySelector('section[data-area="later"]').contains(toolbarRow));
-  const switches = toolbarRow.querySelectorAll('[role="switch"]');
-  assert.equal(switches.length, 8);
-  assert.ok(switches.every((sw) => sw.getAttribute('aria-checked') === 'true'), 'the default set is every button, all on');
-  assert.ok(switches.every((sw) => sw.disabled && sw.getAttribute('aria-disabled') === 'true'));
-  const reset = toolbarRow.querySelector('.sp-corner').querySelector('button');
+  assert.equal(logic.ROWS.find((row) => row.id === 'toolbarButtons').notYet, undefined);
+  assert.equal(logic.rowTier(logic.ROWS.find((row) => row.id === 'toolbarButtons')), 'page');
+  assert.equal(app.querySelector('[data-opens="toolbarButtons"]').querySelector('.bw-button').textContent, 'Edit toolbars…');
+  assert.ok(!app.querySelector('section[data-area="later"]').contains(app.querySelector('.sp-row[data-row="toolbarButtons"]')));
+  assert.deepEqual(editorRows('address').map((row) => row.dataset.item), ['back', 'forward', 'reload', 'site-info', 'split', 'reader', 'extensions', 'downloads']);
+  assert.deepEqual(editorRows('tabs').map((row) => row.dataset.item), ['closed-tabs']);
+  assert.deepEqual(editorRows('panel').map((row) => row.dataset.item), []);
+  const headings = app.querySelectorAll('.sp-tbe-title').map((h) => h.textContent);
+  assert.deepEqual(headings, ['Address bar', 'Tab bar', 'Panel bar'], 'there is no status bar to edit');
+});
+
+test('moving, removing and resetting an address bar button each save the whole list', () => {
+  deliver(fixture.snap);
   sent.length = 0;
-  switches[0].click();
-  reset.click();
-  assert.deepEqual(sent, [], 'nothing is sent from a row that does nothing yet');
-  // Another change still carries the saved list, so nothing is lost.
-  app.querySelector('.sp-row[data-row="roundedContentFrame"]').querySelector('[role="switch"]').click();
-  assert.match(sent[0].text, /\ntoolbar_buttons=back,forward,reload,site-info,bookmark,newtab,split,reader\n/);
+  // Move Forward up past Back: back and forward swap.
+  editorButton(editorRows('address')[1], 'Move Forward up').click();
+  assert.deepEqual(toolbarSave(), ['forward,back,reload,site-info,split,reader,extensions,downloads']);
   deliver(fixture.snap);
+  sent.length = 0;
+  // Remove Reload.
+  editorButton(editorRows('address')[2], 'Remove Reload').click();
+  assert.deepEqual(toolbarSave(), ['back,forward,site-info,split,reader,extensions,downloads']);
+  deliver(fixture.snap);
+  sent.length = 0;
+  // The first button of a zone cannot move up, the last cannot move down, and a button never crosses into another zone.
+  assert.equal(editorButton(editorRows('address')[0], 'Move Back up').disabled, true);
+  assert.equal(editorButton(editorRows('address')[2], 'Move Reload and stop down').disabled, true, 'reload is the last before the address field');
+  assert.equal(editorButton(editorRows('address')[3], 'Move Site information up').disabled, true, 'site information is the first inside the field');
+  // Reset returns the default list (here it already is the default, so the button is off).
+  assert.equal(barReset('address').disabled, true);
+  deliver({ ...fixture.snap, d: { ...fixture.snap.d, toolbarButtons: 'back,newtab,cmd:new-tab' } });
+  sent.length = 0;
+  assert.equal(barReset('address').disabled, false);
+  barReset('address').click();
+  assert.deepEqual(toolbarSave(), ['back,forward,reload,site-info,split,reader,extensions,downloads']);
+  deliver(fixture.snap);
+});
+
+test('the tab bar and panel bar lists are their own baropt commands, never part of save', () => {
+  deliver(fixture.snap);
+  sent.length = 0;
+  editorButton(editorRows('tabs')[0], 'Remove Closed tabs').click();
+  assert.deepEqual(sent, [{ v: 1, t: 'set', a: 'baropt', text: 'toolbar_tabs=' }]);
+  assert.ok(!sent.some((m) => m.a === 'save'));
+  deliver({ ...fixture.snap, d: { ...fixture.snap.d, bars: { ...fixture.snap.d.bars, tabs: 'cmd:new-tab,closed-tabs', panel: 'feeds,chain:2' } } });
+  assert.deepEqual(editorRows('tabs').map((row) => row.dataset.item), ['cmd:new-tab', 'closed-tabs']);
+  assert.deepEqual(editorRows('panel').map((row) => row.dataset.item), ['feeds', 'chain:2']);
+  sent.length = 0;
+  editorButton(editorRows('tabs')[1], 'Move Closed tabs up').click();
+  editorButton(editorRows('panel')[0], 'Move Feeds down').click();
+  assert.deepEqual(sent, [
+    { v: 1, t: 'set', a: 'baropt', text: 'toolbar_tabs=closed-tabs,cmd:new-tab' },
+    { v: 1, t: 'set', a: 'baropt', text: 'toolbar_panel=chain:2,feeds' },
+  ]);
+  sent.length = 0;
+  barReset('panel').click();
+  barReset('tabs').click();
+  assert.deepEqual(sent, [
+    { v: 1, t: 'set', a: 'baropt', text: 'toolbar_panel=' },
+    { v: 1, t: 'set', a: 'baropt', text: 'toolbar_tabs=closed-tabs' },
+  ]);
+  deliver(fixture.snap);
+});
+
+test('command buttons take the name of their command once the commands arrive', () => {
+  deliver(fixture.snap);
+  deliver({ v: 1, t: 'snap', p: 'commands', d: JSON.parse(JSON.stringify(commandsFixture0.d)) });
+  deliver({ ...fixture.snap, d: { ...fixture.snap.d, bars: { ...fixture.snap.d.bars, tabs: 'cmd:new-tab,cmd:no-such' } } });
+  const names = editorRows('tabs').map((row) => row.querySelector('.sp-label').textContent);
+  assert.equal(names[0], 'New tab');
+  assert.equal(names[1], 'no such', 'a command Rust does not list is named from its id');
+  deliver(fixture.snap);
+});
+
+test('the feed rows: open the panel, the address bar button and when Feeds fetches', () => {
+  deliver(fixture.snap);
+  const rowOf = (id) => app.querySelector(`.sp-row[data-row="${id}"]`);
+  sent.length = 0;
+  rowOf('feedsOpen').querySelector('button').click();
+  const detect = rowOf('feedsDetect').querySelector('[role="switch"]');
+  assert.equal(detect.getAttribute('aria-checked'), 'true');
+  detect.click();
+  assert.deepEqual(sent, [{ v: 1, t: 'set', a: 'openfeeds' }, { v: 1, t: 'set', a: 'baropt', text: 'feeds_detect=false' }]);
+  assert.ok(!sent.some((m) => m.a === 'save'));
+  deliver({ ...fixture.snap, d: { ...fixture.snap.d, bars: { ...fixture.snap.d.bars, feedsDetect: false, feedsRefresh: 180 } } });
+  assert.equal(detect.getAttribute('aria-checked'), 'false');
+  assert.equal(rowOf('feedsRefresh').querySelector('.bw-select-value').textContent, 'After 3 hours');
+  deliver(fixture.snap);
+  assert.equal(rowOf('feedsRefresh').querySelector('.bw-select-value').textContent, 'After 1 hour');
+  assert.equal(logic.rowTier(logic.ROWS.find((row) => row.id === 'feedsOpen')), 'core');
+  assert.equal(logic.rowTier(logic.ROWS.find((row) => row.id === 'feedsDetect')), 'more');
 });
 
 test('the theme reset button clears both theme and accent in one save', () => {
@@ -585,9 +670,10 @@ test('default browser status reflects the snapshot and the button sends a bare s
 
 test('an unreadable settings file disables the new controls too, except the setdefault button', () => {
   deliver({ ...fixture.snap, d: { ...fixture.snap.d, readable: false } });
-  const toolbarRow = app.querySelector('.sp-row[data-row="toolbarButtons"]');
-  for (const sw of toolbarRow.querySelectorAll('[role="switch"]')) assert.equal(sw.disabled, true);
-  assert.equal(toolbarRow.querySelector('.sp-corner').querySelector('button').disabled, true);
+  // --- toolbars and feeds (thread T13) --- the toolbar editor and the feed rows lock too.
+  for (const button of app.querySelector('.sp-tbe').querySelectorAll('button')) assert.equal(button.disabled, true, button.getAttribute('aria-label') ?? button.textContent);
+  assert.equal(app.querySelector('.sp-row[data-row="feedsDetect"]').querySelector('[role="switch"]').disabled, true);
+  assert.equal(app.querySelector('.sp-row[data-row="feedsRefresh"]').querySelector('button').disabled, true);
   const themeRow = app.querySelector('.sp-row[data-row="themeAccent"]');
   assert.equal(themeRow.querySelector('input').disabled, true);
   assert.equal(themeRow.querySelector('button').disabled, true);
@@ -1301,8 +1387,12 @@ test('row descriptions match what the rows do', () => {
   assert.match(desc('minimalUrl'), /path/);
   assert.match(desc('forceDark'), /open tabs at once/);
   assert.match(desc('qcNotesPanel'), /does not yet go to the picked note/);
-  assert.match(desc('sidePanelPosition'), /next time a side panel opens/);
-  assert.ok(!row('sidePanelPosition').restart, 'it applies without a restart');
+  // --- layout (thread T6) --- the side panel's edge is a choice of the Layout block's edges row and acts at once.
+  assert.equal(row('sidePanelPosition'), undefined, 'no separate side panel row any more');
+  assert.match(row('layoutBars').label, /panels/i);
+  assert.ok(!row('layoutBars').restart && !row('layoutBars').notYet, 'it applies without a restart and is live');
+  assert.match(desc('statusBar'), /Bowser has no status bar of its own/);
+  assert.match(desc('addressBarVisible'), /Ctrl\+L/);
 });
 // ---- settings slim: a short core list per area, one "More options", sub-pages, "Not active yet" ----
 
@@ -1390,7 +1480,7 @@ test('slim: no row that does nothing yet renders as a live control', () => {
   const later = areaNode('later');
   assert.equal(later.querySelector('.sp-h').textContent, logic.LATER_TITLE);
   assert.equal(later.querySelector('.sp-more-btn').getAttribute('aria-expanded'), 'false', 'collapsed by default');
-  assert.equal(later.querySelector('.sp-more-btn').querySelector('.sp-desc').textContent, 'Customise your toolbar, Frameless window');
+  assert.equal(later.querySelector('.sp-more-btn').querySelector('.sp-desc').textContent, 'Frameless window');
   for (const row of logic.ROWS) {
     const node = rowNode(row.id);
     assert.equal(later.contains(node), row.notYet === true, `${row.id} is in Not active yet only when it does nothing yet`);
@@ -1474,4 +1564,237 @@ test('slim: a row nobody placed defaults to More options, so new rows never leng
   assert.equal(logic.rowTier({ ...base, id: 'engines' }), 'page');
   assert.equal(logic.moreCountText(1), '1 more setting');
   assert.equal(logic.moreCountText(12), '12 more settings');
+});
+
+// ---- layout (thread T6): presets, the three edges, the long tail behind More options ----
+const layoutLogic = await bundle('layout-logic.ts');
+
+test('layout: the snapshot carries the Layout block, refuses anything else, and the save lists its keys', () => {
+  const d = fixture.snap.d;
+  const s = logic.parseSettingsSnapshot(d);
+  assert.deepEqual(s.layout, { tabBarVisible: true, addressBarPosition: 'top', addressBarVisible: true, showTitleBar: false, statusBar: 'overlay', uiDensity: 'regular', compactMenus: false, uiZoom: 100, saved: '' });
+  assert.deepEqual([...logic.TAB_LAYOUTS], ['horizontal', 'tabs-top', 'single-row', 'vertical', 'vertical-right', 'bottom']);
+  for (const layout of ['vertical-right', 'bottom']) assert.ok(logic.parseSettingsSnapshot({ ...d, tabLayout: layout }), layout);
+  const bad = (layout) => ({ ...d, layout: { ...d.layout, ...layout } });
+  for (const broken of [
+    bad({ tabBarVisible: 'yes' }), bad({ addressBarPosition: 'middle' }), bad({ statusBar: 'show' }), bad({ uiDensity: 'dense' }), bad({ compactMenus: 1 }),
+    bad({ uiZoom: 49 }), bad({ uiZoom: 201 }), bad({ uiZoom: 100.5 }), bad({ saved: 'tabs=sideways' }), bad({ saved: 'x'.repeat(161) }), bad({ extra: true }),
+    { ...d, layout: { tabBarVisible: true } }, { ...d, layout: null },
+  ]) assert.equal(logic.parseSettingsSnapshot(broken), null, JSON.stringify(broken.layout));
+  const { layout: _dropped, ...without } = d;
+  assert.equal(logic.parseSettingsSnapshot(without), null, 'the layout object is required');
+  const draft = logic.draftOf(s);
+  assert.deepEqual(draft.layout, s.layout);
+  assert.notEqual(draft.layout, s.layout, 'the draft owns a copy');
+  const text = logic.saveText({ ...draft, tabLayout: 'bottom', sidePanelPosition: 'right', layout: { ...draft.layout, tabBarVisible: false, addressBarPosition: 'bottom', showTitleBar: true, statusBar: 'hidden', uiDensity: 'compact', compactMenus: true, uiZoom: 150, saved: layoutLogic.layoutConfigKey(layoutLogic.presetConfig('bottom')) } });
+  assert.match(text, /^tab_layout=bottom\n/);
+  assert.match(text, /\nside_panel_position=right\n/);
+  assert.ok(text.endsWith('\ntab_bar_visible=false\naddress_bar_position=bottom\naddress_bar_visible=true\nshow_title_bar=true\nstatus_bar=hidden\nui_density=compact\ncompact_menus=true\nui_zoom=150\nlayout_saved=tabs=bottom,tabbar=true,address=top,addressbar=true,panel=left,status=overlay,title=false'), text);
+  for (const broken of [{ uiZoom: 30 }, { statusBar: 'show' }, { addressBarPosition: 'left' }, { saved: 'nope' }]) {
+    assert.equal(logic.saveText({ ...draft, layout: { ...draft.layout, ...broken } }), null, JSON.stringify(broken));
+  }
+  // The side panel's edge stays the older key; the row that carried it alone is gone.
+  assert.equal(logic.ROWS.find((row) => row.id === 'sidePanelPosition'), undefined);
+  for (const id of ['layoutPreset', 'layoutBars']) assert.equal(logic.rowTier(logic.ROWS.find((row) => row.id === id)), 'core', id);
+  for (const id of ['layout', 'sidebarWidth', 'tabBarVisible', 'addressBarVisible', 'showTitleBar', 'statusBar', 'uiDensity', 'compactMenus', 'uiZoom']) {
+    assert.equal(logic.rowTier(logic.ROWS.find((row) => row.id === id)), 'more', id);
+  }
+});
+
+test('layout: presets choose a configuration, the edges derive from the tab layout, and the user’s own arrangement is kept as Saved', () => {
+  const L = layoutLogic;
+  assert.deepEqual([...L.PRESETS], ['simple', 'classic', 'vertical-left', 'vertical-right', 'bottom']);
+  assert.equal(L.presetConfig('simple').tabLayout, 'single-row');
+  assert.equal(L.presetConfig('simple').statusBar, 'hidden');
+  assert.equal(L.presetConfig('classic').tabLayout, 'tabs-top');
+  assert.equal(L.presetConfig('vertical-left').sidePanelPosition, 'left');
+  assert.equal(L.presetConfig('vertical-right').tabLayout, 'vertical-right');
+  assert.equal(L.presetConfig('vertical-right').sidePanelPosition, 'right');
+  assert.equal(L.presetConfig('bottom').tabLayout, 'bottom');
+  for (const preset of L.PRESETS) {
+    const key = L.layoutConfigKey(L.presetConfig(preset));
+    assert.deepEqual(L.parseLayoutConfig(key), L.presetConfig(preset), preset);
+    assert.equal(L.matchingPreset(L.presetConfig(preset)), preset);
+    assert.ok(L.isLayoutSaved(key));
+  }
+  assert.equal(L.layoutConfigKey(L.DEFAULT_LAYOUT_CONFIG), 'tabs=horizontal,tabbar=true,address=top,addressbar=true,panel=left,status=overlay,title=false', 'the same text Rust keeps');
+  assert.equal(L.matchingPreset(L.DEFAULT_LAYOUT_CONFIG), null, 'toolbar above tabs is Bowser’s own default, not a preset');
+  for (const bad of ['', 'tabs=horizontal', 'tabs=horizontal,tabbar=true,address=top,addressbar=true,panel=left,status=overlay,title=false,title=true', 'TABS=horizontal,tabbar=true,address=top,addressbar=true,panel=left,status=overlay,title=false']) {
+    assert.equal(L.parseLayoutConfig(bad), null, bad);
+  }
+  assert.ok(L.isLayoutSaved(''), 'empty means none');
+  // Edges.
+  assert.deepEqual(['horizontal', 'tabs-top', 'single-row', 'vertical', 'vertical-right', 'bottom'].map(L.tabBarEdge), ['top', 'top', 'top', 'left', 'right', 'bottom']);
+  assert.equal(L.tabLayoutForEdge('top', 'single-row'), 'single-row', 'a top edge keeps the top style');
+  assert.equal(L.tabLayoutForEdge('top', 'vertical'), 'horizontal', 'from a side, the first top style');
+  assert.equal(L.tabLayoutForEdge('left', 'horizontal'), 'vertical');
+  assert.equal(L.tabLayoutForEdge('right', 'horizontal'), 'vertical-right');
+  assert.equal(L.tabLayoutForEdge('bottom', 'tabs-top'), 'bottom');
+  // Saved: a change away from every preset is remembered; a preset pick leaves it alone.
+  const draft = logic.draftOf(logic.parseSettingsSnapshot(fixture.snap.d));
+  assert.equal(L.selectedTile(draft), null);
+  L.applyLayoutConfig(draft, L.presetConfig('vertical-right'));
+  assert.equal(draft.tabLayout, 'vertical-right');
+  assert.equal(draft.sidePanelPosition, 'right');
+  assert.equal(L.selectedTile(draft), 'vertical-right');
+  L.rememberOwnLayout(draft);
+  assert.equal(draft.layout.saved, '', 'a preset is not Saved');
+  draft.sidePanelPosition = 'left';
+  L.rememberOwnLayout(draft);
+  assert.equal(draft.layout.saved, 'tabs=vertical-right,tabbar=true,address=top,addressbar=true,panel=left,status=overlay,title=false');
+  assert.equal(L.selectedTile(draft), 'saved');
+  L.applyLayoutConfig(draft, L.presetConfig('classic'));
+  assert.equal(L.selectedTile(draft), 'classic');
+  assert.equal(draft.layout.saved, 'tabs=vertical-right,tabbar=true,address=top,addressbar=true,panel=left,status=overlay,title=false', 'kept while a preset is tried');
+  L.applyLayoutConfig(draft, L.parseLayoutConfig(draft.layout.saved));
+  assert.equal(L.selectedTile(draft), 'saved', 'the Saved tile brings it back');
+  // UI zoom typed values.
+  assert.equal(L.parseUiZoom('125'), 125);
+  assert.equal(L.parseUiZoom(' 125% '), 125);
+  assert.equal(L.parseUiZoom('123'), 125, 'rounded to the slider’s step');
+  assert.equal(L.parseUiZoom('50'), 50);
+  assert.equal(L.parseUiZoom('200'), 200);
+  for (const bad of ['', '49', '201', 'big', '100.5', '-100']) assert.equal(L.parseUiZoom(bad), null, bad);
+  assert.equal(L.uiZoomText(110), '110%');
+});
+
+test('layout: the page shows the preset thumbnails and the three edges in view; each pick saves the whole draft', () => {
+  deliver(fixture.snap);
+  searchFor('');
+  const presets = app.querySelector('.sp-tiles.is-presets');
+  const tiles = presets.querySelectorAll('.sp-tile');
+  assert.deepEqual(tiles.map((tile) => tile.dataset.preset), ['simple', 'classic', 'vertical-left', 'vertical-right', 'bottom', 'saved']);
+  assert.deepEqual(tiles.map((tile) => tile.querySelector('.sp-tile-name').textContent), ['Simple', 'Classic', 'Vertical left', 'Vertical right', 'Bottom', 'Saved']);
+  assert.ok(tiles.every((tile) => tile.querySelector('svg')?.getAttribute('class') === 'sp-art'), 'every tile has a thumbnail in the layout-tile style');
+  assert.ok(tiles.every((tile) => tile.getAttribute('aria-checked') === 'false'), 'toolbar above tabs is no preset');
+  const saved = tiles[5];
+  assert.equal(saved.disabled, true, 'nothing saved yet');
+  assert.equal(app.querySelectorAll('.sp-tile').length, 9, 'six presets plus the three top styles');
+  // Both core rows sit in Appearance's main view, not behind More options.
+  for (const id of ['layoutPreset', 'layoutBars']) {
+    assert.ok(areaNode('appearance').contains(rowNode(id)), id);
+    assert.ok(!moreOf('appearance').contains(rowNode(id)), id);
+  }
+  for (const id of ['layout', 'sidebarWidth', 'tabBarVisible', 'addressBarVisible', 'showTitleBar', 'statusBar', 'uiDensity', 'compactMenus', 'uiZoom']) {
+    assert.ok(moreOf('appearance').contains(rowNode(id)), `${id} is behind More options`);
+  }
+  // A preset: every key of its configuration in one save.
+  sent.length = 0;
+  tiles[4].click();
+  assert.equal(sent.length, 1);
+  assert.match(sent[0].text, /^tab_layout=bottom\n/);
+  assert.match(sent[0].text, /\nside_panel_position=left\n/);
+  assert.match(sent[0].text, /\nstatus_bar=overlay\n/);
+  assert.match(sent[0].text, /\nlayout_saved=$/, 'a preset is not Saved');
+  deliver({ ...fixture.snap, d: { ...fixture.snap.d, tabLayout: 'bottom', ack: 'saved' } });
+  assert.equal(tiles[4].getAttribute('aria-checked'), 'true');
+  sent.length = 0;
+  tiles[0].click();
+  assert.match(sent[0].text, /^tab_layout=single-row\n/);
+  assert.match(sent[0].text, /\nstatus_bar=hidden\n/, 'Simple hides the link overlay');
+  // The edges: tab bar right makes a right sidebar; with the panel still left that is the user's own arrangement, kept as Saved.
+  deliver({ ...fixture.snap, d: { ...fixture.snap.d, ack: 'saved' } });
+  const bars = rowNode('layoutBars');
+  const groups = bars.querySelectorAll('[role="radiogroup"]');
+  assert.deepEqual(groups.map((g) => g.getAttribute('aria-label')), ['Tab bar', 'Address bar', 'Panels']);
+  assert.deepEqual(groups[0].querySelectorAll('[role="radio"]').map((b) => b.textContent), ['Top', 'Left', 'Right', 'Bottom']);
+  assert.equal(groups[0].querySelector('[aria-checked="true"]').textContent, 'Top');
+  assert.equal(groups[2].querySelector('[aria-checked="true"]').textContent, 'Left');
+  sent.length = 0;
+  groups[0].querySelectorAll('[role="radio"]')[2].click();
+  assert.match(sent[0].text, /^tab_layout=vertical-right\n/);
+  const own = 'tabs=vertical-right,tabbar=true,address=top,addressbar=true,panel=left,status=overlay,title=false';
+  assert.match(sent[0].text, new RegExp(`\\nlayout_saved=${own.replace(/[-,=]/g, '\\$&')}$`));
+  deliver({ ...fixture.snap, d: { ...fixture.snap.d, tabLayout: 'vertical-right', layout: { ...fixture.snap.d.layout, saved: own }, ack: 'saved' } });
+  assert.equal(saved.disabled, false, 'the Saved tile has something to bring back');
+  assert.equal(saved.getAttribute('aria-checked'), 'true');
+  assert.equal(groups[0].querySelector('[aria-checked="true"]').textContent, 'Right');
+  assert.equal(rowNode('layout').querySelector('[aria-checked="true"]'), null, 'no top style while the tabs are on a side');
+  // Address bar bottom, panels right: one key each.
+  sent.length = 0;
+  groups[1].querySelectorAll('[role="radio"]')[1].click();
+  assert.match(sent[0].text, /\naddress_bar_position=bottom\n/);
+  groups[2].querySelectorAll('[role="radio"]')[1].click();
+  assert.match(sent[1].text, /\nside_panel_position=right\n/);
+  // Back to a preset through the Saved tile and the top-style tiles.
+  deliver({ ...fixture.snap, d: { ...fixture.snap.d, layout: { ...fixture.snap.d.layout, saved: own }, ack: 'saved' } });
+  sent.length = 0;
+  saved.click();
+  assert.match(sent[0].text, /^tab_layout=vertical-right\n/);
+  rowNode('layout').querySelectorAll('.sp-tile')[1].click();
+  assert.match(sent[1].text, /^tab_layout=tabs-top\n/);
+});
+
+test('layout: the rows behind More options each save their key; the UI zoom takes the slider, a typed value and Reset', () => {
+  deliver({ ...fixture.snap, d: { ...fixture.snap.d, ack: 'saved' } });
+  const sw = (id) => rowNode(id).querySelector('[role="switch"]');
+  const seg = (id, index) => rowNode(id).querySelectorAll('[role="radio"]')[index];
+  const expectSave = (line) => { assert.equal(sent.length, 1); assert.equal(sent[0].a, 'save'); assert.match(sent[0].text, line); sent.length = 0; deliver({ ...fixture.snap, d: { ...fixture.snap.d, ack: 'saved' } }); };
+  sent.length = 0;
+  sw('tabBarVisible').click();
+  expectSave(/\ntab_bar_visible=false\n/);
+  sw('addressBarVisible').click();
+  expectSave(/\naddress_bar_visible=false\n/);
+  sw('showTitleBar').click();
+  expectSave(/\nshow_title_bar=true\n/);
+  assert.deepEqual(rowNode('statusBar').querySelectorAll('[role="radio"]').map((b) => b.textContent), ['Info overlay only', 'Hidden']);
+  seg('statusBar', 1).click();
+  expectSave(/\nstatus_bar=hidden\n/);
+  seg('uiDensity', 1).click();
+  expectSave(/\nui_density=compact\n/);
+  sw('compactMenus').click();
+  expectSave(/\ncompact_menus=true\n/);
+  // A hidden tab bar is the user's own arrangement: Saved follows.
+  sw('tabBarVisible').click();
+  assert.match(sent[0].text, /\nlayout_saved=tabs=horizontal,tabbar=false,/);
+  sent.length = 0;
+  deliver({ ...fixture.snap, d: { ...fixture.snap.d, ack: 'saved' } });
+  // UI zoom.
+  const zoom = rowNode('uiZoom');
+  const range = zoom.querySelector('.sp-range');
+  const value = zoom.querySelector('.sp-ui-zoom-value');
+  const reset = zoom.querySelector('.bw-button');
+  assert.equal(range.min, '50');
+  assert.equal(range.max, '200');
+  assert.equal(range.value, '100');
+  assert.equal(value.value, '100%');
+  assert.equal(reset.disabled, true, 'nothing to reset at 100%');
+  range.value = '150';
+  range.dispatch('input');
+  assert.equal(value.value, '150%', 'the value follows the slider as it moves');
+  assert.equal(sent.length, 0, 'nothing is saved until the slider is let go');
+  range.dispatch('change');
+  expectSave(/\nui_zoom=150\n/);
+  deliver({ ...fixture.snap, d: { ...fixture.snap.d, layout: { ...fixture.snap.d.layout, uiZoom: 150 }, ack: 'saved' } });
+  assert.equal(reset.disabled, false);
+  value.value = '123%';
+  value.dispatch('change');
+  assert.equal(value.value, '125%', 'typed values round to the step');
+  expectSave(/\nui_zoom=125\n/);
+  value.value = 'lots';
+  value.dispatch('change');
+  assert.equal(sent.length, 0, 'a bad value is not saved');
+  assert.match(app.querySelector('.sp-toast').textContent, /Enter a zoom from 50 to 200 percent/);
+  assert.equal(value.value, '100%', 'the field goes back to the saved value');
+  deliver({ ...fixture.snap, d: { ...fixture.snap.d, layout: { ...fixture.snap.d.layout, uiZoom: 150 }, ack: 'saved' } });
+  reset.click();
+  expectSave(/\nui_zoom=100\n/);
+  // An unreadable settings file locks the block too.
+  deliver({ ...fixture.snap, d: { ...fixture.snap.d, readable: false } });
+  for (const control of [...rowNode('layoutPreset').querySelectorAll('.sp-tile'), ...rowNode('layoutBars').querySelectorAll('[role="radio"]'), sw('tabBarVisible'), range, value]) assert.equal(control.disabled, true);
+});
+
+test('layout: the view applies the density and compact menus to the root for the row-height tokens', () => {
+  const stateParse = parseInbound(JSON.stringify({ t: 'state', scale: 1, solid: true, dark: true, back: false, forward: false, loading: false, progress: 0, security: 'none', label: '', density: 'compact', compactMenus: true, theme: {} }));
+  assert.equal(stateParse.density, 'compact');
+  assert.equal(stateParse.compactMenus, true);
+  assert.equal(parseInbound(JSON.stringify({ t: 'state', scale: 1, solid: true, dark: true, back: false, forward: false, loading: false, progress: 0, security: 'none', label: '', density: 'dense', theme: {} })), null);
+  assert.equal(parseInbound(JSON.stringify({ t: 'state', scale: 1, solid: true, dark: true, back: false, forward: false, loading: false, progress: 0, security: 'none', label: '', compactMenus: 'yes', theme: {} })), null);
+  const tokens = read(join(srcDir, 'styles', 'tokens.css'));
+  assert.match(tokens, /:root\[data-density="compact"\]\s*\{[^}]*--bw-row-h: 28px;[^}]*--bw-side-row-h: 22px;/);
+  assert.match(tokens, /:root\[data-compact-menus="true"\]\s*\{[^}]*--bw-menu-row-h: 24px;/);
+  assert.match(read(join(srcDir, 'styles', 'components.css')), /\.bw-row \{[^}]*min-height: var\(--bw-row-h\)/);
+  assert.match(read(join(srcDir, 'styles', 'menu.css')), /--menu-item-h: var\(--bw-menu-row-h\)/);
+  assert.match(read(join(srcDir, 'styles', 'sidebar.css')), /height: var\(--bw-side-row-h\)/);
+  assert.match(read(join(srcDir, 'view.ts')), /root\.dataset\.density = density/);
 });

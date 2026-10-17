@@ -1389,6 +1389,10 @@ fn layout_label(layout: settings::TabLayout) -> &'static str {
         settings::TabLayout::TabsTop => "Tabs above toolbar",
         settings::TabLayout::SingleRow => "Single row",
         settings::TabLayout::Vertical => "Vertical",
+        // --- layout (thread T6) ---
+        settings::TabLayout::VerticalRight => "Vertical, on the right",
+        settings::TabLayout::TabsBottom => "Tabs along the bottom",
+        // --- end layout ---
     }
 }
 
@@ -1839,16 +1843,22 @@ fn save_form(hwnd: HWND) {
             return;
         }
     };
+    // The GDI form has no controls for these; the file's current values are kept.
+    let current = Settings::load(&path);
     // This native window has no drag-reordering, so the checked buttons are written back in their
     // fixed catalog order, matching `settings::KNOWN_TOOLBAR_BUTTONS`.
-    let toolbar_buttons: Vec<String> = settings::KNOWN_TOOLBAR_BUTTONS
+    let mut toolbar_buttons: Vec<String> = settings::KNOWN_TOOLBAR_BUTTONS
         .iter()
         .zip(form.toolbar_buttons)
         .filter(|(_, checked)| *checked)
         .map(|(&id, _)| id.to_owned())
         .collect();
-    // The GDI form has no controls for these; the file's current values are kept.
-    let current = Settings::load(&path);
+    // --- toolbars and feeds (thread T13) --- the form lists only the original eight buttons. The others
+    // (Downloads, Extensions, command buttons) belong to the HTML chrome's toolbar editor and are kept.
+    let kept: Vec<String> = current.toolbar_buttons.iter().filter(|id| !settings::KNOWN_TOOLBAR_BUTTONS.contains(&id.as_str())).cloned().collect();
+    toolbar_buttons.extend(kept);
+    let toolbar_buttons = settings::parse_toolbar_buttons(&toolbar_buttons.join(",")).unwrap_or(current.toolbar_buttons.clone());
+    // --- end toolbars and feeds ---
     let settings = Settings {
         tab_layout: form.tab_layout,
         sidebar_width,
@@ -1865,6 +1875,10 @@ fn save_form(hwnd: HWND) {
         theme: form.theme,
         theme_accent,
         toolbar_buttons,
+        toolbar_tabs: current.toolbar_tabs.clone(),
+        toolbar_panel: current.toolbar_panel.clone(),
+        feeds_detect: current.feeds_detect,
+        feeds_refresh_minutes: current.feeds_refresh_minutes,
         centred_address_bar: form.centred_address_bar,
         minimal_url: form.minimal_url,
         show_load_progress: form.show_load_progress,
@@ -1908,6 +1922,17 @@ fn save_form(hwnd: HWND) {
         address: current.address,
         // The GDI form has no controls for the tab options (the HTML settings page has them).
         tabs: current.tabs,
+        // --- layout (thread T6): the Layout block's other options have no GDI controls; kept as the file has them ---
+        tab_bar_visible: current.tab_bar_visible,
+        address_bar_position: current.address_bar_position,
+        address_bar_visible: current.address_bar_visible,
+        show_title_bar: current.show_title_bar,
+        status_bar: current.status_bar,
+        ui_density: current.ui_density,
+        compact_menus: current.compact_menus,
+        ui_zoom: current.ui_zoom,
+        layout_saved: current.layout_saved,
+        // --- end layout ---
     };
     match settings::save(&path, &settings) {
         Ok(()) => {

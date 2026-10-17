@@ -36,11 +36,11 @@ use windows::{
 use super::{
     assets::{
         self, Asset, DIALOG_START_URL, HOVER_START_URL, NOTES_DIALOG_START_URL, PANEL_START_URL, POPUP_START_URL,
-        PRIVACY_DIALOG_START_URL, RAIL_START_URL, RENAME_DIALOG_START_URL, ADDRESS_DIALOG_START_URL, BOOKMARK_BAR_START_URL, RESPONSE_HEADERS, SCHEME, SESSIONS_DIALOG_START_URL,
+        PRIVACY_DIALOG_START_URL, RAIL_START_URL, RENAME_DIALOG_START_URL, ADDRESS_DIALOG_START_URL, BOOKMARK_BAR_START_URL, RESPONSE_HEADERS, SCHEME, SESSIONS_DIALOG_START_URL, FEEDS_DIALOG_START_URL,
         SETTINGS_START_URL, START_URL, TABS_START_URL, HISTORY_PAGE_START_URL, DOWNLOADS_PAGE_START_URL,
     },
     protocol::{
-        Command, PanelType, MESSAGE_BURST, MESSAGE_RATE_PER_SEC, POPUP_COMMAND_INTERVAL, Throttle,
+        Command, PanelType, ToolBar, MESSAGE_BURST, MESSAGE_RATE_PER_SEC, POPUP_COMMAND_INTERVAL, Throttle,
         TokenBucket, is_popup_command, parse_command,
     },
 };
@@ -188,6 +188,8 @@ pub enum View {
     BookmarkBar,
     /// The Sessions panel (Settings > Tabs): saved sessions, saving the open tabs as one.
     DialogSessions,
+    /// The Feeds panel: subscriptions, items, preview, OPML import (src/win32/feeds_panel.rs).
+    DialogFeeds,
     /// The no-activate hover layer: tooltips, the tab hover card and the island menu.
     Hover,
     // --- split view ---
@@ -220,6 +222,7 @@ impl View {
             Self::DialogAddress => ADDRESS_DIALOG_START_URL,
             Self::BookmarkBar => BOOKMARK_BAR_START_URL,
             Self::DialogSessions => SESSIONS_DIALOG_START_URL,
+            Self::DialogFeeds => FEEDS_DIALOG_START_URL,
             Self::Hover => HOVER_START_URL,
             Self::Split => SPLIT_START_URL,
             Self::Settings => SETTINGS_START_URL,
@@ -1047,8 +1050,8 @@ fn is_trusted_message(view: View, sender_uri: &str, message_uri: &str) -> bool {
 fn view_accepts_command(view: View, command: &Command) -> bool {
     if matches!(command, Command::Ready) { return true; }
     match view {
-        View::Toolbar => matches!(command, Command::DownloadsToggle { .. } | Command::ExtensionsButton { .. } | Command::Nav(_) | Command::Edit { .. } | Command::Submit(_) | Command::Escape | Command::Focus(_) | Command::Open(_) | Command::BeginDrag | Command::Caption(_) | Command::Tip { .. } | Command::TipOff | Command::SuggestPick { .. } | Command::SuggestPreview { .. } | Command::SuggestEnd | Command::Panel { kind: PanelType::Address, .. }),
-        View::Tabs => matches!(command, Command::Tab { .. } | Command::TabMove { .. } | Command::TabSelection { .. } | Command::ClosedTabs | Command::Group { .. } | Command::Side(_) | Command::BeginDrag | Command::Caption(_) | Command::Tip { .. } | Command::TipOff | Command::Hover(_))
+        View::Toolbar => matches!(command, Command::Tool { bar: ToolBar::Address, .. } | Command::DownloadsToggle { .. } | Command::ExtensionsButton { .. } | Command::Nav(_) | Command::Edit { .. } | Command::Submit(_) | Command::Escape | Command::Focus(_) | Command::Open(_) | Command::BeginDrag | Command::Caption(_) | Command::Tip { .. } | Command::TipOff | Command::SuggestPick { .. } | Command::SuggestPreview { .. } | Command::SuggestEnd | Command::Panel { kind: PanelType::Address, .. }),
+        View::Tabs => matches!(command, Command::Tool { bar: ToolBar::Tabs, .. } | Command::Tab { .. } | Command::TabMove { .. } | Command::TabSelection { .. } | Command::ClosedTabs | Command::Group { .. } | Command::Side(_) | Command::BeginDrag | Command::Caption(_) | Command::Tip { .. } | Command::TipOff | Command::Hover(_))
             // --- split view ---
             || matches!(command, Command::Split(SplitCommand::DragOver { .. } | SplitCommand::Drop { .. } | SplitCommand::DragEnd { .. }))
             // --- end split view ---
@@ -1063,6 +1066,7 @@ fn view_accepts_command(view: View, command: &Command) -> bool {
         View::DialogAddress => matches!(command, Command::Panel { kind: PanelType::Panel | PanelType::Address, .. }),
         View::BookmarkBar => matches!(command, Command::Panel { kind: PanelType::Address, .. } | Command::Tip { .. } | Command::TipOff),
         View::DialogSessions => matches!(command, Command::Panel { kind: PanelType::Panel | PanelType::Sessions, .. }),
+        View::DialogFeeds => matches!(command, Command::Panel { kind: PanelType::Panel | PanelType::Feeds, .. }),
         View::Hover => matches!(command, Command::PopupSize { .. } | Command::HoverAct { .. } | Command::SuggestPick { .. }),
         // --- split view ---
         View::Split => matches!(command, Command::Split(SplitCommand::Pick { .. } | SplitCommand::Reopen { .. } | SplitCommand::Go(_) | SplitCommand::Close | SplitCommand::Focus | SplitCommand::ClosePrivate))
@@ -1861,3 +1865,41 @@ mod tests {
         assert!(page.is_some());
     }
 }
+
+// --- toolbars and feeds (thread T13) ---
+#[cfg(test)]
+mod toolbar_view_tests {
+    use super::*;
+
+    #[test]
+    fn a_command_button_is_accepted_only_from_the_bar_it_belongs_to() {
+        let address = parse_command(r#"{"v":1,"t":"tool","b":"address","k":"cmd:new-tab","i":0}"#).unwrap();
+        let tabs = parse_command(r#"{"v":1,"t":"tool","b":"tabs","k":"cmd:new-tab","i":0}"#).unwrap();
+        assert!(view_accepts_command(View::Toolbar, &address));
+        assert!(!view_accepts_command(View::Toolbar, &tabs));
+        assert!(view_accepts_command(View::Tabs, &tabs));
+        assert!(!view_accepts_command(View::Tabs, &address));
+        for view in [View::Rail, View::Panel, View::Popup, View::Dialog, View::DialogFeeds, View::DialogSessions, View::Hover, View::Split, View::Settings, View::HistoryPage, View::DownloadsPage] {
+            assert!(!view_accepts_command(view, &address), "{view:?}");
+            assert!(!view_accepts_command(view, &tabs), "{view:?}");
+        }
+    }
+
+    #[test]
+    fn the_feeds_window_takes_its_own_family_and_the_dismiss_and_nothing_else() {
+        let feed = parse_command(r#"{"v":1,"t":"feed","a":"refresh"}"#).unwrap();
+        let dismiss = parse_command(r#"{"v":1,"t":"panel","a":"dismiss"}"#).unwrap();
+        assert!(view_accepts_command(View::DialogFeeds, &feed));
+        assert!(view_accepts_command(View::DialogFeeds, &dismiss));
+        for foreign in [r#"{"v":1,"t":"sess","a":"save","text":"x","n":0}"#, r#"{"v":1,"t":"set","a":"reset"}"#, r#"{"v":1,"t":"notes","a":"add-note"}"#, r#"{"v":1,"t":"open","a":"feeds"}"#, r#"{"v":1,"t":"nav","a":"back"}"#] {
+            assert!(!view_accepts_command(View::DialogFeeds, &parse_command(foreign).unwrap()), "{foreign}");
+        }
+        for view in [View::Toolbar, View::Tabs, View::Rail, View::Panel, View::Popup, View::Dialog, View::DialogNotes, View::DialogSessions, View::Settings] {
+            assert!(!view_accepts_command(view, &feed), "{view:?} accepted the feed family");
+        }
+        // The address bar's feed button is the toolbar's own `open` command.
+        assert!(view_accepts_command(View::Toolbar, &parse_command(r#"{"v":1,"t":"open","a":"feeds"}"#).unwrap()));
+        assert!(!view_accepts_command(View::Tabs, &parse_command(r#"{"v":1,"t":"open","a":"feeds"}"#).unwrap()));
+    }
+}
+// --- end toolbars and feeds ---

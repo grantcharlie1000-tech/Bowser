@@ -16,14 +16,28 @@ import { mountExtensionsSection } from './extensions-section';
 import { mountCommandsSections } from './commands-section';
 import { mountStartSection } from './settings-start'; // --- start page ---
 import { mountAddressSections } from './address-section'; // --- address bar, search and bookmarks ---
+// --- toolbars and feeds (thread T13) ---
+import { mountToolbarEditor, type EditorCommand } from './toolbar-editor';
+import { BAR_KEYS, itemsOf, itemsText, type BarId } from './bars-logic';
+import { REFRESH_CHOICES, feedAssignment, refreshLabel, type RefreshChoice } from './feeds-settings-logic';
+import { parseCommandsSnapshot } from './commands-logic';
+// --- end toolbars and feeds ---
+// --- layout (thread T6) --- the Layout block's presets, edges and values
+import {
+  BAR_POSITIONS, DEFAULT_LAYOUT_CONFIG, DEFAULT_UI_ZOOM, MAX_UI_ZOOM, MIN_UI_ZOOM, PRESETS, PRESET_HINTS, PRESET_LABELS, STATUS_BARS, STATUS_BAR_LABELS,
+  TAB_BAR_EDGES, TAB_BAR_EDGE_LABELS, TOP_TAB_STYLES, UI_DENSITIES, UI_ZOOM_STEP, applyLayoutConfig, parseLayoutConfig, parseUiZoom, presetConfig,
+  rememberOwnLayout, selectedTile, tabBarEdge, tabLayoutForEdge, uiZoomText, type BarPosition, type LayoutConfig, type Preset, type StatusBar,
+  type TabBarEdge, type UiDensity,
+} from './layout-logic';
+// --- end layout ---
 import { browserProbes, codecDetail, drmText, guidance, runMediaCheck, verdictText, type MediaReport } from './panels/media-logic';
 import { TAB_CARDS, TAB_CARD_TITLES, assignmentText, cardSpecs, clampNumber, numberLabel, textApplies, type TabOptionSpec, type TabOptionValues } from './tab-options-logic';
 import {
-  BOOKMARKS_BAR_MODES, DEFAULT_TOOLBAR_BUTTONS, EFFICIENCY_MODES, FONT_SIZES, LAYOUT_HINTS, MAX_SIDEBAR, MAX_UI_FONT, MAX_ZOOM, MIN_SIDEBAR, MIN_ZOOM,
-  NOT_YET_GROUP_NOTE, NOT_YET_NOTE, RESTART_NOTE, ROWS, SIDE_PANEL_POSITIONS, TAB_LAYOUTS, TAB_LAYOUT_LABELS, THEME_MODES, TOOLBAR_BUTTONS,
+  BOOKMARKS_BAR_MODES, EFFICIENCY_MODES, FONT_SIZES, LAYOUT_HINTS, MAX_SIDEBAR, MAX_UI_FONT, MAX_ZOOM, MIN_SIDEBAR, MIN_ZOOM,
+  NOT_YET_GROUP_NOTE, NOT_YET_NOTE, RESTART_NOTE, ROWS, SIDE_PANEL_POSITIONS, TAB_LAYOUT_LABELS, THEME_MODES,
   addSite, draftOf, durationLabel, highlightRanges, isSection, matchRows, parseSettingsSnapshot, resultCountText,
-  saveText, sleepOptions, translateTargetOptions, toolbarButtonsList, updateView, type BookmarksBarMode, type Draft, type EfficiencyMode, type FontSize, type RowSpec,
-  type SettingsSnapshot, type SidePanelPosition, type TabLayout, type ThemeMode, type ToolbarButton, type TrackingPrevention,
+  saveText, sleepOptions, translateTargetOptions, updateView, type BookmarksBarMode, type Draft, type EfficiencyMode, type FontSize, type RowSpec,
+  type SettingsSnapshot, type SidePanelPosition, type TabLayout, type ThemeMode, type TrackingPrevention,
   AREAS, LATER_LABEL, LATER_LEAD, LATER_TITLE, MORE_LABEL, PAGE_ROWS, areaOf, moreCountText, partTitle, rowTier, type AreaSpec,
 } from './settings-page-logic';
 
@@ -122,8 +136,14 @@ export function segmentedControl<T extends string>(label: string, options: Reado
   return radioGroup('bw-segmented sp-seg', label, options.map(([value, text]) => [value, (button: HTMLButtonElement) => { button.textContent = text; }] as const), onSelect);
 }
 
-/** A schematic of a browser layout: window frame, toolbar, tab row or sidebar, page. */
-function layoutArt(layout: TabLayout): SVGSVGElement {
+/**
+ * A schematic of a browser layout: window frame, toolbar, tab row or sidebar, page. Takes the tab
+ * layout alone (the "style at the top" tiles) or a whole configuration (the preset tiles, thread
+ * T6): tabs on any edge or hidden, the address bar on top or along the bottom or hidden, and the
+ * title row that holds the window buttons when neither is at the top.
+ */
+function layoutArt(config: TabLayout | LayoutConfig): SVGSVGElement {
+  const c: LayoutConfig = typeof config === 'string' ? { ...DEFAULT_LAYOUT_CONFIG, tabLayout: config } : config;
   const svg = document.createElementNS(SVG_NS, 'svg');
   svg.setAttribute('viewBox', '0 0 72 46');
   svg.setAttribute('class', 'sp-art');
@@ -143,22 +163,54 @@ function layoutArt(layout: TabLayout): SVGSVGElement {
     rect('sp-art-dot', 10, y + 1.25, 3, 3, 1.5);
     rect('sp-art-pill', 16, y, 40, 5.5, 2.75);
   };
-  switch (layout) {
-    case 'horizontal':
-      toolbar(5); tabs(5, 13.5, 3, 14); rect('sp-art-page', 5, 21, 62, 20, 2.5);
-      break;
-    case 'tabs-top':
-      tabs(5, 5, 3, 14); toolbar(12.5); rect('sp-art-page', 5, 21, 62, 20, 2.5);
-      break;
-    case 'single-row':
-      rect('sp-art-dot', 5, 6.25, 3, 3, 1.5); rect('sp-art-pill', 10, 5, 22, 5.5, 2.75); tabs(35, 5.5, 3, 9.3); rect('sp-art-page', 5, 14, 62, 27, 2.5);
-      break;
-    case 'vertical':
-      toolbar(5);
-      for (let i = 0; i < 4; i++) rect(i === 0 ? 'sp-art-tab is-on' : 'sp-art-tab', 5, 14 + i * 6.5, 15, 4.5, 1.5);
-      rect('sp-art-page', 23, 14, 44, 27, 2.5);
-      break;
+  const singleRow = (y: number): void => {
+    rect('sp-art-dot', 5, y + 1.25, 3, 3, 1.5); rect('sp-art-pill', 10, y, 22, 5.5, 2.75); tabs(35, y + 0.5, 3, 9.3);
+  };
+  // The title row: the window buttons alone, at the right end.
+  const titleRow = (y: number): void => {
+    for (let i = 0; i < 3; i++) rect('sp-art-dot', 56 + i * 4, y + 1.25, 2.5, 2.5, 1.25);
+  };
+  const edge = c.tabBarVisible ? tabBarEdge(c.tabLayout) : null;
+  const addressTop = c.addressBarVisible && c.addressBarPosition === 'top';
+  const addressBottom = c.addressBarVisible && c.addressBarPosition === 'bottom';
+  // The rows at the top, then the rows along the bottom, each 8.5 units of the 36 inside the frame.
+  type Row = 'toolbar' | 'tabs' | 'single' | 'title';
+  const top: Row[] = [];
+  const bottom: Row[] = [];
+  if (edge === 'top') {
+    if (c.tabLayout === 'single-row' && addressTop) top.push('single');
+    else if (c.tabLayout === 'horizontal' && addressTop) top.push('toolbar', 'tabs');
+    else top.push('tabs', ...(addressTop ? ['toolbar' as Row] : []));
+  } else if (addressTop) {
+    top.push(...(c.showTitleBar && (edge === 'left' || edge === 'right') ? ['title' as Row] : []), 'toolbar');
+  } else {
+    top.push('title');
   }
+  if (edge === 'bottom') bottom.push('tabs');
+  if (addressBottom) bottom.push('toolbar');
+  let y = 5;
+  for (const row of top) {
+    if (row === 'toolbar') toolbar(y); else if (row === 'tabs') tabs(5, y + 0.5, 3, 14); else if (row === 'single') singleRow(y); else titleRow(y);
+    y += 8.5;
+  }
+  let floor = 41;
+  for (const row of bottom.reverse()) {
+    floor -= 8.5;
+    if (row === 'toolbar') toolbar(floor + 3); else tabs(5, floor + 3.5, 3, 14);
+  }
+  const pageTop = y;
+  const pageBottom = floor;
+  let left = 5;
+  let right = 67;
+  if (edge === 'left' || edge === 'right') {
+    const x = edge === 'left' ? 5 : 52;
+    for (let i = 0; i < 4; i++) {
+      const rowY = pageTop + i * 6.5;
+      if (rowY + 4.5 <= pageBottom) rect(i === 0 ? 'sp-art-tab is-on' : 'sp-art-tab', x, rowY, 15, 4.5, 1.5);
+    }
+    if (edge === 'left') left = 23; else right = 49;
+  }
+  rect('sp-art-page', left, pageTop, Math.max(right - left, 1), Math.max(pageBottom - pageTop, 1), 2.5);
   return svg;
 }
 
@@ -421,16 +473,60 @@ export function startSettingsPage(root: HTMLElement): void {
   row(profileCard, 'import', textButton('Import', () => cmd({ a: 'import' }), { icon: 'download' }));
 
   // Appearance: the two big visual choices first, then the chrome, tabs and text.
+  // --- layout (thread T6) --- the Layout block: the presets as thumbnails and the three edges in
+  // view; the top style, sidebar width, the show/hide switches, the title row, the status bar, the
+  // density and the UI zoom behind More options (rowTier). Each pick saves the whole draft; a
+  // configuration that is no preset is remembered as Saved (rememberOwnLayout).
   const layoutCard = card('appearance', 'Layout');
-  const layout = radioGroup<TabLayout>('sp-tiles', 'Browser layout', TAB_LAYOUTS.map((key) => [key, (button: HTMLButtonElement) => {
+  let savedTile: HTMLButtonElement | null = null;
+  const presetTile = (key: Preset | 'saved') => (button: HTMLButtonElement): void => {
+    button.className = 'sp-tile';
+    button.dataset.preset = key;
+    const name = el('span', 'sp-tile-name');
+    name.textContent = PRESET_LABELS[key];
+    const hint = el('span', 'sp-tile-hint');
+    hint.textContent = PRESET_HINTS[key];
+    button.append(layoutArt(key === 'saved' ? DEFAULT_LAYOUT_CONFIG : presetConfig(key)), name, hint);
+    if (key === 'saved') savedTile = button;
+  };
+  const presets = radioGroup<Preset | 'saved'>('sp-tiles is-presets', 'Layout', [...PRESETS, 'saved' as const].map((key) => [key, presetTile(key)] as const), (value) => change((d) => {
+    const config = value === 'saved' ? parseLayoutConfig(d.layout.saved) : presetConfig(value);
+    if (config) applyLayoutConfig(d, config);
+  }));
+  row(layoutCard, 'layoutPreset', presets.root, { stack: true });
+  /** The Saved tile shows the saved arrangement, or stays dimmed until there is one. */
+  const paintSavedTile = (saved: string, readable: boolean): void => {
+    if (!savedTile) return;
+    const config = parseLayoutConfig(saved);
+    savedTile.querySelector('svg')?.replaceWith(layoutArt(config ?? DEFAULT_LAYOUT_CONFIG));
+    savedTile.disabled = config === null || !readable;
+    savedTile.setAttribute('aria-disabled', String(savedTile.disabled));
+  };
+  const bars = el('div', 'sp-bars');
+  const barGroup = (label: string, control: Control<unknown>): void => {
+    const box = el('div', 'sp-bar');
+    const text = el('span', 'sp-bar-label');
+    text.textContent = label;
+    box.append(text, control.root);
+    bars.append(box);
+  };
+  const tabEdge = segmentedControl<TabBarEdge>('Tab bar', TAB_BAR_EDGES.map((key) => [key, TAB_BAR_EDGE_LABELS[key]] as const), (value) => change((d) => { d.tabLayout = tabLayoutForEdge(value, d.tabLayout); rememberOwnLayout(d); }));
+  const addressEdge = segmentedControl<BarPosition>('Address bar', BAR_POSITIONS.map((key) => [key, key === 'top' ? 'Top' : 'Bottom'] as const), (value) => change((d) => { d.layout.addressBarPosition = value; rememberOwnLayout(d); }));
+  const panelEdge = segmentedControl<SidePanelPosition>('Panels', SIDE_PANEL_POSITIONS.map((key) => [key, key === 'left' ? 'Left' : 'Right'] as const), (value) => change((d) => { d.sidePanelPosition = value; rememberOwnLayout(d); }));
+  barGroup('Tab bar', tabEdge);
+  barGroup('Address bar', addressEdge);
+  barGroup('Panels', panelEdge);
+  row(layoutCard, 'layoutBars', bars, { stack: true });
+  const layout = radioGroup<TabLayout>('sp-tiles', 'Tab bar style at the top', TOP_TAB_STYLES.map((key) => [key, (button: HTMLButtonElement) => {
     button.className = 'sp-tile';
     const name = el('span', 'sp-tile-name');
     name.textContent = TAB_LAYOUT_LABELS[key];
     const hint = el('span', 'sp-tile-hint');
     hint.textContent = LAYOUT_HINTS[key];
     button.append(layoutArt(key), name, hint);
-  }] as const), (value) => change((d) => { d.tabLayout = value; }));
+  }] as const), (value) => change((d) => { d.tabLayout = value; rememberOwnLayout(d); }));
   row(layoutCard, 'layout', layout.root, { stack: true });
+  // --- end layout --- (the rest of the block follows the sidebar width row)
   const width = el('input', 'sp-range');
   width.type = 'range';
   width.min = String(MIN_SIDEBAR);
@@ -447,6 +543,54 @@ export function startSettingsPage(root: HTMLElement): void {
   width.addEventListener('input', paintWidth);
   width.addEventListener('change', () => change((d) => { d.sidebarWidth = Number(width.value); }));
   row(layoutCard, 'sidebarWidth', widthWrap);
+  // --- layout (thread T6) --- the rest of the Layout block
+  const tabBarVisible = switchControl((on) => change((d) => { d.layout.tabBarVisible = on; rememberOwnLayout(d); }));
+  row(layoutCard, 'tabBarVisible', tabBarVisible.root);
+  const addressBarVisible = switchControl((on) => change((d) => { d.layout.addressBarVisible = on; rememberOwnLayout(d); }));
+  row(layoutCard, 'addressBarVisible', addressBarVisible.root);
+  const titleBar = switchControl((on) => change((d) => { d.layout.showTitleBar = on; rememberOwnLayout(d); }));
+  row(layoutCard, 'showTitleBar', titleBar.root);
+  const statusBarCtl = segmentedControl<StatusBar>('Status bar', STATUS_BARS.map((key) => [key, STATUS_BAR_LABELS[key]] as const), (value) => change((d) => { d.layout.statusBar = value; rememberOwnLayout(d); }));
+  row(layoutCard, 'statusBar', statusBarCtl.root);
+  const densityCtl = segmentedControl<UiDensity>('User interface density', UI_DENSITIES.map((key) => [key, key === 'regular' ? 'Regular' : 'Compact'] as const), (value) => change((d) => { d.layout.uiDensity = value; }));
+  row(layoutCard, 'uiDensity', densityCtl.root);
+  const compactMenus = switchControl((on) => change((d) => { d.layout.compactMenus = on; }));
+  row(layoutCard, 'compactMenus', compactMenus.root);
+  // UI zoom: a slider, the value as a field you can type into, and Reset.
+  const uiZoomRange = el('input', 'sp-range');
+  uiZoomRange.type = 'range';
+  uiZoomRange.min = String(MIN_UI_ZOOM);
+  uiZoomRange.max = String(MAX_UI_ZOOM);
+  uiZoomRange.step = String(UI_ZOOM_STEP);
+  uiZoomRange.setAttribute('aria-label', 'User interface zoom');
+  const uiZoomValue = el('input', 'bw-input sp-zoom-input sp-ui-zoom-value');
+  uiZoomValue.type = 'text';
+  uiZoomValue.inputMode = 'numeric';
+  uiZoomValue.maxLength = 4;
+  uiZoomValue.autocomplete = 'off';
+  uiZoomValue.setAttribute('aria-label', 'User interface zoom, percent');
+  const uiZoomReset = textButton('Reset', () => change((d) => { d.layout.uiZoom = DEFAULT_UI_ZOOM; }));
+  const uiZoomWrap = el('div', 'sp-range-wrap sp-ui-zoom');
+  uiZoomWrap.append(uiZoomRange, uiZoomValue, uiZoomReset);
+  let uiZoomShown = DEFAULT_UI_ZOOM;
+  const paintUiZoom = (value: number): void => {
+    uiZoomShown = value;
+    uiZoomRange.value = String(value);
+    uiZoomRange.style.setProperty('--sp-fill', `${((value - MIN_UI_ZOOM) / (MAX_UI_ZOOM - MIN_UI_ZOOM)) * 100}%`);
+    uiZoomRange.setAttribute('aria-valuetext', `${value} percent`);
+    uiZoomValue.value = uiZoomText(value);
+    uiZoomReset.disabled = value === DEFAULT_UI_ZOOM || !(snapshot?.readable ?? false);
+  };
+  uiZoomRange.addEventListener('input', () => paintUiZoom(Number(uiZoomRange.value)));
+  uiZoomRange.addEventListener('change', () => change((d) => { d.layout.uiZoom = Number(uiZoomRange.value); }));
+  uiZoomValue.addEventListener('change', () => {
+    const typed = parseUiZoom(uiZoomValue.value);
+    if (typed === null) { showToast(`Enter a zoom from ${MIN_UI_ZOOM} to ${MAX_UI_ZOOM} percent.`, false); paintUiZoom(uiZoomShown); return; }
+    paintUiZoom(typed);
+    change((d) => { d.layout.uiZoom = typed; });
+  });
+  row(layoutCard, 'uiZoom', uiZoomWrap);
+  // --- end layout ---
 
   // Theme
   const themeCard = card('appearance', 'Theme');
@@ -467,36 +611,21 @@ export function startSettingsPage(root: HTMLElement): void {
   row(themeCard, 'forceDark', protection.forceDark.root);
   row(themeCard, 'privateTheme', protection.privateTheme.root);
 
-  // Toolbar
-  const TOOLBAR_LABELS: Readonly<Record<ToolbarButton, string>> = {
-    back: 'Back', forward: 'Forward', reload: 'Reload', 'site-info': 'Site information', bookmark: 'Bookmark', newtab: 'New tab', split: 'Split view', reader: 'Reader view',
-  };
-  const TOOLBAR_ICONS: Readonly<Record<ToolbarButton, IconName>> = {
-    back: 'back', forward: 'forward', reload: 'reload', 'site-info': 'info', bookmark: 'bookmark', newtab: 'plus', split: 'split', reader: 'reader',
-  };
+  // Toolbars (thread T13): the editor for the address bar, the tab bar and the panel bar, on a sub-page of its own.
+  // The address bar's list is part of the page's Save (`toolbar_buttons`); the other two bars are each a `baropt` command.
   const toolbarCard = card('appearance', 'Toolbar');
-  const toolbarSwitches = new Map<ToolbarButton, Control<boolean>>();
-  const toolbarList = el('div', 'sp-toolbar-list');
-  for (const id of TOOLBAR_BUTTONS) {
-    const item = el('div', 'sp-toolbar-item');
-    const label = el('span', 'sp-label');
-    label.textContent = TOOLBAR_LABELS[id];
-    const glyph = icon(TOOLBAR_ICONS[id], { className: 'sp-toolbar-glyph' });
-    const sw = switchControl((on) => change((d) => {
-      const ids = new Set(toolbarButtonsList(d.toolbarButtons));
-      if (on) ids.add(id); else ids.delete(id);
-      d.toolbarButtons = TOOLBAR_BUTTONS.filter((b) => ids.has(b)).join(',');
-    }));
-    sw.root.setAttribute('aria-label', TOOLBAR_LABELS[id]);
-    toolbarSwitches.set(id, sw);
-    item.append(glyph, label, sw.root);
-    toolbarList.append(item);
-  }
-  const toolbarReset = textButton('Reset to default', () => change((d) => { d.toolbarButtons = DEFAULT_TOOLBAR_BUTTONS; }));
-  const toolbarActions = el('div', 'sp-corner');
-  toolbarActions.append(toolbarReset);
-  const toolbarRow = row(toolbarCard, 'toolbarButtons', toolbarList, { stack: true });
-  toolbarRow.root.append(toolbarActions);
+  const sendBarOption = (text: string | null): void => {
+    if (text === null) { showToast('That value is not allowed.', false); return; }
+    if (cmd({ a: 'baropt', text })) pending += 1;
+  };
+  let editorCommands: readonly EditorCommand[] = [];
+  const toolbarEditor = mountToolbarEditor({
+    onChange: (bar: BarId, items: string[]) => {
+      if (bar === 'address') change((d) => { d.toolbarButtons = itemsText(items); });
+      else sendBarOption(`${BAR_KEYS[bar]}=${itemsText(items)}`);
+    },
+  });
+  row(toolbarCard, 'toolbarButtons', toolbarEditor.root, { stack: true });
   const showHome = switchControl((on) => change((d) => { d.showHomeButton = on; }));
   row(toolbarCard, 'showHomeButton', showHome.root);
 
@@ -537,10 +666,7 @@ export function startSettingsPage(root: HTMLElement): void {
   const bookmarksGroups = switchControl((on) => change((d) => { d.bookmarksBarTabGroups = on; }));
   row(bookmarksCard, 'bookmarksBarTabGroups', bookmarksGroups.root);
 
-  // Helium panels
-  const panelsCard = card('appearance', 'Helium panels');
-  const sidePanelCtl = segmentedControl<SidePanelPosition>('Side panel position', SIDE_PANEL_POSITIONS.map((key) => [key, key === 'left' ? 'Left' : 'Right'] as const), (value) => change((d) => { d.sidePanelPosition = value; }));
-  row(panelsCard, 'sidePanelPosition', sidePanelCtl.root);
+  // --- layout (thread T6) --- the side panel's edge is the Panels choice of the Layout block above.
 
   // Fonts and zoom (--- settings slim --- one card)
   const fontsCard = card('appearance', 'Text and zoom');
@@ -830,6 +956,25 @@ export function startSettingsPage(root: HTMLElement): void {
     switchControl,
     segmentedControl,
   });
+
+  // Feeds (thread T13, docs/feeds.md): open the panel, the address bar's feed button, and when Feeds fetches. Each is
+  // its own command (`openfeeds`, `baropt`), applied at once; the rows join the page's search like any other.
+  const feedsCard = card('address', 'Feeds');
+  const feedsOpen = textButton('Open Feeds', () => cmd({ a: 'openfeeds' }), { icon: 'feed' });
+  row(feedsCard, 'feedsOpen', feedsOpen);
+  const feedsDetect = switchControl((on) => sendBarOption(feedAssignment('feeds_detect', on)));
+  row(feedsCard, 'feedsDetect', feedsDetect.root);
+  const feedsRefreshHost = el('div', 'sp-select-host');
+  const feedsRefreshSelect = selectField<string>({
+    options: REFRESH_CHOICES.map((minutes) => ({ value: String(minutes), label: refreshLabel(minutes) })),
+    value: String(60),
+    label: 'Fetch feeds again when Feeds opens',
+    placeholder: 'Fetch feeds again when Feeds opens',
+    onChange: (next) => sendBarOption(feedAssignment('feeds_refresh_minutes', Number(next) as RefreshChoice)),
+  });
+  feedsRefreshSelect.button.setAttribute('aria-labelledby', 'sp-l-feedsRefresh');
+  feedsRefreshHost.append(feedsRefreshSelect.root);
+  row(feedsCard, 'feedsRefresh', feedsRefreshHost);
 
   // Keyboard and Quick commands (docs/commands.md): each control is its own command, answered by the
   // `commands` snapshot, never part of `save`. The rows join the page's search like any other.
@@ -1303,7 +1448,23 @@ export function startSettingsPage(root: HTMLElement): void {
     const settle = pending === 0;
     if (settle || !draft) draft = draftOf(s);
     const d = draft;
-    layout.set(d.tabLayout);
+    // --- layout (thread T6) ---
+    presets.set(selectedTile(d));
+    paintSavedTile(d.layout.saved, s.readable);
+    tabEdge.set(tabBarEdge(d.tabLayout));
+    addressEdge.set(d.layout.addressBarPosition);
+    panelEdge.set(d.sidePanelPosition);
+    layout.set((TOP_TAB_STYLES as readonly string[]).includes(d.tabLayout) ? d.tabLayout : null);
+    tabBarVisible.set(d.layout.tabBarVisible);
+    addressBarVisible.set(d.layout.addressBarVisible);
+    titleBar.set(d.layout.showTitleBar);
+    statusBarCtl.set(d.layout.statusBar);
+    densityCtl.set(d.layout.uiDensity);
+    compactMenus.set(d.layout.compactMenus);
+    paintUiZoom(d.layout.uiZoom);
+    uiZoomRange.disabled = !s.readable;
+    uiZoomValue.disabled = !s.readable;
+    // --- end layout ---
     width.value = String(d.sidebarWidth);
     paintWidth();
     grouping.set(d.automaticTabGrouping);
@@ -1315,7 +1476,15 @@ export function startSettingsPage(root: HTMLElement): void {
     vTabs.set(d.ctrlSVerticalTabs);
     theme.set(d.theme);
     accentInput.value = d.themeAccent !== '' ? d.themeAccent : '#000000';
-    for (const [id, sw] of toolbarSwitches) sw.set(toolbarButtonsList(d.toolbarButtons).includes(id));
+    // --- toolbars and feeds (thread T13) ---
+    toolbarEditor.set({ address: itemsOf(d.toolbarButtons), tabs: itemsOf(s.bars.tabs), panel: itemsOf(s.bars.panel), commands: editorCommands });
+    toolbarEditor.disable(!s.readable);
+    feedsDetect.set(s.bars.feedsDetect);
+    feedsDetect.disable(!s.readable || s.guest);
+    feedsRefreshSelect.set(String(s.bars.feedsRefresh));
+    feedsRefreshSelect.button.toggleAttribute('disabled', !s.readable || s.guest);
+    feedsOpen.disabled = !s.readable;
+    // --- end toolbars and feeds ---
     showHome.set(d.showHomeButton);
     centred.set(d.centredAddressBar);
     minimal.set(d.minimalUrl);
@@ -1324,7 +1493,6 @@ export function startSettingsPage(root: HTMLElement): void {
     rounded.set(d.roundedContentFrame);
     bookmarksBarCtl.set(d.bookmarksBar);
     bookmarksGroups.set(d.bookmarksBarTabGroups);
-    sidePanelCtl.set(d.sidePanelPosition);
     fontSizeCtl.set(d.fontSize);
     uiFont.value = d.uiFont;
     zoomInput.value = String(d.defaultZoom);
@@ -1371,9 +1539,10 @@ export function startSettingsPage(root: HTMLElement): void {
     for (const control of [
       layout, grouping, tracking, efficiency, sleep,
       previewImages, previewMemory, mru, pinGroups, edgeDrop, vTabs, theme, showHome, centred, minimal, loadProgress, frameless,
-      rounded, bookmarksBarCtl, bookmarksGroups, sidePanelCtl, fontSizeCtl, zoomIndicator, shiftRightClick, copyLink, blockYoutube,
-      ...toolbarSwitches.values(),
+      rounded, bookmarksBarCtl, bookmarksGroups, fontSizeCtl, zoomIndicator, shiftRightClick, copyLink, blockYoutube,
+      presets, tabEdge, addressEdge, panelEdge, tabBarVisible, addressBarVisible, titleBar, statusBarCtl, densityCtl, compactMenus, // --- layout (thread T6) ---
     ]) control.disable(!s.readable);
+    paintSavedTile(d.layout.saved, s.readable); // --- layout (thread T6) --- after the group-wide disable
     downloadAsk.disable(!s.readable);
     translateOffer.disable(!s.readable);
     translateAuto.disable(!s.readable);
@@ -1384,7 +1553,6 @@ export function startSettingsPage(root: HTMLElement): void {
     addButton.disabled = !s.readable;
     accentInput.disabled = !s.readable;
     accentReset.disabled = !s.readable;
-    toolbarReset.disabled = !s.readable;
     uiFont.disabled = !s.readable;
     zoomInput.disabled = !s.readable;
     startSection.apply(d.start, s.readable); // --- start page ---
@@ -1577,7 +1745,7 @@ export function startSettingsPage(root: HTMLElement): void {
   // ---- Bowser's messages ----
   let wanted: SettingsSection | '' | null = null;
   const receive = (message: Inbound): void => {
-    if (message.t === 'state') { applyTheme(message.theme, message.solid, message.dark); return; }
+    if (message.t === 'state') { applyTheme(message.theme, message.solid, message.dark, undefined, undefined, message.density, message.compactMenus); return; }
     if (message.t === 'settingsgo') {
       // Bowser moved the tab (a typed address, a menu pick): jump, as a navigation would.
       if (!snapshot) { wanted = message.s; return; }
@@ -1587,7 +1755,19 @@ export function startSettingsPage(root: HTMLElement): void {
     if (message.t === 'snap' && message.p === 'privacy') { receiveDashboard(message); return; }
     if (message.t === 'snap' && message.p === 'protection') { protection.receive(message); return; }
     if (message.t === 'snap' && message.p === 'extensions') { extensions.receive(message); return; }
-    if (message.t === 'snap' && message.p === 'commands') { commandSections.receive(message); return; }
+    if (message.t === 'snap' && message.p === 'commands') {
+      commandSections.receive(message);
+      // --- toolbars and feeds (thread T13) --- the editor offers every command and chain, and names the command buttons.
+      const known = parseCommandsSnapshot(message.d);
+      if (known && snapshot) {
+        editorCommands = [...known.commands.map((c) => ({ id: c.id, label: c.label, chain: c.chain }))];
+        toolbarEditor.set({ address: itemsOf(draft?.toolbarButtons ?? snapshot.toolbarButtons), tabs: itemsOf(snapshot.bars.tabs), panel: itemsOf(snapshot.bars.panel), commands: editorCommands });
+        toolbarEditor.disable(!snapshot.readable);
+      } else if (known) {
+        editorCommands = [...known.commands.map((c) => ({ id: c.id, label: c.label, chain: c.chain }))];
+      }
+      return;
+    }
     if (message.t === 'snap' && message.p === 'address') { addressSections.receive(message); return; } // --- address bar, search and bookmarks ---
     if (message.t !== 'snap' || message.p !== 'settings') return;
     const parsed = parseSettingsSnapshot(message.d);
