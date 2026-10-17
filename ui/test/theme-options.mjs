@@ -88,7 +88,7 @@ test('the rows cover every option once, are searchable, and only the schedule is
   }
   assert.deepEqual(options.THEME_ROWS.map((row) => row.id), [...options.THEME_ROW_IDS]);
   const tiers = Object.fromEntries(options.THEME_ROWS.map((row) => [row.id, logic.rowTier(logic.ROWS.find((r) => r.id === row.id))]));
-  assert.deepEqual(Object.entries(tiers).filter(([, tier]) => tier === 'core').map(([id]) => id), ['themeSchedule']);
+  assert.deepEqual(Object.entries(tiers).filter(([, tier]) => tier === 'core').map(([id]) => id), [], 'final: no theme row is core; Appearance keeps its ten');
   assert.ok(Object.entries(tiers).filter(([id]) => id !== 'themeSchedule').every(([, tier]) => tier === 'more'), JSON.stringify(tiers));
   assert.ok(logic.matchRows('night').has('themeSchedule'));
   assert.ok(logic.matchRows('saturation').has('themeSaturation'));
@@ -247,11 +247,12 @@ test('the theme rows are drawn once each, labelled, with their own control', () 
   assert.deepEqual(rowNode('themeFile').querySelectorAll('button').map((b) => b.textContent).filter((t) => t !== 'Cancel'), ['Export…', 'Import…', 'Reset theme']);
 });
 
-test('only the schedule joins the main view; the rest sit behind More options', () => {
-  assert.ok(!more.contains(rowNode('themeSchedule')), 'the schedule is a core row');
-  for (const id of options.THEME_ROW_IDS.filter((x) => x !== 'themeSchedule')) assert.ok(more.contains(rowNode(id)), `${id} is behind More options`);
+test('every theme row sits behind More options; the main view keeps its ten rows', () => {
+  // --- final --- the schedule joined Appearance's main view on its own branch; with the layout
+  // presets and the auto-hide switch merged, Appearance keeps the ten core rows PR #34 had.
+  for (const id of options.THEME_ROW_IDS) assert.ok(more.contains(rowNode(id)), `${id} is behind More options`);
   const core = areaNode.querySelectorAll('.sp-row').filter((row) => !more.contains(row)).map((row) => row.dataset.row);
-  assert.deepEqual(core.filter((id) => id.startsWith('theme')), ['theme', 'themeAccent', 'themeSchedule'], 'the theme card gains one core row');
+  assert.deepEqual(core.filter((id) => id.startsWith('theme')), ['theme', 'themeAccent'], 'the theme card gains no core row');
   assert.ok(core.length <= 10, `${core.length} core rows in Appearance`);
   // Search finds a hidden row and opens the disclosure it is in.
   searchFor('saturation');

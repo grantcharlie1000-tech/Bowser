@@ -1727,19 +1727,20 @@ test('layout: the view applies the density and compact menus to the root for the
 
 // ---- Auto-hide toolbars and tabs (thread T11, src/auto_hide.rs) ----
 
-test('auto-hide: the master switch is core, the other two rows are behind More options, nothing is "not active yet"', () => {
+test('auto-hide: the three rows are live and behind More options, nothing is "not active yet"', () => {
   deliver(fixture.snap);
   for (const id of ['frameless', 'autoHideBars', 'autoHideFullscreen']) {
     const row = logic.ROWS.find((r) => r.id === id);
     assert.ok(!row.notYet && !row.restart, `${id} acts at once`);
   }
   assert.equal(logic.ROWS.find((r) => r.id === 'frameless').label, 'Auto-hide toolbars and tabs');
-  assert.equal(tierOf('frameless'), 'core');
+  // --- final --- Appearance's main view keeps the ten rows PR #34 had; the switch is one row down, under More options.
+  assert.equal(tierOf('frameless'), 'more');
   assert.equal(tierOf('autoHideBars'), 'more');
   assert.equal(tierOf('autoHideFullscreen'), 'more');
   assert.ok(moreOf('appearance').querySelector('.sp-more-body').contains(rowNode('autoHideBars')), 'Bars to hide is behind More options');
   assert.ok(moreOf('appearance').querySelector('.sp-more-body').contains(rowNode('autoHideFullscreen')));
-  assert.ok(!moreOf('appearance').contains(rowNode('frameless')), 'the master switch is not');
+  assert.ok(moreOf('appearance').querySelector('.sp-more-body').contains(rowNode('frameless')), 'so is the master switch');
   assert.ok(!areaNode('later').contains(rowNode('frameless')), 'and it left Not active yet');
   assert.equal(moreOf('appearance').querySelector('.sp-more-btn').getAttribute('aria-expanded'), 'false', 'collapsed by default');
   assert.ok(logic.matchRows('auto-hide').has('frameless'));

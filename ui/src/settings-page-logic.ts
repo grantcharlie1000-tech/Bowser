@@ -559,7 +559,8 @@ export function moreCountText(count: number): string {
 const CORE_ROWS: ReadonlySet<string> = new Set([
   'profile', 'profiles', 'import',
   'layoutPreset', 'layoutBars' /* --- layout (thread T6): the presets and the three edges; the rest of the block is `more` --- */,
-  'theme', 'themeAccent', 'themeSchedule', 'websiteAppearance', 'showHomeButton', 'bookmarksBar', 'fontSize', 'defaultZoom', 'translateOffer',
+  // --- final --- Appearance keeps ten core rows: the theme schedule (T8) and the auto-hide switch (T11) sit behind More options.
+  'theme', 'themeAccent', 'websiteAppearance', 'showHomeButton', 'bookmarksBar', 'fontSize', 'defaultZoom', 'translateOffer',
   'tabs_new_tab_page', 'tabs_new_tab_url', 'tabs_new_tab_position', 'tabs_link_background',
   'startupMode', 'startupPages', 'startHomepage',
   'blocker', 'cookieNotices', 'tracking', 'history', 'historyRetention',
@@ -658,7 +659,7 @@ export const ROWS: readonly RowSpec[] = [
   { id: 'ctrlSVerticalTabs', section: 'keyboard', label: 'Ctrl+S collapses or expands the sidebar in the vertical layout', description: 'Only does anything in the vertical layout; otherwise Ctrl+S reaches the page as normal.', keywords: 'ctrl s sidebar collapse expand vertical layout shortcut' },
   { id: 'roundedContentFrame', section: 'appearance', label: 'Rounded corners around the page', description: 'Rounds the corners of the page area.', keywords: 'rounded corners content frame page' },
   // --- auto-hide (T11) --- the master switch is the old `frameless` key (core); the other two sit behind "More options".
-  { id: 'frameless', section: 'appearance', label: 'Auto-hide toolbars and tabs', description: 'Hides the bars you choose until the pointer rests at the edge of the window. Ctrl+F11 turns it on or off.', keywords: 'auto hide autohide frameless toolbar tabs immersive fullscreen full screen bars edge', tier: 'core' },
+  { id: 'frameless', section: 'appearance', label: 'Auto-hide toolbars and tabs', description: 'Hides the bars you choose until the pointer rests at the edge of the window. Ctrl+F11 turns it on or off.', keywords: 'auto hide autohide frameless toolbar tabs immersive fullscreen full screen bars edge', tier: 'more' },
   { id: 'autoHideBars', section: 'appearance', label: 'Bars to hide', description: 'The tab bar and address bar share the top edge in the horizontal layouts, so either one hides both. The side panel opens over the page instead of pushing it.', keywords: 'auto hide bars tabs address bookmarks panel status', tier: 'more' },
   { id: 'autoHideFullscreen', section: 'appearance', label: 'Always auto-hide in full screen', description: 'In full screen (F11, or a video) every bar hides, even with the switch above off.', keywords: 'auto hide full screen fullscreen f11 video', tier: 'more' },
   // --- end auto-hide ---

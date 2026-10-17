@@ -1123,7 +1123,7 @@
   flex-wrap: wrap;
   align-items: center;
   justify-content: flex-end;
-  gap: var(--bw-space-2) var(--bw-space-5);
+  gap: var(--bw-space-2) var(--bw-space-4);
 }
 
 .sp-theme-colours {
