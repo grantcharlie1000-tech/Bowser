@@ -1,0 +1,286 @@
+name: Release guarded Bowser v0.0.19
+
+# Install this while Cargo is still 0.0.18. Only the later release-prep merge
+# (Cargo 0.0.19 + updater revision 20) arms publication. Stable pin is separate.
+on:
+  push:
+    branches: [main]
+    paths:
+      - Cargo.toml
+      - Cargo.lock
+      - src/updater.rs
+      - .github/workflows/release-v0.0.19.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: bowser-release-v0.0.19
+  cancel-in-progress: false
+
+jobs:
+  gate:
+    if: github.repository == 'grantcharlie1000-tech/Bowser' && github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      ready: ${{ steps.version.outputs.ready }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Require exact release identity
+        id: version
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import os, pathlib, re, tomllib
+          version = tomllib.loads(pathlib.Path('Cargo.toml').read_text())['package']['version']
+          revisions = re.findall(r'^const PIN_REVISION: u32 = (\d+);$', pathlib.Path('src/updater.rs').read_text(), re.M)
+          ready = version == '0.0.19' and revisions == ['20']
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write(f'ready={str(ready).lower()}\n')
+          print(f'Cargo {version}; updater revision {revisions}; release enabled: {ready}')
+          PY
+
+  verify:
+    needs: gate
+    if: needs.gate.outputs.ready == 'true'
+    runs-on: windows-latest
+    timeout-minutes: 60
+    outputs:
+      artifact_id: ${{ steps.candidate.outputs.artifact-id }}
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      BOWSER_UPDATE_URL: ''
+      BOWSER_UPDATE_PUBKEY: ''
+    steps:
+      - name: Preserve fingerprinted source bytes
+        run: git config --global core.autocrlf false
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Require exact clean source
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $source = git rev-parse HEAD
+          if ($LASTEXITCODE -ne 0 -or $source.Trim() -cne $env:GITHUB_SHA) { throw 'Wrong source SHA.' }
+          $dirty = git status --porcelain
+          if ($LASTEXITCODE -ne 0 -or $dirty) { throw 'Source tree is not clean.' }
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+      - name: Locked UI install, typecheck and lint
+        working-directory: ui
+        run: |
+          npm ci --no-audit --no-fund
+          if ($LASTEXITCODE -ne 0) { throw 'npm ci failed.' }
+          npm run typecheck
+          if ($LASTEXITCODE -ne 0) { throw 'UI typecheck failed.' }
+          npm run lint
+          if ($LASTEXITCODE -ne 0) { throw 'UI lint failed.' }
+      - name: Require Edge for browser-backed regression tests
+        run: |
+          $edge = @(
+            'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe',
+            'C:/Program Files/Microsoft/Edge/Application/msedge.exe'
+          ) | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $edge) { throw 'Edge is required; browser-backed tests must not skip.' }
+          "BOWSER_TEST_EDGE=$edge" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+      - name: Test complete UI suite
+        working-directory: ui
+        run: |
+          npm test
+          if ($LASTEXITCODE -ne 0) { throw 'UI tests failed.' }
+      - name: Test shipped Shield extension
+        run: |
+          node --test extensions/bowser-shield/test/run-tests.js
+          if ($LASTEXITCODE -ne 0) { throw 'Shield tests failed.' }
+      - name: Rebuild embedded UI
+        working-directory: ui
+        run: |
+          npm run build
+          if ($LASTEXITCODE -ne 0) { throw 'UI build failed.' }
+      - name: Require byte-reproducible committed UI
+        run: |
+          git diff --exit-code -- ui/src/icons.gen.ts ui/dist ui/dist.manifest
+          if ($LASTEXITCODE -ne 0) { throw 'Rebuilt UI differs from committed assets.' }
+          $dirty = git status --porcelain
+          if ($LASTEXITCODE -ne 0 -or $dirty) { throw 'Build changed the source tree.' }
+      - name: Install official Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --component clippy
+          if ($LASTEXITCODE -ne 0) { throw 'Rust installation failed.' }
+          rustc +stable --version
+          if ($LASTEXITCODE -ne 0) { throw 'rustc unavailable.' }
+          cargo +stable --version
+          if ($LASTEXITCODE -ne 0) { throw 'cargo unavailable.' }
+      - name: Require Cargo identity, Windows tests and Clippy
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $raw = cargo +stable metadata --locked --no-deps --format-version 1
+          if ($LASTEXITCODE -ne 0) { throw 'Cargo metadata failed.' }
+          $package = ($raw | ConvertFrom-Json).packages | Where-Object name -eq 'bowser'
+          if (@($package).Count -ne 1 -or $package.version -cne '0.0.19') { throw 'Wrong Cargo package version.' }
+          if ((Get-Content src/updater.rs -Raw) -notmatch '(?m)^const PIN_REVISION: u32 = 20;$') { throw 'Wrong updater revision.' }
+          cargo +stable test --locked --features html-chrome-default
+          if ($LASTEXITCODE -ne 0) { throw 'Rust tests failed.' }
+          cargo +stable clippy --locked --features html-chrome-default -- -D warnings
+          if ($LASTEXITCODE -ne 0) { throw 'Clippy failed.' }
+      - name: Build production HTML chrome executable
+        run: |
+          cargo +stable build --release --locked --bin bowser --features html-chrome-default
+          if ($LASTEXITCODE -ne 0) { throw 'Release build failed.' }
+      - name: Smoke actual executable with isolated profile and local fixture
+        run: |
+          pwsh -NoProfile -File benchmarks/scripts/verify-release-candidate.ps1 -Out "$env:RUNNER_TEMP/bowser-release-smoke"
+          if ($LASTEXITCODE -ne 0) { throw 'Native release smoke test failed.' }
+      - name: Record immutable build identity after all gates pass
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory release-candidate | Out-Null
+          Copy-Item target/release/bowser.exe release-candidate/Bowser.exe
+          $file = Get-Item release-candidate/Bowser.exe
+          $smokePath = Join-Path $env:RUNNER_TEMP 'bowser-release-smoke/native-smoke.json'
+          $smoke = Get-Content $smokePath -Raw | ConvertFrom-Json
+          $hash = (Get-FileHash $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($smoke.status -cne 'passed_bounded_native_smoke' -or $smoke.source_commit -cne $env:GITHUB_SHA -or $smoke.executable_sha256 -cne $hash) { throw 'Native smoke report is not bound to this tested executable/source.' }
+          Copy-Item $smokePath release-candidate/native-smoke.json
+          $rust = rustc +stable --version
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot record Rust toolchain.' }
+          $metadata = [ordered]@{
+            repository = $env:GITHUB_REPOSITORY
+            commit = $env:GITHUB_SHA
+            version = '0.0.19'
+            revision = 20
+            tag = 'v0.0.19'
+            asset = 'Bowser.exe'
+            sha256 = $hash
+            smoke_report_sha256 = (Get-FileHash $smokePath -Algorithm SHA256).Hash.ToLowerInvariant()
+            bytes = $file.Length
+            features = 'html-chrome-default'
+            run_id = $env:GITHUB_RUN_ID
+            run_attempt = $env:GITHUB_RUN_ATTEMPT
+            rustc = $rust
+            smoke_passed = $true
+            built_at_utc = (Get-Date).ToUniversalTime().ToString('o')
+          }
+          $metadata | ConvertTo-Json | Set-Content -Encoding utf8 release-candidate/build-metadata.json
+      - name: Save immutable tested candidate
+        id: candidate
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-v0.0.19-${{ github.sha }}-${{ github.run_attempt }}
+          path: release-candidate/
+          if-no-files-found: error
+          retention-days: 30
+      - name: Save native smoke evidence even on failure
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-smoke-${{ github.sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/bowser-release-smoke/
+          if-no-files-found: warn
+          retention-days: 30
+
+  publish:
+    needs: verify
+    if: needs.verify.result == 'success' && github.repository == 'grantcharlie1000-tech/Bowser' && github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: windows-latest
+    timeout-minutes: 15
+    # Only this main-only job receives the ephemeral release permission. It runs
+    # no repository scripts, builds, dependencies or candidate executable.
+    permissions:
+      contents: write
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          artifact-ids: ${{ needs.verify.outputs.artifact_id }}
+          path: candidate
+          merge-multiple: true
+      - name: Validate, draft, upload, download-verify, then publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-StrictMode -Version Latest
+          $repo = 'grantcharlie1000-tech/Bowser'
+          $tag = 'v0.0.19'
+          $source = (git rev-parse HEAD).Trim()
+          if ($LASTEXITCODE -ne 0 -or $source -cne $env:GITHUB_SHA) { throw 'Publisher checkout SHA mismatch.' }
+          $m = Get-Content candidate/build-metadata.json -Raw | ConvertFrom-Json
+          if ($m.repository -cne $repo -or $m.commit -cne $source -or $m.version -cne '0.0.19' -or $m.revision -ne 20 -or $m.tag -cne $tag -or $m.asset -cne 'Bowser.exe' -or $m.features -cne 'html-chrome-default' -or $m.smoke_passed -ne $true -or $m.run_id -cne $env:GITHUB_RUN_ID -or $m.run_attempt -cne $env:GITHUB_RUN_ATTEMPT) { throw 'Candidate provenance mismatch.' }
+          if ($m.sha256 -cnotmatch '^[0-9a-f]{64}$' -or $m.bytes -le 0) { throw 'Invalid asset identity.' }
+          function Assert-Asset([string]$Path) {
+            if ((Get-Item $Path).Length -ne $m.bytes -or (Get-FileHash $Path -Algorithm SHA256).Hash.ToLowerInvariant() -cne $m.sha256) { throw "Asset bytes/hash mismatch: $Path" }
+          }
+          Assert-Asset candidate/Bowser.exe
+          $smoke = Get-Content candidate/native-smoke.json -Raw | ConvertFrom-Json
+          if ($smoke.status -cne 'passed_bounded_native_smoke' -or $smoke.source_commit -cne $source -or $smoke.executable_sha256 -cne $m.sha256 -or (Get-FileHash candidate/native-smoke.json -Algorithm SHA256).Hash.ToLowerInvariant() -cne $m.smoke_report_sha256) { throw 'Smoke evidence provenance mismatch.' }
+          $headers = @{ Authorization = "Bearer $env:GH_TOKEN"; Accept = 'application/vnd.github+json'; 'X-GitHub-Api-Version' = '2022-11-28' }
+          function Read-Api([string]$Path) {
+            try { return Invoke-RestMethod -Uri "https://api.github.com/repos/$repo/$Path" -Headers $headers }
+            catch {
+              if ($_.Exception.Response -and [int]$_.Exception.Response.StatusCode -eq 404) { return $null }
+              throw
+            }
+          }
+          function Assert-Tag {
+            $ref = Read-Api "git/ref/tags/$tag"
+            if (-not $ref) { throw 'Release tag is missing.' }
+            $obj = $ref.object
+            while ($obj.type -eq 'tag') { $obj = (Read-Api "git/tags/$($obj.sha)").object }
+            if ($obj.type -ne 'commit' -or $obj.sha -cne $source) { throw 'Existing release tag targets another commit; never overwrite.' }
+          }
+          $ref = Read-Api "git/ref/tags/$tag"
+          if ($ref) { Assert-Tag }
+          $release = Read-Api "releases/tags/$tag"
+          if ($release) {
+            # Existing drafts may be partial/ambiguous: inspect manually, never replace.
+            if ($release.draft) { throw 'A draft already exists. Inspect it; do not overwrite or blindly retry.' }
+            Assert-Tag
+          } else {
+            gh release create $tag --repo $repo --target $source --draft --title 'Bowser v0.0.19' --notes "Verified Windows HTML-chrome build from $source. Stable rollout is controlled separately by stable/release.json."
+            if ($LASTEXITCODE -ne 0) { throw 'Draft creation failed; inspect remote state before retry.' }
+            gh release upload $tag candidate/Bowser.exe candidate/build-metadata.json --repo $repo
+            if ($LASTEXITCODE -ne 0) { throw 'Draft upload failed; draft left unpublished for inspection.' }
+            $release = Read-Api "releases/tags/$tag"
+            if (-not $release -or -not $release.draft -or $release.target_commitish -cne $source) { throw 'Draft release target mismatch.' }
+          }
+          $assets = @($release.assets)
+          if ($assets.Count -ne 2 -or @($assets | Where-Object name -CEQ 'Bowser.exe').Count -ne 1 -or @($assets | Where-Object name -CEQ 'build-metadata.json').Count -ne 1) { throw 'Unexpected release asset set.' }
+          New-Item -ItemType Directory downloaded | Out-Null
+          gh release download $tag --repo $repo --pattern Bowser.exe --pattern build-metadata.json --dir downloaded
+          if ($LASTEXITCODE -ne 0) { throw 'Release download verification failed.' }
+          Assert-Asset downloaded/Bowser.exe
+          if ($release.draft) {
+            $localMetadata = Get-Item candidate/build-metadata.json
+            $remoteMetadata = Get-Item downloaded/build-metadata.json
+            if ($localMetadata.Length -ne $remoteMetadata.Length -or (Get-FileHash $localMetadata.FullName -Algorithm SHA256).Hash -cne (Get-FileHash $remoteMetadata.FullName -Algorithm SHA256).Hash) { throw 'Downloaded metadata bytes/hash mismatch.' }
+          }
+          $downloaded = Get-Content downloaded/build-metadata.json -Raw | ConvertFrom-Json
+          if ($downloaded.commit -cne $source -or $downloaded.version -cne '0.0.19' -or $downloaded.revision -ne 20 -or $downloaded.sha256 -cne $m.sha256 -or $downloaded.bytes -ne $m.bytes) { throw 'Downloaded release metadata mismatch.' }
+          if ($release.draft) {
+            # Recheck an independently created tag immediately before publication.
+            $ref = Read-Api "git/ref/tags/$tag"
+            if ($ref) { Assert-Tag }
+            gh release edit $tag --repo $repo --draft=false --latest=false
+            if ($LASTEXITCODE -ne 0) { throw 'Publication result uncertain; inspect remote state before retry.' }
+          }
+          Assert-Tag
+          $published = Read-Api "releases/tags/$tag"
+          if (-not $published -or $published.draft) { throw 'Release publication was not verified.' }
+          "Published verified $tag at $source; SHA256 $($m.sha256); bytes $($m.bytes). Stable pin unchanged." | Out-File $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append

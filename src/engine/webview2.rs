@@ -4557,7 +4557,7 @@ unsafe fn configure_controller(
                     if let Some(sender) = sender {
                         let mut on = BOOL(0);
                         if sender.ContainsFullScreenElement(&mut on).is_ok() {
-                            fullscreen_changed(tab_id, on.as_bool());
+                            fullscreen_changed(tab_id, on.as_bool(), current_web_url(&sender));
                         }
                     }
                     Ok(())

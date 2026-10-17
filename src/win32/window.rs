@@ -113,6 +113,7 @@ use windows::{
 const CLASS_NAME: windows::core::PCWSTR = w!("BowserNativeWindow");
 // --- auto-hide (T11) --- the window's side of auto-hide and full screen (window/auto_hide.rs).
 mod auto_hide;
+mod fullscreen_notice;
 // --- end auto-hide ---
 // --- look state (fix group B) --- the page and panel hosts' `state` (window/host_state.rs).
 mod host_state;
@@ -1816,8 +1817,8 @@ pub(crate) fn zoomed_or_full(hwnd: HWND) -> bool {
 pub(crate) fn toggle_fullscreen(hwnd: HWND, app: &AppRef) {
     auto_hide::toggle_fullscreen(hwnd, app);
 }
-pub(crate) fn page_fullscreen(hwnd: HWND, app: &AppRef, on: bool) {
-    auto_hide::page_fullscreen(hwnd, app, on);
+pub(crate) fn page_fullscreen(hwnd: HWND, app: &AppRef, on: bool, source: Option<&url::Url>) {
+    auto_hide::page_fullscreen(hwnd, app, on, source);
 }
 pub(super) fn bookmark_bar_placement(hwnd: HWND) -> Option<(RECT, bool)> {
     auto_hide::bookmark_bar_placement(hwnd)
@@ -2097,12 +2098,13 @@ fn sync_foreground(hwnd: HWND, app: Option<&AppRef>) {
         hwnd,
         caret_blink_allowed(foreground, minimised, edit_focused(hwnd)),
     );
-    let gained = with_chrome(hwnd, |s| {
+    let (changed, gained) = with_chrome(hwnd, |s| {
+        let changed = foreground != s.foreground;
         let gained = foreground && !s.foreground;
         s.foreground = foreground;
-        gained
+        (changed, gained)
     })
-    .unwrap_or(false);
+    .unwrap_or((false, false));
     if !foreground {
         card::cancel(hwnd);
     }
@@ -2110,8 +2112,12 @@ fn sync_foreground(hwnd: HWND, app: Option<&AppRef>) {
     // no-op when the JSON is the same). Skipped while the app state is borrowed (a modal loop).
     if app.is_some_and(|app| app.try_borrow_mut().is_ok()) {
         let faded = app.is_some_and(|app| App::settings(app).window.fade_background);
-        if faded {
+        if faded && changed {
             html_sync(hwnd);
+            // State-only updates: ordinary chrome sync also reaches existing page hosts and
+            // the bookmarks bar without setting their content/draft snapshots dirty.
+            mark_chrome_dirty(hwnd);
+            html_panel::settings_changed(hwnd);
         }
     }
     // --- end window and panels ---
@@ -2959,6 +2965,9 @@ unsafe extern "system" fn window_proc(
             }
             WM_TABS_CHANGED => {
                 if let Some(app) = app {
+                    if !fullscreen_notice::belongs_to_active_tab(hwnd, app) {
+                        auto_hide::page_fullscreen(hwnd, app, false, None);
+                    }
                     let (structural, persisted) = App::take_tab_change_flags();
                     if structural {
                         card::cancel_card(hwnd);
@@ -3854,6 +3863,12 @@ unsafe extern "system" fn window_proc(
                 LRESULT(0)
             }
             WM_KEYDOWN | WM_SYSKEYDOWN => {
+                if wparam.0 == windows::Win32::UI::Input::KeyboardAndMouse::VK_ESCAPE.0 as usize
+                    && auto_hide::fullscreen_of(hwnd) == crate::auto_hide::Fullscreen::Page
+                {
+                    if let Some(app) = app { auto_hide::page_fullscreen(hwnd, app, false, None); }
+                    return LRESULT(0);
+                }
                 if wparam.0 == windows::Win32::UI::Input::KeyboardAndMouse::VK_ESCAPE.0 as usize
                     && with_chrome(hwnd, |s| s.rail_drag.is_some()).unwrap_or(false)
                 {
@@ -12501,6 +12516,31 @@ mod tests {
         for id in ids {
             assert!(id >= windows::Win32::UI::WindowsAndMessaging::WM_APP, "{id:#x} is a private message");
             assert!(seen.insert(id), "WM_APP + {:#x} is used twice", id - windows::Win32::UI::WindowsAndMessaging::WM_APP);
+        }
+    }
+
+    /// Timers are scoped to the main HWND, not to each feature's module. Dispatch order must
+    /// never redirect auto-hide to themes, split bounds to statistics, or reader probes to panels.
+    #[test]
+    fn the_main_window_timer_ids_are_unique_and_outside_hover_ranges() {
+        let ids = [
+            WM_IDLE_TRIM_TIMER, WM_CARET_BLINK_TIMER, WM_ANIMATION_TIMER, WM_SESSION_SAVE_TIMER,
+            super::super::WM_PRIVACY_STATS_TIMER, WM_PROGRESS_TIMER, WM_SPLIT_BOUNDS_TIMER,
+            super::super::WM_POWER_TIMER, super::super::WM_IMPORT_OFFER_TIMER,
+            super::super::WM_READER_PROBE_TIMER, super::super::WM_TRANSLATE_WATCH_TIMER,
+            super::super::WM_DOWNLOADS_TIMER, crate::app::BLOCKED_TITLE_TIMER,
+            WM_SIDEBAR_SCROLL_TIMER, WM_RAIL_TOOLTIP_TIMER, WM_NEWTAB_TOOLTIP_TIMER,
+            WM_SIDEBAR_RESIZE_TIMER, WM_PAGE_IDLE_TIMER, WM_HTML_POPUP_PREWARM_TIMER,
+            WM_TAB_TICK_TIMER, WM_TAB_THUMB_TIMER, WM_TAB_LINK_TIMER, WM_THEME_SCHEDULE_TIMER,
+            auto_hide::TIMER_ID, side_panel::TIMER_ID, super::super::panel_webapp::RELOAD_TIMER,
+            super::super::panel_webapp::IDLE_TIMER, devtools_dock::TIMER_ID,
+            super::super::passwords_panel::CLIPBOARD_CLEAR_TIMER,
+        ];
+        let mut seen = std::collections::HashSet::new();
+        for id in ids {
+            assert!(seen.insert(id), "main window timer {id:#x} is used twice");
+            assert!(!card::is_hover_timer(id), "timer {id:#x} is claimed by tab-card dispatch");
+            assert!(!island_menu::is_timer(id), "timer {id:#x} is claimed by island-menu dispatch");
         }
     }
 

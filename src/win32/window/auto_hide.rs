@@ -42,7 +42,7 @@ use super::{
 /// put back above the page windows.
 pub(super) const WM_AUTOHIDE_SENSOR: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 0xA1;
 /// Timer while a reveal is pending or bars are shown. Never armed otherwise.
-pub(super) const TIMER_ID: usize = 0xB0A4;
+pub(super) const TIMER_ID: usize = 0xB0A5;
 const RAISE: usize = 0xFF;
 const SENSOR_CLASS: PCWSTR = w!("BowserAutoHideSensor");
 const PROP_FULLSCREEN: PCWSTR = w!("BowserFullscreen");
@@ -597,8 +597,10 @@ pub(crate) fn toggle_fullscreen(hwnd: HWND, app: &AppRef) {
 
 /// A page element (a video) went full screen or came back. The window fills its monitor too, every
 /// bar hides and nothing reveals them; Esc, which the page handles, ends it.
-pub(crate) fn page_fullscreen(hwnd: HWND, app: &AppRef, on: bool) {
+pub(crate) fn page_fullscreen(hwnd: HWND, app: &AppRef, on: bool, source: Option<&url::Url>) {
     let bits = fullscreen_bits(hwnd);
+    // Repeated events must not overwrite the saved pre-fullscreen window placement.
+    if on == (bits & 2 != 0) { return; }
     if on {
         let by_page = bits & 1 == 0;
         // Bit 2 is the page; bit 4 remembers that the window went full screen only for it.
@@ -608,7 +610,13 @@ pub(crate) fn page_fullscreen(hwnd: HWND, app: &AppRef, on: bool) {
         } else {
             sync_config(hwnd, app);
         }
+        // Browser-owned, persistent identity/exit surface. If it cannot be displayed, keep
+        // browser chrome visible rather than enter an unlabelled page full-screen state.
+        if !super::fullscreen_notice::show(hwnd, app, source) {
+            page_fullscreen(hwnd, app, false, None);
+        }
     } else {
+        super::fullscreen_notice::hide(hwnd);
         let had_window_for_page = bits & 4 != 0;
         set_fullscreen_bits(hwnd, bits & !2 & !4);
         if had_window_for_page {
@@ -664,5 +672,6 @@ fn leave_window(hwnd: HWND, app: &AppRef, for_page: bool) {
 
 /// The window is going away: forget what it saved.
 pub(crate) fn forget(hwnd: HWND) {
+    super::fullscreen_notice::hide(hwnd);
     SAVED.with(|saved| saved.borrow_mut().remove(&(hwnd.0 as isize)));
 }

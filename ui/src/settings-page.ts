@@ -1720,7 +1720,7 @@ export function startSettingsPage(root: HTMLElement): void {
     translateAuto.set(s.translateAuto);
     paintTranslateSelect(s.translateTarget, s.translateTargets);
     for (const control of tabControls.values()) { control.set(s.tabOptions); control.disable(!s.readable); }
-    themeRows.apply(s.themeOptions, s.readable); // --- theme options ---
+    themeRows.apply(s.themeOptions, s.readable, d.window.rangeButtons); // --- theme options ---
     autoUpdate.set(s.autoUpdate);
     autoUpdate.disable(s.update === 'unavailable');
     const view = updateView(s);

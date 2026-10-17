@@ -20,6 +20,14 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
+      - name: Parse native smoke script before running checks
+        run: |
+          $tokens = $null
+          $parseErrors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            (Join-Path $pwd 'benchmarks/scripts/verify-release-candidate.ps1'),
+            [ref]$tokens, [ref]$parseErrors) | Out-Null
+          if ($parseErrors.Count -gt 0) { $parseErrors | Format-List; throw 'Native smoke script does not parse.' }
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '22'
@@ -42,6 +50,10 @@ jobs:
           ) | Where-Object { Test-Path $_ } | Select-Object -First 1
           if (-not $edge) { throw 'Microsoft Edge is required; browser-backed suites must not silently skip.' }
           "BOWSER_TEST_EDGE=$edge" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+      - name: Check isolated CJK reader baseline (unchanged budget)
+        working-directory: ui
+        run: |
+          node --test --test-concurrency=1 --test-name-pattern="reader: article-cjk.html" test/reader.mjs
       - name: Test UI
         working-directory: ui
         run: npm test
@@ -66,6 +78,16 @@ jobs:
         run: cargo +stable clippy --locked --features html-chrome-default -- -D warnings
       - name: Build release candidate
         run: cargo +stable build --release --locked --bin bowser --features html-chrome-default
+      - name: Smoke exact native release executable in isolated profile
+        run: pwsh -NoProfile -File benchmarks/scripts/verify-release-candidate.ps1 -Out "$env:RUNNER_TEMP/bowser-release-smoke"
+      - name: Save native smoke evidence even on failure
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: bowser-native-smoke-${{ github.sha }}
+          path: ${{ runner.temp }}/bowser-release-smoke/
+          if-no-files-found: warn
+          retention-days: 14
       - name: Record immutable build identity
         run: |
           New-Item -ItemType Directory -Force release-candidate | Out-Null
@@ -73,6 +95,12 @@ jobs:
           $file = Get-Item release-candidate/Bowser.exe
           $hash = (Get-FileHash $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
           $source = (git rev-parse HEAD).Trim()
+          $smokePath = Join-Path $env:RUNNER_TEMP 'bowser-release-smoke/native-smoke.json'
+          $smoke = Get-Content $smokePath -Raw | ConvertFrom-Json
+          if ($smoke.status -cne 'passed_bounded_native_smoke' -or $smoke.source_commit -cne $source -or $smoke.executable_sha256 -cne $hash) {
+            throw 'Native smoke evidence does not match the candidate.'
+          }
+          Copy-Item $smokePath release-candidate/native-smoke.json
           $metadata = [ordered]@{
             commit = $source
             workflow_sha = $env:GITHUB_SHA
@@ -82,6 +110,8 @@ jobs:
             sha256 = $hash
             bytes = $file.Length
             features = 'html-chrome-default'
+            smoke_report_sha256 = (Get-FileHash $smokePath -Algorithm SHA256).Hash.ToLowerInvariant()
+            smoke_status = $smoke.status
             rustc = (rustc +stable --version)
             built_at_utc = (Get-Date).ToUniversalTime().ToString('o')
             published = $false

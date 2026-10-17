@@ -435,8 +435,9 @@ pub struct EngineEvents {
     pub page_usable: Option<std::rc::Rc<dyn Fn(crate::tabs::TabId)>>,
     pub controller_ready: Option<std::rc::Rc<dyn Fn(crate::tabs::TabId)>>,
     /// A page element went full screen or left it (a video's full-screen button). The window then
-    /// fills its monitor and every bar hides (auto-hide, `src/auto_hide.rs`).
-    pub fullscreen_changed: Option<std::rc::Rc<dyn Fn(crate::tabs::TabId, bool)>>,
+    /// fills its monitor and every bar hides (auto-hide, `src/auto_hide.rs`). The optional URL
+    /// is the native top-level WebView2 Source at the event, never an optimistic navigation target.
+    pub fullscreen_changed: Option<std::rc::Rc<dyn Fn(crate::tabs::TabId, bool, Option<url::Url>)>>,
     /// A WebView2 pane received focus from the user.
     pub focus_changed: Option<std::rc::Rc<dyn Fn(crate::tabs::TabId)>>,
     pub navigation_started: Option<std::rc::Rc<dyn Fn(crate::tabs::TabId, u64)>>,

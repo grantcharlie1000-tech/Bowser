@@ -195,13 +195,13 @@ pub(crate) const WM_PRIVACY_STATS_TIMER: usize = 7;
 /// Advances the address bar navigation progress transition while it is visible.
 pub(crate) const WM_PROGRESS_TIMER: usize = 6;
 /// Coalesces split divider moves to one controller bounds update per frame.
-pub(crate) const WM_SPLIT_BOUNDS_TIMER: usize = 7;
+pub(crate) const WM_SPLIT_BOUNDS_TIMER: usize = 8;
 /// Slow fallback that re-reads the power source for efficiency mode (Auto only).
 pub(crate) const WM_POWER_TIMER: usize = 0xB060;
 /// Delays the first-run import offer until after the first chrome paint.
 pub(crate) const WM_IMPORT_OFFER_TIMER: usize = 0xB055;
 /// Defers the active tab's reader probe until after the page's first paint.
-pub(crate) const WM_READER_PROBE_TIMER: usize = 0xB05E;
+pub(crate) const WM_READER_PROBE_TIMER: usize = 0xB073;
 /// Google Translate answered a batch (posted from its worker thread); `WPARAM` is the job id and
 /// `LPARAM` the request id whose result is waiting in `app::page_translate`.
 pub(crate) const WM_TRANSLATE_NET: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 0x5D1;

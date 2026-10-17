@@ -394,3 +394,26 @@ test('the theme rows touch no network or page API and add no inline styles beyon
   for (const banned of [/fetch\(/, /XMLHttpRequest/, /WebSocket/, /innerHTML/, /eval\(/, /new Function/, /location\./, /window\.open/]) assert.doesNotMatch(text, banned);
   assert.deepEqual([...text.matchAll(/style\.setProperty\('([^']+)'/g)].map((m) => m[1]), ['--sp-fill']);
 });
+
+test('Buttons instead of sliders also controls theme saturation and bounded step commands', () => {
+  const window = { ...fixture.snap.d.window, rangeButtons: true };
+  deliver(snapshotWith({ theme_saturation: 95 }, { window }));
+  const row = rowNode('themeSaturation');
+  const wrap = row.querySelector('.sp-range-wrap');
+  assert.ok(wrap.classList.contains('is-steps'));
+  const [less, more] = row.querySelector('.sp-stepper').querySelectorAll('button');
+  assert.equal(more.getAttribute('aria-label'), 'Increase accent saturation');
+  sent.length = 0;
+  more.click();
+  assert.deepEqual(themeCommands(), [{ v: 1, t: 'set', a: 'themeopt', text: 'theme_saturation=100' }]);
+  more.click();
+  assert.deepEqual(themeCommands(), [{ v: 1, t: 'set', a: 'themeopt', text: 'theme_saturation=100' }]);
+  deliver(snapshotWith({ theme_saturation: 0 }, { window }));
+  less.click();
+  assert.deepEqual(themeCommands(), [{ v: 1, t: 'set', a: 'themeopt', text: 'theme_saturation=0' }]);
+  deliver(snapshotWith({}, { window: { ...window, rangeButtons: false } }));
+  assert.ok(!wrap.classList.contains('is-steps'));
+  deliver(snapshotWith({}, { readable: false, window }));
+  assert.ok(less.disabled && more.disabled);
+  deliver(snapshotWith());
+});

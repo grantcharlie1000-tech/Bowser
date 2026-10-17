@@ -4,6 +4,7 @@
 // snapshot. Every change is one `themeopt` command (`key=value`); Rust checks it again.
 import { el } from './dom';
 import { textButton } from './panels/kit';
+import { stepValue } from './window-logic';
 import {
   COLOURINGS, COLOUR_KEYS, CONTRASTS, LOOKS, MAX_SATURATION, MIN_SATURATION, SCHEDULES, TIME_KEYS, lookApplies, percentText, scheduleNote, timesApply,
   type ColourKey, type ThemeOptionValue, type ThemeOptionValues, type TimeKey,
@@ -23,7 +24,7 @@ export interface ThemeRowsHost {
   action(name: 'themeexport' | 'themeimport' | 'themereset'): void;
 }
 
-export function mountThemeRows(host: ThemeRowsHost): { apply(values: ThemeOptionValues, readable: boolean): void } {
+export function mountThemeRows(host: ThemeRowsHost): { apply(values: ThemeOptionValues, readable: boolean, rangeButtons: boolean): void } {
   let latest: ThemeOptionValues = {};
   let unreadable = false;
 
@@ -99,6 +100,19 @@ export function mountThemeRows(host: ThemeRowsHost): { apply(values: ThemeOption
     saturation.style.setProperty('--sp-fill', `${((n - MIN_SATURATION) / (MAX_SATURATION - MIN_SATURATION)) * 100}%`);
     saturation.setAttribute('aria-valuetext', percentText(n));
   };
+  const saturationSteps = el('div', 'sp-stepper');
+  const stepSaturation = (direction: -1 | 1): void => {
+    const value = stepValue(Number(saturation.value), direction, 5, MIN_SATURATION, MAX_SATURATION);
+    saturation.value = String(value);
+    paintSaturation();
+    host.send('theme_saturation', value);
+  };
+  const saturationLess = textButton('−', () => stepSaturation(-1));
+  saturationLess.setAttribute('aria-label', 'Decrease accent saturation');
+  const saturationMore = textButton('+', () => stepSaturation(1));
+  saturationMore.setAttribute('aria-label', 'Increase accent saturation');
+  saturationSteps.append(saturationLess, saturationMore);
+  saturationWrap.append(saturationSteps);
   saturation.addEventListener('input', paintSaturation);
   saturation.addEventListener('change', () => host.send('theme_saturation', Number(saturation.value)));
   host.row(host.card, 'themeSaturation', saturationWrap);
@@ -128,7 +142,7 @@ export function mountThemeRows(host: ThemeRowsHost): { apply(values: ThemeOption
   host.row(host.card, 'themeFile', file);
 
   return {
-    apply(values, readable) {
+    apply(values, readable, rangeButtons) {
       latest = values;
       unreadable = !readable;
       const disabled = unreadable;
@@ -154,6 +168,9 @@ export function mountThemeRows(host: ThemeRowsHost): { apply(values: ThemeOption
       accentPage.disable(disabled);
       saturation.value = String(values.theme_saturation);
       saturation.disabled = disabled;
+      saturationLess.disabled = disabled;
+      saturationMore.disabled = disabled;
+      saturationWrap.classList.toggle('is-steps', rangeButtons);
       paintSaturation();
       contrast.set(String(values.theme_contrast));
       contrast.disable(disabled);
