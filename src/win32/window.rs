@@ -12523,6 +12523,29 @@ mod tests {
     use super::*;
     use std::time::Duration;
 
+    /// --- final --- every private message the main window's procedure matches has its own number, so
+    /// no thread's message is taken for another's after the merges.
+    #[test]
+    fn the_main_window_private_messages_are_unique() {
+        let ids = [
+            WM_CHROME_SYNC, WM_FOREGROUND_SYNC, WM_HISTORY_BACK, WM_HISTORY_FORWARD, WM_HTML_CHROME_ENV,
+            WM_HTML_CHROME_FAILED, WM_HTML_CHROME_START, WM_HTML_DEFERRED, WM_HTML_HOVER_START, WM_HTML_PANEL_FAILED,
+            WM_HTML_POPUP_FAILED, WM_HTML_RAIL_FAILED, WM_HTML_TABS_FAILED, WM_LOGIN_MESSAGE, WM_NAVIGATION_PROGRESS,
+            WM_PANE_FOCUSED, WM_RAIL_CHANGED, WM_SHORTCUT_KEY, WM_SUBMIT, WM_TABS_CHANGED, WM_UPDATE_CHECKED,
+            auto_hide::WM_AUTOHIDE_SENSOR, notes_panel::WM_SIDEBAR_RESIZED, side_panel::WM_RESIZED,
+            super::super::WM_CHAIN_STEP, super::super::WM_DOWNLOADS_CHANGED, super::super::WM_DOWNLOADS_PAGE_COMMAND,
+            super::super::WM_EXTENSIONS_CHANGED, super::super::WM_HISTORY_PAGE_COMMAND, super::super::WM_SETTINGS_COMMAND,
+            super::super::WM_SPLIT_COMMAND, super::super::WM_SPLIT_LINK, super::super::WM_SPLIT_LOOK,
+            super::super::WM_TRANSLATE_NET, super::super::address_bar::WM_ADDRESS_SUGGEST,
+            super::super::bookmark_bar::WM_BOOKMARK_BAR_COMMAND,
+        ];
+        let mut seen = std::collections::HashSet::new();
+        for id in ids {
+            assert!(id >= windows::Win32::UI::WindowsAndMessaging::WM_APP, "{id:#x} is a private message");
+            assert!(seen.insert(id), "WM_APP + {:#x} is used twice", id - windows::Win32::UI::WindowsAndMessaging::WM_APP);
+        }
+    }
+
     /// --- wave-1 fixes --- the main menu's History and Downloads run registry commands, so they still
     /// work with shortcuts switched off or Ctrl+H / Ctrl+J bound elsewhere.
     #[test]
