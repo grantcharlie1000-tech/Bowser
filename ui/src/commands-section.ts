@@ -417,7 +417,8 @@ export function mountCommandsSections(options: CommandsSectionsOptions): Command
       const down = iconButton('chevron-down', `Move ${RESULT_TYPE_LABELS[type]} down`, () => { send(typesCommand(moveItem(shown, at, at + 1))); }, 'sp-qc-move');
       up.disabled = !on || at === 0;
       down.disabled = !on || at === shown.length - 1;
-      li.append(sw.root, text, up, down);
+      // Label first and the switch at the end of the row, like every other switch row (Address bar sources).
+      li.append(text, up, down, sw.root);
       return li;
     };
     typesList.replaceChildren(...shown.map((type, at) => item(type, at)), ...hidden.map((type) => item(type, -1)));

@@ -1105,8 +1105,18 @@
   border-bottom: 0;
 }
 
+/* Inset hairlines between rows, drawn like .sp-row's, so a dashboard block reads as the same card. */
 .sp-card .pg-row + .pg-row {
-  border-top: 1px solid var(--sp-rule);
+  position: relative;
+}
+
+.sp-card .pg-row + .pg-row::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  inset-inline: var(--sp-row-x);
+  height: 1px;
+  background: var(--sp-rule);
 }
 
 .sp-card .pg-bar,
@@ -1707,12 +1717,15 @@
   padding: var(--bw-space-3) var(--bw-space-0_5);
 }
 
-/* Quick commands: result types, each with a switch and move buttons. */
+/* Quick commands: result types, each with move buttons and a switch, in the inset well the toolbar
+   list and the address bar's suggestion sources use. */
 .sp-qc-types {
   display: flex;
   flex-direction: column;
   margin: 0;
-  padding: 0;
+  padding: 0 var(--bw-space-3);
+  border-radius: var(--bw-r-row);
+  background: var(--sp-well);
   list-style: none;
 }
 
@@ -1720,7 +1733,8 @@
   display: flex;
   align-items: center;
   gap: var(--bw-space-3);
-  padding: var(--bw-space-2) 0;
+  min-height: 40px;
+  padding: var(--bw-space-1) 0;
 }
 
 .sp-qc-type + .sp-qc-type {
