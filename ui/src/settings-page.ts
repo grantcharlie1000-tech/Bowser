@@ -15,6 +15,8 @@ import { mountProtection } from './panels/protection'; // blocking, history and 
 import { mountExtensionsSection } from './extensions-section';
 import { mountCommandsSections } from './commands-section';
 import { mountStartSection } from './settings-start'; // --- start page ---
+import { mountThemeRows } from './settings-themes'; // --- theme options ---
+import { themeAssignment, type ThemeOptionValue } from './theme-options-logic'; // --- theme options ---
 import { mountAddressSections } from './address-section'; // --- address bar, search and bookmarks ---
 import { browserProbes, codecDetail, drmText, guidance, runMediaCheck, verdictText, type MediaReport } from './panels/media-logic';
 import { TAB_CARDS, TAB_CARD_TITLES, assignmentText, cardSpecs, clampNumber, numberLabel, textApplies, type TabOptionSpec, type TabOptionValues } from './tab-options-logic';
@@ -460,6 +462,23 @@ export function startSettingsPage(root: HTMLElement): void {
   const accentWrap = el('div', 'sp-reset');
   accentWrap.append(accentInput, accentReset);
   row(themeCard, 'themeAccent', accentWrap);
+  // --- theme options --- the schedule (core), then the colours, the colouring mode, the page's accent,
+  // saturation, contrast and the theme file (behind More options). Each is its own `themeopt` command.
+  const sendThemeOption = (key: string, value: ThemeOptionValue): void => {
+    const text = themeAssignment(key, value);
+    if (text === null) { showToast('That value is not allowed.', false); return; }
+    if (cmd({ a: 'themeopt', text })) pending += 1;
+  };
+  const themeRows = mountThemeRows({
+    card: themeCard,
+    row,
+    switchControl,
+    segmentedControl,
+    send: sendThemeOption,
+    // A cancelled file dialog answers with nothing, so the file commands are not counted as pending.
+    action: (name) => { if (cmd({ a: name }) && name === 'themereset') pending += 1; },
+  });
+  // --- end theme options ---
 
   // Website appearance and the private tab theme (thread T3). --- settings slim --- they join the
   // Theme card, so the core view is one card of colour choices.
@@ -1350,6 +1369,7 @@ export function startSettingsPage(root: HTMLElement): void {
     translateAuto.set(s.translateAuto);
     paintTranslateSelect(s.translateTarget, s.translateTargets);
     for (const control of tabControls.values()) { control.set(s.tabOptions); control.disable(!s.readable); }
+    themeRows.apply(s.themeOptions, s.readable); // --- theme options ---
     autoUpdate.set(s.autoUpdate);
     autoUpdate.disable(s.update === 'unavailable');
     const view = updateView(s);
