@@ -1347,10 +1347,16 @@ fn apply_cosmetic_css(
     } else {
         state.cosmetic_css_for_host(&top_host)
     };
+    let x_script = state.x_promoted_script(&top_host, private);
     drop(state);
     let installed = block.cosmetic_installed.replace(css.is_some());
     let Some(script) = cosmetic_script(css.as_deref(), installed) else {
         return;
+    };
+    // X promoted posts: the marker script runs after the style it depends on.
+    let script = match x_script {
+        Some(marker) => format!("{script};\n{marker}"),
+        None => script,
     };
     // Fire-and-forget: a cosmetic touch-up must never gate on the completion handler (see
     // `engine_never_blocks_on_a_webview2_completion`).
@@ -4419,8 +4425,16 @@ unsafe fn configure_controller(
         )?;
         if let Ok(webview2_2) = webview.cast::<ICoreWebView2_2>() {
             let dom_progress = events.navigation_progress.clone();
+            let dom_block_tab = block_tab.clone();
+            let dom_blocker = blocker.clone();
             webview2_2.add_DOMContentLoaded(
-                &DOMContentLoadedEventHandler::create(Box::new(move |_sender, args| {
+                &DOMContentLoadedEventHandler::create(Box::new(move |sender, args| {
+                    // The page's own scripts have started by now: install the cosmetic style and
+                    // the X promoted-post marker again (both idempotent) in case the early one ran
+                    // before the document was ready.
+                    if let (Some(sender), Some(blocker)) = (sender.as_ref(), dom_blocker.as_ref()) {
+                        apply_cosmetic_css(sender, &dom_block_tab, blocker, private);
+                    }
                     if let (Some(args), Some(callback)) = (args, dom_progress.as_ref()) {
                         let mut navigation_id = 0;
                         if args.NavigationId(&mut navigation_id).is_ok() {

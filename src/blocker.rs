@@ -55,6 +55,7 @@ pub mod fetch;
 pub(crate) mod json;
 pub mod site_rules;
 pub mod sources;
+pub mod x_promoted;
 pub mod youtube;
 
 use std::{
@@ -1355,6 +1356,9 @@ impl BlockerState {
             if let Some(ads) = self.matcher.cosmetic_css_for_host(page_host) {
                 css.push_str(&ads);
             }
+            if x_promoted::is_x_host(page_host) {
+                css.push_str(x_promoted::CSS);
+            }
         }
         if self.cookie_notices_for(page_host, private) {
             if let Some(notices) = self.cookies.css_for_host(page_host) {
@@ -1362,6 +1366,14 @@ impl BlockerState {
             }
         }
         (!css.is_empty()).then_some(css)
+    }
+
+    /// The page script that marks X promoted posts for the cosmetic rule, for a document on
+    /// `page_host`: only on x.com / twitter.com where the blocker is at the "trackers and ads" level
+    /// (always for a private tab; a normal tab honours the switch and site exceptions).
+    pub fn x_promoted_script(&self, page_host: &str, private: bool) -> Option<&'static str> {
+        (x_promoted::is_x_host(page_host) && self.level_for(page_host, private) == Level::Ads)
+            .then_some(x_promoted::SCRIPT)
     }
 
     /// DevTools `Network.setBlockedURLs` patterns for a normal tab's document on `page_host`
@@ -1798,6 +1810,36 @@ mod tests {
         s.enabled = false;
         assert_eq!(s.cosmetic_css_for_host("other.example"), None);
         assert!(s.cosmetic_css_for_host_private("other.example").is_some());
+    }
+
+    #[test]
+    fn x_promoted_posts_are_hidden_only_on_x_hosts_at_the_ads_level() {
+        let mut s = state("", &[]);
+        for host in ["x.com", "www.x.com", "twitter.com", "mobile.twitter.com"] {
+            assert_eq!(s.cosmetic_css_for_host(host).as_deref(), Some(x_promoted::CSS), "{host}");
+            assert!(s.x_promoted_script(host, false).is_some(), "{host}");
+        }
+        for host in ["news.example", "box.com", "x.com.evil.example", ""] {
+            assert_eq!(s.cosmetic_css_for_host(host), None, "{host}");
+            assert!(s.x_promoted_script(host, false).is_none(), "{host}");
+        }
+        // A lower level, a site exception and the master switch each turn it off.
+        s.level = Level::Trackers;
+        assert_eq!(s.cosmetic_css_for_host("x.com"), None);
+        assert!(s.x_promoted_script("x.com", false).is_none());
+        s.level = Level::Ads;
+        assert!(s.set_site_level("x.com", Some(Level::Trackers)));
+        assert!(s.x_promoted_script("x.com", false).is_none());
+        assert!(s.x_promoted_script("twitter.com", false).is_some(), "other X host keeps its own level");
+        assert!(s.set_site_level("x.com", None));
+        s.toggle_site("twitter.com");
+        assert!(s.x_promoted_script("twitter.com", false).is_none());
+        assert_eq!(s.cosmetic_css_for_host("twitter.com"), None);
+        s.enabled = false;
+        assert!(s.x_promoted_script("x.com", false).is_none());
+        // A private tab always blocks, exceptions and the switch notwithstanding.
+        assert!(s.x_promoted_script("twitter.com", true).is_some());
+        assert_eq!(s.cosmetic_css_for_host_private("twitter.com").as_deref(), Some(x_promoted::CSS));
     }
 
     #[test]
