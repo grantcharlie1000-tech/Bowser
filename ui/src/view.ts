@@ -5,6 +5,7 @@ import { setTip } from './tooltip';
 import { isZoomed, zoomChipLabel, zoomChipTip, zoomText } from './zoom-logic';
 import { buttonLabel, buttonTip, ringMode, ringOffset } from './downloads-logic';
 import { extButtonText } from './extensions-logic';
+import { lookAttributes, type Look } from './window-logic'; // --- window and panels (thread T9) ---
 import { splitHost, type AddrFlags } from './address-logic'; // --- address bar, search and bookmarks ---
 
 export interface View {
@@ -543,8 +544,16 @@ export function applyState(view: View, state: StateMsg): void {
   }
 }
 
-export function applyTheme(theme: Theme, solid: boolean, dark: boolean, fontScale?: number, uiFont?: string, density?: 'regular' | 'compact', compactMenus?: boolean): void {
+// --- window and panels (thread T9) --- the Window appearance options as root attributes the CSS reads.
+export function applyLook(look: Look): void {
   const root = document.documentElement;
+  for (const [name, value] of lookAttributes(look)) root.dataset[name] = value;
+}
+// --- end window and panels ---
+
+export function applyTheme(theme: Theme, solid: boolean, dark: boolean, fontScale?: number, uiFont?: string, density?: 'regular' | 'compact', compactMenus?: boolean, look?: Look): void {
+  const root = document.documentElement;
+  if (look !== undefined) applyLook(look); // --- window and panels (thread T9) ---
   // --- layout (thread T6) --- `ui_density` / `compact_menus`: the row-height tokens read these.
   // Absent (an older host, a view that does not send them) leaves the regular heights.
   if (density !== undefined) root.dataset.density = density;

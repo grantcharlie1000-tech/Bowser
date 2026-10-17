@@ -189,6 +189,13 @@ pub fn snapshot_json(s: &Snapshot<'_>) -> String {
             layout.string("saved", &settings.layout_saved);
         });
         // --- end layout ---
+        // --- window and panels (thread T9) --- one object of booleans (src/window_prefs.rs)
+        out.object("window", |window| {
+            for (key, value) in settings.window.pairs() {
+                window.bool(&snake_to_camel(key), value == "true");
+            }
+        });
+        // --- end window and panels ---
     })
     .expect("settings is a panel token")
 }
@@ -337,6 +344,16 @@ pub fn apply_page_save(settings: &mut Settings, text: &str) -> bool {
 /// Applies a `save` payload: every profile setting exactly once, exact keys and values, nothing
 /// else (the update switch is install-wide and never part of it). `false` leaves the caller's copy
 /// to be discarded.
+/// `range_buttons` -> `rangeButtons` (the snapshot's key style).
+fn snake_to_camel(key: &str) -> String {
+    let mut out = String::new();
+    let mut up = false;
+    for c in key.chars() {
+        if c == '_' { up = true; } else if up { out.push(c.to_ascii_uppercase()); up = false; } else { out.push(c); }
+    }
+    out
+}
+
 pub fn apply_settings_text(settings: &mut Settings, text: &str) -> bool {
     if text.len() > MAX_SAVE_TEXT { return false; }
     let mut seen = std::collections::HashSet::new();
@@ -397,6 +414,9 @@ pub fn apply_settings_text(settings: &mut Settings, text: &str) -> bool {
             "ui_zoom" => { let Ok(value) = value.parse::<u16>() else { return false; }; if !(crate::layout_prefs::MIN_UI_ZOOM..=crate::layout_prefs::MAX_UI_ZOOM).contains(&value) { return false; } settings.ui_zoom = value; }
             "layout_saved" => { if !crate::layout_prefs::is_layout_saved(value) { return false; } settings.layout_saved = value.to_owned(); }
             // --- end layout ---
+            // --- window and panels (thread T9) ---
+            key if crate::window_prefs::KEYS.contains(&key) => { if settings.window.apply_strict(key, value).is_none() { return false; } }
+            // --- end window and panels ---
             _ => return false,
         }
     }
@@ -681,7 +701,9 @@ mod tests {
         assert!(json.contains(r#""translateAuto":true,"translateTarget":"fr""#), "{json}");
         // --- layout (thread T6) --- the Layout block's object closes the snapshot.
         assert!(json.contains(r##""widgetColor":"#1f2933","widgetDrag":true},"layout":{"##), "{json}");
-        assert!(json.ends_with(r##""uiZoom":100,"saved":""}}}"##), "{json}");
+        // --- window and panels (thread T9) --- the Window object closes the snapshot.
+        assert!(json.contains(r##""uiZoom":100,"saved":""},"window":{"##), "{json}");
+        assert!(json.ends_with(r##""panelAutoClose":true}}}"##), "{json}");
     }
 
     // --- layout (thread T6) ---

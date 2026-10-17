@@ -134,6 +134,20 @@ impl SidebarConfig {
         });
         Ok(id)
     }
+    /// `remove_app`, remembering the app (name and address) so the rail's "Add web app" menu can
+    /// restore it (thread T9, `panel_prefs.txt`), and dropping its per-panel options.
+    pub fn remove_app_remembered(&mut self, id: u32) -> bool {
+        let gone = self.apps.iter().find(|app| app.id == id).map(|app| (app.name.clone(), app.url.clone()));
+        let removed = self.remove_app(id);
+        if let (true, Some((name, url))) = (removed, gone) {
+            let _ = crate::panel_prefs::update(|file| {
+                file.forget(id);
+                file.remember_removed(&name, &url);
+            });
+        }
+        removed
+    }
+
     pub fn remove_app(&mut self, id: u32) -> bool {
         let n = self.apps.len();
         self.apps.retain(|a| a.id != id);

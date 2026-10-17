@@ -28,6 +28,10 @@ import {
 } from './layout-logic';
 export { LAYOUT_HINTS, SIDE_PANEL_POSITIONS, TAB_LAYOUTS, TAB_LAYOUT_LABELS, type LayoutSettings, type SidePanelPosition, type TabLayout };
 // --- end layout ---
+// --- window and panels (thread T9) ---
+import { parseWindowSettings, windowSaveLines, type WindowSettings } from './window-logic';
+export type { WindowSettings };
+// --- end window and panels ---
 export const MIN_SIDEBAR = 180;
 export const MAX_SIDEBAR = 360;
 export const MIN_SLEEP = 30;
@@ -200,6 +204,10 @@ export interface SettingsSnapshot {
   /** The Layout block's own options (`layout_prefs.rs`); the tab layout and panel side are the older keys above. */
   layout: LayoutSettings;
   // --- end layout ---
+  // --- window and panels (thread T9) ---
+  /** Window appearance and panel options (`window_prefs.rs`). */
+  window: WindowSettings;
+  // --- end window and panels ---
 }
 
 type RecordValue = Record<string, unknown>;
@@ -214,7 +222,8 @@ const KEYS = ['tabLayout', 'sidebarWidth', 'sleepEnabled', 'sleepAfterSecs', 'bl
   'bookmarksBar', 'bookmarksBarTabGroups', 'sidePanelPosition', 'tabPreviewImages', 'tabPreviewMemory', 'fontSize', 'uiFont', 'defaultZoom',
   'showZoomIndicator', 'newTabBesideActive', 'ctrlTabMru', 'shiftRightClickContext', 'ctrlShiftCCopyLink', 'ctrlSVerticalTabs', 'pinNewTabGroups',
   'splitEdgeDrop', 'blockYoutubeVideoAds', 'defaultBrowser', 'downloadDir', 'downloadAsk',
-  'translateOffer', 'translateAuto', 'translateTarget', 'translateTargets', 'start', 'tabOptions', 'layout' /* --- layout (thread T6) --- */, 'themeOptions'];
+  'translateOffer', 'translateAuto', 'translateTarget', 'translateTargets', 'start', 'tabOptions', 'layout' /* --- layout (thread T6) --- */, 'themeOptions',
+  'window' /* --- window and panels (thread T9) --- */];
 /** A language code the translation settings carry: two or three lower-case letters. */
 const LANGUAGE_RE = /^[a-z]{2,3}$/;
 /** The most target languages Rust may list. */
@@ -287,6 +296,8 @@ export function parseSettingsSnapshot(value: unknown): SettingsSnapshot | null {
   if (layout === null) return null;
   const themeOptions = parseThemeOptions(v.themeOptions); // --- theme options ---
   if (!themeOptions) return null;
+  const window = parseWindowSettings(v.window); // --- window and panels (thread T9) ---
+  if (window === null) return null;
   return {
     tabLayout: v.tabLayout,
     sidebarWidth: v.sidebarWidth,
@@ -352,6 +363,7 @@ export function parseSettingsSnapshot(value: unknown): SettingsSnapshot | null {
     tabOptions,
     layout, // --- layout (thread T6) ---
     themeOptions,
+    window, // --- window and panels (thread T9) ---
   };
 }
 
@@ -363,6 +375,7 @@ export type Draft = Pick<SettingsSnapshot,
   | 'tabPreviewMemory' | 'fontSize' | 'uiFont' | 'defaultZoom' | 'showZoomIndicator' | 'newTabBesideActive' | 'ctrlTabMru' | 'shiftRightClickContext'
   | 'ctrlShiftCCopyLink' | 'ctrlSVerticalTabs' | 'pinNewTabGroups' | 'splitEdgeDrop' | 'blockYoutubeVideoAds' | 'start'
   | 'layout' // --- layout (thread T6) ---
+  | 'window' // --- window and panels (thread T9) ---
 >;
 
 export function draftOf(snapshot: SettingsSnapshot): Draft {
@@ -371,7 +384,7 @@ export function draftOf(snapshot: SettingsSnapshot): Draft {
     trackingPrevention, theme, themeAccent, toolbarButtons, centredAddressBar, minimalUrl, showLoadProgress, frameless, autoHideBars, autoHideFullscreen, roundedContentFrame,
     showHomeButton, bookmarksBar, bookmarksBarTabGroups, sidePanelPosition, tabPreviewImages, tabPreviewMemory, fontSize, uiFont, defaultZoom,
     showZoomIndicator, newTabBesideActive, ctrlTabMru, shiftRightClickContext, ctrlShiftCCopyLink, ctrlSVerticalTabs, pinNewTabGroups, splitEdgeDrop,
-    blockYoutubeVideoAds, start, layout,
+    blockYoutubeVideoAds, start, layout, window,
   } = snapshot;
   return {
     tabLayout, sidebarWidth, sleepEnabled, sleepAfterSecs, blockerEnabled, blockerAllow: [...blockerAllow], searchEngine, automaticTabGrouping,
@@ -380,6 +393,7 @@ export function draftOf(snapshot: SettingsSnapshot): Draft {
     defaultZoom, showZoomIndicator, newTabBesideActive, ctrlTabMru, shiftRightClickContext, ctrlShiftCCopyLink, ctrlSVerticalTabs, pinNewTabGroups,
     splitEdgeDrop, blockYoutubeVideoAds, start: { ...start, startupPages: [...start.startupPages] },
     layout: { ...layout }, // --- layout (thread T6) ---
+    window: { ...window }, // --- window and panels (thread T9) ---
   };
 }
 
@@ -449,6 +463,7 @@ export function saveText(draft: Draft): string | null {
   if (layoutLines === null) return null;
   lines.push(...layoutLines);
   // --- end layout ---
+  lines.push(...windowSaveLines(draft.window)); // --- window and panels (thread T9) ---
   const text = lines.join('\n');
   return text.length <= MAX_TEXT ? text : null;
 }
@@ -657,6 +672,20 @@ export const ROWS: readonly RowSpec[] = [
   { id: 'splitEdgeDrop', section: 'appearance', label: 'Allow dropping a dragged tab on the window edge to split', description: 'Dragging a tab to the edge of the window opens it in a split view.', keywords: 'split view drag drop edge tab' },
   { id: 'pinNewTabGroups', section: 'appearance', label: 'Pin new tab groups to the bookmarks bar', description: 'A tab group formed from now on is pinned to the bookmarks bar. Needs “Show tab groups in the bookmarks bar”.', keywords: 'pin tab groups bookmarks bar' },
   { id: 'ctrlSVerticalTabs', section: 'keyboard', label: 'Ctrl+S collapses or expands the sidebar in the vertical layout', description: 'Only does anything in the vertical layout; otherwise Ctrl+S reaches the page as normal.', keywords: 'ctrl s sidebar collapse expand vertical layout shortcut' },
+  // --- window and panels (thread T9) --- each row below acts at once; all sit behind More options. Not here, on purpose:
+  // "open settings in a tab" and "open popups in tabs" (Bowser already always does), "show title bar" (Layout's
+  // title row), "reset toolbars" (the toolbar editor) and the Windows and Reading list panels (Bowser has neither).
+  { id: 'winAnimations', section: 'appearance', label: 'Use animation', description: 'Bowser’s own transitions and the panel slide. Off, they snap. Bowser also stays still when Windows has animations off.', keywords: 'animation motion transitions reduced motion prefers reduced motion slide' },
+  { id: 'winRangeButtons', section: 'appearance', label: 'Buttons instead of sliders', description: 'Range controls on this page, such as the sidebar width and the interface zoom, show minus and plus buttons instead of a slider.', keywords: 'sliders range buttons stepper plus minus' },
+  { id: 'winFade', section: 'appearance', label: 'Fade colours in background windows', description: 'Bowser’s bars and panels lose their colour while another window is in front.', keywords: 'fade colours background window inactive dim grey desaturate' },
+  { id: 'winScrollbars', section: 'appearance', label: 'Simple scrollbars', description: 'Thin, quiet scrollbars in Bowser’s own pages and panels. Web pages keep theirs.', keywords: 'scrollbars simple thin slim overlay' },
+  { id: 'winMonoIcons', section: 'appearance', label: 'Monochrome settings icons', description: 'The icons in this page’s list draw in plain text colour, without the accent.', keywords: 'monochrome icons settings colour accent plain' },
+  { id: 'panelCloseButton', section: 'appearance', label: 'Show the close button on panels', description: 'The X in a panel’s header. Off, Escape and the panel’s rail button still close it.', keywords: 'panel close button x header' },
+  { id: 'panelFolderCounts', section: 'appearance', label: 'Show folder counters', description: 'How many items a bookmarks folder holds, beside its name.', keywords: 'folder counters count number bookmarks panel items' },
+  { id: 'panelAutoClose', section: 'appearance', label: 'Close floating panels when you click elsewhere', description: 'Bookmarks and Customize float over the page. Off, they stay until you close them.', keywords: 'floating panel auto close dismiss click outside overlay flyout' },
+  { id: 'winReset', section: 'appearance', label: 'Reset window options', description: 'Puts animation, sliders, fading, scrollbars and icons back to their defaults.', keywords: 'reset window defaults restore' },
+  { id: 'panelReset', section: 'appearance', label: 'Reset panel options', description: 'Puts the close button, folder counters and auto-close back to their defaults.', keywords: 'reset panels defaults restore' },
+  // --- end window and panels ---
   { id: 'roundedContentFrame', section: 'appearance', label: 'Rounded corners around the page', description: 'Rounds the corners of the page area.', keywords: 'rounded corners content frame page' },
   // --- auto-hide (T11) --- the master switch is the old `frameless` key (core); the other two sit behind "More options".
   { id: 'frameless', section: 'appearance', label: 'Auto-hide toolbars and tabs', description: 'Hides the bars you choose until the pointer rests at the edge of the window. Ctrl+F11 turns it on or off.', keywords: 'auto hide autohide frameless toolbar tabs immersive fullscreen full screen bars edge', tier: 'more' },

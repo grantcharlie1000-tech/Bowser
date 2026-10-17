@@ -65,6 +65,12 @@ struct AppView {
     initial_url: String,
     current_url: String,
     state: ViewState,
+    // --- window and panels (thread T9) ---
+    /// The count the page title announces ("(3) Inbox"); 0 when none or when notifications are off.
+    unread: u32,
+    /// When the page last reloaded (or was created): the periodic reload counts from it.
+    last_reload: Instant,
+    // --- end window and panels ---
 }
 
 struct Shared {
@@ -88,6 +94,84 @@ thread_local! {
     static WINDOWS: RefCell<HashMap<isize, SharedRef>> = RefCell::new(HashMap::new());
     static ICON_CHANGED: RefCell<Option<Box<dyn Fn()>>> = RefCell::new(None);
 }
+
+// --- window and panels (thread T9) --- per-panel options from the rail menu (src/panel_prefs.rs)
+/// Timer id for periodic reloads; the main window's WM_TIMER arm calls `reload_timer`.
+pub(crate) const RELOAD_TIMER: usize = 0xB05E;
+const RELOAD_TICK_MS: u32 = 30_000;
+
+/// Applies a panel's saved zoom and mute to its page (a no-op until the page exists).
+fn apply_prefs(shared: &SharedRef, id: u32) {
+    let prefs = crate::panel_prefs::current(id);
+    let host = shared.borrow().host.clone();
+    if let Some(host) = host {
+        let key = id.to_string();
+        let _ = host.set_zoom_percent(&key, prefs.zoom);
+        let _ = host.set_muted(&key, prefs.muted);
+    }
+}
+
+/// Re-applies one panel's options in every window after the rail menu changed them.
+pub fn prefs_changed(id: u32) {
+    let all: Vec<SharedRef> = WINDOWS.with(|windows| windows.borrow().values().cloned().collect());
+    for shared in all {
+        apply_prefs(&shared, id);
+        // A page whose notifications were switched off loses its mark at once.
+        if !crate::panel_prefs::current(id).notify {
+            if let Some(view) = shared.borrow().views.get(&id).cloned() { view.borrow_mut().unread = 0; }
+        }
+        let main = shared.borrow().main_hwnd;
+        arm_reload_timer(main);
+    }
+    ICON_CHANGED.with(|slot| { if let Some(callback) = slot.borrow().as_ref() { callback(); } });
+}
+
+/// Starts the reload tick when any panel reloads on a timer (it stops itself when none does).
+pub fn arm_reload_timer(main: HWND) {
+    let any = crate::profile::active().ok().is_some_and(|profile| crate::panel_prefs::PanelPrefsFile::load(profile.root()).any_reload());
+    if any { unsafe { SetTimer(Some(main), RELOAD_TIMER, RELOAD_TICK_MS, None); } }
+}
+
+/// One reload tick for the window `hwnd`: reloads each loaded panel whose interval has passed.
+/// Returns whether any panel still reloads on a timer, i.e. whether the tick should keep running.
+pub(crate) fn reload_timer(hwnd: HWND) -> bool {
+    let Some(shared) = WINDOWS.with(|windows| windows.borrow().values().find(|shared| shared.borrow().main_hwnd == hwnd).cloned()) else { return false; };
+    let Ok(profile) = crate::profile::active() else { return false; };
+    let file = crate::panel_prefs::PanelPrefsFile::load(profile.root());
+    let host = shared.borrow().host.clone();
+    let views: Vec<(u32, Rc<RefCell<AppView>>)> = shared.borrow().views.iter().map(|(id, view)| (*id, view.clone())).collect();
+    for (id, view) in views {
+        let minutes = file.get(id).reload_minutes;
+        if !crate::panel_prefs::reload_due(minutes, view.borrow().last_reload.elapsed()) { continue; }
+        if let Some(host) = host.as_ref() {
+            if host.reload_if_open(&id.to_string()) { view.borrow_mut().last_reload = Instant::now(); }
+        }
+    }
+    file.any_reload()
+}
+
+/// The address the web app's page is showing now (its start address before the page exists).
+pub fn page_url(id: u32) -> Option<String> {
+    WINDOWS.with(|windows| {
+        windows.borrow().values().find_map(|shared| {
+            let shared = shared.borrow();
+            let view = shared.views.get(&id)?;
+            shared.host.as_ref().and_then(|host| host.current_url(&id.to_string())).or_else(|| Some(view.borrow().initial_url.clone()))
+        })
+    })
+}
+
+/// The count to show on the rail button of web app `id` (0 while its panel is open or the page announces none).
+pub fn unread_count(id: u32) -> u32 {
+    WINDOWS.with(|windows| {
+        windows.borrow().values().map(|shared| {
+            let shared = shared.borrow();
+            if shared.active_id == Some(id) { return 0; }
+            shared.views.get(&id).map_or(0, |view| view.borrow().unread)
+        }).max().unwrap_or(0)
+    })
+}
+// --- end window and panels ---
 
 /// Timer id for suspending hidden apps; the main window's WM_TIMER arm calls `idle_timer`.
 pub(crate) const IDLE_TIMER: usize = 0xB05D;
@@ -125,6 +209,7 @@ pub fn register(app: &AppRef) {
     WINDOWS.with(|windows| { windows.borrow_mut().insert(app.borrow().hwnd.0 as isize, shared.clone()); });
     let config = profile.as_ref().and_then(|p| SidebarConfig::load(p.root()).ok()).unwrap_or_default();
     for web_app in config.apps { register_app_with(shared.clone(), web_app); }
+    arm_reload_timer(app.borrow().hwnd); // --- window and panels (thread T9) --- only when a panel reloads on a timer
 }
 
 /// Registers an app added after startup. The Customize panel or rail refresh path can call this.
@@ -211,6 +296,8 @@ impl Content {
                 initial_url: url.clone(),
                 current_url: url,
                 state: ViewState::Loading,
+                unread: 0,
+                last_reload: Instant::now(),
             }))).clone()
         };
         Self { shared, id, view, bounds: RECT::default(), dpi: 96 }
@@ -354,6 +441,7 @@ impl PanelContent for Content {
 
 fn make_events(weak: Weak<RefCell<Shared>>, app: AppRef) -> WebAppEvents {
     let favicons_weak = weak.clone();
+    let title_weak = weak.clone(); // --- window and panels (thread T9) ---
     let nav_weak = weak.clone();
     let failed_weak = weak.clone();
     let (download_event, download_plan) = App::download_hooks(&app);
@@ -361,7 +449,15 @@ fn make_events(weak: Weak<RefCell<Shared>>, app: AppRef) -> WebAppEvents {
         download_event: Some(download_event),
         download_plan: Some(download_plan),
         policy_event: None,
-        title_changed: None,
+        // --- window and panels (thread T9) --- a count in the title ("(3) Inbox") marks the rail button.
+        title_changed: Some(Rc::new(move |id, title| {
+            let Some(shared) = title_weak.upgrade() else { return; };
+            let Some(view) = lookup_view(&shared, id) else { return; };
+            let count = if id.parse::<u32>().is_ok_and(|id| crate::panel_prefs::current(id).notify) { crate::panel_prefs::title_notifications(&title) } else { 0 };
+            let changed = std::mem::replace(&mut view.borrow_mut().unread, count) != count;
+            if changed { ICON_CHANGED.with(|slot| { if let Some(callback) = slot.borrow().as_ref() { callback(); } }); }
+        })),
+        // --- end window and panels ---
         favicon_changed: Some(Rc::new(move |id, url, bytes| {
             let (Some(shared), Some(bytes)) = (favicons_weak.upgrade(), bytes) else { return; };
             let host = url.as_ref().and_then(Url::host_str).map(str::to_owned)
@@ -380,11 +476,14 @@ fn make_events(weak: Weak<RefCell<Shared>>, app: AppRef) -> WebAppEvents {
             let mut view = view.borrow_mut();
             match state {
                 AppNavigationState::Loading => view.state = ViewState::Loading,
-                AppNavigationState::Ready => view.state = ViewState::Ready,
+                AppNavigationState::Ready => { view.state = ViewState::Ready; view.last_reload = Instant::now(); }
                 AppNavigationState::Failed if view.state == ViewState::Loading => view.state = ViewState::Error("The page failed to load.".into()),
                 AppNavigationState::Failed => {}
             }
             }
+            // --- window and panels (thread T9) --- the page is up: its saved zoom and mute apply.
+            if let Ok(app_id) = id.parse::<u32>() { apply_prefs(&shared, app_id); }
+            // --- end window and panels ---
             invalidate_shared(&shared);
         })),
         failed: Some(Rc::new(move |id, message| {

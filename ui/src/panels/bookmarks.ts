@@ -189,6 +189,7 @@ export function startBookmarksPanel(root: HTMLElement): (message: Inbound) => vo
     const trail = el('span', 'pn-trail');
     const meta = el('span', 'pn-meta');
     meta.textContent = flat ? folderPath(item) : isFolder ? String(children(item.id).length) : hostOf(item.url ?? '');
+    if (isFolder && !flat) meta.classList.add('pn-count'); // --- window and panels (thread T9) --- `panel_folder_counts` hides it (data-folder-counts)
     const actions = el('span', 'pn-actions');
     if (!isFolder) actions.append(iconButton('external', `Open ${name} in a new tab`, (event) => { event.stopPropagation(); emit(bookmarkActionCommand('newtab', item.id)); }));
     else if (children(item.id).some((child) => child.kind === 'link')) actions.append(iconButton('external', `Open everything in ${name} in new tabs`, (event) => { event.stopPropagation(); emit(bookmarkActionCommand('openall', item.id)); }));

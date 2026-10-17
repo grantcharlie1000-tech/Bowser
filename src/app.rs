@@ -4883,6 +4883,7 @@ impl App {
         crate::website_look::set(crate::website_look::WebsiteLook::from_settings(&app.settings));
         crate::layout_prefs::set_status_overlay(app.settings.status_bar); // --- layout (thread T6) ---
         theme_features::install_launch_theme(&app.settings); // --- theme options ---
+        crate::window_prefs::publish(&app.settings.window); // --- window and panels (thread T9) ---
         if track_privacy {
             // A guest's list lives in memory only; so does one the profile folder cannot hold.
             app.downloads = if profile.is_guest() {
@@ -6896,6 +6897,10 @@ impl App {
             state.settings.ui_zoom = settings.ui_zoom;
             state.settings.layout_saved = settings.layout_saved.clone();
             // --- end layout ---
+            // --- window and panels (thread T9) --- the HTML chrome reads these from its next state push
+            state.settings.window = settings.window;
+            crate::window_prefs::publish(&settings.window);
+            // --- end window and panels ---
             (state.hwnd, state.edit)
         };
         // --- layout (thread T6) --- the docked panel moves edge at once; the link-address overlay

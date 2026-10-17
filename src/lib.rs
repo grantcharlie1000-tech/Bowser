@@ -47,6 +47,8 @@ pub mod browsing_data; // Delete Browsing Data: kinds, ranges and the plan (T3)
 pub mod history_retention; // drops visits older than the retention setting (T3)
 pub mod website_look; // the colour scheme sites are told, and forced dark mode (T3)
 pub mod layout_prefs; // bar positions, presets, density, UI zoom (T6)
+pub mod window_prefs; // window appearance and panel options (T9)
+pub mod panel_prefs; // per-web-panel zoom, mute, reload, width, notifications and removed panels (T9)
 pub mod shortcuts;
 pub mod sidebar;
 pub mod site_prefs;

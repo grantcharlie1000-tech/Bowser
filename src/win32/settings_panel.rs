@@ -1928,6 +1928,7 @@ fn save_form(hwnd: HWND) {
         // --- end layout ---
         // The GDI form has no controls for the theme options (the HTML settings page has them).
         themes: current.themes,
+        window: current.window, // --- window and panels (thread T9) --- no GDI controls; the file's values are kept
     };
     match settings::save(&path, &settings) {
         Ok(()) => {

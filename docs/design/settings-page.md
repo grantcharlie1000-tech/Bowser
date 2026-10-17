@@ -230,3 +230,8 @@ and a 2.6-unit hub, all on the 24-unit grid with the family's 1.5 stroke, round 
 Turning by one tooth pitch (60deg) lands on the same drawing, so the hover turn never snaps.
 The native menu (`src/win32/menu.rs`, `Icon::Gear`) draws the same outline as a polyline sampled
 from the same geometry.
+
+## Window appearance and Panels (T9)
+
+Behind More options in Appearance: Window gains Use animation, Buttons instead of sliders, Fade colours in background windows, Simple scrollbars, Monochrome settings icons and a Reset; a Panels card holds the close button, folder counters, floating-panel auto-close and a Reset. All are in the `window` snapshot object (src/window_prefs.rs) and reach the chrome as the `look` object of `state`. Per-web-panel options (zoom, mute, reload every 1-30 minutes, open in tab/window/private tab, title-count mark, own width, restore removed) live on the web app's rail right-click menu and in `panel_prefs.txt`, not on this page. Not added: open settings in a tab, popups in tabs (Bowser always does both), show title bar (Layout's title row), reset toolbars (toolbar editor), Windows and Reading list panels (none exist), show panel toggle (rail buttons are the toggles).
+
