@@ -101,6 +101,7 @@ jobs:
             store-stale-owner-probe.log
             store-fail-closed-environment-probe.log
             store-profile-private-isolation-probe.log
+            store-native-api-isolation.log
             store-update-probe.log
             store-action-probe.log
             ${{ runner.temp }}/bowser-store-rendering/
@@ -252,6 +253,14 @@ jobs:
           $test = Get-ChildItem target/debug/deps/bowser-*.exe | Sort-Object LastWriteTime -Descending | Select-Object -First 1
           & $test.FullName live_probe_profile_private_isolation --ignored --nocapture --test-threads=1 2>&1 | Tee-Object store-profile-private-isolation-probe.log
           if ($LASTEXITCODE -ne 0) { throw 'Actual profile/private isolation diagnostic failed.' }
+      - name: Probe broad-host native API effects across private UI and other profiles
+        if: ${{ !cancelled() && steps.native_build.outcome == 'success' }}
+        run: |
+          $env:LOCALAPPDATA = Join-Path $env:RUNNER_TEMP 'bowser-store-api-isolation-localappdata'
+          New-Item -ItemType Directory -Force $env:LOCALAPPDATA | Out-Null
+          $test = Get-ChildItem target/debug/deps/bowser-*.exe | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          & $test.FullName live_probe_native_api_isolation --ignored --nocapture --test-threads=1 2>&1 | Tee-Object store-native-api-isolation.log
+          if ($LASTEXITCODE -ne 0) { throw 'Native broad-host API isolation controls failed.' }
       - name: Probe signed-keyed process-crash recovery at exact native boundaries
         if: ${{ !cancelled() && steps.native_build.outcome == 'success' }}
         run: |
@@ -300,6 +309,7 @@ jobs:
             store-stale-owner-probe.log
             store-fail-closed-environment-probe.log
             store-profile-private-isolation-probe.log
+            store-native-api-isolation.log
             store-ui-profile-isolation-probe.log
             store-crash-recovery-probe.log
             store-update-probe.log

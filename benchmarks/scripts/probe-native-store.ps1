@@ -13,7 +13,7 @@ New-Item -ItemType Directory -Force $run | Out-Null
 $portFile=Join-Path $run 'port.txt';$readyFile=Join-Path $run 'ready.txt'
 @'
 const http=require('node:http'),fs=require('node:fs');const[port,ready]=process.argv.slice(2);
-const server=http.createServer((req,res)=>{const u=new URL(req.url,'http://127.0.0.1');res.setHeader('Cache-Control','no-store');if(u.pathname==='/ready'){fs.writeFileSync(ready,u.searchParams.get('token')||'');res.writeHead(204);res.end();return}res.setHeader('Content-Type','text/html');res.setHeader('Content-Security-Policy',"default-src 'none';script-src 'unsafe-inline';connect-src 'self'");res.end(`<!doctype html><title>Bowser toolbar</title><div role="document" aria-label="Bowser toolbar"><button>Add to Bowser</button><input aria-label="Address and search bar"><input aria-label="Search extensions and themes"><a href="#">Stylus</a></div><h1>Disposable native browsing control</h1><script>addEventListener('load',()=>fetch('/ready?token='+encodeURIComponent(new URL(location.href).searchParams.get('token')),{cache:'no-store'}))</script>`)});server.listen(0,'127.0.0.1',()=>fs.writeFileSync(port,String(server.address().port)));
+const server=http.createServer((req,res)=>{const u=new URL(req.url,'http://127.0.0.1');res.setHeader('Cache-Control','no-store');if(u.pathname==='/ready'){fs.writeFileSync(ready,u.searchParams.get('token')||'');res.writeHead(204);res.end();return}res.setHeader('Content-Type','text/html');res.setHeader('Content-Security-Policy',"default-src 'none';script-src 'unsafe-inline';connect-src 'self'");res.end(`<!doctype html><title>Bowser toolbar</title><div role="document" aria-label="Bowser toolbar"><button>Add to Bowser</button><input aria-label="Address and search bar"><input aria-label="Search Chrome Web Store"><a href="#">Stylus</a></div><h1>Disposable native browsing control</h1><script>addEventListener('load',()=>fetch('/ready?token='+encodeURIComponent(new URL(location.href).searchParams.get('token')),{cache:'no-store'}))</script>`)});server.listen(0,'127.0.0.1',()=>fs.writeFileSync(port,String(server.address().port)));
 '@|Set-Content (Join-Path $run 'server.cjs') -Encoding utf8
 $initialUrl=$null;$server=$null;$readyToken=$null
 Add-Type -AssemblyName System.Windows.Forms, System.Drawing, UIAutomationClient, UIAutomationTypes
@@ -418,7 +418,8 @@ function Probe-OriginalDiscovery {
    Invoke-BoundControl $dismiss;$report.google_promotion='native-source-bound-no-thanks-invoked'
    [void](Wait-CwsPath '/category/extensions')
   }
-  $bound=Wait-BoundControl 'cws' 'Search extensions and themes';$search=$bound.control
+  $bound=Wait-BoundControl 'cws' 'Search Chrome Web Store';$search=$bound.control
+  if($search.Current.ControlType -ne [Windows.Automation.ControlType]::ComboBox){throw 'Original CWS search was not the observed exact native ComboBox.'}
   $search.SetFocus();Field-LiteralText $bound 'Stylus'
   $value=$null
   if(!$search.TryGetCurrentPattern([Windows.Automation.ValuePattern]::Pattern,[ref]$value) -or $value.Current.Value -cne 'Stylus' -or !$search.Current.HasKeyboardFocus){throw 'Original CWS search did not retain exact native input/focus; no Enter sent.'}
@@ -558,7 +559,7 @@ function Run-InstallJourney {
  $report.popup_closed='native-owned-window-pattern-close-observed'
  Assert-Owned;[void][BowserStoreSmoke]::ShowWindow($script:window,9)
  [void][BowserStoreSmoke]::SetForegroundWindow($script:window)
- [Windows.Automation.AutomationElement]::FromHandle($script:window).SetFocus()
+ # The owned native root need not itself support UIA focus; exact foreground remains mandatory.
  if([BowserStoreSmoke]::GetForegroundWindow() -ne $script:window){throw 'Separate Settings task could not activate the exact owned main window.'}
  # Toggle via the actual accessible switch, then re-enable before removal.
  $toggle=Wait-Control 'uBlock Origin Lite on';Toggle-Control $toggle
@@ -598,7 +599,7 @@ try {
  [void](Wait-BoundControl 'toolbar' 'Address and search bar')
  $spoof=Find-Document 'loopback'
  if(!$spoof -or $spoof.source -cne $initialUrl){throw 'Actual controlled spoof document source was not exposed.'}
- foreach($label in @('Add to Bowser','Address and search bar','Search extensions and themes')){
+ foreach($label in @('Add to Bowser','Address and search bar','Search Chrome Web Store')){
   $spoofs=$spoof.document.FindAll([Windows.Automation.TreeScope]::Descendants,[Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::NameProperty,$label))
   if($spoofs.Count -ne 1){throw 'Required website spoof-label positive control was not exposed.'}
  }

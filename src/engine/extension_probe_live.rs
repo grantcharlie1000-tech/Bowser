@@ -1973,3 +1973,117 @@ fn live_successful_document_gate() {
     println!("NATIVE_DOCUMENT_GATE actual_failed=true actual_cancelled=true overlapping_native_ids_differ=true latest_success=true same_document_source=true stop_closed_ineligible=true");
     session.close();
 }
+
+/// Broad-host native API negative controls, not a general Chrome compatibility claim.
+#[test]
+#[ignore = "requires native private/other-profile/Settings views and real extension APIs"]
+fn live_probe_native_api_isolation() {
+    use crate::chrome_host::host::{ChromeEnv, ChromeHost, ChromeHostOptions, View, CHROME_PROFILE};
+    use extensions::json::Value;
+    use windows::core::Interface;
+    unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED).ok().unwrap() };
+    let root=temp_root();let profile=root.join("api-owner");let (id,folder)=install_fixture(&profile,"probe-native-api-isolation");
+    let loopback=Loopback::start();let normal=loopback.page("api-normal-positive");let private=loopback.page("api-private-negative");
+    // Genuine private-first setup supplies the production always-on private blocker.
+    let mut owner=Session::open_configured(&profile,vec![(id.clone(),folder.clone())],vec![(id.clone(),true)],&private,true,true);
+    owner.engine.select_tab(TabId(2)).unwrap();owner.engine.navigate_tab(TabId(2),&normal).unwrap();
+    let (loaded,failure)=owner.wait_for_add(&profile,&id);assert!(failure.is_none());assert_eq!(loaded.as_deref(),Some(KEY_FIXTURE_ID));
+    owner.engine.navigate_tab(TabId(2),&normal).unwrap();
+    let other_loopback=Loopback::start();let other_url=other_loopback.page("api-other-profile-negative");
+    let mut other=Session::open(&root.join("api-other-profile"),vec![],vec![],&other_url);
+    for (tab,url) in [(TabId(2),&normal),(TabId(1),&private)] {
+        let ready=format!("location.href==={}&&document.readyState==='complete'",crate::chrome_host::protocol::json_string(url.as_str()));
+        assert!(pump_until(Duration::from_secs(20),||command_view(&mut owner,tab,&ready).as_deref()==Some("true")),"controlled owner/private page did not actually load");
+    }
+    let ready=format!("location.href==={}&&document.readyState==='complete'",crate::chrome_host::protocol::json_string(other_url.as_str()));
+    assert!(pump_until(Duration::from_secs(20),||other.browsing_script(&ready).as_deref()==Some("true")),"other profile page did not actually load");
+    assert!(pump_until(Duration::from_secs(15),||command_view(&mut owner,TabId(2),"document.documentElement.getAttribute('data-bowser-api-content-ready')").as_deref()==Some("\"yes\"")),"normal content listener positive control missing after actual Add");
+    assert_eq!(command_view(&mut owner,TabId(1),"document.documentElement.getAttribute('data-bowser-api-content-ready')").as_deref(),Some("null"));
+    assert_eq!(other.browsing_script("document.documentElement.getAttribute('data-bowser-api-content-ready')").as_deref(),Some("null"));
+    for (tab,private_expected) in [(TabId(2),false),(TabId(1),true)] {
+        let view=owner.engine.probe_document_webview(tab).expect("actual controlled native view");
+        let native_profile=unsafe{view.cast::<webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2_13>().unwrap().Profile().unwrap()};
+        let mut name=windows::core::PWSTR::null();let mut private_flag=windows::core::BOOL::default();
+        unsafe{native_profile.ProfileName(&mut name).unwrap();native_profile.IsInPrivateModeEnabled(&mut private_flag).unwrap();}
+        let name=webview2_com::CoTaskMemPWSTR::from(name).to_string();assert_eq!(private_flag.as_bool(),private_expected);
+        if private_expected {assert_eq!(name,crate::private::PRIVATE_PROFILE);}else{assert_ne!(name,crate::private::PRIVATE_PROFILE);assert_ne!(name,CHROME_PROFILE);}
+        println!("NATIVE_API_ISOLATION owned_view={tab:?} actual_profile={name:?} actual_in_private={}",private_flag.as_bool());
+    }
+    let env=ChromeEnv::new(owner.engine.chrome_environment().expect("real UI scheme environment"));
+    let ready=Rc::new(std::cell::Cell::new(false));let ready_sink=ready.clone();let failed=Rc::new(std::cell::Cell::new(false));let failed_sink=failed.clone();
+    let created=Rc::new(RefCell::new(None));let sink=created.clone();
+    ChromeHost::create(&env,ChromeHostOptions {
+        parent:owner.host,bounds:RECT{left:0,top:0,right:800,bottom:600},view:View::Settings,
+        on_command:Rc::new(move|command|{if matches!(command,crate::chrome_host::protocol::Command::Ready){ready_sink.set(true);}}),
+        on_failed:Rc::new(move||failed_sink.set(true)),on_accelerator:None,
+    },move|result|*sink.borrow_mut()=Some(result)).unwrap();
+    assert!(pump_until(Duration::from_secs(30),||created.borrow().is_some()||failed.get())&&!failed.get());
+    let ui=created.borrow_mut().take().unwrap().unwrap();
+    assert!(pump_until(Duration::from_secs(30),||ready.get()||failed.get())&&ready.get()&&!failed.get());
+    let ui_view=ui.probe_native_webview();
+    let ui_profile=unsafe{ui_view.cast::<webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2_13>().unwrap().Profile().unwrap()};
+    let mut name=windows::core::PWSTR::null();let mut in_private=windows::core::BOOL::default();
+    unsafe{ui_profile.ProfileName(&mut name).unwrap();ui_profile.IsInPrivateModeEnabled(&mut in_private).unwrap();}
+    assert_eq!(webview2_com::CoTaskMemPWSTR::from(name).to_string(),CHROME_PROFILE);assert!(in_private.as_bool());
+    let mut ui_source=windows::core::PWSTR::null();unsafe{ui_view.Source(&mut ui_source).unwrap();}
+    assert_eq!(webview2_com::CoTaskMemPWSTR::from(ui_source).to_string(),View::Settings.start_url());
+    owner.open_page(&id,&folder,extensions::PageKind::Popup).unwrap();
+    assert!(pump_until(Duration::from_secs(10),||owner.page_script("document.documentElement.getAttribute('data-ready')").as_deref()==Some("\"yes\"")));
+    let ui_read=|script:&str| {
+        let value=Rc::new(RefCell::new(None));let sink=value.clone();super::extension_page::execute_script(&ui_view,script,Box::new(move|answer|*sink.borrow_mut()=Some(answer)));
+        assert!(pump_until(Duration::from_secs(10),||value.borrow().is_some()));let result=value.borrow_mut().take().flatten();result
+    };
+    // Read-only document lifetime receipts prevent a reload erasing a negative effect unnoticed.
+    // Compact native JSON result stays below the existing 64-byte reader cap.
+    let receipt_script=|url:&str|format!("[location.href==={},performance.timeOrigin,document.readyState==='complete']",crate::chrome_host::protocol::json_string(url));
+    let normal_receipt=receipt_script(normal.as_str());let private_receipt=receipt_script(private.as_str());
+    let other_receipt=receipt_script(other_url.as_str());let ui_receipt=receipt_script(&View::Settings.start_url());
+    let normal_document=command_view(&mut owner,TabId(2),&normal_receipt).expect("normal document receipt");
+    let private_document=command_view(&mut owner,TabId(1),&private_receipt).expect("private document receipt");
+    let other_document=other.browsing_script(&other_receipt).expect("other document receipt");
+    let ui_document=ui_read(&ui_receipt).expect("actual UI document receipt");
+    for receipt in [&normal_document,&private_document,&other_document,&ui_document] {
+        assert!(receipt.len()<=64,"document lifetime receipt exceeded existing reader cap");
+        assert!(matches!(extensions::json::parse(receipt),Some(Value::Array(values)) if values.len()==3&&values[0]==Value::Bool(true)&&matches!(&values[1],Value::Number(_))&&values[2]==Value::Bool(true)),"exact expected loaded document receipt missing");
+    }
+    let token=format!("api-isolation-{}",std::process::id());
+    let script=r#"(()=>{document.documentElement.removeAttribute('data-api-isolation-result');const token=TOKEN;const result={complete:false,tabs:[],attempts:[]};(async()=>{try{const tabs=await chrome.tabs.query({});result.tabs=tabs.map(t=>({id:t.id,incognito:t.incognito,url:t.url}));if(tabs.length>16||tabs.some(t=>!Number.isInteger(t.id)))throw Error('Native inventory exceeded bounds or returned invalid identity');for(const tab of tabs){const attempt={id:tab.id,token:token+'-'+tab.id};try{attempt.execute=await chrome.scripting.executeScript({target:{tabId:tab.id},func:token=>{document.documentElement.setAttribute('data-bowser-api-script',token);return token},args:[attempt.token]});attempt.executeAllowed=true}catch(e){attempt.executeAllowed=false;attempt.executeError=String(e)}try{attempt.message=await chrome.tabs.sendMessage(tab.id,{type:'bowser-api-isolation',token:attempt.token});attempt.messageAllowed=true}catch(e){attempt.messageAllowed=false;attempt.messageError=String(e)}result.attempts.push(attempt)}}catch(e){result.error=String(e)}finally{result.complete=true;document.documentElement.setAttribute('data-api-isolation-result',JSON.stringify(result))}})();return true})()"#.replace("TOKEN",&crate::chrome_host::protocol::json_string(&token));
+    owner.page_script(&script);
+    let mut receipt=None;
+    assert!(pump_until(Duration::from_secs(30),||{receipt=owner.page_script("JSON.parse(document.documentElement.getAttribute('data-api-isolation-result')||'null')").and_then(|raw|extensions::json::parse(&raw));receipt.as_ref().is_some_and(|r|command_field(r,"complete")==Some(&Value::Bool(true)))}),"native enumeration/injection/message attempts did not settle");
+    let receipt=receipt.unwrap();println!("NATIVE_API_ISOLATION receipt={receipt:?}");assert!(command_field(&receipt,"error").is_none());
+    let Some(Value::Array(tabs))=command_field(&receipt,"tabs") else{panic!("native query provenance missing")};
+    let Some(Value::Array(attempts))=command_field(&receipt,"attempts") else{panic!("native attempt receipts missing")};
+    assert!(!tabs.is_empty());assert_eq!(tabs.len(),attempts.len());
+    for (tab,attempt) in tabs.iter().zip(attempts){assert_eq!(command_field(tab,"id"),command_field(attempt,"id"));}
+    assert_eq!(command_view(&mut owner,TabId(2),&normal_receipt).as_ref(),Some(&normal_document),"normal document changed during native API attempts");
+    assert_eq!(command_view(&mut owner,TabId(1),&private_receipt).as_ref(),Some(&private_document),"private document changed during native API attempts");
+    assert_eq!(other.browsing_script(&other_receipt).as_ref(),Some(&other_document),"other-profile document changed during native API attempts");
+    assert_eq!(ui_read(&ui_receipt).as_ref(),Some(&ui_document),"UI document changed during native API attempts");
+    let normal_effect=command_view(&mut owner,TabId(2),"document.documentElement.getAttribute('data-bowser-api-script')").and_then(|raw|extensions::json::parse(&raw));
+    let Some(Value::String(normal_token))=normal_effect else{panic!("normal actual executeScript effect missing")};
+    assert!(normal_token.starts_with(&format!("{token}-")));
+    let matching:Vec<_>=attempts.iter().filter(|attempt|command_field(attempt,"token")==Some(&Value::String(normal_token.clone()))).collect();assert_eq!(matching.len(),1);
+    let positive=matching[0];assert_eq!(command_field(positive,"executeAllowed"),Some(&Value::Bool(true)));assert_eq!(command_field(positive,"messageAllowed"),Some(&Value::Bool(true)));
+    assert!(matches!(command_field(positive,"execute"),Some(Value::Array(results)) if results.iter().any(|result|command_field(result,"frameId")==Some(&Value::Number("0".into()))&&command_field(result,"result")==Some(&Value::String(normal_token.clone())))),"native executeScript return did not prove the normal effect token");
+    let reply=command_field(positive,"message").expect("native message reply missing");assert_eq!(command_field(reply,"received"),Some(&Value::Bool(true)));assert_eq!(command_field(reply,"token"),Some(&Value::String(normal_token.clone())));
+    let expected=crate::chrome_host::protocol::json_string(&normal_token);
+    for attribute in ["data-bowser-api-script","data-bowser-api-message"] {
+        let read=format!("document.documentElement.getAttribute('{attribute}')");
+        assert_eq!(command_view(&mut owner,TabId(2),&read).as_deref(),Some(expected.as_str()),"normal owned view did not provide the actual native API positive control");
+        assert_eq!(command_view(&mut owner,TabId(1),&read).as_deref(),Some("null"),"private view was affected by native extension API");
+        assert_eq!(other.browsing_script(&read).as_deref(),Some("null"),"other profile was affected by native extension API");
+        assert_eq!(ui_read(&read).as_deref(),Some("null"),"genuine UI profile was affected by native extension API");
+    }
+    assert_eq!(command_view(&mut owner,TabId(2),&normal_receipt).as_ref(),Some(&normal_document));
+    assert_eq!(command_view(&mut owner,TabId(1),&private_receipt).as_ref(),Some(&private_document));
+    assert_eq!(other.browsing_script(&other_receipt).as_ref(),Some(&other_document));
+    assert_eq!(ui_read(&ui_receipt).as_ref(),Some(&ui_document));
+    // These are metadata-exposure negatives, never URL-based native-ID bindings or routing.
+    for tab in tabs {
+        assert_ne!(command_field(tab,"incognito"),Some(&Value::Bool(true)),"normal extension enumerated an incognito native tab");
+        if let Some(Value::String(url))=command_field(tab,"url") {assert_ne!(url.as_str(),private.as_str());assert_ne!(url.as_str(),other_url.as_str());assert!(!url.starts_with("bowser-ui:"),"normal extension exposed privileged UI URL metadata");}
+    }
+    println!("NATIVE_API_ISOLATION normal_execute_and_message_positive=true private_other_profile_ui_effects_absent=true native_query_id_provenance=true scope=returned-ID-effects-and-known-URL-incognito-metadata-not-hidden-ID-proof-or-every-API");
+    ui.close();drop(ui_view);drop(ui_profile);drop(ui);drop(env);other.close();drop(other_loopback);owner.close();drop(loopback);remove_with_retries(&root);
+}
