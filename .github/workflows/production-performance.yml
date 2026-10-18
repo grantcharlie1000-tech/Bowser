@@ -96,6 +96,15 @@ jobs:
           $env:BOWSER_TEST_EDGE='C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe'
           if (-not (Test-Path $env:BOWSER_TEST_EDGE)) { $env:BOWSER_TEST_EDGE='C:/Program Files/Microsoft/Edge/Application/msedge.exe' }
           if (-not (Test-Path $env:BOWSER_TEST_EDGE)) { throw 'Edge required for actual all-surface module/CSP smoke' }
+          # Compare actual browser module first-use costs with the exact frozen baseline assets.
+          New-Item -ItemType Directory -Force ../../evidence/baseline-ui | Out-Null
+          $archive=Join-Path $env:RUNNER_TEMP 'baseline-ui.tar'
+          git -C .. archive --format=tar --output=$archive 8a60dca2ac7de6d369c9b65584fd621a7013f491 ui/dist
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot archive frozen baseline UI bytes' }
+          tar -xf $archive -C ../../evidence/baseline-ui
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot extract frozen baseline UI bytes' }
+          $env:BOWSER_UI_BASELINE_DIST=(Resolve-Path ../../evidence/baseline-ui/ui/dist).Path
+          $env:BOWSER_UI_SURFACE_REPORT=Join-Path (Resolve-Path ../../evidence).Path 'surface-module-regressions.json'
           node --test test/hardening.mjs test/surface-modules.mjs
           if ($LASTEXITCODE -ne 0) { throw 'Actual module/CSP smoke failed' }
           Pop-Location
@@ -143,6 +152,8 @@ jobs:
           path: |
             evidence/frozen/
             evidence/candidate/
+            evidence/baseline-ui/
+            evidence/surface-module-regressions.json
             evidence/validity/*.json
             evidence/validity/*.csv
             evidence/validity/*stderr.txt
