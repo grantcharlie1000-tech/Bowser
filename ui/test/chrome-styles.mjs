@@ -72,3 +72,25 @@ test('address_bar_show off hides only the address part of the pill: the search f
   assert.equal(r.hidden['.tb-zoom'], '1', 'the page buttons stay');
   assert.equal(r.focused, '1', 'Ctrl+L (focus in the field) brings the address field back');
 });
+
+test('tabs_close_always and tabs_close_left reach the vertical sidebar rows; collapsed and pinned tiles still hide it', { skip }, () => {
+  const row = (extra = '') => `<div class="side-tab${extra}"><span class="side-face"></span><span class="side-title">Tab</span><span class="side-flags"></span><button class="side-close"></button></div>`;
+  const list = (cls, rows) => `<div class="side-list${cls}" style="width:240px">${rows}</div>`;
+  const r = measure(`
+    <div id="app" class="sidebar"><div id="plain">${list('', row())}</div><div id="always">${list(' side-close-always', row())}</div>
+    <div id="left">${list(' side-close-left side-close-always', row())}</div></div>`, `
+    out.plain = cs('#plain .side-close').display;
+    out.always = cs('#always .side-close').display;
+    var close = $('#left .side-close').getBoundingClientRect(), face = $('#left .side-face').getBoundingClientRect();
+    out.leftFirst = close.right <= face.left;
+    out.rightFirst = $('#always .side-close').getBoundingClientRect().left > $('#always .side-face').getBoundingClientRect().right;
+  `);
+  const collapsed = measure(`<div id="app" class="sidebar is-collapsed">${list(' side-close-always', row())}</div>`, `
+    out.display = cs('.side-close').display;
+  `);
+  assert.equal(r.plain, 'none', 'off: the close button waits for hover');
+  assert.equal(r.always, 'grid', 'close-always: every unpinned row shows it');
+  assert.equal(r.rightFirst, true, 'by default it is at the end of the row');
+  assert.equal(r.leftFirst, true, 'close-left: it comes before the favicon');
+  assert.equal(collapsed.display, 'none', 'a collapsed sidebar keeps hiding it');
+});

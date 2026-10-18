@@ -284,6 +284,38 @@
 .side-tab:is(:hover, :focus-within) .side-close { display: grid; }
 .side-tab .side-close:hover,
 .side-tab .side-close:focus-visible { background: var(--bw-hover); opacity: 1; }
+/* Settings > Tabs, honoured as the strip honours them: "Always show the close button" keeps it on every
+   unpinned row (its pin column is free there), and "Close button on the left side" moves it before the
+   favicon. Collapsed and pinned tiles keep hiding it (the #app rules outrank these). */
+.side-list.side-close-always .side-tab:not(.pinned) .side-close { display: grid; }
+.side-list.side-close-left .side-tab:not(.pinned) { grid-template-columns: auto 16px minmax(0, 1fr) auto; padding-inline: var(--bw-space-1) var(--bw-space-2); }
+.side-list.side-close-left .side-tab:not(.pinned) .side-close { grid-column: 1; grid-row: 1; }
+.side-list.side-close-left .side-tab:not(.pinned) .side-face { grid-column: 2; }
+.side-list.side-close-left .side-tab:not(.pinned) .side-title { grid-column: 3; }
+.side-list.side-close-left .side-tab:not(.pinned) .side-flags { grid-column: 4; }
+
+/* Page load progress (tabs_load_indicator): a line along the bottom of the row, or a ring on the favicon. */
+.side-loadbar {
+  position: absolute;
+  left: var(--bw-space-2);
+  right: var(--bw-space-2);
+  bottom: 0;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--bw-accent);
+  transform: scaleX(var(--pct, 0));
+  transform-origin: left center;
+  pointer-events: none;
+}
+.side-face > .side-ring {
+  display: block;
+  position: absolute;
+  inset: -3px;
+  border-radius: 50%;
+  background: conic-gradient(var(--bw-accent) calc(var(--pct, 0) * 1%), transparent 0);
+  mask: radial-gradient(farthest-side, transparent calc(100% - 2px), #000 calc(100% - 1.5px));
+  pointer-events: none;
+}
 
 /* ---- Group header: 6px colour dot, regular-weight name, 2px colour underline; no pill chrome ---- */
 .side-group {
