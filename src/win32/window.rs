@@ -696,7 +696,7 @@ impl WindowChrome {
             overlay,
             client: (width, height),
             layout: layout::compute_in_frame(width, height, dpi, 1, 0, false),
-            palette: auto_hide::chrome_palette(), // --- auto-hide (T11) --- the solid palette while a bar is auto-hidden
+            palette: glass::palette(), // --- auto-hide (T11) --- a new window has hidden no bar yet, so it starts glass
             tabs: Vec::with_capacity(8),
             slots: Vec::with_capacity(8),
             stack_tabs: Vec::new(), // --- two-level stacks (T10b) ---
@@ -2474,7 +2474,7 @@ unsafe extern "system" fn window_proc(
                 glass::refresh_system_state();
                 let _ = glass::apply(hwnd);
                 let settled = with_chrome(hwnd, |s| {
-                    s.palette = auto_hide::chrome_palette(); // --- auto-hide (T11) ---
+                    s.palette = auto_hide::chrome_palette(hwnd); // --- auto-hide (T11) --- this window's
                     let settled = s.motion.set_snap(!animations_enabled(), Instant::now());
                     let rail_settled = s.surface.set_rail_snap(!animations_enabled(), Instant::now());
                     let settled = settled || rail_settled;
@@ -9187,7 +9187,7 @@ fn html_sync(hwnd: HWND) {
     let look = settings.private_theme.appearance(App::tab_private(&app, id), system_look);
     // --- theme options --- the person's colours, the accent (the page's, when asked) and the tint.
     // --- auto-hide (T11) --- solid while a bar is out of the layout: a revealed bar floats over the page.
-    let (palette, _) = App::themed_palette(&app, look, glass::backdrop_mode() == glass::BackdropMode::Solid || auto_hide::solid());
+    let (palette, _) = App::themed_palette(&app, look, view_solid(hwnd));
     // --- end theme options ---
     let dark = look == crate::theme::Appearance::Dark;
     let state = ViewState {
@@ -9195,7 +9195,7 @@ fn html_sync(hwnd: HWND) {
         pillx,
         pillw,
         menux,
-        solid: glass::backdrop_mode() == glass::BackdropMode::Solid || auto_hide::solid(), // --- auto-hide (T11) ---
+        solid: view_solid(hwnd), // --- auto-hide (T11) ---
         dark,
         back: App::tab_can_go_back(&app, id),
         forward: App::tab_can_go_forward(&app, id),
@@ -10179,6 +10179,12 @@ pub(super) fn request_composer(
     defer_html_command(hwnd, DeferredChromeCommand::ComposerOpen);
 }
 
+/// Whether window `hwnd`'s views are solid: the system backdrop is, or this window (not another
+/// one) has a bar auto-hidden.
+fn view_solid(hwnd: HWND) -> bool {
+    glass::backdrop_mode() == glass::BackdropMode::Solid || auto_hide::solid(hwnd)
+}
+
 pub(super) fn popup_state_json(hwnd: HWND) -> Option<String> {
     let app = app_of(hwnd)?;
     let (palette, dpi) = with_chrome(hwnd, |s| (s.palette, s.dpi))?;
@@ -10193,7 +10199,7 @@ pub(super) fn popup_state_json(hwnd: HWND) -> Option<String> {
         pillx: 0,
         pillw: 0,
         menux: 0,
-        solid: glass::backdrop_mode() == glass::BackdropMode::Solid || auto_hide::solid(), // --- auto-hide (T11) ---
+        solid: view_solid(hwnd), // --- auto-hide (T11) ---
         dark: glass::appearance() == crate::theme::Appearance::Dark,
         back: App::tab_can_go_back(&app, id),
         forward: App::tab_can_go_forward(&app, id),
