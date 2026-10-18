@@ -52,6 +52,79 @@ jobs:
             store-runtime-probe.log
           if-no-files-found: error
           retention-days: 14
+      - name: Probe genuine action activeTab through in-process CDP without unsafe flags
+        run: |
+          $env:BOWSER_EXTENSION_TRACE = '1'
+          $env:LOCALAPPDATA = Join-Path $env:RUNNER_TEMP 'bowser-store-isolated-localappdata'
+          $test = Get-ChildItem target/debug/deps/bowser-*.exe | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          & $test.FullName live_probe_native_action_active_tab --ignored --nocapture --test-threads=1 2>&1 | Tee-Object store-action-probe.log
+          if ($LASTEXITCODE -ne 0) { throw 'Action activeTab feasibility fixture failed.' }
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+      - name: Install locked Store renderer dependencies
+        working-directory: ui
+        run: npm ci --no-audit --no-fund
+      - name: Capture real-browser Store rendering, not native installation evidence
+        working-directory: ui
+        run: node scripts/capture-store.mjs "$env:RUNNER_TEMP/bowser-store-rendering"
+      - name: Measure actual native zero versus four extension profiles without benchmark mode
+        if: ${{ !cancelled() && steps.real_packages.outcome == 'success' && env.BOWSER_EXTENSION_MEASURE_ROOT != '' }}
+        run: |
+          cargo +stable build --release --locked --bin bowser --features html-chrome-default
+          if ($LASTEXITCODE -ne 0) { throw 'Release executable for actual extension measurement failed to build.' }
+          ./benchmarks/scripts/measure-native-extensions.ps1 -ProfilesRoot $env:BOWSER_EXTENSION_MEASURE_ROOT
+      - name: Remove only the disposable package measurement copies
+        if: always()
+        run: |
+          $path = $env:BOWSER_EXTENSION_MEASURE_ROOT
+          if ($path) {
+            $full = [IO.Path]::GetFullPath($path)
+            $allowed = [IO.Path]::GetFullPath($env:RUNNER_TEMP).TrimEnd('\') + '\'
+            if (-not $full.StartsWith($allowed, [StringComparison]::OrdinalIgnoreCase) -or -not ([IO.Path]::GetFileName($full).StartsWith('bowser-extension-measurement-'))) { throw 'Refusing cleanup outside the disposable measurement root.' }
+            if (Test-Path -LiteralPath $full) { Remove-Item -LiteralPath $full -Recurse -Force }
+          }
+      - name: Save diagnostic evidence, including unavailable packages
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: store-download-probe-${{ github.sha }}
+          path: |
+            store-download-probe.log
+            store-runtime-probe.log
+            store-fixture-probe.log
+            store-pending-native-probe.log
+            store-crash-recovery-probe.log
+            store-completed-restart-probe.log
+            store-stale-owner-probe.log
+            store-fail-closed-environment-probe.log
+            store-profile-private-isolation-probe.log
+            store-update-probe.log
+            store-action-probe.log
+            ${{ runner.temp }}/bowser-store-rendering/
+            ${{ runner.temp }}/bowser-native-store/
+            ${{ runner.temp }}/bowser-extension-metrics/
+          if-no-files-found: error
+          retention-days: 14
+
+  native-safety:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Preserve fingerprinted source bytes
+        run: git config --global core.autocrlf false
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Install official Rust toolchain
+        run: rustup toolchain install stable --profile minimal
+      - name: Build independent native safety executable without marketplace or resource dependencies
+        run: |
+          cargo +stable test --locked --lib --no-run
+          if ($LASTEXITCODE -ne 0) { throw 'Native safety executable failed to build.' }
       - name: Probe local fixture restart, worker messaging, and hosted-context boundaries
         if: ${{ !cancelled() }}
         run: |
@@ -113,7 +186,14 @@ jobs:
           $test = Get-ChildItem target/debug/deps/bowser-*.exe | Sort-Object LastWriteTime -Descending | Select-Object -First 1
           & $test.FullName live_probe_same_identity_update_and_rollback --ignored --nocapture --test-threads=1 2>&1 | Tee-Object store-update-probe.log
           if ($LASTEXITCODE -ne 0) { throw 'Update/storage/rollback feasibility probe failed.' }
-      - name: Save independent native safety gate evidence before resource measurements
+      - name: Probe genuine privileged Settings UI profile isolation
+        if: ${{ !cancelled() }}
+        run: |
+          $env:BOWSER_EXTENSION_TRACE = '1'
+          $test = Get-ChildItem target/debug/deps/bowser-*.exe | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          & $test.FullName live_probe_ui_profile_isolation --ignored --nocapture --test-threads=1 2>&1 | Tee-Object store-ui-profile-isolation-probe.log
+          if ($LASTEXITCODE -ne 0) { throw 'Actual Settings UI profile isolation diagnostic failed.' }
+      - name: Save independent native safety gate evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
@@ -124,65 +204,11 @@ jobs:
             store-stale-owner-probe.log
             store-fail-closed-environment-probe.log
             store-profile-private-isolation-probe.log
+            store-ui-profile-isolation-probe.log
             store-crash-recovery-probe.log
             store-update-probe.log
           if-no-files-found: error
           retention-days: 14
-      - name: Probe genuine action activeTab through in-process CDP without unsafe flags
-        run: |
-          $env:BOWSER_EXTENSION_TRACE = '1'
-          $env:LOCALAPPDATA = Join-Path $env:RUNNER_TEMP 'bowser-store-isolated-localappdata'
-          $test = Get-ChildItem target/debug/deps/bowser-*.exe | Sort-Object LastWriteTime -Descending | Select-Object -First 1
-          & $test.FullName live_probe_native_action_active_tab --ignored --nocapture --test-threads=1 2>&1 | Tee-Object store-action-probe.log
-          if ($LASTEXITCODE -ne 0) { throw 'Action activeTab feasibility fixture failed.' }
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        with:
-          node-version: '22'
-      - name: Install locked Store renderer dependencies
-        working-directory: ui
-        run: npm ci --no-audit --no-fund
-      - name: Capture real-browser Store rendering, not native installation evidence
-        working-directory: ui
-        run: node scripts/capture-store.mjs "$env:RUNNER_TEMP/bowser-store-rendering"
-      - name: Measure actual native zero versus four extension profiles without benchmark mode
-        if: ${{ !cancelled() && steps.real_packages.outcome == 'success' && env.BOWSER_EXTENSION_MEASURE_ROOT != '' }}
-        run: |
-          cargo +stable build --release --locked --bin bowser --features html-chrome-default
-          if ($LASTEXITCODE -ne 0) { throw 'Release executable for actual extension measurement failed to build.' }
-          ./benchmarks/scripts/measure-native-extensions.ps1 -ProfilesRoot $env:BOWSER_EXTENSION_MEASURE_ROOT
-      - name: Remove only the disposable package measurement copies
-        if: always()
-        run: |
-          $path = $env:BOWSER_EXTENSION_MEASURE_ROOT
-          if ($path) {
-            $full = [IO.Path]::GetFullPath($path)
-            $allowed = [IO.Path]::GetFullPath($env:RUNNER_TEMP).TrimEnd('\') + '\'
-            if (-not $full.StartsWith($allowed, [StringComparison]::OrdinalIgnoreCase) -or -not ([IO.Path]::GetFileName($full).StartsWith('bowser-extension-measurement-'))) { throw 'Refusing cleanup outside the disposable measurement root.' }
-            if (Test-Path -LiteralPath $full) { Remove-Item -LiteralPath $full -Recurse -Force }
-          }
-      - name: Save diagnostic evidence, including unavailable packages
-        if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: store-download-probe-${{ github.sha }}
-          path: |
-            store-download-probe.log
-            store-runtime-probe.log
-            store-fixture-probe.log
-            store-pending-native-probe.log
-            store-crash-recovery-probe.log
-            store-completed-restart-probe.log
-            store-stale-owner-probe.log
-            store-fail-closed-environment-probe.log
-            store-profile-private-isolation-probe.log
-            store-update-probe.log
-            store-action-probe.log
-            ${{ runner.temp }}/bowser-store-rendering/
-            ${{ runner.temp }}/bowser-native-store/
-            ${{ runner.temp }}/bowser-extension-metrics/
-          if-no-files-found: error
-          retention-days: 14
-
   native-store-journey:
     runs-on: windows-latest
     timeout-minutes: 20

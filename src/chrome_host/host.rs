@@ -1143,6 +1143,11 @@ fn request_path(uri: &str) -> Option<String> {
 mod tests {
     use super::*;
 
+    impl ChromeHost {
+        /// Rust-only ignored diagnostics. Never a host object, message command or production API.
+        pub(crate) fn probe_native_webview(&self) -> ICoreWebView2 { self.state.borrow().webview.clone() }
+    }
+
     #[test]
     fn three_consecutive_com_failures_trip_and_success_resets() {
         let mut failures = FailureCounter::default();

@@ -5956,6 +5956,7 @@ mod tests {
     use super::*;
     type ProbeNetworkEvents = Rc<RefCell<Vec<(String, String)>>>;
     type ProbeNativeInventoryDone = Box<dyn FnOnce(std::result::Result<Vec<(String, bool)>, String>)>;
+    type ProbeBrowserExit = (ICoreWebView2Environment5, i64, Rc<Cell<bool>>);
 
     /// Hooks for the ignored live probe (`extension_probe_live`). They live here, not beside the
     /// production code, so the source-scanning tests below see the whole production region.
@@ -6005,6 +6006,27 @@ mod tests {
                 }).collect());
                 done(result);
             }));
+        }
+
+        pub(in crate::engine) fn probe_browser_exit_observer(&self) -> Result<ProbeBrowserExit> {
+            let environment = self.core.borrow().environment.clone().ok_or_else(|| Error::from(windows::Win32::Foundation::E_FAIL))?.cast::<ICoreWebView2Environment5>()?;
+            let exited = Rc::new(Cell::new(false)); let sink = exited.clone(); let mut token = 0;
+            unsafe { environment.add_BrowserProcessExited(&webview2_com::BrowserProcessExitedEventHandler::create(Box::new(move |_sender, args| {
+                let mut pid = 0; if let Some(args) = args { let _ = args.BrowserProcessId(&mut pid); }
+                println!("LIVE_NATIVE_BROWSER_EXIT observed=true browser_pid={pid}"); sink.set(true); Ok(())
+            })), &mut token)?; }
+            Ok((environment, token, exited))
+        }
+
+        pub(in crate::engine) fn probe_webview_inventory(webview: &ICoreWebView2, done: ProbeNativeInventoryDone) -> Result<()> {
+            let profile = unsafe { webview.cast::<ICoreWebView2_13>()?.Profile()? }.cast::<ICoreWebView2Profile7>()?;
+            list_profile_extensions(&profile, Box::new(move |result| {
+                done(result.and_then(|items| items.into_iter().map(|(_, extension)| {
+                    let id = extension_webview_id(&extension).ok_or_else(|| "Native extension ID unavailable.".to_owned())?;
+                    let mut enabled = BOOL::default(); unsafe { extension.IsEnabled(&mut enabled) }.map_err(|error| error.to_string())?;
+                    Ok((id, enabled.as_bool()))
+                }).collect()));
+            })); Ok(())
         }
 
         pub(in crate::engine) fn probe_extension_startup_state(&self) -> (bool, Option<String>) {

@@ -232,6 +232,7 @@ fn fixture(variant: &str) -> PathBuf {
 struct Session {
     engine: WebView2Engine,
     host: HWND,
+    failures: Rc<RefCell<Vec<String>>>,
 }
 
 impl Session {
@@ -248,6 +249,10 @@ impl Session {
     }
 
     fn open_with_private_first(profile: &Path, startup: Vec<(String, PathBuf)>, known: Vec<(String, bool)>, first: &Url, private_first: bool) -> Self {
+        Self::open_configured(profile, startup, known, first, private_first, false)
+    }
+
+    fn open_configured(profile: &Path, startup: Vec<(String, PathBuf)>, known: Vec<(String, bool)>, first: &Url, private_first: bool, chrome_ui_scheme: bool) -> Self {
         let host = unsafe {
             CreateWindowExW(
                 WINDOW_EX_STYLE(0),
@@ -274,12 +279,14 @@ impl Session {
         let webview_dir = profile.join("WebView2");
         let ids_file = profile.join("extension_ids.txt");
         let mut engine = None;
+        let failures = Rc::new(RefCell::new(Vec::new()));
         for attempt in 1..=4 {
             let created: Rc<RefCell<Option<windows::core::Result<WebView2Engine>>>> =
                 Rc::new(RefCell::new(None));
             let slot = created.clone();
             let extras = EngineExtras {
                 browser_extensions: true,
+                chrome_ui_scheme,
                 private_blocker: private_first.then(|| Rc::new(RefCell::new(crate::blocker::BlockerState::new(crate::blocker::Blocker::from_lists(None), &[])))),
                 startup_extensions: startup.clone(),
                 known_extensions: known.clone(),
@@ -288,6 +295,8 @@ impl Session {
                 ..EngineExtras::default()
             };
             let mut events = EngineEvents::default();
+            let failed = failures.clone(); events.failed = Some(Rc::new(move |error| { let message = format!("controller_or_environment_hresult=0x{:08x} error={error}", error.code().0 as u32); println!("LIVE_NATIVE_FAILURE {message}"); failed.borrow_mut().push(message); }));
+            events.navigation_failed = Some(Rc::new(|tab, failed| println!("LIVE_NATIVE_NAVIGATION tab={tab:?} failed={failed}")));
             if let (Ok(cut), Some(cut_root)) = (std::env::var("BOWSER_EXTENSION_CRASH_EVENT"), std::env::var_os("BOWSER_EXTENSION_CRASH_ROOT").map(PathBuf::from)) {
                 assert!(["extension_add_preclaim_committed", "extension_add_native_complete", "extension_disable_native_complete", "extension_remove_native_complete"].contains(&cut.as_str()));
                 assert!(cut_root.starts_with(std::env::temp_dir()) && cut_root.file_name().unwrap().to_string_lossy().starts_with("bowser-ext-live-"));
@@ -331,7 +340,7 @@ impl Session {
         if private_first { engine.set_tab_private(tab); }
         engine.select_tab(tab).unwrap();
         engine.navigate_tab(tab, first).unwrap();
-        Self { engine, host }
+        Self { engine, host, failures }
     }
 
     fn native_inventory(&self) -> Result<Vec<(String, bool)>, String> {
@@ -1390,7 +1399,13 @@ fn live_probe_fail_closed_environment() {
     for damage in ["malformed-map", "duplicate-map", "initialized-missing-map", "malformed-records"] {
         let root = temp_root(); let profile = root.join("damaged-profile"); let (id, folder) = install_fixture(&profile, "probe-mv3-key");
         let loopback = Loopback::start(); let mut initial = Session::open(&profile, vec![(id.clone(), folder.clone())], vec![(id.clone(), true)], &loopback.page("initial-consent"));
-        assert!(initial.wait_for_add(&profile, &id).1.is_none()); assert!(initial.wait_for_worker_reply(&loopback)); initial.close(); drop(loopback);
+        assert!(initial.wait_for_add(&profile, &id).1.is_none()); assert!(initial.wait_for_worker_reply(&loopback));
+        // Microsoft requires browser-process exit before reopening a folder with a changed
+        // AreBrowserExtensionsEnabled value. Object drop alone is not that native boundary.
+        let (environment, token, exited) = initial.engine.probe_browser_exit_observer().unwrap();
+        initial.close(); drop(loopback);
+        assert!(pump_until(Duration::from_secs(30), || exited.get()), "consented profile browser did not actually exit before changing environment options");
+        unsafe { environment.remove_BrowserProcessExited(token).unwrap(); } drop(environment);
         let map = profile.join("extension_ids.txt"); let records = profile.join("extensions.txt");
         match damage {
             "malformed-map" => std::fs::write(&map, b"truncated-authority\n").unwrap(),
@@ -1402,7 +1417,9 @@ fn live_probe_fail_closed_environment() {
         let map_before = std::fs::read(&map).ok(); let records_before = std::fs::read(&records).unwrap();
         let loopback = Loopback::start(); let target = loopback.page("damaged-real-page");
         let mut refused = Session::open(&profile, vec![(id.clone(), folder.clone())], vec![(id.clone(), true)], &target);
-        assert!(pump_until(Duration::from_secs(15), || loopback.beacons.lock().unwrap().iter().any(|path| path == "/damaged-real-page")), "negative control did not load its actual HTTP page");
+        let page_loaded = pump_until(Duration::from_secs(15), || loopback.beacons.lock().unwrap().iter().any(|path| path == "/damaged-real-page"));
+        println!("FAIL_CLOSED_ENV damage={damage} before_exclusion_assertions startup_state={:?} page_loaded={page_loaded} native_failures={:?}", refused.engine.probe_extension_startup_state(), refused.failures.borrow());
+        assert!(page_loaded, "negative control did not load its actual HTTP page; native failures={:?}", refused.failures.borrow());
         pump_until(Duration::from_secs(2), || false);
         let state = refused.engine.probe_extension_startup_state(); assert!(!state.0 && state.1.is_some(), "damaged state was not refused before environment configuration: {state:?}");
         assert!(!refused.engine.probe_extension_profile_ready()); assert!(refused.engine.probe_loaded_extension_id(&id).is_none());
@@ -1467,4 +1484,40 @@ fn live_real_stylus_restart_child() {
     assert!(styled, "actual signed Stylus imported style did not execute after process restart");
     println!("STYLUS_RESTART actual_computed_colour=rgb(7,11,19) retained_imported_style=true runtime_id={:?}", session.engine.probe_loaded_extension_id(&id));
     session.close();
+}
+
+
+#[test]
+#[ignore = "real production Settings ChromeHost profile and fresh native extension inventory"]
+fn live_probe_ui_profile_isolation() {
+    use crate::chrome_host::host::{ChromeEnv, ChromeHost, ChromeHostOptions, View, CHROME_PROFILE};
+    use windows::core::Interface;
+    unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED).ok().unwrap() };
+    let root = temp_root(); let profile = root.join("ui-isolation-owner"); let (id, folder) = install_fixture(&profile, "probe-mv3-key");
+    let loopback = Loopback::start(); let mut owner = Session::open_configured(&profile, vec![(id.clone(), folder)], vec![(id.clone(), true)], &loopback.page("ui-owner-positive"), false, true);
+    assert!(owner.wait_for_add(&profile, &id).1.is_none()); assert!(owner.wait_for_worker_reply(&loopback));
+    assert!(owner.native_inventory().unwrap().iter().any(|(native, on)| native == KEY_FIXTURE_ID && *on));
+    let env = ChromeEnv::new(owner.engine.chrome_environment().expect("production UI scheme environment"));
+    let ready = Rc::new(std::cell::Cell::new(false)); let ready_sink = ready.clone();
+    let created = Rc::new(RefCell::new(None)); let sink = created.clone();
+    ChromeHost::create(&env, ChromeHostOptions {
+        parent: owner.host, bounds: RECT { left:0, top:0, right:800, bottom:600 }, view: View::Settings,
+        on_command: Rc::new(move |command| { if matches!(command, crate::chrome_host::protocol::Command::Ready) { ready_sink.set(true); } }),
+        on_failed: Rc::new(|| panic!("genuine Settings host failed")), on_accelerator: None,
+    }, move |result| *sink.borrow_mut() = Some(result)).unwrap();
+    assert!(pump_until(Duration::from_secs(30), || created.borrow().is_some())); let ui = created.borrow_mut().take().unwrap().unwrap();
+    assert!(pump_until(Duration::from_secs(30), || ready.get()), "actual Settings UI did not post its genuine ready message");
+    let webview = ui.probe_native_webview();
+    let profile = unsafe { webview.cast::<webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2_13>().unwrap().Profile().unwrap() };
+    let mut name = windows::core::PWSTR::null(); let mut private = windows::Win32::Foundation::BOOL::default();
+    unsafe { profile.ProfileName(&mut name).unwrap(); profile.IsInPrivateModeEnabled(&mut private).unwrap(); }
+    let name = webview2_com::CoTaskMemPWSTR::from(name).to_string(); assert_eq!(name, CHROME_PROFILE); assert!(private.as_bool());
+    let mut source = windows::core::PWSTR::null(); unsafe { webview.Source(&mut source).unwrap(); }
+    let source = webview2_com::CoTaskMemPWSTR::from(source).to_string(); assert_eq!(source, View::Settings.start_url());
+    let inventory = Rc::new(RefCell::new(None)); let sink = inventory.clone();
+    WebView2Engine::probe_webview_inventory(&webview, Box::new(move |result| *sink.borrow_mut() = Some(result))).unwrap();
+    assert!(pump_until(Duration::from_secs(15), || inventory.borrow().is_some())); let inventory = inventory.borrow_mut().take().unwrap().unwrap();
+    assert!(!inventory.iter().any(|(native, _)| native == KEY_FIXTURE_ID), "ordinary extension was present in the privileged UI profile: {inventory:?}");
+    println!("UI_PROFILE_ISOLATION actual_settings_ready=true source={source} native_profile={name} in_private=true ordinary_fixture_enabled_and_worker_content=true ui_fresh_native_inventory={inventory:?} fixture_absent=true scope=profile-inventory-not-loopback-only-content-marker");
+    ui.close(); drop(ui); drop(webview); drop(env); owner.close(); drop(loopback); remove_with_retries(&root);
 }
