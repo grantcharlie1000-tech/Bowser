@@ -11,6 +11,10 @@ param(
     [ValidateRange(1,20)][int]$MaxInvalidSamples=2,
     [string]$DiagnosticSource='8a60dca2ac7de6d369c9b65584fd621a7013f491',
     [switch]$IncludeTabFlow,
+    [string]$CandidateExe,
+    [string]$CandidateSource,
+    [ValidateSet('timing','resource')][string]$MeasurementMode='resource',
+    [ValidateRange(10,20)][int]$ReadinessPollMilliseconds=15,
     [ValidateRange(1,30)][int]$IdleSeconds=3,
     [ValidateRange(100,2000)][int]$SampleMilliseconds=250,
     [string]$BaselineSource='80eabd7ae6d421e61c81985c34023bfc824a2e58'
@@ -25,7 +29,13 @@ New-Item -ItemType Directory -Force $Out | Out-Null
 $run=Join-Path $Out 'isolated'
 New-Item -ItemType Directory -Force $run | Out-Null
 $arms=[ordered]@{release=(Resolve-BowserExecutable $ReleaseExe);baseline=(Resolve-BowserExecutable $BaselineExe);diagnostic_off=(Resolve-BowserExecutable $DiagnosticExe);diagnostic_on=(Resolve-BowserExecutable $DiagnosticExe)}
-$hashes=Get-MeasurementInputHashes @($BaselineExe,$DiagnosticExe,$ReleaseExe)
+$inputPaths=@($BaselineExe,$DiagnosticExe,$ReleaseExe)
+if ($CandidateExe) {
+    if ($CandidateSource -notmatch '^[0-9a-f]{40}$') { throw 'Candidate source must be its exact40-character commit SHA' }
+    $arms=[ordered]@{baseline_on=(Resolve-BowserExecutable $DiagnosticExe);candidate_on=(Resolve-BowserExecutable $CandidateExe)}
+    $inputPaths+=@($CandidateExe)
+}
+$hashes=Get-MeasurementInputHashes $inputPaths
 $expected='341486070d2e74cf9a9e5d5fbeffa90c7dd2ec4fd36bc284a8a3878a7a9bcec1'
 if ((Get-FileHash $ReleaseExe -Algorithm SHA256).Hash.ToLowerInvariant() -cne $expected) { throw 'Released executable does not match verified v0.0.19 pin' }
 Add-Type -AssemblyName System.Windows.Forms,System.Drawing
@@ -101,7 +111,7 @@ try {
     while (-not (Test-Path $portFile)) { if ([DateTime]::UtcNow -gt $deadline) {throw 'Fixture startup timeout'}; Start-Sleep -Milliseconds 50 }
     $base="http://127.0.0.1:$([int](Get-Content $portFile -Raw))"
     $metadata=[ordered]@{
-        schema_version=1; baseline_source=$BaselineSource; diagnostic_source=$DiagnosticSource; harness_source=(& git rev-parse HEAD).Trim(); selected_fixtures=$Fixtures; started_at_utc=[DateTime]::UtcNow.ToString('o'); pairs=$Pairs
+        schema_version=2; measurement_mode=$MeasurementMode; readiness_poll_milliseconds=$ReadinessPollMilliseconds; candidate_source=$CandidateSource; process_state_policy='wait for owned/profile tree exit; retain files for reused profile'; baseline_source=$BaselineSource; diagnostic_source=$DiagnosticSource; harness_source=(& git rev-parse HEAD).Trim(); selected_fixtures=$Fixtures; started_at_utc=[DateTime]::UtcNow.ToString('o'); pairs=$Pairs
         inputs=$hashes; qpc_frequency=[Diagnostics.Stopwatch]::Frequency; sample_milliseconds=$SampleMilliseconds
         runner_image=$env:ImageOS; runner_image_version=$env:ImageVersion; runner_name=$env:RUNNER_NAME
         os=(Get-CimInstance Win32_OperatingSystem | Select-Object Caption,Version,BuildNumber,TotalVisibleMemorySize)
@@ -119,8 +129,8 @@ try {
         foreach($arm in $order) {
             if ($arm -eq 'release' -and $pair -gt 1) { continue }
             foreach($fixture in @(@($Fixtures)+@('redirect','network-failure','error','hung') | Select-Object -Unique)) {
-                if ($fixture -notin $Fixtures -and ($arm -ne 'diagnostic_on' -or $pair -ne 1)) { continue }
-                if ($fixture -in @('network-failure','error','hung') -and ($arm -ne 'diagnostic_on' -or $pair -ne 1)) { continue }
+                if ($fixture -notin $Fixtures -and ($arm -notin @('diagnostic_on','baseline_on','candidate_on') -or $pair -ne 1)) { continue }
+                if ($fixture -in @('network-failure','error','hung') -and ($arm -notin @('diagnostic_on','baseline_on','candidate_on') -or $pair -ne 1)) { continue }
                 $profile=Join-Path $run "$arm-$pair-$fixture"
                 Seed-Profile $profile 818
                 foreach($condition in @('fresh','reused')) {
@@ -128,17 +138,16 @@ try {
                     $token=([guid]::NewGuid().ToString('N')); $url="$base/$($fixture)?token=$token"
                     $id="$arm-$pair-$fixture-$condition"; $eventFile=Join-Path $Out "$id-events.csv"
                     $args=@('--data-dir',"`"$profile`"",'--open-url',"`"$url`"")
-                    if($arm -eq 'diagnostic_on') { $args+=@('--diagnostic-log',"`"$eventFile`"") }
+                    if($arm.EndsWith('_on')) { $args+=@('--diagnostic-log',"`"$eventFile`"") }
                     $snapshots=[Collections.Generic.List[object]]::new(); $overheads=[Collections.Generic.List[double]]::new()
-                    $sample=[ordered]@{id=$id;pair=$pair;arm=$arm;fixture=$fixture;condition=$condition;token=$token;valid=$false;expected_failure=($fixture -in @('network-failure','error','hung'));error=$null;launch_qpc=(Qpc);ready_qpc=$null;title_ready_qpc=$null;input_ready_qpc=$null;shutdown_ms=$null;disk_before=(Disk-Bytes $profile);events=$null;input=$null;tab_switch_proxy_ms=$null;idle=$null;minimized=$null}
+                    $sample=[ordered]@{id=$id;pair=$pair;arm=$arm;fixture=$fixture;condition=$condition;token=$token;valid=$false;expected_failure=($fixture -in @('network-failure','error','hung'));error=$null;launch_qpc=$null;ready_qpc=$null;title_ready_qpc=$null;input_ready_qpc=$null;shutdown_ms=$null;disk_before=(Disk-Bytes $profile);measurement_mode=$MeasurementMode;tree_exit_wait_ms=$null;tree_exit_confirmed=$false;events=$null;input=$null;tab_switch_proxy_ms=$null;idle=$null;minimized=$null}
                     $app=$null
                     try {
+                        $sample.launch_qpc=Qpc
                         $app=Start-Process -FilePath $arms[$arm] -ArgumentList $args -PassThru
                         $limit=[Diagnostics.Stopwatch]::StartNew(); $timeout=if($sample.expected_failure){4}else{30}
                         while($limit.Elapsed.TotalSeconds -lt $timeout) {
                             $app.Refresh(); if($app.HasExited){throw "Early exit $($app.ExitCode)"}
-                            $t=Qpc; $snapshot=Get-ProcessGroupSnapshot -RootPid $app.Id -Profile $profile
-                            $overheads.Add(((Qpc)-$t)*1000.0/[Diagnostics.Stopwatch]::Frequency); $snapshots.Add($snapshot)
                             if($null -eq $sample.input_ready_qpc -and [BowserProductionNative]::FindHost([uint32]$app.Id) -ne [IntPtr]::Zero){$sample.input_ready_qpc=Qpc}
                             $window=[BowserProductionNative]::FindHost([uint32]$app.Id)
                             if(([BowserProductionNative]::Title($window)).Contains("BOWSER_PERF_READY_$token")){$sample.title_ready_qpc=Qpc}
@@ -147,7 +156,11 @@ try {
                                 # Native title propagation can lag the page's loopback acknowledgement.
                                 if ($null -ne $sample.title_ready_qpc) { break }
                             }
-                            Start-Sleep -Milliseconds $SampleMilliseconds
+                            if ($MeasurementMode -eq 'resource') {
+                                $t=Qpc; $snapshot=Get-ProcessGroupSnapshot -RootPid $app.Id -Profile $profile
+                                $overheads.Add(((Qpc)-$t)*1000.0/[Diagnostics.Stopwatch]::Frequency); $snapshots.Add($snapshot)
+                                Start-Sleep -Milliseconds $SampleMilliseconds
+                            } else { Start-Sleep -Milliseconds $ReadinessPollMilliseconds }
                         }
                         if($sample.expected_failure) {
                             if($sample.ready_qpc){throw 'Failed fixture counted as ready'}
@@ -170,21 +183,44 @@ try {
                             $sample.tab_switch_proxy_ms=((Qpc)-$switch)*1000.0/[Diagnostics.Stopwatch]::Frequency
                             }
                             # Equal-time foreground and minimized idle windows, resource tree sampled throughout.
+                            if ($MeasurementMode -eq 'resource') {
+                            # Settled one-tab endpoint is identical for both arms; no startup sampling in timing arm.
+                            Start-Sleep -Seconds 1
                             foreach($state in @('idle','minimized')) {
                                 if($state -eq 'minimized'){[void][BowserProductionNative]::ShowWindow([BowserProductionNative]::FindHost([uint32]$app.Id),6)}
                                 $idleRows=[Collections.Generic.List[object]]::new();$w=[Diagnostics.Stopwatch]::StartNew()
                                 while($w.Elapsed.TotalSeconds -lt $IdleSeconds){$idleRows.Add((Get-ProcessGroupSnapshot -RootPid $app.Id -Profile $profile));Start-Sleep -Milliseconds $SampleMilliseconds}
                                 $sample[$state]=@($idleRows.ToArray());foreach($r in $idleRows){$snapshots.Add($r)}
                             }
+                            }
                             [void][BowserProductionNative]::ShowWindow([BowserProductionNative]::FindHost([uint32]$app.Id),9)
                             $sample.valid=$true
                         }
+                        # Inventory only after all cheap timing endpoints, to establish exact identities for drain.
+                        $ownedBeforeClose=@(Get-ProcessGroupMembers -RootPid $app.Id -Profile $profile -Inventory @(Get-ProcessInventory))
+                        $known=@{}; foreach($process in $ownedBeforeClose){$known["$($process.Pid):$($process.CreationTicks)"]=$true}
                         $close=Qpc
                         if(-not [BowserProductionNative]::Close([uint32]$app.Id) -or -not $app.WaitForExit(15000)){throw 'Graceful close not confirmed'}
                         $sample.shutdown_ms=((Qpc)-$close)*1000.0/[Diagnostics.Stopwatch]::Frequency
+                        $drain=[Diagnostics.Stopwatch]::StartNew()
+                        do {
+                            $inventory=@(Get-ProcessInventory)
+                            $remaining=@(Get-ProcessGroupMembers -RootPid 0 -Profile $profile -Inventory $inventory)
+                            $remaining+=@($inventory | Where-Object {$known.ContainsKey("$($_.Pid):$($_.CreationTicks)")})
+                            if(-not $remaining.Count){break}
+                            Start-Sleep -Milliseconds 100
+                        } while($drain.Elapsed.TotalSeconds -lt 20)
+                        $sample.tree_exit_wait_ms=$drain.Elapsed.TotalMilliseconds
+                        $sample.tree_exit_confirmed=($remaining.Count -eq 0)
+                        if(-not $sample.tree_exit_confirmed){throw 'Owned/profile helpers survived drain; reused launch forbidden'}
                         if($app.ExitCode -ne 0){throw "Exit $($app.ExitCode)"}
-                        if($arm -eq 'diagnostic_on') {
+                        if($arm.EndsWith('_on')) {
                             $events=@(Import-Csv $eventFile);$sample.events=$events
+                            if(-not $sample.expected_failure) {
+                                foreach($required in @('html_toolbar_ready','html_chrome_shown')) {
+                                    if(-not @($events | Where-Object event -eq $required).Count){throw "HTML activation missing: $required"}
+                                }
+                            }
                             $readiness=Get-ProductionReadiness $events $token
                             # Later UI navigations supersede startup, so validate the initial identity segment only.
                             $initial=@();foreach($e in $events){if($e.event -eq 'diagnostic_navigation_started' -and @($initial|Where-Object event -eq diagnostic_navigation_completed).Count){break};$initial+=$e}
@@ -198,12 +234,13 @@ try {
                         if($app -and -not $app.HasExited){[void][BowserProductionNative]::Close([uint32]$app.Id);if(-not $app.WaitForExit(5000)){Stop-Process -Id $app.Id -Force -ErrorAction SilentlyContinue;$sample.valid=$false;$sample.error='Forced close required'}}
                         $sample.disk_after=Disk-Bytes $profile
                         $sample.snapshots=@($snapshots.ToArray());$sample.sampling_overhead_ms=Get-ProductionDistribution @($overheads.ToArray())
-                        $sample.cpu=Get-ProductionCpuDelta @($snapshots.ToArray())
+                        $sample.cpu=if($snapshots.Count){Get-ProductionCpuDelta @($snapshots.ToArray())}else{$null}
                         Write-Host ("Sample {0}: valid={1}; error={2}" -f $id,$sample.valid,$sample.error)
                         $sample | ConvertTo-Json -Depth 30 | Set-Content (Join-Path $Out "$id.json") -Encoding utf8
                         $rows.Add([pscustomobject]$sample);$app=$null
                         if (-not $sample.valid) { $invalidSamples++ }
                     }
+                    if (-not $sample.tree_exit_confirmed) { throw 'Stopped: unconfirmed process-tree drain; raw evidence retained' }
                     if ($invalidSamples -ge $MaxInvalidSamples) { throw "Stopped after $invalidSamples invalid samples; raw failures retained for diagnosis" }
                 }
             }
@@ -214,7 +251,7 @@ try {
         [ordered]@{arm=$first.arm;fixture=$first.fixture;condition=$first.condition;valid_count=@($group.Group|Where-Object valid).Count;invalid_count=@($group.Group|Where-Object {-not $_.valid}).Count;expected_failure_count=@($group.Group|Where-Object expected_failure).Count;launch_to_fixture_ack_ms=(Get-ProductionDistribution @($valid|ForEach-Object {($_.ready_qpc-$_.launch_qpc)*1000.0/[Diagnostics.Stopwatch]::Frequency})); errors=@($group.Group|Where-Object error|ForEach-Object error)}
     }
     $summary | ConvertTo-Json -Depth 15 | Set-Content (Join-Path $Out 'summary.json') -Encoding utf8
-    Assert-MeasurementInputHashesUnchanged $hashes (Get-MeasurementInputHashes @($BaselineExe,$DiagnosticExe,$ReleaseExe)) | Out-Null
+    Assert-MeasurementInputHashesUnchanged $hashes (Get-MeasurementInputHashes $inputPaths) | Out-Null
     if(@($rows|Where-Object {-not $_.valid}).Count){throw 'Invalid samples retained; baseline is not yet accepted'}
 } finally {
     if($server -and -not $server.HasExited){Stop-Process -Id $server.Id -Force -ErrorAction SilentlyContinue}

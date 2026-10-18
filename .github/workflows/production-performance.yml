@@ -1,4 +1,4 @@
-name: Production performance baseline
+name: Production performance comparison
 on:
   pull_request:
     paths:
@@ -11,6 +11,8 @@ on:
       - 'src/engine/mod.rs'
       - 'src/app.rs'
       - 'src/main.rs'
+      - 'src/chrome_host/assets.rs'
+      - 'ui/**'
   workflow_dispatch:
 permissions:
   contents: read
@@ -46,23 +48,21 @@ jobs:
           }
           ./benchmarks/test-production-measurements.ps1
           ./benchmarks/test-measurements.ps1
+          python benchmarks/test-production-analyze.py
+          if ($LASTEXITCODE -ne 0) { throw 'Analysis contract tests failed' }
           node --check benchmarks/scripts/production-fixture-server.mjs
       - name: Reuse and verify immutable binaries already built from the exact frozen sources
         working-directory: candidate
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          # The diagnostic/native code was tested and built in run39086719160.
-          # This focused lane accepts only harness changes since that source, never optimizations.
+          # The two baseline binaries remain frozen; the candidate is built separately below.
           git fetch --no-tags --depth=1 origin 8a60dca2ac7de6d369c9b65584fd621a7013f491
           if ($LASTEXITCODE -ne 0) { throw 'Cannot fetch immutable diagnostic source' }
           git fetch --no-tags --depth=1 origin 80eabd7ae6d421e61c81985c34023bfc824a2e58
           if ($LASTEXITCODE -ne 0) { throw 'Cannot fetch untouched source for instrumentation provenance' }
-          $changed=@(git diff --name-only 8a60dca2ac7de6d369c9b65584fd621a7013f491 HEAD)
-          if ($LASTEXITCODE -ne 0) { throw 'Cannot validate harness-only source changes' }
-          foreach ($path in $changed) {
-            if (-not $path.StartsWith('benchmarks/') -and $path -cne '.github/workflows/production-performance.yml') { throw "Frozen diagnostic source changed: $path; a new candidate build and provenance are required" }
-          }
+          git diff --exit-code 8a60dca2ac7de6d369c9b65584fd621a7013f491 HEAD -- src/performance.rs src/main.rs src/app.rs src/engine
+          if ($LASTEXITCODE -ne 0) { throw 'This first UI slice requires identical native instrumentation and runtime code' }
           New-Item -ItemType Directory -Force ../evidence | Out-Null
           $zip=Join-Path $env:RUNNER_TEMP 'production-frozen-8a60dca.zip'
           $headers=@{ Authorization="Bearer $env:GH_TOKEN"; Accept='application/vnd.github+json'; 'X-GitHub-Api-Version'='2022-11-28' }
@@ -79,14 +79,62 @@ jobs:
           git diff 80eabd7ae6d421e61c81985c34023bfc824a2e58 8a60dca2ac7de6d369c9b65584fd621a7013f491 -- src | Set-Content (Join-Path $frozen 'instrumentation.patch')
           if ($LASTEXITCODE -ne 0) { throw 'Cannot preserve instrumentation diff' }
           [ordered]@{archive_artifact_id=12121088896;archive_sha256=$archiveHash;diagnostic_source='8a60dca2ac7de6d369c9b65584fd621a7013f491';untouched_source='80eabd7ae6d421e61c81985c34023bfc824a2e58';harness_source=(git rev-parse HEAD).Trim();previous_source_tests='run39086719160, measurement module tests and Windows source check passed'} | ConvertTo-Json | Set-Content ../evidence/frozen/provenance.json
-      - name: Bounded native validity pass before the noise pilot
+      - name: Build actual optimized candidate with the frozen baseline toolchain
         working-directory: candidate
         run: |
-          ./benchmarks/production-baseline.ps1 -BaselineExe ../evidence/frozen/untouched-main.exe -DiagnosticExe ../evidence/frozen/diagnostic.exe -ReleaseExe ../evidence/frozen/released-v0.0.19.exe -Out ../evidence/validity -Pairs 1 -Fixtures light -IdleSeconds 1
-      - name: Focused same-runner five-pair production baseline and diagnostic overhead pilot
+          rustup toolchain install 1.99.1 --profile minimal
+          if ($LASTEXITCODE -ne 0) { throw 'Pinned toolchain installation failed' }
+          Push-Location ui
+          npm ci --no-audit --no-fund
+          if ($LASTEXITCODE -ne 0) { throw 'Locked UI install failed' }
+          npm run build
+          if ($LASTEXITCODE -ne 0) { throw 'UI rebuild failed' }
+          npm run typecheck
+          if ($LASTEXITCODE -ne 0) { throw 'UI typecheck failed' }
+          npm run lint
+          if ($LASTEXITCODE -ne 0) { throw 'UI lint failed' }
+          $env:BOWSER_TEST_EDGE='C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe'
+          if (-not (Test-Path $env:BOWSER_TEST_EDGE)) { $env:BOWSER_TEST_EDGE='C:/Program Files/Microsoft/Edge/Application/msedge.exe' }
+          if (-not (Test-Path $env:BOWSER_TEST_EDGE)) { throw 'Edge required for actual all-surface module/CSP smoke' }
+          node --test test/hardening.mjs test/surface-modules.mjs
+          if ($LASTEXITCODE -ne 0) { throw 'Actual module/CSP smoke failed' }
+          Pop-Location
+          git diff --exit-code -- ui/src/icons.gen.ts ui/dist ui/dist.manifest
+          if ($LASTEXITCODE -ne 0) { throw 'Committed optimized assets are not reproducible' }
+          cargo +1.99.1 build --release --locked --bin bowser --features html-chrome-default
+          if ($LASTEXITCODE -ne 0) { throw 'Actual candidate build failed' }
+          New-Item -ItemType Directory -Force ../evidence/candidate | Out-Null
+          Copy-Item target/release/bowser.exe ../evidence/candidate/candidate.exe
+          Copy-Item Cargo.lock,ui/dist.manifest ../evidence/candidate/
+          $file=Get-Item ../evidence/candidate/candidate.exe
+          [ordered]@{source=(git rev-parse HEAD).Trim();tree=(git rev-parse 'HEAD^{tree}').Trim();sha256=(Get-FileHash $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant();bytes=$file.Length;toolchain=(rustc +1.99.1 --version --verbose | Out-String);features='html-chrome-default';scope='first bounded per-surface UI slice; not a release'} | ConvertTo-Json | Set-Content ../evidence/candidate/identity.json
+      - name: Bounded native actual-module and HTML activation validity pass
         working-directory: candidate
         run: |
-          ./benchmarks/production-baseline.ps1 -BaselineExe ../evidence/frozen/untouched-main.exe -DiagnosticExe ../evidence/frozen/diagnostic.exe -ReleaseExe ../evidence/frozen/released-v0.0.19.exe -Out ../evidence/pilot -Pairs 5 -Fixtures light
+          ./benchmarks/production-baseline.ps1 -BaselineExe ../evidence/frozen/untouched-main.exe -DiagnosticExe ../evidence/frozen/diagnostic.exe -ReleaseExe ../evidence/frozen/released-v0.0.19.exe -CandidateExe ../evidence/candidate/candidate.exe -CandidateSource (git rev-parse HEAD).Trim() -Out ../evidence/validity -Pairs 1 -Fixtures light -IdleSeconds 1 -MeasurementMode timing -MaxInvalidSamples 1
+      - name: Corrected diagnostic-off untouched and logging-on off controls
+        working-directory: candidate
+        run: |
+          ./benchmarks/production-baseline.ps1 -BaselineExe ../evidence/frozen/untouched-main.exe -DiagnosticExe ../evidence/frozen/diagnostic.exe -ReleaseExe ../evidence/frozen/released-v0.0.19.exe -Out ../evidence/controls -Pairs 5 -Fixtures light -MeasurementMode timing -MaxInvalidSamples 1
+      - name: Ten matched AB BA pairs per fresh and reused profile cheap timing arm
+        working-directory: candidate
+        run: |
+          ./benchmarks/production-baseline.ps1 -BaselineExe ../evidence/frozen/untouched-main.exe -DiagnosticExe ../evidence/frozen/diagnostic.exe -ReleaseExe ../evidence/frozen/released-v0.0.19.exe -CandidateExe ../evidence/candidate/candidate.exe -CandidateSource (git rev-parse HEAD).Trim() -Out ../evidence/timing -Pairs 10 -Fixtures light -MeasurementMode timing -MaxInvalidSamples 1
+      - name: Ten matched AB BA pairs separate settled one-tab whole-tree resource arm
+        working-directory: candidate
+        run: |
+          ./benchmarks/production-baseline.ps1 -BaselineExe ../evidence/frozen/untouched-main.exe -DiagnosticExe ../evidence/frozen/diagnostic.exe -ReleaseExe ../evidence/frozen/released-v0.0.19.exe -CandidateExe ../evidence/candidate/candidate.exe -CandidateSource (git rev-parse HEAD).Trim() -Out ../evidence/resource -Pairs 10 -Fixtures light -MeasurementMode resource -MaxInvalidSamples 1
+      - name: Derive descriptive paired statistics without accepting gains automatically
+        if: always()
+        working-directory: candidate
+        run: |
+          foreach($arm in @('validity','controls','timing','resource')) {
+            $folder="../evidence/$arm"
+            if(Test-Path "$folder/environment.json") {
+              python benchmarks/production-analyze.py $folder
+              if($LASTEXITCODE -ne 0){throw "Analysis failed for $arm; raw samples remain preserved"}
+            }
+          }
       - name: Preserve raw samples and frozen executables, not disposable renderer caches
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
@@ -94,11 +142,18 @@ jobs:
           name: production-performance-${{ github.event.pull_request.head.sha || github.sha }}
           path: |
             evidence/frozen/
+            evidence/candidate/
             evidence/validity/*.json
             evidence/validity/*.csv
             evidence/validity/*stderr.txt
-            evidence/pilot/*.json
-            evidence/pilot/*.csv
-            evidence/pilot/*stderr.txt
+            evidence/controls/*.json
+            evidence/controls/*.csv
+            evidence/controls/*stderr.txt
+            evidence/timing/*.json
+            evidence/timing/*.csv
+            evidence/timing/*stderr.txt
+            evidence/resource/*.json
+            evidence/resource/*.csv
+            evidence/resource/*stderr.txt
           if-no-files-found: warn
           retention-days: 30

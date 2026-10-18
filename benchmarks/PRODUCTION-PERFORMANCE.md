@@ -1,6 +1,6 @@
-# Production-path performance baseline (measurement-only)
+# Production-path performance baseline and bounded UI experiment
 
-No optimization is included. No native performance result is established until the Windows job succeeds and its raw data and coverage are reviewed. Do not use the older baseline.json as this baseline.
+The pass-0 baseline is measurement-only. The first per-surface UI optimization is a separate experiment; no gain is established until its actual candidate and corrected matched comparison pass native verification and raw-data review. Do not use the older baseline.json as this baseline.
 
 ## Frozen inputs
 
@@ -30,3 +30,37 @@ Run 39086719160 built both binaries successfully but stopped before timing when 
 To get an early valid focused baseline, the recovery runs a bounded one-pair validity pass then a five-pair light-fixture noise/overhead pilot, with redirect and failed/hung/error validation retained. Other fixtures remain selectable. It stops after two invalid samples instead of repeating an infrastructure failure across the matrix. This remains a pilot, not full-matrix acceptance or proof of an optimization. Disposable renderer caches are not archived; reproducible seeds, raw measurements, failures, binary inputs and provenance are retained.
 
 The first native validity attempt (run 39087819630, artifact 12121607087) retained two invalid fresh samples and one completed released/reused sample. Startup acknowledgement and UI Enter succeeded; the extra five-tab keyboard workload lost the .NET main-window handle. Those failures are not a baseline or an optimization win. The focused pilot now enumerates the owned BowserNativeWindow directly and keeps the first resource workload at one tab. Five-tab scaling remains an explicit optional -IncludeTabFlow probe, with the earlier failure retained for diagnosis; its metric is absent from the one-tab pilot, never zero. No application behavior or browser feature is disabled.
+
+## First per-surface UI experiment, corrected comparison contract
+
+The immutable pass-0 pilot remains exploratory. For the first bounded UI split, the workflow
+builds the actual candidate with Rust 1.99.1 and records its source/tree/EXE SHA256/size and
+lockfile/asset manifest, while retaining the frozen diagnostic baseline and untouched/released
+EXEs unchanged. Native instrumentation is required to remain identical for this slice.
+
+`-CandidateExe` selects two identically logged arms, frozen `baseline_on` and actual
+`candidate_on`, alternating AB/BA per pair. `-MeasurementMode timing` uses 15ms readiness
+polls and does not inventory processes before startup/input timing endpoints. The launch QPC
+is immediately before `Start-Process`, after profile setup/disk inventory. The separate
+`resource` arm observes whole-process-tree private bytes/CPU and sampled peaks, with readiness
+checked before its expensive inventory. Neither arm subtracts diagnostic or sampling overhead.
+The workflow requires 10 matched pairs per fresh/reused condition for each arm, plus a corrected
+untouched/diagnostic-off/on control pass. All failures and outliers remain in the artifact.
+
+Root shutdown and owned/profile helper-tree drain are separate endpoints. A subsequent launch
+is forbidden unless the previous tree has exited, including identities recorded before close;
+profile files remain for the reused condition. A timeout invalidates/stops the run, rather than
+silently converting reused launches into surviving-helper launches. Resource snapshots use the
+same settled one-tab light fixture phase. Working sets include shared pages; sampled peaks are
+not continuous ETW peaks; short-lived processes can escape endpoint inventories.
+
+A fast fixture alone cannot validate a candidate: diagnostic rows must additionally contain
+`html_toolbar_ready` and `html_chrome_shown`. Actual HTTP module/CSP first/warm load smoke covers
+all 12 lazy surfaces in Edge; native candidate startup proves embedded custom-scheme module loading
+and HTML activation. The HTTP smoke's external browser-launch/load durations are only regression
+proxies, not in-app first-open interaction benchmarks. Those native first-open/warm surface
+interaction latencies remain a separate acceptance check before claiming a startup win.
+The title/navigation attribution is valid here only for isolated sequential single-tab fixtures
+with unique tokens, independent loopback acknowledgement and owned-window checks, not arbitrary
+concurrent navigation races. Reduced JS closure bytes are build evidence only, not RAM or speed
+measurements; shared chunks do not share JavaScript state between WebViews.

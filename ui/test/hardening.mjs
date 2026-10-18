@@ -11,7 +11,7 @@ import { RULES, findViolations } from '../lint-rules.mjs';
 const here = dirname(fileURLToPath(import.meta.url));
 const uiRoot = join(here, '..');
 // Include every shared chunk, not only top-level entries.
-const BUNDLES = readdirSync(join(uiRoot, 'dist'), { recursive: true }).filter((name) => name.endsWith('.js')).sort();
+const BUNDLES = readdirSync(join(uiRoot, 'dist'), { recursive: true }).filter((name) => name.endsWith('.js')).map((name) => name.replaceAll('\\', '/')).sort();
 // Text only each page's own code holds, so its absence shows the page left app.js.
 const PAGE_MARKERS = {
   'settings-page': ['sp-search-input', 'Settings sections'],
