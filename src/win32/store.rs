@@ -41,6 +41,9 @@ pub(crate) fn start(owner: HWND, app: &AppRef, id: &str) {
     let Ok(profile) = crate::profile::active() else { return error(owner, "The profile is not ready."); };
     if profile.is_guest() { return error(owner, "Use a persistent normal profile to install extensions."); }
     let runtime = match crate::engine::WebView2Engine::availability() { Ok(runtime) => runtime, Err(reason) => return error(owner, reason.0) };
+    if !crate::engine::WebView2Engine::extension_runtime_is_supported(&runtime) {
+        return error(owner, "This WebView2 runtime cannot run supported extensions. Update the WebView2 runtime before installing; restarting alone will not fix this. Nothing was installed.");
+    }
     let version = runtime.split_whitespace().next().unwrap_or_default().to_owned();
     let request = store::request_id();
     let cancelled = Arc::new(AtomicBool::new(false));

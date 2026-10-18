@@ -1,9 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { buildSync } from 'esbuild';
+import { fileURLToPath } from 'node:url';
 import { FakeDocument } from './fake-dom.mjs';
 const bundle = async (file) => {
-  const built = buildSync({ entryPoints: [new URL(`../src/${file}.ts`, import.meta.url).pathname], bundle: true, format: 'esm', platform: 'neutral', write: false });
+  const built = buildSync({ entryPoints: [fileURLToPath(new URL(`../src/${file}.ts`, import.meta.url))], bundle: true, format: 'esm', platform: 'neutral', write: false });
   return import(`data:text/javascript;base64,${Buffer.from(built.outputFiles[0].contents).toString('base64')}`);
 };
 const logic = await bundle('store-logic');

@@ -391,6 +391,20 @@ impl Session {
         self.page_script(script)
     }
 
+    fn replace(&self, id: &str, folder: &Path) -> Result<(), String> {
+        let slot = Rc::new(RefCell::new(None)); let sink = slot.clone();
+        self.engine.probe_replace_extension(id, folder, Box::new(move |result| *sink.borrow_mut() = Some(result)));
+        pump_until(Duration::from_secs(60), || slot.borrow().is_some());
+        slot.borrow_mut().take().unwrap_or_else(|| Err("replacement timed out".into()))
+    }
+
+    fn protocol(&self, tab: TabId, method: &str, params: &str) -> Option<String> {
+        let slot = Rc::new(RefCell::new(None)); let sink = slot.clone();
+        self.engine.probe_protocol(tab, method, params, Box::new(move |result| *sink.borrow_mut() = Some(result)));
+        pump_until(Duration::from_secs(15), || slot.borrow().is_some());
+        slot.borrow_mut().take().flatten()
+    }
+
     fn close(mut self) {
         let _ = self.engine.close();
         drop(self.engine);
@@ -745,4 +759,71 @@ fn live_store_current_extension_loads() {
     }
     remove_with_retries(&root);
     assert!(loaded > 0, "no real signed current extension loaded; inspect diagnostic reasons");
+}
+
+/// Isolated runtime feasibility only: it deliberately does not enable production updates. Uses
+/// two immutable local fixture copies sharing a key; signature/update-consent unit tests are separate.
+#[test]
+#[ignore = "live WebView2 update/rollback feasibility; disposable profiles only"]
+fn live_probe_same_identity_update_and_rollback() {
+    unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED).ok().unwrap() };
+    let root = temp_root();
+    let profile = root.join("update-profile");
+    let original = std::fs::read_to_string(fixture("probe-mv3-key").join("manifest.json")).unwrap();
+    let base = original.trim().strip_suffix('}').unwrap();
+    let manifest = format!("{base},\"action\":{{\"default_popup\":\"popup.html\"}}}}");
+    let first_source = root.join("first-source");
+    let second_source = root.join("second-source");
+    for (source, version) in [(&first_source, "0.0.1"), (&second_source, "0.0.2")] {
+        std::fs::create_dir(source).unwrap();
+        for name in ["worker.js", "content.js"] { std::fs::copy(fixture("probe-mv3-key").join(name), source.join(name)).unwrap(); }
+        std::fs::write(source.join("manifest.json"), manifest.replace("0.0.1", version)).unwrap();
+        std::fs::write(source.join("popup.html"), "<!doctype html><title>Disposable update probe</title><p>Update probe</p><script src=\"popup.js\"></script>").unwrap();
+        std::fs::write(source.join("popup.js"), "document.documentElement.setAttribute('data-ready','yes');").unwrap();
+    }
+    let first_record = extensions::install(&first_source, &profile.join("Extensions"), &profile.join("extensions.txt")).unwrap();
+    let id = first_record.id;
+    let first = extensions::folder_for(&profile.join("Extensions"), &id).unwrap();
+    let second_record = extensions::install(&second_source, &root.join("versions"), &root.join("version-records.txt")).unwrap();
+    let second = extensions::folder_for(&root.join("versions"), &second_record.id).unwrap();
+    let loopback = Loopback::start();
+    let mut session = Session::open(&profile, vec![(id.clone(), first.clone())], vec![(id.clone(), true)], &loopback.page("before-update"));
+    let (runtime_id, failure) = session.wait_for_add(&profile, &id);
+    assert_eq!(runtime_id.as_deref(), Some(KEY_FIXTURE_ID)); assert!(failure.is_none());
+    session.open_page(&id, &first, extensions::PageKind::Popup).unwrap();
+    pump_until(Duration::from_secs(2), || false);
+    session.page_script("(()=>{chrome.storage.local.set({bowserUpdateSentinel:'disposable-test-value'},()=>document.documentElement.setAttribute('data-update-written','yes'));return true})()");
+    pump_until(Duration::from_secs(1), || false);
+    let first_manifest_before = std::fs::read(first.join("manifest.json")).unwrap();
+    let second_manifest_before = std::fs::read(second.join("manifest.json")).unwrap();
+    for (label, folder, expect_version) in [("update", second.as_path(), "0.0.2"), ("rollback", first.as_path(), "0.0.1")] {
+        let result = session.replace(&id, folder);
+        println!("UPDATE_PROBE phase={label} add={result:?}");
+        result.unwrap();
+        session.open_page(&id, folder, extensions::PageKind::Popup).unwrap();
+        pump_until(Duration::from_secs(2), || false);
+        session.page_script("(()=>{chrome.storage.local.get('bowserUpdateSentinel',s=>document.documentElement.setAttribute('data-update-state',JSON.stringify({id:chrome.runtime.id,version:chrome.runtime.getManifest().version,sentinel:s.bowserUpdateSentinel||null})));return true})()");
+        pump_until(Duration::from_secs(1), || false);
+        let state = session.page_script("document.documentElement.getAttribute('data-update-state')").unwrap_or_default();
+        println!("UPDATE_PROBE phase={label} state={state}");
+        assert!(state.contains(KEY_FIXTURE_ID) && state.contains(expect_version) && state.contains("disposable-test-value"), "identity/version/storage not preserved: {state}");
+        assert_eq!(std::fs::read(first.join("manifest.json")).unwrap(), first_manifest_before);
+        assert_eq!(std::fs::read(second.join("manifest.json")).unwrap(), second_manifest_before);
+    }
+    // An invalid staged replacement must not remove the working previous version.
+    let bad = root.join("bad-version"); std::fs::create_dir(&bad).unwrap();
+    std::fs::write(bad.join("manifest.json"), "not json").unwrap();
+    let refused = session.replace(&id, &bad);
+    println!("UPDATE_PROBE phase=invalid-replacement result={refused:?}");
+    assert!(refused.is_err());
+    session.open_page(&id, &first, extensions::PageKind::Popup).unwrap();
+    pump_until(Duration::from_secs(2), || false);
+    let live_version = session.page_script("chrome.runtime.getManifest().version").unwrap_or_default();
+    println!("UPDATE_PROBE phase=after-invalid-replacement version={live_version}");
+    assert!(live_version.contains("0.0.1"));
+    let targets = session.protocol(session.tab(), "Target.getTargets", "{}");
+    println!("API_PROBE scope=disposable-profile target_inventory={targets:?}");
+    let stopped = session.protocol(session.tab(), "ServiceWorker.stopAllWorkers", "{}");
+    println!("API_PROBE worker_stop={stopped:?}");
+    session.close(); drop(loopback); remove_with_retries(&root);
 }

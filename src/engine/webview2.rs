@@ -1496,6 +1496,10 @@ enum MemoryTargetApi {
 }
 
 impl WebView2Engine {
+    pub(crate) fn extension_runtime_is_supported(version: &str) -> bool {
+        runtime_supports_extensions(version)
+    }
+
     pub fn availability() -> std::result::Result<String, RuntimeUnavailable> {
         query_runtime(PCWSTR::null())
     }
@@ -5590,6 +5594,36 @@ mod tests {
             done: Box<dyn FnOnce(std::result::Result<(), String>)>,
         ) {
             self.open_extension_page_with(id, folder, kind, "Bowser extension probe", false, done);
+        }
+
+        /// Test-only native replacement probe. No web bridge or production update path is enabled.
+        pub(in crate::engine) fn probe_replace_extension(
+            &self, id: &str, folder: &Path,
+            done: Box<dyn FnOnce(std::result::Result<(), String>)>,
+        ) {
+            let profile = self.core.borrow().extension_profile.clone();
+            match profile {
+                Some(profile) => add_extension(&self.core, &profile, id.to_owned(), folder, done),
+                None => done(Err("The disposable extension profile is not ready.".into())),
+            }
+        }
+
+        /// Test-only COM protocol call on a specific disposable tab, never a debugging port.
+        pub(in crate::engine) fn probe_protocol(
+            &self, tab: TabId, method: &str, params: &str,
+            done: Box<dyn FnOnce(Option<String>)>,
+        ) {
+            let webview = self.core.borrow().tabs.get(&tab).and_then(|tab| tab.webview.clone());
+            let Some(webview) = webview else { done(None); return; };
+            let slot = Rc::new(RefCell::new(Some(done)));
+            let sink = slot.clone();
+            let handler = CallDevToolsProtocolMethodCompletedHandler::create(Box::new(move |status, answer| {
+                if let Some(done) = sink.borrow_mut().take() { done(status.is_ok().then_some(answer)); }
+                Ok(())
+            }));
+            let method = HSTRING::from(method); let params = HSTRING::from(params);
+            if unsafe { webview.CallDevToolsProtocolMethod(PCWSTR(method.as_ptr()), PCWSTR(params.as_ptr()), &handler) }.is_err()
+                && let Some(done) = slot.borrow_mut().take() { done(None); }
         }
 
         /// Runs a script in the open hosted page.
