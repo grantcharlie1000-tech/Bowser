@@ -876,6 +876,19 @@ fn probe_real_stylus_appearance(profile: &Path, id: &str, folder: &Path, session
     println!("STYLUS_APPEARANCE remove={:?} after_remove={removed:?} folder_exists={} scope=actual-import-style-url-boundary-and-removal-not-process-restart-or-all-features", result.borrow(), folder.exists());
 }
 
+/// Real catalogue popup queries with two distinct Bowser browsing views on the same fixture URL.
+/// This is observation only: no URL/title-based ID binding, guessed senderTabId or API shim.
+fn probe_real_tab_topology(name: &str, session: &mut Session, loopback: &Loopback) {
+    let duplicate = loopback.page("duplicate-url-control");
+    session.engine.navigate_tab(TabId(1), &duplicate).unwrap();
+    session.engine.select_tab(TabId(2)).unwrap(); session.engine.navigate_tab(TabId(2), &duplicate).unwrap();
+    pump_until(Duration::from_secs(3), || false); session.engine.select_tab(TabId(1)).unwrap();
+    let script = "(()=>{const result={};const queries={all:{},activeCurrent:{active:true,currentWindow:true},activeLastFocused:{active:true,lastFocusedWindow:true}};Promise.all(Object.entries(queries).map(([key,q])=>new Promise(resolve=>chrome.tabs.query(q,tabs=>{result[key]={error:chrome.runtime.lastError?.message||null,tabs:tabs?.map(t=>({id:t.id,windowId:t.windowId,active:t.active,incognito:t.incognito,url:t.url}))};resolve()})))).then(()=>document.documentElement.setAttribute('data-bowser-topology',JSON.stringify(result)));return true})()";
+    session.page_script(script); pump_until(Duration::from_secs(2), || false);
+    let report = session.page_script("document.documentElement.getAttribute('data-bowser-topology')");
+    println!("CATALOGUE_TOPOLOGY name={name} host_browser_window_count=1 host_browsing_view_count=2 duplicate_url_control=true genuine_popup_queries={report:?} scope=observation-only-no-id-adapter-or-guessed-target");
+}
+
 /// Real packages, fresh throwaway profiles, no accounts and no user data. This proves package
 /// identity/load and genuine extension context only, not product functionality or action grants.
 #[test]
@@ -938,6 +951,7 @@ fn live_store_current_extension_loads() {
                     session.page_script("(()=>{chrome.tabs.query({},tabs=>document.documentElement.setAttribute('data-bowser-api-probe',JSON.stringify({lastError:chrome.runtime.lastError?.message||null,tabs:tabs?.map(t=>({id:t.id,windowId:t.windowId,active:t.active,incognito:t.incognito,url:t.url}))})));return true})()");
                     pump_until(Duration::from_secs(2), || false);
                     println!("REAL_STORE name={name} page={label} tabs_query={:?}", session.page_script("document.documentElement.getAttribute('data-bowser-api-probe')"));
+                    if label == "popup" && matches!(name, "bitwarden" | "tab-session-manager") { probe_real_tab_topology(name, &mut session, &loopback); }
                 }
             }
         }

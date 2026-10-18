@@ -5983,8 +5983,9 @@ mod tests {
                     if let Some(args) = args {
                         let mut raw = PWSTR::null();
                         if args.ParameterObjectAsJson(&mut raw).is_ok() {
+                            let json = CoTaskMemPWSTR::from(raw).to_string();
                             let mut events = sink.borrow_mut();
-                            if events.len() < 512 { events.push((name.to_owned(), CoTaskMemPWSTR::from(raw).to_string())); }
+                            if events.len() < 512 { events.push((name.to_owned(), json)); }
                         }
                     }
                     Ok(())
