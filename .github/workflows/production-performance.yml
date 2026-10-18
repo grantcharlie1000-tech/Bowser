@@ -56,19 +56,20 @@ jobs:
           if($LASTEXITCODE -ne 0){throw 'Cannot fetch reviewed product source'}
           $changes=@(git diff --name-only f285525d205b9b388ebb26481f5af01d4df99ac8 HEAD)
           if($LASTEXITCODE -ne 0){throw 'Cannot verify bounded interaction instrumentation'}
-          if(@($changes | Where-Object {$_ -cnotin @('.github/workflows/production-performance.yml','benchmarks/production-baseline.ps1','benchmarks/production-analyze.py','benchmarks/interaction-diagnostic.md','src/performance.rs','src/main.rs','src/app.rs','src/chrome_host/host.rs','src/chrome_host/protocol.rs','src/win32/window.rs','src/win32/settings_page.rs','ui/src/interaction-diagnostic.ts','ui/src/main.ts','ui/src/protocol.ts','ui/test/interaction-diagnostic.mjs','ui/package.json','ui/dist.manifest','ui/dist/app.js','ui/dist/settings-page.js','ui/dist/history-page.js')}).Count){throw 'Unexpected changes outside fixed interaction diagnostic slice'}
+          if(@($changes | Where-Object {$_ -cnotin @('.github/workflows/production-performance.yml','benchmarks/production-baseline.ps1','benchmarks/production-analyze.py','benchmarks/interaction-diagnostic.md','benchmarks/production-focus.psm1','benchmarks/test-production-focus.ps1','benchmarks/native-focus-diagnostic.md','src/performance.rs','src/main.rs','src/app.rs','src/chrome_host/host.rs','src/chrome_host/protocol.rs','src/win32/window.rs','src/win32/settings_page.rs','ui/src/interaction-diagnostic.ts','ui/src/main.ts','ui/src/protocol.ts','ui/test/interaction-diagnostic.mjs','ui/package.json','ui/dist.manifest','ui/dist/app.js','ui/dist/settings-page.js','ui/dist/history-page.js')}).Count){throw 'Unexpected changes outside fixed interaction diagnostic slice'}
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: '22'
       - name: Parse measurement scripts and run contract tests
         working-directory: candidate
         run: |
-          foreach ($path in @('benchmarks/production-baseline.ps1','benchmarks/production-measurements.psm1','benchmarks/test-production-measurements.ps1')) {
+          foreach ($path in @('benchmarks/production-baseline.ps1','benchmarks/production-measurements.psm1','benchmarks/test-production-measurements.ps1','benchmarks/production-focus.psm1','benchmarks/test-production-focus.ps1')) {
             $tokens=$null; $errors=$null
             [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $pwd $path),[ref]$tokens,[ref]$errors) | Out-Null
             if ($errors.Count) { $errors | Format-List; throw "$path does not parse" }
           }
           ./benchmarks/test-production-measurements.ps1
+          ./benchmarks/test-production-focus.ps1
           ./benchmarks/test-measurements.ps1
           python benchmarks/test-native-detail-analyze.py
           if ($LASTEXITCODE -ne 0) { throw 'Native detail analyzer contracts failed' }
@@ -76,7 +77,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Analysis contract tests failed' }
           node --check benchmarks/scripts/production-fixture-server.mjs
           node --check benchmarks/scripts/filter-parity-fixture.mjs
-      - name: Reuse exact matched9862 binaries for one fixed64-row replication
+      - name: Reuse exact matched9862 binaries for bounded passive OS focus diagnosis
         working-directory: candidate
         env:
           GH_TOKEN: ${{ github.token }}
@@ -85,7 +86,7 @@ jobs:
           git fetch --no-tags --depth=1 origin $source
           if($LASTEXITCODE -ne 0){throw 'Cannot fetch frozen interaction source'}
           $changes=@(git diff --name-only $source HEAD)
-          if($LASTEXITCODE -ne 0 -or $changes.Count -ne 1 -or $changes[0] -cne '.github/workflows/production-performance.yml'){throw 'Replication requires unchanged product and harness bytes; workflow-only change'}
+          if($LASTEXITCODE -ne 0 -or @($changes|Where-Object {$_ -cnotin @('.github/workflows/production-performance.yml','benchmarks/production-baseline.ps1','benchmarks/production-focus.psm1','benchmarks/test-production-focus.ps1','benchmarks/native-focus-diagnostic.md')}).Count){throw 'Focus diagnostic requires unchanged product and only reviewed passive harness paths'}
           $headers=@{Authorization="Bearer $env:GH_TOKEN";Accept='application/vnd.github+json';'X-GitHub-Api-Version'='2022-11-28'}
           $zip=Join-Path $env:RUNNER_TEMP 'interaction-9862.zip'
           Invoke-WebRequest 'https://api.github.com/repos/grantcharlie1000-tech/Bowser/actions/artifacts/12133737632/zip' -Headers $headers -OutFile $zip
@@ -106,7 +107,7 @@ jobs:
           $paths=@{baseline='../evidence/frozen/untouched-main.exe';diagnostic='../evidence/interaction-reference/reference.exe';release='../evidence/frozen/released-v0.0.19.exe';candidate='../evidence/candidate/candidate.exe'}
           foreach($role in $expected.Keys){if($manifest.$role -cne $expected[$role] -or (Get-FileHash $paths[$role] -Algorithm SHA256).Hash.ToLowerInvariant() -cne $expected[$role]){throw "Frozen replication input mismatch: $role"}}
           if((Get-Item $paths.candidate).Length -ne 7859712 -or (Get-Item $paths.diagnostic).Length -ne 7826944){throw 'Frozen matched input size mismatch'}
-          [ordered]@{artifact_id=12133737632;archive_sha256=$archiveHash;candidate_source=$source;reference_tree=$reference.build_tree;harness_source=(git rev-parse HEAD).Trim();candidate_rebuilt=$false;fixed_pairs=8;planned_rows=64;max_invalid_samples=20;purpose='One predeclared failure-inclusive OFF ON replication; capture failing ON trace, not retry until green; all-pass means not reproduced, not fixed';stop='Up to64 planned rows; stop at20 invalids or any identity/isolation loss; no within-row retry or repair'} | ConvertTo-Json | Set-Content ../evidence/replication-provenance.json
+          [ordered]@{artifact_id=12133737632;archive_sha256=$archiveHash;candidate_source=$source;reference_tree=$reference.build_tree;harness_source=(git rev-parse HEAD).Trim();candidate_rebuilt=$false;fixed_pairs=2;planned_rows=16;max_invalid_samples=20;purpose='H1 passive OS focus ownership versus UIA at fixed input boundaries; controller identity and H2 setText overwrite remain untested; no performance acceptance';stop='One fixed16-row batch; stop on any identity/isolation loss; no within-row retry, repair, delay or input-method change'} | ConvertTo-Json | Set-Content ../evidence/replication-provenance.json
       - name: Bounded native actual-module and HTML activation validity pass
         id: validity
         working-directory: candidate
@@ -143,11 +144,11 @@ jobs:
         working-directory: candidate
         run: |
           ./benchmarks/production-baseline.ps1 -BaselineExe ../evidence/frozen/untouched-main.exe -DiagnosticExe ../evidence/interaction-reference/reference.exe -DiagnosticSource (Get-Content ../evidence/interaction-reference/identity.json -Raw | ConvertFrom-Json).source -ReleaseExe ../evidence/frozen/released-v0.0.19.exe -CandidateExe ../evidence/candidate/candidate.exe -CandidateSource (Get-Content ../evidence/candidate/identity.json -Raw | ConvertFrom-Json).source -IncludeSurfaceSmoke -PositiveOnly -Out ../evidence/surfaces -StartupOnly -Pairs 1 -Fixtures light -MeasurementMode timing -MaxInvalidSamples 1
-      - name: One predeclared64-row fast interaction OFF ON replication
+      - name: Small predeclared16-row passive native focus hypothesis control
         if: ${{ !cancelled() && env.INTERACTION_DIAGNOSTIC_ONLY == 'true' && steps.validity.outcome == 'success' }}
         working-directory: candidate
         run: |
-          ./benchmarks/production-baseline.ps1 -BaselineExe ../evidence/frozen/untouched-main.exe -DiagnosticExe ../evidence/interaction-reference/reference.exe -DiagnosticSource (Get-Content ../evidence/interaction-reference/identity.json -Raw | ConvertFrom-Json).source -ReleaseExe ../evidence/frozen/released-v0.0.19.exe -CandidateExe ../evidence/candidate/candidate.exe -CandidateSource (Get-Content ../evidence/candidate/identity.json -Raw | ConvertFrom-Json).source -IncludeSurfaceSmoke -SurfaceInputMethod uia-value -DiagnosticAutoUpdateOff -ExpectedInputManifest ../evidence/input-manifest.json -DiagnosticInteractionPilot -PositiveOnly -Out ../evidence/interaction-order -StartupOnly -Pairs 8 -Fixtures light -MeasurementMode timing -MaxInvalidSamples 20
+          ./benchmarks/production-baseline.ps1 -BaselineExe ../evidence/frozen/untouched-main.exe -DiagnosticExe ../evidence/interaction-reference/reference.exe -DiagnosticSource (Get-Content ../evidence/interaction-reference/identity.json -Raw | ConvertFrom-Json).source -ReleaseExe ../evidence/frozen/released-v0.0.19.exe -CandidateExe ../evidence/candidate/candidate.exe -CandidateSource (Get-Content ../evidence/candidate/identity.json -Raw | ConvertFrom-Json).source -IncludeSurfaceSmoke -SurfaceInputMethod uia-value -DiagnosticAutoUpdateOff -ExpectedInputManifest ../evidence/input-manifest.json -DiagnosticInteractionPilot -DiagnosticNativeFocus -PositiveOnly -Out ../evidence/interaction-order -StartupOnly -Pairs 2 -Fixtures light -MeasurementMode timing -MaxInvalidSamples 20
       - name: Derive descriptive paired statistics without accepting gains automatically
         if: always()
         working-directory: candidate

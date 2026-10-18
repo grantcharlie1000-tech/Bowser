@@ -18,6 +18,7 @@ param(
     [switch]$PositiveOnly,
     [switch]$DiagnosticDetailPilot,
     [switch]$DiagnosticInteractionPilot,
+    [switch]$DiagnosticNativeFocus,
     [switch]$StartupOnly,
     [string]$CandidateExe,
     [string]$CandidateSource,
@@ -36,6 +37,8 @@ if($DiagnosticAutoUpdateOff -and -not $ExpectedInputManifest){throw 'Updater-off
 if($SurfaceInputMethod -ne 'sendkeys' -and -not $IncludeSurfaceSmoke){throw 'UIA value control requires the independent surface lane'}
 if($StartupOnly -and $IncludeTabFlow){throw 'StartupOnly cannot be combined with IncludeTabFlow'}
 if($DiagnosticInteractionPilot -and (-not $CandidateExe -or -not $IncludeSurfaceSmoke -or -not $StartupOnly)){throw 'DiagnosticInteractionPilot requires CandidateExe, IncludeSurfaceSmoke and StartupOnly'}
+if($DiagnosticNativeFocus -and (-not $DiagnosticInteractionPilot -or -not $DiagnosticAutoUpdateOff -or $SurfaceInputMethod -ne 'uia-value')){throw 'Native focus observation requires isolated interaction pilot with ordinary updater OFF and unchanged UIA value input'}
+if($DiagnosticNativeFocus){Import-Module "$PSScriptRoot/production-focus.psm1" -Force}
 $Out=[IO.Path]::GetFullPath($Out)
 New-Item -ItemType Directory -Force $Out | Out-Null
 $contaminationMarker=Join-Path ([IO.Directory]::GetParent($Out).FullName) 'native-isolation-blocked.json'
@@ -112,7 +115,18 @@ $script:profileTimestamp=[DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
 $invalidSamples=0
 $server=$null; $app=$null; $rows=[Collections.Generic.List[object]]::new()
 function Qpc { [Diagnostics.Stopwatch]::GetTimestamp() }
-function Owned-Keys([string]$keys) {
+function Observe-NativeFocus([string]$boundary) {
+    if(-not $DiagnosticNativeFocus){return}
+    $outerStart=Qpc
+    $root=[BowserProductionNative]::FindHost([uint32]$app.Id)
+    $record=Get-ProductionNativeFocusSnapshot -RootPid ([uint32]$app.Id) -RootWindow $root -Boundary $boundary -Attempt $script:addressAttempt
+    $outerEnd=Qpc
+    $record['outer_start_qpc']=$outerStart;$record['outer_end_qpc']=$outerEnd
+    $record['lookup_and_snapshot_ms']=($outerEnd-$outerStart)*1000.0/[Diagnostics.Stopwatch]::Frequency
+    $record['duration_scope']='Outer interval includes owned-root lookup and snapshot call; inner observation_ms retains API/wrapper interval; record append/caller dispatch not included; no overhead subtraction'
+    $script:nativeFocusTrace.Add($record)
+}
+function Owned-Keys([string]$keys,[string]$focusBoundary='') {
     # Process.MainWindowHandle can be a cached/transient popup handle. Select the exact native host.
     $deadline=[DateTime]::UtcNow.AddSeconds(3); $window=[IntPtr]::Zero; $owner=[uint32]0
     do {
@@ -123,10 +137,13 @@ function Owned-Keys([string]$keys) {
     } while ([DateTime]::UtcNow -lt $deadline)
     [void][BowserProductionNative]::GetWindowThreadProcessId($window,[ref]$owner)
     if ($window -eq [IntPtr]::Zero -or $owner -ne $app.Id -or -not [BowserProductionNative]::IsWindowVisible($window)) { throw 'Owned visible BowserNativeWindow unavailable; no global input sent' }
+    if($focusBoundary){Observe-NativeFocus "$focusBoundary-before-foreground"}
     [void][BowserProductionNative]::SetForegroundWindow($window)
     Start-Sleep -Milliseconds 80
     if ([BowserProductionNative]::GetForegroundWindow() -ne $window) { throw 'Foreground unavailable; no global input sent' }
+    if($focusBoundary){Observe-NativeFocus "$focusBoundary-before-keys"}
     [Windows.Forms.SendKeys]::SendWait($keys)
+    if($focusBoundary){Observe-NativeFocus "$focusBoundary-after-keys"}
 }
 function Capture-OwnedSurface([string]$name,[IntPtr]$window=[IntPtr]::Zero) {
     if($window -eq [IntPtr]::Zero){$window=[BowserProductionNative]::FindHost([uint32]$app.Id)}
@@ -186,18 +203,22 @@ function Read-InputModifiers {
     return $result
 }
 function Submit-OwnedAddress([string]$text) {
-    Owned-Keys '^l'
+    if($DiagnosticNativeFocus){$script:addressAttempt++}
+    Owned-Keys '^l' 'ctrl-l'
     $wait=[Diagnostics.Stopwatch]::StartNew();$state=$null
     do {$state=Read-OwnedAddress;if($state.focused){break};Start-Sleep -Milliseconds 20}while($wait.Elapsed.TotalSeconds -lt 3)
     if(-not $state.focused){throw "Omnibox focus not confirmed before typing; observed=$($state.focus_name)"}
     $trace=[ordered]@{surface='semantic-address-input';method=$SurfaceInputMethod;expected_value=$text;before_value=$state.value;before_selection=$state.selection;before_modifiers=(Read-InputModifiers);value_transitions=@();focus_name=$state.focus_name;provider_process_id=$state.provider_process_id;owned_address_focused=$state.focused;value_matches_expected=$false;qpc=(Qpc)}
     $script:surfaceTrace.Add($trace)
     if($SurfaceInputMethod -eq 'uia-value') {
-        # Separate navigation/first-use CONTROL. This bypasses keystrokes/autocomplete and
+        # Separate navigation/first-use CONTROL. It bypasses keystrokes, but may dispatch DOM
+        # input/change and autocomplete; it
         # can NEVER establish keyboard correctness or keyboard latency.
         $pattern=[Windows.Automation.ValuePattern]$state.element.GetCurrentPattern([Windows.Automation.ValuePattern]::Pattern)
         if($pattern.Current.IsReadOnly){throw 'Owned address ValuePattern is read-only'}
+        Observe-NativeFocus 'set-value-before'
         $pattern.SetValue($text)
+        Observe-NativeFocus 'set-value-after'
     } elseif($SurfaceInputMethod -eq 'sendkeys-per-key') {
         # Predeclared real keystroke control: at least30ms plus UIA work per character, no
         # modifier reset, text repair or retry. It still exercises autocomplete.
@@ -224,10 +245,13 @@ function Submit-OwnedAddress([string]$text) {
         if($state.focused -and $state.value -ceq $text){break};Start-Sleep -Milliseconds 20
     }while($wait.Elapsed.TotalSeconds -lt 3)
     $trace.value_transitions=@($transitions.ToArray());$trace.focus_name=$state.focus_name;$trace.provider_process_id=$state.provider_process_id;$trace.owned_address_focused=$state.focused;$trace.value_matches_expected=($state.value -ceq $text);$trace.qpc=Qpc
+    Observe-NativeFocus 'uia-assertion-after'
     if(-not $state.focused -or $state.value -cne $text){throw 'Omnibox exact value/focus not confirmed; Enter was not sent'}
     $window=[BowserProductionNative]::FindHost([uint32]$app.Id)
     if([BowserProductionNative]::GetForegroundWindow() -ne $window){throw 'Owned foreground lost before semantically verified Enter; Enter was not sent'}
+    Observe-NativeFocus 'enter-before'
     $start=Qpc;[Windows.Forms.SendKeys]::SendWait('{ENTER}')
+    Observe-NativeFocus 'enter-after'
     return $start
 }
 function Submit-OwnedFixture([string]$fixtureToken,[string]$purpose) {
@@ -359,7 +383,7 @@ try {
         power=(& powercfg /getactivescheme | Out-String).Trim(); resolution=[Windows.Forms.Screen]::PrimaryScreen.Bounds.ToString()
         webview2_runtime=@(Get-ChildItem 'C:/Program Files (x86)/Microsoft/EdgeWebView/Application' -Directory -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name)
         noise=@('Shared hosted runner, not a laptop/battery claim','Fresh profile is not cold OS cache',$(if($DiagnosticAutoUpdateOff){'Updater OFF via ordinary disposable-profile setting; interaction control, not primary workload'}else{'Updater remains production-enabled, isolated LOCALAPPDATA'}),'Samples are endpoint process-tree observations, not ETW complete','Working-set sums include shared pages','Fixture double-requestAnimationFrame is acknowledged page readiness, not proven display presentation','Title-based tab switch is only a proxy','Sampling overhead separately recorded; measured values are not overhead-subtracted','DOM telemetry QPC is native receipt time, not DOM event execution time; cross-process causality is not inferred from receipt order alone; flag OFF/ON controls stay separate','GetAsyncKeyState snapshots do not prove queued modifier messages have been processed; instrumented input lanes are diagnosis, not typing-latency acceptance')
-        workload_settings=@{history_records=10000; bookmark_records=818; startup='start_page overridden by ordinary --open-url'; first_run_offer='already answered synthetic profile'; security='unchanged defaults'; ui='HTML-default build, no BOWSER_UI override'; tab_flow=[bool]$IncludeTabFlow; surface_smoke=[bool]$IncludeSurfaceSmoke;surface_input_method=$SurfaceInputMethod;auto_update=if($DiagnosticAutoUpdateOff){'OFF ordinary disposable-profile control; not the primary workload'}else{'ON production default'};surface_input_scope=if($SurfaceInputMethod -eq 'uia-value'){'ValuePattern navigation/first-use control; bypasses keystrokes; may dispatch DOM input/change and autocomplete; not keyboard correctness'}else{'instrumented SendKeys keyboard diagnostic with UIA value/selection reads; no primary typing latency, retyping or retry'}; diagnostic_detail_pilot=[bool]$DiagnosticDetailPilot;diagnostic_interaction_pilot=[bool]$DiagnosticInteractionPilot; startup_only=[bool]$StartupOnly; resource_endpoint=if($StartupOnly){'settled initial one-tab navigation; no omnibox submission or UIA; not comparable to old post-Enter state'}else{'settled post-Enter one-tab navigation'}; resource_tab_count=if($IncludeTabFlow){5}else{1}}
+        workload_settings=@{history_records=10000; bookmark_records=818; startup='start_page overridden by ordinary --open-url'; first_run_offer='already answered synthetic profile'; security='unchanged defaults'; ui='HTML-default build, no BOWSER_UI override'; tab_flow=[bool]$IncludeTabFlow; surface_smoke=[bool]$IncludeSurfaceSmoke;surface_input_method=$SurfaceInputMethod;auto_update=if($DiagnosticAutoUpdateOff){'OFF ordinary disposable-profile control; not the primary workload'}else{'ON production default'};surface_input_scope=if($SurfaceInputMethod -eq 'uia-value'){'ValuePattern navigation/first-use control; bypasses keystrokes; may dispatch DOM input/change and autocomplete; not keyboard correctness'}else{'instrumented SendKeys keyboard diagnostic with UIA value/selection reads; no primary typing latency, retyping or retry'}; diagnostic_detail_pilot=[bool]$DiagnosticDetailPilot;diagnostic_interaction_pilot=[bool]$DiagnosticInteractionPilot;native_focus_observation=[bool]$DiagnosticNativeFocus;native_focus_hypothesis=if($DiagnosticNativeFocus){'H1 OS keyboard focus differs from UIA between CtrlL/SetValue/Enter; HWND cannot establish a specific controller; H2 setText overwrite untested; passive observations perturb timing, no performance claim'}else{$null}; startup_only=[bool]$StartupOnly; resource_endpoint=if($StartupOnly){'settled initial one-tab navigation; no omnibox submission or UIA; not comparable to old post-Enter state'}else{'settled post-Enter one-tab navigation'}; resource_tab_count=if($IncludeTabFlow){5}else{1}}
     }
     $metadata | ConvertTo-Json -Depth 10 | Set-Content (Join-Path $Out 'environment.json') -Encoding utf8
     # Five-pair pilot by default. Alternate whole arm order each pair, same session/runtime/fixture seed.
@@ -384,8 +408,8 @@ try {
                     if($arm -eq 'candidate_detail_on') { $args+=@('--diagnostic-detail') }
                     if($arm -like '*_interaction_on'){$args+=@('--diagnostic-interaction')}
                     $snapshots=[Collections.Generic.List[object]]::new(); $overheads=[Collections.Generic.List[double]]::new()
-                    $sample=[ordered]@{id=$id;pair=$pair;arm=$arm;fixture=$fixture;condition=$condition;prior_fresh_outcome=if($condition -eq 'reused'){$freshOutcome}else{$null};token=$token;valid=$false;expected_failure=($fixture -in @('network-failure','error','hung'));error=$null;launch_qpc=$null;ready_qpc=$null;title_ready_qpc=$null;input_ready_qpc=$null;shutdown_ms=$null;disk_before=(Disk-Bytes $profile);measurement_mode=$MeasurementMode;tree_exit_wait_ms=$null;tree_exit_confirmed=$false;ownership_inventory_captured=$false;drain_remaining=@();cleanup_error=$null;cleanup_forced_root=$false;identity_error=$null;input_identity_checks=@();observer_arming_wait_ms=$null;observation_error=$null;updater_control=if($DiagnosticAutoUpdateOff){'ordinary auto-update.txt=false; no staged/trial state; separate interaction workload'}else{'production default on'};surface_smoke=$null;filter_parity=$null;events=$null;input=$null;input_exclusion_reason=if($StartupOnly){'Startup-only lane: no omnibox interaction; input latency unavailable, not passed or zero'}else{$null};tab_switch_proxy_ms=$null;idle=$null;minimized=$null}
-                    $app=$null;$known=@{};$script:surfaceTrace=$null
+                    $sample=[ordered]@{id=$id;pair=$pair;arm=$arm;fixture=$fixture;condition=$condition;prior_fresh_outcome=if($condition -eq 'reused'){$freshOutcome}else{$null};token=$token;valid=$false;expected_failure=($fixture -in @('network-failure','error','hung'));error=$null;launch_qpc=$null;ready_qpc=$null;title_ready_qpc=$null;input_ready_qpc=$null;shutdown_ms=$null;disk_before=(Disk-Bytes $profile);measurement_mode=$MeasurementMode;tree_exit_wait_ms=$null;tree_exit_confirmed=$false;ownership_inventory_captured=$false;drain_remaining=@();cleanup_error=$null;cleanup_forced_root=$false;identity_error=$null;input_identity_checks=@();observer_arming_wait_ms=$null;observation_error=$null;native_focus_trace=$null;native_focus_observation_errors=@();updater_control=if($DiagnosticAutoUpdateOff){'ordinary auto-update.txt=false; no staged/trial state; separate interaction workload'}else{'production default on'};surface_smoke=$null;filter_parity=$null;events=$null;input=$null;input_exclusion_reason=if($StartupOnly){'Startup-only lane: no omnibox interaction; input latency unavailable, not passed or zero'}else{$null};tab_switch_proxy_ms=$null;idle=$null;minimized=$null}
+                    $app=$null;$known=@{};$script:surfaceTrace=$null;$script:nativeFocusTrace=$null;$script:addressAttempt=0
                     try {
                         Assert-FrozenInputs $sample 'before-launch'
                         Confirm-NoStagedUpdate $profile
@@ -459,7 +483,7 @@ try {
                                 $sample.observer_arming_wait_ms=$armed.Elapsed.TotalMilliseconds
                                 if(-not $observed){throw 'Interaction observer not armed; no diagnostic input sent'}
                             }
-                            $script:surfaceTrace=[Collections.Generic.List[object]]::new();$sample.surface_smoke=@(Native-SurfaceSmoke)
+                            $script:surfaceTrace=[Collections.Generic.List[object]]::new();if($DiagnosticNativeFocus){$script:nativeFocusTrace=[Collections.Generic.List[object]]::new()};$sample.surface_smoke=@(Native-SurfaceSmoke)
                         }
                         # Inventory only after all cheap timing endpoints, to establish exact identities for drain.
                         $ownedBeforeClose=@(Get-ProcessGroupMembers -RootPid $app.Id -Profile $profile -Inventory @(Get-ProcessInventory))
@@ -519,6 +543,11 @@ try {
                         [ordered]@{id=$sample.id;original_error=$sample.error;identity_error=$sample.identity_error;cleanup_error=$sample.cleanup_error;ownership_inventory_captured=$sample.ownership_inventory_captured;remaining=$sample.drain_remaining} | ConvertTo-Json -Depth 15 | Set-Content $contaminationMarker -Encoding utf8
                         }
                         if($script:surfaceTrace){$sample.surface_smoke=@($script:surfaceTrace.ToArray())}
+                        if($script:nativeFocusTrace){
+                            $sample.native_focus_trace=@($script:nativeFocusTrace.ToArray())
+                            $sample.native_focus_observation_errors=@($sample.native_focus_trace|Where-Object {$_.api_exception -or $null -eq $_.native -or -not $_.native.query_ok})
+                            if($sample.native_focus_observation_errors.Count){$sample.valid=$false;$sample.observation_error='Native OS focus snapshot unavailable; focus attribution incomplete';if(-not $sample.error){$sample.error=$sample.observation_error}}
+                        }
                         if($arm.EndsWith('_on') -and (Test-Path $eventFile)){$sample.events=@(Import-Csv $eventFile)}
                         if($arm -like '*_interaction_on') {
                             $drops=@($sample.events|Where-Object {$_.event -in @('interaction_bridge_rate_drop','interaction_bridge_parse_drop','interaction_diagnostic_rate_drop','interaction_observer_enable_failed') -or ($_.event -eq 'interaction_app_borrow_drops' -and [long]$_.count -ne 0)})
