@@ -12,6 +12,7 @@ param(
     [string]$DiagnosticSource='8a60dca2ac7de6d369c9b65584fd621a7013f491',
     [switch]$IncludeTabFlow,
     [switch]$IncludeSurfaceSmoke,
+    [ValidateSet('sendkeys','sendkeys-per-key','uia-value')][string]$SurfaceInputMethod='sendkeys',
     [switch]$PositiveOnly,
     [switch]$DiagnosticDetailPilot,
     [switch]$StartupOnly,
@@ -28,9 +29,12 @@ $ErrorActionPreference='Stop'
 Import-Module "$PSScriptRoot/measurements.psm1" -Force
 Import-Module "$PSScriptRoot/production-measurements.psm1" -Force
 if (-not $IsWindows) { throw 'Native Windows required' }
+if($SurfaceInputMethod -ne 'sendkeys' -and -not $IncludeSurfaceSmoke){throw 'UIA value control requires the independent surface lane'}
 if($StartupOnly -and $IncludeTabFlow){throw 'StartupOnly cannot be combined with IncludeTabFlow'}
 $Out=[IO.Path]::GetFullPath($Out)
 New-Item -ItemType Directory -Force $Out | Out-Null
+$contaminationMarker=Join-Path ([IO.Directory]::GetParent($Out).FullName) 'native-isolation-blocked.json'
+if(Test-Path $contaminationMarker){throw 'Prior native lane has unconfirmed process isolation; no new native process launched'}
 $run=Join-Path $Out 'isolated'
 New-Item -ItemType Directory -Force $run | Out-Null
 $arms=[ordered]@{release=(Resolve-BowserExecutable $ReleaseExe);baseline=(Resolve-BowserExecutable $BaselineExe);diagnostic_off=(Resolve-BowserExecutable $DiagnosticExe);diagnostic_on=(Resolve-BowserExecutable $DiagnosticExe)}
@@ -72,6 +76,7 @@ public static class BowserProductionNative {
  }
  public static bool Close(uint pid) {var h=FindHost(pid);return h!=IntPtr.Zero && PostMessage(h,0x0010,IntPtr.Zero,IntPtr.Zero);}
 
+ [DllImport("user32.dll")] public static extern short GetAsyncKeyState(int key);
  [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
  [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
  [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h,out uint pid);
@@ -129,21 +134,59 @@ function Read-OwnedAddress {
     $focused=[Windows.Automation.AutomationElement]::FocusedElement
     $same=$edit -and $focused -and (($edit.GetRuntimeId() -join ',') -ceq ($focused.GetRuntimeId() -join ','))
     $value=if($edit){([Windows.Automation.ValuePattern]$edit.GetCurrentPattern([Windows.Automation.ValuePattern]::Pattern)).Current.Value}else{$null}
-    return [ordered]@{focused=[bool]$same;value=$value;focus_name=if($focused){$focused.Current.Name}else{''};provider_process_id=if($focused){$focused.Current.ProcessId}else{0}}
+    $selection=$null
+    if($edit){try{$ranges=([Windows.Automation.TextPattern]$edit.GetCurrentPattern([Windows.Automation.TextPattern]::Pattern)).GetSelection();$selection=@($ranges|ForEach-Object {$_.GetText(-1)})}catch{}}
+    return [ordered]@{selection=$selection;element=$edit;focused=[bool]$same;value=$value;focus_name=if($focused){$focused.Current.Name}else{''};provider_process_id=if($focused){$focused.Current.ProcessId}else{0}}
+}
+function Read-InputModifiers {
+    $result=[ordered]@{}
+    foreach($key in @(@('shift',16),@('control',17),@('alt',18),@('left_windows',91),@('right_windows',92))) {
+        $result[$key[0]]=([BowserProductionNative]::GetAsyncKeyState([int]$key[1]) -lt 0)
+    }
+    return $result
 }
 function Submit-OwnedAddress([string]$text) {
     Owned-Keys '^l'
     $wait=[Diagnostics.Stopwatch]::StartNew();$state=$null
     do {$state=Read-OwnedAddress;if($state.focused){break};Start-Sleep -Milliseconds 20}while($wait.Elapsed.TotalSeconds -lt 3)
     if(-not $state.focused){throw "Omnibox focus not confirmed before typing; observed=$($state.focus_name)"}
-    Owned-Keys $text
+    $trace=[ordered]@{surface='semantic-address-input';method=$SurfaceInputMethod;expected_value=$text;before_value=$state.value;before_selection=$state.selection;before_modifiers=(Read-InputModifiers);value_transitions=@();focus_name=$state.focus_name;provider_process_id=$state.provider_process_id;owned_address_focused=$state.focused;value_matches_expected=$false;qpc=(Qpc)}
+    $script:surfaceTrace.Add($trace)
+    if($SurfaceInputMethod -eq 'uia-value') {
+        # Separate navigation/first-use CONTROL. This bypasses keystrokes/autocomplete and
+        # can NEVER establish keyboard correctness or keyboard latency.
+        $pattern=[Windows.Automation.ValuePattern]$state.element.GetCurrentPattern([Windows.Automation.ValuePattern]::Pattern)
+        if($pattern.Current.IsReadOnly){throw 'Owned address ValuePattern is read-only'}
+        $pattern.SetValue($text)
+    } elseif($SurfaceInputMethod -eq 'sendkeys-per-key') {
+        # Predeclared real keystroke control: at least30ms plus UIA work per character, no
+        # modifier reset, text repair or retry. It still exercises autocomplete.
+        $keys=[Collections.Generic.List[object]]::new();$trace['per_key']=$keys
+        foreach($character in $text.ToCharArray()) {
+            $state=Read-OwnedAddress;$modifiers=Read-InputModifiers
+            $key=[ordered]@{qpc=(Qpc);character=[string]$character;before_value=$state.value;before_selection=$state.selection;focused=$state.focused;modifiers=$modifiers}
+            $keys.Add($key)
+            if(-not $state.focused -or @($modifiers.Values|Where-Object {$_}).Count){throw 'Per-key diagnostic requires owned focus and neutral modifiers; no repair attempted'}
+            if([BowserProductionNative]::GetForegroundWindow() -ne [BowserProductionNative]::FindHost([uint32]$app.Id)){throw 'Per-key foreground lost; no further input sent'}
+            [Windows.Forms.SendKeys]::SendWait([string]$character)
+            Start-Sleep -Milliseconds 30
+            $after=Read-OwnedAddress;$key['after_value']=$after.value;$key['after_selection']=$after.selection;$key['after_modifiers']=Read-InputModifiers
+        }
+        $trace.per_key=@($keys.ToArray())
+    } else { Owned-Keys $text }
+    $trace['after_injection_modifiers']=Read-InputModifiers
+    $transitions=[Collections.Generic.List[object]]::new();$previous=$null
     $wait=[Diagnostics.Stopwatch]::StartNew()
-    do {$state=Read-OwnedAddress;if($state.focused -and $state.value -ceq $text){break};Start-Sleep -Milliseconds 20}while($wait.Elapsed.TotalSeconds -lt 3)
-    $script:surfaceTrace.Add([ordered]@{surface='semantic-address-input';focus_name=$state.focus_name;provider_process_id=$state.provider_process_id;owned_address_focused=$state.focused;value_matches_expected=($state.value -ceq $text);qpc=(Qpc)})
+    do {
+        $state=Read-OwnedAddress
+        $identity="$($state.focused):$($state.value)"
+        if($identity -cne $previous){$transitions.Add([ordered]@{qpc=(Qpc);value=$state.value;selection=$state.selection;focused=$state.focused;focus_name=$state.focus_name;modifiers=(Read-InputModifiers)});$previous=$identity}
+        if($state.focused -and $state.value -ceq $text){break};Start-Sleep -Milliseconds 20
+    }while($wait.Elapsed.TotalSeconds -lt 3)
+    $trace.value_transitions=@($transitions.ToArray());$trace.focus_name=$state.focus_name;$trace.provider_process_id=$state.provider_process_id;$trace.owned_address_focused=$state.focused;$trace.value_matches_expected=($state.value -ceq $text);$trace.qpc=Qpc
     if(-not $state.focused -or $state.value -cne $text){throw 'Omnibox exact value/focus not confirmed; Enter was not sent'}
     $window=[BowserProductionNative]::FindHost([uint32]$app.Id)
     if([BowserProductionNative]::GetForegroundWindow() -ne $window){throw 'Owned foreground lost before semantically verified Enter; Enter was not sent'}
-    # No second80ms focus delay: send only after confirming actual focused element and exact value.
     $start=Qpc;[Windows.Forms.SendKeys]::SendWait('{ENTER}')
     return $start
 }
@@ -226,6 +269,22 @@ function Native-SurfaceSmoke {
     }
     return @($results.ToArray())
 }
+function Confirm-OwnedTreeDrain($known,[string]$profile,$sample) {
+    $drain=[Diagnostics.Stopwatch]::StartNew()
+    do {
+        $inventory=@(Get-ProcessInventory)
+        if(-not $inventory.Count){throw 'Global process inventory empty/unavailable; process exit unproven'}
+        # A negative traversal sentinel cannot seed Windows PID0/System ancestry.
+        $remaining=@(Get-ProcessGroupMembers -RootPid -1 -Profile $profile -Inventory $inventory)
+        foreach($process in $remaining){$known["$($process.Pid):$($process.CreationTicks)"]=$true}
+        $remaining+=@($inventory | Where-Object {$known.ContainsKey("$($_.Pid):$($_.CreationTicks)")})
+        if(-not $remaining.Count){break}
+        Start-Sleep -Milliseconds 100
+    } while($drain.Elapsed.TotalSeconds -lt 20)
+    $sample.tree_exit_wait_ms=$drain.Elapsed.TotalMilliseconds
+    $sample.tree_exit_confirmed=($remaining.Count -eq 0 -and $sample.ownership_inventory_captured)
+    $sample.drain_remaining=@($remaining | ForEach-Object {[ordered]@{pid=$_.Pid;parent=$_.Parent;name=$_.Name;created_ticks=$_.CreationTicks;command_line_contains_profile=([bool]$_.CommandLine -and $_.CommandLine.IndexOf($profile,[StringComparison]::OrdinalIgnoreCase) -ge 0)}})
+}
 function Disk-Bytes([string]$path) { $files=@(Get-ChildItem -LiteralPath $path -File -Recurse -Force -ErrorAction SilentlyContinue); if (-not $files.Count) { return 0 }; return ($files | Measure-Object Length -Sum).Sum }
 function Has-Ready([string]$token) {
     if (-not (Test-Path $requestFile)) { return $false }
@@ -258,8 +317,8 @@ try {
         gpu=(Get-CimInstance Win32_VideoController | Select-Object Name,DriverVersion,CurrentHorizontalResolution,CurrentVerticalResolution)
         power=(& powercfg /getactivescheme | Out-String).Trim(); resolution=[Windows.Forms.Screen]::PrimaryScreen.Bounds.ToString()
         webview2_runtime=@(Get-ChildItem 'C:/Program Files (x86)/Microsoft/EdgeWebView/Application' -Directory -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name)
-        noise=@('Shared hosted runner, not a laptop/battery claim','Fresh profile is not cold OS cache','Updater remains production-enabled, isolated LOCALAPPDATA','Samples are endpoint process-tree observations, not ETW complete','Working-set sums include shared pages','Fixture double-requestAnimationFrame is acknowledged page readiness, not proven display presentation','Title-based tab switch is only a proxy','Sampling overhead separately recorded; measured values are not overhead-subtracted')
-        workload_settings=@{history_records=10000; bookmark_records=818; startup='start_page overridden by ordinary --open-url'; first_run_offer='already answered synthetic profile'; security='unchanged defaults'; ui='HTML-default build, no BOWSER_UI override'; tab_flow=[bool]$IncludeTabFlow; surface_smoke=[bool]$IncludeSurfaceSmoke; diagnostic_detail_pilot=[bool]$DiagnosticDetailPilot; startup_only=[bool]$StartupOnly; resource_endpoint=if($StartupOnly){'settled initial one-tab navigation; no omnibox submission or UIA; not comparable to old post-Enter state'}else{'settled post-Enter one-tab navigation'}; resource_tab_count=if($IncludeTabFlow){5}else{1}}
+        noise=@('Shared hosted runner, not a laptop/battery claim','Fresh profile is not cold OS cache','Updater remains production-enabled, isolated LOCALAPPDATA','Samples are endpoint process-tree observations, not ETW complete','Working-set sums include shared pages','Fixture double-requestAnimationFrame is acknowledged page readiness, not proven display presentation','Title-based tab switch is only a proxy','Sampling overhead separately recorded; measured values are not overhead-subtracted','GetAsyncKeyState snapshots do not prove queued modifier messages have been processed; instrumented input lanes are diagnosis, not typing-latency acceptance')
+        workload_settings=@{history_records=10000; bookmark_records=818; startup='start_page overridden by ordinary --open-url'; first_run_offer='already answered synthetic profile'; security='unchanged defaults'; ui='HTML-default build, no BOWSER_UI override'; tab_flow=[bool]$IncludeTabFlow; surface_smoke=[bool]$IncludeSurfaceSmoke;surface_input_method=$SurfaceInputMethod;surface_input_scope=if($SurfaceInputMethod -eq 'uia-value'){'ValuePattern navigation/first-use control; bypasses keyboard/autocomplete; not input correctness'}else{'instrumented SendKeys keyboard diagnostic with UIA value/selection reads; no primary typing latency, retyping or retry'}; diagnostic_detail_pilot=[bool]$DiagnosticDetailPilot; startup_only=[bool]$StartupOnly; resource_endpoint=if($StartupOnly){'settled initial one-tab navigation; no omnibox submission or UIA; not comparable to old post-Enter state'}else{'settled post-Enter one-tab navigation'}; resource_tab_count=if($IncludeTabFlow){5}else{1}}
     }
     $metadata | ConvertTo-Json -Depth 10 | Set-Content (Join-Path $Out 'environment.json') -Encoding utf8
     # Five-pair pilot by default. Alternate whole arm order each pair, same session/runtime/fixture seed.
@@ -273,6 +332,7 @@ try {
                 if ($fixture -in @('network-failure','error','hung') -and ($arm -notin @('diagnostic_on','baseline_on','candidate_on','candidate_detail_on') -or $pair -ne 1)) { continue }
                 $profile=Join-Path $run "$arm-$pair-$fixture"
                 Seed-Profile $profile 818
+                $freshOutcome=$null
                 foreach($condition in @('fresh','reused')) {
                     if ($fixture -notin $Fixtures -and $condition -eq 'reused') { continue }
                     $token=([guid]::NewGuid().ToString('N')); $url="$base/$($fixture)?token=$token"
@@ -281,8 +341,8 @@ try {
                     if($arm.EndsWith('_on')) { $args+=@('--diagnostic-log',"`"$eventFile`"") }
                     if($arm -eq 'candidate_detail_on') { $args+=@('--diagnostic-detail') }
                     $snapshots=[Collections.Generic.List[object]]::new(); $overheads=[Collections.Generic.List[double]]::new()
-                    $sample=[ordered]@{id=$id;pair=$pair;arm=$arm;fixture=$fixture;condition=$condition;token=$token;valid=$false;expected_failure=($fixture -in @('network-failure','error','hung'));error=$null;launch_qpc=$null;ready_qpc=$null;title_ready_qpc=$null;input_ready_qpc=$null;shutdown_ms=$null;disk_before=(Disk-Bytes $profile);measurement_mode=$MeasurementMode;tree_exit_wait_ms=$null;tree_exit_confirmed=$false;drain_remaining=@();surface_smoke=$null;filter_parity=$null;events=$null;input=$null;input_exclusion_reason=if($StartupOnly){'Startup-only lane: no omnibox interaction; input latency unavailable, not passed or zero'}else{$null};tab_switch_proxy_ms=$null;idle=$null;minimized=$null}
-                    $app=$null;$script:surfaceTrace=$null
+                    $sample=[ordered]@{id=$id;pair=$pair;arm=$arm;fixture=$fixture;condition=$condition;prior_fresh_outcome=if($condition -eq 'reused'){$freshOutcome}else{$null};token=$token;valid=$false;expected_failure=($fixture -in @('network-failure','error','hung'));error=$null;launch_qpc=$null;ready_qpc=$null;title_ready_qpc=$null;input_ready_qpc=$null;shutdown_ms=$null;disk_before=(Disk-Bytes $profile);measurement_mode=$MeasurementMode;tree_exit_wait_ms=$null;tree_exit_confirmed=$false;ownership_inventory_captured=$false;drain_remaining=@();cleanup_error=$null;cleanup_forced_root=$false;surface_smoke=$null;filter_parity=$null;events=$null;input=$null;input_exclusion_reason=if($StartupOnly){'Startup-only lane: no omnibox interaction; input latency unavailable, not passed or zero'}else{$null};tab_switch_proxy_ms=$null;idle=$null;minimized=$null}
+                    $app=$null;$known=@{};$script:surfaceTrace=$null
                     try {
                         $sample.launch_qpc=Qpc
                         $app=Start-Process -FilePath $arms[$arm] -ArgumentList $args -PassThru
@@ -347,23 +407,12 @@ try {
                         if($IncludeSurfaceSmoke -and -not $sample.expected_failure){$script:surfaceTrace=[Collections.Generic.List[object]]::new();$sample.surface_smoke=@(Native-SurfaceSmoke)}
                         # Inventory only after all cheap timing endpoints, to establish exact identities for drain.
                         $ownedBeforeClose=@(Get-ProcessGroupMembers -RootPid $app.Id -Profile $profile -Inventory @(Get-ProcessInventory))
+                        $sample.ownership_inventory_captured=(@($ownedBeforeClose|Where-Object {$_.Pid -eq $app.Id -and $null -ne $_.CreationTicks}).Count -eq 1)
                         $known=@{}; foreach($process in $ownedBeforeClose){$known["$($process.Pid):$($process.CreationTicks)"]=$true}
                         $close=Qpc
                         if(-not [BowserProductionNative]::Close([uint32]$app.Id) -or -not $app.WaitForExit(15000)){throw 'Graceful close not confirmed'}
                         $sample.shutdown_ms=((Qpc)-$close)*1000.0/[Diagnostics.Stopwatch]::Frequency
-                        $drain=[Diagnostics.Stopwatch]::StartNew()
-                        do {
-                            $inventory=@(Get-ProcessInventory)
-                            # A negative traversal sentinel cannot seed Windows PID0/System ancestry.
-                            $remaining=@(Get-ProcessGroupMembers -RootPid -1 -Profile $profile -Inventory $inventory)
-                            foreach($process in $remaining){$known["$($process.Pid):$($process.CreationTicks)"]=$true}
-                            $remaining+=@($inventory | Where-Object {$known.ContainsKey("$($_.Pid):$($_.CreationTicks)")})
-                            if(-not $remaining.Count){break}
-                            Start-Sleep -Milliseconds 100
-                        } while($drain.Elapsed.TotalSeconds -lt 20)
-                        $sample.tree_exit_wait_ms=$drain.Elapsed.TotalMilliseconds
-                        $sample.tree_exit_confirmed=($remaining.Count -eq 0)
-                        $sample.drain_remaining=@($remaining | ForEach-Object {[ordered]@{pid=$_.Pid;parent=$_.Parent;name=$_.Name;created_ticks=$_.CreationTicks;command_line_contains_profile=([bool]$_.CommandLine -and $_.CommandLine.IndexOf($profile,[StringComparison]::OrdinalIgnoreCase) -ge 0)}})
+                        Confirm-OwnedTreeDrain $known $profile $sample
                         if(-not $sample.tree_exit_confirmed){throw 'Owned/profile helpers survived drain; reused launch forbidden'}
                         if($app.ExitCode -ne 0){throw "Exit $($app.ExitCode)"}
                         if($arm.EndsWith('_on')) {
@@ -391,7 +440,27 @@ try {
                         if($app -and -not $app.HasExited){try{$sample.failure_screenshot=Capture-OwnedSurface 'failure'}catch{}}
                     }
                     finally {
-                        if($app -and -not $app.HasExited){[void][BowserProductionNative]::Close([uint32]$app.Id);if(-not $app.WaitForExit(5000)){Stop-Process -Id $app.Id -Force -ErrorAction SilentlyContinue;$sample.valid=$false;$sample.error='Forced close required'}}
+                        if(-not $sample.tree_exit_confirmed) {
+                            try {
+                                if($app -and -not $app.HasExited) {
+                                    $ownedAtFailure=@(Get-ProcessGroupMembers -RootPid $app.Id -Profile $profile -Inventory @(Get-ProcessInventory))
+                                    if(@($ownedAtFailure|Where-Object {$_.Pid -eq $app.Id -and $null -ne $_.CreationTicks}).Count -eq 1){$sample.ownership_inventory_captured=$true}
+                                    foreach($process in $ownedAtFailure){$known["$($process.Pid):$($process.CreationTicks)"]=$true}
+                                    [void][BowserProductionNative]::Close([uint32]$app.Id)
+                                    if(-not $app.WaitForExit(5000)){
+                                        Stop-Process -Id $app.Id -Force -ErrorAction SilentlyContinue
+                                        $sample.cleanup_forced_root=$true;$sample.valid=$false
+                                        if(-not $sample.error){$sample.error='Forced close required'}
+                                    }
+                                }
+                                Confirm-OwnedTreeDrain $known $profile $sample
+                                if(-not $sample.tree_exit_confirmed){$sample.cleanup_error=if(-not $sample.ownership_inventory_captured){'Root exited without owned identity inventory; helper absence unproven'}else{'Owned/profile helpers survived independent finally drain'};$sample.valid=$false}
+                            } catch {$sample.cleanup_error=$_.Exception.Message;$sample.valid=$false}
+                        }
+                        # Isolation is persisted BEFORE any later diagnostic import/serialization can fail.
+                        if(-not $sample.tree_exit_confirmed) {
+                        [ordered]@{id=$sample.id;original_error=$sample.error;cleanup_error=$sample.cleanup_error;ownership_inventory_captured=$sample.ownership_inventory_captured;remaining=$sample.drain_remaining} | ConvertTo-Json -Depth 15 | Set-Content $contaminationMarker -Encoding utf8
+                        }
                         if($script:surfaceTrace){$sample.surface_smoke=@($script:surfaceTrace.ToArray())}
                         if($arm.EndsWith('_on') -and (Test-Path $eventFile)){$sample.events=@(Import-Csv $eventFile)}
                         $sample.disk_after=Disk-Bytes $profile
@@ -400,9 +469,12 @@ try {
                         Write-Host ("Sample {0}: valid={1}; error={2}" -f $id,$sample.valid,$sample.error)
                         $sample | ConvertTo-Json -Depth 30 | Set-Content (Join-Path $Out "$id.json") -Encoding utf8
                         $rows.Add([pscustomobject]$sample);$app=$null
+                        if($condition -eq 'fresh'){$freshOutcome=[ordered]@{valid=$sample.valid;error=$sample.error;state_conditioning=if($sample.valid){'completed prior fresh sequence'}else{'partial failed prior fresh sequence; reused first-use timings not comparable with successful conditioning'}}}
                         if (-not $sample.valid) { $invalidSamples++ }
                     }
-                    if (-not $sample.tree_exit_confirmed) { throw "Stopped after unconfirmed cleanup: $($sample.error); raw evidence retained" }
+                    if (-not $sample.tree_exit_confirmed) {
+                        throw "Stopped after unconfirmed cleanup: $($sample.error); subsequent native lanes blocked, raw evidence retained"
+                    }
                     if ($invalidSamples -ge $MaxInvalidSamples) { throw "Stopped after $invalidSamples invalid samples; raw failures retained for diagnosis" }
                 }
             }

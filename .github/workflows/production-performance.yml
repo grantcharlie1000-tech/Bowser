@@ -32,6 +32,8 @@ jobs:
   baseline:
     runs-on: windows-2025
     timeout-minutes: 45
+    env:
+      INTERACTION_DIAGNOSTIC_ONLY: 'true'
     defaults:
       run:
         shell: pwsh
@@ -54,7 +56,7 @@ jobs:
           if($LASTEXITCODE -ne 0){throw 'Cannot fetch reviewed product source'}
           $changes=@(git diff --name-only f285525d205b9b388ebb26481f5af01d4df99ac8 HEAD)
           if($LASTEXITCODE -ne 0){throw 'Cannot verify workflow-only follow-up'}
-          if(@($changes | Where-Object {$_ -cne '.github/workflows/production-performance.yml'}).Count){throw 'Product inputs differ from reviewed filter candidate'}
+          if(@($changes | Where-Object {$_ -cnotin @('.github/workflows/production-performance.yml','benchmarks/production-baseline.ps1')}).Count){throw 'Product inputs differ from reviewed filter candidate'}
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: '22'
@@ -95,7 +97,7 @@ jobs:
           New-Item -ItemType Directory -Force ../evidence/candidate | Out-Null
           git diff 46ee3b3ef98a4c7603967d22df9cb1490ca936c1 HEAD -- src | Set-Content ../evidence/candidate/native-filter.patch
           if($LASTEXITCODE -ne 0){throw 'Cannot preserve diagnostic source patch'}
-          [ordered]@{frozen_source='46ee3b3ef98a4c7603967d22df9cb1490ca936c1';candidate_source=(git rev-parse HEAD).Trim();allowed_native_paths=$allowedNative;actual_native_paths=$nativeChanges;scope='Existing-registration-glob subset with retained covering witnesses; immediate reference immutable and candidate rebuilt'} | ConvertTo-Json | Set-Content ../evidence/candidate/native-detail-provenance.json
+          [ordered]@{frozen_source='46ee3b3ef98a4c7603967d22df9cb1490ca936c1';candidate_source=if($env:INTERACTION_DIAGNOSTIC_ONLY -eq 'true'){'94e9ec423f411b5ba177112978415d0dd552af58'}else{(git rev-parse HEAD).Trim()};harness_source=(git rev-parse HEAD).Trim();candidate_rebuilt=($env:INTERACTION_DIAGNOSTIC_ONLY -ne 'true');allowed_native_paths=$allowedNative;actual_native_paths=$nativeChanges;scope='Existing-registration-glob subset with retained covering witnesses; immediate reference immutable; candidate identity/reuse mode explicit'} | ConvertTo-Json | Set-Content ../evidence/candidate/native-detail-provenance.json
           $zip=Join-Path $env:RUNNER_TEMP 'production-frozen-8a60dca.zip'
           $headers=@{ Authorization="Bearer $env:GH_TOKEN"; Accept='application/vnd.github+json'; 'X-GitHub-Api-Version'='2022-11-28' }
           Invoke-WebRequest 'https://api.github.com/repos/grantcharlie1000-tech/Bowser/actions/artifacts/12121088896/zip' -Headers $headers -OutFile $zip
@@ -124,7 +126,26 @@ jobs:
           Copy-Item $reference ../evidence/reference/reference.exe
           Copy-Item (Join-Path $referenceCache 'candidate/identity.json') ../evidence/reference/identity.json
           [ordered]@{source=$identity.source;artifact_id=12125524797;archive_sha256='4bfcfc316f6b7fed074d8736308a0e22d7b8ddb6c95e922f0130601b6fadc0e1';harness_source=(git rev-parse HEAD).Trim();policy='No rebuild or relabelling of reference bytes'} | ConvertTo-Json | Set-Content ../evidence/reference/provenance.json
+      - name: Reuse exact tested filter candidate for isolated input diagnostics
+        if: env.INTERACTION_DIAGNOSTIC_ONLY == 'true'
+        working-directory: candidate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $zip=Join-Path $env:RUNNER_TEMP 'filter-tested-94e9.zip'
+          $headers=@{Authorization="Bearer $env:GH_TOKEN";Accept='application/vnd.github+json';'X-GitHub-Api-Version'='2022-11-28'}
+          Invoke-WebRequest 'https://api.github.com/repos/grantcharlie1000-tech/Bowser/actions/artifacts/12127686230/zip' -Headers $headers -OutFile $zip
+          if((Get-FileHash $zip -Algorithm SHA256).Hash.ToLowerInvariant() -cne 'df8d3a0141925a89a1f4a830d0ffbbb78556f14361482581cbd602fec73aaf69'){throw 'Tested filter candidate archive mismatch'}
+          $cache=Join-Path $env:RUNNER_TEMP 'filter-tested-94e9'
+          Expand-Archive -LiteralPath $zip -DestinationPath $cache
+          $identity=Get-Content (Join-Path $cache 'candidate/identity.json') -Raw | ConvertFrom-Json
+          $file=Join-Path $cache 'candidate/candidate.exe'
+          if($identity.source -cne '94e9ec423f411b5ba177112978415d0dd552af58' -or $identity.product_source -cne 'f285525d205b9b388ebb26481f5af01d4df99ac8' -or $identity.sha256 -cne 'a323440fd4b0a9d13d56e77639336a51fff48b1ae0fa032aa377e0e58b891df5' -or (Get-FileHash $file -Algorithm SHA256).Hash.ToLowerInvariant() -cne $identity.sha256 -or (Get-Item $file).Length -ne 7849472){throw 'Tested filter candidate EXE mismatch'}
+          Copy-Item $file ../evidence/candidate/candidate.exe
+          Copy-Item (Join-Path $cache 'candidate/identity.json') ../evidence/candidate/identity.json
+          [ordered]@{candidate_source=$identity.source;product_source=$identity.product_source;harness_source=(git rev-parse HEAD).Trim();artifact_id=12127686230;archive_sha256='df8d3a0141925a89a1f4a830d0ffbbb78556f14361482581cbd602fec73aaf69';scope='Isolated input diagnostic, no product rebuild or primary matrix rerun; original failed surface result remains retained'} | ConvertTo-Json | Set-Content ../evidence/candidate/input-diagnostic-provenance.json
       - name: Build and fingerprint actual filter-union candidate
+        if: env.INTERACTION_DIAGNOSTIC_ONLY != 'true'
         working-directory: candidate
         run: |
           rustup toolchain install 1.99.1 --profile minimal --component clippy
@@ -174,37 +195,55 @@ jobs:
         run: |
           ./benchmarks/production-baseline.ps1 -BaselineExe ../evidence/frozen/untouched-main.exe -DiagnosticExe ../evidence/reference/reference.exe -DiagnosticSource 46ee3b3ef98a4c7603967d22df9cb1490ca936c1 -ReleaseExe ../evidence/frozen/released-v0.0.19.exe -CandidateExe ../evidence/candidate/candidate.exe -CandidateSource (Get-Content ../evidence/candidate/identity.json -Raw | ConvertFrom-Json).source -Out ../evidence/validity -StartupOnly -Pairs 1 -Fixtures light -IdleSeconds 1 -MeasurementMode timing -MaxInvalidSamples 1
       - name: Corrected diagnostic-off untouched and logging-on off controls
+        if: env.INTERACTION_DIAGNOSTIC_ONLY != 'true'
         working-directory: candidate
         run: |
           ./benchmarks/production-baseline.ps1 -BaselineExe ../evidence/frozen/untouched-main.exe -DiagnosticExe ../evidence/reference/reference.exe -DiagnosticSource 46ee3b3ef98a4c7603967d22df9cb1490ca936c1 -ReleaseExe ../evidence/frozen/released-v0.0.19.exe -Out ../evidence/controls -StartupOnly -Pairs 3 -Fixtures light -MeasurementMode timing -MaxInvalidSamples 1
       - name: Ten matched AB BA pairs fresh and reused primary startup timing
+        if: env.INTERACTION_DIAGNOSTIC_ONLY != 'true'
         working-directory: candidate
         run: |
           ./benchmarks/production-baseline.ps1 -BaselineExe ../evidence/frozen/untouched-main.exe -DiagnosticExe ../evidence/reference/reference.exe -DiagnosticSource 46ee3b3ef98a4c7603967d22df9cb1490ca936c1 -ReleaseExe ../evidence/frozen/released-v0.0.19.exe -CandidateExe ../evidence/candidate/candidate.exe -CandidateSource (Get-Content ../evidence/candidate/identity.json -Raw | ConvertFrom-Json).source -Out ../evidence/timing -StartupOnly -Pairs 10 -Fixtures light -MeasurementMode timing -MaxInvalidSamples 1
       - name: Ten matched AB BA pairs fresh and reused primary settled resources
+        if: env.INTERACTION_DIAGNOSTIC_ONLY != 'true'
         working-directory: candidate
         run: |
           ./benchmarks/production-baseline.ps1 -BaselineExe ../evidence/frozen/untouched-main.exe -DiagnosticExe ../evidence/reference/reference.exe -DiagnosticSource 46ee3b3ef98a4c7603967d22df9cb1490ca936c1 -ReleaseExe ../evidence/frozen/released-v0.0.19.exe -CandidateExe ../evidence/candidate/candidate.exe -CandidateSource (Get-Content ../evidence/candidate/identity.json -Raw | ConvertFrom-Json).source -Out ../evidence/resource -StartupOnly -Pairs 10 -Fixtures light -MeasurementMode resource -MaxInvalidSamples 1
       - name: Separate small detail arm confirms actual registration count and cost
-        if: ${{ !cancelled() && steps.validity.outcome == 'success' }}
+        if: ${{ !cancelled() && env.INTERACTION_DIAGNOSTIC_ONLY != 'true' && steps.validity.outcome == 'success' }}
         working-directory: candidate
         run: |
           ./benchmarks/production-baseline.ps1 -BaselineExe ../evidence/frozen/untouched-main.exe -DiagnosticExe ../evidence/reference/reference.exe -DiagnosticSource 46ee3b3ef98a4c7603967d22df9cb1490ca936c1 -ReleaseExe ../evidence/frozen/released-v0.0.19.exe -CandidateExe ../evidence/candidate/candidate.exe -CandidateSource (Get-Content ../evidence/candidate/identity.json -Raw | ConvertFrom-Json).source -Out ../evidence/detail -StartupOnly -PositiveOnly -Pairs 2 -DiagnosticDetailPilot -Fixtures light -MeasurementMode timing -MaxInvalidSamples 1
       - name: Mandatory actual native request-dispatch parity including worker sources
-        if: ${{ !cancelled() && steps.validity.outcome == 'success' }}
+        if: ${{ !cancelled() && env.INTERACTION_DIAGNOSTIC_ONLY != 'true' && steps.validity.outcome == 'success' }}
         working-directory: candidate
         run: |
           ./benchmarks/production-baseline.ps1 -BaselineExe ../evidence/frozen/untouched-main.exe -DiagnosticExe ../evidence/reference/reference.exe -DiagnosticSource 46ee3b3ef98a4c7603967d22df9cb1490ca936c1 -ReleaseExe ../evidence/frozen/released-v0.0.19.exe -CandidateExe ../evidence/candidate/candidate.exe -CandidateSource (Get-Content ../evidence/candidate/identity.json -Raw | ConvertFrom-Json).source -Out ../evidence/parity -StartupOnly -PositiveOnly -Pairs 1 -Fixtures filter-parity -MeasurementMode timing -MaxInvalidSamples 1
       - name: Mandatory independent native first-use interaction smoke
-        if: ${{ !cancelled() && steps.validity.outcome == 'success' }}
+        if: ${{ !cancelled() && env.INTERACTION_DIAGNOSTIC_ONLY != 'true' && steps.validity.outcome == 'success' }}
         working-directory: candidate
         run: |
           ./benchmarks/production-baseline.ps1 -BaselineExe ../evidence/frozen/untouched-main.exe -DiagnosticExe ../evidence/reference/reference.exe -DiagnosticSource 46ee3b3ef98a4c7603967d22df9cb1490ca936c1 -ReleaseExe ../evidence/frozen/released-v0.0.19.exe -CandidateExe ../evidence/candidate/candidate.exe -CandidateSource (Get-Content ../evidence/candidate/identity.json -Raw | ConvertFrom-Json).source -IncludeSurfaceSmoke -PositiveOnly -Out ../evidence/surfaces -StartupOnly -Pairs 1 -Fixtures light -MeasurementMode timing -MaxInvalidSamples 1
+      - name: Instrumented SendKeys diagnostic fixed AB BA attempts
+        if: ${{ !cancelled() && env.INTERACTION_DIAGNOSTIC_ONLY == 'true' && steps.validity.outcome == 'success' }}
+        working-directory: candidate
+        run: |
+          ./benchmarks/production-baseline.ps1 -BaselineExe ../evidence/frozen/untouched-main.exe -DiagnosticExe ../evidence/reference/reference.exe -DiagnosticSource 46ee3b3ef98a4c7603967d22df9cb1490ca936c1 -ReleaseExe ../evidence/frozen/released-v0.0.19.exe -CandidateExe ../evidence/candidate/candidate.exe -CandidateSource (Get-Content ../evidence/candidate/identity.json -Raw | ConvertFrom-Json).source -IncludeSurfaceSmoke -SurfaceInputMethod sendkeys -PositiveOnly -Out ../evidence/keyboard-legacy -StartupOnly -Pairs 3 -Fixtures light -MeasurementMode timing -MaxInvalidSamples 20
+      - name: Per-key diagnostic minimum30ms plus UIA fixed AB BA attempts
+        if: ${{ !cancelled() && env.INTERACTION_DIAGNOSTIC_ONLY == 'true' && steps.validity.outcome == 'success' }}
+        working-directory: candidate
+        run: |
+          ./benchmarks/production-baseline.ps1 -BaselineExe ../evidence/frozen/untouched-main.exe -DiagnosticExe ../evidence/reference/reference.exe -DiagnosticSource 46ee3b3ef98a4c7603967d22df9cb1490ca936c1 -ReleaseExe ../evidence/frozen/released-v0.0.19.exe -CandidateExe ../evidence/candidate/candidate.exe -CandidateSource (Get-Content ../evidence/candidate/identity.json -Raw | ConvertFrom-Json).source -IncludeSurfaceSmoke -SurfaceInputMethod sendkeys-per-key -PositiveOnly -Out ../evidence/keyboard-per-key -StartupOnly -Pairs 3 -Fixtures light -MeasurementMode timing -MaxInvalidSamples 20
+      - name: Isolated input diagnostic uia-value fixed AB BA attempts
+        if: ${{ !cancelled() && env.INTERACTION_DIAGNOSTIC_ONLY == 'true' && steps.validity.outcome == 'success' }}
+        working-directory: candidate
+        run: |
+          ./benchmarks/production-baseline.ps1 -BaselineExe ../evidence/frozen/untouched-main.exe -DiagnosticExe ../evidence/reference/reference.exe -DiagnosticSource 46ee3b3ef98a4c7603967d22df9cb1490ca936c1 -ReleaseExe ../evidence/frozen/released-v0.0.19.exe -CandidateExe ../evidence/candidate/candidate.exe -CandidateSource (Get-Content ../evidence/candidate/identity.json -Raw | ConvertFrom-Json).source -IncludeSurfaceSmoke -SurfaceInputMethod uia-value -PositiveOnly -Out ../evidence/navigation-value-control -StartupOnly -Pairs 1 -Fixtures light -MeasurementMode timing -MaxInvalidSamples 20
       - name: Derive descriptive paired statistics without accepting gains automatically
         if: always()
         working-directory: candidate
         run: |
-          foreach($arm in @('validity','controls','timing','resource','detail','parity','surfaces')) {
+          foreach($arm in @('validity','controls','timing','resource','detail','parity','surfaces','keyboard-legacy','keyboard-per-key','navigation-value-control')) {
             $folder="../evidence/$arm"
             if(Test-Path "$folder/environment.json") {
               python benchmarks/production-analyze.py $folder
@@ -220,6 +259,7 @@ jobs:
           name: production-performance-${{ github.event.pull_request.head.sha || github.sha }}
           path: |
             evidence/frozen/
+            evidence/native-isolation-blocked.json
             evidence/candidate/
             evidence/reference/
             evidence/baseline-ui/
@@ -259,5 +299,20 @@ jobs:
             evidence/surfaces/*.png
             evidence/surfaces/*stderr.txt
             evidence/surfaces/isolated/requests.jsonl
+            evidence/keyboard-legacy/*.json
+            evidence/keyboard-legacy/*.csv
+            evidence/keyboard-legacy/*.png
+            evidence/keyboard-legacy/*stderr.txt
+            evidence/keyboard-legacy/isolated/requests.jsonl
+            evidence/keyboard-per-key/*.json
+            evidence/keyboard-per-key/*.csv
+            evidence/keyboard-per-key/*.png
+            evidence/keyboard-per-key/*stderr.txt
+            evidence/keyboard-per-key/isolated/requests.jsonl
+            evidence/navigation-value-control/*.json
+            evidence/navigation-value-control/*.csv
+            evidence/navigation-value-control/*.png
+            evidence/navigation-value-control/*stderr.txt
+            evidence/navigation-value-control/isolated/requests.jsonl
           if-no-files-found: warn
           retention-days: 30
