@@ -72,6 +72,12 @@ jobs:
           $test = Get-ChildItem target/debug/deps/bowser-*.exe | Sort-Object LastWriteTime -Descending | Select-Object -First 1
           & $test.FullName live_probe_completed_revocations_restart --ignored --nocapture --test-threads=1 2>&1 | Tee-Object store-completed-restart-probe.log
           if ($LASTEXITCODE -ne 0) { throw 'Completed native revocation restart diagnostic failed.' }
+      - name: Probe stale native owner versus a new signing-identity owner without tracing
+        run: |
+          Remove-Item Env:BOWSER_EXTENSION_TRACE -ErrorAction SilentlyContinue
+          $test = Get-ChildItem target/debug/deps/bowser-*.exe | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          & $test.FullName live_probe_stale_owner_replacement --ignored --nocapture --test-threads=1 2>&1 | Tee-Object store-stale-owner-probe.log
+          if ($LASTEXITCODE -ne 0) { throw 'Stale native owner replacement diagnostic failed.' }
       - name: Probe signed-keyed process-crash recovery at exact native boundaries
         run: |
           $env:BOWSER_EXTENSION_TRACE = '1'
@@ -130,6 +136,7 @@ jobs:
             store-pending-native-probe.log
             store-crash-recovery-probe.log
             store-completed-restart-probe.log
+            store-stale-owner-probe.log
             store-update-probe.log
             store-action-probe.log
             ${{ runner.temp }}/bowser-store-rendering/

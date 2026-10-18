@@ -856,7 +856,9 @@ fn probe_real_stylus_appearance(profile: &Path, id: &str, folder: &Path, session
     let imported = session.page_script(&script); pump_until(Duration::from_secs(5), || false);
     println!("STYLUS_APPEARANCE import_dom={imported:?} manager_report={:?}", session.page_script("({title:document.title,fixtureVisible:document.body?.textContent?.includes('Bowser disposable appearance fixture'),text:document.body?.textContent?.slice(0,1200)})"));
     session.engine.navigate_tab(session.tab(), &target).unwrap(); pump_until(Duration::from_secs(4), || false);
-    let read = "({background:getComputedStyle(document.body).backgroundColor,origin:location.origin,styleSheets:document.styleSheets.length})";
+    // The production reader deliberately caps results at64 bytes. Read only the actual
+    // computed colour, never widen the production cap to accommodate a diagnostic.
+    let read = "getComputedStyle(document.body).backgroundColor";
     let styled = session.browsing_script(read);
     session.engine.navigate_tab(session.tab(), &loopback.page("stylus-unmatched-control")).unwrap(); pump_until(Duration::from_secs(2), || false);
     let unmatched = session.browsing_script(read);
@@ -1289,4 +1291,61 @@ fn live_runtime_completed_state_child() {
     }
     println!("COMPLETED_RESTART_CHILD expected={expected} actual_native_inventory={native:?} record_count={}", records.len());
     session.close(); drop(loopback);
+}
+
+#[test]
+#[ignore = "real two-process stale native owner versus replacement signing identity"]
+fn live_probe_stale_owner_replacement() {
+    assert!(std::env::var_os("BOWSER_EXTENSION_TRACE").is_none(), "this control must exercise production identity checks without tracing");
+    unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED).ok().unwrap() };
+    let root = temp_root(); let profile = root.join("replacement-profile");
+    let (old_id, old_folder) = install_fixture(&profile, "probe-mv3-key");
+    let loopback = Loopback::start();
+    let mut owner = Session::open(&profile, vec![(old_id.clone(), old_folder.clone())], vec![(old_id.clone(), true)], &loopback.page("replacement-owner"));
+    assert!(owner.wait_for_add(&profile, &old_id).1.is_none());
+    let child = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "engine::extension_probe_live::live_runtime_stale_owner_child", "--ignored", "--nocapture", "--test-threads=1"])
+        .env("BOWSER_STALE_OWNER_ROOT", &root).env("BOWSER_STALE_OWNER_ID", &old_id)
+        .stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).spawn().unwrap();
+    assert!(pump_until(Duration::from_secs(45), || root.join("stale-ready").is_file()));
+    let answer = Rc::new(RefCell::new(None)); let sink = answer.clone();
+    let records = profile.join("extensions.txt"); let dir = profile.join("Extensions"); let id = old_id.clone();
+    owner.engine.remove_extension(&old_id, Box::new(move |native| *sink.borrow_mut() = Some(native.and_then(|()| extensions::uninstall_under_runtime(&dir, &records, &id).map_err(|e| e.to_string())))));
+    assert!(pump_until(Duration::from_secs(30), || answer.borrow().is_some())); answer.borrow_mut().take().unwrap().unwrap();
+    // Same authentic signing key, deliberately distinct Bowser record/folder. Never edit loaded code.
+    let (new_id, new_folder) = install_fixture(&profile, "probe-mv3-key"); assert_ne!(old_id, new_id);
+    let answer = Rc::new(RefCell::new(None)); let sink = answer.clone();
+    owner.engine.set_extension_enabled(&new_id, &new_folder, true, Box::new(move |result| *sink.borrow_mut() = Some(result)));
+    assert!(pump_until(Duration::from_secs(30), || answer.borrow().is_some())); answer.borrow_mut().take().unwrap().unwrap();
+    assert!(owner.native_inventory().unwrap().iter().any(|(id, on)| id == KEY_FIXTURE_ID && *on));
+    let before_records = std::fs::read(profile.join("extensions.txt")).unwrap(); let before_map = std::fs::read(profile.join("extension_ids.txt")).unwrap();
+    std::fs::write(root.join("replacement-ready"), b"new-consented-record-now-owns-same-native-ID").unwrap();
+    assert!(pump_until(Duration::from_secs(45), || root.join("stale-done").is_file()));
+    let output = child.wait_with_output().unwrap(); println!("STALE_OWNER child_stdout={} child_stderr={}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr)); assert!(output.status.success());
+    assert_eq!(std::fs::read(profile.join("extensions.txt")).unwrap(), before_records); assert_eq!(std::fs::read(profile.join("extension_ids.txt")).unwrap(), before_map);
+    assert!(new_folder.is_dir()); assert!(!old_folder.exists());
+    let native = owner.native_inventory().unwrap(); assert!(native.iter().any(|(id, on)| id == KEY_FIXTURE_ID && *on));
+    assert!(owner.wait_for_worker_reply(&loopback));
+    println!("STALE_OWNER verdict=old-process-cannot-mutate-replacement-owner native_inventory={native:?} new_record={new_id} worker_content_reply=true records_and_map_unchanged=true trace_absent=true");
+    owner.close(); drop(loopback); remove_with_retries(&root);
+}
+
+#[test]
+#[ignore = "child retaining a genuinely loaded stale native extension object"]
+fn live_runtime_stale_owner_child() {
+    let root = std::env::var_os("BOWSER_STALE_OWNER_ROOT").map(PathBuf::from).expect("Only the owning diagnostic launches this child.");
+    assert!(root.starts_with(std::env::temp_dir()) && root.file_name().unwrap().to_string_lossy().starts_with("bowser-ext-live-"));
+    let id = std::env::var("BOWSER_STALE_OWNER_ID").unwrap(); let profile = root.join("replacement-profile"); let folder = extensions::folder_for(&profile.join("Extensions"), &id).unwrap();
+    unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED).ok().unwrap() };
+    let loopback = Loopback::start(); let mut stale = Session::open(&profile, vec![(id.clone(), folder.clone())], vec![(id.clone(), true)], &loopback.page("stale-cache"));
+    assert!(stale.wait_for_add(&profile, &id).1.is_none()); std::fs::write(root.join("stale-ready"), b"actual-native-object-retained").unwrap();
+    assert!(pump_until(Duration::from_secs(45), || root.join("replacement-ready").is_file()));
+    for operation in ["disable", "enable", "remove"] {
+        let answer = Rc::new(RefCell::new(None)); let sink = answer.clone();
+        if operation == "remove" { stale.engine.remove_extension(&id, Box::new(move |result| *sink.borrow_mut() = Some(result))); }
+        else { stale.engine.set_extension_enabled(&id, &folder, operation == "enable", Box::new(move |result| *sink.borrow_mut() = Some(result))); }
+        assert!(pump_until(Duration::from_secs(15), || answer.borrow().is_some())); let result = answer.borrow_mut().take().unwrap();
+        assert!(result.is_err(), "stale {operation} unexpectedly accepted: {result:?}"); println!("STALE_OWNER_CHILD operation={operation} result={result:?}");
+    }
+    std::fs::write(root.join("stale-done"), b"all-stale-operations-rejected").unwrap(); stale.close(); drop(loopback);
 }
