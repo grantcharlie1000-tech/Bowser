@@ -1,0 +1,35 @@
+name: Probe current Store downloads
+on:
+  pull_request:
+    paths:
+      - 'src/crx_fetch.rs'
+      - '.github/workflows/store-probe.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  download-probe:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Install official Rust toolchain
+        run: rustup toolchain install stable --profile minimal
+      - name: Probe current MV3 listings using detected WebView2 runtime
+        run: |
+          $env:BOWSER_EXTENSION_TRACE = '1'
+          cargo +stable test --locked --lib live_current_mv3_store_downloads -- --ignored --nocapture --test-threads=1 2>&1 | Tee-Object store-download-probe.log
+          if ($LASTEXITCODE -ne 0) { throw 'Store diagnostic test failed.' }
+      - name: Save diagnostic evidence, including unavailable packages
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: store-download-probe-${{ github.sha }}
+          path: store-download-probe.log
+          if-no-files-found: error
+          retention-days: 14

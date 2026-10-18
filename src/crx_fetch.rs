@@ -545,7 +545,11 @@ fn transfer(
         // SAFETY: `request` is live and was sent.
         unsafe { WinHttpReceiveResponse(request.0, std::ptr::null_mut()) }
             .map_err(|e| net("receive", e))?;
-        match status(request.0)? {
+        let http_status = status(request.0)?;
+        if std::env::var_os("BOWSER_EXTENSION_TRACE").is_some() {
+            eprintln!("CRX_FETCH host={} http_status={http_status}", url.host_str().unwrap_or_default());
+        }
+        match http_status {
             301 | 302 | 303 | 307 | 308 => {
                 url = redirect_target(endpoint, &url, &location(request.0)?)?;
                 continue;
@@ -2021,6 +2025,59 @@ mod tests {
             assert!(fetch_from(&server.endpoint(), input, PRODVERSION, &scratch.0).is_err());
         }
         assert!(server.requests().is_empty());
+    }
+
+    /// Explicit network diagnostic, not a compatibility verdict. Uses the installed runtime, never
+    /// a Chrome version or user-agent. Each selected current listing is requested exactly once.
+    #[test]
+    #[ignore = "live network and installed WebView2 runtime; run explicitly on a disposable runner"]
+    fn live_current_mv3_store_downloads() {
+        use webview2_com::{CoTaskMemPWSTR, Microsoft::Web::WebView2::Win32::GetAvailableCoreWebView2BrowserVersionString};
+        use windows::core::PWSTR;
+        let mut raw = PWSTR::null();
+        unsafe { GetAvailableCoreWebView2BrowserVersionString(PCWSTR::null(), &mut raw) }
+            .expect("installed WebView2 runtime required for an accurate protocol version");
+        let runtime = CoTaskMemPWSTR::from(raw).to_string();
+        let version = runtime.split_whitespace().next().expect("runtime version");
+        assert!(valid_prodversion(version), "unusable detected runtime version");
+        println!("STORE_PROBE runtime={version} product={PROD} user_agent=Bowser-CrxFetch/{}", env!("CARGO_PKG_VERSION"));
+        let endpoint = Endpoint::production();
+        for (name, id) in [
+            ("ublock-origin-lite", "ddkjiahejlhfcafbddmgiahcphecmpfh"),
+            ("bitwarden", "nngceckbapebfimnlniiiahkandclblb"),
+            ("dark-reader", "eimadpbcbfnmbkopoojfekhnkhdbieeh"),
+        ] {
+            let manifest = match fetch_manifest_bytes(&endpoint, id, version) {
+                Ok(bytes) => bytes,
+                Err(error) => {
+                    println!("STORE_PROBE name={name} id={id} stage=manifest result={error}");
+                    continue;
+                }
+            };
+            let offer = match parse_update_manifest(&endpoint, &manifest, id) {
+                Ok(offer) => offer,
+                Err(error) => {
+                    println!("STORE_PROBE name={name} id={id} http_status=200 stage=updatecheck result={error}");
+                    continue;
+                }
+            };
+            println!("STORE_PROBE name={name} id={id} http_status=200 updatecheck=ok");
+            let bytes = match download_bytes(&endpoint, &offer.codebase, MAX_DOWNLOAD_BYTES) {
+                Ok(bytes) => bytes,
+                Err(error) => {
+                    println!("STORE_PROBE name={name} id={id} stage=download result={error}");
+                    continue;
+                }
+            };
+            let scratch = Scratch::new();
+            match verify_and_unpack(&bytes, id, &scratch.0) {
+                Ok(stamped) => match crate::extensions::inspect_source(&scratch.0) {
+                    Ok(inspection) => println!("STORE_PROBE name={name} id={} stage=verified version={} manifest_version={} files={} bytes={} loaded=false", stamped.id, inspection.manifest.version, inspection.manifest.manifest_version, inspection.files, inspection.bytes),
+                    Err(error) => println!("STORE_PROBE name={name} id={id} stage=inspection result={error}"),
+                },
+                Err(error) => println!("STORE_PROBE name={name} id={id} stage=verification result={error}"),
+            }
+        }
     }
 
     // ---- live attempt (run by hand, once) --------------------------------------------------
