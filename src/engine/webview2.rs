@@ -6012,7 +6012,7 @@ mod tests {
         // these source checks keep a queued search body from reaching another address or outliving
         // its tab.
         let source = include_str!("webview2.rs");
-        let production = &source[..source.find("#[cfg(test)]").expect("test module")];
+        let production = &source[..source.find("\n#[cfg(test)]\nmod tests {").expect("test module boundary")];
         for needle in [
             "take_pending_post(&mut core.borrow_mut().pending_post, tab_id, pending.as_ref())",
             "state.pending_post.insert(tab, (url.clone(), body.to_owned()))",
@@ -6215,7 +6215,7 @@ mod tests {
         // The controller code is not unit-testable without WebView2, so these source checks keep the
         // private-tab guarantees from being dropped by a refactor.
         let source = include_str!("webview2.rs");
-        let production = &source[..source.find("#[cfg(test)]").expect("test module")];
+        let production = &source[..source.find("\n#[cfg(test)]\nmod tests {").expect("test module boundary")];
         for needle in [
             // Created InPrivate, in the named private profile, and verified afterwards.
             "SetIsInPrivateModeEnabled(true)",
@@ -6628,7 +6628,7 @@ mod tests {
     #[test]
     fn the_request_filters_and_lazy_legacy_list_stay_wired_into_the_engine() {
         let source = include_str!("webview2.rs");
-        let production = &source[..source.find("#[cfg(test)]").expect("test module")];
+        let production = &source[..source.find("\n#[cfg(test)]\nmod tests {").expect("test module boundary")];
         for needle in [
             "blocker.borrow().request_filters()",
             "request_filter_uris(request_filters)",
@@ -6779,7 +6779,7 @@ mod tests {
     #[test]
     fn the_player_response_rewrite_stays_wired_into_the_fetch_listener() {
         let source = include_str!("webview2.rs");
-        let production = &source[..source.find("#[cfg(test)]").expect("test module")];
+        let production = &source[..source.find("\n#[cfg(test)]\nmod tests {").expect("test module boundary")];
         for needle in [
             "if let PausedStage::Response(paused) = paused_stage(&json)",
             ".player_ads_rewrite(&paused.url, &top_host, private)",
@@ -7645,7 +7645,7 @@ mod tests {
         // result without telling the windows. Calls: report_load, profile/runtime refusals,
         // and both ownership-persistence failure branches.
         let source = include_str!("webview2.rs");
-        let production = &source[..source.find("#[cfg(test)]").expect("test module")];
+        let production = &source[..source.find("\n#[cfg(test)]\nmod tests {").expect("test module boundary")];
         assert_eq!(production.matches("crate::extensions::record_load_result(").count(), 1, "only record_load records");
         assert_eq!(production.matches("record_load(").count() - production.matches("fn record_load(").count(), 5);
     }
