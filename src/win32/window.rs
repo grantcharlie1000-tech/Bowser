@@ -8458,12 +8458,18 @@ pub(super) fn remove_extension(
                 Ok(()) => {
                     extensions::record_load_result(&id, Ok(()));
                     extensions::uninstall_under_runtime(&extensions_dir, &records_file, &id).map_err(|error| {
-                        format!("The extension was removed from the list, but its files were not deleted. {error}")
+                        let record_remains = extensions::read_authority_records(&records_file).ok().map(|records| records.iter().any(|record| record.id == id));
+                        let outcome = match record_remains {
+                            Some(true) => "Native removal succeeded, but the installation record was not deleted. The previously consented extension may be restored at restart.",
+                            Some(false) => "Native removal and record deletion succeeded, but package-file cleanup did not finish.",
+                            None => "Native removal succeeded, but the installation record and package cleanup could not be verified.",
+                        };
+                        format!("{outcome} {error}")
                     })
                 }
                 Err(reason) => {
                     extensions::record_load_result(&id, Err(format!("Remove failed: {reason}")));
-                    Err(format!("The extension was not removed. {reason}"))
+                    Err(format!("Removal did not finish; native and saved state may differ. {reason}"))
                 }
             };
             super::extensions_changed();
