@@ -10,8 +10,8 @@ import { RULES, findViolations } from '../lint-rules.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const uiRoot = join(here, '..');
-// Include every shared chunk, not only top-level entries.
-const BUNDLES = readdirSync(join(uiRoot, 'dist'), { recursive: true }).filter((name) => name.endsWith('.js')).map((name) => name.replaceAll('\\', '/')).sort();
+// Every script build.mjs writes: app.js (classic, every view) and the pages it imports on demand.
+const BUNDLES = ['app.js', 'settings-page.js', 'history-page.js', 'start-page.js'];
 // Text only each page's own code holds, so its absence shows the page left app.js.
 const PAGE_MARKERS = {
   'settings-page': ['sp-search-input', 'Settings sections'],
@@ -62,27 +62,19 @@ test('the built bundles contain no banned sink', () => {
 });
 
 test('every built script is served by assets.rs and nothing else is', () => {
-  const built = BUNDLES;
-  const assets = readFileSync(join(uiRoot, 'dist', 'scripts.rs'), 'utf8');
-  const served = [...assets.matchAll(/\("([^"]+\.js)", include_bytes!\("([^"]+)"\)\)/g)].map((m) => {
-    assert.equal(m[1], m[2], 'allowlisted URL matches embedded bytes');
-    return m[1];
-  }).sort();
+  const built = readdirSync(join(uiRoot, 'dist')).filter((name) => name.endsWith('.js')).sort();
+  assert.deepEqual(built, [...BUNDLES].sort());
+  const assets = readFileSync(join(uiRoot, '..', 'src', 'chrome_host', 'assets.rs'), 'utf8');
+  const served = [...assets.matchAll(/^\s*"([a-z-]+\.js)" => Some\(Asset \{/gm)].map((m) => m[1]).sort();
   assert.deepEqual(served, built);
-  const rust = readFileSync(join(uiRoot, '..', 'src', 'chrome_host', 'assets.rs'), 'utf8');
-  assert.ok(rust.includes('include!("../../ui/dist/scripts.rs")'));
-  assert.ok(rust.includes('SCRIPT_ASSETS.iter().find'));
-
 });
 
 test('the settings and history pages are not in app.js: it imports them only for their view', () => {
   const app = readFileSync(join(uiRoot, 'dist', 'app.js'), 'utf8');
-  assert.ok(app.includes('import('), 'app.js dispatches through lazy module imports');
-  assert.ok(readFileSync(join(uiRoot, 'dist', 'index.html'), 'utf8').includes('<script type="module" src="app.js">'));
+  assert.match(app, /^("use strict";)?\(\(\)=>\{/, 'app.js stays a classic IIFE script');
   for (const [page, markers] of Object.entries(PAGE_MARKERS)) {
     const own = readFileSync(join(uiRoot, 'dist', `${page}.js`), 'utf8');
-    const dispatcher = page === 'start-page' ? readFileSync(join(uiRoot, 'dist', 'split.js'), 'utf8') : app;
-    assert.ok(dispatcher.includes(`"./${page}.js"`), `lazy dispatcher names ./${page}.js`);
+    assert.ok(app.includes(`"./${page}.js"`), `app.js names ./${page}.js`);
     assert.match(own, /\bexport\s*\{/, `${page}.js is a module`);
     for (const marker of markers) {
       assert.ok(own.includes(marker), `${page}.js holds ${JSON.stringify(marker)}`);
@@ -209,7 +201,7 @@ test('a full toolbar state message is accepted for all chrome views', () => {
   assert.equal(parseInbound({ ...sample, menux: 1.5 }), null);
   assert.equal(parseInbound({ ...sample, pillw: undefined }), null);
   assert.equal(parseInbound({ ...sample, unexpected: true }), null);
-  for (const file of ['toolbar.ts', 'tabs.ts', 'rail.ts']) {
+  for (const file of ['main.ts', 'tabs.ts', 'rail.ts']) {
     const source = readFileSync(join(uiRoot, 'src', file), 'utf8');
     assert.match(source, /case 'state':[\s\S]*?applyTheme\(msg\.theme, msg\.solid, msg\.dark[,)]/, file);
   }

@@ -103,7 +103,6 @@ const logic = await import(bundleSource("export * from './settings-page-logic';"
 const menu = await import(bundleSource("export * from './menu-logic';"));
 // main.ts starts the toolbar on import (no ?view means the toolbar), exactly as the browser does.
 await import(bundleSource("import './main';"));
-await new Promise(setImmediate);
 
 const STATE = { t: 'state', scale: 1, solid: true, dark: true, back: false, forward: false, loading: false, progress: 0, security: 'secure', label: 'Secure', theme: {} };
 const stateMsg = (patch, drop = []) => {

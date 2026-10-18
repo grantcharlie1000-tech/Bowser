@@ -35,9 +35,7 @@ if (!existsSync(bundle)) {
   violations += 1;
   console.error('dist/app.js is missing: run npm run build before lint');
 } else {
-  for (const file of walk(join(root, 'dist')).filter((path) => path.endsWith('.js'))) {
-    report(file, findViolations(readFileSync(file, 'utf8')));
-  }
+  report(bundle, findViolations(readFileSync(bundle, 'utf8')));
 }
 
 if (violations > 0) {

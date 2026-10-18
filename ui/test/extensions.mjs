@@ -477,7 +477,7 @@ test('toolbar: a click sends only the button’s rectangle; the slot matches Rus
   assert.match(css, /#app\.placed\.has-ext\.has-dl \.actions \{\s*left: calc\(var\(--menu-x\) - 64px\);/, 'both slots');
   const rust = read(join(here, '..', '..', 'src', 'chrome_host', 'mod.rs'));
   assert.match(rust, /pub const EXT_BUTTON_SLOT: i32 = 32;/);
-  const main = read(join(srcDir, 'toolbar.ts'));
+  const main = read(join(srcDir, 'main.ts'));
   assert.match(main, /view\.extensions\.button\.addEventListener\('click', \(\) => \{ sendExtensionsButton\(view\.extensions\.button\.getBoundingClientRect\(\)\); \}\);/);
   assert.match(main, /case 'extbtn':\s*view\.extensions\.apply\(msg\);/);
 });

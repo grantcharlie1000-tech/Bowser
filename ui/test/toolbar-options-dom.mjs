@@ -105,7 +105,6 @@ const deliver = (msg) => { for (const cb of listeners.slice()) cb({ data: JSON.s
 const viewMod = await import(bundleSource("export { applyState, buildView, renderDisplay } from './view';"));
 // main.ts starts the toolbar on import (no ?view means the toolbar), exactly as the browser does.
 await import(bundleSource("import './main';"));
-await new Promise(setImmediate);
 
 const omni = root.querySelector('.omni');
 const search = root.querySelector('.omni-search');

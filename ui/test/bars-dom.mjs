@@ -103,7 +103,6 @@ const deliver = (msg) => { for (const cb of listeners.slice()) cb({ data: JSON.s
 
 // main.ts starts the toolbar on import (no ?view means the toolbar), exactly as the browser does.
 await import(bundleSource("import './main';"));
-await new Promise(setImmediate);
 
 const STATE = { t: 'state', scale: 1, solid: true, dark: false, back: true, forward: true, loading: false, progress: 0, security: 'secure', label: 'Secure', theme: {} };
 const bar = (items, extra = {}) => ({ ...STATE, items, tools: [], extra: 0, feeds: 0, ...extra });

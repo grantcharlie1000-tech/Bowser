@@ -23,7 +23,7 @@ const shim = `const listeners = []; window.chrome = { webview: { addEventListene
 window.addEventListener('error', () => document.documentElement.setAttribute('data-surface-error', 'yes'));
 window.addEventListener('unhandledrejection', () => document.documentElement.setAttribute('data-surface-error', 'yes'));`;
 
-test('every lazy surface starts through actual modules under the production CSP', { skip: !browser, timeout: 180000 }, async () => {
+test('every surface starts through actual assets under the production CSP', { skip: !browser, timeout: 180000 }, async () => {
   const requested = new Set();
   const sources = { candidate: join(root, 'dist') };
   if (process.env.BOWSER_UI_BASELINE_DIST) sources.baseline = process.env.BOWSER_UI_BASELINE_DIST;
@@ -77,8 +77,8 @@ test('every lazy surface starts through actual modules under the production CSP'
         }
       }
     }
-    assert.ok([...requested].some((p) => p.startsWith('candidate/chunks/')), 'actual shared chunks were fetched');
-    for (const view of views) assert.ok(requested.has(`candidate/${view === 'settings' || view === 'history' ? `${view}-page` : view}.js`), `${view}: actual entry fetched`);
+    assert.ok(requested.has('candidate/app.js'), 'actual chrome entry fetched');
+    for (const view of ['settings', 'history']) assert.ok(requested.has(`candidate/${view}-page.js`), `${view}: actual page entry fetched`);
     for (const label of Object.keys(sources)) assert.ok(requested.has(`${label}/start-page.js`), `${label}: actual lazy start-page entry fetched`);
     if (process.env.BOWSER_UI_SURFACE_REPORT) writeFileSync(process.env.BOWSER_UI_SURFACE_REPORT, `${JSON.stringify({ scope: 'Exploratory load correctness smoke. External spawn endpoint is wall-clock and includes full Edge launch; in-page performance.now endpoints use virtual time, not wall-clock latency. Not native interaction benchmarks or statistical no-regression proof', sources, alternating_order: true, reports }, null, 2)}\n`);
   } finally {

@@ -9,7 +9,7 @@ import { fileURLToPath as pathOf } from 'node:url';
 // density, menu rows and window look on, so those settings reach the pages, panels, menus and dialogs.
 test('every applyTheme call passes fontScale, uiFont, density, compactMenus and look from its state', () => {
   const src = joinPath(dirOf(pathOf(import.meta.url)), '..', 'src');
-  const files = ['toolbar.ts', 'bookmark-bar.ts', 'tabs.ts', 'rail.ts', 'shell.ts', 'panel.ts', 'settings-page.ts', 'history-page.ts', 'downloads-page.ts', 'dialog.ts', 'split.ts'];
+  const files = ['main.ts', 'bookmark-bar.ts', 'tabs.ts', 'rail.ts', 'shell.ts', 'panel.ts', 'settings-page.ts', 'history-page.ts', 'downloads-page.ts', 'dialog.ts', 'split.ts'];
   for (const file of files) {
     const text = readSource(joinPath(src, file), 'utf8');
     const calls = [...text.matchAll(/applyTheme\((\w+)\.theme,[^)]*\)/g)];
