@@ -386,14 +386,7 @@ fn top_sites_over_5000_distinct_hosts_is_fast_and_keeps_the_ranking() {
         hosts.sort_by(|a, b| b.1.cmp(&a.1).then(b.2.cmp(&a.2)).then(a.0.cmp(&b.0)));
         hosts.into_iter().map(|(host, ..)| host).collect()
     };
-    let started = std::time::Instant::now();
-    let old = quadratic(&history);
-    let old_elapsed = started.elapsed();
-    let started = std::time::Instant::now();
-    let top = top_sites(&history, 5000);
-    let elapsed = started.elapsed();
-    assert_eq!(top.iter().map(|s| s.host.clone()).collect::<Vec<_>>(), old, "the same order as before");
-    assert_eq!(top.len(), 5000);
+    // Build an independent reference once, outside warmups and every timing interval.
     // Reference ranking: count desc, newest desc, host asc.
     let mut expected: Vec<(usize, u64, String)> = (0..5000u64)
         .map(|i| {
@@ -403,11 +396,63 @@ fn top_sites_over_5000_distinct_hosts_is_fast_and_keeps_the_ranking() {
         })
         .collect();
     expected.sort_by(|a, b| b.0.cmp(&a.0).then(b.1.cmp(&a.1)).then(a.2.cmp(&b.2)));
-    assert_eq!(top.iter().map(|s| s.host.clone()).collect::<Vec<_>>(), expected.into_iter().map(|e| e.2).collect::<Vec<_>>());
-    assert_eq!(top[0].url, "https://www.host3.example/again", "the newest repeat page wins");
-    // Relative, not absolute, so a loaded runner cannot fail it: the hash ranking must beat the
-    // quadratic version by a wide margin.
-    eprintln!("top_sites {elapsed:?}, quadratic {old_elapsed:?}");
+    let expected_hosts: Vec<String> = expected.iter().map(|e| e.2.clone()).collect();
+    let check_old = |old: &[String]| assert_eq!(old, expected_hosts.as_slice(), "the same order as before");
+    let check_top = |top: &[TopSite]| {
+        assert_eq!(top.len(), 5000);
+        assert_eq!(top.iter().map(|s| s.host.clone()).collect::<Vec<_>>(), expected_hosts);
+        assert_eq!(top[0].url, "https://www.host3.example/again", "the newest repeat page wins");
+        for (site, (_, newest, host)) in top.iter().zip(&expected) {
+            let (url, title) = if *newest >= 10_000 {
+                (format!("https://www.{host}/again"), "Again".to_owned())
+            } else {
+                (format!("https://{host}/"), format!("Host {newest}"))
+            };
+            assert_eq!(site.url, url);
+            assert_eq!(site.title, title);
+        }
+    };
+    // One checked warmup of each arm; neither contributes to the predeclared measured total.
+    let old = std::hint::black_box(quadratic(std::hint::black_box(&history)));
+    check_old(&old);
+    drop(old);
+    let top = std::hint::black_box(top_sites(std::hint::black_box(&history), 5000));
+    check_top(&top);
+    drop(top);
+    let measure_old = || {
+        let started = std::time::Instant::now();
+        let old = std::hint::black_box(quadratic(std::hint::black_box(&history)));
+        let elapsed = started.elapsed();
+        check_old(&old);
+        drop(old);
+        elapsed
+    };
+    let measure_top = || {
+        let started = std::time::Instant::now();
+        let top = std::hint::black_box(top_sites(std::hint::black_box(&history), 5000));
+        let elapsed = started.elapsed();
+        check_top(&top);
+        drop(top);
+        elapsed
+    };
+    // Relative timing can still suffer asymmetric scheduling contention. Use exactly eight
+    // alternating pairs and sum ALL samples: no trimming, best-of selection or adaptive retries.
+    // Each result is checked and dropped outside its timer before starting the other arm.
+    let mut elapsed = std::time::Duration::ZERO;
+    let mut old_elapsed = std::time::Duration::ZERO;
+    for pair in 0..8 {
+        let old_first = pair % 2 == 0;
+        let (old_sample, sample) = if old_first {
+            (measure_old(), measure_top())
+        } else {
+            let sample = measure_top();
+            (measure_old(), sample)
+        };
+        eprintln!("top_sites pair={} old_first={old_first} top_sites={sample:?} quadratic={old_sample:?}", pair + 1);
+        elapsed += sample;
+        old_elapsed += old_sample;
+    }
+    eprintln!("top_sites eight-pair totals {elapsed:?}, quadratic {old_elapsed:?}");
     assert!(elapsed * 3 < old_elapsed, "top_sites took {elapsed:?}, the quadratic version {old_elapsed:?}");
 }
 
