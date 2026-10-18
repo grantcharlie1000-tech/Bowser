@@ -514,6 +514,12 @@ pub struct PreparedInstall {
 
 /// Cross-process read/modify/write lease. The OS denies a second open while this handle lives,
 /// and deletes the tiny lease file on close/crash. No persistent lock token or ACL changes.
+fn lease_open_error_log_line(runtime: bool, code: Option<i32>) -> String {
+    let kind = if runtime { "runtime" } else { "authority" };
+    let code = code.map_or_else(|| "unavailable".to_owned(), |code| code.to_string());
+    format!("extension call=lease_open kind={kind} result=error win32_code={code}")
+}
+
 pub(crate) struct RecordsLease { _file: File }
 impl RecordsLease {
     /// Native lifecycle operations hold this separate lease until their async completion and
@@ -529,7 +535,15 @@ impl RecordsLease {
             // GENERIC_READ | GENERIC_WRITE | DELETE, required for DELETE_ON_CLOSE.
             .access_mode(0x8000_0000 | 0x4000_0000 | 0x0001_0000).share_mode(0)
             .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | 0x0400_0000)
-            .open(PathBuf::from(path)).map_err(|_| ExtensionError::Io)?;
+            .open(PathBuf::from(path)).map_err(|error| {
+                // Existing explicit diagnostic opt-in only. Never print the authority path or
+                // arbitrary error text; raw_os_error is the numeric failure from this exact open.
+                if std::env::var_os("BOWSER_EXTENSION_TRACE").is_some() {
+                    let runtime = records_file.file_name() == Some(std::ffi::OsStr::new("extension-runtime"));
+                    eprintln!("{}", lease_open_error_log_line(runtime, error.raw_os_error()));
+                }
+                ExtensionError::Io
+            })?;
         if !is_plain_file(&file.metadata().map_err(|_| ExtensionError::Io)?) { return Err(ExtensionError::LinkNotAllowed); }
         Ok(Self { _file: file })
     }
@@ -1633,6 +1647,13 @@ mod tests {
     fn runtime_lease_child() {
         let Some(path) = std::env::var_os("BOWSER_TEST_RUNTIME_LEASE_PATH") else { panic!("Only the owning lease test launches this child."); };
         assert!(RecordsLease::runtime(Path::new(&path)).is_err()); println!("RUNTIME_LEASE_CHILD=blocked");
+    }
+
+    #[test]
+    fn extension_lease_trace_contains_only_kind_and_numeric_error() {
+        assert_eq!(lease_open_error_log_line(true, Some(32)), "extension call=lease_open kind=runtime result=error win32_code=32");
+        assert_eq!(lease_open_error_log_line(false, Some(5)), "extension call=lease_open kind=authority result=error win32_code=5");
+        assert_eq!(lease_open_error_log_line(false, None), "extension call=lease_open kind=authority result=error win32_code=unavailable");
     }
 
     #[test]

@@ -2231,7 +2231,30 @@ fn extension_name(extension: &ICoreWebView2BrowserExtension) -> Option<String> {
 /// Records how an extension's load went, then runs `announce` so the windows read it: the toolbar
 /// button and the settings page both show the result and only catch up when told. The engine calls
 /// this on the UI thread, where `win32::extensions_changed` posts to every window.
+fn extension_load_result_log_line(id: &str, result: &std::result::Result<(), String>) -> String {
+    let id = if crate::extensions::is_valid_id(id) { id } else { "invalid" };
+    let (status, category) = match result {
+        Ok(()) => ("ok", "none"),
+        Err(reason) => {
+            let category = if reason.contains("Another extension operation") || reason.contains("An extension operation is finishing") {
+                "runtime_busy"
+            } else if reason.contains("closed") {
+                "profile_closed"
+            } else if reason.contains("manifest") || reason.contains("extension files") || reason.contains("folder contains") {
+                "manifest_or_files"
+            } else if reason.contains("owning") || reason.contains("ownership") || reason.contains("identity") || reason.contains("map") || reason.contains("record") {
+                "ownership_or_records"
+            } else {
+                "native_or_other"
+            };
+            ("error", category)
+        }
+    };
+    format!("extension call=load_result bowser={id} result={status} failure_class={category}")
+}
+
 fn record_load(id: &str, result: std::result::Result<(), String>, announce: impl FnOnce()) {
+    if extension_trace_enabled() { extension_trace(&extension_load_result_log_line(id, &result)); }
     crate::extensions::record_load_result(id, result);
     announce();
 }
@@ -6207,6 +6230,23 @@ mod tests {
         let source = include_str!("webview2.rs");
         for blocking in [concat!("wait_for_async", "_operation"), concat!("wait_with", "_pump")] {
             assert!(!source.contains(blocking), "src/engine/webview2.rs uses {blocking}");
+        }
+    }
+
+    #[test]
+    fn extension_startup_trace_uses_only_fixed_categories_and_validated_ids() {
+        let id = "ext-0123456789abcdef";
+        let busy = Err("Another extension operation is finishing in this profile. Private-path-or-secret must never appear.".to_owned());
+        assert_eq!(extension_load_result_log_line(id, &busy), "extension call=load_result bowser=ext-0123456789abcdef result=error failure_class=runtime_busy");
+        let unknown = Err("private_path=secret credential or URL must never appear".to_owned());
+        assert_eq!(extension_load_result_log_line("untrusted\nprivate-id", &unknown), "extension call=load_result bowser=invalid result=error failure_class=native_or_other");
+        assert_eq!(extension_load_result_log_line(id, &Ok(())), "extension call=load_result bowser=ext-0123456789abcdef result=ok failure_class=none");
+        for (message, category) in [
+            ("Bowser closed this profile.", "profile_closed"),
+            ("The extension files could not be read or copied.", "manifest_or_files"),
+            ("The owning extension map could not be read.", "ownership_or_records"),
+        ] {
+            assert!(extension_load_result_log_line(id, &Err(message.to_owned())).ends_with(category));
         }
     }
 
