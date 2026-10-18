@@ -1,6 +1,7 @@
 //! Isolated documented native presentation. No production registration, fake extension item or API dispatch.
 use super::*;
 use std::{cell::Cell,collections::HashSet};
+use windows::Win32::Graphics::Gdi::ClientToScreen;
 use windows::Win32::UI::Shell::{SetWindowSubclass,RemoveWindowSubclass,DefSubclassProc};
 use webview2_com::{ContextMenuRequestedEventHandler,Microsoft::Web::WebView2::Win32::*};
 use windows::{core::{Interface,PCWSTR},Win32::{Foundation::{POINT,WPARAM,LPARAM},System::Threading::GetCurrentThreadId,UI::WindowsAndMessaging::*}};
