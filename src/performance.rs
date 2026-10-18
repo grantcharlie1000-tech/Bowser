@@ -1,9 +1,10 @@
 use crate::engine::TrackingPreventionLevel;
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     fs::File,
     io::{self, Write},
     path::{Path, PathBuf},
+    rc::Rc,
     time::Instant,
 };
 use url::Url;
@@ -604,8 +605,42 @@ fn ensure_benchmark_profile(path: &Path) -> Result<(), String> {
         .map_err(|e| format!("Cannot mark isolated benchmark profile: {e}"))
 }
 
+fn valid_focus_view(view: &str) -> bool {
+    matches!(view,"content"|"toolbar"|"tabs"|"rail"|"panel"|"popup"|"dialog"|"dialog_notes"|"dialog_privacy"|"dialog_rename"|"dialog_address"|"bookmark_bar"|"dialog_sessions"|"dialog_feeds"|"hover"|"split"|"settings"|"history"|"downloads")
+}
+/// Explicit opt-in only. Holds no App, controller or host reference, so passive callbacks cannot
+/// introduce a controller/host reference cycle or borrow application state.
+#[derive(Clone)]
+pub struct FocusTrace {
+    log: Rc<PerfLog>,
+    view: &'static str,
+    tab: u64,
+    controller: u64,
+}
+impl FocusTrace {
+    pub fn new(log: Rc<PerfLog>,view: &'static str,tab: u64) -> Self {
+        let controller=if log.enabled() {
+            match log.focus_sequence.get().checked_add(1) {
+                Some(next)=>{log.focus_sequence.set(next);next},
+                None=>0,
+            }
+        }else{0};
+        let trace=Self{log,view,tab,controller};
+        trace.record("interaction_focus_controller_created",None);
+        trace
+    }
+    pub fn record(&self,event: &'static str,result: Option<i32>) {
+        let _=self.log.record_focus(event,self.view,self.tab,self.controller,result);
+    }
+    /// Rust Result<()> is observed once: success is normalized0; failure retains its HRESULT.
+    pub fn result(&self,event: &'static str,result: &windows::core::Result<()>) {
+        self.record(event,Some(result.as_ref().map(|_|0).unwrap_or_else(|error|error.code().0)));
+    }
+}
+
 pub struct PerfLog {
     active: Option<ActiveLog>,
+    focus_sequence: Cell<u64>,
 }
 struct ActiveLog {
     start: Instant,
@@ -629,7 +664,7 @@ impl PerfLog {
         } else {
             None
         };
-        Ok(Self { active })
+        Ok(Self { active, focus_sequence: Cell::new(0) })
     }
     pub fn enabled(&self) -> bool {
         self.active.is_some()
@@ -665,6 +700,27 @@ impl PerfLog {
             return Err(io::Error::new(io::ErrorKind::InvalidInput, "Invalid diagnostic view"));
         }
         self.record_fields(event, &format!(",,,,{view},{pid},{private_bytes},{count}"))
+    }
+    /// Focus-only rows use navigation_id as a controller identity, NEVER a navigation identity.
+    /// count is a native HWND (or HRESULT for the dedicated result row); private_bytes stays zero.
+    fn record_focus(&self, event: &str, view: &str, tab: u64, controller: u64, result: Option<i32>) -> io::Result<()> {
+        if !self.enabled() { return Ok(()); }
+        if !valid_focus_view(view) || controller == 0 {
+            return self.record("interaction_focus_coverage_error");
+        }
+        use windows::Win32::UI::{Input::KeyboardAndMouse::GetFocus, WindowsAndMessaging::{GetForegroundWindow, GetWindowThreadProcessId}};
+        let success=result.map(|hr|(hr>=0).to_string()).unwrap_or_default();
+        let write_window=|event: &str,window: windows::Win32::Foundation::HWND| {
+            let mut pid=0;
+            if !window.is_invalid() {unsafe {GetWindowThreadProcessId(window,Some(&mut pid));}}
+            self.record_fields(event,&format!("{tab},{controller},{success},,{view},{pid},0,{}",window.0 as usize as u64))
+        };
+        write_window(event,unsafe {GetFocus()})?;
+        write_window("interaction_focus_foreground",unsafe {GetForegroundWindow()})?;
+        if let Some(hr)=result {
+            self.record_fields("interaction_focus_hresult",&format!("{tab},{controller},{success},,{view},0,0,{}",hr as u32))?;
+        }
+        Ok(())
     }
     fn record_fields(&self, event: &str, fields: &str) -> io::Result<()> {
         let Some(active) = &self.active else {
@@ -1339,6 +1395,35 @@ mod tests {
         let content: Vec<_> = rows[2].split(',').collect();
         assert_eq!(content[3], "9");
         assert_eq!(&content[7..], &["content", "0", "0", "42"]);
+    }
+
+    #[test]
+    fn focus_rows_have_unique_controller_ids_fixed_views_and_numeric_state() {
+        let path=std::env::temp_dir().join(format!("bowser-focus-{}.csv",std::process::id()));
+        let log=Rc::new(PerfLog::new(Some(&path)).unwrap());
+        let content=FocusTrace::new(log.clone(),"content",7);
+        let toolbar=FocusTrace::new(log.clone(),"toolbar",0);
+        assert_eq!(content.controller,1);assert_eq!(toolbar.controller,2);
+        content.record("interaction_content_move_request",None);
+        content.record("interaction_content_move_result",Some(-1));
+        let bad=FocusTrace::new(log.clone(),"https://private.test/",0);
+        assert_eq!(bad.controller,3);
+        log.focus_sequence.set(u64::MAX);
+        assert_eq!(FocusTrace::new(log.clone(),"toolbar",0).controller,0);
+        assert_eq!(FocusTrace::new(log.clone(),"toolbar",0).controller,0);
+        drop((content,toolbar,bad));drop(log);
+        let text=std::fs::read_to_string(&path).unwrap();std::fs::remove_file(path).unwrap();
+        assert!(!text.contains("private.test"));
+        let rows:Vec<Vec<&str>>=text.lines().skip(1).map(|line|line.split(',').collect()).collect();
+        let request=rows.iter().find(|row|row[0]=="interaction_content_move_request").unwrap();
+        assert_eq!((request[3],request[4],request[7],request[9]),("7","1","content","0"));
+        let result=rows.iter().find(|row|row[0]=="interaction_content_move_result").unwrap();
+        assert_eq!(result[5],"false");
+        assert!(rows.iter().any(|row|row[0]=="interaction_focus_hresult"&&row[10].parse::<u32>().unwrap()==u32::MAX));
+        assert_eq!(rows.iter().filter(|row|row[0]=="interaction_focus_coverage_error").count(),3);
+        let disabled=Rc::new(PerfLog::new(None).unwrap());
+        assert_eq!(FocusTrace::new(disabled.clone(),"toolbar",0).controller,0);
+        assert_eq!(disabled.focus_sequence.get(),0);
     }
 
     #[test]

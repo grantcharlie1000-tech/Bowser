@@ -1411,6 +1411,7 @@ const BLOCKABLE_CONTEXTS: [COREWEBVIEW2_WEB_RESOURCE_CONTEXT; 8] = [
 ];
 
 struct WebView2Tab {
+    focus_trace: Option<crate::performance::FocusTrace>,
     environment: Option<ICoreWebView2Environment>,
     controller: Option<ICoreWebView2Controller>,
     webview: Option<ICoreWebView2>,
@@ -2857,11 +2858,14 @@ impl EngineAdapter for WebView2Engine {
             state
                 .active_tab
                 .and_then(|active| state.tabs.get(&active))
-                .and_then(|tab| tab.controller.clone())
+                .and_then(|tab| tab.controller.clone().map(|controller|(controller,tab.focus_trace.clone())))
         };
         match controller {
-            Some(controller) => unsafe {
-                controller.MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC)
+            Some((controller,trace)) => {
+                if let Some(trace)=&trace {trace.record("interaction_content_move_request",None);}
+                let result=unsafe {controller.MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC)};
+                if let Some(trace)=&trace {trace.result("interaction_content_move_result",&result);}
+                result
             },
             None => Ok(()),
         }
@@ -4116,6 +4120,7 @@ unsafe fn configure_controller(
         let detail = |name, count| {
             if let Some(log) = events.diagnostic_detail.as_ref() { log(name, tab_id, count); }
         };
+        let focus_trace=events.diagnostic_focus.as_ref().map(|log|crate::performance::FocusTrace::new(log.clone(),"content",u64::from(tab_id.0)));
         detail("configure_geometry_started", 0);
         controller.SetBounds(bounds)?;
         controller.SetIsVisible(visible)?;
@@ -5199,6 +5204,20 @@ unsafe fn configure_controller(
             )?;
         }
 
+        // Separate opt-in passive hooks leave the existing GotFocus product callback unchanged.
+        if let Some(trace)=focus_trace.clone() {
+            trace.record("interaction_focus_registration_started",None);
+            let got=trace.clone();
+            let result=controller.add_GotFocus(&FocusChangedEventHandler::create(Box::new(move |_,_|{
+                got.record("interaction_controller_got_focus",None);Ok(())
+            })),&mut token);
+            trace.result("interaction_focus_got_registration",&result);
+            let lost=trace.clone();
+            let result=controller.add_LostFocus(&FocusChangedEventHandler::create(Box::new(move |_,_|{
+                lost.record("interaction_controller_lost_focus",None);Ok(())
+            })),&mut token);
+            trace.result("interaction_focus_lost_registration",&result);
+        }
         if let Some(callback) = events.failed.as_ref() {
             let failure_callback = callback.clone();
             let render_callback = events.render_process_failed.clone();
@@ -5221,6 +5240,7 @@ unsafe fn configure_controller(
         }
         detail("configure_final_handlers_finished", 0);
         Ok(WebView2Tab {
+            focus_trace,
             environment: Some(environment.clone()),
             controller: Some(controller),
             webview: Some(webview),

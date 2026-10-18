@@ -56,7 +56,7 @@ jobs:
           if($LASTEXITCODE -ne 0){throw 'Cannot fetch reviewed product source'}
           $changes=@(git diff --name-only f285525d205b9b388ebb26481f5af01d4df99ac8 HEAD)
           if($LASTEXITCODE -ne 0){throw 'Cannot verify bounded interaction instrumentation'}
-          if(@($changes | Where-Object {$_ -cnotin @('.github/workflows/production-performance.yml','benchmarks/production-baseline.ps1','benchmarks/production-analyze.py','benchmarks/interaction-diagnostic.md','benchmarks/production-focus.psm1','benchmarks/test-production-focus.ps1','benchmarks/native-focus-diagnostic.md','src/performance.rs','src/main.rs','src/app.rs','src/chrome_host/host.rs','src/chrome_host/protocol.rs','src/win32/window.rs','src/win32/settings_page.rs','ui/src/interaction-diagnostic.ts','ui/src/main.ts','ui/src/protocol.ts','ui/test/interaction-diagnostic.mjs','ui/package.json','ui/dist.manifest','ui/dist/app.js','ui/dist/settings-page.js','ui/dist/history-page.js')}).Count){throw 'Unexpected changes outside fixed interaction diagnostic slice'}
+          if(@($changes | Where-Object {$_ -cnotin @('.github/workflows/production-performance.yml','benchmarks/production-baseline.ps1','benchmarks/production-analyze.py','benchmarks/interaction-diagnostic.md','benchmarks/production-focus.psm1','benchmarks/test-production-focus.ps1','benchmarks/native-focus-diagnostic.md','benchmarks/controller-focus-diagnostic.md','src/performance.rs','src/main.rs','src/app.rs','src/chrome_host/host.rs','src/engine/mod.rs','src/engine/webview2.rs','src/chrome_host/protocol.rs','src/win32/window.rs','src/win32/settings_page.rs','ui/src/interaction-diagnostic.ts','ui/src/main.ts','ui/src/protocol.ts','ui/test/interaction-diagnostic.mjs','ui/package.json','ui/dist.manifest','ui/dist/app.js','ui/dist/settings-page.js','ui/dist/history-page.js')}).Count){throw 'Unexpected changes outside fixed interaction diagnostic slice'}
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: '22'
@@ -77,7 +77,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Analysis contract tests failed' }
           node --check benchmarks/scripts/production-fixture-server.mjs
           node --check benchmarks/scripts/filter-parity-fixture.mjs
-      - name: Reuse exact matched9862 binaries for bounded passive OS focus diagnosis
+      - name: Preserve and verify immutable original9862 control provenance
         working-directory: candidate
         env:
           GH_TOKEN: ${{ github.token }}
@@ -86,7 +86,9 @@ jobs:
           git fetch --no-tags --depth=1 origin $source
           if($LASTEXITCODE -ne 0){throw 'Cannot fetch frozen interaction source'}
           $changes=@(git diff --name-only $source HEAD)
-          if($LASTEXITCODE -ne 0 -or @($changes|Where-Object {$_ -cnotin @('.github/workflows/production-performance.yml','benchmarks/production-baseline.ps1','benchmarks/production-focus.psm1','benchmarks/test-production-focus.ps1','benchmarks/native-focus-diagnostic.md')}).Count){throw 'Focus diagnostic requires unchanged product and only reviewed passive harness paths'}
+          if($LASTEXITCODE -ne 0 -or @($changes|Where-Object {$_ -cnotin @('.github/workflows/production-performance.yml','benchmarks/production-baseline.ps1','benchmarks/production-focus.psm1','benchmarks/test-production-focus.ps1','benchmarks/native-focus-diagnostic.md','benchmarks/controller-focus-diagnostic.md','src/app.rs','src/performance.rs','src/chrome_host/host.rs','src/engine/mod.rs','src/engine/webview2.rs')}).Count){throw 'Controller focus diagnostic contains changes outside reviewed instrumentation/harness paths'}
+          git fetch --no-tags --depth=1 origin 46ee3b3ef98a4c7603967d22df9cb1490ca936c1
+          if($LASTEXITCODE -ne 0){throw 'Cannot fetch original pre-minimizer source for matched reference'}
           $headers=@{Authorization="Bearer $env:GH_TOKEN";Accept='application/vnd.github+json';'X-GitHub-Api-Version'='2022-11-28'}
           $zip=Join-Path $env:RUNNER_TEMP 'interaction-9862.zip'
           Invoke-WebRequest 'https://api.github.com/repos/grantcharlie1000-tech/Bowser/actions/artifacts/12133737632/zip' -Headers $headers -OutFile $zip
@@ -107,7 +109,81 @@ jobs:
           $paths=@{baseline='../evidence/frozen/untouched-main.exe';diagnostic='../evidence/interaction-reference/reference.exe';release='../evidence/frozen/released-v0.0.19.exe';candidate='../evidence/candidate/candidate.exe'}
           foreach($role in $expected.Keys){if($manifest.$role -cne $expected[$role] -or (Get-FileHash $paths[$role] -Algorithm SHA256).Hash.ToLowerInvariant() -cne $expected[$role]){throw "Frozen replication input mismatch: $role"}}
           if((Get-Item $paths.candidate).Length -ne 7859712 -or (Get-Item $paths.diagnostic).Length -ne 7826944){throw 'Frozen matched input size mismatch'}
-          [ordered]@{artifact_id=12133737632;archive_sha256=$archiveHash;candidate_source=$source;reference_tree=$reference.build_tree;harness_source=(git rev-parse HEAD).Trim();candidate_rebuilt=$false;fixed_pairs=2;planned_rows=16;max_invalid_samples=20;purpose='H1 passive OS focus ownership versus UIA at fixed input boundaries; controller identity and H2 setText overwrite remain untested; no performance acceptance';stop='One fixed16-row batch; stop on any identity/isolation loss; no within-row retry, repair, delay or input-method change'} | ConvertTo-Json | Set-Content ../evidence/replication-provenance.json
+          [ordered]@{artifact_id=12133737632;archive_sha256=$archiveHash;candidate_source=$source;reference_tree=$reference.build_tree;harness_source=(git rev-parse HEAD).Trim();candidate_rebuilt=$false;scope='Archived original9862 controls verified only; executed controls are rebuilt below with new identities';fixed_pairs=2;planned_rows=16;max_invalid_samples=20;purpose='H1 passive OS focus ownership versus UIA at fixed input boundaries; controller identity and H2 setText overwrite remain untested; no performance acceptance';stop='One fixed16-row batch; stop on any identity/isolation loss; no within-row retry, repair, delay or input-method change'} | ConvertTo-Json | Set-Content ../evidence/original-control-provenance.json
+      - name: Build matched controller-focus reference and candidate with identical passive instrumentation
+        working-directory: candidate
+        run: |
+          rustup toolchain install 1.99.1 --profile minimal --component clippy
+          if ($LASTEXITCODE -ne 0) { throw 'Pinned toolchain installation failed' }
+          Push-Location ui
+          npm ci --no-audit --no-fund
+          if ($LASTEXITCODE -ne 0) { throw 'Locked UI install failed' }
+          npm run build
+          if ($LASTEXITCODE -ne 0) { throw 'UI rebuild failed' }
+          npm run typecheck
+          if ($LASTEXITCODE -ne 0) { throw 'UI typecheck failed' }
+          npm run lint
+          if ($LASTEXITCODE -ne 0) { throw 'UI lint failed' }
+          $env:BOWSER_TEST_EDGE='C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe'
+          if (-not (Test-Path $env:BOWSER_TEST_EDGE)) { $env:BOWSER_TEST_EDGE='C:/Program Files/Microsoft/Edge/Application/msedge.exe' }
+          if (-not (Test-Path $env:BOWSER_TEST_EDGE)) { throw 'Edge required for actual all-surface module/CSP smoke' }
+          # Compare actual browser module first-use costs with the exact frozen baseline assets.
+          New-Item -ItemType Directory -Force ../../evidence/baseline-ui | Out-Null
+          $archive=Join-Path $env:RUNNER_TEMP 'baseline-ui.tar'
+          git -C .. archive --format=tar --output=$archive 46ee3b3ef98a4c7603967d22df9cb1490ca936c1 ui/dist
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot archive frozen baseline UI bytes' }
+          tar -xf $archive -C ../../evidence/baseline-ui
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot extract frozen baseline UI bytes' }
+          $env:BOWSER_UI_BASELINE_DIST=(Resolve-Path ../../evidence/baseline-ui/ui/dist).Path
+          $env:BOWSER_UI_SURFACE_REPORT=Join-Path (Resolve-Path ../../evidence).Path 'surface-module-regressions.json'
+          node --test test/hardening.mjs test/surface-modules.mjs test/interaction-diagnostic.mjs
+          if ($LASTEXITCODE -ne 0) { throw 'Actual module/CSP smoke failed' }
+          Pop-Location
+          git diff --exit-code -- ui/src/icons.gen.ts ui/dist ui/dist.manifest
+          if ($LASTEXITCODE -ne 0) { throw 'Committed assets are not reproducible' }
+          cargo +1.99.1 test --locked
+          if ($LASTEXITCODE -ne 0) { throw 'Default Rust contracts failed' }
+          cargo +1.99.1 test --locked --features html-chrome-default
+          if ($LASTEXITCODE -ne 0) { throw 'HTML Rust contracts failed' }
+          cargo +1.99.1 clippy --locked --features html-chrome-default -- -D warnings
+          if ($LASTEXITCODE -ne 0) { throw 'Clippy failed' }
+          cargo +1.99.1 build --release --locked --bin bowser --features html-chrome-default
+          if ($LASTEXITCODE -ne 0) { throw 'Actual candidate build failed' }
+          New-Item -ItemType Directory -Force ../evidence/candidate | Out-Null
+          Copy-Item target/release/bowser.exe ../evidence/candidate/candidate.exe
+          Copy-Item Cargo.lock,ui/dist.manifest ../evidence/candidate/
+          $file=Get-Item ../evidence/candidate/candidate.exe
+          [ordered]@{filter_product_source='f285525d205b9b388ebb26481f5af01d4df99ac8';source=(git rev-parse HEAD).Trim();tree=(git rev-parse 'HEAD^{tree}').Trim();sha256=(Get-FileHash $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant();bytes=$file.Length;toolchain=(rustc +1.99.1 --version --verbose | Out-String);features='html-chrome-default';scope='Matched controller-focus diagnostic build; identical passive tracing, not the frozen primary candidate or9862 executable'} | ConvertTo-Json | Set-Content ../evidence/candidate/identity.json
+          # The rebuilt reference has EXACTLY the same diagnostic/UI/build inputs, minus only
+          # the two minimizer files. Never relabel it as the original frozen46ee executable.
+          git worktree add --detach ../interaction-reference-source HEAD
+          if($LASTEXITCODE -ne 0){throw 'Cannot create matched reference tree'}
+          git -C ../interaction-reference-source checkout 46ee3b3ef98a4c7603967d22df9cb1490ca936c1 -- src/blocker.rs
+          if($LASTEXITCODE -ne 0){throw 'Cannot restore original registration construction'}
+          git -C ../interaction-reference-source rm -- src/blocker/registration.rs
+          if($LASTEXITCODE -ne 0){throw 'Cannot remove minimizer from matched reference'}
+          $diff=@(git -C ../interaction-reference-source diff --cached --name-only HEAD)
+          if($LASTEXITCODE -ne 0 -or $diff.Count -ne 2 -or @($diff|Where-Object {$_ -cnotin @('src/blocker.rs','src/blocker/registration.rs')}).Count){throw 'Matched binaries would differ outside minimizer'}
+          $referenceTree=(git -C ../interaction-reference-source write-tree).Trim()
+          if($LASTEXITCODE -ne 0 -or $referenceTree -cnotmatch '^[0-9a-f]{40}$'){throw 'Invalid matched reference source tree'}
+          New-Item -ItemType Directory -Force ../evidence/interaction-reference | Out-Null
+          git -C ../interaction-reference-source diff --cached HEAD | Set-Content ../evidence/interaction-reference/minimizer-only-difference.patch
+          git diff f285525d205b9b388ebb26481f5af01d4df99ac8 HEAD -- src ui | Set-Content ../evidence/interaction-reference/identical-instrumentation.patch
+          $patchHash=(Get-FileHash ../evidence/interaction-reference/identical-instrumentation.patch -Algorithm SHA256).Hash.ToLowerInvariant()
+          Push-Location ../interaction-reference-source
+          $target=(Resolve-Path ../candidate/target).Path
+          cargo +1.99.1 test --locked --features html-chrome-default --target-dir $target
+          if($LASTEXITCODE -ne 0){throw 'Matched reference Rust contracts failed'}
+          cargo +1.99.1 build --release --locked --bin bowser --features html-chrome-default --target-dir $target
+          if($LASTEXITCODE -ne 0){throw 'Matched reference build failed'}
+          Pop-Location
+          Copy-Item target/release/bowser.exe ../evidence/interaction-reference/reference.exe
+          $reference=Get-Item ../evidence/interaction-reference/reference.exe
+          $referenceHash=(Get-FileHash $reference.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+          [ordered]@{source="tree:$referenceTree";build_tree=$referenceTree;base_source='46ee3b3ef98a4c7603967d22df9cb1490ca936c1';instrumentation_source=(git rev-parse HEAD).Trim();instrumentation_patch_sha256=$patchHash;only_difference_paths=$diff;sha256=$referenceHash;bytes=$reference.Length;features='html-chrome-default';scope='Matched rebuilt controller-focus reference, NOT original46ee or9862 bytes; no primary gain remeasurement'} | ConvertTo-Json | Set-Content ../evidence/interaction-reference/identity.json
+          $candidate=Get-Content ../evidence/candidate/identity.json -Raw | ConvertFrom-Json
+          [ordered]@{baseline='d0075f2807fd94000cb51ace647eaf335c71ab37c8302a91f0a52d3380dbe0fa';diagnostic=$referenceHash;release='341486070d2e74cf9a9e5d5fbeffa90c7dd2ec4fd36bc284a8a3878a7a9bcec1';candidate=$candidate.sha256} | ConvertTo-Json | Set-Content ../evidence/input-manifest.json
+          [ordered]@{candidate_source=(git rev-parse HEAD).Trim();reference_tree=$referenceTree;harness_source=(git rev-parse HEAD).Trim();candidate_rebuilt=$true;fixed_pairs=2;planned_rows=16;purpose='Identify actual controller Got/LostFocus and existing Bowser MoveFocus calls in the OS focus discrepancy; not a performance acceptance matrix';limits='No-request means no observed Bowser COM MoveFocus only, not no SetFocus/activation/visibility side effects; coverage begins after per-controller hook registration';stop='One fixed16-row cohort, all failures retained; any identity/isolation loss stops later launches; no repair, retry or added delay'} | ConvertTo-Json | Set-Content ../evidence/replication-provenance.json
       - name: Bounded native actual-module and HTML activation validity pass
         id: validity
         working-directory: candidate
@@ -144,11 +220,11 @@ jobs:
         working-directory: candidate
         run: |
           ./benchmarks/production-baseline.ps1 -BaselineExe ../evidence/frozen/untouched-main.exe -DiagnosticExe ../evidence/interaction-reference/reference.exe -DiagnosticSource (Get-Content ../evidence/interaction-reference/identity.json -Raw | ConvertFrom-Json).source -ReleaseExe ../evidence/frozen/released-v0.0.19.exe -CandidateExe ../evidence/candidate/candidate.exe -CandidateSource (Get-Content ../evidence/candidate/identity.json -Raw | ConvertFrom-Json).source -IncludeSurfaceSmoke -PositiveOnly -Out ../evidence/surfaces -StartupOnly -Pairs 1 -Fixtures light -MeasurementMode timing -MaxInvalidSamples 1
-      - name: Small predeclared16-row passive native focus hypothesis control
+      - name: Small predeclared16-row matched controller focus hypothesis control
         if: ${{ !cancelled() && env.INTERACTION_DIAGNOSTIC_ONLY == 'true' && steps.validity.outcome == 'success' }}
         working-directory: candidate
         run: |
-          ./benchmarks/production-baseline.ps1 -BaselineExe ../evidence/frozen/untouched-main.exe -DiagnosticExe ../evidence/interaction-reference/reference.exe -DiagnosticSource (Get-Content ../evidence/interaction-reference/identity.json -Raw | ConvertFrom-Json).source -ReleaseExe ../evidence/frozen/released-v0.0.19.exe -CandidateExe ../evidence/candidate/candidate.exe -CandidateSource (Get-Content ../evidence/candidate/identity.json -Raw | ConvertFrom-Json).source -IncludeSurfaceSmoke -SurfaceInputMethod uia-value -DiagnosticAutoUpdateOff -ExpectedInputManifest ../evidence/input-manifest.json -DiagnosticInteractionPilot -DiagnosticNativeFocus -PositiveOnly -Out ../evidence/interaction-order -StartupOnly -Pairs 2 -Fixtures light -MeasurementMode timing -MaxInvalidSamples 20
+          ./benchmarks/production-baseline.ps1 -BaselineExe ../evidence/frozen/untouched-main.exe -DiagnosticExe ../evidence/interaction-reference/reference.exe -DiagnosticSource (Get-Content ../evidence/interaction-reference/identity.json -Raw | ConvertFrom-Json).source -ReleaseExe ../evidence/frozen/released-v0.0.19.exe -CandidateExe ../evidence/candidate/candidate.exe -CandidateSource (Get-Content ../evidence/candidate/identity.json -Raw | ConvertFrom-Json).source -IncludeSurfaceSmoke -SurfaceInputMethod uia-value -DiagnosticAutoUpdateOff -ExpectedInputManifest ../evidence/input-manifest.json -DiagnosticInteractionPilot -DiagnosticNativeFocus -DiagnosticControllerFocus -PositiveOnly -Out ../evidence/interaction-order -StartupOnly -Pairs 2 -Fixtures light -MeasurementMode timing -MaxInvalidSamples 20
       - name: Derive descriptive paired statistics without accepting gains automatically
         if: always()
         working-directory: candidate
@@ -170,6 +246,7 @@ jobs:
           path: |
             evidence/frozen/
             evidence/replication-provenance.json
+            evidence/original-control-provenance.json
             evidence/interaction-reference/
             evidence/input-manifest.json
             evidence/native-isolation-blocked.json

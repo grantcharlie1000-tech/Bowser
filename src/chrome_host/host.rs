@@ -17,7 +17,7 @@ use url::Url;
 use webview2_com::{
     AcceleratorKeyPressedEventHandler, CoTaskMemPWSTR, CoreWebView2CustomSchemeRegistration,
     CreateCoreWebView2ControllerCompletedHandler, DownloadStartingEventHandler,
-    FrameCreatedEventHandler, FrameNavigationStartingEventHandler, IFixedEnvironmentOptions4,
+    FrameCreatedEventHandler, FrameNavigationStartingEventHandler, FocusChangedEventHandler, IFixedEnvironmentOptions4,
     NavigationStartingEventHandler, NewWindowRequestedEventHandler,
     PermissionRequestedEventHandler, ProcessFailedEventHandler, WebMessageReceivedEventHandler,
     WebResourceRequestedEventHandler, Microsoft::Web::WebView2::Win32::*,
@@ -443,6 +443,7 @@ struct State {
     _env: ChromeEnv,
     view: View,
     diagnostic_id: u64,
+    focus_trace: Option<crate::performance::FocusTrace>,
     /// The window the controller is a child of; `applied_bounds` are in its client coordinates.
     parent: HWND,
     applied_bounds: RECT,
@@ -486,6 +487,7 @@ impl FailureCounter {
 #[derive(Clone)]
 pub struct ChromeHost {
     state: Rc<RefCell<State>>,
+    focus_trace: Option<crate::performance::FocusTrace>,
 }
 
 /// Parent, geometry and callbacks used to create one HTML chrome controller.
@@ -608,11 +610,20 @@ impl ChromeHost {
     /// Moves keyboard focus into the chrome page (programmatic move).
     pub fn focus(&self) -> Result<()> {
         let controller = {
-            let state = self.state.try_borrow().map_err(|_| fail("Chrome host is busy"))?;
-            if state.closed { return Err(fail("Chrome host is closed")); }
+            let state = self.state.try_borrow().map_err(|_| {
+                if let Some(trace)=&self.focus_trace {trace.record("interaction_chrome_move_busy",None);}
+                fail("Chrome host is busy")
+            })?;
+            if state.closed {
+                if let Some(trace)=&self.focus_trace {trace.record("interaction_chrome_move_closed",None);}
+                return Err(fail("Chrome host is closed"));
+            }
             state.controller.clone()
         };
-        self.observe(unsafe { controller.MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC) })
+        if let Some(trace)=&self.focus_trace {trace.record("interaction_chrome_move_request",None);}
+        let result=unsafe { controller.MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC) };
+        if let Some(trace)=&self.focus_trace {trace.result("interaction_chrome_move_result",&result);}
+        self.observe(result)
     }
 
     /// Starts suspension. Initiation errors are returned; completion failures notify `on_failed`.
@@ -799,13 +810,16 @@ fn configure(
             return Err(error);
         }
     };
+    let focus_trace=setup.env.interaction.as_ref().map(|log|crate::performance::FocusTrace::new(log.clone(),setup.view.diagnostic_name(),0));
     let host = ChromeHost {
+        focus_trace: focus_trace.clone(),
         state: Rc::new(RefCell::new(State {
             controller,
             webview,
             _env: setup.env.clone(),
             view: setup.view,
             diagnostic_id: setup.env.next_diagnostic_id(),
+            focus_trace,
             parent: setup.parent,
             applied_bounds: LOADING_BOUNDS,
             wanted_bounds: setup.bounds,
@@ -910,6 +924,24 @@ fn install_handlers(
     let view = setup.view;
 
     unsafe {
+        // Passive interaction-only hooks. Callbacks hold only immutable log/identity context;
+        // they do not call COM, borrow the host/App, change focus, or alter product handlers.
+        if let Some(trace)=host.focus_trace.clone() {
+            trace.record("interaction_focus_registration_started",None);
+            let controller=host.state.borrow().controller.clone();
+            let got=trace.clone();
+            let result=controller.add_GotFocus(&FocusChangedEventHandler::create(Box::new(move |_,_|{
+                got.record("interaction_controller_got_focus",None);Ok(())
+            })),&mut token);
+            trace.result("interaction_focus_got_registration",&result);
+            if result.is_ok(){let c=controller.clone();let t=token;removers.push(Box::new(move ||{let _=c.remove_GotFocus(t);}));}
+            let lost=trace.clone();
+            let result=controller.add_LostFocus(&FocusChangedEventHandler::create(Box::new(move |_,_|{
+                lost.record("interaction_controller_lost_focus",None);Ok(())
+            })),&mut token);
+            trace.result("interaction_focus_lost_registration",&result);
+            if result.is_ok(){let c=controller.clone();let t=token;removers.push(Box::new(move ||{let _=c.remove_LostFocus(t);}));}
+        }
         // Top-level navigation: only this host's start URL may load.
         webview.add_NavigationStarting(
             &NavigationStartingEventHandler::create(Box::new(move |_sender, args| {
@@ -1036,6 +1068,7 @@ fn install_handlers(
         // messages never reach the parser or the caller.
         let on_command = setup.on_command.clone();
         let weak_bridge = weak.clone();
+        let bridge_focus_trace=host.focus_trace.clone();
         let interaction=setup.env.interaction.clone();
         let diagnostic_enabled=Cell::new(false);
         let rate_drop_logged=Cell::new(false);
@@ -1118,7 +1151,7 @@ fn install_handlers(
                     if interaction.is_some() && view==View::Toolbar && !diagnostic_enabled.replace(true)
                         && let Some(state)=weak_bridge.upgrade()
                     {
-                        let host=ChromeHost{state};
+                        let host=ChromeHost{state,focus_trace:bridge_focus_trace.clone()};
                         let event=if host.post_json(r#"{"v":1,"t":"diagnosticInteraction","enabled":true}"#).is_ok(){"interaction_observer_enable_sent"}else{"interaction_observer_enable_failed"};
                         if let Some(log)=&interaction {let _=log.record(event);}
                     }
@@ -1257,15 +1290,15 @@ fn reveal(weak: &Weak<RefCell<State>>) {
     let Some(shared) = weak.upgrade() else {
         return;
     };
-    let (wanted_bounds, wanted_visible) = {
+    let (wanted_bounds, wanted_visible,focus_trace) = {
         let Ok(mut state) = shared.try_borrow_mut() else { return; };
         if state.closed || state.revealed { return; }
         state.revealed = true;
         state._env.detail("chrome_host_ready", state.view, state.diagnostic_id);
         state._env.snapshot_renderers();
-        (state.wanted_bounds, state.wanted_visible)
+        (state.wanted_bounds, state.wanted_visible,state.focus_trace.clone())
     };
-    let host = ChromeHost { state: shared };
+    let host = ChromeHost { state: shared,focus_trace };
     if wanted_visible {
         let bounds_ok = host.set_bounds(wanted_bounds).is_ok();
         let visible_ok = host.set_visible(true).is_ok();

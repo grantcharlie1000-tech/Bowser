@@ -488,6 +488,8 @@ pub struct EngineEvents {
     pub diagnostic_navigation: Option<DiagnosticNavigationCallback>,
     /// Explicit detail-only native configure spans/counts; absent from ordinary timing arms.
     pub diagnostic_detail: Option<DiagnosticDetailCallback>,
+    /// Interaction-only passive controller focus tracing; absent without the explicit opt-in.
+    pub diagnostic_focus: Option<std::rc::Rc<crate::performance::PerfLog>>,
     /// A download from a normal tab started, moved or changed state (docs/design/downloads.md).
     /// Without this and `download_plan`, every download is cancelled.
     pub download_event: Option<std::rc::Rc<dyn Fn(crate::downloads::DownloadEvent)>>,

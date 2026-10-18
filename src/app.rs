@@ -6376,6 +6376,7 @@ impl App {
                     let _ = log.record_navigation(event, u64::from(tab.0), navigation, success, token);
                 }))
             } else { None },
+            diagnostic_focus: Self::diagnostic_interaction_log(app),
             diagnostic_detail: Self::diagnostic_detail_log(app).map(|log| {
                 Rc::new(move |event: &'static str, tab: TabId, count: u64| {
                     let _ = log.record_detail_count(event, u64::from(tab.0), count);
