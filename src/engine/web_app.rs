@@ -224,7 +224,8 @@ impl WebAppHost {
                 let state = state_rc.borrow();
                 (state.events.clone(), origin.clone(), state.environment.clone())
             };
-            let configured=unsafe { configure_web_app_controller(&env, controller.clone(), parent, bounds, &app_id, origin_for_handlers, events,completion_trace.clone()) };
+            let configuration=WebAppConfiguration{events,trace:completion_trace.clone()};
+            let configured=unsafe { configure_web_app_controller(&env, controller.clone(), parent, bounds, &app_id, origin_for_handlers, configuration) };
             if let Some(trace)=&completion_trace {trace.result("webapp_controller_configure_result",&configured);}
             match configured {
                 Ok(app) => {
@@ -493,6 +494,11 @@ fn close_observed(controller: &ICoreWebView2Controller,trace: Option<&crate::per
     if let Some(trace)=trace {trace.result("webapp_controller_close_result",&result);}
 }
 
+struct WebAppConfiguration {
+    events: WebAppEvents,
+    trace: Option<crate::performance::WebAppTrace>,
+}
+
 unsafe fn configure_web_app_controller(
     _environment: &ICoreWebView2Environment,
     controller: ICoreWebView2Controller,
@@ -500,9 +506,9 @@ unsafe fn configure_web_app_controller(
     bounds: RECT,
     app_id: &str,
     origin: Url,
-    events: WebAppEvents,
-    trace: Option<crate::performance::WebAppTrace>,
+    configuration: WebAppConfiguration,
 ) -> Result<WebAppView> {
+    let WebAppConfiguration{events,trace}=configuration;
     let webview = unsafe { controller.CoreWebView2()? };
     unsafe {
         controller.SetBounds(bounds)?;
