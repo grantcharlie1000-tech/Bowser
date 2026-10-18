@@ -10,6 +10,7 @@ param(
     [ValidateSet('light','demanding','redirect')][string[]]$Fixtures=@('light','demanding','redirect'),
     [ValidateRange(1,20)][int]$MaxInvalidSamples=2,
     [string]$DiagnosticSource='8a60dca2ac7de6d369c9b65584fd621a7013f491',
+    [switch]$IncludeTabFlow,
     [ValidateRange(1,30)][int]$IdleSeconds=3,
     [ValidateRange(100,2000)][int]$SampleMilliseconds=250,
     [string]$BaselineSource='80eabd7ae6d421e61c81985c34023bfc824a2e58'
@@ -29,8 +30,21 @@ $expected='341486070d2e74cf9a9e5d5fbeffa90c7dd2ec4fd36bc284a8a3878a7a9bcec1'
 if ((Get-FileHash $ReleaseExe -Algorithm SHA256).Hash.ToLowerInvariant() -cne $expected) { throw 'Released executable does not match verified v0.0.19 pin' }
 Add-Type -AssemblyName System.Windows.Forms,System.Drawing
 Add-Type @'
-using System; using System.Runtime.InteropServices;
+using System; using System.Text; using System.Runtime.InteropServices;
 public static class BowserProductionNative {
+ public delegate bool EnumProc(IntPtr window,IntPtr param);
+ [DllImport("user32.dll")] public static extern bool EnumWindows(EnumProc callback,IntPtr param);
+ [DllImport("user32.dll",CharSet=CharSet.Unicode)] public static extern int GetClassName(IntPtr h,StringBuilder text,int count);
+ [DllImport("user32.dll",CharSet=CharSet.Unicode)] public static extern int GetWindowText(IntPtr h,StringBuilder text,int count);
+ [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr h,uint message,IntPtr w,IntPtr l);
+ public static IntPtr FindHost(uint pid) {
+  IntPtr found=IntPtr.Zero;
+  EnumWindows((window,param)=>{uint owner;GetWindowThreadProcessId(window,out owner);var cls=new StringBuilder(128);GetClassName(window,cls,cls.Capacity);if(owner==pid && cls.ToString()=="BowserNativeWindow"){found=window;return false;}return true;},IntPtr.Zero);
+  return found;
+ }
+ public static string Title(IntPtr h) {var text=new StringBuilder(2048);GetWindowText(h,text,text.Capacity);return text.ToString();}
+ public static bool Close(uint pid) {var h=FindHost(pid);return h!=IntPtr.Zero && PostMessage(h,0x0010,IntPtr.Zero,IntPtr.Zero);}
+
  [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
  [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
  [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h,out uint pid);
@@ -48,12 +62,19 @@ $invalidSamples=0
 $server=$null; $app=$null; $rows=[Collections.Generic.List[object]]::new()
 function Qpc { [Diagnostics.Stopwatch]::GetTimestamp() }
 function Owned-Keys([string]$keys) {
-    $app.Refresh(); $h=$app.MainWindowHandle; $owner=[uint32]0
-    [void][BowserProductionNative]::GetWindowThreadProcessId($h,[ref]$owner)
-    if ($h -eq [IntPtr]::Zero -or $owner -ne $app.Id -or -not [BowserProductionNative]::IsWindowVisible($h)) { throw 'Owned visible window unavailable; no global input sent' }
-    [void][BowserProductionNative]::SetForegroundWindow($h)
+    # Process.MainWindowHandle can be a cached/transient popup handle. Select the exact native host.
+    $deadline=[DateTime]::UtcNow.AddSeconds(3); $window=[IntPtr]::Zero; $owner=[uint32]0
+    do {
+        $app.Refresh(); if ($app.HasExited) { throw "Owned process exited before input: $keys" }
+        $window=[BowserProductionNative]::FindHost([uint32]$app.Id)
+        if ($window -ne [IntPtr]::Zero -and [BowserProductionNative]::IsWindowVisible($window)) { break }
+        Start-Sleep -Milliseconds 50
+    } while ([DateTime]::UtcNow -lt $deadline)
+    [void][BowserProductionNative]::GetWindowThreadProcessId($window,[ref]$owner)
+    if ($window -eq [IntPtr]::Zero -or $owner -ne $app.Id -or -not [BowserProductionNative]::IsWindowVisible($window)) { throw 'Owned visible BowserNativeWindow unavailable; no global input sent' }
+    [void][BowserProductionNative]::SetForegroundWindow($window)
     Start-Sleep -Milliseconds 80
-    if ([BowserProductionNative]::GetForegroundWindow() -ne $h) { throw 'Foreground unavailable; no global input sent' }
+    if ([BowserProductionNative]::GetForegroundWindow() -ne $window) { throw 'Foreground unavailable; no global input sent' }
     [Windows.Forms.SendKeys]::SendWait($keys)
 }
 function Disk-Bytes([string]$path) { $files=@(Get-ChildItem -LiteralPath $path -File -Recurse -Force -ErrorAction SilentlyContinue); if (-not $files.Count) { return 0 }; return ($files | Measure-Object Length -Sum).Sum }
@@ -89,7 +110,7 @@ try {
         power=(& powercfg /getactivescheme | Out-String).Trim(); resolution=[Windows.Forms.Screen]::PrimaryScreen.Bounds.ToString()
         webview2_runtime=@(Get-ChildItem 'C:/Program Files (x86)/Microsoft/EdgeWebView/Application' -Directory -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name)
         noise=@('Shared hosted runner, not a laptop/battery claim','Fresh profile is not cold OS cache','Updater remains production-enabled, isolated LOCALAPPDATA','Samples are endpoint process-tree observations, not ETW complete','Working-set sums include shared pages','Fixture double-requestAnimationFrame is acknowledged page readiness, not proven display presentation','Title-based tab switch is only a proxy','Sampling overhead separately recorded; measured values are not overhead-subtracted')
-        workload_settings=@{history_records=10000; bookmark_records=818; startup='start_page overridden by ordinary --open-url'; first_run_offer='already answered synthetic profile'; security='unchanged defaults'; ui='HTML-default build, no BOWSER_UI override'}
+        workload_settings=@{history_records=10000; bookmark_records=818; startup='start_page overridden by ordinary --open-url'; first_run_offer='already answered synthetic profile'; security='unchanged defaults'; ui='HTML-default build, no BOWSER_UI override'; tab_flow=[bool]$IncludeTabFlow; resource_tab_count=if($IncludeTabFlow){5}else{1}}
     }
     $metadata | ConvertTo-Json -Depth 10 | Set-Content (Join-Path $Out 'environment.json') -Encoding utf8
     # Five-pair pilot by default. Alternate whole arm order each pair, same session/runtime/fixture seed.
@@ -118,8 +139,9 @@ try {
                             $app.Refresh(); if($app.HasExited){throw "Early exit $($app.ExitCode)"}
                             $t=Qpc; $snapshot=Get-ProcessGroupSnapshot -RootPid $app.Id -Profile $profile
                             $overheads.Add(((Qpc)-$t)*1000.0/[Diagnostics.Stopwatch]::Frequency); $snapshots.Add($snapshot)
-                            if($null -eq $sample.input_ready_qpc -and $app.MainWindowHandle -ne [IntPtr]::Zero){$sample.input_ready_qpc=Qpc}
-                            if($app.MainWindowTitle.Contains("BOWSER_PERF_READY_$token")){$sample.title_ready_qpc=Qpc}
+                            if($null -eq $sample.input_ready_qpc -and [BowserProductionNative]::FindHost([uint32]$app.Id) -ne [IntPtr]::Zero){$sample.input_ready_qpc=Qpc}
+                            $window=[BowserProductionNative]::FindHost([uint32]$app.Id)
+                            if(([BowserProductionNative]::Title($window)).Contains("BOWSER_PERF_READY_$token")){$sample.title_ready_qpc=Qpc}
                             if(Has-Ready $token){
                                 if ($null -eq $sample.ready_qpc) { $sample.ready_qpc=Qpc }
                                 # Native title propagation can lag the page's loopback acknowledgement.
@@ -140,23 +162,25 @@ try {
                             while(-not (Has-Ready $inputToken) -and $wait.Elapsed.TotalSeconds -lt 20){Start-Sleep -Milliseconds 50}
                             $sample.input=[ordered]@{token=$inputToken;start_qpc=$inputStart;end_qpc=(Qpc);ready=(Has-Ready $inputToken);method='owned-window SendKeys; endpoint includes foreground verification overhead'}
                             if(-not $sample.input.ready){throw 'UI-enter navigation failed'}
-                            # One→five tabs, normal Ctrl+T and address input, title-only switch proxy labelled honestly.
+                            # Optional, separate scaling workload. The first focused baseline stays at one tab.
+                            if ($IncludeTabFlow) {
                             for($i=1;$i -le 4;$i++){Owned-Keys '^t';Owned-Keys '^l';Owned-Keys "$base/light?token=$($inputToken)_$i";Owned-Keys '{ENTER}';$w=[Diagnostics.Stopwatch]::StartNew();while(-not (Has-Ready "$($inputToken)_$i") -and $w.Elapsed.TotalSeconds -lt 15){Start-Sleep -Milliseconds 50};if(-not(Has-Ready "$($inputToken)_$i")){throw 'Tab fixture failed'}}
-                            $app.Refresh();$oldTitle=$app.MainWindowTitle;$switch=Qpc;Owned-Keys '^{TAB}';$w=[Diagnostics.Stopwatch]::StartNew();do{$app.Refresh();if($app.MainWindowTitle -ne $oldTitle){break};Start-Sleep -Milliseconds 10}while($w.Elapsed.TotalSeconds -lt 5)
-                            if($app.MainWindowTitle -eq $oldTitle){throw 'Tab switch title proxy timed out'}
+                            $switch=Qpc;Owned-Keys '^{TAB}';$w=[Diagnostics.Stopwatch]::StartNew();do{$title=[BowserProductionNative]::Title([BowserProductionNative]::FindHost([uint32]$app.Id));if($title.Contains("BOWSER_PERF_READY_$($inputToken)_3")){break};Start-Sleep -Milliseconds 10}while($w.Elapsed.TotalSeconds -lt 5)
+                            if(-not $title.Contains("BOWSER_PERF_READY_$($inputToken)_3")){throw 'Expected tab switch title proxy timed out'}
                             $sample.tab_switch_proxy_ms=((Qpc)-$switch)*1000.0/[Diagnostics.Stopwatch]::Frequency
+                            }
                             # Equal-time foreground and minimized idle windows, resource tree sampled throughout.
                             foreach($state in @('idle','minimized')) {
-                                if($state -eq 'minimized'){[void][BowserProductionNative]::ShowWindow($app.MainWindowHandle,6)}
+                                if($state -eq 'minimized'){[void][BowserProductionNative]::ShowWindow([BowserProductionNative]::FindHost([uint32]$app.Id),6)}
                                 $idleRows=[Collections.Generic.List[object]]::new();$w=[Diagnostics.Stopwatch]::StartNew()
                                 while($w.Elapsed.TotalSeconds -lt $IdleSeconds){$idleRows.Add((Get-ProcessGroupSnapshot -RootPid $app.Id -Profile $profile));Start-Sleep -Milliseconds $SampleMilliseconds}
                                 $sample[$state]=@($idleRows.ToArray());foreach($r in $idleRows){$snapshots.Add($r)}
                             }
-                            [void][BowserProductionNative]::ShowWindow($app.MainWindowHandle,9)
+                            [void][BowserProductionNative]::ShowWindow([BowserProductionNative]::FindHost([uint32]$app.Id),9)
                             $sample.valid=$true
                         }
                         $close=Qpc
-                        if(-not $app.CloseMainWindow() -or -not $app.WaitForExit(15000)){throw 'Graceful close not confirmed'}
+                        if(-not [BowserProductionNative]::Close([uint32]$app.Id) -or -not $app.WaitForExit(15000)){throw 'Graceful close not confirmed'}
                         $sample.shutdown_ms=((Qpc)-$close)*1000.0/[Diagnostics.Stopwatch]::Frequency
                         if($app.ExitCode -ne 0){throw "Exit $($app.ExitCode)"}
                         if($arm -eq 'diagnostic_on') {
@@ -171,7 +195,7 @@ try {
                         }
                     } catch { $sample.valid=$false; $sample.error=$_.Exception.Message }
                     finally {
-                        if($app -and -not $app.HasExited){[void]$app.CloseMainWindow();if(-not $app.WaitForExit(5000)){Stop-Process -Id $app.Id -Force -ErrorAction SilentlyContinue;$sample.valid=$false;$sample.error='Forced close required'}}
+                        if($app -and -not $app.HasExited){[void][BowserProductionNative]::Close([uint32]$app.Id);if(-not $app.WaitForExit(5000)){Stop-Process -Id $app.Id -Force -ErrorAction SilentlyContinue;$sample.valid=$false;$sample.error='Forced close required'}}
                         $sample.disk_after=Disk-Bytes $profile
                         $sample.snapshots=@($snapshots.ToArray());$sample.sampling_overhead_ms=Get-ProductionDistribution @($overheads.ToArray())
                         $sample.cpu=Get-ProductionCpuDelta @($snapshots.ToArray())
