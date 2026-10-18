@@ -94,3 +94,14 @@ test('tabs_close_always and tabs_close_left reach the vertical sidebar rows; col
   assert.equal(r.leftFirst, true, 'close-left: it comes before the favicon');
   assert.equal(collapsed.display, 'none', 'a collapsed sidebar keeps hiding it');
 });
+
+test('a narrow inactive strip tab drops its close button, except under tabs_close_always', { skip }, () => {
+  const tab = (active) => `<div class="tab${active ? ' active' : ''}" style="flex:none;width:100px"><span class="ico"></span><span class="title">A tab</span><button class="close bw-icon-btn"></button></div>`;
+  const strip = (id, cls) => `<div id="${id}"><div id="app" class="strip${cls}">${tab(false)}${tab(true)}</div></div>`;
+  const plain = measure(strip('s', ''), `out.inactive = cs('.tab:not(.active) .close').display; out.active = cs('.tab.active .close').display;`);
+  const always = measure(strip('s', ' close-always'), `var c = cs('.tab:not(.active) .close'); out.display = c.display; out.opacity = c.opacity;`);
+  assert.equal(plain.inactive, 'none', 'narrow and inactive: the title keeps the room');
+  assert.notEqual(plain.active, 'none', 'the active tab keeps its close button');
+  assert.notEqual(always.display, 'none', 'close-always keeps it on narrow tabs too');
+  assert.notEqual(always.opacity, '0', 'and drawn');
+});

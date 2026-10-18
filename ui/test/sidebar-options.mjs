@@ -118,10 +118,14 @@ test('tabs_close_left, tabs_close_always and tabs_pinned_separator reach the sid
   assert.equal(root.querySelector('.side-loadbar'), null);
 });
 
-test('sidebar.css shows and moves the close button for those classes', () => {
+test('sidebar.css shows and moves the close button for those classes; narrow strip tabs keep it under close-always', () => {
   const side = css('sidebar.css');
   assert.match(side, /\.side-list\.side-close-always \.side-tab:not\(\.pinned\) \.side-close \{ display: grid; \}/);
   assert.match(side, /\.side-list\.side-close-left \.side-tab:not\(\.pinned\) \.side-close \{ grid-column: 1;/);
   assert.match(side, /\.side-loadbar \{/);
   assert.match(side, /\.side-face > \.side-ring \{/);
+  const strip = css('tabs.css');
+  const narrow = /@container \(max-width: 111\.9px\) \{([^}]*)\}/.exec(strip)?.[1] ?? '';
+  assert.match(narrow, /\.strip:not\(\.close-always\) \.tab:not\(\.active\) \.close/);
+  assert.doesNotMatch(narrow, /(^|,)\s*\.strip \.tab:not\(\.active\) \.close/);
 });
