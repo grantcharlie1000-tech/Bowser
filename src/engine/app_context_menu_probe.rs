@@ -324,7 +324,12 @@ fn sequence(app: &AppRef,root: &Path,page: &url::Url,bowser_id: &str,folder: &Pa
     let command=native_input(app,&primary,source_tab,primary_proof,"Select",&out.join("select"));
     let mut settled=None;
     assert!(pump_until(Duration::from_secs(10),||{let receipt=worker(&popup,"native-command-state");let events=array(&receipt,"events");let done=events.len()==1&&field(&events[0],"complete")==Some(&Value::Bool(true));settled=Some(receipt);done}),"genuine native onClicked/injection receipt absent, no functionality acceptance");
-    let receipt=settled.unwrap();assert_eq!(text(&receipt,"workerInstance"),worker_id);assert_eq!(field(&receipt,"creation"),Some(&creation));
+    let receipt=settled.unwrap();
+    // Retain the actual settled native receipt even when a later grant/effect assertion fails.
+    // This disposable profile contains only the controlled fixture and loopback test documents.
+    std::fs::write(out.join("genuine-worker-receipt.txt"),format!("{receipt:?}\n")).unwrap();
+    println!("APP_CONTEXT_MENU settled_native_worker_receipt={receipt:?}");
+    assert_eq!(text(&receipt,"workerInstance"),worker_id);assert_eq!(field(&receipt,"creation"),Some(&creation));
     let event=&array(&receipt,"events")[0];assert_eq!(text(event,"eventKind"),"contextMenus.onClicked");assert!(field(event,"error").is_none());
     let info=field(event,"info").unwrap();assert_eq!(text(info,"menuItemId"),"bowser-native-context-probe");assert_bool(info,"editable",true);assert_eq!(number(info,"frameId"),0);
     let native_tab=field(event,"nativeTab").unwrap();let actual_tab_id=number(native_tab,"id");assert!(actual_tab_id>=0);
@@ -342,7 +347,6 @@ fn sequence(app: &AppRef,root: &Path,page: &url::Url,bowser_id: &str,folder: &Pa
     for role in ["primary","negative"]{assert_eq!(marker(&negative.view,role),Value::Null);}
     let other=array(event,"otherTabAttempts");assert!(!other.is_empty());for attempt in other {assert_bool(attempt,"allowed",false);assert_bool(attempt,"permissionDenied",true);assert_ne!(number(attempt,"id"),actual_tab_id);}
     assert_eq!(document(&primary.view,page),before_doc);assert_eq!(document(&negative.view,page),negative_doc);current(&primary,primary_proof);authority(root,bowser_id);
-    std::fs::write(out.join("genuine-worker-receipt.txt"),format!("{receipt:?}\n")).unwrap();
     std::fs::write(out.join("app-context-menu-summary.json"),format!(r#"{{"scope":"real-App-run-BowserNativeWindow-warm-worker-single-consented-fixture","cancel":"observed-no-event-no-grant-2000ms-window","extension_selection":"observed-real-native-onClicked-and-exact-source-COM-marker","selected_engine_command":{command},"copy_paste":"not-run","host_actions":"not-run","no_activeTab_cross_origin_matrix":"not-run","multi_profile":"not-run","worker_restart":"not-run","in_modal_navigation_close_shutdown_races":"not-run","store_package_compatibility":"not-claimed"}}"#)).unwrap();
     println!("APP_CONTEXT_MENU real_App_run=true actual_BowserNativeWindow=true cancellation_no_grant=true real_current_engine_selection=true real_worker_native_tab_and_exact_COM_marker=true scope=warm-worker-single-consented-fixture remaining_Copy_Paste_host_permissions_profiles_races=NOT_RUN evidence={}",out.display());
 }

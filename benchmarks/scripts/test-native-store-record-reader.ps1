@@ -10,16 +10,31 @@ $file=Join-Path $root 'extensions.txt';$temp=Join-Path $root 'next.txt'
 $utf8=[Text.UTF8Encoding]::new($false,$true)
 $old="ext-0000000000000001`t1`tSynthetic extension`t1.0`n"
 $new="ext-0000000000000001`t0`tSynthetic extension`t1.0`n"
-$report=[ordered]@{scope='Windows read-share contract on generated disposable files';status='failed';powershell_version=$PSVersionTable.PSVersion.ToString();old_share_blocks_replace=$false;delete_share_allows_replace=$false;open_reader_retains_old_generation=$false;new_reader_observes_new_generation=$false;oversize_refused=$false;invalid_utf8_refused=$false}
+$report=[ordered]@{scope='Windows read-share contract on generated disposable files';status='failed';powershell_version=$PSVersionTable.PSVersion.ToString();old_share_blocks_replace=$false;control_error_code=$null;control_hresult=$null;control_exception_type=$null;control_error_kind=$null;released_control_allows_replace=$false;delete_share_allows_replace=$false;open_reader_retains_old_generation=$false;new_reader_observes_new_generation=$false;oversize_refused=$false;invalid_utf8_refused=$false}
 try {
  [IO.File]::WriteAllText($file,$old,$utf8);[IO.File]::WriteAllText($temp,$new,$utf8)
  # This matches the documented Get-Content provider's ReadWrite sharing, not its full implementation.
  $control=[IO.FileStream]::new($file,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::ReadWrite)
  try {
   try {[IO.File]::Move($temp,$file,$true);throw 'ReadWrite-only control unexpectedly allowed replacement.'}
-  catch {if(($_.Exception.GetBaseException().HResult -band 0xffff) -ne 32){throw};$report.old_share_blocks_replace=$true}
+  catch {
+   $failure=$_.Exception.GetBaseException();$code=$failure.HResult -band 0xffff
+   $report.control_error_code=$code;$report.control_hresult=$failure.HResult
+   $typeName=$failure.GetType().FullName
+   if(!$typeName -or $typeName.Length -gt 128){throw 'Control exception type was unavailable or over bound.'}
+   $report.control_exception_type=$typeName
+   $report.control_error_kind=if($failure -is [UnauthorizedAccessException]){'unauthorized-access'}elseif($failure -is [IO.IOException]){'io'}else{'other'}
+   # File.Move documents exclusive-destination failure as UnauthorizedAccessException too.
+   if(!(($code -eq 32 -and $failure -is [IO.IOException]) -or ($code -eq 5 -and $failure -is [UnauthorizedAccessException]))){throw}
+   $report.old_share_blocks_replace=$true
+  }
  } finally {$control.Dispose()}
  if((Read-BowserRecordSnapshot $file) -cne $old -or ![IO.File]::Exists($temp)){throw 'Failed replacement changed the control files.'}
+ # The identical operation must succeed after releasing only the known blocking handle.
+ [IO.File]::Move($temp,$file,$true)
+ if((Read-BowserRecordSnapshot $file) -cne $new -or [IO.File]::Exists($temp)){throw 'Released control did not permit the same replacement.'}
+ $report.released_control_allows_replace=$true
+ [IO.File]::WriteAllText($file,$old,$utf8);[IO.File]::WriteAllText($temp,$new,$utf8)
  $reader=Open-BowserRecordSnapshot $file
  try {
   [IO.File]::Move($temp,$file,$true);$report.delete_share_allows_replace=$true
@@ -42,4 +57,4 @@ try {
  [IO.File]::WriteAllText($Out,($report|ConvertTo-Json -Depth 4),$utf8)
  [IO.Directory]::Delete($root,$true)
 }
-Write-Output 'RECORD_READER_CONTRACT readwrite_control_blocked=true delete_share_replace=true old_and_new_generations_checked=true bound_refused=true invalid_utf8_refused=true'
+Write-Output 'RECORD_READER_CONTRACT readwrite_control_blocked=true released_control_replace=true delete_share_replace=true old_and_new_generations_checked=true bound_refused=true invalid_utf8_refused=true'
