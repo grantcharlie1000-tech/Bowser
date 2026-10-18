@@ -872,8 +872,6 @@ fn probe_real_stylus_appearance(profile: &Path, id: &str, folder: &Path, session
     let expected_url = Url::parse(&expected_url).unwrap();
     assert!(extensions::is_page_url(&expected_url));
     assert_eq!(expected_url.host_str(), session.engine.probe_loaded_extension_id(id).as_deref());
-    // Observe the REAL right-click without changing default behavior or invoking its handler.
-    session.page_script("(()=>{document.addEventListener('contextmenu',e=>{const link=e.target.closest('a');queueMicrotask(()=>document.documentElement.setAttribute('data-bowser-real-contextmenu',JSON.stringify({defaultPrevented:e.defaultPrevented,link:link?.href||null,target:e.target.id})))},true);return true})()");
     let bounds = session.page_script("(()=>{const r=document.querySelector('#popup-manage-button').getBoundingClientRect();return [r.left,r.top,r.width,r.height,devicePixelRatio,innerWidth,innerHeight]})()").unwrap();
     let Some(extensions::json::Value::Array(bounds)) = extensions::json::parse(&bounds) else { panic!("actual link bounds were not an array"); };
     let bounds: Vec<f64> = bounds.into_iter().map(|value| match value {
@@ -893,6 +891,7 @@ fn probe_real_stylus_appearance(profile: &Path, id: &str, folder: &Path, session
         .arg("-OwnerPid").arg(std::process::id().to_string()).arg("-Out").arg(&output)
         .arg("-ClientX").arg(client_x.to_string()).arg("-ClientY").arg(client_y.to_string())
         .arg("-ViewportWidth").arg(viewport_width.to_string()).arg("-ViewportHeight").arg(viewport_height.to_string())
+        .arg("-Mode").arg("PageLinks").arg("-ExpectedLinkLabel").arg(expected_url.path().rsplit('/').next().unwrap())
         .stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).spawn().unwrap();
     if !pump_until(Duration::from_secs(75), || automation.try_wait().is_ok_and(|status| status.is_some())) {
         let _ = automation.kill();
@@ -902,13 +901,12 @@ fn probe_real_stylus_appearance(profile: &Path, id: &str, folder: &Path, session
     let automation = automation.wait_with_output().unwrap();
     pump_until(Duration::from_secs(2), || false);
     println!("STYLUS_NATIVE_LINK exit={:?} stdout={} stderr={} actual_page={:?}", automation.status.code(), String::from_utf8_lossy(&automation.stdout), String::from_utf8_lossy(&automation.stderr), session.page_script("({url:location.href,title:document.title,importButton:!!document.querySelector('#import')})"));
-    println!("STYLUS_NATIVE_LINK actual_dom_contextmenu={:?}", session.page_script("document.documentElement.getAttribute('data-bowser-real-contextmenu')"));
-    assert!(automation.status.success(), "real owned native context-menu helper failed; no scripted fallback is accepted as menu evidence");
+    assert!(automation.status.success(), "real owned Page links helper failed; no scripted fallback is accepted as menu evidence");
     assert!(pump_until(Duration::from_secs(30), || {
         session.page_script("location.href").as_deref() == Some(expected.as_str())
             && session.page_script("!!document.querySelector('#import')").as_deref() == Some("true")
-    }), "native menu selection did not reach the exact real signed manager href and manager DOM");
-    println!("STYLUS_NATIVE_LINK verdict=real-owned-menu-exact-manager-destination-and-dom-proven expected={expected_url}");
+    }), "native Page links selection did not reach the exact real signed manager href and manager DOM");
+    println!("STYLUS_NATIVE_LINK verdict=real-owned-page-links-command-exact-manager-destination-and-dom-proven expected={expected_url}");
     // Separate each comparison from the successful native-menu document. Neither scripted route
     // is permitted to rescue the mandatory real-input assertion above.
     session.open_page(id, folder, extensions::PageKind::Popup).unwrap();

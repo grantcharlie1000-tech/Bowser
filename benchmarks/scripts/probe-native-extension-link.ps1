@@ -1,4 +1,4 @@
-# Real native extension-page context menu. Disposable Windows diagnostic, never a host bridge.
+# Real native extension-page command/menu. Disposable Windows diagnostic, never a host bridge.
 [CmdletBinding()]
 param(
  [Parameter(Mandatory)][uint32]$OwnerPid,
@@ -6,7 +6,9 @@ param(
  [Parameter(Mandatory)][int]$ClientX,
  [Parameter(Mandatory)][int]$ClientY,
  [Parameter(Mandatory)][int]$ViewportWidth,
- [Parameter(Mandatory)][int]$ViewportHeight
+ [Parameter(Mandatory)][int]$ViewportHeight,
+ [ValidateSet('ContextMenu','PageLinks')][string]$Mode='PageLinks',
+ [string]$ExpectedLinkLabel
 )
 $ErrorActionPreference='Stop'; Set-StrictMode -Version Latest
 Add-Type -AssemblyName UIAutomationClient,UIAutomationTypes,System.Drawing
@@ -57,6 +59,7 @@ foreach($item in $window.FindAll([Windows.Automation.TreeScope]::Descendants,[Wi
  try {$names+=@{name=$item.Current.Name;type=$item.Current.ControlType.ProgrammaticName;automation_id=$item.Current.AutomationId}}catch{}
 }
 $names|ConvertTo-Json|Set-Content (Join-Path $Out 'link-accessibility.json') -Encoding utf8
+if($Mode -eq 'ContextMenu') {
 $client=[BowserExtensionLink+RECT]::new()
 if(![BowserExtensionLink]::GetClientRect($h,[ref]$client)){throw 'Exact owned client bounds unavailable; no input sent.'}
 $width=$client.Right-$client.Left;$height=$client.Bottom-$client.Top
@@ -67,22 +70,38 @@ if(![BowserExtensionLink]::ClientToScreen($h,[ref]$point)){throw 'Exact owned cl
 if([BowserExtensionLink]::GetForegroundWindow() -ne $h){throw 'Foreground changed before input; no input sent.'}
 [void][BowserExtensionLink]::SetCursorPos($point.X,$point.Y)
 [BowserExtensionLink]::mouse_event(0x0008,0,0,0,[UIntPtr]::Zero);[BowserExtensionLink]::mouse_event(0x0010,0,0,0,[UIntPtr]::Zero)
+}else{
+ if(!$ExpectedLinkLabel){throw 'Actual observed same-extension link label was not supplied; no command invoked.'}
+ $command=$null
+ $condition=[Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::NameProperty,'Page links…')
+ foreach($item in $window.FindAll([Windows.Automation.TreeScope]::Descendants,$condition)) {
+  try {if($item.Current.ProcessId -eq $OwnerPid -and $item.Current.FrameworkId -eq 'Win32' -and $item.Current.ControlType -eq [Windows.Automation.ControlType]::MenuItem){$command=$item;break}}catch{}
+ }
+ if(!$command){throw 'Exact owned Win32 Page links command was not exposed; no page fallback used.'}
+ $invoke=$null;if(!$command.TryGetCurrentPattern([Windows.Automation.InvokePattern]::Pattern,[ref]$invoke)){throw 'Native Page links command has no InvokePattern.'}
+ $invoke.Invoke()
+}
 # The menu can live in the embedded browser process. Restrict selection to the exact owner's
 # descendant process tree and the Bowser-owned command name/type, not a similarly named website.
 $processes=Get-CimInstance Win32_Process;$owned=[Collections.Generic.HashSet[uint32]]::new();[void]$owned.Add($OwnerPid)
 do { $changed=$false;foreach($p in $processes){if($owned.Contains([uint32]$p.ParentProcessId) -and $owned.Add([uint32]$p.ProcessId)){$changed=$true}} }while($changed)
 $menu=$null;$deadline=[DateTime]::UtcNow.AddSeconds(10)
 do {
- $condition=[Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::NameProperty,'Open link in this extension window')
- foreach($item in $root.FindAll([Windows.Automation.TreeScope]::Descendants,$condition)) {
-  try {if($owned.Contains([uint32]$item.Current.ProcessId) -and $item.Current.ControlType -eq [Windows.Automation.ControlType]::MenuItem -and $item.Current.IsEnabled){$menu=$item;break}}catch{}
+ foreach($item in $root.FindAll([Windows.Automation.TreeScope]::Descendants,[Windows.Automation.Condition]::TrueCondition)) {
+  try {
+   $name=$item.Current.Name
+   $matchName=if($Mode -eq 'ContextMenu'){$name -eq 'Open link in this extension window'}else{$name -eq $ExpectedLinkLabel}
+   $matchOwner=if($Mode -eq 'PageLinks'){$item.Current.ProcessId -eq $OwnerPid}else{$owned.Contains([uint32]$item.Current.ProcessId)}
+   if($matchName -and $matchOwner -and $item.Current.FrameworkId -eq 'Win32' -and $item.Current.ControlType -eq [Windows.Automation.ControlType]::MenuItem -and $item.Current.IsEnabled){$menu=$item;break}
+  }catch{}
  }
  if(!$menu){Start-Sleep -Milliseconds 100}
 }while(!$menu -and [DateTime]::UtcNow -lt $deadline)
 if(!$menu){Save-OwnedWindow '02-native-menu-not-found.png';throw 'Owned native same-extension menu item did not appear.'}
 $invoke=$null;if(!$menu.TryGetCurrentPattern([Windows.Automation.InvokePattern]::Pattern,[ref]$invoke)){throw 'Native menu item has no InvokePattern.'}
+$selectedName=$menu.Current.Name
 $invoke.Invoke()
 Start-Sleep -Seconds 2
 Save-OwnedWindow '02-after-native-link-selection.png'
-@{owner_pid=$OwnerPid;owner_window=$h.ToInt64();link='actual signed #popup-manage-button, COM-observed client bounds';client_x=$ClientX;client_y=$ClientY;menu='Open link in this extension window';route='real-native-right-click-and-owned-menu-invoke'}|ConvertTo-Json|Set-Content (Join-Path $Out 'native-link-report.json') -Encoding utf8
-Write-Output 'NATIVE_EXTENSION_LINK actual_signed_link_com_bounds=true verified_owned_foreground=true real_right_click=true owned_native_menu_invoked=true'
+@{owner_pid=$OwnerPid;owner_window=$h.ToInt64();link='actual signed #popup-manage-button, COM-observed client bounds';client_x=$ClientX;client_y=$ClientY;menu=$selectedName;route=if($Mode -eq 'PageLinks'){'real-owned-native-page-links-command-and-menu'}else{'real-native-right-click-and-owned-menu-invoke'}}|ConvertTo-Json|Set-Content (Join-Path $Out 'native-link-report.json') -Encoding utf8
+Write-Output "NATIVE_EXTENSION_LINK mode=$Mode verified_owned_foreground=true actual_native_command_or_right_click=true owned_native_menu_invoked=true"

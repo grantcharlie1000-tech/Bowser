@@ -146,6 +146,12 @@ jobs:
           $test = Get-ChildItem target/debug/deps/bowser-*.exe | Sort-Object LastWriteTime -Descending | Select-Object -First 1
           & $test.FullName update_model_ --nocapture --test-threads=1 2>&1 | Tee-Object store-update-model-probe.log
           if ($LASTEXITCODE -ne 0) { throw 'Test-only update state contract failed.' }
+      - name: Enforce bounded native extension page link parsing and navigation guards
+        if: ${{ !cancelled() && steps.native_build.outcome == 'success' }}
+        run: |
+          $test = Get-ChildItem target/debug/deps/bowser-*.exe | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          & $test.FullName native_page_links_ --nocapture --test-threads=1 2>&1 | Tee-Object store-page-links-controls.log
+          if ($LASTEXITCODE -ne 0) { throw 'Native page-link parsing/navigation controls failed.' }
       - name: Probe local fixture restart, worker messaging, and hosted-context boundaries
         if: ${{ !cancelled() && steps.native_build.outcome == 'success' }}
         run: |

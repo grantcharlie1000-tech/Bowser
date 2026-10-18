@@ -1,6 +1,7 @@
 pub mod download;
 pub mod web_app;
 mod extension_page;
+mod extension_links;
 mod webview2;
 #[cfg(test)]
 mod extension_probe_live;
