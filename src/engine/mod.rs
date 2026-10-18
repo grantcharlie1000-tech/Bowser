@@ -2,6 +2,7 @@ pub mod download;
 pub mod web_app;
 mod extension_page;
 mod extension_links;
+mod document_gate;
 mod webview2;
 #[cfg(test)]
 mod extension_probe_live;
@@ -87,7 +88,15 @@ impl BrowsingDataRange {
     }
 }
 
+pub type NativeDocumentQuery = Box<dyn FnOnce() -> Option<url::Url>>;
+
 pub trait EngineAdapter {
+    /// Native controller evidence only; unsupported engines fail closed, never a requested URL.
+    fn successful_document_query(&self, _tab: crate::tabs::TabId) -> Option<NativeDocumentQuery> { None }
+    fn successful_document_url(&self, tab: crate::tabs::TabId) -> Option<url::Url> {
+        let query = self.successful_document_query(tab)?;
+        query()
+    }
     fn navigate(&mut self, url: &url::Url) -> windows::core::Result<()>;
     fn navigate_tab(
         &mut self,

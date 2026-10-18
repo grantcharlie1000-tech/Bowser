@@ -182,6 +182,19 @@ pub fn resolved_name(folder: &Path, manifest: &Manifest) -> Result<String, Strin
 mod tests {
     use super::*;
     #[test]
+    fn original_store_discovery_is_separate_from_trusted_review() {
+        assert_eq!(BROWSE_URL, "https://chromewebstore.google.com/category/extensions");
+        let source = include_str!("win32/store.rs");
+        let discovery = source.split("pub(crate) fn open(").nth(1).unwrap().split("fn open_review(").next().unwrap();
+        assert!(discovery.contains("App::navigate_current(app, &url)"));
+        assert!(!discovery.contains("open_internal_page"));
+        assert!(source.contains("open_review(owner, app);"));
+        let app = include_str!("app.rs");
+        let restored = app.split("fn navigate_internal(").nth(1).unwrap();
+        assert!(restored.contains("Self::navigate_tab(app, tab_id, &destination)"));
+    }
+
+    #[test]
     fn catalogue_has_real_distinct_validated_sources() {
         let mut ids = std::collections::HashSet::new();
         for item in CATALOGUE {

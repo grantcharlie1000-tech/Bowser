@@ -1,11 +1,17 @@
 # Bowser Store catalogue and evidence
 
-`bowser://store` is a Bowser-owned Discover / Categories / Installed page, not a replacement
-rendering of Google's website. The four entries in `src/store.rs` are manually curated links to
-real public listings. They have no invented ratings, review counts, installation counts, search
-API, or guarantee of Chrome compatibility. “Browse Chrome Web Store” opens Google's ordinary
-unprivileged website. A native Bowser Add control is offered only for a validated current
-top-level listing and revalidates the current tab at click time. Website script cannot install.
+Discovery now uses the original Chrome Web Store in an ordinary, unprivileged top-level browsing
+view. `bowser://store` and the Extensions settings action open Google's real catalogue/search;
+Bowser does not clone it, frame it, scrape its artwork or give it a host bridge. Actual availability
+in WebView2 remains a Windows acceptance gate, not an assumption.
+
+Bowser's own **Add to Bowser** control is outside the website and is offered only for a validated,
+committed current top-level listing. It revalidates the active nonprivate, nonloading tab at click
+time. It opens Bowser's trusted resolved-package/permission review; website script cannot install.
+Installed management remains in Extensions settings. The older native catalogue code is retained
+only as part of the internal review surface during this transition, not the default discovery UI.
+The four curated entries in `src/store.rs` remain provenance/test metadata, without invented ratings,
+review counts, installation counts, search API or guarantee of Chrome compatibility.
 
 ## Provenance and refresh
 

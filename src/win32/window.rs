@@ -8298,7 +8298,9 @@ const STORE_BUTTON_SLOT: i32 = 132;
 fn current_store_listing(app: &AppRef) -> Option<String> {
     let tab = App::active_tab_id(app);
     if App::active_tab_private(app) || App::tab_loading(app, tab) { return None; }
-    let url = App::tab_committed_url(app, tab)?;
+    let url = App::successful_document_url(app, tab)?;
+    // Source may reenter navigation, selection or window-close callbacks. Fence host selection too.
+    if App::active_tab_id(app) != tab || App::active_tab_private(app) || App::tab_loading(app, tab) { return None; }
     crate::crx_fetch::parse_store_url(url.as_str()).ok()
 }
 

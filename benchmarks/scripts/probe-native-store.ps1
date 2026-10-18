@@ -13,7 +13,7 @@ New-Item -ItemType Directory -Force $run | Out-Null
 $portFile=Join-Path $run 'port.txt';$readyFile=Join-Path $run 'ready.txt'
 @'
 const http=require('node:http'),fs=require('node:fs');const[port,ready]=process.argv.slice(2);
-const server=http.createServer((req,res)=>{const u=new URL(req.url,'http://127.0.0.1');res.setHeader('Cache-Control','no-store');if(u.pathname==='/ready'){fs.writeFileSync(ready,u.searchParams.get('token')||'');res.writeHead(204);res.end();return}res.setHeader('Content-Type','text/html');res.setHeader('Content-Security-Policy',"default-src 'none';script-src 'unsafe-inline';connect-src 'self'");res.end(`<!doctype html><title>Disposable Bowser Store control</title><h1>Disposable native browsing control</h1><script>addEventListener('load',()=>fetch('/ready?token='+encodeURIComponent(new URL(location.href).searchParams.get('token')),{cache:'no-store'}))</script>`)});server.listen(0,'127.0.0.1',()=>fs.writeFileSync(port,String(server.address().port)));
+const server=http.createServer((req,res)=>{const u=new URL(req.url,'http://127.0.0.1');res.setHeader('Cache-Control','no-store');if(u.pathname==='/ready'){fs.writeFileSync(ready,u.searchParams.get('token')||'');res.writeHead(204);res.end();return}res.setHeader('Content-Type','text/html');res.setHeader('Content-Security-Policy',"default-src 'none';script-src 'unsafe-inline';connect-src 'self'");res.end(`<!doctype html><title>Bowser toolbar</title><div role="document" aria-label="Bowser toolbar"><button>Add to Bowser</button><input aria-label="Address and search bar"><input aria-label="Search extensions and themes"><a href="#">Stylus</a></div><h1>Disposable native browsing control</h1><script>addEventListener('load',()=>fetch('/ready?token='+encodeURIComponent(new URL(location.href).searchParams.get('token')),{cache:'no-store'}))</script>`)});server.listen(0,'127.0.0.1',()=>fs.writeFileSync(port,String(server.address().port)));
 '@|Set-Content (Join-Path $run 'server.cjs') -Encoding utf8
 $initialUrl=$null;$server=$null;$readyToken=$null
 Add-Type -AssemblyName System.Windows.Forms, System.Drawing, UIAutomationClient, UIAutomationTypes
@@ -27,6 +27,7 @@ public static class BowserStoreSmoke {
  [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h,out RECT r);
  [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h,out uint p);
  [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
+ [DllImport("user32.dll")] public static extern short GetAsyncKeyState(int key);
  [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
  [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
  [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h,int command);
@@ -36,7 +37,7 @@ public static class BowserStoreSmoke {
 '@
 $app = $null
 $saved = @{}
-$report = [ordered]@{ scope='Native Store rendering smoke, not installation or functional compatibility'; status='failed'; commit=(& git -C $root rev-parse HEAD).Trim(); screenshots=@(); error=$null }
+$report = [ordered]@{ scope='Actual original Chrome Web Store browsing plus native Bowser consent/management; not complete extension functionality'; status='failed'; commit=(& git -C $root rev-parse HEAD).Trim(); screenshots=@(); error=$null }
 function Assert-Owned {
  $pidOwner=[uint32]0
  [void][BowserStoreSmoke]::GetWindowThreadProcessId($script:window,[ref]$pidOwner)
@@ -83,17 +84,120 @@ function Capture([string]$Name,[IntPtr]$Target=[IntPtr]::Zero,[switch]$Extension
   $report.screenshots+=@{file="$Name.png";sha256=(Get-FileHash $path -Algorithm SHA256).Hash.ToLowerInvariant();sampled_colors=$colors.Count}
  } finally { $bitmap.Dispose() }
 }
-function Find-Control([string]$Name, [switch]$Prefix) {
- Assert-Owned
- $owned=[Windows.Automation.AutomationElement]::FromHandle($script:window)
- $all=$owned.FindAll([Windows.Automation.TreeScope]::Descendants,[Windows.Automation.Condition]::TrueCondition)
- foreach($item in $all) {
-  try { if(!$item.Current.IsEnabled -or $item.Current.ControlType -eq [Windows.Automation.ControlType]::Text){continue}; $actual=$item.Current.Name; if(($Prefix -and $actual.StartsWith($Name,[StringComparison]::Ordinal)) -or (!$Prefix -and $actual -eq $Name)){
-    if($item.Current.IsOffscreen){$scroll=$null;if($item.TryGetCurrentPattern([Windows.Automation.ScrollItemPattern]::Pattern,[ref]$scroll)){$scroll.ScrollIntoView()}else{$item.SetFocus()};Start-Sleep -Milliseconds 300}
-    return $item
-   } } catch {}
+function Same-Uia($A,$B) { return $A -and $B -and (($A.GetRuntimeId() -join ',') -ceq ($B.GetRuntimeId() -join ',')) }
+function Document-Source($Document) {
+ # Chromium's native provider exposes tree-data URL for document roles, not an aria/title value.
+ $values=@();$pattern=$null
+ if($Document.TryGetCurrentPattern([Windows.Automation.ValuePattern]::Pattern,[ref]$pattern)){$values+=([Windows.Automation.ValuePattern]$pattern).Current.Value}
+ $pattern=$null
+ if($Document.TryGetCurrentPattern([Windows.Automation.LegacyIAccessiblePattern]::Pattern,[ref]$pattern)){$values+=([Windows.Automation.LegacyIAccessiblePattern]$pattern).Current.Value}
+ $values=@($values|Where-Object {$_}|Select-Object -Unique)
+ if($values.Count -ne 1 -or $values[0].Length -gt 4096){return $null}
+ return [string]$values[0]
+}
+function Source-Matches([string]$Kind,[string]$Source) {
+ if($Kind -eq 'toolbar'){return $Source -ceq 'bowser-ui://app/index.html?view=toolbar'}
+ if($Kind -eq 'settings'){return $Source -ceq 'bowser-ui://app/index.html?view=settings'}
+ $uri=$null
+ if($Kind -eq 'loopback'){return [Uri]::TryCreate($Source,[UriKind]::Absolute,[ref]$uri) -and $uri.Scheme -ceq 'http' -and $uri.Host -ceq '127.0.0.1' -and !$uri.UserInfo}
+ return $Kind -eq 'cws' -and [Uri]::TryCreate($Source,[UriKind]::Absolute,[ref]$uri) -and $uri.Scheme -ceq 'https' -and $uri.Host -ceq 'chromewebstore.google.com' -and !$uri.UserInfo -and $uri.IsDefaultPort
+}
+function Outermost-OwnedDocument($Document,$Owned) {
+ $node=$Document
+ for($depth=0;$depth -lt 64;$depth++){
+  $node=[Windows.Automation.TreeWalker]::RawViewWalker.GetParent($node)
+  if(!$node){return $false}
+  if(Same-Uia $node $Owned){return $true}
+  if($node.Current.ControlType -eq [Windows.Automation.ControlType]::Document){return $false}
  }
+ return $false
+}
+function Find-Document([string]$Kind) {
+ Assert-Owned;$owned=[Windows.Automation.AutomationElement]::FromHandle($script:window)
+ $documents=$owned.FindAll([Windows.Automation.TreeScope]::Descendants,[Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::ControlTypeProperty,[Windows.Automation.ControlType]::Document))
+ if($documents.Count -gt 64){throw 'Native document inventory exceeded the bounded probe.'}
+ $matches=@()
+ foreach($document in $documents){
+  if(!(Outermost-OwnedDocument $document $owned)){continue}
+  $source=Document-Source $document
+  if($source -and (Source-Matches $Kind $source)){$matches+=@{document=$document;source=$source;kind=$Kind}}
+ }
+ if($matches.Count -gt 1){throw 'Native document source attribution is ambiguous; no input sent.'}
+ if($matches.Count -eq 1){return $matches[0]}
  return $null
+}
+function In-Document($Control,$Document) {
+ $node=$Control
+ for($depth=0;$depth -lt 64;$depth++){
+  if(Same-Uia $node $Document){return $true}
+  $node=[Windows.Automation.TreeWalker]::RawViewWalker.GetParent($node)
+  if(!$node){return $false}
+  if($node.Current.ControlType -eq [Windows.Automation.ControlType]::Document){return (Same-Uia $node $Document)}
+ }
+ return $false
+}
+function Find-BoundControl([string]$Kind,[string]$Name,[switch]$Prefix) {
+ $document=Find-Document $Kind;if(!$document){return $null}
+ $all=$document.document.FindAll([Windows.Automation.TreeScope]::Descendants,[Windows.Automation.Condition]::TrueCondition)
+ if($all.Count -gt 10000){throw 'Attributed document control inventory exceeded the bounded probe.'}
+ $matches=@()
+ foreach($item in $all){
+  if(!$item.Current.IsEnabled -or $item.Current.ControlType -eq [Windows.Automation.ControlType]::Text -or !(In-Document $item $document.document)){continue}
+  $actual=$item.Current.Name
+  if(($Prefix -and $actual.StartsWith($Name,[StringComparison]::Ordinal)) -or (!$Prefix -and $actual -ceq $Name)){$matches+=@{control=$item;document=$document.document;source=$document.source;kind=$Kind;name=$actual}}
+ }
+ if($matches.Count -gt 1){throw 'Attributed native control is ambiguous; no input sent.'}
+ if($matches.Count -eq 1){return $matches[0]}
+ return $null
+}
+function Wait-BoundControl([string]$Kind,[string]$Name) {
+ $deadline=[DateTime]::UtcNow.AddSeconds(60)
+ do{$bound=Find-BoundControl $Kind $Name;if($bound){return $bound};Start-Sleep -Milliseconds 200}while([DateTime]::UtcNow -lt $deadline)
+ throw 'Required native document source/control was not exposed; no title/name fallback.'
+}
+function Assert-BoundControl($Bound,[switch]$Focused) {
+ Assert-Owned
+ $fresh=Find-BoundControl $Bound.kind $Bound.name
+ if(!$fresh -or !(Same-Uia $fresh.document $Bound.document) -or !(Same-Uia $fresh.control $Bound.control) -or $fresh.source -cne $Bound.source){throw 'Native document/control source changed; no input sent.'}
+ if([BowserStoreSmoke]::GetForegroundWindow() -ne $script:window){throw 'Exact native foreground lost; no input sent.'}
+ $bounds=$fresh.control.Current.BoundingRectangle
+ if($fresh.control.Current.IsOffscreen -or $bounds.Width -le 0 -or $bounds.Height -le 0){throw 'Attributed native control is not visible; no input sent.'}
+ if($Focused -and (!$fresh.control.Current.HasKeyboardFocus -or !(Same-Uia $fresh.control ([Windows.Automation.AutomationElement]::FocusedElement)))){throw 'Exact attributed field is not focused; no input sent.'}
+}
+function Field-Keys($Bound,[string]$Value) {
+ Assert-BoundControl $Bound -Focused
+ foreach($key in @(16,17,18,91,92)){if([BowserStoreSmoke]::GetAsyncKeyState($key) -lt 0){throw 'Unexpected held input modifier; no input repair.'}}
+ [Windows.Forms.SendKeys]::SendWait($Value)
+}
+function Invoke-BoundControl($Bound) {
+ Assert-BoundControl $Bound
+ $pattern=$null
+ if(!$Bound.control.TryGetCurrentPattern([Windows.Automation.InvokePattern]::Pattern,[ref]$pattern)){throw 'Attributed native control has no InvokePattern; no fallback.'}
+ $pattern.Invoke();Start-Sleep -Milliseconds 400
+}
+function Wait-CwsPath([string]$Path) {
+ $deadline=[DateTime]::UtcNow.AddSeconds(20)
+ do{$document=Find-Document 'cws';if($document -and ([Uri]$document.source).AbsolutePath -ceq $Path){return $document};Start-Sleep -Milliseconds 100}while([DateTime]::UtcNow -lt $deadline)
+ throw 'Actual native Chrome Web Store document did not transition to the required route.'
+}
+function Cws-ListingId {
+ $document=Find-Document 'cws';if(!$document){return $null}
+ $uri=[Uri]$document.source
+ if($uri.AbsolutePath -cmatch '^/detail/(?:[^/]+/)?([a-p]{32})/?$'){return $Matches[1]}
+ return $null
+}
+function Find-Control([string]$Name, [switch]$Prefix) {
+ $bound=Find-BoundControl 'settings' $Name -Prefix:$Prefix
+ if(!$bound){return $null}
+ if($bound.control.Current.IsOffscreen){
+  $scroll=$null
+  if($bound.control.TryGetCurrentPattern([Windows.Automation.ScrollItemPattern]::Pattern,[ref]$scroll)){$scroll.ScrollIntoView()}else{$bound.control.SetFocus()}
+  Start-Sleep -Milliseconds 300
+  $fresh=Find-BoundControl 'settings' $bound.name
+  if(!$fresh -or !(Same-Uia $bound.document $fresh.document) -or !(Same-Uia $bound.control $fresh.control) -or $fresh.source -cne $bound.source){throw 'Trusted review source/control changed while revealing it.'}
+  $bound=$fresh
+ }
+ return $bound.control
 }
 function Wait-Control([string]$Name,[switch]$Prefix) {
  $deadline=[DateTime]::UtcNow.AddSeconds(90)
@@ -106,7 +210,9 @@ function Wait-Control([string]$Name,[switch]$Prefix) {
  throw "Native accessible control did not appear: $Name"
 }
 function Invoke-Control($Control) {
- Assert-Owned
+ $bound=Find-BoundControl 'settings' $Control.Current.Name
+ if(!$bound -or !(Same-Uia $bound.control $Control)){throw 'Trusted review control changed before invocation.'}
+ Assert-BoundControl $bound
  $pattern=$null
  if(!$Control.TryGetCurrentPattern([Windows.Automation.InvokePattern]::Pattern,[ref]$pattern)){throw "No native InvokePattern for $($Control.Current.Name)"}
  $pattern.Invoke();Start-Sleep -Milliseconds 400
@@ -117,6 +223,9 @@ function Wait-Window {
  Assert-Owned;[void][BowserStoreSmoke]::MoveWindow($script:window,20,20,1100,800,$true);Start-Sleep -Seconds 5
 }
 function Toggle-Control($Control){
+ $bound=Find-BoundControl 'settings' $Control.Current.Name
+ if(!$bound -or !(Same-Uia $bound.control $Control)){throw 'Trusted management control changed before toggle.'}
+ Assert-BoundControl $bound
  $pattern=$null
  if($Control.TryGetCurrentPattern([Windows.Automation.TogglePattern]::Pattern,[ref]$pattern)){$pattern.Toggle();return}
  if($Control.TryGetCurrentPattern([Windows.Automation.InvokePattern]::Pattern,[ref]$pattern)){$pattern.Invoke();return}
@@ -139,20 +248,58 @@ function Records {
  if((Test-Path -LiteralPath $file -PathType Leaf) -and ((Get-Content -LiteralPath $file -Raw) -match '\S')){return @(Get-Item -LiteralPath $file)}
  return @()
 }
+function Navigate-Owned([string]$Url) {
+ Assert-Owned;Keys '^l'
+ $bound=Wait-BoundControl 'toolbar' 'Address and search bar';$edit=$bound.control;$value=$null
+ Assert-BoundControl $bound -Focused
+ if(!$edit.TryGetCurrentPattern([Windows.Automation.ValuePattern]::Pattern,[ref]$value)){throw 'Owned omnibox ValuePattern unavailable; no navigation sent.'}
+ $value.SetValue($Url)
+ if($value.Current.Value -cne $Url -or !$edit.Current.HasKeyboardFocus){throw 'Owned omnibox did not retain the exact requested URL/focus; no Enter sent.'}
+ Field-Keys $bound '{ENTER}';Start-Sleep -Seconds 3
+}
+function Open-ListingReview([string]$Id) {
+ if($Id -cnotmatch '^[a-p]{32}$'){throw 'Invalid fixed test listing ID.'}
+ Navigate-Owned "https://chromewebstore.google.com/detail/$Id"
+ # This control is Bowser chrome, offered only after the actual top-level listing commits.
+ $add=Wait-BoundControl 'toolbar' 'Add to Bowser'
+ if((Cws-ListingId) -cne $Id){throw 'Actual native website document did not commit the expected listing ID.'}
+ Invoke-BoundControl $add
+}
+function Probe-OriginalDiscovery {
+ $result=[ordered]@{status='failed';category=false;search=false;listing=false;error=$null}
+ try {
+  Navigate-Owned 'bowser://store';Capture '01-original-chrome-web-store'
+  [void](Wait-CwsPath '/category/extensions')
+  $bound=Wait-BoundControl 'cws' 'Search extensions and themes';$search=$bound.control
+  $result.category=$true
+  $search.SetFocus();Field-Keys $bound '^a';Field-Keys $bound 'Stylus'
+  $value=$null
+  if(!$search.TryGetCurrentPattern([Windows.Automation.ValuePattern]::Pattern,[ref]$value) -or $value.Current.Value -cne 'Stylus' -or !$search.Current.HasKeyboardFocus){throw 'Original CWS search did not retain exact native input/focus; no Enter sent.'}
+  Field-Keys $bound '{ENTER}'
+  [void](Wait-CwsPath '/search/Stylus');Capture '02-original-cws-search'
+  $resultBound=Wait-BoundControl 'cws' 'Stylus';$listing=$resultBound.control
+  if($listing.Current.ControlType -ne [Windows.Automation.ControlType]::Hyperlink){throw 'Original CWS search result was not an actual hyperlink.'}
+  $result.search=$true;Invoke-BoundControl $resultBound
+  [void](Wait-BoundControl 'toolbar' 'Add to Bowser')
+  if((Cws-ListingId) -cne 'clngdbkpkpeebahjckkjfobafhncgmne'){throw 'Native CWS result navigation did not commit the actual Stylus listing ID.'}
+  Capture '03-original-cws-stylus-listing'
+  $result.listing=$true;$result.status='passed-native-category-search-listing-owned-add'
+ } catch {
+  $result.error=$_.Exception.Message
+  try{Capture '03-original-cws-discovery-unavailable'}catch{}
+ }
+ $report.original_cws_discovery=$result
+}
 function Run-InstallJourney {
  # These are standard Windows accessibility actions against this exact disposable app window.
  # No WebView script, test bridge, native consent bypass or user credential is involved.
- $search=Wait-Control 'Search extensions';$value=$null
- if(!$search.TryGetCurrentPattern([Windows.Automation.ValuePattern]::Pattern,[ref]$value)){throw 'Search ValuePattern unavailable.'}
- $value.SetValue('uBlock Origin Lite');Start-Sleep -Milliseconds 500
- Invoke-Control (Wait-Control 'uBlock Origin Lite')
- Capture '04-native-store-details'
- Invoke-Control (Wait-Control 'Get uBlock Origin Lite')
+ Open-ListingReview 'ddkjiahejlhfcafbddmgiahcphecmpfh'
+ Capture '04-native-original-listing-to-review'
  $approve=Wait-Control 'Install uBlock Origin Lite ' -Prefix
  if(@(Records).Count -ne 0){throw 'An extension was recorded before consent.'}
  Capture '05-native-full-permission-review'
  $report.review_button=$approve.Current.Name
- $owned=[Windows.Automation.AutomationElement]::FromHandle($script:window)
+ $reviewDocument=Find-Document 'settings';if(!$reviewDocument){throw 'Trusted native review document source unavailable.'};$owned=$reviewDocument.document
  $texts=$owned.FindAll([Windows.Automation.TreeScope]::Descendants,[Windows.Automation.Condition]::TrueCondition)
  @($texts | ForEach-Object { try{$_.Current.Name}catch{''} } | Where-Object {$_}) | ConvertTo-Json | Set-Content (Join-Path $Out 'review-accessibility-text.json') -Encoding utf8
  Invoke-Control (Wait-Control 'Cancel installation')
@@ -161,13 +308,10 @@ function Run-InstallJourney {
  Capture '06-native-cancelled'
  # A separate actual signed appearance package supplies real static script declarations for
  # native visual review. This review is cancelled; it grants no installation consent.
- $search=Wait-Control 'Search extensions';$value=$null
- if(!$search.TryGetCurrentPattern([Windows.Automation.ValuePattern]::Pattern,[ref]$value)){throw 'Search ValuePattern unavailable for appearance review.'}
- $value.SetValue('Stylus');Start-Sleep -Milliseconds 500
- Invoke-Control (Wait-Control 'Stylus');Invoke-Control (Wait-Control 'Get Stylus')
+ Open-ListingReview 'clngdbkpkpeebahjckkjfobafhncgmne'
  $appearanceApprove=Wait-Control 'Install Stylus ' -Prefix
  if(@(Records).Count -ne 0){throw 'Appearance review recorded an extension before consent.'}
- $owned=[Windows.Automation.AutomationElement]::FromHandle($script:window)
+ $reviewDocument=Find-Document 'settings';if(!$reviewDocument){throw 'Trusted native review document source unavailable.'};$owned=$reviewDocument.document
  $all=$owned.FindAll([Windows.Automation.TreeScope]::Descendants,[Windows.Automation.Condition]::TrueCondition)
  $declaration=$null
  foreach($item in $all){try{if($item.Current.Name.StartsWith('{"declared":',[StringComparison]::Ordinal) -and $item.Current.Name.Contains('documented_defaults_for_omitted_fields')){$declaration=$item;break}}catch{}}
@@ -208,11 +352,7 @@ function Run-InstallJourney {
  $report.complete_static_script_review='actual-signed-Stylus-native-visible-full-frame-world-timing-declaration-with-defaults'
  Invoke-Control (Wait-Control 'Cancel installation')
  if(@(Records).Count -ne 0){throw 'Cancelled appearance review recorded an installation.'}
- $search=Wait-Control 'Search extensions';$value=$null
- if(!$search.TryGetCurrentPattern([Windows.Automation.ValuePattern]::Pattern,[ref]$value)){throw 'Search ValuePattern unavailable after appearance cancellation.'}
- $value.SetValue('uBlock Origin Lite');Start-Sleep -Milliseconds 500
- Invoke-Control (Wait-Control 'uBlock Origin Lite')
- Invoke-Control (Wait-Control 'Get uBlock Origin Lite')
+ Open-ListingReview 'ddkjiahejlhfcafbddmgiahcphecmpfh'
  $approve=Wait-Control 'Install uBlock Origin Lite ' -Prefix
  # Explicit authorized disposable-test consent to the real displayed package/version/permissions.
  $report.explicit_test_consent=$approve.Current.Name
@@ -233,8 +373,7 @@ function Run-InstallJourney {
  Wait-Window
  Wait-NativeReady $readyToken
  $report.restart_browsing_ready='unique-loopback-acknowledged'
- Keys '^l';Keys 'bowser://store{ENTER}';Start-Sleep -Seconds 4
- Invoke-Control (Wait-Control 'Installed')
+ Navigate-Owned 'bowser://settings/extensions'
  $popup=Wait-Control 'Open uBlock Origin Lite popup'
  $report.restart_persisted='record-and-running-popup-control-present'
  Capture '08-native-installed-after-restart'
@@ -285,14 +424,18 @@ try {
  Assert-Owned; [void][BowserStoreSmoke]::MoveWindow($script:window,20,20,1100,800,$true)
  Start-Sleep -Seconds 5
  Capture '00-native-control-before-keyboard'
- Keys '^l';Keys 'bowser://store{ENTER}';Start-Sleep -Seconds 4
- Capture '01-native-store-discover'
- # This is ordinary omnibox navigation, not an install bridge or injected UI command.
- Keys '^l'; Keys 'bowser://settings{ENTER}'; Start-Sleep -Seconds 3
- Capture '02-native-settings'
- Keys '^l'; Keys 'bowser://store{ENTER}'; Start-Sleep -Seconds 3
- Capture '03-native-store-return'
+ [void](Wait-BoundControl 'toolbar' 'Address and search bar')
+ $spoof=Find-Document 'loopback'
+ if(!$spoof -or $spoof.source -cne $initialUrl){throw 'Actual controlled spoof document source was not exposed.'}
+ foreach($label in @('Add to Bowser','Address and search bar','Search extensions and themes')){
+  $spoofs=$spoof.document.FindAll([Windows.Automation.TreeScope]::Descendants,[Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::NameProperty,$label))
+  if($spoofs.Count -ne 1){throw 'Required website spoof-label positive control was not exposed.'}
+ }
+ if(Find-BoundControl 'toolbar' 'Add to Bowser'){throw 'Install control was offered on the actual non-listing loopback page.'}
+ $report.nonlisting_add_absent=$true
+ Probe-OriginalDiscovery
  if($InstallJourney){Run-InstallJourney}
+ if($report.original_cws_discovery.status -ne 'passed-native-category-search-listing-owned-add'){throw 'Original Chrome Web Store discovery/search/listing is not verified; see retained native screenshots/report.'}
  $app.Refresh(); $report.native_process_working_set_bytes=$app.WorkingSet64
  $report.status=if($InstallJourney){'native-journey-awaiting-visual-review-not-functional-compatibility'}else{'captured-awaiting-visual-review'}
 } catch {

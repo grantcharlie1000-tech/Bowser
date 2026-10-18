@@ -161,3 +161,16 @@ test('complete static declarations remain visible without truncation and reject 
   for (const contentScriptDeclarations of [['x'.repeat(180 * 1024 + 1)], ['hidden\u202etext'], ['bad\nvalue'], Array(257).fill('{}')]) assert.equal(logic.parseStoreSnapshot(snap({ contentScriptDeclarations })), null);
   const missing = { ...review }; delete missing.contentScriptDeclarations; assert.equal(logic.parseStoreSnapshot(missing), null);
 });
+
+
+test('native installation review does not present a replacement discovery catalogue', () => {
+  const store = mount();
+  store.receive(message(snap({phase:'review',requestId:'native-cws',name:entry.name,version:'1'})));
+  assert.equal(store.root.querySelector('.bs-side').hidden,true);
+  assert.equal(store.root.querySelector('.bs-search').hidden,true);
+  assert.equal(store.root.querySelector('.bs-body').hidden,true);
+  store.root.dispatch('keydown', {key:'f',ctrlKey:true,altKey:false,shiftKey:false});
+  assert.equal(store.root.querySelector('.bs-search').hidden,true);
+  assert.equal(store.root.querySelector('.bs-body').hidden,true);
+  assert.ok(btn(store.root,`Install ${entry.name} 1`));
+});

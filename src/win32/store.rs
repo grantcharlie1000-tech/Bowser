@@ -23,9 +23,16 @@ fn error(owner: HWND, text: impl Into<String>) {
     changed(owner);
 }
 
-pub(crate) fn open(owner: HWND, app: &AppRef, reuse_blank: bool) {
+/// Discovery is Google's real website in an ordinary browsing tab. It receives no Bowser bridge.
+pub(crate) fn open(_owner: HWND, app: &AppRef, reuse_blank: bool) {
+    if !reuse_blank { App::new_tab(app); }
+    if let Ok(url) = url::Url::parse(store::BROWSE_URL) { App::navigate_current(app, &url); }
+}
+
+/// Only a native install request opens the trusted package/permission review, not discovery.
+fn open_review(owner: HWND, app: &AppRef) {
     if !super::settings_page::usable(owner) { super::show_error_message("The Bowser Store needs Bowser's HTML interface. Restart with the default HTML interface."); return; }
-    let _ = App::open_internal_page(app, InternalPage::Store, reuse_blank);
+    let _ = App::open_internal_page(app, InternalPage::Store, false);
     changed(owner);
 }
 
@@ -52,7 +59,7 @@ pub(crate) fn start(owner: HWND, app: &AppRef, id: &str) {
     let cancelled = Arc::new(AtomicBool::new(false));
     let restart = crate::extensions::read_records(&profile.extensions_file()).is_ok_and(|records| records.is_empty());
     with(owner, |state| *state = State { request: request.clone(), id: id.to_owned(), name: store::entry(id).map_or_else(String::new, |entry| entry.name.to_owned()), phase: "downloading", restart, profile: profile.root().to_owned(), cancelled: Some(cancelled.clone()), ..State::default() });
-    open(owner, app, false);
+    open_review(owner, app);
     let raw = owner.0 as isize;
     let worker_id = id.to_owned();
     let spawned = std::thread::Builder::new().name("bowser-store-download".into()).spawn(move || {

@@ -42,7 +42,7 @@ export function mountStoreSection(options: ExtensionsSectionOptions): { readonly
   layout.append(side, main); root.append(header, layout);
   search.addEventListener('input', () => { selected = ''; renderBody(); });
   root.addEventListener('keydown', (event) => {
-    if (event.key === 'f' && event.ctrlKey && !event.altKey && !event.shiftKey) { event.preventDefault(); view = 'discover'; selected = ''; renderBody(); search.focus(); search.select(); }
+    if (event.key === 'f' && event.ctrlKey && !event.altKey && !event.shiftKey) { event.preventDefault(); if (snapshot && snapshot.phase !== 'idle') return; view = 'discover'; selected = ''; renderBody(); search.focus(); search.select(); }
   });
   const sendInstall = (id: string): void => {
     const command = storeInstallCommand(id);
@@ -71,9 +71,10 @@ export function mountStoreSection(options: ExtensionsSectionOptions): { readonly
     return section;
   };
   function renderBody(): void {
-    installed.root.hidden = view !== 'installed'; search.hidden = view === 'installed'; body.hidden = view === 'installed';
+    const reviewing = !!snapshot && snapshot.phase !== 'idle';
+    installed.root.hidden = view !== 'installed'; search.hidden = reviewing || view === 'installed'; body.hidden = reviewing || view === 'installed'; side.hidden = reviewing;
     for (const [key, button] of navButtons) { if (key === view) button.setAttribute('aria-current', 'page'); else button.removeAttribute('aria-current'); }
-    if (view === 'installed') return;
+    if (reviewing || view === 'installed') return;
     if (invalid) { body.replaceChildren(paragraph('The store response could not be read. Refresh the page to try again.')); return; }
     if (!snapshot) { body.replaceChildren(paragraph('Loading the extension catalogue…')); return; }
     const chosen = snapshot.catalogue.find((entry) => entry.id === selected);
@@ -150,6 +151,12 @@ export function mountStoreSection(options: ExtensionsSectionOptions): { readonly
       if (s.phase === 'ready') status.append(textButton('Manage installed extensions', () => { view = 'installed'; selected = ''; render(); }));
     }
     renderBody();
+    // Production entrypoints browse Google's original site. The internal host is only review /
+    // management; never present the old curated cards behind an active installation request.
+    const reviewing = !!snapshot && snapshot.phase !== 'idle';
+    side.hidden = reviewing;
+    if (reviewing) { search.hidden = true; body.hidden = true; }
+    title.textContent = reviewing ? 'Extension installation' : 'Bowser Store';
     if (focusKey) root.querySelector<HTMLElement>(`[data-focus="${focusKey}"]`)?.focus();
   }
   render();

@@ -305,7 +305,8 @@ test('section: Install CRX file… sits beside Install unpacked… with the same
   assert.equal(crx.className.replace('sp-ext-install-crx', '').trim(), unpacked.className.replace('sp-ext-install', '').trim(), 'same visual weight');
   assert.equal(crx.hidden, unpacked.hidden);
   assert.equal(crx.getAttribute('aria-describedby'), 'sp-ext-note');
-  assert.doesNotMatch(head.textContent, /\bstore\b|chrome web|add to chrome|one-click/i);
+  assert.doesNotMatch(`${unpacked.textContent} ${crx.textContent}`, /\bstore\b|chrome web|add to chrome|one-click/i);
+  assert.ok(button(head, 'Open Chrome Web Store'), 'discovery is a separate original-site action');
 });
 
 test('section: the switch sends its id and waits for the answer; the answer is a toast', () => {
@@ -421,7 +422,7 @@ test('section: Install CRX file… asks Bowser to open its file picker, once, an
   assert.deepEqual(toasts.at(-1), { text: 'The extension was not installed. The file did not verify as a signed CRX package: CRX signature does not verify.', ok: false }, 'a failure uses the existing error toast');
   assert.equal(button(card(), 'Install CRX file…').disabled, false);
   assert.doesNotMatch(button(card(), 'Install CRX file…').textContent, /\bstore\b|chrome web|add to chrome|one-click/i);
-  assert.ok(button(section.root, 'Open Bowser Store'), 'the store is a separate entry point');
+  assert.ok(button(section.root, 'Open Chrome Web Store'), 'the store is a separate entry point');
 });
 
 test('section: an unreadable list and an invalid snapshot each say so and offer to try again', () => {

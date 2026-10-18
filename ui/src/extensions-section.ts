@@ -57,7 +57,7 @@ export function mountExtensionsSection(options: ExtensionsSectionOptions): Exten
   installCrx.classList.add('sp-ext-install-crx');
   installCrx.setAttribute('aria-describedby', `${prefix}-ext-note`);
   const installs = el('div', 'sp-ext-installs');
-  installs.append(textButton('Open Bowser Store', () => options.send({ a: 'storeopen' }), { icon: 'puzzle', primary: true }), install, installCrx);
+  installs.append(textButton('Open Chrome Web Store', () => options.send({ a: 'storeopen' }), { icon: 'puzzle', primary: true }), install, installCrx);
   head.append(heading, installs);
   const box = el('div', 'sp-card sp-ext-card');
   box.setAttribute('role', 'group');

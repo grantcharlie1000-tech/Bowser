@@ -146,6 +146,14 @@ jobs:
           $test = Get-ChildItem target/debug/deps/bowser-*.exe | Sort-Object LastWriteTime -Descending | Select-Object -First 1
           & $test.FullName update_model_ --nocapture --test-threads=1 2>&1 | Tee-Object store-update-model-probe.log
           if ($LASTEXITCODE -ne 0) { throw 'Test-only update state contract failed.' }
+      - name: Gate listing authority on actual successful native documents
+        if: ${{ !cancelled() && steps.native_build.outcome == 'success' }}
+        run: |
+          $test = Get-ChildItem target/debug/deps/bowser-*.exe | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          & $test.FullName engine::document_gate:: --nocapture --test-threads=1 2>&1 | Tee-Object store-document-gate-unit.log
+          if ($LASTEXITCODE -ne 0) { throw 'Native document gate contract failed.' }
+          & $test.FullName live_successful_document_gate --ignored --nocapture --test-threads=1 2>&1 | Tee-Object store-document-gate-native.log
+          if ($LASTEXITCODE -ne 0) { throw 'Actual native document gate controls failed.' }
       - name: Preserve complete static content-script declarations for consent
         if: ${{ !cancelled() && steps.native_build.outcome == 'success' }}
         run: |
@@ -261,6 +269,8 @@ jobs:
             store-record-temp-probe.log
             store-update-model-probe.log
             store-content-script-review.log
+            store-document-gate-unit.log
+            store-document-gate-native.log
             store-page-links-controls.log
             store-page-links-runtime-controls.log
             store-native-command-probe.log

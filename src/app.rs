@@ -2200,6 +2200,19 @@ impl App {
         app.borrow().tab_model.get(id).is_some_and(|tab| tab.pinned)
     }
 
+    /// The native current document must have a matching successful navigation completion.
+    pub fn successful_document_url(app: &AppRef, id: TabId) -> Option<url::Url> {
+        let query = {
+            let state = app.try_borrow().ok()?;
+            if state.closing { return None; }
+            state.engine.as_ref()?.successful_document_query(id)?
+        };
+        let result = query();
+        let state = app.try_borrow().ok()?;
+        if state.closing || !state.tabs.iter().any(|tab| tab.id == id) { return None; }
+        result
+    }
+
     pub fn tab_committed_url(app: &AppRef, id: TabId) -> Option<url::Url> {
         app.borrow()
             .tabs
@@ -2972,6 +2985,8 @@ impl App {
                         .tabs
                         .iter()
                         .find(|tab| tab.id == model.id)
+                        // A dormant Store alias restores into the real website, not review.
+                        .filter(|tab| !page.is_store() || (!tab.discarded && !tab.controller_created && !tab.private))
                         .and_then(|tab| tab.url.as_ref())
                         .and_then(crate::internal_page::parse)
                         .is_some_and(|shown| shown.same_page(page));
@@ -6603,6 +6618,14 @@ impl App {
             win32::show_error_message(&format!("Bowser has no page at {}.", url.as_str()));
             return;
         };
+        // A restored/deferred Store address is discovery too, never a privileged copy of Google.
+        // Native consent opens its own settings host directly through open_internal_page.
+        if page.is_store() {
+            if let Ok(destination) = url::Url::parse(crate::store::BROWSE_URL) {
+                Self::navigate_tab(app, tab_id, &destination);
+            }
+            return;
+        }
         let (has_page, private, active) = {
             let state = app.borrow();
             let tab = state.tabs.iter().find(|tab| tab.id == tab_id);
@@ -10787,6 +10810,29 @@ mod tests {
             (l.viewport_y, l.viewport_width, l.viewport_height),
             (44, 800, 556)
         );
+    }
+
+    #[test]
+    fn restored_store_alias_is_not_reused_for_trusted_install_review() {
+        let app = app_with_pending(windows::Win32::Foundation::RECT { left:0, top:0, right:800, bottom:600 });
+        let dormant = App::active_tab_id(&app);
+        let store = crate::internal_page::InternalPage::Store;
+        {
+            let mut state = app.borrow_mut();
+            let tab = state.tabs.iter_mut().find(|tab| tab.id == dormant).unwrap();
+            tab.url = Some(store.url()); tab.discarded = true; tab.controller_created = false;
+            state.tab_model.set_url(dormant, Some(store.url().as_str()));
+        }
+        let listing = App::new_tab(&app);
+        crate::app::test_show_page(&app, listing, "https://chromewebstore.google.com/detail/stylus/clngdbkpkpeebahjckkjfobafhncgmne");
+        let review = App::open_internal_page(&app, store, false);
+        assert_ne!(review, dormant); assert_ne!(review, listing);
+        assert_eq!(App::active_tab_id(&app), review);
+        assert_eq!(App::internal_page(&app, review), Some(store));
+        let state = app.borrow();
+        assert!(!state.tabs.iter().find(|tab| tab.id == review).unwrap().controller_created);
+        assert!(state.tabs.iter().find(|tab| tab.id == dormant).unwrap().discarded);
+        assert!(state.tabs.iter().find(|tab| tab.id == listing).unwrap().controller_created);
     }
 
     #[test]

@@ -98,6 +98,7 @@ fn handle(mut stream: TcpStream, beacons: &Mutex<Vec<String>>) {
         .unwrap_or("")
         .to_owned();
     beacons.lock().unwrap().push(path.clone());
+    if path == "/document-gate-slow" { std::thread::sleep(Duration::from_secs(2)); }
     let (status, content_type, body) = if path.starts_with(BEACON_PREFIX) {
         ("200 OK", "text/plain", String::new())
     } else if path == "/control-script.js" || path == "/ads/banner.js" || path == "/adserver/ad.js" || path == "/pagead/show_ads.js" {
@@ -1832,4 +1833,64 @@ fn run_native_keyboard_probe(reserved_action: bool) {
         session.close(); drop(loopback);
     }
     remove_with_retries(&root);
+}
+
+
+#[test]
+#[ignore = "requires native WebView2 and a disposable profile"]
+fn live_successful_document_gate() {
+    unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED).ok().unwrap(); }
+    let root = temp_root().join("native-document-gate"); std::fs::create_dir_all(&root).unwrap();
+    let loopback = Loopback::start(); let first = loopback.page("document-gate-first");
+    let mut session = Session::open(&root, vec![], vec![], &first);
+    let tab = session.tab();
+    assert!(pump_until(Duration::from_secs(30), || session.engine.successful_document_url(tab).as_ref()==Some(&first)));
+    let webview = session.engine.probe_document_webview(tab).unwrap();
+    let starts = Rc::new(RefCell::new(Vec::<(u64,String)>::new()));
+    let completions = Rc::new(RefCell::new(Vec::<(u64,bool)>::new()));
+    let start_sink = starts.clone(); let complete_sink = completions.clone();
+    let cancelled = Rc::new(std::cell::Cell::new(false)); let cancel_sink = cancelled.clone();
+    let mut start_token=0;let mut complete_token=0;
+    unsafe {
+        webview.add_NavigationStarting(&webview2_com::NavigationStartingEventHandler::create(Box::new(move |_,args| {
+            if let Some(args)=args {
+                let mut id=0;args.NavigationId(&mut id)?;
+                let mut raw=windows::core::PWSTR::null();args.Uri(&mut raw)?;
+                let uri=webview2_com::CoTaskMemPWSTR::from(raw).to_string();
+                start_sink.borrow_mut().push((id,uri.clone()));
+                if uri.ends_with("/document-gate-cancel") {args.SetCancel(true)?;cancel_sink.set(true);}
+            } Ok(())
+        })), &mut start_token).unwrap();
+        webview.add_NavigationCompleted(&webview2_com::NavigationCompletedEventHandler::create(Box::new(move |_,args| {
+            if let Some(args)=args {let mut id=0;let mut success=windows::core::BOOL::default();args.NavigationId(&mut id)?;args.IsSuccess(&mut success)?;complete_sink.borrow_mut().push((id,success.as_bool()));}Ok(())
+        })), &mut complete_token).unwrap();
+    }
+    let listener=TcpListener::bind("127.0.0.1:0").unwrap();let port=listener.local_addr().unwrap().port();drop(listener);
+    let failing=Url::parse(&format!("http://127.0.0.1:{port}/document-gate-failure")).unwrap();
+    let before=completions.borrow().len();session.engine.navigate_tab(tab,&failing).unwrap();
+    assert!(session.engine.successful_document_url(tab).is_none(),"request must revoke before any completion");
+    assert!(pump_until(Duration::from_secs(30),||completions.borrow().len()>before));
+    assert!(!completions.borrow().last().unwrap().1,"actual failed navigation must be observed");
+    assert!(session.engine.successful_document_url(tab).is_none());
+    session.engine.navigate_tab(tab,&first).unwrap();
+    assert!(pump_until(Duration::from_secs(30),||session.engine.successful_document_url(tab).as_ref()==Some(&first)));
+    let before=completions.borrow().len();session.engine.navigate_tab(tab,&loopback.page("document-gate-cancel")).unwrap();
+    assert!(session.engine.successful_document_url(tab).is_none());
+    assert!(pump_until(Duration::from_secs(30),||cancelled.get()&&completions.borrow().len()>before));
+    assert!(!completions.borrow().last().unwrap().1);
+    assert!(session.engine.successful_document_url(tab).is_none());
+    let slow=loopback.page("document-gate-slow");let latest=loopback.page("document-gate-latest");
+    session.engine.navigate_tab(tab,&slow).unwrap();
+    assert!(pump_until(Duration::from_secs(10),||starts.borrow().iter().any(|(_,uri)|uri==slow.as_str())));
+    session.engine.navigate_tab(tab,&latest).unwrap();assert!(session.engine.successful_document_url(tab).is_none());
+    assert!(pump_until(Duration::from_secs(30),||session.engine.successful_document_url(tab).as_ref()==Some(&latest)));
+    let starts=starts.borrow();let a=starts.iter().find(|(_,uri)|uri==slow.as_str()).unwrap().0;let b=starts.iter().find(|(_,uri)|uri==latest.as_str()).unwrap().0;
+    assert_ne!(a,b);assert!(completions.borrow().contains(&(b,true)));
+    drop(starts);
+    session.browsing_script("history.pushState({},'', '/document-gate-same-document');true").unwrap();
+    assert!(pump_until(Duration::from_secs(10),||session.engine.successful_document_url(tab).as_ref()==Some(&loopback.page("document-gate-same-document"))));
+    session.engine.stop().unwrap();assert!(session.engine.successful_document_url(tab).is_none());
+    session.engine.close().unwrap();assert!(session.engine.successful_document_url(tab).is_none());
+    println!("NATIVE_DOCUMENT_GATE actual_failed=true actual_cancelled=true overlapping_native_ids_differ=true latest_success=true same_document_source=true stop_closed_ineligible=true");
+    session.close();
 }

@@ -1415,6 +1415,7 @@ const BLOCKABLE_CONTEXTS: [COREWEBVIEW2_WEB_RESOURCE_CONTEXT; 8] = [
 ];
 
 struct WebView2Tab {
+    document_gate: Rc<RefCell<super::document_gate::DocumentGate>>,
     environment: Option<ICoreWebView2Environment>,
     controller: Option<ICoreWebView2Controller>,
     webview: Option<ICoreWebView2>,
@@ -1934,6 +1935,7 @@ impl WebView2Engine {
                 return Err(Error::from(windows::Win32::Foundation::E_INVALIDARG));
             }
             if let Some(tab) = state.tabs.get(&tab_id) {
+                tab.document_gate.borrow_mut().request();
                 let handles = (tab.webview.clone(), tab.allowed_file.clone());
                 drop(state);
                 return navigate_with_timing(
@@ -3259,6 +3261,30 @@ impl WebView2Engine {
 }
 
 impl EngineAdapter for WebView2Engine {
+    fn successful_document_query(&self, id: TabId) -> Option<super::NativeDocumentQuery> {
+        // Prepare clone-only state; the caller drops App/engine borrows before running the query.
+        let (view, gate) = {
+            let state = self.core.try_borrow().ok()?;
+            if state.closed { return None; }
+            let tab = state.tabs.get(&id)?;
+            (tab.webview.clone()?, tab.document_gate.clone())
+        };
+        let core = Rc::downgrade(&self.core);
+        Some(Box::new(move || {
+            // No Core, App or gate borrow survives the potentially reentrant COM getter.
+            let proof = gate.borrow().proof()?;
+            let url = current_web_url(&view)?;
+            let core = core.upgrade()?;
+            let state = core.try_borrow().ok()?;
+            if state.closed { return None; }
+            let current = state.tabs.get(&id)?;
+            if !Rc::ptr_eq(&gate, &current.document_gate)
+                || current.webview.as_ref()?.as_raw() != view.as_raw()
+                || gate.borrow().proof() != Some(proof) { return None; }
+            Some(url)
+        }))
+    }
+
     fn focus_page(&mut self) -> Result<()> {
         let controller = {
             let state = self.core.borrow();
@@ -3623,7 +3649,10 @@ impl EngineAdapter for WebView2Engine {
     fn navigate_tab_post(&mut self, tab: TabId, url: &Url, body: &str) -> Result<()> {
         let live = {
             let state = self.core.borrow();
-            state.tabs.get(&tab).map(|tab| (tab.webview.clone(), tab.environment.clone()))
+            state.tabs.get(&tab).map(|tab| {
+                tab.document_gate.borrow_mut().request();
+                (tab.webview.clone(), tab.environment.clone())
+            })
         };
         if let Some((webview, environment)) = live {
             return post_webview(webview.as_ref(), environment.as_ref(), url, body);
@@ -4390,6 +4419,7 @@ fn navigate_with_timing(
 
 impl EngineAdapter for WebView2Tab {
     fn navigate(&mut self, url: &Url) -> Result<()> {
+        self.document_gate.borrow_mut().request();
         navigate_webview(self.webview.as_ref(), self.allowed_file.as_ref(), url)
     }
     fn can_go_back(&self) -> bool {
@@ -4399,6 +4429,7 @@ impl EngineAdapter for WebView2Tab {
         })
     }
     fn go_back(&mut self) -> Result<()> {
+        self.document_gate.borrow_mut().request();
         unsafe {
             self.webview
                 .as_ref()
@@ -4413,6 +4444,7 @@ impl EngineAdapter for WebView2Tab {
         })
     }
     fn go_forward(&mut self) -> Result<()> {
+        self.document_gate.borrow_mut().request();
         unsafe {
             self.webview
                 .as_ref()
@@ -4434,6 +4466,7 @@ impl EngineAdapter for WebView2Tab {
         Ok(())
     }
     fn reload(&mut self) -> Result<()> {
+        self.document_gate.borrow_mut().request();
         unsafe {
             self.webview
                 .as_ref()
@@ -4442,6 +4475,7 @@ impl EngineAdapter for WebView2Tab {
         }
     }
     fn stop(&mut self) -> Result<()> {
+        self.document_gate.borrow_mut().invalidate();
         unsafe {
             self.webview
                 .as_ref()
@@ -4496,6 +4530,7 @@ impl EngineAdapter for WebView2Tab {
         }
     }
     fn close(&mut self) -> Result<()> {
+        self.document_gate.borrow_mut().close();
         if let Some(controller) = self.controller.take() {
             unsafe {
                 controller.Close()?;
@@ -4541,6 +4576,7 @@ unsafe fn configure_controller(
         controller.SetBounds(bounds)?;
         controller.SetIsVisible(visible)?;
         let webview = controller.CoreWebView2()?;
+        let document_gate = Rc::new(RefCell::new(super::document_gate::DocumentGate::default()));
         if private {
             // A runtime that ignored the controller options must never leave a private tab in the
             // browsing profile.
@@ -4700,9 +4736,14 @@ unsafe fn configure_controller(
         let link_navigation = events.link_navigation.clone(); // --- tab options ---
         let nav_blocker = blocker.clone();
         let nav_block_tab = block_tab.clone();
+        let starting_document = document_gate.clone();
         webview.add_NavigationStarting(
             &NavigationStartingEventHandler::create(Box::new(move |_sender, args| {
+                if args.is_none() { starting_document.borrow_mut().unreadable_event(); }
                 if let Some(args) = args {
+                    let mut id = 0;
+                    if args.NavigationId(&mut id).is_ok() { starting_document.borrow_mut().started(id); }
+                    else { starting_document.borrow_mut().unreadable_event(); }
                     let mut uri = PWSTR::null();
                     let uri_value = if args.Uri(&mut uri).is_ok() {
                         CoTaskMemPWSTR::from(uri).to_string()
@@ -4891,9 +4932,15 @@ unsafe fn configure_controller(
         let completed_progress = events.navigation_progress.clone();
         let completed_page_loaded = events.page_loaded.clone();
         let completed_failed = events.navigation_failed.clone();
+        let completed_document = document_gate.clone();
         webview.add_NavigationCompleted(
             &NavigationCompletedEventHandler::create(Box::new(move |sender, args| {
+                if args.is_none() { completed_document.borrow_mut().unreadable_event(); }
                 if let Some(args) = args {
+                    let mut id = 0; let mut success = BOOL::default();
+                    if args.NavigationId(&mut id).is_ok() && args.IsSuccess(&mut success).is_ok() {
+                        completed_document.borrow_mut().completed(id, success.as_bool());
+                    } else { completed_document.borrow_mut().unreadable_event(); }
                     let mut navigation_id = 0;
                     if args.NavigationId(&mut navigation_id).is_ok() {
                         if let Some(callback) = completed_progress.as_ref() {
@@ -4944,8 +4991,10 @@ unsafe fn configure_controller(
         let address_changed = events.address_changed.clone();
         let source_block_tab = block_tab.clone();
         let source_blocker = blocker.clone();
+        let source_document = document_gate.clone();
         webview.add_SourceChanged(
             &SourceChangedEventHandler::create(Box::new(move |sender, _args| {
+                source_document.borrow_mut().source_changed();
                 if let Some(sender) = sender.as_ref() {
                     sync_top_host(sender, &source_block_tab);
                     if let Some(blocker) = source_blocker.as_ref() {
@@ -5591,6 +5640,12 @@ unsafe fn configure_controller(
             )?;
         }
 
+        let failed_document = document_gate.clone();
+        webview.add_ProcessFailed(&ProcessFailedEventHandler::create(Box::new(move |_, _| {
+            failed_document.borrow_mut().unreadable_event();
+            Ok(())
+        })), &mut token)?;
+
         if let Some(callback) = events.failed.as_ref() {
             let failure_callback = callback.clone();
             let render_callback = events.render_process_failed.clone();
@@ -5612,6 +5667,7 @@ unsafe fn configure_controller(
             )?;
         }
         Ok(WebView2Tab {
+            document_gate,
             environment: Some(environment.clone()),
             controller: Some(controller),
             webview: Some(webview),
@@ -6058,6 +6114,10 @@ mod tests {
     /// Hooks for the ignored live probe (`extension_probe_live`). They live here, not beside the
     /// production code, so the source-scanning tests below see the whole production region.
     impl WebView2Engine {
+        /// Exact disposable controller for native event registration; no message/host endpoint.
+        pub(in crate::engine) fn probe_document_webview(&self, tab: TabId) -> Option<ICoreWebView2> {
+            self.core.borrow().tabs.get(&tab)?.webview.clone()
+        }
         /// Opens an extension page without showing a window.
         pub(in crate::engine) fn open_extension_page_hidden(
             &mut self,
