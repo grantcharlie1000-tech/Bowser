@@ -825,7 +825,7 @@ fn live_probe_same_identity_update_and_rollback() {
     let live_version = session.page_script("chrome.runtime.getManifest().version").unwrap_or_default();
     println!("UPDATE_PROBE phase=after-invalid-replacement version={live_version}");
     assert!(live_version.contains("0.0.1"));
-    let targets = session.protocol(session.tab(), "Target.getTargets", "{}");
+    let targets = session.protocol(session.tab(), "Target.getTargets", r#"{"filter":[{}]}"#);
     println!("API_PROBE scope=disposable-profile target_inventory={targets:?}");
     let stopped = session.protocol(session.tab(), "ServiceWorker.stopAllWorkers", "{}");
     println!("API_PROBE worker_stop={stopped:?}");
@@ -856,21 +856,34 @@ fn live_probe_native_action_active_tab() {
     assert_eq!(runtime_id.as_deref(), Some(KEY_FIXTURE_ID)); assert!(failure.is_none());
     pump_until(Duration::from_secs(2), || false);
     assert!(!session.read_marker("data-action-active-tab").unwrap_or_default().contains("granted-by-real-action"));
-    let targets = session.protocol(session.tab(), "Target.getTargets", "{}");
+    let targets = session.protocol(session.tab(), "Target.getTargets", r#"{"filter":[{}]}"#);
     println!("ACTION_PROBE inventory={targets:?}");
     let info = session.protocol(session.tab(), "Target.getTargetInfo", "{}");
     println!("ACTION_PROBE owning_target={info:?}");
     let browser_attach = session.protocol(session.tab(), "Target.attachToBrowserTarget", "{}");
     println!("ACTION_PROBE browser_attach={browser_attach:?}");
     let browser_session = browser_attach.as_deref().and_then(|text| json_string(text, "sessionId"));
-    if let Some(browser_session) = browser_session.as_deref() {
-        println!("ACTION_PROBE browser_inventory={:?}", session.protocol_session(session.tab(), Some(browser_session), "Target.getTargets", "{}"));
+    let browser_inventory = browser_session.as_deref().and_then(|browser_session| {
+        let inventory = session.protocol_session(session.tab(), Some(browser_session), "Target.getTargets", r#"{"filter":[{}]}"#);
+        println!("ACTION_PROBE browser_inventory={inventory:?}");
         println!("ACTION_PROBE browser_extension_domain={:?}", session.protocol_session(session.tab(), Some(browser_session), "Extensions.getExtensions", "{}"));
-    }
-    // Do not manufacture a relationship between page and tab targets, or bind by URL/title.
-    if info.as_deref().and_then(|text| json_string(text, "type")).as_deref() == Some("tab")
-        && let Some(target_id) = info.as_deref().and_then(|text| json_string(text, "targetId"))
-    {
+        inventory
+    });
+    // Only the exact owning target, or its explicitly reported parent of verified type tab.
+    // Never manufacture a relationship or bind by URL/title, even for duplicate-URL tabs.
+    let target_id = info.as_deref().and_then(|text| {
+        if json_string(text, "type").as_deref() == Some("tab") { return json_string(text, "targetId"); }
+        let parent = json_string(text, "parentId")?;
+        use extensions::json::{self, Value};
+        let Value::Object(fields) = json::parse(browser_inventory.as_deref()?)? else { return None; };
+        let Value::Array(targets) = json::get(&fields, "targetInfos")? else { return None; };
+        targets.iter().any(|target| {
+            let Value::Object(fields) = target else { return false; };
+            json::get(fields, "targetId") == Some(&Value::String(parent.clone()))
+                && json::get(fields, "type") == Some(&Value::String("tab".into()))
+        }).then_some(parent)
+    });
+    if let Some(target_id) = target_id {
         let params = format!(r#"{{"id":"{KEY_FIXTURE_ID}","targetId":"{target_id}"}}"#);
         let action = session.protocol_session(session.tab(), browser_session.as_deref(), "Extensions.triggerAction", &params);
         println!("ACTION_PROBE genuine_trigger={action:?}");
