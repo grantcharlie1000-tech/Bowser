@@ -862,11 +862,18 @@ fn probe_real_stylus_appearance(profile: &Path, id: &str, folder: &Path, session
     let manager_link = session.page_script("(()=>{const a=document.querySelector('#popup-manage-button');if(!a)return null;const href=a.href;a.click();return href})()");
     pump_until(Duration::from_secs(3), || false);
     println!("STYLUS_APPEARANCE ordinary_manage_click={manager_link:?} resulting_page={:?}", session.page_script("({url:location.href,title:document.title,importButton:!!document.querySelector('#import')})"));
-    // Diagnostic only: navigate the genuine signed popup's own manager hyperlink in this same
-    // isolated extension host. This is not a claim that its native tabs.create UI route worked.
-    let followed = session.page_script("(()=>{const a=document.querySelector('#popup-manage-button');if(!a)return false;const u=new URL(a.href);if(u.protocol!==location.protocol||u.host!==location.host)return false;location.href=a.href;return true})()");
+    // Exercise the standard native new-window link route (as offered by a link context menu),
+    // not a guessed page path, location assignment, tabs shim or claim about chrome.tabs.create.
+    let followed = session.page_script("(()=>{const a=document.querySelector('#popup-manage-button');if(!a)return false;const u=new URL(a.href);if(u.protocol!==location.protocol||u.host!==location.host)return false;window.open(a.href,'_blank');return true})()");
     pump_until(Duration::from_secs(4), || false);
-    println!("STYLUS_APPEARANCE same_extension_hyperlink_followed={followed:?} scope=diagnostic-own-page-navigation-not-native-tab-creation");
+    println!("STYLUS_APPEARANCE same_extension_native_window_link_requested={followed:?} resulting_page={:?} scope=standard-new-window-native-handler-not-chrome-tabs-create", session.page_script("({url:location.href,title:document.title,importButton:!!document.querySelector('#import')})"));
+    let escape = loopback.page("extension-window-escape");
+    let script = format!("(()=>{{window.open({},'_blank');window.open('bowser-ui://app/index.html?view=settings','_blank');window.open('chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/options.html','_blank');return location.href}})()", crate::chrome_host::protocol::json_string(escape.as_str()));
+    let before_escape = session.page_script(&script); pump_until(Duration::from_secs(1), || false);
+    let after_escape = session.page_script("location.href");
+    let escaped = loopback.beacons.lock().unwrap().iter().any(|path| path == "/extension-window-escape");
+    assert_eq!(before_escape, after_escape, "forbidden new-window request changed the signed extension page"); assert!(!escaped, "external new-window request escaped its isolated host");
+    println!("STYLUS_APPEARANCE external_ui_other_extension_new_window_attempts=made same_page_retained=true own_loopback_escape_absent=true scope=observe-native-event-log-for-each-request-not-universal-window-coverage");
     let style = format!(r#"[{{"name":"Bowser disposable appearance fixture","enabled":true,"sections":[{{"code":"body {{ background-color: rgb(7, 11, 19) !important; }}","urls":[{}],"urlPrefixes":[],"domains":[],"regexps":[]}}]}}]"#, crate::chrome_host::protocol::json_string(target.as_str()));
     let script = format!(r#"(()=>{{if(typeof document.body.ondrop!=='function')return {{dropHandler:false,title:document.title}};const data=new DataTransfer();data.items.add(new File([{}],'bowser-disposable-style.json',{{type:'application/json'}}));document.body.dispatchEvent(new DragEvent('drop',{{dataTransfer:data,bubbles:true,cancelable:true}}));return {{dropHandler:true,title:document.title}}}})()"#, crate::chrome_host::protocol::json_string(&style));
     let imported = session.page_script(&script); pump_until(Duration::from_secs(5), || false);
