@@ -770,7 +770,8 @@ fn probe_real_blocker_network(root: &Path, session: &mut Session, loopback: &Loo
     println!("BLOCKER_PROBE enabled_rules={:?}", session.page_script("document.documentElement.getAttribute('data-enabled-rules')"));
     let baseline_loopback = Loopback::start();
     let baseline = Session::open(&root.join("zero-extension-control"), vec![], vec![], &baseline_loopback.page("dnr-fixture"));
-    pump_until(Duration::from_secs(4), || false);
+    assert!(pump_until(Duration::from_secs(30), || baseline_loopback.beacons.lock().unwrap().iter().any(|path| path == "/control-script.js")), "zero-extension baseline did not acknowledge its actual page/script readiness");
+    pump_until(Duration::from_millis(300), || false);
     let baseline_requests = baseline_loopback.beacons.lock().unwrap().clone();
     baseline.close();
     assert!(baseline_requests.iter().any(|p| p == "/control-script.js"), "control did not request its normal script");
@@ -872,6 +873,17 @@ fn probe_real_stylus_appearance(profile: &Path, id: &str, folder: &Path, session
     let effect = styled.as_deref().is_some_and(|value| value.contains("rgb(7, 11, 19)")) && unmatched.as_deref().is_some_and(|value| !value.contains("rgb(7, 11, 19)"));
     println!("STYLUS_APPEARANCE verdict={}", if effect { "actual-imported-style-effect-and-url-boundary-proven-partial" } else { "appearance-effect-not-demonstrated" });
     if !effect { return; }
+    // A genuinely new executable process must retain the imported style, not merely a second
+    // document in the same process. Keep the parent loopback server alive, close its engine first.
+    session.engine.close().unwrap();
+    let child = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "engine::extension_probe_live::live_real_stylus_restart_child", "--ignored", "--nocapture", "--test-threads=1"])
+        .env("BOWSER_STYLUS_RESTART_PROFILE", profile).env("BOWSER_STYLUS_RESTART_ID", id).env("BOWSER_STYLUS_RESTART_URL", target.as_str()).output().unwrap();
+    println!("STYLUS_APPEARANCE restart_child_exit={:?} stdout={} stderr={}", child.status.code(), String::from_utf8_lossy(&child.stdout), String::from_utf8_lossy(&child.stderr));
+    assert!(child.status.success(), "the imported real appearance style did not survive a new executable process");
+    let restarted = Session::open(profile, vec![(id.to_owned(), folder.to_owned())], vec![(id.to_owned(), true)], &target);
+    let old = std::mem::replace(session, restarted); old.close();
+    assert!(session.wait_for_add(profile, id).1.is_none());
     // Real native Remove, then the same under-lease durable commit the product uses.
     let result = Rc::new(RefCell::new(None)); let sink = result.clone(); let records = profile.join("extensions.txt"); let extensions_dir = profile.join("Extensions"); let removed_id = id.to_owned();
     session.engine.remove_extension(id, Box::new(move |native| {
@@ -881,7 +893,7 @@ fn probe_real_stylus_appearance(profile: &Path, id: &str, folder: &Path, session
     pump_until(Duration::from_secs(15), || result.borrow().is_some());
     session.engine.navigate_tab(session.tab(), &target).unwrap(); pump_until(Duration::from_secs(3), || false);
     let removed = session.browsing_script(read);
-    println!("STYLUS_APPEARANCE remove={:?} after_remove={removed:?} folder_exists={} scope=actual-import-style-url-boundary-and-removal-not-process-restart-or-all-features", result.borrow(), folder.exists());
+    println!("STYLUS_APPEARANCE remove={:?} after_remove={removed:?} folder_exists={} scope=actual-import-style-url-boundary-new-process-restart-and-removal-not-all-features", result.borrow(), folder.exists());
 }
 
 /// Real catalogue popup queries with two distinct Bowser browsing views on the same fixture URL.
@@ -1417,4 +1429,27 @@ fn live_probe_profile_private_isolation() {
     pump_until(Duration::from_secs(2), || false); assert_eq!(private.read_marker("data-bowser-probe").as_deref(), Some("null"));
     println!("PRIVATE_ISOLATION persisted_enabled_fixture=true private_first_actual_page_loaded=true private_profile_not_captured=true private_content_absent=true popup_privacy_gate_not_exercised=true later_ordinary_profile_captured=true private_after_ordinary_content_absent=true scope=profile-and-private-not-ui-context");
     private.close(); drop(private_loopback); remove_with_retries(&root);
+}
+
+
+#[test]
+#[ignore = "child of the actual signed Stylus appearance diagnostic"]
+fn live_real_stylus_restart_child() {
+    let profile = std::env::var_os("BOWSER_STYLUS_RESTART_PROFILE").map(PathBuf::from).expect("Only the owning diagnostic starts this child.");
+    assert!(profile.starts_with(std::env::temp_dir()) && profile.file_name().unwrap() == "stylus");
+    let id = std::env::var("BOWSER_STYLUS_RESTART_ID").unwrap(); let target = Url::parse(&std::env::var("BOWSER_STYLUS_RESTART_URL").unwrap()).unwrap();
+    assert_eq!(target.scheme(), "http"); assert_eq!(target.host_str(), Some("127.0.0.1"));
+    unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED).ok().unwrap() };
+    let folder = extensions::folder_for(&profile.join("Extensions"), &id).unwrap();
+    let mut session = Session::open(&profile, vec![(id.clone(), folder)], vec![(id.clone(), true)], &target);
+    assert!(session.wait_for_add(&profile, &id).1.is_none());
+    let mut styled = false;
+    for _ in 0..6 {
+        session.engine.navigate_tab(session.tab(), &target).unwrap(); pump_until(Duration::from_secs(1), || false);
+        styled = session.browsing_script("getComputedStyle(document.body).backgroundColor").as_deref() == Some("\"rgb(7, 11, 19)\"");
+        if styled { break; }
+    }
+    assert!(styled, "actual signed Stylus imported style did not execute after process restart");
+    println!("STYLUS_RESTART actual_computed_colour=rgb(7,11,19) retained_imported_style=true runtime_id={:?}", session.engine.probe_loaded_extension_id(&id));
+    session.close();
 }

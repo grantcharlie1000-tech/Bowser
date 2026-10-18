@@ -97,8 +97,9 @@ pub(crate) fn snapshot(owner: HWND, shown: bool) -> String {
             item.string("publisher", entry.publisher); item.string("category", entry.category);
             item.string("source", entry.source); item.string("homepage", entry.homepage);
             item.string("provenance", "Manually curated from the linked publisher and Chrome Web Store listing. Not an all-store search or availability guarantee.");
-            item.string("checked", entry.checked); item.string("compatibility", "untested");
-            item.string("compatibilityNote", "No version-specific functionality verdict yet. Installation alone does not prove compatibility.");
+            let (compatibility, note) = store::catalogue_evidence(entry.id);
+            item.string("checked", entry.checked); item.string("compatibility", compatibility);
+            item.string("compatibilityNote", note);
         }); });
         out.string("phase", if state.phase.is_empty() { "idle" } else { state.phase });
         out.string("requestId", &state.request); out.string("extensionId", &state.id); out.string("name", &state.name); out.string("version", &state.version);

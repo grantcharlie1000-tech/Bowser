@@ -23,6 +23,18 @@ pub const CATALOGUE: &[CatalogueEntry] = &[
 
 pub fn entry(id: &str) -> Option<&'static CatalogueEntry> { CATALOGUE.iter().find(|entry| entry.id == id) }
 
+/// Historical, exact-version evidence, never a promise about a newly resolved package/runtime.
+pub fn catalogue_evidence(id: &str) -> (&'static str, &'static str) {
+    match id {
+        "ddkjiahejlhfcafbddmgiahcphecmpfh" => ("partial", "Tested version 2026.1012.1545 on WebView2 154.0.4258.62: one real default ad-domain request was blocked with a successful zero-extension/control comparison. Popup action/active-tab targeting remains unsupported. Other package/runtime versions are untested."),
+        "clngdbkpkpeebahjckkjfobafhncgmne" => ("partial", "Tested version 2.4.14 on WebView2 154.0.4258.62: genuine manager imported a local style; exact-URL CSS effect, unmatched-URL exclusion and removal worked. Manager access required diagnostic own-page navigation; normal Manage routing and restart are not yet verified. Other versions are untested."),
+        "nngceckbapebfimnlniiiahkandclblb" => ("untested", "Version 2026.10.0 loaded on WebView2 154.0.4258.62, but dummy-vault autofill is untested. The hosted popup's current-window query targets its own page, not the active Bowser browsing tab. Do not trust real credentials to unverified functionality."),
+        "iaiomicjabeggjcfkbimgmglanimpnae" => ("untested", "Version 7.4.0 loaded on WebView2 154.0.4258.62. Native window IDs group individual WebViews, not Bowser's browser window. Actual Bowser-tab save/restore is unverified; restoration may close native windows. Test only disposable sessions."),
+        _ => ("untested", "No exact-version functionality evidence is available. Installation alone does not prove compatibility."),
+    }
+}
+
+
 pub fn valid_request_id(id: &str) -> bool {
     !id.is_empty() && id.len() <= 64 && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
 }
@@ -204,6 +216,17 @@ mod tests {
         assert!(!second_folder.exists());
         assert_eq!(extensions::read_records(&records_file).unwrap(), vec![record]);
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn historical_compatibility_is_exact_and_never_a_global_chrome_promise() {
+        let (label, note) = catalogue_evidence(CATALOGUE[0].id);
+        assert_eq!(label, "partial"); assert!(note.contains("2026.1012.1545") && note.contains("154.0.4258.62") && note.contains("Other package/runtime versions are untested"));
+        let (label, note) = catalogue_evidence(CATALOGUE[2].id);
+        assert_eq!(label, "partial"); assert!(note.contains("2.4.14") && note.contains("diagnostic own-page navigation"));
+        assert_eq!(catalogue_evidence(CATALOGUE[1].id).0, "untested");
+        assert_eq!(catalogue_evidence(CATALOGUE[3].id).0, "untested");
+        assert_eq!(catalogue_evidence("not-a-catalogue-entry").0, "untested");
     }
 
     #[test]

@@ -32,6 +32,7 @@ jobs:
           cargo +stable test --locked --lib live_current_mv3_store_downloads -- --ignored --nocapture --test-threads=1 2>&1 | Tee-Object store-download-probe.log
           if ($LASTEXITCODE -ne 0) { throw 'Store diagnostic test failed.' }
       - name: Load real signed packages in disposable extension-enabled profiles
+        id: real_packages
         run: |
           $env:BOWSER_EXTENSION_TRACE = '1'
           $env:LOCALAPPDATA = Join-Path $env:RUNNER_TEMP 'bowser-store-isolated-localappdata'
@@ -52,6 +53,7 @@ jobs:
           if-no-files-found: error
           retention-days: 14
       - name: Probe local fixture restart, worker messaging, and hosted-context boundaries
+        if: ${{ !cancelled() }}
         run: |
           $env:BOWSER_EXTENSION_TRACE = '1'
           $env:LOCALAPPDATA = Join-Path $env:RUNNER_TEMP 'bowser-store-isolated-localappdata'
@@ -60,6 +62,7 @@ jobs:
           & $test.FullName live_probe_mv3_extension_executes --ignored --nocapture --test-threads=1 2>&1 | Tee-Object store-fixture-probe.log
           if ($LASTEXITCODE -ne 0) { throw 'MV3 lifecycle fixture probe failed.' }
       - name: Probe real pending native callbacks against a second process
+        if: ${{ !cancelled() }}
         run: |
           $env:BOWSER_EXTENSION_TRACE = '1'
           $env:LOCALAPPDATA = Join-Path $env:RUNNER_TEMP 'bowser-store-isolated-localappdata'
@@ -67,36 +70,42 @@ jobs:
           & $test.FullName live_probe_pending_native_operations --ignored --nocapture --test-threads=1 2>&1 | Tee-Object store-pending-native-probe.log
           if ($LASTEXITCODE -ne 0) { throw 'Real pending native operation diagnostic failed.' }
       - name: Probe completed native revocations across new processes
+        if: ${{ !cancelled() }}
         run: |
           $env:BOWSER_EXTENSION_TRACE = '1'
           $test = Get-ChildItem target/debug/deps/bowser-*.exe | Sort-Object LastWriteTime -Descending | Select-Object -First 1
           & $test.FullName live_probe_completed_revocations_restart --ignored --nocapture --test-threads=1 2>&1 | Tee-Object store-completed-restart-probe.log
           if ($LASTEXITCODE -ne 0) { throw 'Completed native revocation restart diagnostic failed.' }
       - name: Probe stale native owner versus a new signing-identity owner without tracing
+        if: ${{ !cancelled() }}
         run: |
           Remove-Item Env:BOWSER_EXTENSION_TRACE -ErrorAction SilentlyContinue
           $test = Get-ChildItem target/debug/deps/bowser-*.exe | Sort-Object LastWriteTime -Descending | Select-Object -First 1
           & $test.FullName live_probe_stale_owner_replacement --ignored --nocapture --test-threads=1 2>&1 | Tee-Object store-stale-owner-probe.log
           if ($LASTEXITCODE -ne 0) { throw 'Stale native owner replacement diagnostic failed.' }
       - name: Probe fail-closed damaged authority at the actual environment boundary
+        if: ${{ !cancelled() }}
         run: |
           $env:BOWSER_EXTENSION_TRACE = '1'
           $test = Get-ChildItem target/debug/deps/bowser-*.exe | Sort-Object LastWriteTime -Descending | Select-Object -First 1
           & $test.FullName live_probe_fail_closed_environment --ignored --nocapture --test-threads=1 2>&1 | Tee-Object store-fail-closed-environment-probe.log
           if ($LASTEXITCODE -ne 0) { throw 'Actual fail-closed environment diagnostic failed.' }
       - name: Probe actual profile and private-first extension isolation
+        if: ${{ !cancelled() }}
         run: |
           $env:BOWSER_EXTENSION_TRACE = '1'
           $test = Get-ChildItem target/debug/deps/bowser-*.exe | Sort-Object LastWriteTime -Descending | Select-Object -First 1
           & $test.FullName live_probe_profile_private_isolation --ignored --nocapture --test-threads=1 2>&1 | Tee-Object store-profile-private-isolation-probe.log
           if ($LASTEXITCODE -ne 0) { throw 'Actual profile/private isolation diagnostic failed.' }
       - name: Probe signed-keyed process-crash recovery at exact native boundaries
+        if: ${{ !cancelled() }}
         run: |
           $env:BOWSER_EXTENSION_TRACE = '1'
           $test = Get-ChildItem target/debug/deps/bowser-*.exe | Sort-Object LastWriteTime -Descending | Select-Object -First 1
           & $test.FullName live_probe_native_crash_recovery --ignored --nocapture --test-threads=1 2>&1 | Tee-Object store-crash-recovery-probe.log
           if ($LASTEXITCODE -ne 0) { throw 'Native process-crash recovery diagnostic failed.' }
       - name: Probe same-identity immutable replacement and rollback feasibility
+        if: ${{ !cancelled() }}
         run: |
           $env:BOWSER_EXTENSION_TRACE = '1'
           $env:LOCALAPPDATA = Join-Path $env:RUNNER_TEMP 'bowser-store-isolated-localappdata'
@@ -104,6 +113,21 @@ jobs:
           $test = Get-ChildItem target/debug/deps/bowser-*.exe | Sort-Object LastWriteTime -Descending | Select-Object -First 1
           & $test.FullName live_probe_same_identity_update_and_rollback --ignored --nocapture --test-threads=1 2>&1 | Tee-Object store-update-probe.log
           if ($LASTEXITCODE -ne 0) { throw 'Update/storage/rollback feasibility probe failed.' }
+      - name: Save independent native safety gate evidence before resource measurements
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: store-native-safety-diagnostics-${{ github.sha }}
+          path: |
+            store-pending-native-probe.log
+            store-completed-restart-probe.log
+            store-stale-owner-probe.log
+            store-fail-closed-environment-probe.log
+            store-profile-private-isolation-probe.log
+            store-crash-recovery-probe.log
+            store-update-probe.log
+          if-no-files-found: error
+          retention-days: 14
       - name: Probe genuine action activeTab through in-process CDP without unsafe flags
         run: |
           $env:BOWSER_EXTENSION_TRACE = '1'
@@ -121,7 +145,7 @@ jobs:
         working-directory: ui
         run: node scripts/capture-store.mjs "$env:RUNNER_TEMP/bowser-store-rendering"
       - name: Measure actual native zero versus four extension profiles without benchmark mode
-        if: ${{ !cancelled() && env.BOWSER_EXTENSION_MEASURE_ROOT != '' }}
+        if: ${{ !cancelled() && steps.real_packages.outcome == 'success' && env.BOWSER_EXTENSION_MEASURE_ROOT != '' }}
         run: |
           cargo +stable build --release --locked --bin bowser --features html-chrome-default
           if ($LASTEXITCODE -ne 0) { throw 'Release executable for actual extension measurement failed to build.' }

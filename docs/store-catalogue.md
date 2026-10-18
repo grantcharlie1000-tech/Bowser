@@ -37,7 +37,7 @@ CRX3 verification, unpack, and `AddBrowserExtension` passed for these versions:
 | --- | --- | --- | --- |
 | uBlock Origin Lite | 2026.1012.1545 | Genuine popup/options; default ad-domain request blocked while zero-extension baseline received a response and the normal control loaded; native DNR rule add/remove effect | Partial |
 | Bitwarden | 2026.10.0 | Genuine popup intro screen, storage/runtime/tabs/windows; no declared options page; dummy-vault autofill not tested | Untested |
-| Stylus | 2.4.14 | Genuine popup; no declared options page; genuine manager imported a disposable style through its own DOM after diagnostic same-extension hyperlink navigation; appearance effect still awaiting corrected bounded observation | Untested |
+| Stylus | 2.4.14 | Genuine popup; no declared options page; genuine manager imported a disposable style through its own DOM after diagnostic same-extension hyperlink navigation; exact-URL CSS effect, unmatched-URL exclusion and real removal restored original appearance | Partial |
 | Tab Session Manager | 7.4.0 | Genuine popup/options; native windows do not correspond to Bowser's tab grouping; actual save/restore not demonstrated | Untested |
 
 Evidence: [exact real-package probe](https://github.com/grantcharlie1000-tech/Bowser/actions/runs/39091891946),
