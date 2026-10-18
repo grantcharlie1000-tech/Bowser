@@ -369,6 +369,9 @@ jobs:
             store-band-system-comctl-exports.log
             store-native-installer-band-component/*.json
             store-native-installer-band-component/*.png
+            store-native-installer-band-component-v2/*.json
+            store-native-installer-band-component-v2/*.log
+            store-native-installer-band-component-v2/*.png
             store-native-installer-band-component/*.log
             store-guidance-font-measurements.log
             store-page-links-controls.log

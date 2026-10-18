@@ -255,15 +255,24 @@ fn actual_native_installer_band_component() {
     use windows::Win32::{Foundation::RECT,UI::{HiDpi::GetDpiForWindow,WindowsAndMessaging::{MSG,PeekMessageW,PM_REMOVE,TranslateMessage,DispatchMessageW,SetForegroundWindow,GetWindowRect,WS_POPUP}}};
     let args:Vec<_>=std::env::args().skip(1).collect();
     assert_eq!(args.iter().map(String::as_str).collect::<Vec<_>>(),vec!["chrome::store_guidance_layout::native_component::actual_native_installer_band_component","--exact","--ignored","--nocapture","--test-threads=1"]);
-    let owner=unsafe{CreateWindowExW(WINDOW_EX_STYLE::default(),w!("STATIC"),w!("Bowser installer band component - no install authority"),WS_POPUP,0,0,1044,788,None,None,None,None)}.unwrap();
+    // v2 is a separately labelled contained fixture, not a replacement for oversized v1 evidence.
+    use windows::Win32::{Foundation::HINSTANCE,Graphics::Gdi::{GetSysColorBrush,COLOR_WINDOW},System::LibraryLoader::GetModuleHandleW,UI::WindowsAndMessaging::{DefWindowProcW,RegisterClassW,UnregisterClassW,WNDCLASSW}};
+    unsafe extern "system" fn fixture_owner_proc(hwnd:HWND,message:u32,w:WPARAM,l:LPARAM)->LRESULT{unsafe{DefWindowProcW(hwnd,message,w,l)}}
+    struct OwnerClass{instance:HINSTANCE,registered:bool}
+    impl OwnerClass{fn release(&mut self)->bool{if !self.registered{return true}let ok=unsafe{UnregisterClassW(w!("BowserInstallerBandProbeV2"),Some(self.instance))}.is_ok();if ok{self.registered=false}ok}}
+    impl Drop for OwnerClass{fn drop(&mut self){if !self.release(){eprintln!("INSTALLER_BAND_COMPONENT v2 private class retained after uncertain owner teardown; not accepted");}}}
+    let instance:HINSTANCE=unsafe{GetModuleHandleW(None)}.unwrap().into();let background=unsafe{GetSysColorBrush(COLOR_WINDOW)};assert!(!background.0.is_null());
+    let class=WNDCLASSW{lpfnWndProc:Some(fixture_owner_proc),hInstance:instance,hbrBackground:background,lpszClassName:w!("BowserInstallerBandProbeV2"),..Default::default()};
+    assert_ne!(unsafe{RegisterClassW(&class)},0,"existing or unavailable private fixture class must refuse");let mut owner_class=OwnerClass{instance,registered:true};
+    let owner=unsafe{CreateWindowExW(WINDOW_EX_STYLE::default(),w!("BowserInstallerBandProbeV2"),w!("Bowser installer band component - no install authority"),WS_POPUP,0,0,960,680,None,None,Some(instance),None)}.unwrap();
     struct Host(HWND);impl Drop for Host{fn drop(&mut self){if unsafe{IsWindow(Some(self.0))}.as_bool(){let _=unsafe{DestroyWindow(self.0)};}}}
     let host=Host(owner);unsafe{let _=ShowWindow(owner,SW_SHOW);}
-    let dpi=unsafe{GetDpiForWindow(owner)};assert!((96..=768).contains(&dpi));
+    let dpi=unsafe{GetDpiForWindow(owner)};assert_eq!(dpi,96,"v2 capture protocol is explicitly reported-window96DPI only");
     let page=unsafe{CreateWindowExW(WINDOW_EX_STYLE::default(),w!("STATIC"),w!("Disposable reserved page area. This is not Google or an install-capable browser."),WS_CHILD,0,0,1,1,Some(owner),Some(HMENU(0x5b13_usize as *mut _)),None,None)}.unwrap();
-    let mut band=Band::new(owner).unwrap();assert!(Band::new(owner).is_none(),"duplicate owner subclass must not replace the live component authority");let out=PathBuf::from("store-native-installer-band-component");std::fs::create_dir_all(&out).unwrap();
-    for scale in [100_u32,150,200] {for width in [1044_i32,320] {
+    let mut band=Band::new(owner).unwrap();assert!(Band::new(owner).is_none(),"duplicate owner subclass must not replace the live component authority");let out=PathBuf::from("store-native-installer-band-component-v2");std::fs::create_dir_all(&out).unwrap();
+    for scale in [100_u32,150,200] {for width in [960_i32,320] {
         assert!(band.hide(),"must hide controls before releasing old reservation");
-        unsafe{SetWindowPos(owner,Some(HWND_TOP),0,0,width,788,SWP_NOACTIVATE|SWP_SHOWWINDOW).unwrap();}
+        unsafe{SetWindowPos(owner,Some(HWND_TOP),0,0,width,680,SWP_NOACTIVATE|SWP_SHOWWINDOW).unwrap();}
         let mut client=RECT::default();unsafe{GetClientRect(owner,&mut client).unwrap()};
         let old_button=band.button();let old_retired=band.retired_buttons();
         let prepared=band.prepare(client.right,client.bottom,dpi,scale).expect("complete real-font component must fit these representative sizes");
@@ -272,11 +281,11 @@ fn actual_native_installer_band_component() {
         unsafe{SetWindowPos(page,Some(HWND_TOP),area.left,area.top,area.width(),area.height(),SWP_NOACTIVATE|SWP_SHOWWINDOW).unwrap();}
         assert!(band.show(prepared));
         // No webpage/App/Store function is present: the only possible click effect is this counter.
-        if scale==100&&width==1044 {unsafe{let _=SetForegroundWindow(owner);}}
-        let sample=format!("font-{scale}-width-{width}");
+        if scale==100&&width==960 {unsafe{let _=SetForegroundWindow(owner);}}
+        let sample=format!("v2-font-{scale}-width-{width}");
         let mut command=std::process::Command::new("powershell.exe");command.args(["-NoProfile","-File"]).arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("benchmarks/scripts/probe-native-installer-band-component.ps1"));
         command.args(["-OwnerPid",&std::process::id().to_string(),"-OwnerHandle",&(owner.0 as isize).to_string(),"-OwnerExe",std::env::current_exe().unwrap().to_str().unwrap(),"-NoteHandle",&(band.note().0 as isize).to_string(),"-ButtonHandle",&(band.button().0 as isize).to_string(),"-PageHandle",&(page.0 as isize).to_string(),"-NoteLeft",&prepared.plan.note.left.to_string(),"-NoteTop",&prepared.plan.note.top.to_string(),"-NoteWidth",&prepared.plan.note.width().to_string(),"-NoteHeight",&prepared.plan.note.height().to_string(),"-ButtonLeft",&prepared.plan.button.left.to_string(),"-ButtonTop",&prepared.plan.button.top.to_string(),"-ButtonWidth",&prepared.plan.button.width().to_string(),"-ButtonHeight",&prepared.plan.button.height().to_string(),"-PageTop",&area.top.to_string(),"-FontScale",&scale.to_string(),"-Dpi",&dpi.to_string(),"-Sample",&sample,"-Out"]).arg(&out);
-        if scale==100&&width==1044 {command.arg("-Click");}
+        if scale==100&&width==960 {command.arg("-Click");}
         let stdout=std::fs::File::create(out.join(format!("{sample}.stdout.log"))).unwrap();let stderr=std::fs::File::create(out.join(format!("{sample}.stderr.log"))).unwrap();
         let mut child=command.stdout(std::process::Stdio::from(stdout)).stderr(std::process::Stdio::from(stderr)).spawn().unwrap();let started=Instant::now();let mut status=None;
         while started.elapsed()<Duration::from_secs(30){if let Some(done)=child.try_wait().unwrap(){status=Some(done);break}unsafe{let mut msg=MSG::default();while PeekMessageW(&mut msg,None,0,0,PM_REMOVE).as_bool(){let _=TranslateMessage(&msg);DispatchMessageW(&msg);}}std::thread::sleep(Duration::from_millis(10));}
@@ -290,7 +299,7 @@ fn actual_native_installer_band_component() {
             std::thread::sleep(Duration::from_millis(10));
         }
         assert_eq!(band.clicks(),1,"exactly one observed native first-sample click must be the only test-local notification");
-        println!("INSTALLER_BAND_COMPONENT common_controls_context=unmanifested-libtest-not-production-v6 dpi={dpi} font_scale={scale} width={width} stacked={} row_height={} page_top={} captured=true visual_verdict=pending-independent-review install_authority=false",prepared.plan.stacked,prepared.plan.rows.guidance.unwrap().height(),area.top);
+        println!("INSTALLER_BAND_COMPONENT sample_set=v2-contained-960x680-or-320x680 common_controls_context=unmanifested-libtest-not-production-v6 dpi={dpi} font_scale={scale} width={width} stacked={} row_height={} page_top={} captured=true visual_verdict=pending-independent-review install_authority=false",prepared.plan.stacked,prepared.plan.rows.guidance.unwrap().height(),area.top);
     }}
     assert!(band.hide());unsafe{SetWindowPos(owner,Some(HWND_TOP),0,0,120,100,SWP_NOACTIVATE|SWP_SHOWWINDOW).unwrap();}
     assert!(band.prepare(120,100,dpi,200).is_none(),"no-space state must not create a clipped/reserved component");
@@ -306,6 +315,6 @@ fn actual_native_installer_band_component() {
     assert_ne!(band.claim.token,retired_token);assert!(!retire_claim(owner,retired_token,unsafe{GetCurrentThreadId()}));assert!(Band::new(owner).is_none());
     // Destroying the real owner invalidates child authority before the component object drops.
     unsafe{DestroyWindow(host.0).unwrap();}assert!(!band.owner_alive());assert!(band.release());
-    assert_eq!(band.clicks(),0);drop(band);assert!(OwnerClaim::new(owner).is_some_and(|claim|claim.retire()));drop(host);
+    assert_eq!(band.clicks(),0);drop(band);assert!(OwnerClaim::new(owner).is_some_and(|claim|claim.retire()));drop(host);assert!(owner_class.release(),"actual owner destruction must permit successful private class unregister");
     println!("INSTALLER_BAND_COMPONENT no_space_refused=true actual_no_space_page_reservation_released=true actual_owner_close_observed=true only_test_local_notification=true no_production_activation=true");
 }
