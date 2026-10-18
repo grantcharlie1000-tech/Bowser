@@ -115,8 +115,7 @@ fn memory_target(owner: HWND, low: bool) -> bool {
     });
     if let Some((memory, host)) = pair {
         request_memory_target(&memory, low, |target| host.set_bookmark_bar_memory_low(target).ok());
-        let alive = !memory.borrow().closed;
-        alive
+        !memory.borrow().closed
     } else {
         false
     }
