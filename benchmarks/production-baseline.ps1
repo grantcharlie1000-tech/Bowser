@@ -498,7 +498,7 @@ try {
                                 $sample[$state]=@($idleRows.ToArray());foreach($r in $idleRows){$snapshots.Add($r)}
                             }
                             }
-                            if(-not $SidebarRouteSmoke){if(-not $SidebarCapabilityPreflight){[void][BowserProductionNative]::ShowWindow([BowserProductionNative]::FindHost([uint32]$app.Id),9)}}
+                            if(-not $SidebarLifecyclePilot){if(-not $SidebarCapabilityPreflight){[void][BowserProductionNative]::ShowWindow([BowserProductionNative]::FindHost([uint32]$app.Id),9)}}
                             $sample.valid=$true
                         }
                         if($IncludeSurfaceSmoke -and -not $sample.expected_failure){

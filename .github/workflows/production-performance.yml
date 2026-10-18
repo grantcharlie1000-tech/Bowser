@@ -125,6 +125,7 @@ jobs:
           Copy-Item ../evidence/candidate/identity.json ../evidence/sidebar-reference/identity.json
           [ordered]@{artifact_id=12136361999;archive_sha256=$archiveHash;source=$source;scope='Current WITH-minimizer reference retained; archived minus-minimizer interaction reference is NOT used in this sidebar experiment'} | ConvertTo-Json | Set-Content ../evidence/sidebar-frozen-provenance.json
       - name: Reuse verified 8036 sidebar executable after harness-only setup correction
+        id: sidebar_setup
         working-directory: candidate
         env:
           GH_TOKEN: ${{ github.token }}
@@ -149,17 +150,24 @@ jobs:
           Copy-Item (Join-Path $cache 'candidate/*') ../evidence/candidate/ -Force
           # Preserve original candidate identity; HEAD identifies only the corrected harness.
           Copy-Item (Join-Path $cache 'input-manifest.json') ../evidence/input-manifest.json -Force
-          [ordered]@{harness_source=(git rev-parse HEAD).Trim();candidate_source=$source;candidate_tree=$identity.tree;candidate_sha256=$identity.sha256;artifact_id=12137628254;archive_sha256=$archiveHash;rebuild=$false;baseline_kind='Measurement-only current-minimizer line';same_frozen_exe=$true;planned_rows=2;route_smoke=$true;previous_run='39135629025: two retained route failures after successful owned click/Toggle A; ready-ack collection binding failed before app-ready wait';stop='Fixed cohort, retain every failure; no retries/repair; identity/isolation failure blocks later lanes';scope='One fixed fresh/reused route pair: one owned noninteractive-heading click then four observed Toggle actions; no resource/performance claim'} | ConvertTo-Json | Set-Content ../evidence/sidebar-provenance.json
-      - name: Fixed two-row owned activation and observed Toggle route smoke
+          [ordered]@{harness_source=(git rev-parse HEAD).Trim();candidate_source=$source;candidate_tree=$identity.tree;candidate_sha256=$identity.sha256;artifact_id=12137628254;archive_sha256=$archiveHash;rebuild=$false;baseline_kind='Measurement-only current-minimizer line';same_exe_logging_on_off=$true;settled_pairs=3;rapid_pairs=1;planned_rows=16;previous_run='39136198288: both complete route rows passed; actual1A+2Bcontrollerrequests, oneBreplacement, noobservedCloseforreplacedB throughendmarker';stop='Fixed cohort, retain every failure; no retries/repair; identity/isolation failure blocks later lanes';scope='Preserved fixed settled/rapid ON-OFF lifecycle/resource baseline using the verified owned-heading-click and observed Toggle route; logging overhead only, not an optimization benefit'} | ConvertTo-Json | Set-Content ../evidence/sidebar-provenance.json
+      - name: Fixed settled sidebar logging ON OFF lifecycle and resource baseline
         working-directory: candidate
         run: |
-          ./benchmarks/production-baseline.ps1 -BaselineExe ../evidence/frozen/untouched-main.exe -DiagnosticExe ../evidence/sidebar-reference/reference.exe -DiagnosticSource (Get-Content ../evidence/sidebar-reference/identity.json -Raw | ConvertFrom-Json).source -ReleaseExe ../evidence/frozen/released-v0.0.19.exe -CandidateExe ../evidence/candidate/candidate.exe -CandidateSource (Get-Content ../evidence/candidate/identity.json -Raw | ConvertFrom-Json).source -DiagnosticAutoUpdateOff -ExpectedInputManifest ../evidence/input-manifest.json -SidebarLifecyclePilot -SidebarRouteSmoke -StartupOnly -PositiveOnly -Fixtures light -MeasurementMode timing -MaxInvalidSamples 2 -Pairs 1 -Out ../evidence/sidebar-route
-      - name: Summarize route correctness without performance statistics
+          ./benchmarks/production-baseline.ps1 -BaselineExe ../evidence/frozen/untouched-main.exe -DiagnosticExe ../evidence/sidebar-reference/reference.exe -DiagnosticSource (Get-Content ../evidence/sidebar-reference/identity.json -Raw | ConvertFrom-Json).source -ReleaseExe ../evidence/frozen/released-v0.0.19.exe -CandidateExe ../evidence/candidate/candidate.exe -CandidateSource (Get-Content ../evidence/candidate/identity.json -Raw | ConvertFrom-Json).source -DiagnosticAutoUpdateOff -ExpectedInputManifest ../evidence/input-manifest.json -SidebarLifecyclePilot -StartupOnly -PositiveOnly -Fixtures light -MeasurementMode timing -MaxInvalidSamples 20 -SidebarScenario settled -Pairs 3 -Out ../evidence/sidebar-settled
+      - name: Fixed rapid sidebar logging ON OFF lifecycle and resource baseline
+        if: ${{ !cancelled() && steps.sidebar_setup.outcome == 'success' }}
+        working-directory: candidate
+        run: |
+          ./benchmarks/production-baseline.ps1 -BaselineExe ../evidence/frozen/untouched-main.exe -DiagnosticExe ../evidence/sidebar-reference/reference.exe -DiagnosticSource (Get-Content ../evidence/sidebar-reference/identity.json -Raw | ConvertFrom-Json).source -ReleaseExe ../evidence/frozen/released-v0.0.19.exe -CandidateExe ../evidence/candidate/candidate.exe -CandidateSource (Get-Content ../evidence/candidate/identity.json -Raw | ConvertFrom-Json).source -DiagnosticAutoUpdateOff -ExpectedInputManifest ../evidence/input-manifest.json -SidebarLifecyclePilot -StartupOnly -PositiveOnly -Fixtures light -MeasurementMode timing -MaxInvalidSamples 20 -SidebarScenario rapid -Pairs 1 -Out ../evidence/sidebar-rapid
+      - name: Describe fixed sidebar resource rows without accepting gains
         if: always()
         working-directory: candidate
         run: |
-          $rows=@(Get-ChildItem ../evidence/sidebar-route -Filter '*-light-*.json' -ErrorAction SilentlyContinue | ForEach-Object {Get-Content $_.FullName -Raw | ConvertFrom-Json})
-          [ordered]@{planned_rows=2;actual_rows=$rows.Count;valid_rows=@($rows|Where-Object valid).Count;scope='Fixed owned activation and Toggle route; no input latency or resource comparison'} | ConvertTo-Json | Set-Content ../evidence/sidebar-route-summary.json
+          foreach($lane in @('sidebar-settled','sidebar-rapid')) {
+            $folder="../evidence/$lane"
+            if(Test-Path "$folder/environment.json") {python benchmarks/sidebar-analyze.py $folder;if($LASTEXITCODE -ne 0){throw "Sidebar analysis failed for $lane; raw rows remain preserved"}}
+          }
       - name: Preserve raw samples and frozen executables, not disposable renderer caches
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
