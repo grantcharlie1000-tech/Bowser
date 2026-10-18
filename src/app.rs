@@ -5964,7 +5964,8 @@ impl App {
                             let state = app.borrow();
                             (state.hwnd, state.tab_model.active() == tab_id)
                         };
-                        if active || !on {
+                        let owns = win32::page_fullscreen_owner(hwnd) == Some(tab_id);
+                        if crate::auto_hide::page_fullscreen_event_applies(on, active, owns) {
                             win32::page_fullscreen(hwnd, &app, on, source.as_ref());
                         }
                     }

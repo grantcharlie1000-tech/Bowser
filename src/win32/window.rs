@@ -1800,6 +1800,10 @@ pub(crate) fn toggle_fullscreen(hwnd: HWND, app: &AppRef) {
 pub(crate) fn page_fullscreen(hwnd: HWND, app: &AppRef, on: bool, source: Option<&url::Url>) {
     auto_hide::page_fullscreen(hwnd, app, on, source);
 }
+/// The tab whose page holds page full screen in `hwnd`, if any.
+pub(crate) fn page_fullscreen_owner(hwnd: HWND) -> Option<crate::tabs::TabId> {
+    fullscreen_notice::owner(hwnd)
+}
 pub(super) fn bookmark_bar_placement(hwnd: HWND) -> Option<(RECT, bool)> {
     auto_hide::bookmark_bar_placement(hwnd)
 }

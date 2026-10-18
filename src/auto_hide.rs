@@ -239,6 +239,14 @@ pub fn plan_for(hidden: Bars, layout: TabLayout, tab_bar: bool) -> Plan {
     Plan { top: hidden.contains(Bars::ADDRESS), sidebar: false, ..plan(hidden, layout) }
 }
 
+/// Whether a page's "entered / left full screen" event (`on`) acts on the window: only the shown
+/// tab (`active`) can take page full screen, and a "left" event ends it only when it comes from the
+/// shown tab or the tab that holds it (`owns`). A late "left" from a background tab, one that was
+/// full screen before a switch or has already ended, must not end the shown tab's full screen.
+pub fn page_fullscreen_event_applies(on: bool, active: bool, owns: bool) -> bool {
+    if on { active } else { active || owns }
+}
+
 impl Plan {
     /// The part of this plan `layout.rs` lays out.
     pub fn layout(self) -> crate::chrome::layout::AutoHide {
@@ -582,6 +590,17 @@ mod tests {
                 assert_eq!(plan_for(hidden, layout, true), plan(hidden, layout), "{layout:?} {hidden:?}: a shown tab bar is unchanged");
             }
         }
+    }
+
+    #[test]
+    fn page_full_screen_belongs_to_the_shown_tab_and_a_late_exit_from_another_tab_is_ignored() {
+        for owns in [false, true] {
+            assert!(!page_fullscreen_event_applies(true, false, owns), "a background tab cannot take the screen (owns {owns})");
+            assert!(page_fullscreen_event_applies(true, true, owns), "the shown tab can (owns {owns})");
+            assert!(page_fullscreen_event_applies(false, true, owns), "the shown tab can leave (owns {owns})");
+        }
+        assert!(!page_fullscreen_event_applies(false, false, false), "a late exit from a background tab leaves the shown tab full screen");
+        assert!(page_fullscreen_event_applies(false, false, true), "the tab that holds it can still end it");
     }
 
     #[test]
