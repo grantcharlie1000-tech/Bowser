@@ -1474,6 +1474,7 @@ struct EngineCore {
     known_extensions: Vec<(String, bool)>,
     /// Where `extension_ids` is saved.
     extension_ids_file: Option<PathBuf>,
+    extension_records_file: Option<PathBuf>,
     /// Bowser id to WebView2 extension id, for extensions present in the profile.
     extension_ids: HashMap<String, String>,
     /// Stored per-site permission decisions. `None` denies every request, as before the store.
@@ -2247,11 +2248,8 @@ fn reconcile_profile(
             let present = match result {
                 Ok(present) => present,
                 Err(_) => {
-                    // The profile cannot be read: add each enabled extension as a fresh load.
-                    for (id, folder) in pending {
-                        let report = report_load(id.clone());
-                        add_extension(&core, &profile_for_add, id, &folder, report);
-                    }
+                    // No native ownership inventory means no safe mutation or Add fallback.
+                    for (id, _) in pending { report_load(id)(Err("The profile's extension inventory could not be read. Nothing was loaded.".into())); }
                     return;
                 }
             };
@@ -2267,7 +2265,6 @@ fn reconcile_profile(
                 .map(|(bowser, webview)| (webview.clone(), bowser.clone()))
                 .collect();
             let folder_ready: HashSet<String> = pending.iter().map(|(id, _)| id.clone()).collect();
-            let mut mapping = HashMap::new();
             let mut held = HashMap::new();
             let mut unloads = Vec::new();
             let mut disables = Vec::new();
@@ -2282,48 +2279,77 @@ fn reconcile_profile(
                 match reconcile_action(record, folder_ready.contains(&bowser)) {
                     ProfileExtensionAction::Remove => unloads.push((bowser, extension)),
                     ProfileExtensionAction::Disable => {
-                        mapping.insert(bowser.clone(), webview_id);
                         held.insert(bowser.clone(), extension.clone());
                         disables.push(extension);
                     }
                     ProfileExtensionAction::Enable => {
-                        mapping.insert(bowser.clone(), webview_id);
                         held.insert(bowser.clone(), extension.clone());
                         enables.push((bowser, extension));
                     }
                 }
             }
-            for (id, extension) in unloads {
-                remove_loaded(&core, id, &extension, Box::new(|_| {}));
-            }
-            for extension in disables {
-                set_loaded_enabled(&extension, false, Box::new(|_| {}));
-            }
-            let reused: HashSet<String> = enables.iter().map(|(id, _)| id.clone()).collect();
+            // Inventory itself changes no authority. Native mutations are serialized and each
+            // queued operation revalidates the current record/map under the runtime lease.
             {
                 let mut state = core.borrow_mut();
-                match persist_extension_ids(state.extension_ids_file.as_deref(), &previous, &mapping) {
-                    Ok(current) => state.extension_ids = current,
-                    Err(reason) => {
+                let current = state.extension_ids_file.as_deref().map(read_extension_ids).transpose();
+                match current {
+                    Ok(Some(current)) => state.extension_ids = current,
+                    _ => {
                         drop(state);
-                        for (id, extension) in held { crate::extensions::record_load_result(&id, Err(reason.clone())); set_loaded_enabled(&extension, false, Box::new(|_| {})); }
-                        for (id, _) in &pending { crate::extensions::record_load_result(id, Err(reason.clone())); }
+                        for (id, extension) in held { record_load(&id, Err("Extension ownership could not be read safely.".into()), win32::extensions_changed); set_loaded_enabled(&extension, false, Box::new(|_| {})); }
+                        for (id, _) in &pending { record_load(id, Err("Extension ownership could not be read safely.".into()), win32::extensions_changed); }
                         return;
                     }
                 }
                 state.extensions_loaded.extend(held);
             }
-            for (id, extension) in enables {
-                set_loaded_enabled(&extension, true, report_load(id));
-            }
-            for (id, folder) in pending {
-                if !reused.contains(&id) {
-                    let report = report_load(id.clone());
-                    add_extension(&core, &profile_for_add, id, &folder, report);
+            let reused: HashSet<String> = enables.iter().map(|(id, _)| id.clone()).collect();
+            let mut operations = VecDeque::new();
+            operations.extend(unloads.into_iter().map(|(id, extension)| StartupExtensionMutation::Remove(id, extension)));
+            // Keep Bowser ids with disabled objects as well, for fresh ownership/record validation.
+            for extension in disables {
+                if let Some(native) = extension_webview_id(&extension) {
+                    if let Some(id) = webview_to_bowser.get(&native) { operations.push_back(StartupExtensionMutation::Set(id.clone(), extension)); }
                 }
             }
+            operations.extend(enables.into_iter().map(|(id, extension)| StartupExtensionMutation::Set(id, extension)));
+            operations.extend(pending.into_iter().filter(|(id, _)| !reused.contains(id)).map(|(id, folder)| StartupExtensionMutation::Add(id, folder)));
+            run_startup_extension_mutation(&core, &profile_for_add, Rc::new(RefCell::new(operations)));
         }),
     );
+}
+
+enum StartupExtensionMutation {
+    Remove(String, ICoreWebView2BrowserExtension),
+    Set(String, ICoreWebView2BrowserExtension),
+    Add(String, PathBuf),
+}
+
+fn run_startup_extension_mutation(core: &Rc<RefCell<EngineCore>>, profile: &ICoreWebView2Profile7, queue: Rc<RefCell<VecDeque<StartupExtensionMutation>>>) {
+    let Some(operation) = queue.borrow_mut().pop_front() else { return; };
+    let id = match &operation { StartupExtensionMutation::Remove(id, _) | StartupExtensionMutation::Set(id, _) | StartupExtensionMutation::Add(id, _) => id.clone() };
+    let weak = Rc::downgrade(core); let next_profile = profile.clone();
+    let done: ExtensionDone = Box::new(move |result| {
+        report_load(id)(result);
+        if let Some(core) = weak.upgrade() { run_startup_extension_mutation(&core, &next_profile, queue); }
+    });
+    match operation {
+        StartupExtensionMutation::Remove(id, extension) => {
+            // A stale inventory must not remove an extension that has since been reinstalled/on.
+            match current_extension_record(core, &id) {
+                Ok(Some(record)) if record.enabled => done(Err("Startup removal became stale; the current enabled record was preserved.".into())),
+                Ok(_) => remove_startup_extension(core, id, &extension, done),
+                Err(reason) => done(Err(reason)),
+            }
+        }
+        StartupExtensionMutation::Set(id, extension) => match current_extension_record(core, &id) {
+            Ok(Some(record)) => set_managed_enabled(core, &id, &extension, record.enabled, false, done),
+            Ok(None) => remove_startup_extension(core, id, &extension, done),
+            Err(reason) => done(Err(reason)),
+        },
+        StartupExtensionMutation::Add(id, folder) => add_extension(core, profile, id, &folder, done),
+    }
 }
 
 /// Removes an extension that is in the profile but not loaded in this session. It is found by
@@ -2335,6 +2361,7 @@ fn remove_unloaded(
     webview_id: String,
     done: ExtensionDone,
 ) {
+    let done = match runtime_operation(core, done) { Ok(done) => done, Err((reason, done)) => { done(Err(reason)); return; } };
     let weak = Rc::downgrade(core);
     list_profile_extensions(
         profile,
@@ -2354,10 +2381,14 @@ fn remove_unloaded(
                 return;
             };
             match found {
-                Some(extension) => remove_loaded(&core, id, &extension, done),
+                Some(extension) => remove_loaded_locked(&core, id, &extension, done),
                 None => {
                     {
                         let mut state = core.borrow_mut();
+                        let current = state.extension_ids_file.as_deref().map(read_extension_ids).transpose();
+                        if !matches!(current, Ok(Some(ref ids)) if ids.get(&id) == state.extension_ids.get(&id)) {
+                            done(Err("Removal ownership changed during inventory. Nothing was removed.".into())); return;
+                        }
                         let previous = state.extension_ids.clone();
                         let mut desired = previous.clone(); desired.remove(&id);
                         match persist_extension_ids(state.extension_ids_file.as_deref(), &previous, &desired) {
@@ -2395,10 +2426,6 @@ fn format_extension_ids(ids: &HashMap<String, String>) -> String {
     lines.concat()
 }
 
-fn load_extension_ids(path: &Path) -> HashMap<String, String> {
-    read_extension_ids(path).unwrap_or_default()
-}
-
 /// Ownership is authoritative only when the entire bounded, no-follow file is well formed.
 fn read_extension_ids(path: &Path) -> std::result::Result<HashMap<String, String>, String> {
     use std::{io::Read, os::windows::fs::{MetadataExt, OpenOptionsExt}};
@@ -2412,7 +2439,11 @@ fn read_extension_ids(path: &Path) -> std::result::Result<HashMap<String, String
             file.take(1024 * 1024 + 1).read_to_string(&mut text).map_err(|_| "Extension ownership could not be read safely.".to_owned())?;
             if text.len() > 1024 * 1024 { return Err("Extension ownership exceeded its safe size.".into()); }
         }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            if std::fs::symlink_metadata(path.with_extension("initialized")).is_ok() {
+                return Err("Initialized extension ownership is missing. Extensions stay off; preserve this profile for recovery.".into());
+            }
+        }
         Err(_) => return Err("Extension ownership could not be read safely.".into()),
     }
     let current = parse_extension_ids(&text);
@@ -2454,6 +2485,25 @@ fn merge_extension_ids(
     Ok(())
 }
 
+fn initialize_extension_ownership_marker(path: &Path) -> std::result::Result<(), String> {
+    use std::{io::{Read, Write}, os::windows::fs::{MetadataExt, OpenOptionsExt}};
+    let marker = path.with_extension("initialized");
+    match std::fs::OpenOptions::new().write(true).create_new(true).open(&marker) {
+        Ok(mut file) => file.write_all(b"bowser-extension-ownership-v1\n").and_then(|()| file.sync_all())
+            .map_err(|_| "Extension ownership initialization could not be saved.".to_owned()),
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            let file = std::fs::OpenOptions::new().read(true).custom_flags(0x0020_0000).open(&marker)
+                .map_err(|_| "Extension ownership initialization could not be read.".to_owned())?;
+            let meta = file.metadata().map_err(|_| "Extension ownership initialization metadata is unavailable.".to_owned())?;
+            if !meta.is_file() || meta.file_attributes() & 0x400 != 0 || meta.len() > 64 { return Err("Extension ownership initialization is invalid.".into()); }
+            let mut text = String::new(); file.take(65).read_to_string(&mut text).map_err(|_| "Extension ownership initialization is unreadable.".to_owned())?;
+            if text != "bowser-extension-ownership-v1\n" { return Err("Extension ownership initialization is invalid.".into()); }
+            Ok(())
+        }
+        Err(_) => Err("Extension ownership initialization could not be created.".into()),
+    }
+}
+
 fn persist_extension_ids(
     path: Option<&Path>, previous: &HashMap<String, String>, desired: &HashMap<String, String>,
 ) -> std::result::Result<HashMap<String, String>, String> {
@@ -2472,18 +2522,65 @@ fn persist_extension_ids(
         std::fs::rename(&temp, path)
     })();
     if written.is_err() { if created { let _ = std::fs::remove_file(&temp); } return Err("Extension ownership could not be saved. Installation was not accepted.".into()); }
+    initialize_extension_ownership_marker(path)?;
     Ok(current)
+}
+
+/// A native operation is serialized across this owning profile's processes. Records/map leases
+/// are acquired only inside this lease, never in the opposite order. The callback wrapper keeps
+/// the guard alive through the caller's final record commit, including Remove -> uninstall.
+fn runtime_operation(
+    core: &Rc<RefCell<EngineCore>>, done: ExtensionDone,
+) -> std::result::Result<ExtensionDone, (String, ExtensionDone)> {
+    runtime_operation_mode(core, done, true)
+}
+
+fn runtime_operation_mode(core: &Rc<RefCell<EngineCore>>, done: ExtensionDone, through_done: bool) -> std::result::Result<ExtensionDone, (String, ExtensionDone)> {
+    let path = core.borrow().extension_records_file.clone();
+    let guard = match path.as_deref().map(crate::extensions::RecordsLease::runtime).transpose() {
+        Ok(guard) => guard,
+        Err(_) => return Err(("Another extension operation is finishing in this profile. Wait and retry; nothing was changed by this operation.".into(), done)),
+    };
+    Ok(runtime_completion(guard, done, through_done))
+}
+
+fn runtime_completion(guard: Option<crate::extensions::RecordsLease>, done: ExtensionDone, through_done: bool) -> ExtensionDone {
+    Box::new(move |result| {
+        if through_done { done(result); drop(guard); }
+        else { drop(guard); done(result); }
+    })
+}
+
+fn current_extension_record(core: &Rc<RefCell<EngineCore>>, id: &str) -> std::result::Result<Option<crate::extensions::Record>, String> {
+    let path = core.borrow().extension_records_file.clone().ok_or_else(|| "The owning extension record file is unavailable.".to_owned())?;
+    crate::extensions::read_authority_records(&path).map_err(|_| "The owning extension records could not be read safely.".to_owned())
+        .map(|records| records.into_iter().find(|record| record.id == id))
+}
+
+fn require_load_record(core: &Rc<RefCell<EngineCore>>, id: &str, allow_disabled: bool) -> std::result::Result<(), String> {
+    match current_extension_record(core, id)? {
+        Some(record) if record.enabled || allow_disabled => Ok(()),
+        _ => Err("This extension was disabled or removed before loading. It was not loaded.".into()),
+    }
 }
 
 /// Adds an unpacked extension folder to the profile. On success the loaded extension is kept so
 /// it can be enabled, disabled or removed later.
-fn add_extension(
-    core: &Rc<RefCell<EngineCore>>,
-    profile: &ICoreWebView2Profile7,
-    id: String,
-    folder: &Path,
-    done: ExtensionDone,
-) {
+fn add_extension(core: &Rc<RefCell<EngineCore>>, profile: &ICoreWebView2Profile7, id: String, folder: &Path, done: ExtensionDone) {
+    add_extension_mode(core, profile, id, folder, false, done);
+}
+
+fn add_extension_mode(core: &Rc<RefCell<EngineCore>>, profile: &ICoreWebView2Profile7, id: String, folder: &Path, commit_enabled: bool, done: ExtensionDone) {
+    let done = match runtime_operation_mode(core, done, commit_enabled) { Ok(done) => done, Err((reason, done)) => { done(Err(reason)); return; } };
+    if let Err(reason) = require_load_record(core, &id, commit_enabled) { done(Err(reason)); return; }
+    if commit_enabled {
+        // Enabling GRANTS authority, so persist the explicit user's grant before native code can
+        // run. Disabling revokes authority in the opposite order: native off, then durable off.
+        let path = core.borrow().extension_records_file.clone();
+        if path.as_deref().ok_or(crate::extensions::ExtensionError::Io).and_then(|path| crate::extensions::set_enabled_under_runtime(path, &id, true)).is_err() {
+            done(Err("The enabled setting could not be saved. Nothing was loaded.".into())); return;
+        }
+    }
     let expected = match crate::extensions::manifest_key_id(folder) {
         Ok(Some(expected)) => expected,
         Ok(None) => { add_extension_owned(core, profile, id, folder, None, done); return; }
@@ -2494,7 +2591,14 @@ fn add_extension(
     list_profile_extensions(&profile_for_list, Box::new(move |present| {
         let Some(core) = weak.upgrade() else { done(Err("Bowser closed this profile.".into())); return; };
         let present = match present { Ok(present) => present, Err(reason) => { done(Err(format!("The profile's existing extension ownership could not be checked: {reason}"))); return; } };
-        let owned = core.borrow().extension_ids.get(&id).is_some_and(|known| *known == expected);
+        if let Err(reason) = require_load_record(&core, &id, false) { done(Err(reason)); return; }
+        let map_path = core.borrow().extension_ids_file.clone();
+        let current = match map_path.as_deref().map(read_extension_ids).transpose() {
+            Ok(Some(current)) => current,
+            _ => { done(Err("The owning extension map could not be revalidated. Nothing was loaded.".into())); return; }
+        };
+        let owned = current.get(&id).is_some_and(|known| *known == expected);
+        core.borrow_mut().extension_ids = current;
         if !owned && present.iter().any(|(native_id, _)| *native_id == expected) {
             done(Err("An extension with this identity already exists outside this Bowser record. Bowser did not replace or take ownership of it.".into()));
             return;
@@ -2530,6 +2634,18 @@ fn add_extension_owned(
             let result = match (status, extension) {
                 (Ok(()), Some(extension)) => {
                     let (traced_id, traced_name) = extension_identity(&extension);
+                    if let Some(core) = weak.upgrade() {
+                        if let Err(reason) = require_load_record(&core, &loaded_id, false) {
+                            let stale = completion.clone();
+                            // This exact object was returned by our Add; removal cannot target
+                            // a different native identity obtained from a stale map.
+                            let handler = BrowserExtensionRemoveCompletedHandler::create(Box::new(move |status| {
+                                finish_slot(&stale, Err(if status.is_ok() { reason } else { format!("{reason} The stale returned extension could not be removed; close this profile.") })); Ok(())
+                            }));
+                            if let Err(error) = unsafe { extension.Remove(&handler) } { finish_slot(&completion, Err(format!("The stale returned extension could not be removed: {error}"))); }
+                            return Ok(());
+                        }
+                    }
                     let actual_identity = extension_webview_id(&extension);
                     if expected_identity.as_ref().is_some_and(|expected| actual_identity.as_ref() != Some(expected)) {
                         // This object was returned by our consented Add call. Do not claim success,
@@ -2604,6 +2720,70 @@ fn add_extension_owned(
     }
 }
 
+fn set_managed_enabled(core: &Rc<RefCell<EngineCore>>, id: &str, extension: &ICoreWebView2BrowserExtension, enabled: bool, commit: bool, done: ExtensionDone) {
+    let done = match runtime_operation_mode(core, done, commit) { Ok(done) => done, Err((reason, done)) => { done(Err(reason)); return; } };
+    set_managed_enabled_locked(core, id, extension, enabled, commit, done);
+}
+
+fn set_managed_enabled_locked(core: &Rc<RefCell<EngineCore>>, id: &str, extension: &ICoreWebView2BrowserExtension, enabled: bool, commit: bool, done: ExtensionDone) {
+    let previous_enabled = match current_extension_record(core, id) {
+        Ok(Some(record)) => record.enabled,
+        _ => { done(Err("This extension's owning record is absent or unreadable. No switch was applied.".into())); return; }
+    };
+    let enabled = if commit { enabled } else { previous_enabled };
+    let state = core.borrow();
+    let actual = extension_webview_id(extension);
+    let current = state.extension_ids_file.as_deref().map(read_extension_ids).transpose();
+    let valid = matches!(current, Ok(Some(ref ids)) if actual.is_some() && ids.get(id) == actual.as_ref() && state.extension_ids.get(id) == actual.as_ref());
+    drop(state);
+    if !valid { done(Err("The native extension's owning record could not be revalidated. Nothing was switched.".into())); return; }
+    if !commit { set_loaded_enabled(extension, enabled, done); return; }
+    let path = core.borrow().extension_records_file.clone(); let id = id.to_owned(); let rollback = extension.clone();
+    if enabled {
+        let saved = path.as_deref().ok_or(crate::extensions::ExtensionError::Io)
+            .and_then(|path| crate::extensions::set_enabled_under_runtime(path, &id, true));
+        if saved.is_err() { done(Err("The enabled setting could not be saved. No native grant was applied.".into())); return; }
+        set_loaded_enabled(extension, true, done); return;
+    }
+    set_loaded_enabled(extension, enabled, Box::new(move |result| {
+        if let Err(reason) = result { done(Err(reason)); return; }
+        let saved = path.as_deref().ok_or(crate::extensions::ExtensionError::Io)
+            .and_then(|path| crate::extensions::set_enabled_under_runtime(path, &id, enabled));
+        if saved.is_ok() { done(Ok(())); return; }
+        set_loaded_enabled(&rollback, previous_enabled, Box::new(move |restored| {
+            done(Err(if restored.is_ok() { "The extension flag could not be saved. The native switch was rolled back.".into() }
+                else { "The extension flag could not be saved and native rollback failed. Close this profile.".into() }));
+        }));
+    }));
+}
+
+fn disable_unloaded(core: &Rc<RefCell<EngineCore>>, profile: &ICoreWebView2Profile7, id: String, done: ExtensionDone) {
+    let done = match runtime_operation(core, done) { Ok(done) => done, Err((reason, done)) => { done(Err(reason)); return; } };
+    let weak = Rc::downgrade(core);
+    list_profile_extensions(profile, Box::new(move |present| {
+        let Some(core) = weak.upgrade() else { done(Err("The owning profile closed.".into())); return; };
+        let present = match present { Ok(present) => present, Err(reason) => { done(Err(reason)); return; } };
+        let path = core.borrow().extension_ids_file.clone();
+        let current = match path.as_deref().map(read_extension_ids).transpose() {
+            Ok(Some(current)) => current,
+            _ => { done(Err("The owning extension map could not be read safely.".into())); return; }
+        };
+        if let Some(native) = current.get(&id) {
+            if let Some((_, extension)) = present.into_iter().find(|(found, _)| found == native) {
+                core.borrow_mut().extension_ids = current;
+                set_managed_enabled_locked(&core, &id, &extension, false, true, done); return;
+            }
+        }
+        // A successful native inventory proved this owned identity is not running. Commit off
+        // under the same lease, rather than reporting a pending Add as already disabled.
+        let path = core.borrow().extension_records_file.clone();
+        let result = path.as_deref().ok_or(crate::extensions::ExtensionError::Io)
+            .and_then(|path| crate::extensions::set_enabled_under_runtime(path, &id, false))
+            .map_err(|error| format!("The disabled flag was not saved: {error}"));
+        done(result);
+    }));
+}
+
 fn set_loaded_enabled(
     extension: &ICoreWebView2BrowserExtension,
     enabled: bool,
@@ -2643,6 +2823,23 @@ fn remove_loaded(
     extension: &ICoreWebView2BrowserExtension,
     done: ExtensionDone,
 ) {
+    let done = match runtime_operation(core, done) { Ok(done) => done, Err((reason, done)) => { done(Err(reason)); return; } };
+    remove_loaded_locked(core, id, extension, done);
+}
+
+fn remove_startup_extension(core: &Rc<RefCell<EngineCore>>, id: String, extension: &ICoreWebView2BrowserExtension, done: ExtensionDone) {
+    let done = match runtime_operation_mode(core, done, false) { Ok(done) => done, Err((reason, done)) => { done(Err(reason)); return; } };
+    remove_loaded_locked(core, id, extension, done);
+}
+
+fn remove_loaded_locked(core: &Rc<RefCell<EngineCore>>, id: String, extension: &ICoreWebView2BrowserExtension, done: ExtensionDone) {
+    let actual = extension_webview_id(extension);
+    let (path, cached) = { let state = core.borrow(); (state.extension_ids_file.clone(), state.extension_ids.get(&id).cloned()) };
+    let current = path.as_deref().map(read_extension_ids).transpose();
+    match current {
+        Ok(Some(current)) if cached.is_some() && current.get(&id) == cached.as_ref() && actual == cached => {}
+        _ => { done(Err("Native removal ownership changed or could not be established. Nothing was removed.".into())); return; }
+    }
     let slot = once_slot(done);
     let completion = slot.clone();
     let weak = Rc::downgrade(core);
@@ -2789,15 +2986,29 @@ impl WebView2Engine {
                 extensions_refused = Some(reason);
             }
         }
-        let browser_extensions = extras.browser_extensions && extensions_refused.is_none();
         let known_extensions = extras.known_extensions;
         let extension_ids_file = extras.extension_ids_file;
+        let extension_records_file = extras.extension_records_file;
         let permissions = extras.permissions;
         let chrome_ui_scheme_requested = extras.chrome_ui_scheme;
-        let extension_ids = extension_ids_file
-            .as_deref()
-            .map(load_extension_ids)
-            .unwrap_or_default();
+        let extension_ids = match extension_ids_file.as_deref().map(read_extension_ids).transpose() {
+            Ok(Some(ids)) => ids,
+            Ok(None) => HashMap::new(),
+            Err(reason) => { extensions_refused = Some(reason); HashMap::new() }
+        };
+        if extras.browser_extensions && extensions_refused.is_none() {
+            let safe = extension_records_file.as_deref().ok_or_else(|| "The owning extension record file is unavailable.".to_owned())
+                .and_then(|path| crate::extensions::read_authority_records(path).map_err(|_| "The owning extension records are unsafe or unreadable.".to_owned()))
+                .and_then(|_| {
+                    let path = extension_ids_file.as_deref().ok_or_else(|| "The owning extension map is unavailable.".to_owned())?;
+                    let records = extension_records_file.as_deref().ok_or_else(|| "The owning extension records are unavailable.".to_owned())?;
+                    let _runtime = crate::extensions::RecordsLease::runtime(records).map_err(|_| "An extension operation is finishing. Extensions stay off in this window; retry after it completes.".to_owned())?;
+                    persist_extension_ids(Some(path), &extension_ids, &extension_ids).map(|_| ())
+                });
+            if let Err(reason) = safe { extensions_refused = Some(reason); }
+        }
+        if let Some(reason) = &extensions_refused { for (id, _) in &startup_extensions { report_load(id.clone())(Err(reason.clone())); } }
+        let browser_extensions = extras.browser_extensions && extensions_refused.is_none();
         let creation_log = events.policy_event.clone();
         if let Some(log) = creation_log.as_ref() {
             log("webview_profile_started");
@@ -2926,6 +3137,7 @@ impl WebView2Engine {
                         startup_extensions: startup_extensions.clone(),
                         known_extensions: known_extensions.clone(),
                         extension_ids_file: extension_ids_file.clone(),
+                        extension_records_file: extension_records_file.clone(),
                         extension_ids: extension_ids.clone(),
                         permissions: permissions.clone(),
                         chrome_ui_scheme: chrome_ui_scheme_env.get(),
@@ -3043,10 +3255,10 @@ impl EngineAdapter for WebView2Engine {
             )
         };
         match (loaded, profile) {
-            (Some(extension), _) => set_loaded_enabled(&extension, enabled, done),
-            (None, _) if !enabled => done(Ok(())),
+            (Some(extension), _) => set_managed_enabled(&self.core, id, &extension, enabled, true, done),
+            (None, Some(profile)) if !enabled => disable_unloaded(&self.core, &profile, id.to_owned(), done),
             (None, Some(profile)) => {
-                add_extension(&self.core, &profile, id.to_owned(), folder, done)
+                add_extension_mode(&self.core, &profile, id.to_owned(), folder, true, done)
             }
             (None, None) if extensions_on => done(Err(
                 "Bowser is still opening this window. Try again in a moment.".to_owned(),
@@ -3063,12 +3275,7 @@ impl EngineAdapter for WebView2Engine {
         done: Box<dyn FnOnce(std::result::Result<(), String>)>,
     ) {
         let (loaded, profile, webview_id) = {
-            let mut state = self.core.borrow_mut();
-            // An extension being removed must not be added or reconciled back in at startup.
-            state
-                .startup_extensions
-                .retain(|(pending, _)| pending != id);
-            state.known_extensions.retain(|(known, _)| known != id);
+            let state = self.core.borrow();
             (
                 state.extensions_loaded.get(id).cloned(),
                 state.extension_profile.clone(),
@@ -3084,7 +3291,15 @@ impl EngineAdapter for WebView2Engine {
             (Some(profile), Some(webview_id)) => {
                 remove_unloaded(&self.core, &profile, id.to_owned(), webview_id, done)
             }
-            _ => done(Ok(())),
+            (_, Some(_)) => done(Err("The owning native extension profile is not ready. Nothing was removed; try again after a browsing tab opens.".into())),
+            (_, None) => {
+                let done = match runtime_operation(&self.core, done) { Ok(done) => done, Err((reason, done)) => { done(Err(reason)); return; } };
+                let path = self.core.borrow().extension_ids_file.clone();
+                match path.as_deref().map(read_extension_ids).transpose() {
+                    Ok(Some(ids)) if !ids.contains_key(id) => done(Ok(())),
+                    _ => done(Err("Extension ownership could not be verified before removal. Nothing was removed.".into())),
+                }
+            }
         }
     }
 
@@ -5736,6 +5951,11 @@ mod tests {
             self.open_extension_page_with(id, folder, kind, "Bowser extension probe", false, done);
         }
 
+        /// Completion, not a provisional ownership preclaim, proves Add actually returned.
+        pub(in crate::engine) fn probe_loaded_extension_id(&self, id: &str) -> Option<String> {
+            self.core.borrow().extensions_loaded.get(id).and_then(extension_webview_id)
+        }
+
         /// Test-only native replacement probe. No web bridge or production update path is enabled.
         pub(in crate::engine) fn probe_replace_extension(
             &self, id: &str, folder: &Path,
@@ -5743,7 +5963,7 @@ mod tests {
         ) {
             let profile = self.core.borrow().extension_profile.clone();
             match profile {
-                Some(profile) => add_extension(&self.core, &profile, id.to_owned(), folder, done),
+                Some(profile) => add_extension_mode(&self.core, &profile, id.to_owned(), folder, true, done),
                 None => done(Err("The disposable extension profile is not ready.".into())),
             }
         }
@@ -7130,8 +7350,51 @@ mod tests {
         assert_eq!(read_extension_ids(&path).unwrap(), merged);
         std::fs::write(&path, "malformed ownership").unwrap();
         assert!(persist_extension_ids(Some(&path), &empty, &first).is_err());
-        assert!(load_extension_ids(&path).is_empty());
+        assert!(read_extension_ids(&path).is_err());
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "malformed ownership");
+        std::fs::remove_dir_all(folder).unwrap();
+    }
+
+    #[test]
+    fn pending_native_completion_holds_runtime_lease_through_record_commit() {
+        let folder = std::env::temp_dir().join(format!("bowser-runtime-completion-{}-{}", std::process::id(), SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()));
+        std::fs::create_dir_all(&folder).unwrap(); let path = folder.join("extensions.txt");
+        let record = crate::extensions::Record { id: "ext-0123456789abcdef".into(), enabled: true, name: "Fixture".into(), version: "1.0".into() };
+        crate::extensions::write_records(&path, std::slice::from_ref(&record)).unwrap();
+        let guard = crate::extensions::RecordsLease::runtime(&path).unwrap();
+        let committed = Rc::new(Cell::new(false)); let seen = committed.clone(); let inside = path.clone(); let id = record.id.clone();
+        let completion = runtime_completion(Some(guard), Box::new(move |result| {
+            result.unwrap();
+            assert!(crate::extensions::set_enabled(&inside, &id, false).is_err(), "another runtime operation must stay busy inside the final commit callback");
+            crate::extensions::set_enabled_under_runtime(&inside, &id, false).unwrap(); seen.set(true);
+        }), true);
+        assert!(crate::extensions::RecordsLease::runtime(&path).is_err(), "simulated delayed native callback owns the lease");
+        assert!(crate::extensions::read_authority_records(&path).unwrap()[0].enabled, "no early revocation commit");
+        completion(Ok(())); assert!(committed.get());
+        assert!(!crate::extensions::read_authority_records(&path).unwrap()[0].enabled);
+        drop(crate::extensions::RecordsLease::runtime(&path).unwrap());
+        std::fs::remove_dir_all(folder).unwrap();
+    }
+
+    #[test]
+    fn startup_completion_releases_lease_before_starting_next_native_operation() {
+        let folder = std::env::temp_dir().join(format!("bowser-runtime-chain-{}-{}", std::process::id(), SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()));
+        std::fs::create_dir_all(&folder).unwrap(); let path = folder.join("extensions.txt");
+        let guard = crate::extensions::RecordsLease::runtime(&path).unwrap(); let inside = path.clone();
+        let completion = runtime_completion(Some(guard), Box::new(move |result| { result.unwrap(); drop(crate::extensions::RecordsLease::runtime(&inside).unwrap()); }), false);
+        completion(Ok(())); std::fs::remove_dir_all(folder).unwrap();
+    }
+
+    #[test]
+    fn initialized_missing_or_duplicate_ownership_is_never_an_empty_authority_map() {
+        let folder = std::env::temp_dir().join(format!("bowser-map-authority-{}-{}", std::process::id(), SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()));
+        std::fs::create_dir_all(&folder).unwrap(); let path = folder.join("ids.txt");
+        assert!(read_extension_ids(&path).unwrap().is_empty());
+        persist_extension_ids(Some(&path), &HashMap::new(), &HashMap::new()).unwrap();
+        assert!(path.with_extension("initialized").is_file()); std::fs::remove_file(&path).unwrap();
+        assert!(read_extension_ids(&path).is_err(), "lost initialized state must fail before environment creation");
+        std::fs::write(&path, "ext-0123456789abcdef\taaaa\next-00000000000000ff\taaaa\n").unwrap();
+        assert!(read_extension_ids(&path).is_err(), "one native identity cannot have two owners");
         std::fs::remove_dir_all(folder).unwrap();
     }
 
@@ -7212,11 +7475,12 @@ mod tests {
     #[test]
     fn every_engine_load_result_is_announced_to_the_windows() {
         // The startup paths cannot run without WebView2; this keeps one of them from recording a
-        // result without telling the windows. Calls: report_load, the profile refusal, the runtime floor.
+        // result without telling the windows. Calls: report_load, profile/runtime refusals,
+        // and both ownership-persistence failure branches.
         let source = include_str!("webview2.rs");
         let production = &source[..source.find("#[cfg(test)]").expect("test module")];
         assert_eq!(production.matches("crate::extensions::record_load_result(").count(), 1, "only record_load records");
-        assert_eq!(production.matches("record_load(").count() - production.matches("fn record_load(").count(), 3);
+        assert_eq!(production.matches("record_load(").count() - production.matches("fn record_load(").count(), 5);
     }
 
     #[test]
@@ -7304,6 +7568,7 @@ mod tests {
             startup_extensions: Vec::new(),
             known_extensions: Vec::new(),
             extension_ids_file: None,
+            extension_records_file: None,
             extension_ids: HashMap::new(),
             permissions: None,
             chrome_ui_scheme: false,

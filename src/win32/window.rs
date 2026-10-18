@@ -8410,7 +8410,8 @@ pub(super) fn open_extension_popup(app: &AppRef, profile: &crate::profile::Profi
     }
 }
 
-/// Turns an installed extension on or off: the flag in `extensions.txt`, then the engine loads or
+/// Turns an installed extension on or off: native change first, then the durable flag commit under
+/// the same profile runtime lease. The engine loads or
 /// unloads Bowser's existing copy. Nothing is read from the original folder again and nothing is
 /// asked, so turning one back on uses exactly what was installed. The load result arrives later
 /// (`App::set_extension_enabled`) and every window hears about it.
@@ -8421,9 +8422,8 @@ pub(super) fn set_extension_enabled(
     enabled: bool,
 ) -> Result<(), String> {
     use crate::extensions;
-    extensions::set_enabled(&profile.extensions_file(), &record.id, enabled)
-        .map_err(|error| format!("The extension was not changed. {error}"))?;
-    super::extensions_changed();
+    // Native mutation and the durable flag commit are serialized by the engine. Do not revoke
+    // in records first: a crash before native Disable could otherwise auto-run revoked code.
     let folder = extensions::folder_for(&profile.extensions_dir(), &record.id).map_err(|error| error.to_string())?;
     App::set_extension_enabled(app, record.id.clone(), folder, enabled);
     Ok(())
@@ -8449,7 +8449,7 @@ pub(super) fn remove_extension(
             let result = match result {
                 Ok(()) => {
                     extensions::record_load_result(&id, Ok(()));
-                    extensions::uninstall(&extensions_dir, &records_file, &id).map_err(|error| {
+                    extensions::uninstall_under_runtime(&extensions_dir, &records_file, &id).map_err(|error| {
                         format!("The extension was removed from the list, but its files were not deleted. {error}")
                     })
                 }

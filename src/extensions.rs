@@ -509,6 +509,12 @@ pub struct PreparedInstall {
 /// and deletes the tiny lease file on close/crash. No persistent lock token or ACL changes.
 pub(crate) struct RecordsLease { _file: File }
 impl RecordsLease {
+    /// Native lifecycle operations hold this separate lease until their async completion and
+    /// owning record commit. Never wait/pump for it: a concurrent change fails honestly busy.
+    pub(crate) fn runtime(records_file: &Path) -> Result<Self, ExtensionError> {
+        Self::acquire(&records_file.with_file_name("extension-runtime"))
+    }
+
     pub(crate) fn acquire(records_file: &Path) -> Result<Self, ExtensionError> {
         if let Some(parent) = records_file.parent().filter(|parent| !parent.as_os_str().is_empty()) { ensure_plain_dir(parent)?; }
         let mut path = records_file.as_os_str().to_owned(); path.push(".lease");
@@ -543,6 +549,7 @@ impl PreparedInstall {
     }
 
     pub(crate) fn commit_checked_named(mut self, name: &str, check: impl FnOnce(&[Record]) -> Result<(), ExtensionError>) -> Result<Record, ExtensionError> {
+        let _runtime = RecordsLease::runtime(&self.records_file)?;
         let _lease = RecordsLease::acquire(&self.records_file)?;
         if name.is_empty() || name.chars().count() > MAX_NAME_CHARS
             || name.chars().any(|c| c.is_control() || is_invisible_format(c))
@@ -687,8 +694,14 @@ fn copy_file_no_follow(from: &Path, to: &Path) -> Result<(), ExtensionError> {
 
 /// Sets the enabled flag of one installed extension.
 pub fn set_enabled(records_file: &Path, id: &str, enabled: bool) -> Result<(), ExtensionError> {
+    let _runtime = RecordsLease::runtime(records_file)?;
+    set_enabled_under_runtime(records_file, id, enabled)
+}
+
+/// Caller holds the profile runtime lease until the native operation and this commit finish.
+pub(crate) fn set_enabled_under_runtime(records_file: &Path, id: &str, enabled: bool) -> Result<(), ExtensionError> {
     let _lease = RecordsLease::acquire(records_file)?;
-    let mut records = read_records(records_file)?;
+    let mut records = read_authority_records(records_file)?;
     let record = records
         .iter_mut()
         .find(|record| record.id == id)
@@ -704,8 +717,14 @@ pub fn uninstall(
     records_file: &Path,
     id: &str,
 ) -> Result<(), ExtensionError> {
+    let _runtime = RecordsLease::runtime(records_file)?;
+    uninstall_under_runtime(extensions_dir, records_file, id)
+}
+
+/// Caller owns the runtime lease through native Remove and this durable deletion.
+pub(crate) fn uninstall_under_runtime(extensions_dir: &Path, records_file: &Path, id: &str) -> Result<(), ExtensionError> {
     let _lease = RecordsLease::acquire(records_file)?;
-    let mut records = read_records(records_file)?;
+    let mut records = read_authority_records(records_file)?;
     let before = records.len();
     records.retain(|record| record.id != id);
     if records.len() == before {
@@ -827,6 +846,31 @@ pub fn read_records(records_file: &Path) -> Result<Vec<Record>, ExtensionError> 
         if records.len() == MAX_INSTALLED {
             break;
         }
+    }
+    Ok(records)
+}
+
+/// Strict authority reader for native lifecycle decisions. Unlike the display parser, a single
+/// malformed/duplicate row, over-budget file or reparse point fails the entire operation closed.
+pub(crate) fn read_authority_records(path: &Path) -> Result<Vec<Record>, ExtensionError> {
+    let file = match fs::OpenOptions::new().read(true).custom_flags(FILE_FLAG_OPEN_REPARSE_POINT).open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(_) => return Err(ExtensionError::Io),
+    };
+    let meta = file.metadata().map_err(|_| ExtensionError::Io)?;
+    if !is_plain_file(&meta) || meta.len() > 1024 * 1024 { return Err(ExtensionError::Io); }
+    let mut text = String::new(); file.take(1024 * 1024 + 1).read_to_string(&mut text).map_err(|_| ExtensionError::Io)?;
+    if text.len() > 1024 * 1024 { return Err(ExtensionError::Io); }
+    let mut records = Vec::new();
+    for line in text.lines() {
+        let fields: Vec<_> = line.split('\t').collect();
+        let [id, enabled, name, version] = fields.as_slice() else { return Err(ExtensionError::Io); };
+        if !is_valid_id(id) || !matches!(*enabled, "0" | "1") || records.iter().any(|record: &Record| record.id == *id)
+            || name.is_empty() || name.chars().count() > MAX_NAME_CHARS || name.chars().any(|c| c.is_control() || is_invisible_format(c))
+            || version.is_empty() || version.len() > 64 || !version.bytes().all(|b| b.is_ascii_digit() || b == b'.')
+            || records.len() >= MAX_INSTALLED { return Err(ExtensionError::Io); }
+        records.push(Record { id: (*id).into(), enabled: *enabled == "1", name: (*name).into(), version: (*version).into() });
     }
     Ok(records)
 }
@@ -1481,6 +1525,36 @@ mod tests {
 
     const MV3: &str = r#"{"manifest_version": 3, "name": "Demo", "version": "1.2.3",
         "permissions": ["storage", "tabs"], "host_permissions": ["https://example.com/*"]}"#;
+
+    #[test]
+    fn strict_runtime_records_reject_malformed_duplicate_and_oversized_authority() {
+        let root = temp_dir("strict-runtime-records"); let path = root.join("extensions.txt");
+        let good = "ext-0123456789abcdef\t1\tFixture\t1.0\n";
+        fs::write(&path, good).unwrap(); assert_eq!(read_authority_records(&path).unwrap().len(), 1);
+        for bad in [format!("{good}broken\n"), format!("{good}{good}"), good.replace("\t1\t", "\tmaybe\t"), "x".repeat(1024 * 1024 + 1)] {
+            fs::write(&path, bad).unwrap(); assert!(read_authority_records(&path).is_err());
+        }
+        assert!(read_authority_records(&root).is_err()); fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn runtime_lease_blocks_record_mutation_in_another_process() {
+        let root = temp_dir("runtime-cross-process"); let path = root.join("extensions.txt");
+        let guard = RecordsLease::runtime(&path).unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "extensions::tests::runtime_lease_child", "--ignored", "--nocapture"])
+            .env("BOWSER_TEST_RUNTIME_LEASE_PATH", &path).output().unwrap();
+        assert!(output.status.success(), "cross-process exclusion failed: {} {}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+        assert!(String::from_utf8_lossy(&output.stdout).contains("RUNTIME_LEASE_CHILD=blocked"));
+        drop(guard); drop(RecordsLease::runtime(&path).unwrap()); fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    #[ignore = "child of the bounded cross-process runtime lease unit test"]
+    fn runtime_lease_child() {
+        let Some(path) = std::env::var_os("BOWSER_TEST_RUNTIME_LEASE_PATH") else { panic!("Only the owning lease test launches this child."); };
+        assert!(RecordsLease::runtime(Path::new(&path)).is_err()); println!("RUNTIME_LEASE_CHILD=blocked");
+    }
 
     #[test]
     fn accepts_minimal_manifest_v2_and_v3() {

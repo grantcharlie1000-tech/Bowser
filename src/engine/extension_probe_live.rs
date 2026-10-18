@@ -277,6 +277,7 @@ impl Session {
                 startup_extensions: startup.clone(),
                 known_extensions: known.clone(),
                 extension_ids_file: Some(ids_file.clone()),
+                extension_records_file: Some(profile.join("extensions.txt")),
                 ..EngineExtras::default()
             };
             WebView2Engine::begin_create_with_extras(
@@ -316,15 +317,15 @@ impl Session {
         TabId(1)
     }
 
-    /// Waits for the add to finish (a mapping or a recorded failure) and returns what it left.
+    /// Waits for native Add completion, never the earlier durable ownership preclaim.
     fn wait_for_add(&self, profile: &Path, bowser_id: &str) -> (Option<String>, Option<String>) {
-        let ids_file = profile.join("extension_ids.txt");
+        let _ = profile; // completion belongs to this engine, not merely an on-disk map row.
         pump_until(Duration::from_secs(60), || {
-            mapping_for(&ids_file, bowser_id).is_some()
+            self.engine.probe_loaded_extension_id(bowser_id).is_some()
                 || extensions::load_failure(bowser_id).is_some()
         });
         (
-            mapping_for(&ids_file, bowser_id),
+            self.engine.probe_loaded_extension_id(bowser_id),
             extensions::load_failure(bowser_id),
         )
     }

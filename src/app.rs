@@ -963,7 +963,7 @@ impl App {
             let result = if enabled {
                 Err("Bowser is still starting. Restart Bowser to load this extension.".to_owned())
             } else {
-                Ok(())
+                Err("Bowser is still starting. The extension was not switched; try again after a browsing tab opens.".to_owned())
             };
             crate::extensions::record_load_result(&id, result);
             win32::extensions_changed();
@@ -1040,7 +1040,7 @@ impl App {
     ) {
         let present = app.borrow().engine.is_some();
         if !present {
-            done(Ok(()));
+            done(Err("Bowser is still starting. Nothing was removed; try again after a browsing tab opens.".into()));
             return;
         }
         Self::with_engine(app, move |engine| {
@@ -6362,6 +6362,7 @@ impl App {
             browser_extensions: plan.installed || profile_may_hold_extensions,
             startup_extensions: plan.enabled,
             known_extensions: known_extensions.unwrap_or_default(),
+            extension_records_file: extension_ids_file.as_ref().map(|path| path.with_file_name("extensions.txt")),
             extension_ids_file,
             permissions: app.borrow().permissions.clone(),
             chrome_ui_scheme: crate::chrome_host::html_ui_enabled(),

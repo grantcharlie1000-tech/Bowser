@@ -563,6 +563,8 @@ pub struct EngineExtras {
     /// File that maps Bowser extension ids to WebView2's ids, which differ. Without it a restart
     /// cannot tell which profile extension is which.
     pub extension_ids_file: Option<std::path::PathBuf>,
+    /// Owning profile record file; native lifecycle operations revalidate it under a runtime lease.
+    pub extension_records_file: Option<std::path::PathBuf>,
     /// Stored per-site permission decisions, consulted for every permission request.
     pub permissions: Option<PermissionsHandle>,
     /// HTML chrome mode: registers the `bowser-ui` scheme on the environment so the chrome views

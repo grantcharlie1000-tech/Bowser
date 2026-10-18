@@ -109,7 +109,11 @@ function Wait-Window {
  Assert-Owned;[void][BowserStoreSmoke]::MoveWindow($script:window,20,20,1100,800,$true);Start-Sleep -Seconds 5
 }
 function Records {
- return @(Get-ChildItem -LiteralPath $run -Filter extensions.txt -File -Recurse | Where-Object { (Get-Content $_.FullName -Raw) -match '\S' })
+ # The exact disposable owning profile record, never a recursive scan of package folders that
+ # may legitimately be removed while a cancelled download or uninstall finishes.
+ $file=Join-Path $env:BOWSER_DATA_DIR 'extensions.txt'
+ if((Test-Path -LiteralPath $file -PathType Leaf) -and ((Get-Content -LiteralPath $file -Raw) -match '\S')){return @(Get-Item -LiteralPath $file)}
+ return @()
 }
 function Run-InstallJourney {
  # These are standard Windows accessibility actions against this exact disposable app window.
