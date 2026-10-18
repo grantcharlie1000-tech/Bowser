@@ -159,6 +159,9 @@ impl WebAppHost {
         let handler = CreateCoreWebView2EnvironmentCompletedHandler::create(Box::new(
             move |status, environment| {
                 let _retire = completion_request.completing();
+                #[cfg(test)]
+                lifecycle_live::environment_completion_entry(&completion_request,
+                    status.is_ok() && environment.is_some());
                 let profile = environment.as_ref().and_then(|environment| completion_request.observe_environment(environment));
                 if let Some(trace)=&completion_trace {trace.result("webapp_environment_callback",&status);}
                 let result = match (status, environment) {

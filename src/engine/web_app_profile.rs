@@ -44,6 +44,11 @@ pub(super) struct NativeRequest {
     dispatched: Rc<Cell<bool>>,
 }
 impl NativeRequest {
+    #[cfg(test)]
+    pub(super) fn snapshot_for_test(&self) -> (bool, bool, usize) {
+        let profile = self.profile.borrow();
+        (profile.retirement.request_pending_for_test(self.id), self.dispatched.get(), profile.environments.len())
+    }
     fn start(profile: ProfileRef, environment: Option<u64>) -> Result<Self> {
         let id = profile.borrow_mut().retirement.request(environment).ok_or_else(blocked)?;
         Ok(Self { profile, id, environment_observed: Rc::new(Cell::new(environment.is_some())), dispatched: Rc::new(Cell::new(false)) })

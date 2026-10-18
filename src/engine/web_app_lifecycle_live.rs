@@ -12,6 +12,22 @@ use windows::{
     },
 };
 
+type CompletionHook = Box<dyn FnOnce(super::super::web_app_profile::NativeRequest, bool)>;
+thread_local! {
+    static COMPLETION_HOOK: RefCell<Option<CompletionHook>> = const { RefCell::new(None) };
+}
+struct CompletionHookScope;
+impl Drop for CompletionHookScope {
+    fn drop(&mut self) { COMPLETION_HOOK.with(|slot| { let _ = slot.borrow_mut().take(); }); }
+}
+/// One-shot test seam at actual native completion entry; no queue, delay, fake result or replay.
+/// Release the hook-storage borrow BEFORE shutdown can reenter a real native callback.
+pub(super) fn environment_completion_entry(request: &super::super::web_app_profile::NativeRequest,
+    native_success: bool) {
+    let hook = COMPLETION_HOOK.with(|slot| slot.borrow_mut().take());
+    if let Some(hook) = hook { hook(request.clone(), native_success); }
+}
+
 fn pump_until(timeout: Duration, mut done: impl FnMut() -> bool) -> bool {
     let start = Instant::now();
     while start.elapsed() < timeout {
@@ -132,18 +148,42 @@ fn live_webapp_generation_remove_readd_clear_shutdown() {
     super::finish_clear_profile(&profile).unwrap(); assert!(!profile.exists());
     assert!(host.open_app("1", &a).is_err()); assert!(!profile.exists());
 
-    // Independent pending environment at final shutdown: a late success must be closeable, and
-    // opening again is refused before filesystem/native dispatch. Unknown release is not erased.
+    // Deterministically shut down at a REAL native environment completion entry while its request
+    // is outstanding, before registration/on_ready. This is NOT a naturally asynchronous scheduling
+    // claim: the callback may run reentrantly before begin_create returns. No callback is delayed.
     let shutdown_root = root.join("shutdown"); std::fs::create_dir(&shutdown_root).unwrap();
     let shutdown_profile = shutdown_root.join("WebApps");
     let late = Rc::new(Cell::new(false)); let late_done = late.clone();
+    let hook_count = Rc::new(Cell::new(0)); let observed_count = hook_count.clone();
+    let observed = Rc::new(RefCell::new(None)); let hook_observed = observed.clone();
+    let late_refused = Rc::new(Cell::new(false)); let callback_refused = late_refused.clone();
+    let shutdown_url = format!("{base}/light?token=native_shutdown_refused");
+    let _hook_scope = CompletionHookScope;
+    assert!(COMPLETION_HOOK.with(|slot| slot.borrow().is_none()));
+    COMPLETION_HOOK.with(|slot| *slot.borrow_mut() = Some(Box::new(move |request, native_success| {
+        observed_count.set(observed_count.get() + 1);
+        *hook_observed.borrow_mut() = Some((native_success, request.snapshot_for_test(), request));
+        super::shutdown_profiles();
+    })));
     WebAppHost::begin_create(window, bounds, &shutdown_profile, events, move |result| {
-        if let Ok(host) = result { host.close(); }
+        match result {
+            Ok(host) => {
+                callback_refused.set(host.open_app("3", &shutdown_url).is_err());
+                host.close();
+            }
+            Err(_) => callback_refused.set(true),
+        }
         late_done.set(true);
     }).unwrap();
-    assert!(!late.get(), "pending-shutdown race was not exercised");
-    super::shutdown_profiles();
     assert!(pump_until(Duration::from_secs(30), || late.get()), "shutdown callback never retired");
+    assert_eq!(hook_count.get(), 1, "real native completion-entry shutdown was not exercised exactly once");
+    let observed = observed.borrow();
+    let (native_success, (was_pending, was_dispatched, observers_before), request) = observed.as_ref().unwrap();
+    assert!(*native_success && *was_pending && *was_dispatched,
+        "shutdown seam lacked a real successful dispatched outstanding native request");
+    assert_eq!(*observers_before, 0);
+    assert_eq!(request.snapshot_for_test(), (false, true, 0), "request did not retire or observer registered after shutdown");
+    assert!(late_refused.get(), "late environment created a controller after shutdown");
     let refused = root.join("refused"); std::fs::create_dir(&refused).unwrap(); let refused = refused.join("WebApps");
     assert!(WebAppHost::begin_create(window, bounds, &refused, WebAppEvents::default(), |_| {}).is_err());
     assert!(!refused.exists(), "shutdown request touched profile storage");
@@ -168,5 +208,5 @@ fn live_webapp_generation_remove_readd_clear_shutdown() {
         assert_eq!(closed.iter().filter(|row| row[4] == id && row[5] == "true").count(), 1);
     }
     assert!(rows.iter().filter(|row| row[0] == "webapp_observation_end").all(|row| row[5] == "true"));
-    std::fs::write(out.join("result.json"), "{\"scope\":\"real isolated engine correctness only; no benchmark\",\"pending_remove_readd_exercised\":true,\"pending_shutdown_exercised\":true,\"controller_requests\":3,\"installed\":2,\"replaced\":0,\"close_requests\":3,\"clear_release_confirmed\":true,\"unknown_shutdown_erase_refused\":true}\n").unwrap();
+    std::fs::write(out.join("result.json"), "{\"scope\":\"real isolated engine correctness only; no benchmark\",\"pending_remove_readd_exercised\":true,\"shutdown_at_real_environment_completion_entry_exercised\":true,\"naturally_async_environment_shutdown_exercised\":false,\"controller_requests\":3,\"installed\":2,\"replaced\":0,\"close_requests\":3,\"clear_release_confirmed\":true,\"unknown_shutdown_erase_refused\":true}\n").unwrap();
 }

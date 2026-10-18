@@ -99,6 +99,10 @@ impl EnvironmentRelease {
 }
 
 impl ProfileRetirement {
+    #[cfg(test)]
+    pub(crate) fn request_pending_for_test(&self, request: u64) -> bool {
+        self.requests.contains_key(&request)
+    }
     pub(crate) fn request(&mut self, environment: Option<u64>) -> Option<u64> {
         if self.clearing { return None; }
         self.next = self.next.checked_add(1)?;
