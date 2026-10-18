@@ -167,6 +167,14 @@ jobs:
           $test = Get-ChildItem target/debug/deps/bowser-*.exe | Sort-Object LastWriteTime -Descending | Select-Object -First 1
           & $test.FullName live_probe_native_page_links_guards --ignored --nocapture --test-threads=1 2>&1 | Tee-Object store-page-links-runtime-controls.log
           if ($LASTEXITCODE -ne 0) { throw 'Actual native Page links empty/reload controls failed.' }
+      - name: Probe genuine named command delivery without host shortcut interception
+        if: ${{ !cancelled() && steps.native_build.outcome == 'success' }}
+        run: |
+          $env:LOCALAPPDATA = Join-Path $env:RUNNER_TEMP 'bowser-store-native-command-localappdata'
+          New-Item -ItemType Directory -Force $env:LOCALAPPDATA | Out-Null
+          $test = Get-ChildItem target/debug/deps/bowser-*.exe | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          & $test.FullName live_probe_native_named_command --ignored --nocapture --test-threads=1 2>&1 | Tee-Object store-native-command-probe.log
+          if ($LASTEXITCODE -ne 0) { throw 'Named-command native input/control diagnostic failed.' }
       - name: Probe local fixture restart, worker messaging, and hosted-context boundaries
         if: ${{ !cancelled() && steps.native_build.outcome == 'success' }}
         run: |
@@ -247,6 +255,7 @@ jobs:
             store-content-script-review.log
             store-page-links-controls.log
             store-page-links-runtime-controls.log
+            store-native-command-probe.log
             ${{ runner.temp }}/bowser-native-page-links-*/*.png
             ${{ runner.temp }}/bowser-native-page-links-*/*.json
             store-pending-native-probe.log
@@ -275,6 +284,7 @@ jobs:
         run: |
           [void][scriptblock]::Create((Get-Content benchmarks/scripts/probe-native-store.ps1 -Raw))
           [void][scriptblock]::Create((Get-Content benchmarks/scripts/probe-native-extension-link.ps1 -Raw))
+          [void][scriptblock]::Create((Get-Content benchmarks/scripts/probe-native-extension-command.ps1 -Raw))
           [void][scriptblock]::Create((Get-Content benchmarks/scripts/measure-native-extensions.ps1 -Raw))
       - name: Install official Rust toolchain
         run: rustup toolchain install stable --profile minimal

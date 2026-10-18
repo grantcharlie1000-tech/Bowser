@@ -1633,3 +1633,155 @@ fn live_probe_native_page_links_guards() {
     println!("PAGE_LINKS_CONTROL verdict=actual-empty-notice-dismissed-and-real-same-url-reload-stale-selection-refused");
     session.close(); drop(loopback); remove_with_retries(&root);
 }
+
+thread_local! { static COMMAND_ACCELERATOR_FORWARDED: std::cell::Cell<Option<(TabId, bool)>> = const { std::cell::Cell::new(None) }; }
+/// Read-only observation at the actual production accelerator decision. Never changes handling.
+pub(super) fn observe_command_accelerator(tab: TabId, forwarded: bool) {
+    COMMAND_ACCELERATOR_FORWARDED.with(|value| value.set(Some((tab, forwarded))));
+    println!("NATIVE_COMMAND_ACCELERATOR actual_ctrl_shift_x=true owned_tab={tab:?} bowser_forwarded={forwarded}");
+}
+fn command_field<'a>(value: &'a extensions::json::Value, key: &str) -> Option<&'a extensions::json::Value> {
+    match value { extensions::json::Value::Object(fields) => extensions::json::get(fields, key), _ => None }
+}
+fn command_receipt(session: &mut Session, kind: &str) -> Option<extensions::json::Value> {
+    let script = format!("(()=>{{document.documentElement.removeAttribute('data-command-receipt');chrome.runtime.sendMessage({{type:'{kind}'}},answer=>document.documentElement.setAttribute('data-command-receipt',JSON.stringify(answer)));return true}})()");
+    session.page_script(&script);
+    let mut value = None;
+    pump_until(Duration::from_secs(10), || {
+        value = session.page_script("JSON.parse(document.documentElement.getAttribute('data-command-receipt')||'null')").and_then(|text| extensions::json::parse(&text));
+        value.as_ref().is_some_and(|value| matches!(value, extensions::json::Value::Object(_)))
+    }); value.filter(|value| matches!(value, extensions::json::Value::Object(_)))
+}
+fn command_view(session: &mut Session, tab: TabId, script: &str) -> Option<String> {
+    let slot = Rc::new(RefCell::new(None)); let sink = slot.clone();
+    session.engine.run_reader_script(tab, script, Box::new(move |answer| *sink.borrow_mut() = Some(answer)));
+    pump_until(Duration::from_secs(10), || slot.borrow().is_some()); slot.borrow_mut().take().flatten()
+}
+fn command_input(session: &mut Session, tab: TabId, chord: &str) {
+    use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, SetForegroundWindow, ShowWindow, SW_SHOW};
+    session.engine.select_tab(tab).unwrap(); session.engine.set_visible(true).unwrap();
+    unsafe { let _ = ShowWindow(session.host, SW_SHOW); let _ = SetForegroundWindow(session.host); }
+    session.engine.focus_page().unwrap(); pump_until(Duration::from_millis(500), || false);
+    assert_eq!(unsafe { GetForegroundWindow() }, session.host);
+    assert_eq!(command_view(session, tab, "document.hasFocus()").as_deref(), Some("true"));
+    let mut child = std::process::Command::new("powershell.exe").args(["-NoProfile", "-File"])
+        .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("benchmarks/scripts/probe-native-extension-command.ps1"))
+        .args(["-OwnerPid", &std::process::id().to_string(), "-OwnerHandle", &(session.host.0 as isize).to_string(), "-Chord", chord])
+        .stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).spawn().unwrap();
+    if !pump_until(Duration::from_secs(20), || child.try_wait().is_ok_and(|status| status.is_some())) { let _ = child.kill(); let _ = child.wait(); panic!("owned command input helper timed out"); }
+    let output = child.wait_with_output().unwrap();
+    println!("NATIVE_COMMAND_INPUT result={:?} stdout={} stderr={}", output.status.code(), String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+    assert!(output.status.success());
+}
+
+/// Feasibility only: a missing native event is not a generic extension-API absence verdict.
+#[test]
+#[ignore = "needs live WebView2 and genuine OS keyboard input to disposable focused views"]
+fn live_probe_native_named_command() {
+    use extensions::json::Value;
+    unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED).ok().unwrap() };
+    let root = temp_root();
+    for active_tab in [true, false] {
+        let profile = root.join(if active_tab { "with-active-tab" } else { "without-active-tab" });
+        let source = root.join(if active_tab { "source-with" } else { "source-without" }); std::fs::create_dir(&source).unwrap();
+        for name in ["manifest.json", "worker.js", "popup.html", "popup.js"] { std::fs::copy(fixture("probe-native-commands").join(name), source.join(name)).unwrap(); }
+        if !active_tab {
+            let manifest = std::fs::read_to_string(source.join("manifest.json")).unwrap().replace(",\n    \"activeTab\"", "");
+            assert!(!manifest.contains("\"activeTab\"")); std::fs::write(source.join("manifest.json"), manifest).unwrap();
+        }
+        let record = extensions::install(&source, &profile.join("Extensions"), &profile.join("extensions.txt")).unwrap();
+        let folder = extensions::folder_for(&profile.join("Extensions"), &record.id).unwrap(); let loopback = Loopback::start();
+        let mut session = Session::open(&profile, vec![(record.id.clone(), folder.clone())], vec![(record.id.clone(), true)], &loopback.page("command-duplicate"));
+        let (native_id, failure) = session.wait_for_add(&profile, &record.id); assert!(failure.is_none(), "native command fixture load failed: {failure:?}");
+        assert_eq!(native_id.as_deref(), Some(KEY_FIXTURE_ID));
+        session.engine.select_tab(TabId(2)).unwrap(); session.engine.navigate_tab(TabId(2), &loopback.page("command-duplicate")).unwrap();
+        let ready = format!("location.href==={}&&document.title==='Bowser probe page'&&document.readyState==='complete'", crate::chrome_host::protocol::json_string(loopback.page("command-duplicate").as_str()));
+        for tab in [TabId(1), TabId(2)] { assert!(pump_until(Duration::from_secs(20), || command_view(&mut session,tab,&ready).as_deref()==Some("true")), "duplicate-URL controlled view was not actually ready: {tab:?}"); }
+        session.open_page(&record.id, &folder, extensions::PageKind::Popup).unwrap();
+        assert!(pump_until(Duration::from_secs(10), || session.page_script("document.documentElement.getAttribute('data-ready')").as_deref() == Some("\"yes\"")));
+        let baseline = command_receipt(&mut session, "native-command-preflight").expect("genuine worker preflight receipt missing");
+        println!("NATIVE_COMMAND phase=preflight active_tab={active_tab} receipt={baseline:?}");
+        let assigned = matches!(command_field(&baseline, "commands"), Some(Value::Array(commands)) if commands.iter().any(|command| matches!(command_field(command, "name"), Some(Value::String(name)) if name=="bowser-native-probe") && matches!(command_field(command, "shortcut"), Some(Value::String(chord)) if chord=="Ctrl+Shift+X")));
+        if !assigned { println!("NATIVE_COMMAND verdict=unavailable-assigned-native-chord-not-reported active_tab={active_tab}"); session.close(); drop(loopback); break; }
+        for tab in [TabId(1), TabId(2)] {
+            for role in ["primary", "negative"] { assert_eq!(command_view(&mut session, tab, &format!("document.documentElement.getAttribute('data-bowser-native-command-{role}')")).as_deref(), Some("null"), "pregesture injection changed a real browsing view"); }
+        }
+        let mut first_native_id = None; let mut first_primary_token = None; let mut second_native_id = None;
+        for tab in [TabId(1), TabId(2)] {
+            command_view(&mut session, tab, "document.addEventListener('keydown',e=>{if(e.isTrusted&&e.key==='F8')document.documentElement.setAttribute('data-native-f8','actual-os-key')});true");
+            command_input(&mut session, tab, "F8");
+            assert_eq!(command_view(&mut session, tab, "document.documentElement.getAttribute('data-native-f8')").as_deref(), Some("\"actual-os-key\""));
+            let before = command_receipt(&mut session, "native-command-state").unwrap();
+            let previous_events = match command_field(&before,"events") { Some(Value::Array(events)) => events.len(), _ => 0 };
+            COMMAND_ACCELERATOR_FORWARDED.with(|value| value.set(None)); command_input(&mut session, tab, "CtrlShiftX");
+            assert_eq!(COMMAND_ACCELERATOR_FORWARDED.with(std::cell::Cell::get), Some((tab, false)), "actual host accelerator observation did not establish unhandled command");
+            let mut receipt = None;
+            let received = pump_until(Duration::from_secs(8), || {
+                receipt = command_receipt(&mut session, "native-command-state");
+                matches!(receipt.as_ref().and_then(|r| command_field(r, "events")), Some(Value::Array(events)) if events.len() > previous_events && events.last().is_some_and(|event| command_field(event,"injection").is_some() && command_field(event,"complete")==Some(&Value::Bool(true))))
+            });
+            let receipt = receipt.expect("genuine worker state missing"); println!("NATIVE_COMMAND active_tab={active_tab} focused_owned_view={tab:?} receipt={receipt:?}");
+            if !received {
+                assert!(!matches!(command_field(&receipt,"events"),Some(Value::Array(events)) if events.len()>previous_events), "native event arrived but injection/query/negative completion timed out; not a delivery-absence verdict");
+                println!("NATIVE_COMMAND verdict=no-new-native-onCommand-on-tested-runtime assignment_and_focus_and_os_delivery_and_unhandled_host_proven=true focused_owned_view={tab:?}"); session.close(); drop(loopback); remove_with_retries(&root); return;
+            }
+            let Some(Value::Array(events)) = command_field(&receipt, "events") else { panic!("worker event array missing"); };
+            let Some(event) = events.last() else { println!("NATIVE_COMMAND verdict=no-native-onCommand-on-tested-runtime assignment_and_focus_and_os_delivery_and_unhandled_host_proven=true"); session.close(); drop(loopback); remove_with_retries(&root); return; };
+            assert_eq!(command_field(event,"command"),Some(&Value::String("bowser-native-probe".to_owned())), "native event did not name the declared command");
+            assert!(command_field(event,"error").is_none(), "native command boundary probes did not all settle successfully");
+            assert!(matches!(command_field(event,"otherTabAttempts"),Some(Value::Array(_))), "other-view attempts did not finish");
+            let native = command_field(event, "nativeTab");
+            let Some(Value::Number(native_id)) = native.and_then(|tab| command_field(tab,"id")) else { println!("NATIVE_COMMAND verdict=native-event-has-no-authoritative-tab-target"); session.close(); drop(loopback); remove_with_retries(&root); return; };
+            let event_id = Value::Number(native_id.clone());
+            if tab == TabId(1) { first_native_id = Some(event_id.clone()); }
+            else { assert_ne!(first_native_id.as_ref(),Some(&event_id), "two different focused COM-owned views received the same native event tab identity"); second_native_id = Some(event_id.clone()); }
+            assert_eq!(command_field(event,"currentNativeTab").and_then(|tab| command_field(tab,"id")),Some(&event_id), "native event target no longer exists");
+            assert!(matches!(command_field(&baseline,"preflight"),Some(Value::Array(attempts)) if attempts.iter().any(|attempt| command_field(attempt,"id")==Some(&event_id) && command_field(attempt,"allowed")==Some(&Value::Bool(false)) && command_field(attempt,"permissionDenied")==Some(&Value::Bool(true)))), "later native event target lacks actual pre-gesture permission-denial evidence");
+            if !active_tab {
+                let injection = command_field(event,"injection").unwrap();
+                assert_eq!(command_field(injection,"id"),Some(&event_id)); assert_eq!(command_field(injection,"allowed"),Some(&Value::Bool(false)));
+                assert_eq!(command_field(injection,"permissionDenied"),Some(&Value::Bool(true)), "no-activeTab command failed for a reason other than native permission denial");
+            }
+            let marker = command_view(&mut session, tab, "document.documentElement.getAttribute('data-bowser-native-command-primary')");
+            if active_tab {
+                let injection = command_field(event,"injection").unwrap();
+                assert_eq!(command_field(injection,"id"),Some(&event_id)); assert_eq!(command_field(injection,"allowed"),Some(&Value::Bool(true)), "event-target primary injection did not succeed");
+                let Some(Value::String(token)) = command_field(event,"primaryToken") else { panic!("per-event primary token missing"); };
+                if tab == TabId(1) { first_primary_token = Some(token.clone()); }
+                else { assert_ne!(first_primary_token.as_deref(),Some(token.as_str()), "second real invocation reused its primary attribution token"); }
+                let expected = crate::chrome_host::protocol::json_string(token);
+                assert_eq!(marker.as_deref(),Some(expected.as_str()), "event-target injection did not affect the exact focused COM-owned view");
+            }
+            else { assert_eq!(marker.as_deref(), Some("null"), "command without activeTab unexpectedly injected"); }
+            // The other real view is read by its COM owner, not identified by URL/native-ID guessing.
+            let other = if tab == TabId(1) { TabId(2) } else { TabId(1) };
+            if tab == TabId(1) {
+                assert_eq!(command_view(&mut session, other, "document.documentElement.getAttribute('data-bowser-native-command-primary')").as_deref(), Some("null"));
+                assert_eq!(command_view(&mut session, other, "document.documentElement.getAttribute('data-bowser-native-command-negative')").as_deref(), Some("null"), "late settled negative attempt affected the ungranted other view");
+            }
+        }
+        if !active_tab {
+            for tab in [TabId(1),TabId(2)] {
+                for role in ["primary","negative"] { assert_eq!(command_view(&mut session,tab,&format!("document.documentElement.getAttribute('data-bowser-native-command-{role}')")).as_deref(),Some("null"), "settled no-activeTab attempts affected a controlled view"); }
+            }
+        }
+        if active_tab {
+            let mut cross = loopback.page("command-cross-origin"); cross.set_host(Some("localhost")).unwrap();
+            session.engine.select_tab(TabId(2)).unwrap(); session.engine.navigate_tab(TabId(2), &cross).unwrap();
+            assert!(pump_until(Duration::from_secs(15), || loopback.beacons.lock().unwrap().iter().any(|path| path=="/command-cross-origin")));
+            let ready = format!("location.origin==={}&&document.title==='Bowser probe page'&&document.readyState==='complete'", crate::chrome_host::protocol::json_string(cross.origin().ascii_serialization().as_str()));
+            assert!(pump_until(Duration::from_secs(10), || command_view(&mut session,TabId(2),&ready).as_deref()==Some("true")), "cross-origin revocation negative did not load its actual new document");
+            let receipt = command_receipt(&mut session, "native-command-again").unwrap(); println!("NATIVE_COMMAND phase=cross-origin-no-new-gesture receipt={receipt:?}");
+            let again = command_field(&receipt,"again").unwrap();
+            assert_eq!(command_field(again,"id"),second_native_id.as_ref(), "cross-origin retry did not use the retained second native event target");
+            assert_eq!(command_field(again,"currentNativeTab").and_then(|tab| command_field(tab,"id")),second_native_id.as_ref(), "retained native tab was closed/replaced rather than permission-revoked");
+            assert_eq!(command_field(again,"allowed"),Some(&Value::Bool(false)));
+            assert_eq!(command_field(again,"permissionDenied"),Some(&Value::Bool(true)), "cross-origin retry failed for a reason other than native permission denial");
+            assert_eq!(command_view(&mut session,TabId(2),"document.documentElement.getAttribute('data-bowser-native-command-primary')").as_deref(),Some("null"));
+            assert_eq!(command_view(&mut session,TabId(2),"document.documentElement.getAttribute('data-bowser-native-command-negative')").as_deref(),Some("null"), "retained-ID negative injection affected the new cross-origin document");
+        }
+        println!("NATIVE_COMMAND verdict=real-native-command-boundary-controls-passed active_tab={active_tab}");
+        session.close(); drop(loopback);
+    }
+    remove_with_retries(&root);
+}

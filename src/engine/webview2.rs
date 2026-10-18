@@ -5517,9 +5517,13 @@ unsafe fn configure_controller(
                     }
                     // A user can bind a gated command to any chord, so the gates are read for every key.
                     let gated = win32::gated_chords(parent);
-                    if let Some(forward) = shortcut_forward_on_page(key, kind, ctrl, shift, alt, gated, || {
+                    let forward = shortcut_forward_on_page(key, kind, ctrl, shift, alt, gated, || {
                         current_web_url(&key_webview).and_then(|url| url.host_str().map(str::to_owned))
-                    }) {
+                    });
+                    #[cfg(test)] if key == 0x58 && ctrl && shift && !alt && is_key_down(kind) {
+                        crate::engine::extension_probe_live::observe_command_accelerator(tab_id, forward.is_some());
+                    }
+                    if let Some(forward) = forward {
                         win32::post(
                             parent,
                             win32::WM_SHORTCUT_KEY,
