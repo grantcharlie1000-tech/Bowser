@@ -40,6 +40,7 @@ pub enum AppNavigationState {
 
 #[derive(Clone, Default)]
 pub struct WebAppEvents {
+    pub diagnostic_lifecycle: Option<std::rc::Weak<crate::performance::PerfLog>>,
     pub title_changed: Option<TitleChangedCallback>,
     pub favicon_changed: Option<FaviconChangedCallback>,
     pub navigation_state: Option<NavigationCallback>,
@@ -53,6 +54,7 @@ pub struct WebAppEvents {
 }
 
 struct WebAppView {
+    trace: Option<crate::performance::WebAppTrace>,
     controller: ICoreWebView2Controller,
     webview: ICoreWebView2,
     remove_handlers: Vec<Box<dyn Fn()>>,
@@ -62,6 +64,7 @@ struct WebAppView {
 }
 
 struct HostState {
+    trace: Option<crate::performance::WebAppTrace>,
     parent: HWND,
     bounds: RECT,
     environment: ICoreWebView2Environment,
@@ -90,6 +93,7 @@ impl WebAppHost {
     where
         F: FnOnce(Result<Self>) + 'static,
     {
+        let trace=events.diagnostic_lifecycle.as_ref().and_then(std::rc::Weak::upgrade).and_then(crate::performance::WebAppTrace::environment);
         std::fs::create_dir_all(web_apps_user_data_dir).map_err(|error| {
             Error::new(
                 windows::core::HRESULT(0x80070005u32 as i32),
@@ -109,8 +113,10 @@ impl WebAppHost {
         let options1: ICoreWebView2EnvironmentOptions = options2.cast()?;
         let completion = Rc::new(RefCell::new(Some(on_ready)));
         let done = completion.clone();
+        let completion_trace=trace.clone();
         let handler = CreateCoreWebView2EnvironmentCompletedHandler::create(Box::new(
             move |status, environment| {
+                if let Some(trace)=&completion_trace {trace.result("webapp_environment_callback",&status);}
                 let result = match (status, environment) {
                     (Ok(()), Some(environment)) => {
                         let path_result = (|| -> Result<()> {
@@ -132,6 +138,7 @@ impl WebAppHost {
                         })();
                         path_result.map(|()| WebAppHost {
                             state: Rc::new(RefCell::new(HostState {
+                                trace: completion_trace.clone(),
                                 parent,
                                 bounds,
                                 environment,
@@ -145,20 +152,24 @@ impl WebAppHost {
                     (Err(error), _) => Err(error),
                     _ => Err(Error::from(windows::Win32::Foundation::E_POINTER)),
                 };
+                if let Some(trace)=&completion_trace {trace.result("webapp_environment_configure_result",&result);}
                 if let Some(callback) = done.borrow_mut().take() {
                     callback(result);
                 }
                 Ok(())
             },
         ));
-        unsafe {
+        if let Some(trace)=&trace {trace.record("webapp_environment_requested");}
+        let result=unsafe {
             CreateCoreWebView2EnvironmentWithOptions(
                 PCWSTR::null(),
                 PCWSTR(profile.as_ptr()),
                 &options1,
                 &handler,
             )
-        }
+        };
+        if let Some(trace)=&trace {trace.result("webapp_environment_begin_result",&result);}
+        result
     }
 
     /// Shows an existing app controller or creates it once, then loads its initial URL.
@@ -185,14 +196,18 @@ impl WebAppHost {
                 return Ok(());
             }
         }
-        let (environment, parent, bounds, weak, app_id, origin) = {
+        let (environment, parent, bounds, weak, app_id, origin, trace) = {
             let state = self.state.borrow();
-            (state.environment.clone(), state.parent, state.bounds, Rc::downgrade(&self.state), app_id.to_owned(), url)
+            (state.environment.clone(), state.parent, state.bounds, Rc::downgrade(&self.state), app_id.to_owned(), url,state.trace.as_ref().map(|trace|trace.request(app_id)))
         };
+        if let Some(trace)=&trace {trace.record("webapp_controller_requested");}
+        let completion_trace=trace.clone();
         let handler = CreateCoreWebView2ControllerCompletedHandler::create(Box::new(move |status, controller| {
+            if let Some(trace)=&completion_trace {trace.result("webapp_controller_callback",&status);}
             let controller = match (status, controller) {
                 (Ok(()), Some(controller)) => controller,
                 _ => {
+                    if let Some(trace)=&completion_trace {trace.record("webapp_controller_unavailable");}
                     if let Some(state) = weak.upgrade() {
                         if let Some(callback) = state.borrow().events.failed.as_ref() {
                             callback(&app_id, "The web app could not be opened.".to_owned());
@@ -201,13 +216,19 @@ impl WebAppHost {
                     return Ok(());
                 }
             };
-            let Some(state_rc) = weak.upgrade() else { let _ = unsafe { controller.Close() }; return Ok(()); };
+            let Some(state_rc) = weak.upgrade() else {
+                if let Some(trace)=&completion_trace {trace.record("webapp_controller_host_gone");}
+                close_observed(&controller,completion_trace.as_ref());return Ok(());
+            };
             let (events, origin_for_handlers, env) = {
                 let state = state_rc.borrow();
                 (state.events.clone(), origin.clone(), state.environment.clone())
             };
-            match unsafe { configure_web_app_controller(&env, controller.clone(), parent, bounds, &app_id, origin_for_handlers, events) } {
+            let configured=unsafe { configure_web_app_controller(&env, controller.clone(), parent, bounds, &app_id, origin_for_handlers, events,completion_trace.clone()) };
+            if let Some(trace)=&completion_trace {trace.result("webapp_controller_configure_result",&configured);}
+            match configured {
                 Ok(app) => {
+                    if let Some(trace)=&completion_trace {trace.record("webapp_controller_configured");}
                     let mut state = state_rc.borrow_mut();
                     if state.closed {
                         app.close();
@@ -219,19 +240,26 @@ impl WebAppHost {
                         // still being built), which would otherwise leave the page at 0x0.
                         let _ = unsafe { app.controller.SetBounds(state.bounds) };
                         let _ = app.set_visible(visible);
+                        let replaced=completion_trace.as_ref().is_some_and(|_|state.apps.contains_key(&app_id));
                         state.apps.insert(app_id, app);
+                        if replaced {
+                            if let Some(trace)=&completion_trace {trace.record("webapp_controller_replaced");}
+                        }
+                        if let Some(trace)=&completion_trace {trace.record("webapp_controller_installed");}
                     }
                 }
                 Err(error) => {
                     if let Some(callback) = state_rc.borrow().events.failed.as_ref() {
                         callback(&app_id, format!("The web app could not be configured: {error}"));
                     }
-                    let _ = unsafe { controller.Close() };
+                    close_observed(&controller,completion_trace.as_ref());
                 }
             }
             Ok(())
         }));
-        unsafe { environment.CreateCoreWebView2Controller(parent, &handler) }
+        let result=unsafe { environment.CreateCoreWebView2Controller(parent, &handler) };
+        if let Some(trace)=&trace {trace.result("webapp_controller_begin_result",&result);}
+        result
     }
 
     pub fn set_bounds(&self, bounds: RECT) -> Result<()> {
@@ -455,8 +483,14 @@ impl WebAppView {
 
     fn close(mut self) {
         for remove in self.remove_handlers.drain(..) { remove(); }
-        let _ = unsafe { self.controller.Close() };
+        close_observed(&self.controller,self.trace.as_ref());
     }
+}
+
+fn close_observed(controller: &ICoreWebView2Controller,trace: Option<&crate::performance::WebAppTrace>) {
+    if let Some(trace)=trace {trace.record("webapp_controller_close_requested");}
+    let result=unsafe {controller.Close()};
+    if let Some(trace)=trace {trace.result("webapp_controller_close_result",&result);}
 }
 
 unsafe fn configure_web_app_controller(
@@ -467,6 +501,7 @@ unsafe fn configure_web_app_controller(
     app_id: &str,
     origin: Url,
     events: WebAppEvents,
+    trace: Option<crate::performance::WebAppTrace>,
 ) -> Result<WebAppView> {
     let webview = unsafe { controller.CoreWebView2()? };
     unsafe {
@@ -509,6 +544,7 @@ unsafe fn configure_web_app_controller(
         removers.push(Box::new(move || { let _ = event_webview.remove_NavigationStarting(token); }));
 
         let navigation_state = events.navigation_state.clone();
+        let navigation_trace=trace.clone();
         let failed = events.failed.clone();
         let completed_id = app_id.to_owned();
         let completed_webview = webview.clone();
@@ -516,7 +552,11 @@ unsafe fn configure_web_app_controller(
         webview.add_NavigationCompleted(&NavigationCompletedEventHandler::create(Box::new(move |_sender, args| {
             if let Some(args) = args {
                 let mut success = BOOL::default();
-                let _ = args.IsSuccess(&mut success);
+                let result=args.IsSuccess(&mut success);
+                if let Some(trace)=&navigation_trace {
+                    trace.result("webapp_navigation_status_result",&result);
+                    if result.is_ok() {trace.record(if success.as_bool(){"webapp_navigation_success"}else{"webapp_navigation_failed"});}
+                }
                 if success.as_bool() {
                     if let Some(callback) = navigation_state.as_ref() { callback(&completed_id, AppNavigationState::Ready); }
                 } else {
@@ -620,8 +660,10 @@ unsafe fn configure_web_app_controller(
         removers.push(Box::new(move || { let _ = failed_webview.remove_ProcessFailed(failed_token); }));
 
         let initial_url = wide(origin.as_str());
-        webview.Navigate(PCWSTR::from_raw(initial_url.as_ptr()))?;
-        Ok(WebAppView { controller, webview, remove_handlers: removers, hidden_since: None, suspended: false })
+        let result=webview.Navigate(PCWSTR::from_raw(initial_url.as_ptr()));
+        if let Some(trace)=&trace {trace.result("webapp_initial_navigate_result",&result);}
+        result?;
+        Ok(WebAppView { controller, webview, trace, remove_handlers: removers, hidden_since: None, suspended: false })
     }
 }
 

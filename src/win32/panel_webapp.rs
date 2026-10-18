@@ -446,6 +446,7 @@ fn make_events(weak: Weak<RefCell<Shared>>, app: AppRef) -> WebAppEvents {
         download_event: Some(download_event),
         download_plan: Some(download_plan),
         policy_event: None,
+        diagnostic_lifecycle: App::diagnostic_lifecycle_log(&app),
         // --- window and panels (thread T9) --- a count in the title ("(3) Inbox") marks the rail button.
         title_changed: Some(Rc::new(move |id, title| {
             let Some(shared) = title_weak.upgrade() else { return; };

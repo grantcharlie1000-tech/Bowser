@@ -83,6 +83,9 @@ fn main() -> ExitCode {
     unsafe {
         CoUninitialize();
     }
+    // A retained sidebar controller may retain App callbacks. Its final diagnostic evidence must
+    // not depend on the last Rc<PerfLog> being dropped; ordinary/startup-only paths are inert.
+    let _=log.checkpoint_sidebar_if_observed();
     if options_ephemeral {
         if let Some(dir) = bowser::profile::data_root_override() {
             let _ = fs::remove_dir_all(dir);

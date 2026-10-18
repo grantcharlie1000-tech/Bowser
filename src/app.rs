@@ -5780,6 +5780,11 @@ impl App {
         let state = app.borrow();
         state.diagnostic_detail.then(|| state.log.clone())
     }
+    /// Existing explicit diagnostic-log opt-in; fixed numeric lifecycle events only.
+    pub fn diagnostic_lifecycle_log(app: &AppRef) -> Option<std::rc::Weak<PerfLog>> {
+        let state=app.borrow();
+        state.log.enabled().then(||Rc::downgrade(&state.log))
+    }
 
     /// HTML chrome mode: the tab environment the chrome views are hosted in. When the engine has
     /// not been started yet (native mode starts it lazily, when the user begins typing), this starts

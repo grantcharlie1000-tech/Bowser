@@ -638,9 +638,40 @@ impl FocusTrace {
     }
 }
 
+/// Buffered numeric WebApps lifecycle observation. No App/host/controller references or queries.
+/// Rows use tab_id=app numeric ID, navigation_id=request ID, count=environment ID; never URLs.
+#[derive(Clone)]
+pub struct WebAppTrace { log: std::rc::Weak<PerfLog>, environment: u64, request: u64, app: u64 }
+impl WebAppTrace {
+    pub fn environment(log: Rc<PerfLog>) -> Option<Self> {
+        if !log.enabled() {return None;}
+        let environment=log.next_sidebar_identity();
+        Some(Self{log:Rc::downgrade(&log),environment,request:0,app:0})
+    }
+    pub fn request(&self,app: &str) -> Self {
+        let app=app.parse::<u32>().map(u64::from).unwrap_or(0);
+        let log=self.log.upgrade();
+        let request=log.as_ref().map_or(0,|log|log.next_sidebar_identity());
+        if app==0 && let Some(log)=&log {let _=log.record("webapp_observation_error");}
+        Self{log:self.log.clone(),environment:self.environment,request,app}
+    }
+    pub fn record(&self,event: &'static str) {self.write(event,None);}
+    fn write(&self,event: &'static str,result: Option<i32>) {
+        let Some(log)=self.log.upgrade()else{return;};
+        if self.environment==0 {let _=log.record("webapp_observation_error");return;}
+        let success=result.map(|hr|(hr>=0).to_string()).unwrap_or_default();
+        let _=log.record_fields(event,&format!("{},{},{success},,webapps,0,0,{}",self.app,self.request,self.environment));
+        if let Some(hr)=result {let _=log.record_fields("webapp_hresult",&format!("{},{},{success},,webapps,0,0,{}",self.app,self.request,hr as u32));}
+    }
+    pub fn result<T>(&self,event: &'static str,result: &windows::core::Result<T>) {
+        self.write(event,Some(result.as_ref().map(|_|0).unwrap_or_else(|error|error.code().0)));
+    }
+}
+
 pub struct PerfLog {
     active: Option<ActiveLog>,
     focus_sequence: Cell<u64>,
+    sidebar_sequence: Cell<u64>,
 }
 struct ActiveLog {
     start: Instant,
@@ -664,10 +695,23 @@ impl PerfLog {
         } else {
             None
         };
-        Ok(Self { active, focus_sequence: Cell::new(0) })
+        Ok(Self { active, focus_sequence: Cell::new(0), sidebar_sequence: Cell::new(0) })
     }
     pub fn enabled(&self) -> bool {
         self.active.is_some()
+    }
+    fn next_sidebar_identity(&self) -> u64 {
+        match self.sidebar_sequence.get().checked_add(1) {
+            Some(next)=>{self.sidebar_sequence.set(next);next},
+            None=>{let _=self.record("webapp_observation_error");0},
+        }
+    }
+    /// Sidebar diagnostics may expose retained callbacks. Flush only this observed workload,
+    /// without making ordinary/startup-only logging depend on a new checkpoint.
+    pub fn checkpoint_sidebar_if_observed(&self) -> io::Result<()> {
+        if self.sidebar_sequence.get()==0 {return Ok(());}
+        self.record_fields("webapp_observation_end",&format!("0,0,{},,webapps,0,0,{}",self.failure().is_none(),self.sidebar_sequence.get()))?;
+        self.diagnostic_checkpoint()
     }
     pub fn failure(&self) -> Option<String> {
         self.active
@@ -1424,6 +1468,50 @@ mod tests {
         let disabled=Rc::new(PerfLog::new(None).unwrap());
         assert_eq!(FocusTrace::new(disabled.clone(),"toolbar",0).controller,0);
         assert_eq!(disabled.focus_sequence.get(),0);
+    }
+
+    #[test]
+    fn webapp_lifecycle_ids_and_results_are_numeric_buffered_and_opt_in() {
+        let disabled=Rc::new(PerfLog::new(None).unwrap());
+        assert!(WebAppTrace::environment(disabled.clone()).is_none());
+        assert_eq!(disabled.sidebar_sequence.get(),0);
+        let path=std::env::temp_dir().join(format!("bowser-webapp-trace-{}.csv",std::process::id()));
+        let log=Rc::new(PerfLog::new(Some(&path)).unwrap());
+        let env=WebAppTrace::environment(log.clone()).unwrap();
+        let a=env.request("1");let b=env.request("2");
+        assert_eq!(Rc::strong_count(&log),1,"Observers cannot extend logger/App teardown lifetime");
+        assert_ne!(a.request,b.request);assert_eq!(a.environment,b.environment);
+        a.record("webapp_controller_requested");
+        b.result("webapp_controller_close_result",&Err::<(),_>(windows::core::Error::from(windows::core::HRESULT(-1))));
+        let invalid=env.request("https://private.test/");
+        invalid.record("webapp_controller_requested");
+        log.sidebar_sequence.set(u64::MAX);
+        assert_eq!(env.request("1").request,0);
+        assert!(!std::fs::read_to_string(&path).unwrap().contains("webapp_controller_requested"));
+        drop((env,a,b,invalid));drop(log);
+        let text=std::fs::read_to_string(&path).unwrap();std::fs::remove_file(path).unwrap();
+        assert!(!text.contains("private.test"));
+        let rows:Vec<Vec<&str>>=text.lines().skip(1).map(|line|line.split(',').collect()).collect();
+        let request=rows.iter().find(|row|row[0]=="webapp_controller_requested").unwrap();
+        assert_eq!((request[3],request[7],request[9],request[10]),("1","webapps","0","1"));
+        assert!(rows.iter().any(|row|row[0]=="webapp_controller_close_result"&&row[5]=="false"));
+        assert!(rows.iter().any(|row|row[0]=="webapp_hresult"&&row[10]=="4294967295"));
+        assert!(rows.iter().any(|row|row[0]=="webapp_observation_error"));
+    }
+
+    #[test]
+    fn sidebar_end_marker_flushes_without_last_logger_drop() {
+        let path=std::env::temp_dir().join(format!("bowser-sidebar-end-{}.csv",std::process::id()));
+        let log=Rc::new(PerfLog::new(Some(&path)).unwrap());
+        let env=WebAppTrace::environment(log.clone()).unwrap();
+        let request=env.request("1");request.record("webapp_controller_requested");
+        log.checkpoint_sidebar_if_observed().unwrap();
+        let text=std::fs::read_to_string(&path).unwrap();
+        let end:Vec<_>=text.lines().last().unwrap().split(',').collect();
+        assert_eq!((end[0],end[5],end[10]),("webapp_observation_end","true","2"));
+        assert_eq!(text.lines().filter(|line|line.starts_with("webapp_observation_end,")).count(),1);
+        drop((env,request));drop(log);std::fs::remove_file(path).unwrap();
+        let disabled=PerfLog::new(None).unwrap();disabled.checkpoint_sidebar_if_observed().unwrap();
     }
 
     #[test]
