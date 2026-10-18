@@ -454,3 +454,15 @@ test('the address dialogs: snapshots parse strictly and fields are cleaned befor
   assert.equal(dialogLogic.MAX_QR_BYTES, 213);
   assert.ok(qrMatrix('x'.repeat(dialogLogic.MAX_QR_BYTES)) !== null && qrMatrix('x'.repeat(dialogLogic.MAX_QR_BYTES + 1)) === null, 'the dialog limit is the encoder limit');
 });
+
+// ---- address_bar_show, the highlight default and search_keep_text ----
+
+test('hiding the address field hides only its part of the pill, and its row reads differently from the layout row', () => {
+  const css = readFileSync(join(here, '..', 'src', 'styles', 'address.css'), 'utf8');
+  const rule = css.match(/\.pill\[data-hidden="true"\][^{]*\{[^}]*\}/)?.[0] ?? '';
+  assert.match(rule, /> :is\(\.tb-site, \.omni-field, \.tb-hist, \.tb-qr\)/, 'only the address part is hidden');
+  assert.doesNotMatch(rule, /omni-search/, 'the search field stays');
+  const row = rows.ADDRESS_ROWS.find((r) => r.id === 'addrShow');
+  assert.equal(row.label, 'Show the address field');
+  assert.notEqual(row.label, 'Show the address bar row');
+});
