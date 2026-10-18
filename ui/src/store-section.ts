@@ -111,6 +111,21 @@ export function mountStoreSection(options: ExtensionsSectionOptions): { readonly
       status.setAttribute('aria-busy', String(s.phase === 'downloading' || s.phase === 'installing'));
       if (s.phase === 'downloading' || s.phase === 'installing') status.append(el('span', 'bw-spinner'));
       if (s.phase === 'review') {
+        const listing = s.catalogue.find((entry) => entry.id === s.extensionId);
+        const identity = el('dl', 'bs-facts bs-review-facts');
+        for (const [label, value] of [
+          ['Store / signing ID', s.extensionId],
+          ['Package version', s.version],
+          ['Publisher', listing ? `${listing.publisher} (catalogue attribution, not independently verified for this package)` : 'Unknown. Not independently verified.'],
+          ['Package source', `https://chromewebstore.google.com/detail/${s.extensionId}`],
+          ['Provenance', listing ? 'Curated listing metadata, not a verified publisher assertion.' : 'Requested from a validated Chrome Web Store listing. Not part of the curated Bowser catalogue.'],
+          ['Compatibility', 'Untested for this resolved package version. Installation alone does not establish compatibility.'],
+        ] as const) {
+          const term = el('dt'); term.textContent = label;
+          const valueText = el('dd'); valueText.textContent = value; identity.append(term, valueText);
+        }
+        const source = textButton('View package source', () => options.send({ a: 'storelisting', text: s.extensionId }), { icon: 'external' });
+        status.append(identity, source);
         status.append(paragraph('Review the resolved package below. Required access is granted when the extension is on. Bowser cannot narrow it. Optional declarations are shown separately and are not a promise of enforcement.'));
         const lists = el('dl', 'bs-permissions');
         for (const [key, label] of PERMISSION_GROUPS) {

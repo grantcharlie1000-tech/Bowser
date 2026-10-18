@@ -11,7 +11,7 @@ const protocol = await bundle('protocol');
 const ui = await bundle('store-section');
 const id = 'a'.repeat(32);
 const entry = { id, name: 'Helpful <text>', description: 'Make reading pleasant', publisher: 'Example publisher', category: 'Reading', source: 'Chrome Web Store', homepage: 'https://example.com', provenance: 'Published by Example', checked: '2026-10-18', compatibility: 'untested', compatibilityNote: 'No tested version yet.' };
-const snap = (extra = {}) => ({ shown: true, catalogue: [entry], phase: 'idle', requestId: '', extensionId: '', name: '', version: '', error: '', restart: false, permissions: [], hostPermissions: [], contentScripts: [], optionalPermissions: [], optionalHostPermissions: [], ...extra });
+const snap = (extra = {}) => ({ shown: true, catalogue: [entry], phase: 'idle', requestId: '', extensionId: id, name: '', version: '', error: '', restart: false, permissions: [], hostPermissions: [], contentScripts: [], optionalPermissions: [], optionalHostPermissions: [], ...extra });
 const message = (d) => ({ t: 'snap', p: 'store', d });
 const btn = (root, text) => root.querySelectorAll('button').find((node) => node.textContent === text);
 function mount() {
@@ -123,4 +123,28 @@ test('detail back restores card focus and a fresh review focuses its heading, no
   assert.equal(document.activeElement.tagName,'h2');
   assert.ok(document.activeElement.textContent.startsWith('Review'));
   assert.notEqual(document.activeElement,btn(store.root,`Install ${entry.name} 1`));
+});
+
+
+test('permission bounds count Unicode scalars and reject more than the native cap', () => {
+  const value = '😀'.repeat(256);
+  assert.equal(logic.parseStoreSnapshot(snap({ permissions:[value] })).permissions[0],value);
+  assert.equal(logic.parseStoreSnapshot(snap({ permissions:[value+'😀'] })),null);
+});
+
+test('every resolved review identifies source and unverified publisher without assuming catalogue membership', () => {
+  const store = mount();
+  store.receive(message(snap({phase:'review',requestId:'source-1',name:entry.name,version:'1'})));
+  assert.ok(store.root.querySelector('.bs-review-facts').textContent.includes(entry.publisher));
+  assert.ok(store.root.querySelector('.bs-review-facts').textContent.includes('not independently verified'));
+  const noncatalog='c'.repeat(32);
+  store.receive(message(snap({phase:'review',requestId:'source-2',extensionId:noncatalog,name:'Resolved package',version:'4'})));
+  const facts=store.root.querySelector('.bs-review-facts').textContent;
+  assert.ok(facts.includes(noncatalog));
+  assert.ok(facts.includes('Unknown. Not independently verified.'));
+  assert.ok(facts.includes('Untested for this resolved package version'));
+  assert.ok(facts.includes('Not part of the curated Bowser catalogue'));
+  btn(store.root,'View package source').click();
+  assert.deepEqual(store.sent,[{a:'storelisting',text:noncatalog}]);
+  assert.equal(logic.parseStoreSnapshot(snap({phase:'review',requestId:'bad-source',name:'X',version:'1',extensionId:'https://evil.test'})),null);
 });

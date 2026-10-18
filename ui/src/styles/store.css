@@ -31,6 +31,7 @@
 .bs-detail-head h2 { flex: 1; }
 .bs-facts { display: grid; grid-template-columns: minmax(120px, 1fr) minmax(0, 3fr); gap: var(--bw-space-4); margin: 0; padding: var(--bw-space-6); border: 1px solid var(--bw-hairline); border-radius: var(--bw-r-island); }
 .bs-facts dt, .bs-permissions dt { color: var(--bw-text-2); font-weight: var(--bw-weight-strong); }
+.bs-review-facts { flex-basis: 100%; }
 .bs-facts dd { margin: 0; overflow-wrap: anywhere; }
 .bs-status { display: flex; flex-wrap: wrap; gap: var(--bw-space-4); align-items: center; padding: var(--bw-space-6); margin-bottom: var(--bw-space-6); border: 1px solid var(--bw-accent); border-radius: var(--bw-r-island); background: var(--bw-accent-soft); }
 .bs-status-title, .bs-status > .bs-muted, .bs-permissions { flex-basis: 100%; }

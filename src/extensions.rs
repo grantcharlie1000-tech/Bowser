@@ -1845,6 +1845,39 @@ mod tests {
     }
 
     #[test]
+    fn prepared_copy_is_not_installed_until_explicit_commit_and_cancel_cleans_it() {
+        let dir = temp_dir("prepared-consent");
+        let extensions = dir.join("Extensions");
+        let records = dir.join("extensions.txt");
+        let prepared = prepare_install(&fixture("probe-mv3"), &extensions, &records).unwrap();
+        let folder = prepared.folder().unwrap();
+        assert!(folder.join("manifest.json").exists());
+        assert!(read_records(&records).unwrap().is_empty());
+        assert!(startup_plan(&extensions, &records).enabled.is_empty());
+        drop(prepared);
+        assert!(!folder.exists());
+        assert!(read_records(&records).unwrap().is_empty());
+        let prepared = prepare_install(&fixture("probe-mv3"), &extensions, &records).unwrap();
+        let record = prepared.commit().unwrap();
+        assert_eq!(read_records(&records).unwrap(), vec![record]);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn changed_reviewed_declarations_cannot_commit() {
+        let dir = temp_dir("prepared-change");
+        let extensions = dir.join("Extensions");
+        let records = dir.join("extensions.txt");
+        let prepared = prepare_install(&fixture("probe-mv3"), &extensions, &records).unwrap();
+        let folder = prepared.folder().unwrap();
+        fs::write(folder.join("manifest.json"), r#"{"manifest_version":3,"name":"Changed","version":"1","permissions":["tabs"]}"#).unwrap();
+        assert!(prepared.commit().is_err());
+        assert!(!folder.exists());
+        assert!(read_records(&records).unwrap().is_empty());
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn locales_fixture_keeps_its_raw_name_and_its_locales_folder_through_install() {
         let source = fixture("probe-mv3-locales");
         assert_eq!(

@@ -707,8 +707,8 @@ fn live_store_current_extension_loads() {
     for (name, id) in [
         ("ublock-origin-lite", "ddkjiahejlhfcafbddmgiahcphecmpfh"),
         ("bitwarden", "nngceckbapebfimnlniiiahkandclblb"),
-        ("dark-reader", "eimadpbcbfnmbkopoojfekhnkhdbieeh"),
-        ("onetab", "chphlpgkkbolifaimnlloiipkdnihall"),
+        ("stylus", "clngdbkpkpeebahjckkjfobafhncgmne"),
+        ("tab-session-manager", "iaiomicjabeggjcfkbimgmglanimpnae"),
     ] {
         let profile = root.join(name);
         let review = match crate::store::prepare(id, version, &profile.join("Extensions"), &profile.join("extensions.txt"), &cancelled) {

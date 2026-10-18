@@ -116,10 +116,11 @@ pub(crate) fn run(owner: HWND, app: &AppRef, fields: &PanelFields) -> bool {
         "storeurl" => match fields.text.as_deref().and_then(|text| crate::crx_fetch::parse_store_url(text).ok()) {
             Some(id) => start(owner, app, &id), None => error(owner, "Enter a valid HTTPS Chrome Web Store extension listing URL."),
         },
-        "storelisting" | "storesource" => if let Some(entry) = fields.text.as_deref().and_then(store::entry) { open_web(app, if fields.a == "storelisting" { entry.source } else { entry.homepage }); },
+        "storelisting" => if let Some(id) = fields.text.as_deref().and_then(|id| crate::crx_fetch::parse_extension_id(id).ok()) { open_web(app, &format!("https://chromewebstore.google.com/detail/{id}")); },
+        "storesource" => if let Some(entry) = fields.text.as_deref().and_then(store::entry) { open_web(app, entry.homepage); },
         "storecancel" => {
             if let Some(request) = fields.text.as_deref().filter(|id| store::valid_request_id(id)) {
-                with(owner, |state| if state.request == request {
+                with(owner, |state| if state.request == request && matches!(state.phase, "downloading" | "review") {
                     if let Some(cancelled) = &state.cancelled { cancelled.store(true, Ordering::Release); }
                     state.review = None; state.phase = "cancelled"; state.error.clear();
                 }); changed(owner);

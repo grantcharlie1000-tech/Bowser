@@ -654,6 +654,7 @@ pub(crate) fn run_queued(owner: HWND, app: &AppRef) {
                 if super::store::run(owner, app, &fields) { continue; }
                 if App::internal_page(app, tab).is_some_and(InternalPage::is_store) {
                     if fields.a == "refresh" { let _ = with(owner, |rt| { rt.ext_due = true; rt.store_due = true; }); }
+                    else if let Some(Action::Section(section)) = wire::map_command(&fields) { open(owner, app, section, false); }
                     else if let Some(action) = ext::map_command(&fields) { run_extension(owner, app, action); }
                     continue;
                 }

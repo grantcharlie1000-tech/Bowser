@@ -468,13 +468,20 @@ impl HostedPagePolicy {
         if self.pending.get() {
             return consume_allowed_file_navigation(uri, Some(&self.granted), &self.pending);
         }
-        crate::extensions::is_page_url(uri) && uri.host_str() == self.granted.host_str()
+        self.owns_page(uri)
+    }
+
+    fn owns_page(&self, uri: &Url) -> bool {
+        let mut page = uri.clone();
+        page.set_query(None);
+        page.set_fragment(None);
+        crate::extensions::is_page_url(&page) && page.host_str() == self.granted.host_str()
     }
 
     /// Frames may be blank or the granted extension's own pages, nothing else.
     pub(super) fn allow_frame(&self, uri: &Url) -> bool {
         (uri.scheme() == "about" && matches!(uri.path(), "blank" | "srcdoc"))
-            || (crate::extensions::is_page_url(uri) && uri.host_str() == self.granted.host_str())
+            || self.owns_page(uri)
     }
 }
 
@@ -6467,6 +6474,7 @@ mod tests {
         // Refusals above did not use up the grant.
         assert!(policy.allow_navigation(&granted), "first navigation to the granted URL");
         assert!(policy.allow_navigation(&granted), "reload stays within the same extension");
+        assert!(policy.allow_navigation(&Url::parse(&format!("chrome-extension://{HOSTED_ID}/options.html?mode=full#settings")).unwrap()));
         assert!(policy.allow_navigation(&Url::parse(&format!("chrome-extension://{HOSTED_ID}/options.html")).unwrap()));
         assert!(!policy.allow_navigation(&Url::parse("chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/options.html").unwrap()));
         assert!(!policy.allow_navigation(&Url::parse("https://example.com/").unwrap()));

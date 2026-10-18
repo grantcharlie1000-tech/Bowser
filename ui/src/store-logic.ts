@@ -20,7 +20,7 @@ export interface StoreSnapshot extends Readonly<Record<PermissionKey, readonly s
   readonly version: string; readonly error: string; readonly restart: boolean;
 }
 const record = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
-const text = (v: unknown, max = 4096): v is string => typeof v === 'string' && v.length <= max && !/[\u0000-\u001f\u007f]/.test(v);
+const text = (v: unknown, max = 4096): v is string => typeof v === 'string' && v.length <= max * 2 && Array.from(v).length <= max && !/[\u0000-\u001f\u007f]/.test(v);
 export const isStoreId = (v: unknown): v is string => typeof v === 'string' && /^[a-p]{32}$/.test(v);
 export const isStoreRequestId = (v: unknown): v is string => typeof v === 'string' && /^[a-zA-Z0-9-]{1,64}$/.test(v);
 export function parseStoreSnapshot(v: unknown): StoreSnapshot | null {
@@ -39,7 +39,7 @@ export function parseStoreSnapshot(v: unknown): StoreSnapshot | null {
   for (const [key] of PERMISSION_GROUPS) {
     if (!Array.isArray(v[key]) || v[key].length > 256 || !v[key].every((item) => text(item, 256))) return null;
   }
-  if (v.phase === 'review' && (!isStoreRequestId(v.requestId) || v.version === '' || v.name === '')) return null;
+  if (v.phase === 'review' && (!isStoreRequestId(v.requestId) || v.version === '' || v.name === '' || !isStoreId(v.extensionId))) return null;
   return v as unknown as StoreSnapshot;
 }
 export function filterCatalogue(items: readonly StoreEntry[], query: string, category = ''): readonly StoreEntry[] {
