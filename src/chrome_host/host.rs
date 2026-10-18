@@ -24,7 +24,7 @@ use webview2_com::{
 };
 use windows::{
     Win32::{
-        Foundation::{E_FAIL, E_POINTER, HWND, RECT},
+        Foundation::{E_FAIL, E_NOINTERFACE, E_POINTER, HWND, RECT},
         System::Com::IStream,
         UI::{
             Input::KeyboardAndMouse::{GetKeyState, VIRTUAL_KEY, VK_CONTROL, VK_MENU, VK_SHIFT},
@@ -624,6 +624,41 @@ impl ChromeHost {
         let result=unsafe { controller.MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC) };
         if let Some(trace)=&self.focus_trace {trace.result("interaction_chrome_move_result",&result);}
         self.observe(result)
+    }
+
+    /// Optional bookmark-bar-only memory hint. Never enters the host failure budget.
+    /// A successful setter requests a target; it does not confirm memory reclamation.
+    pub(crate) fn set_bookmark_bar_memory_low(&self, low: bool) -> Result<bool> {
+        let (webview, env, view, id) = {
+            let state = self.state.try_borrow().map_err(|_| fail("Chrome host is busy"))?;
+            if state.closed { return Err(fail("Chrome host is closed")); }
+            if !matches!(state.view, View::BookmarkBar) { return Err(fail("Memory hint is bookmark-bar-only")); }
+            (state.webview.clone(), state._env.clone(), state.view, state.diagnostic_id)
+        };
+        let api = match webview.cast::<ICoreWebView2_19>() {
+            Ok(api) => api,
+            Err(error) if error.code() == E_NOINTERFACE => {
+                env.detail("chrome_bar_memory_unsupported", view, id);
+                return Ok(false);
+            }
+            Err(error) => {
+                env.detail("chrome_bar_memory_interface_failed", view, id);
+                return Err(error);
+            }
+        };
+        env.detail(if low { "chrome_bar_memory_low_requested" } else { "chrome_bar_memory_normal_requested" }, view, id);
+        let result = unsafe { api.SetMemoryUsageTargetLevel(if low {
+            COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_LOW
+        } else {
+            COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_NORMAL
+        }) };
+        env.detail(match (low, result.is_ok()) {
+            (true, true) => "chrome_bar_memory_low_succeeded",
+            (true, false) => "chrome_bar_memory_low_failed",
+            (false, true) => "chrome_bar_memory_normal_succeeded",
+            (false, false) => "chrome_bar_memory_normal_failed",
+        }, view, id);
+        result.map(|()| true)
     }
 
     /// Starts suspension. Initiation errors are returned; completion failures notify `on_failed`.

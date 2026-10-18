@@ -27,6 +27,36 @@ function Get-ProductionBookmarkBarCoverage {
  foreach($snapshot in $Snapshots){if($snapshot.CoverageErrors.Count -or $snapshot.RacedExitCount -or $snapshot.PrivateSource -cne 'native' -or $null -eq $snapshot.NativePrivateBytes){$errors.Add('native_counter_coverage_gap')}}
  [ordered]@{eligible=($errors.Count -eq 0);invalid_reasons=@($errors.ToArray());scope='All owned/profile process identities stable before/after and covered in all three native snapshots; churn unavailable, not lower memory'}
 }
+# Detail-only correctness ledger; setter success is not freed-memory evidence.
+function Get-ProductionBookmarkBarHintCoverage {
+ param([object[]]$Events)
+ $Events=@($Events|Where-Object {$null -ne $_})
+ $errors=[Collections.Generic.List[string]]::new()
+ $bar=@($Events|Where-Object {$_.view -ceq 'bookmark_bar'})
+ $hints=@($Events|Where-Object {$_.event -like 'chrome_bar_memory_*'})
+ $expected='chrome_bar_memory_low_requested,chrome_bar_memory_low_succeeded,chrome_bar_memory_normal_requested,chrome_bar_memory_normal_succeeded,chrome_bar_memory_low_requested,chrome_bar_memory_low_succeeded'
+ if((@($hints|ForEach-Object {$_.event}) -join ',') -cne $expected -or @($hints|Where-Object {$_.view -cne 'bookmark_bar'}).Count){$errors.Add('missing_failed_unsupported_or_wrong_hint_sequence')}
+ $ids=@($hints|ForEach-Object {$_.count}|Sort-Object -Unique)
+ $ready=@($bar|Where-Object {$_.event -ceq 'chrome_host_ready'})
+ if($ids.Count -ne 1 -or $ids[0] -notmatch '^[1-9][0-9]*$' -or $ready.Count -ne 1 -or $ready[0].count -cne $ids[0]){$errors.Add('unknown_or_changed_bar_controller_identity')}
+ if(-not $errors.Count -and @($bar|Where-Object {$_.event -in @('chrome_host_shown','chrome_host_hidden','chrome_host_close_requested','chrome_host_close_succeeded') -and $_.count -cne $ids[0]}).Count){$errors.Add('host_lifecycle_identity_mismatch')}
+ foreach($event in @('chrome_host_requested','chrome_host_close_requested','chrome_host_close_succeeded')){if(@($bar|Where-Object {$_.event -ceq $event}).Count -ne 1){$errors.Add('missing_or_recreated_host_lifecycle')}}
+ if(@($bar|Where-Object {$_.event -ceq 'chrome_host_close_failed'}).Count){$errors.Add('failed_host_close')}
+ foreach($event in $bar){$clock=[long]0;if(-not [long]::TryParse([string]$event.qpc_ticks,[ref]$clock) -or $clock -le 0){$errors.Add('unknown_native_event_clock')}}
+ if(-not $errors.Count){
+  for($i=1;$i -lt $hints.Count;$i++){if([long]$hints[$i].qpc_ticks -le [long]$hints[$i-1].qpc_ticks){$errors.Add('nonincreasing_hint_request_result_clock')}}
+  $requested=@($bar|Where-Object {$_.event -ceq 'chrome_host_requested'})[0]
+  $close=@($bar|Where-Object {$_.event -ceq 'chrome_host_close_requested'})[0]
+  $closed=@($bar|Where-Object {$_.event -ceq 'chrome_host_close_succeeded'})[0]
+  if([long]$requested.qpc_ticks -ge [long]$ready[0].qpc_ticks -or [long]$ready[0].qpc_ticks -ge [long]$hints[0].qpc_ticks -or [long]$close.qpc_ticks -le [long]$hints[-1].qpc_ticks -or [long]$closed.qpc_ticks -le [long]$close.qpc_ticks){$errors.Add('ready_or_paired_close_lifecycle_order_unproven')}
+ }
+ if(-not $errors.Count){
+  $hidden=@($bar|Where-Object {$_.event -ceq 'chrome_host_hidden'})
+  $shown=@($bar|Where-Object {$_.event -ceq 'chrome_host_shown'})
+  if($hidden.Count -ne 2 -or -not @($shown|Where-Object {[long]$_.qpc_ticks -lt [long]$hidden[0].qpc_ticks}).Count -or [long]$hidden[0].qpc_ticks -ge [long]$hints[0].qpc_ticks -or [long]$hints[1].qpc_ticks -ge [long]$hints[2].qpc_ticks -or -not @($shown|Where-Object {[long]$_.qpc_ticks -gt [long]$hints[3].qpc_ticks -and [long]$_.qpc_ticks -lt [long]$hidden[1].qpc_ticks}).Count -or [long]$hidden[1].qpc_ticks -ge [long]$hints[4].qpc_ticks){$errors.Add('hide_low_restore_before_reveal_order_unproven')}
+ }
+ [ordered]@{complete=($errors.Count -eq 0);errors=@($errors.ToArray());scope='Detail-only API request/result and retained-host ordering, not reclaimed private bytes or physical presentation'}
+}
 function Invoke-ProductionBookmarkBarLifecycle {
  [CmdletBinding()]
  param([uint32]$RootPid,[string]$InitialToken,[string]$Profile,[string]$BaseUrl,[string]$RequestFile,[string]$ContaminationMarker,[Parameter(Mandatory)][AllowEmptyCollection()][Collections.Generic.List[object]]$Trace)
@@ -157,4 +187,4 @@ function Invoke-ProductionBookmarkBarLifecycle {
   if($partial.Count){[ordered]@{reason='Partial physical input batch; all later native lanes blocked';clicks=$partial}|ConvertTo-Json -Depth 15|Set-Content -LiteralPath $ContaminationMarker -Encoding utf8}
  }
 }
-Export-ModuleMember -Function New-ProductionBookmarkBarFixture,Get-ProductionBookmarkBarCoverage,Invoke-ProductionBookmarkBarLifecycle
+Export-ModuleMember -Function New-ProductionBookmarkBarFixture,Get-ProductionBookmarkBarCoverage,Get-ProductionBookmarkBarHintCoverage,Invoke-ProductionBookmarkBarLifecycle
