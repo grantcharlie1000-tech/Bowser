@@ -193,3 +193,29 @@ released on normal completion or unwind. This tests the default system message f
 no child control and changes no production geometry; it does not establish STATIC rendering,
 user-selected font fallback, actual monitor DPI, show/hide lifetime, Google-page reservation or
 200% visual acceptance. Those remain distinct integration/runtime gates.
+
+
+### Installer-band component fixture, not production UI
+
+The next cfg(test)-only native component has a fixed read-only STATIC note and ordinary native
+Add to Bowser push button. It has no App reference, Store function, browser/controller or host bridge.
+A genuine OS button click can record only a test-local native notification; it cannot download,
+install or grant activeTab. Its standalone title and page placeholder explicitly identify it as a
+component fixture, not Google or an install-capable browser.
+
+The isolated exact-name test requests100/150/200% actual message fonts at the native window's
+observed DPI, wide1044px and narrow320px layouts, real control bounds/fonts, hidden creation then
+explicit reserved-page placement before showing/enabling, repeated resize/font recreation,
+hide/show, duplicate-owner refusal, no-space refusal and actual owner close. Source checks preserve
+font/callback lifetime on uncertain cleanup rather than deleting a possibly live resource.
+The native helper uses a retained read-only exact test-process handle, exact direct-child
+HWND/PID/thread/class/control IDs, bounded exact copy reads, fresh contained bounds and one genuine
+foreground/hit-tested first-sample click. It captures only the owned native component window;
+screenshots require independent visual review and cannot pass merely from accessible text.
+
+These are pending executable component gates, not production activation or200% acceptance. The
+reserved page is a native fixture placeholder, not a WebView or Google page. Custom user-font
+faces, real creation/measurement/position-error controls, production navigation/profile/privacy
+visibility, bookmark/split/panel integration and actual CWS Add→trusted consent remain distinct
+later gates. Future production toolbar dispatch must also become popup/management-only when the
+band owns Add; changing its label alone cannot leave the existing listing→Store interception active.

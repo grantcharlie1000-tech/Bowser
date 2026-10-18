@@ -5,6 +5,9 @@
 
 use super::layout::Rect;
 
+// Whole parent module is Windows cfg(test)-only; this fixture never activates production chrome.
+mod native_component;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Rows {
     /// Page before bookmark reservation, used by the existing auto-hide page contract.
