@@ -1168,3 +1168,66 @@ fn live_runtime_crash_child() {
     pump_until(Duration::from_secs(30), || result.borrow().is_some());
     panic!("The exact crash cut was not delivered before completion: {:?}", result.borrow());
 }
+
+
+fn run_completed_state_child(root: &Path, expected: &str) {
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "engine::extension_probe_live::live_runtime_completed_state_child", "--ignored", "--nocapture", "--test-threads=1"])
+        .env("BOWSER_COMPLETED_STATE_ROOT", root).env("BOWSER_COMPLETED_STATE_EXPECTED", expected).output().unwrap();
+    println!("COMPLETED_RESTART expected={expected} child_exit={:?} stdout={} stderr={}", output.status.code(), String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+    assert!(output.status.success(), "the actual new-process completed-state control failed");
+}
+
+#[test]
+#[ignore = "actual durable Disable and Remove persist across separate executable processes"]
+fn live_probe_completed_revocations_restart() {
+    unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED).ok().unwrap() };
+    let root = temp_root(); let profile = root.join("state-profile");
+    let record = extensions::install(&fixture("probe-mv3-key"), &profile.join("Extensions"), &profile.join("extensions.txt")).unwrap();
+    let folder = extensions::folder_for(&profile.join("Extensions"), &record.id).unwrap(); let loopback = Loopback::start();
+    let mut session = Session::open(&profile, vec![(record.id.clone(), folder.clone())], vec![(record.id.clone(), true)], &loopback.page("completed-enabled"));
+    let (_, failure) = session.wait_for_add(&profile, &record.id); assert!(failure.is_none());
+    assert!(session.native_inventory().unwrap().iter().any(|(id, on)| id == KEY_FIXTURE_ID && *on));
+    let answer = Rc::new(RefCell::new(None)); let sink = answer.clone();
+    session.engine.set_extension_enabled(&record.id, &folder, false, Box::new(move |result| *sink.borrow_mut() = Some(result)));
+    assert!(pump_one_until(Duration::from_secs(30), || answer.borrow().is_some())); answer.borrow_mut().take().unwrap().unwrap();
+    assert!(!extensions::read_authority_records(&profile.join("extensions.txt")).unwrap()[0].enabled);
+    assert!(session.native_inventory().unwrap().iter().any(|(id, on)| id == KEY_FIXTURE_ID && !on));
+    session.close(); drop(loopback); run_completed_state_child(&root, "off");
+    let loopback = Loopback::start();
+    let mut session = Session::open(&profile, vec![], vec![(record.id.clone(), false)], &loopback.page("completed-off"));
+    assert!(pump_one_until(Duration::from_secs(30), || session.engine.probe_extension_profile_ready()));
+    assert!(pump_one_until(Duration::from_secs(30), || extensions::RecordsLease::runtime(&profile.join("extensions.txt")).is_ok()));
+    let answer = Rc::new(RefCell::new(None)); let sink = answer.clone(); let records = profile.join("extensions.txt"); let dir = profile.join("Extensions"); let id = record.id.clone();
+    session.engine.remove_extension(&record.id, Box::new(move |native| {
+        *sink.borrow_mut() = Some(native.and_then(|()| extensions::uninstall_under_runtime(&dir, &records, &id).map_err(|error| error.to_string())));
+    }));
+    assert!(pump_one_until(Duration::from_secs(30), || answer.borrow().is_some())); answer.borrow_mut().take().unwrap().unwrap();
+    assert!(extensions::read_authority_records(&profile.join("extensions.txt")).unwrap().is_empty());
+    assert!(!session.native_inventory().unwrap().iter().any(|(id, _)| id == KEY_FIXTURE_ID)); assert!(!folder.exists());
+    session.close(); drop(loopback); run_completed_state_child(&root, "absent");
+    println!("COMPLETED_RESTART verdict=actual-native-off-and-remove-stay-off-or-absent-in-new-processes scope=signed-keyed-fixture-not-all-extension-functionality");
+    remove_with_retries(&root);
+}
+
+#[test]
+#[ignore = "child of the completed durable revocation restart diagnostic"]
+fn live_runtime_completed_state_child() {
+    let root = std::env::var_os("BOWSER_COMPLETED_STATE_ROOT").map(PathBuf::from).expect("Only the owning diagnostic starts this child.");
+    assert!(root.starts_with(std::env::temp_dir()) && root.file_name().unwrap().to_string_lossy().starts_with("bowser-ext-live-"));
+    let expected = std::env::var("BOWSER_COMPLETED_STATE_EXPECTED").unwrap(); let profile = root.join("state-profile");
+    unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED).ok().unwrap() };
+    let records = extensions::read_authority_records(&profile.join("extensions.txt")).unwrap();
+    assert!(records.iter().all(|record| !record.enabled), "completed-off authority must not become enabled in a new process");
+    let known = records.iter().map(|record| (record.id.clone(), record.enabled)).collect(); let loopback = Loopback::start();
+    let session = Session::open(&profile, vec![], known, &loopback.page("completed-restart-control"));
+    assert!(pump_one_until(Duration::from_secs(30), || session.engine.probe_extension_profile_ready()));
+    let native = session.native_inventory().unwrap();
+    match expected.as_str() {
+        "off" => { assert_eq!(records.len(), 1); assert!(native.iter().any(|(id, on)| id == KEY_FIXTURE_ID && !on)); }
+        "absent" => { assert!(records.is_empty()); assert!(!native.iter().any(|(id, _)| id == KEY_FIXTURE_ID)); }
+        _ => panic!("Unknown owning test state"),
+    }
+    println!("COMPLETED_RESTART_CHILD expected={expected} actual_native_inventory={native:?} record_count={}", records.len());
+    session.close(); drop(loopback);
+}

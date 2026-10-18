@@ -41,6 +41,16 @@ jobs:
           $test = Get-ChildItem target/debug/deps/bowser-*.exe | Sort-Object LastWriteTime -Descending | Select-Object -First 1
           & $test.FullName live_store_current_extension_loads --ignored --nocapture --test-threads=1 2>&1 | Tee-Object store-runtime-probe.log
           if ($LASTEXITCODE -ne 0) { throw 'Real extension load diagnostic failed.' }
+      - name: Save real-package functionality diagnostics before later gates
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: store-real-package-diagnostics-${{ github.sha }}
+          path: |
+            store-download-probe.log
+            store-runtime-probe.log
+          if-no-files-found: error
+          retention-days: 14
       - name: Probe local fixture restart, worker messaging, and hosted-context boundaries
         run: |
           $env:BOWSER_EXTENSION_TRACE = '1'
@@ -56,6 +66,12 @@ jobs:
           $test = Get-ChildItem target/debug/deps/bowser-*.exe | Sort-Object LastWriteTime -Descending | Select-Object -First 1
           & $test.FullName live_probe_pending_native_operations --ignored --nocapture --test-threads=1 2>&1 | Tee-Object store-pending-native-probe.log
           if ($LASTEXITCODE -ne 0) { throw 'Real pending native operation diagnostic failed.' }
+      - name: Probe completed native revocations across new processes
+        run: |
+          $env:BOWSER_EXTENSION_TRACE = '1'
+          $test = Get-ChildItem target/debug/deps/bowser-*.exe | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          & $test.FullName live_probe_completed_revocations_restart --ignored --nocapture --test-threads=1 2>&1 | Tee-Object store-completed-restart-probe.log
+          if ($LASTEXITCODE -ne 0) { throw 'Completed native revocation restart diagnostic failed.' }
       - name: Probe signed-keyed process-crash recovery at exact native boundaries
         run: |
           $env:BOWSER_EXTENSION_TRACE = '1'
@@ -113,6 +129,7 @@ jobs:
             store-fixture-probe.log
             store-pending-native-probe.log
             store-crash-recovery-probe.log
+            store-completed-restart-probe.log
             store-update-probe.log
             store-action-probe.log
             ${{ runner.temp }}/bowser-store-rendering/

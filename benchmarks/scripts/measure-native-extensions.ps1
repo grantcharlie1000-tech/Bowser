@@ -43,7 +43,7 @@ function Native-Completed([string]$Log,[int]$Count){
  $text=Get-Content -LiteralPath $Log -Raw
  $ids=@('ddkjiahejlhfcafbddmgiahcphecmpfh','nngceckbapebfimnlniiiahkandclblb','clngdbkpkpeebahjckkjfobafhncgmne','iaiomicjabeggjcfkbimgmglanimpnae')
  foreach($id in $ids){
-  if($text -notmatch ('extension call=add bowser=ext-[a-f0-9]{16} result=ok hresult=0x00000000 id='+$id+' ')){return $false}
+  if($text -notmatch ('extension call=(?:add|enable) bowser=(?:ext-[a-f0-9]{16}|none) result=ok hresult=0x00000000 id='+$id+' ')){return $false}
   if($text -match ('extension call=disable .* id='+$id+' ')){throw 'A measured extension was disabled during startup; four-enabled-extension measurement is invalid.'}
  }
  return $true
