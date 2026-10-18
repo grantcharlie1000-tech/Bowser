@@ -184,6 +184,22 @@ impl App {
         count
     }
 
+    /// [`Self::stack_all_by_site`], plus the tab whose stack "Open the stack editor when a stack is
+    /// made" opens: the tab in front when it is now in a stack, else the first tab of any stack.
+    /// The tab is `None` when no stack was made.
+    pub fn stack_all_by_site_for_editor(app: &AppRef) -> (usize, Option<TabId>) {
+        let count = Self::stack_all_by_site(app);
+        if count == 0 {
+            return (0, None);
+        }
+        let active = Self::active_tab_id(app);
+        if !Self::stack_members(app, active).is_empty() {
+            return (count, Some(active));
+        }
+        let first = Self::tab_ids(app).into_iter().find(|id| !Self::stack_members(app, *id).is_empty());
+        (count, first)
+    }
+
     /// "Unstack": every tab of `id`'s stack leaves it and stays out of automatic grouping.
     pub fn unstack(app: &AppRef, id: TabId) -> bool {
         let members = Self::stack_members(app, id);

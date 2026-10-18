@@ -152,6 +152,25 @@ fn stacking_by_site_by_hand_works_without_automatic_grouping_and_unstack_undoes_
 }
 
 #[test]
+fn stack_all_by_site_names_a_stack_for_the_editor_option() {
+    let app = fixture();
+    app.borrow_mut().settings.automatic_tab_grouping = false;
+    let ids = tabs_on(&app, &["https://a.com/1", "https://b.com/1", "https://a.com/2", "https://c.com/"]);
+    let _ = App::select_tab(&app, ids[3]);
+    let (count, target) = App::stack_all_by_site_for_editor(&app);
+    assert_eq!(count, 1);
+    assert!(target.is_some_and(|id| in_stack(&app, id, "a.com")), "the lone c.com tab in front has no stack: the first stack opens");
+    assert!(App::unstack(&app, ids[0]));
+    let _ = App::select_tab(&app, ids[2]);
+    // Unstacked tabs stay out of automatic grouping but stack again by hand.
+    let (_, target) = App::stack_all_by_site_for_editor(&app);
+    assert_eq!(target, Some(ids[2]), "the tab in front, now in a stack, is the one whose editor opens");
+    let lone = fixture();
+    let _ = tabs_on(&lone, &["https://x.com/"]);
+    assert_eq!(App::stack_all_by_site_for_editor(&lone), (0, None), "no stack made: no editor");
+}
+
+#[test]
 fn dragging_a_tab_onto_another_stacks_them_only_while_the_option_is_on() {
     let app = fixture();
     app.borrow_mut().settings.automatic_tab_grouping = false;
