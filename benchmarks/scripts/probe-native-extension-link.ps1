@@ -34,7 +34,9 @@ public static class BowserExtensionLink {
  [DllImport("user32.dll")] public static extern IntPtr WindowFromPoint(POINT point);
  [DllImport("user32.dll")] public static extern bool IsWindow(IntPtr h);
  [DllImport("user32.dll")] public static extern int GetDlgCtrlID(IntPtr h);
- [DllImport("user32.dll",EntryPoint="SendMessageTimeoutW",SetLastError=true)] public static extern IntPtr SendMessageTimeoutValue(IntPtr h,uint message,UIntPtr wparam,IntPtr lparam,uint flags,uint timeout,out UIntPtr result);
+ [DllImport("user32.dll",EntryPoint="GetWindowLongPtrW",SetLastError=true)] static extern IntPtr GetWindowLongPtr64(IntPtr h,int index);
+ [DllImport("user32.dll",EntryPoint="GetWindowLongW",SetLastError=true)] static extern int GetWindowLong32(IntPtr h,int index);
+ static long WindowStyle(IntPtr h) { return IntPtr.Size==8?GetWindowLongPtr64(h,-16).ToInt64():GetWindowLong32(h,-16); }
  static readonly System.Diagnostics.Stopwatch clock=System.Diagnostics.Stopwatch.StartNew(); static int diagnostics;
  public static string DiagnosticsFile;
  static readonly System.Collections.Generic.List<string> diagnosticLines=new System.Collections.Generic.List<string>();
@@ -55,14 +57,28 @@ public static class BowserExtensionLink {
   var title=new StringBuilder(64);GetWindowText(dialog,title,64);
   return title.ToString()=="Extension page links"&&HasExactStaticText(dialog,"No eligible same-extension page links are present on this page.");
  }
- public static int NativeDefaultButtonId(IntPtr dialog,IntPtr owner,uint pid,uint tid) {
-  if(!ExactNotice(dialog,owner,pid,tid)){Diag("default_button_query skipped_stale_notice=true");return 0;}
-  Diag("default_button_query_begin");UIntPtr result;
-  var status=SendMessageTimeoutValue(dialog,0x0400,UIntPtr.Zero,IntPtr.Zero,0x23,250,out result);
-  ulong value=result.ToUInt64();int id=(int)(value&0xffff);
-  bool valid=status!=IntPtr.Zero&&(value>>32)==0&&((value>>16)&0xffff)==0x534b&&(id==1||id==2);
-  Diag("default_button_query_end success="+(status!=IntPtr.Zero)+" declared_default="+valid+" known_id="+(id==1||id==2)+" accepted_id="+(valid?id:0));
-  return valid?id:0;
+ // MessageBox return IDs/logical DM_GETDEFID IDs do not identify its internal child HWND.
+ // Use the actual unique owned OK control, default-pushbutton style and native thread focus.
+ public static bool OwnedOkLabel(IntPtr button,IntPtr dialog,uint pid,uint tid) {
+  uint actual;uint thread=GetWindowThreadProcessId(button,out actual);var cls=new StringBuilder(64);GetClassName(button,cls,64);
+  if(!IsWindow(button)||actual!=pid||thread!=tid||GetParent(button)!=dialog||cls.ToString()!="Button"||!IsWindowVisible(button)||!IsWindowEnabled(button))return false;
+  string caption=ReadOwnedChildText(button,dialog,pid,tid);return caption=="OK"||caption=="&OK";
+ }
+ public static bool PhysicalDefaultOk(IntPtr button,IntPtr dialog,IntPtr owner,uint pid,uint tid) {
+  if(!ExactNotice(dialog,owner,pid,tid)||!OwnedOkLabel(button,dialog,pid,tid))return false;
+  var gui=new GUITHREADINFO();gui.cbSize=(uint)Marshal.SizeOf(gui);
+  bool defaultStyle=(WindowStyle(button)&0x0f)==1; // BS_TYPEMASK / BS_DEFPUSHBUTTON, GWL_STYLE.
+  bool focused=GetGUIThreadInfo(tid,ref gui)&&gui.hwndActive==dialog&&gui.hwndFocus==button&&GetForegroundWindow()==dialog;
+  Diag("physical_default_button default_style="+defaultStyle+" exact_native_focus="+focused);
+  return defaultStyle&&focused;
+ }
+ public static IntPtr FindPhysicalDefaultOk(IntPtr dialog,IntPtr owner,uint pid,uint tid) {
+  if(!ExactNotice(dialog,owner,pid,tid)){Diag("physical_ok_inventory skipped_stale_notice=true");return IntPtr.Zero;}
+  int examined=0;bool overflow=false;var matches=new System.Collections.Generic.List<IntPtr>();
+  EnumChildWindows(dialog,(child,p)=>{if(++examined>16){overflow=true;return false;}if(OwnedOkLabel(child,dialog,pid,tid))matches.Add(child);return true;},IntPtr.Zero);
+  Diag("physical_ok_inventory matching_controls="+matches.Count+" overflow="+overflow);
+  if(overflow||matches.Count!=1)return IntPtr.Zero;
+  return PhysicalDefaultOk(matches[0],dialog,owner,pid,tid)?matches[0]:IntPtr.Zero;
  }
  public static bool ExactButtonId(IntPtr button,IntPtr dialog,uint pid,uint tid,int id) {
   uint actual;uint thread=GetWindowThreadProcessId(button,out actual);
@@ -217,14 +233,14 @@ if($Mode -eq 'PageLinksEmpty') {
  }while($dialog -eq [IntPtr]::Zero -and [DateTime]::UtcNow -lt $deadline)
  if($dialog -eq [IntPtr]::Zero){throw 'Exact owned native no-links notice did not appear; no fallback used.'}
  [BowserExtensionLink]::DialogState($dialog,$h,$OwnerPid,$ownerThread,'exact_candidate_body_discovered')
- [BowserExtensionLink]::DialogState($dialog,$h,$OwnerPid,$ownerThread,'before_getdlgitem')
- $nativeDefaultId=[BowserExtensionLink]::NativeDefaultButtonId($dialog,$h,$OwnerPid,$ownerThread)
- if($nativeDefaultId -notin @(1,2)){[BowserExtensionLink]::FailedDialogChildren($dialog,$h,$OwnerPid,$ownerThread);throw 'Exact notice did not report a known native default button; no input sent.'}
- # Resolve only the current native-returned default ID, never a fallback/guessed button.
- $button=[BowserExtensionLink]::GetDlgItem($dialog,$nativeDefaultId);$getDlgError=[Runtime.InteropServices.Marshal]::GetLastWin32Error()
- $buttonIdMatches=[BowserExtensionLink]::ExactButtonId($button,$dialog,$OwnerPid,$ownerThread,$nativeDefaultId)
- [BowserExtensionLink]::Diag("getdlgitem_returned default_button_nonzero=$($button -ne [IntPtr]::Zero) last_error_diagnostic_only=$getDlgError")
- [BowserExtensionLink]::DialogState($dialog,$h,$OwnerPid,$ownerThread,'after_getdlgitem')
+ [BowserExtensionLink]::DialogState($dialog,$h,$OwnerPid,$ownerThread,'before_physical_button_resolution')
+ # The physical native control is the authority, not a hardcoded/logical MessageBox result ID.
+ $button=[BowserExtensionLink]::FindPhysicalDefaultOk($dialog,$h,$OwnerPid,$ownerThread)
+ if($button -eq [IntPtr]::Zero){[BowserExtensionLink]::FailedDialogChildren($dialog,$h,$OwnerPid,$ownerThread);throw 'Unique exact owned native OK/default/focused control was not verified; no input sent.'}
+ $observedControlId=[BowserExtensionLink]::GetDlgCtrlID($button)
+ $buttonIdMatches=[BowserExtensionLink]::GetDlgItem($dialog,$observedControlId) -eq $button -and [BowserExtensionLink]::ExactButtonId($button,$dialog,$OwnerPid,$ownerThread,$observedControlId)
+ [BowserExtensionLink]::Diag("physical_button_resolved default_button_nonzero=$($button -ne [IntPtr]::Zero)")
+ [BowserExtensionLink]::DialogState($dialog,$h,$OwnerPid,$ownerThread,'after_physical_button_resolution')
  $class=[Text.StringBuilder]::new(64);[void][BowserExtensionLink]::GetClassName($button,$class,64)
  $buttonText=[BowserExtensionLink]::ReadOwnedChildText($button,$dialog,$OwnerPid,$ownerThread)
  $captionKind=if($null -eq $buttonText){'unreadable'}elseif($buttonText -ceq 'OK'){'exact-OK'}elseif($buttonText -ceq '&OK'){'standard-mnemonic-OK'}else{'unexpected'}
@@ -234,8 +250,8 @@ if($Mode -eq 'PageLinksEmpty') {
  $r=[BowserExtensionLink+RECT]::new();$outer=[BowserExtensionLink+RECT]::new()
  if(![BowserExtensionLink]::GetWindowRect($button,[ref]$r) -or ![BowserExtensionLink]::GetWindowRect($dialog,[ref]$outer) -or !(Test-ContainedRect $r $outer)){throw 'Native notice button bounds were not verified; no input sent.'}
  if([BowserExtensionLink]::GetWindow($dialog,4) -ne $h -or (Read-NativeText $dialog) -cne 'Extension page links' -or ![BowserExtensionLink]::HasExactStaticText($dialog,'No eligible same-extension page links are present on this page.')){throw 'Native notice identity changed; no input sent.'}
- $freshDefault=[BowserExtensionLink]::NativeDefaultButtonId($dialog,$h,$OwnerPid,$ownerThread)
- if($freshDefault -ne $nativeDefaultId -or [BowserExtensionLink]::GetDlgItem($dialog,$freshDefault) -ne $button -or ![BowserExtensionLink]::ExactButtonId($button,$dialog,$OwnerPid,$ownerThread,$freshDefault)){throw 'Exact native notice default changed before input; no input sent.'}
+ $freshButton=[BowserExtensionLink]::FindPhysicalDefaultOk($dialog,$h,$OwnerPid,$ownerThread)
+ if($freshButton -ne $button -or [BowserExtensionLink]::GetDlgItem($dialog,$observedControlId) -ne $button -or ![BowserExtensionLink]::ExactButtonId($button,$dialog,$OwnerPid,$ownerThread,$observedControlId)){throw 'Exact physical native notice control changed before input; no input sent.'}
  $freshCaption=[BowserExtensionLink]::ReadOwnedChildText($button,$dialog,$OwnerPid,$ownerThread)
  if($freshCaption -cnotin @('OK','&OK') -or ![BowserExtensionLink]::IsWindowVisible($button) -or ![BowserExtensionLink]::IsWindowEnabled($button)){throw 'Exact native default button state changed before input; no input sent.'}
  Send-OwnedPoint $r $button $dialog
