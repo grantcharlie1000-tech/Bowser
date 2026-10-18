@@ -2168,13 +2168,19 @@ fn live_probe_native_context_menu_observation() {
     assert_eq!(command_field(&before,"workerInstance"),Some(&worker));assert_eq!(command_field(&before,"creation"),Some(creation));
     assert!(!before_denials.is_empty());for attempt in before_denials {assert_eq!(command_field(attempt,"allowed"),Some(&Value::Bool(false)));assert_eq!(command_field(attempt,"permissionDenied"),Some(&Value::Bool(true)));}
     let view=session.engine.probe_document_webview(TabId(1)).unwrap();let native=view.cast::<ICoreWebView2_11>().unwrap();let expected=view.as_raw() as usize;
+    let mut browser_pid=0;let browser_pid_result=unsafe{view.BrowserProcessId(&mut browser_pid)};
+    println!("NATIVE_CONTEXT_MENU browser_pid_query_ok={} normalized_error={:?} native_browser_pid={browser_pid}",browser_pid_result.is_ok(),browser_pid_result.as_ref().err().map(|e|e.code().0));
+    browser_pid_result.unwrap();assert!(browser_pid>0&&browser_pid!=std::process::id(),"native browser process identity unavailable before input");
     let out=PathBuf::from("store-native-context-menu-observation");std::fs::create_dir_all(&out).unwrap();
     let snapshot=Rc::new(RefCell::new(std::fs::OpenOptions::new().write(true).create_new(true).open(out.join(format!("native-menu-items-{}.log",std::process::id()))).unwrap()));let snapshot_sink=snapshot.clone();
     let requests=Rc::new(RefCell::new(Vec::<NativeContextRequest>::new()));let sink=requests.clone();let observed=Rc::new(std::cell::Cell::new(0usize));let observed_sink=observed.clone();let mut event_token=0;
+    let native_clock=Instant::now();
     let handler=ContextMenuRequestedEventHandler::create(Box::new(move|sender,args| {
         let count=observed_sink.get();observed_sink.set(count.saturating_add(1));
         if count>=4 {if count==4{let mut file=snapshot_sink.borrow_mut();let _=file.write_all(b"native-request-capture-bound-exceeded\n").and_then(|_|file.flush()).and_then(|_|file.sync_data());}return Ok(())}
+        let entry_persisted={let mut file=snapshot_sink.borrow_mut();file.write_all(format!("native-callback-enter index={count} monotonic_ms={}\n",native_clock.elapsed().as_millis()).as_bytes()).and_then(|_|file.flush()).and_then(|_|file.sync_data()).is_ok()};
         let mut request=NativeContextRequest{same_receiving_view:sender.as_ref().is_some_and(|view|view.as_raw() as usize==expected),complete:true,..Default::default()};
+        if !entry_persisted{request.complete=false;request.failures.push("native-entry-snapshot-write-failed".into());}
         if let Some(args)=args {
             let mut handled=windows::core::BOOL::default();request.handled_result=unsafe{args.Handled(&mut handled)}.err().map_or(0,|e|e.code().0);if request.handled_result==0{request.handled=Some(handled.as_bool())}else{request.complete=false}
             match unsafe{args.ContextMenuTarget()}{Ok(target)=>{let mut editable=windows::core::BOOL::default();request.editable_result=unsafe{target.IsEditable(&mut editable)}.err().map_or(0,|e|e.code().0);if request.editable_result==0{request.editable=Some(editable.as_bool())}else{request.complete=false}},Err(e)=>{request.target_result=e.code().0;request.complete=false}}
@@ -2184,7 +2190,10 @@ fn live_probe_native_context_menu_observation() {
         // Flush native metadata before returning: a failed topology may terminate this test process.
         let persisted={let mut file=snapshot_sink.borrow_mut();file.write_all(format!("{request:?}\n").as_bytes()).and_then(|_|file.flush()).and_then(|_|file.sync_data()).is_ok()};
         if !persisted {request.complete=false;request.failures.push("native-snapshot-write-failed".into());}
-        if sink.borrow().len()<4{sink.borrow_mut().push(request);}Ok(())
+        if sink.borrow().len()<4{sink.borrow_mut().push(request);}
+        // Body completion is not a claim that an external COM caller has already resumed.
+        {let mut file=snapshot_sink.borrow_mut();let _=file.write_all(format!("native-callback-body-complete index={count} monotonic_ms={}\n",native_clock.elapsed().as_millis()).as_bytes()).and_then(|_|file.flush()).and_then(|_|file.sync_data());}
+        Ok(())
     }));
     unsafe{native.add_ContextMenuRequested(&handler,&mut event_token).unwrap();}
     pump_until(Duration::from_millis(500),||false);assert!(requests.borrow().is_empty(),"native menu request appeared during no-input baseline");
@@ -2201,6 +2210,7 @@ fn live_probe_native_context_menu_observation() {
     assert_eq!(command_view(&mut session,TabId(1),&format!("document.elementFromPoint({},{})===document.getElementById('context-target')",points[0],points[1])).as_deref(),Some("true"));
     let mut child=std::process::Command::new("powershell.exe").args(["-NoProfile","-File"]).arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("benchmarks/scripts/probe-native-context-observation.ps1"))
         .args(["-OwnerPid",&std::process::id().to_string(),"-OwnerHandle",&(session.host.0 as isize).to_string(),"-OwnerExe"]).arg(std::env::current_exe().unwrap())
+        .args(["-BrowserPid",&browser_pid.to_string()])
         .args(["-ClientX",&points[0].to_string(),"-ClientY",&points[1].to_string(),"-ViewportWidth",&points[2].to_string(),"-ViewportHeight",&points[3].to_string(),"-Out"]).arg(&out)
         .stdout(std::process::Stdio::from(std::fs::File::create(out.join("helper.stdout.log")).unwrap())).stderr(std::process::Stdio::from(std::fs::File::create(out.join("helper.stderr.log")).unwrap())).spawn().unwrap();
     let complete=pump_until(Duration::from_secs(25),||child.try_wait().is_ok_and(|s|s.is_some()));

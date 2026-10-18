@@ -1,6 +1,6 @@
 # Observation/cancellation only. Never selects or recreates an extension menu item.
 [CmdletBinding()]
-param([Parameter(Mandatory)][uint32]$OwnerPid,[Parameter(Mandatory)][long]$OwnerHandle,[Parameter(Mandatory)][string]$OwnerExe,
+param([Parameter(Mandatory)][uint32]$OwnerPid,[Parameter(Mandatory)][long]$OwnerHandle,[Parameter(Mandatory)][string]$OwnerExe,[Parameter(Mandatory)][uint32]$BrowserPid,
  [Parameter(Mandatory)][int]$ClientX,[Parameter(Mandatory)][int]$ClientY,[Parameter(Mandatory)][int]$ViewportWidth,[Parameter(Mandatory)][int]$ViewportHeight,
  [Parameter(Mandatory)][string]$Out)
 $ErrorActionPreference='Stop';Set-StrictMode -Version Latest
@@ -58,6 +58,47 @@ public static class BowserContextObservation {
   uint actual;var gui=new GUI{cbSize=(uint)Marshal.SizeOf(typeof(GUI))};var bar=new MENU{cbSize=(uint)Marshal.SizeOf(typeof(MENU))};
   return Host(host,pid,tid)&&IsWindow(popup)&&IsWindowVisible(popup)&&GetWindowThreadProcessId(popup,out actual)==tid&&actual==pid&&Class(popup)=="#32768"&&GetMenuBarInfo(popup,-4,0,ref bar)&&bar.hMenu==menu&&GetGUIThreadInfo(tid,ref gui)&&gui.hwndActive==host&&gui.hwndMenuOwner==host&&(gui.flags&0x10)!=0&&GetForegroundWindow()==host;
  }
+ [DllImport("user32.dll")] public static extern IntPtr GetParent(IntPtr h);
+ [DllImport("user32.dll")] public static extern IntPtr GetWindow(IntPtr h,uint command);
+ [DllImport("user32.dll")] public static extern bool EnumChildWindows(IntPtr parent,EnumProc callback,IntPtr data);
+ [DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr h,IntPtr dc,uint flags);
+ public sealed class ReadOnlyBrowser:IDisposable {
+  IntPtr handle;uint pid;ulong created;string image;
+  public ReadOnlyBrowser(uint expected){handle=OpenProcess(0x00101000,false,expected);if(handle==IntPtr.Zero)throw new InvalidOperationException("Native browser read-only handle unavailable.");try{pid=expected;image=Image();created=Creation();if(!String.Equals(System.IO.Path.GetFileName(image),"msedgewebview2.exe",StringComparison.OrdinalIgnoreCase)||!SameAlive())throw new InvalidOperationException("Native browser read-only identity unavailable.");}catch{Dispose();throw;}}
+  string Image(){var b=new StringBuilder(32768);uint n=32768;if(!QueryFullProcessImageName(handle,0,b,ref n))throw new InvalidOperationException("Native browser image query unavailable.");return System.IO.Path.GetFullPath(b.ToString());}
+  ulong Creation(){TIME a,b,c,d;if(!GetProcessTimes(handle,out a,out b,out c,out d))throw new InvalidOperationException("Native browser creation query unavailable.");return a.Bits;}
+  public bool SameAlive(){return handle!=IntPtr.Zero&&GetProcessId(handle)==pid&&Creation()==created&&String.Equals(Image(),image,StringComparison.OrdinalIgnoreCase)&&WaitForSingleObject(handle,0)==258;}
+  public void Dispose(){if(handle!=IntPtr.Zero){CloseHandle(handle);handle=IntPtr.Zero;}}
+ }
+ static object GuiSnapshot(uint tid,IntPtr witness,uint pid){
+  uint beforePid;uint beforeThread=GetWindowThreadProcessId(witness,out beforePid);
+  if(beforeThread!=tid||beforePid!=pid||!IsWindow(witness))return new {thread=tid,witness_rechecked=false,query_performed=false};
+  var g=new GUI{cbSize=(uint)Marshal.SizeOf(typeof(GUI))};bool ok=GetGUIThreadInfo(tid,ref g);
+  uint afterPid;uint afterThread=GetWindowThreadProcessId(witness,out afterPid);
+  if(afterThread!=tid||afterPid!=pid||!IsWindow(witness))return new {thread=tid,witness_rechecked=false,query_performed=true};
+  return new {thread=tid,witness=witness.ToInt64(),witness_pid=pid,witness_rechecked=true,non_atomic_observation=true,query_performed=true,query_ok=ok,flags=g.flags,active=g.hwndActive.ToInt64(),focus=g.hwndFocus.ToInt64(),capture=g.hwndCapture.ToInt64(),menu_owner=g.hwndMenuOwner.ToInt64()};
+ }
+ static object WindowSnapshot(IntPtr h,IntPtr host,uint pid,uint tid,string source){
+  uint actual;uint thread=GetWindowThreadProcessId(h,out actual);
+  if(actual!=pid||thread!=tid||!IsWindow(h))return new {source=source,window=h.ToInt64(),status="expected-pid-thread-unavailable-before-read"};
+  var c=new StringBuilder(64);int n=GetClassName(h,c,64);RECT r;bool bounds=GetWindowRect(h,out r);
+  IntPtr p=GetParent(h),owner=GetWindow(h,4),root=GetAncestor(h,2),rootOwner=GetAncestor(h,3);bool chain=false;IntPtr cursor=h;int hops=0;
+  for(;hops<16&&cursor!=IntPtr.Zero;hops++){if(cursor==host){chain=true;break;}cursor=GetWindow(cursor,4);}
+  bool visible=IsWindowVisible(h),enabled=IsWindowEnabled(h),isChild=IsChild(host,h);
+  uint afterPid;uint afterThread=GetWindowThreadProcessId(h,out afterPid);
+  if(afterPid!=pid||afterThread!=tid||!IsWindow(h))return new {source=source,window=h.ToInt64(),status="expected-pid-thread-unavailable-after-read-details-discarded"};
+  return new {source=source,window=h.ToInt64(),pid=actual,thread=thread,non_atomic_observation=true,pid_thread_same_after=true,window_alive=true,class_query_ok=n>0,class_truncated=n==63,class_name=c.ToString(),visible=visible,enabled=enabled,bounds_ok=bounds,left=r.Left,top=r.Top,right=r.Right,bottom=r.Bottom,parent=p.ToInt64(),owner=owner.ToInt64(),root=root.ToInt64(),root_owner=rootOwner.ToInt64(),is_actual_child=isChild,root_is_host=root==host,owner_chain_reaches_host=chain,owner_chain_complete=chain||cursor==IntPtr.Zero,owner_chain_truncated=!chain&&cursor!=IntPtr.Zero&&hops==16};
+ }
+ public static object Topology(IntPtr host,uint testPid,uint browserPid){
+  var records=new List<object>();var threads=new Dictionary<uint,Tuple<IntPtr,uint>>();var seen=new HashSet<long>();int examinedTop=0,examinedChild=0;bool topCap=false,childCap=false,recordCap=false,readFailure=false;
+  Action<IntPtr,string> capture=(h,source)=>{uint pid;uint tid=GetWindowThreadProcessId(h,out pid);if(pid!=testPid&&pid!=browserPid)return;if(!seen.Add(h.ToInt64()))return;if(records.Count>=96){recordCap=true;return;}try{records.Add(WindowSnapshot(h,host,pid,tid,source));uint afterPid;uint afterTid=GetWindowThreadProcessId(h,out afterPid);if(tid!=0&&threads.Count<32&&afterTid==tid&&afterPid==pid&&IsWindow(h))threads[tid]=Tuple.Create(h,pid);}catch{readFailure=true;}};
+  bool top=EnumWindows((h,p)=>{if(++examinedTop>128){topCap=true;return false;}capture(h,"top-level");return true;},IntPtr.Zero);
+  // EnumChildWindows' documented return is not used as an enumeration-success indicator.
+  EnumChildWindows(host,(h,p)=>{if(++examinedChild>128){childCap=true;return false;}capture(h,"host-descendant");return true;},IntPtr.Zero);
+  uint foregroundPid;IntPtr foreground=GetForegroundWindow();uint foregroundThread=GetWindowThreadProcessId(foreground,out foregroundPid);
+  var gui=new List<object>();int guiCount=0;foreach(var witness in threads){if(guiCount++>=16)break;gui.Add(GuiSnapshot(witness.Key,witness.Value.Item1,witness.Value.Item2));}
+  return new {coverage="observed-test-and-native-browser-process-only-not-menu-authority",top_enumeration_return=top,top_cap=topCap,child_cap=childCap,window_record_cap=recordCap,read_failure=readFailure,top_examined=examinedTop,child_examined=examinedChild,thread_cap=threads.Count>16,foreground=foreground.ToInt64(),foreground_pid=foregroundPid,foreground_thread=foregroundThread,windows=records,thread_gui=gui};
+ }
  public sealed class OriginalProcess:IDisposable {
   IntPtr handle;uint pid;ulong created;string image;
   public OriginalProcess(uint expected,string path){
@@ -73,10 +114,43 @@ public static class BowserContextObservation {
  }
 }
 '@
+Add-Type -AssemblyName System.Drawing
 New-Item -ItemType Directory -Force $Out|Out-Null
 $report=[ordered]@{scope='single-test-observation-and-cancellation-not-selection';status='failed';right_input_called=$false;escape_called=$false;error=$null;failure_cleanup=$null}
-$h=[IntPtr]$OwnerHandle;$pidNow=[uint32]0;$tid=[BowserContextObservation]::GetWindowThreadProcessId($h,[ref]$pidNow);$guard=$null
+$observationClock=[Diagnostics.Stopwatch]::StartNew();$report.topology=@()
+$h=[IntPtr]$OwnerHandle;$pidNow=[uint32]0;$tid=[BowserContextObservation]::GetWindowThreadProcessId($h,[ref]$pidNow);$guard=$null;$browserGuard=$null
 function Save-Report {[IO.File]::WriteAllText((Join-Path $Out 'native-context-observation.json'),($report|ConvertTo-Json -Depth 8),[Text.UTF8Encoding]::new($false))}
+function Observe-Topology([string]$Phase) {
+ $observation=[ordered]@{phase=$Phase;elapsed_ms=$observationClock.ElapsedMilliseconds;identity_before=$false;identity_after=$false;status='unavailable';native=$null;screenshot_status='not-attempted'}
+ try {
+  if(!$guard.SameAlive() -or !$browserGuard.SameAlive() -or ![BowserContextObservation]::Host($h,$OwnerPid,$tid)){throw 'diagnostic-identity-unavailable'}
+  $observation.identity_before=$true
+  $observation.native=[BowserContextObservation]::Topology($h,$OwnerPid,$BrowserPid)
+  $observation.identity_after=($guard.SameAlive() -and $browserGuard.SameAlive() -and [BowserContextObservation]::Host($h,$OwnerPid,$tid))
+  $observation.status=if($observation.identity_after){'captured-read-only-not-input-authority'}else{'identity-unavailable-after-read'}
+ } catch {$observation.status='read-only-topology-unavailable'}
+ $report.topology+=,$observation;Save-Report
+ # Native screenshot is diagnostic only; it does not identify or authorize a menu. No desktop capture.
+ try {
+  if(!$observation.identity_after -or !$guard.SameAlive() -or ![BowserContextObservation]::Host($h,$OwnerPid,$tid)){throw 'diagnostic-capture-identity-unavailable'}
+  $rect=[BowserContextObservation+RECT]::new()
+  if(![BowserContextObservation]::GetWindowRect($h,[ref]$rect)){throw 'diagnostic-capture-bounds-unavailable'}
+  $width=$rect.Right-$rect.Left;$height=$rect.Bottom-$rect.Top
+  if($width -le 0 -or $height -le 0 -or $width -gt 4096 -or $height -gt 4096){throw 'diagnostic-capture-bounds-outside-limit'}
+  $bitmap=[Drawing.Bitmap]::new($width,$height)
+  try {
+   $graphics=[Drawing.Graphics]::FromImage($bitmap)
+   try {
+    $dc=$graphics.GetHdc()
+    try {$ok=[BowserContextObservation]::PrintWindow($h,$dc,2)} finally {$graphics.ReleaseHdc($dc)}
+   } finally {$graphics.Dispose()}
+   if(!$ok -or !$guard.SameAlive() -or ![BowserContextObservation]::Host($h,$OwnerPid,$tid)){throw 'diagnostic-capture-unconfirmed'}
+   $name="native-context-$Phase.png";$bitmap.Save((Join-Path $Out $name),[Drawing.Imaging.ImageFormat]::Png)
+   $observation.screenshot_status='captured-owned-host-only-not-independent-menu-proof';$observation.screenshot=$name
+  } finally {$bitmap.Dispose()}
+ } catch {$observation.screenshot_status='owned-host-capture-unavailable'}
+ Save-Report
+}
 function Neutral {foreach($key in @(1,2,16,17,18,27,91,92)){if([BowserContextObservation]::GetAsyncKeyState($key) -lt 0){throw 'Unexpected held modifier/Escape; no repair or input.'}}}
 function Menu-State {
  param([switch]$AllowPending)
@@ -98,6 +172,8 @@ function Menu-State {
 try {
  if($pidNow -ne $OwnerPid -or ![BowserContextObservation]::Host($h,$OwnerPid,$tid)){throw 'Exact disposable host unavailable; no input.'}
  $guard=[BowserContextObservation+OriginalProcess]::new($OwnerPid,$OwnerExe)
+ $browserGuard=[BowserContextObservation+ReadOnlyBrowser]::new($BrowserPid)
+ Observe-Topology 'before-input'
  $point=[BowserContextObservation+POINT]::new();$point.X=$ClientX;$point.Y=$ClientY
  if(![BowserContextObservation]::ClientToScreen($h,[ref]$point)){throw 'Exact controlled point conversion failed.'}
  Neutral
@@ -106,10 +182,10 @@ try {
  Neutral
  if(![BowserContextObservation]::Input($h,$OwnerPid,$tid,$ClientX,$ClientY,$ViewportWidth,$ViewportHeight,$point)){throw 'Exact owned hit target changed before real right-click.'}
  try{[BowserContextObservation]::mouse_event(0x0008,0,0,0,[UIntPtr]::Zero);$report.right_input_called=$true}finally{[BowserContextObservation]::mouse_event(0x0010,0,0,0,[UIntPtr]::Zero)}
- $watch=[Diagnostics.Stopwatch]::StartNew();$report.readiness=@{elapsed_ms=0;last_predicate='not-observed';polls=0};$menu=$null
+ $watch=[Diagnostics.Stopwatch]::StartNew();Observe-Topology 'after-right-input';$report.readiness=@{elapsed_ms=0;last_predicate='not-observed';polls=0};$menu=$null
  do {
   $report.readiness.polls++;$menu=Menu-State -AllowPending;$report.readiness.elapsed_ms=$watch.ElapsedMilliseconds
-  if($watch.ElapsedMilliseconds -ge 10000){throw 'Native popup readiness window expired; topology unavailable.'}
+  if($watch.ElapsedMilliseconds -ge 10000){Observe-Topology 'readiness-expired';throw 'Native popup readiness window expired; topology unavailable.'}
   if($menu){$report.readiness.last_predicate='strict-native-menu-ready';break}
   Start-Sleep -Milliseconds 50
  } while($true)
@@ -129,5 +205,5 @@ try {
  try{Save-Report}catch{[Console]::Error.WriteLine('Native observation failure report write failed.')}
  if($report.right_input_called -and $guard){$report.failure_cleanup=$guard.FailOnly($h,$tid);try{Save-Report}catch{[Console]::Error.WriteLine('Native observation cleanup report write failed.')}}
  [Console]::Error.WriteLine('Native context observation failed; no selection compatibility verdict.');exit 75
-} finally {if($guard){$guard.Dispose()}}
+} finally {if($browserGuard){$browserGuard.Dispose()};if($guard){$guard.Dispose()}}
 Write-Output 'NATIVE_CONTEXT_OBSERVATION exact_owned_right_input=true exact_visible_native_popup=true real_escape_and_disappearance=true selection_performed=false'

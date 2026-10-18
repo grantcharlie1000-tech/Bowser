@@ -320,6 +320,7 @@ jobs:
             store-native-context-menu.log
             store-native-context-menu-observation/*.json
             store-native-context-menu-observation/*.log
+            store-native-context-menu-observation/*.png
             store-ui-profile-isolation-probe.log
             store-crash-recovery-probe.log
             store-update-probe.log

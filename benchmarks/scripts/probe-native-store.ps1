@@ -240,7 +240,7 @@ function Find-BoundControl([string]$Kind,[string]$Name,[switch]$Prefix,[Windows.
  foreach($item in $all){
   if($ControlType -and $item.Current.ControlType -ne $ControlType){continue}
   if($Within -and !(In-Document $item $Within.control)){continue}
-  if(!$item.Current.IsEnabled -or ($item.Current.ControlType -eq [Windows.Automation.ControlType]::Text -and $ControlType -ne [Windows.Automation.ControlType]::Text) -or !(In-Document $item $document.document)){continue}
+  if(!$item.Current.IsEnabled -or $item.Current.ControlType -eq [Windows.Automation.ControlType]::Text -or !(In-Document $item $document.document)){continue}
   $actual=$item.Current.Name
   if(($Prefix -and $actual.StartsWith($Name,[StringComparison]::Ordinal)) -or (!$Prefix -and $actual -ceq $Name)){$matches+=@{control=$item;document=$document.document;source=$document.source;kind=$Kind;name=$actual;controlType=$ControlType;within=$Within}}
  }
@@ -423,25 +423,31 @@ function Navigate-Owned([string]$Url) {
  Field-LiteralText $bound $Url
  Field-Enter $bound $Url;Start-Sleep -Seconds 3
 }
-function Assert-VisibleBowserInstaller {
+function Observe-OwnedInstallerControl {
+ # Chromium may flatten button descendants in its accessibility tree. Never invent Text nodes
+ # or substitute a website control. This proves the owned button, not rendered copy geometry.
  $add=Wait-BoundControl 'toolbar' 'Add to Bowser' -ControlType ([Windows.Automation.ControlType]::Button)
- $label=Wait-BoundControl 'toolbar' 'Add to Bowser' -ControlType ([Windows.Automation.ControlType]::Text) -Within $add
- $note=Wait-BoundControl 'toolbar' 'Google installs into Chrome. Bowser support varies.' -ControlType ([Windows.Automation.ControlType]::Text) -Within $add
  Assert-BoundControl $add
- foreach($copy in @($label,$note)){
-  Assert-BoundControl $copy
-  if(!(Same-Uia $add.document $copy.document) -or !(In-Document $copy.control $add.control)){throw 'Installer copy was not inside the exact trusted toolbar button.'}
-  $buttonRect=$add.control.Current.BoundingRectangle;$copyRect=$copy.control.Current.BoundingRectangle
-  if($copy.control.Current.IsOffscreen -or $copyRect.Width -le 0 -or $copyRect.Height -le 0 -or $copyRect.Left -lt $buttonRect.Left -or $copyRect.Top -lt $buttonRect.Top -or $copyRect.Right -gt $buttonRect.Right -or $copyRect.Bottom -gt $buttonRect.Bottom){throw 'Visible Bowser installer copy was clipped or outside its owned button.'}
+ $buttonRect=$add.control.Current.BoundingRectangle;$documentRect=$add.document.Current.BoundingRectangle
+ foreach($coordinate in @($buttonRect.Left,$buttonRect.Top,$buttonRect.Right,$buttonRect.Bottom,$documentRect.Left,$documentRect.Top,$documentRect.Right,$documentRect.Bottom)){
+  if([Double]::IsNaN($coordinate) -or [Double]::IsInfinity($coordinate)){throw 'Owned installer geometry is not finite.'}
  }
- Assert-BoundControl $add;Assert-BoundControl $label;Assert-BoundControl $note
+ if($documentRect.Width -le 0 -or $documentRect.Height -le 0 -or $buttonRect.Left -lt $documentRect.Left -or $buttonRect.Top -lt $documentRect.Top -or $buttonRect.Right -gt $documentRect.Right -or $buttonRect.Bottom -gt $documentRect.Bottom){throw 'Owned installer button was outside its actual toolbar document.'}
+ Assert-BoundControl $add
+ $sequence=1;if($report.Contains('installer_controls')){$sequence=$report.installer_controls.Count+1}else{$report.installer_controls=@()}
+ $image=('owned-installer-{0:d2}' -f $sequence)
+ Capture $image
+ Assert-BoundControl $add
+ if(!$add.control.Current.BoundingRectangle.Equals($buttonRect) -or !$add.document.Current.BoundingRectangle.Equals($documentRect)){throw 'Owned installer geometry changed during screenshot capture.'}
+ Assert-BoundControl $add
+ $report.installer_controls+=@{source_bound_button=$true;button_inside_toolbar=$true;screenshot="$image.png";copy_visual_verdict='pending-independent-screenshot-review';scale_scope='default-100-percent-only'}
  return $add
 }
 function Open-ListingReview([string]$Id) {
  if($Id -cnotmatch '^[a-p]{32}$'){throw 'Invalid fixed test listing ID.'}
  Navigate-Owned "https://chromewebstore.google.com/detail/$Id"
  # This control is Bowser chrome, offered only after the actual top-level listing commits.
- $add=Assert-VisibleBowserInstaller
+ $add=Observe-OwnedInstallerControl
  if((Cws-ListingId) -cne $Id){throw 'Actual native website document did not commit the expected listing ID.'}
  Invoke-BoundControl $add
 }
@@ -482,7 +488,7 @@ function Probe-OriginalDiscovery {
   $resultBound=Wait-BoundControl 'cws' 'Stylus';$listing=$resultBound.control
   if($listing.Current.ControlType -ne [Windows.Automation.ControlType]::Hyperlink){throw 'Original CWS search result was not an actual hyperlink.'}
   $result.search=$true;Invoke-BoundControl $resultBound
-  [void](Assert-VisibleBowserInstaller)
+  [void](Observe-OwnedInstallerControl)
   if((Cws-ListingId) -cne 'clngdbkpkpeebahjckkjfobafhncgmne'){throw 'Native CWS result navigation did not commit the actual Stylus listing ID.'}
   Capture '03-original-cws-stylus-listing'
   $result.listing=$true;$result.status='passed-native-category-search-listing-owned-add'
