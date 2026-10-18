@@ -38,6 +38,7 @@ public static class BowserDefaultContext {
  [DllImport("user32.dll")] public static extern void keybd_event(byte key,byte scan,uint flags,UIntPtr extra);
  [DllImport("kernel32.dll",SetLastError=true)] static extern IntPtr OpenProcess(uint access,bool inherit,uint pid);
  [DllImport("kernel32.dll")] static extern uint GetProcessId(IntPtr process);
+ [DllImport("kernel32.dll",EntryPoint="GetCurrentProcessId")] static extern uint NativeCurrentProcessId();
  [DllImport("kernel32.dll",SetLastError=true,CharSet=CharSet.Unicode)] static extern bool QueryFullProcessImageName(IntPtr process,uint flags,StringBuilder text,ref uint n);
  [DllImport("kernel32.dll",SetLastError=true)] static extern bool GetProcessTimes(IntPtr process,out TIME created,out TIME exited,out TIME kernel,out TIME user);
  [DllImport("kernel32.dll",SetLastError=true)] static extern bool TerminateProcess(IntPtr process,uint exitCode);
@@ -78,8 +79,8 @@ public static class BowserDefaultContext {
  static bool RootFence(IntPtr host,uint testPid,uint hostTid,IntPtr popup,uint browserPid,uint menuTid,ReadOnlyBrowser browser,AutomationElement root,int[] rootId){
   return browser.SameAlive()&&Host(host,testPid,hostTid)&&PopupIdentity(host,popup,browserPid,menuTid)&&Same(Runtime(root),rootId)&&root.Current.ProcessId==(int)browserPid&&root.Current.NativeWindowHandle==popup.ToInt32()&&PopupIdentity(host,popup,browserPid,menuTid)&&Host(host,testPid,hostTid)&&browser.SameAlive();
  }
- static void WriteMismatch(IntPtr host,uint testPid,uint hostTid,IntPtr popup,uint browserPid,uint menuTid,ReadOnlyBrowser browser,AutomationElement root,int[] rootId,AutomationElement node,int depth,int[] expectedParent,int index,int providerPid,string directory){
-  string prefix="{\"scope\":\"failure-only-popup-rooted-numeric-identity-not-input-authority\",\"first_mismatch\":true,\"visited_count\":"+Number(index)+",\"depth\":"+Number(depth)+",\"expected_pid\":"+Number(browserPid)+",\"observed_pid\":"+Number(providerPid)+",\"expected_pid_equal\":false,";
+ static void WriteMismatch(IntPtr host,uint testPid,uint hostTid,IntPtr popup,uint browserPid,uint menuTid,ReadOnlyBrowser browser,AutomationElement root,int[] rootId,AutomationElement node,int depth,int[] expectedParent,int index,int providerPid,uint helperPid,string directory){
+  string prefix="{\"scope\":\"failure-only-popup-rooted-numeric-identity-not-input-authority\",\"first_mismatch\":true,\"visited_count\":"+Number(index)+",\"depth\":"+Number(depth)+",\"expected_pid\":"+Number(browserPid)+",\"observed_pid\":"+Number(providerPid)+",\"helper_pid\":"+Number(helperPid)+",\"helper_pid_available\":"+(helperPid!=0?"true":"false")+",\"observed_pid_equals_helper\":"+(helperPid!=0&&providerPid==helperPid?"true":"false")+",\"observed_pid_equals_test\":"+(providerPid==testPid?"true":"false")+",\"observed_pid_equals_browser\":"+(providerPid==browserPid?"true":"false")+",\"expected_pid_equal\":false,";
   string json=prefix+"\"status\":\"diagnostic-unavailable\"}";
   try{
    if(!RootFence(host,testPid,hostTid,popup,browserPid,menuTid,browser,root,rootId)){json=prefix+"\"status\":\"stale-before-read\"}";}
@@ -102,13 +103,14 @@ public static class BowserDefaultContext {
   try{System.IO.File.WriteAllText(System.IO.Path.Combine(directory,"native-provider-mismatch.json"),json,new UTF8Encoding(false));}catch{ /* Missing evidence is inconclusive, never permission to continue. */ }
  }
  public static MenuProof ReadMenu(IntPtr host,uint testPid,uint hostTid,IntPtr popup,uint browserPid,ReadOnlyBrowser browser,string diagnosticDirectory){
+  uint helperPid=NativeCurrentProcessId(); // Known local identity, captured before UIA traversal.
   uint beforePid;uint tid=GetWindowThreadProcessId(popup,out beforePid);if(beforePid!=browserPid||tid==0||!IsWindow(popup))throw new InvalidOperationException("Exact native UIA root unavailable.");
   var root=AutomationElement.FromHandle(popup);if(root==null||root.Current.ProcessId!=(int)browserPid||root.Current.NativeWindowHandle!=popup.ToInt32())throw new InvalidOperationException("Exact native UIA root mismatch.");
   var focusGui=new GUI{cbSize=(uint)Marshal.SizeOf(typeof(GUI))};if(!GetGUIThreadInfo(tid,ref focusGui)||!FocusOwned(host,focusGui.hwndFocus,browserPid,tid))throw new InvalidOperationException("Native focus witness unavailable before UIA read.");
   int[] rootId=Runtime(root);var walker=TreeWalker.RawViewWalker;var queue=new Queue<Tuple<AutomationElement,int,int[]>>();queue.Enqueue(Tuple.Create(root,0,(int[])null));int examined=0,menus=0,items=0;int[] menuId=null,itemId=null;System.Windows.Rect chosen=new System.Windows.Rect();
   while(queue.Count>0){if(++examined>128)throw new InvalidOperationException("UIA raw menu inventory incomplete.");var queued=queue.Dequeue();var e=queued.Item1;var c=e.Current;int providerPid=c.ProcessId;
    if(providerPid!=(int)browserPid){
-    WriteMismatch(host,testPid,hostTid,popup,browserPid,tid,browser,root,rootId,e,queued.Item2,queued.Item3,examined,providerPid,diagnosticDirectory);
+    WriteMismatch(host,testPid,hostTid,popup,browserPid,tid,browser,root,rootId,e,queued.Item2,queued.Item3,examined,providerPid,helperPid,diagnosticDirectory);
     throw new InvalidOperationException("UIA menu provider PID mismatch.");
    }
    int[] currentId=Runtime(e);
