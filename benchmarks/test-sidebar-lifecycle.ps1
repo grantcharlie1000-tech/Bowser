@@ -65,4 +65,39 @@ try {
  Check (@(Get-ProductionSidebarReadyAcknowledgements -RequestFile $ackFile -Token 'fixture_a').Count -eq 2) 'duplicate ready acknowledgements retained without collapsing or accepting another token'
 } finally {if(Test-Path -LiteralPath $ackFile){Remove-Item -LiteralPath $ackFile}}
 
+
+# Evaluate only the actual comparison guard/arm-selection AST, never the launch harness.
+$baselineTokens=$null;$baselineErrors=$null
+$baselineAst=[Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot 'production-baseline.ps1'),[ref]$baselineTokens,[ref]$baselineErrors)
+Check ($baselineErrors.Count -eq 0) 'comparison harness parses'
+$comparisonGuards=@($baselineAst.FindAll({param($node)
+ $node -is [Management.Automation.Language.IfStatementAst] -and $node.Clauses.Count -eq 1 -and $node.Clauses[0].Item1.Extent.Text -match '^\$SidebarLifecycleCompare -and'
+},$true))
+Check ($comparisonGuards.Count -eq 1) 'one actual comparison parameter guard'
+$comparisonGuard=[scriptblock]::Create($comparisonGuards[0].Extent.Text)
+function Test-ComparisonRefusal([hashtable]$Changes) {
+ $SidebarLifecycleCompare=$true;$SidebarLifecyclePilot=$true;$SidebarRouteSmoke=$false;$SidebarCapabilityPreflight=$false
+ $PositiveOnly=$true;$Fixtures=@('light');$MeasurementMode='timing'
+ foreach($key in $Changes.Keys){Set-Variable -Name $key -Value $Changes[$key]}
+ try {& $comparisonGuard;return $false} catch {return $true}
+}
+Check (-not(Test-ComparisonRefusal @{})) 'matched sidebar resource configuration accepted'
+foreach($case in @(@{SidebarLifecyclePilot=$false},@{SidebarRouteSmoke=$true},@{SidebarCapabilityPreflight=$true},@{PositiveOnly=$false},@{Fixtures=@('light','demanding')},@{Fixtures=@('demanding')},@{MeasurementMode='resource'})) {
+ Check (Test-ComparisonRefusal $case) 'mixed or nonidentical comparison workload refused'
+}
+$comparisonSelections=@($baselineAst.FindAll({param($node)
+ $node -is [Management.Automation.Language.IfStatementAst] -and $node.Clauses.Count -eq 1 -and $node.Clauses[0].Item1.Extent.Text -ceq '$SidebarLifecycleCompare' -and $node.Extent.Text -match '\$arms=\[ordered\]'
+},$true))
+Check ($comparisonSelections.Count -eq 1) 'one actual matched binary arm selection'
+$selection=[scriptblock]::Create($comparisonSelections[0].Extent.Text)
+function Test-ComparisonSelection {
+ function Resolve-BowserExecutable([string]$Path){return $Path}
+ $SidebarLifecycleCompare=$true;$DiagnosticExe='reference.exe';$CandidateExe='candidate.exe';$arms=[ordered]@{}
+ . $selection
+ Check (($arms.Keys -join ',') -ceq 'sidebar_baseline_on,sidebar_candidate_on') 'exact two logging-matched arms'
+ Check ($arms.sidebar_baseline_on -ceq 'reference.exe' -and $arms.sidebar_candidate_on -ceq 'candidate.exe') 'reference/candidate binaries are not aliased'
+ Check (@($arms.Keys|Where-Object {-not $_.EndsWith('_on')}).Count -eq 0) 'identical diagnostic flags for both arms'
+}
+Test-ComparisonSelection
+
 'Sidebar lifecycle observation contracts passed.'
