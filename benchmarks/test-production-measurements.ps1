@@ -23,3 +23,8 @@ Check ($cpu.ObservedIdentityCount -eq 3) 'all identities retained'
 $d=Get-ProductionDistribution @(1,2,3,4)
 Check ($d.Median -eq 2.5 -and $d.P95 -eq 4) 'distribution'
 'Production measurement contract tests passed.'
+
+# Drain traversal uses PID0 only as a sentinel: Windows can enumerate the Idle PID0 itself.
+$harness=Get-Content "$PSScriptRoot/production-baseline.ps1" -Raw
+Check ($harness.Contains('Where-Object { $_.Pid -ne 0 }')) 'drain excludes sentinel Idle PID0'
+Check ($harness.IndexOf('$sample.launch_qpc=Qpc') -lt $harness.IndexOf('$app=Start-Process -FilePath')) 'launch clock immediately precedes process launch'

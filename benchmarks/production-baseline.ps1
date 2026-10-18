@@ -205,7 +205,8 @@ try {
                         $drain=[Diagnostics.Stopwatch]::StartNew()
                         do {
                             $inventory=@(Get-ProcessInventory)
-                            $remaining=@(Get-ProcessGroupMembers -RootPid 0 -Profile $profile -Inventory $inventory)
+                            # PID0 is a traversal sentinel, never an owned process (Win32_Process may enumerate Idle).
+                            $remaining=@(Get-ProcessGroupMembers -RootPid 0 -Profile $profile -Inventory $inventory | Where-Object { $_.Pid -ne 0 })
                             $remaining+=@($inventory | Where-Object {$known.ContainsKey("$($_.Pid):$($_.CreationTicks)")})
                             if(-not $remaining.Count){break}
                             Start-Sleep -Milliseconds 100
