@@ -9,7 +9,13 @@
 //! ```
 //! A default value is not written. Unknown or malformed lines are dropped.
 
-use std::{collections::BTreeMap, fs, io, path::Path, time::Duration};
+use std::{
+    collections::{BTreeMap, HashMap},
+    fs, io,
+    path::{Path, PathBuf},
+    sync::Mutex,
+    time::{Duration, SystemTime},
+};
 
 pub const FILE_NAME: &str = "panel_prefs.txt";
 const MAX_BYTES: usize = 64 * 1024;
@@ -173,7 +179,22 @@ impl PanelPrefsFile {
         self.apps.values().any(|prefs| prefs.reload_minutes > 0)
     }
 
+    /// The profile's options, parsed from disk once and then served from memory while the file is
+    /// unchanged: a title change, a panel switch and window creation all ask, and none of them may
+    /// wait on a read and parse. Only the file's stamp is checked, because Ctrl+N opens another
+    /// Bowser process on the same profile: a change it saves is seen here (and not overwritten by
+    /// an `update` working from a stale copy). `save` keeps the copy current for this process.
     pub fn load(profile_dir: &Path) -> Self {
+        let stamp = file_stamp(&profile_dir.join(FILE_NAME));
+        if let Some(file) = with_cache(|cache| cache.get(profile_dir).filter(|(seen, _)| *seen == stamp).map(|(_, file)| file.clone())) {
+            return file;
+        }
+        let file = Self::read(profile_dir);
+        file.remember(profile_dir, stamp);
+        file
+    }
+
+    fn read(profile_dir: &Path) -> Self {
         match fs::read(profile_dir.join(FILE_NAME)) {
             Ok(bytes) if bytes.len() <= MAX_BYTES => Self::parse(&String::from_utf8_lossy(&bytes)),
             _ => Self::default(),
@@ -186,13 +207,49 @@ impl PanelPrefsFile {
         if text.is_empty() {
             return match fs::remove_file(&path) {
                 Err(error) if error.kind() != io::ErrorKind::NotFound => Err(error),
-                _ => Ok(()),
+                _ => {
+                    self.remember(profile_dir, None);
+                    Ok(())
+                }
             };
         }
         let temp = path.with_extension("tmp");
         fs::write(&temp, text)?;
-        fs::rename(&temp, &path)
+        fs::rename(&temp, &path)?;
+        self.remember(profile_dir, file_stamp(&path));
+        Ok(())
     }
+
+    /// Makes this the in-memory copy for `profile_dir`, whose file has `stamp`.
+    fn remember(&self, profile_dir: &Path, stamp: Option<FileStamp>) {
+        with_cache(|cache| {
+            if cache.len() >= MAX_CACHED && !cache.contains_key(profile_dir) {
+                cache.clear();
+            }
+            cache.insert(profile_dir.to_owned(), (stamp, self.clone()));
+        });
+    }
+}
+
+/// A file's modification time and length: what tells a cached copy that another process (or a
+/// hand edit) changed the file. `None` when the file is missing.
+pub(crate) type FileStamp = (Option<SystemTime>, u64);
+
+/// The stamp of the file at `path`, from its metadata only (no read).
+pub(crate) fn file_stamp(path: &Path) -> Option<FileStamp> {
+    fs::metadata(path).ok().map(|meta| (meta.modified().ok(), meta.len()))
+}
+
+type Cached = (Option<FileStamp>, PanelPrefsFile);
+
+/// Each profile's options by profile folder, with the file stamp they were read at.
+static CACHE: Mutex<Option<HashMap<PathBuf, Cached>>> = Mutex::new(None);
+/// Profiles are few; this only bounds the map.
+const MAX_CACHED: usize = 64;
+
+fn with_cache<R>(f: impl FnOnce(&mut HashMap<PathBuf, Cached>) -> R) -> R {
+    let mut cache = CACHE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    f(cache.get_or_insert_with(HashMap::new))
 }
 
 /// Runs `edit` on the active profile's panel options and saves the result (a guest's are not kept).
@@ -257,6 +314,37 @@ pub fn reload_label(minutes: u8) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn loads_come_from_memory_until_the_file_changes_and_a_save_keeps_them_current() {
+        let dir = std::env::temp_dir().join(format!("bowser-panel-prefs-cache-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(FILE_NAME);
+        fs::write(&path, "app=3 reload=10
+").unwrap();
+        assert_eq!(PanelPrefsFile::load(&dir).get(3).reload_minutes, 10);
+        // A later load of the unchanged file is not parsed again: the copy in memory answers (seen
+        // here by planting a different copy for the same stamp).
+        let mut planted = PanelPrefsFile::default();
+        planted.set(3, PanelPrefs { reload_minutes: 30, ..PanelPrefs::default() });
+        planted.remember(&dir, file_stamp(&path));
+        assert_eq!(PanelPrefsFile::load(&dir).get(3).reload_minutes, 30, "served from memory");
+        // Another process (a Ctrl+N window on this profile) writes the file: the next load sees it.
+        fs::write(&path, "app=3 reload=15 notify=true
+").unwrap();
+        assert_eq!(PanelPrefsFile::load(&dir).get(3).reload_minutes, 15, "a changed file is read again");
+        // It is removed: back to the defaults, not the copy in memory.
+        fs::remove_file(&path).unwrap();
+        assert_eq!(PanelPrefsFile::load(&dir).get(3).reload_minutes, 0);
+        // A save is seen by the next load, and reaches the disk.
+        let mut file = PanelPrefsFile::load(&dir);
+        file.set(3, PanelPrefs { reload_minutes: 5, ..PanelPrefs::default() });
+        file.save(&dir).unwrap();
+        assert_eq!(PanelPrefsFile::load(&dir).get(3).reload_minutes, 5);
+        assert_eq!(PanelPrefsFile::read(&dir).get(3).reload_minutes, 5);
+        let _ = fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn defaults_are_not_written_and_everything_round_trips() {

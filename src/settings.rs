@@ -1416,7 +1416,18 @@ pub fn save(path: &Path, settings: &Settings) -> io::Result<()> {
         let _ = std::fs::remove_file(&temporary);
         return Err(error);
     }
+    SAVES.fetch_add(1, std::sync::atomic::Ordering::Release);
     Ok(())
+}
+
+/// Counts the settings files `save` has written in this process.
+static SAVES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Moves on whenever `save` writes a settings file, so a value cached from one (the side panel's
+/// shared width) is read again after a Save or Reset on the settings page, even when the file's
+/// time and length alone would not show the change (two saves inside one clock tick).
+pub fn save_generation() -> u64 {
+    SAVES.load(std::sync::atomic::Ordering::Acquire)
 }
 
 /// Creates `path` from `TEMPLATE` when it does not exist yet. An existing file is left alone.
