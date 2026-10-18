@@ -53,4 +53,16 @@ foreach($kind in @('customize','workspaces','apps','bookmarks','history','menu')
 Check ($lines[7] -ceq "app`t1`tFixture A`thttp://127.0.0.1:12345/light?token=0123456789abcdef0123456789abcdef_a`t-`t0") 'exact synthetic A identity and token'
 Check ($lines[8] -ceq "app`t2`tFixture B`thttp://127.0.0.1:12345/light?token=0123456789abcdef0123456789abcdef_b`t-`t1") 'exact synthetic B identity and token'
 
+$ackFile=Join-Path ([IO.Path]::GetTempPath()) ("bowser-sidebar-acks-"+[guid]::NewGuid().ToString('N')+".jsonl")
+try {
+ Check (@(Get-ProductionSidebarReadyAcknowledgements -RequestFile $ackFile -Token 'fixture_a').Count -eq 0) 'missing acknowledgement file is an empty collection'
+ '{"path":"/light","token":"fixture_a"}' | Set-Content -LiteralPath $ackFile -Encoding utf8
+ Check (@(Get-ProductionSidebarReadyAcknowledgements -RequestFile $ackFile -Token 'fixture_a').Count -eq 0) 'zero ready matches remain an empty collection'
+ '{"path":"/ready","token":"fixture_a"}' | Add-Content -LiteralPath $ackFile -Encoding utf8
+ Check (@(Get-ProductionSidebarReadyAcknowledgements -RequestFile $ackFile -Token 'fixture_a').Count -eq 1) 'one ready match remains a one-element collection'
+ '{"path":"/ready","token":"fixture_a"}' | Add-Content -LiteralPath $ackFile -Encoding utf8
+ '{"path":"/ready","token":"fixture_b"}' | Add-Content -LiteralPath $ackFile -Encoding utf8
+ Check (@(Get-ProductionSidebarReadyAcknowledgements -RequestFile $ackFile -Token 'fixture_a').Count -eq 2) 'duplicate ready acknowledgements retained without collapsing or accepting another token'
+} finally {if(Test-Path -LiteralPath $ackFile){Remove-Item -LiteralPath $ackFile}}
+
 'Sidebar lifecycle observation contracts passed.'

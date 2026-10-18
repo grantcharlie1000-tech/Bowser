@@ -10,6 +10,10 @@ function New-ProductionSidebarFixture {
  $items=foreach($kind in @('customize','workspaces','apps','bookmarks','history','menu')){"item`t$kind`t$kind`t1"}
  "bowser-sidebar-v1`n$($items -join "`n")`napp`t1`tFixture A`t$BaseUrl/light?token=$($Token)_a`t-`t0`napp`t2`tFixture B`t$BaseUrl/light?token=$($Token)_b`t-`t1`n"
 }
+function Get-ProductionSidebarReadyAcknowledgements {
+ param([string]$RequestFile,[string]$Token)
+ if(Test-Path -LiteralPath $RequestFile){Get-Content -LiteralPath $RequestFile | ConvertFrom-Json | Where-Object {$_.path -ceq '/ready' -and $_.token -ceq $Token}}
+}
 function Invoke-ProductionSidebarLifecycle {
  [CmdletBinding()]
  param([uint32]$RootPid,[string]$InitialToken,[switch]$RouteSmoke,[string]$Profile,[string]$RequestFile,[string]$AToken,[string]$BToken,[ValidateSet('settled','rapid')][string]$Scenario='settled',[Parameter(Mandatory)][AllowEmptyCollection()][Collections.Generic.List[object]]$Trace)
@@ -51,7 +55,7 @@ function Invoke-ProductionSidebarLifecycle {
    $panel=[BowserProductionNative]::FindSurface($RootPid,'BowserSidePanelHost',100,100)
    $docs=@()
    if($panel -ne [IntPtr]::Zero){$panelRoot=[Windows.Automation.AutomationElement]::FromHandle($panel);$docs=@(Find-Visible $panelRoot "BOWSER_PERF_READY_$token" ([Windows.Automation.ControlType]::Document))}
-   $acks=if(Test-Path -LiteralPath $RequestFile){@(Get-Content -LiteralPath $RequestFile|ConvertFrom-Json|Where-Object {$_.path -ceq '/ready' -and $_.token -ceq $token})}else{@()}
+   $acks=@(Get-ProductionSidebarReadyAcknowledgements -RequestFile $RequestFile -Token $token)
    if($acks.Count -gt 0 -and $docs.Count -gt 0){break};Start-Sleep -Milliseconds 50
   }while($wait.Elapsed.TotalSeconds -lt 20)
   $matched=@($docs|ForEach-Object {$c=$_.Current;$r=$c.BoundingRectangle;[ordered]@{name=$c.Name;provider_pid=$c.ProcessId;offscreen=$c.IsOffscreen;bounds=@{left=$r.Left;top=$r.Top;width=$r.Width;height=$r.Height}}})
@@ -102,7 +106,7 @@ function Invoke-ProductionSidebarLifecycle {
   Phase "closed-cycle-$cycle" $true
  }
 }
-Export-ModuleMember -Function New-ProductionSidebarFixture,Invoke-ProductionSidebarLifecycle
+Export-ModuleMember -Function Get-ProductionSidebarReadyAcknowledgements,New-ProductionSidebarFixture,Invoke-ProductionSidebarLifecycle
 
 function Get-ProductionSidebarLedger {
  param([AllowNull()][object[]]$Rows,[uint32[]]$ExpectedApps=@())
@@ -152,7 +156,7 @@ function Get-ProductionSidebarLedger {
  foreach($expectedApp in $ExpectedApps){if(-not @($summaries|Where-Object app -eq $expectedApp).Count){$errors.Add("missing_reached_app_participant:$expectedApp")}}
  [ordered]@{complete=($errors.Count -eq 0);expected_observed_apps=$ExpectedApps;allocated_identity_count=$allocated;invalid_reasons=@($errors.ToArray());environment_requests=$environments.Count;controller_requests=$requests.Count;requests=@($summaries.ToArray());scope='Actual COM request/result counts through the declared end marker, not assumed UI invocation count; missing Close is not proof of leaked/freed memory; duplicate requests and acks are retained'}
 }
-Export-ModuleMember -Function New-ProductionSidebarFixture,Invoke-ProductionSidebarLifecycle,Get-ProductionSidebarLedger
+Export-ModuleMember -Function Get-ProductionSidebarReadyAcknowledgements,New-ProductionSidebarFixture,Invoke-ProductionSidebarLifecycle,Get-ProductionSidebarLedger
 
 function Get-ProductionSidebarPhaseCoverage {
  param([object[]]$Snapshots,$Before,$After,[bool]$ExpectWebApps)
@@ -170,4 +174,4 @@ function Get-ProductionSidebarPhaseCoverage {
  foreach($snapshot in $Snapshots){if($snapshot.CoverageErrors.Count -gt 0 -or $snapshot.RacedExitCount -gt 0 -or $snapshot.PrivateSource -cne 'native' -or $null -eq $snapshot.NativePrivateBytes){$errors.Add('native_counter_coverage_gap')}}
  [ordered]@{eligible=($errors.Count -eq 0);invalid_reasons=@($errors.ToArray());scope='Stable WebApps identities before/after window, covered by ALL native snapshots; churn unavailable, never zero'}
 }
-Export-ModuleMember -Function New-ProductionSidebarFixture,Invoke-ProductionSidebarLifecycle,Get-ProductionSidebarLedger,Get-ProductionSidebarPhaseCoverage
+Export-ModuleMember -Function Get-ProductionSidebarReadyAcknowledgements,New-ProductionSidebarFixture,Invoke-ProductionSidebarLifecycle,Get-ProductionSidebarLedger,Get-ProductionSidebarPhaseCoverage
