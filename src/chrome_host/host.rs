@@ -402,8 +402,10 @@ fn diagnostic_private_bytes(pid: u32) -> Option<u64> {
     }};
     unsafe {
         let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
-        let mut counters = PROCESS_MEMORY_COUNTERS_EX::default();
-        counters.cb = std::mem::size_of::<PROCESS_MEMORY_COUNTERS_EX>() as u32;
+        let mut counters = PROCESS_MEMORY_COUNTERS_EX {
+            cb: std::mem::size_of::<PROCESS_MEMORY_COUNTERS_EX>() as u32,
+            ..Default::default()
+        };
         let ok = K32GetProcessMemoryInfo(handle, (&mut counters as *mut PROCESS_MEMORY_COUNTERS_EX).cast::<PROCESS_MEMORY_COUNTERS>(), counters.cb).as_bool();
         let _ = CloseHandle(handle);
         ok.then_some(counters.PrivateUsage as u64)

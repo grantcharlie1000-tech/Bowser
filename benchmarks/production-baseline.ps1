@@ -375,14 +375,14 @@ try {
                             if($sample.expected_failure -and $readiness.Valid){throw 'Diagnostic failed fixture incorrectly usable'}
                             if(-not $sample.expected_failure -and -not $readiness.Valid){throw "Identity/success readiness invalid: $($readiness.InvalidReasons -join ',')"}
                             $sample.diagnostic_readiness=$readiness
-                            foreach($probe in @($sample.surface_smoke | Where-Object surface -eq 'semantic-fixture-navigation')) {
+                            foreach($probe in @(Get-ProductionSemanticFixtureProbes $sample.surface_smoke)) {
                                 $segment=Get-ProductionTokenSegmentReadiness $events $probe.token
                                 $probe.native_navigation_success=$segment.Valid
                                 if(-not $segment.Valid){throw "Semantic fixture native navigation failed: $($segment.InvalidReasons -join ',')"}
                             }
                         }
                     } catch {
-                        $sample.valid=$false;$sample.error=$_.Exception.Message
+                        $sample.valid=$false;$sample.error=$_.Exception.Message;$sample['error_script_stack']=$_.ScriptStackTrace;$sample['error_position']=$_.InvocationInfo.PositionMessage
                         if($app -and -not $app.HasExited){try{$sample.failure_screenshot=Capture-OwnedSurface 'failure'}catch{}}
                     }
                     finally {

@@ -43,3 +43,7 @@ Check (Get-ProductionTokenSegmentReadiness @($start,$ready,$done,(Row diagnostic
 Check (-not (Get-ProductionTokenSegmentReadiness @($start,$ready,$done,(Row diagnostic_navigation_completed 1 10 false)) fixture).Valid) 'historical semantic segment retains late failure'
 Check (-not (Get-ProductionTokenSegmentReadiness @($start,$ready,$done,(Row diagnostic_fixture_ready 1 11 '' fixture)) fixture).Valid) 'ambiguous repeated token identities rejected'
 Check ($harness.Contains("if(`$StartupOnly -and `$IncludeTabFlow)")) 'startup-only rejects tab-flow workload'
+
+Check (@(Get-ProductionSemanticFixtureProbes $null).Count -eq 0) 'startup-only absent surface rows are valid empty input'
+$fixtureProbes=@($null,[pscustomobject]@{surface='core-tabs-rail'},[pscustomobject]@{surface='semantic-fixture-navigation';token='fixture'})
+Check (@(Get-ProductionSemanticFixtureProbes $fixtureProbes).Count -eq 1) 'semantic fixture filter ignores null and unrelated surfaces'

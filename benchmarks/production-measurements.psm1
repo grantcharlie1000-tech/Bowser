@@ -41,6 +41,13 @@ function Get-ProductionReadiness {
     [pscustomobject]@{ Valid=($null -ne $result); Ready=$result; InvalidReasons=@($invalid | Sort-Object -Unique) }
 }
 
+function Get-ProductionSemanticFixtureProbes {
+    param([AllowNull()][object[]]$Rows)
+    foreach($row in $Rows) {
+        if($null -ne $row -and $row.surface -eq 'semantic-fixture-navigation') { $row }
+    }
+}
+
 # Historical interaction check only. The ordinary readiness validator still rejects superseded
 # current documents; this scopes one unique fixture to its own recorded navigation identity.
 function Get-ProductionTokenSegmentReadiness {
@@ -79,4 +86,4 @@ function Get-ProductionDistribution {
     $median = if ($sorted.Count % 2) { $sorted[[int][Math]::Floor($sorted.Count / 2)] } else { ($sorted[$sorted.Count/2-1]+$sorted[$sorted.Count/2])/2 }
     [pscustomobject]@{ Count=$sorted.Count; Median=$median; P95=$sorted[[Math]::Max(0,[int][Math]::Ceiling($sorted.Count*0.95)-1)]; Min=$sorted[0]; Max=$sorted[-1] }
 }
-Export-ModuleMember -Function Get-ProductionTokenSegmentReadiness,Get-ProductionReadiness,Get-ProductionCpuDelta,Get-ProductionDistribution
+Export-ModuleMember -Function Get-ProductionSemanticFixtureProbes,Get-ProductionTokenSegmentReadiness,Get-ProductionReadiness,Get-ProductionCpuDelta,Get-ProductionDistribution
