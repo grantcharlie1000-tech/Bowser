@@ -1,5 +1,7 @@
 name: Production performance comparison
 on:
+  push:
+    branches: ['performance/post-ui']
   pull_request:
     paths:
       - '.github/workflows/production-performance.yml'
@@ -41,6 +43,18 @@ jobs:
           persist-credentials: false
           path: candidate
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Verify exact event checkout and unchanged product inputs
+        working-directory: candidate
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_SOURCE: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          if((git rev-parse HEAD).Trim() -cne $env:EVENT_SOURCE){throw 'Unexpected merge/source checkout'}
+          git fetch --no-tags --depth=1 origin f285525d205b9b388ebb26481f5af01d4df99ac8
+          if($LASTEXITCODE -ne 0){throw 'Cannot fetch reviewed product source'}
+          $changes=@(git diff --name-only f285525d205b9b388ebb26481f5af01d4df99ac8 HEAD)
+          if($LASTEXITCODE -ne 0){throw 'Cannot verify workflow-only follow-up'}
+          if(@($changes | Where-Object {$_ -cne '.github/workflows/production-performance.yml'}).Count){throw 'Product inputs differ from reviewed filter candidate'}
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: '22'
@@ -113,7 +127,7 @@ jobs:
       - name: Build and fingerprint actual filter-union candidate
         working-directory: candidate
         run: |
-          rustup toolchain install 1.99.1 --profile minimal
+          rustup toolchain install 1.99.1 --profile minimal --component clippy
           if ($LASTEXITCODE -ne 0) { throw 'Pinned toolchain installation failed' }
           Push-Location ui
           npm ci --no-audit --no-fund
@@ -141,13 +155,19 @@ jobs:
           Pop-Location
           git diff --exit-code -- ui/src/icons.gen.ts ui/dist ui/dist.manifest
           if ($LASTEXITCODE -ne 0) { throw 'Committed assets are not reproducible' }
+          cargo +1.99.1 test --locked
+          if ($LASTEXITCODE -ne 0) { throw 'Default Rust contracts failed' }
+          cargo +1.99.1 test --locked --features html-chrome-default
+          if ($LASTEXITCODE -ne 0) { throw 'HTML Rust contracts failed' }
+          cargo +1.99.1 clippy --locked --features html-chrome-default -- -D warnings
+          if ($LASTEXITCODE -ne 0) { throw 'Clippy failed' }
           cargo +1.99.1 build --release --locked --bin bowser --features html-chrome-default
           if ($LASTEXITCODE -ne 0) { throw 'Actual candidate build failed' }
           New-Item -ItemType Directory -Force ../evidence/candidate | Out-Null
           Copy-Item target/release/bowser.exe ../evidence/candidate/candidate.exe
           Copy-Item Cargo.lock,ui/dist.manifest ../evidence/candidate/
           $file=Get-Item ../evidence/candidate/candidate.exe
-          [ordered]@{source=(git rev-parse HEAD).Trim();tree=(git rev-parse 'HEAD^{tree}').Trim();sha256=(Get-FileHash $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant();bytes=$file.Length;toolchain=(rustc +1.99.1 --version --verbose | Out-String);features='html-chrome-default';scope='proved existing registration-glob redundancy elimination; not a release'} | ConvertTo-Json | Set-Content ../evidence/candidate/identity.json
+          [ordered]@{product_source='f285525d205b9b388ebb26481f5af01d4df99ac8';source=(git rev-parse HEAD).Trim();tree=(git rev-parse 'HEAD^{tree}').Trim();sha256=(Get-FileHash $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant();bytes=$file.Length;toolchain=(rustc +1.99.1 --version --verbose | Out-String);features='html-chrome-default';scope='proved existing registration-glob redundancy elimination; not a release'} | ConvertTo-Json | Set-Content ../evidence/candidate/identity.json
       - name: Bounded native actual-module and HTML activation validity pass
         id: validity
         working-directory: candidate
