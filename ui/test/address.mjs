@@ -454,3 +454,50 @@ test('the address dialogs: snapshots parse strictly and fields are cleaned befor
   assert.equal(dialogLogic.MAX_QR_BYTES, 213);
   assert.ok(qrMatrix('x'.repeat(dialogLogic.MAX_QR_BYTES)) !== null && qrMatrix('x'.repeat(dialogLogic.MAX_QR_BYTES + 1)) === null, 'the dialog limit is the encoder limit');
 });
+
+test('minimal_url: focus swaps in the full address, blur restores the condensed one, edits are kept', () => {
+  const shown = 'example.com';
+  const full = 'example.com/docs?q=1#part';
+  assert.equal(logic.focusAddressText(shown, shown, full, false), full);
+  assert.equal(logic.blurAddressText(full, shown, full, false), shown);
+  // No full form (minimal_url off, or the same text): nothing changes.
+  assert.equal(logic.focusAddressText(shown, shown, '', false), shown);
+  assert.equal(logic.blurAddressText(shown, shown, '', false), shown);
+  // Typed text is the user's, on focus and on blur.
+  assert.equal(logic.focusAddressText('typed', shown, full, true), 'typed');
+  assert.equal(logic.blurAddressText(full, shown, full, true), full);
+  assert.equal(logic.blurAddressText('typed', shown, full, false), 'typed');
+});
+
+// ---- address_bar_show, the highlight default and search_keep_text ----
+
+test('hiding the address field hides only its part of the pill, and its row reads differently from the layout row', () => {
+  const css = readFileSync(join(here, '..', 'src', 'styles', 'address.css'), 'utf8');
+  const rule = css.match(/\.pill\[data-hidden="true"\][^{]*\{[^}]*\}/)?.[0] ?? '';
+  assert.match(rule, /> :is\(\.tb-site, \.omni-field, \.tb-hist, \.tb-qr\)/, 'only the address part is hidden');
+  assert.doesNotMatch(rule, /omni-search/, 'the search field stays');
+  const row = rows.ADDRESS_ROWS.find((r) => r.id === 'addrShow');
+  assert.equal(row.label, 'Show the address field');
+  assert.notEqual(row.label, 'Show the address bar row');
+});
+
+test('the UI defaults for the address flags match what Rust sends for default settings (highlight_base off)', () => {
+  assert.equal(logic.DEFAULT_ADDR.highlight, false);
+  // The fixture's settings change only the drop-down sources and the search field, never these flags.
+  for (const key of logic.ADDR_FLAG_KEYS.filter((k) => k !== 'base')) assert.equal(logic.DEFAULT_ADDR[key], fixture.addr[key], key);
+});
+
+test('a search-field row picked with the mouse (sdone) clears the field unless search_keep_text', () => {
+  assert.deepEqual(parseInbound({ v: 1, t: 'sdone' }), { t: 'sdone' });
+  // The exact text Rust posts (address_page.rs SEARCH_DONE_JSON) is the message the toolbar accepts.
+  const rust = readFileSync(join(here, '..', '..', 'src', 'chrome_host', 'address_page.rs'), 'utf8');
+  const sent = /pub const SEARCH_DONE_JSON: &str = r#"(.*)"#;/.exec(rust)?.[1];
+  assert.ok(sent, 'SEARCH_DONE_JSON is defined');
+  assert.deepEqual(parseInbound(JSON.parse(sent)), { t: 'sdone' });
+  assert.equal(parseInbound({ v: 1, t: 'sdone', extra: 1 }), null);
+  assert.equal(parseInbound({ v: 2, t: 'sdone' }), null);
+  assert.equal(logic.searchTextAfterSearch(false, 'rust'), '');
+  assert.equal(logic.searchTextAfterSearch(true, 'rust'), 'rust');
+  const main = readFileSync(join(here, '..', 'src', 'main.ts'), 'utf8');
+  assert.match(main, /case 'sdone':[\s\S]{0,200}searchTextAfterSearch\(sfield\?\.keep/);
+});

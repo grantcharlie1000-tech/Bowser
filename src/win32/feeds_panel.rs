@@ -36,7 +36,23 @@ enum Done {
     BatchEnd,
 }
 
-static DONE: Mutex<Vec<(isize, Done)>> = Mutex::new(Vec::new());
+/// Answers the workers left, waiting for the UI thread. They are not tied to a window: a fetch that ends
+/// after the panel closed is applied when it opens again (or at close, for what is already here).
+static DONE: Mutex<Vec<Done>> = Mutex::new(Vec::new());
+/// The open Feeds window workers wake, or 0 while none is open (so nothing is posted to a dead window).
+static PANEL: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
+
+/// The Feeds window `window` opened: workers wake it from now on.
+pub(crate) fn attached(window: HWND) {
+    PANEL.store(window.0 as isize, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// The Feeds window `window` is being destroyed: stop waking it and take the answers already left, so
+/// the job count stays true while it is closed.
+pub(crate) fn detached(window: HWND) {
+    let _ = PANEL.compare_exchange(window.0 as isize, 0, std::sync::atomic::Ordering::SeqCst, std::sync::atomic::Ordering::SeqCst);
+    apply_done();
+}
 
 #[derive(Default)]
 struct State {
@@ -105,11 +121,13 @@ pub(crate) fn open(hwnd: HWND, app: &AppRef, page: Vec<FeedLink>) {
 
 /// The panel just became ready: fetch the subscriptions that are older than the user's "refresh when
 /// opened" choice. The setting's value `0` fetches nothing.
-pub(crate) fn on_ready(app: &AppRef, parent: HWND) {
+pub(crate) fn on_ready(app: &AppRef) {
     let minutes = App::settings(app).feeds_refresh_minutes;
+    // Answers that arrived while the panel was closed are applied first, so the job count is true.
+    apply_done();
     let ids = store(|store| store.stale(now(), minutes)).unwrap_or_default();
     if !ids.is_empty() {
-        start_refresh(parent, ids);
+        start_refresh(ids);
     }
 }
 
@@ -158,8 +176,8 @@ pub(crate) fn handle(app: &AppRef, parent: HWND, action: Action) {
             state.preview = None;
             state.status.clear();
         }),
-        Action::Preview(text) => start_look(parent, text, false),
-        Action::Subscribe(text) => subscribe(parent, text),
+        Action::Preview(text) => start_look(text, false),
+        Action::Subscribe(text) => subscribe(text),
         Action::Unsubscribe(id) => {
             let removed = store(|store| store.remove(id)).unwrap_or(false);
             if removed {
@@ -177,7 +195,7 @@ pub(crate) fn handle(app: &AppRef, parent: HWND, action: Action) {
                 Some(id) => vec![id],
                 None => store(|store| store.feeds.iter().map(|feed| feed.id).collect()).unwrap_or_default(),
             };
-            start_refresh(parent, ids);
+            start_refresh(ids);
         }
         Action::Read { feed, item, read } => {
             if store(|store| store.mark(feed, item, read)).unwrap_or(false) {
@@ -217,7 +235,7 @@ fn open_item(app: &AppRef, feed: u32, item: u32, play: bool) {
     App::open_in_new_tab(app, &url);
 }
 
-fn subscribe(parent: HWND, text: String) {
+fn subscribe(text: String) {
     // The previewed feed is already read: subscribe to what the user saw, without fetching again.
     let previewed = with(|state| {
         state.preview.as_ref().filter(|preview| preview.candidates.is_empty() && same_address(&preview.url, &text)).cloned()
@@ -227,7 +245,7 @@ fn subscribe(parent: HWND, text: String) {
         add_feed(&preview.url, &parsed);
         return;
     }
-    start_look(parent, text, true);
+    start_look(text, true);
 }
 
 fn same_address(a: &str, b: &str) -> bool {
@@ -266,12 +284,15 @@ fn add_feed(url: &str, parsed: &feeds::parse::ParsedFeed) {
 
 // ---- workers ----
 
-fn post_done(parent: isize, done: Done) {
-    DONE.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push((parent, done));
-    super::post(HWND(parent as *mut _), WM_FEEDS_DONE, WPARAM(0), LPARAM(0));
+fn post_done(done: Done) {
+    DONE.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(done);
+    let panel = PANEL.load(std::sync::atomic::Ordering::SeqCst);
+    if panel != 0 {
+        super::post(HWND(panel as *mut _), WM_FEEDS_DONE, WPARAM(0), LPARAM(0));
+    }
 }
 
-fn start_look(parent: HWND, text: String, subscribe: bool) {
+fn start_look(text: String, subscribe: bool) {
     // Refuse a bad address here, so the panel says why at once and no thread starts.
     if let Err(error) = feeds::fetch::parse_url(&text) {
         with(|state| state.error = error.to_string());
@@ -281,11 +302,10 @@ fn start_look(parent: HWND, text: String, subscribe: bool) {
         state.jobs += 1;
         state.status = if subscribe { "Looking for the feed…".into() } else { "Loading a preview…".into() };
     });
-    let raw = parent.0 as isize;
     let worker_text = text.clone();
     let spawned = std::thread::Builder::new().name("bowser-feed-look".into()).spawn(move || {
         let result = feeds::look_at(&worker_text);
-        post_done(raw, Done::Looked { text: worker_text, subscribe, result });
+        post_done(Done::Looked { text: worker_text, subscribe, result });
     });
     if spawned.is_err() {
         with(|state| {
@@ -295,7 +315,7 @@ fn start_look(parent: HWND, text: String, subscribe: bool) {
     }
 }
 
-fn start_refresh(parent: HWND, ids: Vec<u32>) {
+fn start_refresh(ids: Vec<u32>) {
     let jobs: Vec<(u32, String)> = store(|store| ids.iter().filter_map(|id| store.feed(*id).map(|feed| (feed.id, feed.url.clone()))).take(MAX_BATCH).collect()).unwrap_or_default();
     if jobs.is_empty() {
         return;
@@ -308,13 +328,12 @@ fn start_refresh(parent: HWND, ids: Vec<u32>) {
         state.jobs += 1;
         state.status = if jobs.len() == 1 { "Refreshing…".into() } else { format!("Refreshing {} feeds…", jobs.len()) };
     });
-    let raw = parent.0 as isize;
     let spawned = std::thread::Builder::new().name("bowser-feed-refresh".into()).spawn(move || {
         for (id, url) in jobs {
             let result = feeds::refresh_one(&url);
-            post_done(raw, Done::Refreshed { id, result });
+            post_done(Done::Refreshed { id, result });
         }
-        post_done(raw, Done::BatchEnd);
+        post_done(Done::BatchEnd);
     });
     if spawned.is_err() {
         with(|state| {
@@ -324,15 +343,10 @@ fn start_refresh(parent: HWND, ids: Vec<u32>) {
     }
 }
 
-/// Takes the answers the workers left for `parent` and applies them. True when anything changed (the
-/// caller sends a fresh snapshot).
-pub(crate) fn apply_done(parent: HWND) -> bool {
-    let mine: Vec<Done> = {
-        let mut queue = DONE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        let (mine, rest): (Vec<_>, Vec<_>) = queue.drain(..).partition(|(owner, _)| *owner == parent.0 as isize);
-        *queue = rest;
-        mine.into_iter().map(|(_, done)| done).collect()
-    };
+/// Takes the answers the workers left and applies them. True when anything changed (the caller sends a
+/// fresh snapshot).
+pub(crate) fn apply_done() -> bool {
+    let mine: Vec<Done> = std::mem::take(&mut *DONE.lock().unwrap_or_else(std::sync::PoisonError::into_inner));
     let any = !mine.is_empty();
     let mut changed_store = false;
     for done in mine {
@@ -439,7 +453,7 @@ fn import(parent: HWND) {
     });
     // The new subscriptions are empty until fetched: fetch them now (the user asked for them).
     if !added.is_empty() {
-        start_refresh(parent, added);
+        start_refresh(added);
     }
 }
 
@@ -483,5 +497,22 @@ mod tests {
         assert!(!same_address("https://a.example/feed", "https://a.example/other"));
         assert!(!same_address("", ""));
         assert!(!same_address("http://127.0.0.1/x", "http://127.0.0.1/x"), "an address that is refused matches nothing");
+    }
+
+    #[test]
+    fn closing_mid_fetch_does_not_leave_the_panel_busy() {
+        // A preview is running in a window that then closes.
+        let window = HWND(0x5C6 as *mut _);
+        attached(window);
+        with(|state| state.jobs = 1);
+        detached(window);
+        assert_eq!(PANEL.load(std::sync::atomic::Ordering::SeqCst), 0, "a closed window is not woken");
+        // The worker answers after the close: the answer waits, nothing is posted to the dead window.
+        post_done(Done::Looked { text: "https://a.example/feed".into(), subscribe: false, result: Err("no".into()) });
+        assert_eq!(DONE.lock().unwrap().len(), 1);
+        // The next window applies it, so the panel is not stuck busy and nothing is left behind.
+        assert!(apply_done());
+        assert_eq!(with(|state| state.jobs), 0);
+        assert!(DONE.lock().unwrap().is_empty());
     }
 }

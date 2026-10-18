@@ -1551,7 +1551,12 @@ pub fn hit_test_native(
     }
     // The margin left of the toolbar, beside the rail, drags the window like the rest of the strip.
     // Below the toolbar that margin is outside the chrome and takes no hit.
-    if y < layout.strip.bottom && x < layout.strip.left {
+    // The band above the toolbar ends where the page starts, and a toolbar along
+    // the bottom edge has its own band: the rows over the page are not drag bands
+    // (`drag_region_rects` sweeps the same two bands).
+    let above_bottom = layout.strip.top.min(layout.top_chrome);
+    let in_strip_band = y >= layout.strip.top && y < layout.strip.bottom;
+    if (y < above_bottom || in_strip_band) && x < layout.strip.left {
         return Hit::CaptionArea;
     }
     if layout.viewport.contains(x, y) {
@@ -1616,7 +1621,9 @@ pub fn hit_test_native(
     if layout.title_bar.contains(x, y) {
         return Hit::CaptionArea;
     }
-    if y >= 0 && y < layout.strip.top {
+    // Only above the page: with the toolbar at the bottom everything over it is
+    // the page and its margins, not caption.
+    if y >= 0 && y < layout.strip.top.min(layout.top_chrome) {
         return Hit::CaptionArea;
     }
     if !layout.strip.contains(x, y) {
@@ -2202,10 +2209,18 @@ pub fn compute_arranged_auto_hide(
     let hide = AutoHide { sidebar: hide.sidebar && arrangement.sidebar_side().is_some(), ..hide };
     if hide.sidebar {
         let normal_viewport = layout.viewport;
-        let (moved, _) = compute_arranged_in_frame(
+        let (mut moved, _) = compute_arranged_in_frame(
             Arrangement { tab_bar: false, ..arrangement },
             client_w, client_h, dpi, tab_count, active_index, maximised, sidebar_width, centred, sidebar_row_height,
         );
+        // The title row the sidebar asked for (`show_title_bar`) is top chrome: it
+        // stays while only the sidebar hides, so the toolbar does not jump into its place and the
+        // revealed sidebar still hangs under it.
+        if arrangement.has_title_row() && moved.title_bar.is_empty() {
+            moved = moved.with_title_row(left_rail_inset(dpi));
+        }
+        moved.top_chrome = layout.top_chrome;
+        moved.bottom_chrome = layout.bottom_chrome;
         layout = moved;
         layout.viewport = normal_viewport;
     }
@@ -4551,6 +4566,38 @@ mod tests {
         }
     }
     // --- end layout + auto-hide ---
+
+    /// A title row asked for with the tabs on a side stays put while only the sidebar hides: the
+    /// toolbar keeps its place under it, and the revealed sidebar hangs under it as when shown.
+    #[test]
+    fn hiding_the_sidebar_keeps_its_title_row_and_the_toolbar_under_it() {
+        for dpi in DPIS {
+            for maximised in [false, true] {
+                for tabs in [TabLayout::Vertical, TabLayout::VerticalRight] {
+                    let arrangement = Arrangement { tabs, title_bar: true, ..Arrangement::default() };
+                    let (shown, shown_sidebar) = compute_arranged_in_frame(arrangement, 1280, 720, dpi, 5, 2, maximised, 260, true, 36);
+                    let hide = AutoHide { top: false, sidebar: true };
+                    let (hidden, sidebar) = compute_arranged_auto_hide(arrangement, 1280, 720, dpi, 5, 2, maximised, 260, true, 36, hide);
+                    let context = format!("{tabs:?} dpi {dpi} max {maximised}");
+                    assert!(!shown.title_bar.is_empty(), "{context}");
+                    assert_eq!(hidden.title_bar, shown.title_bar, "{context}: the title row stays");
+                    assert_eq!((hidden.strip.top, hidden.strip.bottom), (shown.strip.top, shown.strip.bottom), "{context}: the toolbar does not move up");
+                    assert_eq!(hidden.caption_area, shown.caption_area, "{context}");
+                    assert_eq!(hidden.top_chrome, shown.top_chrome, "{context}");
+                    let sidebar = sidebar.expect("the sidebar keeps its rectangle");
+                    assert_eq!(Some(sidebar.sidebar), shown_sidebar.map(|s| s.sidebar), "{context}");
+                    assert!(sidebar.sidebar.top >= hidden.title_bar.bottom, "{context}: the revealed sidebar is under the title row");
+                    let overlay = auto_hide_overlay_arranged(&shown, &hidden, Some(&sidebar), arrangement, dpi, true);
+                    assert!(overlay.sidebar.intersect(hidden.title_bar).is_empty(), "{context}: no overlap with the title row");
+                    // With the top chrome hidden too, the title row goes with it: the page starts at the top.
+                    let (both, _) = compute_arranged_auto_hide(arrangement, 1280, 720, dpi, 5, 2, maximised, 260, true, 36, AutoHide { top: true, sidebar: true });
+                    assert_eq!(both.viewport.top, auto_hide_top(dpi, maximised), "{context}");
+                    let overlay = auto_hide_overlay_arranged(&shown, &both, Some(&sidebar), arrangement, dpi, true);
+                    assert!(overlay.top.contains_rect(Rect::new(both.title_bar.left, both.title_bar.top, both.title_bar.right, both.title_bar.bottom)), "{context}: the title row reveals with the top chrome");
+                }
+            }
+        }
+    }
     // --- end auto-hide ---
 }
 
@@ -4757,6 +4804,43 @@ mod arrangement_tests {
             }
         }
         assert!(Arrangement { address_bar: BarPosition::Bottom, ..Default::default() }.thin_bottom_edge());
+    }
+
+    /// With the toolbar along the bottom edge the hit test agrees with the layout's rects: a point
+    /// is `CaptionArea` exactly where a drag region is, so the margins over the page (between it and
+    /// the bottom toolbar, beside a sidebar) are not a caption, and the bottom toolbar's empty space is.
+    #[test]
+    fn caption_hits_follow_the_drag_regions_with_the_address_bar_at_the_bottom() {
+        for dpi in [96, 144] {
+            for tabs in TabLayout::ALL {
+                for tab_bar in [true, false] {
+                    let arrangement = Arrangement { tabs, tab_bar, address_bar: BarPosition::Bottom, ..Default::default() };
+                    let (layout, _) = arranged(arrangement, dpi);
+                    let context = format!("{tabs:?} tab bar {tab_bar} dpi {dpi}");
+                    let drags = layout.drag_region_rects();
+                    for y in (0..layout.client.bottom).step_by(3) {
+                        // Left of the toolbar is the margin beside the rail: it drags in the
+                        // toolbar's bands only, checked below.
+                        for x in (layout.strip.left..layout.client.right).step_by(7) {
+                            let caption = hit(&layout, x, y) == Hit::CaptionArea;
+                            let dragged = drags.iter().any(|rect| rect.contains(x, y));
+                            assert_eq!(caption, dragged, "{context}: ({x}, {y}) caption {caption} drag region {dragged}");
+                        }
+                    }
+                    // The gap between the page and the toolbar is no caption.
+                    let y = layout.strip.top - 1;
+                    assert_ne!(hit(&layout, layout.viewport.left + 40, y), Hit::CaptionArea, "{context}");
+                    assert_ne!(hit(&layout, layout.strip.left - 1, layout.viewport.top + 40), Hit::CaptionArea, "{context}: the margin beside the page");
+                    assert_ne!(hit(&layout, 0, layout.viewport.top + 40), Hit::CaptionArea, "{context}: the margin beside the rail, by the page");
+                    assert_eq!(hit(&layout, 0, layout.strip.top + 2), Hit::CaptionArea, "{context}: the margin beside the rail, by the toolbar");
+                    // The bottom toolbar's empty space between its controls drags the window.
+                    let spare = Rect::new(layout.omnibox.right, layout.strip.top, layout.main_menu_button.left, layout.strip.bottom);
+                    if spare.width() > 2 {
+                        assert_eq!(hit(&layout, spare.left + 1, spare.top + spare.height() / 2), Hit::CaptionArea, "{context}");
+                    }
+                }
+            }
+        }
     }
 
     #[test]

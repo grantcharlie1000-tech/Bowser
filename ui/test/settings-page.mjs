@@ -1631,6 +1631,7 @@ test('stacks: one small block in Tabs and start page, two core rows, the rest be
   const delay = rowNode('tabs_stack_drop_delay').querySelector('input');
   delay.value = '9000';
   delay.dispatch('change');
+  delay.dispatch('blur');
   assert.deepEqual(sent.pop(), { v: 1, t: 'set', a: 'tabopt', text: 'tabs_stack_drop_delay=2000' }, 'clamped to what Rust takes');
   // Drag and drop tiling is the older switch, still saved with the page's draft.
   sent.length = 0;

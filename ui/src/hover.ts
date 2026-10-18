@@ -372,7 +372,9 @@ export function startHover(root: HTMLElement): void {
   onInbound((msg) => {
     switch (msg.t) {
       case 'state':
-        applyTheme(msg.theme, msg.solid, msg.dark);
+        // The owner's text size and face (html_hover.rs text_prefs): the suggestion titles keep the
+        // pill's size, and tooltips and cards follow font_size as every other surface does.
+        applyTheme(msg.theme, msg.solid, msg.dark, msg.fontScale, msg.uiFont);
         break;
       // --- omnibox suggest ---
       case 'suggest':

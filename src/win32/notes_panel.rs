@@ -155,6 +155,30 @@ pub(crate) fn show(owner: HWND) {
     }
 }
 
+/// Shows the panel at note `id` (a note picked in Quick commands). The native panel selects it,
+/// open or not; the HTML panel's page has no way to be told a note yet, so it opens as `show` does.
+pub(crate) fn show_note(owner: HWND, id: u64) {
+    show(owner);
+    if super::html_dialog::html_only(owner) {
+        return;
+    }
+    let Some(raw) = OPEN.with(Cell::get).checked_sub(0).filter(|raw| *raw != 0) else { return };
+    let hwnd = HWND(raw as *mut c_void);
+    if let Some(s) = unsafe { panel(hwnd) } {
+        let Some(picked) = picked_note(&s.notes, id) else { return };
+        s.tab = Tab::Notes;
+        s.selected_note = Some(picked);
+        populate_edits(hwnd);
+        let _ = unsafe { InvalidateRect(Some(hwnd), None, false) };
+    }
+}
+
+/// The note to select for a pick of `id`: that note while it still exists, else none (the panel
+/// keeps its own choice).
+fn picked_note(notes: &[data::Note], id: u64) -> Option<u64> {
+    notes.iter().any(|note| note.id == id).then_some(id)
+}
+
 pub(crate) fn open(owner: HWND) {
     if let Some(raw) = OPEN.with(Cell::get).checked_sub(0).filter(|raw| *raw != 0) {
         unsafe {
@@ -994,6 +1018,13 @@ fn next_id() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_picked_note_is_selected_only_while_it_exists() {
+        let notes = vec![data::Note { id: 4, title: "A".into(), body: String::new() }, data::Note { id: 9, title: "B".into(), body: String::new() }];
+        assert_eq!(picked_note(&notes, 9), Some(9));
+        assert_eq!(picked_note(&notes, 5), None);
+    }
 
     #[test]
     fn sidebar_width_and_right_dock_scale_and_clamp_at_supported_dpis() {

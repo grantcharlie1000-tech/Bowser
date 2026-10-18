@@ -287,7 +287,11 @@ test('the rows settle in once, staggered and finite; reduced motion only fades',
 });
 
 test('the pill text and the row titles share one size and one column', () => {
-  assert.match(tokens, /--bw-text-omni: 13px;/);
+  assert.match(tokens, /--bw-text-omni: calc\(13px \* var\(--bw-font-scale\)\);/, '13px at the default text size');
+  // The list lives in the hover layer: it takes the owner's text size and face as the toolbar does,
+  // so the two still match when font_size, ui_zoom or ui_font change.
+  assert.match(readFileSync(join(here, '..', 'src', 'hover.ts'), 'utf8'), /applyTheme\(msg\.theme, msg\.solid, msg\.dark, msg\.fontScale, msg\.uiFont\)/);
+  assert.match(readFileSync(join(here, '..', '..', 'src', 'win32', 'html_hover.rs'), 'utf8'), /font_scale: text\.0,\s*ui_font: text\.1,/);
   assert.match(rule(toolbar, '.omni, .omni-display'), /font-size: var\(--bw-text-omni\);/);
   assert.match(rule(hover, '.bw-suggest'), /font: var\(--bw-text-omni\) \/ var\(--bw-leading-body\) var\(--bw-font\);/);
   // Site button 4px in (the corner) + 20px + 10px text inset == list inset 5px + row inset 6px + 16px lead + 8px gap.

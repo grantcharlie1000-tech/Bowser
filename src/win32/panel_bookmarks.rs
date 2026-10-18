@@ -460,8 +460,17 @@ impl Model {
     }
 
     /// Pointer click on a row. Folders toggle, links open. Middle click and Ctrl-click pass
-    /// `new_tab`.
-    pub(crate) fn click(&mut self, index: usize, new_tab: bool, m: Metrics) -> Action {
+    /// `new_tab`. Honours `bm_panel_single_click`: with `single_click` off, a plain click on a link
+    /// only selects it and the second click of a double click (`second`) opens it. Folders and
+    /// Ctrl-clicks act on one click either way.
+    pub(crate) fn click_with(&mut self, index: usize, new_tab: bool, single_click: bool, second: bool, m: Metrics) -> Action {
+        if !single_click && !new_tab && !second && self.rows.get(index).is_some_and(|row| !row.folder) {
+            if let Some(row) = self.rows.get(index) {
+                self.selected = Some(row.id);
+            }
+            self.reveal_selection(m);
+            return Action::Redraw;
+        }
         let Some(row) = self.rows.get(index).cloned() else {
             return Action::Nothing;
         };
@@ -737,6 +746,9 @@ pub(crate) struct Content {
     icons: IconCache,
     viewport: i32,
     press: Option<Press>,
+    /// The row and time of the last plain click, to tell a double click when
+    /// `bm_panel_single_click` is off.
+    last_click: Option<(u64, std::time::Instant)>,
     /// Problem from the last action, shown in the status line until the next action.
     message: Option<String>,
 }
@@ -798,6 +810,7 @@ impl Content {
             icons: IconCache::default(),
             viewport: 0,
             press: None,
+            last_click: None,
             message: None,
         };
         content.reload();
@@ -1413,7 +1426,12 @@ impl PanelContent for Content {
         }
         let ctrl = unsafe { GetKeyState(VK_CONTROL.0 as i32) < 0 };
         if let Some(index) = self.model.rows.iter().position(|r| r.id == press.row) {
-            let action = self.model.click(index, ctrl, self.list_metrics(&geometry));
+            let single = App::settings(&self.app).address.panel_single_click;
+            let now = std::time::Instant::now();
+            let window = std::time::Duration::from_millis(u64::from(unsafe { windows::Win32::UI::Input::KeyboardAndMouse::GetDoubleClickTime() }));
+            let second = self.last_click.is_some_and(|(row, at)| row == press.row && now.duration_since(at) <= window);
+            self.last_click = if second { None } else { Some((press.row, now)) };
+            let action = self.model.click_with(index, ctrl, single, second, self.list_metrics(&geometry));
             self.run(action);
         }
     }
@@ -1758,6 +1776,18 @@ mod tests {
         };
         model.rebuild(items, |_| Vec::new());
         model
+    }
+
+    #[test]
+    fn bm_panel_single_click_off_needs_a_double_click_to_open_a_link() {
+        let mut model = open(&sample(), &[]);
+        assert!(matches!(model.click_with(1, false, true, false, m()), Action::Open { new_tab: false, .. }), "single click on: one click opens");
+        assert!(matches!(model.click_with(1, false, false, false, m()), Action::Redraw), "single click off: one click only selects");
+        assert_eq!(model.selected, Some(2));
+        assert!(matches!(model.click_with(1, false, false, true, m()), Action::Open { new_tab: false, .. }), "the second click opens");
+        assert!(matches!(model.click_with(1, true, false, false, m()), Action::Open { new_tab: true, .. }), "Ctrl-click still opens");
+        model.click_with(0, false, false, false, m());
+        assert!(model.expanded.contains(&1), "a folder still toggles on one click");
     }
 
     #[test]

@@ -7,10 +7,7 @@
 //! A chain runs on a helper thread that only waits and posts `WM_CHAIN_STEP`; every command itself
 //! runs on the window thread, as every other command does. Nothing waits on the UI thread.
 
-use std::{
-    cell::{Cell, RefCell},
-    collections::HashMap,
-};
+use std::collections::HashMap;
 
 use windows::Win32::{
     Foundation::{HWND, LPARAM, WPARAM},
@@ -29,10 +26,71 @@ use crate::{
     internal_page::Section,
 };
 
-thread_local! {
-    /// Running chains by run id, each with its plan. A run leaves the table with its last step.
-    static RUNS: RefCell<HashMap<u32, Vec<Planned>>> = RefCell::new(HashMap::new());
-    static NEXT_RUN: Cell<u32> = const { Cell::new(1) };
+/// The most chains that may run at once; a further start is refused until one finishes.
+pub(crate) const MAX_RUNS: usize = 8;
+
+/// Why a chain did not start.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Refused {
+    /// The same chain is still running.
+    AlreadyRunning,
+    /// `MAX_RUNS` chains are already running.
+    TooMany,
+}
+
+/// Running chains by run id, each with its chain id and plan. A run leaves the table with its last
+/// step, or when its helper thread can no longer post (the window is gone), so nothing leaks.
+#[derive(Default)]
+pub(crate) struct Runs {
+    runs: HashMap<u32, (u32, Vec<Planned>)>,
+    next: u32,
+}
+
+impl Runs {
+    /// Registers a run of chain `chain` with `plan`, unless that chain is already running or too
+    /// many are.
+    pub(crate) fn begin(&mut self, chain: u32, plan: Vec<Planned>) -> Result<u32, Refused> {
+        if self.runs.values().any(|(id, _)| *id == chain) {
+            return Err(Refused::AlreadyRunning);
+        }
+        if self.runs.len() >= MAX_RUNS {
+            return Err(Refused::TooMany);
+        }
+        self.next = self.next.wrapping_add(1).max(1);
+        while self.runs.contains_key(&self.next) {
+            self.next = self.next.wrapping_add(1).max(1);
+        }
+        self.runs.insert(self.next, (chain, plan));
+        Ok(self.next)
+    }
+
+    /// Step `index` of `run`, removing the run after its last step.
+    pub(crate) fn step(&mut self, run: u32, index: usize) -> Option<Planned> {
+        let (_, plan) = self.runs.get(&run)?;
+        let step = plan.get(index).cloned();
+        if index + 1 >= plan.len() {
+            self.runs.remove(&run);
+        }
+        step
+    }
+
+    /// Drops `run` (its helper thread stopped early).
+    pub(crate) fn abandon(&mut self, run: u32) {
+        self.runs.remove(&run);
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.runs.len()
+    }
+}
+
+/// Shared with the helper threads so a run whose post fails can leave the table. Held only briefly.
+static RUNS: std::sync::Mutex<Option<Runs>> = std::sync::Mutex::new(None);
+
+fn with_runs<T>(f: impl FnOnce(&mut Runs) -> T) -> T {
+    let mut guard = RUNS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    f(guard.get_or_insert_with(Runs::default))
 }
 
 /// Starts the saved chain `number` for the window `hwnd`.
@@ -43,31 +101,39 @@ pub(crate) fn start_chain(hwnd: HWND, store: &Store, number: u32) {
 }
 
 /// Runs `chain` now: its first command after its own delay, each next one after its. Also used by
-/// the editor's Test Chain button with a chain that is not saved yet.
+/// the editor's Test Chain button with a chain that is not saved yet. A chain that is already
+/// running, or a start beyond `MAX_RUNS` running chains, is refused with a toast.
 pub(crate) fn start(hwnd: HWND, chain: &Chain) {
     let plan = chains::plan(chain);
     if plan.is_empty() {
         return;
     }
-    let run = NEXT_RUN.with(|next| next.replace(next.get().wrapping_add(1).max(1)));
-    RUNS.with(|runs| runs.borrow_mut().insert(run, plan.clone()));
+    let run = match with_runs(|runs| runs.begin(chain.id, plan.clone())) {
+        Ok(run) => run,
+        Err(Refused::AlreadyRunning) => {
+            super::window::show_toast(hwnd, &format!("{} is already running", chain.name), "Command chains");
+            return;
+        }
+        Err(Refused::TooMany) => {
+            super::window::show_toast(hwnd, "Too many command chains are running", "Command chains");
+            return;
+        }
+    };
     let raw = hwnd.0 as isize;
-    let _ = chains::schedule(plan, move |step| unsafe {
-        PostMessageW(Some(HWND(raw as *mut _)), WM_CHAIN_STEP, WPARAM(run as usize), LPARAM(step.index as isize)).is_ok()
+    let _ = chains::schedule(plan, move |step| {
+        let posted = unsafe {
+            PostMessageW(Some(HWND(raw as *mut _)), WM_CHAIN_STEP, WPARAM(run as usize), LPARAM(step.index as isize)).is_ok()
+        };
+        if !posted {
+            with_runs(|runs| runs.abandon(run));
+        }
+        posted
     });
 }
 
 /// `WM_CHAIN_STEP`: the delay before step `index` of `run` has passed, so run its command.
 pub(crate) fn chain_step(hwnd: HWND, app: &AppRef, run: u32, index: usize) {
-    let step = RUNS.with(|runs| {
-        let mut runs = runs.borrow_mut();
-        let plan = runs.get(&run)?;
-        let step = plan.get(index).cloned();
-        if index + 1 >= plan.len() {
-            runs.remove(&run);
-        }
-        step
-    });
+    let step = with_runs(|runs| runs.step(run, index));
     if let Some(step) = step {
         // An id that no longer exists (a command removed since the chain was saved) is skipped.
         super::window::run_registered(hwnd, app, &step.command);
@@ -323,6 +389,45 @@ mod tests {
         assert!(drag[saved..].contains("settings_page::refresh(hwnd)"), "the drag refreshes the page after saving");
     }
     // --- end fix group C ---
+
+    #[test]
+    fn a_running_chain_is_not_started_twice_runs_are_capped_and_a_failed_post_leaves_no_entry() {
+        let plan = |n: usize| (0..n).map(|index| Planned { index, delay_ms: 0, command: "reload".into() }).collect::<Vec<_>>();
+        let mut runs = Runs::default();
+        let first = runs.begin(1, plan(2)).unwrap();
+        assert_eq!(runs.begin(1, plan(2)), Err(Refused::AlreadyRunning));
+        for chain in 2..=MAX_RUNS as u32 {
+            runs.begin(chain, plan(1)).unwrap();
+        }
+        assert_eq!(runs.begin(99, plan(1)), Err(Refused::TooMany));
+        assert_eq!(runs.len(), MAX_RUNS);
+        // Steps run in order and the last one ends the run, which frees a slot and the chain id.
+        assert_eq!(runs.step(first, 0).map(|s| s.index), Some(0));
+        assert_eq!(runs.step(first, 1).map(|s| s.index), Some(1));
+        assert_eq!(runs.step(first, 1), None, "the run is gone after its last step");
+        let again = runs.begin(1, plan(3)).unwrap();
+        // A helper whose post failed abandons its run: nothing stays behind.
+        runs.abandon(again);
+        assert_eq!(runs.len(), MAX_RUNS - 1);
+        assert!(runs.begin(1, plan(1)).is_ok());
+    }
+
+    #[test]
+    fn a_chain_whose_window_is_gone_leaves_the_running_table_and_can_start_again() {
+        use crate::commands::chains::Step;
+        // No window has this handle, so the helper thread's first post fails.
+        let gone = HWND(0x7FFF_FFF0usize as *mut _);
+        let chain = Chain { id: 0xC4A1, name: "Gone".into(), steps: vec![Step { command: "reload".into(), delay_ms: 0 }, Step { command: "reload".into(), delay_ms: 0 }] };
+        start(gone, &chain);
+        let running = || with_runs(|runs| runs.runs.values().any(|(id, _)| *id == chain.id));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while running() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(!running(), "the run was abandoned, not leaked");
+        // So the same chain is not refused as "already running" afterwards.
+        assert!(with_runs(|runs| runs.begin(chain.id, chains::plan(&chain))).map(|run| with_runs(|runs| runs.abandon(run))).is_ok());
+    }
 
     #[test]
     fn toggling_a_site_adds_it_and_then_removes_it_with_any_parent_that_covered_it() {

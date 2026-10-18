@@ -408,6 +408,9 @@ pub(super) fn run_target(hwnd: HWND, app: &AppRef, target: &Target) -> bool {
             let new_tab = false;
             let options = Options { new_tab, from_search_field: true, engine: Some(engine.as_str()), ..Options::default() };
             App::submit_with(app, query, options);
+            // A row picked with the mouse never passes the toolbar's Enter handler, which is where
+            // `search_keep_text` clears the field: tell the toolbar the search ran.
+            super::window::html_toolbar_post(hwnd, address_page::SEARCH_DONE_JSON);
             App::focus_page(app);
             true
         }

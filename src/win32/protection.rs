@@ -228,7 +228,7 @@ pub(crate) fn run(app: &AppRef, owner: HWND, action: Action) {
             // confirmation is only a flag it sends; this is a question that only the user at the
             // keyboard can answer, so a page cannot delete the vault on its own say-so.
             if plan.passwords
-                && !super::ask_yes_no("Delete every saved password in this profile? Passwords have no dates, so all of them go, whatever period you chose. This cannot be undone.")
+                && !super::ask_destructive_owned(owner, "Delete every saved password in this profile? Passwords have no dates, so all of them go, whatever period you chose. This cannot be undone.")
             {
                 return set_result(false, "Nothing was deleted. Your saved passwords were kept.");
             }

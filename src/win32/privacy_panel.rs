@@ -9,7 +9,7 @@ use std::{
 use windows::Win32::{
     Foundation::{HWND, POINT, RECT},
     UI::WindowsAndMessaging::{
-        DispatchMessageW, GetWindowRect, MSG, PM_REMOVE, PeekMessageW, TranslateMessage, WM_QUIT,
+        DispatchMessageW, GetWindowRect, MSG, PM_REMOVE, PeekMessageW, PostQuitMessage, TranslateMessage, WM_QUIT,
     },
 };
 
@@ -510,6 +510,8 @@ fn wait_for_result(
         unsafe {
             while PeekMessageW(&mut message, None, 0, 0, PM_REMOVE).as_bool() {
                 if message.message == WM_QUIT {
+                    // The quit belongs to the outer message loop: put it back so the app still exits.
+                    PostQuitMessage(message.wParam.0 as i32);
                     return None;
                 }
                 let _ = TranslateMessage(&message);
@@ -529,5 +531,26 @@ fn anchor(hwnd: HWND) -> POINT {
     POINT {
         x: rect.right - 28,
         y: rect.top + 42,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn waiting_for_a_deletion_puts_a_quit_back_for_the_outer_loop() {
+        std::thread::spawn(|| unsafe {
+            let mut message = MSG::default();
+            let _ = PeekMessageW(&mut message, None, 0, 0, PM_REMOVE); // creates the queue
+            PostQuitMessage(7);
+            let result: Rc<RefCell<Option<DeleteReport>>> = Rc::new(RefCell::new(None));
+            assert!(wait_for_result(&result, Duration::from_secs(2)).is_none());
+            assert!(PeekMessageW(&mut message, None, 0, 0, PM_REMOVE).as_bool(), "the quit is queued again");
+            assert_eq!(message.message, WM_QUIT);
+            assert_eq!(message.wParam.0, 7, "with its exit code");
+        })
+        .join()
+        .unwrap();
     }
 }

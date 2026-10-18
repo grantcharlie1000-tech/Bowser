@@ -195,7 +195,7 @@ pub fn open(owner: HWND, id: PanelId) -> bool {
     let client = super::window::page_viewport(owner).unwrap_or_else(|| base_viewport(owner));
     let inset = crate::chrome::layout::left_rail_inset(dpi(owner));
     let mut content = factory();
-    let saved_width = crate::profile::active().ok().map(|profile| crate::settings::Settings::load(&profile.settings_file()).side_panel_width as i32).unwrap_or_else(|| GUEST_WIDTH.with(Cell::get));
+    let saved_width = crate::profile::active().ok().map(|profile| shared_width(&profile.settings_file())).unwrap_or_else(|| GUEST_WIDTH.with(Cell::get));
     let preferred = if saved_width == crate::settings::DEFAULT_SIDE_PANEL_WIDTH as i32 { content.preferred_width() } else { saved_width };
     let minimum = content.min_width().clamp(MIN_WIDTH_DIP, MAX_WIDTH_DIP);
     let width_dip = preferred.clamp(minimum, MAX_WIDTH_DIP);
@@ -206,7 +206,7 @@ pub fn open(owner: HWND, id: PanelId) -> bool {
     };
     content.on_focus(true);
     let header = content.native_header();
-    let position = crate::profile::active().ok().map(|profile| crate::settings::Settings::load(&profile.settings_file()).side_panel_position).unwrap_or(SidePanelPosition::Left);
+    let position = crate::profile::active().ok().map(|profile| saved_layout(&profile.settings_file()).position).unwrap_or(SidePanelPosition::Left);
     let state = Box::new(SidePanelHost { owner, previous_focus: unsafe { GetFocus() }, id: Some(id), content: Some(content), retired: Vec::new(), retired_blur: Vec::new(), width_dip, width: 0, position, client, resizing: false, animation: Some(Animation { from: 0, to: target_width, started: Instant::now() }), header, edit_brush: unsafe { CreateSolidBrush(colorref(theme::palette(glass::appearance(), true).omnibox_fill)) } });
     let instance = HINSTANCE(unsafe { GetModuleHandleW(None).unwrap_or_default().0 });
     let hwnd = unsafe { CreateWindowExW(Default::default(), CLASS, w!(""), WS_CHILD | WS_CLIPCHILDREN, panel_left(client, inset, 0, position), client.top, 1, client.bottom-client.top, Some(owner), None, Some(instance), Some(Box::into_raw(state).cast())) };
@@ -449,7 +449,7 @@ fn paint(hwnd: HWND) {
 /// The width a switch to `next` should take, or `None` to leave the host's width alone: a web panel's
 /// own width (or the shared one when it has none), and the shared width when leaving a web panel.
 fn panel_width_choice(previous: Option<PanelId>, next: PanelId) -> Option<i32> {
-    let shared = || crate::profile::active().ok().map_or_else(|| GUEST_WIDTH.with(Cell::get), |profile| crate::settings::Settings::load(&profile.settings_file()).side_panel_width as i32);
+    let shared = || crate::profile::active().ok().map_or_else(|| GUEST_WIDTH.with(Cell::get), |profile| shared_width(&profile.settings_file()));
     match (previous, next) {
         (_, PanelId::WebApp(app)) => Some(crate::panel_prefs::current(app).width.map_or_else(shared, i32::from)),
         (Some(PanelId::WebApp(_)), _) => Some(shared()),
@@ -472,6 +472,48 @@ fn save_panel_width(id: Option<PanelId>, owner: HWND, width: i32) {
     }
 }
 // --- end window and panels ---
+
+/// The side panel layout saved in a settings file.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct SavedLayout { width: i32, position: SidePanelPosition }
+
+/// What a cached layout was read at: the file's stamp and the `crate::settings::save_generation`.
+type LayoutSeen = (Option<crate::panel_prefs::FileStamp>, u64);
+
+/// A settings file's side panel layout, with what it was read at.
+type CachedLayout = (std::path::PathBuf, LayoutSeen, SavedLayout);
+
+thread_local! {
+    /// The saved shared width and position, parsed once: opening or switching a panel must not wait
+    /// on reading and parsing the whole settings file. A save by this process (this panel's resize,
+    /// a Save or Reset on the settings page) moves the save generation on, and a write by another
+    /// Bowser process on the profile changes the file's stamp, so either way the next ask reads it
+    /// again instead of serving a stale width.
+    static SAVED_LAYOUT: std::cell::RefCell<Option<CachedLayout>> = const { std::cell::RefCell::new(None) };
+}
+
+/// The side panel layout saved in `settings`, from memory while the file is unchanged.
+fn saved_layout(settings: &std::path::Path) -> SavedLayout {
+    saved_layout_at(settings, crate::settings::save_generation())
+}
+
+/// `saved_layout` once `generation` settings saves have happened in this process.
+fn saved_layout_at(settings: &std::path::Path, generation: u64) -> SavedLayout {
+    let stamp = (crate::panel_prefs::file_stamp(settings), generation);
+    let cached = SAVED_LAYOUT.with(|slot| slot.borrow().as_ref().filter(|(path, seen, _)| path == settings && *seen == stamp).map(|(.., layout)| *layout));
+    if let Some(layout) = cached {
+        return layout;
+    }
+    let file = crate::settings::Settings::load(settings);
+    let layout = SavedLayout { width: i32::from(file.side_panel_width), position: file.side_panel_position };
+    SAVED_LAYOUT.with(|slot| *slot.borrow_mut() = Some((settings.to_owned(), stamp, layout)));
+    layout
+}
+
+/// The shared side panel width saved in `settings`.
+fn shared_width(settings: &std::path::Path) -> i32 {
+    saved_layout(settings).width
+}
 
 fn save_width(_owner: HWND, width: i32) { let width=width.clamp(MIN_WIDTH_DIP,MAX_WIDTH_DIP); if let Ok(profile)=crate::profile::active() { if profile.is_guest() { GUEST_WIDTH.with(|v|v.set(width)); } else { let path=profile.settings_file(); let mut settings=crate::settings::Settings::load(&path); settings.side_panel_width=width as u16; let _=crate::settings::save(&path,&settings); } } else { GUEST_WIDTH.with(|v|v.set(width)); } }
 fn panel_origin(viewport_left: i32, inset: i32) -> i32 { viewport_left.max(inset) }
@@ -531,6 +573,42 @@ fn colorref(c: theme::Rgba) -> windows::Win32::Foundation::COLORREF { windows::W
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_saved_layout_is_read_once_and_any_write_to_the_settings_makes_it_read_again() {
+        let dir = std::env::temp_dir().join(format!("bowser-side-width-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.txt");
+        let mut settings = crate::settings::Settings::default();
+        settings.side_panel_width = 333;
+        settings.side_panel_position = SidePanelPosition::Right;
+        // Every save in this process moves the generation on (tests running alongside save too, so
+        // only "it grew" is certain; below, explicit generations keep their saves out of the result).
+        let before = crate::settings::save_generation();
+        crate::settings::save(&path, &settings).unwrap();
+        assert!(crate::settings::save_generation() > before, "a settings save invalidates the cached layout");
+        assert_eq!(saved_layout_at(&path, 1), SavedLayout { width: 333, position: SidePanelPosition::Right });
+        // While nothing changed a panel switch does not parse the file: the copy in memory answers
+        // (seen here by planting a different copy for the same stamp and generation).
+        let planted = SavedLayout { width: 300, position: SidePanelPosition::Right };
+        SAVED_LAYOUT.with(|slot| *slot.borrow_mut() = Some((path.clone(), (crate::panel_prefs::file_stamp(&path), 1), planted)));
+        assert_eq!(saved_layout_at(&path, 1).width, 300, "served from memory");
+        // A settings-page Save or Reset: the generation moved, so the file is read again even when
+        // its time and length could not show it.
+        assert_eq!(saved_layout_at(&path, 2).width, 333, "a save in this process is never served stale");
+        // Another Bowser process on the profile rewrites the file (generation unchanged here): its
+        // stamp changed, so the new width is read.
+        settings.side_panel_width = 410;
+        settings.side_panel_position = SidePanelPosition::Left;
+        crate::settings::save(&path, &settings).unwrap();
+        assert_eq!(saved_layout_at(&path, 2), SavedLayout { width: 410, position: SidePanelPosition::Left });
+        // The real entry points agree, and a removed file means the default width.
+        assert_eq!(shared_width(&path), 410);
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(shared_width(&path), i32::from(crate::settings::DEFAULT_SIDE_PANEL_WIDTH));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn width_is_dpi_aware_and_preserves_a_useful_viewport() {

@@ -104,8 +104,12 @@ docs/design/private-tabs.md.
 ### Type
 
 `--bw-font` (Segoe UI Variable), `--bw-text-chrome` 12px/1 (toolbar, tabs, rail, sidebar),
-Caption `--bw-text-caption`/`--bw-leading-caption` 12/16, Body 14/20, Subtitle 20/28,
-`--bw-weight-strong` 600. Sentence case, no italics, no uppercase eyebrows.
+Caption `--bw-text-caption`/`--bw-leading-caption` 12/16, Body 14/20, Subtitle 20/28, Display
+`--bw-text-display`/`--bw-leading-display` 28/36, `--bw-weight-strong` 600. Sentence case, no
+italics, no uppercase eyebrows. Every size is `calc(Npx * var(--bw-font-scale))`: applyTheme sets
+`--bw-font-scale` from `font_size` x `ui_zoom` and overrides `--bw-font` with `ui_font` (then
+`--bw-font-stock`), so text follows those settings. A new `font-size` uses a token or that calc;
+only glyphs and badges in fixed-size boxes keep a plain px size (test/styles.mjs lists them).
 `--bw-font-panel` ("Segoe UI", 13px callers) is legacy for panels and the menu popup.
 
 ### Geometry

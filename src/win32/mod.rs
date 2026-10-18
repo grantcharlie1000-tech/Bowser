@@ -78,7 +78,7 @@ pub(crate) use command_actions::run_bookmarks_panel; // --- latency (fix E) ---
 // --- wave-1 integration --- T1, T2 and T3 commands in the registry.
 // --- auto-hide (T11) --- Auto-hide and full screen (registry commands).
 pub(crate) use command_actions::{run_toggle_auto_hide, run_toggle_fullscreen};
-pub(crate) use window::{auto_hide_effective, auto_hide_page_created, auto_hide_sync, page_fullscreen, zoomed_or_full};
+pub(crate) use window::{auto_hide_effective, auto_hide_page_created, auto_hide_sync, page_fullscreen, page_fullscreen_owner, zoomed_or_full};
 // --- end auto-hide ---
 pub(crate) use command_actions::{
     run_cycle_blocking_level, run_delete_browsing_data, run_periodic_reload, run_qr_code, run_stop_all_reloads, run_toggle_address_bar,
@@ -144,6 +144,36 @@ pub(crate) fn ask_yes_no_owned(owner: HWND, message: &str) -> bool {
                 | windows::Win32::UI::WindowsAndMessaging::MB_ICONQUESTION,
         ) == windows::Win32::UI::WindowsAndMessaging::IDYES
     }
+}
+
+/// The style of a question whose Yes destroys data: No is the default button, so Enter keeps it.
+pub(crate) fn destructive_question_style() -> windows::Win32::UI::WindowsAndMessaging::MESSAGEBOX_STYLE {
+    use windows::Win32::UI::WindowsAndMessaging::{MB_DEFBUTTON2, MB_ICONWARNING, MB_YESNO};
+    MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2
+}
+
+/// Native Yes/No question owned by `owner` (modal to it), defaulting to No; `true` only for Yes.
+pub(crate) fn ask_destructive_owned(owner: HWND, message: &str) -> bool {
+    let text: Vec<u16> = message.encode_utf16().chain(std::iter::once(0)).collect();
+    unsafe {
+        MessageBoxW(Some(owner), windows::core::PCWSTR(text.as_ptr()), w!("Bowser"), destructive_question_style())
+            == windows::Win32::UI::WindowsAndMessaging::IDYES
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn the_destructive_question_defaults_to_no() {
+    use windows::Win32::UI::WindowsAndMessaging::{MB_DEFBUTTON2, MB_YESNO};
+    let style = destructive_question_style();
+    assert_eq!(style.0 & MB_DEFBUTTON2.0, MB_DEFBUTTON2.0, "No (the second button) is the default");
+    assert_eq!(style.0 & 0xF, MB_YESNO.0, "Yes and No buttons");
+    // The saved-password deletion asks this way, owned by its window (so it cannot fall behind
+    // it), not with the unowned default-Yes `ask_yes_no`.
+    let source = include_str!("protection.rs");
+    let at = source.find("\"Delete every saved password").expect("the password question");
+    let call = &source[source[..at].rfind("super::").unwrap()..at];
+    assert_eq!(call, "super::ask_destructive_owned(owner, ", "the password question is owned and defaults to No");
 }
 
 pub(crate) const INPUT_ID: u16 = 100;
@@ -215,6 +245,9 @@ pub(crate) const WM_READER_PROBE_TIMER: usize = 0xB073;
 pub(crate) const WM_TRANSLATE_NET: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 0x5D1;
 /// Fails a translation step that never answered.
 pub(crate) const WM_TRANSLATE_WATCH_TIMER: usize = 0xB072;
+/// A capture's join/encode/save worker finished; `WPARAM` is the worker id whose result is waiting in
+/// `app::page_actions`.
+pub(crate) const WM_CAPTURE_DONE: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 0x5D9;
 
 // --- settings page (docs/design/settings-page.md) ---
 /// Opens `bowser://settings` at `section` in window `hwnd` (the native Settings window when the
