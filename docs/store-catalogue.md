@@ -158,3 +158,24 @@ The first default-scale native Add screenshot visibly retained both text lines, 
 At f786f5cb / tested merge425e333e, genuine right input produced a complete22-item ContextMenuRequested inventory from the exact editable browsing view, including the enabled extension-classified fixture item. The helper did not observe its narrow Win32 popup-mode contract within10s, sent no Escape and failed with confined single-test-process cleanup. This establishes item availability, not displayed-menu ownership, cancellation, selection or activeTab grants.
 
 The next diagnostic retains that strict input/cancellation contract. It records bounded before-input/after-input/expiry native window topology only for the test process and the exact view’s native BrowserProcessId, guarded by the browser’s read-only process handle and the existing confined test-process handle, plus native callback-entry/body-completion chronology and owned-host-only screenshots. Window snapshots are non-atomic observations, not new menu authority; browser PID alone never authorizes input. No titles, URLs, process paths or command lines are emitted. Unknown topology still fails with no broad Escape, click, EndMenu or browser-process termination. Synchronous getters, screenshot calls and snapshot I/O are not hard-bounded by the observation deadline; partial/missing diagnostics remain inconclusive.
+
+
+### Separate default-menu cancellation prerequisite
+
+`live_probe_default_context_menu_cancellation` is a new isolated, cancellation-only test. It preserves
+the earlier Win32-menu observation test and its failure evidence unchanged. The 4a71 runtime
+observation found an enabled engine extension item and a browser-owned Chromium Views popup, not
+a Win32 `#32768` popup. The new helper therefore requires the observed exact host/browser ownership,
+active/foreground/focus/capture state on both witnessed GUI queues, and a bounded raw UIA tree rooted
+at that exact popup with one Menu and one unique enabled fixture MenuItem leaf. Full RuntimeIDs,
+raw ancestry, provider PID, visible contained bounds and native identity are freshly rechecked
+before one real Escape. No Invoke, command-message, SelectedCommandId, listener invocation or
+selection is used. No input is permitted on ambiguous or unavailable provider evidence.
+
+A successful prerequisite additionally needs actual popup hiding/destruction and capture release,
+the original COM-owned document and trusted right-click receipt unchanged, the same warm worker
+instance, no onClicked event during an explicit quiet interval, and fresh permission denial against
+the same native preflight IDs. Unknown topology remains a failure with only the previously confined
+retained test-process-handle cleanup. The browser process handle remains read-only. These bounded
+observations do not bound synchronous native/UIA execution time, prove general menu ownership,
+select an extension item, establish activeTab grants, or test Bitwarden autofill.

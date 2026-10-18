@@ -268,6 +268,13 @@ jobs:
           $test = Get-ChildItem target/debug/deps/bowser-*.exe | Sort-Object LastWriteTime -Descending | Select-Object -First 1
           & $test.FullName engine::extension_probe_live::live_probe_native_context_menu_observation --exact --ignored --nocapture --test-threads=1 2>&1 | Tee-Object store-native-context-menu.log
           if ($LASTEXITCODE -ne 0) { throw 'Native menu observation/cancellation unavailable or failed; no selection compatibility verdict.' }
+      - name: Probe separate default Chromium menu cancellation with native UIA identity
+        if: ${{ !cancelled() && steps.native_build.outcome == 'success' }}
+        run: |
+          $env:LOCALAPPDATA = Join-Path $env:RUNNER_TEMP 'bowser-store-isolated-localappdata'
+          $test = Get-ChildItem target/debug/deps/bowser-*.exe | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          & $test.FullName engine::extension_probe_live::live_probe_default_context_menu_cancellation --exact --ignored --nocapture --test-threads=1 2>&1 | Tee-Object store-default-context-cancellation.log
+          if ($LASTEXITCODE -ne 0) { throw 'Default native menu cancellation prerequisite failed or unavailable.' }
       - name: Probe signed-keyed process-crash recovery at exact native boundaries
         if: ${{ !cancelled() && steps.native_build.outcome == 'success' }}
         run: |
@@ -321,6 +328,10 @@ jobs:
             store-native-context-menu-observation/*.json
             store-native-context-menu-observation/*.log
             store-native-context-menu-observation/*.png
+            store-default-context-menu-cancellation/*.json
+            store-default-context-menu-cancellation/*.log
+            store-default-context-menu-cancellation/*.png
+            store-default-context-cancellation.log
             store-ui-profile-isolation-probe.log
             store-crash-recovery-probe.log
             store-update-probe.log
