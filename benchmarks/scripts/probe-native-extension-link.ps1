@@ -163,7 +163,11 @@ if($Mode -eq 'PageLinksEmpty') {
  }while($dialog -eq [IntPtr]::Zero -and [DateTime]::UtcNow -lt $deadline)
  if($dialog -eq [IntPtr]::Zero){throw 'Exact owned native no-links notice did not appear; no fallback used.'}
  $button=[BowserExtensionLink]::GetDlgItem($dialog,1);$class=[Text.StringBuilder]::new(64);[void][BowserExtensionLink]::GetClassName($button,$class,64)
- if($button -eq [IntPtr]::Zero -or $class.ToString() -cne 'Button' -or [BowserExtensionLink]::ReadOwnedChildText($button,$dialog,$OwnerPid,$ownerThread) -cne 'OK' -or ![BowserExtensionLink]::IsWindowVisible($button) -or ![BowserExtensionLink]::IsWindowEnabled($button)){throw 'Exact native IDOK button was not verified; no input sent.'}
+ $buttonText=[BowserExtensionLink]::ReadOwnedChildText($button,$dialog,$OwnerPid,$ownerThread)
+ $captionKind=if($null -eq $buttonText){'unreadable'}elseif($buttonText -ceq 'OK'){'exact-OK'}elseif($buttonText -ceq '&OK'){'standard-mnemonic-OK'}else{'unexpected'}
+ $classMatches=$class.ToString() -ceq 'Button';$visible=[BowserExtensionLink]::IsWindowVisible($button);$enabled=[BowserExtensionLink]::IsWindowEnabled($button)
+ Write-Output "NATIVE_EMPTY_NOTICE idok_nonzero=$($button -ne [IntPtr]::Zero) class_button=$classMatches caption_kind=$captionKind visible=$visible enabled=$enabled"
+ if($button -eq [IntPtr]::Zero -or !$classMatches -or $captionKind -notin @('exact-OK','standard-mnemonic-OK') -or !$visible -or !$enabled){throw 'Exact native IDOK button was not verified; no input sent.'}
  $r=[BowserExtensionLink+RECT]::new();$outer=[BowserExtensionLink+RECT]::new()
  if(![BowserExtensionLink]::GetWindowRect($button,[ref]$r) -or ![BowserExtensionLink]::GetWindowRect($dialog,[ref]$outer) -or !(Test-ContainedRect $r $outer)){throw 'Native notice button bounds were not verified; no input sent.'}
  if([BowserExtensionLink]::GetWindow($dialog,4) -ne $h -or (Read-NativeText $dialog) -cne 'Extension page links' -or ![BowserExtensionLink]::HasExactStaticText($dialog,'No eligible same-extension page links are present on this page.')){throw 'Native notice identity changed; no input sent.'}
