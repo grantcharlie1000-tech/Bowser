@@ -14,6 +14,7 @@ param(
     [switch]$IncludeSurfaceSmoke,
     [switch]$PositiveOnly,
     [switch]$DiagnosticDetailPilot,
+    [switch]$StartupOnly,
     [string]$CandidateExe,
     [string]$CandidateSource,
     [ValidateSet('timing','resource')][string]$MeasurementMode='resource',
@@ -27,6 +28,7 @@ $ErrorActionPreference='Stop'
 Import-Module "$PSScriptRoot/measurements.psm1" -Force
 Import-Module "$PSScriptRoot/production-measurements.psm1" -Force
 if (-not $IsWindows) { throw 'Native Windows required' }
+if($StartupOnly -and $IncludeTabFlow){throw 'StartupOnly cannot be combined with IncludeTabFlow'}
 $Out=[IO.Path]::GetFullPath($Out)
 New-Item -ItemType Directory -Force $Out | Out-Null
 $run=Join-Path $Out 'isolated'
@@ -145,6 +147,18 @@ function Submit-OwnedAddress([string]$text) {
     $start=Qpc;[Windows.Forms.SendKeys]::SendWait('{ENTER}')
     return $start
 }
+function Submit-OwnedFixture([string]$fixtureToken,[string]$purpose) {
+    $start=Submit-OwnedAddress "$base/light?token=$fixtureToken"
+    $wait=[Diagnostics.Stopwatch]::StartNew();$ack=$false;$ownedTitle=$false
+    do {
+        $ack=Has-Ready $fixtureToken
+        $window=[BowserProductionNative]::FindHost([uint32]$app.Id)
+        $ownedTitle=([BowserProductionNative]::Title($window)).Contains("BOWSER_PERF_READY_$fixtureToken")
+        if($ack -and $ownedTitle){break};Start-Sleep -Milliseconds 20
+    }while($wait.Elapsed.TotalSeconds -lt 20)
+    $script:surfaceTrace.Add([ordered]@{surface='semantic-fixture-navigation';purpose=$purpose;token=$fixtureToken;start_qpc=$start;end_qpc=(Qpc);ready=$ack;owned_title_matches=$ownedTitle;native_navigation_success=$null;uia_conditioned_enter_to_ack_title_proxy_ms=((Qpc)-$start)*1000.0/[Diagnostics.Stopwatch]::Frequency})
+    if(-not $ack -or -not $ownedTitle){throw 'Semantically submitted fixture lacks unique acknowledgement and owned title'}
+}
 function Confirm-NativeCoreSurfaces {
     # Validity only: enabling accessibility can change renderer resource use.
     Add-Type -AssemblyName UIAutomationClient,UIAutomationTypes
@@ -173,6 +187,7 @@ function Confirm-NativeCoreSurfaces {
 function Native-SurfaceSmoke {
     $results=$script:surfaceTrace
     $results.Add((Confirm-NativeCoreSurfaces))
+    Submit-OwnedFixture ([guid]::NewGuid().ToString('N')) 'before-popup-settings'
     foreach($use in @('first','warm')) {
         $start=Qpc; Owned-Keys '^+m'
         $wait=[Diagnostics.Stopwatch]::StartNew();$surface=[IntPtr]::Zero
@@ -204,10 +219,7 @@ function Native-SurfaceSmoke {
         Start-Sleep -Milliseconds 200
         $results.Add([ordered]@{surface='settings';use=$use;visible_host_proxy_ms=$elapsed;includes_foreground_verification=$false;screenshot=(Capture-OwnedSurface "settings-$use")})
         $backToken=[guid]::NewGuid().ToString('N')
-        [void](Submit-OwnedAddress "$base/light?token=$backToken")
-        $wait=[Diagnostics.Stopwatch]::StartNew()
-        while(-not (Has-Ready $backToken) -and $wait.Elapsed.TotalSeconds -lt 20){Start-Sleep -Milliseconds 20}
-        if(-not (Has-Ready $backToken)){throw 'Return from native Settings to owned fixture failed'}
+        Submit-OwnedFixture $backToken "settings-$use-return"
         $wait=[Diagnostics.Stopwatch]::StartNew()
         while([BowserProductionNative]::FindSurface([uint32]$app.Id,'BowserSettingsPage',200,100) -ne [IntPtr]::Zero -and $wait.Elapsed.TotalSeconds -lt 3){Start-Sleep -Milliseconds 20}
         if([BowserProductionNative]::FindSurface([uint32]$app.Id,'BowserSettingsPage',200,100) -ne [IntPtr]::Zero){throw 'Inactive Settings remained visibly expanded'}
@@ -247,7 +259,7 @@ try {
         power=(& powercfg /getactivescheme | Out-String).Trim(); resolution=[Windows.Forms.Screen]::PrimaryScreen.Bounds.ToString()
         webview2_runtime=@(Get-ChildItem 'C:/Program Files (x86)/Microsoft/EdgeWebView/Application' -Directory -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name)
         noise=@('Shared hosted runner, not a laptop/battery claim','Fresh profile is not cold OS cache','Updater remains production-enabled, isolated LOCALAPPDATA','Samples are endpoint process-tree observations, not ETW complete','Working-set sums include shared pages','Fixture double-requestAnimationFrame is acknowledged page readiness, not proven display presentation','Title-based tab switch is only a proxy','Sampling overhead separately recorded; measured values are not overhead-subtracted')
-        workload_settings=@{history_records=10000; bookmark_records=818; startup='start_page overridden by ordinary --open-url'; first_run_offer='already answered synthetic profile'; security='unchanged defaults'; ui='HTML-default build, no BOWSER_UI override'; tab_flow=[bool]$IncludeTabFlow; surface_smoke=[bool]$IncludeSurfaceSmoke; diagnostic_detail_pilot=[bool]$DiagnosticDetailPilot; resource_tab_count=if($IncludeTabFlow){5}else{1}}
+        workload_settings=@{history_records=10000; bookmark_records=818; startup='start_page overridden by ordinary --open-url'; first_run_offer='already answered synthetic profile'; security='unchanged defaults'; ui='HTML-default build, no BOWSER_UI override'; tab_flow=[bool]$IncludeTabFlow; surface_smoke=[bool]$IncludeSurfaceSmoke; diagnostic_detail_pilot=[bool]$DiagnosticDetailPilot; startup_only=[bool]$StartupOnly; resource_endpoint=if($StartupOnly){'settled initial one-tab navigation; no omnibox submission or UIA; not comparable to old post-Enter state'}else{'settled post-Enter one-tab navigation'}; resource_tab_count=if($IncludeTabFlow){5}else{1}}
     }
     $metadata | ConvertTo-Json -Depth 10 | Set-Content (Join-Path $Out 'environment.json') -Encoding utf8
     # Five-pair pilot by default. Alternate whole arm order each pair, same session/runtime/fixture seed.
@@ -269,7 +281,7 @@ try {
                     if($arm.EndsWith('_on')) { $args+=@('--diagnostic-log',"`"$eventFile`"") }
                     if($arm -eq 'candidate_detail_on') { $args+=@('--diagnostic-detail') }
                     $snapshots=[Collections.Generic.List[object]]::new(); $overheads=[Collections.Generic.List[double]]::new()
-                    $sample=[ordered]@{id=$id;pair=$pair;arm=$arm;fixture=$fixture;condition=$condition;token=$token;valid=$false;expected_failure=($fixture -in @('network-failure','error','hung'));error=$null;launch_qpc=$null;ready_qpc=$null;title_ready_qpc=$null;input_ready_qpc=$null;shutdown_ms=$null;disk_before=(Disk-Bytes $profile);measurement_mode=$MeasurementMode;tree_exit_wait_ms=$null;tree_exit_confirmed=$false;drain_remaining=@();surface_smoke=$null;events=$null;input=$null;tab_switch_proxy_ms=$null;idle=$null;minimized=$null}
+                    $sample=[ordered]@{id=$id;pair=$pair;arm=$arm;fixture=$fixture;condition=$condition;token=$token;valid=$false;expected_failure=($fixture -in @('network-failure','error','hung'));error=$null;launch_qpc=$null;ready_qpc=$null;title_ready_qpc=$null;input_ready_qpc=$null;shutdown_ms=$null;disk_before=(Disk-Bytes $profile);measurement_mode=$MeasurementMode;tree_exit_wait_ms=$null;tree_exit_confirmed=$false;drain_remaining=@();surface_smoke=$null;events=$null;input=$null;input_exclusion_reason=if($StartupOnly){'Startup-only lane: no omnibox interaction; input latency unavailable, not passed or zero'}else{$null};tab_switch_proxy_ms=$null;idle=$null;minimized=$null}
                     $app=$null;$script:surfaceTrace=$null
                     try {
                         $sample.launch_qpc=Qpc
@@ -296,6 +308,7 @@ try {
                             $sample.valid=$true
                         } else {
                             if(-not $sample.ready_qpc -or -not $sample.title_ready_qpc){throw 'Fixture did not acknowledge readiness in the owned window'}
+                            if(-not $StartupOnly) {
                             # Normal UI address submit, not a benchmark navigation shortcut.
                             $inputToken=[guid]::NewGuid().ToString('N'); $inputUrl="$base/light?token=$inputToken"
                             Owned-Keys '^l'; Owned-Keys $inputUrl
@@ -311,6 +324,7 @@ try {
                             if(-not $title.Contains("BOWSER_PERF_READY_$($inputToken)_3")){throw 'Expected tab switch title proxy timed out'}
                             $sample.tab_switch_proxy_ms=((Qpc)-$switch)*1000.0/[Diagnostics.Stopwatch]::Frequency
                             }
+                            } # StartupOnly deliberately excludes legacy input/tab probes.
                             # Equal-time foreground and minimized idle windows, resource tree sampled throughout.
                             if ($MeasurementMode -eq 'resource') {
                             # Settled one-tab endpoint is identical for both arms; no startup sampling in timing arm.
@@ -361,6 +375,11 @@ try {
                             if($sample.expected_failure -and $readiness.Valid){throw 'Diagnostic failed fixture incorrectly usable'}
                             if(-not $sample.expected_failure -and -not $readiness.Valid){throw "Identity/success readiness invalid: $($readiness.InvalidReasons -join ',')"}
                             $sample.diagnostic_readiness=$readiness
+                            foreach($probe in @($sample.surface_smoke | Where-Object surface -eq 'semantic-fixture-navigation')) {
+                                $segment=Get-ProductionTokenSegmentReadiness $events $probe.token
+                                $probe.native_navigation_success=$segment.Valid
+                                if(-not $segment.Valid){throw "Semantic fixture native navigation failed: $($segment.InvalidReasons -join ',')"}
+                            }
                         }
                     } catch {
                         $sample.valid=$false;$sample.error=$_.Exception.Message

@@ -38,3 +38,8 @@ $inventory=@(
 )
 $drain=@(Get-ProcessGroupMembers -RootPid -1 -Profile 'C:\isolated' -Inventory $inventory)
 Check (($drain.Pid -join ',') -eq '20,21') 'drain selects only profile group, not Windows system ancestry'
+
+Check (Get-ProductionTokenSegmentReadiness @($start,$ready,$done,(Row diagnostic_navigation_started 1 11)) fixture).Valid 'historical semantic segment excludes intentional later navigation'
+Check (-not (Get-ProductionTokenSegmentReadiness @($start,$ready,$done,(Row diagnostic_navigation_completed 1 10 false)) fixture).Valid) 'historical semantic segment retains late failure'
+Check (-not (Get-ProductionTokenSegmentReadiness @($start,$ready,$done,(Row diagnostic_fixture_ready 1 11 '' fixture)) fixture).Valid) 'ambiguous repeated token identities rejected'
+Check ($harness.Contains("if(`$StartupOnly -and `$IncludeTabFlow)")) 'startup-only rejects tab-flow workload'

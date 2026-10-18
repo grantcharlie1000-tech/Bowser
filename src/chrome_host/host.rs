@@ -359,14 +359,14 @@ impl ChromeEnv {
                     let iterator = unsafe { frames.GetIterator()? };
                     let mut labels = HashSet::new();
                     loop {
-                        let mut has = windows::Win32::Foundation::BOOL::default();
+                        let mut has = windows::core::BOOL::default();
                         unsafe { iterator.HasCurrent(&mut has)?; }
                         if !has.as_bool() { break; }
                         let frame = unsafe { iterator.GetCurrent()? };
                         let mut source = PWSTR::null();
                         unsafe { frame.Source(&mut source)?; }
                         if let Some(view) = diagnostic_frame_view(&CoTaskMemPWSTR::from(source).to_string()) { labels.insert(view); }
-                        let mut more = windows::Win32::Foundation::BOOL::default();
+                        let mut more = windows::core::BOOL::default();
                         unsafe { iterator.MoveNext(&mut more)?; }
                         if !more.as_bool() { break; }
                     }

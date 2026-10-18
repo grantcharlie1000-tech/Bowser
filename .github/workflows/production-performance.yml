@@ -157,24 +157,24 @@ jobs:
         id: validity
         working-directory: candidate
         run: |
-          ./benchmarks/production-baseline.ps1 -BaselineExe ../evidence/frozen/untouched-main.exe -DiagnosticExe ../evidence/frozen/diagnostic.exe -ReleaseExe ../evidence/frozen/released-v0.0.19.exe -CandidateExe ../evidence/candidate/candidate.exe -CandidateSource (Get-Content ../evidence/candidate/identity.json -Raw | ConvertFrom-Json).source -Out ../evidence/validity -Pairs 1 -Fixtures light -IdleSeconds 1 -MeasurementMode timing -MaxInvalidSamples 1
+          ./benchmarks/production-baseline.ps1 -BaselineExe ../evidence/frozen/untouched-main.exe -DiagnosticExe ../evidence/frozen/diagnostic.exe -ReleaseExe ../evidence/frozen/released-v0.0.19.exe -CandidateExe ../evidence/candidate/candidate.exe -CandidateSource (Get-Content ../evidence/candidate/identity.json -Raw | ConvertFrom-Json).source -Out ../evidence/validity -StartupOnly -Pairs 1 -Fixtures light -IdleSeconds 1 -MeasurementMode timing -MaxInvalidSamples 1
       - name: Corrected diagnostic-off untouched and logging-on off controls
         working-directory: candidate
         run: |
-          ./benchmarks/production-baseline.ps1 -BaselineExe ../evidence/frozen/untouched-main.exe -DiagnosticExe ../evidence/candidate/candidate.exe -DiagnosticSource (Get-Content ../evidence/candidate/identity.json -Raw | ConvertFrom-Json).source -ReleaseExe ../evidence/frozen/released-v0.0.19.exe -Out ../evidence/controls -Pairs 3 -Fixtures light -MeasurementMode timing -MaxInvalidSamples 1
+          ./benchmarks/production-baseline.ps1 -BaselineExe ../evidence/frozen/untouched-main.exe -DiagnosticExe ../evidence/candidate/candidate.exe -DiagnosticSource (Get-Content ../evidence/candidate/identity.json -Raw | ConvertFrom-Json).source -ReleaseExe ../evidence/frozen/released-v0.0.19.exe -Out ../evidence/controls -StartupOnly -Pairs 3 -Fixtures light -MeasurementMode timing -MaxInvalidSamples 1
       - name: Short matched native detail-on off attribution timing pilot
         working-directory: candidate
         run: |
-          ./benchmarks/production-baseline.ps1 -BaselineExe ../evidence/frozen/untouched-main.exe -DiagnosticExe ../evidence/frozen/diagnostic.exe -ReleaseExe ../evidence/frozen/released-v0.0.19.exe -CandidateExe ../evidence/candidate/candidate.exe -CandidateSource (Get-Content ../evidence/candidate/identity.json -Raw | ConvertFrom-Json).source -Out ../evidence/timing -Pairs 3 -DiagnosticDetailPilot -Fixtures light -MeasurementMode timing -MaxInvalidSamples 1
+          ./benchmarks/production-baseline.ps1 -BaselineExe ../evidence/frozen/untouched-main.exe -DiagnosticExe ../evidence/frozen/diagnostic.exe -ReleaseExe ../evidence/frozen/released-v0.0.19.exe -CandidateExe ../evidence/candidate/candidate.exe -CandidateSource (Get-Content ../evidence/candidate/identity.json -Raw | ConvertFrom-Json).source -Out ../evidence/timing -StartupOnly -Pairs 3 -DiagnosticDetailPilot -Fixtures light -MeasurementMode timing -MaxInvalidSamples 1
       - name: Short matched native detail-on off attribution resource pilot
         working-directory: candidate
         run: |
-          ./benchmarks/production-baseline.ps1 -BaselineExe ../evidence/frozen/untouched-main.exe -DiagnosticExe ../evidence/frozen/diagnostic.exe -ReleaseExe ../evidence/frozen/released-v0.0.19.exe -CandidateExe ../evidence/candidate/candidate.exe -CandidateSource (Get-Content ../evidence/candidate/identity.json -Raw | ConvertFrom-Json).source -Out ../evidence/resource -Pairs 3 -DiagnosticDetailPilot -Fixtures light -MeasurementMode resource -MaxInvalidSamples 1
+          ./benchmarks/production-baseline.ps1 -BaselineExe ../evidence/frozen/untouched-main.exe -DiagnosticExe ../evidence/frozen/diagnostic.exe -ReleaseExe ../evidence/frozen/released-v0.0.19.exe -CandidateExe ../evidence/candidate/candidate.exe -CandidateSource (Get-Content ../evidence/candidate/identity.json -Raw | ConvertFrom-Json).source -Out ../evidence/resource -StartupOnly -Pairs 3 -DiagnosticDetailPilot -Fixtures light -MeasurementMode resource -MaxInvalidSamples 1
       - name: Mandatory independent native first-use interaction smoke
         if: ${{ !cancelled() && steps.validity.outcome == 'success' }}
         working-directory: candidate
         run: |
-          ./benchmarks/production-baseline.ps1 -BaselineExe ../evidence/frozen/untouched-main.exe -DiagnosticExe ../evidence/frozen/diagnostic.exe -ReleaseExe ../evidence/frozen/released-v0.0.19.exe -CandidateExe ../evidence/candidate/candidate.exe -CandidateSource (Get-Content ../evidence/candidate/identity.json -Raw | ConvertFrom-Json).source -IncludeSurfaceSmoke -PositiveOnly -Out ../evidence/surfaces -Pairs 1 -Fixtures light -MeasurementMode timing -MaxInvalidSamples 1
+          ./benchmarks/production-baseline.ps1 -BaselineExe ../evidence/frozen/untouched-main.exe -DiagnosticExe ../evidence/frozen/diagnostic.exe -ReleaseExe ../evidence/frozen/released-v0.0.19.exe -CandidateExe ../evidence/candidate/candidate.exe -CandidateSource (Get-Content ../evidence/candidate/identity.json -Raw | ConvertFrom-Json).source -IncludeSurfaceSmoke -PositiveOnly -Out ../evidence/surfaces -StartupOnly -Pairs 1 -Fixtures light -MeasurementMode timing -MaxInvalidSamples 1
       - name: Derive descriptive paired statistics without accepting gains automatically
         if: always()
         working-directory: candidate

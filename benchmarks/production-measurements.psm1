@@ -41,6 +41,18 @@ function Get-ProductionReadiness {
     [pscustomobject]@{ Valid=($null -ne $result); Ready=$result; InvalidReasons=@($invalid | Sort-Object -Unique) }
 }
 
+# Historical interaction check only. The ordinary readiness validator still rejects superseded
+# current documents; this scopes one unique fixture to its own recorded navigation identity.
+function Get-ProductionTokenSegmentReadiness {
+    param([object[]]$Rows,[Parameter(Mandatory)][string]$Token)
+    $matches=@($Rows | Where-Object {$_.event -eq 'diagnostic_fixture_ready' -and $_.fixture_token -ceq $Token})
+    $identities=@($matches | ForEach-Object {"$($_.tab_id)/$($_.navigation_id)"} | Sort-Object -Unique)
+    if($identities.Count -ne 1){return [pscustomobject]@{Valid=$false;Ready=$null;InvalidReasons=@('missing_or_ambiguous_fixture_identity')}}
+    $identity=$matches[0]
+    $segment=@($Rows | Where-Object {$_.event -like 'diagnostic_*' -and [string]$_.tab_id -ceq [string]$identity.tab_id -and [string]$_.navigation_id -ceq [string]$identity.navigation_id})
+    Get-ProductionReadiness $segment $Token
+}
+
 function Get-ProductionCpuDelta {
     param([object[]]$Snapshots)
     $last = @{}; $total = 0.0; $newIdentityCount = 0; $regressions = 0
@@ -67,4 +79,4 @@ function Get-ProductionDistribution {
     $median = if ($sorted.Count % 2) { $sorted[[int][Math]::Floor($sorted.Count / 2)] } else { ($sorted[$sorted.Count/2-1]+$sorted[$sorted.Count/2])/2 }
     [pscustomobject]@{ Count=$sorted.Count; Median=$median; P95=$sorted[[Math]::Max(0,[int][Math]::Ceiling($sorted.Count*0.95)-1)]; Min=$sorted[0]; Max=$sorted[-1] }
 }
-Export-ModuleMember -Function Get-ProductionReadiness,Get-ProductionCpuDelta,Get-ProductionDistribution
+Export-ModuleMember -Function Get-ProductionTokenSegmentReadiness,Get-ProductionReadiness,Get-ProductionCpuDelta,Get-ProductionDistribution
