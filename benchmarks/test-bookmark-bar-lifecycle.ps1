@@ -19,7 +19,7 @@ New-Item -ItemType Directory -Path $directory|Out-Null
 try {
  $path=Join-Path $directory 'bookmarks-v2.txt';$temp="$path.fixture.tmp"
  [IO.File]::WriteAllText($path,$a);$length=(Get-Item $path).Length
- [IO.File]::WriteAllText($temp,$b);[IO.File]::Replace($temp,$path,$null)
+ [IO.File]::WriteAllText($temp,$b);[IO.File]::Replace($temp,$path,[NullString]::Value)
  Check (([IO.File]::ReadAllText($path)) -ceq $b -and (Get-Item $path).Length -ne $length -and -not (Test-Path $temp)) 'atomic disposable same-file update changes native cache stamp/content'
 } finally {Remove-Item -LiteralPath $directory -Recurse -Force}
 $id=[ordered]@{pid=7;created_ticks=8};$before=[ordered]@{available=$true;identities=@($id)};$after=[ordered]@{available=$true;identities=@($id)}
@@ -33,7 +33,7 @@ Check (-not (Get-ProductionBookmarkBarCoverage @($snapshot,$snapshot,$snapshot) 
 $module=Get-Content "$PSScriptRoot/bookmark-bar-lifecycle.psm1" -Raw
 Check ($module -notmatch 'SetForegroundWindow|AttachThreadInput|SetFocus|MoveFocus|SendKeys|\.Invoke\(|\.Toggle\(|mouse_event|SetCursorPos') 'no action-pattern guessing/focus repair/input alternative'
 Check (@([regex]::Matches($module,'\[BowserSidebarInput\]::ClickOwned\(')).Count -eq 1) 'single guarded physical click implementation, no retry'
-Check ($module.Contains('[IO.File]::Replace($temporary,$path,$null)') -and $module.Contains('old_label_count') -and $module.Contains('bar-observation-end')) 'atomic update, stale DOM rejection and completeness marker'
+Check ($module.Contains('[IO.File]::Replace($temporary,$path,[NullString]::Value)') -and $module.Contains('old_label_count') -and $module.Contains('bar-observation-end')) 'atomic update, stale DOM rejection and completeness marker'
 $tokens=$null;$errors=$null;$ast=[Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot 'production-baseline.ps1'),[ref]$tokens,[ref]$errors)
 Check ($errors.Count -eq 0) 'production bar harness parses'
 $guards=@($ast.FindAll({param($node) $node -is [Management.Automation.Language.IfStatementAst] -and $node.Clauses.Count -eq 1 -and $node.Clauses[0].Item1.Extent.Text -match '^\$BookmarkBarPilot -and' -and $node.Clauses[0].Item1.Extent.Text.Contains('-not $CandidateExe') -and $node.Clauses[0].Item2.Extent.Text.Contains("throw 'Bookmark bar baseline requires one fixed ordinary updater-off positive light pair, startup-only timing and no mixed workload'")},$true))

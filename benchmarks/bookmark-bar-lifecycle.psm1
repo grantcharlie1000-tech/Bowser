@@ -145,7 +145,7 @@ function Invoke-ProductionBookmarkBarLifecycle {
   $updated=New-ProductionBookmarkBarFixture -BaseUrl $BaseUrl -Token $InitialToken -Updated
   $path=Join-Path $Profile 'bookmarks-v2.txt';$temporary="$path.fixture.tmp"
   $old=Get-Item -LiteralPath $path;$oldLength=$old.Length;$oldTicks=$old.LastWriteTimeUtc.Ticks;$oldHash=(Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash
-  [IO.File]::WriteAllText($temporary,$updated);[IO.File]::Replace($temporary,$path,$null)
+  [IO.File]::WriteAllText($temporary,$updated);[IO.File]::Replace($temporary,$path,[NullString]::Value)
   $new=Get-Item -LiteralPath $path;$newHash=(Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash
   if(($new.Length -eq $oldLength -and $new.LastWriteTimeUtc.Ticks -eq $oldTicks) -or $newHash -ceq $oldHash){throw 'Synthetic bookmark cache stamp/content did not change; no freshness claim'}
   $Trace.Add([ordered]@{kind='bar-hidden-fixture-update';qpc=(Qpc);same_bookmark_id=1;before_length=$oldLength;after_length=$new.Length;before_mtime_ticks=$oldTicks;after_mtime_ticks=$new.LastWriteTimeUtc.Ticks;content_changed=($newHash -cne $oldHash);scope='Only disposable synthetic bookmark label/URL changed while hidden, before reveal timer; no real user data'})
