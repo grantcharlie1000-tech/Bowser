@@ -6,6 +6,7 @@ Add-Type -TypeDefinition @'
 using System;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Collections.Generic;
 public static class BowserFocusObservation {
  [StructLayout(LayoutKind.Sequential)] public struct RECT {public int Left,Top,Right,Bottom;}
  [StructLayout(LayoutKind.Sequential)] public struct GUITHREADINFO {
@@ -24,12 +25,35 @@ public static class BowserFocusObservation {
   public uint root_thread_id,root_process_id,gui_flags;
   public WindowInfo owned_root,foreground,active,focus;
  }
+ public sealed class TopologyNode {
+  public WindowInfo window;
+  public RECT rect;
+  public bool rect_ok,visible,style_ok,ex_style_ok,identity_stable;
+  public int rect_error,style_error,ex_style_error;
+  public long style,ex_style;
+ }
+ public sealed class TopologyChain {
+  public bool complete;
+  public string reason,container_handle,container_class;
+  public List<TopologyNode> nodes=new List<TopologyNode>();
+ }
+ public sealed class TopologyPair {
+  public string classification;
+  public bool root_identity_stable;
+  public TopologyChain original,current;
+ }
  [DllImport("user32.dll",SetLastError=true)] static extern bool GetGUIThreadInfo(uint thread,ref GUITHREADINFO info);
  [DllImport("user32.dll",SetLastError=true)] static extern uint GetWindowThreadProcessId(IntPtr window,out uint pid);
  [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
  [DllImport("user32.dll")] static extern IntPtr GetAncestor(IntPtr window,uint flags);
  [DllImport("user32.dll")] static extern bool IsChild(IntPtr parent,IntPtr child);
  [DllImport("user32.dll",CharSet=CharSet.Unicode)] static extern int GetClassName(IntPtr window,StringBuilder value,int count);
+ [DllImport("user32.dll",SetLastError=true)] static extern bool GetWindowRect(IntPtr window,out RECT rect);
+ [DllImport("user32.dll")] static extern bool IsWindow(IntPtr window);
+ [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr window);
+ [DllImport("user32.dll",EntryPoint="GetWindowLongPtrW",SetLastError=true)] static extern IntPtr GetWindowLongPtr64(IntPtr window,int index);
+ [DllImport("user32.dll",EntryPoint="GetWindowLongW",SetLastError=true)] static extern int GetWindowLong32(IntPtr window,int index);
+ [DllImport("kernel32.dll",EntryPoint="SetLastError")] static extern void ClearLastError(uint error);
  static string Handle(IntPtr h){return "0x"+h.ToInt64().ToString("x");}
  public static string Relation(bool present,bool ownerKnown,bool same,bool child,bool ownedPopup){
   if(!present)return "none";
@@ -56,6 +80,57 @@ public static class BowserFocusObservation {
    root_handle=Handle(ancestor),root_owner_handle=Handle(owner),ancestry_query_ok=ancestor!=IntPtr.Zero&&owner!=IntPtr.Zero,class_label=h==IntPtr.Zero?"none":ClassLabel(h),
    relation=Relation(h!=IntPtr.Zero,tid!=0&&ancestor!=IntPtr.Zero&&owner!=IntPtr.Zero,h==root,h!=IntPtr.Zero&&IsChild(root,h),h!=IntPtr.Zero&&owner==root)};
  }
+ static bool KnownContainer(string label){return label=="BowserSettingsPage"||label=="BowserHtmlPopup"||label=="BowserHtmlHover"||label=="Chrome_WidgetWin_0";}
+ public static bool KnownOwnedTopLevel(bool ancestryKnown,string handle,string gaRoot,string gaOwner,string ownedRoot,string label){
+  return ancestryKnown&&handle!="0x0"&&handle!=ownedRoot&&handle==gaRoot&&gaOwner==ownedRoot&&KnownContainer(label);
+ }
+ static long Style(IntPtr h,int index,out bool ok,out int error){
+  ClearLastError(0);long value=IntPtr.Size==8?GetWindowLongPtr64(h,index).ToInt64():GetWindowLong32(h,index);
+  error=value==0?Marshal.GetLastWin32Error():0;ok=error==0;return value;
+ }
+ static TopologyChain Chain(IntPtr start,uint expectedPid,uint expectedTid,IntPtr root){
+  var result=new TopologyChain{reason="unknown",container_handle="0x0",container_class="unknown"};
+  if(start==IntPtr.Zero||expectedPid==0||expectedTid==0){result.reason="missing_anchor_or_owner";return result;}
+  var seen=new HashSet<long>();var h=start;
+  for(int depth=0;depth<16;depth++){
+   if(h==IntPtr.Zero||!IsWindow(h)){result.reason="null_or_destroyed_handle";return result;}
+   if(!seen.Add(h.ToInt64())){result.reason="parent_cycle";return result;}
+   var before=Describe(h,root);
+   if(!before.owner_query_ok||(depth==0&&(before.process_id!=expectedPid||before.thread_id!=expectedTid))){result.reason="owner_missing_or_changed";return result;}
+   var node=new TopologyNode{window=before};
+   node.rect_ok=GetWindowRect(h,out node.rect);node.rect_error=node.rect_ok?0:Marshal.GetLastWin32Error();
+   node.visible=IsWindowVisible(h);node.style=Style(h,-16,out node.style_ok,out node.style_error);node.ex_style=Style(h,-20,out node.ex_style_ok,out node.ex_style_error);
+   var parent=GetAncestor(h,1);uint afterPid=0;uint afterTid=GetWindowThreadProcessId(h,out afterPid);
+   node.identity_stable=IsWindow(h)&&afterTid!=0&&afterTid==before.thread_id&&afterPid==before.process_id;
+   result.nodes.Add(node);
+   if(!node.identity_stable||!node.rect_ok||!node.style_ok||!node.ex_style_ok){result.reason="identity_or_geometry_query_incomplete";return result;}
+   if(h==root){result.complete=true;result.reason="owned_parent_chain";return result;}
+   if(KnownOwnedTopLevel(before.ancestry_query_ok,before.handle,before.root_handle,before.root_owner_handle,Handle(root),before.class_label)){
+    result.container_handle=before.handle;result.container_class=before.class_label;result.complete=true;result.reason="known_owned_top_level_chain";return result;
+   }
+   if(parent==root){result.container_handle=before.handle;result.container_class=before.class_label;}
+   if(parent==IntPtr.Zero){result.reason="parent_lookup_or_endpoint_unknown";return result;}
+   h=parent;
+  }
+  result.reason="depth_limit";return result;
+ }
+ public static string Classify(bool originalComplete,bool currentComplete,string root,string[] original,string[] current,string originalContainer,string originalClass,string currentContainer,string currentClass){
+  if(!originalComplete||!currentComplete)return "unknown";
+  foreach(var a in original)foreach(var b in current)if(a!="0x0"&&a!=root&&a==b)return "same_native_subtree";
+  if(originalContainer!="0x0"&&currentContainer!="0x0"&&originalContainer!=currentContainer&&KnownContainer(originalClass)&&KnownContainer(currentClass))return "different_known_container";
+  return "unknown";
+ }
+ public static TopologyPair CaptureTopology(IntPtr root,WindowInfo expectedRoot,WindowInfo original,WindowInfo current){
+  var result=new TopologyPair{classification="unknown"};
+  result.original=Chain(original==null?IntPtr.Zero:new IntPtr(Convert.ToInt64(original.handle.Substring(2),16)),original==null?0:original.process_id,original==null?0:original.thread_id,root);
+  result.current=Chain(current==null?IntPtr.Zero:new IntPtr(Convert.ToInt64(current.handle.Substring(2),16)),current==null?0:current.process_id,current==null?0:current.thread_id,root);
+  var a=new List<string>();foreach(var n in result.original.nodes)a.Add(n.window.handle);var b=new List<string>();foreach(var n in result.current.nodes)b.Add(n.window.handle);
+  result.classification=Classify(result.original.complete,result.current.complete,Handle(root),a.ToArray(),b.ToArray(),result.original.container_handle,result.original.container_class,result.current.container_handle,result.current.container_class);
+  uint rootPid=0;uint rootTid=GetWindowThreadProcessId(root,out rootPid);
+  result.root_identity_stable=expectedRoot!=null&&IsWindow(root)&&rootTid!=0&&rootTid==expectedRoot.thread_id&&rootPid==expectedRoot.process_id;
+  if(!result.root_identity_stable)result.classification="unknown";
+  return result;
+ }
  public static Snapshot Capture(uint expectedPid,IntPtr root){
   var result=new Snapshot();uint pid=0;
   result.root_thread_id=GetWindowThreadProcessId(root,out pid);result.root_error=result.root_thread_id==0?Marshal.GetLastWin32Error():0;result.root_process_id=pid;
@@ -73,11 +148,12 @@ public static class BowserFocusObservation {
 }
 function Get-ProductionNativeFocusSnapshot {
  [CmdletBinding()]
- param([uint32]$RootPid,[IntPtr]$RootWindow,[string]$Boundary,[int]$Attempt)
- $start=[Diagnostics.Stopwatch]::GetTimestamp();$capture=$null;$error=$null
+ param([uint32]$RootPid,[IntPtr]$RootWindow,[string]$Boundary,[int]$Attempt,[switch]$IncludeTopology,[object]$OriginalFocus)
+ $start=[Diagnostics.Stopwatch]::GetTimestamp();$capture=$null;$error=$null;$topology=$null;$topologyError=$null
  try{$capture=[BowserFocusObservation]::Capture($RootPid,$RootWindow)}catch{$error=$_.Exception.GetType().Name}
+ if($IncludeTopology -and $null -ne $capture -and $capture.query_ok){try{$topology=[BowserFocusObservation]::CaptureTopology($RootWindow,$capture.owned_root,$OriginalFocus,$capture.focus)}catch{$topologyError=$_.Exception.GetType().Name}}
  $end=[Diagnostics.Stopwatch]::GetTimestamp()
- [ordered]@{boundary=$Boundary;attempt=$Attempt;start_qpc=$start;end_qpc=$end;observation_ms=($end-$start)*1000.0/[Diagnostics.Stopwatch]::Frequency;api_exception=$error;native=$capture;scope='Owned root GUI thread; HWND ownership/ancestry only, NOT a controller/view identity; no title/text or focus repair'}
+ [ordered]@{boundary=$Boundary;attempt=$Attempt;start_qpc=$start;end_qpc=$end;observation_ms=($end-$start)*1000.0/[Diagnostics.Stopwatch]::Frequency;api_exception=$error;native=$capture;topology=$topology;topology_exception=$topologyError;scope='Owned root GUI thread; non-atomic HWND ownership/ancestry/geometry only, NOT controller identity; same-PID/TID handle reuse cannot be excluded; no title/text or focus repair'}
 }
 Export-ModuleMember -Function Get-ProductionNativeFocusSnapshot
 

@@ -20,6 +20,7 @@ param(
     [switch]$DiagnosticInteractionPilot,
     [switch]$DiagnosticNativeFocus,
     [switch]$DiagnosticControllerFocus,
+    [switch]$DiagnosticFocusTopology,
     [switch]$StartupOnly,
     [string]$CandidateExe,
     [string]$CandidateSource,
@@ -40,6 +41,7 @@ if($StartupOnly -and $IncludeTabFlow){throw 'StartupOnly cannot be combined with
 if($DiagnosticInteractionPilot -and (-not $CandidateExe -or -not $IncludeSurfaceSmoke -or -not $StartupOnly)){throw 'DiagnosticInteractionPilot requires CandidateExe, IncludeSurfaceSmoke and StartupOnly'}
 if($DiagnosticNativeFocus -and (-not $DiagnosticInteractionPilot -or -not $DiagnosticAutoUpdateOff -or $SurfaceInputMethod -ne 'uia-value')){throw 'Native focus observation requires isolated interaction pilot with ordinary updater OFF and unchanged UIA value input'}
 if($DiagnosticControllerFocus -and -not $DiagnosticNativeFocus){throw 'Controller focus coverage requires the passive OS focus diagnostic lane'}
+if($DiagnosticFocusTopology -and -not $DiagnosticControllerFocus){throw 'Topology diagnostic requires native/controller focus coverage'}
 if($DiagnosticNativeFocus){Import-Module "$PSScriptRoot/production-focus.psm1" -Force}
 $Out=[IO.Path]::GetFullPath($Out)
 New-Item -ItemType Directory -Force $Out | Out-Null
@@ -121,7 +123,11 @@ function Observe-NativeFocus([string]$boundary) {
     if(-not $DiagnosticNativeFocus){return}
     $outerStart=Qpc
     $root=[BowserProductionNative]::FindHost([uint32]$app.Id)
-    $record=Get-ProductionNativeFocusSnapshot -RootPid ([uint32]$app.Id) -RootWindow $root -Boundary $boundary -Attempt $script:addressAttempt
+    if($DiagnosticFocusTopology -and $boundary -eq 'ctrl-l-before-foreground'){$script:originalFocus=$null}
+    $topologyArgs=@{}
+    if($DiagnosticFocusTopology){$topologyArgs=@{IncludeTopology=$true;OriginalFocus=$script:originalFocus}}
+    $record=Get-ProductionNativeFocusSnapshot -RootPid ([uint32]$app.Id) -RootWindow $root -Boundary $boundary -Attempt $script:addressAttempt @topologyArgs
+    if($DiagnosticFocusTopology -and $boundary -eq 'ctrl-l-after-keys' -and $record.native.query_ok){$script:originalFocus=$record.native.focus}
     $outerEnd=Qpc
     $record['outer_start_qpc']=$outerStart;$record['outer_end_qpc']=$outerEnd
     $record['lookup_and_snapshot_ms']=($outerEnd-$outerStart)*1000.0/[Diagnostics.Stopwatch]::Frequency
@@ -385,7 +391,7 @@ try {
         power=(& powercfg /getactivescheme | Out-String).Trim(); resolution=[Windows.Forms.Screen]::PrimaryScreen.Bounds.ToString()
         webview2_runtime=@(Get-ChildItem 'C:/Program Files (x86)/Microsoft/EdgeWebView/Application' -Directory -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name)
         noise=@('Shared hosted runner, not a laptop/battery claim','Fresh profile is not cold OS cache',$(if($DiagnosticAutoUpdateOff){'Updater OFF via ordinary disposable-profile setting; interaction control, not primary workload'}else{'Updater remains production-enabled, isolated LOCALAPPDATA'}),'Samples are endpoint process-tree observations, not ETW complete','Working-set sums include shared pages','Fixture double-requestAnimationFrame is acknowledged page readiness, not proven display presentation','Title-based tab switch is only a proxy','Sampling overhead separately recorded; measured values are not overhead-subtracted','DOM telemetry QPC is native receipt time, not DOM event execution time; cross-process causality is not inferred from receipt order alone; flag OFF/ON controls stay separate','GetAsyncKeyState snapshots do not prove queued modifier messages have been processed; instrumented input lanes are diagnosis, not typing-latency acceptance')
-        workload_settings=@{history_records=10000; bookmark_records=818; startup='start_page overridden by ordinary --open-url'; first_run_offer='already answered synthetic profile'; security='unchanged defaults'; ui='HTML-default build, no BOWSER_UI override'; tab_flow=[bool]$IncludeTabFlow; surface_smoke=[bool]$IncludeSurfaceSmoke;surface_input_method=$SurfaceInputMethod;auto_update=if($DiagnosticAutoUpdateOff){'OFF ordinary disposable-profile control; not the primary workload'}else{'ON production default'};surface_input_scope=if($SurfaceInputMethod -eq 'uia-value'){'ValuePattern navigation/first-use control; bypasses keystrokes; may dispatch DOM input/change and autocomplete; not keyboard correctness'}else{'instrumented SendKeys keyboard diagnostic with UIA value/selection reads; no primary typing latency, retyping or retry'}; diagnostic_detail_pilot=[bool]$DiagnosticDetailPilot;diagnostic_interaction_pilot=[bool]$DiagnosticInteractionPilot;native_focus_observation=[bool]$DiagnosticNativeFocus;controller_focus_observation=[bool]$DiagnosticControllerFocus;native_focus_hypothesis=if($DiagnosticNativeFocus){'H1 OS keyboard focus differs from UIA between CtrlL/SetValue/Enter; HWND cannot establish a specific controller; H2 setText overwrite untested; passive observations perturb timing, no performance claim'}else{$null}; startup_only=[bool]$StartupOnly; resource_endpoint=if($StartupOnly){'settled initial one-tab navigation; no omnibox submission or UIA; not comparable to old post-Enter state'}else{'settled post-Enter one-tab navigation'}; resource_tab_count=if($IncludeTabFlow){5}else{1}}
+        workload_settings=@{history_records=10000; bookmark_records=818; startup='start_page overridden by ordinary --open-url'; first_run_offer='already answered synthetic profile'; security='unchanged defaults'; ui='HTML-default build, no BOWSER_UI override'; tab_flow=[bool]$IncludeTabFlow; surface_smoke=[bool]$IncludeSurfaceSmoke;surface_input_method=$SurfaceInputMethod;auto_update=if($DiagnosticAutoUpdateOff){'OFF ordinary disposable-profile control; not the primary workload'}else{'ON production default'};surface_input_scope=if($SurfaceInputMethod -eq 'uia-value'){'ValuePattern navigation/first-use control; bypasses keystrokes; may dispatch DOM input/change and autocomplete; not keyboard correctness'}else{'instrumented SendKeys keyboard diagnostic with UIA value/selection reads; no primary typing latency, retyping or retry'}; diagnostic_detail_pilot=[bool]$DiagnosticDetailPilot;diagnostic_interaction_pilot=[bool]$DiagnosticInteractionPilot;native_focus_observation=[bool]$DiagnosticNativeFocus;controller_focus_observation=[bool]$DiagnosticControllerFocus;focus_topology_observation=[bool]$DiagnosticFocusTopology;native_focus_hypothesis=if($DiagnosticNativeFocus){'H1 OS keyboard focus differs from UIA between CtrlL/SetValue/Enter; HWND cannot establish a specific controller; H2 setText overwrite untested; passive observations perturb timing, no performance claim'}else{$null}; startup_only=[bool]$StartupOnly; resource_endpoint=if($StartupOnly){'settled initial one-tab navigation; no omnibox submission or UIA; not comparable to old post-Enter state'}else{'settled post-Enter one-tab navigation'}; resource_tab_count=if($IncludeTabFlow){5}else{1}}
     }
     $metadata | ConvertTo-Json -Depth 10 | Set-Content (Join-Path $Out 'environment.json') -Encoding utf8
     # Five-pair pilot by default. Alternate whole arm order each pair, same session/runtime/fixture seed.

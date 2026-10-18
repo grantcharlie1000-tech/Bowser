@@ -12,11 +12,22 @@ Check ([BowserFocusObservation]::Relation($true,$true,$false,$false,$false) -ceq
 $invalid=Get-ProductionNativeFocusSnapshot -RootPid 1 -RootWindow ([IntPtr]::Zero) -Boundary contract-invalid-root -Attempt 0
 Check (-not $invalid.native.query_ok -and $invalid.native.error -eq -1) 'invalid owned root is an explicit failed observation'
 Check ($invalid.end_qpc -ge $invalid.start_qpc) 'observer interval retained'
+Check ([BowserFocusObservation]::Classify($true,$true,'root',@('original','shared','root'),@('current','shared','root'),'shared','other','shared','other') -ceq 'same_native_subtree') 'shared non-root ancestor proves only same native subtree'
+Check ([BowserFocusObservation]::Classify($true,$true,'root',@('original','root'),@('current','root'),'original','Chrome_WidgetWin_0','current','BowserSettingsPage') -ceq 'different_known_container') 'distinct verified fixed-label containers'
+Check ([BowserFocusObservation]::Classify($true,$true,'root',@('original','root'),@('current','root'),'original','other','current','other') -ceq 'unknown') 'common owned root alone cannot classify receiver'
+Check ([BowserFocusObservation]::Classify($false,$true,'root',@('same','root'),@('same','root'),'same','Chrome_WidgetWin_0','same','Chrome_WidgetWin_0') -ceq 'unknown') 'incomplete ownership stays unknown even on equal handle'
+Check ([BowserFocusObservation]::KnownOwnedTopLevel($true,'popup','popup','root','root','BowserHtmlPopup')) 'owned top-level endpoint positively uses GA_ROOT/GA_ROOTOWNER, independent of null parent'
+Check (-not [BowserFocusObservation]::KnownOwnedTopLevel($false,'popup','popup','root','root','BowserHtmlPopup')) 'failed ancestry cannot establish an owned endpoint'
+Check (-not [BowserFocusObservation]::KnownOwnedTopLevel($true,'child','popup','root','root','BowserHtmlPopup')) 'recognized descendant class is not a top-level endpoint'
+$emptyTopology=[BowserFocusObservation]::CaptureTopology([IntPtr]::Zero,$null,$null,$null)
+Check ($emptyTopology.classification -ceq 'unknown' -and -not $emptyTopology.root_identity_stable -and $emptyTopology.original.reason -ceq 'missing_anchor_or_owner') 'null/recycled-unknown anchor never becomes a toolbar classification'
 $module=Get-Content "$PSScriptRoot/production-focus.psm1" -Raw
 $boundary=$module.IndexOf('# Pure coverage accounting.')
 Check ($boundary -gt 0) 'native observation implementation boundary exists'
 $native=$module.Substring(0,$boundary)
 Check (-not ($native -match 'GetWindowText|SetFocus|SetForegroundWindow|SendInput|SendWait|MoveFocus|Thread.Sleep|Start-Sleep')) 'observer cannot read text or change focus/input/timing policy'
+Check ($native -match 'depth<16' -and $native -match 'HashSet<long>' -and $native -match 'identity_stable') 'topology traversal has depth/visited and before-after identity guards'
+Check ($native.Contains('if(parent==IntPtr.Zero){result.reason="parent_lookup_or_endpoint_unknown";return result;}')) 'null parent lookup cannot make a chain complete'
 Check (-not ($module.Substring($boundary) -match 'DllImport|Add-Type|\[BowserFocusObservation\]::')) 'coverage accounting cannot add native calls'
 'Native focus observation contracts passed.'
 function FocusRow($event,$tick,$success=''){[pscustomobject]@{event=$event;qpc_ticks=[string]$tick;success=$success;navigation_id='1';tab_id='0';view='toolbar'}}
