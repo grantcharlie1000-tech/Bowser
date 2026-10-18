@@ -59,14 +59,14 @@ jobs:
           if($LASTEXITCODE -ne 0){throw 'Cannot fetch reviewed product source'}
           $changes=@(git diff --name-only f285525d205b9b388ebb26481f5af01d4df99ac8 HEAD)
           if($LASTEXITCODE -ne 0){throw 'Cannot verify bounded interaction instrumentation'}
-          if(@($changes | Where-Object {$_ -cnotin @('.github/workflows/production-performance.yml','benchmarks/production-baseline.ps1','benchmarks/production-analyze.py','benchmarks/interaction-diagnostic.md','benchmarks/production-focus.psm1','benchmarks/test-production-focus.ps1','benchmarks/native-focus-diagnostic.md','benchmarks/controller-focus-diagnostic.md','benchmarks/focus-topology-diagnostic.md','benchmarks/sidebar-lifecycle.psm1','benchmarks/test-sidebar-lifecycle.ps1','benchmarks/sidebar-lifecycle-diagnostic.md','benchmarks/sidebar-analyze.py','benchmarks/test-sidebar-analyze.py','src/engine/web_app.rs','src/win32/panel_webapp.rs','src/performance.rs','src/main.rs','src/app.rs','src/chrome_host/host.rs','src/engine/mod.rs','src/engine/webview2.rs','src/chrome_host/protocol.rs','src/win32/window.rs','src/win32/settings_page.rs','ui/src/interaction-diagnostic.ts','ui/src/main.ts','ui/src/protocol.ts','ui/test/interaction-diagnostic.mjs','ui/package.json','ui/dist.manifest','ui/dist/app.js','ui/dist/settings-page.js','ui/dist/history-page.js')}).Count){throw 'Unexpected changes outside fixed interaction diagnostic slice'}
+          if(@($changes | Where-Object {$_ -cnotin @('.github/workflows/production-performance.yml','benchmarks/production-baseline.ps1','benchmarks/production-analyze.py','benchmarks/interaction-diagnostic.md','benchmarks/production-focus.psm1','benchmarks/test-production-focus.ps1','benchmarks/native-focus-diagnostic.md','benchmarks/controller-focus-diagnostic.md','benchmarks/focus-topology-diagnostic.md','benchmarks/sidebar-lifecycle.psm1','benchmarks/test-sidebar-lifecycle.ps1','benchmarks/sidebar-lifecycle-diagnostic.md','benchmarks/sidebar-preflight.psm1','benchmarks/test-sidebar-preflight.ps1','benchmarks/sidebar-analyze.py','benchmarks/test-sidebar-analyze.py','src/engine/web_app.rs','src/win32/panel_webapp.rs','src/performance.rs','src/main.rs','src/app.rs','src/chrome_host/host.rs','src/engine/mod.rs','src/engine/webview2.rs','src/chrome_host/protocol.rs','src/win32/window.rs','src/win32/settings_page.rs','ui/src/interaction-diagnostic.ts','ui/src/main.ts','ui/src/protocol.ts','ui/test/interaction-diagnostic.mjs','ui/package.json','ui/dist.manifest','ui/dist/app.js','ui/dist/settings-page.js','ui/dist/history-page.js')}).Count){throw 'Unexpected changes outside fixed interaction diagnostic slice'}
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: '22'
       - name: Parse measurement scripts and run contract tests
         working-directory: candidate
         run: |
-          foreach ($path in @('benchmarks/production-baseline.ps1','benchmarks/production-measurements.psm1','benchmarks/test-production-measurements.ps1','benchmarks/production-focus.psm1','benchmarks/test-production-focus.ps1','benchmarks/sidebar-lifecycle.psm1','benchmarks/test-sidebar-lifecycle.ps1')) {
+          foreach ($path in @('benchmarks/production-baseline.ps1','benchmarks/production-measurements.psm1','benchmarks/test-production-measurements.ps1','benchmarks/production-focus.psm1','benchmarks/test-production-focus.ps1','benchmarks/sidebar-lifecycle.psm1','benchmarks/test-sidebar-lifecycle.ps1','benchmarks/sidebar-preflight.psm1','benchmarks/test-sidebar-preflight.ps1')) {
             $tokens=$null; $errors=$null
             [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $pwd $path),[ref]$tokens,[ref]$errors) | Out-Null
             if ($errors.Count) { $errors | Format-List; throw "$path does not parse" }
@@ -74,6 +74,7 @@ jobs:
           ./benchmarks/test-production-measurements.ps1
           ./benchmarks/test-production-focus.ps1
           ./benchmarks/test-sidebar-lifecycle.ps1
+          ./benchmarks/test-sidebar-preflight.ps1
           python benchmarks/test-sidebar-analyze.py
           if($LASTEXITCODE -ne 0){throw 'Sidebar analyzer contracts failed'}
           ./benchmarks/test-measurements.ps1
@@ -95,7 +96,7 @@ jobs:
           git fetch --no-tags --depth=1 origin $harnessBase
           if($LASTEXITCODE -ne 0){throw 'Cannot fetch reviewed predecessor harness'}
           $changes=@(git diff --name-only $harnessBase HEAD)
-          if($LASTEXITCODE -ne 0 -or @($changes|Where-Object {$_ -cnotin @('.github/workflows/production-performance.yml','benchmarks/production-baseline.ps1','benchmarks/sidebar-lifecycle.psm1','benchmarks/test-sidebar-lifecycle.ps1','benchmarks/sidebar-lifecycle-diagnostic.md','benchmarks/sidebar-analyze.py','benchmarks/test-sidebar-analyze.py','src/app.rs','src/main.rs','src/performance.rs','src/engine/web_app.rs','src/win32/panel_webapp.rs')}).Count){throw 'Unexpected changes outside measurement-only sidebar slice'}
+          if($LASTEXITCODE -ne 0 -or @($changes|Where-Object {$_ -cnotin @('.github/workflows/production-performance.yml','benchmarks/production-baseline.ps1','benchmarks/sidebar-lifecycle.psm1','benchmarks/test-sidebar-lifecycle.ps1','benchmarks/sidebar-lifecycle-diagnostic.md','benchmarks/sidebar-preflight.psm1','benchmarks/test-sidebar-preflight.ps1','benchmarks/sidebar-analyze.py','benchmarks/test-sidebar-analyze.py','src/app.rs','src/main.rs','src/performance.rs','src/engine/web_app.rs','src/win32/panel_webapp.rs')}).Count){throw 'Unexpected changes outside measurement-only sidebar slice'}
           $headers=@{Authorization="Bearer $env:GH_TOKEN";Accept='application/vnd.github+json';'X-GitHub-Api-Version'='2022-11-28'}
           $zip=Join-Path $env:RUNNER_TEMP 'controller-c6f93.zip'
           Invoke-WebRequest -Headers $headers -Uri 'https://api.github.com/repos/grantcharlie1000-tech/Bowser/actions/artifacts/12136361999/zip' -OutFile $zip
@@ -131,7 +132,7 @@ jobs:
           git fetch --no-tags --depth=1 origin $source
           if($LASTEXITCODE -ne 0){throw 'Cannot fetch frozen sidebar build source'}
           $changes=@(git diff --name-only $source HEAD)
-          if($LASTEXITCODE -ne 0 -or @($changes|Where-Object {$_ -cnotin @('.github/workflows/production-performance.yml','benchmarks/production-baseline.ps1','benchmarks/sidebar-lifecycle.psm1','benchmarks/test-sidebar-lifecycle.ps1','benchmarks/sidebar-lifecycle-diagnostic.md')}).Count){throw 'Frozen sidebar EXE reuse allows only the reviewed harness correction'}
+          if($LASTEXITCODE -ne 0 -or @($changes|Where-Object {$_ -cnotin @('.github/workflows/production-performance.yml','benchmarks/production-baseline.ps1','benchmarks/sidebar-lifecycle.psm1','benchmarks/test-sidebar-lifecycle.ps1','benchmarks/sidebar-lifecycle-diagnostic.md','benchmarks/sidebar-preflight.psm1','benchmarks/test-sidebar-preflight.ps1')}).Count){throw 'Frozen sidebar EXE reuse allows only the reviewed harness correction'}
           git diff --exit-code $source HEAD -- src ui Cargo.toml Cargo.lock build.rs
           if($LASTEXITCODE -ne 0){throw 'Frozen sidebar runtime/build inputs changed'}
           $headers=@{Authorization="Bearer $env:GH_TOKEN";Accept='application/vnd.github+json';'X-GitHub-Api-Version'='2022-11-28'}
@@ -147,35 +148,17 @@ jobs:
           Copy-Item (Join-Path $cache 'candidate/*') ../evidence/candidate/ -Force
           # Preserve original candidate identity; HEAD identifies only the corrected harness.
           Copy-Item (Join-Path $cache 'input-manifest.json') ../evidence/input-manifest.json -Force
-          [ordered]@{harness_source=(git rev-parse HEAD).Trim();candidate_source=$source;candidate_tree=$identity.tree;candidate_sha256=$identity.sha256;artifact_id=12137628254;archive_sha256=$archiveHash;rebuild=$false;baseline_kind='Measurement-only current-minimizer line';same_exe_logging_on_off=$true;settled_pairs=3;rapid_pairs=1;planned_rows=16;previous_run='39132170003: 16 invalid setup rows preserved; missing ordinary Apps visibility and immediate foreground guard; zero webapp observations';stop='Fixed cohort, retain every failure; no retries/repair; identity/isolation failure blocks later lanes';scope='First B-open and retained resource/count baseline, not an optimization comparison or input correctness result'} | ConvertTo-Json | Set-Content ../evidence/sidebar-provenance.json
-      - name: Bounded native actual-module and HTML activation validity pass
-        id: validity
+          [ordered]@{harness_source=(git rev-parse HEAD).Trim();candidate_source=$source;candidate_tree=$identity.tree;candidate_sha256=$identity.sha256;artifact_id=12137628254;archive_sha256=$archiveHash;rebuild=$false;baseline_kind='Measurement-only current-minimizer line';same_frozen_exe=$true;planned_rows=1;capability_preflight=$true;previous_run='39132782846: 16 invalid rows preserved; unsupported InvokePattern and denied foreground activation; zero webapp observations';stop='Fixed cohort, retain every failure; no retries/repair; identity/isolation failure blocks later lanes';scope='One passive supported-pattern/foreground-ownership discovery on a new ordinary profile; no action, activation or resource/performance claim'} | ConvertTo-Json | Set-Content ../evidence/sidebar-provenance.json
+      - name: One passive sidebar supported-pattern and foreground-ownership preflight
         working-directory: candidate
         run: |
-          $control=@{};if($env:INTERACTION_DIAGNOSTIC_ONLY -eq 'true'){$control=@{DiagnosticAutoUpdateOff=$true;ExpectedInputManifest='../evidence/input-manifest.json'}}
-          ./benchmarks/production-baseline.ps1 -BaselineExe ../evidence/frozen/untouched-main.exe -DiagnosticExe ../evidence/sidebar-reference/reference.exe -DiagnosticSource (Get-Content ../evidence/sidebar-reference/identity.json -Raw | ConvertFrom-Json).source -ReleaseExe ../evidence/frozen/released-v0.0.19.exe -CandidateExe ../evidence/candidate/candidate.exe -CandidateSource (Get-Content ../evidence/candidate/identity.json -Raw | ConvertFrom-Json).source -Out ../evidence/validity @control -StartupOnly -Pairs 1 -Fixtures light -IdleSeconds 1 -MeasurementMode timing -MaxInvalidSamples 1
-      - name: Fixed settled sidebar logging ON OFF lifecycle and resource baseline
-        if: ${{ !cancelled() && steps.validity.outcome == 'success' }}
-        working-directory: candidate
-        run: |
-          ./benchmarks/production-baseline.ps1 -BaselineExe ../evidence/frozen/untouched-main.exe -DiagnosticExe ../evidence/sidebar-reference/reference.exe -DiagnosticSource (Get-Content ../evidence/sidebar-reference/identity.json -Raw | ConvertFrom-Json).source -ReleaseExe ../evidence/frozen/released-v0.0.19.exe -CandidateExe ../evidence/candidate/candidate.exe -CandidateSource (Get-Content ../evidence/candidate/identity.json -Raw | ConvertFrom-Json).source -DiagnosticAutoUpdateOff -ExpectedInputManifest ../evidence/input-manifest.json -SidebarLifecyclePilot -StartupOnly -PositiveOnly -Fixtures light -MeasurementMode timing -MaxInvalidSamples 20 -SidebarScenario settled -Pairs 3 -Out ../evidence/sidebar-settled
-      - name: Fixed rapid sidebar logging ON OFF lifecycle and resource baseline
-        if: ${{ !cancelled() && steps.validity.outcome == 'success' }}
-        working-directory: candidate
-        run: |
-          ./benchmarks/production-baseline.ps1 -BaselineExe ../evidence/frozen/untouched-main.exe -DiagnosticExe ../evidence/sidebar-reference/reference.exe -DiagnosticSource (Get-Content ../evidence/sidebar-reference/identity.json -Raw | ConvertFrom-Json).source -ReleaseExe ../evidence/frozen/released-v0.0.19.exe -CandidateExe ../evidence/candidate/candidate.exe -CandidateSource (Get-Content ../evidence/candidate/identity.json -Raw | ConvertFrom-Json).source -DiagnosticAutoUpdateOff -ExpectedInputManifest ../evidence/input-manifest.json -SidebarLifecyclePilot -StartupOnly -PositiveOnly -Fixtures light -MeasurementMode timing -MaxInvalidSamples 20 -SidebarScenario rapid -Pairs 1 -Out ../evidence/sidebar-rapid
-      - name: Derive descriptive paired statistics without accepting gains automatically
+          ./benchmarks/production-baseline.ps1 -BaselineExe ../evidence/frozen/untouched-main.exe -DiagnosticExe ../evidence/sidebar-reference/reference.exe -DiagnosticSource (Get-Content ../evidence/sidebar-reference/identity.json -Raw | ConvertFrom-Json).source -ReleaseExe ../evidence/frozen/released-v0.0.19.exe -CandidateExe ../evidence/candidate/candidate.exe -CandidateSource (Get-Content ../evidence/candidate/identity.json -Raw | ConvertFrom-Json).source -DiagnosticAutoUpdateOff -ExpectedInputManifest ../evidence/input-manifest.json -SidebarLifecyclePilot -SidebarCapabilityPreflight -StartupOnly -PositiveOnly -Fixtures light -MeasurementMode timing -MaxInvalidSamples 1 -Pairs 1 -Out ../evidence/sidebar-preflight
+      - name: Summarize passive preflight without performance statistics
         if: always()
         working-directory: candidate
         run: |
-          foreach($arm in @('validity','sidebar-settled','sidebar-rapid')) {
-            $folder="../evidence/$arm"
-            if(Test-Path "$folder/environment.json") {
-              python benchmarks/production-analyze.py $folder
-              if($LASTEXITCODE -ne 0){throw "Analysis failed for $arm; raw samples remain preserved"}
-              if($arm -like 'sidebar-*'){python benchmarks/sidebar-analyze.py $folder;if($LASTEXITCODE -ne 0){throw "Sidebar analysis failed for $arm"}}
-            }
-          }
+          $rows=@(Get-ChildItem ../evidence/sidebar-preflight -Filter '*-light-fresh.json' -ErrorAction SilentlyContinue | ForEach-Object {Get-Content $_.FullName -Raw | ConvertFrom-Json})
+          [ordered]@{planned_rows=1;actual_rows=$rows.Count;valid_rows=@($rows|Where-Object valid).Count;scope='Passive supported-pattern and foreground discovery only; no action or resource claim'} | ConvertTo-Json | Set-Content ../evidence/sidebar-preflight-summary.json
       - name: Preserve raw samples and frozen executables, not disposable renderer caches
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
@@ -194,6 +177,11 @@ jobs:
             evidence/validity/*stderr.txt
             evidence/validity/*.png
             evidence/validity/isolated/requests.jsonl
+            evidence/sidebar-preflight/*.json
+            evidence/sidebar-preflight/*.csv
+            evidence/sidebar-preflight/*.png
+            evidence/sidebar-preflight/*stderr.txt
+            evidence/sidebar-preflight/isolated/requests.jsonl
             evidence/sidebar-settled/*.json
             evidence/sidebar-settled/*.csv
             evidence/sidebar-settled/*.png

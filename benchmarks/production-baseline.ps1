@@ -22,6 +22,7 @@ param(
     [switch]$DiagnosticControllerFocus,
     [switch]$DiagnosticFocusTopology,
     [switch]$SidebarLifecyclePilot,
+    [switch]$SidebarCapabilityPreflight,
     [ValidateSet('settled','rapid')][string]$SidebarScenario='settled',
     [switch]$StartupOnly,
     [string]$CandidateExe,
@@ -45,6 +46,8 @@ if($DiagnosticNativeFocus -and (-not $DiagnosticInteractionPilot -or -not $Diagn
 if($DiagnosticControllerFocus -and -not $DiagnosticNativeFocus){throw 'Controller focus coverage requires the passive OS focus diagnostic lane'}
 if($DiagnosticFocusTopology -and -not $DiagnosticControllerFocus){throw 'Topology diagnostic requires native/controller focus coverage'}
 if($SidebarLifecyclePilot -and (-not $CandidateExe -or -not $StartupOnly -or -not $DiagnosticAutoUpdateOff -or $IncludeSurfaceSmoke -or $IncludeTabFlow -or $DiagnosticInteractionPilot -or $DiagnosticDetailPilot)){throw 'Sidebar pilot requires candidate, startup-only, ordinary updater OFF; no mixed surface/input/detail workload'}
+if($SidebarCapabilityPreflight -and (-not $SidebarLifecyclePilot -or $Pairs -ne 1 -or -not $PositiveOnly -or $Fixtures.Count -ne 1 -or $Fixtures[0] -cne 'light' -or $MeasurementMode -cne 'timing')){throw 'Passive sidebar preflight requires one positive light timing-only sidebar pair; exactly one fresh profile, no action/resource lane'}
+if($SidebarCapabilityPreflight){Import-Module "$PSScriptRoot/sidebar-preflight.psm1" -Force}
 if($SidebarLifecyclePilot){Import-Module "$PSScriptRoot/sidebar-lifecycle.psm1" -Force}
 if($DiagnosticNativeFocus){Import-Module "$PSScriptRoot/production-focus.psm1" -Force}
 $Out=[IO.Path]::GetFullPath($Out)
@@ -61,6 +64,7 @@ if ($CandidateExe) {
     if($DiagnosticDetailPilot) { $arms['candidate_detail_on']=(Resolve-BowserExecutable $CandidateExe) }
     if($DiagnosticInteractionPilot){$arms['baseline_interaction_on']=(Resolve-BowserExecutable $DiagnosticExe);$arms['candidate_interaction_on']=(Resolve-BowserExecutable $CandidateExe)}
     if($SidebarLifecyclePilot){$arms=[ordered]@{sidebar_off=(Resolve-BowserExecutable $CandidateExe);sidebar_on=(Resolve-BowserExecutable $CandidateExe)}}
+    if($SidebarCapabilityPreflight){$arms=[ordered]@{sidebar_preflight_on=(Resolve-BowserExecutable $CandidateExe)}}
     $inputPaths+=@($CandidateExe)
 }
 $hashes=Get-MeasurementInputHashes $inputPaths
@@ -396,7 +400,7 @@ try {
         power=(& powercfg /getactivescheme | Out-String).Trim(); resolution=[Windows.Forms.Screen]::PrimaryScreen.Bounds.ToString()
         webview2_runtime=@(Get-ChildItem 'C:/Program Files (x86)/Microsoft/EdgeWebView/Application' -Directory -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name)
         noise=@('Shared hosted runner, not a laptop/battery claim','Fresh profile is not cold OS cache',$(if($DiagnosticAutoUpdateOff){'Updater OFF via ordinary disposable-profile setting; interaction control, not primary workload'}else{'Updater remains production-enabled, isolated LOCALAPPDATA'}),'Samples are endpoint process-tree observations, not ETW complete','Working-set sums include shared pages','Fixture double-requestAnimationFrame is acknowledged page readiness, not proven display presentation','Title-based tab switch is only a proxy','Sampling overhead separately recorded; measured values are not overhead-subtracted','DOM telemetry QPC is native receipt time, not DOM event execution time; cross-process causality is not inferred from receipt order alone; flag OFF/ON controls stay separate','GetAsyncKeyState snapshots do not prove queued modifier messages have been processed; instrumented input lanes are diagnosis, not typing-latency acceptance')
-        workload_settings=@{history_records=10000; bookmark_records=818; startup='start_page overridden by ordinary --open-url'; first_run_offer='already answered synthetic profile'; security='unchanged defaults'; ui='HTML-default build, no BOWSER_UI override'; tab_flow=[bool]$IncludeTabFlow; surface_smoke=[bool]$IncludeSurfaceSmoke;surface_input_method=$SurfaceInputMethod;auto_update=if($DiagnosticAutoUpdateOff){'OFF ordinary disposable-profile control; not the primary workload'}else{'ON production default'};surface_input_scope=if($SurfaceInputMethod -eq 'uia-value'){'ValuePattern navigation/first-use control; bypasses keystrokes; may dispatch DOM input/change and autocomplete; not keyboard correctness'}else{'instrumented SendKeys keyboard diagnostic with UIA value/selection reads; no primary typing latency, retyping or retry'}; diagnostic_detail_pilot=[bool]$DiagnosticDetailPilot;diagnostic_interaction_pilot=[bool]$DiagnosticInteractionPilot;native_focus_observation=[bool]$DiagnosticNativeFocus;controller_focus_observation=[bool]$DiagnosticControllerFocus;focus_topology_observation=[bool]$DiagnosticFocusTopology;sidebar_lifecycle_pilot=[bool]$SidebarLifecyclePilot;sidebar_scenario=$SidebarScenario;native_focus_hypothesis=if($DiagnosticNativeFocus){'H1 OS keyboard focus differs from UIA between CtrlL/SetValue/Enter; HWND cannot establish a specific controller; H2 setText overwrite untested; passive observations perturb timing, no performance claim'}else{$null}; startup_only=[bool]$StartupOnly; resource_endpoint=if($SidebarLifecyclePilot){'Sidebar UIA-conditioned lifecycle resource phases; not comparable to prior UIA-free startup-only matrix'}elseif($StartupOnly){'settled initial one-tab navigation; no omnibox submission or UIA; not comparable to old post-Enter state'}else{'settled post-Enter one-tab navigation'}; resource_tab_count=if($IncludeTabFlow){5}else{1}}
+        workload_settings=@{history_records=10000; bookmark_records=818; startup='start_page overridden by ordinary --open-url'; first_run_offer='already answered synthetic profile'; security='unchanged defaults'; ui='HTML-default build, no BOWSER_UI override'; tab_flow=[bool]$IncludeTabFlow; surface_smoke=[bool]$IncludeSurfaceSmoke;surface_input_method=$SurfaceInputMethod;auto_update=if($DiagnosticAutoUpdateOff){'OFF ordinary disposable-profile control; not the primary workload'}else{'ON production default'};surface_input_scope=if($SurfaceInputMethod -eq 'uia-value'){'ValuePattern navigation/first-use control; bypasses keystrokes; may dispatch DOM input/change and autocomplete; not keyboard correctness'}else{'instrumented SendKeys keyboard diagnostic with UIA value/selection reads; no primary typing latency, retyping or retry'}; diagnostic_detail_pilot=[bool]$DiagnosticDetailPilot;diagnostic_interaction_pilot=[bool]$DiagnosticInteractionPilot;native_focus_observation=[bool]$DiagnosticNativeFocus;controller_focus_observation=[bool]$DiagnosticControllerFocus;focus_topology_observation=[bool]$DiagnosticFocusTopology;sidebar_lifecycle_pilot=[bool]$SidebarLifecyclePilot;sidebar_capability_preflight=[bool]$SidebarCapabilityPreflight;sidebar_scenario=$SidebarScenario;native_focus_hypothesis=if($DiagnosticNativeFocus){'H1 OS keyboard focus differs from UIA between CtrlL/SetValue/Enter; HWND cannot establish a specific controller; H2 setText overwrite untested; passive observations perturb timing, no performance claim'}else{$null}; startup_only=[bool]$StartupOnly; resource_endpoint=if($SidebarCapabilityPreflight){'Unavailable: passive capabilities/foreground discovery only, no resource sampling or performance claim'}elseif($SidebarLifecyclePilot){'Sidebar UIA-conditioned lifecycle resource phases; not comparable to prior UIA-free startup-only matrix'}elseif($StartupOnly){'settled initial one-tab navigation; no omnibox submission or UIA; not comparable to old post-Enter state'}else{'settled post-Enter one-tab navigation'}; resource_tab_count=if($IncludeTabFlow){5}else{1}}
     }
     $metadata | ConvertTo-Json -Depth 10 | Set-Content (Join-Path $Out 'environment.json') -Encoding utf8
     # Five-pair pilot by default. Alternate whole arm order each pair, same session/runtime/fixture seed.
@@ -412,7 +416,8 @@ try {
                 if($DiagnosticAutoUpdateOff -and (Test-Path -LiteralPath $profile)){throw 'Updater-off controls require newly created disposable roots, not existing profiles'}
                 Seed-Profile $profile 818
                 $freshOutcome=$null
-                foreach($condition in @('fresh','reused')) {
+                $conditions=if($SidebarCapabilityPreflight){@('fresh')}else{@('fresh','reused')}
+                foreach($condition in $conditions) {
                     if ($fixture -notin $Fixtures -and $condition -eq 'reused') { continue }
                     $token=([guid]::NewGuid().ToString('N')); $url="$base/$($fixture)?token=$token"
                     if($SidebarLifecyclePilot){
@@ -432,6 +437,7 @@ try {
                     try {
                         Assert-FrozenInputs $sample 'before-launch'
                         Confirm-NoStagedUpdate $profile
+                        if($SidebarCapabilityPreflight){$sidebarTrace.Add((Get-ProductionSidebarPreflightSnapshot -Boundary 'prelaunch'))}
                         $sample.launch_qpc=Qpc
                         $app=Start-Process -FilePath $arms[$arm] -ArgumentList $args -PassThru
                         $limit=[Diagnostics.Stopwatch]::StartNew(); $timeout=if($sample.expected_failure){4}else{30}
@@ -489,7 +495,7 @@ try {
                                 $sample[$state]=@($idleRows.ToArray());foreach($r in $idleRows){$snapshots.Add($r)}
                             }
                             }
-                            [void][BowserProductionNative]::ShowWindow([BowserProductionNative]::FindHost([uint32]$app.Id),9)
+                            if(-not $SidebarCapabilityPreflight){[void][BowserProductionNative]::ShowWindow([BowserProductionNative]::FindHost([uint32]$app.Id),9)}
                             $sample.valid=$true
                         }
                         if($IncludeSurfaceSmoke -and -not $sample.expected_failure){
@@ -506,7 +512,8 @@ try {
                         }
                         if($SidebarLifecyclePilot -and -not $sample.expected_failure){
                             $sample['sidebar_core_html']=Confirm-NativeCoreSurfaces
-                            Invoke-ProductionSidebarLifecycle -RootPid ([uint32]$app.Id) -Profile $profile -RequestFile $requestFile -AToken "$($token)_a" -BToken "$($token)_b" -Scenario $SidebarScenario -Trace $sidebarTrace
+                            if($SidebarCapabilityPreflight){$sample['sidebar_preflight']=Get-ProductionSidebarCapabilities -RootPid ([uint32]$app.Id) -Trace $sidebarTrace;if(-not $sample.sidebar_preflight.complete){throw 'Passive sidebar capability discovery incomplete'}}
+                            else {Invoke-ProductionSidebarLifecycle -RootPid ([uint32]$app.Id) -Profile $profile -RequestFile $requestFile -AToken "$($token)_a" -BToken "$($token)_b" -Scenario $SidebarScenario -Trace $sidebarTrace}
                         }
                         # Inventory only after all cheap timing endpoints, to establish exact identities for drain.
                         $ownedBeforeClose=@(Get-ProcessGroupMembers -RootPid $app.Id -Profile $profile -Inventory @(Get-ProcessInventory))
@@ -573,7 +580,8 @@ try {
                             if($sample.native_focus_observation_errors.Count){$sample.valid=$false;$sample.observation_error='Native OS focus snapshot unavailable; focus attribution incomplete';if(-not $sample.error){$sample.error=$sample.observation_error}}
                         }
                         if($arm.EndsWith('_on') -and (Test-Path $eventFile)){$sample.events=@(Import-Csv $eventFile)}
-                        if($SidebarLifecyclePilot){
+                        if($SidebarCapabilityPreflight){$sample.sidebar_observation=[ordered]@{complete=$null;exclusion_reason='Passive capabilities preflight; no app action or lifecycle/count measurement'}}
+                        elseif($SidebarLifecyclePilot){
                             $expectedSidebarApps=@($sample.sidebar_trace|Where-Object {$_.kind -ceq 'visible-app' -and $_.ack_count -gt 0 -and $_.visible_document_count -gt 0}|ForEach-Object {$_.app_id}|Sort-Object -Unique)
                             $sample.sidebar_observation=if($arm.EndsWith('_on')){Get-ProductionSidebarLedger $sample.events -ExpectedApps $expectedSidebarApps}else{[ordered]@{complete=$null;exclusion_reason='Diagnostic logging OFF; counts unavailable, not zero or passed'}}
                             if($arm.EndsWith('_on') -and -not $sample.sidebar_observation.complete){$sample.valid=$false;$sample.observation_error='Sidebar lifecycle observation incomplete';if(-not $sample.error){$sample.error=$sample.observation_error}}
@@ -609,7 +617,7 @@ try {
     }
     $summary=foreach($group in @($rows|Group-Object arm,fixture,condition)) {
         $first=$group.Group[0];$valid=@($group.Group|Where-Object {$_.valid -and -not $_.expected_failure})
-        [ordered]@{arm=$first.arm;fixture=$first.fixture;condition=$first.condition;valid_count=@($group.Group|Where-Object valid).Count;invalid_count=@($group.Group|Where-Object {-not $_.valid}).Count;expected_failure_count=@($group.Group|Where-Object expected_failure).Count;launch_to_fixture_ack_ms=(Get-ProductionDistribution @($valid|ForEach-Object {($_.ready_qpc-$_.launch_qpc)*1000.0/[Diagnostics.Stopwatch]::Frequency})); errors=@($group.Group|Where-Object error|ForEach-Object error)}
+        [ordered]@{arm=$first.arm;fixture=$first.fixture;condition=$first.condition;valid_count=@($group.Group|Where-Object valid).Count;invalid_count=@($group.Group|Where-Object {-not $_.valid}).Count;expected_failure_count=@($group.Group|Where-Object expected_failure).Count;launch_to_fixture_ack_ms=if($SidebarCapabilityPreflight){$null}else{Get-ProductionDistribution @($valid|ForEach-Object {($_.ready_qpc-$_.launch_qpc)*1000.0/[Diagnostics.Stopwatch]::Frequency})};latency_exclusion_reason=if($SidebarCapabilityPreflight){'Passive capabilities discovery, not a timing comparison'}else{$null}; errors=@($group.Group|Where-Object error|ForEach-Object error)}
     }
     $summary | ConvertTo-Json -Depth 15 | Set-Content (Join-Path $Out 'summary.json') -Encoding utf8
     Assert-MeasurementInputHashesUnchanged $hashes (Get-MeasurementInputHashes $inputPaths) | Out-Null
