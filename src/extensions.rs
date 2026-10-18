@@ -891,24 +891,27 @@ pub fn write_records(records_file: &Path, records: &[Record]) -> Result<(), Exte
             sanitize_text(&record.version)
         ));
     }
-    if let Some(parent) = records_file.parent() {
-        fs::create_dir_all(parent).map_err(|_| ExtensionError::Io)?;
-    }
-    if let Some(parent) = records_file.parent() {
-        fs::create_dir_all(parent).map_err(|_| ExtensionError::Io)?;
+    if let Some(parent) = records_file.parent().filter(|parent| !parent.as_os_str().is_empty()) {
+        ensure_plain_dir(parent)?;
     }
     let mut temporary = records_file.as_os_str().to_owned();
-    temporary.push(".tmp");
+    temporary.push(format!(".tmp-{}", std::process::id()));
     let temporary = PathBuf::from(temporary);
+    let mut created = false;
     let result = (|| -> io::Result<()> {
-        let mut file = File::create(&temporary)?;
+        // Never open an existing temporary file/link, and never delete somebody else's entry
+        // when creation fails. Profile mutation callers already own the records/runtime leases.
+        let mut file = fs::OpenOptions::new().write(true).create_new(true)
+            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT).open(&temporary)?;
+        created = true;
+        if !is_plain_file(&file.metadata()?) { return Err(io::Error::other("unsafe record temporary file")); }
         file.write_all(text.as_bytes())?;
         file.sync_all()?;
         drop(file);
         fs::rename(&temporary, records_file)
     })();
     result.map_err(|_| {
-        let _ = fs::remove_file(&temporary);
+        if created { let _ = fs::remove_file(&temporary); }
         ExtensionError::Io
     })
 }
@@ -1525,6 +1528,51 @@ mod tests {
 
     const MV3: &str = r#"{"manifest_version": 3, "name": "Demo", "version": "1.2.3",
         "permissions": ["storage", "tabs"], "host_permissions": ["https://example.com/*"]}"#;
+
+    #[test]
+    fn record_write_preserves_preexisting_temporary_file_and_authority() {
+        let root = temp_dir("records-create-new-file"); let records = root.join("extensions.txt");
+        let original = Record { id: "ext-0000000000000001".into(), enabled: true, name: "Original".into(), version: "1".into() };
+        write_records(&records, std::slice::from_ref(&original)).unwrap();
+        let before = fs::read(&records).unwrap();
+        let temporary = PathBuf::from(format!("{}.tmp-{}", records.display(), std::process::id()));
+        fs::write(&temporary, b"preexisting data must survive").unwrap();
+        assert_eq!(write_records(&records, &[]), Err(ExtensionError::Io));
+        assert_eq!(fs::read(&records).unwrap(), before);
+        assert_eq!(fs::read(&temporary).unwrap(), b"preexisting data must survive");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn record_write_preserves_preexisting_temporary_directory() {
+        let root = temp_dir("records-create-new-dir"); let records = root.join("extensions.txt");
+        let temporary = PathBuf::from(format!("{}.tmp-{}", records.display(), std::process::id()));
+        fs::create_dir(&temporary).unwrap(); fs::write(temporary.join("keep"), b"untouched").unwrap();
+        assert_eq!(write_records(&records, &[]), Err(ExtensionError::Io));
+        assert!(!records.exists()); assert_eq!(fs::read(temporary.join("keep")).unwrap(), b"untouched");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn record_write_does_not_follow_or_remove_temporary_junction() {
+        let root = temp_dir("records-create-new-junction"); let outside = temp_dir("records-create-new-junction-outside");
+        let records = root.join("extensions.txt");
+        let temporary = PathBuf::from(format!("{}.tmp-{}", records.display(), std::process::id()));
+        fs::write(outside.join("keep"), b"untouched").unwrap(); make_junction(&temporary, &outside);
+        assert_eq!(write_records(&records, &[]), Err(ExtensionError::Io));
+        assert!(fs::symlink_metadata(&temporary).unwrap().file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0);
+        assert_eq!(fs::read(outside.join("keep")).unwrap(), b"untouched"); assert!(!records.exists());
+        fs::remove_dir(&temporary).unwrap(); let _ = fs::remove_dir_all(root); let _ = fs::remove_dir_all(outside);
+    }
+
+    #[test]
+    fn record_write_refuses_reparse_parent_without_touching_target() {
+        let root = temp_dir("records-parent-junction"); let outside = temp_dir("records-parent-junction-outside");
+        fs::write(outside.join("keep"), b"untouched").unwrap(); let parent = root.join("linked"); make_junction(&parent, &outside);
+        assert_eq!(write_records(&parent.join("extensions.txt"), &[]), Err(ExtensionError::OutsideExtensions));
+        assert!(!outside.join("extensions.txt").exists()); assert_eq!(fs::read(outside.join("keep")).unwrap(), b"untouched");
+        fs::remove_dir(&parent).unwrap(); let _ = fs::remove_dir_all(root); let _ = fs::remove_dir_all(outside);
+    }
 
     #[test]
     fn strict_runtime_records_reject_malformed_duplicate_and_oversized_authority() {
