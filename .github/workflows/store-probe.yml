@@ -36,8 +36,6 @@ jobs:
           $env:BOWSER_EXTENSION_TRACE = '1'
           $env:LOCALAPPDATA = Join-Path $env:RUNNER_TEMP 'bowser-store-isolated-localappdata'
           New-Item -ItemType Directory -Force $env:LOCALAPPDATA | Out-Null
-          $env:LOCALAPPDATA = Join-Path $env:RUNNER_TEMP 'bowser-store-isolated-localappdata'
-          New-Item -ItemType Directory -Force $env:LOCALAPPDATA | Out-Null
           $test = Get-ChildItem target/debug/deps/bowser-*.exe | Sort-Object LastWriteTime -Descending | Select-Object -First 1
           & $test.FullName live_store_current_extension_loads --ignored --nocapture --test-threads=1 2>&1 | Tee-Object store-runtime-probe.log
           if ($LASTEXITCODE -ne 0) { throw 'Real extension load diagnostic failed.' }
@@ -57,6 +55,13 @@ jobs:
           $test = Get-ChildItem target/debug/deps/bowser-*.exe | Sort-Object LastWriteTime -Descending | Select-Object -First 1
           & $test.FullName live_probe_same_identity_update_and_rollback --ignored --nocapture --test-threads=1 2>&1 | Tee-Object store-update-probe.log
           if ($LASTEXITCODE -ne 0) { throw 'Update/storage/rollback feasibility probe failed.' }
+      - name: Probe genuine action activeTab through in-process CDP without unsafe flags
+        run: |
+          $env:BOWSER_EXTENSION_TRACE = '1'
+          $env:LOCALAPPDATA = Join-Path $env:RUNNER_TEMP 'bowser-store-isolated-localappdata'
+          $test = Get-ChildItem target/debug/deps/bowser-*.exe | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          & $test.FullName live_probe_native_action_active_tab --ignored --nocapture --test-threads=1 2>&1 | Tee-Object store-action-probe.log
+          if ($LASTEXITCODE -ne 0) { throw 'Action activeTab feasibility fixture failed.' }
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '22'
@@ -66,6 +71,11 @@ jobs:
       - name: Capture real-browser Store rendering, not native installation evidence
         working-directory: ui
         run: node scripts/capture-store.mjs "$env:RUNNER_TEMP/bowser-store-rendering"
+      - name: Build and capture genuine native Store window in a disposable profile
+        run: |
+          cargo +stable build --locked --bin bowser --features html-chrome-default
+          if ($LASTEXITCODE -ne 0) { throw 'Native Store debug build failed.' }
+          ./benchmarks/scripts/probe-native-store.ps1
       - name: Save diagnostic evidence, including unavailable packages
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -76,6 +86,8 @@ jobs:
             store-runtime-probe.log
             store-fixture-probe.log
             store-update-probe.log
+            store-action-probe.log
             ${{ runner.temp }}/bowser-store-rendering/
+            ${{ runner.temp }}/bowser-native-store/
           if-no-files-found: error
           retention-days: 14

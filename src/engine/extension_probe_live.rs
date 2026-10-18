@@ -399,8 +399,12 @@ impl Session {
     }
 
     fn protocol(&self, tab: TabId, method: &str, params: &str) -> Option<String> {
+        self.protocol_session(tab, None, method, params)
+    }
+
+    fn protocol_session(&self, tab: TabId, session: Option<&str>, method: &str, params: &str) -> Option<String> {
         let slot = Rc::new(RefCell::new(None)); let sink = slot.clone();
-        self.engine.probe_protocol(tab, method, params, Box::new(move |result| *sink.borrow_mut() = Some(result)));
+        self.engine.probe_protocol_session(tab, session, method, params, Box::new(move |result| *sink.borrow_mut() = Some(result)));
         pump_until(Duration::from_secs(15), || slot.borrow().is_some());
         slot.borrow_mut().take().flatten()
     }
@@ -825,5 +829,54 @@ fn live_probe_same_identity_update_and_rollback() {
     println!("API_PROBE scope=disposable-profile target_inventory={targets:?}");
     let stopped = session.protocol(session.tab(), "ServiceWorker.stopAllWorkers", "{}");
     println!("API_PROBE worker_stop={stopped:?}");
+    session.close(); drop(loopback); remove_with_retries(&root);
+}
+
+/// Genuine action/activeTab feasibility, not a synthesized click or a host-side permission grant.
+/// This fixture has no host permissions and cannot inject until a real action grant exists.
+#[test]
+#[ignore = "live in-process CDP action feasibility; disposable fixture only"]
+fn live_probe_native_action_active_tab() {
+    unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED).ok().unwrap() };
+    let root = temp_root();
+    let source = root.join("active-tab-source"); std::fs::create_dir(&source).unwrap();
+    let raw = std::fs::read_to_string(fixture("probe-mv3-key").join("manifest.json")).unwrap();
+    let key = json_string(&raw.replace(": ", ":"), "key").expect("fixture development public key");
+    let manifest = format!(r#"{{"manifest_version":3,"name":"Disposable activeTab feasibility","version":"0.0.1","key":"{key}","permissions":["activeTab","scripting"],"action":{{"default_title":"Test action"}},"background":{{"service_worker":"worker.js"}}}}"#);
+    std::fs::write(source.join("manifest.json"), manifest).unwrap();
+    std::fs::write(source.join("worker.js"), r#"chrome.action.onClicked.addListener(tab=>{
+      chrome.scripting.executeScript({target:{tabId:tab.id},func:()=>document.documentElement.setAttribute('data-action-active-tab','granted-by-real-action')});
+    });"#).unwrap();
+    let profile = root.join("action-profile");
+    let record = extensions::install(&source, &profile.join("Extensions"), &profile.join("extensions.txt")).unwrap();
+    let folder = extensions::folder_for(&profile.join("Extensions"), &record.id).unwrap();
+    let loopback = Loopback::start();
+    let mut session = Session::open(&profile, vec![(record.id.clone(), folder)], vec![(record.id.clone(), true)], &loopback.page("action-target"));
+    let (runtime_id, failure) = session.wait_for_add(&profile, &record.id);
+    assert_eq!(runtime_id.as_deref(), Some(KEY_FIXTURE_ID)); assert!(failure.is_none());
+    pump_until(Duration::from_secs(2), || false);
+    assert!(!session.read_marker("data-action-active-tab").unwrap_or_default().contains("granted-by-real-action"));
+    let targets = session.protocol(session.tab(), "Target.getTargets", "{}");
+    println!("ACTION_PROBE inventory={targets:?}");
+    let info = session.protocol(session.tab(), "Target.getTargetInfo", "{}");
+    println!("ACTION_PROBE owning_target={info:?}");
+    let browser_attach = session.protocol(session.tab(), "Target.attachToBrowserTarget", "{}");
+    println!("ACTION_PROBE browser_attach={browser_attach:?}");
+    let browser_session = browser_attach.as_deref().and_then(|text| json_string(text, "sessionId"));
+    if let Some(browser_session) = browser_session.as_deref() {
+        println!("ACTION_PROBE browser_inventory={:?}", session.protocol_session(session.tab(), Some(browser_session), "Target.getTargets", "{}"));
+        println!("ACTION_PROBE browser_extension_domain={:?}", session.protocol_session(session.tab(), Some(browser_session), "Extensions.getExtensions", "{}"));
+    }
+    // Do not manufacture a relationship between page and tab targets, or bind by URL/title.
+    if info.as_deref().and_then(|text| json_string(text, "type")).as_deref() == Some("tab")
+        && let Some(target_id) = info.as_deref().and_then(|text| json_string(text, "targetId"))
+    {
+        let params = format!(r#"{{"id":"{KEY_FIXTURE_ID}","targetId":"{target_id}"}}"#);
+        let action = session.protocol_session(session.tab(), browser_session.as_deref(), "Extensions.triggerAction", &params);
+        println!("ACTION_PROBE genuine_trigger={action:?}");
+        pump_until(Duration::from_secs(3), || false);
+        let marker = session.read_marker("data-action-active-tab");
+        println!("ACTION_PROBE injection_marker={marker:?} verdict={}", if marker.as_deref().is_some_and(|v| v.contains("granted-by-real-action")) { "single-target-feasibility-only" } else { "unsupported-or-unavailable-no-grant-fabricated" });
+    } else { println!("ACTION_PROBE verdict=no-bound-owning-tab-target-no-action-attempted"); }
     session.close(); drop(loopback); remove_with_retries(&root);
 }

@@ -5609,21 +5609,31 @@ mod tests {
         }
 
         /// Test-only COM protocol call on a specific disposable tab, never a debugging port.
-        pub(in crate::engine) fn probe_protocol(
-            &self, tab: TabId, method: &str, params: &str,
+        pub(in crate::engine) fn probe_protocol_session(
+            &self, tab: TabId, session: Option<&str>, method: &str, params: &str,
             done: Box<dyn FnOnce(Option<String>)>,
         ) {
             let webview = self.core.borrow().tabs.get(&tab).and_then(|tab| tab.webview.clone());
             let Some(webview) = webview else { done(None); return; };
             let slot = Rc::new(RefCell::new(Some(done)));
             let sink = slot.clone();
+            let logged_method = method.to_owned();
             let handler = CallDevToolsProtocolMethodCompletedHandler::create(Box::new(move |status, answer| {
+                println!("API_PROBE method={logged_method} completion_hresult={status:?} response={answer}");
                 if let Some(done) = sink.borrow_mut().take() { done(status.is_ok().then_some(answer)); }
                 Ok(())
             }));
             let method = HSTRING::from(method); let params = HSTRING::from(params);
-            if unsafe { webview.CallDevToolsProtocolMethod(PCWSTR(method.as_ptr()), PCWSTR(params.as_ptr()), &handler) }.is_err()
-                && let Some(done) = slot.borrow_mut().take() { done(None); }
+            let result = if let Some(session) = session {
+                let session = HSTRING::from(session);
+                webview.cast::<ICoreWebView2_11>().and_then(|webview| unsafe {
+                    webview.CallDevToolsProtocolMethodForSession(PCWSTR(session.as_ptr()), PCWSTR(method.as_ptr()), PCWSTR(params.as_ptr()), &handler)
+                })
+            } else { unsafe { webview.CallDevToolsProtocolMethod(PCWSTR(method.as_ptr()), PCWSTR(params.as_ptr()), &handler) } };
+            if let Err(error) = result {
+                println!("API_PROBE call_hresult={:?}", error.code());
+                if let Some(done) = slot.borrow_mut().take() { done(None); }
+            }
         }
 
         /// Runs a script in the open hosted page.
