@@ -478,7 +478,17 @@ impl PreparedInstall {
 
     /// Re-read the actual copy and records after consent. No source folder is consulted and the
     /// reviewed declarations must still match. Writing the record is the install commit point.
-    pub fn commit(mut self) -> Result<Record, ExtensionError> {
+    pub fn commit(self) -> Result<Record, ExtensionError> {
+        let name = self.inspection.manifest.name.clone();
+        self.commit_named(&name)
+    }
+
+    /// Store callers supply the resolved localized name shown in the matching permission review.
+    /// This affects display only; all declarations and package bytes remain bound to the review.
+    pub(crate) fn commit_named(mut self, name: &str) -> Result<Record, ExtensionError> {
+        if name.is_empty() || name.chars().count() > MAX_NAME_CHARS
+            || name.chars().any(|c| c.is_control() || is_invisible_format(c))
+        { return Err(ExtensionError::InvalidName); }
         if inspect_source(&self.folder()?)? != self.inspection
             || tree_fingerprint(&self.folder()?)? != self.fingerprint
         {
@@ -489,7 +499,7 @@ impl PreparedInstall {
         if records.iter().any(|record| record.id == self.id) { return Err(ExtensionError::InvalidRecords); }
         let record = Record {
             id: self.id.clone(), enabled: true,
-            name: self.inspection.manifest.name.clone(),
+            name: name.to_owned(),
             version: self.inspection.manifest.version.clone(),
         };
         records.push(record.clone());

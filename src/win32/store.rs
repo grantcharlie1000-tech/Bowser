@@ -137,7 +137,7 @@ pub(crate) fn run(owner: HWND, app: &AppRef, fields: &PanelFields) -> bool {
                 state.phase = "installing"; state.review.take()
             });
             if let (Some(review), Some(profile)) = (review, profile) {
-                let result = review.prepared.commit().map(Some).map_err(|error| error.to_string());
+                let result = review.prepared.commit_named(&review.name).map(Some).map_err(|error| error.to_string());
                 match super::window::finish_install(app, &profile, result) {
                     Ok(true) => { with(owner, |state| { state.phase = "ready"; state.error.clear(); }); changed(owner); }
                     Ok(false) => error(owner, "No extension was installed."),

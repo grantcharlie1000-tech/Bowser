@@ -75,7 +75,7 @@ jobs:
         run: |
           cargo +stable build --locked --bin bowser --features html-chrome-default
           if ($LASTEXITCODE -ne 0) { throw 'Native Store debug build failed.' }
-          ./benchmarks/scripts/probe-native-store.ps1
+          ./benchmarks/scripts/probe-native-store.ps1 -InstallJourney
       - name: Save diagnostic evidence, including unavailable packages
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

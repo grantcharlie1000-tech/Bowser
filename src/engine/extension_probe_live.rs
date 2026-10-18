@@ -748,7 +748,7 @@ fn live_store_current_extension_loads() {
         let reviewed = review.prepared.inspection().manifest.clone();
         println!("REAL_STORE name={name} id={id} version={} stage=permission_review required={:?} hosts={:?} scripts={:?} optional={:?} optional_hosts={:?}", reviewed.version, reviewed.permissions, reviewed.host_permissions, reviewed.content_script_matches, reviewed.optional_permissions, reviewed.optional_host_permissions);
         // Explicit test-harness consent to exactly the verified copy, never credentials/accounts.
-        let record = review.prepared.commit().expect("test-only reviewed package consent");
+        let record = review.prepared.commit_named(&review.name).expect("test-only reviewed package consent");
         let folder = extensions::folder_for(&profile.join("Extensions"), &record.id).unwrap();
         let loopback = Loopback::start();
         let mut session = Session::open(&profile, vec![(record.id.clone(), folder.clone())], vec![(record.id.clone(), true)], &loopback.page("real-first"));
@@ -839,7 +839,9 @@ fn live_probe_same_identity_update_and_rollback() {
     assert!(live_version.contains("0.0.1"));
     let targets = session.protocol(session.tab(), "Target.getTargets", r#"{"filter":[{}]}"#);
     println!("API_PROBE scope=disposable-profile target_inventory={targets:?}");
-    let stopped = session.protocol(session.tab(), "ServiceWorker.stopAllWorkers", "{}");
+    let enabled = session.protocol(session.tab(), "ServiceWorker.enable", "{}");
+    println!("API_PROBE worker_domain_enable={enabled:?}");
+    let stopped = if enabled.is_some() { session.protocol(session.tab(), "ServiceWorker.stopAllWorkers", "{}") } else { None };
     println!("API_PROBE worker_stop={stopped:?}");
     session.close(); drop(loopback); remove_with_retries(&root);
 }
@@ -872,36 +874,9 @@ fn live_probe_native_action_active_tab() {
     println!("ACTION_PROBE inventory={targets:?}");
     let info = session.protocol(session.tab(), "Target.getTargetInfo", "{}");
     println!("ACTION_PROBE owning_target={info:?}");
-    let browser_attach = session.protocol(session.tab(), "Target.attachToBrowserTarget", "{}");
-    println!("ACTION_PROBE browser_attach={browser_attach:?}");
-    let browser_session = browser_attach.as_deref().and_then(|text| protocol_string(text, None, "sessionId"));
-    let browser_inventory = browser_session.as_deref().and_then(|browser_session| {
-        let inventory = session.protocol_session(session.tab(), Some(browser_session), "Target.getTargets", r#"{"filter":[{}]}"#);
-        println!("ACTION_PROBE browser_inventory={inventory:?}");
-        println!("ACTION_PROBE browser_extension_domain={:?}", session.protocol_session(session.tab(), Some(browser_session), "Extensions.getExtensions", "{}"));
-        inventory
-    });
-    // Only the exact owning target, or its explicitly reported parent of verified type tab.
-    // Never manufacture a relationship or bind by URL/title, even for duplicate-URL tabs.
-    let target_id = info.as_deref().and_then(|text| {
-        if protocol_string(text, Some("targetInfo"), "type").as_deref() == Some("tab") { return protocol_string(text, Some("targetInfo"), "targetId"); }
-        let parent = protocol_string(text, Some("targetInfo"), "parentId")?;
-        use extensions::json::{self, Value};
-        let Value::Object(fields) = json::parse(browser_inventory.as_deref()?)? else { return None; };
-        let Value::Array(targets) = json::get(&fields, "targetInfos")? else { return None; };
-        targets.iter().any(|target| {
-            let Value::Object(fields) = target else { return false; };
-            json::get(fields, "targetId") == Some(&Value::String(parent.clone()))
-                && json::get(fields, "type") == Some(&Value::String("tab".into()))
-        }).then_some(parent)
-    });
-    if let Some(target_id) = target_id {
-        let params = format!(r#"{{"id":"{KEY_FIXTURE_ID}","targetId":"{target_id}"}}"#);
-        let action = session.protocol_session(session.tab(), browser_session.as_deref(), "Extensions.triggerAction", &params);
-        println!("ACTION_PROBE genuine_trigger={action:?}");
-        pump_until(Duration::from_secs(3), || false);
-        let marker = session.read_marker("data-action-active-tab");
-        println!("ACTION_PROBE injection_marker={marker:?} verdict={}", if marker.as_deref().is_some_and(|v| v.contains("granted-by-real-action")) { "single-target-feasibility-only" } else { "unsupported-or-unavailable-no-grant-fabricated" });
-    } else { println!("ACTION_PROBE verdict=no-bound-owning-tab-target-no-action-attempted"); }
+    // Runtime 154.0.4258.62 explicitly refused Target.attachToBrowserTarget with protocol
+    // -32000 "Not allowed" (run39087008886). Do not retry that denied route or use flags/ports
+    // to reach the same browser target. Discovery is not a grant or a compatibility pass.
+    println!("ACTION_PROBE verdict=unsupported-browser-target-route-explicitly-denied-no-action-attempted");
     session.close(); drop(loopback); remove_with_retries(&root);
 }
