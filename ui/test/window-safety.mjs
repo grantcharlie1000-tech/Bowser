@@ -116,3 +116,15 @@ test('sleep script conservatively preserves blurred edits and unreadable frame s
   let deep = page(); for (let depth = 0; depth < 10; depth++) { const parent = page(); parent.frames = [deep]; deep = parent; }
   assert.equal(blocked(deep), true, 'unvisited frame depth is unknown, not safe');
 });
+
+test('stable verifier cannot pass without each actual launcher remote response', () => {
+  const verifier = read('benchmarks/scripts/verify-stable-package.ps1');
+  assert.match(verifier, /GetEnvironmentVariable\('BOWSER_STABLE_VERIFIER_CAPTURE_PATH', 'Process'\)/);
+  assert.doesNotMatch(verifier, /WriteAllText\(\$script:CapturePath/);
+  assert.match(verifier, /Microsoft\.PowerShell\.Utility\\Invoke-WebRequest @PSBoundParameters -TimeoutSec 60/);
+  assert.match(verifier, /if \(Test-Path -LiteralPath \(\$capture \+ '\.error\.txt'\)\) \{[\s\S]*?throw/);
+  assert.match(verifier, /if \(-not \(Test-Path -LiteralPath \$capture -PathType Leaf\)[\s\S]*?throw "Actual launcher remote response was not captured/);
+  assert.match(verifier, /catch \{ throw "Captured launcher remote response is malformed/);
+  assert.match(verifier, /launcherOutput\.Contains\(\$expectedLine\)/);
+  assert.match(verifier, /actual_launcher_remote_response_observed_both_attempts = \$true/);
+});

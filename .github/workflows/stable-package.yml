@@ -1,0 +1,176 @@
+name: Verify stable package
+
+# Historical releases do not contain the new metadata contract. Run only when
+# the final stable pin itself changes, after its public release assets exist.
+on:
+  push:
+    branches: [main]
+    paths: [stable/release.json]
+  pull_request:
+    branches: [main]
+    paths: [stable/release.json]
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    outputs:
+      checkout: ${{ steps.verify.outputs.checkout }}
+      tag: ${{ steps.verify.outputs.tag }}
+      source: ${{ steps.verify.outputs.source }}
+      sha256: ${{ steps.verify.outputs.sha256 }}
+      bytes: ${{ steps.verify.outputs.bytes }}
+      revision: ${{ steps.verify.outputs.revision }}
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Preserve fingerprinted source bytes
+        run: git config --global core.autocrlf false
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Parse verification and launcher scripts before network or install
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $out = Join-Path $env:RUNNER_TEMP 'bowser-stable-package'
+          New-Item -ItemType Directory -Force $out | Out-Null
+          $checks = @()
+          foreach ($path in @('benchmarks/scripts/verify-stable-package.ps1', 'Open-Bowser.ps1')) {
+            $tokens = $null
+            $parseErrors = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile((Join-Path $PWD $path), [ref]$tokens, [ref]$parseErrors)
+            $checks += [ordered]@{
+              script = $path
+              errors = @($parseErrors | ForEach-Object { [ordered]@{ message = $_.Message; text = $_.Extent.Text } })
+            }
+            # The isolated launcher wrapper is an embedded literal here-string;
+            # parse its body too, rather than checking only the outer script.
+            if ($path -eq 'benchmarks/scripts/verify-stable-package.ps1') {
+              $wrappers = @($tokens | Where-Object { $_.Kind -eq 'HereStringLiteral' -and $_.Value.StartsWith('param([string]$Launcher,') })
+              if ($wrappers.Count -ne 1) { throw 'Could not identify exactly one isolated launcher wrapper.' }
+              $wrapperErrors = $null
+              $wrapperTokens = $null
+              [void][System.Management.Automation.Language.Parser]::ParseInput($wrappers[0].Value, [ref]$wrapperTokens, [ref]$wrapperErrors)
+              $checks += [ordered]@{
+                script = 'embedded isolated launcher wrapper'
+                errors = @($wrapperErrors | ForEach-Object { [ordered]@{ message = $_.Message; text = $_.Extent.Text } })
+              }
+            }
+          }
+          $checks | ConvertTo-Json -Depth 8 | Set-Content -Encoding utf8 (Join-Path $out 'powershell-parse.json')
+          if (@($checks | Where-Object { $_.errors.Count -ne 0 }).Count -ne 0) { throw 'PowerShell parse failed; see diagnostic artifact.' }
+      - name: Verify public package and isolated no-launch installation
+        id: verify
+        run: |
+          & pwsh -NoProfile -NonInteractive -File benchmarks/scripts/verify-stable-package.ps1 -Out "$env:RUNNER_TEMP/bowser-stable-package"
+          if ($LASTEXITCODE -ne 0) { throw 'Stable package verification failed.' }
+          $report = Get-Content "$env:RUNNER_TEMP/bowser-stable-package/stable-package.json" -Raw | ConvertFrom-Json
+          if ($report.status -cne 'passed_isolated_stable_package_verification' -or $report.checkout_commit -cne $env:GITHUB_SHA -or $report.attempts.Count -ne 2 -or $report.checks.second_run_idempotent -ne $true) { throw 'Stable package verification did not complete with the expected checkout and two matching installs.' }
+          $pin = $report.checked_out_pin
+          foreach ($item in @{
+            checkout = $report.checkout_commit
+            tag = $pin.tag
+            source = $pin.commit
+            sha256 = $pin.sha256
+            bytes = $pin.bytes
+            revision = $pin.revision
+          }.GetEnumerator()) { "$($item.Key)=$($item.Value)" | Out-File $env:GITHUB_OUTPUT -Encoding utf8 -Append }
+      - name: Preserve diagnostic evidence even on failure
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: stable-package-${{ github.sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/bowser-stable-package/
+          if-no-files-found: warn
+          retention-days: 14
+
+
+  mark-latest:
+    needs: verify
+    if: needs.verify.result == 'success' && github.repository == 'grantcharlie1000-tech/Bowser' && github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: windows-latest
+    timeout-minutes: 10
+    # Only this main-only job receives ephemeral publication permission. It runs
+    # no repository scripts, dependency installs, builds or candidate executable.
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Reconfirm verified package identity and mark the pinned release latest
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERIFIED_CHECKOUT: ${{ needs.verify.outputs.checkout }}
+          VERIFIED_TAG: ${{ needs.verify.outputs.tag }}
+          VERIFIED_SOURCE: ${{ needs.verify.outputs.source }}
+          VERIFIED_SHA256: ${{ needs.verify.outputs.sha256 }}
+          VERIFIED_BYTES: ${{ needs.verify.outputs.bytes }}
+          VERIFIED_REVISION: ${{ needs.verify.outputs.revision }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-StrictMode -Version Latest
+          $repo = 'grantcharlie1000-tech/Bowser'
+          $source = (git rev-parse HEAD).Trim()
+          if ($LASTEXITCODE -ne 0 -or $source -cne $env:GITHUB_SHA -or $source -cne $env:VERIFIED_CHECKOUT) { throw 'Publisher checkout differs from the verified pin checkout.' }
+          $pin = Get-Content stable/release.json -Raw | ConvertFrom-Json
+          if ($pin.repository -cne $repo -or $pin.tag -cne 'v0.0.19' -or $pin.version -cne '0.0.19' -or $pin.revision -ne 20 -or $pin.asset -cne 'Bowser.exe') { throw 'Latest promotion is restricted to the verified v0.0.19 revision-20 recovery release.' }
+          if ($pin.tag -cne $env:VERIFIED_TAG -or $pin.commit -cne $env:VERIFIED_SOURCE -or $pin.sha256 -cne $env:VERIFIED_SHA256 -or [string]$pin.bytes -cne $env:VERIFIED_BYTES -or [string]$pin.revision -cne $env:VERIFIED_REVISION) { throw 'Pin differs from successful isolated-install verification.' }
+          if ($pin.commit -cnotmatch '^[0-9a-f]{40}$' -or $pin.sha256 -cnotmatch '^[0-9a-f]{64}$' -or $pin.bytes -lt 512 -or $pin.bytes -gt 536870912) { throw 'Invalid pinned package identity.' }
+          $headers = @{ Accept = 'application/vnd.github+json'; 'X-GitHub-Api-Version' = '2022-11-28'; 'User-Agent' = 'Bowser-stable-latest-verification' }
+          function Read-PublicApi([string]$Path) { return Invoke-RestMethod -Uri "https://api.github.com/repos/$repo/$Path" -Headers $headers -TimeoutSec 60 }
+          function Assert-Tag {
+            $obj = (Read-PublicApi "git/ref/tags/$($pin.tag)").object
+            for ($depth = 0; $obj.type -eq 'tag'; $depth++) {
+              if ($depth -ge 8 -or $obj.sha -cnotmatch '^[0-9a-f]{40}$') { throw 'Invalid/deep annotated release tag.' }
+              $obj = (Read-PublicApi "git/tags/$($obj.sha)").object
+            }
+            if ($obj.type -cne 'commit' -or $obj.sha -cne $pin.commit) { throw 'Release tag no longer resolves to the verified source commit.' }
+          }
+          Assert-Tag
+          $release = Read-PublicApi "releases/tags/$($pin.tag)"
+          if ($release.draft -or $release.prerelease -or $release.tag_name -cne $pin.tag) { throw 'Pinned public stable release is missing.' }
+          $base = "https://github.com/$repo/releases/download/$($pin.tag)"
+          foreach ($name in @('Bowser.exe', 'build-metadata.json')) {
+            $asset = @($release.assets | Where-Object { $_.name -ceq $name })
+            if ($asset.Count -ne 1 -or $asset[0].browser_download_url -cne "$base/$name") { throw "Missing/unexpected release asset: $name" }
+          }
+          $download = Join-Path $env:RUNNER_TEMP ('bowser-latest-check-' + [guid]::NewGuid().ToString('N'))
+          New-Item -ItemType Directory $download | Out-Null
+          $metadataPath = Join-Path $download 'build-metadata.json'
+          $exePath = Join-Path $download 'Bowser.exe'
+          Invoke-WebRequest -Uri "$base/build-metadata.json" -OutFile $metadataPath -UseBasicParsing -TimeoutSec 120
+          $metadata = Get-Content $metadataPath -Raw | ConvertFrom-Json
+          foreach ($field in @('repository', 'version', 'revision', 'tag', 'commit', 'asset', 'sha256', 'bytes')) {
+            if ([string]$metadata.$field -cne [string]$pin.$field) { throw "Published metadata no longer matches verified pin: $field" }
+          }
+          if ($metadata.features -cne 'html-chrome-default' -or $metadata.smoke_passed -isnot [bool] -or $metadata.smoke_passed -ne $true) { throw 'Published metadata lacks verified HTML-chrome smoke provenance.' }
+          Invoke-WebRequest -Uri "$base/Bowser.exe" -OutFile $exePath -UseBasicParsing -TimeoutSec 180
+          if ((Get-Item $exePath).Length -ne $pin.bytes -or (Get-FileHash $exePath -Algorithm SHA256).Hash.ToLowerInvariant() -cne $pin.sha256) { throw 'Public executable no longer matches the tested and installed package.' }
+          Assert-Tag
+          # A newer main push must not be overtaken by an older queued promotion.
+          $mainPinFile = Read-PublicApi 'contents/stable/release.json?ref=main'
+          if ($mainPinFile.encoding -cne 'base64') { throw 'Could not independently read the current production pin.' }
+          $mainPin = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($mainPinFile.content)) | ConvertFrom-Json
+          foreach ($field in @('repository', 'version', 'revision', 'tag', 'commit', 'asset', 'sha256', 'bytes')) {
+            if ([string]$mainPin.$field -cne [string]$pin.$field) { throw 'Production pin changed after verification; do not promote a stale release.' }
+          }
+          # This is the only external mutation. No asset, tag, pin or secret is changed.
+          gh release edit $pin.tag --repo $repo --latest
+          if ($LASTEXITCODE -ne 0) { throw 'Latest promotion outcome uncertain; inspect remote state before retrying.' }
+          $latest = Read-PublicApi 'releases/latest'
+          if ($latest.tag_name -cne $pin.tag -or $latest.draft -or $latest.prerelease) { throw 'Latest promotion was not verified; inspect remote state.' }
+          # Verify the website's real latest-download redirect as well as its API tag.
+          # A stale CDN redirect must not be mistaken for a completed rollout.
+          $latestDownloadPath = Join-Path $download 'latest-Bowser.exe'
+          Invoke-WebRequest -Uri "https://github.com/grantcharlie1000-tech/Bowser/releases/latest/download/Bowser.exe" -OutFile $latestDownloadPath -UseBasicParsing -TimeoutSec 180
+          if ((Get-Item $latestDownloadPath).Length -ne $pin.bytes -or (Get-FileHash $latestDownloadPath -Algorithm SHA256).Hash.ToLowerInvariant() -cne $pin.sha256) {
+            throw 'Latest API points at the pin, but the public latest-download route does not serve the pinned bytes. Promotion already occurred; inspect redirect/cache state before any retry.'
+          }
+          "Verified stable package $($pin.tag) is latest: source $($pin.commit), SHA256 $($pin.sha256), bytes $($pin.bytes)." | Out-File $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append

@@ -1,10 +1,10 @@
 {
-    "version":  "0.0.18",
-    "revision":  19,
-    "commit":  "fb9059fa2e1e862b482a3ab64d41713f943eec46",
-    "tag":  "v0.0.18",
-    "repository":  "grantcharlie1000-tech/Bowser",
-    "asset":  "Bowser.exe",
-    "sha256":  "e65a9b70066cacb878011d230435c4cd1da4e46a704c94916b354322f7e302fc",
-    "bytes":  5762048
+    "version": "0.0.19",
+    "revision": 20,
+    "commit": "ad5dd58066d12d6b772e7534baef41ab9d26bef1",
+    "tag": "v0.0.19",
+    "repository": "grantcharlie1000-tech/Bowser",
+    "asset": "Bowser.exe",
+    "sha256": "341486070d2e74cf9a9e5d5fbeffa90c7dd2ec4fd36bc284a8a3878a7a9bcec1",
+    "bytes": 7795712
 }
