@@ -472,3 +472,18 @@ test('the UI defaults for the address flags match what Rust sends for default se
   // The fixture's settings change only the drop-down sources and the search field, never these flags.
   for (const key of logic.ADDR_FLAG_KEYS.filter((k) => k !== 'base')) assert.equal(logic.DEFAULT_ADDR[key], fixture.addr[key], key);
 });
+
+test('a search-field row picked with the mouse (sdone) clears the field unless search_keep_text', () => {
+  assert.deepEqual(parseInbound({ v: 1, t: 'sdone' }), { t: 'sdone' });
+  // The exact text Rust posts (address_page.rs SEARCH_DONE_JSON) is the message the toolbar accepts.
+  const rust = readFileSync(join(here, '..', '..', 'src', 'chrome_host', 'address_page.rs'), 'utf8');
+  const sent = /pub const SEARCH_DONE_JSON: &str = r#"(.*)"#;/.exec(rust)?.[1];
+  assert.ok(sent, 'SEARCH_DONE_JSON is defined');
+  assert.deepEqual(parseInbound(JSON.parse(sent)), { t: 'sdone' });
+  assert.equal(parseInbound({ v: 1, t: 'sdone', extra: 1 }), null);
+  assert.equal(parseInbound({ v: 2, t: 'sdone' }), null);
+  assert.equal(logic.searchTextAfterSearch(false, 'rust'), '');
+  assert.equal(logic.searchTextAfterSearch(true, 'rust'), 'rust');
+  const main = readFileSync(join(here, '..', 'src', 'main.ts'), 'utf8');
+  assert.match(main, /case 'sdone':[\s\S]{0,200}searchTextAfterSearch\(sfield\?\.keep/);
+});

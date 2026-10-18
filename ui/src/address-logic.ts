@@ -37,6 +37,11 @@ export const DEFAULT_ADDR: AddrFlags = {
 
 export const ADDR_FLAG_KEYS = ['show', 'full', 'select', 'encoded', 'qr', 'hbtn', 'typed', 'typing', 'badge', 'strip', 'highlight', 'base'] as const;
 
+/** The search field's text once a search has run: kept only when `search_keep_text` is on. */
+export function searchTextAfterSearch(keep: boolean, text: string): string {
+  return keep ? text : '';
+}
+
 /** What a key press in the address field submits. */
 export type SubmitKind = 'plain' | 'newtab' | 'expand';
 
