@@ -63,14 +63,54 @@ test('address_bar_show off hides only the address part of the pill: the search f
     var parts = ['.tb-site', '.omni-field', '.tb-hist', '.tb-qr', '.omni-search', '.tb-zoom'];
     out.shown = {}; out.hidden = {};
     parts.forEach(function (p) { out.shown[p] = cs('#shown ' + p).opacity; out.hidden[p] = cs('#hidden ' + p).opacity; });
+    // The pill being open (the suggestion list is up) brings the field back: a real class, so this is
+    // the computed style.
+    $('#hidden .pill').classList.add('is-open');
+    out.open = {}; parts.forEach(function (p) { out.open[p] = cs('#hidden ' + p).opacity; });
+    $('#hidden .pill').classList.remove('is-open');
+    // Focus in the field (Ctrl+L) brings it back through :has(.omni-field:focus-within). Chromium only
+    // matches :focus/:focus-within while the page itself has focus, and a headless Edge on a CI runner
+    // can start without it (document.hasFocus() false), so the shipped rule is checked two ways: its
+    // own selector, read back from the CSSOM, with :focus-within swapped for a marker attribute (always
+    // deterministic), and the real computed opacity whenever the page does have focus.
+    var find = function (rules) {
+      for (var i = 0; i < rules.length; i++) {
+        var r = rules[i];
+        if (r.selectorText && r.selectorText.indexOf('data-hidden="true"') >= 0 && r.selectorText.indexOf(':focus-within') >= 0) return r;
+        if (r.cssRules) { var hit = find(r.cssRules); if (hit) return hit; }
+      }
+      return null;
+    };
+    var rule = null;
+    for (var s = 0; s < document.styleSheets.length && !rule; s++) rule = find(document.styleSheets[s].cssRules);
+    if (!rule) throw new Error('no data-hidden rule with :focus-within in app.css');
+    out.rule = { selector: rule.selectorText, opacity: rule.style.opacity };
+    var marked = rule.selectorText.split(':focus-within').join('[data-st-focus]');
+    out.byRule = { before: {}, focused: {} };
+    parts.forEach(function (p) { out.byRule.before[p] = $('#hidden ' + p).matches(marked); });
+    $('#hidden .omni-field').setAttribute('data-st-focus', '');
+    parts.forEach(function (p) { out.byRule.focused[p] = $('#hidden ' + p).matches(marked); });
+    $('#hidden .omni-field').removeAttribute('data-st-focus');
     $('#hidden .omni-input').focus();
+    out.active = document.activeElement === $('#hidden .omni-input');
+    out.hasFocus = document.hasFocus();
     out.focused = cs('#hidden .omni-field').opacity;
   `);
   for (const part of ['.tb-site', '.omni-field', '.tb-hist', '.tb-qr', '.omni-search', '.tb-zoom']) assert.equal(r.shown[part], '1', `${part} shows normally`);
   for (const part of ['.tb-site', '.omni-field', '.tb-hist', '.tb-qr']) assert.equal(r.hidden[part], '0', `${part} is hidden with the address field`);
   assert.equal(r.hidden['.omni-search'], '1', 'the search field stays');
   assert.equal(r.hidden['.tb-zoom'], '1', 'the page buttons stay');
-  assert.equal(r.focused, '1', 'Ctrl+L (focus in the field) brings the address field back');
+  for (const part of ['.tb-site', '.omni-field', '.tb-hist', '.tb-qr']) assert.equal(r.open[part], '1', `${part} comes back while the pill is open`);
+  assert.equal(r.rule.opacity, '0', 'the matched rule is the one that hides the parts');
+  assert.match(r.rule.selector, /:not\([^)]*:has\(\.omni-field:focus-within\)/, 'focus inside the field is one of the exceptions');
+  for (const part of ['.tb-site', '.omni-field', '.tb-hist', '.tb-qr']) {
+    assert.equal(r.byRule.before[part], true, `${part}: the hiding rule matches while the field is unfocused`);
+    assert.equal(r.byRule.focused[part], false, `${part}: the hiding rule stops matching once the field has focus`);
+  }
+  for (const part of ['.omni-search', '.tb-zoom']) assert.equal(r.byRule.before[part], false, `${part} is never matched by the hiding rule`);
+  assert.equal(r.active, true, 'the hidden field still takes focus (Ctrl+L reaches it)');
+  if (r.hasFocus) assert.equal(r.focused, '1', 'Ctrl+L (focus in the field) brings the address field back');
+  else console.log(`# headless page has no focus (document.hasFocus() false): computed :focus-within check covered by the CSSOM selector check; opacity read ${r.focused}`);
 });
 
 test('tabs_close_always and tabs_close_left reach the vertical sidebar rows; collapsed and pinned tiles still hide it', { skip }, () => {
