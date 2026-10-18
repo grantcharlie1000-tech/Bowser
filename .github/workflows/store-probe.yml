@@ -84,6 +84,12 @@ jobs:
           $test = Get-ChildItem target/debug/deps/bowser-*.exe | Sort-Object LastWriteTime -Descending | Select-Object -First 1
           & $test.FullName live_probe_fail_closed_environment --ignored --nocapture --test-threads=1 2>&1 | Tee-Object store-fail-closed-environment-probe.log
           if ($LASTEXITCODE -ne 0) { throw 'Actual fail-closed environment diagnostic failed.' }
+      - name: Probe actual profile and private-first extension isolation
+        run: |
+          $env:BOWSER_EXTENSION_TRACE = '1'
+          $test = Get-ChildItem target/debug/deps/bowser-*.exe | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          & $test.FullName live_probe_profile_private_isolation --ignored --nocapture --test-threads=1 2>&1 | Tee-Object store-profile-private-isolation-probe.log
+          if ($LASTEXITCODE -ne 0) { throw 'Actual profile/private isolation diagnostic failed.' }
       - name: Probe signed-keyed process-crash recovery at exact native boundaries
         run: |
           $env:BOWSER_EXTENSION_TRACE = '1'
@@ -144,6 +150,7 @@ jobs:
             store-completed-restart-probe.log
             store-stale-owner-probe.log
             store-fail-closed-environment-probe.log
+            store-profile-private-isolation-probe.log
             store-update-probe.log
             store-action-probe.log
             ${{ runner.temp }}/bowser-store-rendering/

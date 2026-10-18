@@ -244,6 +244,10 @@ impl Session {
         known: Vec<(String, bool)>,
         first: &Url,
     ) -> Self {
+        Self::open_with_private_first(profile, startup, known, first, false)
+    }
+
+    fn open_with_private_first(profile: &Path, startup: Vec<(String, PathBuf)>, known: Vec<(String, bool)>, first: &Url, private_first: bool) -> Self {
         let host = unsafe {
             CreateWindowExW(
                 WINDOW_EX_STYLE(0),
@@ -276,6 +280,7 @@ impl Session {
             let slot = created.clone();
             let extras = EngineExtras {
                 browser_extensions: true,
+                private_blocker: private_first.then(|| Rc::new(RefCell::new(crate::blocker::BlockerState::new(crate::blocker::Blocker::from_lists(None), &[])))),
                 startup_extensions: startup.clone(),
                 known_extensions: known.clone(),
                 extension_ids_file: Some(ids_file.clone()),
@@ -323,6 +328,7 @@ impl Session {
         }
         let mut engine = engine.expect("engine created");
         let tab = TabId(1);
+        if private_first { engine.set_tab_private(tab); }
         engine.select_tab(tab).unwrap();
         engine.navigate_tab(tab, first).unwrap();
         Self { engine, host }
@@ -1379,4 +1385,36 @@ fn live_probe_fail_closed_environment() {
         println!("FAIL_CLOSED_ENV damage={damage} startup_state={state:?} actual_http_page_loaded=true content_marker_absent=true extension_beacons_absent=true authority_and_package_preserved=true scope=real-environment-not-parser-only");
         refused.close(); drop(loopback); remove_with_retries(&root);
     }
+}
+
+#[test]
+#[ignore = "real independent profile and private-first controller exclusion"]
+fn live_probe_profile_private_isolation() {
+    unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED).ok().unwrap() };
+    let root = temp_root(); let profile = root.join("ordinary-owner"); let (id, folder) = install_fixture(&profile, "probe-mv3-key");
+    let loopback = Loopback::start(); let mut owner = Session::open(&profile, vec![(id.clone(), folder.clone())], vec![(id.clone(), true)], &loopback.page("owner-positive"));
+    assert!(owner.wait_for_add(&profile, &id).1.is_none()); assert!(owner.wait_for_worker_reply(&loopback));
+    let other_loopback = Loopback::start(); let mut other = Session::open(&root.join("different-profile"), vec![], vec![], &other_loopback.page("other-profile-negative"));
+    assert!(pump_until(Duration::from_secs(15), || other_loopback.beacons.lock().unwrap().iter().any(|p| p == "/other-profile-negative"))); pump_until(Duration::from_secs(2), || false);
+    assert_eq!(other.read_marker("data-bowser-probe").as_deref(), Some("null"));
+    assert!(!other_loopback.beacons.lock().unwrap().iter().any(|p| p.starts_with(BEACON_PREFIX)));
+    assert!(!other.native_inventory().unwrap().iter().any(|(native, _)| native == KEY_FIXTURE_ID));
+    println!("PROFILE_ISOLATION owning_profile_worker_content=true different_profile_actual_page_loaded=true different_profile_native_absent=true different_profile_content_beacons_absent=true");
+    other.close(); drop(other_loopback); owner.close(); drop(loopback);
+    // Existing persisted enabled native code is the important private-first negative, not a fresh
+    // empty environment. The ordinary controller is created only after the negative is observed.
+    let private_loopback = Loopback::start();
+    let mut private = Session::open_with_private_first(&profile, vec![(id.clone(), folder.clone())], vec![(id.clone(), true)], &private_loopback.page("private-first-negative"), true);
+    assert!(pump_until(Duration::from_secs(20), || private_loopback.beacons.lock().unwrap().iter().any(|p| p == "/private-first-negative")), "private negative did not load its real page under the production privacy checks");
+    pump_until(Duration::from_secs(2), || false); assert_eq!(private.read_marker("data-bowser-probe").as_deref(), Some("null"));
+    assert!(!private.engine.probe_extension_profile_ready(), "private-first controller captured the extension profile");
+    assert!(!private_loopback.beacons.lock().unwrap().iter().any(|p| p.starts_with(BEACON_PREFIX)));
+    let popup = private.open_page(&id, &folder, extensions::PageKind::Popup); assert!(popup.is_err(), "private active view unexpectedly gained the extension page: {popup:?}");
+    private.engine.select_tab(TabId(2)).unwrap(); private.engine.navigate_tab(TabId(2), &private_loopback.page("ordinary-after-private")).unwrap();
+    assert!(pump_until(Duration::from_secs(30), || private.engine.probe_loaded_extension_id(&id).is_some()));
+    assert!(private.engine.probe_extension_profile_ready());
+    private.engine.select_tab(TabId(1)).unwrap(); private.engine.navigate_tab(TabId(1), &private_loopback.page("private-after-normal-negative")).unwrap(); pump_until(Duration::from_secs(3), || false);
+    assert_eq!(private.read_marker("data-bowser-probe").as_deref(), Some("null"));
+    println!("PRIVATE_ISOLATION persisted_enabled_fixture=true private_first_actual_page_loaded=true private_profile_not_captured=true private_content_absent=true private_popup_rejected=true later_ordinary_profile_captured=true private_after_ordinary_content_absent=true scope=profile-and-private-not-ui-context");
+    private.close(); drop(private_loopback); remove_with_retries(&root);
 }
