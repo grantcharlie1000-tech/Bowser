@@ -1,0 +1,96 @@
+name: Production performance baseline
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/production-performance.yml'
+      - 'benchmarks/production-*'
+      - 'benchmarks/test-production-*'
+      - 'benchmarks/scripts/production-*'
+      - 'src/performance.rs'
+      - 'src/engine/webview2.rs'
+      - 'src/engine/mod.rs'
+      - 'src/app.rs'
+      - 'src/main.rs'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  baseline:
+    runs-on: windows-2025
+    timeout-minutes: 100
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Preserve fingerprinted bytes
+        run: git config --global core.autocrlf false
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+          path: candidate
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+          path: untouched
+          ref: 80eabd7ae6d421e61c81985c34023bfc824a2e58
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22'
+      - name: Parse measurement scripts and run contract tests
+        working-directory: candidate
+        run: |
+          foreach ($path in @('benchmarks/production-baseline.ps1','benchmarks/production-measurements.psm1','benchmarks/test-production-measurements.ps1')) {
+            $tokens=$null; $errors=$null
+            [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $pwd $path),[ref]$tokens,[ref]$errors) | Out-Null
+            if ($errors.Count) { $errors | Format-List; throw "$path does not parse" }
+          }
+          ./benchmarks/test-production-measurements.ps1
+          ./benchmarks/test-measurements.ps1
+          node --check benchmarks/scripts/production-fixture-server.mjs
+      - name: Install official Rust toolchain
+        run: rustup toolchain install stable --profile minimal --component rustfmt
+      - name: Test measurement-only source
+        working-directory: candidate
+        run: |
+          cargo +stable test --locked --features html-chrome-default performance::tests
+          if ($LASTEXITCODE -ne 0) { throw 'Performance diagnostic unit tests failed' }
+          cargo +stable check --locked --features html-chrome-default
+          if ($LASTEXITCODE -ne 0) { throw 'Diagnostic Windows source check failed' }
+      - name: Build and freeze untouched HTML-default executable
+        working-directory: untouched
+        run: |
+          cargo +stable build --release --locked --bin bowser --features html-chrome-default
+          if ($LASTEXITCODE -ne 0) { throw 'Untouched release build failed' }
+          New-Item -ItemType Directory -Force ../evidence/frozen | Out-Null
+          Copy-Item target/release/bowser.exe ../evidence/frozen/untouched-main.exe
+          git rev-parse HEAD | Set-Content ../evidence/frozen/untouched-source.txt
+          git rev-parse HEAD^{tree} | Add-Content ../evidence/frozen/untouched-source.txt
+          Copy-Item Cargo.lock,ui/dist.manifest ../evidence/frozen/
+          rustc +stable -vV | Set-Content ../evidence/frozen/toolchain.txt
+          cargo +stable --version | Add-Content ../evidence/frozen/toolchain.txt
+      - name: Preserve verified released reference
+        run: |
+          Invoke-WebRequest 'https://github.com/grantcharlie1000-tech/Bowser/releases/download/v0.0.19/Bowser.exe' -OutFile evidence/frozen/released-v0.0.19.exe
+          $hash=(Get-FileHash evidence/frozen/released-v0.0.19.exe -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($hash -cne '341486070d2e74cf9a9e5d5fbeffa90c7dd2ec4fd36bc284a8a3878a7a9bcec1') { throw 'Released reference hash mismatch' }
+      - name: Build diagnostic-only executable separately
+        working-directory: candidate
+        run: |
+          cargo +stable build --release --locked --bin bowser --features html-chrome-default
+          if ($LASTEXITCODE -ne 0) { throw 'Diagnostic release build failed' }
+          Copy-Item target/release/bowser.exe ../evidence/frozen/diagnostic.exe
+          git diff 80eabd7ae6d421e61c81985c34023bfc824a2e58 -- src | Set-Content ../evidence/frozen/instrumentation.patch
+          Get-ChildItem ../evidence/frozen -File | ForEach-Object { [ordered]@{name=$_.Name;bytes=$_.Length;sha256=(Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()} } | ConvertTo-Json | Set-Content ../evidence/frozen/manifest.json
+      - name: Production-path paired validity and noise pilot
+        working-directory: candidate
+        run: |
+          ./benchmarks/production-baseline.ps1 -BaselineExe ../evidence/frozen/untouched-main.exe -DiagnosticExe ../evidence/frozen/diagnostic.exe -ReleaseExe ../evidence/frozen/released-v0.0.19.exe -Out ../evidence/pilot -Pairs 5
+      - name: Preserve all raw evidence and frozen executables, including failure samples
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: production-performance-${{ github.event.pull_request.head.sha || github.sha }}
+          path: evidence/
+          if-no-files-found: warn
+          retention-days: 30

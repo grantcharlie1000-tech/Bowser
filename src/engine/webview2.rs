@@ -4258,6 +4258,9 @@ unsafe fn configure_controller(
         let allowed_file_for_handler = allowed_file.clone();
         let allowed_file_pending = Rc::new(Cell::new(allowed_file.is_some()));
         let block_tab = Rc::new(TabBlockState::default());
+        let diagnostic_navigation_id = Rc::new(Cell::new(0u64));
+        let diagnostic_start_id = diagnostic_navigation_id.clone();
+        let diagnostic_start = events.diagnostic_navigation.clone();
         let navigation_start_log = events.policy_event.clone();
         let navigation_started = events.navigation_started.clone();
         let link_navigation = events.link_navigation.clone(); // --- tab options ---
@@ -4328,6 +4331,10 @@ unsafe fn configure_controller(
                             // sync_top_host), not here: a navigation can still be superseded.
                             let mut navigation_id = 0;
                             if args.NavigationId(&mut navigation_id).is_ok() {
+                                diagnostic_start_id.set(navigation_id);
+                                if let Some(callback) = diagnostic_start.as_ref() {
+                                    callback("diagnostic_navigation_started", tab_id, navigation_id, None, "");
+                                }
                                 if let Some(callback) = navigation_started.as_ref() {
                                     callback(tab_id, navigation_id);
                                 }
@@ -4449,6 +4456,7 @@ unsafe fn configure_controller(
                 &mut token,
             )?;
         }
+        let diagnostic_completed = events.diagnostic_navigation.clone();
         let navigation_log = events.policy_event.clone();
         let completed_address_changed = events.address_changed.clone();
         let completed_progress = events.navigation_progress.clone();
@@ -4465,12 +4473,12 @@ unsafe fn configure_controller(
                                 super::NavigationProgressEvent::Completed(navigation_id),
                             );
                         }
-                        if let Some(log) = navigation_log.as_ref() {
-                            log("navigation_completed");
-                        }
                     }
                     let mut success = BOOL::default();
                     if args.IsSuccess(&mut success).is_ok() {
+                        if let Some(callback) = diagnostic_completed.as_ref() {
+                            callback("diagnostic_navigation_completed", tab_id, navigation_id, Some(success.as_bool()), "");
+                        }
                         if let Some(log) = navigation_log.as_ref() {
                             if success.as_bool() {
                                 log("navigation_completed");
@@ -4525,6 +4533,8 @@ unsafe fn configure_controller(
             &mut token,
         )?;
 
+        let diagnostic_title = events.diagnostic_navigation.clone();
+        let diagnostic_title_id = diagnostic_navigation_id;
         let page_ready = events.page_usable.clone();
         let title_changed = events.title_changed.clone();
         webview.add_DocumentTitleChanged(
@@ -4534,6 +4544,14 @@ unsafe fn configure_controller(
                     if sender.DocumentTitle(&mut title).is_ok() {
                         let title = CoTaskMemPWSTR::from(title);
                         let title_text = title.to_string();
+                        if let Some(callback) = diagnostic_title.as_ref()
+                            && let Some(token) = title_text.strip_prefix("BOWSER_PERF_READY_")
+                            && token.len() <= 80
+                            && !token.is_empty()
+                            && token.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+                        {
+                            callback("diagnostic_fixture_ready", tab_id, diagnostic_title_id.get(), None, token);
+                        }
                         if let Some(callback) = title_changed.as_ref() {
                             callback(tab_id, title_text.clone());
                         }

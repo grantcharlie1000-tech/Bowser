@@ -437,6 +437,8 @@ pub trait TabEngine {
     fn close_tab(&mut self, tab: crate::tabs::TabId) -> windows::core::Result<()>;
 }
 
+pub type DiagnosticNavigationCallback = std::rc::Rc<dyn Fn(&'static str, crate::tabs::TabId, u64, Option<bool>, &str)>;
+
 #[derive(Clone, Default)]
 pub struct EngineEvents {
     pub address_changed: Option<std::rc::Rc<dyn Fn(crate::tabs::TabId, url::Url)>>,
@@ -480,6 +482,8 @@ pub struct EngineEvents {
     /// The tab's zoom changed (our own set or the page's Ctrl+wheel). The value is in percent.
     pub zoom_changed: Option<std::rc::Rc<dyn Fn(crate::tabs::TabId, u16)>>,
     pub policy_event: Option<std::rc::Rc<dyn Fn(&'static str)>>,
+    /// Synthetic-profile diagnostics only. No URLs or arbitrary page titles are recorded.
+    pub diagnostic_navigation: Option<DiagnosticNavigationCallback>,
     /// A download from a normal tab started, moved or changed state (docs/design/downloads.md).
     /// Without this and `download_plan`, every download is cancelled.
     pub download_event: Option<std::rc::Rc<dyn Fn(crate::downloads::DownloadEvent)>>,

@@ -15,6 +15,8 @@ pub const MAX_OPEN_URLS: usize = 16;
 #[derive(Debug, Default)]
 pub struct LaunchOptions {
     pub benchmark_log: Option<PathBuf>,
+    /// Timing only: never selects benchmark behavior or suppresses production features.
+    pub diagnostic_log: Option<PathBuf>,
     pub user_data_dir: Option<PathBuf>,
     pub benchmark_url: Option<Url>,
     /// `--data-dir <path>` / `BOWSER_DATA_DIR`: the app-data root that replaces
@@ -130,6 +132,7 @@ impl LaunchOptions {
             if !matches!(
                 flag.as_str(),
                 "--benchmark-log"
+                    | "--diagnostic-log"
                     | "--benchmark-user-data-dir"
                     | "--benchmark-url"
                     | "--data-dir"
@@ -156,6 +159,11 @@ impl LaunchOptions {
                 .filter(|v| !v.is_empty() && !v.starts_with("--"))
                 .ok_or_else(|| format!("Missing value for {flag}"))?;
             match flag.as_str() {
+                "--diagnostic-log" => {
+                    if options.diagnostic_log.replace(PathBuf::from(value)).is_some() {
+                        return Err("Duplicate diagnostic log argument".into());
+                    }
+                }
                 "--benchmark-log" => {
                     if options
                         .benchmark_log
@@ -289,6 +297,20 @@ impl LaunchOptions {
                 _ => {
                     if raw_url.replace(value).is_some() {
                         return Err("Duplicate benchmark URL argument".into());
+                    }
+                }
+            }
+        }
+        if options.diagnostic_log.is_some() {
+            if options.benchmark_log.is_some() || options.agent || options.agent_call.is_some() {
+                return Err("Diagnostic logging cannot be combined with benchmark or agent mode".into());
+            }
+            // Diagnostics are intended for synthetic profiles, never an accidental real profile.
+            let dir = explicit_data_dir.as_ref().ok_or("Diagnostic logging requires explicit --data-dir")?;
+            if let Some(local) = local_app_data {
+                for real in [local.join("Bowser"), local.join("Bowser-Dev")] {
+                    if profile_contains(&real, dir)? {
+                        return Err("Diagnostic logging requires an isolated data directory".into());
                     }
                 }
             }
@@ -581,7 +603,7 @@ impl PerfLog {
             Some(ActiveLog {
                 start: Instant::now(),
                 path: path.to_owned(),
-                output: RefCell::new(b"event,elapsed_ms,qpc_ticks\n".to_vec()),
+                output: RefCell::new(b"event,elapsed_ms,qpc_ticks,tab_id,navigation_id,success,fixture_token\n".to_vec()),
                 failure: RefCell::new(None),
             })
         } else {
@@ -598,6 +620,15 @@ impl PerfLog {
             .and_then(|active| active.failure.borrow().clone())
     }
     pub fn record(&self, event: &str) -> io::Result<()> {
+        self.record_fields(event, "")
+    }
+    pub fn record_navigation(&self, event: &str, tab: u64, navigation: u64, success: Option<bool>, token: &str) -> io::Result<()> {
+        if token.len() > 80 || !token.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "Invalid fixture token"));
+        }
+        self.record_fields(event, &format!("{tab},{navigation},{},{token}", success.map(|value| value.to_string()).unwrap_or_default()))
+    }
+    fn record_fields(&self, event: &str, fields: &str) -> io::Result<()> {
         let Some(active) = &self.active else {
             return Ok(());
         };
@@ -615,7 +646,7 @@ impl PerfLog {
             let mut output = active.output.borrow_mut();
             writeln!(
                 output,
-                "{event},{:.6},{tick}",
+                "{event},{:.6},{tick},{fields}",
                 active.start.elapsed().as_secs_f64() * 1000.0
             )?;
             Ok(())
@@ -654,6 +685,17 @@ mod tests {
     use super::*;
     fn args(values: &[&str]) -> Vec<String> {
         values.iter().map(|v| v.to_string()).collect()
+    }
+    #[test]
+    fn diagnostics_preserve_production_launch_semantics() {
+        let temp = std::env::temp_dir().join("bowser-diagnostic-test");
+        let options = LaunchOptions::parse_from(vec!["--diagnostic-log".into(), temp.join("events.csv").to_string_lossy().into_owned(), "--data-dir".into(), temp.to_string_lossy().into_owned(), "--open-url".into(), "http://127.0.0.1:1234/light".into()], Path::new("missing")).unwrap();
+        assert!(options.benchmark_log.is_none());
+        assert!(options.benchmark_url.is_none());
+        assert!(options.user_data_dir.is_none());
+        assert!(!options.data_dir_ephemeral);
+        assert!(options.open_url.is_some());
+        assert!(LaunchOptions::parse_from(args(&["--diagnostic-log", "events.csv"]), Path::new("missing")).is_err());
     }
     #[test]
     fn profile_flag_accepts_only_valid_names_and_not_with_benchmarks() {
@@ -1209,7 +1251,7 @@ mod tests {
         std::fs::remove_file(path).unwrap();
         let rows: Vec<_> = text.lines().collect();
         assert_eq!(rows.len(), 3);
-        assert_eq!(rows[0], "event,elapsed_ms,qpc_ticks");
+        assert_eq!(rows[0], "event,elapsed_ms,qpc_ticks,tab_id,navigation_id,success,fixture_token");
         let a: Vec<_> = rows[1].split(',').collect();
         let b: Vec<_> = rows[2].split(',').collect();
         assert_eq!(a[0], "window_visible");

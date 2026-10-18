@@ -59,7 +59,7 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
     bowser::updater::spawn_background(benchmark, options.dev);
-    let log = match PerfLog::new(options.benchmark_log.as_deref()) {
+    let log = match PerfLog::new(options.diagnostic_log.as_deref().or(options.benchmark_log.as_deref())) {
         Ok(log) => Rc::new(log),
         Err(error) => {
             show_error(&format!("Unable to create benchmark log: {error}"));

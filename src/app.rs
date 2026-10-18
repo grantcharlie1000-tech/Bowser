@@ -658,6 +658,7 @@ pub struct App {
     /// Stamps of `settings.txt` and the search provider file when `provider` was last read.
     search_config_stamp: Option<[ConfigStamp; 2]>,
     pub log: Rc<PerfLog>,
+    diagnostic_logging: bool,
     pub minimized: bool,
     /// Power source, efficiency decision and EcoQoS state. See `crate::efficiency`.
     pub efficiency: EfficiencyState,
@@ -5042,6 +5043,7 @@ impl App {
             provider,
             search_config_stamp: None,
             log,
+            diagnostic_logging: options.diagnostic_log.is_some(),
             minimized: false,
             efficiency: EfficiencyState::default(),
             desired_memory_target: MemoryUsageTarget::Normal,
@@ -6332,6 +6334,12 @@ impl App {
             }),
             download_event: Some(Self::download_event_hook(app)),
             download_plan: Some(Self::download_plan_hook(app)),
+            diagnostic_navigation: if app.borrow().diagnostic_logging {
+                let log = app.borrow().log.clone();
+                Some(Rc::new(move |event, tab, navigation, success, token| {
+                    let _ = log.record_navigation(event, u64::from(tab.0), navigation, success, token);
+                }))
+            } else { None },
             policy_event: {
                 let log = app.borrow().log.clone();
                 Some(Rc::new(move |event| {
@@ -9969,6 +9977,7 @@ mod tests {
             provider: SearchProvider::from_config(None, Path::new("missing-search-provider.txt")),
             search_config_stamp: None,
             log: Rc::new(PerfLog::new(None).unwrap()),
+            diagnostic_logging: false,
             minimized: false,
             efficiency: EfficiencyState::default(),
             desired_memory_target: MemoryUsageTarget::Normal,
