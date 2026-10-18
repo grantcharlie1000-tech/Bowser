@@ -221,21 +221,41 @@ pub fn register_app(app: &AppRef, web_app: WebApp) {
     if let Some(shared) = shared { register_app_with(shared, web_app); }
 }
 
-fn register_app_with(shared: SharedRef, web_app: WebApp) {
-    let id = web_app.id;
+struct Registration {
+    view: Rc<RefCell<AppView>>,
+    retired: Option<Rc<RefCell<AppView>>>,
+}
+
+/// Rail activation re-registers the current saved app on EVERY click. That is not a remove/re-add:
+/// preserve its exact page registration, navigation/session, unread state and reload timestamp.
+fn retain_or_replace_view(views: &mut HashMap<u32, Rc<RefCell<AppView>>>, id: u32, url: &str) -> Registration {
+    if let Some(view) = views.get(&id) {
+        let unchanged = {
+            let view = view.borrow();
+            view.initial_url == url && !matches!(view.state, ViewState::Removed)
+        };
+        if unchanged { return Registration { view: view.clone(), retired: None }; }
+    }
     let view = Rc::new(RefCell::new(AppView {
-        initial_url: web_app.url.clone(), current_url: web_app.url,
+        initial_url: url.to_owned(), current_url: url.to_owned(),
         state: ViewState::Loading, unread: 0, last_reload: Instant::now(),
     }));
-    let (retired, host) = {
+    let retired = views.insert(id, view.clone());
+    Registration { view, retired }
+}
+
+fn register_app_with(shared: SharedRef, web_app: WebApp) {
+    let id = web_app.id;
+    let (registration, host) = {
         let mut state = shared.borrow_mut();
         if state.closed { return; }
-        (state.views.insert(id, view.clone()), state.host.clone())
+        (retain_or_replace_view(&mut state.views, id, &web_app.url), state.host.clone())
     };
-    if let Some(retired) = retired {
+    if let Some(retired) = registration.retired {
         retired.borrow_mut().state.remove();
         if let Some(host) = host { host.remove_app(&id.to_string()); }
     }
+    let view = registration.view;
     // Capture this exact registration, never resurrect an ID from a retired factory.
     side_panel::register_content(PanelId::WebApp(id), move || {
         Box::new(Content::new(shared.clone(), id, view.clone()))
@@ -629,4 +649,37 @@ mod tests {
         // A panel with no height never produces a zero/negative-height webview.
         assert_eq!(webview_rect(RECT { left: 0, top: 50, right: 420, bottom: 50 }), None);
     }
+    #[test]
+    fn ordinary_a_b_a_registration_retains_hidden_page_and_session_state() {
+        let mut views = HashMap::new();
+        let a = retain_or_replace_view(&mut views, 1, "https://a.example/");
+        assert!(a.retired.is_none());
+        {
+            let mut page = a.view.borrow_mut(); page.state = ViewState::Ready;
+            page.current_url = "https://a.example/form-with-unsaved-work".to_owned(); page.unread = 7;
+        }
+        let timestamp = a.view.borrow().last_reload;
+        let b = retain_or_replace_view(&mut views, 2, "https://b.example/");
+        assert!(b.retired.is_none());
+        let again = retain_or_replace_view(&mut views, 1, "https://a.example/");
+        assert!(again.retired.is_none()); assert!(Rc::ptr_eq(&a.view, &again.view));
+        let page = again.view.borrow();
+        assert_eq!(page.state, ViewState::Ready); assert_eq!(page.unread, 7);
+        assert_eq!(page.current_url, "https://a.example/form-with-unsaved-work");
+        assert_eq!(page.last_reload, timestamp);
+    }
+
+    #[test]
+    fn real_remove_readd_and_url_edit_bind_new_registration_not_retired_factory_view() {
+        let mut views = HashMap::new(); let old = retain_or_replace_view(&mut views, 1, "https://a.example/").view;
+        views.remove(&1).unwrap().borrow_mut().state.remove();
+        let added = retain_or_replace_view(&mut views, 1, "https://a.example/");
+        assert!(added.retired.is_none()); assert!(!Rc::ptr_eq(&old, &added.view));
+        assert_eq!(old.borrow().state, ViewState::Removed);
+        let edited = retain_or_replace_view(&mut views, 1, "https://new.example/");
+        assert!(Rc::ptr_eq(edited.retired.as_ref().unwrap(), &added.view));
+        assert!(!Rc::ptr_eq(&edited.view, &added.view));
+        assert_eq!(edited.view.borrow().initial_url, "https://new.example/");
+    }
+
 }
