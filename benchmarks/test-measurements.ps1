@@ -195,7 +195,8 @@ try {
     Assert-True ($rootDetail.working_set_bytes -gt 0 -and $rootDetail.private_bytes -gt 0 -and $null -ne $rootDetail.page_fault_count) 'native process detail counters are available'
     Assert-True ($rootDetail.wmi_proxy_source -eq 'wmi_pagefileusage_proxy') 'PageFileUsage remains explicitly labeled as a proxy'
 
-    $childExe = Join-Path $PSHOME 'powershell.exe'
+    # Reuse the actual host executable: Windows PowerShell and PowerShell 7 use different names.
+    $childExe = (Get-Process -Id $PID -ErrorAction Stop).Path
     $child = Start-Process -FilePath $childExe -ArgumentList @('-NoProfile','-Command','Start-Sleep -Seconds 8') -PassThru
     try {
         Start-Sleep -Milliseconds 300
