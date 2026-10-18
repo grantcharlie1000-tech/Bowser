@@ -146,6 +146,36 @@ pub(crate) fn ask_yes_no_owned(owner: HWND, message: &str) -> bool {
     }
 }
 
+/// The style of a question whose Yes destroys data: No is the default button, so Enter keeps it.
+pub(crate) fn destructive_question_style() -> windows::Win32::UI::WindowsAndMessaging::MESSAGEBOX_STYLE {
+    use windows::Win32::UI::WindowsAndMessaging::{MB_DEFBUTTON2, MB_ICONWARNING, MB_YESNO};
+    MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2
+}
+
+/// Native Yes/No question owned by `owner` (modal to it), defaulting to No; `true` only for Yes.
+pub(crate) fn ask_destructive_owned(owner: HWND, message: &str) -> bool {
+    let text: Vec<u16> = message.encode_utf16().chain(std::iter::once(0)).collect();
+    unsafe {
+        MessageBoxW(Some(owner), windows::core::PCWSTR(text.as_ptr()), w!("Bowser"), destructive_question_style())
+            == windows::Win32::UI::WindowsAndMessaging::IDYES
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn the_destructive_question_defaults_to_no() {
+    use windows::Win32::UI::WindowsAndMessaging::{MB_DEFBUTTON2, MB_YESNO};
+    let style = destructive_question_style();
+    assert_eq!(style.0 & MB_DEFBUTTON2.0, MB_DEFBUTTON2.0, "No (the second button) is the default");
+    assert_eq!(style.0 & 0xF, MB_YESNO.0, "Yes and No buttons");
+    // The saved-password deletion asks this way, owned by its window (so it cannot fall behind
+    // it), not with the unowned default-Yes `ask_yes_no`.
+    let source = include_str!("protection.rs");
+    let at = source.find("\"Delete every saved password").expect("the password question");
+    let call = &source[source[..at].rfind("super::").unwrap()..at];
+    assert_eq!(call, "super::ask_destructive_owned(owner, ", "the password question is owned and defaults to No");
+}
+
 pub(crate) const INPUT_ID: u16 = 100;
 pub(crate) const WM_SUBMIT: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 10;
 pub(crate) const WM_HISTORY_BACK: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 11;
