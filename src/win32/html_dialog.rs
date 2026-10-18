@@ -120,7 +120,7 @@ unsafe extern "system" fn dialog_proc(hwnd: HWND, message: u32, wparam: WPARAM, 
                 close(hwnd);
                 PRIVACY.with(|slot| if slot.get() == hwnd.0 as isize { slot.set(0); });
                 SESSIONS.with(|slot| if slot.get() == hwnd.0 as isize { slot.set(0); });
-                FEEDS.with(|slot| if slot.get() == hwnd.0 as isize { slot.set(0); });
+                FEEDS.with(|slot| if slot.get() == hwnd.0 as isize { slot.set(0); super::feeds_panel::detached(hwnd); });
                 DefWindowProcW(hwnd, message, wparam, lparam)
             }
             _ => DefWindowProcW(hwnd, message, wparam, lparam),
@@ -272,13 +272,14 @@ pub(crate) fn open_feeds(owner: HWND, app: &AppRef, env: ChromeEnv) {
         return;
     };
     FEEDS.with(|slot| slot.set(window.0 as isize));
+    super::feeds_panel::attached(window);
     attach(app, owner, window, env, Kind::Feeds);
     unsafe { let _ = ShowWindow(window, SW_SHOW); let _ = SetForegroundWindow(window); }
 }
 
 /// A feed worker's answer arrived for the Feeds window `parent`: apply it and redraw the panel.
 fn feeds_done(parent: HWND) {
-    if super::feeds_panel::apply_done(parent)
+    if super::feeds_panel::apply_done()
         && let Some(runtime) = RUNTIMES.with(|map| map.borrow().get(&(parent.0 as isize)).cloned())
     {
         send_current(&runtime);
@@ -326,7 +327,7 @@ fn handle(runtime: &Rc<RefCell<Runtime>>, command: Command) {
             // The Feeds panel fetches the subscriptions that are older than the user's refresh choice.
             if kind == Kind::Feeds {
                 let app = runtime.borrow().app.clone();
-                super::feeds_panel::on_ready(&app, parent);
+                super::feeds_panel::on_ready(&app);
                 send_current(runtime);
             }
             if kind == Kind::Rename {
