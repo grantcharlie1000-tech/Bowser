@@ -161,6 +161,20 @@ export function keyboardFocusSelection(select: boolean, edited: boolean): 'all' 
   return select ? 'all' : 'end';
 }
 
+/**
+ * `minimal_url`: the field shows the condensed address unfocused but holds the full one (query and
+ * fragment included) while focused, so copying or editing sees all of it. `shown` and `full` are the
+ * host's last `setText` text and its `full` form; an address the user has edited is never replaced.
+ */
+export function focusAddressText(value: string, shown: string, full: string, edited: boolean): string {
+  return !edited && full !== '' && value === shown ? full : value;
+}
+
+/** The reverse of {@link focusAddressText} on blur: an untouched full address goes back to the condensed one. */
+export function blurAddressText(value: string, shown: string, full: string, edited: boolean): string {
+  return !edited && full !== '' && value === full ? shown : value;
+}
+
 /** The search field's modes, as `search_field` stores them. */
 export const SEARCH_FIELD_MODES = ['off', 'field', 'button'] as const;
 export type SearchFieldMode = typeof SEARCH_FIELD_MODES[number];

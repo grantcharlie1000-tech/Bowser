@@ -184,6 +184,12 @@ test('setText truncates at MAX_TEXT UTF-16 units without splitting a surrogate p
   assert.equal(parseInbound({ t: 'setText', text: '😀'.repeat(MAX_TEXT / 2 + 100), select: false }).text.length, MAX_TEXT);
 });
 
+test('setText carries the minimal_url full address only as a string', () => {
+  assert.equal(parseInbound({ t: 'setText', text: 'example.com', select: false, full: 'example.com/a?q=1#f' }).full, 'example.com/a?q=1#f');
+  assert.equal('full' in parseInbound({ t: 'setText', text: 'example.com', select: false }), false);
+  assert.equal(parseInbound({ t: 'setText', text: 'example.com', select: false, full: 3 }), null);
+});
+
 test('a full toolbar state message is accepted for all chrome views', () => {
   const sample = stateWithTheme('#fff');
   assert.equal(parseInbound(sample)?.t, 'state');

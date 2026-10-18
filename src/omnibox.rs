@@ -232,6 +232,13 @@ pub fn address_display(url: &Url, minimal: bool) -> String {
     }
 }
 
+/// The address the focused field holds, whatever `minimal_url` says: the full [`display_form`] (query
+/// and fragment included), so copying or editing a focused address sees all of it. Kept per tab next
+/// to the condensed [`address_display`] and swapped in on focus; the condensed form returns on blur.
+pub fn focused_address_display(url: &Url) -> String {
+    address_display(url, false)
+}
+
 /// Whether a navigation may replace the address text with the page's URL. While the field has keyboard
 /// focus the text and selection belong to the user, so the URL is only remembered until focus leaves.
 pub fn should_sync_displayed_url(field_focused: bool) -> bool {
@@ -724,6 +731,17 @@ mod tests {
             Some("anet.local/")
         );
         assert_eq!(suffix(&history, "https://intr"), None);
+    }
+
+    #[test]
+    fn focused_address_keeps_query_and_fragment_that_minimal_url_condenses() {
+        let page = url("https://www.example.com/docs/page?q=1#part");
+        let condensed = address_display(&page, true);
+        let full = focused_address_display(&page);
+        assert_ne!(condensed, full);
+        assert!(!condensed.contains("q=1"), "{condensed}");
+        assert_eq!(full, "example.com/docs/page?q=1#part");
+        assert_eq!(focused_address_display(&page), address_display(&page, false));
     }
 
     #[test]
