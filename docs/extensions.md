@@ -276,7 +276,8 @@ shim.
   until the engine answers; one removal at a time). "Install unpacked…" opens Bowser's folder picker
   and the native confirmation that lists the declarations. "Install CRX file…" does the same for a
   `.crx` file on disk (see "CRX file" below). "Open popup" opens the hosted popup. Bowser installs
-  unpacked folders and `.crx` files the user picks, and has no store install.
+  unpacked folders and `.crx` files the user picks, and offers verified Store downloads through
+  `bowser://store`. See [Store catalogue and evidence](store-catalogue.md).
 - **Wire** (`src/chrome_host/extensions_page.rs`). Rust -> page:
   `{v:1,t:"snap",p:"extensions",d:{state:"on"|"error",busy,ack,error,items:[{id,name,version,enabled,popup,failure,readable,all,sites,sitesN,scripts,scriptsN,perms,permsN,optional,optionalN}]}}`.
   Page -> Rust, in the settings page's `set` family: `extension` (`text` id, `on`), `extremove`
@@ -328,9 +329,9 @@ The live probe observed `chrome-extension` as the extension page scheme and Bows
 nothing for tabs. In a tab, `chrome-extension:` and `extension:` are not on the block list: a
 navigation to either goes down the external-protocol path, which only cancels the OS launch.
 Frames, popups and the omnibox refuse both. A test records the tab policy for all three schemes, so
-a later change is a visible decision. Hosted pages use their own exact-URL, one-shot policy
+a later change is a visible decision. Hosted pages use their own initial exact-URL, one-shot policy
 (`HostedPagePolicy`) instead of a scheme allowance, and it takes no part in tab navigation. Its
-tests cover `chrome-extension` (the only scheme that can be granted, and only as one exact URL) and
+tests cover `chrome-extension` (the only scheme that can be granted; the initial exact URL is followed only by safe paths in that same extension) and
 `extension` and `ms-browser-extension` (refused, even with the same id and path).
 
 ## Where the code lives
@@ -352,4 +353,22 @@ tests cover `chrome-extension` (the only scheme that can be granted, and only as
 
 ## Store fetch status
 
-`src/crx_fetch.rs` turns an extension id or a Chrome Web Store URL into verified CRX bytes and a stamped unpack folder, and is not wired to any UI. It follows the protocol Chromium's `ExtensionDownloader` uses: a GET to `https://clients2.google.com/service/update2/crx` (the only fixed host) returns an update manifest (`<gupdate>` XML), and the CRX is downloaded from the `codebase` URL inside it. The query is Chromium's: `os`, `arch`, `prod=chromiumcrx` (the unbranded value; `chromecrx` is Chrome's and is never sent), `prodchannel`, `prodversion` (the WebView2 runtime), `lang`, `acceptformat=crx3` and `x=id%3D<id>%26v%3D0.0.0.0%26uc`. `acceptformat` leaves out Chromium's `puff` because Bowser cannot apply it; a manifest that offers only a puff package is refused with its own error. `response=redirect` is not in Chromium's source and is no longer sent. The request carries the `X-Goog-Update-Updater: chromiumcrx-<prodversion>`, `X-Goog-Update-AppId` and `X-Goog-Update-Interactivity: fg` protocol headers and the user agent `Bowser-CrxFetch/<version>`, never a Chrome identity. The manifest is read the way `extensions/browser/updater/safe_manifest_parser.cc` reads it, for three things only: the `<app appid>` (it must be the requested id), the `<updatecheck status>` (`noupdate`, HTTP 204 or an empty body mean no package) and its `codebase` (HTTPS, a host, no credentials). The codebase download keeps the size cap, the HTTPS-only redirect rule and the five-hop limit; the bytes then go through `verify_crx3` for the requested id and `unpack_stamped` into the caller's empty folder, and a bad signature leaves that folder empty. Live result, 2026-10-14, one attempt: uBlock Origin (`cjpalhdlnbpafiamejdnhcphjbkeiagm`) with `prod=chromiumcrx`, `prodversion=155.0.4283.45` and no `response=redirect` got HTTP 200 and a 333-byte manifest for the requested app id with `<updatecheck status="noupdate"/>` and no `codebase`. So the earlier HTTP 204 answers were this same "no package" verdict, and the endpoint does speak this protocol to a non-Chrome client; it simply has no package to give for this id and runtime version. A second attempt the same day changed only `prodversion`, to Chrome stable `155.0.8059.80` (Windows, release note 2026-10-13), and got the same answer: HTTP 200, a 333-byte manifest for the requested app id with `<updatecheck status="noupdate"/>` and no `codebase`. That closes the unbranded store-download experiment. Nothing was downloaded, verified or unpacked in either attempt, and `chromecrx` was not tried. Store fetch is therefore implemented and covered by loopback tests (manifest accepted, `noupdate`, a different app id, an HTTP codebase and puff-only refused, the CRX download staying on `127.0.0.1`, the production manifest host being only `clients2.google.com`), but not yet shown to return a real CRX: that needs an id the store still offers for this runtime, and has not been observed live.
+The old MV2 uBlock Origin `noupdate` result was not a general Store-download verdict. On
+2026-10-18 the existing unbranded protocol, using the **detected WebView2 154.0.4258.62**, returned
+HTTP 200 update manifests with `updatecheck status="ok"` and HTTP 200 CRX3 packages for current
+MV3 listings. Signature and signing-derived identity verification passed before unpacking.
+No Chrome identity, access bypass, or undocumented search API was used.
+
+The Store uses the existing `crx_fetch` → `crx` → `crx_unpack` pipeline, with the fixed
+`clients2.google.com` manifest endpoint, HTTPS-only bounded redirects, manifest/codebase checks,
+size caps, and CRX3 verification unchanged. Verified Chrome-generated root `_metadata` is counted,
+CRC-validated, and omitted from the unpacked copy. Arbitrary user archives/folders do not acquire
+this exception. A prepared, profile-owned folder is not registered or loaded until its complete
+resolved permission review receives explicit consent. Cancellation drops the unregistered copy.
+
+Package retrieval and native loading are distinct from functional compatibility. The current
+probes demonstrated genuine extension popups/options and extension APIs, but also demonstrated
+that native `chrome.tabs/windows` does not yet correctly model Bowser tabs. Catalogue entries
+remain **Untested**, not "supported". Production staged updates remain disabled until stable
+identity/storage, increased-permission consent, and rollback have evidence. See
+[Store catalogue and evidence](store-catalogue.md) for reproducible runs and the acceptance gap.

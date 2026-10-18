@@ -32,7 +32,10 @@
 //! the updater name `chromiumcrx-<prodversion>`, and the user agent `Bowser-CrxFetch/<version>`. It
 //! never claims to be Google Chrome.
 
-use std::{ffi::c_void, fmt, path::Path};
+use std::{
+    ffi::c_void, fmt, path::Path,
+    sync::atomic::{AtomicBool, Ordering},
+};
 
 use url::{Position, Url};
 use windows::{
@@ -82,6 +85,7 @@ pub enum FetchError {
     InvalidStoreUrl(&'static str),
     /// `prodversion` is not one to four dot-separated digit groups.
     InvalidProdVersion,
+    Cancelled,
     /// A redirect left HTTPS, carried credentials, or was unusable.
     BadRedirect(&'static str),
     TooManyRedirects,
@@ -108,6 +112,7 @@ impl fmt::Display for FetchError {
             Self::InvalidId => f.write_str("extension id must be 32 characters a-p"),
             Self::InvalidStoreUrl(why) => write!(f, "not a Chrome Web Store extension URL: {why}"),
             Self::InvalidProdVersion => f.write_str("runtime version is not dotted digits"),
+            Self::Cancelled => f.write_str("download cancelled; nothing was installed"),
             Self::BadRedirect(why) => write!(f, "refused redirect: {why}"),
             Self::TooManyRedirects => f.write_str("too many redirects"),
             Self::Oversize => f.write_str("download exceeds the size limit"),
@@ -455,6 +460,7 @@ fn read_error_body(request: *mut c_void) -> Vec<u8> {
 
 /// GETs `start` from the endpoint's own host with the update protocol headers, handing body chunks
 /// to `sink`. This is the manifest request: the only one whose host is fixed.
+#[cfg(test)]
 fn get(
     endpoint: &Endpoint,
     start: &Url,
@@ -462,16 +468,28 @@ fn get(
     max_bytes: u64,
     sink: &mut dyn FnMut(&[u8]),
 ) -> Result<(), FetchError> {
+    get_cancellable(endpoint, start, headers, max_bytes, None, sink)
+}
+
+fn get_cancellable(
+    endpoint: &Endpoint,
+    start: &Url,
+    headers: &str,
+    max_bytes: u64,
+    cancelled: Option<&AtomicBool>,
+    sink: &mut dyn FnMut(&[u8]),
+) -> Result<(), FetchError> {
     if start.host_str() != Some(endpoint.host.as_str()) {
         return Err(FetchError::BadRedirect("request is not for the endpoint"));
     }
-    transfer(endpoint, start, Some(headers), max_bytes, sink)
+    transfer_cancellable(endpoint, start, Some(headers), max_bytes, cancelled, sink)
 }
 
 /// GETs `start`, handing body chunks to `sink`. `headers` (CRLF-terminated lines) go only to the
 /// endpoint's own host. Fails on a scheme other than the endpoint's, a redirect that
 /// [`redirect_target`] refuses, more than five hops, a declared body over `max_bytes`, a body that
 /// grows past `max_bytes` while read (no chunk past the cap is passed on), or any final status but 200.
+#[cfg(test)]
 fn transfer(
     endpoint: &Endpoint,
     start: &Url,
@@ -479,6 +497,15 @@ fn transfer(
     max_bytes: u64,
     sink: &mut dyn FnMut(&[u8]),
 ) -> Result<(), FetchError> {
+    transfer_cancellable(endpoint, start, headers, max_bytes, None, sink)
+}
+
+fn transfer_cancellable(
+    endpoint: &Endpoint, start: &Url, headers: Option<&str>, max_bytes: u64,
+    cancelled: Option<&AtomicBool>, sink: &mut dyn FnMut(&[u8]),
+) -> Result<(), FetchError> {
+    let check_cancelled = || if cancelled.is_some_and(|flag| flag.load(Ordering::Acquire)) { Err(FetchError::Cancelled) } else { Ok(()) };
+    check_cancelled()?;
     if start.scheme() != endpoint.scheme() {
         return Err(FetchError::BadRedirect("request is not for the endpoint"));
     }
@@ -504,6 +531,7 @@ fn transfer(
     };
     let mut url = start.clone();
     for _hop in 0..=MAX_REDIRECTS {
+        check_cancelled()?;
         let host = HSTRING::from(url.host_str().unwrap_or_default());
         let port = url.port_or_known_default().unwrap_or(endpoint.port);
         let object = HSTRING::from(&url[Position::BeforePath..Position::AfterQuery]);
@@ -582,7 +610,9 @@ fn transfer(
         let mut buffer = vec![0u8; 64 * 1024];
         let mut total = 0u64;
         loop {
+            check_cancelled()?;
             let read = read_chunk(request.0, &mut buffer)?;
+            check_cancelled()?;
             if read == 0 {
                 return Ok(());
             }
@@ -878,26 +908,34 @@ fn parse_update_manifest(endpoint: &Endpoint, xml: &[u8], id: &str) -> Result<Of
 }
 
 /// GETs the update manifest for `id`. Any status but 200 is a [`FetchError::Http`], 204 included.
+#[cfg(test)]
 fn fetch_manifest_bytes(
     endpoint: &Endpoint,
     id: &str,
     prodversion: &str,
 ) -> Result<Vec<u8>, FetchError> {
+    fetch_manifest_bytes_cancellable(endpoint, id, prodversion, None)
+}
+
+fn fetch_manifest_bytes_cancellable(
+    endpoint: &Endpoint, id: &str, prodversion: &str, cancelled: Option<&AtomicBool>,
+) -> Result<Vec<u8>, FetchError> {
     let url = request_url(endpoint, id, prodversion)?;
     let mut bytes = Vec::new();
-    get(
+    get_cancellable(
         endpoint,
         &url,
         &update_headers(id, prodversion),
         MAX_MANIFEST_BYTES,
+        cancelled,
         &mut |chunk| bytes.extend_from_slice(chunk),
     )?;
     Ok(bytes)
 }
 
 /// Asks the update service what it offers for `id`: the manifest request, then the manifest rules.
-fn fetch_offer(endpoint: &Endpoint, id: &str, prodversion: &str) -> Result<Offer, FetchError> {
-    let manifest = match fetch_manifest_bytes(endpoint, id, prodversion) {
+fn fetch_offer_cancellable(endpoint: &Endpoint, id: &str, prodversion: &str, cancelled: Option<&AtomicBool>) -> Result<Offer, FetchError> {
+    let manifest = match fetch_manifest_bytes_cancellable(endpoint, id, prodversion, cancelled) {
         Err(FetchError::Http { status: 204, .. }) => return Err(FetchError::NoUpdate),
         other => other?,
     };
@@ -905,9 +943,14 @@ fn fetch_offer(endpoint: &Endpoint, id: &str, prodversion: &str) -> Result<Offer
 }
 
 /// Downloads `url` (a validated codebase), holding at most `max_bytes` in memory.
+#[cfg(test)]
 fn download_bytes(endpoint: &Endpoint, url: &Url, max_bytes: u64) -> Result<Vec<u8>, FetchError> {
+    download_bytes_cancellable(endpoint, url, max_bytes, None)
+}
+
+fn download_bytes_cancellable(endpoint: &Endpoint, url: &Url, max_bytes: u64, cancelled: Option<&AtomicBool>) -> Result<Vec<u8>, FetchError> {
     let mut bytes = Vec::new();
-    transfer(endpoint, url, None, max_bytes, &mut |chunk| {
+    transfer_cancellable(endpoint, url, None, max_bytes, cancelled, &mut |chunk| {
         bytes.extend_from_slice(chunk)
     })?;
     Ok(bytes)
@@ -920,8 +963,14 @@ fn download_from(
     prodversion: &str,
     max_bytes: u64,
 ) -> Result<Vec<u8>, FetchError> {
-    let offer = fetch_offer(endpoint, id, prodversion)?;
-    download_bytes(endpoint, &offer.codebase, max_bytes)
+    download_from_cancellable(endpoint, id, prodversion, max_bytes, None)
+}
+
+fn download_from_cancellable(
+    endpoint: &Endpoint, id: &str, prodversion: &str, max_bytes: u64, cancelled: Option<&AtomicBool>,
+) -> Result<Vec<u8>, FetchError> {
+    let offer = fetch_offer_cancellable(endpoint, id, prodversion, cancelled)?;
+    download_bytes_cancellable(endpoint, &offer.codebase, max_bytes, cancelled)
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -962,6 +1011,18 @@ pub fn fetch_and_unpack(
     dest: &Path,
 ) -> Result<StampedUnpack, FetchError> {
     fetch_from(&Endpoint::production(), input, prodversion, dest)
+}
+
+/// The same verified pipeline with cooperative cancellation between network operations/chunks.
+/// A blocked WinHTTP call still obeys its timeout. Cancellation is checked again before unpack;
+/// the Store caller checks it after unpack and never commits a cancelled review.
+pub fn fetch_and_unpack_cancellable(
+    input: &str, prodversion: &str, dest: &Path, cancelled: &AtomicBool,
+) -> Result<StampedUnpack, FetchError> {
+    let id = parse_request(input)?;
+    let bytes = download_from_cancellable(&Endpoint::production(), &id, prodversion, MAX_DOWNLOAD_BYTES, Some(cancelled))?;
+    if cancelled.load(Ordering::Acquire) { return Err(FetchError::Cancelled); }
+    verify_and_unpack(&bytes, &id, dest)
 }
 
 #[cfg(test)]
@@ -1542,6 +1603,35 @@ mod tests {
             ],
             xml.as_bytes(),
         );
+    }
+
+    #[test]
+    fn cancelled_download_does_not_make_a_network_request() {
+        let server = Server::start(|_, _, _| panic!("cancelled request reached server"));
+        let cancelled = AtomicBool::new(true);
+        assert_eq!(
+            fetch_manifest_bytes_cancellable(&server.endpoint(), ID, PRODVERSION, Some(&cancelled)),
+            Err(FetchError::Cancelled)
+        );
+        assert!(server.requests().is_empty());
+    }
+
+    #[test]
+    fn cancellation_during_response_does_not_deliver_body_to_caller() {
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let flag = cancelled.clone();
+        let server = Server::start(move |_, _, stream| {
+            flag.store(true, Ordering::Release);
+            ok_with_length(stream, b"untrusted response bytes");
+        });
+        let mut delivered = Vec::new();
+        assert_eq!(
+            transfer_cancellable(&server.endpoint(), &url_on(&server, "/crx"), None,
+                1024, Some(&cancelled), &mut |chunk| delivered.extend_from_slice(chunk)),
+            Err(FetchError::Cancelled)
+        );
+        assert!(delivered.is_empty());
+        assert_eq!(server.requests().len(), 1);
     }
 
     #[test]

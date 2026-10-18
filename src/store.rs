@@ -65,7 +65,7 @@ pub fn prepare(
         }
     }
     let staging = Staging::new()?;
-    crx_fetch::fetch_and_unpack(id, runtime, &staging.0).map_err(|error| format!("Package download or verification failed: {error}. This is not a runtime compatibility verdict."))?;
+    crx_fetch::fetch_and_unpack_cancellable(id, runtime, &staging.0, cancelled).map_err(|error| format!("Package download or verification failed: {error}. This is not a runtime compatibility verdict."))?;
     check_cancelled()?;
     let inspection = extensions::inspect_source(&staging.0).map_err(|error| error.to_string())?;
     let name = resolved_name(&staging.0, &inspection.manifest)?;
