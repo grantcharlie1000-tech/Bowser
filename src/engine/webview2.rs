@@ -2297,7 +2297,7 @@ fn reconcile_profile(
                     Ok(Some(current)) => state.extension_ids = current,
                     _ => {
                         drop(state);
-                        for (id, extension) in held { record_load(&id, Err("Extension ownership could not be read safely.".into()), win32::extensions_changed); set_loaded_enabled(&extension, false, Box::new(|_| {})); }
+                        for (id, _) in held { record_load(&id, Err("Extension ownership could not be read safely. No unproven native object was changed.".into()), win32::extensions_changed); }
                         for (id, _) in &pending { record_load(id, Err("Extension ownership could not be read safely.".into()), win32::extensions_changed); }
                         return;
                     }
@@ -2377,7 +2377,7 @@ fn remove_unloaded(
                 }
             };
             let Some(core) = weak.upgrade() else {
-                done(Ok(()));
+                done(Err("The owning profile closed before removal could be established.".into()));
                 return;
             };
             match found {
@@ -2387,13 +2387,13 @@ fn remove_unloaded(
                         let mut state = core.borrow_mut();
                         let current = state.extension_ids_file.as_deref().map(read_extension_ids).transpose();
                         if !matches!(current, Ok(Some(ref ids)) if ids.get(&id) == state.extension_ids.get(&id)) {
-                            done(Err("Removal ownership changed during inventory. Nothing was removed.".into())); return;
+                            drop(state); done(Err("Removal ownership changed during inventory. Nothing was removed.".into())); return;
                         }
                         let previous = state.extension_ids.clone();
                         let mut desired = previous.clone(); desired.remove(&id);
                         match persist_extension_ids(state.extension_ids_file.as_deref(), &previous, &desired) {
                             Ok(current) => state.extension_ids = current,
-                            Err(reason) => { done(Err(reason)); return; }
+                            Err(reason) => { drop(state); done(Err(reason)); return; }
                         }
                     }
                     done(Ok(()));
@@ -2610,7 +2610,7 @@ fn add_extension_mode(core: &Rc<RefCell<EngineCore>>, profile: &ICoreWebView2Pro
             let mut desired = previous.clone(); desired.insert(id.clone(), expected.clone());
             match persist_extension_ids(state.extension_ids_file.as_deref(), &previous, &desired) {
                 Ok(current) => state.extension_ids = current,
-                Err(reason) => { done(Err(reason)); return; }
+                Err(reason) => { drop(state); done(Err(reason)); return; }
             }
         }
         add_extension_owned(&core, &profile, id, &folder, Some(expected), done);
@@ -2829,7 +2829,13 @@ fn remove_loaded(
 
 fn remove_startup_extension(core: &Rc<RefCell<EngineCore>>, id: String, extension: &ICoreWebView2BrowserExtension, done: ExtensionDone) {
     let done = match runtime_operation_mode(core, done, false) { Ok(done) => done, Err((reason, done)) => { done(Err(reason)); return; } };
-    remove_loaded_locked(core, id, extension, done);
+    // The earlier inventory/queue decision is not authority. Recheck AFTER acquiring the lease.
+    match current_extension_record(core, &id) {
+        Ok(Some(record)) if record.enabled => done(Err("Startup cleanup became stale. The current enabled record was preserved.".into())),
+        Ok(Some(_)) => set_managed_enabled_locked(core, &id, extension, false, false, done),
+        Ok(None) => remove_loaded_locked(core, id, extension, done),
+        Err(reason) => done(Err(reason)),
+    }
 }
 
 fn remove_loaded_locked(core: &Rc<RefCell<EngineCore>>, id: String, extension: &ICoreWebView2BrowserExtension, done: ExtensionDone) {
@@ -2863,7 +2869,7 @@ fn remove_loaded_locked(core: &Rc<RefCell<EngineCore>>, id: String, extension: &
                 let previous = state.extension_ids.clone(); let mut desired = previous.clone(); desired.remove(&id);
                 match persist_extension_ids(state.extension_ids_file.as_deref(), &previous, &desired) {
                     Ok(current) => state.extension_ids = current,
-                    Err(reason) => { finish_slot(&completion, Err(reason)); return Ok(()); }
+                    Err(reason) => { drop(state); finish_slot(&completion, Err(reason)); return Ok(()); }
                 }
             }
         }

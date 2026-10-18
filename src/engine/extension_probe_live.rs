@@ -392,6 +392,13 @@ impl Session {
         slot.borrow_mut().take().flatten()
     }
 
+    /// Read/drive the exact disposable browsing WebView through its existing in-process test hook.
+    fn browsing_script(&mut self, script: &str) -> Option<String> {
+        let slot = Rc::new(RefCell::new(None)); let sink = slot.clone();
+        self.engine.run_reader_script(self.tab(), script, Box::new(move |answer| *sink.borrow_mut() = Some(answer)));
+        pump_until(Duration::from_secs(10), || slot.borrow().is_some()); slot.borrow_mut().take().flatten()
+    }
+
     /// The page's own report (`data-bowser-popup`), once `done` says it is complete.
     fn page_report(&mut self, done: &str) -> Option<String> {
         let script =
@@ -776,6 +783,35 @@ fn probe_real_blocker_network(root: &Path, session: &mut Session, loopback: &Loo
     }
 }
 
+/// Genuine Stylus backup import through its real manager's ordinary DOM drop handler. No package
+/// edits, injected CSS, internal extension API replacement, or fake Chrome globals are involved.
+fn probe_real_stylus_appearance(profile: &Path, id: &str, folder: &Path, session: &mut Session, loopback: &Loopback) {
+    let target = loopback.page("stylus-appearance");
+    let style = format!(r#"[{{"name":"Bowser disposable appearance fixture","enabled":true,"sections":[{{"code":"body {{ background-color: rgb(7, 11, 19) !important; }}","urls":[{}],"urlPrefixes":[],"domains":[],"regexps":[]}}]}}]"#, crate::chrome_host::protocol::json_string(target.as_str()));
+    let script = format!(r#"(()=>{{if(typeof document.body.ondrop!=='function')return {{dropHandler:false,title:document.title}};const data=new DataTransfer();data.items.add(new File([{}],'bowser-disposable-style.json',{{type:'application/json'}}));document.body.dispatchEvent(new DragEvent('drop',{{dataTransfer:data,bubbles:true,cancelable:true}}));return {{dropHandler:true,title:document.title}}}})()"#, crate::chrome_host::protocol::json_string(&style));
+    let imported = session.page_script(&script); pump_until(Duration::from_secs(5), || false);
+    println!("STYLUS_APPEARANCE import_dom={imported:?} manager_report={:?}", session.page_script("({title:document.title,fixtureVisible:document.body?.textContent?.includes('Bowser disposable appearance fixture'),text:document.body?.textContent?.slice(0,1200)})"));
+    session.engine.navigate_tab(session.tab(), &target).unwrap(); pump_until(Duration::from_secs(4), || false);
+    let read = "({background:getComputedStyle(document.body).backgroundColor,origin:location.origin,styleSheets:document.styleSheets.length})";
+    let styled = session.browsing_script(read);
+    session.engine.navigate_tab(session.tab(), &loopback.page("stylus-unmatched-control")).unwrap(); pump_until(Duration::from_secs(2), || false);
+    let unmatched = session.browsing_script(read);
+    println!("STYLUS_APPEARANCE exact_url={target} styled={styled:?} unmatched={unmatched:?} package_unchanged=true");
+    let effect = styled.as_deref().is_some_and(|value| value.contains("rgb(7, 11, 19)")) && unmatched.as_deref().is_some_and(|value| !value.contains("rgb(7, 11, 19)"));
+    println!("STYLUS_APPEARANCE verdict={}", if effect { "actual-imported-style-effect-and-url-boundary-proven-partial" } else { "appearance-effect-not-demonstrated" });
+    if !effect { return; }
+    // Real native Remove, then the same under-lease durable commit the product uses.
+    let result = Rc::new(RefCell::new(None)); let sink = result.clone(); let records = profile.join("extensions.txt"); let extensions_dir = profile.join("Extensions"); let removed_id = id.to_owned();
+    session.engine.remove_extension(id, Box::new(move |native| {
+        let answer = native.and_then(|()| extensions::uninstall_under_runtime(&extensions_dir, &records, &removed_id).map_err(|error| error.to_string()));
+        *sink.borrow_mut() = Some(answer);
+    }));
+    pump_until(Duration::from_secs(15), || result.borrow().is_some());
+    session.engine.navigate_tab(session.tab(), &target).unwrap(); pump_until(Duration::from_secs(3), || false);
+    let removed = session.browsing_script(read);
+    println!("STYLUS_APPEARANCE remove={:?} after_remove={removed:?} folder_exists={} scope=actual-import-style-url-boundary-and-removal-not-process-restart-or-all-features", result.borrow(), folder.exists());
+}
+
 /// Real packages, fresh throwaway profiles, no accounts and no user data. This proves package
 /// identity/load and genuine extension context only, not product functionality or action grants.
 #[test]
@@ -843,6 +879,9 @@ fn live_store_current_extension_loads() {
         }
         if name == "ublock-origin-lite" && failure.is_none() && webview_id.as_deref() == Some(id) {
             probe_real_blocker_network(&root, &mut session, &loopback);
+        }
+        if name == "stylus" && failure.is_none() && webview_id.as_deref() == Some(id) {
+            probe_real_stylus_appearance(&profile, &record.id, &folder, &mut session, &loopback);
         }
         session.close();
         drop(loopback);

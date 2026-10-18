@@ -559,7 +559,7 @@ impl PreparedInstall {
         {
             return Err(ExtensionError::InvalidManifest("The staged extension changed. Review it again."));
         }
-        let mut records = read_records(&self.records_file)?;
+        let mut records = read_authority_records(&self.records_file)?;
         if let Some(identity) = manifest_key_id(&self.folder()?)? {
             for record in &records {
                 let folder = contained_path(&self.extensions_dir, &record.id)?;
