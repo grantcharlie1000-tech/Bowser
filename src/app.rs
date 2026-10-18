@@ -994,6 +994,10 @@ impl App {
         kind: crate::extensions::PageKind,
         title: String,
     ) {
+        if Self::active_tab_private(app) {
+            win32::show_error_message("Extensions are not enabled in private tabs. Return to a normal tab to open this extension page.");
+            return;
+        }
         if app.borrow().engine.is_none() {
             win32::show_error_message("Bowser is still starting. Try again in a moment.");
             return;
@@ -9691,6 +9695,14 @@ mod tests {
                 "suspend:30000".to_owned(),
             ]
         );
+    }
+
+    #[test]
+    #[should_panic(expected = "Extensions are not enabled in private tabs")]
+    fn private_tab_cannot_open_a_normal_profile_extension_page() {
+        let app = app_with_pending(rect(800, 600));
+        App::new_private_tab(&app);
+        App::open_extension_page(&app, "ext-0000000000000001".into(), PathBuf::new(), crate::extensions::PageKind::Popup, "Test popup".into());
     }
 
     #[test]

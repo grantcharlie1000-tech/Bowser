@@ -589,6 +589,7 @@ struct WindowChrome {
     /// the last `extbtn` message the page was sent, and the button's rectangle from its last click.
     html_ext_slot: i32,
     html_store_listing: bool,
+    html_extensions_private: bool,
     html_ext_last: Option<String>,
     html_ext_rect: Option<chrome_host::protocol::HoverRect>,
     // --- toolbars and feeds (thread T13) --- what the address bar's list (`toolbar_buttons`) does to the
@@ -776,6 +777,7 @@ impl WindowChrome {
             html_dl_last: None,
             html_ext_slot: 0,
             html_store_listing: false,
+            html_extensions_private: false,
             html_ext_last: None,
             html_ext_rect: None,
             html_dl_allowed: true,
@@ -1624,7 +1626,8 @@ fn run_chrome_sync(hwnd: HWND, app: Option<&AppRef>) {
     sync_html_host_bounds(hwnd);
     html_sync(hwnd);
     let listing = app.and_then(current_store_listing).is_some();
-    if with_chrome(hwnd, |state| state.html_store_listing != listing).unwrap_or(false) { html_refresh_extensions_button(hwnd); }
+    let private = app.is_some_and(App::active_tab_private);
+    if with_chrome(hwnd, |state| state.html_store_listing != listing || state.html_extensions_private != private).unwrap_or(false) { html_refresh_extensions_button(hwnd); }
     html_tabs_sync(hwnd);
     html_rail_sync(hwnd);
     let Some(app) = app else {
@@ -8284,10 +8287,12 @@ fn current_store_listing(app: &AppRef) -> Option<String> {
 }
 
 fn html_refresh_extensions_button(hwnd: HWND) {
-    let popups = crate::profile::active().map(|profile| popup_extensions(&profile)).unwrap_or_default();
+    let app = app_of(hwnd);
+    let private = app.as_ref().is_some_and(App::active_tab_private);
+    let popups = if private { Vec::new() } else { crate::profile::active().map(|profile| popup_extensions(&profile)).unwrap_or_default() };
     let names: Vec<&str> = popups.iter().map(|record| record.name.as_str()).collect();
-    let listing = app_of(hwnd).as_ref().and_then(current_store_listing).is_some();
-    let _ = with_chrome(hwnd, |state| state.html_store_listing = listing);
+    let listing = app.as_ref().and_then(current_store_listing).is_some();
+    let _ = with_chrome(hwnd, |state| { state.html_store_listing = listing; state.html_extensions_private = private; });
     let json = if listing { super::store::listing_button_json() } else { chrome_host::extensions_page::button_json(&names) };
     let slot = if listing { STORE_BUTTON_SLOT } else if popups.is_empty() { 0 } else { chrome_host::EXT_BUTTON_SLOT };
     let moved = with_chrome(hwnd, |s| std::mem::replace(&mut s.html_ext_slot, slot) != slot).unwrap_or(false);
