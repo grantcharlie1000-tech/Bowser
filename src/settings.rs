@@ -510,9 +510,9 @@ pub struct Settings {
     pub rounded_content_frame: bool,
     /// `show_home_button` (default true): the Home button in the rail. Applies immediately.
     pub show_home_button: bool,
-    /// `bookmarks_bar=always|never|newtab` (default never). Applies after restart.
+    /// `bookmarks_bar=always|never|newtab` (default never). Applies immediately (`App::apply_live_settings`).
     pub bookmarks_bar: BookmarksBar,
-    /// `bookmarks_bar_tab_groups` (default false). Applies after restart.
+    /// `bookmarks_bar_tab_groups` (default false). Applies immediately (`App::apply_live_settings`).
     pub bookmarks_bar_tab_groups: bool,
     /// `side_panel_position=left|right` (default left). Read from the file each time the side panel
     /// opens, so it applies from the next panel opened; memory keeps the startup value.
@@ -775,6 +775,9 @@ impl Settings {
                         .split(',')
                         .map(str::trim)
                         .filter(|site| !site.is_empty())
+                        // Same character rule as `parse_blocker_allow`: one hand-edited bad entry
+                        // is dropped rather than making the whole settings snapshot unsavable.
+                        .filter(|site| !site.chars().any(|c| c.is_whitespace() || c.is_control()))
                         .take(MAX_BLOCKER_ALLOW)
                         .map(str::to_owned)
                         .collect();
@@ -1551,6 +1554,13 @@ mod tests {
             vec!["a.com".to_owned(), "b.org".to_owned()]
         );
         assert!(Settings::parse("blocker_enabled=maybe").blocker_enabled);
+    }
+
+    #[test]
+    fn a_hand_edited_bad_blocker_allow_entry_is_dropped_so_the_snapshot_stays_valid() {
+        let s = Settings::parse("blocker_allow=a.com,a b.com,b.org\n");
+        assert_eq!(s.blocker_allow, vec!["a.com".to_owned(), "b.org".to_owned()]);
+        assert_eq!(parse_blocker_allow(&s.blocker_allow.join(",")), Ok(s.blocker_allow.clone()));
     }
 
     #[test]
