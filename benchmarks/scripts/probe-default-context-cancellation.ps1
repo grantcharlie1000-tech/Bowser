@@ -73,12 +73,45 @@ public static class BowserDefaultContext {
  public sealed class MenuProof {
   public IntPtr Window,Focus;public uint Thread;public int[] RootId,MenuId,ItemId;public double Left,Top,Width,Height;
  }
- public static MenuProof ReadMenu(IntPtr host,IntPtr popup,uint browserPid){
+ static string Number(long n){return n.ToString(System.Globalization.CultureInfo.InvariantCulture);}
+ static string JsonIds(int[] ids){return ids==null?"null":"["+String.Join(",",Array.ConvertAll(ids,n=>Number(n)))+"]";}
+ static bool RootFence(IntPtr host,uint testPid,uint hostTid,IntPtr popup,uint browserPid,uint menuTid,ReadOnlyBrowser browser,AutomationElement root,int[] rootId){
+  return browser.SameAlive()&&Host(host,testPid,hostTid)&&PopupIdentity(host,popup,browserPid,menuTid)&&Same(Runtime(root),rootId)&&root.Current.ProcessId==(int)browserPid&&root.Current.NativeWindowHandle==popup.ToInt32()&&PopupIdentity(host,popup,browserPid,menuTid)&&Host(host,testPid,hostTid)&&browser.SameAlive();
+ }
+ static void WriteMismatch(IntPtr host,uint testPid,uint hostTid,IntPtr popup,uint browserPid,uint menuTid,ReadOnlyBrowser browser,AutomationElement root,int[] rootId,AutomationElement node,int depth,int[] expectedParent,int index,int providerPid,string directory){
+  string prefix="{\"scope\":\"failure-only-popup-rooted-numeric-identity-not-input-authority\",\"first_mismatch\":true,\"visited_count\":"+Number(index)+",\"depth\":"+Number(depth)+",\"expected_pid\":"+Number(browserPid)+",\"observed_pid\":"+Number(providerPid)+",\"expected_pid_equal\":false,";
+  string json=prefix+"\"status\":\"diagnostic-unavailable\"}";
+  try{
+   if(!RootFence(host,testPid,hostTid,popup,browserPid,menuTid,browser,root,rootId)){json=prefix+"\"status\":\"stale-before-read\"}";}
+   else{
+    var id=Runtime(node);var current=node.Current;int type=current.ControlType.Id;int native=current.NativeWindowHandle;
+    string pidNoDefaultKind="getter-failed",pidNoDefaultValue="null";
+    try{var raw=node.GetCurrentPropertyValue(AutomationElement.ProcessIdProperty,true);if(raw is int){pidNoDefaultKind="integer";pidNoDefaultValue=Number((int)raw);}else if(Object.ReferenceEquals(raw,AutomationElement.NotSupported)){pidNoDefaultKind="not-supported";}else{pidNoDefaultKind="other-kind";}}catch{}
+    int[] parentId=null;int parentPid=0,parentType=0,parentNative=0;bool parentPresent=false,parentMetadataRead=false;
+    // Only the known enqueued parent is inspected; never walk beyond the captured root.
+    if(expectedParent!=null){var parent=TreeWalker.RawViewWalker.GetParent(node);if(parent!=null){parentPresent=true;parentId=Runtime(parent);if(Same(parentId,expectedParent)){var pc=parent.Current;parentPid=pc.ProcessId;parentType=pc.ControlType.Id;parentNative=pc.NativeWindowHandle;parentMetadataRead=true;}}}
+    bool after=RootFence(host,testPid,hostTid,popup,browserPid,menuTid,browser,root,rootId)&&Same(Runtime(node),id)&&node.Current.ProcessId==providerPid;
+    if(!after){json=prefix+"\"status\":\"stale-after-read-details-discarded\"}";}
+    else{
+     string kind=Same(id,rootId)?"root":type==ControlType.Menu.Id?"menu":type==ControlType.MenuItem.Id?"menu-item-unattributed":"structural-other";
+     json=prefix+"\"status\":\"captured-nonatomic-not-authority\",\"root_identity_before_after\":true,\"node_kind\":\""+kind+"\",\"control_type_id\":"+Number(type)+",\"native_hwnd\":"+Number(native)+",\"pid_no_default_kind\":\""+pidNoDefaultKind+"\",\"pid_no_default_value\":"+pidNoDefaultValue+",\"runtime_id\":"+JsonIds(id)+",\"root_runtime_id\":"+JsonIds(rootId)+",\"parent_already_encountered\":"+(expectedParent!=null?"true":"false")+",\"expected_parent_runtime_id\":"+JsonIds(expectedParent)+",\"parent_present\":"+(parentPresent?"true":"false")+",\"parent_runtime_id\":"+JsonIds(parentId)+",\"parent_matches_enqueued_parent\":"+(expectedParent!=null&&parentId!=null&&Same(parentId,expectedParent)?"true":"false")+",\"parent_metadata_read\":"+(parentMetadataRead?"true":"false")+",\"parent_provider_pid\":"+Number(parentPid)+",\"parent_control_type_id\":"+Number(parentType)+",\"parent_native_hwnd\":"+Number(parentNative)+"}";
+    }
+   }
+  }catch{ /* Getter failures remain diagnostic unavailable; never suppress the original rejection. */ }
+  if(json.Length>8192)json=prefix+"\"status\":\"diagnostic-bound-exceeded\"}";
+  try{System.IO.File.WriteAllText(System.IO.Path.Combine(directory,"native-provider-mismatch.json"),json,new UTF8Encoding(false));}catch{ /* Missing evidence is inconclusive, never permission to continue. */ }
+ }
+ public static MenuProof ReadMenu(IntPtr host,uint testPid,uint hostTid,IntPtr popup,uint browserPid,ReadOnlyBrowser browser,string diagnosticDirectory){
   uint beforePid;uint tid=GetWindowThreadProcessId(popup,out beforePid);if(beforePid!=browserPid||tid==0||!IsWindow(popup))throw new InvalidOperationException("Exact native UIA root unavailable.");
   var root=AutomationElement.FromHandle(popup);if(root==null||root.Current.ProcessId!=(int)browserPid||root.Current.NativeWindowHandle!=popup.ToInt32())throw new InvalidOperationException("Exact native UIA root mismatch.");
   var focusGui=new GUI{cbSize=(uint)Marshal.SizeOf(typeof(GUI))};if(!GetGUIThreadInfo(tid,ref focusGui)||!FocusOwned(host,focusGui.hwndFocus,browserPid,tid))throw new InvalidOperationException("Native focus witness unavailable before UIA read.");
-  int[] rootId=Runtime(root);var walker=TreeWalker.RawViewWalker;var queue=new Queue<AutomationElement>();queue.Enqueue(root);int examined=0,menus=0,items=0;int[] menuId=null,itemId=null;System.Windows.Rect chosen=new System.Windows.Rect();
-  while(queue.Count>0){if(++examined>128)throw new InvalidOperationException("UIA raw menu inventory incomplete.");var e=queue.Dequeue();var c=e.Current;if(c.ProcessId!=(int)browserPid)throw new InvalidOperationException("UIA menu provider PID mismatch.");Runtime(e);
+  int[] rootId=Runtime(root);var walker=TreeWalker.RawViewWalker;var queue=new Queue<Tuple<AutomationElement,int,int[]>>();queue.Enqueue(Tuple.Create(root,0,(int[])null));int examined=0,menus=0,items=0;int[] menuId=null,itemId=null;System.Windows.Rect chosen=new System.Windows.Rect();
+  while(queue.Count>0){if(++examined>128)throw new InvalidOperationException("UIA raw menu inventory incomplete.");var queued=queue.Dequeue();var e=queued.Item1;var c=e.Current;int providerPid=c.ProcessId;
+   if(providerPid!=(int)browserPid){
+    WriteMismatch(host,testPid,hostTid,popup,browserPid,tid,browser,root,rootId,e,queued.Item2,queued.Item3,examined,providerPid,diagnosticDirectory);
+    throw new InvalidOperationException("UIA menu provider PID mismatch.");
+   }
+   int[] currentId=Runtime(e);
    if(c.ControlType==ControlType.Menu){menus++;menuId=Runtime(e);}
    if(c.ControlType==ControlType.MenuItem&&String.Equals(c.Name,"Bowser native context permission probe",StringComparison.Ordinal)){
     if(!c.IsEnabled||c.IsOffscreen)throw new InvalidOperationException("Fixture menu leaf unavailable.");
@@ -86,7 +119,7 @@ public static class BowserDefaultContext {
     var ancestor=e;bool reached=false;int menuAncestors=0;for(int hop=0;hop<32&&ancestor!=null;hop++){var ac=ancestor.Current;if(ac.ProcessId!=(int)browserPid)throw new InvalidOperationException("UIA raw ancestry provider mismatch.");if(ac.ControlType==ControlType.Menu)menuAncestors++;if(Same(Runtime(ancestor),rootId)){reached=true;break;}if(ac.NativeWindowHandle!=0&&(IntPtr)ac.NativeWindowHandle!=popup)throw new InvalidOperationException("Unexpected native ancestor in menu hierarchy.");ancestor=walker.GetParent(ancestor);}if(!reached||menuAncestors!=1)throw new InvalidOperationException("UIA raw Menu ancestry incomplete or ambiguous.");
     items++;itemId=Runtime(e);chosen=c.BoundingRectangle;
    }
-   for(var child=walker.GetFirstChild(e);child!=null;child=walker.GetNextSibling(child)){if(queue.Count+examined>=128)throw new InvalidOperationException("UIA child inventory exceeds bound.");queue.Enqueue(child);}
+   for(var child=walker.GetFirstChild(e);child!=null;child=walker.GetNextSibling(child)){if(queue.Count+examined>=128)throw new InvalidOperationException("UIA child inventory exceeds bound.");queue.Enqueue(Tuple.Create(child,queued.Item2+1,currentId));}
   }
   RECT r;uint afterPid;uint afterTid=GetWindowThreadProcessId(popup,out afterPid);
   if(!FocusOwned(host,focusGui.hwndFocus,browserPid,tid)||menus!=1||items!=1||!Same(rootId,Runtime(root))||afterPid!=browserPid||afterTid!=tid||!IsWindow(popup)||!GetWindowRect(popup,out r)||!Finite(chosen.X)||!Finite(chosen.Y)||!Finite(chosen.Width)||!Finite(chosen.Height)||chosen.Width<=0||chosen.Height<=0||chosen.Left<r.Left||chosen.Top<r.Top||chosen.Right>r.Right||chosen.Bottom>r.Bottom)throw new InvalidOperationException("Unique bounded current Menu/MenuItem proof unavailable.");
@@ -200,7 +233,7 @@ function Menu-State {
  if($candidates.Count -eq 0){if($AllowPending){$report.readiness.last_predicate='native-candidate-not-present';return $null};throw 'Native menu candidate unavailable.'}
  $popup=$candidates[0];$menuTid=[BowserDefaultContext]::CandidateThread($popup,$BrowserPid)
  if(!$menuTid -or ![BowserDefaultContext]::NativeReady($h,$OwnerPid,$tid,$popup,$BrowserPid,$menuTid,[IntPtr]::Zero)){if($AllowPending){$report.readiness.last_predicate='exact-native-focus-capture-not-ready';return $null};throw 'Exact menu native focus/capture unavailable.'}
- $proof=[BowserDefaultContext]::ReadMenu($h,$popup,$BrowserPid)
+ $proof=[BowserDefaultContext]::ReadMenu($h,$OwnerPid,$tid,$popup,$BrowserPid,$browserGuard,$Out)
  if(![BowserDefaultContext]::NativeReady($h,$OwnerPid,$tid,$popup,$BrowserPid,$menuTid,$proof.Focus)){throw 'Native ownership changed across UIA read.'}
  return $proof
 }

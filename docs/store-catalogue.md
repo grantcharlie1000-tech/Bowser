@@ -179,3 +179,17 @@ the same native preflight IDs. Unknown topology remains a failure with only the 
 retained test-process-handle cleanup. The browser process handle remains read-only. These bounded
 observations do not bound synchronous native/UIA execution time, prove general menu ownership,
 select an extension item, establish activeTab grants, or test Bitwarden autofill.
+
+
+### Native font-measurement prerequisite (test only)
+
+The guidance reservation model has a separate native measurement control using Bowser's real
+system-message-font factory at explicit96/144/192 DPI and100/150/200% font scale, with fixed
+260/640/960-DIP widths. It selects that exact font into a temporary DC, checks actual text metrics,
+requires realized line-height growth across both requested font scales and DPI values,
+and measures the complete fixed note with DrawTextW's matching word-wrap/no-prefix/calculated-rect
+flags before passing the physical padded height to the partition. Native handles are restored and
+released on normal completion or unwind. This tests the default system message face only. It creates
+no child control and changes no production geometry; it does not establish STATIC rendering,
+user-selected font fallback, actual monitor DPI, show/hide lifetime, Google-page reservation or
+200% visual acceptance. Those remain distinct integration/runtime gates.

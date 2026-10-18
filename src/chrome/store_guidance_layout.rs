@@ -136,4 +136,81 @@ mod tests {
         r.area.bottom=750;assert!(partition(r).unwrap().guidance.is_some());
         r.measured_guidance=None;assert!(partition(r).unwrap().guidance.is_none());
     }
+
+    /// Native font/wrapping prerequisite only. No control is created and no production viewport
+    /// consumes this measurement; screenshots and actual child-control lifecycle remain separate.
+    #[test]
+    fn actual_message_font_measurements_fit_the_partition_at_supported_scales() {
+        use windows::Win32::{Foundation::RECT, Graphics::Gdi::{
+            ANTIALIASED_QUALITY, CreateCompatibleDC, DeleteDC, DeleteObject, DT_CALCRECT,
+            DT_NOPREFIX, DT_WORDBREAK, GetTextMetricsW, HDC, HFONT, HGDIOBJ, SelectObject,
+            TEXTMETRICW,
+        }};
+        #[link(name = "user32")]
+        unsafe extern "system" {
+            #[link_name = "DrawTextW"]
+            fn measure_text(dc: HDC, text: *const u16, count: i32, rect: *mut RECT, format: u32) -> i32;
+        }
+        struct SelectedFont { dc: HDC, font: HFONT, previous: HGDIOBJ }
+        impl SelectedFont {
+            fn release(&mut self) -> bool {
+                unsafe {
+                    let restored = if self.dc.0.is_null() || self.previous.0.is_null() { true }
+                        else { let selected = SelectObject(self.dc, self.previous); !selected.0.is_null() && selected.0 as isize != -1 };
+                    let dc_deleted = self.dc.0.is_null() || DeleteDC(self.dc).as_bool();
+                    if dc_deleted { self.dc = HDC::default(); }
+                    // Never try deleting a font which may still be selected in a failed DC.
+                    let font_deleted = (restored || dc_deleted) && (self.font.0.is_null() || DeleteObject(self.font.into()).as_bool());
+                    if font_deleted { self.font = HFONT::default(); }
+                    restored && dc_deleted && font_deleted
+                }
+            }
+        }
+        impl Drop for SelectedFont { fn drop(&mut self) { let _ = self.release(); } }
+        let text: Vec<u16> = "Google installs into Chrome. Bowser uses a separate verified package and permission review. Extension compatibility varies.".encode_utf16().collect();
+        assert!(!text.is_empty());
+        let mut previous_dpi_height = 0;
+        for dpi in [96_u32, 144, 192] {
+            let mut previous_scale_height = 0;
+            for scale in [100_u32, 150, 200] {
+            let mut resources = SelectedFont { dc: unsafe { CreateCompatibleDC(None) },
+                font: super::super::paint::create_message_font_with(dpi, ANTIALIASED_QUALITY, scale, None),
+                previous: HGDIOBJ::default() };
+            assert!(!resources.dc.0.is_null(), "native measurement DC unavailable");
+            assert!(!resources.font.0.is_null(), "actual Bowser message font unavailable");
+            resources.previous = unsafe { SelectObject(resources.dc, resources.font.into()) };
+            assert!(!resources.previous.0.is_null() && resources.previous.0 as isize != -1, "actual message font selection failed");
+            let mut metrics = TEXTMETRICW::default();
+            assert!(unsafe { GetTextMetricsW(resources.dc, &mut metrics) }.as_bool());
+            assert!(metrics.tmHeight > previous_scale_height, "realized font height did not grow with requested scale");
+            previous_scale_height = metrics.tmHeight;
+            if scale == 100 {
+                assert!(metrics.tmHeight > previous_dpi_height, "realized baseline font height did not grow with explicit DPI");
+                previous_dpi_height = metrics.tmHeight;
+            }
+            for width_dip in [260_i32, 640, 960] {
+                let width = width_dip * dpi as i32 / 96;
+                let mut measured = RECT { left: 0, top: 0, right: width, bottom: 0 };
+                let returned = unsafe { measure_text(resources.dc, text.as_ptr(), text.len() as i32,
+                    &mut measured, (DT_CALCRECT | DT_NOPREFIX | DT_WORDBREAK).0) };
+                let measured_height = measured.bottom - measured.top;
+                assert!(returned > 0 && measured_height >= metrics.tmHeight);
+                assert_eq!(returned, measured_height, "native calculated height and rectangle disagree");
+                assert!(measured.right > measured.left && measured.right - measured.left <= width);
+                let padded_height = measured_height.checked_add(16 * dpi as i32 / 96).unwrap();
+                let request = Request { area: Rect::new(0, 0, width, 720 * dpi as i32 / 96),
+                    bookmark_height: 28 * dpi as i32 / 96, bookmark_bottom: false,
+                    bookmark_reserved: true, measured_guidance: Some(padded_height),
+                    minimum_page_height: 96 * dpi as i32 / 96 };
+                let rows = partition(request).unwrap();
+                let guidance = rows.guidance.expect("complete measured copy must fit representative viewport");
+                assert_eq!(guidance.height(), padded_height);
+                assert_eq!(rows.page.top, guidance.bottom + request.bookmark_height);
+                assert!(rows.page.height() >= request.minimum_page_height);
+                println!("STORE_GUIDANCE_FONT_MEASUREMENT dpi={dpi} font_scale={scale} width={width} text_units={} font_line_height={} measured_text_height={measured_height} reserved_height={padded_height} native_control_created=false", text.len(), metrics.tmHeight);
+            }
+            assert!(resources.release(), "native measurement resources did not release cleanly");
+        }}
+    }
+
 }

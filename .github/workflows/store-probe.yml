@@ -9,6 +9,7 @@ on:
       - 'src/engine/**'
       - 'src/win32/store.rs'
       - '.github/workflows/store-probe.yml'
+      - 'benchmarks/scripts/probe-default-context-cancellation.ps1'
   workflow_dispatch:
 permissions:
   contents: read
@@ -161,6 +162,12 @@ jobs:
           $test = Get-ChildItem target/debug/deps/bowser-*.exe | Sort-Object LastWriteTime -Descending | Select-Object -First 1
           & $test.FullName content_script_review_ --nocapture --test-threads=1 2>&1 | Tee-Object store-content-script-review.log
           if ($LASTEXITCODE -ne 0) { throw 'Complete content-script review controls failed.' }
+      - name: Measure actual system message fonts before test-only guidance partition
+        if: ${{ !cancelled() && steps.native_build.outcome == 'success' }}
+        run: |
+          $test = Get-ChildItem target/debug/deps/bowser-*.exe | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          & $test.FullName chrome::store_guidance_layout::tests::actual_message_font_measurements_fit_the_partition_at_supported_scales --exact --nocapture --test-threads=1 2>&1 | Tee-Object store-guidance-font-measurements.log
+          if ($LASTEXITCODE -ne 0) { throw 'Native font measurement prerequisite failed; no rendered-control acceptance.' }
       - name: Enforce bounded native extension page link parsing and navigation guards
         if: ${{ !cancelled() && steps.native_build.outcome == 'success' }}
         run: |
@@ -310,6 +317,7 @@ jobs:
             store-content-script-review.log
             store-document-gate-unit.log
             store-document-gate-native.log
+            store-guidance-font-measurements.log
             store-page-links-controls.log
             store-page-links-runtime-controls.log
             store-native-command-probe.log
