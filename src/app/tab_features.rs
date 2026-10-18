@@ -385,7 +385,9 @@ impl App {
             let state = app.borrow();
             let pinned = state.tab_model.get(id).is_some_and(|tab| tab.pinned);
             (
-                tab_options::close_kind(&state.settings.tabs, pinned, state.workspaces.active().tabs().len()),
+                // The window's tabs in every workspace: closing the last tab of one workspace is not
+                // closing the window's last tab.
+                tab_options::close_kind(&state.settings.tabs, pinned, state.tab_model.len()),
                 state.tab_model.active() == id,
             )
         };

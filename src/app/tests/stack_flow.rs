@@ -362,3 +362,18 @@ fn a_ball_click_under_two_level_brings_back_the_member_used_last() {
     assert_eq!(App::active_tab_id(&app), ids[1]);
 }
 // --- end two-level stacks ---
+
+#[test]
+fn keep_window_off_counts_the_tabs_of_every_workspace() {
+    let app = fixture();
+    let home = app.borrow().workspaces.active_id();
+    let _work = App::create_workspace(&app, "Work").unwrap();
+    let _ = App::switch_workspace(&app, home);
+    assert_eq!(app.borrow().workspaces.active().tabs().len(), 1, "one tab in front");
+    assert!(App::tab_count(&app) > 1, "another workspace holds a tab");
+    set(&app, |o| o.keep_window = false);
+    let only = App::active_tab_id(&app);
+    assert_eq!(App::user_close_tab(&app, only), crate::tab_options::CloseKind::Close, "the window has tabs elsewhere: it stays");
+    assert!(App::tab_ids(&app).iter().all(|id| *id != only), "the tab itself closed");
+    assert!(App::tab_count(&app) >= 1, "the window keeps the other workspace's tab");
+}
