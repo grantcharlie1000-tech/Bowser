@@ -38,6 +38,12 @@ function Assert-Owned {
  $pidOwner=[uint32]0
  [void][BowserStoreSmoke]::GetWindowThreadProcessId($script:window,[ref]$pidOwner)
  $class=[Text.StringBuilder]::new(128);[void][BowserStoreSmoke]::GetClassName($script:window,$class,$class.Capacity)
+ if($pidOwner -eq $app.Id -and $class.ToString() -eq '#32770') {
+  $dialog=[Windows.Automation.AutomationElement]::FromHandle($script:window)
+  $texts=$dialog.FindAll([Windows.Automation.TreeScope]::Descendants,[Windows.Automation.Condition]::TrueCondition)
+  $report.startup_error_dialog=@($texts | ForEach-Object {try{$_.Current.Name}catch{''}} | Where-Object {$_})
+  throw ('Owned startup dialog, not browser UI: ' + ($report.startup_error_dialog -join ' | '))
+ }
  if ($pidOwner -ne $app.Id -or ![BowserStoreSmoke]::IsWindowVisible($script:window) -or $class.ToString() -ne 'BowserNativeWindow') { throw ('Not the disposable native browser window. Class=' + $class.ToString()) }
 }
 function Keys([string]$Value) {

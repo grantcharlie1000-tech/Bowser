@@ -71,17 +71,33 @@ impl Review {
         if installed_source(&self.prepared.folder().map_err(|error| error.to_string())?).as_deref() != Some(self.store_id.as_str()) {
             return Err("The staged package source identity changed. Nothing was installed.".into());
         }
-        self.prepared.commit_named(&self.name).map_err(|error| error.to_string())
+        self.prepared.commit_checked_named(&self.name, |records| {
+            if identity_already_present(&self.store_id, &self.extensions_dir, &self.records_file, records) {
+                return Err(extensions::ExtensionError::InvalidManifest("This extension identity was installed by another window during review. Nothing else was installed."));
+            }
+            Ok(())
+        }).map_err(|error| error.to_string())
     }
 }
 
+fn identity_already_present(id: &str, extensions_dir: &Path, records_file: &Path, records: &[extensions::Record]) -> bool {
+    // A legacy local CRX/unpacked installation can have the same native key without a Store
+    // marker. Check its key and the existing native mapping, not catalogue/source claims alone.
+    let mapping_path = records_file.with_file_name("extension_ids.txt");
+    let mapping = fs::symlink_metadata(&mapping_path).ok().filter(|meta| meta.is_file() && !meta.file_type().is_symlink() && meta.len() <= 64 * 1024)
+        .and_then(|_| fs::read_to_string(mapping_path).ok()).unwrap_or_default();
+    records.iter().any(|record| {
+        let native_match = mapping.lines().any(|line| line.split_once('\t').is_some_and(|(bowser, native)| bowser == record.id && native == id));
+        native_match || extensions::folder_for(extensions_dir, &record.id).is_ok_and(|folder| {
+            extensions::manifest_key_id(&folder).ok().flatten().or_else(|| installed_source(&folder)).as_deref() == Some(id)
+        })
+    })
+}
+
 fn ensure_not_installed(id: &str, extensions_dir: &Path, records_file: &Path) -> Result<(), String> {
-    for record in extensions::read_records(records_file).map_err(|error| error.to_string())? {
-        if let Ok(folder) = extensions::folder_for(extensions_dir, &record.id)
-            && installed_source(&folder).as_deref() == Some(id)
-        {
-            return Err("This extension is already installed in this profile. Verified extension updates are not enabled yet.".to_owned());
-        }
+    let records = extensions::read_records(records_file).map_err(|error| error.to_string())?;
+    if identity_already_present(id, extensions_dir, records_file, &records) {
+        return Err("This extension identity is already installed in this profile. Verified extension updates are not enabled yet.".to_owned());
     }
     Ok(())
 }

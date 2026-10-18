@@ -2412,6 +2412,33 @@ fn add_extension(
     folder: &Path,
     done: ExtensionDone,
 ) {
+    let expected = match crate::extensions::manifest_key_id(folder) {
+        Ok(Some(expected)) => expected,
+        Ok(None) => { add_extension_owned(core, profile, id, folder, None, done); return; }
+        Err(error) => { done(Err(error.to_string())); return; }
+    };
+    let weak = Rc::downgrade(core); let profile = profile.clone(); let folder = folder.to_owned();
+    let profile_for_list = profile.clone();
+    list_profile_extensions(&profile_for_list, Box::new(move |present| {
+        let Some(core) = weak.upgrade() else { done(Err("Bowser closed this profile.".into())); return; };
+        let present = match present { Ok(present) => present, Err(reason) => { done(Err(format!("The profile's existing extension ownership could not be checked: {reason}"))); return; } };
+        let owned = core.borrow().extension_ids.get(&id).is_some_and(|known| *known == expected);
+        if !owned && present.iter().any(|(native_id, _)| *native_id == expected) {
+            done(Err("An extension with this identity already exists outside this Bowser record. Bowser did not replace or take ownership of it.".into()));
+            return;
+        }
+        add_extension_owned(&core, &profile, id, &folder, Some(expected), done);
+    }));
+}
+
+fn add_extension_owned(
+    core: &Rc<RefCell<EngineCore>>,
+    profile: &ICoreWebView2Profile7,
+    id: String,
+    folder: &Path,
+    expected_identity: Option<String>,
+    done: ExtensionDone,
+) {
     let slot = once_slot(done);
     let completion = slot.clone();
     let weak = Rc::downgrade(core);
@@ -2421,6 +2448,17 @@ fn add_extension(
             let result = match (status, extension) {
                 (Ok(()), Some(extension)) => {
                     let (traced_id, traced_name) = extension_identity(&extension);
+                    if expected_identity.as_ref().is_some_and(|expected| traced_id.as_ref() != Some(expected)) {
+                        // This object was returned by our consented Add call. Do not claim success,
+                        // persist its ownership, or leave unexpected-identity code enabled.
+                        let mismatch = completion.clone();
+                        set_loaded_enabled(&extension, false, Box::new(move |disabled| {
+                            let reason = if disabled.is_ok() { "The runtime returned an unexpected extension identity. The returned extension was disabled; installation was not accepted.".to_owned() }
+                                else { "The runtime returned an unexpected extension identity and could not disable its returned object. Close this profile and investigate; installation was not accepted.".to_owned() };
+                            finish_slot(&mismatch, Err(reason));
+                        }));
+                        return Ok(());
+                    }
                     extension_trace(&extension_log_line(
                         "add",
                         Some(&loaded_id),

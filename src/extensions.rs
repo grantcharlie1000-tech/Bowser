@@ -412,6 +412,42 @@ fn walk_with_limits(
     Ok(stats)
 }
 
+/// The existing public native-ID ownership map. Bounded, no links, and no inferred ownership
+/// from an extension name/URL. A missing/damaged entry is not a grant to overwrite runtime data.
+fn recorded_native_identity(records_file: &Path, id: &str) -> Option<String> {
+    let path = records_file.with_file_name("extension_ids.txt");
+    let mut file = fs::OpenOptions::new().read(true).custom_flags(FILE_FLAG_OPEN_REPARSE_POINT).open(path).ok()?;
+    let meta = file.metadata().ok()?;
+    if !is_plain_file(&meta) || meta.len() > 64 * 1024 { return None; }
+    let mut text = String::new(); (&mut file).take(64 * 1024 + 1).read_to_string(&mut text).ok()?;
+    if text.len() > 64 * 1024 { return None; }
+    text.lines().find_map(|line| {
+        let (bowser, native) = line.split_once('\t')?;
+        (bowser == id && crate::crx_fetch::parse_extension_id(native).is_ok()).then(|| native.to_owned())
+    })
+}
+
+/// Native Chromium identity claimed by a manifest public key. This is for duplicate/ownership
+/// collision checks only, not signature verification or publisher attribution. Store packages
+/// must still pass CRX3 verification before preparation.
+pub fn manifest_key_id(folder: &Path) -> Result<Option<String>, ExtensionError> {
+    let mut file = fs::OpenOptions::new().read(true).custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(folder.join(MANIFEST_FILE_NAME)).map_err(|_| ExtensionError::Io)?;
+    let meta = file.metadata().map_err(|_| ExtensionError::Io)?;
+    if !is_plain_file(&meta) { return Err(ExtensionError::LinkNotAllowed); }
+    if meta.len() > MAX_MANIFEST_BYTES { return Err(ExtensionError::ManifestTooLarge); }
+    let mut text = String::new(); (&mut file).take(MAX_MANIFEST_BYTES + 1).read_to_string(&mut text).map_err(|_| ExtensionError::Io)?;
+    if text.len() as u64 > MAX_MANIFEST_BYTES { return Err(ExtensionError::ManifestTooLarge); }
+    let invalid = || ExtensionError::InvalidManifest("The manifest public key cannot be safely bound to its native identity.");
+    let json::Value::Object(fields) = json::parse(&text).ok_or_else(invalid)? else { return Err(invalid()); };
+    let Some(key) = json::get(&fields, "key") else { return Ok(None); };
+    let json::Value::String(key) = key else { return Err(invalid()); };
+    if key.is_empty() || key.len() > 16 * 1024 { return Err(invalid()); }
+    let compact: String = key.chars().filter(|c| !c.is_ascii_whitespace()).collect();
+    let bytes = crate::blocker::json::base64_decode(&compact).filter(|bytes| !bytes.is_empty()).ok_or_else(invalid)?;
+    crate::crx::extension_id_from_public_key(&bytes).map(Some).ok_or(ExtensionError::Io)
+}
+
 /// A single plain name: no separators, no drive or stream syntax, no control characters, and no
 /// trailing dot or space (Windows strips those).
 fn is_valid_entry_name(name: &str) -> bool {
@@ -469,6 +505,23 @@ pub struct PreparedInstall {
     committed: bool,
 }
 
+/// Cross-process read/modify/write lease. The OS denies a second open while this handle lives,
+/// and deletes the tiny lease file on close/crash. No persistent lock token or ACL changes.
+struct RecordsLease { _file: File }
+impl RecordsLease {
+    fn acquire(records_file: &Path) -> Result<Self, ExtensionError> {
+        if let Some(parent) = records_file.parent().filter(|parent| !parent.as_os_str().is_empty()) { ensure_plain_dir(parent)?; }
+        let mut path = records_file.as_os_str().to_owned(); path.push(".lease");
+        let file = fs::OpenOptions::new().read(true).write(true).create(true).truncate(false)
+            // GENERIC_READ | GENERIC_WRITE | DELETE, required for DELETE_ON_CLOSE.
+            .access_mode(0x8000_0000 | 0x4000_0000 | 0x0001_0000).share_mode(0)
+            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | 0x0400_0000)
+            .open(PathBuf::from(path)).map_err(|_| ExtensionError::Io)?;
+        if !is_plain_file(&file.metadata().map_err(|_| ExtensionError::Io)?) { return Err(ExtensionError::LinkNotAllowed); }
+        Ok(Self { _file: file })
+    }
+}
+
 impl PreparedInstall {
     pub fn inspection(&self) -> &Inspection { &self.inspection }
 
@@ -485,7 +538,12 @@ impl PreparedInstall {
 
     /// Store callers supply the resolved localized name shown in the matching permission review.
     /// This affects display only; all declarations and package bytes remain bound to the review.
-    pub(crate) fn commit_named(mut self, name: &str) -> Result<Record, ExtensionError> {
+    pub(crate) fn commit_named(self, name: &str) -> Result<Record, ExtensionError> {
+        self.commit_checked_named(name, |_| Ok(()))
+    }
+
+    pub(crate) fn commit_checked_named(mut self, name: &str, check: impl FnOnce(&[Record]) -> Result<(), ExtensionError>) -> Result<Record, ExtensionError> {
+        let _lease = RecordsLease::acquire(&self.records_file)?;
         if name.is_empty() || name.chars().count() > MAX_NAME_CHARS
             || name.chars().any(|c| c.is_control() || is_invisible_format(c))
         { return Err(ExtensionError::InvalidName); }
@@ -495,6 +553,17 @@ impl PreparedInstall {
             return Err(ExtensionError::InvalidManifest("The staged extension changed. Review it again."));
         }
         let mut records = read_records(&self.records_file)?;
+        if let Some(identity) = manifest_key_id(&self.folder()?)? {
+            for record in &records {
+                let folder = contained_path(&self.extensions_dir, &record.id)?;
+                if manifest_key_id(&folder).ok().flatten().as_deref() == Some(identity.as_str())
+                    || recorded_native_identity(&self.records_file, &record.id).as_deref() == Some(identity.as_str())
+                {
+                    return Err(ExtensionError::InvalidManifest("This native extension identity is already installed in this profile."));
+                }
+            }
+        }
+        check(&records)?;
         if records.len() >= MAX_INSTALLED { return Err(ExtensionError::TooManyInstalled); }
         if records.iter().any(|record| record.id == self.id) { return Err(ExtensionError::InvalidRecords); }
         let record = Record {
@@ -618,6 +687,7 @@ fn copy_file_no_follow(from: &Path, to: &Path) -> Result<(), ExtensionError> {
 
 /// Sets the enabled flag of one installed extension.
 pub fn set_enabled(records_file: &Path, id: &str, enabled: bool) -> Result<(), ExtensionError> {
+    let _lease = RecordsLease::acquire(records_file)?;
     let mut records = read_records(records_file)?;
     let record = records
         .iter_mut()
@@ -634,6 +704,7 @@ pub fn uninstall(
     records_file: &Path,
     id: &str,
 ) -> Result<(), ExtensionError> {
+    let _lease = RecordsLease::acquire(records_file)?;
     let mut records = read_records(records_file)?;
     let before = records.len();
     records.retain(|record| record.id != id);
@@ -1569,6 +1640,32 @@ mod tests {
             folder_for(&dir, "../../Windows"),
             Err(ExtensionError::InvalidRecords)
         );
+    }
+
+    #[test]
+    fn local_install_cannot_duplicate_an_existing_native_public_key_identity() {
+        let root = temp_dir("duplicate-native-key");
+        let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/extensions/probe-mv3-key");
+        assert_eq!(manifest_key_id(&source).unwrap().as_deref(), Some("ciocoifocbggchcecjgibbaeojegkpen"));
+        let extensions = root.join("Extensions"); let records = root.join("extensions.txt");
+        let first = install(&source, &extensions, &records).unwrap();
+        let prepared = prepare_install(&source, &extensions, &records).unwrap();
+        let rejected = prepared.folder().unwrap();
+        assert!(prepared.commit().is_err()); assert!(!rejected.exists());
+        assert_eq!(read_records(&records).unwrap(), vec![first]);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn records_lease_refuses_overlapping_writer_and_releases_automatically() {
+        let dir = temp_dir("records-lease"); let records = dir.join("extensions.txt");
+        let first = RecordsLease::acquire(&records).unwrap();
+        assert!(RecordsLease::acquire(&records).is_err());
+        drop(first);
+        let second = RecordsLease::acquire(&records).unwrap();
+        drop(second);
+        assert!(!dir.join("extensions.txt.lease").exists());
+        let _ = fs::remove_dir_all(dir);
     }
 
     #[test]
