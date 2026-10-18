@@ -7,6 +7,9 @@ param(
     [Parameter(Mandatory)][string]$ReleaseExe,
     [Parameter(Mandatory)][string]$Out,
     [ValidateRange(1,30)][int]$Pairs=5,
+    [ValidateSet('light','demanding','redirect')][string[]]$Fixtures=@('light','demanding','redirect'),
+    [ValidateRange(1,20)][int]$MaxInvalidSamples=2,
+    [string]$DiagnosticSource='8a60dca2ac7de6d369c9b65584fd621a7013f491',
     [ValidateRange(1,30)][int]$IdleSeconds=3,
     [ValidateRange(100,2000)][int]$SampleMilliseconds=250,
     [string]$BaselineSource='80eabd7ae6d421e61c81985c34023bfc824a2e58'
@@ -41,6 +44,7 @@ $env:LOCALAPPDATA=Join-Path $run 'local-app-data'
 New-Item -ItemType Directory -Force $env:LOCALAPPDATA | Out-Null
 $portFile=Join-Path $run 'port.txt'; $requestFile=Join-Path $run 'requests.jsonl'
 $script:profileTimestamp=[DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+$invalidSamples=0
 $server=$null; $app=$null; $rows=[Collections.Generic.List[object]]::new()
 function Qpc { [Diagnostics.Stopwatch]::GetTimestamp() }
 function Owned-Keys([string]$keys) {
@@ -76,7 +80,7 @@ try {
     while (-not (Test-Path $portFile)) { if ([DateTime]::UtcNow -gt $deadline) {throw 'Fixture startup timeout'}; Start-Sleep -Milliseconds 50 }
     $base="http://127.0.0.1:$([int](Get-Content $portFile -Raw))"
     $metadata=[ordered]@{
-        schema_version=1; baseline_source=$BaselineSource; candidate_source=(& git rev-parse HEAD).Trim(); started_at_utc=[DateTime]::UtcNow.ToString('o'); pairs=$Pairs
+        schema_version=1; baseline_source=$BaselineSource; diagnostic_source=$DiagnosticSource; harness_source=(& git rev-parse HEAD).Trim(); selected_fixtures=$Fixtures; started_at_utc=[DateTime]::UtcNow.ToString('o'); pairs=$Pairs
         inputs=$hashes; qpc_frequency=[Diagnostics.Stopwatch]::Frequency; sample_milliseconds=$SampleMilliseconds
         runner_image=$env:ImageOS; runner_image_version=$env:ImageVersion; runner_name=$env:RUNNER_NAME
         os=(Get-CimInstance Win32_OperatingSystem | Select-Object Caption,Version,BuildNumber,TotalVisibleMemorySize)
@@ -93,12 +97,13 @@ try {
         $order=@($arms.Keys); if ($pair % 2 -eq 0) { [array]::Reverse($order) }
         foreach($arm in $order) {
             if ($arm -eq 'release' -and $pair -gt 1) { continue }
-            foreach($fixture in @('light','demanding','redirect','network-failure','error','hung')) {
+            foreach($fixture in @(@($Fixtures)+@('redirect','network-failure','error','hung') | Select-Object -Unique)) {
+                if ($fixture -notin $Fixtures -and ($arm -ne 'diagnostic_on' -or $pair -ne 1)) { continue }
                 if ($fixture -in @('network-failure','error','hung') -and ($arm -ne 'diagnostic_on' -or $pair -ne 1)) { continue }
                 $profile=Join-Path $run "$arm-$pair-$fixture"
                 Seed-Profile $profile 818
                 foreach($condition in @('fresh','reused')) {
-                    if ($fixture -in @('network-failure','error','hung') -and $condition -eq 'reused') { continue }
+                    if ($fixture -notin $Fixtures -and $condition -eq 'reused') { continue }
                     $token=([guid]::NewGuid().ToString('N')); $url="$base/$($fixture)?token=$token"
                     $id="$arm-$pair-$fixture-$condition"; $eventFile=Join-Path $Out "$id-events.csv"
                     $args=@('--data-dir',"`"$profile`"",'--open-url',"`"$url`"")
@@ -170,9 +175,12 @@ try {
                         $sample.disk_after=Disk-Bytes $profile
                         $sample.snapshots=@($snapshots.ToArray());$sample.sampling_overhead_ms=Get-ProductionDistribution @($overheads.ToArray())
                         $sample.cpu=Get-ProductionCpuDelta @($snapshots.ToArray())
+                        Write-Host ("Sample {0}: valid={1}; error={2}" -f $id,$sample.valid,$sample.error)
                         $sample | ConvertTo-Json -Depth 30 | Set-Content (Join-Path $Out "$id.json") -Encoding utf8
                         $rows.Add([pscustomobject]$sample);$app=$null
+                        if (-not $sample.valid) { $invalidSamples++ }
                     }
+                    if ($invalidSamples -ge $MaxInvalidSamples) { throw "Stopped after $invalidSamples invalid samples; raw failures retained for diagnosis" }
                 }
             }
         }
