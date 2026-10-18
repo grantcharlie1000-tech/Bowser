@@ -2530,7 +2530,8 @@ fn add_extension_owned(
             let result = match (status, extension) {
                 (Ok(()), Some(extension)) => {
                     let (traced_id, traced_name) = extension_identity(&extension);
-                    if expected_identity.as_ref().is_some_and(|expected| traced_id.as_ref() != Some(expected)) {
+                    let actual_identity = extension_webview_id(&extension);
+                    if expected_identity.as_ref().is_some_and(|expected| actual_identity.as_ref() != Some(expected)) {
                         // This object was returned by our consented Add call. Do not claim success,
                         // persist its ownership, or leave unexpected-identity code enabled.
                         let mismatch = completion.clone();

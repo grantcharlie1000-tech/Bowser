@@ -144,7 +144,9 @@ function Run-InstallJourney {
  $report.installed_record=Get-Content $recordFile -Raw
  Capture '07-native-installed-before-restart'
  # Real process restart of the same persistent disposable profile, not a fresh engine simulation.
- Stop-Process -Id $app.Id -Force;$app.WaitForExit(10000)|Out-Null;Start-Sleep -Seconds 2
+ if(!$app.CloseMainWindow()){throw 'The owned app did not accept a normal close request.'}
+ if(!$app.WaitForExit(15000)){throw 'The owned app did not close cleanly; restart acceptance not attempted.'}
+ Start-Sleep -Seconds 2
  $script:app=Start-Process $exe -ArgumentList @('--dev','--data-dir',"`"$env:BOWSER_DATA_DIR`"",'--open-url',$initialUrl) -WorkingDirectory $root -PassThru
  Wait-Window
  Keys '^l';Keys 'bowser://store{ENTER}';Start-Sleep -Seconds 4

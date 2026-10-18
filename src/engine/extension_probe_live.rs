@@ -101,7 +101,7 @@ fn handle(mut stream: TcpStream, beacons: &Mutex<Vec<String>>) {
         ("200 OK", "text/plain", String::new())
     } else if path == "/control-script.js" || path == "/ads/banner.js" || path == "/adserver/ad.js" || path == "/pagead/show_ads.js" {
         ("200 OK", "application/javascript", format!("document.documentElement.setAttribute('data-script-{}','loaded');", path.trim_start_matches('/').replace(['/', '.'], "-")))
-    } else if path == "/dnr-fixture" {
+    } else if path.starts_with("/dnr-fixture") {
         ("200 OK", "text/html; charset=utf-8", "<!doctype html><title>Disposable native DNR fixture</title><p>Controlled loopback requests</p><script src='/control-script.js'></script><script src='/ads/banner.js'></script><script src='/adserver/ad.js'></script><script src='/pagead/show_ads.js'></script>".to_owned())
     } else if path.starts_with('/') && !path.contains("favicon") {
         (
@@ -748,6 +748,31 @@ fn probe_real_blocker_network(root: &Path, session: &mut Session, loopback: &Loo
     let blocked: Vec<_> = ad_paths.into_iter().filter(|path| !extension_requests.iter().any(|p| p == path)).collect();
     println!("BLOCKER_PROBE zero_extension_requests={baseline_requests:?} with_extension_requests={extension_requests:?} normal_control_requested={control} blocked_candidates={blocked:?}");
     println!("BLOCKER_PROBE verdict={}", if control && !blocked.is_empty() { "concrete-native-default-rule-network-effect-partial-only" } else { "no-blocking-demonstrated-by-these-controlled-candidates" });
+    // Separate native DNR API control, NOT a claim about uBO's default filtering. This uses the
+    // genuine signed extension context in a disposable profile, without editing its package.
+    let blocked_url = loopback.page("ads/banner.js").to_string();
+    let rule_filter = format!("|{blocked_url}|");
+    let script = format!("(()=>{{chrome.declarativeNetRequest.updateDynamicRules({{removeRuleIds:[987654],addRules:[{{id:987654,priority:100,action:{{type:'block'}},condition:{{urlFilter:{},resourceTypes:['script']}}}}]}},()=>document.documentElement.setAttribute('data-dnr-native-control',JSON.stringify({{error:chrome.runtime.lastError?.message||null}})));return true}})()", crate::chrome_host::protocol::json_string(&rule_filter));
+    session.page_script(&script); pump_until(Duration::from_secs(2), || false);
+    let installed = session.page_script("document.documentElement.getAttribute('data-dnr-native-control')");
+    println!("DNR_NATIVE_CONTROL rule_filter={rule_filter:?} installed={installed:?} scope=native-api-only-not-default-ubo-functionality");
+    if installed.as_deref().is_some_and(|answer| answer.contains("error") && answer.contains("null")) {
+        loopback.beacons.lock().unwrap().clear();
+        session.engine.navigate_tab(session.tab(), &loopback.page("dnr-fixture-dynamic")).unwrap();
+        pump_until(Duration::from_secs(3), || false);
+        let requests = loopback.beacons.lock().unwrap().clone();
+        let control_requested = requests.iter().any(|path| path == "/control-script.js");
+        let target_requested = requests.iter().any(|path| path == "/ads/banner.js");
+        session.page_script("(()=>{chrome.declarativeNetRequest.updateDynamicRules({removeRuleIds:[987654]},()=>document.documentElement.setAttribute('data-dnr-native-removed',JSON.stringify({error:chrome.runtime.lastError?.message||null})));return true})()");
+        pump_until(Duration::from_secs(2), || false);
+        let removed = session.page_script("document.documentElement.getAttribute('data-dnr-native-removed')");
+        loopback.beacons.lock().unwrap().clear();
+        session.engine.navigate_tab(session.tab(), &loopback.page("dnr-fixture-restored")).unwrap();
+        pump_until(Duration::from_secs(3), || false);
+        let restored = loopback.beacons.lock().unwrap().iter().any(|path| path == "/ads/banner.js");
+        println!("DNR_NATIVE_CONTROL requests={requests:?} control_requested={control_requested} target_requested={target_requested} removed={removed:?} target_requested_after_removal={restored}");
+        println!("DNR_NATIVE_CONTROL verdict={}", if control_requested && !target_requested && restored { "exact-native-rule-network-effect-and-removal-proven" } else { "native-rule-network-effect-not-demonstrated" });
+    }
 }
 
 /// Real packages, fresh throwaway profiles, no accounts and no user data. This proves package
