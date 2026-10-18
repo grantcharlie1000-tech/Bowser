@@ -33,7 +33,11 @@ function Get-ProductionReadiness {
         }
     }
     # A newer navigation after readiness invalidates the result. Never inherit another document.
-    if ($result -and $current[$result.tab_id] -ne $result.navigation_id) { $result = $null; $invalid += 'superseded_readiness' }
+    if ($result) {
+        $resultKey = "$($result.tab_id)/$($result.navigation_id)"
+        if ($current[$result.tab_id] -ne $result.navigation_id) { $result = $null; $invalid += 'superseded_readiness' }
+        elseif (-not $success.ContainsKey($resultKey) -or $success[$resultKey] -ne $true) { $result = $null; $invalid += 'readiness_completion_not_successful' }
+    }
     [pscustomobject]@{ Valid=($null -ne $result); Ready=$result; InvalidReasons=@($invalid | Sort-Object -Unique) }
 }
 

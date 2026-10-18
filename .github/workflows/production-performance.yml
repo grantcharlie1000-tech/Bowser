@@ -65,7 +65,7 @@ jobs:
           New-Item -ItemType Directory -Force ../evidence/frozen | Out-Null
           Copy-Item target/release/bowser.exe ../evidence/frozen/untouched-main.exe
           git rev-parse HEAD | Set-Content ../evidence/frozen/untouched-source.txt
-          git rev-parse HEAD^{tree} | Add-Content ../evidence/frozen/untouched-source.txt
+          git rev-parse "HEAD^{tree}" | Add-Content ../evidence/frozen/untouched-source.txt
           Copy-Item Cargo.lock,ui/dist.manifest ../evidence/frozen/
           rustc +stable -vV | Set-Content ../evidence/frozen/toolchain.txt
           cargo +stable --version | Add-Content ../evidence/frozen/toolchain.txt

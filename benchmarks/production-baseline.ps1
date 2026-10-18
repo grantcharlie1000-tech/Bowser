@@ -115,7 +115,11 @@ try {
                             $overheads.Add(((Qpc)-$t)*1000.0/[Diagnostics.Stopwatch]::Frequency); $snapshots.Add($snapshot)
                             if($null -eq $sample.input_ready_qpc -and $app.MainWindowHandle -ne [IntPtr]::Zero){$sample.input_ready_qpc=Qpc}
                             if($app.MainWindowTitle.Contains("BOWSER_PERF_READY_$token")){$sample.title_ready_qpc=Qpc}
-                            if(Has-Ready $token){$sample.ready_qpc=Qpc;break}
+                            if(Has-Ready $token){
+                                if ($null -eq $sample.ready_qpc) { $sample.ready_qpc=Qpc }
+                                # Native title propagation can lag the page's loopback acknowledgement.
+                                if ($null -ne $sample.title_ready_qpc) { break }
+                            }
                             Start-Sleep -Milliseconds $SampleMilliseconds
                         }
                         if($sample.expected_failure) {
