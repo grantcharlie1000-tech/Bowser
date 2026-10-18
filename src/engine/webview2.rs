@@ -45,6 +45,39 @@ use crate::permissions::Permission;
 use crate::tabs::TabId;
 use crate::{shortcuts, win32};
 
+
+#[cfg(feature = "experimental-engine-context-menu")]
+mod engine_menu;
+#[cfg(feature = "experimental-engine-context-menu")]
+mod menu_inventory;
+#[cfg(feature = "experimental-engine-context-menu")]
+mod owned_context_menu;
+#[cfg(all(test, feature = "experimental-engine-context-menu"))]
+pub(crate) use owned_context_menu::set_probe_observer as set_menu_probe_observer;
+#[cfg(feature = "experimental-engine-context-menu")]
+pub(crate) use owned_context_menu::{continue_request as engine_menu_continue, owner_destroyed as engine_menu_owner_destroyed, tick as engine_menu_tick, drain_destroyed as engine_menu_drain_destroyed, TIMER as ENGINE_MENU_TIMER};
+
+type ContextAugmenter = Rc<dyn Fn(Option<ICoreWebView2>, Option<ICoreWebView2ContextMenuRequestedEventArgs>) -> Result<()>>;
+
+/// The experimental coordinator freezes only after all existing Bowser augmentations run, in
+/// their original explicit order. The ordinary build still registers those same three handlers.
+fn register_context_augmenter(
+    native: &ICoreWebView2_11,
+    augmenter: ContextAugmenter,
+    token: &mut i64,
+    coordinated: bool,
+    collected: &mut Vec<ContextAugmenter>,
+) -> Result<()> {
+    if coordinated {
+        collected.push(augmenter);
+        Ok(())
+    } else {
+        unsafe { native.add_ContextMenuRequested(
+            &ContextMenuRequestedEventHandler::create(Box::new(move |sender, args| augmenter(sender, args))), token,
+        ) }
+    }
+}
+
 #[derive(Debug)]
 pub struct RuntimeUnavailable(pub String);
 
@@ -1415,6 +1448,8 @@ const BLOCKABLE_CONTEXTS: [COREWEBVIEW2_WEB_RESOURCE_CONTEXT; 8] = [
 ];
 
 struct WebView2Tab {
+    #[cfg(feature = "experimental-engine-context-menu")]
+    context_menu_registration: Option<owned_context_menu::Registration>,
     document_gate: Rc<RefCell<super::document_gate::DocumentGate>>,
     environment: Option<ICoreWebView2Environment>,
     controller: Option<ICoreWebView2Controller>,
@@ -1783,6 +1818,8 @@ impl WebView2Engine {
                 let configured = unsafe {
                     configure_controller(
                         &controller_environment,
+                        #[cfg(feature = "experimental-engine-context-menu")]
+                        weak_core.clone(),
                         controller,
                         parent,
                         bounds,
@@ -3261,6 +3298,34 @@ impl WebView2Engine {
 }
 
 impl EngineAdapter for WebView2Engine {
+    #[cfg(all(test, feature = "experimental-engine-context-menu"))]
+    fn probe_native_context_handles(&self, tab:TabId) -> Option<super::app_context_menu_probe::NativeContextProbeHandles> {
+        // Clone-only; App may still be borrowed by the caller. No COM call in this method.
+        let state=self.core.try_borrow().ok()?;
+        if state.closed || state.active_tab!=Some(tab) || state.private_tabs.contains(&tab) {return None;}
+        let current=state.tabs.get(&tab)?;
+        let view=current.webview.clone()?;let controller=current.controller.clone()?;
+        let environment=current.environment.clone()?;let gate=current.document_gate.clone();
+        let initial=gate.try_borrow().ok()?.proof()?;
+        let weak=Rc::downgrade(&self.core);let expected_view=view.clone();let expected_controller=controller.clone();
+        let proof:Rc<dyn Fn()->Option<(u64,u64,u64)>>=Rc::new(move || {
+            let core=weak.upgrade()?;let state=core.try_borrow().ok()?;
+            if state.closed || state.active_tab!=Some(tab) || state.private_tabs.contains(&tab) {return None;}
+            let current=state.tabs.get(&tab)?;
+            if !Rc::ptr_eq(&current.document_gate,&gate)
+                || current.webview.as_ref()?.as_raw()!=expected_view.as_raw()
+                || current.controller.as_ref()?.as_raw()!=expected_controller.as_raw() {return None;}
+            let result=gate.try_borrow().ok()?.proof();result
+        });
+        let current=proof.clone();
+        Some(super::app_context_menu_probe::NativeContextProbeHandles {view,controller,environment,
+            proof,document_fence:Rc::new(move || current()==Some(initial))})
+    }
+    #[cfg(all(test, feature = "experimental-engine-context-menu"))]
+    fn probe_extension_receipt_view(&self)->Option<ICoreWebView2> {
+        self.core.try_borrow().ok()?.extension_page.as_ref().map(|page|page.webview.clone())
+    }
+
     fn successful_document_query(&self, id: TabId) -> Option<super::NativeDocumentQuery> {
         // Prepare clone-only state; the caller drops App/engine borrows before running the query.
         let (view, gate) = {
@@ -3906,6 +3971,10 @@ impl EngineAdapter for WebView2Engine {
         Ok(())
     }
     fn select_tab(&mut self, tab_id: TabId) -> Result<()> {
+        #[cfg(feature = "experimental-engine-context-menu")]
+        if self.core.borrow().active_tab != Some(tab_id) {
+            owned_context_menu::cancel_core(&self.core, None);
+        }
         let mut state = self.core.borrow_mut();
         if state.closed {
             return Ok(());
@@ -4018,6 +4087,8 @@ impl EngineAdapter for WebView2Engine {
         Ok(())
     }
     fn close_tab(&mut self, tab_id: TabId) -> Result<()> {
+        #[cfg(feature = "experimental-engine-context-menu")]
+        owned_context_menu::cancel_core(&self.core, Some(tab_id));
         if let Some(webview) = self
             .core
             .borrow()
@@ -4257,6 +4328,8 @@ impl EngineAdapter for WebView2Engine {
         }
     }
     fn close(&mut self) -> Result<()> {
+        #[cfg(feature = "experimental-engine-context-menu")]
+        owned_context_menu::cancel_core(&self.core, None);
         let page = self.core.borrow_mut().extension_page.take();
         if let Some(page) = page {
             page.close();
@@ -4531,6 +4604,8 @@ impl EngineAdapter for WebView2Tab {
     }
     fn close(&mut self) -> Result<()> {
         self.document_gate.borrow_mut().close();
+        #[cfg(feature = "experimental-engine-context-menu")]
+        let menu_removed = self.context_menu_registration.take().map(|mut registration|registration.close()).transpose();
         if let Some(controller) = self.controller.take() {
             unsafe {
                 controller.Close()?;
@@ -4538,6 +4613,8 @@ impl EngineAdapter for WebView2Tab {
         }
         self.webview = None;
         self.environment = None;
+        #[cfg(feature = "experimental-engine-context-menu")]
+        menu_removed?;
         Ok(())
     }
 }
@@ -4560,6 +4637,7 @@ struct TrackingPolicy {
 #[allow(clippy::too_many_arguments)]
 unsafe fn configure_controller(
     environment: &ICoreWebView2Environment,
+    #[cfg(feature = "experimental-engine-context-menu")] core: std::rc::Weak<RefCell<EngineCore>>,
     controller: ICoreWebView2Controller,
     parent: HWND,
     bounds: RECT,
@@ -5222,6 +5300,11 @@ unsafe fn configure_controller(
         )?;
         #[cfg(test)] window_probe.installed();
 
+        #[cfg(feature = "experimental-engine-context-menu")]
+        let coordinated_menu = !private && events.engine_menu_deferred.is_some() && events.engine_menu_available.is_some();
+        #[cfg(not(feature = "experimental-engine-context-menu"))]
+        let coordinated_menu = false;
+        let mut menu_augmenters = Vec::new();
         // --- split view ---
         // "Open link in split view" after "Open link in new window" on an http(s) link. The pick
         // only reports the link; the window opens it later, outside this callback.
@@ -5230,8 +5313,9 @@ unsafe fn configure_controller(
             webview.cast::<ICoreWebView2_11>(),
             environment.cast::<ICoreWebView2Environment9>(),
         ) {
-            webview11.add_ContextMenuRequested(
-                &ContextMenuRequestedEventHandler::create(Box::new(move |_sender, args| {
+            register_context_augmenter(
+                &webview11,
+                Rc::new(move |_sender, args| {
                     let Some(args) = args else { return Ok(()) };
                     let target = args.ContextMenuTarget()?;
                     let mut has_link = BOOL::default();
@@ -5276,8 +5360,8 @@ unsafe fn configure_controller(
                     }
                     items.InsertValueAtIndex(at, &item)?;
                     Ok(())
-                })),
-                &mut token,
+                }),
+                &mut token, coordinated_menu, &mut menu_augmenters,
             )?;
         }
         // --- end split view ---
@@ -5291,8 +5375,9 @@ unsafe fn configure_controller(
             webview.cast::<ICoreWebView2_11>(),
             environment.cast::<ICoreWebView2Environment9>(),
         ) {
-            webview11.add_ContextMenuRequested(
-                &ContextMenuRequestedEventHandler::create(Box::new(move |_sender, args| {
+            register_context_augmenter(
+                &webview11,
+                Rc::new(move |_sender, args| {
                     let Some(args) = args else { return Ok(()) };
                     let target = args.ContextMenuTarget()?;
                     let mut has_selection = BOOL::default();
@@ -5358,8 +5443,8 @@ unsafe fn configure_controller(
                         add(&label, super::ContextSearchPick::Image(url), &["copyImage", "saveImageAs", "copyImageLocation"])?;
                     }
                     Ok(())
-                })),
-                &mut token,
+                }),
+                &mut token, coordinated_menu, &mut menu_augmenters,
             )?;
         }
         // --- end address bar, search and bookmarks ---
@@ -5374,8 +5459,9 @@ unsafe fn configure_controller(
             webview.cast::<ICoreWebView2_11>(),
             environment.cast::<ICoreWebView2Environment9>(),
         ) {
-            webview11.add_ContextMenuRequested(
-                &ContextMenuRequestedEventHandler::create(Box::new(move |_sender, args| {
+            register_context_augmenter(
+                &webview11,
+                Rc::new(move |_sender, args| {
                     let Some(args) = args else { return Ok(()) };
                     let target = args.ContextMenuTarget()?;
                     let mut editable = BOOL::default();
@@ -5424,11 +5510,20 @@ unsafe fn configure_controller(
                         }
                     }
                     items.InsertValueAtIndex(at, &parent)
-                })),
-                &mut token,
+                }),
+                &mut token, coordinated_menu, &mut menu_augmenters,
             )?;
         }
         // --- end page tools ---
+        #[cfg(feature = "experimental-engine-context-menu")]
+        let context_menu_registration = if coordinated_menu {
+            Some(owned_context_menu::install(
+                core, &webview, &controller, parent, tab_id, document_gate.clone(),
+                menu_augmenters, events.engine_menu_deferred.clone().expect("coordinator requires native dispatcher"),
+                events.engine_menu_available.clone().expect("coordinator requires pure App availability"),
+            )?)
+        } else {None};
+
 
         let external_webview: ICoreWebView2_18 = webview.cast()?;
         let external_policy_event = events.policy_event.clone();
@@ -5674,6 +5769,8 @@ unsafe fn configure_controller(
             )?;
         }
         Ok(WebView2Tab {
+            #[cfg(feature = "experimental-engine-context-menu")]
+            context_menu_registration,
             document_gate,
             environment: Some(environment.clone()),
             controller: Some(controller),

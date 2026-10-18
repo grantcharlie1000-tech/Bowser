@@ -5878,6 +5878,16 @@ impl App {
         });
         let progress_hwnd = hwnd;
         let events = engine::EngineEvents {
+            #[cfg(feature = "experimental-engine-context-menu")]
+            engine_menu_deferred: Some(Rc::new(move |token| win32::queue_engine_context_menu(hwnd, token))),
+            #[cfg(feature = "experimental-engine-context-menu")]
+            engine_menu_available: {
+                let available_app=Rc::downgrade(app);
+                Some(Rc::new(move || {
+                    let Some(app)=available_app.upgrade() else {return false;};
+                    let available=app.try_borrow_mut().is_ok();available
+                }))
+            },
             address_changed: Some(Rc::new(move |tab_id, url| {
                 if let Some(app) = events_app.upgrade() {
                     let mut left_reader = false;

@@ -18,6 +18,8 @@ zip = { version = "=1.1.4", default-features = false, features = ["deflate"] }
 # Makes the HTML/CSS/TypeScript chrome the default. `BOWSER_UI=native` still selects the GDI chrome
 # and `BOWSER_UI=html` selects the HTML chrome in any build. Update-Bowser.ps1 builds with this on.
 html-chrome-default = []
+# Experimental generic engine-owned menu presentation. Never enabled by shipping defaults.
+experimental-engine-context-menu = []
 
 [[bin]]
 name = "bowser"

@@ -256,3 +256,65 @@ A separate exact ignored test uses a fresh ungranted profile and the original ge
 
 ### Native component v2 contained-capture protocol (Windows pending)
 Original1044x788/320x788 PNGs and their incomplete visual verdict remain retained. Their native owner/client exceeded the runner monitor1024x768 and work area1024x720; clipping aligned with that boundary, without proving a sole rendering cause. The distinct v2 output directory/names use fixed960x680 and320x680 at reported-window96DPI, not adaptive retries. GetDpiForWindow can report96 for an unaware window; this is not attribution of the physical monitor DPI. The helper requires successful current caller/window awareness classification/equality and whole-owner reported-work-area containment before input/capture and after capture; incompatible context, insufficient space or changed geometry fails without repositioning or repair. These are non-atomic reported coordinates, not all-DPI physical-layout proof. A private test-only DefWindowProc owner class with borrowed system brush replaces the text-painting STATIC root while retaining exact native class/title/process/thread guards and actual owner destruction/class unregister checks. Native band/font/layout implementation and the one test-local button notification remain unchanged. All six v2 images require independent review; no production band integration,200% app readability or theme-fidelity claim follows.
+
+## Default-off ordinary-App engine-menu experiment (not activation)
+
+`experimental-engine-context-menu` is a new Cargo feature with no shipping default. The ordinary
+build keeps the existing three menu registrations and native behavior. An experimental HTML build
+instead composes the existing split-link, selection/image-search and Insert-note augmenters in
+that explicit order, then presents the completed engine tree in one native Win32 menu. The actual
+request-local OS choice returns only through WebView2 `SelectedCommandId` and its deferral; Bowser
+never calls an extension listener, fabricates an extension item or grants `activeTab` itself.
+Existing host `CustomItemSelected` callbacks remain WebView2's responsibility, not manual calls.
+
+This is generic **engine-owned presentation**, not a signer-certified or Bowser-owned extension
+menu. A native `Name=extension`, label, command ID or browser PID is not signer identity. Unknown
+native extensions are preserved and included in the complete inventory without new installation,
+enabling, removal, relabeling, trust or hardcoded exemptions. Admission requires the exact active
+ordinary/non-private controller and native profile identity, a successfully completed original
+DocumentGate proof, native owner-window lifetime, required records/map files and a real runtime
+records lease. Every native ID and enabled flag must be read successfully in a bounded complete
+inventory. Records/map bytes and the full inventory must remain unchanged through the real choice
+and a second fresh inventory, before the one setter call and exactly-once deferral completion.
+The lease fences cooperating Bowser mutations, not hostile external changes, native internal ABA,
+power loss, a durable generation epoch or arbitrary runtime behavior.
+
+Presentation is deferred to the real owner WndProc after returning from the COM callback, without
+App/Core/RefCell borrows through modal UI or getters. A pure App availability probe drops its
+mutable guard immediately. When that probe is unavailable, the initial callback uses only the
+minimal native `SetHandled(true)` cancellation setter, without augmentation, authority acquisition,
+`GetDeferral`, modal display, selection dispatch or deferral completion; it does not claim literally
+zero COM under every outer App borrow. Waiting/destruction cleanup retains request state and its
+lease until a borrow-free owner continuation or post-loop drain. A failed native `Complete` is
+uncertain: no retry, no cleanup success, and exact deferral/authority state remains preserved for
+the process lifetime under a permit reserved before acquisition (at most64). A second request cannot overwrite a claim;
+owner close, selected-tab change, tab/engine close or original-document invalidation refuses the
+old request. Async inventory callbacks retain only weak request ownership; waiting inventory has
+a five-second monotonic observation deadline. Synchronous native/COM calls and modal user choice
+are not hard time-bounded. No cross-profile, private, hosted-extension or privileged-UI registration
+is added. Controller offsets are included in the native anchor; real split/DPI placement is still
+an integration gate, not established by the old full-client fixture.
+
+The bounded renderer preserves text/accelerators, shortcuts, order, submenus, separators, enabled
+state and checkbox/radio state. Unknown kinds, failed/null/invalid text, duplicate/nonpositive leaf
+IDs, over-limit trees, changed native item identities or unsupported non-null icons refuse the
+whole presentation. It never silently truncates or strips an icon to claim faithful success.
+Refusal currently has fixed opt-in diagnostics, not a production-ready busy/error UX. A default-off
+experimental refusal does not establish that the extension or native runtime lacks the feature.
+
+The new exact ignored test `engine::app_context_menu_probe::live_probe_real_app_context_menu` runs
+actual `App::run`, HTML chrome and `BowserNativeWindow` in a disposable `--dev` profile, not the old
+Static/Session harness. Its explicit fixture-consent environment names only the retained keyed
+fixture. The first lane is warm-worker cancellation/no-grant and one genuine native item selection,
+with event-supplied native tab identity, settled native execution result and exact COM-owned page
+effect plus unchanged duplicate-view negatives. Test-only Rust hooks, clone-only native handles
+and current-request witness files are not website bridges or dispatch authority. Artifacts are
+kept in `store-real-app-context-menu`; profile/package data are not uploaded.
+
+Compilation and Windows execution of this candidate are pending. In-app built-in Copy/Paste,
+all existing Bowser host actions, full no-activeTab/cross-origin matrix, pending-menu second-process
+busy behavior, in-modal reload/tab-switch/close/disable/remove, malformed inventory, private/UI/
+other-profile refusal, split/DPI placement and a genuine signed Bitwarden locked-vault prompt are
+still **not accepted**. The earlier isolated custom-menu permission and post-selection Reload
+results remain separate, not substituted for those gates. No account, credentials, autofill,
+worker cold-start, full Chrome compatibility, production activation, merge or release is implied.

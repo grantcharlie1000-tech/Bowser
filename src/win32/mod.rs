@@ -440,3 +440,9 @@ mod error_dialog_tests {
         super::show_error_message("settings write failed");
     }
 }
+
+#[cfg(feature = "experimental-engine-context-menu")]
+pub(crate) use window::queue_engine_context_menu;
+
+#[cfg(all(test, feature = "experimental-engine-context-menu"))]
+pub(crate) use window::set_app_menu_probe_hooks;

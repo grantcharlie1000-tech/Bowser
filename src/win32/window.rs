@@ -164,6 +164,8 @@ const WM_HTML_TABS_FAILED: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP
 /// Posted once per queued menu, popup or window command from an HTML chrome view. Each post runs
 /// the oldest queued command on the UI thread, outside WebView2's message callback.
 const WM_HTML_DEFERRED: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 0x7E;
+#[cfg(feature = "experimental-engine-context-menu")]
+const WM_ENGINE_CONTEXT_MENU: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 0x86;
 /// Posted when the HTML left rail's WebView2 process fails. Handled on the UI thread.
 const WM_HTML_RAIL_FAILED: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 0x7F;
 /// Posted by the "Check for updates" worker when its check ends; `wparam` is an `UPDATE_*` code.
@@ -2277,11 +2279,23 @@ pub fn run(app: App) -> windows::core::Result<()> {
         if let Some(url) = benchmark_url {
             App::submit_benchmark_url(&app, url)
         }
+        #[cfg(all(test, feature = "experimental-engine-context-menu"))]
+        {
+            let ready=APP_MENU_PROBE_READY.with(|slot|slot.borrow_mut().take());
+            if let Some(ready)=ready {
+                if SetTimer(Some(hwnd),APP_MENU_PROBE_TIMER,100,None)==0 {return Err(windows::core::Error::from_thread());}
+                ready(app.clone());
+            }
+        }
         let mut m = MSG::default();
         loop {
             match GetMessageW(&mut m, None, 0, 0).0 {
                 -1 => return Err(windows::core::Error::from_thread()),
-                0 => break,
+                0 => {
+                    #[cfg(feature = "experimental-engine-context-menu")]
+                    crate::engine::engine_menu_drain_destroyed();
+                    break;
+                },
                 _ => {
                     if settings_panel::process_message(&m) {
                         continue;
@@ -4006,6 +4020,21 @@ unsafe extern "system" fn window_proc(
                 LRESULT(0)
             }
             // --- end panel host ---
+            #[cfg(all(test, feature = "experimental-engine-context-menu"))]
+            WM_TIMER if wparam.0 == APP_MENU_PROBE_TIMER => {
+                if let Some(app)=app {app_menu_probe_tick(app.clone());}
+                LRESULT(0)
+            }
+            #[cfg(feature = "experimental-engine-context-menu")]
+            WM_ENGINE_CONTEXT_MENU => {
+                crate::engine::engine_menu_continue(hwnd, wparam.0);
+                LRESULT(0)
+            }
+            #[cfg(feature = "experimental-engine-context-menu")]
+            WM_TIMER if wparam.0 == crate::engine::ENGINE_MENU_TIMER => {
+                crate::engine::engine_menu_tick(hwnd);
+                LRESULT(0)
+            }
             WM_HTML_DEFERRED => {
                 if chrome_host::html_ui_enabled() {
                     run_deferred_html_command(hwnd);
@@ -4420,6 +4449,8 @@ unsafe extern "system" fn window_proc(
                 LRESULT(0)
             }
             WM_NCDESTROY => {
+                #[cfg(feature = "experimental-engine-context-menu")]
+                crate::engine::engine_menu_owner_destroyed(hwnd);
                 let _ = SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
                 if !raw.is_null() {
                     drop(Box::from_raw(raw as *mut AppRef));
@@ -12498,6 +12529,8 @@ mod tests {
     #[test]
     fn the_main_window_private_messages_are_unique() {
         let ids = [
+            #[cfg(feature = "experimental-engine-context-menu")]
+            WM_ENGINE_CONTEXT_MENU,
             WM_CHROME_SYNC, WM_FOREGROUND_SYNC, WM_HISTORY_BACK, WM_HISTORY_FORWARD, WM_HTML_CHROME_ENV,
             WM_HTML_CHROME_FAILED, WM_HTML_CHROME_START, WM_HTML_DEFERRED, WM_HTML_HOVER_START, WM_HTML_PANEL_FAILED,
             WM_HTML_POPUP_FAILED, WM_HTML_RAIL_FAILED, WM_HTML_TABS_FAILED, WM_LOGIN_MESSAGE, WM_NAVIGATION_PROGRESS,
@@ -12521,6 +12554,10 @@ mod tests {
     #[test]
     fn the_main_window_timer_ids_are_unique_and_outside_hover_ranges() {
         let ids = [
+            #[cfg(feature = "experimental-engine-context-menu")]
+            crate::engine::ENGINE_MENU_TIMER,
+            #[cfg(feature = "experimental-engine-context-menu")]
+            APP_MENU_PROBE_TIMER,
             WM_IDLE_TRIM_TIMER, WM_CARET_BLINK_TIMER, WM_ANIMATION_TIMER, WM_SESSION_SAVE_TIMER,
             super::super::WM_PRIVACY_STATS_TIMER, WM_PROGRESS_TIMER, WM_SPLIT_BOUNDS_TIMER,
             super::super::WM_POWER_TIMER, super::super::WM_IMPORT_OFFER_TIMER,
@@ -13072,3 +13109,37 @@ mod bar_tests {
     }
 }
 // --- end toolbars and feeds ---
+
+/// Native-only continuation; neither website nor HTML chrome messages can select a menu ID.
+#[cfg(feature = "experimental-engine-context-menu")]
+pub(crate) fn queue_engine_context_menu(hwnd: HWND, token: usize) -> bool {
+    unsafe { PostMessageW(Some(hwnd), WM_ENGINE_CONTEXT_MENU, WPARAM(token), LPARAM(0)) }.is_ok()
+}
+
+// The ignored real-App probe owns these Rust callbacks only on its creating STA. No host object,
+// page message, listener, or external test server can access the App or select a native command.
+#[cfg(all(test, feature = "experimental-engine-context-menu"))]
+thread_local! {
+    static APP_MENU_PROBE_READY: RefCell<Option<Box<dyn FnOnce(AppRef)>>> = RefCell::new(None);
+    static APP_MENU_PROBE_TICK: RefCell<Option<Box<dyn FnMut(AppRef)>>> = RefCell::new(None);
+}
+#[cfg(all(test, feature = "experimental-engine-context-menu"))]
+const APP_MENU_PROBE_TIMER:usize=0x6ff2_0002;
+#[cfg(all(test, feature = "experimental-engine-context-menu"))]
+pub(crate) fn set_app_menu_probe_hooks(ready:Box<dyn FnOnce(AppRef)>,tick:Box<dyn FnMut(AppRef)>) {
+    APP_MENU_PROBE_READY.with(|slot|{assert!(slot.borrow().is_none());*slot.borrow_mut()=Some(ready);});
+    APP_MENU_PROBE_TICK.with(|slot|{assert!(slot.borrow().is_none());*slot.borrow_mut()=Some(tick);});
+}
+#[cfg(all(test, feature = "experimental-engine-context-menu"))]
+fn app_menu_probe_tick(app:AppRef) {
+    let callback=APP_MENU_PROBE_TICK.with(|slot|slot.borrow_mut().take());
+    if let Some(mut callback)=callback {
+        let hwnd=app.borrow().hwnd;
+        if std::panic::catch_unwind(std::panic::AssertUnwindSafe(||callback(app))).is_err() {
+            eprintln!("APP_CONTEXT_MENU probe_tick_panicked=true");
+            unsafe {let _=PostMessageW(Some(hwnd),WM_CLOSE,WPARAM(0),LPARAM(0));}
+            return;
+        }
+        APP_MENU_PROBE_TICK.with(|slot|{if slot.borrow().is_none(){*slot.borrow_mut()=Some(callback);}});
+    }
+}
