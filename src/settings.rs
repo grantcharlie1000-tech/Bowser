@@ -821,12 +821,16 @@ impl Settings {
                     }
                 }
                 "toolbar_buttons" => {
-                    if let Some(buttons) = parse_toolbar_buttons(value) {
+                    // A retired or hand-edited `cmd:` button is dropped; the rest of the list stays.
+                    if let Some(buttons) = crate::toolbar_prefs::parse_stored_list(crate::toolbar_prefs::Bar::Address, value) {
                         settings.toolbar_buttons = buttons;
                     }
                 }
                 // --- toolbars and feeds (thread T13) --- a bad value keeps the previous one.
-                "toolbar_tabs" | "toolbar_panel" | "feeds_detect" | "feeds_refresh_minutes" => {
+                "toolbar_tabs" | "toolbar_panel" => {
+                    let _ = crate::toolbar_prefs::apply_stored_list(&mut settings, key, value);
+                }
+                "feeds_detect" | "feeds_refresh_minutes" => {
                     let mut probe = settings.clone();
                     if crate::toolbar_prefs::apply_assignment(&mut probe, &format!("{key}={value}")) {
                         settings = probe;
@@ -2257,6 +2261,17 @@ nick_tabs=t
         for bad in ["1a2b3c", "#1a2b3", "#1a2b3cd", "red", "#gggggg"] {
             assert_eq!(parse_theme_accent(bad), None, "{bad}");
         }
+    }
+
+    #[test]
+    fn a_hand_edited_unknown_command_button_drops_only_itself_from_a_bar() {
+        let s = Settings::parse("toolbar_buttons=back,cmd:no-such-command,reload
+toolbar_tabs=cmd:nope,closed-tabs
+");
+        assert_eq!(s.toolbar_buttons, vec!["back".to_owned(), "reload".to_owned()]);
+        assert_eq!(s.toolbar_tabs, vec!["closed-tabs".to_owned()]);
+        assert_eq!(Settings::parse("toolbar_buttons=back,bogus
+").toolbar_buttons, Settings::default().toolbar_buttons, "any other bad id keeps the default");
     }
 
     #[test]
