@@ -909,6 +909,16 @@ fn probe_real_tab_topology(name: &str, session: &mut Session, loopback: &Loopbac
     println!("CATALOGUE_TOPOLOGY name={name} host_browser_window_count=1 host_browsing_view_count=2 duplicate_url_control=true genuine_popup_queries={report:?} scope=observation-only-no-id-adapter-or-guessed-target");
 }
 
+/// Click the genuine TSM save control in its own DOM. The fixture has exactly one Bowser
+/// window and two browsing views; preserve its real saved-window count rather than rewriting IDs.
+/// Do not invoke restore-current: its documented behaviour removes other native windows.
+fn probe_real_tsm_save(session: &mut Session) {
+    let clicked = session.page_script("(()=>{const input=document.querySelector('#saveArea input');const save=document.querySelector('#saveArea .saveButton');if(!input||!save)return false;input.value='Bowser disposable two-tab session';save.click();return true})()");
+    pump_until(Duration::from_secs(4), || false);
+    let report = session.page_script("({sessions:[...document.querySelectorAll('.session')].map(e=>({text:e.textContent?.slice(0,900),buttons:[...e.querySelectorAll('button')].map(b=>({text:b.textContent,title:b.title,className:b.className}))})),body:document.body.textContent?.slice(0,1600)})");
+    println!("TSM_REAL_SAVE genuine_save_click={clicked:?} actual_saved_session_dom={report:?} host_window_count=1 host_browsing_view_count=2 scope=real-save-only-not-restore-or-correct-host-window-grouping");
+}
+
 /// Real packages, fresh throwaway profiles, no accounts and no user data. This proves package
 /// identity/load and genuine extension context only, not product functionality or action grants.
 #[test]
@@ -972,6 +982,7 @@ fn live_store_current_extension_loads() {
                     pump_until(Duration::from_secs(2), || false);
                     println!("REAL_STORE name={name} page={label} tabs_query={:?}", session.page_script("document.documentElement.getAttribute('data-bowser-api-probe')"));
                     if label == "popup" && matches!(name, "bitwarden" | "tab-session-manager") { probe_real_tab_topology(name, &mut session, &loopback); }
+                    if label == "popup" && name == "tab-session-manager" { probe_real_tsm_save(&mut session); }
                 }
             }
         }
@@ -1299,7 +1310,7 @@ fn live_runtime_completed_state_child() {
     let records = extensions::read_authority_records(&profile.join("extensions.txt")).unwrap();
     assert!(records.iter().all(|record| !record.enabled), "completed-off authority must not become enabled in a new process");
     let known = records.iter().map(|record| (record.id.clone(), record.enabled)).collect(); let loopback = Loopback::start();
-    let session = Session::open(&profile, vec![], known, &loopback.page("completed-restart-control"));
+    let mut session = Session::open(&profile, vec![], known, &loopback.page("completed-restart-control"));
     assert!(pump_one_until(Duration::from_secs(30), || session.engine.probe_extension_profile_ready()));
     let native = session.native_inventory().unwrap();
     match expected.as_str() {
@@ -1307,7 +1318,11 @@ fn live_runtime_completed_state_child() {
         "absent" => { assert!(records.is_empty()); assert!(!native.iter().any(|(id, _)| id == KEY_FIXTURE_ID)); }
         _ => panic!("Unknown owning test state"),
     }
-    println!("COMPLETED_RESTART_CHILD expected={expected} actual_native_inventory={native:?} record_count={}", records.len());
+    assert!(pump_until(Duration::from_secs(15), || loopback.beacons.lock().unwrap().iter().any(|path| path == "/completed-restart-control")), "completed-state negative did not load its actual HTTP page");
+    pump_until(Duration::from_secs(2), || false);
+    assert_eq!(session.read_marker("data-bowser-probe").as_deref(), Some("null"));
+    assert!(!loopback.beacons.lock().unwrap().iter().any(|path| path.starts_with(BEACON_PREFIX)), "completed revoked extension executed in the new process");
+    println!("COMPLETED_RESTART_CHILD expected={expected} actual_native_inventory={native:?} record_count={} actual_page_ready=true content_marker_absent=true extension_beacons_absent=true", records.len());
     session.close(); drop(loopback);
 }
 
