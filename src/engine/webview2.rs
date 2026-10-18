@@ -2526,6 +2526,13 @@ fn persist_extension_ids(
     Ok(current)
 }
 
+/// Fixed native lifecycle diagnostics. The callback is Rust-owned (existing EngineEvents), never
+/// website script or an extension page bridge. Disposable tests use it for precise process exits.
+fn extension_lifecycle_event(core: &Rc<RefCell<EngineCore>>, event: &'static str) {
+    let callback = core.borrow().events.policy_event.clone();
+    if let Some(callback) = callback { callback(event); }
+}
+
 /// A native operation is serialized across this owning profile's processes. Records/map leases
 /// are acquired only inside this lease, never in the opposite order. The callback wrapper keeps
 /// the guard alive through the caller's final record commit, including Remove -> uninstall.
@@ -2613,6 +2620,7 @@ fn add_extension_mode(core: &Rc<RefCell<EngineCore>>, profile: &ICoreWebView2Pro
                 Err(reason) => { drop(state); done(Err(reason)); return; }
             }
         }
+        extension_lifecycle_event(&core, "extension_add_preclaim_committed");
         add_extension_owned(&core, &profile, id, &folder, Some(expected), done);
     }));
 }
@@ -2666,6 +2674,7 @@ fn add_extension_owned(
                         traced_name.as_deref(),
                     ));
                     if let Some(core) = weak.upgrade() {
+                        extension_lifecycle_event(&core, "extension_add_native_complete");
                         let mut state = core.borrow_mut();
                         let previous = state.extension_ids.clone(); let mut desired = previous.clone();
                         let Some(webview_id) = extension_webview_id(&extension) else {
@@ -2739,6 +2748,7 @@ fn set_managed_enabled_locked(core: &Rc<RefCell<EngineCore>>, id: &str, extensio
     if !valid { done(Err("The native extension's owning record could not be revalidated. Nothing was switched.".into())); return; }
     if !commit { set_loaded_enabled(extension, enabled, done); return; }
     let path = core.borrow().extension_records_file.clone(); let id = id.to_owned(); let rollback = extension.clone();
+    let policy = core.borrow().events.policy_event.clone();
     if enabled {
         let saved = path.as_deref().ok_or(crate::extensions::ExtensionError::Io)
             .and_then(|path| crate::extensions::set_enabled_under_runtime(path, &id, true));
@@ -2747,6 +2757,7 @@ fn set_managed_enabled_locked(core: &Rc<RefCell<EngineCore>>, id: &str, extensio
     }
     set_loaded_enabled(extension, enabled, Box::new(move |result| {
         if let Err(reason) = result { done(Err(reason)); return; }
+        if let Some(policy) = policy { policy("extension_disable_native_complete"); }
         let saved = path.as_deref().ok_or(crate::extensions::ExtensionError::Io)
             .and_then(|path| crate::extensions::set_enabled_under_runtime(path, &id, enabled));
         if saved.is_ok() { done(Ok(())); return; }
@@ -2864,6 +2875,7 @@ fn remove_loaded_locked(core: &Rc<RefCell<EngineCore>>, id: String, extension: &
         let result = status.map_err(|error| format!("{error}"));
         if result.is_ok() {
             if let Some(core) = weak.upgrade() {
+                extension_lifecycle_event(&core, "extension_remove_native_complete");
                 let mut state = core.borrow_mut();
                 state.extensions_loaded.remove(&id);
                 let previous = state.extension_ids.clone(); let mut desired = previous.clone(); desired.remove(&id);
@@ -5955,6 +5967,23 @@ mod tests {
             done: Box<dyn FnOnce(std::result::Result<(), String>)>,
         ) {
             self.open_extension_page_with(id, folder, kind, "Bowser extension probe", false, done);
+        }
+
+        pub(in crate::engine) fn probe_native_extension_inventory(&self, done: Box<dyn FnOnce(std::result::Result<Vec<(String, bool)>, String>)>) {
+            let profile = self.core.borrow().extension_profile.clone();
+            let Some(profile) = profile else { done(Err("The native profile is not ready.".into())); return; };
+            list_profile_extensions(&profile, Box::new(move |result| {
+                let result = result.and_then(|items| items.into_iter().map(|(_, extension)| {
+                    let id = extension_webview_id(&extension).ok_or_else(|| "Native extension ID is unavailable.".to_owned())?;
+                    let mut enabled = BOOL::default(); unsafe { extension.IsEnabled(&mut enabled) }.map_err(|error| error.to_string())?;
+                    Ok((id, enabled.as_bool()))
+                }).collect());
+                done(result);
+            }));
+        }
+
+        pub(in crate::engine) fn probe_extension_profile_ready(&self) -> bool {
+            self.core.borrow().extension_profile.is_some()
         }
 
         /// Completion, not a provisional ownership preclaim, proves Add actually returned.

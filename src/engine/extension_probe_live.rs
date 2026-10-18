@@ -280,12 +280,25 @@ impl Session {
                 extension_records_file: Some(profile.join("extensions.txt")),
                 ..EngineExtras::default()
             };
+            let mut events = EngineEvents::default();
+            if let (Ok(cut), Some(cut_root)) = (std::env::var("BOWSER_EXTENSION_CRASH_EVENT"), std::env::var_os("BOWSER_EXTENSION_CRASH_ROOT").map(PathBuf::from)) {
+                assert!(["extension_add_preclaim_committed", "extension_add_native_complete", "extension_disable_native_complete", "extension_remove_native_complete"].contains(&cut.as_str()));
+                assert!(cut_root.starts_with(std::env::temp_dir()) && cut_root.file_name().unwrap().to_string_lossy().starts_with("bowser-ext-live-"));
+                events.policy_event = Some(Rc::new(move |event| {
+                    if event == cut {
+                        let mut file = std::fs::File::create(cut_root.join("crash-marker")).unwrap(); file.write_all(event.as_bytes()).unwrap(); file.sync_all().unwrap();
+                        // Abrupt process exit: no Rust/COM cleanup and no lease destructor. This
+                        // models process crash only, not filesystem/power-loss durability.
+                        std::process::exit(73);
+                    }
+                }));
+            }
             WebView2Engine::begin_create_with_extras(
                 host,
                 bounds,
                 &webview_dir,
                 None,
-                EngineEvents::default(),
+                events,
                 None,
                 extras,
                 move |result| *slot.borrow_mut() = Some(result),
@@ -311,6 +324,13 @@ impl Session {
         engine.select_tab(tab).unwrap();
         engine.navigate_tab(tab, first).unwrap();
         Self { engine, host }
+    }
+
+    fn native_inventory(&self) -> Result<Vec<(String, bool)>, String> {
+        let answer = Rc::new(RefCell::new(None)); let sink = answer.clone();
+        self.engine.probe_native_extension_inventory(Box::new(move |result| *sink.borrow_mut() = Some(result)));
+        pump_until(Duration::from_secs(15), || answer.borrow().is_some());
+        answer.borrow_mut().take().unwrap_or_else(|| Err("Native inventory timed out.".into()))
     }
 
     fn tab(&self) -> TabId {
@@ -995,4 +1015,156 @@ fn live_probe_native_action_active_tab() {
     // to reach the same browser target. Discovery is not a grant or a compatibility pass.
     println!("ACTION_PROBE verdict=unsupported-browser-target-route-explicitly-denied-no-action-attempted");
     session.close(); drop(loopback); remove_with_retries(&root);
+}
+
+
+/// Delivers at most one actual Windows/COM message before testing the boundary again. This lets
+/// the diagnostic observe a real pending native callback, not replace it with fake API success.
+fn pump_one_until(timeout: Duration, mut done: impl FnMut() -> bool) -> bool {
+    let started = Instant::now();
+    while started.elapsed() < timeout {
+        if done() { return true; }
+        unsafe {
+            let mut message = MSG::default();
+            if PeekMessageW(&mut message, None, 0, 0, PM_REMOVE).as_bool() {
+                let _ = TranslateMessage(&message); DispatchMessageW(&message);
+            } else { std::thread::sleep(Duration::from_millis(5)); }
+        }
+    }
+    done()
+}
+
+fn wait_file_without_parent_com(path: &Path) {
+    let started = Instant::now();
+    while !path.is_file() && started.elapsed() < Duration::from_secs(30) { std::thread::sleep(Duration::from_millis(10)); }
+    assert!(path.is_file(), "competing child did not acknowledge the real pending native phase: {}", path.display());
+}
+
+#[test]
+#[ignore = "real delayed native inventory/Add and two-process competing mutation; disposable Windows profiles only"]
+fn live_probe_pending_native_operations() {
+    unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED).ok().unwrap() };
+    let root = temp_root(); let profile = root.join("shared-profile");
+    let record = extensions::install(&fixture("probe-mv3-key"), &profile.join("Extensions"), &profile.join("extensions.txt")).unwrap();
+    let folder = extensions::folder_for(&profile.join("Extensions"), &record.id).unwrap();
+    let loopback = Loopback::start();
+    let mut session = Session::open(&profile, vec![], vec![(record.id.clone(), true)], &loopback.page("parent-ready"));
+    assert!(pump_one_until(Duration::from_secs(30), || session.engine.probe_extension_profile_ready()));
+    let child = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "engine::extension_probe_live::live_runtime_competing_child", "--ignored", "--nocapture", "--test-threads=1"])
+        .env("BOWSER_PENDING_NATIVE_ROOT", &root).env("BOWSER_PENDING_NATIVE_ID", &record.id)
+        .stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).spawn().unwrap();
+    assert!(pump_one_until(Duration::from_secs(45), || root.join("child-ready").is_file()));
+    let answer = Rc::new(RefCell::new(None)); let sink = answer.clone();
+    session.engine.set_extension_enabled(&record.id, &folder, true, Box::new(move |result| *sink.borrow_mut() = Some(result)));
+    assert!(answer.borrow().is_none(), "runtime delivered inventory/Add inline; this run did not establish a pending callback boundary");
+    // Do not pump parent COM while the other real engine/process attempts its mutations.
+    std::fs::write(root.join("go-inventory"), b"real-native-inventory-pending").unwrap();
+    wait_file_without_parent_com(&root.join("ack-inventory"));
+    println!("PENDING_NATIVE phase=GetBrowserExtensions competing_process=busy record_unchanged=true");
+    let ids = profile.join("extension_ids.txt");
+    assert!(pump_one_until(Duration::from_secs(30), || mapping_for(&ids, &record.id).is_some()));
+    assert!(answer.borrow().is_none(), "native Add completed inline; this run did not establish the second pending callback boundary");
+    std::fs::write(root.join("go-add"), b"real-native-Add-called-callback-pending").unwrap();
+    wait_file_without_parent_com(&root.join("ack-add"));
+    println!("PENDING_NATIVE phase=AddBrowserExtension competing_process=busy record_unchanged=true actual_completion_pending=true");
+    assert!(pump_one_until(Duration::from_secs(30), || answer.borrow().is_some()));
+    answer.borrow_mut().take().unwrap().unwrap();
+    assert_eq!(session.engine.probe_loaded_extension_id(&record.id).as_deref(), Some(KEY_FIXTURE_ID));
+    assert!(extensions::read_authority_records(&profile.join("extensions.txt")).unwrap()[0].enabled);
+    let output = child.wait_with_output().unwrap();
+    println!("PENDING_NATIVE child_stdout={} child_stderr={}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+    assert!(output.status.success());
+    // A real native off operation must commit only after its callback, then be removable.
+    let disabled = Rc::new(RefCell::new(None)); let sink = disabled.clone();
+    session.engine.set_extension_enabled(&record.id, &folder, false, Box::new(move |result| *sink.borrow_mut() = Some(result)));
+    assert!(pump_one_until(Duration::from_secs(30), || disabled.borrow().is_some())); disabled.borrow_mut().take().unwrap().unwrap();
+    assert!(!extensions::read_authority_records(&profile.join("extensions.txt")).unwrap()[0].enabled);
+    let native = session.native_inventory().unwrap();
+    assert!(native.iter().any(|(id, enabled)| id == KEY_FIXTURE_ID && !enabled), "actual native IsEnabled did not confirm off: {native:?}");
+    println!("PENDING_NATIVE native_inventory_after_disable={native:?}");
+    println!("PENDING_NATIVE final_native_disable_and_durable_commit=passed scope=real-two-process-pending-inventory-and-Add-not-crash-cut-points");
+    session.close(); drop(loopback); remove_with_retries(&root);
+}
+
+#[test]
+#[ignore = "child of the bounded real pending-native-operation diagnostic"]
+fn live_runtime_competing_child() {
+    let Some(root) = std::env::var_os("BOWSER_PENDING_NATIVE_ROOT").map(PathBuf::from) else { panic!("Only the owning diagnostic launches this child."); };
+    let id = std::env::var("BOWSER_PENDING_NATIVE_ID").unwrap(); let profile = root.join("shared-profile");
+    assert!(root.starts_with(std::env::temp_dir()) && root.file_name().unwrap().to_string_lossy().starts_with("bowser-ext-live-"));
+    unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED).ok().unwrap() };
+    let loopback = Loopback::start(); let folder = extensions::folder_for(&profile.join("Extensions"), &id).unwrap();
+    let mut session = Session::open(&profile, vec![], vec![(id.clone(), true)], &loopback.page("child-ready"));
+    assert!(pump_one_until(Duration::from_secs(30), || session.engine.probe_extension_profile_ready()));
+    std::fs::write(root.join("child-ready"), b"actual-second-engine-profile-ready").unwrap();
+    for phase in ["inventory", "add"] {
+        assert!(pump_one_until(Duration::from_secs(45), || root.join(format!("go-{phase}")).is_file()));
+        let before = std::fs::read(profile.join("extensions.txt")).unwrap();
+        let disabled = Rc::new(RefCell::new(None)); let sink = disabled.clone();
+        session.engine.set_extension_enabled(&id, &folder, false, Box::new(move |result| *sink.borrow_mut() = Some(result)));
+        assert!(pump_one_until(Duration::from_secs(10), || disabled.borrow().is_some()));
+        let disable = disabled.borrow_mut().take().unwrap();
+        let removed = Rc::new(RefCell::new(None)); let sink = removed.clone();
+        session.engine.remove_extension(&id, Box::new(move |result| *sink.borrow_mut() = Some(result)));
+        assert!(pump_one_until(Duration::from_secs(10), || removed.borrow().is_some()));
+        let remove = removed.borrow_mut().take().unwrap();
+        assert!(disable.as_ref().is_err_and(|reason| reason.contains("operation is finishing")), "disable did not honestly report busy: {disable:?}");
+        assert!(remove.as_ref().is_err_and(|reason| reason.contains("operation is finishing")), "remove did not honestly report busy: {remove:?}");
+        assert_eq!(std::fs::read(profile.join("extensions.txt")).unwrap(), before);
+        assert!(folder.is_dir());
+        println!("PENDING_NATIVE_CHILD phase={phase} disable={disable:?} remove={remove:?} record_and_folder_unchanged=true");
+        std::fs::write(root.join(format!("ack-{phase}")), b"both-native-mutations-busy-record-unchanged").unwrap();
+    }
+    session.close(); drop(loopback);
+}
+
+
+#[test]
+#[ignore = "precise disposable child process-crash cut points; not power-loss durability"]
+fn live_probe_native_crash_recovery() {
+    unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED).ok().unwrap() };
+    for cut in ["extension_add_preclaim_committed", "extension_add_native_complete", "extension_disable_native_complete", "extension_remove_native_complete"] {
+        let root = temp_root(); let profile = root.join("crash-profile");
+        let record = extensions::install(&fixture("probe-mv3-key"), &profile.join("Extensions"), &profile.join("extensions.txt")).unwrap();
+        let folder = extensions::folder_for(&profile.join("Extensions"), &record.id).unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "engine::extension_probe_live::live_runtime_crash_child", "--ignored", "--nocapture", "--test-threads=1"])
+            .env("BOWSER_EXTENSION_CRASH_EVENT", cut).env("BOWSER_EXTENSION_CRASH_ROOT", &root).env("BOWSER_EXTENSION_CRASH_ID", &record.id).output().unwrap();
+        println!("CRASH_RECOVERY cut={cut} child_exit={:?} stderr={}", output.status.code(), String::from_utf8_lossy(&output.stderr));
+        assert_eq!(output.status.code(), Some(73), "exact native cut was not reached: {}", String::from_utf8_lossy(&output.stdout));
+        assert_eq!(std::fs::read_to_string(root.join("crash-marker")).unwrap(), cut);
+        let records = extensions::read_authority_records(&profile.join("extensions.txt")).unwrap();
+        assert_eq!(records.len(), 1); assert!(records[0].enabled, "interrupted revocation must not pretend it durably committed");
+        let loopback = Loopback::start();
+        let mut recovered = Session::open(&profile, vec![(record.id.clone(), folder.clone())], vec![(record.id.clone(), true)], &loopback.page("crash-recovery"));
+        let (id, failure) = recovered.wait_for_add(&profile, &record.id);
+        assert_eq!(id.as_deref(), Some(KEY_FIXTURE_ID)); assert!(failure.is_none(), "recovery load failed: {failure:?}");
+        let mut native = Vec::new();
+        for _ in 0..8 { native = recovered.native_inventory().unwrap(); if native.iter().any(|(id, enabled)| id == KEY_FIXTURE_ID && *enabled) { break; } pump_until(Duration::from_millis(300), || false); }
+        assert!(native.iter().any(|(id, enabled)| id == KEY_FIXTURE_ID && *enabled), "actual native enabled recovery was not established: {native:?}");
+        assert!(recovered.wait_for_worker_reply(&loopback), "consented extension worker/content messaging did not recover");
+        println!("CRASH_RECOVERY cut={cut} actual_native_inventory={native:?} worker_content_reply=true record_authority=prior-consented-enabled interrupted_revocation_not_accepted=true scope=signed-keyed-process-crash-not-power-loss");
+        recovered.close(); drop(loopback); remove_with_retries(&root);
+    }
+}
+
+#[test]
+#[ignore = "child of the exact process-crash lifecycle diagnostic"]
+fn live_runtime_crash_child() {
+    let root = std::env::var_os("BOWSER_EXTENSION_CRASH_ROOT").map(PathBuf::from).expect("Only the owning diagnostic launches this child.");
+    let id = std::env::var("BOWSER_EXTENSION_CRASH_ID").unwrap(); let cut = std::env::var("BOWSER_EXTENSION_CRASH_EVENT").unwrap();
+    unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED).ok().unwrap() };
+    let profile = root.join("crash-profile"); let folder = extensions::folder_for(&profile.join("Extensions"), &id).unwrap(); let loopback = Loopback::start();
+    let mut session = Session::open(&profile, vec![(id.clone(), folder.clone())], vec![(id.clone(), true)], &loopback.page("crash-owner"));
+    let (loaded, failure) = session.wait_for_add(&profile, &id);
+    assert_eq!(loaded.as_deref(), Some(KEY_FIXTURE_ID)); assert!(failure.is_none());
+    let result = Rc::new(RefCell::new(None)); let sink = result.clone();
+    match cut.as_str() {
+        "extension_disable_native_complete" => session.engine.set_extension_enabled(&id, &folder, false, Box::new(move |answer| *sink.borrow_mut() = Some(answer))),
+        "extension_remove_native_complete" => session.engine.remove_extension(&id, Box::new(move |answer| *sink.borrow_mut() = Some(answer))),
+        _ => panic!("The exact Add cut should already have exited before its completion."),
+    }
+    pump_until(Duration::from_secs(30), || result.borrow().is_some());
+    panic!("The exact crash cut was not delivered before completion: {:?}", result.borrow());
 }

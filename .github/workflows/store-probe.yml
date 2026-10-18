@@ -49,6 +49,19 @@ jobs:
           $test = Get-ChildItem target/debug/deps/bowser-*.exe | Sort-Object LastWriteTime -Descending | Select-Object -First 1
           & $test.FullName live_probe_mv3_extension_executes --ignored --nocapture --test-threads=1 2>&1 | Tee-Object store-fixture-probe.log
           if ($LASTEXITCODE -ne 0) { throw 'MV3 lifecycle fixture probe failed.' }
+      - name: Probe real pending native callbacks against a second process
+        run: |
+          $env:BOWSER_EXTENSION_TRACE = '1'
+          $env:LOCALAPPDATA = Join-Path $env:RUNNER_TEMP 'bowser-store-isolated-localappdata'
+          $test = Get-ChildItem target/debug/deps/bowser-*.exe | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          & $test.FullName live_probe_pending_native_operations --ignored --nocapture --test-threads=1 2>&1 | Tee-Object store-pending-native-probe.log
+          if ($LASTEXITCODE -ne 0) { throw 'Real pending native operation diagnostic failed.' }
+      - name: Probe signed-keyed process-crash recovery at exact native boundaries
+        run: |
+          $env:BOWSER_EXTENSION_TRACE = '1'
+          $test = Get-ChildItem target/debug/deps/bowser-*.exe | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          & $test.FullName live_probe_native_crash_recovery --ignored --nocapture --test-threads=1 2>&1 | Tee-Object store-crash-recovery-probe.log
+          if ($LASTEXITCODE -ne 0) { throw 'Native process-crash recovery diagnostic failed.' }
       - name: Probe same-identity immutable replacement and rollback feasibility
         run: |
           $env:BOWSER_EXTENSION_TRACE = '1'
@@ -98,6 +111,8 @@ jobs:
             store-download-probe.log
             store-runtime-probe.log
             store-fixture-probe.log
+            store-pending-native-probe.log
+            store-crash-recovery-probe.log
             store-update-probe.log
             store-action-probe.log
             ${{ runner.temp }}/bowser-store-rendering/
