@@ -13,9 +13,11 @@ import {
   EMPTY_DETAIL, EXTENSIONS_NOTE, INSTALL_COMMAND, INSTALL_CRX_COMMAND, INSTALL_CRX_LABEL, INSTALL_CRX_TIP, ackToast, declarationGroups, parseExtensionsSnapshot, popupCommand, reachText, removeCommand, removeQuestion,
   setEnabledCommand, statusText, switchLabel, type ExtensionItem, type ExtensionsSnapshot,
 } from './extensions-logic';
+import { storeUrlCommand } from './store-logic';
 import type { PanelFields, SnapshotMsg } from './protocol';
 
 export interface ExtensionsSectionOptions {
+  readonly idPrefix?: string;
   /** Sends one `set` command; false when the bridge refused it. */
   readonly send: (fields: PanelFields) => boolean;
   /** The settings page's toast. */
@@ -30,6 +32,7 @@ export interface ExtensionsSection {
 }
 
 export function mountExtensionsSection(options: ExtensionsSectionOptions): ExtensionsSection {
+  const prefix = options.idPrefix ?? 'sp';
   let snapshot: ExtensionsSnapshot | null = null;
   let invalid = false;
   /** Switches clicked and not yet answered: they stay put until the next snapshot. */
@@ -45,16 +48,16 @@ export function mountExtensionsSection(options: ExtensionsSectionOptions): Exten
   const group = el('div', 'sp-group');
   const head = el('div', 'sp-ext-head');
   const heading = el('h3', 'sp-group-h');
-  heading.id = 'sp-ext-h';
+  heading.id = `${prefix}-ext-h`;
   heading.textContent = 'Installed';
   const install = textButton('Install unpacked…', () => sendInstall(), { icon: 'folder' });
   install.classList.add('sp-ext-install');
-  install.setAttribute('aria-describedby', 'sp-ext-note');
+  install.setAttribute('aria-describedby', `${prefix}-ext-note`);
   const installCrx = crxButton();
   installCrx.classList.add('sp-ext-install-crx');
-  installCrx.setAttribute('aria-describedby', 'sp-ext-note');
+  installCrx.setAttribute('aria-describedby', `${prefix}-ext-note`);
   const installs = el('div', 'sp-ext-installs');
-  installs.append(install, installCrx);
+  installs.append(textButton('Open Bowser Store', () => options.send({ a: 'storeopen' }), { icon: 'puzzle', primary: true }), install, installCrx);
   head.append(heading, installs);
   const box = el('div', 'sp-card sp-ext-card');
   box.setAttribute('role', 'group');
@@ -62,11 +65,22 @@ export function mountExtensionsSection(options: ExtensionsSectionOptions): Exten
   box.setAttribute('aria-busy', 'true');
   group.append(head, box);
   const note = el('p', 'sp-flag sp-ext-note');
-  note.id = 'sp-ext-note';
+  note.id = `${prefix}-ext-note`;
   const noteText = el('span');
   noteText.textContent = EXTENSIONS_NOTE;
   note.append(icon('info', { size: 12, fine: true }), noteText);
-  root.append(group, note);
+  const fromLink = el('details', 'sp-ext-link');
+  const linkSummary = el('summary'); linkSummary.textContent = 'Install from a store link';
+  const linkLabel = el('label'); linkLabel.textContent = 'Chrome Web Store listing URL'; linkLabel.htmlFor = `${prefix}-ext-url`;
+  const linkInput = el('input', 'bw-input'); linkInput.id = `${prefix}-ext-url`; linkInput.type = 'url'; linkInput.maxLength = 2048; linkInput.placeholder = 'https://chromewebstore.google.com/detail/…';
+  const linkError = el('p', 'sp-desc'); linkError.hidden = true; linkError.setAttribute('role', 'alert');
+  const linkInstall = textButton('Review extension', () => {
+    const fields = storeUrlCommand(linkInput.value);
+    if (!fields) { linkError.hidden = false; linkError.textContent = 'Enter a full HTTPS Chrome Web Store extension listing URL.'; linkInput.focus(); return; }
+    linkError.hidden = true; sendInstall(fields);
+  });
+  fromLink.append(linkSummary, linkLabel, linkInput, linkInstall, linkError);
+  root.append(group, note, fromLink);
 
   const sendInstall = (command: PanelFields = INSTALL_COMMAND): void => {
     if (installing) return;
@@ -98,7 +112,7 @@ export function mountExtensionsSection(options: ExtensionsSectionOptions): Exten
 
   const declarations = (item: ExtensionItem): HTMLElement => {
     const details = el('div', 'sp-ext-details');
-    details.id = `sp-ext-d-${item.id}`;
+    details.id = `${prefix}-ext-d-${item.id}`;
     const groups = declarationGroups(item);
     if (groups.length === 0) {
       const none = el('p', 'sp-desc');
@@ -139,12 +153,12 @@ export function mountExtensionsSection(options: ExtensionsSectionOptions): Exten
     tile.append(icon('puzzle'));
     const text = el('div', 'sp-text');
     const name = el('span', 'sp-label sp-ext-name');
-    name.id = `sp-ext-n-${item.id}`;
+    name.id = `${prefix}-ext-n-${item.id}`;
     name.textContent = item.name;
     const status = el('span', 'sp-desc sp-ext-status');
     status.textContent = statusText(item, removing);
     const reach = el('span', `sp-desc sp-ext-reach${item.all ? ' is-broad' : ''}`);
-    reach.id = `sp-ext-r-${item.id}`;
+    reach.id = `${prefix}-ext-r-${item.id}`;
     if (item.all) reach.append(icon('warning', { size: 12, fine: true }));
     reach.append(document.createTextNode(reachText(item)));
     text.append(name, status, reach);
@@ -160,7 +174,7 @@ export function mountExtensionsSection(options: ExtensionsSectionOptions): Exten
     more.type = 'button';
     more.dataset.focus = `${item.id}:details`;
     more.setAttribute('aria-expanded', String(open));
-    more.setAttribute('aria-controls', `sp-ext-d-${item.id}`);
+    more.setAttribute('aria-controls', `${prefix}-ext-d-${item.id}`);
     more.append(document.createTextNode(open ? 'Hide what it declares' : 'What it declares'), icon(open ? 'chevron-up' : 'chevron-down', { size: 12, fine: true }));
     more.addEventListener('click', () => {
       if (expanded.has(item.id)) expanded.delete(item.id); else expanded.add(item.id);
@@ -180,6 +194,12 @@ export function mountExtensionsSection(options: ExtensionsSectionOptions): Exten
         popup.dataset.focus = `${item.id}:popup`;
         popup.disabled = held;
         actions.append(popup);
+      }
+      for (const [action, label] of [['extoptions', 'Options'], ['extupdate', 'Check update']] as const) {
+        const button = textButton(label, () => options.send({ a: action, text: item.id }), { subtle: true, aria: `${label} for ${item.name}` });
+        button.dataset.focus = `${item.id}:${action}`;
+        button.disabled = held;
+        actions.append(button);
       }
       const remove = el('button', 'bw-icon-btn is-lg sp-ext-remove');
       remove.type = 'button';
@@ -252,6 +272,7 @@ export function mountExtensionsSection(options: ExtensionsSectionOptions): Exten
     // The empty state has its own, larger install button; an unreadable list has nothing to add to.
     install.hidden = !snapshot || invalid || snapshot.state !== 'on' || snapshot.items.length === 0;
     install.disabled = installing;
+    linkInstall.disabled = installing; linkInput.disabled = installing;
     installCrx.hidden = install.hidden;
     installCrx.disabled = installing;
     box.setAttribute('aria-busy', String(!snapshot && !invalid));

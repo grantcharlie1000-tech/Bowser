@@ -449,41 +449,79 @@ pub fn install_confirmed(
     records_file: &Path,
     confirm: &mut dyn FnMut(&Inspection) -> bool,
 ) -> Result<Option<Record>, ExtensionError> {
-    let mut records = read_records(records_file)?;
-    if records.len() >= MAX_INSTALLED {
-        return Err(ExtensionError::TooManyInstalled);
+    let prepared = prepare_install(source, extensions_dir, records_file)?;
+    if !confirm(prepared.inspection()) {
+        return Ok(None);
     }
-    if !is_plain_dir(source) {
-        return Err(ExtensionError::NotAFolder);
+    prepared.commit().map(Some)
+}
+
+/// A profile-owned, unrecorded copy. Dropping it (cancel, error, closed window) removes only this
+/// newly-created folder. It cannot load until explicit approval calls `commit` and the UI asks the
+/// owning profile's engine to load the returned record.
+#[derive(Debug)]
+pub struct PreparedInstall {
+    extensions_dir: PathBuf,
+    records_file: PathBuf,
+    id: String,
+    inspection: Inspection,
+    committed: bool,
+}
+
+impl PreparedInstall {
+    pub fn inspection(&self) -> &Inspection { &self.inspection }
+
+    pub fn folder(&self) -> Result<PathBuf, ExtensionError> {
+        contained_path(&self.extensions_dir, &self.id)
     }
+
+    /// Re-read the actual copy and records after consent. No source folder is consulted and the
+    /// reviewed declarations must still match. Writing the record is the install commit point.
+    pub fn commit(mut self) -> Result<Record, ExtensionError> {
+        if inspect_source(&self.folder()?)? != self.inspection {
+            return Err(ExtensionError::InvalidManifest("The staged extension changed. Review it again."));
+        }
+        let mut records = read_records(&self.records_file)?;
+        if records.len() >= MAX_INSTALLED { return Err(ExtensionError::TooManyInstalled); }
+        if records.iter().any(|record| record.id == self.id) { return Err(ExtensionError::InvalidRecords); }
+        let record = Record {
+            id: self.id.clone(), enabled: true,
+            name: self.inspection.manifest.name.clone(),
+            version: self.inspection.manifest.version.clone(),
+        };
+        records.push(record.clone());
+        write_records(&self.records_file, &records)?;
+        self.committed = true;
+        Ok(record)
+    }
+}
+
+impl Drop for PreparedInstall {
+    fn drop(&mut self) {
+        if !self.committed { let _ = remove_folder(&self.extensions_dir, &self.id); }
+    }
+}
+
+/// Prepare the exact profile-owned files for a full asynchronous permission review. This reuses
+/// the same link/path/size-checked copy and inspection as local CRX/unpacked installation.
+pub fn prepare_install(
+    source: &Path, extensions_dir: &Path, records_file: &Path,
+) -> Result<PreparedInstall, ExtensionError> {
+    let records = read_records(records_file)?;
+    if records.len() >= MAX_INSTALLED { return Err(ExtensionError::TooManyInstalled); }
+    if !is_plain_dir(source) { return Err(ExtensionError::NotAFolder); }
     ensure_plain_dir(extensions_dir)?;
     let id = new_id(&records, extensions_dir)?;
     let target = contained_path(extensions_dir, &id)?;
     fs::create_dir(&target).map_err(|_| ExtensionError::Io)?;
-    let inspected = copy_tree(source, &target).and_then(|()| inspect_source(&target));
-    let inspection = match inspected {
+    let inspection = match copy_tree(source, &target).and_then(|()| inspect_source(&target)) {
         Ok(inspection) => inspection,
-        Err(error) => {
-            let _ = remove_folder(extensions_dir, &id);
-            return Err(error);
-        }
+        Err(error) => { let _ = remove_folder(extensions_dir, &id); return Err(error); }
     };
-    if !confirm(&inspection) {
-        let _ = remove_folder(extensions_dir, &id);
-        return Ok(None);
-    }
-    let record = Record {
-        id,
-        enabled: true,
-        name: inspection.manifest.name,
-        version: inspection.manifest.version,
-    };
-    records.push(record.clone());
-    if let Err(error) = write_records(records_file, &records) {
-        let _ = remove_folder(extensions_dir, &record.id);
-        return Err(error);
-    }
-    Ok(Some(record))
+    Ok(PreparedInstall {
+        extensions_dir: extensions_dir.to_owned(), records_file: records_file.to_owned(),
+        id, inspection, committed: false,
+    })
 }
 
 /// Copies every entry of `source` under `target` using the same walk and caps as inspection.

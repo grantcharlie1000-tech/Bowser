@@ -13,6 +13,7 @@ pub mod chrome_host;
 pub mod commands;
 pub mod crx;
 pub mod crx_fetch;
+pub mod store;
 pub mod crx_file;
 pub mod crx_unpack;
 pub mod default_browser;

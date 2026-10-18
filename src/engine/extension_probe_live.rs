@@ -691,3 +691,58 @@ fn live_probe_restart_child() {
     );
     session.close();
 }
+
+/// Real packages, fresh throwaway profiles, no accounts and no user data. This proves package
+/// identity/load and genuine extension context only, not product functionality or action grants.
+#[test]
+#[ignore = "live store network and WebView2; explicit disposable Windows acceptance diagnostic"]
+fn live_store_current_extension_loads() {
+    unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED).ok().unwrap() };
+    let runtime = WebView2Engine::availability().expect("installed runtime");
+    let version = runtime.split_whitespace().next().unwrap();
+    let root = temp_root();
+    let cancelled = AtomicBool::new(false);
+    let mut loaded = 0;
+    println!("REAL_STORE runtime={version}");
+    for (name, id) in [
+        ("ublock-origin-lite", "ddkjiahejlhfcafbddmgiahcphecmpfh"),
+        ("bitwarden", "nngceckbapebfimnlniiiahkandclblb"),
+        ("dark-reader", "eimadpbcbfnmbkopoojfekhnkhdbieeh"),
+        ("onetab", "chphlpgkkbolifaimnlloiipkdnihall"),
+    ] {
+        let profile = root.join(name);
+        let review = match crate::store::prepare(id, version, &profile.join("Extensions"), &profile.join("extensions.txt"), &cancelled) {
+            Ok(review) => review,
+            Err(reason) => { println!("REAL_STORE name={name} id={id} stage=prepare failed={reason}"); continue; }
+        };
+        let reviewed = review.prepared.inspection().manifest.clone();
+        println!("REAL_STORE name={name} id={id} version={} stage=permission_review required={:?} hosts={:?} scripts={:?} optional={:?} optional_hosts={:?}", reviewed.version, reviewed.permissions, reviewed.host_permissions, reviewed.content_script_matches, reviewed.optional_permissions, reviewed.optional_host_permissions);
+        // Explicit test-harness consent to exactly the verified copy, never credentials/accounts.
+        let record = review.prepared.commit().expect("test-only reviewed package consent");
+        let folder = extensions::folder_for(&profile.join("Extensions"), &record.id).unwrap();
+        let loopback = Loopback::start();
+        let mut session = Session::open(&profile, vec![(record.id.clone(), folder.clone())], vec![(record.id.clone(), true)], &loopback.page("real-first"));
+        let (webview_id, failure) = session.wait_for_add(&profile, &record.id);
+        println!("REAL_STORE name={name} version={} signed_id={id} runtime_id={webview_id:?} load_failure={failure:?}", reviewed.version);
+        if webview_id.as_deref() == Some(id) && failure.is_none() {
+            loaded += 1;
+            for (label, kind) in [("popup", extensions::PageKind::Popup), ("options", extensions::PageKind::Options)] {
+                if !extensions::declares_page(&folder, kind) { println!("REAL_STORE name={name} page={label} declared=false"); continue; }
+                let opened = session.open_page(&record.id, &folder, kind);
+                println!("REAL_STORE name={name} page={label} open={opened:?}");
+                if opened.is_ok() {
+                    pump_until(Duration::from_secs(3), || false);
+                    let context = session.page_script("({origin:location.origin,runtimeId:typeof chrome==='object'&&chrome.runtime?chrome.runtime.id:null,bodyTextLength:document.body?.textContent?.length||0,tabs:typeof chrome?.tabs,windows:typeof chrome?.windows,action:typeof chrome?.action,storage:typeof chrome?.storage,dnr:typeof chrome?.declarativeNetRequest})");
+                    println!("REAL_STORE name={name} page={label} genuine_context={context:?}");
+                    session.page_script("(()=>{chrome.tabs.query({},tabs=>document.documentElement.setAttribute('data-bowser-api-probe',JSON.stringify({lastError:chrome.runtime.lastError?.message||null,tabs:tabs?.map(t=>({id:t.id,windowId:t.windowId,active:t.active,incognito:t.incognito,url:t.url}))})));return true})()");
+                    pump_until(Duration::from_secs(2), || false);
+                    println!("REAL_STORE name={name} page={label} tabs_query={:?}", session.page_script("document.documentElement.getAttribute('data-bowser-api-probe')"));
+                }
+            }
+        }
+        session.close();
+        drop(loopback);
+    }
+    remove_with_retries(&root);
+    assert!(loaded > 0, "no real signed current extension loaded; inspect diagnostic reasons");
+}

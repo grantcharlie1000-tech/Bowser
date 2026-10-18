@@ -5471,6 +5471,8 @@ impl App {
                 win32::open_history_page(hwnd, app, true);
             } else if page.is_downloads() {
                 win32::open_downloads_page(hwnd, app, true);
+            } else if page.is_store() {
+                win32::open_store_page(hwnd, app, true);
             } else {
                 win32::open_settings_page(hwnd, app, page.section(), true);
             }
@@ -6598,6 +6600,8 @@ impl App {
                     win32::open_history_page(hwnd, app, false);
                 } else if page.is_downloads() {
                     win32::open_downloads_page(hwnd, app, false);
+                } else if page.is_store() {
+                    win32::open_store_page(hwnd, app, false);
                 } else {
                     win32::open_settings_page(hwnd, app, page.section(), false);
                 }
@@ -6611,6 +6615,8 @@ impl App {
                 win32::history_page_focus(hwnd);
             } else if page.is_downloads() {
                 win32::downloads_page_focus(hwnd);
+            } else if page.is_store() {
+                win32::settings_page_refresh(hwnd);
             } else {
                 win32::settings_page_go(hwnd, page.section());
             }

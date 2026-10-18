@@ -46,7 +46,7 @@ export type TabAction = 'select' | 'close' | 'menu' | 'pin' | 'mute' | 'dblclick
 export type GroupAction = 'toggle' | 'menu';
 export type RailAction = 'click' | 'menu' | 'hover';
 export type PanelKind = 'panel' | 'hist' | 'bm' | 'cust' | 'notes' | 'set' | 'priv' | 'ren' | 'hpage' | 'dpage' | 'spage' | 'addr' | 'sess' | 'feed';
-export type PanelToken = 'history' | 'bookmarks' | 'customize' | 'notes' | 'settings' | 'privacy' | 'rename' | 'historypage' | 'downloadspage' | 'extensions' | 'commands' | 'protection' | 'startpage' | 'address' | 'addressdlg' | 'bookmarkbar' | 'sessions' | 'pagetools' | 'feeds';
+export type PanelToken = 'history' | 'bookmarks' | 'customize' | 'notes' | 'settings' | 'privacy' | 'rename' | 'historypage' | 'downloadspage' | 'extensions' | 'commands' | 'protection' | 'startpage' | 'address' | 'addressdlg' | 'bookmarkbar' | 'sessions' | 'pagetools' | 'feeds' | 'store';
 export interface PanelFields {
   a: string;
   id?: number;
@@ -379,6 +379,8 @@ export function sendAddr(fields: PanelFields): boolean {
 /** The toolbar's extensions button (toolbar only): shown while an enabled extension has a popup. */
 export interface ExtButtonMsg {
   readonly t: 'extbtn';
+  /** Native top-level store listing action; absent for older snapshots. */
+  readonly store?: boolean;
   readonly on: boolean;
   /** Enabled extensions with a popup. */
   readonly n: number;
@@ -670,7 +672,7 @@ function hasAllKeys(v: Record<string, unknown>, keys: readonly string[]): boolea
 const READER_PILL: readonly ReaderPill[] = ['none', 'available', 'on'];
 const TRANSLATE_PILL: readonly TranslatePill[] = ['none', 'available', 'on'];
 const SECURITY: readonly Security[] = ['secure', 'notsecure', 'certproblem', 'internal', 'unknown', 'none'];
-const PANEL_TOKENS: readonly PanelToken[] = ['history', 'bookmarks', 'customize', 'notes', 'settings', 'privacy', 'rename', 'historypage', 'downloadspage', 'extensions', 'commands', 'protection', 'startpage', 'address', 'addressdlg', 'bookmarkbar', 'sessions', 'pagetools', 'feeds'];
+const PANEL_TOKENS: readonly PanelToken[] = ['history', 'bookmarks', 'customize', 'notes', 'settings', 'privacy', 'rename', 'historypage', 'downloadspage', 'extensions', 'commands', 'protection', 'startpage', 'address', 'addressdlg', 'bookmarkbar', 'sessions', 'pagetools', 'feeds', 'store'];
 /** Lower-case words joined by single hyphens (`workspace-create`), at most 24 characters. */
 const PANEL_ACTION_RE = /^(?=.{1,24}$)[a-z]+(?:-[a-z]+)*$/;
 const MAX_SNAPSHOT_DEPTH = 8;
@@ -802,12 +804,16 @@ export function sendExtensionsButton(rect: Parameters<typeof rectWire>[0]): bool
 
 function parseExtButton(raw: Record<string, unknown>): ExtButtonMsg | null {
   const keys = ['v', 't', 'on', 'n', 'name'];
-  if (!hasOnlyKeys(raw, keys) || !hasAllKeys(raw, keys) || raw.v !== 1) return null;
+  if (!hasOnlyKeys(raw, [...keys, 'store']) || !hasAllKeys(raw, keys) || raw.v !== 1 || (raw.store !== undefined && !isBool(raw.store))) return null;
   const { on, n, name } = raw;
   if (!isBool(on) || !isInt(n, 0, MAX_EXTENSIONS) || !isStr(name, MAX_EXTENSION_NAME * 2) || Array.from(name).length > MAX_EXTENSION_NAME) return null;
   // Shown exactly when there is something to open; a name only for a single one.
+  if (raw.store === true) {
+    if (!on || n !== 0 || name !== 'Add to Bowser') return null;
+    return { t: 'extbtn', on, n, name, store: true };
+  }
   if (on !== n > 0 || (name !== '') !== (n === 1)) return null;
-  return { t: 'extbtn', on, n, name };
+  return { t: 'extbtn', on, n, name, ...(raw.store === false ? { store: false } : {}) };
 }
 
 function parseDlButton(raw: Record<string, unknown>): DlButtonMsg | null {

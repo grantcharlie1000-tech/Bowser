@@ -3,6 +3,10 @@ on:
   pull_request:
     paths:
       - 'src/crx*.rs'
+      - 'src/store.rs'
+      - 'src/extensions.rs'
+      - 'src/engine/**'
+      - 'src/win32/store.rs'
       - '.github/workflows/store-probe.yml'
   workflow_dispatch:
 permissions:
@@ -10,11 +14,13 @@ permissions:
 jobs:
   download-probe:
     runs-on: windows-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     defaults:
       run:
         shell: pwsh
     steps:
+      - name: Preserve fingerprinted source bytes
+        run: git config --global core.autocrlf false
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
@@ -25,11 +31,21 @@ jobs:
           $env:BOWSER_EXTENSION_TRACE = '1'
           cargo +stable test --locked --lib live_current_mv3_store_downloads -- --ignored --nocapture --test-threads=1 2>&1 | Tee-Object store-download-probe.log
           if ($LASTEXITCODE -ne 0) { throw 'Store diagnostic test failed.' }
+      - name: Load real signed packages in disposable extension-enabled profiles
+        run: |
+          $env:BOWSER_EXTENSION_TRACE = '1'
+          $env:LOCALAPPDATA = Join-Path $env:RUNNER_TEMP 'bowser-store-isolated-localappdata'
+          New-Item -ItemType Directory -Force $env:LOCALAPPDATA | Out-Null
+          $test = Get-ChildItem target/debug/deps/bowser-*.exe | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          & $test.FullName live_store_current_extension_loads --ignored --nocapture --test-threads=1 2>&1 | Tee-Object store-runtime-probe.log
+          if ($LASTEXITCODE -ne 0) { throw 'Real extension load diagnostic failed.' }
       - name: Save diagnostic evidence, including unavailable packages
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: store-download-probe-${{ github.sha }}
-          path: store-download-probe.log
+          path: |
+            store-download-probe.log
+            store-runtime-probe.log
           if-no-files-found: error
           retention-days: 14

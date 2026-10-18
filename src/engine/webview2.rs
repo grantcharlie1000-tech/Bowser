@@ -465,7 +465,10 @@ impl HostedPagePolicy {
     }
 
     pub(super) fn allow_navigation(&self, uri: &Url) -> bool {
-        consume_allowed_file_navigation(uri, Some(&self.granted), &self.pending)
+        if self.pending.get() {
+            return consume_allowed_file_navigation(uri, Some(&self.granted), &self.pending);
+        }
+        crate::extensions::is_page_url(uri) && uri.host_str() == self.granted.host_str()
     }
 
     /// Frames may be blank or the granted extension's own pages, nothing else.
@@ -2260,7 +2263,8 @@ fn reconcile_profile(
             let mut enables = Vec::new();
             for (webview_id, extension) in present {
                 let Some(bowser) = webview_to_bowser.get(&webview_id).cloned() else {
-                    unloads.push((webview_id, extension));
+                    // Not in Bowser's ownership map: preserve runtime built-ins and anything
+                    // Bowser cannot prove it owns. Never reconcile another owner's extensions.
                     continue;
                 };
                 let record = known.get(&bowser).copied();
@@ -6462,7 +6466,10 @@ mod tests {
         }
         // Refusals above did not use up the grant.
         assert!(policy.allow_navigation(&granted), "first navigation to the granted URL");
-        assert!(!policy.allow_navigation(&granted), "the grant is one-shot");
+        assert!(policy.allow_navigation(&granted), "reload stays within the same extension");
+        assert!(policy.allow_navigation(&Url::parse(&format!("chrome-extension://{HOSTED_ID}/options.html")).unwrap()));
+        assert!(!policy.allow_navigation(&Url::parse("chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/options.html").unwrap()));
+        assert!(!policy.allow_navigation(&Url::parse("https://example.com/").unwrap()));
     }
 
     #[test]

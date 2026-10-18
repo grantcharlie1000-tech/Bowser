@@ -13,6 +13,7 @@ import { textButton, type PageSection } from './panels/kit';
 import { mountPrivacyDashboard } from './panels/privacy';
 import { mountProtection } from './panels/protection'; // blocking, history and website appearance (thread T3)
 import { mountExtensionsSection } from './extensions-section';
+import { mountStoreSection } from './store-section';
 import { mountCommandsSections } from './commands-section';
 import { mountStartSection } from './settings-start'; // --- start page ---
 import { mountThemeRows } from './settings-themes'; // --- theme options ---
@@ -1276,6 +1277,8 @@ export function startSettingsPage(root: HTMLElement): void {
   // this page and takes its extension commands in the `set` family; search treats it as one row.
   const extensions = mountExtensionsSection({ send: cmd, toast: (text, ok) => showToast(text, ok) });
   sectionNodes.get('extensions')?.append(extensions.root);
+  const store = mountStoreSection({ send: cmd, toast: (text, ok) => showToast(text, ok) });
+  root.append(store.root);
   const extensionsSpec = ROWS.find((r) => r.id === 'extensions')!;
   rows.set('extensions', { spec: extensionsSpec, root: extensions.root, label: el('span'), desc: null, card: extensions.root, flag: null, target: null });
 
@@ -1922,6 +1925,7 @@ export function startSettingsPage(root: HTMLElement): void {
   clear.addEventListener('click', () => { input.value = ''; query = ''; filter(); input.focus(); });
   // Ctrl+F and / jump to the search field, as on Chrome's settings page.
   document.addEventListener('keydown', (event) => {
+    if (!store.root.hidden) return;
     const typing = event.target instanceof HTMLInputElement;
     if ((event.key === 'f' && event.ctrlKey && !event.shiftKey && !event.altKey) || (event.key === '/' && !typing)) {
       event.preventDefault();
@@ -1951,6 +1955,8 @@ export function startSettingsPage(root: HTMLElement): void {
   const receive = (message: Inbound): void => {
     if (message.t === 'state') { applyTheme(message.theme, message.solid, message.dark, message.fontScale, message.uiFont, message.density, message.compactMenus, message.look); return; }
     if (message.t === 'settingsgo') {
+      store.hide();
+      page.hidden = false;
       // Bowser moved the tab (a typed address, a menu pick): jump, as a navigation would.
       if (!snapshot) { wanted = message.s; return; }
       go(message.s, false, false);
@@ -1958,7 +1964,8 @@ export function startSettingsPage(root: HTMLElement): void {
     }
     if (message.t === 'snap' && message.p === 'privacy') { receiveDashboard(message); return; }
     if (message.t === 'snap' && message.p === 'protection') { protection.receive(message); return; }
-    if (message.t === 'snap' && message.p === 'extensions') { extensions.receive(message); return; }
+    if (message.t === 'snap' && message.p === 'store') { const shown = store.receive(message); if (shown !== null) page.hidden = shown; return; }
+    if (message.t === 'snap' && message.p === 'extensions') { extensions.receive(message); store.receive(message); return; }
     if (message.t === 'snap' && message.p === 'pagetools') { pageToolsSection.receive(message); return; } // --- page tools (T7) ---
     if (message.t === 'snap' && message.p === 'commands') {
       commandSections.receive(message);

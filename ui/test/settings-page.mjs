@@ -2118,3 +2118,17 @@ test('window: the chrome look reaches every surface as root attributes the CSS a
   assert.match(read(join(srcDir, 'base.css') === '' ? join(srcDir, 'styles', 'base.css') : join(srcDir, 'styles', 'base.css')), /prefers-reduced-motion: reduce/, 'the OS reduced-motion rule stays in force whatever the setting says');
 });
 // ---- end window and panels ----
+
+test('built-in Store and Settings share the trusted host without page navigation', () => {
+  const state = { shown: true, catalogue: [], phase: 'idle', requestId: '', extensionId: '', name: '', version: '', error: '', restart: false, permissions: [], hostPermissions: [], contentScripts: [], optionalPermissions: [], optionalHostPermissions: [] };
+  deliver({ v: 1, t: 'snap', p: 'store', d: state });
+  assert.equal(app.querySelector('.sp').hidden, true);
+  assert.equal(app.querySelector('.bs').hidden, false);
+  assert.equal(app.querySelectorAll('iframe').length, 0);
+  sent.length = 0;
+  app.querySelector('.bs').querySelectorAll('button').find((b) => b.textContent === 'Extension settings').click();
+  assert.deepEqual(sent, [{ v: 1, t: 'set', a: 'section', text: 'extensions' }]);
+  deliver({ v: 1, t: 'settingsgo', s: 'extensions' });
+  assert.equal(app.querySelector('.sp').hidden, false);
+  assert.equal(app.querySelector('.bs').hidden, true);
+});

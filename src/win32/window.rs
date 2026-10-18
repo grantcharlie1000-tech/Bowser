@@ -588,6 +588,7 @@ struct WindowChrome {
     /// The same for the extensions button (`0` or `EXT_BUTTON_SLOT`, docs/extensions.md): its slot,
     /// the last `extbtn` message the page was sent, and the button's rectangle from its last click.
     html_ext_slot: i32,
+    html_store_listing: bool,
     html_ext_last: Option<String>,
     html_ext_rect: Option<chrome_host::protocol::HoverRect>,
     // --- toolbars and feeds (thread T13) --- what the address bar's list (`toolbar_buttons`) does to the
@@ -774,6 +775,7 @@ impl WindowChrome {
             html_dl_slot: 0,
             html_dl_last: None,
             html_ext_slot: 0,
+            html_store_listing: false,
             html_ext_last: None,
             html_ext_rect: None,
             html_dl_allowed: true,
@@ -1190,7 +1192,7 @@ impl WindowChrome {
     /// CSS px the toolbar page's buttons beside the pill (downloads, extensions) take from it.
     fn toolbar_slot(&self) -> i32 {
         // --- toolbars and feeds (thread T13) --- a button taken off the bar gives its room back.
-        (if self.html_dl_allowed { self.html_dl_slot } else { 0 }) + (if self.html_ext_allowed { self.html_ext_slot } else { 0 }) + self.html_bar_extra
+        (if self.html_dl_allowed { self.html_dl_slot } else { 0 }) + (if self.html_ext_allowed || self.html_ext_slot == STORE_BUTTON_SLOT { self.html_ext_slot } else { 0 }) + self.html_bar_extra
     }
     /// Moves the HTML chrome over the toolbar region and hides it when there is none. Also tells
     /// the surface to leave the region to the page.
@@ -1621,6 +1623,8 @@ fn run_chrome_sync(hwnd: HWND, app: Option<&AppRef>) {
     let _ = with_chrome(hwnd, |s| s.chrome_sync_posted = false);
     sync_html_host_bounds(hwnd);
     html_sync(hwnd);
+    let listing = app.and_then(current_store_listing).is_some();
+    if with_chrome(hwnd, |state| state.html_store_listing != listing).unwrap_or(false) { html_refresh_extensions_button(hwnd); }
     html_tabs_sync(hwnd);
     html_rail_sync(hwnd);
     let Some(app) = app else {
@@ -8268,11 +8272,24 @@ fn popup_extensions(profile: &crate::profile::Profile) -> Vec<crate::extensions:
 /// enabled extension has a popup (so the pill's new width is sent first), then sends the `extbtn`
 /// message when it differs from the last one the page got. Runs when the toolbar page is ready and
 /// on `WM_EXTENSIONS_CHANGED`.
+const STORE_BUTTON_SLOT: i32 = 132;
+
+/// The live top-level model is updated by WebView2 SourceChanged. Do not offer installation for a
+/// private tab, a pending navigation, frame URL or unvalidated look-alike listing.
+fn current_store_listing(app: &AppRef) -> Option<String> {
+    let tab = App::active_tab_id(app);
+    if App::active_tab_private(app) || App::tab_loading(app, tab) { return None; }
+    let url = App::tab_committed_url(app, tab)?;
+    crate::crx_fetch::parse_store_url(url.as_str()).ok()
+}
+
 fn html_refresh_extensions_button(hwnd: HWND) {
     let popups = crate::profile::active().map(|profile| popup_extensions(&profile)).unwrap_or_default();
     let names: Vec<&str> = popups.iter().map(|record| record.name.as_str()).collect();
-    let json = chrome_host::extensions_page::button_json(&names);
-    let slot = if popups.is_empty() { 0 } else { chrome_host::EXT_BUTTON_SLOT };
+    let listing = app_of(hwnd).as_ref().and_then(current_store_listing).is_some();
+    let _ = with_chrome(hwnd, |state| state.html_store_listing = listing);
+    let json = if listing { super::store::listing_button_json() } else { chrome_host::extensions_page::button_json(&names) };
+    let slot = if listing { STORE_BUTTON_SLOT } else if popups.is_empty() { 0 } else { chrome_host::EXT_BUTTON_SLOT };
     let moved = with_chrome(hwnd, |s| std::mem::replace(&mut s.html_ext_slot, slot) != slot).unwrap_or(false);
     if moved {
         html_sync(hwnd);
@@ -8306,6 +8323,8 @@ pub(super) fn post_to_every_window(message: u32) {
 /// The toolbar's extensions button was clicked: the only extension with a popup opens it; with
 /// several, their names hang from the button with "Manage extensions" under them.
 fn show_extensions_button_menu(hwnd: HWND, app: &AppRef) {
+    // The website supplies neither this action nor an ID: revalidate the active top-level URL now.
+    if let Some(id) = current_store_listing(app) { super::store::start(hwnd, app, &id); return; }
     const MANAGE: usize = 1;
     const POPUP_BASE: usize = 100;
     let Ok(profile) = crate::profile::active() else {
@@ -8480,7 +8499,7 @@ pub(super) fn install_extension_from_crx_file(
 
 /// What both install paths do with the answer: a recorded extension is loaded from Bowser's copy and
 /// every window hears about it; a declined prompt is `Ok(false)`; a failure is worded for the page.
-fn finish_install(
+pub(super) fn finish_install(
     app: &AppRef,
     profile: &crate::profile::Profile,
     result: Result<Option<crate::extensions::Record>, String>,

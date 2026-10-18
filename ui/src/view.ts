@@ -328,16 +328,19 @@ export function applyBar(view: View, state: Pick<StateMsg, 'items' | 'tools' | '
       }
     }
     for (const id of [...bar.tools.keys()]) if (!live.has(id)) bar.tools.delete(id);
+    const storeAction = view.extensions.button.classList.contains('is-store');
+    if (storeAction && !right.includes(view.extensions.button)) right.push(view.extensions.button);
     view.actions.replaceChildren(...right, view.menu);
     // Downloads and extensions that are off the bar never show, and never take room.
     if (root) {
       root.classList.toggle('bar-no-dl', !bar.has.has('downloads'));
       root.classList.toggle('bar-no-ext', !bar.has.has('extensions'));
       if (!bar.has.has('downloads')) root.classList.remove('has-dl');
-      if (!bar.has.has('extensions')) root.classList.remove('has-ext');
+      if (!bar.has.has('extensions') && !storeAction) root.classList.remove('has-ext');
+      if (storeAction && !view.extensions.button.hidden) root.classList.add('has-ext');
     }
     if (!bar.has.has('downloads')) view.downloads.button.hidden = true;
-    if (!bar.has.has('extensions')) view.extensions.button.hidden = true;
+    if (!bar.has.has('extensions') && !storeAction) view.extensions.button.hidden = true;
   }
   root?.style.setProperty('--tb-extra', `${state.extra ?? 0}px`);
   const feeds = state.feeds ?? 0;
@@ -362,6 +365,10 @@ export interface ExtensionsButton {
 
 function buildExtensionsButton(root: HTMLElement): ExtensionsButton {
   const button = iconButton('Extensions', 'puzzle', 'tb-nav is-lg is-round tb-ext');
+  const storeLabel = el('span', 'tb-ext-store-label');
+  storeLabel.textContent = 'Add to Bowser';
+  storeLabel.hidden = true;
+  button.append(storeLabel);
   button.hidden = true;
   let outTimer = 0;
   button.addEventListener('animationend', (event) => {
@@ -372,11 +379,21 @@ function buildExtensionsButton(root: HTMLElement): ExtensionsButton {
     apply(msg: ExtButtonMsg): void {
       window.clearTimeout(outTimer);
       const text = extButtonText(msg);
+      const store = msg.store === true;
+      storeLabel.hidden = !store;
+      button.classList.toggle('is-store', store);
+      root.classList.toggle('has-store-ext', store && msg.on);
       label(button, text.label, text.tip);
+      if (!store && root.classList.contains('bar-no-ext')) { button.hidden = true; button.remove(); root.classList.remove('has-ext'); return; }
+      if (store) {
+        const actions = root.querySelector<HTMLElement>('.actions');
+        const menu = actions?.querySelector<HTMLElement>('.tb-menu');
+        if (actions && menu && !actions.contains(button)) actions.replaceChildren(...Array.from(actions.children).filter((node) => node !== menu), button, menu);
+      }
       if (text.menu) button.setAttribute('aria-haspopup', 'menu');
       else button.removeAttribute('aria-haspopup');
       if (msg.on) {
-        if (root.classList.contains('bar-no-ext')) return; // taken off the bar (docs/toolbars.md)
+        if (root.classList.contains('bar-no-ext') && !store) return; // taken off the bar (docs/toolbars.md)
         button.classList.remove('is-out');
         if (button.hidden) {
           button.hidden = false;

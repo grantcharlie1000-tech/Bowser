@@ -902,6 +902,12 @@ html[data-scheme="dark"] #app {
   margin-inline-end: var(--bw-space-0_5);
 }
 
+#app.placed.has-ext.has-store-ext .actions { left: calc(var(--menu-x) - 132px); }
+#app.placed.has-ext.has-store-ext.has-dl .actions { left: calc(var(--menu-x) - 164px); }
+.tb-ext.is-store { width: 128px; min-width: 128px; gap: var(--bw-space-2); padding-inline: var(--bw-space-2); border-radius: var(--bw-r-control); color: var(--bw-accent); background: var(--bw-accent-soft); font: var(--bw-text-caption)/var(--bw-leading-caption) var(--bw-font); }
+.tb-ext-store-label { white-space: nowrap; }
+.tb-ext-store-label[hidden] { display: none; }
+
 .tb-ext[hidden] {
   display: none;
 }
