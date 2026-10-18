@@ -1466,6 +1466,7 @@ export function startSettingsPage(root: HTMLElement): void {
     }
   };
   const showPage = (id: string): void => {
+    unpinSection();
     const sub = subPages.get(id);
     if (!sub) return;
     if (query !== '') { input.value = ''; query = ''; filter(); }
@@ -1803,13 +1804,37 @@ export function startSettingsPage(root: HTMLElement): void {
     if (page.classList.contains('is-narrow')) button?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
   };
 
-  /** Scrolls to an area, or to a part inside a merged area (a deep link such as bowser://settings/search). */
-  const scrollToSection = (key: SettingsSection | '', smooth: boolean): void => {
+  /** The destination is relative to main, including the browser's end-of-page clamp. */
+  const sectionTop = (key: SettingsSection | ''): number => {
     const area = key === '' ? null : areaOf(key);
     const target = key === '' || area === null ? null : key === area.key ? areaNodes.get(area.key) : sectionNodes.get(key);
-    const top = target ? target.offsetTop - 8 : 0;
-    main.scrollTo({ top, behavior: smooth && !reduceMotion() ? 'smooth' : 'auto' });
+    return Math.max(0, Math.min(target ? target.offsetTop - 8 : 0, Math.max(0, main.scrollHeight - main.clientHeight)));
   };
+  // Keep the chosen section at its destination when late snapshots, media results or the host's
+  // first visible size change the layout. Pinning is navigation state, not a permanent scroll lock.
+  let pinned: { key: SettingsSection | ''; top: number } | null = null;
+  let pinFrame = 0;
+  const unpinSection = (): void => { pinned = null; };
+  const alignPinnedSection = (): void => {
+    if (pinFrame || !pinned) return;
+    pinFrame = requestAnimationFrame(() => {
+      pinFrame = 0;
+      // Read the latest navigation here: a queued old layout must not undo a newer pick or input.
+      if (!pinned || page.hidden || openPage || query !== '' || !store.root.hidden) return;
+      const top = sectionTop(pinned.key);
+      // Do not interrupt an unchanged smooth navigation, or loop at the bottom of the document.
+      if (Math.abs(top - pinned.top) < 0.5) return;
+      pinned.top = top;
+      main.scrollTo({ top, behavior: 'auto' });
+    });
+  };
+  if (typeof ResizeObserver !== 'undefined') {
+    const layout = new ResizeObserver(alignPinnedSection);
+    layout.observe(main);
+    layout.observe(column);
+    // Opposing size changes can leave a column or merged area unchanged but move its target.
+    for (const node of new Set([...areaNodes.values(), ...sectionNodes.values()])) layout.observe(node);
+  }
 
   /** Shows `key`; `tell` reports it to Bowser (the tab's address follows), `smooth` animates. */
   const go = (key: SettingsSection | '', smooth: boolean, tell: boolean): void => {
@@ -1819,9 +1844,11 @@ export function startSettingsPage(root: HTMLElement): void {
     current = area.key;
     // The chosen area stays current even when the page cannot scroll it to the top (the last
     // ones), until the user scrolls by hand.
-    pinned = true;
+    const top = sectionTop(key);
+    pinned = { key, top };
     paintNav();
-    scrollToSection(key, smooth);
+    main.scrollTo({ top, behavior: smooth && !reduceMotion() ? 'smooth' : 'auto' });
+    alignPinnedSection();
     if (tell) cmd({ a: 'section', text: key });
     if (area.key === 'media' && !mediaStarted) checkMedia();
     if (tell && key !== '') areaNodes.get(area.key)?.querySelector<HTMLElement>('h2')?.focus({ preventScroll: true });
@@ -1829,12 +1856,12 @@ export function startSettingsPage(root: HTMLElement): void {
 
   // The area whose heading last passed a line a third of the way down is the current one.
   let scrollFrame = 0;
-  let pinned = false;
-  for (const type of ['wheel', 'pointerdown', 'keydown', 'touchstart'] as const) main.addEventListener(type, () => { pinned = false; }, { passive: true });
+  for (const type of ['wheel', 'pointerdown', 'keydown', 'touchstart'] as const) main.addEventListener(type, unpinSection, { passive: true });
   main.addEventListener('scroll', () => {
     if (scrollFrame || pinned || openPage) return;
     scrollFrame = requestAnimationFrame(() => {
       scrollFrame = 0;
+      if (pinned || openPage || page.hidden) return;
       const line = main.scrollTop + main.clientHeight / 3;
       let next: SettingsSection = 'profile';
       for (const spec of AREAS) {
@@ -1872,6 +1899,7 @@ export function startSettingsPage(root: HTMLElement): void {
     for (const group of groups) group.root.hidden = !group.card.querySelector('.sp-row:not([hidden])');
   };
   function filter(): void {
+    unpinSection();
     if (query !== '') closePage(false);
     const hits = matchRows(query);
     searching = hits !== null;
@@ -1984,7 +2012,11 @@ export function startSettingsPage(root: HTMLElement): void {
     }
     if (message.t === 'snap' && message.p === 'privacy') { receiveDashboard(message); return; }
     if (message.t === 'snap' && message.p === 'protection') { protection.receive(message); return; }
-    if (message.t === 'snap' && message.p === 'store') { const shown = store.receive(message); if (shown !== null) page.hidden = shown; return; }
+    if (message.t === 'snap' && message.p === 'store') {
+      const shown = store.receive(message);
+      if (shown !== null) { page.hidden = shown; if (shown) unpinSection(); }
+      return;
+    }
     if (message.t === 'snap' && message.p === 'extensions') { extensions.receive(message); store.receive(message); return; }
     if (message.t === 'snap' && message.p === 'pagetools') { pageToolsSection.receive(message); return; } // --- page tools (T7) ---
     if (message.t === 'snap' && message.p === 'commands') {
