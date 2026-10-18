@@ -1,7 +1,8 @@
 # Ordinary native rail actions and whole-tree resource observations, not an input-latency probe.
 Set-StrictMode -Version Latest
 $ErrorActionPreference='Stop'
-Import-Module "$PSScriptRoot/measurements.psm1" -Force
+# Do not force-reload this shared dependency: the caller also imports its exports.
+Import-Module "$PSScriptRoot/measurements.psm1"
 function Invoke-ProductionSidebarLifecycle {
  [CmdletBinding()]
  param([uint32]$RootPid,[string]$Profile,[string]$RequestFile,[string]$AToken,[string]$BToken,[ValidateSet('settled','rapid')][string]$Scenario='settled',[Parameter(Mandatory)][AllowEmptyCollection()][Collections.Generic.List[object]]$Trace)

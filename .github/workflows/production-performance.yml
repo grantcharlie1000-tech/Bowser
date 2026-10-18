@@ -122,44 +122,32 @@ jobs:
           Copy-Item ../evidence/candidate/candidate.exe ../evidence/sidebar-reference/reference.exe
           Copy-Item ../evidence/candidate/identity.json ../evidence/sidebar-reference/identity.json
           [ordered]@{artifact_id=12136361999;archive_sha256=$archiveHash;source=$source;scope='Current WITH-minimizer reference retained; archived minus-minimizer interaction reference is NOT used in this sidebar experiment'} | ConvertTo-Json | Set-Content ../evidence/sidebar-frozen-provenance.json
-      - name: Build measurement-only sidebar diagnostic with current minimizer unchanged
+      - name: Reuse verified 8036 sidebar executable after harness-only import correction
         working-directory: candidate
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          rustup toolchain install 1.99.1 --profile minimal --component clippy
-          if ($LASTEXITCODE -ne 0) { throw 'Pinned toolchain installation failed' }
-          Push-Location ui
-          npm ci --no-audit --no-fund
-          if ($LASTEXITCODE -ne 0) { throw 'Locked UI install failed' }
-          npm run build
-          if ($LASTEXITCODE -ne 0) { throw 'UI rebuild failed' }
-          npm run typecheck
-          if ($LASTEXITCODE -ne 0) { throw 'UI typecheck failed' }
-          npm run lint
-          if ($LASTEXITCODE -ne 0) { throw 'UI lint failed' }
-          $env:BOWSER_TEST_EDGE='C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe'
-          if (-not (Test-Path $env:BOWSER_TEST_EDGE)) { $env:BOWSER_TEST_EDGE='C:/Program Files/Microsoft/Edge/Application/msedge.exe' }
-          if (-not (Test-Path $env:BOWSER_TEST_EDGE)) { throw 'Edge required for actual all-surface module/CSP smoke' }
-          $env:BOWSER_UI_SURFACE_REPORT=Join-Path (Resolve-Path ../../evidence).Path 'surface-module-smoke.json'
-          node --test test/hardening.mjs test/surface-modules.mjs test/interaction-diagnostic.mjs
-          if ($LASTEXITCODE -ne 0) { throw 'Actual module/CSP smoke failed' }
-          Pop-Location
-          git diff --exit-code -- ui/src/icons.gen.ts ui/dist ui/dist.manifest
-          if ($LASTEXITCODE -ne 0) { throw 'Committed assets are not reproducible' }
-          cargo +1.99.1 test --locked
-          if ($LASTEXITCODE -ne 0) { throw 'Default Rust contracts failed' }
-          cargo +1.99.1 test --locked --features html-chrome-default
-          if ($LASTEXITCODE -ne 0) { throw 'HTML Rust contracts failed' }
-          cargo +1.99.1 clippy --locked --features html-chrome-default -- -D warnings
-          if ($LASTEXITCODE -ne 0) { throw 'Clippy failed' }
-          cargo +1.99.1 build --release --locked --bin bowser --features html-chrome-default
-          if ($LASTEXITCODE -ne 0) { throw 'Actual candidate build failed' }
-          New-Item -ItemType Directory -Force ../evidence/candidate | Out-Null
-          Copy-Item target/release/bowser.exe ../evidence/candidate/candidate.exe
-          Copy-Item Cargo.lock,ui/dist.manifest ../evidence/candidate/
-          $file=Get-Item ../evidence/candidate/candidate.exe
-          [ordered]@{filter_product_source='f285525d205b9b388ebb26481f5af01d4df99ac8';source=(git rev-parse HEAD).Trim();tree=(git rev-parse 'HEAD^{tree}').Trim();sha256=(Get-FileHash $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant();bytes=$file.Length;toolchain=(rustc +1.99.1 --version --verbose | Out-String);features='html-chrome-default';scope='Measurement-only sidebar build WITH existing minimizer; ON/OFF use this exact same EXE; no lifecycle optimization or primary gain claim'} | ConvertTo-Json | Set-Content ../evidence/candidate/identity.json
-          [ordered]@{baseline='d0075f2807fd94000cb51ace647eaf335c71ab37c8302a91f0a52d3380dbe0fa';diagnostic='40c68ab5ad01cfa30b1632f58047e5293b2d7c0f305c05e9be51b4d8a3aff905';release='341486070d2e74cf9a9e5d5fbeffa90c7dd2ec4fd36bc284a8a3878a7a9bcec1';candidate=(Get-FileHash ../evidence/candidate/candidate.exe -Algorithm SHA256).Hash.ToLowerInvariant()} | ConvertTo-Json | Set-Content ../evidence/input-manifest.json
-          [ordered]@{harness_source=(git rev-parse HEAD).Trim();candidate_source=(git rev-parse HEAD).Trim();baseline_kind='Measurement-only current-minimizer line';same_exe_logging_on_off=$true;settled_pairs=3;rapid_pairs=1;planned_rows=16;stop='Fixed cohort, retain every failure; no retries/repair; identity/isolation failure blocks later lanes';scope='First B-open and retained resource/count baseline, not an optimization comparison or input correctness result'} | ConvertTo-Json | Set-Content ../evidence/sidebar-provenance.json
+          $source='8036b86d109e6aec7a39808589655a43ee34b85d'
+          git fetch --no-tags --depth=1 origin $source
+          if($LASTEXITCODE -ne 0){throw 'Cannot fetch frozen sidebar build source'}
+          $changes=@(git diff --name-only $source HEAD)
+          if($LASTEXITCODE -ne 0 -or @($changes|Where-Object {$_ -cnotin @('.github/workflows/production-performance.yml','benchmarks/sidebar-lifecycle.psm1','benchmarks/test-sidebar-lifecycle.ps1','benchmarks/sidebar-lifecycle-diagnostic.md')}).Count){throw 'Frozen sidebar EXE reuse allows only the reviewed harness correction'}
+          git diff --exit-code $source HEAD -- src ui Cargo.toml Cargo.lock build.rs
+          if($LASTEXITCODE -ne 0){throw 'Frozen sidebar runtime/build inputs changed'}
+          $headers=@{Authorization="Bearer $env:GH_TOKEN";Accept='application/vnd.github+json';'X-GitHub-Api-Version'='2022-11-28'}
+          $zip=Join-Path $env:RUNNER_TEMP 'sidebar-8036.zip'
+          Invoke-WebRequest -Headers $headers -Uri 'https://api.github.com/repos/grantcharlie1000-tech/Bowser/actions/artifacts/12137628254/zip' -OutFile $zip
+          $archiveHash=(Get-FileHash $zip -Algorithm SHA256).Hash.ToLowerInvariant()
+          if($archiveHash -cne 'c5fd895e5b4b12768736363e43b1295a4ad1f23b65284ac087cb06c64e6b668e'){throw 'Frozen sidebar archive digest mismatch'}
+          $cache=Join-Path $env:RUNNER_TEMP 'sidebar-8036'
+          Expand-Archive -LiteralPath $zip -DestinationPath $cache
+          $identity=Get-Content (Join-Path $cache 'candidate/identity.json') -Raw | ConvertFrom-Json
+          $exe=Join-Path $cache 'candidate/candidate.exe'
+          if($identity.source -cne $source -or $identity.tree -cne '2a36d4c7af8ee00c27f950151f3ace8152fb72ed' -or $identity.sha256 -cne 'e42a1005193c54b08fba8c6f65f88757900f6bc400d4c350b0b386453406fa66' -or $identity.bytes -ne 7889408 -or (Get-FileHash $exe -Algorithm SHA256).Hash.ToLowerInvariant() -cne $identity.sha256 -or (Get-Item $exe).Length -ne $identity.bytes){throw 'Frozen sidebar executable identity mismatch'}
+          Copy-Item (Join-Path $cache 'candidate/*') ../evidence/candidate/ -Force
+          # Preserve original candidate identity; HEAD identifies only the corrected harness.
+          Copy-Item (Join-Path $cache 'input-manifest.json') ../evidence/input-manifest.json -Force
+          [ordered]@{harness_source=(git rev-parse HEAD).Trim();candidate_source=$source;candidate_tree=$identity.tree;candidate_sha256=$identity.sha256;artifact_id=12137628254;archive_sha256=$archiveHash;rebuild=$false;baseline_kind='Measurement-only current-minimizer line';same_exe_logging_on_off=$true;settled_pairs=3;rapid_pairs=1;planned_rows=16;previous_run='39131158385: no sidebar sample launched due to nested forced-module import';stop='Fixed cohort, retain every failure; no retries/repair; identity/isolation failure blocks later lanes';scope='First B-open and retained resource/count baseline, not an optimization comparison or input correctness result'} | ConvertTo-Json | Set-Content ../evidence/sidebar-provenance.json
       - name: Bounded native actual-module and HTML activation validity pass
         id: validity
         working-directory: candidate

@@ -1,6 +1,10 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference='Stop'
+Import-Module "$PSScriptRoot/measurements.psm1" -Force
+$beforeResolve=(Get-Command Resolve-BowserExecutable -ErrorAction Stop).ScriptBlock
 Import-Module "$PSScriptRoot/sidebar-lifecycle.psm1" -Force
+if((Get-Command Resolve-BowserExecutable -ErrorAction Stop).ScriptBlock -ne $beforeResolve){throw 'Sidebar import replaced caller measurement exports'}
+foreach($command in @('Get-ProcessInventory','Get-ProcessGroupSnapshot','Get-MeasurementInputHashes','Assert-MeasurementInputHashesUnchanged')){Get-Command $command -ErrorAction Stop | Out-Null}
 function Check($value,$name){if(-not $value){throw "Failed: $name"}}
 function Row($event,$request=0,$app=0,$success='') {[pscustomobject]@{event=$event;navigation_id=[string]$request;tab_id=[string]$app;success=$success;count='1';view='webapps'}}
 $environment=@((Row webapp_environment_requested),(Row webapp_environment_callback 0 0 true),(Row webapp_environment_begin_result 0 0 true),(Row webapp_environment_configure_result 0 0 true))
