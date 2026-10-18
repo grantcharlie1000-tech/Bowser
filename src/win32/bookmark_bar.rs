@@ -16,7 +16,7 @@ use windows::{
         Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
         System::LibraryLoader::GetModuleHandleW,
         UI::WindowsAndMessaging::{
-            CreateWindowExW, DefWindowProcW, DestroyWindow, GetCursorPos, IsWindow, IsWindowVisible, RegisterClassW, SetWindowPos, ShowWindow, HWND_TOP,
+            CreateWindowExW, DefWindowProcW, DestroyWindow, GetCursorPos, IsWindow, RegisterClassW, SetWindowPos, ShowWindow, HWND_TOP,
             SWP_NOACTIVATE, SWP_SHOWWINDOW, SW_HIDE, WNDCLASSW, WS_CHILD, WS_CLIPCHILDREN, WS_CLIPSIBLINGS,
         },
     },
@@ -57,7 +57,6 @@ struct Runtime {
     ready: bool,
     failed: bool,
     shown: Option<RECT>,
-    memory: Rc<RefCell<BarMemoryPolicy>>,
     /// Last theme state and snapshot the page accepted.
     state: Option<String>,
     snapshot: Option<String>,
@@ -65,60 +64,6 @@ struct Runtime {
     built: Option<BuiltFrom>,
     /// Domains of tab groups seen live, for "pin new tab groups".
     seen_groups: Option<HashSet<String>>,
-}
-
-/// Optional hints favor NORMAL over a reentrant LOW opportunity. A reveal during LOW
-/// latches one restoration attempt; there is never a retry loop or deferred LOW action.
-#[derive(Default)]
-struct BarMemoryPolicy {
-    may_be_low: bool,
-    busy: bool,
-    restore: bool,
-    closed: bool,
-}
-
-fn request_memory_target(memory: &Rc<RefCell<BarMemoryPolicy>>, low: bool, mut apply: impl FnMut(bool) -> Option<bool>) {
-    {
-        let mut policy = memory.borrow_mut();
-        if policy.closed { return; }
-        if policy.busy {
-            if !low { policy.restore = true; }
-            return;
-        }
-        if low == policy.may_be_low { return; }
-        policy.busy = true;
-        policy.restore = false;
-        // A failed setter is not cached as success; a later reveal still attempts NORMAL.
-        if low { policy.may_be_low = true; }
-    }
-    let result = apply(low); // No runtime/host/policy RefCell borrow spans COM.
-    let restore = {
-        let mut policy = memory.borrow_mut();
-        if (!low && result == Some(true)) || (low && result == Some(false)) { policy.may_be_low = false; }
-        low && policy.restore && !policy.closed
-    };
-    if restore {
-        // NORMAL dominates even if a second hide reentered the original LOW call.
-        let restored = apply(false);
-        if restored == Some(true) { memory.borrow_mut().may_be_low = false; }
-    }
-    let mut policy = memory.borrow_mut();
-    policy.restore = false;
-    policy.busy = false;
-}
-
-fn memory_target(owner: HWND, low: bool) -> bool {
-    let pair = RUNTIMES.with(|all| {
-        let all = all.try_borrow().ok()?;
-        let runtime = all.get(&(owner.0 as isize))?;
-        Some((runtime.memory.clone(), runtime.host.clone()?))
-    });
-    if let Some((memory, host)) = pair {
-        request_memory_target(&memory, low, |target| host.set_bookmark_bar_memory_low(target).ok());
-        !memory.borrow().closed
-    } else {
-        false
-    }
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -288,7 +233,6 @@ fn queue(owner: HWND, action: BarAction) {
 pub(crate) fn close(owner: HWND) {
     let removed = RUNTIMES.with(|runtimes| runtimes.try_borrow_mut().ok().and_then(|mut all| all.remove(&(owner.0 as isize))));
     if let Some(runtime) = removed {
-        runtime.memory.borrow_mut().closed = true;
         if let Some(host) = runtime.host {
             host.close();
         }
@@ -452,40 +396,23 @@ pub(crate) fn sync(owner: HWND, app: &AppRef) {
         return; // the relayout runs this again with the room in place
     }
     if reserve.0 == 0 {
-        let new_tab_navigation_hidden = App::settings(app).bookmarks_bar == BookmarksBar::NewTab
-            && !App::tab_is_blank(app, App::active_tab_id(app));
-        hide(owner, new_tab_navigation_hidden);
+        hide(owner);
         return;
     }
     ensure_host(owner);
-    let Some((host, container, ready, memory)) = with(owner, |rt| (rt.host.clone(), rt.container, rt.ready && !rt.failed, rt.memory.clone())) else { return };
+    let Some((host, container, ready)) = with(owner, |rt| (rt.host.clone(), rt.container, rt.ready && !rt.failed)) else { return };
     let (Some(host), Some(container), true) = (host, container, ready) else { return };
     let Some(viewport) = super::window::page_viewport(owner) else { return };
     let mut rect = if reserve.1 { RECT { left: viewport.left, top: viewport.bottom, right: viewport.right, bottom: viewport.bottom + reserve.0 } } else { RECT { left: viewport.left, top: viewport.top - reserve.0, right: viewport.right, bottom: viewport.top } };
     // --- auto-hide (T11) --- auto-hide has the bar out of the layout: it floats where it would sit, and only while revealed.
     if let Some((float, revealed)) = super::window::bookmark_bar_placement(owner) {
         if !revealed {
-            hide(owner, false);
+            hide(owner);
             return;
         }
         rect = float;
     }
     // --- end auto-hide ---
-    // Restore even if the setting changed since a previous NewTab navigation-hide.
-    if with(owner, |runtime| runtime.shown.is_none()).unwrap_or(false) && !memory_target(owner, false) {
-        return; // The optional call reentered close: do not revive the retired container.
-    }
-    // The optional COM call may have reentered navigation/settings/layout/close. Never let
-    // this older sync revive a hidden/replaced host or apply its stale presentation afterward.
-    let same_runtime = RUNTIMES.with(|all| all.try_borrow().ok().and_then(|all| {
-        all.get(&(owner.0 as isize)).map(|runtime| runtime.ready && !runtime.failed
-            && runtime.container == Some(container) && Rc::ptr_eq(&runtime.memory, &memory))
-    })).unwrap_or(false);
-    let current_dpi = super::window::split_px(owner, 96).max(96) as u32;
-    if !reveal_is_current(same_runtime, current_dpi == dpi, reserve_px(app, current_dpi) == reserve,
-        rect, current_reveal_rect(owner, app, current_dpi)) {
-        return;
-    }
     let state = super::window::split_host_state(owner, App::settings_accent(app));
     if with(owner, |rt| rt.state.as_deref() != Some(state.as_str())).unwrap_or(false) && host.post_json(&state).is_ok() {
         let _ = with(owner, |rt| rt.state = Some(state));
@@ -511,43 +438,17 @@ pub(crate) fn sync(owner: HWND, app: &AppRef) {
     }
 }
 
-fn reveal_is_current(same_runtime: bool, same_dpi: bool, same_reserve: bool, expected: RECT, current: Option<RECT>) -> bool {
-    same_runtime && same_dpi && same_reserve && current == Some(expected)
-}
-
-/// Read-only desired presentation, recalculated after the optional memory COM call.
-fn current_reveal_rect(owner: HWND, app: &AppRef, dpi: u32) -> Option<RECT> {
-    let reserve = reserve_px(app, dpi);
-    if reserve.0 == 0 { return None; }
-    let viewport = super::window::page_viewport(owner)?;
-    let rect = if reserve.1 {
-        RECT { left: viewport.left, top: viewport.bottom, right: viewport.right, bottom: viewport.bottom + reserve.0 }
-    } else {
-        RECT { left: viewport.left, top: viewport.top - reserve.0, right: viewport.right, bottom: viewport.top }
-    };
-    match super::window::bookmark_bar_placement(owner) {
-        Some((floating, true)) => Some(floating),
-        Some((_, false)) => None,
-        None => Some(rect),
-    }
-}
-
-fn hide(owner: HWND, navigation_hidden: bool) {
+fn hide(owner: HWND) {
     let Some((host, container, shown)) = with(owner, |rt| (rt.host.clone(), rt.container, rt.shown.take())) else { return };
     if shown.is_none() {
         return;
     }
-    let hidden = host.as_ref().is_some_and(|host| host.set_visible(false).is_ok());
+    if let Some(host) = host {
+        let _ = host.set_visible(false);
+    }
     if let Some(container) = container {
         unsafe {
             let _ = ShowWindow(container, SW_HIDE);
-        }
-        // Auto-hide/Always mode is outside this experiment. Reentrant show/close is not a LOW target.
-        let still_hidden = RUNTIMES.with(|all| all.try_borrow().ok().and_then(|all| {
-            all.get(&(owner.0 as isize)).map(|runtime| runtime.shown.is_none())
-        })).unwrap_or(false);
-        if navigation_hidden && hidden && still_hidden && !unsafe { IsWindowVisible(container) }.as_bool() {
-            let _ = memory_target(owner, true);
         }
     }
 }
@@ -798,90 +699,6 @@ fn anchor(owner: HWND, rect: HoverRect) -> Option<POINT> {
     let scale = super::window::split_px(owner, 96) as f32 / 96.0;
     let element = super::html_hover::anchor_to_screen(screen, scale, rect);
     Some(POINT { x: element.left, y: element.bottom + (2.0 * scale).round() as i32 })
-}
-
-#[cfg(test)]
-mod memory_tests {
-    use super::{BarMemoryPolicy, request_memory_target};
-    use std::{cell::RefCell, rc::Rc};
-
-    #[test]
-    fn stale_reveal_after_optional_com_is_abandoned_for_hide_layout_or_replacement() {
-        use windows::Win32::Foundation::RECT;
-        let rect = RECT { left: 1, top: 2, right: 100, bottom: 30 };
-        assert!(super::reveal_is_current(true, true, true, rect, Some(rect)));
-        assert!(!super::reveal_is_current(true, true, true, rect, None), "Reentrant navigation/auto-hide");
-        assert!(!super::reveal_is_current(false, true, true, rect, Some(rect)), "Closed or replaced runtime");
-        assert!(!super::reveal_is_current(true, false, true, rect, Some(rect)), "DPI changed");
-        assert!(!super::reveal_is_current(true, true, false, rect, Some(rect)), "Settings/reserved space changed");
-        assert!(!super::reveal_is_current(true, true, true, rect, Some(RECT { bottom: 31, ..rect })), "Layout changed");
-    }
-
-    #[test]
-    fn first_show_has_no_hint_and_repeated_transitions_are_deduplicated() {
-        let memory = Rc::new(RefCell::new(BarMemoryPolicy::default()));
-        let mut calls = Vec::new();
-        for low in [false, false, true, true, false, false] {
-            request_memory_target(&memory, low, |target| { calls.push(target); Some(true) });
-        }
-        assert_eq!(calls, [true, false]);
-        assert!(!memory.borrow().may_be_low);
-    }
-
-    #[test]
-    fn reentrant_reveal_dominates_another_hide_without_retrying_low() {
-        let memory = Rc::new(RefCell::new(BarMemoryPolicy::default()));
-        let mut calls = Vec::new();
-        request_memory_target(&memory, true, |target| {
-            calls.push(target);
-            request_memory_target(&memory, false, |_| panic!("No nested COM"));
-            request_memory_target(&memory, true, |_| panic!("No nested COM"));
-            Some(true)
-        });
-        assert_eq!(calls, [true, false]);
-        assert!(!memory.borrow().may_be_low);
-    }
-
-    #[test]
-    fn hide_during_normal_never_schedules_low_after_reveal() {
-        let memory = Rc::new(RefCell::new(BarMemoryPolicy { may_be_low: true, ..Default::default() }));
-        let mut calls = Vec::new();
-        request_memory_target(&memory, false, |target| {
-            calls.push(target);
-            request_memory_target(&memory, true, |_| panic!("No nested COM"));
-            Some(true)
-        });
-        assert_eq!(calls, [false]);
-        assert!(!memory.borrow().may_be_low);
-    }
-
-    #[test]
-    fn unsupported_and_failed_hints_do_not_cache_success_or_block_later_transition() {
-        let memory = Rc::new(RefCell::new(BarMemoryPolicy::default()));
-        request_memory_target(&memory, true, |_| Some(false));
-        assert!(!memory.borrow().may_be_low);
-        request_memory_target(&memory, true, |_| None);
-        assert!(memory.borrow().may_be_low, "Failure remains unknown, not successfully normal");
-        request_memory_target(&memory, false, |_| None);
-        assert!(memory.borrow().may_be_low);
-        request_memory_target(&memory, false, |_| Some(true));
-        assert!(!memory.borrow().may_be_low);
-    }
-
-    #[test]
-    fn close_during_hint_never_restores_or_recreates_retired_state() {
-        let memory = Rc::new(RefCell::new(BarMemoryPolicy::default()));
-        let mut calls = Vec::new();
-        request_memory_target(&memory, true, |target| {
-            calls.push(target);
-            request_memory_target(&memory, false, |_| panic!("No nested COM"));
-            memory.borrow_mut().closed = true;
-            Some(true)
-        });
-        request_memory_target(&memory, false, |_| panic!("No work after close"));
-        assert_eq!(calls, [true]);
-        assert!(!memory.borrow().busy);
-    }
 }
 
 #[cfg(test)]

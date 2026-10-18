@@ -1,4 +1,4 @@
-name: Production performance comparison
+name: Performance restoration checks
 on:
   push:
     branches: ['performance/post-ui']
@@ -38,31 +38,35 @@ concurrency:
 jobs:
   baseline:
     runs-on: windows-2025
-    timeout-minutes: 20
+    timeout-minutes: 45
     defaults:
       run:
         shell: pwsh
+        working-directory: candidate
     steps:
       - name: Preserve fingerprinted bytes
+        working-directory: ${{ github.workspace }}
         run: git config --global core.autocrlf false
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           persist-credentials: false
           path: candidate
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
-      - name: Verify exact comparison harness and unchanged tested product
+      - name: Verify restored original product source
         working-directory: candidate
         env:
           EVENT_SOURCE: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           if((git rev-parse HEAD).Trim() -cne $env:EVENT_SOURCE){throw 'Unexpected source/merge checkout'}
-          git fetch --no-tags --depth=1 origin bc97fc4fd0f6b8058700499b7d04897aa139c096 19606fc644a23c07db49faeae0b5d13497784649
-          if($LASTEXITCODE -ne 0){throw 'Cannot fetch immutable product/reference identities'}
-          $allowed=@('.github/workflows/production-performance.yml','benchmarks/production-baseline.ps1','benchmarks/bookmark-bar-analyze.py','benchmarks/test-bookmark-bar-analyze.py','benchmarks/test-bookmark-bar-lifecycle.ps1','benchmarks/bookmark-bar-lifecycle.md')
-          $changed=@(git diff --name-only bc97fc4fd0f6b8058700499b7d04897aa139c096 HEAD)
-          if($LASTEXITCODE -ne 0 -or @($changed|Where-Object {$_ -cnotin $allowed}).Count){throw 'Unexpected change outside six-file comparison harness'}
-          git diff --exit-code bc97fc4fd0f6b8058700499b7d04897aa139c096 HEAD -- src ui Cargo.toml Cargo.lock build.rs benchmarks/bookmark-bar-lifecycle.psm1 benchmarks/sidebar-input.psm1 benchmarks/measurements.psm1
-          if($LASTEXITCODE -ne 0){throw 'Candidate/source/actions/resource sampling drifted'}
+          git fetch --no-tags --depth=1 origin 19606fc644a23c07db49faeae0b5d13497784649 a7fa3ef916eacf4df3ffa8c2db565382720d861f
+          if($LASTEXITCODE -ne 0){throw 'Cannot fetch immutable restoration/experiment identities'}
+          $allowed=@('.github/workflows/production-performance.yml','benchmarks/bookmark-bar-lifecycle.md','src/chrome_host/host.rs','src/win32/bookmark_bar.rs')
+          $changed=@(git diff --name-only a7fa3ef916eacf4df3ffa8c2db565382720d861f HEAD)
+          if($LASTEXITCODE -ne 0 -or @($changed|Where-Object {$_ -cnotin $allowed}).Count){throw 'Unexpected change outside bounded hint revert'}
+          git diff --exit-code 19606fc644a23c07db49faeae0b5d13497784649 HEAD -- src ui Cargo.toml Cargo.lock build.rs
+          if($LASTEXITCODE -ne 0){throw 'Original product source/build inputs not restored exactly'}
+          git diff --exit-code a7fa3ef916eacf4df3ffa8c2db565382720d861f HEAD -- benchmarks ':!benchmarks/bookmark-bar-lifecycle.md'
+          if($LASTEXITCODE -ne 0){throw 'Benchmark tools changed during product revert'}
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: '22'
@@ -91,67 +95,127 @@ jobs:
           if($LASTEXITCODE -ne 0){throw 'Native detail contracts failed'}
           node --check benchmarks/scripts/production-fixture-server.mjs
           if($LASTEXITCODE -ne 0){throw 'Fixture syntax failed'}
-      - name: Preserve independently pinned reference and successful bar candidate
-        id: inputs
-        working-directory: candidate
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: Parse native smoke script before running checks
         run: |
-          $headers=@{Authorization="Bearer $env:GH_TOKEN";Accept='application/vnd.github+json';'X-GitHub-Api-Version'='2022-11-28'}
-          $run=Invoke-RestMethod -Headers $headers -Uri 'https://api.github.com/repos/grantcharlie1000-tech/Bowser/actions/runs/39153558625'
-          if($run.head_sha -cne 'bc97fc4fd0f6b8058700499b7d04897aa139c096' -or $run.status -cne 'completed' -or $run.conclusion -cne 'success'){throw 'Candidate correctness run is not successful'}
-          $zip=Join-Path $env:RUNNER_TEMP 'bar-correctness.zip'
-          Invoke-WebRequest -Headers $headers -Uri 'https://api.github.com/repos/grantcharlie1000-tech/Bowser/actions/artifacts/12146077234/zip' -OutFile $zip
-          if((Get-FileHash $zip -Algorithm SHA256).Hash.ToLowerInvariant() -cne '129643ae002de1dfbe92e4541cfc231b538b62f78bd7ec3560f0c2ac5951eb75'){throw 'Pinned candidate archive mismatch'}
-          $cache=Join-Path $env:RUNNER_TEMP 'bar-correctness';Expand-Archive -LiteralPath $zip -DestinationPath $cache
-          New-Item -ItemType Directory -Force ../evidence|Out-Null
-          Copy-Item (Join-Path $cache 'frozen'),(Join-Path $cache 'bookmark-reference'),(Join-Path $cache 'candidate') ../evidence/ -Recurse
-          $reference=Get-Content ../evidence/bookmark-reference/identity.json -Raw|ConvertFrom-Json
-          $candidate=Get-Content ../evidence/candidate/identity.json -Raw|ConvertFrom-Json
-          if($reference.source -cne '19606fc644a23c07db49faeae0b5d13497784649' -or $reference.tree -cne 'cf214f415f80b408a0bbe7f16b990b3a34f7c55e' -or $reference.bytes -ne 7938560 -or $reference.sha256 -cne '0799cb5151c27a1e0476519a3b2919ccd5e6b2503160e70da5c21a8eb500be8e' -or (Get-Item ../evidence/bookmark-reference/candidate.exe).Length -ne $reference.bytes -or (Get-FileHash ../evidence/bookmark-reference/candidate.exe -Algorithm SHA256).Hash.ToLowerInvariant() -cne $reference.sha256){throw 'Exact reference binary/source mismatch'}
-          if($candidate.source -cne 'bc97fc4fd0f6b8058700499b7d04897aa139c096' -or $candidate.tree -cne 'b45402eb26d1eee6a526c6d858ebb2a1780a551e' -or $candidate.bytes -ne 7940096 -or $candidate.sha256 -cne '3e055342bd07299637a492e0d43edbf86776a78868fbda5c8df442df7aa2a281' -or (Get-Item ../evidence/candidate/candidate.exe).Length -ne $candidate.bytes -or (Get-FileHash ../evidence/candidate/candidate.exe -Algorithm SHA256).Hash.ToLowerInvariant() -cne $candidate.sha256){throw 'Exact candidate binary/source mismatch'}
-          if($candidate.toolchain -cne $reference.toolchain -or $candidate.features -cne $reference.features -or $candidate.features -cne 'html-chrome-default'){throw 'Matched toolchain/features mismatch'}
-          $manifest=[ordered]@{baseline='d0075f2807fd94000cb51ace647eaf335c71ab37c8302a91f0a52d3380dbe0fa';diagnostic=$reference.sha256;release='341486070d2e74cf9a9e5d5fbeffa90c7dd2ec4fd36bc284a8a3878a7a9bcec1';candidate=$candidate.sha256}
-          foreach($item in @(@('baseline','../evidence/frozen/untouched-main.exe'),@('release','../evidence/frozen/released-v0.0.19.exe'))){if((Get-FileHash $item[1] -Algorithm SHA256).Hash.ToLowerInvariant() -cne $manifest[$item[0]]){throw 'Untouched frozen role mismatch'}}
-          $manifest|ConvertTo-Json|Set-Content ../evidence/input-manifest.json
-          [ordered]@{harness_source=(git rev-parse HEAD).Trim();harness_tree=(git rev-parse 'HEAD^{tree}').Trim();candidate=$candidate;reference=$reference;artifact=12146077234;archive_sha256='129643ae002de1dfbe92e4541cfc231b538b62f78bd7ec3560f0c2ac5951eb75';scope='Fresh runner, frozen19606 reference vs actual successful bar candidate, identical detailOFF40 planned rows; no rebuild/primary metric reuse or gain acceptance'}|ConvertTo-Json -Depth 8|Set-Content ../evidence/bookmark-bar-provenance.json
-      - name: Forty planned alternating matched bar rows, detail OFF
-        working-directory: candidate
-        run: |
-          ./benchmarks/production-baseline.ps1 -BaselineExe ../evidence/frozen/untouched-main.exe -DiagnosticExe ../evidence/bookmark-reference/candidate.exe -DiagnosticSource '19606fc644a23c07db49faeae0b5d13497784649' -ReleaseExe ../evidence/frozen/released-v0.0.19.exe -CandidateExe ../evidence/candidate/candidate.exe -CandidateSource 'bc97fc4fd0f6b8058700499b7d04897aa139c096' -DiagnosticAutoUpdateOff -ExpectedInputManifest ../evidence/input-manifest.json -BookmarkBarPilot -BookmarkBarCompare -StartupOnly -PositiveOnly -Fixtures light -MeasurementMode timing -MaxInvalidSamples 20 -Pairs 10 -Out ../evidence/bookmark-bar-comparison
-      - name: Analyze every retained pair, keep semantic and metric failures excluded
-        if: ${{ !cancelled() && steps.inputs.outcome == 'success' }}
-        working-directory: candidate
-        run: |
-          python benchmarks/bookmark-bar-analyze.py ../evidence/bookmark-bar-comparison
-          if($LASTEXITCODE -ne 0){throw 'Matched analysis failed; retain all raw evidence'}
-          $report=Get-Content ../evidence/bookmark-bar-comparison/bookmark-bar-analysis.json -Raw|ConvertFrom-Json
-          $environment=Get-Content ../evidence/bookmark-bar-comparison/environment.json -Raw|ConvertFrom-Json
-          if(-not $environment.workload_settings.bookmark_bar_compare -or $environment.workload_settings.bookmark_bar_hint_detail -or $environment.pairs -ne 10){throw 'Primary comparison workload/detail mismatch'}
-          if($report.row_count -ne 40 -or $report.valid_count -ne 40 -or $report.eligible_count -ne 40){throw 'Fixed matched cohort incomplete; failures remain excluded, no replacement samples'}
-          foreach($condition in @('fresh','reused')){
-            foreach($metric in @('phase_bar-warm-hidden_private_bytes','first_reveal_proxy_ms','warm_reveal_proxy_ms')){
-              $matches=@($report.paired_comparisons|Where-Object {$_.condition -ceq $condition -and $_.metric -ceq $metric})
-              if($matches.Count -ne 1 -or $matches[0].valid_pair_count -ne 10 -or @($matches[0].all_pairs|Where-Object {-not $_.included}).Count){throw 'Ten valid matched pairs required for each primary/regression metric and profile condition'}
-            }
+          $tokens = $null
+          $parseErrors = $null
+          foreach ($script in @('verify-release-candidate.ps1', 'test-native-theme-flow.ps1')) {
+            [System.Management.Automation.Language.Parser]::ParseFile(
+              (Join-Path $pwd "benchmarks/scripts/$script"),
+              [ref]$tokens, [ref]$parseErrors) | Out-Null
+            if ($parseErrors.Count -gt 0) { $parseErrors | Format-List; throw "$script does not parse." }
           }
-          # Numerical results are evidence only, never an automatic gain/interaction/release acceptance.
-      - name: Preserve immutable inputs and every bar observation/failure
+      - name: Install official Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --component clippy
+          if ($LASTEXITCODE -ne 0) { throw 'Rust toolchain installation failed.' }
+          rustc +stable --version
+          cargo +stable --version
+      - name: Diagnose focused native theme persistence before aggregate tests
+        timeout-minutes: 15
+        run: ./benchmarks/scripts/test-native-theme-flow.ps1
+      - name: Save focused Rust logs and timeout process evidence
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: production-performance-${{ github.event.pull_request.head.sha || github.sha }}
-          path: |
-            evidence/frozen/
-            evidence/candidate/
-            evidence/bookmark-reference/
-            evidence/input-manifest.json
-            evidence/bookmark-bar-provenance.json
-            evidence/native-isolation-blocked.json
-            evidence/bookmark-bar-comparison/*.json
-            evidence/bookmark-bar-comparison/*.csv
-            evidence/bookmark-bar-comparison/*.png
-            evidence/bookmark-bar-comparison/*stderr.txt
-            evidence/bookmark-bar-comparison/isolated/requests.jsonl
+          name: native-theme-diagnostics-${{ github.sha }}
+          path: ${{ runner.temp }}/bowser-theme-tests/
           if-no-files-found: warn
-          retention-days: 30
+          retention-days: 14
+      - name: Test default native Windows source
+        timeout-minutes: 10
+        run: cargo +stable test --locked
+      - name: Test shipping HTML-default Windows source
+        timeout-minutes: 10
+        run: cargo +stable test --locked --features html-chrome-default
+      - name: Check Windows source with Clippy
+        run: cargo +stable clippy --locked --features html-chrome-default -- -D warnings
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: candidate/ui/package-lock.json
+      - name: Install locked UI dependencies
+        working-directory: candidate/ui
+        run: npm ci --no-audit --no-fund
+      - name: Typecheck UI
+        working-directory: candidate/ui
+        run: npm run typecheck
+      - name: Lint UI
+        working-directory: candidate/ui
+        run: npm run lint
+      - name: Require Edge for browser-backed regression tests
+        run: |
+          $edge = @(
+            'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe',
+            'C:/Program Files/Microsoft/Edge/Application/msedge.exe'
+          ) | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $edge) { throw 'Microsoft Edge is required; browser-backed suites must not silently skip.' }
+          "BOWSER_TEST_EDGE=$edge" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+      - name: Check isolated CJK reader baseline (unchanged budget)
+        working-directory: candidate/ui
+        run: |
+          node --test --test-concurrency=1 --test-name-pattern="reader: article-cjk.html" test/reader.mjs
+      - name: Test UI
+        working-directory: candidate/ui
+        run: npm test
+      - name: Test shipped Shield extension
+        run: node --test extensions/bowser-shield/test/run-tests.js
+      - name: Rebuild embedded UI
+        working-directory: candidate/ui
+        run: npm run build
+      - name: Verify committed UI is reproducible
+        run: |
+          git diff --exit-code -- ui/src/icons.gen.ts ui/dist ui/dist.manifest
+          if ($LASTEXITCODE -ne 0) { throw 'Rebuilt UI differs from committed source/assets.' }
+      - name: Build release candidate
+        run: cargo +stable build --release --locked --bin bowser --features html-chrome-default
+      - name: Smoke exact native release executable in isolated profile
+        run: pwsh -NoProfile -File benchmarks/scripts/verify-release-candidate.ps1 -Out "$env:RUNNER_TEMP/bowser-release-smoke"
+      - name: Save native smoke evidence even on failure
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: bowser-native-smoke-${{ github.sha }}
+          path: ${{ runner.temp }}/bowser-release-smoke/
+          if-no-files-found: warn
+          retention-days: 14
+      - name: Record immutable build identity
+        run: |
+          New-Item -ItemType Directory -Force release-candidate | Out-Null
+          Copy-Item target/release/bowser.exe release-candidate/Bowser.exe
+          $file = Get-Item release-candidate/Bowser.exe
+          $hash = (Get-FileHash $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+          $source = (git rev-parse HEAD).Trim()
+          $smokePath = Join-Path $env:RUNNER_TEMP 'bowser-release-smoke/native-smoke.json'
+          $smoke = Get-Content $smokePath -Raw | ConvertFrom-Json
+          if ($smoke.status -cne 'passed_bounded_native_smoke' -or $smoke.source_commit -cne $source -or $smoke.executable_sha256 -cne $hash) {
+            throw 'Native smoke evidence does not match the candidate.'
+          }
+          Copy-Item $smokePath release-candidate/native-smoke.json
+          $metadata = [ordered]@{
+            commit = $source
+            workflow_sha = $env:GITHUB_SHA
+            run_id = $env:GITHUB_RUN_ID
+            run_attempt = $env:GITHUB_RUN_ATTEMPT
+            asset = 'Bowser.exe'
+            sha256 = $hash
+            bytes = $file.Length
+            features = 'html-chrome-default'
+            smoke_report_sha256 = (Get-FileHash $smokePath -Algorithm SHA256).Hash.ToLowerInvariant()
+            smoke_status = $smoke.status
+            rustc = (rustc +stable --version)
+            built_at_utc = (Get-Date).ToUniversalTime().ToString('o')
+            published = $false
+          }
+          $metadata | ConvertTo-Json | Set-Content -Encoding utf8 release-candidate/build-metadata.json
+          "$hash  Bowser.exe" | Set-Content -Encoding ascii release-candidate/SHA256SUMS.txt
+      - name: Save verified release candidate (not a publication)
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: restored-bowser-windows-${{ github.event.pull_request.head.sha || github.sha }}
+          path: candidate/release-candidate/
+          if-no-files-found: error
+          retention-days: 14
+
+      # No hint experiment or resource cohort follows these restoration gates.
