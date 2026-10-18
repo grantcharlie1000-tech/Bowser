@@ -26,10 +26,14 @@ pub(crate) fn run_stack_site(cx: &Context) {
 }
 
 pub(crate) fn run_stack_all_by_site(cx: &Context) {
-    match App::stack_all_by_site(cx.app) {
+    let (count, target) = App::stack_all_by_site_for_editor(cx.app);
+    match count {
         0 => toast(cx.hwnd, "No site has two tabs to stack"),
         1 => toast(cx.hwnd, "1 stack made"),
         count => toast(cx.hwnd, &format!("{count} stacks made")),
+    }
+    if let Some(id) = target {
+        stack_made(cx.hwnd, cx.app, id);
     }
 }
 
@@ -184,7 +188,9 @@ pub(super) fn tab_menu_pick(hwnd: HWND, app: &AppRef, id: TabId, command: usize)
     match command {
         STACK_SITE => stack_site(hwnd, app, id),
         STACK_ALL => {
-            let _ = App::stack_all_by_site(app);
+            if let (_, Some(target)) = App::stack_all_by_site_for_editor(app) {
+                stack_made(hwnd, app, target);
+            }
         }
         STACK_EDIT => super::window::open_stack_editor(hwnd, app, id),
         STACK_PIN => {

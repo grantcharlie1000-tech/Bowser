@@ -280,6 +280,8 @@ export interface SetTextMsg {
   readonly t: 'setText';
   readonly text: string;
   readonly select: boolean;
+  /** `minimal_url`: the full address the focused field holds, when it differs from `text`. */
+  readonly full?: string;
 }
 export interface FocusOmniboxMsg {
   readonly t: 'focusOmnibox';
@@ -347,6 +349,8 @@ export interface SearchFieldMsg {
   readonly engine: number;
   readonly engines: readonly FieldEngine[];
 }
+/** A search-field drop-down row was picked with the mouse and its search ran (Rust `SEARCH_DONE_JSON`). */
+export interface SearchDoneMsg { readonly t: 'sdone' }
 /** Most engines the search field lists (Rust `MAX_FIELD_ENGINES`). */
 export const MAX_FIELD_ENGINES = 40;
 function parseAddr(raw: Record<string, unknown>): AddrMsg | null {
@@ -614,6 +618,7 @@ export type Inbound =
   | ExtButtonMsg // --- extensions ---
   | AddrMsg // --- address bar, search and bookmarks ---
   | SearchFieldMsg
+  | SearchDoneMsg
   // --- split view ---
   | SplitInbound
   // --- end split view ---
@@ -1186,6 +1191,8 @@ export function parseInbound(data: unknown): Inbound | null {
       return parseAddr(raw);
     case 'sfield':
       return parseSearchField(raw);
+    case 'sdone':
+      return hasOnlyKeys(raw, ['v', 't']) && raw.v === 1 ? { t: 'sdone' } : null;
     // --- end address bar, search and bookmarks ---
     // --- end downloads ---
     // --- split view ---
@@ -1272,9 +1279,10 @@ export function parseInbound(data: unknown): Inbound | null {
       };
     }
     case 'setText': {
-      const { text, select } = raw;
+      const { text, select, full } = raw;
       if (typeof text !== 'string' || !isBool(select)) return null;
-      return { t: 'setText', text: truncateCodePoint(text, MAX_TEXT), select };
+      if (full !== undefined && typeof full !== 'string') return null;
+      return { t: 'setText', text: truncateCodePoint(text, MAX_TEXT), select, ...(typeof full === 'string' ? { full: truncateCodePoint(full, MAX_TEXT) } : {}) };
     }
     case 'focusOmnibox': {
       const { select } = raw;

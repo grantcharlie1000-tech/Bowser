@@ -742,8 +742,10 @@ fn show_card(owner: HWND, app: &AppRef, tab: TabId, anchor: RECT) {
 
 /// Theme state for a popup. Hover cards and tooltips use the opaque palette; the omnibox suggestions
 /// are the pill grown downward, so they take the toolbar's own palette (focus ring colour and fill)
-/// and the ring and material run on from the pill without a colour change.
-fn theme_json(like_toolbar: bool) -> String {
+/// and the ring and material run on from the pill without a colour change. `text` is the owner's
+/// `font_size` x `ui_zoom` and `ui_font` ([`text_prefs`]), so the suggestion titles keep the pill's
+/// text size and face, and tooltips and cards follow the text size as every other surface does.
+fn theme_json(like_toolbar: bool, text: (u32, String)) -> String {
     let palette = if like_toolbar { glass::palette() } else { theme::palette(glass::appearance(), true) };
     ViewState {
         scale: 1.0,
@@ -767,8 +769,8 @@ fn theme_json(like_toolbar: bool) -> String {
         private: false,
         reader: crate::reader::Pill::Hidden,
         translate: crate::translate::Pill::Hidden,
-        font_scale: 100,
-        ui_font: String::new(),
+        font_scale: text.0,
+        ui_font: text.1,
         density: crate::layout_prefs::UiDensity::Regular, // --- layout (thread T6) ---
         compact_menus: false,
         look: crate::window_prefs::Look::default(), // --- window and panels (thread T9) ---
@@ -778,12 +780,21 @@ fn theme_json(like_toolbar: bool) -> String {
     .to_json()
 }
 
+/// The owner window's text size (`font_size` x `ui_zoom`, as the toolbar's `fontScale`) and
+/// `ui_font`; Bowser's defaults when the window has no app.
+fn text_prefs(owner: HWND) -> (u32, String) {
+    app_of(owner).map_or((100, String::new()), |app| {
+        let settings = App::settings(&app);
+        (crate::layout_prefs::chrome_scale_percent(&settings), settings.ui_font)
+    })
+}
+
 /// Posts `content` with a fresh token. The layer is placed and shown when the page replies `size`.
 fn present(owner: HWND, content: Content, anchor: RECT) -> bool {
     let Some(host) = ready_host(owner) else {
         return false;
     };
-    let state = theme_json(matches!(content, Content::Suggest { .. }));
+    let state = theme_json(matches!(content, Content::Suggest { .. }), text_prefs(owner));
     let Some((window, tok, json, post_state, closed_suggest)) = with_layer(owner, |layer| {
         let tok = layer.next_tok;
         layer.next_tok = layer.next_tok.wrapping_add(1).max(1);
@@ -1835,6 +1846,19 @@ mod tests {
 
     fn tuple(r: RECT) -> (i32, i32, i32, i32) {
         (r.left, r.top, r.right, r.bottom)
+    }
+
+    #[test]
+    fn the_hover_state_carries_the_owners_text_size_and_face() {
+        for like_toolbar in [true, false] {
+            let json = theme_json(like_toolbar, (125, "Consolas".into()));
+            assert!(json.contains(r#""fontScale":125"#), "{json}");
+            assert!(json.contains(r#""uiFont":"Consolas""#), "{json}");
+        }
+        let neutral = theme_json(true, (100, String::new()));
+        assert!(neutral.contains(r#""fontScale":100,"uiFont":"""#), "{neutral}");
+        let window_less = text_prefs(HWND::default());
+        assert_eq!(window_less, (100, String::new()), "no app: Bowser's defaults");
     }
 
     const WORK: RECT = RECT { left: 0, top: 0, right: 1000, bottom: 700 };

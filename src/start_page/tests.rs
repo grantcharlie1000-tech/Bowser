@@ -361,6 +361,57 @@ fn top_sites_rank_hosts_by_pages_then_recency() {
 }
 
 #[test]
+fn top_sites_over_5000_distinct_hosts_is_fast_and_keeps_the_ranking() {
+    // 5000 distinct hosts plus repeat visits, so counts, recency and the host tiebreak all decide.
+    let mut history: Vec<(u64, String, String)> =
+        (0..5000u64).map(|i| (i, format!("https://host{i}.example/"), format!("Host {i}"))).collect();
+    for i in 0..300u64 {
+        history.push((10_000 + i, format!("https://www.host{}.example/again", i % 37), "Again".to_owned()));
+    }
+    // The old ranking, a linear find per row: the same order, and the cost the fix removes.
+    let quadratic = |history: &[(u64, String, String)]| -> Vec<String> {
+        let mut hosts: Vec<(String, usize, u64)> = Vec::new();
+        for (stamp, url, _) in history {
+            let parsed = url::Url::parse(url).unwrap();
+            let host = parsed.host_str().unwrap();
+            let host = host.strip_prefix("www.").unwrap_or(host).to_ascii_lowercase();
+            match hosts.iter_mut().find(|(h, ..)| *h == host) {
+                Some((_, count, newest)) => {
+                    *count += 1;
+                    *newest = (*newest).max(*stamp);
+                }
+                None => hosts.push((host, 1, *stamp)),
+            }
+        }
+        hosts.sort_by(|a, b| b.1.cmp(&a.1).then(b.2.cmp(&a.2)).then(a.0.cmp(&b.0)));
+        hosts.into_iter().map(|(host, ..)| host).collect()
+    };
+    let started = std::time::Instant::now();
+    let old = quadratic(&history);
+    let old_elapsed = started.elapsed();
+    let started = std::time::Instant::now();
+    let top = top_sites(&history, 5000);
+    let elapsed = started.elapsed();
+    assert_eq!(top.iter().map(|s| s.host.clone()).collect::<Vec<_>>(), old, "the same order as before");
+    assert_eq!(top.len(), 5000);
+    // Reference ranking: count desc, newest desc, host asc.
+    let mut expected: Vec<(usize, u64, String)> = (0..5000u64)
+        .map(|i| {
+            let repeats: Vec<u64> = (0..300u64).filter(|r| r % 37 == i).collect();
+            let newest = repeats.last().map_or(i, |r| 10_000 + r);
+            (1 + repeats.len(), newest, format!("host{i}.example"))
+        })
+        .collect();
+    expected.sort_by(|a, b| b.0.cmp(&a.0).then(b.1.cmp(&a.1)).then(a.2.cmp(&b.2)));
+    assert_eq!(top.iter().map(|s| s.host.clone()).collect::<Vec<_>>(), expected.into_iter().map(|e| e.2).collect::<Vec<_>>());
+    assert_eq!(top[0].url, "https://www.host3.example/again", "the newest repeat page wins");
+    // Relative, not absolute, so a loaded runner cannot fail it: the hash ranking must beat the
+    // quadratic version by a wide margin.
+    eprintln!("top_sites {elapsed:?}, quadratic {old_elapsed:?}");
+    assert!(elapsed * 3 < old_elapsed, "top_sites took {elapsed:?}, the quadratic version {old_elapsed:?}");
+}
+
+#[test]
 fn bookmark_widget_lists_only_links_of_its_folder_and_a_note_gets_a_short_title() {
     let (store, _, [work, _, a, b, ..]) = fixture();
     let links = widget_links(&store, work);

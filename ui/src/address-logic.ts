@@ -32,10 +32,15 @@ export interface AddrFlags {
 }
 
 export const DEFAULT_ADDR: AddrFlags = {
-  show: true, full: false, select: true, encoded: true, qr: false, hbtn: false, typed: false, typing: true, badge: false, strip: true, highlight: true, base: '',
+  show: true, full: false, select: true, encoded: true, qr: false, hbtn: false, typed: false, typing: true, badge: false, strip: true, highlight: false, base: '',
 };
 
 export const ADDR_FLAG_KEYS = ['show', 'full', 'select', 'encoded', 'qr', 'hbtn', 'typed', 'typing', 'badge', 'strip', 'highlight', 'base'] as const;
+
+/** The search field's text once a search has run: kept only when `search_keep_text` is on. */
+export function searchTextAfterSearch(keep: boolean, text: string): string {
+  return keep ? text : '';
+}
 
 /** What a key press in the address field submits. */
 export type SubmitKind = 'plain' | 'newtab' | 'expand';
@@ -159,6 +164,20 @@ export function showsTypedHistoryOnFocus(opts: { readonly enabled: boolean; read
 export function keyboardFocusSelection(select: boolean, edited: boolean): 'all' | 'end' | 'keep' {
   if (edited) return 'keep';
   return select ? 'all' : 'end';
+}
+
+/**
+ * `minimal_url`: the field shows the condensed address unfocused but holds the full one (query and
+ * fragment included) while focused, so copying or editing sees all of it. `shown` and `full` are the
+ * host's last `setText` text and its `full` form; an address the user has edited is never replaced.
+ */
+export function focusAddressText(value: string, shown: string, full: string, edited: boolean): string {
+  return !edited && full !== '' && value === shown ? full : value;
+}
+
+/** The reverse of {@link focusAddressText} on blur: an untouched full address goes back to the condensed one. */
+export function blurAddressText(value: string, shown: string, full: string, edited: boolean): string {
+  return !edited && full !== '' && value === full ? shown : value;
 }
 
 /** The search field's modes, as `search_field` stores them. */

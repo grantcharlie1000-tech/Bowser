@@ -149,6 +149,9 @@ pub struct TabState {
     pub memory_at: Option<std::time::Instant>,
     /// Links a pinned tab refused to follow, waiting to open in a tab of their own: (the pinned tab, address).
     pub deferred_links: Vec<(TabId, url::Url)>,
+    /// Same-tab link navigations a workspace rule matched, waiting (outside the engine's event) to
+    /// move their tab to the rule's workspace: (the tab, address).
+    pub deferred_workspace: Vec<(TabId, url::Url)>,
     /// Restored tabs that load as soon as the engine is ready ("Load restored tabs when first
     /// selected" off, or pinned tabs kept loading).
     pub eager: Vec<TabId>,

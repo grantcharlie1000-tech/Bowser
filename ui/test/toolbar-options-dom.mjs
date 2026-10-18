@@ -151,6 +151,16 @@ test('Enter searches with the chosen engine, and keeps the typed text only with 
   }
 });
 
+test('a drop-down row picked with the mouse (sdone) clears the search field unless "Keep the text" is on', () => {
+  for (const keep of [false, true]) {
+    deliver(sfield({ mode: 'field', keep }));
+    searchInput.value = 'rust lifetimes';
+    // Rust's search ran from the picked row; the toolbar only hears that it did.
+    deliver({ v: 1, t: 'sdone' });
+    assert.equal(searchInput.value, keep ? 'rust lifetimes' : '', `keep ${keep}`);
+  }
+});
+
 test('the typed-history button shows only with its option on', () => {
   deliver(addr({ hbtn: true }));
   assert.equal(historyButton.hidden, false);

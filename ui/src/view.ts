@@ -7,6 +7,7 @@ import { isZoomed, zoomChipLabel, zoomChipTip, zoomText } from './zoom-logic';
 import { buttonLabel, buttonTip, ringMode, ringOffset } from './downloads-logic';
 import { extButtonText } from './extensions-logic';
 import { lookAttributes, type Look } from './window-logic'; // --- window and panels (thread T9) ---
+import { fontScaleValue, uiFontStack } from './font-logic';
 import { splitHost, type AddrFlags } from './address-logic'; // --- address bar, search and bookmarks ---
 
 export interface View {
@@ -715,8 +716,13 @@ export function applyTheme(theme: Theme, solid: boolean, dark: boolean, fontScal
   }
   document.body.classList.toggle('solid', solid);
   root.dataset.scheme = dark ? 'dark' : 'light';
-  // `font_size`/`ui_font`: the chrome's text size and face. Absent (other HTML surfaces that do
-  // not send them) leaves the page's own default alone.
-  if (fontScale !== undefined) root.style.fontSize = `${fontScale}%`;
-  if (uiFont !== undefined) root.style.fontFamily = uiFont;
+  // `font_size`/`ui_font`: the chrome's text size and face, as the inputs of the type tokens
+  // (styles/tokens.css). Absent (other HTML surfaces that do not send them) leaves the page's own
+  // default alone.
+  if (fontScale !== undefined) root.style.setProperty('--bw-font-scale', fontScaleValue(fontScale));
+  if (uiFont !== undefined) {
+    const stack = uiFontStack(uiFont);
+    if (stack === null) root.style.removeProperty('--bw-font');
+    else root.style.setProperty('--bw-font', stack);
+  }
 }

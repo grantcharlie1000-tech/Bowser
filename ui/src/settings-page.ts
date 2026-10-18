@@ -63,6 +63,8 @@ function writeOpen(open: ReadonlySet<string>): void {
 }
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
+/** How long a Tabs number field waits after its last change before it saves. */
+const TAB_NUMBER_DEBOUNCE_MS = 400;
 const NAV_ICONS: Readonly<Record<SettingsSection, IconName>> = {
   profile: 'person', appearance: 'sidebar', tabs: 'tab-switch', privacy: 'shield', performance: 'workspace-bolt',
   search: 'search', keyboard: 'command', commands: 'quick-commands', downloads: 'folder-download', media: 'volume', extensions: 'puzzle', updates: 'download', about: 'info',
@@ -860,12 +862,30 @@ export function startSettingsPage(root: HTMLElement): void {
         const wrap = el('div', 'sp-zoom-wrap');
         wrap.append(input, suffix);
         const paint = (n: number): void => { input.value = String(n); suffix.textContent = numberLabel(spec, n); };
+        // Each save is a full read, merge and write in Rust, so a run of spinner steps sends only its
+        // last value: 400 ms after the last change, or at once when the field loses focus.
+        let timer = 0;
+        let queued: number | null = null;
+        const flush = (): void => {
+          if (timer) { clearTimeout(timer); timer = 0; }
+          if (queued === null) return;
+          const n = queued;
+          queued = null;
+          sendTabOption(spec.key, n);
+        };
         input.addEventListener('change', () => {
           const n = clampNumber(spec, Number(input.value));
           paint(n);
-          sendTabOption(spec.key, n);
+          queued = n;
+          if (timer) clearTimeout(timer);
+          timer = window.setTimeout(flush, TAB_NUMBER_DEBOUNCE_MS);
         });
-        tabControls.set(spec.key, { set: (values) => paint(Number(values[spec.key] ?? spec.default)), disable: (off) => { input.disabled = off; } });
+        input.addEventListener('blur', flush);
+        // Closing or hiding the page inside the wait still saves the value the field shows.
+        window.addEventListener('pagehide', flush);
+        document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') flush(); });
+        // A host update while a value waits must not repaint the field under the user.
+        tabControls.set(spec.key, { set: (values) => { if (queued === null) paint(Number(values[spec.key] ?? spec.default)); }, disable: (off) => { input.disabled = off; } });
         return wrap;
       }
       case 'text': {

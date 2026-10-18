@@ -647,8 +647,8 @@
 }
 
 :where(#app.sp-root) .sp-row.is-profile .sp-label {
-  font-size: 16px;
-  line-height: 22px;
+  font-size: calc(16px * var(--bw-font-scale));
+  line-height: calc(22px * var(--bw-font-scale));
   font-weight: var(--bw-weight-strong);
 }
 

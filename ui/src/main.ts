@@ -19,7 +19,7 @@ import {
   type SuggestMsg,
 } from './protocol';
 // --- address bar, search and bookmarks ---
-import { DEFAULT_ADDR, clipboardText, keyboardFocusSelection, showsTypedHistoryOnFocus, stripPastedJavascript, submitKind, type AddrFlags } from './address-logic';
+import { DEFAULT_ADDR, blurAddressText, clipboardText, searchTextAfterSearch, focusAddressText, keyboardFocusSelection, showsTypedHistoryOnFocus, stripPastedJavascript, submitKind, type AddrFlags } from './address-logic';
 import { engineLabel, monogram } from './address-settings-logic';
 // --- end address bar, search and bookmarks ---
 import { moveSuggestSelection, suggestPreviewText } from './suggest-logic'; // --- omnibox suggest ---
@@ -291,7 +291,7 @@ function startToolbar(root: HTMLElement): void {
       // Alt+Enter and Shift+Enter search in a new tab.
       sendAddr({ a: 'search', text: searchInput.value, id: sfield.engine, n: submitKind(ev) === 'newtab' ? 1 : 0 });
       list = null;
-      if (!sfield.keep) searchInput.value = '';
+      searchInput.value = searchTextAfterSearch(sfield.keep, searchInput.value);
       if (sfield.mode === 'button') view.search.root.classList.remove('is-open');
       return;
     }
@@ -333,6 +333,9 @@ function startToolbar(root: HTMLElement): void {
   let selectOnUp = false;
   let pointerIsDown = false;
   let edited = false;
+  // minimal_url: the host's condensed text and the full address the focused field holds instead.
+  let shownText = '';
+  let fullText = '';
   input.addEventListener('input', () => {
     edited = true;
   });
@@ -348,6 +351,8 @@ function startToolbar(root: HTMLElement): void {
 
   input.addEventListener('focus', () => {
     view.pill.classList.remove('is-display');
+    const focusedText = focusAddressText(input.value, shownText, fullText, edited);
+    if (focusedText !== input.value) input.value = focusedText;
     // A press that is still down is what moved the focus here: select now as well as on release.
     if (flags.select && pointerIsDown && input.selectionStart === input.selectionEnd) input.select();
     // --- wave-1 fixes --- keyboard focus (Tab, F6) follows "Select the address on activation" too.
@@ -368,6 +373,8 @@ function startToolbar(root: HTMLElement): void {
     // --- end address bar, search and bookmarks ---
   });
   input.addEventListener('blur', () => {
+    const blurredText = blurAddressText(input.value, shownText, fullText, edited);
+    if (blurredText !== input.value) input.value = blurredText;
     edited = false;
     list = null; // --- omnibox suggest ---
     showDisplay();
@@ -400,6 +407,8 @@ function startToolbar(root: HTMLElement): void {
         lastInputType = '';
         list = null; // --- omnibox suggest ---
         input.value = msg.text;
+        shownText = msg.text;
+        fullText = msg.full ?? '';
         edited = false;
         if (msg.select && flags.select) input.select();
         showDisplay();
@@ -444,6 +453,12 @@ function startToolbar(root: HTMLElement): void {
       case 'sfield':
         sfield = msg;
         showSearch();
+        break;
+      case 'sdone':
+        // A drop-down row picked with the mouse: the same rule as Enter in the field.
+        list = null;
+        searchInput.value = searchTextAfterSearch(sfield?.keep ?? false, searchInput.value);
+        if (sfield?.mode === 'button' && searchInput.value === '') view.search.root.classList.remove('is-open');
         break;
       // --- end address bar, search and bookmarks ---
       case 'extbtn':

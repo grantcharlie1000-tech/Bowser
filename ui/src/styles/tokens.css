@@ -103,17 +103,25 @@
        is painted natively, under the popup, with the same two layers at --bw-sh-flyout's size. */
     --bw-sh-omni: 0 1px 2px rgba(0, 0, 0, 0.28), 0 0 1px rgba(0, 0, 0, 0.24);
 
-    /* Typography (Fluent ramp; Segoe UI Variable has an automatic optical axis). */
-    --bw-font: "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
+    /* Typography (Fluent ramp; Segoe UI Variable has an automatic optical axis).
+       `font_size` x `ui_zoom` and `ui_font` reach every surface through two inputs view.ts applyTheme
+       sets on <html>: --bw-font-scale (the host's fontScale / 100) and, when `ui_font` names a face,
+       --bw-font (that face, then the stock stack). At the defaults (scale 1, no face) every size below
+       is exactly its px value. */
+    --bw-font-stock: "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
+    --bw-font: var(--bw-font-stock);
     --bw-font-panel: "Segoe UI", sans-serif; /* legacy: panels and the menu popup; migrate to --bw-font */
-    --bw-text-chrome: 12px; /* toolbar, tabs, rail, sidebar (line-height 1) */
-    --bw-text-caption: 12px; /* Caption 12/16 */
-    --bw-leading-caption: 16px;
-    --bw-text-body: 14px; /* Body 14/20 */
-    --bw-leading-body: 20px;
-    --bw-text-omni: 13px; /* the omnibox text and the suggestion titles under it (13/20) */
-    --bw-text-subtitle: 20px; /* Subtitle 20/28 */
-    --bw-leading-subtitle: 28px;
+    --bw-font-scale: 1;
+    --bw-text-chrome: calc(12px * var(--bw-font-scale)); /* toolbar, tabs, rail, sidebar (line-height 1) */
+    --bw-text-caption: calc(12px * var(--bw-font-scale)); /* Caption 12/16 */
+    --bw-leading-caption: calc(16px * var(--bw-font-scale));
+    --bw-text-body: calc(14px * var(--bw-font-scale)); /* Body 14/20 */
+    --bw-leading-body: calc(20px * var(--bw-font-scale));
+    --bw-text-omni: calc(13px * var(--bw-font-scale)); /* the omnibox text and the suggestion titles under it (13/20) */
+    --bw-text-subtitle: calc(20px * var(--bw-font-scale)); /* Subtitle 20/28 */
+    --bw-leading-subtitle: calc(28px * var(--bw-font-scale));
+    --bw-text-display: calc(28px * var(--bw-font-scale)); /* Display 28/36: the private page title, start-page figures */
+    --bw-leading-display: calc(36px * var(--bw-font-scale));
     --bw-weight-strong: 600;
 
     /* Radius (Fluent). */

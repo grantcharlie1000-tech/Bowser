@@ -144,6 +144,22 @@ pub fn parse_list(bar: Bar, value: &str) -> Option<Vec<String>> {
     Some(list)
 }
 
+/// [`parse_list`] for a value read back from settings.txt: a command button whose command no longer
+/// exists (a hand-edited file, or a command retired since) is dropped on its own, so the rest of the
+/// list is kept. What the settings page sends is still checked whole by [`parse_list`].
+pub fn parse_stored_list(bar: Bar, value: &str) -> Option<Vec<String>> {
+    let kept: Vec<&str> = value.split(',').map(str::trim).filter(|id| !(id.starts_with("cmd:") && !is_command_item(id))).collect();
+    parse_list(bar, &kept.join(","))
+}
+
+/// Sets the list of the bar whose key is `key` from a settings.txt value with
+/// [`parse_stored_list`]. `false` and nothing changed for another key or a bad list.
+pub fn apply_stored_list(settings: &mut Settings, key: &str, value: &str) -> bool {
+    let Some(list) = Bar::from_key(key).and_then(|bar| parse_stored_list(bar, value).map(|list| (bar, list))) else { return false };
+    list.0.set(settings, list.1);
+    true
+}
+
 // ---- the address bar's zones ----
 
 /// Where on the address bar an item sits.
@@ -235,6 +251,18 @@ mod tests {
         ] {
             assert_eq!(parse_list(bar, bad), None, "{bar:?} {bad}");
         }
+    }
+
+    #[test]
+    fn an_unknown_command_button_in_the_file_is_dropped_without_losing_the_rest_of_the_list() {
+        assert_eq!(parse_stored_list(Bar::Address, "back,cmd:no-such-command,reload"), Some(list("back,reload")));
+        assert_eq!(parse_stored_list(Bar::Tabs, "cmd:no-such-command,closed-tabs"), Some(list("closed-tabs")));
+        assert_eq!(parse_stored_list(Bar::Tabs, "closed-tabs,back"), None, "another bar's own id still refuses the list");
+        assert_eq!(parse_list(Bar::Address, "back,cmd:no-such-command,reload"), None, "the settings page's list is checked whole");
+        let mut settings = Settings::default();
+        assert!(apply_stored_list(&mut settings, "toolbar_panel", "feeds,cmd:nope"));
+        assert_eq!(settings.toolbar_panel, list("feeds"));
+        assert!(!apply_stored_list(&mut settings, "feeds_detect", "true"), "only a bar's key");
     }
 
     #[test]
