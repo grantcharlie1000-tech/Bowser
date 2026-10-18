@@ -73,11 +73,6 @@ jobs:
       - name: Capture real-browser Store rendering, not native installation evidence
         working-directory: ui
         run: node scripts/capture-store.mjs "$env:RUNNER_TEMP/bowser-store-rendering"
-      - name: Build and capture genuine native Store window in a disposable profile
-        run: |
-          cargo +stable build --locked --bin bowser --features html-chrome-default
-          if ($LASTEXITCODE -ne 0) { throw 'Native Store debug build failed.' }
-          ./benchmarks/scripts/probe-native-store.ps1 -InstallJourney
       - name: Measure actual native zero versus four extension profiles without benchmark mode
         if: ${{ !cancelled() && env.BOWSER_EXTENSION_MEASURE_ROOT != '' }}
         run: |
@@ -109,4 +104,37 @@ jobs:
             ${{ runner.temp }}/bowser-native-store/
             ${{ runner.temp }}/bowser-extension-metrics/
           if-no-files-found: error
+          retention-days: 14
+
+  native-store-journey:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Preserve fingerprinted source bytes
+        run: git config --global core.autocrlf false
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Parse native lifecycle scripts
+        run: |
+          [void][scriptblock]::Create((Get-Content benchmarks/scripts/probe-native-store.ps1 -Raw))
+          [void][scriptblock]::Create((Get-Content benchmarks/scripts/measure-native-extensions.ps1 -Raw))
+      - name: Install official Rust toolchain
+        run: rustup toolchain install stable --profile minimal
+      - name: Build exact native HTML-default debug executable
+        run: |
+          cargo +stable build --locked --bin bowser --features html-chrome-default
+          if ($LASTEXITCODE -ne 0) { throw 'Native Store debug build failed.' }
+      - name: Exercise actual native Store consent lifecycle through Windows accessibility
+        run: ./benchmarks/scripts/probe-native-store.ps1 -InstallJourney
+      - name: Save native-only evidence, never downloaded packages or profile data
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: store-native-journey-${{ github.sha }}
+          path: ${{ runner.temp }}/bowser-native-store/
+          if-no-files-found: warn
           retention-days: 14
