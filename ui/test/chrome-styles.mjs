@@ -64,8 +64,10 @@ test('address_bar_show off hides only the address part of the pill: the search f
   // Run under both motion settings. Under prefers-reduced-motion (base.css) every element gets an 83ms
   // opacity transition, so a style read straight after a change returns the transition's start value;
   // a CI runner's desktop reports reduced motion, which is how this test passed locally and failed there.
-  // settle() finishes the running transitions so each read is the state the change settles on.
-  for (const flags of [[], ['--force-prefers-reduced-motion']]) {
+  // settle() finishes the running transitions so each read is the state the change settles on. Both
+  // settings are set explicitly, so the run does not depend on the machine's own setting.
+  for (const reduce of [false, true]) {
+  const flags = [`--blink-settings=prefersReducedMotion=${reduce}`];
   const r = measure(`<div id="app"><div id="shown">${pill(false)}</div><div id="hidden">${pill(true)}</div></div>`, `
     var parts = ['.tb-site', '.omni-field', '.tb-hist', '.tb-qr', '.omni-search', '.tb-zoom'];
     out.reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -109,7 +111,7 @@ test('address_bar_show off hides only the address part of the pill: the search f
     out.hasFocus = document.hasFocus();
     out.focused = cs('#hidden .omni-field').opacity;
   `, '', flags);
-  assert.equal(r.reduced, flags.length > 0, `prefers-reduced-motion is ${flags.length > 0} for this run`);
+  assert.equal(r.reduced, reduce, `prefers-reduced-motion is ${reduce} for this run`);
   for (const part of ['.tb-site', '.omni-field', '.tb-hist', '.tb-qr', '.omni-search', '.tb-zoom']) assert.equal(r.shown[part], '1', `${part} shows normally`);
   for (const part of ['.tb-site', '.omni-field', '.tb-hist', '.tb-qr']) assert.equal(r.hidden[part], '0', `${part} is hidden with the address field`);
   assert.equal(r.hidden['.omni-search'], '1', 'the search field stays');
