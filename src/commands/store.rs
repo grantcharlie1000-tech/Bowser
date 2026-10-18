@@ -515,7 +515,12 @@ impl Store {
             if self.chains.len() >= chains::MAX_CHAINS {
                 return Err(format!("You can keep at most {} chains.", chains::MAX_CHAINS));
             }
-            chain.id = self.chains.iter().map(|c| c.id).max().unwrap_or(0) + 1;
+            // A hand-edited file can hold an id of u32::MAX: take the lowest free id then.
+            let max = self.chains.iter().map(|c| c.id).max().unwrap_or(0);
+            chain.id = match max.checked_add(1) {
+                Some(id) => id,
+                None => (1..=u32::MAX).find(|id| !self.chains.iter().any(|c| c.id == *id)).ok_or("No chain id is free.")?,
+            };
         } else if !self.chains.iter().any(|c| c.id == chain.id) {
             return Err("That chain no longer exists.".into());
         }
@@ -738,6 +743,15 @@ mod tests {
         assert!(reused > copy, "ids are never reused while a later chain exists");
         assert!(store.save_chain(Chain { id: 99, name: "Ghost".into(), steps: vec![] }).is_err());
         assert!(store.save_chain(Chain { id: 0, name: "Fresh".into(), steps: vec![chains::Step { command: "reload".into(), delay_ms: 0 }] }).is_err(), "names are unique");
+    }
+
+    #[test]
+    fn a_hand_edited_max_chain_id_does_not_overflow_the_next_id() {
+        let mut store = Store::default();
+        store.chains = chains::parse(&format!("bowser-chains-v1\nchain\t{}\tEdge\nstep\t0\tnew-tab\n", u32::MAX));
+        assert_eq!(store.chains.len(), 1);
+        let id = store.save_chain(Chain { id: 0, name: "Next".into(), steps: vec![chains::Step { command: "reload".into(), delay_ms: 0 }] }).unwrap();
+        assert_eq!(id, 1, "the lowest free id is taken instead of wrapping");
     }
 
     #[test]
