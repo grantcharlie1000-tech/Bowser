@@ -385,7 +385,9 @@ impl App {
             let state = app.borrow();
             let pinned = state.tab_model.get(id).is_some_and(|tab| tab.pinned);
             (
-                tab_options::close_kind(&state.settings.tabs, pinned, state.workspaces.active().tabs().len()),
+                // The window's tabs in every workspace: closing the last tab of one workspace is not
+                // closing the window's last tab.
+                tab_options::close_kind(&state.settings.tabs, pinned, state.tab_model.len()),
                 state.tab_model.active() == id,
             )
         };
@@ -764,6 +766,13 @@ impl App {
         for (tab, url) in links {
             let private = crate::private::inherits_privacy(Self::tab_private(app, tab));
             Self::open_link_tab(app, tab, private, url);
+        }
+        // Same-tab links a workspace rule matched: the tab moves, and the window follows when the
+        // tab is the one in front.
+        let moves = std::mem::take(&mut app.borrow_mut().tab_state.deferred_workspace);
+        for (tab, url) in moves {
+            let follow = Self::active_tab_id(app) == tab;
+            let _ = Self::apply_workspace_rule(app, tab, &url, follow);
         }
     }
 

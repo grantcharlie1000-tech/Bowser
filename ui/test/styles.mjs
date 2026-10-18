@@ -108,3 +108,60 @@ test('panel styles carry no legacy 13px Segoe UI block', () => {
     assert.doesNotMatch(text, /--bw-font-panel|\.customize-panel|font:\s*13px/, file);
   }
 });
+
+// ---- font_size x ui_zoom and ui_font reach the HTML chrome (the type tokens scale) ----
+
+test('every type token scales with --bw-font-scale and is its design px size at scale 1', () => {
+  const tokens = readFileSync(join(stylesDir, 'tokens.css'), 'utf8');
+  assert.match(tokens, /--bw-font-scale: 1;/);
+  const sizes = [...tokens.matchAll(/(--bw-(?:text|leading)-(?:chrome|caption|body|omni|subtitle|display)):\s*([^;]+);/g)];
+  assert.equal(sizes.length, 10, 'chrome, caption, body, omni, subtitle and display sizes with their leadings');
+  for (const [, name, value] of sizes) assert.match(value, /^calc\(\d+px \* var\(--bw-font-scale\)\)$/, name);
+  assert.match(tokens, /--bw-font: var\(--bw-font-stock\);/, 'ui_font overrides --bw-font; the stock stack stays reachable');
+});
+
+test('a font-size is a type token or scales with --bw-font-scale, except glyphs and badges in fixed boxes', () => {
+  // These size a monogram, emoji or count inside a box of fixed px size, so scaling the text would
+  // overflow the box. Everything else must follow font_size.
+  const FIXED = new Map([
+    ['address.css', ['.omni-search-engine', '.omni-search-engine .tb-tile']],
+    ['hover.css', ['.bw-card-badge']],
+    ['menu.css', ['.html-menu-badge']],
+    ['panels.css', ['.pn-favicon']],
+    ['rail.css', ['.rb-tile', '.rb-emoji', '.rb-count']],
+    ['settings.css', ['.sp-badge', '.sp-avatar']],
+    ['sidebar.css', ['.side-workspace-emoji']],
+    ['start.css', ['.sp-letter']],
+  ]);
+  const seen = new Set();
+  for (const name of readdirSync(stylesDir).filter((n) => n.endsWith('.css'))) {
+    const text = readFileSync(join(stylesDir, name), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+    for (const m of text.matchAll(/([^{}]*)\{([^{}]*)\}/g)) {
+      const selector = m[1].trim();
+      for (const d of m[2].matchAll(/(?:^|;)\s*font-size:\s*([^;]+)/g)) {
+        const value = d[1].trim();
+        if (/var\(--bw-text-|var\(--bw-font-scale\)|em$|^0$|^inherit$|^clamp\(/.test(value)) continue;
+        const allowed = (FIXED.get(name) ?? []).find((s) => selector.endsWith(s));
+        assert.ok(allowed, `${name}: ${selector} { font-size: ${value} } does not follow font_size`);
+        seen.add(`${name} ${allowed}`);
+      }
+    }
+  }
+  const listed = [...FIXED].flatMap(([file, sels]) => sels.map((s) => `${file} ${s}`));
+  for (const entry of listed) assert.ok(seen.has(entry), `${entry} is listed but has no fixed size any more: drop it`);
+});
+
+test('applyTheme turns fontScale into --bw-font-scale and ui_font into a quoted --bw-font stack', async () => {
+  const esbuild = await import('esbuild');
+  const out = esbuild.buildSync({ entryPoints: [join(uiRoot, 'src', 'font-logic.ts')], bundle: true, format: 'esm', platform: 'neutral', write: false, logLevel: 'silent' });
+  const logic = await import(`data:text/javascript;base64,${Buffer.from(out.outputFiles[0].contents).toString('base64')}`);
+  assert.equal(logic.fontScaleValue(100), '1');
+  assert.equal(logic.fontScaleValue(125), '1.25');
+  assert.equal(logic.uiFontStack(''), null, 'no face: the stock stack');
+  assert.equal(logic.uiFontStack('  , '), null);
+  assert.equal(logic.uiFontStack('Comic Sans MS'), '"Comic Sans MS", var(--bw-font-stock)');
+  assert.equal(logic.uiFontStack('"Fira Code", Consolas, monospace'), '"Fira Code", "Consolas", monospace, var(--bw-font-stock)');
+  assert.equal(logic.uiFontStack(String.raw`a"b\c`), String.raw`"a\"b\\c", var(--bw-font-stock)`, 'quotes and backslashes cannot end the string');
+  const view = readFileSync(join(uiRoot, 'src', 'view.ts'), 'utf8');
+  assert.doesNotMatch(view, /root\.style\.fontSize|root\.style\.fontFamily/, 'the old html font-size/family had no effect on the px tokens');
+});

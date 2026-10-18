@@ -676,9 +676,9 @@
 /* The largest type in Bowser is the private page's 28/36 title; the widgets' figures use it too. */
 #app.split-view.is-start .sp-date-day {
   margin: 0;
-  font-size: 28px;
+  font-size: var(--bw-text-display);
   font-weight: var(--bw-weight-strong);
-  line-height: 36px;
+  line-height: var(--bw-leading-display);
   letter-spacing: -0.01em;
   font-variant-numeric: tabular-nums;
 }
@@ -696,9 +696,9 @@
 
 #app.split-view.is-start .sp-stat {
   margin: 0;
-  font-size: 28px;
+  font-size: var(--bw-text-display);
   font-weight: var(--bw-weight-strong);
-  line-height: 36px;
+  line-height: var(--bw-leading-display);
   letter-spacing: -0.01em;
   font-variant-numeric: tabular-nums;
 }

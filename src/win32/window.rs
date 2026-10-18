@@ -7351,7 +7351,7 @@ fn run_palette_item(hwnd: HWND, app: &AppRef, action: &str) {
         let _ = App::switch_workspace(app, crate::workspaces::WorkspaceId(id));
     } else if let Some(id) = action.strip_prefix("note:").and_then(|s| s.parse::<u64>().ok()) {
         if crate::commands::behaviour::note_pick(&options) == crate::commands::behaviour::NotePick::OpenPanel {
-            notes_panel::show(hwnd); // --- wave-1 fixes --- never closes an open panel
+            notes_panel::show_note(hwnd, id); // --- wave-1 fixes --- never closes an open panel; C2: at the picked note (native panel)
             apply_sidebar_bounds(hwnd, app);
         } else if let Ok(profile) = crate::profile::active() {
             // Off: the note's text goes to the clipboard to paste where it is wanted.

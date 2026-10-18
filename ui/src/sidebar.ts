@@ -11,7 +11,7 @@ import { el, icon, place, type IconName } from './dom';
 import { DRAG_ATTR } from './view';
 import { beforeId, dragScrollDelta, privateTabName } from './tabs-logic';
 // --- tab options ---
-import { clickSelection, markedName, notifyLabel, pruneSelection } from './tab-marks-logic';
+import { clickSelection, loadMark, markedName, notifyLabel, pruneSelection, type LoadIndicatorChoice } from './tab-marks-logic';
 // --- end tab options ---
 import {
   buildSidebarEntries, dropIndexVertical, nearestTile, pinnedBeforeId, rovingTarget, scrollIntoViewDelta, tileShift,
@@ -48,6 +48,8 @@ export interface SidebarTabNode {
   // --- tab options --- created only while the row needs them.
   dot?: HTMLSpanElement;
   badge?: HTMLSpanElement;
+  /** The page load bar along the row or the ring on the favicon (tabs_load_indicator `bar`/`favicon`). */
+  load?: HTMLSpanElement;
   // --- end tab options ---
 }
 interface SidebarGroupNode {
@@ -88,11 +90,26 @@ export interface SidebarWorkspace {
 
 function colour(index: number): string { return index < 0 ? 'var(--bw-accent)' : ISLAND[index & 7] ?? 'var(--bw-accent)'; }
 
-function setFace(node: SidebarTabNode, uri: string | undefined): void {
-  const state = node.item.loading ? 'spin' : uri ? 'img' : 'glyph';
+/**
+ * The favicon tile under Settings > Tabs > Page load progress (`tabs_load_indicator`), as the strip
+ * draws it: the spinner in place of the favicon, a bar along the row, a ring on the favicon, or nothing.
+ */
+function setFace(node: SidebarTabNode, uri: string | undefined, indicator: LoadIndicatorChoice): void {
+  const load = loadMark(indicator, node.item.loading, node.item.pct);
+  const state = load === 'spin' ? 'spin' : uri ? 'img' : 'glyph';
   node.face.dataset.state = state;
   if (uri && state === 'img') { if (node.image.getAttribute('src') !== uri) node.image.src = uri; }
   else node.image.removeAttribute('src');
+  const kind = load === 'bar' ? 'side-loadbar' : load === 'ring' ? 'side-ring' : '';
+  if (node.load && node.load.className !== kind) { node.load.remove(); delete node.load; }
+  if (kind === '') return;
+  if (!node.load) {
+    node.load = el('span', kind);
+    node.load.setAttribute('aria-hidden', 'true');
+    (load === 'ring' ? node.face : node.root).append(node.load);
+  }
+  const pct = node.item.pct ?? 0;
+  node.load.style.setProperty('--pct', String(load === 'bar' ? pct / 100 : pct));
 }
 
 /** The marks a row can carry (Settings > Tabs): the unread dot and the notification count live beside the mute and marker flags. */
@@ -109,7 +126,7 @@ function sideMark(node: SidebarTabNode, key: 'dot' | 'badge', on: boolean): HTML
   return made;
 }
 
-export function syncTab(node: SidebarTabNode, item: TabItem, active: boolean, favs: ReadonlyMap<number, string>, picked = false): void {
+export function syncTab(node: SidebarTabNode, item: TabItem, active: boolean, favs: ReadonlyMap<number, string>, picked = false, indicator: LoadIndicatorChoice = 'spinner'): void {
   node.item = item;
   const label = item.title || 'New tab';
   node.title.textContent = label;
@@ -142,13 +159,13 @@ export function syncTab(node: SidebarTabNode, item: TabItem, active: boolean, fa
   const closeLabel = `Close ${item.title || 'tab'}`;
   setTip(node.close, closeLabel);
   node.close.setAttribute('aria-label', closeLabel);
-  setFace(node, item.fav ? favs.get(item.id) : undefined);
+  setFace(node, item.fav ? favs.get(item.id) : undefined, indicator);
   node.marker.classList.toggle('on', item.marker >= 0);
   if (item.marker >= 0) node.marker.style.setProperty('--mc', colour(item.marker));
 }
 
 /** Exported (with syncTab) for test/private.mjs (fake DOM); rows are built by createSidebarRenderer. */
-export function makeTab(item: TabItem, active: boolean, favs: ReadonlyMap<number, string>): SidebarTabNode {
+export function makeTab(item: TabItem, active: boolean, favs: ReadonlyMap<number, string>, indicator: LoadIndicatorChoice = 'spinner'): SidebarTabNode {
   const root = el('div', 'side-tab bw-island bw-focus-inset');
   root.setAttribute('role', 'treeitem');
   root.dataset.id = String(item.id);
@@ -183,7 +200,7 @@ export function makeTab(item: TabItem, active: boolean, favs: ReadonlyMap<number
   close.append(icon('close', { size: 12, fine: true }));
   root.append(face, title, flags, pin, close);
   const node: SidebarTabNode = { item, root, image, title, marker, mute, close, face, shift: 0 };
-  syncTab(node, item, active, favs);
+  syncTab(node, item, active, favs, false, indicator);
   return node;
 }
 
@@ -223,6 +240,9 @@ export function createSidebarRenderer(root: HTMLElement): {
   let anchor = 0;
   let selectionOn = true;
   let selectionActive = true; // --- wave-1 fixes ---
+  // Settings > Tabs, as the strip honours them: the page load indicator and the pinned separator.
+  let indicator: LoadIndicatorChoice = 'spinner';
+  let pinnedSeparator = false;
   const closedRow = el('button', 'side-closed bw-focus-inset');
   closedRow.type = 'button';
   closedRow.hidden = true;
@@ -426,10 +446,10 @@ export function createSidebarRenderer(root: HTMLElement): {
         const active = item.id === msg.active;
         let node = tabs.get(item.id);
         if (!node) {
-          node = makeTab(item, active, favs);
+          node = makeTab(item, active, favs, indicator);
           tabs.set(item.id, node);
         } else {
-          syncTab(node, item, active, favs, picked.includes(item.id)); // --- tab options ---
+          syncTab(node, item, active, favs, picked.includes(item.id), indicator); // --- tab options ---
         }
         const gc = item.g > 0 && !item.pinned ? groupColour.get(item.g) : undefined;
         if (gc) node.root.style.setProperty('--gc', gc);
@@ -441,7 +461,7 @@ export function createSidebarRenderer(root: HTMLElement): {
     if (pinned.length > 0) {
       place(pinGrid, pinned);
       rows.unshift(pinGrid);
-      if (rows.length > 1) rows.splice(1, 0, separator);
+      if (rows.length > 1 && pinnedSeparator) rows.splice(1, 0, separator); // tabs_pinned_separator
     }
     for (const key of groups.keys()) if (!keys.has(key)) groups.delete(key);
     if (rows.length === 0) rows.push(empty);
@@ -862,6 +882,13 @@ export function createSidebarRenderer(root: HTMLElement): {
     options(value) {
       selectionOn = value.selection;
       selectionActive = value.selectionActive;
+      // tabs_close_left / tabs_close_always: sidebar.css moves and shows the rows' close buttons.
+      list.classList.toggle('side-close-left', value.closeLeft);
+      list.classList.toggle('side-close-always', value.closeAlways);
+      const redraw = indicator !== value.indicator || pinnedSeparator !== value.separator;
+      indicator = value.indicator;
+      pinnedSeparator = value.separator;
+      if (redraw && latest) render(latest, latestFavs, currentWorkspace);
       closedRow.hidden = value.closed === 0 || !value.closedButton; // --- toolbars and feeds (thread T13) ---
       syncTools(value.tools);
       if (!selectionOn && picked.length > 0) setPicked([]);

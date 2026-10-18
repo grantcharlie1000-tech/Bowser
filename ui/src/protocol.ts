@@ -349,6 +349,8 @@ export interface SearchFieldMsg {
   readonly engine: number;
   readonly engines: readonly FieldEngine[];
 }
+/** A search-field drop-down row was picked with the mouse and its search ran (Rust `SEARCH_DONE_JSON`). */
+export interface SearchDoneMsg { readonly t: 'sdone' }
 /** Most engines the search field lists (Rust `MAX_FIELD_ENGINES`). */
 export const MAX_FIELD_ENGINES = 40;
 function parseAddr(raw: Record<string, unknown>): AddrMsg | null {
@@ -614,6 +616,7 @@ export type Inbound =
   | ExtButtonMsg // --- extensions ---
   | AddrMsg // --- address bar, search and bookmarks ---
   | SearchFieldMsg
+  | SearchDoneMsg
   // --- split view ---
   | SplitInbound
   // --- end split view ---
@@ -1182,6 +1185,8 @@ export function parseInbound(data: unknown): Inbound | null {
       return parseAddr(raw);
     case 'sfield':
       return parseSearchField(raw);
+    case 'sdone':
+      return hasOnlyKeys(raw, ['v', 't']) && raw.v === 1 ? { t: 'sdone' } : null;
     // --- end address bar, search and bookmarks ---
     // --- end downloads ---
     // --- split view ---

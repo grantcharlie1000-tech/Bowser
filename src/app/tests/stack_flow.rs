@@ -152,6 +152,25 @@ fn stacking_by_site_by_hand_works_without_automatic_grouping_and_unstack_undoes_
 }
 
 #[test]
+fn stack_all_by_site_names_a_stack_for_the_editor_option() {
+    let app = fixture();
+    app.borrow_mut().settings.automatic_tab_grouping = false;
+    let ids = tabs_on(&app, &["https://a.com/1", "https://b.com/1", "https://a.com/2", "https://c.com/"]);
+    let _ = App::select_tab(&app, ids[3]);
+    let (count, target) = App::stack_all_by_site_for_editor(&app);
+    assert_eq!(count, 1);
+    assert!(target.is_some_and(|id| in_stack(&app, id, "a.com")), "the lone c.com tab in front has no stack: the first stack opens");
+    assert!(App::unstack(&app, ids[0]));
+    let _ = App::select_tab(&app, ids[2]);
+    // Unstacked tabs stay out of automatic grouping but stack again by hand.
+    let (_, target) = App::stack_all_by_site_for_editor(&app);
+    assert_eq!(target, Some(ids[2]), "the tab in front, now in a stack, is the one whose editor opens");
+    let lone = fixture();
+    let _ = tabs_on(&lone, &["https://x.com/"]);
+    assert_eq!(App::stack_all_by_site_for_editor(&lone), (0, None), "no stack made: no editor");
+}
+
+#[test]
 fn dragging_a_tab_onto_another_stacks_them_only_while_the_option_is_on() {
     let app = fixture();
     app.borrow_mut().settings.automatic_tab_grouping = false;
@@ -226,6 +245,31 @@ fn a_workspace_rule_opens_its_site_in_the_named_workspace() {
     let before = app.borrow().workspaces.get(work).unwrap().tabs().len();
     App::submit_url(&app, url::Url::parse("https://example.org/b").unwrap(), None);
     assert_eq!(app.borrow().workspaces.get(work).unwrap().tabs().len(), before, "workspaces off: rules rest");
+}
+
+#[test]
+fn a_workspace_rule_also_moves_a_tab_that_follows_a_link_in_place() {
+    let app = fixture();
+    let ids = tabs_on(&app, &["https://start.example/", "https://keep.example/"]);
+    let home = app.borrow().workspaces.active_id();
+    let work = App::create_workspace(&app, "Work").unwrap();
+    let _ = App::switch_workspace(&app, home);
+    let mut rules = Vec::new();
+    crate::workspace_rules::add(&mut rules, "example.org", "work").unwrap();
+    app.borrow_mut().workspace_rules = rules;
+    let link = url::Url::parse("https://news.example.org/a").unwrap();
+    // Off: nothing is queued.
+    set(&app, |o| o.workspaces = false);
+    assert!(!App::defer_workspace_rule(&app, ids[0], &link));
+    set(&app, |o| o.workspaces = true);
+    let _ = App::select_tab(&app, ids[0]);
+    assert!(!App::defer_workspace_rule(&app, ids[0], &url::Url::parse("https://other.test/").unwrap()), "no rule, no move");
+    assert!(App::defer_workspace_rule(&app, ids[0], &link), "the move waits outside the engine's event");
+    assert_eq!(app.borrow().workspaces.workspace_for(ids[0]), Some(home), "not moved inside the event");
+    App::run_deferred_links(&app);
+    assert_eq!(app.borrow().workspaces.workspace_for(ids[0]), Some(work), "moved to the rule's workspace");
+    assert_eq!(app.borrow().workspaces.active_id(), work, "the tab in front takes the window with it");
+    assert!(app.borrow().tab_state.deferred_workspace.is_empty());
 }
 
 #[test]
@@ -343,3 +387,18 @@ fn a_ball_click_under_two_level_brings_back_the_member_used_last() {
     assert_eq!(App::active_tab_id(&app), ids[1]);
 }
 // --- end two-level stacks ---
+
+#[test]
+fn keep_window_off_counts_the_tabs_of_every_workspace() {
+    let app = fixture();
+    let home = app.borrow().workspaces.active_id();
+    let _work = App::create_workspace(&app, "Work").unwrap();
+    let _ = App::switch_workspace(&app, home);
+    assert_eq!(app.borrow().workspaces.active().tabs().len(), 1, "one tab in front");
+    assert!(App::tab_count(&app) > 1, "another workspace holds a tab");
+    set(&app, |o| o.keep_window = false);
+    let only = App::active_tab_id(&app);
+    assert_eq!(App::user_close_tab(&app, only), crate::tab_options::CloseKind::Close, "the window has tabs elsewhere: it stays");
+    assert!(App::tab_ids(&app).iter().all(|id| *id != only), "the tab itself closed");
+    assert!(App::tab_count(&app) >= 1, "the window keeps the other workspace's tab");
+}

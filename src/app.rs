@@ -6180,7 +6180,14 @@ impl App {
             link_navigation: {
                 let link_app = Rc::downgrade(app);
                 Some(Rc::new(move |tab, url: &url::Url| {
-                    link_app.upgrade().is_some_and(|app| App::pinned_link(&app, tab, url))
+                    link_app.upgrade().is_some_and(|app| {
+                        // A refused pinned-tab link opens elsewhere; one that loads in place may
+                        // still belong to a workspace rule's site (moved a moment later).
+                        App::pinned_link(&app, tab, url) || {
+                            App::defer_workspace_rule(&app, tab, url);
+                            false
+                        }
+                    })
                 }))
             },
             // --- end tab options ---

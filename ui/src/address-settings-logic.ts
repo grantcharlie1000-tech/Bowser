@@ -289,7 +289,7 @@ export function monogram(name: string): string {
 const S = (id: string, section: RowSpec['section'], label: string, description: string, keywords: string): RowSpec => ({ id, section, label, description, keywords });
 
 export const ADDRESS_ROWS: readonly RowSpec[] = [
-  S('addrShow', 'address', 'Show the address bar', 'Off, the address field appears only while it has focus (Ctrl+L).', 'address bar hide show url field toolbar omnibox'),
+  S('addrShow', 'address', 'Show the address field', 'Off, the address field appears only while it has focus (Ctrl+L). The search field and page buttons stay.', 'address bar hide show url field toolbar omnibox'),
   S('addrAutocomplete', 'address', 'Complete addresses as you type', 'Fills in the rest of a site you have visited before.', 'autocomplete inline completion address typing history'),
   S('addrFull', 'address', 'Show the full address', 'Keeps https:// and www. in the address instead of hiding them.', 'full url scheme www https protocol show address'),
   S('addrSelect', 'address', 'Select the address when the field is activated', 'Clicking or tabbing into the field selects all of its text.', 'select all on click focus activation address'),

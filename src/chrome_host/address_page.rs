@@ -226,6 +226,10 @@ pub fn sfield_json(settings: &AddressSettings, engines: &EngineStore, chosen: us
     })
 }
 
+/// `{v:1,t:"sdone"}`: a search-field drop-down row was picked with the mouse and its search ran.
+/// The toolbar clears the field unless `search_keep_text` (its `sfield.keep`) is on, as Enter does.
+pub const SEARCH_DONE_JSON: &str = r#"{"v":1,"t":"sdone"}"#;
+
 /// What the toolbar asks of Bowser through `{t:"addr",a:..}`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ToolbarAction {

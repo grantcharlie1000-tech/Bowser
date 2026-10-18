@@ -19,7 +19,7 @@ import {
   type SuggestMsg,
 } from './protocol';
 // --- address bar, search and bookmarks ---
-import { DEFAULT_ADDR, blurAddressText, clipboardText, focusAddressText, keyboardFocusSelection, showsTypedHistoryOnFocus, stripPastedJavascript, submitKind, type AddrFlags } from './address-logic';
+import { DEFAULT_ADDR, blurAddressText, clipboardText, searchTextAfterSearch, focusAddressText, keyboardFocusSelection, showsTypedHistoryOnFocus, stripPastedJavascript, submitKind, type AddrFlags } from './address-logic';
 import { engineLabel, monogram } from './address-settings-logic';
 // --- end address bar, search and bookmarks ---
 import { moveSuggestSelection, suggestPreviewText } from './suggest-logic'; // --- omnibox suggest ---
@@ -291,7 +291,7 @@ function startToolbar(root: HTMLElement): void {
       // Alt+Enter and Shift+Enter search in a new tab.
       sendAddr({ a: 'search', text: searchInput.value, id: sfield.engine, n: submitKind(ev) === 'newtab' ? 1 : 0 });
       list = null;
-      if (!sfield.keep) searchInput.value = '';
+      searchInput.value = searchTextAfterSearch(sfield.keep, searchInput.value);
       if (sfield.mode === 'button') view.search.root.classList.remove('is-open');
       return;
     }
@@ -453,6 +453,12 @@ function startToolbar(root: HTMLElement): void {
       case 'sfield':
         sfield = msg;
         showSearch();
+        break;
+      case 'sdone':
+        // A drop-down row picked with the mouse: the same rule as Enter in the field.
+        list = null;
+        searchInput.value = searchTextAfterSearch(sfield?.keep ?? false, searchInput.value);
+        if (sfield?.mode === 'button' && searchInput.value === '') view.search.root.classList.remove('is-open');
         break;
       // --- end address bar, search and bookmarks ---
       case 'extbtn':
