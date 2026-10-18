@@ -1092,6 +1092,11 @@ fn live_store_current_extension_loads() {
                     session.page_script("(()=>{chrome.tabs.query({},tabs=>document.documentElement.setAttribute('data-bowser-api-probe',JSON.stringify({lastError:chrome.runtime.lastError?.message||null,tabs:tabs?.map(t=>({id:t.id,windowId:t.windowId,active:t.active,incognito:t.incognito,url:t.url}))})));return true})()");
                     pump_until(Duration::from_secs(2), || false);
                     println!("REAL_STORE name={name} page={label} tabs_query={:?}", session.page_script("document.documentElement.getAttribute('data-bowser-api-probe')"));
+                    if label == "popup" && matches!(name, "bitwarden" | "tab-session-manager") {
+                        session.page_script("(()=>{document.documentElement.removeAttribute('data-native-package-commands');chrome.commands.getAll(commands=>document.documentElement.setAttribute('data-native-package-commands',JSON.stringify({error:chrome.runtime.lastError?.message||null,commands:commands?.slice(0,64).map(c=>({name:c.name,shortcut:c.shortcut}))})));return true})()");
+                        let mut commands=None;assert!(pump_until(Duration::from_secs(10),||{commands=session.page_script("document.documentElement.getAttribute('data-native-package-commands')");commands.as_deref().is_some_and(|v|v!="null")}));
+                        println!("REAL_STORE_NATIVE_COMMANDS name={name} signed_id={id} version={} genuine_get_all={commands:?} scope=individual-profile-assignment-not-delivery",reviewed.version);
+                    }
                     if label == "popup" && matches!(name, "bitwarden" | "tab-session-manager") { probe_real_tab_topology(name, &mut session, &loopback); }
                     if label == "popup" && name == "tab-session-manager" { probe_real_tsm_save(&mut session); }
                 }
@@ -1666,11 +1671,20 @@ fn live_probe_native_page_links_guards() {
     session.close(); drop(loopback); remove_with_retries(&root);
 }
 
-thread_local! { static COMMAND_ACCELERATOR_FORWARDED: std::cell::Cell<Option<(TabId, bool)>> = const { std::cell::Cell::new(None) }; }
+thread_local! { static COMMAND_ACCELERATOR_FORWARDED: std::cell::Cell<Option<(TabId, bool)>> = const { std::cell::Cell::new(None) }; static CTRL_L_NATIVE_HANDLED: std::cell::Cell<Option<(TabId, i32)>> = const { std::cell::Cell::new(None) }; static CTRL_L_ACCELERATOR_FORWARDED: std::cell::Cell<Option<(TabId, bool)>> = const { std::cell::Cell::new(None) }; }
 /// Read-only observation at the actual production accelerator decision. Never changes handling.
 pub(super) fn observe_command_accelerator(tab: TabId, forwarded: bool) {
     COMMAND_ACCELERATOR_FORWARDED.with(|value| value.set(Some((tab, forwarded))));
     println!("NATIVE_COMMAND_ACCELERATOR actual_ctrl_shift_x=true owned_tab={tab:?} bowser_forwarded={forwarded}");
+}
+pub(super) fn observe_ctrl_l_accelerator(tab: TabId, forwarded: bool) {
+    CTRL_L_ACCELERATOR_FORWARDED.with(|value| value.set(Some((tab, forwarded))));
+    println!("NATIVE_CTRL_L_ACCELERATOR owned_tab={tab:?} bowser_forwarded={forwarded}");
+}
+pub(super) fn observe_ctrl_l_handled(tab: TabId, result: Result<(), i32>) {
+    let hresult = result.err().unwrap_or(0);
+    CTRL_L_NATIVE_HANDLED.with(|value|value.set(Some((tab,hresult))));
+    println!("NATIVE_CTRL_L_HANDLED owned_tab={tab:?} native_set_handled_ok={} normalized_result={hresult}",result.is_ok());
 }
 fn command_field<'a>(value: &'a extensions::json::Value, key: &str) -> Option<&'a extensions::json::Value> {
     match value { extensions::json::Value::Object(fields) => extensions::json::get(fields, key), _ => None }
@@ -1709,23 +1723,34 @@ fn command_input(session: &mut Session, tab: TabId, chord: &str) {
 /// Feasibility only: a missing native event is not a generic extension-API absence verdict.
 #[test]
 #[ignore = "needs live WebView2 and genuine OS keyboard input to disposable focused views"]
-fn live_probe_native_named_command() { run_native_keyboard_probe(false, false); }
+fn live_probe_native_named_command() { run_native_keyboard_probe(false, false, false); }
 
 #[test]
 #[ignore = "needs genuine reserved action keyboard input in disposable no-popup extension profiles"]
-fn live_probe_native_reserved_action() { run_native_keyboard_probe(true, false); }
+fn live_probe_native_reserved_action() { run_native_keyboard_probe(true, false, false); }
 
 /// Exact native worker query used by Bitwarden, before injection, without event-ID fallback.
 #[test]
 #[ignore = "needs genuine OS keyboard and native worker WINDOW_ID_CURRENT targeting"]
-fn live_probe_native_worker_current_query() { run_native_keyboard_probe(false, true); }
+fn live_probe_native_worker_current_query() { run_native_keyboard_probe(false, true, false); }
 
-fn run_native_keyboard_probe(reserved_action: bool, worker_query: bool) {
+#[test]
+#[ignore = "needs genuine CtrlShiftL with default conflict and explicit disposable shortcut change"]
+fn live_probe_native_ctrl_l_conflict() { run_native_keyboard_probe(false, true, true); }
+
+fn run_native_keyboard_probe(reserved_action: bool, worker_query: bool, ctrl_shift_l: bool) {
+    assert!(!ctrl_shift_l || (worker_query && !reserved_action));
+    // Restore the previous process-local command state even if this diagnostic assertion unwinds.
+    struct RestoreCommands(crate::commands::store::Store);
+    impl Drop for RestoreCommands { fn drop(&mut self) { crate::commands::install(self.0.clone()); } }
+    let _restore_commands = ctrl_shift_l.then(|| RestoreCommands(crate::commands::live().store.clone()));
+    let chord = if ctrl_shift_l { "CtrlShiftL" } else { "CtrlShiftX" };
+    let assigned_chord = if ctrl_shift_l { "Ctrl+Shift+L" } else { "Ctrl+Shift+X" };
     use extensions::json::Value;
     let assignment = if reserved_action { "_execute_action" } else { "bowser-native-probe" };
     let event_kind = if reserved_action { "action.onClicked" } else { "commands.onCommand" };
     let fixture_name = if worker_query { "probe-native-worker-query" } else if reserved_action { "probe-native-action" } else { "probe-native-commands" };
-    println!("NATIVE_COMMAND scope=real-native-keyboard event_kind={event_kind} manifest_assignment={assignment} no_popup={reserved_action} exact_worker_query_before_injection={worker_query} observer_extension_context_present=true worker_query_observer_popup_present={worker_query}");
+    println!("NATIVE_COMMAND scope=real-native-keyboard event_kind={event_kind} manifest_assignment={assignment} no_popup={reserved_action} exact_worker_query_before_injection={worker_query} observer_extension_context_present=true worker_query_observer_popup_present={worker_query} assigned_chord={assigned_chord} explicit_host_conflict_probe={ctrl_shift_l}");
     unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED).ok().unwrap() };
     let root = temp_root();
     for active_tab in [true, false] {
@@ -1735,6 +1760,15 @@ fn run_native_keyboard_probe(reserved_action: bool, worker_query: bool) {
         if !active_tab {
             let manifest = std::fs::read_to_string(source.join("manifest.json")).unwrap().replace(",\n    \"activeTab\"", "");
             assert!(!manifest.contains("\"activeTab\"")); std::fs::write(source.join("manifest.json"), manifest).unwrap();
+        }
+        if ctrl_shift_l {
+            let manifest = std::fs::read_to_string(source.join("manifest.json")).unwrap().replace("Ctrl+Shift+X", "Ctrl+Shift+L");
+            std::fs::write(source.join("manifest.json"), manifest).unwrap();
+            std::fs::create_dir_all(&profile).unwrap();
+            let defaults = crate::commands::store::Store::default();
+            defaults.save(&profile.join("keybindings.txt"), &profile.join("chains.txt")).unwrap();
+            crate::commands::install(crate::commands::store::Store::load(&profile.join("keybindings.txt"), &profile.join("chains.txt")));
+            assert_eq!(crate::commands::resolve(0x4c,true,true,false,&crate::commands::ResolveContext { source: crate::commands::Source::Page, ..Default::default() }),Some(crate::shortcuts::Command::FillPassword));
         }
         let record = extensions::install(&source, &profile.join("Extensions"), &profile.join("extensions.txt")).unwrap();
         let folder = extensions::folder_for(&profile.join("Extensions"), &record.id).unwrap(); let loopback = Loopback::start();
@@ -1748,20 +1782,45 @@ fn run_native_keyboard_probe(reserved_action: bool, worker_query: bool) {
         assert!(pump_until(Duration::from_secs(10), || session.page_script("document.documentElement.getAttribute('data-ready')").as_deref() == Some("\"yes\"")));
         let baseline = command_receipt(&mut session, "native-command-preflight").expect("genuine worker preflight receipt missing");
         println!("NATIVE_COMMAND phase=preflight active_tab={active_tab} receipt={baseline:?}");
-        let assigned = matches!(command_field(&baseline, "commands"), Some(Value::Array(commands)) if commands.iter().any(|command| matches!(command_field(command, "name"), Some(Value::String(name)) if name==assignment) && matches!(command_field(command, "shortcut"), Some(Value::String(chord)) if chord=="Ctrl+Shift+X")));
+        let assigned = matches!(command_field(&baseline, "commands"), Some(Value::Array(commands)) if commands.iter().any(|command| matches!(command_field(command, "name"), Some(Value::String(name)) if name==assignment) && matches!(command_field(command, "shortcut"), Some(Value::String(chord)) if chord==assigned_chord)));
         if !assigned { println!("NATIVE_COMMAND verdict=unavailable-assigned-native-chord-not-reported active_tab={active_tab}"); session.close(); drop(loopback); break; }
         for tab in [TabId(1), TabId(2)] {
             for role in ["primary", "negative"] { assert_eq!(command_view(&mut session, tab, &format!("document.documentElement.getAttribute('data-bowser-native-command-{role}')")).as_deref(), Some("null"), "pregesture injection changed a real browsing view"); }
         }
-        let mut first_native_id = None; let mut first_primary_token = None; let mut second_native_id = None;
+        let mut first_native_id = None; let mut first_primary_token = None; let mut second_native_id = None; let mut conflict_denials = None;
         for tab in [TabId(1), TabId(2)] {
             command_view(&mut session, tab, "document.addEventListener('keydown',e=>{if(e.isTrusted&&e.key==='F8')document.documentElement.setAttribute('data-native-f8','actual-os-key')});true");
             command_input(&mut session, tab, "F8");
             assert_eq!(command_view(&mut session, tab, "document.documentElement.getAttribute('data-native-f8')").as_deref(), Some("\"actual-os-key\""));
             let before = command_receipt(&mut session, "native-command-state").unwrap();
             let previous_events = match command_field(&before,"events") { Some(Value::Array(events)) => events.len(), _ => 0 };
-            COMMAND_ACCELERATOR_FORWARDED.with(|value| value.set(None)); command_input(&mut session, tab, "CtrlShiftX");
-            assert_eq!(COMMAND_ACCELERATOR_FORWARDED.with(std::cell::Cell::get), Some((tab, false)), "actual host accelerator observation did not establish unhandled command");
+            if ctrl_shift_l && tab == TabId(1) {
+                CTRL_L_ACCELERATOR_FORWARDED.with(|value| value.set(None)); CTRL_L_NATIVE_HANDLED.with(|value|value.set(None)); command_input(&mut session,tab,chord);
+                assert_eq!(CTRL_L_ACCELERATOR_FORWARDED.with(std::cell::Cell::get),Some((tab,true)),"default host conflict was not actually consumed");
+                assert_eq!(CTRL_L_NATIVE_HANDLED.with(std::cell::Cell::get),Some((tab,0)),"default native SetHandled did not succeed");
+                pump_until(Duration::from_secs(2),||false);
+                let blocked = command_receipt(&mut session,"native-command-state").unwrap();
+                assert!(matches!(command_field(&blocked,"events"),Some(Value::Array(events)) if events.is_empty()),"default-bound chord unexpectedly reached extension");
+                let conflict_preflight=command_receipt(&mut session,"native-command-preflight").unwrap();
+                conflict_denials=Some(conflict_preflight.clone());
+                println!("NATIVE_CTRL_L_CONFLICT phase=after-default-host-handling observation_seconds=2 native_event_state={blocked:?} permission_receipt={conflict_preflight:?}");
+                assert!(matches!(command_field(&conflict_preflight,"preflight"),Some(Value::Array(attempts)) if !attempts.is_empty() && attempts.iter().all(|attempt| command_field(attempt,"allowed")==Some(&Value::Bool(false)) && command_field(attempt,"permissionDenied")==Some(&Value::Bool(true)))),"host-consumed gesture unexpectedly granted injection");
+                for owned in [TabId(1),TabId(2)] { for role in ["primary","negative"] { assert_eq!(command_view(&mut session,owned,&format!("document.documentElement.getAttribute('data-bowser-native-command-{role}')")).as_deref(),Some("null")); } }
+                let mut changed = crate::commands::store::Store::default();
+                assert!(changed.remove_chord("fill-password", "Ctrl+Shift+L"));
+                assert_eq!(changed.binds.len(),1);assert!(changed.binds["fill-password"].is_empty());
+                changed.save(&profile.join("keybindings.txt"),&profile.join("chains.txt")).unwrap();
+                let reloaded=crate::commands::store::Store::load(&profile.join("keybindings.txt"),&profile.join("chains.txt"));assert_eq!(reloaded,changed);
+                crate::commands::install(reloaded);
+                assert_eq!(crate::commands::resolve(0x4c,true,true,false,&crate::commands::ResolveContext { source: crate::commands::Source::Page, ..Default::default() }),None);
+                println!("NATIVE_CTRL_L_CONFLICT default_consumed=true extension_events_absent=true explicit_disposable_saved_binding_remove=fill-password only_one_override=true no_host_routing_change=true");
+            }
+            if ctrl_shift_l { CTRL_L_ACCELERATOR_FORWARDED.with(|value| value.set(None)); CTRL_L_NATIVE_HANDLED.with(|value|value.set(None)); }
+            else { COMMAND_ACCELERATOR_FORWARDED.with(|value| value.set(None)); }
+            command_input(&mut session, tab, chord);
+            let observed = if ctrl_shift_l { CTRL_L_ACCELERATOR_FORWARDED.with(std::cell::Cell::get) } else { COMMAND_ACCELERATOR_FORWARDED.with(std::cell::Cell::get) };
+            assert_eq!(observed, Some((tab, false)), "actual host accelerator observation did not establish unhandled command");
+            if ctrl_shift_l { assert!(CTRL_L_NATIVE_HANDLED.with(std::cell::Cell::get).is_none(),"unbound chord unexpectedly set native Handled"); }
             let mut receipt = None;
             let received = pump_until(Duration::from_secs(8), || {
                 receipt = command_receipt(&mut session, "native-command-state");
@@ -1787,6 +1846,9 @@ fn run_native_keyboard_probe(reserved_action: bool, worker_query: bool) {
             let native = command_field(event, "nativeTab");
             let Some(Value::Number(native_id)) = native.and_then(|tab| command_field(tab,"id")) else { println!("NATIVE_COMMAND verdict=native-event-has-no-authoritative-tab-target"); session.close(); drop(loopback); remove_with_retries(&root); return; };
             let event_id = Value::Number(native_id.clone());
+            if ctrl_shift_l {
+                assert!(matches!(conflict_denials.as_ref().and_then(|r|command_field(r,"preflight")),Some(Value::Array(attempts)) if attempts.iter().any(|attempt|command_field(attempt,"id")==Some(&event_id)&&command_field(attempt,"allowed")==Some(&Value::Bool(false))&&command_field(attempt,"permissionDenied")==Some(&Value::Bool(true)))),"later genuine owned query/event ID lacks host-conflict permission-denial evidence");
+            }
             if worker_query {
                 assert_eq!(command_field(event,"operationOrder"),Some(&Value::Array(vec![Value::String("query-started".to_owned()),Value::String("query-settled".to_owned()),Value::String("primary-attempt".to_owned())])),"query did not settle before the primary attempt");
                 assert_eq!(command_field(event,"workerQueryComplete"),Some(&Value::Bool(true)),"worker query did not complete before primary injection");

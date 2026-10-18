@@ -27,6 +27,7 @@ public static class BowserStoreSmoke {
  [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h,out RECT r);
  [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h,out uint p);
  [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
+ [DllImport("user32.dll")] public static extern bool IsWindow(IntPtr h);
  [DllImport("user32.dll")] public static extern short GetAsyncKeyState(int key);
  [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
  [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
@@ -221,6 +222,12 @@ function Find-BoundControl([string]$Kind,[string]$Name,[switch]$Prefix) {
  $document=Find-Document $Kind;if(!$document){return $null}
  $all=$document.document.FindAll([Windows.Automation.TreeScope]::Descendants,[Windows.Automation.Condition]::TrueCondition)
  if($all.Count -gt 10000){throw 'Attributed document control inventory exceeded the bounded probe.'}
+ # Preserve the full-inventory refusal above, but ask the provider for exact-name candidates
+ # before expensive per-node property/ancestry reads. Name never establishes document authority.
+ if(!$Prefix){
+  $all=$document.document.FindAll([Windows.Automation.TreeScope]::Descendants,[Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::NameProperty,$Name))
+  if($all.Count -gt 10000){throw 'Attributed filtered control inventory exceeded the bounded probe.'}
+ }
  $matches=@()
  foreach($item in $all){
   if(!$item.Current.IsEnabled -or $item.Current.ControlType -eq [Windows.Automation.ControlType]::Text -or !(In-Document $item $document.document)){continue}
@@ -384,13 +391,34 @@ function Open-ListingReview([string]$Id) {
  if((Cws-ListingId) -cne $Id){throw 'Actual native website document did not commit the expected listing ID.'}
  Invoke-BoundControl $add
 }
+function Capture-CwsControls {
+ $document=Find-Document 'cws';if(!$document){return}
+ $items=$document.document.FindAll([Windows.Automation.TreeScope]::Descendants,[Windows.Automation.Condition]::TrueCondition)
+ if($items.Count -gt 10000){throw 'CWS diagnostic inventory exceeded the unchanged cap.'}
+ $rows=@()
+ for($i=0;$i -lt [Math]::Min($items.Count,256);$i++){
+  $item=$items[$i]
+  if(!(In-Document $item $document.document)){continue}
+  $name=$item.Current.Name;if($name.Length -gt 256){$name=$name.Substring(0,256)}
+  $rows+=@{name=$name;type=$item.Current.ControlType.ProgrammaticName;enabled=$item.Current.IsEnabled;offscreen=$item.Current.IsOffscreen}
+ }
+ $fresh=Find-Document 'cws'
+ if(!$fresh -or !(Same-Uia $fresh.document $document.document) -or $fresh.source -cne $document.source){throw 'CWS diagnostic source changed during enumeration; candidates refused.'}
+ $rows|ConvertTo-Json -Depth 4|Set-Content (Join-Path $Out 'cws-accessibility-candidates.json') -Encoding utf8
+}
 function Probe-OriginalDiscovery {
  $result=[ordered]@{status='failed';category=$false;search=$false;listing=$false;error=$null}
  try {
   Navigate-Owned 'bowser://store';Capture '01-original-chrome-web-store'
-  [void](Wait-CwsPath '/category/extensions')
+  [void](Wait-CwsPath '/category/extensions');$result.category=$true
+  # Ordinary Google promotional choice, not a browser security warning or permission bypass.
+  $dismiss=Find-BoundControl 'cws' 'No thanks'
+  if($dismiss){
+   if($dismiss.control.Current.ControlType -ne [Windows.Automation.ControlType]::Button){throw 'Google promotional dismissal was not an actual attributed button.'}
+   Invoke-BoundControl $dismiss;$report.google_promotion='native-source-bound-no-thanks-invoked'
+   [void](Wait-CwsPath '/category/extensions')
+  }
   $bound=Wait-BoundControl 'cws' 'Search extensions and themes';$search=$bound.control
-  $result.category=$true
   $search.SetFocus();Field-LiteralText $bound 'Stylus'
   $value=$null
   if(!$search.TryGetCurrentPattern([Windows.Automation.ValuePattern]::Pattern,[ref]$value) -or $value.Current.Value -cne 'Stylus' -or !$search.Current.HasKeyboardFocus){throw 'Original CWS search did not retain exact native input/focus; no Enter sent.'}
@@ -406,6 +434,7 @@ function Probe-OriginalDiscovery {
  } catch {
   $result.error=$_.Exception.Message
   try{Capture '03-original-cws-discovery-unavailable'}catch{}
+  try{Capture-CwsControls}catch{$report.cws_candidate_capture_error=$_.Exception.Message}
  }
  $report.original_cws_discovery=$result
 }
@@ -502,12 +531,35 @@ function Run-InstallJourney {
  $report.popup_invoked='native-owned-extension-popup-control'
  Capture '09-native-popup-invoked'
  $windows=[Windows.Automation.AutomationElement]::RootElement.FindAll([Windows.Automation.TreeScope]::Children,[Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::ProcessIdProperty,$app.Id))
- $popupWindow=[IntPtr]::Zero
- foreach($candidate in $windows){$handle=[IntPtr]$candidate.Current.NativeWindowHandle;$class=[Text.StringBuilder]::new(128);[void][BowserStoreSmoke]::GetClassName($handle,$class,128);if($class.ToString() -eq 'BowserExtensionPage'){$popupWindow=$handle;break}}
- if($popupWindow -eq [IntPtr]::Zero){throw 'The actual native extension popup window did not appear.'}
+ $popupWindows=@()
+ foreach($candidate in $windows){$handle=[IntPtr]$candidate.Current.NativeWindowHandle;$class=[Text.StringBuilder]::new(128);[void][BowserStoreSmoke]::GetClassName($handle,$class,128);if($class.ToString() -eq 'BowserExtensionPage'){$popupWindows+=,$handle}}
+ if($popupWindows.Count -ne 1){throw 'The actual native extension popup window was absent or ambiguous.'}
+ $popupWindow=$popupWindows[0]
+ $popupInitialPid=[uint32]0;$popupThread=[BowserStoreSmoke]::GetWindowThreadProcessId($popupWindow,[ref]$popupInitialPid)
+ if($popupInitialPid -ne $app.Id -or $popupThread -eq 0){throw 'Exact popup owner unavailable.'}
  Capture '09b-native-popup-content' -Target $popupWindow -Extension
  $popupElement=[Windows.Automation.AutomationElement]::FromHandle($popupWindow)
+ $popupRuntimeId=$popupElement.GetRuntimeId()
  @($popupElement.FindAll([Windows.Automation.TreeScope]::Descendants,[Windows.Automation.Condition]::TrueCondition)|ForEach-Object{$_.Current.Name})|ConvertTo-Json|Set-Content (Join-Path $Out 'popup-accessibility-text.json') -Encoding utf8
+ # Explicitly finish the popup user task before a separate Settings interaction.
+ $popupPid=[uint32]0;[void][BowserStoreSmoke]::GetWindowThreadProcessId($popupWindow,[ref]$popupPid)
+ $popupClass=[Text.StringBuilder]::new(128);[void][BowserStoreSmoke]::GetClassName($popupWindow,$popupClass,128)
+ if($popupPid -ne $app.Id -or $popupClass.ToString() -ne 'BowserExtensionPage' -or ![BowserStoreSmoke]::IsWindowVisible($popupWindow)){throw 'Exact popup identity changed before ordinary close.'}
+ $close=$null
+ if(!$popupElement.TryGetCurrentPattern([Windows.Automation.WindowPattern]::Pattern,[ref]$close)){throw 'Owned popup has no ordinary WindowPattern close; no fallback.'}
+ $freshPopup=[Windows.Automation.AutomationElement]::FromHandle($popupWindow)
+ $freshPid=[uint32]0;$freshThread=[BowserStoreSmoke]::GetWindowThreadProcessId($popupWindow,[ref]$freshPid)
+ $popupClass.Clear();[void][BowserStoreSmoke]::GetClassName($popupWindow,$popupClass,128)
+ if(![BowserStoreSmoke]::IsWindow($popupWindow) -or $freshPid -ne $app.Id -or $freshThread -ne $popupThread -or $popupClass.ToString() -ne 'BowserExtensionPage' -or !(Same-Uia $freshPopup $popupElement) -or (($freshPopup.GetRuntimeId() -join ',') -cne ($popupRuntimeId -join ','))){throw 'Exact popup native/runtime identity changed after obtaining close pattern; no close.'}
+ $close.Close()
+ $deadline=[DateTime]::UtcNow.AddSeconds(10)
+ while([BowserStoreSmoke]::IsWindow($popupWindow) -and [DateTime]::UtcNow -lt $deadline){Start-Sleep -Milliseconds 100}
+ if([BowserStoreSmoke]::IsWindow($popupWindow)){throw 'Ordinary popup close did not destroy its native window; no Settings input.'}
+ $report.popup_closed='native-owned-window-pattern-close-observed'
+ Assert-Owned;[void][BowserStoreSmoke]::ShowWindow($script:window,9)
+ [void][BowserStoreSmoke]::SetForegroundWindow($script:window)
+ [Windows.Automation.AutomationElement]::FromHandle($script:window).SetFocus()
+ if([BowserStoreSmoke]::GetForegroundWindow() -ne $script:window){throw 'Separate Settings task could not activate the exact owned main window.'}
  # Toggle via the actual accessible switch, then re-enable before removal.
  $toggle=Wait-Control 'uBlock Origin Lite on';Toggle-Control $toggle
  Wait-RecordFlag $recordFile 0

@@ -5600,6 +5600,9 @@ unsafe fn configure_controller(
                     #[cfg(test)] if key == 0x58 && ctrl && shift && !alt && is_key_down(kind) {
                         crate::engine::extension_probe_live::observe_command_accelerator(tab_id, forward.is_some());
                     }
+                    #[cfg(test)] if key == 0x4c && ctrl && shift && !alt && is_key_down(kind) {
+                        crate::engine::extension_probe_live::observe_ctrl_l_accelerator(tab_id, forward.is_some());
+                    }
                     if let Some(forward) = forward {
                         win32::post(
                             parent,
@@ -5607,7 +5610,11 @@ unsafe fn configure_controller(
                             WPARAM(forward.key as usize),
                             LPARAM(forward.modifier_bits()),
                         );
-                        let _ = args.SetHandled(true);
+                        let handled = args.SetHandled(true);
+                        #[cfg(test)] if key == 0x4c && ctrl && shift && !alt && is_key_down(kind) {
+                            crate::engine::extension_probe_live::observe_ctrl_l_handled(tab_id,handled.as_ref().map(|_|()).map_err(|error|error.code().0));
+                        }
+                        let _ = handled;
                     }
                 }
                 Ok(())

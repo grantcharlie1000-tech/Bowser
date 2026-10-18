@@ -191,6 +191,14 @@ jobs:
           $test = Get-ChildItem target/debug/deps/bowser-*.exe | Sort-Object LastWriteTime -Descending | Select-Object -First 1
           & $test.FullName live_probe_native_worker_current_query --ignored --nocapture --test-threads=1 2>&1 | Tee-Object store-native-worker-query-probe.log
           if ($LASTEXITCODE -ne 0) { throw 'Exact pre-injection worker query/control diagnostic failed.' }
+      - name: Probe actual CtrlShiftL conflict and explicit disposable binding choice
+        if: ${{ !cancelled() && steps.native_build.outcome == 'success' }}
+        run: |
+          $env:LOCALAPPDATA = Join-Path $env:RUNNER_TEMP 'bowser-store-native-ctrl-l-localappdata'
+          New-Item -ItemType Directory -Force $env:LOCALAPPDATA | Out-Null
+          $test = Get-ChildItem target/debug/deps/bowser-*.exe | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          & $test.FullName live_probe_native_ctrl_l_conflict --ignored --nocapture --test-threads=1 2>&1 | Tee-Object store-native-ctrl-l-probe.log
+          if ($LASTEXITCODE -ne 0) { throw 'Native CtrlShiftL conflict/permission diagnostic failed.' }
       - name: Probe genuine reserved action without popup or host emulation
         if: ${{ !cancelled() && steps.native_build.outcome == 'success' }}
         run: |
@@ -283,6 +291,7 @@ jobs:
             store-page-links-runtime-controls.log
             store-native-command-probe.log
             store-native-worker-query-probe.log
+            store-native-ctrl-l-probe.log
             store-native-action-keyboard-probe.log
             ${{ runner.temp }}/bowser-native-page-links-*/*.png
             ${{ runner.temp }}/bowser-native-page-links-*/*.json
