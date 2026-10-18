@@ -1,6 +1,6 @@
 //! Disposable native component only. No App, Store command, browser bridge or production caller.
-use std::cell::Cell;
-use windows::{core::{HSTRING,w},Win32::{Foundation::{HWND,LPARAM,LRESULT,RECT,SIZE,WPARAM},Graphics::Gdi::{ANTIALIASED_QUALITY,CreateCompatibleDC,DeleteDC,DeleteObject,DT_CALCRECT,DT_NOPREFIX,DT_WORDBREAK,GetTextExtentPoint32W,GetTextMetricsW,HDC,HFONT,HGDIOBJ,SelectObject,TEXTMETRICW},System::Threading::{GetCurrentProcessId,GetCurrentThreadId},UI::{Input::KeyboardAndMouse::{EnableWindow,IsWindowEnabled},Shell::{DefSubclassProc,GetWindowSubclass,RemoveWindowSubclass,SetWindowSubclass},WindowsAndMessaging::{CreateWindowExW,DestroyWindow,GetDlgCtrlID,GetParent,IsWindow,IsWindowVisible,SendMessageW,SetWindowPos,ShowWindow,BN_CLICKED,BS_PUSHBUTTON,HMENU,HWND_TOP,SW_HIDE,SW_SHOW,SWP_NOACTIVATE,SWP_SHOWWINDOW,WINDOW_EX_STYLE,WINDOW_STYLE,WM_COMMAND,WM_NCDESTROY,WM_SETFONT,WM_GETFONT,GetWindowThreadProcessId,GetClientRect,WS_CHILD,WS_TABSTOP}}}};
+use std::{cell::{Cell,RefCell},collections::HashMap,marker::PhantomData,rc::Rc};
+use windows::{core::{HSTRING,w},Win32::{Foundation::{HWND,LPARAM,LRESULT,RECT,SIZE,WPARAM},Graphics::Gdi::{ANTIALIASED_QUALITY,CreateCompatibleDC,DeleteDC,DeleteObject,DT_CALCRECT,DT_NOPREFIX,DT_WORDBREAK,GetTextExtentPoint32W,GetTextMetricsW,HDC,HFONT,HGDIOBJ,SelectObject,TEXTMETRICW},System::Threading::{GetCurrentProcessId,GetCurrentThreadId},UI::{Input::KeyboardAndMouse::{EnableWindow,IsWindowEnabled},Shell::{DefSubclassProc,RemoveWindowSubclass,SetWindowSubclass},WindowsAndMessaging::{CreateWindowExW,DestroyWindow,GetDlgCtrlID,GetParent,IsWindow,IsWindowVisible,SendMessageW,SetWindowPos,ShowWindow,BN_CLICKED,BS_PUSHBUTTON,HMENU,HWND_TOP,SW_HIDE,SW_SHOW,SWP_NOACTIVATE,SWP_SHOWWINDOW,WINDOW_EX_STYLE,WINDOW_STYLE,WM_COMMAND,WM_NCDESTROY,WM_SETFONT,WM_GETFONT,GetWindowThreadProcessId,GetClientRect,WS_CHILD,WS_TABSTOP}}}};
 use super::{partition,Request,Rows};
 use crate::chrome::{layout::Rect,paint};
 
@@ -60,6 +60,28 @@ fn placement(font:&Font,width:i32,height:i32,dpi:u32)->Option<Placement>{
  Some(Placement{note,button,rows,stacked})
 }
 
+// This private STA registration coordinates only this fixture constructor, not arbitrary subclasses.
+thread_local! {static OWNER_CLAIMS:RefCell<HashMap<isize,u64>>=RefCell::new(HashMap::new());static NEXT_CLAIM:Cell<u64>=const{Cell::new(0)};}
+struct OwnerClaim{owner:HWND,token:u64,thread:u32,_sta:PhantomData<Rc<()>>}
+fn retire_claim(owner:HWND,token:u64,thread:u32)->bool{
+    if thread!=unsafe{GetCurrentThreadId()}{return false}
+    OWNER_CLAIMS.with(|claims|{let mut claims=claims.borrow_mut();let key=owner.0 as isize;if claims.get(&key)!=Some(&token){return false}claims.remove(&key);true})
+}
+impl OwnerClaim{
+    fn new(owner:HWND)->Option<Self>{
+        let token=NEXT_CLAIM.with(|next|{let value=next.get().checked_add(1)?;next.set(value);Some(value)})?;
+        let claimed=OWNER_CLAIMS.with(|claims|{let mut claims=claims.borrow_mut();let key=owner.0 as isize;match claims.entry(key){std::collections::hash_map::Entry::Vacant(entry)=>{entry.insert(token);true},std::collections::hash_map::Entry::Occupied(_)=>false}});
+        claimed.then_some(Self{owner,token,thread:unsafe{GetCurrentThreadId()},_sta:PhantomData})
+    }
+    fn retire(&self)->bool{retire_claim(self.owner,self.token,self.thread)}
+}
+#[test]fn native_band_registration_tokens_refuse_stale_cleanup(){
+    let owner=HWND(std::ptr::dangling_mut());let first=OwnerClaim::new(owner).unwrap();assert!(OwnerClaim::new(owner).is_none());
+    // Known nonattached failure can retire only its own claim; another claim then gets a new token.
+    assert!(first.retire());let second=OwnerClaim::new(owner).unwrap();assert_ne!(first.token,second.token);
+    assert!(!first.retire());assert!(OwnerClaim::new(owner).is_none());assert!(second.retire());
+    let third=OwnerClaim::new(owner).unwrap();assert!(third.retire());
+}
 struct Authority {
     owner: HWND,
     pid: u32,
@@ -69,6 +91,7 @@ struct Authority {
     button_alive: Cell<bool>,
     note_alive: Cell<bool>,
     alive: Cell<bool>,
+    owner_destroyed:Cell<bool>,
     published: Cell<bool>,
     generation: Cell<u64>,
     clicks: Cell<u32>,
@@ -97,7 +120,7 @@ impl Authority {
 unsafe extern "system" fn notification(owner:HWND,message:u32,w:WPARAM,l:LPARAM,_id:usize,data:usize)->LRESULT {
     unsafe {
         let state=&*(data as *const Authority);
-        if message==WM_NCDESTROY { state.alive.set(false);state.published.set(false);let _=state.advance(); }
+        if message==WM_NCDESTROY { state.owner_destroyed.set(true);state.alive.set(false);state.published.set(false);let _=state.advance(); }
         if message==WM_COMMAND && state.published.get() && state.same_owner()
             && state.owner==owner && (w.0&0xffff) as i32==BUTTON_ID && ((w.0>>16)&0xffff) as u32==BN_CLICKED {
             let button=HWND(l.0 as *mut _);
@@ -125,16 +148,15 @@ unsafe extern "system" fn child_lifetime(child:HWND,message:u32,w:WPARAM,l:LPARA
 #[derive(Clone,Copy,Debug)]
 pub(super) struct Prepared {pub plan:Placement,generation:u64}
 /// Native component fixture only: there is deliberately no installation function or App reference.
-pub(super) struct Band {state:Box<Authority>,font:Option<Font>,pub placement:Option<Placement>}
+pub(super) struct Band {state:Box<Authority>,claim:OwnerClaim,font:Option<Font>,pub placement:Option<Placement>}
 impl Band {
     pub fn new(owner:HWND)->Option<Self> {
         let mut pid=0;let thread=unsafe{GetWindowThreadProcessId(owner,Some(&mut pid))};
         if pid!=unsafe{GetCurrentProcessId()} || thread!=unsafe{GetCurrentThreadId()} || !unsafe{IsWindow(Some(owner))}.as_bool() {return None}
-        let mut existing=0;
-        if unsafe{GetWindowSubclass(owner,Some(notification),SUBCLASS_ID,Some(&mut existing))}.as_bool(){return None}
-        let state=Box::new(Authority{owner,pid,thread,button:Cell::new(HWND::default()),note:Cell::new(HWND::default()),button_alive:Cell::new(false),note_alive:Cell::new(false),alive:Cell::new(true),published:Cell::new(false),generation:Cell::new(1),clicks:Cell::new(0),retired_buttons:Cell::new(0)});
-        if !unsafe{SetWindowSubclass(owner,Some(notification),SUBCLASS_ID,(&*state as *const Authority) as usize)}.as_bool(){return None}
-        let band=Self{state,font:None,placement:None};
+        let claim=OwnerClaim::new(owner)?;
+        let state=Box::new(Authority{owner,pid,thread,button:Cell::new(HWND::default()),note:Cell::new(HWND::default()),button_alive:Cell::new(false),note_alive:Cell::new(false),alive:Cell::new(true),owner_destroyed:Cell::new(false),published:Cell::new(false),generation:Cell::new(1),clicks:Cell::new(0),retired_buttons:Cell::new(0)});
+        if !unsafe{SetWindowSubclass(owner,Some(notification),SUBCLASS_ID,(&*state as *const Authority) as usize)}.as_bool(){assert!(claim.retire(),"known nonattached constructor failure must retire its matching claim");return None}
+        let band=Self{state,claim,font:None,placement:None};
         if !band.state.same_owner(){return None}
         Some(band)
     }
@@ -212,13 +234,14 @@ impl Band {
 impl Drop for Band {
     fn drop(&mut self) {
         let released=self.release();
-        let detached=if self.state.alive.get(){unsafe{RemoveWindowSubclass(self.state.owner,Some(notification),SUBCLASS_ID)}.as_bool()}else{true};
-        if !released||!detached {
+        let detached=if self.state.owner_destroyed.get(){true}else if self.state.same_owner(){unsafe{RemoveWindowSubclass(self.state.owner,Some(notification),SUBCLASS_ID)}.as_bool()}else{false};
+        let retired=released&&detached&&(self.state.owner_destroyed.get()||self.state.same_owner())&&self.claim.retire();
+        if !retired {
             // Preserve uncertain native callback/font lifetime until this disposable process exits.
             // The test must assert explicit release before returning; this is not successful cleanup.
             self.state.published.set(false);
             if let Some(font)=self.font.take(){std::mem::forget(font)}
-            let replacement=Box::new(Authority{owner:HWND::default(),pid:0,thread:0,button:Cell::new(HWND::default()),note:Cell::new(HWND::default()),button_alive:Cell::new(false),note_alive:Cell::new(false),alive:Cell::new(false),published:Cell::new(false),generation:Cell::new(0),clicks:Cell::new(0),retired_buttons:Cell::new(0)});
+            let replacement=Box::new(Authority{owner:HWND::default(),pid:0,thread:0,button:Cell::new(HWND::default()),note:Cell::new(HWND::default()),button_alive:Cell::new(false),note_alive:Cell::new(false),alive:Cell::new(false),owner_destroyed:Cell::new(false),published:Cell::new(false),generation:Cell::new(0),clicks:Cell::new(0),retired_buttons:Cell::new(0)});
             std::mem::forget(std::mem::replace(&mut self.state,replacement));
             eprintln!("INSTALLER_BAND_COMPONENT native cleanup uncertain; fixture lifetime preserved, not accepted");
         }
@@ -267,7 +290,7 @@ fn actual_native_installer_band_component() {
             std::thread::sleep(Duration::from_millis(10));
         }
         assert_eq!(band.clicks(),1,"exactly one observed native first-sample click must be the only test-local notification");
-        println!("INSTALLER_BAND_COMPONENT dpi={dpi} font_scale={scale} width={width} stacked={} row_height={} page_top={} captured=true visual_verdict=pending-independent-review install_authority=false",prepared.plan.stacked,prepared.plan.rows.guidance.unwrap().height(),area.top);
+        println!("INSTALLER_BAND_COMPONENT common_controls_context=unmanifested-libtest-not-production-v6 dpi={dpi} font_scale={scale} width={width} stacked={} row_height={} page_top={} captured=true visual_verdict=pending-independent-review install_authority=false",prepared.plan.stacked,prepared.plan.rows.guidance.unwrap().height(),area.top);
     }}
     assert!(band.hide());unsafe{SetWindowPos(owner,Some(HWND_TOP),0,0,120,100,SWP_NOACTIVATE|SWP_SHOWWINDOW).unwrap();}
     assert!(band.prepare(120,100,dpi,200).is_none(),"no-space state must not create a clipped/reserved component");
@@ -278,8 +301,11 @@ fn actual_native_installer_band_component() {
     let mut tiny_client=RECT::default();unsafe{GetClientRect(owner,&mut tiny_client).unwrap();SetWindowPos(page,Some(HWND_TOP),0,0,tiny_client.right,tiny_client.bottom,SWP_NOACTIVATE|SWP_SHOWWINDOW).unwrap();}
     let mut tiny_owner=RECT::default();let mut tiny_page=RECT::default();unsafe{GetWindowRect(owner,&mut tiny_owner).unwrap();GetWindowRect(page,&mut tiny_page).unwrap();}
     assert_eq!((tiny_page.left,tiny_page.top,tiny_page.right-tiny_page.left,tiny_page.bottom-tiny_page.top),(tiny_owner.left,tiny_owner.top,tiny_client.right,tiny_client.bottom),"actual placeholder must fill the no-border tiny owner client after reservation release");
+    assert!(band.release());assert_eq!(band.clicks(),1);let retired_token=band.claim.token;drop(band);
+    let mut band=Band::new(owner).expect("successful real detach must permit a new registration");
+    assert_ne!(band.claim.token,retired_token);assert!(!retire_claim(owner,retired_token,unsafe{GetCurrentThreadId()}));assert!(Band::new(owner).is_none());
     // Destroying the real owner invalidates child authority before the component object drops.
     unsafe{DestroyWindow(host.0).unwrap();}assert!(!band.owner_alive());assert!(band.release());
-    assert_eq!(band.clicks(),1);drop(band);drop(host);
+    assert_eq!(band.clicks(),0);drop(band);assert!(OwnerClaim::new(owner).is_some_and(|claim|claim.retire()));drop(host);
     println!("INSTALLER_BAND_COMPONENT no_space_refused=true actual_no_space_page_reservation_released=true actual_owner_close_observed=true only_test_local_notification=true no_production_activation=true");
 }

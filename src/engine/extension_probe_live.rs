@@ -2335,3 +2335,7 @@ fn live_probe_default_context_menu_cancellation() {
     println!("DEFAULT_CONTEXT_CANCELLATION verdict=observed-created-visible-native-item-and-real-cancellation-no-grant scope=warm-worker-observer-present-top-level-not-selection-or-Bitwarden");
     session.close();let _=std::fs::remove_dir_all(root);
 }
+
+// Distinct documented engine-item presentation experiment; old observers remain unchanged.
+#[path = "custom_context_menu_probe.rs"]
+mod custom_context_menu;

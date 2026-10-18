@@ -6125,6 +6125,25 @@ mod tests {
         pub(in crate::engine) fn probe_document_webview(&self, tab: TabId) -> Option<ICoreWebView2> {
             self.core.borrow().tabs.get(&tab)?.webview.clone()
         }
+        /// Strict current authority snapshot for one isolated feasibility test, never a production epoch.
+        pub(in crate::engine) fn probe_context_authority(&self) -> Option<(Vec<crate::extensions::Record>,HashMap<String,String>)> {
+            let (records,map)={let core=self.core.try_borrow().ok()?;if core.closed{return None}(core.extension_records_file.clone()?,core.extension_ids_file.clone()?)};
+            Some((crate::extensions::read_authority_records(&records).ok()?,read_extension_ids(&map).ok()?))
+        }
+        pub(in crate::engine) fn probe_context_authority_fence(&self) -> Option<Box<dyn Fn() -> bool>> {
+            let snapshot=self.probe_context_authority()?;
+            let (records,map)={let core=self.core.try_borrow().ok()?;(core.extension_records_file.clone()?,core.extension_ids_file.clone()?)};
+            Some(Box::new(move||crate::extensions::read_authority_records(&records).ok().zip(read_extension_ids(&map).ok()).is_some_and(|current|current==snapshot)))
+        }
+        /// One disposable-request fence; no host endpoint or durable epoch claim.
+        pub(in crate::engine) fn probe_context_document_fence(&self, tab: TabId) -> Option<Box<dyn Fn() -> bool>> {
+            let state=self.core.try_borrow().ok()?;if state.closed||state.active_tab!=Some(tab){return None}
+            let current=state.tabs.get(&tab)?;let view=current.webview.clone()?;let gate=current.document_gate.clone();let proof=gate.borrow().proof()?;drop(state);
+            let core=Rc::downgrade(&self.core);
+            Some(Box::new(move||{let Some(core)=core.upgrade() else{return false};let Ok(state)=core.try_borrow() else{return false};
+                !state.closed&&state.active_tab==Some(tab)&&state.tabs.get(&tab).is_some_and(|current|current.webview.as_ref().is_some_and(|current|current.as_raw()==view.as_raw())&&Rc::ptr_eq(&current.document_gate,&gate))&&gate.try_borrow().is_ok_and(|gate|gate.proof()==Some(proof))
+            }))
+        }
         /// Opens an extension page without showing a window.
         pub(in crate::engine) fn open_extension_page_hidden(
             &mut self,

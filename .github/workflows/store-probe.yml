@@ -10,6 +10,7 @@ on:
       - 'src/win32/store.rs'
       - '.github/workflows/store-probe.yml'
       - 'benchmarks/scripts/probe-default-context-cancellation.ps1'
+      - 'benchmarks/scripts/probe-custom-context-menu.ps1'
       - 'benchmarks/scripts/probe-native-installer-band-component.ps1'
       - 'src/chrome/store_guidance_layout.rs'
       - 'src/chrome/store_guidance_layout/**'
@@ -313,6 +314,12 @@ jobs:
           $test = Get-ChildItem target/debug/deps/bowser-*.exe | Sort-Object LastWriteTime -Descending | Select-Object -First 1
           & $test.FullName engine::extension_probe_live::live_probe_default_context_menu_cancellation --exact --ignored --nocapture --test-threads=1 2>&1 | Tee-Object store-default-context-cancellation.log
           if ($LASTEXITCODE -ne 0) { throw 'Default native menu cancellation prerequisite failed or unavailable.' }
+      - name: Probe documented engine-item native menu cancellation and actual dispatch
+        if: ${{ !cancelled() && steps.native_build.outcome == 'success' }}
+        run: |
+          $test = Get-ChildItem target/debug/deps/bowser-*.exe | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          & $test.FullName engine::extension_probe_live::custom_context_menu::live_probe_custom_context_menu --exact --ignored --nocapture --test-threads=1 2>&1 | Tee-Object store-custom-context-menu.log
+          if ($LASTEXITCODE -ne 0) { throw 'Documented custom native menu feasibility failed; no compatibility acceptance.' }
       - name: Probe signed-keyed process-crash recovery at exact native boundaries
         if: ${{ !cancelled() && steps.native_build.outcome == 'success' }}
         run: |
@@ -380,6 +387,10 @@ jobs:
             store-default-context-menu-cancellation/*.log
             store-default-context-menu-cancellation/*.png
             store-default-context-cancellation.log
+            store-custom-context-menu.log
+            store-custom-context-menu/**/*.json
+            store-custom-context-menu/**/*.log
+            store-custom-context-menu/**/*.png
             store-ui-profile-isolation-probe.log
             store-crash-recovery-probe.log
             store-update-probe.log

@@ -219,3 +219,32 @@ faces, real creation/measurement/position-error controls, production navigation/
 visibility, bookmark/split/panel integration and actual CWS Add→trusted consent remain distinct
 later gates. Future production toolbar dispatch must also become popup/management-only when the
 band owns Add; changing its label alone cannot leave the existing listing→Store interception active.
+
+The first component build exposed a pre-main libtest loader failure (`0xc0000139`). The exact
+hashed libtest imported `GetWindowSubclass` by name, its embedded-manifest inspection reported
+no resource section, and the retained System32 Comctl32 export list omitted that v6-only name.
+The test-only correction removes that import and coordinates this private constructor with
+nonreused STA registration tokens. It keeps the existing 5.8-compatible Set/Remove/DefSubclassProc
+helpers and does not change build.rs, production manifests or production UI. Uncertain teardown
+preserves the callback state, fonts and claim. Resulting component captures are explicitly from
+an unmanifested libtest context, not a claim of production-v6 theme fidelity. Rebuilt imports,
+actual test startup, all restored gates and the six native captures remain required evidence.
+
+### Separate documented engine-item menu feasibility test
+
+The ignored `engine::extension_probe_live::custom_context_menu::live_probe_custom_context_menu`
+uses the documented WebView2 `GetDeferral`/`Handled`/`SelectedCommandId` route only in a disposable
+single-test process. It presents the complete bounded engine item tree using a host-owned Win32
+menu, retains request-local item IDs and state, posts the modal continuation after the COM callback
+returns, and sends a selected ID only after genuine confined OS selection and fresh controller,
+document, ordinary-profile and strict record/map snapshot checks. Cancellation retains `-1`.
+It never creates an imitation extension item or calls an extension listener or permission-grant API.
+The existing failed default-menu/UIA experiments and their original rejection remain unchanged.
+
+The first executable scope is a sole keyed fixture, warm worker with its observer popup present,
+top-level editable context, cancellation/no-event/no-grant, two duplicate-URL native view selections,
+actual onClicked tab/frame and executeScript result/effect, separate no-activeTab permission denial,
+and cross-origin revocation against the retained native event ID. A snapshot is not a production
+generation epoch or ABA/two-process proof. Same-URL reload/tab-switch/close/disable/remove races,
+worker cold start, iframe targeting and actual Bitwarden vault use remain distinct later gates.
+No production menu registration, routing, permission or install-authority change is included.
