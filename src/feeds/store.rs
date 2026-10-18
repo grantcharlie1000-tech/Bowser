@@ -61,6 +61,9 @@ impl Feed {
     }
 }
 
+/// Highest subscription id Bowser hands out or reads back, far below `u32::MAX` so `id + 1` cannot overflow.
+pub const MAX_ID: u32 = 1 << 30;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AddError {
     /// Already subscribed; the id is the existing subscription.
@@ -129,7 +132,12 @@ impl Store {
         if self.feeds.len() >= MAX_FEEDS {
             return Err(AddError::TooMany);
         }
-        let id = self.feeds.iter().map(|feed| feed.id).max().unwrap_or(0) + 1;
+        // The next id after the highest; when that would pass MAX_ID, the lowest one not in use (there is
+        // always one, as there are fewer than MAX_FEEDS subscriptions).
+        let next = self.feeds.iter().map(|feed| feed.id).max().unwrap_or(0).checked_add(1).filter(|id| *id <= MAX_ID);
+        let Some(id) = next.or_else(|| (1..=MAX_ID).find(|id| self.feed(*id).is_none())) else {
+            return Err(AddError::TooMany);
+        };
         self.feeds.push(Feed { id, url: comparable(url), title: super::parse::plain_text(title, MAX_TITLE_CHARS), ..Feed::default() });
         Ok(id)
     }
@@ -234,7 +242,7 @@ impl Store {
             match fields.first().map(String::as_str) {
                 Some("F") if fields.len() >= 7 => {
                     let Ok(id) = fields[1].parse::<u32>() else { continue };
-                    if id == 0 || store.feeds.len() >= MAX_FEEDS || store.feed(id).is_some() {
+                    if id == 0 || id > MAX_ID || store.feeds.len() >= MAX_FEEDS || store.feed(id).is_some() {
                         continue;
                     }
                     store.feeds.push(Feed {
@@ -346,6 +354,16 @@ mod tests {
 
     fn parsed(items: Vec<ParsedItem>) -> ParsedFeed {
         ParsedFeed { title: "Site".into(), site: "https://a.example/".into(), items }
+    }
+
+    #[test]
+    fn ids_near_the_top_never_overflow() {
+        let text = format!("F\t{}\thttps://a.example/x\tA\t\t0\t\nF\t{MAX_ID}\thttps://b.example/x\tB\t\t0\t\n", u32::MAX);
+        let mut store = Store::parse(&text);
+        assert_eq!(store.feeds.iter().map(|feed| feed.id).collect::<Vec<_>>(), vec![MAX_ID], "an id past MAX_ID is not read back");
+        // The highest id is taken: the next subscription gets the lowest free id instead of overflowing.
+        assert_eq!(store.add("https://c.example/x", "C"), Ok(1));
+        assert_eq!(store.add("https://d.example/x", "D"), Ok(2));
     }
 
     #[test]
