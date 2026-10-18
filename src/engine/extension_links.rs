@@ -106,7 +106,7 @@ impl ModalWatchdog {
         let id=MODAL_NEXT_ID.with(|next| { let id=next.get(); next.set(id.checked_add(1).filter(|id|*id<0x5b00_0000).expect("test timer ID space exhausted")); id });
         ACTIVE_MODAL.with(|active|assert!(active.borrow().is_none(),"test modal watchdog cannot replace another owner"));
         let deadline=std::time::Instant::now()+std::time::Duration::from_secs(60);
-        let timer = unsafe { windows::Win32::UI::WindowsAndMessaging::SetTimer(Some(hwnd), id, 60_000, None) };
+        let timer = unsafe { windows::Win32::UI::WindowsAndMessaging::SetTimer(Some(hwnd), id, 250, None) };
         assert_ne!(timer,0,"test-only native modal watchdog was not installed");
         ACTIVE_MODAL.with(|active|*active.borrow_mut()=Some((hwnd,id,kind,deadline))); Self(hwnd,id)
     }

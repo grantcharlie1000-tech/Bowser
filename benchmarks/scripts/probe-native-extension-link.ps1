@@ -18,6 +18,36 @@ using System; using System.Runtime.InteropServices; using System.Text;
 public static class BowserExtensionLink {
  [StructLayout(LayoutKind.Sequential)] public struct POINT { public int X,Y; }
  [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left,Top,Right,Bottom; }
+ [StructLayout(LayoutKind.Sequential)] public struct MENUBARINFO { public uint cbSize; public RECT rcBar; public IntPtr hMenu,hwndMenu; public uint flags; }
+ [StructLayout(LayoutKind.Sequential)] public struct GUITHREADINFO { public uint cbSize,flags; public IntPtr hwndActive,hwndFocus,hwndCapture,hwndMenuOwner,hwndMoveSize,hwndCaret; public RECT rcCaret; }
+ public delegate bool EnumWindowProc(IntPtr h,IntPtr p);
+ [DllImport("user32.dll")] public static extern bool EnumWindows(EnumWindowProc f,IntPtr p);
+ [DllImport("user32.dll")] public static extern bool EnumChildWindows(IntPtr h,EnumWindowProc f,IntPtr p);
+ [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h,out RECT r);
+ [DllImport("user32.dll")] public static extern bool GetGUIThreadInfo(uint thread,ref GUITHREADINFO info);
+ [DllImport("user32.dll")] public static extern bool GetMenuBarInfo(IntPtr window,int obj,int item,ref MENUBARINFO info);
+ [DllImport("user32.dll")] public static extern bool IsWindowEnabled(IntPtr h);
+ [DllImport("user32.dll")] public static extern IntPtr GetParent(IntPtr h);
+ [DllImport("user32.dll",CharSet=CharSet.Unicode,SetLastError=true)] public static extern IntPtr SendMessageTimeout(IntPtr h,uint message,UIntPtr count,StringBuilder text,uint flags,uint timeout,out UIntPtr result);
+ [DllImport("user32.dll")] public static extern IntPtr GetDlgItem(IntPtr h,int id);
+ [DllImport("user32.dll",CharSet=CharSet.Unicode)] public static extern int GetWindowText(IntPtr h,StringBuilder s,int n);
+ [DllImport("user32.dll")] public static extern IntPtr WindowFromPoint(POINT point);
+ public static IntPtr[] OwnedWindows(uint pid,uint tid,string cls) {
+  var found=new System.Collections.Generic.List<IntPtr>();
+  EnumWindows((h,p)=>{uint actual;uint thread=GetWindowThreadProcessId(h,out actual);var name=new StringBuilder(64);GetClassName(h,name,64);if(actual==pid&&thread==tid&&IsWindowVisible(h)&&name.ToString()==cls)found.Add(h);return true;},IntPtr.Zero);
+  return found.ToArray();
+ }
+ public static string ReadOwnedChildText(IntPtr child,IntPtr parent,uint pid,uint tid) {
+  uint actual;uint thread=GetWindowThreadProcessId(child,out actual);
+  if(actual!=pid||thread!=tid||GetParent(child)!=parent)return null;
+  var text=new StringBuilder(512);UIntPtr copied;
+  if(SendMessageTimeout(child,0x000D,(UIntPtr)512,text,0x23,250,out copied)==IntPtr.Zero)return null;
+  return text.ToString();
+ }
+ public static bool HasExactStaticText(IntPtr parent,string expected) {
+  bool found=false;int count=0;uint pid;uint tid=GetWindowThreadProcessId(parent,out pid);
+  EnumChildWindows(parent,(h,p)=>{if(++count>16)return false;var cls=new StringBuilder(64);GetClassName(h,cls,64);if(cls.ToString()=="Static"&&ReadOwnedChildText(h,parent,pid,tid)==expected)found=true;return true;},IntPtr.Zero);return found;
+ }
  [DllImport("user32.dll")] public static extern bool GetClientRect(IntPtr h,out RECT r);
  [DllImport("user32.dll")] public static extern bool ClientToScreen(IntPtr h,ref POINT p);
  [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
@@ -46,7 +76,7 @@ do {
  if(!$window){Start-Sleep -Milliseconds 100}
 }while(!$window -and [DateTime]::UtcNow -lt $deadline)
 if(!$window){throw 'Exact owned visible extension page was not found; no input sent.'}
-$h=[IntPtr]$window.Current.NativeWindowHandle;$owner=[uint32]0;[void][BowserExtensionLink]::GetWindowThreadProcessId($h,[ref]$owner)
+$h=[IntPtr]$window.Current.NativeWindowHandle;$owner=[uint32]0;$ownerThread=[BowserExtensionLink]::GetWindowThreadProcessId($h,[ref]$owner)
 if($owner -ne $OwnerPid){throw 'Native owner changed; no input sent.'}
 [void][BowserExtensionLink]::SetForegroundWindow($h);Start-Sleep -Milliseconds 300
 if([BowserExtensionLink]::GetForegroundWindow() -ne $h){throw 'Exact extension page is not foreground; no input sent.'}
@@ -63,8 +93,9 @@ Save-OwnedWindow '01-actual-signed-popup.png'
 # The exact signed link's real bounds are observed through the already-owned in-process test
 # COM document, not inferred from an ambiguous icon accessible name or a guessed screen pixel.
 $names=@()
-foreach($item in $window.FindAll([Windows.Automation.TreeScope]::Descendants,[Windows.Automation.Condition]::TrueCondition)) {
+if($Mode -eq 'ContextMenu') { foreach($item in $window.FindAll([Windows.Automation.TreeScope]::Descendants,[Windows.Automation.Condition]::TrueCondition)) {
  try {$names+=@{name=$item.Current.Name;type=$item.Current.ControlType.ProgrammaticName;automation_id=$item.Current.AutomationId}}catch{}
+}
 }
 $names|ConvertTo-Json|Set-Content (Join-Path $Out 'link-accessibility.json') -Encoding utf8
 if($Mode -eq 'ContextMenu') {
@@ -95,28 +126,84 @@ if(![BowserExtensionLink]::SetCursorPos($point.X,$point.Y)){throw 'Actual native
  if([BowserExtensionLink]::GetForegroundWindow() -ne $h){throw 'Foreground changed before native menu click; no input sent.'}
  $actual=[uint32]0;[void][BowserExtensionLink]::GetWindowThreadProcessId($h,[ref]$actual)
  if($actual -ne $OwnerPid){throw 'Native owner changed before menu click; no input sent.'}
- if(![BowserExtensionLink]::SetCursorPos([int](($commandRect.Left+$commandRect.Right)/2),[int](($commandRect.Top+$commandRect.Bottom)/2))){throw 'Actual native menu cursor placement failed; no input sent.'}
+ $commandPoint=[BowserExtensionLink+POINT]::new();$commandPoint.X=[int](($commandRect.Left+$commandRect.Right)/2);$commandPoint.Y=[int](($commandRect.Top+$commandRect.Bottom)/2)
+ if([BowserExtensionLink]::WindowFromPoint($commandPoint) -ne $h -or ![BowserExtensionLink]::SetCursorPos($commandPoint.X,$commandPoint.Y)){throw 'Native command is obscured or cursor placement failed; no input sent.'}
+ $actual=[uint32]0;$threadNow=[BowserExtensionLink]::GetWindowThreadProcessId($h,[ref]$actual)
+ if($actual -ne $OwnerPid -or $threadNow -ne $ownerThread -or [BowserExtensionLink]::GetForegroundWindow() -ne $h -or [BowserExtensionLink]::WindowFromPoint($commandPoint) -ne $h -or [BowserExtensionLink]::GetMenu($h) -ne $nativeMenu -or [BowserExtensionLink]::GetMenuItemID($nativeMenu,0) -ne 0x4100 -or ([BowserExtensionLink]::GetMenuState($nativeMenu,0,0x400) -band 3) -ne 0){throw 'Native command owner/thread/foreground/menu changed before input.'}
  [BowserExtensionLink]::mouse_event(0x0002,0,0,0,[UIntPtr]::Zero);[BowserExtensionLink]::mouse_event(0x0004,0,0,0,[UIntPtr]::Zero)
 
 }
+function Read-NativeText([IntPtr]$Handle) {
+ $text=[Text.StringBuilder]::new(512);[void][BowserExtensionLink]::GetWindowText($Handle,$text,512);return $text.ToString()
+}
+function Test-ContainedRect($Rect,$Outer) {
+ return $Rect.Right -gt $Rect.Left -and $Rect.Bottom -gt $Rect.Top -and $Rect.Left -ge $Outer.Left -and $Rect.Top -ge $Outer.Top -and $Rect.Right -le $Outer.Right -and $Rect.Bottom -le $Outer.Bottom
+}
+function Send-OwnedPoint($Rect,[IntPtr]$HitWindow,[IntPtr]$Foreground) {
+ $pidNow=[uint32]0;$tidNow=[BowserExtensionLink]::GetWindowThreadProcessId($HitWindow,[ref]$pidNow)
+ if($pidNow -ne $OwnerPid -or $tidNow -ne $ownerThread -or [BowserExtensionLink]::GetForegroundWindow() -ne $Foreground){throw 'Exact native input owner/thread/foreground changed; no input sent.'}
+ $point=[BowserExtensionLink+POINT]::new();$point.X=[int]([double]$Rect.Left+([double]$Rect.Right-$Rect.Left)/2);$point.Y=[int]([double]$Rect.Top+([double]$Rect.Bottom-$Rect.Top)/2)
+ if([BowserExtensionLink]::WindowFromPoint($point) -ne $HitWindow){throw 'Actual native item is obscured or changed; no input sent.'}
+ if(![BowserExtensionLink]::SetCursorPos($point.X,$point.Y)){throw 'Native item cursor placement failed; no input sent.'}
+ if($Mode -eq 'PageLinks') {
+  $gui=[BowserExtensionLink+GUITHREADINFO]::new();$gui.cbSize=[Runtime.InteropServices.Marshal]::SizeOf($gui)
+  if(![BowserExtensionLink]::GetGUIThreadInfo($ownerThread,[ref]$gui) -or $gui.hwndMenuOwner -ne $h -or ($gui.flags -band 0x10) -eq 0){throw 'Native menu owner changed immediately before input.'}
+ }
+ if([BowserExtensionLink]::WindowFromPoint($point) -ne $HitWindow -or [BowserExtensionLink]::GetForegroundWindow() -ne $Foreground){throw 'Native input target changed; no input sent.'}
+ [BowserExtensionLink]::mouse_event(0x0002,0,0,0,[UIntPtr]::Zero);[BowserExtensionLink]::mouse_event(0x0004,0,0,0,[UIntPtr]::Zero)
+}
 if($Mode -eq 'PageLinksEmpty') {
- $dialog=$null;$deadline=[DateTime]::UtcNow.AddSeconds(15)
+ $dialog=[IntPtr]::Zero;$deadline=[DateTime]::UtcNow.AddSeconds(15)
  do {
-  foreach($candidate in $root.FindAll([Windows.Automation.TreeScope]::Children,[Windows.Automation.Condition]::TrueCondition)) {
-   try {if($candidate.Current.ProcessId -eq $OwnerPid -and $candidate.Current.Name -eq 'Extension page links'){$dialog=$candidate;break}}catch{}
+  $matches=@([BowserExtensionLink]::OwnedWindows($OwnerPid,$ownerThread,'#32770')|Where-Object {
+   [BowserExtensionLink]::GetWindow($_,4) -eq $h -and (Read-NativeText $_) -ceq 'Extension page links' -and [BowserExtensionLink]::HasExactStaticText($_,'No eligible same-extension page links are present on this page.')
+  })
+  if($matches.Count -gt 1){throw 'Native no-links notice is ambiguous; no input sent.'}
+  if($matches.Count -eq 1){$dialog=$matches[0]}else{Start-Sleep -Milliseconds 100}
+ }while($dialog -eq [IntPtr]::Zero -and [DateTime]::UtcNow -lt $deadline)
+ if($dialog -eq [IntPtr]::Zero){throw 'Exact owned native no-links notice did not appear; no fallback used.'}
+ $button=[BowserExtensionLink]::GetDlgItem($dialog,1);$class=[Text.StringBuilder]::new(64);[void][BowserExtensionLink]::GetClassName($button,$class,64)
+ if($button -eq [IntPtr]::Zero -or $class.ToString() -cne 'Button' -or [BowserExtensionLink]::ReadOwnedChildText($button,$dialog,$OwnerPid,$ownerThread) -cne 'OK' -or ![BowserExtensionLink]::IsWindowVisible($button) -or ![BowserExtensionLink]::IsWindowEnabled($button)){throw 'Exact native IDOK button was not verified; no input sent.'}
+ $r=[BowserExtensionLink+RECT]::new();$outer=[BowserExtensionLink+RECT]::new()
+ if(![BowserExtensionLink]::GetWindowRect($button,[ref]$r) -or ![BowserExtensionLink]::GetWindowRect($dialog,[ref]$outer) -or !(Test-ContainedRect $r $outer)){throw 'Native notice button bounds were not verified; no input sent.'}
+ if([BowserExtensionLink]::GetWindow($dialog,4) -ne $h -or (Read-NativeText $dialog) -cne 'Extension page links' -or ![BowserExtensionLink]::HasExactStaticText($dialog,'No eligible same-extension page links are present on this page.')){throw 'Native notice identity changed; no input sent.'}
+ Send-OwnedPoint $r $button $dialog
+ $dismissDeadline=[DateTime]::UtcNow.AddSeconds(5)
+ while([BowserExtensionLink]::IsWindowVisible($dialog) -and [DateTime]::UtcNow -lt $dismissDeadline){Start-Sleep -Milliseconds 100}
+ if([BowserExtensionLink]::IsWindowVisible($dialog)){throw 'Native no-links notice remained visible after actual input; dismissal was not proven.'}
+ Write-Output 'NATIVE_EXTENSION_LINK deferred_empty_notice_observed_and_real_os_dismissed=true';return
+}
+if($Mode -eq 'PageLinks') {
+ function Read-OwnedMenuMatches {
+  $info=[BowserExtensionLink+GUITHREADINFO]::new();$info.cbSize=[Runtime.InteropServices.Marshal]::SizeOf($info)
+  if(![BowserExtensionLink]::GetGUIThreadInfo($ownerThread,[ref]$info) -or $info.hwndMenuOwner -ne $h -or ($info.flags -band 0x10) -eq 0){return}
+  foreach($popup in [BowserExtensionLink]::OwnedWindows($OwnerPid,$ownerThread,'#32768')) {
+   $bar=[BowserExtensionLink+MENUBARINFO]::new();$bar.cbSize=[Runtime.InteropServices.Marshal]::SizeOf($bar)
+   if(![BowserExtensionLink]::GetMenuBarInfo($popup,-4,0,[ref]$bar) -or $bar.hMenu -eq [IntPtr]::Zero){continue}
+   $count=[BowserExtensionLink]::GetMenuItemCount($bar.hMenu);if($count -lt 1 -or $count -gt 32){continue}
+   for($index=0;$index -lt $count;$index++) {
+    $label=[Text.StringBuilder]::new(128);$copied=[BowserExtensionLink]::GetMenuString($bar.hMenu,$index,$label,128,0x400)
+    if($copied -le 0 -or $label.ToString() -cne $ExpectedLinkLabel){continue}
+    $id=[BowserExtensionLink]::GetMenuItemID($bar.hMenu,$index);$state=[BowserExtensionLink]::GetMenuState($bar.hMenu,$index,0x400)
+    if($id -ne $index+1 -or $state -eq [uint32]::MaxValue -or ($state -band 0x803) -ne 0){continue}
+    $r=[BowserExtensionLink+RECT]::new();$outer=[BowserExtensionLink+RECT]::new()
+    if([BowserExtensionLink]::GetMenuItemRect([IntPtr]::Zero,$bar.hMenu,$index,[ref]$r) -and [BowserExtensionLink]::GetWindowRect($popup,[ref]$outer) -and (Test-ContainedRect $r $outer)) {
+     [pscustomobject]@{popup=$popup;menu=$bar.hMenu;index=$index;id=$id;rect=$r}
+    }
+   }
   }
-  if(!$dialog){Start-Sleep -Milliseconds 100}
- }while(!$dialog -and [DateTime]::UtcNow -lt $deadline)
- if(!$dialog){throw 'Deferred native no-links notice did not appear; no page fallback used.'}
- $dialogH=[IntPtr]$dialog.Current.NativeWindowHandle;$dialogClass=[Text.StringBuilder]::new(128);[void][BowserExtensionLink]::GetClassName($dialogH,$dialogClass,128)
- if($dialogClass.ToString() -ne '#32770' -or [BowserExtensionLink]::GetWindow($dialogH,4) -ne $h){throw 'Notice is not the exact native dialog owned by the extension window.'}
- $textCondition=[Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::NameProperty,'No eligible same-extension page links are present on this page.')
- if(!$dialog.FindFirst([Windows.Automation.TreeScope]::Descendants,$textCondition)){throw 'Exact no-links notice text was not observed.'}
- $okCondition=[Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::NameProperty,'OK')
- $ok=$dialog.FindFirst([Windows.Automation.TreeScope]::Descendants,$okCondition)
- if(!$ok -or $ok.Current.ProcessId -ne $OwnerPid -or $ok.Current.ControlType -ne [Windows.Automation.ControlType]::Button){throw 'Owned native notice dismissal was not found.'}
- $invoke=$null;if(!$ok.TryGetCurrentPattern([Windows.Automation.InvokePattern]::Pattern,[ref]$invoke)){throw 'Native notice OK has no InvokePattern.'}
- $invoke.Invoke();Write-Output 'NATIVE_EXTENSION_LINK deferred_empty_notice_observed_and_dismissed=true';return
+ }
+ $matches=@();$deadline=[DateTime]::UtcNow.AddSeconds(10)
+ do {$matches=@(Read-OwnedMenuMatches);if($matches.Count -gt 1){throw 'Native exact-label menu item is ambiguous; no input sent.'};if($matches.Count -eq 0){Start-Sleep -Milliseconds 100}}while($matches.Count -eq 0 -and [DateTime]::UtcNow -lt $deadline)
+ if($matches.Count -ne 1){Save-OwnedWindow '02-native-menu-not-found.png';throw 'Exact owned native menu item was not verified; no UIA or scripted fallback used.'}
+ $selected=$matches[0]
+ if($SelectionDelayMs -gt 0){Start-Sleep -Milliseconds $SelectionDelayMs}
+ $fresh=@(Read-OwnedMenuMatches)
+ if($fresh.Count -ne 1 -or $fresh[0].popup -ne $selected.popup -or $fresh[0].menu -ne $selected.menu -or $fresh[0].index -ne $selected.index -or $fresh[0].id -ne $selected.id){throw 'Native menu changed before actual input; no input sent.'}
+ Send-OwnedPoint $fresh[0].rect $fresh[0].popup $h
+ Start-Sleep -Seconds 2;Save-OwnedWindow '02-after-native-link-selection.png'
+ @{owner_pid=$OwnerPid;owner_thread=$ownerThread;owner_window=$h.ToInt64();expected_label_verified=$true;native_menu_id=$selected.id;route='real-owned-native-menu-geometry-and-os-click'}|ConvertTo-Json|Set-Content (Join-Path $Out 'native-link-report.json') -Encoding utf8
+ Write-Output 'NATIVE_EXTENSION_LINK mode=PageLinks exact_native_owner_thread_menu_label_id_state_bounds=true real_os_menu_click=true';return
 }
 # The menu can live in the embedded browser process. Restrict selection to the exact owner's
 # descendant process tree and the Bowser-owned command name/type, not a similarly named website.
