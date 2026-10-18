@@ -1121,10 +1121,12 @@ fn run_extension(owner: HWND, app: &AppRef, action: ext::Action) {
             if record.enabled == on {
                 return ext_answer(owner, ext::Ack::None, String::new());
             }
-            match super::window::set_extension_enabled(app, &profile, &record, on) {
-                Ok(()) => ext_answer(owner, if on { ext::Ack::Enabled } else { ext::Ack::Disabled }, String::new()),
-                Err(error) => ext_answer(owner, ext::Ack::Failed, error),
-            }
+            super::window::set_extension_enabled_async(app, &profile, &record, on, move |result| {
+                match result {
+                    Ok(()) => ext_answer(owner, if on { ext::Ack::Enabled } else { ext::Ack::Disabled }, String::new()),
+                    Err(error) => ext_answer(owner, ext::Ack::Failed, error),
+                }
+            });
         }
         ext::Action::Remove(id) => {
             // One removal at a time: the page shows the one in progress and holds the others.

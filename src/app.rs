@@ -957,6 +957,10 @@ impl App {
     /// Loads an installed extension into the running profile, or unloads it when `enabled` is
     /// false. The outcome goes to the extension status list, which the extension menu shows.
     pub fn set_extension_enabled(app: &AppRef, id: String, folder: PathBuf, enabled: bool) {
+        Self::set_extension_enabled_notify(app, id, folder, enabled, Box::new(|_| {}));
+    }
+
+    pub(crate) fn set_extension_enabled_notify(app: &AppRef, id: String, folder: PathBuf, enabled: bool, done: Box<dyn FnOnce(std::result::Result<(), String>)>) {
         let present = app.borrow().engine.is_some();
         if !present {
             // No engine yet: the saved state takes effect when the window starts.
@@ -965,8 +969,9 @@ impl App {
             } else {
                 Err("Bowser is still starting. The extension was not switched; try again after a browsing tab opens.".to_owned())
             };
-            crate::extensions::record_load_result(&id, result);
+            crate::extensions::record_load_result(&id, result.clone());
             win32::extensions_changed();
+            done(result);
             return;
         }
         let report = id.clone();
@@ -976,7 +981,8 @@ impl App {
                 &folder,
                 enabled,
                 Box::new(move |result| {
-                    crate::extensions::record_load_result(&report, result);
+                    crate::extensions::record_load_result(&report, result.clone());
+                    done(result);
                     // The toolbar button and the settings page show load results; they catch up later.
                     win32::extensions_changed();
                 }),

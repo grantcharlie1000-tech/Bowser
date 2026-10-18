@@ -10,9 +10,12 @@ if (!(Test-Path $exe)) { throw 'Build the HTML-default debug executable first.' 
 New-Item -ItemType Directory -Force $Out | Out-Null
 $run = Join-Path ([IO.Path]::GetTempPath()) ('bowser-native-store-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Force $run | Out-Null
-$initialFile=Join-Path $run 'start.html'
-'<!doctype html><title>Disposable Bowser Store probe</title><h1>Disposable native control</h1>' | Set-Content -LiteralPath $initialFile -Encoding utf8
-$initialUrl=([uri]$initialFile).AbsoluteUri
+$portFile=Join-Path $run 'port.txt';$readyFile=Join-Path $run 'ready.txt'
+@'
+const http=require('node:http'),fs=require('node:fs');const[port,ready]=process.argv.slice(2);
+const server=http.createServer((req,res)=>{const u=new URL(req.url,'http://127.0.0.1');res.setHeader('Cache-Control','no-store');if(u.pathname==='/ready'){fs.writeFileSync(ready,u.searchParams.get('token')||'');res.writeHead(204);res.end();return}res.setHeader('Content-Type','text/html');res.setHeader('Content-Security-Policy',"default-src 'none';script-src 'unsafe-inline';connect-src 'self'");res.end(`<!doctype html><title>Disposable Bowser Store control</title><h1>Disposable native browsing control</h1><script>addEventListener('load',()=>fetch('/ready?token='+encodeURIComponent(new URL(location.href).searchParams.get('token')),{cache:'no-store'}))</script>`)});server.listen(0,'127.0.0.1',()=>fs.writeFileSync(port,String(server.address().port)));
+'@|Set-Content (Join-Path $run 'server.cjs') -Encoding utf8
+$initialUrl=$null;$server=$null;$readyToken=$null
 Add-Type -AssemblyName System.Windows.Forms, System.Drawing, UIAutomationClient, UIAutomationTypes
 Add-Type @'
 using System;
@@ -58,13 +61,18 @@ function Keys([string]$Value) {
  if ([BowserStoreSmoke]::GetForegroundWindow() -ne $script:window) { $report.foreground_window=[BowserStoreSmoke]::GetForegroundWindow().ToInt64();$report.owned_window=$script:window.ToInt64();throw 'Owned foreground unavailable; no keyboard sent.' }
  [Windows.Forms.SendKeys]::SendWait($Value)
 }
-function Capture([string]$Name) {
- Assert-Owned
+function Capture([string]$Name,[IntPtr]$Target=[IntPtr]::Zero,[switch]$Extension) {
+ if($Target -eq [IntPtr]::Zero){$Target=$script:window}
+ if($Extension){
+  $owner=[uint32]0;[void][BowserStoreSmoke]::GetWindowThreadProcessId($Target,[ref]$owner)
+  $class=[Text.StringBuilder]::new(128);[void][BowserStoreSmoke]::GetClassName($Target,$class,128)
+  if($owner -ne $app.Id -or $class.ToString() -ne 'BowserExtensionPage' -or ![BowserStoreSmoke]::IsWindowVisible($Target)){throw 'Not the exact owned native extension page.'}
+ }else{Assert-Owned}
  $rect=[BowserStoreSmoke+RECT]::new()
- if (![BowserStoreSmoke]::GetWindowRect($script:window,[ref]$rect)) { throw 'No window bounds.' }
+ if (![BowserStoreSmoke]::GetWindowRect($Target,[ref]$rect)) { throw 'No window bounds.' }
  $bitmap=[Drawing.Bitmap]::new($rect.Right-$rect.Left,$rect.Bottom-$rect.Top)
  $graphics=[Drawing.Graphics]::FromImage($bitmap); $dc=$graphics.GetHdc()
- try { $ok=[BowserStoreSmoke]::PrintWindow($script:window,$dc,2) }
+ try { $ok=[BowserStoreSmoke]::PrintWindow($Target,$dc,2) }
  finally { $graphics.ReleaseHdc($dc); $graphics.Dispose() }
  try {
   if (!$ok) { throw 'Native screenshot API failed.' }
@@ -107,6 +115,22 @@ function Wait-Window {
  $deadline=[DateTime]::UtcNow.AddSeconds(60);$script:window=[IntPtr]::Zero
  do{Start-Sleep -Milliseconds 200;$app.Refresh();if($app.HasExited){throw 'Disposable native app exited.'};$script:window=$app.MainWindowHandle}while($script:window -eq [IntPtr]::Zero -and [DateTime]::UtcNow -lt $deadline)
  Assert-Owned;[void][BowserStoreSmoke]::MoveWindow($script:window,20,20,1100,800,$true);Start-Sleep -Seconds 5
+}
+function Toggle-Control($Control){
+ $pattern=$null
+ if($Control.TryGetCurrentPattern([Windows.Automation.TogglePattern]::Pattern,[ref]$pattern)){$pattern.Toggle();return}
+ if($Control.TryGetCurrentPattern([Windows.Automation.InvokePattern]::Pattern,[ref]$pattern)){$pattern.Invoke();return}
+ throw 'The owned extension switch exposes neither a native toggle nor invoke action.'
+}
+function Wait-RecordFlag([string]$File,[int]$Flag){
+ $deadline=[DateTime]::UtcNow.AddSeconds(15)
+ do{if((Get-Content -LiteralPath $File -Raw) -match ('^ext-[a-f0-9]{16}\t'+$Flag+'\t')){return};Start-Sleep -Milliseconds 200}while([DateTime]::UtcNow -lt $deadline)
+ throw "The native switch did not durably commit flag $Flag."
+}
+function Wait-NativeReady([string]$Token){
+ $deadline=[DateTime]::UtcNow.AddSeconds(60)
+ do{if((Test-Path -LiteralPath $readyFile) -and ((Get-Content -LiteralPath $readyFile -Raw) -eq $Token)){return};$app.Refresh();if($app.HasExited){throw 'The owned app exited before its real browsing page loaded.'};Start-Sleep -Milliseconds 100}while([DateTime]::UtcNow -lt $deadline)
+ throw 'The actual native browsing WebView did not acknowledge its unique loopback fixture.'
 }
 function Records {
  # The exact disposable owning profile record, never a recursive scan of package folders that
@@ -151,8 +175,11 @@ function Run-InstallJourney {
  if(!$app.CloseMainWindow()){throw 'The owned app did not accept a normal close request.'}
  if(!$app.WaitForExit(15000)){throw 'The owned app did not close cleanly; restart acceptance not attempted.'}
  Start-Sleep -Seconds 2
+ $readyToken=[guid]::NewGuid().ToString('N');$initialUrl="$base/restart?token=$readyToken"
  $script:app=Start-Process $exe -ArgumentList @('--dev','--data-dir',"`"$env:BOWSER_DATA_DIR`"",'--open-url',$initialUrl) -WorkingDirectory $root -PassThru
  Wait-Window
+ Wait-NativeReady $readyToken
+ $report.restart_browsing_ready='unique-loopback-acknowledged'
  Keys '^l';Keys 'bowser://store{ENTER}';Start-Sleep -Seconds 4
  Invoke-Control (Wait-Control 'Installed')
  $popup=Wait-Control 'Open uBlock Origin Lite popup'
@@ -163,12 +190,19 @@ function Run-InstallJourney {
  # Popup hosting is genuine; this does not by itself prove blocker behavior or targeting.
  $report.popup_invoked='native-owned-extension-popup-control'
  Capture '09-native-popup-invoked'
+ $windows=[Windows.Automation.AutomationElement]::RootElement.FindAll([Windows.Automation.TreeScope]::Children,[Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::ProcessIdProperty,$app.Id))
+ $popupWindow=[IntPtr]::Zero
+ foreach($candidate in $windows){$handle=[IntPtr]$candidate.Current.NativeWindowHandle;$class=[Text.StringBuilder]::new(128);[void][BowserStoreSmoke]::GetClassName($handle,$class,128);if($class.ToString() -eq 'BowserExtensionPage'){$popupWindow=$handle;break}}
+ if($popupWindow -eq [IntPtr]::Zero){throw 'The actual native extension popup window did not appear.'}
+ Capture '09b-native-popup-content' -Target $popupWindow -Extension
+ $popupElement=[Windows.Automation.AutomationElement]::FromHandle($popupWindow)
+ @($popupElement.FindAll([Windows.Automation.TreeScope]::Descendants,[Windows.Automation.Condition]::TrueCondition)|ForEach-Object{$_.Current.Name})|ConvertTo-Json|Set-Content (Join-Path $Out 'popup-accessibility-text.json') -Encoding utf8
  # Toggle via the actual accessible switch, then re-enable before removal.
- $toggle=Wait-Control 'uBlock Origin Lite on';$toggle.SetFocus();Keys ' ';Start-Sleep -Seconds 2
+ $toggle=Wait-Control 'uBlock Origin Lite on';Toggle-Control $toggle
+ Wait-RecordFlag $recordFile 0
  $report.disabled_record=Get-Content $recordFile -Raw
- if($report.disabled_record -notmatch '^ext-[a-f0-9]{16}\t0\t'){throw 'Native disable switch did not persist disabled state.'}
- $toggle=Wait-Control 'uBlock Origin Lite on';$toggle.SetFocus();Keys ' ';Start-Sleep -Seconds 2
- if((Get-Content $recordFile -Raw) -notmatch '^ext-[a-f0-9]{16}\t1\t'){throw 'Native re-enable switch did not persist enabled state.'}
+ $toggle=Wait-Control 'uBlock Origin Lite on';Toggle-Control $toggle
+ Wait-RecordFlag $recordFile 1
  Invoke-Control (Wait-Control 'Remove uBlock Origin Lite')
  $confirm=Wait-Control 'Confirm removing uBlock Origin Lite'
  $remove=$confirm.FindFirst([Windows.Automation.TreeScope]::Descendants,[Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::NameProperty,'Remove uBlock Origin Lite'))
@@ -185,10 +219,16 @@ try {
  foreach($name in @('LOCALAPPDATA','BOWSER_DATA_DIR','BOWSER_UI')) { $saved[$name]=[Environment]::GetEnvironmentVariable($name,'Process'); [Environment]::SetEnvironmentVariable($name,$null,'Process') }
  $env:LOCALAPPDATA=Join-Path $run 'localappdata'; $env:BOWSER_DATA_DIR=Join-Path $run 'appdata'
  New-Item -ItemType Directory -Force $env:LOCALAPPDATA,$env:BOWSER_DATA_DIR | Out-Null
+ $server=Start-Process (Get-Command node).Source -ArgumentList @("`"$(Join-Path $run 'server.cjs')`"","`"$portFile`"","`"$readyFile`"") -PassThru -WindowStyle Hidden
+ $deadline=[DateTime]::UtcNow.AddSeconds(15);while(!(Test-Path -LiteralPath $portFile) -and [DateTime]::UtcNow -lt $deadline){Start-Sleep -Milliseconds 50}
+ if(!(Test-Path -LiteralPath $portFile)){throw 'The disposable loopback fixture did not start.'}
+ $base='http://127.0.0.1:'+(Get-Content -LiteralPath $portFile -Raw).Trim();$readyToken=[guid]::NewGuid().ToString('N');$initialUrl="$base/start?token=$readyToken"
  # --dev skips production updater; unlike benchmark mode it does not disable extension startup.
  $app=Start-Process $exe -ArgumentList @('--dev','--data-dir',"`"$env:BOWSER_DATA_DIR`"",'--open-url',$initialUrl) -WorkingDirectory $root -PassThru
  $deadline=[DateTime]::UtcNow.AddSeconds(60); $script:window=[IntPtr]::Zero
  do { Start-Sleep -Milliseconds 200; $app.Refresh(); if($app.HasExited){throw 'Disposable native app exited.'}; $script:window=$app.MainWindowHandle } while($script:window -eq [IntPtr]::Zero -and [DateTime]::UtcNow -lt $deadline)
+ Wait-NativeReady $readyToken
+ $report.initial_browsing_ready='unique-loopback-acknowledged'
  Assert-Owned; [void][BowserStoreSmoke]::MoveWindow($script:window,20,20,1100,800,$true)
  Start-Sleep -Seconds 5
  Capture '00-native-control-before-keyboard'
@@ -202,9 +242,14 @@ try {
  if($InstallJourney){Run-InstallJourney}
  $app.Refresh(); $report.native_process_working_set_bytes=$app.WorkingSet64
  $report.status=if($InstallJourney){'native-journey-awaiting-visual-review-not-functional-compatibility'}else{'captured-awaiting-visual-review'}
-} catch { $report.error=$_.Exception.Message; throw }
+} catch {
+ $report.error=$_.Exception.Message
+ try{Capture '99-native-failure-state';$owned=[Windows.Automation.AutomationElement]::FromHandle($script:window);@($owned.FindAll([Windows.Automation.TreeScope]::Descendants,[Windows.Automation.Condition]::TrueCondition)|ForEach-Object{$_.Current.Name})|ConvertTo-Json|Set-Content (Join-Path $Out 'last-accessibility-text.json') -Encoding utf8}catch{}
+ throw
+}
 finally {
  if($app -and !$app.HasExited) { Stop-Process -Id $app.Id -Force; $app.WaitForExit(10000) | Out-Null }
+ if($server -and !$server.HasExited){Stop-Process -Id $server.Id -Force}
  foreach($entry in $saved.GetEnumerator()){[Environment]::SetEnvironmentVariable($entry.Key,$entry.Value,'Process')}
  $report | ConvertTo-Json -Depth 8 | Set-Content (Join-Path $Out 'native-store-report.json') -Encoding utf8
  # Only our randomly named disposable root. No installed browser/user profile is touched.

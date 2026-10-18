@@ -8429,6 +8429,14 @@ pub(super) fn set_extension_enabled(
     Ok(())
 }
 
+/// Settings waits for the actual native operation AND durable flag commit before showing success.
+pub(super) fn set_extension_enabled_async(app: &AppRef, profile: &crate::profile::Profile, record: &crate::extensions::Record, enabled: bool, done: impl FnOnce(Result<(), String>) + 'static) {
+    let folder = match crate::extensions::folder_for(&profile.extensions_dir(), &record.id) {
+        Ok(folder) => folder, Err(error) => { done(Err(error.to_string())); return; }
+    };
+    App::set_extension_enabled_notify(app, record.id.clone(), folder, enabled, Box::new(done));
+}
+
 /// Unloads an extension, then drops it from the list and deletes Bowser's copy. The caller has
 /// already asked the user. `done` runs once the engine answers (later, or at once without an
 /// engine) with what went wrong, if anything.
