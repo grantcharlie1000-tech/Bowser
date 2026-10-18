@@ -13124,7 +13124,7 @@ thread_local! {
     static APP_MENU_PROBE_TICK: RefCell<Option<Box<dyn FnMut(AppRef)>>> = RefCell::new(None);
 }
 #[cfg(all(test, feature = "experimental-engine-context-menu"))]
-const APP_MENU_PROBE_TIMER:usize=0x6ff2_0002;
+const APP_MENU_PROBE_TIMER:usize=0xB0A7;
 #[cfg(all(test, feature = "experimental-engine-context-menu"))]
 pub(crate) fn set_app_menu_probe_hooks(ready:Box<dyn FnOnce(AppRef)>,tick:Box<dyn FnMut(AppRef)>) {
     APP_MENU_PROBE_READY.with(|slot|{assert!(slot.borrow().is_none());*slot.borrow_mut()=Some(ready);});

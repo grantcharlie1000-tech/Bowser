@@ -8,7 +8,7 @@ use std::rc::Weak;
 use windows::Win32::{Foundation::POINT, Graphics::Gdi::ClientToScreen,
     System::Threading::GetCurrentThreadId, UI::WindowsAndMessaging::*};
 
-pub(crate) const TIMER: usize = 0x6ff2_0001;
+pub(crate) const TIMER: usize = 0xB0A6;
 const INVENTORY_WAIT: Duration = Duration::from_secs(5);
 const MAX_DEFERRALS:usize=64;
 #[cfg(test)]
