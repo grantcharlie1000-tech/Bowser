@@ -12,10 +12,13 @@ if(!(Test-Path $exe)){throw 'The exact HTML-default release executable must be b
 New-Item -ItemType Directory -Force $Out | Out-Null
 $run=Join-Path $ProfilesRoot 'fixture';New-Item -ItemType Directory $run | Out-Null
 $portFile=Join-Path $run 'port.txt';$events=Join-Path $run 'ready.jsonl'
-Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName System.Windows.Forms, UIAutomationClient, UIAutomationTypes
 Add-Type @'
 using System;using System.Text;using System.Runtime.InteropServices;
 public static class BowserExtensionMeasure {
+ [StructLayout(LayoutKind.Sequential)]public struct COUNTERS {public uint cb,PageFaultCount;public UIntPtr PeakWorkingSetSize,WorkingSetSize,QuotaPeakPagedPoolUsage,QuotaPagedPoolUsage,QuotaPeakNonPagedPoolUsage,QuotaNonPagedPoolUsage,PagefileUsage,PeakPagefileUsage,PrivateUsage;}
+ [DllImport("kernel32.dll",SetLastError=true)]public static extern bool K32GetProcessMemoryInfo(IntPtr h,ref COUNTERS counters,uint size);
+ [DllImport("user32.dll")]public static extern bool ShowWindow(IntPtr h,int command);
  [DllImport("user32.dll")]public static extern bool SetForegroundWindow(IntPtr h);
  [DllImport("user32.dll")]public static extern IntPtr GetForegroundWindow();
  [DllImport("user32.dll")]public static extern uint GetWindowThreadProcessId(IntPtr h,out uint p);
@@ -35,12 +38,18 @@ $report=[ordered]@{scope='Paired release-executable observation; zero vs four re
 function Ready([string]$Token){if(!(Test-Path $events)){return $false};return [bool](@(Get-Content $events | ConvertFrom-Json | Where-Object {$_.token -eq $Token}).Count)}
 function Await([scriptblock]$Condition,[string]$Description){$deadline=[DateTime]::UtcNow.AddSeconds(90);do{if($app){$app.Refresh();if($app.HasExited){throw "App exited before $Description"}};if(& $Condition){return};Start-Sleep -Milliseconds 50}while([DateTime]::UtcNow -lt $deadline);throw "Timed out: $Description"}
 function Native-Count([string]$Profile){$file=Join-Path $Profile 'extension_ids.txt';if(!(Test-Path $file)){return 0};return @(Get-Content $file | Where-Object {$_ -match '^ext-[a-f0-9]{16}\t[a-p]{32}$'}).Count}
-function Owned-Keys([string]$Keys){$owner=[uint32]0;[void][BowserExtensionMeasure]::GetWindowThreadProcessId($app.MainWindowHandle,[ref]$owner);$class=[Text.StringBuilder]::new(128);[void][BowserExtensionMeasure]::GetClassName($app.MainWindowHandle,$class,128);if($owner -ne $app.Id -or $class.ToString() -ne 'BowserNativeWindow'){throw 'Not an owned native browser window.'};[void][BowserExtensionMeasure]::SetForegroundWindow($app.MainWindowHandle);Start-Sleep -Milliseconds 100;if([BowserExtensionMeasure]::GetForegroundWindow() -ne $app.MainWindowHandle){throw 'No owned foreground; keyboard not sent.'};[Windows.Forms.SendKeys]::SendWait($Keys)}
+function Owned-Keys([string]$Keys){$owner=[uint32]0;[void][BowserExtensionMeasure]::GetWindowThreadProcessId($app.MainWindowHandle,[ref]$owner);$class=[Text.StringBuilder]::new(128);[void][BowserExtensionMeasure]::GetClassName($app.MainWindowHandle,$class,128);if($owner -ne $app.Id -or $class.ToString() -ne 'BowserNativeWindow'){throw 'Not an owned native browser window.'};[void][BowserExtensionMeasure]::ShowWindow($app.MainWindowHandle,9);try{[Windows.Automation.AutomationElement]::FromHandle($app.MainWindowHandle).SetFocus()}catch{};[void][BowserExtensionMeasure]::SetForegroundWindow($app.MainWindowHandle);Start-Sleep -Milliseconds 250;if([BowserExtensionMeasure]::GetForegroundWindow() -ne $app.MainWindowHandle){throw 'No owned foreground; keyboard not sent.'};[Windows.Forms.SendKeys]::SendWait($Keys)}
 function Memory-Tree {
  $snapshot=@(Get-CimInstance Win32_Process -Filter "Name = 'msedgewebview2.exe' OR ProcessId = $($app.Id)")
  $ids=[Collections.Generic.HashSet[int]]::new();[void]$ids.Add($app.Id)
  do{$changed=$false;foreach($p in $snapshot){if($ids.Contains([int]$p.ParentProcessId) -and $ids.Add([int]$p.ProcessId)){$changed=$true}}}while($changed)
- $entries=@();foreach($id in $ids){try{$p=Get-Process -Id $id -ErrorAction Stop;$entries+=@{pid=$p.Id;name=$p.ProcessName;private_bytes=$p.PrivateMemorySize64;working_set_bytes=$p.WorkingSet64}}catch{}}
+ $entries=@();foreach($id in $ids){
+  $p=Get-Process -Id $id -ErrorAction Stop;$c=[BowserExtensionMeasure+COUNTERS]::new();$c.cb=[Runtime.InteropServices.Marshal]::SizeOf($c)
+  if(![BowserExtensionMeasure]::K32GetProcessMemoryInfo($p.Handle,[ref]$c,$c.cb)){throw "Native memory counters unavailable for owned PID $id"}
+  $identity=$snapshot | Where-Object {[int]$_.ProcessId -eq $id} | Select-Object -First 1
+  $version=$null;if($identity.ExecutablePath){$version=[Diagnostics.FileVersionInfo]::GetVersionInfo($identity.ExecutablePath).ProductVersion}
+  $entries+=@{pid=$p.Id;parent_pid=$identity.ParentProcessId;name=$p.ProcessName;executable_path=$identity.ExecutablePath;command_line=$identity.CommandLine;product_version=$version;private_bytes=$c.PrivateUsage.ToUInt64();working_set_bytes=$c.WorkingSetSize.ToUInt64();private_source='K32GetProcessMemoryInfo/PROCESS_MEMORY_COUNTERS_EX.PrivateUsage';working_set_source='K32GetProcessMemoryInfo/PROCESS_MEMORY_COUNTERS_EX.WorkingSetSize'}
+ }
  return $entries
 }
 try{

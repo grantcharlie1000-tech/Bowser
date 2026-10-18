@@ -1,6 +1,6 @@
 //! Bowser's small, curated catalogue and verified package preparation. The catalogue is not a
 //! Google search API. No website or catalogue metadata can grant installation consent.
-use std::{fs, path::{Path, PathBuf}, sync::atomic::{AtomicBool, AtomicU64, Ordering}};
+use std::{fs, path::{Path, PathBuf}, sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering}};
 use crate::{crx_fetch, extensions::{self, PreparedInstall, Manifest}};
 
 pub const SOURCE_MARKER: &str = "bowser-store-source.txt";
@@ -32,6 +32,19 @@ pub fn request_id() -> String {
     format!("store-{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed))
 }
 
+const MAX_DOWNLOAD_WORKERS: usize = 2;
+static DOWNLOAD_WORKERS: AtomicUsize = AtomicUsize::new(0);
+pub(crate) struct DownloadPermit;
+impl Drop for DownloadPermit {
+    fn drop(&mut self) { DOWNLOAD_WORKERS.fetch_sub(1, Ordering::AcqRel); }
+}
+/// Cancelling is cooperative, so a new click must not create unlimited blocked WinHTTP threads.
+pub(crate) fn acquire_download_permit() -> Option<DownloadPermit> {
+    DOWNLOAD_WORKERS.fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+        (count < MAX_DOWNLOAD_WORKERS).then_some(count + 1)
+    }).ok().map(|_| DownloadPermit)
+}
+
 struct Staging(PathBuf);
 impl Staging {
     fn new() -> Result<Self, String> {
@@ -46,6 +59,31 @@ pub struct Review {
     pub prepared: PreparedInstall,
     pub name: String,
     pub store_id: String,
+    extensions_dir: PathBuf,
+    records_file: PathBuf,
+}
+
+impl Review {
+    /// Revalidate identity ownership at consent, not only when the download began. Two windows
+    /// may have prepared the same Store identity before either one was recorded.
+    pub fn commit(self) -> Result<extensions::Record, String> {
+        ensure_not_installed(&self.store_id, &self.extensions_dir, &self.records_file)?;
+        if installed_source(&self.prepared.folder().map_err(|error| error.to_string())?).as_deref() != Some(self.store_id.as_str()) {
+            return Err("The staged package source identity changed. Nothing was installed.".into());
+        }
+        self.prepared.commit_named(&self.name).map_err(|error| error.to_string())
+    }
+}
+
+fn ensure_not_installed(id: &str, extensions_dir: &Path, records_file: &Path) -> Result<(), String> {
+    for record in extensions::read_records(records_file).map_err(|error| error.to_string())? {
+        if let Ok(folder) = extensions::folder_for(extensions_dir, &record.id)
+            && installed_source(&folder).as_deref() == Some(id)
+        {
+            return Err("This extension is already installed in this profile. Verified extension updates are not enabled yet.".to_owned());
+        }
+    }
+    Ok(())
 }
 
 /// Downloads and verifies before touching a profile, then prepares its immutable, unrecorded copy.
@@ -56,14 +94,8 @@ pub fn prepare(
     crx_fetch::parse_extension_id(id).map_err(|error| error.to_string())?;
     let check_cancelled = || if cancelled.load(Ordering::Acquire) { Err("Download cancelled. Nothing was installed.".to_owned()) } else { Ok(()) };
     check_cancelled()?;
-    // Prevent duplicate signing identities, including while the first installation needs a restart.
-    for record in extensions::read_records(records_file).map_err(|error| error.to_string())? {
-        if let Ok(folder) = extensions::folder_for(extensions_dir, &record.id) {
-            if installed_source(&folder).as_deref() == Some(id) {
-                return Err("This extension is already installed in this profile. Use its update control.".to_owned());
-            }
-        }
-    }
+    // Also checked again at consent, because another window may install during download/review.
+    ensure_not_installed(id, extensions_dir, records_file)?;
     let staging = Staging::new()?;
     crx_fetch::fetch_and_unpack_cancellable(id, runtime, &staging.0, cancelled).map_err(|error| format!("Package download or verification failed: {error}. This is not a runtime compatibility verdict."))?;
     check_cancelled()?;
@@ -74,7 +106,7 @@ pub fn prepare(
     fs::write(&marker, id).map_err(|_| "The verified package source could not be recorded.".to_owned())?;
     let prepared = extensions::prepare_install(&staging.0, extensions_dir, records_file).map_err(|error| error.to_string())?;
     check_cancelled()?;
-    Ok(Review { prepared, name, store_id: id.to_owned() })
+    Ok(Review { prepared, name, store_id: id.to_owned(), extensions_dir: extensions_dir.to_owned(), records_file: records_file.to_owned() })
 }
 
 pub fn installed_source(folder: &Path) -> Option<String> {
@@ -119,6 +151,40 @@ mod tests {
             assert_eq!(url::Url::parse(item.homepage).unwrap().scheme(), "https");
         }
     }
+    #[test]
+    fn cooperative_downloads_have_a_bounded_worker_budget() {
+        let first = acquire_download_permit().unwrap();
+        let second = acquire_download_permit().unwrap();
+        assert!(acquire_download_permit().is_none());
+        drop(first);
+        let replacement = acquire_download_permit().unwrap();
+        assert!(acquire_download_permit().is_none());
+        drop(second); drop(replacement);
+        assert_eq!(DOWNLOAD_WORKERS.load(Ordering::Acquire), 0);
+    }
+
+    #[test]
+    fn concurrent_reviews_cannot_commit_the_same_store_identity_twice() {
+        let root = std::env::temp_dir().join(format!("bowser-store-duplicate-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root); fs::create_dir_all(&root).unwrap();
+        let source = root.join("source"); fs::create_dir(&source).unwrap();
+        fs::write(source.join("manifest.json"), br#"{"manifest_version":3,"name":"Resolved name","version":"1"}"#).unwrap();
+        let id = CATALOGUE[0].id; fs::write(source.join(SOURCE_MARKER), id).unwrap();
+        let extensions_dir = root.join("Extensions"); let records_file = root.join("extensions.txt");
+        let review = || Review {
+            prepared: extensions::prepare_install(&source, &extensions_dir, &records_file).unwrap(),
+            name: "Resolved name".into(), store_id: id.into(),
+            extensions_dir: extensions_dir.clone(), records_file: records_file.clone(),
+        };
+        let first = review(); let second = review();
+        let second_folder = second.prepared.folder().unwrap();
+        let record = first.commit().unwrap();
+        assert!(second.commit().is_err());
+        assert!(!second_folder.exists());
+        assert_eq!(extensions::read_records(&records_file).unwrap(), vec![record]);
+        let _ = fs::remove_dir_all(root);
+    }
+
     #[test]
     fn review_tokens_are_bounded_and_not_paths() {
         assert!(valid_request_id(&request_id()));

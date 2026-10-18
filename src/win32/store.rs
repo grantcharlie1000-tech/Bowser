@@ -45,6 +45,9 @@ pub(crate) fn start(owner: HWND, app: &AppRef, id: &str) {
         return error(owner, "This WebView2 runtime cannot run supported extensions. Update the WebView2 runtime before installing; restarting alone will not fix this. Nothing was installed.");
     }
     let version = runtime.split_whitespace().next().unwrap_or_default().to_owned();
+    let Some(permit) = store::acquire_download_permit() else {
+        return error(owner, "Other extension downloads are finishing. Wait a moment and try again. Nothing was installed.");
+    };
     let request = store::request_id();
     let cancelled = Arc::new(AtomicBool::new(false));
     let restart = crate::extensions::read_records(&profile.extensions_file()).is_ok_and(|records| records.is_empty());
@@ -53,6 +56,7 @@ pub(crate) fn start(owner: HWND, app: &AppRef, id: &str) {
     let raw = owner.0 as isize;
     let worker_id = id.to_owned();
     let spawned = std::thread::Builder::new().name("bowser-store-download".into()).spawn(move || {
+        let _permit = permit;
         let outcome = store::prepare(&worker_id, &version, &profile.extensions_dir(), &profile.extensions_file(), &cancelled);
         // Never keep a prepared copy for a cancelled/closed window waiting for another event.
         let mut completed = COMPLETED.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -137,7 +141,7 @@ pub(crate) fn run(owner: HWND, app: &AppRef, fields: &PanelFields) -> bool {
                 state.phase = "installing"; state.review.take()
             });
             if let (Some(review), Some(profile)) = (review, profile) {
-                let result = review.prepared.commit_named(&review.name).map(Some).map_err(|error| error.to_string());
+                let result = review.commit().map(Some);
                 match super::window::finish_install(app, &profile, result) {
                     Ok(true) => { with(owner, |state| { state.phase = "ready"; state.error.clear(); }); changed(owner); }
                     Ok(false) => error(owner, "No extension was installed."),

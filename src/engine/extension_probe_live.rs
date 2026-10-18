@@ -793,7 +793,7 @@ fn live_store_current_extension_loads() {
             println!("REAL_STORE measurement_copy id={} name={} version={} consent=explicit-disposable-profile", copied.id, copied.name, copied.version);
         }
         // Explicit test-harness consent to exactly the verified copy, never credentials/accounts.
-        let record = review.prepared.commit_named(&review.name).expect("test-only reviewed package consent");
+        let record = review.commit().expect("test-only reviewed package consent");
         let folder = extensions::folder_for(&profile.join("Extensions"), &record.id).unwrap();
         let loopback = Loopback::start();
         let mut session = Session::open(&profile, vec![(record.id.clone(), folder.clone())], vec![(record.id.clone(), true)], &loopback.page("real-first"));

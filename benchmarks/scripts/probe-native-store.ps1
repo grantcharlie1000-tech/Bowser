@@ -26,6 +26,7 @@ public static class BowserStoreSmoke {
  [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
  [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
  [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+ [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h,int command);
  [DllImport("user32.dll")] public static extern bool MoveWindow(IntPtr h,int x,int y,int w,int height,bool repaint);
  [DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr h,IntPtr dc,uint flags);
 }
@@ -41,9 +42,14 @@ function Assert-Owned {
 }
 function Keys([string]$Value) {
  Assert-Owned
- [void][BowserStoreSmoke]::SetForegroundWindow($script:window)
- Start-Sleep -Milliseconds 250
- if ([BowserStoreSmoke]::GetForegroundWindow() -ne $script:window) { throw 'Owned foreground unavailable; no keyboard sent.' }
+ [void][BowserStoreSmoke]::ShowWindow($script:window,9)
+ for($attempt=0;$attempt -lt 3;$attempt++) {
+  try { [Windows.Automation.AutomationElement]::FromHandle($script:window).SetFocus() } catch {}
+  [void][BowserStoreSmoke]::SetForegroundWindow($script:window)
+  Start-Sleep -Milliseconds 250
+  if([BowserStoreSmoke]::GetForegroundWindow() -eq $script:window){break}
+ }
+ if ([BowserStoreSmoke]::GetForegroundWindow() -ne $script:window) { $report.foreground_window=[BowserStoreSmoke]::GetForegroundWindow().ToInt64();$report.owned_window=$script:window.ToInt64();throw 'Owned foreground unavailable; no keyboard sent.' }
  [Windows.Forms.SendKeys]::SendWait($Value)
 }
 function Capture([string]$Name) {
@@ -165,6 +171,7 @@ try {
  do { Start-Sleep -Milliseconds 200; $app.Refresh(); if($app.HasExited){throw 'Disposable native app exited.'}; $script:window=$app.MainWindowHandle } while($script:window -eq [IntPtr]::Zero -and [DateTime]::UtcNow -lt $deadline)
  Assert-Owned; [void][BowserStoreSmoke]::MoveWindow($script:window,20,20,1100,800,$true)
  Start-Sleep -Seconds 5
+ Capture '00-native-control-before-keyboard'
  Keys '^l';Keys 'bowser://store{ENTER}';Start-Sleep -Seconds 4
  Capture '01-native-store-discover'
  # This is ordinary omnibox navigation, not an install bridge or injected UI command.
