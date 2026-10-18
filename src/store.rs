@@ -40,9 +40,14 @@ impl Drop for DownloadPermit {
 }
 /// Cancelling is cooperative, so a new click must not create unlimited blocked WinHTTP threads.
 pub(crate) fn acquire_download_permit() -> Option<DownloadPermit> {
-    DOWNLOAD_WORKERS.fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
-        (count < MAX_DOWNLOAD_WORKERS).then_some(count + 1)
-    }).ok().map(|_| DownloadPermit)
+    let mut count = DOWNLOAD_WORKERS.load(Ordering::Acquire);
+    loop {
+        if count >= MAX_DOWNLOAD_WORKERS { return None; }
+        match DOWNLOAD_WORKERS.compare_exchange_weak(count, count + 1, Ordering::AcqRel, Ordering::Acquire) {
+            Ok(_) => return Some(DownloadPermit),
+            Err(observed) => count = observed,
+        }
+    }
 }
 
 struct Staging(PathBuf);

@@ -80,13 +80,21 @@ function Find-Control([string]$Name, [switch]$Prefix) {
  $owned=[Windows.Automation.AutomationElement]::FromHandle($script:window)
  $all=$owned.FindAll([Windows.Automation.TreeScope]::Descendants,[Windows.Automation.Condition]::TrueCondition)
  foreach($item in $all) {
-  try { if($item.Current.IsOffscreen -or !$item.Current.IsEnabled -or $item.Current.ControlType -eq [Windows.Automation.ControlType]::Text){continue}; $actual=$item.Current.Name; if(($Prefix -and $actual.StartsWith($Name,[StringComparison]::Ordinal)) -or (!$Prefix -and $actual -eq $Name)){return $item} } catch {}
+  try { if(!$item.Current.IsEnabled -or $item.Current.ControlType -eq [Windows.Automation.ControlType]::Text){continue}; $actual=$item.Current.Name; if(($Prefix -and $actual.StartsWith($Name,[StringComparison]::Ordinal)) -or (!$Prefix -and $actual -eq $Name)){
+    if($item.Current.IsOffscreen){$scroll=$null;if($item.TryGetCurrentPattern([Windows.Automation.ScrollItemPattern]::Pattern,[ref]$scroll)){$scroll.ScrollIntoView()}else{$item.SetFocus()};Start-Sleep -Milliseconds 300}
+    return $item
+   } } catch {}
  }
  return $null
 }
 function Wait-Control([string]$Name,[switch]$Prefix) {
  $deadline=[DateTime]::UtcNow.AddSeconds(90)
  do { $found=Find-Control $Name -Prefix:$Prefix; if($found){return $found}; $app.Refresh();if($app.HasExited){throw 'Native app exited during journey.'};Start-Sleep -Milliseconds 300 } while([DateTime]::UtcNow -lt $deadline)
+ try {
+  $owned=[Windows.Automation.AutomationElement]::FromHandle($script:window)
+  @($owned.FindAll([Windows.Automation.TreeScope]::Descendants,[Windows.Automation.Condition]::TrueCondition)|ForEach-Object{$_.Current.Name}) | ConvertTo-Json | Set-Content (Join-Path $Out 'last-accessibility-text.json') -Encoding utf8
+  Capture '99-native-failure-state'
+ } catch {}
  throw "Native accessible control did not appear: $Name"
 }
 function Invoke-Control($Control) {
