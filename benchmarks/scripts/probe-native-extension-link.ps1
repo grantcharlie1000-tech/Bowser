@@ -29,9 +29,37 @@ public static class BowserExtensionLink {
  [DllImport("user32.dll")] public static extern bool IsWindowEnabled(IntPtr h);
  [DllImport("user32.dll")] public static extern IntPtr GetParent(IntPtr h);
  [DllImport("user32.dll",CharSet=CharSet.Unicode,SetLastError=true)] public static extern IntPtr SendMessageTimeout(IntPtr h,uint message,UIntPtr count,StringBuilder text,uint flags,uint timeout,out UIntPtr result);
- [DllImport("user32.dll")] public static extern IntPtr GetDlgItem(IntPtr h,int id);
+ [DllImport("user32.dll",SetLastError=true)] public static extern IntPtr GetDlgItem(IntPtr h,int id);
  [DllImport("user32.dll",CharSet=CharSet.Unicode)] public static extern int GetWindowText(IntPtr h,StringBuilder s,int n);
  [DllImport("user32.dll")] public static extern IntPtr WindowFromPoint(POINT point);
+ [DllImport("user32.dll")] public static extern bool IsWindow(IntPtr h);
+ [DllImport("user32.dll")] public static extern int GetDlgCtrlID(IntPtr h);
+ static readonly System.Diagnostics.Stopwatch clock=System.Diagnostics.Stopwatch.StartNew(); static int diagnostics;
+ public static string DiagnosticsFile;
+ static readonly System.Collections.Generic.List<string> diagnosticLines=new System.Collections.Generic.List<string>();
+ public static void Diag(string phase) {
+  if(++diagnostics>128)return;
+  try { string line="utc="+DateTime.UtcNow.ToString("O")+" elapsed_ms="+clock.ElapsedMilliseconds+" "+phase;
+   diagnosticLines.Add("\""+line.Replace("\\", "\\\\").Replace("\"", "\\\"")+"\"");
+   if(DiagnosticsFile!=null)System.IO.File.WriteAllText(DiagnosticsFile,"["+String.Join(",",diagnosticLines)+"]",new UTF8Encoding(false));
+  } catch { /* Diagnostic I/O never changes the authoritative selection/input predicate. */ }
+ }
+ public static void DialogState(IntPtr dialog,IntPtr owner,uint pid,uint tid,string phase) {
+  uint actual;uint thread=GetWindowThreadProcessId(dialog,out actual);var cls=new StringBuilder(64);GetClassName(dialog,cls,64);
+  Diag(phase+" alive="+IsWindow(dialog)+" pid_match="+(actual==pid)+" thread_match="+(thread==tid)+" owner_match="+(GetWindow(dialog,4)==owner)+" class_dialog="+(cls.ToString()=="#32770"));
+ }
+ public static void FailedDialogChildren(IntPtr dialog,IntPtr owner,uint pid,uint tid) {
+  uint parentPid;uint parentThread=GetWindowThreadProcessId(dialog,out parentPid);var parentClass=new StringBuilder(64);
+  GetClassName(dialog,parentClass,64);
+  if(!IsWindow(dialog)||parentPid!=pid||parentThread!=tid||GetWindow(dialog,4)!=owner||parentClass.ToString()!="#32770"){Diag("failed_child_inventory skipped_parent_identity=true");return;}
+  var title=new StringBuilder(64);GetWindowText(dialog,title,64);
+  if(title.ToString()!="Extension page links"){Diag("failed_child_inventory skipped_parent_caption=true");return;}
+  int count=0;EnumChildWindows(dialog,(child,p)=>{if(++count>16)return false;uint actual;uint thread=GetWindowThreadProcessId(child,out actual);
+   if(actual!=pid||thread!=tid||GetParent(child)!=dialog){Diag("failed_child index="+count+" direct_owned=false");return true;}
+   var cls=new StringBuilder(64);GetClassName(child,cls,64);int id=GetDlgCtrlID(child);var text=ReadOwnedChildText(child,dialog,pid,tid);
+   string kind=text==null?"unreadable":text=="OK"?"exact-OK":text=="&OK"?"standard-mnemonic-OK":text=="No eligible same-extension page links are present on this page."?"exact-body":"other";
+   Diag("failed_child index="+count+" direct_owned=true id="+id+" class_button="+(cls.ToString()=="Button")+" class_static="+(cls.ToString()=="Static")+" caption_kind="+kind);return true;},IntPtr.Zero);
+ }
  public static IntPtr[] OwnedWindows(uint pid,uint tid,string cls) {
   var found=new System.Collections.Generic.List<IntPtr>();
   EnumWindows((h,p)=>{uint actual;uint thread=GetWindowThreadProcessId(h,out actual);var name=new StringBuilder(64);GetClassName(h,name,64);if(actual==pid&&thread==tid&&IsWindowVisible(h)&&name.ToString()==cls)found.Add(h);return true;},IntPtr.Zero);
@@ -41,7 +69,10 @@ public static class BowserExtensionLink {
   uint actual;uint thread=GetWindowThreadProcessId(child,out actual);
   if(actual!=pid||thread!=tid||GetParent(child)!=parent)return null;
   var text=new StringBuilder(512);UIntPtr copied;
-  if(SendMessageTimeout(child,0x000D,(UIntPtr)512,text,0x23,250,out copied)==IntPtr.Zero)return null;
+  Diag("wm_gettext_begin");var started=clock.ElapsedMilliseconds;
+  var result=SendMessageTimeout(child,0x000D,(UIntPtr)512,text,0x23,250,out copied);
+  Diag("wm_gettext_end success="+(result!=IntPtr.Zero)+" duration_ms="+(clock.ElapsedMilliseconds-started));
+  if(result==IntPtr.Zero)return null;
   return text.ToString();
  }
  public static bool HasExactStaticText(IntPtr parent,string expected) {
@@ -66,7 +97,9 @@ public static class BowserExtensionLink {
  [DllImport("user32.dll")] public static extern void mouse_event(uint flags,uint x,uint y,uint data,UIntPtr extra);
 }
 '@
+trap { [BowserExtensionLink]::Diag('helper_failure_exit'); throw }
 New-Item -ItemType Directory -Force $Out | Out-Null
+[BowserExtensionLink]::DiagnosticsFile=Join-Path $Out 'native-notice-chronology.json'
 $root=[Windows.Automation.AutomationElement]::RootElement
 $window=$null; $deadline=[DateTime]::UtcNow.AddSeconds(15)
 do {
@@ -152,6 +185,7 @@ function Send-OwnedPoint($Rect,[IntPtr]$HitWindow,[IntPtr]$Foreground) {
  if([BowserExtensionLink]::WindowFromPoint($point) -ne $HitWindow -or [BowserExtensionLink]::GetForegroundWindow() -ne $Foreground){throw 'Native input target changed; no input sent.'}
  [BowserExtensionLink]::mouse_event(0x0002,0,0,0,[UIntPtr]::Zero);[BowserExtensionLink]::mouse_event(0x0004,0,0,0,[UIntPtr]::Zero)
 }
+[BowserExtensionLink]::Diag('command_input_returned')
 if($Mode -eq 'PageLinksEmpty') {
  $dialog=[IntPtr]::Zero;$deadline=[DateTime]::UtcNow.AddSeconds(15)
  do {
@@ -162,12 +196,17 @@ if($Mode -eq 'PageLinksEmpty') {
   if($matches.Count -eq 1){$dialog=$matches[0]}else{Start-Sleep -Milliseconds 100}
  }while($dialog -eq [IntPtr]::Zero -and [DateTime]::UtcNow -lt $deadline)
  if($dialog -eq [IntPtr]::Zero){throw 'Exact owned native no-links notice did not appear; no fallback used.'}
- $button=[BowserExtensionLink]::GetDlgItem($dialog,1);$class=[Text.StringBuilder]::new(64);[void][BowserExtensionLink]::GetClassName($button,$class,64)
+ [BowserExtensionLink]::DialogState($dialog,$h,$OwnerPid,$ownerThread,'exact_candidate_body_discovered')
+ [BowserExtensionLink]::DialogState($dialog,$h,$OwnerPid,$ownerThread,'before_getdlgitem')
+ $button=[BowserExtensionLink]::GetDlgItem($dialog,1);$getDlgError=[Runtime.InteropServices.Marshal]::GetLastWin32Error()
+ [BowserExtensionLink]::Diag("getdlgitem_returned idok_nonzero=$($button -ne [IntPtr]::Zero) last_error_diagnostic_only=$getDlgError")
+ [BowserExtensionLink]::DialogState($dialog,$h,$OwnerPid,$ownerThread,'after_getdlgitem')
+ $class=[Text.StringBuilder]::new(64);[void][BowserExtensionLink]::GetClassName($button,$class,64)
  $buttonText=[BowserExtensionLink]::ReadOwnedChildText($button,$dialog,$OwnerPid,$ownerThread)
  $captionKind=if($null -eq $buttonText){'unreadable'}elseif($buttonText -ceq 'OK'){'exact-OK'}elseif($buttonText -ceq '&OK'){'standard-mnemonic-OK'}else{'unexpected'}
  $classMatches=$class.ToString() -ceq 'Button';$visible=[BowserExtensionLink]::IsWindowVisible($button);$enabled=[BowserExtensionLink]::IsWindowEnabled($button)
  Write-Output "NATIVE_EMPTY_NOTICE idok_nonzero=$($button -ne [IntPtr]::Zero) class_button=$classMatches caption_kind=$captionKind visible=$visible enabled=$enabled"
- if($button -eq [IntPtr]::Zero -or !$classMatches -or $captionKind -notin @('exact-OK','standard-mnemonic-OK') -or !$visible -or !$enabled){throw 'Exact native IDOK button was not verified; no input sent.'}
+ if($button -eq [IntPtr]::Zero -or !$classMatches -or $captionKind -notin @('exact-OK','standard-mnemonic-OK') -or !$visible -or !$enabled){[BowserExtensionLink]::FailedDialogChildren($dialog,$h,$OwnerPid,$ownerThread);throw 'Exact native IDOK button was not verified; no input sent.'}
  $r=[BowserExtensionLink+RECT]::new();$outer=[BowserExtensionLink+RECT]::new()
  if(![BowserExtensionLink]::GetWindowRect($button,[ref]$r) -or ![BowserExtensionLink]::GetWindowRect($dialog,[ref]$outer) -or !(Test-ContainedRect $r $outer)){throw 'Native notice button bounds were not verified; no input sent.'}
  if([BowserExtensionLink]::GetWindow($dialog,4) -ne $h -or (Read-NativeText $dialog) -cne 'Extension page links' -or ![BowserExtensionLink]::HasExactStaticText($dialog,'No eligible same-extension page links are present on this page.')){throw 'Native notice identity changed; no input sent.'}
