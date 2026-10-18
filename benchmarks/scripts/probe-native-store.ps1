@@ -218,34 +218,44 @@ function In-Document($Control,$Document) {
  }
  return $false
 }
-function Find-BoundControl([string]$Kind,[string]$Name,[switch]$Prefix) {
+function Find-BoundControl([string]$Kind,[string]$Name,[switch]$Prefix,[Windows.Automation.ControlType]$ControlType,$Within) {
  $document=Find-Document $Kind;if(!$document){return $null}
  $all=$document.document.FindAll([Windows.Automation.TreeScope]::Descendants,[Windows.Automation.Condition]::TrueCondition)
  if($all.Count -gt 10000){throw 'Attributed document control inventory exceeded the bounded probe.'}
+ $scope=$document.document
+ if($Within){
+  Assert-BoundControl $Within
+  if($Within.kind -cne $Kind -or $Within.source -cne $document.source -or !(Same-Uia $Within.document $document.document)){throw 'Confirmation container is not in the exact current attributed document.'}
+  $scope=$Within.control
+  $all=$scope.FindAll([Windows.Automation.TreeScope]::Descendants,[Windows.Automation.Condition]::TrueCondition)
+  if($all.Count -gt 10000){throw 'Attributed confirmation inventory exceeded the bounded probe.'}
+ }
  # Preserve the full-inventory refusal above, but ask the provider for exact-name candidates
  # before expensive per-node property/ancestry reads. Name never establishes document authority.
  if(!$Prefix){
-  $all=$document.document.FindAll([Windows.Automation.TreeScope]::Descendants,[Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::NameProperty,$Name))
+  $all=$scope.FindAll([Windows.Automation.TreeScope]::Descendants,[Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::NameProperty,$Name))
   if($all.Count -gt 10000){throw 'Attributed filtered control inventory exceeded the bounded probe.'}
  }
  $matches=@()
  foreach($item in $all){
+  if($ControlType -and $item.Current.ControlType -ne $ControlType){continue}
+  if($Within -and !(In-Document $item $Within.control)){continue}
   if(!$item.Current.IsEnabled -or $item.Current.ControlType -eq [Windows.Automation.ControlType]::Text -or !(In-Document $item $document.document)){continue}
   $actual=$item.Current.Name
-  if(($Prefix -and $actual.StartsWith($Name,[StringComparison]::Ordinal)) -or (!$Prefix -and $actual -ceq $Name)){$matches+=@{control=$item;document=$document.document;source=$document.source;kind=$Kind;name=$actual}}
+  if(($Prefix -and $actual.StartsWith($Name,[StringComparison]::Ordinal)) -or (!$Prefix -and $actual -ceq $Name)){$matches+=@{control=$item;document=$document.document;source=$document.source;kind=$Kind;name=$actual;controlType=$ControlType;within=$Within}}
  }
  if($matches.Count -gt 1){throw 'Attributed native control is ambiguous; no input sent.'}
  if($matches.Count -eq 1){return $matches[0]}
  return $null
 }
-function Wait-BoundControl([string]$Kind,[string]$Name) {
+function Wait-BoundControl([string]$Kind,[string]$Name,[Windows.Automation.ControlType]$ControlType,$Within) {
  $deadline=[DateTime]::UtcNow.AddSeconds(60)
- do{$bound=Find-BoundControl $Kind $Name;if($bound){return $bound};Start-Sleep -Milliseconds 200}while([DateTime]::UtcNow -lt $deadline)
+ do{$bound=Find-BoundControl $Kind $Name -ControlType $ControlType -Within $Within;if($bound){return $bound};Start-Sleep -Milliseconds 200}while([DateTime]::UtcNow -lt $deadline)
  throw 'Required native document source/control was not exposed; no title/name fallback.'
 }
 function Assert-BoundControl($Bound,[switch]$Focused) {
  Assert-Owned
- $fresh=Find-BoundControl $Bound.kind $Bound.name
+ $fresh=Find-BoundControl $Bound.kind $Bound.name -ControlType $Bound.controlType -Within $Bound.within
  if(!$fresh -or !(Same-Uia $fresh.document $Bound.document) -or !(Same-Uia $fresh.control $Bound.control) -or $fresh.source -cne $Bound.source){throw 'Native document/control source changed; no input sent.'}
  if([BowserStoreSmoke]::GetForegroundWindow() -ne $script:window){throw 'Exact native foreground lost; no input sent.'}
  $bounds=$fresh.control.Current.BoundingRectangle
@@ -418,7 +428,7 @@ function Probe-OriginalDiscovery {
    Invoke-BoundControl $dismiss;$report.google_promotion='native-source-bound-no-thanks-invoked'
    [void](Wait-CwsPath '/category/extensions')
   }
-  $bound=Wait-BoundControl 'cws' 'Search Chrome Web Store';$search=$bound.control
+  $bound=Wait-BoundControl 'cws' 'Search Chrome Web Store' -ControlType ([Windows.Automation.ControlType]::ComboBox);$search=$bound.control
   if($search.Current.ControlType -ne [Windows.Automation.ControlType]::ComboBox){throw 'Original CWS search was not the observed exact native ComboBox.'}
   $search.SetFocus();Field-LiteralText $bound 'Stylus'
   $value=$null
@@ -568,10 +578,9 @@ function Run-InstallJourney {
  $toggle=Wait-Control 'uBlock Origin Lite on';Toggle-Control $toggle
  Wait-RecordFlag $recordFile 1
  Invoke-Control (Wait-Control 'Remove uBlock Origin Lite')
- $confirm=Wait-Control 'Confirm removing uBlock Origin Lite'
- $remove=$confirm.FindFirst([Windows.Automation.TreeScope]::Descendants,[Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::NameProperty,'Remove uBlock Origin Lite'))
- if(!$remove){throw 'Explicit remove confirmation control absent.'}
- Invoke-Control $remove
+ $confirm=Wait-BoundControl 'settings' 'Confirm removing uBlock Origin Lite'
+ $remove=Wait-BoundControl 'settings' 'Remove uBlock Origin Lite' -ControlType ([Windows.Automation.ControlType]::Button) -Within $confirm
+ Invoke-BoundControl $remove
  $deadline=[DateTime]::UtcNow.AddSeconds(30)
  while(@(Records).Count -ne 0 -and [DateTime]::UtcNow -lt $deadline){Start-Sleep -Milliseconds 300}
  if(@(Records).Count -ne 0){throw 'Native removal did not clear the owning profile record.'}
