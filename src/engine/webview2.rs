@@ -5088,9 +5088,12 @@ unsafe fn configure_controller(
         let popup_store = permissions.clone();
         let popup_denied = events.permission_denied.clone();
         let popup_blocker = blocker.clone();
+        #[cfg(test)] let window_probe=crate::extension_window_probe::Observer::prepare("ordinary-browsing",&webview);
+        #[cfg(test)] let request_probe=window_probe.clone();
         webview.add_NewWindowRequested(
             &NewWindowRequestedEventHandler::create(Box::new(move |sender, args| {
                 if let Some(args) = args {
+                    #[cfg(test)] let request_id=request_probe.enter(sender.as_ref(),&args);
                     let mut uri = PWSTR::null();
                     let mut initiated = BOOL::default();
                     let uri_result = args.Uri(&mut uri);
@@ -5162,11 +5165,13 @@ unsafe fn configure_controller(
                         }
                     }
                     let _ = args.SetHandled(true);
+                    #[cfg(test)] request_probe.finish(request_id,&args,if decision==PopupDecision::NewTab{"new-tab-existing-policy"}else{"blocked-existing-policy"},popup_callback.is_some());
                 }
                 Ok(())
             })),
             &mut token,
         )?;
+        #[cfg(test)] window_probe.installed();
 
         // --- split view ---
         // "Open link in split view" after "Open link in new window" on an http(s) link. The pick

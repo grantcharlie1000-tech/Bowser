@@ -7,7 +7,7 @@ param(
  [Parameter(Mandatory)][int]$ClientY,
  [Parameter(Mandatory)][int]$ViewportWidth,
  [Parameter(Mandatory)][int]$ViewportHeight,
- [ValidateSet('ContextMenu','PageLinks','PageLinksEmpty')][string]$Mode='PageLinks',
+ [ValidateSet('ContextMenu','PageLinks','PageLinksEmpty','LinkClick')][string]$Mode='PageLinks',
  [string]$ExpectedLinkLabel,
  [ValidateRange(0,5000)][int]$SelectionDelayMs=0
 )
@@ -32,6 +32,18 @@ public static class BowserExtensionLink {
  [DllImport("user32.dll",SetLastError=true)] public static extern IntPtr GetDlgItem(IntPtr h,int id);
  [DllImport("user32.dll",CharSet=CharSet.Unicode)] public static extern int GetWindowText(IntPtr h,StringBuilder s,int n);
  [DllImport("user32.dll")] public static extern IntPtr WindowFromPoint(POINT point);
+ [DllImport("user32.dll")] public static extern bool IsChild(IntPtr parent,IntPtr child);
+ [DllImport("user32.dll")] public static extern IntPtr GetAncestor(IntPtr h,uint flags);
+ public static bool LinkInputReady(IntPtr owner,uint pid,uint tid,int x,int y,int width,int height,POINT point) {
+  uint actual;uint thread=GetWindowThreadProcessId(owner,out actual);var cls=new StringBuilder(64);GetClassName(owner,cls,64);
+  RECT client;POINT current=new POINT{X=x,Y=y};
+  if(!IsWindow(owner)||actual!=pid||thread!=tid||cls.ToString()!="BowserExtensionPage"||!IsWindowVisible(owner)||!IsWindowEnabled(owner)||GetForegroundWindow()!=owner||
+     !GetClientRect(owner,out client)||client.Right-client.Left!=width||client.Bottom-client.Top!=height||x<0||y<0||x>=width||y>=height||
+     !ClientToScreen(owner,ref current)||current.X!=point.X||current.Y!=point.Y)return false;
+  IntPtr hit=WindowFromPoint(point);
+  return hit==owner||(hit!=IntPtr.Zero&&IsChild(owner,hit)&&GetAncestor(hit,2)==owner);
+ }
+
  [DllImport("user32.dll")] public static extern bool IsWindow(IntPtr h);
  [DllImport("user32.dll")] public static extern int GetDlgCtrlID(IntPtr h);
  [DllImport("user32.dll",EntryPoint="GetWindowLongPtrW",SetLastError=true)] static extern IntPtr GetWindowLongPtr64(IntPtr h,int index);
@@ -167,7 +179,7 @@ if($Mode -eq 'ContextMenu') { foreach($item in $window.FindAll([Windows.Automati
 }
 }
 $names|ConvertTo-Json|Set-Content (Join-Path $Out 'link-accessibility.json') -Encoding utf8
-if($Mode -eq 'ContextMenu') {
+if($Mode -in @('ContextMenu','LinkClick')) {
 $client=[BowserExtensionLink+RECT]::new()
 if(![BowserExtensionLink]::GetClientRect($h,[ref]$client)){throw 'Exact owned client bounds unavailable; no input sent.'}
 $width=$client.Right-$client.Left;$height=$client.Bottom-$client.Top
@@ -176,7 +188,14 @@ if($ClientX -lt 0 -or $ClientY -lt 0 -or $ClientX -ge $width -or $ClientY -ge $h
 $point=[BowserExtensionLink+POINT]::new();$point.X=$ClientX;$point.Y=$ClientY
 if(![BowserExtensionLink]::ClientToScreen($h,[ref]$point)){throw 'Exact owned client-to-screen conversion failed; no input sent.'}
 if([BowserExtensionLink]::GetForegroundWindow() -ne $h){throw 'Foreground changed before input; no input sent.'}
+if($Mode -eq 'LinkClick' -and ![BowserExtensionLink]::LinkInputReady($h,$OwnerPid,$ownerThread,$ClientX,$ClientY,$ViewportWidth,$ViewportHeight,$point)){throw 'Exact native link owner or hit target changed before cursor placement; no input sent.'}
 if(![BowserExtensionLink]::SetCursorPos($point.X,$point.Y)){throw 'Actual native cursor placement failed; no input sent.'}
+if($Mode -eq 'LinkClick'){
+ if(![BowserExtensionLink]::LinkInputReady($h,$OwnerPid,$ownerThread,$ClientX,$ClientY,$ViewportWidth,$ViewportHeight,$point)){throw 'Exact native link owner or hit target changed before mouse input; no input sent.'}
+ [BowserExtensionLink]::mouse_event(0x0002,0,0,0,[UIntPtr]::Zero);[BowserExtensionLink]::mouse_event(0x0004,0,0,0,[UIntPtr]::Zero)
+ Start-Sleep -Seconds 2;Save-OwnedWindow '02-after-actual-manage-left-click.png'
+ Write-Output 'NATIVE_EXTENSION_LINK real_owned_left_click=true actual_signed_link_bounds=true';return
+}
 [BowserExtensionLink]::mouse_event(0x0008,0,0,0,[UIntPtr]::Zero);[BowserExtensionLink]::mouse_event(0x0010,0,0,0,[UIntPtr]::Zero)
 }else{
  if($Mode -eq 'PageLinks' -and !$ExpectedLinkLabel){throw 'Actual observed same-extension link label was not supplied; no command invoked.'}

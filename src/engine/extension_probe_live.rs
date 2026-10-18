@@ -872,7 +872,8 @@ fn probe_real_stylus_appearance(profile: &Path, id: &str, folder: &Path, session
     let expected_url = Url::parse(&expected_url).unwrap();
     assert!(extensions::is_page_url(&expected_url));
     assert_eq!(expected_url.host_str(), session.engine.probe_loaded_extension_id(id).as_deref());
-    let bounds = session.page_script("(()=>{const r=document.querySelector('#popup-manage-button').getBoundingClientRect();return [r.left,r.top,r.width,r.height,devicePixelRatio,innerWidth,innerHeight]})()").unwrap();
+    let actual_bounds = |session: &mut Session| {
+        let bounds = session.page_script("(()=>{const r=document.querySelector('#popup-manage-button').getBoundingClientRect();return [r.left,r.top,r.width,r.height,devicePixelRatio,innerWidth,innerHeight]})()").unwrap();
     let Some(extensions::json::Value::Array(bounds)) = extensions::json::parse(&bounds) else { panic!("actual link bounds were not an array"); };
     let bounds: Vec<f64> = bounds.into_iter().map(|value| match value {
         extensions::json::Value::Number(value) => value.parse::<f64>().unwrap(),
@@ -885,13 +886,16 @@ fn probe_real_stylus_appearance(profile: &Path, id: &str, folder: &Path, session
     let client_y = ((bounds[1] + bounds[3] / 2.0) * bounds[4]).round() as i32;
     let viewport_width = (bounds[5] * bounds[4]).round() as i32;
     let viewport_height = (bounds[6] * bounds[4]).round() as i32;
-    let output = std::env::var_os("RUNNER_TEMP").map(PathBuf::from).unwrap_or_else(std::env::temp_dir).join("bowser-extension-link-native");
+        (client_x, client_y, viewport_width, viewport_height)
+    };
+    let run_native = |mode: &str, output: &Path, bounds: (i32,i32,i32,i32)| {
+        let (client_x,client_y,viewport_width,viewport_height) = bounds;
     let mut automation = std::process::Command::new("pwsh").args(["-NoProfile", "-File"])
         .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("benchmarks/scripts/probe-native-extension-link.ps1"))
-        .arg("-OwnerPid").arg(std::process::id().to_string()).arg("-Out").arg(&output)
+        .arg("-OwnerPid").arg(std::process::id().to_string()).arg("-Out").arg(output)
         .arg("-ClientX").arg(client_x.to_string()).arg("-ClientY").arg(client_y.to_string())
         .arg("-ViewportWidth").arg(viewport_width.to_string()).arg("-ViewportHeight").arg(viewport_height.to_string())
-        .arg("-Mode").arg("PageLinks").arg("-ExpectedLinkLabel").arg(expected_url.path().rsplit('/').next().unwrap())
+        .arg("-Mode").arg(mode).arg("-ExpectedLinkLabel").arg(expected_url.path().rsplit('/').next().unwrap())
         .stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).spawn().unwrap();
     if !pump_until(Duration::from_secs(75), || automation.try_wait().is_ok_and(|status| status.is_some())) {
         let _ = automation.kill();
@@ -900,6 +904,28 @@ fn probe_real_stylus_appearance(profile: &Path, id: &str, folder: &Path, session
     }
     let automation = automation.wait_with_output().unwrap();
     pump_until(Duration::from_secs(2), || false);
+        automation
+    };
+    let output = std::env::var_os("RUNNER_TEMP").map(PathBuf::from).unwrap_or_else(std::env::temp_dir).join("bowser-extension-link-native");
+    crate::extension_window_probe::expected_destination(Some(expected_url.clone()));
+    crate::extension_window_probe::interval("explicit-no-input-baseline");
+    pump_until(Duration::from_secs(2), || false);
+    assert_eq!(session.page_script("(()=>{const key='__bowser_native_manage_click_v1',href=document.querySelector('#popup-manage-button').href;sessionStorage.removeItem(key);document.addEventListener('click',e=>{const a=e.target instanceof Element&&e.target.closest('#popup-manage-button');if(e.isTrusted&&e.button===0&&a&&a.href===href)sessionStorage.setItem(key,'trusted-exact-link')},true);return true})()").as_deref(),Some("true"));
+    crate::extension_window_probe::interval("real-owned-manage-left-click");
+    let click = run_native("LinkClick", &output.join("actual-left-click"), actual_bounds(session));
+    assert!(click.status.success(), "actual owned left-click helper failed before native observation");
+    let trusted = session.page_script("sessionStorage.getItem('__bowser_native_manage_click_v1')");
+    let reached = session.page_script("location.href").as_deref()==Some(expected.as_str()) && session.page_script("!!document.querySelector('#import')").as_deref()==Some("true");
+    assert!(trusted.as_deref()==Some("\"trusted-exact-link\""), "actual trusted Manage click was not independently observed");
+    println!("NATIVE_WINDOW_CLICK trusted_receipt={} exact_same_view_manager={} scope=observation-only-routing-unchanged",trusted.as_deref()==Some("\"trusted-exact-link\""),reached);
+    crate::extension_window_probe::interval("reopen-independent-popup");
+    // Reopen visibly: a preceding successful route cannot rescue the independent Page links test.
+    let opened = Rc::new(RefCell::new(None)); let sink = opened.clone();
+    session.engine.open_extension_page(id, folder, extensions::PageKind::Popup, "Bowser disposable Stylus navigation", Box::new(move |result| *sink.borrow_mut()=Some(result)));
+    assert!(pump_until(Duration::from_secs(30),|| opened.borrow().is_some())); opened.borrow_mut().take().unwrap().unwrap();
+    assert!(pump_until(Duration::from_secs(30),|| session.page_script("document.querySelector('#popup-manage-button')?.href").as_deref()==Some(expected.as_str())));
+    crate::extension_window_probe::interval("independent-native-page-links");
+    let automation = run_native("PageLinks", &output, actual_bounds(session));
     println!("STYLUS_NATIVE_LINK exit={:?} stdout={} stderr={} actual_page={:?}", automation.status.code(), String::from_utf8_lossy(&automation.stdout), String::from_utf8_lossy(&automation.stderr), session.page_script("({url:location.href,title:document.title,importButton:!!document.querySelector('#import')})"));
     super::extension_links::assert_no_modal_timeout();
     assert!(automation.status.success(), "real owned Page links helper failed; no scripted fallback is accepted as menu evidence");
@@ -912,6 +938,7 @@ fn probe_real_stylus_appearance(profile: &Path, id: &str, folder: &Path, session
     // is permitted to rescue the mandatory real-input assertion above.
     session.open_page(id, folder, extensions::PageKind::Popup).unwrap();
     assert!(pump_until(Duration::from_secs(30), || session.page_script("!!document.querySelector('#popup-manage-button')").as_deref() == Some("true")));
+    crate::extension_window_probe::interval("independent-scripted-click");
     let manager_link = session.page_script("(()=>{const a=document.querySelector('#popup-manage-button');if(!a)return null;const href=a.href;a.click();return href})()");
     pump_until(Duration::from_secs(3), || false);
     println!("STYLUS_APPEARANCE ordinary_manage_click={manager_link:?} resulting_page={:?}", session.page_script("({url:location.href,title:document.title,importButton:!!document.querySelector('#import')})"));
@@ -919,9 +946,11 @@ fn probe_real_stylus_appearance(profile: &Path, id: &str, folder: &Path, session
     assert!(pump_until(Duration::from_secs(30), || session.page_script("!!document.querySelector('#popup-manage-button')").as_deref() == Some("true")));
     // Exercise the standard native new-window link route (as offered by a link context menu),
     // not a guessed page path, location assignment, tabs shim or claim about chrome.tabs.create.
+    crate::extension_window_probe::interval("independent-scripted-window-open");
     let followed = session.page_script("(()=>{const a=document.querySelector('#popup-manage-button');if(!a)return false;const u=new URL(a.href);if(u.protocol!==location.protocol||u.host!==location.host)return false;window.open(a.href,'_blank');return true})()");
     pump_until(Duration::from_secs(4), || false);
     println!("STYLUS_APPEARANCE same_extension_native_window_link_requested={followed:?} resulting_page={:?} scope=standard-new-window-native-handler-not-chrome-tabs-create", session.page_script("({url:location.href,title:document.title,importButton:!!document.querySelector('#import')})"));
+    crate::extension_window_probe::interval("independent-forbidden-destinations");
     let escape = loopback.page("extension-window-escape");
     let script = format!("(()=>{{window.open({},'_blank');window.open('bowser-ui://app/index.html?view=settings','_blank');window.open('chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/options.html','_blank');return location.href}})()", crate::chrome_host::protocol::json_string(escape.as_str()));
     let before_escape = session.page_script(&script); pump_until(Duration::from_secs(1), || false);
@@ -929,6 +958,8 @@ fn probe_real_stylus_appearance(profile: &Path, id: &str, folder: &Path, session
     let escaped = loopback.beacons.lock().unwrap().iter().any(|path| path == "/extension-window-escape");
     assert_eq!(before_escape, after_escape, "forbidden new-window request changed the signed extension page"); assert!(!escaped, "external new-window request escaped its isolated host");
     println!("STYLUS_APPEARANCE external_ui_other_extension_new_window_attempts=made same_page_retained=true own_loopback_escape_absent=true scope=observe-native-event-log-for-each-request-not-universal-window-coverage");
+    crate::extension_window_probe::expected_destination(None);
+    crate::extension_window_probe::interval("post-observation");
     let style = format!(r#"[{{"name":"Bowser disposable appearance fixture","enabled":true,"sections":[{{"code":"body {{ background-color: rgb(7, 11, 19) !important; }}","urls":[{}],"urlPrefixes":[],"domains":[],"regexps":[]}}]}}]"#, crate::chrome_host::protocol::json_string(target.as_str()));
     let script = format!(r#"(()=>{{if(typeof document.body.ondrop!=='function')return {{dropHandler:false,title:document.title}};const data=new DataTransfer();data.items.add(new File([{}],'bowser-disposable-style.json',{{type:'application/json'}}));document.body.dispatchEvent(new DragEvent('drop',{{dataTransfer:data,bubbles:true,cancelable:true}}));return {{dropHandler:true,title:document.title}}}})()"#, crate::chrome_host::protocol::json_string(&style));
     let imported = session.page_script(&script); pump_until(Duration::from_secs(5), || false);

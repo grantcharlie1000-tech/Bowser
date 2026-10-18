@@ -383,9 +383,12 @@ fn configure(
             })), &mut token)?;
         }
         let window_policy = policy.clone();
+        #[cfg(test)] let window_probe=crate::extension_window_probe::Observer::prepare("isolated-extension-page",&webview);
+        #[cfg(test)] let request_probe=window_probe.clone();
         webview.add_NewWindowRequested(
             &NewWindowRequestedEventHandler::create(Box::new(move |sender, args| {
                 if let Some(args) = args {
+                    #[cfg(test)] let request_id=request_probe.enter(sender.as_ref(),&args);
                     // Always suppress an unowned native window. A signed extension's own link
                     // may instead navigate this same no-bridge host, using the normal policy.
                     args.SetHandled(true)?;
@@ -393,6 +396,7 @@ fn configure(
                     let uri = args.Uri(&mut uri).ok().and_then(|()| Url::parse(&CoTaskMemPWSTR::from(uri).to_string()).ok());
                     let allowed = uri.as_ref().is_some_and(|uri| window_policy.allow_new_window(uri));
                     #[cfg(test)] println!("EXTENSION_PAGE_NEW_WINDOW uri={uri:?} same_extension_reuse_allowed={allowed}");
+                    #[cfg(test)] request_probe.finish(request_id,&args,if allowed{"same-extension-existing-policy"}else{"blocked-existing-policy"},false);
                     if let (true, Some(uri), Some(sender)) = (allowed, uri, sender) {
                         let address = CoTaskMemPWSTR::from(uri.as_str()); sender.Navigate(*address.as_ref().as_pcwstr())?;
                     }
@@ -401,6 +405,7 @@ fn configure(
             })),
             &mut token,
         )?;
+        #[cfg(test)] window_probe.installed();
         webview.add_PermissionRequested(
             &PermissionRequestedEventHandler::create(Box::new(move |_sender, args| {
                 if let Some(args) = args {

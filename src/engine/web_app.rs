@@ -586,8 +586,11 @@ unsafe fn configure_web_app_controller(
         removers.push(Box::new(move || { if let Ok(v4) = download_webview.cast::<ICoreWebView2_4>() { let _ = v4.remove_DownloadStarting(download_token); } }));
 
         let popup_callback = events.on_open_in_tab.clone();
+        #[cfg(test)] let window_probe=crate::extension_window_probe::Observer::prepare("standalone-web-app",&webview);
+        #[cfg(test)] let request_probe=window_probe.clone();
         webview.add_NewWindowRequested(&NewWindowRequestedEventHandler::create(Box::new(move |_sender, args| {
             if let Some(args) = args {
+                    #[cfg(test)] let request_id=request_probe.enter(_sender.as_ref(),&args);
                 let mut uri = PWSTR::null();
                 if args.Uri(&mut uri).is_ok() {
                     if let Ok(url) = Url::parse(&CoTaskMemPWSTR::from(uri).to_string()) {
@@ -595,9 +598,11 @@ unsafe fn configure_web_app_controller(
                     }
                 }
                 let _ = args.SetHandled(true);
+                    #[cfg(test)] request_probe.finish(request_id,&args,"existing-policy-unchanged",popup_callback.is_some());
             }
             Ok(())
         })), &mut token)?;
+        #[cfg(test)] window_probe.installed();
         let popup_webview = webview.clone(); let popup_token = token;
         removers.push(Box::new(move || { let _ = popup_webview.remove_NewWindowRequested(popup_token); }));
 

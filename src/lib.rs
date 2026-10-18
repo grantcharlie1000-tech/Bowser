@@ -78,3 +78,6 @@ pub mod workspace_rules; // sites that open in a named workspace (T10)
 // Executable specification only; production update activation remains unavailable.
 #[cfg(test)]
 mod extension_update_model;
+
+#[cfg(test)]
+mod extension_window_probe;
