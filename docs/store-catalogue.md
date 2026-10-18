@@ -130,3 +130,23 @@ The default conflict control observes no event during a fixed two-second warm-wo
 The separate `live_probe_native_api_isolation` fixture declares broad host access only in disposable test profiles. Its genuine extension context attempts native executeScript/sendMessage against every integral ID returned by its exact bounded native tabs.query, without guessed IDs or URL/title/order mapping. The real normal view must prove both effects after a separately observed static-content-listener positive. Actual private, other-profile and privileged Settings views must be ready and remain unaffected; incognito/private/UI metadata exposure is also rejected. UI scheme policy and profile separation are distinct possible enforcement reasons. This is a narrow API/effect test, not proof every extension API is isolated or permission authority for production code. No website bridge, user credential or production permission setting is introduced.
 
 The fixture explicitly supplies the production private blocker and checks the native controller profile name/InPrivate flags. The normal positive is bound by a unique per-returned-ID effect token plus successful native executeScript result and received:true message reply, never a URL-derived identity. Metadata checks reject returned incognito:true and known controlled private/other-profile/UI URLs; a redacted returned identifier is not proven non-private, and this fixture does not claim every private identifier is hidden.
+
+### Genuine context-menu observation prerequisite (pending Windows)
+
+The separate keyed contextMenus/scripting/activeTab fixture has no host/tabs/content-script access.
+A genuine creation callback is only the first prerequisite. The isolated single-test gate then requires
+a no-input baseline, real right-click on the exact owned textarea, trusted page receipt, exact native
+receiving view/IsEditable and complete bounded recursive menu metadata. It never inserts/selects a
+host item or writes Handled/SelectedCommandId. One real Escape is allowed only for the positively
+owned unchanged visible native popup; disappearance and cleared native popup mode must both follow.
+Unknown topology fails without a global Escape/EndMenu. Bounded failure evidence is saved before
+termination through the retained original disposable single-test process handle; this stays a failure.
+Zero native onClicked events, unchanged document/effects and fresh permission-specific denials for
+the original native preflight IDs are mandatory. This warm-worker/observer-present/top-level negative
+control does not establish selection grants, actual Bitwarden menus/autofill, iframe or cold-worker use.
+
+### Bowser-owned installer guidance
+
+The validated listing action is a labeled Add to Bowser control in Bowser’s toolbar, not in Google’s document. Its visible note explains that Google installs into Chrome and Bowser support varies. Google’s original Chrome-only notice is neither hidden nor rewritten. Bowser still revalidates the exact successful top-level listing at click time, verifies the signed package and opens its independent permission review; the label does not promise extension compatibility.
+
+Current visual acceptance is limited to the default 100% UI font scale. The two-line installer copy still requires an adaptive layout at enlarged supported font scales: the fixed-height toolbar cannot fit both scaled lines at 200%. This remains an unreleased UX blocker, not a verified supported-scale result. The native journey requires both actual Text rectangles inside the owned button; accessible names alone cannot pass it.

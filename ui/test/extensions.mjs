@@ -503,12 +503,17 @@ test('toolbar: native top-level listing action is visible and resets back to pop
   view.extensions.apply(msg);
   assert.equal(ext.hidden, false);
   assert.equal(ext.getAttribute('aria-label'), 'Add to Bowser');
+  assert.equal(ext.querySelector('.tb-ext-store-copy').hidden, false);
+  assert.equal(ext.querySelector('.tb-ext-store-note').textContent, 'Google installs into Chrome. Bowser support varies.');
+  assert.equal(ext.getAttribute('aria-describedby'), ext.querySelector('.tb-ext-store-note').id);
   assert.equal(ext.querySelector('.tb-ext-store-label').hidden, false);
   assert.ok(ext.classList.contains('is-store'));
   assert.ok(bar.classList.contains('has-store-ext'));
   assert.equal(ext.getAttribute('aria-haspopup'), null);
   view.extensions.apply(protocol.parseInbound(JSON.stringify(fixture.buttonOne)));
   assert.equal(ext.querySelector('.tb-ext-store-label').hidden, true);
+  assert.equal(ext.querySelector('.tb-ext-store-copy').hidden, true);
+  assert.equal(ext.getAttribute('aria-describedby'), null);
   assert.equal(ext.classList.contains('is-store'), false);
   assert.equal(bar.classList.contains('has-store-ext'), false);
   for (const patch of [{ on: false }, { n: 1 }, { name: 'Injected website title' }, { store: 'true' }]) {

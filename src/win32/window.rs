@@ -8291,7 +8291,7 @@ fn popup_extensions(profile: &crate::profile::Profile) -> Vec<crate::extensions:
 /// enabled extension has a popup (so the pill's new width is sent first), then sends the `extbtn`
 /// message when it differs from the last one the page got. Runs when the toolbar page is ready and
 /// on `WM_EXTENSIONS_CHANGED`.
-const STORE_BUTTON_SLOT: i32 = 132;
+const STORE_BUTTON_SLOT: i32 = 304;
 
 /// The live top-level model is updated by WebView2 SourceChanged. Do not offer installation for a
 /// private tab, a pending navigation, frame URL or unvalidated look-alike listing.

@@ -240,7 +240,7 @@ function Find-BoundControl([string]$Kind,[string]$Name,[switch]$Prefix,[Windows.
  foreach($item in $all){
   if($ControlType -and $item.Current.ControlType -ne $ControlType){continue}
   if($Within -and !(In-Document $item $Within.control)){continue}
-  if(!$item.Current.IsEnabled -or $item.Current.ControlType -eq [Windows.Automation.ControlType]::Text -or !(In-Document $item $document.document)){continue}
+  if(!$item.Current.IsEnabled -or ($item.Current.ControlType -eq [Windows.Automation.ControlType]::Text -and $ControlType -ne [Windows.Automation.ControlType]::Text) -or !(In-Document $item $document.document)){continue}
   $actual=$item.Current.Name
   if(($Prefix -and $actual.StartsWith($Name,[StringComparison]::Ordinal)) -or (!$Prefix -and $actual -ceq $Name)){$matches+=@{control=$item;document=$document.document;source=$document.source;kind=$Kind;name=$actual;controlType=$ControlType;within=$Within}}
  }
@@ -370,6 +370,36 @@ function Toggle-Control($Control){
  if($Control.TryGetCurrentPattern([Windows.Automation.InvokePattern]::Pattern,[ref]$pattern)){$pattern.Invoke();return}
  throw 'The owned extension switch exposes neither a native toggle nor invoke action.'
 }
+function Observe-InstalledRow($Bound,[string]$Name) {
+ $document=Find-Document 'settings'
+ if(!$document -or !(Same-Uia $document.document $Bound.document) -or $document.source -cne $Bound.source){throw 'Exact trusted Settings document changed before positive installed-row observation.'}
+ $rows=$document.document.FindAll([Windows.Automation.TreeScope]::Descendants,[Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::NameProperty,$Name))
+ if($rows.Count -ne 1){throw 'Exact installed row name was not uniquely exposed before removal.'}
+ $row=$rows[0];$rect=$row.Current.BoundingRectangle;$runtime=$row.GetRuntimeId()
+ if($row.Current.Name -cne $Name -or !(In-Document $row $document.document) -or $row.Current.IsOffscreen -or $rect.Width -le 0 -or $rect.Height -le 0 -or $runtime.Length -lt 1 -or $runtime.Length -gt 128){throw 'Positive installed-row identity/visibility unavailable before removal.'}
+ $fresh=Find-Document 'settings'
+ if(!$fresh -or !(Same-Uia $fresh.document $document.document) -or $fresh.source -cne $document.source){throw 'Trusted Settings source changed during positive row enumeration.'}
+ $report.removal_row_positive=@{name=$Name;unique_visible_match=$true;runtime_id=@($runtime)}
+ return @{document=$document.document;source=$document.source;name=$Name;positive=$true}
+}
+function Wait-RemovedRow($Bound) {
+ if(!$Bound.positive){throw 'No exact positive installed-row observation to compare removal against.'}
+ $Name=$Bound.name
+
+ $deadline=[DateTime]::UtcNow.AddSeconds(20)
+ do {
+  $document=Find-Document 'settings'
+  if(!$document -or !(Same-Uia $document.document $Bound.document) -or $document.source -cne $Bound.source){throw 'Exact trusted Settings document changed before final row-absence observation.'}
+  # Count disabled text/controls too: a busy disabled row is not successful removal UI.
+  $rows=$document.document.FindAll([Windows.Automation.TreeScope]::Descendants,[Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::NameProperty,$Name))
+  if($rows.Count -gt 16){throw 'Removal row inventory was ambiguous or exceeded its bound.'}
+  $fresh=Find-Document 'settings'
+  if(!$fresh -or !(Same-Uia $fresh.document $document.document) -or $fresh.source -cne $document.source){throw 'Trusted Settings source changed during row-absence enumeration.'}
+  if($rows.Count -eq 0){return}
+  Start-Sleep -Milliseconds 200
+ } while([DateTime]::UtcNow -lt $deadline)
+ throw 'Durable record was removed but the actual installed row did not disappear; UI removal incomplete.'
+}
 function Wait-RecordFlag([string]$File,[int]$Flag){
  $deadline=[DateTime]::UtcNow.AddSeconds(15)
  do{if((Get-Content -LiteralPath $File -Raw) -match ('^ext-[a-f0-9]{16}\t'+$Flag+'\t')){return};Start-Sleep -Milliseconds 200}while([DateTime]::UtcNow -lt $deadline)
@@ -393,11 +423,25 @@ function Navigate-Owned([string]$Url) {
  Field-LiteralText $bound $Url
  Field-Enter $bound $Url;Start-Sleep -Seconds 3
 }
+function Assert-VisibleBowserInstaller {
+ $add=Wait-BoundControl 'toolbar' 'Add to Bowser' -ControlType ([Windows.Automation.ControlType]::Button)
+ $label=Wait-BoundControl 'toolbar' 'Add to Bowser' -ControlType ([Windows.Automation.ControlType]::Text) -Within $add
+ $note=Wait-BoundControl 'toolbar' 'Google installs into Chrome. Bowser support varies.' -ControlType ([Windows.Automation.ControlType]::Text) -Within $add
+ Assert-BoundControl $add
+ foreach($copy in @($label,$note)){
+  Assert-BoundControl $copy
+  if(!(Same-Uia $add.document $copy.document) -or !(In-Document $copy.control $add.control)){throw 'Installer copy was not inside the exact trusted toolbar button.'}
+  $buttonRect=$add.control.Current.BoundingRectangle;$copyRect=$copy.control.Current.BoundingRectangle
+  if($copy.control.Current.IsOffscreen -or $copyRect.Width -le 0 -or $copyRect.Height -le 0 -or $copyRect.Left -lt $buttonRect.Left -or $copyRect.Top -lt $buttonRect.Top -or $copyRect.Right -gt $buttonRect.Right -or $copyRect.Bottom -gt $buttonRect.Bottom){throw 'Visible Bowser installer copy was clipped or outside its owned button.'}
+ }
+ Assert-BoundControl $add;Assert-BoundControl $label;Assert-BoundControl $note
+ return $add
+}
 function Open-ListingReview([string]$Id) {
  if($Id -cnotmatch '^[a-p]{32}$'){throw 'Invalid fixed test listing ID.'}
  Navigate-Owned "https://chromewebstore.google.com/detail/$Id"
  # This control is Bowser chrome, offered only after the actual top-level listing commits.
- $add=Wait-BoundControl 'toolbar' 'Add to Bowser'
+ $add=Assert-VisibleBowserInstaller
  if((Cws-ListingId) -cne $Id){throw 'Actual native website document did not commit the expected listing ID.'}
  Invoke-BoundControl $add
 }
@@ -438,7 +482,7 @@ function Probe-OriginalDiscovery {
   $resultBound=Wait-BoundControl 'cws' 'Stylus';$listing=$resultBound.control
   if($listing.Current.ControlType -ne [Windows.Automation.ControlType]::Hyperlink){throw 'Original CWS search result was not an actual hyperlink.'}
   $result.search=$true;Invoke-BoundControl $resultBound
-  [void](Wait-BoundControl 'toolbar' 'Add to Bowser')
+  [void](Assert-VisibleBowserInstaller)
   if((Cws-ListingId) -cne 'clngdbkpkpeebahjckkjfobafhncgmne'){throw 'Native CWS result navigation did not commit the actual Stylus listing ID.'}
   Capture '03-original-cws-stylus-listing'
   $result.listing=$true;$result.status='passed-native-category-search-listing-owned-add'
@@ -577,14 +621,19 @@ function Run-InstallJourney {
  $report.disabled_record=Get-Content $recordFile -Raw
  $toggle=Wait-Control 'uBlock Origin Lite on';Toggle-Control $toggle
  Wait-RecordFlag $recordFile 1
- Invoke-Control (Wait-Control 'Remove uBlock Origin Lite')
+ $rowRemove=Wait-Control 'Remove uBlock Origin Lite'
+ $rowBound=Find-BoundControl 'settings' 'Remove uBlock Origin Lite'
+ if(!$rowBound -or !(Same-Uia $rowBound.control $rowRemove)){throw 'Exact pre-removal action changed before positive row observation.'}
+ $rowObserved=Observe-InstalledRow $rowBound 'uBlock Origin Lite'
+ Invoke-Control $rowRemove
  $confirm=Wait-BoundControl 'settings' 'Confirm removing uBlock Origin Lite'
  $remove=Wait-BoundControl 'settings' 'Remove uBlock Origin Lite' -ControlType ([Windows.Automation.ControlType]::Button) -Within $confirm
  Invoke-BoundControl $remove
  $deadline=[DateTime]::UtcNow.AddSeconds(30)
  while(@(Records).Count -ne 0 -and [DateTime]::UtcNow -lt $deadline){Start-Sleep -Milliseconds 300}
  if(@(Records).Count -ne 0){throw 'Native removal did not clear the owning profile record.'}
- $report.removal='passed-no-record'
+ Wait-RemovedRow $rowObserved
+ $report.removal='passed-no-record-and-native-ui-row-absent'
  Capture '10-native-removed'
 }
 

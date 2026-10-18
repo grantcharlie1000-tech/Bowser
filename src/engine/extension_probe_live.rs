@@ -107,6 +107,8 @@ fn handle(mut stream: TcpStream, beacons: &Mutex<Vec<String>>) {
         ("200 OK", "text/html; charset=utf-8", "<!doctype html><title>Disposable default-filter network fixture</title><p>No accounts or user data</p><script src='/control-script.js'></script><img alt='network control' src='https://pagead2.googlesyndication.com/pagead/gen_204?id=bowser_disposable_probe'>".to_owned())
     } else if path.starts_with("/dnr-fixture") {
         ("200 OK", "text/html; charset=utf-8", "<!doctype html><title>Disposable native DNR fixture</title><p>Controlled loopback requests</p><script src='/control-script.js'></script><script src='/ads/banner.js'></script><script src='/adserver/ad.js'></script><script src='/pagead/show_ads.js'></script>".to_owned())
+    } else if path == "/context-menu-observation" {
+        ("200 OK","text/html; charset=utf-8",r#"<!doctype html><title>Disposable native menu fixture</title><textarea id="context-target" style="margin:20px;width:300px;height:100px">Disposable context target</textarea><script>document.addEventListener('contextmenu',e=>{if(e.isTrusted&&e.button===2&&e.target===document.getElementById('context-target')){const root=document.documentElement;root.setAttribute('data-bowser-context-trusted',String(Number(root.getAttribute('data-bowser-context-trusted')||0)+1))}})</script>"#.to_owned())
     } else if path.starts_with('/') && !path.contains("favicon") {
         (
             "200 OK",
@@ -2086,4 +2088,140 @@ fn live_probe_native_api_isolation() {
     }
     println!("NATIVE_API_ISOLATION normal_execute_and_message_positive=true private_other_profile_ui_effects_absent=true native_query_id_provenance=true scope=returned-ID-effects-and-known-URL-incognito-metadata-not-hidden-ID-proof-or-every-API");
     ui.close();drop(ui_view);drop(ui_profile);drop(ui);drop(env);other.close();drop(other_loopback);owner.close();drop(loopback);remove_with_retries(&root);
+}
+
+#[derive(Debug)]
+struct NativeContextItem {
+    path: Vec<u32>, name: String, label: String, kind: i32, enabled: bool, command: i32,
+    // Normalized success=0/error HRESULT, not a preserved raw successful HRESULT.
+    results: [i32;5], children_result: Option<i32>, text_truncated: bool, text_redacted: bool,
+}
+#[derive(Debug,Default)]
+struct NativeContextRequest {
+    same_receiving_view: bool, editable: Option<bool>, handled: Option<bool>,
+    target_result: i32, editable_result: i32, handled_result: i32, collection_result: i32,
+    complete: bool, visited_items: usize, entries: Vec<NativeContextItem>, failures: Vec<String>,
+}
+fn native_context_text(result: windows::core::Result<()>, pointer: windows::core::PWSTR, limit: usize) -> (i32,String,bool,bool) {
+    let code=result.err().map_or(0,|e|e.code().0);
+    let raw=pointer.0;let _owned=webview2_com::CoTaskMemPWSTR::from(pointer);
+    if code!=0||raw.is_null(){return (code,String::new(),false,false)}
+    // COM guarantees a terminated allocation; read at most limit UTF-16 units plus terminator.
+    let mut units=Vec::with_capacity(limit);let mut truncated=false;
+    for index in 0..=limit {let unit=unsafe{*raw.add(index)};if unit==0{break}if index==limit{truncated=true;break}units.push(unit);}
+    let decoded=String::from_utf16(&units);let invalid=decoded.is_err();let text=decoded.unwrap_or_default();
+    let redacted=invalid||text.contains(':')||text.contains('?')||text.contains('#');
+    (code,if redacted{"[invalid-or-url-like-native-text-redacted]".into()}else{text},truncated,redacted)
+}
+fn native_context_items(collection: &webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2ContextMenuItemCollection, path:&[u32], request:&mut NativeContextRequest) {
+    use webview2_com::Microsoft::Web::WebView2::Win32::{COREWEBVIEW2_CONTEXT_MENU_ITEM_KIND,COREWEBVIEW2_CONTEXT_MENU_ITEM_KIND_SUBMENU};
+    let mut count=0;let result=unsafe{collection.Count(&mut count)};
+    if let Err(error)=result{request.complete=false;request.failures.push(format!("count depth={} error={}",path.len(),error.code().0));return}
+    if path.len()>=4||count>64u32.saturating_sub(request.visited_items as u32){request.complete=false;request.failures.push(format!("inventory-bound depth={} count={count}",path.len()));return}
+    for index in 0..count {
+        if request.visited_items>=64{request.complete=false;return}request.visited_items+=1;
+        let item=match unsafe{collection.GetValueAtIndex(index)}{Ok(item)=>item,Err(error)=>{request.complete=false;request.failures.push(format!("item depth={} index={index} error={}",path.len(),error.code().0));continue}};
+        let mut current=path.to_vec();current.push(index);
+        let mut name=windows::core::PWSTR::null();let name_result=unsafe{item.Name(&mut name)};let (nr,name,nt,nred)=native_context_text(name_result,name,64);
+        let mut label=windows::core::PWSTR::null();let label_result=unsafe{item.Label(&mut label)};let (lr,label,lt,lred)=native_context_text(label_result,label,128);
+        let mut kind=COREWEBVIEW2_CONTEXT_MENU_ITEM_KIND(0);let kr=unsafe{item.Kind(&mut kind)}.err().map_or(0,|e|e.code().0);
+        let mut enabled=windows::core::BOOL::default();let er=unsafe{item.IsEnabled(&mut enabled)}.err().map_or(0,|e|e.code().0);
+        let mut command=0;let cr=unsafe{item.CommandId(&mut command)}.err().map_or(0,|e|e.code().0);
+        let results=[nr,lr,kr,er,cr];if results.iter().any(|r|*r!=0)||nt||lt||nred||lred{request.complete=false}
+        let position=request.entries.len();request.entries.push(NativeContextItem{path:current.clone(),name,label,kind:kind.0,enabled:enabled.as_bool(),command,results,children_result:None,text_truncated:nt||lt,text_redacted:nred||lred});
+        if kr==0&&kind==COREWEBVIEW2_CONTEXT_MENU_ITEM_KIND_SUBMENU {
+            match unsafe{item.Children()}{Ok(children)=>{request.entries[position].children_result=Some(0);native_context_items(&children,&current,request)},Err(error)=>{request.entries[position].children_result=Some(error.code().0);request.complete=false}}
+        }
+    }
+}
+
+/// Observation/cancellation only; native selection and activeTab grants remain separate gates.
+#[test]
+#[ignore = "requires real owned native right-click/cancellation in an isolated single-test process"]
+fn live_probe_native_context_menu_observation() {
+    use extensions::json::Value;
+    use windows::core::Interface;
+    use webview2_com::{ContextMenuRequestedEventHandler,Microsoft::Web::WebView2::Win32::ICoreWebView2_11};
+    let arguments:Vec<_>=std::env::args().skip(1).collect();
+    assert_eq!(arguments.iter().map(String::as_str).collect::<Vec<_>>(),vec!["engine::extension_probe_live::live_probe_native_context_menu_observation","--exact","--ignored","--nocapture","--test-threads=1"],"failure cleanup is allowed only in this exact isolated single-test invocation");
+    unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED).ok().unwrap() };
+    let root=temp_root();let profile=root.join("native-context-menu");
+    let (id,folder)=install_fixture(&profile,"probe-native-context-menu");let loopback=Loopback::start();let page=loopback.page("context-menu-observation");
+    let mut session=Session::open(&profile,vec![(id.clone(),folder.clone())],vec![(id.clone(),true)],&page);
+    let (loaded,failure)=session.wait_for_add(&profile,&id);assert!(failure.is_none());assert_eq!(loaded.as_deref(),Some(KEY_FIXTURE_ID));
+    let document_script=format!("[location.href==={},performance.timeOrigin,document.readyState==='complete']",crate::chrome_host::protocol::json_string(page.as_str()));
+    assert!(pump_until(Duration::from_secs(20),||command_view(&mut session,TabId(1),&document_script).is_some_and(|raw|matches!(extensions::json::parse(&raw),Some(Value::Array(a)) if a.len()==3&&a[0]==Value::Bool(true)&&a[2]==Value::Bool(true)))));
+    session.open_page(&id,&folder,extensions::PageKind::Popup).unwrap();
+    assert!(pump_until(Duration::from_secs(10),||session.page_script("document.documentElement.getAttribute('data-ready')").as_deref()==Some("\"yes\"")));
+    let mut receipt=None;
+    assert!(pump_until(Duration::from_secs(10),|| {
+        receipt=command_receipt(&mut session,"native-command-state");
+        receipt.as_ref().and_then(|r|command_field(r,"creation")).is_some_and(|r|command_field(r,"complete")==Some(&Value::Bool(true)))
+    }),"actual onInstalled/create callback did not settle; menu observation unavailable");
+    let receipt=receipt.unwrap();println!("NATIVE_CONTEXT_MENU creation_receipt={receipt:?}");
+    let worker=command_field(&receipt,"workerInstance").expect("genuine worker instance token missing").clone();
+    assert!(matches!(&worker,Value::String(token) if token.len()==36));
+    let creation=command_field(&receipt,"creation").unwrap();assert_eq!(command_field(creation,"ok"),Some(&Value::Bool(true)));assert_eq!(command_field(creation,"error"),Some(&Value::Null));
+    assert_eq!(command_field(&receipt,"events"),Some(&Value::Array(vec![])));
+    let before=command_receipt(&mut session,"native-command-preflight").expect("genuine native preflight receipt");
+    let Some(Value::Array(before_denials))=command_field(&before,"preflight") else{panic!("native preflight identities missing")};
+    assert_eq!(command_field(&before,"workerInstance"),Some(&worker));assert_eq!(command_field(&before,"creation"),Some(creation));
+    assert!(!before_denials.is_empty());for attempt in before_denials {assert_eq!(command_field(attempt,"allowed"),Some(&Value::Bool(false)));assert_eq!(command_field(attempt,"permissionDenied"),Some(&Value::Bool(true)));}
+    let view=session.engine.probe_document_webview(TabId(1)).unwrap();let native=view.cast::<ICoreWebView2_11>().unwrap();let expected=view.as_raw() as usize;
+    let out=PathBuf::from("store-native-context-menu-observation");std::fs::create_dir_all(&out).unwrap();
+    let snapshot=Rc::new(RefCell::new(std::fs::OpenOptions::new().write(true).create_new(true).open(out.join(format!("native-menu-items-{}.log",std::process::id()))).unwrap()));let snapshot_sink=snapshot.clone();
+    let requests=Rc::new(RefCell::new(Vec::<NativeContextRequest>::new()));let sink=requests.clone();let observed=Rc::new(std::cell::Cell::new(0usize));let observed_sink=observed.clone();let mut event_token=0;
+    let handler=ContextMenuRequestedEventHandler::create(Box::new(move|sender,args| {
+        let count=observed_sink.get();observed_sink.set(count.saturating_add(1));
+        if count>=4 {if count==4{let mut file=snapshot_sink.borrow_mut();let _=file.write_all(b"native-request-capture-bound-exceeded\n").and_then(|_|file.flush()).and_then(|_|file.sync_data());}return Ok(())}
+        let mut request=NativeContextRequest{same_receiving_view:sender.as_ref().is_some_and(|view|view.as_raw() as usize==expected),complete:true,..Default::default()};
+        if let Some(args)=args {
+            let mut handled=windows::core::BOOL::default();request.handled_result=unsafe{args.Handled(&mut handled)}.err().map_or(0,|e|e.code().0);if request.handled_result==0{request.handled=Some(handled.as_bool())}else{request.complete=false}
+            match unsafe{args.ContextMenuTarget()}{Ok(target)=>{let mut editable=windows::core::BOOL::default();request.editable_result=unsafe{target.IsEditable(&mut editable)}.err().map_or(0,|e|e.code().0);if request.editable_result==0{request.editable=Some(editable.as_bool())}else{request.complete=false}},Err(e)=>{request.target_result=e.code().0;request.complete=false}}
+            match unsafe{args.MenuItems()}{Ok(items)=>native_context_items(&items,&[],&mut request),Err(e)=>{request.collection_result=e.code().0;request.complete=false}}
+        }else{request.complete=false;request.failures.push("missing-event-args".into())}
+        // Read-only observation. Never SetHandled, SelectedCommandId, host insertion or deferral.
+        // Flush native metadata before returning: a failed topology may terminate this test process.
+        let persisted={let mut file=snapshot_sink.borrow_mut();file.write_all(format!("{request:?}\n").as_bytes()).and_then(|_|file.flush()).and_then(|_|file.sync_data()).is_ok()};
+        if !persisted {request.complete=false;request.failures.push("native-snapshot-write-failed".into());}
+        if sink.borrow().len()<4{sink.borrow_mut().push(request);}Ok(())
+    }));
+    unsafe{native.add_ContextMenuRequested(&handler,&mut event_token).unwrap();}
+    pump_until(Duration::from_millis(500),||false);assert!(requests.borrow().is_empty(),"native menu request appeared during no-input baseline");
+    assert_eq!(command_view(&mut session,TabId(1),"document.documentElement.getAttribute('data-bowser-context-trusted')").as_deref(),Some("null"));
+    session.engine.select_tab(TabId(1)).unwrap();session.engine.set_visible(true).unwrap();
+    unsafe{let _=windows::Win32::UI::WindowsAndMessaging::ShowWindow(session.host,windows::Win32::UI::WindowsAndMessaging::SW_SHOW);let _=windows::Win32::UI::WindowsAndMessaging::SetForegroundWindow(session.host);}
+    session.engine.focus_page().unwrap();pump_until(Duration::from_millis(300),||false);
+    assert_eq!(command_view(&mut session,TabId(1),"document.hasFocus()").as_deref(),Some("true"));
+    let document=command_view(&mut session,TabId(1),&document_script).unwrap();assert!(document.len()<=64);
+    assert!(matches!(extensions::json::parse(&document),Some(Value::Array(a)) if a.len()==3&&a[0]==Value::Bool(true)&&matches!(&a[1],Value::Number(n) if n.parse::<f64>().is_ok_and(|n|n.is_finite()&&n>0.0))&&a[2]==Value::Bool(true)),"exact valid loaded document missing immediately before native input");
+    let bounds=command_view(&mut session,TabId(1),"(()=>{const e=document.getElementById('context-target'),r=e.getBoundingClientRect();return [Math.round(r.x+r.width/2),Math.round(r.y+r.height/2),innerWidth,innerHeight]})()").and_then(|raw|extensions::json::parse(&raw)).unwrap();
+    let Value::Array(bounds)=bounds else{panic!("actual owned textarea geometry missing")};assert_eq!(bounds.len(),4);
+    let points:Vec<i32>=bounds.iter().map(|v|match v{Value::Number(n)=>n.parse().unwrap(),_=>panic!("nonintegral owned geometry")}).collect();
+    assert_eq!(command_view(&mut session,TabId(1),&format!("document.elementFromPoint({},{})===document.getElementById('context-target')",points[0],points[1])).as_deref(),Some("true"));
+    let mut child=std::process::Command::new("powershell.exe").args(["-NoProfile","-File"]).arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("benchmarks/scripts/probe-native-context-observation.ps1"))
+        .args(["-OwnerPid",&std::process::id().to_string(),"-OwnerHandle",&(session.host.0 as isize).to_string(),"-OwnerExe"]).arg(std::env::current_exe().unwrap())
+        .args(["-ClientX",&points[0].to_string(),"-ClientY",&points[1].to_string(),"-ViewportWidth",&points[2].to_string(),"-ViewportHeight",&points[3].to_string(),"-Out"]).arg(&out)
+        .stdout(std::process::Stdio::from(std::fs::File::create(out.join("helper.stdout.log")).unwrap())).stderr(std::process::Stdio::from(std::fs::File::create(out.join("helper.stderr.log")).unwrap())).spawn().unwrap();
+    let complete=pump_until(Duration::from_secs(25),||child.try_wait().is_ok_and(|s|s.is_some()));
+    if !complete{let _=child.kill();let _=child.wait();panic!("native menu observation helper did not complete; no acceptance")}
+    let status=child.wait().unwrap();println!("NATIVE_CONTEXT_MENU helper_status={status:?}");
+    for request in requests.borrow().iter(){println!("NATIVE_CONTEXT_MENU same_view={} editable={:?} handled={:?} target_result={} editable_result={} handled_result={} collection_result={} complete={} visited_items={} failures={:?}",request.same_receiving_view,request.editable,request.handled,request.target_result,request.editable_result,request.handled_result,request.collection_result,request.complete,request.visited_items,request.failures);for entry in &request.entries{println!("NATIVE_CONTEXT_MENU path={:?} name={:?} label={:?} kind={} enabled={} request_local_command={} normalized_get_results={:?} children_result={:?} text_truncated={} text_redacted={}",entry.path,entry.name,entry.label,entry.kind,entry.enabled,entry.command,entry.results,entry.children_result,entry.text_truncated,entry.text_redacted);}}
+    assert!(status.success(),"actual menu topology/cancellation unavailable or failed; no selection/grant verdict");
+    let report=std::fs::read_to_string(out.join("native-context-observation.json")).unwrap();let report=extensions::json::parse(&report).unwrap();assert_eq!(command_field(&report,"status"),Some(&Value::String("observed-owned-popup-and-real-cancellation".into())));
+    assert_eq!(observed.get(),1,"native request count differs from the one actual right-click");
+    {let requests=requests.borrow();assert_eq!(requests.len(),1);let request=&requests[0];assert!(request.same_receiving_view&&request.complete);assert_eq!(request.editable,Some(true));assert_eq!(request.handled,Some(false));assert!(request.entries.iter().any(|entry|entry.name=="extension"&&entry.label=="Bowser native context permission probe"&&entry.enabled),"no actual native extension-classified expected item in complete inventory");}
+    assert_eq!(command_view(&mut session,TabId(1),&document_script).as_ref(),Some(&document));assert_eq!(command_view(&mut session,TabId(1),"document.documentElement.getAttribute('data-bowser-context-trusted')").as_deref(),Some("\"1\""));
+    pump_until(Duration::from_secs(2),||false);
+    let quiet=command_receipt(&mut session,"native-command-state").expect("same warm worker after bounded cancellation quiet interval");
+    assert_eq!(command_field(&quiet,"workerInstance"),Some(&worker),"worker restart makes cancellation evidence unavailable");assert_eq!(command_field(&quiet,"creation"),Some(creation));assert_eq!(command_field(&quiet,"events"),Some(&Value::Array(vec![])));
+    println!("NATIVE_CONTEXT_MENU cancellation_quiet_interval_ms=2000 same_worker=true no_native_event_observed=true");
+    let after=command_receipt(&mut session,"native-command-preflight").unwrap();assert_eq!(command_field(&after,"workerInstance"),Some(&worker));assert_eq!(command_field(&after,"creation"),Some(creation));println!("NATIVE_CONTEXT_MENU after_cancel_receipt={after:?}");assert_eq!(command_field(&after,"events"),Some(&Value::Array(vec![])));
+    let Some(Value::Array(after_denials))=command_field(&after,"preflight") else{panic!("post-cancel native denials missing")};
+    assert_eq!(before_denials.len(),after_denials.len());for (before,after) in before_denials.iter().zip(after_denials){assert_eq!(command_field(before,"id"),command_field(after,"id"));assert_eq!(command_field(after,"allowed"),Some(&Value::Bool(false)));assert_eq!(command_field(after,"permissionDenied"),Some(&Value::Bool(true)));}
+    for role in ["primary","negative"]{assert_eq!(command_view(&mut session,TabId(1),&format!("document.documentElement.getAttribute('data-bowser-native-command-{role}')")).as_deref(),Some("null"));}
+    assert_eq!(command_view(&mut session,TabId(1),&document_script).as_ref(),Some(&document));
+    unsafe{native.remove_ContextMenuRequested(event_token).unwrap();}drop(native);drop(view);
+    println!("NATIVE_CONTEXT_MENU verdict=observed-created-visible-native-item-and-real-cancellation-no-grant scope=warm-worker-observer-present-top-level-not-selection-or-Bitwarden");
+    session.close();let _=std::fs::remove_dir_all(root);
 }

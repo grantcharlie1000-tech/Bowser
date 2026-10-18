@@ -60,7 +60,7 @@ function Read-OwnedAddress {
   [Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::NameProperty,'Address and search bar'),
   [Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::ControlTypeProperty,[Windows.Automation.ControlType]::Edit))
  $edits=$rootElement.FindAll([Windows.Automation.TreeScope]::Descendants,$condition)
- if($edits.Count -ne 1){throw 'Owned address edit was missing or ambiguous; no input sent.'}
+ if($edits.Count -ne 1){throw ("Owned address edit was missing or ambiguous; observed_exact_edit_count="+$edits.Count+"; no input sent.")}
  $edit=$edits[0];$focused=[Windows.Automation.AutomationElement]::FocusedElement
  $same=$focused -and (($edit.GetRuntimeId() -join ',') -ceq ($focused.GetRuntimeId() -join ','))
  $pattern=[Windows.Automation.ValuePattern]$edit.GetCurrentPattern([Windows.Automation.ValuePattern]::Pattern)

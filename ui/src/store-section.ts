@@ -154,6 +154,7 @@ export function mountStoreSection(options: ExtensionsSectionOptions): { readonly
     // Production entrypoints browse Google's original site. The internal host is only review /
     // management; never present the old curated cards behind an active installation request.
     const reviewing = !!snapshot && snapshot.phase !== 'idle';
+    layout.classList.toggle('is-review', reviewing);
     side.hidden = reviewing;
     if (reviewing) { search.hidden = true; body.hidden = true; }
     title.textContent = reviewing ? 'Extension installation' : 'Bowser Store';
