@@ -79,7 +79,7 @@ do {
  }
  if(!$menu){Start-Sleep -Milliseconds 100}
 }while(!$menu -and [DateTime]::UtcNow -lt $deadline)
-if(!$menu){throw 'Owned native same-extension menu item did not appear.'}
+if(!$menu){Save-OwnedWindow '02-native-menu-not-found.png';throw 'Owned native same-extension menu item did not appear.'}
 $invoke=$null;if(!$menu.TryGetCurrentPattern([Windows.Automation.InvokePattern]::Pattern,[ref]$invoke)){throw 'Native menu item has no InvokePattern.'}
 $invoke.Invoke()
 Start-Sleep -Seconds 2

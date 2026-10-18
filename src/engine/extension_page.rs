@@ -240,6 +240,11 @@ fn configure(
             ));
         }
 
+        #[cfg(test)] {
+            let mut native_menus = BOOL::default(); settings.AreDefaultContextMenusEnabled(&mut native_menus)?;
+            println!("EXTENSION_PAGE_MENU default_context_menus_enabled={}", native_menus.as_bool());
+        }
+
         // Never register `WebMessageReceived`, `FrameWebMessageReceived` or a host object on this
         // WebView. Observed on runtime 155.0.4283.45 (see docs/extensions.md): `window.chrome.webview`
         // still exists in the page, but with these settings off a `postMessage` from it reached no
@@ -294,14 +299,17 @@ fn configure(
             webview11.add_ContextMenuRequested(&ContextMenuRequestedEventHandler::create(Box::new(move |sender, args| {
                 let (Some(sender), Some(args)) = (sender, args) else { return Ok(()) };
                 let target = args.ContextMenuTarget()?; let mut has_link = BOOL::default(); target.HasLinkUri(&mut has_link)?;
+                #[cfg(test)] println!("EXTENSION_PAGE_MENU native_context_requested=true has_link={}", has_link.as_bool());
                 if !has_link.as_bool() { return Ok(()); }
                 let mut raw = PWSTR::null(); target.LinkUri(&mut raw)?;
                 let Some(link) = Url::parse(&CoTaskMemPWSTR::from(raw).to_string()).ok().filter(|url| link_policy.allow_new_window(url)) else { return Ok(()) };
                 let item = environment9.CreateContextMenuItem(w!("Open link in this extension window"), None::<&IStream>, COREWEBVIEW2_CONTEXT_MENU_ITEM_KIND_COMMAND)?;
+                #[cfg(test)] println!("EXTENSION_PAGE_MENU offered_same_extension_link={link}");
                 let navigation_policy = link_policy.clone(); let mut selected = 0;
                 item.add_CustomItemSelected(&CustomItemSelectedEventHandler::create(Box::new(move |_sender, _args| {
                     let mut raw = PWSTR::null(); sender.Source(&mut raw)?;
                     let source = Url::parse(&CoTaskMemPWSTR::from(raw).to_string()).ok();
+                    #[cfg(test)] println!("EXTENSION_PAGE_MENU custom_item_selected=true source={source:?} link={link}");
                     if source.as_ref().is_some_and(|source| navigation_policy.allow_new_window(source)) && navigation_policy.allow_new_window(&link) {
                         let address = CoTaskMemPWSTR::from(link.as_str()); sender.Navigate(*address.as_ref().as_pcwstr())?;
                     }
