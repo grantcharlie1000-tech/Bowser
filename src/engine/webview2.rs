@@ -478,6 +478,12 @@ impl HostedPagePolicy {
         crate::extensions::is_page_url(&page) && page.host_str() == self.granted.host_str()
     }
 
+    /// A new-window request may reuse this isolated host only after its initial exact grant,
+    /// and only for the same signed extension. It never creates a browsing tab or UI-profile view.
+    pub(super) fn allow_new_window(&self, uri: &Url) -> bool {
+        !self.pending.get() && self.owns_page(uri)
+    }
+
     /// Frames may be blank or the granted extension's own pages, nothing else.
     pub(super) fn allow_frame(&self, uri: &Url) -> bool {
         (uri.scheme() == "about" && matches!(uri.path(), "blank" | "srcdoc"))
@@ -6982,6 +6988,18 @@ mod tests {
             "file:///C:/Windows/win.ini".to_owned(),
         ] {
             assert!(HostedPagePolicy::new(&Url::parse(&refused).unwrap()).is_none(), "{refused}");
+        }
+    }
+
+    #[test]
+    fn hosted_extension_new_window_reuses_only_the_loaded_extension_origin() {
+        let granted = Url::parse(&format!("chrome-extension://{HOSTED_ID}/popup.html")).unwrap();
+        let manager = Url::parse(&format!("chrome-extension://{HOSTED_ID}/manage.html?tab=styles#one")).unwrap();
+        let policy = HostedPagePolicy::new(&granted).unwrap();
+        assert!(!policy.allow_new_window(&manager), "a new-window request must not consume the initial page grant");
+        assert!(policy.allow_navigation(&granted)); assert!(policy.allow_new_window(&manager));
+        for denied in ["about:blank", "https://example.com/", "file:///C:/Windows/win.ini", "bowser-ui://app/index.html?view=settings", "chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/manage.html"] {
+            assert!(!policy.allow_new_window(&Url::parse(denied).unwrap()), "{denied}");
         }
     }
 

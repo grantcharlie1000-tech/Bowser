@@ -5,8 +5,8 @@
 //! shares the profile's extension storage and runtime with the extension's worker.
 //!
 //! What the page gets: no web-message channel and no host objects (Bowser has no message handler
-//! here, and both settings are verified off), denied permissions and downloads, no new windows, no
-//! external-protocol launches, and exactly one navigation (the granted URL, see
+//! here, and both settings are verified off), denied permissions and downloads, no unowned new windows, no
+//! external-protocol launches, and same-extension navigation after the initial granted URL (see
 //! `HostedPagePolicy`). What it does not get from Bowser: the blocker, the privacy counters, tab
 //! history or any tab id. Whether the page has `chrome.*` is the runtime's decision.
 
@@ -265,7 +265,7 @@ fn configure(
             })),
             &mut token,
         )?;
-        let frame_policy = policy;
+        let frame_policy = policy.clone();
         webview.add_FrameNavigationStarting(
             &NavigationStartingEventHandler::create(Box::new(move |_sender, args| {
                 if let Some(args) = args {
@@ -284,9 +284,18 @@ fn configure(
             &mut token,
         )?;
         webview.add_NewWindowRequested(
-            &NewWindowRequestedEventHandler::create(Box::new(move |_sender, args| {
+            &NewWindowRequestedEventHandler::create(Box::new(move |sender, args| {
                 if let Some(args) = args {
-                    let _ = args.SetHandled(true);
+                    // Always suppress an unowned native window. A signed extension's own link
+                    // may instead navigate this same no-bridge host, using the normal policy.
+                    args.SetHandled(true)?;
+                    let mut uri = PWSTR::null();
+                    let uri = args.Uri(&mut uri).ok().and_then(|()| Url::parse(&CoTaskMemPWSTR::from(uri).to_string()).ok());
+                    let allowed = uri.as_ref().is_some_and(|uri| policy.allow_new_window(uri));
+                    #[cfg(test)] println!("EXTENSION_PAGE_NEW_WINDOW uri={uri:?} same_extension_reuse_allowed={allowed}");
+                    if let (true, Some(uri), Some(sender)) = (allowed, uri, sender) {
+                        let address = CoTaskMemPWSTR::from(uri.as_str()); sender.Navigate(*address.as_ref().as_pcwstr())?;
+                    }
                 }
                 Ok(())
             })),
