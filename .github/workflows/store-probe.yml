@@ -122,11 +122,12 @@ jobs:
       - name: Install official Rust toolchain
         run: rustup toolchain install stable --profile minimal
       - name: Build independent native safety executable without marketplace or resource dependencies
+        id: native_build
         run: |
           cargo +stable test --locked --lib --no-run
           if ($LASTEXITCODE -ne 0) { throw 'Native safety executable failed to build.' }
       - name: Probe local fixture restart, worker messaging, and hosted-context boundaries
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.native_build.outcome == 'success' }}
         run: |
           $env:BOWSER_EXTENSION_TRACE = '1'
           $env:LOCALAPPDATA = Join-Path $env:RUNNER_TEMP 'bowser-store-isolated-localappdata'
@@ -135,7 +136,7 @@ jobs:
           & $test.FullName live_probe_mv3_extension_executes --ignored --nocapture --test-threads=1 2>&1 | Tee-Object store-fixture-probe.log
           if ($LASTEXITCODE -ne 0) { throw 'MV3 lifecycle fixture probe failed.' }
       - name: Probe real pending native callbacks against a second process
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.native_build.outcome == 'success' }}
         run: |
           $env:BOWSER_EXTENSION_TRACE = '1'
           $env:LOCALAPPDATA = Join-Path $env:RUNNER_TEMP 'bowser-store-isolated-localappdata'
@@ -143,42 +144,42 @@ jobs:
           & $test.FullName live_probe_pending_native_operations --ignored --nocapture --test-threads=1 2>&1 | Tee-Object store-pending-native-probe.log
           if ($LASTEXITCODE -ne 0) { throw 'Real pending native operation diagnostic failed.' }
       - name: Probe completed native revocations across new processes
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.native_build.outcome == 'success' }}
         run: |
           $env:BOWSER_EXTENSION_TRACE = '1'
           $test = Get-ChildItem target/debug/deps/bowser-*.exe | Sort-Object LastWriteTime -Descending | Select-Object -First 1
           & $test.FullName live_probe_completed_revocations_restart --ignored --nocapture --test-threads=1 2>&1 | Tee-Object store-completed-restart-probe.log
           if ($LASTEXITCODE -ne 0) { throw 'Completed native revocation restart diagnostic failed.' }
       - name: Probe stale native owner versus a new signing-identity owner without tracing
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.native_build.outcome == 'success' }}
         run: |
           Remove-Item Env:BOWSER_EXTENSION_TRACE -ErrorAction SilentlyContinue
           $test = Get-ChildItem target/debug/deps/bowser-*.exe | Sort-Object LastWriteTime -Descending | Select-Object -First 1
           & $test.FullName live_probe_stale_owner_replacement --ignored --nocapture --test-threads=1 2>&1 | Tee-Object store-stale-owner-probe.log
           if ($LASTEXITCODE -ne 0) { throw 'Stale native owner replacement diagnostic failed.' }
       - name: Probe fail-closed damaged authority at the actual environment boundary
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.native_build.outcome == 'success' }}
         run: |
           $env:BOWSER_EXTENSION_TRACE = '1'
           $test = Get-ChildItem target/debug/deps/bowser-*.exe | Sort-Object LastWriteTime -Descending | Select-Object -First 1
           & $test.FullName live_probe_fail_closed_environment --ignored --nocapture --test-threads=1 2>&1 | Tee-Object store-fail-closed-environment-probe.log
           if ($LASTEXITCODE -ne 0) { throw 'Actual fail-closed environment diagnostic failed.' }
       - name: Probe actual profile and private-first extension isolation
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.native_build.outcome == 'success' }}
         run: |
           $env:BOWSER_EXTENSION_TRACE = '1'
           $test = Get-ChildItem target/debug/deps/bowser-*.exe | Sort-Object LastWriteTime -Descending | Select-Object -First 1
           & $test.FullName live_probe_profile_private_isolation --ignored --nocapture --test-threads=1 2>&1 | Tee-Object store-profile-private-isolation-probe.log
           if ($LASTEXITCODE -ne 0) { throw 'Actual profile/private isolation diagnostic failed.' }
       - name: Probe signed-keyed process-crash recovery at exact native boundaries
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.native_build.outcome == 'success' }}
         run: |
           $env:BOWSER_EXTENSION_TRACE = '1'
           $test = Get-ChildItem target/debug/deps/bowser-*.exe | Sort-Object LastWriteTime -Descending | Select-Object -First 1
           & $test.FullName live_probe_native_crash_recovery --ignored --nocapture --test-threads=1 2>&1 | Tee-Object store-crash-recovery-probe.log
           if ($LASTEXITCODE -ne 0) { throw 'Native process-crash recovery diagnostic failed.' }
       - name: Probe same-identity immutable replacement and rollback feasibility
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.native_build.outcome == 'success' }}
         run: |
           $env:BOWSER_EXTENSION_TRACE = '1'
           $env:LOCALAPPDATA = Join-Path $env:RUNNER_TEMP 'bowser-store-isolated-localappdata'
@@ -187,7 +188,7 @@ jobs:
           & $test.FullName live_probe_same_identity_update_and_rollback --ignored --nocapture --test-threads=1 2>&1 | Tee-Object store-update-probe.log
           if ($LASTEXITCODE -ne 0) { throw 'Update/storage/rollback feasibility probe failed.' }
       - name: Probe genuine privileged Settings UI profile isolation
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.native_build.outcome == 'success' }}
         run: |
           $env:BOWSER_EXTENSION_TRACE = '1'
           $test = Get-ChildItem target/debug/deps/bowser-*.exe | Sort-Object LastWriteTime -Descending | Select-Object -First 1
@@ -207,7 +208,7 @@ jobs:
             store-ui-profile-isolation-probe.log
             store-crash-recovery-probe.log
             store-update-probe.log
-          if-no-files-found: error
+          if-no-files-found: warn
           retention-days: 14
   native-store-journey:
     runs-on: windows-latest

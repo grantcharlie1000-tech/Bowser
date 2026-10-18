@@ -1499,17 +1499,19 @@ fn live_probe_ui_profile_isolation() {
     assert!(owner.native_inventory().unwrap().iter().any(|(native, on)| native == KEY_FIXTURE_ID && *on));
     let env = ChromeEnv::new(owner.engine.chrome_environment().expect("production UI scheme environment"));
     let ready = Rc::new(std::cell::Cell::new(false)); let ready_sink = ready.clone();
+    let failed = Rc::new(std::cell::Cell::new(false)); let failed_sink = failed.clone();
     let created = Rc::new(RefCell::new(None)); let sink = created.clone();
     ChromeHost::create(&env, ChromeHostOptions {
         parent: owner.host, bounds: RECT { left:0, top:0, right:800, bottom:600 }, view: View::Settings,
         on_command: Rc::new(move |command| { if matches!(command, crate::chrome_host::protocol::Command::Ready) { ready_sink.set(true); } }),
-        on_failed: Rc::new(|| panic!("genuine Settings host failed")), on_accelerator: None,
+        on_failed: Rc::new(move || failed_sink.set(true)), on_accelerator: None,
     }, move |result| *sink.borrow_mut() = Some(result)).unwrap();
-    assert!(pump_until(Duration::from_secs(30), || created.borrow().is_some())); let ui = created.borrow_mut().take().unwrap().unwrap();
-    assert!(pump_until(Duration::from_secs(30), || ready.get()), "actual Settings UI did not post its genuine ready message");
+    assert!(pump_until(Duration::from_secs(30), || created.borrow().is_some() || failed.get())); assert!(!failed.get(), "genuine Settings host failed before creation");
+    let ui = created.borrow_mut().take().unwrap().unwrap();
+    assert!(pump_until(Duration::from_secs(30), || ready.get() || failed.get()) && ready.get() && !failed.get(), "actual Settings UI did not post its genuine ready message");
     let webview = ui.probe_native_webview();
     let profile = unsafe { webview.cast::<webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2_13>().unwrap().Profile().unwrap() };
-    let mut name = windows::core::PWSTR::null(); let mut private = windows::Win32::Foundation::BOOL::default();
+    let mut name = windows::core::PWSTR::null(); let mut private = windows::core::BOOL::default();
     unsafe { profile.ProfileName(&mut name).unwrap(); profile.IsInPrivateModeEnabled(&mut private).unwrap(); }
     let name = webview2_com::CoTaskMemPWSTR::from(name).to_string(); assert_eq!(name, CHROME_PROFILE); assert!(private.as_bool());
     let mut source = windows::core::PWSTR::null(); unsafe { webview.Source(&mut source).unwrap(); }

@@ -37,8 +37,8 @@ CRX3 verification, unpack, and `AddBrowserExtension` passed for these versions:
 | --- | --- | --- | --- |
 | uBlock Origin Lite | 2026.1012.1545 | Genuine popup/options; default ad-domain request blocked while zero-extension baseline received a response and the normal control loaded; native DNR rule add/remove effect | Partial |
 | Bitwarden | 2026.10.0 | Genuine popup intro screen, storage/runtime/tabs/windows; no declared options page; dummy-vault autofill not tested | Untested |
-| Stylus | 2.4.14 | Genuine popup; no declared options page; genuine manager imported a disposable style through its own DOM after diagnostic same-extension hyperlink navigation; exact-URL CSS effect, unmatched-URL exclusion and real removal restored original appearance | Partial |
-| Tab Session Manager | 7.4.0 | Genuine popup/options; native windows do not correspond to Bowser's tab grouping; actual save/restore not demonstrated | Untested |
+| Stylus | 2.4.14 | Genuine popup; no declared options page; genuine manager imported a disposable style through its own DOM after diagnostic same-extension hyperlink navigation; exact-URL CSS effect, unmatched-URL exclusion, new-executable-process restart, and real removal restoring original appearance | Partial |
+| Tab Session Manager | 7.4.0 | Genuine popup/options; genuine Save saved one Bowser window/two tabs as two native windows/two tabs; correct grouping and restoration not demonstrated | Untested |
 
 Evidence: [exact real-package probe](https://github.com/grantcharlie1000-tech/Bowser/actions/runs/39091891946),
 head df612ffadefb3bfe7a4851c284923dc33f07be23, tested merge
@@ -52,6 +52,16 @@ reported as active tabs in separate native windows. Correct Bowser-tab targeting
 known unresolved blocker. No website receives a fake `window.chrome`, privileged host object,
 debug port, or private Bowser UI bridge. Bitwarden and Stylus do not declare options pages in
 these packages; earlier generic popup/options wording was too broad.
+
+Later exact signed Stylus2.4.14 execution proved imported CSS survives a new executable process
+and real removal restores the original appearance. TSM7.4.0's genuine Save button saved two
+Bowser tabs in one window as “2 Windows - 2 Tabs”, demonstrating incorrect Bowser-window grouping.
+[Run39092946278](https://github.com/grantcharlie1000-tech/Bowser/actions/runs/39092946278),
+head722aad1f5f6d875d776059a56e8b5a803060147f, testedmergeaa1c44940dcc6871d0214805a6286b0064b9efa4.
+Early real-package artifact12124020376 SHA256
+2c361f96b6c213d316cb70808efdad1371c73ba25e6302ef6180801e50192a5d.
+No restore-current command was used. These observations do not establish Bitwarden autofill or
+TSM restoration, and no guessed IDs or native API replacement were used.
 
 Earlier diagnostic runs used Dark Reader 4.9.133 and OneTab 2.24. They are not current catalogue
 or future acceptance-test candidates. The Dark Reader run actually loaded its popup/options;
@@ -76,7 +86,7 @@ its terms' implicit-use acceptance was disclosed separately. This is not redistr
   head 26ac1ffe864fe7a53ff6bd3f0745b69226221745, tested merge fca7d460c23000f4e984c95cccfaa18bba256909.
   Stale-owner replacement, damaged-authority real-environment exclusion and private/profile negatives
   remain distinct pending runtime gates.
-- Untested: Bitwarden dummy-credential use; real Stylus CSS application/removal/restart; actual
+- Untested: Bitwarden dummy-credential use; normal Stylus manager-routing integration; actual
   Bowser-tab session save/restore; complete private/UI isolation. A 6-row cold/warm zero/four
   release-executable diagnostic series completed in the same green run, preserving process-tree
   identities and K32 PrivateUsage; both arms have diagnostic tracing enabled and use --dev, so
