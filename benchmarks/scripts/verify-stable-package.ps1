@@ -103,16 +103,25 @@ try {
     @'
 param([string]$Launcher, [string]$SourceExe, [string]$InstallDirectory, [string]$CapturePath)
 $ErrorActionPreference = 'Stop'
-$script:CapturePath = $CapturePath
+if ([string]::IsNullOrWhiteSpace($CapturePath)) { throw 'Missing owned capture path' }
+# This variable belongs only to the disposable wrapper process, not a user/machine environment.
+# Process scope stays unambiguous across invocation of a different launcher script scope.
+$env:BOWSER_STABLE_VERIFIER_CAPTURE_PATH = $CapturePath
 function Invoke-WebRequest {
     param([Parameter(Mandatory = $true)][string]$Uri, [switch]$UseBasicParsing)
-    if ($Uri -cne 'https://raw.githubusercontent.com/grantcharlie1000-tech/Bowser/main/stable/release.json') { throw 'Unexpected request in isolated no-launch installer' }
+    $captureFile = [Environment]::GetEnvironmentVariable('BOWSER_STABLE_VERIFIER_CAPTURE_PATH', 'Process')
+    if ([string]::IsNullOrWhiteSpace($captureFile)) { throw 'Owned wrapper process lost its capture path' }
     try {
+        if ($Uri -cne 'https://raw.githubusercontent.com/grantcharlie1000-tech/Bowser/main/stable/release.json') { throw 'Unexpected request in isolated no-launch installer' }
+        [IO.File]::WriteAllText($captureFile + '.invoked.txt', "Actual unchanged launcher requested $Uri")
         $response = Microsoft.PowerShell.Utility\Invoke-WebRequest @PSBoundParameters -TimeoutSec 60
-        [IO.File]::WriteAllText($script:CapturePath, [string]$response.Content)
+        [IO.File]::WriteAllText($captureFile, [string]$response.Content)
         return $response
     } catch {
-        [IO.File]::WriteAllText($script:CapturePath + '.error.txt', $_.Exception.Message)
+        $detail = ($_ | Format-List * -Force | Out-String) + "`n" + $_.ScriptStackTrace
+        [Console]::Error.WriteLine($detail)
+        try { [IO.File]::WriteAllText($captureFile + '.error.txt', $detail) }
+        catch { [Console]::Error.WriteLine("Capture diagnostic write also failed: $($_.Exception)") }
         throw
     }
 }
@@ -125,7 +134,7 @@ exit $LASTEXITCODE
     foreach ($attempt in 1..2) {
         $capture = Join-Path $Out "attempt-$attempt-remote-pin.json"
         # Do not misattribute a previous run's response when the current remote request fails.
-        foreach ($old in @($capture, ($capture + '.error.txt'))) {
+        foreach ($old in @($capture, ($capture + '.error.txt'), ($capture + '.invoked.txt'))) {
             if (Test-Path -LiteralPath $old) { Remove-Item -LiteralPath $old -Force }
         }
         $stdout = Join-Path $Out "attempt-$attempt-stdout.txt"
@@ -144,19 +153,34 @@ exit $LASTEXITCODE
         $process.Dispose()
         if ($null -eq $exitCode) { throw "Isolated launcher attempt $attempt returned no exit code" }
         $selected = $pin
-        $selection = 'checked-out pin (remote unavailable/older/invalid)'
-        $remoteReadError = $null
-        if (Test-Path -LiteralPath $capture) {
-            try {
-                $remote = Get-Content -LiteralPath $capture -Raw | ConvertFrom-Json
-                # Match Open-Bowser's exact revision-selection rule and Int32 conversions.
-                $localRevision = 0; if ($pin.revision) { $localRevision = [int]$pin.revision }
-                $remoteRevision = 0; if ($remote.revision) { $remoteRevision = [int]$remote.revision }
-                if ($remoteRevision -ge $localRevision) { $selected = $remote; $selection = 'actual launcher remote response' }
-            } catch { $remoteReadError = $_.Exception.Message }
-        }
-        $entry = [ordered]@{ attempt = $attempt; exit_code = $exitCode; selection = $selection; selected_pin = $selected; remote_parse_error = $remoteReadError }
+        $selection = 'checked-out pin (actual remote response older)'
+        $entry = [ordered]@{ attempt = $attempt; exit_code = $exitCode; selection = $null; selected_pin = $null; remote_response_observed = $false }
         $report.attempts += $entry
+        if (Test-Path -LiteralPath ($capture + '.error.txt')) {
+            $detail = Get-Content -LiteralPath ($capture + '.error.txt') -Raw
+            throw "Actual launcher remote request/capture failed: $detail"
+        }
+        if (-not (Test-Path -LiteralPath $capture -PathType Leaf) -or -not (Test-Path -LiteralPath ($capture + '.invoked.txt') -PathType Leaf)) {
+            throw "Actual launcher remote response was not captured; see attempt-$attempt stdout/stderr. Fallback cannot satisfy this release gate."
+        }
+        try {
+            $remote = Get-Content -LiteralPath $capture -Raw | ConvertFrom-Json
+            foreach ($field in @('repository', 'version', 'revision', 'tag', 'commit', 'asset', 'sha256', 'bytes')) { [void](Require-Field $remote $field) }
+            # Match the unchanged launcher's Int32 revision-selection rule, using its actual response.
+            $localRevision = [int]$pin.revision
+            $remoteRevision = [int]$remote.revision
+            $expectedLine = 'The GitHub pin is older than this folder. Using the local pin.'
+            if ($remoteRevision -ge $localRevision) {
+                $selected = $remote
+                $selection = 'actual launcher remote response'
+                $expectedLine = 'Using the stable release published on GitHub.'
+            }
+        } catch { throw "Captured launcher remote response is malformed: $($_.Exception.Message)" }
+        $launcherOutput = Get-Content -LiteralPath $stdout -Raw
+        if (-not $launcherOutput.Contains($expectedLine) -or $launcherOutput.Contains('GitHub could not be reached.')) { throw 'Launcher output does not confirm the observed remote-response selection.' }
+        $entry.selection = $selection
+        $entry.selected_pin = $selected
+        $entry.remote_response_observed = $true
         Assert-SamePin $selected $pin
         if ($exitCode -ne 0) { throw "Isolated launcher attempt $attempt failed (exit $exitCode); see captured logs" }
         $installed = Join-Path $report.install_directory 'Bowser.exe'
@@ -173,6 +197,7 @@ exit $LASTEXITCODE
         $entry.installed_sha256 = Hash $installed
         $entry.stable_note_verified = $true
     }
+    $report.checks.actual_launcher_remote_response_observed_both_attempts = $true
     $report.checks.isolated_no_launch_no_shortcuts_install = $true
     $report.checks.second_run_idempotent = $true
     $report.checks.checked_out_pin_and_launcher_unchanged = $true
