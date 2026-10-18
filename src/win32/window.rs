@@ -29,7 +29,7 @@ use crate::{
         protocol::{
             CaptionAction, Command as ChromeCommand, GroupAction, NavAction, OpenTarget,
             RailAction, RailKeyWire, SideAction, TabAction, ViewState, completion_json, fav_json, focus_json,
-            rail_json, railfav_json, set_text_json, tabs_json,
+            rail_json, railfav_json, set_text_full_json, set_text_json, tabs_json,
         },
     },
     favicon::{self, FaviconCache},
@@ -529,6 +529,9 @@ struct WindowChrome {
     /// (see `loaded_history`).
     history_load: Option<JoinHandle<History>>,
     urls: HashMap<TabId, String>,
+    /// The full address per tab next to the (possibly `minimal_url`-condensed) one in `urls`: what the
+    /// focused field holds, so copying or editing sees the query and fragment too.
+    full_urls: HashMap<TabId, String>,
     /// Decides when a finished page load becomes a history entry (any way the page was reached).
     visits: crate::productivity::VisitTracker,
     /// A visit was written to history.txt since the History flyout last refreshed.
@@ -601,8 +604,9 @@ struct WindowChrome {
     html_rail_last_state: Option<String>,
     /// Incremented for each page `ready`, so a re-entrant post cannot cache a prior page's state.
     html_state_generation: [u64; 3],
-    /// The tab and omnibox text last sent with `setText`, so the text is not re-sent each sync.
-    html_text_sent: Option<(TabId, String)>,
+    /// The tab, omnibox text and `minimal_url` full address last sent with `setText`, so the text is
+    /// not re-sent each sync (and a new full address behind the same condensed text still is).
+    html_text_sent: Option<(TabId, String, String)>,
     /// The active tab the last sync saw. A change of tab sends the new tab's text even while the
     /// omnibox is focused (see `chrome_host::should_set_text`).
     html_synced_tab: Option<TabId>,
@@ -696,7 +700,7 @@ impl WindowChrome {
             overlay,
             client: (width, height),
             layout: layout::compute_in_frame(width, height, dpi, 1, 0, false),
-            palette: auto_hide::chrome_palette(), // --- auto-hide (T11) --- the solid palette while a bar is auto-hidden
+            palette: glass::palette(), // --- auto-hide (T11) --- a new window has hidden no bar yet, so it starts glass
             tabs: Vec::with_capacity(8),
             slots: Vec::with_capacity(8),
             stack_tabs: Vec::new(), // --- two-level stacks (T10b) ---
@@ -741,6 +745,7 @@ impl WindowChrome {
             history: History::default(),
             history_load: None,
             urls: HashMap::with_capacity(8),
+            full_urls: HashMap::with_capacity(8),
             visits: crate::productivity::VisitTracker::default(),
             history_dirty: false,
             hover: Hit::None,
@@ -1051,7 +1056,7 @@ impl WindowChrome {
         // --- auto-hide (T11) --- with nothing hidden this is exactly that geometry; with bars out
         // the page widens over them (`layout::compute_arranged_auto_hide`), and the layout with
         // every bar shown says where a revealed bar floats.
-        let plan = crate::auto_hide::plan(self.ah.hidden, arrangement.tabs);
+        let plan = crate::auto_hide::plan_for(self.ah.hidden, arrangement.tabs, arrangement.tab_bar); // A hidden tab bar hides nothing
         let hide = plan.layout();
         let (layout, sidebar) = layout::compute_arranged_auto_hide(
             arrangement, w, h, self.dpi, self.slots.len().max(1), i, maximised,
@@ -1800,6 +1805,10 @@ pub(crate) fn toggle_fullscreen(hwnd: HWND, app: &AppRef) {
 pub(crate) fn page_fullscreen(hwnd: HWND, app: &AppRef, on: bool, source: Option<&url::Url>) {
     auto_hide::page_fullscreen(hwnd, app, on, source);
 }
+/// The tab whose page holds page full screen in `hwnd`, if any.
+pub(crate) fn page_fullscreen_owner(hwnd: HWND) -> Option<crate::tabs::TabId> {
+    fullscreen_notice::owner(hwnd)
+}
 pub(super) fn bookmark_bar_placement(hwnd: HWND) -> Option<(RECT, bool)> {
     auto_hide::bookmark_bar_placement(hwnd)
 }
@@ -2338,8 +2347,9 @@ unsafe extern "system" fn window_proc(
                 let _ = windows::Win32::Graphics::Gdi::ScreenToClient(hwnd, &mut p);
                 let mut r = RECT::default();
                 let _ = GetClientRect(hwnd, &mut r);
+                let chrome_hit = hit(hwnd, p.x, p.y); // Also tells a drag band apart
                 let ih = matches!(
-                    hit(hwnd, p.x, p.y),
+                    chrome_hit,
                     Hit::Tab(_)
                         | Hit::TabClose(_)
                         | Hit::NewTab
@@ -2369,6 +2379,8 @@ unsafe extern "system" fn window_proc(
                     auto_hide::zoomed_or_full(hwnd), // --- auto-hide (T11) --- no resize rim in full screen
                     if ih {
                         frame::ChromeHit::Interactive
+                    } else if chrome_hit == Hit::CaptionArea {
+                        frame::ChromeHit::Drag // The bottom toolbar's empty space drags too
                     } else {
                         frame::ChromeHit::None
                     },
@@ -2471,7 +2483,7 @@ unsafe extern "system" fn window_proc(
                 glass::refresh_system_state();
                 let _ = glass::apply(hwnd);
                 let settled = with_chrome(hwnd, |s| {
-                    s.palette = auto_hide::chrome_palette(); // --- auto-hide (T11) ---
+                    s.palette = auto_hide::chrome_palette(hwnd); // --- auto-hide (T11) --- this window's
                     let settled = s.motion.set_snap(!animations_enabled(), Instant::now());
                     let rail_settled = s.surface.set_rail_snap(!animations_enabled(), Instant::now());
                     let settled = settled || rail_settled;
@@ -9122,7 +9134,7 @@ fn html_refresh(hwnd: HWND) {
         if host.post_json(&set_text_json(&text, false)).is_ok() {
             let current = with_chrome(hwnd, |s| {
                 if s.html_state_generation[0] != generation { return false; }
-                s.html_text_sent = Some((id, text.clone()));
+                s.html_text_sent = Some((id, text.clone(), String::new()));
                 s.html_synced_tab = Some(id);
                 s.html_omnibox_focused = true;
                 s.edit_text = text;
@@ -9188,7 +9200,7 @@ fn html_sync(hwnd: HWND) {
     let look = settings.private_theme.appearance(App::tab_private(&app, id), system_look);
     // --- theme options --- the person's colours, the accent (the page's, when asked) and the tint.
     // --- auto-hide (T11) --- solid while a bar is out of the layout: a revealed bar floats over the page.
-    let (palette, _) = App::themed_palette(&app, look, glass::backdrop_mode() == glass::BackdropMode::Solid || auto_hide::solid());
+    let (palette, _) = App::themed_palette(&app, look, view_solid(hwnd));
     // --- end theme options ---
     let dark = look == crate::theme::Appearance::Dark;
     let state = ViewState {
@@ -9196,7 +9208,7 @@ fn html_sync(hwnd: HWND) {
         pillx,
         pillw,
         menux,
-        solid: glass::backdrop_mode() == glass::BackdropMode::Solid || auto_hide::solid(), // --- auto-hide (T11) ---
+        solid: view_solid(hwnd), // --- auto-hide (T11) ---
         dark,
         back: App::tab_can_go_back(&app, id),
         forward: App::tab_can_go_forward(&app, id),
@@ -9235,13 +9247,15 @@ fn html_sync(hwnd: HWND) {
     let generation = with_chrome(hwnd, |s| s.html_state_generation[0]).unwrap_or_default();
     super::address_bar::sync(hwnd, &app, generation);
     super::bookmark_bar::sync(hwnd, &app);
-    let display =
-        with_chrome(hwnd, |s| s.urls.get(&id).cloned().unwrap_or_default()).unwrap_or_default();
+    let (display, full) = with_chrome(hwnd, |s| {
+        (s.urls.get(&id).cloned().unwrap_or_default(), s.full_urls.get(&id).cloned().unwrap_or_default())
+    })
+    .unwrap_or_default();
     let (send_text, select, generation) = with_chrome(hwnd, |s| {
         let already_sent = s
             .html_text_sent
             .as_ref()
-            .is_some_and(|(tab, text)| *tab == id && *text == display);
+            .is_some_and(|(tab, text, sent_full)| *tab == id && *text == display && *sent_full == full);
         let prev_tab = s.html_synced_tab;
         let send_text = chrome_host::should_set_text(
             prev_tab,
@@ -9254,11 +9268,11 @@ fn html_sync(hwnd: HWND) {
         (send_text, select, s.html_state_generation[0])
     })
     .unwrap_or_default();
-    if send_text && host.post_json(&set_text_json(&display, select)).is_ok() {
+    if send_text && host.post_json(&set_text_full_json(&display, &full, select)).is_ok() {
             let _ = with_chrome(hwnd, |s| {
                 if s.html_state_generation[0] != generation { return; }
                 s.html_synced_tab = Some(id);
-                s.html_text_sent = Some((id, display.clone()));
+                s.html_text_sent = Some((id, display.clone(), full.clone()));
                 s.edit_text.clone_from(&display);
                 s.completion = None;
             });
@@ -9506,9 +9520,12 @@ fn html_command(hwnd: HWND, command: ChromeCommand) {
             let Some(app) = app_of(hwnd) else { return };
             super::html_hover::suggest_hide(hwnd); // --- omnibox suggest ---
             let id = App::active_tab_id(&app);
-            let display = with_chrome(hwnd, |s| s.urls.get(&id).cloned().unwrap_or_default())
-                .unwrap_or_default();
-            // Restore the address the tab shows, then hand the keyboard back to the page.
+            let (display, full) = with_chrome(hwnd, |s| {
+                (s.urls.get(&id).cloned().unwrap_or_default(), s.full_urls.get(&id).cloned().unwrap_or_default())
+            })
+            .unwrap_or_default();
+            // Restore the address the tab shows (with its full form for the next focus), then hand
+            // the keyboard back to the page.
             let host = with_chrome(hwnd, |s| {
                 s.html_text_sent = None;
                 s.edit_text.clone_from(&display);
@@ -9516,10 +9533,10 @@ fn html_command(hwnd: HWND, command: ChromeCommand) {
                 (s.html.clone(), s.html_state_generation[0])
             });
             if let Some((Some(host), generation)) = host {
-                if host.post_json(&set_text_json(&display, false)).is_ok() {
+                if host.post_json(&set_text_full_json(&display, &full, false)).is_ok() {
                     let _ = with_chrome(hwnd, |s| {
                         if s.html_state_generation[0] == generation {
-                            s.html_text_sent = Some((id, display.clone()));
+                            s.html_text_sent = Some((id, display.clone(), full.clone()));
                         }
                     });
                 }
@@ -10180,6 +10197,12 @@ pub(super) fn request_composer(
     defer_html_command(hwnd, DeferredChromeCommand::ComposerOpen);
 }
 
+/// Whether window `hwnd`'s views are solid: the system backdrop is, or this window (not another
+/// one) has a bar auto-hidden.
+fn view_solid(hwnd: HWND) -> bool {
+    glass::backdrop_mode() == glass::BackdropMode::Solid || auto_hide::solid(hwnd)
+}
+
 pub(super) fn popup_state_json(hwnd: HWND) -> Option<String> {
     let app = app_of(hwnd)?;
     let (palette, dpi) = with_chrome(hwnd, |s| (s.palette, s.dpi))?;
@@ -10194,7 +10217,7 @@ pub(super) fn popup_state_json(hwnd: HWND) -> Option<String> {
         pillx: 0,
         pillw: 0,
         menux: 0,
-        solid: glass::backdrop_mode() == glass::BackdropMode::Solid || auto_hide::solid(), // --- auto-hide (T11) ---
+        solid: view_solid(hwnd), // --- auto-hide (T11) ---
         dark: glass::appearance() == crate::theme::Appearance::Dark,
         back: App::tab_can_go_back(&app, id),
         forward: App::tab_can_go_forward(&app, id),
@@ -11814,8 +11837,10 @@ fn remember_url(hwnd: HWND, id: TabId, value: &str, minimal_url: bool) {
     });
     if let Ok(url) = parsed {
         let shown = omnibox::address_display(&url, minimal_url);
+        let full = omnibox::focused_address_display(&url);
         let _ = with_chrome(hwnd, |s| {
             s.urls.insert(id, shown);
+            s.full_urls.insert(id, full);
         });
         mark_chrome_dirty(hwnd);
     }
@@ -11840,8 +11865,11 @@ pub(super) fn focus_omni(hwnd: HWND, app: &AppRef, all: bool) {
     }
     let edit = app.borrow().edit;
     let id = App::active_tab_id(app);
-    let value =
-        with_chrome(hwnd, |s| s.urls.get(&id).cloned().unwrap_or_default()).unwrap_or_default();
+    // The focused field holds the full address; the condensed `minimal_url` form returns on blur.
+    let value = with_chrome(hwnd, |s| {
+        s.full_urls.get(&id).filter(|full| !full.is_empty()).or_else(|| s.urls.get(&id)).cloned().unwrap_or_default()
+    })
+    .unwrap_or_default();
     unsafe {
         let _ = SetWindowTextW(edit, &windows::core::HSTRING::from(value));
         let _ = SetFocus(Some(edit));
@@ -11865,7 +11893,13 @@ pub(super) fn focus_omni(hwnd: HWND, app: &AppRef, all: bool) {
 /// address reaches the HTML omnibox the way a committed one does.
 pub(crate) fn show_pending_address(hwnd: HWND, edit: HWND, id: TabId, url: &url::Url, minimal_url: bool) {
     let shown = omnibox::address_display(url, minimal_url);
-    if with_chrome(hwnd, |s| s.urls.insert(id, shown.clone())).is_none() {
+    let full = omnibox::focused_address_display(url);
+    if with_chrome(hwnd, |s| {
+        s.full_urls.insert(id, full);
+        s.urls.insert(id, shown.clone())
+    })
+    .is_none()
+    {
         return;
     }
     unsafe {
@@ -11884,6 +11918,8 @@ pub(crate) fn show_pending_address(hwnd: HWND, edit: HWND, id: TabId, url: &url:
 /// selection, so the address is only remembered and appears once focus leaves.
 pub(crate) fn sync_address_input(hwnd: HWND, edit: HWND, id: TabId, url: &url::Url, minimal_url: bool) -> bool {
     let shown = omnibox::address_display(url, minimal_url);
+    let full = omnibox::focused_address_display(url);
+    let _ = with_chrome(hwnd, |s| s.full_urls.insert(id, full));
     if omnibox::should_sync_displayed_url(edit_focused(hwnd)) {
         return super::set_input_text(edit, &shown);
     }
@@ -12240,7 +12276,10 @@ unsafe extern "system" fn edit_subclass(
                 .unwrap_or(text);
             let active = app.map(App::active_tab_id);
             let _ = with_chrome(main, |s| {
-                if let Some(id) = active {
+                // The full address focus_omni swaps in is not the tab's (condensed) shown address.
+                if let Some(id) = active
+                    && s.full_urls.get(&id).is_none_or(|full| *full != display || s.urls.get(&id) == Some(full))
+                {
                     s.urls.insert(id, display.clone());
                 }
                 s.edit_text.clone_from(&display);

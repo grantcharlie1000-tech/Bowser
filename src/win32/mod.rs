@@ -78,7 +78,7 @@ pub(crate) use command_actions::run_bookmarks_panel; // --- latency (fix E) ---
 // --- wave-1 integration --- T1, T2 and T3 commands in the registry.
 // --- auto-hide (T11) --- Auto-hide and full screen (registry commands).
 pub(crate) use command_actions::{run_toggle_auto_hide, run_toggle_fullscreen};
-pub(crate) use window::{auto_hide_effective, auto_hide_page_created, auto_hide_sync, page_fullscreen, zoomed_or_full};
+pub(crate) use window::{auto_hide_effective, auto_hide_page_created, auto_hide_sync, page_fullscreen, page_fullscreen_owner, zoomed_or_full};
 // --- end auto-hide ---
 pub(crate) use command_actions::{
     run_cycle_blocking_level, run_delete_browsing_data, run_periodic_reload, run_qr_code, run_stop_all_reloads, run_toggle_address_bar,

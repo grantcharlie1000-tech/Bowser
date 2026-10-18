@@ -454,3 +454,17 @@ test('the address dialogs: snapshots parse strictly and fields are cleaned befor
   assert.equal(dialogLogic.MAX_QR_BYTES, 213);
   assert.ok(qrMatrix('x'.repeat(dialogLogic.MAX_QR_BYTES)) !== null && qrMatrix('x'.repeat(dialogLogic.MAX_QR_BYTES + 1)) === null, 'the dialog limit is the encoder limit');
 });
+
+test('minimal_url: focus swaps in the full address, blur restores the condensed one, edits are kept', () => {
+  const shown = 'example.com';
+  const full = 'example.com/docs?q=1#part';
+  assert.equal(logic.focusAddressText(shown, shown, full, false), full);
+  assert.equal(logic.blurAddressText(full, shown, full, false), shown);
+  // No full form (minimal_url off, or the same text): nothing changes.
+  assert.equal(logic.focusAddressText(shown, shown, '', false), shown);
+  assert.equal(logic.blurAddressText(shown, shown, '', false), shown);
+  // Typed text is the user's, on focus and on blur.
+  assert.equal(logic.focusAddressText('typed', shown, full, true), 'typed');
+  assert.equal(logic.blurAddressText(full, shown, full, true), full);
+  assert.equal(logic.blurAddressText('typed', shown, full, false), 'typed');
+});

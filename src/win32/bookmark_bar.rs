@@ -103,7 +103,13 @@ pub(crate) fn reserve_px(app: &AppRef, dpi: u32) -> (i32, bool) {
         return (0, false);
     }
     let settings = App::settings(app);
-    (BAR_HEIGHT_DIP * dpi.max(96) as i32 / 96, settings.address.bar_position == BarPosition::Bottom)
+    (bar_height_px(dpi), settings.address.bar_position == BarPosition::Bottom)
+}
+
+/// The bar's height in physical pixels, rounded the way every other chrome row is
+/// (`Metrics::px`), so the bar and the rows beside it agree at any scale.
+pub(crate) fn bar_height_px(dpi: u32) -> i32 {
+    crate::chrome::layout::Metrics::new(dpi.max(96)).px(BAR_HEIGHT_DIP)
 }
 
 /// `viewport` after the bar took its share (called by `window::relayout`).
@@ -705,6 +711,26 @@ fn anchor(owner: HWND, rect: HoverRect) -> Option<POINT> {
 mod tests {
     use super::*;
     use crate::chrome::layout::Rect;
+
+    /// At 125/150/175% (and odd scales) the bar is as tall as the layout's own rounding makes a
+    /// 28 DIP row, and the reserved page and the bar's rectangle (as `sync` places the host) tile
+    /// the laid-out page with no gap or overlap, at either edge.
+    #[test]
+    fn the_bar_and_the_page_tile_at_fractional_dpi() {
+        for dpi in [96, 106, 120, 132, 144, 168, 192] {
+            let height = bar_height_px(dpi);
+            assert_eq!(height, crate::chrome::layout::Metrics::new(dpi).px(BAR_HEIGHT_DIP), "dpi {dpi}");
+            let (layout, _) = crate::chrome::layout::compute_arranged_in_frame(crate::chrome::layout::Arrangement::default(), 1301, 803, dpi, 3, 0, false, 260, true, 36);
+            let normal = layout.viewport;
+            for bottom in [false, true] {
+                let page = reserved_viewport(normal, (height, bottom));
+                let bar = if bottom { Rect::new(page.left, page.bottom, page.right, page.bottom + height) } else { Rect::new(page.left, page.top - height, page.right, page.top) };
+                assert_eq!(bar.union(page), normal, "dpi {dpi} bottom {bottom}: no gap");
+                assert!(bar.intersect(page).is_empty(), "dpi {dpi} bottom {bottom}: no overlap");
+            }
+        }
+        assert_eq!((bar_height_px(120), bar_height_px(144), bar_height_px(168)), (35, 42, 49));
+    }
 
     // --- wave-1 fixes --- what the bar's options do.
     #[test]

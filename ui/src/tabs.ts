@@ -1119,17 +1119,25 @@ export function startTabs(strip: HTMLElement): HTMLElement {
   window.addEventListener('pointercancel', (ev) => onPointerEnd(ev, false));
   window.addEventListener('blur', () => endDrag(false));
   strip.addEventListener('scroll', updateEdges, { passive: true });
+  // One wheel stepper for both rows, each among its own tabs.
+  const wheelSwitch = (ev: WheelEvent, order: readonly TabNode[]): void => {
+    ev.preventDefault();
+    const now = Date.now();
+    if (now - wheelAt > 400) wheelTotal = 0;
+    wheelAt = now;
+    const moved = wheelSteps(wheelTotal, ev.deltaY !== 0 ? ev.deltaY : ev.deltaX);
+    wheelTotal = moved.rest;
+    const target = moved.steps === 0 ? null : stepTab(order.map((n) => n.id), activeId, moved.steps);
+    if (target !== null) send({ v: 1, t: 'tab', a: 'select', id: target });
+  };
+  // --- two-level stacks (T10b) --- over the second row the wheel steps through the stack's tabs.
+  row2.addEventListener('wheel', (ev) => {
+    if (ui.wheel && layoutMode === 'horizontal' && !row2.hidden) wheelSwitch(ev, tabsIn(row2));
+  }, { passive: false });
   strip.addEventListener('wheel', (ev) => {
     // --- tab options --- "Switch tabs by scrolling": a wheel over the strip steps through the tabs.
     if (ui.wheel && layoutMode === 'horizontal') {
-      ev.preventDefault();
-      const now = Date.now();
-      if (now - wheelAt > 400) wheelTotal = 0;
-      wheelAt = now;
-      const moved = wheelSteps(wheelTotal, ev.deltaY !== 0 ? ev.deltaY : ev.deltaX);
-      wheelTotal = moved.rest;
-      const target = moved.steps === 0 ? null : stepTab(visibleTabs().map((n) => n.id), activeId, moved.steps);
-      if (target !== null) send({ v: 1, t: 'tab', a: 'select', id: target });
+      wheelSwitch(ev, visibleTabs());
       return;
     }
     // --- end tab options ---

@@ -87,6 +87,11 @@ pub(super) fn show(owner: HWND, app: &AppRef, source: Option<&url::Url>) -> bool
     }
 }
 
+/// The tab whose page holds page full screen in `owner` (the tab the notice was shown for), if any.
+pub(super) fn owner(owner: HWND) -> Option<TabId> {
+    NOTICES.with(|notices| notices.borrow().get(&(owner.0 as isize)).map(|(_, tab)| *tab))
+}
+
 pub(super) fn hide(owner: HWND) {
     let window = NOTICES.with(|notices| notices.borrow_mut().remove(&(owner.0 as isize)));
     if let Some((window, _)) = window { unsafe { let _ = DestroyWindow(window); } }
@@ -122,6 +127,17 @@ mod tests {
         if let Ok(url) = url::Url::parse(&long) {
             assert!(notice_text(&url).is_none());
         } // A parser rejecting the oversized host is already fail-closed.
+    }
+
+    #[test]
+    fn the_owner_is_the_tab_the_notice_was_shown_for_in_that_window_only() {
+        let (first, second) = (HWND(0x2001 as *mut _), HWND(0x2002 as *mut _));
+        assert_eq!(owner(first), None, "no page full screen, no owner");
+        NOTICES.with(|notices| notices.borrow_mut().insert(first.0 as isize, (HWND::default(), TabId(7))));
+        assert_eq!(owner(first), Some(TabId(7)));
+        assert_eq!(owner(second), None, "another window has its own owner");
+        NOTICES.with(|notices| notices.borrow_mut().remove(&(first.0 as isize)));
+        assert_eq!(owner(first), None);
     }
 
     #[test]

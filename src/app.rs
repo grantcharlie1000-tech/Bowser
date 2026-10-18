@@ -5964,7 +5964,8 @@ impl App {
                             let state = app.borrow();
                             (state.hwnd, state.tab_model.active() == tab_id)
                         };
-                        if active || !on {
+                        let owns = win32::page_fullscreen_owner(hwnd) == Some(tab_id);
+                        if crate::auto_hide::page_fullscreen_event_applies(on, active, owns) {
                             win32::page_fullscreen(hwnd, &app, on, source.as_ref());
                         }
                     }
@@ -7534,7 +7535,7 @@ impl App {
         // window lays out the same way (`chrome::layout::compute_arranged_auto_hide`).
         let maximised = crate::win32::zoomed_or_full(self.hwnd);
         let hidden = crate::win32::auto_hide_effective(self.hwnd, &self.settings).hidden;
-        let plan = crate::auto_hide::plan(hidden, self.settings.tab_layout);
+        let plan = crate::auto_hide::plan_for(hidden, self.settings.tab_layout, self.settings.tab_bar_visible);
         // --- end auto-hide ---
         // --- layout (thread T6) --- the whole arrangement, with a hidden address bar shown while
         // Ctrl+L has it revealed, and the docked panel on the edge it is actually on (none of its

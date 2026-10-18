@@ -280,6 +280,8 @@ export interface SetTextMsg {
   readonly t: 'setText';
   readonly text: string;
   readonly select: boolean;
+  /** `minimal_url`: the full address the focused field holds, when it differs from `text`. */
+  readonly full?: string;
 }
 export interface FocusOmniboxMsg {
   readonly t: 'focusOmnibox';
@@ -1266,9 +1268,10 @@ export function parseInbound(data: unknown): Inbound | null {
       };
     }
     case 'setText': {
-      const { text, select } = raw;
+      const { text, select, full } = raw;
       if (typeof text !== 'string' || !isBool(select)) return null;
-      return { t: 'setText', text: truncateCodePoint(text, MAX_TEXT), select };
+      if (full !== undefined && typeof full !== 'string') return null;
+      return { t: 'setText', text: truncateCodePoint(text, MAX_TEXT), select, ...(typeof full === 'string' ? { full: truncateCodePoint(full, MAX_TEXT) } : {}) };
     }
     case 'focusOmnibox': {
       const { select } = raw;
