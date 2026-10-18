@@ -650,6 +650,25 @@ test('two-level stacks: the tab row shows the stack as its open ball and the sec
   row.children[1].focus();
   row.children[1].dispatch('keydown', { key: 'ArrowRight', target: row.children[1] });
   assert.equal(document.activeElement, row.children[2]);
+  // "Switch tabs by scrolling" over the second row steps among the stack's tabs.
+  deliver(opts({ stackRow: 'regular', wheel: true }));
+  const wheelRow = (deltaY) => row.dispatch('wheel', { deltaY, deltaX: 0, shiftKey: false });
+  sent.length = 0;
+  wheelRow(100);
+  wheelRow(-100);
+  assert.deepEqual(sent.filter((m) => m.t === 'tab'), [
+    { v: 1, t: 'tab', a: 'select', id: 4 },
+    { v: 1, t: 'tab', a: 'select', id: 2 },
+  ], 'the next and previous tab of the stack, not of the tab row');
+  sent.length = 0;
+  deliver(stacked(4));
+  wheelRow(100);
+  assert.deepEqual(sent.filter((m) => m.t === 'tab'), [], 'the stack’s last tab stops there (tab 5 is outside it)');
+  deliver(stacked(3));
+  deliver(opts({ stackRow: 'regular', wheel: false }));
+  sent.length = 0;
+  wheelRow(100);
+  assert.deepEqual(sent.filter((m) => m.t === 'tab'), [], 'off: no switching');
   // Compact second row: the same tabs, a smaller row.
   deliver(opts({ stackRow: 'compact' }));
   assert.equal(row.dataset.size, 'compact');
