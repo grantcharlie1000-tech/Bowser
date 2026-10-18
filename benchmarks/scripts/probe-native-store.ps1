@@ -129,6 +129,7 @@ function Assert-Owned {
 }
 function Keys([string]$Value) {
  Assert-Owned
+ foreach($key in @(16,17,18,91,92)){if([BowserStoreSmoke]::GetAsyncKeyState($key) -lt 0){throw 'Unexpected held input modifier before owned chord; no repair.'}}
  [void][BowserStoreSmoke]::ShowWindow($script:window,9)
  for($attempt=0;$attempt -lt 3;$attempt++) {
   try { [Windows.Automation.AutomationElement]::FromHandle($script:window).SetFocus() } catch {}
@@ -137,6 +138,7 @@ function Keys([string]$Value) {
   if([BowserStoreSmoke]::GetForegroundWindow() -eq $script:window){break}
  }
  if ([BowserStoreSmoke]::GetForegroundWindow() -ne $script:window) { $report.foreground_window=[BowserStoreSmoke]::GetForegroundWindow().ToInt64();$report.owned_window=$script:window.ToInt64();throw 'Owned foreground unavailable; no keyboard sent.' }
+ foreach($key in @(16,17,18,91,92)){if([BowserStoreSmoke]::GetAsyncKeyState($key) -lt 0){throw 'Unexpected held input modifier before owned chord dispatch; no repair.'}}
  [Windows.Forms.SendKeys]::SendWait($Value)
 }
 function Capture([string]$Name,[IntPtr]$Target=[IntPtr]::Zero,[switch]$Extension) {
@@ -248,6 +250,47 @@ function Field-Keys($Bound,[string]$Value) {
  foreach($key in @(16,17,18,91,92)){if([BowserStoreSmoke]::GetAsyncKeyState($key) -lt 0){throw 'Unexpected held input modifier; no input repair.'}}
  [Windows.Forms.SendKeys]::SendWait($Value)
 }
+function Field-Enter($Bound,[string]$Expected) {
+ Assert-BoundControl $Bound -Focused
+ foreach($key in @(16,17,18,91,92)){if([BowserStoreSmoke]::GetAsyncKeyState($key) -lt 0){throw 'Unexpected held modifier before exact text submission; no repair.'}}
+ $pattern=$null
+ if(!$Bound.control.TryGetCurrentPattern([Windows.Automation.ValuePattern]::Pattern,[ref]$pattern)){throw 'Exact submission ValuePattern unavailable; no Enter.'}
+ if(!$Bound.control.Current.HasKeyboardFocus -or !(Same-Uia $Bound.control ([Windows.Automation.AutomationElement]::FocusedElement))){throw 'Exact submission focus changed; no Enter.'}
+ $actual=$pattern.Current.Value
+ if($actual -cne $Expected){throw 'Exact submitted text changed after source/input guards; no Enter or repair.'}
+ $report.last_enter=[ordered]@{expected=$Expected;actual=$actual;source=$Bound.source;method='single real Enter after fresh source, identity, neutral modifier, focus and exact value checks'}
+ [Windows.Forms.SendKeys]::SendWait('{ENTER}')
+}
+function Field-LiteralText($Bound,[string]$Text) {
+ # A new correctness workload, not a SetValue repair or typing-latency benchmark.
+ # Only the fixed test URL/search alphabet is allowed; SendKeys control characters are refused.
+ if($Text.Length -gt 512 -or $Text -cnotmatch '^[A-Za-z0-9:/._?=&-]+$'){throw 'Fixed native text input contains an unsupported literal character; no input sent.'}
+ $trace=[ordered]@{kind=$Bound.kind;method='real per-character SendKeys, minimum 30ms plus source-bound UIA observations';expected=$Text;keys=@();final_exact=$false}
+ if(!$report.Contains('literal_input')){$report.literal_input=@()};$report.literal_input+=,$trace
+ Field-Keys $Bound '^a';Field-Keys $Bound '{BACKSPACE}';Start-Sleep -Milliseconds 30
+ Assert-BoundControl $Bound -Focused
+ $pattern=$null
+ if(!$Bound.control.TryGetCurrentPattern([Windows.Automation.ValuePattern]::Pattern,[ref]$pattern)){throw 'Attributed text field ValuePattern unavailable; no text sent.'}
+ $trace.clear_value=$pattern.Current.Value
+ if($trace.clear_value -cne ''){throw 'Genuine select-all/backspace did not clear the exact field; no repair.'}
+ foreach($character in $Text.ToCharArray()){
+  $key=[ordered]@{character=[string]$character;phase='before-source-check';dispatch_returned=$false;before=$null;after=$null;focused=$null;error=$null}
+  $trace.keys+=,$key
+  try {
+   Assert-BoundControl $Bound -Focused
+   $key.before=$pattern.Current.Value;$key.phase='guard-and-dispatch'
+   Field-Keys $Bound ([string]$character)
+   $key.dispatch_returned=$true;$key.phase='post-key-source-check'
+   Start-Sleep -Milliseconds 30
+   Assert-BoundControl $Bound -Focused
+   $key.after=$pattern.Current.Value;$key.focused=$Bound.control.Current.HasKeyboardFocus;$key.phase='observed'
+  } catch { $key.error=$_.Exception.Message;throw }
+ }
+ Assert-BoundControl $Bound -Focused
+ $trace.final_value=$pattern.Current.Value;$trace.final_focused=$Bound.control.Current.HasKeyboardFocus
+ $trace.final_exact=($trace.final_value -ceq $Text -and $trace.final_focused)
+ if(!$trace.final_exact){throw 'Real literal input did not retain exact text/focus; no Enter, repair or retry.'}
+}
 function Invoke-BoundControl($Bound) {
  Assert-BoundControl $Bound
  $pattern=$null
@@ -329,12 +372,9 @@ function Records {
 }
 function Navigate-Owned([string]$Url) {
  Assert-Owned;Keys '^l'
- $bound=Wait-BoundControl 'toolbar' 'Address and search bar';$edit=$bound.control;$value=$null
- Assert-BoundControl $bound -Focused
- if(!$edit.TryGetCurrentPattern([Windows.Automation.ValuePattern]::Pattern,[ref]$value)){throw 'Owned omnibox ValuePattern unavailable; no navigation sent.'}
- $value.SetValue($Url)
- if($value.Current.Value -cne $Url -or !$edit.Current.HasKeyboardFocus){throw 'Owned omnibox did not retain the exact requested URL/focus; no Enter sent.'}
- Field-Keys $bound '{ENTER}';Start-Sleep -Seconds 3
+ $bound=Wait-BoundControl 'toolbar' 'Address and search bar'
+ Field-LiteralText $bound $Url
+ Field-Enter $bound $Url;Start-Sleep -Seconds 3
 }
 function Open-ListingReview([string]$Id) {
  if($Id -cnotmatch '^[a-p]{32}$'){throw 'Invalid fixed test listing ID.'}
@@ -345,16 +385,16 @@ function Open-ListingReview([string]$Id) {
  Invoke-BoundControl $add
 }
 function Probe-OriginalDiscovery {
- $result=[ordered]@{status='failed';category=false;search=false;listing=false;error=$null}
+ $result=[ordered]@{status='failed';category=$false;search=$false;listing=$false;error=$null}
  try {
   Navigate-Owned 'bowser://store';Capture '01-original-chrome-web-store'
   [void](Wait-CwsPath '/category/extensions')
   $bound=Wait-BoundControl 'cws' 'Search extensions and themes';$search=$bound.control
   $result.category=$true
-  $search.SetFocus();Field-Keys $bound '^a';Field-Keys $bound 'Stylus'
+  $search.SetFocus();Field-LiteralText $bound 'Stylus'
   $value=$null
   if(!$search.TryGetCurrentPattern([Windows.Automation.ValuePattern]::Pattern,[ref]$value) -or $value.Current.Value -cne 'Stylus' -or !$search.Current.HasKeyboardFocus){throw 'Original CWS search did not retain exact native input/focus; no Enter sent.'}
-  Field-Keys $bound '{ENTER}'
+  Field-Enter $bound 'Stylus'
   [void](Wait-CwsPath '/search/Stylus');Capture '02-original-cws-search'
   $resultBound=Wait-BoundControl 'cws' 'Stylus';$listing=$resultBound.control
   if($listing.Current.ControlType -ne [Windows.Automation.ControlType]::Hyperlink){throw 'Original CWS search result was not an actual hyperlink.'}
