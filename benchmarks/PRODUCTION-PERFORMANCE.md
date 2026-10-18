@@ -93,3 +93,13 @@ selected, and retains remaining process identities if exit cannot be confirmed. 
 activation is checked through UIAutomation rooted at the exact owned window, with named visible
 HTML roles and rectangles, in the dedicated validity arm only. Provider unavailability on the
 frozen baseline is a harness limitation, not evidence of a candidate regression.
+
+
+Expanded native interaction smoke is a separate mandatory acceptance step AFTER primary timing
+and resource measurements. Basic successful navigation, HTML activation and isolated owned-window
+validity still gate every primary sample. An expanded interaction failure keeps the overall job
+failed and blocks acceptance; it does not discard independent paired metrics. This separation
+was requested during review after a warm Settings return lost/unreceived Enter upstream of
+submission. The original failing sample is retained. The diagnostic smoke now confirms the actual
+owned omnibox focus and exact intended value before sending Enter, retains partial interaction
+traces and failure screenshots, and never substitutes a timeout or failed page for success.

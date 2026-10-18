@@ -12,6 +12,7 @@ param(
     [string]$DiagnosticSource='8a60dca2ac7de6d369c9b65584fd621a7013f491',
     [switch]$IncludeTabFlow,
     [switch]$IncludeSurfaceSmoke,
+    [switch]$PositiveOnly,
     [string]$CandidateExe,
     [string]$CandidateSource,
     [ValidateSet('timing','resource')][string]$MeasurementMode='resource',
@@ -114,6 +115,34 @@ function Capture-OwnedSurface([string]$name,[IntPtr]$window=[IntPtr]::Zero) {
         return [ordered]@{file=[IO.Path]::GetFileName($path);sha256=(Get-FileHash $path -Algorithm SHA256).Hash.ToLowerInvariant();method='owned-window desktop capture; synthetic isolated profile'}
     } finally {$graphics.Dispose();$bitmap.Dispose()}
 }
+function Read-OwnedAddress {
+    $window=[BowserProductionNative]::FindHost([uint32]$app.Id)
+    $root=[Windows.Automation.AutomationElement]::FromHandle($window)
+    $condition=[Windows.Automation.AndCondition]::new(
+        [Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::NameProperty,'Address and search bar'),
+        [Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::ControlTypeProperty,[Windows.Automation.ControlType]::Edit))
+    $edit=$root.FindFirst([Windows.Automation.TreeScope]::Descendants,$condition)
+    $focused=[Windows.Automation.AutomationElement]::FocusedElement
+    $same=$edit -and $focused -and (($edit.GetRuntimeId() -join ',') -ceq ($focused.GetRuntimeId() -join ','))
+    $value=if($edit){([Windows.Automation.ValuePattern]$edit.GetCurrentPattern([Windows.Automation.ValuePattern]::Pattern)).Current.Value}else{$null}
+    return [ordered]@{focused=[bool]$same;value=$value;focus_name=if($focused){$focused.Current.Name}else{''};provider_process_id=if($focused){$focused.Current.ProcessId}else{0}}
+}
+function Submit-OwnedAddress([string]$text) {
+    Owned-Keys '^l'
+    $wait=[Diagnostics.Stopwatch]::StartNew();$state=$null
+    do {$state=Read-OwnedAddress;if($state.focused){break};Start-Sleep -Milliseconds 20}while($wait.Elapsed.TotalSeconds -lt 3)
+    if(-not $state.focused){throw "Omnibox focus not confirmed before typing; observed=$($state.focus_name)"}
+    Owned-Keys $text
+    $wait=[Diagnostics.Stopwatch]::StartNew()
+    do {$state=Read-OwnedAddress;if($state.focused -and $state.value -ceq $text){break};Start-Sleep -Milliseconds 20}while($wait.Elapsed.TotalSeconds -lt 3)
+    $script:surfaceTrace.Add([ordered]@{surface='semantic-address-input';focus_name=$state.focus_name;provider_process_id=$state.provider_process_id;owned_address_focused=$state.focused;value_matches_expected=($state.value -ceq $text);qpc=(Qpc)})
+    if(-not $state.focused -or $state.value -cne $text){throw 'Omnibox exact value/focus not confirmed; Enter was not sent'}
+    $window=[BowserProductionNative]::FindHost([uint32]$app.Id)
+    if([BowserProductionNative]::GetForegroundWindow() -ne $window){throw 'Owned foreground lost before semantically verified Enter; Enter was not sent'}
+    # No second80ms focus delay: send only after confirming actual focused element and exact value.
+    $start=Qpc;[Windows.Forms.SendKeys]::SendWait('{ENTER}')
+    return $start
+}
 function Confirm-NativeCoreSurfaces {
     # Validity only: enabling accessibility can change renderer resource use.
     Add-Type -AssemblyName UIAutomationClient,UIAutomationTypes
@@ -140,7 +169,7 @@ function Confirm-NativeCoreSurfaces {
     return [ordered]@{surface='core-tabs-rail';method='UIA rooted at exact owned native window; descendant provider PID may differ';matches=@($matches.ToArray());screenshot=(Capture-OwnedSurface 'core-html')}
 }
 function Native-SurfaceSmoke {
-    $results=[Collections.Generic.List[object]]::new()
+    $results=$script:surfaceTrace
     $results.Add((Confirm-NativeCoreSurfaces))
     foreach($use in @('first','warm')) {
         $start=Qpc; Owned-Keys '^+m'
@@ -161,8 +190,7 @@ function Native-SurfaceSmoke {
         Start-Sleep -Milliseconds 350
     }
     foreach($use in @('first','warm')) {
-        Owned-Keys '^l'; Owned-Keys 'bowser://settings'
-        $start=Qpc;Owned-Keys '{ENTER}'
+        $start=Submit-OwnedAddress 'bowser://settings'
         $wait=[Diagnostics.Stopwatch]::StartNew();$surface=[IntPtr]::Zero
         do {
             # This container is only expanded/shown after its HTML bridge has sent ready.
@@ -172,9 +200,9 @@ function Native-SurfaceSmoke {
         if($surface -eq [IntPtr]::Zero){throw "Native HTML internal Settings $use open failed or fell back"}
         $elapsed=((Qpc)-$start)*1000.0/[Diagnostics.Stopwatch]::Frequency
         Start-Sleep -Milliseconds 200
-        $results.Add([ordered]@{surface='settings';use=$use;visible_host_proxy_ms=$elapsed;includes_foreground_verification=$true;screenshot=(Capture-OwnedSurface "settings-$use")})
+        $results.Add([ordered]@{surface='settings';use=$use;visible_host_proxy_ms=$elapsed;includes_foreground_verification=$false;screenshot=(Capture-OwnedSurface "settings-$use")})
         $backToken=[guid]::NewGuid().ToString('N')
-        Owned-Keys '^l';Owned-Keys "$base/light?token=$backToken";Owned-Keys '{ENTER}'
+        [void](Submit-OwnedAddress "$base/light?token=$backToken")
         $wait=[Diagnostics.Stopwatch]::StartNew()
         while(-not (Has-Ready $backToken) -and $wait.Elapsed.TotalSeconds -lt 20){Start-Sleep -Milliseconds 20}
         if(-not (Has-Ready $backToken)){throw 'Return from native Settings to owned fixture failed'}
@@ -225,7 +253,8 @@ try {
         $order=@($arms.Keys); if ($pair % 2 -eq 0) { [array]::Reverse($order) }
         foreach($arm in $order) {
             if ($arm -eq 'release' -and $pair -gt 1) { continue }
-            foreach($fixture in @(@($Fixtures)+@('redirect','network-failure','error','hung') | Select-Object -Unique)) {
+            $cases=if($PositiveOnly){@($Fixtures)}else{@(@($Fixtures)+@('redirect','network-failure','error','hung') | Select-Object -Unique)}
+            foreach($fixture in $cases) {
                 if ($fixture -notin $Fixtures -and ($arm -notin @('diagnostic_on','baseline_on','candidate_on') -or $pair -ne 1)) { continue }
                 if ($fixture -in @('network-failure','error','hung') -and ($arm -notin @('diagnostic_on','baseline_on','candidate_on') -or $pair -ne 1)) { continue }
                 $profile=Join-Path $run "$arm-$pair-$fixture"
@@ -238,7 +267,7 @@ try {
                     if($arm.EndsWith('_on')) { $args+=@('--diagnostic-log',"`"$eventFile`"") }
                     $snapshots=[Collections.Generic.List[object]]::new(); $overheads=[Collections.Generic.List[double]]::new()
                     $sample=[ordered]@{id=$id;pair=$pair;arm=$arm;fixture=$fixture;condition=$condition;token=$token;valid=$false;expected_failure=($fixture -in @('network-failure','error','hung'));error=$null;launch_qpc=$null;ready_qpc=$null;title_ready_qpc=$null;input_ready_qpc=$null;shutdown_ms=$null;disk_before=(Disk-Bytes $profile);measurement_mode=$MeasurementMode;tree_exit_wait_ms=$null;tree_exit_confirmed=$false;drain_remaining=@();surface_smoke=$null;events=$null;input=$null;tab_switch_proxy_ms=$null;idle=$null;minimized=$null}
-                    $app=$null
+                    $app=$null;$script:surfaceTrace=$null
                     try {
                         $sample.launch_qpc=Qpc
                         $app=Start-Process -FilePath $arms[$arm] -ArgumentList $args -PassThru
@@ -293,7 +322,7 @@ try {
                             [void][BowserProductionNative]::ShowWindow([BowserProductionNative]::FindHost([uint32]$app.Id),9)
                             $sample.valid=$true
                         }
-                        if($IncludeSurfaceSmoke -and -not $sample.expected_failure){$sample.surface_smoke=@(Native-SurfaceSmoke)}
+                        if($IncludeSurfaceSmoke -and -not $sample.expected_failure){$script:surfaceTrace=[Collections.Generic.List[object]]::new();$sample.surface_smoke=@(Native-SurfaceSmoke)}
                         # Inventory only after all cheap timing endpoints, to establish exact identities for drain.
                         $ownedBeforeClose=@(Get-ProcessGroupMembers -RootPid $app.Id -Profile $profile -Inventory @(Get-ProcessInventory))
                         $known=@{}; foreach($process in $ownedBeforeClose){$known["$($process.Pid):$($process.CreationTicks)"]=$true}
@@ -330,9 +359,14 @@ try {
                             if(-not $sample.expected_failure -and -not $readiness.Valid){throw "Identity/success readiness invalid: $($readiness.InvalidReasons -join ',')"}
                             $sample.diagnostic_readiness=$readiness
                         }
-                    } catch { $sample.valid=$false; $sample.error=$_.Exception.Message }
+                    } catch {
+                        $sample.valid=$false;$sample.error=$_.Exception.Message
+                        if($app -and -not $app.HasExited){try{$sample.failure_screenshot=Capture-OwnedSurface 'failure'}catch{}}
+                    }
                     finally {
                         if($app -and -not $app.HasExited){[void][BowserProductionNative]::Close([uint32]$app.Id);if(-not $app.WaitForExit(5000)){Stop-Process -Id $app.Id -Force -ErrorAction SilentlyContinue;$sample.valid=$false;$sample.error='Forced close required'}}
+                        if($script:surfaceTrace){$sample.surface_smoke=@($script:surfaceTrace.ToArray())}
+                        if($arm.EndsWith('_on') -and (Test-Path $eventFile)){$sample.events=@(Import-Csv $eventFile)}
                         $sample.disk_after=Disk-Bytes $profile
                         $sample.snapshots=@($snapshots.ToArray());$sample.sampling_overhead_ms=Get-ProductionDistribution @($overheads.ToArray())
                         $sample.cpu=if($snapshots.Count){Get-ProductionCpuDelta @($snapshots.ToArray())}else{$null}
@@ -341,7 +375,7 @@ try {
                         $rows.Add([pscustomobject]$sample);$app=$null
                         if (-not $sample.valid) { $invalidSamples++ }
                     }
-                    if (-not $sample.tree_exit_confirmed) { throw 'Stopped: unconfirmed process-tree drain; raw evidence retained' }
+                    if (-not $sample.tree_exit_confirmed) { throw "Stopped after unconfirmed cleanup: $($sample.error); raw evidence retained" }
                     if ($invalidSamples -ge $MaxInvalidSamples) { throw "Stopped after $invalidSamples invalid samples; raw failures retained for diagnosis" }
                 }
             }

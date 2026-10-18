@@ -142,9 +142,10 @@ jobs:
           $file=Get-Item ../evidence/candidate/candidate.exe
           [ordered]@{source=(git rev-parse HEAD).Trim();tree=(git rev-parse 'HEAD^{tree}').Trim();sha256=(Get-FileHash $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant();bytes=$file.Length;toolchain=(rustc +1.99.1 --version --verbose | Out-String);features='html-chrome-default';scope='first bounded per-surface UI slice; not a release'} | ConvertTo-Json | Set-Content ../evidence/candidate/identity.json
       - name: Bounded native actual-module and HTML activation validity pass
+        id: validity
         working-directory: candidate
         run: |
-          ./benchmarks/production-baseline.ps1 -BaselineExe ../evidence/frozen/untouched-main.exe -DiagnosticExe ../evidence/frozen/diagnostic.exe -ReleaseExe ../evidence/frozen/released-v0.0.19.exe -CandidateExe ../evidence/candidate/candidate.exe -CandidateSource (Get-Content ../evidence/candidate/identity.json -Raw | ConvertFrom-Json).source -IncludeSurfaceSmoke -Out ../evidence/validity -Pairs 1 -Fixtures light -IdleSeconds 1 -MeasurementMode timing -MaxInvalidSamples 1
+          ./benchmarks/production-baseline.ps1 -BaselineExe ../evidence/frozen/untouched-main.exe -DiagnosticExe ../evidence/frozen/diagnostic.exe -ReleaseExe ../evidence/frozen/released-v0.0.19.exe -CandidateExe ../evidence/candidate/candidate.exe -CandidateSource (Get-Content ../evidence/candidate/identity.json -Raw | ConvertFrom-Json).source -Out ../evidence/validity -Pairs 1 -Fixtures light -IdleSeconds 1 -MeasurementMode timing -MaxInvalidSamples 1
       - name: Corrected diagnostic-off untouched and logging-on off controls
         working-directory: candidate
         run: |
@@ -157,11 +158,16 @@ jobs:
         working-directory: candidate
         run: |
           ./benchmarks/production-baseline.ps1 -BaselineExe ../evidence/frozen/untouched-main.exe -DiagnosticExe ../evidence/frozen/diagnostic.exe -ReleaseExe ../evidence/frozen/released-v0.0.19.exe -CandidateExe ../evidence/candidate/candidate.exe -CandidateSource (Get-Content ../evidence/candidate/identity.json -Raw | ConvertFrom-Json).source -Out ../evidence/resource -Pairs 10 -Fixtures light -MeasurementMode resource -MaxInvalidSamples 1
+      - name: Mandatory independent native first-use interaction smoke
+        if: ${{ !cancelled() && steps.validity.outcome == 'success' }}
+        working-directory: candidate
+        run: |
+          ./benchmarks/production-baseline.ps1 -BaselineExe ../evidence/frozen/untouched-main.exe -DiagnosticExe ../evidence/frozen/diagnostic.exe -ReleaseExe ../evidence/frozen/released-v0.0.19.exe -CandidateExe ../evidence/candidate/candidate.exe -CandidateSource (Get-Content ../evidence/candidate/identity.json -Raw | ConvertFrom-Json).source -IncludeSurfaceSmoke -PositiveOnly -Out ../evidence/surfaces -Pairs 1 -Fixtures light -MeasurementMode timing -MaxInvalidSamples 1
       - name: Derive descriptive paired statistics without accepting gains automatically
         if: always()
         working-directory: candidate
         run: |
-          foreach($arm in @('validity','controls','timing','resource')) {
+          foreach($arm in @('validity','controls','timing','resource','surfaces')) {
             $folder="../evidence/$arm"
             if(Test-Path "$folder/environment.json") {
               python benchmarks/production-analyze.py $folder
@@ -182,6 +188,7 @@ jobs:
             evidence/validity/*.csv
             evidence/validity/*stderr.txt
             evidence/validity/*.png
+            evidence/validity/isolated/requests.jsonl
             evidence/controls/*.json
             evidence/controls/*.csv
             evidence/controls/*stderr.txt
@@ -191,5 +198,10 @@ jobs:
             evidence/resource/*.json
             evidence/resource/*.csv
             evidence/resource/*stderr.txt
+            evidence/surfaces/*.json
+            evidence/surfaces/*.csv
+            evidence/surfaces/*.png
+            evidence/surfaces/*stderr.txt
+            evidence/surfaces/isolated/requests.jsonl
           if-no-files-found: warn
           retention-days: 30
