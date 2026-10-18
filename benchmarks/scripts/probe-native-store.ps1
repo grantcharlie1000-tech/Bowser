@@ -34,6 +34,83 @@ public static class BowserStoreSmoke {
  [DllImport("user32.dll")] public static extern bool MoveWindow(IntPtr h,int x,int y,int w,int height,bool repaint);
  [DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr h,IntPtr dc,uint flags);
 }
+// Read-only prefixes from Microsoft's UIAutomationClient.h, in native vtable order.
+// LegacyIAccessible Value is property 30093, NOT ValuePattern's property 30045.
+[ComImport, Guid("30cbe57d-d9d0-452a-ab13-7ac5ac4825ee"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+interface BowserNativeAutomation {
+ [PreserveSig] int CompareElements(IntPtr a,IntPtr b,out int same);
+ [PreserveSig] int CompareRuntimeIds(IntPtr a,IntPtr b,out int same);
+ [PreserveSig] int GetRootElement(out IntPtr value);
+ [PreserveSig] int ElementFromHandle(IntPtr hwnd,out BowserNativeElement value);
+ [PreserveSig] int ElementFromPoint(long point,out IntPtr value);
+ [PreserveSig] int GetFocusedElement(out IntPtr value);
+ [PreserveSig] int GetRootElementBuildCache(IntPtr cache,out IntPtr value);
+ [PreserveSig] int ElementFromHandleBuildCache(IntPtr hwnd,IntPtr cache,out IntPtr value);
+ [PreserveSig] int ElementFromPointBuildCache(long point,IntPtr cache,out IntPtr value);
+ [PreserveSig] int GetFocusedElementBuildCache(IntPtr cache,out IntPtr value);
+ [PreserveSig] int CreateTreeWalker(IntPtr condition,out IntPtr value);
+ [PreserveSig] int GetControlViewWalker(out IntPtr value);
+ [PreserveSig] int GetContentViewWalker(out IntPtr value);
+ [PreserveSig] int GetRawViewWalker(out IntPtr value);
+ [PreserveSig] int GetRawViewCondition(out IntPtr value);
+ [PreserveSig] int GetControlViewCondition(out IntPtr value);
+ [PreserveSig] int GetContentViewCondition(out IntPtr value);
+ [PreserveSig] int CreateCacheRequest(out IntPtr value);
+ [PreserveSig] int CreateTrueCondition(out IntPtr value);
+ [PreserveSig] int CreateFalseCondition(out IntPtr value);
+ [PreserveSig] int CreatePropertyCondition(int property,[MarshalAs(UnmanagedType.Struct)] object value,out IntPtr condition);
+}
+[ComImport, Guid("d22108aa-8ac5-49a5-837b-37bbb3d7591e"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+interface BowserNativeElement {
+ [PreserveSig] int SetFocus();
+ [PreserveSig] int GetRuntimeId([MarshalAs(UnmanagedType.SafeArray,SafeArraySubType=VarEnum.VT_I4)] out int[] id);
+ [PreserveSig] int FindFirst(int scope,IntPtr condition,out IntPtr value);
+ [PreserveSig] int FindAll(int scope,IntPtr condition,out BowserNativeElementArray value);
+ [PreserveSig] int FindFirstBuildCache(int scope,IntPtr condition,IntPtr cache,out IntPtr value);
+ [PreserveSig] int FindAllBuildCache(int scope,IntPtr condition,IntPtr cache,out IntPtr value);
+ [PreserveSig] int BuildUpdatedCache(IntPtr cache,out IntPtr value);
+ [PreserveSig] int GetCurrentPropertyValue(int property,[MarshalAs(UnmanagedType.Struct)] out object value);
+ [PreserveSig] int GetCurrentPropertyValueEx(int property,[MarshalAs(UnmanagedType.Bool)] bool ignoreDefault,[MarshalAs(UnmanagedType.Struct)] out object value);
+}
+[ComImport, Guid("14314595-b4bc-4055-95f2-58f2e42c9855"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+interface BowserNativeElementArray {
+ [PreserveSig] int GetLength(out int length);
+ [PreserveSig] int GetElement(int index,out BowserNativeElement element);
+}
+public static class BowserNativeDocument {
+ static void Check(int hr) { Marshal.ThrowExceptionForHR(hr); }
+ static void Release(object value) { if(value!=null&&Marshal.IsComObject(value))Marshal.ReleaseComObject(value); }
+ static bool Same(int[] a,int[] b) { if(a==null||b==null||a.Length!=b.Length)return false;for(int i=0;i<a.Length;i++)if(a[i]!=b[i])return false;return true; }
+ public static string LegacyValue(IntPtr hwnd,uint expectedPid,int[] runtimeId) {
+  if(runtimeId==null||runtimeId.Length==0||runtimeId.Length>128)throw new InvalidOperationException("Invalid native document identity.");
+  uint pid;uint thread=BowserStoreSmoke.GetWindowThreadProcessId(hwnd,out pid);
+  var cls=new StringBuilder(128);BowserStoreSmoke.GetClassName(hwnd,cls,128);
+  if(thread==0||pid!=expectedPid||cls.ToString()!="BowserNativeWindow")throw new InvalidOperationException("Native document owner unavailable.");
+  object instance=null;BowserNativeElement root=null;BowserNativeElementArray documents=null;IntPtr condition=IntPtr.Zero;
+  try {
+   instance=Activator.CreateInstance(Type.GetTypeFromCLSID(new Guid("ff48dba4-60ef-4201-aa87-54103eef594e"),true));
+   var automation=(BowserNativeAutomation)instance;
+   Check(automation.ElementFromHandle(hwnd,out root));Check(automation.CreatePropertyCondition(30003,50030,out condition));
+   Check(root.FindAll(4,condition,out documents));int count;Check(documents.GetLength(out count));
+   if(count<0||count>64)throw new InvalidOperationException("Native document inventory exceeded limit.");
+   int matches=0;string result=null;
+   for(int i=0;i<count;i++) {
+    BowserNativeElement candidate=null;
+    try { Check(documents.GetElement(i,out candidate));int[] before;Check(candidate.GetRuntimeId(out before));if(!Same(before,runtimeId))continue;
+     matches++;object value=null;
+     try { Check(candidate.GetCurrentPropertyValueEx(30093,true,out value));int[] after;Check(candidate.GetRuntimeId(out after));
+      if(!Same(before,after))throw new InvalidOperationException("Native document identity changed during property query.");
+      result=value as string;if(result!=null&&result.Length>4096)throw new InvalidOperationException("Native document URL exceeded limit.");
+     } finally { Release(value); }
+    } finally { Release(candidate); }
+   }
+   uint freshPid;uint freshThread=BowserStoreSmoke.GetWindowThreadProcessId(hwnd,out freshPid);cls.Clear();BowserStoreSmoke.GetClassName(hwnd,cls,128);
+   if(freshPid!=expectedPid||freshThread!=thread||cls.ToString()!="BowserNativeWindow")throw new InvalidOperationException("Native document owner changed.");
+   if(matches!=1)throw new InvalidOperationException("Native document runtime identity was unavailable or ambiguous.");
+   return result;
+  } finally { if(condition!=IntPtr.Zero)Marshal.Release(condition);Release(documents);Release(root);Release(instance); }
+ }
+}
 '@
 $app = $null
 $saved = @{}
@@ -89,8 +166,10 @@ function Document-Source($Document) {
  # Chromium's native provider exposes tree-data URL for document roles, not an aria/title value.
  $values=@();$pattern=$null
  if($Document.TryGetCurrentPattern([Windows.Automation.ValuePattern]::Pattern,[ref]$pattern)){$values+=([Windows.Automation.ValuePattern]$pattern).Current.Value}
- $pattern=$null
- if($Document.TryGetCurrentPattern([Windows.Automation.LegacyIAccessiblePattern]::Pattern,[ref]$pattern)){$values+=([Windows.Automation.LegacyIAccessiblePattern]$pattern).Current.Value}
+ $runtimeId=$Document.GetRuntimeId()
+ $legacy=[BowserNativeDocument]::LegacyValue($script:window,[uint32]$app.Id,$runtimeId)
+ if(($Document.GetRuntimeId() -join ',') -cne ($runtimeId -join ',')){throw 'Managed document identity changed during native property query.'}
+ if($legacy){$values+=$legacy}
  $values=@($values|Where-Object {$_}|Select-Object -Unique)
  if($values.Count -ne 1 -or $values[0].Length -gt 4096){return $null}
  return [string]$values[0]

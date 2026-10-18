@@ -112,3 +112,9 @@ honest unavailable explanation instead of a fake success.
 
 Do not mark the product requirement complete or merge/release on the strength of download/load
 success alone. Formal security review and actual Windows acceptance evidence remain required.
+
+### Exact worker-current-window prerequisite (test-only)
+
+The independent `live_probe_native_worker_current_query` fixture uses a genuine named Ctrl+Shift+X command. Before any event-handler injection, its real MV3 worker calls `tabs.query({active: true, windowId: chrome.windows.WINDOW_ID_CURRENT})`, matching the targeting query used by Bitwarden browser-v2026.10.0. Only the unique returned native ID is an injection target; the untouched command-event tab is independent comparison evidence, never a fallback. Wrong/empty/ambiguous results fail. The exact focused duplicate-URL COM-owned view must receive the per-event marker, with the existing settled pre-gesture, no-activeTab and cross-origin permission controls retained. The original named-command fixture remains separate.
+
+This is a warm-worker, observer-popup-present, unbound Ctrl+Shift+X prerequisite probe. It is not Bitwarden autofill acceptance, a closed-popup/cold-worker test, or proof of the actual Ctrl+Shift+L assignment/conflict path. No vault credentials, command synthesis, Chrome API replacement or production shortcut routing is involved.

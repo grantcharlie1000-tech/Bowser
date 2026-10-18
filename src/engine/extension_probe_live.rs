@@ -1709,18 +1709,23 @@ fn command_input(session: &mut Session, tab: TabId, chord: &str) {
 /// Feasibility only: a missing native event is not a generic extension-API absence verdict.
 #[test]
 #[ignore = "needs live WebView2 and genuine OS keyboard input to disposable focused views"]
-fn live_probe_native_named_command() { run_native_keyboard_probe(false); }
+fn live_probe_native_named_command() { run_native_keyboard_probe(false, false); }
 
 #[test]
 #[ignore = "needs genuine reserved action keyboard input in disposable no-popup extension profiles"]
-fn live_probe_native_reserved_action() { run_native_keyboard_probe(true); }
+fn live_probe_native_reserved_action() { run_native_keyboard_probe(true, false); }
 
-fn run_native_keyboard_probe(reserved_action: bool) {
+/// Exact native worker query used by Bitwarden, before injection, without event-ID fallback.
+#[test]
+#[ignore = "needs genuine OS keyboard and native worker WINDOW_ID_CURRENT targeting"]
+fn live_probe_native_worker_current_query() { run_native_keyboard_probe(false, true); }
+
+fn run_native_keyboard_probe(reserved_action: bool, worker_query: bool) {
     use extensions::json::Value;
     let assignment = if reserved_action { "_execute_action" } else { "bowser-native-probe" };
     let event_kind = if reserved_action { "action.onClicked" } else { "commands.onCommand" };
-    let fixture_name = if reserved_action { "probe-native-action" } else { "probe-native-commands" };
-    println!("NATIVE_COMMAND scope=real-native-keyboard event_kind={event_kind} manifest_assignment={assignment} no_popup={reserved_action}");
+    let fixture_name = if worker_query { "probe-native-worker-query" } else if reserved_action { "probe-native-action" } else { "probe-native-commands" };
+    println!("NATIVE_COMMAND scope=real-native-keyboard event_kind={event_kind} manifest_assignment={assignment} no_popup={reserved_action} exact_worker_query_before_injection={worker_query} observer_extension_context_present=true worker_query_observer_popup_present={worker_query}");
     unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED).ok().unwrap() };
     let root = temp_root();
     for active_tab in [true, false] {
@@ -1760,7 +1765,7 @@ fn run_native_keyboard_probe(reserved_action: bool) {
             let mut receipt = None;
             let received = pump_until(Duration::from_secs(8), || {
                 receipt = command_receipt(&mut session, "native-command-state");
-                matches!(receipt.as_ref().and_then(|r| command_field(r, "events")), Some(Value::Array(events)) if events.len() > previous_events && events.last().is_some_and(|event| command_field(event,"injection").is_some() && command_field(event,"complete")==Some(&Value::Bool(true))))
+                matches!(receipt.as_ref().and_then(|r| command_field(r, "events")), Some(Value::Array(events)) if events.len() > previous_events && events.last().is_some_and(|event| (worker_query || command_field(event,"injection").is_some()) && command_field(event,"complete")==Some(&Value::Bool(true))))
             });
             let receipt = receipt.expect("genuine worker state missing"); println!("NATIVE_COMMAND active_tab={active_tab} focused_owned_view={tab:?} receipt={receipt:?}");
             if !received {
@@ -1782,6 +1787,18 @@ fn run_native_keyboard_probe(reserved_action: bool) {
             let native = command_field(event, "nativeTab");
             let Some(Value::Number(native_id)) = native.and_then(|tab| command_field(tab,"id")) else { println!("NATIVE_COMMAND verdict=native-event-has-no-authoritative-tab-target"); session.close(); drop(loopback); remove_with_retries(&root); return; };
             let event_id = Value::Number(native_id.clone());
+            if worker_query {
+                assert_eq!(command_field(event,"operationOrder"),Some(&Value::Array(vec![Value::String("query-started".to_owned()),Value::String("query-settled".to_owned()),Value::String("primary-attempt".to_owned())])),"query did not settle before the primary attempt");
+                assert_eq!(command_field(event,"workerQueryComplete"),Some(&Value::Bool(true)),"worker query did not complete before primary injection");
+                assert!(command_field(event,"workerQueryError").is_none(),"exact native query failed");
+                let query = command_field(event,"workerQuery").expect("pre-injection exact worker query missing");
+                assert_eq!(command_field(query,"active"),Some(&Value::Bool(true)));
+                assert_eq!(command_field(query,"windowId"),Some(&Value::Number("-2".to_owned())), "fixture did not use native WINDOW_ID_CURRENT");
+                let Some(Value::Array(queried)) = command_field(event,"workerQueryTabs") else { panic!("worker query result missing"); };
+                assert_eq!(queried.len(),1,"exact pre-injection worker query did not return one native target");
+                assert_eq!(command_field(event,"queryNativeId"),Some(&event_id),"retained target is not the query-selected native ID");
+                assert_eq!(command_field(&queried[0],"id"),Some(&event_id),"exact worker query selected a different tab than the genuine focused-view command event; no fallback permitted");
+            }
             if tab == TabId(1) { first_native_id = Some(event_id.clone()); }
             else { assert_ne!(first_native_id.as_ref(),Some(&event_id), "two different focused COM-owned views received the same native event tab identity"); second_native_id = Some(event_id.clone()); }
             assert_eq!(command_field(event,"currentNativeTab").and_then(|tab| command_field(tab,"id")),Some(&event_id), "native event target no longer exists");
