@@ -82,7 +82,7 @@ def main():
         for arm in sorted({r['arm'] for r in group}):
             members=[r for r in group if r['arm']==arm]
             summaries.append({'fixture':fixture,'condition':condition,'arm':arm,'valid_samples':len(members),'metrics':{name:dist([r['metrics'].get(name) for r in members]) for name in names},'native_counter_coverage_errors':sum(len(s.get('CoverageErrors') or []) for r in members for s in r.get('snapshots') or [])})
-        for arm,ref in [('diagnostic_off','baseline'),('diagnostic_on','diagnostic_off'),('candidate_on','baseline_on')]:
+        for arm,ref in [('diagnostic_off','baseline'),('diagnostic_on','diagnostic_off'),('candidate_on','baseline_on'),('candidate_detail_on','candidate_on')]:
             for name in names:
                 c=paired(group,arm,ref,name)
                 if c['valid_pair_count']:comparisons.append(dict(fixture=fixture,condition=condition,**c))

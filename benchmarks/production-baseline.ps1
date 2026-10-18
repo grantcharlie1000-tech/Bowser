@@ -13,6 +13,7 @@ param(
     [switch]$IncludeTabFlow,
     [switch]$IncludeSurfaceSmoke,
     [switch]$PositiveOnly,
+    [switch]$DiagnosticDetailPilot,
     [string]$CandidateExe,
     [string]$CandidateSource,
     [ValidateSet('timing','resource')][string]$MeasurementMode='resource',
@@ -35,6 +36,7 @@ $inputPaths=@($BaselineExe,$DiagnosticExe,$ReleaseExe)
 if ($CandidateExe) {
     if ($CandidateSource -notmatch '^[0-9a-f]{40}$') { throw 'Candidate source must be its exact40-character commit SHA' }
     $arms=[ordered]@{baseline_on=(Resolve-BowserExecutable $DiagnosticExe);candidate_on=(Resolve-BowserExecutable $CandidateExe)}
+    if($DiagnosticDetailPilot) { $arms['candidate_detail_on']=(Resolve-BowserExecutable $CandidateExe) }
     $inputPaths+=@($CandidateExe)
 }
 $hashes=Get-MeasurementInputHashes $inputPaths
@@ -245,7 +247,7 @@ try {
         power=(& powercfg /getactivescheme | Out-String).Trim(); resolution=[Windows.Forms.Screen]::PrimaryScreen.Bounds.ToString()
         webview2_runtime=@(Get-ChildItem 'C:/Program Files (x86)/Microsoft/EdgeWebView/Application' -Directory -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name)
         noise=@('Shared hosted runner, not a laptop/battery claim','Fresh profile is not cold OS cache','Updater remains production-enabled, isolated LOCALAPPDATA','Samples are endpoint process-tree observations, not ETW complete','Working-set sums include shared pages','Fixture double-requestAnimationFrame is acknowledged page readiness, not proven display presentation','Title-based tab switch is only a proxy','Sampling overhead separately recorded; measured values are not overhead-subtracted')
-        workload_settings=@{history_records=10000; bookmark_records=818; startup='start_page overridden by ordinary --open-url'; first_run_offer='already answered synthetic profile'; security='unchanged defaults'; ui='HTML-default build, no BOWSER_UI override'; tab_flow=[bool]$IncludeTabFlow; surface_smoke=[bool]$IncludeSurfaceSmoke; resource_tab_count=if($IncludeTabFlow){5}else{1}}
+        workload_settings=@{history_records=10000; bookmark_records=818; startup='start_page overridden by ordinary --open-url'; first_run_offer='already answered synthetic profile'; security='unchanged defaults'; ui='HTML-default build, no BOWSER_UI override'; tab_flow=[bool]$IncludeTabFlow; surface_smoke=[bool]$IncludeSurfaceSmoke; diagnostic_detail_pilot=[bool]$DiagnosticDetailPilot; resource_tab_count=if($IncludeTabFlow){5}else{1}}
     }
     $metadata | ConvertTo-Json -Depth 10 | Set-Content (Join-Path $Out 'environment.json') -Encoding utf8
     # Five-pair pilot by default. Alternate whole arm order each pair, same session/runtime/fixture seed.
@@ -255,8 +257,8 @@ try {
             if ($arm -eq 'release' -and $pair -gt 1) { continue }
             $cases=if($PositiveOnly){@($Fixtures)}else{@(@($Fixtures)+@('redirect','network-failure','error','hung') | Select-Object -Unique)}
             foreach($fixture in $cases) {
-                if ($fixture -notin $Fixtures -and ($arm -notin @('diagnostic_on','baseline_on','candidate_on') -or $pair -ne 1)) { continue }
-                if ($fixture -in @('network-failure','error','hung') -and ($arm -notin @('diagnostic_on','baseline_on','candidate_on') -or $pair -ne 1)) { continue }
+                if ($fixture -notin $Fixtures -and ($arm -notin @('diagnostic_on','baseline_on','candidate_on','candidate_detail_on') -or $pair -ne 1)) { continue }
+                if ($fixture -in @('network-failure','error','hung') -and ($arm -notin @('diagnostic_on','baseline_on','candidate_on','candidate_detail_on') -or $pair -ne 1)) { continue }
                 $profile=Join-Path $run "$arm-$pair-$fixture"
                 Seed-Profile $profile 818
                 foreach($condition in @('fresh','reused')) {
@@ -265,6 +267,7 @@ try {
                     $id="$arm-$pair-$fixture-$condition"; $eventFile=Join-Path $Out "$id-events.csv"
                     $args=@('--data-dir',"`"$profile`"",'--open-url',"`"$url`"")
                     if($arm.EndsWith('_on')) { $args+=@('--diagnostic-log',"`"$eventFile`"") }
+                    if($arm -eq 'candidate_detail_on') { $args+=@('--diagnostic-detail') }
                     $snapshots=[Collections.Generic.List[object]]::new(); $overheads=[Collections.Generic.List[double]]::new()
                     $sample=[ordered]@{id=$id;pair=$pair;arm=$arm;fixture=$fixture;condition=$condition;token=$token;valid=$false;expected_failure=($fixture -in @('network-failure','error','hung'));error=$null;launch_qpc=$null;ready_qpc=$null;title_ready_qpc=$null;input_ready_qpc=$null;shutdown_ms=$null;disk_before=(Disk-Bytes $profile);measurement_mode=$MeasurementMode;tree_exit_wait_ms=$null;tree_exit_confirmed=$false;drain_remaining=@();surface_smoke=$null;events=$null;input=$null;tab_switch_proxy_ms=$null;idle=$null;minimized=$null}
                     $app=$null;$script:surfaceTrace=$null

@@ -439,6 +439,8 @@ pub trait TabEngine {
 
 pub type DiagnosticNavigationCallback = std::rc::Rc<dyn Fn(&'static str, crate::tabs::TabId, u64, Option<bool>, &str)>;
 
+pub type DiagnosticDetailCallback = std::rc::Rc<dyn Fn(&'static str, crate::tabs::TabId, u64)>;
+
 #[derive(Clone, Default)]
 pub struct EngineEvents {
     pub address_changed: Option<std::rc::Rc<dyn Fn(crate::tabs::TabId, url::Url)>>,
@@ -484,6 +486,8 @@ pub struct EngineEvents {
     pub policy_event: Option<std::rc::Rc<dyn Fn(&'static str)>>,
     /// Synthetic-profile diagnostics only. No URLs or arbitrary page titles are recorded.
     pub diagnostic_navigation: Option<DiagnosticNavigationCallback>,
+    /// Explicit detail-only native configure spans/counts; absent from ordinary timing arms.
+    pub diagnostic_detail: Option<DiagnosticDetailCallback>,
     /// A download from a normal tab started, moved or changed state (docs/design/downloads.md).
     /// Without this and `download_plan`, every download is cancelled.
     pub download_event: Option<std::rc::Rc<dyn Fn(crate::downloads::DownloadEvent)>>,

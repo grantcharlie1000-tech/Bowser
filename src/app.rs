@@ -659,6 +659,7 @@ pub struct App {
     search_config_stamp: Option<[ConfigStamp; 2]>,
     pub log: Rc<PerfLog>,
     diagnostic_logging: bool,
+    diagnostic_detail: bool,
     pub minimized: bool,
     /// Power source, efficiency decision and EcoQoS state. See `crate::efficiency`.
     pub efficiency: EfficiencyState,
@@ -5044,6 +5045,7 @@ impl App {
             search_config_stamp: None,
             log,
             diagnostic_logging: options.diagnostic_log.is_some(),
+            diagnostic_detail: options.diagnostic_detail,
             minimized: false,
             efficiency: EfficiencyState::default(),
             desired_memory_target: MemoryUsageTarget::Normal,
@@ -5745,6 +5747,11 @@ impl App {
         }
     }
 
+    pub fn diagnostic_detail_log(app: &AppRef) -> Option<Rc<PerfLog>> {
+        let state = app.borrow();
+        state.diagnostic_detail.then(|| state.log.clone())
+    }
+
     /// HTML chrome mode: the tab environment the chrome views are hosted in. When the engine has
     /// not been started yet (native mode starts it lazily, when the user begins typing), this starts
     /// it now, with no tab controller and no navigation, so the chrome can appear at startup. The
@@ -6340,6 +6347,11 @@ impl App {
                     let _ = log.record_navigation(event, u64::from(tab.0), navigation, success, token);
                 }))
             } else { None },
+            diagnostic_detail: Self::diagnostic_detail_log(app).map(|log| {
+                Rc::new(move |event: &'static str, tab: TabId, count: u64| {
+                    let _ = log.record_detail_count(event, u64::from(tab.0), count);
+                }) as Rc<dyn Fn(&'static str, TabId, u64)>
+            }),
             policy_event: {
                 let log = app.borrow().log.clone();
                 Some(Rc::new(move |event| {
@@ -9978,6 +9990,7 @@ mod tests {
             search_config_stamp: None,
             log: Rc::new(PerfLog::new(None).unwrap()),
             diagnostic_logging: false,
+            diagnostic_detail: false,
             minimized: false,
             efficiency: EfficiencyState::default(),
             desired_memory_target: MemoryUsageTarget::Normal,

@@ -8900,7 +8900,7 @@ fn html_env_settled(hwnd: HWND) {
     match App::request_chrome_environment(&app) {
         ChromeEnvironment::Pending => {}
         ChromeEnvironment::Ready(environment) => {
-            let env = ChromeEnv::new(environment);
+            let env = ChromeEnv::new(environment, App::diagnostic_detail_log(&app));
             let _ = with_chrome(hwnd, |s| {
                 s.html_env_waiting = false;
                 s.html_env = Some(env.clone());

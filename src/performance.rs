@@ -17,6 +17,8 @@ pub struct LaunchOptions {
     pub benchmark_log: Option<PathBuf>,
     /// Timing only: never selects benchmark behavior or suppresses production features.
     pub diagnostic_log: Option<PathBuf>,
+    /// Additional native attribution, deliberately excluded from primary timing arms.
+    pub diagnostic_detail: bool,
     pub user_data_dir: Option<PathBuf>,
     pub benchmark_url: Option<Url>,
     /// `--data-dir <path>` / `BOWSER_DATA_DIR`: the app-data root that replaces
@@ -101,6 +103,11 @@ impl LaunchOptions {
         let mut explicit_data_dir: Option<PathBuf> = None;
         let mut iter = args.into_iter();
         while let Some(flag) = iter.next() {
+            if flag == "--diagnostic-detail" {
+                if options.diagnostic_detail { return Err("Duplicate diagnostic detail argument".into()); }
+                options.diagnostic_detail = true;
+                continue;
+            }
             if flag == "--new-window" {
                 if options.new_window {
                     return Err("Duplicate new window argument".into());
@@ -300,6 +307,9 @@ impl LaunchOptions {
                     }
                 }
             }
+        }
+        if options.diagnostic_detail && options.diagnostic_log.is_none() {
+            return Err("Diagnostic detail requires --diagnostic-log".into());
         }
         if options.diagnostic_log.is_some() {
             if options.benchmark_log.is_some() || options.agent || options.agent_call.is_some() {
@@ -603,7 +613,7 @@ impl PerfLog {
             Some(ActiveLog {
                 start: Instant::now(),
                 path: path.to_owned(),
-                output: RefCell::new(b"event,elapsed_ms,qpc_ticks,tab_id,navigation_id,success,fixture_token\n".to_vec()),
+                output: RefCell::new(b"event,elapsed_ms,qpc_ticks,tab_id,navigation_id,success,fixture_token,view,pid,private_bytes,count\n".to_vec()),
                 failure: RefCell::new(None),
             })
         } else {
@@ -627,6 +637,16 @@ impl PerfLog {
             return Err(io::Error::new(io::ErrorKind::InvalidInput, "Invalid fixture token"));
         }
         self.record_fields(event, &format!("{tab},{navigation},{},{token}", success.map(|value| value.to_string()).unwrap_or_default()))
+    }
+    pub fn record_detail_count(&self, event: &str, tab: u64, count: u64) -> io::Result<()> {
+        self.record_fields(event, &format!("{tab},,,,content,0,0,{count}"))
+    }
+    /// Fixed native labels and numeric attribution only: never document URLs or page text.
+    pub fn record_detail(&self, event: &str, view: &str, pid: u32, private_bytes: u64, count: u64) -> io::Result<()> {
+        if view.is_empty() || !view.bytes().all(|b| b.is_ascii_lowercase() || b == b'_') {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "Invalid diagnostic view"));
+        }
+        self.record_fields(event, &format!(",,,,{view},{pid},{private_bytes},{count}"))
     }
     fn record_fields(&self, event: &str, fields: &str) -> io::Result<()> {
         let Some(active) = &self.active else {
@@ -690,6 +710,12 @@ mod tests {
     fn diagnostics_preserve_production_launch_semantics() {
         let temp = std::env::temp_dir().join("bowser-diagnostic-test");
         let options = LaunchOptions::parse_from(vec!["--diagnostic-log".into(), temp.join("events.csv").to_string_lossy().into_owned(), "--data-dir".into(), temp.to_string_lossy().into_owned(), "--open-url".into(), "http://127.0.0.1:1234/light".into()], Path::new("missing")).unwrap();
+        assert!(!options.diagnostic_detail);
+        assert!(LaunchOptions::parse_from(args(&["--diagnostic-detail"]), Path::new("missing")).is_err());
+        let mut detail_args = vec!["--diagnostic-log".into(), temp.join("detail.csv").to_string_lossy().into_owned(), "--data-dir".into(), temp.to_string_lossy().into_owned(), "--diagnostic-detail".into()];
+        assert!(LaunchOptions::parse_from(detail_args.clone(), Path::new("missing")).unwrap().diagnostic_detail);
+        detail_args.push("--diagnostic-detail".into());
+        assert!(LaunchOptions::parse_from(detail_args, Path::new("missing")).is_err());
         assert!(options.benchmark_log.is_none());
         assert!(options.benchmark_url.is_none());
         assert!(options.user_data_dir.is_none());
@@ -1251,12 +1277,30 @@ mod tests {
         std::fs::remove_file(path).unwrap();
         let rows: Vec<_> = text.lines().collect();
         assert_eq!(rows.len(), 3);
-        assert_eq!(rows[0], "event,elapsed_ms,qpc_ticks,tab_id,navigation_id,success,fixture_token");
+        assert_eq!(rows[0], "event,elapsed_ms,qpc_ticks,tab_id,navigation_id,success,fixture_token,view,pid,private_bytes,count");
         let a: Vec<_> = rows[1].split(',').collect();
         let b: Vec<_> = rows[2].split(',').collect();
         assert_eq!(a[0], "window_visible");
         assert_eq!(b[0], "input_ready");
         assert!(b[1].parse::<f64>().unwrap() >= a[1].parse::<f64>().unwrap());
+    }
+
+    #[test]
+    fn detail_rows_have_fixed_labels_and_numeric_columns() {
+        let path = std::env::temp_dir().join(format!("bowser-detail-{}.csv", std::process::id()));
+        let log = PerfLog::new(Some(&path)).unwrap();
+        assert!(log.record_detail("chrome_host_ready", "https://private.test/", 1, 2, 3).is_err());
+        log.record_detail("chrome_renderer_private", "toolbar", 123, 456, 7).unwrap();
+        log.record_detail_count("configure_filter_registration_finished", 9, 42).unwrap();
+        drop(log);
+        let text = std::fs::read_to_string(&path).unwrap();
+        std::fs::remove_file(path).unwrap();
+        let rows: Vec<_> = text.lines().collect();
+        let chrome: Vec<_> = rows[1].split(',').collect();
+        assert_eq!(&chrome[7..], &["toolbar", "123", "456", "7"]);
+        let content: Vec<_> = rows[2].split(',').collect();
+        assert_eq!(content[3], "9");
+        assert_eq!(&content[7..], &["content", "0", "0", "42"]);
     }
 
     #[test]

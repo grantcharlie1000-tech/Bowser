@@ -688,6 +688,7 @@ impl std::fmt::Display for RuntimeUnavailable {
 /// resend the pattern lists.
 #[derive(Default)]
 struct TabBlockState {
+    diagnostic: Option<(TabId, super::DiagnosticDetailCallback)>,
     top_host: RefCell<String>,
     count: Cell<u32>,
     doc_filter: RefCell<Option<(String, crate::blocker::Level, bool, u32)>>,
@@ -698,6 +699,10 @@ struct TabBlockState {
     /// The last cosmetic script sent to this tab installed a style, so a page with no cosmetic
     /// CSS still has one to remove.
     cosmetic_installed: Cell<bool>,
+}
+
+fn blocker_detail(block: &TabBlockState, name: &'static str, count: u64) {
+    if let Some((tab, log)) = block.diagnostic.as_ref() { log(name, *tab, count); }
 }
 
 /// Escapes `value` for embedding as a double-quoted JavaScript or JSON string literal. Defence in
@@ -891,7 +896,7 @@ const NETWORK_ENABLE_PARAMS: &str =
 
 /// Sends `urlPatterns`. If that call is rejected, sends the legacy `urls` list instead. Current
 /// Edge accepts `urlPatterns`, so the legacy JSON is built only after a rejection.
-fn push_blocked_urls(webview: &ICoreWebView2, patterns: Rc<[String]>) {
+fn push_blocked_urls(webview: &ICoreWebView2, patterns: Rc<[String]>, block: &TabBlockState) {
     let target = webview.clone();
     let rejected = Rc::clone(&patterns);
     let handler = CallDevToolsProtocolMethodCompletedHandler::create(Box::new(move |error, result| {
@@ -902,7 +907,11 @@ fn push_blocked_urls(webview: &ICoreWebView2, patterns: Rc<[String]>) {
         Ok(())
     }));
     let method = HSTRING::from("Network.setBlockedURLs");
-    let params = HSTRING::from(blocked_urls_params(&patterns));
+    blocker_detail(block, "blocker_payload_started", 0);
+    let payload = blocked_urls_params(&patterns);
+    blocker_detail(block, "blocker_payload_finished", payload.len() as u64);
+    blocker_detail(block, "blocker_pattern_count", patterns.len() as u64);
+    let params = HSTRING::from(payload);
     let queued = unsafe {
         webview.CallDevToolsProtocolMethod(PCWSTR(method.as_ptr()), PCWSTR(params.as_ptr()), &handler)
     };
@@ -916,7 +925,7 @@ fn push_blocked_urls(webview: &ICoreWebView2, patterns: Rc<[String]>) {
 fn enable_network_then_block(webview: &ICoreWebView2, block: &Rc<TabBlockState>, patterns: Vec<String>) {
     let patterns: Rc<[String]> = patterns.into();
     if block.network_enabled.get() {
-        push_blocked_urls(webview, patterns);
+        push_blocked_urls(webview, patterns, block);
         return;
     }
     let target = webview.clone();
@@ -926,7 +935,7 @@ fn enable_network_then_block(webview: &ICoreWebView2, block: &Rc<TabBlockState>,
         if error.is_ok() && !devtools_protocol_error(&result) {
             armed.network_enabled.set(true);
         }
-        push_blocked_urls(&target, Rc::clone(&queued_patterns));
+        push_blocked_urls(&target, Rc::clone(&queued_patterns), &armed);
         Ok(())
     }));
     let method = HSTRING::from("Network.enable");
@@ -935,7 +944,7 @@ fn enable_network_then_block(webview: &ICoreWebView2, block: &Rc<TabBlockState>,
         webview.CallDevToolsProtocolMethod(PCWSTR(method.as_ptr()), PCWSTR(params.as_ptr()), &handler)
     };
     if queued.is_err() {
-        push_blocked_urls(webview, patterns);
+        push_blocked_urls(webview, patterns, block);
     }
 }
 
@@ -1278,6 +1287,7 @@ fn refresh_blocked_urls(
     private: bool,
     page_host: Option<&str>,
 ) {
+    blocker_detail(block, "blocker_pattern_preparation_started", 0);
     let stored_host = block.top_host.borrow().clone();
     let top_host = page_host.unwrap_or(&stored_host);
     let state = blocker.borrow();
@@ -1293,6 +1303,7 @@ fn refresh_blocked_urls(
         generation,
     );
     if block.doc_filter.borrow().as_ref() == Some(&signature) {
+        blocker_detail(block, "blocker_pattern_preparation_finished", 0);
         return;
     }
     let patterns = if private {
@@ -1301,6 +1312,7 @@ fn refresh_blocked_urls(
         state.blocked_url_patterns(top_host)
     };
     drop(state);
+    blocker_detail(block, "blocker_pattern_preparation_finished", patterns.len() as u64);
     *block.doc_filter.borrow_mut() = Some(signature);
     // Host rules and plain path rules fail in the renderer once Network.enable has landed. The
     // 403 below answers what only the in-process matcher can decide (`request_filters`).
@@ -4101,6 +4113,10 @@ unsafe fn configure_controller(
     private: bool,
 ) -> Result<WebView2Tab> {
     unsafe {
+        let detail = |name, count| {
+            if let Some(log) = events.diagnostic_detail.as_ref() { log(name, tab_id, count); }
+        };
+        detail("configure_geometry_started", 0);
         controller.SetBounds(bounds)?;
         controller.SetIsVisible(visible)?;
         let webview = controller.CoreWebView2()?;
@@ -4109,6 +4125,8 @@ unsafe fn configure_controller(
             // browsing profile.
             verify_private_profile(&webview)?;
         }
+        detail("configure_geometry_finished", 0);
+        detail("configure_settings_started", 0);
         let settings = webview.Settings()?;
         // Browsing tabs keep the page DevTools available in every build (the "Developer tools"
         // menu item and F12 / Ctrl+Shift+I open it). This is the DevTools UI only; it does not
@@ -4232,6 +4250,8 @@ unsafe fn configure_controller(
                 &mut token,
             )?;
         }
+        detail("configure_settings_finished", 0);
+        detail("configure_look_started", 0);
         enable_smart_screen(&settings, events.policy_event.as_ref())?;
         start_website_look(&webview);
         // Page tools (T7): Ctrl+scroll zoom and spatial navigation, as Settings > Page tools has them.
@@ -4254,10 +4274,15 @@ unsafe fn configure_controller(
         } else if private {
             return Err(Error::from(windows::Win32::Foundation::E_ACCESSDENIED));
         }
+        detail("configure_look_finished", 0);
+        detail("configure_handlers_started", 0);
         let mut token = 0;
         let allowed_file_for_handler = allowed_file.clone();
         let allowed_file_pending = Rc::new(Cell::new(allowed_file.is_some()));
-        let block_tab = Rc::new(TabBlockState::default());
+        let block_tab = Rc::new(TabBlockState {
+            diagnostic: events.diagnostic_detail.clone().map(|log| (tab_id, log)),
+            ..Default::default()
+        });
         let diagnostic_navigation_id = Rc::new(Cell::new(0u64));
         let diagnostic_start_id = diagnostic_navigation_id.clone();
         let diagnostic_start = events.diagnostic_navigation.clone();
@@ -4996,6 +5021,8 @@ unsafe fn configure_controller(
             let _ = webview15.add_FaviconChanged(&favicon_handler, &mut token);
         }
 
+        detail("configure_handlers_finished", 0);
+        detail("configure_blocker_started", 0);
         if let Some(blocker) = blocker {
             let blocked_callback = events.blocked_changed.clone();
             let policy_log = events.policy_event.clone();
@@ -5010,7 +5037,9 @@ unsafe fn configure_controller(
             );
             // Installed now, with the tab's still-empty top host, so every listed host is blocked
             // at the network layer before the first navigation commits.
+            detail("configure_blocker_refresh_started", 0);
             refresh_blocked_urls(&webview, &block_tab, &blocker, private, None);
+            detail("configure_blocker_refresh_finished", 0);
             // The rules do not change after load, so neither do the request filters.
             let request_filters = blocker.borrow().request_filters();
             let response_environment = environment.clone();
@@ -5077,6 +5106,8 @@ unsafe fn configure_controller(
             // is what excludes documents; the source-kind filter adds requests made by workers,
             // which the older call does not see. The URIs are narrow (`request_filter_uris`): no
             // filter at all means no page request is routed through the UI thread.
+            detail("configure_filter_registration_started", 0);
+            let mut registered_filters = 0u64;
             match webview.cast::<ICoreWebView2_22>() {
                 Ok(webview22) => {
                     for (uri, kinds) in request_filter_uris(request_filters) {
@@ -5087,6 +5118,7 @@ unsafe fn configure_controller(
                                 context,
                                 kinds,
                             )?;
+                            registered_filters += 1;
                         }
                     }
                 }
@@ -5095,12 +5127,16 @@ unsafe fn configure_controller(
                         let uri = HSTRING::from(uri);
                         for context in BLOCKABLE_CONTEXTS {
                             webview.AddWebResourceRequestedFilter(PCWSTR(uri.as_ptr()), context)?;
+                            registered_filters += 1;
                         }
                     }
                 }
             }
+            detail("configure_filter_registration_finished", registered_filters);
         }
 
+        detail("configure_blocker_finished", 0);
+        detail("configure_final_handlers_started", 0);
         let escape_pressed = events.escape_pressed.clone();
         let key_webview = webview.clone();
         controller.add_AcceleratorKeyPressed(
@@ -5183,6 +5219,7 @@ unsafe fn configure_controller(
                 &mut token,
             )?;
         }
+        detail("configure_final_handlers_finished", 0);
         Ok(WebView2Tab {
             environment: Some(environment.clone()),
             controller: Some(controller),

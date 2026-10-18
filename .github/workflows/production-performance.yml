@@ -5,6 +5,7 @@ on:
       - '.github/workflows/production-performance.yml'
       - 'benchmarks/production-*'
       - 'benchmarks/test-production-*'
+      - 'benchmarks/*native-detail*'
       - 'benchmarks/scripts/production-*'
       - 'src/performance.rs'
       - 'src/engine/webview2.rs'
@@ -12,6 +13,8 @@ on:
       - 'src/app.rs'
       - 'src/main.rs'
       - 'src/chrome_host/assets.rs'
+      - 'src/chrome_host/host.rs'
+      - 'src/win32/window.rs'
       - 'ui/**'
   workflow_dispatch:
 permissions:
@@ -48,6 +51,8 @@ jobs:
           }
           ./benchmarks/test-production-measurements.ps1
           ./benchmarks/test-measurements.ps1
+          python benchmarks/test-native-detail-analyze.py
+          if ($LASTEXITCODE -ne 0) { throw 'Native detail analyzer contracts failed' }
           python benchmarks/test-production-analyze.py
           if ($LASTEXITCODE -ne 0) { throw 'Analysis contract tests failed' }
           node --check benchmarks/scripts/production-fixture-server.mjs
@@ -61,9 +66,16 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Cannot fetch immutable diagnostic source' }
           git fetch --no-tags --depth=1 origin 80eabd7ae6d421e61c81985c34023bfc824a2e58
           if ($LASTEXITCODE -ne 0) { throw 'Cannot fetch untouched source for instrumentation provenance' }
-          git diff --exit-code 8a60dca2ac7de6d369c9b65584fd621a7013f491 HEAD -- src/performance.rs src/main.rs src/app.rs src/engine
-          if ($LASTEXITCODE -ne 0) { throw 'This first UI slice requires identical native instrumentation and runtime code' }
-          New-Item -ItemType Directory -Force ../evidence | Out-Null
+          # Native changes are explicit diagnostic-only inputs, never relabelled frozen bytes.
+          $allowedNative=@('src/performance.rs','src/app.rs','src/engine/mod.rs','src/engine/webview2.rs','src/chrome_host/host.rs','src/win32/window.rs')
+          $nativeChanges=@(git diff --name-only 8a60dca2ac7de6d369c9b65584fd621a7013f491 HEAD -- src)
+          if($LASTEXITCODE -ne 0){throw 'Cannot verify diagnostic native source provenance'}
+          $unexpectedNative=@($nativeChanges | Where-Object {$_ -cnotin $allowedNative})
+          if($unexpectedNative.Count){throw "Unexpected native changes outside diagnostic slice: $unexpectedNative"}
+          New-Item -ItemType Directory -Force ../evidence/candidate | Out-Null
+          git diff 8a60dca2ac7de6d369c9b65584fd621a7013f491 HEAD -- src | Set-Content ../evidence/candidate/native-detail.patch
+          if($LASTEXITCODE -ne 0){throw 'Cannot preserve diagnostic source patch'}
+          [ordered]@{frozen_source='8a60dca2ac7de6d369c9b65584fd621a7013f491';candidate_source=(git rev-parse HEAD).Trim();allowed_native_paths=$allowedNative;actual_native_paths=$nativeChanges;scope='Diagnostic-only attribution; frozen EXEs remain immutable, candidate rebuilt and fingerprinted'} | ConvertTo-Json | Set-Content ../evidence/candidate/native-detail-provenance.json
           $zip=Join-Path $env:RUNNER_TEMP 'production-frozen-8a60dca.zip'
           $headers=@{ Authorization="Bearer $env:GH_TOKEN"; Accept='application/vnd.github+json'; 'X-GitHub-Api-Version'='2022-11-28' }
           Invoke-WebRequest 'https://api.github.com/repos/grantcharlie1000-tech/Bowser/actions/artifacts/12121088896/zip' -Headers $headers -OutFile $zip
@@ -99,7 +111,7 @@ jobs:
             Copy-Item (Join-Path $cache 'candidate') ../evidence/ -Recurse
             [ordered]@{build_source=$reuseSource;harness_source=(git rev-parse HEAD).Trim();archive_artifact_id=12122339684;archive_sha256='19a931dce37ad6f954f909d4e2dd0e9d3899b073bb93a6d17a41448d6df0379c';allowed_nonproduct_changes=$changes;product_changes=$productChanges;note='Exact already-built optimized candidate; source is not relabelled as harness revision'} | ConvertTo-Json | Set-Content ../evidence/candidate/reuse-provenance.json
           }
-      - name: Verify actual optimized candidate and build when product inputs changed
+      - name: Verify actual diagnostic candidate and build when product inputs changed
         working-directory: candidate
         run: |
           rustup toolchain install 1.99.1 --profile minimal
@@ -129,7 +141,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Actual module/CSP smoke failed' }
           Pop-Location
           git diff --exit-code -- ui/src/icons.gen.ts ui/dist ui/dist.manifest
-          if ($LASTEXITCODE -ne 0) { throw 'Committed optimized assets are not reproducible' }
+          if ($LASTEXITCODE -ne 0) { throw 'Committed assets are not reproducible' }
           if(Test-Path ../evidence/candidate/reuse-provenance.json) {
             Write-Host 'Reusing exact optimized native EXE after strict no-product-change and hash verification'
             exit 0
@@ -140,7 +152,7 @@ jobs:
           Copy-Item target/release/bowser.exe ../evidence/candidate/candidate.exe
           Copy-Item Cargo.lock,ui/dist.manifest ../evidence/candidate/
           $file=Get-Item ../evidence/candidate/candidate.exe
-          [ordered]@{source=(git rev-parse HEAD).Trim();tree=(git rev-parse 'HEAD^{tree}').Trim();sha256=(Get-FileHash $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant();bytes=$file.Length;toolchain=(rustc +1.99.1 --version --verbose | Out-String);features='html-chrome-default';scope='first bounded per-surface UI slice; not a release'} | ConvertTo-Json | Set-Content ../evidence/candidate/identity.json
+          [ordered]@{source=(git rev-parse HEAD).Trim();tree=(git rev-parse 'HEAD^{tree}').Trim();sha256=(Get-FileHash $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant();bytes=$file.Length;toolchain=(rustc +1.99.1 --version --verbose | Out-String);features='html-chrome-default';scope='diagnostic-only native attribution after reverting UI experiment; not a release'} | ConvertTo-Json | Set-Content ../evidence/candidate/identity.json
       - name: Bounded native actual-module and HTML activation validity pass
         id: validity
         working-directory: candidate
@@ -149,15 +161,15 @@ jobs:
       - name: Corrected diagnostic-off untouched and logging-on off controls
         working-directory: candidate
         run: |
-          ./benchmarks/production-baseline.ps1 -BaselineExe ../evidence/frozen/untouched-main.exe -DiagnosticExe ../evidence/frozen/diagnostic.exe -ReleaseExe ../evidence/frozen/released-v0.0.19.exe -Out ../evidence/controls -Pairs 5 -Fixtures light -MeasurementMode timing -MaxInvalidSamples 1
-      - name: Ten matched AB BA pairs per fresh and reused profile cheap timing arm
+          ./benchmarks/production-baseline.ps1 -BaselineExe ../evidence/frozen/untouched-main.exe -DiagnosticExe ../evidence/candidate/candidate.exe -DiagnosticSource (Get-Content ../evidence/candidate/identity.json -Raw | ConvertFrom-Json).source -ReleaseExe ../evidence/frozen/released-v0.0.19.exe -Out ../evidence/controls -Pairs 3 -Fixtures light -MeasurementMode timing -MaxInvalidSamples 1
+      - name: Short matched native detail-on off attribution timing pilot
         working-directory: candidate
         run: |
-          ./benchmarks/production-baseline.ps1 -BaselineExe ../evidence/frozen/untouched-main.exe -DiagnosticExe ../evidence/frozen/diagnostic.exe -ReleaseExe ../evidence/frozen/released-v0.0.19.exe -CandidateExe ../evidence/candidate/candidate.exe -CandidateSource (Get-Content ../evidence/candidate/identity.json -Raw | ConvertFrom-Json).source -Out ../evidence/timing -Pairs 10 -Fixtures light -MeasurementMode timing -MaxInvalidSamples 1
-      - name: Ten matched AB BA pairs separate settled one-tab whole-tree resource arm
+          ./benchmarks/production-baseline.ps1 -BaselineExe ../evidence/frozen/untouched-main.exe -DiagnosticExe ../evidence/frozen/diagnostic.exe -ReleaseExe ../evidence/frozen/released-v0.0.19.exe -CandidateExe ../evidence/candidate/candidate.exe -CandidateSource (Get-Content ../evidence/candidate/identity.json -Raw | ConvertFrom-Json).source -Out ../evidence/timing -Pairs 3 -DiagnosticDetailPilot -Fixtures light -MeasurementMode timing -MaxInvalidSamples 1
+      - name: Short matched native detail-on off attribution resource pilot
         working-directory: candidate
         run: |
-          ./benchmarks/production-baseline.ps1 -BaselineExe ../evidence/frozen/untouched-main.exe -DiagnosticExe ../evidence/frozen/diagnostic.exe -ReleaseExe ../evidence/frozen/released-v0.0.19.exe -CandidateExe ../evidence/candidate/candidate.exe -CandidateSource (Get-Content ../evidence/candidate/identity.json -Raw | ConvertFrom-Json).source -Out ../evidence/resource -Pairs 10 -Fixtures light -MeasurementMode resource -MaxInvalidSamples 1
+          ./benchmarks/production-baseline.ps1 -BaselineExe ../evidence/frozen/untouched-main.exe -DiagnosticExe ../evidence/frozen/diagnostic.exe -ReleaseExe ../evidence/frozen/released-v0.0.19.exe -CandidateExe ../evidence/candidate/candidate.exe -CandidateSource (Get-Content ../evidence/candidate/identity.json -Raw | ConvertFrom-Json).source -Out ../evidence/resource -Pairs 3 -DiagnosticDetailPilot -Fixtures light -MeasurementMode resource -MaxInvalidSamples 1
       - name: Mandatory independent native first-use interaction smoke
         if: ${{ !cancelled() && steps.validity.outcome == 'success' }}
         working-directory: candidate
@@ -172,6 +184,8 @@ jobs:
             if(Test-Path "$folder/environment.json") {
               python benchmarks/production-analyze.py $folder
               if($LASTEXITCODE -ne 0){throw "Analysis failed for $arm; raw samples remain preserved"}
+              python benchmarks/native-detail-analyze.py $folder
+              if($LASTEXITCODE -ne 0){throw "Native attribution analysis failed for $arm; raw samples remain preserved"}
             }
           }
       - name: Preserve raw samples and frozen executables, not disposable renderer caches

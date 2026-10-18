@@ -7,7 +7,8 @@
 //! only channel back to Rust is the string bridge in `protocol.rs`.
 
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
+    collections::HashSet,
     rc::{Rc, Weak},
     time::Instant,
 };
@@ -279,14 +280,133 @@ pub fn register_ui_scheme(options: &impl Interface) -> Result<()> {
 #[derive(Clone)]
 pub struct ChromeEnv {
     inner: Rc<ICoreWebView2Environment>,
+    diagnostic: Option<Rc<crate::performance::PerfLog>>,
+    diagnostic_sequence: Rc<Cell<u64>>,
 }
 
 impl ChromeEnv {
     /// Wraps the shared tab environment. It must have been created with [`register_ui_scheme`].
-    pub fn new(environment: ICoreWebView2Environment) -> Self {
+    pub fn new(environment: ICoreWebView2Environment, diagnostic: Option<Rc<crate::performance::PerfLog>>) -> Self {
         Self {
             inner: Rc::new(environment),
+            diagnostic,
+            diagnostic_sequence: Rc::new(Cell::new(0)),
         }
+    }
+}
+
+impl View {
+    fn diagnostic_name(self) -> &'static str {
+        match self {
+            Self::Toolbar => "toolbar", Self::Tabs => "tabs", Self::Rail => "rail",
+            Self::Panel => "panel", Self::Popup => "popup", Self::Dialog => "dialog",
+            Self::DialogNotes => "dialog_notes", Self::DialogPrivacy => "dialog_privacy",
+            Self::DialogRename => "dialog_rename", Self::DialogAddress => "dialog_address",
+            Self::BookmarkBar => "bookmark_bar", Self::DialogSessions => "dialog_sessions",
+            Self::DialogFeeds => "dialog_feeds", Self::Hover => "hover", Self::Split => "split",
+            Self::Settings => "settings", Self::HistoryPage => "history", Self::DownloadsPage => "downloads",
+        }
+    }
+}
+
+/// Exact embedded chrome URLs only. Unrecognized frame sources are never recorded.
+fn diagnostic_frame_view(source: &str) -> Option<&'static str> {
+    [View::Toolbar, View::Tabs, View::Rail, View::Panel, View::Popup, View::Dialog,
+     View::DialogNotes, View::DialogPrivacy, View::DialogRename, View::DialogAddress,
+     View::BookmarkBar, View::DialogSessions, View::DialogFeeds, View::Hover, View::Split,
+     View::Settings, View::HistoryPage, View::DownloadsPage]
+        .into_iter().find(|view| view.start_url() == source).map(View::diagnostic_name)
+}
+
+impl ChromeEnv {
+    fn next_diagnostic_id(&self) -> u64 {
+        if self.diagnostic.is_none() { return 0; }
+        let id = self.diagnostic_sequence.get().saturating_add(1);
+        self.diagnostic_sequence.set(id);
+        id
+    }
+    fn detail(&self, event: &'static str, view: View, id: u64) {
+        if let Some(log) = self.diagnostic.as_ref() {
+            let _ = log.record_detail(event, view.diagnostic_name(), 0, 0, id);
+        }
+    }
+    /// Detail-only asynchronous attribution. This is not executed by primary timing/resource arms.
+    fn snapshot_renderers(&self) {
+        let Some(log) = self.diagnostic.clone() else { return; };
+        let snapshot = self.next_diagnostic_id();
+        let _ = log.record_detail("chrome_snapshot_requested", "all", 0, 0, snapshot);
+        let Ok(environment) = self.inner.cast::<ICoreWebView2Environment13>() else {
+            let _ = log.record_detail("chrome_snapshot_unsupported", "all", 0, 0, snapshot);
+            return;
+        };
+        let callback_log = log.clone();
+        let handler = webview2_com::GetProcessExtendedInfosCompletedHandler::create(Box::new(move |status, infos| {
+            let result = status.and_then(|()| {
+                let infos = infos.ok_or_else(|| Error::from(E_POINTER))?;
+                let mut count = 0u32;
+                unsafe { infos.Count(&mut count)?; }
+                if count > 512 { return Err(Error::from(E_FAIL)); }
+                let mut seen = HashSet::new();
+                let mut inventory_seen = HashSet::new();
+                for index in 0..count.min(512) {
+                    let info = unsafe { infos.GetValueAtIndex(index)? };
+                    let process = unsafe { info.ProcessInfo()? };
+                    let mut kind = COREWEBVIEW2_PROCESS_KIND::default();
+                    let mut pid = 0i32;
+                    unsafe { process.Kind(&mut kind)?; process.ProcessId(&mut pid)?; }
+                    if kind != COREWEBVIEW2_PROCESS_KIND_RENDERER || pid <= 0 { continue; }
+                    let frames = unsafe { info.AssociatedFrameInfos()? };
+                    let iterator = unsafe { frames.GetIterator()? };
+                    let mut labels = HashSet::new();
+                    loop {
+                        let mut has = windows::Win32::Foundation::BOOL::default();
+                        unsafe { iterator.HasCurrent(&mut has)?; }
+                        if !has.as_bool() { break; }
+                        let frame = unsafe { iterator.GetCurrent()? };
+                        let mut source = PWSTR::null();
+                        unsafe { frame.Source(&mut source)?; }
+                        if let Some(view) = diagnostic_frame_view(&CoTaskMemPWSTR::from(source).to_string()) { labels.insert(view); }
+                        let mut more = windows::Win32::Foundation::BOOL::default();
+                        unsafe { iterator.MoveNext(&mut more)?; }
+                        if !more.as_bool() { break; }
+                    }
+                    // One native counter read per renderer, even if several chrome views share it.
+                    let bytes = diagnostic_private_bytes(pid as u32);
+                    let inventory_event = if bytes.is_some() { "renderer_private_inventory" } else { "renderer_private_inventory_unavailable" };
+                    if inventory_seen.insert(pid) {
+                        let _ = callback_log.record_detail(inventory_event, "all", pid as u32, bytes.unwrap_or(0), snapshot);
+                    }
+                    for label in labels {
+                        if seen.insert((pid, label)) {
+                            let event = if bytes.is_some() { "chrome_renderer_private" } else { "chrome_renderer_private_unavailable" };
+                            let _ = callback_log.record_detail(event, label, pid as u32, bytes.unwrap_or(0), snapshot);
+                        }
+                    }
+                }
+                Ok(())
+            });
+            let event = if result.is_ok() { "chrome_snapshot_completed" } else { "chrome_snapshot_failed" };
+            let _ = callback_log.record_detail(event, "all", 0, 0, snapshot);
+            Ok(())
+        }));
+        if unsafe { environment.GetProcessExtendedInfos(&handler) }.is_err() {
+            let _ = log.record_detail("chrome_snapshot_failed", "all", 0, 0, snapshot);
+        }
+    }
+}
+
+fn diagnostic_private_bytes(pid: u32) -> Option<u64> {
+    use windows::Win32::{Foundation::CloseHandle, System::{
+        ProcessStatus::{K32GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS, PROCESS_MEMORY_COUNTERS_EX},
+        Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION},
+    }};
+    unsafe {
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
+        let mut counters = PROCESS_MEMORY_COUNTERS_EX::default();
+        counters.cb = std::mem::size_of::<PROCESS_MEMORY_COUNTERS_EX>() as u32;
+        let ok = K32GetProcessMemoryInfo(handle, (&mut counters as *mut PROCESS_MEMORY_COUNTERS_EX).cast::<PROCESS_MEMORY_COUNTERS>(), counters.cb).as_bool();
+        let _ = CloseHandle(handle);
+        ok.then_some(counters.PrivateUsage as u64)
     }
 }
 
@@ -317,6 +437,8 @@ struct State {
     webview: ICoreWebView2,
     /// Keeps the shared environment alive for as long as this host exists.
     _env: ChromeEnv,
+    view: View,
+    diagnostic_id: u64,
     /// The window the controller is a child of; `applied_bounds` are in its client coordinates.
     parent: HWND,
     applied_bounds: RECT,
@@ -394,6 +516,7 @@ impl ChromeHost {
             on_accelerator,
             ready: Rc::new(RefCell::new(Some(Box::new(on_ready)))),
         };
+        env.detail("chrome_host_requested", view, 0);
         create_controller(&env.inner, setup)
     }
 
@@ -537,7 +660,9 @@ impl ChromeHost {
             state.controller.clone()
         };
         self.observe(unsafe { controller.SetIsVisible(visible) })?;
-        self.state.try_borrow_mut().map_err(|_| fail("Chrome host is busy"))?.applied_visible = Some(visible);
+        let mut state = self.state.try_borrow_mut().map_err(|_| fail("Chrome host is busy"))?;
+        state.applied_visible = Some(visible);
+        state._env.detail(if visible { "chrome_host_shown" } else { "chrome_host_hidden" }, state.view, state.diagnostic_id);
         Ok(())
     }
 
@@ -546,10 +671,13 @@ impl ChromeHost {
             let Ok(mut state) = self.state.try_borrow_mut() else { return; };
             if state.closed { return; }
             state.closed = true;
+            state._env.detail("chrome_host_close_requested", state.view, state.diagnostic_id);
             (state.controller.clone(), std::mem::take(&mut state.removers))
         };
         for remove in removers { remove(); }
-        let _ = unsafe { controller.Close() };
+        let closed = unsafe { controller.Close() }.is_ok();
+        let state = self.state.borrow();
+        state._env.detail(if closed { "chrome_host_close_succeeded" } else { "chrome_host_close_failed" }, state.view, state.diagnostic_id);
     }
 
     fn observe(&self, result: Result<()>) -> Result<()> {
@@ -635,6 +763,7 @@ fn create_controller(environment: &ICoreWebView2Environment, setup: Setup) -> Re
     let handler_setup = setup.clone();
     let handler = CreateCoreWebView2ControllerCompletedHandler::create(Box::new(
         move |status, controller| {
+            handler_setup.env.detail("chrome_controller_result", handler_setup.view, 0);
             let result = match (status, controller) {
                 (Ok(()), Some(controller)) => {
                     configure(&environment, controller, &handler_setup, background_at_creation)
@@ -671,6 +800,8 @@ fn configure(
             controller,
             webview,
             _env: setup.env.clone(),
+            view: setup.view,
+            diagnostic_id: setup.env.next_diagnostic_id(),
             parent: setup.parent,
             applied_bounds: LOADING_BOUNDS,
             wanted_bounds: setup.bounds,
@@ -683,7 +814,9 @@ fn configure(
             on_failed: setup.on_failed.clone(),
         })),
     };
+    setup.env.detail("chrome_configure_started", setup.view, host.state.borrow().diagnostic_id);
     prepare(&host, environment, setup, background_at_creation)?;
+    setup.env.detail("chrome_configure_finished", setup.view, host.state.borrow().diagnostic_id);
     Ok(host)
 }
 
@@ -1066,12 +1199,20 @@ fn reveal(weak: &Weak<RefCell<State>>) {
         let Ok(mut state) = shared.try_borrow_mut() else { return; };
         if state.closed || state.revealed { return; }
         state.revealed = true;
+        state._env.detail("chrome_host_ready", state.view, state.diagnostic_id);
+        state._env.snapshot_renderers();
         (state.wanted_bounds, state.wanted_visible)
     };
     let host = ChromeHost { state: shared };
     if wanted_visible {
-        let _ = host.set_bounds(wanted_bounds);
-        let _ = host.set_visible(true);
+        let bounds_ok = host.set_bounds(wanted_bounds).is_ok();
+        let visible_ok = host.set_visible(true).is_ok();
+        // Initial hosts already have IsVisible=true at one-pixel loading bounds; reveal moves
+        // them without another visibility COM call. Record that successful transition too.
+        if bounds_ok && visible_ok {
+            let state = host.state.borrow();
+            state._env.detail("chrome_host_shown", state.view, state.diagnostic_id);
+        }
     } else {
         let _ = host.set_visible(false);
         let _ = host.set_bounds(wanted_bounds);
@@ -1141,6 +1282,13 @@ fn request_path(uri: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn diagnostic_sources_are_exact_fixed_chrome_views() {
+        assert_eq!(super::diagnostic_frame_view(super::START_URL), Some("toolbar"));
+        assert_eq!(super::diagnostic_frame_view(super::TABS_START_URL), Some("tabs"));
+        assert_eq!(super::diagnostic_frame_view("https://example.test/private?secret=1"), None);
+        assert_eq!(super::diagnostic_frame_view(&format!("{}&private=1", super::START_URL)), None);
+    }
     use super::*;
 
     #[test]
