@@ -6135,6 +6135,11 @@ mod tests {
             let (records,map)={let core=self.core.try_borrow().ok()?;(core.extension_records_file.clone()?,core.extension_ids_file.clone()?)};
             Some(Box::new(move||crate::extensions::read_authority_records(&records).ok().zip(read_extension_ids(&map).ok()).is_some_and(|current|current==snapshot)))
         }
+        /// Read-only native gate receipt for isolated stale-dispatch tests, never a host endpoint.
+        pub(in crate::engine) fn probe_context_document_proof(&self,tab:TabId)->Option<(u64,u64,u64)>{
+            let core=self.core.try_borrow().ok()?;if core.closed||core.active_tab!=Some(tab){return None}
+            let proof=core.tabs.get(&tab)?.document_gate.try_borrow().ok()?.proof();proof
+        }
         /// One disposable-request fence; no host endpoint or durable epoch claim.
         pub(in crate::engine) fn probe_context_document_fence(&self, tab: TabId) -> Option<Box<dyn Fn() -> bool>> {
             let state=self.core.try_borrow().ok()?;if state.closed||state.active_tab!=Some(tab){return None}

@@ -248,3 +248,7 @@ and cross-origin revocation against the retained native event ID. A snapshot is 
 generation epoch or ABA/two-process proof. Same-URL reload/tab-switch/close/disable/remove races,
 worker cold start, iframe targeting and actual Bitwarden vault use remain distinct later gates.
 No production menu registration, routing, permission or install-authority change is included.
+
+
+### Isolated post-selection stale-request control (Windows pending)
+A separate exact ignored test uses a fresh ungranted profile and the original genuine engine-item OS-selection flow. After a nonzero native choice returns, but before any SelectedCommandId setter, it performs one actual same-view Reload and requires a different native NavigationStarting ID. The original dispatch proof is never refreshed: the same final guard must refuse, with zero setter calls, successful deferral completion and event removal. Stable-worker quiet-window absence, fresh matched-ID permission denials, same-URL/new-timeOrigin success and unchanged other-view documents are required. If a held deferral prevents navigation, the test fails unavailable rather than completing early. This is post-selection/pre-dispatch invalidation, not navigation while the menu is open, tab-switch/close/revocation races, ABA fencing or production integration.

@@ -10,6 +10,10 @@ Add-Type @'
 using System;using System.Text;using System.Runtime.InteropServices;
 public static class InstallerBandCapture {
  [StructLayout(LayoutKind.Sequential)]public struct RECT{public int Left,Top,Right,Bottom;}
+ [StructLayout(LayoutKind.Sequential)]public struct MONITOR{public uint Size;public RECT Screen,Work;public uint Flags;}
+ [DllImport("user32.dll")]public static extern IntPtr MonitorFromWindow(IntPtr h,uint flags);
+ [DllImport("user32.dll",CharSet=CharSet.Unicode)]public static extern bool GetMonitorInfo(IntPtr monitor,ref MONITOR info);
+ [DllImport("user32.dll")]public static extern int GetSystemMetrics(int index);
  [StructLayout(LayoutKind.Sequential)]public struct POINT{public int X,Y;}
  [StructLayout(LayoutKind.Sequential)]public struct GUI{public uint cbSize,flags;public IntPtr Active,Focus,Capture,MenuOwner,MoveSize,Caret;public RECT CaretRect;}
  [StructLayout(LayoutKind.Sequential)]public struct TIME{public uint Low,High;public ulong Bits{get{return ((ulong)High<<32)|Low;}}}
@@ -65,6 +69,16 @@ function Identity {
  Children
  if(!$guard.SameAlive() -or [InstallerBandCapture]::GetDpiForWindow($h) -ne $Dpi -or ![InstallerBandCapture]::Owned($h,$OwnerPid,$tid,'Static')){throw 'Host/children changed during text reads.'}
 }
+# Fixed numeric observation only: monitor bounds never widen input or alter layout/capture size.
+function Capture-Geometry {
+ Identity
+ $owner=[InstallerBandCapture+RECT]::new();$clientNow=[InstallerBandCapture+RECT]::new();$origin=[InstallerBandCapture+POINT]::new()
+ $ownerOk=[InstallerBandCapture]::GetWindowRect($h,[ref]$owner);$clientOk=[InstallerBandCapture]::GetClientRect($h,[ref]$clientNow);$originOk=[InstallerBandCapture]::ClientToScreen($h,[ref]$origin)
+ $monitor=[InstallerBandCapture]::MonitorFromWindow($h,0);$info=[InstallerBandCapture+MONITOR]::new();$info.Size=[Runtime.InteropServices.Marshal]::SizeOf($info);$monitorOk=$monitor -ne [IntPtr]::Zero -and [InstallerBandCapture]::GetMonitorInfo($monitor,[ref]$info)
+ $result=[ordered]@{scope='non-atomic-fixed-numeric-capture-diagnostic-not-input-authority';owner_rect_ok=$ownerOk;owner_rect=@($owner.Left,$owner.Top,$owner.Right,$owner.Bottom);client_rect_ok=$clientOk;client_rect=@($clientNow.Left,$clientNow.Top,$clientNow.Right,$clientNow.Bottom);client_origin_ok=$originOk;client_origin=@($origin.X,$origin.Y);monitor_info_ok=$monitorOk;monitor_rect=@($info.Screen.Left,$info.Screen.Top,$info.Screen.Right,$info.Screen.Bottom);work_rect=@($info.Work.Left,$info.Work.Top,$info.Work.Right,$info.Work.Bottom);primary_size=@([InstallerBandCapture]::GetSystemMetrics(0),[InstallerBandCapture]::GetSystemMetrics(1));virtual_xywh=@([InstallerBandCapture]::GetSystemMetrics(76),[InstallerBandCapture]::GetSystemMetrics(77),[InstallerBandCapture]::GetSystemMetrics(78),[InstallerBandCapture]::GetSystemMetrics(79));print_window_flags=2}
+ Identity
+ return $result
+}
 function Bounds([IntPtr]$Window,[int]$Left,[int]$Top,[int]$Width,[int]$Height){$r=[InstallerBandCapture+RECT]::new();$p=[InstallerBandCapture+POINT]::new();$p.X=$Left;$p.Y=$Top;if(![InstallerBandCapture]::ClientToScreen($h,[ref]$p) -or ![InstallerBandCapture]::GetWindowRect($Window,[ref]$r) -or $r.Left -ne $p.X -or $r.Top -ne $p.Y -or $r.Right-$r.Left -ne $Width -or $r.Bottom-$r.Top -ne $Height -or $Width -le 0 -or $Height -le 0){throw 'Native control geometry differs from measured reservation.'};return $r}
 try {
  $guard=[InstallerBandCapture+ProcessIdentity]::new($OwnerPid,$OwnerExe);Identity
@@ -82,8 +96,10 @@ try {
  }
  Identity;$r=[InstallerBandCapture+RECT]::new();if(![InstallerBandCapture]::GetWindowRect($h,[ref]$r)){throw 'Capture root geometry unavailable.'}
  $width=$r.Right-$r.Left;$height=$r.Bottom-$r.Top;if($width -le 0 -or $height -le 0 -or $width -gt 4096 -or $height -gt 4096){throw 'Capture size outside bound.'}
+ $report.capture_geometry_before=Capture-Geometry
  $bitmap=[Drawing.Bitmap]::new($width,$height)
  try{$graphics=[Drawing.Graphics]::FromImage($bitmap);try{$dc=$graphics.GetHdc();try{$ok=[InstallerBandCapture]::PrintWindow($h,$dc,2)}finally{$graphics.ReleaseHdc($dc)}}finally{$graphics.Dispose()};if(!$ok){throw 'Owned PrintWindow failed.'};Identity;$null=Bounds $note $NoteLeft $NoteTop $NoteWidth $NoteHeight;$null=Bounds $button $ButtonLeft $ButtonTop $ButtonWidth $ButtonHeight;$null=Bounds $page 0 $PageTop $client.Right ($client.Bottom-$PageTop);$file=Join-Path $Out "$Sample.png";if(Test-Path $file){throw 'Existing sample file refused.'};$bitmap.Save($file,[Drawing.Imaging.ImageFormat]::Png)}finally{$bitmap.Dispose()}
+ $report.capture_geometry_after=Capture-Geometry
  $report.screenshot="$Sample.png";$sha=[Security.Cryptography.SHA256]::Create();try{$stream=[IO.File]::OpenRead($file);try{$report.sha256=([BitConverter]::ToString($sha.ComputeHash($stream))).Replace('-','').ToLowerInvariant()}finally{$stream.Dispose()}}finally{$sha.Dispose()};$report.status='captured-native-component-visual-review-pending'
 } catch {$report.error=$_.Exception.Message} finally {if($guard){$guard.Dispose()};[IO.File]::WriteAllText((Join-Path $Out "$Sample.json"),($report|ConvertTo-Json -Depth 5),[Text.UTF8Encoding]::new($false))}
 if($report.status -cne 'captured-native-component-visual-review-pending'){throw 'Native component failed; not accepted.'}

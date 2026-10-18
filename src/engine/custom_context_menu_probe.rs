@@ -3,7 +3,7 @@ use super::*;
 use std::{cell::Cell,collections::HashSet};
 use windows::Win32::Graphics::Gdi::ClientToScreen;
 use windows::Win32::UI::Shell::{SetWindowSubclass,RemoveWindowSubclass,DefSubclassProc};
-use webview2_com::{ContextMenuRequestedEventHandler,Microsoft::Web::WebView2::Win32::*};
+use webview2_com::{ContextMenuRequestedEventHandler,NavigationStartingEventHandler,Microsoft::Web::WebView2::Win32::*};
 use windows::{core::{Interface,PCWSTR},Win32::{Foundation::{POINT,WPARAM,LPARAM},System::Threading::GetCurrentThreadId,UI::WindowsAndMessaging::*}};
 const CONTINUE:u32=WM_APP+0x5c1;
 const EXPECTED_LABEL:&str="Bowser native context permission probe";
@@ -12,8 +12,8 @@ struct NativeMenu(HMENU);
 impl NativeMenu{fn close(&mut self)->bool{if self.0==HMENU::default(){return true}match unsafe{DestroyMenu(self.0)}{Ok(())=>{self.0=HMENU::default();true},Err(e)=>{println!("CUSTOM_CONTEXT menu_destroy_error={}",e.code().0);false}}}}
 impl Drop for NativeMenu{fn drop(&mut self){let _=self.close();}}
 struct Choice {id:i32,kind:i32,enabled:bool,checked:bool,item:ICoreWebView2ContextMenuItem}
-struct Completion {deferral:Option<ICoreWebView2Deferral>,outcome:Rc<Cell<Option<i32>>>}
-impl Completion {fn complete(&mut self){if let Some(deferral)=self.deferral.take(){self.outcome.set(Some(unsafe{deferral.Complete()}.err().map_or(0,|e|e.code().0)));}}}
+struct Completion {deferral:Option<ICoreWebView2Deferral>,outcome:Rc<Cell<Option<i32>>>,calls:Rc<Cell<u32>>}
+impl Completion {fn complete(&mut self){if let Some(deferral)=self.deferral.take(){self.calls.set(self.calls.get().saturating_add(1));self.outcome.set(Some(unsafe{deferral.Complete()}.err().map_or(0,|e|e.code().0)));}}}
 impl Drop for Completion{fn drop(&mut self){self.complete();}}
 struct Pending {args:ICoreWebView2ContextMenuRequestedEventArgs,_completion:Completion,menu:NativeMenu,choices:Vec<Choice>,point:POINT,fixture_id:i32}
 fn same_item(choice:&Choice)->bool{
@@ -77,23 +77,44 @@ impl Drop for OwnerObserver{fn drop(&mut self){
     self.detached.set(Some(removed));if !removed{let _=Rc::into_raw(self.state.clone());println!("CUSTOM_CONTEXT owner_callback_lifetime_preserved_cleanup_failed=true");}
 }}
 fn owner_ready(owner:HWND,pid:u32,thread:u32)->bool{let mut actual=0;unsafe{IsWindow(Some(owner))}.as_bool()&&unsafe{GetWindowThreadProcessId(owner,Some(&mut actual))}==thread&&actual==pid&&unsafe{GetForegroundWindow()}==owner}
-struct Dispatch {pending:Rc<RefCell<Option<Pending>>>,completion:Rc<Cell<Option<i32>>>,selected:Rc<Cell<Option<i32>>>,errors:Rc<Cell<u32>>,requests:Rc<Cell<u32>>}
-fn run_input(session:&mut Session,tab:TabId,profile_path:&Path,mode:&str,out:&Path)->i32{
+struct Dispatch {pending:Rc<RefCell<Option<Pending>>>,completion_calls:Rc<Cell<u32>>,completion:Rc<Cell<Option<i32>>>,selected:Rc<Cell<Option<i32>>>,errors:Rc<Cell<u32>>,requests:Rc<Cell<u32>>}
+struct ReloadWatch{view:ICoreWebView2,token:i64,removed:Rc<Cell<Option<i32>>>}
+impl Drop for ReloadWatch{fn drop(&mut self){self.removed.set(Some(unsafe{self.view.remove_NavigationStarting(self.token)}.err().map_or(0,|e|e.code().0)));}}
+fn reload_after_selection(session:&mut Session,tab:TabId,view:&ICoreWebView2,old_proof:(u64,u64,u64),document:&dyn Fn()->bool,trusted_before:u32)->u64{
+    let old_native_id=old_proof.0;assert_eq!(session.engine.probe_context_document_proof(tab),Some(old_proof));
+    assert!(document());assert_eq!(command_view(session,tab,"Number(document.documentElement.getAttribute('data-bowser-context-trusted')||0)").unwrap().parse::<u32>().unwrap(),trusted_before+1,"trusted right-click must be observed before Reload erases its DOM receipt");assert!(document());
+    let started=Rc::new(Cell::new(None));let count=Rc::new(Cell::new(0_u32));let errors=Rc::new(Cell::new(0_u32));let issued=Rc::new(Cell::new(false));
+    let seen=started.clone();let calls=count.clone();let failures=errors.clone();let dispatched=issued.clone();let expected=view.as_raw() as usize;
+    let handler=NavigationStartingEventHandler::create(Box::new(move|sender,args|{
+        calls.set(calls.get().saturating_add(1));let mut id=0;
+        if !dispatched.get()||!sender.as_ref().is_some_and(|v|v.as_raw() as usize==expected)||!args.as_ref().is_some_and(|a|unsafe{a.NavigationId(&mut id)}.is_ok())||id==old_native_id||seen.get().is_some(){failures.set(failures.get().saturating_add(1));}else{seen.set(Some(id));}
+        Ok(())
+    }));
+    let mut token=0;unsafe{view.add_NavigationStarting(&handler,&mut token).unwrap()};let removed=Rc::new(Cell::new(None));let watch=ReloadWatch{view:view.clone(),token,removed:removed.clone()};
+    assert!(document());assert_eq!(session.engine.probe_context_document_proof(tab),Some(old_proof));issued.set(true);let result=unsafe{view.Reload()};println!("CUSTOM_CONTEXT_STALE real_reload_ok={} normalized_error={:?}",result.is_ok(),result.as_ref().err().map(|e|e.code().0));result.unwrap();
+    assert!(pump_until(Duration::from_secs(10),||started.get().is_some()||errors.get()>0),"held deferral prevented actual new NavigationStarting; stale prerequisite unavailable");
+    assert_eq!(errors.get(),0);assert_eq!(count.get(),1);let id=started.get().unwrap();assert_ne!(id,old_native_id);assert!(!document(),"the original request proof must be invalid after real native NavigationStarting");
+    drop(watch);assert_eq!(removed.get(),Some(0),"Reload observer must deregister successfully");println!("CUSTOM_CONTEXT_STALE native_starting_observed=true old_native_id={old_native_id} new_native_id={id} original_document_invalid=true");id
+}
+fn run_input(session:&mut Session,tab:TabId,profile_path:&Path,mode:&str,out:&Path)->i32{run_input_case(session,tab,profile_path,mode,out,false).0}
+fn run_input_case(session:&mut Session,tab:TabId,profile_path:&Path,mode:&str,out:&Path,reload_before_dispatch:bool)->(i32,Option<u64>){
+    let original_proof=session.engine.probe_context_document_proof(tab).expect("native successful document proof required");
+    let setters=Cell::new(0_u32);let stale_refused=Cell::new(false);let reloaded=Cell::new(None);
     let view=session.engine.probe_document_webview(tab).unwrap();let native=view.cast::<ICoreWebView2_11>().unwrap();let expected=view.as_raw() as usize;
     let expected_profile=profile(&view).expect("ordinary native profile required");
-    let document=Rc::new(session.engine.probe_context_document_fence(tab).expect("successful selected document required"));
+    let document=Rc::new(session.engine.probe_context_document_fence(tab).expect("successful selected document required"));assert_eq!(session.engine.probe_context_document_proof(tab),Some(original_proof));
     let authority=Rc::new(session.engine.probe_context_authority_fence().expect("strict profile authority required"));
     assert!(document()&&authority());let snapshot=session.engine.probe_context_authority().unwrap();assert_eq!(snapshot.0.len(),1);assert!(snapshot.0[0].enabled);assert_eq!(snapshot.1.get(&snapshot.0[0].id).map(String::as_str),Some(KEY_FIXTURE_ID));
     let owner=session.host;let pid=std::process::id();let thread=unsafe{GetCurrentThreadId()};assert!(owner_ready(owner,pid,thread));
     let owner_detached=Rc::new(Cell::new(None));let owner_observer=OwnerObserver::new(owner,pid,thread,owner_detached.clone()).expect("actual owner lifetime observer unavailable");let owner_state=owner_observer.state.clone();
-    let state=Dispatch{pending:Rc::new(RefCell::new(None)),completion:Rc::new(Cell::new(None)),selected:Rc::new(Cell::new(None)),errors:Rc::new(Cell::new(0)),requests:Rc::new(Cell::new(0))};
-    let pending=state.pending.clone();let completion=state.completion.clone();let errors=state.errors.clone();let requests=state.requests.clone();let doc=document.clone();let auth=authority.clone();let receiving=view.clone();let ordinary=expected_profile.clone();let observed_owner=owner_state.clone();
+    let state=Dispatch{pending:Rc::new(RefCell::new(None)),completion_calls:Rc::new(Cell::new(0)),completion:Rc::new(Cell::new(None)),selected:Rc::new(Cell::new(None)),errors:Rc::new(Cell::new(0)),requests:Rc::new(Cell::new(0))};
+    let pending=state.pending.clone();let completion=state.completion.clone();let completion_calls=state.completion_calls.clone();let errors=state.errors.clone();let requests=state.requests.clone();let doc=document.clone();let auth=authority.clone();let receiving=view.clone();let ordinary=expected_profile.clone();let observed_owner=owner_state.clone();
     let handler=ContextMenuRequestedEventHandler::create(Box::new(move|sender,args|{
         requests.set(requests.get().saturating_add(1));
         let Some(args)=args else{errors.set(errors.get()+1);return Ok(())};
         // A second request never replaces the owning request or its one-shot deferral.
         unsafe{args.SetHandled(true)?};
-        let guard=Completion{deferral:Some(unsafe{args.GetDeferral()?}),outcome:completion.clone()};
+        let guard=Completion{deferral:Some(unsafe{args.GetDeferral()?}),outcome:completion.clone(),calls:completion_calls.clone()};
         if !observed_owner.current()||requests.get()!=1||pending.borrow().is_some()||!sender.as_ref().is_some_and(|v|v.as_raw() as usize==expected)||!doc()||!auth()||!owner_ready(owner,pid,thread){errors.set(errors.get()+1);return Ok(())}
         let result=(||->windows::core::Result<Pending>{
             let reject=||windows::core::Error::from_hresult(windows::core::HRESULT(0x80070057u32 as i32));
@@ -130,9 +151,10 @@ fn run_input(session:&mut Session,tab:TabId,profile_path:&Path,mode:&str,out:&Pa
                         let selected=TrackPopupMenu(request.menu.0,TPM_RETURNCMD|TPM_NONOTIFY,request.point.x,request.point.y,Some(0),owner,None).0;
                         state.selected.set(Some(selected));
                         if selected>0 {
+                            if reload_before_dispatch{let id=reload_after_selection(session,tab,&view,original_proof,document.as_ref(),trusted_before);reloaded.set(Some(id));}
                             let chosen=request.choices.iter().find(|c|c.id==selected);
                             let allowed=owner_state.current()&&state.requests.get()==1&&state.errors.get()==0&&chosen.is_some_and(|c|c.enabled&&same_item(c))&&selected==request.fixture_id&&profile(&view).as_ref()==Some(&expected_profile)&&owner_ready(owner,pid,thread)&&authority()&&document()&&owner_state.current()&&state.requests.get()==1&&state.errors.get()==0;
-                            if allowed{let result=request.args.SetSelectedCommandId(selected);println!("CUSTOM_CONTEXT genuine_os_selection_id={selected} native_dispatch_ok={} normalized_error={:?}",result.is_ok(),result.as_ref().err().map(|e|e.code().0));if result.is_err(){state.errors.set(state.errors.get()+1)}}else{println!("CUSTOM_CONTEXT stale_or_unowned_selection_refused=true");state.errors.set(state.errors.get()+1)}
+                            if allowed{setters.set(setters.get()+1);let result=request.args.SetSelectedCommandId(selected);println!("CUSTOM_CONTEXT genuine_os_selection_id={selected} native_dispatch_ok={} normalized_error={:?}",result.is_ok(),result.as_ref().err().map(|e|e.code().0));if result.is_err(){state.errors.set(state.errors.get()+1)}}else{println!("CUSTOM_CONTEXT stale_or_unowned_selection_refused=true");if reload_before_dispatch&&reloaded.get().is_some()&&chosen.is_some_and(|c|c.enabled&&same_item(c))&&selected==request.fixture_id&&profile(&view).as_ref()==Some(&expected_profile)&&owner_ready(owner,pid,thread)&&authority()&&!document()&&owner_state.current()&&state.requests.get()==1&&state.errors.get()==0{stale_refused.set(true);println!("CUSTOM_CONTEXT_STALE specific_document_refusal=true setter_calls={}",setters.get());}else{state.errors.set(state.errors.get()+1)}}
                         }
                     }else{state.errors.set(state.errors.get()+1)}
                     request._completion.complete();
@@ -144,11 +166,11 @@ fn run_input(session:&mut Session,tab:TabId,profile_path:&Path,mode:&str,out:&Pa
     }
     if status.is_none(){let _=child.kill();let _=child.wait();panic!("custom native menu helper unavailable; no acceptance")}
     drop(registration);assert_eq!(removal_result.get(),Some(0),"native event deregistration must succeed");
-    assert!(status.unwrap().success(),"real owned custom-menu input failed");assert_eq!(state.requests.get(),1);assert_eq!(state.errors.get(),0);assert_eq!(state.completion.get(),Some(0),"deferral must complete exactly once successfully");assert!(document()&&authority());
-    assert_eq!(command_view(session,tab,"Number(document.documentElement.getAttribute('data-bowser-context-trusted')||0)").unwrap().parse::<u32>().unwrap(),trusted_before+1,"exact current textarea must receive the genuine trusted right click");assert!(document());
+    assert!(status.unwrap().success(),"real owned custom-menu input failed");assert_eq!(state.requests.get(),1);assert_eq!(state.errors.get(),0);assert_eq!(state.completion.get(),Some(0),"deferral must complete exactly once successfully");assert_eq!(state.completion_calls.get(),1);if reload_before_dispatch{assert!(!document()&&authority());assert!(stale_refused.get());assert!(reloaded.get().is_some());assert_eq!(setters.get(),0);}else{
+    assert!(document()&&authority());assert_eq!(command_view(session,tab,"Number(document.documentElement.getAttribute('data-bowser-context-trusted')||0)").unwrap().parse::<u32>().unwrap(),trusted_before+1,"exact current textarea must receive the genuine trusted right click");assert!(document());}
     let report=extensions::json::parse(&std::fs::read_to_string(out.join("custom-context-menu.json")).unwrap()).unwrap();println!("CUSTOM_CONTEXT helper_receipt={report:?}");
     let selected=state.selected.get().expect("native menu did not return actual user choice");if mode=="Cancel"{assert_eq!(selected,0)}else{assert!(selected>0);assert_eq!(command_field(&report,"selected_command_id"),Some(&extensions::json::Value::Number(selected.to_string())))}
-    assert!(owner_state.current());drop(owner_observer);assert_eq!(owner_detached.get(),Some(true),"native owner lifetime observer must detach successfully");let _=profile_path;selected
+    assert!(owner_state.current());drop(owner_observer);assert_eq!(owner_detached.get(),Some(true),"native owner lifetime observer must detach successfully");let _=profile_path;(selected,reloaded.get())
 }
 fn receipt_document(session:&mut Session,tab:TabId,page:&Url)->String{
     let script=format!("[location.href==={},performance.timeOrigin,document.readyState==='complete']",crate::chrome_host::protocol::json_string(page.as_str()));
@@ -210,4 +232,29 @@ fn live_probe_custom_context_menu(){
         println!("CUSTOM_CONTEXT active_tab={active_tab} native_cancellation_no_grant=true actual_engine_dispatch_and_native_event=true duplicate_view_native_ids_differ=true settled_permission_controls=true scope=warm-worker-top-level-sole-fixture-single-owner-not-production-or-Bitwarden");session.close();drop(loopback);
     }
     remove_with_retries(&root);
+}
+
+
+#[test]
+#[ignore="requires actual OS selection and native same-URL Reload before dispatch in a fresh isolated profile"]
+fn live_probe_custom_context_menu_stale_dispatch(){
+    use extensions::json::Value;
+    let args:Vec<_>=std::env::args().skip(1).collect();assert_eq!(args.iter().map(String::as_str).collect::<Vec<_>>(),vec!["engine::extension_probe_live::custom_context_menu::live_probe_custom_context_menu_stale_dispatch","--exact","--ignored","--nocapture","--test-threads=1"]);
+    unsafe{CoInitializeEx(None,COINIT_APARTMENTTHREADED).ok().unwrap()};let root=temp_root();let profile_path=root.join("fresh-ungranted");
+    let record=extensions::install(&fixture("probe-custom-context-menu"),&profile_path.join("Extensions"),&profile_path.join("extensions.txt")).unwrap();let folder=extensions::folder_for(&profile_path.join("Extensions"),&record.id).unwrap();let loopback=Loopback::start();let page=loopback.page("context-menu-observation");
+    let mut session=Session::open(&profile_path,vec![(record.id.clone(),folder.clone())],vec![(record.id.clone(),true)],&page);let (native,failure)=session.wait_for_add(&profile_path,&record.id);assert!(failure.is_none());assert_eq!(native.as_deref(),Some(KEY_FIXTURE_ID));
+    session.engine.select_tab(TabId(2)).unwrap();session.engine.navigate_tab(TabId(2),&page).unwrap();
+    let ready=format!("location.href==={}&&document.readyState==='complete'",crate::chrome_host::protocol::json_string(page.as_str()));for tab in [TabId(1),TabId(2)]{assert!(pump_until(Duration::from_secs(20),||command_view(&mut session,tab,&ready).as_deref()==Some("true")));}
+    let old_document=receipt_document(&mut session,TabId(1),&page);let other_document=receipt_document(&mut session,TabId(2),&page);
+    session.open_page(&record.id,&folder,extensions::PageKind::Popup).unwrap();assert!(pump_until(Duration::from_secs(10),||session.page_script("document.documentElement.getAttribute('data-ready')").as_deref()==Some("\"yes\"")));
+    let mut creation=None;assert!(pump_until(Duration::from_secs(10),||{creation=command_receipt(&mut session,"native-command-state");creation.as_ref().and_then(|r|command_field(r,"creation")).is_some_and(|c|command_field(c,"complete")==Some(&Value::Bool(true)))}));let creation=creation.unwrap();let worker=command_field(&creation,"workerInstance").unwrap().clone();let installed=command_field(&creation,"creation").unwrap().clone();assert_eq!(command_field(&installed,"ok"),Some(&Value::Bool(true)));assert_eq!(command_field(&installed,"error"),Some(&Value::Null));
+    let before=command_receipt(&mut session,"native-command-preflight").unwrap();println!("CUSTOM_CONTEXT_STALE fresh_ungranted_before={before:?}");assert_eq!(command_field(&before,"workerInstance"),Some(&worker));assert_eq!(command_field(&before,"creation"),Some(&installed));assert_eq!(command_field(&before,"events"),Some(&Value::Array(vec![])));let Some(Value::Array(attempts))=command_field(&before,"preflight")else{panic!("real preflight IDs absent")};assert!(attempts.len()>=2);let mut ids=Vec::new();for a in attempts{let id=command_field(a,"id").unwrap().clone();assert!(matches!(&id,Value::Number(n) if n.parse::<i64>().is_ok()));assert!(!ids.contains(&id));denied_for(&before,&id);ids.push(id);}
+    ready_focus(&mut session,TabId(1));let original_proof=session.engine.probe_context_document_proof(TabId(1)).unwrap();
+    let (selected,reload_id)=run_input_case(&mut session,TabId(1),&profile_path,"Select",&PathBuf::from("store-custom-context-menu").join("stale-post-selection-reload"),true);let reload_id=reload_id.expect("exact observed Reload native ID required");assert!(selected>0,"real old request selection is mandatory; cancellation is not stale-selection coverage");
+    assert!(pump_until(Duration::from_secs(20),||session.engine.probe_context_document_proof(TabId(1)).is_some_and(|proof|proof.0==reload_id&&proof.0!=original_proof.0)&&command_view(&mut session,TabId(1),&ready).as_deref()==Some("true")),"new same-URL successful native document required");
+    let new_document=receipt_document(&mut session,TabId(1),&page);assert_ne!(new_document,old_document,"same-URL Reload must produce a different real document timeOrigin");let reload_proof=session.engine.probe_context_document_proof(TabId(1)).unwrap();assert_eq!(reload_proof.0,reload_id);let fresh=session.engine.probe_context_document_fence(TabId(1)).unwrap();assert_eq!(session.engine.probe_context_document_proof(TabId(1)),Some(reload_proof));assert!(fresh());assert_eq!(receipt_document(&mut session,TabId(1),&page),new_document);assert_eq!(session.engine.probe_context_document_proof(TabId(1)),Some(reload_proof));assert!(fresh());
+    pump_until(Duration::from_secs(2),||false);let after=command_receipt(&mut session,"native-command-preflight").unwrap();println!("CUSTOM_CONTEXT_STALE fixed_quiet_ms=2000 actual_after={after:?}");assert_eq!(command_field(&after,"workerInstance"),Some(&worker));assert_eq!(command_field(&after,"creation"),Some(&installed));assert_eq!(command_field(&after,"events"),Some(&Value::Array(vec![])));let Some(Value::Array(after_attempts))=command_field(&after,"preflight")else{panic!("fresh native permission receipts absent")};assert_eq!(after_attempts.len(),ids.len());for id in &ids{denied_for(&after,id);}
+    for tab in [TabId(1),TabId(2)]{for role in ["primary","negative"]{assert_eq!(marker(&mut session,tab,role).as_deref(),Some("null"));}}
+    assert_eq!(receipt_document(&mut session,TabId(1),&page),new_document);assert_eq!(receipt_document(&mut session,TabId(2),&page),other_document);assert!(fresh());assert_eq!(session.engine.probe_context_document_proof(TabId(1)),Some(reload_proof));
+    println!("CUSTOM_CONTEXT_STALE post_selection_pre_dispatch_reload_refusal=true original_nonzero_os_selection={selected} no_event_no_grant=true scope=single-owner-warm-worker-not-in-modal-race-or-production");session.close();drop(loopback);remove_with_retries(&root);
 }
