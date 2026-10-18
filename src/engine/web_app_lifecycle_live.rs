@@ -90,10 +90,11 @@ fn live_webapp_generation_remove_readd_clear_shutdown() {
     host.remove_app("2"); host.open_app("2", &new_b).unwrap(); host.open_app("1", &a).unwrap();
     let latest = RECT { left: 0, top: 0, right: 640, bottom: 480 };
     host.set_bounds(latest).unwrap(); host.hide_all().unwrap();
+    // Hidden controllers may suppress the fixture's double-requestAnimationFrame title/ack.
+    // First prove native navigation and latest hidden presentation, then separately show the
+    // existing B controller to require the unchanged visual-readiness fixture signal.
     assert!(pump_until(Duration::from_secs(30), || host.has_app("2")
-        && titles.borrow().iter().any(|(_, title)| title == "BOWSER_PERF_READY_native_b_current")
-        && states.borrow().get("2") == Some(&AppNavigationState::Ready)), "re-added B never ready");
-    assert!(!titles.borrow()[retired_at..].iter().any(|(_, title)| title.contains("native_b_retired")), "retired creation navigated or delivered title after removal");
+        && states.borrow().get("2") == Some(&AppNavigationState::Ready)), "re-added B native navigation never ready");
     {
         let state = host.state.borrow();
         assert_eq!(state.apps.len(), 2); assert!(state.current_app.is_none());
@@ -103,6 +104,21 @@ fn live_webapp_generation_remove_readd_clear_shutdown() {
             assert_eq!(actual, latest); assert!(!visible.as_bool());
         }
     }
+    host.show_app("2", latest).unwrap();
+    assert!(pump_until(Duration::from_secs(30), || titles.borrow().iter()
+        .any(|(_, title)| title == "BOWSER_PERF_READY_native_b_current")
+        && states.borrow().get("2") == Some(&AppNavigationState::Ready)), "shown re-added B fixture never ready");
+    {
+        let state = host.state.borrow();
+        assert_eq!(state.current_app.as_deref(), Some("2"));
+        for (id, app) in &state.apps {
+            let mut visible = BOOL::default();
+            unsafe { app.controller.IsVisible(&mut visible).unwrap(); }
+            assert_eq!(visible.as_bool(), id == "2");
+        }
+    }
+    host.hide_all().unwrap();
+    assert!(!titles.borrow()[retired_at..].iter().any(|(_, title)| title.contains("native_b_retired")), "retired creation navigated or delivered title after removal");
     assert!(failed.borrow().is_empty(), "unexpected UI failure");
     super::begin_clear_profile(&profile).unwrap();
     assert_eq!(super::finish_clear_profile(&profile).unwrap_err().kind(), std::io::ErrorKind::WouldBlock,
