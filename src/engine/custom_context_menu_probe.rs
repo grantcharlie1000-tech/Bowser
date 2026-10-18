@@ -52,8 +52,9 @@ fn engine_menu(collection:&ICoreWebView2ContextMenuItemCollection,depth:usize,vi
 }
 fn profile(view:&ICoreWebView2)->Option<String>{
     let profile=unsafe{view.cast::<ICoreWebView2_13>().ok()?.Profile().ok()?};let mut name=windows::core::PWSTR::null();let mut private=windows::core::BOOL::default();
-    let result=unsafe{profile.ProfileName(&mut name)};let (code,name,truncated,redacted)=native_context_text(result,name,64);
-    if code!=0||truncated||redacted||name.is_empty()||unsafe{profile.IsInPrivateModeEnabled(&mut private)}.is_err()||private.as_bool()||name==crate::private::PRIVATE_PROFILE||name==crate::chrome_host::host::CHROME_PROFILE{return None}Some(name)
+    let result=unsafe{profile.ProfileName(&mut name)};let name_present=!name.is_null();let (code,name,truncated,redacted)=native_context_text(result,name,64);
+    // This disposable Session uses the documented unnamed default normal profile, not a named profile fallback.
+    if code!=0||!name_present||truncated||redacted||!name.is_empty()||unsafe{profile.IsInPrivateModeEnabled(&mut private)}.is_err()||private.as_bool(){return None}Some(name)
 }
 thread_local!{static NEXT_OWNER_OBSERVER:Cell<usize>=const{Cell::new(0)};}
 struct OwnerState{owner:HWND,pid:u32,thread:u32,destroyed:Cell<bool>}
