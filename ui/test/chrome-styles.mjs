@@ -22,16 +22,18 @@ const skip = EDGE ? false : 'Microsoft Edge is not installed';
 
 /**
  * Loads `body` (markup) under dist/app.css, runs `script` (a function body that fills `out`, with `$`
- * as querySelector and `cs` as getComputedStyle), and returns `out`. `prelude` is extra script that
- * runs first (a bundled module, for instance).
+ * as querySelector, `cs` as getComputedStyle and `settle()` to finish running transitions), and returns
+ * `out`. `prelude` is extra script that runs first (a bundled module, for instance); `flags` are extra
+ * Edge switches (--force-prefers-reduced-motion, for instance).
  */
-export function measure(body, script, prelude = '') {
+export function measure(body, script, prelude = '', flags = []) {
   const dir = mkdtempSync(join(tmpdir(), 'bowser-styles-test-'));
   try {
     const driver = `
 window.addEventListener('load', function () {
   var out = { errors: [] };
   var $ = function (s) { return document.querySelector(s); };
+  var settle = function () { document.getAnimations().forEach(function (a) { a.finish(); }); };
   var cs = function (s) { var n = typeof s === 'string' ? $(s) : s; if (!n) throw new Error('missing ' + s); return getComputedStyle(n); };
   try { ${script} } catch (e) { out.errors.push(String(e && e.stack || e)); }
   var m = document.createElement('meta'); m.name = 'st-out'; m.content = encodeURIComponent(JSON.stringify(out));
@@ -43,7 +45,7 @@ window.addEventListener('load', function () {
     mkdirSync(profile);
     const result = spawnSync(EDGE, [
       '--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check', '--allow-file-access-from-files',
-      `--user-data-dir=${profile}`, '--window-size=1000,800', '--virtual-time-budget=3000', '--dump-dom', pathToFileURL(file).href,
+      `--user-data-dir=${profile}`, '--window-size=1000,800', '--virtual-time-budget=3000', ...flags, '--dump-dom', pathToFileURL(file).href,
     ], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, timeout: 120000 });
     const match = /name="st-out" content="([^"]*)"/.exec(result.stdout ?? '');
     assert.ok(match, `no report (exit ${result.status}) ${String(result.stderr).slice(0, 300)}`);
@@ -59,15 +61,25 @@ test('address_bar_show off hides only the address part of the pill: the search f
   const pill = (hidden) => `<div class="pill"${hidden ? ' data-hidden="true"' : ''}>
     <button class="tb-site"></button><div class="omni-field"><input class="omni-input"></div><button class="tb-hist"></button><button class="tb-qr"></button>
     <div class="omni-search"><input class="omni-search-input"></div><button class="tb-zoom"></button></div>`;
+  // Run under both motion settings. Under prefers-reduced-motion (base.css) every element gets an 83ms
+  // opacity transition, so a style read straight after a change returns the transition's start value;
+  // a CI runner's desktop reports reduced motion, which is how this test passed locally and failed there.
+  // settle() finishes the running transitions so each read is the state the change settles on.
+  for (const flags of [[], ['--force-prefers-reduced-motion']]) {
   const r = measure(`<div id="app"><div id="shown">${pill(false)}</div><div id="hidden">${pill(true)}</div></div>`, `
     var parts = ['.tb-site', '.omni-field', '.tb-hist', '.tb-qr', '.omni-search', '.tb-zoom'];
+    out.reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
+    settle();
     out.shown = {}; out.hidden = {};
     parts.forEach(function (p) { out.shown[p] = cs('#shown ' + p).opacity; out.hidden[p] = cs('#hidden ' + p).opacity; });
     // The pill being open (the suggestion list is up) brings the field back: a real class, so this is
     // the computed style.
     $('#hidden .pill').classList.add('is-open');
+    settle();
     out.open = {}; parts.forEach(function (p) { out.open[p] = cs('#hidden ' + p).opacity; });
     $('#hidden .pill').classList.remove('is-open');
+    settle();
+    out.closed = cs('#hidden .omni-field').opacity;
     // Focus in the field (Ctrl+L) brings it back through :has(.omni-field:focus-within). Chromium only
     // matches :focus/:focus-within while the page itself has focus, and a headless Edge on a CI runner
     // can start without it (document.hasFocus() false), so the shipped rule is checked two ways: its
@@ -92,15 +104,18 @@ test('address_bar_show off hides only the address part of the pill: the search f
     parts.forEach(function (p) { out.byRule.focused[p] = $('#hidden ' + p).matches(marked); });
     $('#hidden .omni-field').removeAttribute('data-st-focus');
     $('#hidden .omni-input').focus();
+    settle();
     out.active = document.activeElement === $('#hidden .omni-input');
     out.hasFocus = document.hasFocus();
     out.focused = cs('#hidden .omni-field').opacity;
-  `);
+  `, '', flags);
+  assert.equal(r.reduced, flags.length > 0, `prefers-reduced-motion is ${flags.length > 0} for this run`);
   for (const part of ['.tb-site', '.omni-field', '.tb-hist', '.tb-qr', '.omni-search', '.tb-zoom']) assert.equal(r.shown[part], '1', `${part} shows normally`);
   for (const part of ['.tb-site', '.omni-field', '.tb-hist', '.tb-qr']) assert.equal(r.hidden[part], '0', `${part} is hidden with the address field`);
   assert.equal(r.hidden['.omni-search'], '1', 'the search field stays');
   assert.equal(r.hidden['.tb-zoom'], '1', 'the page buttons stay');
   for (const part of ['.tb-site', '.omni-field', '.tb-hist', '.tb-qr']) assert.equal(r.open[part], '1', `${part} comes back while the pill is open`);
+  assert.equal(r.closed, '0', 'and hides again once the pill closes');
   assert.equal(r.rule.opacity, '0', 'the matched rule is the one that hides the parts');
   assert.match(r.rule.selector, /:not\([^)]*:has\(\.omni-field:focus-within\)/, 'focus inside the field is one of the exceptions');
   for (const part of ['.tb-site', '.omni-field', '.tb-hist', '.tb-qr']) {
@@ -111,6 +126,7 @@ test('address_bar_show off hides only the address part of the pill: the search f
   assert.equal(r.active, true, 'the hidden field still takes focus (Ctrl+L reaches it)');
   if (r.hasFocus) assert.equal(r.focused, '1', 'Ctrl+L (focus in the field) brings the address field back');
   else console.log(`# headless page has no focus (document.hasFocus() false): computed :focus-within check covered by the CSSOM selector check; opacity read ${r.focused}`);
+  }
 });
 
 test('tabs_close_always and tabs_close_left reach the vertical sidebar rows; collapsed and pinned tiles still hide it', { skip }, () => {
