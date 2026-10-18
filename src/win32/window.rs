@@ -2338,8 +2338,9 @@ unsafe extern "system" fn window_proc(
                 let _ = windows::Win32::Graphics::Gdi::ScreenToClient(hwnd, &mut p);
                 let mut r = RECT::default();
                 let _ = GetClientRect(hwnd, &mut r);
+                let chrome_hit = hit(hwnd, p.x, p.y); // Also tells a drag band apart
                 let ih = matches!(
-                    hit(hwnd, p.x, p.y),
+                    chrome_hit,
                     Hit::Tab(_)
                         | Hit::TabClose(_)
                         | Hit::NewTab
@@ -2369,6 +2370,8 @@ unsafe extern "system" fn window_proc(
                     auto_hide::zoomed_or_full(hwnd), // --- auto-hide (T11) --- no resize rim in full screen
                     if ih {
                         frame::ChromeHit::Interactive
+                    } else if chrome_hit == Hit::CaptionArea {
+                        frame::ChromeHit::Drag // The bottom toolbar's empty space drags too
                     } else {
                         frame::ChromeHit::None
                     },

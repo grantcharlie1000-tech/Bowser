@@ -1551,7 +1551,12 @@ pub fn hit_test_native(
     }
     // The margin left of the toolbar, beside the rail, drags the window like the rest of the strip.
     // Below the toolbar that margin is outside the chrome and takes no hit.
-    if y < layout.strip.bottom && x < layout.strip.left {
+    // The band above the toolbar ends where the page starts, and a toolbar along
+    // the bottom edge has its own band: the rows over the page are not drag bands
+    // (`drag_region_rects` sweeps the same two bands).
+    let above_bottom = layout.strip.top.min(layout.top_chrome);
+    let in_strip_band = y >= layout.strip.top && y < layout.strip.bottom;
+    if (y < above_bottom || in_strip_band) && x < layout.strip.left {
         return Hit::CaptionArea;
     }
     if layout.viewport.contains(x, y) {
@@ -1616,7 +1621,9 @@ pub fn hit_test_native(
     if layout.title_bar.contains(x, y) {
         return Hit::CaptionArea;
     }
-    if y >= 0 && y < layout.strip.top {
+    // Only above the page: with the toolbar at the bottom everything over it is
+    // the page and its margins, not caption.
+    if y >= 0 && y < layout.strip.top.min(layout.top_chrome) {
         return Hit::CaptionArea;
     }
     if !layout.strip.contains(x, y) {
@@ -4757,6 +4764,43 @@ mod arrangement_tests {
             }
         }
         assert!(Arrangement { address_bar: BarPosition::Bottom, ..Default::default() }.thin_bottom_edge());
+    }
+
+    /// With the toolbar along the bottom edge the hit test agrees with the layout's rects: a point
+    /// is `CaptionArea` exactly where a drag region is, so the margins over the page (between it and
+    /// the bottom toolbar, beside a sidebar) are not a caption, and the bottom toolbar's empty space is.
+    #[test]
+    fn caption_hits_follow_the_drag_regions_with_the_address_bar_at_the_bottom() {
+        for dpi in [96, 144] {
+            for tabs in TabLayout::ALL {
+                for tab_bar in [true, false] {
+                    let arrangement = Arrangement { tabs, tab_bar, address_bar: BarPosition::Bottom, ..Default::default() };
+                    let (layout, _) = arranged(arrangement, dpi);
+                    let context = format!("{tabs:?} tab bar {tab_bar} dpi {dpi}");
+                    let drags = layout.drag_region_rects();
+                    for y in (0..layout.client.bottom).step_by(3) {
+                        // Left of the toolbar is the margin beside the rail: it drags in the
+                        // toolbar's bands only, checked below.
+                        for x in (layout.strip.left..layout.client.right).step_by(7) {
+                            let caption = hit(&layout, x, y) == Hit::CaptionArea;
+                            let dragged = drags.iter().any(|rect| rect.contains(x, y));
+                            assert_eq!(caption, dragged, "{context}: ({x}, {y}) caption {caption} drag region {dragged}");
+                        }
+                    }
+                    // The gap between the page and the toolbar is no caption.
+                    let y = layout.strip.top - 1;
+                    assert_ne!(hit(&layout, layout.viewport.left + 40, y), Hit::CaptionArea, "{context}");
+                    assert_ne!(hit(&layout, layout.strip.left - 1, layout.viewport.top + 40), Hit::CaptionArea, "{context}: the margin beside the page");
+                    assert_ne!(hit(&layout, 0, layout.viewport.top + 40), Hit::CaptionArea, "{context}: the margin beside the rail, by the page");
+                    assert_eq!(hit(&layout, 0, layout.strip.top + 2), Hit::CaptionArea, "{context}: the margin beside the rail, by the toolbar");
+                    // The bottom toolbar's empty space between its controls drags the window.
+                    let spare = Rect::new(layout.omnibox.right, layout.strip.top, layout.main_menu_button.left, layout.strip.bottom);
+                    if spare.width() > 2 {
+                        assert_eq!(hit(&layout, spare.left + 1, spare.top + spare.height() / 2), Hit::CaptionArea, "{context}");
+                    }
+                }
+            }
+        }
     }
 
     #[test]
