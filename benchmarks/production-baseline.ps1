@@ -13,6 +13,8 @@ param(
     [switch]$IncludeTabFlow,
     [switch]$IncludeSurfaceSmoke,
     [ValidateSet('sendkeys','sendkeys-per-key','uia-value')][string]$SurfaceInputMethod='sendkeys',
+    [switch]$DiagnosticAutoUpdateOff,
+    [string]$ExpectedInputManifest,
     [switch]$PositiveOnly,
     [switch]$DiagnosticDetailPilot,
     [switch]$StartupOnly,
@@ -29,6 +31,7 @@ $ErrorActionPreference='Stop'
 Import-Module "$PSScriptRoot/measurements.psm1" -Force
 Import-Module "$PSScriptRoot/production-measurements.psm1" -Force
 if (-not $IsWindows) { throw 'Native Windows required' }
+if($DiagnosticAutoUpdateOff -and -not $ExpectedInputManifest){throw 'Updater-off diagnostic requires the original frozen-input manifest'}
 if($SurfaceInputMethod -ne 'sendkeys' -and -not $IncludeSurfaceSmoke){throw 'UIA value control requires the independent surface lane'}
 if($StartupOnly -and $IncludeTabFlow){throw 'StartupOnly cannot be combined with IncludeTabFlow'}
 $Out=[IO.Path]::GetFullPath($Out)
@@ -46,6 +49,19 @@ if ($CandidateExe) {
     $inputPaths+=@($CandidateExe)
 }
 $hashes=Get-MeasurementInputHashes $inputPaths
+if($ExpectedInputManifest) {
+    $manifest=Get-Content -LiteralPath $ExpectedInputManifest -Raw | ConvertFrom-Json
+    $roles=[ordered]@{baseline=$BaselineExe;diagnostic=$DiagnosticExe;release=$ReleaseExe}
+    if($CandidateExe){$roles['candidate']=$CandidateExe}
+    $hashes=[ordered]@{}
+    foreach($role in $roles.Keys) {
+        $property=$manifest.PSObject.Properties[$role]
+        if(-not $property -or $property.Value -cnotmatch '^[0-9a-f]{64}$'){throw "Original manifest missing valid hash: $role"}
+        $hashes[(Resolve-Path -LiteralPath $roles[$role]).Path]=$property.Value
+    }
+    try {Assert-MeasurementInputHashesUnchanged $hashes (Get-MeasurementInputHashes $inputPaths) | Out-Null}
+    catch {[ordered]@{reason='Pinned manifest mismatch before lane start; no native process launched';error=$_.Exception.Message} | ConvertTo-Json | Set-Content $contaminationMarker -Encoding utf8;throw}
+}
 $expected='341486070d2e74cf9a9e5d5fbeffa90c7dd2ec4fd36bc284a8a3878a7a9bcec1'
 if ((Get-FileHash $ReleaseExe -Algorithm SHA256).Hash.ToLowerInvariant() -cne $expected) { throw 'Released executable does not match verified v0.0.19 pin' }
 Add-Type -AssemblyName System.Windows.Forms,System.Drawing
@@ -137,6 +153,27 @@ function Read-OwnedAddress {
     $selection=$null
     if($edit){try{$ranges=([Windows.Automation.TextPattern]$edit.GetCurrentPattern([Windows.Automation.TextPattern]::Pattern)).GetSelection();$selection=@($ranges|ForEach-Object {$_.GetText(-1)})}catch{}}
     return [ordered]@{selection=$selection;element=$edit;focused=[bool]$same;value=$value;focus_name=if($focused){$focused.Current.Name}else{''};provider_process_id=if($focused){$focused.Current.ProcessId}else{0}}
+}
+function Assert-FrozenInputs($sample,[string]$phase) {
+    try {
+        Assert-MeasurementInputHashesUnchanged $hashes (Get-MeasurementInputHashes $inputPaths) | Out-Null
+        $sample.input_identity_checks+=@([ordered]@{phase=$phase;passed=$true;qpc=(Qpc)})
+    } catch {
+        $sample.valid=$false;$sample.identity_error=$_.Exception.Message
+        $sample.input_identity_checks+=@([ordered]@{phase=$phase;passed=$false;qpc=(Qpc);error=$sample.identity_error})
+        if(-not $sample.error){$sample.error=$sample.identity_error}
+        [ordered]@{id=$sample.id;reason='Frozen executable identity changed; no subsequent native lane permitted';phase=$phase;error=$sample.identity_error} | ConvertTo-Json | Set-Content $contaminationMarker -Encoding utf8
+        throw
+    }
+}
+function Confirm-NoStagedUpdate([string]$profile) {
+    if(-not $DiagnosticAutoUpdateOff){return}
+    $setting=Join-Path $profile 'auto-update.txt'
+    if((Get-Content -LiteralPath $setting -Raw).Trim() -cne 'auto_update=false'){throw 'Updater-off diagnostic switch missing or modified'}
+    $updates=Join-Path $profile 'updates'
+    $files=if(Test-Path -LiteralPath $updates){@(Get-ChildItem -LiteralPath $updates -Recurse -File -ErrorAction Stop)}else{@()}
+    $staged=@($files | Where-Object {$_.Name -in @('pending.txt','trial.txt') -or $_.Extension -in @('.exe','.download')})
+    if($staged.Count){throw 'Pending/trial/staged update present; disposable control profile rejected, not cleaned or reused'}
 }
 function Read-InputModifiers {
     $result=[ordered]@{}
@@ -292,6 +329,7 @@ function Has-Ready([string]$token) {
 }
 function Seed-Profile([string]$path,[int]$bookmarks) {
     New-Item -ItemType Directory -Force $path | Out-Null
+    if($DiagnosticAutoUpdateOff){'auto_update=false' | Set-Content (Join-Path $path 'auto-update.txt') -Encoding utf8NoBOM}
     # Fixed, documented synthetic settings. All security, privacy, downloads, blocker defaults remain on.
     "startup=start_page`n" | Set-Content (Join-Path $path 'settings.txt') -Encoding utf8NoBOM
     'answered' | Set-Content (Join-Path $path 'import-offer.txt') -Encoding utf8NoBOM
@@ -317,8 +355,8 @@ try {
         gpu=(Get-CimInstance Win32_VideoController | Select-Object Name,DriverVersion,CurrentHorizontalResolution,CurrentVerticalResolution)
         power=(& powercfg /getactivescheme | Out-String).Trim(); resolution=[Windows.Forms.Screen]::PrimaryScreen.Bounds.ToString()
         webview2_runtime=@(Get-ChildItem 'C:/Program Files (x86)/Microsoft/EdgeWebView/Application' -Directory -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name)
-        noise=@('Shared hosted runner, not a laptop/battery claim','Fresh profile is not cold OS cache','Updater remains production-enabled, isolated LOCALAPPDATA','Samples are endpoint process-tree observations, not ETW complete','Working-set sums include shared pages','Fixture double-requestAnimationFrame is acknowledged page readiness, not proven display presentation','Title-based tab switch is only a proxy','Sampling overhead separately recorded; measured values are not overhead-subtracted','GetAsyncKeyState snapshots do not prove queued modifier messages have been processed; instrumented input lanes are diagnosis, not typing-latency acceptance')
-        workload_settings=@{history_records=10000; bookmark_records=818; startup='start_page overridden by ordinary --open-url'; first_run_offer='already answered synthetic profile'; security='unchanged defaults'; ui='HTML-default build, no BOWSER_UI override'; tab_flow=[bool]$IncludeTabFlow; surface_smoke=[bool]$IncludeSurfaceSmoke;surface_input_method=$SurfaceInputMethod;surface_input_scope=if($SurfaceInputMethod -eq 'uia-value'){'ValuePattern navigation/first-use control; bypasses keyboard/autocomplete; not input correctness'}else{'instrumented SendKeys keyboard diagnostic with UIA value/selection reads; no primary typing latency, retyping or retry'}; diagnostic_detail_pilot=[bool]$DiagnosticDetailPilot; startup_only=[bool]$StartupOnly; resource_endpoint=if($StartupOnly){'settled initial one-tab navigation; no omnibox submission or UIA; not comparable to old post-Enter state'}else{'settled post-Enter one-tab navigation'}; resource_tab_count=if($IncludeTabFlow){5}else{1}}
+        noise=@('Shared hosted runner, not a laptop/battery claim','Fresh profile is not cold OS cache',$(if($DiagnosticAutoUpdateOff){'Updater OFF via ordinary disposable-profile setting; interaction control, not primary workload'}else{'Updater remains production-enabled, isolated LOCALAPPDATA'}),'Samples are endpoint process-tree observations, not ETW complete','Working-set sums include shared pages','Fixture double-requestAnimationFrame is acknowledged page readiness, not proven display presentation','Title-based tab switch is only a proxy','Sampling overhead separately recorded; measured values are not overhead-subtracted','GetAsyncKeyState snapshots do not prove queued modifier messages have been processed; instrumented input lanes are diagnosis, not typing-latency acceptance')
+        workload_settings=@{history_records=10000; bookmark_records=818; startup='start_page overridden by ordinary --open-url'; first_run_offer='already answered synthetic profile'; security='unchanged defaults'; ui='HTML-default build, no BOWSER_UI override'; tab_flow=[bool]$IncludeTabFlow; surface_smoke=[bool]$IncludeSurfaceSmoke;surface_input_method=$SurfaceInputMethod;auto_update=if($DiagnosticAutoUpdateOff){'OFF ordinary disposable-profile control; not the primary workload'}else{'ON production default'};surface_input_scope=if($SurfaceInputMethod -eq 'uia-value'){'ValuePattern navigation/first-use control; bypasses keyboard/autocomplete; not input correctness'}else{'instrumented SendKeys keyboard diagnostic with UIA value/selection reads; no primary typing latency, retyping or retry'}; diagnostic_detail_pilot=[bool]$DiagnosticDetailPilot; startup_only=[bool]$StartupOnly; resource_endpoint=if($StartupOnly){'settled initial one-tab navigation; no omnibox submission or UIA; not comparable to old post-Enter state'}else{'settled post-Enter one-tab navigation'}; resource_tab_count=if($IncludeTabFlow){5}else{1}}
     }
     $metadata | ConvertTo-Json -Depth 10 | Set-Content (Join-Path $Out 'environment.json') -Encoding utf8
     # Five-pair pilot by default. Alternate whole arm order each pair, same session/runtime/fixture seed.
@@ -331,6 +369,7 @@ try {
                 if ($fixture -notin $Fixtures -and ($arm -notin @('diagnostic_on','baseline_on','candidate_on','candidate_detail_on') -or $pair -ne 1)) { continue }
                 if ($fixture -in @('network-failure','error','hung') -and ($arm -notin @('diagnostic_on','baseline_on','candidate_on','candidate_detail_on') -or $pair -ne 1)) { continue }
                 $profile=Join-Path $run "$arm-$pair-$fixture"
+                if($DiagnosticAutoUpdateOff -and (Test-Path -LiteralPath $profile)){throw 'Updater-off controls require newly created disposable roots, not existing profiles'}
                 Seed-Profile $profile 818
                 $freshOutcome=$null
                 foreach($condition in @('fresh','reused')) {
@@ -341,9 +380,11 @@ try {
                     if($arm.EndsWith('_on')) { $args+=@('--diagnostic-log',"`"$eventFile`"") }
                     if($arm -eq 'candidate_detail_on') { $args+=@('--diagnostic-detail') }
                     $snapshots=[Collections.Generic.List[object]]::new(); $overheads=[Collections.Generic.List[double]]::new()
-                    $sample=[ordered]@{id=$id;pair=$pair;arm=$arm;fixture=$fixture;condition=$condition;prior_fresh_outcome=if($condition -eq 'reused'){$freshOutcome}else{$null};token=$token;valid=$false;expected_failure=($fixture -in @('network-failure','error','hung'));error=$null;launch_qpc=$null;ready_qpc=$null;title_ready_qpc=$null;input_ready_qpc=$null;shutdown_ms=$null;disk_before=(Disk-Bytes $profile);measurement_mode=$MeasurementMode;tree_exit_wait_ms=$null;tree_exit_confirmed=$false;ownership_inventory_captured=$false;drain_remaining=@();cleanup_error=$null;cleanup_forced_root=$false;surface_smoke=$null;filter_parity=$null;events=$null;input=$null;input_exclusion_reason=if($StartupOnly){'Startup-only lane: no omnibox interaction; input latency unavailable, not passed or zero'}else{$null};tab_switch_proxy_ms=$null;idle=$null;minimized=$null}
+                    $sample=[ordered]@{id=$id;pair=$pair;arm=$arm;fixture=$fixture;condition=$condition;prior_fresh_outcome=if($condition -eq 'reused'){$freshOutcome}else{$null};token=$token;valid=$false;expected_failure=($fixture -in @('network-failure','error','hung'));error=$null;launch_qpc=$null;ready_qpc=$null;title_ready_qpc=$null;input_ready_qpc=$null;shutdown_ms=$null;disk_before=(Disk-Bytes $profile);measurement_mode=$MeasurementMode;tree_exit_wait_ms=$null;tree_exit_confirmed=$false;ownership_inventory_captured=$false;drain_remaining=@();cleanup_error=$null;cleanup_forced_root=$false;identity_error=$null;input_identity_checks=@();updater_control=if($DiagnosticAutoUpdateOff){'ordinary auto-update.txt=false; no staged/trial state; separate interaction workload'}else{'production default on'};surface_smoke=$null;filter_parity=$null;events=$null;input=$null;input_exclusion_reason=if($StartupOnly){'Startup-only lane: no omnibox interaction; input latency unavailable, not passed or zero'}else{$null};tab_switch_proxy_ms=$null;idle=$null;minimized=$null}
                     $app=$null;$known=@{};$script:surfaceTrace=$null
                     try {
+                        Assert-FrozenInputs $sample 'before-launch'
+                        Confirm-NoStagedUpdate $profile
                         $sample.launch_qpc=Qpc
                         $app=Start-Process -FilePath $arms[$arm] -ArgumentList $args -PassThru
                         $limit=[Diagnostics.Stopwatch]::StartNew(); $timeout=if($sample.expected_failure){4}else{30}
@@ -457,9 +498,10 @@ try {
                                 if(-not $sample.tree_exit_confirmed){$sample.cleanup_error=if(-not $sample.ownership_inventory_captured){'Root exited without owned identity inventory; helper absence unproven'}else{'Owned/profile helpers survived independent finally drain'};$sample.valid=$false}
                             } catch {$sample.cleanup_error=$_.Exception.Message;$sample.valid=$false}
                         }
+                        try {Assert-FrozenInputs $sample 'after-cleanup'}catch{}
                         # Isolation is persisted BEFORE any later diagnostic import/serialization can fail.
                         if(-not $sample.tree_exit_confirmed) {
-                        [ordered]@{id=$sample.id;original_error=$sample.error;cleanup_error=$sample.cleanup_error;ownership_inventory_captured=$sample.ownership_inventory_captured;remaining=$sample.drain_remaining} | ConvertTo-Json -Depth 15 | Set-Content $contaminationMarker -Encoding utf8
+                        [ordered]@{id=$sample.id;original_error=$sample.error;identity_error=$sample.identity_error;cleanup_error=$sample.cleanup_error;ownership_inventory_captured=$sample.ownership_inventory_captured;remaining=$sample.drain_remaining} | ConvertTo-Json -Depth 15 | Set-Content $contaminationMarker -Encoding utf8
                         }
                         if($script:surfaceTrace){$sample.surface_smoke=@($script:surfaceTrace.ToArray())}
                         if($arm.EndsWith('_on') -and (Test-Path $eventFile)){$sample.events=@(Import-Csv $eventFile)}
@@ -472,6 +514,7 @@ try {
                         if($condition -eq 'fresh'){$freshOutcome=[ordered]@{valid=$sample.valid;error=$sample.error;state_conditioning=if($sample.valid){'completed prior fresh sequence'}else{'partial failed prior fresh sequence; reused first-use timings not comparable with successful conditioning'}}}
                         if (-not $sample.valid) { $invalidSamples++ }
                     }
+                    if($sample.identity_error){throw 'Frozen input mutation retained; no restoration or subsequent launch allowed'}
                     if (-not $sample.tree_exit_confirmed) {
                         throw "Stopped after unconfirmed cleanup: $($sample.error); subsequent native lanes blocked, raw evidence retained"
                     }

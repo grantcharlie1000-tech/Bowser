@@ -143,6 +143,7 @@ jobs:
           if($identity.source -cne '94e9ec423f411b5ba177112978415d0dd552af58' -or $identity.product_source -cne 'f285525d205b9b388ebb26481f5af01d4df99ac8' -or $identity.sha256 -cne 'a323440fd4b0a9d13d56e77639336a51fff48b1ae0fa032aa377e0e58b891df5' -or (Get-FileHash $file -Algorithm SHA256).Hash.ToLowerInvariant() -cne $identity.sha256 -or (Get-Item $file).Length -ne 7849472){throw 'Tested filter candidate EXE mismatch'}
           Copy-Item $file ../evidence/candidate/candidate.exe
           Copy-Item (Join-Path $cache 'candidate/identity.json') ../evidence/candidate/identity.json
+          [ordered]@{baseline='d0075f2807fd94000cb51ace647eaf335c71ab37c8302a91f0a52d3380dbe0fa';diagnostic='22674e9fdaa589915200b3058765ec202843d87d7ecabdad081911537004bd2b';release='341486070d2e74cf9a9e5d5fbeffa90c7dd2ec4fd36bc284a8a3878a7a9bcec1';candidate='a323440fd4b0a9d13d56e77639336a51fff48b1ae0fa032aa377e0e58b891df5'} | ConvertTo-Json | Set-Content ../evidence/input-manifest.json
           [ordered]@{candidate_source=$identity.source;product_source=$identity.product_source;harness_source=(git rev-parse HEAD).Trim();artifact_id=12127686230;archive_sha256='df8d3a0141925a89a1f4a830d0ffbbb78556f14361482581cbd602fec73aaf69';scope='Isolated input diagnostic, no product rebuild or primary matrix rerun; original failed surface result remains retained'} | ConvertTo-Json | Set-Content ../evidence/candidate/input-diagnostic-provenance.json
       - name: Build and fingerprint actual filter-union candidate
         if: env.INTERACTION_DIAGNOSTIC_ONLY != 'true'
@@ -193,7 +194,8 @@ jobs:
         id: validity
         working-directory: candidate
         run: |
-          ./benchmarks/production-baseline.ps1 -BaselineExe ../evidence/frozen/untouched-main.exe -DiagnosticExe ../evidence/reference/reference.exe -DiagnosticSource 46ee3b3ef98a4c7603967d22df9cb1490ca936c1 -ReleaseExe ../evidence/frozen/released-v0.0.19.exe -CandidateExe ../evidence/candidate/candidate.exe -CandidateSource (Get-Content ../evidence/candidate/identity.json -Raw | ConvertFrom-Json).source -Out ../evidence/validity -StartupOnly -Pairs 1 -Fixtures light -IdleSeconds 1 -MeasurementMode timing -MaxInvalidSamples 1
+          $control=@{};if($env:INTERACTION_DIAGNOSTIC_ONLY -eq 'true'){$control=@{DiagnosticAutoUpdateOff=$true;ExpectedInputManifest='../evidence/input-manifest.json'}}
+          ./benchmarks/production-baseline.ps1 -BaselineExe ../evidence/frozen/untouched-main.exe -DiagnosticExe ../evidence/reference/reference.exe -DiagnosticSource 46ee3b3ef98a4c7603967d22df9cb1490ca936c1 -ReleaseExe ../evidence/frozen/released-v0.0.19.exe -CandidateExe ../evidence/candidate/candidate.exe -CandidateSource (Get-Content ../evidence/candidate/identity.json -Raw | ConvertFrom-Json).source -Out ../evidence/validity @control -StartupOnly -Pairs 1 -Fixtures light -IdleSeconds 1 -MeasurementMode timing -MaxInvalidSamples 1
       - name: Corrected diagnostic-off untouched and logging-on off controls
         if: env.INTERACTION_DIAGNOSTIC_ONLY != 'true'
         working-directory: candidate
@@ -224,21 +226,16 @@ jobs:
         working-directory: candidate
         run: |
           ./benchmarks/production-baseline.ps1 -BaselineExe ../evidence/frozen/untouched-main.exe -DiagnosticExe ../evidence/reference/reference.exe -DiagnosticSource 46ee3b3ef98a4c7603967d22df9cb1490ca936c1 -ReleaseExe ../evidence/frozen/released-v0.0.19.exe -CandidateExe ../evidence/candidate/candidate.exe -CandidateSource (Get-Content ../evidence/candidate/identity.json -Raw | ConvertFrom-Json).source -IncludeSurfaceSmoke -PositiveOnly -Out ../evidence/surfaces -StartupOnly -Pairs 1 -Fixtures light -MeasurementMode timing -MaxInvalidSamples 1
-      - name: Instrumented SendKeys diagnostic fixed AB BA attempts
-        if: ${{ !cancelled() && env.INTERACTION_DIAGNOSTIC_ONLY == 'true' && steps.validity.outcome == 'success' }}
-        working-directory: candidate
-        run: |
-          ./benchmarks/production-baseline.ps1 -BaselineExe ../evidence/frozen/untouched-main.exe -DiagnosticExe ../evidence/reference/reference.exe -DiagnosticSource 46ee3b3ef98a4c7603967d22df9cb1490ca936c1 -ReleaseExe ../evidence/frozen/released-v0.0.19.exe -CandidateExe ../evidence/candidate/candidate.exe -CandidateSource (Get-Content ../evidence/candidate/identity.json -Raw | ConvertFrom-Json).source -IncludeSurfaceSmoke -SurfaceInputMethod sendkeys -PositiveOnly -Out ../evidence/keyboard-legacy -StartupOnly -Pairs 3 -Fixtures light -MeasurementMode timing -MaxInvalidSamples 20
       - name: Per-key diagnostic minimum30ms plus UIA fixed AB BA attempts
         if: ${{ !cancelled() && env.INTERACTION_DIAGNOSTIC_ONLY == 'true' && steps.validity.outcome == 'success' }}
         working-directory: candidate
         run: |
-          ./benchmarks/production-baseline.ps1 -BaselineExe ../evidence/frozen/untouched-main.exe -DiagnosticExe ../evidence/reference/reference.exe -DiagnosticSource 46ee3b3ef98a4c7603967d22df9cb1490ca936c1 -ReleaseExe ../evidence/frozen/released-v0.0.19.exe -CandidateExe ../evidence/candidate/candidate.exe -CandidateSource (Get-Content ../evidence/candidate/identity.json -Raw | ConvertFrom-Json).source -IncludeSurfaceSmoke -SurfaceInputMethod sendkeys-per-key -PositiveOnly -Out ../evidence/keyboard-per-key -StartupOnly -Pairs 3 -Fixtures light -MeasurementMode timing -MaxInvalidSamples 20
+          ./benchmarks/production-baseline.ps1 -BaselineExe ../evidence/frozen/untouched-main.exe -DiagnosticExe ../evidence/reference/reference.exe -DiagnosticSource 46ee3b3ef98a4c7603967d22df9cb1490ca936c1 -ReleaseExe ../evidence/frozen/released-v0.0.19.exe -CandidateExe ../evidence/candidate/candidate.exe -CandidateSource (Get-Content ../evidence/candidate/identity.json -Raw | ConvertFrom-Json).source -IncludeSurfaceSmoke -SurfaceInputMethod sendkeys-per-key -DiagnosticAutoUpdateOff -ExpectedInputManifest ../evidence/input-manifest.json -PositiveOnly -Out ../evidence/keyboard-per-key -StartupOnly -Pairs 3 -Fixtures light -MeasurementMode timing -MaxInvalidSamples 20
       - name: Isolated input diagnostic uia-value fixed AB BA attempts
         if: ${{ !cancelled() && env.INTERACTION_DIAGNOSTIC_ONLY == 'true' && steps.validity.outcome == 'success' }}
         working-directory: candidate
         run: |
-          ./benchmarks/production-baseline.ps1 -BaselineExe ../evidence/frozen/untouched-main.exe -DiagnosticExe ../evidence/reference/reference.exe -DiagnosticSource 46ee3b3ef98a4c7603967d22df9cb1490ca936c1 -ReleaseExe ../evidence/frozen/released-v0.0.19.exe -CandidateExe ../evidence/candidate/candidate.exe -CandidateSource (Get-Content ../evidence/candidate/identity.json -Raw | ConvertFrom-Json).source -IncludeSurfaceSmoke -SurfaceInputMethod uia-value -PositiveOnly -Out ../evidence/navigation-value-control -StartupOnly -Pairs 1 -Fixtures light -MeasurementMode timing -MaxInvalidSamples 20
+          ./benchmarks/production-baseline.ps1 -BaselineExe ../evidence/frozen/untouched-main.exe -DiagnosticExe ../evidence/reference/reference.exe -DiagnosticSource 46ee3b3ef98a4c7603967d22df9cb1490ca936c1 -ReleaseExe ../evidence/frozen/released-v0.0.19.exe -CandidateExe ../evidence/candidate/candidate.exe -CandidateSource (Get-Content ../evidence/candidate/identity.json -Raw | ConvertFrom-Json).source -IncludeSurfaceSmoke -SurfaceInputMethod uia-value -DiagnosticAutoUpdateOff -ExpectedInputManifest ../evidence/input-manifest.json -PositiveOnly -Out ../evidence/navigation-value-control -StartupOnly -Pairs 1 -Fixtures light -MeasurementMode timing -MaxInvalidSamples 20
       - name: Derive descriptive paired statistics without accepting gains automatically
         if: always()
         working-directory: candidate
@@ -259,6 +256,7 @@ jobs:
           name: production-performance-${{ github.event.pull_request.head.sha || github.sha }}
           path: |
             evidence/frozen/
+            evidence/input-manifest.json
             evidence/native-isolation-blocked.json
             evidence/candidate/
             evidence/reference/
