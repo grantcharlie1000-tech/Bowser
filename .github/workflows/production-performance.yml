@@ -50,19 +50,19 @@ jobs:
           persist-credentials: false
           path: candidate
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
-      - name: Verify exact bounded bar-only product source and pinned reference
+      - name: Verify exact comparison harness and unchanged tested product
         working-directory: candidate
         env:
           EVENT_SOURCE: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           if((git rev-parse HEAD).Trim() -cne $env:EVENT_SOURCE){throw 'Unexpected source/merge checkout'}
-          git fetch --no-tags --depth=1 origin df86bc49bc95e1c65499deb9984c529c43cd9c45 19606fc644a23c07db49faeae0b5d13497784649
-          if($LASTEXITCODE -ne 0){throw 'Cannot fetch preserved product/harness identities'}
-          $changed=@(git diff --name-only df86bc49bc95e1c65499deb9984c529c43cd9c45 HEAD)
-          $allowed=@('.github/workflows/production-performance.yml','benchmarks/production-baseline.ps1','benchmarks/bookmark-bar-lifecycle.psm1','benchmarks/bookmark-bar-analyze.py','benchmarks/test-bookmark-bar-lifecycle.ps1','benchmarks/test-bookmark-bar-analyze.py','benchmarks/bookmark-bar-lifecycle.md','benchmarks/sidebar-analyze.py','benchmarks/test-sidebar-analyze.py','src/chrome_host/host.rs','src/win32/bookmark_bar.rs')
-          if($LASTEXITCODE -ne 0 -or @($changed|Where-Object {$_ -cnotin $allowed}).Count){throw 'Unexpected change outside reviewed bar hint and existing baseline harness scope'}
-          $productChanges=@(git diff --name-only 19606fc644a23c07db49faeae0b5d13497784649 HEAD -- src ui Cargo.toml Cargo.lock build.rs)
-          if($LASTEXITCODE -ne 0 -or @($productChanges|Where-Object {$_ -cnotin @('src/chrome_host/host.rs','src/win32/bookmark_bar.rs')}).Count){throw 'Unexpected product/build change outside bar-only memory hint'}
+          git fetch --no-tags --depth=1 origin bc97fc4fd0f6b8058700499b7d04897aa139c096 19606fc644a23c07db49faeae0b5d13497784649
+          if($LASTEXITCODE -ne 0){throw 'Cannot fetch immutable product/reference identities'}
+          $allowed=@('.github/workflows/production-performance.yml','benchmarks/production-baseline.ps1','benchmarks/bookmark-bar-analyze.py','benchmarks/test-bookmark-bar-analyze.py','benchmarks/test-bookmark-bar-lifecycle.ps1','benchmarks/bookmark-bar-lifecycle.md')
+          $changed=@(git diff --name-only bc97fc4fd0f6b8058700499b7d04897aa139c096 HEAD)
+          if($LASTEXITCODE -ne 0 -or @($changed|Where-Object {$_ -cnotin $allowed}).Count){throw 'Unexpected change outside six-file comparison harness'}
+          git diff --exit-code bc97fc4fd0f6b8058700499b7d04897aa139c096 HEAD -- src ui Cargo.toml Cargo.lock build.rs benchmarks/bookmark-bar-lifecycle.psm1 benchmarks/sidebar-input.psm1 benchmarks/measurements.psm1
+          if($LASTEXITCODE -ne 0){throw 'Candidate/source/actions/resource sampling drifted'}
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: '22'
@@ -91,94 +91,51 @@ jobs:
           if($LASTEXITCODE -ne 0){throw 'Native detail contracts failed'}
           node --check benchmarks/scripts/production-fixture-server.mjs
           if($LASTEXITCODE -ne 0){throw 'Fixture syntax failed'}
-      - name: Preserve verified immutable 19606 executable and frozen input roles
+      - name: Preserve independently pinned reference and successful bar candidate
         id: inputs
         working-directory: candidate
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           $headers=@{Authorization="Bearer $env:GH_TOKEN";Accept='application/vnd.github+json';'X-GitHub-Api-Version'='2022-11-28'}
-          $run=Invoke-RestMethod -Headers $headers -Uri 'https://api.github.com/repos/grantcharlie1000-tech/Bowser/actions/runs/39145303484'
-          if($run.head_sha -cne '19606fc644a23c07db49faeae0b5d13497784649' -or $run.status -cne 'completed' -or $run.conclusion -cne 'success'){throw 'Candidate correctness gates have not passed'}
-          $zip=Join-Path $env:RUNNER_TEMP 'bar-19606.zip'
-          Invoke-WebRequest -Headers $headers -Uri 'https://api.github.com/repos/grantcharlie1000-tech/Bowser/actions/artifacts/12143481419/zip' -OutFile $zip
-          if((Get-FileHash $zip -Algorithm SHA256).Hash.ToLowerInvariant() -cne '58ae1c032639a19b9e44245a3cc9bde0d57feba0d23a38325028de5a9c5e8678'){throw 'Immutable archive mismatch'}
-          $cache=Join-Path $env:RUNNER_TEMP 'bar-19606';Expand-Archive -LiteralPath $zip -DestinationPath $cache
+          $run=Invoke-RestMethod -Headers $headers -Uri 'https://api.github.com/repos/grantcharlie1000-tech/Bowser/actions/runs/39153558625'
+          if($run.head_sha -cne 'bc97fc4fd0f6b8058700499b7d04897aa139c096' -or $run.status -cne 'completed' -or $run.conclusion -cne 'success'){throw 'Candidate correctness run is not successful'}
+          $zip=Join-Path $env:RUNNER_TEMP 'bar-correctness.zip'
+          Invoke-WebRequest -Headers $headers -Uri 'https://api.github.com/repos/grantcharlie1000-tech/Bowser/actions/artifacts/12146077234/zip' -OutFile $zip
+          if((Get-FileHash $zip -Algorithm SHA256).Hash.ToLowerInvariant() -cne '129643ae002de1dfbe92e4541cfc231b538b62f78bd7ec3560f0c2ac5951eb75'){throw 'Pinned candidate archive mismatch'}
+          $cache=Join-Path $env:RUNNER_TEMP 'bar-correctness';Expand-Archive -LiteralPath $zip -DestinationPath $cache
           New-Item -ItemType Directory -Force ../evidence|Out-Null
-          Copy-Item (Join-Path $cache 'frozen'),(Join-Path $cache 'sidebar-reference'),(Join-Path $cache 'candidate') ../evidence/ -Recurse
-          $identity=Get-Content ../evidence/candidate/identity.json -Raw|ConvertFrom-Json
-          $exe=Get-Item ../evidence/candidate/candidate.exe
-          if($identity.source -cne '19606fc644a23c07db49faeae0b5d13497784649' -or $identity.tree -cne 'cf214f415f80b408a0bbe7f16b990b3a34f7c55e' -or $identity.bytes -ne 7938560 -or $identity.sha256 -cne '0799cb5151c27a1e0476519a3b2919ccd5e6b2503160e70da5c21a8eb500be8e' -or $exe.Length -ne $identity.bytes -or (Get-FileHash $exe.FullName -Algorithm SHA256).Hash.ToLowerInvariant() -cne $identity.sha256){throw 'Actual immutable candidate identity mismatch'}
-          $roles=[ordered]@{baseline='d0075f2807fd94000cb51ace647eaf335c71ab37c8302a91f0a52d3380dbe0fa';diagnostic='e42a1005193c54b08fba8c6f65f88757900f6bc400d4c350b0b386453406fa66';release='341486070d2e74cf9a9e5d5fbeffa90c7dd2ec4fd36bc284a8a3878a7a9bcec1';candidate=$identity.sha256}
-          foreach($item in @(@('baseline','../evidence/frozen/untouched-main.exe'),@('diagnostic','../evidence/sidebar-reference/reference.exe'),@('release','../evidence/frozen/released-v0.0.19.exe'))){if((Get-FileHash $item[1] -Algorithm SHA256).Hash.ToLowerInvariant() -cne $roles[$item[0]]){throw 'Preserved frozen role mismatch'}}
-          $roles|ConvertTo-Json|Set-Content ../evidence/input-manifest.json
-          [ordered]@{harness_source=(git rev-parse HEAD).Trim();harness_tree=(git rev-parse 'HEAD^{tree}').Trim();product=$identity;artifact=12143481419;archive_sha256='58ae1c032639a19b9e44245a3cc9bde0d57feba0d23a38325028de5a9c5e8678';scope='Same exact EXE ON/OFF, four fixed opt-in NewTab bar rows; no rebuild/product optimization/default-memory claim'}|ConvertTo-Json -Depth 8|Set-Content ../evidence/bookmark-bar-provenance.json
-      - name: Build actual bar-only candidate after full native and UI gates
-        id: built
-        working-directory: candidate
-        run: |
-          rustup toolchain install 1.99.1 --profile minimal --component clippy
-          if($LASTEXITCODE -ne 0){throw 'Pinned toolchain unavailable'}
-          Push-Location ui
-          npm ci --no-audit --no-fund
-          if($LASTEXITCODE -ne 0){throw 'Locked UI install failed'}
-          npm run build
-          if($LASTEXITCODE -ne 0){throw 'UI build failed'}
-          npm run typecheck
-          if($LASTEXITCODE -ne 0){throw 'UI typecheck failed'}
-          npm run lint
-          if($LASTEXITCODE -ne 0){throw 'UI lint failed'}
-          $env:BOWSER_TEST_EDGE='C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe'
-          if(-not(Test-Path $env:BOWSER_TEST_EDGE)){$env:BOWSER_TEST_EDGE='C:/Program Files/Microsoft/Edge/Application/msedge.exe'}
-          if(-not(Test-Path $env:BOWSER_TEST_EDGE)){throw 'Actual Edge verification required'}
-          node --test test/hardening.mjs test/surface-modules.mjs test/interaction-diagnostic.mjs
-          if($LASTEXITCODE -ne 0){throw 'Module/CSP contracts failed'}
-          Pop-Location
-          git diff --exit-code -- ui/src/icons.gen.ts ui/dist ui/dist.manifest
-          if($LASTEXITCODE -ne 0){throw 'UI assets not reproducible'}
-          cargo +1.99.1 test --locked
-          if($LASTEXITCODE -ne 0){throw 'Default Rust contracts failed'}
-          cargo +1.99.1 test --locked --features html-chrome-default
-          if($LASTEXITCODE -ne 0){throw 'HTML Rust contracts failed'}
-          cargo +1.99.1 clippy --locked --features html-chrome-default -- -D warnings
-          if($LASTEXITCODE -ne 0){throw 'Clippy failed'}
-          cargo +1.99.1 build --release --locked --bin bowser --features html-chrome-default
-          if($LASTEXITCODE -ne 0){throw 'Actual bar candidate build failed'}
-          Copy-Item ../evidence/candidate ../evidence/bookmark-reference -Recurse
-          Copy-Item target/release/bowser.exe ../evidence/candidate/candidate.exe -Force
-          $file=Get-Item ../evidence/candidate/candidate.exe
-          $identity=[ordered]@{source=(git rev-parse HEAD).Trim();tree=(git rev-parse 'HEAD^{tree}').Trim();sha256=(Get-FileHash $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant();bytes=$file.Length;toolchain=(rustc +1.99.1 --version --verbose|Out-String);features='html-chrome-default';reference_source='19606fc644a23c07db49faeae0b5d13497784649';scope='Bar-only optional LOW/NORMAL candidate; correctness pilot, not memory acceptance'}
-          $identity|ConvertTo-Json|Set-Content ../evidence/candidate/identity.json
-          $manifest=Get-Content ../evidence/input-manifest.json -Raw|ConvertFrom-Json
-          $manifest.candidate=$identity.sha256
+          Copy-Item (Join-Path $cache 'frozen'),(Join-Path $cache 'bookmark-reference'),(Join-Path $cache 'candidate') ../evidence/ -Recurse
+          $reference=Get-Content ../evidence/bookmark-reference/identity.json -Raw|ConvertFrom-Json
+          $candidate=Get-Content ../evidence/candidate/identity.json -Raw|ConvertFrom-Json
+          if($reference.source -cne '19606fc644a23c07db49faeae0b5d13497784649' -or $reference.tree -cne 'cf214f415f80b408a0bbe7f16b990b3a34f7c55e' -or $reference.bytes -ne 7938560 -or $reference.sha256 -cne '0799cb5151c27a1e0476519a3b2919ccd5e6b2503160e70da5c21a8eb500be8e' -or (Get-Item ../evidence/bookmark-reference/candidate.exe).Length -ne $reference.bytes -or (Get-FileHash ../evidence/bookmark-reference/candidate.exe -Algorithm SHA256).Hash.ToLowerInvariant() -cne $reference.sha256){throw 'Exact reference binary/source mismatch'}
+          if($candidate.source -cne 'bc97fc4fd0f6b8058700499b7d04897aa139c096' -or $candidate.tree -cne 'b45402eb26d1eee6a526c6d858ebb2a1780a551e' -or $candidate.bytes -ne 7940096 -or $candidate.sha256 -cne '3e055342bd07299637a492e0d43edbf86776a78868fbda5c8df442df7aa2a281' -or (Get-Item ../evidence/candidate/candidate.exe).Length -ne $candidate.bytes -or (Get-FileHash ../evidence/candidate/candidate.exe -Algorithm SHA256).Hash.ToLowerInvariant() -cne $candidate.sha256){throw 'Exact candidate binary/source mismatch'}
+          if($candidate.toolchain -cne $reference.toolchain -or $candidate.features -cne $reference.features -or $candidate.features -cne 'html-chrome-default'){throw 'Matched toolchain/features mismatch'}
+          $manifest=[ordered]@{baseline='d0075f2807fd94000cb51ace647eaf335c71ab37c8302a91f0a52d3380dbe0fa';diagnostic=$reference.sha256;release='341486070d2e74cf9a9e5d5fbeffa90c7dd2ec4fd36bc284a8a3878a7a9bcec1';candidate=$candidate.sha256}
+          foreach($item in @(@('baseline','../evidence/frozen/untouched-main.exe'),@('release','../evidence/frozen/released-v0.0.19.exe'))){if((Get-FileHash $item[1] -Algorithm SHA256).Hash.ToLowerInvariant() -cne $manifest[$item[0]]){throw 'Untouched frozen role mismatch'}}
           $manifest|ConvertTo-Json|Set-Content ../evidence/input-manifest.json
-          $provenance=Get-Content ../evidence/bookmark-bar-provenance.json -Raw|ConvertFrom-Json
-          $provenance.product=$identity
-          $provenance.scope='Actual rebuilt bar-only candidate, separate exact19606 reference; detail-ON correctness values excluded from later resource inference'
-          $provenance|ConvertTo-Json -Depth 8|Set-Content ../evidence/bookmark-bar-provenance.json
-      - name: Four fixed candidate ordinary bar correctness rows, ON detail separate from performance
+          [ordered]@{harness_source=(git rev-parse HEAD).Trim();harness_tree=(git rev-parse 'HEAD^{tree}').Trim();candidate=$candidate;reference=$reference;artifact=12146077234;archive_sha256='129643ae002de1dfbe92e4541cfc231b538b62f78bd7ec3560f0c2ac5951eb75';scope='Fresh runner, frozen19606 reference vs actual successful bar candidate, identical detailOFF40 planned rows; no rebuild/primary metric reuse or gain acceptance'}|ConvertTo-Json -Depth 8|Set-Content ../evidence/bookmark-bar-provenance.json
+      - name: Forty planned alternating matched bar rows, detail OFF
         working-directory: candidate
         run: |
-          ./benchmarks/production-baseline.ps1 -BaselineExe ../evidence/frozen/untouched-main.exe -DiagnosticExe ../evidence/sidebar-reference/reference.exe -DiagnosticSource '8036b86d109e6aec7a39808589655a43ee34b85d' -ReleaseExe ../evidence/frozen/released-v0.0.19.exe -CandidateExe ../evidence/candidate/candidate.exe -CandidateSource (Get-Content ../evidence/candidate/identity.json -Raw|ConvertFrom-Json).source -DiagnosticAutoUpdateOff -ExpectedInputManifest ../evidence/input-manifest.json -BookmarkBarPilot -BookmarkBarHintDetail -StartupOnly -PositiveOnly -Fixtures light -MeasurementMode timing -MaxInvalidSamples 4 -Pairs 1 -Out ../evidence/bookmark-bar
-      - name: Analyze every retained baseline row, failures remain unavailable
-        if: ${{ !cancelled() && steps.built.outcome == 'success' }}
+          ./benchmarks/production-baseline.ps1 -BaselineExe ../evidence/frozen/untouched-main.exe -DiagnosticExe ../evidence/bookmark-reference/candidate.exe -DiagnosticSource '19606fc644a23c07db49faeae0b5d13497784649' -ReleaseExe ../evidence/frozen/released-v0.0.19.exe -CandidateExe ../evidence/candidate/candidate.exe -CandidateSource 'bc97fc4fd0f6b8058700499b7d04897aa139c096' -DiagnosticAutoUpdateOff -ExpectedInputManifest ../evidence/input-manifest.json -BookmarkBarPilot -BookmarkBarCompare -StartupOnly -PositiveOnly -Fixtures light -MeasurementMode timing -MaxInvalidSamples 20 -Pairs 10 -Out ../evidence/bookmark-bar-comparison
+      - name: Analyze every retained pair, keep semantic and metric failures excluded
+        if: ${{ !cancelled() && steps.inputs.outcome == 'success' }}
         working-directory: candidate
         run: |
-          python benchmarks/bookmark-bar-analyze.py ../evidence/bookmark-bar
-          if($LASTEXITCODE -ne 0){throw 'Bar baseline analysis failed, retain raw rows'}
-          $report=Get-Content ../evidence/bookmark-bar/bookmark-bar-analysis.json -Raw|ConvertFrom-Json
-          $keys=@($report.rows|ForEach-Object {"$($_.arm):$($_.condition)"}|Sort-Object)
-          if($report.row_count -ne 4 -or $report.valid_count -ne 4 -or $report.eligible_count -ne 4 -or ($keys -join ',') -cne 'bookmarkbar_off:fresh,bookmarkbar_off:reused,bookmarkbar_on:fresh,bookmarkbar_on:reused'){throw 'Fixed bar candidate correctness incomplete; retain all attempts, no replacement or memory inference'}
-          Import-Module ./benchmarks/bookmark-bar-lifecycle.psm1 -Force
-          $coverage=@()
-          foreach($row in @($report.rows|Where-Object {$_.arm -ceq 'bookmarkbar_on'})){
-            $events=@(Import-Csv (Join-Path ../evidence/bookmark-bar ($row.id+'-events.csv')))
-            $result=Get-ProductionBookmarkBarHintCoverage $events
-            $coverage+=@([ordered]@{id=$row.id;coverage=$result})
+          python benchmarks/bookmark-bar-analyze.py ../evidence/bookmark-bar-comparison
+          if($LASTEXITCODE -ne 0){throw 'Matched analysis failed; retain all raw evidence'}
+          $report=Get-Content ../evidence/bookmark-bar-comparison/bookmark-bar-analysis.json -Raw|ConvertFrom-Json
+          $environment=Get-Content ../evidence/bookmark-bar-comparison/environment.json -Raw|ConvertFrom-Json
+          if(-not $environment.workload_settings.bookmark_bar_compare -or $environment.workload_settings.bookmark_bar_hint_detail -or $environment.pairs -ne 10){throw 'Primary comparison workload/detail mismatch'}
+          if($report.row_count -ne 40 -or $report.valid_count -ne 40 -or $report.eligible_count -ne 40){throw 'Fixed matched cohort incomplete; failures remain excluded, no replacement samples'}
+          foreach($condition in @('fresh','reused')){
+            foreach($metric in @('phase_bar-warm-hidden_private_bytes','first_reveal_proxy_ms','warm_reveal_proxy_ms')){
+              $matches=@($report.paired_comparisons|Where-Object {$_.condition -ceq $condition -and $_.metric -ceq $metric})
+              if($matches.Count -ne 1 -or $matches[0].valid_pair_count -ne 10 -or @($matches[0].all_pairs|Where-Object {-not $_.included}).Count){throw 'Ten valid matched pairs required for each primary/regression metric and profile condition'}
+            }
           }
-          $coverage|ConvertTo-Json -Depth 8|Set-Content ../evidence/bookmark-bar/hint-coverage.json
-          if($coverage.Count -ne 2 -or @($coverage|Where-Object {-not $_.coverage.complete}).Count){throw 'Incomplete/unsupported/failed bar hint observation; retain all raw evidence'}
-          # These detail-ON resource/proxy observations are correctness-only, never gain inference.
+          # Numerical results are evidence only, never an automatic gain/interaction/release acceptance.
       - name: Preserve immutable inputs and every bar observation/failure
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
@@ -186,16 +143,15 @@ jobs:
           name: production-performance-${{ github.event.pull_request.head.sha || github.sha }}
           path: |
             evidence/frozen/
-            evidence/sidebar-reference/
             evidence/candidate/
             evidence/bookmark-reference/
             evidence/input-manifest.json
             evidence/bookmark-bar-provenance.json
             evidence/native-isolation-blocked.json
-            evidence/bookmark-bar/*.json
-            evidence/bookmark-bar/*.csv
-            evidence/bookmark-bar/*.png
-            evidence/bookmark-bar/*stderr.txt
-            evidence/bookmark-bar/isolated/requests.jsonl
+            evidence/bookmark-bar-comparison/*.json
+            evidence/bookmark-bar-comparison/*.csv
+            evidence/bookmark-bar-comparison/*.png
+            evidence/bookmark-bar-comparison/*stderr.txt
+            evidence/bookmark-bar-comparison/isolated/requests.jsonl
           if-no-files-found: warn
           retention-days: 30

@@ -63,15 +63,19 @@ $tokens=$null;$errors=$null;$ast=[Management.Automation.Language.Parser]::ParseF
 Check ($errors.Count -eq 0) 'production bar harness parses'
 $guards=@($ast.FindAll({param($node) $node -is [Management.Automation.Language.IfStatementAst] -and $node.Clauses.Count -eq 1 -and $node.Clauses[0].Item1.Extent.Text -match '^\$BookmarkBarPilot -and' -and $node.Clauses[0].Item1.Extent.Text.Contains('-not $CandidateExe') -and $node.Clauses[0].Item2.Extent.Text.Contains("throw 'Bookmark bar baseline requires one fixed ordinary updater-off positive light pair, startup-only timing and no mixed workload'")},$true))
 Check ($guards.Count -eq 1) 'one actual bar pilot parameter guard'
-$guard=[scriptblock]::Create($guards[0].Extent.Text)
+$compareGuards=@($ast.FindAll({param($node) $node -is [Management.Automation.Language.IfStatementAst] -and $node.Clauses.Count -eq 1 -and $node.Clauses[0].Item1.Extent.Text -match '^\$BookmarkBarCompare -and'},$true))
+Check ($compareGuards.Count -eq 1) 'one actual comparison parameter guard'
+$guard=[scriptblock]::Create($compareGuards[0].Extent.Text+"`n"+$guards[0].Extent.Text)
 function Refused([hashtable]$Changes){
- $BookmarkBarPilot=$true;$CandidateExe='candidate.exe';$StartupOnly=$true;$DiagnosticAutoUpdateOff=$true
+ $BookmarkBarPilot=$true;$BookmarkBarCompare=$false;$BookmarkBarHintDetail=$false;$CandidateExe='candidate.exe';$StartupOnly=$true;$DiagnosticAutoUpdateOff=$true
  $SidebarLifecyclePilot=$false;$SidebarLifecycleCompare=$false;$SidebarRouteSmoke=$false;$SidebarCapabilityPreflight=$false;$IncludeSurfaceSmoke=$false;$IncludeTabFlow=$false;$DiagnosticInteractionPilot=$false;$DiagnosticDetailPilot=$false
  $Pairs=1;$PositiveOnly=$true;$Fixtures=@('light');$MeasurementMode='timing'
  foreach($key in $Changes.Keys){Set-Variable -Name $key -Value $Changes[$key]}
  try {& $guard;return $false}catch{return $true}
 }
 Check (-not (Refused @{})) 'one fixed ordinary ON/OFF fresh/reused plan accepted'
+Check (-not (Refused @{BookmarkBarCompare=$true;Pairs=10})) 'ten matched alternating fresh/reused detail-off pairs accepted'
+foreach($case in @(@{BookmarkBarCompare=$true;Pairs=9},@{BookmarkBarCompare=$true;Pairs=10;BookmarkBarHintDetail=$true},@{BookmarkBarCompare=$true;Pairs=10;BookmarkBarPilot=$false})){Check (Refused $case) 'comparison count/detail/mixed-mode misuse refused'}
 foreach($case in @(@{CandidateExe=''},@{StartupOnly=$false},@{DiagnosticAutoUpdateOff=$false},@{SidebarLifecyclePilot=$true},@{SidebarLifecycleCompare=$true},@{IncludeSurfaceSmoke=$true},@{IncludeTabFlow=$true},@{Pairs=2},@{PositiveOnly=$false},@{Fixtures=@('demanding')},@{MeasurementMode='resource'})){Check (Refused $case) 'mixed/unbounded bar workload refused'}
 $source=Get-Content "$PSScriptRoot/production-baseline.ps1" -Raw
 Check ($source.Contains('bookmarks_bar=newtab') -and $source.Contains('tabs_new_tab_page=blank') -and $source.Contains('toolbar_buttons=back,forward,reload,site-info,split,reader,extensions,downloads,newtab')) 'explicit ordinary opt-in/blank/new-tab-button setup'
