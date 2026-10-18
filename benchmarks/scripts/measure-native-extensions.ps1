@@ -50,6 +50,36 @@ function Native-Completed([string]$Log,[int]$Count){
  return $true
 }
 function Owned-Keys([string]$Keys){$owner=[uint32]0;[void][BowserExtensionMeasure]::GetWindowThreadProcessId($app.MainWindowHandle,[ref]$owner);$class=[Text.StringBuilder]::new(128);[void][BowserExtensionMeasure]::GetClassName($app.MainWindowHandle,$class,128);if($owner -ne $app.Id -or $class.ToString() -ne 'BowserNativeWindow'){throw 'Not an owned native browser window.'};[void][BowserExtensionMeasure]::ShowWindow($app.MainWindowHandle,9);try{[Windows.Automation.AutomationElement]::FromHandle($app.MainWindowHandle).SetFocus()}catch{};[void][BowserExtensionMeasure]::SetForegroundWindow($app.MainWindowHandle);Start-Sleep -Milliseconds 250;if([BowserExtensionMeasure]::GetForegroundWindow() -ne $app.MainWindowHandle){throw 'No owned foreground; keyboard not sent.'};[Windows.Forms.SendKeys]::SendWait($Keys)}
+# Failure-only observations. These classifications never select a control or authorize input.
+# Record caps bound output, not synchronous provider execution or collection allocation.
+function Observe-UnavailableAddress($RootElement,[IntPtr]$Window) {
+ $result=@{status='incomplete';record_cap=16;collections=@();identity_after=$false;error=$null}
+ try {
+  foreach($spec in @(
+   @{kind='exact-address-name';condition=[Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::NameProperty,'Address and search bar')},
+   @{kind='edit-type';condition=[Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::ControlTypeProperty,[Windows.Automation.ControlType]::Edit)},
+   @{kind='document-type';condition=[Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::ControlTypeProperty,[Windows.Automation.ControlType]::Document)})) {
+   $nodes=$RootElement.FindAll([Windows.Automation.TreeScope]::Descendants,$spec.condition)
+   $collection=@{kind=$spec.kind;count=$nodes.Count;truncated=($nodes.Count -gt 16);records=@()}
+   $result.collections+=,$collection
+   for($i=0;$i -lt [Math]::Min(16,$nodes.Count);$i++) {
+    $record=@{index=$i;status='unavailable';control_type=$null;provider_reported_pid=$null;name_kind='unavailable';offscreen=$null;focusable=$null}
+    $collection.records+=,$record
+    try {
+     $node=$nodes[$i];$state=$node.Current
+     $record.control_type=$state.ControlType.Id;$record.provider_reported_pid=$state.ProcessId
+     $record.name_kind=if($state.Name -ceq 'Address and search bar'){'exact-address'}elseif($state.Name -ceq 'Address and search bar, private tab'){'private-address'}else{'other'}
+     $record.offscreen=$state.IsOffscreen;$record.focusable=$state.IsKeyboardFocusable;$record.status='observed-not-authority'
+    }catch { $record.status='getter-unavailable' }
+   }
+  }
+  $owner=[uint32]0;[void][BowserExtensionMeasure]::GetWindowThreadProcessId($Window,[ref]$owner)
+  $class=[Text.StringBuilder]::new(128);[void][BowserExtensionMeasure]::GetClassName($Window,$class,128)
+  $result.identity_after=$owner -eq $app.Id -and $class.ToString() -ceq 'BowserNativeWindow' -and [BowserExtensionMeasure]::GetForegroundWindow() -eq $Window -and $app.MainWindowHandle -eq $Window
+  $result.status=if($result.identity_after){'observed-not-control-or-document-authority'}else{'owner-unavailable-or-changed'}
+ }catch { $result.error='diagnostic-unavailable' }
+ return $result
+}
 function Read-OwnedAddress {
  $app.Refresh();$window=$app.MainWindowHandle;$owner=[uint32]0
  [void][BowserExtensionMeasure]::GetWindowThreadProcessId($window,[ref]$owner)
@@ -60,7 +90,10 @@ function Read-OwnedAddress {
   [Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::NameProperty,'Address and search bar'),
   [Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::ControlTypeProperty,[Windows.Automation.ControlType]::Edit))
  $edits=$rootElement.FindAll([Windows.Automation.TreeScope]::Descendants,$condition)
- if($edits.Count -ne 1){throw ("Owned address edit was missing or ambiguous; observed_exact_edit_count="+$edits.Count+"; no input sent.")}
+ if($edits.Count -ne 1){
+  try {$currentRow.navigation_workload['address_unavailable_diagnostic']=Observe-UnavailableAddress $rootElement $window}catch {$currentRow.navigation_workload['address_unavailable_diagnostic']=@{status='diagnostic-unavailable'}}
+  throw ("Owned address edit was missing or ambiguous; observed_exact_edit_count="+$edits.Count+"; no input sent.")
+ }
  $edit=$edits[0];$focused=[Windows.Automation.AutomationElement]::FocusedElement
  $same=$focused -and (($edit.GetRuntimeId() -join ',') -ceq ($focused.GetRuntimeId() -join ','))
  $pattern=[Windows.Automation.ValuePattern]$edit.GetCurrentPattern([Windows.Automation.ValuePattern]::Pattern)

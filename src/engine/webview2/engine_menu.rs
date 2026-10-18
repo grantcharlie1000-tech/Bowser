@@ -557,6 +557,30 @@ impl EngineMenu {
         Ok(())
     }
 
+    /// Read-only full-tree diagnostic for the separately armed host regression test. The
+    /// production tree/selection remains private; these values confer no dispatch authority.
+    #[cfg(test)]
+    pub(crate) fn probe_host_snapshot(&self) -> Result<Vec<super::super::app_host_menu_probe::NodeWitness>> {
+        use super::super::app_host_menu_probe::{NodeWitness,role};
+        fn visit(tree:&Tree,path:&[usize])->Result<Vec<NodeWitness>> {
+            tree.nodes.iter().enumerate().map(|(index,node)|{
+                let mut path=path.to_vec();path.push(index);
+                let name=task_text(MAX_LABEL_UTF16_UNITS,|out|unsafe{node.item.Name(out)})?;
+                let rendered=if node.value.kind==Kind::Separator {vec![0]}else{display_text(&node.value)};let units=&rendered[..rendered.len()-1];
+                let bytes=units.iter().flat_map(|unit|unit.to_le_bytes()).collect::<Vec<_>>();
+                let fingerprint=crate::updater::sha256(&bytes).map_err(|_|MenuError::Native(0x80004005u32 as i32))?;
+                let fingerprint=fingerprint.iter().map(|byte|format!("{byte:02x}")).collect::<String>();
+                Ok(NodeWitness {path:path.clone(),collection:tree.identity.as_raw() as usize,
+                    identity:node.identity.as_raw() as usize,kind:match node.value.kind {Kind::Command=>0,Kind::CheckBox=>1,Kind::Radio=>2,Kind::Separator=>3,Kind::Submenu=>4},
+                    command:node.value.command_id,enabled:node.value.enabled,checked:node.value.checked,name,
+                    rendered_fingerprint:fingerprint,rendered_units:units.len(),host_role:role(&node.identity),
+                    children:if let Some(children)=&node.children {visit(children,&path)?}else{Vec::new()},
+                })
+            }).collect()
+        }
+        self.tree.revalidate()?;let snapshot=visit(&self.tree,&[])?;self.tree.revalidate()?;Ok(snapshot)
+    }
+
     #[cfg(test)]
     pub(crate) fn probe_fixture_command(&self)->Option<i32> {
         fn visit(tree:&Tree,found:&mut Vec<i32>) {

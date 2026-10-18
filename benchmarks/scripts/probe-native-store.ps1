@@ -4,6 +4,7 @@
 param([string]$Out = "$env:RUNNER_TEMP/bowser-native-store", [switch]$InstallJourney)
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+Import-Module (Join-Path $PSScriptRoot 'native-store-record-reader.psm1') -Force
 $root = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
 $exe = Join-Path $root 'target/debug/bowser.exe'
 if (!(Test-Path $exe)) { throw 'Build the HTML-default debug executable first.' }
@@ -402,7 +403,7 @@ function Wait-RemovedRow($Bound) {
 }
 function Wait-RecordFlag([string]$File,[int]$Flag){
  $deadline=[DateTime]::UtcNow.AddSeconds(15)
- do{if((Get-Content -LiteralPath $File -Raw) -match ('^ext-[a-f0-9]{16}\t'+$Flag+'\t')){return};Start-Sleep -Milliseconds 200}while([DateTime]::UtcNow -lt $deadline)
+ do{if((Read-BowserRecordSnapshot $File) -match ('^ext-[a-f0-9]{16}\t'+$Flag+'\t')){return};Start-Sleep -Milliseconds 200}while([DateTime]::UtcNow -lt $deadline)
  throw "The native switch did not durably commit flag $Flag."
 }
 function Wait-NativeReady([string]$Token){
@@ -414,7 +415,7 @@ function Records {
  # The exact disposable owning profile record, never a recursive scan of package folders that
  # may legitimately be removed while a cancelled download or uninstall finishes.
  $file=Join-Path $env:BOWSER_DATA_DIR 'extensions.txt'
- if((Test-Path -LiteralPath $file -PathType Leaf) -and ((Get-Content -LiteralPath $file -Raw) -match '\S')){return @(Get-Item -LiteralPath $file)}
+ if((Test-Path -LiteralPath $file -PathType Leaf) -and ((Read-BowserRecordSnapshot $file) -match '\S')){return @(Get-Item -LiteralPath $file)}
  return @()
 }
 function Navigate-Owned([string]$Url) {
@@ -571,7 +572,7 @@ function Run-InstallJourney {
  while(@(Records).Count -eq 0 -and [DateTime]::UtcNow -lt $deadline){Start-Sleep -Milliseconds 300}
  if(@(Records).Count -ne 1){throw 'Expected exactly one disposable owning-profile extension record.'}
  $recordFile=(Records)[0].FullName
- $report.installed_record=Get-Content $recordFile -Raw
+ $report.installed_record=Read-BowserRecordSnapshot $recordFile
  Capture '07-native-installed-before-restart'
  # Real process restart of the same persistent disposable profile, not a fresh engine simulation.
  if(!$app.CloseMainWindow()){throw 'The owned app did not accept a normal close request.'}
@@ -624,7 +625,7 @@ function Run-InstallJourney {
  # Toggle via the actual accessible switch, then re-enable before removal.
  $toggle=Wait-Control 'uBlock Origin Lite on';Toggle-Control $toggle
  Wait-RecordFlag $recordFile 0
- $report.disabled_record=Get-Content $recordFile -Raw
+ $report.disabled_record=Read-BowserRecordSnapshot $recordFile
  $toggle=Wait-Control 'uBlock Origin Lite on';Toggle-Control $toggle
  Wait-RecordFlag $recordFile 1
  $rowRemove=Wait-Control 'Remove uBlock Origin Lite'

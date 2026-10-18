@@ -21,6 +21,7 @@ pub(crate) fn set_probe_observer(observer:Rc<dyn Fn(MenuProbeEvent)>) {
 }
 #[cfg(test)]
 fn observe(event:MenuProbeEvent)->bool {
+    if !super::super::app_host_menu_probe::observe(super::super::app_host_menu_probe::HostProbeEvent::Lifecycle(event)) {return false;}
     let observer=PROBE_OBSERVER.with(|slot|slot.borrow().clone());
     observer.is_none_or(|observer|std::panic::catch_unwind(std::panic::AssertUnwindSafe(||observer(event))).is_ok())
 }
@@ -319,6 +320,8 @@ pub(super) fn install(
         let mut acquired_authority=None;
         let admitted=(|| -> Option<Rc<Request>> {
             if !claimed || !initial_receiver || epoch.is_none() || !owned.current() || !sender.as_ref().is_some_and(|v|v.as_raw()==receiving.as_raw()) {return None;}
+            #[cfg(test)]
+            super::super::app_host_menu_probe::begin(&args).ok()?;
             for augment in &augmenters { if augment(sender.clone(),Some(args.clone())).is_err() {return None;} }
             let core_now=core.upgrade()?;
             acquired_authority=Some(MenuInventoryAuthority::acquire(&core_now,&receiving).ok()?);
@@ -379,6 +382,13 @@ pub(crate) fn continue_request(hwnd:HWND,token:usize) {
             if let Some(fixture_command)=menu.probe_fixture_command() {
                 if !observe(MenuProbeEvent::BeforeShow {request:request.token,tab:request.tab,
                     view_identity:request.view.as_raw() as usize,proof:request.proof,fixture_command}) {request.cancel();return;}
+            }
+            #[cfg(test)]
+            if super::super::app_host_menu_probe::armed() {
+                let witness=menu.probe_host_snapshot().ok().and_then(|nodes|request.args.cast::<windows::core::IUnknown>().ok().map(|args|
+                    super::super::app_host_menu_probe::HostProbeEvent::BeforeShow {request:request.token,tab:request.tab,
+                        view:request.view.as_raw() as usize,args:args.as_raw() as usize,proof:request.proof,nodes}));
+                if witness.is_none_or(|event|!super::super::app_host_menu_probe::observe(event)) {request.cancel();return;}
             }
             request.phase.set(Phase::Showing);
             let choice=menu.show(hwnd,request.point,||

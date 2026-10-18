@@ -3322,6 +3322,30 @@ impl EngineAdapter for WebView2Engine {
             proof,document_fence:Rc::new(move || current()==Some(initial))})
     }
     #[cfg(all(test, feature = "experimental-engine-context-menu"))]
+    fn probe_owned_host_context_handles(&self, tab:TabId) -> Option<super::app_context_menu_probe::NativeContextProbeHandles> {
+        // Separate clone-only host-lane witness. Includes inactive negative views, but is never
+        // a menu admission or dispatch authority. The production coordinator still requires active-tab ownership.
+        let state=self.core.try_borrow().ok()?;
+        if state.closed || state.private_tabs.contains(&tab) {return None;}
+        let current=state.tabs.get(&tab)?;
+        let view=current.webview.clone()?;let controller=current.controller.clone()?;
+        let environment=current.environment.clone()?;let gate=current.document_gate.clone();
+        let initial=gate.try_borrow().ok()?.proof()?;
+        let weak=Rc::downgrade(&self.core);let expected_view=view.clone();let expected_controller=controller.clone();
+        let proof:Rc<dyn Fn()->Option<(u64,u64,u64)>>=Rc::new(move || {
+            let core=weak.upgrade()?;let state=core.try_borrow().ok()?;
+            if state.closed || state.private_tabs.contains(&tab) {return None;}
+            let current=state.tabs.get(&tab)?;
+            if !Rc::ptr_eq(&current.document_gate,&gate)
+                || current.webview.as_ref()?.as_raw()!=expected_view.as_raw()
+                || current.controller.as_ref()?.as_raw()!=expected_controller.as_raw() {return None;}
+            let result=gate.try_borrow().ok()?.proof();result
+        });
+        let current=proof.clone();
+        Some(super::app_context_menu_probe::NativeContextProbeHandles {view,controller,environment,
+            proof,document_fence:Rc::new(move || current()==Some(initial))})
+    }
+    #[cfg(all(test, feature = "experimental-engine-context-menu"))]
     fn probe_extension_receipt_view(&self)->Option<ICoreWebView2> {
         self.core.try_borrow().ok()?.extension_page.as_ref().map(|page|page.webview.clone())
     }
@@ -5359,6 +5383,8 @@ unsafe fn configure_controller(
                         }
                     }
                     items.InsertValueAtIndex(at, &item)?;
+                    #[cfg(all(test, feature = "experimental-engine-context-menu"))]
+                    super::app_host_menu_probe::inserted(&args,&item,super::app_host_menu_probe::HostRole::SplitLink);
                     Ok(())
                 }),
                 &mut token, coordinated_menu, &mut menu_augmenters,
@@ -5496,6 +5522,8 @@ unsafe fn configure_controller(
                             &mut item_token,
                         )?;
                         children.InsertValueAtIndex(index as u32, &child)?;
+                        #[cfg(all(test, feature = "experimental-engine-context-menu"))]
+                        super::app_host_menu_probe::inserted(&args,&child,super::app_host_menu_probe::HostRole::InsertNoteChild);
                     }
                     let items = args.MenuItems()?;
                     let mut count = 0u32;
@@ -5509,6 +5537,13 @@ unsafe fn configure_controller(
                             at = index + 1;
                         }
                     }
+                    #[cfg(all(test, feature = "experimental-engine-context-menu"))]
+                    {
+                        let inserted = items.InsertValueAtIndex(at, &parent);
+                        if inserted.is_ok() {super::app_host_menu_probe::inserted(&args,&parent,super::app_host_menu_probe::HostRole::InsertNoteParent);}
+                        inserted
+                    }
+                    #[cfg(not(all(test, feature = "experimental-engine-context-menu")))]
                     items.InsertValueAtIndex(at, &parent)
                 }),
                 &mut token, coordinated_menu, &mut menu_augmenters,

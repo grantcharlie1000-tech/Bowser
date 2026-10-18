@@ -12,6 +12,12 @@ on:
       - 'benchmarks/scripts/probe-default-context-cancellation.ps1'
       - 'benchmarks/scripts/probe-custom-context-menu.ps1'
       - 'benchmarks/scripts/probe-app-context-menu.ps1'
+      - 'benchmarks/scripts/probe-app-host-context-menu.ps1'
+      - 'benchmarks/scripts/validate-app-host-menu-fixture.mjs'
+      - 'benchmarks/fixtures/app-host-context-menu/**'
+      - 'benchmarks/scripts/probe-native-store.ps1'
+      - 'benchmarks/scripts/native-store-record-reader.psm1'
+      - 'benchmarks/scripts/test-native-store-record-reader.ps1'
       - 'benchmarks/scripts/probe-native-installer-band-component.ps1'
       - 'src/chrome/store_guidance_layout.rs'
       - 'src/chrome/store_guidance_layout/**'
@@ -364,6 +370,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Experimental main-window message collision guard failed.' }
           cargo +stable test --locked --lib --features html-chrome-default,experimental-engine-context-menu the_main_window_timer_ids_are_unique_and_outside_hover_ranges -- --nocapture --test-threads=1 2>&1 | Tee-Object -Append store-real-app-menu-unit.log
           if ($LASTEXITCODE -ne 0) { throw 'Experimental main-window timer collision guard failed.' }
+          cargo +stable test --locked --lib --features html-chrome-default,experimental-engine-context-menu engine::app_host_menu_probe::live::host_probe_selection_uses_native_name_or_inserted_role_not_command_range -- --exact --nocapture --test-threads=1 2>&1 | Tee-Object -Append store-real-app-menu-unit.log
+          if ($LASTEXITCODE -ne 0) { throw 'Separate host-lane read-only selection diagnostic failed.' }
 
       - name: Probe default-off native engine menu in actual HTML Bowser App
         if: ${{ !cancelled() && steps.experimental_menu_build.outcome == 'success' }}
@@ -372,6 +380,13 @@ jobs:
           $env:BOWSER_APP_MENU_PROBE_CONSENT = 'probe-custom-context-menu'
           cargo +stable test --locked --lib --features html-chrome-default,experimental-engine-context-menu engine::app_context_menu_probe::live_probe_real_app_context_menu -- --exact --ignored --nocapture --test-threads=1 2>&1 | Tee-Object store-real-app-context-menu.log
           if ($LASTEXITCODE -ne 0) { throw 'Actual App native-menu cancellation/selection unavailable or failed; no activation.' }
+      - name: Probe separate actual App native Copy Paste and host note split regressions
+        if: ${{ !cancelled() && steps.experimental_menu_build.outcome == 'success' }}
+        run: |
+          $env:BOWSER_APP_HOST_MENU_PROBE_CONSENT = 'disposable-app-host-menu-synthetic-clipboard'
+          # Do not read, back up, or clear the runner clipboard. Non-empty/locked means fail closed.
+          cargo +stable test --locked --lib --features html-chrome-default,experimental-engine-context-menu engine::app_host_menu_probe::live::live_probe_real_app_host_context_menu -- --exact --ignored --nocapture --test-threads=1 2>&1 | Tee-Object store-real-app-host-context-menu.log
+          if ($LASTEXITCODE -ne 0) { throw 'Separate actual App native/host regression unavailable or failed; no activation.' }
       - name: Save independent native safety gate evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
@@ -422,6 +437,8 @@ jobs:
             store-custom-context-stale-dispatch.log
             store-real-app-menu-unit.log
             store-real-app-context-menu.log
+            store-real-app-host-context-menu.log
+            store-real-app-host-context-menu/**/*.json
             store-real-app-context-menu/**/*.json
             store-real-app-context-menu/**/*.log
             store-real-app-context-menu/**/*.png
@@ -450,11 +467,15 @@ jobs:
       - name: Parse native lifecycle scripts
         run: |
           [void][scriptblock]::Create((Get-Content benchmarks/scripts/probe-native-store.ps1 -Raw))
+          [void][scriptblock]::Create((Get-Content benchmarks/scripts/native-store-record-reader.psm1 -Raw))
+          [void][scriptblock]::Create((Get-Content benchmarks/scripts/test-native-store-record-reader.ps1 -Raw))
           [void][scriptblock]::Create((Get-Content benchmarks/scripts/probe-native-extension-link.ps1 -Raw))
           [void][scriptblock]::Create((Get-Content benchmarks/scripts/probe-native-extension-command.ps1 -Raw))
           [void][scriptblock]::Create((Get-Content benchmarks/scripts/measure-native-extensions.ps1 -Raw))
       - name: Install official Rust toolchain
         run: rustup toolchain install stable --profile minimal
+      - name: Check read-only record observers permit atomic replacement
+        run: ./benchmarks/scripts/test-native-store-record-reader.ps1
       - name: Build exact native HTML-default debug executable
         run: |
           cargo +stable build --locked --bin bowser --features html-chrome-default

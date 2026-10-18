@@ -9,6 +9,8 @@ mod extension_probe_live;
 #[cfg(all(test, feature = "experimental-engine-context-menu"))]
 pub(crate) mod app_context_menu_probe;
 #[cfg(all(test, feature = "experimental-engine-context-menu"))]
+pub(crate) mod app_host_menu_probe;
+#[cfg(all(test, feature = "experimental-engine-context-menu"))]
 pub(crate) use webview2::set_menu_probe_observer;
 pub(crate) use webview2::password_login_messages_enabled;
 
@@ -99,6 +101,8 @@ pub type NativeDocumentQuery = Box<dyn FnOnce() -> Option<url::Url>>;
 pub trait EngineAdapter {
     #[cfg(all(test, feature = "experimental-engine-context-menu"))]
     fn probe_native_context_handles(&self, _tab:crate::tabs::TabId) -> Option<app_context_menu_probe::NativeContextProbeHandles> {None}
+    #[cfg(all(test, feature = "experimental-engine-context-menu"))]
+    fn probe_owned_host_context_handles(&self, _tab:crate::tabs::TabId) -> Option<app_context_menu_probe::NativeContextProbeHandles> {None}
     #[cfg(all(test, feature = "experimental-engine-context-menu"))]
     fn probe_extension_receipt_view(&self) -> Option<webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2> {None}
 
