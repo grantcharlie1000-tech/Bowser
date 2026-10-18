@@ -130,7 +130,9 @@ pub fn prepare(
     // Also checked again at consent, because another window may install during download/review.
     ensure_not_installed(id, extensions_dir, records_file)?;
     let staging = Staging::new()?;
-    crx_fetch::fetch_and_unpack_cancellable(id, runtime, &staging.0, cancelled).map_err(|error| format!("Package download or verification failed: {error}. This is not a runtime compatibility verdict."))?;
+    let original = crx_fetch::download_crx_cancellable(id, runtime, cancelled).map_err(|error| format!("Package download failed: {error}. This is not a runtime compatibility verdict."))?;
+    check_cancelled()?;
+    crx_fetch::verify_and_unpack(&original, id, &staging.0).map_err(|error| format!("Package verification failed: {error}. This is not a runtime compatibility verdict."))?;
     check_cancelled()?;
     let inspection = extensions::inspect_source(&staging.0).map_err(|error| error.to_string())?;
     let name = resolved_name(&staging.0, &inspection.manifest)?;
@@ -138,6 +140,7 @@ pub fn prepare(
     if marker.exists() { return Err("The package contains a reserved Bowser source marker.".to_owned()); }
     fs::write(&marker, id).map_err(|_| "The verified package source could not be recorded.".to_owned())?;
     let prepared = extensions::prepare_install(&staging.0, extensions_dir, records_file).map_err(|error| error.to_string())?;
+    let prepared = prepared.retain_verified_store_original(id, &original).map_err(|error| format!("Installation was not accepted. {error} Nonexecuting staging may remain."))?;
     check_cancelled()?;
     Ok(Review { prepared, name, store_id: id.to_owned(), extensions_dir: extensions_dir.to_owned(), records_file: records_file.to_owned() })
 }

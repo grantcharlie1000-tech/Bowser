@@ -983,6 +983,12 @@ pub fn download_crx(id: &str, prodversion: &str) -> Result<Vec<u8>, FetchError> 
     download_from(&Endpoint::production(), id, prodversion, MAX_DOWNLOAD_BYTES)
 }
 
+/// Cancellable download only. Callers must still run the existing CRX verifier/unpacker before
+/// using these untrusted bytes; Store retains the authenticated original for a future updater.
+pub(crate) fn download_crx_cancellable(id: &str, prodversion: &str, cancelled: &AtomicBool) -> Result<Vec<u8>, FetchError> {
+    download_from_cancellable(&Endpoint::production(), id, prodversion, MAX_DOWNLOAD_BYTES, Some(cancelled))
+}
+
 /// Verifies `crx` for `id` and unpacks it, stamped with its developer key, into `dest`: a folder the
 /// caller just created and that is still empty. Verification comes first, so a CRX that does not
 /// verify writes nothing. If the unpack or the stamp fails, the files it created are removed; a

@@ -21,6 +21,8 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+mod artifacts;
+
 /// Largest `manifest.json` accepted.
 pub const MAX_MANIFEST_BYTES: u64 = 1024 * 1024;
 /// Extensions one profile may hold.
@@ -503,6 +505,7 @@ pub struct PreparedInstall {
     inspection: Inspection,
     fingerprint: [u8; 32],
     committed: bool,
+    retained_original: Option<artifacts::Stage>,
 }
 
 /// Cross-process read/modify/write lease. The OS denies a second open while this handle lives,
@@ -530,6 +533,14 @@ impl RecordsLease {
 
 impl PreparedInstall {
     pub fn inspection(&self) -> &Inspection { &self.inspection }
+
+    /// New Store installs retain a reverified original outside their loaded copy. This grants
+    /// no update eligibility by itself and never upgrades an unauthenticated legacy folder.
+    pub(crate) fn retain_verified_store_original(mut self, native_id: &str, bytes: &[u8]) -> Result<Self, ExtensionError> {
+        self.retained_original = Some(artifacts::Stage::prepare(&self, native_id, bytes)?);
+        Ok(self)
+    }
+
 
     pub fn folder(&self) -> Result<PathBuf, ExtensionError> {
         contained_path(&self.extensions_dir, &self.id)
@@ -579,7 +590,9 @@ impl PreparedInstall {
             version: self.inspection.manifest.version.clone(),
         };
         records.push(record.clone());
+        if let Some(original) = self.retained_original.as_mut() { original.publish()?; }
         write_records(&self.records_file, &records)?;
+        if let Some(original) = self.retained_original.as_mut() { original.accept(); }
         self.committed = true;
         Ok(record)
     }
@@ -614,7 +627,7 @@ pub fn prepare_install(
     Ok(PreparedInstall {
         fingerprint,
         extensions_dir: extensions_dir.to_owned(), records_file: records_file.to_owned(),
-        id, inspection, committed: false,
+        id, inspection, committed: false, retained_original: None,
     })
 }
 
@@ -731,7 +744,8 @@ pub(crate) fn uninstall_under_runtime(extensions_dir: &Path, records_file: &Path
         return Err(ExtensionError::NotInstalled);
     }
     write_records(records_file, &records)?;
-    remove_folder(extensions_dir, id)
+    remove_folder(extensions_dir, id)?;
+    artifacts::remove_for_record(extensions_dir, id)
 }
 
 /// Deletes `<extensions_dir>\<id>` only when it is a plain folder directly inside `extensions_dir`.
