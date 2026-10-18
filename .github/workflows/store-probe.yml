@@ -133,6 +133,28 @@ jobs:
         run: |
           cargo +stable test --locked --lib --no-run
           if ($LASTEXITCODE -ne 0) { throw 'Native safety executable failed to build.' }
+      - name: Inspect exact test executable imports after pre-test loader failure
+        if: ${{ !cancelled() && steps.native_build.outcome == 'success' }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $test = @(Get-ChildItem target/debug/deps/bowser-*.exe)
+          if ($test.Count -ne 1) { throw 'Exact single test executable unavailable for import inspection.' }
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer/vswhere.exe'
+          $vs = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if ($LASTEXITCODE -ne 0 -or -not $vs) { throw 'Official Visual Studio tools unavailable.' }
+          $dumpbin = @(Get-ChildItem (Join-Path $vs 'VC/Tools/MSVC/*/bin/Hostx64/x64/dumpbin.exe') | Sort-Object FullName -Descending)
+          if ($dumpbin.Count -lt 1) { throw 'Official import inspector unavailable.' }
+          Get-FileHash -Algorithm SHA256 -LiteralPath $test[0].FullName | Format-List | Out-String | Tee-Object store-band-loader-identity.log
+          & $dumpbin[0].FullName /imports $test[0].FullName 2>&1 | Tee-Object store-band-loader-imports.log
+          if ($LASTEXITCODE -ne 0) { throw 'Exact test executable import inspection failed.' }
+          & $dumpbin[0].FullName /exports (Join-Path $env:windir 'System32/comctl32.dll') 2>&1 | Tee-Object store-band-system-comctl-exports.log
+          if ($LASTEXITCODE -ne 0) { throw 'System common-controls export inspection failed.' }
+          $mt = @(Get-ChildItem (Join-Path ${env:ProgramFiles(x86)} 'Windows Kits/10/bin/*/x64/mt.exe') | Sort-Object FullName -Descending)
+          if ($mt.Count -lt 1) { throw 'Official manifest inspector unavailable.' }
+          & $mt[0].FullName "-inputresource:$($test[0].FullName);#1" '-out:store-band-libtest.manifest.xml' 2>&1 | Tee-Object store-band-libtest-manifest.log
+          "manifest_inspection_exit=$LASTEXITCODE" | Add-Content store-band-libtest-manifest.log
+          # Missing manifest is diagnostic evidence, never acceptance of a test or loader fix.
+          $global:LASTEXITCODE = 0
       - name: Authenticate signed originals and preserve unexpected artifact data
         if: ${{ !cancelled() && steps.native_build.outcome == 'success' }}
         run: |
@@ -327,6 +349,11 @@ jobs:
             store-document-gate-unit.log
             store-document-gate-native.log
             store-native-installer-band-component.log
+            store-band-loader-imports.log
+            store-band-loader-identity.log
+            store-band-libtest-manifest.log
+            store-band-libtest.manifest.xml
+            store-band-system-comctl-exports.log
             store-native-installer-band-component/*.json
             store-native-installer-band-component/*.png
             store-native-installer-band-component/*.log
