@@ -5954,6 +5954,8 @@ fn pane_switch_steps(next: &[TabId], old: &[TabId]) -> Vec<SwitchStep> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    type ProbeNetworkEvents = Rc<RefCell<Vec<(String, String)>>>;
+    type ProbeNativeInventoryDone = Box<dyn FnOnce(std::result::Result<Vec<(String, bool)>, String>)>;
 
     /// Hooks for the ignored live probe (`extension_probe_live`). They live here, not beside the
     /// production code, so the source-scanning tests below see the whole production region.
@@ -5969,7 +5971,29 @@ mod tests {
             self.open_extension_page_with(id, folder, kind, "Bowser extension probe", false, done);
         }
 
-        pub(in crate::engine) fn probe_native_extension_inventory(&self, done: Box<dyn FnOnce(std::result::Result<Vec<(String, bool)>, String>)>) {
+        /// Read-only page-target network observation in disposable tests; no Fetch interception,
+        /// request rewriting, unsafe flags, remote port or browser-target access is involved.
+        pub(in crate::engine) fn probe_network_events(&self, tab: TabId) -> Result<ProbeNetworkEvents> {
+            let webview = self.core.borrow().tabs.get(&tab).and_then(|tab| tab.webview.clone()).ok_or_else(|| Error::from(windows::Win32::Foundation::E_FAIL))?;
+            let events = Rc::new(RefCell::new(Vec::new()));
+            for name in ["Network.requestWillBeSent", "Network.loadingFailed", "Network.responseReceived"] {
+                let wide = HSTRING::from(name); let receiver = unsafe { webview.GetDevToolsProtocolEventReceiver(PCWSTR(wide.as_ptr()))? };
+                let sink = events.clone(); let mut token = 0;
+                unsafe { receiver.add_DevToolsProtocolEventReceived(&DevToolsProtocolEventReceivedEventHandler::create(Box::new(move |_sender, args| {
+                    if let Some(args) = args {
+                        let mut raw = PWSTR::null();
+                        if args.ParameterObjectAsJson(&mut raw).is_ok() {
+                            let mut events = sink.borrow_mut();
+                            if events.len() < 512 { events.push((name.to_owned(), CoTaskMemPWSTR::from(raw).to_string())); }
+                        }
+                    }
+                    Ok(())
+                })), &mut token)?; }
+            }
+            Ok(events)
+        }
+
+        pub(in crate::engine) fn probe_native_extension_inventory(&self, done: ProbeNativeInventoryDone) {
             let profile = self.core.borrow().extension_profile.clone();
             let Some(profile) = profile else { done(Err("The native profile is not ready.".into())); return; };
             list_profile_extensions(&profile, Box::new(move |result| {

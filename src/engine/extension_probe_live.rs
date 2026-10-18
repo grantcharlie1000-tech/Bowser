@@ -101,6 +101,8 @@ fn handle(mut stream: TcpStream, beacons: &Mutex<Vec<String>>) {
         ("200 OK", "text/plain", String::new())
     } else if path == "/control-script.js" || path == "/ads/banner.js" || path == "/adserver/ad.js" || path == "/pagead/show_ads.js" {
         ("200 OK", "application/javascript", format!("document.documentElement.setAttribute('data-script-{}','loaded');", path.trim_start_matches('/').replace(['/', '.'], "-")))
+    } else if path == "/dnr-external" {
+        ("200 OK", "text/html; charset=utf-8", "<!doctype html><title>Disposable default-filter network fixture</title><p>No accounts or user data</p><script src='/control-script.js'></script><img alt='network control' src='https://pagead2.googlesyndication.com/pagead/gen_204?id=bowser_disposable_probe'>".to_owned())
     } else if path.starts_with("/dnr-fixture") {
         ("200 OK", "text/html; charset=utf-8", "<!doctype html><title>Disposable native DNR fixture</title><p>Controlled loopback requests</p><script src='/control-script.js'></script><script src='/ads/banner.js'></script><script src='/adserver/ad.js'></script><script src='/pagead/show_ads.js'></script>".to_owned())
     } else if path.starts_with('/') && !path.contains("favicon") {
@@ -803,10 +805,52 @@ fn probe_real_blocker_network(root: &Path, session: &mut Session, loopback: &Loo
     }
 }
 
+fn observe_default_ubo_network(session: &mut Session, loopback: &Loopback) -> (bool, bool, bool) {
+    let events = session.engine.probe_network_events(session.tab()).expect("read-only in-process network receiver");
+    let enabled = session.protocol(session.tab(), "Network.enable", "{}");
+    println!("UBO_DEFAULT_NETWORK network_domain={enabled:?}");
+    loopback.beacons.lock().unwrap().clear(); session.engine.navigate_tab(session.tab(), &loopback.page("dnr-external")).unwrap();
+    pump_until(Duration::from_secs(8), || false);
+    let events = events.borrow();
+    let request_ids: Vec<_> = events.iter().filter(|(name, raw)| name == "Network.requestWillBeSent" && protocol_string(raw, Some("request"), "url").as_deref() == Some("https://pagead2.googlesyndication.com/pagead/gen_204?id=bowser_disposable_probe"))
+        .filter_map(|(_, raw)| protocol_string(raw, None, "requestId")).collect();
+    let mut blocked = false; let mut responded = false;
+    for (name, raw) in events.iter() {
+        if protocol_string(raw, None, "requestId").is_some_and(|id| request_ids.contains(&id)) {
+            if name == "Network.loadingFailed" {
+                let error = protocol_string(raw, None, "errorText"); let reason = protocol_string(raw, None, "blockedReason");
+                println!("UBO_DEFAULT_NETWORK controlled_resource_failure error={error:?} reason={reason:?}");
+                blocked |= error.as_deref() == Some("net::ERR_BLOCKED_BY_CLIENT");
+            }
+            responded |= name == "Network.responseReceived";
+        }
+    }
+    let control = loopback.beacons.lock().unwrap().iter().any(|path| path == "/control-script.js");
+    println!("UBO_DEFAULT_NETWORK requested={} blocked_by_client={blocked} received_response={responded} own_control_requested={control}", !request_ids.is_empty());
+    (!request_ids.is_empty(), blocked, control)
+}
+
+fn probe_real_ubo_default_external(root: &Path, session: &mut Session, loopback: &Loopback) {
+    let baseline_loopback = Loopback::start();
+    let mut baseline = Session::open(&root.join("zero-default-external-control"), vec![], vec![], &baseline_loopback.page("external-control-ready"));
+    pump_until(Duration::from_secs(2), || false);
+    let zero = observe_default_ubo_network(&mut baseline, &baseline_loopback); baseline.close(); drop(baseline_loopback);
+    let actual = observe_default_ubo_network(session, loopback);
+    println!("UBO_DEFAULT_NETWORK zero={zero:?} actual_ubo={actual:?} verdict={} scope=one-real-default-ad-domain-request-not-universal-filtering-or-correct-tab-action", if zero.0 && !zero.1 && zero.2 && actual.0 && actual.1 && actual.2 { "actual-default-filter-network-effect-demonstrated-partial" } else { "default-filter-effect-not-demonstrated" });
+}
+
 /// Genuine Stylus backup import through its real manager's ordinary DOM drop handler. No package
 /// edits, injected CSS, internal extension API replacement, or fake Chrome globals are involved.
 fn probe_real_stylus_appearance(profile: &Path, id: &str, folder: &Path, session: &mut Session, loopback: &Loopback) {
     let target = loopback.page("stylus-appearance");
+    let manager_link = session.page_script("(()=>{const a=document.querySelector('#popup-manage-button');if(!a)return null;const href=a.href;a.click();return href})()");
+    pump_until(Duration::from_secs(3), || false);
+    println!("STYLUS_APPEARANCE ordinary_manage_click={manager_link:?} resulting_page={:?}", session.page_script("({url:location.href,title:document.title,importButton:!!document.querySelector('#import')})"));
+    // Diagnostic only: navigate the genuine signed popup's own manager hyperlink in this same
+    // isolated extension host. This is not a claim that its native tabs.create UI route worked.
+    let followed = session.page_script("(()=>{const a=document.querySelector('#popup-manage-button');if(!a)return false;const u=new URL(a.href);if(u.protocol!==location.protocol||u.host!==location.host)return false;location.href=a.href;return true})()");
+    pump_until(Duration::from_secs(4), || false);
+    println!("STYLUS_APPEARANCE same_extension_hyperlink_followed={followed:?} scope=diagnostic-own-page-navigation-not-native-tab-creation");
     let style = format!(r#"[{{"name":"Bowser disposable appearance fixture","enabled":true,"sections":[{{"code":"body {{ background-color: rgb(7, 11, 19) !important; }}","urls":[{}],"urlPrefixes":[],"domains":[],"regexps":[]}}]}}]"#, crate::chrome_host::protocol::json_string(target.as_str()));
     let script = format!(r#"(()=>{{if(typeof document.body.ondrop!=='function')return {{dropHandler:false,title:document.title}};const data=new DataTransfer();data.items.add(new File([{}],'bowser-disposable-style.json',{{type:'application/json'}}));document.body.dispatchEvent(new DragEvent('drop',{{dataTransfer:data,bubbles:true,cancelable:true}}));return {{dropHandler:true,title:document.title}}}})()"#, crate::chrome_host::protocol::json_string(&style));
     let imported = session.page_script(&script); pump_until(Duration::from_secs(5), || false);
@@ -899,6 +943,7 @@ fn live_store_current_extension_loads() {
         }
         if name == "ublock-origin-lite" && failure.is_none() && webview_id.as_deref() == Some(id) {
             probe_real_blocker_network(&root, &mut session, &loopback);
+            probe_real_ubo_default_external(&root, &mut session, &loopback);
         }
         if name == "stylus" && failure.is_none() && webview_id.as_deref() == Some(id) {
             probe_real_stylus_appearance(&profile, &record.id, &folder, &mut session, &loopback);
