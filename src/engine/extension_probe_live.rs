@@ -179,6 +179,18 @@ fn json_string(text: &str, key: &str) -> Option<String> {
     Some(text[start..start + end].to_owned())
 }
 
+/// Parsed protocol identity field, never the logging-only substring helper above.
+fn protocol_string(text: &str, container: Option<&str>, field: &str) -> Option<String> {
+    use extensions::json::{self, Value};
+    let Value::Object(root) = json::parse(text)? else { return None; };
+    let fields = if let Some(container) = container {
+        let Value::Object(fields) = json::get(&root, container)? else { return None; };
+        fields
+    } else { &root };
+    let Value::String(value) = json::get(fields, field)? else { return None; };
+    Some(value.clone())
+}
+
 /// `scheme://id/` of an extension URL, or `None` when it has no authority.
 fn url_scheme(url: &str) -> Option<String> {
     url.split_once("://").map(|(scheme, _)| scheme.to_owned())
@@ -841,7 +853,7 @@ fn live_probe_native_action_active_tab() {
     let root = temp_root();
     let source = root.join("active-tab-source"); std::fs::create_dir(&source).unwrap();
     let raw = std::fs::read_to_string(fixture("probe-mv3-key").join("manifest.json")).unwrap();
-    let key = json_string(&raw.replace(": ", ":"), "key").expect("fixture development public key");
+    let key = protocol_string(&raw, None, "key").expect("fixture development public key");
     let manifest = format!(r#"{{"manifest_version":3,"name":"Disposable activeTab feasibility","version":"0.0.1","key":"{key}","permissions":["activeTab","scripting"],"action":{{"default_title":"Test action"}},"background":{{"service_worker":"worker.js"}}}}"#);
     std::fs::write(source.join("manifest.json"), manifest).unwrap();
     std::fs::write(source.join("worker.js"), r#"chrome.action.onClicked.addListener(tab=>{
@@ -862,7 +874,7 @@ fn live_probe_native_action_active_tab() {
     println!("ACTION_PROBE owning_target={info:?}");
     let browser_attach = session.protocol(session.tab(), "Target.attachToBrowserTarget", "{}");
     println!("ACTION_PROBE browser_attach={browser_attach:?}");
-    let browser_session = browser_attach.as_deref().and_then(|text| json_string(text, "sessionId"));
+    let browser_session = browser_attach.as_deref().and_then(|text| protocol_string(text, None, "sessionId"));
     let browser_inventory = browser_session.as_deref().and_then(|browser_session| {
         let inventory = session.protocol_session(session.tab(), Some(browser_session), "Target.getTargets", r#"{"filter":[{}]}"#);
         println!("ACTION_PROBE browser_inventory={inventory:?}");
@@ -872,8 +884,8 @@ fn live_probe_native_action_active_tab() {
     // Only the exact owning target, or its explicitly reported parent of verified type tab.
     // Never manufacture a relationship or bind by URL/title, even for duplicate-URL tabs.
     let target_id = info.as_deref().and_then(|text| {
-        if json_string(text, "type").as_deref() == Some("tab") { return json_string(text, "targetId"); }
-        let parent = json_string(text, "parentId")?;
+        if protocol_string(text, Some("targetInfo"), "type").as_deref() == Some("tab") { return protocol_string(text, Some("targetInfo"), "targetId"); }
+        let parent = protocol_string(text, Some("targetInfo"), "parentId")?;
         use extensions::json::{self, Value};
         let Value::Object(fields) = json::parse(browser_inventory.as_deref()?)? else { return None; };
         let Value::Array(targets) = json::get(&fields, "targetInfos")? else { return None; };

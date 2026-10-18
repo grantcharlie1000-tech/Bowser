@@ -7,8 +7,8 @@
 //! Layout inside a profile: `Extensions\<id>\` holds the copied folder and `extensions.txt` lists
 //! one installed extension per line as `id<TAB>enabled(0|1)<TAB>name<TAB>version`.
 //!
-//! Scope: only unpacked folders and `.crx` files chosen by the user. Chrome Web Store installs are
-//! not supported.
+//! Scope: user-picked unpacked/CRX installs and verified Store packages. Store website script
+//! cannot grant consent or load extension code.
 
 use std::{
     collections::{BTreeMap, hash_map::RandomState},
@@ -465,6 +465,7 @@ pub struct PreparedInstall {
     records_file: PathBuf,
     id: String,
     inspection: Inspection,
+    fingerprint: [u8; 32],
     committed: bool,
 }
 
@@ -478,7 +479,9 @@ impl PreparedInstall {
     /// Re-read the actual copy and records after consent. No source folder is consulted and the
     /// reviewed declarations must still match. Writing the record is the install commit point.
     pub fn commit(mut self) -> Result<Record, ExtensionError> {
-        if inspect_source(&self.folder()?)? != self.inspection {
+        if inspect_source(&self.folder()?)? != self.inspection
+            || tree_fingerprint(&self.folder()?)? != self.fingerprint
+        {
             return Err(ExtensionError::InvalidManifest("The staged extension changed. Review it again."));
         }
         let mut records = read_records(&self.records_file)?;
@@ -518,10 +521,51 @@ pub fn prepare_install(
         Ok(inspection) => inspection,
         Err(error) => { let _ = remove_folder(extensions_dir, &id); return Err(error); }
     };
+    let fingerprint = match tree_fingerprint(&target) {
+        Ok(fingerprint) => fingerprint,
+        Err(error) => { let _ = remove_folder(extensions_dir, &id); return Err(error); }
+    };
     Ok(PreparedInstall {
+        fingerprint,
         extensions_dir: extensions_dir.to_owned(), records_file: records_file.to_owned(),
         id, inspection, committed: false,
     })
+}
+
+/// Deterministic SHA-256 of every staged path/type/length and file byte. The review binds the
+/// entire copied package, not merely manifest declarations or total size. Bounded streaming,
+/// no extra package-sized allocation and no symlink/reparse-point reads.
+fn tree_fingerprint(root: &Path) -> Result<[u8; 32], ExtensionError> {
+    let mut entries = Vec::new();
+    walk_with_limits(root, LIMITS, &mut |path, kind| { entries.push((path.to_owned(), kind)); Ok(()) })?;
+    entries.sort_by(|a, b| a.0.cmp(&b.0));
+    let mut hash = crate::crx::PackageSha256::new().ok_or(ExtensionError::Io)?;
+    for (relative, kind) in entries {
+        let name = relative.to_str().ok_or(ExtensionError::InvalidName)?.replace('\\', "/");
+        if !hash.update(&(name.len() as u64).to_le_bytes()) || !hash.update(name.as_bytes()) {
+            return Err(ExtensionError::Io);
+        }
+        match kind {
+            EntryKind::Folder => { if !hash.update(b"D") { return Err(ExtensionError::Io); } }
+            EntryKind::File => {
+                let mut file = fs::OpenOptions::new().read(true).custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+                    .open(root.join(&relative)).map_err(|_| ExtensionError::Io)?;
+                let meta = file.metadata().map_err(|_| ExtensionError::Io)?;
+                if !is_plain_file(&meta) { return Err(ExtensionError::LinkNotAllowed); }
+                if meta.len() > MAX_TOTAL_BYTES { return Err(ExtensionError::TooLarge); }
+                if !hash.update(b"F") || !hash.update(&meta.len().to_le_bytes()) { return Err(ExtensionError::Io); }
+                let mut read = 0u64; let mut buffer = [0u8; 64 * 1024];
+                loop {
+                    let count = file.read(&mut buffer).map_err(|_| ExtensionError::Io)?;
+                    if count == 0 { break; }
+                    read += count as u64;
+                    if read > meta.len() || !hash.update(&buffer[..count]) { return Err(ExtensionError::Io); }
+                }
+                if read != meta.len() { return Err(ExtensionError::Io); }
+            }
+        }
+    }
+    hash.finish().ok_or(ExtensionError::Io)
 }
 
 /// Copies every entry of `source` under `target` using the same walk and caps as inspection.
@@ -1515,6 +1559,21 @@ mod tests {
             folder_for(&dir, "../../Windows"),
             Err(ExtensionError::InvalidRecords)
         );
+    }
+
+    #[test]
+    fn prepared_install_rejects_same_size_code_change_after_review() {
+        let dir = temp_dir("review-code-change");
+        let source = dir.join("source"); fs::create_dir(&source).unwrap();
+        fs::write(source.join("manifest.json"), br#"{"manifest_version":3,"name":"Test","version":"1"}"#).unwrap();
+        fs::write(source.join("worker.js"), b"original").unwrap();
+        let target = dir.join("Extensions"); let records = dir.join("extensions.txt");
+        let prepared = prepare_install(&source, &target, &records).unwrap();
+        let copy = prepared.folder().unwrap();
+        fs::write(copy.join("worker.js"), b"modified").unwrap();
+        assert!(prepared.commit().is_err());
+        assert!(!copy.exists()); assert!(read_records(&records).unwrap().is_empty());
+        let _ = fs::remove_dir_all(dir);
     }
 
     #[test]
