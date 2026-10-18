@@ -901,6 +901,7 @@ fn probe_real_stylus_appearance(profile: &Path, id: &str, folder: &Path, session
     let automation = automation.wait_with_output().unwrap();
     pump_until(Duration::from_secs(2), || false);
     println!("STYLUS_NATIVE_LINK exit={:?} stdout={} stderr={} actual_page={:?}", automation.status.code(), String::from_utf8_lossy(&automation.stdout), String::from_utf8_lossy(&automation.stderr), session.page_script("({url:location.href,title:document.title,importButton:!!document.querySelector('#import')})"));
+    super::extension_links::assert_no_modal_timeout();
     assert!(automation.status.success(), "real owned Page links helper failed; no scripted fallback is accepted as menu evidence");
     assert!(pump_until(Duration::from_secs(30), || {
         session.page_script("location.href").as_deref() == Some(expected.as_str())
@@ -1616,6 +1617,7 @@ fn live_probe_native_page_links_guards() {
         if !pump_until(Duration::from_secs(75), || child.try_wait().is_ok_and(|status| status.is_some())) { let _ = child.kill(); let _ = child.wait(); panic!("native page-link helper timed out"); }
         let output = child.wait_with_output().unwrap();
         println!("PAGE_LINKS_CONTROL mode={mode} exit={:?} stdout={} stderr={}", output.status.code(), String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+        super::extension_links::assert_no_modal_timeout();
         assert!(output.status.success(), "real owned native helper failed");
     };
     assert_eq!(session.page_script("document.querySelectorAll('a[href]').length").as_deref(), Some("0"));

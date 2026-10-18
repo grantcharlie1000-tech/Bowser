@@ -97,6 +97,10 @@ unsafe extern "system" fn page_proc(
             println!("EXTENSION_PAGE_LINKS real_same_url_native_reload={result}");
             LRESULT(0)
         }
+        #[cfg(test)]
+        windows::Win32::UI::WindowsAndMessaging::WM_TIMER if super::extension_links::probe_modal_timer(hwnd,wparam.0) => {
+            LRESULT(0)
+        }
         WM_COMMAND if wparam.0 & 0xffff == PAGE_LINKS_COMMAND => {
             let state = unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) } as *const WindowState;
             if let Some(state) = unsafe { state.as_ref() } {

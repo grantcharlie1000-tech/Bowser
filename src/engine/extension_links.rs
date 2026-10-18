@@ -63,7 +63,7 @@ fn source(webview: &ICoreWebView2) -> Option<Url> {
 fn still_current(webview: &ICoreWebView2, alive: &Cell<bool>, navigation: &Navigation, captured: u64, original: &Url, policy: &HostedPagePolicy) -> bool {
     navigation.current(alive.get(), captured) && source(webview).as_ref() == Some(original) && navigation.current(alive.get(), captured) && policy.allow_new_window(original)
 }
-fn notice(hwnd: HWND, text: &str) { unsafe { let _ = MessageBoxW(Some(hwnd), &HSTRING::from(text), w!("Extension page links"), MB_OK | MB_ICONINFORMATION); } }
+fn notice(hwnd: HWND, text: &str) { #[cfg(test)] let _watchdog = ModalWatchdog::new(hwnd, ModalKind::Notice); unsafe { let _ = MessageBoxW(Some(hwnd), &HSTRING::from(text), w!("Extension page links"), MB_OK | MB_ICONINFORMATION); } }
 struct Busy(Rc<Cell<bool>>);
 impl Drop for Busy { fn drop(&mut self) { self.0.set(false); } }
 
@@ -86,6 +86,66 @@ pub(super) fn probe_reload_result(success: bool) { RELOAD_PERFORMED.with(|flag| 
 pub(super) fn probe_results() -> (bool, bool, bool) {
     (RELOAD_PERFORMED.with(Cell::get), STALE_SELECTION_REFUSED.with(Cell::get), EMPTY_NOTICE_SHOWN.with(Cell::get))
 }
+
+// A Rust/STA pump deadline cannot interrupt DispatchMessage inside a real native modal loop.
+// Unique, test-only timer IDs and exact currently-armed ownership reject stale timer messages.
+#[cfg(test)]
+#[derive(Clone, Copy, PartialEq)]
+enum ModalKind { Menu, Notice }
+#[cfg(test)]
+thread_local! {
+    static MODAL_TIMED_OUT: Cell<bool> = const { Cell::new(false) };
+    static MODAL_NEXT_ID: Cell<usize> = const { Cell::new(0x5a00_0000) };
+    static ACTIVE_MODAL: RefCell<Option<(HWND,usize,ModalKind,std::time::Instant)>> = const { RefCell::new(None) };
+}
+#[cfg(test)]
+struct ModalWatchdog(HWND,usize);
+#[cfg(test)]
+impl ModalWatchdog {
+    fn new(hwnd: HWND, kind: ModalKind) -> Self {
+        let id=MODAL_NEXT_ID.with(|next| { let id=next.get(); next.set(id.checked_add(1).filter(|id|*id<0x5b00_0000).expect("test timer ID space exhausted")); id });
+        ACTIVE_MODAL.with(|active|assert!(active.borrow().is_none(),"test modal watchdog cannot replace another owner"));
+        let deadline=std::time::Instant::now()+std::time::Duration::from_secs(60);
+        let timer = unsafe { windows::Win32::UI::WindowsAndMessaging::SetTimer(Some(hwnd), id, 60_000, None) };
+        assert_ne!(timer,0,"test-only native modal watchdog was not installed");
+        ACTIVE_MODAL.with(|active|*active.borrow_mut()=Some((hwnd,id,kind,deadline))); Self(hwnd,id)
+    }
+}
+#[cfg(test)]
+impl Drop for ModalWatchdog {
+    fn drop(&mut self) {
+        ACTIVE_MODAL.with(|active| { let matches=active.borrow().as_ref().is_some_and(|(hwnd,id,_,_)|*hwnd==self.0&&*id==self.1); if matches { active.borrow_mut().take(); } });
+        unsafe { let _ = windows::Win32::UI::WindowsAndMessaging::KillTimer(Some(self.0),self.1); }
+    }
+}
+#[cfg(test)]
+pub(super) fn probe_modal_timer(hwnd: HWND,id:usize) -> bool {
+    use windows::Win32::UI::WindowsAndMessaging::{EndMenu, GetClassNameW, GetGUIThreadInfo, GetLastActivePopup, GetWindow, GetWindowTextW, GUITHREADINFO, GUI_POPUPMENUMODE, GW_OWNER, KillTimer, PostMessageW, WM_CLOSE};
+    if !(0x5a00_0000..0x5b00_0000).contains(&id) { return false; }
+    let active=ACTIVE_MODAL.with(|active|*active.borrow());
+    let Some((owner,armed_id,kind,deadline))=active.filter(|(owner,armed_id,_,_)|*owner==hwnd&&*armed_id==id) else { return true; };
+    if std::time::Instant::now()<deadline { return true; }
+    MODAL_TIMED_OUT.with(|flag|flag.set(true));
+    unsafe {
+        let _ = KillTimer(Some(owner),armed_id);
+        if kind==ModalKind::Menu {
+            let mut info=GUITHREADINFO{cbSize:std::mem::size_of::<GUITHREADINFO>() as u32,..Default::default()};
+            if GetGUIThreadInfo(windows::Win32::System::Threading::GetCurrentThreadId(),&mut info).is_ok() && info.hwndMenuOwner==owner && info.flags.contains(GUI_POPUPMENUMODE) { let _ = EndMenu(); }
+        } else {
+            let popup = GetLastActivePopup(owner); let mut class=[0u16;64]; let mut title=[0u16;64];
+            let class_len=GetClassNameW(popup,&mut class).max(0) as usize;
+            let title_len=GetWindowTextW(popup,&mut title).max(0) as usize;
+            if popup!=owner && GetWindow(popup,GW_OWNER).ok()==Some(owner)
+                && String::from_utf16_lossy(&class[..class_len])=="#32770"
+                && String::from_utf16_lossy(&title[..title_len])=="Extension page links" {
+                let _ = PostMessageW(Some(popup),WM_CLOSE,WPARAM(0),LPARAM(0));
+            }
+        }
+    }
+    println!("EXTENSION_PAGE_LINKS native_modal_watchdog_expired=true acceptance_failed=true"); true
+}
+#[cfg(test)]
+pub(super) fn assert_no_modal_timeout() { assert!(!MODAL_TIMED_OUT.with(Cell::get),"actual native modal input timed out; cancellation is not acceptance"); }
 
 pub(super) const SHOW_MESSAGE: u32 = 0x8000 + 0x4a0;
 #[derive(Clone, Default)]
@@ -125,7 +185,9 @@ pub(super) fn open_pending(hwnd: HWND, queue: MenuQueue) {
     let mut point = POINT::default();
     let chosen = unsafe {
         if GetCursorPos(&mut point).is_err() { let _ = DestroyMenu(menu); return; }
+        #[cfg(test)] let watchdog = ModalWatchdog::new(hwnd,ModalKind::Menu);
         let chosen = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON, point.x, point.y, Some(0), hwnd, None);
+        #[cfg(test)] drop(watchdog);
         let _ = DestroyMenu(menu); chosen.0 as usize
     };
     if !current() {
