@@ -76,129 +76,37 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Analysis contract tests failed' }
           node --check benchmarks/scripts/production-fixture-server.mjs
           node --check benchmarks/scripts/filter-parity-fixture.mjs
-      - name: Reuse and verify immutable binaries already built from the exact frozen sources
+      - name: Reuse exact matched9862 binaries for one fixed64-row replication
         working-directory: candidate
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          # The two baseline binaries remain frozen; the candidate is built separately below.
-          git fetch --no-tags --depth=1 origin 8a60dca2ac7de6d369c9b65584fd621a7013f491
-          if ($LASTEXITCODE -ne 0) { throw 'Cannot fetch immutable diagnostic source' }
-          git fetch --no-tags --depth=1 origin 80eabd7ae6d421e61c81985c34023bfc824a2e58
-          if ($LASTEXITCODE -ne 0) { throw 'Cannot fetch untouched source for instrumentation provenance' }
-          git fetch --no-tags --depth=1 origin 46ee3b3ef98a4c7603967d22df9cb1490ca936c1
-          if($LASTEXITCODE -ne 0){throw 'Cannot fetch immediate pre-optimization reference'}
-          # Only the proved registration-union minimizer differs from the immediate reference.
-          $allowedNative=@('src/blocker.rs','src/blocker/registration.rs','src/performance.rs','src/main.rs','src/app.rs','src/chrome_host/host.rs','src/chrome_host/protocol.rs','src/win32/window.rs','src/win32/settings_page.rs')
-          $nativeChanges=@(git diff --name-only 46ee3b3ef98a4c7603967d22df9cb1490ca936c1 HEAD -- src)
-          if($LASTEXITCODE -ne 0){throw 'Cannot verify diagnostic native source provenance'}
-          $unexpectedNative=@($nativeChanges | Where-Object {$_ -cnotin $allowedNative})
-          if($unexpectedNative.Count){throw "Unexpected native changes outside diagnostic slice: $unexpectedNative"}
-          New-Item -ItemType Directory -Force ../evidence/candidate | Out-Null
-          git diff 46ee3b3ef98a4c7603967d22df9cb1490ca936c1 HEAD -- src | Set-Content ../evidence/candidate/native-filter.patch
-          if($LASTEXITCODE -ne 0){throw 'Cannot preserve diagnostic source patch'}
-          [ordered]@{frozen_source='46ee3b3ef98a4c7603967d22df9cb1490ca936c1';candidate_source=(git rev-parse HEAD).Trim();harness_source=(git rev-parse HEAD).Trim();candidate_rebuilt=$true;allowed_native_paths=$allowedNative;actual_native_paths=$nativeChanges;scope='Existing-registration-glob subset with retained covering witnesses; immediate reference immutable; candidate identity/reuse mode explicit'} | ConvertTo-Json | Set-Content ../evidence/candidate/native-detail-provenance.json
-          $zip=Join-Path $env:RUNNER_TEMP 'production-frozen-8a60dca.zip'
-          $headers=@{ Authorization="Bearer $env:GH_TOKEN"; Accept='application/vnd.github+json'; 'X-GitHub-Api-Version'='2022-11-28' }
-          Invoke-WebRequest 'https://api.github.com/repos/grantcharlie1000-tech/Bowser/actions/artifacts/12121088896/zip' -Headers $headers -OutFile $zip
+          $source='9862f716cca4d9e048a43b6e81be16687b63515e'
+          git fetch --no-tags --depth=1 origin $source
+          if($LASTEXITCODE -ne 0){throw 'Cannot fetch frozen interaction source'}
+          $changes=@(git diff --name-only $source HEAD)
+          if($LASTEXITCODE -ne 0 -or $changes.Count -ne 1 -or $changes[0] -cne '.github/workflows/production-performance.yml'){throw 'Replication requires unchanged product and harness bytes; workflow-only change'}
+          $headers=@{Authorization="Bearer $env:GH_TOKEN";Accept='application/vnd.github+json';'X-GitHub-Api-Version'='2022-11-28'}
+          $zip=Join-Path $env:RUNNER_TEMP 'interaction-9862.zip'
+          Invoke-WebRequest 'https://api.github.com/repos/grantcharlie1000-tech/Bowser/actions/artifacts/12133737632/zip' -Headers $headers -OutFile $zip
           $archiveHash=(Get-FileHash $zip -Algorithm SHA256).Hash.ToLowerInvariant()
-          if ($archiveHash -cne '7067133916748c8726a74bf48a599834f82adadfebf6c0ef1c69f2afd763ccef') { throw 'Frozen binary archive digest mismatch' }
-          Expand-Archive -LiteralPath $zip -DestinationPath ../evidence
-          $frozen=Join-Path $pwd '../evidence/frozen'
-          foreach ($entry in (Get-Content (Join-Path $frozen 'manifest.json') -Raw | ConvertFrom-Json)) {
-            $path=Join-Path $frozen $entry.name
-            if ((Get-FileHash $path -Algorithm SHA256).Hash.ToLowerInvariant() -cne $entry.sha256) { throw "Frozen input hash mismatch: $($entry.name)" }
-            if ((Get-Item $path).Length -ne $entry.bytes) { throw "Frozen input size mismatch: $($entry.name)" }
-          }
-          git diff 80eabd7ae6d421e61c81985c34023bfc824a2e58 8a60dca2ac7de6d369c9b65584fd621a7013f491 -- src | Set-Content (Join-Path $frozen 'instrumentation.patch')
-          if ($LASTEXITCODE -ne 0) { throw 'Cannot preserve instrumentation diff' }
-          [ordered]@{archive_artifact_id=12121088896;archive_sha256=$archiveHash;diagnostic_source='8a60dca2ac7de6d369c9b65584fd621a7013f491';untouched_source='80eabd7ae6d421e61c81985c34023bfc824a2e58';harness_source=(git rev-parse HEAD).Trim();previous_source_tests='run39086719160, measurement module tests and Windows source check passed'} | ConvertTo-Json | Set-Content ../evidence/frozen/provenance.json
-          # Freeze the actual instrumented pre-optimization EXE, not a rebuilt reference.
-          $referenceZip=Join-Path $env:RUNNER_TEMP 'filter-reference-46ee.zip'
-          Invoke-WebRequest 'https://api.github.com/repos/grantcharlie1000-tech/Bowser/actions/artifacts/12125524797/zip' -Headers $headers -OutFile $referenceZip
-          if((Get-FileHash $referenceZip -Algorithm SHA256).Hash.ToLowerInvariant() -cne '4bfcfc316f6b7fed074d8736308a0e22d7b8ddb6c95e922f0130601b6fadc0e1'){throw 'Immediate reference archive digest mismatch'}
-          $referenceCache=Join-Path $env:RUNNER_TEMP 'filter-reference-46ee'
-          Expand-Archive -LiteralPath $referenceZip -DestinationPath $referenceCache
-          $identity=Get-Content (Join-Path $referenceCache 'candidate/identity.json') -Raw | ConvertFrom-Json
-          $reference=Join-Path $referenceCache 'candidate/candidate.exe'
-          if($identity.source -cne '46ee3b3ef98a4c7603967d22df9cb1490ca936c1' -or $identity.sha256 -cne '22674e9fdaa589915200b3058765ec202843d87d7ecabdad081911537004bd2b' -or $identity.bytes -ne 7817216 -or (Get-FileHash $reference -Algorithm SHA256).Hash.ToLowerInvariant() -cne $identity.sha256 -or (Get-Item $reference).Length -ne $identity.bytes){throw 'Immediate reference EXE identity mismatch'}
-          New-Item -ItemType Directory -Force ../evidence/reference | Out-Null
-          Copy-Item $reference ../evidence/reference/reference.exe
-          Copy-Item (Join-Path $referenceCache 'candidate/identity.json') ../evidence/reference/identity.json
-          [ordered]@{source=$identity.source;artifact_id=12125524797;archive_sha256='4bfcfc316f6b7fed074d8736308a0e22d7b8ddb6c95e922f0130601b6fadc0e1';harness_source=(git rev-parse HEAD).Trim();policy='No rebuild or relabelling of reference bytes'} | ConvertTo-Json | Set-Content ../evidence/reference/provenance.json
-      - name: Build matched interaction reference and candidate with identical diagnostics
-        working-directory: candidate
-        run: |
-          rustup toolchain install 1.99.1 --profile minimal --component clippy
-          if ($LASTEXITCODE -ne 0) { throw 'Pinned toolchain installation failed' }
-          Push-Location ui
-          npm ci --no-audit --no-fund
-          if ($LASTEXITCODE -ne 0) { throw 'Locked UI install failed' }
-          npm run build
-          if ($LASTEXITCODE -ne 0) { throw 'UI rebuild failed' }
-          npm run typecheck
-          if ($LASTEXITCODE -ne 0) { throw 'UI typecheck failed' }
-          npm run lint
-          if ($LASTEXITCODE -ne 0) { throw 'UI lint failed' }
-          $env:BOWSER_TEST_EDGE='C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe'
-          if (-not (Test-Path $env:BOWSER_TEST_EDGE)) { $env:BOWSER_TEST_EDGE='C:/Program Files/Microsoft/Edge/Application/msedge.exe' }
-          if (-not (Test-Path $env:BOWSER_TEST_EDGE)) { throw 'Edge required for actual all-surface module/CSP smoke' }
-          # Compare actual browser module first-use costs with the exact frozen baseline assets.
-          New-Item -ItemType Directory -Force ../../evidence/baseline-ui | Out-Null
-          $archive=Join-Path $env:RUNNER_TEMP 'baseline-ui.tar'
-          git -C .. archive --format=tar --output=$archive 46ee3b3ef98a4c7603967d22df9cb1490ca936c1 ui/dist
-          if ($LASTEXITCODE -ne 0) { throw 'Cannot archive frozen baseline UI bytes' }
-          tar -xf $archive -C ../../evidence/baseline-ui
-          if ($LASTEXITCODE -ne 0) { throw 'Cannot extract frozen baseline UI bytes' }
-          $env:BOWSER_UI_BASELINE_DIST=(Resolve-Path ../../evidence/baseline-ui/ui/dist).Path
-          $env:BOWSER_UI_SURFACE_REPORT=Join-Path (Resolve-Path ../../evidence).Path 'surface-module-regressions.json'
-          node --test test/hardening.mjs test/surface-modules.mjs test/interaction-diagnostic.mjs
-          if ($LASTEXITCODE -ne 0) { throw 'Actual module/CSP smoke failed' }
-          Pop-Location
-          git diff --exit-code -- ui/src/icons.gen.ts ui/dist ui/dist.manifest
-          if ($LASTEXITCODE -ne 0) { throw 'Committed assets are not reproducible' }
-          cargo +1.99.1 test --locked
-          if ($LASTEXITCODE -ne 0) { throw 'Default Rust contracts failed' }
-          cargo +1.99.1 test --locked --features html-chrome-default
-          if ($LASTEXITCODE -ne 0) { throw 'HTML Rust contracts failed' }
-          cargo +1.99.1 clippy --locked --features html-chrome-default -- -D warnings
-          if ($LASTEXITCODE -ne 0) { throw 'Clippy failed' }
-          cargo +1.99.1 build --release --locked --bin bowser --features html-chrome-default
-          if ($LASTEXITCODE -ne 0) { throw 'Actual candidate build failed' }
-          New-Item -ItemType Directory -Force ../evidence/candidate | Out-Null
-          Copy-Item target/release/bowser.exe ../evidence/candidate/candidate.exe
-          Copy-Item Cargo.lock,ui/dist.manifest ../evidence/candidate/
-          $file=Get-Item ../evidence/candidate/candidate.exe
-          [ordered]@{filter_product_source='f285525d205b9b388ebb26481f5af01d4df99ac8';source=(git rev-parse HEAD).Trim();tree=(git rev-parse 'HEAD^{tree}').Trim();sha256=(Get-FileHash $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant();bytes=$file.Length;toolchain=(rustc +1.99.1 --version --verbose | Out-String);features='html-chrome-default';scope='Matched interaction diagnostic build; minimizer plus identical opt-in observers; NOT the frozen primary candidate'} | ConvertTo-Json | Set-Content ../evidence/candidate/identity.json
-          # The rebuilt reference has EXACTLY the same diagnostic/UI/build inputs, minus only
-          # the two minimizer files. Never relabel it as the original frozen46ee executable.
-          git worktree add --detach ../interaction-reference-source HEAD
-          if($LASTEXITCODE -ne 0){throw 'Cannot create matched reference tree'}
-          git -C ../interaction-reference-source checkout 46ee3b3ef98a4c7603967d22df9cb1490ca936c1 -- src/blocker.rs
-          if($LASTEXITCODE -ne 0){throw 'Cannot restore original registration construction'}
-          git -C ../interaction-reference-source rm -- src/blocker/registration.rs
-          if($LASTEXITCODE -ne 0){throw 'Cannot remove minimizer from matched reference'}
-          $diff=@(git -C ../interaction-reference-source diff --cached --name-only HEAD)
-          if($LASTEXITCODE -ne 0 -or $diff.Count -ne 2 -or @($diff|Where-Object {$_ -cnotin @('src/blocker.rs','src/blocker/registration.rs')}).Count){throw 'Matched binaries would differ outside minimizer'}
-          $referenceTree=(git -C ../interaction-reference-source write-tree).Trim()
-          if($LASTEXITCODE -ne 0 -or $referenceTree -cnotmatch '^[0-9a-f]{40}$'){throw 'Invalid matched reference source tree'}
-          New-Item -ItemType Directory -Force ../evidence/interaction-reference | Out-Null
-          git -C ../interaction-reference-source diff --cached HEAD | Set-Content ../evidence/interaction-reference/minimizer-only-difference.patch
-          git diff f285525d205b9b388ebb26481f5af01d4df99ac8 HEAD -- src ui | Set-Content ../evidence/interaction-reference/identical-instrumentation.patch
-          $patchHash=(Get-FileHash ../evidence/interaction-reference/identical-instrumentation.patch -Algorithm SHA256).Hash.ToLowerInvariant()
-          Push-Location ../interaction-reference-source
-          $target=(Resolve-Path ../candidate/target).Path
-          cargo +1.99.1 test --locked --features html-chrome-default --target-dir $target
-          if($LASTEXITCODE -ne 0){throw 'Matched reference Rust contracts failed'}
-          cargo +1.99.1 build --release --locked --bin bowser --features html-chrome-default --target-dir $target
-          if($LASTEXITCODE -ne 0){throw 'Matched reference build failed'}
-          Pop-Location
-          Copy-Item target/release/bowser.exe ../evidence/interaction-reference/reference.exe
-          $reference=Get-Item ../evidence/interaction-reference/reference.exe
-          $referenceHash=(Get-FileHash $reference.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
-          [ordered]@{source="tree:$referenceTree";build_tree=$referenceTree;base_source='46ee3b3ef98a4c7603967d22df9cb1490ca936c1';instrumentation_source=(git rev-parse HEAD).Trim();instrumentation_patch_sha256=$patchHash;only_difference_paths=$diff;sha256=$referenceHash;bytes=$reference.Length;features='html-chrome-default';scope='Matched rebuilt reference, NOT original46ee bytes; no primary gain remeasurement'} | ConvertTo-Json | Set-Content ../evidence/interaction-reference/identity.json
+          if($archiveHash -cne '4b0621f17a729cff98a0c12f7207de7df89185027a190f636f979b8a0c6d0e1c'){throw 'Frozen interaction archive digest mismatch'}
+          $cache=Join-Path $env:RUNNER_TEMP 'interaction-9862'
+          Expand-Archive -LiteralPath $zip -DestinationPath $cache
+          New-Item -ItemType Directory -Force ../evidence | Out-Null
+          # Copy only immutable inputs/provenance, NEVER old samples, profiles or isolation markers.
+          foreach($folder in @('candidate','interaction-reference','frozen','reference')){Copy-Item (Join-Path $cache $folder) ../evidence/ -Recurse}
+          Copy-Item (Join-Path $cache 'input-manifest.json') ../evidence/input-manifest.json
           $candidate=Get-Content ../evidence/candidate/identity.json -Raw | ConvertFrom-Json
-          [ordered]@{baseline='d0075f2807fd94000cb51ace647eaf335c71ab37c8302a91f0a52d3380dbe0fa';diagnostic=$referenceHash;release='341486070d2e74cf9a9e5d5fbeffa90c7dd2ec4fd36bc284a8a3878a7a9bcec1';candidate=$candidate.sha256} | ConvertTo-Json | Set-Content ../evidence/input-manifest.json
+          $reference=Get-Content ../evidence/interaction-reference/identity.json -Raw | ConvertFrom-Json
+          if($candidate.source -cne $source -or $candidate.tree -cne '09f2e42ace847610cf6f2e51c0f858f7d7be79a2' -or $candidate.sha256 -cne 'dd17f2db887c7645543d178a4a361c46c2909c10b2d1b01d7df79f0c03ec58d9' -or $candidate.bytes -ne 7859712){throw 'Frozen matched candidate provenance mismatch'}
+          if($reference.source -cne 'tree:35852d0c97f2f2f21819beaf05bd8fcade5cb231' -or $reference.instrumentation_source -cne $source -or $reference.sha256 -cne 'bdcff6631bbc6d086a364a3d71f64a6478fc3c8e37c552196ccc6423580d62ff' -or $reference.bytes -ne 7826944){throw 'Frozen matched reference provenance mismatch'}
+          $expected=[ordered]@{baseline='d0075f2807fd94000cb51ace647eaf335c71ab37c8302a91f0a52d3380dbe0fa';diagnostic='bdcff6631bbc6d086a364a3d71f64a6478fc3c8e37c552196ccc6423580d62ff';release='341486070d2e74cf9a9e5d5fbeffa90c7dd2ec4fd36bc284a8a3878a7a9bcec1';candidate='dd17f2db887c7645543d178a4a361c46c2909c10b2d1b01d7df79f0c03ec58d9'}
+          $manifest=Get-Content ../evidence/input-manifest.json -Raw | ConvertFrom-Json
+          $paths=@{baseline='../evidence/frozen/untouched-main.exe';diagnostic='../evidence/interaction-reference/reference.exe';release='../evidence/frozen/released-v0.0.19.exe';candidate='../evidence/candidate/candidate.exe'}
+          foreach($role in $expected.Keys){if($manifest.$role -cne $expected[$role] -or (Get-FileHash $paths[$role] -Algorithm SHA256).Hash.ToLowerInvariant() -cne $expected[$role]){throw "Frozen replication input mismatch: $role"}}
+          if((Get-Item $paths.candidate).Length -ne 7859712 -or (Get-Item $paths.diagnostic).Length -ne 7826944){throw 'Frozen matched input size mismatch'}
+          [ordered]@{artifact_id=12133737632;archive_sha256=$archiveHash;candidate_source=$source;reference_tree=$reference.build_tree;harness_source=(git rev-parse HEAD).Trim();candidate_rebuilt=$false;fixed_pairs=8;planned_rows=64;max_invalid_samples=20;purpose='One predeclared failure-inclusive OFF ON replication; capture failing ON trace, not retry until green; all-pass means not reproduced, not fixed';stop='Up to64 planned rows; stop at20 invalids or any identity/isolation loss; no within-row retry or repair'} | ConvertTo-Json | Set-Content ../evidence/replication-provenance.json
       - name: Bounded native actual-module and HTML activation validity pass
         id: validity
         working-directory: candidate
@@ -235,11 +143,11 @@ jobs:
         working-directory: candidate
         run: |
           ./benchmarks/production-baseline.ps1 -BaselineExe ../evidence/frozen/untouched-main.exe -DiagnosticExe ../evidence/interaction-reference/reference.exe -DiagnosticSource (Get-Content ../evidence/interaction-reference/identity.json -Raw | ConvertFrom-Json).source -ReleaseExe ../evidence/frozen/released-v0.0.19.exe -CandidateExe ../evidence/candidate/candidate.exe -CandidateSource (Get-Content ../evidence/candidate/identity.json -Raw | ConvertFrom-Json).source -IncludeSurfaceSmoke -PositiveOnly -Out ../evidence/surfaces -StartupOnly -Pairs 1 -Fixtures light -MeasurementMode timing -MaxInvalidSamples 1
-      - name: Fixed fast interaction flag OFF ON controls on both matched binaries
+      - name: One predeclared64-row fast interaction OFF ON replication
         if: ${{ !cancelled() && env.INTERACTION_DIAGNOSTIC_ONLY == 'true' && steps.validity.outcome == 'success' }}
         working-directory: candidate
         run: |
-          ./benchmarks/production-baseline.ps1 -BaselineExe ../evidence/frozen/untouched-main.exe -DiagnosticExe ../evidence/interaction-reference/reference.exe -DiagnosticSource (Get-Content ../evidence/interaction-reference/identity.json -Raw | ConvertFrom-Json).source -ReleaseExe ../evidence/frozen/released-v0.0.19.exe -CandidateExe ../evidence/candidate/candidate.exe -CandidateSource (Get-Content ../evidence/candidate/identity.json -Raw | ConvertFrom-Json).source -IncludeSurfaceSmoke -SurfaceInputMethod uia-value -DiagnosticAutoUpdateOff -ExpectedInputManifest ../evidence/input-manifest.json -DiagnosticInteractionPilot -PositiveOnly -Out ../evidence/interaction-order -StartupOnly -Pairs 2 -Fixtures light -MeasurementMode timing -MaxInvalidSamples 20
+          ./benchmarks/production-baseline.ps1 -BaselineExe ../evidence/frozen/untouched-main.exe -DiagnosticExe ../evidence/interaction-reference/reference.exe -DiagnosticSource (Get-Content ../evidence/interaction-reference/identity.json -Raw | ConvertFrom-Json).source -ReleaseExe ../evidence/frozen/released-v0.0.19.exe -CandidateExe ../evidence/candidate/candidate.exe -CandidateSource (Get-Content ../evidence/candidate/identity.json -Raw | ConvertFrom-Json).source -IncludeSurfaceSmoke -SurfaceInputMethod uia-value -DiagnosticAutoUpdateOff -ExpectedInputManifest ../evidence/input-manifest.json -DiagnosticInteractionPilot -PositiveOnly -Out ../evidence/interaction-order -StartupOnly -Pairs 8 -Fixtures light -MeasurementMode timing -MaxInvalidSamples 20
       - name: Derive descriptive paired statistics without accepting gains automatically
         if: always()
         working-directory: candidate
@@ -260,6 +168,7 @@ jobs:
           name: production-performance-${{ github.event.pull_request.head.sha || github.sha }}
           path: |
             evidence/frozen/
+            evidence/replication-provenance.json
             evidence/interaction-reference/
             evidence/input-manifest.json
             evidence/native-isolation-blocked.json
