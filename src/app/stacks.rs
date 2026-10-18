@@ -473,6 +473,24 @@ impl App {
         moved
     }
 
+    /// A link followed in `tab` loads in place: when a workspace rule matches its site, the tab is
+    /// moved to the rule's workspace a moment later ([`App::run_deferred_links`]), outside the
+    /// engine's event. Whether a move was queued.
+    pub(super) fn defer_workspace_rule(app: &AppRef, tab: TabId, url: &url::Url) -> bool {
+        let (hwnd, queued) = {
+            let mut state = app.borrow_mut();
+            let applies = state.settings.tabs.workspaces && crate::workspace_rules::matching(&state.workspace_rules, url).is_some();
+            if applies {
+                state.tab_state.deferred_workspace.push((tab, url.clone()));
+            }
+            (state.hwnd, applies)
+        };
+        if queued {
+            win32::set_link_timer(hwnd);
+        }
+        queued
+    }
+
     /// The wheel turned `steps` notches over the rail's workspaces ("Switch workspaces by
     /// scrolling"). Whether the workspace changed.
     pub fn scroll_workspaces(app: &AppRef, steps: i32) -> bool {

@@ -248,6 +248,31 @@ fn a_workspace_rule_opens_its_site_in_the_named_workspace() {
 }
 
 #[test]
+fn a_workspace_rule_also_moves_a_tab_that_follows_a_link_in_place() {
+    let app = fixture();
+    let ids = tabs_on(&app, &["https://start.example/", "https://keep.example/"]);
+    let home = app.borrow().workspaces.active_id();
+    let work = App::create_workspace(&app, "Work").unwrap();
+    let _ = App::switch_workspace(&app, home);
+    let mut rules = Vec::new();
+    crate::workspace_rules::add(&mut rules, "example.org", "work").unwrap();
+    app.borrow_mut().workspace_rules = rules;
+    let link = url::Url::parse("https://news.example.org/a").unwrap();
+    // Off: nothing is queued.
+    set(&app, |o| o.workspaces = false);
+    assert!(!App::defer_workspace_rule(&app, ids[0], &link));
+    set(&app, |o| o.workspaces = true);
+    let _ = App::select_tab(&app, ids[0]);
+    assert!(!App::defer_workspace_rule(&app, ids[0], &url::Url::parse("https://other.test/").unwrap()), "no rule, no move");
+    assert!(App::defer_workspace_rule(&app, ids[0], &link), "the move waits outside the engine's event");
+    assert_eq!(app.borrow().workspaces.workspace_for(ids[0]), Some(home), "not moved inside the event");
+    App::run_deferred_links(&app);
+    assert_eq!(app.borrow().workspaces.workspace_for(ids[0]), Some(work), "moved to the rule's workspace");
+    assert_eq!(app.borrow().workspaces.active_id(), work, "the tab in front takes the window with it");
+    assert!(app.borrow().tab_state.deferred_workspace.is_empty());
+}
+
+#[test]
 fn scrolling_switches_workspaces_only_with_the_option() {
     let app = fixture();
     let home = app.borrow().workspaces.active_id();

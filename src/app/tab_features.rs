@@ -767,6 +767,13 @@ impl App {
             let private = crate::private::inherits_privacy(Self::tab_private(app, tab));
             Self::open_link_tab(app, tab, private, url);
         }
+        // Same-tab links a workspace rule matched: the tab moves, and the window follows when the
+        // tab is the one in front.
+        let moves = std::mem::take(&mut app.borrow_mut().tab_state.deferred_workspace);
+        for (tab, url) in moves {
+            let follow = Self::active_tab_id(app) == tab;
+            let _ = Self::apply_workspace_rule(app, tab, &url, follow);
+        }
     }
 
     /// Loads the restored tabs the options ask to load now, once the engine can. Called after a
