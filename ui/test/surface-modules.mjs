@@ -1,0 +1,63 @@
+// Real HTTP module loading under the unchanged production CSP. This is a load/first-use
+// regression smoke, not a native performance benchmark or a substitute for WebView2 verification.
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { createServer } from 'node:http';
+import { spawn } from 'node:child_process';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+const root = join(dirname(fileURLToPath(import.meta.url)), '..');
+const browser = [process.env.BOWSER_TEST_EDGE, 'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe', 'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe'].find((p) => p && existsSync(p));
+const views = ['toolbar', 'tabs', 'rail', 'panel', 'popup', 'bar', 'dialog', 'hover', 'split', 'settings', 'history', 'downloads'];
+const shim = `window.chrome = { webview: { addEventListener() {}, postMessage(value) {
+ const m = typeof value === 'string' ? JSON.parse(value) : value;
+ if (m.t === 'ready') document.documentElement.setAttribute('data-surface-ready', 'yes');
+} } }; window.addEventListener('error', () => document.documentElement.setAttribute('data-surface-error', 'yes'));
+window.addEventListener('unhandledrejection', () => document.documentElement.setAttribute('data-surface-error', 'yes'));`;
+
+test('every lazy surface starts through actual modules under the production CSP', { skip: !browser, timeout: 180000 }, async () => {
+  const requested = new Set();
+  const html = readFileSync(join(root, 'dist/index.html'), 'utf8');
+  const csp = html.match(/Content-Security-Policy" content="([^"]+)"/)[1];
+  const server = createServer((req, res) => {
+    const path = new URL(req.url, 'http://localhost').pathname.slice(1);
+    requested.add(path);
+    res.setHeader('Content-Security-Policy', csp);
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Cache-Control', 'no-store');
+    if (path === 'shim.js') { res.setHeader('Content-Type', 'text/javascript'); res.end(shim); return; }
+    if (path === 'index.html') { res.setHeader('Content-Type', 'text/html'); res.end(html.replace('<script type="module"', '<script src="shim.js"></script><script type="module"')); return; }
+    if (!/^(?:[a-z-]+\.js|chunks\/chunk-[A-Z0-9]+\.js|app\.css)$/.test(path)) { res.writeHead(404); res.end(); return; }
+    try { res.setHeader('Content-Type', path.endsWith('.css') ? 'text/css' : 'text/javascript'); res.end(readFileSync(join(root, 'dist', path))); }
+    catch { res.writeHead(404); res.end(); }
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const profile = mkdtempSync(join(tmpdir(), 'bowser-module-smoke-'));
+  try {
+    for (const view of views) {
+      for (const use of ['first', 'warm']) {
+        const started = performance.now();
+        const args = ['--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check', `--user-data-dir=${profile}`, '--virtual-time-budget=2500', '--dump-dom', `http://127.0.0.1:${server.address().port}/index.html?view=${view}`];
+        // Container-only test runner constraint, never a product/benchmark launch flag.
+        if (process.platform !== 'win32' && process.getuid?.() === 0) args.unshift('--no-sandbox');
+        const result = await new Promise((resolve, reject) => {
+          const child = spawn(browser, args); let out = '', err = '';
+          const timer = setTimeout(() => { child.kill(); reject(new Error(`${view}: browser timeout`)); }, 12000);
+          child.stdout.on('data', (d) => { out += d; }); child.stderr.on('data', (d) => { err += d; });
+          child.on('error', reject); child.on('close', (code) => { clearTimeout(timer); resolve({ out, err, code }); });
+        });
+        assert.equal(result.code, 0, `${view}: ${result.err.slice(-1000)}`);
+        assert.match(result.out, /data-surface-ready="yes"/, `${view}: module did not register and send ready`);
+        assert.doesNotMatch(result.out, /data-surface-error="yes"|page-load-failed|csp-not-enforced/, view);
+        console.log(`module smoke ${view} ${use}: ${(performance.now() - started).toFixed(1)}ms external browser launch/load proxy (not native benchmark)`);
+      }
+    }
+    assert.ok([...requested].some((p) => p.startsWith('chunks/')), 'actual shared chunks were fetched');
+    for (const view of views) assert.ok(requested.has(`${view === 'settings' || view === 'history' ? `${view}-page` : view}.js`), `${view}: actual entry fetched`);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+    rmSync(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  }
+});

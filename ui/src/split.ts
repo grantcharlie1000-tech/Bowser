@@ -235,10 +235,9 @@ function buildDrop(msg: SplitDropMsg): HTMLElement {
 // --- start page ---
 type StartPageHandle = ReturnType<typeof buildStartPage>;
 
-/** Imports the start page bundle (a variable specifier, so esbuild leaves the import() to the browser). */
+/** Imports the start page lazily; the build rewrites the module path with its shared chunks. */
 function loadStartPage(): Promise<{ buildStartPage: typeof buildStartPage }> {
-  const file = './start-page.js' as string;
-  return (import(file) as Promise<{ buildStartPage: typeof buildStartPage }>).catch((err: unknown) => {
+  return import('./start-page').catch((err: unknown) => {
     document.title = 'page-load-failed';
     throw err;
   });

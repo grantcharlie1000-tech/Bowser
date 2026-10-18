@@ -6,9 +6,9 @@
 pub const SCHEME: &str = "bowser-ui";
 /// Start URL of the toolbar host. The page reads `view` from `location.search`.
 pub const START_URL: &str = "bowser-ui://app/index.html?view=toolbar";
-/// Start URL of the tab strip host. Same bundle as `START_URL`, different view.
+/// Start URL of the tab strip host. Shared bootstrap, separate surface module.
 pub const TABS_START_URL: &str = "bowser-ui://app/index.html?view=tabs";
-/// Start URL of the left rail host. Same bundle as `START_URL`, different view.
+/// Start URL of the left rail host. Shared bootstrap, separate surface module.
 pub const RAIL_START_URL: &str = "bowser-ui://app/index.html?view=rail";
 pub const PANEL_START_URL: &str = "bowser-ui://app/index.html?view=panel";
 pub const POPUP_START_URL: &str = "bowser-ui://app/index.html?view=popup";
@@ -37,6 +37,8 @@ pub const SPLIT_START_URL: &str = "bowser-ui://app/index.html?view=split";
 const HTML: &str = "text/html;charset=utf-8";
 const JS: &str = "text/javascript;charset=utf-8";
 const CSS: &str = "text/css;charset=utf-8";
+
+include!("../../ui/dist/scripts.rs");
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Asset {
@@ -93,35 +95,31 @@ pub fn lookup(path: &str) -> Option<Asset> {
             bytes: include_bytes!("../../ui/dist/index.html"),
             mime: HTML,
         }),
-        "app.js" => Some(Asset {
-            bytes: include_bytes!("../../ui/dist/app.js"),
-            mime: JS,
-        }),
         "app.css" => Some(Asset {
             bytes: include_bytes!("../../ui/dist/app.css"),
             mime: CSS,
         }),
-        // ES modules app.js imports only when the settings or history view opens (ui/build.mjs).
-        "settings-page.js" => Some(Asset {
-            bytes: include_bytes!("../../ui/dist/settings-page.js"),
-            mime: JS,
-        }),
-        "history-page.js" => Some(Asset {
-            bytes: include_bytes!("../../ui/dist/history-page.js"),
-            mime: JS,
-        }),
-        // The start page, which the split view's host imports only when a blank tab shows it.
-        "start-page.js" => Some(Asset {
-            bytes: include_bytes!("../../ui/dist/start-page.js"),
-            mime: JS,
-        }),
-        _ => None,
+        _ => SCRIPT_ASSETS.iter().find(|(path, _)| *path == name).map(|(_, bytes)| Asset { bytes, mime: JS }),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_generated_script_has_an_exact_closed_mapping() {
+        assert!(!SCRIPT_ASSETS.is_empty());
+        for (name, bytes) in SCRIPT_ASSETS {
+            assert!(name.ends_with(".js"));
+            assert!(!name.contains("..") && !name.contains('\\'));
+            let asset = lookup(name).expect("generated script");
+            assert_eq!(asset.mime, JS);
+            assert_eq!(asset.bytes, *bytes);
+        }
+        assert_eq!(lookup("/chunks/not-embedded.js"), None);
+        assert_eq!(lookup("/scripts.rs"), None);
+    }
 
     #[test]
     fn committed_dist_matches_manifest() {
