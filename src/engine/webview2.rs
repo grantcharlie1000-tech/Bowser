@@ -2302,9 +2302,16 @@ fn reconcile_profile(
             let reused: HashSet<String> = enables.iter().map(|(id, _)| id.clone()).collect();
             {
                 let mut state = core.borrow_mut();
+                match persist_extension_ids(state.extension_ids_file.as_deref(), &previous, &mapping) {
+                    Ok(current) => state.extension_ids = current,
+                    Err(reason) => {
+                        drop(state);
+                        for (id, extension) in held { crate::extensions::record_load_result(&id, Err(reason.clone())); set_loaded_enabled(&extension, false, Box::new(|_| {})); }
+                        for (id, _) in &pending { crate::extensions::record_load_result(id, Err(reason.clone())); }
+                        return;
+                    }
+                }
                 state.extensions_loaded.extend(held);
-                state.extension_ids = mapping;
-                save_extension_ids(&state);
             }
             for (id, extension) in enables {
                 set_loaded_enabled(&extension, true, report_load(id));
@@ -2351,8 +2358,12 @@ fn remove_unloaded(
                 None => {
                     {
                         let mut state = core.borrow_mut();
-                        state.extension_ids.remove(&id);
-                        save_extension_ids(&state);
+                        let previous = state.extension_ids.clone();
+                        let mut desired = previous.clone(); desired.remove(&id);
+                        match persist_extension_ids(state.extension_ids_file.as_deref(), &previous, &desired) {
+                            Ok(current) => state.extension_ids = current,
+                            Err(reason) => { done(Err(reason)); return; }
+                        }
                     }
                     done(Ok(()));
                 }
@@ -2385,22 +2396,83 @@ fn format_extension_ids(ids: &HashMap<String, String>) -> String {
 }
 
 fn load_extension_ids(path: &Path) -> HashMap<String, String> {
-    std::fs::read_to_string(path)
-        .map(|text| parse_extension_ids(&text))
-        .unwrap_or_default()
+    read_extension_ids(path).unwrap_or_default()
 }
 
-/// Writes the id map through a temporary file so a crash cannot leave it half written.
-fn save_extension_ids(state: &EngineCore) {
-    let Some(path) = state.extension_ids_file.as_deref() else {
-        return;
-    };
-    let text = format_extension_ids(&state.extension_ids);
-    let temp = path.with_extension("tmp");
-    let written = std::fs::write(&temp, text).and_then(|()| std::fs::rename(&temp, path));
-    if written.is_err() {
-        let _ = std::fs::remove_file(&temp);
+/// Ownership is authoritative only when the entire bounded, no-follow file is well formed.
+fn read_extension_ids(path: &Path) -> std::result::Result<HashMap<String, String>, String> {
+    use std::{io::Read, os::windows::fs::{MetadataExt, OpenOptionsExt}};
+    let mut text = String::new();
+    match std::fs::OpenOptions::new().read(true).custom_flags(0x0020_0000).open(path) {
+        Ok(file) => {
+            let meta = file.metadata().map_err(|_| "Extension ownership metadata could not be read.".to_owned())?;
+            if !meta.is_file() || meta.file_attributes() & 0x400 != 0 || meta.len() > 1024 * 1024 {
+                return Err("Extension ownership is not a bounded plain file.".into());
+            }
+            file.take(1024 * 1024 + 1).read_to_string(&mut text).map_err(|_| "Extension ownership could not be read safely.".to_owned())?;
+            if text.len() > 1024 * 1024 { return Err("Extension ownership exceeded its safe size.".into()); }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(_) => return Err("Extension ownership could not be read safely.".into()),
     }
+    let current = parse_extension_ids(&text);
+    let mut lines: Vec<_> = text.lines().map(|line| format!("{line}\n")).collect(); lines.sort();
+    if format_extension_ids(&current) != lines.concat() || current.values().collect::<HashSet<_>>().len() != current.len() {
+        return Err("Extension ownership is malformed. Close this profile and investigate.".into());
+    }
+    Ok(current)
+}
+
+/// Merge only this operation's compare-and-set deltas into the latest profile map. A stale
+/// window must never replace another process's ownership entries or silently report durability.
+fn merge_extension_ids(
+    current: &mut HashMap<String, String>, previous: &HashMap<String, String>,
+    desired: &HashMap<String, String>,
+) -> std::result::Result<(), String> {
+    let changed: HashSet<&String> = previous.keys().chain(desired.keys())
+        .filter(|id| previous.get(*id) != desired.get(*id)).collect();
+    for id in &changed {
+        if current.get(*id) != previous.get(*id) && current.get(*id) != desired.get(*id) {
+            return Err("Extension ownership changed in another window. Restart this profile before retrying.".into());
+        }
+    }
+    for id in &changed {
+        if let Some(value) = desired.get(*id) {
+            if current.iter().any(|(other, native)| other != *id && native == value && !changed.contains(other)) {
+                return Err("That native extension identity already belongs to another Bowser record.".into());
+            }
+        }
+    }
+    let mut next = current.clone();
+    for id in changed {
+        if let Some(value) = desired.get(id) { next.insert(id.clone(), value.clone()); }
+        else { next.remove(id); }
+    }
+    let unique: HashSet<&String> = next.values().collect();
+    if unique.len() != next.len() { return Err("Duplicate native extension ownership is not accepted.".into()); }
+    *current = next;
+    Ok(())
+}
+
+fn persist_extension_ids(
+    path: Option<&Path>, previous: &HashMap<String, String>, desired: &HashMap<String, String>,
+) -> std::result::Result<HashMap<String, String>, String> {
+    let Some(path) = path else { return Ok(desired.clone()); };
+    let _lease = crate::extensions::RecordsLease::acquire(path)
+        .map_err(|_| "Extension ownership is busy or cannot be locked. Nothing was accepted.".to_owned())?;
+    use std::io::Write;
+    let mut current = read_extension_ids(path)?;
+    merge_extension_ids(&mut current, previous, desired)?;
+    let temp = path.with_extension(format!("tmp-{}", std::process::id()));
+    let mut created = false;
+    let written = (|| -> std::io::Result<()> {
+        let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(&temp)?;
+        created = true;
+        file.write_all(format_extension_ids(&current).as_bytes())?; file.sync_all()?; drop(file);
+        std::fs::rename(&temp, path)
+    })();
+    if written.is_err() { if created { let _ = std::fs::remove_file(&temp); } return Err("Extension ownership could not be saved. Installation was not accepted.".into()); }
+    Ok(current)
 }
 
 /// Adds an unpacked extension folder to the profile. On success the loaded extension is kept so
@@ -2426,6 +2498,16 @@ fn add_extension(
         if !owned && present.iter().any(|(native_id, _)| *native_id == expected) {
             done(Err("An extension with this identity already exists outside this Bowser record. Bowser did not replace or take ownership of it.".into()));
             return;
+        }
+        // Consent already created the owning record. Persist signing-derived ownership BEFORE
+        // Add: a crash after the native call but before its callback remains recoverable at restart.
+        {
+            let mut state = core.borrow_mut(); let previous = state.extension_ids.clone();
+            let mut desired = previous.clone(); desired.insert(id.clone(), expected.clone());
+            match persist_extension_ids(state.extension_ids_file.as_deref(), &previous, &desired) {
+                Ok(current) => state.extension_ids = current,
+                Err(reason) => { done(Err(reason)); return; }
+            }
         }
         add_extension_owned(&core, &profile, id, &folder, Some(expected), done);
     }));
@@ -2468,11 +2550,27 @@ fn add_extension_owned(
                     ));
                     if let Some(core) = weak.upgrade() {
                         let mut state = core.borrow_mut();
-                        if let Some(webview_id) = extension_webview_id(&extension) {
-                            state.extension_ids.insert(loaded_id.clone(), webview_id);
+                        let previous = state.extension_ids.clone(); let mut desired = previous.clone();
+                        let Some(webview_id) = extension_webview_id(&extension) else {
+                            drop(state); let failed = completion.clone();
+                            set_loaded_enabled(&extension, false, Box::new(move |disabled| {
+                                let reason = if disabled.is_ok() { "The runtime returned no extension identity. The returned extension was disabled." }
+                                    else { "The runtime returned no extension identity and could not disable its object. Close this profile." };
+                                finish_slot(&failed, Err(reason.into()));
+                            })); return Ok(());
+                        };
+                        desired.insert(loaded_id.clone(), webview_id);
+                        match persist_extension_ids(state.extension_ids_file.as_deref(), &previous, &desired) {
+                            Ok(current) => state.extension_ids = current,
+                            Err(reason) => {
+                                drop(state); let failed = completion.clone();
+                                set_loaded_enabled(&extension, false, Box::new(move |disabled| {
+                                    let reason = if disabled.is_ok() { reason } else { format!("{reason} The returned extension could not be disabled; close this profile.") };
+                                    finish_slot(&failed, Err(reason));
+                                })); return Ok(());
+                            }
                         }
                         state.extensions_loaded.insert(loaded_id, extension);
-                        save_extension_ids(&state);
                     }
                     Ok(())
                 }
@@ -2564,8 +2662,11 @@ fn remove_loaded(
             if let Some(core) = weak.upgrade() {
                 let mut state = core.borrow_mut();
                 state.extensions_loaded.remove(&id);
-                state.extension_ids.remove(&id);
-                save_extension_ids(&state);
+                let previous = state.extension_ids.clone(); let mut desired = previous.clone(); desired.remove(&id);
+                match persist_extension_ids(state.extension_ids_file.as_deref(), &previous, &desired) {
+                    Ok(current) => state.extension_ids = current,
+                    Err(reason) => { finish_slot(&completion, Err(reason)); return Ok(()); }
+                }
             }
         }
         finish_slot(&completion, result);
@@ -6986,6 +7087,51 @@ mod tests {
         let bad =
             "../escape\tabc\next-0123456789abcdef\t\next-0123456789abcdef\tab-cd\nno tab here\n";
         assert!(parse_extension_ids(bad).is_empty());
+    }
+
+    #[test]
+    fn extension_ownership_delta_preserves_other_windows_and_rejects_stale_changes() {
+        let a = "ext-0123456789abcdef".to_owned(); let b = "ext-00000000000000ff".to_owned();
+        let previous = HashMap::from([(a.clone(), "aaaa".to_owned())]);
+        let mut current = previous.clone(); current.insert(b.clone(), "bbbb".into());
+        let desired = HashMap::new();
+        merge_extension_ids(&mut current, &previous, &desired).unwrap();
+        assert_eq!(current, HashMap::from([(b, "bbbb".into())]));
+        current.insert(a.clone(), "newer".into()); let before = current.clone();
+        assert!(merge_extension_ids(&mut current, &previous, &desired).is_err());
+        assert_eq!(current, before);
+    }
+
+    #[test]
+    fn extension_ownership_preclaim_is_idempotent_but_never_takes_another_record() {
+        let a = "ext-0123456789abcdef".to_owned(); let b = "ext-00000000000000ff".to_owned();
+        let previous = HashMap::new(); let desired = HashMap::from([(a.clone(), "native".into())]);
+        let mut current = desired.clone();
+        merge_extension_ids(&mut current, &previous, &desired).unwrap();
+        current.clear(); current.insert(b, "native".into()); let before = current.clone();
+        assert!(merge_extension_ids(&mut current, &previous, &desired).is_err()); assert_eq!(current, before);
+    }
+
+    #[test]
+    fn extension_ownership_file_merges_independent_writers_and_fails_closed() {
+        let folder = std::env::temp_dir().join(format!("bowser-ownership-{}-{}", std::process::id(), SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()));
+        std::fs::create_dir_all(&folder).unwrap(); let path = folder.join("ids.txt");
+        let a = "ext-0123456789abcdef".to_owned(); let b = "ext-00000000000000ff".to_owned();
+        let empty = HashMap::new();
+        let first = HashMap::from([(a.clone(), "aaaa".into())]);
+        persist_extension_ids(Some(&path), &empty, &first).unwrap();
+        // A second process's initial cache was empty, but its unrelated delta must preserve A.
+        let second = HashMap::from([(b.clone(), "bbbb".into())]);
+        let merged = persist_extension_ids(Some(&path), &empty, &second).unwrap();
+        assert_eq!(merged.len(), 2); assert_eq!(merged.get(&a), Some(&"aaaa".to_owned()));
+        let lease = crate::extensions::RecordsLease::acquire(&path).unwrap();
+        assert!(persist_extension_ids(Some(&path), &merged, &empty).is_err()); drop(lease);
+        assert_eq!(read_extension_ids(&path).unwrap(), merged);
+        std::fs::write(&path, "malformed ownership").unwrap();
+        assert!(persist_extension_ids(Some(&path), &empty, &first).is_err());
+        assert!(load_extension_ids(&path).is_empty());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "malformed ownership");
+        std::fs::remove_dir_all(folder).unwrap();
     }
 
     #[test]

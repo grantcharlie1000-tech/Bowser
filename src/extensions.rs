@@ -507,9 +507,9 @@ pub struct PreparedInstall {
 
 /// Cross-process read/modify/write lease. The OS denies a second open while this handle lives,
 /// and deletes the tiny lease file on close/crash. No persistent lock token or ACL changes.
-struct RecordsLease { _file: File }
+pub(crate) struct RecordsLease { _file: File }
 impl RecordsLease {
-    fn acquire(records_file: &Path) -> Result<Self, ExtensionError> {
+    pub(crate) fn acquire(records_file: &Path) -> Result<Self, ExtensionError> {
         if let Some(parent) = records_file.parent().filter(|parent| !parent.as_os_str().is_empty()) { ensure_plain_dir(parent)?; }
         let mut path = records_file.as_os_str().to_owned(); path.push(".lease");
         let file = fs::OpenOptions::new().read(true).write(true).create(true).truncate(false)
