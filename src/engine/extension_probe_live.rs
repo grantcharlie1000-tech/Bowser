@@ -872,10 +872,25 @@ fn probe_real_stylus_appearance(profile: &Path, id: &str, folder: &Path, session
     let expected_url = Url::parse(&expected_url).unwrap();
     assert!(extensions::is_page_url(&expected_url));
     assert_eq!(expected_url.host_str(), session.engine.probe_loaded_extension_id(id).as_deref());
+    let bounds = session.page_script("(()=>{const r=document.querySelector('#popup-manage-button').getBoundingClientRect();return [r.left,r.top,r.width,r.height,devicePixelRatio,innerWidth,innerHeight]})()").unwrap();
+    let Some(extensions::json::Value::Array(bounds)) = extensions::json::parse(&bounds) else { panic!("actual link bounds were not an array"); };
+    let bounds: Vec<f64> = bounds.into_iter().map(|value| match value {
+        extensions::json::Value::Number(value) => value.parse::<f64>().unwrap(),
+        _ => panic!("actual link bound was not numeric"),
+    }).collect();
+    assert_eq!(bounds.len(), 7);
+    assert!(bounds.iter().all(|value| value.is_finite() && *value >= 0.0 && *value <= 32767.0));
+    assert!(bounds[2] > 0.0 && bounds[3] > 0.0 && bounds[4] > 0.0 && bounds[4] <= 4.0);
+    let client_x = ((bounds[0] + bounds[2] / 2.0) * bounds[4]).round() as i32;
+    let client_y = ((bounds[1] + bounds[3] / 2.0) * bounds[4]).round() as i32;
+    let viewport_width = (bounds[5] * bounds[4]).round() as i32;
+    let viewport_height = (bounds[6] * bounds[4]).round() as i32;
     let output = std::env::var_os("RUNNER_TEMP").map(PathBuf::from).unwrap_or_else(std::env::temp_dir).join("bowser-extension-link-native");
     let mut automation = std::process::Command::new("pwsh").args(["-NoProfile", "-File"])
         .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("benchmarks/scripts/probe-native-extension-link.ps1"))
         .arg("-OwnerPid").arg(std::process::id().to_string()).arg("-Out").arg(&output)
+        .arg("-ClientX").arg(client_x.to_string()).arg("-ClientY").arg(client_y.to_string())
+        .arg("-ViewportWidth").arg(viewport_width.to_string()).arg("-ViewportHeight").arg(viewport_height.to_string())
         .stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).spawn().unwrap();
     if !pump_until(Duration::from_secs(75), || automation.try_wait().is_ok_and(|status| status.is_some())) {
         let _ = automation.kill();

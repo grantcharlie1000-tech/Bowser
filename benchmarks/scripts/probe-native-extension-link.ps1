@@ -1,11 +1,22 @@
 # Real native extension-page context menu. Disposable Windows diagnostic, never a host bridge.
 [CmdletBinding()]
-param([Parameter(Mandatory)][uint32]$OwnerPid,[Parameter(Mandatory)][string]$Out)
+param(
+ [Parameter(Mandatory)][uint32]$OwnerPid,
+ [Parameter(Mandatory)][string]$Out,
+ [Parameter(Mandatory)][int]$ClientX,
+ [Parameter(Mandatory)][int]$ClientY,
+ [Parameter(Mandatory)][int]$ViewportWidth,
+ [Parameter(Mandatory)][int]$ViewportHeight
+)
 $ErrorActionPreference='Stop'; Set-StrictMode -Version Latest
 Add-Type -AssemblyName UIAutomationClient,UIAutomationTypes,System.Drawing
 Add-Type @'
 using System; using System.Runtime.InteropServices; using System.Text;
 public static class BowserExtensionLink {
+ [StructLayout(LayoutKind.Sequential)] public struct POINT { public int X,Y; }
+ [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left,Top,Right,Bottom; }
+ [DllImport("user32.dll")] public static extern bool GetClientRect(IntPtr h,out RECT r);
+ [DllImport("user32.dll")] public static extern bool ClientToScreen(IntPtr h,ref POINT p);
  [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
  [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
  [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
@@ -39,20 +50,22 @@ function Save-OwnedWindow([string]$Name) {
  try {$graphics.CopyFromScreen([int]$r.X,[int]$r.Y,0,0,$bitmap.Size);$bitmap.Save((Join-Path $Out $Name),[Drawing.Imaging.ImageFormat]::Png)}finally{$graphics.Dispose();$bitmap.Dispose()}
 }
 Save-OwnedWindow '01-actual-signed-popup.png'
-$link=$null;$names=@();$deadline=[DateTime]::UtcNow.AddSeconds(15)
-do {
- foreach($item in $window.FindAll([Windows.Automation.TreeScope]::Descendants,[Windows.Automation.Condition]::TrueCondition)) {
-  try { $names+=$item.Current.Name;if($item.Current.Name -match '(?i)manage' -and $item.Current.ControlType -eq [Windows.Automation.ControlType]::Hyperlink -and !$item.Current.IsOffscreen){$link=$item;break} }catch{}
- }
- if(!$link){Start-Sleep -Milliseconds 100}
-}while(!$link -and [DateTime]::UtcNow -lt $deadline)
-$names|Select-Object -Unique|ConvertTo-Json|Set-Content (Join-Path $Out 'link-accessibility.json') -Encoding utf8
-if(!$link){throw 'Actual Manage hyperlink was not exposed; no menu selection was simulated.'}
-$linkName=$link.Current.Name
-$bounds=$link.Current.BoundingRectangle
-if($bounds.Width -le 0 -or $bounds.Height -le 0){throw 'Manage link has no real bounds.'}
+# The exact signed link's real bounds are observed through the already-owned in-process test
+# COM document, not inferred from an ambiguous icon accessible name or a guessed screen pixel.
+$names=@()
+foreach($item in $window.FindAll([Windows.Automation.TreeScope]::Descendants,[Windows.Automation.Condition]::TrueCondition)) {
+ try {$names+=@{name=$item.Current.Name;type=$item.Current.ControlType.ProgrammaticName;automation_id=$item.Current.AutomationId}}catch{}
+}
+$names|ConvertTo-Json|Set-Content (Join-Path $Out 'link-accessibility.json') -Encoding utf8
+$client=[BowserExtensionLink+RECT]::new()
+if(![BowserExtensionLink]::GetClientRect($h,[ref]$client)){throw 'Exact owned client bounds unavailable; no input sent.'}
+$width=$client.Right-$client.Left;$height=$client.Bottom-$client.Top
+if([Math]::Abs($width-$ViewportWidth) -gt 2 -or [Math]::Abs($height-$ViewportHeight) -gt 2){throw 'Observed COM viewport and native client dimensions disagree; no input sent.'}
+if($ClientX -lt 0 -or $ClientY -lt 0 -or $ClientX -ge $width -or $ClientY -ge $height){throw 'Observed link point lies outside the exact owned client; no input sent.'}
+$point=[BowserExtensionLink+POINT]::new();$point.X=$ClientX;$point.Y=$ClientY
+if(![BowserExtensionLink]::ClientToScreen($h,[ref]$point)){throw 'Exact owned client-to-screen conversion failed; no input sent.'}
 if([BowserExtensionLink]::GetForegroundWindow() -ne $h){throw 'Foreground changed before input; no input sent.'}
-[void][BowserExtensionLink]::SetCursorPos([int]($bounds.X+$bounds.Width/2),[int]($bounds.Y+$bounds.Height/2))
+[void][BowserExtensionLink]::SetCursorPos($point.X,$point.Y)
 [BowserExtensionLink]::mouse_event(0x0008,0,0,0,[UIntPtr]::Zero);[BowserExtensionLink]::mouse_event(0x0010,0,0,0,[UIntPtr]::Zero)
 # The menu can live in the embedded browser process. Restrict selection to the exact owner's
 # descendant process tree and the Bowser-owned command name/type, not a similarly named website.
@@ -71,5 +84,5 @@ $invoke=$null;if(!$menu.TryGetCurrentPattern([Windows.Automation.InvokePattern]:
 $invoke.Invoke()
 Start-Sleep -Seconds 2
 Save-OwnedWindow '02-after-native-link-selection.png'
-@{owner_pid=$OwnerPid;owner_window=$h.ToInt64();link_name=$linkName;menu='Open link in this extension window';route='real-native-right-click-and-owned-menu-invoke'}|ConvertTo-Json|Set-Content (Join-Path $Out 'native-link-report.json') -Encoding utf8
-Write-Output 'NATIVE_EXTENSION_LINK actual_manage_hyperlink=true verified_owned_foreground=true real_right_click=true owned_native_menu_invoked=true'
+@{owner_pid=$OwnerPid;owner_window=$h.ToInt64();link='actual signed #popup-manage-button, COM-observed client bounds';client_x=$ClientX;client_y=$ClientY;menu='Open link in this extension window';route='real-native-right-click-and-owned-menu-invoke'}|ConvertTo-Json|Set-Content (Join-Path $Out 'native-link-report.json') -Encoding utf8
+Write-Output 'NATIVE_EXTENSION_LINK actual_signed_link_com_bounds=true verified_owned_foreground=true real_right_click=true owned_native_menu_invoked=true'
