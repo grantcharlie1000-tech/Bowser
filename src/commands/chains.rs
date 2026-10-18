@@ -64,6 +64,9 @@ pub fn parse(text: &str) -> Vec<Chain> {
     }
     let mut chains: Vec<Chain> = Vec::new();
     for line in lines {
+        // `lines` keeps a lone trailing `\r` (a CRLF file whose last line has no `\n`, or a stray
+        // CR), which would make the command id invalid and silently drop that step.
+        let line = line.trim_end_matches('\r');
         let parts: Vec<&str> = line.split('\t').collect();
         match parts.as_slice() {
             ["chain", id, name] => {
@@ -207,6 +210,14 @@ mod tests {
         assert_eq!(parse(&damaged), chains, "unreadable lines are skipped");
         assert_eq!(parse("not the header\nchain\t1\tX\n"), Vec::new());
         assert_eq!(parse(&"x".repeat(MAX_FILE_BYTES + 1)), Vec::new());
+    }
+
+    #[test]
+    fn a_crlf_chain_file_keeps_every_step_including_an_unterminated_last_line() {
+        let chains = vec![chain(1, "Morning", &[(0, "new-tab"), (250, "history")])];
+        let crlf = serialize(&chains).replace('\n', "\r\n");
+        assert_eq!(parse(&crlf), chains);
+        assert_eq!(parse(&format!("{}\r", crlf.trim_end_matches("\r\n"))), chains, "a lone final CR");
     }
 
     #[test]
