@@ -1677,14 +1677,24 @@ fn command_input(session: &mut Session, tab: TabId, chord: &str) {
 /// Feasibility only: a missing native event is not a generic extension-API absence verdict.
 #[test]
 #[ignore = "needs live WebView2 and genuine OS keyboard input to disposable focused views"]
-fn live_probe_native_named_command() {
+fn live_probe_native_named_command() { run_native_keyboard_probe(false); }
+
+#[test]
+#[ignore = "needs genuine reserved action keyboard input in disposable no-popup extension profiles"]
+fn live_probe_native_reserved_action() { run_native_keyboard_probe(true); }
+
+fn run_native_keyboard_probe(reserved_action: bool) {
     use extensions::json::Value;
+    let assignment = if reserved_action { "_execute_action" } else { "bowser-native-probe" };
+    let event_kind = if reserved_action { "action.onClicked" } else { "commands.onCommand" };
+    let fixture_name = if reserved_action { "probe-native-action" } else { "probe-native-commands" };
+    println!("NATIVE_COMMAND scope=real-native-keyboard event_kind={event_kind} manifest_assignment={assignment} no_popup={reserved_action}");
     unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED).ok().unwrap() };
     let root = temp_root();
     for active_tab in [true, false] {
         let profile = root.join(if active_tab { "with-active-tab" } else { "without-active-tab" });
         let source = root.join(if active_tab { "source-with" } else { "source-without" }); std::fs::create_dir(&source).unwrap();
-        for name in ["manifest.json", "worker.js", "popup.html", "popup.js"] { std::fs::copy(fixture("probe-native-commands").join(name), source.join(name)).unwrap(); }
+        for name in ["manifest.json", "worker.js", "popup.html", "popup.js"] { std::fs::copy(fixture(fixture_name).join(name), source.join(name)).unwrap(); }
         if !active_tab {
             let manifest = std::fs::read_to_string(source.join("manifest.json")).unwrap().replace(",\n    \"activeTab\"", "");
             assert!(!manifest.contains("\"activeTab\"")); std::fs::write(source.join("manifest.json"), manifest).unwrap();
@@ -1697,11 +1707,11 @@ fn live_probe_native_named_command() {
         session.engine.select_tab(TabId(2)).unwrap(); session.engine.navigate_tab(TabId(2), &loopback.page("command-duplicate")).unwrap();
         let ready = format!("location.href==={}&&document.title==='Bowser probe page'&&document.readyState==='complete'", crate::chrome_host::protocol::json_string(loopback.page("command-duplicate").as_str()));
         for tab in [TabId(1), TabId(2)] { assert!(pump_until(Duration::from_secs(20), || command_view(&mut session,tab,&ready).as_deref()==Some("true")), "duplicate-URL controlled view was not actually ready: {tab:?}"); }
-        session.open_page(&record.id, &folder, extensions::PageKind::Popup).unwrap();
+        session.open_page(&record.id, &folder, if reserved_action { extensions::PageKind::Options } else { extensions::PageKind::Popup }).unwrap();
         assert!(pump_until(Duration::from_secs(10), || session.page_script("document.documentElement.getAttribute('data-ready')").as_deref() == Some("\"yes\"")));
         let baseline = command_receipt(&mut session, "native-command-preflight").expect("genuine worker preflight receipt missing");
         println!("NATIVE_COMMAND phase=preflight active_tab={active_tab} receipt={baseline:?}");
-        let assigned = matches!(command_field(&baseline, "commands"), Some(Value::Array(commands)) if commands.iter().any(|command| matches!(command_field(command, "name"), Some(Value::String(name)) if name=="bowser-native-probe") && matches!(command_field(command, "shortcut"), Some(Value::String(chord)) if chord=="Ctrl+Shift+X")));
+        let assigned = matches!(command_field(&baseline, "commands"), Some(Value::Array(commands)) if commands.iter().any(|command| matches!(command_field(command, "name"), Some(Value::String(name)) if name==assignment) && matches!(command_field(command, "shortcut"), Some(Value::String(chord)) if chord=="Ctrl+Shift+X")));
         if !assigned { println!("NATIVE_COMMAND verdict=unavailable-assigned-native-chord-not-reported active_tab={active_tab}"); session.close(); drop(loopback); break; }
         for tab in [TabId(1), TabId(2)] {
             for role in ["primary", "negative"] { assert_eq!(command_view(&mut session, tab, &format!("document.documentElement.getAttribute('data-bowser-native-command-{role}')")).as_deref(), Some("null"), "pregesture injection changed a real browsing view"); }
@@ -1723,11 +1733,18 @@ fn live_probe_native_named_command() {
             let receipt = receipt.expect("genuine worker state missing"); println!("NATIVE_COMMAND active_tab={active_tab} focused_owned_view={tab:?} receipt={receipt:?}");
             if !received {
                 assert!(!matches!(command_field(&receipt,"events"),Some(Value::Array(events)) if events.len()>previous_events), "native event arrived but injection/query/negative completion timed out; not a delivery-absence verdict");
-                println!("NATIVE_COMMAND verdict=no-new-native-onCommand-on-tested-runtime assignment_and_focus_and_os_delivery_and_unhandled_host_proven=true focused_owned_view={tab:?}"); session.close(); drop(loopback); remove_with_retries(&root); return;
+                println!("NATIVE_COMMAND verdict=no-new-native-{event_kind}-on-tested-runtime assignment_and_focus_and_os_delivery_and_unhandled_host_proven=true focused_owned_view={tab:?}"); session.close(); drop(loopback); remove_with_retries(&root); return;
             }
             let Some(Value::Array(events)) = command_field(&receipt, "events") else { panic!("worker event array missing"); };
-            let Some(event) = events.last() else { println!("NATIVE_COMMAND verdict=no-native-onCommand-on-tested-runtime assignment_and_focus_and_os_delivery_and_unhandled_host_proven=true"); session.close(); drop(loopback); remove_with_retries(&root); return; };
-            assert_eq!(command_field(event,"command"),Some(&Value::String("bowser-native-probe".to_owned())), "native event did not name the declared command");
+            let Some(event) = events.last() else { println!("NATIVE_COMMAND verdict=no-native-{event_kind}-on-tested-runtime assignment_and_focus_and_os_delivery_and_unhandled_host_proven=true"); session.close(); drop(loopback); remove_with_retries(&root); return; };
+            if reserved_action {
+                assert_eq!(command_field(event,"eventKind"),Some(&Value::String("action.onClicked".to_owned())), "no genuine native action event receipt");
+                // Manifest metadata, deliberately not represented as a native onClicked command name.
+                assert_eq!(command_field(event,"manifestAssignment"),Some(&Value::String(assignment.to_owned())));
+                assert!(matches!(command_field(&receipt,"unexpectedCommandEvents"),Some(Value::Array(events)) if events.is_empty()), "reserved action unexpectedly delivered commands.onCommand");
+            } else {
+                assert_eq!(command_field(event,"command"),Some(&Value::String(assignment.to_owned())), "native event did not name the declared command");
+            }
             assert!(command_field(event,"error").is_none(), "native command boundary probes did not all settle successfully");
             assert!(matches!(command_field(event,"otherTabAttempts"),Some(Value::Array(_))), "other-view attempts did not finish");
             let native = command_field(event, "nativeTab");
@@ -1780,7 +1797,7 @@ fn live_probe_native_named_command() {
             assert_eq!(command_view(&mut session,TabId(2),"document.documentElement.getAttribute('data-bowser-native-command-primary')").as_deref(),Some("null"));
             assert_eq!(command_view(&mut session,TabId(2),"document.documentElement.getAttribute('data-bowser-native-command-negative')").as_deref(),Some("null"), "retained-ID negative injection affected the new cross-origin document");
         }
-        println!("NATIVE_COMMAND verdict=real-native-command-boundary-controls-passed active_tab={active_tab}");
+        println!("NATIVE_COMMAND verdict=real-native-keyboard-boundary-controls-passed event_kind={event_kind} manifest_assignment={assignment} active_tab={active_tab}");
         session.close(); drop(loopback);
     }
     remove_with_retries(&root);
