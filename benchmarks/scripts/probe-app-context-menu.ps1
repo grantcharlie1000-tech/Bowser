@@ -2,7 +2,9 @@
 # Coordinates come from the exact COM-owned source document/controller, never global discovery.
 # RequestReceipt is written by the cfg(test) production-menu coordinator observer before display.
 # Native ID + current request identity authorize selection; the label is only a presentation check.
-# This helper does not focus/activate/repair a window, invoke accessibility, send WM_COMMAND,
+# Before the first right-click, request ordinary activation of this exact retained owner once.
+# A denied request or failed fresh foreground/active proof fails, with no repair or retry.
+# This helper does not invoke accessibility, send WM_COMMAND,
 # call SetSelectedCommandId, dismiss unrelated UI, kill a browser, or infer missing acceptance.
 [CmdletBinding()]
 param([Parameter(Mandatory)][uint32]$OwnerPid,[Parameter(Mandatory)][long]$OwnerHandle,[Parameter(Mandatory)][string]$OwnerExe,[Parameter(Mandatory)][uint32]$BrowserPid,
@@ -43,6 +45,7 @@ public static class BowserAppContext {
  [DllImport("user32.dll")] public static extern IntPtr GetAncestor(IntPtr h,uint flags);
  [DllImport("user32.dll")] public static extern IntPtr WindowFromPoint(POINT p);
  [DllImport("user32.dll")] public static extern bool SetCursorPos(int x,int y);
+ [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
  [DllImport("user32.dll")] public static extern short GetAsyncKeyState(int key);
  [DllImport("user32.dll")] public static extern void mouse_event(uint flags,uint x,uint y,uint data,UIntPtr extra);
  [DllImport("user32.dll")] public static extern void keybd_event(byte key,byte scan,uint flags,UIntPtr extra);
@@ -128,7 +131,7 @@ public static class BowserAppContext {
 '@
 Add-Type -AssemblyName System.Drawing
 New-Item -ItemType Directory -Force $Out|Out-Null
-$report=[ordered]@{scope='real-App-run-BowserNativeWindow-current-engine-request-and-genuine-native-input';status='failed';right_input_called=$false;escape_called=$false;selection_called=$false;selected_command_id=$null;error=$null;failure_cleanup=$null}
+$report=[ordered]@{scope='real-App-run-BowserNativeWindow-current-engine-request-and-genuine-native-input';status='failed';activation_requested=$false;activation_returned=$null;right_input_called=$false;escape_called=$false;selection_called=$false;selected_command_id=$null;error=$null;failure_cleanup=$null}
 $observationClock=[Diagnostics.Stopwatch]::StartNew();$report.topology=@()
 $h=[IntPtr]$OwnerHandle;$pidNow=[uint32]0;$tid=[BowserAppContext]::GetWindowThreadProcessId($h,[ref]$pidNow);$guard=$null;$browserGuard=$null
 function Save-Report {[IO.File]::WriteAllText((Join-Path $Out 'app-context-menu.json'),($report|ConvertTo-Json -Depth 8),[Text.UTF8Encoding]::new($false))}
@@ -227,7 +230,13 @@ try {
  if($pidNow -ne $OwnerPid -or ![BowserAppContext]::Host($h,$OwnerPid,$tid)){throw 'Exact disposable host unavailable; no input.'}
  $guard=[BowserAppContext+OriginalProcess]::new($OwnerPid,$OwnerExe)
  $browserGuard=[BowserAppContext+ReadOnlyBrowser]::new($BrowserPid)
- Observe-Topology 'before-input'
+ Observe-Topology 'before-activation'
+ Neutral
+ if(!$guard.SameAlive() -or !$browserGuard.SameAlive() -or ![BowserAppContext]::Host($h,$OwnerPid,$tid) -or ![BowserAppContext]::IsWindowVisible($h) -or ![BowserAppContext]::IsWindowEnabled($h)){throw 'Exact retained owner unavailable before ordinary activation.'}
+ $report.activation_requested=$true
+ $report.activation_returned=[BowserAppContext]::SetForegroundWindow($h)
+ Observe-Topology 'after-activation-before-input'
+ if(!$report.activation_returned -or !$guard.SameAlive() -or !$browserGuard.SameAlive() -or ![BowserAppContext]::Host($h,$OwnerPid,$tid) -or [BowserAppContext]::GetForegroundWindow() -ne $h){throw 'Exact owner activation unavailable; no input or retry.'}
  $point=[BowserAppContext+POINT]::new();$point.X=$ClientX;$point.Y=$ClientY
  if(![BowserAppContext]::ClientToScreen($h,[ref]$point)){throw 'Exact controlled point conversion failed.'}
  Source-Control;Neutral
