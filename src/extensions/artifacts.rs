@@ -67,8 +67,8 @@ fn guarded(path: &Path, directory: bool) -> Result<Guard, ExtensionError> {
     Ok(Guard { file, id: FileId(info.dwVolumeSerialNumber, (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow)) })
 }
 fn delete_guarded(guard: &Guard) -> Result<(), ExtensionError> {
-    use windows::{core::BOOL, Win32::{Foundation::HANDLE, Storage::FileSystem::{FILE_DISPOSITION_INFO, FileDispositionInfo, SetFileInformationByHandle}}};
-    let info = FILE_DISPOSITION_INFO { DeleteFile: BOOL(1) };
+    use windows::Win32::{Foundation::HANDLE, Storage::FileSystem::{FILE_DISPOSITION_INFO, FileDispositionInfo, SetFileInformationByHandle}};
+    let info = FILE_DISPOSITION_INFO { DeleteFile: true };
     unsafe { SetFileInformationByHandle(HANDLE(guard.file.as_raw_handle()), FileDispositionInfo, (&info as *const FILE_DISPOSITION_INFO).cast(), std::mem::size_of::<FILE_DISPOSITION_INFO>() as u32) }.map_err(|_| refused())
 }
 fn guarded_bytes(guard: &Guard, cap: u64) -> Result<Vec<u8>, ExtensionError> {
