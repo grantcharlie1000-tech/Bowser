@@ -232,7 +232,7 @@ pub(super) fn sync_config(hwnd: HWND, app: &AppRef) {
     let settings = crate::app::App::settings(app);
     let tab_layout = settings.tab_layout;
     let effective = effective_for(hwnd, &settings);
-    let plan = rules::plan(effective.hidden, tab_layout);
+    let plan = rules::plan_for(effective.hidden, tab_layout, settings.tab_bar_visible); // A hidden tab bar hides nothing
     set_panel_floats(hwnd, plan.panel);
     let was_solid = solid();
     let now_solid = !effective.hidden.is_empty();
@@ -438,7 +438,7 @@ fn zone_from_code(code: usize) -> Option<Zone> {
 fn sync_sensors(hwnd: HWND) {
     let want = with_chrome(hwnd, |s| {
         if !s.ah.reveal_allowed || s.ah.hidden.is_empty() {
-            return (Zones::NONE, LRect::default(), LRect::default(), false, 96, false);
+            return (Zones::NONE, LRect::default(), LRect::default(), false, 96, false, false);
         }
         let present = rules::zones(s.ah.plan, !s.ah.bar_float.is_empty(), s.ah.bar_bottom);
         let mut waiting = Zones::NONE;
@@ -447,16 +447,18 @@ fn sync_sensors(hwnd: HWND) {
                 waiting = waiting.with(zone);
             }
         }
-        (waiting, s.ah.page, s.ah.bar_float, s.ah.bar_bottom, s.dpi, true)
+        // A right sidebar comes back from the right edge.
+        let sidebar_right = s.sidebar.is_some_and(|sidebar| sidebar.side == crate::settings::SidePanelPosition::Right);
+        (waiting, s.ah.page, s.ah.bar_float, s.ah.bar_bottom, s.dpi, true, sidebar_right)
     })
-    .unwrap_or((Zones::NONE, LRect::default(), LRect::default(), false, 96, false));
-    let (zones, page, bar, bottom, dpi_now, active) = want;
+    .unwrap_or((Zones::NONE, LRect::default(), LRect::default(), false, 96, false, false));
+    let (zones, page, bar, bottom, dpi_now, active, sidebar_right) = want;
     if !active && with_chrome(hwnd, |s| s.ah.sensors.is_empty()).unwrap_or(true) {
         return;
     }
     // A strip at a screen edge with no monitor beyond it is one pixel; anywhere else 4 DIP.
     let thin_top = zoomed_or_full(hwnd) && no_monitor_above(hwnd, page);
-    let strips = rules::sensors(zones, page, bar, bottom, dpi_now, thin_top, false);
+    let strips = rules::sensors_sided(zones, page, bar, bottom, dpi_now, thin_top, false, sidebar_right);
     // Hide every existing sensor whose zone is not wanted now.
     let existing = with_chrome(hwnd, |s| s.ah.sensors.clone()).unwrap_or_default();
     for (zone, window) in &existing {

@@ -1051,7 +1051,7 @@ impl WindowChrome {
         // --- auto-hide (T11) --- with nothing hidden this is exactly that geometry; with bars out
         // the page widens over them (`layout::compute_arranged_auto_hide`), and the layout with
         // every bar shown says where a revealed bar floats.
-        let plan = crate::auto_hide::plan(self.ah.hidden, arrangement.tabs);
+        let plan = crate::auto_hide::plan_for(self.ah.hidden, arrangement.tabs, arrangement.tab_bar); // A hidden tab bar hides nothing
         let hide = plan.layout();
         let (layout, sidebar) = layout::compute_arranged_auto_hide(
             arrangement, w, h, self.dpi, self.slots.len().max(1), i, maximised,
