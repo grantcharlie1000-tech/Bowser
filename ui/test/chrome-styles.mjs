@@ -105,3 +105,34 @@ test('a narrow inactive strip tab drops its close button, except under tabs_clos
   assert.notEqual(always.display, 'none', 'close-always keeps it on narrow tabs too');
   assert.notEqual(always.opacity, '0', 'and drawn');
 });
+
+test('font_size x ui_zoom (fontScale) scales chrome text and ui_font changes its face; the defaults are the design sizes', { skip }, async () => {
+  const esbuild = await import('esbuild');
+  const out = esbuild.buildSync({
+    stdin: { contents: "export { applyTheme } from './view';", resolveDir: join(here, '..', 'src'), loader: 'ts' },
+    bundle: true, format: 'iife', globalName: 'BW', platform: 'browser', write: false, logLevel: 'silent',
+  });
+  const prelude = Buffer.from(out.outputFiles[0].contents).toString('utf8').replace(/<\/script/gi, String.raw`<\/script`);
+  const markup = `<div id="app"><span id="chrome">Tab title</span><p id="caption" style="font-size:var(--bw-text-caption);line-height:var(--bw-leading-caption)">Caption</p>
+    <p id="body" style="font-size:var(--bw-text-body);line-height:var(--bw-leading-body)">Body</p><h2 id="sub" style="font-size:var(--bw-text-subtitle)">Subtitle</h2>
+    <h1 class="pm-title" id="display">Display</h1></div>`;
+  const read = `
+    var pick = function () { var r = {}; ['body', '#chrome', '#caption', '#body', '#sub', '#display'].forEach(function (s) { var c = cs(s === 'body' ? document.body : s); r[s] = { size: c.fontSize, leading: c.lineHeight, family: c.fontFamily }; }); return r; };
+    out.initial = pick();
+    BW.applyTheme({}, false, true, 100, '');
+    out.defaults = pick();
+    BW.applyTheme({}, false, true, 125, 'Consolas');
+    out.scaled = pick();
+    BW.applyTheme({}, false, true, 100, '');
+    out.back = pick();`;
+  const r = measure(markup, read, prelude);
+  const sizes = (set) => Object.fromEntries(Object.entries(set).map(([k, v]) => [k, v.size]));
+  assert.deepEqual(sizes(r.defaults), { body: '12px', '#chrome': '12px', '#caption': '12px', '#body': '14px', '#sub': '20px', '#display': '28px' }, 'scale 100: the design px sizes');
+  assert.deepEqual(r.defaults, r.initial, 'the default state message changes nothing');
+  assert.equal(r.defaults['#caption'].leading, '16px');
+  assert.match(r.defaults.body.family, /^"Segoe UI Variable", "Segoe UI", system-ui, sans-serif$/);
+  assert.deepEqual(sizes(r.scaled), { body: '15px', '#chrome': '15px', '#caption': '15px', '#body': '17.5px', '#sub': '25px', '#display': '35px' }, 'fontScale 125 scales every text token');
+  assert.equal(r.scaled['#caption'].leading, '20px', 'line heights follow the text');
+  assert.match(r.scaled['#chrome'].family, /^"?Consolas"?, "Segoe UI Variable"/, 'ui_font comes first, the stock stack after it');
+  assert.deepEqual(r.back, r.defaults, 'back to the defaults: back to the stock face and sizes');
+});
