@@ -32,7 +32,7 @@ export interface AddrFlags {
 }
 
 export const DEFAULT_ADDR: AddrFlags = {
-  show: true, full: false, select: true, encoded: true, qr: false, hbtn: false, typed: false, typing: true, badge: false, strip: true, highlight: true, base: '',
+  show: true, full: false, select: true, encoded: true, qr: false, hbtn: false, typed: false, typing: true, badge: false, strip: true, highlight: false, base: '',
 };
 
 export const ADDR_FLAG_KEYS = ['show', 'full', 'select', 'encoded', 'qr', 'hbtn', 'typed', 'typing', 'badge', 'strip', 'highlight', 'base'] as const;

@@ -466,3 +466,9 @@ test('hiding the address field hides only its part of the pill, and its row read
   assert.equal(row.label, 'Show the address field');
   assert.notEqual(row.label, 'Show the address bar row');
 });
+
+test('the UI defaults for the address flags match what Rust sends for default settings (highlight_base off)', () => {
+  assert.equal(logic.DEFAULT_ADDR.highlight, false);
+  // The fixture's settings change only the drop-down sources and the search field, never these flags.
+  for (const key of logic.ADDR_FLAG_KEYS.filter((k) => k !== 'base')) assert.equal(logic.DEFAULT_ADDR[key], fixture.addr[key], key);
+});
