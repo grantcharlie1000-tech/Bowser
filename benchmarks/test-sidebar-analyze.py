@@ -182,6 +182,16 @@ class ComparisonContracts(unittest.TestCase):
             elif kind=='bad-drain':rows[1]['tree_exit_confirmed']=False
             else:rows[1]['sidebar_observation']['complete']=False
             self.assertEqual(primary(module.comparison(rows,1000),'reused')['valid_pair_count'],9,kind)
+    def test_powershell_integer_valued_double_byte_sums_are_valid(self):
+        rows=matrix();rows[1]['disk_before']=100.0;rows[1]['disk_after']=90.0
+        result=module.comparison(rows,1000)
+        self.assertEqual(result['rows'][1]['metrics']['profile_disk_growth_bytes'],-10)
+        self.assertEqual(primary(result)['valid_pair_count'],10)
+    def test_unknown_fractional_or_imprecise_disk_values_are_unavailable(self):
+        for value in [float('nan'),float('inf'),-1,1.25,None,True,2**53+2]:
+            rows=matrix();rows[1]['disk_before']=value;rows[1]['disk_after']=100.0
+            result=module.comparison(rows,1000)
+            self.assertNotIn('profile_disk_growth_bytes',result['rows'][1]['metrics'])
     def test_failure_is_retained_and_never_replaced_with_zero(self):
         rows=matrix();rows[1]['valid']=False;rows[1]['error']='fixture failed'
         r=module.comparison(rows,1000);self.assertEqual(primary(r)['valid_pair_count'],9)

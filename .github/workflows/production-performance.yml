@@ -9,6 +9,7 @@ on:
       - 'benchmarks/test-production-*'
       - 'benchmarks/*native-detail*'
       - 'benchmarks/*sidebar*'
+      - 'benchmarks/*bookmark-bar*'
       - 'src/engine/web_app.rs'
       - 'src/engine/web_app_profile.rs'
       - 'src/engine/web_app_lifecycle_live.rs'
@@ -37,7 +38,7 @@ concurrency:
 jobs:
   baseline:
     runs-on: windows-2025
-    timeout-minutes: 45
+    timeout-minutes: 20
     defaults:
       run:
         shell: pwsh
@@ -49,26 +50,26 @@ jobs:
           persist-credentials: false
           path: candidate
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
-      - name: Verify exact harness checkout and unchanged tested product
+      - name: Verify exact bounded measurement-only source and immutable product
         working-directory: candidate
         env:
           EVENT_SOURCE: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           if((git rev-parse HEAD).Trim() -cne $env:EVENT_SOURCE){throw 'Unexpected source/merge checkout'}
-          git fetch --no-tags --depth=1 origin 19606fc644a23c07db49faeae0b5d13497784649 8036b86d109e6aec7a39808589655a43ee34b85d
-          if($LASTEXITCODE -ne 0){throw 'Cannot fetch preserved product identities'}
-          $changed=@(git diff --name-only 19606fc644a23c07db49faeae0b5d13497784649 HEAD)
-          $allowed=@('.github/workflows/production-performance.yml','benchmarks/production-baseline.ps1','benchmarks/sidebar-analyze.py','benchmarks/test-sidebar-analyze.py','benchmarks/test-sidebar-lifecycle.ps1','benchmarks/sidebar-lifecycle-fix.md')
-          if($LASTEXITCODE -ne 0 -or @($changed|Where-Object {$_ -cnotin $allowed}).Count){throw 'Unexpected change outside reviewed measurement slice'}
+          git fetch --no-tags --depth=1 origin df86bc49bc95e1c65499deb9984c529c43cd9c45 19606fc644a23c07db49faeae0b5d13497784649
+          if($LASTEXITCODE -ne 0){throw 'Cannot fetch preserved product/harness identities'}
+          $changed=@(git diff --name-only df86bc49bc95e1c65499deb9984c529c43cd9c45 HEAD)
+          $allowed=@('.github/workflows/production-performance.yml','benchmarks/production-baseline.ps1','benchmarks/bookmark-bar-lifecycle.psm1','benchmarks/bookmark-bar-analyze.py','benchmarks/test-bookmark-bar-lifecycle.ps1','benchmarks/test-bookmark-bar-analyze.py','benchmarks/bookmark-bar-lifecycle.md','benchmarks/sidebar-analyze.py','benchmarks/test-sidebar-analyze.py')
+          if($LASTEXITCODE -ne 0 -or @($changed|Where-Object {$_ -cnotin $allowed}).Count){throw 'Unexpected change outside reviewed nine-file measurement slice'}
           git diff --exit-code 19606fc644a23c07db49faeae0b5d13497784649 HEAD -- src ui Cargo.toml Cargo.lock build.rs
           if($LASTEXITCODE -ne 0){throw 'Tested product or build inputs changed'}
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: '22'
-      - name: Parse and run native measurement and matched-analysis contracts
+      - name: Parse and run native measurement and bookmark fixture contracts
         working-directory: candidate
         run: |
-          foreach($path in @('benchmarks/production-baseline.ps1','benchmarks/sidebar-lifecycle.psm1','benchmarks/sidebar-input.psm1','benchmarks/test-sidebar-lifecycle.ps1','benchmarks/test-sidebar-input.ps1')) {
+          foreach($path in @('benchmarks/production-baseline.ps1','benchmarks/bookmark-bar-lifecycle.psm1','benchmarks/test-bookmark-bar-lifecycle.ps1','benchmarks/sidebar-lifecycle.psm1','benchmarks/sidebar-input.psm1')) {
             $tokens=$null;$errors=$null
             [Management.Automation.Language.Parser]::ParseFile((Join-Path $pwd $path),[ref]$tokens,[ref]$errors)|Out-Null
             if($errors.Count){$errors|Format-List;throw "$path does not parse"}
@@ -78,16 +79,19 @@ jobs:
           ./benchmarks/test-sidebar-lifecycle.ps1
           ./benchmarks/test-sidebar-preflight.ps1
           ./benchmarks/test-sidebar-input.ps1
+          ./benchmarks/test-bookmark-bar-lifecycle.ps1
           ./benchmarks/test-measurements.ps1
+          python benchmarks/test-bookmark-bar-analyze.py
+          if($LASTEXITCODE -ne 0){throw 'Bar analyzer contracts failed'}
           python benchmarks/test-sidebar-analyze.py
-          if($LASTEXITCODE -ne 0){throw 'Sidebar analyzer contracts failed'}
+          if($LASTEXITCODE -ne 0){throw 'Sidebar analyzer/disk contracts failed'}
           python benchmarks/test-production-analyze.py
           if($LASTEXITCODE -ne 0){throw 'Production analyzer contracts failed'}
           python benchmarks/test-native-detail-analyze.py
           if($LASTEXITCODE -ne 0){throw 'Native detail contracts failed'}
           node --check benchmarks/scripts/production-fixture-server.mjs
           if($LASTEXITCODE -ne 0){throw 'Fixture syntax failed'}
-      - name: Preserve verified immutable reference and successful correctness candidate
+      - name: Preserve verified immutable 19606 executable and frozen input roles
         id: inputs
         working-directory: candidate
         env:
@@ -95,66 +99,34 @@ jobs:
         run: |
           $headers=@{Authorization="Bearer $env:GH_TOKEN";Accept='application/vnd.github+json';'X-GitHub-Api-Version'='2022-11-28'}
           $run=Invoke-RestMethod -Headers $headers -Uri 'https://api.github.com/repos/grantcharlie1000-tech/Bowser/actions/runs/39145303484'
-          if($run.head_sha -cne '19606fc644a23c07db49faeae0b5d13497784649' -or $run.status -cne 'completed' -or $run.conclusion -cne 'success'){throw 'Candidate correctness gates have not passed; no comparison'}
-          $referenceZip=Join-Path $env:RUNNER_TEMP 'sidebar-reference.zip';$candidateZip=Join-Path $env:RUNNER_TEMP 'sidebar-candidate.zip'
-          Invoke-WebRequest -Headers $headers -Uri 'https://api.github.com/repos/grantcharlie1000-tech/Bowser/actions/artifacts/12137628254/zip' -OutFile $referenceZip
-          Invoke-WebRequest -Headers $headers -Uri 'https://api.github.com/repos/grantcharlie1000-tech/Bowser/actions/artifacts/12143481419/zip' -OutFile $candidateZip
-          if((Get-FileHash $referenceZip -Algorithm SHA256).Hash.ToLowerInvariant() -cne 'c5fd895e5b4b12768736363e43b1295a4ad1f23b65284ac087cb06c64e6b668e' -or (Get-FileHash $candidateZip -Algorithm SHA256).Hash.ToLowerInvariant() -cne '58ae1c032639a19b9e44245a3cc9bde0d57feba0d23a38325028de5a9c5e8678'){throw 'Immutable archive mismatch'}
-          $reference=Join-Path $env:RUNNER_TEMP 'sidebar-reference';$tested=Join-Path $env:RUNNER_TEMP 'sidebar-candidate'
-          Expand-Archive -LiteralPath $referenceZip -DestinationPath $reference
-          Expand-Archive -LiteralPath $candidateZip -DestinationPath $tested
-          New-Item -ItemType Directory -Force ../evidence/sidebar-reference,../evidence/candidate|Out-Null
-          Copy-Item (Join-Path $reference 'frozen') ../evidence/ -Recurse
-          $baselineIdentity=Get-Content (Join-Path $reference 'candidate/identity.json') -Raw|ConvertFrom-Json
-          $candidateIdentity=Get-Content (Join-Path $tested 'candidate/identity.json') -Raw|ConvertFrom-Json
-          $baselineExe=Join-Path $reference 'candidate/candidate.exe';$candidateExe=Join-Path $tested 'candidate/candidate.exe'
-          if($baselineIdentity.source -cne '8036b86d109e6aec7a39808589655a43ee34b85d' -or $baselineIdentity.tree -cne '2a36d4c7af8ee00c27f950151f3ace8152fb72ed' -or $baselineIdentity.sha256 -cne 'e42a1005193c54b08fba8c6f65f88757900f6bc400d4c350b0b386453406fa66' -or $baselineIdentity.bytes -ne 7889408 -or (Get-FileHash $baselineExe -Algorithm SHA256).Hash.ToLowerInvariant() -cne $baselineIdentity.sha256 -or (Get-Item $baselineExe).Length -ne $baselineIdentity.bytes){throw 'Reference executable/source mismatch'}
-          if($candidateIdentity.source -cne '19606fc644a23c07db49faeae0b5d13497784649' -or $candidateIdentity.tree -cne 'cf214f415f80b408a0bbe7f16b990b3a34f7c55e' -or $candidateIdentity.sha256 -cne '0799cb5151c27a1e0476519a3b2919ccd5e6b2503160e70da5c21a8eb500be8e' -or $candidateIdentity.bytes -ne 7938560 -or (Get-FileHash $candidateExe -Algorithm SHA256).Hash.ToLowerInvariant() -cne $candidateIdentity.sha256 -or (Get-Item $candidateExe).Length -ne $candidateIdentity.bytes){throw 'Candidate executable/source mismatch'}
-          if($baselineIdentity.toolchain -cne $candidateIdentity.toolchain -or $baselineIdentity.features -cne $candidateIdentity.features){throw 'Unmatched build toolchain/features'}
-          Copy-Item $baselineExe ../evidence/sidebar-reference/reference.exe
-          Copy-Item (Join-Path $reference 'candidate/identity.json') ../evidence/sidebar-reference/identity.json
-          Copy-Item (Join-Path $tested 'candidate/*') ../evidence/candidate/
-          if((Get-FileHash ../evidence/frozen/untouched-main.exe -Algorithm SHA256).Hash.ToLowerInvariant() -cne 'd0075f2807fd94000cb51ace647eaf335c71ab37c8302a91f0a52d3380dbe0fa' -or (Get-FileHash ../evidence/frozen/released-v0.0.19.exe -Algorithm SHA256).Hash.ToLowerInvariant() -cne '341486070d2e74cf9a9e5d5fbeffa90c7dd2ec4fd36bc284a8a3878a7a9bcec1'){throw 'Untouched frozen identity mismatch'}
-          [ordered]@{baseline='d0075f2807fd94000cb51ace647eaf335c71ab37c8302a91f0a52d3380dbe0fa';diagnostic=$baselineIdentity.sha256;release='341486070d2e74cf9a9e5d5fbeffa90c7dd2ec4fd36bc284a8a3878a7a9bcec1';candidate=$candidateIdentity.sha256}|ConvertTo-Json|Set-Content ../evidence/input-manifest.json
-          [ordered]@{harness_source=(git rev-parse HEAD).Trim();harness_tree=(git rev-parse 'HEAD^{tree}').Trim();reference=$baselineIdentity;candidate=$candidateIdentity;reference_artifact=12137628254;candidate_artifact=12143481419;reference_archive_sha256='c5fd895e5b4b12768736363e43b1295a4ad1f23b65284ac087cb06c64e6b668e';candidate_archive_sha256='58ae1c032639a19b9e44245a3cc9bde0d57feba0d23a38325028de5a9c5e8678';scope='Exact immutable EXEs reused on a fresh matched runner; no rebuild; fixed failure-inclusive sidebar memory comparison, no automatic acceptance'}|ConvertTo-Json -Depth 8|Set-Content ../evidence/comparison-provenance.json
-      - name: Ten fixed alternating matched settled pairs each fresh and reused
-        id: settled
+          if($run.head_sha -cne '19606fc644a23c07db49faeae0b5d13497784649' -or $run.status -cne 'completed' -or $run.conclusion -cne 'success'){throw 'Candidate correctness gates have not passed'}
+          $zip=Join-Path $env:RUNNER_TEMP 'bar-19606.zip'
+          Invoke-WebRequest -Headers $headers -Uri 'https://api.github.com/repos/grantcharlie1000-tech/Bowser/actions/artifacts/12143481419/zip' -OutFile $zip
+          if((Get-FileHash $zip -Algorithm SHA256).Hash.ToLowerInvariant() -cne '58ae1c032639a19b9e44245a3cc9bde0d57feba0d23a38325028de5a9c5e8678'){throw 'Immutable archive mismatch'}
+          $cache=Join-Path $env:RUNNER_TEMP 'bar-19606';Expand-Archive -LiteralPath $zip -DestinationPath $cache
+          New-Item -ItemType Directory -Force ../evidence|Out-Null
+          Copy-Item (Join-Path $cache 'frozen'),(Join-Path $cache 'sidebar-reference'),(Join-Path $cache 'candidate') ../evidence/ -Recurse
+          $identity=Get-Content ../evidence/candidate/identity.json -Raw|ConvertFrom-Json
+          $exe=Get-Item ../evidence/candidate/candidate.exe
+          if($identity.source -cne '19606fc644a23c07db49faeae0b5d13497784649' -or $identity.tree -cne 'cf214f415f80b408a0bbe7f16b990b3a34f7c55e' -or $identity.bytes -ne 7938560 -or $identity.sha256 -cne '0799cb5151c27a1e0476519a3b2919ccd5e6b2503160e70da5c21a8eb500be8e' -or $exe.Length -ne $identity.bytes -or (Get-FileHash $exe.FullName -Algorithm SHA256).Hash.ToLowerInvariant() -cne $identity.sha256){throw 'Actual immutable candidate identity mismatch'}
+          $roles=[ordered]@{baseline='d0075f2807fd94000cb51ace647eaf335c71ab37c8302a91f0a52d3380dbe0fa';diagnostic='e42a1005193c54b08fba8c6f65f88757900f6bc400d4c350b0b386453406fa66';release='341486070d2e74cf9a9e5d5fbeffa90c7dd2ec4fd36bc284a8a3878a7a9bcec1';candidate=$identity.sha256}
+          foreach($item in @(@('baseline','../evidence/frozen/untouched-main.exe'),@('diagnostic','../evidence/sidebar-reference/reference.exe'),@('release','../evidence/frozen/released-v0.0.19.exe'))){if((Get-FileHash $item[1] -Algorithm SHA256).Hash.ToLowerInvariant() -cne $roles[$item[0]]){throw 'Preserved frozen role mismatch'}}
+          $roles|ConvertTo-Json|Set-Content ../evidence/input-manifest.json
+          [ordered]@{harness_source=(git rev-parse HEAD).Trim();harness_tree=(git rev-parse 'HEAD^{tree}').Trim();product=$identity;artifact=12143481419;archive_sha256='58ae1c032639a19b9e44245a3cc9bde0d57feba0d23a38325028de5a9c5e8678';scope='Same exact EXE ON/OFF, four fixed opt-in NewTab bar rows; no rebuild/product optimization/default-memory claim'}|ConvertTo-Json -Depth 8|Set-Content ../evidence/bookmark-bar-provenance.json
+      - name: Four fixed ordinary enabled-NewTab-bar ON OFF fresh reused rows
         working-directory: candidate
         run: |
-          ./benchmarks/production-baseline.ps1 -BaselineExe ../evidence/frozen/untouched-main.exe -DiagnosticExe ../evidence/sidebar-reference/reference.exe -DiagnosticSource '8036b86d109e6aec7a39808589655a43ee34b85d' -ReleaseExe ../evidence/frozen/released-v0.0.19.exe -CandidateExe ../evidence/candidate/candidate.exe -CandidateSource '19606fc644a23c07db49faeae0b5d13497784649' -DiagnosticAutoUpdateOff -ExpectedInputManifest ../evidence/input-manifest.json -SidebarLifecyclePilot -SidebarLifecycleCompare -StartupOnly -PositiveOnly -Fixtures light -MeasurementMode timing -MaxInvalidSamples 20 -SidebarScenario settled -Pairs 10 -Out ../evidence/sidebar-settled
-      - name: Analyze all retained settled rows including failures
+          ./benchmarks/production-baseline.ps1 -BaselineExe ../evidence/frozen/untouched-main.exe -DiagnosticExe ../evidence/sidebar-reference/reference.exe -DiagnosticSource '8036b86d109e6aec7a39808589655a43ee34b85d' -ReleaseExe ../evidence/frozen/released-v0.0.19.exe -CandidateExe ../evidence/candidate/candidate.exe -CandidateSource '19606fc644a23c07db49faeae0b5d13497784649' -DiagnosticAutoUpdateOff -ExpectedInputManifest ../evidence/input-manifest.json -BookmarkBarPilot -StartupOnly -PositiveOnly -Fixtures light -MeasurementMode timing -MaxInvalidSamples 4 -Pairs 1 -Out ../evidence/bookmark-bar
+      - name: Analyze every retained baseline row, failures remain unavailable
         if: ${{ !cancelled() && steps.inputs.outcome == 'success' }}
         working-directory: candidate
         run: |
-          python benchmarks/sidebar-analyze.py ../evidence/sidebar-settled
-          if($LASTEXITCODE -ne 0){throw 'Matched analysis failed; preserve all raw rows'}
-      - name: One separate fixed rapid regression pair each fresh and reused
-        if: ${{ !cancelled() && steps.inputs.outcome == 'success' }}
-        working-directory: candidate
-        run: |
-          ./benchmarks/production-baseline.ps1 -BaselineExe ../evidence/frozen/untouched-main.exe -DiagnosticExe ../evidence/sidebar-reference/reference.exe -DiagnosticSource '8036b86d109e6aec7a39808589655a43ee34b85d' -ReleaseExe ../evidence/frozen/released-v0.0.19.exe -CandidateExe ../evidence/candidate/candidate.exe -CandidateSource '19606fc644a23c07db49faeae0b5d13497784649' -DiagnosticAutoUpdateOff -ExpectedInputManifest ../evidence/input-manifest.json -SidebarLifecyclePilot -SidebarLifecycleCompare -StartupOnly -PositiveOnly -Fixtures light -MeasurementMode timing -MaxInvalidSamples 4 -SidebarScenario rapid -Pairs 1 -Out ../evidence/sidebar-rapid
-      - name: Analyze retained rapid rows separately, not primary acceptance
-        if: ${{ !cancelled() && steps.inputs.outcome == 'success' }}
-        working-directory: candidate
-        run: |
-          python benchmarks/sidebar-analyze.py ../evidence/sidebar-rapid
-          if($LASTEXITCODE -ne 0){throw 'Rapid analysis failed; preserve raw rows'}
-      - name: Require complete primary pairs and unchanged candidate correctness
-        if: ${{ !cancelled() && steps.inputs.outcome == 'success' }}
-        working-directory: candidate
-        run: |
-          $analysis=Get-Content ../evidence/sidebar-settled/sidebar-analysis.json -Raw|ConvertFrom-Json
-          $primary=@($analysis.paired_comparisons|Where-Object {$_.metric -ceq 'phase_closed-cycle-3_private_bytes' -and $_.scenario -ceq 'settled'})
-          if($primary.Count -ne 2 -or @($primary|Where-Object {$_.valid_pair_count -ne 10 -or -not $_.minimum_primary_pair_count_met}).Count -or (@($primary.condition|Sort-Object)-join ',') -cne 'fresh,reused'){throw 'Ten eligible primary matched pairs EACH fresh/reused required; no replacement attempts'}
-          foreach($folder in @('../evidence/sidebar-settled','../evidence/sidebar-rapid')){
-            $rows=@(Get-ChildItem "$folder/sidebar_candidate_on-*.json"|ForEach-Object {Get-Content $_ -Raw|ConvertFrom-Json})
-            $expected=if($folder.EndsWith('settled')){20}else{2}
-            if($rows.Count -ne $expected){throw 'Fixed candidate row count incomplete'}
-            foreach($row in $rows){
-              if(-not $row.valid -or -not $row.tree_exit_confirmed -or -not $row.sidebar_observation.complete -or $row.sidebar_observation.environment_requests -ne 1 -or $row.sidebar_observation.controller_requests -ne 2 -or @($row.sidebar_observation.requests).Count -ne 2 -or (@($row.sidebar_observation.requests.app|Sort-Object)-join ',') -cne '1,2' -or @($row.sidebar_observation.requests|Where-Object {$_.configured -ne 1 -or $_.installed -ne 1 -or $_.replaced -ne 0 -or $_.close_requested -ne 1 -or $_.close_succeeded -ne 1 -or $_.close_failed -ne 0 -or $_.native_navigation_success -lt 1}).Count){throw 'Candidate lifecycle correctness regression; metrics do not override failure'}
-            }
-          }
-      - name: Preserve immutable inputs, provenance and every raw result
+          python benchmarks/bookmark-bar-analyze.py ../evidence/bookmark-bar
+          if($LASTEXITCODE -ne 0){throw 'Bar baseline analysis failed, retain raw rows'}
+          $report=Get-Content ../evidence/bookmark-bar/bookmark-bar-analysis.json -Raw|ConvertFrom-Json
+          $keys=@($report.rows|ForEach-Object {"$($_.arm):$($_.condition)"}|Sort-Object)
+          if($report.row_count -ne 4 -or $report.valid_count -ne 4 -or $report.eligible_count -ne 4 -or ($keys -join ',') -cne 'bookmarkbar_off:fresh,bookmarkbar_off:reused,bookmarkbar_on:fresh,bookmarkbar_on:reused'){throw 'Fixed bar baseline incomplete; no native replacement attempt or product optimization yet'}
+      - name: Preserve immutable inputs and every bar observation/failure
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
@@ -164,17 +136,12 @@ jobs:
             evidence/sidebar-reference/
             evidence/candidate/
             evidence/input-manifest.json
-            evidence/comparison-provenance.json
+            evidence/bookmark-bar-provenance.json
             evidence/native-isolation-blocked.json
-            evidence/sidebar-settled/*.json
-            evidence/sidebar-settled/*.csv
-            evidence/sidebar-settled/*.png
-            evidence/sidebar-settled/*stderr.txt
-            evidence/sidebar-settled/isolated/requests.jsonl
-            evidence/sidebar-rapid/*.json
-            evidence/sidebar-rapid/*.csv
-            evidence/sidebar-rapid/*.png
-            evidence/sidebar-rapid/*stderr.txt
-            evidence/sidebar-rapid/isolated/requests.jsonl
+            evidence/bookmark-bar/*.json
+            evidence/bookmark-bar/*.csv
+            evidence/bookmark-bar/*.png
+            evidence/bookmark-bar/*stderr.txt
+            evidence/bookmark-bar/isolated/requests.jsonl
           if-no-files-found: warn
           retention-days: 30

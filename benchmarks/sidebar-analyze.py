@@ -139,8 +139,10 @@ def comparison(rows, frequency):
         metrics = {'phase_' + name + '_private_bytes': value for name, value in record['phase_private_bytes'].items()}
         if not exclusions:
             before, after = raw.get('disk_before'), raw.get('disk_after')
-            if isinstance(before, int) and isinstance(after, int):
-                metrics['profile_disk_growth_bytes'] = after - before
+            if all(isinstance(value, (int, float)) and not isinstance(value, bool)
+                   and math.isfinite(value) and 0 <= value <= 2 ** 53
+                   and int(value) == value for value in (before, after)):
+                metrics['profile_disk_growth_bytes'] = int(after) - int(before)
             for phase in raw.get('sidebar_trace') or []:
                 if phase.get('kind') != 'resource-phase' or phase_private(phase) is None:
                     continue
