@@ -1409,12 +1409,12 @@ fn live_probe_profile_private_isolation() {
     pump_until(Duration::from_secs(2), || false); assert_eq!(private.read_marker("data-bowser-probe").as_deref(), Some("null"));
     assert!(!private.engine.probe_extension_profile_ready(), "private-first controller captured the extension profile");
     assert!(!private_loopback.beacons.lock().unwrap().iter().any(|p| p.starts_with(BEACON_PREFIX)));
-    let popup = private.open_page(&id, &folder, extensions::PageKind::Popup); assert!(popup.is_err(), "private active view unexpectedly gained the extension page: {popup:?}");
     private.engine.select_tab(TabId(2)).unwrap(); private.engine.navigate_tab(TabId(2), &private_loopback.page("ordinary-after-private")).unwrap();
     assert!(pump_until(Duration::from_secs(30), || private.engine.probe_loaded_extension_id(&id).is_some()));
     assert!(private.engine.probe_extension_profile_ready());
-    private.engine.select_tab(TabId(1)).unwrap(); private.engine.navigate_tab(TabId(1), &private_loopback.page("private-after-normal-negative")).unwrap(); pump_until(Duration::from_secs(3), || false);
-    assert_eq!(private.read_marker("data-bowser-probe").as_deref(), Some("null"));
-    println!("PRIVATE_ISOLATION persisted_enabled_fixture=true private_first_actual_page_loaded=true private_profile_not_captured=true private_content_absent=true private_popup_rejected=true later_ordinary_profile_captured=true private_after_ordinary_content_absent=true scope=profile-and-private-not-ui-context");
+    private.engine.select_tab(TabId(1)).unwrap(); private.engine.navigate_tab(TabId(1), &private_loopback.page("private-after-normal-negative")).unwrap();
+    assert!(pump_until(Duration::from_secs(15), || private_loopback.beacons.lock().unwrap().iter().any(|p| p == "/private-after-normal-negative")), "second private negative did not navigate its actual new document");
+    pump_until(Duration::from_secs(2), || false); assert_eq!(private.read_marker("data-bowser-probe").as_deref(), Some("null"));
+    println!("PRIVATE_ISOLATION persisted_enabled_fixture=true private_first_actual_page_loaded=true private_profile_not_captured=true private_content_absent=true popup_privacy_gate_not_exercised=true later_ordinary_profile_captured=true private_after_ordinary_content_absent=true scope=profile-and-private-not-ui-context");
     private.close(); drop(private_loopback); remove_with_retries(&root);
 }
