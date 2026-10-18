@@ -282,15 +282,17 @@ pub struct ChromeEnv {
     inner: Rc<ICoreWebView2Environment>,
     diagnostic: Option<Rc<crate::performance::PerfLog>>,
     diagnostic_sequence: Rc<Cell<u64>>,
+    interaction: Option<Rc<crate::performance::PerfLog>>,
 }
 
 impl ChromeEnv {
     /// Wraps the shared tab environment. It must have been created with [`register_ui_scheme`].
-    pub fn new(environment: ICoreWebView2Environment, diagnostic: Option<Rc<crate::performance::PerfLog>>) -> Self {
+    pub fn new(environment: ICoreWebView2Environment, diagnostic: Option<Rc<crate::performance::PerfLog>>, interaction: Option<Rc<crate::performance::PerfLog>>) -> Self {
         Self {
             inner: Rc::new(environment),
             diagnostic,
             diagnostic_sequence: Rc::new(Cell::new(0)),
+            interaction,
         }
     }
 }
@@ -1034,6 +1036,12 @@ fn install_handlers(
         // messages never reach the parser or the caller.
         let on_command = setup.on_command.clone();
         let weak_bridge = weak.clone();
+        let interaction=setup.env.interaction.clone();
+        let diagnostic_enabled=Cell::new(false);
+        let rate_drop_logged=Cell::new(false);
+        let diagnostic_drop_logged=Cell::new(false);
+        let mut diagnostic_bucket=TokenBucket::new(32,32);
+        let diagnostic_checkpoint_done=Cell::new(false);
         let mut bucket = TokenBucket::new(MESSAGE_BURST, MESSAGE_RATE_PER_SEC);
         let mut popup_gate = Throttle::new(POPUP_COMMAND_INTERVAL);
         webview.add_WebMessageReceived(
@@ -1055,20 +1063,65 @@ fn install_handlers(
                 if !is_trusted_message(view, &sender_uri, &message_uri) {
                     return Ok(());
                 }
-                if !bucket.take(Instant::now()) {
+                // Opt-in telemetry has a separate bounded NON-ACTION intake. It never spends
+                // product action tokens. Unknown/malformed messages still take the original path.
+                // OFF mode retains the original quota-before-string-read order unchanged.
+                let diagnostic_raw=if interaction.is_some() && view==View::Toolbar {
+                    let mut raw=PWSTR::null();
+                    args.TryGetWebMessageAsString(&mut raw).ok().map(|()|CoTaskMemPWSTR::from(raw).to_string())
+                }else{None};
+                let product_allowed=if let Some(raw)=diagnostic_raw.as_ref() {
+                    match interaction_admission(view,interaction.is_some(),raw,&mut diagnostic_bucket,&mut bucket,Instant::now()) {
+                        InteractionAdmission::Diagnostic{event,count}=>{
+                            if let Some(log)=&interaction {
+                                let _=log.record_detail(event,"toolbar",0,0,u64::from(count));
+                                if event=="interaction_dom_armed" && !diagnostic_checkpoint_done.replace(true){let _=log.diagnostic_checkpoint();}
+                            }
+                            return Ok(());
+                        }
+                        InteractionAdmission::DiagnosticDropped=>{
+                            if !diagnostic_drop_logged.replace(true) && let Some(log)=&interaction {let _=log.record("interaction_diagnostic_rate_drop");}
+                            return Ok(());
+                        }
+                        InteractionAdmission::Product(allowed)=>allowed,
+                    }
+                }else{bucket.take(Instant::now())};
+                if !product_allowed {
+                    if !rate_drop_logged.replace(true) && let Some(log)=&interaction {let _=log.record("interaction_bridge_rate_drop");}
                     return Ok(());
                 }
-                let mut raw = PWSTR::null();
-                if args.TryGetWebMessageAsString(&mut raw).is_err() {
-                    return Ok(());
-                }
-                let raw = CoTaskMemPWSTR::from(raw).to_string();
+                let raw=if let Some(raw)=diagnostic_raw {raw}else{
+                    let mut raw = PWSTR::null();
+                    if args.TryGetWebMessageAsString(&mut raw).is_err() {return Ok(());}
+                    CoTaskMemPWSTR::from(raw).to_string()
+                };
                 let Ok(command) = parse_command(&raw) else {
+                    if let Some(log)=&interaction {let _=log.record("interaction_bridge_parse_drop");}
                     return Ok(());
                 };
                 if !view_accepts_command(view, &command) { return Ok(()); }
+                if matches!(command,Command::Interaction{..}) {
+                    return Ok(()); // Unavailable without flag; never reaches action dispatch.
+                }
+                if let Some(log)=&interaction {
+                    let event=match &command {
+                        Command::Submit(_)=>Some("interaction_bridge_submit"),
+                        Command::SuggestPick{..}=>Some("interaction_bridge_suggestion_pick"),
+                        Command::Focus(true)=>Some("interaction_bridge_focus_in"),
+                        Command::Focus(false)=>Some("interaction_bridge_focus_out"),
+                        _=>None,
+                    };
+                    if let Some(event)=event {let _=log.record(event);}
+                }
                 if matches!(command, Command::Ready) {
                     reveal(&weak_bridge);
+                    if interaction.is_some() && view==View::Toolbar && !diagnostic_enabled.replace(true)
+                        && let Some(state)=weak_bridge.upgrade()
+                    {
+                        let host=ChromeHost{state};
+                        let event=if host.post_json(r#"{"v":1,"t":"diagnosticInteraction","enabled":true}"#).is_ok(){"interaction_observer_enable_sent"}else{"interaction_observer_enable_failed"};
+                        if let Some(log)=&interaction {let _=log.record(event);}
+                    }
                 } else if is_popup_command(&command) && !popup_gate.allow(Instant::now()) {
                     return Ok(());
                 }
@@ -1086,15 +1139,22 @@ fn install_handlers(
         // shortcuts. Browser accelerator keys are disabled in settings, so nothing else runs here.
         if let Some(on_accelerator) = setup.on_accelerator.clone() {
             let controller = host.state.borrow().controller.clone();
+            let interaction_accel=setup.env.interaction.clone();
             controller.add_AcceleratorKeyPressed(
                 &AcceleratorKeyPressedEventHandler::create(Box::new(move |_sender, args| {
                     let Some(args) = args else {
                         return Ok(());
                     };
-                    if let Some(accel) = read_accel(&args)
-                        && on_accelerator(accel)
-                    {
-                        args.SetHandled(true)?;
+                    if let Some(accel) = read_accel(&args) {
+                        if accel.vk==13 && let Some(log)=&interaction_accel {
+                            let flags=u64::from(accel.key_down)|(u64::from(accel.ctrl)<<1)|(u64::from(accel.shift)<<2)|(u64::from(accel.alt)<<3);
+                            let _=log.record_detail("interaction_native_enter",view.diagnostic_name(),0,0,flags);
+                        }
+                        let handled=on_accelerator(accel); // Original handler called exactly once.
+                        if accel.vk==13 && let Some(log)=&interaction_accel {
+                            let _=log.record_detail("interaction_native_enter_handled",view.diagnostic_name(),0,0,u64::from(handled));
+                        }
+                        if handled{args.SetHandled(true)?;}
                     }
                     Ok(())
                 })),
@@ -1233,10 +1293,27 @@ fn is_trusted_message(view: View, sender_uri: &str, message_uri: &str) -> bool {
 }
 
 /// The URL check establishes origin; this check limits each page to its own command family.
+#[derive(Debug,PartialEq,Eq)]
+enum InteractionAdmission {
+    Diagnostic {event: &'static str,count: u32},
+    DiagnosticDropped,
+    Product(bool),
+}
+/// Caller has already applied the unchanged top-frame/source checks. Valid diagnostic-only
+/// traffic is bounded separately and can neither spend product tokens nor admit an action.
+fn interaction_admission(view: View,enabled: bool,raw: &str,diagnostic: &mut TokenBucket,product: &mut TokenBucket,now: Instant)->InteractionAdmission {
+    if enabled && view==View::Toolbar && raw.len()<=128
+        && let Ok(Command::Interaction{event,count})=parse_command(raw)
+    {
+        return if diagnostic.take(now){InteractionAdmission::Diagnostic{event,count}}else{InteractionAdmission::DiagnosticDropped};
+    }
+    InteractionAdmission::Product(product.take(now))
+}
+
 fn view_accepts_command(view: View, command: &Command) -> bool {
     if matches!(command, Command::Ready) { return true; }
     match view {
-        View::Toolbar => matches!(command, Command::Tool { bar: ToolBar::Address, .. } | Command::DownloadsToggle { .. } | Command::ExtensionsButton { .. } | Command::Nav(_) | Command::Edit { .. } | Command::Submit(_) | Command::Escape | Command::Focus(_) | Command::Open(_) | Command::BeginDrag | Command::Caption(_) | Command::Tip { .. } | Command::TipOff | Command::SuggestPick { .. } | Command::SuggestPreview { .. } | Command::SuggestEnd | Command::Panel { kind: PanelType::Address, .. }),
+        View::Toolbar => matches!(command, Command::Interaction{..} | Command::Tool { bar: ToolBar::Address, .. } | Command::DownloadsToggle { .. } | Command::ExtensionsButton { .. } | Command::Nav(_) | Command::Edit { .. } | Command::Submit(_) | Command::Escape | Command::Focus(_) | Command::Open(_) | Command::BeginDrag | Command::Caption(_) | Command::Tip { .. } | Command::TipOff | Command::SuggestPick { .. } | Command::SuggestPreview { .. } | Command::SuggestEnd | Command::Panel { kind: PanelType::Address, .. }),
         View::Tabs => matches!(command, Command::Tool { bar: ToolBar::Tabs, .. } | Command::Tab { .. } | Command::TabMove { .. } | Command::TabSelection { .. } | Command::ClosedTabs | Command::Group { .. } | Command::Side(_) | Command::BeginDrag | Command::Caption(_) | Command::Tip { .. } | Command::TipOff | Command::Hover(_))
             // --- split view ---
             || matches!(command, Command::Split(SplitCommand::DragOver { .. } | SplitCommand::Drop { .. } | SplitCommand::DragEnd { .. }))
@@ -1284,6 +1361,39 @@ fn request_path(uri: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn diagnostic_intake_cannot_spend_or_admit_product_actions() {
+        let now=Instant::now();
+        let raw=r#"{"v":1,"t":"interaction","e":"armed","n":0}"#;
+        let mut diagnostic=TokenBucket::new(1,0);let mut product=TokenBucket::new(1,0);
+        assert!(matches!(interaction_admission(View::Toolbar,true,raw,&mut diagnostic,&mut product,now),InteractionAdmission::Diagnostic{..}));
+        assert_eq!(interaction_admission(View::Toolbar,true,raw,&mut diagnostic,&mut product,now),InteractionAdmission::DiagnosticDropped);
+        assert!(product.take(now));assert!(!product.take(now));
+        for raw in ["{",r#"{"v":1,"t":"interaction","e":"unknown","n":0}"#,r#"{"v":1,"t":"unknown"}"#,r#"{"v":1,"t":"interaction","e":"armed","n":0,"text":"url"}"#,r#"{"v":1,"t":"submit","text":"bowser://settings"}"#] {
+            let mut diagnostic=TokenBucket::new(1,0);let mut product=TokenBucket::new(1,0);
+            assert_eq!(interaction_admission(View::Toolbar,true,raw,&mut diagnostic,&mut product,now),InteractionAdmission::Product(true));
+            assert_eq!(interaction_admission(View::Toolbar,true,raw,&mut diagnostic,&mut product,now),InteractionAdmission::Product(false));
+            assert!(diagnostic.take(now));
+        }
+        let mut diagnostic=TokenBucket::new(1,0);let mut product=TokenBucket::new(1,0);
+        assert_eq!(interaction_admission(View::Toolbar,false,raw,&mut diagnostic,&mut product,now),InteractionAdmission::Product(true));
+        assert!(diagnostic.take(now));
+        let mut diagnostic=TokenBucket::new(1,0);let mut product=TokenBucket::new(1,0);
+        assert_eq!(interaction_admission(View::Settings,true,raw,&mut diagnostic,&mut product,now),InteractionAdmission::Product(true));
+        assert!(diagnostic.take(now));
+        let padded=format!("{raw}{}"," ".repeat(129));
+        let mut diagnostic=TokenBucket::new(1,0);let mut product=TokenBucket::new(1,0);
+        assert_eq!(interaction_admission(View::Toolbar,true,&padded,&mut diagnostic,&mut product,now),InteractionAdmission::Product(true));
+        assert!(diagnostic.take(now));
+    }
+    #[test]
+    fn interaction_telemetry_is_toolbar_only() {
+        let command=Command::Interaction{event:"interaction_dom_armed",count:0};
+        assert!(view_accepts_command(View::Toolbar,&command));
+        for view in [View::Tabs,View::Rail,View::Panel,View::Popup,View::Dialog,View::Settings,View::HistoryPage,View::DownloadsPage,View::Split] {
+            assert!(!view_accepts_command(view,&command));
+        }
+    }
     #[test]
     fn diagnostic_sources_are_exact_fixed_chrome_views() {
         assert_eq!(super::diagnostic_frame_view(super::START_URL), Some("toolbar"));

@@ -19,6 +19,8 @@ pub struct LaunchOptions {
     pub diagnostic_log: Option<PathBuf>,
     /// Additional native attribution, deliberately excluded from primary timing arms.
     pub diagnostic_detail: bool,
+    /// Cheap fixed-label interaction ordering; no process/frame inventory.
+    pub diagnostic_interaction: bool,
     pub user_data_dir: Option<PathBuf>,
     pub benchmark_url: Option<Url>,
     /// `--data-dir <path>` / `BOWSER_DATA_DIR`: the app-data root that replaces
@@ -103,6 +105,11 @@ impl LaunchOptions {
         let mut explicit_data_dir: Option<PathBuf> = None;
         let mut iter = args.into_iter();
         while let Some(flag) = iter.next() {
+            if flag == "--diagnostic-interaction" {
+                if options.diagnostic_interaction { return Err("Duplicate diagnostic interaction argument".into()); }
+                options.diagnostic_interaction = true;
+                continue;
+            }
             if flag == "--diagnostic-detail" {
                 if options.diagnostic_detail { return Err("Duplicate diagnostic detail argument".into()); }
                 options.diagnostic_detail = true;
@@ -307,6 +314,9 @@ impl LaunchOptions {
                     }
                 }
             }
+        }
+        if options.diagnostic_interaction && options.diagnostic_log.is_none() {
+            return Err("Diagnostic interaction requires --diagnostic-log".into());
         }
         if options.diagnostic_detail && options.diagnostic_log.is_none() {
             return Err("Diagnostic detail requires --diagnostic-log".into());
@@ -629,6 +639,14 @@ impl PerfLog {
             .as_ref()
             .and_then(|active| active.failure.borrow().clone())
     }
+    /// One explicit interaction-observer handshake, outside any primary performance claim.
+    /// Normal logging remains buffered; this is never called in ordinary/primary arms.
+    pub fn diagnostic_checkpoint(&self) -> io::Result<()> {
+        let Some(active)=&self.active else{return Ok(());};
+        let result=File::create(&active.path).and_then(|mut file|file.write_all(&active.output.borrow()));
+        if let Err(error)=&result {let mut failure=active.failure.borrow_mut();if failure.is_none(){*failure=Some(format!("Diagnostic checkpoint failed: {error}"));}}
+        result
+    }
     pub fn record(&self, event: &str) -> io::Result<()> {
         self.record_fields(event, "")
     }
@@ -707,10 +725,30 @@ mod tests {
         values.iter().map(|v| v.to_string()).collect()
     }
     #[test]
+    fn interaction_handshake_checkpoint_retains_buffered_events() {
+        let path=std::env::temp_dir().join(format!("bowser-interaction-checkpoint-{}.csv",std::process::id()));
+        let log=PerfLog::new(Some(&path)).unwrap();
+        log.record("interaction_dom_armed").unwrap();
+        log.diagnostic_checkpoint().unwrap();
+        assert!(std::fs::read_to_string(&path).unwrap().contains("interaction_dom_armed,"));
+        log.record("interaction_bridge_submit").unwrap();
+        drop(log);
+        let text=std::fs::read_to_string(&path).unwrap();
+        assert_eq!(text.matches("interaction_dom_armed,").count(),1);
+        assert!(text.contains("interaction_bridge_submit,"));
+        let _=std::fs::remove_file(path);
+    }
+    #[test]
     fn diagnostics_preserve_production_launch_semantics() {
         let temp = std::env::temp_dir().join("bowser-diagnostic-test");
         let options = LaunchOptions::parse_from(vec!["--diagnostic-log".into(), temp.join("events.csv").to_string_lossy().into_owned(), "--data-dir".into(), temp.to_string_lossy().into_owned(), "--open-url".into(), "http://127.0.0.1:1234/light".into()], Path::new("missing")).unwrap();
         assert!(!options.diagnostic_detail);
+        assert!(!options.diagnostic_interaction);
+        assert!(LaunchOptions::parse_from(args(&["--diagnostic-interaction"]), Path::new("missing")).is_err());
+        let mut interaction_args=vec!["--diagnostic-log".into(),temp.join("interaction.csv").to_string_lossy().into_owned(),"--data-dir".into(),temp.to_string_lossy().into_owned(),"--diagnostic-interaction".into()];
+        assert!(LaunchOptions::parse_from(interaction_args.clone(),Path::new("missing")).unwrap().diagnostic_interaction);
+        interaction_args.push("--diagnostic-interaction".into());
+        assert!(LaunchOptions::parse_from(interaction_args,Path::new("missing")).is_err());
         assert!(LaunchOptions::parse_from(args(&["--diagnostic-detail"]), Path::new("missing")).is_err());
         let mut detail_args = vec!["--diagnostic-log".into(), temp.join("detail.csv").to_string_lossy().into_owned(), "--data-dir".into(), temp.to_string_lossy().into_owned(), "--diagnostic-detail".into()];
         assert!(LaunchOptions::parse_from(detail_args.clone(), Path::new("missing")).unwrap().diagnostic_detail);

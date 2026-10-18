@@ -74,7 +74,9 @@ fn main() -> ExitCode {
         ));
         return ExitCode::FAILURE;
     }
+    let interaction_diagnostic=options.diagnostic_interaction;
     let result = App::run(options, log.clone());
+    if interaction_diagnostic {let _=log.record_detail("interaction_app_borrow_drops","all",0,0,App::diagnostic_interaction_dropped());}
     if result.is_ok() {
         bowser::updater::note_clean_exit();
     }

@@ -17,6 +17,7 @@ param(
     [string]$ExpectedInputManifest,
     [switch]$PositiveOnly,
     [switch]$DiagnosticDetailPilot,
+    [switch]$DiagnosticInteractionPilot,
     [switch]$StartupOnly,
     [string]$CandidateExe,
     [string]$CandidateSource,
@@ -34,6 +35,7 @@ if (-not $IsWindows) { throw 'Native Windows required' }
 if($DiagnosticAutoUpdateOff -and -not $ExpectedInputManifest){throw 'Updater-off diagnostic requires the original frozen-input manifest'}
 if($SurfaceInputMethod -ne 'sendkeys' -and -not $IncludeSurfaceSmoke){throw 'UIA value control requires the independent surface lane'}
 if($StartupOnly -and $IncludeTabFlow){throw 'StartupOnly cannot be combined with IncludeTabFlow'}
+if($DiagnosticInteractionPilot -and (-not $CandidateExe -or -not $IncludeSurfaceSmoke -or -not $StartupOnly)){throw 'DiagnosticInteractionPilot requires CandidateExe, IncludeSurfaceSmoke and StartupOnly'}
 $Out=[IO.Path]::GetFullPath($Out)
 New-Item -ItemType Directory -Force $Out | Out-Null
 $contaminationMarker=Join-Path ([IO.Directory]::GetParent($Out).FullName) 'native-isolation-blocked.json'
@@ -46,6 +48,7 @@ if ($CandidateExe) {
     if ($CandidateSource -notmatch '^[0-9a-f]{40}$') { throw 'Candidate source must be its exact40-character commit SHA' }
     $arms=[ordered]@{baseline_on=(Resolve-BowserExecutable $DiagnosticExe);candidate_on=(Resolve-BowserExecutable $CandidateExe)}
     if($DiagnosticDetailPilot) { $arms['candidate_detail_on']=(Resolve-BowserExecutable $CandidateExe) }
+    if($DiagnosticInteractionPilot){$arms['baseline_interaction_on']=(Resolve-BowserExecutable $DiagnosticExe);$arms['candidate_interaction_on']=(Resolve-BowserExecutable $CandidateExe)}
     $inputPaths+=@($CandidateExe)
 }
 $hashes=Get-MeasurementInputHashes $inputPaths
@@ -355,8 +358,8 @@ try {
         gpu=(Get-CimInstance Win32_VideoController | Select-Object Name,DriverVersion,CurrentHorizontalResolution,CurrentVerticalResolution)
         power=(& powercfg /getactivescheme | Out-String).Trim(); resolution=[Windows.Forms.Screen]::PrimaryScreen.Bounds.ToString()
         webview2_runtime=@(Get-ChildItem 'C:/Program Files (x86)/Microsoft/EdgeWebView/Application' -Directory -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name)
-        noise=@('Shared hosted runner, not a laptop/battery claim','Fresh profile is not cold OS cache',$(if($DiagnosticAutoUpdateOff){'Updater OFF via ordinary disposable-profile setting; interaction control, not primary workload'}else{'Updater remains production-enabled, isolated LOCALAPPDATA'}),'Samples are endpoint process-tree observations, not ETW complete','Working-set sums include shared pages','Fixture double-requestAnimationFrame is acknowledged page readiness, not proven display presentation','Title-based tab switch is only a proxy','Sampling overhead separately recorded; measured values are not overhead-subtracted','GetAsyncKeyState snapshots do not prove queued modifier messages have been processed; instrumented input lanes are diagnosis, not typing-latency acceptance')
-        workload_settings=@{history_records=10000; bookmark_records=818; startup='start_page overridden by ordinary --open-url'; first_run_offer='already answered synthetic profile'; security='unchanged defaults'; ui='HTML-default build, no BOWSER_UI override'; tab_flow=[bool]$IncludeTabFlow; surface_smoke=[bool]$IncludeSurfaceSmoke;surface_input_method=$SurfaceInputMethod;auto_update=if($DiagnosticAutoUpdateOff){'OFF ordinary disposable-profile control; not the primary workload'}else{'ON production default'};surface_input_scope=if($SurfaceInputMethod -eq 'uia-value'){'ValuePattern navigation/first-use control; bypasses keyboard/autocomplete; not input correctness'}else{'instrumented SendKeys keyboard diagnostic with UIA value/selection reads; no primary typing latency, retyping or retry'}; diagnostic_detail_pilot=[bool]$DiagnosticDetailPilot; startup_only=[bool]$StartupOnly; resource_endpoint=if($StartupOnly){'settled initial one-tab navigation; no omnibox submission or UIA; not comparable to old post-Enter state'}else{'settled post-Enter one-tab navigation'}; resource_tab_count=if($IncludeTabFlow){5}else{1}}
+        noise=@('Shared hosted runner, not a laptop/battery claim','Fresh profile is not cold OS cache',$(if($DiagnosticAutoUpdateOff){'Updater OFF via ordinary disposable-profile setting; interaction control, not primary workload'}else{'Updater remains production-enabled, isolated LOCALAPPDATA'}),'Samples are endpoint process-tree observations, not ETW complete','Working-set sums include shared pages','Fixture double-requestAnimationFrame is acknowledged page readiness, not proven display presentation','Title-based tab switch is only a proxy','Sampling overhead separately recorded; measured values are not overhead-subtracted','DOM telemetry QPC is native receipt time, not DOM event execution time; cross-process causality is not inferred from receipt order alone; flag OFF/ON controls stay separate','GetAsyncKeyState snapshots do not prove queued modifier messages have been processed; instrumented input lanes are diagnosis, not typing-latency acceptance')
+        workload_settings=@{history_records=10000; bookmark_records=818; startup='start_page overridden by ordinary --open-url'; first_run_offer='already answered synthetic profile'; security='unchanged defaults'; ui='HTML-default build, no BOWSER_UI override'; tab_flow=[bool]$IncludeTabFlow; surface_smoke=[bool]$IncludeSurfaceSmoke;surface_input_method=$SurfaceInputMethod;auto_update=if($DiagnosticAutoUpdateOff){'OFF ordinary disposable-profile control; not the primary workload'}else{'ON production default'};surface_input_scope=if($SurfaceInputMethod -eq 'uia-value'){'ValuePattern navigation/first-use control; bypasses keystrokes; may dispatch DOM input/change and autocomplete; not keyboard correctness'}else{'instrumented SendKeys keyboard diagnostic with UIA value/selection reads; no primary typing latency, retyping or retry'}; diagnostic_detail_pilot=[bool]$DiagnosticDetailPilot;diagnostic_interaction_pilot=[bool]$DiagnosticInteractionPilot; startup_only=[bool]$StartupOnly; resource_endpoint=if($StartupOnly){'settled initial one-tab navigation; no omnibox submission or UIA; not comparable to old post-Enter state'}else{'settled post-Enter one-tab navigation'}; resource_tab_count=if($IncludeTabFlow){5}else{1}}
     }
     $metadata | ConvertTo-Json -Depth 10 | Set-Content (Join-Path $Out 'environment.json') -Encoding utf8
     # Five-pair pilot by default. Alternate whole arm order each pair, same session/runtime/fixture seed.
@@ -379,8 +382,9 @@ try {
                     $args=@('--data-dir',"`"$profile`"",'--open-url',"`"$url`"")
                     if($arm.EndsWith('_on')) { $args+=@('--diagnostic-log',"`"$eventFile`"") }
                     if($arm -eq 'candidate_detail_on') { $args+=@('--diagnostic-detail') }
+                    if($arm -like '*_interaction_on'){$args+=@('--diagnostic-interaction')}
                     $snapshots=[Collections.Generic.List[object]]::new(); $overheads=[Collections.Generic.List[double]]::new()
-                    $sample=[ordered]@{id=$id;pair=$pair;arm=$arm;fixture=$fixture;condition=$condition;prior_fresh_outcome=if($condition -eq 'reused'){$freshOutcome}else{$null};token=$token;valid=$false;expected_failure=($fixture -in @('network-failure','error','hung'));error=$null;launch_qpc=$null;ready_qpc=$null;title_ready_qpc=$null;input_ready_qpc=$null;shutdown_ms=$null;disk_before=(Disk-Bytes $profile);measurement_mode=$MeasurementMode;tree_exit_wait_ms=$null;tree_exit_confirmed=$false;ownership_inventory_captured=$false;drain_remaining=@();cleanup_error=$null;cleanup_forced_root=$false;identity_error=$null;input_identity_checks=@();updater_control=if($DiagnosticAutoUpdateOff){'ordinary auto-update.txt=false; no staged/trial state; separate interaction workload'}else{'production default on'};surface_smoke=$null;filter_parity=$null;events=$null;input=$null;input_exclusion_reason=if($StartupOnly){'Startup-only lane: no omnibox interaction; input latency unavailable, not passed or zero'}else{$null};tab_switch_proxy_ms=$null;idle=$null;minimized=$null}
+                    $sample=[ordered]@{id=$id;pair=$pair;arm=$arm;fixture=$fixture;condition=$condition;prior_fresh_outcome=if($condition -eq 'reused'){$freshOutcome}else{$null};token=$token;valid=$false;expected_failure=($fixture -in @('network-failure','error','hung'));error=$null;launch_qpc=$null;ready_qpc=$null;title_ready_qpc=$null;input_ready_qpc=$null;shutdown_ms=$null;disk_before=(Disk-Bytes $profile);measurement_mode=$MeasurementMode;tree_exit_wait_ms=$null;tree_exit_confirmed=$false;ownership_inventory_captured=$false;drain_remaining=@();cleanup_error=$null;cleanup_forced_root=$false;identity_error=$null;input_identity_checks=@();observer_arming_wait_ms=$null;observation_error=$null;updater_control=if($DiagnosticAutoUpdateOff){'ordinary auto-update.txt=false; no staged/trial state; separate interaction workload'}else{'production default on'};surface_smoke=$null;filter_parity=$null;events=$null;input=$null;input_exclusion_reason=if($StartupOnly){'Startup-only lane: no omnibox interaction; input latency unavailable, not passed or zero'}else{$null};tab_switch_proxy_ms=$null;idle=$null;minimized=$null}
                     $app=$null;$known=@{};$script:surfaceTrace=$null
                     try {
                         Assert-FrozenInputs $sample 'before-launch'
@@ -445,7 +449,18 @@ try {
                             [void][BowserProductionNative]::ShowWindow([BowserProductionNative]::FindHost([uint32]$app.Id),9)
                             $sample.valid=$true
                         }
-                        if($IncludeSurfaceSmoke -and -not $sample.expected_failure){$script:surfaceTrace=[Collections.Generic.List[object]]::new();$sample.surface_smoke=@(Native-SurfaceSmoke)}
+                        if($IncludeSurfaceSmoke -and -not $sample.expected_failure){
+                            if($arm -like '*_interaction_on') {
+                                $armed=[Diagnostics.Stopwatch]::StartNew();$observed=$false
+                                do {
+                                    try{$observed=(Test-Path $eventFile) -and [bool](Select-String -LiteralPath $eventFile -Pattern '^interaction_dom_armed,' -Quiet)}catch{$observed=$false}
+                                    if($observed){break};Start-Sleep -Milliseconds 20
+                                }while($armed.Elapsed.TotalSeconds -lt 5)
+                                $sample.observer_arming_wait_ms=$armed.Elapsed.TotalMilliseconds
+                                if(-not $observed){throw 'Interaction observer not armed; no diagnostic input sent'}
+                            }
+                            $script:surfaceTrace=[Collections.Generic.List[object]]::new();$sample.surface_smoke=@(Native-SurfaceSmoke)
+                        }
                         # Inventory only after all cheap timing endpoints, to establish exact identities for drain.
                         $ownedBeforeClose=@(Get-ProcessGroupMembers -RootPid $app.Id -Profile $profile -Inventory @(Get-ProcessInventory))
                         $sample.ownership_inventory_captured=(@($ownedBeforeClose|Where-Object {$_.Pid -eq $app.Id -and $null -ne $_.CreationTicks}).Count -eq 1)
@@ -505,6 +520,11 @@ try {
                         }
                         if($script:surfaceTrace){$sample.surface_smoke=@($script:surfaceTrace.ToArray())}
                         if($arm.EndsWith('_on') -and (Test-Path $eventFile)){$sample.events=@(Import-Csv $eventFile)}
+                        if($arm -like '*_interaction_on') {
+                            $drops=@($sample.events|Where-Object {$_.event -in @('interaction_bridge_rate_drop','interaction_bridge_parse_drop','interaction_diagnostic_rate_drop','interaction_observer_enable_failed') -or ($_.event -eq 'interaction_app_borrow_drops' -and [long]$_.count -ne 0)})
+                            $coverage=@($sample.events|Where-Object event -eq interaction_app_borrow_drops)
+                            if($drops.Count -or $coverage.Count -ne 1){$sample.valid=$false;$sample.observation_error='Incomplete interaction observation: drop or missing coverage; absence cannot prove non-delivery';if(-not $sample.error){$sample.error=$sample.observation_error}}
+                        }
                         $sample.disk_after=Disk-Bytes $profile
                         $sample.snapshots=@($snapshots.ToArray());$sample.sampling_overhead_ms=Get-ProductionDistribution @($overheads.ToArray())
                         $sample.cpu=if($snapshots.Count){Get-ProductionCpuDelta @($snapshots.ToArray())}else{$null}
