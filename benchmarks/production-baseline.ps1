@@ -417,7 +417,7 @@ try {
                     $token=([guid]::NewGuid().ToString('N')); $url="$base/$($fixture)?token=$token"
                     if($SidebarLifecyclePilot){
                         # Ordinary profile configuration, same app IDs and fresh per-launch fixture tokens.
-                        $sidebar="bowser-sidebar-v1`napp`t1`tFixture A`t$base/light?token=$($token)_a`t-`t0`napp`t2`tFixture B`t$base/light?token=$($token)_b`t-`t1`n"
+                        $sidebar=New-ProductionSidebarFixture -BaseUrl $base -Token $token
                         [IO.File]::WriteAllText((Join-Path $profile 'sidebar.txt'),$sidebar)
                     }
                     $id="$arm-$pair-$fixture-$condition"; $eventFile=Join-Path $Out "$id-events.csv"

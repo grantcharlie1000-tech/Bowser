@@ -42,4 +42,15 @@ Check (-not (Get-ProductionSidebarPhaseCoverage @($missing,$snapshot,$snapshot) 
 $changed=[ordered]@{available=$true;identities=@([pscustomobject]@{pid=7;created_ticks=9;parent=1})}
 Check (-not (Get-ProductionSidebarPhaseCoverage $snapshots $before $changed $true).eligible) 'changed identity is unavailable, not lower memory'
 
+$moduleTokens=$null;$moduleErrors=$null
+$moduleAst=[Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot 'sidebar-lifecycle.psm1'),[ref]$moduleTokens,[ref]$moduleErrors)
+$railFunctions=@($moduleAst.FindAll({param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq 'Invoke-Rail'},$true))
+Check ($railFunctions.Count -eq 1 -and $railFunctions[0].Body.Extent.Text -notmatch 'SetForegroundWindow|Start-Sleep') 'per-action rail path has no foreground repair or pacing'
+$fixture=New-ProductionSidebarFixture -BaseUrl 'http://127.0.0.1:12345' -Token '0123456789abcdef0123456789abcdef'
+$lines=@($fixture -split "`n" | Where-Object {$_})
+Check ($lines.Count -eq 9 -and $lines[0] -ceq 'bowser-sidebar-v1') 'ordinary sidebar fixture header and record count'
+foreach($kind in @('customize','workspaces','apps','bookmarks','history','menu')){Check (@($lines|Where-Object {$_ -ceq "item`t$kind`t$kind`t1"}).Count -eq 1) "ordinary default-visible sidebar item: $kind"}
+Check ($lines[7] -ceq "app`t1`tFixture A`thttp://127.0.0.1:12345/light?token=0123456789abcdef0123456789abcdef_a`t-`t0") 'exact synthetic A identity and token'
+Check ($lines[8] -ceq "app`t2`tFixture B`thttp://127.0.0.1:12345/light?token=0123456789abcdef0123456789abcdef_b`t-`t1") 'exact synthetic B identity and token'
+
 'Sidebar lifecycle observation contracts passed.'

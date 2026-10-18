@@ -3,6 +3,12 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference='Stop'
 # Do not force-reload this shared dependency: the caller also imports its exports.
 Import-Module "$PSScriptRoot/measurements.psm1"
+function New-ProductionSidebarFixture {
+ param([Parameter(Mandatory)][ValidatePattern('^http://127\.0\.0\.1:[0-9]{1,5}$')][string]$BaseUrl,[Parameter(Mandatory)][ValidatePattern('^[0-9a-f]{32}$')][string]$Token)
+ # Match SidebarConfig::default: omitted item rows parse Apps as hidden.
+ $items=foreach($kind in @('customize','workspaces','apps','bookmarks','history','menu')){"item`t$kind`t$kind`t1"}
+ "bowser-sidebar-v1`n$($items -join "`n")`napp`t1`tFixture A`t$BaseUrl/light?token=$($Token)_a`t-`t0`napp`t2`tFixture B`t$BaseUrl/light?token=$($Token)_b`t-`t1`n"
+}
 function Invoke-ProductionSidebarLifecycle {
  [CmdletBinding()]
  param([uint32]$RootPid,[string]$Profile,[string]$RequestFile,[string]$AToken,[string]$BToken,[ValidateSet('settled','rapid')][string]$Scenario='settled',[Parameter(Mandatory)][AllowEmptyCollection()][Collections.Generic.List[object]]$Trace)
@@ -18,7 +24,6 @@ function Invoke-ProductionSidebarLifecycle {
  function Invoke-Rail([string]$name) {
   $owner=[uint32]0;[void][BowserProductionNative]::GetWindowThreadProcessId($rootWindow,[ref]$owner)
   if($owner -ne $RootPid -or [BowserProductionNative]::FindHost($RootPid) -ne $rootWindow){throw 'Sidebar native ownership changed before action'}
-  [void][BowserProductionNative]::SetForegroundWindow($rootWindow)
   if([BowserProductionNative]::GetForegroundWindow() -ne $rootWindow){throw 'Sidebar owned root not foreground; no rail action'}
   $rails=@(Find-Visible $root 'Left rail' ([Windows.Automation.ControlType]::ToolBar))
   if($rails.Count -ne 1){throw "Sidebar source rail unavailable or ambiguous: $($rails.Count)"}
@@ -61,6 +66,14 @@ function Invoke-ProductionSidebarLifecycle {
   $Trace.Add([ordered]@{kind='resource-phase';name=$name;start_qpc=$start;end_qpc=(& $qpc);settle_before_samples_ms=1000;sample_count=3;between_samples_ms=250;snapshots=@($snapshots.ToArray());sampling_overhead_ms=@($overhead.ToArray());inventory_overhead_ms=@($inventoryCost.ToArray());webapps_profile=$webProfile;webapps_inventory_before=$before;webapps_inventory_after=$after;webapps_root_identities=$before.identities;coverage=$coverage;eligible=$coverage.eligible;scope='Whole root descendants plus profile path including separate WebApps; stable identity coverage across ALL three snapshots required; native PrivateUsage is private commit, not per-view RAM; working-set sums not PSS; endpoint sampling is not lifetime peak'})
   if(-not $coverage.eligible){throw "Sidebar resource coverage incomplete: $name"}
  }
+  $beforeForeground=[BowserProductionNative]::GetForegroundWindow();$activationStart=& $qpc
+  $activationRequested=[BowserProductionNative]::SetForegroundWindow($rootWindow)
+  # Same fixed activation-confirmation interval as production-baseline.ps1 Owned-Keys.
+  # Once per row before resource phases/actions: no per-action pacing or focus repair.
+  Start-Sleep -Milliseconds 80
+  $afterForeground=[BowserProductionNative]::GetForegroundWindow()
+  $Trace.Add([ordered]@{kind='rail-activation';name='initial-sidebar-setup';start_qpc=$activationStart;end_qpc=(& $qpc);requested=$activationRequested;before_hwnd=$beforeForeground.ToInt64();after_hwnd=$afterForeground.ToInt64();root_hwnd=$rootWindow.ToInt64();confirmation_ms=80;scope='Single ordinary foreground request, fixed confirmation interval, then fail-closed guard; no retry'})
+  if($afterForeground -ne $rootWindow -or [BowserProductionNative]::FindHost($RootPid) -ne $rootWindow){throw 'Sidebar owned root not foreground; no rail action'}
  Phase 'initial-one-tab' $false
  if($Scenario -eq 'rapid'){foreach($name in @('Fixture A','Fixture B','Fixture A')){Invoke-Rail $name}}else{Invoke-Rail 'Fixture A'}
  Wait-App $AToken 'Fixture A'
@@ -77,7 +90,7 @@ function Invoke-ProductionSidebarLifecycle {
   Phase "closed-cycle-$cycle" $true
  }
 }
-Export-ModuleMember -Function Invoke-ProductionSidebarLifecycle
+Export-ModuleMember -Function New-ProductionSidebarFixture,Invoke-ProductionSidebarLifecycle
 
 function Get-ProductionSidebarLedger {
  param([AllowNull()][object[]]$Rows,[uint32[]]$ExpectedApps=@())
@@ -127,7 +140,7 @@ function Get-ProductionSidebarLedger {
  foreach($expectedApp in $ExpectedApps){if(-not @($summaries|Where-Object app -eq $expectedApp).Count){$errors.Add("missing_reached_app_participant:$expectedApp")}}
  [ordered]@{complete=($errors.Count -eq 0);expected_observed_apps=$ExpectedApps;allocated_identity_count=$allocated;invalid_reasons=@($errors.ToArray());environment_requests=$environments.Count;controller_requests=$requests.Count;requests=@($summaries.ToArray());scope='Actual COM request/result counts through the declared end marker, not assumed UI invocation count; missing Close is not proof of leaked/freed memory; duplicate requests and acks are retained'}
 }
-Export-ModuleMember -Function Invoke-ProductionSidebarLifecycle,Get-ProductionSidebarLedger
+Export-ModuleMember -Function New-ProductionSidebarFixture,Invoke-ProductionSidebarLifecycle,Get-ProductionSidebarLedger
 
 function Get-ProductionSidebarPhaseCoverage {
  param([object[]]$Snapshots,$Before,$After,[bool]$ExpectWebApps)
@@ -145,4 +158,4 @@ function Get-ProductionSidebarPhaseCoverage {
  foreach($snapshot in $Snapshots){if($snapshot.CoverageErrors.Count -gt 0 -or $snapshot.RacedExitCount -gt 0 -or $snapshot.PrivateSource -cne 'native' -or $null -eq $snapshot.NativePrivateBytes){$errors.Add('native_counter_coverage_gap')}}
  [ordered]@{eligible=($errors.Count -eq 0);invalid_reasons=@($errors.ToArray());scope='Stable WebApps identities before/after window, covered by ALL native snapshots; churn unavailable, never zero'}
 }
-Export-ModuleMember -Function Invoke-ProductionSidebarLifecycle,Get-ProductionSidebarLedger,Get-ProductionSidebarPhaseCoverage
+Export-ModuleMember -Function New-ProductionSidebarFixture,Invoke-ProductionSidebarLifecycle,Get-ProductionSidebarLedger,Get-ProductionSidebarPhaseCoverage
