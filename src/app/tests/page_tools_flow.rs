@@ -301,7 +301,7 @@ fn the_selection_for_a_note_is_its_text_page_and_address() {
     let fx = Fixture::new("note");
     let seen = Rc::new(RefCell::new(Vec::new()));
     let sink = seen.clone();
-    fx.scripts.borrow_mut().push_back(Some(format!("{:?}", r#"{"c":1,"t":"A quote\nsecond line","x":1,"y":2,"w":3,"h":4,"a":"https://www.example.test/docs/page#x","n":"Docs"}"#)));
+    fx.scripts.borrow_mut().push_back(Some(format!("{:?}", r#"{"c":1,"t":"A quote\nsecond line","x":1,"y":2,"w":3,"h":4,"a":"https://evil.example/claimed","n":"Claimed\n# title"}"#)));
     App::read_selection(&fx.app, fx.tab, Box::new(move |s| sink.borrow_mut().push(s)));
     fx.scripts.borrow_mut().push_back(Some(format!("{:?}", r#"{"c":0}"#)));
     let sink = seen.clone();
@@ -311,7 +311,8 @@ fn the_selection_for_a_note_is_its_text_page_and_address() {
     assert_eq!(
         *seen.borrow(),
         vec![
-            Selected::Text { text: "A quote\nsecond line".into(), title: "Docs".into(), addr: "https://www.example.test/docs/page#x".into() },
+            // The address and title are the tab's, not what the page script claimed.
+            Selected::Text { text: "A quote\nsecond line".into(), title: "Docs: the page?".into(), addr: "https://www.example.test/docs/page".into() },
             Selected::Nothing,
             Selected::Unavailable
         ]

@@ -115,17 +115,21 @@ impl App {
         }
     }
 
-    /// The selected text of the page in `tab`, with its title and address.
+    /// The selected text of the page in `tab`, with its title and address. The title and address are the
+    /// tab's own, never what the page script answers (a page could claim any address).
     pub fn read_selection(app: &AppRef, tab: TabId, done: Box<dyn FnOnce(Selected)>) {
+        let (title, addr) = {
+            let state = app.borrow();
+            let entry = state.tabs.iter().find(|entry| entry.id == tab);
+            let addr = entry.and_then(|entry| entry.url.as_ref()).filter(|u| matches!(u.scheme(), "http" | "https")).map(url::Url::to_string).unwrap_or_default();
+            (entry.map(|entry| entry.title.clone()).unwrap_or_default(), addr)
+        };
         Self::page_answer(
             app,
             |engine, answer| engine.run_page_script(tab, capture::SELECTION_SCRIPT, capture::SELECTION_ANSWER_LIMIT, answer),
             Box::new(move |raw| {
                 done(match raw.as_deref().map(capture::parse_selection) {
-                    Some(Ok(Some(found))) if !found.text.trim().is_empty() => {
-                        let addr = url::Url::parse(&found.address).ok().filter(|u| matches!(u.scheme(), "http" | "https")).map(|u| u.to_string()).unwrap_or_default();
-                        Selected::Text { text: found.text, title: found.title, addr }
-                    }
+                    Some(Ok(Some(found))) if !found.text.trim().is_empty() => Selected::Text { text: found.text, title, addr },
                     Some(Ok(_)) => Selected::Nothing,
                     _ => Selected::Unavailable,
                 });
