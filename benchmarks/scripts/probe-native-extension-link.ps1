@@ -34,6 +34,7 @@ public static class BowserExtensionLink {
  [DllImport("user32.dll")] public static extern IntPtr WindowFromPoint(POINT point);
  [DllImport("user32.dll")] public static extern bool IsWindow(IntPtr h);
  [DllImport("user32.dll")] public static extern int GetDlgCtrlID(IntPtr h);
+ [DllImport("user32.dll",EntryPoint="SendMessageTimeoutW",SetLastError=true)] public static extern IntPtr SendMessageTimeoutValue(IntPtr h,uint message,UIntPtr wparam,IntPtr lparam,uint flags,uint timeout,out UIntPtr result);
  static readonly System.Diagnostics.Stopwatch clock=System.Diagnostics.Stopwatch.StartNew(); static int diagnostics;
  public static string DiagnosticsFile;
  static readonly System.Collections.Generic.List<string> diagnosticLines=new System.Collections.Generic.List<string>();
@@ -47,6 +48,25 @@ public static class BowserExtensionLink {
  public static void DialogState(IntPtr dialog,IntPtr owner,uint pid,uint tid,string phase) {
   uint actual;uint thread=GetWindowThreadProcessId(dialog,out actual);var cls=new StringBuilder(64);GetClassName(dialog,cls,64);
   Diag(phase+" alive="+IsWindow(dialog)+" pid_match="+(actual==pid)+" thread_match="+(thread==tid)+" owner_match="+(GetWindow(dialog,4)==owner)+" class_dialog="+(cls.ToString()=="#32770"));
+ }
+ public static bool ExactNotice(IntPtr dialog,IntPtr owner,uint pid,uint tid) {
+  uint actual;uint thread=GetWindowThreadProcessId(dialog,out actual);var cls=new StringBuilder(64);GetClassName(dialog,cls,64);
+  if(!IsWindow(dialog)||actual!=pid||thread!=tid||GetWindow(dialog,4)!=owner||cls.ToString()!="#32770")return false;
+  var title=new StringBuilder(64);GetWindowText(dialog,title,64);
+  return title.ToString()=="Extension page links"&&HasExactStaticText(dialog,"No eligible same-extension page links are present on this page.");
+ }
+ public static int NativeDefaultButtonId(IntPtr dialog,IntPtr owner,uint pid,uint tid) {
+  if(!ExactNotice(dialog,owner,pid,tid)){Diag("default_button_query skipped_stale_notice=true");return 0;}
+  Diag("default_button_query_begin");UIntPtr result;
+  var status=SendMessageTimeoutValue(dialog,0x0400,UIntPtr.Zero,IntPtr.Zero,0x23,250,out result);
+  ulong value=result.ToUInt64();int id=(int)(value&0xffff);
+  bool valid=status!=IntPtr.Zero&&(value>>32)==0&&((value>>16)&0xffff)==0x534b&&(id==1||id==2);
+  Diag("default_button_query_end success="+(status!=IntPtr.Zero)+" declared_default="+valid+" known_id="+(id==1||id==2)+" accepted_id="+(valid?id:0));
+  return valid?id:0;
+ }
+ public static bool ExactButtonId(IntPtr button,IntPtr dialog,uint pid,uint tid,int id) {
+  uint actual;uint thread=GetWindowThreadProcessId(button,out actual);
+  return IsWindow(button)&&actual==pid&&thread==tid&&GetParent(button)==dialog&&GetDlgCtrlID(button)==id;
  }
  public static void FailedDialogChildren(IntPtr dialog,IntPtr owner,uint pid,uint tid) {
   uint parentPid;uint parentThread=GetWindowThreadProcessId(dialog,out parentPid);var parentClass=new StringBuilder(64);
@@ -198,18 +218,26 @@ if($Mode -eq 'PageLinksEmpty') {
  if($dialog -eq [IntPtr]::Zero){throw 'Exact owned native no-links notice did not appear; no fallback used.'}
  [BowserExtensionLink]::DialogState($dialog,$h,$OwnerPid,$ownerThread,'exact_candidate_body_discovered')
  [BowserExtensionLink]::DialogState($dialog,$h,$OwnerPid,$ownerThread,'before_getdlgitem')
- $button=[BowserExtensionLink]::GetDlgItem($dialog,1);$getDlgError=[Runtime.InteropServices.Marshal]::GetLastWin32Error()
- [BowserExtensionLink]::Diag("getdlgitem_returned idok_nonzero=$($button -ne [IntPtr]::Zero) last_error_diagnostic_only=$getDlgError")
+ $nativeDefaultId=[BowserExtensionLink]::NativeDefaultButtonId($dialog,$h,$OwnerPid,$ownerThread)
+ if($nativeDefaultId -notin @(1,2)){[BowserExtensionLink]::FailedDialogChildren($dialog,$h,$OwnerPid,$ownerThread);throw 'Exact notice did not report a known native default button; no input sent.'}
+ # Resolve only the current native-returned default ID, never a fallback/guessed button.
+ $button=[BowserExtensionLink]::GetDlgItem($dialog,$nativeDefaultId);$getDlgError=[Runtime.InteropServices.Marshal]::GetLastWin32Error()
+ $buttonIdMatches=[BowserExtensionLink]::ExactButtonId($button,$dialog,$OwnerPid,$ownerThread,$nativeDefaultId)
+ [BowserExtensionLink]::Diag("getdlgitem_returned default_button_nonzero=$($button -ne [IntPtr]::Zero) last_error_diagnostic_only=$getDlgError")
  [BowserExtensionLink]::DialogState($dialog,$h,$OwnerPid,$ownerThread,'after_getdlgitem')
  $class=[Text.StringBuilder]::new(64);[void][BowserExtensionLink]::GetClassName($button,$class,64)
  $buttonText=[BowserExtensionLink]::ReadOwnedChildText($button,$dialog,$OwnerPid,$ownerThread)
  $captionKind=if($null -eq $buttonText){'unreadable'}elseif($buttonText -ceq 'OK'){'exact-OK'}elseif($buttonText -ceq '&OK'){'standard-mnemonic-OK'}else{'unexpected'}
  $classMatches=$class.ToString() -ceq 'Button';$visible=[BowserExtensionLink]::IsWindowVisible($button);$enabled=[BowserExtensionLink]::IsWindowEnabled($button)
- Write-Output "NATIVE_EMPTY_NOTICE idok_nonzero=$($button -ne [IntPtr]::Zero) class_button=$classMatches caption_kind=$captionKind visible=$visible enabled=$enabled"
- if($button -eq [IntPtr]::Zero -or !$classMatches -or $captionKind -notin @('exact-OK','standard-mnemonic-OK') -or !$visible -or !$enabled){[BowserExtensionLink]::FailedDialogChildren($dialog,$h,$OwnerPid,$ownerThread);throw 'Exact native IDOK button was not verified; no input sent.'}
+ Write-Output "NATIVE_EMPTY_NOTICE default_button_nonzero=$($button -ne [IntPtr]::Zero) class_button=$classMatches caption_kind=$captionKind visible=$visible enabled=$enabled"
+ if($button -eq [IntPtr]::Zero -or !$buttonIdMatches -or !$classMatches -or $captionKind -notin @('exact-OK','standard-mnemonic-OK') -or !$visible -or !$enabled){[BowserExtensionLink]::FailedDialogChildren($dialog,$h,$OwnerPid,$ownerThread);throw 'Exact native default OK button was not verified; no input sent.'}
  $r=[BowserExtensionLink+RECT]::new();$outer=[BowserExtensionLink+RECT]::new()
  if(![BowserExtensionLink]::GetWindowRect($button,[ref]$r) -or ![BowserExtensionLink]::GetWindowRect($dialog,[ref]$outer) -or !(Test-ContainedRect $r $outer)){throw 'Native notice button bounds were not verified; no input sent.'}
  if([BowserExtensionLink]::GetWindow($dialog,4) -ne $h -or (Read-NativeText $dialog) -cne 'Extension page links' -or ![BowserExtensionLink]::HasExactStaticText($dialog,'No eligible same-extension page links are present on this page.')){throw 'Native notice identity changed; no input sent.'}
+ $freshDefault=[BowserExtensionLink]::NativeDefaultButtonId($dialog,$h,$OwnerPid,$ownerThread)
+ if($freshDefault -ne $nativeDefaultId -or [BowserExtensionLink]::GetDlgItem($dialog,$freshDefault) -ne $button -or ![BowserExtensionLink]::ExactButtonId($button,$dialog,$OwnerPid,$ownerThread,$freshDefault)){throw 'Exact native notice default changed before input; no input sent.'}
+ $freshCaption=[BowserExtensionLink]::ReadOwnedChildText($button,$dialog,$OwnerPid,$ownerThread)
+ if($freshCaption -cnotin @('OK','&OK') -or ![BowserExtensionLink]::IsWindowVisible($button) -or ![BowserExtensionLink]::IsWindowEnabled($button)){throw 'Exact native default button state changed before input; no input sent.'}
  Send-OwnedPoint $r $button $dialog
  $dismissDeadline=[DateTime]::UtcNow.AddSeconds(5)
  while([BowserExtensionLink]::IsWindowVisible($dialog) -and [DateTime]::UtcNow -lt $dismissDeadline){Start-Sleep -Milliseconds 100}
