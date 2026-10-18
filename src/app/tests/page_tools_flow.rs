@@ -204,6 +204,20 @@ fn a_page_longer_than_30000_pixels_is_cut_and_the_result_says_so() {
 }
 
 #[test]
+fn a_capture_is_joined_and_saved_off_the_ui_thread() {
+    let fx = Fixture::new("worker");
+    fx.calls.borrow_mut().push_back(Some(r#"{"cssContentSize":{"x":0,"y":0,"width":4,"height":10}}"#.to_owned()));
+    fx.call_answer(&pics::picture(4, 10, CaptureFormat::Png, |_| 7));
+    *crate::app::page_actions::FINISH_THREAD.lock().unwrap() = None;
+    let CaptureResult::Saved { path, .. } = fx.capture(CaptureMode::FullPage, CaptureTarget::File) else { panic!() };
+    assert!(path.exists());
+    let worker = crate::app::page_actions::FINISH_THREAD.lock().unwrap().clone();
+    assert_eq!(worker.as_deref(), Some("bowser-capture-finish"), "stitching and saving ran on the worker");
+    assert_ne!(std::thread::current().name(), Some("bowser-capture-finish"));
+    assert!(!crate::app::capture_busy(), "the result came back and ended the job");
+}
+
+#[test]
 fn a_selection_is_captured_with_a_clip_around_its_box() {
     let fx = Fixture::new("selection");
     fx.scripts.borrow_mut().push_back(Some(format!("{:?}", r#"{"c":1,"t":"hello","x":120,"y":900,"w":300,"h":40,"a":"https://www.example.test/docs/page","n":"Docs"}"#)));

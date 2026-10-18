@@ -293,43 +293,124 @@ impl App {
         done(result);
     }
 
-    /// Joins the slices and sends the picture where it was asked to go.
+    /// Joins the slices and sends the picture where it was asked to go. The joining, the PNG/JPEG
+    /// encoding and the file write (which waits for the disk) run on a worker thread, never the UI
+    /// thread; the result comes back as `WM_CAPTURE_DONE` and [`App::capture_worker_done`] ends the job.
     fn capture_finish(app: &AppRef, job: &Rc<RefCell<Job>>) {
-        let (settings, format, slices, mode, target, host, title, addr, cut) = {
+        let work = {
             let mut job = job.borrow_mut();
-            (
-                app.borrow().settings.page_tools.clone(),
-                job.format,
-                std::mem::take(&mut job.slices),
-                job.mode,
-                job.target,
-                job.host.clone(),
-                job.title.clone(),
-                job.addr.clone(),
-                job.cut,
-            )
-        };
-        let bytes = match capture::stitch(&slices, format) {
-            Ok(bytes) => bytes,
-            Err(message) => return Self::capture_end(job, CaptureResult::Failed(message)),
-        };
-        let result = match target {
-            CaptureTarget::Clipboard => match capture::dib_of(&bytes) {
-                Ok(dib) => CaptureResult::Clipboard { dib, cut },
-                Err(message) => CaptureResult::Failed(message),
-            },
-            CaptureTarget::File | CaptureTarget::Note => {
-                let Some(dir) = capture::resolve_dir(&settings.capture_dir) else {
-                    return Self::capture_end(job, CaptureResult::Failed("There is no folder to save captures in.".into()));
-                };
-                let stem = page_tools::capture_stem(&settings.capture_name, &host, &title, mode, page_tools::Stamp::now());
-                match capture::save_file(&dir, &stem, format, &bytes) {
-                    Ok(path) if target == CaptureTarget::Note => CaptureResult::Note { path, page_title: title, addr, cut },
-                    Ok(path) => CaptureResult::Saved { path, cut },
-                    Err(message) => CaptureResult::Failed(message),
-                }
+            let settings = app.borrow().settings.page_tools.clone();
+            let stem = page_tools::capture_stem(&settings.capture_name, &job.host, &job.title, job.mode, page_tools::Stamp::now());
+            Finish {
+                capture_dir: settings.capture_dir,
+                stem,
+                format: job.format,
+                slices: std::mem::take(&mut job.slices),
+                target: job.target,
+                title: job.title.clone(),
+                addr: job.addr.clone(),
+                cut: job.cut,
             }
         };
-        Self::capture_end(job, result);
+        let id = NEXT_FINISH.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        FINISHING.with(|slot| *slot.borrow_mut() = Some((id, job.clone())));
+        #[cfg(not(test))]
+        let window = app.borrow().hwnd.0 as isize;
+        let spawned = std::thread::Builder::new().name("bowser-capture-finish".into()).spawn(move || {
+            let result = finish_off_thread(work);
+            FINISHED.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push((id, result));
+            #[cfg(not(test))]
+            crate::win32::post(windows::Win32::Foundation::HWND(window as *mut _), crate::win32::WM_CAPTURE_DONE, windows::Win32::Foundation::WPARAM(id as usize), windows::Win32::Foundation::LPARAM(0));
+        });
+        match spawned {
+            // Tests have no message loop: wait for the worker and deliver as the window would.
+            #[cfg(test)]
+            Ok(handle) => {
+                let _ = handle.join();
+                Self::capture_worker_done(id);
+            }
+            #[cfg(not(test))]
+            Ok(_) => {}
+            Err(_) => {
+                FINISHING.with(|slot| slot.borrow_mut().take());
+                Self::capture_end(job, CaptureResult::Failed("The capture could not be saved.".into()));
+            }
+        }
+    }
+
+    /// The capture worker `id` finished (`WM_CAPTURE_DONE`): hand its result to the job that asked.
+    pub fn capture_worker_done(id: u64) {
+        let result = {
+            let mut finished = FINISHED.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            finished.iter().position(|(owner, _)| *owner == id).map(|at| finished.remove(at).1)
+        };
+        let job = FINISHING.with(|slot| {
+            let mut slot = slot.borrow_mut();
+            if slot.as_ref().is_some_and(|(owner, _)| *owner == id) { slot.take().map(|(_, job)| job) } else { None }
+        });
+        if let (Some(job), Some(result)) = (job, result) {
+            Self::capture_end(&job, result);
+        }
+    }
+}
+
+/// What the capture worker needs: everything owned, nothing of the app.
+struct Finish {
+    capture_dir: String,
+    stem: String,
+    format: CaptureFormat,
+    slices: Vec<Vec<u8>>,
+    target: CaptureTarget,
+    title: String,
+    addr: String,
+    cut: bool,
+}
+
+static NEXT_FINISH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+/// Results the capture workers left, by worker id.
+static FINISHED: std::sync::Mutex<Vec<(u64, CaptureResult)>> = std::sync::Mutex::new(Vec::new());
+thread_local! {
+    /// The job waiting for its worker (only one capture runs at a time).
+    static FINISHING: RefCell<Option<(u64, Rc<RefCell<Job>>)>> = const { RefCell::new(None) };
+}
+#[cfg(test)]
+/// The name of the thread the last capture was joined and saved on.
+pub(crate) static FINISH_THREAD: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// Joins, encodes and saves on the calling (worker) thread, with COM started for WIC.
+fn finish_off_thread(work: Finish) -> CaptureResult {
+    use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx, CoUninitialize};
+    #[cfg(test)]
+    {
+        *FINISH_THREAD.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = std::thread::current().name().map(str::to_owned);
+    }
+    let com = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }.is_ok();
+    let result = finish_work(work);
+    if com {
+        unsafe { CoUninitialize() };
+    }
+    result
+}
+
+fn finish_work(work: Finish) -> CaptureResult {
+    let bytes = match capture::stitch(&work.slices, work.format) {
+        Ok(bytes) => bytes,
+        Err(message) => return CaptureResult::Failed(message),
+    };
+    match work.target {
+        CaptureTarget::Clipboard => match capture::dib_of(&bytes) {
+            Ok(dib) => CaptureResult::Clipboard { dib, cut: work.cut },
+            Err(message) => CaptureResult::Failed(message),
+        },
+        CaptureTarget::File | CaptureTarget::Note => {
+            let Some(dir) = capture::resolve_dir(&work.capture_dir) else {
+                return CaptureResult::Failed("There is no folder to save captures in.".into());
+            };
+            match capture::save_file(&dir, &work.stem, work.format, &bytes) {
+                Ok(path) if work.target == CaptureTarget::Note => CaptureResult::Note { path, page_title: work.title, addr: work.addr, cut: work.cut },
+                Ok(path) => CaptureResult::Saved { path, cut: work.cut },
+                Err(message) => CaptureResult::Failed(message),
+            }
+        }
     }
 }
