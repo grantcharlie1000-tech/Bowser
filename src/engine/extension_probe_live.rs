@@ -15,7 +15,8 @@
 //!   $env:BOWSER_EXTENSION_TRACE = "1"
 //!   cargo test --lib live_probe_mv3_extension_executes -- --ignored --nocapture --test-threads=1
 //!
-//! The windows are popups that are never shown, so nothing appears on the desktop. Every WebView2
+//! Most fixture windows are hidden. The real-package link diagnostic deliberately shows one
+//! disposable extension page for genuine Windows input/accessibility. Every WebView2
 //! user data folder, extension copy and id file lives in one fresh temp directory that is passed to
 //! the engine explicitly; the test never reads or writes `%LOCALAPPDATA%\Bowser*`.
 
@@ -859,9 +860,46 @@ fn probe_real_ubo_default_external(root: &Path, session: &mut Session, loopback:
 /// edits, injected CSS, internal extension API replacement, or fake Chrome globals are involved.
 fn probe_real_stylus_appearance(profile: &Path, id: &str, folder: &Path, session: &mut Session, loopback: &Loopback) {
     let target = loopback.page("stylus-appearance");
+    // Use the production visible popup and actual Windows accessibility/native context menu.
+    // Keep pumping the owning STA while the separate automation process sends genuine input.
+    let opened = Rc::new(RefCell::new(None)); let sink = opened.clone();
+    session.engine.open_extension_page(id, folder, extensions::PageKind::Popup, "Bowser disposable Stylus navigation", Box::new(move |result| *sink.borrow_mut() = Some(result)));
+    assert!(pump_until(Duration::from_secs(30), || opened.borrow().is_some())); opened.borrow_mut().take().unwrap().unwrap();
+    pump_until(Duration::from_secs(2), || false);
+    assert!(pump_until(Duration::from_secs(30), || session.page_script("!!document.querySelector('#popup-manage-button')").as_deref() == Some("true")), "actual signed popup did not expose its Manage link");
+    let expected = session.page_script("document.querySelector('#popup-manage-button').href").unwrap();
+    let Some(extensions::json::Value::String(expected_url)) = extensions::json::parse(&expected) else { panic!("actual Manage href was not a string"); };
+    let expected_url = Url::parse(&expected_url).unwrap();
+    assert!(extensions::is_page_url(&expected_url));
+    assert_eq!(expected_url.host_str(), session.engine.probe_loaded_extension_id(id).as_deref());
+    let output = std::env::var_os("RUNNER_TEMP").map(PathBuf::from).unwrap_or_else(std::env::temp_dir).join("bowser-extension-link-native");
+    let mut automation = std::process::Command::new("pwsh").args(["-NoProfile", "-File"])
+        .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("benchmarks/scripts/probe-native-extension-link.ps1"))
+        .arg("-OwnerPid").arg(std::process::id().to_string()).arg("-Out").arg(&output)
+        .stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).spawn().unwrap();
+    if !pump_until(Duration::from_secs(75), || automation.try_wait().is_ok_and(|status| status.is_some())) {
+        let _ = automation.kill();
+        let _ = automation.wait();
+        panic!("bounded native link automation timed out; its owned helper was stopped");
+    }
+    let automation = automation.wait_with_output().unwrap();
+    pump_until(Duration::from_secs(2), || false);
+    println!("STYLUS_NATIVE_LINK exit={:?} stdout={} stderr={} actual_page={:?}", automation.status.code(), String::from_utf8_lossy(&automation.stdout), String::from_utf8_lossy(&automation.stderr), session.page_script("({url:location.href,title:document.title,importButton:!!document.querySelector('#import')})"));
+    assert!(automation.status.success(), "real owned native context-menu helper failed; no scripted fallback is accepted as menu evidence");
+    assert!(pump_until(Duration::from_secs(30), || {
+        session.page_script("location.href").as_deref() == Some(expected.as_str())
+            && session.page_script("!!document.querySelector('#import')").as_deref() == Some("true")
+    }), "native menu selection did not reach the exact real signed manager href and manager DOM");
+    println!("STYLUS_NATIVE_LINK verdict=real-owned-menu-exact-manager-destination-and-dom-proven expected={expected_url}");
+    // Separate each comparison from the successful native-menu document. Neither scripted route
+    // is permitted to rescue the mandatory real-input assertion above.
+    session.open_page(id, folder, extensions::PageKind::Popup).unwrap();
+    assert!(pump_until(Duration::from_secs(30), || session.page_script("!!document.querySelector('#popup-manage-button')").as_deref() == Some("true")));
     let manager_link = session.page_script("(()=>{const a=document.querySelector('#popup-manage-button');if(!a)return null;const href=a.href;a.click();return href})()");
     pump_until(Duration::from_secs(3), || false);
     println!("STYLUS_APPEARANCE ordinary_manage_click={manager_link:?} resulting_page={:?}", session.page_script("({url:location.href,title:document.title,importButton:!!document.querySelector('#import')})"));
+    session.open_page(id, folder, extensions::PageKind::Popup).unwrap();
+    assert!(pump_until(Duration::from_secs(30), || session.page_script("!!document.querySelector('#popup-manage-button')").as_deref() == Some("true")));
     // Exercise the standard native new-window link route (as offered by a link context menu),
     // not a guessed page path, location assignment, tabs shim or claim about chrome.tabs.create.
     let followed = session.page_script("(()=>{const a=document.querySelector('#popup-manage-button');if(!a)return false;const u=new URL(a.href);if(u.protocol!==location.protocol||u.host!==location.host)return false;window.open(a.href,'_blank');return true})()");
@@ -888,7 +926,7 @@ fn probe_real_stylus_appearance(profile: &Path, id: &str, folder: &Path, session
     println!("STYLUS_APPEARANCE exact_url={target} styled={styled:?} unmatched={unmatched:?} package_unchanged=true");
     let effect = styled.as_deref().is_some_and(|value| value.contains("rgb(7, 11, 19)")) && unmatched.as_deref().is_some_and(|value| !value.contains("rgb(7, 11, 19)"));
     println!("STYLUS_APPEARANCE verdict={}", if effect { "actual-imported-style-effect-and-url-boundary-proven-partial" } else { "appearance-effect-not-demonstrated" });
-    if !effect { return; }
+    assert!(effect, "the real imported appearance style or unmatched-URL control failed");
     // A genuinely new executable process must retain the imported style, not merely a second
     // document in the same process. Keep the parent loopback server alive, close its engine first.
     session.engine.close().unwrap();
@@ -900,6 +938,11 @@ fn probe_real_stylus_appearance(profile: &Path, id: &str, folder: &Path, session
     let restarted = Session::open(profile, vec![(id.to_owned(), folder.to_owned())], vec![(id.to_owned(), true)], &target);
     let old = std::mem::replace(session, restarted); old.close();
     assert!(session.wait_for_add(profile, id).1.is_none());
+    // A cached native object can become visible before every queued startup callback releases
+    // its production lease. Observe actual quiescence; never call a busy rejection a removal.
+    assert!(pump_until(Duration::from_secs(30), || {
+        extensions::RecordsLease::runtime(&profile.join("extensions.txt")).is_ok()
+    }), "real appearance profile did not finish its queued startup operations");
     // Real native Remove, then the same under-lease durable commit the product uses.
     let result = Rc::new(RefCell::new(None)); let sink = result.clone(); let records = profile.join("extensions.txt"); let extensions_dir = profile.join("Extensions"); let removed_id = id.to_owned();
     session.engine.remove_extension(id, Box::new(move |native| {
@@ -910,6 +953,9 @@ fn probe_real_stylus_appearance(profile: &Path, id: &str, folder: &Path, session
     session.engine.navigate_tab(session.tab(), &target).unwrap(); pump_until(Duration::from_secs(3), || false);
     let removed = session.browsing_script(read);
     println!("STYLUS_APPEARANCE remove={:?} after_remove={removed:?} folder_exists={} scope=actual-import-style-url-boundary-new-process-restart-and-removal-not-all-features", result.borrow(), folder.exists());
+    assert!(result.borrow().as_ref().is_some_and(|answer| answer.is_ok()), "real appearance native/durable removal did not complete");
+    assert!(!folder.exists(), "removed appearance package still has its managed folder");
+    assert!(removed.as_deref().is_some_and(|value| !value.contains("rgb(7, 11, 19)")), "removed real appearance style still affects a newly loaded page");
 }
 
 /// Real catalogue popup queries with two distinct Bowser browsing views on the same fixture URL.

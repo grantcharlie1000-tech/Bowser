@@ -50,6 +50,7 @@ jobs:
           path: |
             store-download-probe.log
             store-runtime-probe.log
+            ${{ runner.temp }}/bowser-extension-link-native/
           if-no-files-found: error
           retention-days: 14
       - name: Probe genuine action activeTab through in-process CDP without unsafe flags
@@ -225,6 +226,7 @@ jobs:
       - name: Parse native lifecycle scripts
         run: |
           [void][scriptblock]::Create((Get-Content benchmarks/scripts/probe-native-store.ps1 -Raw))
+          [void][scriptblock]::Create((Get-Content benchmarks/scripts/probe-native-extension-link.ps1 -Raw))
           [void][scriptblock]::Create((Get-Content benchmarks/scripts/measure-native-extensions.ps1 -Raw))
       - name: Install official Rust toolchain
         run: rustup toolchain install stable --profile minimal

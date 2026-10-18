@@ -14,14 +14,15 @@ use std::{cell::Cell, cell::RefCell, rc::Rc};
 
 use url::Url;
 use webview2_com::{
-    CoTaskMemPWSTR, CreateCoreWebView2ControllerCompletedHandler, DownloadStartingEventHandler,
+    CoTaskMemPWSTR, ContextMenuRequestedEventHandler, CustomItemSelectedEventHandler,
+    CreateCoreWebView2ControllerCompletedHandler, DownloadStartingEventHandler,
     Microsoft::Web::WebView2::Win32::*, NavigationStartingEventHandler,
     NewWindowRequestedEventHandler, PermissionRequestedEventHandler,
 };
 use windows::{
     Win32::{
         Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM},
-        System::LibraryLoader::GetModuleHandleW,
+        System::{LibraryLoader::GetModuleHandleW, Com::IStream},
         UI::WindowsAndMessaging::{
             CW_USEDEFAULT, CreateWindowExW, DefWindowProcW, DestroyWindow, GWLP_USERDATA,
             GetClientRect, GetWindowLongPtrW, IDC_ARROW, LoadCursorW, RegisterClassW, SW_SHOW,
@@ -177,11 +178,12 @@ pub(super) fn open(
     let slot = Rc::new(RefCell::new(Some(done)));
     let completion = slot.clone();
     let policy = Rc::new(policy);
+    let environment_for_menu = environment.clone();
     let handler = CreateCoreWebView2ControllerCompletedHandler::create(Box::new(
         move |status, controller| {
             let result = match (status, controller) {
                 (Ok(()), Some(controller)) => {
-                    let configured = configure(hwnd, &controller, &url, policy, show);
+                    let configured = configure(hwnd, &controller, &url, policy, show, &environment_for_menu);
                     if configured.is_err() {
                         let _ = unsafe { controller.Close() };
                     }
@@ -213,6 +215,7 @@ fn configure(
     url: &Url,
     policy: Rc<HostedPagePolicy>,
     show: bool,
+    environment: &ICoreWebView2Environment,
 ) -> Result<HostedPage> {
     unsafe {
         let mut bounds = RECT::default();
@@ -283,6 +286,30 @@ fn configure(
             })),
             &mut token,
         )?;
+        // A native, user-picked way to follow a real signed-page link even when its ordinary
+        // click handler depends on chrome.tabs.create, which WebView2 cannot map to Bowser tabs.
+        // This grants no website API and never reads a guessed dashboard path.
+        let link_policy = policy.clone();
+        if let (Ok(webview11), Ok(environment9)) = (webview.cast::<ICoreWebView2_11>(), environment.cast::<ICoreWebView2Environment9>()) {
+            webview11.add_ContextMenuRequested(&ContextMenuRequestedEventHandler::create(Box::new(move |sender, args| {
+                let (Some(sender), Some(args)) = (sender, args) else { return Ok(()) };
+                let target = args.ContextMenuTarget()?; let mut has_link = BOOL::default(); target.HasLinkUri(&mut has_link)?;
+                if !has_link.as_bool() { return Ok(()); }
+                let mut raw = PWSTR::null(); target.LinkUri(&mut raw)?;
+                let Some(link) = Url::parse(&CoTaskMemPWSTR::from(raw).to_string()).ok().filter(|url| link_policy.allow_new_window(url)) else { return Ok(()) };
+                let item = environment9.CreateContextMenuItem(w!("Open link in this extension window"), None::<&IStream>, COREWEBVIEW2_CONTEXT_MENU_ITEM_KIND_COMMAND)?;
+                let navigation_policy = link_policy.clone(); let mut selected = 0;
+                item.add_CustomItemSelected(&CustomItemSelectedEventHandler::create(Box::new(move |_sender, _args| {
+                    let mut raw = PWSTR::null(); sender.Source(&mut raw)?;
+                    let source = Url::parse(&CoTaskMemPWSTR::from(raw).to_string()).ok();
+                    if source.as_ref().is_some_and(|source| navigation_policy.allow_new_window(source)) && navigation_policy.allow_new_window(&link) {
+                        let address = CoTaskMemPWSTR::from(link.as_str()); sender.Navigate(*address.as_ref().as_pcwstr())?;
+                    }
+                    Ok(())
+                })), &mut selected)?;
+                args.MenuItems()?.InsertValueAtIndex(0, &item)?; Ok(())
+            })), &mut token)?;
+        }
         webview.add_NewWindowRequested(
             &NewWindowRequestedEventHandler::create(Box::new(move |sender, args| {
                 if let Some(args) = args {
