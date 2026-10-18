@@ -6007,6 +6007,10 @@ mod tests {
             }));
         }
 
+        pub(in crate::engine) fn probe_extension_startup_state(&self) -> (bool, Option<String>) {
+            let state = self.core.borrow(); (state.browser_extensions, state.extensions_refused.clone())
+        }
+
         pub(in crate::engine) fn probe_extension_profile_ready(&self) -> bool {
             self.core.borrow().extension_profile.is_some()
         }

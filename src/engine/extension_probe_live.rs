@@ -805,7 +805,7 @@ fn probe_real_blocker_network(root: &Path, session: &mut Session, loopback: &Loo
     }
 }
 
-fn observe_default_ubo_network(session: &mut Session, loopback: &Loopback) -> (bool, bool, bool) {
+fn observe_default_ubo_network(session: &mut Session, loopback: &Loopback) -> (bool, bool, bool, bool) {
     let events = session.engine.probe_network_events(session.tab()).expect("read-only in-process network receiver");
     let enabled = session.protocol(session.tab(), "Network.enable", "{}");
     println!("UBO_DEFAULT_NETWORK network_domain={enabled:?}");
@@ -827,7 +827,7 @@ fn observe_default_ubo_network(session: &mut Session, loopback: &Loopback) -> (b
     }
     let control = loopback.beacons.lock().unwrap().iter().any(|path| path == "/control-script.js");
     println!("UBO_DEFAULT_NETWORK requested={} blocked_by_client={blocked} received_response={responded} own_control_requested={control}", !request_ids.is_empty());
-    (!request_ids.is_empty(), blocked, control)
+    (!request_ids.is_empty(), blocked, control, responded)
 }
 
 fn probe_real_ubo_default_external(root: &Path, session: &mut Session, loopback: &Loopback) {
@@ -836,7 +836,7 @@ fn probe_real_ubo_default_external(root: &Path, session: &mut Session, loopback:
     pump_until(Duration::from_secs(2), || false);
     let zero = observe_default_ubo_network(&mut baseline, &baseline_loopback); baseline.close(); drop(baseline_loopback);
     let actual = observe_default_ubo_network(session, loopback);
-    println!("UBO_DEFAULT_NETWORK zero={zero:?} actual_ubo={actual:?} verdict={} scope=one-real-default-ad-domain-request-not-universal-filtering-or-correct-tab-action", if zero.0 && !zero.1 && zero.2 && actual.0 && actual.1 && actual.2 { "actual-default-filter-network-effect-demonstrated-partial" } else { "default-filter-effect-not-demonstrated" });
+    println!("UBO_DEFAULT_NETWORK zero={zero:?} actual_ubo={actual:?} verdict={} scope=one-real-default-ad-domain-request-not-universal-filtering-or-correct-tab-action", if zero.0 && !zero.1 && zero.2 && zero.3 && actual.0 && actual.1 && actual.2 { "actual-default-filter-network-effect-demonstrated-partial" } else { "default-filter-effect-not-demonstrated" });
 }
 
 /// Genuine Stylus backup import through its real manager's ordinary DOM drop handler. No package
@@ -1348,4 +1348,35 @@ fn live_runtime_stale_owner_child() {
         assert!(result.is_err(), "stale {operation} unexpectedly accepted: {result:?}"); println!("STALE_OWNER_CHILD operation={operation} result={result:?}");
     }
     std::fs::write(root.join("stale-done"), b"all-stale-operations-rejected").unwrap(); stale.close(); drop(loopback);
+}
+
+#[test]
+#[ignore = "damaged authority must refuse extension-enabled real environments before native startup"]
+fn live_probe_fail_closed_environment() {
+    unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED).ok().unwrap() };
+    for damage in ["malformed-map", "duplicate-map", "initialized-missing-map", "malformed-records"] {
+        let root = temp_root(); let profile = root.join("damaged-profile"); let (id, folder) = install_fixture(&profile, "probe-mv3-key");
+        let loopback = Loopback::start(); let mut initial = Session::open(&profile, vec![(id.clone(), folder.clone())], vec![(id.clone(), true)], &loopback.page("initial-consent"));
+        assert!(initial.wait_for_add(&profile, &id).1.is_none()); assert!(initial.wait_for_worker_reply(&loopback)); initial.close(); drop(loopback);
+        let map = profile.join("extension_ids.txt"); let records = profile.join("extensions.txt");
+        match damage {
+            "malformed-map" => std::fs::write(&map, b"truncated-authority\n").unwrap(),
+            "duplicate-map" => { let row = std::fs::read_to_string(&map).unwrap(); std::fs::write(&map, format!("{row}{row}")).unwrap(); }
+            "initialized-missing-map" => { assert!(map.with_extension("initialized").is_file()); std::fs::remove_file(&map).unwrap(); }
+            "malformed-records" => std::fs::write(&records, b"truncated-record\n").unwrap(),
+            _ => unreachable!(),
+        }
+        let map_before = std::fs::read(&map).ok(); let records_before = std::fs::read(&records).unwrap();
+        let loopback = Loopback::start(); let target = loopback.page("damaged-real-page");
+        let mut refused = Session::open(&profile, vec![(id.clone(), folder.clone())], vec![(id.clone(), true)], &target);
+        assert!(pump_until(Duration::from_secs(15), || loopback.beacons.lock().unwrap().iter().any(|path| path == "/damaged-real-page")), "negative control did not load its actual HTTP page");
+        pump_until(Duration::from_secs(2), || false);
+        let state = refused.engine.probe_extension_startup_state(); assert!(!state.0 && state.1.is_some(), "damaged state was not refused before environment configuration: {state:?}");
+        assert!(!refused.engine.probe_extension_profile_ready()); assert!(refused.engine.probe_loaded_extension_id(&id).is_none());
+        assert_eq!(refused.read_marker("data-bowser-probe").as_deref(), Some("null"));
+        assert!(!loopback.beacons.lock().unwrap().iter().any(|path| path.starts_with(BEACON_PREFIX)), "persisted native extension executed despite refused environment");
+        assert_eq!(std::fs::read(&map).ok(), map_before); assert_eq!(std::fs::read(&records).unwrap(), records_before); assert!(folder.is_dir());
+        println!("FAIL_CLOSED_ENV damage={damage} startup_state={state:?} actual_http_page_loaded=true content_marker_absent=true extension_beacons_absent=true authority_and_package_preserved=true scope=real-environment-not-parser-only");
+        refused.close(); drop(loopback); remove_with_retries(&root);
+    }
 }
