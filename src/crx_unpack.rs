@@ -129,12 +129,12 @@ pub fn unpack(crx: &VerifiedCrx<'_>, dest: &Path) -> Result<UnpackSummary, Unpac
 }
 
 fn unpack_archive(archive: &[u8], dest: &Path) -> Result<UnpackSummary, UnpackError> {
-    unpack_tracked(archive, dest).map(|(summary, _)| summary)
+    unpack_tracked(archive, dest, false).map(|(summary, _)| summary)
 }
 
 /// [`unpack_archive`] that also returns what it created, so a caller that fails afterwards can remove
 /// exactly those paths. On error everything is already rolled back and nothing is returned.
-fn unpack_tracked(archive: &[u8], dest: &Path) -> Result<(UnpackSummary, Created), UnpackError> {
+fn unpack_tracked(archive: &[u8], dest: &Path, omit_store_metadata: bool) -> Result<(UnpackSummary, Created), UnpackError> {
     check_destination(dest)?;
     let canonical_dest = fs::canonicalize(dest).map_err(|_| UnpackError::Io)?;
 
@@ -150,7 +150,7 @@ fn unpack_tracked(archive: &[u8], dest: &Path) -> Result<(UnpackSummary, Created
         return Err(UnpackError::DuplicateEntry);
     }
 
-    let plan = plan_entries(&mut zip)?;
+    let plan = plan_entries(&mut zip, omit_store_metadata)?;
 
     let mut created = Created::default();
     match write_entries(&mut zip, &plan, dest, &canonical_dest, &mut created) {
@@ -206,7 +206,7 @@ pub struct StampedUnpack {
 /// file the unpack created is removed again and only the empty destination stays. A package whose id
 /// would not be stable is never left behind to load. Nothing is installed or loaded here.
 pub fn unpack_stamped(crx: &VerifiedCrx<'_>, dest: &Path) -> Result<StampedUnpack, StampError> {
-    let (summary, mut created) = unpack_tracked(crx.archive(), dest).map_err(StampError::Unpack)?;
+    let (summary, mut created) = unpack_tracked(crx.archive(), dest, true).map_err(StampError::Unpack)?;
     let stamped = fs::canonicalize(dest)
         .map_err(|_| StampError::Io)
         .and_then(|canonical_dest| stamp_manifest(dest, &canonical_dest, crx.developer_public_key()));
@@ -320,10 +320,11 @@ struct Planned {
     parts: Vec<String>,
     folder: bool,
     size: u64,
+    omit_metadata: bool,
 }
 
 /// Validates every entry from central-directory metadata alone; nothing is inflated or written.
-fn plan_entries(zip: &mut ZipArchive<Cursor<&[u8]>>) -> Result<Vec<Planned>, UnpackError> {
+fn plan_entries(zip: &mut ZipArchive<Cursor<&[u8]>>, omit_store_metadata: bool) -> Result<Vec<Planned>, UnpackError> {
     let mut plan = Vec::with_capacity(zip.len());
     let mut explicit: HashSet<String> = HashSet::new();
     let mut files: HashSet<String> = HashSet::new();
@@ -363,7 +364,11 @@ fn plan_entries(zip: &mut ZipArchive<Cursor<&[u8]>>) -> Result<Vec<Planned>, Unp
             return Err(UnpackError::TooDeep);
         }
         let root = parts[0].as_str();
-        if root.starts_with('_') && (root != LOCALES_FOLDER || (parts.len() == 1 && !folder)) {
+        // A verified store CRX normally contains Chrome-owned _metadata. It cannot be loaded
+        // unpacked by WebView2. Validate and count it like every other entry, but never materialize
+        // it. This is confined to the signature-verified stamped path, not arbitrary local folders.
+        let omit_metadata = omit_store_metadata && root == "_metadata" && (parts.len() > 1 || folder);
+        if root.starts_with('_') && !omit_metadata && (root != LOCALES_FOLDER || (parts.len() == 1 && !folder)) {
             return Err(UnpackError::ReservedRootName);
         }
 
@@ -404,7 +409,7 @@ fn plan_entries(zip: &mut ZipArchive<Cursor<&[u8]>>) -> Result<Vec<Planned>, Unp
             }
         }
         folders.extend(ancestors);
-        plan.push(Planned { index, parts, folder, size });
+        plan.push(Planned { index, parts, folder, size, omit_metadata });
     }
     Ok(plan)
 }
@@ -489,6 +494,13 @@ fn write_entries(
 ) -> Result<UnpackSummary, UnpackError> {
     let mut summary = UnpackSummary { files: 0, bytes: 0 };
     for item in plan {
+        if item.omit_metadata {
+            if !item.folder {
+                let mut entry = zip.by_index(item.index).map_err(|_| UnpackError::CorruptEntry)?;
+                copy_bounded(&mut entry, &mut std::io::sink(), item.size)?;
+            }
+            continue;
+        }
         if item.folder {
             ensure_folders(dest, canonical_dest, &item.parts, created)?;
             continue;
@@ -1447,6 +1459,27 @@ mod tests {
         let verified = crate::crx::verify_crx3(&crx, &id).expect("test CRX verifies");
         assert_eq!(verified.developer_public_key(), spki.as_slice());
         (id, unpack_stamped(&verified, dest), spki)
+    }
+
+    #[test]
+    fn verified_staging_omits_store_metadata_but_keeps_all_safeguards() {
+        let scratch = Scratch::new();
+        let archive = zip_bytes(&[
+            stored("manifest.json", MANIFEST.as_bytes()),
+            stored("_metadata/verified_contents.json", b"{\"signed\":true}"),
+            stored("_metadata/computed_hashes.json", b"{}"),
+        ]);
+        let (_, result, _) = verified_unpack(&archive, &scratch.0);
+        assert_eq!(result.unwrap().summary.files, 1);
+        assert!(!scratch.0.join("_metadata").exists());
+        assert!(crate::extensions::inspect_source(&scratch.0).is_ok());
+        for unsafe_name in ["_metadata/../escape", "_metadata/CON", "_metadata/a:stream", "_other/a"] {
+            let scratch = Scratch::new();
+            let archive = zip_bytes(&[stored("manifest.json", MANIFEST.as_bytes()), stored(unsafe_name, b"x")]);
+            let (_, result, _) = verified_unpack(&archive, &scratch.0);
+            assert!(result.is_err(), "{unsafe_name}");
+            assert!(fs::read_dir(&scratch.0).unwrap().next().is_none());
+        }
     }
 
     #[test]

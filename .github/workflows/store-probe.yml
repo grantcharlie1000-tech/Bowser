@@ -2,7 +2,7 @@ name: Probe current Store downloads
 on:
   pull_request:
     paths:
-      - 'src/crx_fetch.rs'
+      - 'src/crx*.rs'
       - '.github/workflows/store-probe.yml'
   workflow_dispatch:
 permissions:
