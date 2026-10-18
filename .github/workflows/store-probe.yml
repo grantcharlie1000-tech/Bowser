@@ -36,6 +36,8 @@ jobs:
           $env:BOWSER_EXTENSION_TRACE = '1'
           $env:LOCALAPPDATA = Join-Path $env:RUNNER_TEMP 'bowser-store-isolated-localappdata'
           New-Item -ItemType Directory -Force $env:LOCALAPPDATA | Out-Null
+          $env:BOWSER_EXTENSION_MEASURE_ROOT = Join-Path $env:RUNNER_TEMP ('bowser-extension-measurement-' + [guid]::NewGuid().ToString('N'))
+          "BOWSER_EXTENSION_MEASURE_ROOT=$env:BOWSER_EXTENSION_MEASURE_ROOT" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           $test = Get-ChildItem target/debug/deps/bowser-*.exe | Sort-Object LastWriteTime -Descending | Select-Object -First 1
           & $test.FullName live_store_current_extension_loads --ignored --nocapture --test-threads=1 2>&1 | Tee-Object store-runtime-probe.log
           if ($LASTEXITCODE -ne 0) { throw 'Real extension load diagnostic failed.' }
@@ -76,6 +78,22 @@ jobs:
           cargo +stable build --locked --bin bowser --features html-chrome-default
           if ($LASTEXITCODE -ne 0) { throw 'Native Store debug build failed.' }
           ./benchmarks/scripts/probe-native-store.ps1 -InstallJourney
+      - name: Measure actual native zero versus four extension profiles without benchmark mode
+        if: ${{ !cancelled() && env.BOWSER_EXTENSION_MEASURE_ROOT != '' }}
+        run: |
+          cargo +stable build --release --locked --bin bowser --features html-chrome-default
+          if ($LASTEXITCODE -ne 0) { throw 'Release executable for actual extension measurement failed to build.' }
+          ./benchmarks/scripts/measure-native-extensions.ps1 -ProfilesRoot $env:BOWSER_EXTENSION_MEASURE_ROOT
+      - name: Remove only the disposable package measurement copies
+        if: always()
+        run: |
+          $path = $env:BOWSER_EXTENSION_MEASURE_ROOT
+          if ($path) {
+            $full = [IO.Path]::GetFullPath($path)
+            $allowed = [IO.Path]::GetFullPath($env:RUNNER_TEMP).TrimEnd('\') + '\'
+            if (-not $full.StartsWith($allowed, [StringComparison]::OrdinalIgnoreCase) -or -not ([IO.Path]::GetFileName($full).StartsWith('bowser-extension-measurement-'))) { throw 'Refusing cleanup outside the disposable measurement root.' }
+            if (Test-Path -LiteralPath $full) { Remove-Item -LiteralPath $full -Recurse -Force }
+          }
       - name: Save diagnostic evidence, including unavailable packages
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -89,5 +107,6 @@ jobs:
             store-action-probe.log
             ${{ runner.temp }}/bowser-store-rendering/
             ${{ runner.temp }}/bowser-native-store/
+            ${{ runner.temp }}/bowser-extension-metrics/
           if-no-files-found: error
           retention-days: 14

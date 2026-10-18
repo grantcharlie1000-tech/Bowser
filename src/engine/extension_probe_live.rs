@@ -96,9 +96,13 @@ fn handle(mut stream: TcpStream, beacons: &Mutex<Vec<String>>) {
         .and_then(|line| line.split(' ').nth(1))
         .unwrap_or("")
         .to_owned();
+    beacons.lock().unwrap().push(path.clone());
     let (status, content_type, body) = if path.starts_with(BEACON_PREFIX) {
-        beacons.lock().unwrap().push(path);
         ("200 OK", "text/plain", String::new())
+    } else if path == "/control-script.js" || path == "/ads/banner.js" || path == "/adserver/ad.js" || path == "/pagead/show_ads.js" {
+        ("200 OK", "application/javascript", format!("document.documentElement.setAttribute('data-script-{}','loaded');", path.trim_start_matches('/').replace(['/', '.'], "-")))
+    } else if path == "/dnr-fixture" {
+        ("200 OK", "text/html; charset=utf-8", "<!doctype html><title>Disposable native DNR fixture</title><p>Controlled loopback requests</p><script src='/control-script.js'></script><script src='/ads/banner.js'></script><script src='/adserver/ad.js'></script><script src='/pagead/show_ads.js'></script>".to_owned())
     } else if path.starts_with('/') && !path.contains("favicon") {
         (
             "200 OK",
@@ -722,6 +726,30 @@ fn live_probe_restart_child() {
     session.close();
 }
 
+/// Real uBO default rules against controlled loopback assets, paired with a zero-extension
+/// control. This probes a concrete network effect, not tab targeting or arbitrary websites.
+fn probe_real_blocker_network(root: &Path, session: &mut Session, loopback: &Loopback) {
+    session.page_script("(()=>{chrome.declarativeNetRequest.getEnabledRulesets(r=>document.documentElement.setAttribute('data-enabled-rules',JSON.stringify({rules:r,error:chrome.runtime.lastError?.message||null})));return true})()");
+    pump_until(Duration::from_secs(1), || false);
+    println!("BLOCKER_PROBE enabled_rules={:?}", session.page_script("document.documentElement.getAttribute('data-enabled-rules')"));
+    let baseline_loopback = Loopback::start();
+    let baseline = Session::open(&root.join("zero-extension-control"), vec![], vec![], &baseline_loopback.page("dnr-fixture"));
+    pump_until(Duration::from_secs(4), || false);
+    let baseline_requests = baseline_loopback.beacons.lock().unwrap().clone();
+    baseline.close();
+    assert!(baseline_requests.iter().any(|p| p == "/control-script.js"), "control did not request its normal script");
+    let ad_paths = ["/ads/banner.js", "/adserver/ad.js", "/pagead/show_ads.js"];
+    assert!(ad_paths.iter().all(|path| baseline_requests.iter().any(|p| p == path)), "zero-extension ad fixtures must all reach server");
+    loopback.beacons.lock().unwrap().clear();
+    session.engine.navigate_tab(session.tab(), &loopback.page("dnr-fixture")).unwrap();
+    pump_until(Duration::from_secs(4), || false);
+    let extension_requests = loopback.beacons.lock().unwrap().clone();
+    let control = extension_requests.iter().any(|p| p == "/control-script.js");
+    let blocked: Vec<_> = ad_paths.into_iter().filter(|path| !extension_requests.iter().any(|p| p == path)).collect();
+    println!("BLOCKER_PROBE zero_extension_requests={baseline_requests:?} with_extension_requests={extension_requests:?} normal_control_requested={control} blocked_candidates={blocked:?}");
+    println!("BLOCKER_PROBE verdict={}", if control && !blocked.is_empty() { "concrete-native-default-rule-network-effect-partial-only" } else { "no-blocking-demonstrated-by-these-controlled-candidates" });
+}
+
 /// Real packages, fresh throwaway profiles, no accounts and no user data. This proves package
 /// identity/load and genuine extension context only, not product functionality or action grants.
 #[test]
@@ -733,6 +761,15 @@ fn live_store_current_extension_loads() {
     let root = temp_root();
     let cancelled = AtomicBool::new(false);
     let mut loaded = 0;
+    // Optional handoff to the native executable measurement in this same disposable runner.
+    // Never an artifact or user profile; source packages are deleted by the following script.
+    let measurement = std::env::var_os("BOWSER_EXTENSION_MEASURE_ROOT").map(PathBuf::from);
+    if let Some(path) = &measurement {
+        let runner_temp = std::env::var_os("RUNNER_TEMP").map(PathBuf::from).unwrap_or_else(std::env::temp_dir);
+        assert!(path.starts_with(runner_temp) && !path.exists(), "measurement root must be fresh under this runner's temp directory");
+        std::fs::create_dir_all(path.join("zero")).unwrap();
+        std::fs::create_dir(path.join("several")).unwrap();
+    }
     println!("REAL_STORE runtime={version}");
     for (name, id) in [
         ("ublock-origin-lite", "ddkjiahejlhfcafbddmgiahcphecmpfh"),
@@ -747,6 +784,14 @@ fn live_store_current_extension_loads() {
         };
         let reviewed = review.prepared.inspection().manifest.clone();
         println!("REAL_STORE name={name} id={id} version={} stage=permission_review required={:?} hosts={:?} scripts={:?} optional={:?} optional_hosts={:?}", reviewed.version, reviewed.permissions, reviewed.host_permissions, reviewed.content_script_matches, reviewed.optional_permissions, reviewed.optional_host_permissions);
+        if let Some(path) = &measurement {
+            let several = path.join("several");
+            let prepared = extensions::prepare_install(&review.prepared.folder().unwrap(), &several.join("Extensions"), &several.join("extensions.txt")).unwrap();
+            assert_eq!(prepared.inspection(), review.prepared.inspection());
+            // Explicit repeated consent to the same complete declarations printed immediately above.
+            let copied = prepared.commit_named(&review.name).unwrap();
+            println!("REAL_STORE measurement_copy id={} name={} version={} consent=explicit-disposable-profile", copied.id, copied.name, copied.version);
+        }
         // Explicit test-harness consent to exactly the verified copy, never credentials/accounts.
         let record = review.prepared.commit_named(&review.name).expect("test-only reviewed package consent");
         let folder = extensions::folder_for(&profile.join("Extensions"), &record.id).unwrap();
@@ -770,8 +815,14 @@ fn live_store_current_extension_loads() {
                 }
             }
         }
+        if name == "ublock-origin-lite" && failure.is_none() && webview_id.as_deref() == Some(id) {
+            probe_real_blocker_network(&root, &mut session, &loopback);
+        }
         session.close();
         drop(loopback);
+    }
+    if let Some(path) = &measurement {
+        assert_eq!(extensions::read_records(&path.join("several/extensions.txt")).unwrap().len(), 4, "four verified packages are required for the native several-extension comparison");
     }
     remove_with_retries(&root);
     assert!(loaded > 0, "no real signed current extension loaded; inspect diagnostic reasons");
