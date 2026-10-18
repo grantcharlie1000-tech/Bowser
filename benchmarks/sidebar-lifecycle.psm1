@@ -3,6 +3,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference='Stop'
 # Do not force-reload this shared dependency: the caller also imports its exports.
 Import-Module "$PSScriptRoot/measurements.psm1"
+Import-Module "$PSScriptRoot/sidebar-input.psm1"
 function New-ProductionSidebarFixture {
  param([Parameter(Mandatory)][ValidatePattern('^http://127\.0\.0\.1:[0-9]{1,5}$')][string]$BaseUrl,[Parameter(Mandatory)][ValidatePattern('^[0-9a-f]{32}$')][string]$Token)
  # Match SidebarConfig::default: omitted item rows parse Apps as hidden.
@@ -11,7 +12,7 @@ function New-ProductionSidebarFixture {
 }
 function Invoke-ProductionSidebarLifecycle {
  [CmdletBinding()]
- param([uint32]$RootPid,[string]$Profile,[string]$RequestFile,[string]$AToken,[string]$BToken,[ValidateSet('settled','rapid')][string]$Scenario='settled',[Parameter(Mandatory)][AllowEmptyCollection()][Collections.Generic.List[object]]$Trace)
+ param([uint32]$RootPid,[string]$InitialToken,[switch]$RouteSmoke,[string]$Profile,[string]$RequestFile,[string]$AToken,[string]$BToken,[ValidateSet('settled','rapid')][string]$Scenario='settled',[Parameter(Mandatory)][AllowEmptyCollection()][Collections.Generic.List[object]]$Trace)
  Add-Type -AssemblyName UIAutomationClient,UIAutomationTypes
  $qpc={ [Diagnostics.Stopwatch]::GetTimestamp() }
  $rootWindow=[BowserProductionNative]::FindHost($RootPid)
@@ -26,14 +27,23 @@ function Invoke-ProductionSidebarLifecycle {
   if($owner -ne $RootPid -or [BowserProductionNative]::FindHost($RootPid) -ne $rootWindow){throw 'Sidebar native ownership changed before action'}
   if([BowserProductionNative]::GetForegroundWindow() -ne $rootWindow){throw 'Sidebar owned root not foreground; no rail action'}
   $rails=@(Find-Visible $root 'Left rail' ([Windows.Automation.ControlType]::ToolBar))
-  if($rails.Count -ne 1){throw "Sidebar source rail unavailable or ambiguous: $($rails.Count)"}
+  if($rails.Count -ne 1 -or -not $rails[0].Current.IsEnabled){throw "Sidebar source rail unavailable, disabled or ambiguous: $($rails.Count)"}
   $buttons=@(Find-Visible $rails[0] $name ([Windows.Automation.ControlType]::Button))
-  if($buttons.Count -ne 1){throw "Sidebar action button unavailable or ambiguous: $name/$($buttons.Count)"}
+  if($buttons.Count -ne 1 -or -not $buttons[0].Current.IsEnabled){throw "Sidebar action button unavailable, disabled or ambiguous: $name/$($buttons.Count)"}
   $current=$buttons[0].Current;$bounds=$current.BoundingRectangle
-  $entry=[ordered]@{kind='rail-invoke';name=$name;qpc=(& $qpc);provider_pid=$current.ProcessId;bounds=@{left=$bounds.Left;top=$bounds.Top;width=$bounds.Width;height=$bounds.Height};invoked=$false;method='UIA Invoke rooted in exact owned native Left rail; action proxy, not keyboard evidence'}
+  $supported=@($buttons[0].GetSupportedPatterns()|ForEach-Object {$_.Id})
+  $entry=[ordered]@{kind='rail-toggle';name=$name;qpc=(& $qpc);provider_pid=$current.ProcessId;bounds=@{left=$bounds.Left;top=$bounds.Top;width=$bounds.Width;height=$bounds.Height};invoked=$false;supported_pattern_ids=$supported;method='Observed UIA Toggle rooted in exact owned native Left rail; ordinary action proxy, not keyboard evidence'}
   $Trace.Add($entry)
-  $pattern=$buttons[0].GetCurrentPattern([Windows.Automation.InvokePattern]::Pattern)
-  $pattern.Invoke();$entry.invoked=$true;$entry['return_qpc']=(& $qpc)
+  if(10015 -notin $supported){throw 'Previously observed TogglePattern unavailable; no alternative action'}
+  $pattern=$buttons[0].GetCurrentPattern([Windows.Automation.TogglePattern]::Pattern)
+  $latest=$buttons[0].Current
+  $targetValid=($latest.IsEnabled -and -not $latest.IsOffscreen -and $latest.Name -ceq $name -and $latest.ControlType -eq [Windows.Automation.ControlType]::Button -and $latest.BoundingRectangle.Width -gt 10 -and $latest.BoundingRectangle.Height -gt 10 -and $rails[0].Current.IsEnabled)
+  $dispatchRoot=[BowserProductionNative]::FindHost($RootPid)
+  $dispatchOwner=[uint32]0;[void][BowserProductionNative]::GetWindowThreadProcessId($rootWindow,[ref]$dispatchOwner)
+  $dispatchForeground=[BowserProductionNative]::GetForegroundWindow()
+  $entry['dispatch_guard']=[ordered]@{qpc=(& $qpc);target_valid=$targetValid;root_pid=$dispatchOwner;root_unchanged=($dispatchRoot -eq $rootWindow);foreground_owned=($dispatchForeground -eq $rootWindow);refused=(-not $targetValid -or $dispatchOwner -ne $RootPid -or $dispatchRoot -ne $rootWindow -or $dispatchForeground -ne $rootWindow)}
+  if($entry.dispatch_guard.refused){throw 'Owned enabled source-bound Toggle target or foreground changed; action refused without repair'}
+  $pattern.Toggle();$entry.invoked=$true;$entry['return_qpc']=(& $qpc)
  }
  function Wait-App([string]$token,[string]$name) {
   $wait=[Diagnostics.Stopwatch]::StartNew();$docs=@();$acks=@();$panel=[IntPtr]::Zero
@@ -66,20 +76,22 @@ function Invoke-ProductionSidebarLifecycle {
   $Trace.Add([ordered]@{kind='resource-phase';name=$name;start_qpc=$start;end_qpc=(& $qpc);settle_before_samples_ms=1000;sample_count=3;between_samples_ms=250;snapshots=@($snapshots.ToArray());sampling_overhead_ms=@($overhead.ToArray());inventory_overhead_ms=@($inventoryCost.ToArray());webapps_profile=$webProfile;webapps_inventory_before=$before;webapps_inventory_after=$after;webapps_root_identities=$before.identities;coverage=$coverage;eligible=$coverage.eligible;scope='Whole root descendants plus profile path including separate WebApps; stable identity coverage across ALL three snapshots required; native PrivateUsage is private commit, not per-view RAM; working-set sums not PSS; endpoint sampling is not lifetime peak'})
   if(-not $coverage.eligible){throw "Sidebar resource coverage incomplete: $name"}
  }
-  $beforeForeground=[BowserProductionNative]::GetForegroundWindow();$activationStart=& $qpc
-  $activationRequested=[BowserProductionNative]::SetForegroundWindow($rootWindow)
-  # Same fixed activation-confirmation interval as production-baseline.ps1 Owned-Keys.
-  # Once per row before resource phases/actions: no per-action pacing or focus repair.
-  Start-Sleep -Milliseconds 80
-  $afterForeground=[BowserProductionNative]::GetForegroundWindow()
-  $Trace.Add([ordered]@{kind='rail-activation';name='initial-sidebar-setup';start_qpc=$activationStart;end_qpc=(& $qpc);requested=$activationRequested;before_hwnd=$beforeForeground.ToInt64();after_hwnd=$afterForeground.ToInt64();root_hwnd=$rootWindow.ToInt64();confirmation_ms=80;scope='Single ordinary foreground request, fixed confirmation interval, then fail-closed guard; no retry'})
-  if($afterForeground -ne $rootWindow -or [BowserProductionNative]::FindHost($RootPid) -ne $rootWindow){throw 'Sidebar owned root not foreground; no rail action'}
- Phase 'initial-one-tab' $false
+ Invoke-ProductionSidebarActivation -RootPid $RootPid -InitialToken $InitialToken -Trace $Trace
+ if(-not $RouteSmoke){Phase 'initial-one-tab' $false}
  if($Scenario -eq 'rapid'){foreach($name in @('Fixture A','Fixture B','Fixture A')){Invoke-Rail $name}}else{Invoke-Rail 'Fixture A'}
  Wait-App $AToken 'Fixture A'
- Phase 'A-ready' $true
+ if(-not $RouteSmoke){Phase 'A-ready' $true}
  Invoke-Rail 'Fixture B';Wait-App $BToken 'Fixture B'
- Phase 'first-B-ready' $true
+ if(-not $RouteSmoke){Phase 'first-B-ready' $true}
+ if($RouteSmoke){
+  Invoke-Rail 'Fixture A';Wait-App $AToken 'Fixture A'
+  Invoke-Rail 'Fixture A'
+  $closeWait=[Diagnostics.Stopwatch]::StartNew()
+  while([BowserProductionNative]::FindSurface($RootPid,'BowserSidePanelHost',100,100) -ne [IntPtr]::Zero -and $closeWait.Elapsed.TotalSeconds -lt 5){Start-Sleep -Milliseconds 50}
+  if([BowserProductionNative]::FindSurface($RootPid,'BowserSidePanelHost',100,100) -ne [IntPtr]::Zero){throw 'Single route close action did not hide the panel'}
+  $Trace.Add([ordered]@{kind='route-close-confirmed';qpc=(& $qpc);scope='Exactly four predeclared Toggle actions A/B/A/A-close, no retries; no resource result'})
+  return
+ }
  for($cycle=1;$cycle -le 3;$cycle++) {
   foreach($pair in @(@('Fixture A',$AToken),@('Fixture B',$BToken),@('Fixture A',$AToken))){Invoke-Rail $pair[0];Wait-App $pair[1] $pair[0]}
   # The ordinary active rail button toggles the panel closed. No testing message or focus repair.
