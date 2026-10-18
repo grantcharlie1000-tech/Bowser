@@ -24,7 +24,17 @@ $d=Get-ProductionDistribution @(1,2,3,4)
 Check ($d.Median -eq 2.5 -and $d.P95 -eq 4) 'distribution'
 'Production measurement contract tests passed.'
 
-# Drain traversal uses PID0 only as a sentinel: Windows can enumerate the Idle PID0 itself.
+# A negative drain sentinel cannot seed the PID0/System ancestry.
 $harness=Get-Content "$PSScriptRoot/production-baseline.ps1" -Raw
-Check ($harness.Contains('Where-Object { $_.Pid -ne 0 }')) 'drain excludes sentinel Idle PID0'
+Check ($harness.Contains('Get-ProcessGroupMembers -RootPid -1')) 'negative drain sentinel excludes system ancestry'
 Check ($harness.IndexOf('$sample.launch_qpc=Qpc') -lt $harness.IndexOf('$app=Start-Process -FilePath')) 'launch clock immediately precedes process launch'
+Import-Module "$PSScriptRoot/measurements.psm1" -Force
+$inventory=@(
+    [pscustomobject]@{Pid=0;Parent=0;CreationTicks=1;CommandLine=''},
+    [pscustomobject]@{Pid=4;Parent=0;CreationTicks=2;CommandLine='System'},
+    [pscustomobject]@{Pid=10;Parent=4;CreationTicks=3;CommandLine='unrelated'},
+    [pscustomobject]@{Pid=20;Parent=4;CreationTicks=4;CommandLine='--user-data-dir=C:\isolated'},
+    [pscustomobject]@{Pid=21;Parent=20;CreationTicks=5;CommandLine='--type=renderer'}
+)
+$drain=@(Get-ProcessGroupMembers -RootPid -1 -Profile 'C:\isolated' -Inventory $inventory)
+Check (($drain.Pid -join ',') -eq '20,21') 'drain selects only profile group, not Windows system ancestry'

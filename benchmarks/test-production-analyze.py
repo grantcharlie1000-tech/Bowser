@@ -14,6 +14,17 @@ class ProductionAnalysisTests(unittest.TestCase):
         self.assertIsNone(analysis.cpu_delta([]))
         self.assertIsNone(analysis.metrics({'condition': 'fresh'}, 1000)['idle_median_private_bytes'])
 
+    def test_phase_cpu_is_absolute_with_actual_endpoint_duration_and_coverage(self):
+        rows = [
+            {'SampledAtUtc': '2026-10-18T00:00:00+00:00', 'CpuByPid': {'1:100': 1}},
+            {'SampledAtUtc': '2026-10-18T00:00:02.75+00:00', 'CpuByPid': {'1:100': 1.1}},
+        ]
+        result = analysis.metrics({'idle': rows}, 1000)
+        self.assertAlmostEqual(result['idle_cpu_core_seconds'], .1)
+        self.assertEqual(result['idle_observed_endpoint_seconds'], 2.75)
+        rows[1]['CoverageErrors'] = ['wmi_cpu_unavailable:1']
+        self.assertIsNone(analysis.metrics({'idle': rows}, 1000)['idle_cpu_core_seconds'])
+
     def test_matched_ratios_and_deltas_retain_pair_ids(self):
         rows = []
         for pair in range(1, 11):
@@ -42,6 +53,11 @@ class ProductionAnalysisTests(unittest.TestCase):
         self.assertIsNone(analysis.native_private({'PrivateSource': 'wmi_pagefileusage_proxy', 'PrivateBytes': 123}))
         self.assertIsNone(analysis.native_private({'PrivateSource': 'native', 'NativePrivateBytes': 123, 'CoverageErrors': ['missing']}))
         self.assertEqual(analysis.native_private({'PrivateSource': 'native', 'NativePrivateBytes': 123}), 123)
+        good = {'PrivateSource': 'native', 'NativePrivateBytes': 123}
+        gap = {'PrivateSource': 'unavailable', 'NativePrivateBytes': None}
+        result = analysis.metrics({'idle': [good, gap], 'snapshots': [good, gap]}, 1000)
+        self.assertIsNone(result['idle_median_private_bytes'])
+        self.assertIsNone(result['recorded_window_sampled_peak_private_bytes'])
 
 if __name__ == '__main__':
     unittest.main()

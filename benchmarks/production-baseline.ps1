@@ -11,6 +11,7 @@ param(
     [ValidateRange(1,20)][int]$MaxInvalidSamples=2,
     [string]$DiagnosticSource='8a60dca2ac7de6d369c9b65584fd621a7013f491',
     [switch]$IncludeTabFlow,
+    [switch]$IncludeSurfaceSmoke,
     [string]$CandidateExe,
     [string]$CandidateSource,
     [ValidateSet('timing','resource')][string]$MeasurementMode='resource',
@@ -42,6 +43,9 @@ Add-Type -AssemblyName System.Windows.Forms,System.Drawing
 Add-Type @'
 using System; using System.Text; using System.Runtime.InteropServices;
 public static class BowserProductionNative {
+ [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left,Top,Right,Bottom; }
+ [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h,out RECT r);
+ [DllImport("user32.dll")] public static extern bool EnumChildWindows(IntPtr parent,EnumProc callback,IntPtr param);
  public delegate bool EnumProc(IntPtr window,IntPtr param);
  [DllImport("user32.dll")] public static extern bool EnumWindows(EnumProc callback,IntPtr param);
  [DllImport("user32.dll",CharSet=CharSet.Unicode)] public static extern int GetClassName(IntPtr h,StringBuilder text,int count);
@@ -53,6 +57,14 @@ public static class BowserProductionNative {
   return found;
  }
  public static string Title(IntPtr h) {var text=new StringBuilder(2048);GetWindowText(h,text,text.Capacity);return text.ToString();}
+ public static IntPtr FindSurface(uint pid,string name,int minWidth,int minHeight) {
+  IntPtr found=IntPtr.Zero;
+  EnumProc visit=(h,p)=>{uint owner;GetWindowThreadProcessId(h,out owner);var cls=new StringBuilder(128);GetClassName(h,cls,cls.Capacity);RECT r;
+   if(owner==pid && IsWindowVisible(h) && cls.ToString()==name && GetWindowRect(h,out r) && r.Right-r.Left>=minWidth && r.Bottom-r.Top>=minHeight){found=h;return false;} return true;};
+  EnumWindows(visit,IntPtr.Zero);
+  if(found==IntPtr.Zero)EnumChildWindows(FindHost(pid),visit,IntPtr.Zero);
+  return found;
+ }
  public static bool Close(uint pid) {var h=FindHost(pid);return h!=IntPtr.Zero && PostMessage(h,0x0010,IntPtr.Zero,IntPtr.Zero);}
 
  [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
@@ -87,6 +99,91 @@ function Owned-Keys([string]$keys) {
     if ([BowserProductionNative]::GetForegroundWindow() -ne $window) { throw 'Foreground unavailable; no global input sent' }
     [Windows.Forms.SendKeys]::SendWait($keys)
 }
+function Capture-OwnedSurface([string]$name,[IntPtr]$window=[IntPtr]::Zero) {
+    if($window -eq [IntPtr]::Zero){$window=[BowserProductionNative]::FindHost([uint32]$app.Id)}
+    $owner=[uint32]0; [void][BowserProductionNative]::GetWindowThreadProcessId($window,[ref]$owner)
+    if($owner -ne $app.Id -or -not [BowserProductionNative]::IsWindowVisible($window)){throw 'Screenshot window is not owned and visible'}
+    $rect=[BowserProductionNative+RECT]::new()
+    if(-not [BowserProductionNative]::GetWindowRect($window,[ref]$rect)){throw 'Screenshot rectangle unavailable'}
+    $bitmap=[Drawing.Bitmap]::new($rect.Right-$rect.Left,$rect.Bottom-$rect.Top)
+    $graphics=[Drawing.Graphics]::FromImage($bitmap)
+    try {
+        $graphics.CopyFromScreen($rect.Left,$rect.Top,0,0,$bitmap.Size)
+        $path=Join-Path $Out "$id-$name.png"
+        $bitmap.Save($path,[Drawing.Imaging.ImageFormat]::Png)
+        return [ordered]@{file=[IO.Path]::GetFileName($path);sha256=(Get-FileHash $path -Algorithm SHA256).Hash.ToLowerInvariant();method='owned-window desktop capture; synthetic isolated profile'}
+    } finally {$graphics.Dispose();$bitmap.Dispose()}
+}
+function Confirm-NativeCoreSurfaces {
+    # Validity only: enabling accessibility can change renderer resource use.
+    Add-Type -AssemblyName UIAutomationClient,UIAutomationTypes
+    $window=[BowserProductionNative]::FindHost([uint32]$app.Id)
+    $root=[Windows.Automation.AutomationElement]::FromHandle($window)
+    $matches=[Collections.Generic.List[object]]::new()
+    foreach($check in @(@{name='Tabs';type=[Windows.Automation.ControlType]::Tab},@{name='Left rail';type=[Windows.Automation.ControlType]::ToolBar})) {
+        $byName=[Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::NameProperty,$check.name)
+        $byType=[Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::ControlTypeProperty,$check.type)
+        $condition=[Windows.Automation.AndCondition]::new($byName,$byType)
+        $wait=[Diagnostics.Stopwatch]::StartNew();$found=$null
+        do {
+            $node=$root.FindFirst([Windows.Automation.TreeScope]::Descendants,$condition)
+            if($node){
+                $current=$node.Current;$rect=$current.BoundingRectangle
+                if(-not $current.IsOffscreen -and $rect.Width -gt 10 -and $rect.Height -gt 10){$found=$current;break}
+            }
+            Start-Sleep -Milliseconds 50
+        } while($wait.Elapsed.TotalSeconds -lt 10)
+        if(-not $found){throw "Native HTML UIA confirmation unavailable: $($check.name); validate provider/fixture on frozen baseline before attributing a regression"}
+        $rect=$found.BoundingRectangle
+        $matches.Add([ordered]@{name=$found.Name;control_type=$found.ControlType.ProgrammaticName;offscreen=$found.IsOffscreen;bounds=@{left=$rect.Left;top=$rect.Top;width=$rect.Width;height=$rect.Height};provider_process_id=$found.ProcessId})
+    }
+    return [ordered]@{surface='core-tabs-rail';method='UIA rooted at exact owned native window; descendant provider PID may differ';matches=@($matches.ToArray());screenshot=(Capture-OwnedSurface 'core-html')}
+}
+function Native-SurfaceSmoke {
+    $results=[Collections.Generic.List[object]]::new()
+    $results.Add((Confirm-NativeCoreSurfaces))
+    foreach($use in @('first','warm')) {
+        $start=Qpc; Owned-Keys '^+m'
+        $wait=[Diagnostics.Stopwatch]::StartNew();$surface=[IntPtr]::Zero
+        do {
+            $surface=[BowserProductionNative]::FindSurface([uint32]$app.Id,'BowserHtmlPopup',100,40)
+            if($surface -ne [IntPtr]::Zero){break};Start-Sleep -Milliseconds 20
+        } while($wait.Elapsed.TotalSeconds -lt 10)
+        if($surface -eq [IntPtr]::Zero){throw "Native HTML popup $use open failed or fell back"}
+        $elapsed=((Qpc)-$start)*1000.0/[Diagnostics.Stopwatch]::Frequency
+        Start-Sleep -Milliseconds 200
+        $results.Add([ordered]@{surface='popup';use=$use;visible_host_proxy_ms=$elapsed;includes_foreground_verification=$true;screenshot=(Capture-OwnedSurface "popup-$use" $surface)})
+        Owned-Keys '{ESC}'
+        $wait=[Diagnostics.Stopwatch]::StartNew()
+        while([BowserProductionNative]::FindSurface([uint32]$app.Id,'BowserHtmlPopup',100,40) -ne [IntPtr]::Zero -and $wait.Elapsed.TotalSeconds -lt 3){Start-Sleep -Milliseconds 20}
+        if([BowserProductionNative]::FindSurface([uint32]$app.Id,'BowserHtmlPopup',100,40) -ne [IntPtr]::Zero){throw 'Native HTML popup did not dismiss'}
+        # Preserve the product's intentional300ms same-kind reopen guard, outside the open timer.
+        Start-Sleep -Milliseconds 350
+    }
+    foreach($use in @('first','warm')) {
+        Owned-Keys '^l'; Owned-Keys 'bowser://settings'
+        $start=Qpc;Owned-Keys '{ENTER}'
+        $wait=[Diagnostics.Stopwatch]::StartNew();$surface=[IntPtr]::Zero
+        do {
+            # This container is only expanded/shown after its HTML bridge has sent ready.
+            $surface=[BowserProductionNative]::FindSurface([uint32]$app.Id,'BowserSettingsPage',200,100)
+            if($surface -ne [IntPtr]::Zero){break};Start-Sleep -Milliseconds 20
+        } while($wait.Elapsed.TotalSeconds -lt 15)
+        if($surface -eq [IntPtr]::Zero){throw "Native HTML internal Settings $use open failed or fell back"}
+        $elapsed=((Qpc)-$start)*1000.0/[Diagnostics.Stopwatch]::Frequency
+        Start-Sleep -Milliseconds 200
+        $results.Add([ordered]@{surface='settings';use=$use;visible_host_proxy_ms=$elapsed;includes_foreground_verification=$true;screenshot=(Capture-OwnedSurface "settings-$use")})
+        $backToken=[guid]::NewGuid().ToString('N')
+        Owned-Keys '^l';Owned-Keys "$base/light?token=$backToken";Owned-Keys '{ENTER}'
+        $wait=[Diagnostics.Stopwatch]::StartNew()
+        while(-not (Has-Ready $backToken) -and $wait.Elapsed.TotalSeconds -lt 20){Start-Sleep -Milliseconds 20}
+        if(-not (Has-Ready $backToken)){throw 'Return from native Settings to owned fixture failed'}
+        $wait=[Diagnostics.Stopwatch]::StartNew()
+        while([BowserProductionNative]::FindSurface([uint32]$app.Id,'BowserSettingsPage',200,100) -ne [IntPtr]::Zero -and $wait.Elapsed.TotalSeconds -lt 3){Start-Sleep -Milliseconds 20}
+        if([BowserProductionNative]::FindSurface([uint32]$app.Id,'BowserSettingsPage',200,100) -ne [IntPtr]::Zero){throw 'Inactive Settings remained visibly expanded'}
+    }
+    return @($results.ToArray())
+}
 function Disk-Bytes([string]$path) { $files=@(Get-ChildItem -LiteralPath $path -File -Recurse -Force -ErrorAction SilentlyContinue); if (-not $files.Count) { return 0 }; return ($files | Measure-Object Length -Sum).Sum }
 function Has-Ready([string]$token) {
     if (-not (Test-Path $requestFile)) { return $false }
@@ -120,7 +217,7 @@ try {
         power=(& powercfg /getactivescheme | Out-String).Trim(); resolution=[Windows.Forms.Screen]::PrimaryScreen.Bounds.ToString()
         webview2_runtime=@(Get-ChildItem 'C:/Program Files (x86)/Microsoft/EdgeWebView/Application' -Directory -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name)
         noise=@('Shared hosted runner, not a laptop/battery claim','Fresh profile is not cold OS cache','Updater remains production-enabled, isolated LOCALAPPDATA','Samples are endpoint process-tree observations, not ETW complete','Working-set sums include shared pages','Fixture double-requestAnimationFrame is acknowledged page readiness, not proven display presentation','Title-based tab switch is only a proxy','Sampling overhead separately recorded; measured values are not overhead-subtracted')
-        workload_settings=@{history_records=10000; bookmark_records=818; startup='start_page overridden by ordinary --open-url'; first_run_offer='already answered synthetic profile'; security='unchanged defaults'; ui='HTML-default build, no BOWSER_UI override'; tab_flow=[bool]$IncludeTabFlow; resource_tab_count=if($IncludeTabFlow){5}else{1}}
+        workload_settings=@{history_records=10000; bookmark_records=818; startup='start_page overridden by ordinary --open-url'; first_run_offer='already answered synthetic profile'; security='unchanged defaults'; ui='HTML-default build, no BOWSER_UI override'; tab_flow=[bool]$IncludeTabFlow; surface_smoke=[bool]$IncludeSurfaceSmoke; resource_tab_count=if($IncludeTabFlow){5}else{1}}
     }
     $metadata | ConvertTo-Json -Depth 10 | Set-Content (Join-Path $Out 'environment.json') -Encoding utf8
     # Five-pair pilot by default. Alternate whole arm order each pair, same session/runtime/fixture seed.
@@ -140,7 +237,7 @@ try {
                     $args=@('--data-dir',"`"$profile`"",'--open-url',"`"$url`"")
                     if($arm.EndsWith('_on')) { $args+=@('--diagnostic-log',"`"$eventFile`"") }
                     $snapshots=[Collections.Generic.List[object]]::new(); $overheads=[Collections.Generic.List[double]]::new()
-                    $sample=[ordered]@{id=$id;pair=$pair;arm=$arm;fixture=$fixture;condition=$condition;token=$token;valid=$false;expected_failure=($fixture -in @('network-failure','error','hung'));error=$null;launch_qpc=$null;ready_qpc=$null;title_ready_qpc=$null;input_ready_qpc=$null;shutdown_ms=$null;disk_before=(Disk-Bytes $profile);measurement_mode=$MeasurementMode;tree_exit_wait_ms=$null;tree_exit_confirmed=$false;events=$null;input=$null;tab_switch_proxy_ms=$null;idle=$null;minimized=$null}
+                    $sample=[ordered]@{id=$id;pair=$pair;arm=$arm;fixture=$fixture;condition=$condition;token=$token;valid=$false;expected_failure=($fixture -in @('network-failure','error','hung'));error=$null;launch_qpc=$null;ready_qpc=$null;title_ready_qpc=$null;input_ready_qpc=$null;shutdown_ms=$null;disk_before=(Disk-Bytes $profile);measurement_mode=$MeasurementMode;tree_exit_wait_ms=$null;tree_exit_confirmed=$false;drain_remaining=@();surface_smoke=$null;events=$null;input=$null;tab_switch_proxy_ms=$null;idle=$null;minimized=$null}
                     $app=$null
                     try {
                         $sample.launch_qpc=Qpc
@@ -196,6 +293,7 @@ try {
                             [void][BowserProductionNative]::ShowWindow([BowserProductionNative]::FindHost([uint32]$app.Id),9)
                             $sample.valid=$true
                         }
+                        if($IncludeSurfaceSmoke -and -not $sample.expected_failure){$sample.surface_smoke=@(Native-SurfaceSmoke)}
                         # Inventory only after all cheap timing endpoints, to establish exact identities for drain.
                         $ownedBeforeClose=@(Get-ProcessGroupMembers -RootPid $app.Id -Profile $profile -Inventory @(Get-ProcessInventory))
                         $known=@{}; foreach($process in $ownedBeforeClose){$known["$($process.Pid):$($process.CreationTicks)"]=$true}
@@ -205,14 +303,16 @@ try {
                         $drain=[Diagnostics.Stopwatch]::StartNew()
                         do {
                             $inventory=@(Get-ProcessInventory)
-                            # PID0 is a traversal sentinel, never an owned process (Win32_Process may enumerate Idle).
-                            $remaining=@(Get-ProcessGroupMembers -RootPid 0 -Profile $profile -Inventory $inventory | Where-Object { $_.Pid -ne 0 })
+                            # A negative traversal sentinel cannot seed Windows PID0/System ancestry.
+                            $remaining=@(Get-ProcessGroupMembers -RootPid -1 -Profile $profile -Inventory $inventory)
+                            foreach($process in $remaining){$known["$($process.Pid):$($process.CreationTicks)"]=$true}
                             $remaining+=@($inventory | Where-Object {$known.ContainsKey("$($_.Pid):$($_.CreationTicks)")})
                             if(-not $remaining.Count){break}
                             Start-Sleep -Milliseconds 100
                         } while($drain.Elapsed.TotalSeconds -lt 20)
                         $sample.tree_exit_wait_ms=$drain.Elapsed.TotalMilliseconds
                         $sample.tree_exit_confirmed=($remaining.Count -eq 0)
+                        $sample.drain_remaining=@($remaining | ForEach-Object {[ordered]@{pid=$_.Pid;parent=$_.Parent;name=$_.Name;created_ticks=$_.CreationTicks;command_line_contains_profile=([bool]$_.CommandLine -and $_.CommandLine.IndexOf($profile,[StringComparison]::OrdinalIgnoreCase) -ge 0)}})
                         if(-not $sample.tree_exit_confirmed){throw 'Owned/profile helpers survived drain; reused launch forbidden'}
                         if($app.ExitCode -ne 0){throw "Exit $($app.ExitCode)"}
                         if($arm.EndsWith('_on')) {

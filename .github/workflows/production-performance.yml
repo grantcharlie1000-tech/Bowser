@@ -79,7 +79,27 @@ jobs:
           git diff 80eabd7ae6d421e61c81985c34023bfc824a2e58 8a60dca2ac7de6d369c9b65584fd621a7013f491 -- src | Set-Content (Join-Path $frozen 'instrumentation.patch')
           if ($LASTEXITCODE -ne 0) { throw 'Cannot preserve instrumentation diff' }
           [ordered]@{archive_artifact_id=12121088896;archive_sha256=$archiveHash;diagnostic_source='8a60dca2ac7de6d369c9b65584fd621a7013f491';untouched_source='80eabd7ae6d421e61c81985c34023bfc824a2e58';harness_source=(git rev-parse HEAD).Trim();previous_source_tests='run39086719160, measurement module tests and Windows source check passed'} | ConvertTo-Json | Set-Content ../evidence/frozen/provenance.json
-      - name: Build actual optimized candidate with the frozen baseline toolchain
+          # Reuse the already-built ACTUAL optimized candidate only for harness/test-only revisions.
+          # This is not the pre-optimization diagnostic.exe: source and exact EXE hash remain explicit.
+          $reuseSource='bc82c994afc80de4d717ca22b93f0dc47b015992'
+          git fetch --no-tags --depth=1 origin $reuseSource
+          if($LASTEXITCODE -ne 0){throw 'Cannot verify actual optimized candidate source'}
+          $changes=@(git diff --name-only $reuseSource HEAD)
+          if($LASTEXITCODE -ne 0){throw 'Cannot validate candidate build-input identity'}
+          $productChanges=@($changes | Where-Object {-not $_.StartsWith('benchmarks/') -and -not $_.StartsWith('ui/test/') -and $_ -cne '.github/workflows/production-performance.yml'})
+          if(-not $productChanges.Count) {
+            $cachedZip=Join-Path $env:RUNNER_TEMP 'actual-ui-candidate-bc82c99.zip'
+            Invoke-WebRequest 'https://api.github.com/repos/grantcharlie1000-tech/Bowser/actions/artifacts/12122339684/zip' -Headers $headers -OutFile $cachedZip
+            if((Get-FileHash $cachedZip -Algorithm SHA256).Hash.ToLowerInvariant() -cne '19a931dce37ad6f954f909d4e2dd0e9d3899b073bb93a6d17a41448d6df0379c'){throw 'Actual candidate archive digest mismatch'}
+            $cache=Join-Path $env:RUNNER_TEMP 'actual-ui-candidate-bc82c99'
+            Expand-Archive -LiteralPath $cachedZip -DestinationPath $cache
+            $identity=Get-Content (Join-Path $cache 'candidate/identity.json') -Raw | ConvertFrom-Json
+            $candidate=Join-Path $cache 'candidate/candidate.exe'
+            if($identity.source -cne $reuseSource -or $identity.sha256 -cne 'c06cac90eb1a0debfb3e71e462e31f4c080d4adadfda538f373cc4fe01ed55d7' -or (Get-FileHash $candidate -Algorithm SHA256).Hash.ToLowerInvariant() -cne $identity.sha256 -or (Get-Item $candidate).Length -ne $identity.bytes){throw 'Actual candidate identity mismatch'}
+            Copy-Item (Join-Path $cache 'candidate') ../evidence/ -Recurse
+            [ordered]@{build_source=$reuseSource;harness_source=(git rev-parse HEAD).Trim();archive_artifact_id=12122339684;archive_sha256='19a931dce37ad6f954f909d4e2dd0e9d3899b073bb93a6d17a41448d6df0379c';allowed_nonproduct_changes=$changes;product_changes=$productChanges;note='Exact already-built optimized candidate; source is not relabelled as harness revision'} | ConvertTo-Json | Set-Content ../evidence/candidate/reuse-provenance.json
+          }
+      - name: Verify actual optimized candidate and build when product inputs changed
         working-directory: candidate
         run: |
           rustup toolchain install 1.99.1 --profile minimal
@@ -110,6 +130,10 @@ jobs:
           Pop-Location
           git diff --exit-code -- ui/src/icons.gen.ts ui/dist ui/dist.manifest
           if ($LASTEXITCODE -ne 0) { throw 'Committed optimized assets are not reproducible' }
+          if(Test-Path ../evidence/candidate/reuse-provenance.json) {
+            Write-Host 'Reusing exact optimized native EXE after strict no-product-change and hash verification'
+            exit 0
+          }
           cargo +1.99.1 build --release --locked --bin bowser --features html-chrome-default
           if ($LASTEXITCODE -ne 0) { throw 'Actual candidate build failed' }
           New-Item -ItemType Directory -Force ../evidence/candidate | Out-Null
@@ -120,7 +144,7 @@ jobs:
       - name: Bounded native actual-module and HTML activation validity pass
         working-directory: candidate
         run: |
-          ./benchmarks/production-baseline.ps1 -BaselineExe ../evidence/frozen/untouched-main.exe -DiagnosticExe ../evidence/frozen/diagnostic.exe -ReleaseExe ../evidence/frozen/released-v0.0.19.exe -CandidateExe ../evidence/candidate/candidate.exe -CandidateSource (git rev-parse HEAD).Trim() -Out ../evidence/validity -Pairs 1 -Fixtures light -IdleSeconds 1 -MeasurementMode timing -MaxInvalidSamples 1
+          ./benchmarks/production-baseline.ps1 -BaselineExe ../evidence/frozen/untouched-main.exe -DiagnosticExe ../evidence/frozen/diagnostic.exe -ReleaseExe ../evidence/frozen/released-v0.0.19.exe -CandidateExe ../evidence/candidate/candidate.exe -CandidateSource (Get-Content ../evidence/candidate/identity.json -Raw | ConvertFrom-Json).source -IncludeSurfaceSmoke -Out ../evidence/validity -Pairs 1 -Fixtures light -IdleSeconds 1 -MeasurementMode timing -MaxInvalidSamples 1
       - name: Corrected diagnostic-off untouched and logging-on off controls
         working-directory: candidate
         run: |
@@ -128,11 +152,11 @@ jobs:
       - name: Ten matched AB BA pairs per fresh and reused profile cheap timing arm
         working-directory: candidate
         run: |
-          ./benchmarks/production-baseline.ps1 -BaselineExe ../evidence/frozen/untouched-main.exe -DiagnosticExe ../evidence/frozen/diagnostic.exe -ReleaseExe ../evidence/frozen/released-v0.0.19.exe -CandidateExe ../evidence/candidate/candidate.exe -CandidateSource (git rev-parse HEAD).Trim() -Out ../evidence/timing -Pairs 10 -Fixtures light -MeasurementMode timing -MaxInvalidSamples 1
+          ./benchmarks/production-baseline.ps1 -BaselineExe ../evidence/frozen/untouched-main.exe -DiagnosticExe ../evidence/frozen/diagnostic.exe -ReleaseExe ../evidence/frozen/released-v0.0.19.exe -CandidateExe ../evidence/candidate/candidate.exe -CandidateSource (Get-Content ../evidence/candidate/identity.json -Raw | ConvertFrom-Json).source -Out ../evidence/timing -Pairs 10 -Fixtures light -MeasurementMode timing -MaxInvalidSamples 1
       - name: Ten matched AB BA pairs separate settled one-tab whole-tree resource arm
         working-directory: candidate
         run: |
-          ./benchmarks/production-baseline.ps1 -BaselineExe ../evidence/frozen/untouched-main.exe -DiagnosticExe ../evidence/frozen/diagnostic.exe -ReleaseExe ../evidence/frozen/released-v0.0.19.exe -CandidateExe ../evidence/candidate/candidate.exe -CandidateSource (git rev-parse HEAD).Trim() -Out ../evidence/resource -Pairs 10 -Fixtures light -MeasurementMode resource -MaxInvalidSamples 1
+          ./benchmarks/production-baseline.ps1 -BaselineExe ../evidence/frozen/untouched-main.exe -DiagnosticExe ../evidence/frozen/diagnostic.exe -ReleaseExe ../evidence/frozen/released-v0.0.19.exe -CandidateExe ../evidence/candidate/candidate.exe -CandidateSource (Get-Content ../evidence/candidate/identity.json -Raw | ConvertFrom-Json).source -Out ../evidence/resource -Pairs 10 -Fixtures light -MeasurementMode resource -MaxInvalidSamples 1
       - name: Derive descriptive paired statistics without accepting gains automatically
         if: always()
         working-directory: candidate
@@ -157,6 +181,7 @@ jobs:
             evidence/validity/*.json
             evidence/validity/*.csv
             evidence/validity/*stderr.txt
+            evidence/validity/*.png
             evidence/controls/*.json
             evidence/controls/*.csv
             evidence/controls/*stderr.txt

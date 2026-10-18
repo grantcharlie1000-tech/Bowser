@@ -64,3 +64,32 @@ The title/navigation attribution is valid here only for isolated sequential sing
 with unique tokens, independent loopback acknowledgement and owned-window checks, not arbitrary
 concurrent navigation races. Reduced JS closure bytes are build evidence only, not RAM or speed
 measurements; shared chunks do not share JavaScript state between WebViews.
+
+
+The dedicated native validity arm optionally opens an actual HTML popup and internal Settings
+page, first and warm, through owned-window keyboard input. It requires the owned visible HTML
+popup class and the ready-gated expanded Settings container (not native fallback), retains
+screenshots, and returns to an independently acknowledged fixture between page opens. These
+activation proxies include foreground verification and are not precise interaction or cold
+module timings. Popup prewarming remains normal production behavior. This probe is not enabled
+in primary timing/resource arms, so additional first-use controllers do not contaminate their
+settled one-tab phase.
+
+Edge surface smoke loads the existing lazy start-page module through a valid host snapshot,
+not merely the split host bootstrap. Its optional in-document timing fields are explicitly
+virtual-time diagnostics because the headless smoke uses a virtual-time budget. Only its
+external spawn/load endpoint is wall-clock, still dominated by a full browser launch and a
+single first/warm sample per surface. It is exploratory load/behavior evidence, not native
+latency or statistical no-regression proof.
+
+
+Harness-only follow-ups may reuse the already-built actual optimized bc82c994 executable,
+not the pre-optimization diagnostic executable, only when a strict source diff permits solely
+benchmark, UI-test and this measurement-workflow changes. Both its artifact ZIP and native EXE
+are hash-verified; the original candidate source/tree/identity remain unchanged and the newer
+harness source is recorded separately. Any product/build-input change forces a fresh build.
+The drain uses a negative nonexistent PID sentinel so Windows Idle/System ancestry is never
+selected, and retains remaining process identities if exit cannot be confirmed. Native tabs/rail
+activation is checked through UIAutomation rooted at the exact owned window, with named visible
+HTML roles and rectangles, in the dedicated validity arm only. Provider unavailability on the
+frozen baseline is a harness limitation, not evidence of a candidate regression.

@@ -8,7 +8,7 @@ def dist(values):
     return dict(count=len(a),median=statistics.median(a) if a else None,p95=a[max(0,math.ceil(len(a)*.95)-1)] if a else None,min=a[0] if a else None,max=a[-1] if a else None)
 
 def cpu_delta(rows):
-    if not rows: return None
+    if len(rows)<2 or any(row.get('CoverageErrors') for row in rows): return None
     last=dict(rows[0].get('CpuByPid',{})); total=0
     for row in rows[1:]:
         for ident,value in row.get('CpuByPid',{}).items():
@@ -32,17 +32,23 @@ def metrics(row,freq):
         out['launch_to_'+name+'_ms']=ms(row.get('launch_qpc'),hits[0]) if hits else None
     snapshots=row.get('snapshots') or []
     private=[native_private(s) for s in snapshots]; private=[x for x in private if x is not None]
-    out['recorded_window_sampled_peak_private_bytes']=max(private) if private else None
+    out['recorded_window_sampled_peak_private_bytes']=max(private) if private and len(private)==len(snapshots) else None
     counts=[s.get('ProcessCount') for s in snapshots if s.get('ProcessCount') is not None]
     out['recorded_window_sampled_peak_process_count']=max(counts) if counts else None
     # Warm-profile helper lifetime CPU is not the current workload's CPU budget.
     # Keep the raw number unchanged in its retained sample, but exclude the metric from analysis.
-    out['sampled_tree_cpu_core_seconds']=None if row.get('condition')=='reused' and not row.get('tree_exit_confirmed') else (row.get('cpu') or {}).get('CoreSeconds')
+    out['sampled_tree_cpu_core_seconds']=None if (row.get('condition')=='reused' and not row.get('tree_exit_confirmed')) or any(s.get('CoverageErrors') for s in snapshots) else (row.get('cpu') or {}).get('CoreSeconds')
     for phase in ('idle','minimized'):
         phase_rows=row.get(phase) or []
         pv=[native_private(s) for s in phase_rows]; pv=[x for x in pv if x is not None]
-        out[phase+'_median_private_bytes']=statistics.median(pv) if pv else None
+        out[phase+'_median_private_bytes']=statistics.median(pv) if pv and len(pv)==len(phase_rows) else None
         out[phase+'_cpu_core_seconds']=cpu_delta(phase_rows)
+        out[phase+'_observed_endpoint_seconds']=None
+        if len(phase_rows)>1:
+            first=phase_rows[0].get('SampledAtUtc'); last=phase_rows[-1].get('SampledAtUtc')
+            if first and last:
+                seconds=(datetime.datetime.fromisoformat(last.replace('Z','+00:00'))-datetime.datetime.fromisoformat(first.replace('Z','+00:00'))).total_seconds()
+                out[phase+'_observed_endpoint_seconds']=seconds if seconds>=0 else None
     return out
 
 def paired(samples,arm,reference,metric):

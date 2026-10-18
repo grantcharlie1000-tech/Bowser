@@ -11,10 +11,16 @@ import { fileURLToPath } from 'node:url';
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const browser = [process.env.BOWSER_TEST_EDGE, 'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe', 'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe'].find((p) => p && existsSync(p));
 const views = ['toolbar', 'tabs', 'rail', 'panel', 'popup', 'bar', 'dialog', 'hover', 'split', 'settings', 'history', 'downloads'];
-const shim = `window.chrome = { webview: { addEventListener() {}, postMessage(value) {
+const startFixture = JSON.parse(readFileSync(join(root, 'test/fixtures/start-page-messages.json'), 'utf8')).empty;
+const shim = `const listeners = []; window.chrome = { webview: { addEventListener(type, callback) { if (type === 'message') listeners.push(callback); }, postMessage(value) {
  const m = typeof value === 'string' ? JSON.parse(value) : value;
- if (m.t === 'ready') { document.documentElement.setAttribute('data-surface-ready', 'yes'); document.documentElement.setAttribute('data-surface-ready-ms', performance.now().toFixed(3)); }
-} } }; window.addEventListener('error', () => document.documentElement.setAttribute('data-surface-error', 'yes'));
+ if (m.t === 'ready') { document.documentElement.setAttribute('data-surface-ready', 'yes'); document.documentElement.setAttribute('data-surface-ready-ms', performance.now().toFixed(3));
+ if (new URLSearchParams(location.search).get('view') === 'split') setTimeout(() => listeners.forEach((callback) => callback({ data: ${JSON.stringify(startFixture)} })), 0);
+ }
+} } }; const observer = new MutationObserver(() => {
+ if (document.getElementById('app')?.classList.contains('is-start') && !document.documentElement.hasAttribute('data-start-page-ready-ms')) document.documentElement.setAttribute('data-start-page-ready-ms', performance.now().toFixed(3));
+}); observer.observe(document.documentElement, { attributes: true, childList: true, subtree: true });
+window.addEventListener('error', () => document.documentElement.setAttribute('data-surface-error', 'yes'));
 window.addEventListener('unhandledrejection', () => document.documentElement.setAttribute('data-surface-error', 'yes'));`;
 
 test('every lazy surface starts through actual modules under the production CSP', { skip: !browser, timeout: 180000 }, async () => {
@@ -64,14 +70,17 @@ test('every lazy surface starts through actual modules under the production CSP'
           assert.doesNotMatch(result.out, /data-surface-error="yes"|page-load-failed|csp-not-enforced/, view);
           const readyMs = Number(/data-surface-ready-ms="([0-9.]+)"/.exec(result.out)?.[1]);
           assert.ok(Number.isFinite(readyMs), `${view}: missing document-navigation-to-ready endpoint`);
-          reports.push({ label, view, use, document_navigation_to_bridge_ready_ms: readyMs, external_browser_launch_load_proxy_ms: performance.now() - started });
+          const startMs = view === 'split' ? Number(/data-start-page-ready-ms="([0-9.]+)"/.exec(result.out)?.[1]) : null;
+          if (view === 'split') assert.ok(Number.isFinite(startMs), `${label}: lazy start-page module did not render`);
+          reports.push({ label, view, use, virtual_document_navigation_to_start_page_proxy_ms: startMs, virtual_document_navigation_to_bridge_ready_ms: readyMs, external_browser_launch_load_proxy_ms: performance.now() - started });
           console.log(`module smoke ${label} ${view} ${use}: ${(performance.now() - started).toFixed(1)}ms external browser launch/load proxy (not native benchmark)`);
         }
       }
     }
     assert.ok([...requested].some((p) => p.startsWith('candidate/chunks/')), 'actual shared chunks were fetched');
     for (const view of views) assert.ok(requested.has(`candidate/${view === 'settings' || view === 'history' ? `${view}-page` : view}.js`), `${view}: actual entry fetched`);
-    if (process.env.BOWSER_UI_SURFACE_REPORT) writeFileSync(process.env.BOWSER_UI_SURFACE_REPORT, `${JSON.stringify({ scope: 'External Edge launch/module-ready first-warm regression proxies, not native interaction benchmarks', sources, alternating_order: true, reports }, null, 2)}\n`);
+    for (const label of Object.keys(sources)) assert.ok(requested.has(`${label}/start-page.js`), `${label}: actual lazy start-page entry fetched`);
+    if (process.env.BOWSER_UI_SURFACE_REPORT) writeFileSync(process.env.BOWSER_UI_SURFACE_REPORT, `${JSON.stringify({ scope: 'Exploratory load correctness smoke. External spawn endpoint is wall-clock and includes full Edge launch; in-page performance.now endpoints use virtual time, not wall-clock latency. Not native interaction benchmarks or statistical no-regression proof', sources, alternating_order: true, reports }, null, 2)}\n`);
   } finally {
     await new Promise((resolve) => server.close(resolve));
     rmSync(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
