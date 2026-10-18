@@ -120,7 +120,7 @@ fn remove_authenticated(root: &Path, path: &Path, generation: &str, expected: &s
 #[cfg(test)]
 type PublishProbe = Box<dyn FnOnce(&Path)>;
 #[cfg(test)]
-thread_local! { static AFTER_PUBLISH: std::cell::RefCell<Option<PublishProbe>> = std::cell::RefCell::new(None); }
+thread_local! { static AFTER_PUBLISH: std::cell::RefCell<Option<PublishProbe>> = const { std::cell::RefCell::new(None) }; }
 
 /// Private capability for a directory created by this preparation. Drop never removes a
 /// preexisting final record directory after a failed publish, and nothing here loads code.
@@ -244,7 +244,7 @@ mod tests {
             let source = root.join("source"); fs::create_dir(&source).unwrap();
             let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
             let options = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored).unix_permissions(0o644);
-            for (name, text) in [("manifest.json", r#"{"manifest_version":3,"name":"Signed fixture","version":"1.0","permissions":["storage"]}"#), ("background.js", "console.log(1);")] {
+            for (name, text) in [("manifest.json", r#"{"manifest_version":3,"name":"Signed fixture","version":"1.0","permissions":["storage"]}"#), ("background.js", "console.log(1);"), ("assets/nested/probe.txt", "genuine nested replay cleanup")] {
                 zip.start_file(name, options).unwrap(); zip.write_all(text.as_bytes()).unwrap();
             }
             let (bytes, native, _) = crate::crx::tests::signed_crx_for_tests(&zip.finish().unwrap().into_inner());
@@ -278,6 +278,7 @@ mod tests {
         let record = fixture.prepared.take().unwrap().commit().unwrap();
         let retained = root(&fixture.extensions, false).unwrap().join(&record.id).join(generation);
         assert!(!retained.starts_with(&package));
+        assert_eq!(fs::read(package.join("assets/nested/probe.txt")).unwrap(), b"genuine nested replay cleanup");
         let raw = read_plain(&retained.join(ORIGINAL), crate::crx_fetch::MAX_DOWNLOAD_BYTES).unwrap();
         assert_eq!(raw, fixture.bytes); crate::crx::verify_crx3(&raw, &fixture.native).unwrap();
         let receipt = fs::read_to_string(retained.join(RECEIPT)).unwrap();

@@ -5,6 +5,7 @@ on:
       - 'src/crx*.rs'
       - 'src/store.rs'
       - 'src/extensions.rs'
+      - 'src/extensions/**'
       - 'src/engine/**'
       - 'src/win32/store.rs'
       - '.github/workflows/store-probe.yml'
@@ -127,6 +128,24 @@ jobs:
         run: |
           cargo +stable test --locked --lib --no-run
           if ($LASTEXITCODE -ne 0) { throw 'Native safety executable failed to build.' }
+      - name: Authenticate signed originals and preserve unexpected artifact data
+        if: ${{ !cancelled() && steps.native_build.outcome == 'success' }}
+        run: |
+          $test = Get-ChildItem target/debug/deps/bowser-*.exe | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          & $test.FullName signed_original_ --nocapture --test-threads=1 2>&1 | Tee-Object store-signed-original-probe.log
+          if ($LASTEXITCODE -ne 0) { throw 'Signed-original crypto/filesystem controls failed.' }
+      - name: Reject preexisting record temporary files and junctions
+        if: ${{ !cancelled() && steps.native_build.outcome == 'success' }}
+        run: |
+          $test = Get-ChildItem target/debug/deps/bowser-*.exe | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          & $test.FullName record_write_ --nocapture --test-threads=1 2>&1 | Tee-Object store-record-temp-probe.log
+          if ($LASTEXITCODE -ne 0) { throw 'Record temporary-file preservation controls failed.' }
+      - name: Execute update state contract without enabling production updates
+        if: ${{ !cancelled() && steps.native_build.outcome == 'success' }}
+        run: |
+          $test = Get-ChildItem target/debug/deps/bowser-*.exe | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          & $test.FullName update_model_ --nocapture --test-threads=1 2>&1 | Tee-Object store-update-model-probe.log
+          if ($LASTEXITCODE -ne 0) { throw 'Test-only update state contract failed.' }
       - name: Probe local fixture restart, worker messaging, and hosted-context boundaries
         if: ${{ !cancelled() && steps.native_build.outcome == 'success' }}
         run: |
@@ -201,6 +220,9 @@ jobs:
         with:
           name: store-native-safety-diagnostics-${{ github.sha }}
           path: |
+            store-signed-original-probe.log
+            store-record-temp-probe.log
+            store-update-model-probe.log
             store-pending-native-probe.log
             store-completed-restart-probe.log
             store-stale-owner-probe.log
