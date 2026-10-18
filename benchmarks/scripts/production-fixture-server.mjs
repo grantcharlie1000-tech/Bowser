@@ -1,6 +1,7 @@
 // Loopback-only synthetic fixtures. No production/browser instrumentation protocol is enabled.
 import http from 'node:http';
 import fs from 'node:fs';
+import { serveFilterParity } from './filter-parity-fixture.mjs';
 const [portFile, logFile] = process.argv.slice(2);
 const server = http.createServer((req, res) => {
   const url = new URL(req.url, 'http://127.0.0.1');
@@ -8,6 +9,7 @@ const server = http.createServer((req, res) => {
   if (!/^[a-zA-Z0-9_]{1,80}$/.test(token)) { res.writeHead(400).end(); return; }
   fs.appendFileSync(logFile, JSON.stringify({ path:url.pathname, token, at_ns:process.hrtime.bigint().toString(), status:url.pathname === '/error' ? 500 : 200 })+'\n');
   res.setHeader('Cache-Control','no-store');
+  if (serveFilterParity(req,res,url,token,logFile)) return;
   if (url.pathname === '/ready') { res.writeHead(204).end(); return; }
   if (url.pathname === '/redirect') { res.writeHead(302,{Location:`/light?token=${token}`}).end(); return; }
   if (url.pathname === '/network-failure') { req.socket.destroy(); return; }

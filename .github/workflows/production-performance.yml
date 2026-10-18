@@ -13,6 +13,9 @@ on:
       - 'src/app.rs'
       - 'src/main.rs'
       - 'src/chrome_host/assets.rs'
+      - 'src/blocker.rs'
+      - 'src/blocker/registration.rs'
+      - 'benchmarks/scripts/filter-parity-fixture.mjs'
       - 'src/chrome_host/host.rs'
       - 'src/win32/window.rs'
       - 'ui/**'
@@ -56,6 +59,7 @@ jobs:
           python benchmarks/test-production-analyze.py
           if ($LASTEXITCODE -ne 0) { throw 'Analysis contract tests failed' }
           node --check benchmarks/scripts/production-fixture-server.mjs
+          node --check benchmarks/scripts/filter-parity-fixture.mjs
       - name: Reuse and verify immutable binaries already built from the exact frozen sources
         working-directory: candidate
         env:
@@ -66,16 +70,18 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Cannot fetch immutable diagnostic source' }
           git fetch --no-tags --depth=1 origin 80eabd7ae6d421e61c81985c34023bfc824a2e58
           if ($LASTEXITCODE -ne 0) { throw 'Cannot fetch untouched source for instrumentation provenance' }
-          # Native changes are explicit diagnostic-only inputs, never relabelled frozen bytes.
-          $allowedNative=@('src/performance.rs','src/app.rs','src/engine/mod.rs','src/engine/webview2.rs','src/chrome_host/host.rs','src/win32/window.rs')
-          $nativeChanges=@(git diff --name-only 8a60dca2ac7de6d369c9b65584fd621a7013f491 HEAD -- src)
+          git fetch --no-tags --depth=1 origin 46ee3b3ef98a4c7603967d22df9cb1490ca936c1
+          if($LASTEXITCODE -ne 0){throw 'Cannot fetch immediate pre-optimization reference'}
+          # Only the proved registration-union minimizer differs from the immediate reference.
+          $allowedNative=@('src/blocker.rs','src/blocker/registration.rs')
+          $nativeChanges=@(git diff --name-only 46ee3b3ef98a4c7603967d22df9cb1490ca936c1 HEAD -- src)
           if($LASTEXITCODE -ne 0){throw 'Cannot verify diagnostic native source provenance'}
           $unexpectedNative=@($nativeChanges | Where-Object {$_ -cnotin $allowedNative})
           if($unexpectedNative.Count){throw "Unexpected native changes outside diagnostic slice: $unexpectedNative"}
           New-Item -ItemType Directory -Force ../evidence/candidate | Out-Null
-          git diff 8a60dca2ac7de6d369c9b65584fd621a7013f491 HEAD -- src | Set-Content ../evidence/candidate/native-detail.patch
+          git diff 46ee3b3ef98a4c7603967d22df9cb1490ca936c1 HEAD -- src | Set-Content ../evidence/candidate/native-filter.patch
           if($LASTEXITCODE -ne 0){throw 'Cannot preserve diagnostic source patch'}
-          [ordered]@{frozen_source='8a60dca2ac7de6d369c9b65584fd621a7013f491';candidate_source=(git rev-parse HEAD).Trim();allowed_native_paths=$allowedNative;actual_native_paths=$nativeChanges;scope='Diagnostic-only attribution; frozen EXEs remain immutable, candidate rebuilt and fingerprinted'} | ConvertTo-Json | Set-Content ../evidence/candidate/native-detail-provenance.json
+          [ordered]@{frozen_source='46ee3b3ef98a4c7603967d22df9cb1490ca936c1';candidate_source=(git rev-parse HEAD).Trim();allowed_native_paths=$allowedNative;actual_native_paths=$nativeChanges;scope='Existing-registration-glob subset with retained covering witnesses; immediate reference immutable and candidate rebuilt'} | ConvertTo-Json | Set-Content ../evidence/candidate/native-detail-provenance.json
           $zip=Join-Path $env:RUNNER_TEMP 'production-frozen-8a60dca.zip'
           $headers=@{ Authorization="Bearer $env:GH_TOKEN"; Accept='application/vnd.github+json'; 'X-GitHub-Api-Version'='2022-11-28' }
           Invoke-WebRequest 'https://api.github.com/repos/grantcharlie1000-tech/Bowser/actions/artifacts/12121088896/zip' -Headers $headers -OutFile $zip
@@ -91,27 +97,20 @@ jobs:
           git diff 80eabd7ae6d421e61c81985c34023bfc824a2e58 8a60dca2ac7de6d369c9b65584fd621a7013f491 -- src | Set-Content (Join-Path $frozen 'instrumentation.patch')
           if ($LASTEXITCODE -ne 0) { throw 'Cannot preserve instrumentation diff' }
           [ordered]@{archive_artifact_id=12121088896;archive_sha256=$archiveHash;diagnostic_source='8a60dca2ac7de6d369c9b65584fd621a7013f491';untouched_source='80eabd7ae6d421e61c81985c34023bfc824a2e58';harness_source=(git rev-parse HEAD).Trim();previous_source_tests='run39086719160, measurement module tests and Windows source check passed'} | ConvertTo-Json | Set-Content ../evidence/frozen/provenance.json
-          # Reuse the already-built ACTUAL optimized candidate only for harness/test-only revisions.
-          # This is not the pre-optimization diagnostic.exe: source and exact EXE hash remain explicit.
-          $reuseSource='bc82c994afc80de4d717ca22b93f0dc47b015992'
-          git fetch --no-tags --depth=1 origin $reuseSource
-          if($LASTEXITCODE -ne 0){throw 'Cannot verify actual optimized candidate source'}
-          $changes=@(git diff --name-only $reuseSource HEAD)
-          if($LASTEXITCODE -ne 0){throw 'Cannot validate candidate build-input identity'}
-          $productChanges=@($changes | Where-Object {-not $_.StartsWith('benchmarks/') -and -not $_.StartsWith('ui/test/') -and $_ -cne '.github/workflows/production-performance.yml'})
-          if(-not $productChanges.Count) {
-            $cachedZip=Join-Path $env:RUNNER_TEMP 'actual-ui-candidate-bc82c99.zip'
-            Invoke-WebRequest 'https://api.github.com/repos/grantcharlie1000-tech/Bowser/actions/artifacts/12122339684/zip' -Headers $headers -OutFile $cachedZip
-            if((Get-FileHash $cachedZip -Algorithm SHA256).Hash.ToLowerInvariant() -cne '19a931dce37ad6f954f909d4e2dd0e9d3899b073bb93a6d17a41448d6df0379c'){throw 'Actual candidate archive digest mismatch'}
-            $cache=Join-Path $env:RUNNER_TEMP 'actual-ui-candidate-bc82c99'
-            Expand-Archive -LiteralPath $cachedZip -DestinationPath $cache
-            $identity=Get-Content (Join-Path $cache 'candidate/identity.json') -Raw | ConvertFrom-Json
-            $candidate=Join-Path $cache 'candidate/candidate.exe'
-            if($identity.source -cne $reuseSource -or $identity.sha256 -cne 'c06cac90eb1a0debfb3e71e462e31f4c080d4adadfda538f373cc4fe01ed55d7' -or (Get-FileHash $candidate -Algorithm SHA256).Hash.ToLowerInvariant() -cne $identity.sha256 -or (Get-Item $candidate).Length -ne $identity.bytes){throw 'Actual candidate identity mismatch'}
-            Copy-Item (Join-Path $cache 'candidate') ../evidence/ -Recurse
-            [ordered]@{build_source=$reuseSource;harness_source=(git rev-parse HEAD).Trim();archive_artifact_id=12122339684;archive_sha256='19a931dce37ad6f954f909d4e2dd0e9d3899b073bb93a6d17a41448d6df0379c';allowed_nonproduct_changes=$changes;product_changes=$productChanges;note='Exact already-built optimized candidate; source is not relabelled as harness revision'} | ConvertTo-Json | Set-Content ../evidence/candidate/reuse-provenance.json
-          }
-      - name: Verify actual diagnostic candidate and build when product inputs changed
+          # Freeze the actual instrumented pre-optimization EXE, not a rebuilt reference.
+          $referenceZip=Join-Path $env:RUNNER_TEMP 'filter-reference-46ee.zip'
+          Invoke-WebRequest 'https://api.github.com/repos/grantcharlie1000-tech/Bowser/actions/artifacts/12125524797/zip' -Headers $headers -OutFile $referenceZip
+          if((Get-FileHash $referenceZip -Algorithm SHA256).Hash.ToLowerInvariant() -cne '4bfcfc316f6b7fed074d8736308a0e22d7b8ddb6c95e922f0130601b6fadc0e1'){throw 'Immediate reference archive digest mismatch'}
+          $referenceCache=Join-Path $env:RUNNER_TEMP 'filter-reference-46ee'
+          Expand-Archive -LiteralPath $referenceZip -DestinationPath $referenceCache
+          $identity=Get-Content (Join-Path $referenceCache 'candidate/identity.json') -Raw | ConvertFrom-Json
+          $reference=Join-Path $referenceCache 'candidate/candidate.exe'
+          if($identity.source -cne '46ee3b3ef98a4c7603967d22df9cb1490ca936c1' -or $identity.sha256 -cne '22674e9fdaa589915200b3058765ec202843d87d7ecabdad081911537004bd2b' -or $identity.bytes -ne 7817216 -or (Get-FileHash $reference -Algorithm SHA256).Hash.ToLowerInvariant() -cne $identity.sha256 -or (Get-Item $reference).Length -ne $identity.bytes){throw 'Immediate reference EXE identity mismatch'}
+          New-Item -ItemType Directory -Force ../evidence/reference | Out-Null
+          Copy-Item $reference ../evidence/reference/reference.exe
+          Copy-Item (Join-Path $referenceCache 'candidate/identity.json') ../evidence/reference/identity.json
+          [ordered]@{source=$identity.source;artifact_id=12125524797;archive_sha256='4bfcfc316f6b7fed074d8736308a0e22d7b8ddb6c95e922f0130601b6fadc0e1';harness_source=(git rev-parse HEAD).Trim();policy='No rebuild or relabelling of reference bytes'} | ConvertTo-Json | Set-Content ../evidence/reference/provenance.json
+      - name: Build and fingerprint actual filter-union candidate
         working-directory: candidate
         run: |
           rustup toolchain install 1.99.1 --profile minimal
@@ -131,7 +130,7 @@ jobs:
           # Compare actual browser module first-use costs with the exact frozen baseline assets.
           New-Item -ItemType Directory -Force ../../evidence/baseline-ui | Out-Null
           $archive=Join-Path $env:RUNNER_TEMP 'baseline-ui.tar'
-          git -C .. archive --format=tar --output=$archive 8a60dca2ac7de6d369c9b65584fd621a7013f491 ui/dist
+          git -C .. archive --format=tar --output=$archive 46ee3b3ef98a4c7603967d22df9cb1490ca936c1 ui/dist
           if ($LASTEXITCODE -ne 0) { throw 'Cannot archive frozen baseline UI bytes' }
           tar -xf $archive -C ../../evidence/baseline-ui
           if ($LASTEXITCODE -ne 0) { throw 'Cannot extract frozen baseline UI bytes' }
@@ -142,44 +141,50 @@ jobs:
           Pop-Location
           git diff --exit-code -- ui/src/icons.gen.ts ui/dist ui/dist.manifest
           if ($LASTEXITCODE -ne 0) { throw 'Committed assets are not reproducible' }
-          if(Test-Path ../evidence/candidate/reuse-provenance.json) {
-            Write-Host 'Reusing exact optimized native EXE after strict no-product-change and hash verification'
-            exit 0
-          }
           cargo +1.99.1 build --release --locked --bin bowser --features html-chrome-default
           if ($LASTEXITCODE -ne 0) { throw 'Actual candidate build failed' }
           New-Item -ItemType Directory -Force ../evidence/candidate | Out-Null
           Copy-Item target/release/bowser.exe ../evidence/candidate/candidate.exe
           Copy-Item Cargo.lock,ui/dist.manifest ../evidence/candidate/
           $file=Get-Item ../evidence/candidate/candidate.exe
-          [ordered]@{source=(git rev-parse HEAD).Trim();tree=(git rev-parse 'HEAD^{tree}').Trim();sha256=(Get-FileHash $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant();bytes=$file.Length;toolchain=(rustc +1.99.1 --version --verbose | Out-String);features='html-chrome-default';scope='diagnostic-only native attribution after reverting UI experiment; not a release'} | ConvertTo-Json | Set-Content ../evidence/candidate/identity.json
+          [ordered]@{source=(git rev-parse HEAD).Trim();tree=(git rev-parse 'HEAD^{tree}').Trim();sha256=(Get-FileHash $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant();bytes=$file.Length;toolchain=(rustc +1.99.1 --version --verbose | Out-String);features='html-chrome-default';scope='proved existing registration-glob redundancy elimination; not a release'} | ConvertTo-Json | Set-Content ../evidence/candidate/identity.json
       - name: Bounded native actual-module and HTML activation validity pass
         id: validity
         working-directory: candidate
         run: |
-          ./benchmarks/production-baseline.ps1 -BaselineExe ../evidence/frozen/untouched-main.exe -DiagnosticExe ../evidence/frozen/diagnostic.exe -ReleaseExe ../evidence/frozen/released-v0.0.19.exe -CandidateExe ../evidence/candidate/candidate.exe -CandidateSource (Get-Content ../evidence/candidate/identity.json -Raw | ConvertFrom-Json).source -Out ../evidence/validity -StartupOnly -Pairs 1 -Fixtures light -IdleSeconds 1 -MeasurementMode timing -MaxInvalidSamples 1
+          ./benchmarks/production-baseline.ps1 -BaselineExe ../evidence/frozen/untouched-main.exe -DiagnosticExe ../evidence/reference/reference.exe -DiagnosticSource 46ee3b3ef98a4c7603967d22df9cb1490ca936c1 -ReleaseExe ../evidence/frozen/released-v0.0.19.exe -CandidateExe ../evidence/candidate/candidate.exe -CandidateSource (Get-Content ../evidence/candidate/identity.json -Raw | ConvertFrom-Json).source -Out ../evidence/validity -StartupOnly -Pairs 1 -Fixtures light -IdleSeconds 1 -MeasurementMode timing -MaxInvalidSamples 1
       - name: Corrected diagnostic-off untouched and logging-on off controls
         working-directory: candidate
         run: |
-          ./benchmarks/production-baseline.ps1 -BaselineExe ../evidence/frozen/untouched-main.exe -DiagnosticExe ../evidence/candidate/candidate.exe -DiagnosticSource (Get-Content ../evidence/candidate/identity.json -Raw | ConvertFrom-Json).source -ReleaseExe ../evidence/frozen/released-v0.0.19.exe -Out ../evidence/controls -StartupOnly -Pairs 3 -Fixtures light -MeasurementMode timing -MaxInvalidSamples 1
-      - name: Short matched native detail-on off attribution timing pilot
+          ./benchmarks/production-baseline.ps1 -BaselineExe ../evidence/frozen/untouched-main.exe -DiagnosticExe ../evidence/reference/reference.exe -DiagnosticSource 46ee3b3ef98a4c7603967d22df9cb1490ca936c1 -ReleaseExe ../evidence/frozen/released-v0.0.19.exe -Out ../evidence/controls -StartupOnly -Pairs 3 -Fixtures light -MeasurementMode timing -MaxInvalidSamples 1
+      - name: Ten matched AB BA pairs fresh and reused primary startup timing
         working-directory: candidate
         run: |
-          ./benchmarks/production-baseline.ps1 -BaselineExe ../evidence/frozen/untouched-main.exe -DiagnosticExe ../evidence/frozen/diagnostic.exe -ReleaseExe ../evidence/frozen/released-v0.0.19.exe -CandidateExe ../evidence/candidate/candidate.exe -CandidateSource (Get-Content ../evidence/candidate/identity.json -Raw | ConvertFrom-Json).source -Out ../evidence/timing -StartupOnly -Pairs 3 -DiagnosticDetailPilot -Fixtures light -MeasurementMode timing -MaxInvalidSamples 1
-      - name: Short matched native detail-on off attribution resource pilot
+          ./benchmarks/production-baseline.ps1 -BaselineExe ../evidence/frozen/untouched-main.exe -DiagnosticExe ../evidence/reference/reference.exe -DiagnosticSource 46ee3b3ef98a4c7603967d22df9cb1490ca936c1 -ReleaseExe ../evidence/frozen/released-v0.0.19.exe -CandidateExe ../evidence/candidate/candidate.exe -CandidateSource (Get-Content ../evidence/candidate/identity.json -Raw | ConvertFrom-Json).source -Out ../evidence/timing -StartupOnly -Pairs 10 -Fixtures light -MeasurementMode timing -MaxInvalidSamples 1
+      - name: Ten matched AB BA pairs fresh and reused primary settled resources
         working-directory: candidate
         run: |
-          ./benchmarks/production-baseline.ps1 -BaselineExe ../evidence/frozen/untouched-main.exe -DiagnosticExe ../evidence/frozen/diagnostic.exe -ReleaseExe ../evidence/frozen/released-v0.0.19.exe -CandidateExe ../evidence/candidate/candidate.exe -CandidateSource (Get-Content ../evidence/candidate/identity.json -Raw | ConvertFrom-Json).source -Out ../evidence/resource -StartupOnly -Pairs 3 -DiagnosticDetailPilot -Fixtures light -MeasurementMode resource -MaxInvalidSamples 1
+          ./benchmarks/production-baseline.ps1 -BaselineExe ../evidence/frozen/untouched-main.exe -DiagnosticExe ../evidence/reference/reference.exe -DiagnosticSource 46ee3b3ef98a4c7603967d22df9cb1490ca936c1 -ReleaseExe ../evidence/frozen/released-v0.0.19.exe -CandidateExe ../evidence/candidate/candidate.exe -CandidateSource (Get-Content ../evidence/candidate/identity.json -Raw | ConvertFrom-Json).source -Out ../evidence/resource -StartupOnly -Pairs 10 -Fixtures light -MeasurementMode resource -MaxInvalidSamples 1
+      - name: Separate small detail arm confirms actual registration count and cost
+        if: ${{ !cancelled() && steps.validity.outcome == 'success' }}
+        working-directory: candidate
+        run: |
+          ./benchmarks/production-baseline.ps1 -BaselineExe ../evidence/frozen/untouched-main.exe -DiagnosticExe ../evidence/reference/reference.exe -DiagnosticSource 46ee3b3ef98a4c7603967d22df9cb1490ca936c1 -ReleaseExe ../evidence/frozen/released-v0.0.19.exe -CandidateExe ../evidence/candidate/candidate.exe -CandidateSource (Get-Content ../evidence/candidate/identity.json -Raw | ConvertFrom-Json).source -Out ../evidence/detail -StartupOnly -PositiveOnly -Pairs 2 -DiagnosticDetailPilot -Fixtures light -MeasurementMode timing -MaxInvalidSamples 1
+      - name: Mandatory actual native request-dispatch parity including worker sources
+        if: ${{ !cancelled() && steps.validity.outcome == 'success' }}
+        working-directory: candidate
+        run: |
+          ./benchmarks/production-baseline.ps1 -BaselineExe ../evidence/frozen/untouched-main.exe -DiagnosticExe ../evidence/reference/reference.exe -DiagnosticSource 46ee3b3ef98a4c7603967d22df9cb1490ca936c1 -ReleaseExe ../evidence/frozen/released-v0.0.19.exe -CandidateExe ../evidence/candidate/candidate.exe -CandidateSource (Get-Content ../evidence/candidate/identity.json -Raw | ConvertFrom-Json).source -Out ../evidence/parity -StartupOnly -PositiveOnly -Pairs 1 -Fixtures filter-parity -MeasurementMode timing -MaxInvalidSamples 1
       - name: Mandatory independent native first-use interaction smoke
         if: ${{ !cancelled() && steps.validity.outcome == 'success' }}
         working-directory: candidate
         run: |
-          ./benchmarks/production-baseline.ps1 -BaselineExe ../evidence/frozen/untouched-main.exe -DiagnosticExe ../evidence/frozen/diagnostic.exe -ReleaseExe ../evidence/frozen/released-v0.0.19.exe -CandidateExe ../evidence/candidate/candidate.exe -CandidateSource (Get-Content ../evidence/candidate/identity.json -Raw | ConvertFrom-Json).source -IncludeSurfaceSmoke -PositiveOnly -Out ../evidence/surfaces -StartupOnly -Pairs 1 -Fixtures light -MeasurementMode timing -MaxInvalidSamples 1
+          ./benchmarks/production-baseline.ps1 -BaselineExe ../evidence/frozen/untouched-main.exe -DiagnosticExe ../evidence/reference/reference.exe -DiagnosticSource 46ee3b3ef98a4c7603967d22df9cb1490ca936c1 -ReleaseExe ../evidence/frozen/released-v0.0.19.exe -CandidateExe ../evidence/candidate/candidate.exe -CandidateSource (Get-Content ../evidence/candidate/identity.json -Raw | ConvertFrom-Json).source -IncludeSurfaceSmoke -PositiveOnly -Out ../evidence/surfaces -StartupOnly -Pairs 1 -Fixtures light -MeasurementMode timing -MaxInvalidSamples 1
       - name: Derive descriptive paired statistics without accepting gains automatically
         if: always()
         working-directory: candidate
         run: |
-          foreach($arm in @('validity','controls','timing','resource','surfaces')) {
+          foreach($arm in @('validity','controls','timing','resource','detail','parity','surfaces')) {
             $folder="../evidence/$arm"
             if(Test-Path "$folder/environment.json") {
               python benchmarks/production-analyze.py $folder
@@ -196,6 +201,7 @@ jobs:
           path: |
             evidence/frozen/
             evidence/candidate/
+            evidence/reference/
             evidence/baseline-ui/
             evidence/surface-module-regressions.json
             evidence/validity/*.json
@@ -206,12 +212,28 @@ jobs:
             evidence/controls/*.json
             evidence/controls/*.csv
             evidence/controls/*stderr.txt
+            evidence/controls/*.png
+            evidence/controls/isolated/requests.jsonl
             evidence/timing/*.json
             evidence/timing/*.csv
             evidence/timing/*stderr.txt
+            evidence/timing/*.png
+            evidence/timing/isolated/requests.jsonl
             evidence/resource/*.json
             evidence/resource/*.csv
             evidence/resource/*stderr.txt
+            evidence/resource/*.png
+            evidence/resource/isolated/requests.jsonl
+            evidence/detail/*.json
+            evidence/detail/*.csv
+            evidence/detail/*.png
+            evidence/detail/*stderr.txt
+            evidence/detail/isolated/requests.jsonl
+            evidence/parity/*.json
+            evidence/parity/*.csv
+            evidence/parity/*.png
+            evidence/parity/*stderr.txt
+            evidence/parity/isolated/requests.jsonl
             evidence/surfaces/*.json
             evidence/surfaces/*.csv
             evidence/surfaces/*.png

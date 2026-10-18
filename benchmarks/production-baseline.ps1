@@ -7,7 +7,7 @@ param(
     [Parameter(Mandatory)][string]$ReleaseExe,
     [Parameter(Mandatory)][string]$Out,
     [ValidateRange(1,30)][int]$Pairs=5,
-    [ValidateSet('light','demanding','redirect')][string[]]$Fixtures=@('light','demanding','redirect'),
+    [ValidateSet('light','demanding','redirect','filter-parity')][string[]]$Fixtures=@('light','demanding','redirect'),
     [ValidateRange(1,20)][int]$MaxInvalidSamples=2,
     [string]$DiagnosticSource='8a60dca2ac7de6d369c9b65584fd621a7013f491',
     [switch]$IncludeTabFlow,
@@ -281,7 +281,7 @@ try {
                     if($arm.EndsWith('_on')) { $args+=@('--diagnostic-log',"`"$eventFile`"") }
                     if($arm -eq 'candidate_detail_on') { $args+=@('--diagnostic-detail') }
                     $snapshots=[Collections.Generic.List[object]]::new(); $overheads=[Collections.Generic.List[double]]::new()
-                    $sample=[ordered]@{id=$id;pair=$pair;arm=$arm;fixture=$fixture;condition=$condition;token=$token;valid=$false;expected_failure=($fixture -in @('network-failure','error','hung'));error=$null;launch_qpc=$null;ready_qpc=$null;title_ready_qpc=$null;input_ready_qpc=$null;shutdown_ms=$null;disk_before=(Disk-Bytes $profile);measurement_mode=$MeasurementMode;tree_exit_wait_ms=$null;tree_exit_confirmed=$false;drain_remaining=@();surface_smoke=$null;events=$null;input=$null;input_exclusion_reason=if($StartupOnly){'Startup-only lane: no omnibox interaction; input latency unavailable, not passed or zero'}else{$null};tab_switch_proxy_ms=$null;idle=$null;minimized=$null}
+                    $sample=[ordered]@{id=$id;pair=$pair;arm=$arm;fixture=$fixture;condition=$condition;token=$token;valid=$false;expected_failure=($fixture -in @('network-failure','error','hung'));error=$null;launch_qpc=$null;ready_qpc=$null;title_ready_qpc=$null;input_ready_qpc=$null;shutdown_ms=$null;disk_before=(Disk-Bytes $profile);measurement_mode=$MeasurementMode;tree_exit_wait_ms=$null;tree_exit_confirmed=$false;drain_remaining=@();surface_smoke=$null;filter_parity=$null;events=$null;input=$null;input_exclusion_reason=if($StartupOnly){'Startup-only lane: no omnibox interaction; input latency unavailable, not passed or zero'}else{$null};tab_switch_proxy_ms=$null;idle=$null;minimized=$null}
                     $app=$null;$script:surfaceTrace=$null
                     try {
                         $sample.launch_qpc=Qpc
@@ -325,6 +325,11 @@ try {
                             $sample.tab_switch_proxy_ms=((Qpc)-$switch)*1000.0/[Diagnostics.Stopwatch]::Frequency
                             }
                             } # StartupOnly deliberately excludes legacy input/tab probes.
+                            if($fixture -eq 'filter-parity') {
+                                $receipts=@(Get-Content $requestFile | ForEach-Object {ConvertFrom-Json $_} | Where-Object {$_.path -eq '/parity-receipt' -and $_.token -ceq $token})
+                                if($receipts.Count -ne 1 -or -not $receipts[0].result.passed -or $receipts[0].result.checks.Count -ne 23 -or @($receipts[0].result.checks | Where-Object {-not $_.pass}).Count){throw 'Native filter dispatch parity receipt failed'}
+                                $sample.filter_parity=$receipts[0].result
+                            }
                             # Equal-time foreground and minimized idle windows, resource tree sampled throughout.
                             if ($MeasurementMode -eq 'resource') {
                             # Settled one-tab endpoint is identical for both arms; no startup sampling in timing arm.
