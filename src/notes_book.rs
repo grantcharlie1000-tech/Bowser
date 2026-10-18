@@ -107,7 +107,8 @@ pub fn clip_chars(text: &str, max: usize) -> String {
     text.chars().take(max).collect()
 }
 
-fn plain_line(text: &str, max: usize) -> String {
+/// `text` as one line (runs of whitespace, newlines included, become one space), cut to `max` characters.
+pub fn plain_line(text: &str, max: usize) -> String {
     clip_chars(&text.split_whitespace().collect::<Vec<_>>().join(" "), max)
 }
 

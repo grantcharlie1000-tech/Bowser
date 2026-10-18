@@ -204,6 +204,20 @@ fn a_page_longer_than_30000_pixels_is_cut_and_the_result_says_so() {
 }
 
 #[test]
+fn a_capture_is_joined_and_saved_off_the_ui_thread() {
+    let fx = Fixture::new("worker");
+    fx.calls.borrow_mut().push_back(Some(r#"{"cssContentSize":{"x":0,"y":0,"width":4,"height":10}}"#.to_owned()));
+    fx.call_answer(&pics::picture(4, 10, CaptureFormat::Png, |_| 7));
+    *crate::app::page_actions::FINISH_THREAD.lock().unwrap() = None;
+    let CaptureResult::Saved { path, .. } = fx.capture(CaptureMode::FullPage, CaptureTarget::File) else { panic!() };
+    assert!(path.exists());
+    let worker = crate::app::page_actions::FINISH_THREAD.lock().unwrap().clone();
+    assert_eq!(worker.as_deref(), Some("bowser-capture-finish"), "stitching and saving ran on the worker");
+    assert_ne!(std::thread::current().name(), Some("bowser-capture-finish"));
+    assert!(!crate::app::capture_busy(), "the result came back and ended the job");
+}
+
+#[test]
 fn a_selection_is_captured_with_a_clip_around_its_box() {
     let fx = Fixture::new("selection");
     fx.scripts.borrow_mut().push_back(Some(format!("{:?}", r#"{"c":1,"t":"hello","x":120,"y":900,"w":300,"h":40,"a":"https://www.example.test/docs/page","n":"Docs"}"#)));
@@ -287,7 +301,7 @@ fn the_selection_for_a_note_is_its_text_page_and_address() {
     let fx = Fixture::new("note");
     let seen = Rc::new(RefCell::new(Vec::new()));
     let sink = seen.clone();
-    fx.scripts.borrow_mut().push_back(Some(format!("{:?}", r#"{"c":1,"t":"A quote\nsecond line","x":1,"y":2,"w":3,"h":4,"a":"https://www.example.test/docs/page#x","n":"Docs"}"#)));
+    fx.scripts.borrow_mut().push_back(Some(format!("{:?}", r#"{"c":1,"t":"A quote\nsecond line","x":1,"y":2,"w":3,"h":4,"a":"https://evil.example/claimed","n":"Claimed\n# title"}"#)));
     App::read_selection(&fx.app, fx.tab, Box::new(move |s| sink.borrow_mut().push(s)));
     fx.scripts.borrow_mut().push_back(Some(format!("{:?}", r#"{"c":0}"#)));
     let sink = seen.clone();
@@ -297,7 +311,8 @@ fn the_selection_for_a_note_is_its_text_page_and_address() {
     assert_eq!(
         *seen.borrow(),
         vec![
-            Selected::Text { text: "A quote\nsecond line".into(), title: "Docs".into(), addr: "https://www.example.test/docs/page#x".into() },
+            // The address and title are the tab's, not what the page script claimed.
+            Selected::Text { text: "A quote\nsecond line".into(), title: "Docs: the page?".into(), addr: "https://www.example.test/docs/page".into() },
             Selected::Nothing,
             Selected::Unavailable
         ]
