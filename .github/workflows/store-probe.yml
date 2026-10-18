@@ -146,12 +146,27 @@ jobs:
           $test = Get-ChildItem target/debug/deps/bowser-*.exe | Sort-Object LastWriteTime -Descending | Select-Object -First 1
           & $test.FullName update_model_ --nocapture --test-threads=1 2>&1 | Tee-Object store-update-model-probe.log
           if ($LASTEXITCODE -ne 0) { throw 'Test-only update state contract failed.' }
+      - name: Preserve complete static content-script declarations for consent
+        if: ${{ !cancelled() && steps.native_build.outcome == 'success' }}
+        run: |
+          $test = Get-ChildItem target/debug/deps/bowser-*.exe | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          & $test.FullName content_script_review_ --nocapture --test-threads=1 2>&1 | Tee-Object store-content-script-review.log
+          if ($LASTEXITCODE -ne 0) { throw 'Complete content-script review controls failed.' }
       - name: Enforce bounded native extension page link parsing and navigation guards
         if: ${{ !cancelled() && steps.native_build.outcome == 'success' }}
         run: |
           $test = Get-ChildItem target/debug/deps/bowser-*.exe | Sort-Object LastWriteTime -Descending | Select-Object -First 1
           & $test.FullName native_page_links_ --nocapture --test-threads=1 2>&1 | Tee-Object store-page-links-controls.log
           if ($LASTEXITCODE -ne 0) { throw 'Native page-link parsing/navigation controls failed.' }
+      - name: Exercise genuine empty-link notice and stale-menu same-URL reload
+        if: ${{ !cancelled() && steps.native_build.outcome == 'success' }}
+        run: |
+          $env:BOWSER_EXTENSION_TRACE = '1'
+          $env:LOCALAPPDATA = Join-Path $env:RUNNER_TEMP 'bowser-store-page-links-localappdata'
+          New-Item -ItemType Directory -Force $env:LOCALAPPDATA | Out-Null
+          $test = Get-ChildItem target/debug/deps/bowser-*.exe | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          & $test.FullName live_probe_native_page_links_guards --ignored --nocapture --test-threads=1 2>&1 | Tee-Object store-page-links-runtime-controls.log
+          if ($LASTEXITCODE -ne 0) { throw 'Actual native Page links empty/reload controls failed.' }
       - name: Probe local fixture restart, worker messaging, and hosted-context boundaries
         if: ${{ !cancelled() && steps.native_build.outcome == 'success' }}
         run: |
@@ -229,6 +244,11 @@ jobs:
             store-signed-original-probe.log
             store-record-temp-probe.log
             store-update-model-probe.log
+            store-content-script-review.log
+            store-page-links-controls.log
+            store-page-links-runtime-controls.log
+            ${{ runner.temp }}/bowser-native-page-links-*/*.png
+            ${{ runner.temp }}/bowser-native-page-links-*/*.json
             store-pending-native-probe.log
             store-completed-restart-probe.log
             store-stale-owner-probe.log

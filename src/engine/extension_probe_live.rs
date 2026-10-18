@@ -1592,3 +1592,42 @@ fn live_probe_ui_profile_isolation() {
     println!("UI_PROFILE_ISOLATION actual_settings_ready=true source={source} native_profile={name} in_private=true ordinary_fixture_enabled_and_worker_content=true ui_fresh_native_inventory={inventory:?} fixture_absent=true scope=profile-inventory-not-loopback-only-content-marker");
     ui.close(); drop(ui); drop(webview); drop(env); owner.close(); drop(loopback); remove_with_retries(&root);
 }
+
+/// Independent local fixture gates, not a claim about any marketplace package's functionality.
+#[test]
+#[ignore = "needs real WebView2 and ordinary native Windows menu input"]
+fn live_probe_native_page_links_guards() {
+    unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED).ok().unwrap() };
+    let root = temp_root(); let profile = root.join("page-links"); let loopback = Loopback::start();
+    let (id, folder) = install_fixture(&profile, "probe-mv3");
+    let mut session = Session::open(&profile, vec![(id.clone(), folder.clone())], vec![(id.clone(), true)], &loopback.page("page-links"));
+    let (_, failure) = session.wait_for_add(&profile, &id); assert!(failure.is_none(), "native fixture failed: {failure:?}");
+    let result = Rc::new(RefCell::new(None)); let sink = result.clone();
+    session.engine.open_extension_page(&id, &folder, extensions::PageKind::Popup, "Bowser disposable page-link controls", Box::new(move |answer| *sink.borrow_mut() = Some(answer)));
+    assert!(pump_until(Duration::from_secs(30), || result.borrow().is_some())); result.borrow_mut().take().unwrap().unwrap();
+    assert!(pump_until(Duration::from_secs(30), || session.page_script("!!document.querySelector('#send')").as_deref() == Some("true")));
+    pump_until(Duration::from_secs(1), || false);
+    let run_helper = |mode: &str, delay: &str, label: &str| {
+        let out = std::env::var_os("RUNNER_TEMP").map(PathBuf::from).unwrap_or_else(std::env::temp_dir).join(format!("bowser-native-page-links-{mode}"));
+        let mut child = std::process::Command::new("powershell.exe").args(["-NoProfile", "-File"])
+            .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("benchmarks/scripts/probe-native-extension-link.ps1"))
+            .args(["-OwnerPid", &std::process::id().to_string(), "-ClientX", "0", "-ClientY", "0", "-ViewportWidth", "0", "-ViewportHeight", "0", "-Mode", mode, "-SelectionDelayMs", delay, "-ExpectedLinkLabel", label])
+            .arg("-Out").arg(out).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).spawn().unwrap();
+        if !pump_until(Duration::from_secs(75), || child.try_wait().is_ok_and(|status| status.is_some())) { let _ = child.kill(); let _ = child.wait(); panic!("native page-link helper timed out"); }
+        let output = child.wait_with_output().unwrap();
+        println!("PAGE_LINKS_CONTROL mode={mode} exit={:?} stdout={} stderr={}", output.status.code(), String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+        assert!(output.status.success(), "real owned native helper failed");
+    };
+    assert_eq!(session.page_script("document.querySelectorAll('a[href]').length").as_deref(), Some("0"));
+    run_helper("PageLinksEmpty", "0", "unused");
+    assert!(super::extension_links::probe_results().2, "actual deferred no-links notice was not shown");
+    session.page_script("(()=>{const a=document.createElement('a');a.href=chrome.runtime.getURL('options.html');a.textContent='Disposable options';a.id='old-document-only-link';document.body.append(a);return true})()");
+    let original = session.page_script("location.href").unwrap();
+    super::extension_links::arm_probe_reload();
+    run_helper("PageLinks", "2000", "options.html");
+    assert!(pump_until(Duration::from_secs(10), || session.page_script("document.querySelector('#old-document-only-link')===null").as_deref() == Some("true")));
+    assert_eq!(session.page_script("location.href"), Some(original), "stale menu selection navigated after a real same-URL reload");
+    let (reloaded, refused, _) = super::extension_links::probe_results(); assert!(reloaded && refused, "real native Reload and stale native selection refusal were not both observed");
+    println!("PAGE_LINKS_CONTROL verdict=actual-empty-notice-dismissed-and-real-same-url-reload-stale-selection-refused");
+    session.close(); drop(loopback); remove_with_retries(&root);
+}

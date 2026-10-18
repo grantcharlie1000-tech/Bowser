@@ -2120,7 +2120,7 @@ test('window: the chrome look reaches every surface as root attributes the CSS a
 // ---- end window and panels ----
 
 test('built-in Store and Settings share the trusted host without page navigation', () => {
-  const state = { shown: true, catalogue: [], phase: 'idle', requestId: '', extensionId: '', name: '', version: '', error: '', restart: false, permissions: [], hostPermissions: [], contentScripts: [], optionalPermissions: [], optionalHostPermissions: [] };
+  const state = { shown: true, catalogue: [], phase: 'idle', requestId: '', extensionId: '', name: '', version: '', error: '', restart: false, permissions: [], hostPermissions: [], contentScripts: [], contentScriptDeclarations: [], optionalPermissions: [], optionalHostPermissions: [] };
   deliver({ v: 1, t: 'snap', p: 'store', d: state });
   assert.equal(app.querySelector('.sp').hidden, true);
   assert.equal(app.querySelector('.bs').hidden, false);

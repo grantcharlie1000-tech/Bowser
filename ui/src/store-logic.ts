@@ -10,7 +10,7 @@ export const STORE_PHASES = ['idle', 'downloading', 'review', 'installing', 'rea
 export type StorePhase = typeof STORE_PHASES[number];
 export const PERMISSION_GROUPS = [
   ['permissions', 'Required permissions'], ['hostPermissions', 'Required site access'],
-  ['contentScripts', 'Content scripts run on'], ['optionalPermissions', 'Optional permissions'],
+  ['contentScripts', 'Content scripts run on'], ['contentScriptDeclarations', 'Complete static content-script declarations'], ['optionalPermissions', 'Optional permissions'],
   ['optionalHostPermissions', 'Optional site access'],
 ] as const;
 type PermissionKey = typeof PERMISSION_GROUPS[number][0];
@@ -37,7 +37,9 @@ export function parseStoreSnapshot(v: unknown): StoreSnapshot | null {
     if (item.name === '' || item.publisher === '' || item.category === '') return null;
   }
   for (const [key] of PERMISSION_GROUPS) {
-    if (!Array.isArray(v[key]) || v[key].length > 256 || !v[key].every((item) => text(item, 256))) return null;
+    const limit = key === 'contentScriptDeclarations' ? 180 * 1024 : 256;
+    if (!Array.isArray(v[key]) || v[key].length > 256 || !v[key].every((item) => text(item, limit))) return null;
+    if (key === 'contentScriptDeclarations' && v[key].some((item) => /[^\x20-\x7e]/.test(item as string))) return null;
   }
   if (v.phase === 'review' && (!isStoreRequestId(v.requestId) || v.version === '' || v.name === '' || !isStoreId(v.extensionId))) return null;
   return v as unknown as StoreSnapshot;

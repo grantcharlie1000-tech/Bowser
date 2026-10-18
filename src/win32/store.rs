@@ -107,7 +107,8 @@ pub(crate) fn snapshot(owner: HWND, shown: bool) -> String {
         let manifest = state.review.as_ref().map(|review| &review.prepared.inspection().manifest);
         for (key, values) in [
             ("permissions", manifest.map(|m| &m.permissions)), ("hostPermissions", manifest.map(|m| &m.host_permissions)),
-            ("contentScripts", manifest.map(|m| &m.content_script_matches)), ("optionalPermissions", manifest.map(|m| &m.optional_permissions)),
+            ("contentScripts", manifest.map(|m| &m.content_script_matches)),
+            ("contentScriptDeclarations", manifest.map(|m| &m.content_script_declarations)), ("optionalPermissions", manifest.map(|m| &m.optional_permissions)),
             ("optionalHostPermissions", manifest.map(|m| &m.optional_host_permissions)),
         ] { out.array(key, |items| if let Some(values) = values { for value in values { items.string(value); } }); }
     }).expect("store is a panel token"))

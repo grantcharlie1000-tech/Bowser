@@ -67,6 +67,26 @@ fn notice(hwnd: HWND, text: &str) { unsafe { let _ = MessageBoxW(Some(hwnd), &HS
 struct Busy(Rc<Cell<bool>>);
 impl Drop for Busy { fn drop(&mut self) { self.0.set(false); } }
 
+// Fixed Rust-only disposable runtime controls. No production message, page bridge or configurable
+// script endpoint is registered. The real native timer performs a real same-URL WebView Reload.
+#[cfg(test)]
+pub(super) const PROBE_RELOAD_TIMER: usize = 0x4a1;
+#[cfg(test)]
+thread_local! {
+    static RELOAD_NEXT_MENU: Cell<bool> = const { Cell::new(false) };
+    static RELOAD_PERFORMED: Cell<bool> = const { Cell::new(false) };
+    static STALE_SELECTION_REFUSED: Cell<bool> = const { Cell::new(false) };
+    static EMPTY_NOTICE_SHOWN: Cell<bool> = const { Cell::new(false) };
+}
+#[cfg(test)]
+pub(super) fn arm_probe_reload() { RELOAD_NEXT_MENU.with(|flag| flag.set(true)); }
+#[cfg(test)]
+pub(super) fn probe_reload_result(success: bool) { RELOAD_PERFORMED.with(|flag| flag.set(success)); }
+#[cfg(test)]
+pub(super) fn probe_results() -> (bool, bool, bool) {
+    (RELOAD_PERFORMED.with(Cell::get), STALE_SELECTION_REFUSED.with(Cell::get), EMPTY_NOTICE_SHOWN.with(Cell::get))
+}
+
 pub(super) const SHOW_MESSAGE: u32 = 0x8000 + 0x4a0;
 #[derive(Clone, Default)]
 pub(super) struct Navigation { pub(super) epoch: Rc<Cell<u64>>, pub(super) in_flight: Rc<Cell<bool>>, pub(super) navigation_id: Rc<Cell<Option<u64>>> }
@@ -87,7 +107,10 @@ pub(super) fn open_pending(hwnd: HWND, queue: MenuQueue) {
     let current = || still_current(&pending.view, &pending.active, &pending.navigation, pending.captured, &pending.original, &pending.policy);
     if !current() { return; }
     #[cfg(test)] println!("EXTENSION_PAGE_LINKS deferred_native_dispatch=true current_document=true");
-    let links = match &pending.content { Content::Links(links) => links, Content::Notice(text) => { notice(hwnd, text); return; } };
+    let links = match &pending.content { Content::Links(links) => links, Content::Notice(text) => {
+        #[cfg(test)] if *text == "No eligible same-extension page links are present on this page." { EMPTY_NOTICE_SHOWN.with(|flag| flag.set(true)); }
+        notice(hwnd, text); return;
+    } };
     let Ok(menu) = (unsafe { CreatePopupMenu() }) else { notice(hwnd, "The native Page links menu could not be created."); return; };
     for (index, link) in links.iter().enumerate() {
         let label = HSTRING::from(link.label.replace('&', "&&"));
@@ -95,13 +118,20 @@ pub(super) fn open_pending(hwnd: HWND, queue: MenuQueue) {
             unsafe { let _ = DestroyMenu(menu); } return;
         }
     }
+    #[cfg(test)] if RELOAD_NEXT_MENU.with(|flag| flag.replace(false)) {
+        let timer = unsafe { windows::Win32::UI::WindowsAndMessaging::SetTimer(Some(hwnd), PROBE_RELOAD_TIMER, 500, None) };
+        assert_ne!(timer, 0, "real reload control timer was not installed");
+    }
     let mut point = POINT::default();
     let chosen = unsafe {
         if GetCursorPos(&mut point).is_err() { let _ = DestroyMenu(menu); return; }
         let chosen = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON, point.x, point.y, Some(0), hwnd, None);
         let _ = DestroyMenu(menu); chosen.0 as usize
     };
-    if !current() { return; }
+    if !current() {
+        #[cfg(test)] if chosen != 0 { STALE_SELECTION_REFUSED.with(|flag| flag.set(true)); println!("EXTENSION_PAGE_LINKS stale_native_selection_refused=true"); }
+        return;
+    }
     if let Some(link) = chosen.checked_sub(1).and_then(|index| links.get(index)).filter(|link| pending.policy.allow_new_window(&link.destination)) {
         #[cfg(test)] println!("EXTENSION_PAGE_LINKS actual_native_menu_selection=true destination_policy_valid=true");
         let address = CoTaskMemPWSTR::from(link.destination.as_str());

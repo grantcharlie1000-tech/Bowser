@@ -136,6 +136,9 @@ pub fn prepare(
     check_cancelled()?;
     let inspection = extensions::inspect_source(&staging.0).map_err(|error| error.to_string())?;
     let name = resolved_name(&staging.0, &inspection.manifest)?;
+    if !extensions::store_review_fits(&inspection.manifest) {
+        return Err("The complete permission and content-script review is too large for Bowser to display safely. Nothing was installed; declarations were not truncated.".to_owned());
+    }
     let marker = staging.0.join(SOURCE_MARKER);
     if marker.exists() { return Err("The package contains a reserved Bowser source marker.".to_owned()); }
     fs::write(&marker, id).map_err(|_| "The verified package source could not be recorded.".to_owned())?;

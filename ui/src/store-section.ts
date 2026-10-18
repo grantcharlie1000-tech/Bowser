@@ -139,7 +139,7 @@ export function mountStoreSection(options: ExtensionsSectionOptions): { readonly
           const command = storeRequestCommand('storeapprove', s.requestId);
           if (command && !pending && options.send(command)) { pending = true; render(); }
         }, { primary: true }); approve.dataset.focus = 'approve'; approve.disabled = pending;
-        status.append(lists, approve);
+        status.append(lists, paragraph('Complete static declarations preserve exclusions, file order, frame access, execution world and timing. Documented defaults for omitted fields are shown explicitly, not a guarantee of WebView2 behavior. Unrecognized fields are preserved without assuming their effect. Runtime injection may also use the declared extension APIs.'), approve);
       }
       if ((s.phase === 'downloading' || s.phase === 'review') && s.requestId) {
         const cancel = textButton('Cancel installation', () => {

@@ -12,7 +12,7 @@ const protocol = await bundle('protocol');
 const ui = await bundle('store-section');
 const id = 'a'.repeat(32);
 const entry = { id, name: 'Helpful <text>', description: 'Make reading pleasant', publisher: 'Example publisher', category: 'Reading', source: 'Chrome Web Store', homepage: 'https://example.com', provenance: 'Published by Example', checked: '2026-10-18', compatibility: 'untested', compatibilityNote: 'No tested version yet.' };
-const snap = (extra = {}) => ({ shown: true, catalogue: [entry], phase: 'idle', requestId: '', extensionId: id, name: '', version: '', error: '', restart: false, permissions: [], hostPermissions: [], contentScripts: [], optionalPermissions: [], optionalHostPermissions: [], ...extra });
+const snap = (extra = {}) => ({ shown: true, catalogue: [entry], phase: 'idle', requestId: '', extensionId: id, name: '', version: '', error: '', restart: false, permissions: [], hostPermissions: [], contentScripts: [], contentScriptDeclarations: [], optionalPermissions: [], optionalHostPermissions: [], ...extra });
 const message = (d) => ({ t: 'snap', p: 'store', d });
 const btn = (root, text) => root.querySelectorAll('button').find((node) => node.textContent === text);
 function mount() {
@@ -148,4 +148,16 @@ test('every resolved review identifies source and unverified publisher without a
   btn(store.root,'View package source').click();
   assert.deepEqual(store.sent,[{a:'storelisting',text:noncatalog}]);
   assert.equal(logic.parseStoreSnapshot(snap({phase:'review',requestId:'bad-source',name:'X',version:'1',extensionId:'https://evil.test'})),null);
+});
+
+test('complete static declarations remain visible without truncation and reject unsafe wire text', () => {
+  const store = mount();
+  const declaration = JSON.stringify({ declared: { matches: ['https://example.test/*'], exclude_matches: ['https://example.test/private/*'], all_frames: true, match_about_blank: true, match_origin_as_fallback: true, world: 'MAIN', run_at: 'document_start', future: 'preserved' }, documented_defaults_for_omitted_fields: {}, unrecognized_fields_effect_not_assumed: ['future'] });
+  const review = snap({ phase: 'review', requestId: 'full-scripts', name: entry.name, version: '1', contentScriptDeclarations: [declaration] });
+  assert.ok(logic.parseStoreSnapshot(review));
+  store.receive(message(review));
+  assert.ok(store.root.textContent.includes(declaration));
+  assert.ok(store.root.textContent.includes('not a guarantee of WebView2 behavior'));
+  for (const contentScriptDeclarations of [['x'.repeat(180 * 1024 + 1)], ['hidden\u202etext'], ['bad\nvalue'], Array(257).fill('{}')]) assert.equal(logic.parseStoreSnapshot(snap({ contentScriptDeclarations })), null);
+  const missing = { ...review }; delete missing.contentScriptDeclarations; assert.equal(logic.parseStoreSnapshot(missing), null);
 });

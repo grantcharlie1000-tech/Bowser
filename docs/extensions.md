@@ -1,5 +1,14 @@
 # Browser extensions
 
+## Current unreleased Store checkpoint (2026-10-18)
+
+Store work remains on its draft branch, not a released compatibility promise. A verified current
+MV3 package can be reviewed in the built-in Store and installed with explicit consent. Current
+exact-version functionality and remaining browser-topology blockers are listed in
+[Store catalogue and evidence](store-catalogue.md). Historical Stage 1 observations below are not
+proof that every extension works. Production extension updates/recovery are not enabled.
+
+
 ## What WebView2 offers
 
 Checked against the webview2-com 0.39.1 bindings in the cargo registry:
@@ -17,8 +26,9 @@ Checked against the webview2-com 0.39.1 bindings in the cargo registry:
 
 - WebView2 supports a subset of Chrome extension APIs. Each extension is only as compatible as the
   APIs it uses. Microsoft publishes no list of which ones.
-- Only unpacked folders and `.crx` files chosen by the user are supported. Chrome Web Store install
-  is not supported, and Bowser makes no Web Store compatibility claim.
+- User-picked unpacked folders and `.crx` files remain available. The unreleased Store additionally
+  downloads current signed MV3 packages through the existing protocol. Download/install success
+  is not a general Chrome Web Store or Chrome extension API compatibility claim.
 - Bowser validates manifests itself (manifest version 2 or 3, name, version, permission lists). It
   is stricter than Chrome: non-text permission entries are refused. Declared permissions are shown
   to the user before install. Bowser does not enforce them; WebView2 does what it does.
@@ -53,7 +63,13 @@ declares, so the answer is all or nothing.
   host `*`), then site access and content-script pages, then permissions. Each list line shows the
   first items that fit, each cut to 56 characters, and "and N more" for the rest. The whole prompt
   stays under 2,400 characters however a manifest is padded.
-- A localized name (`__MSG_extName__`) is shown as written. Bowser does not read `_locales`.
+- The legacy local-install summary shows a localized name token as written. Store review resolves
+  its validated `_locales` message before asking for consent; attribution is not publisher identity proof.
+- Store review shows full permission categories and complete static script objects, including
+  exclusions, file order, frame flags, world/timing, explicit documented defaults for omitted flags,
+  and unknown fields without assuming their effect. The canonical ASCII declaration text makes
+  invisible/control characters visible. Packages whose entire review cannot fit the existing trusted
+  snapshot bound are refused, not truncated. Defaults describe the declaration, not runtime API support.
 
 ### Folder rules
 
@@ -67,41 +83,31 @@ declares, so the answer is all or nothing.
 
 ## Profile state across restarts
 
-- The WebView2 profile can keep extensions added with `AddBrowserExtension`. Bowser's records file
-  is the source of truth, so at startup, once the profile is ready, the engine lists the profile's
-  extensions (`GetBrowserExtensions`) and reconciles them:
-  - an extension with no Bowser record is removed;
-  - a recorded but disabled extension is disabled;
-  - an enabled one is turned on, reusing the profile's copy instead of adding a second one.
-- Bowser ids (`ext-...`) are not WebView2's ids. WebView2 derives its own id for each unpacked
-  folder. Bowser keeps the mapping in `extension_ids.txt` beside `extensions.txt`, written when an
-  extension is added and removed when it is unloaded.
-- Removing an extension that is not loaded in this session looks up its WebView2 id in the profile
-  and unloads it before its folder is deleted. If the lookup fails, the removal fails and the
-  folder is kept.
-- An extension is excluded from the startup load if it is removed before the profile is ready.
-- A profile whose `extension_ids.txt` exists is reconciled even when no extension is enabled, so
-  an extension removed while disabled does not linger.
+Current Store-branch ownership handling is deliberately fail closed:
 
-Uncertainty, stated plainly:
+- Bowser records and native-ID ownership are strict, bounded, no-follow authority files. Malformed,
+  duplicate or initialized-but-missing authority blocks extension-enabled environment creation.
+  Unknown native objects, including built-ins, are preserved rather than removed as unowned.
+- A profile-scoped runtime lease serializes inventory, fresh record/ownership checks, native mutation,
+  completion and durable final outcomes. Busy is an explicit no-mutation result. Stale owners cannot
+  mutate a replacement record sharing the same signing ID. Other profiles have independent leases.
+- Signed/keyed identities are durably preclaimed before native Add. Identity validation is independent
+  of diagnostic tracing. Native Add occurs only after accepted installation consent.
+- Completed Disable/Remove waits for native completion and the durable record commit before UI success.
+  Interrupted or failed revocation was not accepted and may restore the previous consented state at
+  restart. A process-crash test is not power-loss durability or a promise of cancellation after crash.
+- New verified Store installs retain the original CRX3 plus an exact package/tree receipt outside the
+  loaded folder. The retained original is reverified/replayed against the reviewed immutable tree.
+  It grants no new consent or updater authority; old legacy folders are not retroactively authenticated.
+- Artifact cleanup deletes only authenticated known entries by held native handles and removes empty
+  owned directories. Changed/replaced/incomplete folders or unknown additions may remain nonexecuting;
+  an explicit partial cleanup error is not a claim that every file vanished.
 
-- Persistence across a restart was observed once on a throwaway profile (see Verification status):
-  a second process listed the extension, reused it with `Enable` (no second `Add`), and its worker
-  answered with the same id and the `chrome.storage.local` value the first process's worker wrote.
-  That is consistent with persistence; it does not show whether `onInstalled` ran again.
-- If `extension_ids.txt` is lost or corrupt, a profile extension cannot be matched to its record.
-  It is removed at startup and re-added as a fresh load, so its extension-held storage may reset.
-  That path was not run live.
-- Ids are compared as WebView2 reports them. Every id observed was 32 lowercase letters `a` to `p`,
-  which Bowser's id parser accepts (ASCII alphanumeric). If a runtime changes that format, the
-  mapping misses and the same fallback applies. The id comes from the folder path unless the
-  manifest has a `key` (see Verification status), so Bowser's copy keeps its id only while it stays
-  at the same path.
-- A fresh WebView2 profile already lists two built-in extensions, "Microsoft Clipboard Extension"
-  and "Microsoft Edge PDF Viewer". They have no Bowser record, so startup reconcile asks WebView2 to
-  remove them, and `Remove` fails with `E_FAIL` (0x80004005). Nothing breaks, but the failure is
-  silent outside the trace, and the log line for them shows the WebView2 id in its `bowser=` field.
-  This was observed once and not changed.
+Windows disposable-profile evidence includes real pending callbacks versus a second process, stale
+same-key owner rejection, four signed/keyed process-crash boundaries, completed revocation across new
+executable processes, damaged-authority environment exclusion, and ordinary/private/UI profile
+inventory/content isolation. Keyless crash ownership, power-loss durability, arbitrary hostile record-
+temp path swaps, every API isolation route, and general extension data-migration safety are not claimed.
 
 ## Diagnostics
 
@@ -368,7 +374,6 @@ resolved permission review receives explicit consent. Cancellation drops the unr
 
 Package retrieval and native loading are distinct from functional compatibility. The current
 probes demonstrated genuine extension popups/options and extension APIs, but also demonstrated
-that native `chrome.tabs/windows` does not yet correctly model Bowser tabs. Catalogue entries
-remain **Untested**, not "supported". Production staged updates remain disabled until stable
+that native `chrome.tabs/windows` does not yet correctly model Bowser tabs. Catalogue entries carry exact-version **Partial** or **Untested** evidence, not a global "supported" claim. Production staged updates remain disabled until stable
 identity/storage, increased-permission consent, and rollback have evidence. See
 [Store catalogue and evidence](store-catalogue.md) for reproducible runs and the acceptance gap.

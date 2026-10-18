@@ -203,6 +203,7 @@ mod tests {
             permissions: vec!["storage".into(), "tabs".into()],
             host_permissions: vec!["https://example.com/*".into()],
             content_script_matches: vec!["<all_urls>".into()],
+            content_script_declarations: Vec::new(),
             optional_permissions: vec!["downloads".into()],
             optional_host_permissions: vec!["https://news.example/*".into()],
         }
@@ -323,6 +324,7 @@ mod tests {
                 permissions: vec!["storage".into()],
                 host_permissions: Vec::new(),
                 content_script_matches: Vec::new(),
+                content_script_declarations: Vec::new(),
                 optional_permissions: Vec::new(),
                 optional_host_permissions: Vec::new(),
             }),

@@ -22,6 +22,7 @@ use std::{
 };
 
 mod artifacts;
+mod script_review;
 
 /// Largest `manifest.json` accepted.
 pub const MAX_MANIFEST_BYTES: u64 = 1024 * 1024;
@@ -123,6 +124,8 @@ pub struct Manifest {
     pub host_permissions: Vec<String>,
     /// Every `content_scripts[].matches` pattern, in manifest order.
     pub content_script_matches: Vec<String>,
+    /// Complete ASCII canonical static declarations, explicit documented defaults and unknown fields.
+    pub content_script_declarations: Vec<String>,
     pub optional_permissions: Vec<String>,
     pub optional_host_permissions: Vec<String>,
 }
@@ -201,6 +204,7 @@ pub fn parse_manifest(bytes: &[u8]) -> Result<Manifest, ExtensionError> {
         permissions: string_list(&fields, "permissions")?,
         host_permissions: string_list(&fields, "host_permissions")?,
         content_script_matches: content_script_matches(&fields)?,
+        content_script_declarations: script_review::declarations(&fields)?,
         optional_permissions: string_list(&fields, "optional_permissions")?,
         optional_host_permissions: string_list(&fields, "optional_host_permissions")?,
     })
@@ -949,6 +953,19 @@ const MAX_SUMMARY_LIST_CHARS: usize = 120;
 
 /// Upper bound on the text of the install confirmation (see [`install_prompt`]).
 pub const MAX_PROMPT_CHARS: usize = 2_400;
+
+/// A complete Store permission review must fit the existing 256 KiB trusted snapshot envelope.
+/// Reserve room for catalogue/identity/status JSON rather than silently truncating declarations.
+/// This is an admission bound, not an increased bridge message allowance.
+pub fn store_review_fits(manifest: &Manifest) -> bool {
+    const MAX_REVIEW_JSON_BYTES: usize = 180 * 1024;
+    let lists = [&manifest.permissions, &manifest.host_permissions, &manifest.content_script_matches,
+        &manifest.content_script_declarations, &manifest.optional_permissions, &manifest.optional_host_permissions];
+    let bytes = lists.iter().flat_map(|list| list.iter()).try_fold(0usize, |total, value| {
+        total.checked_add(crate::chrome_host::protocol::json_string(value).len() + 1)
+    });
+    bytes.is_some_and(|bytes| bytes <= MAX_REVIEW_JSON_BYTES)
+}
 
 /// Human-readable summary for the install confirmation. Counts come first, then a flag for access to
 /// every website, then site access and content-script pages, then permissions. Each list is capped,
@@ -2315,6 +2332,7 @@ mod tests {
             permissions: filler("perm"),
             host_permissions,
             content_script_matches: filler("https://script"),
+            content_script_declarations: Vec::new(),
             optional_permissions: filler("opt"),
             optional_host_permissions: filler("https://optsite"),
         }

@@ -159,6 +159,59 @@ function Run-InstallJourney {
  if(@(Records).Count -ne 0){throw 'Cancellation recorded an installation.'}
  $report.cancel_before_consent='passed-no-record'
  Capture '06-native-cancelled'
+ # A separate actual signed appearance package supplies real static script declarations for
+ # native visual review. This review is cancelled; it grants no installation consent.
+ $search=Wait-Control 'Search extensions';$value=$null
+ if(!$search.TryGetCurrentPattern([Windows.Automation.ValuePattern]::Pattern,[ref]$value)){throw 'Search ValuePattern unavailable for appearance review.'}
+ $value.SetValue('Stylus');Start-Sleep -Milliseconds 500
+ Invoke-Control (Wait-Control 'Stylus');Invoke-Control (Wait-Control 'Get Stylus')
+ $appearanceApprove=Wait-Control 'Install Stylus ' -Prefix
+ if(@(Records).Count -ne 0){throw 'Appearance review recorded an extension before consent.'}
+ $owned=[Windows.Automation.AutomationElement]::FromHandle($script:window)
+ $all=$owned.FindAll([Windows.Automation.TreeScope]::Descendants,[Windows.Automation.Condition]::TrueCondition)
+ $declaration=$null
+ foreach($item in $all){try{if($item.Current.Name.StartsWith('{"declared":',[StringComparison]::Ordinal) -and $item.Current.Name.Contains('documented_defaults_for_omitted_fields')){$declaration=$item;break}}catch{}}
+ if(!$declaration){throw 'Actual appearance-package complete script declaration was not exposed in native review.'}
+ $text=$declaration.Current.Name;$parsed=$text|ConvertFrom-Json
+ if(!$parsed.declared -or !$parsed.documented_defaults_for_omitted_fields){throw 'Actual native script review omitted declarations/defaults objects.'}
+ $declared=$parsed.declared;$defaults=$parsed.documented_defaults_for_omitted_fields
+ foreach($key in @('all_frames','match_about_blank','match_origin_as_fallback','world','run_at')){
+  $property=$declared.PSObject.Properties|Where-Object {$_.Name -ceq $key}|Select-Object -First 1
+  if(!$property){$property=$defaults.PSObject.Properties|Where-Object {$_.Name -ceq $key}|Select-Object -First 1}
+  if(!$property){throw "Actual native script review omitted effective $key."}
+  $effective=$property.Value
+  if($key -in @('all_frames','match_about_blank','match_origin_as_fallback')){if($effective -isnot [bool]){throw "Native $key review is not a Boolean value."}}
+  elseif($key -eq 'world'){if($effective -isnot [string] -or $effective -cnotin @('ISOLATED','MAIN')){throw 'Native world review is not a documented string enum.'}}
+  elseif($effective -isnot [string] -or $effective -cnotin @('document_start','document_end','document_idle')){throw 'Native run_at review is not a documented string enum.'}
+ }
+ $matchesProperty=$declared.PSObject.Properties|Where-Object {$_.Name -ceq 'matches'}|Select-Object -First 1
+ if(!$matchesProperty -or $matchesProperty.Value -isnot [Array] -or $matchesProperty.Value.Count -eq 0 -or @($matchesProperty.Value|Where-Object {$_ -isnot [string] -or !$_}).Count -ne 0){throw 'Actual native script review has no nonempty declared match array.'}
+ $hasFiles=$false
+ foreach($key in @('js','css')){
+  $property=$declared.PSObject.Properties|Where-Object {$_.Name -ceq $key}|Select-Object -First 1
+  if($property){if($property.Value -isnot [Array] -or @($property.Value|Where-Object {$_ -isnot [string] -or !$_}).Count -ne 0){throw 'Actual native js/css declaration is not a string array.'};if($property.Value.Count -gt 0){$hasFiles=$true}}
+ }
+ if(!$hasFiles){throw 'Actual native script review has no declared script/style files.'}
+ $scroll=$null
+ if($declaration.TryGetCurrentPattern([Windows.Automation.ScrollItemPattern]::Pattern,[ref]$scroll)){$scroll.ScrollIntoView()}
+ else {
+  for($i=0;$i -lt 12 -and $declaration.Current.IsOffscreen;$i++){
+   foreach($item in $all){try{$pattern=$null;if($item.TryGetCurrentPattern([Windows.Automation.ScrollPattern]::Pattern,[ref]$pattern) -and $pattern.Current.VerticallyScrollable){$pattern.Scroll([Windows.Automation.ScrollAmount]::NoAmount,[Windows.Automation.ScrollAmount]::LargeIncrement)}}catch{}}
+   Start-Sleep -Milliseconds 200
+  }
+ }
+ Start-Sleep -Milliseconds 400
+ $bounds=$declaration.Current.BoundingRectangle
+ if($declaration.Current.IsOffscreen -or $bounds.Width -le 0 -or $bounds.Height -le 0){throw 'Complete actual script declaration could not be brought into native view.'}
+ Capture '05b-native-stylus-complete-script-review'
+ $text|Set-Content (Join-Path $Out 'native-complete-script-review.txt') -Encoding utf8
+ $report.complete_static_script_review='actual-signed-Stylus-native-visible-full-frame-world-timing-declaration-with-defaults'
+ Invoke-Control (Wait-Control 'Cancel installation')
+ if(@(Records).Count -ne 0){throw 'Cancelled appearance review recorded an installation.'}
+ $search=Wait-Control 'Search extensions';$value=$null
+ if(!$search.TryGetCurrentPattern([Windows.Automation.ValuePattern]::Pattern,[ref]$value)){throw 'Search ValuePattern unavailable after appearance cancellation.'}
+ $value.SetValue('uBlock Origin Lite');Start-Sleep -Milliseconds 500
+ Invoke-Control (Wait-Control 'uBlock Origin Lite')
  Invoke-Control (Wait-Control 'Get uBlock Origin Lite')
  $approve=Wait-Control 'Install uBlock Origin Lite ' -Prefix
  # Explicit authorized disposable-test consent to the real displayed package/version/permissions.

@@ -87,6 +87,16 @@ unsafe extern "system" fn page_proc(
     lparam: LPARAM,
 ) -> LRESULT {
     match message {
+        #[cfg(test)]
+        windows::Win32::UI::WindowsAndMessaging::WM_TIMER if wparam.0 == super::extension_links::PROBE_RELOAD_TIMER => {
+            unsafe { let _ = windows::Win32::UI::WindowsAndMessaging::KillTimer(Some(hwnd), super::extension_links::PROBE_RELOAD_TIMER); }
+            let state = unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) } as *const WindowState;
+            let webview = unsafe { state.as_ref() }.map(|state| state.webview.clone());
+            let result = webview.is_some_and(|webview| unsafe { webview.Reload() }.is_ok());
+            super::extension_links::probe_reload_result(result);
+            println!("EXTENSION_PAGE_LINKS real_same_url_native_reload={result}");
+            LRESULT(0)
+        }
         WM_COMMAND if wparam.0 & 0xffff == PAGE_LINKS_COMMAND => {
             let state = unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) } as *const WindowState;
             if let Some(state) = unsafe { state.as_ref() } {
