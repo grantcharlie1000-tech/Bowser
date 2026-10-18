@@ -73,3 +73,5 @@ pub mod win32;
 pub mod workspaces;
 pub mod stacks; // tab stacks, tiling and workspace rules: the pure rules (T10)
 pub mod workspace_rules; // sites that open in a named workspace (T10)
+
+mod web_app_lifecycle;

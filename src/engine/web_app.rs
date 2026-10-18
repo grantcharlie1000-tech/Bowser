@@ -26,6 +26,8 @@ use windows::{
     core::{BOOL, Error, Interface, PCWSTR, PWSTR, Result},
 };
 
+use crate::web_app_lifecycle::{CreationGate, HostOwners, Lease};
+
 type TitleChangedCallback = Rc<dyn Fn(&str, String)>;
 type FaviconChangedCallback = Rc<dyn Fn(&str, Option<Url>, Option<Vec<u8>>)>;
 type NavigationCallback = Rc<dyn Fn(&str, AppNavigationState)>;
@@ -53,7 +55,41 @@ pub struct WebAppEvents {
     pub policy_event: Option<Rc<dyn Fn(&'static str)>>,
 }
 
+impl WebAppEvents {
+    /// Gate only UI deliveries and newly requested download plans. Existing download tracking and
+    /// all permission/navigation/new-window security decisions continue to run after retirement.
+    fn with_lease(mut self, lease: Lease) -> Self {
+        if let Some(callback) = self.title_changed.take() {
+            let live = lease.clone();
+            self.title_changed = Some(Rc::new(move |id, title| { if live.is_live() { callback(id, title); } }));
+        }
+        if let Some(callback) = self.favicon_changed.take() {
+            let live = lease.clone();
+            self.favicon_changed = Some(Rc::new(move |id, url, bytes| { if live.is_live() { callback(id, url, bytes); } }));
+        }
+        if let Some(callback) = self.navigation_state.take() {
+            let live = lease.clone();
+            self.navigation_state = Some(Rc::new(move |id, state| { if live.is_live() { callback(id, state); } }));
+        }
+        if let Some(callback) = self.failed.take() {
+            let live = lease.clone();
+            self.failed = Some(Rc::new(move |id, error| { if live.is_live() { callback(id, error); } }));
+        }
+        if let Some(callback) = self.on_open_in_tab.take() {
+            let live = lease.clone();
+            self.on_open_in_tab = Some(Rc::new(move |url| { if live.is_live() { callback(url); } }));
+        }
+        if let Some(callback) = self.download_plan.take() {
+            self.download_plan = Some(Rc::new(move |request| {
+                if lease.is_live() { callback(request) } else { crate::downloads::DownloadPlan::Cancel }
+            }));
+        }
+        self
+    }
+}
+
 struct WebAppView {
+    lease: Lease,
     trace: Option<crate::performance::WebAppTrace>,
     controller: ICoreWebView2Controller,
     webview: ICoreWebView2,
@@ -64,6 +100,8 @@ struct WebAppView {
 }
 
 struct HostState {
+    creation: CreationGate,
+    profile: super::web_app_profile::EnvironmentLease,
     trace: Option<crate::performance::WebAppTrace>,
     parent: HWND,
     bounds: RECT,
@@ -78,6 +116,7 @@ struct HostState {
 /// WebMessageReceived bridge or any native script injection.
 #[derive(Clone)]
 pub struct WebAppHost {
+    owners: HostOwners,
     state: Rc<RefCell<HostState>>,
 }
 
@@ -93,6 +132,8 @@ impl WebAppHost {
     where
         F: FnOnce(Result<Self>) + 'static,
     {
+        let request = super::web_app_profile::NativeRequest::environment(web_apps_user_data_dir)?;
+        let _preparing = request.preparing();
         let trace=events.diagnostic_lifecycle.as_ref().and_then(std::rc::Weak::upgrade).and_then(crate::performance::WebAppTrace::environment);
         std::fs::create_dir_all(web_apps_user_data_dir).map_err(|error| {
             Error::new(
@@ -111,15 +152,18 @@ impl WebAppHost {
         let options2: ICoreWebView2EnvironmentOptions2 = options.into();
         unsafe { options2.SetExclusiveUserDataFolderAccess(true)?; }
         let options1: ICoreWebView2EnvironmentOptions = options2.cast()?;
+        let completion_request = request.clone();
         let completion = Rc::new(RefCell::new(Some(on_ready)));
         let done = completion.clone();
         let completion_trace=trace.clone();
         let handler = CreateCoreWebView2EnvironmentCompletedHandler::create(Box::new(
             move |status, environment| {
+                let _retire = completion_request.completing();
+                let profile = environment.as_ref().and_then(|environment| completion_request.observe_environment(environment));
                 if let Some(trace)=&completion_trace {trace.result("webapp_environment_callback",&status);}
                 let result = match (status, environment) {
                     (Ok(()), Some(environment)) => {
-                        let path_result = (|| -> Result<()> {
+                        let path_result = (|| -> Result<super::web_app_profile::EnvironmentLease> {
                             let environment7: ICoreWebView2Environment7 = environment.cast()?;
                             let mut actual_path = PWSTR::null();
                             unsafe { environment7.UserDataFolder(&mut actual_path)?; }
@@ -134,11 +178,14 @@ impl WebAppHost {
                                     "WebView2 did not use the isolated WebApps profile directory",
                                 ));
                             }
-                            Ok(())
+                            profile.ok_or_else(|| Error::from(windows::Win32::Foundation::E_FAIL))
                         })();
-                        path_result.map(|()| WebAppHost {
+                        path_result.map(|profile| WebAppHost {
+                            owners: HostOwners::default(),
                             state: Rc::new(RefCell::new(HostState {
                                 trace: completion_trace.clone(),
+                                creation: CreationGate::default(),
+                                profile,
                                 parent,
                                 bounds,
                                 environment,
@@ -153,13 +200,15 @@ impl WebAppHost {
                     _ => Err(Error::from(windows::Win32::Foundation::E_POINTER)),
                 };
                 if let Some(trace)=&completion_trace {trace.result("webapp_environment_configure_result",&result);}
-                if let Some(callback) = done.borrow_mut().take() {
+                let callback = done.borrow_mut().take();
+                if let Some(callback) = callback {
                     callback(result);
                 }
                 Ok(())
             },
         ));
         if let Some(trace)=&trace {trace.record("webapp_environment_requested");}
+        request.dispatch();
         let result=unsafe {
             CreateCoreWebView2EnvironmentWithOptions(
                 PCWSTR::null(),
@@ -169,98 +218,149 @@ impl WebAppHost {
             )
         };
         if let Some(trace)=&trace {trace.result("webapp_environment_begin_result",&result);}
+        if result.is_err() { request.finish(); }
         result
     }
 
-    /// Shows an existing app controller or creates it once, then loads its initial URL.
+    /// Shows an existing app or coalesces one in-flight creation per app generation.
     pub fn open_app(&self, app_id: &str, url: &str) -> Result<()> {
-        let url = validate_app_url(url).map_err(|_| Error::new(
+        let origin = validate_app_url(url).map_err(|_| Error::new(
             windows::core::HRESULT(0x80070057u32 as i32), "Invalid web app URL"))?;
-        {
+        let reservation = {
             let mut state = self.state.borrow_mut();
-            if state.closed {
-                return Err(Error::from(windows::Win32::Foundation::E_FAIL));
-            }
-            for (id, app) in state.apps.iter_mut() {
-                app.set_visible(id == app_id)?;
-            }
+            if state.closed || state.profile.is_clearing() { return Err(Error::from(windows::Win32::Foundation::E_FAIL)); }
+            // Reserve before any COM call can reenter. Pending opens still update active/bounds,
+            // but cannot dispatch another native request.
+            let reservation = state.creation.reserve(app_id).map_err(|()| Error::from(windows::Win32::Foundation::E_FAIL))?;
             state.current_app = Some(app_id.to_owned());
+            let visibility = state.apps.iter_mut().try_for_each(|(id, app)| app.set_visible(id == app_id));
+            if let Err(error) = visibility {
+                if let Some(lease) = &reservation { state.creation.fail(app_id, lease); }
+                return Err(error);
+            }
             if let Some(app) = state.apps.get(app_id) {
                 unsafe { app.controller.SetBounds(state.bounds)?; }
                 let mut current = PWSTR::null();
                 unsafe { app.webview.Source(&mut current)?; }
-                let current = CoTaskMemPWSTR::from(current).to_string();
-                if current.is_empty() {
-                    unsafe { app.webview.Navigate(PCWSTR::from_raw(wide(url.as_ref()).as_ptr()))?; }
+                if CoTaskMemPWSTR::from(current).to_string().is_empty() {
+                    unsafe { app.webview.Navigate(PCWSTR::from_raw(wide(origin.as_ref()).as_ptr()))?; }
                 }
+            }
+            reservation
+        };
+        let Some(lease) = reservation else { return Ok(()); };
+        let (environment, parent, bounds, weak, trace, profile) = {
+            let state = self.state.borrow();
+            (state.environment.clone(), state.parent, state.bounds, Rc::downgrade(&self.state),
+                state.trace.as_ref().map(|trace| trace.request(app_id)), state.profile.clone())
+        };
+        let request = match profile.request() {
+            Ok(request) => request,
+            Err(error) => { self.state.borrow_mut().creation.fail(app_id, &lease); return Err(error); }
+        };
+        let completion_request = request.clone();
+        let app_id = app_id.to_owned();
+        let completion_id = app_id.clone();
+        let completion_lease = lease.clone();
+        let completion_trace = trace.clone();
+        if let Some(trace) = &trace { trace.record("webapp_controller_requested"); }
+        let handler = CreateCoreWebView2ControllerCompletedHandler::create(Box::new(move |status, controller| {
+            let _retire = completion_request.completing();
+            if let Some(controller) = &controller { profile.observe_controller(&completion_request, controller); }
+            if let Some(trace) = &completion_trace { trace.result("webapp_controller_callback", &status); }
+            let Some(state_rc) = weak.upgrade() else {
+                completion_lease.invalidate();
+                if let Some(trace) = &completion_trace { trace.record("webapp_controller_host_gone"); }
+                if let Some(controller) = controller { close_observed(&controller, completion_trace.as_ref()); }
+                return Ok(());
+            };
+            let current = state_rc.borrow().creation.pending(&completion_id, &completion_lease);
+            if !current {
+                if let Some(controller) = controller { close_observed(&controller, completion_trace.as_ref()); }
                 return Ok(());
             }
-        }
-        let (environment, parent, bounds, weak, app_id, origin, trace) = {
-            let state = self.state.borrow();
-            (state.environment.clone(), state.parent, state.bounds, Rc::downgrade(&self.state), app_id.to_owned(), url,state.trace.as_ref().map(|trace|trace.request(app_id)))
-        };
-        if let Some(trace)=&trace {trace.record("webapp_controller_requested");}
-        let completion_trace=trace.clone();
-        let handler = CreateCoreWebView2ControllerCompletedHandler::create(Box::new(move |status, controller| {
-            if let Some(trace)=&completion_trace {trace.result("webapp_controller_callback",&status);}
             let controller = match (status, controller) {
                 (Ok(()), Some(controller)) => controller,
-                _ => {
-                    if let Some(trace)=&completion_trace {trace.record("webapp_controller_unavailable");}
-                    if let Some(state) = weak.upgrade() {
-                        if let Some(callback) = state.borrow().events.failed.as_ref() {
-                            callback(&app_id, "The web app could not be opened.".to_owned());
-                        }
-                    }
+                (_, controller) => {
+                    if let Some(trace) = &completion_trace { trace.record("webapp_controller_unavailable"); }
+                    let callback = {
+                        let mut state = state_rc.borrow_mut();
+                        state.creation.fail(&completion_id, &completion_lease)
+                            .then(|| state.events.failed.clone()).flatten()
+                    };
+                    if let Some(callback) = callback { callback(&completion_id, "The web app could not be opened.".to_owned()); }
+                    if let Some(controller) = controller { close_observed(&controller, completion_trace.as_ref()); }
                     return Ok(());
                 }
             };
-            let Some(state_rc) = weak.upgrade() else {
-                if let Some(trace)=&completion_trace {trace.record("webapp_controller_host_gone");}
-                close_observed(&controller,completion_trace.as_ref());return Ok(());
-            };
-            let (events, origin_for_handlers, env) = {
+            let (events, env) = {
                 let state = state_rc.borrow();
-                (state.events.clone(), origin.clone(), state.environment.clone())
+                (state.events.clone(), state.environment.clone())
             };
-            let configuration=WebAppConfiguration{events,trace:completion_trace.clone()};
-            let configured=unsafe { configure_web_app_controller(&env, controller.clone(), parent, bounds, &app_id, origin_for_handlers, configuration) };
-            if let Some(trace)=&completion_trace {trace.result("webapp_controller_configure_result",&configured);}
+            let configuration = WebAppConfiguration { events: events.with_lease(completion_lease.clone()),
+                trace: completion_trace.clone(), lease: completion_lease.clone() };
+            let configured = unsafe { configure_web_app_controller(&env, controller.clone(), parent, bounds,
+                &completion_id, origin.clone(), configuration) };
+            if let Some(trace) = &completion_trace { trace.result("webapp_controller_configure_result", &configured); }
             match configured {
-                Ok(app) => {
-                    if let Some(trace)=&completion_trace {trace.record("webapp_controller_configured");}
-                    let mut state = state_rc.borrow_mut();
-                    if state.closed {
+                Ok(mut app) => {
+                    if let Some(trace) = &completion_trace { trace.record("webapp_controller_configured"); }
+                    let applied = crate::web_app_lifecycle::apply_current(|| {
+                        let state = state_rc.borrow();
+                        state.creation.pending(&completion_id, &completion_lease).then_some((
+                            [state.bounds.left, state.bounds.top, state.bounds.right, state.bounds.bottom],
+                            state.current_app.as_deref() == Some(completion_id.as_str())))
+                    }, |(bounds, visible)| {
+                        unsafe { app.controller.SetBounds(RECT { left: bounds[0], top: bounds[1], right: bounds[2], bottom: bounds[3] })?; }
+                        app.set_visible(*visible)
+                    });
+                    if !matches!(applied, Ok(true)) {
+                        let message = match &applied {
+                            Err(error) => format!("The web app layout could not be applied: {error}"),
+                            _ => "The web app layout changed while opening. Retry opening it.".to_owned(),
+                        };
+                        let callback = {
+                            let mut state = state_rc.borrow_mut();
+                            if state.creation.fail(&completion_id, &completion_lease) { state.events.failed.clone() } else { None }
+                        };
+                        if let Some(callback) = callback { callback(&completion_id, message); }
                         app.close();
-                    } else {
-                        let mut app = app;
-                        let visible = state.current_app.as_deref() == Some(app_id.as_str());
-                        // Re-apply the current bounds: the rect captured when creation began may be
-                        // stale (e.g. the panel finished animating open while the controller was
-                        // still being built), which would otherwise leave the page at 0x0.
-                        let _ = unsafe { app.controller.SetBounds(state.bounds) };
-                        let _ = app.set_visible(visible);
-                        let replaced=completion_trace.as_ref().is_some_and(|_|state.apps.contains_key(&app_id));
-                        state.apps.insert(app_id, app);
-                        if replaced {
-                            if let Some(trace)=&completion_trace {trace.record("webapp_controller_replaced");}
-                        }
-                        if let Some(trace)=&completion_trace {trace.record("webapp_controller_installed");}
+                        return Ok(());
                     }
+                    // Visibility/configuration can reenter. Recheck before install; never close
+                    // while a HostState RefCell borrow is held.
+                    let retired = {
+                        let mut state = state_rc.borrow_mut();
+                        if state.creation.commit(&completion_id, &completion_lease) {
+                            let replaced = state.apps.insert(completion_id.clone(), app);
+                            if replaced.is_some() {
+                                if let Some(trace) = &completion_trace { trace.record("webapp_controller_replaced"); }
+                            }
+                            if let Some(trace) = &completion_trace { trace.record("webapp_controller_installed"); }
+                            replaced
+                        } else { Some(app) }
+                    };
+                    if let Some(app) = retired { app.close(); }
                 }
                 Err(error) => {
-                    if let Some(callback) = state_rc.borrow().events.failed.as_ref() {
-                        callback(&app_id, format!("The web app could not be configured: {error}"));
-                    }
-                    close_observed(&controller,completion_trace.as_ref());
+                    let callback = {
+                        let mut state = state_rc.borrow_mut();
+                        state.creation.fail(&completion_id, &completion_lease)
+                            .then(|| state.events.failed.clone()).flatten()
+                    };
+                    if let Some(callback) = callback { callback(&completion_id, format!("The web app could not be configured: {error}")); }
+                    close_observed(&controller, completion_trace.as_ref());
                 }
             }
             Ok(())
         }));
-        let result=unsafe { environment.CreateCoreWebView2Controller(parent, &handler) };
-        if let Some(trace)=&trace {trace.result("webapp_controller_begin_result",&result);}
-        result
+        request.dispatch();
+        let result = unsafe { environment.CreateCoreWebView2Controller(parent, &handler) };
+        if let Some(trace) = &trace { trace.result("webapp_controller_begin_result", &result); }
+        crate::web_app_lifecycle::dispatch_outcome(result, || {
+            request.finish();
+            self.state.borrow_mut().creation.fail(&app_id, &lease)
+        })
     }
 
     pub fn set_bounds(&self, bounds: RECT) -> Result<()> {
@@ -405,24 +505,40 @@ impl WebAppHost {
     }
 
     pub fn remove_app(&self, app_id: &str) {
-        let mut state = self.state.borrow_mut();
-        if state.current_app.as_deref() == Some(app_id) { state.current_app = None; }
-        if let Some(app) = state.apps.remove(app_id) { app.close(); }
+        let retired = {
+            let mut state = self.state.borrow_mut();
+            state.creation.remove(app_id);
+            if state.current_app.as_deref() == Some(app_id) { state.current_app = None; }
+            state.apps.remove(app_id)
+        };
         super::download::interrupt_owner(super::download::app_owner(app_id));
+        if let Some(app) = retired { app.close(); }
     }
 
     pub fn close(&self) {
-        let mut state = self.state.borrow_mut();
-        if state.closed { return; }
-        state.closed = true;
-        state.current_app = None;
-        for (id, app) in state.apps.drain() { app.close(); super::download::interrupt_owner(super::download::app_owner(&id)); }
+        let (retired, owners) = {
+            let mut state = self.state.borrow_mut();
+            if state.closed { return; }
+            state.closed = true;
+            let owners = state.creation.keys();
+            state.creation.close();
+            state.current_app = None;
+            (state.apps.drain().map(|(_, app)| app).collect::<Vec<_>>(), owners)
+        };
+        for id in owners { super::download::interrupt_owner(super::download::app_owner(&id)); }
+        for app in retired { app.close(); }
     }
+
 }
+
+/// Block all new native work for this isolated profile before retiring panel generations.
+pub(crate) fn begin_clear_profile(path: &Path) -> std::io::Result<()> { super::web_app_profile::begin_clear(path) }
+pub(crate) fn shutdown_profiles() { super::web_app_profile::shutdown(); }
+pub(crate) fn finish_clear_profile(path: &Path) -> std::io::Result<()> { super::web_app_profile::finish_clear(path) }
 
 impl Drop for WebAppHost {
     fn drop(&mut self) {
-        if Rc::strong_count(&self.state) == 1 {
+        if self.owners.is_last() {
             self.close();
         }
     }
@@ -483,6 +599,7 @@ impl WebAppView {
     }
 
     fn close(mut self) {
+        self.lease.invalidate();
         for remove in self.remove_handlers.drain(..) { remove(); }
         close_observed(&self.controller,self.trace.as_ref());
     }
@@ -494,7 +611,17 @@ fn close_observed(controller: &ICoreWebView2Controller,trace: Option<&crate::per
     if let Some(trace)=trace {trace.result("webapp_controller_close_result",&result);}
 }
 
+#[derive(Default)]
+struct HandlerRemovers(Vec<Box<dyn Fn()>>);
+impl HandlerRemovers {
+    fn push(&mut self, remove: Box<dyn Fn()>) { self.0.push(remove); }
+}
+impl Drop for HandlerRemovers {
+    fn drop(&mut self) { for remove in self.0.drain(..) { remove(); } }
+}
+
 struct WebAppConfiguration {
+    lease: Lease,
     events: WebAppEvents,
     trace: Option<crate::performance::WebAppTrace>,
 }
@@ -508,7 +635,8 @@ unsafe fn configure_web_app_controller(
     origin: Url,
     configuration: WebAppConfiguration,
 ) -> Result<WebAppView> {
-    let WebAppConfiguration{events,trace}=configuration;
+    let WebAppConfiguration{events,trace,lease}=configuration;
+    if !lease.is_live() { return Err(Error::from(windows::Win32::Foundation::E_ABORT)); }
     let webview = unsafe { controller.CoreWebView2()? };
     unsafe {
         controller.SetBounds(bounds)?;
@@ -524,7 +652,7 @@ unsafe fn configure_web_app_controller(
         let settings6: ICoreWebView2Settings6 = settings.cast()?;
         settings6.SetIsGeneralAutofillEnabled(false)?;
     }
-    let mut removers: Vec<Box<dyn Fn()>> = Vec::new();
+    let mut removers = HandlerRemovers::default();
     let mut token = 0;
     let app_id_owned = app_id.to_owned();
     let open_in_tab = events.on_open_in_tab.clone();
@@ -647,8 +775,10 @@ unsafe fn configure_web_app_controller(
         let popup_webview = webview.clone(); let popup_token = token;
         removers.push(Box::new(move || { let _ = popup_webview.remove_NewWindowRequested(popup_token); }));
 
+        let process_lease = lease.clone();
         let id = app_id.to_owned(); let failure = events.failed.clone(); let process_navigation_state = events.navigation_state.clone(); let retry = Rc::new(Cell::new(false)); let retry_state = retry.clone(); let failed_webview = webview.clone();
         webview.add_ProcessFailed(&ProcessFailedEventHandler::create(Box::new(move |_sender, _args| {
+            if !process_lease.is_live() { return Ok(()); }
             let retrying_again = retry_state.replace(true);
             if !retrying_again {
                 failed_webview.Reload()?;
@@ -665,11 +795,12 @@ unsafe fn configure_web_app_controller(
         let failed_webview = webview.clone(); let failed_token = token;
         removers.push(Box::new(move || { let _ = failed_webview.remove_ProcessFailed(failed_token); }));
 
+        if !lease.is_live() { return Err(Error::from(windows::Win32::Foundation::E_ABORT)); }
         let initial_url = wide(origin.as_str());
         let result=webview.Navigate(PCWSTR::from_raw(initial_url.as_ptr()));
         if let Some(trace)=&trace {trace.result("webapp_initial_navigate_result",&result);}
         result?;
-        Ok(WebAppView { controller, webview, trace, remove_handlers: removers, hidden_since: None, suspended: false })
+        Ok(WebAppView { controller, webview, trace, lease, remove_handlers: std::mem::take(&mut removers.0), hidden_since: None, suspended: false })
     }
 }
 
@@ -870,4 +1001,45 @@ mod tests {
             );
         }
     }
+    #[test]
+    fn retired_request_ui_callbacks_are_inert_but_existing_download_tracking_is_preserved() {
+        let mut gate = CreationGate::default();
+        let lease = gate.reserve("1").unwrap().unwrap();
+        let delivered = Rc::new(Cell::new(0));
+        let count = delivered.clone();
+        let downloads: Rc<dyn Fn(crate::downloads::DownloadEvent)> = Rc::new(|_| {});
+        let policy: Rc<dyn Fn(&'static str)> = Rc::new(|_| {});
+        let events = WebAppEvents {
+            navigation_state: Some(Rc::new(move |_, _| count.set(count.get() + 1))),
+            download_event: Some(downloads.clone()), policy_event: Some(policy.clone()),
+            ..Default::default()
+        }.with_lease(lease.clone());
+        let callback = events.navigation_state.as_ref().unwrap();
+        callback("1", AppNavigationState::Loading);
+        assert_eq!(delivered.get(), 1);
+        gate.remove("1");
+        let replacement = gate.reserve("1").unwrap().unwrap();
+        callback("1", AppNavigationState::Ready);
+        assert_eq!(delivered.get(), 1);
+        assert!(replacement.is_live());
+        assert!(Rc::ptr_eq(events.download_event.as_ref().unwrap(), &downloads));
+        assert!(Rc::ptr_eq(events.policy_event.as_ref().unwrap(), &policy));
+    }
+
+    #[test]
+    fn lease_does_not_retain_host_or_gate_and_hidden_ready_app_remains_live() {
+        let mut gate = CreationGate::default();
+        let lease = gate.reserve("A").unwrap().unwrap();
+        assert!(gate.commit("A", &lease));
+        let b = gate.reserve("B").unwrap().unwrap();
+        assert!(gate.commit("B", &b));
+        assert!(lease.is_live()); // switching does not retire A or discard its session/form state.
+        gate.close();
+        assert!(!lease.is_live() && !b.is_live());
+    }
+
 }
+
+#[cfg(test)]
+#[path = "web_app_lifecycle_live.rs"]
+mod lifecycle_live;

@@ -1,5 +1,6 @@
 pub mod download;
 pub mod web_app;
+mod web_app_profile;
 mod extension_page;
 mod webview2;
 #[cfg(test)]

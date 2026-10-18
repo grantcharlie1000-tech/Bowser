@@ -10,6 +10,9 @@ on:
       - 'benchmarks/*native-detail*'
       - 'benchmarks/*sidebar*'
       - 'src/engine/web_app.rs'
+      - 'src/engine/web_app_profile.rs'
+      - 'src/engine/web_app_lifecycle_live.rs'
+      - 'src/web_app_lifecycle.rs'
       - 'src/win32/panel_webapp.rs'
       - 'benchmarks/scripts/production-*'
       - 'src/performance.rs'
@@ -48,127 +51,128 @@ jobs:
           persist-credentials: false
           path: candidate
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
-      - name: Verify exact event checkout and unchanged product inputs
+      - name: Verify exact checkout and bounded lifecycle product diff
         working-directory: candidate
         env:
-          EVENT_NAME: ${{ github.event_name }}
           EVENT_SOURCE: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
-          if((git rev-parse HEAD).Trim() -cne $env:EVENT_SOURCE){throw 'Unexpected merge/source checkout'}
-          git fetch --no-tags --depth=1 origin f285525d205b9b388ebb26481f5af01d4df99ac8
-          if($LASTEXITCODE -ne 0){throw 'Cannot fetch reviewed product source'}
-          $changes=@(git diff --name-only f285525d205b9b388ebb26481f5af01d4df99ac8 HEAD)
-          if($LASTEXITCODE -ne 0){throw 'Cannot verify bounded interaction instrumentation'}
-          if(@($changes | Where-Object {$_ -cnotin @('.github/workflows/production-performance.yml','benchmarks/production-baseline.ps1','benchmarks/production-analyze.py','benchmarks/interaction-diagnostic.md','benchmarks/production-focus.psm1','benchmarks/test-production-focus.ps1','benchmarks/native-focus-diagnostic.md','benchmarks/controller-focus-diagnostic.md','benchmarks/focus-topology-diagnostic.md','benchmarks/sidebar-lifecycle.psm1','benchmarks/test-sidebar-lifecycle.ps1','benchmarks/sidebar-lifecycle-diagnostic.md','benchmarks/sidebar-preflight.psm1','benchmarks/test-sidebar-preflight.ps1','benchmarks/sidebar-input.psm1','benchmarks/test-sidebar-input.ps1','benchmarks/sidebar-analyze.py','benchmarks/test-sidebar-analyze.py','src/engine/web_app.rs','src/win32/panel_webapp.rs','src/performance.rs','src/main.rs','src/app.rs','src/chrome_host/host.rs','src/engine/mod.rs','src/engine/webview2.rs','src/chrome_host/protocol.rs','src/win32/window.rs','src/win32/settings_page.rs','ui/src/interaction-diagnostic.ts','ui/src/main.ts','ui/src/protocol.ts','ui/test/interaction-diagnostic.mjs','ui/package.json','ui/dist.manifest','ui/dist/app.js','ui/dist/settings-page.js','ui/dist/history-page.js')}).Count){throw 'Unexpected changes outside fixed interaction diagnostic slice'}
+          if((git rev-parse HEAD).Trim() -cne $env:EVENT_SOURCE){throw 'Unexpected source/merge checkout'}
+          git fetch --no-tags --depth=1 origin ce7d73e4b805a0663de638a352cc925ed586567c 8036b86d109e6aec7a39808589655a43ee34b85d
+          if($LASTEXITCODE -ne 0){throw 'Cannot fetch preserved sidebar reference'}
+          $changed=@(git diff --name-only ce7d73e4b805a0663de638a352cc925ed586567c HEAD)
+          $allowed=@('.github/workflows/production-performance.yml','src/engine/mod.rs','src/engine/web_app.rs','src/engine/web_app_profile.rs','src/engine/web_app_lifecycle_live.rs','src/lib.rs','src/main.rs','src/web_app_lifecycle.rs','src/win32/panel_webapp.rs','benchmarks/sidebar-lifecycle-fix.md')
+          if($LASTEXITCODE -ne 0 -or @($changed|Where-Object {$_ -cnotin $allowed}).Count){throw 'Unexpected change outside reviewed lifecycle slice'}
+          git diff --exit-code 8036b86d109e6aec7a39808589655a43ee34b85d HEAD -- ui src/blocker.rs src/blocker/registration.rs src/chrome_host src/engine/webview2.rs src/engine/download.rs Cargo.toml Cargo.lock build.rs
+          if($LASTEXITCODE -ne 0){throw 'Minimizer, security, UI or build inputs changed'}
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: '22'
-      - name: Parse measurement scripts and run contract tests
+      - name: Parse and run unchanged native measurement contracts
         working-directory: candidate
         run: |
-          foreach ($path in @('benchmarks/production-baseline.ps1','benchmarks/production-measurements.psm1','benchmarks/test-production-measurements.ps1','benchmarks/production-focus.psm1','benchmarks/test-production-focus.ps1','benchmarks/sidebar-lifecycle.psm1','benchmarks/test-sidebar-lifecycle.ps1','benchmarks/sidebar-preflight.psm1','benchmarks/test-sidebar-preflight.ps1','benchmarks/sidebar-input.psm1','benchmarks/test-sidebar-input.ps1')) {
-            $tokens=$null; $errors=$null
-            [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $pwd $path),[ref]$tokens,[ref]$errors) | Out-Null
-            if ($errors.Count) { $errors | Format-List; throw "$path does not parse" }
+          foreach($path in @('benchmarks/production-baseline.ps1','benchmarks/sidebar-lifecycle.psm1','benchmarks/sidebar-input.psm1','benchmarks/test-sidebar-lifecycle.ps1','benchmarks/test-sidebar-input.ps1')) {
+            $tokens=$null;$errors=$null
+            [Management.Automation.Language.Parser]::ParseFile((Join-Path $pwd $path),[ref]$tokens,[ref]$errors)|Out-Null
+            if($errors.Count){$errors|Format-List;throw "$path does not parse"}
           }
           ./benchmarks/test-production-measurements.ps1
           ./benchmarks/test-production-focus.ps1
           ./benchmarks/test-sidebar-lifecycle.ps1
           ./benchmarks/test-sidebar-preflight.ps1
           ./benchmarks/test-sidebar-input.ps1
+          ./benchmarks/test-measurements.ps1
           python benchmarks/test-sidebar-analyze.py
           if($LASTEXITCODE -ne 0){throw 'Sidebar analyzer contracts failed'}
-          ./benchmarks/test-measurements.ps1
-          python benchmarks/test-native-detail-analyze.py
-          if ($LASTEXITCODE -ne 0) { throw 'Native detail analyzer contracts failed' }
           python benchmarks/test-production-analyze.py
-          if ($LASTEXITCODE -ne 0) { throw 'Analysis contract tests failed' }
+          if($LASTEXITCODE -ne 0){throw 'Production analyzer contracts failed'}
+          python benchmarks/test-native-detail-analyze.py
+          if($LASTEXITCODE -ne 0){throw 'Native detail contracts failed'}
           node --check benchmarks/scripts/production-fixture-server.mjs
-          node --check benchmarks/scripts/filter-parity-fixture.mjs
-      - name: Verify immutable current-with-minimizer c6f93 input before diagnostic-only rebuild
+      - name: Preserve and verify exact 8036 with-minimizer reference bytes
         working-directory: candidate
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          $source='c6f93eac8d9003e91ba60ac0804bbed29acd14ad'
-          git fetch --no-tags --depth=1 origin $source
-          if($LASTEXITCODE -ne 0){throw 'Cannot fetch frozen controller source'}
-          $harnessBase='73fc3c5881f33936ab6c2ac83eda5e499ef0eaa7'
-          git fetch --no-tags --depth=1 origin $harnessBase
-          if($LASTEXITCODE -ne 0){throw 'Cannot fetch reviewed predecessor harness'}
-          $changes=@(git diff --name-only $harnessBase HEAD)
-          if($LASTEXITCODE -ne 0 -or @($changes|Where-Object {$_ -cnotin @('.github/workflows/production-performance.yml','benchmarks/production-baseline.ps1','benchmarks/sidebar-lifecycle.psm1','benchmarks/test-sidebar-lifecycle.ps1','benchmarks/sidebar-lifecycle-diagnostic.md','benchmarks/sidebar-preflight.psm1','benchmarks/test-sidebar-preflight.ps1','benchmarks/sidebar-input.psm1','benchmarks/test-sidebar-input.ps1','benchmarks/sidebar-analyze.py','benchmarks/test-sidebar-analyze.py','src/app.rs','src/main.rs','src/performance.rs','src/engine/web_app.rs','src/win32/panel_webapp.rs')}).Count){throw 'Unexpected changes outside measurement-only sidebar slice'}
-          $headers=@{Authorization="Bearer $env:GH_TOKEN";Accept='application/vnd.github+json';'X-GitHub-Api-Version'='2022-11-28'}
-          $zip=Join-Path $env:RUNNER_TEMP 'controller-c6f93.zip'
-          Invoke-WebRequest -Headers $headers -Uri 'https://api.github.com/repos/grantcharlie1000-tech/Bowser/actions/artifacts/12136361999/zip' -OutFile $zip
-          $archiveHash=(Get-FileHash $zip -Algorithm SHA256).Hash.ToLowerInvariant()
-          if($archiveHash -cne '8ed7287f9fcdb71087fd61ee9bc256ea06bb4345c14beb37e5c3dce7864bdcfe'){throw 'Frozen controller archive digest mismatch'}
-          $cache=Join-Path $env:RUNNER_TEMP 'controller-c6f93'
-          Expand-Archive -LiteralPath $zip -DestinationPath $cache
-          New-Item -ItemType Directory -Force ../evidence | Out-Null
-          # Copy immutable executables/provenance only, never prior rows, profiles or isolation markers.
-          foreach($folder in @('candidate','interaction-reference','frozen','reference')){Copy-Item (Join-Path $cache $folder) ../evidence/ -Recurse}
-          Copy-Item (Join-Path $cache 'input-manifest.json') ../evidence/input-manifest.json
-          $candidate=Get-Content ../evidence/candidate/identity.json -Raw | ConvertFrom-Json
-          $reference=Get-Content ../evidence/interaction-reference/identity.json -Raw | ConvertFrom-Json
-          if($candidate.source -cne $source -or $candidate.tree -cne '6fd425195b5ccf65214584552de1e2322f64f731' -or $candidate.sha256 -cne '40c68ab5ad01cfa30b1632f58047e5293b2d7c0f305c05e9be51b4d8a3aff905' -or $candidate.bytes -ne 7883264){throw 'Frozen matched candidate identity mismatch'}
-          if($reference.source -cne 'tree:50708b8a05cd6f203503b1a83c6bee4f3dad4fc4' -or $reference.instrumentation_source -cne $source -or $reference.sha256 -cne 'ba569e18a2b6bf220805aad6de67ce3adc03d94ce48cbffd01ec2ca65b83147a' -or $reference.bytes -ne 7851008){throw 'Frozen matched reference identity mismatch'}
-          $expected=[ordered]@{baseline='d0075f2807fd94000cb51ace647eaf335c71ab37c8302a91f0a52d3380dbe0fa';diagnostic='ba569e18a2b6bf220805aad6de67ce3adc03d94ce48cbffd01ec2ca65b83147a';release='341486070d2e74cf9a9e5d5fbeffa90c7dd2ec4fd36bc284a8a3878a7a9bcec1';candidate='40c68ab5ad01cfa30b1632f58047e5293b2d7c0f305c05e9be51b4d8a3aff905'}
-          $manifest=Get-Content ../evidence/input-manifest.json -Raw | ConvertFrom-Json
-          $paths=@{baseline='../evidence/frozen/untouched-main.exe';diagnostic='../evidence/interaction-reference/reference.exe';release='../evidence/frozen/released-v0.0.19.exe';candidate='../evidence/candidate/candidate.exe'}
-          foreach($role in $expected.Keys){if($manifest.$role -cne $expected[$role] -or (Get-FileHash $paths[$role] -Algorithm SHA256).Hash.ToLowerInvariant() -cne $expected[$role]){throw "Frozen topology input mismatch: $role"}}
-          if((Get-Item $paths.candidate).Length -ne 7883264 -or (Get-Item $paths.diagnostic).Length -ne 7851008){throw 'Frozen matched input size mismatch'}
-          git diff --exit-code $source HEAD -- src/blocker.rs src/blocker/registration.rs src/chrome_host/assets.rs ui
-          if($LASTEXITCODE -ne 0){throw 'Minimizer/security/UI bytes must remain unchanged for sidebar baseline'}
-          New-Item -ItemType Directory -Force ../evidence/sidebar-reference | Out-Null
-          Copy-Item ../evidence/candidate/candidate.exe ../evidence/sidebar-reference/reference.exe
-          Copy-Item ../evidence/candidate/identity.json ../evidence/sidebar-reference/identity.json
-          [ordered]@{artifact_id=12136361999;archive_sha256=$archiveHash;source=$source;scope='Current WITH-minimizer reference retained; archived minus-minimizer interaction reference is NOT used in this sidebar experiment'} | ConvertTo-Json | Set-Content ../evidence/sidebar-frozen-provenance.json
-      - name: Reuse verified 8036 sidebar executable after harness-only setup correction
-        id: sidebar_setup
-        working-directory: candidate
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          $source='8036b86d109e6aec7a39808589655a43ee34b85d'
-          git fetch --no-tags --depth=1 origin $source
-          if($LASTEXITCODE -ne 0){throw 'Cannot fetch frozen sidebar build source'}
-          $changes=@(git diff --name-only $source HEAD)
-          if($LASTEXITCODE -ne 0 -or @($changes|Where-Object {$_ -cnotin @('.github/workflows/production-performance.yml','benchmarks/production-baseline.ps1','benchmarks/sidebar-lifecycle.psm1','benchmarks/test-sidebar-lifecycle.ps1','benchmarks/sidebar-lifecycle-diagnostic.md','benchmarks/sidebar-preflight.psm1','benchmarks/test-sidebar-preflight.ps1','benchmarks/sidebar-input.psm1','benchmarks/test-sidebar-input.ps1')}).Count){throw 'Frozen sidebar EXE reuse allows only the reviewed harness correction'}
-          git diff --exit-code $source HEAD -- src ui Cargo.toml Cargo.lock build.rs
-          if($LASTEXITCODE -ne 0){throw 'Frozen sidebar runtime/build inputs changed'}
           $headers=@{Authorization="Bearer $env:GH_TOKEN";Accept='application/vnd.github+json';'X-GitHub-Api-Version'='2022-11-28'}
           $zip=Join-Path $env:RUNNER_TEMP 'sidebar-8036.zip'
           Invoke-WebRequest -Headers $headers -Uri 'https://api.github.com/repos/grantcharlie1000-tech/Bowser/actions/artifacts/12137628254/zip' -OutFile $zip
-          $archiveHash=(Get-FileHash $zip -Algorithm SHA256).Hash.ToLowerInvariant()
-          if($archiveHash -cne 'c5fd895e5b4b12768736363e43b1295a4ad1f23b65284ac087cb06c64e6b668e'){throw 'Frozen sidebar archive digest mismatch'}
+          if((Get-FileHash $zip -Algorithm SHA256).Hash.ToLowerInvariant() -cne 'c5fd895e5b4b12768736363e43b1295a4ad1f23b65284ac087cb06c64e6b668e'){throw 'Frozen archive mismatch'}
           $cache=Join-Path $env:RUNNER_TEMP 'sidebar-8036'
           Expand-Archive -LiteralPath $zip -DestinationPath $cache
-          $identity=Get-Content (Join-Path $cache 'candidate/identity.json') -Raw | ConvertFrom-Json
+          New-Item -ItemType Directory -Force ../evidence/sidebar-reference,../evidence/candidate|Out-Null
+          Copy-Item (Join-Path $cache 'frozen') ../evidence/ -Recurse
+          $identity=Get-Content (Join-Path $cache 'candidate/identity.json') -Raw|ConvertFrom-Json
           $exe=Join-Path $cache 'candidate/candidate.exe'
-          if($identity.source -cne $source -or $identity.tree -cne '2a36d4c7af8ee00c27f950151f3ace8152fb72ed' -or $identity.sha256 -cne 'e42a1005193c54b08fba8c6f65f88757900f6bc400d4c350b0b386453406fa66' -or $identity.bytes -ne 7889408 -or (Get-FileHash $exe -Algorithm SHA256).Hash.ToLowerInvariant() -cne $identity.sha256 -or (Get-Item $exe).Length -ne $identity.bytes){throw 'Frozen sidebar executable identity mismatch'}
-          Copy-Item (Join-Path $cache 'candidate/*') ../evidence/candidate/ -Force
-          # Preserve original candidate identity; HEAD identifies only the corrected harness.
-          Copy-Item (Join-Path $cache 'input-manifest.json') ../evidence/input-manifest.json -Force
-          [ordered]@{harness_source=(git rev-parse HEAD).Trim();candidate_source=$source;candidate_tree=$identity.tree;candidate_sha256=$identity.sha256;artifact_id=12137628254;archive_sha256=$archiveHash;rebuild=$false;baseline_kind='Measurement-only current-minimizer line';same_exe_logging_on_off=$true;settled_pairs=3;rapid_pairs=1;planned_rows=16;previous_run='39136198288: both complete route rows passed; actual1A+2Bcontrollerrequests, oneBreplacement, noobservedCloseforreplacedB throughendmarker';stop='Fixed cohort, retain every failure; no retries/repair; identity/isolation failure blocks later lanes';scope='Preserved fixed settled/rapid ON-OFF lifecycle/resource baseline using the verified owned-heading-click and observed Toggle route; logging overhead only, not an optimization benefit'} | ConvertTo-Json | Set-Content ../evidence/sidebar-provenance.json
-      - name: Fixed settled sidebar logging ON OFF lifecycle and resource baseline
+          if($identity.source -cne '8036b86d109e6aec7a39808589655a43ee34b85d' -or $identity.tree -cne '2a36d4c7af8ee00c27f950151f3ace8152fb72ed' -or $identity.sha256 -cne 'e42a1005193c54b08fba8c6f65f88757900f6bc400d4c350b0b386453406fa66' -or $identity.bytes -ne 7889408 -or (Get-FileHash $exe -Algorithm SHA256).Hash.ToLowerInvariant() -cne $identity.sha256 -or (Get-Item $exe).Length -ne $identity.bytes){throw 'Reference executable/source mismatch'}
+          Copy-Item $exe ../evidence/sidebar-reference/reference.exe
+          Copy-Item (Join-Path $cache 'candidate/identity.json') ../evidence/sidebar-reference/identity.json
+          if((Get-FileHash ../evidence/frozen/untouched-main.exe -Algorithm SHA256).Hash.ToLowerInvariant() -cne 'd0075f2807fd94000cb51ace647eaf335c71ab37c8302a91f0a52d3380dbe0fa' -or (Get-FileHash ../evidence/frozen/released-v0.0.19.exe -Algorithm SHA256).Hash.ToLowerInvariant() -cne '341486070d2e74cf9a9e5d5fbeffa90c7dd2ec4fd36bc284a8a3878a7a9bcec1'){throw 'Untouched frozen identity mismatch'}
+      - name: Build actual lifecycle candidate after both Rust suites and Clippy
+        id: built
         working-directory: candidate
         run: |
-          ./benchmarks/production-baseline.ps1 -BaselineExe ../evidence/frozen/untouched-main.exe -DiagnosticExe ../evidence/sidebar-reference/reference.exe -DiagnosticSource (Get-Content ../evidence/sidebar-reference/identity.json -Raw | ConvertFrom-Json).source -ReleaseExe ../evidence/frozen/released-v0.0.19.exe -CandidateExe ../evidence/candidate/candidate.exe -CandidateSource (Get-Content ../evidence/candidate/identity.json -Raw | ConvertFrom-Json).source -DiagnosticAutoUpdateOff -ExpectedInputManifest ../evidence/input-manifest.json -SidebarLifecyclePilot -StartupOnly -PositiveOnly -Fixtures light -MeasurementMode timing -MaxInvalidSamples 20 -SidebarScenario settled -Pairs 3 -Out ../evidence/sidebar-settled
-      - name: Fixed rapid sidebar logging ON OFF lifecycle and resource baseline
-        if: ${{ !cancelled() && steps.sidebar_setup.outcome == 'success' }}
+          rustup toolchain install 1.99.1 --profile minimal --component clippy
+          if($LASTEXITCODE -ne 0){throw 'Pinned toolchain unavailable'}
+          Push-Location ui
+          npm ci --no-audit --no-fund
+          if($LASTEXITCODE -ne 0){throw 'Locked UI install failed'}
+          npm run build
+          if($LASTEXITCODE -ne 0){throw 'UI build failed'}
+          npm run typecheck
+          if($LASTEXITCODE -ne 0){throw 'UI typecheck failed'}
+          npm run lint
+          if($LASTEXITCODE -ne 0){throw 'UI lint failed'}
+          $env:BOWSER_TEST_EDGE='C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe'
+          if(-not(Test-Path $env:BOWSER_TEST_EDGE)){$env:BOWSER_TEST_EDGE='C:/Program Files/Microsoft/Edge/Application/msedge.exe'}
+          if(-not(Test-Path $env:BOWSER_TEST_EDGE)){throw 'Actual Edge module/CSP verification required'}
+          $env:BOWSER_UI_SURFACE_REPORT=Join-Path (Resolve-Path ../../evidence).Path 'surface-module-smoke.json'
+          node --test test/hardening.mjs test/surface-modules.mjs test/interaction-diagnostic.mjs
+          if($LASTEXITCODE -ne 0){throw 'Module/CSP contracts failed'}
+          Pop-Location
+          git diff --exit-code -- ui/src/icons.gen.ts ui/dist ui/dist.manifest
+          if($LASTEXITCODE -ne 0){throw 'UI assets not reproducible'}
+          cargo +1.99.1 test --locked
+          if($LASTEXITCODE -ne 0){throw 'Default Rust contracts failed'}
+          cargo +1.99.1 test --locked --features html-chrome-default
+          if($LASTEXITCODE -ne 0){throw 'HTML Rust contracts failed'}
+          cargo +1.99.1 clippy --locked --features html-chrome-default -- -D warnings
+          if($LASTEXITCODE -ne 0){throw 'Clippy failed'}
+          cargo +1.99.1 build --release --locked --bin bowser --features html-chrome-default
+          if($LASTEXITCODE -ne 0){throw 'Actual candidate build failed'}
+          Copy-Item target/release/bowser.exe ../evidence/candidate/candidate.exe
+          Copy-Item Cargo.lock,ui/dist.manifest ../evidence/candidate/
+          $file=Get-Item ../evidence/candidate/candidate.exe
+          [ordered]@{source=(git rev-parse HEAD).Trim();tree=(git rev-parse 'HEAD^{tree}').Trim();sha256=(Get-FileHash $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant();bytes=$file.Length;toolchain=(rustc +1.99.1 --version --verbose|Out-String);features='html-chrome-default';reference_source='8036b86d109e6aec7a39808589655a43ee34b85d';scope='Sidebar generation/single-flight lifecycle candidate; same existing minimizer and diagnostics, no gain acceptance'}|ConvertTo-Json|Set-Content ../evidence/candidate/identity.json
+          [ordered]@{baseline='d0075f2807fd94000cb51ace647eaf335c71ab37c8302a91f0a52d3380dbe0fa';diagnostic='e42a1005193c54b08fba8c6f65f88757900f6bc400d4c350b0b386453406fa66';release='341486070d2e74cf9a9e5d5fbeffa90c7dd2ec4fd36bc284a8a3878a7a9bcec1';candidate=(Get-FileHash $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()}|ConvertTo-Json|Set-Content ../evidence/input-manifest.json
+      - name: Fixed candidate first and reused ordinary sidebar route correctness
         working-directory: candidate
         run: |
-          ./benchmarks/production-baseline.ps1 -BaselineExe ../evidence/frozen/untouched-main.exe -DiagnosticExe ../evidence/sidebar-reference/reference.exe -DiagnosticSource (Get-Content ../evidence/sidebar-reference/identity.json -Raw | ConvertFrom-Json).source -ReleaseExe ../evidence/frozen/released-v0.0.19.exe -CandidateExe ../evidence/candidate/candidate.exe -CandidateSource (Get-Content ../evidence/candidate/identity.json -Raw | ConvertFrom-Json).source -DiagnosticAutoUpdateOff -ExpectedInputManifest ../evidence/input-manifest.json -SidebarLifecyclePilot -StartupOnly -PositiveOnly -Fixtures light -MeasurementMode timing -MaxInvalidSamples 20 -SidebarScenario rapid -Pairs 1 -Out ../evidence/sidebar-rapid
-      - name: Describe fixed sidebar resource rows without accepting gains
-        if: always()
-        working-directory: candidate
-        run: |
-          foreach($lane in @('sidebar-settled','sidebar-rapid')) {
-            $folder="../evidence/$lane"
-            if(Test-Path "$folder/environment.json") {python benchmarks/sidebar-analyze.py $folder;if($LASTEXITCODE -ne 0){throw "Sidebar analysis failed for $lane; raw rows remain preserved"}}
+          ./benchmarks/production-baseline.ps1 -BaselineExe ../evidence/frozen/untouched-main.exe -DiagnosticExe ../evidence/sidebar-reference/reference.exe -DiagnosticSource '8036b86d109e6aec7a39808589655a43ee34b85d' -ReleaseExe ../evidence/frozen/released-v0.0.19.exe -CandidateExe ../evidence/candidate/candidate.exe -CandidateSource (Get-Content ../evidence/candidate/identity.json -Raw|ConvertFrom-Json).source -DiagnosticAutoUpdateOff -ExpectedInputManifest ../evidence/input-manifest.json -SidebarLifecyclePilot -SidebarRouteSmoke -StartupOnly -PositiveOnly -Fixtures light -MeasurementMode timing -MaxInvalidSamples 2 -SidebarScenario settled -Pairs 1 -Out ../evidence/sidebar-route
+          $rows=@(Get-ChildItem ../evidence/sidebar-route/sidebar_route_on-*.json|ForEach-Object {Get-Content $_ -Raw|ConvertFrom-Json})
+          if($rows.Count -ne 2){throw 'Two fixed route rows required'}
+          foreach($row in $rows){
+            if(-not $row.valid -or -not $row.tree_exit_confirmed -or -not $row.sidebar_observation.complete -or $row.sidebar_observation.environment_requests -ne 1 -or $row.sidebar_observation.controller_requests -ne 2 -or @($row.sidebar_observation.requests|Where-Object {$_.configured -ne 1 -or $_.installed -ne 1 -or $_.replaced -ne 0 -or $_.close_succeeded -ne 1 -or $_.close_failed -ne 0}).Count){throw 'Candidate route/controller correctness gate failed; preserve every row'}
           }
-      - name: Preserve raw samples and frozen executables, not disposable renderer caches
+      - name: One isolated real-engine pending-remove clear and shutdown correctness probe
+        working-directory: candidate
+        run: |
+          $out=Join-Path (Resolve-Path ../evidence).Path 'native-lifecycle'
+          New-Item -ItemType Directory -Force $out|Out-Null
+          $port=Join-Path $out 'port.txt';$requests=Join-Path $out 'requests.jsonl'
+          $server=Start-Process node -ArgumentList @('benchmarks/scripts/production-fixture-server.mjs',"`"$port`"","`"$requests`"") -PassThru -RedirectStandardOutput (Join-Path $out 'server-stdout.txt') -RedirectStandardError (Join-Path $out 'server-stderr.txt')
+          try {
+            $wait=[Diagnostics.Stopwatch]::StartNew()
+            while(-not(Test-Path $port) -and $wait.Elapsed.TotalSeconds -lt 10 -and -not $server.HasExited){Start-Sleep -Milliseconds 25}
+            if(-not(Test-Path $port) -or $server.HasExited){throw 'Native correctness fixture unavailable'}
+            $env:BOWSER_WEBAPP_FIXTURE_BASE="http://127.0.0.1:$((Get-Content $port -Raw).Trim())"
+            $env:BOWSER_WEBAPP_NATIVE_OUT=$out
+            cargo +1.99.1 test --locked --lib --features html-chrome-default live_webapp_generation_remove_readd_clear_shutdown -- --ignored --nocapture --test-threads=1
+            if($LASTEXITCODE -ne 0){throw 'Fixed real-engine lifecycle probe failed or intended race was unexercised; no rerun'}
+            if(-not(Test-Path (Join-Path $out 'result.json'))){throw 'Native lifecycle result missing'}
+          } finally {
+            if(-not $server.HasExited){Stop-Process -Id $server.Id -Force}
+          }
+      - name: Preserve actual build, frozen reference, raw failures and route evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
@@ -178,33 +182,13 @@ jobs:
             evidence/sidebar-reference/
             evidence/candidate/
             evidence/input-manifest.json
-            evidence/sidebar-*.json
             evidence/native-isolation-blocked.json
             evidence/surface-module-smoke.json
-            evidence/validity/*.json
-            evidence/validity/*.csv
-            evidence/validity/*stderr.txt
-            evidence/validity/*.png
-            evidence/validity/isolated/requests.jsonl
+            evidence/native-lifecycle/
             evidence/sidebar-route/*.json
             evidence/sidebar-route/*.csv
             evidence/sidebar-route/*.png
             evidence/sidebar-route/*stderr.txt
             evidence/sidebar-route/isolated/requests.jsonl
-            evidence/sidebar-preflight/*.json
-            evidence/sidebar-preflight/*.csv
-            evidence/sidebar-preflight/*.png
-            evidence/sidebar-preflight/*stderr.txt
-            evidence/sidebar-preflight/isolated/requests.jsonl
-            evidence/sidebar-settled/*.json
-            evidence/sidebar-settled/*.csv
-            evidence/sidebar-settled/*.png
-            evidence/sidebar-settled/*stderr.txt
-            evidence/sidebar-settled/isolated/requests.jsonl
-            evidence/sidebar-rapid/*.json
-            evidence/sidebar-rapid/*.csv
-            evidence/sidebar-rapid/*.png
-            evidence/sidebar-rapid/*stderr.txt
-            evidence/sidebar-rapid/isolated/requests.jsonl
           if-no-files-found: warn
           retention-days: 30

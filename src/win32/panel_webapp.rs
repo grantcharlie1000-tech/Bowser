@@ -8,6 +8,7 @@ use crate::{
     engine::web_app::{AppNavigationState, WebAppEvents, WebAppHost},
     profile,
     sidebar::{SidebarConfig, WebApp},
+    web_app_lifecycle::CreationGate,
     theme::{self, Palette},
 };
 use std::{
@@ -71,6 +72,8 @@ struct AppView {
 }
 
 struct Shared {
+    creation: CreationGate,
+    closed: bool,
     app: AppRef,
     profile_dir: PathBuf,
     /// The browser window that owns the idle timer.
@@ -194,6 +197,8 @@ fn arm_idle_timer(shared: &SharedRef) {
 pub fn register(app: &AppRef) {
     let profile = profile::active().ok();
     let shared = Rc::new(RefCell::new(Shared {
+        creation: CreationGate::default(),
+        closed: false,
         app: app.clone(),
         profile_dir: profile.as_ref().map_or_else(PathBuf::new, |p| p.web_apps_dir()),
         main_hwnd: app.borrow().hwnd,
@@ -218,58 +223,74 @@ pub fn register_app(app: &AppRef, web_app: WebApp) {
 
 fn register_app_with(shared: SharedRef, web_app: WebApp) {
     let id = web_app.id;
+    let view = Rc::new(RefCell::new(AppView {
+        initial_url: web_app.url.clone(), current_url: web_app.url,
+        state: ViewState::Loading, unread: 0, last_reload: Instant::now(),
+    }));
+    let (retired, host) = {
+        let mut state = shared.borrow_mut();
+        if state.closed { return; }
+        (state.views.insert(id, view.clone()), state.host.clone())
+    };
+    if let Some(retired) = retired {
+        retired.borrow_mut().state.remove();
+        if let Some(host) = host { host.remove_app(&id.to_string()); }
+    }
+    // Capture this exact registration, never resurrect an ID from a retired factory.
     side_panel::register_content(PanelId::WebApp(id), move || {
-        Box::new(Content::new(shared.clone(), id, web_app.url.clone()))
+        Box::new(Content::new(shared.clone(), id, view.clone()))
     });
 }
 
 /// Called when the rail's app list changes. Removes its controller and any live panel content.
 pub fn forget_app(id: u32) {
-    WINDOWS.with(|windows| {
-        for shared in windows.borrow().values() {
-            let (view, host, owner) = {
-                let mut state = shared.borrow_mut();
-                (state.views.remove(&id), state.host.clone(), state.app.borrow().hwnd)
-            };
-            if let Some(view) = view { view.borrow_mut().state.remove(); }
-            if let Some(host) = host { host.remove_app(&id.to_string()); }
-            side_panel::close_content(owner, PanelId::WebApp(id));
-        }
-    });
+    let shared_windows = WINDOWS.with(|windows| windows.borrow().values().cloned().collect::<Vec<_>>());
+    for shared in shared_windows {
+        let (view, host, owner) = {
+            let mut state = shared.borrow_mut();
+            if state.active_id == Some(id) { state.active_id = None; }
+            (state.views.remove(&id), state.host.clone(), state.main_hwnd)
+        };
+        if let Some(view) = view { view.borrow_mut().state.remove(); }
+        if let Some(host) = host { host.remove_app(&id.to_string()); }
+        side_panel::close_content(owner, PanelId::WebApp(id));
+    }
     side_panel::unregister_content(PanelId::WebApp(id));
 }
 
-/// Closes every WebView2 controller before the browser window and its profile are destroyed.
+/// Invalidate before cleanup; retired factories can still retain Shared after WINDOWS is cleared.
 pub fn shutdown() {
-    WINDOWS.with(|windows| {
-        let shared_windows: Vec<_> = windows.borrow().values().cloned().collect();
-        for shared in shared_windows {
+    let shared_windows = WINDOWS.with(|windows| windows.borrow_mut().drain().map(|(_, shared)| shared).collect::<Vec<_>>());
+    for shared in shared_windows {
+        let host = {
             let mut state = shared.borrow_mut();
-            if let Some(host) = state.host.take() { host.close(); }
+            state.closed = true;
+            state.creation.close();
             state.parent = None;
             state.active_id = None;
-        }
-        windows.borrow_mut().clear();
-    });
+            state.host.take()
+        };
+        if let Some(host) = host { host.close(); }
+    }
+    crate::engine::web_app::shutdown_profiles();
 }
 
 /// Clears all pinned-app cookies, storage, cache, and service workers for the active profile.
 /// Customize can call this after confirming the user wants to clear every web app's site data.
 pub fn clear_all_data() -> std::io::Result<()> {
-    let hosts = WINDOWS.with(|windows| {
-        windows.borrow().values().filter_map(|shared| {
+    let dir = profile::active().map_err(|_| std::io::Error::new(std::io::ErrorKind::NotFound, "active profile unavailable"))?.web_apps_dir();
+    crate::engine::web_app::begin_clear_profile(&dir)?;
+    let shared_windows = WINDOWS.with(|windows| windows.borrow().values().cloned().collect::<Vec<_>>());
+    for shared in shared_windows {
+        let host = {
             let mut state = shared.borrow_mut();
+            state.creation.invalidate_all();
             state.active_id = None;
             state.host.take()
-        }).collect::<Vec<_>>()
-    });
-    for host in hosts { host.close(); }
-    let dir = profile::active().map_err(|_| std::io::Error::new(std::io::ErrorKind::NotFound, "active profile unavailable"))?.web_apps_dir();
-    match std::fs::remove_dir_all(dir) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(error),
+        };
+        if let Some(host) = host { host.close(); }
     }
+    crate::engine::web_app::finish_clear_profile(&dir)
 }
 
 /// Lets startup wiring post its existing sidebar/rail rebuild notification after a favicon arrives.
@@ -286,58 +307,75 @@ struct Content {
 }
 
 impl Content {
-    fn new(shared: SharedRef, id: u32, url: String) -> Self {
-        let view = {
-            let mut state = shared.borrow_mut();
-            state.views.entry(id).or_insert_with(|| Rc::new(RefCell::new(AppView {
-                initial_url: url.clone(),
-                current_url: url,
-                state: ViewState::Loading,
-                unread: 0,
-                last_reload: Instant::now(),
-            }))).clone()
-        };
+    fn new(shared: SharedRef, id: u32, view: Rc<RefCell<AppView>>) -> Self {
         Self { shared, id, view, bounds: RECT::default(), dpi: 96 }
     }
 
+    fn is_current(&self) -> bool {
+        let state = self.shared.borrow();
+        !state.closed && state.views.get(&self.id).is_some_and(|view| Rc::ptr_eq(view, &self.view))
+            && !matches!(self.view.borrow().state, ViewState::Removed)
+    }
+
     fn ensure_host(&mut self, parent: HWND) {
-        let (needs_create, profile_dir, app, weak_shared, initial) = {
+        if !self.is_current() { return; }
+        let (reservation, profile_dir, app, weak_shared, initial, existing) = {
             let mut shared = self.shared.borrow_mut();
             shared.parent = Some(parent);
             shared.active_id = Some(self.id);
-            (shared.host.is_none(), shared.profile_dir.clone(), shared.app.clone(), Rc::downgrade(&self.shared), shared.webview_bounds)
+            let reservation = match shared.creation.reserve("environment") {
+                Ok(reservation) => reservation,
+                Err(()) => return,
+            };
+            (reservation, shared.profile_dir.clone(), shared.app.clone(),
+                Rc::downgrade(&self.shared), shared.webview_bounds, shared.host.is_some())
         };
-        if !needs_create { self.open_current(); return; }
-
-        let events = make_events(weak_shared.clone(), app.clone());
-        let app_id = self.id;
+        let Some(lease) = reservation else {
+            if existing { self.open_current(); }
+            return;
+        };
+        let events = make_events(weak_shared.clone(), app);
+        let completion_lease = lease.clone();
         let result = WebAppHost::begin_create(parent, initial, &profile_dir, events, move |result| {
             let Some(shared) = weak_shared.upgrade() else { return; };
+            // Factories can retain Shared after window shutdown. Weak upgrade alone is not a
+            // validity test. No stale result may install a host or report an error to a re-add.
+            if !shared.borrow().creation.pending("environment", &completion_lease) { return; }
             match result {
                 Ok(host) => {
                     let active = {
                         let mut state = shared.borrow_mut();
+                        if !state.creation.commit("environment", &completion_lease) { return; }
                         state.host = Some(host.clone());
                         let bounds = state.webview_bounds;
-                        state.active_id.map(|id| (id, state.views.get(&id).cloned(), bounds))
+                        state.active_id.and_then(|id| state.views.get(&id).cloned().map(|view| (id, view, bounds)))
                     };
-                    if let Some((id, Some(view), bounds)) = active {
+                    if let Some((id, view, bounds)) = active {
                         let url = view.borrow().initial_url.clone();
-                        // Apply the bounds that accumulated during async creation before the first
-                        // controller is made, so it opens at the real panel rect, not 0x0.
                         let _ = host.set_bounds(bounds);
                         let _ = host.open_app(&id.to_string(), &url);
                     }
                 }
-                Err(error) => set_error(&shared, app_id, format!("The web app could not start: {error}")),
+                Err(error) => {
+                    let active = {
+                        let mut state = shared.borrow_mut();
+                        if state.creation.fail("environment", &completion_lease) { state.active_id } else { None }
+                    };
+                    if let Some(id) = active { set_error(&shared, id, format!("The web app could not start: {error}")); }
+                }
             }
         });
         if let Err(error) = result {
-            self.view.borrow_mut().state.fail(format!("The web app could not start: {error}"));
+            let active = {
+                let mut state = self.shared.borrow_mut();
+                if state.creation.fail("environment", &lease) { state.active_id } else { None }
+            };
+            if let Some(id) = active { set_error(&self.shared, id, format!("The web app could not start: {error}")); }
         }
     }
 
     fn open_current(&self) {
+        if !self.is_current() { return; }
         let (host, url) = {
             let mut state = self.shared.borrow_mut();
             state.active_id = Some(self.id);
@@ -345,16 +383,24 @@ impl Content {
         };
         if let Some(host) = host {
             if let Err(error) = host.open_app(&self.id.to_string(), &url) {
-                self.view.borrow_mut().state.fail(format!("The web app could not open: {error}"));
+                if self.is_current() { self.view.borrow_mut().state.fail(format!("The web app could not open: {error}")); }
             }
         }
     }
 
     /// Re-runs a failed load, or starts the host again if it never came up.
     fn retry(&mut self) {
+        if !self.is_current() { return; }
         self.view.borrow_mut().state.retry();
         let host = self.shared.borrow().host.clone();
-        if let Some(host) = host { let _ = host.retry_app(&self.id.to_string()); }
+        if let Some(host) = host {
+            let id = self.id.to_string(); let url = self.view.borrow().initial_url.clone();
+            let result = crate::web_app_lifecycle::retry_route(host.has_app(&id),
+                || host.retry_app(&id), || host.open_app(&id, &url));
+            if let Err(error) = result {
+                if self.is_current() { self.view.borrow_mut().state.fail(format!("The web app could not retry: {error}")); }
+            }
+        }
         else {
             let parent = self.shared.borrow().parent;
             if let Some(parent) = parent { self.ensure_host(parent); }
@@ -376,6 +422,7 @@ impl PanelContent for Content {
     }
 
     fn on_bounds_changed(&mut self, bounds: RECT) {
+        if !self.is_current() { return; }
         self.bounds = bounds;
         let target = webview_rect(bounds);
         // Remember the latest rect even while the host is still being created, so the controller can
@@ -419,6 +466,7 @@ impl PanelContent for Content {
     }
 
     fn on_focus(&mut self, focused: bool) {
+        if !self.is_current() { return; }
         if focused {
             self.open_current();
         } else {

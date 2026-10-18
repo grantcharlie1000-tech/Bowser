@@ -80,6 +80,9 @@ fn main() -> ExitCode {
     if result.is_ok() {
         bowser::updater::note_clean_exit();
     }
+    // WM_DESTROY normally does this; a GetMessage/run error can return without that message.
+    // Idempotent teardown must release retained native profile subscriptions before COM uninit.
+    bowser::win32::panel_webapp::shutdown();
     unsafe {
         CoUninitialize();
     }
