@@ -18,12 +18,96 @@ using System;using System.Text;using System.Runtime.InteropServices;
 public static class BowserExtensionMeasure {
  [StructLayout(LayoutKind.Sequential)]public struct COUNTERS {public uint cb,PageFaultCount;public UIntPtr PeakWorkingSetSize,WorkingSetSize,QuotaPeakPagedPoolUsage,QuotaPagedPoolUsage,QuotaPeakNonPagedPoolUsage,QuotaNonPagedPoolUsage,PagefileUsage,PeakPagefileUsage,PrivateUsage;}
  [DllImport("kernel32.dll",SetLastError=true)]public static extern bool K32GetProcessMemoryInfo(IntPtr h,ref COUNTERS counters,uint size);
+ [DllImport("user32.dll")]public static extern bool IsWindow(IntPtr h);
+ [DllImport("user32.dll")]public static extern bool IsWindowVisible(IntPtr h);
+ [DllImport("user32.dll")]public static extern bool IsWindowEnabled(IntPtr h);
  [DllImport("user32.dll")]public static extern bool ShowWindow(IntPtr h,int command);
  [DllImport("user32.dll")]public static extern bool SetForegroundWindow(IntPtr h);
  [DllImport("user32.dll")]public static extern IntPtr GetForegroundWindow();
  [DllImport("user32.dll")]public static extern short GetAsyncKeyState(int key);
  [DllImport("user32.dll")]public static extern uint GetWindowThreadProcessId(IntPtr h,out uint p);
  [DllImport("user32.dll",CharSet=CharSet.Unicode)]public static extern int GetClassName(IntPtr h,StringBuilder s,int n);
+}
+// Read-only prefixes from Microsoft's UIAutomationClient.h, in native vtable order.
+// LegacyIAccessible Value is property 30093, NOT ValuePattern's property 30045.
+[ComImport, Guid("30cbe57d-d9d0-452a-ab13-7ac5ac4825ee"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+interface BowserResourceAutomation {
+ [PreserveSig] int CompareElements(IntPtr a,IntPtr b,out int same);
+ [PreserveSig] int CompareRuntimeIds(IntPtr a,IntPtr b,out int same);
+ [PreserveSig] int GetRootElement(out IntPtr value);
+ [PreserveSig] int ElementFromHandle(IntPtr hwnd,out BowserResourceElement value);
+ [PreserveSig] int ElementFromPoint(long point,out IntPtr value);
+ [PreserveSig] int GetFocusedElement(out IntPtr value);
+ [PreserveSig] int GetRootElementBuildCache(IntPtr cache,out IntPtr value);
+ [PreserveSig] int ElementFromHandleBuildCache(IntPtr hwnd,IntPtr cache,out IntPtr value);
+ [PreserveSig] int ElementFromPointBuildCache(long point,IntPtr cache,out IntPtr value);
+ [PreserveSig] int GetFocusedElementBuildCache(IntPtr cache,out IntPtr value);
+ [PreserveSig] int CreateTreeWalker(IntPtr condition,out IntPtr value);
+ [PreserveSig] int GetControlViewWalker(out IntPtr value);
+ [PreserveSig] int GetContentViewWalker(out IntPtr value);
+ [PreserveSig] int GetRawViewWalker(out IntPtr value);
+ [PreserveSig] int GetRawViewCondition(out IntPtr value);
+ [PreserveSig] int GetControlViewCondition(out IntPtr value);
+ [PreserveSig] int GetContentViewCondition(out IntPtr value);
+ [PreserveSig] int CreateCacheRequest(out IntPtr value);
+ [PreserveSig] int CreateTrueCondition(out IntPtr value);
+ [PreserveSig] int CreateFalseCondition(out IntPtr value);
+ [PreserveSig] int CreatePropertyCondition(int property,[MarshalAs(UnmanagedType.Struct)] object value,out IntPtr condition);
+}
+[ComImport, Guid("d22108aa-8ac5-49a5-837b-37bbb3d7591e"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+interface BowserResourceElement {
+ [PreserveSig] int SetFocus();
+ [PreserveSig] int GetRuntimeId([MarshalAs(UnmanagedType.SafeArray,SafeArraySubType=VarEnum.VT_I4)] out int[] id);
+ [PreserveSig] int FindFirst(int scope,IntPtr condition,out IntPtr value);
+ [PreserveSig] int FindAll(int scope,IntPtr condition,out BowserResourceElementArray value);
+ [PreserveSig] int FindFirstBuildCache(int scope,IntPtr condition,IntPtr cache,out IntPtr value);
+ [PreserveSig] int FindAllBuildCache(int scope,IntPtr condition,IntPtr cache,out IntPtr value);
+ [PreserveSig] int BuildUpdatedCache(IntPtr cache,out IntPtr value);
+ [PreserveSig] int GetCurrentPropertyValue(int property,[MarshalAs(UnmanagedType.Struct)] out object value);
+ [PreserveSig] int GetCurrentPropertyValueEx(int property,[MarshalAs(UnmanagedType.Bool)] bool ignoreDefault,[MarshalAs(UnmanagedType.Struct)] out object value);
+}
+[ComImport, Guid("14314595-b4bc-4055-95f2-58f2e42c9855"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+interface BowserResourceElementArray {
+ [PreserveSig] int GetLength(out int length);
+ [PreserveSig] int GetElement(int index,out BowserResourceElement element);
+}
+public static class BowserResourceDocument {
+ static void Check(int hr) { Marshal.ThrowExceptionForHR(hr); }
+ static void Release(object value) { if(value!=null&&Marshal.IsComObject(value))Marshal.ReleaseComObject(value); }
+ static bool Same(int[] a,int[] b) { if(a==null||b==null||a.Length!=b.Length)return false;for(int i=0;i<a.Length;i++)if(a[i]!=b[i])return false;return true; }
+ public static string LegacyValue(IntPtr hwnd,uint expectedPid,uint expectedThread,int[] rootRuntimeId,int[] runtimeId) {
+  if(rootRuntimeId==null||rootRuntimeId.Length==0||rootRuntimeId.Length>128||runtimeId==null||runtimeId.Length==0||runtimeId.Length>128)throw new InvalidOperationException("Invalid native document identity.");
+  uint pid;uint thread=BowserExtensionMeasure.GetWindowThreadProcessId(hwnd,out pid);
+  var cls=new StringBuilder(128);BowserExtensionMeasure.GetClassName(hwnd,cls,128);
+  if(thread==0||thread!=expectedThread||pid!=expectedPid||cls.ToString()!="BowserNativeWindow"||!BowserExtensionMeasure.IsWindow(hwnd)||!BowserExtensionMeasure.IsWindowVisible(hwnd)||!BowserExtensionMeasure.IsWindowEnabled(hwnd)||BowserExtensionMeasure.GetForegroundWindow()!=hwnd)throw new InvalidOperationException("Native document owner unavailable.");
+  object instance=null;BowserResourceElement root=null;BowserResourceElementArray documents=null;IntPtr condition=IntPtr.Zero;
+  try {
+   instance=Activator.CreateInstance(Type.GetTypeFromCLSID(new Guid("ff48dba4-60ef-4201-aa87-54103eef594e"),true));
+   var automation=(BowserResourceAutomation)instance;
+   Check(automation.ElementFromHandle(hwnd,out root));int[] rootBefore;Check(root.GetRuntimeId(out rootBefore));
+   if(!Same(rootBefore,rootRuntimeId))throw new InvalidOperationException("Native/managed owned root identity mismatch.");
+   Check(automation.CreatePropertyCondition(30003,50030,out condition));
+   Check(root.FindAll(4,condition,out documents));int count;Check(documents.GetLength(out count));
+   if(count<0||count>64)throw new InvalidOperationException("Native document inventory exceeded limit.");
+   int matches=0;string result=null;
+   for(int i=0;i<count;i++) {
+    BowserResourceElement candidate=null;
+    try { Check(documents.GetElement(i,out candidate));int[] before;Check(candidate.GetRuntimeId(out before));if(!Same(before,runtimeId))continue;
+     matches++;object value=null;
+     try { Check(candidate.GetCurrentPropertyValueEx(30093,true,out value));int[] after;Check(candidate.GetRuntimeId(out after));
+      if(!Same(before,after))throw new InvalidOperationException("Native document identity changed during property query.");
+      result=value as string;if(result!=null&&result.Length>4096)throw new InvalidOperationException("Native document URL exceeded limit.");
+     } finally { Release(value); }
+    } finally { Release(candidate); }
+   }
+   int[] rootAfter;Check(root.GetRuntimeId(out rootAfter));
+   if(!Same(rootBefore,rootAfter)||!Same(rootAfter,rootRuntimeId))throw new InvalidOperationException("Native owned root identity changed.");
+   uint freshPid;uint freshThread=BowserExtensionMeasure.GetWindowThreadProcessId(hwnd,out freshPid);cls.Clear();BowserExtensionMeasure.GetClassName(hwnd,cls,128);
+   if(freshPid!=expectedPid||freshThread!=expectedThread||freshThread!=thread||cls.ToString()!="BowserNativeWindow"||!BowserExtensionMeasure.IsWindow(hwnd)||!BowserExtensionMeasure.IsWindowVisible(hwnd)||!BowserExtensionMeasure.IsWindowEnabled(hwnd)||BowserExtensionMeasure.GetForegroundWindow()!=hwnd)throw new InvalidOperationException("Native document owner changed.");
+   if(matches!=1)throw new InvalidOperationException("Native document runtime identity was unavailable or ambiguous.");
+   return result;
+  } finally { if(condition!=IntPtr.Zero)Marshal.Release(condition);Release(documents);Release(root);Release(instance); }
+ }
 }
 '@
 @'
@@ -35,7 +119,7 @@ const server=http.createServer((req,res)=>{const url=new URL(req.url,'http://127
 });server.listen(0,'127.0.0.1',()=>fs.writeFileSync(port,String(server.address().port)));
 '@ | Set-Content (Join-Path $run 'server.cjs') -Encoding utf8
 $app=$null;$server=$null;$saved=@{};$rows=@();$currentRow=$null;$hadFailure=$false
-$report=[ordered]@{protocol_version=2;series_complete=$false;cleanup_errors=@();reference_runtime_version=$null;scope='Release executable with --dev: startup/resources before UIA conditioning; separate mandatory slow-per-key navigation correctness lane';navigation_workload='At least30ms per literal key plus UIA reads, exact focused value before one Enter; NOT browser-only latency or comparable to previous burst-input rows';primary_valid_pair_count=0;navigation_valid_pair_count=0;source_commit=(& git -C $root rev-parse HEAD).Trim();executable_sha256=(Get-FileHash $exe -Algorithm SHA256).Hash.ToLowerInvariant();status='failed';samples=@();notes=@('Bowser executable hashes are read before each launch, warming its executable cache; this is a hash-conditioned workload, not pristine cold-disk startup. Synchronous UIA provider calls are not hard-bounded by the surrounding polling deadlines.','No benchmark flags; --dev only suppresses production updater. Extension diagnostic tracing is enabled in both arms so native Add completions, not provisional ownership rows, can be observed; these are diagnostic observations, not clean production latency.','Fresh prepared profiles only in trial1; later startups inherit prior navigation/autocomplete and extension-storage conditioning. UIA input conditioning follows resource capture within each row, not across reused rows.','Startup-to-ready includes process launch and local page load; navigation-to-ready includes keyboard interaction.','Memory is sum of owned process-tree private committed bytes and working sets, not PSS; shared pages may be counted twice.','Four packages were signature-verified and explicitly consented in the preceding runtime probe.');error=$null}
+$report=[ordered]@{protocol_version=3;series_complete=$false;cleanup_errors=@();reference_runtime_version=$null;scope='Release executable with --dev: startup/resources before UIA conditioning; separate mandatory slow-per-key navigation correctness lane';navigation_workload='Source-bound toolbar document and stable current UIA identities, at least30ms per literal key plus UIA reads, exact focused value before one Enter; NOT browser-only latency or comparable to previous burst-input rows';primary_valid_pair_count=0;navigation_valid_pair_count=0;source_commit=(& git -C $root rev-parse HEAD).Trim();executable_sha256=(Get-FileHash $exe -Algorithm SHA256).Hash.ToLowerInvariant();status='failed';samples=@();notes=@('Bowser executable hashes are read before each launch, warming its executable cache; this is a hash-conditioned workload, not pristine cold-disk startup. Synchronous UIA provider calls are not hard-bounded by the surrounding polling deadlines.','No benchmark flags; --dev only suppresses production updater. Extension diagnostic tracing is enabled in both arms so native Add completions, not provisional ownership rows, can be observed; these are diagnostic observations, not clean production latency.','Fresh prepared profiles only in trial1; later startups inherit prior navigation/autocomplete and extension-storage conditioning. UIA input conditioning follows resource capture within each row, not across reused rows.','Startup-to-ready includes process launch and local page load; navigation-to-ready includes keyboard interaction.','Memory is sum of owned process-tree private committed bytes and working sets, not PSS; shared pages may be counted twice.','Four packages were signature-verified and explicitly consented in the preceding runtime probe.');error=$null}
 function Ready([string]$Token){if(!(Test-Path $events)){return $false};return [bool](@(Get-Content $events | ConvertFrom-Json | Where-Object {$_.token -eq $Token}).Count)}
 function Await([scriptblock]$Condition,[string]$Description){$deadline=[DateTime]::UtcNow.AddSeconds(90);do{if($app){$app.Refresh();if($app.HasExited){throw "App exited before $Description"};if($app.MainWindowHandle -ne [IntPtr]::Zero){$class=[Text.StringBuilder]::new(128);[void][BowserExtensionMeasure]::GetClassName($app.MainWindowHandle,$class,128);if($class.ToString() -eq '#32770'){$dialog=[Windows.Automation.AutomationElement]::FromHandle($app.MainWindowHandle);$text=@($dialog.FindAll([Windows.Automation.TreeScope]::Descendants,[Windows.Automation.Condition]::TrueCondition)|ForEach-Object{$_.Current.Name});throw ('Owned native startup dialog: '+($text -join ' | '))}}};if(& $Condition){return};Start-Sleep -Milliseconds 50}while([DateTime]::UtcNow -lt $deadline);throw "Timed out: $Description"}
 function Native-Count([string]$Profile){$file=Join-Path $Profile 'extension_ids.txt';if(!(Test-Path $file)){return 0};return @(Get-Content $file | Where-Object {$_ -match '^ext-[a-f0-9]{16}\t[a-p]{32}$'}).Count}
@@ -49,7 +133,17 @@ function Native-Completed([string]$Log,[int]$Count){
  }
  return $true
 }
-function Owned-Keys([string]$Keys){$owner=[uint32]0;[void][BowserExtensionMeasure]::GetWindowThreadProcessId($app.MainWindowHandle,[ref]$owner);$class=[Text.StringBuilder]::new(128);[void][BowserExtensionMeasure]::GetClassName($app.MainWindowHandle,$class,128);if($owner -ne $app.Id -or $class.ToString() -ne 'BowserNativeWindow'){throw 'Not an owned native browser window.'};[void][BowserExtensionMeasure]::ShowWindow($app.MainWindowHandle,9);try{[Windows.Automation.AutomationElement]::FromHandle($app.MainWindowHandle).SetFocus()}catch{};[void][BowserExtensionMeasure]::SetForegroundWindow($app.MainWindowHandle);Start-Sleep -Milliseconds 250;if([BowserExtensionMeasure]::GetForegroundWindow() -ne $app.MainWindowHandle){throw 'No owned foreground; keyboard not sent.'};[Windows.Forms.SendKeys]::SendWait($Keys)}
+function Activate-OwnedAddressWindow {
+ $app.Refresh();$window=$app.MainWindowHandle;$owner=[uint32]0
+ [void][BowserExtensionMeasure]::GetWindowThreadProcessId($window,[ref]$owner)
+ $class=[Text.StringBuilder]::new(128);[void][BowserExtensionMeasure]::GetClassName($window,$class,128)
+ if($owner -ne $app.Id -or $class.ToString() -cne 'BowserNativeWindow'){throw 'Not the exact owned native browser window; no input sent.'}
+ [void][BowserExtensionMeasure]::ShowWindow($window,9)
+ try{[Windows.Automation.AutomationElement]::FromHandle($window).SetFocus()}catch{}
+ [void][BowserExtensionMeasure]::SetForegroundWindow($window);Start-Sleep -Milliseconds 250
+ [void](Assert-AddressWindow $window)
+}
+
 # Failure-only observations. These classifications never select a control or authorize input.
 # Record caps bound output, not synchronous provider execution or collection allocation.
 function Observe-UnavailableAddress($RootElement,[IntPtr]$Window) {
@@ -80,54 +174,170 @@ function Observe-UnavailableAddress($RootElement,[IntPtr]$Window) {
  }catch { $result.error='diagnostic-unavailable' }
  return $result
 }
-function Read-OwnedAddress {
- $app.Refresh();$window=$app.MainWindowHandle;$owner=[uint32]0
- [void][BowserExtensionMeasure]::GetWindowThreadProcessId($window,[ref]$owner)
- $class=[Text.StringBuilder]::new(128);[void][BowserExtensionMeasure]::GetClassName($window,$class,128)
- if($owner -ne $app.Id -or $class.ToString() -cne 'BowserNativeWindow' -or [BowserExtensionMeasure]::GetForegroundWindow() -ne $window){throw 'Exact owned foreground lost before address observation; no input sent.'}
- $rootElement=[Windows.Automation.AutomationElement]::FromHandle($window)
- $condition=[Windows.Automation.AndCondition]::new(
-  [Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::NameProperty,'Address and search bar'),
-  [Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::ControlTypeProperty,[Windows.Automation.ControlType]::Edit))
- $edits=$rootElement.FindAll([Windows.Automation.TreeScope]::Descendants,$condition)
- if($edits.Count -ne 1){
-  try {$currentRow.navigation_workload['address_unavailable_diagnostic']=Observe-UnavailableAddress $rootElement $window}catch {$currentRow.navigation_workload['address_unavailable_diagnostic']=@{status='diagnostic-unavailable'}}
-  throw ("Owned address edit was missing or ambiguous; observed_exact_edit_count="+$edits.Count+"; no input sent.")
+# No title, provider PID, address-name-only or whole-window fallback establishes authority.
+# The exact source is the embedded toolbar host in src/chrome_host/assets.rs. Runtime IDs
+# are opaque comparison values, revalidated within this single lane, not persisted identifiers.
+function Address-IsToolbarSource([string]$Source) { return $Source -ceq 'bowser-ui://app/index.html?view=toolbar' }
+function Assert-AddressGeometry($Bounds) {
+ if(!$Bounds){throw 'Source-bound address geometry unavailable or nonfinite; no input sent.'}
+ foreach($coordinate in @($Bounds.X,$Bounds.Y,$Bounds.Width,$Bounds.Height)){
+  if([double]::IsNaN($coordinate) -or [double]::IsInfinity($coordinate)){throw 'Source-bound address geometry unavailable or nonfinite; no input sent.'}
  }
- $edit=$edits[0];$focused=[Windows.Automation.AutomationElement]::FocusedElement
- $same=$focused -and (($edit.GetRuntimeId() -join ',') -ceq ($focused.GetRuntimeId() -join ','))
- $pattern=[Windows.Automation.ValuePattern]$edit.GetCurrentPattern([Windows.Automation.ValuePattern]::Pattern)
- if($pattern.Current.IsReadOnly){throw 'Owned address edit is read-only; no input sent.'}
- $selection=$null;try{$ranges=([Windows.Automation.TextPattern]$edit.GetCurrentPattern([Windows.Automation.TextPattern]::Pattern)).GetSelection();$selection=@($ranges|ForEach-Object {$_.GetText(-1)})}catch{}
- return @{focused=[bool]$same;value=$pattern.Current.Value;selection=$selection;window=$window}
+ if($Bounds.Width -le 0 -or $Bounds.Height -le 0){throw 'Source-bound address geometry has nonpositive extents; no input sent.'}
 }
+function Address-RuntimeKey($Element) {
+ if(!$Element){throw 'Current UIA element unavailable; no input sent.'}
+ $id=@($Element.GetRuntimeId())
+ if(!$id.Count -or $id.Count -gt 128 -or @($id|Where-Object {$_ -isnot [int]}).Count){throw 'Current UIA runtime identity unavailable or over bound; no input sent.'}
+ return $id -join ','
+}
+function Assert-AddressWindow([IntPtr]$Window,[uint32]$Thread=0) {
+ $app.Refresh();$owner=[uint32]0
+ $actualThread=[BowserExtensionMeasure]::GetWindowThreadProcessId($Window,[ref]$owner)
+ $class=[Text.StringBuilder]::new(128);[void][BowserExtensionMeasure]::GetClassName($Window,$class,128)
+ if($app.HasExited -or $app.MainWindowHandle -ne $Window -or !$actualThread -or ($Thread -and $actualThread -ne $Thread) -or $owner -ne $app.Id -or $class.ToString() -cne 'BowserNativeWindow' -or ![BowserExtensionMeasure]::IsWindow($Window) -or ![BowserExtensionMeasure]::IsWindowVisible($Window) -or ![BowserExtensionMeasure]::IsWindowEnabled($Window) -or [BowserExtensionMeasure]::GetForegroundWindow() -ne $Window){throw 'Exact owned window/thread/foreground unavailable or changed; no input sent.'}
+ return $actualThread
+}
+function Address-InDocument($Control,$Document) {
+ $key=Address-RuntimeKey $Document;$node=$Control
+ for($depth=0;$depth -lt 64;$depth++){
+  $node=[Windows.Automation.TreeWalker]::RawViewWalker.GetParent($node)
+  if(!$node){return $false}
+  if((Address-RuntimeKey $node) -ceq $key){return $true}
+  if($node.Current.ControlType -eq [Windows.Automation.ControlType]::Document){return $false}
+ }
+ return $false
+}
+function Address-OutermostDocument($Document,$RootElement) {
+ $key=Address-RuntimeKey $RootElement;$node=$Document
+ for($depth=0;$depth -lt 64;$depth++){
+  $node=[Windows.Automation.TreeWalker]::RawViewWalker.GetParent($node)
+  if(!$node){return $false}
+  if((Address-RuntimeKey $node) -ceq $key){return $true}
+  if($node.Current.ControlType -eq [Windows.Automation.ControlType]::Document){return $false}
+ }
+ return $false
+}
+function Address-DocumentSource($Document,[IntPtr]$Window,[uint32]$Thread,$RootElement) {
+ [void](Assert-AddressWindow $Window $Thread)
+ $runtimeId=$Document.GetRuntimeId();$key=Address-RuntimeKey $Document
+ $rootRuntimeId=$RootElement.GetRuntimeId();$rootKey=Address-RuntimeKey $RootElement
+ $values=@();$pattern=$null
+ if($Document.TryGetCurrentPattern([Windows.Automation.ValuePattern]::Pattern,[ref]$pattern)){$values+=([Windows.Automation.ValuePattern]$pattern).Current.Value}
+ # Chromium exposes document tree-data URL as LegacyIAccessible.Value (30093),
+ # not Name/title or ValuePattern's property 30045. The native lookup must match
+ # the same exact managed runtime ID, with owned-window/thread fences on both sides.
+ $legacy=[BowserResourceDocument]::LegacyValue($Window,[uint32]$app.Id,$Thread,$rootRuntimeId,$runtimeId)
+ if($legacy){$values+=$legacy}
+ if((($rootRuntimeId -join ',') -cne $rootKey) -or (Address-RuntimeKey $RootElement) -cne $rootKey){throw 'Current root identity changed during native source query; no input sent.'}
+ if((($runtimeId -join ',') -cne $key) -or (Address-RuntimeKey $Document) -cne $key){throw 'Current document identity changed during source query; no input sent.'}
+ [void](Assert-AddressWindow $Window $Thread)
+ $values=@($values|Where-Object {$_}|Select-Object -Unique)
+ # A default/unsupported/non-string native result never authorizes a ValuePattern fallback.
+ if($legacy -isnot [string] -or !$legacy -or $values.Count -ne 1 -or $values[0].Length -gt 4096){return $null}
+ return [string]$values[0]
+}
+function Read-OwnedAddress($Expected) {
+ $app.Refresh();$window=$app.MainWindowHandle
+ $thread=Assert-AddressWindow $window $(if($Expected){$Expected.thread}else{0})
+ if($Expected -and $window -ne $Expected.window){throw 'Original address host changed; no input sent.'}
+ $rootElement=[Windows.Automation.AutomationElement]::FromHandle($window);$rootKey=Address-RuntimeKey $rootElement
+ if($Expected -and $rootKey -cne $Expected.root_key){throw 'Original address root runtime identity changed; no input sent.'}
+ try {
+  $documents=$rootElement.FindAll([Windows.Automation.TreeScope]::Descendants,[Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::ControlTypeProperty,[Windows.Automation.ControlType]::Document))
+  if($documents.Count -gt 64){throw 'Address document inventory exceeded the bounded probe; no input sent.'}
+  $matches=@()
+  foreach($candidate in $documents){
+   if(!(Address-OutermostDocument $candidate $rootElement)){continue}
+   $source=Address-DocumentSource $candidate $window $thread $rootElement
+   if(Address-IsToolbarSource $source){$matches+=@{document=$candidate;source=$source}}
+  }
+  if($matches.Count -ne 1){throw ("Exact source-bound toolbar document missing or ambiguous; observed_toolbar_document_count="+$matches.Count+"; no input sent.")}
+  $document=$matches[0].document;$documentKey=Address-RuntimeKey $document
+  if($Expected -and $documentKey -cne $Expected.document_key){throw 'Original toolbar document runtime identity changed; no input sent.'}
+  # Search once, only under the attributed document. Filtering the exact-name set by
+  # current type and nearest Document ancestry is not a global or first-match fallback.
+  $named=$document.FindAll([Windows.Automation.TreeScope]::Descendants,[Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::NameProperty,'Address and search bar'))
+  if($named.Count -gt 10000){throw 'Attributed address inventory exceeded the bounded probe; no input sent.'}
+  $edits=@($named|Where-Object {$_.Current.Name -ceq 'Address and search bar' -and $_.Current.ControlType -eq [Windows.Automation.ControlType]::Edit -and (Address-InDocument $_ $document)})
+  if($edits.Count -ne 1){throw ("Source-bound address edit missing or ambiguous; observed_exact_edit_count="+$edits.Count+"; no input sent.")}
+  $edit=$edits[0];$editKey=Address-RuntimeKey $edit
+  if($Expected -and $editKey -cne $Expected.edit_key){throw 'Original address edit runtime identity changed; no input sent.'}
+  $bounds=$edit.Current.BoundingRectangle
+  Assert-AddressGeometry $bounds
+  if(!$edit.Current.IsEnabled -or !$edit.Current.IsKeyboardFocusable -or $edit.Current.IsOffscreen){throw 'Source-bound address edit unavailable for visible input; no input sent.'}
+  $pattern=[Windows.Automation.ValuePattern]$edit.GetCurrentPattern([Windows.Automation.ValuePattern]::Pattern)
+  if($pattern.Current.IsReadOnly){throw 'Source-bound address edit is read-only; no input sent.'}
+  $selection=$null;try{$ranges=([Windows.Automation.TextPattern]$edit.GetCurrentPattern([Windows.Automation.TextPattern]::Pattern)).GetSelection();$selection=@($ranges|ForEach-Object {$_.GetText(-1)})}catch{}
+  if((Address-RuntimeKey $rootElement) -cne $rootKey -or (Address-RuntimeKey $document) -cne $documentKey -or (Address-RuntimeKey $edit) -cne $editKey -or !(Address-OutermostDocument $document $rootElement) -or !(Address-InDocument $edit $document) -or !(Address-IsToolbarSource (Address-DocumentSource $document $window $thread $rootElement))){throw 'Current address document/control source or identity changed; no input sent.'}
+  if((Address-RuntimeKey $rootElement) -cne $rootKey -or (Address-RuntimeKey $document) -cne $documentKey -or (Address-RuntimeKey $edit) -cne $editKey){throw 'Address runtime identity changed after final source query; no input sent.'}
+  $focused=[Windows.Automation.AutomationElement]::FocusedElement
+  $same=$edit.Current.HasKeyboardFocus -and $focused -and $editKey -ceq (Address-RuntimeKey $focused)
+  [void](Assert-AddressWindow $window $thread)
+  $value=$pattern.Current.Value
+  $bound=@{window=$window;thread=$thread;root_key=$rootKey;document_key=$documentKey;edit_key=$editKey}
+  return @{focused=[bool]$same;value=$value;selection=$selection;window=$window;bound=$bound;value_pattern=$pattern}
+ } catch {
+  # Failure observations cannot retry, choose a control, erase a failed sample, or authorize input.
+  try {$currentRow.navigation_workload['address_unavailable_diagnostic']=Observe-UnavailableAddress $rootElement $window}catch {$currentRow.navigation_workload['address_unavailable_diagnostic']=@{status='diagnostic-unavailable'}}
+  throw
+ }
+}
+function Assert-AddressInput($State) {
+ # Every literal key and Enter uses a fresh source/identity/focus observation of the
+ # original bound field. Never SetFocus/SetValue, reacquire a new identity, or repair text.
+ $fresh=Read-OwnedAddress $State.bound
+ if(!$fresh.focused){throw 'Exact source-bound address focus changed before input; no repair or retry.'}
+ Assert-NeutralModifiers
+ [void](Assert-AddressWindow $State.window $State.bound.thread)
+ return $fresh
+}
+
 function Assert-NeutralModifiers {
  foreach($key in @(16,17,18,91,92)){if([BowserExtensionMeasure]::GetAsyncKeyState($key) -lt 0){throw 'Unexpected held input modifier; no repair or further input.'}}
 }
 function Submit-OwnedFixture([string]$Text,$Trace) {
  if($Text -cnotmatch '^http://127\.0\.0\.1:[0-9]+/page\?token=[a-f0-9]{32}$'){throw 'Not the exact generated loopback fixture address; no input sent.'}
- $Trace['workload']='slow-real-per-key-plus-UIA-readbacks';$Trace['minimum_per_key_delay_ms']=30;$Trace['expected_length']=$Text.Length;$Trace['keys']=@();$Trace['exact_final_value']= $false
+ $Trace['workload']='source-bound-slow-real-per-key-plus-UIA-readbacks';$Trace['minimum_per_key_delay_ms']=30;$Trace['expected_length']=$Text.Length;$Trace['keys']=@();$Trace['exact_final_value']= $false
+ # Initial activation is native-owner-only; source authority must be established before Ctrl+L.
+ Activate-OwnedAddressWindow
+ $state=Read-OwnedAddress $null;$bound=$state.bound
+$Trace['address_authority']='exact-toolbar-source-nearest-document-and-stable-runtime-ids'
+ $state=Read-OwnedAddress $bound
  Assert-NeutralModifiers
- Owned-Keys '^l'
- $wait=[Diagnostics.Stopwatch]::StartNew();$state=$null
- do{$state=Read-OwnedAddress;if($state.focused){break};Start-Sleep -Milliseconds 20}while($wait.Elapsed.TotalSeconds -lt 3)
+ [void](Assert-AddressWindow $state.window $bound.thread)
+ [Windows.Forms.SendKeys]::SendWait('^l')
+ $wait=[Diagnostics.Stopwatch]::StartNew()
+ do{$state=Read-OwnedAddress $bound;if($state.focused){break};Start-Sleep -Milliseconds 20}while($wait.Elapsed.TotalSeconds -lt 3)
  if(!$state.focused){throw 'Exact owned address focus not confirmed; no typing sent.'}
  $Trace['initial_value_length']=$state.value.Length;$Trace['initial_selection_available']=$null -ne $state.selection
  $index=0
  foreach($character in $Text.ToCharArray()){
-  $state=Read-OwnedAddress;Assert-NeutralModifiers
-  if(!$state.focused){throw 'Owned address focus lost before literal key; no repair or retry.'}
-  [Windows.Forms.SendKeys]::SendWait([string]$character);Start-Sleep -Milliseconds 30
-  $after=Read-OwnedAddress;Assert-NeutralModifiers
-  $Trace['keys']+=@{index=$index;before_length=$state.value.Length;after_length=$after.value.Length;focused_after=$after.focused;selection_available=$null -ne $after.selection};$index++
-  if(!$after.focused){throw 'Owned address focus lost after literal key; no further input.'}
+  # Append the attempt BEFORE any guard/dispatch/post-check can fail. Failed attempts
+  # remain in the row; returned dispatch is not proof that the target accepted a key.
+  $keyRow=@{index=$index;phase='before-source-read';before_length=$null;after_length=$null;focused_after=$null;selection_available=$null;dispatch_attempted=$false;dispatch_returned=$false;postcheck_completed=$false;error=$null}
+  $Trace['keys']+=,$keyRow
+  try {
+   $state=Read-OwnedAddress $bound;Assert-NeutralModifiers
+   if(!$state.focused){throw 'Owned address focus lost before literal key; no repair or retry.'}
+   $state=Assert-AddressInput $state;$keyRow.before_length=$state.value.Length
+   $keyRow.phase='dispatch';$keyRow.dispatch_attempted=$true
+   [Windows.Forms.SendKeys]::SendWait([string]$character);$keyRow.dispatch_returned=$true;Start-Sleep -Milliseconds 30
+   $keyRow.phase='post-dispatch-read';$after=Read-OwnedAddress $bound;Assert-NeutralModifiers
+   $keyRow.after_length=$after.value.Length;$keyRow.focused_after=$after.focused;$keyRow.selection_available=$null -ne $after.selection;$keyRow.postcheck_completed=$true
+   if(!$after.focused){throw 'Owned address focus lost after literal key; no further input.'}
+   $keyRow.phase='completed';$index++
+  } catch {$keyRow.error=$_.Exception.Message;throw}
  }
+
  $wait.Restart()
- do{$state=Read-OwnedAddress;if($state.focused -and $state.value -ceq $Text){break};Start-Sleep -Milliseconds 20}while($wait.Elapsed.TotalSeconds -lt 3)
+ do{$state=Read-OwnedAddress $bound;if($state.focused -and $state.value -ceq $Text){break};Start-Sleep -Milliseconds 20}while($wait.Elapsed.TotalSeconds -lt 3)
  $Trace['exact_final_value']=$state.focused -and $state.value -ceq $Text
  if(!$Trace['exact_final_value']){throw 'Exact focused final address was not observed; Enter not sent, no correction or retry.'}
- Assert-NeutralModifiers
+ $state=Assert-AddressInput $state
  if([BowserExtensionMeasure]::GetForegroundWindow() -ne $state.window){throw 'Exact owned foreground lost before Enter; no input sent.'}
+ # Exact text is the last provider read, after fresh source/identity/focus/modifier/foreground guards.
+ if($state.value_pattern.Current.Value -cne $Text){throw 'Exact focused final address changed before Enter; no correction or retry.'}
  [Windows.Forms.SendKeys]::SendWait('{ENTER}')
 }
 function Assert-FrozenExecutable($Row,[string]$Phase,[bool]$Final) {

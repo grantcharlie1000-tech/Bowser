@@ -16,6 +16,9 @@ on:
       - 'benchmarks/scripts/validate-app-host-menu-fixture.mjs'
       - 'benchmarks/fixtures/app-host-context-menu/**'
       - 'benchmarks/scripts/probe-native-store.ps1'
+      - 'benchmarks/scripts/measure-native-extensions.ps1'
+      - 'benchmarks/scripts/test-native-extension-address-guards.ps1'
+      - 'benchmarks/test-native-extension-address-source.py'
       - 'benchmarks/scripts/native-store-record-reader.psm1'
       - 'benchmarks/scripts/test-native-store-record-reader.ps1'
       - 'benchmarks/scripts/probe-native-installer-band-component.ps1'
@@ -37,6 +40,11 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
+      - name: Parse resource harness and check generated address guard contracts
+        run: |
+          ./benchmarks/scripts/test-native-extension-address-guards.ps1
+          python ./benchmarks/test-native-extension-address-source.py
+          if ($LASTEXITCODE -ne 0) { throw 'Resource address source contracts failed.' }
       - name: Install official Rust toolchain
         run: rustup toolchain install stable --profile minimal
       - name: Probe current MV3 listings using detected WebView2 runtime
