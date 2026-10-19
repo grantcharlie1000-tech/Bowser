@@ -462,6 +462,20 @@ static PENDING_HISTORY: Mutex<Vec<(PathBuf, Vec<HistoryEntry>)>> = Mutex::new(Ve
 /// never interleave.
 static HISTORY_IO: Mutex<()> = Mutex::new(());
 
+/// Counts every removal from a history file (an entry, a range, a site, a clear, a retention prune).
+/// Each window's address-bar suggestions are an in-memory copy of the history; a window that sees
+/// this change reads the file again, so a deleted site is not offered.
+static HISTORY_REMOVALS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// The number of history removals so far in this process (see [`HISTORY_REMOVALS`]).
+pub fn history_removals() -> u64 {
+    HISTORY_REMOVALS.load(std::sync::atomic::Ordering::Acquire)
+}
+
+fn note_history_removal() {
+    HISTORY_REMOVALS.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+}
+
 /// The parsed history this process last read or wrote, per file, so a write does not reread and
 /// reparse the file. Only trusted while the file still has the size and modification time recorded
 /// with it, so an edit from outside is picked up. Take it inside [`HISTORY_IO`].
@@ -868,6 +882,7 @@ pub fn delete_history_entry(path: &Path, url: &str) -> std::io::Result<bool> {
         return Ok(false);
     }
     write_history(path, &entries)?;
+    note_history_removal();
     Ok(true)
 }
 pub fn delete_history_range(path: &Path, start: u64, end: u64) -> std::io::Result<usize> {
@@ -877,7 +892,8 @@ pub fn delete_history_range(path: &Path, start: u64, end: u64) -> std::io::Resul
     entries.retain(|(t, _, _)| *t < start || *t > end);
     let count = n - entries.len();
     if count > 0 {
-        write_history(path, &entries)?
+        write_history(path, &entries)?;
+        note_history_removal();
     }
     Ok(count)
 }
@@ -894,7 +910,8 @@ pub fn delete_history_for_host(path: &Path, host: &str) -> std::io::Result<usize
     });
     let count = n - entries.len();
     if count > 0 {
-        write_history(path, &entries)?
+        write_history(path, &entries)?;
+        note_history_removal();
     }
     Ok(count)
 }
@@ -903,7 +920,9 @@ pub fn clear_history(path: &Path) -> std::io::Result<()> {
     // Visits still queued were made before the clear.
     lock_history(&PENDING_HISTORY).retain(|(queued, _)| queued != path);
     forget_history(path);
-    atomic_write(path, b"")
+    atomic_write(path, b"")?;
+    note_history_removal();
+    Ok(())
 }
 pub fn search_history(path: &Path, query: &str, limit: usize) -> Vec<HistoryEntry> {
     search_entries(read_history(path), query, limit)

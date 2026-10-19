@@ -91,9 +91,15 @@ impl PrivacyStats {
             return;
         };
 
-        if self.hosts.contains_key(&host) || self.hosts.len() < MAX_HOSTS {
-            increment(&mut self.hosts, host);
+        // A new site when the list is full takes the place of the least blocked one, so the
+        // list is never frozen on the first sites ever seen.
+        if !self.hosts.contains_key(&host)
+            && self.hosts.len() >= MAX_HOSTS
+            && let Some(least) = self.hosts.iter().min_by_key(|(name, count)| (**count, std::cmp::Reverse(name.as_str()))).map(|(name, _)| name.clone())
+        {
+            self.hosts.remove(&least);
         }
+        increment(&mut self.hosts, host);
 
         while self.days.len() > MAX_DAYS {
             if let Some(oldest) = self.days.keys().next().cloned() {
@@ -317,6 +323,22 @@ mod tests {
 
         assert!(stats.days().count() <= MAX_DAYS);
         assert!(stats.host_count() <= MAX_HOSTS);
+    }
+
+    #[test]
+    fn a_new_site_is_still_counted_once_the_site_list_is_full() {
+        let mut stats = PrivacyStats::default();
+        for host in 0..MAX_HOSTS {
+            stats.record_blocked("2026-10-11", &format!("h{host}.example"));
+        }
+        stats.record_blocked("2026-10-11", "h0.example");
+        for _ in 0..50 {
+            stats.record_blocked("2026-10-11", "new.example");
+        }
+        assert_eq!(stats.host_total("new.example"), 50, "the current site shows 0 for good");
+        assert_eq!(stats.top_sites(5)[0], ("new.example", 50));
+        assert_eq!(stats.host_total("h0.example"), 2, "the busier site stays");
+        assert_eq!(stats.host_count(), MAX_HOSTS);
     }
 
     #[test]
