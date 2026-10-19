@@ -284,6 +284,10 @@ struct ShortcutForward {
     ctrl: bool,
     shift: bool,
     alt: bool,
+    /// False for an auto-repeat of a toggle (`shortcuts::is_toggle`): the key is still consumed, so
+    /// the page never sees part of a browser chord, but the command does not run again. The chrome
+    /// path does the same in `accel_command_gated`.
+    run: bool,
 }
 
 impl ShortcutForward {
@@ -305,18 +309,21 @@ fn shortcut_forward(
     alt: bool,
     gated: shortcuts::GatedChords,
 ) -> Option<ShortcutForward> {
-    shortcut_forward_on_page(key, kind, ctrl, shift, alt, gated, || None)
+    shortcut_forward_on_page(key, kind, ctrl, shift, alt, false, gated, || None)
 }
 
 /// [`shortcut_forward`] for a page whose host `page_host` reads only when a site list exists: a site
 /// that prioritises its own shortcuts keeps every key but the browser priority list
-/// (`crate::commands`), and a typing key is never a shortcut from a page.
+/// (`crate::commands`), and a typing key is never a shortcut from a page. `repeat` is the
+/// event's `WasKeyDown`: a held toggle chord runs once (see [`ShortcutForward::run`]).
+#[allow(clippy::too_many_arguments)]
 fn shortcut_forward_on_page(
     key: u32,
     kind: COREWEBVIEW2_KEY_EVENT_KIND,
     ctrl: bool,
     shift: bool,
     alt: bool,
+    repeat: bool,
     gated: shortcuts::GatedChords,
     page_host: impl Fn() -> Option<String>,
 ) -> Option<ShortcutForward> {
@@ -331,12 +338,13 @@ fn shortcut_forward_on_page(
         typing: false,
         host: host.as_deref(),
     };
-    crate::commands::resolve_in(&live, key, ctrl, shift, alt, &context)?;
+    let command = crate::commands::resolve_in(&live, key, ctrl, shift, alt, &context)?;
     Some(ShortcutForward {
         key,
         ctrl,
         shift,
         alt,
+        run: !(repeat && shortcuts::is_toggle(command)),
     })
 }
 
@@ -5171,6 +5179,8 @@ unsafe fn configure_controller(
                     let mut kind = COREWEBVIEW2_KEY_EVENT_KIND::default();
                     let _ = args.VirtualKey(&mut key);
                     let _ = args.KeyEventKind(&mut kind);
+                    let mut status = COREWEBVIEW2_PHYSICAL_KEY_STATUS::default();
+                    let repeat = args.PhysicalKeyStatus(&mut status).is_ok() && status.WasKeyDown.as_bool();
                     let ctrl = GetKeyState(VK_CONTROL.0 as i32) < 0;
                     let shift = GetKeyState(VK_SHIFT.0 as i32) < 0;
                     let alt = GetKeyState(VK_MENU.0 as i32) < 0;
@@ -5182,15 +5192,17 @@ unsafe fn configure_controller(
                     }
                     // A user can bind a gated command to any chord, so the gates are read for every key.
                     let gated = win32::gated_chords(parent);
-                    if let Some(forward) = shortcut_forward_on_page(key, kind, ctrl, shift, alt, gated, || {
+                    if let Some(forward) = shortcut_forward_on_page(key, kind, ctrl, shift, alt, repeat, gated, || {
                         current_web_url(&key_webview).and_then(|url| url.host_str().map(str::to_owned))
                     }) {
-                        win32::post(
-                            parent,
-                            win32::WM_SHORTCUT_KEY,
-                            WPARAM(forward.key as usize),
-                            LPARAM(forward.modifier_bits()),
-                        );
+                        if forward.run {
+                            win32::post(
+                                parent,
+                                win32::WM_SHORTCUT_KEY,
+                                WPARAM(forward.key as usize),
+                                LPARAM(forward.modifier_bits()),
+                            );
+                        }
                         let _ = args.SetHandled(true);
                     }
                 }
@@ -6699,7 +6711,36 @@ mod tests {
             ctrl,
             shift,
             alt,
+            run: true,
         })
+    }
+
+    #[test]
+    fn a_held_toggle_chord_on_a_page_runs_once_but_other_chords_repeat() {
+        let down = COREWEBVIEW2_KEY_EVENT_KIND_KEY_DOWN;
+        let held = |key, ctrl, shift, alt, repeat| {
+            super::shortcut_forward_on_page(key, down, ctrl, shift, alt, repeat, shortcuts::GatedChords::default(), || None)
+        };
+        for (key, ctrl, shift, alt, name) in [
+            (0x54, true, true, false, "Ctrl+Shift+T reopen closed tab"),
+            (0x7B, false, false, false, "F12 DevTools"),
+            (0x49, true, true, false, "Ctrl+Shift+I DevTools"),
+            (0x52, true, false, true, "Ctrl+Alt+R reader"),
+            (0x53, true, true, false, "Ctrl+Shift+S capture"),
+            (0x7A, false, false, false, "F11 full screen"),
+        ] {
+            assert_eq!(held(key, ctrl, shift, alt, false), forward(key, ctrl, shift, alt), "{name}: first press");
+            let repeat = held(key, ctrl, shift, alt, true).unwrap_or_else(|| panic!("{name}: a repeat must still be consumed"));
+            assert!(!repeat.run, "{name}: an auto-repeat must not run the toggle again");
+        }
+        // Non-toggle chords keep repeating while held, as in the chrome path.
+        for (key, ctrl, shift, alt, name) in [
+            (0xBB, true, false, false, "Ctrl+Plus zoom in"),
+            (0x09, true, false, false, "Ctrl+Tab next tab"),
+            (0x74, false, false, false, "F5 reload"),
+        ] {
+            assert_eq!(held(key, ctrl, shift, alt, true), forward(key, ctrl, shift, alt), "{name}");
+        }
     }
 
     /// The ungated filter: every setting-gated chord is off, as when the app cannot be reached.
