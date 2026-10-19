@@ -183,8 +183,8 @@ pub fn display_host(url: &str) -> String {
 
 /// Converts a point in CSS pixels of a view whose top-left corner is at `origin` (screen pixels)
 /// to screen pixels at `scale` (device pixels per CSS pixel).
-pub fn css_to_screen(origin: (i32, i32), scale: f32, x: u32, y: u32) -> (i32, i32) {
-    let to_px = |value: u32| (value as f32 * scale).round() as i32;
+pub fn css_to_screen(origin: (i32, i32), scale: f32, x: i32, y: i32) -> (i32, i32) {
+    let to_px = |value: i32| (value as f32 * scale).round() as i32;
     (origin.0.saturating_add(to_px(x)), origin.1.saturating_add(to_px(y)))
 }
 
@@ -282,6 +282,8 @@ mod tests {
         assert_eq!(display_host("not a url"), "");
         assert_eq!(css_to_screen((100, 50), 1.5, 10, 20), (115, 80));
         assert_eq!(css_to_screen((i32::MAX - 1, 0), 2.0, 16_384, 0), (i32::MAX, 0));
+        // A sidebar at the right: the page is left of the view.
+        assert_eq!(css_to_screen((1000, 50), 1.5, -100, 20), (850, 80));
     }
 
     #[test]
@@ -300,6 +302,10 @@ mod tests {
             ok(r#"{"v":1,"t":"split","a":"over","id":2,"x":0,"y":16384}"#),
             SplitCommand::DragOver { id: 2, x: 0, y: 16384 }
         );
+        assert_eq!(
+            ok(r#"{"v":1,"t":"split","a":"over","id":2,"x":-300,"y":-16384}"#),
+            SplitCommand::DragOver { id: 2, x: -300, y: -16384 }
+        );
         assert_eq!(ok(r#"{"v":1,"t":"split","a":"drop","id":2}"#), SplitCommand::Drop { id: 2 });
         assert_eq!(ok(r#"{"v":1,"t":"split","a":"end","id":2}"#), SplitCommand::DragEnd { id: 2 });
         for raw in [
@@ -313,6 +319,8 @@ mod tests {
             r#"{"v":1,"t":"split","a":"closeprivate","n":1}"#,
             r#"{"v":1,"t":"split","a":"closePrivate"}"#,
             r#"{"v":1,"t":"split","a":"over","id":2,"x":16385,"y":0}"#,
+            r#"{"v":1,"t":"split","a":"over","id":2,"x":-16385,"y":0}"#,
+            r#"{"v":1,"t":"split","a":"over","id":2,"x":1.5,"y":0}"#,
             r#"{"v":1,"t":"split","a":"over","id":2,"x":1}"#,
             r#"{"v":1,"t":"split","a":"Pick","id":4}"#,
             r#"{"v":1,"t":"split","a":"swap"}"#,

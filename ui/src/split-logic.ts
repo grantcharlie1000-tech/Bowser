@@ -187,14 +187,20 @@ export function splitGlyph(pair: PairMsg | null): 'split' | PlaceGlyph {
   return PLACE_GLYPH[roleEdge(live.f, live)];
 }
 
-/** Whether the pointer (CSS px in the tab view) has left the strip downwards, onto the page. */
-export function overPage(clientY: number, stripBottom: number): boolean {
-  return clientY > stripBottom + DRAG_OUT_PX;
+/**
+ * Whether the pointer (CSS px in the tab view) has left the strip onto the page: downwards, or
+ * upwards when the strip runs along the bottom of the window (`atBottom`).
+ */
+export function overPage(clientY: number, strip: { readonly top: number; readonly bottom: number }, atBottom = false): boolean {
+  return atBottom ? clientY < strip.top - DRAG_OUT_PX : clientY > strip.bottom + DRAG_OUT_PX;
 }
 
-/** Whether the pointer (CSS px in the tab view) has left the vertical sidebar to the right, onto the page. */
-export function overPageBeside(clientX: number, sidebarRight: number): boolean {
-  return clientX > sidebarRight + DRAG_OUT_PX;
+/**
+ * Whether the pointer (CSS px in the tab view) has left the vertical sidebar onto the page: to the
+ * right, or to the left when the sidebar is docked at the right (`atRight`).
+ */
+export function overPageBeside(clientX: number, sidebar: { readonly left: number; readonly right: number }, atRight = false): boolean {
+  return atRight ? clientX < sidebar.left - DRAG_OUT_PX : clientX > sidebar.right + DRAG_OUT_PX;
 }
 
 /**
@@ -216,7 +222,8 @@ export function dropCard(side: SplitAt): { readonly label: string; readonly glyp
 
 /** Clamps a drag point into the wire range (the view may report negative or fractional values). */
 export function wirePoint(x: number, y: number): { x: number; y: number } {
-  const clamp = (v: number): number => Math.min(16384, Math.max(0, Math.round(Number.isFinite(v) ? v : 0)));
+  // Signed: with the sidebar at the right or the strip at the bottom, the page is left of or above the view.
+  const clamp = (v: number): number => Math.min(16384, Math.max(-16384, Math.round(Number.isFinite(v) ? v : 0)));
   return { x: clamp(x), y: clamp(y) };
 }
 

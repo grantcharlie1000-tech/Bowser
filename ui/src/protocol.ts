@@ -504,7 +504,8 @@ export interface PanelShowMsg { readonly t: 'panelshow'; readonly p: PanelToken 
 export interface FlyoutMsg { readonly t: 'flyout'; readonly caret: number }
 export const MAX_FLYOUT_CARET = 4000;
 // --- end rail flyouts ---
-export interface LayoutMsg { readonly t: 'layout'; readonly mode: 'vertical' | 'horizontal' }
+/** `side` is the far side the tabs sit on (`right` for a vertical sidebar, `bottom` for a strip); absent, the near one. */
+export interface LayoutMsg { readonly t: 'layout'; readonly mode: 'vertical' | 'horizontal'; readonly side?: 'right' | 'bottom' }
 // --- tab options ---
 export const LOAD_INDICATORS = ['spinner', 'bar', 'favicon', 'none'] as const;
 export type LoadIndicator = typeof LOAD_INDICATORS[number];
@@ -1153,8 +1154,11 @@ export function parseInbound(data: unknown): Inbound | null {
     }
     // --- end rail flyouts ---
     case 'layout': {
-      if (!hasOnlyKeys(raw, ['v', 't', 'mode']) || raw.v !== 1 || !isOneOf(raw.mode, ['vertical', 'horizontal'] as const)) return null;
-      return { t: 'layout', mode: raw.mode };
+      if (!hasOnlyKeys(raw, ['v', 't', 'mode', 'side']) || raw.v !== 1 || !isOneOf(raw.mode, ['vertical', 'horizontal'] as const)) return null;
+      if (raw.side === undefined) return { t: 'layout', mode: raw.mode };
+      const far = raw.mode === 'vertical' ? 'right' : 'bottom';
+      if (raw.side !== far) return null;
+      return { t: 'layout', mode: raw.mode, side: far };
     }
     // --- vertical sidebar (lane S) ---
     case 'workspace': {

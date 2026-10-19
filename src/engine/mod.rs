@@ -6,6 +6,8 @@ mod extension_links;
 mod document_gate;
 mod webview2;
 #[cfg(test)]
+mod capture_zoom_live;
+#[cfg(test)]
 mod extension_probe_live;
 #[cfg(all(test, feature = "experimental-engine-context-menu"))]
 pub(crate) mod app_context_menu_probe;

@@ -41,9 +41,14 @@ export function stripBand(strip: Rectish): Band {
   return { left: -Infinity, top: strip.top, right: Infinity, bottom: strip.bottom };
 }
 
-/** The vertical sidebar: only its right edge (towards the page) detaches; up and down auto-scroll. */
-export function sidebarBand(sidebar: Rectish): Band {
-  return { left: -Infinity, top: -Infinity, right: sidebar.right, bottom: Infinity };
+/**
+ * The vertical sidebar: only its edge towards the page detaches (the right edge, or the left one when
+ * the sidebar is docked at the right, `atRight`); up and down auto-scroll.
+ */
+export function sidebarBand(sidebar: Rectish, atRight = false): Band {
+  return atRight
+    ? { left: sidebar.left, top: -Infinity, right: Infinity, bottom: Infinity }
+    : { left: -Infinity, top: -Infinity, right: sidebar.right, bottom: Infinity };
 }
 
 /** How far (px) the point is outside the band; 0 inside. */

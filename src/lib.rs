@@ -34,7 +34,6 @@ pub mod notes_book; // notes: folders, sort, markdown, export and import (T7)
 pub mod passwords;
 pub mod performance;
 pub mod permissions;
-pub mod pip;
 pub mod privacy_stats;
 pub mod private;
 pub mod productivity;

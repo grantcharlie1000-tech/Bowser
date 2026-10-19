@@ -273,12 +273,19 @@ pub fn reload_due(minutes: u8, since: Duration) -> bool {
     minutes > 0 && since >= Duration::from_secs(u64::from(minutes.min(MAX_RELOAD_MINUTES)) * 60)
 }
 
-/// The unread count a page title announces: a leading or trailing `(N)` or `[N]`, 1 to 999.
+/// The unread count a page title announces: a leading or trailing `(N)` or `[N]`, 1 to 999, or a
+/// larger count written with thousands separators as Gmail does (`(1,234)`).
 pub fn title_notifications(title: &str) -> u32 {
     let title = title.trim();
+    let group = |text: &str, sizes: std::ops::RangeInclusive<usize>| {
+        sizes.contains(&text.len()) && text.bytes().all(|b| b.is_ascii_digit())
+    };
     let digits = |inner: &str| -> Option<u32> {
-        (!inner.is_empty() && inner.len() <= 3 && inner.bytes().all(|b| b.is_ascii_digit()))
-            .then(|| inner.parse::<u32>().ok())
+        let mut groups = inner.split(',');
+        let lead = groups.next()?;
+        let rest: Vec<&str> = groups.collect();
+        (group(lead, 1..=3) && rest.len() <= 2 && rest.iter().all(|g| group(g, 3..=3)))
+            .then(|| inner.replace(',', "").parse::<u32>().ok())
             .flatten()
             .filter(|count| *count > 0)
     };
@@ -405,6 +412,13 @@ mod tests {
             assert_eq!(title_notifications(title), count, "{title}");
         }
         for title in ["Inbox", "(0) Inbox", "(1000) Inbox", "(a) Inbox", "()", "Windows (R) 11", "2024 report", "(3", "Version (1.2)"] {
+            assert_eq!(title_notifications(title), 0, "{title}");
+        }
+        // P-22: Gmail writes large counts with separators; the badge must not vanish.
+        for (title, count) in [("(1,234) Inbox", 1_234), ("Inbox (12,345)", 12_345), ("[1,000,000] Chat", 1_000_000)] {
+            assert_eq!(title_notifications(title), count, "{title}");
+        }
+        for title in ["(1,23) Inbox", "(,123) Inbox", "(1234,567) Inbox", "(1,2345) Inbox", "(0,000) Inbox", "Pages (1,2)"] {
             assert_eq!(title_notifications(title), 0, "{title}");
         }
     }

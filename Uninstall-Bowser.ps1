@@ -31,12 +31,57 @@ $installedExe = Join-Path $InstallDirectory 'Bowser.exe'
 $uninstallKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\$RegistryKeyName"
 $userDataKept = $true
 
+# True when $Candidate names the file $Expected. Never throws: Windows PowerShell's GetFullPath
+# rejects shortcut targets such as 'https://...' or 'shell:AppsFolder\...', and one odd pinned
+# shortcut must not abort an uninstall that has already removed files.
+function Test-SameFilePath {
+    param([string]$Candidate, [string]$Expected)
+    if ([string]::IsNullOrWhiteSpace($Candidate) -or [string]::IsNullOrWhiteSpace($Expected)) { return $false }
+    try {
+        return [string]::Equals([IO.Path]::GetFullPath($Candidate), [IO.Path]::GetFullPath($Expected), [StringComparison]::OrdinalIgnoreCase)
+    }
+    catch {
+        return $false
+    }
+}
+
+# The program a shell\open\command value runs: the quoted first token, or the first word.
+function Get-CommandProgram {
+    param([string]$Command)
+    if ([string]::IsNullOrWhiteSpace($Command)) { return $null }
+    $text = $Command.Trim()
+    if ($text.StartsWith('"')) {
+        $end = $text.IndexOf('"', 1)
+        if ($end -lt 1) { return $null }
+        return $text.Substring(1, $end - 1)
+    }
+    return ($text -split '\s+', 2)[0]
+}
+
+# Removes the default-browser registration Bowser writes under HKCU (src/default_browser.rs),
+# but only when it launches this installation's executable: a Dev build that registered itself
+# keeps its own registration.
+function Remove-BowserBrowserRegistration {
+    param([string]$Executable)
+    $client = 'HKCU:\Software\Clients\StartMenuInternet\Bowser'
+    $progId = 'HKCU:\Software\Classes\Bowser.HTML'
+    foreach ($key in @($client, $progId)) {
+        $commandKey = Join-Path $key 'shell\open\command'
+        if (-not (Test-Path -LiteralPath $commandKey)) { continue }
+        $command = (Get-Item -LiteralPath $commandKey).GetValue('')
+        if (-not (Test-SameFilePath -Candidate (Get-CommandProgram -Command $command) -Expected $Executable)) { continue }
+        Remove-Item -LiteralPath $key -Recurse -Force
+        if ($key -eq $client) {
+            Remove-ItemProperty -LiteralPath 'HKCU:\Software\RegisteredApplications' -Name 'Bowser' -ErrorAction SilentlyContinue
+        }
+    }
+}
+
 function Get-InstalledBowserProcesses {
     $expected = [IO.Path]::GetFullPath($installedExe)
     @(Get-CimInstance Win32_Process -Filter "Name='Bowser.exe'" -ErrorAction Stop |
         Where-Object {
-            -not [string]::IsNullOrWhiteSpace($_.ExecutablePath) -and
-            [string]::Equals([IO.Path]::GetFullPath($_.ExecutablePath), $expected, [StringComparison]::OrdinalIgnoreCase)
+            Test-SameFilePath -Candidate $_.ExecutablePath -Expected $expected
         })
 }
 
@@ -57,6 +102,7 @@ try {
     if ($remaining.Count -gt 0) {
         throw 'Bowser did not close gracefully. Close the application and run the uninstaller again; no process was terminated.'
     }
+    Remove-BowserBrowserRegistration -Executable $installedExe
 
     if (Test-Path -LiteralPath $InstallDirectory -PathType Container) {
         $item = Get-Item -LiteralPath $InstallDirectory -Force
@@ -79,9 +125,14 @@ try {
         ForEach-Object FullName
     foreach ($shortcutPath in ($shortcutCandidates | Sort-Object -Unique)) {
         if (-not (Test-Path -LiteralPath $shortcutPath -PathType Leaf)) { continue }
-        $target = $shell.CreateShortcut($shortcutPath).TargetPath
-        if ([string]::IsNullOrWhiteSpace($target)) { continue }
-        if ([string]::Equals([IO.Path]::GetFullPath($target), $installedExe, [StringComparison]::OrdinalIgnoreCase)) {
+        try {
+            $target = $shell.CreateShortcut($shortcutPath).TargetPath
+        }
+        catch {
+            Write-Host "Skipping a shortcut that could not be read: $shortcutPath"
+            continue
+        }
+        if (Test-SameFilePath -Candidate $target -Expected $installedExe) {
             Remove-Item -LiteralPath $shortcutPath -Force
         }
     }

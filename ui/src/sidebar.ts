@@ -225,7 +225,12 @@ export function createSidebarRenderer(root: HTMLElement): {
   render(msg: TabsMsg, favs: ReadonlyMap<number, string>, workspace: SidebarWorkspace): void;
   workspace(value: SidebarWorkspace): void;
   options(value: TabOptsMsg): void; // --- tab options ---
+  /** Drops the selection (the layout switched away, so it can no longer be seen). */
+  clearSelection(): void;
+  /** Whether the sidebar is docked at the right of the window (the page is to its left). */
+  side(right: boolean): void;
 } {
+  let sideRight = false;
   const tabs = new Map<number, SidebarTabNode>();
   const groups = new Map<number, SidebarGroupNode>();
   let latest: TabsMsg | null = null;
@@ -562,7 +567,7 @@ export function createSidebarRenderer(root: HTMLElement): {
     const dy = current.lastY - current.startY;
     const ghosted = current.ghost?.live === true;
     const box = root.getBoundingClientRect();
-    const phase = nextPhase(current.phase, sidebarBand(box), current.lastX, current.lastY);
+    const phase = nextPhase(current.phase, sidebarBand(box, sideRight), current.lastX, current.lastY);
     if (phase !== current.phase) {
       current.phase = phase;
       current.ghost?.phase(phase === 'floating');
@@ -571,7 +576,7 @@ export function createSidebarRenderer(root: HTMLElement): {
     // --- split view ---
     // Off the sidebar to the right the tab is over the page: the rows keep their order and Rust shows
     // where the tab would open (one report per frame); back on the sidebar the reorder resumes.
-    const out = phase === 'floating' && overPageBeside(current.lastX, box.right);
+    const out = phase === 'floating' && overPageBeside(current.lastX, box, sideRight);
     if (out !== splitOut) {
       splitOut = out;
       root.classList.toggle('split-out', out);
@@ -825,6 +830,8 @@ export function createSidebarRenderer(root: HTMLElement): {
   root.addEventListener('lostpointercapture', (event) => { if (drag?.pointerId === event.pointerId) endDrag(false); });
   root.addEventListener('keydown', (event) => {
     if (!(event.target instanceof Element)) return;
+    // --- tab options --- Escape drops the selection, as in the strip.
+    if (event.key === 'Escape' && picked.length > 0) { event.preventDefault(); setPicked([]); return; }
     const row = event.target.closest<HTMLElement>('.side-tab, .side-group');
     if (!row || event.target.closest('.side-close')) return;
     const order = rowsOf();
@@ -892,6 +899,12 @@ export function createSidebarRenderer(root: HTMLElement): {
       closedRow.hidden = value.closed === 0 || !value.closedButton; // --- toolbars and feeds (thread T13) ---
       syncTools(value.tools);
       if (!selectionOn && picked.length > 0) setPicked([]);
+    },
+    clearSelection() {
+      if (picked.length > 0) setPicked([]);
+    },
+    side(right) {
+      sideRight = right;
     },
     // --- end tab options ---
   };

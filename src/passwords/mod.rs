@@ -522,6 +522,8 @@ impl PasswordStore {
         if table.len().saturating_sub(1) > MAX_IMPORT_ROWS {
             return Err(PasswordError::TooManyRows);
         }
+        // A blank line is not a login, so it is not a rejected row either.
+        table.retain(|fields| !(fields.len() == 1 && fields[0].trim().is_empty()));
         let parsed = table.iter().map(|fields| {
             ParsedCredential::new(
                 fields
@@ -1371,6 +1373,20 @@ mod tests {
         assert_eq!(p.rows()[1].classification, Classification::Conflict);
         assert_eq!(p.rows()[2].classification, Classification::New);
         assert!(!format!("{p:?}").contains("synthetic-secret-731"));
+    }
+
+    /// P-24: blank lines between rows or at the end are skipped, not reported as failed rows.
+    #[test]
+    fn blank_csv_lines_are_not_rejected_rows() {
+        let s = store();
+        let csv = b"url,username,password\r\n\r\nhttps://one.test,a,secret-1\n\nhttps://two.test,b,secret-2\r\n\r\n";
+        let p = s.preview_csv(csv).unwrap();
+        let classes: Vec<_> = p.rows().iter().map(|row| row.classification).collect();
+        assert_eq!(classes, [Classification::New, Classification::New]);
+        // A row with fields that are all empty is still a row, and still rejected.
+        let p = s.preview_csv(b"url,username,password\n,,\n").unwrap();
+        assert_eq!(p.rows().len(), 1);
+        assert_eq!(p.rows()[0].classification, Classification::Reject);
     }
 
     #[test]

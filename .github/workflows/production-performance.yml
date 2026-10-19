@@ -37,6 +37,10 @@ concurrency:
   cancel-in-progress: true
 jobs:
   baseline:
+    # Measurement-branch checks: pull_request runs check out the PR head, which
+    # for other branches may predate these benchmark inputs. Push and dispatch
+    # runs are unchanged.
+    if: github.event_name != 'pull_request' || github.head_ref == 'performance/post-ui'
     runs-on: windows-2025
     timeout-minutes: 45
     defaults:

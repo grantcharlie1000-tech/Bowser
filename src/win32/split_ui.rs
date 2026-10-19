@@ -769,7 +769,7 @@ fn edge_drop_enabled(app: &AppRef) -> bool {
 /// The edge zone of the page under the dragged tab (`split_view::drop_zone`, which keeps `previous`
 /// near the diagonals and in the middle), or `None` when the pointer is not over the page or the
 /// drop would change nothing (a half dropped where it already is).
-fn drop_target(owner: HWND, app: &AppRef, tab: TabId, x: u32, y: u32, previous: Option<DropZone>, intent: &mut crate::drop_intent::DropIntent) -> Option<DropZone> {
+fn drop_target(owner: HWND, app: &AppRef, tab: TabId, x: i32, y: i32, previous: Option<DropZone>, intent: &mut crate::drop_intent::DropIntent) -> Option<DropZone> {
     if !edge_drop_enabled(app) {
         return None;
     }
@@ -1209,7 +1209,7 @@ mod tests {
 mod queue_tests {
     use super::*;
 
-    fn over(x: u32) -> SplitCommand {
+    fn over(x: i32) -> SplitCommand {
         SplitCommand::DragOver { id: 3, x, y: 400 }
     }
 
