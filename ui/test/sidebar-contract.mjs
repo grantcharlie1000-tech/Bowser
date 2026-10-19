@@ -24,6 +24,13 @@ test('Rust vertical-sidebar fixture messages parse with the strict TS protocol',
   assert.deepEqual(parseInbound(fixture.workspace), { t: 'workspace', name: 'Work & Play', icon: 'g:code' });
 });
 
+test('layout names the far side the tabs sit on, and only a side that fits the mode', () => {
+  assert.deepEqual(parseInbound('{"v":1,"t":"layout","mode":"vertical","side":"right"}'), { t: 'layout', mode: 'vertical', side: 'right' });
+  assert.deepEqual(parseInbound('{"v":1,"t":"layout","mode":"horizontal","side":"bottom"}'), { t: 'layout', mode: 'horizontal', side: 'bottom' });
+  assert.equal(parseInbound('{"v":1,"t":"layout","mode":"vertical","side":"bottom"}'), null);
+  assert.equal(parseInbound('{"v":1,"t":"layout","mode":"horizontal","side":"left"}'), null);
+});
+
 test('workspace sidebar metadata rejects extra, unsafe, and malformed fields', () => {
   assert.equal(parseInbound('{"v":1,"t":"workspace","name":"Work","icon":"g:code","extra":1}'), null);
   assert.equal(parseInbound('{"v":1,"t":"workspace","name":"Work","icon":"javascript:alert(1)"}'), null);

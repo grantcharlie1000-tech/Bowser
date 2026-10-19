@@ -211,7 +211,7 @@ export function validSplitCommand(cmd: SplitCommand): boolean {
     case 'closeprivate':
       return exactKeys(cmd, ['v', 't', 'a']);
     case 'over':
-      return exactKeys(cmd, ['v', 't', 'a', 'id', 'x', 'y']) && isInt(cmd.id, 1, MAX_ID) && isInt(cmd.x, 0, MAX_SPLIT_COORD) && isInt(cmd.y, 0, MAX_SPLIT_COORD);
+      return exactKeys(cmd, ['v', 't', 'a', 'id', 'x', 'y']) && isInt(cmd.id, 1, MAX_ID) && isInt(cmd.x, -MAX_SPLIT_COORD, MAX_SPLIT_COORD) && isInt(cmd.y, -MAX_SPLIT_COORD, MAX_SPLIT_COORD);
     default:
       return false;
   }

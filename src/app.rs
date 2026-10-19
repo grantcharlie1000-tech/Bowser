@@ -1325,6 +1325,8 @@ impl App {
         name: &str,
     ) -> std::result::Result<crate::workspaces::WorkspaceId, crate::workspaces::WorkspaceError>
     {
+        // A refused name (the composer relies on "already exists") must not leave a new tab behind.
+        app.borrow().workspaces.check_new(name)?;
         let tab = Self::new_tab(app);
         let id = {
             let mut state = app.borrow_mut();
@@ -2127,7 +2129,12 @@ impl App {
                         })
                 })
                 .unwrap_or(0);
-            if !state.tab_model.move_tab(id, target) {
+            // The model keeps pinned tabs first, so it may clamp or refuse the move; the workspace
+            // order (the strip) follows whatever it did rather than keep the asked-for place.
+            let moved = state.tab_model.move_tab(id, target);
+            let model_order = state.tab_model.iter().map(|tab| tab.id).collect::<Vec<_>>();
+            state.workspaces.sync_order(&model_order);
+            if !moved {
                 return false;
             }
             let tab = state.tabs.remove(index);
@@ -5134,8 +5141,16 @@ impl App {
         store.begin_run(accepted.as_ref());
         self.pending_restore = accepted.map(|offer| offer.session);
         if self.pending_restore.is_none() {
+            // Nothing restored: the file's tab ids are the last run's, so every workspace keeps its
+            // name, icon and colour on a fresh blank tab, and this run's first tab stays in the
+            // workspace that was active.
             let active = self.tab_model.active();
-            self.workspaces.reconcile(&[active], active);
+            let (model, tabs) = (&mut self.tab_model, &mut self.tabs);
+            self.workspaces.rebind(&[], &[active], active, || {
+                let id = model.add(false);
+                tabs.push(AppTab::empty(id));
+                id
+            });
         }
         self.session = crate::session::SessionWriter::new(store).ok();
         true
@@ -5253,8 +5268,14 @@ impl App {
             }
             let ids = state.tab_model.iter().map(|tab| tab.id).collect::<Vec<_>>();
             let active = state.tab_model.active();
-            state.workspaces.remap_session_order(&ids);
-            state.workspaces.reconcile(&ids, active);
+            // `restored_ids` lines up with the saved session (and so with `order=`) by position.
+            let state = &mut *state;
+            let (model, tabs) = (&mut state.tab_model, &mut state.tabs);
+            state.workspaces.rebind(&restored_ids, &ids, active, || {
+                let id = model.add(false);
+                tabs.push(AppTab::empty(id));
+                id
+            });
             state.hwnd
         };
         let Some(url) = active_url else {
@@ -5367,15 +5388,20 @@ impl App {
             return;
         }
         state.session_save_pending = false;
+        let mut saved = false;
         if let Some(snapshot) = snapshot {
             if state.last_session_snapshot.as_ref() != Some(&snapshot)
                 && let Some(store) = state.session.as_ref()
             {
                 store.save(snapshot.clone());
                 state.last_session_snapshot = Some(snapshot);
+                saved = true;
             }
         }
-        let dirty = std::mem::take(&mut state.workspaces_dirty);
+        // `order=` in the workspace file pairs workspace members with session tabs by position, so
+        // it is written with every session save (a navigation from a New Tab page adds a session
+        // tab without any workspace change). An unchanged file is not rewritten.
+        let dirty = std::mem::take(&mut state.workspaces_dirty) || saved;
         drop(state);
         if dirty {
             Self::save_workspaces_now(app);
@@ -7722,6 +7748,7 @@ mod tests {
     mod page_tools_flow; // --- page tools (T7) ---
     mod theme_flow; // --- theme options ---
     mod stack_flow; // --- tab stacks, tiling and workspaces (T10) ---
+    mod workspace_restore; // workspaces across a restart, refused moves and creates
 
     #[test]
     fn reader_probe_due_table() {

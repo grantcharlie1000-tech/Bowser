@@ -182,8 +182,10 @@ pub struct PanelFields {
     pub url: Option<String>,
 }
 
+/// The tab list's form, and whether it sits on the far side of the page (a sidebar at the right, or a
+/// strip along the bottom), where a tab is dragged left or up onto the page.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum LayoutMode { Vertical, Horizontal }
+pub enum LayoutMode { Vertical { right: bool }, Horizontal { bottom: bool } }
 pub fn layout_needs_sync(cached: Option<LayoutMode>, current: LayoutMode) -> bool {
     cached != Some(current)
 }
@@ -391,7 +393,7 @@ pub enum Command {
 /// Most rows the empty side lists under "Recently closed"; `reopen` names one by index.
 pub const MAX_SPLIT_CLOSED: u32 = 8;
 /// Largest drag coordinate accepted from the tab strip, in CSS pixels of that view.
-pub const MAX_SPLIT_COORD: u32 = 16_384;
+pub const MAX_SPLIT_COORD: i32 = 16_384;
 
 /// One validated split-view command. Tab ids are wire ids (`TabId + 1`); Rust checks every id
 /// against the live model before acting.
@@ -409,9 +411,9 @@ pub enum SplitCommand {
     Focus,
     /// The private landing's "Close all private tabs" (docs/design/private-tabs.md).
     ClosePrivate,
-    /// Tab `id` is being dragged at `x`,`y` (CSS pixels of the tab view; below the strip means over
-    /// the page).
-    DragOver { id: u32, x: u32, y: u32 },
+    /// Tab `id` is being dragged at `x`,`y` (CSS pixels of the tab view, negative left of or above
+    /// it; past the strip or sidebar edge towards the page means over the page).
+    DragOver { id: u32, x: i32, y: i32 },
     /// Tab `id` was released while the page showed a split drop target.
     Drop { id: u32 },
     /// The drag of tab `id` ended without a split drop.
@@ -434,9 +436,10 @@ fn split_command(fields: &[(String, Value)]) -> Result<SplitCommand, ProtocolErr
             return Err(ProtocolError::UnknownKey(name.to_owned()));
         }
     }
-    let coord = |name: &'static str| -> Result<u32, ProtocolError> {
-        let value = uint_field(fields, name)?;
-        if value > MAX_SPLIT_COORD { Err(ProtocolError::InvalidValue(name)) } else { Ok(value) }
+    // Signed: with the sidebar at the right or the strip at the bottom, the page is left of or above the view.
+    let coord = |name: &'static str| -> Result<i32, ProtocolError> {
+        let value = int_field(fields, name)?;
+        if value.unsigned_abs() > MAX_SPLIT_COORD.unsigned_abs() { Err(ProtocolError::InvalidValue(name)) } else { Ok(value) }
     };
     Ok(match a {
         "pick" => SplitCommand::Pick { id: uint_field(fields, "id")? },
@@ -1446,8 +1449,11 @@ pub fn flyout_json(caret: i32) -> String {
 }
 
 pub fn layout_json(mode: LayoutMode) -> String {
-    let mode = match mode { LayoutMode::Vertical => "vertical", LayoutMode::Horizontal => "horizontal" };
-    format!("{{\"v\":1,\"t\":\"layout\",\"mode\":\"{mode}\"}}")
+    let (mode, side) = match mode {
+        LayoutMode::Vertical { right } => ("vertical", if right { ",\"side\":\"right\"" } else { "" }),
+        LayoutMode::Horizontal { bottom } => ("horizontal", if bottom { ",\"side\":\"bottom\"" } else { "" }),
+    };
+    format!("{{\"v\":1,\"t\":\"layout\",\"mode\":\"{mode}\"{side}}}")
 }
 
 // --- vertical sidebar (lane S) ---
@@ -2647,7 +2653,7 @@ mod tests {
             set_text_json("https://example.test/😀", false),
             completion_json(9, ".test/"),
             panelshow_json("history").expect("panel token"),
-            layout_json(LayoutMode::Vertical),
+            layout_json(LayoutMode::Vertical { right: false }),
             snap,
         );
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -2665,8 +2671,8 @@ mod tests {
     fn sidebar_messages_match_own_committed_fixture() {
         let content = format!(
             "{{\"layoutVertical\":{},\"layoutHorizontal\":{},\"workspace\":{}}}\n",
-            layout_json(LayoutMode::Vertical),
-            layout_json(LayoutMode::Horizontal),
+            layout_json(LayoutMode::Vertical { right: false }),
+            layout_json(LayoutMode::Horizontal { bottom: false }),
             workspace_json("Work & Play", "g:code").expect("workspace glyph"),
         );
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -2681,9 +2687,9 @@ mod tests {
 
     #[test]
     fn layout_sync_is_required_after_mode_changes_and_host_ready() {
-        assert!(layout_needs_sync(None, LayoutMode::Vertical));
-        assert!(layout_needs_sync(Some(LayoutMode::Horizontal), LayoutMode::Vertical));
-        assert!(!layout_needs_sync(Some(LayoutMode::Vertical), LayoutMode::Vertical));
+        assert!(layout_needs_sync(None, LayoutMode::Vertical { right: false }));
+        assert!(layout_needs_sync(Some(LayoutMode::Horizontal { bottom: false }), LayoutMode::Vertical { right: false }));
+        assert!(!layout_needs_sync(Some(LayoutMode::Vertical { right: false }), LayoutMode::Vertical { right: false }));
     }
 
     #[test]
@@ -2760,8 +2766,12 @@ mod tests {
         assert_eq!(flyout_json(22), r#"{"v":1,"t":"flyout","caret":22}"#);
         assert_eq!(flyout_json(-1), r#"{"v":1,"t":"flyout","caret":-1}"#);
         assert_eq!(flyout_json(MAX_FLYOUT_CARET + 1), r#"{"v":1,"t":"flyout","caret":-1}"#);
-        assert_eq!(layout_json(LayoutMode::Vertical), r#"{"v":1,"t":"layout","mode":"vertical"}"#);
-        assert_eq!(layout_json(LayoutMode::Horizontal), r#"{"v":1,"t":"layout","mode":"horizontal"}"#);
+        assert_eq!(layout_json(LayoutMode::Vertical { right: false }), r#"{"v":1,"t":"layout","mode":"vertical"}"#);
+        assert_eq!(layout_json(LayoutMode::Horizontal { bottom: false }), r#"{"v":1,"t":"layout","mode":"horizontal"}"#);
+        // The far side rides only when the tabs are there, so the near-side shape is unchanged.
+        assert_eq!(layout_json(LayoutMode::Vertical { right: true }), r#"{"v":1,"t":"layout","mode":"vertical","side":"right"}"#);
+        assert_eq!(layout_json(LayoutMode::Horizontal { bottom: true }), r#"{"v":1,"t":"layout","mode":"horizontal","side":"bottom"}"#);
+        assert!(layout_needs_sync(Some(LayoutMode::Vertical { right: false }), LayoutMode::Vertical { right: true }));
         // --- vertical sidebar (lane S) ---
         assert_eq!(workspace_json("Work & Play", "g:code").as_deref(), Some(r#"{"v":1,"t":"workspace","name":"Work & Play","icon":"g:code"}"#));
         assert_eq!(workspace_json("Work", "javascript:alert(1)"), None);
