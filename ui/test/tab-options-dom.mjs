@@ -48,7 +48,7 @@ class Node {
     this.ownText = text; this.id = ''; this.type = ''; this.offsetTop = 0; this.offsetHeight = 34; this.offsetWidth = 120;
     this.scrollTop = 0; this.clientHeight = 800; this.clientWidth = 800; this.scrollHeight = 4000; this.scrollLeft = 0;
     const props = new Map();
-    this.style = { setProperty: (k, v) => (v === '' ? props.delete(k) : props.set(k, v)), getPropertyValue: (k) => props.get(k) ?? '', props };
+    this.style = { setProperty: (k, v) => (v === '' ? props.delete(k) : props.set(k, v)), removeProperty: (k) => props.delete(k), getPropertyValue: (k) => props.get(k) ?? '', props };
   }
   get textContent() { return this.ownText ?? this.children.map((c) => c.textContent).join(''); }
   set textContent(v) { this.children = []; this.ownText = null; if (v !== '') this.append(new Node('#text', String(v))); }
@@ -587,6 +587,23 @@ test('with selection off a Ctrl click is just a click', () => {
   tabNode(4).click({ ctrlKey: true });
   assert.deepEqual(sent, [{ v: 1, t: 'tab', a: 'select', id: 4 }]);
   deliver(opts({ selection: true }));
+});
+
+test('turning selection off, or switching layout, drops a selection the strip can no longer show', () => {
+  deliver(opts({ selection: true }));
+  tabNode(2).click();
+  tabNode(4).click({ ctrlKey: true });
+  sent.length = 0;
+  deliver(opts({ selection: false }));
+  assert.deepEqual(sent.filter((m) => m.t === 'tabsel'), [{ v: 1, t: 'tabsel', ids: '' }], 'option off: Rust drops it too');
+  deliver(opts({ selection: true }));
+  tabNode(4).click({ ctrlKey: true });
+  sent.length = 0;
+  deliver({ v: 1, t: 'layout', mode: 'vertical' });
+  assert.deepEqual(sent.filter((m) => m.t === 'tabsel'), [{ v: 1, t: 'tabsel', ids: '' }], 'the sidebar would not show it, so Rust must not keep it');
+  sent.length = 0;
+  deliver({ v: 1, t: 'layout', mode: 'horizontal' });
+  assert.deepEqual(sent.filter((m) => m.t === 'tabsel'), [], 'nothing left to drop');
 });
 
 test('a closed tab leaves the selection', () => {

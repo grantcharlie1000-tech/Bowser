@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [ValidateRange(1, 100)] [int] $Runs = 5,
     [ValidateRange(1, 3600)] [int] $IdleSeconds = 30,

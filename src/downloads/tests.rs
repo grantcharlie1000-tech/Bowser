@@ -1129,3 +1129,70 @@ fn downloads_messages_match_committed_fixture() {
         assert_eq!(std::fs::read_to_string(path).expect("committed downloads fixture"), content);
     }
 }
+
+/// P-05: two windows of one profile are two processes, each with its own manager on the same
+/// file. Neither may drop the other's entries, reuse its ids, or rewrite its finished or running
+/// downloads as "Interrupted".
+#[test]
+fn two_windows_on_one_profile_keep_each_others_downloads() {
+    let tmp = TempDir::new("twowindows");
+    let file = sample_file(&tmp);
+    let mut a = DownloadManager::open(&file);
+    let mut b = DownloadManager::open(&file);
+    let x = start(&mut a, 1, "x.bin", 100, NOON_MS);
+    // B was opened before A's download and starts its own while A's is still running.
+    let y = start(&mut b, 1, "y.bin", 100, NOON_MS + 1_000);
+    assert_ne!(x, y, "ids are shared through the file");
+    finish(&mut a, 1, 100, 100, NOON_MS + 2_000);
+    finish(&mut b, 1, 100, 100, NOON_MS + 3_000);
+
+    let reopened = DownloadManager::open(&file);
+    let names: Vec<&str> = reopened.entries().iter().map(|e| e.name.as_str()).collect();
+    assert_eq!(names, ["x.bin", "y.bin"]);
+    assert!(reopened.entries().iter().all(|e| e.state == State::Done), "{:?}", reopened.entries());
+    assert_eq!(reopened.next_id(), y.max(x) + 1);
+    // Each window's list picks the other's entry up as well.
+    assert_eq!(b.get(x).map(|e| e.state), Some(State::Done));
+}
+
+#[test]
+fn a_window_never_rewrites_a_download_another_window_is_running() {
+    let tmp = TempDir::new("foreignactive");
+    let file = sample_file(&tmp);
+    let mut a = DownloadManager::open(&file);
+    let x = start(&mut a, 1, "x.bin", 100, NOON_MS);
+    // B opens while X runs in A, so B shows it as interrupted, then B saves for its own reasons.
+    let mut b = DownloadManager::open(&file);
+    assert_eq!(b.get(x).unwrap().err, "Interrupted");
+    let y = start(&mut b, 1, "y.bin", 10, NOON_MS + 1_000);
+    finish(&mut b, 1, 10, 10, NOON_MS + 1_500);
+    finish(&mut a, 1, 100, 100, NOON_MS + 2_000);
+    let reopened = DownloadManager::open(&file);
+    assert_eq!(reopened.get(x).map(|e| (e.state, e.err.as_str())), Some((State::Done, "")));
+    assert_eq!(reopened.get(y).map(|e| e.state), Some(State::Done));
+}
+
+#[test]
+fn a_removal_in_one_window_is_not_undone_by_the_other() {
+    let tmp = TempDir::new("foreignremove");
+    let file = sample_file(&tmp);
+    let mut a = DownloadManager::open(&file);
+    let x = start(&mut a, 1, "x.bin", 10, NOON_MS);
+    finish(&mut a, 1, 10, 10, NOON_MS + 500);
+    let mut b = DownloadManager::open(&file);
+    assert!(a.remove(x));
+    // B still lists X; its next save must not bring X back.
+    start(&mut b, 1, "y.bin", 10, NOON_MS + 1_000);
+    let reopened = DownloadManager::open(&file);
+    assert!(reopened.get(x).is_none(), "{:?}", reopened.entries());
+    assert!(b.get(x).is_none());
+    // B's own removal sticks too, even after A has picked the entry up.
+    let y = b.entries().iter().find(|e| e.name == "y.bin").unwrap().id;
+    finish(&mut b, 1, 10, 10, NOON_MS + 2_000);
+    start(&mut a, 2, "z.bin", 10, NOON_MS + 3_000);
+    assert!(a.get(y).is_some(), "A picked Y up");
+    assert!(b.remove(y));
+    finish(&mut a, 2, 10, 10, NOON_MS + 4_000);
+    assert!(DownloadManager::open(&file).get(y).is_none());
+    assert!(a.get(y).is_none());
+}

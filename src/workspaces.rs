@@ -401,28 +401,70 @@ impl WorkspaceSet {
         copy
     }
 
-    /// Remaps persisted process-local tab IDs to IDs allocated while restoring the session.
-    pub fn remap_session_order(&mut self, restored: &[TabId]) {
-        if self.session_order.is_empty() {
-            return;
-        }
+    /// Rebinds a set loaded from the file to this run's tabs, at start-up.
+    ///
+    /// The file's tab ids belong to the previous process. Only those listed in `order=` still mean
+    /// something: each is paired by position with `restored`, the new id of the matching saved
+    /// session tab (`None` when that tab did not come back; empty when nothing was restored). Every
+    /// other member (a New Tab page, a private tab, or all of them on a start without restore) is
+    /// dropped, so a stale id can never collide with one this run allocates. The `tabs` of this run
+    /// that no workspace claims join the active workspace, and a workspace left with no tab keeps
+    /// its name, icon and colour and is given a fresh tab from `blank`.
+    pub fn rebind(
+        &mut self,
+        restored: &[Option<TabId>],
+        tabs: &[TabId],
+        active_tab: TabId,
+        mut blank: impl FnMut() -> TabId,
+    ) {
+        let live = tabs.iter().copied().collect::<HashSet<_>>();
         let remap = self
             .session_order
             .iter()
             .copied()
             .zip(restored.iter().copied())
+            .filter_map(|(old, new)| Some((old, new.filter(|new| live.contains(new))?)))
             .collect::<std::collections::HashMap<_, _>>();
+        let mut claimed = HashSet::new();
         for workspace in &mut self.workspaces {
-            for tab in &mut workspace.tabs {
-                if let Some(mapped) = remap.get(tab) {
-                    *tab = *mapped;
-                }
+            let old_active = remap.get(&workspace.active_tab).copied();
+            workspace.tabs = workspace
+                .tabs
+                .iter()
+                .filter_map(|tab| remap.get(tab).copied())
+                .filter(|tab| claimed.insert(*tab))
+                .collect();
+            workspace.active_tab = old_active
+                .filter(|tab| workspace.tabs.contains(tab))
+                .or_else(|| workspace.tabs.first().copied())
+                .unwrap_or(active_tab);
+        }
+        self.session_order = restored.iter().flatten().copied().collect();
+        if !self.workspaces.iter().any(|workspace| workspace.id == self.active) {
+            self.active = self.workspaces[0].id;
+        }
+        let unclaimed = tabs
+            .iter()
+            .copied()
+            .filter(|tab| !claimed.contains(tab))
+            .collect::<Vec<_>>();
+        if let Ok(workspace) = self.get_mut(self.active) {
+            workspace.tabs.extend(unclaimed);
+        }
+        for workspace in &mut self.workspaces {
+            if workspace.tabs.is_empty() {
+                workspace.tabs.push(blank());
             }
-            if let Some(mapped) = remap.get(&workspace.active_tab) {
-                workspace.active_tab = *mapped;
+            if !workspace.tabs.contains(&workspace.active_tab) {
+                workspace.active_tab = workspace.tabs[0];
             }
         }
-        self.session_order = restored.to_vec();
+        if let Some(id) = self.workspace_for(active_tab) {
+            self.active = id;
+            if let Ok(workspace) = self.get_mut(id) {
+                workspace.active_tab = active_tab;
+            }
+        }
     }
 
     /// Drops stale restored ids and assigns any unclaimed session tabs to the active workspace.
@@ -470,7 +512,8 @@ impl WorkspaceSet {
         }
     }
 
-    pub fn create(&mut self, name: &str, first_tab: TabId) -> Result<WorkspaceId, WorkspaceError> {
+    /// Whether [`Self::create`] would accept `name`: a usable, unused name and room for one more.
+    pub fn check_new(&self, name: &str) -> Result<(), WorkspaceError> {
         let name = clean_name(name).ok_or(WorkspaceError::InvalidName)?;
         if self.workspaces.len() >= MAX_WORKSPACES {
             return Err(WorkspaceError::TooMany);
@@ -482,6 +525,12 @@ impl WorkspaceSet {
         {
             return Err(WorkspaceError::DuplicateName);
         }
+        Ok(())
+    }
+
+    pub fn create(&mut self, name: &str, first_tab: TabId) -> Result<WorkspaceId, WorkspaceError> {
+        self.check_new(name)?;
+        let name = clean_name(name).ok_or(WorkspaceError::InvalidName)?;
         if self.contains_tab(first_tab) {
             return Err(WorkspaceError::DuplicateTab);
         }
@@ -948,11 +997,84 @@ mod tests {
         workspaces.set_session_order(&[TabId(42), TabId(17)]);
         let mut restored = WorkspaceSet::parse(&workspaces.serialize()).unwrap();
 
-        restored.remap_session_order(&[TabId(0), TabId(1)]);
-        restored.reconcile(&[TabId(0), TabId(1)], TabId(1));
+        restored.rebind(&[Some(TabId(0)), Some(TabId(1))], &[TabId(0), TabId(1)], TabId(1), || unreachable!());
 
         assert_eq!(restored.active().tabs(), &[TabId(1), TabId(0)]);
         assert_eq!(restored.active().active_tab(), TabId(1));
+    }
+
+    fn blanks(from: u32) -> impl FnMut() -> TabId {
+        let mut next = from;
+        move || {
+            next += 1;
+            TabId(next - 1)
+        }
+    }
+
+    fn names(set: &WorkspaceSet) -> Vec<&str> {
+        set.all().iter().map(Workspace::name).collect()
+    }
+
+    /// T1: a start without restore keeps every workspace, whatever the last run's ids were.
+    #[test]
+    fn a_start_without_restore_keeps_every_workspace_on_fresh_tabs() {
+        for (default_tab, research_tab) in [(TabId(3), TabId(8)), (TabId(4), TabId(0))] {
+            let mut saved = WorkspaceSet::new("Default", default_tab);
+            let research = saved.create("Research", research_tab).unwrap();
+            let mut loaded = WorkspaceSet::parse(&saved.serialize()).unwrap();
+            loaded.rebind(&[], &[TabId(0)], TabId(0), blanks(1));
+            assert_eq!(names(&loaded), ["Default", "Research"]);
+            assert_eq!(loaded.active_id(), WorkspaceId(0), "the workspace that was active");
+            assert_eq!(loaded.active().tabs(), [TabId(0)]);
+            assert_eq!(loaded.get(research).unwrap().tabs(), [TabId(1)]);
+            assert_eq!(loaded.get(research).unwrap().colour(), saved.get(research).unwrap().colour());
+            assert!(WorkspaceSet::parse(&loaded.serialize()).is_ok());
+        }
+    }
+
+    /// T2: a member left out of `order=` (a New Tab page) is dropped, never kept as a stale id.
+    #[test]
+    fn a_member_missing_from_the_session_never_lands_in_two_workspaces() {
+        let mut saved = WorkspaceSet::new("Default", TabId(0));
+        saved.add_tab(TabId(1)).unwrap();
+        let work = saved.create("Work", TabId(2)).unwrap();
+        saved.set_session_order(&[TabId(0), TabId(2)]);
+        let mut loaded = WorkspaceSet::parse(&saved.serialize()).unwrap();
+        let restored = [TabId(0), TabId(1)];
+        loaded.rebind(&restored.map(Some), &restored, TabId(0), blanks(2));
+        assert_eq!(loaded.get(WorkspaceId(0)).unwrap().tabs(), [TabId(0)]);
+        assert_eq!(loaded.get(work).unwrap().tabs(), [TabId(1)]);
+        assert!(WorkspaceSet::parse(&loaded.serialize()).is_ok());
+
+        // A workspace of only unsaved tabs (private, New Tab) keeps its identity on a blank tab.
+        let mut saved = WorkspaceSet::new("Default", TabId(0));
+        let private = saved.create("Private", TabId(5)).unwrap();
+        saved.set_session_order(&[TabId(0)]);
+        let mut loaded = WorkspaceSet::parse(&saved.serialize()).unwrap();
+        loaded.rebind(&[Some(TabId(0))], &[TabId(0)], TabId(0), blanks(1));
+        assert_eq!(loaded.get(private).unwrap().tabs(), [TabId(1)]);
+        assert_eq!(loaded.active_id(), WorkspaceId(0));
+    }
+
+    /// A saved tab that did not restore (`None`) leaves the others in their own workspaces.
+    #[test]
+    fn a_session_tab_that_did_not_restore_does_not_shift_the_rest() {
+        let mut saved = WorkspaceSet::new("Default", TabId(0));
+        saved.add_tab(TabId(1)).unwrap();
+        let work = saved.create("Work", TabId(2)).unwrap();
+        saved.set_session_order(&[TabId(0), TabId(1), TabId(2)]);
+        let mut loaded = WorkspaceSet::parse(&saved.serialize()).unwrap();
+        loaded.rebind(&[Some(TabId(0)), None, Some(TabId(1))], &[TabId(0), TabId(1)], TabId(0), blanks(2));
+        assert_eq!(loaded.get(WorkspaceId(0)).unwrap().tabs(), [TabId(0)]);
+        assert_eq!(loaded.get(work).unwrap().tabs(), [TabId(1)]);
+    }
+
+    #[test]
+    fn a_refused_name_is_reported_before_anything_is_created() {
+        let set = WorkspaceSet::new("Default", TabId(1));
+        assert_eq!(set.check_new(" default "), Err(WorkspaceError::DuplicateName));
+        assert_eq!(set.check_new(" "), Err(WorkspaceError::InvalidName));
+        assert_eq!(set.check_new("Work"), Ok(()));
     }
 
     #[test]

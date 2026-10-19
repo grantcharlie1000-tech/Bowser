@@ -81,12 +81,18 @@ fn write_key_value(path: &str, name: &str, data: &str) -> windows::core::Result<
     result
 }
 
+/// The `shell\open\command` Windows runs for a link or file: `%1` becomes one bare argument,
+/// which [`crate::performance::LaunchOptions`] opens as the initial address.
+pub(crate) fn open_command(exe: &str) -> String {
+    format!("\"{exe}\" \"%1\"")
+}
+
 /// Registers Bowser under `HKEY_CURRENT_USER` as a candidate browser: the `StartMenuInternet`
 /// entry, its capabilities, the `Bowser.HTML` ProgID that actually launches it, and the
 /// `RegisteredApplications` pointer Windows looks for. Every write is HKCU; nothing needs admin.
 pub fn register_hkcu(exe: &Path) -> windows::core::Result<()> {
     let exe = exe.to_string_lossy();
-    let open_command = format!("\"{exe}\" \"%1\"");
+    let open_command = open_command(&exe);
     let icon = format!("{exe},0");
 
     const CLIENT: &str = r"Software\Clients\StartMenuInternet\Bowser";

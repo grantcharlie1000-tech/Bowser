@@ -106,6 +106,33 @@ function Get-InstalledBowserProcesses {
     return $found
 }
 
+# True when $Candidate names the file $Expected. Never throws: Windows PowerShell's GetFullPath
+# rejects an empty string and targets such as 'https://...' or 'shell:AppsFolder\...'.
+function Test-SameFilePath {
+    param([string]$Candidate, [string]$Expected)
+    if ([string]::IsNullOrWhiteSpace($Candidate) -or [string]::IsNullOrWhiteSpace($Expected)) { return $false }
+    try {
+        return [string]::Equals([IO.Path]::GetFullPath($Candidate), [IO.Path]::GetFullPath($Expected), [StringComparison]::OrdinalIgnoreCase)
+    }
+    catch {
+        return $false
+    }
+}
+
+# Puts a staged file in place of $Destination without a moment where neither exists: the old
+# file is swapped out by one rename (ReplaceFile), and survives as a backup if the swap fails.
+function Install-StagedFile {
+    param([Parameter(Mandatory = $true)][string]$Staged, [Parameter(Mandatory = $true)][string]$Destination)
+    if (-not (Test-Path -LiteralPath $Destination -PathType Leaf)) {
+        Move-Item -LiteralPath $Staged -Destination $Destination
+        return
+    }
+    $backup = "$Destination.previous"
+    Remove-Item -LiteralPath $backup -Force -ErrorAction SilentlyContinue
+    [IO.File]::Replace($Staged, $Destination, $backup)
+    Remove-Item -LiteralPath $backup -Force -ErrorAction SilentlyContinue
+}
+
 function Get-StableInstallCandidates {
     param([Parameter(Mandatory = $true)][string]$Preferred)
     $preferredFull = [IO.Path]::GetFullPath($Preferred)
@@ -233,10 +260,7 @@ if (-not $ready) {
         New-Item -ItemType Directory -Path $InstallDirectory -Force | Out-Null
         $staged = Join-Path $InstallDirectory 'Bowser.exe.download'
         Copy-Item -LiteralPath $download -Destination $staged -Force
-        if (Test-Path -LiteralPath $installedExe -PathType Leaf) {
-            Remove-Item -LiteralPath $installedExe -Force
-        }
-        Move-Item -LiteralPath $staged -Destination $installedExe
+        Install-StagedFile -Staged $staged -Destination $installedExe
         if ((Get-LowerSha256 -Path $installedExe) -ne $expectedHash) {
             throw 'The installed file did not match the pinned release after copying.'
         }
@@ -268,11 +292,12 @@ if ($NoLaunch) {
     exit 0
 }
 
+# Only another stable copy shares this profile; a Dev or source build uses its own.
+$stableExes = @($candidates | ForEach-Object { Join-Path $_ 'Bowser.exe' })
 $previous = @(Get-Process -Name 'Bowser' -ErrorAction SilentlyContinue | Where-Object {
-    try {
-        -not [string]::Equals([IO.Path]::GetFullPath($_.Path), $installedExe, [StringComparison]::OrdinalIgnoreCase)
-    }
-    catch { $false }
+    $path = $_.Path
+    -not (Test-SameFilePath -Candidate $path -Expected $installedExe) -and
+        @($stableExes | Where-Object { Test-SameFilePath -Candidate $path -Expected $_ }).Count -gt 0
 })
 if ($previous.Count -gt 0) {
     Write-Host "Stable Bowser $($pin.version) is installed: $installedExe"

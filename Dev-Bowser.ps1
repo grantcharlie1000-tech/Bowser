@@ -71,7 +71,8 @@ function Get-TreeHash {
 
 function Test-WatcherLock {
     if (-not (Test-Path -LiteralPath $lockPath -PathType Leaf)) { return }
-    $owner = (Get-Content -LiteralPath $lockPath -Raw).Trim()
+    # An empty lock file reads as $null.
+    $owner = "$(Get-Content -LiteralPath $lockPath -Raw)".Trim()
     if ($owner -match '^\d+$') {
         $running = Get-Process -Id ([int]$owner) -ErrorAction SilentlyContinue
         if ($running -and $running.ProcessName -match 'powershell|pwsh') {
@@ -216,7 +217,7 @@ try {
     }
 }
 finally {
-    if ((Test-Path -LiteralPath $lockPath -PathType Leaf) -and ((Get-Content -LiteralPath $lockPath -Raw).Trim() -eq "$PID")) {
+    if ((Test-Path -LiteralPath $lockPath -PathType Leaf) -and ("$(Get-Content -LiteralPath $lockPath -Raw)".Trim() -eq "$PID")) {
         Remove-Item -LiteralPath $lockPath -Force -ErrorAction SilentlyContinue
     }
 }
