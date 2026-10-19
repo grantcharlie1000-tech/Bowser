@@ -6626,6 +6626,31 @@ impl App {
     }
 
     pub fn resize_current(app: &AppRef, bounds: windows::Win32::Foundation::RECT) {
+        Self::resize_current_then(app, bounds, |error| {
+            win32::show_error_message(&format!("WebView2 resize failed: {error}"));
+        });
+    }
+
+    /// The main window moved: the pages' controllers are told, so WebView2 places its own popups
+    /// (select lists, IME, autofill) and accessibility rects at the window's new place. A move
+    /// that arrives while the app is busy is skipped; the next one carries the position.
+    pub fn parent_window_moved(app: &AppRef) {
+        if app.try_borrow_mut().is_err() {
+            return;
+        }
+        let _ = Self::with_engine(app, |engine| {
+            engine.parent_window_moved();
+            Ok(())
+        });
+    }
+
+    /// Resizes the page(s) and hands a failure to `report` once the app is no longer borrowed: the
+    /// error dialog's modal loop sends WM_SIZE, which resizes again and borrows the app.
+    fn resize_current_then(
+        app: &AppRef,
+        bounds: windows::Win32::Foundation::RECT,
+        report: impl FnOnce(windows::core::Error),
+    ) {
         let (split, panes) = {
             let state = app.borrow();
             (state.split_view, state.split_bounds)
@@ -6645,8 +6670,9 @@ impl App {
         } else {
             state.engine = Some(engine);
         }
+        drop(state);
         if let Err(error) = result {
-            win32::show_error_message(&format!("WebView2 resize failed: {error}"));
+            report(error);
         }
     }
 
@@ -7722,6 +7748,7 @@ mod tests {
     mod page_tools_flow; // --- page tools (T7) ---
     mod theme_flow; // --- theme options ---
     mod stack_flow; // --- tab stacks, tiling and workspaces (T10) ---
+    mod window_flow; // main window moves and resizes
 
     #[test]
     fn reader_probe_due_table() {

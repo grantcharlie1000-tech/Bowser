@@ -208,7 +208,7 @@ pub(crate) fn open(owner: HWND) {
     }
     let html_only = super::html_dialog::html_only(owner);
     let viewport_top = (client.bottom - 500).max(0); // replaced with the live viewport by sync immediately below
-    let mut state = Box::new(Panel {
+    let state = Box::new(Panel {
         owner,
         profile,
         notes,
@@ -239,32 +239,17 @@ pub(crate) fn open(owner: HWND) {
     unsafe {
         let _ = windows::Win32::UI::WindowsAndMessaging::GetWindowRect(owner, &mut owner_rect);
     }
-    let instance = unsafe { HINSTANCE(GetModuleHandleW(None).unwrap_or_default().0) };
-    HTML_ONLY.with(|flag| flag.set(html_only));
-    let hwnd = unsafe {
-        match CreateWindowExW(
-            WS_EX_TOOLWINDOW,
-            CLASS,
-            w!("Notes and Tasks"),
-            WS_POPUP | WS_VISIBLE,
-            owner_rect.right - width,
-            owner_rect.top + viewport_top,
-            width,
-            height,
-            Some(owner),
-            None,
-            Some(instance),
-            Some((&mut *state as *mut Panel).cast::<c_void>()),
-        ) {
-            Ok(hwnd) => {
-                HTML_ONLY.with(|flag| flag.set(false));
-                hwnd
-            }
-            Err(_) => {
-                HTML_ONLY.with(|flag| flag.set(false));
-                return;
-            }
-        }
+    let Some(hwnd) = create_panel_window(
+        state,
+        RECT {
+            left: owner_rect.right - width,
+            top: owner_rect.top + viewport_top,
+            right: owner_rect.right,
+            bottom: owner_rect.top + viewport_top + height,
+        },
+        Some(owner),
+    ) else {
+        return;
     };
     OPEN.with(|slot| slot.set(hwnd.0 as isize));
     super::window::attach_html_dialog(owner, hwnd, super::html_dialog::Kind::Notes);
@@ -280,16 +265,54 @@ pub(crate) fn open(owner: HWND) {
     );
     unsafe {
         let _ = SetForegroundWindow(hwnd);
-        if !state.notes.is_empty() {
-            state.selected_note = Some(state.notes[0].id);
-        }
-        if !state.tasks.is_empty() {
-            state.selected_task = Some(state.tasks[0].id);
+        if let Some(state) = panel(hwnd) {
+            state.selected_note = state.notes.first().map(|note| note.id);
+            state.selected_task = state.tasks.first().map(|task| task.id);
         }
         if !html_only {
             populate_edits(hwnd);
         }
     }
+}
+
+thread_local! {
+    /// The state handed to a `CreateWindowExW` whose `WM_NCCREATE` has not run yet: until it runs,
+    /// `create_panel_window` still owns it.
+    static UNADOPTED: Cell<usize> = const { Cell::new(0) };
+}
+
+/// Creates the panel window at `bounds` (screen) and gives it `state`. The window owns the state
+/// from `WM_NCCREATE` until `WM_NCDESTROY`, which frees it; the pointer in `GWLP_USERDATA` stays
+/// valid for every message in between (W-1: the Box used to drop when `open` returned).
+fn create_panel_window(state: Box<Panel>, bounds: RECT, owner: Option<HWND>) -> Option<HWND> {
+    let html_only = state.html_only;
+    let raw = Box::into_raw(state);
+    let instance = unsafe { HINSTANCE(GetModuleHandleW(None).unwrap_or_default().0) };
+    HTML_ONLY.with(|flag| flag.set(html_only));
+    UNADOPTED.with(|slot| slot.set(raw as usize));
+    let created = unsafe {
+        CreateWindowExW(
+            WS_EX_TOOLWINDOW,
+            CLASS,
+            w!("Notes and Tasks"),
+            WS_POPUP | WS_VISIBLE,
+            bounds.left,
+            bounds.top,
+            bounds.right - bounds.left,
+            bounds.bottom - bounds.top,
+            owner,
+            None,
+            Some(instance),
+            Some(raw.cast::<c_void>()),
+        )
+    };
+    HTML_ONLY.with(|flag| flag.set(false));
+    // Creation that failed before WM_NCCREATE never handed the state over (after it, WM_NCDESTROY
+    // has freed it already).
+    if UNADOPTED.with(|slot| slot.replace(0)) == raw as usize {
+        drop(unsafe { Box::from_raw(raw) });
+    }
+    created.ok()
 }
 
 pub(crate) fn html_notes(profile: &Profile) -> Vec<data::Note> {
@@ -584,10 +607,12 @@ fn click(hwnd: HWND, x: i32, y: i32) {
         let _ = unsafe { DestroyWindow(hwnd) };
         return;
     }
-    if (scale(46, hwnd)..scale(86, hwnd)).contains(&y) {
-        if x < s.width / 2 {
+    let layout = layout_of(hwnd, s);
+    let (notes_tab, tasks_tab, add) = (layout.notes_tab(), layout.tasks_tab(), layout.add());
+    if (notes_tab.top..notes_tab.bottom).contains(&y) {
+        if x < tasks_tab.left {
             s.tab = Tab::Notes;
-        } else if x < s.width - scale(84, hwnd) {
+        } else if x < add.left {
             s.tab = Tab::Tasks;
         } else {
             if s.tab == Tab::Notes {
@@ -600,38 +625,28 @@ fn click(hwnd: HWND, x: i32, y: i32) {
         populate_edits(hwnd);
         return;
     }
+    if contains(layout.delete(s.tab), x, y) {
+        delete_selected(hwnd);
+        return;
+    }
     if s.tab == Tab::Notes {
-        let row = scale(30, hwnd);
-        let first = scale(100, hwnd);
-        if y >= first && y < s.height - scale(196, hwnd) {
-            let index = ((y - first) / row) as usize;
-            if let Some(note) = s.notes.get(index) {
-                s.selected_note = Some(note.id);
-                populate_edits(hwnd);
-            }
-        } else if y >= s.height - scale(194, hwnd) && x > s.width - scale(76, hwnd) {
-            delete_selected(hwnd);
+        if let Some(note) = layout.row_at(Tab::Notes, y).and_then(|index| s.notes.get(index)) {
+            s.selected_note = Some(note.id);
+            populate_edits(hwnd);
         }
-    } else {
-        let row = scale(30, hwnd);
-        let first = scale(100, hwnd);
-        if y >= first && y < s.height - scale(68, hwnd) {
-            let index = ((y - first) / row) as usize;
-            if let Some(task) = s.tasks.get_mut(index) {
-                if x < scale(42, hwnd) {
-                    task.complete = !task.complete;
-                    if !s.profile.is_guest() {
-                        let _ = data::write_tasks(&s.profile.tasks_file(), &s.tasks);
-                    }
-                    cache_guest(s);
-                    let _ = unsafe { InvalidateRect(Some(hwnd), None, false) };
-                } else {
-                    s.selected_task = Some(task.id);
-                    populate_edits(hwnd);
-                }
+    } else if let Some(index) = layout.row_at(Tab::Tasks, y)
+        && let Some(task) = s.tasks.get_mut(index)
+    {
+        if x < layout.row(index).left + layout.px(34) {
+            task.complete = !task.complete;
+            if !s.profile.is_guest() {
+                let _ = data::write_tasks(&s.profile.tasks_file(), &s.tasks);
             }
-        } else if y > s.height - scale(40, hwnd) && x > s.width - scale(76, hwnd) {
-            delete_selected(hwnd);
+            cache_guest(s);
+            let _ = unsafe { InvalidateRect(Some(hwnd), None, false) };
+        } else {
+            s.selected_task = Some(task.id);
+            populate_edits(hwnd);
         }
     }
 }
@@ -789,6 +804,7 @@ fn paint(hwnd: HWND) {
             false,
         );
         if let Some(s) = panel(hwnd) {
+            let layout = layout_of(hwnd, s);
             let active = if s.tab == Tab::Notes {
                 p.tab_active
             } else {
@@ -799,117 +815,43 @@ fn paint(hwnd: HWND) {
             } else {
                 p.tab_hover
             };
-            smooth::fill_round_rect(
-                dc,
-                rect(EXT, 46, s.width / 2 - 4, 84, hwnd),
-                scale(6, hwnd),
-                active,
-            );
-            smooth::fill_round_rect(
-                dc,
-                rect(s.width / 2 + 4, 46, s.width - 88, 84, hwnd),
-                scale(6, hwnd),
-                inactive,
-            );
-            text(
-                dc,
-                rect(EXT, 46, s.width / 2 - 4, 84, hwnd),
-                "Notes",
-                p.tab_text_active,
-                false,
-            );
-            text(
-                dc,
-                rect(s.width / 2 + 4, 46, s.width - 88, 84, hwnd),
-                "Tasks",
-                p.tab_text_active,
-                false,
-            );
-            smooth::fill_round_rect(
-                dc,
-                rect(s.width - 80, 46, s.width - EXT, 84, hwnd),
-                scale(6, hwnd),
-                p.tab_hover,
-            );
-            text(
-                dc,
-                rect(s.width - 80, 46, s.width - EXT, 84, hwnd),
-                "+ Add",
-                p.tab_text_active,
-                false,
-            );
+            let radius = layout.px(6);
+            smooth::fill_round_rect(dc, layout.notes_tab(), radius, active);
+            smooth::fill_round_rect(dc, layout.tasks_tab(), radius, inactive);
+            text(dc, layout.notes_tab(), "Notes", p.tab_text_active, false);
+            text(dc, layout.tasks_tab(), "Tasks", p.tab_text_active, false);
+            smooth::fill_round_rect(dc, layout.add(), radius, p.tab_hover);
+            text(dc, layout.add(), "+ Add", p.tab_text_active, false);
             match s.tab {
                 Tab::Notes => {
-                    let row = scale(30, hwnd);
-                    let top = scale(98, hwnd);
                     for (index, note) in s.notes.iter().enumerate() {
-                        let y = top + index as i32 * row;
-                        if y > s.height - scale(202, hwnd) {
+                        let bounds = layout.row(index);
+                        if bounds.top > layout.rows_limit(Tab::Notes) {
                             break;
                         }
-                        let bounds = rect(
-                            EXT,
-                            y,
-                            s.width - EXT,
-                            y + row - scale(2, hwnd),
-                            hwnd,
-                        );
                         if s.selected_note == Some(note.id) {
-                            smooth::fill_round_rect(dc, bounds, scale(5, hwnd), p.tab_hover);
+                            smooth::fill_round_rect(dc, bounds, layout.px(5), p.tab_hover);
                         }
                         text(dc, bounds, &note.title, p.tab_text_active, true);
                     }
-                    text(
-                        dc,
-                        rect(
-                            s.width - 76,
-                            s.height - 194,
-                            s.width - EXT,
-                            s.height - 166,
-                            hwnd,
-                        ),
-                        "Delete",
-                        p.tab_text_inactive,
-                        false,
-                    );
-                    text(
-                        dc,
-                        rect(
-                            EXT,
-                            s.height - 158,
-                            s.width - EXT,
-                            s.height - 136,
-                            hwnd,
-                        ),
-                        "Note",
-                        p.tab_text_inactive,
-                        false,
-                    );
+                    text(dc, layout.delete(Tab::Notes), "Delete", p.tab_text_inactive, false);
+                    text(dc, layout.note_label(), "Note", p.tab_text_inactive, false);
                 }
                 Tab::Tasks => {
-                    let row = scale(30, hwnd);
-                    let top = scale(98, hwnd);
                     for (index, task) in s.tasks.iter().enumerate() {
-                        let y = top + index as i32 * row;
-                        if y > s.height - scale(70, hwnd) {
+                        let bounds = layout.row(index);
+                        if bounds.top > layout.rows_limit(Tab::Tasks) {
                             break;
                         }
-                        let bounds = rect(
-                            EXT,
-                            y,
-                            s.width - EXT,
-                            y + row - scale(2, hwnd),
-                            hwnd,
-                        );
                         if s.selected_task == Some(task.id) {
-                            smooth::fill_round_rect(dc, bounds, scale(5, hwnd), p.tab_hover);
+                            smooth::fill_round_rect(dc, bounds, layout.px(5), p.tab_hover);
                         }
                         text(
                             dc,
                             RECT {
-                                left: bounds.left + scale(4, hwnd),
+                                left: bounds.left + layout.px(4),
                                 top: bounds.top,
-                                right: bounds.left + scale(34, hwnd),
+                                right: bounds.left + layout.px(34),
                                 bottom: bounds.bottom,
                             },
                             if task.complete { "☑" } else { "□" },
@@ -919,7 +861,7 @@ fn paint(hwnd: HWND) {
                         text(
                             dc,
                             RECT {
-                                left: bounds.left + scale(36, hwnd),
+                                left: bounds.left + layout.px(36),
                                 top: bounds.top,
                                 right: bounds.right,
                                 bottom: bounds.bottom,
@@ -933,32 +875,8 @@ fn paint(hwnd: HWND) {
                             true,
                         );
                     }
-                    text(
-                        dc,
-                        rect(
-                            EXT,
-                            s.height - 86,
-                            s.width - EXT,
-                            s.height - 60,
-                            hwnd,
-                        ),
-                        "Edit task",
-                        p.tab_text_inactive,
-                        false,
-                    );
-                    text(
-                        dc,
-                        rect(
-                            s.width - 76,
-                            s.height - 42,
-                            s.width - EXT,
-                            s.height - 14,
-                            hwnd,
-                        ),
-                        "Delete",
-                        p.tab_text_inactive,
-                        false,
-                    );
+                    text(dc, layout.task_label(), "Edit task", p.tab_text_inactive, false);
+                    text(dc, layout.delete(Tab::Tasks), "Delete", p.tab_text_inactive, false);
                 }
             }
         }
@@ -979,23 +897,113 @@ fn text(
     }
     unsafe {
         SetTextColor(dc, colorref(color));
-        let mut flags = windows::Win32::Graphics::Gdi::DT_LEFT
-            | windows::Win32::Graphics::Gdi::DT_VCENTER
-            | windows::Win32::Graphics::Gdi::DT_SINGLELINE;
-        if ellipsis {
-            flags |= windows::Win32::Graphics::Gdi::DT_END_ELLIPSIS;
-        }
-        let _ = DrawTextW(dc, &mut units, &mut bounds, flags);
+        let _ = DrawTextW(dc, &mut units, &mut bounds, text_flags(ellipsis));
     }
 }
 
-fn rect(left: i32, top: i32, right: i32, bottom: i32, hwnd: HWND) -> RECT {
-    RECT {
-        left: scale(left, hwnd),
-        top: scale(top, hwnd),
-        right: scale(right, hwnd),
-        bottom: scale(bottom, hwnd),
+/// Labels and note titles are drawn as written: `&` is a character, not a mnemonic prefix (W-10:
+/// the header read "Notes _Tasks" and a title lost its `&`).
+fn text_flags(ellipsis: bool) -> windows::Win32::Graphics::Gdi::DRAW_TEXT_FORMAT {
+    use windows::Win32::Graphics::Gdi::{DT_END_ELLIPSIS, DT_LEFT, DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER};
+    let flags = DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX;
+    if ellipsis { flags | DT_END_ELLIPSIS } else { flags }
+}
+
+/// Where the native panel draws its tabs, rows and buttons, in device pixels, for a panel of
+/// `width` x `height` device pixels at `dpi`. Paint and `click` both read it, so what is drawn is
+/// what is hit (W-4: paint scaled the already-scaled width, height and row tops a second time).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct Layout {
+    dpi: u32,
+    width: i32,
+    height: i32,
+}
+
+impl Layout {
+    fn new(width: i32, height: i32, dpi: u32) -> Self {
+        Self { dpi: dpi.max(96), width, height }
     }
+    fn px(&self, dip: i32) -> i32 {
+        dip * self.dpi as i32 / 96
+    }
+    /// A rect whose edges are each a DIP offset from the panel's start, end or middle.
+    fn rect(&self, left: Edge, top: Edge, right: Edge, bottom: Edge) -> RECT {
+        let x = |edge: Edge| match edge {
+            Edge::Start(dip) => self.px(dip),
+            Edge::End(dip) => self.width - self.px(dip),
+            Edge::Middle(dip) => self.width / 2 + self.px(dip),
+        };
+        let y = |edge: Edge| match edge {
+            Edge::Start(dip) => self.px(dip),
+            Edge::End(dip) => self.height - self.px(dip),
+            Edge::Middle(dip) => self.height / 2 + self.px(dip),
+        };
+        RECT { left: x(left), top: y(top), right: x(right), bottom: y(bottom) }
+    }
+    fn notes_tab(&self) -> RECT {
+        self.rect(Edge::Start(EXT), Edge::Start(46), Edge::Middle(-4), Edge::Start(84))
+    }
+    fn tasks_tab(&self) -> RECT {
+        self.rect(Edge::Middle(4), Edge::Start(46), Edge::End(88), Edge::Start(84))
+    }
+    fn add(&self) -> RECT {
+        self.rect(Edge::End(80), Edge::Start(46), Edge::End(EXT), Edge::Start(84))
+    }
+    fn row_height(&self) -> i32 {
+        self.px(30)
+    }
+    fn rows_top(&self) -> i32 {
+        self.px(98)
+    }
+    /// Row `index` of the note or task list.
+    fn row(&self, index: usize) -> RECT {
+        let top = self.rows_top() + index as i32 * self.row_height();
+        RECT {
+            left: self.px(EXT),
+            top,
+            right: self.width - self.px(EXT),
+            bottom: top + self.row_height() - self.px(2),
+        }
+    }
+    /// The last y a row may start at on `tab`.
+    fn rows_limit(&self, tab: Tab) -> i32 {
+        self.height - self.px(if tab == Tab::Notes { 202 } else { 70 })
+    }
+    /// The index of the row drawn under `y` on `tab`, if one is drawn there.
+    fn row_at(&self, tab: Tab, y: i32) -> Option<usize> {
+        if y < self.rows_top() {
+            return None;
+        }
+        let index = ((y - self.rows_top()) / self.row_height()) as usize;
+        (self.row(index).top <= self.rows_limit(tab)).then_some(index)
+    }
+    fn delete(&self, tab: Tab) -> RECT {
+        match tab {
+            Tab::Notes => self.rect(Edge::End(76), Edge::End(194), Edge::End(EXT), Edge::End(166)),
+            Tab::Tasks => self.rect(Edge::End(76), Edge::End(42), Edge::End(EXT), Edge::End(14)),
+        }
+    }
+    fn note_label(&self) -> RECT {
+        self.rect(Edge::Start(EXT), Edge::End(158), Edge::End(EXT), Edge::End(136))
+    }
+    fn task_label(&self) -> RECT {
+        self.rect(Edge::Start(EXT), Edge::End(86), Edge::End(EXT), Edge::End(60))
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+enum Edge {
+    Start(i32),
+    End(i32),
+    Middle(i32),
+}
+
+fn layout_of(hwnd: HWND, s: &Panel) -> Layout {
+    Layout::new(s.width, s.height, unsafe { GetDpiForWindow(hwnd) })
+}
+
+fn contains(rect: RECT, x: i32, y: i32) -> bool {
+    x >= rect.left && x < rect.right && y >= rect.top && y < rect.bottom
 }
 
 fn colorref(c: theme::Rgba) -> windows::Win32::Foundation::COLORREF {
@@ -1018,6 +1026,101 @@ fn next_id() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    thread_local! { static DROPS: Cell<usize> = const { Cell::new(0) }; }
+
+    impl Drop for Panel {
+        fn drop(&mut self) {
+            DROPS.with(|drops| drops.set(drops.get() + 1));
+        }
+    }
+
+    fn guest_panel(root: &std::path::Path, width_dip: i32) -> Panel {
+        Panel {
+            owner: HWND::default(),
+            profile: Profile::guest_in(root).expect("guest profile"),
+            notes: vec![data::Note { id: 7, title: "kept".into(), body: String::new() }],
+            tasks: Vec::new(),
+            selected_note: None,
+            selected_task: None,
+            tab: Tab::Notes,
+            title: HWND::default(),
+            body: HWND::default(),
+            task: HWND::default(),
+            width_dip,
+            width: 340,
+            height: 600,
+            top: 0,
+            right_screen: 0,
+            updating: false,
+            resizing: false,
+            edit_brush: Default::default(),
+            html_only: true,
+        }
+    }
+
+    #[test]
+    fn the_panel_state_lives_as_long_as_its_window_and_is_freed_once_with_it() {
+        let root = std::env::temp_dir().join(format!("bowser-notes-w1-{}", std::process::id()));
+        assert!(register_class().is_some());
+        DROPS.with(|drops| drops.set(0));
+        let bounds = RECT { left: -32000, top: -32000, right: -31660, bottom: -31400 };
+        let hwnd = create_panel_window(Box::new(guest_panel(&root, 333)), bounds, None)
+            .expect("the panel window is created");
+        // `open` returns here: the state must still be the window's, not freed with a local Box.
+        assert_eq!(DROPS.with(Cell::get), 0, "the state outlives the call that created the window");
+        let state = unsafe { panel(hwnd) }.expect("the window still has its state");
+        assert_eq!((state.width_dip, state.notes[0].title.as_str()), (333, "kept"));
+        unsafe { DestroyWindow(hwnd).expect("destroy") };
+        assert_eq!(DROPS.with(Cell::get), 1, "WM_NCDESTROY frees the state exactly once");
+        assert!(unsafe { panel(hwnd) }.is_none());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn what_the_native_panel_paints_is_inside_it_and_is_what_a_click_hits_at_every_dpi() {
+        for dpi in [96, 120, 144, 192] {
+            let width = width_px(340, dpi, 4000);
+            let height = 700 * dpi as i32 / 96;
+            let layout = Layout::new(width, height, dpi);
+            let painted = [
+                layout.notes_tab(),
+                layout.tasks_tab(),
+                layout.add(),
+                layout.row(0),
+                layout.delete(Tab::Notes),
+                layout.delete(Tab::Tasks),
+                layout.note_label(),
+                layout.task_label(),
+            ];
+            for rect in painted {
+                assert!(
+                    rect.left >= 0 && rect.top >= 0 && rect.right <= width && rect.bottom <= height
+                        && rect.left < rect.right && rect.top < rect.bottom,
+                    "{rect:?} is drawn inside the {width}x{height} panel at dpi {dpi}"
+                );
+            }
+            // The tabs and "+ Add" sit side by side, in that order, without overlapping.
+            assert!(layout.notes_tab().right <= layout.tasks_tab().left);
+            assert!(layout.tasks_tab().right <= layout.add().left);
+            // A click in the middle of a drawn row selects that row.
+            for index in 0..3 {
+                let row = layout.row(index);
+                assert_eq!(layout.row_at(Tab::Notes, (row.top + row.bottom) / 2), Some(index), "dpi {dpi}");
+            }
+            let delete = layout.delete(Tab::Notes);
+            assert!(contains(delete, (delete.left + delete.right) / 2, (delete.top + delete.bottom) / 2));
+        }
+    }
+
+    #[test]
+    fn labels_and_titles_draw_an_ampersand_instead_of_underlining_the_next_letter() {
+        use windows::Win32::Graphics::Gdi::{DT_END_ELLIPSIS, DT_NOPREFIX};
+        assert!(text_flags(false).contains(DT_NOPREFIX));
+        assert!(text_flags(true).contains(DT_NOPREFIX));
+        assert!(text_flags(true).contains(DT_END_ELLIPSIS));
+        assert!(!text_flags(false).contains(DT_END_ELLIPSIS));
+    }
 
     #[test]
     fn a_picked_note_is_selected_only_while_it_exists() {
@@ -1076,6 +1179,11 @@ unsafe extern "system" fn proc(
             WM_NCCREATE => {
                 let create = &*(lparam.0 as *const CREATESTRUCTW);
                 SetWindowLongPtrW(hwnd, GWLP_USERDATA, create.lpCreateParams as isize);
+                UNADOPTED.with(|slot| {
+                    if slot.get() == create.lpCreateParams as usize {
+                        slot.set(0);
+                    }
+                });
                 DefWindowProcW(hwnd, message, wparam, lparam)
             }
             windows::Win32::UI::WindowsAndMessaging::WM_CREATE => {
@@ -1171,7 +1279,11 @@ unsafe extern "system" fn proc(
                         LPARAM(0),
                     );
                 }
-                SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
+                // The window owns its state (`create_panel_window`): free it with the window.
+                let owned = SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0) as *mut Panel;
+                if !owned.is_null() {
+                    drop(Box::from_raw(owned));
+                }
                 DefWindowProcW(hwnd, message, wparam, lparam)
             }
             _ => DefWindowProcW(hwnd, message, wparam, lparam),
