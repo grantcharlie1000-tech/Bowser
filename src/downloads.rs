@@ -36,6 +36,7 @@
 //! the newest [`MAX_ENTRIES`] are kept. Written on every state change (start, pause, finish, remove),
 //! never on progress, atomically. Entries active when the file is read become failed `Interrupted`.
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use crate::chrome_host::json::{capped, Json, Object};
@@ -635,6 +636,15 @@ pub struct DownloadManager {
     released: Vec<u64>,
     revision: u64,
     last_file_check_ms: Option<u64>,
+    /// Other windows of the profile are other processes writing the same file, so a save merges
+    /// with what is on disk. Ids this process is the authority for (it started them, or put them
+    /// back with undo): its copy wins. Every other entry is the file's.
+    authored: HashSet<u32>,
+    /// Ids that were in the file when this process last read or wrote it: one missing since then
+    /// was removed by another window.
+    synced: HashSet<u32>,
+    /// Ids this process removed: never written back from the file.
+    dropped: HashSet<u32>,
 }
 
 impl DownloadManager {
@@ -654,6 +664,9 @@ impl DownloadManager {
             released: Vec::new(),
             revision: 0,
             last_file_check_ms: None,
+            authored: HashSet::new(),
+            synced: HashSet::new(),
+            dropped: HashSet::new(),
         }
     }
 
@@ -664,6 +677,7 @@ impl DownloadManager {
         match read_file(path) {
             Ok((entries, next_id)) => {
                 let mut manager = Self::blank(Store::File(path.to_path_buf()), false);
+                manager.synced = entries.iter().map(|e| e.id).collect();
                 manager.entries = entries;
                 manager.next_id = next_id;
                 manager
@@ -745,8 +759,15 @@ impl DownloadManager {
         if self.index_of_key(key).is_some() {
             return Change::None;
         }
+        // Another window may have handed out ids since this list was read.
+        if let Store::File(file) = &self.store
+            && let Ok((_, next)) = read_file_as(file, false)
+        {
+            self.next_id = self.next_id.max(next);
+        }
         let id = self.next_id;
         self.next_id = self.next_id.saturating_add(1);
+        self.authored.insert(id);
         let name = path
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
@@ -857,6 +878,7 @@ impl DownloadManager {
             let Some(at) = self.entries.iter().position(|e| !e.state.in_progress()) else { break };
             let gone = self.entries.remove(at);
             self.released.extend(gone.op);
+            self.dropped.insert(gone.id);
         }
     }
 
@@ -1128,6 +1150,7 @@ impl DownloadManager {
         };
         let gone = self.entries.remove(at);
         self.released.extend(gone.op);
+        self.dropped.insert(gone.id);
         self.removed = vec![gone];
         self.touch();
         self.save();
@@ -1141,6 +1164,7 @@ impl DownloadManager {
         self.entries = kept;
         for entry in &gone {
             self.released.extend(entry.op);
+            self.dropped.insert(entry.id);
         }
         let count = gone.len();
         if count > 0 {
@@ -1166,6 +1190,8 @@ impl DownloadManager {
             // The engine handle was released with the removal, so a restored failure cannot resume.
             entry.op = None;
             entry.resume = false;
+            self.dropped.remove(&entry.id);
+            self.authored.insert(entry.id);
             if !self.entries.iter().any(|e| e.id == entry.id) {
                 self.entries.push(entry);
             }
@@ -1179,11 +1205,80 @@ impl DownloadManager {
 
     // --- persistence ---
 
-    /// Writes the list now (atomic). Guest and unreadable-file lists never write.
+    /// Writes the list now (atomic), merged with what other windows of the profile wrote since
+    /// it was read. Guest and unreadable-file lists never write.
     pub fn save(&mut self) {
         let Store::File(path) = &self.store else { return };
-        let text = render(&self.entries, self.next_id);
-        let _ = crate::productivity::atomic_write(path, text.as_bytes());
+        let path = path.clone();
+        // A file that cannot be read now is replaced by this list, as before.
+        let (disk, disk_next) = read_file_as(&path, false).unwrap_or_default();
+        let written = self.merge(disk, disk_next);
+        let text = render(&written, self.next_id);
+        let _ = crate::productivity::atomic_write(&path, text.as_bytes());
+        self.synced = written.iter().map(|e| e.id).collect();
+    }
+
+    /// Folds the file's entries (as written, in progress or not) into this list and returns what
+    /// to write: this process's own entries, plus every other entry exactly as the file has it.
+    fn merge(&mut self, mut disk: Vec<DownloadEntry>, disk_next: u32) -> Vec<DownloadEntry> {
+        let mut changed = false;
+        self.next_id = self.next_id.max(disk_next);
+        // An id another window handed out at the same moment: this process's entry moves.
+        for at in 0..self.entries.len() {
+            let entry = &self.entries[at];
+            let clash = self.authored.contains(&entry.id)
+                && disk.iter().any(|d| d.id == entry.id && (d.started, &d.path) != (entry.started, &entry.path));
+            if clash {
+                let high = disk.iter().chain(&self.entries).map(|e| e.id).max().unwrap_or(0);
+                let id = self.next_id.max(high.saturating_add(1));
+                self.next_id = id.saturating_add(1);
+                self.authored.remove(&self.entries[at].id);
+                self.authored.insert(id);
+                self.entries[at].id = id;
+                changed = true;
+            }
+        }
+        disk.retain(|d| !self.dropped.contains(&d.id) && !self.authored.contains(&d.id));
+        let on_disk: HashSet<u32> = disk.iter().map(|d| d.id).collect();
+        let before = self.entries.len();
+        let (authored, synced) = (&self.authored, &self.synced);
+        self.entries.retain(|e| authored.contains(&e.id) || on_disk.contains(&e.id) || !synced.contains(&e.id));
+        changed |= self.entries.len() != before;
+        let mut written: Vec<DownloadEntry> =
+            self.entries.iter().filter(|e| !on_disk.contains(&e.id)).cloned().collect();
+        for record in disk {
+            let mut shown = record.clone();
+            if shown.state.in_progress() {
+                // Running in another window: this one cannot control it.
+                interrupt(&mut shown, 0);
+                shown.ended = record.started.max(record.ended);
+                shown.unseen = false;
+            }
+            match self.entries.iter_mut().find(|e| e.id == record.id) {
+                Some(mine) => {
+                    shown.unseen = mine.unseen;
+                    shown.missing = mine.missing;
+                    if *mine != shown {
+                        *mine = shown;
+                        changed = true;
+                    }
+                }
+                None => {
+                    self.entries.push(shown);
+                    changed = true;
+                }
+            }
+            written.push(record);
+        }
+        if changed {
+            self.entries.sort_by_key(|e| e.id);
+            self.trim();
+            self.touch();
+        }
+        written.sort_by_key(|e| e.id);
+        let high = written.iter().map(|e| e.id).max().unwrap_or(0);
+        self.next_id = self.next_id.max(high.saturating_add(1));
+        written
     }
 }
 
@@ -1282,6 +1377,11 @@ fn render(entries: &[DownloadEntry], next_id: u32) -> String {
 }
 
 fn read_file(path: &Path) -> std::io::Result<(Vec<DownloadEntry>, u32)> {
+    read_file_as(path, true)
+}
+
+/// [`read_file`]; with `interrupt` false, entries in progress keep their state (another window's).
+fn read_file_as(path: &Path, interrupt: bool) -> std::io::Result<(Vec<DownloadEntry>, u32)> {
     use std::io::Read;
     let bytes = match std::fs::File::open(path) {
         Ok(file) => {
@@ -1298,12 +1398,17 @@ fn read_file(path: &Path) -> std::io::Result<(Vec<DownloadEntry>, u32)> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok((Vec::new(), 1)),
         Err(error) => return Err(error),
     };
-    Ok(parse(&String::from_utf8_lossy(&bytes)))
+    Ok(parse_as(&String::from_utf8_lossy(&bytes), interrupt))
 }
 
 /// Parses the file text. Malformed lines are skipped; entries that were in progress become failed
 /// `Interrupted`. Returns the entries (oldest first, at most [`MAX_ENTRIES`]) and the next id.
+#[cfg(test)]
 fn parse(text: &str) -> (Vec<DownloadEntry>, u32) {
+    parse_as(text, true)
+}
+
+fn parse_as(text: &str, interrupt_running: bool) -> (Vec<DownloadEntry>, u32) {
     let mut next_id = 1u32;
     let mut entries: Vec<DownloadEntry> = Vec::new();
     for line in text.trim_start_matches('\u{feff}').lines() {
@@ -1334,7 +1439,7 @@ fn parse(text: &str) -> (Vec<DownloadEntry>, u32) {
         if !path.is_absolute() {
             continue;
         }
-        let interrupted = state.in_progress();
+        let interrupted = interrupt_running && state.in_progress();
         entries.push(DownloadEntry {
             id,
             name: sanitize_file_name(&unescape(fields[6])),
