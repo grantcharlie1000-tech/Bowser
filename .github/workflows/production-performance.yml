@@ -52,7 +52,13 @@ jobs:
           persist-credentials: false
           path: candidate
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      # Purity guard for the measurement branch only: it pins that branch's own
+      # experiment identities, so it cannot hold for main or other PRs. When the
+      # branch has merged origin/main, the unchanged assertions run against the
+      # branch's own tip (the last first-parent commit before the first merge of
+      # main); later own commits may touch only the bounded allowlist.
       - name: Verify restored original product source
+        if: github.head_ref == 'performance/post-ui' || github.ref_name == 'performance/post-ui'
         working-directory: candidate
         env:
           EVENT_SOURCE: ${{ github.event.pull_request.head.sha || github.sha }}
@@ -60,12 +66,31 @@ jobs:
           if((git rev-parse HEAD).Trim() -cne $env:EVENT_SOURCE){throw 'Unexpected source/merge checkout'}
           git fetch --no-tags --depth=1 origin 19606fc644a23c07db49faeae0b5d13497784649 a7fa3ef916eacf4df3ffa8c2db565382720d861f
           if($LASTEXITCODE -ne 0){throw 'Cannot fetch immutable restoration/experiment identities'}
+          git fetch --no-tags --unshallow --filter=blob:none origin '+refs/heads/main:refs/remotes/origin/main'
+          if($LASTEXITCODE -ne 0){throw 'Cannot fetch branch and main history'}
+          git merge-base --is-ancestor a7fa3ef916eacf4df3ffa8c2db565382720d861f HEAD
+          if($LASTEXITCODE -ne 0){throw 'Experiment identity is not an ancestor of the candidate'}
           $allowed=@('.github/workflows/production-performance.yml','benchmarks/bookmark-bar-lifecycle.md','src/chrome_host/host.rs','src/win32/bookmark_bar.rs')
-          $changed=@(git diff --name-only a7fa3ef916eacf4df3ffa8c2db565382720d861f HEAD)
+          $own='a7fa3ef916eacf4df3ffa8c2db565382720d861f'; $merged=$false
+          foreach($commit in @(git rev-list --first-parent --reverse a7fa3ef916eacf4df3ffa8c2db565382720d861f..HEAD)){
+            $parents=@((git rev-list --parents -n 1 $commit).Trim().Split(' ')|Select-Object -Skip 1)
+            if($parents.Count -gt 2){throw "Unexpected octopus merge $commit"}
+            if($parents.Count -eq 2){
+              git merge-base --is-ancestor $parents[1] origin/main
+              if($LASTEXITCODE -ne 0){throw "Merge $commit brings in history that is not on main"}
+              $merged=$true
+            } elseif(-not $merged){ $own=$commit }
+            else {
+              $touched=@(git diff-tree --no-commit-id --name-only -r $commit)
+              if(@($touched|Where-Object {$_ -cnotin $allowed}).Count){throw "Post-merge commit $commit changes files outside bounded hint revert"}
+            }
+          }
+          "Guarding branch-own tip $own (candidate $env:EVENT_SOURCE)"
+          $changed=@(git diff --name-only a7fa3ef916eacf4df3ffa8c2db565382720d861f $own)
           if($LASTEXITCODE -ne 0 -or @($changed|Where-Object {$_ -cnotin $allowed}).Count){throw 'Unexpected change outside bounded hint revert'}
-          git diff --exit-code 19606fc644a23c07db49faeae0b5d13497784649 HEAD -- src ui Cargo.toml Cargo.lock build.rs
+          git diff --exit-code 19606fc644a23c07db49faeae0b5d13497784649 $own -- src ui Cargo.toml Cargo.lock build.rs
           if($LASTEXITCODE -ne 0){throw 'Original product source/build inputs not restored exactly'}
-          git diff --exit-code a7fa3ef916eacf4df3ffa8c2db565382720d861f HEAD -- benchmarks ':!benchmarks/bookmark-bar-lifecycle.md'
+          git diff --exit-code a7fa3ef916eacf4df3ffa8c2db565382720d861f $own -- benchmarks ':!benchmarks/bookmark-bar-lifecycle.md'
           if($LASTEXITCODE -ne 0){throw 'Benchmark tools changed during product revert'}
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
