@@ -3,7 +3,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -11,6 +11,34 @@ import { fileURLToPath } from 'node:url';
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const browser = [process.env.BOWSER_TEST_EDGE, 'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe', 'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe'].find((p) => p && existsSync(p));
 const views = ['toolbar', 'tabs', 'rail', 'panel', 'popup', 'bar', 'dialog', 'hover', 'split', 'settings', 'history', 'downloads'];
+// Edge helpers (zygote/gpu/crashpad) can outlive the launcher and keep the profile locked (EPERM on rmSync),
+// and a cold launch on a busy runner can exceed a short wait. These only ever touch processes this test started.
+const LAUNCH_TIMEOUT_MS = 30000;
+const LAUNCH_ATTEMPTS = 2;
+const killTree = (child) => {
+  if (!child.pid) return;
+  if (process.platform === 'win32') spawnSync('taskkill', ['/PID', String(child.pid), '/T', '/F'], { stdio: 'ignore' });
+  else { try { process.kill(-child.pid, 'SIGKILL'); } catch { try { child.kill('SIGKILL'); } catch { /* already gone */ } } }
+};
+// Kill orphaned Edge helpers whose command line references our private temp profile directory.
+const killProfileProcesses = (profile) => {
+  if (process.platform === 'win32') {
+    const escaped = profile.replace(/'/g, "''");
+    spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', `Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -and $_.CommandLine.Contains('${escaped}') } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }`], { stdio: 'ignore', timeout: 30000 });
+  } else spawnSync('pkill', ['-9', '-f', profile], { stdio: 'ignore' });
+};
+const launchOnce = (args, view) => new Promise((resolve, reject) => {
+  const child = spawn(browser, args, { detached: process.platform !== 'win32' }); let out = '', err = '';
+  const timer = setTimeout(() => { killTree(child); reject(new Error(`${view}: browser timeout`)); }, LAUNCH_TIMEOUT_MS);
+  child.stdout.on('data', (d) => { out += d; }); child.stderr.on('data', (d) => { err += d; });
+  child.on('error', (e) => { clearTimeout(timer); reject(e); }); child.on('close', (code) => { clearTimeout(timer); resolve({ out, err, code }); });
+});
+const launch = async (args, view) => {
+  for (let attempt = 1; ; attempt++) {
+    try { return await launchOnce(args, view); }
+    catch (e) { if (attempt >= LAUNCH_ATTEMPTS || !/browser timeout/.test(e.message)) throw e; console.log(`${view}: browser timeout, retrying launch (${attempt}/${LAUNCH_ATTEMPTS})`); }
+  }
+};
 const startFixture = JSON.parse(readFileSync(join(root, 'test/fixtures/start-page-messages.json'), 'utf8')).empty;
 const shim = `const listeners = []; window.chrome = { webview: { addEventListener(type, callback) { if (type === 'message') listeners.push(callback); }, postMessage(value) {
  const m = typeof value === 'string' ? JSON.parse(value) : value;
@@ -59,12 +87,7 @@ test('every surface starts through actual assets under the production CSP', { sk
           const args = ['--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check', `--user-data-dir=${join(profile, label)}`, '--virtual-time-budget=2500', '--dump-dom', `http://127.0.0.1:${server.address().port}/${label}/index.html?view=${view}${view === 'dialog' ? '&p=notes' : ''}`];
           // Container-only test runner constraint, never a product/benchmark launch flag.
           if (process.platform !== 'win32' && process.getuid?.() === 0) args.unshift('--no-sandbox');
-          const result = await new Promise((resolve, reject) => {
-            const child = spawn(browser, args); let out = '', err = '';
-            const timer = setTimeout(() => { child.kill(); reject(new Error(`${view}: browser timeout`)); }, 12000);
-            child.stdout.on('data', (d) => { out += d; }); child.stderr.on('data', (d) => { err += d; });
-            child.on('error', reject); child.on('close', (code) => { clearTimeout(timer); resolve({ out, err, code }); });
-          });
+          const result = await launch(args, view);
           assert.equal(result.code, 0, `${view}: ${result.err.slice(-1000)}`);
           assert.match(result.out, /data-surface-ready="yes"/, `${view}: module did not register and send ready`);
           assert.doesNotMatch(result.out, /data-surface-error="yes"|page-load-failed|csp-not-enforced/, view);
@@ -83,6 +106,7 @@ test('every surface starts through actual assets under the production CSP', { sk
     if (process.env.BOWSER_UI_SURFACE_REPORT) writeFileSync(process.env.BOWSER_UI_SURFACE_REPORT, `${JSON.stringify({ scope: 'Exploratory load correctness smoke. External spawn endpoint is wall-clock and includes full Edge launch; in-page performance.now endpoints use virtual time, not wall-clock latency. Not native interaction benchmarks or statistical no-regression proof', sources, alternating_order: true, reports }, null, 2)}\n`);
   } finally {
     await new Promise((resolve) => server.close(resolve));
-    rmSync(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    killProfileProcesses(profile);
+    rmSync(profile, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
   }
 });
