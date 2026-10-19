@@ -284,6 +284,10 @@ struct ShortcutForward {
     ctrl: bool,
     shift: bool,
     alt: bool,
+    /// False for an auto-repeat of a toggle (`shortcuts::is_toggle`): the key is still consumed, so
+    /// the page never sees part of a browser chord, but the command does not run again. The chrome
+    /// path does the same in `accel_command_gated`.
+    run: bool,
 }
 
 impl ShortcutForward {
@@ -305,18 +309,21 @@ fn shortcut_forward(
     alt: bool,
     gated: shortcuts::GatedChords,
 ) -> Option<ShortcutForward> {
-    shortcut_forward_on_page(key, kind, ctrl, shift, alt, gated, || None)
+    shortcut_forward_on_page(key, kind, ctrl, shift, alt, false, gated, || None)
 }
 
 /// [`shortcut_forward`] for a page whose host `page_host` reads only when a site list exists: a site
 /// that prioritises its own shortcuts keeps every key but the browser priority list
-/// (`crate::commands`), and a typing key is never a shortcut from a page.
+/// (`crate::commands`), and a typing key is never a shortcut from a page. `repeat` is the
+/// event's `WasKeyDown`: a held toggle chord runs once (see [`ShortcutForward::run`]).
+#[allow(clippy::too_many_arguments)]
 fn shortcut_forward_on_page(
     key: u32,
     kind: COREWEBVIEW2_KEY_EVENT_KIND,
     ctrl: bool,
     shift: bool,
     alt: bool,
+    repeat: bool,
     gated: shortcuts::GatedChords,
     page_host: impl Fn() -> Option<String>,
 ) -> Option<ShortcutForward> {
@@ -331,12 +338,13 @@ fn shortcut_forward_on_page(
         typing: false,
         host: host.as_deref(),
     };
-    crate::commands::resolve_in(&live, key, ctrl, shift, alt, &context)?;
+    let command = crate::commands::resolve_in(&live, key, ctrl, shift, alt, &context)?;
     Some(ShortcutForward {
         key,
         ctrl,
         shift,
         alt,
+        run: !(repeat && shortcuts::is_toggle(command)),
     })
 }
 
@@ -688,6 +696,7 @@ impl std::fmt::Display for RuntimeUnavailable {
 /// resend the pattern lists.
 #[derive(Default)]
 struct TabBlockState {
+    diagnostic: Option<(TabId, super::DiagnosticDetailCallback)>,
     top_host: RefCell<String>,
     count: Cell<u32>,
     doc_filter: RefCell<Option<(String, crate::blocker::Level, bool, u32)>>,
@@ -698,6 +707,10 @@ struct TabBlockState {
     /// The last cosmetic script sent to this tab installed a style, so a page with no cosmetic
     /// CSS still has one to remove.
     cosmetic_installed: Cell<bool>,
+}
+
+fn blocker_detail(block: &TabBlockState, name: &'static str, count: u64) {
+    if let Some((tab, log)) = block.diagnostic.as_ref() { log(name, *tab, count); }
 }
 
 /// Escapes `value` for embedding as a double-quoted JavaScript or JSON string literal. Defence in
@@ -891,7 +904,7 @@ const NETWORK_ENABLE_PARAMS: &str =
 
 /// Sends `urlPatterns`. If that call is rejected, sends the legacy `urls` list instead. Current
 /// Edge accepts `urlPatterns`, so the legacy JSON is built only after a rejection.
-fn push_blocked_urls(webview: &ICoreWebView2, patterns: Rc<[String]>) {
+fn push_blocked_urls(webview: &ICoreWebView2, patterns: Rc<[String]>, block: &TabBlockState) {
     let target = webview.clone();
     let rejected = Rc::clone(&patterns);
     let handler = CallDevToolsProtocolMethodCompletedHandler::create(Box::new(move |error, result| {
@@ -902,7 +915,11 @@ fn push_blocked_urls(webview: &ICoreWebView2, patterns: Rc<[String]>) {
         Ok(())
     }));
     let method = HSTRING::from("Network.setBlockedURLs");
-    let params = HSTRING::from(blocked_urls_params(&patterns));
+    blocker_detail(block, "blocker_payload_started", 0);
+    let payload = blocked_urls_params(&patterns);
+    blocker_detail(block, "blocker_payload_finished", payload.len() as u64);
+    blocker_detail(block, "blocker_pattern_count", patterns.len() as u64);
+    let params = HSTRING::from(payload);
     let queued = unsafe {
         webview.CallDevToolsProtocolMethod(PCWSTR(method.as_ptr()), PCWSTR(params.as_ptr()), &handler)
     };
@@ -916,7 +933,7 @@ fn push_blocked_urls(webview: &ICoreWebView2, patterns: Rc<[String]>) {
 fn enable_network_then_block(webview: &ICoreWebView2, block: &Rc<TabBlockState>, patterns: Vec<String>) {
     let patterns: Rc<[String]> = patterns.into();
     if block.network_enabled.get() {
-        push_blocked_urls(webview, patterns);
+        push_blocked_urls(webview, patterns, block);
         return;
     }
     let target = webview.clone();
@@ -926,7 +943,7 @@ fn enable_network_then_block(webview: &ICoreWebView2, block: &Rc<TabBlockState>,
         if error.is_ok() && !devtools_protocol_error(&result) {
             armed.network_enabled.set(true);
         }
-        push_blocked_urls(&target, Rc::clone(&queued_patterns));
+        push_blocked_urls(&target, Rc::clone(&queued_patterns), &armed);
         Ok(())
     }));
     let method = HSTRING::from("Network.enable");
@@ -935,7 +952,7 @@ fn enable_network_then_block(webview: &ICoreWebView2, block: &Rc<TabBlockState>,
         webview.CallDevToolsProtocolMethod(PCWSTR(method.as_ptr()), PCWSTR(params.as_ptr()), &handler)
     };
     if queued.is_err() {
-        push_blocked_urls(webview, patterns);
+        push_blocked_urls(webview, patterns, block);
     }
 }
 
@@ -1278,6 +1295,7 @@ fn refresh_blocked_urls(
     private: bool,
     page_host: Option<&str>,
 ) {
+    blocker_detail(block, "blocker_pattern_preparation_started", 0);
     let stored_host = block.top_host.borrow().clone();
     let top_host = page_host.unwrap_or(&stored_host);
     let state = blocker.borrow();
@@ -1293,6 +1311,7 @@ fn refresh_blocked_urls(
         generation,
     );
     if block.doc_filter.borrow().as_ref() == Some(&signature) {
+        blocker_detail(block, "blocker_pattern_preparation_finished", 0);
         return;
     }
     let patterns = if private {
@@ -1301,6 +1320,7 @@ fn refresh_blocked_urls(
         state.blocked_url_patterns(top_host)
     };
     drop(state);
+    blocker_detail(block, "blocker_pattern_preparation_finished", patterns.len() as u64);
     *block.doc_filter.borrow_mut() = Some(signature);
     // Host rules and plain path rules fail in the renderer once Network.enable has landed. The
     // 403 below answers what only the in-process matcher can decide (`request_filters`).
@@ -1399,6 +1419,7 @@ const BLOCKABLE_CONTEXTS: [COREWEBVIEW2_WEB_RESOURCE_CONTEXT; 8] = [
 ];
 
 struct WebView2Tab {
+    focus_trace: Option<crate::performance::FocusTrace>,
     environment: Option<ICoreWebView2Environment>,
     controller: Option<ICoreWebView2Controller>,
     webview: Option<ICoreWebView2>,
@@ -2851,11 +2872,14 @@ impl EngineAdapter for WebView2Engine {
             state
                 .active_tab
                 .and_then(|active| state.tabs.get(&active))
-                .and_then(|tab| tab.controller.clone())
+                .and_then(|tab| tab.controller.clone().map(|controller|(controller,tab.focus_trace.clone())))
         };
         match controller {
-            Some(controller) => unsafe {
-                controller.MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC)
+            Some((controller,trace)) => {
+                if let Some(trace)=&trace {trace.record("interaction_content_move_request",None);}
+                let result=unsafe {controller.MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC)};
+                if let Some(trace)=&trace {trace.result("interaction_content_move_result",&result);}
+                result
             },
             None => Ok(()),
         }
@@ -3397,6 +3421,17 @@ impl EngineAdapter for WebView2Engine {
             EngineAdapter::resize(tab, bounds)?;
         }
         Ok(())
+    }
+    fn parent_window_moved(&mut self) {
+        // Every live controller: split view shows more than the active tab, and a hidden one is
+        // placed right when it is shown again. The calls run after the core borrow ends.
+        let controllers: Vec<_> = self.core.try_borrow().map_or_else(
+            |_| Vec::new(),
+            |state| state.tabs.values().filter_map(|tab| tab.controller.clone()).collect(),
+        );
+        for controller in controllers {
+            let _ = unsafe { controller.NotifyParentWindowPositionChanged() };
+        }
     }
     fn reload(&mut self) -> Result<()> {
         let mut state = self.core.borrow_mut();
@@ -4121,6 +4156,11 @@ unsafe fn configure_controller(
     private: bool,
 ) -> Result<WebView2Tab> {
     unsafe {
+        let detail = |name, count| {
+            if let Some(log) = events.diagnostic_detail.as_ref() { log(name, tab_id, count); }
+        };
+        let focus_trace=events.diagnostic_focus.as_ref().map(|log|crate::performance::FocusTrace::new(log.clone(),"content",u64::from(tab_id.0)));
+        detail("configure_geometry_started", 0);
         controller.SetBounds(bounds)?;
         controller.SetIsVisible(visible)?;
         let webview = controller.CoreWebView2()?;
@@ -4129,6 +4169,8 @@ unsafe fn configure_controller(
             // browsing profile.
             verify_private_profile(&webview)?;
         }
+        detail("configure_geometry_finished", 0);
+        detail("configure_settings_started", 0);
         let settings = webview.Settings()?;
         // Browsing tabs keep the page DevTools available in every build (the "Developer tools"
         // menu item and F12 / Ctrl+Shift+I open it). This is the DevTools UI only; it does not
@@ -4252,6 +4294,8 @@ unsafe fn configure_controller(
                 &mut token,
             )?;
         }
+        detail("configure_settings_finished", 0);
+        detail("configure_look_started", 0);
         enable_smart_screen(&settings, events.policy_event.as_ref())?;
         start_website_look(&webview);
         // Page tools (T7): Ctrl+scroll zoom and spatial navigation, as Settings > Page tools has them.
@@ -4274,10 +4318,18 @@ unsafe fn configure_controller(
         } else if private {
             return Err(Error::from(windows::Win32::Foundation::E_ACCESSDENIED));
         }
+        detail("configure_look_finished", 0);
+        detail("configure_handlers_started", 0);
         let mut token = 0;
         let allowed_file_for_handler = allowed_file.clone();
         let allowed_file_pending = Rc::new(Cell::new(allowed_file.is_some()));
-        let block_tab = Rc::new(TabBlockState::default());
+        let block_tab = Rc::new(TabBlockState {
+            diagnostic: events.diagnostic_detail.clone().map(|log| (tab_id, log)),
+            ..Default::default()
+        });
+        let diagnostic_navigation_id = Rc::new(Cell::new(0u64));
+        let diagnostic_start_id = diagnostic_navigation_id.clone();
+        let diagnostic_start = events.diagnostic_navigation.clone();
         let navigation_start_log = events.policy_event.clone();
         let navigation_started = events.navigation_started.clone();
         let link_navigation = events.link_navigation.clone(); // --- tab options ---
@@ -4348,6 +4400,10 @@ unsafe fn configure_controller(
                             // sync_top_host), not here: a navigation can still be superseded.
                             let mut navigation_id = 0;
                             if args.NavigationId(&mut navigation_id).is_ok() {
+                                diagnostic_start_id.set(navigation_id);
+                                if let Some(callback) = diagnostic_start.as_ref() {
+                                    callback("diagnostic_navigation_started", tab_id, navigation_id, None, "");
+                                }
                                 if let Some(callback) = navigation_started.as_ref() {
                                     callback(tab_id, navigation_id);
                                 }
@@ -4469,6 +4525,7 @@ unsafe fn configure_controller(
                 &mut token,
             )?;
         }
+        let diagnostic_completed = events.diagnostic_navigation.clone();
         let navigation_log = events.policy_event.clone();
         let completed_address_changed = events.address_changed.clone();
         let completed_progress = events.navigation_progress.clone();
@@ -4485,12 +4542,12 @@ unsafe fn configure_controller(
                                 super::NavigationProgressEvent::Completed(navigation_id),
                             );
                         }
-                        if let Some(log) = navigation_log.as_ref() {
-                            log("navigation_completed");
-                        }
                     }
                     let mut success = BOOL::default();
                     if args.IsSuccess(&mut success).is_ok() {
+                        if let Some(callback) = diagnostic_completed.as_ref() {
+                            callback("diagnostic_navigation_completed", tab_id, navigation_id, Some(success.as_bool()), "");
+                        }
                         if let Some(log) = navigation_log.as_ref() {
                             if success.as_bool() {
                                 log("navigation_completed");
@@ -4545,6 +4602,8 @@ unsafe fn configure_controller(
             &mut token,
         )?;
 
+        let diagnostic_title = events.diagnostic_navigation.clone();
+        let diagnostic_title_id = diagnostic_navigation_id;
         let page_ready = events.page_usable.clone();
         let title_changed = events.title_changed.clone();
         webview.add_DocumentTitleChanged(
@@ -4554,6 +4613,14 @@ unsafe fn configure_controller(
                     if sender.DocumentTitle(&mut title).is_ok() {
                         let title = CoTaskMemPWSTR::from(title);
                         let title_text = title.to_string();
+                        if let Some(callback) = diagnostic_title.as_ref()
+                            && let Some(token) = title_text.strip_prefix("BOWSER_PERF_READY_")
+                            && token.len() <= 80
+                            && !token.is_empty()
+                            && token.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+                        {
+                            callback("diagnostic_fixture_ready", tab_id, diagnostic_title_id.get(), None, token);
+                        }
                         if let Some(callback) = title_changed.as_ref() {
                             callback(tab_id, title_text.clone());
                         }
@@ -4998,6 +5065,8 @@ unsafe fn configure_controller(
             let _ = webview15.add_FaviconChanged(&favicon_handler, &mut token);
         }
 
+        detail("configure_handlers_finished", 0);
+        detail("configure_blocker_started", 0);
         if let Some(blocker) = blocker {
             let blocked_callback = events.blocked_changed.clone();
             let policy_log = events.policy_event.clone();
@@ -5012,7 +5081,9 @@ unsafe fn configure_controller(
             );
             // Installed now, with the tab's still-empty top host, so every listed host is blocked
             // at the network layer before the first navigation commits.
+            detail("configure_blocker_refresh_started", 0);
             refresh_blocked_urls(&webview, &block_tab, &blocker, private, None);
+            detail("configure_blocker_refresh_finished", 0);
             // The rules do not change after load, so neither do the request filters.
             let request_filters = blocker.borrow().request_filters();
             let response_environment = environment.clone();
@@ -5079,6 +5150,8 @@ unsafe fn configure_controller(
             // is what excludes documents; the source-kind filter adds requests made by workers,
             // which the older call does not see. The URIs are narrow (`request_filter_uris`): no
             // filter at all means no page request is routed through the UI thread.
+            detail("configure_filter_registration_started", 0);
+            let mut registered_filters = 0u64;
             match webview.cast::<ICoreWebView2_22>() {
                 Ok(webview22) => {
                     for (uri, kinds) in request_filter_uris(request_filters) {
@@ -5089,6 +5162,7 @@ unsafe fn configure_controller(
                                 context,
                                 kinds,
                             )?;
+                            registered_filters += 1;
                         }
                     }
                 }
@@ -5097,12 +5171,16 @@ unsafe fn configure_controller(
                         let uri = HSTRING::from(uri);
                         for context in BLOCKABLE_CONTEXTS {
                             webview.AddWebResourceRequestedFilter(PCWSTR(uri.as_ptr()), context)?;
+                            registered_filters += 1;
                         }
                     }
                 }
             }
+            detail("configure_filter_registration_finished", registered_filters);
         }
 
+        detail("configure_blocker_finished", 0);
+        detail("configure_final_handlers_started", 0);
         let escape_pressed = events.escape_pressed.clone();
         let key_webview = webview.clone();
         controller.add_AcceleratorKeyPressed(
@@ -5112,6 +5190,8 @@ unsafe fn configure_controller(
                     let mut kind = COREWEBVIEW2_KEY_EVENT_KIND::default();
                     let _ = args.VirtualKey(&mut key);
                     let _ = args.KeyEventKind(&mut kind);
+                    let mut status = COREWEBVIEW2_PHYSICAL_KEY_STATUS::default();
+                    let repeat = args.PhysicalKeyStatus(&mut status).is_ok() && status.WasKeyDown.as_bool();
                     let ctrl = GetKeyState(VK_CONTROL.0 as i32) < 0;
                     let shift = GetKeyState(VK_SHIFT.0 as i32) < 0;
                     let alt = GetKeyState(VK_MENU.0 as i32) < 0;
@@ -5123,15 +5203,17 @@ unsafe fn configure_controller(
                     }
                     // A user can bind a gated command to any chord, so the gates are read for every key.
                     let gated = win32::gated_chords(parent);
-                    if let Some(forward) = shortcut_forward_on_page(key, kind, ctrl, shift, alt, gated, || {
+                    if let Some(forward) = shortcut_forward_on_page(key, kind, ctrl, shift, alt, repeat, gated, || {
                         current_web_url(&key_webview).and_then(|url| url.host_str().map(str::to_owned))
                     }) {
-                        win32::post(
-                            parent,
-                            win32::WM_SHORTCUT_KEY,
-                            WPARAM(forward.key as usize),
-                            LPARAM(forward.modifier_bits()),
-                        );
+                        if forward.run {
+                            win32::post(
+                                parent,
+                                win32::WM_SHORTCUT_KEY,
+                                WPARAM(forward.key as usize),
+                                LPARAM(forward.modifier_bits()),
+                            );
+                        }
                         let _ = args.SetHandled(true);
                     }
                 }
@@ -5165,6 +5247,20 @@ unsafe fn configure_controller(
             )?;
         }
 
+        // Separate opt-in passive hooks leave the existing GotFocus product callback unchanged.
+        if let Some(trace)=focus_trace.clone() {
+            trace.record("interaction_focus_registration_started",None);
+            let got=trace.clone();
+            let result=controller.add_GotFocus(&FocusChangedEventHandler::create(Box::new(move |_,_|{
+                got.record("interaction_controller_got_focus",None);Ok(())
+            })),&mut token);
+            trace.result("interaction_focus_got_registration",&result);
+            let lost=trace.clone();
+            let result=controller.add_LostFocus(&FocusChangedEventHandler::create(Box::new(move |_,_|{
+                lost.record("interaction_controller_lost_focus",None);Ok(())
+            })),&mut token);
+            trace.result("interaction_focus_lost_registration",&result);
+        }
         if let Some(callback) = events.failed.as_ref() {
             let failure_callback = callback.clone();
             let render_callback = events.render_process_failed.clone();
@@ -5185,7 +5281,9 @@ unsafe fn configure_controller(
                 &mut token,
             )?;
         }
+        detail("configure_final_handlers_finished", 0);
         Ok(WebView2Tab {
+            focus_trace,
             environment: Some(environment.clone()),
             controller: Some(controller),
             webview: Some(webview),
@@ -6624,7 +6722,36 @@ mod tests {
             ctrl,
             shift,
             alt,
+            run: true,
         })
+    }
+
+    #[test]
+    fn a_held_toggle_chord_on_a_page_runs_once_but_other_chords_repeat() {
+        let down = COREWEBVIEW2_KEY_EVENT_KIND_KEY_DOWN;
+        let held = |key, ctrl, shift, alt, repeat| {
+            super::shortcut_forward_on_page(key, down, ctrl, shift, alt, repeat, shortcuts::GatedChords::default(), || None)
+        };
+        for (key, ctrl, shift, alt, name) in [
+            (0x54, true, true, false, "Ctrl+Shift+T reopen closed tab"),
+            (0x7B, false, false, false, "F12 DevTools"),
+            (0x49, true, true, false, "Ctrl+Shift+I DevTools"),
+            (0x52, true, false, true, "Ctrl+Alt+R reader"),
+            (0x53, true, true, false, "Ctrl+Shift+S capture"),
+            (0x7A, false, false, false, "F11 full screen"),
+        ] {
+            assert_eq!(held(key, ctrl, shift, alt, false), forward(key, ctrl, shift, alt), "{name}: first press");
+            let repeat = held(key, ctrl, shift, alt, true).unwrap_or_else(|| panic!("{name}: a repeat must still be consumed"));
+            assert!(!repeat.run, "{name}: an auto-repeat must not run the toggle again");
+        }
+        // Non-toggle chords keep repeating while held, as in the chrome path.
+        for (key, ctrl, shift, alt, name) in [
+            (0xBB, true, false, false, "Ctrl+Plus zoom in"),
+            (0x09, true, false, false, "Ctrl+Tab next tab"),
+            (0x74, false, false, false, "F5 reload"),
+        ] {
+            assert_eq!(held(key, ctrl, shift, alt, true), forward(key, ctrl, shift, alt), "{name}");
+        }
     }
 
     /// The ungated filter: every setting-gated chord is off, as when the app cannot be reached.

@@ -54,6 +54,7 @@ pub mod cookies;
 pub mod fetch;
 pub(crate) mod json;
 pub mod site_rules;
+mod registration;
 pub mod sources;
 pub mod x_promoted;
 pub mod youtube;
@@ -882,6 +883,16 @@ impl Blocker {
     /// matcher decides those. Empty means no request needs the matcher; `["*"]` means one rule
     /// can match any URL, or there would be more than [`MAX_REQUEST_FILTERS`]. Sorted.
     pub fn request_filters(&self) -> Vec<String> {
+        let filters = self.request_filter_candidates();
+        if filters.len() > MAX_REQUEST_FILTERS
+            || filters.iter().any(|filter| filter.bytes().all(|b| b == b'*'))
+        {
+            return vec!["*".to_owned()];
+        }
+        registration::minimize(filters.into_iter().collect())
+    }
+
+    fn request_filter_candidates(&self) -> BTreeSet<String> {
         let mut filters = BTreeSet::new();
         for rule in &self.substrings {
             filters.insert(format!("*{}*", request_filter_text(&rule.pattern)));
@@ -896,12 +907,7 @@ impl Blocker {
                 filters.insert(format!("*://*{host}{}", request_filter_text(path)));
             }
         }
-        if filters.len() > MAX_REQUEST_FILTERS
-            || filters.iter().any(|filter| filter.bytes().all(|b| b == b'*'))
-        {
-            return vec!["*".to_owned()];
-        }
-        filters.into_iter().collect()
+        filters
     }
 
     /// True when `host` or one of its parent domains is a host rule.

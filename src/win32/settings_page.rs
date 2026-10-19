@@ -134,7 +134,9 @@ fn available(owner: HWND) -> bool {
 /// Opens the settings page at `section` (main menu, palette, omnibox). `reuse_blank`: a blank
 /// normal shown tab becomes the page (the omnibox) instead of a new tab opening (the menu).
 pub(crate) fn open(owner: HWND, app: &AppRef, section: Option<Section>, reuse_blank: bool) {
+    App::diagnostic_interaction_event(app,"interaction_settings_open",u64::from(reuse_blank));
     if !available(owner) {
+        App::diagnostic_interaction_event(app,"interaction_settings_fallback",0);
         if let Err(error) = super::settings_panel::open(owner, app) {
             super::show_error_message(&format!("Settings could not be opened: {error}"));
         }
@@ -274,6 +276,7 @@ fn ensure_host(owner: HWND) {
         let owner = HWND(raw as *mut _);
         match command {
             Command::Ready => {
+                if let Some(app)=super::window::app_of(owner){App::diagnostic_interaction_event(&app,"interaction_settings_ready",0);}
                 let _ = with(owner, |rt| {
                     rt.ready = true;
                     rt.state = None;
@@ -517,6 +520,7 @@ pub(crate) fn sync(owner: HWND, app: &AppRef) {
         let _ = host.post_json(&wire::go_json(section));
     }
     if shown != Some(want) {
+        App::diagnostic_interaction_event(app,"interaction_settings_show",u64::from(want.tab.0));
         let size = rect_size(want.rect);
         unsafe {
             let _ = SetWindowPos(container, Some(HWND_TOP), want.rect.left, want.rect.top, size.right, size.bottom, SWP_NOACTIVATE | SWP_SHOWWINDOW);
@@ -530,6 +534,7 @@ pub(crate) fn sync(owner: HWND, app: &AppRef) {
     let asked = with(owner, |rt| std::mem::take(&mut rt.focus_pending)).unwrap_or(false);
     let appeared = shown.is_none() && !super::window::omnibox_focused(owner);
     if (asked || appeared) && want.tab == App::active_tab_id(app) {
+        App::diagnostic_interaction_event(app,"interaction_settings_focus_requested",u64::from(asked)|(u64::from(appeared)<<1));
         let _ = host.focus();
     }
 }
@@ -673,10 +678,7 @@ fn run(owner: HWND, app: &AppRef, tab: TabId, action: Action) {
             }
             let saved = crate::settings::save(&path, &settings);
             if saved.is_ok() {
-                App::apply_tab_layout_settings(app, settings.tab_layout, settings.sidebar_width);
-                App::apply_efficiency_mode(app, settings.efficiency_mode);
-                App::apply_sleep_settings(app, settings.sleep_enabled, settings.sleep_after_secs);
-                App::apply_live_settings(app, &settings);
+                App::apply_page_settings(app, &settings);
             }
             answer(owner, saved.map_err(|error| format!("Settings could not be saved: {error}. Nothing was saved.")));
         }
@@ -688,10 +690,7 @@ fn run(owner: HWND, app: &AppRef, tab: TabId, action: Action) {
             if saved.is_ok() {
                 // Search goes back to its defaults too: the engine list is put back as shipped.
                 let _ = std::fs::remove_file(profile.root().join(crate::search_engines::FILE_NAME));
-                App::apply_tab_layout_settings(app, defaults.tab_layout, defaults.sidebar_width);
-                App::apply_efficiency_mode(app, defaults.efficiency_mode);
-                App::apply_sleep_settings(app, defaults.sleep_enabled, defaults.sleep_after_secs);
-                App::apply_live_settings(app, &defaults);
+                App::apply_page_settings(app, &defaults);
             }
             answer(owner, saved.map_err(|error| format!("Settings could not be reset: {error}.")));
         }
@@ -741,43 +740,16 @@ fn run(owner: HWND, app: &AppRef, tab: TabId, action: Action) {
         Action::Refresh => {
             let _ = with(owner, |rt| rt.dirty = true);
         }
-        Action::DownloadAsk(on) => {
-            App::set_ask_download_location(app, on);
-            answer(owner, Ok(()));
-        }
-        Action::TranslateOffer(on) => {
-            App::set_translate_offer(app, on);
-            answer(owner, Ok(()));
-        }
-        Action::TranslateAuto(on) => {
-            App::set_translate_auto(app, on);
-            answer(owner, Ok(()));
-        }
-        Action::TranslateTarget(target) => {
-            App::set_translate_target(app, &target);
-            answer(owner, Ok(()));
-        }
+        Action::DownloadAsk(on) => answer(owner, App::set_ask_download_location(app, on)),
+        Action::TranslateOffer(on) => answer(owner, App::set_translate_offer(app, on)),
+        Action::TranslateAuto(on) => answer(owner, App::set_translate_auto(app, on)),
+        Action::TranslateTarget(target) => answer(owner, App::set_translate_target(app, &target)),
         // --- tab options ---
-        Action::TabOption(text) => {
-            if App::set_tab_option(app, &text) {
-                answer(owner, Ok(()));
-            } else {
-                answer(owner, Err("That value is not allowed. Nothing was saved.".into()));
-            }
-        }
+        Action::TabOption(text) => answer(owner, App::set_tab_option(app, &text)),
         // --- end tab options ---
         // --- theme options ---
-        Action::ThemeOption(text) => {
-            if App::set_theme_option(app, &text) {
-                answer(owner, Ok(()));
-            } else {
-                answer(owner, Err("That value is not allowed. Nothing was saved.".into()));
-            }
-        }
-        Action::ThemeReset => {
-            App::reset_theme(app);
-            answer(owner, Ok(()));
-        }
+        Action::ThemeOption(text) => answer(owner, App::set_theme_option(app, &text)),
+        Action::ThemeReset => answer(owner, App::reset_theme(app)),
         Action::ThemeExport => match export_theme_file(owner, app) {
             Ok(true) => answer(owner, Ok(())),
             Ok(false) => {
@@ -808,22 +780,18 @@ fn run(owner: HWND, app: &AppRef, tab: TabId, action: Action) {
         }
         // --- end tab stacks ---
         // --- toolbars and feeds (thread T13) ---
-        Action::BarOption(text) => {
-            if App::set_bar_option(app, &text) {
-                answer(owner, Ok(()));
-            } else {
-                answer(owner, Err("That value is not allowed. Nothing was saved.".into()));
-            }
-        }
+        Action::BarOption(text) => answer(owner, App::set_bar_option(app, &text)),
         Action::OpenFeeds => super::window::open_feeds_panel(owner, app),
         // --- end toolbars and feeds ---
         Action::DownloadFolder => {
             // The native folder picker, parented to the window; Bowser keeps the choice itself, so the
             // page never names a path. Cancelling changes nothing and says nothing.
-            if App::pick_download_folder(app, owner) {
-                answer(owner, Ok(()));
-            } else {
-                let _ = with(owner, |rt| rt.dirty = true);
+            match App::pick_download_folder(app, owner) {
+                Ok(true) => answer(owner, Ok(())),
+                Ok(false) => {
+                    let _ = with(owner, |rt| rt.dirty = true);
+                }
+                Err(message) => answer(owner, Err(message)),
             }
         }
         Action::SetDefault => {

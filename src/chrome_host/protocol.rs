@@ -296,6 +296,8 @@ pub struct MenuCards {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Command {
     Ready,
+    /// Non-action telemetry, accepted only from the toolbar and dropped unless opted in.
+    Interaction { event: &'static str, count: u32 },
     Nav(NavAction),
     Edit { seq: u32, text: String },
     Submit(String),
@@ -1129,6 +1131,7 @@ fn build_command(fields: &[(String, Value)]) -> Result<Command, ProtocolError> {
     let allowed: &[&str] = match kind {
         "ready" | "escape" => &[],
         "nav" | "open" => &["a"],
+        "interaction" => &["e", "n"],
         "edit" => &["seq", "text"],
         "submit" => &["text"],
         "focus" => &["on"],
@@ -1185,6 +1188,16 @@ fn build_command(fields: &[(String, Value)]) -> Result<Command, ProtocolError> {
     }
     Ok(match kind {
         "ready" => Command::Ready,
+        "interaction" => {
+            let event=match str_field(fields,"e")? {
+                "armed"=>"interaction_dom_armed", "enter_capture"=>"interaction_dom_enter_capture",
+                "enter_bubble"=>"interaction_dom_enter_bubble", "focus_in"=>"interaction_dom_focus_in",
+                "focus_out"=>"interaction_dom_focus_out", _=>return Err(ProtocolError::InvalidValue("e")),
+            };
+            let count=uint_field(fields,"n")?;
+            if count>65535{return Err(ProtocolError::InvalidValue("n"));}
+            Command::Interaction{event,count}
+        },
         "escape" => Command::Escape,
         "nav" => Command::Nav(match str_field(fields, "a")? {
             "back" => NavAction::Back,
@@ -2518,6 +2531,15 @@ mod tests {
         parse_command(raw).unwrap_or_else(|e| panic!("{raw:?} rejected: {e}"))
     }
 
+    #[test]
+    fn interaction_diagnostics_are_closed_numeric_non_action_messages() {
+        for event in ["armed","enter_capture","enter_bubble","focus_in","focus_out"] {
+            assert!(matches!(parse_command(&format!(r#"{{"v":1,"t":"interaction","e":"{event}","n":65535}}"#)),Ok(Command::Interaction{..})));
+        }
+        for raw in [r#"{"v":1,"t":"interaction","e":"url","n":0}"#,r#"{"v":1,"t":"interaction","e":"armed","n":65536}"#,r#"{"v":1,"t":"interaction","e":"armed","n":-1}"#,r#"{"v":1,"t":"interaction","e":"armed","n":0,"text":"secret"}"#,r#"{"v":1,"t":"interaction","e":"armed","n":0,"n":1}"#] {
+            assert!(parse_command(raw).is_err(),"{raw}");
+        }
+    }
     #[test]
     fn composer_messages_carry_text_and_a_rectangle_and_nothing_else() {
         assert_eq!(

@@ -1,5 +1,6 @@
 pub mod download;
 pub mod web_app;
+mod web_app_profile;
 mod extension_page;
 mod webview2;
 #[cfg(test)]
@@ -178,6 +179,10 @@ pub trait EngineAdapter {
         None
     }
     fn resize(&mut self, bounds: RECT) -> windows::core::Result<()>;
+    /// The parent window moved on screen (its client-relative bounds did not change). WebView2
+    /// needs `NotifyParentWindowPositionChanged` for this, or it keeps placing its own popups and
+    /// accessibility rects at the old position.
+    fn parent_window_moved(&mut self) {}
     fn reload(&mut self) -> windows::core::Result<()> {
         Ok(())
     }
@@ -437,6 +442,10 @@ pub trait TabEngine {
     fn close_tab(&mut self, tab: crate::tabs::TabId) -> windows::core::Result<()>;
 }
 
+pub type DiagnosticNavigationCallback = std::rc::Rc<dyn Fn(&'static str, crate::tabs::TabId, u64, Option<bool>, &str)>;
+
+pub type DiagnosticDetailCallback = std::rc::Rc<dyn Fn(&'static str, crate::tabs::TabId, u64)>;
+
 #[derive(Clone, Default)]
 pub struct EngineEvents {
     pub address_changed: Option<std::rc::Rc<dyn Fn(crate::tabs::TabId, url::Url)>>,
@@ -480,6 +489,12 @@ pub struct EngineEvents {
     /// The tab's zoom changed (our own set or the page's Ctrl+wheel). The value is in percent.
     pub zoom_changed: Option<std::rc::Rc<dyn Fn(crate::tabs::TabId, u16)>>,
     pub policy_event: Option<std::rc::Rc<dyn Fn(&'static str)>>,
+    /// Synthetic-profile diagnostics only. No URLs or arbitrary page titles are recorded.
+    pub diagnostic_navigation: Option<DiagnosticNavigationCallback>,
+    /// Explicit detail-only native configure spans/counts; absent from ordinary timing arms.
+    pub diagnostic_detail: Option<DiagnosticDetailCallback>,
+    /// Interaction-only passive controller focus tracing; absent without the explicit opt-in.
+    pub diagnostic_focus: Option<std::rc::Rc<crate::performance::PerfLog>>,
     /// A download from a normal tab started, moved or changed state (docs/design/downloads.md).
     /// Without this and `download_plan`, every download is cancelled.
     pub download_event: Option<std::rc::Rc<dyn Fn(crate::downloads::DownloadEvent)>>,

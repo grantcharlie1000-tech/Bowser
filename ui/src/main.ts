@@ -1,3 +1,4 @@
+import { installInteractionDiagnostic } from './interaction-diagnostic';
 // Toolbar entry point: wires DOM events to the host bridge and host messages to the view.
 import {
   MAX_TEXT,
@@ -394,6 +395,9 @@ function startToolbar(root: HTMLElement): void {
 
   onInbound((msg) => {
     switch (msg.t) {
+      case 'diagnosticInteraction':
+        installInteractionDiagnostic(input, (e, n) => { send({ v: 1, t: 'interaction', e, n }); }, () => (Number(composing) << 12) | (Number(pending) << 13) | (Number(list !== null && listSel > 0) << 14) | (Number(list !== null && list.seq === latestSeq) << 15));
+        break;
       case 'state':
         loading = msg.loading;
         applyTheme(msg.theme, msg.solid, msg.dark, msg.fontScale, msg.uiFont, msg.density, msg.compactMenus, msg.look);

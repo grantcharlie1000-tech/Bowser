@@ -40,13 +40,12 @@ pub(crate) fn links_from_answer(base: &url::Url, answer: &str) -> Vec<FeedLink> 
 impl App {
     /// Settings > Toolbars and Feeds: one `key=value` change of the tab bar, panel bar or feed options,
     /// kept, saved and put to work at once. False (and nothing changed) when the key or value is not one the
-    /// page may send.
-    pub fn set_bar_option(app: &AppRef, text: &str) -> bool {
+    /// page may send; `Err` too when it is in force but `settings.txt` could not be written.
+    pub fn set_bar_option(app: &AppRef, text: &str) -> std::result::Result<(), String> {
         if !Self::apply_bar_option(app, text) {
-            return false;
+            return Err("That value is not allowed. Nothing was saved.".into());
         }
-        Self::save_settings(app);
-        true
+        Self::try_save_settings(app)
     }
 
     /// The in-memory half of [`App::set_bar_option`]: checks and applies the change and redraws the bars.

@@ -17,6 +17,7 @@ use crate::{
 };
 
 thread_local! {
+    static INTERACTION_BORROW_DROPS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
     static TAB_CHANGE_POSTED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static TAB_CHANGE_FLAGS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
     /// The form fields of a search with an engine that POSTs its query, for the one navigation to
@@ -658,6 +659,9 @@ pub struct App {
     /// Stamps of `settings.txt` and the search provider file when `provider` was last read.
     search_config_stamp: Option<[ConfigStamp; 2]>,
     pub log: Rc<PerfLog>,
+    diagnostic_logging: bool,
+    diagnostic_detail: bool,
+    diagnostic_interaction: bool,
     pub minimized: bool,
     /// Power source, efficiency decision and EcoQoS state. See `crate::efficiency`.
     pub efficiency: EfficiencyState,
@@ -1193,10 +1197,18 @@ impl App {
     }
 
     pub fn save_settings(app: &AppRef) {
-        if let Ok(profile) = crate::profile::active() {
-            if let Err(error) = Self::save_settings_to(app, &profile.settings_file()) {
-                win32::show_error_message(&format!("Settings could not be saved: {error}"));
-            }
+        if let Err(message) = Self::try_save_settings(app) {
+            win32::show_error_message(&message);
+        }
+    }
+
+    /// [`App::save_settings`] for the settings page: the failure comes back as the words the page shows
+    /// (its own toast), not a modal box, so a row never says "Saved" when the file was not written.
+    pub fn try_save_settings(app: &AppRef) -> std::result::Result<(), String> {
+        match crate::profile::active() {
+            Ok(profile) => Self::save_settings_to(app, &profile.settings_file())
+                .map_err(|error| format!("Settings could not be saved: {error}")),
+            Err(_) => Ok(()),
         }
     }
 
@@ -2982,11 +2994,18 @@ impl App {
         };
         let id = match crate::internal_page::open_plan(&tabs, current, reuse_blank) {
             OpenPlan::Existing(id) => {
+                Self::diagnostic_interaction_event(app,"interaction_internal_plan_existing",u64::from(id.0));
                 let _ = Self::select_tab(app, id);
                 id
             }
-            OpenPlan::Current(id) => id,
-            OpenPlan::NewTab => Self::new_tab(app),
+            OpenPlan::Current(id) => {
+                Self::diagnostic_interaction_event(app,"interaction_internal_plan_current",u64::from(id.0));id
+            }
+            OpenPlan::NewTab => {
+                Self::diagnostic_interaction_event(app,"interaction_internal_plan_new",0);
+                let id=Self::new_tab(app);
+                Self::diagnostic_interaction_event(app,"interaction_internal_new_result",u64::from(id.0));id
+            },
         };
         Self::show_internal_page(app, id, page);
         id
@@ -2995,6 +3014,7 @@ impl App {
     /// Puts tab `id` on `page`: address, title and favicon, and no engine page. Only for a tab
     /// without a content controller (a new, blank, discarded or settings tab).
     fn show_internal_page(app: &AppRef, id: TabId, page: crate::internal_page::InternalPage) {
+        Self::diagnostic_interaction_event(app,"interaction_internal_show_requested",u64::from(id.0));
         let url = page.url();
         let (hwnd, edit, active) = {
             let mut state = app.borrow_mut();
@@ -3003,6 +3023,8 @@ impl App {
                 return;
             };
             if tab.private || tab.controller_created {
+                let reason=u64::from(tab.private)|(u64::from(tab.controller_created)<<1);
+                if state.diagnostic_interaction {let _=state.log.record_detail_count("interaction_internal_show_refused",u64::from(id.0),reason);}
                 return;
             }
             tab.url = Some(url.clone());
@@ -3025,6 +3047,7 @@ impl App {
             }
             (state.hwnd, state.edit, active)
         };
+        Self::diagnostic_interaction_event(app,"interaction_internal_show_applied",u64::from(id.0));
         if active {
             win32::sync_address_input(hwnd, edit, id, &url, Self::settings(app).minimal_url);
             Self::sync_window_title(app);
@@ -3545,6 +3568,7 @@ impl App {
 
     /// Moves keyboard focus into the active page. Used after the HTML toolbar submits or escapes.
     pub fn focus_page(app: &AppRef) {
+        Self::diagnostic_interaction_event(app,"interaction_focus_page_requested",0);
         if let Some(page) = Self::internal_page(app, Self::active_tab_id(app)) {
             let hwnd = app.borrow().hwnd;
             if page.is_history() {
@@ -4238,45 +4262,45 @@ impl App {
     }
 
     /// Settings > Downloads > Change: the native folder picker over `owner`, then the choice is
-    /// saved. False when cancelled or the folder is not usable as a setting.
-    pub fn pick_download_folder(app: &AppRef, owner: HWND) -> bool {
+    /// saved. `Ok(false)` when cancelled or the folder is not usable as a setting; `Err` when the
+    /// choice could not be saved.
+    pub fn pick_download_folder(app: &AppRef, owner: HWND) -> std::result::Result<bool, String> {
         let start = Self::download_dir(app);
         let Some(chosen) = crate::download_shell::pick_folder(owner, start.as_deref()) else {
-            return false;
+            return Ok(false);
         };
         let Some(dir) = crate::settings::parse_download_dir(&chosen.to_string_lossy()) else {
-            return false;
+            return Ok(false);
         };
         app.borrow_mut().settings.download_dir = dir;
-        Self::save_settings(app);
-        true
+        Self::try_save_settings(app).map(|()| true)
     }
 
     /// Settings > Translation: offer to translate pages in other languages.
-    pub fn set_translate_offer(app: &AppRef, on: bool) {
+    pub fn set_translate_offer(app: &AppRef, on: bool) -> std::result::Result<(), String> {
         app.borrow_mut().settings.translate_offer = on;
-        Self::save_settings(app);
+        Self::try_save_settings(app)
     }
 
     /// Settings > Translation: translate sites set to "always translate" without asking.
-    pub fn set_translate_auto(app: &AppRef, on: bool) {
+    pub fn set_translate_auto(app: &AppRef, on: bool) -> std::result::Result<(), String> {
         app.borrow_mut().settings.translate_auto = on;
-        Self::save_settings(app);
+        Self::try_save_settings(app)
     }
 
     /// Settings > Translation: the language pages are translated into (empty: the display language).
-    pub fn set_translate_target(app: &AppRef, target: &str) {
+    pub fn set_translate_target(app: &AppRef, target: &str) -> std::result::Result<(), String> {
         let Some(target) = crate::settings::parse_translate_target(target) else {
-            return;
+            return Err("That value is not allowed. Nothing was saved.".into());
         };
         app.borrow_mut().settings.translate_target = target;
-        Self::save_settings(app);
+        Self::try_save_settings(app)
     }
 
     /// Settings > Downloads > "Ask where to save each file".
-    pub fn set_ask_download_location(app: &AppRef, on: bool) {
+    pub fn set_ask_download_location(app: &AppRef, on: bool) -> std::result::Result<(), String> {
         app.borrow_mut().settings.ask_download_location = on;
-        Self::save_settings(app);
+        Self::try_save_settings(app)
     }
 
     /// Performs a bubble or page action for entry `id` (0 for the list-level ones): the list
@@ -5049,6 +5073,9 @@ impl App {
             provider,
             search_config_stamp: None,
             log,
+            diagnostic_logging: options.diagnostic_log.is_some(),
+            diagnostic_detail: options.diagnostic_detail,
+            diagnostic_interaction: options.diagnostic_interaction,
             minimized: false,
             efficiency: EfficiencyState::default(),
             desired_memory_target: MemoryUsageTarget::Normal,
@@ -5492,6 +5519,7 @@ impl App {
         // `bowser://settings...` opens the settings page (a blank tab becomes it); other internal
         // hosts fall through and are reported as an unsupported address, as before.
         if let Some(page) = crate::internal_page::parse_input(input) {
+            Self::diagnostic_interaction_event(app,if page.is_settings(){"interaction_submit_settings"}else{"interaction_submit_other_internal"},0);
             let hwnd = app.borrow().hwnd;
             if page.is_history() {
                 win32::open_history_page(hwnd, app, true);
@@ -5767,6 +5795,29 @@ impl App {
         if start_environment {
             Self::start_engine_creation(app);
         }
+    }
+
+    pub fn diagnostic_interaction_dropped() -> u64 {INTERACTION_BORROW_DROPS.with(std::cell::Cell::get)}
+    pub fn diagnostic_interaction_log(app: &AppRef) -> Option<Rc<PerfLog>> {
+        let state=app.borrow();
+        state.diagnostic_interaction.then(||state.log.clone())
+    }
+    /// Fixed compile-time labels and numeric tab association, never input/URL text.
+    pub fn diagnostic_interaction_event(app: &AppRef,event: &'static str,count: u64) {
+        let Ok(state)=app.try_borrow() else{INTERACTION_BORROW_DROPS.with(|drops|drops.set(drops.get().saturating_add(1)));return;};
+        if state.diagnostic_interaction {
+            let _=state.log.record_detail_count(event,u64::from(state.tab_model.active().0),count);
+        }
+    }
+
+    pub fn diagnostic_detail_log(app: &AppRef) -> Option<Rc<PerfLog>> {
+        let state = app.borrow();
+        state.diagnostic_detail.then(|| state.log.clone())
+    }
+    /// Existing explicit diagnostic-log opt-in; fixed numeric lifecycle events only.
+    pub fn diagnostic_lifecycle_log(app: &AppRef) -> Option<std::rc::Weak<PerfLog>> {
+        let state=app.borrow();
+        state.log.enabled().then(||Rc::downgrade(&state.log))
     }
 
     /// HTML chrome mode: the tab environment the chrome views are hosted in. When the engine has
@@ -6366,6 +6417,18 @@ impl App {
             }),
             download_event: Some(Self::download_event_hook(app)),
             download_plan: Some(Self::download_plan_hook(app)),
+            diagnostic_navigation: if app.borrow().diagnostic_logging {
+                let log = app.borrow().log.clone();
+                Some(Rc::new(move |event, tab, navigation, success, token| {
+                    let _ = log.record_navigation(event, u64::from(tab.0), navigation, success, token);
+                }))
+            } else { None },
+            diagnostic_focus: Self::diagnostic_interaction_log(app),
+            diagnostic_detail: Self::diagnostic_detail_log(app).map(|log| {
+                Rc::new(move |event: &'static str, tab: TabId, count: u64| {
+                    let _ = log.record_detail_count(event, u64::from(tab.0), count);
+                }) as Rc<dyn Fn(&'static str, TabId, u64)>
+            }),
             policy_event: {
                 let log = app.borrow().log.clone();
                 Some(Rc::new(move |event| {
@@ -6652,6 +6715,31 @@ impl App {
     }
 
     pub fn resize_current(app: &AppRef, bounds: windows::Win32::Foundation::RECT) {
+        Self::resize_current_then(app, bounds, |error| {
+            win32::show_error_message(&format!("WebView2 resize failed: {error}"));
+        });
+    }
+
+    /// The main window moved: the pages' controllers are told, so WebView2 places its own popups
+    /// (select lists, IME, autofill) and accessibility rects at the window's new place. A move
+    /// that arrives while the app is busy is skipped; the next one carries the position.
+    pub fn parent_window_moved(app: &AppRef) {
+        if app.try_borrow_mut().is_err() {
+            return;
+        }
+        let _ = Self::with_engine(app, |engine| {
+            engine.parent_window_moved();
+            Ok(())
+        });
+    }
+
+    /// Resizes the page(s) and hands a failure to `report` once the app is no longer borrowed: the
+    /// error dialog's modal loop sends WM_SIZE, which resizes again and borrows the app.
+    fn resize_current_then(
+        app: &AppRef,
+        bounds: windows::Win32::Foundation::RECT,
+        report: impl FnOnce(windows::core::Error),
+    ) {
         let (split, panes) = {
             let state = app.borrow();
             (state.split_view, state.split_bounds)
@@ -6671,8 +6759,9 @@ impl App {
         } else {
             state.engine = Some(engine);
         }
+        drop(state);
         if let Err(error) = result {
-            win32::show_error_message(&format!("WebView2 resize failed: {error}"));
+            report(error);
         }
     }
 
@@ -6956,6 +7045,20 @@ impl App {
     /// `apply_*` of their own (layout, efficiency and sleep already have one, each with its own
     /// resize or reschedule). Everything else here only changes `settings.txt`'s file-committed value
     /// and takes effect on the next start, matching the page's "Applies after restart" rows.
+    /// The settings page saved or reset `settings.txt` to `settings`: memory takes every value it applies
+    /// at once (layout, efficiency, sleep, then [`App::apply_live_settings`]). Every key where memory
+    /// now holds the value just written counts as agreed with the file, so a later save from memory does
+    /// not push this window's layout, efficiency or sleep values over a newer value another window saved.
+    pub fn apply_page_settings(app: &AppRef, settings: &crate::settings::Settings) {
+        Self::apply_tab_layout_settings(app, settings.tab_layout, settings.sidebar_width);
+        Self::apply_efficiency_mode(app, settings.efficiency_mode);
+        Self::apply_sleep_settings(app, settings.sleep_enabled, settings.sleep_after_secs);
+        Self::apply_live_settings(app, settings);
+        let mut state = app.borrow_mut();
+        let synced = crate::settings::mark_agreed(&state.settings_synced, &state.settings, settings);
+        state.settings_synced = synced;
+    }
+
     pub fn apply_live_settings(app: &AppRef, settings: &crate::settings::Settings) {
         let before = app.borrow().settings.clone(); // --- wave-1 fixes ---
         // The blocker, retention and website-look settings take effect without a restart.
@@ -7749,6 +7852,7 @@ mod tests {
     mod theme_flow; // --- theme options ---
     mod stack_flow; // --- tab stacks, tiling and workspaces (T10) ---
     mod workspace_restore; // workspaces across a restart, refused moves and creates
+    mod window_flow; // main window moves and resizes
 
     #[test]
     fn reader_probe_due_table() {
@@ -10004,6 +10108,9 @@ mod tests {
             provider: SearchProvider::from_config(None, Path::new("missing-search-provider.txt")),
             search_config_stamp: None,
             log: Rc::new(PerfLog::new(None).unwrap()),
+            diagnostic_logging: false,
+            diagnostic_detail: false,
+            diagnostic_interaction: false,
             minimized: false,
             efficiency: EfficiencyState::default(),
             desired_memory_target: MemoryUsageTarget::Normal,

@@ -60,6 +60,85 @@ fn a_save_from_memory_never_reverts_a_value_the_page_saved_since() {
 }
 
 #[test]
+fn a_page_save_or_reset_of_layout_efficiency_and_sleep_is_not_pushed_over_a_newer_file_value() {
+    use crate::settings::{EfficiencyMode, TabLayout};
+    for reset in [false, true] {
+        let app = app_with_pending(rect(800, 600));
+        let path = temp_settings(if reset { "page-reset" } else { "page-save" });
+        crate::settings::save(&path, &Settings::default()).unwrap();
+        // The page saves (or resets to) these four values and applies them, as `settings_page::run` does.
+        let page = if reset {
+            {
+                let mut state = app.borrow_mut();
+                state.settings.tab_layout = TabLayout::Vertical;
+                state.settings.sidebar_width = 300;
+                state.settings.efficiency_mode = EfficiencyMode::On;
+                state.settings.sleep_enabled = false;
+            }
+            // Memory and the file agree on these before Reset.
+            App::save_settings_to(&app, &path).unwrap();
+            crate::settings::reset_defaults(&Settings::load(&path))
+        } else {
+            page_writes(&path, |s| {
+                s.tab_layout = TabLayout::Vertical;
+                s.sidebar_width = 300;
+                s.efficiency_mode = EfficiencyMode::On;
+                s.sleep_enabled = false;
+            })
+        };
+        crate::settings::save(&path, &page).unwrap();
+        App::apply_page_settings(&app, &page);
+        // Another window then changes all four in the file, to values neither the page nor memory held.
+        let other = page_writes(&path, |s| {
+            s.tab_layout = TabLayout::TabsBottom;
+            s.sidebar_width = 220;
+            s.efficiency_mode = EfficiencyMode::Off;
+            s.sleep_enabled = !page.sleep_enabled;
+        });
+        // This window saves an unrelated value from memory: the other window's values stay.
+        app.borrow_mut().settings.translate_offer = false;
+        App::save_settings_to(&app, &path).unwrap();
+        let saved = Settings::load(&path);
+        assert_eq!(
+            (saved.tab_layout, saved.sidebar_width, saved.efficiency_mode, saved.sleep_enabled),
+            (other.tab_layout, other.sidebar_width, other.efficiency_mode, other.sleep_enabled),
+            "reset={reset}"
+        );
+        assert!(!saved.translate_offer);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+}
+
+#[test]
+fn a_settings_row_reports_a_failed_save_instead_of_saved() {
+    let _profile = crate::profile::TestProfileGuard::isolated();
+    let app = app_with_pending(rect(800, 600));
+    // A folder where settings.txt belongs: every write fails.
+    let path = crate::profile::active().unwrap().settings_file();
+    std::fs::create_dir_all(&path).unwrap();
+    let rows: [(&str, std::result::Result<(), String>); 8] = [
+        ("tab option", App::set_tab_option(&app, "tabs_new_tab_position=related")),
+        ("theme option", App::set_theme_option(&app, "theme_background=#102030")),
+        ("theme reset", App::reset_theme(&app)),
+        ("bar option", App::set_bar_option(&app, "feeds_detect=false")),
+        ("translate offer", App::set_translate_offer(&app, false)),
+        ("translate auto", App::set_translate_auto(&app, true)),
+        ("translate target", App::set_translate_target(&app, "fr")),
+        ("ask where to save", App::set_ask_download_location(&app, true)),
+    ];
+    for (row, result) in rows {
+        let error = result.expect_err(row);
+        assert!(error.starts_with("Settings could not be saved"), "{row}: {error}");
+    }
+    assert!(path.is_dir(), "nothing replaced the folder");
+    // An invalid value still says so, and a good save still succeeds once the file can be written.
+    assert_eq!(App::set_translate_target(&app, "not a language!").unwrap_err(), "That value is not allowed. Nothing was saved.");
+    std::fs::remove_dir(&path).unwrap();
+    assert_eq!(App::set_tab_option(&app, "tabs_new_tab_position=stack"), Ok(()));
+    assert!(path.is_file());
+}
+
+#[test]
 fn reset_settings_reaches_the_values_memory_holds() {
     let app = app_with_pending(rect(800, 600));
     {

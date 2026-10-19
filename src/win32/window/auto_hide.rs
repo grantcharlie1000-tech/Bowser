@@ -602,12 +602,49 @@ thread_local! {
     static SAVED: RefCell<HashMap<isize, Saved>> = RefCell::new(HashMap::new());
 }
 
+/// What a full-screen change does to the window frame.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum WindowStep {
+    /// Save the placement and style, then fill the monitor.
+    Enter,
+    /// Put back what `Enter` saved.
+    Leave,
+    /// The window is already full screen and stays so; only the bars may change.
+    Keep,
+}
+
+/// F11 with full-screen `bits` (1 window, 2 page, 4 the window went full screen only for the page):
+/// the bits after it and the frame step. While a page holds the window full screen the frame is
+/// already gone, so F11 only decides whether it stays full screen when the page ends. Saving again
+/// there would save the frameless, monitor-sized window over the real one (W-2).
+fn f11_step(bits: usize) -> (usize, WindowStep) {
+    match (bits & 1 != 0, bits & 2 != 0) {
+        (false, false) => (bits | 1, WindowStep::Enter),
+        (true, false) => (bits & !1, WindowStep::Leave),
+        (false, true) => ((bits | 1) & !4, WindowStep::Keep),
+        (true, true) => ((bits & !1) | 4, WindowStep::Keep),
+    }
+}
+
+/// A page going full screen (`on`) or back with full-screen `bits`; `None` for a repeated event.
+fn page_step(bits: usize, on: bool) -> Option<(usize, WindowStep)> {
+    if on == (bits & 2 != 0) {
+        return None;
+    }
+    Some(if on {
+        let by_page = bits & 1 == 0;
+        (bits | 2 | if by_page { 4 } else { 0 }, if by_page { WindowStep::Enter } else { WindowStep::Keep })
+    } else {
+        (bits & !2 & !4, if bits & 4 != 0 { WindowStep::Leave } else { WindowStep::Keep })
+    })
+}
+
 /// F11: the window fills its monitor with no frame, or goes back to what it was.
 pub(crate) fn toggle_fullscreen(hwnd: HWND, app: &AppRef) {
-    if fullscreen_bits(hwnd) & 1 != 0 {
-        leave_window(hwnd, app, false);
-    } else {
-        enter_window(hwnd, app, false);
+    let bits = fullscreen_bits(hwnd);
+    let (next, step) = f11_step(bits);
+    if !apply_step(hwnd, app, next, step) {
+        set_fullscreen_bits(hwnd, bits);
     }
 }
 
@@ -617,15 +654,9 @@ pub(crate) fn page_fullscreen(hwnd: HWND, app: &AppRef, on: bool, source: Option
     let bits = fullscreen_bits(hwnd);
     // Repeated events must not overwrite the saved pre-fullscreen window placement.
     if on == (bits & 2 != 0) { return; }
+    let Some((next, step)) = page_step(bits, on) else { return };
     if on {
-        let by_page = bits & 1 == 0;
-        // Bit 2 is the page; bit 4 remembers that the window went full screen only for it.
-        set_fullscreen_bits(hwnd, bits | 2 | if by_page { 4 } else { 0 });
-        if by_page {
-            enter_window(hwnd, app, true);
-        } else {
-            sync_config(hwnd, app);
-        }
+        apply_step(hwnd, app, next, step);
         // Browser-owned, persistent identity/exit surface. If it cannot be displayed, keep
         // browser chrome visible rather than enter an unlabelled page full-screen state.
         if !super::fullscreen_notice::show(hwnd, app, source) {
@@ -633,32 +664,35 @@ pub(crate) fn page_fullscreen(hwnd: HWND, app: &AppRef, on: bool, source: Option
         }
     } else {
         super::fullscreen_notice::hide(hwnd);
-        let had_window_for_page = bits & 4 != 0;
-        set_fullscreen_bits(hwnd, bits & !2 & !4);
-        if had_window_for_page {
-            leave_window(hwnd, app, true);
-        } else {
-            sync_config(hwnd, app);
-        }
+        apply_step(hwnd, app, next, step);
     }
 }
 
-fn enter_window(hwnd: HWND, app: &AppRef, for_page: bool) {
+/// Takes the window to full-screen `bits`; `false` when the monitor could not be filled.
+fn apply_step(hwnd: HWND, app: &AppRef, bits: usize, step: WindowStep) -> bool {
+    set_fullscreen_bits(hwnd, bits);
+    match step {
+        WindowStep::Enter => return enter_window(hwnd, app),
+        WindowStep::Leave => leave_window(hwnd, app),
+        WindowStep::Keep => sync_config(hwnd, app),
+    }
+    true
+}
+
+/// Saves the placement and style and fills the monitor; `false` when nothing changed.
+fn enter_window(hwnd: HWND, app: &AppRef) -> bool {
     unsafe {
         let mut placement = WINDOWPLACEMENT { length: size_of::<WINDOWPLACEMENT>() as u32, ..Default::default() };
         if GetWindowPlacement(hwnd, &mut placement).is_err() {
-            return;
+            return false;
         }
         let style = GetWindowLongPtrW(hwnd, GWL_STYLE);
         let monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
         let mut info = MONITORINFO { cbSize: size_of::<MONITORINFO>() as u32, ..Default::default() };
         if monitor.is_invalid() || !GetMonitorInfoW(monitor, &mut info).as_bool() {
-            return;
+            return false;
         }
         SAVED.with(|saved| saved.borrow_mut().insert(hwnd.0 as isize, Saved { placement, style }));
-        if !for_page {
-            set_fullscreen_bits(hwnd, fullscreen_bits(hwnd) | 1);
-        }
         // Restored first: a maximised window is laid out from its work area, not the monitor.
         if windows::Win32::UI::WindowsAndMessaging::IsZoomed(hwnd).as_bool() {
             let _ = ShowWindow(hwnd, SW_RESTORE);
@@ -667,17 +701,16 @@ fn enter_window(hwnd: HWND, app: &AppRef, for_page: bool) {
         sync_config(hwnd, app);
         let r = info.rcMonitor;
         let _ = SetWindowPos(hwnd, Some(HWND_TOP), r.left, r.top, r.right - r.left, r.bottom - r.top, SWP_FRAMECHANGED | SWP_NOACTIVATE);
+        true
     }
 }
 
-fn leave_window(hwnd: HWND, app: &AppRef, for_page: bool) {
+fn leave_window(hwnd: HWND, app: &AppRef) {
     let saved = SAVED.with(|saved| saved.borrow_mut().remove(&(hwnd.0 as isize)));
     unsafe {
         if let Some(saved) = saved {
             SetWindowLongPtrW(hwnd, GWL_STYLE, saved.style);
         }
-        let bits = fullscreen_bits(hwnd) & !1;
-        set_fullscreen_bits(hwnd, if for_page { bits & !4 } else { bits });
         sync_config(hwnd, app);
         if let Some(saved) = saved {
             let _ = SetWindowPlacement(hwnd, &saved.placement);
@@ -696,6 +729,55 @@ pub(crate) fn forget(hwnd: HWND) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Plays F11 presses (`'k'`) and page full-screen changes (`'p'` on, `'e'` off/Esc) against a
+    /// model window whose frame is "framed" until it fills its monitor, with one saved slot as in
+    /// `SAVED`. Returns the final bits and frame.
+    fn play(events: &str) -> (usize, &'static str) {
+        let (mut bits, mut frame, mut saved) = (0usize, "framed", None::<&'static str>);
+        for event in events.chars() {
+            let step = match event {
+                'k' => {
+                    let (next, step) = f11_step(bits);
+                    bits = next;
+                    Some(step)
+                }
+                'p' | 'e' => page_step(bits, event == 'p').map(|(next, step)| {
+                    bits = next;
+                    step
+                }),
+                _ => unreachable!(),
+            };
+            match step {
+                Some(WindowStep::Enter) => {
+                    saved = Some(frame);
+                    frame = "frameless";
+                }
+                Some(WindowStep::Leave) => frame = saved.take().unwrap_or(frame),
+                Some(WindowStep::Keep) | None => {}
+            }
+        }
+        (bits, frame)
+    }
+
+    #[test]
+    fn f11_during_page_full_screen_never_saves_the_frameless_window_over_the_real_one() {
+        // The W-2 sequences (page, F11, Esc) and (F11, page, F11, Esc), and their neighbours.
+        for events in ["pke", "kpke", "pkke", "kpe" , "kpek", "pe", "kk", "pkek", "kpkek", "pkkpe"] {
+            let (bits, frame) = play(events);
+            if bits == 0 {
+                assert_eq!(frame, "framed", "{events}: out of full screen, the window has its frame back");
+            } else {
+                assert_eq!(frame, "frameless", "{events}: still full screen ({bits:#b}) and frameless");
+            }
+        }
+        // F11 while the page holds full screen keeps the window full screen after the page ends.
+        assert_eq!(play("pke"), (1, "frameless"));
+        assert_eq!(play("pkek"), (0, "framed"));
+        // F11 out of a window full screen the page also holds: the frame comes back with the page's end.
+        assert_eq!(play("kpke"), (0, "framed"));
+        assert_eq!(play("kpk").0 & 2, 2, "the page still holds full screen until it ends");
+    }
 
     #[test]
     fn one_window_going_solid_leaves_the_others_glass() {
