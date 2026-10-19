@@ -253,12 +253,22 @@ pub struct UserTheme {
     pub highlight: Option<Rgba>,
     pub colouring: Colouring,
     pub contrast: Contrast,
+    /// The accent is the active page's colour ("Get accent colour from the webpage"), not one the
+    /// person picked: a page's colour can be anything, so it is kept visible like the other colours.
+    pub accent_from_page: bool,
 }
 
 impl UserTheme {
     /// Nothing chosen: the palettes are Bowser's own.
     pub fn is_plain(&self) -> bool {
         *self == Self::default()
+    }
+
+    /// Only an accent the person picked (`theme=system` or `theme_accent`, the settings Bowser had
+    /// before the theme options): it colours the focus ring and the progress bar exactly as chosen,
+    /// as [`with_accent`] always has, and nothing else in the palette moves.
+    pub fn is_chosen_accent_only(&self) -> bool {
+        self.accent.is_some() && !self.accent_from_page && UserTheme { accent: None, ..*self }.is_plain()
     }
 }
 
@@ -464,6 +474,12 @@ pub fn themed(appearance: Appearance, solid: bool, user: &UserTheme) -> (Palette
     let base = palette_base(appearance, solid);
     if user.is_plain() {
         return (base.clone(), appearance);
+    }
+    // A picked accent alone keeps its colour: pushing it to 3:1 over every backdrop from black to
+    // white (what a glass palette needs) moved it most of the way to white or black, so a red like
+    // #bf2b2b showed as a washed-out pink (#e5aaaa) on dark glass. v0.0.18 used it as chosen.
+    if user.is_chosen_accent_only() {
+        return (with_accent(base, user.accent), appearance);
     }
     let glass = palette_base(appearance, false);
     let mut p = base.clone();
@@ -1128,7 +1144,12 @@ mod tests {
 
     fn user(background: Option<u32>, foreground: Option<u32>, highlight: Option<u32>, accent: Option<u32>, colouring: Colouring, contrast: Contrast) -> UserTheme {
         let colour = |value: Option<u32>| value.map(|rgb| Rgba::hex(rgb, 0xFF));
-        UserTheme { accent: colour(accent), background: colour(background), foreground: colour(foreground), highlight: colour(highlight), colouring, contrast }
+        UserTheme { accent: colour(accent), background: colour(background), foreground: colour(foreground), highlight: colour(highlight), colouring, contrast, accent_from_page: false }
+    }
+
+    /// `user`'s theme with the accent taken from the page instead of picked.
+    fn from_page(theme: UserTheme) -> UserTheme {
+        UserTheme { accent_from_page: true, ..theme }
     }
 
     /// Every text and focus check the palette tests make, as (label, colour, surfaces, is text).
@@ -1212,7 +1233,17 @@ mod tests {
                     for accent in accents {
                         for colouring in Colouring::ALL {
                             for contrast in Contrast::ALL {
-                                let theme = user(background, foreground, highlight, accent, *colouring, *contrast);
+                                let mut theme = user(background, foreground, highlight, accent, *colouring, *contrast);
+                                if theme.is_chosen_accent_only() {
+                                    // A picked accent alone is used as chosen (v0.0.18's `with_accent`);
+                                    // the same colour from a page is held to every contrast check below.
+                                    for (appearance, solid) in VARIANTS {
+                                        let (p, look) = themed(appearance, solid, &theme);
+                                        assert_eq!(p, with_accent(palette_base(appearance, solid), theme.accent), "{theme:?} {appearance}/solid={solid}");
+                                        assert_eq!(look, appearance);
+                                    }
+                                    theme.accent_from_page = true;
+                                }
                                 for (appearance, solid) in VARIANTS {
                                     count += 1;
                                     let label = format!("{theme:?} {appearance}/solid={solid}");
@@ -1308,8 +1339,10 @@ mod tests {
         let (p, _) = themed(Appearance::Light, true, &user(None, None, None, Some(0xCC0000), Colouring::Off, Contrast::Standard));
         assert_eq!(p.omnibox_focus_border, Rgba::hex(0xCC0000, 0xFF), "a readable accent is used as chosen");
         assert_eq!(p.progress_fill, Rgba::hex(0xCC0000, 0xFF));
-        // A pale yellow on a light window would vanish; the nearest visible colour stands in.
-        let (p, _) = themed(Appearance::Light, true, &user(None, None, None, Some(0xFFEE00), Colouring::Off, Contrast::Standard));
+        let (p, _) = themed(Appearance::Light, true, &from_page(user(None, None, None, Some(0xCC0000), Colouring::Off, Contrast::Standard)));
+        assert_eq!(p.progress_fill, Rgba::hex(0xCC0000, 0xFF), "and so is a readable page colour");
+        // A page's pale yellow on a light window would vanish; the nearest visible colour stands in.
+        let (p, _) = themed(Appearance::Light, true, &from_page(user(None, None, None, Some(0xFFEE00), Colouring::Off, Contrast::Standard)));
         assert_ne!(p.omnibox_focus_border, Rgba::hex(0xFFEE00, 0xFF));
         assert!(worst_contrast(p.omnibox_focus_border, &[vec![p.window], vec![p.window, p.omnibox_fill]]) >= 3.0);
         assert!(p.omnibox_focus_border.r > 0x80 && p.omnibox_focus_border.b < 0x40, "still yellowish: {:?}", p.omnibox_focus_border);
