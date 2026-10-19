@@ -4,6 +4,8 @@ mod web_app_profile;
 mod extension_page;
 mod webview2;
 #[cfg(test)]
+mod capture_zoom_live;
+#[cfg(test)]
 mod extension_probe_live;
 pub(crate) use webview2::password_login_messages_enabled;
 
