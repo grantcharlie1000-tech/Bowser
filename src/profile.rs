@@ -535,8 +535,25 @@ pub fn real_app_data_dir() -> Option<PathBuf> {
 pub fn app_data_dir() -> Option<PathBuf> {
     match data_root_override() {
         Some(path) => Some(path.to_path_buf()),
+        #[cfg(not(test))]
         None => real_app_data_dir(),
+        // A unit test never reaches the person's real profile: app-flow tests without a
+        // `TestProfileGuard` used to save into `%LOCALAPPDATA%\Bowser` (the theme tests left a white
+        // background, grey text and high contrast in the default profile's settings.txt, and the
+        // typed-history tests their searches). They share one throwaway root per test process instead.
+        #[cfg(test)]
+        None => Some(unit_test_data_root().to_path_buf()),
     }
+}
+
+#[cfg(test)]
+fn unit_test_data_root() -> &'static Path {
+    static ROOT: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    ROOT.get_or_init(|| {
+        let root = std::env::temp_dir().join(format!("bowser-unit-tests-{}", std::process::id()));
+        let _ = fs::create_dir_all(&root);
+        root
+    })
 }
 
 /// Records the profile this process runs with. Only the first call has an effect.
@@ -997,6 +1014,17 @@ fn is_locked_by_running_session(profile_root: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_unit_test_without_a_guard_never_reaches_the_real_profile() {
+        let root = app_data_dir().expect("a test root");
+        let settings = active().expect("a test profile").settings_file();
+        assert!(settings.starts_with(&root), "{settings:?} under {root:?}");
+        assert!(root.starts_with(std::env::temp_dir()), "{root:?} is a throwaway directory");
+        if let Some(real) = real_app_data_dir() {
+            assert!(!settings.starts_with(&real), "{settings:?} is in the person's profile {real:?}");
+        }
+    }
 
     #[test]
     fn isolated_app_profiles_restore_scope_and_remove_only_their_owned_root() {
