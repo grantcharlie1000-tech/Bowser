@@ -85,6 +85,7 @@ test('outbound split commands carry exactly their fields and stay in range', () 
     { v: 1, t: 'split', a: 'focus' },
     { v: 1, t: 'split', a: 'closeprivate' },
     { v: 1, t: 'split', a: 'over', id: 2, x: 0, y: 16384 },
+    { v: 1, t: 'split', a: 'over', id: 2, x: -300, y: -16384 },
     { v: 1, t: 'split', a: 'drop', id: 2 },
     { v: 1, t: 'split', a: 'end', id: 2 },
   ];
@@ -99,12 +100,14 @@ test('outbound split commands carry exactly their fields and stay in range', () 
     { v: 1, t: 'split', a: 'close', id: 1 },
     { v: 1, t: 'split', a: 'closeprivate', n: 1 },
     { v: 1, t: 'split', a: 'over', id: 2, x: 16385, y: 0 },
-    { v: 1, t: 'split', a: 'over', id: 2, x: -1, y: 0 },
+    { v: 1, t: 'split', a: 'over', id: 2, x: -16385, y: 0 },
+    { v: 1, t: 'split', a: 'over', id: 2, x: 0, y: -1.5 },
     { v: 1, t: 'split', a: 'swap' },
     { v: 2, t: 'split', a: 'focus' },
   ];
   for (const cmd of bad) assert.equal(validSplitCommand(cmd), false, JSON.stringify(cmd).slice(0, 80));
-  assert.deepEqual(wirePoint(-5.4, 20000), { x: 0, y: 16384 });
+  assert.deepEqual(wirePoint(-5.4, 20000), { x: -5, y: 16384 });
+  assert.deepEqual(wirePoint(-20000, 0), { x: -16384, y: 0 });
   assert.deepEqual(wirePoint(Number.NaN, 12.6), { x: 0, y: 13 });
 });
 
@@ -179,17 +182,32 @@ test('stacked pairs name their halves top and bottom; the edges map one to one',
 
 test('a drag leaves the strip downwards or the sidebar to the right before it is over the page', () => {
   // Horizontal strip: below its bottom edge by more than the slop.
-  assert.equal(overPage(52, 40), false);
-  assert.equal(overPage(53, 40), true);
+  assert.equal(overPage(52, { top: 0, bottom: 40 }), false);
+  assert.equal(overPage(53, { top: 0, bottom: 40 }), true);
   // Vertical sidebar: right of its edge by more than the slop.
-  assert.equal(overPageBeside(250, 240), false);
-  assert.equal(overPageBeside(253, 240), true);
-  assert.equal(overPageBeside(-400, 240), false);
+  assert.equal(overPageBeside(250, { left: 0, right: 240 }), false);
+  assert.equal(overPageBeside(253, { left: 0, right: 240 }), true);
+  assert.equal(overPageBeside(-400, { left: 0, right: 240 }), false);
   // The point sent to Rust is clamped into the wire range wherever the pointer is.
   for (const [x, y] of [[-1e9, -1e9], [1e9, 1e9], [Number.POSITIVE_INFINITY, Number.NaN]]) {
     const p = wirePoint(x, y);
-    assert.ok(p.x >= 0 && p.x <= 16384 && p.y >= 0 && p.y <= 16384, JSON.stringify(p));
+    assert.ok(p.x >= -16384 && p.x <= 16384 && p.y >= -16384 && p.y <= 16384, JSON.stringify(p));
   }
+});
+
+test('with the sidebar at the right or the strip at the bottom, the page is left of or above the tabs', () => {
+  // Sidebar docked at the right (left edge 1000): the page is to its left.
+  const side = { left: 1000, right: 1240 };
+  assert.equal(overPageBeside(990, side, true), false);
+  assert.equal(overPageBeside(987, side, true), true);
+  assert.equal(overPageBeside(1300, side, true), false, 'right of a right sidebar is off the window');
+  // Strip along the bottom (top edge 0 of its own view): the page is above it.
+  const strip = { top: 0, bottom: 34 };
+  assert.equal(overPage(-12, strip, true), false);
+  assert.equal(overPage(-13, strip, true), true);
+  assert.equal(overPage(200, strip, true), false, 'below a bottom strip is off the window');
+  // The point keeps its sign, so Rust can place it left of or above the tab view.
+  assert.deepEqual(wirePoint(-300.4, -20.6), { x: -300, y: -21 });
 });
 
 test('the empty side filters by every word and moves its highlight with wrap', () => {
@@ -209,8 +227,8 @@ test('the empty side filters by every word and moves its highlight with wrap', (
   assert.equal(moveSelection(3, 1, 'Home'), 0);
   assert.equal(moveSelection(3, 1, 'End'), 2);
   assert.equal(moveSelection(0, 0, 'ArrowDown'), -1);
-  assert.equal(overPage(60, 40), true);
-  assert.equal(overPage(50, 40), false);
+  assert.equal(overPage(60, { top: 0, bottom: 40 }), true);
+  assert.equal(overPage(50, { top: 0, bottom: 40 }), false);
 });
 
 // ----- layouts of three or four panes (corner drops) -----
@@ -302,7 +320,7 @@ test('corner drop cards and corner pickers have their own words and glyphs', () 
   assert.deepEqual(['tl', 'tr', 'bl', 'br'].map((side) => dropCard(side).glyph), ['split-top-left', 'split-top-right', 'split-bottom-left', 'split-bottom-right']);
   assert.equal(pickHeading('br'), 'Choose a tab for the bottom-right pane');
   assert.equal(pickHeading('l'), 'Choose a tab for the left side');
-  // The drop point sent from the strip keeps its wire shape and clamping.
-  assert.deepEqual(wirePoint(-4.6, 99999), { x: 0, y: 16384 });
+  // The drop point sent from the strip keeps its wire shape and clamping (signed: the page may be left of or above the tabs).
+  assert.deepEqual(wirePoint(-4.6, 99999), { x: -5, y: 16384 });
   assert.ok(validSplitCommand({ v: 1, t: 'split', a: 'over', id: 3, x: 10, y: 20 }));
 });

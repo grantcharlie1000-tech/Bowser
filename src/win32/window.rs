@@ -10692,10 +10692,16 @@ fn html_tabs_sync(hwnd: HWND) {
         return;
     };
     // Titles, loading and markers come from the snapshot the native strip paints.
+    let tab_layout = App::tab_layout(&app);
     let Some((host, snapshot, mode)) = with_chrome(hwnd, |s| {
         s.html_tab_region()?;
         // --- vertical sidebar (lane S) ---
-        let mode = if s.sidebar.is_some() { chrome_host::protocol::LayoutMode::Vertical } else { chrome_host::protocol::LayoutMode::Horizontal };
+        // The side tells the strip which way the page is, for dragging a tab out onto it.
+        let mode = if s.sidebar.is_some() {
+            chrome_host::protocol::LayoutMode::Vertical { right: tab_layout == crate::settings::TabLayout::VerticalRight }
+        } else {
+            chrome_host::protocol::LayoutMode::Horizontal { bottom: tab_layout == crate::settings::TabLayout::TabsBottom }
+        };
         // --- end vertical sidebar ---
         Some((
             s.html_tabs.clone()?,

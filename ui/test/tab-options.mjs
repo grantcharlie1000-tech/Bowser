@@ -323,6 +323,11 @@ test('the panel sends only commands Rust accepts', () => {
     assert.equal(sessions.deleteCommand(name), null);
   }
   assert.ok(sessions.saveCommand('x'.repeat(100), false));
+  // Rust counts characters, not UTF-16 units: 60 emoji (120 units) is a name it saved and lists.
+  const luggage = '\u{1F9F3}'.repeat(60);
+  assert.deepEqual(sessions.openCommand(luggage, false), { a: 'open', text: luggage, n: 0 });
+  assert.deepEqual(sessions.deleteCommand(luggage), { a: 'delete', text: luggage });
+  assert.equal(sessions.deleteCommand('\u{1F9F3}'.repeat(101)), null);
   assert.equal(sessions.summaryText({ name: 'a', count: 1, hosts: [] }), '1 tab');
   assert.equal(sessions.summaryText({ name: 'a', count: 5, hosts: ['a.example', 'b.example'] }), '5 tabs · a.example, b.example');
   assert.equal(sessions.openTabsText(1, 0), '1 open tab');

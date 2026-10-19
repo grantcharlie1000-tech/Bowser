@@ -66,16 +66,21 @@ test('attached <-> floating: detach past DETACH_PX, re-attach within REATTACH_PX
   assert.equal(nextPhase('floating', strip, 450, 34 + REATTACH_PX), 'attached');
   // The floating band agrees with the split logic: floating below the strip is over the page.
   for (let y = 35; y < 200; y++) {
-    if (nextPhase('floating', strip, 450, y) === 'floating') assert.equal(overPage(y, 34), true, `y=${y}`);
+    if (nextPhase('floating', strip, 450, y) === 'floating') assert.equal(overPage(y, { top: 0, bottom: 34 }), true, `y=${y}`);
   }
   // The sidebar detaches only to the right (towards the page); up and down it auto-scrolls.
   const side = sidebarBand({ left: 0, top: 40, right: 240, bottom: 800 });
   assert.equal(nextPhase('attached', side, 120, -300), 'attached');
   assert.equal(nextPhase('attached', side, 120, 5000), 'attached');
   assert.equal(nextPhase('attached', side, 240 + DETACH_PX + 1, 300), 'floating');
-  assert.equal(overPageBeside(240 + DETACH_PX + 1, 240), true);
+  assert.equal(overPageBeside(240 + DETACH_PX + 1, { left: 0, right: 240 }), true);
   assert.equal(nextPhase('floating', side, 240 + REATTACH_PX, 300), 'attached');
   assert.equal(bandDistance(side, 100, 100), 0);
+  // A sidebar docked at the right detaches to the left (towards the page), never to the right.
+  const right = sidebarBand({ left: 1000, top: 40, right: 1240, bottom: 800 }, true);
+  assert.equal(nextPhase('attached', right, 1000 - DETACH_PX - 1, 300), 'floating');
+  assert.equal(nextPhase('attached', right, 5000, 300), 'attached');
+  assert.equal(overPageBeside(1000 - DETACH_PX - 1, { left: 1000, right: 1240 }, true), true);
   assert.equal(bandDistance(strip, 10, 50), 16);
 });
 

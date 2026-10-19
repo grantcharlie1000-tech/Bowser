@@ -29,7 +29,8 @@ const NAME_RE = /^[^\u0000-\u001f\u007f]+$/;
 
 /** A session name as the page may send and Rust stores: not blank, at most 100 characters, no control characters. */
 export function validName(name: unknown): name is string {
-  return typeof name === 'string' && name.trim() !== '' && name.length <= MAX_NAME && NAME_RE.test(name);
+  // Characters (code points), as Rust counts them: an emoji is one, not two UTF-16 units.
+  return typeof name === 'string' && name.trim() !== '' && [...name].length <= MAX_NAME && NAME_RE.test(name);
 }
 
 /** Rejects the whole snapshot unless every field is exactly what Rust sends. */
