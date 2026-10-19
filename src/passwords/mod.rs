@@ -1699,14 +1699,24 @@ mod tests {
 
     #[test]
     fn generated_password_obeys_requested_length_charset_and_is_not_biased() {
-        let password = generate_password(256, b"abcd").unwrap();
-        assert_eq!(password.len(), 256);
-        assert!(password.bytes().all(|byte| b"abcd".contains(&byte)));
+        // Aggregate many passwords so the bias bound can be wide (>6 sigma)
+        // while a real bias (modulo bias, missing symbol) still fails.
+        // 200 * 256 = 51200 samples over 4 symbols: expect 12800 each, sd ~98.
         let mut counts = [0usize; 4];
-        for byte in password.bytes() {
-            counts[(byte - b'a') as usize] += 1;
+        for _ in 0..200 {
+            let password = generate_password(256, b"abcd").unwrap();
+            assert_eq!(password.len(), 256);
+            assert!(password.bytes().all(|byte| b"abcd".contains(&byte)));
+            for byte in password.bytes() {
+                counts[(byte - b'a') as usize] += 1;
+            }
         }
-        assert!(counts.into_iter().all(|count| (40..=90).contains(&count)));
+        assert!(
+            counts
+                .into_iter()
+                .all(|count| (12_100..=13_500).contains(&count)),
+            "biased symbol counts: {counts:?}"
+        );
         assert_eq!(
             generate_password(7, b"abcdef").unwrap_err(),
             PasswordError::InvalidGenerator
