@@ -134,12 +134,21 @@ fn host_only_sequence(app: &AppRef, root: &Path, server: &Loopback, out: &Path) 
 
     host_only_input(app, &source, source_tab, proof, HostOnlyMode::Note, token, &out.join("note"));
     let mut noted = None;
-    assert!(pump_until(Duration::from_secs(10), || {
+    let note_acknowledged = pump_until(Duration::from_secs(10), || {
         let value = snapshot(&source.view);
         let ready = field(&value, "noteAck") == Some(&Value::String(token.clone()));
         noted = Some(value);
         ready
-    }), "real Insert note source/body/loopback nonce acknowledgment absent");
+    });
+    // Preserve only the last existing controlled receipt; no new script or acceptance fallback.
+    if let Some(last) = noted.as_ref() {
+        let diagnostic = format!("{last:?}");
+        if diagnostic.len() <= 64 * 1024 {
+            let receipt = format!(r#"{{"schema":"controlled-note-effect-debug-v1","acknowledged":{},"snapshot_debug":{}}}"#, note_acknowledged, quote(&diagnostic));
+            let _ = std::fs::write(out.join("note-effect-last-observation.json"), receipt);
+        }
+    }
+    assert!(note_acknowledged, "real Insert note source/body/loopback nonce acknowledgment absent");
     let noted = noted.unwrap();
     unchanged_document(&noted, &before);
     assert_eq!(text(&noted, "note"), format!("note-{token}"));
@@ -251,7 +260,15 @@ fn live_probe_real_app_host_note_split_context_menu() {
     std::fs::create_dir(&root).unwrap();
     let evidence = std::env::current_dir().unwrap().join("store-real-app-host-note-split-context-menu");
     std::fs::create_dir(&evidence).expect("never reuse another lane's evidence or failed profile");
-    let server = Loopback::start(token.clone());
+    let mut server = Loopback::start(token.clone());
+    let rejected_ip_url = server.url.clone();
+    assert!(crate::passwords::secure_origin(rejected_ip_url.as_str()).is_none(), "HTTP IP fixture must remain rejected by production origin policy");
+    server.url.set_host(Some("localhost")).unwrap();
+    assert_eq!(server.url.port(), rejected_ip_url.port());
+    assert_eq!(server.url.path(), rejected_ip_url.path());
+    assert_eq!(server.url.query(), rejected_ip_url.query());
+    let expected_origin = crate::permissions::origin_of(server.url.as_str()).unwrap();
+    assert_eq!(crate::passwords::secure_origin(server.url.as_str()), Some(expected_origin), "only the existing literal-localhost policy admits this fixture");
     let profile = crate::profile::Profile::default_in(&root);
     crate::profile::set_data_root(root.clone()).unwrap();
     crate::profile::set_dev_launch(true);

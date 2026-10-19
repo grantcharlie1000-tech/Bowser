@@ -86,3 +86,18 @@ original clipboard-lane failure.
 
 Search completed transport, permission/race coverage and the signed Bitwarden workflow remain
 unproved. Source-only fixture checks do not establish native acceptance for either lane.
+
+### Independent Note fixture policy correction
+
+The retained f33 run selected and completed the genuine Note item but did not
+observe the required effect acknowledgment; Split did not run. Its HTTP
+127.0.0.1 fixture is incompatible with the existing native insertion path, which
+applies `passwords::secure_origin` and accepts HTTP only for literal localhost.
+The independent lane now requests literal localhost on the same loopback
+listener/port/path/nonce, asserts both the allowed localhost origin and refused
+HTTP IP origin, and keeps all effect/document gates. There is no host-file,
+browser-flag, fallback-address or production-policy change. The original
+Copy/Paste lane and failed IP evidence remain unchanged. This source correction
+does not prove that f33 delivered the CustomItemSelected callback. A bounded
+last already-read controlled snapshot is retained before the unchanged Note
+acknowledgment assertion; diagnostic write failure cannot satisfy or replace it.
