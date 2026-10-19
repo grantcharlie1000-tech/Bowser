@@ -13,13 +13,24 @@
   // Text in these is the author's, not X's label: the post text, a quoted post.
   const NOT_LABEL = '[data-testid="tweetText"],[data-testid="quoteTweet"]';
   const CARET = '[data-testid="caret"]';
+  // Post content below the header row: a label word in these (a poll option "Ads") is never X's label.
+  const BODY = '[data-testid="tweetText"],[data-testid="cardPoll"],[data-testid="card.wrapper"],[data-testid="tweetPhoto"],[data-testid="quoteTweet"]';
   const MARK = 'data-bowser-ad';
   const stats = { scans: 0, posts: 0, hidden: 0 };
   window.__bowserXPromoted = { stats };
   // A label text node: a whole node that is just the word, in the post but not in its text, not
   // in a link (display names and handles are links) unless that link is the post's own header row
-  // (it holds the "..." menu), and not inside a quoted post (a link that holds no menu).
+  // (it holds the "..." menu), and not inside a quoted post (a link that holds no menu). It must
+  // sit in the header row next to the "..." menu: the smallest box around both the menu and the
+  // word is below the article and holds no post content (text, poll, card, media).
+  const inHeader = (post, caret, el) => {
+    let box = caret.parentElement;
+    while (box && box !== post && !box.contains(el)) box = box.parentElement;
+    return !!box && box !== post && post.contains(box) && !box.querySelector(BODY);
+  };
   const promoted = (post) => {
+    const caret = post.querySelector(CARET);
+    if (!caret) return false;
     const walker = document.createTreeWalker(post, NodeFilter.SHOW_TEXT);
     for (let node = walker.nextNode(); node; node = walker.nextNode()) {
       const text = node.data.trim();
@@ -28,6 +39,7 @@
       if (!el || el.closest(NOT_LABEL)) continue;
       const link = el.closest('a,[role="link"]');
       if (link && post.contains(link) && !link.querySelector(CARET)) continue;
+      if (!inHeader(post, caret, el)) continue;
       return true;
     }
     return false;
@@ -43,12 +55,15 @@
     stats.scans++;
     let hidden = 0;
     const posts = document.querySelectorAll(POST);
-    for (const post of posts) {
-      const cell = post.closest(CELL) || post;
-      const ad = promoted(post);
-      if (ad) hidden++;
-      if (ad !== cell.hasAttribute(MARK)) ad ? cell.setAttribute(MARK, '') : cell.removeAttribute(MARK);
+    const ads = new Set();
+    for (const post of posts) if (promoted(post)) ads.add(post.closest(CELL) || post);
+    for (const cell of ads) {
+      hidden++;
+      if (!cell.hasAttribute(MARK)) cell.setAttribute(MARK, '');
     }
+    // X recycles timeline cells: a marked cell whose post changed, or that no longer holds a
+    // promoted post at all, shows again.
+    for (const cell of document.querySelectorAll('[' + MARK + ']')) if (!ads.has(cell)) cell.removeAttribute(MARK);
     stats.posts = posts.length;
     if (hidden !== stats.hidden) {
       stats.hidden = hidden;
@@ -60,11 +75,12 @@
     if (timer) return;
     timer = setTimeout(() => { timer = 0; scan(); }, 250);
   };
+  // Added or removed nodes and changed text all count: a recycled cell can change either way.
   const observer = new MutationObserver((records) => {
-    for (const record of records) if (record.addedNodes.length) return later();
+    for (const record of records) if (record.type === 'characterData' || record.addedNodes.length || record.removedNodes.length) return later();
   });
   const start = () => {
-    observer.observe(document.body, { childList: true, subtree: true });
+    observer.observe(document.body, { childList: true, subtree: true, characterData: true });
     scan();
   };
   if (document.body) start();

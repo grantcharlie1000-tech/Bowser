@@ -229,6 +229,24 @@ pub fn plan(hidden: Bars, layout: TabLayout) -> Plan {
     }
 }
 
+/// [`plan`] for a window whose tab bar may be switched off (`tab_bar_visible=false`): with no tab
+/// row or sidebar on screen, hiding tabs takes nothing out (no tab row to reserve or reveal, no
+/// sidebar zone), and only the address bar can hide the toolbar.
+pub fn plan_for(hidden: Bars, layout: TabLayout, tab_bar: bool) -> Plan {
+    if tab_bar {
+        return plan(hidden, layout);
+    }
+    Plan { top: hidden.contains(Bars::ADDRESS), sidebar: false, ..plan(hidden, layout) }
+}
+
+/// Whether a page's "entered / left full screen" event (`on`) acts on the window: only the shown
+/// tab (`active`) can take page full screen, and a "left" event ends it only when it comes from the
+/// shown tab or the tab that holds it (`owns`). A late "left" from a background tab, one that was
+/// full screen before a switch or has already ended, must not end the shown tab's full screen.
+pub fn page_fullscreen_event_applies(on: bool, active: bool, owns: bool) -> bool {
+    if on { active } else { active || owns }
+}
+
 impl Plan {
     /// The part of this plan `layout.rs` lays out.
     pub fn layout(self) -> crate::chrome::layout::AutoHide {
@@ -323,14 +341,27 @@ pub struct Sensor {
 /// says the strip lies at a screen edge that stops the cursor (maximised or full screen, no monitor
 /// beyond); `thin_top` and `thin_left` carry that per edge.
 pub fn sensors(zones: Zones, page: Rect, bookmarks_bar: Rect, bookmarks_at_bottom: bool, dpi: u32, thin_top: bool, thin_left: bool) -> Vec<Sensor> {
+    sensors_sided(zones, page, bookmarks_bar, bookmarks_at_bottom, dpi, thin_top, thin_left, false)
+}
+
+/// [`sensors`] with the tab sidebar on the right when `sidebar_right` is set: its
+/// strip is then along the page's right edge, the edge the sidebar comes back from (`thin_side`
+/// is that edge's screen-edge flag).
+#[allow(clippy::too_many_arguments)]
+pub fn sensors_sided(zones: Zones, page: Rect, bookmarks_bar: Rect, bookmarks_at_bottom: bool, dpi: u32, thin_top: bool, thin_side: bool, sidebar_right: bool) -> Vec<Sensor> {
     let mut out = Vec::new();
     if zones.contains(Zone::Top) {
         let t = sensor_thickness(dpi, thin_top);
         out.push(Sensor { zone: Zone::Top, rect: Rect::new(page.left, page.top, page.right, (page.top + t).min(page.bottom)) });
     }
     if zones.contains(Zone::Sidebar) {
-        let t = sensor_thickness(dpi, thin_left);
-        out.push(Sensor { zone: Zone::Sidebar, rect: Rect::new(page.left, page.top, (page.left + t).min(page.right), page.bottom) });
+        let t = sensor_thickness(dpi, thin_side);
+        let rect = if sidebar_right {
+            Rect::new((page.right - t).max(page.left), page.top, page.right, page.bottom)
+        } else {
+            Rect::new(page.left, page.top, (page.left + t).min(page.right), page.bottom)
+        };
+        out.push(Sensor { zone: Zone::Sidebar, rect });
     }
     if zones.contains(Zone::Bookmarks) && !bookmarks_bar.is_empty() {
         let t = sensor_thickness(dpi, false);
@@ -536,6 +567,40 @@ mod tests {
         let bottom = sensors(Zones::NONE.with(Zone::Bookmarks), page, Rect::new(30, 1048, 1920, 1080), true, 96, false, false);
         assert_eq!(bottom[0].rect, Rect::new(30, 1076, 1920, 1080));
         assert!(sensors(Zones::NONE, page, Rect::default(), false, 96, true, true).is_empty());
+    }
+
+    #[test]
+    fn a_right_sidebars_sensor_is_on_the_pages_right_edge() {
+        let page = Rect::new(30, 0, 1920, 1080);
+        let z = Zones::NONE.with(Zone::Sidebar);
+        let right = sensors_sided(z, page, Rect::default(), false, 96, false, false, true);
+        assert_eq!(right, vec![Sensor { zone: Zone::Sidebar, rect: Rect::new(1916, 0, 1920, 1080) }]);
+        assert_eq!(sensors_sided(z, page, Rect::default(), false, 144, false, true, true)[0].rect, Rect::new(1919, 0, 1920, 1080), "one pixel at a screen edge");
+        assert_eq!(sensors_sided(z, page, Rect::default(), false, 96, false, false, false), sensors(z, page, Rect::default(), false, 96, false, false), "left: unchanged");
+    }
+
+    #[test]
+    fn a_hidden_tab_bar_has_no_tab_row_or_sidebar_to_auto_hide() {
+        for layout in TabLayout::ALL {
+            assert_eq!(plan_for(Bars::TABS, layout, false), Plan::default(), "{layout:?}: tabs alone hide nothing");
+            assert_eq!(plan_for(Bars::ADDRESS, layout, false), Plan { top: true, ..Plan::default() }, "{layout:?}");
+            assert_eq!(plan_for(ALL_BARS, layout, false), Plan { top: true, sidebar: false, panel: true, bookmarks: true }, "{layout:?}");
+            assert!(zones(plan_for(Bars::TABS, layout, false), false, false).is_empty(), "{layout:?}: no sensor");
+            for hidden in [Bars::NONE, Bars::TABS, Bars::ADDRESS, ALL_BARS] {
+                assert_eq!(plan_for(hidden, layout, true), plan(hidden, layout), "{layout:?} {hidden:?}: a shown tab bar is unchanged");
+            }
+        }
+    }
+
+    #[test]
+    fn page_full_screen_belongs_to_the_shown_tab_and_a_late_exit_from_another_tab_is_ignored() {
+        for owns in [false, true] {
+            assert!(!page_fullscreen_event_applies(true, false, owns), "a background tab cannot take the screen (owns {owns})");
+            assert!(page_fullscreen_event_applies(true, true, owns), "the shown tab can (owns {owns})");
+            assert!(page_fullscreen_event_applies(false, true, owns), "the shown tab can leave (owns {owns})");
+        }
+        assert!(!page_fullscreen_event_applies(false, false, false), "a late exit from a background tab leaves the shown tab full screen");
+        assert!(page_fullscreen_event_applies(false, false, true), "the tab that holds it can still end it");
     }
 
     #[test]

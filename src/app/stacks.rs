@@ -184,6 +184,22 @@ impl App {
         count
     }
 
+    /// [`Self::stack_all_by_site`], plus the tab whose stack "Open the stack editor when a stack is
+    /// made" opens: the tab in front when it is now in a stack, else the first tab of any stack.
+    /// The tab is `None` when no stack was made.
+    pub fn stack_all_by_site_for_editor(app: &AppRef) -> (usize, Option<TabId>) {
+        let count = Self::stack_all_by_site(app);
+        if count == 0 {
+            return (0, None);
+        }
+        let active = Self::active_tab_id(app);
+        if !Self::stack_members(app, active).is_empty() {
+            return (count, Some(active));
+        }
+        let first = Self::tab_ids(app).into_iter().find(|id| !Self::stack_members(app, *id).is_empty());
+        (count, first)
+    }
+
     /// "Unstack": every tab of `id`'s stack leaves it and stays out of automatic grouping.
     pub fn unstack(app: &AppRef, id: TabId) -> bool {
         let members = Self::stack_members(app, id);
@@ -455,6 +471,24 @@ impl App {
             app.borrow_mut().memberships.remove(&tab);
         }
         moved
+    }
+
+    /// A link followed in `tab` loads in place: when a workspace rule matches its site, the tab is
+    /// moved to the rule's workspace a moment later ([`App::run_deferred_links`]), outside the
+    /// engine's event. Whether a move was queued.
+    pub(super) fn defer_workspace_rule(app: &AppRef, tab: TabId, url: &url::Url) -> bool {
+        let (hwnd, queued) = {
+            let mut state = app.borrow_mut();
+            let applies = state.settings.tabs.workspaces && crate::workspace_rules::matching(&state.workspace_rules, url).is_some();
+            if applies {
+                state.tab_state.deferred_workspace.push((tab, url.clone()));
+            }
+            (state.hwnd, applies)
+        };
+        if queued {
+            win32::set_link_timer(hwnd);
+        }
+        queued
     }
 
     /// The wheel turned `steps` notches over the rail's workspaces ("Switch workspaces by

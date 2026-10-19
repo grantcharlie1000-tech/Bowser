@@ -329,3 +329,10 @@ test('the panel sends only commands Rust accepts', () => {
   assert.equal(sessions.openTabsText(6, 3), '6 open tabs, 3 selected');
   assert.equal(sessions.openTabsText(6, 1), '6 open tabs', 'one tab is not a selection');
 });
+
+test('"Prioritise the active tab" reads as what Rust does: other tabs are muted, not paused', () => {
+  const spec = options.TAB_OPTIONS.find((s) => s.key === 'tabs_mute_mode');
+  // app/tab_features.rs mutes the other tabs' audio while the active tab plays; their pages keep running.
+  assert.match(spec.description, /other tabs are muted while the active tab is playing/);
+  assert.doesNotMatch(spec.description, /wait/);
+});

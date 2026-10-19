@@ -1458,7 +1458,9 @@ struct EngineCore {
     pending: HashMap<TabId, Url>,
     /// Form fields to POST to the `pending` address of a tab whose controller is still being made
     /// (a search with an engine that posts its query).
-    pending_post: HashMap<TabId, String>,
+    /// Each body is kept with the address it was queued for, so it is sent only to that
+    /// navigation (see `take_pending_post`).
+    pending_post: HashMap<TabId, (Url, String)>,
     hidden_since: HashMap<TabId, Instant>,
     suspended: HashSet<TabId>,
     closed: bool,
@@ -1837,7 +1839,8 @@ impl WebView2Engine {
                         (None, MemoryUsageTarget::Low, false)
                     }
                 };
-                let pending_post = core.borrow_mut().pending_post.remove(&tab_id);
+                let pending_post =
+                    take_pending_post(&mut core.borrow_mut().pending_post, tab_id, pending.as_ref());
                 if !still_open {
                     let mut tab = tab;
                     let _ = EngineAdapter::close(&mut tab);
@@ -1941,6 +1944,9 @@ impl WebView2Engine {
             // the "Navigation failed: Invalid pointer" dialog.
             state.known_tabs.insert(tab_id);
             state.pending.insert(tab_id, url.clone());
+            // A new navigation supersedes a POST waiting for the controller; `navigate_tab_post`
+            // stores its own body after this call.
+            state.pending_post.remove(&tab_id);
             !state.creating.contains(&tab_id)
         };
         if should_create {
@@ -3225,7 +3231,7 @@ impl EngineAdapter for WebView2Engine {
         self.navigate_tab_internal(tab, url)?;
         let mut state = self.core.borrow_mut();
         if state.pending.contains_key(&tab) {
-            state.pending_post.insert(tab, body.to_owned());
+            state.pending_post.insert(tab, (url.clone(), body.to_owned()));
         }
         Ok(())
     }
@@ -3601,6 +3607,7 @@ impl EngineAdapter for WebView2Engine {
                 state.prewarm_waiting = None;
             }
             state.pending.remove(&tab_id);
+            state.pending_post.remove(&tab_id);
             state.hidden_since.remove(&tab_id);
             state.suspended.remove(&tab_id);
             state.tabs.remove(&tab_id)
@@ -3829,6 +3836,7 @@ impl EngineAdapter for WebView2Engine {
             state.closed = true;
             state.known_tabs.clear();
             state.pending.clear();
+            state.pending_post.clear();
             state.creating.clear();
             state.hidden_since.clear();
             state.suspended.clear();
@@ -3924,6 +3932,18 @@ fn navigate_webview(
             .ok_or_else(|| Error::from(windows::Win32::Foundation::E_POINTER))?
             .Navigate(*url.as_ref().as_pcwstr())
     }
+}
+
+/// Takes the tab's waiting POST body, but only when it belongs to `navigating`, the address the new
+/// controller is about to load; a body left over from a superseded navigation is dropped, never
+/// sent to another address. Pure.
+fn take_pending_post(
+    pending_post: &mut HashMap<TabId, (Url, String)>,
+    tab: TabId,
+    navigating: Option<&Url>,
+) -> Option<String> {
+    let (url, body) = pending_post.remove(&tab)?;
+    (navigating == Some(&url)).then_some(body)
 }
 
 /// Navigates a webview with a POST of form fields (`body`, already percent-encoded) to an https
@@ -5641,6 +5661,45 @@ fn pane_switch_steps(next: &[TabId], old: &[TabId]) -> Vec<SwitchStep> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_pending_post_body_goes_only_to_its_own_navigation() {
+        let tab = TabId(7);
+        let search = Url::parse("https://search.example/q").unwrap();
+        let other = Url::parse("https://other.example/").unwrap();
+        let mut posts = HashMap::new();
+        posts.insert(tab, (search.clone(), "q=secret".to_owned()));
+        assert_eq!(take_pending_post(&mut posts, tab, Some(&search)).as_deref(), Some("q=secret"));
+        assert!(posts.is_empty(), "taken once");
+        posts.insert(tab, (search.clone(), "q=secret".to_owned()));
+        assert_eq!(take_pending_post(&mut posts, tab, Some(&other)), None, "never sent to another address");
+        assert!(posts.is_empty(), "and dropped");
+        posts.insert(tab, (search.clone(), "q=secret".to_owned()));
+        assert_eq!(take_pending_post(&mut posts, tab, None), None);
+        assert!(posts.is_empty());
+        assert_eq!(take_pending_post(&mut posts, TabId(8), Some(&search)), None);
+    }
+
+    #[test]
+    fn a_pending_post_body_is_bound_and_cleared_in_the_engine() {
+        // The controller callback, close and shutdown are not unit-testable without WebView2, so
+        // these source checks keep a queued search body from reaching another address or outliving
+        // its tab.
+        let source = include_str!("webview2.rs");
+        let production = &source[..source.find("#[cfg(test)]").expect("test module")];
+        for needle in [
+            "take_pending_post(&mut core.borrow_mut().pending_post, tab_id, pending.as_ref())",
+            "state.pending_post.insert(tab, (url.clone(), body.to_owned()))",
+            "state.pending_post.clear();",
+        ] {
+            assert!(production.contains(needle), "missing in the engine: {needle}");
+        }
+        assert_eq!(
+            production.matches("state.pending_post.remove(&tab_id);").count(),
+            2,
+            "a new navigation and a tab close each drop the waiting body"
+        );
+    }
 
     /// Hooks for the ignored live probe (`extension_probe_live`). They live here, not beside the
     /// production code, so the source-scanning tests below see the whole production region.

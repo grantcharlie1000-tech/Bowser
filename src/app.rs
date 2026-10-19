@@ -6007,7 +6007,8 @@ impl App {
                             let state = app.borrow();
                             (state.hwnd, state.tab_model.active() == tab_id)
                         };
-                        if active || !on {
+                        let owns = win32::page_fullscreen_owner(hwnd) == Some(tab_id);
+                        if crate::auto_hide::page_fullscreen_event_applies(on, active, owns) {
                             win32::page_fullscreen(hwnd, &app, on, source.as_ref());
                         }
                     }
@@ -6222,7 +6223,14 @@ impl App {
             link_navigation: {
                 let link_app = Rc::downgrade(app);
                 Some(Rc::new(move |tab, url: &url::Url| {
-                    link_app.upgrade().is_some_and(|app| App::pinned_link(&app, tab, url))
+                    link_app.upgrade().is_some_and(|app| {
+                        // A refused pinned-tab link opens elsewhere; one that loads in place may
+                        // still belong to a workspace rule's site (moved a moment later).
+                        App::pinned_link(&app, tab, url) || {
+                            App::defer_workspace_rule(&app, tab, url);
+                            false
+                        }
+                    })
                 }))
             },
             // --- end tab options ---
@@ -7589,7 +7597,7 @@ impl App {
         // window lays out the same way (`chrome::layout::compute_arranged_auto_hide`).
         let maximised = crate::win32::zoomed_or_full(self.hwnd);
         let hidden = crate::win32::auto_hide_effective(self.hwnd, &self.settings).hidden;
-        let plan = crate::auto_hide::plan(hidden, self.settings.tab_layout);
+        let plan = crate::auto_hide::plan_for(hidden, self.settings.tab_layout, self.settings.tab_bar_visible);
         // --- end auto-hide ---
         // --- layout (thread T6) --- the whole arrangement, with a hidden address bar shown while
         // Ctrl+L has it revealed, and the docked panel on the edge it is actually on (none of its

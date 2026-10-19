@@ -1711,6 +1711,20 @@ pub fn set_text_json(text: &str, select: bool) -> String {
     )
 }
 
+/// [`set_text_json`] plus `"full"`: the address the field swaps in while focused when `minimal_url`
+/// condenses `text` (left out when they are the same, or there is no full form).
+pub fn set_text_full_json(text: &str, full: &str, select: bool) -> String {
+    let base = set_text_json(text, select);
+    if full.is_empty() || full == text {
+        return base;
+    }
+    format!(
+        "{},\"full\":{}}}",
+        &base[..base.len() - 1],
+        json_string(truncate_utf16(full, MAX_TEXT_CHARS))
+    )
+}
+
 /// `{"t":"focusOmnibox","select":...}`.
 pub fn focus_json(select: bool) -> String {
     format!("{{\"t\":\"focusOmnibox\",\"select\":{select}}}")
@@ -3839,6 +3853,16 @@ mod tests {
                 r#"{{"t":"completion","seq":4294967295,"suffix":"{}u2028"}}"#,
                 '\\'
             )
+        );
+    }
+
+    #[test]
+    fn set_text_full_carries_the_focused_address_only_when_it_differs() {
+        assert_eq!(set_text_full_json("example.com", "example.com", false), set_text_json("example.com", false));
+        assert_eq!(set_text_full_json("example.com", "", true), set_text_json("example.com", true));
+        assert_eq!(
+            set_text_full_json("example.com", "example.com/a?q=1#f", false),
+            "{\"t\":\"setText\",\"text\":\"example.com\",\"select\":false,\"full\":\"example.com/a?q=1#f\"}"
         );
     }
 

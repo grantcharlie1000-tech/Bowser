@@ -10,6 +10,9 @@ const RESIZE_GRIP: i32 = 8;
 pub enum ChromeHit {
     None,
     Interactive,
+    /// Empty chrome the layout calls `Hit::CaptionArea` (a drag band) wherever it
+    /// is: below the caption strip too, as with a toolbar along the bottom edge.
+    Drag,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -118,7 +121,9 @@ pub fn frame_hit_test_with(
 
     let strip = caption_strip_height(dpi).min(height);
     if y >= strip {
-        return FrameHit::Client;
+        // A drag band lower down (the bottom toolbar's empty space) moves the
+        // window like the one at the top; the caption buttons stay in the top strip.
+        return if chrome_hit == ChromeHit::Drag { FrameHit::Caption } else { FrameHit::Client };
     }
     let buttons = CaptionButtons::for_client_width(width, dpi);
     let button_x = x.clamp(0, width.saturating_sub(1));
@@ -351,4 +356,17 @@ mod tests {
         assert_eq!(frame_hit_test_with(POINT { x: 500, y: 10 }, size, 96, false, ChromeHit::None, true), FrameHit::Caption, "the top is unchanged");
     }
     // --- end layout ---
+
+    #[test]
+    fn a_drag_band_below_the_caption_strip_moves_the_window() {
+        let size = (1000, 700);
+        let bottom_toolbar = POINT { x: 500, y: 680 };
+        for thin in [false, true] {
+            assert_eq!(frame_hit_test_with(bottom_toolbar, size, 96, false, ChromeHit::Drag, thin), FrameHit::Caption, "thin {thin}");
+            assert_eq!(frame_hit_test_with(bottom_toolbar, size, 96, false, ChromeHit::None, thin), FrameHit::Client, "thin {thin}");
+            assert_eq!(frame_hit_test_with(bottom_toolbar, size, 96, false, ChromeHit::Interactive, thin), FrameHit::Client, "thin {thin}");
+        }
+        assert_eq!(frame_hit_test_with(POINT { x: 500, y: 699 }, size, 96, false, ChromeHit::Drag, true), FrameHit::Bottom, "the grip still comes first");
+        assert_eq!(frame_hit_test_with(POINT { x: 980, y: 10 }, size, 96, false, ChromeHit::Drag, true), FrameHit::Close, "the caption buttons stay at the top");
+    }
 }

@@ -147,9 +147,10 @@
   flex: none;
 }
 
-/* The address bar is hidden: the pill stays in place (and focusable, so Ctrl+L brings the field back)
-   but is not drawn until it has focus. */
-.pill[data-hidden="true"]:not(:focus-within, .is-open) {
+/* The address field is hidden: only its part of the pill (site button, field, typed history, QR) is
+   not drawn; the search field and the page buttons stay. The field stays in place and focusable, so
+   Ctrl+L brings it back until it loses focus. */
+.pill[data-hidden="true"]:not(.is-open, :has(.omni-field:focus-within)) > :is(.tb-site, .omni-field, .tb-hist, .tb-qr) {
   opacity: 0;
   pointer-events: none;
 }

@@ -35,7 +35,7 @@ const normal = (id, body = 'hello', extra = '') => cell(id, { name: 'Someone', h
 const label = (text, style) => `<div class="x2">${style === 'wrapped' ? `<div><span>${text}</span><svg></svg></div>` : style === 'bare' ? text : `<span class="x1">${text}</span>`}</div>`;
 const ad = (id, text = 'Ad', style = 'span') => cell(id, { name: 'riffle', handle: 'rifflerdotstudio', label: label(text, style) }, 'Buy now', '<div><a href="https://riffle.studio">From riffle.studio</a></div>');
 
-const PAGE = (initial, later) => `<!doctype html><html><body><div id="tl">${initial}</div><script>
+const PAGE = (initial, later, change = '') => `<!doctype html><html><body><div id="tl">${initial}</div><script>
   var out = { errors: [] };
   function hidden() { var r = {}; document.querySelectorAll('[data-testid=cellInnerDiv]').forEach(function (c) { r[c.id] = getComputedStyle(c).display === 'none'; }); return r; }
   try {
@@ -44,6 +44,7 @@ const PAGE = (initial, later) => `<!doctype html><html><body><div id="tl">${init
     out.first = hidden();
     setTimeout(function () {
       document.getElementById('tl').insertAdjacentHTML('beforeend', ${JSON.stringify(later)});
+      ${change}
       setTimeout(function () {
         out.second = hidden(); out.statsHidden = window.__bowserXPromoted.stats.hidden;
         s.remove();
@@ -94,6 +95,25 @@ test('only promoted cells are hidden, on load and for posts inserted later', { s
   assert.deepEqual(r.first, { n1: false, a1: true, n2: false, n3: false, n4: false, n5: false, n9: false, n6: false, a4: true });
   assert.deepEqual(r.second, { ...r.first, n7: false, a2: true, a3: true, n8: false });
   assert.equal(r.statsHidden, 5);
+});
+
+test('a poll option or other body text "Ads" does not hide a post, and recycled cells are checked again', { skip }, () => {
+  const poll = '<div data-testid="cardPoll"><div role="radio"><span>Ads</span></div><div role="radio"><span>Promoted</span></div></div>';
+  const initial = normal('p1', 'Which do you skip?', poll)
+    + normal('p2', 'media', '<div data-testid="tweetPhoto"><div><span>Ad</span></div></div>')
+    + ad('r1') + normal('r2') + ad('r3')
+    // The header-row label still hides an ad that carries media or a poll of its own.
+    + cell('a6', { name: 'riffle', handle: 'r', label: label('Ad') }, 'Buy now', '<div data-testid="tweetPhoto"><div><span>Ads</span></div></div>' + poll);
+  // X reuses cells while scrolling: r1's ad becomes a normal post, r2's normal post becomes an ad,
+  // and r3's ad cell is emptied into a non-post row.
+  const change = `
+    document.getElementById('r1').innerHTML = ${JSON.stringify(normal('x').replace(/^<div[^>]*>|<\/div>$/g, ''))};
+    document.getElementById('r2').innerHTML = ${JSON.stringify(ad('x').replace(/^<div[^>]*>|<\/div>$/g, ''))};
+    document.getElementById('r3').innerHTML = '<div>Who to follow</div>';`;
+  const r = run(PAGE(initial, '', change));
+  assert.deepEqual(r.first, { p1: false, p2: false, r1: true, r2: false, r3: true, a6: true });
+  assert.deepEqual(r.second, { p1: false, p2: false, r1: false, r2: true, r3: false, a6: true });
+  assert.equal(r.statsHidden, 2);
 });
 
 test('removing the cosmetic style stops the script and unmarks every cell', { skip }, () => {

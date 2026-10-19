@@ -1147,7 +1147,8 @@ pub fn top_sites(history: &[(u64, String, String)], limit: usize) -> Vec<TopSite
         url: String,
         title: String,
     }
-    let mut hosts: Vec<(String, Tally)> = Vec::new();
+    // One hash lookup per row: a linear scan per row was quadratic over 5000 history rows.
+    let mut tallies: std::collections::HashMap<String, Tally> = std::collections::HashMap::new();
     for (stamp, url, title) in history {
         let Ok(parsed) = url::Url::parse(url) else { continue };
         if !matches!(parsed.scheme(), "http" | "https") {
@@ -1155,8 +1156,8 @@ pub fn top_sites(history: &[(u64, String, String)], limit: usize) -> Vec<TopSite
         }
         let Some(host) = parsed.host_str() else { continue };
         let host = host.strip_prefix("www.").unwrap_or(host).to_ascii_lowercase();
-        match hosts.iter_mut().find(|(h, _)| *h == host) {
-            Some((_, tally)) => {
+        match tallies.get_mut(&host) {
+            Some(tally) => {
                 tally.count += 1;
                 if *stamp >= tally.newest {
                     tally.newest = *stamp;
@@ -1164,9 +1165,13 @@ pub fn top_sites(history: &[(u64, String, String)], limit: usize) -> Vec<TopSite
                     tally.title.clone_from(title);
                 }
             }
-            None => hosts.push((host, Tally { count: 1, newest: *stamp, url: url.clone(), title: title.clone() })),
+            None => {
+                tallies.insert(host, Tally { count: 1, newest: *stamp, url: url.clone(), title: title.clone() });
+            }
         }
     }
+    // The sort is total (the host breaks every tie), so the map's order never shows.
+    let mut hosts: Vec<(String, Tally)> = tallies.into_iter().collect();
     hosts.sort_by(|a, b| b.1.count.cmp(&a.1.count).then(b.1.newest.cmp(&a.1.newest)).then(a.0.cmp(&b.0)));
     hosts.into_iter().take(limit).map(|(host, t)| TopSite { host, title: t.title, url: t.url }).collect()
 }

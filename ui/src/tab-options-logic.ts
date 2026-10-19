@@ -109,7 +109,7 @@ export const TAB_OPTIONS: readonly TabOptionSpec[] = [
   toggle('tabs_selection_active', 'select', true, 'Include the active tab in the selection', 'The active tab joins the selected tabs when you act on them.', 'tab selection include active tab'),
 
   choice('tabs_mute_mode', 'audio', 'all', [['all', 'Play all'], ['active', 'Only the active tab'], ['prioritise', 'Prioritise the active tab']], 'Tab audio',
-    'Only the active tab plays, or other tabs wait while the active tab is playing.', 'mute tab audio play all only active prioritise sound'),
+    'Only the active tab plays, or other tabs are muted while the active tab is playing.', 'mute tab audio play all only active prioritise sound'),
 
   choice('tabs_pinned_close', 'pinned', 'close', [['close', 'Close as other tabs'], ['keep', 'Do not close'], ['minimise', 'Minimise instead of close']], 'Closing a pinned tab',
     'What closing a pinned tab does. Minimise puts it to sleep and moves on.', 'pinned tabs close do not close minimize minimise'),

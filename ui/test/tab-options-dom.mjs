@@ -107,12 +107,15 @@ const sent = [];
 const listeners = [];
 const documentElement = new Node('html');
 const body = new Node('body');
+// Page-level listeners (window and document) are kept so a test can fire pagehide or visibilitychange.
+const pageListeners = { window: {}, document: {} };
+const firePage = (target, type) => { for (const cb of pageListeners[target][type] ?? []) cb({ type }); };
 globalThis.document = {
-  documentElement, body, activeElement: null,
+  documentElement, body, activeElement: null, visibilityState: 'visible',
   createElement: (tag) => new Node(tag),
   createElementNS: (_ns, tag) => new Node(tag),
   createTextNode: (text) => new Node('#text', text),
-  addEventListener() {}, removeEventListener() {},
+  addEventListener(type, cb) { (pageListeners.document[type] ??= []).push(cb); }, removeEventListener() {},
 };
 globalThis.window = globalThis;
 const intervals = new Map();
@@ -123,7 +126,7 @@ Object.assign(globalThis, {
   requestAnimationFrame: (cb) => { cb(); return 0; },
   cancelAnimationFrame() {},
   getComputedStyle: () => ({ columnGap: '4px' }),
-  addEventListener() {}, removeEventListener() {},
+  addEventListener(type, cb) { (pageListeners.window[type] ??= []).push(cb); }, removeEventListener() {},
   setInterval: (cb) => { intervals.set(nextInterval, cb); return nextInterval++; },
   clearInterval: (id) => { intervals.delete(id); },
   IntersectionObserver: class { observe() {} disconnect() {} },
@@ -192,17 +195,23 @@ test('a switch, a choice, a number and the address each send one tabopt command 
   assert.deepEqual(position.map((r) => r.textContent), ['After related', 'After active', 'As last', 'As stack with related']); // --- T10 ---
   position[0].click();
   assert.deepEqual(sent.splice(0), [{ v: 1, t: 'set', a: 'tabopt', text: 'tabs_new_tab_position=related' }]);
-  // Number: typed, clamped, sent; one tab is not a bulk close.
+  // Number: typed, clamped, sent once it settles (here: on leaving the field); one tab is not a bulk close.
   const confirm = rowOf('tabs_confirm_close').querySelector('input');
   confirm.value = '5';
   confirm.dispatch('change');
+  assert.deepEqual(sent.splice(0), [], 'a number waits for the run of changes to end');
+  confirm.dispatch('blur');
   assert.deepEqual(sent.splice(0), [{ v: 1, t: 'set', a: 'tabopt', text: 'tabs_confirm_close=5' }]);
-  confirm.value = '1';
-  confirm.dispatch('change');
+  // Spinner steps in a row save only the last value.
+  for (const value of ['6', '7', '1']) { confirm.value = value; confirm.dispatch('change'); }
+  assert.equal(confirm.value, '2', 'clamped at once');
+  confirm.dispatch('blur');
   assert.deepEqual(sent.splice(0), [{ v: 1, t: 'set', a: 'tabopt', text: 'tabs_confirm_close=2' }]);
-  assert.equal(confirm.value, '2');
+  confirm.dispatch('blur');
+  assert.deepEqual(sent.splice(0), [], 'nothing waits, so leaving again sends nothing');
   confirm.value = '999';
   confirm.dispatch('change');
+  confirm.dispatch('blur');
   assert.deepEqual(sent.splice(0), [{ v: 1, t: 'set', a: 'tabopt', text: 'tabs_confirm_close=99' }]);
   // Address: trimmed; a script address never leaves the page.
   const address = rowOf('tabs_new_tab_url').querySelector('input');
@@ -213,6 +222,40 @@ test('a switch, a choice, a number and the address each send one tabopt command 
   address.dispatch('change');
   assert.deepEqual(sent.filter((m) => m.a === 'tabopt'), [], 'refused in the page, before Rust sees it');
   assert.ok(!sent.some((m) => m.a === 'save'), 'none of these is part of save');
+});
+
+test('a waiting number saves by itself after the pause, and when the page is hidden or closed', async () => {
+  const confirm = rowOf('tabs_confirm_close').querySelector('input');
+  sent.length = 0;
+  // Left alone, the last value goes out once the 400 ms pause has passed, and only once.
+  confirm.value = '4';
+  confirm.dispatch('change');
+  const tabopts = () => sent.splice(0).filter((m) => m.a === 'tabopt');
+  assert.deepEqual(tabopts(), []);
+  await new Promise((resolve) => setTimeout(resolve, 450));
+  assert.deepEqual(tabopts(), [{ v: 1, t: 'set', a: 'tabopt', text: 'tabs_confirm_close=4' }]);
+  confirm.dispatch('blur');
+  assert.deepEqual(tabopts(), [], 'already sent');
+  // A host update while a value waits leaves the field alone, so the user's value is not undone.
+  confirm.value = '6';
+  confirm.dispatch('change');
+  deliver({ ...settingsFixture.snap, d: { ...settingsFixture.snap.d, tabOptions: { ...settingsFixture.snap.d.tabOptions, tabs_confirm_close: 9 } } });
+  assert.equal(rowOf('tabs_confirm_close').querySelector('input').value, '6', 'not repainted under the user');
+  // The page is hidden (minimised, another tab) inside the pause: the value is saved, not lost.
+  document.visibilityState = 'hidden';
+  firePage('document', 'visibilitychange');
+  document.visibilityState = 'visible';
+  assert.deepEqual(sent.filter((m) => m.a === 'tabopt'), [{ v: 1, t: 'set', a: 'tabopt', text: 'tabs_confirm_close=6' }]);
+  sent.length = 0;
+  // The page closes inside the pause: pagehide saves it.
+  const input = rowOf('tabs_confirm_close').querySelector('input');
+  input.value = '8';
+  input.dispatch('change');
+  firePage('window', 'pagehide');
+  assert.deepEqual(sent.filter((m) => m.a === 'tabopt'), [{ v: 1, t: 'set', a: 'tabopt', text: 'tabs_confirm_close=8' }]);
+  await new Promise((resolve) => setTimeout(resolve, 450));
+  assert.deepEqual(sent.filter((m) => m.a === 'tabopt'), [{ v: 1, t: 'set', a: 'tabopt', text: 'tabs_confirm_close=8' }], 'the timer does not send it a second time');
+  sent.length = 0;
 });
 
 test('the next snapshot is the truth: it moves every control, and the address follows the new tab page', () => {
@@ -650,6 +693,25 @@ test('two-level stacks: the tab row shows the stack as its open ball and the sec
   row.children[1].focus();
   row.children[1].dispatch('keydown', { key: 'ArrowRight', target: row.children[1] });
   assert.equal(document.activeElement, row.children[2]);
+  // "Switch tabs by scrolling" over the second row steps among the stack's tabs.
+  deliver(opts({ stackRow: 'regular', wheel: true }));
+  const wheelRow = (deltaY) => row.dispatch('wheel', { deltaY, deltaX: 0, shiftKey: false });
+  sent.length = 0;
+  wheelRow(100);
+  wheelRow(-100);
+  assert.deepEqual(sent.filter((m) => m.t === 'tab'), [
+    { v: 1, t: 'tab', a: 'select', id: 4 },
+    { v: 1, t: 'tab', a: 'select', id: 2 },
+  ], 'the next and previous tab of the stack, not of the tab row');
+  sent.length = 0;
+  deliver(stacked(4));
+  wheelRow(100);
+  assert.deepEqual(sent.filter((m) => m.t === 'tab'), [], 'the stack’s last tab stops there (tab 5 is outside it)');
+  deliver(stacked(3));
+  deliver(opts({ stackRow: 'regular', wheel: false }));
+  sent.length = 0;
+  wheelRow(100);
+  assert.deepEqual(sent.filter((m) => m.t === 'tab'), [], 'off: no switching');
   // Compact second row: the same tabs, a smaller row.
   deliver(opts({ stackRow: 'compact' }));
   assert.equal(row.dataset.size, 'compact');

@@ -12,7 +12,6 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::OnceLock;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 use windows::Win32::Foundation::{HANDLE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
@@ -48,18 +47,33 @@ const SENSOR_CLASS: PCWSTR = w!("BowserAutoHideSensor");
 const PROP_FULLSCREEN: PCWSTR = w!("BowserFullscreen");
 const PROP_PANEL_FLOATS: PCWSTR = w!("BowserPanelFloats");
 
-/// Whether any bar is auto-hidden: the chrome then paints and themes itself solid, because a revealed
-/// bar floats over a page and must not let it show through the window's glass.
-static SOLID: AtomicBool = AtomicBool::new(false);
-
-pub(super) fn solid() -> bool {
-    SOLID.load(Ordering::Relaxed)
+thread_local! {
+    /// The windows with a bar auto-hidden: their chrome then paints and themes itself solid, because a
+    /// revealed bar floats over a page and must not let it show through the window's glass. Kept per
+    /// window, so one window hiding its bars (full screen, say) leaves every other window's chrome
+    /// glass. Keyed by the window handle; `forget` drops the entry.
+    static SOLID: RefCell<std::collections::HashSet<isize>> = RefCell::new(std::collections::HashSet::new());
 }
 
-/// The palette the window paints and themes its chrome with: the glass palette, or the solid one while
-/// auto-hide has a bar out of the layout.
-pub(super) fn chrome_palette() -> &'static crate::theme::Palette {
-    if solid() {
+pub(super) fn solid(hwnd: HWND) -> bool {
+    SOLID.with(|solid| solid.borrow().contains(&(hwnd.0 as isize)))
+}
+
+fn set_solid(hwnd: HWND, on: bool) {
+    SOLID.with(|solid| {
+        let mut solid = solid.borrow_mut();
+        if on {
+            solid.insert(hwnd.0 as isize);
+        } else {
+            solid.remove(&(hwnd.0 as isize));
+        }
+    });
+}
+
+/// The palette `hwnd` paints and themes its chrome with: the glass palette, or the solid one while
+/// auto-hide has a bar of that window out of the layout.
+pub(super) fn chrome_palette(hwnd: HWND) -> &'static crate::theme::Palette {
+    if solid(hwnd) {
         crate::theme::palette(super::glass::appearance(), true)
     } else {
         super::glass::palette()
@@ -232,11 +246,11 @@ pub(super) fn sync_config(hwnd: HWND, app: &AppRef) {
     let settings = crate::app::App::settings(app);
     let tab_layout = settings.tab_layout;
     let effective = effective_for(hwnd, &settings);
-    let plan = rules::plan(effective.hidden, tab_layout);
+    let plan = rules::plan_for(effective.hidden, tab_layout, settings.tab_bar_visible); // A hidden tab bar hides nothing
     set_panel_floats(hwnd, plan.panel);
-    let was_solid = solid();
+    let was_solid = solid(hwnd);
     let now_solid = !effective.hidden.is_empty();
-    SOLID.store(now_solid, Ordering::Relaxed);
+    set_solid(hwnd, now_solid); // this window only
     let changed = with_chrome(hwnd, |s| {
         let before = (s.ah.hidden, s.ah.reveal_allowed);
         s.ah.hidden = effective.hidden;
@@ -245,7 +259,7 @@ pub(super) fn sync_config(hwnd: HWND, app: &AppRef) {
             s.ah.machine.reset();
         }
         if was_solid != now_solid {
-            s.palette = chrome_palette();
+            s.palette = chrome_palette(hwnd);
             s.html_last_state = None;
             s.html_tabs_last_state = None;
             s.html_rail_last_state = None;
@@ -438,7 +452,7 @@ fn zone_from_code(code: usize) -> Option<Zone> {
 fn sync_sensors(hwnd: HWND) {
     let want = with_chrome(hwnd, |s| {
         if !s.ah.reveal_allowed || s.ah.hidden.is_empty() {
-            return (Zones::NONE, LRect::default(), LRect::default(), false, 96, false);
+            return (Zones::NONE, LRect::default(), LRect::default(), false, 96, false, false);
         }
         let present = rules::zones(s.ah.plan, !s.ah.bar_float.is_empty(), s.ah.bar_bottom);
         let mut waiting = Zones::NONE;
@@ -447,16 +461,18 @@ fn sync_sensors(hwnd: HWND) {
                 waiting = waiting.with(zone);
             }
         }
-        (waiting, s.ah.page, s.ah.bar_float, s.ah.bar_bottom, s.dpi, true)
+        // A right sidebar comes back from the right edge.
+        let sidebar_right = s.sidebar.is_some_and(|sidebar| sidebar.side == crate::settings::SidePanelPosition::Right);
+        (waiting, s.ah.page, s.ah.bar_float, s.ah.bar_bottom, s.dpi, true, sidebar_right)
     })
-    .unwrap_or((Zones::NONE, LRect::default(), LRect::default(), false, 96, false));
-    let (zones, page, bar, bottom, dpi_now, active) = want;
+    .unwrap_or((Zones::NONE, LRect::default(), LRect::default(), false, 96, false, false));
+    let (zones, page, bar, bottom, dpi_now, active, sidebar_right) = want;
     if !active && with_chrome(hwnd, |s| s.ah.sensors.is_empty()).unwrap_or(true) {
         return;
     }
     // A strip at a screen edge with no monitor beyond it is one pixel; anywhere else 4 DIP.
     let thin_top = zoomed_or_full(hwnd) && no_monitor_above(hwnd, page);
-    let strips = rules::sensors(zones, page, bar, bottom, dpi_now, thin_top, false);
+    let strips = rules::sensors_sided(zones, page, bar, bottom, dpi_now, thin_top, false, sidebar_right);
     // Hide every existing sensor whose zone is not wanted now.
     let existing = with_chrome(hwnd, |s| s.ah.sensors.clone()).unwrap_or_default();
     for (zone, window) in &existing {
@@ -674,4 +690,24 @@ fn leave_window(hwnd: HWND, app: &AppRef, for_page: bool) {
 pub(crate) fn forget(hwnd: HWND) {
     super::fullscreen_notice::hide(hwnd);
     SAVED.with(|saved| saved.borrow_mut().remove(&(hwnd.0 as isize)));
+    set_solid(hwnd, false);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn one_window_going_solid_leaves_the_others_glass() {
+        let (first, second) = (HWND(0x1001 as *mut _), HWND(0x1002 as *mut _));
+        set_solid(first, true);
+        assert!(solid(first));
+        assert!(!solid(second), "the other window keeps its own look");
+        assert!(std::ptr::eq(chrome_palette(second), super::super::glass::palette()));
+        set_solid(second, true);
+        set_solid(first, false);
+        assert!(!solid(first) && solid(second));
+        forget(second);
+        assert!(!solid(second), "a closed window's flag is dropped");
+    }
 }

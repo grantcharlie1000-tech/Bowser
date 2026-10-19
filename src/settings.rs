@@ -510,9 +510,9 @@ pub struct Settings {
     pub rounded_content_frame: bool,
     /// `show_home_button` (default true): the Home button in the rail. Applies immediately.
     pub show_home_button: bool,
-    /// `bookmarks_bar=always|never|newtab` (default never). Applies after restart.
+    /// `bookmarks_bar=always|never|newtab` (default never). Applies immediately (`App::apply_live_settings`).
     pub bookmarks_bar: BookmarksBar,
-    /// `bookmarks_bar_tab_groups` (default false). Applies after restart.
+    /// `bookmarks_bar_tab_groups` (default false). Applies immediately (`App::apply_live_settings`).
     pub bookmarks_bar_tab_groups: bool,
     /// `side_panel_position=left|right` (default left). Read from the file each time the side panel
     /// opens, so it applies from the next panel opened; memory keeps the startup value.
@@ -775,6 +775,9 @@ impl Settings {
                         .split(',')
                         .map(str::trim)
                         .filter(|site| !site.is_empty())
+                        // Same character rule as `parse_blocker_allow`: one hand-edited bad entry
+                        // is dropped rather than making the whole settings snapshot unsavable.
+                        .filter(|site| !site.chars().any(|c| c.is_whitespace() || c.is_control()))
                         .take(MAX_BLOCKER_ALLOW)
                         .map(str::to_owned)
                         .collect();
@@ -818,12 +821,16 @@ impl Settings {
                     }
                 }
                 "toolbar_buttons" => {
-                    if let Some(buttons) = parse_toolbar_buttons(value) {
+                    // A retired or hand-edited `cmd:` button is dropped; the rest of the list stays.
+                    if let Some(buttons) = crate::toolbar_prefs::parse_stored_list(crate::toolbar_prefs::Bar::Address, value) {
                         settings.toolbar_buttons = buttons;
                     }
                 }
                 // --- toolbars and feeds (thread T13) --- a bad value keeps the previous one.
-                "toolbar_tabs" | "toolbar_panel" | "feeds_detect" | "feeds_refresh_minutes" => {
+                "toolbar_tabs" | "toolbar_panel" => {
+                    let _ = crate::toolbar_prefs::apply_stored_list(&mut settings, key, value);
+                }
+                "feeds_detect" | "feeds_refresh_minutes" => {
                     let mut probe = settings.clone();
                     if crate::toolbar_prefs::apply_assignment(&mut probe, &format!("{key}={value}")) {
                         settings = probe;
@@ -1416,7 +1423,18 @@ pub fn save(path: &Path, settings: &Settings) -> io::Result<()> {
         let _ = std::fs::remove_file(&temporary);
         return Err(error);
     }
+    SAVES.fetch_add(1, std::sync::atomic::Ordering::Release);
     Ok(())
+}
+
+/// Counts the settings files `save` has written in this process.
+static SAVES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Moves on whenever `save` writes a settings file, so a value cached from one (the side panel's
+/// shared width) is read again after a Save or Reset on the settings page, even when the file's
+/// time and length alone would not show the change (two saves inside one clock tick).
+pub fn save_generation() -> u64 {
+    SAVES.load(std::sync::atomic::Ordering::Acquire)
 }
 
 /// Creates `path` from `TEMPLATE` when it does not exist yet. An existing file is left alone.
@@ -1551,6 +1569,13 @@ mod tests {
             vec!["a.com".to_owned(), "b.org".to_owned()]
         );
         assert!(Settings::parse("blocker_enabled=maybe").blocker_enabled);
+    }
+
+    #[test]
+    fn a_hand_edited_bad_blocker_allow_entry_is_dropped_so_the_snapshot_stays_valid() {
+        let s = Settings::parse("blocker_allow=a.com,a b.com,b.org\n");
+        assert_eq!(s.blocker_allow, vec!["a.com".to_owned(), "b.org".to_owned()]);
+        assert_eq!(parse_blocker_allow(&s.blocker_allow.join(",")), Ok(s.blocker_allow.clone()));
     }
 
     #[test]
@@ -2247,6 +2272,17 @@ nick_tabs=t
         for bad in ["1a2b3c", "#1a2b3", "#1a2b3cd", "red", "#gggggg"] {
             assert_eq!(parse_theme_accent(bad), None, "{bad}");
         }
+    }
+
+    #[test]
+    fn a_hand_edited_unknown_command_button_drops_only_itself_from_a_bar() {
+        let s = Settings::parse("toolbar_buttons=back,cmd:no-such-command,reload
+toolbar_tabs=cmd:nope,closed-tabs
+");
+        assert_eq!(s.toolbar_buttons, vec!["back".to_owned(), "reload".to_owned()]);
+        assert_eq!(s.toolbar_tabs, vec!["closed-tabs".to_owned()]);
+        assert_eq!(Settings::parse("toolbar_buttons=back,bogus
+").toolbar_buttons, Settings::default().toolbar_buttons, "any other bad id keeps the default");
     }
 
     #[test]

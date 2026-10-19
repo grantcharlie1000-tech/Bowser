@@ -276,7 +276,7 @@
 /* Narrow tabs: inactive ones drop the close and mute buttons so the title keeps room; the
    active tab always keeps its close button. */
 @container (max-width: 111.9px) {
-  .strip .tab:not(.active) .close,
+  .strip:not(.close-always) .tab:not(.active) .close,
   .strip .tab:not(.active) .audio { display: none; }
 }
 

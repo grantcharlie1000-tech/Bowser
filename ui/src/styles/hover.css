@@ -17,7 +17,7 @@ body.bw-hover-body {
   /* Opaque: the overlay tint over the window colour without its glass alpha. */
   background: linear-gradient(var(--bw-overlay), var(--bw-overlay)), var(--bw-window-opaque);
   color: var(--bw-text);
-  font: 12px/1.35 var(--bw-font);
+  font: var(--bw-text-caption) / 1.35 var(--bw-font);
 }
 
 /* Shared entrance: 83 ms fade, decelerating. The popup hides instantly, so there is no exit fade. */

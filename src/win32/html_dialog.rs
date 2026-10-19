@@ -120,7 +120,7 @@ unsafe extern "system" fn dialog_proc(hwnd: HWND, message: u32, wparam: WPARAM, 
                 close(hwnd);
                 PRIVACY.with(|slot| if slot.get() == hwnd.0 as isize { slot.set(0); });
                 SESSIONS.with(|slot| if slot.get() == hwnd.0 as isize { slot.set(0); });
-                FEEDS.with(|slot| if slot.get() == hwnd.0 as isize { slot.set(0); });
+                FEEDS.with(|slot| if slot.get() == hwnd.0 as isize { slot.set(0); super::feeds_panel::detached(hwnd); });
                 DefWindowProcW(hwnd, message, wparam, lparam)
             }
             _ => DefWindowProcW(hwnd, message, wparam, lparam),
@@ -272,13 +272,14 @@ pub(crate) fn open_feeds(owner: HWND, app: &AppRef, env: ChromeEnv) {
         return;
     };
     FEEDS.with(|slot| slot.set(window.0 as isize));
+    super::feeds_panel::attached(window);
     attach(app, owner, window, env, Kind::Feeds);
     unsafe { let _ = ShowWindow(window, SW_SHOW); let _ = SetForegroundWindow(window); }
 }
 
 /// A feed worker's answer arrived for the Feeds window `parent`: apply it and redraw the panel.
 fn feeds_done(parent: HWND) {
-    if super::feeds_panel::apply_done(parent)
+    if super::feeds_panel::apply_done()
         && let Some(runtime) = RUNTIMES.with(|map| map.borrow().get(&(parent.0 as isize)).cloned())
     {
         send_current(&runtime);
@@ -326,7 +327,7 @@ fn handle(runtime: &Rc<RefCell<Runtime>>, command: Command) {
             // The Feeds panel fetches the subscriptions that are older than the user's refresh choice.
             if kind == Kind::Feeds {
                 let app = runtime.borrow().app.clone();
-                super::feeds_panel::on_ready(&app, parent);
+                super::feeds_panel::on_ready(&app);
                 send_current(runtime);
             }
             if kind == Kind::Rename {
@@ -581,7 +582,9 @@ fn handle_notes(runtime: &Rc<RefCell<Runtime>>, f: PanelFields) {
         "add-note" if empty_fields(&f, false) => { let (secs, micros) = now(); let added = book.add("New note", "", "", 0, secs, micros).map(|_| ()); book_result(&book, added) }
         "save-title" if only(true, false, false, false, true) && text_len_ok(2048) => {
             let Some(note) = book.notes.iter_mut().find(|item| item.id == id) else { return; };
-            let title = crate::notes_book::clip_chars(f.text.as_deref().unwrap_or_default(), crate::notes_book::MAX_TITLE_CHARS);
+            // One line: a newline in a title would start a new heading in exported Markdown.
+            let title = crate::notes_book::plain_line(f.text.as_deref().unwrap_or_default(), crate::notes_book::MAX_TITLE_CHARS);
+            let title = if title.is_empty() { "Untitled note".to_owned() } else { title };
             note.title = title; notes_panel::save_html_book(&profile, &book)
         }
         "save-body" if only(true, false, false, false, true) && text_len_ok(crate::notes_book::MAX_BODY_CHARS) => {
@@ -608,18 +611,22 @@ fn handle_notes(runtime: &Rc<RefCell<Runtime>>, f: PanelFields) {
             let name = format!("Notes.{}", kind.extension());
             let dir = crate::capture::default_dir().and_then(|d| d.parent().map(std::path::Path::to_path_buf)).unwrap_or_default();
             if let Some(mut path) = crate::download_shell::save_dialog(parent, &dir, &name) {
-                if crate::notes_book::FileKind::of_path(&path).is_none() { path.set_extension(kind.extension()); }
+                // The dialog asked before replacing the name the user picked; a name Bowser changed was never asked about.
+                let renamed = crate::notes_book::FileKind::of_path(&path).is_none();
+                if renamed { path.set_extension(kind.extension()); }
                 let kind = crate::notes_book::FileKind::of_path(&path).unwrap_or(kind);
-                match std::fs::write(&path, book.export(scope, kind)) { Ok(()) => {}, Err(error) => show_error_message(&format!("The notes could not be exported: {error}")) }
+                match write_export(&path, book.export(scope, kind).as_bytes(), !renamed) {
+                    Ok(()) => {}
+                    Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => show_error_message(&format!("{} already exists. Export again and choose another name.", path.display())),
+                    Err(error) => show_error_message(&format!("The notes could not be exported: {error}")),
+                }
             }
             return;
         }
         "import" if empty_fields(&f, false) => {
             let Some(path) = crate::download_shell::open_notes_dialog(parent) else { return; };
             let Some(kind) = crate::notes_book::FileKind::of_path(&path) else { show_error_message("Choose a .md or .txt file."); return; };
-            let too_big = std::fs::metadata(&path).map(|m| m.len() > crate::notes_book::MAX_IMPORT_BYTES).unwrap_or(true);
-            let text = if too_big { None } else { std::fs::read(&path).ok().and_then(|bytes| String::from_utf8(bytes).ok()) };
-            let Some(text) = text else { show_error_message("That file could not be read as text, or it is larger than 256 KB."); return; };
+            let Some(text) = read_import(&path, crate::notes_book::MAX_IMPORT_BYTES) else { show_error_message("That file could not be read as text, or it is larger than 256 KB."); return; };
             let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("Imported note").to_owned();
             let (secs, micros) = now();
             let (added, left_out) = book.import(crate::notes_book::parse_import(&text, kind, &stem), secs, micros);
@@ -640,6 +647,26 @@ fn handle_notes(runtime: &Rc<RefCell<Runtime>>, f: PanelFields) {
     send_current(runtime);
 }
 
+/// Writes an export to `path`. Only a name the user confirmed in the save dialog (`may_replace`) may
+/// replace a file; any other existing file is left alone (`AlreadyExists`).
+fn write_export(path: &std::path::Path, bytes: &[u8], may_replace: bool) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut file = if may_replace { std::fs::File::create(path)? } else { std::fs::OpenOptions::new().write(true).create_new(true).open(path)? };
+    file.write_all(bytes)
+}
+
+/// The text of the file to import: a regular file, read through a cap of `max` bytes (the size is not
+/// trusted from metadata, which can change or lie), and UTF-8. `None` otherwise.
+fn read_import(path: &std::path::Path, max: u64) -> Option<String> {
+    use std::io::Read;
+    let file = std::fs::File::open(path).ok()?;
+    if !file.metadata().ok()?.is_file() { return None; }
+    let mut bytes = Vec::new();
+    file.take(max + 1).read_to_end(&mut bytes).ok()?;
+    if bytes.len() as u64 > max { return None; }
+    String::from_utf8(bytes).ok()
+}
+
 fn empty_fields(f: &PanelFields, allow_text: bool) -> bool { f.id.is_none() && f.parent.is_none() && f.before.is_none() && f.n.is_none() && f.on.is_none() && f.url.is_none() && (allow_text || f.text.is_none()) }
 fn id_only(f: &PanelFields) -> bool { f.id.is_some() && f.parent.is_none() && f.before.is_none() && f.n.is_none() && f.on.is_none() && f.text.is_none() && f.url.is_none() }
 fn next_id(existing: impl Iterator<Item = u64>) -> u64 { existing.max().unwrap_or(0).saturating_add(1).max(SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_micros() as u64) }
@@ -648,6 +675,39 @@ fn next_id(existing: impl Iterator<Item = u64>) -> u64 { existing.max().unwrap_o
 mod tests {
     use super::*;
     fn rect(left: i32, top: i32, right: i32, bottom: i32) -> RECT { RECT { left, top, right, bottom } }
+
+    #[test]
+    fn notes_export_never_replaces_a_file_it_renamed_to() {
+        let dir = std::env::temp_dir().join(format!("bowser-notes-export-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("Notes.md");
+        std::fs::write(&path, b"keep me").unwrap();
+        // The extension was changed by Bowser: the existing file is left alone.
+        let error = write_export(&path, b"new", false).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(std::fs::read(&path).unwrap(), b"keep me");
+        // The name the user confirmed in the dialog may be replaced; a fresh name is created.
+        write_export(&path, b"new", true).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"new");
+        write_export(&dir.join("Other.md"), b"x", false).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn notes_import_reads_through_a_cap_and_only_regular_files() {
+        let dir = std::env::temp_dir().join(format!("bowser-notes-import-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("a.md");
+        std::fs::write(&path, b"12345").unwrap();
+        assert_eq!(read_import(&path, 5).as_deref(), Some("12345"));
+        assert_eq!(read_import(&path, 4), None, "one byte past the cap is refused");
+        assert_eq!(read_import(&dir, 1000), None, "a folder is not a file");
+        std::fs::write(&path, [0xFF, 0xFE]).unwrap();
+        assert_eq!(read_import(&path, 5), None, "not UTF-8");
+        let _ = std::fs::remove_dir_all(&dir);
+        // A title is one line, so it cannot add a heading to exported Markdown.
+        assert_eq!(crate::notes_book::plain_line("A\n# Injected\r\nheading", 200), "A # Injected heading");
+    }
 
     #[test]
     fn dialog_is_centred_over_the_owner_and_never_leaves_the_work_area() {

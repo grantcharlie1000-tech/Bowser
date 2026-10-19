@@ -144,8 +144,8 @@
 
 .pm-title {
   margin: var(--bw-space-1) 0 0;
-  font-size: 28px;
-  line-height: 36px;
+  font-size: var(--bw-text-display);
+  line-height: var(--bw-leading-display);
   font-weight: var(--bw-weight-strong);
   letter-spacing: -0.01em;
 }
