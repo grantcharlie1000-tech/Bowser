@@ -295,7 +295,11 @@ try {
  Neutral
  if(!$guard.SameAlive() -or !$browserGuard.SameAlive() -or ![BowserHostMenu]::Host($h,$OwnerPid,$tid) -or ![BowserHostMenu]::IsWindowVisible($h) -or ![BowserHostMenu]::IsWindowEnabled($h)){throw 'Retained exact owner unavailable before initial activation.'}
  # One ordinary exact-owner activation only. Never retry or rescue later foreground failures.
- if(![BowserHostMenu]::SetForegroundWindow($h) -or [BowserHostMenu]::GetForegroundWindow() -ne $h){throw 'Initial exact-owner activation denied.'}
+ $report.activation_before_exact_owner=([BowserHostMenu]::GetForegroundWindow() -eq $h)
+ $activated=[BowserHostMenu]::SetForegroundWindow($h)
+ $report.activation_returned_success=[bool]$activated
+ $report.activation_after_exact_owner=([BowserHostMenu]::GetForegroundWindow() -eq $h)
+ if(!$activated -or !$report.activation_after_exact_owner){throw 'Initial exact-owner activation denied.'}
  $point=[BowserHostMenu+POINT]::new();$point.X=$ClientX;$point.Y=$ClientY
  if(![BowserHostMenu]::ClientToScreen($h,[ref]$point)){throw 'Exact COM input conversion failed.'}
  Source-Control;Neutral

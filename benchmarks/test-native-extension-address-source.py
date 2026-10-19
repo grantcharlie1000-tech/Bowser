@@ -59,7 +59,7 @@ class ResourceAddressSourceContract(unittest.TestCase):
             body = function(name)
             self.assertIn('$depth -lt 64', body)
             self.assertIn('RawViewWalker.GetParent', body)
-            self.assertIn('[Windows.Automation.ControlType]::Document){return $false}', body)
+            self.assertRegex(body, r'\[Windows\.Automation\.ControlType\]::Document\)\{[^\n]*return \$false\}')
         read = function('Read-OwnedAddress')
         self.assertIn('$documents.Count -gt 64', read)
         self.assertIn('$named.Count -gt 10000', read)
@@ -124,6 +124,35 @@ class ResourceAddressSourceContract(unittest.TestCase):
         self.assertIn("@('X','Y','Width','Height')", generated)
         self.assertIn('@([double]::NaN,[double]::PositiveInfinity,[double]::NegativeInfinity)', generated)
         self.assertIn('@(0.0,-1.0)', generated)
+
+    def test_failure_source_observations_do_not_discover_or_authorize(self):
+        for name in ('Address-ObservedSourceKind', 'Address-ObservedSourcePair', 'Record-AddressObservedRuntime'):
+            body = function(name)
+            for forbidden in ('FindAll', 'FindFirst', 'GetRuntimeId', 'GetParent', '.Current', 'LegacyValue', 'SendWait', 'SetFocus', 'Start-Sleep'):
+                self.assertNotIn(forbidden, body)
+        runtime = function('Record-AddressObservedRuntime')
+        self.assertIn('$array.Count -gt 128', runtime)
+        self.assertIn("catch {}", runtime)
+        read = function('Read-OwnedAddress')
+        self.assertIn('record_cap=64', read)
+        self.assertLess(read.index('if($documents.Count -gt 64){throw'), read.index('foreach($candidate in $documents)'))
+        self.assertEqual(read.count("['document_source_diagnostic']"), 1)
+        self.assertGreater(read.index("['document_source_diagnostic']"), read.index('return @{focused='))
+        self.assertIn("if(Address-IsToolbarSource $source){$matches+=", read)
+        source = function('Address-DocumentSource')
+        self.assertEqual(source.count('$Document.GetRuntimeId()'), 1)
+        self.assertEqual(source.count('$RootElement.GetRuntimeId()'), 1)
+        self.assertEqual(source.count('.TryGetCurrentPattern('), 1)
+        self.assertEqual(source.count('::LegacyValue('), 1)
+        self.assertEqual(source.count('.Current.Value'), 1)
+        self.assertIn("$Observation.source_result=$pair.source_result", source)
+        self.assertNotIn('$Observation.source_result=$legacy', source)
+        self.assertNotIn('$Observation.source_result=$managed', source)
+        ancestry = function('Address-OutermostDocument')
+        self.assertEqual(ancestry.count('RawViewWalker.GetParent('), 1)
+        self.assertEqual(ancestry.count('Address-RuntimeKey '), 2)
+        for status in ('eligible', 'excluded-nearer-document', 'unowned-parent-chain', 'depth-limit'):
+            self.assertIn(status, ancestry)
 
     def test_measurement_and_failure_accounting_untouched(self):
         # Protocol-3 correction is deliberately confined above this preexisting fence.

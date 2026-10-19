@@ -11,7 +11,7 @@ if($errors.Count){throw ('Resource address script does not parse: '+$errors[0].M
 $native=$ast.Find({param($node) $node -is [Management.Automation.Language.StringConstantExpressionAst] -and $node.Value.Contains('public static class BowserExtensionMeasure')},$true)
 if(!$native){throw 'Real read-only native declarations missing.'}
 Add-Type -TypeDefinition $native.Value
-foreach($name in @('Address-IsToolbarSource','Assert-AddressGeometry','Address-RuntimeKey','Assert-AddressInput')){
+foreach($name in @('Address-IsToolbarSource','Address-ObservedSourceKind','Address-ObservedSourcePair','Record-AddressObservedRuntime','Assert-AddressGeometry','Address-RuntimeKey','Assert-AddressInput')){
  $definition=$ast.Find({param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq $name},$true)
  if(!$definition){throw "Real address policy function missing: $name"}
  . ([scriptblock]::Create($definition.Extent.Text))
@@ -27,6 +27,30 @@ Check (Address-IsToolbarSource 'bowser-ui://app/index.html?view=toolbar') 'Exact
 foreach($source in @('', 'Bowser toolbar','Address and search bar','http://127.0.0.1/page?view=toolbar','https://bowser-ui/app/index.html?view=toolbar','bowser-ui://evil/index.html?view=toolbar','bowser-ui://app/index.html?view=settings','bowser-ui://app/index.html?view=toolbar&x=1','bowser-ui://app/index.html?view=toolbar#x','bowser-ui://app/index.html?view=toolbar/','Bowser-ui://app/index.html?view=toolbar',' bowser-ui://app/index.html?view=toolbar')){
  Check (!(Address-IsToolbarSource $source)) 'Nonexact/spoofed toolbar source was accepted.'
 }
+# Sanitized classifications use supplied values only and never retain URLs or discover UIA.
+$exact='bowser-ui://app/index.html?view=toolbar';$other='https://example.invalid/private-observation-marker'
+foreach($case in @(
+ @{managed=$null;native=$null;want='missing,missing,missing'},
+ @{managed=$exact;native=$null;want='exact-toolbar,missing,missing'},
+ @{managed=$null;native=$exact;want='missing,exact-toolbar,exact-toolbar'},
+ @{managed=$other;native=$other;want='other,other,other'},
+ @{managed=$exact;native=$other;want='exact-toolbar,other,conflict'},
+ @{managed=$other;native=$exact;want='other,exact-toolbar,conflict'})){
+ $observed=Address-ObservedSourcePair $case.managed $case.native
+ Check ((@($observed.managed_source,$observed.native_source,$observed.source_result) -join ',') -ceq $case.want) 'Supplied source classifications changed.'
+ Check (!(($observed|ConvertTo-Json).Contains('private-observation-marker'))) 'Raw source content leaked into observation.'
+}
+$observed=@{runtime_id=$null;runtime_id_status='not-read'}
+Record-AddressObservedRuntime $observed 'runtime_id' ([int[]]@(1..128))
+Check ($observed.runtime_id_status -ceq 'observed' -and $observed.runtime_id.Count -eq 128 -and $observed.runtime_id[127] -eq 128) 'Full already-read bounded runtime ID not retained.'
+foreach($invalid in @(@{ids=[int[]]@(1..129)},@{ids=@('raw-not-an-id')},@{ids=$null})){
+ $observed=@{runtime_id=$null;runtime_id_status='not-read'}
+ Record-AddressObservedRuntime $observed 'runtime_id' $invalid.ids
+ Check ($observed.runtime_id_status -ceq 'unavailable-or-over-bound' -and $null -eq $observed.runtime_id) 'Unbounded/invalid observed ID was retained.'
+}
+# An unusable metadata destination must not throw or alter the original selector result.
+Record-AddressObservedRuntime ([pscustomobject]@{}) 'runtime_id' ([int[]]@(1))
+Check $true 'Metadata destination failure escaped its non-authority helper.'
 # All rectangle components must be finite; only extents must be positive.
 $bounds=[pscustomobject]@{X=-10.0;Y=-20.0;Width=100.0;Height=25.0}
 Assert-AddressGeometry $bounds

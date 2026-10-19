@@ -178,6 +178,25 @@ function Observe-UnavailableAddress($RootElement,[IntPtr]$Window) {
 # The exact source is the embedded toolbar host in src/chrome_host/assets.rs. Runtime IDs
 # are opaque comparison values, revalidated within this single lane, not persisted identifiers.
 function Address-IsToolbarSource([string]$Source) { return $Source -ceq 'bowser-ui://app/index.html?view=toolbar' }
+# Sanitized metadata only. These helpers never read UIA, select controls or authorize input.
+function Address-ObservedSourceKind($Value) {
+ if($Value -isnot [string] -or !$Value){return 'missing'}
+ if(Address-IsToolbarSource $Value){return 'exact-toolbar'}
+ return 'other'
+}
+function Address-ObservedSourcePair($Managed,$Native) {
+ $managedKind=Address-ObservedSourceKind $Managed;$nativeKind=Address-ObservedSourceKind $Native
+ $result=if($nativeKind -ceq 'missing'){'missing'}elseif($managedKind -cne 'missing' -and $Managed -cne $Native){'conflict'}else{$nativeKind}
+ return @{managed_source=$managedKind;native_source=$nativeKind;source_result=$result}
+}
+function Record-AddressObservedRuntime($Observation,[string]$Field,$Ids) {
+ try {
+  if(!$Observation){return}
+  $array=@($Ids)
+  if(!$array.Count -or $array.Count -gt 128 -or @($array|Where-Object {$_ -isnot [int]}).Count){$Observation[$Field+'_status']='unavailable-or-over-bound';return}
+  $Observation[$Field]=@($array);$Observation[$Field+'_status']='observed'
+ } catch {} # Metadata cannot change authority or mask the original rejection.
+}
 function Assert-AddressGeometry($Bounds) {
  if(!$Bounds){throw 'Source-bound address geometry unavailable or nonfinite; no input sent.'}
  foreach($coordinate in @($Bounds.X,$Bounds.Y,$Bounds.Width,$Bounds.Height)){
@@ -208,26 +227,33 @@ function Address-InDocument($Control,$Document) {
  }
  return $false
 }
-function Address-OutermostDocument($Document,$RootElement) {
+function Address-OutermostDocument($Document,$RootElement,$Observation) {
  $key=Address-RuntimeKey $RootElement;$node=$Document
+ try{if($Observation){$Observation.root_runtime_key=$key}}catch{}
  for($depth=0;$depth -lt 64;$depth++){
   $node=[Windows.Automation.TreeWalker]::RawViewWalker.GetParent($node)
-  if(!$node){return $false}
-  if((Address-RuntimeKey $node) -ceq $key){return $true}
-  if($node.Current.ControlType -eq [Windows.Automation.ControlType]::Document){return $false}
+  if(!$node){try{if($Observation){$Observation.outermost_eligibility='unowned-parent-chain'}}catch{};return $false}
+  $ancestorKey=Address-RuntimeKey $node
+  if($ancestorKey -ceq $key){try{if($Observation){$Observation.outermost_eligibility='eligible';$Observation.terminating_ancestor_runtime_key=$ancestorKey}}catch{};return $true}
+  if($node.Current.ControlType -eq [Windows.Automation.ControlType]::Document){try{if($Observation){$Observation.outermost_eligibility='excluded-nearer-document';$Observation.terminating_ancestor_runtime_key=$ancestorKey}}catch{};return $false}
  }
+ try{if($Observation){$Observation.outermost_eligibility='depth-limit';$Observation.ancestry_truncated=$true}}catch{}
  return $false
 }
-function Address-DocumentSource($Document,[IntPtr]$Window,[uint32]$Thread,$RootElement) {
+
+function Address-DocumentSource($Document,[IntPtr]$Window,[uint32]$Thread,$RootElement,$Observation) {
  [void](Assert-AddressWindow $Window $Thread)
- $runtimeId=$Document.GetRuntimeId();$key=Address-RuntimeKey $Document
- $rootRuntimeId=$RootElement.GetRuntimeId();$rootKey=Address-RuntimeKey $RootElement
- $values=@();$pattern=$null
- if($Document.TryGetCurrentPattern([Windows.Automation.ValuePattern]::Pattern,[ref]$pattern)){$values+=([Windows.Automation.ValuePattern]$pattern).Current.Value}
+ $runtimeId=$Document.GetRuntimeId();Record-AddressObservedRuntime $Observation 'document_runtime_id' $runtimeId;$key=Address-RuntimeKey $Document
+ $rootRuntimeId=$RootElement.GetRuntimeId();Record-AddressObservedRuntime $Observation 'root_runtime_id' $rootRuntimeId;$rootKey=Address-RuntimeKey $RootElement
+ $values=@();$pattern=$null;$managed=$null
+ try{if($Observation){$Observation.managed_source='unavailable'}}catch{}
+ if($Document.TryGetCurrentPattern([Windows.Automation.ValuePattern]::Pattern,[ref]$pattern)){$managed=([Windows.Automation.ValuePattern]$pattern).Current.Value;$values+=$managed}
+ try{if($Observation){$Observation.managed_source=Address-ObservedSourceKind $managed;$Observation.native_source='unavailable'}}catch{}
  # Chromium exposes document tree-data URL as LegacyIAccessible.Value (30093),
  # not Name/title or ValuePattern's property 30045. The native lookup must match
  # the same exact managed runtime ID, with owned-window/thread fences on both sides.
  $legacy=[BowserResourceDocument]::LegacyValue($Window,[uint32]$app.Id,$Thread,$rootRuntimeId,$runtimeId)
+ try{if($Observation){$pair=Address-ObservedSourcePair $managed $legacy;$Observation.managed_source=$pair.managed_source;$Observation.native_source=$pair.native_source;$Observation.source_result=$pair.source_result}}catch{}
  if($legacy){$values+=$legacy}
  if((($rootRuntimeId -join ',') -cne $rootKey) -or (Address-RuntimeKey $RootElement) -cne $rootKey){throw 'Current root identity changed during native source query; no input sent.'}
  if((($runtimeId -join ',') -cne $key) -or (Address-RuntimeKey $Document) -cne $key){throw 'Current document identity changed during source query; no input sent.'}
@@ -243,15 +269,23 @@ function Read-OwnedAddress($Expected) {
  if($Expected -and $window -ne $Expected.window){throw 'Original address host changed; no input sent.'}
  $rootElement=[Windows.Automation.AutomationElement]::FromHandle($window);$rootKey=Address-RuntimeKey $rootElement
  if($Expected -and $rootKey -cne $Expected.root_key){throw 'Original address root runtime identity changed; no input sent.'}
+ $documentObservation=$null
+ try{$documentObservation=@{status='unavailable';record_cap=64;inventory_count=$null;truncated=$false;exact_toolbar_count=$null;records=@()}}catch{}
  try {
   $documents=$rootElement.FindAll([Windows.Automation.TreeScope]::Descendants,[Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::ControlTypeProperty,[Windows.Automation.ControlType]::Document))
+  try{$documentObservation.inventory_count=$documents.Count;$documentObservation.truncated=$documents.Count -gt 64}catch{}
   if($documents.Count -gt 64){throw 'Address document inventory exceeded the bounded probe; no input sent.'}
-  $matches=@()
+  $matches=@();$candidateIndex=0
   foreach($candidate in $documents){
-   if(!(Address-OutermostDocument $candidate $rootElement)){continue}
-   $source=Address-DocumentSource $candidate $window $thread $rootElement
+   $observation=$null
+   try{$observation=@{index=$candidateIndex;status='incomplete';outermost_eligibility='unavailable';ancestry_truncated=$false;root_runtime_key=$null;terminating_ancestor_runtime_key=$null;document_runtime_id=$null;document_runtime_id_status='not-read';root_runtime_id=$null;root_runtime_id_status='not-read';managed_source='not-read';native_source='not-read';source_result='not-read'};$documentObservation.records+=,$observation}catch{}
+   $candidateIndex++
+   if(!(Address-OutermostDocument $candidate $rootElement $observation)){try{if($observation){$observation.status='observed-not-authority'}}catch{};continue}
+   $source=Address-DocumentSource $candidate $window $thread $rootElement $observation
+   try{if($observation){$observation.status='observed-not-authority'}}catch{}
    if(Address-IsToolbarSource $source){$matches+=@{document=$candidate;source=$source}}
   }
+  try{$documentObservation.exact_toolbar_count=$matches.Count;$documentObservation.status='observed-not-authority'}catch{}
   if($matches.Count -ne 1){throw ("Exact source-bound toolbar document missing or ambiguous; observed_toolbar_document_count="+$matches.Count+"; no input sent.")}
   $document=$matches[0].document;$documentKey=Address-RuntimeKey $document
   if($Expected -and $documentKey -cne $Expected.document_key){throw 'Original toolbar document runtime identity changed; no input sent.'}
@@ -278,6 +312,9 @@ function Read-OwnedAddress($Expected) {
   $bound=@{window=$window;thread=$thread;root_key=$rootKey;document_key=$documentKey;edit_key=$editKey}
   return @{focused=[bool]$same;value=$value;selection=$selection;window=$window;bound=$bound;value_pattern=$pattern}
  } catch {
+  # Persist only observations already made above, only on failure. No new provider calls,
+  # raw URLs/names/errors, fallback authority, input, retry or successful-sample output.
+  try {$currentRow.navigation_workload['document_source_diagnostic']=if($documentObservation){$documentObservation}else{@{status='diagnostic-unavailable'}}}catch{}
   # Failure observations cannot retry, choose a control, erase a failed sample, or authorize input.
   try {$currentRow.navigation_workload['address_unavailable_diagnostic']=Observe-UnavailableAddress $rootElement $window}catch {$currentRow.navigation_workload['address_unavailable_diagnostic']=@{status='diagnostic-unavailable'}}
   throw

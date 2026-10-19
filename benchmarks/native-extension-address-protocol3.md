@@ -74,7 +74,7 @@ call time or allocation. Sequential identity/focus/source checks cannot make
 OS keyboard delivery atomic. A provider hang or UI change between checks may
 still fail this lane; a fail-closed refusal is not a failed metric to erase.
 
-`python benchmarks/test-native-extension-address-source.py` checks eight static
+`python benchmarks/test-native-extension-address-source.py` checks nine static
 source/wiring contracts, including the unchanged measurement/accounting fence.
 It is not PowerShell parsing or UIA execution.
 
@@ -87,6 +87,19 @@ measurement. A real Windows run is still required to validate the COM binding,
 source exposure, control structure and new protocol. Local Linux validation has
 no PowerShell, Windows desktop, Rust or .NET toolchain, so none of those native
 stages are claimed as run.
+
+## Failure-only source receipt
+
+The next diagnostic retains a maximum of 64 records from the already-performed
+Document inventory, ancestry walk, managed ValuePattern and native source reads.
+It records eligibility/exclusion, exact-toolbar/other/missing/conflict source
+classifications, unavailable/truncated state, and bounded opaque IDs only where
+the existing path already read them. Excluded candidates explicitly retain
+`not-read` source/Document-ID states. No raw URLs, names or errors are added.
+The receipt is persisted only when the observation fails, never on success;
+metadata failures cannot replace the original rejection. It adds no discovery,
+provider calls, retries, input authority, or metric changes. It does not explain
+an earlier count-zero rejection without a new failed receipt.
 
 ## Primary references
 
