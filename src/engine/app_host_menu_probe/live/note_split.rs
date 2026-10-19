@@ -226,7 +226,12 @@ fn host_only_sequence(app: &AppRef, root: &Path, server: &Loopback, out: &Path) 
     current(&source, proof);
     current(&negative, negative_proof);
     current(&destination, destination_proof);
-    assert_eq!(committed(), Some(destination_url));
+    let committed_again = {
+        let state = app.borrow();
+        state.engine.as_ref().unwrap().successful_document_query(destination_tab)
+    }.expect("fresh successful destination document query absent");
+    assert_eq!(committed_again(), Some(destination_url));
+    current(&destination, destination_proof);
     std::fs::write(out.join("app-host-note-split-summary.json"), r#"{"scope":"independent-fresh-actual-App-host-InsertNote-SplitLink-only","clipboard":"NOT USED: no ClipboardGuard construction or clipboard calls","note":"actual-parent-child-COM-identities-OS-hover-selection-source-only-exact-body-loopback-nonce-ack","split":"one-new-AppTab-live-pair-visible-nonoverlapping-controller-bounds-successful-current-committed-destination-nonce","source-and-duplicate-negative":"original-document-proofs-and-effects-retained","bounded-Bowser-storage":"notes-meta-records-map-unchanged","original-Copy-Paste-gate":"INDEPENDENT AND UNCHANGED; this lane cannot satisfy it","search-completed-transport":"NOT RUN","permission-race-matrix":"NOT RUN","signed-Bitwarden-workflow":"NOT RUN","shipping-feature":"DEFAULT OFF","store-compatibility":"NOT CLAIMED"}"#).unwrap();
     println!("APP_HOST_NOTE_SPLIT actual_App_run=true host_only_native_note_split=true clipboard_NOT_USED=true evidence={}", out.display());
 }
