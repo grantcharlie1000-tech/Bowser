@@ -1197,10 +1197,18 @@ impl App {
     }
 
     pub fn save_settings(app: &AppRef) {
-        if let Ok(profile) = crate::profile::active() {
-            if let Err(error) = Self::save_settings_to(app, &profile.settings_file()) {
-                win32::show_error_message(&format!("Settings could not be saved: {error}"));
-            }
+        if let Err(message) = Self::try_save_settings(app) {
+            win32::show_error_message(&message);
+        }
+    }
+
+    /// [`App::save_settings`] for the settings page: the failure comes back as the words the page shows
+    /// (its own toast), not a modal box, so a row never says "Saved" when the file was not written.
+    pub fn try_save_settings(app: &AppRef) -> std::result::Result<(), String> {
+        match crate::profile::active() {
+            Ok(profile) => Self::save_settings_to(app, &profile.settings_file())
+                .map_err(|error| format!("Settings could not be saved: {error}")),
+            Err(_) => Ok(()),
         }
     }
 
@@ -4247,45 +4255,45 @@ impl App {
     }
 
     /// Settings > Downloads > Change: the native folder picker over `owner`, then the choice is
-    /// saved. False when cancelled or the folder is not usable as a setting.
-    pub fn pick_download_folder(app: &AppRef, owner: HWND) -> bool {
+    /// saved. `Ok(false)` when cancelled or the folder is not usable as a setting; `Err` when the
+    /// choice could not be saved.
+    pub fn pick_download_folder(app: &AppRef, owner: HWND) -> std::result::Result<bool, String> {
         let start = Self::download_dir(app);
         let Some(chosen) = crate::download_shell::pick_folder(owner, start.as_deref()) else {
-            return false;
+            return Ok(false);
         };
         let Some(dir) = crate::settings::parse_download_dir(&chosen.to_string_lossy()) else {
-            return false;
+            return Ok(false);
         };
         app.borrow_mut().settings.download_dir = dir;
-        Self::save_settings(app);
-        true
+        Self::try_save_settings(app).map(|()| true)
     }
 
     /// Settings > Translation: offer to translate pages in other languages.
-    pub fn set_translate_offer(app: &AppRef, on: bool) {
+    pub fn set_translate_offer(app: &AppRef, on: bool) -> std::result::Result<(), String> {
         app.borrow_mut().settings.translate_offer = on;
-        Self::save_settings(app);
+        Self::try_save_settings(app)
     }
 
     /// Settings > Translation: translate sites set to "always translate" without asking.
-    pub fn set_translate_auto(app: &AppRef, on: bool) {
+    pub fn set_translate_auto(app: &AppRef, on: bool) -> std::result::Result<(), String> {
         app.borrow_mut().settings.translate_auto = on;
-        Self::save_settings(app);
+        Self::try_save_settings(app)
     }
 
     /// Settings > Translation: the language pages are translated into (empty: the display language).
-    pub fn set_translate_target(app: &AppRef, target: &str) {
+    pub fn set_translate_target(app: &AppRef, target: &str) -> std::result::Result<(), String> {
         let Some(target) = crate::settings::parse_translate_target(target) else {
-            return;
+            return Err("That value is not allowed. Nothing was saved.".into());
         };
         app.borrow_mut().settings.translate_target = target;
-        Self::save_settings(app);
+        Self::try_save_settings(app)
     }
 
     /// Settings > Downloads > "Ask where to save each file".
-    pub fn set_ask_download_location(app: &AppRef, on: bool) {
+    pub fn set_ask_download_location(app: &AppRef, on: bool) -> std::result::Result<(), String> {
         app.borrow_mut().settings.ask_download_location = on;
-        Self::save_settings(app);
+        Self::try_save_settings(app)
     }
 
     /// Performs a bubble or page action for entry `id` (0 for the list-level ones): the list
@@ -6985,6 +6993,20 @@ impl App {
     /// `apply_*` of their own (layout, efficiency and sleep already have one, each with its own
     /// resize or reschedule). Everything else here only changes `settings.txt`'s file-committed value
     /// and takes effect on the next start, matching the page's "Applies after restart" rows.
+    /// The settings page saved or reset `settings.txt` to `settings`: memory takes every value it applies
+    /// at once (layout, efficiency, sleep, then [`App::apply_live_settings`]). Every key where memory
+    /// now holds the value just written counts as agreed with the file, so a later save from memory does
+    /// not push this window's layout, efficiency or sleep values over a newer value another window saved.
+    pub fn apply_page_settings(app: &AppRef, settings: &crate::settings::Settings) {
+        Self::apply_tab_layout_settings(app, settings.tab_layout, settings.sidebar_width);
+        Self::apply_efficiency_mode(app, settings.efficiency_mode);
+        Self::apply_sleep_settings(app, settings.sleep_enabled, settings.sleep_after_secs);
+        Self::apply_live_settings(app, settings);
+        let mut state = app.borrow_mut();
+        let synced = crate::settings::mark_agreed(&state.settings_synced, &state.settings, settings);
+        state.settings_synced = synced;
+    }
+
     pub fn apply_live_settings(app: &AppRef, settings: &crate::settings::Settings) {
         let before = app.borrow().settings.clone(); // --- wave-1 fixes ---
         // The blocker, retention and website-look settings take effect without a restart.
