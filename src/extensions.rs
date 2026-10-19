@@ -1588,6 +1588,32 @@ mod tests {
         let _ = fs::remove_dir_all(root);
     }
 
+    /// Pins the Windows sharing contract that `test-native-store-record-reader.ps1` models: a
+    /// read-only observer that shares Read|Write|Delete never denies the atomic replacement and keeps
+    /// the old generation, while one that withholds Delete sharing blocks it without damage.
+    #[test]
+    fn record_replacement_passes_delete_sharing_readers_and_stops_at_readwrite_only_readers() {
+        use std::io::Read;
+        let root = temp_dir("records-reader-sharing"); let records = root.join("extensions.txt");
+        let record = |enabled| Record { id: "ext-0000000000000001".into(), enabled, name: "Synthetic".into(), version: "1.0".into() };
+        write_records(&records, &[record(true)]).unwrap();
+        let old = fs::read(&records).unwrap();
+        let mut reader = fs::OpenOptions::new().read(true).share_mode(0x1 | 0x2 | 0x4).open(&records).unwrap();
+        write_records(&records, &[record(false)]).unwrap();
+        let mut held = Vec::new(); reader.read_to_end(&mut held).unwrap(); drop(reader);
+        assert_eq!(held, old);
+        assert_eq!(read_records(&records).unwrap(), vec![record(false)]);
+        let new = fs::read(&records).unwrap();
+        let control = fs::OpenOptions::new().read(true).share_mode(0x1 | 0x2).open(&records).unwrap();
+        assert_eq!(write_records(&records, &[record(true)]), Err(ExtensionError::Io));
+        drop(control);
+        assert_eq!(fs::read(&records).unwrap(), new);
+        assert!(!PathBuf::from(format!("{}.tmp-{}", records.display(), std::process::id())).exists());
+        write_records(&records, &[record(true)]).unwrap();
+        assert_eq!(fs::read(&records).unwrap(), old);
+        let _ = fs::remove_dir_all(root);
+    }
+
     #[test]
     fn record_write_preserves_preexisting_temporary_directory() {
         let root = temp_dir("records-create-new-dir"); let records = root.join("extensions.txt");
