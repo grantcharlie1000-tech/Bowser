@@ -131,6 +131,9 @@ impl App {
         let now = history_retention::now_secs();
 
         if plan.local_history {
+            // The recently closed tabs (split view's empty side, the palette, reopen) are history
+            // too. They keep no times, so any range forgets them all, as the typed list.
+            app.borrow_mut().recently_closed.clear();
             match profile.as_ref().filter(|profile| !profile.is_guest()) {
                 // A guest keeps no history list, so there is nothing of Bowser's to delete.
                 None => progress.borrow_mut().done.push(DataKind::History),

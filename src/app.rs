@@ -3259,7 +3259,8 @@ impl App {
         bounds: Option<SplitBounds>,
     ) -> Option<TabId> {
         app.borrow().tab_model.get(tab)?;
-        let empty = Self::new_tab(app);
+        // The new side of a private tab is private too, or its page would use the normal profile.
+        let empty = Self::new_tab_in_mode(app, crate::private::inherits_privacy(Self::tab_private(app, tab)));
         let (left, right) = match side {
             Pane::Left => (empty, tab),
             _ => (tab, empty),
@@ -3859,7 +3860,8 @@ impl App {
         let current = Self::call_engine(app, |engine| engine.zoom_percent(tab))
             .flatten()
             .unwrap_or_else(|| Self::active_zoom_percent(app));
-        Self::set_tab_zoom(app, tab, step.apply(current));
+        let default_zoom = app.borrow().settings.default_zoom;
+        Self::set_tab_zoom(app, tab, step.apply_with_default(current, default_zoom));
     }
 
     /// Sets one tab's zoom and, when the tab shows a web page, stores it for that page's origin
@@ -3877,11 +3879,12 @@ impl App {
 
     /// Records a tab's zoom, optionally stores it for the page's origin, and refreshes the toolbar.
     fn note_tab_zoom(app: &AppRef, tab: TabId, percent: u16, persist: bool) {
-        let (url, store, hwnd, scope) = {
+        let (url, store, hwnd, scope, default_zoom) = {
             let mut state = app.borrow_mut();
             let store = state.site_prefs.clone();
             let hwnd = state.hwnd;
             let scope = state.settings.page_tools.zoom_scope;
+            let default_zoom = state.settings.default_zoom;
             let Some(entry) = state.tabs.iter_mut().find(|entry| entry.id == tab) else {
                 return;
             };
@@ -3889,7 +3892,7 @@ impl App {
             if persist {
                 entry.zoom_set = true; // the user's own change (page tools: tab zoom keeps it)
             }
-            (entry.url.clone(), store, hwnd, scope)
+            (entry.url.clone(), store, hwnd, scope, default_zoom)
         };
         // A private tab's zoom lives in the tab only: nothing is written to the site store. Neither
         // does a zoom kept per tab (Settings > Page tools > Page zoom).
@@ -3902,7 +3905,7 @@ impl App {
             )
         {
             // A full or unwritable store leaves the zoom applied for this tab only.
-            let _ = store.borrow_mut().set_zoom(&origin, Some(percent));
+            let _ = store.borrow_mut().set_zoom_with_default(&origin, Some(percent), default_zoom);
         }
         Self::post_tab_changed_kind(hwnd, tab, false, false);
     }
@@ -7777,6 +7780,7 @@ mod tests {
     mod page_tools_flow; // --- page tools (T7) ---
     mod theme_flow; // --- theme options ---
     mod stack_flow; // --- tab stacks, tiling and workspaces (T10) ---
+    mod privacy_flow; // private tabs and history deletion
 
     #[test]
     fn reader_probe_due_table() {

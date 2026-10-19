@@ -20,7 +20,7 @@
 //!   `$domain=` restricts it;
 //! * `domain##selector` / `##selector`      hide `selector` on `domain` (comma-separated list;
 //!   `##` on its own applies on every page). `selector` is one or more `.class` / `#id` tokens
-//!   concatenated with no separator (ASCII `[A-Za-z_][A-Za-z0-9_-]*` per token) — no spaces,
+//!   concatenated with no separator (ASCII `[A-Za-z_][A-Za-z0-9_-]*` per token) ??? no spaces,
 //!   attributes, commas or pseudo-classes;
 //! * recognised options on a substring rule are `$third-party` (`$3p`) and `$domain=a|b`,
 //!   together or alone; a domain entry with `~` (negation) drops the whole rule. Any other
@@ -510,15 +510,22 @@ fn split_url(url: &str) -> Option<(Cow<'_, str>, &str)> {
     Some((host, path))
 }
 
+/// An IPv4 address: it has no parent domains and no registrable site of its own.
+fn is_ip_address(host: &str) -> bool {
+    host.parse::<std::net::Ipv4Addr>().is_ok()
+}
+
 /// Yields `host` and then each parent domain that still contains a dot: `a.b.c` -> `a.b.c`, `b.c`.
+/// An IP address yields only itself: `168.1.10` is not a parent of `192.168.1.10`.
 fn host_suffixes(host: &str) -> impl Iterator<Item = &str> {
     let mut next = Some(host);
+    let ip = is_ip_address(host);
     std::iter::from_fn(move || {
         let current = next?;
         next = current
             .split_once('.')
             .map(|(_, rest)| rest)
-            .filter(|rest| rest.contains('.'));
+            .filter(|rest| !ip && rest.contains('.'));
         Some(current)
     })
 }
@@ -559,6 +566,10 @@ pub fn registrable_domain(host: &str) -> &str {
 
 /// [`registrable_domain`] without the cache. The result is always a suffix of `host`.
 fn registrable_domain_uncached(host: &str) -> &str {
+    // The public-suffix list's wildcard rule would make `1.10` the site of `192.168.1.10`.
+    if is_ip_address(host) {
+        return host;
+    }
     psl::domain(host.as_bytes())
         .and_then(|domain| std::str::from_utf8(domain.as_bytes()).ok())
         .filter(|domain| host.ends_with(domain))
@@ -1582,7 +1593,7 @@ impl BlockerState {
     /// level, or to the full level when the global one is "none".
     pub fn toggle_site(&mut self, top_host: &str) -> SiteToggle {
         let top_host = top_host.to_ascii_lowercase();
-        if top_host.is_empty() || !top_host.contains('.') {
+        if top_host.is_empty() || !top_host.contains('.') || is_ip_address(&top_host) {
             return SiteToggle::NoSite;
         }
         let site = registrable_domain(&top_host).to_owned();
@@ -1623,7 +1634,7 @@ fn normalise_site(entry: &str) -> Option<String> {
 
 /// Whether YouTube video-ad stripping is switched on. The settings file is reread only when its
 /// length or modified time changes, so a save on the settings page still takes effect without a
-/// restart. No active profile, or a missing or unreadable file, means on — the default Bowser
+/// restart. No active profile, or a missing or unreadable file, means on ??? the default Bowser
 /// has always used.
 fn youtube_video_ads_enabled() -> bool {
     let Ok(profile) = crate::profile::active() else {
@@ -3439,5 +3450,25 @@ mod level_tests {
         assert!(everything > trackers + 150, "{everything} vs {trackers}");
         // Every tracker host is also in the full matcher.
         assert!(s.trackers.hosts().all(|host| s.matcher.host_listed(host)));
+    }
+}
+
+#[cfg(test)]
+mod ip_site_tests {
+    use super::*;
+
+    #[test]
+    fn an_ip_address_is_its_own_site_and_cannot_be_paused_as_one() {
+        assert_eq!(registrable_domain("192.168.1.10"), "192.168.1.10");
+        assert!(!same_site("192.168.1.10", "10.0.1.10"), "unrelated addresses are not first-party");
+        assert_eq!(host_suffixes("192.168.1.10").collect::<Vec<_>>(), ["192.168.1.10"]);
+        let mut matcher = Blocker::default();
+        matcher.add_list("||tracker.example^\n");
+        let mut s = BlockerState::new(matcher, &[]);
+        assert_eq!(s.toggle_site("192.168.1.10"), SiteToggle::NoSite);
+        assert!(s.should_block("https://tracker.example/x", "10.0.1.10"), "pausing one address pauses another");
+        assert!(s.should_block("https://tracker.example/x", "192.168.1.10"));
+        // Names keep their sites.
+        assert_eq!(registrable_domain("www.news.example.co.uk"), "example.co.uk");
     }
 }

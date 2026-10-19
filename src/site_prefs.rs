@@ -11,7 +11,8 @@
 //! ```
 //!
 //! Each line is `<origin> <field> <value>`. The origin is the page's scheme, host and port (default
-//! port dropped). A zoom of 100 is the default and is never stored. Blank lines, `#` comments,
+//! port dropped). A zoom equal to the `default_zoom` setting is never stored; any other one is, 100
+//! included (a site kept at 100% while the default is 125). Blank lines, `#` comments,
 //! unknown fields, unknown values and malformed lines are ignored, and the file is capped at [`MAX_FILE_BYTES`].
 //! Guest sessions use [`SitePrefsStore::in_memory`], which never touches the disk.
 
@@ -26,6 +27,8 @@ pub use crate::permissions::origin_of;
 
 pub const FILE_NAME: &str = "site-prefs.txt";
 pub const MAX_FILE_BYTES: usize = 256 * 1024;
+/// Why a change was refused when the file could not be read: saving would replace every stored line.
+const UNREADABLE: &str = "the site preferences file could not be read, so it was not changed";
 /// Largest number of sites with stored preferences.
 pub const MAX_SITES: usize = 2048;
 
@@ -78,12 +81,18 @@ pub enum ZoomStep {
 }
 
 impl ZoomStep {
-    /// The zoom this command leads to from `current`.
+    /// The zoom this command leads to from `current`, with Ctrl+0 going to 100.
     pub fn apply(self, current: u16) -> u16 {
+        self.apply_with_default(current, ZOOM_DEFAULT)
+    }
+
+    /// The zoom this command leads to from `current`. Ctrl+0 goes to `default` (the `default_zoom`
+    /// setting), the zoom a site with nothing stored shows.
+    pub fn apply_with_default(self, current: u16, default: u16) -> u16 {
         match self {
             Self::In => zoom_in(current),
             Self::Out => zoom_out(current),
-            Self::Reset => ZOOM_DEFAULT,
+            Self::Reset => default.clamp(ZOOM_MIN, ZOOM_MAX),
         }
     }
 }
@@ -142,18 +151,20 @@ type Sites = BTreeMap<String, SitePrefs>;
 #[derive(Debug, Default)]
 pub struct SitePrefsStore {
     path: Option<PathBuf>,
+    /// The file is there but could not be read, so nothing is saved over it.
+    unreadable: bool,
     sites: Sites,
 }
 
 impl SitePrefsStore {
-    /// Loads `path`. A missing, unreadable or oversized file gives an empty store.
+    /// Loads `path`. A missing file gives an empty store. An unreadable or oversized one also reads as
+    /// empty, but its store refuses every change so the file is never overwritten.
     pub fn load(path: &Path) -> Self {
-        let sites = read_capped(path)
-            .map(|text| parse(&text))
-            .unwrap_or_default();
+        let text = read_capped(path);
         Self {
             path: Some(path.to_path_buf()),
-            sites,
+            sites: text.as_deref().map(parse).unwrap_or_default(),
+            unreadable: text.is_none(),
         }
     }
 
@@ -184,9 +195,15 @@ impl SitePrefsStore {
     /// Stores a zoom percent for one origin (`None` or 100 clears it), then saves. A value outside
     /// the supported range is clamped. On a failed save the previous value is restored.
     pub fn set_zoom(&mut self, origin: &str, percent: Option<u16>) -> io::Result<()> {
+        self.set_zoom_with_default(origin, percent, ZOOM_DEFAULT)
+    }
+
+    /// [`Self::set_zoom`] when the `default_zoom` setting is `default`: that value (or `None`) clears
+    /// the entry so the site follows the setting, and any other one is stored, 100 included.
+    pub fn set_zoom_with_default(&mut self, origin: &str, percent: Option<u16>, default: u16) -> io::Result<()> {
         let wanted = percent
             .map(|value| value.clamp(ZOOM_MIN, ZOOM_MAX))
-            .filter(|value| *value != ZOOM_DEFAULT);
+            .filter(|value| *value != default.clamp(ZOOM_MIN, ZOOM_MAX));
         self.update(origin, |prefs| {
             let changed = prefs.zoom != wanted;
             prefs.zoom = wanted;
@@ -269,6 +286,9 @@ impl SitePrefsStore {
         let Some(path) = &self.path else {
             return Ok(());
         };
+        if self.unreadable {
+            return Err(io::Error::other(UNREADABLE));
+        }
         write_atomic(path, serialise(&self.sites).as_bytes())
     }
 }
@@ -294,7 +314,7 @@ fn parse(text: &str) -> Sites {
                 let Some(zoom) = value
                     .parse::<u16>()
                     .ok()
-                    .filter(|zoom| (ZOOM_MIN..=ZOOM_MAX).contains(zoom) && *zoom != ZOOM_DEFAULT)
+                    .filter(|zoom| (ZOOM_MIN..=ZOOM_MAX).contains(zoom))
                 else {
                     continue;
                 };
@@ -331,17 +351,23 @@ fn serialise(sites: &Sites) -> String {
     text
 }
 
+/// The file's text: empty when there is no file. A byte that is not UTF-8 (a hand edit saved as
+/// ANSI) spoils only its own line, never every other one. `None` when a file is there but cannot be
+/// read (locked, oversized): the store then refuses to save, so a change cannot replace what is in it.
 fn read_capped(path: &Path) -> Option<String> {
     let mut bytes = Vec::new();
-    File::open(path)
-        .ok()?
-        .take(MAX_FILE_BYTES as u64 + 1)
+    let file = match File::open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Some(String::new()),
+        Err(_) => return None,
+    };
+    file.take(MAX_FILE_BYTES as u64 + 1)
         .read_to_end(&mut bytes)
         .ok()?;
     if bytes.len() > MAX_FILE_BYTES {
         return None;
     }
-    String::from_utf8(bytes).ok()
+    Some(String::from_utf8_lossy(&bytes).into_owned())
 }
 
 fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
@@ -458,8 +484,9 @@ mod tests {
              file:///x.html zoom 150\n\
              HTTPS://D.test:443 zoom 200\n",
         );
-        assert_eq!(sites.len(), 2, "{sites:?}");
+        assert_eq!(sites.len(), 3, "{sites:?}");
         assert_eq!(sites["https://a.test"].zoom, Some(150), "a later line replaces an earlier one");
+        assert_eq!(sites["https://b.test"].zoom, Some(100), "100 is kept: the default zoom may differ");
         assert_eq!(sites["https://d.test"].zoom, Some(200));
     }
 
@@ -612,6 +639,53 @@ mod tests {
         store.set_translate("https://a.test", Some(SiteTranslate::Never)).unwrap();
         store.set_zoom("https://a.test", None).unwrap();
         assert_eq!(store.translate("https://a.test"), Some(SiteTranslate::Never));
+    }
+
+    #[test]
+    fn a_site_kept_at_100_percent_survives_a_default_zoom_of_125_and_a_reload() {
+        let path = temp_file("zoom100");
+        let mut store = SitePrefsStore::load(&path);
+        store.set_zoom_with_default("https://a.test", Some(100), 125).unwrap();
+        assert_eq!(store.zoom_for_uri("https://a.test/", 125), 100, "the user chose 100% for this site");
+        assert_eq!(SitePrefsStore::load(&path).zoom_for_uri("https://a.test/", 125), 100, "after a restart too");
+        // Choosing the default itself clears the entry, so the site follows the setting again.
+        store.set_zoom_with_default("https://a.test", Some(125), 125).unwrap();
+        assert_eq!(store.zoom("https://a.test"), None);
+        assert_eq!(store.zoom_for_uri("https://a.test/", 150), 150);
+        assert_eq!(ZoomStep::Reset.apply_with_default(200, 125), 125, "Ctrl+0 goes to the default zoom");
+        assert_eq!(ZoomStep::In.apply_with_default(100, 125), 110);
+    }
+
+    #[test]
+    fn one_byte_that_is_not_utf8_keeps_every_other_site_and_the_next_change_keeps_them_too() {
+        let path = temp_file("bad-byte");
+        let mut bytes = b"https://a.test zoom 150\nhttps://a.test translate never\n# caf".to_vec();
+        bytes.extend_from_slice(&[0xE9, b'\n']);
+        fs::write(&path, bytes).unwrap();
+        let mut store = SitePrefsStore::load(&path);
+        assert_eq!(store.zoom("https://a.test"), Some(150), "the valid line is read");
+        store.set_zoom("https://b.test", Some(125)).unwrap();
+        let reloaded = SitePrefsStore::load(&path);
+        assert_eq!(reloaded.zoom("https://a.test"), Some(150), "a later change does not wipe a.test");
+        assert_eq!(reloaded.translate("https://a.test"), Some(SiteTranslate::Never));
+        assert_eq!(reloaded.zoom("https://b.test"), Some(125));
+    }
+
+    #[test]
+    fn a_file_that_cannot_be_read_is_never_overwritten_by_a_change() {
+        let path = temp_file("oversized-kept");
+        let mut big = String::new();
+        while big.len() <= MAX_FILE_BYTES {
+            big.push_str("https://a.test zoom 150\n");
+        }
+        fs::write(&path, &big).unwrap();
+        let mut store = SitePrefsStore::load(&path);
+        assert!(store.set_zoom("https://b.test", Some(125)).is_err());
+        assert!(store.set_translate("https://b.test", Some(SiteTranslate::Always)).is_err());
+        assert_eq!(store.zoom("https://b.test"), None, "a refused change does not count");
+        assert_eq!(fs::read_to_string(&path).unwrap(), big, "the file is unchanged");
+        let mut missing = SitePrefsStore::load(&path.with_file_name("absent.txt"));
+        missing.set_zoom("https://b.test", Some(125)).unwrap();
     }
 
     #[test]

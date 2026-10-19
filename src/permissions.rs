@@ -29,6 +29,8 @@ use url::Url;
 
 pub const FILE_NAME: &str = "permissions.txt";
 pub const MAX_FILE_BYTES: usize = 256 * 1024;
+/// Why a change was refused when the file could not be read: saving would replace every stored line.
+const UNREADABLE: &str = "the site permissions file could not be read, so it was not changed";
 /// Largest number of stored decisions, across all sites.
 pub const MAX_RULES: usize = 2048;
 /// Longest origin text accepted from the user interface.
@@ -152,19 +154,21 @@ type Rules = BTreeMap<String, BTreeMap<Permission, Decision>>;
 #[derive(Debug, Default)]
 pub struct PermissionStore {
     path: Option<PathBuf>,
+    /// The file is there but could not be read, so nothing is saved over it.
+    unreadable: bool,
     rules: Rules,
 }
 
 impl PermissionStore {
     /// Loads `path`. A missing, unreadable or oversized file gives an empty store, so every site is
-    /// blocked until the user chooses otherwise.
+    /// blocked until the user chooses otherwise. An unreadable or oversized file's store refuses every
+    /// change, so the file is never overwritten.
     pub fn load(path: &Path) -> Self {
-        let rules = read_capped(path)
-            .map(|text| parse(&text))
-            .unwrap_or_default();
+        let text = read_capped(path);
         Self {
             path: Some(path.to_path_buf()),
-            rules,
+            rules: text.as_deref().map(parse).unwrap_or_default(),
+            unreadable: text.is_none(),
         }
     }
 
@@ -281,6 +285,9 @@ impl PermissionStore {
         let Some(path) = &self.path else {
             return Ok(());
         };
+        if self.unreadable {
+            return Err(io::Error::other(UNREADABLE));
+        }
         write_atomic(path, serialise(&self.rules).as_bytes())
     }
 }
@@ -331,17 +338,23 @@ fn serialise(rules: &Rules) -> String {
     text
 }
 
+/// The file's text: empty when there is no file. A byte that is not UTF-8 (a hand edit saved as
+/// ANSI) spoils only its own line, never every other one. `None` when a file is there but cannot be
+/// read (locked, oversized): the store then refuses to save, so a change cannot replace what is in it.
 fn read_capped(path: &Path) -> Option<String> {
     let mut bytes = Vec::new();
-    File::open(path)
-        .ok()?
-        .take(MAX_FILE_BYTES as u64 + 1)
+    let file = match File::open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Some(String::new()),
+        Err(_) => return None,
+    };
+    file.take(MAX_FILE_BYTES as u64 + 1)
         .read_to_end(&mut bytes)
         .ok()?;
     if bytes.len() > MAX_FILE_BYTES {
         return None;
     }
-    String::from_utf8(bytes).ok()
+    Some(String::from_utf8_lossy(&bytes).into_owned())
 }
 
 fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
@@ -681,6 +694,36 @@ mod tests {
 
         let missing = PermissionStore::load(&path.with_file_name("absent.txt"));
         assert!(!missing.allows("https://a.test", Permission::Camera));
+    }
+
+    #[test]
+    fn one_byte_that_is_not_utf8_keeps_every_other_permission_and_the_next_change_keeps_them_too() {
+        let path = temp_file("bad-byte");
+        let mut bytes = b"https://meet.test allow camera\n# caf".to_vec();
+        bytes.extend_from_slice(&[0xE9, b'\n']);
+        fs::write(&path, bytes).unwrap();
+        let mut store = PermissionStore::load(&path);
+        assert!(store.allows("https://meet.test/", Permission::Camera), "the valid line is read");
+        store.set("https://b.test", Permission::Camera, Some(Decision::Block)).unwrap();
+        let reloaded = PermissionStore::load(&path);
+        assert!(reloaded.allows("https://meet.test/", Permission::Camera), "a later change keeps it");
+        assert_eq!(reloaded.decision("https://b.test", Permission::Camera), Some(Decision::Block));
+    }
+
+    #[test]
+    fn a_file_that_cannot_be_read_is_never_overwritten_by_a_change() {
+        let path = temp_file("oversized-kept");
+        let mut big = String::new();
+        while big.len() <= MAX_FILE_BYTES {
+            big.push_str("https://a.test allow camera\n");
+        }
+        fs::write(&path, &big).unwrap();
+        let mut store = PermissionStore::load(&path);
+        assert!(store.set("https://b.test", Permission::Camera, Some(Decision::Allow)).is_err());
+        assert_eq!(store.decision("https://b.test", Permission::Camera), None);
+        assert_eq!(fs::read_to_string(&path).unwrap(), big, "the file is unchanged");
+        let mut missing = PermissionStore::load(&path.with_file_name("absent.txt"));
+        missing.set("https://b.test", Permission::Camera, Some(Decision::Allow)).unwrap();
     }
 
     #[test]
