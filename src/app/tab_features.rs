@@ -77,16 +77,17 @@ impl App {
         app.borrow().settings.tabs.clone()
     }
 
-    /// Settings > Tabs: one `key=value` change, kept, saved and put to work at once. False (and
-    /// nothing changed) when the key or value is not one the page may send.
-    pub fn set_tab_option(app: &AppRef, text: &str) -> bool {
+    /// Settings > Tabs: one `key=value` change, kept, saved and put to work at once. `Err` (and
+    /// nothing changed) when the key or value is not one the page may send; `Err` too when it is in
+    /// force but `settings.txt` could not be written.
+    pub fn set_tab_option(app: &AppRef, text: &str) -> std::result::Result<(), String> {
         let before = app.borrow().settings.tabs.clone();
         if !tab_options::apply_assignment(&mut app.borrow_mut().settings, text) {
-            return false;
+            return Err("That value is not allowed. Nothing was saved.".into());
         }
-        Self::save_settings(app);
+        let saved = Self::try_save_settings(app);
         Self::tab_options_changed(app, &before);
-        true
+        saved
     }
 
     /// What changing the options must redo: the audio rule, the tick that serves it, and the strip,

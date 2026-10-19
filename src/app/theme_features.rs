@@ -105,21 +105,23 @@ impl App {
     }
 
     /// Settings > Appearance: one `key=value` change of the theme options, kept, saved and put to
-    /// work at once. False (and nothing changed) when the key or value is not one the page may send.
-    pub fn set_theme_option(app: &AppRef, text: &str) -> bool {
-        let applied = theme_custom::apply_assignment(&mut app.borrow_mut().settings, text);
-        if applied {
-            Self::save_settings(app);
-            Self::apply_theme_options(app);
+    /// work at once. `Err` (and nothing changed) when the key or value is not one the page may send;
+    /// `Err` too when it is in force but `settings.txt` could not be written.
+    pub fn set_theme_option(app: &AppRef, text: &str) -> std::result::Result<(), String> {
+        if !theme_custom::apply_assignment(&mut app.borrow_mut().settings, text) {
+            return Err("That value is not allowed. Nothing was saved.".into());
         }
-        applied
+        let saved = Self::try_save_settings(app);
+        Self::apply_theme_options(app);
+        saved
     }
 
     /// "Reset theme settings": the theme, the accent and every theme option back to the defaults.
-    pub fn reset_theme(app: &AppRef) {
+    pub fn reset_theme(app: &AppRef) -> std::result::Result<(), String> {
         theme_custom::reset(&mut app.borrow_mut().settings);
-        Self::save_settings(app);
+        let saved = Self::try_save_settings(app);
         Self::apply_theme_options(app);
+        saved
     }
 
     /// The text of the theme file for the running settings.
@@ -132,9 +134,9 @@ impl App {
     pub fn import_theme(app: &AppRef, bytes: &[u8]) -> std::result::Result<(), String> {
         let file = theme_custom::parse_theme_file(bytes).map_err(|error| error.to_string())?;
         theme_custom::apply_theme_file(&mut app.borrow_mut().settings, &file);
-        Self::save_settings(app);
+        let saved = Self::try_save_settings(app);
         Self::apply_theme_options(app);
-        Ok(())
+        saved
     }
 
     // ---- the accent from the page ----

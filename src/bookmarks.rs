@@ -55,7 +55,9 @@ impl BookmarkStore {
                 }
                 let text = String::from_utf8(bytes)
                     .map_err(|_| invalid_data("bookmarks are not UTF-8"))?;
-                Ok(Self::parse(&text).unwrap_or_default())
+                // A file that does not parse is an error, never an empty tree: every writer saves what
+                // it loaded, so `Ok(empty)` here would replace the user's bookmarks on the next edit.
+                Self::parse(&text)
             }
             Err(e) if e.kind() == io::ErrorKind::NotFound => {
                 let mut store = Self::new();
@@ -203,12 +205,12 @@ impl BookmarkStore {
         let mut index = 0;
         while index < ids.len() {
             let parent = ids[index];
-            ids.extend(
-                self.items
-                    .iter()
-                    .filter(|i| i.parent == Some(parent))
-                    .map(|i| i.id),
-            );
+            for child in self.items.iter().filter(|i| i.parent == Some(parent)) {
+                // A cycle must not grow the list forever.
+                if !ids.contains(&child.id) {
+                    ids.push(child.id);
+                }
+            }
             index += 1;
         }
         let count = ids.len();
@@ -307,6 +309,10 @@ impl BookmarkStore {
                 let mut path = Vec::new();
                 let mut parent = bookmark.parent;
                 while let Some(id) = parent {
+                    // A cycle ends the walk instead of hanging it.
+                    if path.len() >= self.items.len() {
+                        break;
+                    }
                     if let Some(folder) = self.items.iter().find(|i| i.id == id) {
                         path.push(folder.title.clone());
                         parent = folder.parent
@@ -358,28 +364,31 @@ impl BookmarkStore {
         // Ids kept so far, so a repeated id is found without scanning the list (the start page parses
         // this file for every new tab it rebuilds for).
         let mut seen = std::collections::HashSet::new();
-        for line in lines.take(MAX_ITEMS) {
+        // A line that does not parse (a blank line, a short or hand-edited row) is skipped, never the
+        // reason the whole tree loads empty: every writer saves what it loaded.
+        type Row = (u64, Option<u64>, String, String, String, String, u64);
+        let row = |line: &str| -> Option<Row> {
             let mut f = line.splitn(7, '\t');
-            let id = f
-                .next()
-                .and_then(|x| x.parse::<u64>().ok())
-                .ok_or_else(|| invalid_data("bad id"))?;
-            let parent = match f.next().ok_or_else(|| invalid_data("missing parent"))? {
+            let id = f.next()?.parse::<u64>().ok()?;
+            let parent = match f.next()? {
                 "-" => None,
-                x => Some(x.parse().map_err(|_| invalid_data("bad parent"))?),
+                x => Some(x.parse().ok()?),
             };
-            let kind = f.next().ok_or_else(|| invalid_data("missing kind"))?;
-            let title = unescape(f.next().ok_or_else(|| invalid_data("missing title"))?);
-            let url = unescape(f.next().ok_or_else(|| invalid_data("missing URL"))?);
-            let host = unescape(f.next().ok_or_else(|| invalid_data("missing host"))?);
-            let created = f
-                .next()
-                .and_then(|x| x.parse().ok())
-                .ok_or_else(|| invalid_data("bad timestamp"))?;
+            let kind = f.next()?.to_owned();
+            let title = unescape(f.next()?);
+            let url = unescape(f.next()?);
+            let host = unescape(f.next()?);
+            let created = f.next()?.parse().ok()?;
+            Some((id, parent, kind, title, url, host, created))
+        };
+        for line in lines.take(MAX_ITEMS) {
+            let Some((id, parent, kind, title, url, host, created)) = row(line) else {
+                continue;
+            };
             if id == 0 || seen.contains(&id) || title.len() > MAX_FIELD {
                 continue;
             }
-            let kind = match kind {
+            let kind = match kind.as_str() {
                 "F" => BookmarkKind::Folder,
                 "B" => {
                     let Some(url) = valid_url(&url) else { continue };
@@ -408,6 +417,25 @@ impl BookmarkStore {
             .collect::<std::collections::HashSet<_>>();
         s.items
             .retain(|i| i.parent.is_none_or(|p| valid_ids.contains(&p)));
+        // A folder that is its own ancestor (a damaged or hand-edited file) moves to the top level with
+        // the rest of its cycle, so every walk up the tree ends and nothing is lost.
+        let parents: HashMap<u64, Option<u64>> = s.items.iter().map(|i| (i.id, i.parent)).collect();
+        let in_cycle = |id: u64| {
+            let mut at = parents.get(&id).copied().flatten();
+            for _ in 0..=parents.len() {
+                match at {
+                    None => return false,
+                    Some(p) if p == id => return true,
+                    Some(p) => at = parents.get(&p).copied().flatten(),
+                }
+            }
+            false
+        };
+        let cyclic: std::collections::HashSet<u64> =
+            s.items.iter().filter(|i| in_cycle(i.id)).map(|i| i.id).collect();
+        for item in s.items.iter_mut().filter(|i| cyclic.contains(&i.id)) {
+            item.parent = None;
+        }
         Ok(s)
     }
 }
@@ -550,8 +578,52 @@ mod tests {
             vec!["Reading", "Code"]
         );
         fs::write(dir.join("bookmarks-v2.txt"), b"bad").unwrap();
-        assert!(BookmarkStore::load(&dir).unwrap().items().is_empty());
+        assert!(BookmarkStore::load(&dir).is_err(), "a corrupt file is an error, not an empty tree");
         let _ = fs::remove_dir_all(dir);
+    }
+    #[test]
+    fn a_malformed_line_is_skipped_and_every_good_row_is_kept() {
+        let mut s = BookmarkStore::new();
+        let folder = s.add_folder(None, "Read").unwrap();
+        s.add_bookmark(Some(folder), "Example", "https://example.com/").unwrap();
+        s.add_bookmark(None, "Other", "https://other.example/").unwrap();
+        let good = s.serialize();
+        let (header, rows) = good.split_once('\n').unwrap();
+        let (first, rest) = rows.split_once('\n').unwrap();
+        for bad in ["", "garbage line without tabs", "x\t-\tF\tBad id\t\t\t0", "9\t-\tF\tshort", "9\tx\tF\tBad parent\t\t\t0", "9\t-\tB\tBad time\thttps://t.example/\tt.example\tlater"] {
+            let text = format!("{header}\n{first}\n{bad}\n{rest}\n");
+            let loaded = BookmarkStore::parse(&text).unwrap_or_else(|e| panic!("{bad:?}: {e}"));
+            assert_eq!(loaded, s, "{bad:?}");
+        }
+        assert!(BookmarkStore::parse(&format!("{good}\n")).unwrap() == s, "a trailing blank line");
+    }
+    #[test]
+    fn a_folder_cycle_is_broken_on_load_so_search_and_delete_end() {
+        // 1 and 2 are each other's parent; 3 is its own; a link sits in 1 and another in 3.
+        let text = "bowser-bookmarks-v2\n\
+            1\t2\tF\tA\t\t\t0\n\
+            2\t1\tF\tB\t\t\t0\n\
+            3\t3\tF\tSelf\t\t\t0\n\
+            4\t1\tB\tLink\thttps://a.example/\ta.example\t1\n\
+            5\t3\tB\tSelf link\thttps://b.example/\tb.example\t1\n";
+        let mut s = BookmarkStore::parse(text).unwrap();
+        assert_eq!(s.items().len(), 5, "nothing is dropped");
+        assert!(s.items().iter().filter(|i| [1, 2, 3].contains(&i.id)).all(|i| i.parent.is_none()));
+        assert_eq!(s.search("a.example")[0].folder_path, vec!["A"]);
+        assert_eq!(s.search("b.example")[0].folder_path, vec!["Self"]);
+        assert_eq!(s.delete(3), 2);
+        assert_eq!(s.items().len(), 3);
+    }
+    #[test]
+    fn search_and_delete_end_even_on_a_cycle_made_in_memory() {
+        let mut s = BookmarkStore::new();
+        let a = s.add_folder(None, "A").unwrap();
+        let b = s.add_folder(Some(a), "B").unwrap();
+        s.add_bookmark(Some(b), "Link", "https://a.example/").unwrap();
+        s.items.iter_mut().find(|i| i.id == a).unwrap().parent = Some(b);
+        assert_eq!(s.search("a.example").len(), 1);
+        assert_eq!(s.delete(a), 3);
+        assert!(s.items().is_empty());
     }
     #[test]
     fn round_trip() {
