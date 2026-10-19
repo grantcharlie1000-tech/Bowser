@@ -770,9 +770,9 @@ fn a_changed_option_is_saved_in_the_app_and_refused_when_wrong() {
     assert!(App::tab_options(&app).keep_window);
     // `set_tab_option` also saves to the profile; here only the in-memory half is observable, and a
     // refused value changes nothing.
-    assert!(!App::set_tab_option(&app, "tabs_confirm_close=500"));
+    assert!(App::set_tab_option(&app, "tabs_confirm_close=500").is_err());
     assert_eq!(App::tab_options(&app).confirm_close.0, 0);
-    assert!(!App::set_tab_option(&app, "tabs_nonsense=true"));
+    assert!(App::set_tab_option(&app, "tabs_nonsense=true").is_err());
     let _ = DuplicatePosition::Last;
 }
 

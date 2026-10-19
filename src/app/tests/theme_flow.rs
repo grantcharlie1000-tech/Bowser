@@ -57,7 +57,7 @@ fn fixture() -> Fixture {
 }
 
 fn option(app: &AppRef, text: &str) {
-    assert!(App::set_theme_option(app, text), "{text}");
+    assert!(App::set_theme_option(app, text).is_ok(), "{text}");
     let path = crate::profile::active().unwrap().settings_file();
     assert!(path.is_file(), "theme option must persist real settings: {text}");
     crate::settings::read_strict(&path).expect("persisted theme settings must be readable");
@@ -96,11 +96,11 @@ fn a_refused_value_changes_nothing() {
     option(&app, "theme_colouring=tab_bar");
     let before = App::settings(&app).themes;
     for bad in ["theme_colouring=sideways", "theme_background=red", "theme_saturation=400", "theme_nothing=1", "theme_dark_from=7:00", "no equals sign"] {
-        assert!(!App::set_theme_option(&app, bad), "{bad}");
+        assert!(App::set_theme_option(&app, bad).is_err(), "{bad}");
     }
     assert_eq!(App::settings(&app).themes, before);
     // The two schedule times may not meet.
-    assert!(!App::set_theme_option(&app, "theme_dark_from=07:00"), "the light time is 07:00");
+    assert!(App::set_theme_option(&app, "theme_dark_from=07:00").is_err(), "the light time is 07:00");
     option(&app, "theme_dark_from=21:30");
     assert_eq!(App::settings(&app).themes.dark_from, 21 * 60 + 30);
 }
@@ -247,7 +247,7 @@ fn reset_theme_settings_puts_the_whole_theme_back_and_only_it() {
         state.settings.theme_accent = Some("#112233".to_owned());
         state.settings.website_appearance = crate::settings::WebsiteAppearance::Dark;
     }
-    App::reset_theme(&app);
+    App::reset_theme(&app).unwrap();
     let now = App::settings(&app);
     assert_eq!(now.theme, Theme::Helium);
     assert_eq!(now.theme_accent, None);

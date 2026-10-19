@@ -43,13 +43,26 @@ pub struct Loaded {
     pub widgets: WidgetSet,
 }
 
+/// What the page shows: bookmarks that cannot be read show as none.
 pub fn load(paths: &Paths) -> Loaded {
-    Loaded {
-        store: BookmarkStore::load(&paths.dir).unwrap_or_default(),
+    load_for_change(paths).unwrap_or_else(|_| Loaded {
+        store: BookmarkStore::default(),
         config: SpeedDialConfig::load(&paths.dir),
         widgets: WidgetSet::load(&paths.dir),
-    }
+    })
 }
+
+/// What a command edits. Bookmarks that cannot be read (a bad line, not UTF-8, too large, locked) are an
+/// error, never an empty tree: the command saves what it loaded, which would replace every bookmark.
+fn load_for_change(paths: &Paths) -> io::Result<Loaded> {
+    Ok(Loaded {
+        store: BookmarkStore::load(&paths.dir)?,
+        config: SpeedDialConfig::load(&paths.dir),
+        widgets: WidgetSet::load(&paths.dir),
+    })
+}
+
+const UNREADABLE: &str = "Your bookmarks could not be read, so the start page was not changed.";
 
 /// Size and modification time of each file a snapshot depends on, so an unchanged page is not rebuilt.
 pub type Stamp = Vec<Option<(u64, u128)>>;
@@ -194,7 +207,7 @@ fn find_link(store: &BookmarkStore, config: &SpeedDialConfig, id: u64) -> Option
 /// window still has to do, or the words for why the change was refused.
 pub fn apply(paths: &Paths, requested: &mut Option<u64>, action: Action) -> Result<Effect, String> {
     let dir = paths.dir.as_path();
-    let mut loaded = load(paths);
+    let mut loaded = load_for_change(paths).map_err(|_| UNREADABLE.to_owned())?;
     let err = |e: io::Error| friendly(&e);
     let Loaded { store, config, widgets } = &mut loaded;
     match action {
@@ -346,7 +359,7 @@ pub fn apply(paths: &Paths, requested: &mut Option<u64>, action: Action) -> Resu
 
 /// Keeps a re-encoded image (a small JPEG) as dial `id`'s tile.
 pub fn set_thumbnail(paths: &Paths, id: u64, jpeg: &[u8]) -> Result<(), String> {
-    let mut loaded = load(paths);
+    let mut loaded = load_for_change(paths).map_err(|_| UNREADABLE.to_owned())?;
     if !is_link(&loaded.store, id) {
         return Err("That is not on the start page any more.".to_owned());
     }

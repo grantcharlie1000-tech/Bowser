@@ -1348,6 +1348,24 @@ pub fn merge_changed(base: &Settings, memory: &Settings, file: &Settings) -> Set
     Settings::parse(&text)
 }
 
+/// What memory agrees with the file on after `file` was just written: each key where `memory` holds
+/// `file`'s value takes it; every other key keeps `synced`'s, so it still counts as changed by the app.
+pub fn mark_agreed(synced: &Settings, memory: &Settings, file: &Settings) -> Settings {
+    let (synced, memory, file) = (rendered_keys(synced), rendered_keys(memory), rendered_keys(file));
+    let keys: std::collections::BTreeSet<&String> = synced.keys().chain(memory.keys()).chain(file.keys()).collect();
+    let mut text = String::new();
+    for key in keys {
+        let pick = if memory.get(key) == file.get(key) { file.get(key) } else { synced.get(key) };
+        if let Some(value) = pick {
+            text.push_str(key);
+            text.push('=');
+            text.push_str(value);
+            text.push('\n');
+        }
+    }
+    Settings::parse(&text)
+}
+
 /// Reset settings: every option in the file goes back to its default except how long history is
 /// kept and the three Keyboard-section options, which the page's description promises it leaves
 /// alone (history itself and the shortcuts are not in this file).

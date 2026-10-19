@@ -2620,6 +2620,14 @@ unsafe extern "system" fn window_proc(
                 html_popup::close(hwnd);
                 // --- end popup host ---
                 html_panel::dismiss(hwnd); // --- rail flyouts ---
+                if !IsIconic(hwnd).as_bool()
+                    && let Some(layout) = with_chrome(hwnd, |s| s.layout)
+                {
+                    follow_panels(hwnd, to_win_rect(layout.viewport), FrameEvent::Moved);
+                }
+                if let Some(app) = app {
+                    App::parent_window_moved(app);
+                }
                 LRESULT(0)
             }
             WM_SIZE => {
@@ -2646,8 +2654,7 @@ unsafe extern "system" fn window_proc(
                     position_edit(hwnd);
                     let l = with_chrome(hwnd, |s| s.layout).unwrap();
                     let viewport = to_win_rect(l.viewport);
-                    notes_panel::sync(hwnd, viewport, dpi(hwnd));
-                    side_panel::sync(hwnd, viewport, dpi(hwnd));
+                    follow_panels(hwnd, viewport, FrameEvent::Sized { minimized: min });
                     let viewport = adjusted_viewport(hwnd, viewport, dpi(hwnd));
                     if let Some(panes) = split_rects(hwnd, None) {
                         queue_split_bounds(hwnd, panes);
@@ -2718,8 +2725,7 @@ unsafe extern "system" fn window_proc(
                     position_edit(hwnd);
                     let l = with_chrome(hwnd, |s| s.layout).unwrap();
                     let viewport = to_win_rect(l.viewport);
-                    notes_panel::sync(hwnd, viewport, dpi(hwnd));
-                    side_panel::sync(hwnd, viewport, dpi(hwnd));
+                    follow_panels(hwnd, viewport, FrameEvent::DpiChanged);
                     let viewport = adjusted_viewport(hwnd, viewport, dpi(hwnd));
                     if let Some(panes) = split_rects(hwnd, None) {
                         App::update_split_bounds(app, panes);
@@ -4988,6 +4994,42 @@ fn to_win_rect(rect: Rect) -> RECT {
         top: rect.top,
         right: rect.right,
         bottom: rect.bottom,
+    }
+}
+
+/// A change to the main window that the docked panels may have to follow.
+#[derive(Clone, Copy, Debug)]
+enum FrameEvent {
+    Moved,
+    Sized { minimized: bool },
+    DpiChanged,
+}
+
+/// Which docked panels are put back over the viewport after `event`: (notes, side panel, dock).
+fn panels_following(event: FrameEvent) -> (bool, bool, bool) {
+    match event {
+        // The notes panel is an owned popup at screen coordinates; the side panel and the
+        // DevTools dock are children and move with the window.
+        FrameEvent::Moved => (true, false, false),
+        // A minimised window has an empty client. Laid out there, the side panel and the dock
+        // find no room and close themselves; they stay as they are until the window comes back.
+        FrameEvent::Sized { minimized: true } => (false, false, false),
+        // The page is bounded beside all three (`adjusted_viewport`), so all three follow.
+        FrameEvent::Sized { minimized: false } | FrameEvent::DpiChanged => (true, true, true),
+    }
+}
+
+fn follow_panels(hwnd: HWND, viewport: RECT, event: FrameEvent) {
+    let (notes, side, dock) = panels_following(event);
+    let window_dpi = dpi(hwnd);
+    if notes {
+        notes_panel::sync(hwnd, viewport, window_dpi);
+    }
+    if side {
+        side_panel::sync(hwnd, viewport, window_dpi);
+    }
+    if dock {
+        devtools_dock::sync(hwnd, viewport, window_dpi);
     }
 }
 
@@ -12736,6 +12778,27 @@ mod tests {
         assert_ne!(style.0 & WS_CAPTION.0, 0);
         assert_ne!(style.0 & WS_SYSMENU.0, 0);
         assert_ne!(style.0 & WS_MAXIMIZEBOX.0, 0);
+    }
+
+    #[test]
+    fn docked_panels_follow_moves_resizes_and_dpi_changes_but_survive_a_minimise() {
+        // (notes, side panel, DevTools dock)
+        assert_eq!(
+            panels_following(FrameEvent::Sized { minimized: false }),
+            (true, true, true),
+            "a resize puts the dock back beside the page it was carved from"
+        );
+        assert_eq!(panels_following(FrameEvent::DpiChanged), (true, true, true));
+        assert_eq!(
+            panels_following(FrameEvent::Sized { minimized: true }),
+            (false, false, false),
+            "a minimised window's empty client must not close the side panel or the dock"
+        );
+        assert_eq!(
+            panels_following(FrameEvent::Moved),
+            (true, false, false),
+            "the notes popup sits at screen coordinates and follows a move"
+        );
     }
 
     // --- vertical sidebar (lane S) ---

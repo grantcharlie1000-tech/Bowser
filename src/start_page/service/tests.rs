@@ -419,3 +419,55 @@ fn refused_changes_come_back_in_plain_words() {
     assert!(page.json.ends_with(r#""ack":"failed","error":"Enter an http or https address."}}"#), "{}", page.json);
     let _ = fs::remove_dir_all(&paths.dir);
 }
+
+#[test]
+fn a_speed_dial_edit_refuses_and_keeps_every_bookmark_when_the_file_cannot_be_read() {
+    let mut good = BookmarkStore::new();
+    for n in 0..50 {
+        good.add_bookmark(None, &format!("Site {n}"), &format!("https://site{n}.example/")).unwrap();
+    }
+    let mut not_utf8 = good.serialize().into_bytes();
+    not_utf8.extend_from_slice(&[0xff, 0xfe, b'\n']);
+    let mut too_large = good.serialize().into_bytes();
+    too_large.resize(1024 * 1024 + 1, b'#');
+    let bad_header = good.serialize().replacen("bowser-bookmarks-v2", "bowser-bookmarks-v9", 1).into_bytes();
+    for (name, bytes) in [("not-utf8", not_utf8), ("too-large", too_large), ("bad-header", bad_header)] {
+        let paths = temp(&format!("unreadable-{name}"));
+        let file = paths.dir.join("bookmarks-v2.txt");
+        fs::write(&file, &bytes).unwrap();
+        let mut shown = None;
+        for action in [
+            Action::AddGroup("New group".to_owned()),
+            Action::Add { folder: 1, title: "x".to_owned(), url: "https://x.example/".to_owned() },
+            Action::RenameGroup { id: 1, title: "Renamed".to_owned() },
+            Action::Remove(1),
+            Action::Move { id: 1, before: None },
+        ] {
+            let refused = apply(&paths, &mut shown, action).expect_err(name);
+            assert_eq!(refused, UNREADABLE, "{name}");
+            assert!(fs::read(&file).unwrap() == bytes, "{name}: the bookmarks file changed");
+        }
+        assert_eq!(set_thumbnail(&paths, 1, b"jpeg").unwrap_err(), UNREADABLE, "{name}");
+        assert!(fs::read(&file).unwrap() == bytes, "{name}: the bookmarks file changed");
+        let _ = fs::remove_dir_all(&paths.dir);
+    }
+}
+
+#[test]
+fn a_speed_dial_edit_keeps_every_bookmark_when_one_line_is_malformed() {
+    let mut good = BookmarkStore::new();
+    for n in 0..50 {
+        good.add_bookmark(None, &format!("Site {n}"), &format!("https://site{n}.example/")).unwrap();
+    }
+    let paths = temp("bad-line");
+    fs::write(paths.dir.join("bookmarks-v2.txt"), format!("{}garbage line without tabs\n\n", good.serialize())).unwrap();
+    let mut shown = None;
+    let group = add_group(&paths, &mut shown, "New group");
+    let after = BookmarkStore::load(&paths.dir).unwrap();
+    assert_eq!(after.items().len(), 51, "every bookmark and the new group");
+    for item in good.items() {
+        assert!(after.items().contains(item), "{} kept", item.title);
+    }
+    assert!(after.items().iter().any(|i| i.id == group && i.title == "New group"));
+    let _ = fs::remove_dir_all(&paths.dir);
+}
