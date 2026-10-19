@@ -169,8 +169,7 @@ fn preview_and_import(
             "Bowser could not find the active profile.",
         )
     })?;
-    let existing = std::fs::read_to_string(active.bookmarks_file()).unwrap_or_default();
-    let existing = import::parse_bookmark_store(&existing);
+    let existing = store::existing_bookmarks(&active.bookmarks_file());
     let (new, duplicates) = import::dedupe_bookmarks(bookmarks, &existing);
     show_stage(owner, "Step 4 of 5 · De-duplicating bookmarks");
     if new.is_empty() && search_engine.is_none() && !unsupported_setting {
@@ -226,13 +225,24 @@ fn preview_and_import(
     }
     show_stage(owner, "Step 5 of 5 · Writing to the Bowser profile");
     let mut footer = match store::import_bookmarks(&active.bookmarks_file(), new) {
-        Ok(summary) => format!(
-            "Imported {} · duplicates {} · skipped {} · failed {}",
-            summary.imported,
-            summary.duplicates + duplicates,
-            summary.skipped + skipped,
-            summary.failed
-        ),
+        Ok(summary) => {
+            if summary.imported > 0 {
+                // The bar, panel and suggestions re-read the tree.
+                super::window::post_to_every_window(super::WM_RAIL_CHANGED);
+            }
+            let mut text = format!(
+                "Imported {} · duplicates {} · skipped {} · failed {}",
+                summary.imported,
+                summary.duplicates + duplicates,
+                summary.skipped + skipped,
+                summary.failed
+            );
+            for reason in &summary.reasons {
+                text.push(' ');
+                text.push_str(reason);
+            }
+            text
+        }
         Err(error) => {
             format!(
                 "Imported 0 · duplicates {duplicates} · skipped {skipped} · failed 1. Bowser profile write failed (the profile may be locked): {error}"

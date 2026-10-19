@@ -7662,14 +7662,6 @@ pub(super) fn add_bookmark_now(hwnd: HWND, app: &AppRef) {
         if added && !page_description.is_empty() {
             super::address_dialog::save_description(&profile, url.as_str(), &page_description);
         }
-        let mirror = if added {
-            crate::productivity::add_bookmark(&profile.bookmarks_file(), url.as_str(), &title).map(|_| ())
-        } else {
-            crate::productivity::remove_bookmark(&profile.bookmarks_file(), url.as_str()).map(|_| ())
-        };
-        if let Err(error) = mirror {
-            show_error_message(&format!("The bookmark changed, but the legacy mirror could not be updated: {error}"));
-        }
         // --- popup host (lane M) ---
         menu::show(
             hwnd,

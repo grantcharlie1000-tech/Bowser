@@ -682,40 +682,55 @@ impl VisitTracker {
 
 }
 
-pub fn add_bookmark(path: &Path, url: &str, title: &str) -> std::io::Result<()> {
-    add_bookmark_in_folder(path, url, title, "")
+// Bookmarks have one store: the `bookmarks-v2.txt` tree next to `path` (the profile's
+// `bookmarks.txt`, which is only read once, to migrate it when the tree does not exist yet). The
+// functions below keep the `bookmarks.txt` path parameter their callers already pass.
+
+/// The link id for `url` in `tree`.
+fn bookmark_id(tree: &crate::bookmarks::BookmarkStore, url: &str) -> Option<u64> {
+    tree.items()
+        .iter()
+        .find(|item| matches!(&item.kind, crate::bookmarks::BookmarkKind::Link { url: existing, .. } if existing == url))
+        .map(|item| item.id)
 }
 
-/// Removes a bookmark from the established flat file and the additive v2 tree.
-pub fn remove_bookmark(path: &Path, url: &str) -> std::io::Result<bool> {
+fn profile_dir_of(path: &Path) -> std::io::Result<&Path> {
+    path.parent()
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "no profile folder"))
+}
+
+/// Bookmarks `url` at the top level. A page that is already bookmarked keeps its id, folder and
+/// details (nickname, description); only its title changes.
+pub fn add_bookmark(path: &Path, url: &str, title: &str) -> std::io::Result<()> {
     let url = valid_http_url(url).ok_or_else(invalid_url_error)?;
-    let mut entries = read_bookmarks(path);
-    let old_len = entries.len();
-    entries.retain(|(_, existing, _)| existing != &url);
-    if entries.len() != old_len {
-        let out = entries
-            .iter()
-            .map(|(title, url, folder)| {
-                format!("{}\t{}\t{}\n", escape(title), escape(url), escape(folder))
-            })
-            .collect::<String>();
-        atomic_write(path, out.as_bytes())?;
-    }
-    if let Some(profile_dir) = path.parent() {
-        let mut tree = crate::bookmarks::BookmarkStore::load(profile_dir)?;
-        if let Some(id) = tree
-            .items()
-            .iter()
-            .find(|item| matches!(&item.kind, crate::bookmarks::BookmarkKind::Link { url: existing, .. } if existing == &url))
-            .map(|item| item.id)
-        {
-            tree.delete(id);
-            tree.save(profile_dir)?;
+    let profile_dir = profile_dir_of(path)?;
+    let mut tree = crate::bookmarks::BookmarkStore::load(profile_dir)?;
+    match bookmark_id(&tree, &url) {
+        Some(id) => {
+            tree.update_bookmark(id, title, &url)?;
+        }
+        None => {
+            tree.add_bookmark(None, title, &url)?;
         }
     }
-    Ok(entries.len() != old_len)
+    tree.save(profile_dir)
 }
 
+/// Removes the bookmark for `url`. Whether there was one.
+pub fn remove_bookmark(path: &Path, url: &str) -> std::io::Result<bool> {
+    let url = valid_http_url(url).ok_or_else(invalid_url_error)?;
+    let profile_dir = profile_dir_of(path)?;
+    let mut tree = crate::bookmarks::BookmarkStore::load(profile_dir)?;
+    let Some(id) = bookmark_id(&tree, &url) else {
+        return Ok(false);
+    };
+    tree.delete(id);
+    tree.save(profile_dir)?;
+    Ok(true)
+}
+
+/// Bookmarks `url` in `folder` (`/`-separated names, created when missing). A page that is
+/// already bookmarked moves there and takes the new title, keeping its id and details.
 pub fn add_bookmark_in_folder(
     path: &Path,
     url: &str,
@@ -723,33 +738,20 @@ pub fn add_bookmark_in_folder(
     folder: &str,
 ) -> std::io::Result<()> {
     let url = valid_http_url(url).ok_or_else(invalid_url_error)?;
-    let mut entries = read_bookmarks(path);
-    entries.retain(|(_, existing, _)| existing != &url);
-    entries.push((
-        title.chars().take(256).collect(),
-        url.clone(),
-        folder.chars().take(128).collect(),
-    ));
-    if entries.len() > MAX_BOOKMARKS {
-        entries.drain(..entries.len() - MAX_BOOKMARKS);
+    let profile_dir = profile_dir_of(path)?;
+    let mut tree = crate::bookmarks::BookmarkStore::load(profile_dir)?;
+    let parent = folder_path(&mut tree, folder)?;
+    match bookmark_id(&tree, &url) {
+        Some(id) => {
+            tree.update_bookmark(id, title, &url)?;
+            let at = tree.children(parent).len();
+            tree.move_item(id, parent, at)?;
+        }
+        None => {
+            tree.add_bookmark(parent, title, &url)?;
+        }
     }
-    let out = entries
-        .iter()
-        .map(|(title, url, folder)| {
-            format!("{}\t{}\t{}\n", escape(title), escape(url), escape(folder))
-        })
-        .collect::<String>();
-    atomic_write(path, out.as_bytes())?;
-    // Keep the established importer/command-palette file intact and mirror this mutation into
-    // the additive tree format consumed by the sidebar.
-    if let Some(profile_dir) = path.parent() {
-        let mut tree = crate::bookmarks::BookmarkStore::load(profile_dir)?;
-        let parent = folder_path(&mut tree, folder)?;
-        if let Some(old) = tree.items().iter().find(|item| matches!(&item.kind, crate::bookmarks::BookmarkKind::Link { url: old, .. } if old == &url)).map(|item| item.id) { tree.delete(old); }
-        tree.add_bookmark(parent, title, &url)?;
-        tree.save(profile_dir)?;
-    }
-    Ok(())
+    tree.save(profile_dir)
 }
 
 fn folder_path(
@@ -779,7 +781,17 @@ fn folder_path(
     Ok(parent)
 }
 
+/// Every bookmark as `(title, address, folder path)`, read from the bookmark tree next to `path`
+/// (the profile's `bookmarks.txt`), so the command palette lists exactly what the bar, panel and
+/// address suggestions show. Empty when the tree cannot be read.
 pub fn read_bookmarks(path: &Path) -> Vec<(String, String, String)> {
+    path.parent()
+        .and_then(|dir| crate::bookmarks::BookmarkStore::load(dir).ok())
+        .map_or_else(Vec::new, |tree| tree.flat_links())
+}
+
+/// The legacy flat `bookmarks.txt` records, read only to migrate them into the tree.
+pub fn read_legacy_bookmarks(path: &Path) -> Vec<(String, String, String)> {
     read_bounded(path).map_or_else(Vec::new, |text| {
         text.lines()
             .take(MAX_BOOKMARKS)
@@ -1243,10 +1255,7 @@ mod tests {
         let bookmarks = root.join("bookmarks.txt");
         add_bookmark_in_folder(&bookmarks, "https://example.com/", "First", "Reading").unwrap();
         add_bookmark_in_folder(&bookmarks, "https://example.com/", "Latest", "Work").unwrap();
-        assert_eq!(
-            fs::read_to_string(&bookmarks).unwrap(),
-            "Latest\thttps://example.com/\tWork\n"
-        );
+        assert!(!bookmarks.exists(), "the legacy file is never written; the tree is the store");
         assert_eq!(
             read_bookmarks(&bookmarks),
             vec![(
@@ -1259,6 +1268,61 @@ mod tests {
         assert!(read_bookmarks(&bookmarks).is_empty());
         let tree = crate::bookmarks::BookmarkStore::load(&root).unwrap();
         assert!(!tree.is_bookmarked("https://example.com/"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    fn bookmark_test_dir(name: &str) -> std::path::PathBuf {
+        let root = std::env::temp_dir().join(format!("bowser-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    /// OB-1: the dialog and Ctrl+D save a bookmark (folder, nickname, description by id) and then
+    /// call `add_bookmark` for the same page. That call must not move it to the top level with a
+    /// new id, which orphaned its nickname and description.
+    #[test]
+    fn adding_a_page_that_is_already_bookmarked_keeps_its_id_folder_and_details() {
+        use crate::bookmarks::BookmarkStore;
+        let root = bookmark_test_dir("bookmark-keeps-id");
+        let mut tree = BookmarkStore::new();
+        let work = tree.add_folder(None, "Work").unwrap();
+        let link = tree.add_bookmark(Some(work), "Rust", "https://rust-lang.org/").unwrap();
+        tree.save(&root).unwrap();
+        let mut extras = crate::bookmark_extras::Extras::load(&root);
+        extras.set(link, "rs", "The Rust site").unwrap();
+        extras.save(&root).unwrap();
+
+        add_bookmark(&root.join("bookmarks.txt"), "https://rust-lang.org/", "Rust").unwrap();
+
+        let tree = BookmarkStore::load(&root).unwrap();
+        let item = tree.items().iter().find(|i| i.title == "Rust").unwrap();
+        assert_eq!((item.id, item.parent), (link, Some(work)), "{:?}", tree.items());
+        let extras = crate::bookmark_extras::Extras::load(&root);
+        assert_eq!(extras.nickname(item.id), "rs");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// OB-2: the command palette reads the same store the Bookmarks panel edits, so a bookmark
+    /// deleted in the panel is gone from it and one added there is listed.
+    #[test]
+    fn the_palette_lists_what_the_bookmarks_panel_saved() {
+        use crate::bookmarks::BookmarkStore;
+        let root = bookmark_test_dir("bookmark-palette");
+        let legacy = root.join("bookmarks.txt");
+        add_bookmark(&legacy, "https://deleted.example/", "Deleted").unwrap();
+        // The panel edits the tree only.
+        let mut tree = BookmarkStore::load(&root).unwrap();
+        let deleted = tree.items().iter().find(|i| i.title == "Deleted").unwrap().id;
+        tree.delete(deleted);
+        let folder = tree.add_folder(None, "Read").unwrap();
+        tree.add_bookmark(Some(folder), "Added", "https://added.example/").unwrap();
+        tree.save(&root).unwrap();
+
+        assert_eq!(
+            read_bookmarks(&legacy),
+            vec![("Added".into(), "https://added.example/".into(), "Read".into())]
+        );
         let _ = fs::remove_dir_all(root);
     }
 
