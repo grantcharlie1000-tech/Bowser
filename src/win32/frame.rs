@@ -53,6 +53,46 @@ impl FrameHit {
     }
 }
 
+/// Physical sizes of the top resize grips at `dpi`: the top edge's thickness and the side of each top
+/// corner square. [`frame_hit_test_with`] returns `Top`, `TopLeft` and `TopRight` exactly there.
+pub fn top_grips(dpi: u32) -> (i32, i32) {
+    let m = Metrics::new(dpi);
+    (m.px(Metrics::ISLAND_MARGIN), m.px(RESIZE_GRIP))
+}
+
+/// The client rectangles where a grip window must stand in for the frame's top resize grips: each
+/// of `hosts` (the HTML chrome and page windows, client pixels) cut to the top edge band and the two
+/// top corner squares. Empty when `maximised`, which has no grips. Child windows win every hit test
+/// over their own pixels, so without this an HTML host along the top edge leaves that part of the
+/// edge, and its corner, impossible to resize from.
+pub fn top_grip_rects(client_size: (i32, i32), dpi: u32, maximised: bool, hosts: &[RECT]) -> Vec<RECT> {
+    let (width, height) = (client_size.0.max(0), client_size.1.max(0));
+    if maximised || width == 0 || height == 0 {
+        return Vec::new();
+    }
+    let (top, corner) = top_grips(dpi);
+    let bands = [
+        RECT { left: 0, top: 0, right: width, bottom: top.min(height) },
+        RECT { left: 0, top: 0, right: corner.min(width), bottom: corner.min(height) },
+        RECT { left: (width - corner).max(0), top: 0, right: width, bottom: corner.min(height) },
+    ];
+    let mut out: Vec<RECT> = Vec::new();
+    for host in hosts {
+        for band in &bands {
+            let cut = RECT {
+                left: host.left.max(band.left),
+                top: host.top.max(band.top),
+                right: host.right.min(band.right),
+                bottom: host.bottom.min(band.bottom),
+            };
+            if cut.right > cut.left && cut.bottom > cut.top && !out.contains(&cut) {
+                out.push(cut);
+            }
+        }
+    }
+    out
+}
+
 /// Height from the top edge through the caption hit strip.
 pub fn caption_strip_height(dpi: u32) -> i32 {
     let m = Metrics::new(dpi);
@@ -368,5 +408,93 @@ mod tests {
         }
         assert_eq!(frame_hit_test_with(POINT { x: 500, y: 699 }, size, 96, false, ChromeHit::Drag, true), FrameHit::Bottom, "the grip still comes first");
         assert_eq!(frame_hit_test_with(POINT { x: 980, y: 10 }, size, 96, false, ChromeHit::Drag, true), FrameHit::Close, "the caption buttons stay at the top");
+    }
+}
+
+#[cfg(test)]
+mod grip_and_gap_tests {
+    use super::*;
+    use crate::chrome::layout::{self, Rect as LRect};
+    use crate::settings::TabLayout;
+
+    const DPIS: [u32; 5] = [96, 120, 144, 168, 192];
+
+    fn rect(r: LRect) -> RECT {
+        RECT { left: r.left, top: r.top, right: r.right, bottom: r.bottom }
+    }
+
+    #[test]
+    fn the_tabs_top_drag_gap_is_caption_windowed_and_maximised() {
+        for dpi in DPIS {
+            let m = Metrics::new(dpi);
+            for width in [520, 1024, 1920] {
+                let l = layout::compute_for(TabLayout::TabsTop, m.px(width), m.px(700), dpi, 40, 0, false);
+                let size = (l.client.width(), l.client.height());
+                let x = l.caption_area.left - m.px(Metrics::CAPTION_DRAG_GAP) / 2;
+                for y in [m.px(Metrics::ISLAND_MARGIN), l.caption_area.height() / 2, l.caption_area.height() - 1] {
+                    let p = POINT { x, y };
+                    // Windowed: a move. Maximised: the same caption hit drags the window out of maximised.
+                    assert_eq!(frame_hit_test_with(p, size, dpi, false, ChromeHit::Drag, false), FrameHit::Caption, "dpi {dpi} width {width} y {y}");
+                    assert_eq!(frame_hit_test_with(p, size, dpi, true, ChromeHit::Drag, false), FrameHit::Caption, "dpi {dpi} width {width} y {y} maximised");
+                }
+                assert_eq!(frame_hit_test_with(POINT { x, y: 0 }, size, dpi, false, ChromeHit::Drag, false), FrameHit::Top, "dpi {dpi}: the top edge still resizes");
+            }
+        }
+    }
+
+    #[test]
+    fn top_grips_cover_every_host_on_the_top_edge_and_corners() {
+        for dpi in DPIS {
+            let (top, corner) = top_grips(dpi);
+            assert_eq!(top, Metrics::new(dpi).px(Metrics::ISLAND_MARGIN));
+            for tabs in [TabLayout::TabsTop, TabLayout::ToolbarTop, TabLayout::SingleRow] {
+                let l = layout::compute_for(tabs, 1200, 800, dpi, 3, 0, false);
+                let size = (l.client.width(), l.client.height());
+                let hosts: Vec<RECT> = [
+                    crate::chrome_host::toolbar_bounds(&l),
+                    crate::chrome_host::tab_row_bounds(&l),
+                    Some(RECT { left: 0, top: 0, right: 26, bottom: 800 }), // a rail from the top-left corner
+                ]
+                .into_iter()
+                .flatten()
+                .collect();
+                let grips = top_grip_rects(size, dpi, false, &hosts);
+                // Every host pixel on the top edge band or in a top corner square has a grip over it,
+                // and every grip pixel is a top resize hit.
+                for host in &hosts {
+                    for y in 0..corner {
+                        for x in (host.left..host.right).step_by(3) {
+                            let in_corner = x < corner || x >= size.0 - corner;
+                            if y >= top && !in_corner {
+                                continue;
+                            }
+                            if y >= host.bottom || y < host.top {
+                                continue;
+                            }
+                            let covered = grips.iter().any(|g| x >= g.left && x < g.right && y >= g.top && y < g.bottom);
+                            assert!(covered, "{tabs:?} dpi {dpi}: host {host:?} pixel ({x},{y}) has no grip");
+                            let hit = frame_hit_test_with(POINT { x, y }, size, dpi, false, ChromeHit::Interactive, false);
+                            assert!(matches!(hit, FrameHit::Top | FrameHit::TopLeft | FrameHit::TopRight), "{tabs:?} dpi {dpi}: ({x},{y}) is {hit:?}");
+                        }
+                    }
+                }
+                // Grips never reach below the corner squares, so no tab or control loses its pixels.
+                assert!(grips.iter().all(|g| g.bottom <= corner), "{tabs:?} dpi {dpi}: {grips:?}");
+                assert!(top_grip_rects(size, dpi, true, &hosts).is_empty(), "maximised: no grips");
+            }
+        }
+    }
+
+    #[test]
+    fn top_grips_follow_the_page_when_auto_hide_puts_it_at_the_top() {
+        let size = (1200, 800);
+        // Auto-hide off: the page starts under the chrome and needs no grip.
+        let page_below = rect(LRect::new(34, 63, 1196, 796));
+        assert!(top_grip_rects(size, 96, false, &[page_below]).is_empty());
+        // Auto-hide on with the bars out: the page reaches the top edge, and the grip covers it there.
+        let page_top = rect(LRect::new(30, 0, 1196, 796));
+        let grips = top_grip_rects(size, 96, false, &[page_top]);
+        assert!(grips.contains(&RECT { left: 30, top: 0, right: 1196, bottom: 2 }), "{grips:?}");
+        assert!(grips.contains(&RECT { left: 1192, top: 0, right: 1196, bottom: 8 }), "{grips:?}");
     }
 }

@@ -308,6 +308,7 @@ pub(super) fn bookmark_bar_placement(hwnd: HWND) -> Option<(RECT, bool)> {
 pub(super) fn on_sensor(hwnd: HWND, wparam: WPARAM, lparam: LPARAM) {
     if wparam.0 == RAISE {
         raise_all(hwnd);
+        super::frame_grip::raise(hwnd); // the top resize grips stay above a new page window too
         return;
     }
     let Some(zone) = zone_from_code(wparam.0) else { return };

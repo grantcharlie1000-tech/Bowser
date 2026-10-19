@@ -118,6 +118,8 @@ mod fullscreen_notice;
 // --- look state (fix group B) --- the page and panel hosts' `state` (window/host_state.rs).
 mod host_state;
 // --- end look state ---
+// Native grips that keep the top resize edge over the HTML hosts (window/frame_grip.rs).
+mod frame_grip;
 const WM_NCUAHDRAWCAPTION: u32 = 0x00AE;
 const WM_NCUAHDRAWFRAME: u32 = 0x00AF;
 const WM_MOUSELEAVE: u32 = 0x02A3;
@@ -1768,13 +1770,16 @@ fn sidebar_html_region(layout: Option<&crate::vertical_tabs::SidebarLayout>, act
 
 /// Snapshot hosts and geometry, then call WebView2 after the window borrow has ended.
 fn sync_html_host_bounds(hwnd: HWND) {
-    let Some(hosts) = with_chrome(hwnd, |s| [
+    let Some((hosts, viewport)) = with_chrome(hwnd, |s| ([
         (s.html.clone(), chrome_host::toolbar_bounds(&s.layout).filter(|_| s.html_region().is_some())),
         // --- vertical sidebar (lane S) ---
         (s.html_tabs.clone(), s.html_tabs_bounds().filter(|_| s.html_tab_region().is_some())),
         // --- end vertical sidebar ---
         (s.html_rail.clone(), chrome_host::rail_bounds(&s.layout).filter(|_| s.html_rail_region().is_some())),
-    ]) else { return; };
+    ], s.layout.viewport)) else { return; };
+    // Every child window that can reach the top edge: the HTML chrome and the page.
+    let mut covering: Vec<RECT> = hosts.iter().filter_map(|(host, bounds)| host.as_ref().and(*bounds)).collect();
+    covering.push(RECT { left: viewport.left, top: viewport.top, right: viewport.right, bottom: viewport.bottom });
     for (host, bounds) in hosts {
         let Some(host) = host else { continue; };
         if let Some(bounds) = bounds {
@@ -1783,6 +1788,7 @@ fn sync_html_host_bounds(hwnd: HWND) {
         let _ = host.set_visible(bounds.is_some());
     }
     auto_hide::after_layout(hwnd); // --- auto-hide (T11) --- sensors, and raising what is shown
+    frame_grip::sync(hwnd, &covering); // above the hosts and the sensors
 }
 // --- auto-hide (T11) --- what the rest of the app calls (window/auto_hide.rs does the work).
 pub(crate) fn auto_hide_sync(hwnd: HWND, app: &AppRef) {
@@ -4413,6 +4419,7 @@ unsafe extern "system" fn window_proc(
                 LRESULT(0)
             }
             WM_NCDESTROY => {
+                frame_grip::forget(hwnd);
                 let _ = SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
                 if !raw.is_null() {
                     drop(Box::from_raw(raw as *mut AppRef));
