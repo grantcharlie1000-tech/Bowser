@@ -135,7 +135,9 @@ fn available(owner: HWND) -> bool {
 /// Opens the settings page at `section` (main menu, palette, omnibox). `reuse_blank`: a blank
 /// normal shown tab becomes the page (the omnibox) instead of a new tab opening (the menu).
 pub(crate) fn open(owner: HWND, app: &AppRef, section: Option<Section>, reuse_blank: bool) {
+    App::diagnostic_interaction_event(app,"interaction_settings_open",u64::from(reuse_blank));
     if !available(owner) {
+        App::diagnostic_interaction_event(app,"interaction_settings_fallback",0);
         if let Err(error) = super::settings_panel::open(owner, app) {
             super::show_error_message(&format!("Settings could not be opened: {error}"));
         }
@@ -280,6 +282,7 @@ fn ensure_host(owner: HWND) {
         let owner = HWND(raw as *mut _);
         match command {
             Command::Ready => {
+                if let Some(app)=super::window::app_of(owner){App::diagnostic_interaction_event(&app,"interaction_settings_ready",0);}
                 let _ = with(owner, |rt| {
                     rt.ready = true;
                     rt.state = None;
@@ -530,6 +533,7 @@ pub(crate) fn sync(owner: HWND, app: &AppRef) {
         let _ = host.post_json(&store);
     }
     if shown != Some(want) {
+        App::diagnostic_interaction_event(app,"interaction_settings_show",u64::from(want.tab.0));
         let size = rect_size(want.rect);
         unsafe {
             let _ = SetWindowPos(container, Some(HWND_TOP), want.rect.left, want.rect.top, size.right, size.bottom, SWP_NOACTIVATE | SWP_SHOWWINDOW);
@@ -543,6 +547,7 @@ pub(crate) fn sync(owner: HWND, app: &AppRef) {
     let asked = with(owner, |rt| std::mem::take(&mut rt.focus_pending)).unwrap_or(false);
     let appeared = shown.is_none() && !super::window::omnibox_focused(owner);
     if (asked || appeared) && want.tab == App::active_tab_id(app) {
+        App::diagnostic_interaction_event(app,"interaction_settings_focus_requested",u64::from(asked)|(u64::from(appeared)<<1));
         let _ = host.focus();
     }
 }

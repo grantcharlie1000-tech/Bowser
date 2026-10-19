@@ -1,0 +1,246 @@
+name: Performance restoration checks
+on:
+  push:
+    branches: ['performance/post-ui']
+  pull_request:
+    paths:
+      - '.github/workflows/production-performance.yml'
+      - 'benchmarks/production-*'
+      - 'benchmarks/test-production-*'
+      - 'benchmarks/*native-detail*'
+      - 'benchmarks/*sidebar*'
+      - 'benchmarks/*bookmark-bar*'
+      - 'src/engine/web_app.rs'
+      - 'src/engine/web_app_profile.rs'
+      - 'src/engine/web_app_lifecycle_live.rs'
+      - 'src/web_app_lifecycle.rs'
+      - 'src/win32/panel_webapp.rs'
+      - 'benchmarks/scripts/production-*'
+      - 'src/performance.rs'
+      - 'src/engine/webview2.rs'
+      - 'src/engine/mod.rs'
+      - 'src/app.rs'
+      - 'src/main.rs'
+      - 'src/chrome_host/assets.rs'
+      - 'src/blocker.rs'
+      - 'src/blocker/registration.rs'
+      - 'benchmarks/scripts/filter-parity-fixture.mjs'
+      - 'src/chrome_host/host.rs'
+      - 'src/win32/window.rs'
+      - 'ui/**'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: production-baseline-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  baseline:
+    runs-on: windows-2025
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: pwsh
+        working-directory: candidate
+    steps:
+      - name: Preserve fingerprinted bytes
+        working-directory: ${{ github.workspace }}
+        run: git config --global core.autocrlf false
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+          path: candidate
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      # Purity guard for the measurement branch only: it pins that branch's own
+      # experiment identities, so it cannot hold for main or other PRs. When the
+      # branch has merged origin/main, the unchanged assertions run against the
+      # branch's own tip (the last first-parent commit before the first merge of
+      # main); later own commits may touch only the bounded allowlist.
+      - name: Verify restored original product source
+        if: github.head_ref == 'performance/post-ui' || github.ref_name == 'performance/post-ui'
+        working-directory: candidate
+        env:
+          EVENT_SOURCE: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          if((git rev-parse HEAD).Trim() -cne $env:EVENT_SOURCE){throw 'Unexpected source/merge checkout'}
+          git fetch --no-tags --depth=1 origin 19606fc644a23c07db49faeae0b5d13497784649 a7fa3ef916eacf4df3ffa8c2db565382720d861f
+          if($LASTEXITCODE -ne 0){throw 'Cannot fetch immutable restoration/experiment identities'}
+          git fetch --no-tags --unshallow --filter=blob:none origin '+refs/heads/main:refs/remotes/origin/main'
+          if($LASTEXITCODE -ne 0){throw 'Cannot fetch branch and main history'}
+          git merge-base --is-ancestor a7fa3ef916eacf4df3ffa8c2db565382720d861f HEAD
+          if($LASTEXITCODE -ne 0){throw 'Experiment identity is not an ancestor of the candidate'}
+          $allowed=@('.github/workflows/production-performance.yml','benchmarks/bookmark-bar-lifecycle.md','src/chrome_host/host.rs','src/win32/bookmark_bar.rs')
+          $own='a7fa3ef916eacf4df3ffa8c2db565382720d861f'; $merged=$false
+          foreach($commit in @(git rev-list --first-parent --reverse a7fa3ef916eacf4df3ffa8c2db565382720d861f..HEAD)){
+            $parents=@((git rev-list --parents -n 1 $commit).Trim().Split(' ')|Select-Object -Skip 1)
+            if($parents.Count -gt 2){throw "Unexpected octopus merge $commit"}
+            if($parents.Count -eq 2){
+              git merge-base --is-ancestor $parents[1] origin/main
+              if($LASTEXITCODE -ne 0){throw "Merge $commit brings in history that is not on main"}
+              $merged=$true
+            } elseif(-not $merged){ $own=$commit }
+            else {
+              $touched=@(git diff-tree --no-commit-id --name-only -r $commit)
+              if(@($touched|Where-Object {$_ -cnotin $allowed}).Count){throw "Post-merge commit $commit changes files outside bounded hint revert"}
+            }
+          }
+          "Guarding branch-own tip $own (candidate $env:EVENT_SOURCE)"
+          $changed=@(git diff --name-only a7fa3ef916eacf4df3ffa8c2db565382720d861f $own)
+          if($LASTEXITCODE -ne 0 -or @($changed|Where-Object {$_ -cnotin $allowed}).Count){throw 'Unexpected change outside bounded hint revert'}
+          git diff --exit-code 19606fc644a23c07db49faeae0b5d13497784649 $own -- src ui Cargo.toml Cargo.lock build.rs
+          if($LASTEXITCODE -ne 0){throw 'Original product source/build inputs not restored exactly'}
+          git diff --exit-code a7fa3ef916eacf4df3ffa8c2db565382720d861f $own -- benchmarks ':!benchmarks/bookmark-bar-lifecycle.md'
+          if($LASTEXITCODE -ne 0){throw 'Benchmark tools changed during product revert'}
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22'
+      - name: Parse and run native measurement and bookmark fixture contracts
+        working-directory: candidate
+        run: |
+          foreach($path in @('benchmarks/production-baseline.ps1','benchmarks/bookmark-bar-lifecycle.psm1','benchmarks/test-bookmark-bar-lifecycle.ps1','benchmarks/sidebar-lifecycle.psm1','benchmarks/sidebar-input.psm1')) {
+            $tokens=$null;$errors=$null
+            [Management.Automation.Language.Parser]::ParseFile((Join-Path $pwd $path),[ref]$tokens,[ref]$errors)|Out-Null
+            if($errors.Count){$errors|Format-List;throw "$path does not parse"}
+          }
+          ./benchmarks/test-production-measurements.ps1
+          ./benchmarks/test-production-focus.ps1
+          ./benchmarks/test-sidebar-lifecycle.ps1
+          ./benchmarks/test-sidebar-preflight.ps1
+          ./benchmarks/test-sidebar-input.ps1
+          ./benchmarks/test-bookmark-bar-lifecycle.ps1
+          ./benchmarks/test-measurements.ps1
+          python benchmarks/test-bookmark-bar-analyze.py
+          if($LASTEXITCODE -ne 0){throw 'Bar analyzer contracts failed'}
+          python benchmarks/test-sidebar-analyze.py
+          if($LASTEXITCODE -ne 0){throw 'Sidebar analyzer/disk contracts failed'}
+          python benchmarks/test-production-analyze.py
+          if($LASTEXITCODE -ne 0){throw 'Production analyzer contracts failed'}
+          python benchmarks/test-native-detail-analyze.py
+          if($LASTEXITCODE -ne 0){throw 'Native detail contracts failed'}
+          node --check benchmarks/scripts/production-fixture-server.mjs
+          if($LASTEXITCODE -ne 0){throw 'Fixture syntax failed'}
+      - name: Parse native smoke script before running checks
+        run: |
+          $tokens = $null
+          $parseErrors = $null
+          foreach ($script in @('verify-release-candidate.ps1', 'test-native-theme-flow.ps1')) {
+            [System.Management.Automation.Language.Parser]::ParseFile(
+              (Join-Path $pwd "benchmarks/scripts/$script"),
+              [ref]$tokens, [ref]$parseErrors) | Out-Null
+            if ($parseErrors.Count -gt 0) { $parseErrors | Format-List; throw "$script does not parse." }
+          }
+      - name: Install official Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --component clippy
+          if ($LASTEXITCODE -ne 0) { throw 'Rust toolchain installation failed.' }
+          rustc +stable --version
+          cargo +stable --version
+      - name: Diagnose focused native theme persistence before aggregate tests
+        timeout-minutes: 15
+        run: ./benchmarks/scripts/test-native-theme-flow.ps1
+      - name: Save focused Rust logs and timeout process evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: native-theme-diagnostics-${{ github.sha }}
+          path: ${{ runner.temp }}/bowser-theme-tests/
+          if-no-files-found: warn
+          retention-days: 14
+      - name: Test default native Windows source
+        timeout-minutes: 10
+        run: cargo +stable test --locked
+      - name: Test shipping HTML-default Windows source
+        timeout-minutes: 10
+        run: cargo +stable test --locked --features html-chrome-default
+      - name: Check Windows source with Clippy
+        run: cargo +stable clippy --locked --features html-chrome-default -- -D warnings
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: candidate/ui/package-lock.json
+      - name: Install locked UI dependencies
+        working-directory: candidate/ui
+        run: npm ci --no-audit --no-fund
+      - name: Typecheck UI
+        working-directory: candidate/ui
+        run: npm run typecheck
+      - name: Lint UI
+        working-directory: candidate/ui
+        run: npm run lint
+      - name: Require Edge for browser-backed regression tests
+        run: |
+          $edge = @(
+            'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe',
+            'C:/Program Files/Microsoft/Edge/Application/msedge.exe'
+          ) | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $edge) { throw 'Microsoft Edge is required; browser-backed suites must not silently skip.' }
+          "BOWSER_TEST_EDGE=$edge" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+      - name: Check isolated CJK reader baseline (unchanged budget)
+        working-directory: candidate/ui
+        run: |
+          node --test --test-concurrency=1 --test-name-pattern="reader: article-cjk.html" test/reader.mjs
+      - name: Test UI
+        working-directory: candidate/ui
+        run: npm test
+      - name: Test shipped Shield extension
+        run: node --test extensions/bowser-shield/test/run-tests.js
+      - name: Rebuild embedded UI
+        working-directory: candidate/ui
+        run: npm run build
+      - name: Verify committed UI is reproducible
+        run: |
+          git diff --exit-code -- ui/src/icons.gen.ts ui/dist ui/dist.manifest
+          if ($LASTEXITCODE -ne 0) { throw 'Rebuilt UI differs from committed source/assets.' }
+      - name: Build release candidate
+        run: cargo +stable build --release --locked --bin bowser --features html-chrome-default
+      - name: Smoke exact native release executable in isolated profile
+        run: pwsh -NoProfile -File benchmarks/scripts/verify-release-candidate.ps1 -Out "$env:RUNNER_TEMP/bowser-release-smoke"
+      - name: Save native smoke evidence even on failure
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: bowser-native-smoke-${{ github.sha }}
+          path: ${{ runner.temp }}/bowser-release-smoke/
+          if-no-files-found: warn
+          retention-days: 14
+      - name: Record immutable build identity
+        run: |
+          New-Item -ItemType Directory -Force release-candidate | Out-Null
+          Copy-Item target/release/bowser.exe release-candidate/Bowser.exe
+          $file = Get-Item release-candidate/Bowser.exe
+          $hash = (Get-FileHash $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+          $source = (git rev-parse HEAD).Trim()
+          $smokePath = Join-Path $env:RUNNER_TEMP 'bowser-release-smoke/native-smoke.json'
+          $smoke = Get-Content $smokePath -Raw | ConvertFrom-Json
+          if ($smoke.status -cne 'passed_bounded_native_smoke' -or $smoke.source_commit -cne $source -or $smoke.executable_sha256 -cne $hash) {
+            throw 'Native smoke evidence does not match the candidate.'
+          }
+          Copy-Item $smokePath release-candidate/native-smoke.json
+          $metadata = [ordered]@{
+            commit = $source
+            workflow_sha = $env:GITHUB_SHA
+            run_id = $env:GITHUB_RUN_ID
+            run_attempt = $env:GITHUB_RUN_ATTEMPT
+            asset = 'Bowser.exe'
+            sha256 = $hash
+            bytes = $file.Length
+            features = 'html-chrome-default'
+            smoke_report_sha256 = (Get-FileHash $smokePath -Algorithm SHA256).Hash.ToLowerInvariant()
+            smoke_status = $smoke.status
+            rustc = (rustc +stable --version)
+            built_at_utc = (Get-Date).ToUniversalTime().ToString('o')
+            published = $false
+          }
+          $metadata | ConvertTo-Json | Set-Content -Encoding utf8 release-candidate/build-metadata.json
+          "$hash  Bowser.exe" | Set-Content -Encoding ascii release-candidate/SHA256SUMS.txt
+      - name: Save verified release candidate (not a publication)
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: restored-bowser-windows-${{ github.event.pull_request.head.sha || github.sha }}
+          path: candidate/release-candidate/
+          if-no-files-found: error
+          retention-days: 14
+
+      # No hint experiment or resource cohort follows these restoration gates.

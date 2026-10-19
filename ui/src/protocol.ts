@@ -1,6 +1,7 @@
 // Typed bridge for the toolbar, tab strip and left rail pages. Mirrors docs/html-chrome-protocol.md (v1).
 // Page-controlled text reaches the DOM only through textContent or attributes (see view.ts, tabs.ts, rail.ts).
 import { MAX_RAIL_ITEMS, isRailIcon, isRailKey, type RailIconName } from './rail-logic';
+import type { InteractionEvent } from './interaction-diagnostic';
 import { validZoom } from './zoom-logic';
 // --- split view ---
 import { parseSplitInbound, type SplitCommand, type SplitInbound } from './split-protocol';
@@ -76,6 +77,7 @@ export type Theme = Partial<Record<ThemeToken, string>>;
 // JS -> Rust commands (sent as flat JSON text).
 export type Command =
   | { v: 1; t: 'ready' }
+  | { v: 1; t: 'interaction'; e: InteractionEvent; n: number }
   | { v: 1; t: 'nav'; a: NavAction }
   | { v: 1; t: 'edit'; seq: number; text: string }
   | { v: 1; t: 'submit'; text: string }
@@ -589,6 +591,7 @@ export interface SettingsGoMsg { readonly t: 'settingsgo'; readonly s: SettingsS
 export type SnapshotValue = string | number | boolean | null | readonly SnapshotValue[] | { readonly [key: string]: SnapshotValue };
 export interface SnapshotMsg { readonly t: 'snap'; readonly p: PanelToken; readonly d: { readonly [key: string]: SnapshotValue } }
 export type Inbound =
+  | { readonly t: 'diagnosticInteraction'; readonly enabled: true }
   | StateMsg
   | SetTextMsg
   | FocusOmniboxMsg
@@ -1136,6 +1139,9 @@ export function parseInbound(data: unknown): Inbound | null {
   }
 
   switch (raw.t) {
+    case 'diagnosticInteraction':
+      if (!hasOnlyKeys(raw, ['v', 't', 'enabled']) || raw.v !== 1 || raw.enabled !== true) return null;
+      return { t: 'diagnosticInteraction', enabled: true };
     case 'panelshow': {
       if (!hasOnlyKeys(raw, ['v', 't', 'p']) || raw.v !== 1 || !isOneOf(raw.p, PANEL_TOKENS)) return null;
       return { t: 'panelshow', p: raw.p };

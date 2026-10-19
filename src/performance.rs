@@ -1,9 +1,10 @@
 use crate::engine::TrackingPreventionLevel;
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     fs::File,
     io::{self, Write},
     path::{Path, PathBuf},
+    rc::Rc,
     time::Instant,
 };
 use url::Url;
@@ -15,6 +16,12 @@ pub const MAX_OPEN_URLS: usize = 16;
 #[derive(Debug, Default)]
 pub struct LaunchOptions {
     pub benchmark_log: Option<PathBuf>,
+    /// Timing only: never selects benchmark behavior or suppresses production features.
+    pub diagnostic_log: Option<PathBuf>,
+    /// Additional native attribution, deliberately excluded from primary timing arms.
+    pub diagnostic_detail: bool,
+    /// Cheap fixed-label interaction ordering; no process/frame inventory.
+    pub diagnostic_interaction: bool,
     pub user_data_dir: Option<PathBuf>,
     pub benchmark_url: Option<Url>,
     /// `--data-dir <path>` / `BOWSER_DATA_DIR`: the app-data root that replaces
@@ -99,6 +106,16 @@ impl LaunchOptions {
         let mut explicit_data_dir: Option<PathBuf> = None;
         let mut iter = args.into_iter();
         while let Some(flag) = iter.next() {
+            if flag == "--diagnostic-interaction" {
+                if options.diagnostic_interaction { return Err("Duplicate diagnostic interaction argument".into()); }
+                options.diagnostic_interaction = true;
+                continue;
+            }
+            if flag == "--diagnostic-detail" {
+                if options.diagnostic_detail { return Err("Duplicate diagnostic detail argument".into()); }
+                options.diagnostic_detail = true;
+                continue;
+            }
             if flag == "--new-window" {
                 if options.new_window {
                     return Err("Duplicate new window argument".into());
@@ -130,6 +147,7 @@ impl LaunchOptions {
             if !matches!(
                 flag.as_str(),
                 "--benchmark-log"
+                    | "--diagnostic-log"
                     | "--benchmark-user-data-dir"
                     | "--benchmark-url"
                     | "--data-dir"
@@ -156,6 +174,11 @@ impl LaunchOptions {
                 .filter(|v| !v.is_empty() && !v.starts_with("--"))
                 .ok_or_else(|| format!("Missing value for {flag}"))?;
             match flag.as_str() {
+                "--diagnostic-log" => {
+                    if options.diagnostic_log.replace(PathBuf::from(value)).is_some() {
+                        return Err("Duplicate diagnostic log argument".into());
+                    }
+                }
                 "--benchmark-log" => {
                     if options
                         .benchmark_log
@@ -289,6 +312,26 @@ impl LaunchOptions {
                 _ => {
                     if raw_url.replace(value).is_some() {
                         return Err("Duplicate benchmark URL argument".into());
+                    }
+                }
+            }
+        }
+        if options.diagnostic_interaction && options.diagnostic_log.is_none() {
+            return Err("Diagnostic interaction requires --diagnostic-log".into());
+        }
+        if options.diagnostic_detail && options.diagnostic_log.is_none() {
+            return Err("Diagnostic detail requires --diagnostic-log".into());
+        }
+        if options.diagnostic_log.is_some() {
+            if options.benchmark_log.is_some() || options.agent || options.agent_call.is_some() {
+                return Err("Diagnostic logging cannot be combined with benchmark or agent mode".into());
+            }
+            // Diagnostics are intended for synthetic profiles, never an accidental real profile.
+            let dir = explicit_data_dir.as_ref().ok_or("Diagnostic logging requires explicit --data-dir")?;
+            if let Some(local) = local_app_data {
+                for real in [local.join("Bowser"), local.join("Bowser-Dev")] {
+                    if profile_contains(&real, dir)? {
+                        return Err("Diagnostic logging requires an isolated data directory".into());
                     }
                 }
             }
@@ -562,8 +605,73 @@ fn ensure_benchmark_profile(path: &Path) -> Result<(), String> {
         .map_err(|e| format!("Cannot mark isolated benchmark profile: {e}"))
 }
 
+fn valid_focus_view(view: &str) -> bool {
+    matches!(view,"content"|"toolbar"|"tabs"|"rail"|"panel"|"popup"|"dialog"|"dialog_notes"|"dialog_privacy"|"dialog_rename"|"dialog_address"|"bookmark_bar"|"dialog_sessions"|"dialog_feeds"|"hover"|"split"|"settings"|"history"|"downloads")
+}
+/// Explicit opt-in only. Holds no App, controller or host reference, so passive callbacks cannot
+/// introduce a controller/host reference cycle or borrow application state.
+#[derive(Clone)]
+pub struct FocusTrace {
+    log: Rc<PerfLog>,
+    view: &'static str,
+    tab: u64,
+    controller: u64,
+}
+impl FocusTrace {
+    pub fn new(log: Rc<PerfLog>,view: &'static str,tab: u64) -> Self {
+        let controller=if log.enabled() {
+            match log.focus_sequence.get().checked_add(1) {
+                Some(next)=>{log.focus_sequence.set(next);next},
+                None=>0,
+            }
+        }else{0};
+        let trace=Self{log,view,tab,controller};
+        trace.record("interaction_focus_controller_created",None);
+        trace
+    }
+    pub fn record(&self,event: &'static str,result: Option<i32>) {
+        let _=self.log.record_focus(event,self.view,self.tab,self.controller,result);
+    }
+    /// Rust Result<()> is observed once: success is normalized0; failure retains its HRESULT.
+    pub fn result(&self,event: &'static str,result: &windows::core::Result<()>) {
+        self.record(event,Some(result.as_ref().map(|_|0).unwrap_or_else(|error|error.code().0)));
+    }
+}
+
+/// Buffered numeric WebApps lifecycle observation. No App/host/controller references or queries.
+/// Rows use tab_id=app numeric ID, navigation_id=request ID, count=environment ID; never URLs.
+#[derive(Clone)]
+pub struct WebAppTrace { log: std::rc::Weak<PerfLog>, environment: u64, request: u64, app: u64 }
+impl WebAppTrace {
+    pub fn environment(log: Rc<PerfLog>) -> Option<Self> {
+        if !log.enabled() {return None;}
+        let environment=log.next_sidebar_identity();
+        Some(Self{log:Rc::downgrade(&log),environment,request:0,app:0})
+    }
+    pub fn request(&self,app: &str) -> Self {
+        let app=app.parse::<u32>().map(u64::from).unwrap_or(0);
+        let log=self.log.upgrade();
+        let request=log.as_ref().map_or(0,|log|log.next_sidebar_identity());
+        if app==0 && let Some(log)=&log {let _=log.record("webapp_observation_error");}
+        Self{log:self.log.clone(),environment:self.environment,request,app}
+    }
+    pub fn record(&self,event: &'static str) {self.write(event,None);}
+    fn write(&self,event: &'static str,result: Option<i32>) {
+        let Some(log)=self.log.upgrade()else{return;};
+        if self.environment==0 {let _=log.record("webapp_observation_error");return;}
+        let success=result.map(|hr|(hr>=0).to_string()).unwrap_or_default();
+        let _=log.record_fields(event,&format!("{},{},{success},,webapps,0,0,{}",self.app,self.request,self.environment));
+        if let Some(hr)=result {let _=log.record_fields("webapp_hresult",&format!("{},{},{success},,webapps,0,0,{}",self.app,self.request,hr as u32));}
+    }
+    pub fn result<T>(&self,event: &'static str,result: &windows::core::Result<T>) {
+        self.write(event,Some(result.as_ref().map(|_|0).unwrap_or_else(|error|error.code().0)));
+    }
+}
+
 pub struct PerfLog {
     active: Option<ActiveLog>,
+    focus_sequence: Cell<u64>,
+    sidebar_sequence: Cell<u64>,
 }
 struct ActiveLog {
     start: Instant,
@@ -581,23 +689,84 @@ impl PerfLog {
             Some(ActiveLog {
                 start: Instant::now(),
                 path: path.to_owned(),
-                output: RefCell::new(b"event,elapsed_ms,qpc_ticks\n".to_vec()),
+                output: RefCell::new(b"event,elapsed_ms,qpc_ticks,tab_id,navigation_id,success,fixture_token,view,pid,private_bytes,count\n".to_vec()),
                 failure: RefCell::new(None),
             })
         } else {
             None
         };
-        Ok(Self { active })
+        Ok(Self { active, focus_sequence: Cell::new(0), sidebar_sequence: Cell::new(0) })
     }
     pub fn enabled(&self) -> bool {
         self.active.is_some()
+    }
+    fn next_sidebar_identity(&self) -> u64 {
+        match self.sidebar_sequence.get().checked_add(1) {
+            Some(next)=>{self.sidebar_sequence.set(next);next},
+            None=>{let _=self.record("webapp_observation_error");0},
+        }
+    }
+    /// Sidebar diagnostics may expose retained callbacks. Flush only this observed workload,
+    /// without making ordinary/startup-only logging depend on a new checkpoint.
+    pub fn checkpoint_sidebar_if_observed(&self) -> io::Result<()> {
+        if self.sidebar_sequence.get()==0 {return Ok(());}
+        self.record_fields("webapp_observation_end",&format!("0,0,{},,webapps,0,0,{}",self.failure().is_none(),self.sidebar_sequence.get()))?;
+        self.diagnostic_checkpoint()
     }
     pub fn failure(&self) -> Option<String> {
         self.active
             .as_ref()
             .and_then(|active| active.failure.borrow().clone())
     }
+    /// One explicit interaction-observer handshake, outside any primary performance claim.
+    /// Normal logging remains buffered; this is never called in ordinary/primary arms.
+    pub fn diagnostic_checkpoint(&self) -> io::Result<()> {
+        let Some(active)=&self.active else{return Ok(());};
+        let result=File::create(&active.path).and_then(|mut file|file.write_all(&active.output.borrow()));
+        if let Err(error)=&result {let mut failure=active.failure.borrow_mut();if failure.is_none(){*failure=Some(format!("Diagnostic checkpoint failed: {error}"));}}
+        result
+    }
     pub fn record(&self, event: &str) -> io::Result<()> {
+        self.record_fields(event, "")
+    }
+    pub fn record_navigation(&self, event: &str, tab: u64, navigation: u64, success: Option<bool>, token: &str) -> io::Result<()> {
+        if token.len() > 80 || !token.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "Invalid fixture token"));
+        }
+        self.record_fields(event, &format!("{tab},{navigation},{},{token}", success.map(|value| value.to_string()).unwrap_or_default()))
+    }
+    pub fn record_detail_count(&self, event: &str, tab: u64, count: u64) -> io::Result<()> {
+        self.record_fields(event, &format!("{tab},,,,content,0,0,{count}"))
+    }
+    /// Fixed native labels and numeric attribution only: never document URLs or page text.
+    pub fn record_detail(&self, event: &str, view: &str, pid: u32, private_bytes: u64, count: u64) -> io::Result<()> {
+        if view.is_empty() || !view.bytes().all(|b| b.is_ascii_lowercase() || b == b'_') {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "Invalid diagnostic view"));
+        }
+        self.record_fields(event, &format!(",,,,{view},{pid},{private_bytes},{count}"))
+    }
+    /// Focus-only rows use navigation_id as a controller identity, NEVER a navigation identity.
+    /// count is a native HWND (or HRESULT for the dedicated result row); private_bytes stays zero.
+    fn record_focus(&self, event: &str, view: &str, tab: u64, controller: u64, result: Option<i32>) -> io::Result<()> {
+        if !self.enabled() { return Ok(()); }
+        if !valid_focus_view(view) || controller == 0 {
+            return self.record("interaction_focus_coverage_error");
+        }
+        use windows::Win32::UI::{Input::KeyboardAndMouse::GetFocus, WindowsAndMessaging::{GetForegroundWindow, GetWindowThreadProcessId}};
+        let success=result.map(|hr|(hr>=0).to_string()).unwrap_or_default();
+        let write_window=|event: &str,window: windows::Win32::Foundation::HWND| {
+            let mut pid=0;
+            if !window.is_invalid() {unsafe {GetWindowThreadProcessId(window,Some(&mut pid));}}
+            self.record_fields(event,&format!("{tab},{controller},{success},,{view},{pid},0,{}",window.0 as usize as u64))
+        };
+        write_window(event,unsafe {GetFocus()})?;
+        write_window("interaction_focus_foreground",unsafe {GetForegroundWindow()})?;
+        if let Some(hr)=result {
+            self.record_fields("interaction_focus_hresult",&format!("{tab},{controller},{success},,{view},0,0,{}",hr as u32))?;
+        }
+        Ok(())
+    }
+    fn record_fields(&self, event: &str, fields: &str) -> io::Result<()> {
         let Some(active) = &self.active else {
             return Ok(());
         };
@@ -615,7 +784,7 @@ impl PerfLog {
             let mut output = active.output.borrow_mut();
             writeln!(
                 output,
-                "{event},{:.6},{tick}",
+                "{event},{:.6},{tick},{fields}",
                 active.start.elapsed().as_secs_f64() * 1000.0
             )?;
             Ok(())
@@ -654,6 +823,43 @@ mod tests {
     use super::*;
     fn args(values: &[&str]) -> Vec<String> {
         values.iter().map(|v| v.to_string()).collect()
+    }
+    #[test]
+    fn interaction_handshake_checkpoint_retains_buffered_events() {
+        let path=std::env::temp_dir().join(format!("bowser-interaction-checkpoint-{}.csv",std::process::id()));
+        let log=PerfLog::new(Some(&path)).unwrap();
+        log.record("interaction_dom_armed").unwrap();
+        log.diagnostic_checkpoint().unwrap();
+        assert!(std::fs::read_to_string(&path).unwrap().contains("interaction_dom_armed,"));
+        log.record("interaction_bridge_submit").unwrap();
+        drop(log);
+        let text=std::fs::read_to_string(&path).unwrap();
+        assert_eq!(text.matches("interaction_dom_armed,").count(),1);
+        assert!(text.contains("interaction_bridge_submit,"));
+        let _=std::fs::remove_file(path);
+    }
+    #[test]
+    fn diagnostics_preserve_production_launch_semantics() {
+        let temp = std::env::temp_dir().join("bowser-diagnostic-test");
+        let options = LaunchOptions::parse_from(vec!["--diagnostic-log".into(), temp.join("events.csv").to_string_lossy().into_owned(), "--data-dir".into(), temp.to_string_lossy().into_owned(), "--open-url".into(), "http://127.0.0.1:1234/light".into()], Path::new("missing")).unwrap();
+        assert!(!options.diagnostic_detail);
+        assert!(!options.diagnostic_interaction);
+        assert!(LaunchOptions::parse_from(args(&["--diagnostic-interaction"]), Path::new("missing")).is_err());
+        let mut interaction_args=vec!["--diagnostic-log".into(),temp.join("interaction.csv").to_string_lossy().into_owned(),"--data-dir".into(),temp.to_string_lossy().into_owned(),"--diagnostic-interaction".into()];
+        assert!(LaunchOptions::parse_from(interaction_args.clone(),Path::new("missing")).unwrap().diagnostic_interaction);
+        interaction_args.push("--diagnostic-interaction".into());
+        assert!(LaunchOptions::parse_from(interaction_args,Path::new("missing")).is_err());
+        assert!(LaunchOptions::parse_from(args(&["--diagnostic-detail"]), Path::new("missing")).is_err());
+        let mut detail_args = vec!["--diagnostic-log".into(), temp.join("detail.csv").to_string_lossy().into_owned(), "--data-dir".into(), temp.to_string_lossy().into_owned(), "--diagnostic-detail".into()];
+        assert!(LaunchOptions::parse_from(detail_args.clone(), Path::new("missing")).unwrap().diagnostic_detail);
+        detail_args.push("--diagnostic-detail".into());
+        assert!(LaunchOptions::parse_from(detail_args, Path::new("missing")).is_err());
+        assert!(options.benchmark_log.is_none());
+        assert!(options.benchmark_url.is_none());
+        assert!(options.user_data_dir.is_none());
+        assert!(!options.data_dir_ephemeral);
+        assert!(options.open_url.is_some());
+        assert!(LaunchOptions::parse_from(args(&["--diagnostic-log", "events.csv"]), Path::new("missing")).is_err());
     }
     #[test]
     fn profile_flag_accepts_only_valid_names_and_not_with_benchmarks() {
@@ -1209,12 +1415,103 @@ mod tests {
         std::fs::remove_file(path).unwrap();
         let rows: Vec<_> = text.lines().collect();
         assert_eq!(rows.len(), 3);
-        assert_eq!(rows[0], "event,elapsed_ms,qpc_ticks");
+        assert_eq!(rows[0], "event,elapsed_ms,qpc_ticks,tab_id,navigation_id,success,fixture_token,view,pid,private_bytes,count");
         let a: Vec<_> = rows[1].split(',').collect();
         let b: Vec<_> = rows[2].split(',').collect();
         assert_eq!(a[0], "window_visible");
         assert_eq!(b[0], "input_ready");
         assert!(b[1].parse::<f64>().unwrap() >= a[1].parse::<f64>().unwrap());
+    }
+
+    #[test]
+    fn detail_rows_have_fixed_labels_and_numeric_columns() {
+        let path = std::env::temp_dir().join(format!("bowser-detail-{}.csv", std::process::id()));
+        let log = PerfLog::new(Some(&path)).unwrap();
+        assert!(log.record_detail("chrome_host_ready", "https://private.test/", 1, 2, 3).is_err());
+        log.record_detail("chrome_renderer_private", "toolbar", 123, 456, 7).unwrap();
+        log.record_detail_count("configure_filter_registration_finished", 9, 42).unwrap();
+        drop(log);
+        let text = std::fs::read_to_string(&path).unwrap();
+        std::fs::remove_file(path).unwrap();
+        let rows: Vec<_> = text.lines().collect();
+        let chrome: Vec<_> = rows[1].split(',').collect();
+        assert_eq!(&chrome[7..], &["toolbar", "123", "456", "7"]);
+        let content: Vec<_> = rows[2].split(',').collect();
+        assert_eq!(content[3], "9");
+        assert_eq!(&content[7..], &["content", "0", "0", "42"]);
+    }
+
+    #[test]
+    fn focus_rows_have_unique_controller_ids_fixed_views_and_numeric_state() {
+        let path=std::env::temp_dir().join(format!("bowser-focus-{}.csv",std::process::id()));
+        let log=Rc::new(PerfLog::new(Some(&path)).unwrap());
+        let content=FocusTrace::new(log.clone(),"content",7);
+        let toolbar=FocusTrace::new(log.clone(),"toolbar",0);
+        assert_eq!(content.controller,1);assert_eq!(toolbar.controller,2);
+        content.record("interaction_content_move_request",None);
+        content.record("interaction_content_move_result",Some(-1));
+        let bad=FocusTrace::new(log.clone(),"https://private.test/",0);
+        assert_eq!(bad.controller,3);
+        log.focus_sequence.set(u64::MAX);
+        assert_eq!(FocusTrace::new(log.clone(),"toolbar",0).controller,0);
+        assert_eq!(FocusTrace::new(log.clone(),"toolbar",0).controller,0);
+        drop((content,toolbar,bad));drop(log);
+        let text=std::fs::read_to_string(&path).unwrap();std::fs::remove_file(path).unwrap();
+        assert!(!text.contains("private.test"));
+        let rows:Vec<Vec<&str>>=text.lines().skip(1).map(|line|line.split(',').collect()).collect();
+        let request=rows.iter().find(|row|row[0]=="interaction_content_move_request").unwrap();
+        assert_eq!((request[3],request[4],request[7],request[9]),("7","1","content","0"));
+        let result=rows.iter().find(|row|row[0]=="interaction_content_move_result").unwrap();
+        assert_eq!(result[5],"false");
+        assert!(rows.iter().any(|row|row[0]=="interaction_focus_hresult"&&row[10].parse::<u32>().unwrap()==u32::MAX));
+        assert_eq!(rows.iter().filter(|row|row[0]=="interaction_focus_coverage_error").count(),3);
+        let disabled=Rc::new(PerfLog::new(None).unwrap());
+        assert_eq!(FocusTrace::new(disabled.clone(),"toolbar",0).controller,0);
+        assert_eq!(disabled.focus_sequence.get(),0);
+    }
+
+    #[test]
+    fn webapp_lifecycle_ids_and_results_are_numeric_buffered_and_opt_in() {
+        let disabled=Rc::new(PerfLog::new(None).unwrap());
+        assert!(WebAppTrace::environment(disabled.clone()).is_none());
+        assert_eq!(disabled.sidebar_sequence.get(),0);
+        let path=std::env::temp_dir().join(format!("bowser-webapp-trace-{}.csv",std::process::id()));
+        let log=Rc::new(PerfLog::new(Some(&path)).unwrap());
+        let env=WebAppTrace::environment(log.clone()).unwrap();
+        let a=env.request("1");let b=env.request("2");
+        assert_eq!(Rc::strong_count(&log),1,"Observers cannot extend logger/App teardown lifetime");
+        assert_ne!(a.request,b.request);assert_eq!(a.environment,b.environment);
+        a.record("webapp_controller_requested");
+        b.result("webapp_controller_close_result",&Err::<(),_>(windows::core::Error::from(windows::core::HRESULT(-1))));
+        let invalid=env.request("https://private.test/");
+        invalid.record("webapp_controller_requested");
+        log.sidebar_sequence.set(u64::MAX);
+        assert_eq!(env.request("1").request,0);
+        assert!(!std::fs::read_to_string(&path).unwrap().contains("webapp_controller_requested"));
+        drop((env,a,b,invalid));drop(log);
+        let text=std::fs::read_to_string(&path).unwrap();std::fs::remove_file(path).unwrap();
+        assert!(!text.contains("private.test"));
+        let rows:Vec<Vec<&str>>=text.lines().skip(1).map(|line|line.split(',').collect()).collect();
+        let request=rows.iter().find(|row|row[0]=="webapp_controller_requested").unwrap();
+        assert_eq!((request[3],request[7],request[9],request[10]),("1","webapps","0","1"));
+        assert!(rows.iter().any(|row|row[0]=="webapp_controller_close_result"&&row[5]=="false"));
+        assert!(rows.iter().any(|row|row[0]=="webapp_hresult"&&row[10]=="4294967295"));
+        assert!(rows.iter().any(|row|row[0]=="webapp_observation_error"));
+    }
+
+    #[test]
+    fn sidebar_end_marker_flushes_without_last_logger_drop() {
+        let path=std::env::temp_dir().join(format!("bowser-sidebar-end-{}.csv",std::process::id()));
+        let log=Rc::new(PerfLog::new(Some(&path)).unwrap());
+        let env=WebAppTrace::environment(log.clone()).unwrap();
+        let request=env.request("1");request.record("webapp_controller_requested");
+        log.checkpoint_sidebar_if_observed().unwrap();
+        let text=std::fs::read_to_string(&path).unwrap();
+        let end:Vec<_>=text.lines().last().unwrap().split(',').collect();
+        assert_eq!((end[0],end[5],end[10]),("webapp_observation_end","true","2"));
+        assert_eq!(text.lines().filter(|line|line.starts_with("webapp_observation_end,")).count(),1);
+        drop((env,request));drop(log);std::fs::remove_file(path).unwrap();
+        let disabled=PerfLog::new(None).unwrap();disabled.checkpoint_sidebar_if_observed().unwrap();
     }
 
     #[test]

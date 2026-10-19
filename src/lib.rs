@@ -81,3 +81,5 @@ mod extension_update_model;
 
 #[cfg(test)]
 mod extension_window_probe;
+
+mod web_app_lifecycle;
