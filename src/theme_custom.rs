@@ -430,6 +430,7 @@ pub fn reset(settings: &mut Settings) {
 pub fn user_theme(settings: &Settings, system_accent: Option<Rgba>, page_accent: Option<Rgba>) -> crate::theme::UserTheme {
     let options = &settings.themes;
     let page = if options.accent_from_page { page_accent } else { None };
+    let accent_from_page = page.is_some();
     let accent = page
         .or_else(|| crate::theme::resolved_accent(settings.theme, settings.theme_accent.as_deref(), system_accent))
         .map(|accent| crate::theme::limit_saturation(accent, options.saturation));
@@ -440,6 +441,7 @@ pub fn user_theme(settings: &Settings, system_accent: Option<Rgba>, page_accent:
         highlight: options.highlight,
         colouring: options.colouring,
         contrast: options.contrast,
+        accent_from_page,
     }
 }
 
@@ -877,5 +879,65 @@ mod tests {
         settings.themes.saturation = 0;
         let grey = user_theme(&settings, system, page).accent.unwrap();
         assert!(grey.r == grey.g && grey.g == grey.b, "saturation 0 is grey: {grey:?}");
+    }
+    /// Regression (v0.0.19 "the colours have been desaturated"): the settings Bowser had before the
+    /// theme options (nothing, `theme=system`, `theme_accent`) draw exactly v0.0.18's palettes. A picked
+    /// accent alone was pushed towards white or black to reach 3:1 over every glass backdrop, so
+    /// #bf2b2b showed as #e5aaaa on dark glass.
+    #[test]
+    fn the_settings_v0_0_18_had_draw_v0_0_18s_palettes() {
+        use crate::theme::{palette_base, themed, with_accent, Appearance};
+        const VARIANTS: [(Appearance, bool); 4] = [(Appearance::Light, false), (Appearance::Dark, false), (Appearance::Light, true), (Appearance::Dark, true)];
+        // v0.0.18's own colours (src/theme.rs at tag v0.0.18): window, focus ring, progress bar.
+        let v0_0_18 = |appearance: Appearance, solid: bool| match (appearance, solid) {
+            (Appearance::Light, false) => (Rgba::hex(0xF4F6F8, 0xCC), Rgba::hex(0x4A6D73, 0xFF), Rgba::hex(0x0067C0, 0xFF)),
+            (Appearance::Dark, false) => (Rgba::hex(0x20242C, 0xCC), Rgba::hex(0xB3C9CE, 0xFF), Rgba::hex(0x84C8FF, 0xFF)),
+            (Appearance::Light, true) => (Rgba::hex(0xF4F6F8, 0xFF), Rgba::hex(0x008A94, 0xFF), Rgba::hex(0x0067C0, 0xFF)),
+            (Appearance::Dark, true) => (Rgba::hex(0x20242C, 0xFF), Rgba::hex(0x5FD8DB, 0xFF), Rgba::hex(0x6CB4FF, 0xFF)),
+        };
+        let windows_accent = Some(Rgba::hex(0x0078D7, 0xFF));
+
+        // An empty settings file: nothing chosen, Bowser's own palettes, untouched.
+        let settings = Settings::default();
+        let plain = user_theme(&settings, windows_accent, Some(Rgba::hex(0x00FF00, 0xFF)));
+        assert!(plain.is_plain(), "{plain:?}");
+        for (appearance, solid) in VARIANTS {
+            let (p, look) = themed(appearance, solid, &plain);
+            assert_eq!(&p, palette_base(appearance, solid), "{appearance}/{solid}");
+            assert_eq!(look, appearance);
+            assert_eq!((p.window, p.omnibox_focus_border, p.progress_fill), v0_0_18(appearance, solid), "{appearance}/{solid}");
+        }
+
+        // `theme=system` and `theme_accent`: the accent is used exactly as chosen, nothing else moves.
+        let red = Rgba::hex(0xBF2B2B, 0xFF);
+        let mut system = Settings::default();
+        system.theme = Theme::System;
+        let mut picked = Settings::default();
+        picked.theme_accent = Some("#bf2b2b".to_owned());
+        for settings in [&system, &picked] {
+            let user = user_theme(settings, Some(red), None);
+            assert!(user.is_chosen_accent_only(), "{user:?}");
+            for (appearance, solid) in VARIANTS {
+                let (p, look) = themed(appearance, solid, &user);
+                assert_eq!(p, with_accent(palette_base(appearance, solid), Some(red)), "{appearance}/{solid}");
+                assert_eq!((p.omnibox_focus_border, p.progress_fill), (red, red), "{appearance}/{solid}: not washed out");
+                assert_eq!(look, appearance);
+            }
+        }
+
+        // The options still act: the saturation limit greys the picked accent on purpose...
+        picked.themes.saturation = 40;
+        let limited = user_theme(&picked, None, None);
+        let limited_red = crate::theme::limit_saturation(red, 40);
+        assert_eq!(limited.accent, Some(limited_red));
+        assert_eq!(themed(Appearance::Dark, false, &limited).0.progress_fill, limited_red);
+        // ...and a page's colour (it can be anything) is still kept visible over every backdrop.
+        picked.themes.saturation = 100;
+        picked.themes.accent_from_page = true;
+        let page = user_theme(&picked, None, Some(Rgba::hex(0x101010, 0xFF)));
+        assert!(page.accent_from_page && !page.is_chosen_accent_only());
+        let p = themed(Appearance::Dark, false, &page).0;
+        assert_ne!(p.progress_fill, Rgba::hex(0x101010, 0xFF), "a near-black page colour on dark glass is lifted");
+        assert!(crate::theme::worst_contrast(p.progress_fill, &[vec![p.window], vec![p.window, p.omnibox_fill]]) >= 3.0);
     }
 }
