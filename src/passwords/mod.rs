@@ -1686,11 +1686,23 @@ mod tests {
         let password = generate_password(256, b"abcd").unwrap();
         assert_eq!(password.len(), 256);
         assert!(password.bytes().all(|byte| b"abcd".contains(&byte)));
+        // Bias is judged over 64 maximum-length passwords (16384 draws), so each letter's count is
+        // Binomial(16384, 1/4): mean 4096, sd ~55.4. A +/-6 sd window (3764..=4428) flags any bias
+        // above ~8% yet fails a fair generator about once in 10^8 runs; the former single-password
+        // window (40..=90 of 256) tolerated ~37% bias and still failed a fair generator ~1 in 700.
         let mut counts = [0usize; 4];
-        for byte in password.bytes() {
-            counts[(byte - b'a') as usize] += 1;
+        for _ in 0..64 {
+            let sample = generate_password(256, b"abcd").unwrap();
+            assert!(sample.bytes().all(|byte| b"abcd".contains(&byte)));
+            for byte in sample.bytes() {
+                counts[(byte - b'a') as usize] += 1;
+            }
         }
-        assert!(counts.into_iter().all(|count| (40..=90).contains(&count)));
+        assert_eq!(counts.iter().sum::<usize>(), 64 * 256);
+        assert!(
+            counts.into_iter().all(|count| (3764..=4428).contains(&count)),
+            "generator counts {counts:?} are outside the fair 6-sigma window"
+        );
         assert_eq!(
             generate_password(7, b"abcdef").unwrap_err(),
             PasswordError::InvalidGenerator
