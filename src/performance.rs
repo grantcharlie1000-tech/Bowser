@@ -104,6 +104,7 @@ impl LaunchOptions {
         let mut options = Self::default();
         let mut raw_url = None;
         let mut explicit_data_dir: Option<PathBuf> = None;
+        let mut link_launch = false;
         let mut iter = args.into_iter();
         while let Some(flag) = iter.next() {
             if flag == "--diagnostic-interaction" {
@@ -144,29 +145,14 @@ impl LaunchOptions {
                 options.agent = true;
                 continue;
             }
-            if !matches!(
-                flag.as_str(),
-                "--benchmark-log"
-                    | "--diagnostic-log"
-                    | "--benchmark-user-data-dir"
-                    | "--benchmark-url"
-                    | "--data-dir"
-                    | "--benchmark-tracking-prevention"
-                    | "--benchmark-memory-pressure"
-                    | "--profile"
-                    | "--open-url"
-                    | "--agent-bind"
-                    | "--agent-port"
-                    | "--agent-call"
-                    | "--session"
-                    | "--url"
-                    | "--ref"
-                    | "--selector"
-                    | "--text"
-                    | "--key"
-                    | "--expression"
-                    | "--format"
-            ) {
+            // A bare argument is the address Windows hands over for a link or file once Bowser is
+            // the default browser (`"<exe>" "%1"`, see `default_browser::open_command`).
+            if !flag.starts_with('-') {
+                push_initial_url(&mut options, launch_target(&flag)?)?;
+                link_launch = true;
+                continue;
+            }
+            if !takes_value(&flag) {
                 return Err(format!("Unknown argument: {flag}"));
             }
             let value = iter
@@ -238,20 +224,7 @@ impl LaunchOptions {
                 "--open-url" => {
                     let url =
                         Url::parse(&value).map_err(|error| format!("Invalid URL: {error}"))?;
-                    if !matches!(url.scheme(), "http" | "https" | "file")
-                        || !url.username().is_empty()
-                        || url.password().is_some()
-                    {
-                        return Err("The initial address must be an HTTP(S) or file URL without credentials".into());
-                    }
-                    // --- tab stacks (T10) --- a new window may be given several addresses.
-                    if options.open_url.is_none() {
-                        options.open_url = Some(url);
-                    } else if options.more_urls.len() + 1 < MAX_OPEN_URLS {
-                        options.more_urls.push(url);
-                    } else {
-                        return Err("Too many initial URL arguments".into());
-                    }
+                    push_initial_url(&mut options, url)?;
                 }
                 "--agent-bind" => {
                     if options.agent_bind_host.replace(value).is_some() {
@@ -315,6 +288,10 @@ impl LaunchOptions {
                     }
                 }
             }
+        }
+        if link_launch {
+            // Like Ctrl+N: the profile may already be open, and the link opens in a window beside it.
+            options.new_window = true;
         }
         if options.diagnostic_interaction && options.diagnostic_log.is_none() {
             return Err("Diagnostic interaction requires --diagnostic-log".into());
@@ -450,6 +427,70 @@ impl LaunchOptions {
         })?;
         Ok(options)
     }
+}
+
+/// Adds an initial address (`--open-url`, or a bare argument). --- tab stacks (T10) --- a new
+/// window may be given several.
+fn push_initial_url(options: &mut LaunchOptions, url: Url) -> Result<(), String> {
+    if !matches!(url.scheme(), "http" | "https" | "file")
+        || !url.username().is_empty()
+        || url.password().is_some()
+    {
+        return Err("The initial address must be an HTTP(S) or file URL without credentials".into());
+    }
+    if options.open_url.is_none() {
+        options.open_url = Some(url);
+    } else if options.more_urls.len() + 1 < MAX_OPEN_URLS {
+        options.more_urls.push(url);
+    } else {
+        return Err("Too many initial URL arguments".into());
+    }
+    Ok(())
+}
+
+/// The address a bare launch argument names: a URL, an absolute file path (`C:\x\page.html`,
+/// `\\server\share\page.html`), or a relative path to a file that exists.
+fn launch_target(text: &str) -> Result<Url, String> {
+    let path = Path::new(text);
+    if path.is_absolute() {
+        return Url::from_file_path(path).map_err(|_| format!("Cannot open {text}"));
+    }
+    if let Ok(url) = Url::parse(text) {
+        return Ok(url);
+    }
+    match std::path::absolute(path) {
+        Ok(full) if full.is_file() => {
+            Url::from_file_path(&full).map_err(|_| format!("Cannot open {text}"))
+        }
+        _ => Err(format!("Unknown argument: {text}")),
+    }
+}
+
+/// The launch flags followed by a value (`--profile <name>`); every other flag stands alone.
+pub fn takes_value(flag: &str) -> bool {
+    matches!(
+        flag,
+        "--benchmark-log"
+            | "--diagnostic-log"
+            | "--benchmark-user-data-dir"
+            | "--benchmark-url"
+            | "--data-dir"
+            | "--benchmark-tracking-prevention"
+            | "--benchmark-memory-pressure"
+            | "--profile"
+            | "--open-url"
+            | "--agent-bind"
+            | "--agent-port"
+            | "--agent-call"
+            | "--session"
+            | "--url"
+            | "--ref"
+            | "--selector"
+            | "--text"
+            | "--key"
+            | "--expression"
+            | "--format"
+    )
 }
 
 fn profile_contains(real: &Path, dir: &Path) -> Result<bool, String> {
@@ -1653,5 +1694,86 @@ mod tests {
             local,
         );
         assert!(refused.is_err(), "{refused:?}");
+    }
+
+    /// Splits a command line exactly as Windows does for a new process.
+    fn windows_argv(command_line: &str) -> Vec<String> {
+        use windows::{Win32::UI::Shell::CommandLineToArgvW, core::HSTRING};
+        let wide = HSTRING::from(command_line);
+        let mut count = 0;
+        let argv = unsafe { CommandLineToArgvW(&wide, &mut count) };
+        assert!(!argv.is_null());
+        (0..count as usize)
+            .map(|i| unsafe { (*argv.add(i)).to_string() }.unwrap())
+            .collect()
+    }
+
+    /// P-01: the default-browser registration runs `"<exe>" "%1"`, one bare argument per link or
+    /// file. Every such launch must open the address, not fail with "Unknown argument".
+    #[test]
+    fn the_registered_default_browser_command_opens_its_argument() {
+        let exe = r"C:\Users\me\AppData\Local\Programs\Bowser\Bowser.exe";
+        let page = std::env::temp_dir().join(format!("bowser-launch-target-{}.html", std::process::id()));
+        std::fs::write(&page, "<p>x</p>").unwrap();
+        let page_url = Url::from_file_path(&page).unwrap();
+        for (target, expected) in [
+            ("https://example.com/path?q=one%20two&x=1#top", "https://example.com/path?q=one%20two&x=1#top".to_owned()),
+            ("http://127.0.0.1:8080/", "http://127.0.0.1:8080/".to_owned()),
+            ("file:///C:/Users/me/page.html", "file:///C:/Users/me/page.html".to_owned()),
+            (r"C:\Users\me\My Pages\page one.html", "file:///C:/Users/me/My%20Pages/page%20one.html".to_owned()),
+            (page.to_str().unwrap(), page_url.to_string()),
+        ] {
+            let command = crate::default_browser::open_command(exe).replace("%1", target);
+            let argv = windows_argv(&command);
+            assert_eq!(argv[0], exe, "{command}");
+            let options = LaunchOptions::parse_from(argv.into_iter().skip(1), Path::new("missing"))
+                .unwrap_or_else(|error| panic!("{target}: {error}"));
+            assert_eq!(options.open_url.as_ref().map(Url::as_str), Some(expected.as_str()), "{target}");
+            assert!(options.more_urls.is_empty());
+            // Bowser may already be open for the profile; a link must open beside it.
+            assert!(options.new_window, "{target}");
+        }
+        let _ = std::fs::remove_file(page);
+    }
+
+    #[test]
+    fn a_bare_argument_keeps_the_flags_and_the_initial_address_rules() {
+        let options = LaunchOptions::parse_from(
+            args(&["--profile", "Work", "https://a.example/", "https://b.example/"]),
+            Path::new("missing"),
+        )
+        .unwrap();
+        assert_eq!(options.profile.as_deref(), Some("Work"));
+        assert_eq!(options.open_url.unwrap().as_str(), "https://a.example/");
+        assert_eq!(options.more_urls.iter().map(Url::as_str).collect::<Vec<_>>(), ["https://b.example/"]);
+        // The value of a flag is never taken as an address.
+        let options = LaunchOptions::parse_from(args(&["--profile", "Work"]), Path::new("missing")).unwrap();
+        assert!(options.open_url.is_none() && !options.new_window);
+        for refused in [
+            "javascript:alert(1)",
+            "ms-settings:defaultapps",
+            "https://user:secret@example.com/",
+            "not-a-file-that-exists.html",
+            "--no-such-flag",
+        ] {
+            assert!(
+                LaunchOptions::parse_from(args(&[refused]), Path::new("missing")).is_err(),
+                "{refused}"
+            );
+        }
+        assert!(
+            LaunchOptions::parse_from(args(&["--agent", "https://a.example/"]), Path::new("missing")).is_err(),
+            "agent mode never opens a window"
+        );
+    }
+
+    #[test]
+    fn value_flags_are_the_ones_the_parser_reads_a_value_for() {
+        for flag in ["--profile", "--open-url", "--data-dir", "--benchmark-log", "--format"] {
+            assert!(takes_value(flag), "{flag}");
+        }
+        for flag in ["--new-window", "--dev", "--guest", "--agent", "https://a.example/"] {
+            assert!(!takes_value(flag), "{flag}");
+        }
     }
 }

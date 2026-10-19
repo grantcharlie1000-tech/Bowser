@@ -142,6 +142,19 @@ function Test-BowserPeImage {
     }
 }
 
+# True when $Candidate names the file $Expected. Never throws: Windows PowerShell's GetFullPath
+# rejects an empty string and targets such as 'https://...' or 'shell:AppsFolder\...'.
+function Test-SameFilePath {
+    param([string]$Candidate, [string]$Expected)
+    if ([string]::IsNullOrWhiteSpace($Candidate) -or [string]::IsNullOrWhiteSpace($Expected)) { return $false }
+    try {
+        return [string]::Equals([IO.Path]::GetFullPath($Candidate), [IO.Path]::GetFullPath($Expected), [StringComparison]::OrdinalIgnoreCase)
+    }
+    catch {
+        return $false
+    }
+}
+
 function Get-InstalledBowserProcesses {
     $expected = [IO.Path]::GetFullPath($installedExe)
     @(Get-CimInstance Win32_Process -Filter "Name='Bowser.exe'" -ErrorAction Stop |
@@ -367,7 +380,7 @@ try {
     }
     if (-not $isIsolatedRun -and (Test-Path -LiteralPath $legacyDebugShortcut -PathType Leaf)) {
         $legacyTarget = (New-Object -ComObject WScript.Shell).CreateShortcut($legacyDebugShortcut).TargetPath
-        if ([string]::Equals([IO.Path]::GetFullPath($legacyTarget), (Join-Path $repoRoot 'Launch-Bowser-Debug.cmd'), [StringComparison]::OrdinalIgnoreCase)) {
+        if (Test-SameFilePath -Candidate $legacyTarget -Expected (Join-Path $repoRoot 'Launch-Bowser-Debug.cmd')) {
             Back-Up-ShortcutForRemoval -Path $legacyDebugShortcut
         }
     }

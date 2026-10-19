@@ -1140,6 +1140,7 @@ pub fn apply_pending(layout: &Layout, current: Version) -> ApplyResult {
             version,
             attempts: 0,
             running: false,
+            owner: 0,
         },
     );
     discard_staged(layout, Some(version));
@@ -1175,8 +1176,11 @@ pub struct Trial {
     /// Crashed launches so far.
     pub attempts: u32,
     /// A launch of this version has started and has not yet exited cleanly or been marked healthy.
-    /// Seen at the next start, it means that launch crashed.
+    /// Seen at the next start, it means that launch crashed, unless `owner` is still running.
     pub running: bool,
+    /// Process id of the launch that set `running` (0: unknown, from an older build). A start
+    /// while that process is alive is a second window or a link launch, not a sign of a crash.
+    pub owner: u32,
 }
 
 fn read_trial(layout: &Layout) -> Option<Trial> {
@@ -1187,6 +1191,7 @@ fn read_trial(layout: &Layout) -> Option<Trial> {
             .and_then(|a| a.parse().ok())
             .unwrap_or(MAX_TRIAL_ATTEMPTS),
         running: kv(&pairs, "running") == Some("1"),
+        owner: kv(&pairs, "owner").and_then(|o| o.parse().ok()).unwrap_or(0),
     })
 }
 
@@ -1194,10 +1199,11 @@ fn write_trial(layout: &Layout, trial: Trial) -> Result<(), UpdateError> {
     write_atomic(
         &layout.trial(),
         &format!(
-            "version={}\nattempts={}\nrunning={}\n",
+            "version={}\nattempts={}\nrunning={}\nowner={}\n",
             trial.version,
             trial.attempts,
-            u8::from(trial.running)
+            u8::from(trial.running),
+            trial.owner
         ),
     )
 }
@@ -1212,6 +1218,9 @@ pub enum TrialAction {
     Rollback,
     /// The trial record is stale (a different build is running); clear it.
     Clear,
+    /// The launch that holds the trial is still running (a second window, a link opened from
+    /// another app): this start says nothing about a crash and leaves the record alone.
+    Concurrent,
 }
 
 /// Pure rollback decision for each start. Only crashed launches count: a launch whose process
@@ -1304,9 +1313,30 @@ pub fn startup(benchmark: bool, dev: bool) -> StartupAction {
 /// Records the start of a launch of `running` in the trial record and returns the decision.
 /// Callers must hold the [`SwapLock`].
 fn begin_launch(layout: &Layout, running: Version) -> TrialAction {
-    let action = decide_trial(read_trial(layout), running);
+    begin_launch_as(layout, running, std::process::id(), &same_build_alive)
+}
+
+/// [`begin_launch`] for process `pid`; `alive` says whether another process id is a live launch
+/// of this executable.
+fn begin_launch_as(
+    layout: &Layout,
+    running: Version,
+    pid: u32,
+    alive: &dyn Fn(u32) -> bool,
+) -> TrialAction {
+    let trial = read_trial(layout);
+    if let Some(t) = trial
+        && t.version == running
+        && t.running
+        && t.owner != 0
+        && t.owner != pid
+        && alive(t.owner)
+    {
+        return TrialAction::Concurrent;
+    }
+    let action = decide_trial(trial, running);
     match action {
-        TrialAction::None | TrialAction::Rollback => {}
+        TrialAction::None | TrialAction::Rollback | TrialAction::Concurrent => {}
         TrialAction::Clear => {
             let _ = fs::remove_file(layout.trial());
         }
@@ -1317,11 +1347,45 @@ fn begin_launch(layout: &Layout, running: Version) -> TrialAction {
                     version: running,
                     attempts,
                     running: true,
+                    owner: pid,
                 },
             );
         }
     }
     action
+}
+
+/// Whether `pid` is a running process of this same executable (so not a crashed launch).
+fn same_build_alive(pid: u32) -> bool {
+    use windows::Win32::System::Threading::{
+        GetExitCodeProcess, OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
+        QueryFullProcessImageNameW,
+    };
+    const STILL_ACTIVE: u32 = 259;
+    let Ok(exe) = std::env::current_exe() else {
+        return false;
+    };
+    unsafe {
+        let Ok(handle) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) else {
+            return false;
+        };
+        let mut code = 0u32;
+        let running = GetExitCodeProcess(handle, &mut code).is_ok() && code == STILL_ACTIVE;
+        let mut buffer = [0u16; 1024];
+        let mut len = buffer.len() as u32;
+        let named = QueryFullProcessImageNameW(
+            handle,
+            PROCESS_NAME_WIN32,
+            windows::core::PWSTR(buffer.as_mut_ptr()),
+            &mut len,
+        )
+        .is_ok();
+        let _ = CloseHandle(handle);
+        running
+            && named
+            && String::from_utf16_lossy(&buffer[..len as usize])
+                .eq_ignore_ascii_case(&exe.to_string_lossy())
+    }
 }
 
 /// Called on a normal shutdown. The launch is then not counted as a crash, so quick clean closes
@@ -1342,14 +1406,22 @@ pub fn note_clean_exit() {
 
 /// Clears the `running` flag of this build's trial record. Callers must hold the [`SwapLock`].
 fn mark_clean_exit(layout: &Layout, running: Version) {
+    mark_clean_exit_as(layout, running, std::process::id());
+}
+
+/// [`mark_clean_exit`] for process `pid`. A concurrent launch's clean exit leaves the record to
+/// the launch that owns it, so that one's crash is still counted.
+fn mark_clean_exit_as(layout: &Layout, running: Version, pid: u32) {
     if let Some(trial) = read_trial(layout)
         && trial.version == running
         && trial.running
+        && (trial.owner == 0 || trial.owner == pid)
     {
         let _ = write_trial(
             layout,
             Trial {
                 running: false,
+                owner: 0,
                 ..trial
             },
         );
@@ -1936,15 +2008,19 @@ pub fn restart_requested() -> bool {
 /// lock, which the closing process may still hold, instead of skipping the update.
 const RESTART_ENV: &str = "BOWSER_UPDATE_RESTART";
 
-/// The arguments a restart passes on: the launch's own, minus `--open-url <url>`, whose page is
-/// already among the tabs the restart restores.
+/// The arguments a restart passes on: the launch's own, minus `--open-url <url>` and a bare
+/// link-launch address, whose page is already among the tabs the restart restores.
 fn restart_args(args: impl IntoIterator<Item = std::ffi::OsString>) -> Vec<std::ffi::OsString> {
     let mut out = Vec::new();
     let mut args = args.into_iter();
     while let Some(arg) = args.next() {
+        let text = arg.to_string_lossy();
         if arg == "--open-url" {
             args.next();
-        } else {
+        } else if crate::performance::takes_value(&text) {
+            out.push(arg);
+            out.extend(args.next());
+        } else if text.starts_with('-') {
             out.push(arg);
         }
     }
@@ -1994,6 +2070,9 @@ mod tests {
             restart_args(args),
             ["--profile", "Work", "--new-window"].map(std::ffi::OsString::from)
         );
+        // A default-browser launch (`"<exe>" "%1"`) carries its address as a bare argument.
+        let args = ["--profile", "Work", "https://example.com/", "--dev"].map(std::ffi::OsString::from);
+        assert_eq!(restart_args(args), ["--profile", "Work", "--dev"].map(std::ffi::OsString::from));
     }
 
     #[test]
@@ -2414,6 +2493,7 @@ mod tests {
 
     fn trial(version: Version, attempts: u32, running: bool) -> Option<Trial> {
         Some(Trial {
+            owner: 0,
             version,
             attempts,
             running,
@@ -2478,6 +2558,7 @@ mod tests {
                 version: new,
                 attempts: 1,
                 running: true,
+                owner: 0,
             },
         )
         .unwrap();
@@ -2727,6 +2808,46 @@ mod tests {
         assert_eq!(fs::read(f.layout.bad_exe()).unwrap(), b"NEW BUILD");
         assert!(read_trial(&f.layout).is_none());
         assert_eq!(rejected_version(&f.layout), Some(new));
+        let _ = fs::remove_dir_all(f.dir);
+    }
+
+    /// P-04: second windows and link launches start while the first launch of a fresh update is
+    /// still inside its health window. They are not crashes and must never roll the update back.
+    #[test]
+    fn concurrent_launches_of_a_fresh_update_are_not_crashes() {
+        let f = fixture("concurrent");
+        let new = Version(0, 2, 0);
+        stage(&f, new, b"NEW BUILD");
+        assert_eq!(apply_pending(&f.layout, CURRENT), ApplyResult::Swapped(new));
+        let live = |pid: u32| pid == 100;
+        assert_eq!(begin_launch_as(&f.layout, new, 100, &live), TrialAction::Count(0));
+        for pid in 101..110 {
+            assert_eq!(begin_launch_as(&f.layout, new, pid, &live), TrialAction::Concurrent);
+            // Their clean exits do not hide a crash of the first launch.
+            mark_clean_exit_as(&f.layout, new, pid);
+        }
+        assert_eq!(
+            read_trial(&f.layout).map(|t| (t.attempts, t.running, t.owner)),
+            Some((0, true, 100))
+        );
+        assert_eq!(fs::read(&f.layout.exe).unwrap(), b"NEW BUILD");
+        assert!(rejected_version(&f.layout).is_none());
+        // The first launch then crashes: the next start still counts it.
+        let none = |_: u32| false;
+        assert_eq!(begin_launch_as(&f.layout, new, 200, &none), TrialAction::Count(1));
+        // And a clean exit by the owner clears its flag.
+        mark_clean_exit_as(&f.layout, new, 200);
+        assert_eq!(read_trial(&f.layout), trial(new, 1, false));
+        let _ = fs::remove_dir_all(f.dir);
+    }
+
+    #[test]
+    fn a_trial_record_from_an_older_build_still_counts_crashes() {
+        let f = fixture("legacytrial");
+        let new = Version(0, 2, 0);
+        fs::write(f.layout.trial(), "version=0.2.0\nattempts=2\nrunning=1\n").unwrap();
+        assert_eq!(begin_launch_as(&f.layout, new, 7, &|_| true), TrialAction::Rollback);
+        assert!(!same_build_alive(u32::MAX - 3), "no such process");
         let _ = fs::remove_dir_all(f.dir);
     }
 

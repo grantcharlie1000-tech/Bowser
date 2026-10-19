@@ -68,6 +68,51 @@ pub fn parse_metrics(answer: &str) -> Option<(f64, f64)> {
     None
 }
 
+/// The clips of a full-page capture, in device-independent pixels.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FullPagePlan {
+    pub width: u32,
+    /// `(top, height)` slices, top first.
+    pub slices: Vec<(u32, u32)>,
+    /// The page was larger than a capture covers and was cut.
+    pub cut: bool,
+}
+
+/// What a full-page capture shoots, from a `Page.getLayoutMetrics` answer and the tab's page zoom
+/// in percent.
+///
+/// The metrics are CSS pixels but the screenshot clip is in device-independent pixels, which page
+/// zoom scales: at 150 % a 1200 px wide page is 1800 clip units wide. The zoom the answer reports
+/// (`cssVisualViewport.zoom`) is used, else the tab's own.
+pub fn full_page_plan(answer: &str, zoom_percent: u16) -> Option<FullPagePlan> {
+    let (width, height) = parse_metrics(answer)?;
+    let zoom = reported_zoom(answer).unwrap_or_else(|| zoom_ratio(zoom_percent));
+    let (width, height, cut) = crate::page_tools::clamp_page(width * zoom, height * zoom)?;
+    Some(FullPagePlan { width, slices: crate::page_tools::plan_slices(height), cut })
+}
+
+/// A selection's box in CSS page pixels as a screenshot clip (device-independent pixels) at the tab's
+/// page zoom. `None` when it has no area.
+pub fn selection_clip(rect: (i64, i64, i64, i64), zoom_percent: u16) -> Option<Clip> {
+    let zoom = zoom_ratio(zoom_percent);
+    let (x, y, w, h) = rect;
+    let (x, y, width, height) = crate::page_tools::clamp_selection(x as f64 * zoom, y as f64 * zoom, w as f64 * zoom, h as f64 * zoom)?;
+    Some(Clip { x, y, width, height })
+}
+
+/// A zoom percent as a CSS-to-device-independent-pixel ratio, 100 % for a value out of range.
+fn zoom_ratio(zoom_percent: u16) -> f64 {
+    if (25..=500).contains(&zoom_percent) { f64::from(zoom_percent) / 100.0 } else { 1.0 }
+}
+
+/// The page zoom a `Page.getLayoutMetrics` answer reports (`cssVisualViewport.zoom`), when sane.
+fn reported_zoom(answer: &str) -> Option<f64> {
+    let members = whole_object(answer)?;
+    let inner = whole_object(field(&members, "cssVisualViewport")?)?;
+    let zoom = field(&inner, "zoom")?.trim().parse::<f64>().ok()?;
+    (zoom.is_finite() && (0.25..=5.0).contains(&zoom)).then_some(zoom)
+}
+
 /// The picture a `Page.captureScreenshot` answer carries: base64 of a PNG or a JPEG, nothing else.
 pub fn parse_shot(answer: &str) -> Option<Vec<u8>> {
     let members = whole_object(answer)?;
@@ -457,6 +502,32 @@ pub(crate) mod tests {
         assert_eq!(parse_metrics(r#"{"cssContentSize":{"width":"x","height":1}}"#), None);
         assert_eq!(parse_metrics("[]"), None);
         assert_eq!(parse_metrics(""), None);
+    }
+
+    /// `Page.getLayoutMetrics` from WebView2 at 150 % page zoom (live probe, 1200 x 2400 CSS px page).
+    const METRICS_AT_150: &str = r#"{"contentSize":{"height":3600,"width":1800,"x":0,"y":0},"cssContentSize":{"height":2400,"width":1200,"x":0,"y":0},"cssLayoutViewport":{"clientHeight":390,"clientWidth":523,"pageX":0,"pageY":0},"cssVisualViewport":{"clientHeight":390,"clientWidth":523.3333740234375,"offsetX":0,"offsetY":0,"pageX":0,"pageY":0,"scale":1,"zoom":1.5},"layoutViewport":{"clientHeight":585,"clientWidth":785,"pageX":0,"pageY":0},"visualViewport":{"clientHeight":585,"clientWidth":785,"offsetX":0,"offsetY":0,"pageX":0,"pageY":0,"scale":1,"zoom":1.5}}"#;
+
+    #[test]
+    fn full_page_clip_at_page_zoom_covers_the_whole_zoomed_page() {
+        // The clip is in device-independent pixels: CSS size x zoom, or the right and bottom are cut.
+        assert_eq!(full_page_plan(METRICS_AT_150, 150), Some(FullPagePlan { width: 1800, slices: vec![(0, 3600)], cut: false }));
+        // The answer's own zoom wins over a stale tab value.
+        assert_eq!(full_page_plan(METRICS_AT_150, 100), Some(FullPagePlan { width: 1800, slices: vec![(0, 3600)], cut: false }));
+        // Without a reported zoom, the tab's zoom is used.
+        let bare = r#"{"cssContentSize":{"width":1000,"height":7000}}"#;
+        assert_eq!(full_page_plan(bare, 125), Some(FullPagePlan { width: 1250, slices: vec![(0, 6000), (6000, 2750)], cut: false }));
+        assert_eq!(full_page_plan(bare, 100), Some(FullPagePlan { width: 1000, slices: vec![(0, 6000), (6000, 1000)], cut: false }));
+        // A nonsense zoom falls back to 100 %.
+        let odd = r#"{"cssContentSize":{"width":1000,"height":100},"cssVisualViewport":{"zoom":900}}"#;
+        assert_eq!(full_page_plan(odd, 0), Some(FullPagePlan { width: 1000, slices: vec![(0, 100)], cut: false }));
+    }
+
+    #[test]
+    fn selection_clip_at_page_zoom_lands_on_the_selection() {
+        // Live probe: a selection at CSS (600, 1208) 143 x 24 is at (900, 1812) 215 x 36 at 150 %.
+        assert_eq!(selection_clip((600, 1208, 143, 24), 150), Some(Clip { x: 900, y: 1812, width: 215, height: 36 }));
+        assert_eq!(selection_clip((600, 1208, 143, 23), 100), Some(Clip { x: 600, y: 1208, width: 143, height: 23 }));
+        assert_eq!(selection_clip((10, 10, 0, 5), 150), None);
     }
 
     #[test]

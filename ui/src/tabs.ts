@@ -366,6 +366,8 @@ export function startTabs(strip: HTMLElement): HTMLElement {
   // --- vertical sidebar (lane S) ---
   const sidebar = createSidebarRenderer(strip);
   let layoutMode: 'horizontal' | 'vertical' = 'horizontal';
+  // The strip runs along the bottom of the window (the page is above it).
+  let stripAtBottom = false;
   let workspace: SidebarWorkspace = { name: 'Workspace', icon: 'g:briefcase' };
   // --- end vertical sidebar ---
   strip.classList.remove('sidebar');
@@ -910,7 +912,7 @@ export function startTabs(strip: HTMLElement): HTMLElement {
     // --- split view ---
     // Off the strip and below it the tab is over the page: the strip keeps its order and Rust shows
     // where the tab would open (one report per frame); back on the strip the reorder resumes.
-    const out = phase === 'floating' && overPage(y, box.bottom);
+    const out = phase === 'floating' && overPage(y, box, stripAtBottom);
     if (out !== splitOut) {
       splitOut = out;
       strip.classList.toggle('split-out', out);
@@ -1295,7 +1297,14 @@ export function startTabs(strip: HTMLElement): HTMLElement {
     switch (msg.t) {
       // --- vertical sidebar (lane S) ---
       case 'layout':
+        // A selection made in the other layout cannot be seen here: drop it in both, and in Rust.
+        if (msg.mode !== layoutMode) {
+          setPicked([]);
+          sidebar.clearSelection();
+        }
         layoutMode = msg.mode;
+        stripAtBottom = msg.mode === 'horizontal' && msg.side === 'bottom';
+        sidebar.side(msg.mode === 'vertical' && msg.side === 'right');
         if (latest) {
           dirty = true;
           schedule();
@@ -1329,6 +1338,7 @@ export function startTabs(strip: HTMLElement): HTMLElement {
         ui = msg;
         applyUi();
         sidebar.options(msg);
+        if (!msg.selection) setPicked([]); // the option turned off: the strip drops its selection too
         dirty = true;
         schedule();
         break;

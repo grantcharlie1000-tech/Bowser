@@ -566,8 +566,8 @@ pub fn registrable_domain(host: &str) -> &str {
 
 /// [`registrable_domain`] without the cache. The result is always a suffix of `host`.
 fn registrable_domain_uncached(host: &str) -> &str {
-    // The public-suffix list's wildcard rule would make `1.10` the site of `192.168.1.10`.
-    if is_ip_address(host) {
+    // An IP literal has no public suffix: `psl` would read `127.0.0.1` as the domain `0.1`.
+    if host.contains(':') || host.parse::<std::net::Ipv4Addr>().is_ok() {
         return host;
     }
     psl::domain(host.as_bytes())
@@ -2248,6 +2248,19 @@ mod tests {
         assert_eq!(registrable_domain("localhost"), "localhost");
         assert!(same_site("a.example.co.uk", "b.example.co.uk"));
         assert!(!same_site("a.co.uk", "b.co.uk"));
+    }
+
+    #[test]
+    fn registrable_domain_of_an_ip_literal_is_the_whole_address() {
+        for host in ["127.0.0.1", "10.0.0.1", "192.168.1.20", "[::1]", "[2001:db8::1]", "::1"] {
+            assert_eq!(registrable_domain(host), host, "{host}");
+            assert_eq!(registrable_domain_uncached(host), host, "{host}");
+        }
+        assert!(!same_site("127.0.0.1", "10.0.0.1"));
+        assert!(!same_site("192.168.0.1", "10.168.0.1"));
+        assert!(same_site("127.0.0.1", "127.0.0.1"));
+        // Still a domain: a host that only looks numeric in part.
+        assert_eq!(registrable_domain("a.1.example.com"), "example.com");
     }
 
     #[test]
