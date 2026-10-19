@@ -179,6 +179,10 @@ pub trait EngineAdapter {
         None
     }
     fn resize(&mut self, bounds: RECT) -> windows::core::Result<()>;
+    /// The parent window moved on screen (its client-relative bounds did not change). WebView2
+    /// needs `NotifyParentWindowPositionChanged` for this, or it keeps placing its own popups and
+    /// accessibility rects at the old position.
+    fn parent_window_moved(&mut self) {}
     fn reload(&mut self) -> windows::core::Result<()> {
         Ok(())
     }

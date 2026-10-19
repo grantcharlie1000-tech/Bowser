@@ -166,16 +166,23 @@ pub fn resolve_input(
         return Err(NavigationError::InvalidWebUrl);
     }
 
+    // Whitespace never belongs in an address, so `word: more words` is search text
+    // (`Note: buy milk`, `python.org: tutorial`) unless `word` is a real scheme:
+    // `javascript: alert(1)` is still refused below.
+    let has_whitespace = input.chars().any(char::is_whitespace);
+
     // A colon after a hostname can denote a port. Recognize only authorities
     // whose host is independently a sensible bare host; unsupported schemes
     // such as javascript: and file: remain rejected below.
-    if looks_like_bare_host_port(input) {
+    if !has_whitespace && looks_like_bare_host_port(input) {
         return parse_bare_host(input)
             .map(NavigationTarget::Web)
             .ok_or(NavigationError::InvalidWebUrl);
     }
 
-    if let Some(scheme) = explicit_scheme(input) {
+    if let Some(scheme) =
+        explicit_scheme(input).filter(|scheme| !has_whitespace || known_scheme(scheme))
+    {
         if !scheme.eq_ignore_ascii_case("http") && !scheme.eq_ignore_ascii_case("https") {
             return Err(NavigationError::UnsupportedScheme(
                 scheme.to_ascii_lowercase(),
@@ -188,7 +195,7 @@ pub fn resolve_input(
         if !remainder.starts_with("//") {
             return Err(NavigationError::InvalidWebUrl);
         }
-        return parse_web_url(input, false).map(NavigationTarget::Web);
+        return parse_web_url(input, None).map(NavigationTarget::Web);
     }
 
     if let Some(url) = parse_bare_host(input) {
@@ -233,6 +240,16 @@ fn explicit_scheme(input: &str) -> Option<&str> {
     Some(scheme)
 }
 
+/// Schemes that stay refused even when spaces follow the colon. Any other `word:` followed by
+/// spaces is a search, so this list only needs the schemes someone could type deliberately.
+fn known_scheme(scheme: &str) -> bool {
+    const KNOWN: [&str; 18] = [
+        "http", "https", "javascript", "vbscript", "data", "file", "blob", "filesystem", "about",
+        "view-source", "mailto", "tel", "sms", "ftp", "ws", "wss", "chrome", "edge",
+    ];
+    KNOWN.iter().any(|known| known.eq_ignore_ascii_case(scheme))
+}
+
 fn looks_like_bare_host_port(input: &str) -> bool {
     let authority = input.split(['/', '?', '#']).next().unwrap_or_default();
     let Some((host, _port)) = authority.split_once(':') else {
@@ -245,11 +262,12 @@ fn looks_like_bare_host_port(input: &str) -> bool {
     }
     let host_url = Url::parse(&format!("https://{host}/"));
     host_url.is_ok_and(|url| {
-        url.username().is_empty() && url.password().is_none() && sensible_bare_host(&url)
+        url.username().is_empty() && url.password().is_none() && sensible_bare_host(&url, host)
     })
 }
 
-fn parse_web_url(input: &str, bare: bool) -> Result<Url, NavigationError> {
+/// `bare` is the host text as typed, for an input that had no scheme.
+fn parse_web_url(input: &str, bare: Option<&str>) -> Result<Url, NavigationError> {
     let url = Url::parse(input).map_err(|_| NavigationError::InvalidWebUrl)?;
     if !matches!(url.scheme(), "http" | "https")
         || url.host().is_none()
@@ -258,10 +276,35 @@ fn parse_web_url(input: &str, bare: bool) -> Result<Url, NavigationError> {
     {
         return Err(NavigationError::InvalidWebUrl);
     }
-    if bare && !sensible_bare_host(&url) {
+    if bare.is_some_and(|typed_host| !sensible_bare_host(&url, typed_host)) {
         return Err(NavigationError::InvalidWebUrl);
     }
     Ok(url)
+}
+
+/// The host part of a scheme-less input: before any path, query or fragment, after any
+/// credentials, and without a port. A bracketed IPv6 host is returned with its brackets.
+fn typed_host(input: &str) -> &str {
+    let authority = input.split(['/', '?', '#']).next().unwrap_or_default();
+    let host_port = authority.rsplit_once('@').map_or(authority, |(_, rest)| rest);
+    if host_port.starts_with('[') {
+        return host_port.split_once(']').map_or(host_port, |(host, _)| host);
+    }
+    host_port.split_once(':').map_or(host_port, |(host, _)| host)
+}
+
+/// Four decimal octets, each 0-255 without a leading zero. The URL parser also reads `42`,
+/// `3.14` and `0x7f.1` as IPv4 addresses, but typed without a scheme those are searches.
+fn dotted_quad(host: &str) -> bool {
+    let mut parts = 0;
+    host.split('.').all(|part| {
+        parts += 1;
+        !part.is_empty()
+            && part.len() <= 3
+            && part.bytes().all(|byte| byte.is_ascii_digit())
+            && (part == "0" || !part.starts_with('0'))
+            && part.parse::<u16>().is_ok_and(|octet| octet <= 255)
+    }) && parts == 4
 }
 
 fn parse_bare_host(input: &str) -> Option<Url> {
@@ -271,12 +314,13 @@ fn parse_bare_host(input: &str) -> Option<Url> {
         return None;
     }
     let candidate = format!("https://{input}");
-    parse_web_url(&candidate, true).ok()
+    parse_web_url(&candidate, Some(typed_host(input))).ok()
 }
 
-fn sensible_bare_host(url: &Url) -> bool {
+fn sensible_bare_host(url: &Url, typed_host: &str) -> bool {
     match url.host() {
-        Some(Host::Ipv4(_)) | Some(Host::Ipv6(_)) => true,
+        Some(Host::Ipv4(_)) => dotted_quad(typed_host),
+        Some(Host::Ipv6(_)) => true,
         Some(Host::Domain(host)) => {
             host.eq_ignore_ascii_case("localhost")
                 || (host.contains('.') && valid_domain_labels(host))
@@ -408,6 +452,68 @@ mod tests {
         assert!(
             matches!(resolve_input("intranet", &provider).unwrap(), NavigationTarget::Search { query, .. } if query == "intranet")
         );
+    }
+
+    #[test]
+    fn bare_and_dotted_numbers_are_searches_not_ip_addresses() {
+        let provider = default_provider();
+        for input in [
+            "42", "2024", "3.14", "1.5", "1.2.3", "0x7f.1", "0x7f000001", "v1.2", "2024:10",
+        ] {
+            assert!(
+                matches!(resolve_input(input, &provider), Ok(NavigationTarget::Search { ref query, .. }) if query == input),
+                "input: {input} gave {:?}",
+                resolve_input(input, &provider)
+            );
+        }
+        // Full dotted-quad IPv4 addresses (with or without a port and path) still navigate.
+        for (input, expected) in [
+            ("192.168.1.1", "https://192.168.1.1/"),
+            ("10.0.0.1:8080/admin", "https://10.0.0.1:8080/admin"),
+            ("http://42", "http://0.0.0.42/"),
+        ] {
+            assert_eq!(
+                resolve_input(input, &provider).unwrap(),
+                NavigationTarget::Web(Url::parse(expected).unwrap()),
+                "input: {input}"
+            );
+        }
+    }
+
+    #[test]
+    fn word_colon_text_queries_are_searches_not_schemes() {
+        let provider = default_provider();
+        for input in [
+            "Note: buy milk",
+            "Python: sort list",
+            "C++: pointers",
+            "Re: x",
+            "e.g.: foo",
+            "python.org: tutorial",
+            "Mr.Smith: hi",
+            "a.com:80 foo",
+        ] {
+            assert!(
+                matches!(resolve_input(input, &provider), Ok(NavigationTarget::Search { ref query, .. }) if query == input),
+                "input: {input} gave {:?}",
+                resolve_input(input, &provider)
+            );
+        }
+        // Real non-web schemes stay refused even when text with spaces follows the colon.
+        for input in [
+            "javascript:alert(1)",
+            "javascript: alert(1)",
+            "JavaScript: void(0) ",
+            "data: text/html,hi there",
+            "file: C:/a b.txt",
+            "vbscript: msgbox 1",
+        ] {
+            assert!(
+                matches!(resolve_input(input, &provider), Err(NavigationError::UnsupportedScheme(_))),
+                "input: {input} gave {:?}",
+                resolve_input(input, &provider)
+            );
+        }
     }
 
     #[test]
