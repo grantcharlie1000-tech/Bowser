@@ -1606,7 +1606,7 @@ fn live_probe_ui_profile_isolation() {
     let loopback = Loopback::start(); let mut owner = Session::open_configured(&profile, vec![(id.clone(), folder)], vec![(id.clone(), true)], &loopback.page("ui-owner-positive"), false, true);
     assert!(owner.wait_for_add(&profile, &id).1.is_none()); assert!(owner.wait_for_worker_reply(&loopback));
     assert!(owner.native_inventory().unwrap().iter().any(|(native, on)| native == KEY_FIXTURE_ID && *on));
-    let env = ChromeEnv::new(owner.engine.chrome_environment().expect("production UI scheme environment"));
+    let env = ChromeEnv::new(owner.engine.chrome_environment().expect("production UI scheme environment"), None, None);
     let ready = Rc::new(std::cell::Cell::new(false)); let ready_sink = ready.clone();
     let failed = Rc::new(std::cell::Cell::new(false)); let failed_sink = failed.clone();
     let created = Rc::new(RefCell::new(None)); let sink = created.clone();
@@ -2011,7 +2011,7 @@ fn live_probe_native_api_isolation() {
         if private_expected {assert_eq!(name,crate::private::PRIVATE_PROFILE);}else{assert_ne!(name,crate::private::PRIVATE_PROFILE);assert_ne!(name,CHROME_PROFILE);}
         println!("NATIVE_API_ISOLATION owned_view={tab:?} actual_profile={name:?} actual_in_private={}",private_flag.as_bool());
     }
-    let env=ChromeEnv::new(owner.engine.chrome_environment().expect("real UI scheme environment"));
+    let env=ChromeEnv::new(owner.engine.chrome_environment().expect("real UI scheme environment"), None, None);
     let ready=Rc::new(std::cell::Cell::new(false));let ready_sink=ready.clone();let failed=Rc::new(std::cell::Cell::new(false));let failed_sink=failed.clone();
     let created=Rc::new(RefCell::new(None));let sink=created.clone();
     ChromeHost::create(&env,ChromeHostOptions {
