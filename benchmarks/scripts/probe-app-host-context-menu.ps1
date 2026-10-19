@@ -92,6 +92,18 @@ public static class BowserHostMenu {
  [DllImport("user32.dll",CharSet=CharSet.Unicode)] static extern bool GetMenuItemInfo(IntPtr menu,uint index,bool position,ref ITEM info);
  [DllImport("user32.dll")] public static extern IntPtr GetSubMenu(IntPtr menu,int index);
  public sealed class NativeItem {public uint Type,State,Id;public IntPtr Child;public string Fingerprint;public int Units;}
+ [DllImport("user32.dll")] static extern IntPtr CreatePopupMenu();
+ [DllImport("user32.dll",CharSet=CharSet.Unicode)] static extern bool AppendMenu(IntPtr menu,uint flags,UIntPtr id,string text);
+ [DllImport("user32.dll")] static extern bool DestroyMenu(IntPtr menu);
+ public static void CheckSeparatorProjection(){
+  IntPtr menu=CreatePopupMenu();if(menu==IntPtr.Zero)throw new InvalidOperationException("Generated separator menu creation failed.");
+  try{
+   if(!AppendMenu(menu,0x800,UIntPtr.Zero,null))throw new InvalidOperationException("Generated separator append failed.");
+   NativeItem item=Item(menu,0);
+   if(GetMenuItemCount(menu)!=1||item.Type!=0x800||item.State!=3||item.Units!=0||item.Child!=IntPtr.Zero||item.Fingerprint!="e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")throw new InvalidOperationException("Generated native separator projection contract failed.");
+  }finally{if(!DestroyMenu(menu))throw new InvalidOperationException("Generated separator menu destruction failed.");}
+ }
+
  public static NativeItem Item(IntPtr menu,int index){
   IntPtr buffer=Marshal.AllocHGlobal(2052);try{
    for(int i=0;i<1026;i++)Marshal.WriteInt16(buffer,i*2,0);
@@ -181,7 +193,7 @@ public static class BowserHostMenu {
 }
 '@
 New-Item -ItemType Directory -Force $Out|Out-Null
-$report=[ordered]@{scope='separate-real-App-native-and-host-regression';status='failed';mode=$Mode;right_input_called=$false;selection_called=$false;selected_command_id=$null;clipboard='not-used';owned_clipboard_sequences=@();error=$null;failure_cleanup=$null}
+$report=[ordered]@{scope='separate-real-App-native-and-host-regression';status='failed';mode=$Mode;separator_projection_contract=$false;right_input_called=$false;selection_called=$false;selected_command_id=$null;clipboard='not-used';owned_clipboard_sequences=@();error=$null;failure_cleanup=$null}
 $h=[IntPtr]$OwnerHandle;$pidNow=[uint32]0;$tid=[BowserHostMenu]::GetWindowThreadProcessId($h,[ref]$pidNow)
 $guard=$null;$browserGuard=$null;$clipboard=$null;$script:request=$null;$script:requestText=$null
 function Save-Report {[IO.File]::WriteAllText((Join-Path $Out 'app-host-context-menu.json'),($report|ConvertTo-Json -Depth 18),[Text.UTF8Encoding]::new($false))}
@@ -218,7 +230,8 @@ function Test-Tree([IntPtr]$Menu,$Nodes,[int[]]$Path,[int]$Depth) {
   $item=[BowserHostMenu]::Item($Menu,$index);$kind=[int]$node.kind
   if($kind -lt 0 -or $kind -gt 4){throw 'Unknown full-tree kind.'}
   $type=if($kind -eq 3){0x800}elseif($kind -eq 2){0x200}else{0}
-  $state=if($kind -eq 3){0}elseif(!$node.enabled){3}else{0}
+  # Native MF_SEPARATOR is unselectable and reports MFS_DISABLED, independently of engine IsEnabled.
+  $state=if($kind -eq 3){3}elseif(!$node.enabled){3}else{0}
   if($kind -in @(1,2) -and $node.checked){$state=$state -bor 8}
   if($item.Type -ne $type -or ($item.State -band 0xffffff7fL) -ne $state -or $item.Units -ne [int]$node.rendered_units -or $item.Fingerprint -cne $node.rendered_fingerprint){
    # Failure-only fixed/numeric evidence; this does not accept or select the mismatching node.
@@ -271,6 +284,7 @@ function Item-Point($Entry,$Popup) {
  return @{point=$point;rect=$r}
 }
 try {
+ [BowserHostMenu]::CheckSeparatorProjection();$report.separator_projection_contract=$true
  if($SyntheticToken -notmatch '^[0-9]+-[0-9]+$'){throw 'Generated disposable token required.'}
  if($pidNow -ne $OwnerPid -or ![BowserHostMenu]::Host($h,$OwnerPid,$tid)){throw 'Exact disposable native owner unavailable.'}
  $guard=[BowserHostMenu+OriginalProcess]::new($OwnerPid,$OwnerExe);$browserGuard=[BowserHostMenu+ReadOnlyBrowser]::new($BrowserPid)

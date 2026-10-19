@@ -1431,6 +1431,8 @@ fn live_runtime_completed_state_child() {
     let mut session = Session::open(&profile, vec![], known, &loopback.page("completed-restart-control"));
     assert!(pump_one_until(Duration::from_secs(30), || session.engine.probe_extension_profile_ready()));
     let native = session.native_inventory().unwrap();
+    // Preserve the actual fresh-process observation even if the following strict assertion fails.
+    println!("COMPLETED_RESTART_CHILD_OBSERVED expected={expected} actual_native_inventory={native:?} record_count={}", records.len());
     match expected.as_str() {
         "off" => { assert_eq!(records.len(), 1); assert!(native.iter().any(|(id, on)| id == KEY_FIXTURE_ID && !on)); }
         "absent" => { assert!(records.is_empty()); assert!(!native.iter().any(|(id, _)| id == KEY_FIXTURE_ID)); }
