@@ -88,8 +88,9 @@ class ResourceAddressSourceContract(unittest.TestCase):
 
     def test_current_input_guards_and_one_enter_remain(self):
         submit = function('Submit-OwnedFixture')
-        self.assertLess(submit.index('Read-OwnedAddress $null'), submit.index("SendWait('^l')"))
-        self.assertEqual(submit.count('Read-OwnedAddress $null'), 1)
+        self.assertLess(submit.index('Wait-OwnedAddressBeforeBinding $Trace'), submit.index('Bind-OwnedAddressAfterReadiness $ready $Trace'))
+        self.assertLess(submit.index('Bind-OwnedAddressAfterReadiness $ready $Trace'), submit.index("SendWait('^l')"))
+        self.assertEqual(function('Bind-OwnedAddressAfterReadiness').count('Read-OwnedAddress $null'), 1)
         self.assertIn('$bound=$state.bound', submit)
         self.assertEqual(submit.count('Assert-AddressInput $state'), 2)
         self.assertIn('Start-Sleep -Milliseconds 30', submit)
@@ -154,13 +155,64 @@ class ResourceAddressSourceContract(unittest.TestCase):
         for status in ('eligible', 'excluded-nearer-document', 'unowned-parent-chain', 'depth-limit'):
             self.assertIn(status, ancestry)
 
+    def test_before_binding_schedule_deadline_and_receipts(self):
+        wait = function('Wait-OwnedAddressBeforeBinding')
+        self.assertIn('schedule_ms=@(0,1000,2000,3000)', wait)
+        self.assertIn('$index -lt 4', wait)
+        self.assertIn('absolute_budget_ms=10000', wait)
+        self.assertIn('$wait=$receipt.schedule_ms[$index]-$clock.Elapsed.TotalMilliseconds', wait)
+        self.assertIn("$receipt.observations+=,$observation", wait)
+        self.assertLess(wait.index('$receipt.observations+=,$observation'), wait.index('$documents=Observe-AddressBeforeBinding'))
+        self.assertIn('$accepted=$clock.Elapsed.TotalMilliseconds;Assert-AddressReadinessTime $accepted', wait)
+        self.assertNotIn('.Restart(', wait)
+        self.assertNotIn('.Reset(', wait)
+        self.assertEqual(wait.count('Observe-AddressBeforeBinding '), 1)
+        self.assertIn('$Elapsed -ge 10000', function('Assert-AddressReadinessTime'))
+
+    def test_before_binding_owner_and_source_integrity(self):
+        observer = function('Observe-AddressBeforeBinding')
+        self.assertEqual(observer.count('Assert-AddressReadinessOwner $Owner $Clock'), 2)
+        self.assertIn('Assert-AddressReadinessTime $Clock.Elapsed.TotalMilliseconds', observer)
+        self.assertIn('$read.root_key -cne $Owner.root_key', observer)
+        self.assertIn('$read.managed -cne $read.native', observer)
+        self.assertIn('$ids.Add($read.document_key)', observer)
+        self.assertNotIn('catch', observer)
+        owner = function('Assert-AddressReadinessOwner')
+        self.assertEqual(owner.count('Assert-AddressWindow $Owner.window $Owner.thread'), 2)
+        self.assertIn('$rootKey -cne $Owner.root_key', owner)
+        self.assertIn('$app.Id -ne $Owner.pid', owner)
+        policy = function('Advance-AddressReadiness')
+        for required in ('PendingComplete', 'Ready', '$seen.ContainsKey($entry.key)', '$Previous.seen.Keys',
+                         'prior document identity disappeared', 'prior document source changed',
+                         '$exact.Count -gt 1', '$Previous.seen.ContainsKey($exact[0])', '$Index -eq 3'):
+            self.assertIn(required, policy)
+        self.assertNotIn('Read-OwnedAddress', policy)
+        self.assertNotIn('SendWait', policy)
+        self.assertNotIn('$Receipt.records+=,$read', observer)
+        self.assertNotIn('$Receipt.records+=,$private', observer)
+        strict_reader = SCRIPT[SCRIPT.index('function Read-OwnedAddress'):SCRIPT.index('function Assert-AddressInput')]
+        self.assertEqual(hashlib.sha256(strict_reader.encode()).hexdigest(),
+                         '81e04e04cfd690134f7197507327c5a84456267fcd262d4e2fc0f48a1e01f554')
+
+    def test_ready_strict_binding_is_once_and_never_retried(self):
+        bind = function('Bind-OwnedAddressAfterReadiness')
+        self.assertEqual(bind.count('Read-OwnedAddress $null'), 1)
+        self.assertNotRegex(bind, r'(?i)\b(?:do|while|for|foreach)\s*[({]')
+        self.assertIn('$state.bound.root_key -cne $Ready.owner.root_key', bind)
+        self.assertIn('$state.bound.document_key -cne $Ready.document_key', bind)
+        self.assertIn('$state.bound.window -ne $Ready.owner.window', bind)
+        self.assertIn('$state.bound.thread -ne $Ready.owner.thread', bind)
+        self.assertIn('$accepted=$Ready.clock.Elapsed.TotalMilliseconds;Assert-AddressReadinessTime $accepted', bind)
+        self.assertIn("catch {$receipt.strict_binding_status='failed';$receipt.status='failed';throw}", bind)
+        self.assertIn('NOT comparable to protocol3 or earlier conditioning', SCRIPT)
+
     def test_measurement_and_failure_accounting_untouched(self):
-        # Protocol-3 correction is deliberately confined above this preexisting fence.
+        # Protocol-4 correction is deliberately confined above this preexisting fence.
         # A future metric/gating change requires an explicit review of this snapshot.
         tail = SCRIPT[SCRIPT.index('function Assert-FrozenExecutable'):]
         self.assertEqual(hashlib.sha256(tail.encode()).hexdigest(),
                          '793c9b88b234b114735f92ddfca06f0d14e2515911fd5b5d38d3520dd4d0f1c7')
-        self.assertIn('protocol_version=3;', SCRIPT)
+        self.assertIn('protocol_version=4;', SCRIPT)
         self.assertIn('source-bound-slow-real-per-key-plus-UIA-readbacks', SCRIPT)
 
 

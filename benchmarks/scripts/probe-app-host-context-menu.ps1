@@ -299,7 +299,19 @@ try {
  $activated=[BowserHostMenu]::SetForegroundWindow($h)
  $report.activation_returned_success=[bool]$activated
  $report.activation_after_exact_owner=([BowserHostMenu]::GetForegroundWindow() -eq $h)
- if(!$activated -or !$report.activation_after_exact_owner){throw 'Initial exact-owner activation denied.'}
+ if(!$activated){throw 'Initial exact-owner activation call denied.'}
+ # Cross-input-queue activation is asynchronous. Observe only; never issue a second call.
+ $activationWatch=[Diagnostics.Stopwatch]::StartNew();$report.activation_polls=0
+ do {
+  $report.activation_polls++
+  if(!$guard.SameAlive() -or !$browserGuard.SameAlive() -or ![BowserHostMenu]::Host($h,$OwnerPid,$tid) -or ![BowserHostMenu]::IsWindowVisible($h) -or ![BowserHostMenu]::IsWindowEnabled($h)){throw 'Retained exact owner unavailable during activation observation.'}
+  $foregroundReady=([BowserHostMenu]::GetForegroundWindow() -eq $h)
+  $report.activation_elapsed_ms=$activationWatch.ElapsedMilliseconds
+  $report.activation_observed_exact_owner=$foregroundReady
+  if($report.activation_elapsed_ms -ge 2000){throw 'Bounded initial exact-owner activation observation expired.'}
+  if($foregroundReady){break}
+  Start-Sleep -Milliseconds 20
+ }while($true)
  $point=[BowserHostMenu+POINT]::new();$point.X=$ClientX;$point.Y=$ClientY
  if(![BowserHostMenu]::ClientToScreen($h,[ref]$point)){throw 'Exact COM input conversion failed.'}
  Source-Control;Neutral

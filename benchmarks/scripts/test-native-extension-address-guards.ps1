@@ -11,7 +11,7 @@ if($errors.Count){throw ('Resource address script does not parse: '+$errors[0].M
 $native=$ast.Find({param($node) $node -is [Management.Automation.Language.StringConstantExpressionAst] -and $node.Value.Contains('public static class BowserExtensionMeasure')},$true)
 if(!$native){throw 'Real read-only native declarations missing.'}
 Add-Type -TypeDefinition $native.Value
-foreach($name in @('Address-IsToolbarSource','Address-ObservedSourceKind','Address-ObservedSourcePair','Record-AddressObservedRuntime','Assert-AddressGeometry','Address-RuntimeKey','Assert-AddressInput')){
+foreach($name in @('Address-IsToolbarSource','Address-ObservedSourceKind','Address-ObservedSourcePair','Record-AddressObservedRuntime','Assert-AddressReadinessTime','Advance-AddressReadiness','Bind-OwnedAddressAfterReadiness','Assert-AddressGeometry','Address-RuntimeKey','Assert-AddressInput')){
  $definition=$ast.Find({param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq $name},$true)
  if(!$definition){throw "Real address policy function missing: $name"}
  . ([scriptblock]::Create($definition.Extent.Text))
@@ -51,6 +51,69 @@ foreach($invalid in @(@{ids=[int[]]@(1..129)},@{ids=@('raw-not-an-id')},@{ids=$n
 # An unusable metadata destination must not throw or alter the original selector result.
 Record-AddressObservedRuntime ([pscustomobject]@{}) 'runtime_id' ([int[]]@(1))
 Check $true 'Metadata destination failure escaped its non-authority helper.'
+# Execute protocol4 transitions from the real script on supplied snapshots only.
+function Readiness-Doc([string]$Key,[string]$Source){return @{key=$Key;managed=$Source;native=$Source;eligible=$true}}
+$otherDoc=Readiness-Doc '42,10' $other;$toolbarDoc=Readiness-Doc '42,20' $exact
+$receipt=@{state='Observing'}
+$initialReady=Advance-AddressReadiness $null @($toolbarDoc) 1 0 $receipt
+Check ($initialReady.kind -ceq 'Ready' -and $initialReady.document_key -ceq '42,20' -and $receipt.state -ceq 'Ready') 'Initial exact toolbar did not become Ready.'
+$receipt=@{state='Observing'}
+$pending=Advance-AddressReadiness $null @($otherDoc) 1 0 $receipt
+Check ($pending.kind -ceq 'PendingComplete' -and $receipt.state -ceq 'PendingComplete') 'Complete zero-exact snapshot was not PendingComplete.'
+$receipt=@{state='Observing'}
+$newReady=Advance-AddressReadiness $pending @($otherDoc,$toolbarDoc) 1001 1 $receipt
+Check ($newReady.kind -ceq 'Ready' -and $newReady.document_key -ceq '42,20') 'Only-new-ID exact toolbar did not become Ready.'
+Check (!(($receipt|ConvertTo-Json).Contains('private-observation-marker'))) 'Private exact source leaked into readiness receipt.'
+Refuses {Advance-AddressReadiness $pending @((Readiness-Doc '42,10' $exact)) 1001 1 @{state='Observing'}} 'Before-binding prior document source changed; no input sent.'
+Refuses {Advance-AddressReadiness $pending @((Readiness-Doc '42,11' $other)) 1001 1 @{state='Observing'}} 'Before-binding prior document identity disappeared; no input sent.'
+Refuses {Advance-AddressReadiness $null @($otherDoc,$otherDoc) 1 0 @{state='Observing'}} 'Before-binding duplicate document runtime identity; no input sent.'
+Refuses {Advance-AddressReadiness $null @($toolbarDoc,(Readiness-Doc '42,21' $exact)) 1 0 @{state='Observing'}} 'Before-binding exact toolbar source ambiguous; no input sent.'
+$missing=Readiness-Doc '42,10' $other;$missing.native=$null
+Refuses {Advance-AddressReadiness $null @($missing) 1 0 @{state='Observing'}} 'Before-binding document eligibility/source missing or over bound; no input sent.'
+$conflict=Readiness-Doc '42,10' $other;$conflict.native=$exact
+Refuses {Advance-AddressReadiness $null @($conflict) 1 0 @{state='Observing'}} 'Before-binding managed/native source disagreement; no input sent.'
+$ineligible=Readiness-Doc '42,10' $other;$ineligible.eligible=$false
+Refuses {Advance-AddressReadiness $null @($ineligible) 1 0 @{state='Observing'}} 'Before-binding document eligibility/source missing or over bound; no input sent.'
+Refuses {Advance-AddressReadiness $null @((Readiness-Doc '' $other)) 1 0 @{state='Observing'}} 'Before-binding document runtime identity missing or over bound; no input sent.'
+Refuses {Advance-AddressReadiness $null @() 1 0 @{state='Observing'}} 'Before-binding document inventory missing or over bound; no input sent.'
+Refuses {Advance-AddressReadiness $null @((1..65|ForEach-Object {Readiness-Doc ([string]$_) $other})) 1 0 @{state='Observing'}} 'Before-binding document inventory missing or over bound; no input sent.'
+foreach($late in @(10000.0,10001.0,[double]::NaN,[double]::PositiveInfinity,-1.0)){
+ Refuses {Advance-AddressReadiness $null @($toolbarDoc) $late 0 @{state='Observing'}} 'Before-binding readiness absolute budget expired or clock unavailable; no input sent.'
+}
+Refuses {Advance-AddressReadiness $initialReady @($toolbarDoc) 1001 1 @{state='Observing'}} 'Before-binding readiness observation sequence invalid; no input sent.'
+Refuses {Advance-AddressReadiness $pending @($otherDoc) 2001 2 @{state='Observing'}} 'Before-binding readiness observation sequence invalid; no input sent.'
+$p1=Advance-AddressReadiness $pending @($otherDoc) 1001 1 @{state='Observing'}
+$p2=Advance-AddressReadiness $p1 @($otherDoc) 2001 2 @{state='Observing'}
+$lastReceipt=@{state='Observing'}
+Refuses {Advance-AddressReadiness $p2 @($otherDoc) 3001 3 $lastReceipt} 'Before-binding readiness schedule exhausted without exact toolbar; no input sent.'
+Check ($lastReceipt.state -ceq 'PendingComplete') 'Final complete zero-exact receipt was erased by exhaustion.'
+
+# Execute the actual final binder with stubbed strict read and clock only. No UIA call.
+& {
+ $script:bindingReads=0;$script:bindingMode='ok'
+ $clock=[pscustomobject]@{Elapsed=[pscustomobject]@{TotalMilliseconds=500.0};Stopped=$false}
+ $clock|Add-Member ScriptMethod Stop {$this.Stopped=$true}
+ $ready=@{owner=@{window=[IntPtr]7;thread=[uint32]8;root_key='42,7'};document_key='42,9';clock=$clock}
+ function Read-OwnedAddress($Expected){
+  $script:bindingReads++
+  if($null -ne $Expected){throw 'Initial binder supplied a substitute expected control.'}
+  if($script:bindingMode -ceq 'getter-failure'){throw 'synthetic-strict-getter-failure'}
+  if($script:bindingMode -ceq 'late'){$clock.Elapsed.TotalMilliseconds=10000.0}
+  $doc=if($script:bindingMode -ceq 'changed-document'){'42,99'}else{'42,9'}
+  return @{bound=@{window=[IntPtr]7;thread=[uint32]8;root_key='42,7';document_key=$doc;edit_key='42,10'}}
+ }
+ foreach($scenario in @(
+  @{mode='ok';error=$null},
+  @{mode='getter-failure';error='synthetic-strict-getter-failure'},
+  @{mode='changed-document';error='Ready toolbar/root identity changed before strict initial edit binding; no input sent.'},
+  @{mode='late';error='Before-binding readiness absolute budget expired or clock unavailable; no input sent.'})){
+  $script:bindingMode=$scenario.mode;$script:bindingReads=0;$clock.Elapsed.TotalMilliseconds=500.0;$clock.Stopped=$false
+  $trace=@{before_binding_readiness=@{status='Ready';strict_binding_status='not-started';strict_binding_completed_ms=$null;elapsed_ms=$null}}
+  if($scenario.error){Refuses {Bind-OwnedAddressAfterReadiness $ready $trace} $scenario.error}else{$bound=Bind-OwnedAddressAfterReadiness $ready $trace;Check ($trace.before_binding_readiness.status -ceq 'Bound' -and $bound.bound.edit_key -ceq '42,10') 'One strict initial binding did not retain exact edit identity.'}
+  Check ($script:bindingReads -eq 1 -and $clock.Stopped) 'Strict initial binding retried or did not close its clock.'
+ }
+}
+
 # All rectangle components must be finite; only extents must be positive.
 $bounds=[pscustomobject]@{X=-10.0;Y=-20.0;Width=100.0;Height=25.0}
 Assert-AddressGeometry $bounds

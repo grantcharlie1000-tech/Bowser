@@ -119,7 +119,7 @@ const server=http.createServer((req,res)=>{const url=new URL(req.url,'http://127
 });server.listen(0,'127.0.0.1',()=>fs.writeFileSync(port,String(server.address().port)));
 '@ | Set-Content (Join-Path $run 'server.cjs') -Encoding utf8
 $app=$null;$server=$null;$saved=@{};$rows=@();$currentRow=$null;$hadFailure=$false
-$report=[ordered]@{protocol_version=3;series_complete=$false;cleanup_errors=@();reference_runtime_version=$null;scope='Release executable with --dev: startup/resources before UIA conditioning; separate mandatory slow-per-key navigation correctness lane';navigation_workload='Source-bound toolbar document and stable current UIA identities, at least30ms per literal key plus UIA reads, exact focused value before one Enter; NOT browser-only latency or comparable to previous burst-input rows';primary_valid_pair_count=0;navigation_valid_pair_count=0;source_commit=(& git -C $root rev-parse HEAD).Trim();executable_sha256=(Get-FileHash $exe -Algorithm SHA256).Hash.ToLowerInvariant();status='failed';samples=@();notes=@('Bowser executable hashes are read before each launch, warming its executable cache; this is a hash-conditioned workload, not pristine cold-disk startup. Synchronous UIA provider calls are not hard-bounded by the surrounding polling deadlines.','No benchmark flags; --dev only suppresses production updater. Extension diagnostic tracing is enabled in both arms so native Add completions, not provisional ownership rows, can be observed; these are diagnostic observations, not clean production latency.','Fresh prepared profiles only in trial1; later startups inherit prior navigation/autocomplete and extension-storage conditioning. UIA input conditioning follows resource capture within each row, not across reused rows.','Startup-to-ready includes process launch and local page load; navigation-to-ready includes keyboard interaction.','Memory is sum of owned process-tree private committed bytes and working sets, not PSS; shared pages may be counted twice.','Four packages were signature-verified and explicitly consented in the preceding runtime probe.');error=$null}
+$report=[ordered]@{protocol_version=4;series_complete=$false;cleanup_errors=@();reference_runtime_version=$null;scope='Release executable with --dev: startup/resources before UIA conditioning; separate mandatory slow-per-key navigation correctness lane';navigation_workload='Protocol4 bounded before-binding readiness plus source-bound toolbar document and stable current UIA identities; NOT comparable to protocol3 or earlier conditioning, at least30ms per literal key plus UIA reads, exact focused value before one Enter; NOT browser-only latency or comparable to previous burst-input rows';primary_valid_pair_count=0;navigation_valid_pair_count=0;source_commit=(& git -C $root rev-parse HEAD).Trim();executable_sha256=(Get-FileHash $exe -Algorithm SHA256).Hash.ToLowerInvariant();status='failed';samples=@();notes=@('Bowser executable hashes are read before each launch, warming its executable cache; this is a hash-conditioned workload, not pristine cold-disk startup. Synchronous UIA provider calls are not hard-bounded by the surrounding polling deadlines.','No benchmark flags; --dev only suppresses production updater. Extension diagnostic tracing is enabled in both arms so native Add completions, not provisional ownership rows, can be observed; these are diagnostic observations, not clean production latency.','Fresh prepared profiles only in trial1; later startups inherit prior navigation/autocomplete and extension-storage conditioning. UIA input conditioning follows resource capture within each row, not across reused rows.','Startup-to-ready includes process launch and local page load; navigation-to-ready includes keyboard interaction.','Memory is sum of owned process-tree private committed bytes and working sets, not PSS; shared pages may be counted twice.','Four packages were signature-verified and explicitly consented in the preceding runtime probe.');error=$null}
 function Ready([string]$Token){if(!(Test-Path $events)){return $false};return [bool](@(Get-Content $events | ConvertFrom-Json | Where-Object {$_.token -eq $Token}).Count)}
 function Await([scriptblock]$Condition,[string]$Description){$deadline=[DateTime]::UtcNow.AddSeconds(90);do{if($app){$app.Refresh();if($app.HasExited){throw "App exited before $Description"};if($app.MainWindowHandle -ne [IntPtr]::Zero){$class=[Text.StringBuilder]::new(128);[void][BowserExtensionMeasure]::GetClassName($app.MainWindowHandle,$class,128);if($class.ToString() -eq '#32770'){$dialog=[Windows.Automation.AutomationElement]::FromHandle($app.MainWindowHandle);$text=@($dialog.FindAll([Windows.Automation.TreeScope]::Descendants,[Windows.Automation.Condition]::TrueCondition)|ForEach-Object{$_.Current.Name});throw ('Owned native startup dialog: '+($text -join ' | '))}}};if(& $Condition){return};Start-Sleep -Milliseconds 50}while([DateTime]::UtcNow -lt $deadline);throw "Timed out: $Description"}
 function Native-Count([string]$Profile){$file=Join-Path $Profile 'extension_ids.txt';if(!(Test-Path $file)){return 0};return @(Get-Content $file | Where-Object {$_ -match '^ext-[a-f0-9]{16}\t[a-p]{32}$'}).Count}
@@ -241,18 +241,21 @@ function Address-OutermostDocument($Document,$RootElement,$Observation) {
  return $false
 }
 
-function Address-DocumentSource($Document,[IntPtr]$Window,[uint32]$Thread,$RootElement,$Observation) {
+function Address-DocumentSource($Document,[IntPtr]$Window,[uint32]$Thread,$RootElement,$Observation,$CurrentRead) {
  [void](Assert-AddressWindow $Window $Thread)
  $runtimeId=$Document.GetRuntimeId();Record-AddressObservedRuntime $Observation 'document_runtime_id' $runtimeId;$key=Address-RuntimeKey $Document
  $rootRuntimeId=$RootElement.GetRuntimeId();Record-AddressObservedRuntime $Observation 'root_runtime_id' $rootRuntimeId;$rootKey=Address-RuntimeKey $RootElement
+ if($CurrentRead){$CurrentRead.document_key=$key;$CurrentRead.root_key=$rootKey}
  $values=@();$pattern=$null;$managed=$null
  try{if($Observation){$Observation.managed_source='unavailable'}}catch{}
  if($Document.TryGetCurrentPattern([Windows.Automation.ValuePattern]::Pattern,[ref]$pattern)){$managed=([Windows.Automation.ValuePattern]$pattern).Current.Value;$values+=$managed}
+ if($CurrentRead){$CurrentRead.managed=$managed;$CurrentRead.managed_read=$true}
  try{if($Observation){$Observation.managed_source=Address-ObservedSourceKind $managed;$Observation.native_source='unavailable'}}catch{}
  # Chromium exposes document tree-data URL as LegacyIAccessible.Value (30093),
  # not Name/title or ValuePattern's property 30045. The native lookup must match
  # the same exact managed runtime ID, with owned-window/thread fences on both sides.
  $legacy=[BowserResourceDocument]::LegacyValue($Window,[uint32]$app.Id,$Thread,$rootRuntimeId,$runtimeId)
+ if($CurrentRead){$CurrentRead.native=$legacy;$CurrentRead.native_read=$true}
  try{if($Observation){$pair=Address-ObservedSourcePair $managed $legacy;$Observation.managed_source=$pair.managed_source;$Observation.native_source=$pair.native_source;$Observation.source_result=$pair.source_result}}catch{}
  if($legacy){$values+=$legacy}
  if((($rootRuntimeId -join ',') -cne $rootKey) -or (Address-RuntimeKey $RootElement) -cne $rootKey){throw 'Current root identity changed during native source query; no input sent.'}
@@ -262,6 +265,130 @@ function Address-DocumentSource($Document,[IntPtr]$Window,[uint32]$Thread,$RootE
  # A default/unsupported/non-string native result never authorizes a ValuePattern fallback.
  if($legacy -isnot [string] -or !$legacy -or $values.Count -ne 1 -or $values[0].Length -gt 4096){return $null}
  return [string]$values[0]
+}
+# Protocol4 is a separate BEFORE-binding state machine. No bound-lane error is
+# caught/retried. Source strings in private state are never attached to a report.
+function Assert-AddressReadinessTime([double]$Elapsed) {
+ if([double]::IsNaN($Elapsed) -or [double]::IsInfinity($Elapsed) -or $Elapsed -lt 0 -or $Elapsed -ge 10000){throw 'Before-binding readiness absolute budget expired or clock unavailable; no input sent.'}
+}
+function Advance-AddressReadiness($Previous,$Documents,[double]$Elapsed,[int]$Index,$Receipt) {
+ Assert-AddressReadinessTime $Elapsed
+ if($Index -lt 0 -or $Index -gt 3 -or (!$Previous -and $Index -ne 0) -or ($Previous -and ($Previous.kind -cne 'PendingComplete' -or $Index -ne ($Previous.index+1)))){throw 'Before-binding readiness observation sequence invalid; no input sent.'}
+ $documentsArray=@($Documents)
+ if(!$documentsArray.Count -or $documentsArray.Count -gt 64){throw 'Before-binding document inventory missing or over bound; no input sent.'}
+ $seen=@{};$exact=@()
+ foreach($entry in $documentsArray){
+  if(!$entry -or $entry.key -isnot [string] -or !$entry.key -or $entry.key.Length -gt 1535){throw 'Before-binding document runtime identity missing or over bound; no input sent.'}
+  if($seen.ContainsKey($entry.key)){throw 'Before-binding duplicate document runtime identity; no input sent.'}
+  if(!$entry.eligible -or $entry.managed -isnot [string] -or !$entry.managed -or $entry.native -isnot [string] -or !$entry.native -or $entry.managed.Length -gt 4096 -or $entry.native.Length -gt 4096){throw 'Before-binding document eligibility/source missing or over bound; no input sent.'}
+  if($entry.managed -cne $entry.native){throw 'Before-binding managed/native source disagreement; no input sent.'}
+  $seen[$entry.key]=$entry.native
+  if(Address-IsToolbarSource $entry.native){$exact+=,$entry.key}
+ }
+ if($Previous){
+  foreach($key in $Previous.seen.Keys){
+   if(!$seen.ContainsKey($key)){throw 'Before-binding prior document identity disappeared; no input sent.'}
+   if($seen[$key] -cne $Previous.seen[$key]){throw 'Before-binding prior document source changed; no input sent.'}
+  }
+ }
+ if($exact.Count -gt 1){throw 'Before-binding exact toolbar source ambiguous; no input sent.'}
+ if($exact.Count -eq 1){
+  if($Previous -and $Previous.seen.ContainsKey($exact[0])){throw 'Before-binding previously observed identity cannot become toolbar authority; no input sent.'}
+  if($Receipt){$Receipt.state='Ready'}
+  return @{kind='Ready';index=$Index;seen=$seen;document_key=$exact[0]}
+ }
+ if($Receipt){$Receipt.state='PendingComplete'}
+ if($Index -eq 3){throw 'Before-binding readiness schedule exhausted without exact toolbar; no input sent.'}
+ return @{kind='PendingComplete';index=$Index;seen=$seen;document_key=$null}
+}
+function New-AddressReadinessOwner($Clock) {
+ Assert-AddressReadinessTime $Clock.Elapsed.TotalMilliseconds
+ $app.Refresh();$window=$app.MainWindowHandle;$thread=Assert-AddressWindow $window
+ $rootElement=[Windows.Automation.AutomationElement]::FromHandle($window);$rootKey=Address-RuntimeKey $rootElement
+ Assert-AddressReadinessTime $Clock.Elapsed.TotalMilliseconds
+ [void](Assert-AddressWindow $window $thread)
+ return @{window=$window;thread=$thread;pid=$app.Id;root_key=$rootKey}
+}
+function Assert-AddressReadinessOwner($Owner,$Clock) {
+ Assert-AddressReadinessTime $Clock.Elapsed.TotalMilliseconds
+ if($app.Id -ne $Owner.pid){throw 'Before-binding original native process identity changed; no input sent.'}
+ [void](Assert-AddressWindow $Owner.window $Owner.thread)
+ $rootElement=[Windows.Automation.AutomationElement]::FromHandle($Owner.window);$rootKey=Address-RuntimeKey $rootElement
+ Assert-AddressReadinessTime $Clock.Elapsed.TotalMilliseconds
+ if($rootKey -cne $Owner.root_key){throw 'Before-binding original owned root runtime identity changed; no input sent.'}
+ [void](Assert-AddressWindow $Owner.window $Owner.thread)
+ return $rootElement
+}
+function Observe-AddressBeforeBinding($Owner,$Clock,$Receipt,$Previous) {
+ $rootElement=Assert-AddressReadinessOwner $Owner $Clock
+ $documents=$rootElement.FindAll([Windows.Automation.TreeScope]::Descendants,[Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::ControlTypeProperty,[Windows.Automation.ControlType]::Document))
+ $Receipt.inventory_count=$documents.Count;$Receipt.truncated=$documents.Count -gt 64
+ Assert-AddressReadinessTime $Clock.Elapsed.TotalMilliseconds
+ if(!$documents.Count -or $documents.Count -gt 64){throw 'Before-binding document inventory missing or over bound; no input sent.'}
+ $private=@();$ids=[Collections.Generic.HashSet[string]]::new();$index=0;$exact=0
+ foreach($document in $documents){
+  $observed=@{index=$index;status='incomplete';outermost_eligibility='unavailable';ancestry_truncated=$false;root_runtime_key=$null;terminating_ancestor_runtime_key=$null;document_runtime_id=$null;document_runtime_id_status='not-read';root_runtime_id=$null;root_runtime_id_status='not-read';managed_source='not-read';native_source='not-read';source_result='not-read'}
+  $Receipt.records+=,$observed;$index++
+  $eligible=Address-OutermostDocument $document $rootElement $observed
+  Assert-AddressReadinessTime $Clock.Elapsed.TotalMilliseconds
+  if(!$eligible){throw 'Before-binding document was not in the exact outermost owned scope; no input sent.'}
+  $read=@{document_key=$null;root_key=$null;managed=$null;native=$null;managed_read=$false;native_read=$false}
+  $source=Address-DocumentSource $document $Owner.window $Owner.thread $rootElement $observed $read
+  Assert-AddressReadinessTime $Clock.Elapsed.TotalMilliseconds
+  if($read.root_key -cne $Owner.root_key){throw 'Before-binding source read changed original owned root; no input sent.'}
+  if(!$read.managed_read -or !$read.native_read -or $read.managed -isnot [string] -or !$read.managed -or $read.native -isnot [string] -or !$read.native -or $read.managed.Length -gt 4096 -or $read.native.Length -gt 4096){throw 'Before-binding complete managed/native source unavailable; no input sent.'}
+  if($read.managed -cne $read.native -or $source -cne $read.native){throw 'Before-binding managed/native source disagreement; no input sent.'}
+  if(!$ids.Add($read.document_key)){throw 'Before-binding duplicate document runtime identity; no input sent.'}
+  if($Previous -and $Previous.seen.ContainsKey($read.document_key) -and $Previous.seen[$read.document_key] -cne $read.native){throw 'Before-binding prior document source changed; no input sent.'}
+  $private+=@{key=$read.document_key;managed=$read.managed;native=$read.native;eligible=$eligible}
+  if(Address-IsToolbarSource $source){$exact++;if($exact -gt 1){throw 'Before-binding exact toolbar source ambiguous; no input sent.'}}
+  $observed.status='observed-not-authority'
+ }
+ [void](Assert-AddressReadinessOwner $Owner $Clock)
+ Assert-AddressReadinessTime $Clock.Elapsed.TotalMilliseconds
+ $Receipt.exact_toolbar_count=$exact;$Receipt.complete=$true
+ return ,$private
+}
+function Wait-OwnedAddressBeforeBinding($Trace) {
+ $clock=[Diagnostics.Stopwatch]::StartNew()
+ $receipt=@{protocol_version=4;status='observing';absolute_budget_ms=10000;schedule_ms=@(0,1000,2000,3000);observation_cap=4;owner_pid=$null;owner_thread=$null;owner_window=$null;owner_root_runtime_key=$null;observations=@();elapsed_ms=$null;strict_binding_status='not-started';strict_binding_completed_ms=$null}
+ $Trace['before_binding_readiness']=$receipt
+ try {
+  $owner=New-AddressReadinessOwner $clock;$receipt.owner_pid=$owner.pid;$receipt.owner_thread=$owner.thread;$receipt.owner_window=$owner.window.ToInt64();$receipt.owner_root_runtime_key=$owner.root_key;$previous=$null
+  for($index=0;$index -lt 4;$index++){
+   Assert-AddressReadinessTime $clock.Elapsed.TotalMilliseconds
+   $wait=$receipt.schedule_ms[$index]-$clock.Elapsed.TotalMilliseconds
+   if($wait -gt 0){Start-Sleep -Milliseconds ([int][Math]::Ceiling($wait))}
+   Assert-AddressReadinessTime $clock.Elapsed.TotalMilliseconds
+   $observation=@{index=$index;scheduled_ms=$receipt.schedule_ms[$index];started_ms=$clock.Elapsed.TotalMilliseconds;completed_ms=$null;state='Observing';complete=$false;failed=$false;inventory_count=$null;exact_toolbar_count=$null;truncated=$false;record_cap=64;records=@()}
+   $receipt.observations+=,$observation
+   try {
+    $documents=Observe-AddressBeforeBinding $owner $clock $observation $previous
+    $observation.completed_ms=$clock.Elapsed.TotalMilliseconds
+    $state=Advance-AddressReadiness $previous $documents $observation.completed_ms $index $observation
+    $accepted=$clock.Elapsed.TotalMilliseconds;Assert-AddressReadinessTime $accepted
+    if($state.kind -ceq 'Ready'){
+     $receipt.status='Ready';$receipt.elapsed_ms=$accepted
+     return @{owner=$owner;document_key=$state.document_key;clock=$clock}
+    }
+    $previous=$state
+   } catch {$observation.failed=$true;if($null -eq $observation.completed_ms){$observation.completed_ms=$clock.Elapsed.TotalMilliseconds};throw}
+  }
+  throw 'Before-binding readiness schedule exhausted without exact toolbar; no input sent.'
+ } catch {$receipt.status='failed';$receipt.elapsed_ms=$clock.Elapsed.TotalMilliseconds;$clock.Stop();throw}
+}
+function Bind-OwnedAddressAfterReadiness($Ready,$Trace) {
+ $receipt=$Trace['before_binding_readiness'];$receipt.strict_binding_status='observing'
+ try {
+  Assert-AddressReadinessTime $Ready.clock.Elapsed.TotalMilliseconds
+  # Exactly one strict validation. No catch/retry, alternate field or new authority.
+  $state=Read-OwnedAddress $null
+  if($state.bound.window -ne $Ready.owner.window -or $state.bound.thread -ne $Ready.owner.thread -or $state.bound.root_key -cne $Ready.owner.root_key -or $state.bound.document_key -cne $Ready.document_key){throw 'Ready toolbar/root identity changed before strict initial edit binding; no input sent.'}
+  $accepted=$Ready.clock.Elapsed.TotalMilliseconds;Assert-AddressReadinessTime $accepted
+  $receipt.strict_binding_status='bound';$receipt.status='Bound';$receipt.strict_binding_completed_ms=$accepted
+  return $state
+ } catch {$receipt.strict_binding_status='failed';$receipt.status='failed';throw}
+ finally {$receipt.elapsed_ms=$Ready.clock.Elapsed.TotalMilliseconds;$Ready.clock.Stop()}
 }
 function Read-OwnedAddress($Expected) {
  $app.Refresh();$window=$app.MainWindowHandle
@@ -335,10 +462,11 @@ function Assert-NeutralModifiers {
 }
 function Submit-OwnedFixture([string]$Text,$Trace) {
  if($Text -cnotmatch '^http://127\.0\.0\.1:[0-9]+/page\?token=[a-f0-9]{32}$'){throw 'Not the exact generated loopback fixture address; no input sent.'}
- $Trace['workload']='source-bound-slow-real-per-key-plus-UIA-readbacks';$Trace['minimum_per_key_delay_ms']=30;$Trace['expected_length']=$Text.Length;$Trace['keys']=@();$Trace['exact_final_value']= $false
+ $Trace['workload']='protocol4-before-binding-readiness-source-bound-slow-real-per-key-plus-UIA-readbacks';$Trace['minimum_per_key_delay_ms']=30;$Trace['expected_length']=$Text.Length;$Trace['keys']=@();$Trace['exact_final_value']= $false
  # Initial activation is native-owner-only; source authority must be established before Ctrl+L.
  Activate-OwnedAddressWindow
- $state=Read-OwnedAddress $null;$bound=$state.bound
+ $ready=Wait-OwnedAddressBeforeBinding $Trace
+ $state=Bind-OwnedAddressAfterReadiness $ready $Trace;$bound=$state.bound
 $Trace['address_authority']='exact-toolbar-source-nearest-document-and-stable-runtime-ids'
  $state=Read-OwnedAddress $bound
  Assert-NeutralModifiers
