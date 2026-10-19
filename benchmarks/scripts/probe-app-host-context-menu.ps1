@@ -220,7 +220,12 @@ function Test-Tree([IntPtr]$Menu,$Nodes,[int[]]$Path,[int]$Depth) {
   $type=if($kind -eq 3){0x800}elseif($kind -eq 2){0x200}else{0}
   $state=if($kind -eq 3){0}elseif(!$node.enabled){3}else{0}
   if($kind -in @(1,2) -and $node.checked){$state=$state -bor 8}
-  if($item.Type -ne $type -or ($item.State -band 0xffffff7fL) -ne $state -or $item.Units -ne [int]$node.rendered_units -or $item.Fingerprint -cne $node.rendered_fingerprint){throw 'Exact full-tree native type/state/rendered UTF-16 fingerprint mismatch.'}
+  if($item.Type -ne $type -or ($item.State -band 0xffffff7fL) -ne $state -or $item.Units -ne [int]$node.rendered_units -or $item.Fingerprint -cne $node.rendered_fingerprint){
+   # Failure-only fixed/numeric evidence; this does not accept or select the mismatching node.
+   $report.tree_mismatch=@{path=@($pathNow);kind=$kind;expected_type=$type;actual_type=$item.Type;expected_state=$state;actual_state=$item.State;masked_actual_state=($item.State -band 0xffffff7fL);expected_units=[int]$node.rendered_units;actual_units=$item.Units;fingerprint_equal=($item.Fingerprint -ceq $node.rendered_fingerprint)}
+   try {Save-Report} catch {} # Diagnostic I/O must never replace the original rejection.
+   throw 'Exact full-tree native type/state/rendered UTF-16 fingerprint mismatch.'
+  }
   $child=[BowserHostMenu]::GetSubMenu($Menu,$index)
   if($kind -eq 4){
    if($child -eq [IntPtr]::Zero -or $child -ne $item.Child){throw 'Exact current submenu handle mismatch.'}
