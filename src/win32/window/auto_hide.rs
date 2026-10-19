@@ -653,15 +653,18 @@ pub(crate) fn toggle_fullscreen(hwnd: HWND, app: &AppRef) {
 pub(crate) fn page_fullscreen(hwnd: HWND, app: &AppRef, on: bool, source: Option<&url::Url>) {
     let bits = fullscreen_bits(hwnd);
     // Repeated events must not overwrite the saved pre-fullscreen window placement.
+    if on == (bits & 2 != 0) { return; }
     let Some((next, step)) = page_step(bits, on) else { return };
-    if !on {
+    if on {
+        apply_step(hwnd, app, next, step);
+        // Browser-owned, persistent identity/exit surface. If it cannot be displayed, keep
+        // browser chrome visible rather than enter an unlabelled page full-screen state.
+        if !super::fullscreen_notice::show(hwnd, app, source) {
+            page_fullscreen(hwnd, app, false, None);
+        }
+    } else {
         super::fullscreen_notice::hide(hwnd);
-    }
-    apply_step(hwnd, app, next, step);
-    // Browser-owned, persistent identity/exit surface. If it cannot be displayed, keep
-    // browser chrome visible rather than enter an unlabelled page full-screen state.
-    if on && !super::fullscreen_notice::show(hwnd, app, source) {
-        page_fullscreen(hwnd, app, false, None);
+        apply_step(hwnd, app, next, step);
     }
 }
 
