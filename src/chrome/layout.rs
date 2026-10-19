@@ -106,6 +106,11 @@ impl Metrics {
     /// is not maximised. The page is a child window and wins every hit test over its own pixels, so
     /// without the rim there would be nowhere left to grab those three resize edges.
     pub const RESIZE_RIM: i32 = 4;
+    /// Clear space left of the caption buttons in the row that holds them. Nothing (no tab, no "+",
+    /// no toolbar control, no HTML host) is laid out there, so it is always native caption: the
+    /// window can be moved, double-clicked to maximise and dragged out of maximised from it however
+    /// many tabs there are.
+    pub const CAPTION_DRAG_GAP: i32 = 56;
     pub const ISLAND_RADIUS: i32 = 13;
     pub const OMNIBOX_RADIUS: i32 = 13;
     pub const FAVICON_SIZE: i32 = 16;
@@ -641,6 +646,10 @@ pub fn compute_for_with(
     let caption_w = 3 * m.px(Metrics::CAPTION_BUTTON_WIDTH);
     let caption_left = (client_w - caption_w).max(0);
     let caption_area = Rect::new(caption_left, 0, client_w, caption_h);
+    // Where a row of tabs beside the caption buttons (`TabsTop`, `SingleRow`) must stop: the drag gap
+    // before them stays empty however many tabs there are. The toolbar layouts keep their own empty
+    // toolbar space, which drags, and are unchanged.
+    let caption_row_end = caption_left - m.px(Metrics::CAPTION_DRAG_GAP);
 
     // The toolbar row. In `TabsTop` it sits under the top row, which holds the tabs and the captions.
     let strip_top = if variant == TabLayout::TabsTop { caption_h } else { top_margin };
@@ -677,7 +686,7 @@ pub fn compute_for_with(
         // One row: navigation, then an omnibox of limited width and the main menu right of it, then
         // the tabs, then "+" just left of the captions. The omnibox shrinks to its minimum before
         // the tabs are squeezed, and "+" and the menu drop out before the omnibox goes below it.
-        let right_limit = (caption_left - margin).max(omnibox_min);
+        let right_limit = caption_row_end.max(omnibox_min);
         let avail = right_limit - omnibox_min;
         let menu_total = menu_w + gap;
         let plus_total = new_tab_size + gap;
@@ -778,7 +787,7 @@ pub fn compute_for_with(
             // list at the end of the tabs. The row starts at the island margin so the islands sit
             // just below the window's top resize edge.
             let tab_top = top_margin + (m.px(Metrics::ISLAND_MARGIN) - m.px(Metrics::TAB_ROW_HEIGHT - Metrics::ISLAND_HEIGHT) / 2).max(0);
-            let right_limit = (caption_left - margin).max(tabs_left);
+            let right_limit = caption_row_end.max(tabs_left);
             let plus_left = right_limit - new_tab_size;
             // "+" drops out once it would leave less than one minimum-width tab beside it.
             if plus_left - gap >= tabs_left + min_w {
@@ -4132,8 +4141,8 @@ mod tests {
             assert!(l.omnibox.width() < m.px(Metrics::OMNIBOX_MAX_WIDTH), "dpi {dpi}");
             assert_eq!(l.omnibox.left, l.reload_button.right + m.px(Metrics::ISLAND_GAP), "dpi {dpi}");
             assert_eq!(l.main_menu_button.left, l.omnibox.right + m.px(Metrics::ISLAND_GAP), "dpi {dpi}");
-            // The tabs take everything else: up to "+", which is pinned against the captions.
-            assert_eq!(l.new_tab_button.right, l.caption_area.left - m.px(Metrics::OUTER_MARGIN), "dpi {dpi}");
+            // The tabs take everything else: up to "+", which stops the drag gap short of the captions.
+            assert_eq!(l.new_tab_button.right, l.caption_area.left - m.px(Metrics::CAPTION_DRAG_GAP), "dpi {dpi}");
             assert_eq!(l.tab_zone.right, l.new_tab_button.left - m.px(Metrics::ISLAND_GAP), "dpi {dpi}");
             assert!(l.tab_zone.width() > 4 * m.px(Metrics::SINGLE_ROW_OMNIBOX_WIDTH) / 3, "dpi {dpi}");
             assert!(l.tab_menu_button.is_empty(), "dpi {dpi}: six tabs fit");
@@ -5068,3 +5077,108 @@ mod arrangement_tests {
     // --- end two-level stacks ---
 }
 // --- end layout ---
+
+/// The window can always be moved: every arrangement leaves native drag pixels in the row of the
+/// caption buttons, outside every HTML host, and a row of tabs beside the captions keeps a gap of
+/// at least 48 DIP before them however many tabs there are.
+#[cfg(test)]
+mod caption_drag_gap_tests {
+    use super::*;
+
+    const DPIS: [u32; 5] = [96, 120, 144, 168, 192];
+    const WIDTHS_DIP: [i32; 5] = [520, 768, 1024, 1440, 2560];
+    const TAB_COUNTS: [usize; 3] = [1, 8, 60];
+
+    fn arrangements() -> Vec<(String, Arrangement)> {
+        let mut out = Vec::new();
+        for tabs in TabLayout::ALL {
+            for address_bar in [BarPosition::Top, BarPosition::Bottom] {
+                for tab_bar in [true, false] {
+                    let arrangement = Arrangement { tabs, tab_bar, address_bar, ..Arrangement::default() };
+                    out.push((format!("{tabs:?} tab bar {tab_bar} address {address_bar:?}"), arrangement));
+                }
+            }
+        }
+        out
+    }
+
+    /// The HTML hosts of a layout, in client pixels: the toolbar, the tab row or sidebar, the rail.
+    fn html_regions(layout: &Layout, sidebar: Option<&crate::vertical_tabs::SidebarLayout>) -> Vec<Rect> {
+        [
+            crate::chrome_host::toolbar_bounds(layout),
+            sidebar.and_then(crate::chrome_host::sidebar_bounds).or_else(|| crate::chrome_host::tab_row_bounds(layout)),
+            crate::chrome_host::rail_bounds(layout),
+        ]
+        .into_iter()
+        .flatten()
+        .map(Rect::from)
+        .collect()
+    }
+
+    /// The native drag pixels on the caption buttons' row, left of the buttons: (count, the run
+    /// that ends at the buttons).
+    fn caption_row_drag(layout: &Layout, html: &[Rect]) -> (i32, i32) {
+        let y = layout.caption_area.top + layout.caption_area.height() / 2;
+        let mut count = 0;
+        let mut run = 0;
+        for x in 0..layout.caption_area.left {
+            let drag = !html.iter().any(|r| r.contains(x, y)) && hit_test_native(layout, None, html, x, y) == Hit::CaptionArea;
+            count += i32::from(drag);
+            run = if drag { run + 1 } else { 0 };
+        }
+        (count, run)
+    }
+
+    #[test]
+    fn every_arrangement_keeps_native_drag_pixels_beside_the_caption_buttons() {
+        for (name, arrangement) in arrangements() {
+            for dpi in DPIS {
+                let m = Metrics::new(dpi);
+                for width in WIDTHS_DIP {
+                    for tabs in TAB_COUNTS {
+                        for maximised in [false, true] {
+                            let (layout, sidebar) = compute_arranged_in_frame(arrangement, m.px(width), m.px(700), dpi, tabs, 0, maximised, 260, true, crate::vertical_tabs::TAB_ROW_HEIGHT);
+                            let context = format!("{name} dpi {dpi} width {width} tabs {tabs} maximised {maximised}");
+                            assert!(!layout.caption_area.is_empty(), "{context}");
+                            let html = html_regions(&layout, sidebar.as_ref());
+                            let (count, run) = caption_row_drag(&layout, &html);
+                            assert!(count > 0, "{context}: no native drag pixel left on the caption row");
+                            if matches!(layout.variant, TabLayout::TabsTop | TabLayout::SingleRow) {
+                                assert!(
+                                    run >= m.px(48),
+                                    "{context}: the gap before the captions is {run} px, under 48 DIP"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn tabs_top_gap_is_the_caption_drag_gap_and_tabs_shrink_to_keep_it() {
+        for dpi in DPIS {
+            let m = Metrics::new(dpi);
+            for width in WIDTHS_DIP {
+                for tabs in TAB_COUNTS {
+                    let l = compute_for(TabLayout::TabsTop, m.px(width), m.px(700), dpi, tabs, 0, false);
+                    let context = format!("dpi {dpi} width {width} tabs {tabs}");
+                    let gap_left = l.caption_area.left - m.px(Metrics::CAPTION_DRAG_GAP);
+                    assert!(l.tab_row.right <= gap_left, "{context}: tab row {:?}", l.tab_row);
+                    assert!(l.new_tab_button.right <= gap_left, "{context}: \"+\" {:?}", l.new_tab_button);
+                    assert!(l.tab_menu_button.right <= gap_left, "{context}: tab list {:?}", l.tab_menu_button);
+                    for island in l.tabs() {
+                        assert!(island.right <= gap_left, "{context}: tab {island:?}");
+                    }
+                    let host = crate::chrome_host::tab_row_bounds(&l).map(Rect::from).unwrap_or_default();
+                    assert!(host.right <= gap_left, "{context}: the tab host {host:?} reaches the gap");
+                    let y = l.caption_area.height() / 2;
+                    for x in [gap_left, (gap_left + l.caption_area.left) / 2, l.caption_area.left - 1] {
+                        assert_eq!(hit_test_native(&l, None, &[host], x, y), Hit::CaptionArea, "{context}: x {x}");
+                    }
+                }
+            }
+        }
+    }
+}
