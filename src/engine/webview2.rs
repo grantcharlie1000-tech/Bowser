@@ -550,10 +550,12 @@ fn current_web_url(webview: &ICoreWebView2) -> Option<Url> {
 }
 
 /// The blocker's first-party host for a document: the host of an http(s) source, or empty for
-/// anything else (about:, data:, file:, ...), so no stale host carries over.
+/// anything else (about:, data:, file:, ...), so no stale host carries over. A trailing dot
+/// (`news.example.`) is dropped, as the blocker drops it from request hosts, so the site's own
+/// hosts stay first-party and its exceptions apply.
 fn top_host_for_source(source: &str) -> String {
     web_url_from_source(source)
-        .and_then(|url| url.host_str().map(str::to_owned))
+        .and_then(|url| url.host_str().map(|host| host.strip_suffix('.').unwrap_or(host).to_owned()))
         .unwrap_or_default()
 }
 
@@ -707,6 +709,66 @@ struct TabBlockState {
     /// The last cosmetic script sent to this tab installed a style, so a page with no cosmetic
     /// CSS still has one to remove.
     cosmetic_installed: Cell<bool>,
+    /// The `WebResourceRequested` filters this tab registered and the rule generation they came
+    /// from; `None` until the webview is configured. A newer build registers them again.
+    request_filters: RefCell<Option<(u32, Vec<RequestFilter>)>>,
+}
+
+/// One registered `WebResourceRequested` filter URI with its request source kinds.
+type RequestFilter = (String, COREWEBVIEW2_WEB_RESOURCE_REQUEST_SOURCE_KINDS);
+
+/// The filters to remove and to add so a tab that registered `registered` has `wanted`.
+fn request_filter_changes(registered: &[RequestFilter], wanted: &[RequestFilter]) -> (Vec<RequestFilter>, Vec<RequestFilter>) {
+    let remove = registered.iter().filter(|filter| !wanted.contains(filter)).cloned().collect();
+    let add = wanted.iter().filter(|filter| !registered.contains(filter)).cloned().collect();
+    (remove, add)
+}
+
+/// Makes this tab's `WebResourceRequested` filters the blocker's `filters` at rule generation
+/// `generation`: the ones no longer wanted are removed, the new ones added. Without this, a rule
+/// from `filters.txt` or an added list never reached a tab created before the build swapped it in
+/// (the startup and restored tabs, every open tab after a list is added). Returns how many filter
+/// registrations were added.
+fn sync_request_filters(
+    webview: &ICoreWebView2,
+    block: &TabBlockState,
+    generation: u32,
+    request_filters: Vec<String>,
+) -> windows::core::Result<u64> {
+    let webview22 = webview.cast::<ICoreWebView2_22>().ok();
+    let wanted: Vec<RequestFilter> = match webview22 {
+        Some(_) => request_filter_uris(request_filters),
+        // The older call has no source kinds; the kinds are only kept to compare.
+        None => request_filters.into_iter().map(|uri| (uri, COREWEBVIEW2_WEB_RESOURCE_REQUEST_SOURCE_KINDS_ALL)).collect(),
+    };
+    let registered = block.request_filters.borrow().as_ref().map(|(_, filters)| filters.clone()).unwrap_or_default();
+    let (remove, add) = request_filter_changes(&registered, &wanted);
+    for (uri, kinds) in remove {
+        let uri = HSTRING::from(uri);
+        for context in BLOCKABLE_CONTEXTS {
+            let _ = unsafe {
+                match &webview22 {
+                    Some(webview22) => webview22.RemoveWebResourceRequestedFilterWithRequestSourceKinds(PCWSTR(uri.as_ptr()), context, kinds),
+                    None => webview.RemoveWebResourceRequestedFilter(PCWSTR(uri.as_ptr()), context),
+                }
+            };
+        }
+    }
+    let mut added = 0u64;
+    for (uri, kinds) in add {
+        let uri = HSTRING::from(uri);
+        for context in BLOCKABLE_CONTEXTS {
+            unsafe {
+                match &webview22 {
+                    Some(webview22) => webview22.AddWebResourceRequestedFilterWithRequestSourceKinds(PCWSTR(uri.as_ptr()), context, kinds)?,
+                    None => webview.AddWebResourceRequestedFilter(PCWSTR(uri.as_ptr()), context)?,
+                }
+            }
+            added += 1;
+        }
+    }
+    *block.request_filters.borrow_mut() = Some((generation, wanted));
+    Ok(added)
 }
 
 fn blocker_detail(block: &TabBlockState, name: &'static str, count: u64) {
@@ -1319,7 +1381,14 @@ fn refresh_blocked_urls(
     } else {
         state.blocked_url_patterns(top_host)
     };
+    // A build that changed the rules since this tab registered its request filters (only once the
+    // webview is configured) registers them again.
+    let stale_filters = block.request_filters.borrow().as_ref().is_some_and(|(registered, _)| *registered != generation);
+    let request_filters = stale_filters.then(|| state.request_filters());
     drop(state);
+    if let Some(request_filters) = request_filters {
+        let _ = sync_request_filters(webview, block, generation, request_filters);
+    }
     blocker_detail(block, "blocker_pattern_preparation_finished", patterns.len() as u64);
     *block.doc_filter.borrow_mut() = Some(signature);
     // Host rules and plain path rules fail in the renderer once Network.enable has landed. The
@@ -4365,7 +4434,7 @@ unsafe fn configure_controller(
                                 // that is still showing until the navigation commits.
                                 if let (Some(blocker), Some(host)) = (
                                     nav_blocker.as_ref(),
-                                    parsed.as_ref().and_then(|url| url.host_str()),
+                                    parsed.as_ref().and_then(|url| url.host_str()).map(|host| host.strip_suffix('.').unwrap_or(host)),
                                 ) {
                                     refresh_blocked_urls(
                                         sender,
@@ -4531,6 +4600,7 @@ unsafe fn configure_controller(
         let completed_progress = events.navigation_progress.clone();
         let completed_page_loaded = events.page_loaded.clone();
         let completed_failed = events.navigation_failed.clone();
+        let (completed_block_tab, completed_blocker) = (block_tab.clone(), blocker.clone());
         webview.add_NavigationCompleted(
             &NavigationCompletedEventHandler::create(Box::new(move |sender, args| {
                 if let Some(args) = args {
@@ -4566,13 +4636,21 @@ unsafe fn configure_controller(
                                     callback(tab_id, url);
                                 }
                             }
-                        } else if let Some(callback) = completed_failed.as_ref() {
-                            let mut status = COREWEBVIEW2_WEB_ERROR_STATUS(0);
-                            let _ = args.WebErrorStatus(&mut status);
-                            // A blocker SetCancel completes as OPERATION_CANCELED. The page that
-                            // is still showing did not fail to load, so the security pill stays.
-                            if navigation_failure_is_reportable(status) {
-                                callback(tab_id, is_certificate_error(status));
+                        } else {
+                            // A navigation that did not commit (cancelled for a pinned tab, a
+                            // download, a 204, Stop) leaves the page still showing: its own block
+                            // list goes back, not the destination's from NavigationStarting.
+                            if let (Some(sender), Some(blocker)) = (sender.as_ref(), completed_blocker.as_ref()) {
+                                refresh_blocked_urls(sender, &completed_block_tab, blocker, private, None);
+                            }
+                            if let Some(callback) = completed_failed.as_ref() {
+                                let mut status = COREWEBVIEW2_WEB_ERROR_STATUS(0);
+                                let _ = args.WebErrorStatus(&mut status);
+                                // A blocker SetCancel completes as OPERATION_CANCELED. The page that
+                                // is still showing did not fail to load, so the security pill stays.
+                                if navigation_failure_is_reportable(status) {
+                                    callback(tab_id, is_certificate_error(status));
+                                }
                             }
                         }
                     }
@@ -5084,8 +5162,11 @@ unsafe fn configure_controller(
             detail("configure_blocker_refresh_started", 0);
             refresh_blocked_urls(&webview, &block_tab, &blocker, private, None);
             detail("configure_blocker_refresh_finished", 0);
-            // The rules do not change after load, so neither do the request filters.
-            let request_filters = blocker.borrow().request_filters();
+            // A later build that changes them registers them again (`refresh_blocked_urls`).
+            let (request_filters, filter_generation) = {
+                let state = blocker.borrow();
+                (state.request_filters(), state.generation())
+            };
             let response_environment = environment.clone();
             let request_tab = block_tab.clone();
             webview.add_WebResourceRequested(
@@ -5151,31 +5232,7 @@ unsafe fn configure_controller(
             // which the older call does not see. The URIs are narrow (`request_filter_uris`): no
             // filter at all means no page request is routed through the UI thread.
             detail("configure_filter_registration_started", 0);
-            let mut registered_filters = 0u64;
-            match webview.cast::<ICoreWebView2_22>() {
-                Ok(webview22) => {
-                    for (uri, kinds) in request_filter_uris(request_filters) {
-                        let uri = HSTRING::from(uri);
-                        for context in BLOCKABLE_CONTEXTS {
-                            webview22.AddWebResourceRequestedFilterWithRequestSourceKinds(
-                                PCWSTR(uri.as_ptr()),
-                                context,
-                                kinds,
-                            )?;
-                            registered_filters += 1;
-                        }
-                    }
-                }
-                Err(_) => {
-                    for uri in request_filters {
-                        let uri = HSTRING::from(uri);
-                        for context in BLOCKABLE_CONTEXTS {
-                            webview.AddWebResourceRequestedFilter(PCWSTR(uri.as_ptr()), context)?;
-                            registered_filters += 1;
-                        }
-                    }
-                }
-            }
+            let registered_filters = sync_request_filters(&webview, &block_tab, filter_generation, request_filters)?;
             detail("configure_filter_registration_finished", registered_filters);
         }
 
@@ -6213,12 +6270,57 @@ mod tests {
     }
 
     #[test]
+    fn a_tab_made_before_the_background_build_registers_the_build_s_request_filters() {
+        let dir = std::env::temp_dir().join(format!("bowser-stale-request-filters-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(crate::blocker::USER_LIST_NAME), "/my-own-ad-path/\nadserv\n").unwrap();
+        let mut state = crate::blocker::BlockerState::load_deferred(&dir, &[], || {});
+        // What the startup tab registers when it is configured.
+        let at_creation = (state.generation(), request_filter_uris(state.request_filters()));
+        let start = std::time::Instant::now();
+        while state.building() && start.elapsed().as_secs() < 60 {
+            state.take_built();
+            std::thread::yield_now();
+        }
+        assert!(state.should_block("https://news.example/my-own-ad-path/x.js", "news.example"), "the rule is live");
+        // Its next refresh sees a newer generation and registers the difference.
+        assert_ne!(state.generation(), at_creation.0, "a refresh registers the filters again");
+        let wanted = request_filter_uris(state.request_filters());
+        let (remove, add) = request_filter_changes(&at_creation.1, &wanted);
+        assert!(!add.is_empty(), "the build's filters were never registered on the tab");
+        let mut registered: Vec<RequestFilter> = at_creation.1.into_iter().filter(|filter| !remove.contains(filter)).collect();
+        registered.extend(add);
+        registered.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.0.cmp(&b.1.0)));
+        let mut wanted = wanted;
+        wanted.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.0.cmp(&b.1.0)));
+        assert_eq!(registered, wanted, "after the update the tab has exactly the build's filters");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_navigation_that_does_not_commit_puts_the_showing_page_s_block_list_back() {
+        let source = include_str!("webview2.rs");
+        let production = &source[..source.find("#[cfg(test)]").expect("test module")];
+        let completed = &production[production.find("webview.add_NavigationCompleted(").expect("NavigationCompleted")..];
+        let completed = &completed[..completed.find("webview.add_SourceChanged(").expect("next handler")];
+        let failed = &completed[completed.find("if success.as_bool() {").expect("success branch")..];
+        let failed = &failed[failed.find("} else {").expect("failure branch")..];
+        assert!(
+            failed.contains("refresh_blocked_urls(sender, &completed_block_tab, blocker, private, None);"),
+            "a cancelled or failed navigation keeps the destination's block list on the page still showing"
+        );
+    }
+
+    #[test]
     fn the_request_filters_and_lazy_legacy_list_stay_wired_into_the_engine() {
         let source = include_str!("webview2.rs");
         let production = &source[..source.find("#[cfg(test)]").expect("test module")];
         for needle in [
-            "blocker.borrow().request_filters()",
-            "request_filter_uris(request_filters)",
+            "(state.request_filters(), state.generation())",
+            "Some(_) => request_filter_uris(request_filters),",
+            "sync_request_filters(&webview, &block_tab, filter_generation, request_filters)?",
+            "let _ = sync_request_filters(webview, block, generation, request_filters);",
             "let legacy = blocked_urls_legacy_params(&rejected);",
             "state.response_patterns(top_host, private)",
             "cosmetic_script(css.as_deref(), installed)",
@@ -7033,6 +7135,18 @@ mod tests {
         assert_eq!(top_host_for_source("file:///C:/x.html"), "");
         assert_eq!(top_host_for_source("ms-browser-extension://x/"), "");
         assert_eq!(top_host_for_source("not a url"), "");
+    }
+
+    #[test]
+    fn a_trailing_dot_address_keeps_its_own_hosts_first_party() {
+        assert_eq!(top_host_for_source("https://www.news.example./a"), "www.news.example");
+        let mut matcher = crate::blocker::Blocker::default();
+        matcher.add_list("||cdn.news.example^\n||tracker.example^\n");
+        let state = crate::blocker::BlockerState::new(matcher, &["news.example".to_owned()]);
+        let host = top_host_for_source("https://www.news.example./");
+        assert!(!state.should_block("https://cdn.news.example/a.js", &host), "the site's CDN is first-party");
+        assert!(!state.should_block("https://tracker.example/a.js", &host), "blocker_allow applies");
+        assert!(state.blocked_url_patterns(&host).is_empty());
     }
 
     #[test]

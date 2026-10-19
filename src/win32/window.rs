@@ -530,6 +530,9 @@ struct WindowChrome {
     /// The startup read of history.txt, running on a worker until something needs the history
     /// (see `loaded_history`).
     history_load: Option<JoinHandle<History>>,
+    /// `productivity::history_removals` when `history` was last read: a deletion since then makes
+    /// `suggestion_history` read the file again.
+    history_removals: u64,
     urls: HashMap<TabId, String>,
     /// The full address per tab next to the (possibly `minimal_url`-condensed) one in `urls`: what the
     /// focused field holds, so copying or editing sees the query and fragment too.
@@ -746,6 +749,7 @@ impl WindowChrome {
             omni_click: None,
             history: History::default(),
             history_load: None,
+            history_removals: crate::productivity::history_removals(),
             urls: HashMap::with_capacity(8),
             full_urls: HashMap::with_capacity(8),
             visits: crate::productivity::VisitTracker::default(),
@@ -829,6 +833,11 @@ impl WindowChrome {
     /// Starts reading the profile's history on a worker, so the window shows without first parsing
     /// every stored address. Suggestions and visits take the result through `loaded_history`.
     fn start_history_load(&mut self) {
+        self.load_history_from_file(true);
+    }
+    /// [`Self::start_history_load`]; `prune` first drops visits older than the retention setting.
+    fn load_history_from_file(&mut self, prune: bool) {
+        self.history_removals = crate::productivity::history_removals();
         let Ok(profile) = crate::profile::active() else {
             return;
         };
@@ -842,7 +851,9 @@ impl WindowChrome {
             .spawn(move || {
                 // Visits older than the retention setting are dropped before the list is read, so
                 // suggestions never offer them (thread T3).
-                let _ = crate::history_retention::prune_now(&worker);
+                if prune {
+                    let _ = crate::history_retention::prune_now(&worker);
+                }
                 read_suggestion_history(&worker)
             })
         {
@@ -888,6 +899,8 @@ impl WindowChrome {
         let size = Metrics::new(self.dpi).px(Metrics::FAVICON_SIZE).max(1) as u32;
         let html_strip = self.html_tab_region().is_some();
         // The previous snapshot by id: one pass, not a search of every old tab for every tab.
+        // A visit recorded below lands in a history that has no deleted sites.
+        self.reread_history_after_a_deletion();
         let previous: HashMap<TabId, &TabSnapshot> = self.tabs.iter().map(|tab| (tab.id, tab)).collect();
         for &id in &ids {
             let old = previous.get(&id).copied();
@@ -1343,10 +1356,25 @@ impl WindowChrome {
         self.motion.prune(now);
         running || rail_frame.running
     }
+    /// The history the address bar suggests from. After a deletion (Delete browsing data, the
+    /// history page, a retention prune) it is read from the file again, so deleted sites are gone.
+    fn suggestion_history(&mut self) -> &mut History {
+        self.reread_history_after_a_deletion();
+        loaded_history(&mut self.history, &mut self.history_load)
+    }
+    /// Starts reading the history again (on the worker) when something was deleted from it since
+    /// it was read. Waits for nothing.
+    fn reread_history_after_a_deletion(&mut self) {
+        if self.history_removals != crate::productivity::history_removals() {
+            self.history = History::default();
+            self.history_load = None;
+            self.load_history_from_file(false);
+        }
+    }
     fn update_completion(&mut self) {
-        let history = loaded_history(&mut self.history, &mut self.history_load);
+        self.suggestion_history();
         self.completion =
-            omnibox::inline_completion(history, &self.edit_text, !self.suppress_completion);
+            omnibox::inline_completion(&self.history, &self.edit_text, !self.suppress_completion);
         self.suppress_completion = false
     }
 }
@@ -11251,8 +11279,8 @@ fn html_suggest_compute(hwnd: HWND, app: &AppRef, seq: u32, text: &str, forced: 
     let tabs: Vec<_> =
         App::tab_suggest_sources(app).into_iter().filter(|(id, ..)| *id != active).collect();
     let rows = with_chrome(hwnd, |s| {
-        let history = loaded_history(&mut s.history, &mut s.history_load);
-        super::address_bar::rows(hwnd, app, history, s.completion.as_ref(), &super::address_bar::Query { text, typed_url: typed_url.as_ref(), tabs: &tabs, seq, forced })
+        s.suggestion_history();
+        super::address_bar::rows(hwnd, app, &s.history, s.completion.as_ref(), &super::address_bar::Query { text, typed_url: typed_url.as_ref(), tabs: &tabs, seq, forced })
     })?;
     let mut rows = rows;
     // A favicon is known for a row's page only through an open tab on the same site.
@@ -13022,6 +13050,32 @@ mod tests {
         // A visit recorded later lands in the loaded history.
         loaded_history(&mut history, &mut load).record("https://example.org/", "Org");
         assert_eq!(loaded_history(&mut history, &mut load).len(), 2);
+    }
+
+    #[test]
+    fn a_history_deletion_takes_the_deleted_sites_out_of_the_address_bar() {
+        let _profile = crate::profile::TestProfileGuard::isolated();
+        let path = crate::profile::active().unwrap().history_file();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "1000\thttps://uniquesite.example/\tUnique\n1001\thttps://other.example/\tOther\n").unwrap();
+        let mut s = WindowChrome::new(1200, 700, 96, HWND::default());
+        s.load_history_from_file(false);
+        let completes = |s: &mut WindowChrome, typed: &str| {
+            s.edit_text = typed.to_owned();
+            s.update_completion();
+            s.completion.as_ref().map(|c| c.full_url.clone())
+        };
+        assert_eq!(completes(&mut s, "uniq").as_deref(), Some("https://uniquesite.example/"));
+        // Removing one entry on bowser://history (or a retention prune) takes only that site away.
+        assert!(crate::productivity::delete_history_entry(&path, "https://uniquesite.example/").unwrap());
+        assert_eq!(completes(&mut s, "uniq"), None, "the deleted site is still offered");
+        assert_eq!(completes(&mut s, "oth").as_deref(), Some("https://other.example/"));
+        // A visit recorded in this window and then Delete browsing data > History > All time.
+        s.suggestion_history().record("https://visited.example/", "Visited");
+        assert!(completes(&mut s, "visi").is_some());
+        crate::productivity::clear_history(&path).unwrap();
+        assert_eq!(completes(&mut s, "visi"), None);
+        assert_eq!(completes(&mut s, "oth"), None);
     }
 
     #[test]

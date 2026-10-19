@@ -371,6 +371,24 @@ fn a_tab_the_user_has_not_zoomed_follows_the_default_zoom_in_tab_scope() {
 }
 
 #[test]
+fn a_site_zoomed_to_100_stays_at_100_on_reload_when_the_default_zoom_is_125() {
+    let fx = Fixture::new("zoom-100");
+    let store = Rc::new(RefCell::new(crate::site_prefs::SitePrefsStore::in_memory()));
+    fx.app.borrow_mut().site_prefs = Some(store.clone());
+    fx.app.borrow_mut().settings.default_zoom = 125;
+    let site = url::Url::parse("https://www.example.test/docs/page").unwrap();
+    assert!(App::set_tab_zoom(&fx.app, fx.tab, 100));
+    fx.record.borrow_mut().zooms.clear();
+    App::apply_stored_zoom(&fx.app, fx.tab, &site); // the reload commits
+    assert!(fx.record.borrow().zooms.is_empty(), "the page was put back to the default 125%");
+    assert_eq!(App::active_zoom_percent(&fx.app), 100);
+    // Ctrl+0 goes to the default zoom, and the site then follows the setting.
+    App::zoom_active(&fx.app, crate::site_prefs::ZoomStep::Reset);
+    assert_eq!(App::active_zoom_percent(&fx.app), 125);
+    assert_eq!(store.borrow().zoom("https://www.example.test"), None);
+}
+
+#[test]
 fn applying_the_settings_reaches_the_engine_and_the_reader() {
     let fx = Fixture::new("apply");
     let mut settings = crate::settings::Settings::default();
