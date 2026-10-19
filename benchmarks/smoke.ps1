@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [int] $TimeoutSeconds = 30,
     [switch] $IncludeWebSearch,

@@ -880,8 +880,10 @@ pub enum ReaderResult {
     Applied(crate::reader::Active),
     /// The page has no article-like text, so reader view changed nothing.
     NothingToRead,
-    /// Not an http(s) page, no live page, or a call is already running.
+    /// Not an http(s) page or no live page.
     Unavailable,
+    /// A reader call (such as the automatic check after a page loads) is still running.
+    Busy,
     /// The page did not answer or the script failed; the page was left as it was.
     Failed,
 }
@@ -3918,10 +3920,6 @@ impl App {
     /// Navigation commit: shows the page at its site's stored zoom (100 for a site with none).
     /// Without a store (benchmark launches) the tab keeps whatever zoom it has.
     fn apply_stored_zoom(app: &AppRef, tab: TabId, url: &url::Url) {
-        if Self::tab_private(app, tab) {
-            // A private tab neither reads nor writes stored zoom; it keeps its own level.
-            return;
-        }
         let (store, current, default_zoom, scope, tab_set) = {
             let state = app.borrow();
             let Some(entry) = state.tabs.iter().find(|entry| entry.id == tab) else {
@@ -3929,11 +3927,18 @@ impl App {
             };
             (state.site_prefs.clone(), entry.zoom, state.settings.default_zoom, state.settings.page_tools.zoom_scope, entry.zoom_set)
         };
-        let Some(store) = store else {
-            return;
+        let target = if Self::tab_private(app, tab) {
+            // A private tab never reads or writes stored zoom: it keeps the level it was given, and
+            // until then follows the default zoom.
+            crate::page_tools::zoom_on_commit(crate::page_tools::ZoomScope::Tab, tab_set, current, default_zoom, default_zoom)
+        } else {
+            let Some(store) = store else {
+                return;
+            };
+            let stored = store.borrow().zoom_for_uri(url.as_str(), default_zoom);
+            crate::page_tools::zoom_on_commit(scope, tab_set, current, stored, default_zoom)
         };
-        let stored = store.borrow().zoom_for_uri(url.as_str(), default_zoom);
-        let Some(target) = crate::page_tools::zoom_on_commit(scope, tab_set, current, stored, default_zoom) else {
+        let Some(target) = target else {
             return;
         };
         let applied = Self::call_engine(app, |engine| engine.set_zoom_percent(tab, target))
@@ -4534,8 +4539,12 @@ impl App {
         mode: crate::reader::Mode,
         done: Box<dyn FnOnce(ReaderResult)>,
     ) {
-        if Self::reader_state(app, tab).is_none() || !Self::begin_reader_call(app, tab) {
+        if Self::reader_state(app, tab).is_none() {
             done(ReaderResult::Unavailable);
+            return;
+        }
+        if !Self::begin_reader_call(app, tab) {
+            done(ReaderResult::Busy);
             return;
         }
         let epoch = Self::reader_state(app, tab).map_or(0, |state| state.epoch);
@@ -9797,6 +9806,80 @@ mod tests {
                 "suspend:30000".to_owned(),
             ]
         );
+    }
+
+    #[test]
+    fn reader_command_during_the_load_probe_says_busy() {
+        let app = app_with_pending(rect(800, 600));
+        let tab = App::active_tab_id(&app);
+        {
+            let mut state = app.borrow_mut();
+            let entry = state.tabs.iter_mut().find(|entry| entry.id == tab).unwrap();
+            entry.url = Some(url::Url::parse("https://example.test/article").unwrap());
+            entry.reader.busy = true; // the automatic probe after load is in flight
+        }
+        let seen = Rc::new(std::cell::Cell::new(None));
+        let sink = seen.clone();
+        App::reader_toggle(&app, tab, crate::reader::Mode::Reader, Box::new(move |result| sink.set(Some(result))));
+        assert_eq!(seen.get(), Some(ReaderResult::Busy));
+    }
+
+    /// Engine that records the zoom levels it is asked to set.
+    struct ZoomEngine {
+        set: Rc<RefCell<Vec<(TabId, u16)>>>,
+    }
+
+    impl EngineAdapter for ZoomEngine {
+        fn navigate(&mut self, _url: &url::Url) -> windows::core::Result<()> {
+            Ok(())
+        }
+        fn can_go_back(&self) -> bool {
+            false
+        }
+        fn go_back(&mut self) -> windows::core::Result<()> {
+            Ok(())
+        }
+        fn can_go_forward(&self) -> bool {
+            false
+        }
+        fn go_forward(&mut self) -> windows::core::Result<()> {
+            Ok(())
+        }
+        fn resize(&mut self, _bounds: windows::Win32::Foundation::RECT) -> windows::core::Result<()> {
+            Ok(())
+        }
+        fn set_zoom_percent(&mut self, tab: TabId, percent: u16) -> windows::core::Result<bool> {
+            self.set.borrow_mut().push((tab, percent));
+            Ok(true)
+        }
+        fn set_memory_usage_target(
+            &mut self,
+            _target: MemoryUsageTarget,
+        ) -> windows::core::Result<MemoryTargetApply> {
+            Ok(MemoryTargetApply::Applied)
+        }
+        fn close(&mut self) -> windows::core::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn private_tab_commit_lands_on_the_default_zoom_without_the_site_store() {
+        let app = app_with_pending(rect(800, 600));
+        let set = Rc::new(RefCell::new(Vec::new()));
+        let private = App::new_private_tab(&app);
+        app.borrow_mut().engine = Some(Box::new(ZoomEngine { set: set.clone() }));
+        app.borrow_mut().settings.default_zoom = 125;
+        assert!(app.borrow().site_prefs.is_none(), "no site store is read for a private tab");
+        let page = url::Url::parse("https://example.test/").unwrap();
+        App::apply_stored_zoom(&app, private, &page);
+        assert_eq!(*set.borrow(), vec![(private, 125)]);
+        assert_eq!(app.borrow().tabs.iter().find(|tab| tab.id == private).unwrap().zoom, 125);
+        // A level the user gave the private tab is kept across its next navigation.
+        App::note_tab_zoom(&app, private, 150, true);
+        App::apply_stored_zoom(&app, private, &page);
+        assert_eq!(set.borrow().len(), 1);
+        assert_eq!(app.borrow().tabs.iter().find(|tab| tab.id == private).unwrap().zoom, 150);
     }
 
     #[test]

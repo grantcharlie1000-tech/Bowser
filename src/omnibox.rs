@@ -674,6 +674,13 @@ mod tests {
     }
 
     #[test]
+    fn minimal_form_of_an_ip_address_keeps_the_whole_address() {
+        assert_eq!(minimal_display_form(&url("http://127.0.0.1:8731/article.html")), "127.0.0.1/article.html");
+        assert_eq!(minimal_display_form(&url("http://192.168.1.20/")), "192.168.1.20");
+        assert_eq!(minimal_display_form(&url("http://[::1]:8080/a")), "[::1]/a");
+    }
+
+    #[test]
     fn show_full_address_keeps_scheme_and_www_and_wins_over_the_minimal_form() {
         let url = Url::parse("https://www.example.com/a/b?q=1").unwrap();
         set_show_full_address(false);

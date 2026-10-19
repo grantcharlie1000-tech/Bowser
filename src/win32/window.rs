@@ -5472,7 +5472,7 @@ fn rail_composer_anchor(hwnd: HWND, key: RailKey) -> POINT {
     }
 }
 
-/// Editâ€¦ on a rail web app: the composer opens where the menu was (`at`, screen pixels).
+/// Edit… on a rail web app: the composer opens where the menu was (`at`, screen pixels).
 fn edit_rail_app(hwnd: HWND, app: &AppRef, id: u32, at: POINT) {
     if super::composer::open(hwnd, app, super::composer::Composer::AppEdit(id), None, at) {
         return;
@@ -5637,12 +5637,12 @@ fn show_rail_context_menu(hwnd: HWND, app: &AppRef, key: RailKey, x: i32, y: i32
             let name = name.clone();
             let (can_up, can_down) = workspace_move_enabled(set.all().iter().position(|workspace| workspace.id() == id), set.workspace_count());
             let menu_entries = vec![
-                Entry::Item(Item::new(1, "Renameâ€¦", Icon::Person).glyph("edit")),
-                Entry::Item(Item::new(2, "Change iconâ€¦", Icon::Grid).glyph("workspace")),
-                Entry::Item(Item::new(3, "Change colourâ€¦", Icon::Grid).glyph("droplet")),
+                Entry::Item(Item::new(1, "Rename…", Icon::Person).glyph("edit")),
+                Entry::Item(Item::new(2, "Change icon…", Icon::Grid).glyph("workspace")),
+                Entry::Item(Item::new(3, "Change colour…", Icon::Grid).glyph("droplet")),
                 Entry::Item(Item::new(4, "Move up", Icon::Grid).glyph("chevron-up").disabled_if(!can_up)),
                 Entry::Item(Item::new(5, "Move down", Icon::Grid).glyph("chevron-down").disabled_if(!can_down)),
-                Entry::Item(Item::new(6, "Deleteâ€¦", Icon::Close).glyph("trash").disabled_if(set.workspace_count() == 1)),
+                Entry::Item(Item::new(6, "Delete…", Icon::Close).glyph("trash").disabled_if(set.workspace_count() == 1)),
             ];
             let kind = format!("rail-ws:{raw_id}");
             menu::show(hwnd, point, menu::Placement::BelowLeft, Menu { header: None, entries: menu_entries, footer: name.clone() }, &kind, move |app, chosen| {
@@ -5665,7 +5665,7 @@ fn show_rail_context_menu(hwnd: HWND, app: &AppRef, key: RailKey, x: i32, y: i32
                         const NO_EMOJI: usize = 35;
                         let emoji = App::workspace_emoji(app, id);
                         entries.push(Entry::Separator);
-                        entries.push(Entry::Item(Item::new(EMOJI, emoji.as_deref().map_or_else(|| "Emojiâ€¦".to_owned(), |emoji| format!("Emoji: {emoji}â€¦")), Icon::Grid).glyph("edit").checked(emoji.is_some())));
+                        entries.push(Entry::Item(Item::new(EMOJI, emoji.as_deref().map_or_else(|| "Emoji…".to_owned(), |emoji| format!("Emoji: {emoji}…")), Icon::Grid).glyph("edit").checked(emoji.is_some())));
                         if emoji.is_some() {
                             entries.push(Entry::Item(Item::new(NO_EMOJI, "Use the icon", Icon::Grid).glyph("reset")));
                         }
@@ -5703,20 +5703,20 @@ fn show_rail_context_menu(hwnd: HWND, app: &AppRef, key: RailKey, x: i32, y: i32
                 .collect();
             let entries = vec![
                 Entry::Item(Item::new(1, "Open", Icon::Grid).glyph("app-tile")),
-                Entry::Item(Item::new(2, "Editâ€¦", Icon::Person).glyph("edit")),
+                Entry::Item(Item::new(2, "Edit…", Icon::Person).glyph("edit")),
                 Entry::Separator,
                 Entry::Item(Item::new(10, "Zoom in", Icon::Grid).glyph("zoom-in").disabled_if(prefs.zoom >= crate::site_prefs::ZOOM_MAX)),
                 Entry::Item(Item::new(11, "Zoom out", Icon::Grid).glyph("zoom-out").disabled_if(prefs.zoom <= crate::site_prefs::ZOOM_MIN)),
                 Entry::Item(Item::new(12, crate::panel_prefs::zoom_label(prefs.zoom), Icon::Grid).glyph("reset").disabled_if(prefs.zoom == crate::site_prefs::ZOOM_DEFAULT)),
                 Entry::Item(Item::new(13, "Mute audio", Icon::Grid).glyph("mute").checked(prefs.muted)),
-                Entry::Item(Item::new(14, "Reload page everyâ€¦", Icon::Grid).glyph("reload").submenu_with(reload_choices)),
+                Entry::Item(Item::new(14, "Reload page every…", Icon::Grid).glyph("reload").submenu_with(reload_choices)),
                 Entry::Item(Item::new(15, "Show unread count from the page title", Icon::Grid).glyph("bell").checked(prefs.notify)),
                 Entry::Separator,
                 Entry::Item(Item::new(16, "Open page in a tab", Icon::Grid).glyph("external")),
                 Entry::Item(Item::new(17, "Open page in a new window", Icon::Grid).glyph("window")),
                 Entry::Item(Item::new(18, "Open page in a private tab", Icon::Grid).glyph("private")),
                 Entry::Separator,
-                Entry::Item(Item::new(3, "Removeâ€¦", Icon::Close).glyph("trash")),
+                Entry::Item(Item::new(3, "Remove…", Icon::Close).glyph("trash")),
             ];
             // --- end window and panels ---
             let kind = format!("rail-app:{id}");
@@ -6556,7 +6556,7 @@ fn workspace_menu_entries(app: &AppRef) -> Vec<Entry> {
                 None => workspace.name().to_owned(),
             };
             if counts {
-                label = format!("{label} Â· {}", crate::stacks::tab_count_label(workspace.tabs().len()));
+                label = format!("{label} · {}", crate::stacks::tab_count_label(workspace.tabs().len()));
             }
             Entry::Item(
                 Item::new(WORKSPACE_SELECT_BASE + index, label, Icon::Grid)
@@ -6568,18 +6568,18 @@ fn workspace_menu_entries(app: &AppRef) -> Vec<Entry> {
     entries.push(Entry::Separator);
     entries.push(Entry::Item(Item::new(
         WORKSPACE_CREATE,
-        "New workspaceâ€¦",
+        "New workspace…",
         Icon::Plus,
     )
     .glyph("plus")));
     entries.push(Entry::Item(Item::new(
         WORKSPACE_RENAME,
-        "Rename current workspaceâ€¦",
+        "Rename current workspace…",
         Icon::Person,
     )
     .glyph("edit")));
     entries.push(Entry::Item(
-        Item::new(WORKSPACE_DELETE, "Delete current workspaceâ€¦", Icon::Close)
+        Item::new(WORKSPACE_DELETE, "Delete current workspace…", Icon::Close)
             .glyph("trash")
             .disabled_if(workspaces.workspace_count() == 1),
     ));
@@ -6908,9 +6908,9 @@ fn show_main_menu(hwnd: HWND, app: &AppRef) {
     // (the profile, import, privacy dashboard and update rows) is the page they moved to.
     let guest = crate::profile::active().is_ok_and(|profile| profile.is_guest());
     let mut more_tools = vec![
-            Entry::Item(Item::new(NOTES, "Notes & Tasksâ€¦", Icon::Info).glyph("notes").shortcut("Ctrl+Shift+N")),
-            Entry::Item(Item::new(PALETTE, "Command paletteâ€¦", Icon::Grid).glyph("command").shortcut("Ctrl+Shift+K")),
-            Entry::Item(Item::new(SESSIONS, "Saved sessionsâ€¦", Icon::Check).glyph("folder").disabled_if(guest)),
+            Entry::Item(Item::new(NOTES, "Notes & Tasks…", Icon::Info).glyph("notes").shortcut("Ctrl+Shift+N")),
+            Entry::Item(Item::new(PALETTE, "Command palette…", Icon::Grid).glyph("command").shortcut("Ctrl+Shift+K")),
+            Entry::Item(Item::new(SESSIONS, "Saved sessions…", Icon::Check).glyph("folder").disabled_if(guest)),
             Entry::Item(
                 Item::new(CALM, "Hide distractions", Icon::Info)
                     .glyph("eye")
@@ -6918,7 +6918,7 @@ fn show_main_menu(hwnd: HWND, app: &AppRef) {
                     .disabled_if(!readable),
             ),
             Entry::Separator,
-            Entry::Item(Item::new(EXTENSIONS, "Extensionsâ€¦", Icon::Grid).glyph("puzzle").shortcut("Ctrl+Shift+E")),
+            Entry::Item(Item::new(EXTENSIONS, "Extensions…", Icon::Grid).glyph("puzzle").shortcut("Ctrl+Shift+E")),
             Entry::Item(Item::new(PASSWORDS, "Passwords & passkeys", Icon::Key).glyph("key").shortcut("Ctrl+,").disabled_if(guest)),
             Entry::Item(Item::new(DEVTOOLS, "Developer tools", Icon::Info).glyph("workspace-code").shortcut("F12")),
     ];
@@ -6941,16 +6941,16 @@ fn show_main_menu(hwnd: HWND, app: &AppRef) {
     ));
     entries.push(Entry::Separator);
     entries.push(Entry::Item(
-        Item::new(ZOOM_MENU, format!("Zoom Â· {zoom}%"), Icon::Grid)
+        Item::new(ZOOM_MENU, format!("Zoom · {zoom}%"), Icon::Grid)
             .glyph("zoom-in")
             .submenu_with(vec![
                 Entry::Item(Item::new(ZOOM_IN, "Zoom in", Icon::Plus).glyph("zoom-in").shortcut("Ctrl++")),
-                Entry::Item(Item::new(ZOOM_OUT, "Zoom out", Icon::None).glyph("zoom-out").shortcut("Ctrl+âˆ’")),
+                Entry::Item(Item::new(ZOOM_OUT, "Zoom out", Icon::None).glyph("zoom-out").shortcut("Ctrl+−")),
                 Entry::Item(Item::new(ZOOM_RESET, "Reset zoom", Icon::Reset).glyph("reset").shortcut("Ctrl+0")),
             ]),
     ));
     entries.push(Entry::Item(
-        Item::new(CLEAR_DATA, "Delete browsing dataâ€¦", Icon::Close)
+        Item::new(CLEAR_DATA, "Delete browsing data…", Icon::Close)
             .glyph("trash")
             .shortcut("Ctrl+Shift+Del"),
     ));
@@ -7146,7 +7146,7 @@ fn update_footer(status: &crate::updater::Status) -> String {
         Status::Idle { .. } | Status::Unavailable => None,
     };
     match note {
-        Some(note) => format!("Bowser {running} Â· {note}"),
+        Some(note) => format!("Bowser {running} · {note}"),
         None => format!("Bowser {running}"),
     }
 }
@@ -7495,6 +7495,7 @@ fn run_reader(hwnd: HWND, app: &AppRef, mode: crate::reader::Mode) {
                     Some("Reader view works on web pages")
                 }
                 ReaderResult::Failed => Some("This page could not be changed"),
+                ReaderResult::Busy => Some("Reader view is still checking this page. Try again in a moment"),
                 _ => None,
             };
             if let Some(message) = message {
@@ -7551,7 +7552,7 @@ fn show_translate_toast(hwnd: HWND, message: String) {
 fn translate_message(notice: &crate::app::TranslateNotice, available: bool) -> Option<String> {
     use crate::app::TranslateNotice as N;
     match notice {
-        N::Started => Some("Translating with Google Translateâ€¦".to_owned()),
+        N::Started => Some("Translating with Google Translate…".to_owned()),
         N::Unavailable if !available => Some("Translation works on web pages".to_owned()),
         N::Unavailable => Some("Translation is not available on this page".to_owned()),
         N::InProgress => Some("This page is already being translated".to_owned()),
@@ -7800,12 +7801,12 @@ fn tab_options_menu_entries(app: &AppRef, id: TabId, url: Option<&url::Url>, sel
     }
     let mut entries = vec![
         Entry::Item(Item::new(TAB_RELOAD_PARENT, "Reload every", Icon::None).glyph("reload").submenu_with(reload).disabled_if(!web)),
-        Entry::Item(Item::new(TAB_RENAME, "Rename tabâ€¦", Icon::None).glyph("edit")),
+        Entry::Item(Item::new(TAB_RENAME, "Rename tab…", Icon::None).glyph("edit")),
     ];
     if selected > 1 {
         entries.push(Entry::Separator);
         entries.push(Entry::Item(Item::new(TAB_CLOSE_SELECTED, format!("Close {selected} selected tabs"), Icon::Close).glyph("close")));
-        entries.push(Entry::Item(Item::new(TAB_SESSION_SELECTED, format!("Save {selected} selected tabs as sessionâ€¦"), Icon::None).glyph("save")));
+        entries.push(Entry::Item(Item::new(TAB_SESSION_SELECTED, format!("Save {selected} selected tabs as session…"), Icon::None).glyph("save")));
     }
     entries
 }
@@ -7833,7 +7834,7 @@ fn tab_options_menu_pick(hwnd: HWND, app: &AppRef, id: TabId, command: usize, ta
     true
 }
 
-/// --- wave-1 integration --- the "Reload this tab everyâ€¦" registry command: the tab menu's reload
+/// --- wave-1 integration --- the "Reload this tab every…" registry command: the tab menu's reload
 /// presets for the tab in front, as a menu under the main menu button.
 pub(crate) fn show_periodic_reload_menu(hwnd: HWND, app: &AppRef) {
     let id = App::active_tab_id(app);
@@ -7859,7 +7860,7 @@ pub(crate) fn show_periodic_reload_menu(hwnd: HWND, app: &AppRef) {
 }
 // --- end wave-1 integration ---
 
-/// --- tab stacks and workspaces (T10) --- "Emojiâ€¦" for a workspace: asks for an emoji (or a short
+/// --- tab stacks and workspaces (T10) --- "Emoji…" for a workspace: asks for an emoji (or a short
 /// text) to show instead of its icon. Empty goes back to the icon.
 fn workspace_emoji_prompt(hwnd: HWND, app: &AppRef, id: crate::workspaces::WorkspaceId) {
     let current = App::workspace_emoji(app, id).unwrap_or_default();
@@ -7888,7 +7889,7 @@ fn rename_tab_prompt(hwnd: HWND, app: &AppRef, id: TabId) {
             Ok(())
         }
     });
-    let Some(name) = super::profile_rename::prompt_validated(hwnd, &current, "Rename tab", "Rename", "Leave it empty to show the pageâ€™s title.", validate) else {
+    let Some(name) = super::profile_rename::prompt_validated(hwnd, &current, "Rename tab", "Rename", "Leave it empty to show the page’s title.", validate) else {
         return;
     };
     let _ = App::set_tab_name(app, id, &name);
@@ -7982,7 +7983,7 @@ pub(super) fn show_sessions(hwnd: HWND, _app: &AppRef) {
     const DELETE_BASE: usize = 200;
     let mut entries = vec![Entry::Item(Item::new(
         SAVE,
-        "Save current tabsâ€¦",
+        "Save current tabs…",
         Icon::Plus,
     )
     .glyph("plus"))];
@@ -8222,13 +8223,13 @@ fn show_extensions_menu(hwnd: HWND, _app: &AppRef) {
             )
         })
         .collect();
-    let popup = Item::new(POPUP_MENU, "Open extension popupâ€¦", Icon::Grid).glyph("puzzle");
+    let popup = Item::new(POPUP_MENU, "Open extension popup…", Icon::Grid).glyph("puzzle");
     entries.push(Entry::Item(if popup_entries.is_empty() {
         popup.disabled()
     } else {
         popup.submenu_with(popup_entries)
     }));
-    let remove = Item::new(REMOVE_MENU, "Remove extensionâ€¦", Icon::Close).glyph("trash");
+    let remove = Item::new(REMOVE_MENU, "Remove extension…", Icon::Close).glyph("trash");
     entries.push(Entry::Item(if records.is_empty() {
         remove.disabled()
     } else {
@@ -8238,13 +8239,13 @@ fn show_extensions_menu(hwnd: HWND, _app: &AppRef) {
     entries.push(Entry::Item(Item::new(MANAGE, "Manage extensions", Icon::Grid).glyph("gear")));
     entries.push(Entry::Item(Item::new(
         INSTALL,
-        "Install unpacked extensionâ€¦",
+        "Install unpacked extension…",
         Icon::Plus,
     )
     .glyph("folder")));
     entries.push(Entry::Item(Item::new(
         INSTALL_CRX,
-        "Install CRX fileâ€¦",
+        "Install CRX file…",
         Icon::Plus,
     )
     .glyph("puzzle")));

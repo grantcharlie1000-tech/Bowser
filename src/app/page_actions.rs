@@ -155,10 +155,10 @@ impl App {
 
     /// Captures the page in `tab`. `done` runs once, with the app unborrowed, when it is over.
     pub fn capture_page(app: &AppRef, tab: TabId, mode: CaptureMode, target: CaptureTarget, done: Rc<dyn Fn(CaptureResult)>) {
-        let (url, title, format) = {
+        let (url, title, format, zoom) = {
             let state = app.borrow();
             let Some(entry) = state.tabs.iter().find(|entry| entry.id == tab) else { drop(state); return done(CaptureResult::Unavailable) };
-            (entry.url.clone(), entry.title.clone(), state.settings.page_tools.capture_format)
+            (entry.url.clone(), entry.title.clone(), state.settings.page_tools.capture_format, entry.zoom)
         };
         let Some(url) = url.filter(crate::reader::url_allowed) else { return done(CaptureResult::Unavailable) };
         if BUSY.with(|busy| busy.replace(true)) {
@@ -191,14 +191,14 @@ impl App {
                         if !Self::capture_alive(&app2, &weak) {
                             return Self::capture_end(&weak, CaptureResult::Failed("The page changed before it could be captured.".into()));
                         }
-                        let Some((w, h, cut)) = raw.as_deref().and_then(capture::parse_metrics).and_then(|(w, h)| page_tools::clamp_page(w, h)) else {
+                        let Some(capture::FullPagePlan { width: w, slices: plan, cut }) = raw.as_deref().and_then(|raw| capture::full_page_plan(raw, zoom)) else {
                             return Self::capture_end(&weak, CaptureResult::Failed("The page's size could not be read.".into()));
                         };
                         {
                             let mut job = weak.borrow_mut();
                             job.width = w;
                             job.cut = cut;
-                            job.plan = page_tools::plan_slices(h);
+                            job.plan = plan;
                             job.plan.reverse(); // popped from the end, so top first
                         }
                         Self::next_slice(&app2, &weak);
@@ -217,11 +217,10 @@ impl App {
                         }
                         match raw.as_deref().map(capture::parse_selection) {
                             Some(Ok(Some(found))) => {
-                                let (x, y, w, h) = found.rect;
-                                let Some((x, y, w, h)) = page_tools::clamp_selection(x as f64, y as f64, w as f64, h as f64) else {
+                                let Some(clip) = capture::selection_clip(found.rect, zoom) else {
                                     return Self::capture_end(&weak, CaptureResult::NothingSelected);
                                 };
-                                Self::shoot(&app2, &weak, Some(Clip { x, y, width: w, height: h }));
+                                Self::shoot(&app2, &weak, Some(clip));
                             }
                             Some(Ok(None)) => Self::capture_end(&weak, CaptureResult::NothingSelected),
                             _ => Self::capture_end(&weak, CaptureResult::Unavailable),
