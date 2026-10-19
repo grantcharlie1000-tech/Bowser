@@ -59,7 +59,7 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
     bowser::updater::spawn_background(benchmark, options.dev);
-    let log = match PerfLog::new(options.benchmark_log.as_deref()) {
+    let log = match PerfLog::new(options.diagnostic_log.as_deref().or(options.benchmark_log.as_deref())) {
         Ok(log) => Rc::new(log),
         Err(error) => {
             show_error(&format!("Unable to create benchmark log: {error}"));
@@ -74,13 +74,21 @@ fn main() -> ExitCode {
         ));
         return ExitCode::FAILURE;
     }
+    let interaction_diagnostic=options.diagnostic_interaction;
     let result = App::run(options, log.clone());
+    if interaction_diagnostic {let _=log.record_detail("interaction_app_borrow_drops","all",0,0,App::diagnostic_interaction_dropped());}
     if result.is_ok() {
         bowser::updater::note_clean_exit();
     }
+    // WM_DESTROY normally does this; a GetMessage/run error can return without that message.
+    // Idempotent teardown must release retained native profile subscriptions before COM uninit.
+    bowser::win32::panel_webapp::shutdown();
     unsafe {
         CoUninitialize();
     }
+    // A retained sidebar controller may retain App callbacks. Its final diagnostic evidence must
+    // not depend on the last Rc<PerfLog> being dropped; ordinary/startup-only paths are inert.
+    let _=log.checkpoint_sidebar_if_observed();
     if options_ephemeral {
         if let Some(dir) = bowser::profile::data_root_override() {
             let _ = fs::remove_dir_all(dir);

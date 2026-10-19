@@ -17,6 +17,7 @@ use crate::{
 };
 
 thread_local! {
+    static INTERACTION_BORROW_DROPS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
     static TAB_CHANGE_POSTED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static TAB_CHANGE_FLAGS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
     /// The form fields of a search with an engine that POSTs its query, for the one navigation to
@@ -658,6 +659,9 @@ pub struct App {
     /// Stamps of `settings.txt` and the search provider file when `provider` was last read.
     search_config_stamp: Option<[ConfigStamp; 2]>,
     pub log: Rc<PerfLog>,
+    diagnostic_logging: bool,
+    diagnostic_detail: bool,
+    diagnostic_interaction: bool,
     pub minimized: bool,
     /// Power source, efficiency decision and EcoQoS state. See `crate::efficiency`.
     pub efficiency: EfficiencyState,
@@ -2975,11 +2979,18 @@ impl App {
         };
         let id = match crate::internal_page::open_plan(&tabs, current, reuse_blank) {
             OpenPlan::Existing(id) => {
+                Self::diagnostic_interaction_event(app,"interaction_internal_plan_existing",u64::from(id.0));
                 let _ = Self::select_tab(app, id);
                 id
             }
-            OpenPlan::Current(id) => id,
-            OpenPlan::NewTab => Self::new_tab(app),
+            OpenPlan::Current(id) => {
+                Self::diagnostic_interaction_event(app,"interaction_internal_plan_current",u64::from(id.0));id
+            }
+            OpenPlan::NewTab => {
+                Self::diagnostic_interaction_event(app,"interaction_internal_plan_new",0);
+                let id=Self::new_tab(app);
+                Self::diagnostic_interaction_event(app,"interaction_internal_new_result",u64::from(id.0));id
+            },
         };
         Self::show_internal_page(app, id, page);
         id
@@ -2988,6 +2999,7 @@ impl App {
     /// Puts tab `id` on `page`: address, title and favicon, and no engine page. Only for a tab
     /// without a content controller (a new, blank, discarded or settings tab).
     fn show_internal_page(app: &AppRef, id: TabId, page: crate::internal_page::InternalPage) {
+        Self::diagnostic_interaction_event(app,"interaction_internal_show_requested",u64::from(id.0));
         let url = page.url();
         let (hwnd, edit, active) = {
             let mut state = app.borrow_mut();
@@ -2996,6 +3008,8 @@ impl App {
                 return;
             };
             if tab.private || tab.controller_created {
+                let reason=u64::from(tab.private)|(u64::from(tab.controller_created)<<1);
+                if state.diagnostic_interaction {let _=state.log.record_detail_count("interaction_internal_show_refused",u64::from(id.0),reason);}
                 return;
             }
             tab.url = Some(url.clone());
@@ -3018,6 +3032,7 @@ impl App {
             }
             (state.hwnd, state.edit, active)
         };
+        Self::diagnostic_interaction_event(app,"interaction_internal_show_applied",u64::from(id.0));
         if active {
             win32::sync_address_input(hwnd, edit, id, &url, Self::settings(app).minimal_url);
             Self::sync_window_title(app);
@@ -3538,6 +3553,7 @@ impl App {
 
     /// Moves keyboard focus into the active page. Used after the HTML toolbar submits or escapes.
     pub fn focus_page(app: &AppRef) {
+        Self::diagnostic_interaction_event(app,"interaction_focus_page_requested",0);
         if let Some(page) = Self::internal_page(app, Self::active_tab_id(app)) {
             let hwnd = app.borrow().hwnd;
             if page.is_history() {
@@ -5042,6 +5058,9 @@ impl App {
             provider,
             search_config_stamp: None,
             log,
+            diagnostic_logging: options.diagnostic_log.is_some(),
+            diagnostic_detail: options.diagnostic_detail,
+            diagnostic_interaction: options.diagnostic_interaction,
             minimized: false,
             efficiency: EfficiencyState::default(),
             desired_memory_target: MemoryUsageTarget::Normal,
@@ -5466,6 +5485,7 @@ impl App {
         // `bowser://settings...` opens the settings page (a blank tab becomes it); other internal
         // hosts fall through and are reported as an unsupported address, as before.
         if let Some(page) = crate::internal_page::parse_input(input) {
+            Self::diagnostic_interaction_event(app,if page.is_settings(){"interaction_submit_settings"}else{"interaction_submit_other_internal"},0);
             let hwnd = app.borrow().hwnd;
             if page.is_history() {
                 win32::open_history_page(hwnd, app, true);
@@ -5741,6 +5761,29 @@ impl App {
         if start_environment {
             Self::start_engine_creation(app);
         }
+    }
+
+    pub fn diagnostic_interaction_dropped() -> u64 {INTERACTION_BORROW_DROPS.with(std::cell::Cell::get)}
+    pub fn diagnostic_interaction_log(app: &AppRef) -> Option<Rc<PerfLog>> {
+        let state=app.borrow();
+        state.diagnostic_interaction.then(||state.log.clone())
+    }
+    /// Fixed compile-time labels and numeric tab association, never input/URL text.
+    pub fn diagnostic_interaction_event(app: &AppRef,event: &'static str,count: u64) {
+        let Ok(state)=app.try_borrow() else{INTERACTION_BORROW_DROPS.with(|drops|drops.set(drops.get().saturating_add(1)));return;};
+        if state.diagnostic_interaction {
+            let _=state.log.record_detail_count(event,u64::from(state.tab_model.active().0),count);
+        }
+    }
+
+    pub fn diagnostic_detail_log(app: &AppRef) -> Option<Rc<PerfLog>> {
+        let state = app.borrow();
+        state.diagnostic_detail.then(|| state.log.clone())
+    }
+    /// Existing explicit diagnostic-log opt-in; fixed numeric lifecycle events only.
+    pub fn diagnostic_lifecycle_log(app: &AppRef) -> Option<std::rc::Weak<PerfLog>> {
+        let state=app.borrow();
+        state.log.enabled().then(||Rc::downgrade(&state.log))
     }
 
     /// HTML chrome mode: the tab environment the chrome views are hosted in. When the engine has
@@ -6340,6 +6383,18 @@ impl App {
             }),
             download_event: Some(Self::download_event_hook(app)),
             download_plan: Some(Self::download_plan_hook(app)),
+            diagnostic_navigation: if app.borrow().diagnostic_logging {
+                let log = app.borrow().log.clone();
+                Some(Rc::new(move |event, tab, navigation, success, token| {
+                    let _ = log.record_navigation(event, u64::from(tab.0), navigation, success, token);
+                }))
+            } else { None },
+            diagnostic_focus: Self::diagnostic_interaction_log(app),
+            diagnostic_detail: Self::diagnostic_detail_log(app).map(|log| {
+                Rc::new(move |event: &'static str, tab: TabId, count: u64| {
+                    let _ = log.record_detail_count(event, u64::from(tab.0), count);
+                }) as Rc<dyn Fn(&'static str, TabId, u64)>
+            }),
             policy_event: {
                 let log = app.borrow().log.clone();
                 Some(Rc::new(move |event| {
@@ -9977,6 +10032,9 @@ mod tests {
             provider: SearchProvider::from_config(None, Path::new("missing-search-provider.txt")),
             search_config_stamp: None,
             log: Rc::new(PerfLog::new(None).unwrap()),
+            diagnostic_logging: false,
+            diagnostic_detail: false,
+            diagnostic_interaction: false,
             minimized: false,
             efficiency: EfficiencyState::default(),
             desired_memory_target: MemoryUsageTarget::Normal,

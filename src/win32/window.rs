@@ -8916,7 +8916,7 @@ fn html_env_settled(hwnd: HWND) {
     match App::request_chrome_environment(&app) {
         ChromeEnvironment::Pending => {}
         ChromeEnvironment::Ready(environment) => {
-            let env = ChromeEnv::new(environment);
+            let env = ChromeEnv::new(environment, App::diagnostic_detail_log(&app), App::diagnostic_interaction_log(&app));
             let _ = with_chrome(hwnd, |s| {
                 s.html_env_waiting = false;
                 s.html_env = Some(env.clone());
@@ -9467,6 +9467,7 @@ fn html_failed(hwnd: HWND) {
 /// Handles one validated message from the HTML toolbar. Runs on the UI thread, holding no borrow.
 fn html_command(hwnd: HWND, command: ChromeCommand) {
     match command {
+        ChromeCommand::Interaction{..}=>return, // Intercepted by the opt-in host; never an action.
         ChromeCommand::Ready => {
             let _ = with_chrome(hwnd, |s| s.html_page_ready = true);
             html_refresh(hwnd);
@@ -9510,6 +9511,7 @@ fn html_command(hwnd: HWND, command: ChromeCommand) {
         // --- end omnibox suggest ---
         ChromeCommand::Submit(text) => {
             let Some(app) = app_of(hwnd) else { return };
+            App::diagnostic_interaction_event(&app,"interaction_window_submit",u64::from(text=="bowser://settings"));
             super::html_hover::suggest_hide(hwnd); // --- omnibox suggest ---
             // Same path as the native omnibox: remember the typed text, then let App normalise it.
             remember_url(hwnd, App::active_tab_id(&app), &text, App::settings(&app).minimal_url);
@@ -9544,6 +9546,7 @@ fn html_command(hwnd: HWND, command: ChromeCommand) {
             App::focus_page(&app);
         }
         ChromeCommand::Focus(on) => {
+            if let Some(app)=app_of(hwnd){App::diagnostic_interaction_event(&app,if on{"interaction_window_focus_in"}else{"interaction_window_focus_out"},0);}
             // --- omnibox suggest ---
             if on {
                 // The dropdown is drawn by the hover layer: have it ready by the first keystroke.
