@@ -41,3 +41,48 @@ Finally, the guard opens the clipboard exclusively and restores empty only if it
 - Windows compile/native execution and independent source audit are mandatory before any public run. A helper exit or a source-only JavaScript check is never native dispatch/effect acceptance.
 
 Local deterministic check: `node benchmarks/scripts/validate-app-host-menu-fixture.mjs`. It checks fixture syntax, trusted-right-click accounting, generated tokens, loopback acknowledgment shape, and split href only. It does not exercise App, Windows input, COM, menus, clipboard, permissions, or extension compatibility.
+
+## Independent host-only Insert note / Split lane
+
+A second exact ignored test uses a separate process, fresh disposable ordinary profile, original
+source nonce, and a distinct evidence directory:
+
+`engine::app_host_menu_probe::live::note_split::live_probe_real_app_host_note_split_context_menu`
+
+Run it alone with `--exact --ignored --nocapture --test-threads=1`, the same existing opt-in
+features, and
+`BOWSER_APP_HOST_NOTE_SPLIT_PROBE_CONSENT=disposable-app-host-menu-note-split-no-clipboard`.
+This is a new source-only checkpoint: Windows Rust/PowerShell/C# compilation and actual native
+execution are **not locally verified**. It does not convert the original Copy/Paste refusal
+into a pass or replace that required gate.
+
+This lane exercises only the genuine production Insert note and Split actions, in that order.
+The existing synthetic fixture, full engine-tree/request/identity observer, native mouse helper,
+production SelectedCommandId setter and Complete route are reused unchanged. A closed host-only
+mode type cannot request Cancel, Copy or Paste. The helper's unchanged Note/Split branches never
+construct ClipboardGuard or call the clipboard APIs. Both helper reports must retain
+`clipboard=not-used` and an empty owned-sequence list; no clipboard precondition is queried.
+
+Before input, both exact COM views must contain the pristine same-nonce fixture, use the
+isolated ordinary profile, and have successful current document proofs. Native Insert note
+must select the actual host-created parent/child identities by OS-hover submenu traversal and
+one physical click, yielding exactly the seeded note body and its loopback nonce acknowledgment
+only in the source. Copy/Paste fields and effects, the duplicate negative view, tab inventory,
+and bounded Bowser note/meta/extension record/map storage must remain unchanged.
+
+Split runs last. It must create exactly one new AppTab, keep the source and destination in a
+real pair with visible non-overlapping controller bounds, and prove the current successful
+committed loopback destination URL, destination nonce and exactly one server receipt. The
+source document proof/note effects, duplicate negative view and bounded storage stay unchanged.
+Final App teardown requires exactly three successful native handler-removal receipts.
+
+The workflow invokes this exact test in its own cargo/libtest process even after a prior
+uncancelled Copy/Paste gate failure. A separate always-run artifact step saves
+`store-real-app-host-note-split-context-menu.log` and
+`store-real-app-host-note-split-context-menu/**/*.json`. There is no continue-on-error,
+replacement of the original invocation, profile/evidence reuse, changed helper behavior,
+permission expansion or shipping-default activation. A host-only success cannot mask an
+original clipboard-lane failure.
+
+Search completed transport, permission/race coverage and the signed Bitwarden workflow remain
+unproved. Source-only fixture checks do not establish native acceptance for either lane.

@@ -395,6 +395,24 @@ jobs:
           # Do not read, back up, or clear the runner clipboard. Non-empty/locked means fail closed.
           cargo +stable test --locked --lib --features html-chrome-default,experimental-engine-context-menu engine::app_host_menu_probe::live::live_probe_real_app_host_context_menu -- --exact --ignored --nocapture --test-threads=1 2>&1 | Tee-Object store-real-app-host-context-menu.log
           if ($LASTEXITCODE -ne 0) { throw 'Separate actual App native/host regression unavailable or failed; no activation.' }
+      - name: Probe independent actual App host-only Insert note and Split
+        if: ${{ !cancelled() && steps.experimental_menu_build.outcome == 'success' }}
+        run: |
+          $env:BOWSER_APP_HOST_NOTE_SPLIT_PROBE_CONSENT = 'disposable-app-host-menu-note-split-no-clipboard'
+          # A separate exact libtest process creates its own ordinary profile and evidence directory.
+          # Run even after the original Copy/Paste gate fails; do not continue-on-error or mask it.
+          cargo +stable test --locked --lib --features html-chrome-default,experimental-engine-context-menu engine::app_host_menu_probe::live::note_split::live_probe_real_app_host_note_split_context_menu -- --exact --ignored --nocapture --test-threads=1 2>&1 | Tee-Object store-real-app-host-note-split-context-menu.log
+          if ($LASTEXITCODE -ne 0) { throw 'Independent actual App host-only note/Split regression unavailable or failed; original Copy/Paste gate remains required.' }
+      - name: Save independent host-only note Split evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: store-real-app-host-note-split-diagnostics-${{ github.sha }}
+          path: |
+            store-real-app-host-note-split-context-menu.log
+            store-real-app-host-note-split-context-menu/**/*.json
+          if-no-files-found: warn
+          retention-days: 14
       - name: Save independent native safety gate evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02

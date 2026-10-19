@@ -5,7 +5,38 @@ param([Parameter(Mandatory)][uint32]$OwnerPid,[Parameter(Mandatory)][long]$Owner
  [int]$NoteLeft,[int]$NoteTop,[int]$NoteWidth,[int]$NoteHeight,[int]$ButtonLeft,[int]$ButtonTop,[int]$ButtonWidth,[int]$ButtonHeight,[int]$PageTop,
  [int]$FontScale,[int]$Dpi,[Parameter(Mandatory)][string]$Sample,[Parameter(Mandatory)][string]$Out,[switch]$Click)
 $ErrorActionPreference='Stop';Set-StrictMode -Version Latest
+# Best-effort test-helper diagnostics only, never input/capture authority or a verdict.
+# A missing/partial file is inconclusive. Synchronous file/native calls are not hard bounded.
+# Validate the existing fixed grammar before forming a new diagnostic path; keep its rejection below.
+$script:bandPhaseState=$null
+try {
+ if($Sample -cmatch '\Av2-font-(100|150|200)-width-(960|320)\z'){
+  $script:bandPhaseState=@{path=(Join-Path $Out "$Sample.phases.json");records=[Collections.Generic.List[object]]::new();encoding=[Text.UTF8Encoding]::new($false);frequency=[Diagnostics.Stopwatch]::Frequency;stream=$null}
+ }
+} catch {$script:bandPhaseState=$null}
+function Close-BandPhases {
+ try {
+  $state=$script:bandPhaseState;$script:bandPhaseState=$null
+  if($null -ne $state -and $null -ne $state.stream){$state.stream.Dispose()}
+ } catch {}
+}
+function Write-BandPhase([string]$Stage) {
+ try {
+  $state=$script:bandPhaseState
+  if($null -eq $state -or $state.records.Count -ge 32){return}
+  if($Stage -cnotin @('drawing-add-type-before','drawing-add-type-after','native-add-type-before','native-add-type-after','process-construction-before','process-construction-after','identity-before','identity-after','geometry-before','geometry-after','actual-input-before','actual-input-after','capture-geometry-before','capture-geometry-after','print-window-before','print-window-after','capture-save-before','capture-save-after','capture-postcheck-before','capture-postcheck-after')){return}
+  [void]$state.records.Add([ordered]@{stage=$Stage;qpc=[Diagnostics.Stopwatch]::GetTimestamp()})
+  $json=ConvertTo-Json -InputObject ([ordered]@{scope='best-effort-test-helper-stages-not-acceptance';sample=$Sample;qpc_frequency=$state.frequency;max_records=32;records=$state.records.ToArray()}) -Depth 4 -Compress
+  $bytes=$state.encoding.GetBytes($json)
+  if($null -eq $state.stream){$state.stream=[IO.File]::Open($state.path,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::Read)}
+  $state.stream.Position=0;$state.stream.Write($bytes,0,$bytes.Length);$state.stream.SetLength($bytes.Length);$state.stream.Flush()
+ } catch {Close-BandPhases}
+}
+try {
+Write-BandPhase 'drawing-add-type-before'
 Add-Type -AssemblyName System.Drawing
+Write-BandPhase 'drawing-add-type-after'
+Write-BandPhase 'native-add-type-before'
 Add-Type @'
 using System;using System.Text;using System.Runtime.InteropServices;
 public static class InstallerBandCapture {
@@ -58,6 +89,7 @@ public static class InstallerBandCapture {
  }
 }
 '@
+Write-BandPhase 'native-add-type-after'
 if($Sample -cnotmatch '^v2-font-(100|150|200)-width-(960|320)$'){throw 'Unexpected fixed sample name.'}
 $expectedWidth=[int]($Sample.Split('-')[-1]);$expectedHeight=680
 $h=[IntPtr]$OwnerHandle;$note=[IntPtr]$NoteHandle;$button=[IntPtr]$ButtonHandle;$page=[IntPtr]$PageHandle
@@ -95,28 +127,40 @@ function Contained-Geometry {
 }
 function Bounds([IntPtr]$Window,[int]$Left,[int]$Top,[int]$Width,[int]$Height){$r=[InstallerBandCapture+RECT]::new();$p=[InstallerBandCapture+POINT]::new();$p.X=$Left;$p.Y=$Top;if(![InstallerBandCapture]::ClientToScreen($h,[ref]$p) -or ![InstallerBandCapture]::GetWindowRect($Window,[ref]$r) -or $r.Left -ne $p.X -or $r.Top -ne $p.Y -or $r.Right-$r.Left -ne $Width -or $r.Bottom-$r.Top -ne $Height -or $Width -le 0 -or $Height -le 0){throw 'Native control geometry differs from measured reservation.'};return $r}
 try {
- $guard=[InstallerBandCapture+ProcessIdentity]::new($OwnerPid,$OwnerExe);Identity
+ Write-BandPhase 'process-construction-before'
+ $guard=[InstallerBandCapture+ProcessIdentity]::new($OwnerPid,$OwnerExe);Write-BandPhase 'process-construction-after';Write-BandPhase 'identity-before';Identity
+ Write-BandPhase 'identity-after'
+ Write-BandPhase 'geometry-before'
  $nr=Bounds $note $NoteLeft $NoteTop $NoteWidth $NoteHeight;$br=Bounds $button $ButtonLeft $ButtonTop $ButtonWidth $ButtonHeight
  $client=[InstallerBandCapture+RECT]::new();if(![InstallerBandCapture]::GetClientRect($h,[ref]$client)){throw 'Native client bounds unavailable.'}
  $null=Bounds $page 0 $PageTop $client.Right ($client.Bottom-$PageTop)
  if($PageTop -le 0 -or $NoteTop+$NoteHeight -gt $PageTop -or $ButtonTop+$ButtonHeight -gt $PageTop -or $NoteLeft -lt 0 -or $ButtonLeft -lt 0 -or $NoteLeft+$NoteWidth -gt $client.Right -or $ButtonLeft+$ButtonWidth -gt $client.Right){throw 'Native band/page overlap or clipping.'}
  $report.pre_input_containment=Contained-Geometry
+ Write-BandPhase 'geometry-after'
  if($Click){
+  # Keep all existing input checks between this observation and the actual dispatch.
+  Write-BandPhase 'actual-input-before'
   Neutral;Identity;if(![InstallerBandCapture]::InputReady($h,$tid)){throw 'Exact foreground unavailable; no focus repair.'}
   $point=[InstallerBandCapture+POINT]::new();$point.X=$br.Left+[int](($br.Right-$br.Left)/2);$point.Y=$br.Top+[int](($br.Bottom-$br.Top)/2)
   if([InstallerBandCapture]::WindowFromPoint($point) -ne $button -or ![InstallerBandCapture]::SetCursorPos($point.X,$point.Y)){throw 'Exact button hit/cursor unavailable.'}
   Neutral;Identity;$fresh=Bounds $button $ButtonLeft $ButtonTop $ButtonWidth $ButtonHeight
   if($fresh.Left -ne $br.Left -or $fresh.Top -ne $br.Top -or ![InstallerBandCapture]::InputReady($h,$tid) -or [InstallerBandCapture]::WindowFromPoint($point) -ne $button){throw 'Button changed before real input.'}
   try{[InstallerBandCapture]::mouse_event(2,0,0,0,[UIntPtr]::Zero);$report.click_called=$true}finally{[InstallerBandCapture]::mouse_event(4,0,0,0,[UIntPtr]::Zero)}
+  Write-BandPhase 'actual-input-after'
  }
+ Write-BandPhase 'capture-geometry-before'
  Identity;$r=[InstallerBandCapture+RECT]::new();if(![InstallerBandCapture]::GetWindowRect($h,[ref]$r)){throw 'Capture root geometry unavailable.'}
  $width=$r.Right-$r.Left;$height=$r.Bottom-$r.Top;if($width -le 0 -or $height -le 0 -or $width -gt 4096 -or $height -gt 4096){throw 'Capture size outside bound.'}
  $report.capture_geometry_before=Contained-Geometry
  if($width -ne $expectedWidth -or $height -ne $expectedHeight -or $width -ne $report.capture_geometry_before.owner_rect[2]-$report.capture_geometry_before.owner_rect[0] -or $height -ne $report.capture_geometry_before.owner_rect[3]-$report.capture_geometry_before.owner_rect[1]){throw 'v2 bitmap dimensions differ from declared and fresh contained owner; no capture.'}
+ Write-BandPhase 'capture-geometry-after'
  $bitmap=[Drawing.Bitmap]::new($width,$height)
- try{$graphics=[Drawing.Graphics]::FromImage($bitmap);try{$dc=$graphics.GetHdc();try{$ok=[InstallerBandCapture]::PrintWindow($h,$dc,2)}finally{$graphics.ReleaseHdc($dc)}}finally{$graphics.Dispose()};if(!$ok){throw 'Owned PrintWindow failed.'};Identity;$null=Bounds $note $NoteLeft $NoteTop $NoteWidth $NoteHeight;$null=Bounds $button $ButtonLeft $ButtonTop $ButtonWidth $ButtonHeight;$null=Bounds $page 0 $PageTop $client.Right ($client.Bottom-$PageTop);$file=Join-Path $Out "$Sample.png";if(Test-Path $file){throw 'Existing sample file refused.'};$bitmap.Save($file,[Drawing.Imaging.ImageFormat]::Png)}finally{$bitmap.Dispose()}
+ try{$graphics=[Drawing.Graphics]::FromImage($bitmap);try{$dc=$graphics.GetHdc();try{Write-BandPhase 'print-window-before';$ok=[InstallerBandCapture]::PrintWindow($h,$dc,2);Write-BandPhase 'print-window-after'}finally{$graphics.ReleaseHdc($dc)}}finally{$graphics.Dispose()};if(!$ok){throw 'Owned PrintWindow failed.'};Identity;$null=Bounds $note $NoteLeft $NoteTop $NoteWidth $NoteHeight;$null=Bounds $button $ButtonLeft $ButtonTop $ButtonWidth $ButtonHeight;$null=Bounds $page 0 $PageTop $client.Right ($client.Bottom-$PageTop);$file=Join-Path $Out "$Sample.png";if(Test-Path $file){throw 'Existing sample file refused.'};Write-BandPhase 'capture-save-before';$bitmap.Save($file,[Drawing.Imaging.ImageFormat]::Png);Write-BandPhase 'capture-save-after'}finally{$bitmap.Dispose()}
+ Write-BandPhase 'capture-postcheck-before'
  $report.capture_geometry_after=Contained-Geometry
  foreach($key in @('owner_rect','client_rect','client_origin','monitor_rect','work_rect')){if(($report.capture_geometry_before[$key] -join ',') -cne ($report.capture_geometry_after[$key] -join ',')){throw 'v2 reported capture geometry changed; not accepted.'}}
+ Write-BandPhase 'capture-postcheck-after'
  $report.screenshot="$Sample.png";$sha=[Security.Cryptography.SHA256]::Create();try{$stream=[IO.File]::OpenRead($file);try{$report.sha256=([BitConverter]::ToString($sha.ComputeHash($stream))).Replace('-','').ToLowerInvariant()}finally{$stream.Dispose()}}finally{$sha.Dispose()};$report.status='captured-native-component-visual-review-pending'
 } catch {$report.error=$_.Exception.Message} finally {if($guard){$guard.Dispose()};[IO.File]::WriteAllText((Join-Path $Out "$Sample.json"),($report|ConvertTo-Json -Depth 5),[Text.UTF8Encoding]::new($false))}
 if($report.status -cne 'captured-native-component-visual-review-pending'){throw 'Native component failed; not accepted.'}
+} finally {Close-BandPhases}

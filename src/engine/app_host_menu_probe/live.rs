@@ -295,3 +295,6 @@ fn host_probe_selection_uses_native_name_or_inserted_role_not_command_range() {
     assert_eq!(chosen(&nodes,"Copy"),Some(4));assert_eq!(nodes.len(),2,"complete unknown native entry must not be removed to choose Copy");
     assert_eq!(chosen(&nodes,"Cancel"),None);
 }
+
+// Independent exact-test process and disposable profile; original clipboard lane is unchanged.
+mod note_split;

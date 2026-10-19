@@ -146,26 +146,33 @@ public static class BowserHostMenu {
  /// External to Rust: stores only generated text and clipboard sequence metadata. No backup
  /// claim, no prior content getter, no clipboard logger, no retry on lock/race, no forced clear.
  public sealed class ClipboardGuard:IDisposable {
+  // Fixed scalars from existing calls only; never clipboard contents or admission authority.
+  public static int AdmissionStage,AdmissionFailureStage,AdmissionEnumError;
+  public static bool AdmissionStarted,AdmissionOpened,AdmissionFormatObserved,AdmissionFirstFormatZero,AdmissionSequenceObserved,AdmissionCloseAttempted,AdmissionCloseConfirmed;
+  public static uint AdmissionSequence;
+  bool admission=true;
   IntPtr owner;uint last;bool changed,finished,uncertain;public string Status="not-started";public List<uint> OwnedSequences=new List<uint>();
-  uint Sequence(){uint value=GetClipboardSequenceNumber();if(value==0){uncertain=true;Status="sequence-unavailable-left-untouched";throw new InvalidOperationException("Clipboard sequence unavailable; no authority to read or restore.");}return value;}
-  void CloseChecked(){if(!CloseClipboard()){uncertain=true;Status="close-unconfirmed-left-untouched";throw new InvalidOperationException("Clipboard close was not confirmed.");}}
+  uint Sequence(){uint value=GetClipboardSequenceNumber();if(admission&&AdmissionStage==4){AdmissionSequence=value;AdmissionSequenceObserved=true;}if(value==0){uncertain=true;Status="sequence-unavailable-left-untouched";throw new InvalidOperationException("Clipboard sequence unavailable; no authority to read or restore.");}return value;}
+  void CloseChecked(){bool closed=CloseClipboard();if(admission){AdmissionCloseAttempted=true;AdmissionCloseConfirmed=closed;}if(!closed){uncertain=true;Status="close-unconfirmed-left-untouched";throw new InvalidOperationException("Clipboard close was not confirmed.");}}
   public ClipboardGuard(string generated){
+   AdmissionStarted=true;AdmissionStage=1;AdmissionFailureStage=0;AdmissionEnumError=0;AdmissionOpened=false;AdmissionFormatObserved=false;AdmissionFirstFormatZero=false;AdmissionSequenceObserved=false;AdmissionSequence=0;AdmissionCloseAttempted=false;AdmissionCloseConfirmed=false;
    if(!System.Text.RegularExpressions.Regex.IsMatch(generated,"^(sentinel|paste)-[0-9]+-[0-9]+$"))throw new InvalidOperationException("Only generated synthetic clipboard payloads are allowed.");
    owner=CreateWindowEx(0,"STATIC","",0,0,0,0,0,new IntPtr(-3),IntPtr.Zero,IntPtr.Zero,IntPtr.Zero);
    if(owner==IntPtr.Zero)throw new InvalidOperationException("External clipboard guard window unavailable.");
    IntPtr memory=IntPtr.Zero;bool opened=false;try{
     byte[] bytes=Encoding.Unicode.GetBytes(generated+"\0");memory=GlobalAlloc(2,(UIntPtr)bytes.Length);if(memory==IntPtr.Zero)throw new InvalidOperationException("Synthetic payload allocation failed.");
     var target=GlobalLock(memory);if(target==IntPtr.Zero)throw new InvalidOperationException("Synthetic payload lock failed.");try{Marshal.Copy(bytes,0,target,bytes.Length);}finally{GlobalUnlock(memory);}
-    if(!OpenClipboard(owner))throw new InvalidOperationException("Clipboard locked: no clipboard mutation.");opened=true;
-    SetLastError(0);uint first=EnumClipboardFormats(0);int error=Marshal.GetLastWin32Error();
+    AdmissionStage=2;bool openResult=OpenClipboard(owner);AdmissionOpened=openResult;if(!openResult)throw new InvalidOperationException("Clipboard locked: no clipboard mutation.");opened=true;
+    AdmissionStage=3;SetLastError(0);uint first=EnumClipboardFormats(0);int error=Marshal.GetLastWin32Error();
+    AdmissionFormatObserved=true;AdmissionFirstFormatZero=first==0;AdmissionEnumError=error;
     if(first!=0||error!=0)throw new InvalidOperationException("Clipboard is nonempty or its empty state is unavailable; no content read or mutation.");
-    last=Sequence();if(!EmptyClipboard())throw new InvalidOperationException("Empty precondition could not be claimed.");
+    AdmissionStage=4;last=Sequence();AdmissionStage=5;if(!EmptyClipboard())throw new InvalidOperationException("Empty precondition could not be claimed.");
     changed=true;last=Sequence();OwnedSequences.Add(last);
     if(SetClipboardData(13,memory)==IntPtr.Zero)throw new InvalidOperationException("Synthetic payload write failed.");memory=IntPtr.Zero;
     last=Sequence();OwnedSequences.Add(last);Status="synthetic-payload-owned";
     opened=false;CloseChecked();
-   }catch{if(opened){opened=false;try{CloseChecked();}catch{}}Finish();DestroyWindow(owner);owner=IntPtr.Zero;throw;}
-   finally{if(memory!=IntPtr.Zero)GlobalFree(memory);}
+   }catch{AdmissionFailureStage=AdmissionStage;if(opened){opened=false;try{CloseChecked();}catch{}}Finish();DestroyWindow(owner);owner=IntPtr.Zero;throw;}
+   finally{admission=false;if(memory!=IntPtr.Zero)GlobalFree(memory);}
   }
   public void RequireOwned(){if(!OpenClipboard(owner))throw new InvalidOperationException("Clipboard locked before native input; no input.");try{if(Sequence()!=last||GetClipboardOwner()!=owner)throw new InvalidOperationException("Clipboard sequence changed before native input; no input.");}finally{CloseChecked();}}
   /// The only content getter follows the settled physical Copy. Unknown/zero sequences and
@@ -417,6 +424,8 @@ try {
  $report.status=if($Mode -ceq 'Cancel'){'observed-actual-App-native-cancellation'}else{'observed-actual-App-native-selection'};Save-Report
 }catch{
  $report.error=$_.Exception.Message
+ # Constructor cleanup has already run, even when assignment never returned an object.
+ try {if([BowserHostMenu+ClipboardGuard]::AdmissionStarted){$report.clipboard_admission=@{stage=[BowserHostMenu+ClipboardGuard]::AdmissionStage;failure_stage=[BowserHostMenu+ClipboardGuard]::AdmissionFailureStage;open_succeeded=[BowserHostMenu+ClipboardGuard]::AdmissionOpened;format_observed=[BowserHostMenu+ClipboardGuard]::AdmissionFormatObserved;first_format_zero=[BowserHostMenu+ClipboardGuard]::AdmissionFirstFormatZero;enum_error=[BowserHostMenu+ClipboardGuard]::AdmissionEnumError;sequence_observed=[BowserHostMenu+ClipboardGuard]::AdmissionSequenceObserved;sequence=[BowserHostMenu+ClipboardGuard]::AdmissionSequence;close_attempted=[BowserHostMenu+ClipboardGuard]::AdmissionCloseAttempted;close_confirmed=[BowserHostMenu+ClipboardGuard]::AdmissionCloseConfirmed}}}catch{}
  # Restore only our exact last-owned sequence BEFORE terminating the exact disposable test.
  if($clipboard){$restored=$clipboard.Finish();$report.clipboard=$clipboard.Status;$report.owned_clipboard_sequences=@($clipboard.OwnedSequences)}
  try{Save-Report}catch{[Console]::Error.WriteLine('Native host regression failure report could not be written.')}
