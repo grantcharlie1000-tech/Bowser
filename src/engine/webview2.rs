@@ -3422,6 +3422,17 @@ impl EngineAdapter for WebView2Engine {
         }
         Ok(())
     }
+    fn parent_window_moved(&mut self) {
+        // Every live controller: split view shows more than the active tab, and a hidden one is
+        // placed right when it is shown again. The calls run after the core borrow ends.
+        let controllers: Vec<_> = self.core.try_borrow().map_or_else(
+            |_| Vec::new(),
+            |state| state.tabs.values().filter_map(|tab| tab.controller.clone()).collect(),
+        );
+        for controller in controllers {
+            let _ = unsafe { controller.NotifyParentWindowPositionChanged() };
+        }
+    }
     fn reload(&mut self) -> Result<()> {
         let mut state = self.core.borrow_mut();
         if let Some(active) = state.active_tab

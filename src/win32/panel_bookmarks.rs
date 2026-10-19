@@ -1465,10 +1465,7 @@ impl PanelContent for Content {
             let index = self.model.selected_index();
             let geometry = self.geometry();
             let (x, y) = match index {
-                Some(i) => {
-                    let row = self.row_rect(&geometry, i);
-                    (row.left + self.px(24), row.top + row.bottom)
-                }
+                Some(i) => keyboard_menu_anchor(self.row_rect(&geometry, i), self.px(24)),
                 None => (geometry.pad, geometry.list_top),
             };
             let (x, y) = (x + self.surface.origin.left, y + self.surface.origin.top);
@@ -1728,10 +1725,22 @@ unsafe fn draw_button(dc: HDC, rect: RECT, label: &str, fill: Rgba, text: Rgba, 
     }
 }
 
+/// Where the keyboard context menu (Apps key, Shift+F10) opens for a selected `row`: under it,
+/// `indent` in. `row` is in surface coordinates (W-9: its top and bottom used to be added).
+fn keyboard_menu_anchor(row: RECT, indent: i32) -> (i32, i32) {
+    (row.left + indent, row.bottom)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::bookmarks::BookmarkStore;
+
+    #[test]
+    fn the_keyboard_context_menu_opens_under_the_selected_row() {
+        let row = RECT { left: 12, top: 400, right: 300, bottom: 430 };
+        assert_eq!(keyboard_menu_anchor(row, 24), (36, 430), "not at top + bottom (830)");
+    }
 
     fn folder(id: u64, parent: Option<u64>, title: &str) -> Bookmark {
         Bookmark {
