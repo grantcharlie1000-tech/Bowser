@@ -1922,10 +1922,7 @@ fn save_prompt(
     use crate::win32::menu::{Entry, Icon, Item, Menu};
 
     let anchor = menu_anchor(hwnd)?;
-    let title = match matched {
-        passwords::LoginMatch::Changed(_) => "Update saved password?",
-        _ => "Save this password?",
-    };
+    let update = matches!(matched, passwords::LoginMatch::Changed(_));
     let footer = match matched {
         passwords::LoginMatch::Changed(_) => "Save replaces the password for this username",
         _ => "The password stays in this profile's encrypted vault",
@@ -1936,7 +1933,7 @@ fn save_prompt(
         Menu {
             header: None,
             entries: vec![
-                Entry::SectionHeader(format!("{title} for {username} at {origin}?")),
+                Entry::SectionHeader(passwords::save_prompt_header(update, origin, username)),
                 Entry::Item(Item::new(1, "Not now", Icon::Close)),
                 Entry::Item(Item::new(2, "Save", Icon::Key)),
                 Entry::Item(Item::new(3, "Never for this site", Icon::Shield)),

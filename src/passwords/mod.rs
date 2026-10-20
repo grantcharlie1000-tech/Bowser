@@ -724,6 +724,41 @@ pub(crate) fn secure_origin(value: &str) -> Option<String> {
     Some(parsed.origin().ascii_serialization())
 }
 
+/// Most characters of a page's username the save prompt shows.
+const PROMPT_USERNAME_CHARS: usize = 32;
+
+/// The save prompt's header for a login the page at `origin` submitted. The page picks the
+/// username, so the real site (host and port, from the checked origin) comes first, and the
+/// username follows in quotes, cleaned of controls, direction overrides and zero-width marks,
+/// with whitespace collapsed and cut to [`PROMPT_USERNAME_CHARS`] characters. It can neither name
+/// another site in the site's place nor push the site out of view (SEC-4).
+pub fn save_prompt_header(update: bool, origin: &str, username: &str) -> String {
+    let verb = if update { "Update saved" } else { "Save" };
+    let site = origin.split_once("://").map_or(origin, |(_, rest)| rest);
+    let shown: String = username
+        .chars()
+        .filter(|&c| {
+            !c.is_control()
+                && !('\u{200b}'..='\u{200f}').contains(&c)
+                && !('\u{202a}'..='\u{202e}').contains(&c)
+                && !('\u{2066}'..='\u{2069}').contains(&c)
+                && c != '\u{feff}'
+        })
+        .map(|c| if matches!(c, '"' | '\u{201c}' | '\u{201d}') { '\'' } else { c })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    if shown.is_empty() {
+        return format!("{verb} password for {site}?");
+    }
+    let mut cut: String = shown.chars().take(PROMPT_USERNAME_CHARS).collect();
+    if cut.len() < shown.len() {
+        cut = format!("{}\u{2026}", cut.trim_end());
+    }
+    format!("{verb} password for {site}? Username \u{201c}{cut}\u{201d}")
+}
+
 pub(crate) const MAX_PAGE_MESSAGE_BYTES: usize = 32 * 1024;
 const MAX_PAGE_USERNAME_BYTES: usize = 4096;
 
@@ -1353,6 +1388,34 @@ fn dpapi_unprotect(_: &[u8]) -> Result<Vec<u8>, PasswordError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// SEC-4: the page picks the username, so it must not be able to name another site in the
+    /// save prompt or push the real one out of view.
+    #[test]
+    fn the_save_prompt_names_the_real_site_first_and_cuts_the_username() {
+        let spoof = format!("me at https://accounts.google.com {}", " ".repeat(3000));
+        for update in [false, true] {
+            let header = save_prompt_header(update, "https://evil.example", &spoof);
+            let site = header.find("evil.example").expect(&header);
+            assert!(!header[..site].contains("google"), "{header}");
+            assert!(site < 40, "the real site leads: {header}");
+            assert!(header.chars().count() < 120, "{header}");
+            assert!(!header.contains("  "), "{header}");
+        }
+        let header = save_prompt_header(false, "https://evil.example", &"x".repeat(4096));
+        assert!(header.chars().count() < 120, "{header}");
+        // Controls, direction overrides and zero-width marks never reach the prompt.
+        let header = save_prompt_header(false, "https://a.example:8443", "bob\u{202e}moc.elgoog\n\u{200b}\"x\"");
+        assert!(header.contains("a.example:8443"), "{header}");
+        assert!(!header.contains(['\u{202e}', '\n', '\u{200b}']), "{header}");
+        assert!(header.contains("bob"), "{header}");
+        // An ordinary username is shown whole, and an empty one is left out.
+        let header = save_prompt_header(false, "https://a.example", "alice@a.example");
+        assert!(header.contains("alice@a.example"), "{header}");
+        assert!(header.starts_with("Save password for a.example?"), "{header}");
+        assert_eq!(save_prompt_header(true, "https://a.example", ""), "Update saved password for a.example?");
+    }
+
     fn store() -> PasswordStore {
         PasswordStore {
             path: PathBuf::new(),
