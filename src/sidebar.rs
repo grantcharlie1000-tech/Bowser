@@ -104,11 +104,26 @@ impl SidebarConfig {
             Err(e) => Err(e),
         }
     }
+    /// Writes sidebar.txt. A file that is there but does not read as a sidebar (a header this
+    /// build does not know, a hand edit, too large) is never replaced: [`Self::load`] gave the
+    /// defaults for it, and saving those would drop every pinned web app it holds.
     pub fn save(&self, profile_dir: &Path) -> io::Result<()> {
-        atomic_write(
-            &profile_dir.join("sidebar.txt"),
-            self.serialize().as_bytes(),
-        )
+        let path = profile_dir.join("sidebar.txt");
+        match fs::read(&path) {
+            Ok(bytes)
+                if bytes.len() > MAX_BYTES
+                    || Self::parse(&String::from_utf8_lossy(&bytes)).is_err() =>
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "sidebar.txt could not be read; it is left as it is",
+                ));
+            }
+            Ok(_) => {}
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e),
+        }
+        atomic_write(&path, self.serialize().as_bytes())
     }
     pub fn add_app(&mut self, name: &str, url: &str) -> Result<u32, SidebarError> {
         let name = name.trim();
@@ -264,7 +279,7 @@ impl SidebarConfig {
                 "sidebar config too large",
             ));
         }
-        let mut lines = text.lines();
+        let mut lines = text.strip_prefix('\u{FEFF}').unwrap_or(text).lines();
         if lines.next() != Some("bowser-sidebar-v1") {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -464,6 +479,34 @@ mod tests {
             SidebarConfig::default().set_visible(SidebarKind::Menu, false),
             Err(SidebarError::InvalidName)
         );
+    }
+
+    #[test]
+    fn a_sidebar_file_that_does_not_read_is_never_saved_over() {
+        let dir = std::env::temp_dir().join(format!("bowser-sidebar-bom-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let mut pinned = SidebarConfig::default();
+        pinned.add_app("Mail", "https://mail.example/").unwrap();
+        // A BOM (Notepad's UTF-8) is not a different file: the pinned apps are read.
+        fs::write(dir.join("sidebar.txt"), format!("\u{FEFF}{}", pinned.serialize())).unwrap();
+        assert_eq!(SidebarConfig::load(&dir).unwrap().apps, pinned.apps);
+        // A header this build does not know loads as defaults, and the next change must not
+        // replace the file (and every pinned web app) with them.
+        let unknown = pinned.serialize().replacen("bowser-sidebar-v1", "bowser-sidebar-v2", 1);
+        fs::write(dir.join("sidebar.txt"), &unknown).unwrap();
+        let mut loaded = SidebarConfig::load(&dir).unwrap_or_default();
+        loaded.set_visible(SidebarKind::History, false).unwrap();
+        assert!(loaded.save(&dir).is_err(), "saving over an unreadable sidebar.txt is refused");
+        assert_eq!(fs::read_to_string(dir.join("sidebar.txt")).unwrap(), unknown);
+        // A file that reads is saved as usual, and a missing one is created.
+        fs::write(dir.join("sidebar.txt"), pinned.serialize()).unwrap();
+        pinned.set_visible(SidebarKind::History, false).unwrap();
+        pinned.save(&dir).unwrap();
+        assert!(!SidebarConfig::load(&dir).unwrap().is_visible(SidebarKind::History));
+        fs::remove_file(dir.join("sidebar.txt")).unwrap();
+        SidebarConfig::default().save(&dir).unwrap();
+        let _ = fs::remove_dir_all(dir);
     }
 
     #[test]

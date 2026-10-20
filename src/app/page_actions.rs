@@ -7,7 +7,7 @@
 //! still on the page the capture started on, so a navigation or a closed tab ends it quietly. Only one
 //! capture runs at a time. The window turns the result into a toast, a clipboard bitmap or a note.
 
-use std::{cell::{Cell, RefCell}, path::PathBuf, rc::Rc};
+use std::{cell::{Cell, RefCell}, path::PathBuf, rc::{Rc, Weak}};
 
 use super::{App, AppRef};
 use crate::{
@@ -43,7 +43,9 @@ pub enum Selected {
 }
 
 thread_local! {
-    static BUSY: Cell<bool> = const { Cell::new(false) };
+    /// The running capture. Only the engine's pending answers (and the finishing worker's slot) own
+    /// a job, so one whose answer the browser dropped (a view that went away) frees the lock itself.
+    static RUNNING: RefCell<Weak<RefCell<Job>>> = const { RefCell::new(Weak::new()) };
 }
 
 struct Job {
@@ -64,7 +66,7 @@ struct Job {
 
 /// Whether a capture is running (the next one is refused until it ends).
 pub fn capture_busy() -> bool {
-    BUSY.with(Cell::get)
+    RUNNING.with(|running| running.borrow().strong_count() > 0)
 }
 
 type Answer = Box<dyn FnOnce(Option<String>)>;
@@ -161,7 +163,11 @@ impl App {
             (entry.url.clone(), entry.title.clone(), state.settings.page_tools.capture_format, entry.zoom)
         };
         let Some(url) = url.filter(crate::reader::url_allowed) else { return done(CaptureResult::Unavailable) };
-        if BUSY.with(|busy| busy.replace(true)) {
+        // A job still waiting on a page that is gone (its tab closed or navigated) never finishes
+        // usefully: its answer, if it ever comes, only ends that job. It does not hold the lock.
+        let running = RUNNING.with(|running| running.borrow().upgrade());
+        let finishing = |job: &Rc<RefCell<Job>>| FINISHING.with(|slot| slot.borrow().as_ref().is_some_and(|(_, held)| Rc::ptr_eq(held, job)));
+        if running.is_some_and(|job| finishing(&job) || Self::capture_alive(app, &job)) {
             return done(CaptureResult::Busy);
         }
         let job = Rc::new(RefCell::new(Job {
@@ -179,6 +185,7 @@ impl App {
             cut: false,
             done,
         }));
+        RUNNING.with(|running| *running.borrow_mut() = Rc::downgrade(&job));
         match mode {
             CaptureMode::Visible => Self::shoot(app, &job, None),
             CaptureMode::FullPage => {
@@ -291,7 +298,12 @@ impl App {
     }
 
     fn capture_end(job: &Rc<RefCell<Job>>, result: CaptureResult) {
-        BUSY.with(|busy| busy.set(false));
+        RUNNING.with(|running| {
+            let mut running = running.borrow_mut();
+            if std::ptr::eq(running.as_ptr(), Rc::as_ptr(job)) {
+                *running = Weak::new();
+            }
+        });
         let done = job.borrow().done.clone();
         done(result);
     }

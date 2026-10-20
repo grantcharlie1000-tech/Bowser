@@ -297,6 +297,52 @@ fn a_second_capture_waits_for_the_first_and_a_navigation_ends_it_quietly() {
 }
 
 #[test]
+fn a_capture_whose_answer_never_comes_does_not_lock_out_every_later_capture() {
+    let fx = Fixture::new("stuck");
+    type Held = Rc<RefCell<Vec<Box<dyn FnOnce(Option<String>)>>>>;
+    // An engine that keeps (`hold`) or drops (as WebView2 releases a closed view's handler) `done`.
+    struct Stuck(Held, bool);
+    impl EngineAdapter for Stuck {
+        fn navigate(&mut self, _u: &url::Url) -> windows::core::Result<()> { Ok(()) }
+        fn can_go_back(&self) -> bool { false }
+        fn go_back(&mut self) -> windows::core::Result<()> { Ok(()) }
+        fn can_go_forward(&self) -> bool { false }
+        fn go_forward(&mut self) -> windows::core::Result<()> { Ok(()) }
+        fn resize(&mut self, _b: windows::Win32::Foundation::RECT) -> windows::core::Result<()> { Ok(()) }
+        fn set_memory_usage_target(&mut self, _t: MemoryUsageTarget) -> windows::core::Result<MemoryTargetApply> { Ok(MemoryTargetApply::Applied) }
+        fn close(&mut self) -> windows::core::Result<()> { Ok(()) }
+        fn devtools_call(&mut self, _tab: TabId, _m: &str, _p: &str, done: Box<dyn FnOnce(Option<String>)>) {
+            if self.1 { self.0.borrow_mut().push(done); }
+        }
+    }
+    let held: Held = Rc::new(RefCell::new(Vec::new()));
+    let results = Rc::new(RefCell::new(Vec::new()));
+    let start = |fx: &Fixture| {
+        let sink = results.clone();
+        App::capture_page(&fx.app, fx.tab, CaptureMode::Visible, CaptureTarget::File, Rc::new(move |r| sink.borrow_mut().push(r)));
+    };
+
+    // The browser drops the call (the view went away): nothing holds the job, so nothing is busy.
+    fx.app.borrow_mut().engine = Some(Box::new(Stuck(held.clone(), false)));
+    start(&fx);
+    assert!(!crate::app::capture_busy(), "a dropped call must not keep the lock");
+
+    // The browser keeps the call but the page is gone (closed tab, navigation): the next capture runs.
+    fx.app.borrow_mut().engine = Some(Box::new(Stuck(held.clone(), true)));
+    start(&fx);
+    assert_eq!(fx.capture(CaptureMode::Visible, CaptureTarget::File), CaptureResult::Busy, "the live job still holds it");
+    fx.app.borrow_mut().tabs.iter_mut().find(|e| e.id == fx.tab).unwrap().url = Some(url::Url::parse("https://other.example/").unwrap());
+    fx.app.borrow_mut().engine = Some(Box::new(FakeEngine { record: fx.record.clone(), calls: fx.calls.clone(), scripts: fx.scripts.clone() }));
+    fx.call_answer(&pics::picture(4, 4, CaptureFormat::Png, |_| 1));
+    assert!(matches!(fx.capture(CaptureMode::Visible, CaptureTarget::File), CaptureResult::Saved { .. }), "the stale job no longer blocks");
+    // The stale job's late answer ends only that job, not a later one.
+    let late = held.borrow_mut().pop().unwrap();
+    late(None);
+    assert!(results.borrow().iter().all(|r| matches!(r, CaptureResult::Failed(_))));
+    assert!(!crate::app::capture_busy());
+}
+
+#[test]
 fn the_selection_for_a_note_is_its_text_page_and_address() {
     let fx = Fixture::new("note");
     let seen = Rc::new(RefCell::new(Vec::new()));

@@ -268,10 +268,12 @@ fn parse_line(line: &str) -> Option<Rule> {
                 })
             }
             _ if tail.starts_with('/') || tail.starts_with('?') => {
-                let pattern = tail.trim_end_matches('|');
+                // A trailing `|` (the end anchor) stays: the rule matches the address only up to
+                // its end, never a longer one (see [`glob_core`]).
+                let pattern = end_anchored(tail)?;
                 Some(Rule::Path {
                     host: host.to_owned(),
-                    pattern: pattern.to_owned(),
+                    pattern,
                 })
             }
             _ => None,
@@ -288,15 +290,25 @@ fn parse_line(line: &str) -> Option<Rule> {
     {
         return None;
     }
-    let pattern = pattern.trim_end_matches('|');
-    if pattern.len() < 6 || pattern.contains('|') {
+    let pattern = end_anchored(&pattern)?;
+    if pattern.trim_end_matches('|').len() < 6 {
         return None;
     }
     Some(Rule::Substring {
-        pattern: pattern.to_owned(),
+        pattern,
         third_party_only,
         domains,
     })
+}
+
+/// Rule text with at most one `|`, the end anchor, as its last byte (`a||` is read as `a|`).
+/// `None` when a `|` is anywhere else.
+fn end_anchored(pattern: &str) -> Option<String> {
+    let body = pattern.trim_end_matches('|');
+    if body.contains('|') {
+        return None;
+    }
+    Some(if body.len() < pattern.len() { format!("{body}|") } else { body.to_owned() })
 }
 
 /// Parses the options after `$`: `third-party`/`3p`, and `domain=a|b|...`. Any other option, an
@@ -407,7 +419,9 @@ fn glob_prefix(pattern: &[u8], text: &[u8]) -> bool {
 
 /// Single-pass glob matcher (`*` and `^`) with one backtrack point, so the cost is bounded by
 /// `pattern.len() * text.len()` and never grows with the number of wildcards. When `anchored` is
-/// false the match may start at any offset in `text` (a leading `*`).
+/// false the match may start at any offset in `text` (a leading `*`). A `|` as the pattern's last
+/// byte is the end anchor: the match must reach the end of `text`; otherwise the pattern only has
+/// to match a prefix (the implicit trailing wildcard).
 fn glob_core(pattern: &[u8], text: &[u8], anchored: bool) -> bool {
     let (mut p, mut t) = (0usize, 0usize);
     // (pattern index just after the last `*`, text index that `*` currently consumes up to)
@@ -421,6 +435,11 @@ fn glob_core(pattern: &[u8], text: &[u8], anchored: bool) -> bool {
                 p += 1;
                 star = Some((p, t));
                 continue;
+            }
+            b'|' if p + 1 == pattern.len() => {
+                if t == text.len() {
+                    return true;
+                }
             }
             b'^' => {
                 if t == text.len() {
@@ -453,7 +472,7 @@ fn glob_core(pattern: &[u8], text: &[u8], anchored: bool) -> bool {
 }
 
 fn contains_glob(pattern: &[u8], text: &[u8]) -> bool {
-    if !pattern.iter().any(|b| matches!(b, b'*' | b'^')) {
+    if !pattern.iter().any(|b| matches!(b, b'*' | b'^' | b'|')) {
         return text.len() >= pattern.len()
             && text
                 .windows(pattern.len())
@@ -582,6 +601,21 @@ pub fn same_site(a: &str, b: &str) -> bool {
     a.eq_ignore_ascii_case(b) || registrable_domain(a).eq_ignore_ascii_case(registrable_domain(b))
 }
 
+/// A dotted host that is itself a public suffix (`github.io`, `co.uk`): it has no registrable
+/// domain of its own, and a rule for it covers many unrelated sites.
+fn is_public_suffix(host: &str) -> bool {
+    host.contains('.') && !is_ip_address(host) && psl::domain(host.as_bytes()).is_none()
+}
+
+/// True when a DevTools pattern for a rule on `rule_host` would also fail requests a page on
+/// `page_host` makes to its own site: the rule host is on the page's site, or it is a public
+/// suffix above the page (`||github.io^` on `foo.github.io`). The in-process matcher calls those
+/// requests first-party; a URL pattern cannot leave them out, so the page gets no such pattern.
+fn rule_host_covers_page(rule_host: &str, page_host: &str) -> bool {
+    same_site(rule_host, page_host)
+        || (is_public_suffix(rule_host) && host_suffixes(page_host).any(|suffix| suffix == rule_host))
+}
+
 /// DevTools `Network.setBlockedURLs` patterns for every host in `hosts`, excluding any whose
 /// registrable domain equals `page_host`'s (first-party), or an empty list when `blocking` is
 /// false. Both the bare host and its subdomains are covered (`Network.setBlockedURLs` does no
@@ -596,7 +630,7 @@ pub fn blocked_url_patterns<'a>(
     }
     let mut patterns: Vec<String> = hosts
         .into_iter()
-        .filter(|host| !same_site(host, page_host))
+        .filter(|host| !rule_host_covers_page(host, page_host))
         .flat_map(host_url_patterns)
         .collect();
     patterns.sort_unstable();
@@ -665,6 +699,8 @@ fn request_filter_text(text: &str) -> String {
         match byte {
             b'a'..=b'z' | b'A'..=b'Z' | b'\\' => out.push('?'),
             b'*' | b'^' => out.push('*'),
+            // The end anchor: the filter stays wider (a `*` follows), the matcher decides.
+            b'|' => {}
             b'?' => out.push_str("\\?"),
             other => out.push(other as char),
         }
@@ -686,7 +722,7 @@ pub fn exact_url_patterns<'a>(
         return Vec::new();
     }
     urls.into_iter()
-        .filter(|(host, _)| !same_site(host, page_host))
+        .filter(|(host, _)| !rule_host_covers_page(host, page_host))
         .flat_map(|(host, path)| exact_rule_url_patterns(host, path))
         .collect()
 }
@@ -746,12 +782,16 @@ impl DevtoolsPatterns {
     }
 
     /// The patterns for a document on `page_host` (lowercase, as a URL host is): every pattern
-    /// whose rule host is not on the page's registrable domain. Same exemption as [`same_site`].
+    /// whose rule host is not on the page's registrable domain, nor a public suffix above the page
+    /// (see [`rule_host_covers_page`]). A public-suffix rule host is its own site key here.
     fn for_page(&self, page_host: &str) -> Vec<String> {
-        let own = self.sites.get(registrable_domain(page_host)).copied();
+        let own: Vec<u32> = std::iter::once(registrable_domain(page_host))
+            .chain(host_suffixes(page_host).filter(|suffix| is_public_suffix(suffix)))
+            .filter_map(|site| self.sites.get(site).copied())
+            .collect();
         self.patterns
             .iter()
-            .filter(|(site, _)| Some(*site) != own)
+            .filter(|(site, _)| !own.contains(site))
             .map(|(_, pattern)| pattern.to_string())
             .collect()
     }
@@ -918,6 +958,18 @@ impl Blocker {
                 filters.insert(format!("*://*{host}{}", request_filter_text(path)));
             }
         }
+        // A rule on a public suffix gets no DevTools pattern on the sites under it (see
+        // [`rule_host_covers_page`]), so the matcher has to see those requests.
+        for host in self.hosts() {
+            if is_public_suffix(host) {
+                filters.insert(format!("*://*{}/*", request_filter_text(host)));
+            }
+        }
+        for (host, _) in self.exact_urls().chain(self.path_rules()) {
+            if is_public_suffix(host) {
+                filters.insert(format!("*://*{}/*", request_filter_text(host)));
+            }
+        }
         filters
     }
 
@@ -1069,7 +1121,7 @@ impl BlockerState {
             cookie_notices: false,
             config_allow: config_allow
                 .iter()
-                .filter_map(|site| normalise_site(site))
+                .filter_map(|site| normalise_allow_site(site))
                 .collect(),
             site_rules: site_rules::SiteRules::default(),
             sites_path: None,
@@ -1215,7 +1267,7 @@ impl BlockerState {
             crate::settings::BlockerLevel::Trackers => Level::Trackers,
             crate::settings::BlockerLevel::Ads => Level::Ads,
         };
-        let allow: HashSet<String> = settings.blocker_allow.iter().filter_map(|site| normalise_site(site)).collect();
+        let allow: HashSet<String> = settings.blocker_allow.iter().filter_map(|site| normalise_allow_site(site)).collect();
         let changed = self.enabled != settings.blocker_enabled || self.level != level || self.config_allow != allow;
         self.enabled = settings.blocker_enabled;
         self.level = level;
@@ -1228,7 +1280,7 @@ impl BlockerState {
 
     /// Replaces the sites `blocker_allow` in settings.txt exempts.
     pub fn set_config_allow(&mut self, config_allow: &[String]) {
-        self.config_allow = config_allow.iter().filter_map(|site| normalise_site(site)).collect();
+        self.config_allow = config_allow.iter().filter_map(|site| normalise_allow_site(site)).collect();
         self.rules_changed();
     }
 
@@ -1334,8 +1386,9 @@ impl BlockerState {
     }
 
     /// The shield's level choice for the page on `top_host`: what this site should get from now on.
-    /// A level that equals the global one clears the site's own choice instead of saving a copy of
-    /// it, so the site follows the global level again; any other level is saved. The rule in force
+    /// A level that equals what the site would get without its own choice (a parent's rule, else
+    /// the global level) clears that choice instead of saving a copy of it; any other level is
+    /// saved, so the page always ends at the level chosen. The rule in force
     /// (it may be for a subdomain) is the one that changes, else the site's own.
     pub fn choose_level_for_page(&mut self, top_host: &str, level: Level) -> SiteChoice {
         let top_host = top_host.to_ascii_lowercase();
@@ -1348,7 +1401,9 @@ impl BlockerState {
         let key = host_suffixes(&top_host)
             .find(|suffix| self.site_rules.get(suffix).is_some_and(|rule| rule.level.is_some()))
             .map_or_else(|| registrable_domain(&top_host).to_owned(), str::to_owned);
-        let wanted = (level != self.global_level()).then_some(level);
+        // Clearing is right only when what is left (a parent's rule, else the global level) is the
+        // level asked for; under a parent with its own rule, the choice has to be saved.
+        let wanted = (self.level_without(&top_host, &key) != level).then_some(level);
         if self.site_rules.set_level(&key, wanted) {
             self.sites_changed();
             SiteChoice::Saved
@@ -1358,7 +1413,8 @@ impl BlockerState {
     }
 
     /// The shield's cookie-notice choice for the page on `top_host`: hide them or leave them. A
-    /// choice that equals the global switch clears the site's own choice.
+    /// choice that equals what the site would get without its own (a parent's choice, else the
+    /// global switch) clears the site's own choice.
     pub fn choose_cookie_notices_for_page(&mut self, top_host: &str, hide: bool) -> SiteChoice {
         let top_host = top_host.to_ascii_lowercase();
         if top_host.is_empty() || !top_host.contains('.') {
@@ -1367,13 +1423,32 @@ impl BlockerState {
         let key = host_suffixes(&top_host)
             .find(|suffix| self.site_rules.get(suffix).is_some_and(|rule| rule.cookies.is_some()))
             .map_or_else(|| registrable_domain(&top_host).to_owned(), str::to_owned);
-        let wanted = (hide != self.cookie_notices).then_some(hide);
+        let wanted = (self.cookies_without(&top_host, &key) != hide).then_some(hide);
         if self.site_rules.set_cookies(&key, wanted) {
             self.sites_changed();
             SiteChoice::Saved
         } else {
             SiteChoice::NoSite
         }
+    }
+
+    /// The level `top_host` would get if the saved rule for `key` (one of its suffixes) set none:
+    /// the nearest parent's rule, else the global level.
+    fn level_without(&self, top_host: &str, key: &str) -> Level {
+        host_suffixes(top_host)
+            .skip_while(|suffix| *suffix != key)
+            .skip(1)
+            .find_map(|suffix| self.site_rules.get(suffix).and_then(|rule| rule.level))
+            .unwrap_or_else(|| self.global_level())
+    }
+
+    /// As [`Self::level_without`], for the cookie-notice choice.
+    fn cookies_without(&self, top_host: &str, key: &str) -> bool {
+        host_suffixes(top_host)
+            .skip_while(|suffix| *suffix != key)
+            .skip(1)
+            .find_map(|suffix| self.site_rules.get(suffix).and_then(|rule| rule.cookies))
+            .unwrap_or(self.cookie_notices)
     }
 
     fn sites_changed(&mut self) {
@@ -1600,17 +1675,20 @@ impl BlockerState {
         if self.config_allow_hit(&top_host) {
             return SiteToggle::ConfiguredInSettings;
         }
-        let (level, result) = if self.level_for(&top_host, false) != Level::None {
-            (Some(Level::None), SiteToggle::Allowed)
-        } else if self.global_level() == Level::None {
-            (Some(Level::Ads), SiteToggle::Blocking)
-        } else {
-            (None, SiteToggle::Blocking)
-        };
         // Change the saved rule that is in force (it may be for a subdomain), else the site's own.
         let key = host_suffixes(&top_host)
             .find(|suffix| self.site_rules.get(suffix).is_some_and(|rule| rule.level.is_some()))
             .map_or(site, str::to_owned);
+        let (level, result) = if self.level_for(&top_host, false) != Level::None {
+            (Some(Level::None), SiteToggle::Allowed)
+        } else if self.global_level() == Level::None {
+            (Some(Level::Ads), SiteToggle::Blocking)
+        } else if self.level_without(&top_host, &key) == Level::None {
+            // A paused parent would take over again: block at the global level explicitly.
+            (Some(self.global_level()), SiteToggle::Blocking)
+        } else {
+            (None, SiteToggle::Blocking)
+        };
         if !self.site_rules.set_level(&key, level) {
             return SiteToggle::NoSite;
         }
@@ -1624,6 +1702,36 @@ impl BlockerState {
         };
         write_atomic(path, self.site_rules.render().as_bytes())
     }
+}
+
+/// A `blocker_allow` entry as the host key [`BlockerState::config_allow_hit`] compares: the
+/// settings page and settings.txt accept an address (`https://news.example/page`), a port
+/// (`news.example:8080`), a `*.` prefix, a Unicode name (kept as punycode, as a URL host is), a
+/// single-label intranet name or an IPv4 address. `None` for text that names no web host.
+fn normalise_allow_site(entry: &str) -> Option<String> {
+    let entry = entry.trim();
+    if entry.is_empty() || entry.starts_with('#') {
+        return None;
+    }
+    let entry = entry.strip_prefix("*.").unwrap_or(entry);
+    let url = if entry.contains("://") {
+        url::Url::parse(entry).ok()?
+    } else {
+        url::Url::parse(&format!("http://{entry}")).ok()?
+    };
+    if !matches!(url.scheme(), "http" | "https") || !url.username().is_empty() {
+        return None;
+    }
+    let host = url.host_str()?.trim_end_matches('.').to_ascii_lowercase();
+    let label_ok = |label: &str| {
+        !label.is_empty()
+            && label.len() <= 63
+            && label.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'-' | b'_'))
+    };
+    let usable = is_ip_address(&host)
+        || valid_rule_host(&host)
+        || (!host.contains('.') && label_ok(&host));
+    usable.then_some(host)
 }
 
 fn normalise_site(entry: &str) -> Option<String> {
@@ -1708,7 +1816,7 @@ mod tests {
             parse_line("||example.com/ads/*.js|"),
             Some(Rule::Path {
                 host: "example.com".into(),
-                pattern: "/ads/*.js".into()
+                pattern: "/ads/*.js|".into()
             })
         );
         assert_eq!(
@@ -1960,6 +2068,62 @@ mod tests {
         assert!(blocked_url_patterns(["doubleclick.net"], "ad.doubleclick.net", true).is_empty());
         assert!(blocked_url_patterns(["doubleclick.net"], "news.example", false).is_empty());
         assert!(!blocked_url_patterns(["doubleclick.net"], "", true).is_empty());
+    }
+
+    #[test]
+    fn allow_entries_written_as_addresses_ports_or_unicode_names_still_apply() {
+        let entries = [
+            "https://News.Example/some/page",
+            "shop.example:8080",
+            "*.wild.example",
+            "b\u{fc}cher.example",
+            "intranet",
+            "192.168.1.10",
+        ];
+        for entry in entries {
+            assert!(crate::settings::parse_blocker_allow(entry).is_ok(), "settings accepts {entry}");
+        }
+        let s = state("||tracker.example^\n", &entries);
+        for page in ["news.example", "www.news.example", "shop.example", "a.wild.example", "xn--bcher-kva.example", "intranet", "192.168.1.10"] {
+            assert!(!s.should_block("https://tracker.example/x", page), "{page} is allowed");
+            assert!(s.blocked_url_patterns(page).is_empty(), "{page} gets no DevTools patterns");
+        }
+        assert!(s.should_block("https://tracker.example/x", "other.example"), "others still blocked");
+        assert!(s.should_block("https://tracker.example/x", "10.0.1.10"));
+        // Text that is not a site at all is still dropped.
+        let junk = state("||tracker.example^\n", &["#comment", "mailto:a@b.example", ""]);
+        assert!(junk.config_allowed_sites().is_empty());
+    }
+
+    #[test]
+    fn an_end_anchor_keeps_a_rule_from_matching_longer_addresses() {
+        let s = state("||cdn.ads.example/ads/*.js|\n/adframe.js|\n", &[]);
+        assert!(s.should_block("https://cdn.ads.example/ads/x.js", "news.example"));
+        assert!(!s.should_block("https://cdn.ads.example/ads/x.json", "news.example"));
+        assert!(!s.should_block("https://cdn.ads.example/ads/x.js?v=1", "news.example"), "a query is more than the rule");
+        assert!(s.should_block("https://news.example/static/adframe.js", "news.example"));
+        assert!(!s.should_block("https://news.example/adframe.json", "news.example"));
+        assert!(!s.should_block("https://news.example/adframe.js/more", "news.example"));
+        // Neither engine applies the rule more broadly: the path rule has no DevTools pattern that
+        // would also match .json, and the request filters still send the .js address to the matcher.
+        let patterns = s.blocked_url_patterns("news.example");
+        assert!(patterns.iter().all(|pattern| !pattern.contains("/ads/")), "{patterns:?}");
+        assert!(!s.request_filters().is_empty());
+    }
+
+    #[test]
+    fn a_rule_for_a_public_suffix_spares_the_page_in_both_engines() {
+        let s = state("||github.io^\n", &[]);
+        let own = "https://foo.github.io/a.js";
+        assert!(!s.should_block(own, "foo.github.io"), "the page's own script is first-party");
+        assert!(s.blocked_url_patterns("foo.github.io").is_empty(), "DevTools must not block it either");
+        // Another site on the suffix is still blocked, by the matcher, which the filters reach.
+        assert!(s.should_block("https://bar.github.io/a.js", "foo.github.io"));
+        let filters = s.request_filters();
+        assert!(!filters.is_empty(), "the matcher sees requests on the suffix");
+        // A page elsewhere still gets DevTools patterns for the rule.
+        assert!(!s.blocked_url_patterns("news.example").is_empty());
+        assert!(s.should_block(own, "news.example"));
     }
 
     #[test]
@@ -3434,6 +3598,36 @@ mod level_tests {
         assert_eq!(excepted.choose_level_for_page("skip.test", Level::Ads), SiteChoice::ConfiguredInSettings);
         assert_eq!(s.choose_level_for_page("localhost", Level::Ads), SiteChoice::NoSite);
         assert_eq!(s.choose_level_for_page("", Level::Ads), SiteChoice::NoSite);
+    }
+
+    #[test]
+    fn choosing_the_global_level_on_a_subdomain_gives_the_global_level_not_the_parents() {
+        let (mut s, _dir) = state("shield-subdomain-global");
+        s.enabled = true;
+        s.level = Level::Ads;
+        assert!(s.set_site_level("example.com", Some(Level::None)));
+        assert!(s.set_site_level("shop.example.com", Some(Level::Trackers)));
+        assert_eq!(s.choose_level_for_page("shop.example.com", Level::Ads), SiteChoice::Saved);
+        assert_eq!(s.level_for("shop.example.com", false), Level::Ads, "what the user chose");
+        assert_eq!(s.level_for("example.com", false), Level::None, "the parent keeps its own choice");
+        // With no parent rule, the global level still clears the subdomain's own rule.
+        assert!(s.set_site_level("example.com", None));
+        assert_eq!(s.choose_level_for_page("shop.example.com", Level::Ads), SiteChoice::Saved);
+        assert!(s.site_rules().is_empty(), "no copy of the global level is kept");
+
+        // Ctrl+Shift+B back to blocking under a paused parent blocks again.
+        assert!(s.set_site_level("example.com", Some(Level::None)));
+        assert!(s.set_site_level("shop.example.com", Some(Level::None)));
+        assert_eq!(s.toggle_site("shop.example.com"), SiteToggle::Blocking);
+        assert_eq!(s.level_for("shop.example.com", false), Level::Ads);
+
+        // The cookie-notice choice works the same way.
+        s.cookie_notices = true;
+        assert!(s.set_site_cookies("example.com", Some(false)));
+        assert!(s.set_site_cookies("shop.example.com", Some(false)));
+        assert_eq!(s.choose_cookie_notices_for_page("shop.example.com", true), SiteChoice::Saved);
+        assert!(s.cookie_notices_for("shop.example.com", false), "hidden as the user chose");
+        assert!(!s.cookie_notices_for("example.com", false));
     }
 
     #[test]
