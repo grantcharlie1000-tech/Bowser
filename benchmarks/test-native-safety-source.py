@@ -230,13 +230,70 @@ class NativeSafetySourceContracts(unittest.TestCase):
         self.assertIn("$firstInventoryProof=$menu", helper)
         self.assertIn("$fresh=Menu-State;$freshInventoryProof=$fresh", helper)
         self.assertIn("$report.status='observed-owned-popup-and-real-cancellation';Attach-InventoryEvidence;Save-Report", helper)
-        self.assertIn("if($report.failure_cleanup -ceq 'exact-single-test-process-terminated'){Attach-InventoryEvidence}", helper)
+        cleanup = helper.split("if($report.failure_cleanup -ceq 'exact-single-test-process-terminated'){", 1)[1]
+        self.assertIn("Attach-InventoryEvidence", cleanup)
         attach = helper.split("function Attach-InventoryEvidence {", 1)[1].split("function Observe-Topology(", 1)[0]
         self.assertNotIn("::ReadMenu", attach)
         self.assertIn("evidence-serialization-failed", attach)
         checker = source("benchmarks/scripts/test-native-menu-helpers.ps1")
         self.assertIn("$receipt.inventory -cne $inventory", checker)
         self.assertIn("$receipt.utf8_sha256 -cne $digest", checker)
+
+    def test_host_script_telemetry_observes_existing_calls_without_authority_or_extra_script(self):
+        live = source("src/engine/app_host_menu_probe/live.rs")
+        script = live.split("fn script(", 1)[1].split("fn current(", 1)[0]
+        self.assertEqual(script.count("view.ExecuteScript("), 1)
+        self.assertIn("Duration::from_secs(10)", script)
+        self.assertIn("pump_until_observed(", script)
+        self.assertLess(script.index("trace.start(label)"), script.index("view.ExecuteScript("))
+        self.assertLess(script.index("call.execute_returned(submitted.is_ok())"), script.index("submitted.unwrap()"))
+        self.assertIn("assert!(completed,\"exact COM script completion timed out\")", script)
+        trace = source("src/engine/app_host_menu_probe/live/script_trace.rs")
+        for primitive in ("ordinal", "ExecuteEntered", "ExecuteReturned", "callback_seen", "callback_ok", "PumpEntered", "PumpExited", "Cell<", "diagnostic_json()", "line.len()<=2048", "self.reports.get()>=4"):
+            self.assertIn(primitive, trace)
+        for forbidden in ("ExecuteScript(", "PostMessage", "SetFocus", "SetForegroundWindow", "App::", "RefCell", "source.as_", "result.to_string()"):
+            self.assertNotIn(forbidden, trace)
+        for lane in (live, source("src/engine/app_host_menu_probe/live/note_split.rs")):
+            self.assertIn('report("watchdog-before-close")', lane)
+            self.assertIn("TraceScope::enter(script_trace.clone())", lane)
+        workflow = source(".github/workflows/store-probe.yml")
+        self.assertIn("Exact two synthetic script-trace tests were not discovered.", workflow)
+
+    def test_host_loopback_uses_complete_headers_and_one_bounded_transport_budget(self):
+        server = source("src/engine/app_host_menu_probe/live/loopback.rs")
+        for needed in ("Duration::from_secs(1)", "HEADER_CAP: usize = 8192", "fn remaining(", "checked_sub(clock.elapsed())", "b\"\\r\\n\\r\\n\"", "Outcome::DuplicateKey", "Outcome::LateCompletion", "fn read_header(", "fn write_response(", "fn serve_connection(", "try_lock()", "DIAGNOSTIC_RECORD_CAP: usize = 32"):
+            self.assertIn(needed, server)
+        self.assertNotIn("write_all(", server)
+        self.assertNotIn("format!(\"{error}", server)
+        live = source("src/engine/app_host_menu_probe/live.rs")
+        self.assertIn("mod loopback;", live)
+        self.assertNotIn("struct Loopback", live)
+        self.assertIn("receipts.paste_full_responses,receipts.note_full_responses,receipts.destination_full_responses", live)
+        self.assertIn("save_transport_diagnostic(&server,&output)", live)
+        fixture = source("benchmarks/fixtures/app-host-context-menu/index.html")
+        self.assertEqual(fixture.count("fetch("), 1)
+        self.assertIn("if(state.exact_body_match)document.documentElement.setAttribute", fixture)
+        self.assertIn("state.response_status=r.status", fixture)
+        self.assertIn(".catch(error=>", fixture)
+        workflow = source(".github/workflows/store-probe.yml")
+        self.assertIn("Exact four synthetic loopback tests were not discovered.", workflow)
+
+    def test_rejected_uia_shape_inventory_is_bounded_non_authority_after_irrevocable_failure(self):
+        helper = source("benchmarks/scripts/probe-default-context-cancellation.ps1")
+        diagnostic = helper.split("static string rejectedInventoryBuffer;", 1)[1].split("public static MenuProof ReadMenu(", 1)[0]
+        for required in ("RejectedNodeCap=128", "RejectedRuntimeCap=32", "RejectedOutputCap=65536", "now+750", "if(readiness<local)", "if(ownership!=0&&ownership<local)", "provider-getter-failed", "getter-failed", "not-supported", "wrong-kind", "not-attempted", "foreign-or-unknown-pid-subtree-excluded", "RejectedParent(c,child,runtime", "GetNextSibling(siblingSource)", "GetCurrentPropertyValue(property,true)", "output-cap-details-discarded", "blocking_provider_call_cannot_be_preempted"):
+            self.assertIn(required, diagnostic)
+        for forbidden in (".Current.Name", "NameProperty", "AutomationElement.FromHandle", "keybd_event(", "mouse_event(", "WriteMembershipRequest(", "FileStream", "Start-Sleep"):
+            self.assertNotIn(forbidden, diagnostic)
+        self.assertLess(diagnostic.index('if(!RejectedBrowserPid(row.First.Pid,browserPid))'), diagnostic.index('GetFirstChild(work.Item1)'))
+        refusal = helper.split('browserNode=CaptureBrowserNode(', 1)[1].split('string nativeToken=', 1)[0]
+        self.assertIn('try{BufferRejectedInventory(', refusal)
+        self.assertIn('catch{}', refusal)
+        self.assertRegex(refusal, r'catch\{\}\s*WriteBoundsFailure\([^;\n]*\);throw;')
+        cleanup = helper.split("if($report.failure_cleanup -ceq 'exact-single-test-process-terminated'){", 1)[1]
+        self.assertIn('::RejectedInventoryEvidence()', cleanup)
+        self.assertIn("'rejected-popup-shapes.json'", cleanup)
+        self.assertIn("CheckRejectedInventoryPolicy", source("benchmarks/scripts/test-native-menu-helpers.ps1"))
         workflow = source(".github/workflows/store-probe.yml")
         self.assertLess(workflow.index("name: Preserve bounded native menu proof evidence"), workflow.index("name: Probe default-off native engine menu in actual HTML Bowser App"))
 

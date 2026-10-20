@@ -546,7 +546,208 @@ public static class BowserDefaultContext {
    p=>p.Left=21,p=>p.Top=31,p=>p.Width=41,p=>p.Height=51
   }){var fresh=SyntheticMenuProof(inventory);mutate(fresh);if(SameProof(baseline,fresh))throw new InvalidOperationException("Synthetic changed root/fixture/native/count proof accepted.");}
  }
- public static MenuProof ReadMenu(IntPtr host,uint testPid,uint hostTid,IntPtr popup,uint browserPid,ReadOnlyBrowser browser,ReadOnlyBrowser gpu,ulong ownershipDeadline,string diagnosticDirectory){
+ // Failure-only, non-atomic property shapes. This separate buffer is never a MenuProof,
+ // membership digest, input authority, or a reason to retry the irrevocable rejection.
+ // Each provider call has cooperative before/after checks. A blocked UIA call itself
+ // cannot be preempted; the 750ms cap does not claim a hard wall-clock timeout.
+ // Large per-node records can hit the output cap before all shapes are read. Partial
+ // diagnostic output is never a complete native inventory or an accepted menu proof.
+ static string rejectedInventoryBuffer;
+ const int RejectedNodeCap=128,RejectedRuntimeCap=32,RejectedOutputCap=65536,RejectedOutputReserve=8192;
+ sealed class RejectedStop:Exception {public readonly string Reason;public RejectedStop(string reason){Reason=reason;}}
+ sealed class RejectedValue {
+  public string Status="not-attempted",Kind="unqueried",Json="null";public object Raw;
+  public void Failed(){Status="getter-failed";Kind="unavailable";Json="null";Raw=null;}
+  public void Store(object raw,string kind){
+   Raw=raw;Kind=kind;Status="supported";Json="null";
+   if(Object.ReferenceEquals(raw,AutomationElement.NotSupported)){Status="not-supported";Raw=null;return;}
+   if(kind=="runtime-id"&&raw is int[]){var id=(int[])raw;if(id.Length==0||id.Length>RejectedRuntimeCap){Status="wrong-kind";Kind="runtime-outside-bound";Raw=null;throw new RejectedStop("runtime-cap");}Raw=(int[])id.Clone();Json=JsonIds((int[])Raw);return;}
+   if(kind=="integer"&&raw is int){Json=Number((int)raw);return;}
+   if(kind=="control-type"&&raw is ControlType){Json=Number(((ControlType)raw).Id);return;}
+   if(kind=="boolean"&&raw is bool){Json=(bool)raw?"true":"false";return;}
+   if(kind=="rectangle"&&raw is System.Windows.Rect){Json=RejectedRectangle((System.Windows.Rect)raw);return;}
+   if(kind=="element-presence"){Json=raw==null?"false":"true";Raw=null;return;}
+   Status="wrong-kind";Raw=null;
+  }
+  public string Render(){return "{\"status\":\""+Status+"\",\"kind\":\""+Kind+"\",\"value\":"+Json+"}";}
+ }
+ static string RejectedNumber(double value){return Finite(value)?Real(value):"null";}
+ static string RejectedNumberShape(double value){return Double.IsNaN(value)?"nan":Double.IsPositiveInfinity(value)?"positive-infinity":Double.IsNegativeInfinity(value)?"negative-infinity":"finite";}
+ static string RejectedRectangle(System.Windows.Rect r){
+  return "{\"is_empty\":"+(r.IsEmpty?"true":"false")+",\"all_finite\":"+(Finite(r.X)&&Finite(r.Y)&&Finite(r.Width)&&Finite(r.Height)?"true":"false")+",\"x\":"+RejectedNumber(r.X)+",\"y\":"+RejectedNumber(r.Y)+",\"width\":"+RejectedNumber(r.Width)+",\"height\":"+RejectedNumber(r.Height)+",\"x_shape\":\""+RejectedNumberShape(r.X)+"\",\"y_shape\":\""+RejectedNumberShape(r.Y)+"\",\"width_shape\":\""+RejectedNumberShape(r.Width)+"\",\"height_shape\":\""+RejectedNumberShape(r.Height)+"\"}";
+ }
+ sealed class RejectedReading {
+  public readonly RejectedValue Runtime=new RejectedValue(),Pid=new RejectedValue(),Type=new RejectedValue(),Hwnd=new RejectedValue(),Bounds=new RejectedValue(),Control=new RejectedValue(),Content=new RejectedValue(),Enabled=new RejectedValue(),Focusable=new RejectedValue(),Focused=new RejectedValue(),Offscreen=new RejectedValue();
+  public string IdentityRender(){return "{\"runtime\":"+Runtime.Render()+",\"pid\":"+Pid.Render()+"}";}
+  public string Render(){return "{\"runtime\":"+Runtime.Render()+",\"pid\":"+Pid.Render()+",\"type\":"+Type.Render()+",\"hwnd\":"+Hwnd.Render()+",\"bounds\":"+Bounds.Render()+",\"is_control\":"+Control.Render()+",\"is_content\":"+Content.Render()+",\"enabled\":"+Enabled.Render()+",\"keyboard_focusable\":"+Focusable.Render()+",\"keyboard_focused\":"+Focused.Render()+",\"offscreen\":"+Offscreen.Render()+"}";}
+ }
+ sealed class RejectedNode {
+  public int Index,Depth;public int[] ExpectedParent;public string Status="incomplete";
+  public readonly RejectedReading First=new RejectedReading(),Later=new RejectedReading(),ParentFirst=new RejectedReading(),ParentLater=new RejectedReading();
+  public readonly RejectedValue ParentPresenceFirst=new RejectedValue(),ParentPresenceLater=new RejectedValue(),FirstChild=new RejectedValue(),NextSibling=new RejectedValue(),SiblingSourcePresence=new RejectedValue(),ReturnedSiblingPresence=new RejectedValue(),LastQueuedRuntime=new RejectedValue();
+  public readonly RejectedReading SiblingSourceParent=new RejectedReading(),ReturnedSiblingParent=new RejectedReading(),EnumerationParentLater=new RejectedReading();
+  public string Render(){return "{\"index\":"+Number(Index)+",\"depth\":"+Number(Depth)+",\"expected_parent_runtime\":"+JsonIds(ExpectedParent)+",\"status\":\""+Status+"\",\"first\":"+First.Render()+",\"later\":"+Later.Render()+",\"parent_first\":"+ParentFirst.IdentityRender()+",\"parent_later\":"+ParentLater.IdentityRender()+",\"parent_presence_first\":"+ParentPresenceFirst.Render()+",\"parent_presence_later\":"+ParentPresenceLater.Render()+",\"first_child\":"+FirstChild.Render()+",\"last_sibling_query\":"+NextSibling.Render()+",\"last_sibling_source_parent\":"+SiblingSourceParent.IdentityRender()+",\"last_sibling_source_parent_presence\":"+SiblingSourcePresence.Render()+",\"last_returned_sibling_parent\":"+ReturnedSiblingParent.IdentityRender()+",\"last_returned_sibling_parent_presence\":"+ReturnedSiblingPresence.Render()+",\"last_queued_runtime\":"+LastQueuedRuntime.Render()+",\"enumeration_parent_later\":"+EnumerationParentLater.IdentityRender()+",\"patterns\":\"not-queried\"}";}
+ }
+ sealed class RejectedContext {
+  public ulong Deadline,ReadinessDeadline,OwnershipDeadline;public long Popup;public int[] RootId;public uint BrowserPid;public bool Partial;public string Stop="not-started";public string Outer="null";public Func<ulong> SyntheticClock;public bool GetterFailed;
+  public ulong Now(){return SyntheticClock==null?GetTickCount64():SyntheticClock();}
+  public RejectedReading RootFence=new RejectedReading();public readonly List<RejectedNode> Nodes=new List<RejectedNode>();
+  public void Check(){
+   if(Now()>=Deadline)throw new RejectedStop("cooperative-budget-expired");
+   int length=RejectedJson(this).Length;
+   if(Now()>=Deadline)throw new RejectedStop("cooperative-budget-expired");
+   if(length>RejectedOutputCap-RejectedOutputReserve)throw new RejectedStop("output-cap");
+  }
+ }
+ static string RejectedJson(RejectedContext c){
+  var rows=new StringBuilder();foreach(var node in c.Nodes){if(rows.Length!=0)rows.Append(',');rows.Append(node.Render());}
+  return "{\"schema\":\"bowser-rejected-popup-shapes-v1\",\"scope\":\"failure-only-non-atomic-not-input-authority\",\"non_atomic\":true,\"original_browser_witness_rejection_selected\":true,\"original_rejection_preserved\":true,\"acceptance_retry\":false,\"patterns\":\"not-queried\",\"cooperative_budget_ms\":750,\"blocking_provider_call_cannot_be_preempted\":true,\"coverage\":\""+(c.Partial?"partial":"complete-browser-subtrees-only")+"\",\"stop_reason\":\""+c.Stop+"\",\"expected_browser_pid\":"+Number(c.BrowserPid)+",\"captured_popup_hwnd\":"+Number(c.Popup)+",\"captured_root_runtime\":"+JsonIds(c.RootId)+",\"original_readiness_deadline_tick\":"+c.ReadinessDeadline.ToString(System.Globalization.CultureInfo.InvariantCulture)+",\"original_ownership_deadline_tick\":"+c.OwnershipDeadline.ToString(System.Globalization.CultureInfo.InvariantCulture)+",\"diagnostic_deadline_tick\":"+c.Deadline.ToString(System.Globalization.CultureInfo.InvariantCulture)+",\"failed_outer_observation\":"+c.Outer+",\"last_root_fence\":"+c.RootFence.Render()+",\"node_count\":"+Number(c.Nodes.Count)+",\"nodes\":["+rows+"]}";
+ }
+ static string RejectedBoundedJson(RejectedContext c){
+  string json=RejectedJson(c);if(json.Length<=RejectedOutputCap)return json;
+  // Defensive only: live checks reserve more than the largest bounded field/record.
+  // Never emit an oversized or truncated JSON document or turn missing output into proof.
+  return "{\"schema\":\"bowser-rejected-popup-shapes-v1\",\"scope\":\"failure-only-non-atomic-not-input-authority\",\"non_atomic\":true,\"original_rejection_preserved\":true,\"coverage\":\"partial\",\"stop_reason\":\"output-cap-details-discarded\",\"getter_failure_details\":\"not-retained\",\"node_count\":"+Number(c.Nodes.Count)+",\"nodes\":[{\"index\":"+Number(c.Nodes.Count)+",\"status\":\"details-discarded\",\"getter_state\":{\"status\":\""+(c.GetterFailed?"getter-failed":"not-attempted")+"\"}}]}";
+ }
+ static ulong RejectedDeadline(ulong now,ulong readiness,ulong ownership){
+  ulong local=now>UInt64.MaxValue-750?UInt64.MaxValue:now+750;
+  if(readiness<local)local=readiness;if(ownership!=0&&ownership<local)local=ownership;return local;
+ }
+ static T RejectedProvider<T>(RejectedContext c,Func<T> query,RejectedValue target,string kind){
+  c.Check();T raw;
+  try{raw=query();}catch{target.Failed();c.GetterFailed=true;c.Check();throw new RejectedStop("provider-getter-failed");}
+  // Save getter state before the after-call budget check, even when the call overruns.
+  try{target.Store(raw,kind);}finally{c.Check();}return raw;
+ }
+ static void RejectedProperty(RejectedContext c,AutomationElement node,AutomationProperty property,RejectedValue target,string kind){RejectedProvider(c,()=>node.GetCurrentPropertyValue(property,true),target,kind);}
+ static void RejectedIdentity(RejectedContext c,AutomationElement node,RejectedReading reading){
+  RejectedProvider(c,()=>node.GetRuntimeId(),reading.Runtime,"runtime-id");
+  RejectedProperty(c,node,AutomationElement.ProcessIdProperty,reading.Pid,"integer");
+ }
+ static bool RejectedBrowserPid(RejectedValue pid,uint expected){return pid.Status=="supported"&&pid.Raw is int&&(int)pid.Raw>0&&(long)(int)pid.Raw==expected;}
+ static int[] RejectedRuntime(RejectedValue runtime){if(runtime.Status!="supported"||!(runtime.Raw is int[]))throw new RejectedStop("runtime-unavailable");return (int[])runtime.Raw;}
+ static void RejectedVisit(HashSet<string> seen,int[] runtime,int depth,int count){
+  if(depth<0||depth>128||count<1||count>RejectedNodeCap)throw new RejectedStop("node-or-depth-cap");
+  if(runtime==null||runtime.Length==0||runtime.Length>RejectedRuntimeCap)throw new RejectedStop("runtime-cap");
+  if(!seen.Add(JsonIds(runtime)))throw new RejectedStop("duplicate-or-cyclic-runtime");
+ }
+ static void RejectedParentPolicy(int[] expected,RejectedReading observed,uint browserPid,bool present){
+  if(expected==null||!present||!Same(RejectedRuntime(observed.Runtime),expected)||!RejectedBrowserPid(observed.Pid,browserPid))throw new RejectedStop("queued-parent-runtime-or-pid-changed");
+ }
+ static void RejectedParent(RejectedContext c,AutomationElement node,int[] expected,RejectedReading reading,RejectedValue presence){
+  // Called only for an enqueued descendant. Never ask for the captured root's parent.
+  var parent=RejectedProvider(c,()=>TreeWalker.RawViewWalker.GetParent(node),presence,"element-presence");
+  if(parent!=null)RejectedIdentity(c,parent,reading);RejectedParentPolicy(expected,reading,c.BrowserPid,parent!=null);
+ }
+ static void RejectedShapes(RejectedContext c,AutomationElement node,RejectedReading reading){
+  RejectedProperty(c,node,AutomationElement.ControlTypeProperty,reading.Type,"control-type");
+  RejectedProperty(c,node,AutomationElement.NativeWindowHandleProperty,reading.Hwnd,"integer");
+  RejectedProperty(c,node,AutomationElement.BoundingRectangleProperty,reading.Bounds,"rectangle");
+  RejectedProperty(c,node,AutomationElement.IsControlElementProperty,reading.Control,"boolean");
+  RejectedProperty(c,node,AutomationElement.IsContentElementProperty,reading.Content,"boolean");
+  RejectedProperty(c,node,AutomationElement.IsEnabledProperty,reading.Enabled,"boolean");
+  RejectedProperty(c,node,AutomationElement.IsKeyboardFocusableProperty,reading.Focusable,"boolean");
+  RejectedProperty(c,node,AutomationElement.HasKeyboardFocusProperty,reading.Focused,"boolean");
+  RejectedProperty(c,node,AutomationElement.IsOffscreenProperty,reading.Offscreen,"boolean");
+ }
+ static void RejectedNativeFence(RejectedContext c,IntPtr host,uint testPid,uint hostTid,IntPtr popup,uint menuTid,ReadOnlyBrowser browser){
+  c.Check();bool valid=browser.SameAlive()&&Host(host,testPid,hostTid)&&PopupIdentity(host,popup,c.BrowserPid,menuTid);c.Check();
+  if(!valid)throw new RejectedStop("retained-process-or-native-root-changed");
+ }
+ static void RejectedRootFence(RejectedContext c,IntPtr host,uint testPid,uint hostTid,IntPtr popup,uint menuTid,ReadOnlyBrowser browser,AutomationElement root,int[] rootId){
+  RejectedNativeFence(c,host,testPid,hostTid,popup,menuTid,browser);
+  var reading=new RejectedReading();c.RootFence=reading;RejectedIdentity(c,root,reading);
+  RejectedProperty(c,root,AutomationElement.NativeWindowHandleProperty,reading.Hwnd,"integer");
+  if(!Same(RejectedRuntime(reading.Runtime),rootId)||!RejectedBrowserPid(reading.Pid,c.BrowserPid)||reading.Hwnd.Status!="supported"||!(reading.Hwnd.Raw is int)||(int)reading.Hwnd.Raw!=popup.ToInt32())throw new RejectedStop("captured-uia-root-changed");
+  RejectedNativeFence(c,host,testPid,hostTid,popup,menuTid,browser);
+ }
+ static bool RejectedSameIdentity(RejectedReading a,RejectedReading b){
+  return Same(RejectedRuntime(a.Runtime),RejectedRuntime(b.Runtime))&&a.Pid.Render()==b.Pid.Render()&&a.Type.Render()==b.Type.Render()&&a.Hwnd.Render()==b.Hwnd.Render();
+ }
+ static void BufferRejectedInventory(IntPtr host,uint testPid,uint hostTid,IntPtr popup,uint browserPid,uint menuTid,ReadOnlyBrowser browser,AutomationElement root,int[] rootId,int[] failedRuntime,int[] failedParent,int failedDepth,int failedIndex,int failedPid,int failedType,int failedHwnd,System.Windows.Rect failedBounds,ulong readinessDeadline,ulong ownershipDeadline){
+  if(rejectedInventoryBuffer!=null)return; // At most the original rejected run; no retries.
+  var c=new RejectedContext{BrowserPid=browserPid,Popup=popup.ToInt64(),RootId=(int[])rootId.Clone(),ReadinessDeadline=readinessDeadline,OwnershipDeadline=ownershipDeadline,Deadline=RejectedDeadline(GetTickCount64(),readinessDeadline,ownershipDeadline)};
+  c.Outer="{\"source\":\"failed-outer-default-backed-observation-not-no-default\",\"index\":"+Number(failedIndex)+",\"depth\":"+Number(failedDepth)+",\"runtime\":"+JsonIds(failedRuntime)+",\"expected_parent_runtime\":"+JsonIds(failedParent)+",\"pid\":"+Number(failedPid)+",\"type\":"+Number(failedType)+",\"hwnd\":"+Number(failedHwnd)+",\"bounds\":"+RejectedRectangle(failedBounds)+"}";
+  try{
+   c.Check();var queue=new Queue<Tuple<AutomationElement,int,int[],int[]>>();var seen=new HashSet<string>(StringComparer.Ordinal);var scheduled=new HashSet<string>(StringComparer.Ordinal){JsonIds(rootId)};queue.Enqueue(Tuple.Create(root,0,(int[])null,(int[])rootId.Clone()));
+   while(queue.Count!=0){
+    c.Check();if(c.Nodes.Count>=RejectedNodeCap)throw new RejectedStop("node-or-depth-cap");
+    var work=queue.Dequeue();var row=new RejectedNode{Index=c.Nodes.Count+1,Depth=work.Item2,ExpectedParent=work.Item3};c.Nodes.Add(row);
+    RejectedRootFence(c,host,testPid,hostTid,popup,menuTid,browser,root,rootId);
+    RejectedIdentity(c,work.Item1,row.First);int[] runtime=RejectedRuntime(row.First.Runtime);RejectedVisit(seen,runtime,row.Depth,c.Nodes.Count);
+    if(!Same(runtime,work.Item4))throw new RejectedStop("queued-node-runtime-changed");
+    if(work.Item3!=null)RejectedParent(c,work.Item1,work.Item3,row.ParentFirst,row.ParentPresenceFirst);
+    else if(row.Depth!=0||!Same(runtime,rootId))throw new RejectedStop("captured-root-runtime-changed");
+    if(!RejectedBrowserPid(row.First.Pid,browserPid)){c.Partial=true;row.Status="foreign-or-unknown-pid-subtree-excluded";RejectedRootFence(c,host,testPid,hostTid,popup,menuTid,browser,root,rootId);continue;}
+    RejectedShapes(c,work.Item1,row.First);
+    RejectedIdentity(c,work.Item1,row.Later);
+    if(!RejectedBrowserPid(row.Later.Pid,browserPid)||!Same(RejectedRuntime(row.Later.Runtime),runtime))throw new RejectedStop("node-runtime-or-pid-changed");
+    if(work.Item3!=null)RejectedParent(c,work.Item1,work.Item3,row.ParentLater,row.ParentPresenceLater);
+    RejectedShapes(c,work.Item1,row.Later);
+    if(!RejectedBrowserPid(row.Later.Pid,browserPid)||!RejectedSameIdentity(row.First,row.Later))throw new RejectedStop("node-runtime-pid-type-or-hwnd-changed");
+    RejectedRootFence(c,host,testPid,hostTid,popup,menuTid,browser,root,rootId);row.Status="browser-shapes-recorded-not-authority";
+    var child=RejectedProvider(c,()=>TreeWalker.RawViewWalker.GetFirstChild(work.Item1),row.FirstChild,"element-presence");
+    while(child!=null){
+     if(row.Depth>=128||!InventoryCapacity(c.Nodes.Count,queue.Count+1))throw new RejectedStop("node-queue-or-depth-cap");
+     RejectedRootFence(c,host,testPid,hostTid,popup,menuTid,browser,root,rootId);
+     // Before reading/advancing this child, prove only its exact retained browser
+     // parent's raw runtime/PID edge. This never asks for the captured root's parent.
+     RejectedParent(c,child,runtime,row.SiblingSourceParent,row.SiblingSourcePresence);
+     var scheduledChild=child;RejectedProvider(c,()=>scheduledChild.GetRuntimeId(),row.LastQueuedRuntime,"runtime-id");
+     int[] childRuntime=RejectedRuntime(row.LastQueuedRuntime);if(!scheduled.Add(JsonIds(childRuntime)))throw new RejectedStop("duplicate-or-cyclic-runtime");
+     queue.Enqueue(Tuple.Create(child,row.Depth+1,(int[])runtime.Clone(),(int[])childRuntime.Clone()));
+     // A boundary child's sibling is still in the validated browser parent's list,
+     // not inside the boundary subtree. No GetFirstChild is called on that boundary.
+     // Its parent edge is re-proved immediately before this separately identifiable call.
+     RejectedParent(c,child,runtime,row.SiblingSourceParent,row.SiblingSourcePresence);
+     var siblingSource=child;child=RejectedProvider(c,()=>TreeWalker.RawViewWalker.GetNextSibling(siblingSource),row.NextSibling,"element-presence");
+     if(child!=null)RejectedParent(c,child,runtime,row.ReturnedSiblingParent,row.ReturnedSiblingPresence);
+     RejectedRootFence(c,host,testPid,hostTid,popup,menuTid,browser,root,rootId);
+    }
+    RejectedIdentity(c,work.Item1,row.EnumerationParentLater);
+    if(!Same(RejectedRuntime(row.EnumerationParentLater.Runtime),runtime)||!RejectedBrowserPid(row.EnumerationParentLater.Pid,browserPid))throw new RejectedStop("queued-parent-runtime-or-pid-changed");
+    RejectedRootFence(c,host,testPid,hostTid,popup,menuTid,browser,root,rootId);
+   }
+   RejectedRootFence(c,host,testPid,hostTid,popup,menuTid,browser,root,rootId);
+   c.Stop=c.Partial?"foreign-or-unknown-subtree-excluded":"captured-browser-subtrees-exhausted";
+  }catch(RejectedStop stop){c.Partial=true;c.Stop=stop.Reason;}
+  catch{c.Partial=true;c.Stop="unexpected-diagnostic-failure";}
+  finally{rejectedInventoryBuffer=RejectedBoundedJson(c);}
+ }
+ // Read this captured string only after the exact failed test process was terminated.
+ // No provider/native calls, I/O, digest, MenuProof, membership, retry, or input here.
+ public static string RejectedInventoryEvidence(){return rejectedInventoryBuffer;}
+ // Synthetic only: these are the actual collector/serializer predicates, no native/UIA/I/O.
+ public static void CheckRejectedInventoryPolicy(){
+  if(RejectedDeadline(100,1000,0)!=850||RejectedDeadline(100,700,0)!=700||RejectedDeadline(100,1000,600)!=600||RejectedDeadline(100,99,0)!=99||RejectedDeadline(UInt64.MaxValue-1,UInt64.MaxValue,0)!=UInt64.MaxValue)throw new InvalidOperationException("Synthetic rejected diagnostic budget changed.");
+  Action<Action> refuses=action=>{bool refused=false;try{action();}catch(RejectedStop){refused=true;}if(!refused)throw new InvalidOperationException("Synthetic rejected diagnostic guard accepted invalid input.");};
+  var seen=new HashSet<string>(StringComparer.Ordinal);RejectedVisit(seen,new[]{42,1},0,1);refuses(()=>RejectedVisit(seen,new[]{42,1},1,2));
+  foreach(Action bad in new Action[]{()=>RejectedVisit(new HashSet<string>(),new[]{42},129,1),()=>RejectedVisit(new HashSet<string>(),new[]{42},0,129),()=>RejectedVisit(new HashSet<string>(),new int[33],0,1),()=>RejectedVisit(new HashSet<string>(),new int[0],0,1)})refuses(bad);
+  RejectedVisit(new HashSet<string>(),new int[32],128,128);
+  var parent=new RejectedReading();parent.Runtime.Store(new[]{42,1},"runtime-id");parent.Pid.Store(10,"integer");RejectedParentPolicy(new[]{42,1},parent,10,true);
+  foreach(Action bad in new Action[]{()=>RejectedParentPolicy(new[]{42,2},parent,10,true),()=>RejectedParentPolicy(new[]{42,1},parent,11,true),()=>RejectedParentPolicy(null,parent,10,true),()=>RejectedParentPolicy(new[]{42,1},parent,10,false)})refuses(bad);
+  var unknown=new RejectedValue();unknown.Store(AutomationElement.NotSupported,"integer");if(RejectedBrowserPid(unknown,10))throw new InvalidOperationException("Synthetic unknown PID became browser authority.");
+  var wrong=new RejectedValue();wrong.Store(false,"integer");if(wrong.Status!="wrong-kind"||RejectedBrowserPid(wrong,10))throw new InvalidOperationException("Synthetic wrong-kind PID accepted.");
+  var boolean=new RejectedValue();boolean.Store(false,"boolean");if(boolean.Status!="supported"||boolean.Json!="false"||unknown.Status!="not-supported")throw new InvalidOperationException("Synthetic supported false or unknown erased.");
+  var failure=new RejectedValue();failure.Failed();if(!failure.Render().Contains("getter-failed")||new RejectedValue().Status!="not-attempted")throw new InvalidOperationException("Synthetic failed/unattempted property erased.");
+  var providerContext=new RejectedContext{Deadline=1000,SyntheticClock=()=>100};var providerFailure=new RejectedValue();
+  refuses(()=>RejectedProvider<object>(providerContext,()=>{throw new InvalidOperationException("synthetic-only");},providerFailure,"integer"));
+  if(providerFailure.Status!="getter-failed")throw new InvalidOperationException("Synthetic actual provider wrapper lost getter failure.");
+  int ticks=0,calls=0;var lateContext=new RejectedContext{Deadline=1000,SyntheticClock=()=>++ticks<=2?100UL:1000UL};var lateValue=new RejectedValue();
+  refuses(()=>RejectedProvider(lateContext,()=>{calls++;return 10;},lateValue,"integer"));if(calls!=1||lateValue.Status!="supported"||lateValue.Json!="10")throw new InvalidOperationException("Synthetic after-call expiry erased first reading or retried.");
+  var expiredContext=new RejectedContext{Deadline=100,SyntheticClock=()=>100};var unattempted=new RejectedValue();calls=0;
+  refuses(()=>RejectedProvider(expiredContext,()=>{calls++;return 10;},unattempted,"integer"));if(calls!=0||unattempted.Status!="not-attempted")throw new InvalidOperationException("Synthetic expired budget still called provider.");
+  if(!InventoryCapacity(1,127)||InventoryCapacity(1,128)||InventoryCapacity(128,1))throw new InvalidOperationException("Synthetic rejected queue capacity changed.");
+  var bounds=new RejectedValue();bounds.Store(System.Windows.Rect.Empty,"rectangle");if(!bounds.Json.Contains("positive-infinity")||!bounds.Json.Contains("negative-infinity")||!bounds.Json.Contains("\"x\":null")||bounds.Json.Contains("Infinity"))throw new InvalidOperationException("Synthetic nonfinite bounds serialized as number/default.");
+  if(RejectedNumber(Double.NaN)!="null"||RejectedNumberShape(Double.NaN)!="nan"||RejectedNumber(1.25)!="1.25")throw new InvalidOperationException("Synthetic finite/nonfinite serializer changed.");
+  var c=new RejectedContext{BrowserPid=10,Partial=true,Stop="provider-getter-failed"};var row=new RejectedNode{Index=1,Depth=0};row.First.Hwnd.Failed();c.Nodes.Add(row);
+  string json=RejectedBoundedJson(c);if(!json.Contains("getter-failed")||!json.Contains("\"first\":")||!json.Contains("\"later\":")||!json.Contains("\"coverage\":\"partial\"")||json.Contains("inventory_digest")||json.Contains("inventory_first")||json.Contains("inventory_fresh"))throw new InvalidOperationException("Synthetic rejected schema mixed with authority or lost failure state.");
+  var liveCap=new RejectedContext{Deadline=1000,SyntheticClock=()=>100};bool stopped=false;
+  for(int n=0;n<128;n++){try{liveCap.Check();liveCap.Nodes.Add(new RejectedNode{Index=n+1});liveCap.Check();}catch(RejectedStop){stopped=true;liveCap.Partial=true;liveCap.Stop="output-cap";break;}}
+  json=RejectedBoundedJson(liveCap);if(!stopped||json.Length>RejectedOutputCap||json.Contains("output-cap-details-discarded"))throw new InvalidOperationException("Synthetic live collector reserve failed.");
+  c.GetterFailed=true;for(int n=0;n<128;n++)c.Nodes.Add(new RejectedNode{Index=n+2});json=RejectedBoundedJson(c);if(json.Length>RejectedOutputCap||!json.Contains("output-cap-details-discarded")||!json.Contains("getter-failed"))throw new InvalidOperationException("Synthetic rejected serializer exceeded output cap or erased failure state.");
+ }
+ public static MenuProof ReadMenu(IntPtr host,uint testPid,uint hostTid,IntPtr popup,uint browserPid,ReadOnlyBrowser browser,ReadOnlyBrowser gpu,ulong ownershipDeadline,string diagnosticDirectory,ulong diagnosticReadinessDeadline){
   uint helperPid=NativeCurrentProcessId(); // Known local identity, captured before UIA traversal.
   uint beforePid;uint tid=GetWindowThreadProcessId(popup,out beforePid);if(beforePid!=browserPid||tid==0||!IsWindow(popup))throw new InvalidOperationException("Exact native UIA root unavailable.");
   var root=AutomationElement.FromHandle(popup);if(root==null||root.Current.ProcessId!=(int)browserPid||root.Current.NativeWindowHandle!=popup.ToInt32())throw new InvalidOperationException("Exact native UIA root mismatch.");
@@ -581,6 +782,9 @@ public static class BowserDefaultContext {
      if(!RootFence(host,testPid,hostTid,popup,browserPid,tid,browser,root,rootId))throw new InvalidOperationException("Root changed before typed browser recheck.");
      RecheckBrowserNode(e,browserNode,browserPid,browser);browserNodes.Add(runtimeKey,browserNode);
     }catch{
+     // The original strict browser rejection is already selected. Optional collection
+     // cannot return proof, retry acceptance, send input, or replace that same error.
+     try{BufferRejectedInventory(host,testPid,hostTid,popup,browserPid,tid,browser,root,rootId,currentId,queued.Item3,queued.Item2,examined,providerPid,observedType,observedNative,box,diagnosticReadinessDeadline,ownershipDeadline);}catch{}
      WriteBoundsFailure(host,testPid,hostTid,popup,browserPid,tid,browser,root,rootId,e,currentId,queued.Item3,queued.Item2,examined,providerPid,observedType,observedNative,box,false,diagnosticDirectory);throw;
     }
    }
@@ -683,7 +887,7 @@ $reportName=if($ProbeKind -ceq 'ExtensionObservation'){'native-context-observati
 $reportScope=if($ProbeKind -ceq 'ExtensionObservation'){'single-test-observation-and-cancellation-not-selection'}else{'separate-default-Chromium-Views-menu-cancellation-not-selection'}
 $report=[ordered]@{scope=$reportScope;backend='unhandled-WebView2-Chromium-Views';status='failed';right_input_called=$false;escape_called=$false;error=$null;failure_cleanup=$null}
 $observationClock=[Diagnostics.Stopwatch]::StartNew();$report.topology=@()
-$firstInventoryProof=$null;$freshInventoryProof=$null;$issuedRequestDigest=$null
+$firstInventoryProof=$null;$freshInventoryProof=$null;$issuedRequestDigest=$null;$diagnosticReadinessDeadline=[UInt64]0
 $report.inventory_first=@{phase='first-complete';capture_status='unavailable';reason='not-serialized-before-release-or-cleanup'}
 $report.inventory_fresh=@{phase='fresh-before-escape';capture_status='unavailable';reason='not-serialized-before-release-or-cleanup'}
 $h=[IntPtr]$OwnerHandle;$pidNow=[uint32]0;$tid=[BowserDefaultContext]::GetWindowThreadProcessId($h,[ref]$pidNow);$guard=$null;$browserGuard=$null;$gpuGuard=$null
@@ -739,7 +943,7 @@ function Menu-State {
  if($candidates.Count -eq 0){if($AllowPending){$report.readiness.last_predicate='native-candidate-not-present';return $null};throw 'Native menu candidate unavailable.'}
  $popup=$candidates[0];$menuTid=[BowserDefaultContext]::CandidateThread($popup,$BrowserPid)
  if(!$menuTid -or ![BowserDefaultContext]::NativeReady($h,$OwnerPid,$tid,$popup,$BrowserPid,$menuTid,[IntPtr]::Zero)){if($AllowPending){$report.readiness.last_predicate='exact-native-focus-capture-not-ready';return $null};throw 'Exact menu native focus/capture unavailable.'}
- $proof=[BowserDefaultContext]::ReadMenu($h,$OwnerPid,$tid,$popup,$BrowserPid,$browserGuard,$gpuGuard,$AuthorityDeadlineTick,$Out)
+ $proof=[BowserDefaultContext]::ReadMenu($h,$OwnerPid,$tid,$popup,$BrowserPid,$browserGuard,$gpuGuard,$AuthorityDeadlineTick,$Out,$diagnosticReadinessDeadline)
  if(($gpuGuard -and [BowserDefaultContext]::GetTickCount64() -ge $AuthorityDeadlineTick) -or ![BowserDefaultContext]::NativeReady($h,$OwnerPid,$tid,$popup,$BrowserPid,$menuTid,$proof.Focus)){throw 'Native ownership changed across UIA read.'}
  return $proof
 }
@@ -765,6 +969,7 @@ try {
  if(($gpuGuard -and [BowserDefaultContext]::GetTickCount64() -ge $AuthorityDeadlineTick) -or ![BowserDefaultContext]::Input($h,$OwnerPid,$tid,$ClientX,$ClientY,$ViewportWidth,$ViewportHeight,$point)){throw 'Exact owned hit target or shared ownership deadline changed before real right-click.'}
  if($gpuGuard -and [BowserDefaultContext]::GetTickCount64() -ge $AuthorityDeadlineTick){throw 'Shared ownership deadline expired after final pre-click native reads; no input.'}
  try{[BowserDefaultContext]::mouse_event(0x0008,0,0,0,[UIntPtr]::Zero);$report.right_input_called=$true}finally{[BowserDefaultContext]::mouse_event(0x0010,0,0,0,[UIntPtr]::Zero)}
+ $diagnosticReadinessDeadline=[BowserDefaultContext]::GetTickCount64()+[UInt64]10000
  $watch=[Diagnostics.Stopwatch]::StartNew();Observe-Topology 'after-right-input';$report.readiness=@{elapsed_ms=0;last_predicate='not-observed';polls=0};$menu=$null
  do {
   $report.readiness.polls++;$menu=Menu-State -AllowPending;$report.readiness.elapsed_ms=$watch.ElapsedMilliseconds
@@ -804,7 +1009,12 @@ try {
 } catch {
  $report.error=$_.Exception.Message
  try{Save-Report}catch{[Console]::Error.WriteLine('Native observation failure report write failed.')}
- if($report.right_input_called -and $guard){$report.failure_cleanup=$guard.FailOnly($h,$tid);if($report.failure_cleanup -ceq 'exact-single-test-process-terminated'){Attach-InventoryEvidence};try{Save-Report}catch{[Console]::Error.WriteLine('Native observation cleanup report write failed.')}}
+ if($report.right_input_called -and $guard){$report.failure_cleanup=$guard.FailOnly($h,$tid);if($report.failure_cleanup -ceq 'exact-single-test-process-terminated'){
+   Attach-InventoryEvidence
+   # New full rejected shapes are buffered only. Serialize/attach after exact cleanup,
+   # separately from complete/fresh inventories and never before Escape or to membership.
+   try{$rejected=[BowserDefaultContext]::RejectedInventoryEvidence();if($rejected){$report.rejected_popup_shapes=$rejected|ConvertFrom-Json;[IO.File]::WriteAllText((Join-Path $Out 'rejected-popup-shapes.json'),$rejected,[Text.UTF8Encoding]::new($false))}}catch{$report.rejected_popup_shapes=@{schema='bowser-rejected-popup-shapes-v1';coverage='partial';stop_reason='post-cleanup-serialization-failed'}}
+  };try{Save-Report}catch{[Console]::Error.WriteLine('Native observation cleanup report write failed.')}}
  [Console]::Error.WriteLine('Native context observation failed; no selection compatibility verdict.');exit 75
 } finally {if($gpuGuard){$gpuGuard.Dispose()};if($browserGuard){$browserGuard.Dispose()};if($guard){$guard.Dispose()}}
 Write-Output "CHROMIUM_CONTEXT_CANCELLATION probe=$ProbeKind exact_owned_right_input=true exact_visible_native_popup=true exact_UIA_fixture_row=true real_escape_and_disappearance=true selection_performed=false"

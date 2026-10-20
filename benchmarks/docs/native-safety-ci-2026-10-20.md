@@ -383,3 +383,73 @@ SameProof and digest changes. Windows/native execution remains required.
 
 - [UIA NativeWindowHandle property](https://learn.microsoft.com/en-us/dotnet/api/system.windows.automation.automationelement.nativewindowhandleproperty)
 - [UIA BoundingRectangle property](https://learn.microsoft.com/en-us/dotnet/api/system.windows.automation.automationelement.boundingrectangleproperty)
+
+## Bounded host fixture transport and script-stage diagnostics
+
+In the head49fb450 integration tree21c2323e, the host Copy/Paste lane stopped at
+an unlabeled COM script wait after240s, before helper/clipboard admission. Its
+first source snapshot is strongly implicated by one ordinary controller and no
+negative/per-mode evidence, but ExecuteScript, PeekMessage sent-message work and
+one dispatched callback cannot be distinguished from that log. Fixed per-call
+labels/ordinals now retain ExecuteScript-entered/returned, synchronous callback
+status, pump-entered/exited and the existing primitive pump pulse. Failure and
+the unchanged240s watchdog report at most four bounded lines, without new scripts,
+source contents, pointers, input or App/Core borrows. A non-pumping blocked call
+can prevent the watchdog; absent diagnostics do not establish where it blocked.
+
+The same integration Note lane proved source readiness in2154ms and genuine native
+Note selection/Complete/cleanup with the exact trusted DOM effect, but no exact
+loopback acknowledgment. The previous server made one read and assumed a complete
+GET, then ignored response-write failure. TCP does not promise a full request in
+one read. This is a confirmed harness defect, not a diagnosed cause of that run.
+
+The separate test-only server now collects complete CRLFCRLF headers across partial
+reads within8192 bytes, strictly frames one fixture GET and rejects malformed,
+duplicate-key, incomplete and oversized requests. Explicit read/write loops share
+one original1s accepted-connection monotonic budget, recompute remaining time before
+each syscall and refuse late final results. No hidden write_all/per-call budget reset,
+request retry, clipboard operation, permission change or deadline increase exists.
+Valid effects remain separate from timely full responses; both counters must match
+the expected effects, and the original native/source/exact-body DOM acknowledgment
+is still mandatory. Counter visibility races may fail closed, never repair a pass.
+
+After sequence success/unwind, a create-new bounded receipt retains only classified
+paths, boolean nonce/kind/value matches, transport outcomes and counters from up to32
+connections; no raw request/value/body is logged. The fixture's existing snapshot
+adds fixed fetch started/status/exact-body-match/error-name states without retries.
+Four synthetic Rust fake-transport/clock tests exercise the actual bounded loops,
+and two synthetic script-state tests preserve synchronous/old callback identity.
+CI explicitly discovers/runs them with the existing experimental feature variant.
+The local Node fixture checks include exact response, wrong body and rejection.
+These checks do not prove real socket, COM or native-menu behavior; Windows CI and
+the still-independent Reload/native safety gates remain required.
+
+## Rejected popup property-shape diagnostic, not a new acceptance category
+
+The next integration run (branch2c2c449, actual checkout63d8e43998565d42339cd22a326577553ade6e31,
+tree8c49bd4feb78d7a306bf168249b5f6d72b7d0a44) passes the mixed Pane representation
+and then refuses browser MenuBar50010 with supported finite bounds/unsupported HWND.
+Both lanes still send no Escape. No MenuBar/Menu/MenuItem policy is inferred.
+
+After the original browser-witness error is selected, a separate best-effort
+collector buffers a non-atomic rejected-probe schema rooted only at the captured
+popup. It always rethrows the original error. Numeric/runtime/type/property tags,
+first/later readings and explicit coverage/stop reasons are separate from accepted
+first/fresh inventories and membership hashes. No Name/text/value/image path,
+pattern action, native input, reacquisition, acceptance retry or new permission
+exists. The buffer is attached/written only after exact failed-test-process cleanup.
+
+The collector has a750ms cooperative budget capped by both remaining original
+readiness and ownership deadlines, with checks around each provider call. Blocking
+UIA cannot be preempted. Existing128-node/queue/depth,32-runtime-unit and65536-character
+caps remain; budget/cap/getter/identity failure makes output explicitly partial.
+Only exact supported browser-PID nodes are descended into. Foreign/unknown-PID
+boundaries are recorded but their subtrees are excluded; sibling advancement is
+allowed only inside the exact re-proved browser parent's child list. Changed/missing
+parent, runtime cycle or root/process mismatch stops observation. Root never has
+an above-root parent query. A complete diagnostic traversal is never acceptance.
+
+Pure managed tests exercise the actual caps/cycle/parent/getter/budget/serializer
+predicates, including unavailable values and nonfinite coordinates with explicit
+shape tags. Source checks preserve unconditional original refusal and post-cleanup
+attachment. Actual PS5.1 compilation/provider behavior remains pending Windows CI.

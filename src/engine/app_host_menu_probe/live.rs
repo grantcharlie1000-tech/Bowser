@@ -1,11 +1,13 @@
 //! Exact ignored single-process host regression. Pending Windows compile/native execution.
-use std::{cell::{Cell,RefCell},io::{Read,Write},net::TcpListener,path::Path,process::{Command,Stdio},rc::Rc,
-    sync::{Arc,Mutex,atomic::{AtomicBool,Ordering}},time::{Duration,Instant,SystemTime,UNIX_EPOCH}};
+use std::{cell::{Cell,RefCell},io::Write,path::Path,process::{Command,Stdio},rc::Rc,
+    time::{Duration,Instant,SystemTime,UNIX_EPOCH}};
 use webview2_com::{CoTaskMemPWSTR,ExecuteScriptCompletedHandler,Microsoft::Web::WebView2::Win32::{ICoreWebView2,ICoreWebView2_13,ICoreWebView2Environment7,COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC}};
 use windows::{core::{Interface,PWSTR},Win32::{Foundation::{HWND,RECT,WPARAM,LPARAM},System::Com::{CoInitializeEx,CoUninitialize,COINIT_APARTMENTTHREADED},UI::WindowsAndMessaging::{GetClassNameW,GetClientRect,IsWindow,PostMessageW,WM_CLOSE}}};
 use crate::{app::{App,AppRef},extensions::{self,json::{self,Value}},performance::{LaunchOptions,PerfLog},tabs::TabId};
 use super::{HostProbeEvent,HostRole,NodeWitness,set_observer};
-use super::super::app_context_menu_probe::{NativeContextProbeHandles,MenuProbeEvent,pump_until};
+use super::super::app_context_menu_probe::{NativeContextProbeHandles,MenuProbeEvent,pump_until,pump_until_observed};
+mod script_trace;
+use script_trace::{ScriptTrace,TraceScope};
 const TEST_NAME:&str="engine::app_host_menu_probe::live::live_probe_real_app_host_context_menu";
 const CONSENT:&str="disposable-app-host-menu-synthetic-clipboard";
 fn quote(s:&str)->String {crate::chrome_host::protocol::json_string(s)}
@@ -20,14 +22,21 @@ fn handles(app: &AppRef,tab: TabId)->Option<NativeContextProbeHandles>{
     let app=app.try_borrow().ok()?;
     app.engine.as_ref()?.probe_owned_host_context_handles(tab)
 }
-fn script(view: &ICoreWebView2,source: &str)->Value {
+fn script(view: &ICoreWebView2,source: &str,label:&'static str)->Value {
+    let trace=script_trace::active();let call=trace.as_ref().map(|trace|trace.start(label));let callback=call.clone();
     let slot=Rc::new(RefCell::new(None));let sink=slot.clone();
     let handler=ExecuteScriptCompletedHandler::create(Box::new(move |status,result| {
+        if let Some(call)=callback.as_ref(){call.callback(status.is_ok());}
         *sink.borrow_mut()=Some(status.is_ok().then(||result.to_string()));Ok(())
     }));
     let source=CoTaskMemPWSTR::from(source);
-    unsafe {view.ExecuteScript(*source.as_ref().as_pcwstr(),&handler).unwrap()};
-    assert!(pump_until(Duration::from_secs(10),||slot.borrow().is_some()),"exact COM script completion timed out");
+    let submitted=unsafe {view.ExecuteScript(*source.as_ref().as_pcwstr(),&handler)};
+    if let Some(call)=call.as_ref(){call.execute_returned(submitted.is_ok());}submitted.unwrap();
+    if let Some(call)=call.as_ref(){call.pump_entered();}
+    let completed=pump_until_observed(Duration::from_secs(10),||slot.borrow().is_some(),call.as_ref().map(|call|&call.pump));
+    if let Some(call)=call.as_ref(){call.pump_exited(completed);}
+    if !completed {if let Some(trace)=trace.as_ref(){trace.report("script-pump-refused");}}
+    assert!(completed,"exact COM script completion timed out");
     let result=slot.borrow_mut().take().flatten().expect("exact COM script failed");
     assert!(result.len()<=64*1024,"fixture receipt exceeded bound");json::parse(&result).expect("native JSON result")
 }
@@ -51,34 +60,19 @@ fn ordinary_profile(view: &ICoreWebView2) {
     assert!(name.is_empty(),"this lane requires the ordinary unnamed native profile, not chrome UI");assert!(!private.as_bool());
 }
 
-#[derive(Default)]
-struct Receipts {paste:usize,note:usize,destination:usize}
-struct Loopback {url:url::Url,nonce:String,stop:Arc<AtomicBool>,receipts:Arc<Mutex<Receipts>>,worker:Option<std::thread::JoinHandle<()>>}
-impl Loopback {
-    fn start(nonce:String)->Self {
-        let listener=TcpListener::bind("127.0.0.1:0").unwrap();listener.set_nonblocking(true).unwrap();
-        let url=url::Url::parse(&format!("http://127.0.0.1:{}/source?nonce={nonce}",listener.local_addr().unwrap().port())).unwrap();
-        let stop=Arc::new(AtomicBool::new(false));let stopping=stop.clone();let receipts=Arc::new(Mutex::new(Receipts::default()));let sink=receipts.clone();let token=nonce.clone();
-        let source=include_str!("../../../benchmarks/fixtures/app-host-context-menu/index.html").replace("__NONCE__",&nonce);
-        let worker=std::thread::spawn(move ||while !stopping.load(Ordering::Relaxed) {
-            let Ok((mut socket,peer))=listener.accept() else{std::thread::sleep(Duration::from_millis(10));continue};
-            if !peer.ip().is_loopback(){continue}let _=socket.set_read_timeout(Some(Duration::from_secs(1)));
-            let mut bytes=[0;8192];let Ok(n)=socket.read(&mut bytes) else{continue};if n==bytes.len(){continue}
-            let Some(target)=std::str::from_utf8(&bytes[..n]).ok().and_then(|r|r.lines().next()).and_then(|line|line.strip_prefix("GET ")).and_then(|r|r.split_whitespace().next()) else{continue};
-            let Ok(request)=url::Url::parse(&format!("http://127.0.0.1{target}")) else{continue};
-            let query=request.query_pairs().collect::<std::collections::BTreeMap<_,_>>();
-            let valid=query.get("nonce").is_some_and(|value|value.as_ref()==token);
-            let (status,body)=if valid&&matches!(request.path(),"/source"|"/negative") {("200 OK",source.clone())}
-                else if valid&&request.path()=="/destination" {sink.lock().unwrap().destination+=1;("200 OK",format!("<!doctype html><meta charset=utf-8><title>Disposable split destination</title><body data-destination-nonce={token}>known split destination</body>"))}
-                else if valid&&request.path()=="/effect" {
-                    let kind=query.get("kind").map(|v|v.as_ref()).unwrap_or("");let value=query.get("value").map(|v|v.as_ref()).unwrap_or("");
-                    if ["paste","note"].contains(&kind)&&value==format!("{kind}-{token}") {let mut sink=sink.lock().unwrap();if kind=="paste"{sink.paste+=1}else{sink.note+=1};("200 OK",format!("{token}:{kind}"))}else{("400 Bad Request",String::new())}
-                }else{("404 Not Found",String::new())};
-            let _=write!(socket,"HTTP/1.1 {status}\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n{body}",body.len());
-        });Self{url,nonce,stop,receipts,worker:Some(worker)}
-    }
+mod loopback;
+use loopback::Loopback;
+
+fn save_transport_diagnostic(server:&Loopback,out:&Path){
+    // One bounded snapshot of existing primitive counters, after sequence success/unwind.
+    // Unknown/failed evidence never replaces the original verdict or initiates network I/O.
+    let _=std::panic::catch_unwind(std::panic::AssertUnwindSafe(||{
+        let value=server.diagnostic_json().unwrap_or_else(||r#"{"schema":"controlled-loopback-transport-v1","capture_status":"unavailable"}"#.into());
+        if value.len()<=32*1024 {
+            if let Ok(mut file)=std::fs::OpenOptions::new().write(true).create_new(true).open(out.join("loopback-transport.json")){let _=file.write_all(value.as_bytes());}
+        }
+    }));
 }
-impl Drop for Loopback {fn drop(&mut self){self.stop.store(true,Ordering::Relaxed);if let Some(worker)=self.worker.take(){let _=worker.join();}}}
 
 fn atomic_receipt(path:&Path,text:&str)->std::io::Result<()> {
     assert!(text.len()<=1024*1024);let pending=path.with_extension("pending");
@@ -116,9 +110,9 @@ fn native_input(app:&AppRef,h:&NativeContextProbeHandles,tab:TabId,proof:(u64,u6
     // The external helper is the sole caller of one initial SetForegroundWindow(owner).
     unsafe{h.controller.MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC).unwrap()};
     let preparation=format!("(()=>{{const t=document.getElementById({});t.focus();{}return true}})()",quote(control),if mode=="Copy"{"t.select();"}else{""});
-    assert_eq!(script(&h.view,&preparation),Value::Bool(true));
+    assert_eq!(script(&h.view,&preparation,"fixture-focus-preparation"),Value::Bool(true));
     let geometry=format!("(()=>{{const t=document.getElementById({}),r=t.getBoundingClientRect(),x=(r.left+r.right)/2,y=(r.top+r.bottom)/2;return {{left:r.left,top:r.top,right:r.right,bottom:r.bottom,width:innerWidth,height:innerHeight,ratio:devicePixelRatio,hit:document.elementFromPoint(x,y)===t,trusted:hostMenuSnapshot().trusted[t.id]}}}})()",quote(control));
-    let source=script(&h.view,&geometry);assert_bool(&source,"hit",true);
+    let source=script(&h.view,&geometry,"fixture-geometry");assert_bool(&source,"hit",true);
     let mut bounds=RECT::default();let mut client=RECT::default();let mut parent=HWND::default();let mut zoom=0.0;let mut browser=0;
     unsafe{h.controller.Bounds(&mut bounds).unwrap();h.controller.ParentWindow(&mut parent).unwrap();h.controller.ZoomFactor(&mut zoom).unwrap();GetClientRect(owner,&mut client).unwrap();h.view.BrowserProcessId(&mut browser).unwrap()};
     assert_eq!(parent,owner);assert_eq!(zoom,1.0);assert!(browser>0);assert!(bounds.left>=0&&bounds.top>=0&&bounds.right<=client.right&&bounds.bottom<=client.bottom);
@@ -168,7 +162,7 @@ fn native_input(app:&AppRef,h:&NativeContextProbeHandles,tab:TabId,proof:(u64,u6
     assert_eq!(request,done);assert_eq!(selected,actual);assert_eq!(complete_calls,1);assert_eq!(complete_error,None);assert!(!refused);assert!(cleanup_ok);
     if mode=="Cancel"{assert_eq!(setter_calls,0);assert_eq!(setter_result,None)}else{assert_eq!(setter_calls,1);assert_eq!(setter_result,Some(Ok(())))}drop(events);
     current(h,proof);
-    let after=script(&h.view,&format!("hostMenuSnapshot().trusted[{}]",quote(control)));assert_eq!(after,Value::Number((number(&source,"trusted")+1).to_string()),"trusted right-click did not reach exact COM source control");
+    let after=script(&h.view,&format!("hostMenuSnapshot().trusted[{}]",quote(control)),"fixture-trusted-count");assert_eq!(after,Value::Number((number(&source,"trusted")+1).to_string()),"trusted right-click did not reach exact COM source control");
     let report=json::parse(&std::fs::read_to_string(out.join("app-host-context-menu.json")).unwrap()).unwrap();
     assert_eq!(text(&report,"status"),if mode=="Cancel"{"observed-actual-App-native-cancellation"}else{"observed-actual-App-native-selection"});
     if mode!="Cancel"{assert_eq!(number(&report,"selected_command_id"),selected.unwrap() as i64)}
@@ -176,14 +170,19 @@ fn native_input(app:&AppRef,h:&NativeContextProbeHandles,tab:TabId,proof:(u64,u6
     selected.unwrap_or(0)
 }
 
-fn snapshot(view:&ICoreWebView2)->Value {script(view,"hostMenuSnapshot()")}
+fn snapshot(view:&ICoreWebView2)->Value {script(view,"hostMenuSnapshot()","fixture-snapshot")}
 fn unchanged_document(now:&Value,before:&Value) {
     for key in ["nonce","url","timeOrigin","ready","copy"]{assert_eq!(field(now,key),field(before,key),"source document identity/content changed: {key}")}
 }
 fn storage(root:&Path)->Vec<(String,Option<Vec<u8>>)> {
     ["notes.txt","notes-meta.txt","extensions.txt","extension_ids.txt"].iter().map(|name|((*name).into(),match std::fs::read(root.join(name)) { Ok(bytes)=>Some(bytes), Err(error) if error.kind()==std::io::ErrorKind::NotFound=>None, Err(error)=>panic!("storage snapshot read failed: {error}") })).collect()
 }
-fn effects(server:&Loopback,paste:usize,note:usize,destination:usize){let receipts=server.receipts.lock().unwrap();assert_eq!((receipts.paste,receipts.note,receipts.destination),(paste,note,destination));}
+fn effects(server:&Loopback,paste:usize,note:usize,destination:usize){
+    let receipts=server.receipts.lock().unwrap();
+    assert_eq!((receipts.paste,receipts.note,receipts.destination),(paste,note,destination));
+    // DOM acknowledgment does not excuse a server response that completed after its budget.
+    assert_eq!((receipts.paste_full_responses,receipts.note_full_responses,receipts.destination_full_responses),(paste,note,destination),"exact effect responses must also have completed within the single server budget");
+}
 fn controller_bounds(h:&NativeContextProbeHandles,owner:HWND)->RECT {
     let mut bounds=RECT::default();let mut parent=HWND::default();let mut visible=windows::core::BOOL::default();
     unsafe{h.controller.Bounds(&mut bounds).unwrap();h.controller.ParentWindow(&mut parent).unwrap();h.controller.IsVisible(&mut visible).unwrap()};assert_eq!(parent,owner);assert!(visible.as_bool());assert!(bounds.right>bounds.left&&bounds.bottom>bounds.top);bounds
@@ -223,7 +222,7 @@ fn sequence(app:&AppRef,root:&Path,server:&Loopback,out:&Path) {
     let (destination_tab,destination)=destination.unwrap();let split=App::split_view(app).expect("actual App split_view absent");assert!(split.is_pair());assert_eq!(split.tabs().collect::<std::collections::HashSet<_>>(),[source_tab,destination_tab].into_iter().collect());
     let destination_url=server.url.join(&format!("/destination?nonce={token}")).unwrap();assert_eq!(App::tab_committed_url(app,destination_tab),Some(destination_url.clone()));
     let committed={let state=app.borrow();state.engine.as_ref().unwrap().successful_document_query(destination_tab)}.expect("actual successful destination document query absent");assert_eq!(committed(),Some(destination_url.clone()));
-    let receipt=script(&destination.view,"({url:location.href,ready:document.readyState,nonce:document.body.getAttribute('data-destination-nonce')})");assert_eq!(text(&receipt,"url"),destination_url.as_str());assert_eq!(text(&receipt,"ready"),"complete");assert_eq!(text(&receipt,"nonce"),token);
+    let receipt=script(&destination.view,"({url:location.href,ready:document.readyState,nonce:document.body.getAttribute('data-destination-nonce')})","split-destination-snapshot");assert_eq!(text(&receipt,"url"),destination_url.as_str());assert_eq!(text(&receipt,"ready"),"complete");assert_eq!(text(&receipt,"nonce"),token);
     let source_bounds=controller_bounds(&source,owner);let destination_bounds=controller_bounds(&destination,owner);let mut client=RECT::default();unsafe{GetClientRect(owner,&mut client).unwrap()};
     for bounds in [source_bounds,destination_bounds]{assert!(bounds.left>=0&&bounds.top>=0&&bounds.right<=client.right&&bounds.bottom<=client.bottom)}
     assert!(source_bounds.right<=destination_bounds.left||destination_bounds.right<=source_bounds.left||source_bounds.bottom<=destination_bounds.top||destination_bounds.bottom<=source_bounds.top,"both real split controller bounds must be visible and nonoverlapping");assert_ne!((before_bounds.left,before_bounds.top,before_bounds.right,before_bounds.bottom),(source_bounds.left,source_bounds.top,source_bounds.right,source_bounds.bottom));
@@ -250,14 +249,17 @@ fn live_probe_real_app_host_context_menu() {
     let options=LaunchOptions::parse_from(vec!["--dev".into(),"--data-dir".into(),root.to_string_lossy().into_owned(),"--open-url".into(),server.url.to_string()],&Path::new(env!("CARGO_MANIFEST_DIR")).join("benchmarks/fixtures")).unwrap();
     assert!(options.dev&&!options.guest&&!options.agent&&options.benchmark_log.is_none());assert_eq!(options.data_dir.as_deref(),Some(root.as_path()));assert!(options.user_data_dir.is_none());
     let outcome=Rc::new(RefCell::new(None));let sink=outcome.clone();let destination=root.clone();let output=evidence.clone();let started=Instant::now();let timed_out=Rc::new(Cell::new(false));let expired=timed_out.clone();
+    let script_trace=Rc::new(ScriptTrace::new());let _trace_scope=TraceScope::enter(script_trace.clone());let ready_trace=script_trace.clone();let watchdog_trace=script_trace.clone();
     let deregistrations=Rc::new(RefCell::new(Vec::<Option<i32>>::new()));let removal=deregistrations.clone();
     // Lifecycle observer is rearmed by native_input and left on only for final native removal.
     crate::win32::set_app_menu_probe_hooks(Box::new(move |app|{
         let result=std::panic::catch_unwind(std::panic::AssertUnwindSafe(||sequence(&app,&destination,&server,&output)));
+        save_transport_diagnostic(&server,&output);
+        if result.is_err(){ready_trace.report("caught-sequence-failure");}
         *sink.borrow_mut()=Some(result.map_err(|_|"actual App host regression failed; inspect per-mode native/clipboard diagnostics".to_owned()));
         set_observer(Some(Rc::new(move |event|if let HostProbeEvent::Lifecycle(MenuProbeEvent::Deregistered{native_error})=event {removal.borrow_mut().push(native_error)})));
         let owner=app.borrow().hwnd;unsafe{let _=PostMessageW(Some(owner),WM_CLOSE,WPARAM(0),LPARAM(0));}
-    }),Box::new(move |app|if started.elapsed()>Duration::from_secs(240)&&!expired.replace(true){let owner=app.borrow().hwnd;unsafe{let _=PostMessageW(Some(owner),WM_CLOSE,WPARAM(0),LPARAM(0));}}));
+    }),Box::new(move |app|if started.elapsed()>Duration::from_secs(240)&&!expired.replace(true){watchdog_trace.report("watchdog-before-close");let owner=app.borrow().hwnd;unsafe{let _=PostMessageW(Some(owner),WM_CLOSE,WPARAM(0),LPARAM(0));}}));
     unsafe{CoInitializeEx(None,COINIT_APARTMENTTHREADED).ok().unwrap()};let run=App::run(options,Rc::new(PerfLog::new(None).unwrap()));unsafe{CoUninitialize()};set_observer(None);
     assert!(run.is_ok(),"actual App::run failed: {run:?}");assert!(!timed_out.get());outcome.borrow_mut().take().expect("real ready hook absent").unwrap();
     let removed=deregistrations.borrow();assert!(removed.len()>=3,"source, negative, and split destination native removals required");assert!(removed.iter().all(Option::is_none));

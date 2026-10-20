@@ -117,7 +117,7 @@ impl Drop for Loopback {fn drop(&mut self) {self.stop.store(true,Ordering::Relax
 enum PumpExit { NotStarted, Ready, DeadlineBeforeReady, DeadlineAfterReady, DeadlineBeforeDispatch, DeadlineAfterPeek, DeadlineAfterDispatch, Quit }
 
 /// Test-only copy/Cell telemetry. Never retain an App/Core/COM borrow across pumping.
-struct StartupPump {
+pub(super) struct StartupPump {
     started:Cell<Option<Instant>>, budget:Duration, exit:Cell<PumpExit>, polls:Cell<u64>,
     messages:Cell<u64>, dispatches:Cell<u64>, batch:Cell<u32>, max_batch:Cell<u32>, last_message:Cell<u32>,
     in_ready:Cell<bool>, ready_started:Cell<Option<Instant>>, max_ready_ms:Cell<u128>,
@@ -126,7 +126,12 @@ struct StartupPump {
     max_dispatch_ms:Cell<u128>, tab:Cell<Option<TabId>>, phase:Cell<&'static str>, reported:Cell<bool>,
 }
 impl StartupPump {
-    fn new()->Self {Self {started:Cell::new(None),budget:Duration::from_secs(60),exit:Cell::new(PumpExit::NotStarted),polls:Cell::new(0),messages:Cell::new(0),dispatches:Cell::new(0),batch:Cell::new(0),max_batch:Cell::new(0),last_message:Cell::new(0),in_ready:Cell::new(false),ready_started:Cell::new(None),max_ready_ms:Cell::new(0),in_peek:Cell::new(false),peek_started:Cell::new(None),max_peek_ms:Cell::new(0),in_dispatch:Cell::new(false),dispatch_started:Cell::new(None),max_dispatch_ms:Cell::new(0),tab:Cell::new(None),phase:Cell::new("not-started"),reported:Cell::new(false)}}
+    fn new()->Self {Self::for_timeout(Duration::from_secs(60))}
+    pub(super) fn for_timeout(budget:Duration)->Self {Self {started:Cell::new(None),budget,exit:Cell::new(PumpExit::NotStarted),polls:Cell::new(0),messages:Cell::new(0),dispatches:Cell::new(0),batch:Cell::new(0),max_batch:Cell::new(0),last_message:Cell::new(0),in_ready:Cell::new(false),ready_started:Cell::new(None),max_ready_ms:Cell::new(0),in_peek:Cell::new(false),peek_started:Cell::new(None),max_peek_ms:Cell::new(0),in_dispatch:Cell::new(false),dispatch_started:Cell::new(None),max_dispatch_ms:Cell::new(0),tab:Cell::new(None),phase:Cell::new("not-started"),reported:Cell::new(false)}}
+    pub(super) fn diagnostic_json(&self)->String {
+        format!(r#"{{"exit":"{:?}","elapsed_ms":{},"budget_ms":{},"ready_polls":{},"messages":{},"dispatches":{},"current_batch":{},"max_batch":{},"last_message":{},"in_ready":{},"active_ready_ms":{},"max_ready_ms":{},"in_peek":{},"active_peek_ms":{},"max_peek_ms":{},"in_dispatch":{},"active_dispatch_ms":{},"max_dispatch_ms":{}}}"#,
+            self.exit.get(),self.started.get().map_or(0,|t|t.elapsed().as_millis()),self.budget.as_millis(),self.polls.get(),self.messages.get(),self.dispatches.get(),self.batch.get(),self.max_batch.get(),self.last_message.get(),self.in_ready.get(),self.ready_started.get().map_or(0,|t|t.elapsed().as_millis()),self.max_ready_ms.get(),self.in_peek.get(),self.peek_started.get().map_or(0,|t|t.elapsed().as_millis()),self.max_peek_ms.get(),self.in_dispatch.get(),self.dispatch_started.get().map_or(0,|t|t.elapsed().as_millis()),self.max_dispatch_ms.get())
+    }
     fn report(&self,app:&AppRef,reason:&str) {
         if self.reported.replace(true){return;}
         // Failure-only and best-effort. No raw message parameters, URLs, names or pointers.
@@ -159,7 +164,7 @@ fn pump_message_action(expired:bool,present:bool,quit:bool)->PumpMessageAction {
 pub(super) fn pump_until(timeout: Duration, ready: impl FnMut() -> bool) -> bool {
     pump_until_observed(timeout,ready,None)
 }
-fn pump_until_observed(timeout:Duration,mut ready:impl FnMut()->bool,observed:Option<&StartupPump>)->bool {
+pub(super) fn pump_until_observed(timeout:Duration,mut ready:impl FnMut()->bool,observed:Option<&StartupPump>)->bool {
     let start=Instant::now();if let Some(d)=observed {d.started.set(Some(start));assert_eq!(d.budget,timeout);}
     let finish=|exit|{if let Some(d)=observed {d.exit.set(exit);}exit==PumpExit::Ready};
     loop {

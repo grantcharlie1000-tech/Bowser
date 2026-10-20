@@ -426,6 +426,16 @@ jobs:
           cargo +stable test --locked --lib --features html-chrome-default,experimental-engine-context-menu engine::app_context_menu_probe::synthetic_pump_ -- --nocapture --test-threads=1 2>&1 | Tee-Object -Append store-real-app-menu-unit.log
           if ($LASTEXITCODE -ne 0) { throw 'Synthetic bounded pump/late-refusal policy failed; no live App acceptance.' }
 
+          # Reuse that exact experimental feature variant; no live server/App/input in these cases.
+          $serverTests = @(cargo +stable test --locked --lib --features html-chrome-default,experimental-engine-context-menu engine::app_host_menu_probe::live::loopback::synthetic_loopback_ -- --list)
+          if ($LASTEXITCODE -ne 0 -or @($serverTests | Where-Object { $_ -cmatch '^engine::app_host_menu_probe::live::loopback::synthetic_loopback_[^ ]+: test$' }).Count -ne 4) { throw 'Exact four synthetic loopback tests were not discovered.' }
+          cargo +stable test --locked --lib --features html-chrome-default,experimental-engine-context-menu engine::app_host_menu_probe::live::loopback::synthetic_loopback_ -- --nocapture --test-threads=1 2>&1 | Tee-Object -Append store-real-app-menu-unit.log
+          if ($LASTEXITCODE -ne 0) { throw 'Synthetic fixture HTTP framing/shared-deadline transport policy failed.' }
+          $scriptTests = @(cargo +stable test --locked --lib --features html-chrome-default,experimental-engine-context-menu engine::app_host_menu_probe::live::script_trace::synthetic_script_trace_ -- --list)
+          if ($LASTEXITCODE -ne 0 -or @($scriptTests | Where-Object { $_ -cmatch '^engine::app_host_menu_probe::live::script_trace::synthetic_script_trace_[^ ]+: test$' }).Count -ne 2) { throw 'Exact two synthetic script-trace tests were not discovered.' }
+          cargo +stable test --locked --lib --features html-chrome-default,experimental-engine-context-menu engine::app_host_menu_probe::live::script_trace::synthetic_script_trace_ -- --nocapture --test-threads=1 2>&1 | Tee-Object -Append store-real-app-menu-unit.log
+          if ($LASTEXITCODE -ne 0) { throw 'Synthetic fixed script telemetry state failed; no native completion claim.' }
+
       - name: Probe default-off native engine menu in actual HTML Bowser App
         if: ${{ !cancelled() && steps.experimental_menu_build.outcome == 'success' }}
         run: |

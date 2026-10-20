@@ -278,7 +278,7 @@ fn host_only_sequence(app: &AppRef, root: &Path, server: &Loopback, out: &Path, 
         state.engine.as_ref().unwrap().successful_document_query(destination_tab)
     }.expect("actual successful destination document query absent");
     assert_eq!(committed(), Some(destination_url.clone()));
-    let receipt = script(&destination.view, "({url:location.href,ready:document.readyState,nonce:document.body.getAttribute('data-destination-nonce')})");
+    let receipt = script(&destination.view, "({url:location.href,ready:document.readyState,nonce:document.body.getAttribute('data-destination-nonce')})", "split-destination-snapshot");
     assert_eq!(text(&receipt, "url"), destination_url.as_str());
     assert_eq!(text(&receipt, "ready"), "complete");
     assert_eq!(text(&receipt, "nonce"), token);
@@ -366,11 +366,17 @@ fn live_probe_real_app_host_note_split_context_menu() {
     let phases = Rc::new(ReadinessPhases::open(&evidence.join("source-readiness-phase.json"), started, timed_out.clone()));
     let ready_phases = phases.clone();
     let watchdog_phases = phases.clone();
+    let script_trace = Rc::new(ScriptTrace::new());
+    let _trace_scope = TraceScope::enter(script_trace.clone());
+    let ready_trace = script_trace.clone();
+    let watchdog_trace = script_trace.clone();
     let deregistrations = Rc::new(RefCell::new(Vec::<Option<i32>>::new()));
     let removal = deregistrations.clone();
     crate::win32::set_app_menu_probe_hooks(Box::new(move |app| {
         ready_phases.record(ReadinessStage::ReadyHook);
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| host_only_sequence(&app, &destination, &server, &output, &ready_phases)));
+        save_transport_diagnostic(&server, &output);
+        if result.is_err() { ready_trace.report("caught-sequence-failure"); }
         *sink.borrow_mut() = Some(result.map_err(|_| "independent actual App note/Split regression failed; inspect host-only diagnostics".to_owned()));
         set_observer(Some(Rc::new(move |event| if let HostProbeEvent::Lifecycle(MenuProbeEvent::Deregistered { native_error }) = event {
             removal.borrow_mut().push(native_error);
@@ -379,6 +385,7 @@ fn live_probe_real_app_host_note_split_context_menu() {
         unsafe { let _ = PostMessageW(Some(owner), WM_CLOSE, WPARAM(0), LPARAM(0)); }
     }), Box::new(move |app| if started.elapsed() > Duration::from_secs(240) && !expired.replace(true) {
         watchdog_phases.record(ReadinessStage::WatchdogExpired);
+        watchdog_trace.report("watchdog-before-close");
         let owner = app.borrow().hwnd;
         unsafe { let _ = PostMessageW(Some(owner), WM_CLOSE, WPARAM(0), LPARAM(0)); }
     }));

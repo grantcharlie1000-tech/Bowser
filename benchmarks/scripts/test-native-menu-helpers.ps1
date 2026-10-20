@@ -86,6 +86,8 @@ $leafPolicy=$type.GetMethod('CheckOwnedLeafPolicy',[Reflection.BindingFlags]::Pu
 $null=$leafPolicy.Invoke($null,@())
 $browserPolicy=$type.GetMethod('CheckBrowserStructurePolicy',[Reflection.BindingFlags]::Public -bor [Reflection.BindingFlags]::Static)
 $null=$browserPolicy.Invoke($null,@())
+$rejectedPolicy=$type.GetMethod('CheckRejectedInventoryPolicy',[Reflection.BindingFlags]::Public -bor [Reflection.BindingFlags]::Static)
+$null=$rejectedPolicy.Invoke($null,@())
 # Pure JSON/UTF-8 digest evidence round-trip only. No native provider or filesystem operation.
 $proofType=$type.GetNestedType('MenuProof',[Reflection.BindingFlags]::Public)
 $receiptMethod=$type.GetMethod('InventoryReceiptValue',[Reflection.BindingFlags]::Public -bor [Reflection.BindingFlags]::Static)
