@@ -113,6 +113,8 @@ const DEFAULT_OPTS: TabOptsMsg = {
   closedButton: true, tools: [], // --- toolbars and feeds (thread T13) ---
 };
 const STRIP_OPTION_CLASSES = ['close-left', 'close-always', 'scrolling', 'pin-sep', 'flush'] as const;
+/** The options of `STRIP_OPTION_CLASSES` that the two-level stacks' second row follows too. */
+const ROW2_OPTION_CLASSES = ['close-left', 'close-always', 'scrolling'] as const;
 
 /** Counts every reload label down by the time since the host last said how long was left. Exported for test/tab-options.mjs. */
 export function tickReloads(nodes: Iterable<TabNode>, now: number): void {
@@ -460,20 +462,27 @@ export function startTabs(strip: HTMLElement): HTMLElement {
     syncTools(); // --- toolbars and feeds (thread T13) ---
     const wanted = stripClasses(ui);
     for (const name of STRIP_OPTION_CLASSES) strip.classList.toggle(name, wanted.includes(name));
-    strip.style.setProperty('--tab-active-min', ui.minWidth > 0 ? `${ui.minWidth}px` : '');
+    // --- two-level stacks (T10b) --- the second row's tabs follow the same close button, scroll
+    // and width options (U5); the pinned line and the maximised top edge are the tab row's only.
+    for (const name of ROW2_OPTION_CLASSES) row2.classList.toggle(name, wanted.includes(name));
+    for (const row of [strip, row2]) row.style.setProperty('--tab-active-min', ui.minWidth > 0 ? `${ui.minWidth}px` : '');
     if (!ui.alignClose) unlockWidths();
   };
-  /** Holds every tab at `tab`'s width until the pointer leaves, so the next close button lands under it. */
+  /** Holds every tab of `tab`'s row at its width until the pointer leaves, so the next close button lands under it. */
   const lockWidths = (tab: HTMLElement): void => {
-    strip.style.setProperty('--tab-lock', `${lockedWidth(tab.getBoundingClientRect().width)}px`);
-    strip.classList.add('locked');
+    unlockWidths();
+    const row = rowOf(tab);
+    row.style.setProperty('--tab-lock', `${lockedWidth(tab.getBoundingClientRect().width)}px`);
+    row.classList.add('locked');
     locked = true;
   };
   const unlockWidths = (): void => {
     if (!locked) return;
     locked = false;
-    strip.classList.remove('locked');
-    strip.style.setProperty('--tab-lock', '');
+    for (const row of [strip, row2]) {
+      row.classList.remove('locked');
+      row.style.setProperty('--tab-lock', '');
+    }
   };
   const setPicked = (ids: readonly number[]): void => {
     if (ids.length === picked.length && ids.every((id, i) => id === picked[i])) return;
@@ -512,6 +521,7 @@ export function startTabs(strip: HTMLElement): HTMLElement {
     dirty = false;
     render({ ...msg, items: pairOrder(msg.items, pair) }); // --- split view ---
     markPair(strip, pair); // --- split view ---
+    markPair(row2, pair); // a pane in a two-level stack's second row is a capsule half too
   };
 
   const tabFor = (item: TabItem): TabNode => {
@@ -1229,8 +1239,9 @@ export function startTabs(strip: HTMLElement): HTMLElement {
     // --- end tab options ---
   });
   } // --- end two-level stacks: both rows ---
-  // --- tab options --- the pointer leaving the strip ends a width lock.
+  // --- tab options --- the pointer leaving the row ends a width lock.
   strip.addEventListener('pointerleave', unlockWidths);
+  row2.addEventListener('pointerleave', unlockWidths);
   // --- end tab options ---
 
   for (const host of [strip, row2]) { // --- two-level stacks (T10b) --- each row walks its own tabs.
