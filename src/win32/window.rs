@@ -1808,16 +1808,16 @@ fn sidebar_html_region(layout: Option<&crate::vertical_tabs::SidebarLayout>, act
 
 /// Snapshot hosts and geometry, then call WebView2 after the window borrow has ended.
 fn sync_html_host_bounds(hwnd: HWND) {
-    let Some((hosts, viewport)) = with_chrome(hwnd, |s| ([
+    let Some((hosts, pages, thin_bottom)) = with_chrome(hwnd, |s| ([
         (s.html.clone(), chrome_host::toolbar_bounds(&s.layout).filter(|_| s.html_region().is_some())),
         // --- vertical sidebar (lane S) ---
         (s.html_tabs.clone(), s.html_tabs_bounds().filter(|_| s.html_tab_region().is_some())),
         // --- end vertical sidebar ---
         (s.html_rail.clone(), chrome_host::rail_bounds(&s.layout).filter(|_| s.html_rail_region().is_some())),
-    ], s.layout.viewport)) else { return; };
-    // Every child window that can reach the top edge: the HTML chrome and the page.
+    ], [s.layout.viewport, s.ah.page], s.last_relayout.as_ref().is_some_and(|i| i.arrangement.thin_bottom_edge()))) else { return; };
+    // Every child window that can reach a resize edge: the HTML chrome, and the page with its bars and panels.
     let mut covering: Vec<RECT> = hosts.iter().filter_map(|(host, bounds)| host.as_ref().and(*bounds)).collect();
-    covering.push(RECT { left: viewport.left, top: viewport.top, right: viewport.right, bottom: viewport.bottom });
+    covering.extend(pages.iter().map(|v| RECT { left: v.left, top: v.top, right: v.right, bottom: v.bottom }));
     for (host, bounds) in hosts {
         let Some(host) = host else { continue; };
         if let Some(bounds) = bounds {
@@ -1826,7 +1826,7 @@ fn sync_html_host_bounds(hwnd: HWND) {
         let _ = host.set_visible(bounds.is_some());
     }
     auto_hide::after_layout(hwnd); // --- auto-hide (T11) --- sensors, and raising what is shown
-    frame_grip::sync(hwnd, &covering); // above the hosts and the sensors
+    frame_grip::sync(hwnd, &covering, thin_bottom); // above the hosts and the sensors
 }
 // --- auto-hide (T11) --- what the rest of the app calls (window/auto_hide.rs does the work).
 pub(crate) fn auto_hide_sync(hwnd: HWND, app: &AppRef) {
