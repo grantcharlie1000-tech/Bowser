@@ -5,8 +5,8 @@
 
 use std::{
     collections::BTreeMap,
-    fs::{self, File},
-    io::{self, Read, Write},
+    fs::File,
+    io::{self, Read},
     path::Path,
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -121,10 +121,14 @@ impl PrivacyStats {
     pub fn save(&self, path: &Path) -> io::Result<()> {
         let text = self.serialise();
         // The timer, the panel and exit all save; only a real change touches the disk.
-        if crate::productivity::file_holds(path, text.as_bytes()) {
-            return Ok(());
-        }
-        write_atomic(path, text.as_bytes())
+        // Skips unchanged bytes, and stays in order with a save still queued for the writer thread.
+        crate::background_write::write_now(path, text.as_bytes())
+    }
+
+    /// [`Self::save`] on the writer thread ([`crate::background_write`]): the debounce timer's save,
+    /// about once per ad-heavy page load. Unchanged bytes are still skipped, there.
+    pub fn save_in_background(&self, path: &Path) {
+        crate::background_write::queue(path.to_path_buf(), self.serialise().into_bytes());
     }
 
     pub fn parse(text: &str) -> Self {
@@ -245,18 +249,10 @@ fn read_capped(path: &Path) -> Option<String> {
     String::from_utf8(bytes).ok()
 }
 
-fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
-    let temp = path.with_extension("txt.tmp");
-    let mut file = File::create(&temp)?;
-    file.write_all(bytes)?;
-    file.sync_all()?;
-    drop(file);
-    fs::rename(temp, path)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
 
     #[test]
     fn blocked_requests_accumulate_all_time_per_day_and_per_host() {
@@ -386,6 +382,26 @@ mod tests {
         stats.save(&path).unwrap();
         assert_ne!(fs::metadata(&path).unwrap().modified().unwrap(), stamp);
         assert_eq!(PrivacyStats::load(&path).all_time_total(), 2);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    /// R-17: the debounce timer saved the counters (temp write, `sync_all`, rename) on the UI thread
+    /// about once per ad-heavy page load. That save is now queued for the writer thread.
+    #[test]
+    fn the_debounced_save_never_writes_on_the_calling_thread() {
+        let dir = std::env::temp_dir().join(format!("bowser-privacy-stats-bg-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(FILE_NAME);
+        let mut stats = PrivacyStats::default();
+        stats.record_blocked("2026-10-10", "ads.example");
+        {
+            let _held = crate::background_write::hold_writes();
+            stats.save_in_background(&path);
+            assert!(!path.exists(), "the counters were written on the calling thread");
+        }
+        crate::background_write::flush();
+        assert_eq!(PrivacyStats::load(&path).all_time_total(), 1);
         let _ = fs::remove_dir_all(dir);
     }
 }

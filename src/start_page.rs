@@ -938,6 +938,33 @@ pub fn forget_thumb(config: &mut SpeedDialConfig, dir: Option<&Path>, id: u64) -
     had
 }
 
+/// Deletes the chosen images, and their `thumb` lines, of bookmarks no longer in `store`. Bookmarks
+/// are deleted from many places (the Bookmarks panel and bar, the star, the palette), so
+/// [`BookmarkStore::save`] calls this; without thumbnails it costs one failed directory open.
+/// `speeddial.txt` is only rewritten when it was read and named a deleted bookmark.
+pub fn forget_thumbs_of_deleted(dir: &Path, store: &BookmarkStore) {
+    let Ok(entries) = fs::read_dir(dir.join(THUMB_DIR)) else { return };
+    let live: std::collections::HashSet<u64> = store.items().iter().map(|item| item.id).collect();
+    let mut gone = false;
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(id) = name.to_str().and_then(|n| n.strip_suffix(".jpg")).and_then(|n| n.parse::<u64>().ok()) else { continue };
+        if !live.contains(&id) && fs::remove_file(entry.path()).is_ok() {
+            gone = true;
+        }
+    }
+    if !gone {
+        return;
+    }
+    let Some(text) = read_small(&dir.join(FILE_NAME)) else { return };
+    let mut config = SpeedDialConfig::parse(&text);
+    let before = config.thumbs.len();
+    config.thumbs.retain(|id, _| live.contains(id));
+    if config.thumbs.len() != before {
+        let _ = config.save(dir);
+    }
+}
+
 /// Dial `id`'s chosen image as a `data:` URI, when it exists and is a small JPEG.
 pub fn thumb_data_uri(config: &SpeedDialConfig, dir: &Path, id: u64) -> Option<String> {
     config.thumbs.get(&id)?;
