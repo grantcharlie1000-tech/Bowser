@@ -160,13 +160,52 @@ fn attribute(tag: &str, name: &str) -> Option<String> {
     None
 }
 
+/// Decodes HTML character references in one pass, so each is decoded once: `&amp;lt;` is the text
+/// `&lt;`, never `<`. Reads the named references an export writes (`amp`, `lt`, `gt`, `quot`,
+/// `apos`, `nbsp`) and decimal or hex numeric ones; anything else is kept as written.
 fn decode_entities(text: &str) -> String {
-    text.replace("&amp;", "&")
-        .replace("&quot;", "\"")
-        .replace("&#39;", "'")
-        .replace("&#x27;", "'")
-        .replace("&lt;", "<")
-        .replace("&gt;", ">")
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(at) = rest.find('&') {
+        out.push_str(&rest[..at]);
+        rest = &rest[at..];
+        let decoded = rest[1..]
+            .find(';')
+            .filter(|&end| end <= 10)
+            .and_then(|end| entity(&rest[1..=end]).map(|c| (c, end + 2)));
+        match decoded {
+            Some((c, len)) => {
+                out.push(c);
+                rest = &rest[len..];
+            }
+            None => {
+                out.push('&');
+                rest = &rest[1..];
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// The character one reference names (`name` is what lies between `&` and `;`).
+fn entity(name: &str) -> Option<char> {
+    let code = match name {
+        "amp" => return Some('&'),
+        "lt" => return Some('<'),
+        "gt" => return Some('>'),
+        "quot" => return Some('"'),
+        "apos" => return Some('\''),
+        "nbsp" => return Some('\u{a0}'),
+        _ => {
+            let number = name.strip_prefix('#')?;
+            match number.strip_prefix(['x', 'X']) {
+                Some(hex) => u32::from_str_radix(hex, 16).ok()?,
+                None => number.parse().ok()?,
+            }
+        }
+    };
+    char::from_u32(code).filter(|&c| c != '\0')
 }
 
 fn clean_field(value: &str, max_chars: usize) -> String {
@@ -177,4 +216,25 @@ fn clean_field(value: &str, max_chars: usize) -> String {
         .collect::<String>()
         .trim()
         .to_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_escaped_entity_is_decoded_once_and_numeric_entities_are_read() {
+        let html = concat!(
+            "<DL><p>\n",
+            "<DT><A HREF=\"https://x.example/?a=1&amp;lt;b\">&amp;lt;b&amp;gt; &#38; &#x26; &#8212; &nbsp;</A>\n",
+            "<DT><A HREF=\"https://y.example/?a=1&amp;b=2\">Fish &amp; chips &unknown; &#xZZ; &#0;</A>\n",
+            "</DL><p>\n"
+        );
+        let parsed = parse_netscape_bookmarks(html);
+        assert_eq!(parsed.len(), 2, "{parsed:?}");
+        assert_eq!(parsed[0].title, "&lt;b&gt; & & \u{2014}", "{:?}", parsed[0].title);
+        assert_eq!(parsed[0].url, "https://x.example/?a=1&lt;b");
+        assert_eq!(parsed[1].title, "Fish & chips &unknown; &#xZZ; &#0;");
+        assert_eq!(parsed[1].url, "https://y.example/?a=1&b=2");
+    }
 }
