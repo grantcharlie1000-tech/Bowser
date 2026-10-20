@@ -463,11 +463,20 @@ impl App {
             state.recently_closed.remove(n)?
         };
         let url = url::Url::parse(&entry.url).ok()?;
+        // T6: back in the workspace it was closed from, when that workspace is still there.
+        let home = entry.workspace.filter(|workspace| {
+            let state = app.borrow();
+            state.workspaces.get(*workspace).is_some() && state.workspaces.active().id() != *workspace
+        });
+        if let Some(workspace) = home {
+            let _ = Self::switch_workspace(app, workspace);
+        }
         let id = Self::new_tab(app);
         Self::submit_url(app, url, None);
         if entry.pinned {
             let _ = Self::set_tab_pinned(app, id, true);
         } else {
+            // `tab_ids` is the active workspace's strip, which `move_tab` indexes.
             let count = Self::tab_ids(app).len();
             let _ = Self::move_tab(app, id, entry.index.min(count.saturating_sub(1)));
         }

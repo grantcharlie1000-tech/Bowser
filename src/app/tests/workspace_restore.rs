@@ -213,3 +213,38 @@ fn a_duplicate_of_a_background_tab_lands_beside_it() {
     assert_eq!(App::tab_ids(&app), [a, b, copy, c, d]);
     assert_eq!(App::tab_ids(&app), model_order(&app));
 }
+
+/// T6: with two workspaces, a tab closed in the second one reopens in its own place there, and a
+/// tab closed in the first one reopens in the first even when the second is shown by then.
+#[test]
+fn a_reopened_tab_returns_to_its_place_in_its_own_workspace() {
+    let app = app_with_pending(rect(800, 600));
+    let a0 = App::active_tab_id(&app);
+    page(&app, a0, "https://a0.example/");
+    let a1 = App::new_tab(&app);
+    page(&app, a1, "https://a1.example/");
+    let a2 = App::new_tab(&app);
+    page(&app, a2, "https://a2.example/");
+    let home = app.borrow().workspaces.active().id();
+    let work = App::create_workspace(&app, "Work").unwrap();
+    let b0 = App::active_tab_id(&app);
+    page(&app, b0, "https://b0.example/");
+    let b1 = App::new_tab(&app);
+    page(&app, b1, "https://b1.example/");
+    let b2 = App::new_tab(&app);
+    page(&app, b2, "https://b2.example/");
+    assert_eq!(App::tab_ids(&app), [b0, b1, b2]);
+
+    assert!(App::close_tab(&app, b1));
+    let back = App::reopen_closed_tab(&app).expect("reopened");
+    assert_eq!(App::tab_ids(&app), [b0, back, b2], "the reopened tab is not where it was");
+
+    assert!(App::switch_workspace(&app, home));
+    assert!(App::close_tab(&app, a1));
+    assert!(App::switch_workspace(&app, work));
+    let again = App::reopen_closed_tab(&app).expect("reopened");
+    assert_eq!(app.borrow().workspaces.active().id(), home, "it reopens in the workspace it was closed from");
+    assert_eq!(App::tab_ids(&app), [a0, again, a2]);
+    assert_eq!(app.borrow().workspaces.get(work).unwrap().tabs(), [b0, back, b2], "Work is unchanged");
+    assert_membership_is_sound(&app);
+}

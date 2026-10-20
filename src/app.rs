@@ -776,8 +776,10 @@ pub struct ClosedTab {
     pub title: String,
     // --- tab options --- what "Reopen closed tab" needs to put the tab back as it was.
     pub pinned: bool,
-    /// Its place in the strip when it closed (the strip may be shorter by now).
+    /// Its place in its workspace's strip when it closed (the strip may be shorter by now).
     pub index: usize,
+    /// The workspace it was closed from (T6); it reopens there.
+    pub workspace: Option<crate::workspaces::WorkspaceId>,
     // --- end tab options ---
 }
 // --- end split view ---
@@ -2967,11 +2969,18 @@ impl App {
         let Some(url) = tab.url.as_ref().filter(|url| matches!(url.scheme(), "http" | "https")) else {
             return;
         };
+        // T6: `move_tab` reads an index into the active workspace, so keep the place within the
+        // tab's own workspace (not in every workspace's tabs) and which workspace that was.
+        let workspace = self.workspaces.workspace_for(tab.id);
+        let place = workspace
+            .and_then(|id| self.workspaces.get(id))
+            .and_then(|found| found.tabs().iter().position(|member| *member == tab.id));
         let entry = ClosedTab {
             url: url.as_str().to_owned(),
             title: tab.title.clone(),
             pinned: self.tab_model.get(tab.id).is_some_and(|model| model.pinned),
-            index,
+            index: place.unwrap_or(index),
+            workspace,
         };
         self.recently_closed.retain(|closed| closed.url != entry.url);
         self.recently_closed.push_front(entry);
