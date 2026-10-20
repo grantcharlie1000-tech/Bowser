@@ -231,8 +231,25 @@ impl Store {
         }
     }
 
+    /// Writes the store. When it would not fit the read cap (100 feeds of 50 items with long links
+    /// can), each feed keeps as many of its newest items as fit: never written past what `load`
+    /// reads back, which lost every subscription (R-8).
     pub fn save(&self, path: &Path) -> io::Result<()> {
-        crate::productivity::atomic_write(path, self.to_text().as_bytes())
+        let fits = |text: &String| text.len() as u64 <= MAX_FILE_BYTES;
+        let mut text = self.to_text();
+        if !fits(&text) {
+            // The most items per feed that fit, by halving: `low` always fits, `high` never does.
+            let (mut low, mut high) = (0, self.feeds.iter().map(|feed| feed.items.len()).max().unwrap_or(0));
+            while high - low > 1 {
+                let middle = (low + high) / 2;
+                if fits(&self.to_text_keeping(middle)) { low = middle } else { high = middle }
+            }
+            text = self.to_text_keeping(low);
+            if !fits(&text) {
+                return Err(io::Error::new(io::ErrorKind::InvalidInput, "the feeds are too large to save"));
+            }
+        }
+        crate::productivity::atomic_write(path, text.as_bytes())
     }
 
     pub fn parse(text: &str) -> Store {
@@ -281,12 +298,17 @@ impl Store {
     }
 
     pub fn to_text(&self) -> String {
+        self.to_text_keeping(usize::MAX)
+    }
+
+    /// [`Self::to_text`] with at most the newest `keep` items of each feed.
+    fn to_text_keeping(&self, keep: usize) -> String {
         let mut out = String::new();
         for feed in &self.feeds {
             let id = feed.id.to_string();
             let fetched = feed.fetched.to_string();
             push_record(&mut out, &["F", &id, &feed.url, &feed.title, &feed.site, &fetched, &feed.error]);
-            for item in &feed.items {
+            for item in feed.items.iter().take(keep) {
                 let hash = item.hash.to_string();
                 let published = item.published.to_string();
                 let (enc_url, enc_mime) = item.enclosure.as_ref().map_or(("", ""), |e| (e.url.as_str(), e.mime.as_str()));
@@ -354,6 +376,48 @@ mod tests {
 
     fn parsed(items: Vec<ParsedItem>) -> ParsedFeed {
         ParsedFeed { title: "Site".into(), site: "https://a.example/".into(), items }
+    }
+
+    /// R-8: 100 subscriptions of 50 items with long links and podcast enclosures write well past
+    /// the 8 MiB read cap; the next start read no feeds at all and the next save dropped every
+    /// subscription. The newest items are now kept to fit, and every subscription reads back.
+    #[test]
+    fn every_subscription_survives_a_store_too_large_for_the_read_cap() {
+        let long = |n: usize, what: &str| format!("https://cdn.example/{what}/{n}/{}", "x".repeat(1990));
+        let feeds: Vec<Feed> = (1..=MAX_FEEDS as u32)
+            .map(|id| Feed {
+                id,
+                url: format!("https://podcast{id}.example/feed"),
+                title: format!("Podcast {id}"),
+                items: (0..STORED_ITEMS)
+                    .map(|n| Item {
+                        hash: n as u32 + 1,
+                        title: "\u{e9}".repeat(MAX_TITLE_CHARS),
+                        link: long(n, "episode"),
+                        summary: "\u{e9}".repeat(super::super::parse::MAX_SUMMARY_CHARS),
+                        published: 1_000_000 - n as u64,
+                        enclosure: Some(Enclosure { url: long(n, "audio"), mime: "audio/mpeg".into() }),
+                        ..Item::default()
+                    })
+                    .collect(),
+                ..Feed::default()
+            })
+            .collect();
+        let store = Store { feeds };
+        assert!(store.to_text().len() as u64 > MAX_FILE_BYTES);
+        let dir = std::env::temp_dir().join(format!("bowser-feeds-large-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("feeds.txt");
+        store.save(&path).unwrap();
+        assert!(fs::metadata(&path).unwrap().len() <= MAX_FILE_BYTES, "written past what is read back");
+        let loaded = Store::load(&path);
+        assert_eq!(loaded.feeds.len(), MAX_FEEDS, "subscriptions lost");
+        for (kept, full) in loaded.feeds.iter().zip(&store.feeds) {
+            assert!(!kept.items.is_empty());
+            assert!(kept.items[..] == full.items[..kept.items.len()], "the newest items are the ones kept");
+        }
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
