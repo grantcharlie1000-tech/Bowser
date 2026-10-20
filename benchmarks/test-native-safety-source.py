@@ -197,6 +197,39 @@ class NativeSafetySourceContracts(unittest.TestCase):
         self.assertIn("$sizeOfType[0].Invoke($null,@($objectFlags)) -ne 12", checker)
         self.assertNotIn("::SizeOf($objectFlags)", checker)
 
+    def test_app_probe_pump_is_bounded_and_never_accepts_late_readiness(self):
+        app = source("src/engine/app_context_menu_probe.rs")
+        pump = app.split("fn pump_until_observed(", 1)[1].split("#[test]", 1)[0]
+        self.assertIn("for batch in 1..=32", pump)
+        self.assertNotIn("while PeekMessageW", pump)
+        self.assertIn("PostQuitMessage(message.wParam.0 as i32)", pump)
+        self.assertLess(pump.index("if expired {return finish(PumpExit::DeadlineAfterReady);}"), pump.index("if pump_exit_in_budget(expired,is_ready)"))
+        self.assertIn("PumpExit::DeadlineBeforeDispatch", pump)
+        self.assertIn("PumpExit::DeadlineAfterDispatch", pump)
+        self.assertIn("pump_message_action(start.elapsed()>=timeout,present,message.message==WM_QUIT)", pump)
+        self.assertIn("PumpMessageAction::Deadline=>return finish(PumpExit::DeadlineAfterPeek)", pump)
+        self.assertIn("if late_before_dispatch {return finish(PumpExit::DeadlineAfterPeek);}", pump)
+        self.assertEqual(pump.count("PostQuitMessage("), 1)
+        quit_branch = pump.split("PumpMessageAction::Quit=>{", 1)[1].split("PumpMessageAction::Dispatch|", 1)[0]
+        self.assertIn("return finish(PumpExit::Quit)", quit_branch)
+        self.assertNotIn("DispatchMessageW", quit_branch)
+        self.assertEqual(pump.count("let is_ready=ready();"), 1)
+        self.assertNotIn("SetForegroundWindow", pump)
+        self.assertIn('startup.report(app,"primary-pump-refused-before-teardown")', app)
+        self.assertIn('startup_timer.report(&app,"existing-180s-timer-before-close")', app)
+        diagnostic = app.split("fn report(&self,app:", 1)[1].split("fn pump_exit_in_budget", 1)[0]
+        for forbidden in (".ExecuteScript(", ".Navigate(", "SetForegroundWindow(", "MoveFocus(", "WM_CLOSE", "message.wParam", "message.lParam"):
+            self.assertNotIn(forbidden, diagnostic)
+        self.assertIn("catch_unwind", diagnostic)
+        self.assertIn("handles_with_successful_document_available", diagnostic)
+        workflow = source(".github/workflows/store-probe.yml")
+        experimental = workflow.split("id: experimental_menu_build", 1)[1].split("      - name:", 1)[0]
+        self.assertIn("engine::app_context_menu_probe::synthetic_pump_ -- --list", experimental)
+        self.assertIn("engine::app_context_menu_probe::synthetic_pump_ -- --nocapture", experimental)
+        self.assertIn(".Count -ne 2", experimental)
+        for metric in ("in_ready", "active_ready_ms", "max_ready_ms", "in_peek", "active_peek_ms", "max_peek_ms", "in_dispatch", "active_dispatch_ms", "max_dispatch_ms", "active_tab_matches"):
+            self.assertIn(metric, diagnostic)
+
     def test_reload_has_one_activation_and_observation_only_rechecks(self):
         reload = source("src/engine/app_context_menu_probe/reload.rs")
         self.assertEqual(reload.count("SetForegroundWindow(owner)"), 1)

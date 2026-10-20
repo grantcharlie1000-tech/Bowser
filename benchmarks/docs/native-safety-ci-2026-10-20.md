@@ -246,3 +246,34 @@ remain unresolved. The separate original App Cancel lane did not establish its
 primary document before teardown; an unbounded message drain is a latent harness defect, not a
 proven cause of that timeout. Reload still passed. No repeated unchanged
 clipboard run or permission/clipboard workaround is introduced by this model.
+
+
+## Original App startup pump correction
+
+The retained head03d29a4 original-App failure does not establish a 60-second
+controller failure: its unbounded message drain could bypass both readiness and
+deadline until the existing 180-second timer posted quit. No concrete perpetual
+producer was observed, so that is not claimed as the failure's established cause.
+The test-only nested pump now processes at most32 messages per turn, checks its
+unchanged monotonic timeout before/after readiness and dispatch, rejects late true,
+and reposts WM_QUIT exactly once even after expiry. PeekMessage itself may dispatch
+sent messages: an empty late return refuses; a removed non-quit message is completed
+once before refusal, never discarded or arbitrarily reposted. No new readiness poll
+or next message starts after that late return. It does not add time, input or a retry.
+A blocking native or
+COM dispatch cannot be preempted by this acceptance deadline.
+
+A one-shot, caught failure-only startup log records normalized phase/exit cause,
+elapsed/budget, polls, removed/dispatched message counts/batches and last message
+ID, active readiness/PeekMessage/dispatch and their current/maximum durations, App borrow availability/engine presence/active-tab match, and the
+existing successful-document handles/proof/fence availability. It runs at the
+initial failure boundary before teardown, or before the existing180-second timer
+closes a still-pending initial phase. No App/Core guard spans the closure calls,
+no COM/native input is added, and no raw parameters/URLs/titles/pointers are logged.
+The existing handles getter requires successful document evidence; absence must
+not be described as a missing controller. A diagnostic failure cannot change the
+original acceptance or assertion. Source/pure tests do not establish the actual
+startup cause or exercise native message starvation. CI explicitly discovers and
+runs the two pure Rust decisions in the already-used experimental feature set
+before the live App lanes; the usual default/shipping suites alone cannot discover
+tests behind this default-off feature.

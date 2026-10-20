@@ -113,24 +113,121 @@ impl Loopback {
 }
 impl Drop for Loopback {fn drop(&mut self) {self.stop.store(true,Ordering::Relaxed);if let Some(worker)=self.worker.take(){let _=worker.join();}}}
 
-fn pump_until(timeout: Duration, mut ready: impl FnMut() -> bool) -> bool {
-    let start=Instant::now();
-    while start.elapsed()<timeout {
-        if ready(){return true}
-        unsafe {
-            let mut message=MSG::default();
-            while PeekMessageW(&mut message,None,0,0,PM_REMOVE).as_bool(){
-                // Never swallow the real App loop's quit signal in this nested test pump.
-                if message.message==WM_QUIT {
-                    windows::Win32::UI::WindowsAndMessaging::PostQuitMessage(message.wParam.0 as i32);
-                    return false;
-                }
-                let _=TranslateMessage(&message);DispatchMessageW(&message);
-            }
-        }
-        std::thread::sleep(Duration::from_millis(10));
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PumpExit { NotStarted, Ready, DeadlineBeforeReady, DeadlineAfterReady, DeadlineBeforeDispatch, DeadlineAfterPeek, DeadlineAfterDispatch, Quit }
+
+/// Test-only copy/Cell telemetry. Never retain an App/Core/COM borrow across pumping.
+struct StartupPump {
+    started:Cell<Option<Instant>>, budget:Duration, exit:Cell<PumpExit>, polls:Cell<u64>,
+    messages:Cell<u64>, dispatches:Cell<u64>, batch:Cell<u32>, max_batch:Cell<u32>, last_message:Cell<u32>,
+    in_ready:Cell<bool>, ready_started:Cell<Option<Instant>>, max_ready_ms:Cell<u128>,
+    in_peek:Cell<bool>, peek_started:Cell<Option<Instant>>, max_peek_ms:Cell<u128>,
+    in_dispatch:Cell<bool>, dispatch_started:Cell<Option<Instant>>,
+    max_dispatch_ms:Cell<u128>, tab:Cell<Option<TabId>>, phase:Cell<&'static str>, reported:Cell<bool>,
+}
+impl StartupPump {
+    fn new()->Self {Self {started:Cell::new(None),budget:Duration::from_secs(60),exit:Cell::new(PumpExit::NotStarted),polls:Cell::new(0),messages:Cell::new(0),dispatches:Cell::new(0),batch:Cell::new(0),max_batch:Cell::new(0),last_message:Cell::new(0),in_ready:Cell::new(false),ready_started:Cell::new(None),max_ready_ms:Cell::new(0),in_peek:Cell::new(false),peek_started:Cell::new(None),max_peek_ms:Cell::new(0),in_dispatch:Cell::new(false),dispatch_started:Cell::new(None),max_dispatch_ms:Cell::new(0),tab:Cell::new(None),phase:Cell::new("not-started"),reported:Cell::new(false)}}
+    fn report(&self,app:&AppRef,reason:&str) {
+        if self.reported.replace(true){return;}
+        // Failure-only and best-effort. No raw message parameters, URLs, names or pointers.
+        // A diagnostic failure must never replace or repair the original test failure.
+        let _=std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let (app_available,engine_present,active_matches)=match app.try_borrow(){
+                Ok(state)=>(true,Some(state.engine.is_some()),self.tab.get().map(|tab|App::active_tab_id(app)==tab)),
+                Err(_)=>(false,None,None),
+            };
+            // The previous App guard has ended before any proof/fence closure is invoked.
+            // This getter itself requires a successful gate: absence is NOT controller absence.
+            let h=self.tab.get().and_then(|tab|handles(app,tab));
+            let proof=h.as_ref().map(|h|(h.proof)().is_some());
+            let fence=h.as_ref().map(|h|(h.document_fence)());
+            println!("APP_CONTEXT_STARTUP failure_only=true reason={reason} phase={} exit={:?} elapsed_ms={} budget_ms={} ready_polls={} messages={} dispatches={} current_batch={} max_batch={} last_message={} in_ready={} active_ready_ms={} max_ready_ms={} in_peek={} active_peek_ms={} max_peek_ms={} in_dispatch={} active_dispatch_ms={} max_dispatch_ms={} app_borrow_available={app_available} engine_present={engine_present:?} active_tab_matches={active_matches:?} handles_with_successful_document_available={} proof_attempted={} proof_present={proof:?} fence_attempted={} fence_value={fence:?}",self.phase.get(),self.exit.get(),self.started.get().map_or(0,|at|at.elapsed().as_millis()),self.budget.as_millis(),self.polls.get(),self.messages.get(),self.dispatches.get(),self.batch.get(),self.max_batch.get(),self.last_message.get(),self.in_ready.get(),self.ready_started.get().map_or(0,|at|at.elapsed().as_millis()),self.max_ready_ms.get(),self.in_peek.get(),self.peek_started.get().map_or(0,|at|at.elapsed().as_millis()),self.max_peek_ms.get(),self.in_dispatch.get(),self.dispatch_started.get().map_or(0,|at|at.elapsed().as_millis()),self.max_dispatch_ms.get(),h.is_some(),h.is_some(),h.is_some());
+        }));
     }
-    ready()
+}
+
+fn pump_exit_in_budget(expired:bool,ready:bool)->bool { !expired&&ready }
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+enum PumpMessageAction { Empty, Deadline, Quit, Dispatch, DispatchThenRefuse }
+fn pump_message_action(expired:bool,present:bool,quit:bool)->PumpMessageAction {
+    if present&&quit {PumpMessageAction::Quit}
+    else if !present {if expired {PumpMessageAction::Deadline}else{PumpMessageAction::Empty}}
+    else if expired {PumpMessageAction::DispatchThenRefuse}
+    else {PumpMessageAction::Dispatch}
+}
+
+fn pump_until(timeout: Duration, ready: impl FnMut() -> bool) -> bool {
+    pump_until_observed(timeout,ready,None)
+}
+fn pump_until_observed(timeout:Duration,mut ready:impl FnMut()->bool,observed:Option<&StartupPump>)->bool {
+    let start=Instant::now();if let Some(d)=observed {d.started.set(Some(start));assert_eq!(d.budget,timeout);}
+    let finish=|exit|{if let Some(d)=observed {d.exit.set(exit);}exit==PumpExit::Ready};
+    loop {
+        if start.elapsed()>=timeout {return finish(PumpExit::DeadlineBeforeReady);}
+        let ready_start=Instant::now();
+        if let Some(d)=observed {d.polls.set(d.polls.get().saturating_add(1));d.in_ready.set(true);d.ready_started.set(Some(ready_start));}
+        let is_ready=ready();
+        if let Some(d)=observed {d.in_ready.set(false);d.ready_started.set(None);d.max_ready_ms.set(d.max_ready_ms.get().max(ready_start.elapsed().as_millis()));}
+        let expired=start.elapsed()>=timeout;
+        if expired {return finish(PumpExit::DeadlineAfterReady);}
+        if pump_exit_in_budget(expired,is_ready){return finish(PumpExit::Ready);}
+        // A continuously replenished queue may not starve either readiness or its deadline.
+        for batch in 1..=32 {
+            if start.elapsed()>=timeout {return finish(PumpExit::DeadlineBeforeDispatch);}
+            unsafe {
+                let mut message=MSG::default();
+                // PeekMessage itself can dispatch nonqueued sent messages. Check time even
+                // when it reports an empty queue, and do not discard a removed message.
+                let peek_start=Instant::now();
+                if let Some(d)=observed {d.in_peek.set(true);d.peek_started.set(Some(peek_start));}
+                let present=PeekMessageW(&mut message,None,0,0,PM_REMOVE).as_bool();
+                if let Some(d)=observed {
+                    d.in_peek.set(false);d.peek_started.set(None);d.max_peek_ms.set(d.max_peek_ms.get().max(peek_start.elapsed().as_millis()));
+                    if present {d.messages.set(d.messages.get().saturating_add(1));d.batch.set(batch);d.max_batch.set(d.max_batch.get().max(batch));d.last_message.set(message.message);}
+                }
+                let action=pump_message_action(start.elapsed()>=timeout,present,message.message==WM_QUIT);
+                match action {
+                    PumpMessageAction::Deadline=>return finish(PumpExit::DeadlineAfterPeek),
+                    PumpMessageAction::Empty=>break,
+                    PumpMessageAction::Quit=>{
+                        // Quit wins even after expiry, and is neither translated nor dispatched.
+                        windows::Win32::UI::WindowsAndMessaging::PostQuitMessage(message.wParam.0 as i32);
+                        return finish(PumpExit::Quit);
+                    }
+                    PumpMessageAction::Dispatch|PumpMessageAction::DispatchThenRefuse=>{}
+                }
+                // Complete this one already-removed in-flight message even if Peek crossed
+                // the budget. Never re-post an arbitrary message or start another ready poll.
+                let late_before_dispatch=action==PumpMessageAction::DispatchThenRefuse||start.elapsed()>=timeout;
+                let dispatch_start=Instant::now();
+                if let Some(d)=observed {d.dispatches.set(d.dispatches.get().saturating_add(1));d.in_dispatch.set(true);d.dispatch_started.set(Some(dispatch_start));}
+                let _=TranslateMessage(&message);DispatchMessageW(&message);
+                if let Some(d)=observed {d.in_dispatch.set(false);d.dispatch_started.set(None);d.max_dispatch_ms.set(d.max_dispatch_ms.get().max(dispatch_start.elapsed().as_millis()));}
+                if late_before_dispatch {return finish(PumpExit::DeadlineAfterPeek);}
+            }
+            if start.elapsed()>=timeout {return finish(PumpExit::DeadlineAfterDispatch);}
+        }
+        if let Some(d)=observed {d.batch.set(0);}
+        if start.elapsed()>=timeout {return finish(PumpExit::DeadlineBeforeReady);}
+        std::thread::sleep(Duration::from_millis(10).min(timeout.saturating_sub(start.elapsed())));
+    }
+}
+
+#[test]
+fn synthetic_pump_refuses_readiness_after_expiry() {
+    assert!(pump_exit_in_budget(false,true));
+    assert!(!pump_exit_in_budget(true,true));
+    assert!(!pump_exit_in_budget(true,false));
+    assert!(!pump_exit_in_budget(false,false));
+}
+#[test]
+fn synthetic_pump_late_peek_completes_only_its_removed_message_and_reposts_quit() {
+    assert_eq!(pump_message_action(true,false,false),PumpMessageAction::Deadline);
+    assert_eq!(pump_message_action(false,false,false),PumpMessageAction::Empty);
+    assert_eq!(pump_message_action(true,true,false),PumpMessageAction::DispatchThenRefuse);
+    assert_eq!(pump_message_action(false,true,false),PumpMessageAction::Dispatch);
+    assert_eq!(pump_message_action(true,true,true),PumpMessageAction::Quit);
+    assert_eq!(pump_message_action(false,true,true),PumpMessageAction::Quit);
 }
 
 fn field<'a>(v: &'a Value,k: &str)->Option<&'a Value>{let Value::Object(o)=v else{return None};json::get(o,k)}
@@ -298,9 +395,13 @@ fn native_input(app: &AppRef,h: &NativeContextProbeHandles,tab: TabId,proof:(u64
     fixture_command
 }
 
-fn sequence(app: &AppRef,root: &Path,page: &url::Url,bowser_id: &str,folder: &Path) {
+fn sequence(app: &AppRef,root: &Path,page: &url::Url,bowser_id: &str,folder: &Path,startup:&StartupPump) {
     let source_tab=App::active_tab_id(app);let mut primary=None;
-    assert!(pump_until(Duration::from_secs(60),||{primary=handles(app,source_tab);primary.as_ref().is_some_and(|h|(h.proof)().is_some())}),"real App controller/successful document did not settle");
+    startup.tab.set(Some(source_tab));startup.phase.set("await-primary-successful-document");
+    let settled=pump_until_observed(Duration::from_secs(60),||{primary=handles(app,source_tab);primary.as_ref().is_some_and(|h|(h.proof)().is_some())},Some(startup));
+    if !settled {startup.report(app,"primary-pump-refused-before-teardown");}
+    assert!(settled,"real App controller/successful document did not settle");
+    startup.phase.set("primary-successful-document-observed");
     let primary=primary.unwrap();let primary_proof=(primary.proof)().unwrap();ordinary_profile(&primary.view);
     let before_doc=document(&primary.view,page);current(&primary,primary_proof);isolated_environment(app,&primary);
     assert!(pump_until(Duration::from_secs(30),||std::fs::read_to_string(root.join("extension_ids.txt")).is_ok_and(|s|s.lines().any(|line|line==format!("{bowser_id}\t{FIXTURE_ID}")))),"real native fixture startup did not persist its exact ID");
@@ -383,12 +484,15 @@ fn live_probe_real_app_context_menu() {
     DEREGISTRATIONS.with(|events|events.borrow_mut().clear());install_observer(Rc::new(|_|{}));
     let outcome=Rc::new(RefCell::new(None));let sink=outcome.clone();let destination=root.clone();let page=server.url.clone();
     let started=Instant::now();let timed_out=Rc::new(Cell::new(false));let expired=timed_out.clone();
+    let startup=Rc::new(StartupPump::new());let startup_timer=startup.clone();
     crate::win32::set_app_menu_probe_hooks(Box::new(move |app|{
-        let result=std::panic::catch_unwind(std::panic::AssertUnwindSafe(||sequence(&app,&destination,&page,&record.id,&folder)));
+        let result=std::panic::catch_unwind(std::panic::AssertUnwindSafe(||sequence(&app,&destination,&page,&record.id,&folder,&startup)));
         *sink.borrow_mut()=Some(result.map_err(|_|"real App native menu sequence failed; inspect native helper diagnostics".to_owned()));
         let owner=app.borrow().hwnd;unsafe{let _=PostMessageW(Some(owner),WM_CLOSE,WPARAM(0),LPARAM(0));}
     }),Box::new(move |app|{
-        if started.elapsed()>Duration::from_secs(180)&&!expired.replace(true){let owner=app.borrow().hwnd;unsafe{let _=PostMessageW(Some(owner),WM_CLOSE,WPARAM(0),LPARAM(0));}}
+        if started.elapsed()>Duration::from_secs(180)&&!expired.replace(true){
+            if startup_timer.phase.get()=="await-primary-successful-document" {startup_timer.report(&app,"existing-180s-timer-before-close");}
+            let owner=app.borrow().hwnd;unsafe{let _=PostMessageW(Some(owner),WM_CLOSE,WPARAM(0),LPARAM(0));}}
     }));
     unsafe{CoInitializeEx(None,COINIT_APARTMENTTHREADED).ok().unwrap()};
     let run=App::run(options,Rc::new(PerfLog::new(None).unwrap()));

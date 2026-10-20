@@ -403,6 +403,12 @@ jobs:
           cargo +stable test --locked --lib --features html-chrome-default,experimental-engine-context-menu engine::app_host_menu_probe::live::host_probe_selection_uses_native_name_or_inserted_role_not_command_range -- --exact --nocapture --test-threads=1 2>&1 | Tee-Object -Append store-real-app-menu-unit.log
           if ($LASTEXITCODE -ne 0) { throw 'Separate host-lane read-only selection diagnostic failed.' }
 
+          # Same already-built experimental feature set; pure pump decisions only, no App/input.
+          $pumpTests = @(cargo +stable test --locked --lib --features html-chrome-default,experimental-engine-context-menu engine::app_context_menu_probe::synthetic_pump_ -- --list)
+          if ($LASTEXITCODE -ne 0 -or @($pumpTests | Where-Object { $_ -cmatch '^engine::app_context_menu_probe::synthetic_pump_[^ ]+: test$' }).Count -ne 2) { throw 'Exact two synthetic pump tests were not discovered.' }
+          cargo +stable test --locked --lib --features html-chrome-default,experimental-engine-context-menu engine::app_context_menu_probe::synthetic_pump_ -- --nocapture --test-threads=1 2>&1 | Tee-Object -Append store-real-app-menu-unit.log
+          if ($LASTEXITCODE -ne 0) { throw 'Synthetic bounded pump/late-refusal policy failed; no live App acceptance.' }
+
       - name: Probe default-off native engine menu in actual HTML Bowser App
         if: ${{ !cancelled() && steps.experimental_menu_build.outcome == 'success' }}
         run: |
