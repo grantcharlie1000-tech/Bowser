@@ -62,7 +62,7 @@ impl BookmarkStore {
             Err(e) if e.kind() == io::ErrorKind::NotFound => {
                 let mut store = Self::new();
                 let legacy =
-                    crate::productivity::read_bookmarks(&profile_dir.join("bookmarks.txt"));
+                    crate::productivity::read_legacy_bookmarks(&profile_dir.join("bookmarks.txt"));
                 let mut folders: HashMap<String, u64> = HashMap::new();
                 for (title, url, folder) in legacy {
                     let mut parent = None;
@@ -328,27 +328,155 @@ impl BookmarkStore {
             })
             .collect()
     }
+    /// Every link as `(title, address, folder path)`, in file order. The folder path is the names
+    /// from the top level down, joined with `/` (the shape the command palette shows).
+    pub fn flat_links(&self) -> Vec<(String, String, String)> {
+        let folders: HashMap<u64, (Option<u64>, &str)> = self
+            .items
+            .iter()
+            .filter(|i| matches!(i.kind, BookmarkKind::Folder))
+            .map(|i| (i.id, (i.parent, i.title.as_str())))
+            .collect();
+        let mut paths: HashMap<Option<u64>, String> = HashMap::new();
+        self.items
+            .iter()
+            .filter_map(|item| {
+                let BookmarkKind::Link { url, .. } = &item.kind else {
+                    return None;
+                };
+                let folder = paths
+                    .entry(item.parent)
+                    .or_insert_with(|| {
+                        let mut names = Vec::new();
+                        let mut at = item.parent;
+                        while let Some((parent, title)) = at.and_then(|id| folders.get(&id)) {
+                            // A cycle (never written by this module) ends the walk.
+                            if names.len() > folders.len() {
+                                break;
+                            }
+                            names.push(*title);
+                            at = *parent;
+                        }
+                        names.reverse();
+                        names.join("/")
+                    })
+                    .clone();
+                Some((item.title.clone(), url.clone(), folder))
+            })
+            .collect()
+    }
+    /// Adds many links at once (an import) as `(folder path, title, address)`. The folder path's
+    /// `/`-separated names are matched (ASCII case-insensitively) against the folders already
+    /// there and created when missing. An address already bookmarked counts as a duplicate; one
+    /// that is not a web address, or a link with neither title nor address usable, is skipped.
+    /// Links past the item or file-size limit are counted in `limited` and not added, so the saved
+    /// file always loads again. Linear in the number of bookmarks.
+    pub fn import_links<'a>(
+        &mut self,
+        links: impl IntoIterator<Item = (&'a str, &'a str, &'a str)>,
+    ) -> ImportCounts {
+        let mut counts = ImportCounts::default();
+        let mut urls: std::collections::HashSet<String> = self
+            .items
+            .iter()
+            .filter_map(|i| match &i.kind {
+                BookmarkKind::Link { url, .. } => Some(url.clone()),
+                BookmarkKind::Folder => None,
+            })
+            .collect();
+        let mut folders: HashMap<(Option<u64>, String), u64> = self
+            .items
+            .iter()
+            .filter(|i| matches!(i.kind, BookmarkKind::Folder))
+            .map(|i| ((i.parent, i.title.to_ascii_lowercase()), i.id))
+            .collect();
+        let mut bytes = self.serialize().len();
+        let mut full = false;
+        for (folder, title, url) in links {
+            if full {
+                counts.limited += 1;
+                continue;
+            }
+            let Some(url) = valid_url(url.trim()) else {
+                counts.skipped += 1;
+                continue;
+            };
+            if urls.contains(&url) {
+                counts.duplicates += 1;
+                continue;
+            }
+            let Ok(title) = clean_title(title).or_else(|_| clean_title(&url)) else {
+                counts.skipped += 1;
+                continue;
+            };
+            let mut parent = None;
+            for part in folder
+                .split('/')
+                .map(str::trim)
+                .filter(|p| !p.is_empty())
+                .take(16)
+            {
+                let Ok(name) = clean_title(part) else { break };
+                let key = (parent, name.to_ascii_lowercase());
+                if let Some(id) = folders.get(&key) {
+                    parent = Some(*id);
+                    continue;
+                }
+                let item = Bookmark {
+                    id: 0,
+                    parent,
+                    title: name,
+                    kind: BookmarkKind::Folder,
+                };
+                let Some(id) = self.push_within(item, &mut bytes) else {
+                    full = true;
+                    break;
+                };
+                folders.insert(key, id);
+                parent = Some(id);
+            }
+            if full {
+                counts.limited += 1;
+                continue;
+            }
+            let item = Bookmark {
+                id: 0,
+                parent,
+                title,
+                kind: BookmarkKind::Link {
+                    favicon_host: host_key(&url),
+                    url: url.clone(),
+                    created: now(),
+                },
+            };
+            if self.push_within(item, &mut bytes).is_none() {
+                full = true;
+                counts.limited += 1;
+                continue;
+            }
+            urls.insert(url);
+            counts.added += 1;
+        }
+        counts
+    }
+    /// Appends `item` with a fresh id when the tree stays inside the item and file-size limits;
+    /// `bytes` is the serialized size so far and grows by the new row.
+    fn push_within(&mut self, mut item: Bookmark, bytes: &mut usize) -> Option<u64> {
+        let id = self.next_id.max(1);
+        item.id = id;
+        let row = row_text(&item).len();
+        if self.items.len() >= MAX_ITEMS || *bytes + row > MAX_BYTES {
+            return None;
+        }
+        self.next_id = id.checked_add(1)?;
+        *bytes += row;
+        self.items.push(item);
+        Some(id)
+    }
     pub fn serialize(&self) -> String {
         let mut out = String::from("bowser-bookmarks-v2\n");
         for i in self.items.iter().take(MAX_ITEMS) {
-            let (kind, url, host, created): (&str, &str, &str, u64) = match &i.kind {
-                BookmarkKind::Folder => ("F", "", "", 0),
-                BookmarkKind::Link {
-                    url,
-                    favicon_host,
-                    created,
-                } => ("B", url, favicon_host, *created),
-            };
-            out.push_str(&format!(
-                "{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
-                i.id,
-                i.parent.map_or("-".into(), |p| p.to_string()),
-                kind,
-                escape(&i.title),
-                escape(url),
-                escape(host),
-                created
-            ));
+            out.push_str(&row_text(i));
         }
         out
     }
@@ -438,6 +566,36 @@ impl BookmarkStore {
         }
         Ok(s)
     }
+}
+/// What [`BookmarkStore::import_links`] did with the links it was given.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct ImportCounts {
+    pub added: usize,
+    pub duplicates: usize,
+    pub skipped: usize,
+    /// Not added because the tree reached its item or file-size limit.
+    pub limited: usize,
+}
+/// One line of `bookmarks-v2.txt`.
+fn row_text(i: &Bookmark) -> String {
+    let (kind, url, host, created): (&str, &str, &str, u64) = match &i.kind {
+        BookmarkKind::Folder => ("F", "", "", 0),
+        BookmarkKind::Link {
+            url,
+            favicon_host,
+            created,
+        } => ("B", url, favicon_host, *created),
+    };
+    format!(
+        "{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
+        i.id,
+        i.parent.map_or("-".into(), |p| p.to_string()),
+        kind,
+        escape(&i.title),
+        escape(url),
+        escape(host),
+        created
+    )
 }
 fn clean_title(s: &str) -> io::Result<String> {
     let s = s.trim();

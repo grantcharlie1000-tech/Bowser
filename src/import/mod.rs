@@ -373,9 +373,12 @@ mod tests {
         .unwrap();
         assert_eq!(summary.imported, 1);
         assert_eq!(summary.duplicates, 1);
+        let links = |dir: &std::path::Path| {
+            crate::bookmarks::BookmarkStore::load(dir).unwrap().flat_links()
+        };
         assert_eq!(
-            std::fs::read_to_string(&path).unwrap(),
-            "A\thttps://example.com/\tBar\n"
+            links(&dir),
+            vec![("A".into(), "https://example.com/".into(), "Bar".into())]
         );
         let second = store::import_bookmarks(
             &path,
@@ -384,10 +387,87 @@ mod tests {
         .unwrap();
         assert_eq!(second.imported, 1);
         assert_eq!(
-            std::fs::read_to_string(&path).unwrap(),
-            "A\thttps://example.com/\tBar\nC\thttps://example.org/\tOther\n"
+            links(&dir),
+            vec![
+                ("A".into(), "https://example.com/".into(), "Bar".into()),
+                ("C".into(), "https://example.org/".into(), "Other".into()),
+            ]
+        );
+        assert!(!path.exists(), "imports go to the bookmark tree, not the legacy file");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// P-02: once a profile has a bookmark tree (anyone who ever bookmarked a page), imported
+    /// bookmarks must land in it, with their folders, so the bar and panel show them.
+    #[test]
+    fn imported_bookmarks_reach_an_existing_bookmark_tree() {
+        let dir = std::env::temp_dir().join(format!("bowser-import-v2-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("bookmarks.txt");
+        crate::productivity::add_bookmark(&path, "https://a.example/", "A").unwrap();
+        assert!(dir.join("bookmarks-v2.txt").exists());
+        let summary = store::import_bookmarks(
+            &path,
+            vec![
+                Bookmark::new("B", "https://b.example/", "Bookmarks bar / Work"),
+                Bookmark::new("A again", "https://a.example/#x", ""),
+            ],
+        )
+        .unwrap();
+        assert_eq!((summary.imported, summary.duplicates), (1, 1));
+        let tree = crate::bookmarks::BookmarkStore::load(&dir).unwrap();
+        assert!(tree.is_bookmarked("https://a.example/"));
+        assert!(tree.is_bookmarked("https://b.example/"), "{:?}", tree.items());
+        assert!(
+            tree.flat_links().contains(&(
+                "B".into(),
+                "https://b.example/".into(),
+                "Bookmarks bar/Work".into()
+            )),
+            "{:?}",
+            tree.flat_links()
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// P-03: parsing a Netscape export is linear. 5,000 bookmarks took 18.5 s (debug) when every
+    /// `<a>` lower-cased the whole rest of the file to find its `</a>`.
+    #[test]
+    fn a_large_netscape_export_parses_quickly() {
+        let mut html = String::from("<!DOCTYPE NETSCAPE-Bookmark-file-1>\n<DL><p>\n<DT><H3>Folder</H3>\n<DL><p>\n");
+        for i in 0..5_000 {
+            html.push_str(&format!(
+                "<DT><A HREF=\"https://site{i}.example/page\" ADD_DATE=\"1700000000\">Site {i}</A>\n"
+            ));
+        }
+        html.push_str("</DL><p>\n</DL><p>\n");
+        // A file of opening tags with no closing ones must not be quadratic either.
+        html.push_str(&"<a href=\"https://x.example/\">".repeat(5_000));
+        let started = std::time::Instant::now();
+        let (parsed, _) = bookmarks_html::parse_netscape_bookmarks_detailed(&html);
+        let elapsed = started.elapsed();
+        assert_eq!(parsed.len(), 5_000);
+        assert_eq!(parsed[4_999].folder, "Folder");
+        assert!(elapsed < std::time::Duration::from_secs(3), "took {elapsed:?}");
+    }
+
+    /// P-03: importing into the tree is linear too, and stops at the tree's limits instead of
+    /// writing a file that would not load.
+    #[test]
+    fn importing_many_links_into_the_tree_is_linear_and_bounded() {
+        let mut tree = crate::bookmarks::BookmarkStore::new();
+        let links: Vec<(String, String, String)> = (0..6_000)
+            .map(|i| (format!("F{}", i % 50), format!("Site {i}"), format!("https://site{i}.example/")))
+            .collect();
+        let started = std::time::Instant::now();
+        let counts = tree.import_links(links.iter().map(|(f, t, u)| (f.as_str(), t.as_str(), u.as_str())));
+        assert!(started.elapsed() < std::time::Duration::from_secs(3), "took {:?}", started.elapsed());
+        assert_eq!(counts.added + counts.limited, 6_000);
+        assert!(counts.limited > 0);
+        assert_eq!(tree.items().len(), 5_000);
+        let reparsed = crate::bookmarks::BookmarkStore::parse(&tree.serialize()).unwrap();
+        assert_eq!(reparsed.items().len(), 5_000);
     }
 
     #[test]

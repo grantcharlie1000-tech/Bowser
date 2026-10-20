@@ -1699,25 +1699,23 @@ mod tests {
 
     #[test]
     fn generated_password_obeys_requested_length_charset_and_is_not_biased() {
-        let password = generate_password(256, b"abcd").unwrap();
-        assert_eq!(password.len(), 256);
-        assert!(password.bytes().all(|byte| b"abcd".contains(&byte)));
-        // Bias is judged over 64 maximum-length passwords (16384 draws), so each letter's count is
-        // Binomial(16384, 1/4): mean 4096, sd ~55.4. A +/-6 sd window (3764..=4428) flags any bias
-        // above ~8% yet fails a fair generator about once in 10^8 runs; the former single-password
-        // window (40..=90 of 256) tolerated ~37% bias and still failed a fair generator ~1 in 700.
+        // Aggregate many passwords so the bias bound can be wide (>6 sigma)
+        // while a real bias (modulo bias, missing symbol) still fails.
+        // 200 * 256 = 51200 samples over 4 symbols: expect 12800 each, sd ~98.
         let mut counts = [0usize; 4];
-        for _ in 0..64 {
-            let sample = generate_password(256, b"abcd").unwrap();
-            assert!(sample.bytes().all(|byte| b"abcd".contains(&byte)));
-            for byte in sample.bytes() {
+        for _ in 0..200 {
+            let password = generate_password(256, b"abcd").unwrap();
+            assert_eq!(password.len(), 256);
+            assert!(password.bytes().all(|byte| b"abcd".contains(&byte)));
+            for byte in password.bytes() {
                 counts[(byte - b'a') as usize] += 1;
             }
         }
-        assert_eq!(counts.iter().sum::<usize>(), 64 * 256);
         assert!(
-            counts.into_iter().all(|count| (3764..=4428).contains(&count)),
-            "generator counts {counts:?} are outside the fair 6-sigma window"
+            counts
+                .into_iter()
+                .all(|count| (12_100..=13_500).contains(&count)),
+            "biased symbol counts: {counts:?}"
         );
         assert_eq!(
             generate_password(7, b"abcdef").unwrap_err(),

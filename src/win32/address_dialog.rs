@@ -382,9 +382,6 @@ fn save_bookmark(app: &AppRef, owner: HWND, url: &str, name: &str, folder: u64, 
     };
     store.save(profile.root()).map_err(|error| format!("Bookmark could not be saved: {error}"))?;
     extras.save(profile.root()).map_err(|error| format!("Bookmark details could not be saved: {error}"))?;
-    if existing.is_none() {
-        let _ = crate::productivity::add_bookmark(&profile.bookmarks_file(), url, name);
-    }
     let _ = (app, id);
     super::post(owner, super::WM_RAIL_CHANGED, WPARAM(0), LPARAM(0));
     Ok(())
@@ -399,7 +396,6 @@ fn remove_bookmark(owner: HWND, url: &str) {
     extras.remove(id);
     if store.save(profile.root()).is_ok() {
         let _ = extras.save(profile.root());
-        let _ = crate::productivity::remove_bookmark(&profile.bookmarks_file(), url);
         super::post(owner, super::WM_RAIL_CHANGED, WPARAM(0), LPARAM(0));
     }
 }
