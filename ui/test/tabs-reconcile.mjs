@@ -143,6 +143,15 @@ test('stepMoveBefore gives the host the id to the right of the new slot', () => 
   assert.equal(logic.stepMoveBefore(ids, 3, 1), null);
 });
 
+test('a keyboard step over a collapsed group lands before its first member, as a drag does (U2)', () => {
+  // Visible [1, 11, 2]: group 7 = 10, 11 (shown, active), 12 is collapsed.
+  const visible = [1, 11, 2];
+  const leaders = new Map([[11, 10]]);
+  assert.equal(logic.stepMoveBefore(visible, 2, -1, leaders), 10, 'not between the hidden members');
+  assert.equal(logic.stepMoveBefore(visible, 2, -1, leaders), beforeSlotId([1, 11], 1, leaders), 'same as a drag');
+  assert.equal(logic.stepMoveBefore(visible, 0, 1, leaders), 2, 'past the group is before the next tab');
+});
+
 test('groupWeight sums visible members: active 1.5, others 1, hidden none', () => {
   const t = (id, hidden = false) => ({ item: tab(id), hidden });
   assert.equal(ACTIVE_WEIGHT, 1.5);

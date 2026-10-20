@@ -1251,7 +1251,8 @@ export function startTabs(strip: HTMLElement): HTMLElement {
     let next: number;
     if (ev.ctrlKey && ev.shiftKey && (ev.key === 'ArrowLeft' || ev.key === 'ArrowRight')) {
       // Keyboard reorder: one slot per press; focus follows the moved tab once the host reorders.
-      const before = stepMoveBefore(list.map((n) => n.id), at, ev.key === 'ArrowLeft' ? -1 : 1);
+      // A collapsed group is one slot here too: before it means before its first member (U2).
+      const before = stepMoveBefore(list.map((n) => n.id), at, ev.key === 'ArrowLeft' ? -1 : 1, collapsedLeaders(id));
       ev.preventDefault();
       if (before !== null) {
         refocus = id;
