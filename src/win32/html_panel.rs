@@ -599,6 +599,7 @@ fn run_command(runtime: &Rc<RefCell<Runtime>>, command: Command) {
             let profile_dir = profile.root();
             let Ok(mut store) = BookmarkStore::load(profile_dir) else { return; };
             let Some(action) = chrome_host::panels::bookmarks::map_command(&store, f) else { return; };
+            let mutates = action.mutates();
             match action {
                 chrome_host::panels::bookmarks::Action::Search(query) => {
                     if let Ok(mut state) = runtime.try_borrow_mut() { state.bookmarks_query = query; }
@@ -624,8 +625,10 @@ fn run_command(runtime: &Rc<RefCell<Runtime>>, command: Command) {
                 chrome_host::panels::bookmarks::Action::AddLink { parent, title, url } => { let _ = store.add_bookmark(parent, &title, &url); }
                 chrome_host::panels::bookmarks::Action::Move { id, parent, index } => { let _ = store.move_item(id, parent, index); }
             }
-            if let Err(error) = store.save(profile_dir) {
-                holding(runtime, || show_error_message(&format!("Bookmarks could not be saved: {error}")));
+            if mutates {
+                if let Err(error) = store.save(profile_dir) {
+                    holding(runtime, || show_error_message(&format!("Bookmarks could not be saved: {error}")));
+                }
             }
             send_current(runtime);
         }

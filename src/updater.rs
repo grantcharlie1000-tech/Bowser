@@ -1550,10 +1550,19 @@ fn publish_staged(
         let _ = fs::remove_file(partial);
         return Err(UpdateError::SwitchedOff);
     }
+    // The build staged before this one (a release that was never applied) is replaced by this one.
+    let replaced = read_kv(&layout.pending())
+        .and_then(|pairs| kv(&pairs, "version").and_then(Version::parse))
+        .filter(|version| *version != manifest.version);
     let staged = layout.staged_exe(manifest.version);
     let _ = fs::remove_file(&staged);
     fs::rename(partial, &staged)?;
     write(layout, manifest)?;
+    // Only once the new record is in place, so a failed write never leaves pending.txt naming a
+    // deleted file. Without this every skipped release left a full exe in `updates\`.
+    if let Some(replaced) = replaced {
+        let _ = fs::remove_file(layout.staged_exe(replaced));
+    }
     Ok(CheckOutcome::Staged(manifest.version))
 }
 
@@ -2161,6 +2170,37 @@ mod tests {
         assert_eq!(ready_version(&layout, running), Some(running));
         fs::remove_file(layout.staged_exe(running)).unwrap();
         assert_eq!(ready_version(&layout, running), None, "the staged file must exist");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn staging_a_newer_build_removes_the_one_it_replaces() {
+        let root = temp_dir("restage");
+        let layout = Layout::new(root.join("bowser.exe"), &root);
+        fs::create_dir_all(&layout.updates).unwrap();
+        let stage = |version: Version| {
+            let partial = layout.download_file(version);
+            fs::write(&partial, b"build").unwrap();
+            let manifest = Manifest {
+                version,
+                min_version: Version(0, 0, 0),
+                url: Url::parse("https://example.com/bowser.exe").unwrap(),
+                sha256: [0; 32],
+                size: 5,
+                notes: String::new(),
+            };
+            publish_staged(&layout, &manifest, &partial, write_pending, None).unwrap();
+        };
+        stage(Version(9, 0, 0));
+        stage(Version(9, 1, 0));
+        let staged: Vec<_> = fs::read_dir(&layout.updates).unwrap().flatten()
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.starts_with("bowser-") && name.ends_with(".exe"))
+            .collect();
+        assert_eq!(staged, [format!("bowser-{}.exe", Version(9, 1, 0))], "a skipped staged build is left behind");
+        // Staging the same version again keeps its file.
+        stage(Version(9, 1, 0));
+        assert!(layout.staged_exe(Version(9, 1, 0)).is_file());
         let _ = fs::remove_dir_all(root);
     }
 
