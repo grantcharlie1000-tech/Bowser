@@ -105,17 +105,35 @@ test('tabs_close_left, tabs_close_always and tabs_pinned_separator reach the sid
   assert.ok(list, 'the renderer builds its list');
   assert.equal(root.querySelector('.side-sep'), null, 'no separator unless the option asks for it');
 
-  side.options({ ...OPTS, closeLeft: true, closeAlways: true, separator: true, indicator: 'bar' });
+  side.options({ ...OPTS, closeLeft: true, closeAlways: true, separator: true, indicator: 'bar' }, true);
   assert.equal(list.classList.contains('side-close-left'), true);
   assert.equal(list.classList.contains('side-close-always'), true);
   assert.ok(root.querySelector('.side-sep'), 'the pinned separator shows under the pinned tiles');
   assert.ok(root.querySelector('.side-loadbar'), 'the loading row redraws with the chosen indicator');
 
-  side.options(OPTS);
+  side.options(OPTS, true);
   assert.equal(list.classList.contains('side-close-left'), false);
   assert.equal(list.classList.contains('side-close-always'), false);
   assert.equal(root.querySelector('.side-sep'), null);
   assert.equal(root.querySelector('.side-loadbar'), null);
+});
+
+test('with the horizontal strip in use, a changed indicator or separator does not draw the old sidebar over it (U8)', () => {
+  const root = styled(new Node('div'));
+  root.id = 'app';
+  const side = ui.createSidebarRenderer(root);
+  side.render({ t: 'tabs', active: 2, items: [item(1, { pinned: true }), item(2)] }, new Map(), { name: 'Workspace', icon: 'g:briefcase' });
+  // The layout switched to the strip, which took the shared root over.
+  const stripTab = new Node('div');
+  stripTab.className = 'tab';
+  root.replaceChildren(stripTab);
+  side.options({ ...OPTS, separator: true, indicator: 'bar' }, false);
+  assert.equal(root.querySelector('.side-list'), null, 'the strip keeps the root');
+  assert.deepEqual(root.children, [stripTab]);
+  // Back in the sidebar, the next options message draws with the new look.
+  side.options({ ...OPTS, separator: true, indicator: 'favicon' }, true);
+  assert.ok(root.querySelector('.side-list'));
+  assert.ok(root.querySelector('.side-sep'));
 });
 
 test('sidebar.css shows and moves the close button for those classes; narrow strip tabs keep it under close-always', () => {

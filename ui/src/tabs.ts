@@ -1349,7 +1349,7 @@ export function startTabs(strip: HTMLElement): HTMLElement {
       case 'tabopts':
         ui = msg;
         applyUi();
-        sidebar.options(msg);
+        sidebar.options(msg, layoutMode === 'vertical');
         if (!msg.selection) setPicked([]); // the option turned off: the strip drops its selection too
         dirty = true;
         schedule();

@@ -224,7 +224,8 @@ function makeGroup(key: number): SidebarGroupNode {
 export function createSidebarRenderer(root: HTMLElement): {
   render(msg: TabsMsg, favs: ReadonlyMap<number, string>, workspace: SidebarWorkspace): void;
   workspace(value: SidebarWorkspace): void;
-  options(value: TabOptsMsg): void; // --- tab options ---
+  /** --- tab options --- `shown`: the sidebar is the layout in use, so it may redraw into the root. */
+  options(value: TabOptsMsg, shown: boolean): void;
   /** Drops the selection (the layout switched away, so it can no longer be seen). */
   clearSelection(): void;
   /** Whether the sidebar is docked at the right of the window (the page is to its left). */
@@ -886,7 +887,7 @@ export function createSidebarRenderer(root: HTMLElement): {
       if (latest) render(latest, latestFavs, currentWorkspace);
     },
     // --- tab options ---
-    options(value) {
+    options(value, shown) {
       selectionOn = value.selection;
       selectionActive = value.selectionActive;
       // tabs_close_left / tabs_close_always: sidebar.css moves and shows the rows' close buttons.
@@ -895,7 +896,10 @@ export function createSidebarRenderer(root: HTMLElement): {
       const redraw = indicator !== value.indicator || pinnedSeparator !== value.separator;
       indicator = value.indicator;
       pinnedSeparator = value.separator;
-      if (redraw && latest) render(latest, latestFavs, currentWorkspace);
+      // The root is the tab strip's too: with the strip in use, a redraw would put the old sidebar
+      // over it (for a whole drag, as the strip defers its renders), U8. The next sidebar render
+      // after a switch to it draws the new look anyway.
+      if (redraw && shown && latest) render(latest, latestFavs, currentWorkspace);
       closedRow.hidden = value.closed === 0 || !value.closedButton; // --- toolbars and feeds (thread T13) ---
       syncTools(value.tools);
       if (!selectionOn && picked.length > 0) setPicked([]);
