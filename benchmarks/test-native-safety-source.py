@@ -57,6 +57,24 @@ class NativeSafetySourceContracts(unittest.TestCase):
         self.assertIn("CloseWindowStation(probe)", diagnostics)
         self.assertIn("::AdmissionCloseConfirmed", helper.split("# Admission has already refused", 1)[1])
 
+    def test_attached_station_query_is_failure_only_read_only_and_optional(self):
+        helper = source("benchmarks/scripts/probe-app-host-context-menu.ps1")
+        diagnostic = helper.split("static StationAccessDiagnostic AttachedStationAccess(", 1)[1].split('[DllImport("user32.dll",SetLastError=true)] static extern IntPtr GetProcessWindowStation();', 1)[0]
+        for fence in ("ObjectBasicLayoutValid()", "expected==IntPtr.Zero", "before==expected", "after!=IntPtr.Zero&&after==expected", "if(status!=0)", "if(returned!=56)"):
+            self.assertIn(fence, diagnostic)
+        self.assertEqual(diagnostic.count("QueryObjectBasic("), 1)
+        self.assertIn("QueryObjectBasic(expected,0,out data,56,out returned)", diagnostic)
+        self.assertLess(diagnostic.index("if(status!=0)"), diagnostic.index("result.granted_access=data.GrantedAccess"))
+        self.assertLess(diagnostic.index("if(returned!=56)"), diagnostic.index("result.granted_access=data.GrantedAccess"))
+        for forbidden in ("DuplicateHandle(", "CloseHandle(", "CloseWindowStation(", "OpenWindowStation(", "SetProcessWindowStation(", "GetClipboardSequenceNumber(", "OpenClipboard(", "EmptyClipboard(", "GetClipboardData(", "SetClipboardData("):
+            self.assertNotIn(forbidden, diagnostic)
+        self.assertIn("catch(EntryPointNotFoundException)", diagnostic)
+        self.assertIn("catch(DllNotFoundException)", diagnostic)
+        self.assertIn("attached_station_access=AttachedStationAccess(station)", helper)
+        checker = source("benchmarks/scripts/test-native-menu-helpers.ps1")
+        self.assertIn("GetMethod('ObjectBasicLayoutValid',$flags)", checker)
+        self.assertNotIn("GetMethod('AttachedStationAccess'", checker)
+
     def test_rejected_leaf_diagnostics_cannot_authorize_a_provider(self):
         helper = source("benchmarks/scripts/probe-default-context-cancellation.ps1")
         mismatch = helper.split("static void WriteMismatch(", 1)[1].split("public static MenuProof ReadMenu(", 1)[0]

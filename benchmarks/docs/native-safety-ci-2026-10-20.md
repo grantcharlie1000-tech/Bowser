@@ -157,3 +157,28 @@ pure Rust tests cover tri-state classification and lexical root clearing only;
 wrong/reused native identities, borrowed-context reentry, the one native attempt,
 healthy long-lived modal routing and actual cleanup/Complete still require
 Windows negative/integration execution. No local native acceptance is claimed.
+
+
+## Read-only existing station-handle diagnostic
+
+The next failure-only clipboard diagnostic queries the existing borrowed current
+station handle once with the documented generic NtQueryObject ObjectBasicInformation
+contract. The public structure must be exactly 56 bytes, with GrantedAccess at
+offset 4; status, returned size and the same nonzero current attached handle
+before/after must all validate before reporting the observed mask/bit 4.
+Resolution, layout, status or identity failure is explicitly unavailable.
+No handle is duplicated, closed, switched or granted rights. The query runs only
+after original clipboard admission has already refused and confirmed CloseClipboard;
+it does not retry the sequence or admission, inspect clipboard data or change
+anything about the zero refusal. A present bit does not explain zero or establish
+a guaranteed nonzero initial generation. An absent bit would support the API's
+documented missing-access cause, not permission to repair it automatically.
+
+Microsoft documents window-station handles as kernel objects, and the generic
+NtQueryObject structure exposes access granted to a handle, but warns that the
+API may change or disappear. This is an optional discriminator, not a guaranteed
+station-specific or runner clipboard-authority contract.
+
+- [NtQueryObject](https://learn.microsoft.com/en-us/windows/win32/api/winternl/nf-winternl-ntqueryobject)
+- [Kernel objects](https://learn.microsoft.com/en-us/windows/win32/sysinfo/kernel-objects)
+- [DuplicateHandle supported object table](https://learn.microsoft.com/en-us/windows/win32/api/handleapi/nf-handleapi-duplicatehandle)

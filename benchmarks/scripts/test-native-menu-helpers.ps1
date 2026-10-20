@@ -74,4 +74,6 @@ $sizeOfType=@([Runtime.InteropServices.Marshal].GetMethods() | Where-Object {
 })
 if($sizeOfType.Count -ne 1){throw 'Exact Marshal.SizeOf(System.Type) overload unavailable.'}
 if($sizeOfType[0].Invoke($null,@($objectFlags)) -ne 12){throw 'USEROBJECTFLAGS layout is not the required two Win32 BOOLs and DWORD.'}
+$basicLayout=$hostType.GetMethod('ObjectBasicLayoutValid',$flags)
+if($basicLayout.Invoke($null,@()) -ne $true){throw 'PUBLIC_OBJECT_BASIC_INFORMATION must be 56 bytes with GrantedAccess at offset 4.'}
 Write-Output "native-menu helper source checks passed; managed_classes=$($compiled.Count); native_behavior=NOT_RUN"

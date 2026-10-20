@@ -146,6 +146,40 @@ public static class BowserHostMenu {
  // Failure-only window-station diagnostics. These do not inspect clipboard contents,
  // repair attachment/access, or establish sequence authority. Borrowed handles are not closed.
  [StructLayout(LayoutKind.Sequential)] struct OBJECTFLAGS {public int Inherit,Reserved;public uint Flags;}
+ // Documented generic kernel-object query, optional on this platform. No handle is duplicated,
+ // closed, switched or granted access. A successful mask observation is NOT sequence authority.
+ [StructLayout(LayoutKind.Sequential)] struct OBJECTBASIC {
+  public uint Attributes,GrantedAccess,HandleCount,PointerCount;
+  public uint Reserved0,Reserved1,Reserved2,Reserved3,Reserved4,Reserved5,Reserved6,Reserved7,Reserved8,Reserved9;
+ }
+ [DllImport("ntdll.dll",EntryPoint="NtQueryObject",ExactSpelling=true)] static extern int QueryObjectBasic(IntPtr handle,int informationClass,out OBJECTBASIC data,uint bytes,out uint returned);
+ static bool ObjectBasicLayoutValid(){return Marshal.SizeOf(typeof(OBJECTBASIC))==56&&Marshal.OffsetOf(typeof(OBJECTBASIC),"GrantedAccess").ToInt64()==4;}
+ public sealed class StationAccessDiagnostic {
+  public string scope="failure-only-attached-handle-mask-not-sequence-or-input-authority",status="unavailable",reason="not-attempted";
+  public bool layout_valid,query_attempted,handle_before_matches,handle_after_matches;
+  public int? ntstatus,before_error,after_error;public uint bytes_returned;public uint? granted_access;public bool? accessclipboard_bit;
+ }
+ static StationAccessDiagnostic AttachedStationAccess(IntPtr expected){
+  var result=new StationAccessDiagnostic();
+  try{
+   result.layout_valid=ObjectBasicLayoutValid();if(!result.layout_valid){result.reason="public-layout-mismatch";return result;}
+   if(expected==IntPtr.Zero){result.reason="attached-station-unavailable";return result;}
+   IntPtr before=GetProcessWindowStation();result.before_error=before==IntPtr.Zero?(int?)Marshal.GetLastWin32Error():0;
+   result.handle_before_matches=before==expected;if(!result.handle_before_matches){result.reason="attached-handle-changed-before-query";return result;}
+   OBJECTBASIC data;uint returned;result.query_attempted=true;
+   int status=QueryObjectBasic(expected,0,out data,56,out returned);result.ntstatus=status;result.bytes_returned=returned;
+   IntPtr after=GetProcessWindowStation();result.after_error=after==IntPtr.Zero?(int?)Marshal.GetLastWin32Error():0;
+   result.handle_after_matches=after!=IntPtr.Zero&&after==expected;
+   if(!result.handle_after_matches){result.reason="attached-handle-changed-after-query";return result;}
+   if(status!=0){result.reason="native-status-unavailable";return result;}
+   if(returned!=56){result.reason="public-returned-size-mismatch";return result;}
+   result.granted_access=data.GrantedAccess;result.accessclipboard_bit=(data.GrantedAccess&0x0004)!=0;
+   result.status="captured-nonatomic-not-authority";result.reason=null;
+  }catch(EntryPointNotFoundException){result.reason="native-entry-point-unavailable";}
+   catch(DllNotFoundException){result.reason="native-library-unavailable";}
+   catch{result.reason="interop-or-layout-unavailable";}
+  return result;
+ }
  [DllImport("user32.dll",SetLastError=true)] static extern IntPtr GetProcessWindowStation();
  [DllImport("user32.dll",SetLastError=true)] static extern IntPtr GetThreadDesktop(uint thread);
  [DllImport("kernel32.dll")] static extern uint GetCurrentThreadId();
@@ -193,6 +227,7 @@ public static class BowserHostMenu {
    if(accessOpened){try{}finally{accessCloseAttempted=true;accessClosed=CloseWindowStation(probe);accessCloseError=accessClosed?0:Marshal.GetLastWin32Error();}}
   }
   return new {scope="failure-only-read-only-not-clipboard-or-input-authority",sequence_zero_still_refused=true,
+   attached_station_access=AttachedStationAccess(station),
    station_handle_available=station!=IntPtr.Zero,station_error=stationError,station_name_available=stationName!=null,station_name=stationName,station_name_error=stationNameError,
    station_flags_query_attempted=station!=IntPtr.Zero,station_flags_native_ok=flagsNativeOk,station_flags_available=flagsOk,station_flags_error=flagsError,station_flags_bytes=flagsNeeded,station_flags_size_valid=flagsNeeded==12,station_flags=flagsOk?(uint?)flags.Flags:null,station_flags_are_not_granted_access=true,
    desktop_handle_available=desktop!=IntPtr.Zero,desktop_error=desktopError,desktop_name_available=desktopName!=null,desktop_name=desktopName,desktop_name_error=desktopNameError,
