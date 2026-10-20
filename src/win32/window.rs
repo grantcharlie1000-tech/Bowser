@@ -5199,6 +5199,15 @@ pub(super) fn split_rects_for_view(hwnd: HWND, view: crate::split_view::SplitVie
     Some(bounds_of(&panes, m))
 }
 
+/// [`split_rects_for_view`] for `App`, which may run inside a window-state borrow: then `None`, and
+/// the caller keeps the bounds it has.
+pub(crate) fn split_rects_now(hwnd: HWND, view: crate::split_view::SplitView) -> Option<crate::app::SplitBounds> {
+    if WINDOWS.with(|all| all.try_borrow_mut().is_err()) {
+        return None;
+    }
+    split_rects_for_view(hwnd, view)
+}
+
 /// The shown split's overlay geometry and focused pane, for the split host (picker placement).
 pub(super) fn split_geometry_now(hwnd: HWND) -> Option<layout::SplitPanes> {
     with_chrome(hwnd, |s| split_panes_now(hwnd, s)).flatten()
