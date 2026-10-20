@@ -659,6 +659,7 @@ unsafe fn configure_web_app_controller(
     let mut token = 0;
     let app_id_owned = app_id.to_owned();
     let open_in_tab = events.on_open_in_tab.clone();
+    let script_tabs = ScriptTabBudget::default();
     let navigation_state_started = events.navigation_state.clone();
     let navigation_origin = origin.clone();
     unsafe {
@@ -669,7 +670,13 @@ unsafe fn configure_web_app_controller(
                 match target.as_ref().map(|target| navigation_policy(&navigation_origin, target)) {
                     Some(NavigationPolicy::Allow) => if let Some(callback) = navigation_state_started.as_ref() { callback(&app_id_owned, AppNavigationState::Loading); },
                     Some(NavigationPolicy::OpenInTab) => {
-                        if let (Some(callback), Some(url)) = (open_in_tab.as_ref(), target) { callback(url); }
+                        let mut user = BOOL::default();
+                        let user_initiated = args.IsUserInitiated(&mut user).is_ok() && user.as_bool();
+                        if let (Some(callback), Some(url)) = (open_in_tab.as_ref(), target)
+                            && script_tabs.allow(user_initiated, Instant::now())
+                        {
+                            callback(url);
+                        }
                         let _ = args.SetCancel(true);
                     }
                     _ => { let _ = args.SetCancel(true); }
@@ -769,9 +776,11 @@ unsafe fn configure_web_app_controller(
             if let Some(args) = args {
                     #[cfg(test)] let request_id=request_probe.enter(_sender.as_ref(),&args);
                 let mut uri = PWSTR::null();
+                let mut user = BOOL::default();
+                let user_initiated = args.IsUserInitiated(&mut user).is_ok() && user.as_bool();
                 if args.Uri(&mut uri).is_ok() {
                     if let Ok(url) = Url::parse(&CoTaskMemPWSTR::from(uri).to_string()) {
-                        if matches!(url.scheme(), "http" | "https") { if let Some(callback) = popup_callback.as_ref() { callback(url); } }
+                        if web_app_window_opens(&url, user_initiated) { if let Some(callback) = popup_callback.as_ref() { callback(url); } }
                     }
                 }
                 let _ = args.SetHandled(true);
@@ -900,6 +909,43 @@ pub fn navigation_policy(app_origin_url: &Url, target_url: &Url) -> NavigationPo
         NavigationPolicy::Allow
     } else {
         NavigationPolicy::OpenInTab
+    }
+}
+
+/// Whether a window that a web panel's page, or any iframe in it, asks for opens as a tab: an
+/// http(s) target and a user gesture. A panel has no popup permission to grant, so a
+/// script-opened window (`setInterval(()=>open(..))`) never opens one, as in a normal tab
+/// without a stored Allow.
+pub fn web_app_window_opens(url: &Url, user_initiated: bool) -> bool {
+    user_initiated && matches!(url.scheme(), "http" | "https")
+}
+
+/// Shortest gap between two tabs a web panel's page opens by navigating off its site without a
+/// user gesture (script or redirect). A user gesture always opens one.
+pub const SCRIPT_TAB_INTERVAL: Duration = Duration::from_secs(5);
+
+/// One web panel's budget for tabs opened by leaving navigations without a user gesture: a page
+/// looping `location = elsewhere` gets one tab per [`SCRIPT_TAB_INTERVAL`], not a flood.
+#[derive(Default)]
+pub struct ScriptTabBudget {
+    last: Cell<Option<Instant>>,
+}
+
+impl ScriptTabBudget {
+    /// Whether this leaving navigation may open a tab now (and, without a gesture, spends it).
+    pub fn allow(&self, user_initiated: bool, now: Instant) -> bool {
+        if user_initiated {
+            return true;
+        }
+        if self
+            .last
+            .get()
+            .is_some_and(|last| now.saturating_duration_since(last) < SCRIPT_TAB_INTERVAL)
+        {
+            return false;
+        }
+        self.last.set(Some(now));
+        true
     }
 }
 
@@ -1044,6 +1090,42 @@ mod tests {
         assert!(lease.is_live()); // switching does not retire A or discard its session/form state.
         gate.close();
         assert!(!lease.is_live() && !b.is_live());
+    }
+
+    /// The body of the handler installed by `add_<event>` in this file, up to its remover.
+    fn handler_source(event: &str) -> &'static str {
+        let source = include_str!("web_app.rs");
+        let start = source.find(&format!("webview.add_{event}(")).expect("handler installed");
+        let end = start + source[start..].find(&format!("remove_{event}(")).expect("handler removed");
+        &source[start..end]
+    }
+
+    #[test]
+    fn a_web_panel_window_opens_only_for_a_gesture_and_a_web_address() {
+        let web = Url::parse("https://example.org/?x").unwrap();
+        assert!(web_app_window_opens(&web, true));
+        assert!(!web_app_window_opens(&web, false), "script-opened windows never open a tab");
+        assert!(!web_app_window_opens(&Url::parse("mailto:a@b.example").unwrap(), true));
+        let budget = ScriptTabBudget::default();
+        let start = Instant::now();
+        assert!(budget.allow(false, start), "the first script navigation still opens");
+        for step in 1..50 {
+            assert!(!budget.allow(false, start + Duration::from_millis(step * 100)), "flood held back");
+        }
+        assert!(budget.allow(true, start + Duration::from_secs(1)), "a gesture always opens");
+        assert!(budget.allow(false, start + SCRIPT_TAB_INTERVAL));
+    }
+
+    #[test]
+    fn a_web_panel_opens_tabs_only_on_a_user_gesture_or_slowly() {
+        // window.open from a timer (no click) must not open a tab: the handler has to ask.
+        let popup = handler_source("NewWindowRequested");
+        assert!(popup.contains("IsUserInitiated"), "NewWindowRequested never reads IsUserInitiated");
+        assert!(popup.contains("web_app_window_opens("), "NewWindowRequested must use the tested decision");
+        // A script-driven move off the app's site opens a tab at most once per interval.
+        let navigation = handler_source("NavigationStarting");
+        assert!(navigation.contains("IsUserInitiated") && navigation.contains("script_tabs.allow("),
+            "NavigationStarting opens a tab for every cancelled script navigation");
     }
 
 }
