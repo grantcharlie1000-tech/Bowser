@@ -6,9 +6,10 @@ use super::*;
 use std::rc::Weak;
 use windows::{core::BOOL, Win32::{
     System::Threading::GetCurrentThreadId,
+    UI::Input::KeyboardAndMouse::IsWindowEnabled,
     UI::WindowsAndMessaging::{
         EnumWindows, GetGUIThreadInfo, GetMenuBarInfo, GetWindowRect, GetWindowThreadProcessId,
-        GUITHREADINFO, GUI_POPUPMENUMODE, IsWindowEnabled, IsWindowVisible, KillTimer,
+        GUITHREADINFO, GUI_POPUPMENUMODE, IsWindowVisible, KillTimer,
         MENUBARINFO, OBJID_CLIENT, SetTimer,
     },
 }};
