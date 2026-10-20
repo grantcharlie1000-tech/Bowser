@@ -136,6 +136,17 @@ test('the strip shows the pair as adjacent halves in the left tab\'s group', () 
   assert.deepEqual(pinned.map((item) => [item.id, item.pinned]), [[1, true], [3, true], [2, false]]);
 });
 
+test('the second and middle panes keep their own marks (U1)', () => {
+  const marks = { unread: true, notify: 3, asleep: true, pct: 40, rl: 12, idle: true, muted: true, marker: 2, fav: true, loading: true };
+  const items = [tab(1, { g: 4, gl: true, gname: 'A', gsize: 1 }), tab(2, marks), tab(3, { ...marks, notify: 9, g: 6, gl: true, gname: 'B', gcol: 1, gsize: 1 })];
+  const out = pairOrder(items, { t: 'pair', l: 1, r: 2, f: 'l', shown: true, panes: [{ id: 1 }, { id: 3 }, { id: 2 }] });
+  assert.deepEqual(out.map((item) => item.id), [1, 3, 2]);
+  for (const [id, notify] of [[2, 3], [3, 9]]) {
+    const pane = out.find((item) => item.id === id);
+    assert.deepEqual({ ...pane }, { ...tab(id, marks), title: `T${id}`, notify, g: 4, gl: false }, `pane ${id}`);
+  }
+});
+
 test('pair weights keep the shown pair widest and a parked pair narrower than the active tab', () => {
   const shown = { t: 'pair', l: 4, r: 2, f: 'l', shown: true };
   const parked = { ...shown, shown: false };
