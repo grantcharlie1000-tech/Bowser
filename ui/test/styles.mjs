@@ -65,6 +65,19 @@ test('hand-tuned chrome geometry is unchanged', () => {
   }
 });
 
+test('maximised with the spacing removed, grouped tabs reach the top edge as other tabs do (U6)', () => {
+  const tabs = readFileSync(join(stylesDir, 'tabs.css'), 'utf8');
+  const rule = (selector) => new RegExp(`(?:^|\\n)${selector.replace(/[.*[\]()]/g, '\\$&')} \\{([^}]*)\\}`).exec(tabs)?.[1] ?? '';
+  assert.match(rule('.strip.flush .tab'), /height: auto;/);
+  assert.match(rule('.strip .group'), /height: var\(--bw-tab-h\);/, 'a group is otherwise a box of the tab height');
+  const flushGroup = rule('.strip.flush .group');
+  assert.match(flushGroup, /height: auto;/, 'flush, the group grows with the row');
+  assert.match(flushGroup, /align-items: stretch;/, 'and its tabs fill it');
+  const built = /\.strip\.flush \.group\{([^}]*)\}/.exec(css)?.[1] ?? '';
+  assert.match(built, /height:auto/, 'the built sheet has it');
+  assert.match(built, /align-items:stretch/, 'the built sheet has it');
+});
+
 // --- two-level stacks (T10b) ---
 test('the two rows of two-level stacks are the heights the native layout reserves', () => {
   const tokens = readFileSync(join(stylesDir, 'tokens.css'), 'utf8');

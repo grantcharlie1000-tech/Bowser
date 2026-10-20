@@ -437,6 +437,10 @@
   border-top-left-radius: 0;
   border-top-right-radius: 0;
 }
+/* A group is a box of the tab height that centres its tabs; flush, it grows with the row so its tabs
+   reach the top edge as well (U6). Its header chip stays centred. */
+.strip.flush .group { height: auto; align-items: stretch; }
+.strip.flush .group .ball { align-self: center; }
 
 /* Marks: a hibernated tab's icon is dimmed, a tab unused for the threshold is faint, a selected tab is tinted. */
 .strip .tab.asleep .ico { opacity: 0.5; }
