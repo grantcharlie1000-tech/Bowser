@@ -135,6 +135,16 @@ pub fn should_prewarm(has_engine: bool, initializing: bool, closing: bool, text:
         && text.chars().any(|character| !character.is_whitespace())
 }
 
+/// The one `file:` address the engine may load for this launch: the benchmark file, or else a local
+/// file opened from the command line (an .html double-click once Bowser is the default browser).
+/// Set before the engine starts, so an early (HTML chrome) engine start carries it too. Pure.
+fn launch_allowed_file(benchmark: Option<&url::Url>, initial: Option<&url::Url>) -> Option<url::Url> {
+    match benchmark {
+        Some(benchmark) => Some(benchmark.clone()),
+        None => initial.filter(|url| url.scheme() == "file").cloned(),
+    }
+}
+
 /// Whether a tab-state change may arm the session save timer at all. Checked before a snapshot is
 /// built: with a save already queued, nothing is built per change.
 fn session_arm_allowed(has_store: bool, save_pending: bool, closing: bool) -> bool {
@@ -5076,7 +5086,7 @@ impl App {
         let benchmark_url = options.benchmark_url;
         let initial_url = options.open_url;
         let more_initial_urls = options.more_urls; // --- tab stacks (T10) ---
-        let allowed_benchmark_file = benchmark_url.clone();
+        let allowed_benchmark_file = launch_allowed_file(benchmark_url.as_ref(), initial_url.as_ref());
         let tab_model = crate::tabs::TabList::new();
         let initial_tab = tab_model.active();
         let workspaces_path = crate::profile::active()
@@ -5683,7 +5693,10 @@ impl App {
     pub fn submit_initial_url(app: &AppRef) {
         let url = app.borrow_mut().initial_url.take();
         if let Some(url) = url {
-            Self::submit_url(app, url, None);
+            // A local file the user opened (a double-click on an .html file, or `--open-url file:`)
+            // is the one file address this launch may load; the engine refuses every other one.
+            let allowed = launch_allowed_file(None, Some(&url));
+            Self::submit_url(app, url, allowed);
         }
         // --- tab stacks (T10) --- the rest of a stack moved to this new window: one tab each, asleep
         // until selected, as restored tabs are.
@@ -7916,6 +7929,34 @@ mod tests {
     mod privacy_flow; // private tabs and history deletion
     mod workspace_restore; // workspaces across a restart, refused moves and creates
     mod window_flow; // main window moves and resizes
+
+    // L-2: a local .html file opened from the command line must be the file the engine allows.
+    #[test]
+    fn launch_allowed_file_admits_only_the_opened_local_file() {
+        let file = url::Url::parse("file:///C:/Users/me/page%20one.html").unwrap();
+        let web = url::Url::parse("https://example.test/").unwrap();
+        let bench = url::Url::parse("file:///C:/bench/fixture.html").unwrap();
+        assert_eq!(launch_allowed_file(None, Some(&file)), Some(file.clone()));
+        assert_eq!(launch_allowed_file(None, Some(&web)), None);
+        assert_eq!(launch_allowed_file(None, None), None);
+        assert_eq!(launch_allowed_file(Some(&bench), Some(&file)), Some(bench.clone()));
+        assert_eq!(launch_allowed_file(Some(&web), None), Some(web));
+    }
+
+    #[test]
+    fn submit_initial_url_grants_the_opened_local_file() {
+        let app = app_with_pending(rect(800, 600));
+        let file = url::Url::parse("file:///C:/Users/me/page.html").unwrap();
+        app.borrow_mut().initial_url = Some(file.clone());
+        App::submit_initial_url(&app);
+        assert_eq!(app.borrow().allowed_benchmark_file, Some(file.clone()));
+        assert_eq!(app.borrow().pending, Some(file));
+
+        let app = app_with_pending(rect(800, 600));
+        app.borrow_mut().initial_url = Some(url::Url::parse("https://example.test/").unwrap());
+        App::submit_initial_url(&app);
+        assert_eq!(app.borrow().allowed_benchmark_file, None);
+    }
 
     #[test]
     fn reader_probe_due_table() {

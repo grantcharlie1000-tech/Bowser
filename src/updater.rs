@@ -8,7 +8,8 @@
 //! Installed builds with no signed channel instead follow the GitHub pin
 //! `stable/release.json` on `main`. That pin names one repository, tag and `Bowser.exe`. The
 //! download URL is built from those fields, and the file is replaced only when its SHA-256
-//! differs. Dev and benchmark launches never check or apply updates.
+//! differs. Dev and benchmark launches, and local builds outside the install folders
+//! ([`installed_location`]), never check or apply updates.
 //!
 //! Manifest (LF-only UTF-8, at most 16 KiB), signed over every byte before the final `signature=` line:
 //!
@@ -617,6 +618,34 @@ pub fn load_config(root: &Path) -> Option<Config> {
 
 pub fn data_root() -> Option<PathBuf> {
     crate::profile::app_data_dir()
+}
+
+/// Whether `exe` is an installed copy that may replace itself: directly inside
+/// `<local_app_data>\Programs\Bowser` or a `Bowser Stable[ N]` folder there (Update-Bowser.ps1,
+/// Open-Bowser.ps1). Anything else (a `target\` build, a copy a test script runs, `Bowser Dev`) is
+/// a local build and never stages or swaps itself. Case-insensitive, as Windows paths are. Pure.
+pub fn installed_location(exe: &Path, local_app_data: Option<&Path>) -> bool {
+    let Some(local_app_data) = local_app_data.filter(|path| path.is_absolute()) else {
+        return false;
+    };
+    let (Some(folder), Some(parent)) = (exe.parent(), exe.parent().and_then(Path::parent)) else {
+        return false;
+    };
+    let norm = |path: &Path| path.to_string_lossy().replace('/', "\\").trim_end_matches('\\').to_lowercase();
+    let name = folder.file_name().map(|name| name.to_string_lossy().to_lowercase()).unwrap_or_default();
+    let stable = name == "bowser"
+        || name == "bowser stable"
+        || name
+            .strip_prefix("bowser stable ")
+            .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()));
+    stable
+        && !exe.components().any(|part| matches!(part, std::path::Component::ParentDir | std::path::Component::CurDir))
+        && norm(parent) == norm(&local_app_data.join("Programs"))
+}
+
+fn running_installed_copy() -> bool {
+    let local_app_data = std::env::var_os("LOCALAPPDATA").map(PathBuf::from);
+    std::env::current_exe().is_ok_and(|exe| installed_location(&exe, local_app_data.as_deref()))
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1275,7 +1304,8 @@ pub enum StartupAction {
 /// Called first thing in `main`. Cheap when no update state exists (one missing-file probe).
 /// Benchmark launches (any `--benchmark-*` flag) and `--dev` never touch update state.
 pub fn startup(benchmark: bool, dev: bool) -> StartupAction {
-    if benchmark || dev {
+    // A local build never takes a staged build over itself, even one staged by an installed copy.
+    if benchmark || dev || !running_installed_copy() {
         return StartupAction::Continue;
     }
     let (Some(root), Ok(exe)) = (data_root(), std::env::current_exe()) else {
@@ -1943,7 +1973,8 @@ fn run_check(root: &Path, layout: &Layout, forced: bool) -> Option<Result<CheckO
 /// signed channel is used as before. Otherwise the GitHub pin is checked, at most once an hour.
 /// Failures are silent. Dev launches do not start the thread.
 pub fn spawn_background(benchmark: bool, dev: bool) {
-    if benchmark || dev {
+    // A local build (not an installed copy) never checks, so it is never staged over (L-4).
+    if benchmark || dev || !running_installed_copy() {
         return;
     }
     let Some(root) = data_root() else {
@@ -2053,6 +2084,38 @@ mod tests {
     use super::*;
 
     const CURRENT: Version = Version(0, 0, 1);
+
+    // L-4: only an installed copy may stage or swap a build over itself.
+    #[test]
+    fn only_installed_copies_self_update() {
+        let lad = Path::new(r"C:\Users\me\AppData\Local");
+        let installed = [
+            r"C:\Users\me\AppData\Local\Programs\Bowser\Bowser.exe",
+            r"c:\users\ME\appdata\local\programs\bowser stable\bowser.exe",
+            r"C:\Users\me\AppData\Local\Programs\Bowser Stable 2\Bowser.exe",
+            "C:/Users/me/AppData/Local/Programs/Bowser/Bowser.exe",
+        ];
+        for exe in installed {
+            assert!(installed_location(Path::new(exe), Some(lad)), "{exe}");
+        }
+        let local = [
+            r"C:\src\Bowser\target\release\bowser.exe",
+            r"C:\bw-target\h10\runs\a\bowser.exe",
+            r"C:\Users\me\AppData\Local\Programs\Bowser Dev\Bowser.exe",
+            r"C:\Users\me\AppData\Local\Programs\Bowser\sub\Bowser.exe",
+            r"C:\Users\me\AppData\Local\Programs\Bowser Stable x\Bowser.exe",
+            r"C:\Users\me\AppData\Local\Programs\Bowser Stable \Bowser.exe",
+            r"C:\Users\me\AppData\Local\Programs\Other\..\Bowser\Bowser.exe",
+            r"D:\AppData\Local\Programs\Bowser\Bowser.exe",
+            r"C:\Users\me\AppData\Local\Bowser\Bowser.exe",
+        ];
+        for exe in local {
+            assert!(!installed_location(Path::new(exe), Some(lad)), "{exe}");
+        }
+        let exe = Path::new(r"C:\Users\me\AppData\Local\Programs\Bowser\Bowser.exe");
+        assert!(!installed_location(exe, None));
+        assert!(!installed_location(exe, Some(Path::new("relative"))));
+    }
 
     fn temp_dir(name: &str) -> PathBuf {
         let dir =
