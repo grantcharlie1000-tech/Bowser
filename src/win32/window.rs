@@ -8179,24 +8179,57 @@ fn open_profile_window(target: &crate::profile::Profile, hwnd: HWND) {
 }
 
 /// Handles Alt+Space and titlebar right-click with Bowser's themed window-command menu.
+/// Which window commands the system menu offers: `(command, enabled)` for Restore, Move, Size,
+/// Minimize and Maximize. A full-screen window is neither moved, sized, maximised nor restored from
+/// the menu (W-3: `frame::fullscreen_refuses`); F11 or Esc leaves full screen.
+fn system_menu_states(maximized: bool, minimized: bool, fullscreen: bool) -> [(u32, bool); 5] {
+    use windows::Win32::UI::WindowsAndMessaging::{SC_MAXIMIZE, SC_MINIMIZE};
+    let shown_full = fullscreen && !minimized;
+    [
+        (SC_RESTORE, (maximized || minimized) && !shown_full),
+        (SC_MOVE, !maximized && !minimized && !shown_full),
+        (SC_SIZE, !maximized && !minimized && !shown_full),
+        (SC_MINIMIZE, !minimized),
+        (SC_MAXIMIZE, !maximized && !fullscreen),
+    ]
+}
+
+/// The window's state as `system_menu_states` reads it.
+fn system_menu_states_of(hwnd: HWND) -> [(u32, bool); 5] {
+    let (maximized, minimized) = unsafe { (IsZoomed(hwnd).as_bool(), IsIconic(hwnd).as_bool()) };
+    system_menu_states(maximized, minimized, auto_hide::fullscreen_of(hwnd) != crate::auto_hide::Fullscreen::No)
+}
+
+/// Sets the Windows system menu's items to `states`. Windows refreshes them only when it shows the
+/// menu itself (Alt+Space through `DefWindowProc`), not for a `TrackPopupMenu` of `GetSystemMenu`,
+/// so without this the HTML chrome's menu offered Maximize on a maximised window, and so on.
+fn apply_system_menu_states(menu: windows::Win32::UI::WindowsAndMessaging::HMENU, states: &[(u32, bool)]) {
+    use windows::Win32::UI::WindowsAndMessaging::{EnableMenuItem, MF_BYCOMMAND, MF_ENABLED, MF_GRAYED};
+    for (command, enabled) in states {
+        let flags = MF_BYCOMMAND | if *enabled { MF_ENABLED } else { MF_GRAYED };
+        unsafe {
+            let _ = EnableMenuItem(menu, *command, flags);
+        }
+    }
+}
+
 fn show_system_menu(hwnd: HWND, point: windows::Win32::Foundation::POINT) {
     use windows::Win32::UI::WindowsAndMessaging::{SC_CLOSE, SC_MAXIMIZE, SC_MINIMIZE};
-    let maximized = unsafe { IsZoomed(hwnd).as_bool() };
-    let minimized = unsafe { IsIconic(hwnd).as_bool() };
+    let enabled = |command: u32| system_menu_states_of(hwnd).iter().any(|(c, on)| *c == command && *on);
     let entries = vec![
         Entry::Item(
             Item::new(SC_RESTORE as usize, "Restore", Icon::None)
                 .glyph("caption-restore")
-                .disabled_if(!maximized && !minimized),
+                .disabled_if(!enabled(SC_RESTORE)),
         ),
         Entry::Item(
-            Item::new(SC_MOVE as usize, "Move", Icon::None).disabled_if(maximized || minimized),
+            Item::new(SC_MOVE as usize, "Move", Icon::None).disabled_if(!enabled(SC_MOVE)),
         ),
         Entry::Item(
-            Item::new(SC_SIZE as usize, "Size", Icon::None).disabled_if(maximized || minimized),
+            Item::new(SC_SIZE as usize, "Size", Icon::None).disabled_if(!enabled(SC_SIZE)),
         ),
-        Entry::Item(Item::new(SC_MINIMIZE as usize, "Minimize", Icon::None).glyph("caption-minimize").disabled_if(minimized)),
-        Entry::Item(Item::new(SC_MAXIMIZE as usize, "Maximize", Icon::None).glyph("caption-maximize").disabled_if(maximized)),
+        Entry::Item(Item::new(SC_MINIMIZE as usize, "Minimize", Icon::None).glyph("caption-minimize").disabled_if(!enabled(SC_MINIMIZE))),
+        Entry::Item(Item::new(SC_MAXIMIZE as usize, "Maximize", Icon::None).glyph("caption-maximize").disabled_if(!enabled(SC_MAXIMIZE))),
         Entry::Separator,
         Entry::Item(Item::new(SC_CLOSE as usize, "Close", Icon::Close).glyph("close").shortcut("Alt+F4")),
     ];
@@ -11490,6 +11523,7 @@ fn html_system_menu(hwnd: HWND) {
         if menu.is_invalid() || GetCursorPos(&mut point).is_err() {
             return;
         }
+        apply_system_menu_states(menu, &system_menu_states_of(hwnd));
         let _ = SetForegroundWindow(hwnd);
         let chosen = TrackPopupMenu(
             menu,
@@ -12709,6 +12743,46 @@ mod tests {
         for (id, command) in [(MENU_HISTORY_COMMAND, Command::ShowHistory), (MENU_DOWNLOADS_COMMAND, Command::ShowDownloads)] {
             let entry = crate::commands::entry(&live, id).expect("a registry command");
             assert!(matches!(entry.handler, EntryHandler::Builtin(Handler::Key(found)) if found == command), "{id}");
+        }
+    }
+
+    /// The system menu offers what the window can do now, and the Windows menu the HTML chrome
+    /// shows (`TrackPopupMenu` of `GetSystemMenu`, which Windows does not refresh) is set to it.
+    #[test]
+    fn the_system_menu_offers_what_the_window_can_do_now() {
+        use windows::Win32::UI::WindowsAndMessaging::{
+            CreateWindowExW, DestroyWindow, GetMenuState, MF_BYCOMMAND, MF_GRAYED, SC_MAXIMIZE, SC_MINIMIZE, WINDOW_EX_STYLE,
+            WS_OVERLAPPEDWINDOW,
+        };
+        let on = |states: [(u32, bool); 5]| states.iter().filter(|(_, enabled)| *enabled).map(|(c, _)| *c).collect::<Vec<_>>();
+        assert_eq!(on(system_menu_states(false, false, false)), [SC_MOVE, SC_SIZE, SC_MINIMIZE, SC_MAXIMIZE], "restored");
+        assert_eq!(on(system_menu_states(true, false, false)), [SC_RESTORE, SC_MINIMIZE], "maximised");
+        assert_eq!(on(system_menu_states(false, true, false)), [SC_RESTORE, SC_MAXIMIZE], "minimised");
+        assert_eq!(on(system_menu_states(false, false, true)), [SC_MINIMIZE], "full screen: no move, size, maximise or restore");
+        assert_eq!(on(system_menu_states(false, true, true)), [SC_RESTORE], "a minimised full-screen window comes back");
+        for (maximized, minimized, full) in [(false, false, false), (true, false, false), (false, true, false), (false, false, true), (false, true, true)] {
+            for (command, enabled) in system_menu_states(maximized, minimized, full) {
+                let refused = full && crate::win32::frame::fullscreen_refuses(command as usize, minimized);
+                assert!(!(enabled && refused), "{command:#x} is offered but refused");
+            }
+        }
+        // A real window's system menu, starting from Windows' own restored-window states.
+        let window = unsafe {
+            CreateWindowExW(WINDOW_EX_STYLE(0), w!("STATIC"), w!(""), WS_OVERLAPPEDWINDOW, -32000, -32000, 200, 100, None, None, None, None)
+        }
+        .expect("a test window");
+        let menu = unsafe { GetSystemMenu(window, false) };
+        assert!(!menu.is_invalid());
+        let grayed = |command: u32| (unsafe { GetMenuState(menu, command, MF_BYCOMMAND) } & MF_GRAYED.0) != 0;
+        for (maximized, minimized, full) in [(true, false, false), (false, false, false), (false, false, true)] {
+            let states = system_menu_states(maximized, minimized, full);
+            apply_system_menu_states(menu, &states);
+            for (command, enabled) in states {
+                assert_eq!(grayed(command), !enabled, "{command:#x} for maximized {maximized} full {full}");
+            }
+        }
+        unsafe {
+            let _ = DestroyWindow(window);
         }
     }
 
