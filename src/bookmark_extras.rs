@@ -8,7 +8,11 @@ use std::{collections::BTreeMap, fs, io, path::Path};
 use crate::bookmarks::BookmarkStore;
 
 pub const FILE_NAME: &str = "bookmark-extras.txt";
-const MAX_FILE_BYTES: u64 = 512 * 1024;
+const HEADER: &str = "bowser-bookmark-extras-v1";
+/// Room for every bookmark the tree can hold (5000) with a full nickname and the longest
+/// description in a 4-byte script, about 10.5 MB; `save` refuses more, so nothing written is
+/// unreadable.
+const MAX_FILE_BYTES: u64 = 16 * 1024 * 1024;
 pub const MAX_NICKNAME_CHARS: usize = 24;
 pub const MAX_DESCRIPTION_CHARS: usize = 512;
 
@@ -122,7 +126,7 @@ impl Extras {
     }
 
     pub fn serialize(&self) -> String {
-        let mut out = String::from("bowser-bookmark-extras-v1\n");
+        let mut out = format!("{HEADER}\n");
         for (id, extra) in &self.map {
             out.push_str(&format!("{id}\t{}\t{}\n", escape(&extra.nickname), escape(&extra.description)));
         }
@@ -130,9 +134,9 @@ impl Extras {
     }
 
     pub fn parse(text: &str) -> Self {
-        let mut lines = text.lines();
+        let mut lines = text.trim_start_matches('\u{feff}').lines();
         let mut extras = Self::default();
-        if lines.next() != Some("bowser-bookmark-extras-v1") {
+        if lines.next() != Some(HEADER) {
             return extras;
         }
         for line in lines {
@@ -151,24 +155,52 @@ impl Extras {
         extras
     }
 
+    /// The details to show: none when the file is missing or cannot be read.
     pub fn load(root: &Path) -> Self {
-        match fs::read(root.join(FILE_NAME)) {
-            Ok(bytes) if bytes.len() as u64 <= MAX_FILE_BYTES => String::from_utf8(bytes).map(|text| Self::parse(&text)).unwrap_or_default(),
-            _ => Self::default(),
-        }
+        Self::load_for_change(root).unwrap_or_default()
     }
 
-    pub fn save(&self, root: &Path) -> io::Result<()> {
-        let path = root.join(FILE_NAME);
-        fs::create_dir_all(root)?;
-        let temporary = path.with_extension(format!("txt.{}.tmp", std::process::id()));
-        let written = fs::write(&temporary, self.serialize().as_bytes());
-        if let Err(error) = written.and_then(|()| fs::rename(&temporary, &path)) {
-            let _ = fs::remove_file(&temporary);
-            return Err(error);
-        }
-        Ok(())
+    /// The details an edit rewrites: an error, never an empty map, when the file is there but cannot
+    /// be read (too large, not UTF-8, not headed as this file; a BOM is allowed), since saving what
+    /// was loaded without it would delete every nickname and description.
+    pub fn load_for_change(root: &Path) -> io::Result<Self> {
+        Ok(read_for_change(&root.join(FILE_NAME))?.map_or_else(Self::default, |text| Self::parse(&text)))
     }
+
+    /// Replaces the file (temp file, fsync, rename). Refused when the text would be too large to read
+    /// back, or when the file there cannot be read (see [`Self::load_for_change`]).
+    pub fn save(&self, root: &Path) -> io::Result<()> {
+        let text = self.serialize();
+        if text.len() as u64 > MAX_FILE_BYTES {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "bookmark details are too large to save"));
+        }
+        let path = root.join(FILE_NAME);
+        read_for_change(&path)?;
+        crate::productivity::atomic_write(&path, text.as_bytes())
+    }
+}
+
+/// The file's text, `None` when there is none (missing or blank); an error when it cannot be read.
+fn read_for_change(path: &Path) -> io::Result<Option<String>> {
+    let invalid = |why: &str| io::Error::new(io::ErrorKind::InvalidData, format!("{} {why}", path.display()));
+    let bytes = match fs::metadata(path) {
+        Ok(meta) if meta.len() > MAX_FILE_BYTES => return Err(invalid("is too large to read")),
+        Ok(_) => fs::read(path)?,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    if bytes.len() as u64 > MAX_FILE_BYTES {
+        return Err(invalid("is too large to read"));
+    }
+    let text = String::from_utf8(bytes).map_err(|_| invalid("is not UTF-8 text"))?;
+    let body = text.trim_start_matches('\u{feff}');
+    if body.trim().is_empty() {
+        return Ok(None);
+    }
+    if body.lines().next() != Some(HEADER) {
+        return Err(invalid("is not a file Bowser can read"));
+    }
+    Ok(Some(text))
 }
 
 #[cfg(test)]
@@ -222,6 +254,61 @@ mod tests {
         extras.save(&dir).unwrap();
         assert_eq!(Extras::load(&dir), extras);
         assert_eq!(Extras::load(&dir.join("missing")), Extras::default());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    fn test_dir(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("bowser-extras-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// R-4: 400 descriptions in a non-Latin script pass 512 KiB. They must all read back, and the
+    /// next nickname edit must keep them.
+    #[test]
+    fn details_past_512_kib_read_back_and_survive_the_next_edit() {
+        let dir = test_dir("large");
+        let mut extras = Extras::default();
+        for id in 1..=400u64 {
+            extras.set(id, &format!("n{id}"), &"\u{4e2d}".repeat(MAX_DESCRIPTION_CHARS)).unwrap();
+        }
+        extras.save(&dir).unwrap();
+        assert!(fs::metadata(dir.join(FILE_NAME)).unwrap().len() > 512 * 1024, "the fixture passes the old cap");
+        let mut loaded = Extras::load(&dir);
+        assert_eq!(loaded.len(), 400);
+        loaded.set(9999, "new", "").unwrap();
+        loaded.save(&dir).unwrap();
+        assert_eq!(Extras::load(&dir).len(), 401);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// The most one bookmark tree can hold (5000 bookmarks, each with a full nickname and the
+    /// longest description) still fits under the read cap, so nothing saved is unreadable.
+    #[test]
+    fn a_full_tree_of_details_fits_under_the_read_cap() {
+        let mut extras = Extras::default();
+        for id in 1..=5000u64 {
+            let nickname = format!("{id:0>24}");
+            extras.set(u64::MAX - id, &nickname, &"\u{1f600}".repeat(MAX_DESCRIPTION_CHARS)).unwrap();
+        }
+        assert!(extras.serialize().len() as u64 <= MAX_FILE_BYTES);
+    }
+
+    /// R-4: a file with a BOM is read; one that is not UTF-8 is never replaced by what was loaded
+    /// without it.
+    #[test]
+    fn an_unreadable_details_file_is_never_saved_over() {
+        let dir = test_dir("unreadable");
+        let path = dir.join(FILE_NAME);
+        fs::write(&path, "\u{feff}bowser-bookmark-extras-v1\n1\tmail\twork inbox\n").unwrap();
+        assert_eq!(Extras::load(&dir).nickname(1), "mail", "a BOM is allowed");
+        let ansi = b"bowser-bookmark-extras-v1\n1\tmail\twork inbox\n2\tcafe\tCaf\xe9\n".to_vec();
+        fs::write(&path, &ansi).unwrap();
+        let mut extras = Extras::load(&dir);
+        extras.set(3, "new", "").unwrap();
+        assert!(extras.save(&dir).is_err(), "the save is refused");
+        assert_eq!(fs::read(&path).unwrap(), ansi, "the file is left as it was");
         let _ = fs::remove_dir_all(&dir);
     }
 }

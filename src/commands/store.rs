@@ -280,6 +280,40 @@ pub struct Store {
     pub priority: BTreeMap<String, bool>,
     pub sites: Vec<String>,
     pub chains: Vec<Chain>,
+    /// The files that were there but could not be read when this was loaded. What they hold was
+    /// never loaded, so [`Store::save`] refuses to write over them.
+    pub unread: Unread,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Unread {
+    pub keys: bool,
+    pub chains: bool,
+}
+
+/// The text of `path`, `None` when there is none (missing or blank). A file that cannot be read,
+/// is larger than `max`, is not UTF-8 or is not headed `header` (a BOM is allowed) is an error:
+/// treating it as empty would let the next save delete it.
+fn read_for_change(path: &Path, header: &str, max: usize) -> io::Result<Option<String>> {
+    let invalid = |why: &str| io::Error::new(io::ErrorKind::InvalidData, format!("{} {why}", path.display()));
+    let bytes = match fs::metadata(path) {
+        Ok(meta) if meta.len() > max as u64 => return Err(invalid("is too large to read")),
+        Ok(_) => fs::read(path)?,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    let text = String::from_utf8(bytes).map_err(|_| invalid("is not UTF-8 text"))?;
+    let body = text.trim_start_matches('\u{feff}');
+    if body.len() > max {
+        return Err(invalid("is too large to read"));
+    }
+    if body.trim().is_empty() {
+        return Ok(None);
+    }
+    if body.lines().next().map(str::trim) != Some(header) {
+        return Err(invalid("is not a file Bowser can read"));
+    }
+    Ok(Some(body.to_owned()))
 }
 
 impl Store {
@@ -287,7 +321,7 @@ impl Store {
         if text.len() > MAX_FILE_BYTES {
             return;
         }
-        let mut lines = text.lines();
+        let mut lines = text.trim_start_matches('\u{feff}').lines();
         if lines.next().map(str::trim) != Some(HEADER) {
             return;
         }
@@ -343,19 +377,44 @@ impl Store {
 
     pub fn load(keys: &Path, chains_file: &Path) -> Self {
         let mut store = Self::default();
-        if let Ok(text) = fs::read_to_string(keys) {
-            store.parse_keys(&text);
+        match read_for_change(keys, HEADER, MAX_FILE_BYTES) {
+            Ok(Some(text)) => store.parse_keys(&text),
+            Ok(None) => {}
+            Err(_) => store.unread.keys = true,
         }
-        if let Ok(text) = fs::read_to_string(chains_file) {
-            store.chains = chains::parse(&text);
+        match read_for_change(chains_file, chains::HEADER, chains::MAX_FILE_BYTES) {
+            Ok(Some(text)) => store.chains = chains::parse(&text),
+            Ok(None) => {}
+            Err(_) => store.unread.chains = true,
         }
         store.prune();
         store
     }
 
+    /// Writes both files (each temp file, fsync, rename; the chains first, so a binding is never
+    /// saved before the chain it names). Refused, writing nothing, when either file could not be
+    /// read at load or cannot be read now: what it holds would be lost.
     pub fn save(&self, keys: &Path, chains_file: &Path) -> io::Result<()> {
-        fs::write(keys, self.serialize_keys())?;
-        fs::write(chains_file, chains::serialize(&self.chains))
+        let refused = |path: &Path| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("{} could not be read, so it was left unchanged. Restart Bowser after fixing or restoring it.", path.display()),
+            )
+        };
+        if self.unread.keys {
+            return Err(refused(keys));
+        }
+        if self.unread.chains {
+            return Err(refused(chains_file));
+        }
+        let (keys_text, chains_text) = (self.serialize_keys(), chains::serialize(&self.chains));
+        if keys_text.len() > MAX_FILE_BYTES || chains_text.len() > chains::MAX_FILE_BYTES {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "the shortcuts are too large to save"));
+        }
+        read_for_change(keys, HEADER, MAX_FILE_BYTES)?;
+        read_for_change(chains_file, chains::HEADER, chains::MAX_FILE_BYTES)?;
+        crate::productivity::atomic_write(chains_file, chains_text.as_bytes())?;
+        crate::productivity::atomic_write(keys, keys_text.as_bytes())
     }
 
     /// Drops bindings and priorities that name a command that no longer exists (a deleted chain, a
@@ -778,6 +837,59 @@ mod tests {
         store.save_chain(Chain { id: 0, name: "A".into(), steps: vec![chains::Step { command: "reload".into(), delay_ms: 10 }] }).unwrap();
         store.save(&keys, &chains_file).unwrap();
         assert_eq!(Store::load(&keys, &chains_file), store);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    fn files_in(name: &str) -> (std::path::PathBuf, std::path::PathBuf, std::path::PathBuf) {
+        let dir = std::env::temp_dir().join(format!("bowser-commands-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let (keys, chains_file) = (dir.join("keybindings.txt"), dir.join("chains.txt"));
+        (dir, keys, chains_file)
+    }
+
+    fn morning() -> String {
+        chains::serialize(&[Chain { id: 1, name: "Morning".into(), steps: vec![chains::Step { command: "reload".into(), delay_ms: 0 }] }])
+    }
+
+    /// R-7: Notepad's "UTF-8 with BOM" must not make every chain (and every shortcut bound to one)
+    /// vanish on load and then be saved back empty by the next shortcut edit.
+    #[test]
+    fn files_saved_with_a_bom_load_and_survive_the_next_shortcut_edit() {
+        let (dir, keys, chains_file) = files_in("bom");
+        fs::write(&chains_file, format!("\u{feff}{}", morning())).unwrap();
+        fs::write(&keys, format!("\u{feff}{HEADER}\nbind\tchain:1\tCtrl+Shift+M\n")).unwrap();
+        let mut store = Store::load(&keys, &chains_file);
+        assert_eq!(store.chains.len(), 1, "the chain is read");
+        assert!(store.binds.contains_key("chain:1"), "its shortcut is kept");
+        store.assign("history", "Ctrl+Shift+Q", false).unwrap();
+        store.save(&keys, &chains_file).unwrap();
+        let after = Store::load(&keys, &chains_file);
+        assert_eq!(after.chains.len(), 1, "{:?}", fs::read_to_string(&chains_file));
+        assert!(after.binds.contains_key("chain:1") && after.binds.contains_key("history"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// R-7: a file that cannot be read (here one ANSI byte) is never replaced by what was loaded
+    /// without it, including when it has become readable again by the time of the save.
+    #[test]
+    fn an_unreadable_chains_or_keys_file_is_never_saved_over() {
+        let (dir, keys, chains_file) = files_in("unreadable");
+        let ansi = [morning().as_bytes(), b"chain\t2\tCaf\xe9\n"].concat();
+        fs::write(&chains_file, &ansi).unwrap();
+        let store = Store::load(&keys, &chains_file);
+        assert!(store.save(&keys, &chains_file).is_err(), "the save is refused");
+        assert_eq!(fs::read(&chains_file).unwrap(), ansi, "chains.txt is left as it was");
+        // Readable again (a lock released, the user fixed the byte): the loaded list is still empty.
+        fs::write(&chains_file, morning()).unwrap();
+        assert!(store.save(&keys, &chains_file).is_err());
+        assert_eq!(fs::read_to_string(&chains_file).unwrap(), morning());
+
+        let ansi_keys = [format!("{HEADER}\nbind\thistory\tCtrl+H\n").as_bytes(), b"site\tcaf\xe9.example\n"].concat();
+        fs::write(&keys, &ansi_keys).unwrap();
+        let store = Store::load(&keys, &chains_file);
+        assert!(store.save(&keys, &chains_file).is_err());
+        assert_eq!(fs::read(&keys).unwrap(), ansi_keys, "keybindings.txt is left as it was");
         let _ = fs::remove_dir_all(&dir);
     }
 }

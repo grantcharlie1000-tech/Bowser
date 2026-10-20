@@ -58,6 +58,9 @@ struct Panel {
     profile: Profile,
     notes: Vec<data::Note>,
     tasks: Vec<data::Task>,
+    /// `tasks.txt` was there but could not be read when the popup opened: `tasks` is not what it
+    /// holds, so it is never written over (even if it reads again later).
+    tasks_unread: bool,
     selected_note: Option<u64>,
     selected_task: Option<u64>,
     tab: Tab,
@@ -192,13 +195,11 @@ pub(crate) fn open(owner: HWND) {
     if !REGISTERED.with(Cell::get) && register_class().is_none() {
         return;
     }
-    let (notes, tasks) = if profile.is_guest() {
-        GUEST_DATA.with(|data| data.borrow().clone())
+    let (notes, (tasks, tasks_unread)) = if profile.is_guest() {
+        let (notes, tasks) = GUEST_DATA.with(|data| data.borrow().clone());
+        (notes, (tasks, false))
     } else {
-        (
-            data::read_note_list(&profile.notes_file()),
-            data::read_tasks(&profile.tasks_file()),
-        )
+        (data::read_note_list(&profile.notes_file()), load_tasks(&profile))
     };
     let width_dip = load_width(&profile);
     let dpi = unsafe { GetDpiForWindow(owner).max(96) };
@@ -213,6 +214,7 @@ pub(crate) fn open(owner: HWND) {
         profile,
         notes,
         tasks,
+        tasks_unread,
         selected_note: None,
         selected_task: None,
         tab: Tab::Notes,
@@ -321,8 +323,32 @@ pub(crate) fn html_notes(profile: &Profile) -> Vec<data::Note> {
 }
 
 pub(crate) fn html_tasks(profile: &Profile) -> Vec<data::Task> {
-    if profile.is_guest() { GUEST_DATA.with(|data| data.borrow().1.clone()) }
-    else { data::read_tasks(&profile.tasks_file()) }
+    html_tasks_for_change(profile).unwrap_or_default()
+}
+
+/// The tasks an edit rewrites: an error, never an empty list, when `tasks.txt` cannot be read.
+pub(crate) fn html_tasks_for_change(profile: &Profile) -> std::io::Result<Vec<data::Task>> {
+    if profile.is_guest() { Ok(GUEST_DATA.with(|data| data.borrow().1.clone())) }
+    else { data::read_tasks_for_change(&profile.tasks_file()) }
+}
+
+/// The popup's tasks, and whether `tasks.txt` was there but could not be read.
+fn load_tasks(profile: &Profile) -> (Vec<data::Task>, bool) {
+    match data::read_tasks_for_change(&profile.tasks_file()) {
+        Ok(tasks) => (tasks, false),
+        Err(_) => (Vec::new(), true),
+    }
+}
+
+/// Writes the popup's tasks, unless they were never loaded from the file (see `tasks_unread`).
+fn persist_tasks(s: &Panel) {
+    write_popup_tasks(&s.profile, &s.tasks, s.tasks_unread);
+}
+
+fn write_popup_tasks(profile: &Profile, tasks: &[data::Task], unread: bool) {
+    if !profile.is_guest() && !unread {
+        let _ = data::write_tasks(&profile.tasks_file(), tasks);
+    }
 }
 
 pub(crate) fn save_html_notes(profile: &Profile, notes: &[data::Note]) -> std::io::Result<()> {
@@ -522,9 +548,7 @@ fn save_task(hwnd: HWND, s: &mut Panel) {
     };
     if let Some(task) = s.tasks.iter_mut().find(|task| task.id == id) {
         task.text = edit_text(s.task).trim().to_owned();
-        if !s.profile.is_guest() {
-            let _ = data::write_tasks(&s.profile.tasks_file(), &s.tasks);
-        }
+        persist_tasks(s);
         cache_guest(s);
     }
     let _ = unsafe { InvalidateRect(Some(hwnd), None, false) };
@@ -561,9 +585,7 @@ fn add_task(hwnd: HWND) {
         s.tasks.push(task.clone());
         s.selected_task = Some(task.id);
         s.tab = Tab::Tasks;
-        if !s.profile.is_guest() {
-            let _ = data::write_tasks(&s.profile.tasks_file(), &s.tasks);
-        }
+        persist_tasks(s);
         cache_guest(s);
         populate_edits(hwnd);
         unsafe {
@@ -587,9 +609,7 @@ fn delete_selected(hwnd: HWND) {
             Tab::Tasks => {
                 if let Some(id) = s.selected_task {
                     s.tasks.retain(|task| task.id != id);
-                    if !s.profile.is_guest() {
-                        let _ = data::write_tasks(&s.profile.tasks_file(), &s.tasks);
-                    }
+                    persist_tasks(s);
                     s.selected_task = s.tasks.first().map(|task| task.id);
                 }
             }
@@ -639,9 +659,7 @@ fn click(hwnd: HWND, x: i32, y: i32) {
     {
         if x < layout.row(index).left + layout.px(34) {
             task.complete = !task.complete;
-            if !s.profile.is_guest() {
-                let _ = data::write_tasks(&s.profile.tasks_file(), &s.tasks);
-            }
+            persist_tasks(s);
             cache_guest(s);
             let _ = unsafe { InvalidateRect(Some(hwnd), None, false) };
         } else {
@@ -1040,6 +1058,7 @@ mod tests {
             profile: Profile::guest_in(root).expect("guest profile"),
             notes: vec![data::Note { id: 7, title: "kept".into(), body: String::new() }],
             tasks: Vec::new(),
+            tasks_unread: false,
             selected_note: None,
             selected_task: None,
             tab: Tab::Notes,
@@ -1180,6 +1199,35 @@ mod tests {
         let saved = fs::read_to_string(&path).unwrap();
         assert_eq!(saved, "# mine\nsleep_enabled=false\nunknown=value\nnotes_panel_width=400\n");
         assert!(crate::settings::save_generation() > before, "the width save counts as a settings save");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// PR #69 follow-up: the popup keeps its tasks in memory. If `tasks.txt` could not be read when
+    /// it opened, its (empty) list must never be written over the file, even once the file reads
+    /// again (a lock released by a backup or sync tool).
+    #[test]
+    fn tasks_unreadable_when_the_popup_opened_are_never_saved_over() {
+        let dir = std::env::temp_dir().join(format!("bowser-notes-tasks-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let profile = crate::profile::Profile::default_in(&dir);
+        let path = profile.tasks_file();
+        fs::write(&path, b"bowser-tasks-v1\n1\t0\tCaf\xe9\n").unwrap();
+        let (mut tasks, unread) = load_tasks(&profile);
+        assert!(unread && tasks.is_empty());
+        let kept = [data::Task { id: 1, complete: false, text: "Pay rent".into() }, data::Task { id: 2, complete: true, text: "Call home".into() }];
+        fs::remove_file(&path).unwrap();
+        data::write_tasks(&path, &kept).unwrap();
+        let before = fs::read(&path).unwrap();
+        tasks.push(data::Task { id: 3, complete: false, text: "New task".into() });
+        write_popup_tasks(&profile, &tasks, unread);
+        assert_eq!(fs::read(&path).unwrap(), before, "the readable file keeps both tasks");
+
+        let (mut tasks, unread) = load_tasks(&profile);
+        assert!(!unread && tasks.len() == 2);
+        tasks.push(data::Task { id: 3, complete: false, text: "New task".into() });
+        write_popup_tasks(&profile, &tasks, unread);
+        assert_eq!(data::read_tasks(&path).len(), 3, "a list that was read is saved");
         let _ = fs::remove_dir_all(&dir);
     }
 }
