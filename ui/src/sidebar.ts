@@ -9,7 +9,7 @@ import { wheelNotches } from './rail-logic'; // --- tab stacks and workspaces (T
 import { setTip } from './tooltip';
 import { el, icon, place, type IconName } from './dom';
 import { DRAG_ATTR } from './view';
-import { beforeId, dragScrollDelta, privateTabName } from './tabs-logic';
+import { beforeId, dragScrollDelta, focusHeir, privateTabName } from './tabs-logic';
 // --- tab options ---
 import { clickSelection, loadMark, markedName, notifyLabel, pruneSelection, type LoadIndicatorChoice } from './tab-marks-logic';
 // --- end tab options ---
@@ -224,7 +224,8 @@ function makeGroup(key: number): SidebarGroupNode {
 export function createSidebarRenderer(root: HTMLElement): {
   render(msg: TabsMsg, favs: ReadonlyMap<number, string>, workspace: SidebarWorkspace): void;
   workspace(value: SidebarWorkspace): void;
-  options(value: TabOptsMsg): void; // --- tab options ---
+  /** --- tab options --- `shown`: the sidebar is the layout in use, so it may redraw into the root. */
+  options(value: TabOptsMsg, shown: boolean): void;
   /** Drops the selection (the layout switched away, so it can no longer be seen). */
   clearSelection(): void;
   /** Whether the sidebar is docked at the right of the window (the page is to its left). */
@@ -420,6 +421,10 @@ export function createSidebarRenderer(root: HTMLElement): {
 
     const rows: HTMLElement[] = [];
     const live = new Set(msg.items.map((item) => item.id));
+    // A closed row that had the keyboard (Delete) hands it to the row beside it, not to the body (U10).
+    const shownTabs = Array.from(root.querySelectorAll<HTMLElement>('.side-tab:not(.leaving)'));
+    const hadFocus = shownTabs.find((row) => row === document.activeElement);
+    const heir = hadFocus ? focusHeir(shownTabs.map((row) => Number(row.dataset.id)), Number(hadFocus.dataset.id), live) : 0;
     for (const id of tabs.keys()) if (!live.has(id)) tabs.delete(id);
     // --- tab options --- a closed tab leaves the selection.
     const keptPicked = pruneSelection(picked, live);
@@ -495,13 +500,15 @@ export function createSidebarRenderer(root: HTMLElement): {
     const entering = rows.filter((row) => row.parentNode !== list && row !== separator && row !== empty && row !== pinGrid && !row.classList.contains('leaving'));
     for (const row of rows) if (!row.classList.contains('leaving')) row.classList.remove('leaving');
     // Roving tabindex: keep it where the user is, else on the active tab.
-    const focused = list.contains(document.activeElement) ? (document.activeElement as HTMLElement).closest<HTMLElement>('.side-tab, .side-group') : null;
+    const heirRow = heir !== 0 ? tabs.get(heir)?.root : undefined;
+    const focused = heirRow ?? (list.contains(document.activeElement) ? (document.activeElement as HTMLElement).closest<HTMLElement>('.side-tab, .side-group') : null);
     place(list, rows);
     place(root, [top, list]);
     const activeRow = tabs.get(msg.active)?.root;
     const all = rowsOf();
     const target = focused ?? activeRow ?? all[0];
     for (const row of all) if (row.tabIndex !== (row === target ? 0 : -1)) row.tabIndex = row === target ? 0 : -1;
+    heirRow?.focus({ preventScroll: true });
     if (rendered && entering.length > 0 && entering.length <= MAX_ENTER) {
       for (const row of entering) row.classList.add('bw-enter');
     }
@@ -886,7 +893,7 @@ export function createSidebarRenderer(root: HTMLElement): {
       if (latest) render(latest, latestFavs, currentWorkspace);
     },
     // --- tab options ---
-    options(value) {
+    options(value, shown) {
       selectionOn = value.selection;
       selectionActive = value.selectionActive;
       // tabs_close_left / tabs_close_always: sidebar.css moves and shows the rows' close buttons.
@@ -895,7 +902,10 @@ export function createSidebarRenderer(root: HTMLElement): {
       const redraw = indicator !== value.indicator || pinnedSeparator !== value.separator;
       indicator = value.indicator;
       pinnedSeparator = value.separator;
-      if (redraw && latest) render(latest, latestFavs, currentWorkspace);
+      // The root is the tab strip's too: with the strip in use, a redraw would put the old sidebar
+      // over it (for a whole drag, as the strip defers its renders), U8. The next sidebar render
+      // after a switch to it draws the new look anyway.
+      if (redraw && shown && latest) render(latest, latestFavs, currentWorkspace);
       closedRow.hidden = value.closed === 0 || !value.closedButton; // --- toolbars and feeds (thread T13) ---
       syncTools(value.tools);
       if (!selectionOn && picked.length > 0) setPicked([]);

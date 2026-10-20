@@ -65,6 +65,87 @@ test('hand-tuned chrome geometry is unchanged', () => {
   }
 });
 
+test('maximised with the spacing removed, grouped tabs reach the top edge as other tabs do (U6)', () => {
+  const tabs = readFileSync(join(stylesDir, 'tabs.css'), 'utf8');
+  const rule = (selector) => new RegExp(`(?:^|\\n)${selector.replace(/[.*[\]()]/g, '\\$&')} \\{([^}]*)\\}`).exec(tabs)?.[1] ?? '';
+  assert.match(rule('.strip.flush .tab'), /height: auto;/);
+  assert.match(rule('.strip .group'), /height: var\(--bw-tab-h\);/, 'a group is otherwise a box of the tab height');
+  const flushGroup = rule('.strip.flush .group');
+  assert.match(flushGroup, /height: auto;/, 'flush, the group grows with the row');
+  assert.match(flushGroup, /align-items: stretch;/, 'and its tabs fill it');
+  const built = /\.strip\.flush \.group\{([^}]*)\}/.exec(css)?.[1] ?? '';
+  assert.match(built, /height:auto/, 'the built sheet has it');
+  assert.match(built, /align-items:stretch/, 'the built sheet has it');
+});
+
+// ---- U11: what wins the cascade on a picked or stack-target tab ----
+
+/** CSS specificity [ids, classes, types] of one complex selector (:is/:not/:has count their heaviest argument, :where nothing). */
+function specificity(selector) {
+  let [a, b, c] = [0, 0, 0];
+  const nested = /:(is|not|has|where)\(((?:[^()]|\([^()]*\))*)\)/g;
+  const rest = selector.replace(nested, (_, name, inner) => {
+    if (name === 'where') return '';
+    const best = inner.split(',').map((one) => specificity(one.trim())).sort(compare).at(-1);
+    a += best[0]; b += best[1]; c += best[2];
+    return '';
+  });
+  a += (rest.match(/#[\w-]+/g) ?? []).length;
+  b += (rest.match(/\.[\w-]+|\[[^\]]*\]|(?<!:):[\w-]+/g) ?? []).length;
+  c += (rest.match(/::[\w-]+/g) ?? []).length + (rest.match(/(?:^|[\s>+~])[a-z][\w-]*/gi) ?? []).length;
+  return [a, b, c];
+}
+const compare = (x, y) => x[0] - y[0] || x[1] - y[1] || x[2] - y[2];
+/** Every selector in `file` (comments dropped) that sets one of `props`. */
+function selectorsSetting(file, props) {
+  const text = readFileSync(join(stylesDir, file), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+  const found = [];
+  for (const m of text.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+    if (!props.some((p) => new RegExp(`(?:^|;|\\s)${p}\\s*:`).test(m[2]))) continue;
+    for (const one of m[1].split(/,(?![^(]*\))/)) found.push(one.trim());
+  }
+  return found;
+}
+
+test('specificity helper agrees with the CSS rules it is used for', () => {
+  assert.deepEqual(specificity(':root[data-scheme="light"] .strip .tab::before'), [0, 4, 1]);
+  assert.deepEqual(specificity('.strip .tab[data-pair="shown"]:not(.active)::before'), [0, 4, 1]);
+  assert.deepEqual(specificity('.side-tab[data-private="true"]:not(:focus-visible, .dragging)'), [0, 3, 0]);
+  assert.deepEqual(specificity('.strip:not(#x) .tab.picked::before'), [1, 3, 1]);
+  assert.deepEqual(specificity('.strip .tab.active:where(:not(.landing))'), [0, 3, 0]);
+});
+
+test('a picked or stack-target tab shows its tint and ring over every wash, in both schemes and on private tabs (U11)', () => {
+  // Strip: the islands are painted by ::before. Every other rule that paints a tab's ::before.
+  const strip = [...selectorsSetting('tabs.css', ['background', 'box-shadow']), ...selectorsSetting('split.css', ['background', 'box-shadow'])]
+    .filter((s) => /\.tab\b[^,]*::before$/.test(s));
+  const marks = (cls) => strip.filter((s) => s.includes(`.${cls}`));
+  const others = strip.filter((s) => !s.includes('.picked') && !s.includes('.stack-target'));
+  assert.ok(others.includes(':root[data-scheme="light"] .strip .tab::before'), 'the light wash is among the rivals');
+  assert.ok(others.some((s) => s.includes('[data-pair="shown"]')), 'and a shown pair half');
+  for (const cls of ['picked', 'stack-target']) {
+    const own = marks(cls).filter((s) => !s.includes('[data-private'));
+    assert.ok(own.length > 0, cls);
+    const best = own.map(specificity).sort(compare).at(-1); // a list applies its heaviest matching selector
+    for (const rival of others) assert.ok(compare(best, specificity(rival)) > 0, `.${cls} loses to ${rival}`);
+  }
+  // Sidebar: the rows paint themselves.
+  // Rules on the row itself (its last compound is .side-tab), leaving out hover, the focus ring (the
+  // picked ring yields to it on purpose) and a held row.
+  const lastCompound = (s) => s.replace(/\([^()]*\)/g, '()').split(/\s+/).at(-1);
+  const side = selectorsSetting('sidebar.css', ['background', 'background-color', 'box-shadow'])
+    .filter((s) => lastCompound(s).startsWith('.side-tab') && !/:hover|:focus-visible$|\.dragging$/.test(lastCompound(s)) && !/\.side-tab:focus-visible|\.dragging$/.test(s));
+  const pickedFill = selectorsSetting('sidebar.css', ['background']).filter((s) => /\.side-tab\.picked$/.test(s));
+  const pickedRing = selectorsSetting('sidebar.css', ['box-shadow']).filter((s) => s.includes('.side-tab.picked') && !s.includes('[data-private'));
+  assert.ok(pickedFill.length > 0 && pickedRing.length > 0);
+  const rivals = side.filter((s) => !s.includes('.picked'));
+  assert.ok(rivals.includes('[data-scheme="light"] .side-tab:not(.is-active)'));
+  assert.ok(rivals.includes('.side-tab[data-private="true"]:not(:focus-visible, .dragging)'));
+  for (const rival of rivals) {
+    for (const own of [...pickedFill, ...pickedRing]) assert.ok(compare(specificity(own), specificity(rival)) > 0, `${own} loses to ${rival}`);
+  }
+});
+
 // --- two-level stacks (T10b) ---
 test('the two rows of two-level stacks are the heights the native layout reserves', () => {
   const tokens = readFileSync(join(stylesDir, 'tokens.css'), 'utf8');

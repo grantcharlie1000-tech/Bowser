@@ -615,6 +615,23 @@ test('a closed tab leaves the selection', () => {
   assert.deepEqual(sent, [{ v: 1, t: 'tabsel', ids: '2' }]);
 });
 
+test('Delete on a focused tab closes it and the keyboard stays on the strip (U10)', () => {
+  deliver(tabsMsg([item(1, { pinned: true }), item(2), item(3), item(4)], 2));
+  try {
+    tabNode(3).focus();
+    sent.length = 0;
+    stripRoot.dispatch('keydown', { key: 'Delete', target: tabNode(3) });
+    assert.deepEqual(sent, [{ v: 1, t: 'tab', a: 'close', id: 3 }]);
+    deliver(tabsMsg([item(1, { pinned: true }), item(2), item(4)], 2));
+    assert.equal(document.activeElement, tabNode(4), 'the tab after it has the keyboard');
+    assert.equal(tabNode(4).tabIndex, 0);
+    tabNode(4).dispatch('keydown', { key: 'ArrowLeft', target: tabNode(4) });
+    assert.equal(document.activeElement, tabNode(2), 'and the arrows go on working');
+  } finally {
+    deliver(tabsMsg([item(1, { pinned: true }), item(2), item(3)], 2));
+  }
+});
+
 test('a double click on a tab goes to Rust, which decides what it does; the close button is not a tab', () => {
   sent.length = 0;
   tabNode(3).dispatch('dblclick');
@@ -745,6 +762,30 @@ test('two-level stacks: the tab row shows the stack as its open ball and the sec
   deliver(stacked(3));
   assert.equal(row.hidden, true);
   assert.equal(tabNode(3).parent.classList.contains('group'), true);
+  deliver(tabsMsg([item(1, { pinned: true }), item(2), item(3)], 2));
+});
+
+test('two-level stacks: the second row follows the close, scroll and width options, and shows split halves (U5)', () => {
+  const lead = { gname: 'Docs', gcol: 2, gcollapsed: true, gsize: 3 };
+  const row = document.body.querySelector('.stack-row');
+  deliver(opts({ stackRow: 'regular', closeLeft: true, closeAlways: true, scroll: true, minWidth: 210, alignClose: true }));
+  deliver(tabsMsg([item(1), item(2, { g: 9, gl: true, ...lead }), item(3, { g: 9 }), item(4, { g: 9 }), item(5)], 3));
+  assert.deepEqual(row.children.map((c) => c.dataset.id), ['2', '3', '4']);
+  for (const cls of ['close-left', 'close-always', 'scrolling']) assert.equal(row.classList.contains(cls), true, cls);
+  assert.equal(row.style.getPropertyValue('--tab-active-min'), '210px');
+  // Closing a second-row tab by mouse holds that row's widths, not the tab row's.
+  row.children[2].querySelector('.close').click();
+  assert.equal(row.classList.contains('locked'), true);
+  assert.equal(row.style.getPropertyValue('--tab-lock'), '120px');
+  assert.equal(stripRoot.classList.contains('locked'), false, 'the tab row keeps its own widths');
+  row.dispatch('pointerleave');
+  assert.equal(row.classList.contains('locked'), false, 'leaving the second row ends the lock');
+  // A split pair inside the stack is a joined capsule in the second row too.
+  deliver({ v: 1, t: 'pair', l: 3, r: 4, f: 'l', shown: true, o: 'h' });
+  assert.deepEqual(row.children.map((c) => c.dataset.split), [undefined, 'l', 'r']);
+  deliver({ v: 1, t: 'pair', l: 0, r: 0, f: 'l', shown: false, o: 'h' });
+  deliver(opts({ stackRow: 'off' }));
+  for (const cls of ['close-left', 'close-always', 'scrolling']) assert.equal(row.classList.contains(cls), false, cls);
   deliver(tabsMsg([item(1, { pinned: true }), item(2), item(3)], 2));
 });
 

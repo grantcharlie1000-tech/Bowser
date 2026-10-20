@@ -1,5 +1,5 @@
-//! Workspaces across a restart (T1, T2, T3), and strip moves and workspace creation that the model
-//! refuses (T4, T7).
+//! Workspaces across a restart (T1, T2, T3), strip moves and workspace creation that the model
+//! refuses (T4, T7), reopening a closed tab (T6) and crossing workspaces by selecting a tab (T8).
 
 use super::*;
 use crate::workspaces::{WorkspaceId, WorkspaceSet};
@@ -169,4 +169,115 @@ fn failed_workspace_create_leaves_no_new_tab() {
     assert!(App::create_workspace(&app, "default").is_err());
     assert_eq!(App::tab_ids(&app).len(), before, "a stray new tab was left behind");
     assert_eq!(app.borrow().tabs.len(), before);
+}
+
+/// A move to the right (a drag, "Duplicate" beside a tab further right) lands exactly at the
+/// asked-for place in the strip, and the model agrees. `move_tab` takes the index without the tab.
+#[test]
+fn a_tab_moved_right_lands_where_it_was_dropped() {
+    let app = app_with_pending(rect(800, 600));
+    let a = App::active_tab_id(&app);
+    let b = App::new_tab(&app);
+    let c = App::new_tab(&app);
+    let d = App::new_tab(&app);
+    assert_eq!(App::tab_ids(&app), [a, b, c, d]);
+    // The HTML strip drops a before c: post-removal index 1.
+    let index = crate::chrome_host::drop_index(&App::tab_ids(&app), a, c.0 + 1);
+    assert!(App::drop_tab(&app, a, index.expect("a move")));
+    assert_eq!(App::tab_ids(&app), [b, a, c, d]);
+    assert_eq!(App::tab_ids(&app), model_order(&app));
+    assert!(App::move_tab(&app, b, 3));
+    assert_eq!(App::tab_ids(&app), [a, c, d, b], "to the end");
+    assert_eq!(App::tab_ids(&app), model_order(&app));
+    assert!(App::move_tab(&app, a, 1));
+    assert_eq!(App::tab_ids(&app), [c, a, d, b], "one place right");
+    assert_eq!(App::tab_ids(&app), model_order(&app));
+}
+
+/// T5: "Duplicate" on a background tab right of the active one opens the copy beside the active
+/// tab, then moves it beside the original.
+#[test]
+fn a_duplicate_of_a_background_tab_lands_beside_it() {
+    let app = app_with_pending(rect(800, 600));
+    let a = App::active_tab_id(&app);
+    let b = App::new_tab(&app);
+    let c = App::new_tab(&app);
+    let d = App::new_tab(&app);
+    assert!(App::select_tab(&app, a));
+    let copy = App::new_tab(&app);
+    assert_eq!(App::tab_ids(&app), [a, copy, b, c, d], "a new tab opens beside the active one");
+    // window.rs `duplicate_index` with "beside": the original's place without the copy, plus one.
+    let without: Vec<TabId> = App::tab_ids(&app).into_iter().filter(|tab| *tab != copy).collect();
+    let after = without.iter().position(|tab| *tab == b).unwrap() + 1;
+    assert!(App::move_tab(&app, copy, after));
+    assert_eq!(App::tab_ids(&app), [a, b, copy, c, d]);
+    assert_eq!(App::tab_ids(&app), model_order(&app));
+}
+
+/// T6: with two workspaces, a tab closed in the second one reopens in its own place there, and a
+/// tab closed in the first one reopens in the first even when the second is shown by then.
+#[test]
+fn a_reopened_tab_returns_to_its_place_in_its_own_workspace() {
+    let app = app_with_pending(rect(800, 600));
+    let a0 = App::active_tab_id(&app);
+    page(&app, a0, "https://a0.example/");
+    let a1 = App::new_tab(&app);
+    page(&app, a1, "https://a1.example/");
+    let a2 = App::new_tab(&app);
+    page(&app, a2, "https://a2.example/");
+    let home = app.borrow().workspaces.active().id();
+    let work = App::create_workspace(&app, "Work").unwrap();
+    let b0 = App::active_tab_id(&app);
+    page(&app, b0, "https://b0.example/");
+    let b1 = App::new_tab(&app);
+    page(&app, b1, "https://b1.example/");
+    let b2 = App::new_tab(&app);
+    page(&app, b2, "https://b2.example/");
+    assert_eq!(App::tab_ids(&app), [b0, b1, b2]);
+
+    assert!(App::close_tab(&app, b1));
+    let back = App::reopen_closed_tab(&app).expect("reopened");
+    assert_eq!(App::tab_ids(&app), [b0, back, b2], "the reopened tab is not where it was");
+
+    assert!(App::switch_workspace(&app, home));
+    assert!(App::close_tab(&app, a1));
+    assert!(App::switch_workspace(&app, work));
+    let again = App::reopen_closed_tab(&app).expect("reopened");
+    assert_eq!(app.borrow().workspaces.active().id(), home, "it reopens in the workspace it was closed from");
+    assert_eq!(App::tab_ids(&app), [a0, again, a2]);
+    assert_eq!(app.borrow().workspaces.get(work).unwrap().tabs(), [b0, back, b2], "Work is unchanged");
+    assert_membership_is_sound(&app);
+}
+
+/// Whether a `WM_RAIL_CHANGED` was posted to this thread (the test app has no window, so its
+/// posts land in the thread's queue). Takes every one of them off the queue.
+fn rail_change_posted() -> bool {
+    use windows::Win32::UI::WindowsAndMessaging::{MSG, PM_REMOVE, PeekMessageW};
+    let mut message = MSG::default();
+    let mut seen = false;
+    while unsafe { PeekMessageW(&mut message, None, crate::win32::WM_RAIL_CHANGED, crate::win32::WM_RAIL_CHANGED, PM_REMOVE) }.as_bool() {
+        seen = true;
+    }
+    seen
+}
+
+/// T8: selecting a tab of another workspace (Ctrl+Tab in MRU order, a search result) switches to
+/// that workspace, so the rail is told to show it, as a switch from the rail would.
+#[test]
+fn selecting_a_tab_of_another_workspace_tells_the_rail() {
+    let _ = rail_change_posted(); // creates the thread's queue and clears it
+    let app = app_with_pending(rect(800, 600));
+    let a0 = App::active_tab_id(&app);
+    let home = app.borrow().workspaces.active().id();
+    let _work = App::create_workspace(&app, "Work").unwrap();
+    let b0 = App::active_tab_id(&app);
+    let _b1 = App::new_tab(&app); // active, so b0 below is a switch within Work
+    let _ = rail_change_posted();
+
+    assert!(App::select_tab(&app, b0));
+    assert!(!rail_change_posted(), "a tab of the same workspace leaves the rail alone");
+
+    assert!(App::select_tab(&app, a0));
+    assert_eq!(app.borrow().workspaces.active().id(), home);
+    assert!(rail_change_posted(), "the rail still marks the old workspace");
 }

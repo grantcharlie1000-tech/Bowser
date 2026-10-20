@@ -66,18 +66,10 @@ export function pairOrder(items: readonly TabItem[], pair: PairMsg | null): read
         };
       }
     }
-    joined.push({
-      id: other.id,
-      title: other.title,
-      loading: other.loading,
-      pinned: first.pinned,
-      muted: other.muted,
-      private: other.private,
-      marker: other.marker,
-      g: first.pinned ? 0 : first.g,
-      gl: false,
-      fav: other.fav,
-    });
+    // Every mark of its own (unread, count, progress, asleep, idle, reload) stays with the tab; it
+    // takes only its place (pin section and group) from the first tab, and leads no group.
+    const { gname: _gname, gcol: _gcol, gcollapsed: _gcollapsed, gsize: _gsize, ...own } = other;
+    joined.push({ ...own, pinned: first.pinned, g: first.pinned ? 0 : first.g, gl: false });
   }
   const at = rest.findIndex((item) => item.id === first.id);
   rest.splice(at + 1, 0, ...joined);

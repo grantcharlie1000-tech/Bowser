@@ -437,19 +437,25 @@
   border-top-left-radius: 0;
   border-top-right-radius: 0;
 }
+/* A group is a box of the tab height that centres its tabs; flush, it grows with the row so its tabs
+   reach the top edge as well (U6). Its header chip stays centred. */
+.strip.flush .group { height: auto; align-items: stretch; }
+.strip.flush .group .ball { align-self: center; }
 
 /* Marks: a hibernated tab's icon is dimmed, a tab unused for the threshold is faint, a selected tab is tinted. */
 .strip .tab.asleep .ico { opacity: 0.5; }
 .strip .tab.idle { opacity: 0.6; }
-.strip .tab.picked::before,
-.strip .tab.active.picked::before {
+/* U11: `:not(#bw-no-id)` (no element has that id) lends these marks an id's weight on either row,
+   so no scheme or split wash on an inactive tab (`:root[data-scheme="light"] .strip .tab::before`,
+   a shown pair's half) can hide them, and on a private tab the ring stands in for the underline
+   while it is picked. */
+.strip:not(#bw-no-id) .tab.picked::before {
   background: var(--bw-accent-soft);
   box-shadow: inset 0 0 0 1px var(--bw-accent);
 }
 /* --- tab stacks (T10) --- the tab a held tab rests over: a release stacks the two. The selection's
    tint with a firmer edge, so the two marks never read as one. */
-.strip .tab.stack-target::before,
-.strip .tab.active.stack-target::before {
+.strip:not(#bw-no-id) .tab.stack-target::before {
   background: var(--bw-accent-soft);
   box-shadow: inset 0 0 0 2px var(--bw-accent);
 }

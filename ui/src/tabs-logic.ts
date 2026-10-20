@@ -205,13 +205,27 @@ export function layoutSignature(entries: readonly Entry[]): string {
 
 /**
  * `before` id for moving the tab at `at` one slot left (-1) or right (+1) among `ids` (visible
- * order), or null when it is already at that end.
+ * order), or null when it is already at that end. A collapsed group is one slot, as for a drag:
+ * `leaderOf` maps its visible tab to its first member (see `beforeSlotId`).
  */
-export function stepMoveBefore(ids: readonly number[], at: number, dir: -1 | 1): number | null {
+export function stepMoveBefore(ids: readonly number[], at: number, dir: -1 | 1, leaderOf: ReadonlyMap<number, number> = new Map()): number | null {
   const dest = at + dir;
   if (at < 0 || at >= ids.length || dest < 0 || dest >= ids.length) return null;
   const others = ids.filter((_, i) => i !== at);
-  return beforeId(others, dest);
+  return beforeSlotId(others, dest, leaderOf);
+}
+
+/**
+ * The tab that takes the keyboard when the focused tab `focused` closes: the next one in `order` that
+ * is still `live`, else the one before it; 0 when `focused` did not close (or nothing is left). Keeps
+ * focus on a tab after Delete instead of dropping it to the page body.
+ */
+export function focusHeir(order: readonly number[], focused: number, live: ReadonlySet<number>): number {
+  const at = order.indexOf(focused);
+  if (at < 0 || live.has(focused)) return 0;
+  const after = order.slice(at + 1).find((id) => live.has(id));
+  if (after !== undefined) return after;
+  return order.slice(0, at).reverse().find((id) => live.has(id)) ?? 0;
 }
 
 /**

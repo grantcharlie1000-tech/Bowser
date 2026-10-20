@@ -776,8 +776,10 @@ pub struct ClosedTab {
     pub title: String,
     // --- tab options --- what "Reopen closed tab" needs to put the tab back as it was.
     pub pinned: bool,
-    /// Its place in the strip when it closed (the strip may be shorter by now).
+    /// Its place in its workspace's strip when it closed (the strip may be shorter by now).
     pub index: usize,
+    /// The workspace it was closed from (T6); it reopens there.
+    pub workspace: Option<crate::workspaces::WorkspaceId>,
     // --- end tab options ---
 }
 // --- end split view ---
@@ -1936,11 +1938,14 @@ impl App {
             app.borrow_mut().park_split();
         }
         // --- end split view ---
-        let (hwnd, previous, old_has_controller, new_has_controller) = {
+        let (hwnd, previous, old_has_controller, new_has_controller, crossed) = {
             let mut state = app.borrow_mut();
             let previous = state.tab_model.active();
+            // T8: a tab of another workspace switches to it, and the rail must show that.
+            let mut crossed = false;
             if let Some(workspace_id) = state.workspaces.workspace_for(id) {
-                let _ = state.workspaces.switch_to(workspace_id);
+                crossed = workspace_id != state.workspaces.active().id()
+                    && state.workspaces.switch_to(workspace_id).is_ok();
             }
             let was_active = state.tab_model.active() == id;
             if !state.tab_model.select(id) {
@@ -1971,8 +1976,11 @@ impl App {
                 .find(|tab| tab.id == previous)
                 .is_some_and(|tab| tab.controller_created);
             state.desired_memory_target = MemoryUsageTarget::Normal;
-            (state.hwnd, previous, old_has_controller, new_has_controller)
+            (state.hwnd, previous, old_has_controller, new_has_controller, crossed)
         };
+        if crossed {
+            Self::notify_rail_changed(app);
+        }
         let actions =
             controller_visibility_plan((previous, old_has_controller), (id, new_has_controller));
         let now = Instant::now();
@@ -2150,6 +2158,10 @@ impl App {
                 return false;
             }
             let ordered = state.workspaces.active().tabs();
+            // `TabList::move_tab` takes the tab out before it inserts it, so a neighbour to its
+            // right is one place further left by then (T5: else a move right lands one too far).
+            let from = state.tab_model.index_of(id);
+            let after_removal = |at: usize| if from.is_some_and(|from| from < at) { at - 1 } else { at };
             let target = ordered
                 .iter()
                 .position(|tab| *tab == id)
@@ -2157,11 +2169,12 @@ impl App {
                     ordered
                         .get(position + 1)
                         .and_then(|next| state.tab_model.index_of(*next))
+                        .map(after_removal)
                         .or_else(|| {
                             position
                                 .checked_sub(1)
                                 .and_then(|previous| state.tab_model.index_of(ordered[previous]))
-                                .map(|previous| previous + 1)
+                                .map(|previous| after_removal(previous) + 1)
                         })
                 })
                 .unwrap_or(0);
@@ -2962,11 +2975,18 @@ impl App {
         let Some(url) = tab.url.as_ref().filter(|url| matches!(url.scheme(), "http" | "https")) else {
             return;
         };
+        // T6: `move_tab` reads an index into the active workspace, so keep the place within the
+        // tab's own workspace (not in every workspace's tabs) and which workspace that was.
+        let workspace = self.workspaces.workspace_for(tab.id);
+        let place = workspace
+            .and_then(|id| self.workspaces.get(id))
+            .and_then(|found| found.tabs().iter().position(|member| *member == tab.id));
         let entry = ClosedTab {
             url: url.as_str().to_owned(),
             title: tab.title.clone(),
             pinned: self.tab_model.get(tab.id).is_some_and(|model| model.pinned),
-            index,
+            index: place.unwrap_or(index),
+            workspace,
         };
         self.recently_closed.retain(|closed| closed.url != entry.url);
         self.recently_closed.push_front(entry);

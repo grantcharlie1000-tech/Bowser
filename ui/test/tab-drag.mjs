@@ -289,5 +289,5 @@ test('tabs.ts holds the strip still over a stack target and sends tabstack only 
   assert.match(src, /const stackOnto = commit && d\.stackArmed && !splitOut \? d\.stackOn : null;/);
   assert.match(src, /ui\.stackDrag/, 'the option gates it');
   const css = readFileSync(join(here, '..', 'src', 'styles', 'tabs.css'), 'utf8');
-  assert.match(css, /\.strip \.tab\.stack-target::before/);
+  assert.match(css, /\.strip(?::not\(#bw-no-id\))? \.tab\.stack-target::before \{/);
 });

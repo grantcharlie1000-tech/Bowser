@@ -465,7 +465,10 @@
 
 .side-tab.asleep .side-face { opacity: 0.5; }
 .side-tab.idle { opacity: 0.6; }
-.side-tab.picked { background: var(--bw-accent-soft); box-shadow: inset 0 0 0 1px var(--bw-accent); }
+/* U11: #app's weight keeps the tint over the light scheme's wash on inactive rows, and the ring over a
+   private row's edge while it is picked; the ring yields only to the focus ring. */
+#app .side-tab.picked { background: var(--bw-accent-soft); }
+#app .side-tab.picked:not(:focus-visible, .dragging) { box-shadow: inset 0 0 0 1px var(--bw-accent); }
 .side-unread { flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--bw-accent); }
 .side-notify {
   flex: none;

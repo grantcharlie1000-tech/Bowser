@@ -6187,7 +6187,7 @@ fn show_tab_context_menu(hwnd: HWND, app: &AppRef, id: TabId, x: i32, y: i32, pi
                     }
                     let current = App::tab_ids(app);
                     // --- tab options --- "Duplicated tab position": next to the original, or last.
-                    let after = duplicate_index(App::tab_options(app).duplicate_position, &current, id, index);
+                    let after = duplicate_index(App::tab_options(app).duplicate_position, &current, id, created, index);
                     // --- end tab options ---
                     let _ = App::move_tab(app, created, after);
                 }
@@ -7781,12 +7781,15 @@ fn new_tab_focuses_page(blank: bool, focus_page: bool) -> bool {
     focus_page && !blank
 }
 
-/// "Duplicated tab position": where the copy of tab `original` goes in `order`, which already holds
-/// the copy at its end; `fallback` is the original's index when it is no longer found.
-fn duplicate_index(position: crate::tab_options::DuplicatePosition, order: &[TabId], original: TabId, fallback: usize) -> usize {
+/// "Duplicated tab position": where `copy` of tab `original` goes. `order` already holds the copy
+/// wherever the new tab opened (often left of the original), and `App::move_tab` takes the index
+/// in the order without it, so the copy is left out here. `fallback` is the original's index when
+/// it is no longer found.
+fn duplicate_index(position: crate::tab_options::DuplicatePosition, order: &[TabId], original: TabId, copy: TabId, fallback: usize) -> usize {
+    let others = || order.iter().filter(|candidate| **candidate != copy);
     match position {
-        crate::tab_options::DuplicatePosition::Last => order.len(),
-        crate::tab_options::DuplicatePosition::Beside => order.iter().position(|candidate| *candidate == original).unwrap_or(fallback) + 1,
+        crate::tab_options::DuplicatePosition::Last => others().count(),
+        crate::tab_options::DuplicatePosition::Beside => others().position(|candidate| *candidate == original).unwrap_or(fallback) + 1,
     }
 }
 
@@ -12719,12 +12722,38 @@ mod tests {
         assert!(!new_tab_focuses_page(true, true), "the start page keeps the address bar");
         assert!(!new_tab_focuses_page(false, false), "off: the address bar");
         let order = [TabId(1), TabId(2), TabId(3), TabId(9)];
-        assert_eq!(duplicate_index(DuplicatePosition::Beside, &order, TabId(2), 0), 2, "right of the original");
-        assert_eq!(duplicate_index(DuplicatePosition::Last, &order, TabId(2), 0), 4, "at the end");
-        assert_eq!(duplicate_index(DuplicatePosition::Beside, &order, TabId(7), 1), 2, "a gone original uses its old place");
+        assert_eq!(duplicate_index(DuplicatePosition::Beside, &order, TabId(2), TabId(9), 0), 2, "right of the original");
+        assert_eq!(duplicate_index(DuplicatePosition::Last, &order, TabId(2), TabId(9), 0), 3, "at the end");
+        assert_eq!(duplicate_index(DuplicatePosition::Beside, &order, TabId(7), TabId(9), 1), 2, "a gone original uses its old place");
         assert_eq!(tab_double_click(DoubleClick::Ignore), TabDoubleClick::Nothing);
         assert_eq!(tab_double_click(DoubleClick::Close), TabDoubleClick::Close);
         assert_eq!(tab_double_click(DoubleClick::Rename), TabDoubleClick::Rename);
+    }
+
+    /// T5: the copy of a background tab opens beside the active tab, left of the original. The
+    /// index is taken without the copy, as `App::move_tab` reads it, so the copy lands right of
+    /// the original wherever it opened.
+    #[test]
+    fn a_duplicate_lands_beside_its_original_wherever_the_new_tab_opened() {
+        use crate::tab_options::DuplicatePosition;
+        let (a, b, c, d, copy) = (TabId(0), TabId(1), TabId(2), TabId(3), TabId(9));
+        let move_to = |order: &[TabId], index: usize| {
+            let mut moved: Vec<TabId> = order.iter().copied().filter(|tab| *tab != copy).collect();
+            moved.insert(index.min(moved.len()), copy);
+            moved
+        };
+        for (opened, original, want) in [
+            (vec![a, copy, b, c, d], b, vec![a, b, copy, c, d]),
+            (vec![a, copy, b, c, d], d, vec![a, b, c, d, copy]),
+            (vec![a, b, c, d, copy], b, vec![a, b, copy, c, d]),
+            (vec![a, b, copy, c, d], b, vec![a, b, copy, c, d]),
+            (vec![a, b, c, copy, d], a, vec![a, copy, b, c, d]),
+        ] {
+            let at = duplicate_index(DuplicatePosition::Beside, &opened, original, copy, 0);
+            assert_eq!(move_to(&opened, at), want, "copy of {original:?} opened in {opened:?}");
+            let last = duplicate_index(DuplicatePosition::Last, &opened, original, copy, 0);
+            assert_eq!(move_to(&opened, last).last(), Some(&copy), "Last puts the copy at the end");
+        }
     }
 
     /// Integration (T2 bookmarks bar, T3 private theme): the page hosts beside the toolbar take the
