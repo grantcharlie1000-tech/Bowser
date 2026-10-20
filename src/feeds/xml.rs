@@ -112,9 +112,25 @@ pub fn decode(bytes: &[u8]) -> Result<String, XmlError> {
     // Not UTF-8: honour a declared single-byte encoding, otherwise refuse.
     let head = String::from_utf8_lossy(&bytes[..bytes.len().min(200)]).to_ascii_lowercase();
     if head.contains("iso-8859-1") || head.contains("latin1") || head.contains("windows-1252") || head.contains("us-ascii") {
-        return Ok(bytes.iter().map(|&byte| char::from(byte)).collect());
+        return Ok(bytes.iter().map(|&byte| windows_1252(byte)).collect());
     }
     Err(XmlError::Malformed)
+}
+
+/// One windows-1252 byte. As the WHATWG Encoding Standard does for every one of these labels,
+/// 0x80-0x9F are the curly quotes, dashes and other characters windows-1252 puts there, not C1
+/// controls; the five bytes it leaves unassigned and everything else map to the same code point.
+fn windows_1252(byte: u8) -> char {
+    const HIGH: [char; 32] = [
+        '\u{20AC}', '\u{81}', '\u{201A}', '\u{192}', '\u{201E}', '\u{2026}', '\u{2020}', '\u{2021}',
+        '\u{2C6}', '\u{2030}', '\u{160}', '\u{2039}', '\u{152}', '\u{8D}', '\u{17D}', '\u{8F}',
+        '\u{90}', '\u{2018}', '\u{2019}', '\u{201C}', '\u{201D}', '\u{2022}', '\u{2013}', '\u{2014}',
+        '\u{2DC}', '\u{2122}', '\u{161}', '\u{203A}', '\u{153}', '\u{9D}', '\u{17E}', '\u{178}',
+    ];
+    match byte {
+        0x80..=0x9F => HIGH[usize::from(byte - 0x80)],
+        _ => char::from(byte),
+    }
 }
 
 fn utf16(bytes: &[u8], big_endian: bool) -> Result<String, XmlError> {
@@ -454,6 +470,17 @@ mod tests {
         assert_eq!(decode(&utf16).unwrap(), "<a>é</a>");
         assert_eq!(decode(b"<?xml version=\"1.0\" encoding=\"ISO-8859-1\"?><a>\xE9</a>").unwrap(), "<?xml version=\"1.0\" encoding=\"ISO-8859-1\"?><a>é</a>");
         assert_eq!(decode(b"<a>\xE9</a>"), Err(XmlError::Malformed), "undeclared non-UTF-8 is refused");
+    }
+
+    #[test]
+    fn a_windows_1252_feed_shows_its_quotes_and_dashes() {
+        let feed = b"<?xml version=\"1.0\" encoding=\"windows-1252\"?><t>It\x92s \x93new\x94 \x96 \x80 5\x85 \x81</t>";
+        let text = decode(feed).unwrap();
+        assert!(text.ends_with("<t>It\u{2019}s \u{201C}new\u{201D} \u{2013} \u{20AC} 5\u{2026} \u{81}</t>"), "{text:?}");
+        // ISO-8859-1 is read as windows-1252 too, as browsers do: the bytes 0x80-0x9F are never
+        // meant as control characters.
+        let latin = decode(b"<?xml version=\"1.0\" encoding=\"ISO-8859-1\"?><t>\x92\xE9</t>").unwrap();
+        assert!(latin.ends_with("<t>\u{2019}\u{e9}</t>"), "{latin:?}");
     }
 
     #[test]
