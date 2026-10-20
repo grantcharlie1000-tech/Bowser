@@ -309,7 +309,7 @@ public static class BowserDefaultContext {
    Pid=pid;Type=type;Native=native;Bounds=bounds;Depth=depth;id=(int[])runtime.Clone();parent=parentId==null?null:(int[])parentId.Clone();NativeUnknown=nativeUnknown;BoundsUnknown=boundsUnknown;
    NativeToken=nativeUnknown?"not-supported":"integer:"+Number(native);
    BoundsToken=boundsUnknown?"not-supported":"finite:"+Real(bounds.X)+":"+Real(bounds.Y)+":"+Real(bounds.Width)+":"+Real(bounds.Height);
-   Signature="browser:"+Number(pid)+":"+Number(type)+":"+Number(depth)+":"+JsonIds(id)+":"+JsonIds(parent)+":"+NativeToken+":"+BoundsToken+((nativeUnknown||boundsUnknown)?(type==ControlType.MenuBar.Id?":structural-menubar-unknown-no-virtualization":":structural-pane-unknown-no-virtualization"):":supported-values");
+   Signature="browser:"+Number(pid)+":"+Number(type)+":"+Number(depth)+":"+JsonIds(id)+":"+JsonIds(parent)+":"+NativeToken+":"+BoundsToken+((nativeUnknown||boundsUnknown)?(type==ControlType.MenuBar.Id?":structural-menubar-unknown-no-virtualization":type==ControlType.Menu.Id?":menu-unknown-hwnd-pending-root-no-virtualization":":structural-pane-unknown-no-virtualization"):":supported-values");
   }
   public int[] Parent(){return parent==null?null:(int[])parent.Clone();}
   public int[] Id(){return (int[])id.Clone();}
@@ -323,12 +323,12 @@ public static class BowserDefaultContext {
   int pid=(int)pidValue,type=((ControlType)typeValue).Id;
   bool nativeUnknown=Object.ReferenceEquals(nativeValue,AutomationElement.NotSupported),boundsUnknown=Object.ReferenceEquals(boundsValue,AutomationElement.NotSupported);
   if(nativeUnknown||boundsUnknown){
-   if(!nativeUnknown||(type!=ControlType.Pane.Id&&type!=ControlType.MenuBar.Id)||depth==0||parent==null||!patternsAbsent)throw new InvalidOperationException("Unsupported browser geometry is not a counted non-root structural Pane/MenuBar category.");
-   // MenuBar is only a container witness, never a Menu or fixture MenuItem. Its
-   // bounds must be supported and contained in this exact native popup; unknown
-   // HWND stays tagged unknown, not supported zero or an assertion of childlessness.
-   if(type==ControlType.MenuBar.Id){
-    if(boundsUnknown||!(boundsValue is System.Windows.Rect)||!ContainedBrowserBounds((System.Windows.Rect)boundsValue,popupBounds))throw new InvalidOperationException("Unknown-HWND MenuBar requires supported finite positive exact-popup-contained bounds.");
+   if(!nativeUnknown||(type!=ControlType.Pane.Id&&type!=ControlType.MenuBar.Id&&type!=ControlType.Menu.Id)||depth==0||parent==null||!patternsAbsent)throw new InvalidOperationException("Unsupported browser geometry is not a non-root browser Pane/MenuBar/Menu category.");
+   // Both container categories require supported exact-popup-contained bounds.
+   // A typed unknown-HWND Menu is NOT counted until this invocation separately
+   // issues successful rooted eligibility. MenuItem is deliberately excluded.
+   if(type==ControlType.MenuBar.Id||type==ControlType.Menu.Id){
+    if(boundsUnknown||!(boundsValue is System.Windows.Rect)||!ContainedBrowserBounds((System.Windows.Rect)boundsValue,popupBounds))throw new InvalidOperationException("Unknown-HWND MenuBar/Menu requires supported finite positive exact-popup-contained bounds.");
     return new BrowserNodeWitness(pid,type,0,(System.Windows.Rect)boundsValue,depth,id,parent,true,false);
    }
    if(boundsUnknown)return new BrowserNodeWitness(pid,type,0,System.Windows.Rect.Empty,depth,id,parent,true,true);
@@ -354,10 +354,10 @@ public static class BowserDefaultContext {
   var id=Runtime(node);int[] parentId=null;
   if(expectedParent!=null){var parent=TreeWalker.RawViewWalker.GetParent(node);if(parent==null||!Same(Runtime(parent),expectedParent)||Required<int>(parent,AutomationElement.ProcessIdProperty)!=(int)browserPid)throw new InvalidOperationException("Browser structural parent changed or is foreign.");parentId=Runtime(parent);}
   bool unknown=Object.ReferenceEquals(native,AutomationElement.NotSupported)||Object.ReferenceEquals(bounds,AutomationElement.NotSupported);
-  bool structural=type is ControlType&&(((ControlType)type).Id==ControlType.Pane.Id||((ControlType)type).Id==ControlType.MenuBar.Id);
+  bool structural=type is ControlType&&(((ControlType)type).Id==ControlType.Pane.Id||((ControlType)type).Id==ControlType.MenuBar.Id||((ControlType)type).Id==ControlType.Menu.Id);
   bool patternsAbsent=unknown&&structural&&depth>0&&NoPattern(node,ItemContainerPattern.Pattern)&&NoPattern(node,VirtualizedItemPattern.Pattern);
   var popupBounds=System.Windows.Rect.Empty;
-  if(unknown&&type is ControlType&&((ControlType)type).Id==ControlType.MenuBar.Id){RECT r;if(!GetWindowRect(popup,out r))throw new InvalidOperationException("Exact popup bounds unavailable for structural MenuBar.");popupBounds=new System.Windows.Rect(r.Left,r.Top,(double)r.Right-r.Left,(double)r.Bottom-r.Top);}
+  if(unknown&&type is ControlType&&(((ControlType)type).Id==ControlType.MenuBar.Id||((ControlType)type).Id==ControlType.Menu.Id)){RECT r;if(!GetWindowRect(popup,out r))throw new InvalidOperationException("Exact popup bounds unavailable for browser MenuBar/Menu.");popupBounds=new System.Windows.Rect(r.Left,r.Top,(double)r.Right-r.Left,(double)r.Bottom-r.Top);}
   var proof=CreateBrowserWitness(browserPid,depth,id,parentId,pid,type,native,bounds,patternsAbsent,popupBounds);
   if(!browser.SameAlive())throw new InvalidOperationException("Retained browser changed during typed structure read.");return proof;
  }
@@ -382,8 +382,8 @@ public static class BowserDefaultContext {
  // MenuBar containers. Runtime IDs are exact keys, never ownership prefixes.
  // Each edge resolves to a previously counted immutable browser witness; every
  // fresh node/edge read is fenced before/after; no read ascends beyond the root.
- static int CountedBrowserAncestry<T>(T start,BrowserNodeWitness expectedStart,Dictionary<string,BrowserNodeWitness> nodes,int[] rootId,uint browserPid,int popup,Func<T,BrowserNodeWitness> read,Func<T,T> parent,Action fence) where T:class {
-  var seen=new HashSet<string>(StringComparer.Ordinal);BrowserNodeWitness child=null;T current=start;int menus=0;
+ static BrowserAncestryWitness CountedBrowserAncestry<T>(T start,BrowserNodeWitness expectedStart,Dictionary<string,BrowserNodeWitness> nodes,int[] rootId,uint browserPid,int popup,Func<T,BrowserNodeWitness> read,Func<T,T> parent,Action fence) where T:class {
+  var seen=new HashSet<string>(StringComparer.Ordinal);var path=new List<BrowserNodeWitness>();BrowserNodeWitness child=null;T current=start;int menus=0;
   for(int hop=0;hop<32&&current!=null;hop++){
    fence();var fresh=read(current);fence();
    if(fresh==null)throw new InvalidOperationException("Fresh counted browser ancestor unavailable.");
@@ -392,17 +392,86 @@ public static class BowserDefaultContext {
    // caller, not a transient substitution with some shorter counted root/path.
    if(hop==0&&(expectedStart==null||!Same(runtime,expectedStart.Id())||!Same(counted.Id(),expectedStart.Id())||!SameBrowserWitness(expectedStart,fresh)||!SameBrowserWitness(expectedStart,counted)))throw new InvalidOperationException("Fresh/countable ancestry start differs from the original immutable start witness.");
    if(!seen.Add(JsonIds(runtime))||!SameBrowserWitness(counted,fresh)||counted.Pid!=(int)browserPid)throw new InvalidOperationException("Fresh browser ancestor changed, duplicated/cyclic or foreign.");
-   if(child!=null)CountedParent(nodes,child,runtime);
+   if(child!=null)CountedParent(nodes,child,runtime);path.Add(counted);
    if(counted.Type==ControlType.Menu.Id)menus++;
    if(Same(runtime,rootId)){
     if(counted.Depth!=0||counted.Parent()!=null||counted.NativeUnknown||counted.BoundsUnknown||counted.Native!=popup||popup==0)throw new InvalidOperationException("Counted ancestry root is not the exact native popup.");
-    fence();return menus;
+    var proof=new BrowserAncestryWitness(path,menus);fence();return proof;
    }
    if(counted.Depth<=0||counted.Parent()==null||(!counted.NativeUnknown&&counted.Native!=0&&counted.Native!=popup))throw new InvalidOperationException("Unexpected supported native ancestor or incomplete root progression.");
    if(hop==31)break;
    child=counted;fence();current=parent(current);fence();
   }
   throw new InvalidOperationException("Counted browser root ancestry missing, cyclic or outside32-node bound.");
+ }
+ // Immutable semantic result of the one shared successful root walk. No HWND or
+ // input authority is invented; the exact counted witness sequence is retained.
+ sealed class BrowserAncestryWitness {
+  readonly BrowserNodeWitness[] path;public readonly int MenuCount;
+  public BrowserAncestryWitness(List<BrowserNodeWitness> nodes,int menus){
+   if(nodes==null||nodes.Count==0||nodes.Count>32)throw new InvalidOperationException("Successful browser ancestry outside bound.");
+   path=nodes.ToArray();MenuCount=menus;int observed=0;foreach(var node in path)if(node.Type==ControlType.Menu.Id)observed++;
+   if(observed!=menus)throw new InvalidOperationException("Successful browser Menu ancestry count differs.");
+  }
+  public BrowserNodeWitness Root(){return path[path.Length-1];}
+  public BrowserNodeWitness Start(){return path[0];}
+  public BrowserNodeWitness SingleMenu(){
+   if(MenuCount!=1)throw new InvalidOperationException("Fixture ancestry must identify exactly one counted Menu.");
+   foreach(var node in path)if(node.Type==ControlType.Menu.Id)return node;throw new InvalidOperationException("Fixture Menu witness absent.");
+  }
+  public string ChainFor(BrowserNodeWitness start){
+   int first=-1;for(int n=0;n<path.Length;n++)if(Same(path[n].Id(),start.Id())){if(!SameBrowserWitness(path[n],start)||first!=-1)throw new InvalidOperationException("Rooted Menu signature or chain identity changed.");first=n;}
+   if(first<0)throw new InvalidOperationException("Rooted Menu absent from exact successful chain.");
+   var canonical=new StringBuilder();for(int n=first;n<path.Length;n++)canonical.Append(Number(path[n].Signature.Length)).Append(':').Append(path[n].Signature).Append(';');
+   using(var sha=System.Security.Cryptography.SHA256.Create()){return BitConverter.ToString(sha.ComputeHash(Encoding.UTF8.GetBytes(canonical.ToString()))).Replace("-","").ToLowerInvariant();}
+  }
+ }
+ sealed class RootedMenuWitness {
+  readonly object invocation;readonly BrowserNodeWitness expectedStart;readonly int[] root;readonly int popup;
+  public readonly string Chain,Semantic;
+  public RootedMenuWitness(object owner,BrowserNodeWitness menu,int[] rootId,int popupHandle,BrowserAncestryWitness ancestry){
+   if(owner==null||menu==null||ancestry==null||!SameBrowserWitness(ancestry.Start(),menu)||!Same(ancestry.Root().Id(),rootId)||ancestry.Root().NativeUnknown||ancestry.Root().BoundsUnknown||ancestry.Root().Native!=popupHandle)throw new InvalidOperationException("Rooted Menu construction differs from its successful exact start/root/popup chain.");
+   invocation=owner;expectedStart=menu;root=(int[])rootId.Clone();popup=popupHandle;Chain=ancestry.ChainFor(menu);
+   Semantic="eligible-rooted-menu:popup="+Number(popup)+":root="+JsonIds(root)+":expected-start="+JsonIds(menu.Id())+":menu="+menu.Signature+":chain-sha256="+Chain;
+  }
+  public bool Matches(object owner,BrowserNodeWitness menu,int[] rootId,int popupHandle){return Object.ReferenceEquals(invocation,owner)&&popup==popupHandle&&Same(root,rootId)&&Same(expectedStart.Id(),menu.Id())&&SameBrowserWitness(expectedStart,menu);}
+ }
+ // A new non-reusable identity is created inside each ReadMenu invocation. Only
+ // ProveMenu may register eligibility, and only AFTER the shared walk succeeds.
+ // Identity/reference state is never serialized or carried into the fresh read.
+ sealed class BrowserMenuInvocation {
+  readonly object identity=new object();readonly int[] root;readonly int popup;readonly uint browserPid;
+  readonly Dictionary<string,RootedMenuWitness> issued=new Dictionary<string,RootedMenuWitness>(StringComparer.Ordinal);
+  public BrowserMenuInvocation(int[] rootId,int popupHandle,uint pid){
+   if(rootId==null||rootId.Length==0||rootId.Length>32||popupHandle==0||pid==0)throw new InvalidOperationException("Menu invocation root identity unavailable.");root=(int[])rootId.Clone();popup=popupHandle;browserPid=pid;
+  }
+  public RootedMenuWitness ProofFor(BrowserNodeWitness menu){RootedMenuWitness proof;return menu!=null&&issued.TryGetValue(JsonIds(menu.Id()),out proof)?proof:null;}
+  public RootedMenuWitness ProveMenu<T>(T start,BrowserNodeWitness expectedStart,Dictionary<string,BrowserNodeWitness> nodes,Func<T,BrowserNodeWitness> read,Func<T,T> parent,Action fence) where T:class {
+   if(expectedStart==null||expectedStart.Type!=ControlType.Menu.Id||!expectedStart.NativeUnknown||expectedStart.BoundsUnknown||expectedStart.Depth<=0||expectedStart.Parent()==null||expectedStart.Pid!=(int)browserPid)throw new InvalidOperationException("Only an exact non-root browser unknown-HWND Menu may request rooted eligibility.");
+   var ancestry=CountedBrowserAncestry(start,expectedStart,nodes,root,browserPid,popup,read,parent,fence);
+   if(!SameBrowserWitness(ancestry.Start(),expectedStart))throw new InvalidOperationException("Rooted Menu expected start changed.");
+   var proof=new RootedMenuWitness(identity,expectedStart,root,popup,ancestry);fence();
+   string key=JsonIds(expectedStart.Id());if(issued.ContainsKey(key))throw new InvalidOperationException("Rooted Menu eligibility was already issued in this invocation.");issued.Add(key,proof);return proof;
+  }
+  public bool IsCountedMenu(BrowserNodeWitness node,RootedMenuWitness proof){
+   if(node==null||node.Type!=ControlType.Menu.Id)return false;
+   if(node.Pid!=(int)browserPid)throw new InvalidOperationException("Counted Menu PID differs from this browser invocation.");
+   if(IsBrowserRow(node,ControlType.Menu.Id)){if(proof!=null)throw new InvalidOperationException("Supported Menu cannot reuse unknown-HWND eligibility.");return true;}
+   RootedMenuWitness registered;
+   if(!node.NativeUnknown||node.BoundsUnknown||node.Depth<=0||node.Pid!=(int)browserPid||proof==null||!issued.TryGetValue(JsonIds(node.Id()),out registered)||!Object.ReferenceEquals(registered,proof)||!proof.Matches(identity,node,root,popup))throw new InvalidOperationException("Unknown-HWND Menu lacks this invocation's exact successful rooted proof; whole inventory refused.");
+   return true;
+  }
+  public string InventorySignature(BrowserNodeWitness node,RootedMenuWitness proof){
+   if(node==null)throw new InvalidOperationException("Browser inventory witness unavailable.");
+   if(node.Type==ControlType.Menu.Id){IsCountedMenu(node,proof);return node.Signature+(proof==null?"":":"+proof.Semantic);}
+   if(proof!=null)throw new InvalidOperationException("Rooted Menu proof attached to another browser category.");return node.Signature;
+  }
+  public BrowserNodeWitness FixtureMenu(BrowserAncestryWitness ancestry,BrowserNodeWitness selected){
+   if(ancestry==null||selected==null)throw new InvalidOperationException("Selected fixture Menu or fresh ancestry unavailable.");
+   var actual=ancestry.SingleMenu();var countedRoot=ancestry.Root();
+   if(!Same(actual.Id(),selected.Id())||!SameBrowserWitness(actual,selected)||!Same(countedRoot.Id(),root)||countedRoot.Pid!=(int)browserPid||countedRoot.NativeUnknown||countedRoot.BoundsUnknown||countedRoot.Native!=popup)throw new InvalidOperationException("Fixture ancestry does not identify the same selected Menu/root/popup.");
+   var proof=ProofFor(actual);if(!IsCountedMenu(actual,proof)||(actual.NativeUnknown&&proof.Chain!=ancestry.ChainFor(actual)))throw new InvalidOperationException("Fixture Menu differs from its exact eligible root chain.");return actual;
+  }
  }
  static bool BrowserAncestryBudget(ulong now,ulong readinessDeadline,ulong ownershipDeadline){return readinessDeadline!=0&&now<readinessDeadline&&(ownershipDeadline==0||now<ownershipDeadline);}
  static void BrowserAncestryFence(IntPtr host,uint testPid,uint hostTid,IntPtr popup,uint browserPid,uint menuTid,ReadOnlyBrowser browser,AutomationElement root,int[] rootId,ulong readinessDeadline,ulong ownershipDeadline){
@@ -482,6 +551,7 @@ public static class BowserDefaultContext {
   var capped=new BrowserNodeWitness[129];for(int n=0;n<capped.Length;n++)capped[n]=CreateBrowserWitness(10,1,new[]{42,300+n},new[]{42,1},10,ControlType.Pane,0,finite,false);
   bool capRefused=false;try{SyntheticBrowserInventory(capped);}catch(InvalidOperationException){capRefused=true;}if(!capRefused)throw new InvalidOperationException("Synthetic real serializer accepted129 raw nodes.");
   CheckMenuBarAncestryPolicy();
+  CheckRootedMenuPolicy();
  }
  // Clearly synthetic typed/provider-shape inputs. These execute the same witness,
  // counted-chain and complete-inventory predicates, not a provider race or input.
@@ -498,7 +568,7 @@ public static class BowserDefaultContext {
    Item=Add(CreateBrowserWitness(10,4,new[]{42,5},Menu.Value.Id(),10,ControlType.MenuItem,0,new System.Windows.Rect(20,30,40,50),false),Menu);
   }
   SyntheticBrowserNode Add(BrowserNodeWitness value,SyntheticBrowserNode parent){Nodes.Add(JsonIds(value.Id()),value);return new SyntheticBrowserNode{Value=value,Parent=parent};}
-  public int Prove(SyntheticBrowserNode start){return CountedBrowserAncestry(start,start==null?null:start.Value,Nodes,Root.Value.Id(),10,123,n=>{Reads++;return n.Value;},n=>{Parents++;if(Object.ReferenceEquals(n,Root))throw new InvalidOperationException("Synthetic attempted ascent beyond popup root.");return n.Parent;},()=>{Fences++;});}
+  public int Prove(SyntheticBrowserNode start){return CountedBrowserAncestry(start,start==null?null:start.Value,Nodes,Root.Value.Id(),10,123,n=>{Reads++;return n.Value;},n=>{Parents++;if(Object.ReferenceEquals(n,Root))throw new InvalidOperationException("Synthetic attempted ascent beyond popup root.");return n.Parent;},()=>{Fences++;}).MenuCount;}
  }
  static void BrowserPolicyRefuses(Action action,string name){bool refused=false;try{action();}catch(InvalidOperationException){refused=true;}if(!refused)throw new InvalidOperationException("Synthetic browser refusal missing: "+name);}
  static void CheckMenuBarAncestryPolicy(){
@@ -531,7 +601,7 @@ public static class BowserDefaultContext {
    {"nonfinite-popup",()=>CreateBrowserWitness(10,2,id,parent,10,ControlType.MenuBar,missing,bounds,true,new System.Windows.Rect(Double.NaN,0,100,100))},
    {"wrong-hwnd-kind",()=>CreateBrowserWitness(10,2,id,parent,10,ControlType.MenuBar,null,bounds,true,popup)},
    {"virtualization-or-pattern-unavailable",()=>CreateBrowserWitness(10,2,id,parent,10,ControlType.MenuBar,missing,bounds,false,popup)},
-   {"unknown-menu",()=>CreateBrowserWitness(10,2,id,parent,10,ControlType.Menu,missing,bounds,true,popup)},
+   {"unknown-menu-unknown-bounds",()=>CreateBrowserWitness(10,2,id,parent,10,ControlType.Menu,missing,missing,true,popup)},
    {"unknown-menu-item",()=>CreateBrowserWitness(10,2,id,parent,10,ControlType.MenuItem,missing,bounds,true,popup)}
   })BrowserPolicyRefuses(()=>{bad.Value();},bad.Key);
   foreach(Action bad in new Action[]{()=>FixtureBounds(accepted),()=>NoPatternValue(true,new object()),()=>NoPatternValue(true,null),()=>NoPatternValue(false,new object())})BrowserPolicyRefuses(bad,"fixture-or-positive-pattern");
@@ -612,6 +682,122 @@ public static class BowserDefaultContext {
    int reads=0,parents=0,fences=0;bool returned=false;
    BrowserPolicyRefuses(()=>{CountedBrowserAncestry(c.Bar,expectedStart,c.Nodes,c.Root.Value.Id(),10,123,n=>{reads++;return fresh;},n=>{parents++;return n.Parent;},()=>{fences++;});returned=true;},substitution);
    if(reads!=1||parents!=0||fences!=2||returned)throw new InvalidOperationException("Synthetic first-read substitution advanced or succeeded: "+substitution);
+  }
+ }
+ // Invented typed inputs only. These run the actual issuer, eligibility, fixture,
+ // complete-row serializer and SameProof/digest predicates, never a native lane.
+ static SyntheticBrowserChain SyntheticUnknownMenuChain(){
+  var c=new SyntheticBrowserChain();c.Menu.Value=CreateBrowserWitness(10,3,c.Menu.Value.Id(),c.Bar.Value.Id(),10,ControlType.Menu,AutomationElement.NotSupported,new System.Windows.Rect(10,10,80,80),true,c.PopupBounds);c.Nodes[JsonIds(c.Menu.Value.Id())]=c.Menu.Value;return c;
+ }
+ static RootedMenuWitness ProveSyntheticMenu(BrowserMenuInvocation invocation,SyntheticBrowserChain c,SyntheticBrowserNode menu){
+  return invocation.ProveMenu(menu,menu.Value,c.Nodes,n=>{c.Reads++;return n.Value;},n=>{c.Parents++;return n.Parent;},()=>{c.Fences++;});
+ }
+ static string SyntheticRootedMenuInventory(BrowserMenuInvocation invocation,params BrowserNodeWitness[] nodes){
+  var result=new StringBuilder();var seen=new HashSet<string>(StringComparer.Ordinal);int count=0;
+  foreach(var node in nodes){if(!InventoryCapacity(++count,0)||!seen.Add(JsonIds(node.Id())))throw new InvalidOperationException("Synthetic rooted inventory duplicate/cap refused.");string signature=invocation.InventorySignature(node,invocation.ProofFor(node));AppendInventoryNode(result,count,node.Depth,node.Parent(),node.Id(),node.Pid,node.Type,node.NativeToken,node.BoundsToken,signature);}return result.ToString();
+ }
+ static void CheckRootedMenuPolicy(){
+  var c=SyntheticUnknownMenuChain();var missing=AutomationElement.NotSupported;var menu=c.Menu.Value;var bounds=menu.Bounds;var popup=c.PopupBounds;var id=menu.Id();var parent=menu.Parent();var invocation=new BrowserMenuInvocation(c.Root.Value.Id(),123,10);
+  if(!menu.NativeUnknown||menu.BoundsUnknown||menu.NativeToken!="not-supported"||!menu.Signature.EndsWith(":menu-unknown-hwnd-pending-root-no-virtualization",StringComparison.Ordinal)||IsBrowserRow(menu,ControlType.Menu.Id)||IsBrowserRow(menu,ControlType.MenuItem.Id)||!menu.MatchesOuter(10,ControlType.Menu.Id,0,bounds,id,parent))throw new InvalidOperationException("Synthetic typed unknown Menu lost its distinct pending category.");
+  BrowserPolicyRefuses(()=>invocation.IsCountedMenu(menu,null),"constructed-unproved-menu");BrowserPolicyRefuses(()=>invocation.InventorySignature(menu,null),"unproved-menu-serialization");BrowserPolicyRefuses(()=>FixtureBounds(menu),"rooted-menu-not-fixture");
+  var supported=CreateBrowserWitness(10,3,id,parent,10,ControlType.Menu,0,bounds,false);if(!invocation.IsCountedMenu(supported,null)||invocation.InventorySignature(supported,null)!=supported.Signature)throw new InvalidOperationException("Synthetic supported-zero Menu path changed.");
+  foreach(var bad in new Dictionary<string,Func<BrowserNodeWitness>>{
+   {"menu-unknown-pid",()=>CreateBrowserWitness(10,3,id,parent,missing,ControlType.Menu,missing,bounds,true,popup)},
+   {"menu-wrong-pid-kind",()=>CreateBrowserWitness(10,3,id,parent,"10",ControlType.Menu,missing,bounds,true,popup)},
+   {"menu-foreign-or-gpu-pid",()=>CreateBrowserWitness(10,3,id,parent,20,ControlType.Menu,missing,bounds,true,popup)},
+   {"menu-unknown-type",()=>CreateBrowserWitness(10,3,id,parent,10,missing,missing,bounds,true,popup)},
+   {"menu-wrong-type-kind",()=>CreateBrowserWitness(10,3,id,parent,10,ControlType.Menu.Id,missing,bounds,true,popup)},
+   {"menu-root",()=>CreateBrowserWitness(10,0,id,null,10,ControlType.Menu,missing,bounds,true,popup)},
+   {"menu-null-runtime",()=>CreateBrowserWitness(10,3,null,parent,10,ControlType.Menu,missing,bounds,true,popup)},
+   {"menu-empty-runtime",()=>CreateBrowserWitness(10,3,new int[0],parent,10,ControlType.Menu,missing,bounds,true,popup)},
+   {"menu-null-parent",()=>CreateBrowserWitness(10,3,id,null,10,ControlType.Menu,missing,bounds,true,popup)},
+   {"menu-empty-parent",()=>CreateBrowserWitness(10,3,id,new int[0],10,ControlType.Menu,missing,bounds,true,popup)},
+   {"menu-negative-depth",()=>CreateBrowserWitness(10,-1,id,parent,10,ControlType.Menu,missing,bounds,true,popup)},
+   {"menu-unknown-bounds",()=>CreateBrowserWitness(10,3,id,parent,10,ControlType.Menu,missing,missing,true,popup)},
+   {"menu-null-bounds",()=>CreateBrowserWitness(10,3,id,parent,10,ControlType.Menu,missing,null,true,popup)},
+   {"menu-wrong-bounds-kind",()=>CreateBrowserWitness(10,3,id,parent,10,ControlType.Menu,missing,new object(),true,popup)},
+   {"menu-empty-bounds",()=>CreateBrowserWitness(10,3,id,parent,10,ControlType.Menu,missing,System.Windows.Rect.Empty,true,popup)},
+   {"menu-zero-width",()=>CreateBrowserWitness(10,3,id,parent,10,ControlType.Menu,missing,new System.Windows.Rect(10,10,0,80),true,popup)},
+   {"menu-zero-height",()=>CreateBrowserWitness(10,3,id,parent,10,ControlType.Menu,missing,new System.Windows.Rect(10,10,80,0),true,popup)},
+   {"menu-nan",()=>CreateBrowserWitness(10,3,id,parent,10,ControlType.Menu,missing,new System.Windows.Rect(Double.NaN,10,80,80),true,popup)},
+   {"menu-infinite",()=>CreateBrowserWitness(10,3,id,parent,10,ControlType.Menu,missing,new System.Windows.Rect(10,Double.PositiveInfinity,80,80),true,popup)},
+   {"menu-overflow",()=>CreateBrowserWitness(10,3,id,parent,10,ControlType.Menu,missing,new System.Windows.Rect(Double.MaxValue,10,Double.MaxValue,80),true,popup)},
+   {"menu-outside-left",()=>CreateBrowserWitness(10,3,id,parent,10,ControlType.Menu,missing,new System.Windows.Rect(-1,10,80,80),true,popup)},
+   {"menu-outside-top",()=>CreateBrowserWitness(10,3,id,parent,10,ControlType.Menu,missing,new System.Windows.Rect(10,-1,80,80),true,popup)},
+   {"menu-outside-right",()=>CreateBrowserWitness(10,3,id,parent,10,ControlType.Menu,missing,new System.Windows.Rect(21,10,80,80),true,popup)},
+   {"menu-outside-bottom",()=>CreateBrowserWitness(10,3,id,parent,10,ControlType.Menu,missing,new System.Windows.Rect(10,21,80,80),true,popup)},
+   {"menu-null-native-kind",()=>CreateBrowserWitness(10,3,id,parent,10,ControlType.Menu,null,bounds,true,popup)},
+   {"menu-wrong-native-kind",()=>CreateBrowserWitness(10,3,id,parent,10,ControlType.Menu,new object(),bounds,true,popup)},
+   {"menu-pattern-present-or-unavailable",()=>CreateBrowserWitness(10,3,id,parent,10,ControlType.Menu,missing,bounds,false,popup)},
+   {"menu-item-still-unknown",()=>CreateBrowserWitness(10,3,id,parent,10,ControlType.MenuItem,missing,bounds,true,popup)}
+  })BrowserPolicyRefuses(()=>{bad.Value();},bad.Key);
+  foreach(Action bad in new Action[]{()=>NoPatternValue(true,null),()=>NoPatternValue(false,new object())})BrowserPolicyRefuses(bad,"menu-virtualization-pattern");
+  foreach(var outer in new[]{new[]{11,ControlType.Menu.Id,0},new[]{10,ControlType.MenuItem.Id,0},new[]{10,ControlType.Menu.Id,999}})if(menu.MatchesOuter(outer[0],outer[1],outer[2],bounds,id,parent))throw new InvalidOperationException("Synthetic Menu outer PID/type/HWND changed.");
+  if(menu.MatchesOuter(10,ControlType.Menu.Id,0,new System.Windows.Rect(11,10,80,80),id,parent)||menu.MatchesOuter(10,ControlType.Menu.Id,0,bounds,new[]{42,99},parent)||menu.MatchesOuter(10,ControlType.Menu.Id,0,bounds,id,new[]{42,99}))throw new InvalidOperationException("Synthetic Menu outer bounds/runtime/parent changed.");
+  var proof=ProveSyntheticMenu(invocation,c,c.Menu);if(c.Reads!=4||c.Parents!=3||!invocation.IsCountedMenu(menu,proof)||!Object.ReferenceEquals(invocation.ProofFor(menu),proof)||proof.Semantic==menu.Signature)throw new InvalidOperationException("Synthetic rooted Menu did not independently issue exact local eligibility.");
+  var fixtureAncestry=CountedBrowserAncestry(c.Item,c.Item.Value,c.Nodes,c.Root.Value.Id(),10,123,n=>n.Value,n=>n.Parent,()=>{});
+  if(!Object.ReferenceEquals(invocation.FixtureMenu(fixtureAncestry,menu),menu))throw new InvalidOperationException("Synthetic fixture did not identify the same eligible Menu.");
+  BrowserPolicyRefuses(()=>ProveSyntheticMenu(invocation,c,c.Menu),"duplicate-rooted-issuance");BrowserPolicyRefuses(()=>invocation.IsCountedMenu(supported,proof),"tag-changed-token-reuse");
+  var foreign=CreateBrowserWitness(20,3,id,parent,20,ControlType.Menu,0,bounds,false);BrowserPolicyRefuses(()=>invocation.IsCountedMenu(foreign,null),"foreign-supported-menu");
+  var fresh=SyntheticUnknownMenuChain();var freshInvocation=new BrowserMenuInvocation(fresh.Root.Value.Id(),123,10);
+  BrowserPolicyRefuses(()=>freshInvocation.IsCountedMenu(fresh.Menu.Value,proof),"foreign-invocation-token");BrowserPolicyRefuses(()=>freshInvocation.InventorySignature(fresh.Menu.Value,proof),"foreign-invocation-serialization");
+  var freshProof=ProveSyntheticMenu(freshInvocation,fresh,fresh.Menu);if(fresh.Reads!=4||fresh.Parents!=3||Object.ReferenceEquals(proof,freshProof)||proof.Semantic!=freshProof.Semantic)throw new InvalidOperationException("Synthetic fresh Menu reused local eligibility or serialized local identity.");
+  string firstInventory=SyntheticRootedMenuInventory(invocation,c.Root.Value,c.Pane.Value,c.Bar.Value,menu,c.Item.Value),freshInventory=SyntheticRootedMenuInventory(freshInvocation,fresh.Root.Value,fresh.Pane.Value,fresh.Bar.Value,fresh.Menu.Value,fresh.Item.Value);
+  var baseline=SyntheticMenuProof(firstInventory);var independentlyFresh=SyntheticMenuProof(freshInventory);if(!SameProof(baseline,independentlyFresh)||InventoryDigest(baseline)!=InventoryDigest(independentlyFresh))throw new InvalidOperationException("Synthetic independently reissued equivalent root semantics changed inventory/digest.");
+  var sibling=CreateBrowserWitness(10,3,new[]{42,6},c.Bar.Value.Id(),10,ControlType.Menu,missing,bounds,true,popup);var siblingNode=new SyntheticBrowserNode{Value=sibling,Parent=c.Bar};c.Nodes.Add(JsonIds(sibling.Id()),sibling);
+  BrowserPolicyRefuses(()=>invocation.IsCountedMenu(sibling,proof),"root-proof-other-menu-signature");
+  BrowserPolicyRefuses(()=>SyntheticRootedMenuInventory(invocation,c.Root.Value,c.Pane.Value,c.Bar.Value,menu,sibling,c.Item.Value),"unproved-menu-plus-valid-rooted-sibling");
+  var supportedScope=new BrowserMenuInvocation(c.Root.Value.Id(),123,10);BrowserPolicyRefuses(()=>SyntheticRootedMenuInventory(supportedScope,c.Root.Value,c.Pane.Value,c.Bar.Value,supported,sibling),"unproved-menu-plus-valid-supported-sibling");
+  var siblingProof=ProveSyntheticMenu(invocation,c,siblingNode);if(!invocation.IsCountedMenu(sibling,siblingProof)||UniqueBrowserFixtureCounts(2,1))throw new InvalidOperationException("Synthetic two eligible Menus passed unique gate.");
+  BrowserPolicyRefuses(()=>invocation.FixtureMenu(fixtureAncestry,sibling),"fixture-path-other-eligible-menu");BrowserPolicyRefuses(()=>invocation.FixtureMenu(fixtureAncestry,null),"fixture-without-selected-menu");
+  foreach(string wrong in new[]{"same-process-wrong-popup","same-process-wrong-root"}){
+   var w=SyntheticUnknownMenuChain();var scope=new BrowserMenuInvocation(wrong=="same-process-wrong-root"?new[]{42,99}:w.Root.Value.Id(),wrong=="same-process-wrong-popup"?124:123,10);
+   BrowserPolicyRefuses(()=>ProveSyntheticMenu(scope,w,w.Menu),wrong);if(scope.ProofFor(w.Menu.Value)!=null)throw new InvalidOperationException("Synthetic wrong root/popup still registered eligibility.");
+  }
+  var changedChain=SyntheticUnknownMenuChain();changedChain.Pane.Value=CreateBrowserWitness(10,1,changedChain.Pane.Value.Id(),changedChain.Root.Value.Id(),10,ControlType.Pane,0,popup,false);changedChain.Nodes[JsonIds(changedChain.Pane.Value.Id())]=changedChain.Pane.Value;
+  var changedScope=new BrowserMenuInvocation(changedChain.Root.Value.Id(),123,10);var changedProof=ProveSyntheticMenu(changedScope,changedChain,changedChain.Menu);var changedFixture=CountedBrowserAncestry(changedChain.Item,changedChain.Item.Value,changedChain.Nodes,changedChain.Root.Value.Id(),10,123,n=>n.Value,n=>n.Parent,()=>{});
+  BrowserPolicyRefuses(()=>invocation.FixtureMenu(changedFixture,menu),"fixture-root-chain-changed");
+  if(proof.Chain==changedProof.Chain||invocation.InventorySignature(menu,proof)==changedScope.InventorySignature(changedChain.Menu.Value,changedProof))throw new InvalidOperationException("Synthetic rooted semantic chain binding did not change.");
+  foreach(string changed in new[]{
+   SyntheticRootedMenuInventory(invocation,c.Root.Value,c.Pane.Value,c.Bar.Value,menu),
+   SyntheticRootedMenuInventory(invocation,c.Root.Value,c.Bar.Value,c.Pane.Value,menu,c.Item.Value),
+   SyntheticRootedMenuInventory(invocation,c.Root.Value,c.Pane.Value,c.Bar.Value,menu,c.Item.Value,sibling),
+   SyntheticRootedMenuInventory(supportedScope,c.Root.Value,c.Pane.Value,c.Bar.Value,supported,c.Item.Value),
+   SyntheticRootedMenuInventory(changedScope,changedChain.Root.Value,changedChain.Pane.Value,changedChain.Bar.Value,changedChain.Menu.Value,changedChain.Item.Value)
+  }){var changedInventory=SyntheticMenuProof(changed);if(SameProof(baseline,changedInventory)||InventoryDigest(baseline)==InventoryDigest(changedInventory))throw new InvalidOperationException("Synthetic rooted full inventory add/remove/order/chain change accepted.");}
+  foreach(var stale in new[]{
+   CreateBrowserWitness(10,3,id,c.Pane.Value.Id(),10,ControlType.Menu,missing,bounds,true,popup),
+   CreateBrowserWitness(10,3,new[]{42,99},parent,10,ControlType.Menu,missing,bounds,true,popup),
+   CreateBrowserWitness(20,3,id,parent,20,ControlType.Menu,missing,bounds,true,popup),
+   CreateBrowserWitness(10,3,id,parent,10,ControlType.Menu,999,bounds,false),
+   CreateBrowserWitness(10,3,id,parent,10,ControlType.Menu,missing,new System.Windows.Rect(11,10,80,80),true,popup)
+  }){BrowserPolicyRefuses(()=>invocation.IsCountedMenu(stale,proof),"menu-stale-parent-runtime-pid-hwnd-bounds-proof");BrowserPolicyRefuses(()=>invocation.InventorySignature(stale,proof),"menu-stale-proof-serialization");}
+  // Every first-read substitution must refuse before an ancestor/peer/root can
+  // shorten the Menu's walk. Eligibility remains absent after the failed read.
+  foreach(string substitution in new[]{"menu-counted-root","menu-counted-ancestor","menu-counted-peer","menu-stale-start-tag","menu-stale-start-parent","menu-stale-counted-start-tag","menu-stale-counted-start-parent","menu-wrong-expected-start","menu-null-expected-start"}){
+   var w=SyntheticUnknownMenuChain();var scope=new BrowserMenuInvocation(w.Root.Value.Id(),123,10);var expected=w.Menu.Value;var reading=expected;
+   if(substitution=="menu-counted-root")reading=w.Root.Value;if(substitution=="menu-counted-ancestor")reading=w.Bar.Value;
+   if(substitution=="menu-counted-peer"){reading=CreateBrowserWitness(10,3,new[]{42,6},w.Bar.Value.Id(),10,ControlType.Menu,missing,bounds,true,popup);w.Nodes.Add(JsonIds(reading.Id()),reading);}
+   if(substitution=="menu-stale-start-tag"||substitution=="menu-stale-counted-start-tag"){var changed=CreateBrowserWitness(10,3,expected.Id(),expected.Parent(),10,ControlType.Menu,0,bounds,false);if(substitution=="menu-stale-start-tag")reading=changed;else w.Nodes[JsonIds(expected.Id())]=changed;}
+   if(substitution=="menu-stale-start-parent"||substitution=="menu-stale-counted-start-parent"){var changed=CreateBrowserWitness(10,3,expected.Id(),w.Pane.Value.Id(),10,ControlType.Menu,missing,bounds,true,popup);if(substitution=="menu-stale-start-parent")reading=changed;else w.Nodes[JsonIds(expected.Id())]=changed;}
+   if(substitution=="menu-wrong-expected-start")expected=CreateBrowserWitness(10,3,new[]{42,99},w.Bar.Value.Id(),10,ControlType.Menu,missing,bounds,true,popup);
+   int reads=0,parents=0;if(substitution=="menu-null-expected-start")expected=null;
+   BrowserPolicyRefuses(()=>scope.ProveMenu(w.Menu,expected,w.Nodes,n=>{reads++;return reading;},n=>{parents++;return n.Parent;},()=>{}),substitution);
+   if(reads!=(expected==null?0:1)||parents!=0||scope.ProofFor(w.Menu.Value)!=null)throw new InvalidOperationException("Synthetic substituted Menu advanced or obtained eligibility.");
+  }
+  foreach(int failAt in new[]{1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16}){
+   var w=SyntheticUnknownMenuChain();var scope=new BrowserMenuInvocation(w.Root.Value.Id(),123,10);int fences=0;
+   BrowserPolicyRefuses(()=>scope.ProveMenu(w.Menu,w.Menu.Value,w.Nodes,n=>n.Value,n=>n.Parent,()=>{if(++fences==failAt)throw new InvalidOperationException("Synthetic original process/root/source/deadline fence failure.");}),"menu-before-after-fence-"+Number(failAt));
+   if(scope.ProofFor(w.Menu.Value)!=null)throw new InvalidOperationException("Synthetic stale/late root chain registered eligibility.");
+  }
+  foreach(string failure in new[]{"menu-getter-or-pattern-failed","menu-parent-getter-failed","menu-null-parent","menu-skipped-parent","menu-cyclic-parent","menu-foreign-parent","menu-native-boundary","menu-stale-depth"}){
+   var w=SyntheticUnknownMenuChain();var scope=new BrowserMenuInvocation(w.Root.Value.Id(),123,10);
+   if(failure=="menu-null-parent")w.Menu.Parent=null;if(failure=="menu-skipped-parent")w.Menu.Parent=w.Pane;if(failure=="menu-cyclic-parent")w.Menu.Parent=w.Menu;
+   if(failure=="menu-foreign-parent"){w.Bar.Value=CreateBrowserWitness(20,2,w.Bar.Value.Id(),w.Pane.Value.Id(),20,ControlType.Pane,0,bounds,false);w.Nodes[JsonIds(w.Bar.Value.Id())]=w.Bar.Value;}
+   if(failure=="menu-native-boundary"){w.Bar.Value=CreateBrowserWitness(10,2,w.Bar.Value.Id(),w.Pane.Value.Id(),10,ControlType.Pane,999,bounds,false);w.Nodes[JsonIds(w.Bar.Value.Id())]=w.Bar.Value;}
+   if(failure=="menu-stale-depth"){w.Bar.Value=CreateBrowserWitness(10,1,w.Bar.Value.Id(),w.Pane.Value.Id(),10,ControlType.Pane,0,bounds,false);w.Nodes[JsonIds(w.Bar.Value.Id())]=w.Bar.Value;}
+   BrowserPolicyRefuses(()=>scope.ProveMenu(w.Menu,w.Menu.Value,w.Nodes,n=>{if(failure=="menu-getter-or-pattern-failed")throw new InvalidOperationException("Synthetic Menu getter/pattern failure.");return n.Value;},n=>{if(failure=="menu-parent-getter-failed")throw new InvalidOperationException("Synthetic Menu parent getter failure.");return n.Parent;},()=>{}),failure);
+   if(scope.ProofFor(w.Menu.Value)!=null)throw new InvalidOperationException("Synthetic invalid Menu chain registered eligibility.");
   }
  }
  public static string InventoryDigest(MenuProof proof){
@@ -1026,6 +1212,7 @@ public static class BowserDefaultContext {
   var root=AutomationElement.FromHandle(popup);if(root==null||root.Current.ProcessId!=(int)browserPid||root.Current.NativeWindowHandle!=popup.ToInt32())throw new InvalidOperationException("Exact native UIA root mismatch.");
   var focusGui=new GUI{cbSize=(uint)Marshal.SizeOf(typeof(GUI))};if(!GetGUIThreadInfo(tid,ref focusGui)||!FocusOwned(host,focusGui.hwndFocus,browserPid,tid))throw new InvalidOperationException("Native focus witness unavailable before UIA read.");
   int[] rootId=Runtime(root);var walker=TreeWalker.RawViewWalker;var queue=new Queue<Tuple<AutomationElement,int,int[]>>();queue.Enqueue(Tuple.Create(root,0,(int[])null));int examined=0,menus=0,items=0,gpuLeaves=0;int[] menuId=null,itemId=null;System.Windows.Rect chosen=new System.Windows.Rect();var inventory=new StringBuilder();var seen=new HashSet<string>(StringComparer.Ordinal);var browserNodes=new Dictionary<string,BrowserNodeWitness>(StringComparer.Ordinal);
+  var menuInvocation=new BrowserMenuInvocation(rootId,popup.ToInt32(),browserPid);BrowserNodeWitness countedMenu=null;
   Action ancestryFence=()=>BrowserAncestryFence(host,testPid,hostTid,popup,browserPid,tid,browser,root,rootId,diagnosticReadinessDeadline,ownershipDeadline);
   Func<AutomationElement,BrowserNodeWitness> readAncestor=ancestor=>{
    var ancestorId=Runtime(ancestor);var counted=CountedAncestor(browserNodes,ancestorId);var ac=ancestor.Current;
@@ -1052,7 +1239,7 @@ public static class BowserDefaultContext {
     if(!gpuLeaf.Matches(c.ProcessId,observedNative,observedType,box,currentId,queued.Item3,c.IsEnabled,c.HasKeyboardFocus))throw new InvalidOperationException("Outer inventory differs from immutable GPU Pane/native/bounds witness.");
     RecheckGpuTyped(e,gpuLeaf);
    }
-   BrowserNodeWitness browserNode=null;
+   BrowserNodeWitness browserNode=null;RootedMenuWitness rootedMenu=null;
    if(providerPid==(int)browserPid){
     try{
      browserNode=CaptureBrowserNode(e,browserPid,queued.Item2,queued.Item3,browser,popup);
@@ -1063,6 +1250,7 @@ public static class BowserDefaultContext {
      // Every admitted unknown-HWND MenuBar proves its own fresh chain, even when
      // it is not encountered later as an ancestor of the exact fixture item.
      if(browserNode.NativeUnknown&&browserNode.Type==ControlType.MenuBar.Id)CountedBrowserAncestry(e,browserNode,browserNodes,rootId,browserPid,popup.ToInt32(),readAncestor,ancestor=>walker.GetParent(ancestor),ancestryFence);
+     if(browserNode.NativeUnknown&&browserNode.Type==ControlType.Menu.Id)rootedMenu=menuInvocation.ProveMenu(e,browserNode,browserNodes,readAncestor,ancestor=>walker.GetParent(ancestor),ancestryFence);
     }catch{
      // The original strict browser rejection is already selected. Optional collection
      // cannot return proof, retry acceptance, send input, or replace that same error.
@@ -1072,12 +1260,13 @@ public static class BowserDefaultContext {
    }
    string nativeToken=browserNode==null?Number(observedNative):browserNode.NativeToken;
    string boundsToken=browserNode==null?Real(box.X)+":"+Real(box.Y)+":"+Real(box.Width)+":"+Real(box.Height):browserNode.BoundsToken;
-   AppendInventoryNode(inventory,examined,queued.Item2,queued.Item3,currentId,providerPid,observedType,nativeToken,boundsToken,gpuProof??browserNode.Signature);
-   if(IsBrowserRow(browserNode,ControlType.Menu.Id)){menus++;menuId=browserNode.Id();}
+   AppendInventoryNode(inventory,examined,queued.Item2,queued.Item3,currentId,providerPid,observedType,nativeToken,boundsToken,gpuProof??menuInvocation.InventorySignature(browserNode,rootedMenu));
+   if(menuInvocation.IsCountedMenu(browserNode,rootedMenu)){menus++;menuId=browserNode.Id();countedMenu=browserNode;}
    if(IsBrowserRow(browserNode,ControlType.MenuItem.Id)&&String.Equals(c.Name,"Bowser native context permission probe",StringComparison.Ordinal)){
     if(!c.IsEnabled||c.IsOffscreen)throw new InvalidOperationException("Fixture menu leaf unavailable.");
     var child=walker.GetFirstChild(e);if(child!=null)throw new InvalidOperationException("Fixture item is not a leaf.");
-    if(CountedBrowserAncestry(e,browserNode,browserNodes,rootId,browserPid,popup.ToInt32(),readAncestor,ancestor=>walker.GetParent(ancestor),ancestryFence)!=1)throw new InvalidOperationException("UIA raw Menu ancestry incomplete or ambiguous.");
+    var fixtureAncestry=CountedBrowserAncestry(e,browserNode,browserNodes,rootId,browserPid,popup.ToInt32(),readAncestor,ancestor=>walker.GetParent(ancestor),ancestryFence);
+    menuId=menuInvocation.FixtureMenu(fixtureAncestry,countedMenu).Id();
     items++;itemId=browserNode.Id();chosen=FixtureBounds(browserNode);
    }
    if(!Same(Runtime(e),currentId)||e.Current.ProcessId!=providerPid)throw new InvalidOperationException("Raw node identity changed across inventory read.");

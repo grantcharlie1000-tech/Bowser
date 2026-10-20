@@ -314,7 +314,7 @@ class RequireOwnedMismatchSourceContracts(unittest.TestCase):
         self.assertEqual(require.count("CaptureRequireOwnedMismatchLater();"), 1)
         self.assertNotIn("return", require)
 
-    def test_success_ordinary_setup_close_and_cleanup_paths_get_no_new_operations(self):
+    def test_ordinary_and_authority_paths_are_frozen_except_read_only_close_snapshots(self):
         strict = self.strict()
         hashes = {
             "uint Sequence()": "8411bd80fc84398fd74e35981efe06492c017c1c271cbd7c9c9933fd45f71669",
@@ -326,7 +326,11 @@ class RequireOwnedMismatchSourceContracts(unittest.TestCase):
         }
         for signature, digest in hashes.items():
             with self.subTest(signature=signature):
-                self.assertEqual(hashlib.sha256(block(signature, strict).encode()).hexdigest(), digest)
+                actual = block(signature, strict)
+                if signature == "public InitializedFixtureClipboardGuard(string generated)":
+                    actual = actual.replace("    try{CaptureConstructorClose(false);}catch{}\n", "")
+                    actual = actual.replace("    opened=false;CloseChecked();\n    try{CaptureConstructorClose(true);}catch{}\n    cleanup.Arm(last,helperEpoch);", "    opened=false;CloseChecked();cleanup.Arm(last,helperEpoch);")
+                self.assertEqual(hashlib.sha256(actual.encode()).hexdigest(), digest)
         ordinary = " " + block("public sealed class ClipboardGuard:IDisposable")
         self.assertEqual(hashlib.sha256(ordinary.encode()).hexdigest(), ORDINARY_CLASS_SHA256)
         self.assertNotIn("Mismatch", ordinary)
@@ -379,6 +383,68 @@ class RequireOwnedMismatchSourceContracts(unittest.TestCase):
         self.assertLess(failure.index(export), failure.index("$restored=$clipboard.Finish()"))
         self.assertNotIn("MismatchEvidence", HELPER.split("}catch{\n $report.error=$_.Exception.Message", 1)[0].split("\n'@", 1)[1])
         for forbidden in ("RequireOwned(", "CaptureRequireOwnedMismatchLater(", "Sequence(", "EmptyClipboard(", "GetClipboardData(", "SetClipboardData("):
+            self.assertNotIn(forbidden, export)
+
+
+class ConstructorCloseObservationContracts(unittest.TestCase):
+    """Source contracts; managed synthetic checks run separately in Windows CI."""
+
+    def test_snapshots_are_one_shot_around_only_original_successful_constructor_close(self):
+        strict = block("public sealed class InitializedFixtureClipboardGuard:")
+        constructor = block("public InitializedFixtureClipboardGuard(string generated)", strict)
+        close = "try{CaptureConstructorClose(false);}catch{}\n    opened=false;CloseChecked();\n    try{CaptureConstructorClose(true);}catch{}\n    cleanup.Arm(last,helperEpoch);"
+        self.assertIn(close, constructor)
+        self.assertLess(constructor.index("last=Sequence();OwnedSequences.Add(last);Status=\"synthetic-payload-owned\""), constructor.index(close))
+        capture = block("void CaptureConstructorClose(", strict)
+        self.assertIn("CompareExchange(ref beforeCloseCaptureClaim,1,0)", capture)
+        self.assertIn("CompareExchange(ref afterCloseCaptureClaim,1,0)", capture)
+        self.assertIn("constructorCloseEvidence==null", capture)
+        self.assertIn("new ConstructorCloseReceipt{expected_sequence=last}", capture)
+        self.assertIn("constructorCloseEvidence.close_confirmed=true", capture)
+        self.assertEqual(CS.count("CaptureConstructorClose(false)"), 1)
+        self.assertEqual(CS.count("CaptureConstructorClose(true)"), 1)
+        for name in ("last", "owner", "helperEpoch", "window", "uncertain", "changed", "finished", "Status"):
+            self.assertNotRegex(capture, r"\b" + name + r"\s*=(?!=)")
+        self.assertNotIn("cleanup.", capture)
+        self.assertNotIn("OwnedSequences.", capture)
+
+    def test_capture_has_only_bounded_read_only_operations_and_fixed_scalar_receipt(self):
+        capture = block("static ClipboardCloseSnapshot CaptureClipboardCloseSnapshot(")
+        self.assertEqual(capture.count("ops.Sequence()"), 1)
+        self.assertEqual(capture.count("ops.TryOwner("), 1)
+        self.assertEqual(capture.count("ops.ExactOwner("), 2)
+        for forbidden in (".Open(", ".Close(", ".Empty(", ".Data(", "ReadBounded(", "FirstFormat(", "GetClipboardData(", "SetClipboardData(", "EnumClipboardFormats(", "GlobalLock(", "mouse_event(", "keybd_event(", "while(", "for(", "foreach(", "throw", "catch(Exception"):
+            self.assertNotIn(forbidden, capture)
+        receipt = block("public sealed class ClipboardCloseSnapshot")
+        outer = block("public sealed class ConstructorCloseReceipt")
+        for forbidden in ("IntPtr", "Exception", "Class", "Title", "Path", "Url", "object", "List<"):
+            self.assertNotIn(forbidden, receipt + outer)
+        self.assertIn("not-cause-or-epoch-authority", outer)
+        self.assertIn('observed==0?"unavailable":"observed"', capture)
+        self.assertIn("receipt.owner_query_error=error;receipt.owner_query_succeeded=ok&&error==0;", capture)
+
+    def test_actual_synthetic_snapshot_policy_is_wired_without_native_operations(self):
+        cases = block("public static void CheckInitializedClipboardPolicy()")
+        for label in ("exact helper", "changed close sequence is observation only", "zero close snapshot stays unavailable", "null owner", "owner error", "query unknown", "foreign owner", "helper lost", "helper unknown"):
+            self.assertIn(label, cases)
+        case = block("static void CheckCloseSnapshotCase(")
+        self.assertIn("CaptureClipboardCloseSnapshot(ops)", case)
+        for name in ("OpenCalls", "CloseCalls", "EmptyCalls", "EnumCalls", "ContentCalls", "Reads", "InputCalls"):
+            self.assertIn("ops." + name + "==0", case)
+        self.assertIn("ops.SequenceCalls==1&&ops.OwnerCalls==1", case)
+        self.assertIn("ops.CurrentSequence==before&&ops.CurrentOwner==ownerBefore", case)
+        checker = (ROOT / "benchmarks/scripts/test-native-menu-helpers.ps1").read_text()
+        self.assertIn("$null=$initializedPolicy.Invoke($null,@())", checker)
+
+    def test_export_only_reads_retained_receipt_after_opt_in_failure(self):
+        export = "try{if($clipboard -and $clipboard.CloseEvidence){$report.initialized_guard_constructor_close=$clipboard.CloseEvidence}}catch{}"
+        self.assertEqual(HELPER.count(export), 1)
+        failure = HELPER.split("}catch{\n $report.error=$_.Exception.Message", 1)[1]
+        opt_in = failure.split(" if($InitializedEmptyClipboardFixture){", 1)[1].split("\n }", 1)[0]
+        self.assertIn(export, opt_in)
+        self.assertLess(failure.index(export), failure.index("$restored=$clipboard.Finish()"))
+        self.assertNotIn("CloseEvidence", HELPER.split("}catch{\n $report.error=$_.Exception.Message", 1)[0].split("\n'@", 1)[1])
+        for forbidden in ("CaptureConstructorClose(", "Sequence(", "EmptyClipboard(", "GetClipboardData(", "SetClipboardData("):
             self.assertNotIn(forbidden, export)
 
 

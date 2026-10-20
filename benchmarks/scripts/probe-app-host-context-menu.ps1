@@ -387,6 +387,22 @@ public static class BowserHostMenu {
   public uint FirstFormat(out int error){SetLastError(0);uint first=EnumClipboardFormats(0);error=Marshal.GetLastWin32Error();return first;}
   public bool Empty(){return EmptyClipboard();}public bool Close(){return CloseClipboard();}
  }
+ // Primitive-only, non-atomic observations. Never an epoch/admission/cleanup decision.
+ public sealed class ClipboardCloseSnapshot {
+  public uint? sequence=null;public string sequence_status="unavailable",checked_owner="unknown-query",helper_liveness="unknown";
+  public bool sequence_query_attempted=false,owner_query_attempted=false,owner_query_succeeded=false;public int? owner_query_error=null;
+ }
+ static ClipboardCloseSnapshot CaptureClipboardCloseSnapshot(ClipboardPolicyOps ops){
+  var receipt=new ClipboardCloseSnapshot();
+  try{receipt.sequence_query_attempted=true;uint observed=ops.Sequence();receipt.sequence=observed;receipt.sequence_status=observed==0?"unavailable":"observed";}catch{}
+  try{
+   IntPtr actual;int error;receipt.owner_query_attempted=true;bool ok=ops.TryOwner(out actual,out error);
+   receipt.owner_query_error=error;receipt.owner_query_succeeded=ok&&error==0;
+   if(receipt.owner_query_succeeded)receipt.checked_owner=actual==IntPtr.Zero?"null-error0":ops.ExactOwner(actual,ops.Helper)?"exact-helper":"other-or-not-proven";
+  }catch{}
+  try{var helper=ops.Helper;if(helper!=null)receipt.helper_liveness=ops.ExactOwner(helper.Window,helper)?"exact-live-helper":"not-proven";}catch{}
+  return receipt;
+ }
  public sealed class NativeCopyCompletion {
   public string Schema,Nonce,ExpectedNonce,Request,ExpectedRequest,Mode;public int CompleteCalls,Selected,ExpectedSelected,SetterCalls;public bool CompleteOk,CleanupOk,SetterOk;
  }
@@ -551,8 +567,23 @@ public static class BowserHostMenu {
   bool opened=ops.Open();try{if(opened){int error;uint first=ops.FirstFormat(out error);uint sequence=ops.Sequence();if(OrdinaryAdmissionAllowsMutation(opened,first,error,sequence))ops.Empty();}}finally{if(opened)ops.Close();}
   PolicyAssert(ops.EmptyCalls==expectedMutations,name);NoContentOrInput(ops,name);
  }
+ static void CheckCloseSnapshotCase(string name,SyntheticCopyPolicyOps ops,string sequenceStatus,string ownerStatus,string helperStatus){
+  uint before=ops.CurrentSequence;IntPtr ownerBefore=ops.CurrentOwner;var receipt=CaptureClipboardCloseSnapshot(ops);
+  PolicyAssert(receipt.sequence==before&&receipt.sequence_status==sequenceStatus&&receipt.checked_owner==ownerStatus&&receipt.helper_liveness==helperStatus,name);
+  PolicyAssert(ops.SequenceCalls==1&&ops.OwnerCalls==1&&ops.OpenCalls==0&&ops.CloseCalls==0&&ops.EmptyCalls==0&&ops.EnumCalls==0&&ops.ContentCalls==0&&ops.Reads==0&&ops.InputCalls==0,name+" bounded read-only operations");
+  PolicyAssert(ops.CurrentSequence==before&&ops.CurrentOwner==ownerBefore,name+" no epoch adoption or mutation");
+ }
  public static void CheckInitializedClipboardPolicy(){
   PolicyAssert(ClipboardMessageLayoutValid(),"synthetic public MSG layout x86-or-x64");
+  CheckCloseSnapshotCase("synthetic close snapshot exact helper",new SyntheticCopyPolicyOps{CurrentSequence=3,CurrentOwner=new IntPtr(11)},"observed","exact-helper","exact-live-helper");
+  CheckCloseSnapshotCase("synthetic changed close sequence is observation only",new SyntheticCopyPolicyOps{CurrentSequence=6,CurrentOwner=new IntPtr(11)},"observed","exact-helper","exact-live-helper");
+  CheckCloseSnapshotCase("synthetic zero close snapshot stays unavailable",new SyntheticCopyPolicyOps{CurrentSequence=0,CurrentOwner=new IntPtr(11)},"unavailable","exact-helper","exact-live-helper");
+  CheckCloseSnapshotCase("synthetic close snapshot null owner",new SyntheticCopyPolicyOps{CurrentOwner=IntPtr.Zero},"observed","null-error0","exact-live-helper");
+  CheckCloseSnapshotCase("synthetic close snapshot owner error",new SyntheticCopyPolicyOps{CurrentOwner=IntPtr.Zero,OwnerQueryError=5},"observed","unknown-query","exact-live-helper");
+  CheckCloseSnapshotCase("synthetic close snapshot query unknown",new SyntheticCopyPolicyOps{CurrentOwner=IntPtr.Zero,OwnerQueryOk=false},"observed","unknown-query","exact-live-helper");
+  CheckCloseSnapshotCase("synthetic close snapshot foreign owner",new SyntheticCopyPolicyOps{CurrentOwner=new IntPtr(99)},"observed","other-or-not-proven","exact-live-helper");
+  CheckCloseSnapshotCase("synthetic close snapshot helper lost",new SyntheticCopyPolicyOps{CurrentOwner=new IntPtr(11),HelperAlive=false},"observed","other-or-not-proven","not-proven");
+  CheckCloseSnapshotCase("synthetic close snapshot helper unknown",new SyntheticCopyPolicyOps{CurrentOwner=new IntPtr(11),HelperKnown=false},"observed","other-or-not-proven","not-proven");
   CheckInitializerCase("explicit empty initialization from original zero",new SyntheticClipboardPolicyOps{CurrentSequence=0},true,1);
   CheckInitializerCase("initializer missing dedicated contract",new SyntheticClipboardPolicyOps{Contract=false},false,0);
   CheckInitializerCase("initializer null owner error0",new SyntheticClipboardPolicyOps{CurrentOwner=IntPtr.Zero,OwnerQueryError=0},true,1);
@@ -651,6 +682,23 @@ public static class BowserHostMenu {
 
  // Separate opt-in guard. The original class and ordinary cleanup gap above remain unchanged.
  public sealed class InitializedFixtureClipboardGuard:IDisposable {
+  public sealed class ConstructorCloseReceipt {
+   public string scope="initialized-fixture-constructor-close-read-only-not-authority",observation_timing="before-and-after-original-close-separate-non-atomic-observations-not-cause-or-epoch-authority";
+   public uint expected_sequence=0;public bool close_confirmed=false;
+   public ClipboardCloseSnapshot before=null,after=null;
+  }
+  ConstructorCloseReceipt constructorCloseEvidence;int beforeCloseCaptureClaim=0,afterCloseCaptureClaim=0;
+  public ConstructorCloseReceipt CloseEvidence {get{return constructorCloseEvidence;}}
+  // Exactly one observation on each side of the existing CloseChecked. Never update last.
+  void CaptureConstructorClose(bool after){
+   if(after){
+    if(System.Threading.Interlocked.CompareExchange(ref afterCloseCaptureClaim,1,0)!=0||constructorCloseEvidence==null)return;
+    constructorCloseEvidence.close_confirmed=true;constructorCloseEvidence.after=CaptureClipboardCloseSnapshot(policyOps);
+   }else{
+    if(System.Threading.Interlocked.CompareExchange(ref beforeCloseCaptureClaim,1,0)!=0)return;
+    constructorCloseEvidence=new ConstructorCloseReceipt{expected_sequence=last};constructorCloseEvidence.before=CaptureClipboardCloseSnapshot(policyOps);
+   }
+  }
   // Failure-only evidence, never original-check evidence or admission/cleanup authority.
   public sealed class RequireOwnedMismatchReceipt {
    public string scope="initialized-fixture-require-owned-refusal-read-only-not-authority";
@@ -702,7 +750,10 @@ public static class BowserHostMenu {
     changed=true;last=Sequence();OwnedSequences.Add(last);
     if(SetClipboardData(13,memory)==IntPtr.Zero)throw new InvalidOperationException("Synthetic payload write failed.");memory=IntPtr.Zero;
     last=Sequence();OwnedSequences.Add(last);Status="synthetic-payload-owned";
-    opened=false;CloseChecked();cleanup.Arm(last,helperEpoch);
+    try{CaptureConstructorClose(false);}catch{}
+    opened=false;CloseChecked();
+    try{CaptureConstructorClose(true);}catch{}
+    cleanup.Arm(last,helperEpoch);
    }catch{AdmissionFailureStage=AdmissionStage;if(opened){opened=false;try{CloseChecked();}catch{}}Finish();window.Dispose();owner=IntPtr.Zero;throw;}
    finally{admission=false;if(memory!=IntPtr.Zero)GlobalFree(memory);}
   }
@@ -957,6 +1008,7 @@ try {
  if($InitializedEmptyClipboardFixture){
   try{if([BowserHostMenu+InitializedFixtureClipboardGuard]::AdmissionStarted){$report.initialized_guard_admission=@{stage=[BowserHostMenu+InitializedFixtureClipboardGuard]::AdmissionStage;failure_stage=[BowserHostMenu+InitializedFixtureClipboardGuard]::AdmissionFailureStage;open_succeeded=[BowserHostMenu+InitializedFixtureClipboardGuard]::AdmissionOpened;format_observed=[BowserHostMenu+InitializedFixtureClipboardGuard]::AdmissionFormatObserved;first_format_zero=[BowserHostMenu+InitializedFixtureClipboardGuard]::AdmissionFirstFormatZero;enum_error=[BowserHostMenu+InitializedFixtureClipboardGuard]::AdmissionEnumError;sequence_observed=[BowserHostMenu+InitializedFixtureClipboardGuard]::AdmissionSequenceObserved;sequence=[BowserHostMenu+InitializedFixtureClipboardGuard]::AdmissionSequence;close_attempted=[BowserHostMenu+InitializedFixtureClipboardGuard]::AdmissionCloseAttempted;close_confirmed=[BowserHostMenu+InitializedFixtureClipboardGuard]::AdmissionCloseConfirmed}}}catch{}
   try{if($clipboard -and $clipboard.MismatchEvidence){$report.initialized_guard_require_owned_mismatch=$clipboard.MismatchEvidence}}catch{}
+  try{if($clipboard -and $clipboard.CloseEvidence){$report.initialized_guard_constructor_close=$clipboard.CloseEvidence}}catch{}
  }
  # Constructor cleanup has already run, even when assignment never returned an object.
  try {if([BowserHostMenu+ClipboardGuard]::AdmissionStarted){$report.clipboard_admission=@{stage=[BowserHostMenu+ClipboardGuard]::AdmissionStage;failure_stage=[BowserHostMenu+ClipboardGuard]::AdmissionFailureStage;open_succeeded=[BowserHostMenu+ClipboardGuard]::AdmissionOpened;format_observed=[BowserHostMenu+ClipboardGuard]::AdmissionFormatObserved;first_format_zero=[BowserHostMenu+ClipboardGuard]::AdmissionFirstFormatZero;enum_error=[BowserHostMenu+ClipboardGuard]::AdmissionEnumError;sequence_observed=[BowserHostMenu+ClipboardGuard]::AdmissionSequenceObserved;sequence=[BowserHostMenu+ClipboardGuard]::AdmissionSequence;close_attempted=[BowserHostMenu+ClipboardGuard]::AdmissionCloseAttempted;close_confirmed=[BowserHostMenu+ClipboardGuard]::AdmissionCloseConfirmed}}}catch{}

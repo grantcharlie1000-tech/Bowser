@@ -189,7 +189,7 @@ class NativeSafetySourceContracts(unittest.TestCase):
     def test_raw_browser_unknown_geometry_is_typed_counted_and_not_a_gpu_or_fixture_exception(self):
         helper = source("benchmarks/scripts/probe-default-context-cancellation.ps1")
         policy = helper.split("static BrowserNodeWitness CreateBrowserWitness(", 1)[1].split("static BrowserNodeWitness CaptureBrowserNode(", 1)[0]
-        for guard in ("if(!nativeUnknown||(type!=ControlType.Pane.Id&&type!=ControlType.MenuBar.Id)", "depth==0", "!patternsAbsent", "Supported browser geometry is nonfinite; no Empty exception.", "Mixed unknown-HWND browser Pane requires supported finite non-empty bounds."):
+        for guard in ("if(!nativeUnknown||(type!=ControlType.Pane.Id&&type!=ControlType.MenuBar.Id&&type!=ControlType.Menu.Id)", "depth==0", "!patternsAbsent", "Supported browser geometry is nonfinite; no Empty exception.", "Mixed unknown-HWND browser Pane requires supported finite non-empty bounds."):
             self.assertIn(guard, policy)
         capture = helper.split("static BrowserNodeWitness CaptureBrowserNode(", 1)[1].split("static BrowserNodeWitness RecheckBrowserNode(", 1)[0]
         self.assertIn("GetCurrentPropertyValue(AutomationElement.ProcessIdProperty,true)", capture)
@@ -198,7 +198,8 @@ class NativeSafetySourceContracts(unittest.TestCase):
         self.assertIn("NoPattern(node,ItemContainerPattern.Pattern)", capture)
         self.assertIn("NoPattern(node,VirtualizedItemPattern.Pattern)", capture)
         self.assertIn("CountedAncestor(browserNodes,ancestorId)", helper)
-        self.assertIn("IsBrowserRow(browserNode,ControlType.Menu.Id)", helper)
+        self.assertIn("IsBrowserRow(node,ControlType.Menu.Id)", helper)
+        self.assertIn("menuInvocation.IsCountedMenu(browserNode,rootedMenu)", helper)
         self.assertIn("IsBrowserRow(browserNode,ControlType.MenuItem.Id)", helper)
         self.assertIn("itemId=browserNode.Id();chosen=FixtureBounds(browserNode)", helper)
         self.assertIn("if(child!=null)CountedParent(nodes,child,runtime)", helper)
@@ -223,17 +224,17 @@ class NativeSafetySourceContracts(unittest.TestCase):
     def test_unknown_hwnd_menubar_is_contained_container_with_independent_shared_root_proof(self):
         helper = source("benchmarks/scripts/probe-default-context-cancellation.ps1")
         policy = helper.split("static BrowserNodeWitness CreateBrowserWitness(", 1)[1].split("static bool ContainedBrowserBounds(", 1)[0]
-        bar = policy.split("if(type==ControlType.MenuBar.Id){", 1)[1].split("if(boundsUnknown)return", 1)[0]
+        bar = policy.split("if(type==ControlType.MenuBar.Id||type==ControlType.Menu.Id){", 1)[1].split("if(boundsUnknown)return", 1)[0]
         for guard in ("boundsUnknown", "boundsValue is System.Windows.Rect", "ContainedBrowserBounds((System.Windows.Rect)boundsValue,popupBounds)", "true,false"):
             self.assertIn(guard, bar)
         contains = helper.split("static bool ContainedBrowserBounds(", 1)[1].split("static BrowserNodeWitness CaptureBrowserNode(", 1)[0]
         for guard in ("Finite(bounds.Right)", "Finite(bounds.Bottom)", "bounds.Width>0", "bounds.Height>0", "popup.Width>0", "popup.Height>0", "bounds.Left>=popup.Left", "bounds.Top>=popup.Top", "bounds.Right<=popup.Right", "bounds.Bottom<=popup.Bottom"):
             self.assertIn(guard, contains)
-        ancestry = helper.split("static int CountedBrowserAncestry<T>(", 1)[1].split("static bool BrowserAncestryBudget(", 1)[0]
+        ancestry = helper.split("static BrowserAncestryWitness CountedBrowserAncestry<T>(", 1)[1].split("static bool BrowserAncestryBudget(", 1)[0]
         for guard in ("hop<32", "fence();var fresh=read(current);fence();", "CountedAncestor(nodes,runtime)", "seen.Add(JsonIds(runtime))", "SameBrowserWitness(counted,fresh)", "CountedParent(nodes,child,runtime)", "counted.Pid!=(int)browserPid", "counted.Depth!=0", "counted.Parent()!=null", "counted.NativeUnknown", "counted.BoundsUnknown", "counted.Native!=popup", "child=counted;fence();current=parent(current);fence();"):
             self.assertIn(guard, ancestry)
         self.assertLess(ancestry.index("if(Same(runtime,rootId))"), ancestry.index("current=parent(current)"))
-        parent = helper.split("static BrowserNodeWitness CountedParent(", 1)[1].split("static int CountedBrowserAncestry<T>(", 1)[0]
+        parent = helper.split("static BrowserNodeWitness CountedParent(", 1)[1].split("static BrowserAncestryWitness CountedBrowserAncestry<T>(", 1)[0]
         self.assertIn("parent.Depth!=child.Depth-1", parent)
         self.assertIn("MatchesParentAdvance(child.Parent(),observedParent)", parent)
         fence = helper.split("static void BrowserAncestryFence(", 1)[1].split("static bool UniqueBrowserFixtureCounts(", 1)[0]
@@ -254,7 +255,7 @@ class NativeSafetySourceContracts(unittest.TestCase):
         outer = helper.split("public static void CheckBrowserStructurePolicy(){", 1)[1].split("sealed class SyntheticBrowserNode", 1)[0]
         self.assertIn("CheckMenuBarAncestryPolicy();", outer)
         matrix = helper.split("static void CheckMenuBarAncestryPolicy(){", 1)[1].split("public static string InventoryDigest(", 1)[0]
-        for case in ("unknown-pid", "wrong-pid-kind", "foreign-pid", "unknown-type", "wrong-type-kind", "wrong-type", "root-menubar", "unknown-bounds", "null-bounds", "wrong-bounds-kind", "empty-bounds", "zero-width", "zero-height", "nan", "infinite", "overflow-right", "outside-left", "outside-top", "outside-right", "outside-bottom", "missing-popup", "empty-popup", "nonfinite-popup", "wrong-hwnd-kind", "virtualization-or-pattern-unavailable", "unknown-menu", "unknown-menu-item", "null-parent", "skipped-parent", "cyclic-parent", "missing-counted-parent", "wrong-counted-key", "reparented", "stale-runtime", "stale-type", "stale-native-tag", "stale-bounds", "foreign-counted-parent", "wrong-native-parent", "wrong-native-start", "stale-counted-depth", "wrong-popup-root", "unknown-popup-root", "wrong-root-runtime", "premature-root", "wrong-popup", "getter-or-pattern-failure", "parent-getter-failure", "33-node-ancestry-cap"):
+        for case in ("unknown-pid", "wrong-pid-kind", "foreign-pid", "unknown-type", "wrong-type-kind", "wrong-type", "root-menubar", "unknown-bounds", "null-bounds", "wrong-bounds-kind", "empty-bounds", "zero-width", "zero-height", "nan", "infinite", "overflow-right", "outside-left", "outside-top", "outside-right", "outside-bottom", "missing-popup", "empty-popup", "nonfinite-popup", "wrong-hwnd-kind", "virtualization-or-pattern-unavailable", "unknown-menu-unknown-bounds", "unknown-menu-item", "null-parent", "skipped-parent", "cyclic-parent", "missing-counted-parent", "wrong-counted-key", "reparented", "stale-runtime", "stale-type", "stale-native-tag", "stale-bounds", "foreign-counted-parent", "wrong-native-parent", "wrong-native-start", "stale-counted-depth", "wrong-popup-root", "unknown-popup-root", "wrong-root-runtime", "premature-root", "wrong-popup", "getter-or-pattern-failure", "parent-getter-failure", "33-node-ancestry-cap"):
             self.assertIn('"' + case + '"', matrix)
         for predicate in ("CreateBrowserWitness(", "MatchesOuter(", "SameBrowserWitness(", "FixtureBounds(", "NoPatternValue(", "CountedBrowserAncestry(", "BrowserAncestryBudget(", "UniqueBrowserFixtureCounts(", "SyntheticBrowserInventory(", "SameProof(baseline,fresh)", "InventoryDigest(baseline)==InventoryDigest(fresh)"):
             self.assertIn(predicate, matrix)
@@ -274,7 +275,7 @@ class NativeSafetySourceContracts(unittest.TestCase):
 
     def test_shared_ancestry_binds_first_read_to_original_immutable_start(self):
         helper = source("benchmarks/scripts/probe-default-context-cancellation.ps1")
-        chain = helper.split("static int CountedBrowserAncestry<T>(", 1)[1].split("static bool BrowserAncestryBudget(", 1)[0]
+        chain = helper.split("static BrowserAncestryWitness CountedBrowserAncestry<T>(", 1)[1].split("static bool BrowserAncestryBudget(", 1)[0]
         self.assertIn("T start,BrowserNodeWitness expectedStart,", chain)
         start_guard = chain.split("if(hop==0&&(", 1)[1].split("\n", 1)[0]
         for guard in ("expectedStart==null", "!Same(runtime,expectedStart.Id())", "!Same(counted.Id(),expectedStart.Id())", "!SameBrowserWitness(expectedStart,fresh)", "!SameBrowserWitness(expectedStart,counted)"):
@@ -293,6 +294,85 @@ class NativeSafetySourceContracts(unittest.TestCase):
         self.assertIn("CountedBrowserAncestry(c.Bar,expectedStart,c.Nodes", matrix)
         self.assertIn("reads!=1||parents!=0||fences!=2||returned", matrix)
         self.assertIn("CheckBrowserAncestryStartPolicy();", helper.split("static void CheckMenuBarAncestryPolicy(){", 1)[1].split("static void CheckBrowserAncestryStartPolicy(){", 1)[0])
+
+    def test_unknown_menu_eligibility_requires_successful_invocation_local_expected_start_chain(self):
+        helper = source("benchmarks/scripts/probe-default-context-cancellation.ps1")
+        factory = helper.split("static BrowserNodeWitness CreateBrowserWitness(", 1)[1].split("static bool ContainedBrowserBounds(", 1)[0]
+        self.assertIn("type!=ControlType.Pane.Id&&type!=ControlType.MenuBar.Id&&type!=ControlType.Menu.Id", factory)
+        self.assertIn("if(type==ControlType.MenuBar.Id||type==ControlType.Menu.Id)", factory)
+        self.assertIn("ContainedBrowserBounds((System.Windows.Rect)boundsValue,popupBounds)", factory)
+        self.assertIn(":menu-unknown-hwnd-pending-root-no-virtualization", helper)
+        row = helper.split("static bool IsBrowserRow(", 1)[1].split("static bool MatchesParentAdvance(", 1)[0]
+        self.assertIn("!node.NativeUnknown&&!node.BoundsUnknown", row)
+        fixture = helper.split("static System.Windows.Rect FixtureBounds(", 1)[1].split("static BrowserNodeWitness CountedParent(", 1)[0]
+        self.assertIn("IsBrowserRow(node,ControlType.MenuItem.Id)", fixture)
+        capture = helper.split("static BrowserNodeWitness CaptureBrowserNode(", 1)[1].split("static bool SameBrowserWitness(", 1)[0]
+        self.assertIn("((ControlType)type).Id==ControlType.Menu.Id", capture)
+        self.assertIn("NoPattern(node,ItemContainerPattern.Pattern)&&NoPattern(node,VirtualizedItemPattern.Pattern)", capture)
+        scope = helper.split("sealed class BrowserMenuInvocation {", 1)[1].split("static bool BrowserAncestryBudget(", 1)[0]
+        self.assertIn("readonly object identity=new object()", scope)
+        self.assertIn("readonly Dictionary<string,RootedMenuWitness> issued=", scope)
+        issue = scope.split("public RootedMenuWitness ProveMenu<T>(", 1)[1].split("public bool IsCountedMenu(", 1)[0]
+        self.assertIn("expectedStart.Type!=ControlType.Menu.Id", issue)
+        self.assertIn("CountedBrowserAncestry(start,expectedStart,nodes,root,browserPid,popup,read,parent,fence)", issue)
+        self.assertLess(issue.index("CountedBrowserAncestry("), issue.index("new RootedMenuWitness("))
+        self.assertLess(issue.index("new RootedMenuWitness("), issue.index("fence();"))
+        self.assertLess(issue.index("fence();"), issue.index("issued.Add(key,proof)"))
+        count = scope.split("public bool IsCountedMenu(", 1)[1].split("public string InventorySignature(", 1)[0]
+        for guard in ("node.Type!=ControlType.Menu.Id", "node.Pid!=(int)browserPid", "IsBrowserRow(node,ControlType.Menu.Id)", "proof==null", "issued.TryGetValue(JsonIds(node.Id()),out registered)", "Object.ReferenceEquals(registered,proof)", "proof.Matches(identity,node,root,popup)", "whole inventory refused"):
+            self.assertIn(guard, count)
+        rooted = helper.split("sealed class RootedMenuWitness {", 1)[1].split("sealed class BrowserMenuInvocation {", 1)[0]
+        for guard in ("Object.ReferenceEquals(invocation,owner)", "popup==popupHandle", "Same(root,rootId)", "Same(expectedStart.Id(),menu.Id())", "SameBrowserWitness(expectedStart,menu)"):
+            self.assertIn(guard, rooted)
+        live = helper.split("public static MenuProof ReadMenu(", 1)[1].split("public static bool SameProof(", 1)[0]
+        self.assertEqual(live.count("new BrowserMenuInvocation(rootId,popup.ToInt32(),browserPid)"), 1)
+        self.assertIn("rootedMenu=menuInvocation.ProveMenu(e,browserNode,browserNodes,readAncestor,ancestor=>walker.GetParent(ancestor),ancestryFence)", live)
+        self.assertLess(live.index("rootedMenu=menuInvocation.ProveMenu("), live.index("}catch{" , live.index("rootedMenu=menuInvocation.ProveMenu(")))
+        self.assertIn("gpuProof??menuInvocation.InventorySignature(browserNode,rootedMenu)", live)
+        self.assertIn("menuInvocation.IsCountedMenu(browserNode,rootedMenu)", live)
+        self.assertNotIn("if(IsBrowserRow(browserNode,ControlType.Menu.Id))", live)
+
+    def test_fixture_identifies_same_eligible_menu_and_inventory_serializes_only_stable_semantics(self):
+        helper = source("benchmarks/scripts/probe-default-context-cancellation.ps1")
+        scope = helper.split("sealed class BrowserMenuInvocation {", 1)[1].split("static bool BrowserAncestryBudget(", 1)[0]
+        fixture = scope.split("public BrowserNodeWitness FixtureMenu(", 1)[1]
+        for guard in ("ancestry.SingleMenu()", "Same(actual.Id(),selected.Id())", "SameBrowserWitness(actual,selected)", "Same(countedRoot.Id(),root)", "countedRoot.Native!=popup", "IsCountedMenu(actual,proof)", "proof.Chain!=ancestry.ChainFor(actual)"):
+            self.assertIn(guard, fixture)
+        live = helper.split("public static MenuProof ReadMenu(", 1)[1].split("public static bool SameProof(", 1)[0]
+        self.assertIn("menus++;menuId=browserNode.Id();countedMenu=browserNode", live)
+        self.assertIn("var fixtureAncestry=CountedBrowserAncestry(e,browserNode,browserNodes,rootId,browserPid,popup.ToInt32()", live)
+        self.assertIn("menuId=menuInvocation.FixtureMenu(fixtureAncestry,countedMenu).Id()", live)
+        self.assertIn("!UniqueBrowserFixtureCounts(menus,items)", live)
+        token = helper.split("sealed class RootedMenuWitness {", 1)[1].split("sealed class BrowserMenuInvocation {", 1)[0]
+        semantic = token.split('Semantic="', 1)[1].split("\n", 1)[0]
+        for included in ("eligible-rooted-menu:popup=", "JsonIds(root)", "JsonIds(menu.Id())", "menu.Signature", "chain-sha256=", "Chain"):
+            self.assertIn(included, semantic)
+        for forbidden in ("identity", "invocation", "owner", "GetHashCode", "Guid"):
+            self.assertNotIn(forbidden, semantic)
+        ancestry = helper.split("sealed class BrowserAncestryWitness {", 1)[1].split("sealed class RootedMenuWitness {", 1)[0]
+        self.assertIn("path=nodes.ToArray()", ancestry)
+        self.assertIn("MenuCount!=1", ancestry)
+        self.assertIn("SameBrowserWitness(path[n],start)", ancestry)
+        self.assertIn("Number(path[n].Signature.Length)", ancestry)
+        self.assertIn("SHA256.Create()", ancestry)
+        signature = scope.split("public string InventorySignature(", 1)[1].split("public BrowserNodeWitness FixtureMenu(", 1)[0]
+        self.assertIn("IsCountedMenu(node,proof)", signature)
+        self.assertIn("proof.Semantic", signature)
+
+    def test_rooted_menu_matrix_exercises_real_predicates_without_native_acceptance_claims(self):
+        helper = source("benchmarks/scripts/probe-default-context-cancellation.ps1")
+        outer = helper.split("public static void CheckBrowserStructurePolicy(){", 1)[1].split("sealed class SyntheticBrowserNode", 1)[0]
+        self.assertIn("CheckRootedMenuPolicy();", outer)
+        matrix = helper.split("static void CheckRootedMenuPolicy(){", 1)[1].split("public static string InventoryDigest(", 1)[0]
+        for case in ("constructed-unproved-menu", "unproved-menu-serialization", "rooted-menu-not-fixture", "menu-unknown-pid", "menu-wrong-pid-kind", "menu-foreign-or-gpu-pid", "menu-unknown-type", "menu-wrong-type-kind", "menu-root", "menu-null-runtime", "menu-empty-runtime", "menu-null-parent", "menu-empty-parent", "menu-negative-depth", "menu-unknown-bounds", "menu-null-bounds", "menu-wrong-bounds-kind", "menu-empty-bounds", "menu-zero-width", "menu-zero-height", "menu-nan", "menu-infinite", "menu-overflow", "menu-outside-left", "menu-outside-top", "menu-outside-right", "menu-outside-bottom", "menu-null-native-kind", "menu-wrong-native-kind", "menu-pattern-present-or-unavailable", "menu-item-still-unknown", "duplicate-rooted-issuance", "tag-changed-token-reuse", "foreign-supported-menu", "foreign-invocation-token", "foreign-invocation-serialization", "root-proof-other-menu-signature", "unproved-menu-plus-valid-rooted-sibling", "unproved-menu-plus-valid-supported-sibling", "fixture-path-other-eligible-menu", "fixture-without-selected-menu", "same-process-wrong-popup", "same-process-wrong-root", "fixture-root-chain-changed", "menu-counted-root", "menu-counted-ancestor", "menu-counted-peer", "menu-stale-start-tag", "menu-stale-start-parent", "menu-stale-counted-start-tag", "menu-stale-counted-start-parent", "menu-wrong-expected-start", "menu-null-expected-start", "menu-getter-or-pattern-failed", "menu-parent-getter-failed", "menu-skipped-parent", "menu-cyclic-parent", "menu-foreign-parent", "menu-native-boundary", "menu-stale-depth"):
+            self.assertIn('"' + case + '"', matrix)
+        for predicate in ("IsCountedMenu(", "InventorySignature(", "FixtureBounds(", "CreateBrowserWitness(", "NoPatternValue(", "ProveSyntheticMenu(", "CountedBrowserAncestry(", "FixtureMenu(", "SyntheticRootedMenuInventory(", "SameProof(baseline,independentlyFresh)", "InventoryDigest(baseline)", "UniqueBrowserFixtureCounts("):
+            self.assertIn(predicate, matrix)
+        self.assertIn("fresh.Reads!=4||fresh.Parents!=3", matrix)
+        self.assertIn("proof.Semantic!=freshProof.Semantic", matrix)
+        self.assertIn("scope.ProofFor(w.Menu.Value)!=null", matrix)
+        for forbidden in ("keybd_event(", "mouse_event(", "ReadMenu(", "NativeReady(", "RootFence(", "GetTickCount64(", "GetCurrentPropertyValue("):
+            self.assertNotIn(forbidden, matrix)
 
     def test_complete_inventory_evidence_uses_only_captured_strings_after_release_or_cleanup(self):
         helper = source("benchmarks/scripts/probe-default-context-cancellation.ps1")
