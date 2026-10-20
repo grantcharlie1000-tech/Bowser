@@ -4694,6 +4694,11 @@ impl EngineAdapter for WebView2Tab {
                 .SetIsVisible(visible)
         }?;
         self.visible.set(visible);
+        if !visible {
+            // A hidden page's window can be moved under it (minimising a maximised window shifts it
+            // by the frame inset), so the next resize re-applies even unchanged bounds (L-1).
+            self.applied_bounds = None;
+        }
         if visible
             && let Some(webview) = self.webview.as_ref()
             && let Ok(webview3) = webview.cast::<ICoreWebView2_3>()
