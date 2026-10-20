@@ -84,6 +84,8 @@ $inventoryPolicy=$type.GetMethod('CheckInventoryPolicy',[Reflection.BindingFlags
 $null=$inventoryPolicy.Invoke($null,@())
 $leafPolicy=$type.GetMethod('CheckOwnedLeafPolicy',[Reflection.BindingFlags]::Public -bor [Reflection.BindingFlags]::Static)
 $null=$leafPolicy.Invoke($null,@())
+$browserPolicy=$type.GetMethod('CheckBrowserStructurePolicy',[Reflection.BindingFlags]::Public -bor [Reflection.BindingFlags]::Static)
+$null=$browserPolicy.Invoke($null,@())
 $native=$type.GetMethod('NativeMismatch',$flags)
 $absent=$native.Invoke($null,@([IntPtr]::Zero,[IntPtr]::Zero,[IntPtr]::Zero))|ConvertFrom-Json
 if($absent.status -cne 'no-native-hwnd'){throw 'No-HWND diagnostic branch changed.'}

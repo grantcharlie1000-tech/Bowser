@@ -301,3 +301,40 @@ outcome remain unchanged. No supported-empty policy exception is introduced.
 
 - [UIA BoundingRectangle property](https://learn.microsoft.com/en-us/dotnet/api/system.windows.automation.automationelement.boundingrectangleproperty?view=windowsdesktop-10.0)
 - [System.Windows.Rect.Empty](https://learn.microsoft.com/en-us/dotnet/api/system.windows.rect.empty?view=windowsdesktop-10.0)
+
+
+## Host-lane reuse of the bounded test pump
+
+On mergead33617/tree939e218, the independent note/Split phase receipt measured
+240159ms inside its nominal60-second startup pump, ready=false, before the existing
+240-second watchdog caused teardown. This establishes an unenforced acceptance
+boundary, not an endless queued-message producer or a particular native callback.
+The host live module now imports the already-reviewed, test-only bounded pump
+instead of keeping a duplicate unbounded drain/late-ready fallback. All original
+60/240-second budgets, phase receipts, native assertions and clipboard0 refusal
+remain. The same two explicitly wired pure decisions cover the shared code;
+real note/Split and Reload lanes remain required regression checks.
+
+
+## Typed unsupported browser-structure representation (native CI pending)
+
+The exact mergead33617/tree939e218 receipts identify a browser-PID Pane at depth4
+in both lanes. Its defaulting outer HWND is0 and box is canonical Empty, while
+no-default HWND and bounds are both NotSupported. Stable numeric runtime/parent,
+PID/type and root readings do not turn those unavailable properties into values.
+
+The narrow representation counts and traverses a non-root browser Pane with that
+exact pair as explicitly unknown, after supported PID/type/runtime/parent proof
+and read-only absence of ItemContainer/VirtualizedItem. It makes no leaf,
+invisibility, noncontrol or no-HWND claim. A typed immutable witness binds outer
+defaults and no-default tags; every browser node and fixture ancestor resolves to
+its counted witness and is freshly checked. Known nonzero native-ancestor rules
+remain. Root/Menu/MenuItem/GPU/fixture geometry never uses this unknown category;
+supported Empty, arbitrary nonfinite, one-sided unsupported, wrong kind, missing
+getter or changed availability refuses. Full inventory/digest/SameProof retain
+the actual kind/value tags so unknown-to-known changes cannot be hidden by0.
+
+Pure matrices exercise the real witness, serializer, ancestry lookup and proof
+comparison. They are not real UIA/provider race or permission acceptance. Both
+real menu lanes still require the existing one-shot membership response, full
+second inventory, shared deadline and exact native Escape/disappearance proof.

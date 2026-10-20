@@ -156,7 +156,7 @@ fn pump_message_action(expired:bool,present:bool,quit:bool)->PumpMessageAction {
     else {PumpMessageAction::Dispatch}
 }
 
-fn pump_until(timeout: Duration, ready: impl FnMut() -> bool) -> bool {
+pub(super) fn pump_until(timeout: Duration, ready: impl FnMut() -> bool) -> bool {
     pump_until_observed(timeout,ready,None)
 }
 fn pump_until_observed(timeout:Duration,mut ready:impl FnMut()->bool,observed:Option<&StartupPump>)->bool {

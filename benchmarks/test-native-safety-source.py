@@ -144,7 +144,7 @@ class NativeSafetySourceContracts(unittest.TestCase):
         self.assertIn("GPU leaf gained a child.", helper)
         self.assertIn("a.Inventory==b.Inventory&&a.GpuLeaves==b.GpuLeaves", helper)
         self.assertIn("Inventory=inventory.ToString(),GpuLeaves=gpuLeaves", helper)
-        self.assertIn("gpuLeaf.Matches(c.ProcessId,observedNative,observedType,box,Runtime(e),queued.Item3,c.IsEnabled,c.HasKeyboardFocus)", helper)
+        self.assertIn("gpuLeaf.Matches(c.ProcessId,observedNative,observedType,box,currentId,queued.Item3,c.IsEnabled,c.HasKeyboardFocus)", helper)
         self.assertIn("RecheckGpuTyped(e,gpuLeaf)", helper)
         self.assertIn("var facts=new NativeLeafFacts", helper)
         self.assertIn("if(!NativeLeafPolicy(facts))", helper)
@@ -186,32 +186,35 @@ class NativeSafetySourceContracts(unittest.TestCase):
         self.assertEqual(live.count("authority.service_once(ownership_deadline,ownership_tick)"), 2)
         self.assertEqual(live.count('assert!(ownership_error.is_none(),"fresh exact GPU membership refused:'), 2)
 
-    def test_raw_bounds_diagnostic_does_not_replace_or_relax_nonfinite_refusal(self):
+    def test_raw_browser_unknown_geometry_is_typed_counted_and_not_a_gpu_or_fixture_exception(self):
         helper = source("benchmarks/scripts/probe-default-context-cancellation.ps1")
-        branch = helper.split("if(!Finite(box.X)||!Finite(box.Y)||!Finite(box.Width)||!Finite(box.Height)){", 1)[1].split("   }", 1)[0]
-        self.assertIn("WriteBoundsFailure(", branch)
-        self.assertIn('throw new InvalidOperationException("Nonfinite raw inventory bounds.")', branch)
+        policy = helper.split("static BrowserNodeWitness CreateBrowserWitness(", 1)[1].split("static BrowserNodeWitness CaptureBrowserNode(", 1)[0]
+        for guard in ("!nativeUnknown||!boundsUnknown", "type!=ControlType.Pane.Id", "depth==0", "!patternsAbsent", "Supported browser geometry is nonfinite; no Empty exception."):
+            self.assertIn(guard, policy)
+        capture = helper.split("static BrowserNodeWitness CaptureBrowserNode(", 1)[1].split("static void RecheckBrowserNode(", 1)[0]
+        self.assertIn("GetCurrentPropertyValue(AutomationElement.ProcessIdProperty,true)", capture)
+        self.assertIn("GetCurrentPropertyValue(AutomationElement.NativeWindowHandleProperty,true)", capture)
+        self.assertIn("GetCurrentPropertyValue(AutomationElement.BoundingRectangleProperty,true)", capture)
+        self.assertIn("NoPattern(node,ItemContainerPattern.Pattern)", capture)
+        self.assertIn("NoPattern(node,VirtualizedItemPattern.Pattern)", capture)
+        self.assertIn("CountedAncestor(browserNodes,ancestorId)", helper)
+        self.assertIn("IsBrowserRow(browserNode,ControlType.Menu.Id)", helper)
+        self.assertIn("IsBrowserRow(browserNode,ControlType.MenuItem.Id)", helper)
+        self.assertIn("itemId=browserNode.Id();chosen=FixtureBounds(browserNode)", helper)
+        self.assertIn("CountedParent(browserNodes,counted,next==null?null:Runtime(next))", helper)
+        self.assertIn("browserNode.MatchesOuter(c.ProcessId,observedType,observedNative,box,currentId,queued.Item3)", helper)
+        self.assertIn("RecheckBrowserNode(ancestor,counted,browserPid,browser)", helper)
+        self.assertNotIn("if(ac.NativeWindowHandle!=0", helper)
+        self.assertIn("native==0&&CanonicalEmpty(bounds)", helper)
+        self.assertIn('NativeToken=unknown?"not-supported"', helper)
+        self.assertIn('BoundsToken=unknown?"not-supported"', helper)
+        self.assertIn("AppendInventoryNode(inventory,examined", helper)
+        self.assertIn("CheckBrowserStructurePolicy", source("benchmarks/scripts/test-native-menu-helpers.ps1"))
         diagnostic = helper.split("static void WriteBoundsFailure(", 1)[1].split("static string Real(", 1)[0]
-        self.assertIn("observed_outer_bounds", diagnostic)
-        self.assertIn("later_no_default_bounds", diagnostic)
-        self.assertIn("node_identity_before_later_query", diagnostic)
-        self.assertIn("node_identity_after_later_query", diagnostic)
-        self.assertIn("observed_category", diagnostic)
-        self.assertIn("catch{beforeFence=", diagnostic)
-        self.assertIn("catch{afterFence=", diagnostic)
-        self.assertIn("NodeIdentityMetadata(node,parentId!=null)", diagnostic)
-        identity = helper.split("static string NodeIdentityMetadata(", 1)[1].split("static void WriteBoundsFailure(", 1)[0]
-        self.assertIn("if(!inspectParent)", identity)
-        self.assertIn("captured-root-parent-not-queried", identity)
-        self.assertIn("BoundingRectangleProperty,true", diagnostic)
-        self.assertIn("FileMode.CreateNew", diagnostic)
-        self.assertIn("json.Length>8192", diagnostic)
-        self.assertIn("catch{}", diagnostic)
-        for forbidden in ("keybd_event(", "mouse_event(", "ReadMenu(", "SetForegroundWindow(", "current.Name", "node.Current.Name", "Real("):
+        for required in ("observed_outer_bounds", "later_no_default_bounds", "node_identity_before_later_query", "node_identity_after_later_query", "NodeIdentityMetadata(node,parentId!=null)", "catch{beforeFence=", "catch{afterFence=", "json.Length>8192", "FileMode.CreateNew"):
+            self.assertIn(required, diagnostic)
+        for forbidden in ("keybd_event(", "mouse_event(", "ReadMenu(", "SetForegroundWindow(", "node.Current.Name"):
             self.assertNotIn(forbidden, diagnostic)
-        checker = source("benchmarks/scripts/test-native-menu-helpers.ps1")
-        self.assertIn("Rect]::Empty", checker)
-        self.assertIn("$emptyBounds.rectangle.width -cne '-Infinity'", checker)
 
     def test_managed_helpers_compile_in_one_source_unit(self):
         checker = source("benchmarks/scripts/test-native-menu-helpers.ps1")
@@ -241,6 +244,14 @@ class NativeSafetySourceContracts(unittest.TestCase):
         self.assertIn("return finish(PumpExit::Quit)", quit_branch)
         self.assertNotIn("DispatchMessageW", quit_branch)
         self.assertEqual(pump.count("let is_ready=ready();"), 1)
+        host = source("src/engine/app_host_menu_probe/live.rs")
+        self.assertIn("NativeContextProbeHandles,MenuProbeEvent,pump_until", host)
+        self.assertNotIn("fn pump_until(", host)
+        self.assertNotIn("PeekMessageW", host)
+        note = source("src/engine/app_host_menu_probe/live/note_split.rs")
+        self.assertIn("pump_until(Duration::from_secs(60)", note)
+        self.assertIn("Duration::from_secs(240)", note)
+        self.assertIn("phases.pump_after(source_ready)", note)
         self.assertNotIn("SetForegroundWindow", pump)
         self.assertIn('startup.report(app,"primary-pump-refused-before-teardown")', app)
         self.assertIn('startup_timer.report(&app,"existing-180s-timer-before-close")', app)
