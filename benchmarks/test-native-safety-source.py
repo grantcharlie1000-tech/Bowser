@@ -81,6 +81,32 @@ class NativeSafetySourceContracts(unittest.TestCase):
         for forbidden in ("SelectedCommandId", "SetHandled", "SetForegroundWindow", "TerminateProcess", "MoveFocus"):
             self.assertNotIn(forbidden, process)
 
+    def test_production_stale_modal_cancellation_is_exact_and_not_a_test_rescue(self):
+        coordinator = source("src/engine/webview2/owned_context_menu.rs")
+        continuation = coordinator.split("pub(crate) fn continue_request(", 1)[1].split("pub(crate) fn tick(", 1)[0]
+        self.assertLess(continuation.index("if request.phase.get()==Phase::Showing {request.cancel_stale_modal();return;}"), continuation.index("if Instant::now()>=request.deadline.get()"))
+        tick = coordinator.split("pub(crate) fn tick(", 1)[1].split("pub(crate) fn drain_destroyed(", 1)[0]
+        self.assertIn("if request.phase.get()==Phase::Showing {request.cancel_stale_modal();}", tick)
+        self.assertIn("else if Instant::now()>=request.deadline.get()", tick)
+        validity = coordinator.split("fn showing_validity(self:", 1)[1].split("fn cancel_stale_modal(", 1)[0]
+        for fence in ("try_borrow_mut()", "Rc::ptr_eq(&entry.owner,&self.owner)", "entry.claim==Some(self.token)", "Rc::ptr_eq(pending,self)", "gate.proof()==Some(self.proof)"):
+            self.assertIn(fence, validity)
+        self.assertNotIn("deadline", validity)
+        self.assertNotIn("EndMenu", validity)
+        cancel = coordinator.split("fn cancel_stale_modal(", 1)[1].split("fn complete(", 1)[0]
+        self.assertEqual(cancel.count("EndMenu()"), 1)
+        self.assertIn("exact_modal_popup(&self.owner,root)!=Some((popup,capture))", cancel)
+        self.assertLess(cancel.index("modal_cancel_attempted.replace(true)"), cancel.index("EndMenu()"))
+        for forbidden in ("self.finish(", "self.complete(", "DestroyMenu(", "SetSelectedCommandId(", "PostMessageW(", "SendMessageW("):
+            self.assertNotIn(forbidden, cancel)
+        popup = coordinator.split("fn modal_popup_capture(", 1)[1].split("struct Owner {", 1)[0]
+        for fence in ("bar.hMenu!=root", "gui.hwndMenuOwner!=owner.hwnd", "gui.flags.contains(GUI_POPUPMENUMODE)", "gui.hwndCapture==owner.hwnd", "gui.hwndCapture==popup", "scan.ambiguous", "scan.complete"):
+            self.assertIn(fence, popup)
+        self.assertIn("let _modal=ModalRoot(&request.modal_root)", continuation)
+        self.assertIn("self.0.set(None)", coordinator)
+        helper = source("benchmarks/scripts/probe-app-context-menu-reload.ps1")
+        self.assertNotIn("EndMenu", helper)
+
     def test_managed_helpers_compile_in_one_source_unit(self):
         checker = source("benchmarks/scripts/test-native-menu-helpers.ps1")
         self.assertEqual(checker.count("Add-Type -TypeDefinition"), 1)

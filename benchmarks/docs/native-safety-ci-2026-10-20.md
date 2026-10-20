@@ -117,3 +117,43 @@ acceptance deadline; late native/COM returns refuse. No nested ten-second script
 pump, readiness-first bypass, repeated focus, sleep extension, or input rescue
 is used in this preparation. Source focus/geometry/document and post-click
 Reload/completion/disappearance/permission gates remain required.
+
+
+## Exercised in-modal Reload failure and correction
+
+[Follow-up native-safety run 39391619788](https://github.com/grantcharlie1000-tech/Bowser/actions/runs/39391619788)
+proved source conditioning, one genuine right-click, an actual App Reload return,
+and one same-view/same-URL native NavigationStarting. Nevertheless, the exact
+popup remained modal and no deferral completion arrived within the unchanged
+five-second gate. The product coordinator excluded Showing from stale-proof
+checks, and its cancellation path returned without ending TrackPopupMenu.
+Stale selection was still refused after return, so this is a stuck cancellation
+lifecycle, not evidence of a grant or dispatch.
+
+The default-off coordinator now distinguishes healthy, explicitly stale, and
+borrow-unavailable/unknown modal contexts. A healthy Showing menu is not expired
+by the inventory deadline or a queued continuation. Only explicit staleness can
+attempt one production EndMenu, after fresh same-STA owner lifetime, exact
+registry Rc/claim/request, retained lexical HMENU, unique bounded native popup,
+GetMenuBarInfo, GUI owner/menu mode and absent/exact-owner/exact-popup capture
+proofs. App/Core/gate/registry guards end before native calls and are rechecked.
+The attempted call does not finish, destroy or Complete in-modal; only the real
+TrackPopupMenu return permits ordinary cleanup and the existing single Complete.
+Unknown ownership or multiple visible popup windows (including unproved submenu
+shapes) defer cancellation rather than use a generic thread-wide fallback.
+No test Escape, helper EndMenu, input rescue or acceptance deadline changed.
+
+The new GPU diagnostics also show that control/content/focusable properties are
+explicitly NotSupported on the observed compositor node, despite matching GPU
+process-group membership and leaf observations. No structural exception is made;
+both foreign-provider gates remain required and may still refuse. Clipboard
+sequence-zero refusal likewise remains unchanged.
+
+- [EndMenu](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-endmenu)
+- [GetMenuBarInfo](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-getmenubarinfo)
+
+Local portable checks are source contracts, not dynamic Windows proof. The new
+pure Rust tests cover tri-state classification and lexical root clearing only;
+wrong/reused native identities, borrowed-context reentry, the one native attempt,
+healthy long-lived modal routing and actual cleanup/Complete still require
+Windows negative/integration execution. No local native acceptance is claimed.

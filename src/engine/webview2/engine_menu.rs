@@ -471,6 +471,14 @@ impl EngineMenu {
         Ok(())
     }
 
+    /// Exact retained root identity for the coordinator's cancellation-only modal guard.
+    /// This is not a selection/dispatch authority and is invalid outside the lexical show call.
+    pub(super) fn modal_root(&self)->Result<HMENU> {
+        self.on_thread()?;
+        if !matches!(self.state,State::Ready) {return Err(MenuError::UnexpectedState);}
+        self.native.handle()
+    }
+
     /// Call only from the deferred continuation, AFTER the engine callback has
     /// returned and with no Rust RefCell guard alive. `point` is already in screen
     /// pixels; controller bounds/rasterization conversion belongs to the caller.
