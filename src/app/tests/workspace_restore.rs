@@ -193,3 +193,23 @@ fn a_tab_moved_right_lands_where_it_was_dropped() {
     assert_eq!(App::tab_ids(&app), [c, a, d, b], "one place right");
     assert_eq!(App::tab_ids(&app), model_order(&app));
 }
+
+/// T5: "Duplicate" on a background tab right of the active one opens the copy beside the active
+/// tab, then moves it beside the original.
+#[test]
+fn a_duplicate_of_a_background_tab_lands_beside_it() {
+    let app = app_with_pending(rect(800, 600));
+    let a = App::active_tab_id(&app);
+    let b = App::new_tab(&app);
+    let c = App::new_tab(&app);
+    let d = App::new_tab(&app);
+    assert!(App::select_tab(&app, a));
+    let copy = App::new_tab(&app);
+    assert_eq!(App::tab_ids(&app), [a, copy, b, c, d], "a new tab opens beside the active one");
+    // window.rs `duplicate_index` with "beside": the original's place without the copy, plus one.
+    let without: Vec<TabId> = App::tab_ids(&app).into_iter().filter(|tab| *tab != copy).collect();
+    let after = without.iter().position(|tab| *tab == b).unwrap() + 1;
+    assert!(App::move_tab(&app, copy, after));
+    assert_eq!(App::tab_ids(&app), [a, b, copy, c, d]);
+    assert_eq!(App::tab_ids(&app), model_order(&app));
+}
