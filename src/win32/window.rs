@@ -2387,14 +2387,13 @@ unsafe extern "system" fn window_proc(
                     + windows::Win32::UI::HiDpi::GetSystemMetricsForDpi(SM_CXPADDEDBORDER, d);
                 let fy = windows::Win32::UI::HiDpi::GetSystemMetricsForDpi(SM_CYFRAME, d)
                     + windows::Win32::UI::HiDpi::GetSystemMetricsForDpi(SM_CXPADDEDBORDER, d);
+                // The monitor of the proposed rectangle, not the window's current one.
                 if wparam.0 != 0 {
                     let p = &mut *(lparam.0 as *mut NCCALCSIZE_PARAMS);
-                    let work = monitor_work_area(hwnd).unwrap_or(p.rgrc[0]);
-                    p.rgrc[0] = frame::client_rect_for_nccalc(p.rgrc[0], mx, d, (fx, fy), work);
+                    p.rgrc[0] = frame::nccalc_client(p.rgrc[0], mx, d, (fx, fy), monitor_work_area_of_rect);
                 } else {
                     let r = &mut *(lparam.0 as *mut RECT);
-                    let work = monitor_work_area(hwnd).unwrap_or(*r);
-                    *r = frame::client_rect_for_nccalc(*r, mx, d, (fx, fy), work);
+                    *r = frame::nccalc_client(*r, mx, d, (fx, fy), monitor_work_area_of_rect);
                 }
                 LRESULT(if wparam.0 != 0 {
                     WVR_REDRAW as isize
@@ -2439,7 +2438,7 @@ unsafe extern "system" fn window_proc(
                 );
                 // --- layout (thread T6) --- a row along the bottom edge keeps the bottom grip thin.
                 let thin_bottom = with_chrome(hwnd, |s| s.last_relayout.as_ref().is_some_and(|inputs| inputs.arrangement.thin_bottom_edge())).unwrap_or(false);
-                frame::frame_hit_test_with(
+                let hit = frame::frame_hit_test_with(
                     p,
                     (r.right, r.bottom),
                     dpi(hwnd),
@@ -2452,8 +2451,19 @@ unsafe extern "system" fn window_proc(
                         frame::ChromeHit::None
                     },
                     thin_bottom,
-                )
-                .lresult()
+                );
+                // W-3: a full-screen window has no caption to drag or double-click.
+                let full = auto_hide::fullscreen_of(hwnd) != crate::auto_hide::Fullscreen::No;
+                let hit = if full { frame::in_fullscreen(hit) } else { hit };
+                hit.lresult()
+            }
+            // W-3: nor does it move, size or maximise by any other way in (the HTML chrome's drag
+            // and double click, the system menu).
+            WM_SYSCOMMAND
+                if auto_hide::fullscreen_of(hwnd) != crate::auto_hide::Fullscreen::No
+                    && frame::fullscreen_refuses(wparam.0, IsIconic(hwnd).as_bool()) =>
+            {
+                LRESULT(0)
             }
             WM_NCMOUSEMOVE => {
                 set_hover(hwnd, caption_hit(wparam.0 as u32));
@@ -5198,6 +5208,15 @@ pub(super) fn split_rects_for_view(hwnd: HWND, view: crate::split_view::SplitVie
     let (primary, cross) = crate::split_view::dividers_for_ratios(view, page, m.px(crate::stacks::gap_dip()));
     let panes = layout::split_panes(Rect::new(page.0, page.1, page.2, page.3), view, primary, cross, m)?;
     Some(bounds_of(&panes, m))
+}
+
+/// [`split_rects_for_view`] for `App`, which may run inside a window-state borrow: then `None`, and
+/// the caller keeps the bounds it has.
+pub(crate) fn split_rects_now(hwnd: HWND, view: crate::split_view::SplitView) -> Option<crate::app::SplitBounds> {
+    if WINDOWS.with(|all| all.try_borrow_mut().is_err()) {
+        return None;
+    }
+    split_rects_for_view(hwnd, view)
 }
 
 /// The shown split's overlay geometry and focused pane, for the split host (picker placement).
@@ -8182,24 +8201,57 @@ fn open_profile_window(target: &crate::profile::Profile, hwnd: HWND) {
 }
 
 /// Handles Alt+Space and titlebar right-click with Bowser's themed window-command menu.
+/// Which window commands the system menu offers: `(command, enabled)` for Restore, Move, Size,
+/// Minimize and Maximize. A full-screen window is neither moved, sized, maximised nor restored from
+/// the menu (W-3: `frame::fullscreen_refuses`); F11 or Esc leaves full screen.
+fn system_menu_states(maximized: bool, minimized: bool, fullscreen: bool) -> [(u32, bool); 5] {
+    use windows::Win32::UI::WindowsAndMessaging::{SC_MAXIMIZE, SC_MINIMIZE};
+    let shown_full = fullscreen && !minimized;
+    [
+        (SC_RESTORE, (maximized || minimized) && !shown_full),
+        (SC_MOVE, !maximized && !minimized && !shown_full),
+        (SC_SIZE, !maximized && !minimized && !shown_full),
+        (SC_MINIMIZE, !minimized),
+        (SC_MAXIMIZE, !maximized && !fullscreen),
+    ]
+}
+
+/// The window's state as `system_menu_states` reads it.
+fn system_menu_states_of(hwnd: HWND) -> [(u32, bool); 5] {
+    let (maximized, minimized) = unsafe { (IsZoomed(hwnd).as_bool(), IsIconic(hwnd).as_bool()) };
+    system_menu_states(maximized, minimized, auto_hide::fullscreen_of(hwnd) != crate::auto_hide::Fullscreen::No)
+}
+
+/// Sets the Windows system menu's items to `states`. Windows refreshes them only when it shows the
+/// menu itself (Alt+Space through `DefWindowProc`), not for a `TrackPopupMenu` of `GetSystemMenu`,
+/// so without this the HTML chrome's menu offered Maximize on a maximised window, and so on.
+fn apply_system_menu_states(menu: windows::Win32::UI::WindowsAndMessaging::HMENU, states: &[(u32, bool)]) {
+    use windows::Win32::UI::WindowsAndMessaging::{EnableMenuItem, MF_BYCOMMAND, MF_ENABLED, MF_GRAYED};
+    for (command, enabled) in states {
+        let flags = MF_BYCOMMAND | if *enabled { MF_ENABLED } else { MF_GRAYED };
+        unsafe {
+            let _ = EnableMenuItem(menu, *command, flags);
+        }
+    }
+}
+
 fn show_system_menu(hwnd: HWND, point: windows::Win32::Foundation::POINT) {
     use windows::Win32::UI::WindowsAndMessaging::{SC_CLOSE, SC_MAXIMIZE, SC_MINIMIZE};
-    let maximized = unsafe { IsZoomed(hwnd).as_bool() };
-    let minimized = unsafe { IsIconic(hwnd).as_bool() };
+    let enabled = |command: u32| system_menu_states_of(hwnd).iter().any(|(c, on)| *c == command && *on);
     let entries = vec![
         Entry::Item(
             Item::new(SC_RESTORE as usize, "Restore", Icon::None)
                 .glyph("caption-restore")
-                .disabled_if(!maximized && !minimized),
+                .disabled_if(!enabled(SC_RESTORE)),
         ),
         Entry::Item(
-            Item::new(SC_MOVE as usize, "Move", Icon::None).disabled_if(maximized || minimized),
+            Item::new(SC_MOVE as usize, "Move", Icon::None).disabled_if(!enabled(SC_MOVE)),
         ),
         Entry::Item(
-            Item::new(SC_SIZE as usize, "Size", Icon::None).disabled_if(maximized || minimized),
+            Item::new(SC_SIZE as usize, "Size", Icon::None).disabled_if(!enabled(SC_SIZE)),
         ),
-        Entry::Item(Item::new(SC_MINIMIZE as usize, "Minimize", Icon::None).glyph("caption-minimize").disabled_if(minimized)),
-        Entry::Item(Item::new(SC_MAXIMIZE as usize, "Maximize", Icon::None).glyph("caption-maximize").disabled_if(maximized)),
+        Entry::Item(Item::new(SC_MINIMIZE as usize, "Minimize", Icon::None).glyph("caption-minimize").disabled_if(!enabled(SC_MINIMIZE))),
+        Entry::Item(Item::new(SC_MAXIMIZE as usize, "Maximize", Icon::None).glyph("caption-maximize").disabled_if(!enabled(SC_MAXIMIZE))),
         Entry::Separator,
         Entry::Item(Item::new(SC_CLOSE as usize, "Close", Icon::Close).glyph("close").shortcut("Alt+F4")),
     ];
@@ -8809,9 +8861,10 @@ fn show_open_tabs_menu(hwnd: HWND, app: &AppRef) {
     // --- end popup host ---
 }
 
-/// The work area of the monitor nearest the window, in screen coordinates.
-fn monitor_work_area(hwnd: HWND) -> Option<RECT> {
-    let monitor = unsafe { MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST) };
+/// The work area of the monitor nearest `rect` (screen coordinates). `WM_NCCALCSIZE` asks for the
+/// proposed window rectangle's monitor, which during a snap or move is not yet the window's own.
+fn monitor_work_area_of_rect(rect: RECT) -> Option<RECT> {
+    let monitor = unsafe { windows::Win32::Graphics::Gdi::MonitorFromRect(&rect, MONITOR_DEFAULTTONEAREST) };
     let mut info = MONITORINFO {
         cbSize: size_of::<MONITORINFO>() as u32,
         ..Default::default()
@@ -9671,8 +9724,10 @@ fn html_command(hwnd: HWND, command: ChromeCommand) {
             super::html_hover::suggest_hide(hwnd); // --- omnibox suggest ---
             // Same path as the native omnibox: remember the typed text, then let App normalise it.
             remember_url(hwnd, App::active_tab_id(&app), &text, App::settings(&app).minimal_url);
-            App::submit(&app, &text);
-            App::focus_page(&app);
+            // OB-11: after a refusal (or empty text) the address field keeps the keyboard.
+            if App::submit_opened(&app, &text) {
+                App::focus_page(&app);
+            }
         }
         ChromeCommand::Escape => {
             let Some(app) = app_of(hwnd) else { return };
@@ -11493,6 +11548,7 @@ fn html_system_menu(hwnd: HWND) {
         if menu.is_invalid() || GetCursorPos(&mut point).is_err() {
             return;
         }
+        apply_system_menu_states(menu, &system_menu_states_of(hwnd));
         let _ = SetForegroundWindow(hwnd);
         let chosen = TrackPopupMenu(
             menu,
@@ -11570,6 +11626,9 @@ fn raise_html_child(hwnd: HWND, region: RECT) {
             LPARAM(&mut search as *mut Search as isize),
         );
     }
+    // The resize grips stay above it: a host raised over them would take back the edge bands they
+    // stand in for (the rail's left edge, a tab row's top edge) until the next relayout.
+    frame_grip::raise(hwnd);
 }
 
 fn position_edit(hwnd: HWND) {
@@ -12003,14 +12062,9 @@ fn read_edit(hwnd: HWND) -> String {
     }
 }
 fn remember_url(hwnd: HWND, id: TabId, value: &str, minimal_url: bool) {
-    let parsed = url::Url::parse(value).or_else(|_| {
-        if value.contains('.') || value.starts_with("localhost") {
-            url::Url::parse(&format!("https://{value}"))
-        } else {
-            Err(url::ParseError::RelativeUrlWithoutBase)
-        }
-    });
-    if let Ok(url) = parsed {
+    // OB-11: only what the submit will really open, read as `resolve_input` reads it. A looser
+    // guess showed `javascript:alert(1)` or `e.g.` as the tab's address after a refusal or search.
+    if let Some(url) = crate::navigation::web_address(value) {
         let shown = omnibox::address_display(&url, minimal_url);
         let full = omnibox::focused_address_display(&url);
         let _ = with_chrome(hwnd, |s| {
@@ -12712,6 +12766,88 @@ mod tests {
         for (id, command) in [(MENU_HISTORY_COMMAND, Command::ShowHistory), (MENU_DOWNLOADS_COMMAND, Command::ShowDownloads)] {
             let entry = crate::commands::entry(&live, id).expect("a registry command");
             assert!(matches!(entry.handler, EntryHandler::Builtin(Handler::Key(found)) if found == command), "{id}");
+        }
+    }
+
+    /// raise_html_child: a chrome host raised to the top when it is created (here the rail, along
+    /// the left edge) stays below the resize grips over its edge band, so the edge can be grabbed.
+    #[test]
+    fn raising_an_html_host_keeps_the_resize_grips_above_it() {
+        use windows::Win32::UI::WindowsAndMessaging::{
+            CreateWindowExW, DestroyWindow, GW_CHILD, GW_HWNDNEXT, GetClassNameW, GetWindow, WINDOW_EX_STYLE, WS_CHILD,
+            WS_CLIPCHILDREN, WS_OVERLAPPEDWINDOW, WS_VISIBLE,
+        };
+        let parent = unsafe {
+            CreateWindowExW(WINDOW_EX_STYLE(0), w!("STATIC"), w!(""), WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN, -32000, -32000, 1000, 700, None, None, None, None)
+        }
+        .expect("a test window");
+        let mut client = RECT::default();
+        unsafe { GetClientRect(parent, &mut client) }.expect("client");
+        let region = RECT { left: 0, top: 0, right: 30, bottom: client.bottom };
+        let host = unsafe {
+            CreateWindowExW(WINDOW_EX_STYLE(0), w!("STATIC"), w!(""), WS_CHILD | WS_VISIBLE, region.left, region.top, region.right, region.bottom, Some(parent), None, None, None)
+        }
+        .expect("a host window");
+        frame_grip::sync(parent, &[region], false);
+        raise_html_child(parent, region);
+        let class = |window: HWND| {
+            let mut name = [0u16; 64];
+            let len = unsafe { GetClassNameW(window, &mut name) } as usize;
+            String::from_utf16_lossy(&name[..len])
+        };
+        let mut order = Vec::new();
+        let mut next = unsafe { GetWindow(parent, GW_CHILD) }.ok();
+        while let Some(window) = next {
+            order.push(window);
+            next = unsafe { GetWindow(window, GW_HWNDNEXT) }.ok();
+        }
+        let at = order.iter().position(|window| *window == host).expect("the host is a child");
+        let grips: Vec<usize> = order.iter().enumerate().filter(|(_, w)| class(**w) == "BowserFrameGrip").map(|(i, _)| i).collect();
+        assert!(!grips.is_empty(), "the left band over the host has a grip");
+        assert!(grips.iter().all(|grip| *grip < at), "a grip is under the raised host: z-order {grips:?}, host at {at}");
+        unsafe {
+            let _ = DestroyWindow(parent);
+        }
+        frame_grip::forget(parent);
+    }
+
+    /// The system menu offers what the window can do now, and the Windows menu the HTML chrome
+    /// shows (`TrackPopupMenu` of `GetSystemMenu`, which Windows does not refresh) is set to it.
+    #[test]
+    fn the_system_menu_offers_what_the_window_can_do_now() {
+        use windows::Win32::UI::WindowsAndMessaging::{
+            CreateWindowExW, DestroyWindow, GetMenuState, MF_BYCOMMAND, MF_GRAYED, SC_MAXIMIZE, SC_MINIMIZE, WINDOW_EX_STYLE,
+            WS_OVERLAPPEDWINDOW,
+        };
+        let on = |states: [(u32, bool); 5]| states.iter().filter(|(_, enabled)| *enabled).map(|(c, _)| *c).collect::<Vec<_>>();
+        assert_eq!(on(system_menu_states(false, false, false)), [SC_MOVE, SC_SIZE, SC_MINIMIZE, SC_MAXIMIZE], "restored");
+        assert_eq!(on(system_menu_states(true, false, false)), [SC_RESTORE, SC_MINIMIZE], "maximised");
+        assert_eq!(on(system_menu_states(false, true, false)), [SC_RESTORE, SC_MAXIMIZE], "minimised");
+        assert_eq!(on(system_menu_states(false, false, true)), [SC_MINIMIZE], "full screen: no move, size, maximise or restore");
+        assert_eq!(on(system_menu_states(false, true, true)), [SC_RESTORE], "a minimised full-screen window comes back");
+        for (maximized, minimized, full) in [(false, false, false), (true, false, false), (false, true, false), (false, false, true), (false, true, true)] {
+            for (command, enabled) in system_menu_states(maximized, minimized, full) {
+                let refused = full && crate::win32::frame::fullscreen_refuses(command as usize, minimized);
+                assert!(!(enabled && refused), "{command:#x} is offered but refused");
+            }
+        }
+        // A real window's system menu, starting from Windows' own restored-window states.
+        let window = unsafe {
+            CreateWindowExW(WINDOW_EX_STYLE(0), w!("STATIC"), w!(""), WS_OVERLAPPEDWINDOW, -32000, -32000, 200, 100, None, None, None, None)
+        }
+        .expect("a test window");
+        let menu = unsafe { GetSystemMenu(window, false) };
+        assert!(!menu.is_invalid());
+        let grayed = |command: u32| (unsafe { GetMenuState(menu, command, MF_BYCOMMAND) } & MF_GRAYED.0) != 0;
+        for (maximized, minimized, full) in [(true, false, false), (false, false, false), (false, false, true)] {
+            let states = system_menu_states(maximized, minimized, full);
+            apply_system_menu_states(menu, &states);
+            for (command, enabled) in states {
+                assert_eq!(grayed(command), !enabled, "{command:#x} for maximized {maximized} full {full}");
+            }
+        }
+        unsafe {
+            let _ = DestroyWindow(window);
         }
     }
 

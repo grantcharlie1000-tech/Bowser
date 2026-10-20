@@ -71,6 +71,7 @@ pub(crate) use window::{
     set_thumbnail_timer, show_pending_address, sync_address_input,
 };
 pub(crate) use window::address_bar_revealed; // --- layout (thread T6) ---
+pub(crate) use window::split_rects_now; // a parked split shown again takes the window's pane rectangles now
 pub(crate) use html_panel::settings_changed as panel_settings_changed; // --- look state (fix group B) ---
 pub(crate) use glass::{local_minutes, set_scheduled_look};
 // Registry handlers (`crate::commands::registry`) that need a window.

@@ -263,6 +263,17 @@ fn a_private_tab_searches_with_the_private_window_engine() {
     crate::address_runtime::set_test_engines(None);
 }
 
+/// OB-11: a submit says whether it opened anything, so the address field keeps the keyboard when
+/// it did not (empty text; a refusal shows its error first).
+#[test]
+fn a_submit_says_whether_it_opened_anything() {
+    let (app, shared) = fixture();
+    assert!(!App::submit_opened(&app, "   "), "empty text opens nothing");
+    assert!(calls(&shared).is_empty());
+    assert!(App::submit_opened(&app, "example.com"));
+    assert!(calls(&shared).iter().any(|call| call.contains("example.com")), "{:?}", calls(&shared));
+}
+
 /// Integration: Tabs' "new tab page" reads T5's `homepage` key (one key set) and gates T5's start page.
 #[test]
 fn the_new_tab_page_homepage_and_blank_choices_use_the_start_page_settings() {

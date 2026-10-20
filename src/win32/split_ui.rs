@@ -706,7 +706,8 @@ fn picker_command(owner: HWND, app: &AppRef, command: SplitCommand) {
         SplitCommand::Reopen { n } => {
             let Some(closed) = App::recently_closed(app).into_iter().nth(usize::from(n)) else { return };
             let _ = App::focus_split_tab(app, empty);
-            App::submit(app, &closed.url);
+            // OB-8: a closed tab offered again, not typed.
+            App::submit_with(app, &closed.url, crate::address_input::Options::picked(false));
             App::focus_page(app);
         }
         SplitCommand::Go(text) => {

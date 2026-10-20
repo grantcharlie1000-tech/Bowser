@@ -168,11 +168,9 @@ pub fn open(owner: HWND, id: PanelId) -> bool {
             content.on_host_created(hwnd);
             state.previous_focus = unsafe { GetFocus() };
             if let Some(previous) = state.content.as_mut() { previous.on_focus(false); }
-            state.id = Some(id);
             state.header = content.native_header();
-            state.width_dip = state.width_dip.max(content.min_width()).clamp(MIN_WIDTH_DIP, MAX_WIDTH_DIP);
             // --- window and panels (thread T9) --- a web panel keeps its own width; leaving one goes back to the shared width.
-            if let Some(width) = panel_width_choice(state.id, id) { state.width_dip = width.max(content.min_width()).clamp(MIN_WIDTH_DIP, MAX_WIDTH_DIP); }
+            switch_panel(&mut state.id, &mut state.width_dip, id, content.min_width(), panel_width_choice);
             // --- end window and panels ---
             if let Some(previous) = state.content.take() { state.retired.push(previous); state.retired_blur.push(false); }
             state.content = Some(content);
@@ -457,6 +455,16 @@ fn panel_width_choice(previous: Option<PanelId>, next: PanelId) -> Option<i32> {
     }
 }
 
+/// Switches the host's panel (`shown`) to `next` and sets its width: `choice` decides from the panel
+/// shown until now and `next` (`panel_width_choice`), else the width stays, at least `min_width`.
+/// W-6: the panel being left is read before `shown` changes; read after, a switch from a web panel
+/// looked like a switch from `next` itself and kept the web panel's own width.
+fn switch_panel(shown: &mut Option<PanelId>, width_dip: &mut i32, next: PanelId, min_width: i32, choice: impl Fn(Option<PanelId>, PanelId) -> Option<i32>) {
+    let previous = shown.replace(next);
+    let width = choice(previous, next).unwrap_or(*width_dip);
+    *width_dip = width.max(min_width).clamp(MIN_WIDTH_DIP, MAX_WIDTH_DIP);
+}
+
 /// A drag of the panel's edge ended: a web panel remembers it for itself, every other panel for all.
 fn save_panel_width(id: Option<PanelId>, owner: HWND, width: i32) {
     match id {
@@ -573,6 +581,35 @@ fn colorref(c: theme::Rgba) -> windows::Win32::Foundation::COLORREF { windows::W
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// W-6: from a widened web-app panel to Bookmarks (or History) the host goes back to the shared
+    /// width, because the width rule sees the web app as the panel being left.
+    #[test]
+    fn leaving_a_web_panel_goes_back_to_the_shared_width() {
+        const SHARED: i32 = 320;
+        const OWN: i32 = 520;
+        let seen = std::cell::RefCell::new(Vec::new());
+        // `panel_width_choice` without the profile: a web panel's own width, the shared width when
+        // leaving one, else nothing.
+        let choice = |previous: Option<PanelId>, next: PanelId| {
+            seen.borrow_mut().push((previous, next));
+            match (previous, next) {
+                (_, PanelId::WebApp(_)) => Some(OWN),
+                (Some(PanelId::WebApp(_)), _) => Some(SHARED),
+                _ => None,
+            }
+        };
+        let (mut shown, mut width) = (Some(PanelId::Bookmarks), SHARED);
+        switch_panel(&mut shown, &mut width, PanelId::WebApp(7), 0, choice);
+        assert_eq!((shown, width), (Some(PanelId::WebApp(7)), OWN), "a web panel takes its own width");
+        switch_panel(&mut shown, &mut width, PanelId::Bookmarks, 0, choice);
+        assert_eq!((shown, width), (Some(PanelId::Bookmarks), SHARED), "leaving it: the shared width");
+        assert_eq!(seen.borrow()[1], (Some(PanelId::WebApp(7)), PanelId::Bookmarks), "the rule saw the panel being left");
+        switch_panel(&mut shown, &mut width, PanelId::History, 0, choice);
+        assert_eq!(width, SHARED, "between shared panels the width stays");
+        switch_panel(&mut shown, &mut width, PanelId::Customize, 400, choice);
+        assert_eq!(width, 400, "but never below the content's minimum");
+    }
 
     #[test]
     fn the_saved_layout_is_read_once_and_any_write_to_the_settings_makes_it_read_again() {

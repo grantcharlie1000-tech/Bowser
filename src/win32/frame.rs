@@ -193,6 +193,34 @@ pub fn frame_hit_test_with(
     FrameHit::Caption
 }
 
+/// W-3: in full screen (F11 or a page's) the window is the whole monitor. Empty chrome is not a
+/// caption there: a drag on the revealed toolbar would move the window off its monitor, and a
+/// double click would maximise it to the work area. `hit` is what [`frame_hit_test_with`] answered.
+pub fn in_fullscreen(hit: FrameHit) -> FrameHit {
+    match hit {
+        FrameHit::Caption => FrameHit::Client,
+        other => other,
+    }
+}
+
+/// W-3: the `WM_SYSCOMMAND` commands a full-screen window refuses: move, size and maximise (every
+/// drag and double click on a caption comes here, as do the HTML chrome's drag and maximise), and a
+/// restore unless it is the one that brings the window back from the taskbar (`iconic`).
+pub fn fullscreen_refuses(command: usize, iconic: bool) -> bool {
+    use windows::Win32::UI::WindowsAndMessaging::{SC_MAXIMIZE, SC_MOVE, SC_RESTORE, SC_SIZE};
+    let command = (command & 0xFFF0) as u32;
+    command == SC_MOVE || command == SC_SIZE || command == SC_MAXIMIZE || (command == SC_RESTORE && !iconic)
+}
+
+/// The client rectangle `WM_NCCALCSIZE` gives `proposed` (the window rectangle Windows is about to
+/// set), measured against the work area of the monitor that rectangle is on (`work_of`). A snap or a
+/// move onto another monitor proposes a rectangle there while the window still sits on the old one,
+/// so the window's own monitor would decide the snapped-edge trim with the wrong work area.
+pub fn nccalc_client(proposed: RECT, maximised: bool, dpi: u32, frame: (i32, i32), work_of: impl Fn(RECT) -> Option<RECT>) -> RECT {
+    let work = work_of(proposed).unwrap_or(proposed);
+    client_rect_for_nccalc(proposed, maximised, dpi, frame, work)
+}
+
 pub fn client_rect_for_nccalc(
     window_rect: RECT,
     maximised: bool,
@@ -426,6 +454,67 @@ mod tests {
         }
         assert_eq!(frame_hit_test_with(POINT { x: 500, y: 699 }, size, 96, false, ChromeHit::Drag, true), FrameHit::Bottom, "the grip still comes first");
         assert_eq!(frame_hit_test_with(POINT { x: 980, y: 10 }, size, 96, false, ChromeHit::Drag, true), FrameHit::Close, "the caption buttons stay at the top");
+    }
+
+    /// NCCALCSIZE monitor choice: a window snapped to the right half of monitor B, proposed while it
+    /// still sits on monitor A, is trimmed to B's work area (its frame overhang does not spill past
+    /// B's edge onto the next monitor), at every DPI. The work area of the window's own monitor, as
+    /// the code used before, leaves the overhang.
+    #[test]
+    fn a_snap_onto_another_monitor_is_measured_against_that_monitor() {
+        for dpi in [96, 120, 144, 168, 192] {
+            let s = |v: i32| v * dpi as i32 / 96;
+            let frame = (s(8), s(8));
+            let work_a = RECT { left: 0, top: 0, right: s(1920), bottom: s(1040) };
+            let work_b = RECT { left: s(1920), top: 0, right: s(3840), bottom: s(1040) };
+            let work_of = |r: RECT| {
+                let centre = (r.left + r.right) / 2;
+                Some(if centre >= work_b.left { work_b } else { work_a })
+            };
+            // Windows' snapped rectangle: the work half plus the invisible frame on the outer edges.
+            let proposed = RECT { left: s(2880) - frame.0, top: 0, right: s(3840) + frame.0, bottom: s(1040) + frame.1 };
+            let client = nccalc_client(proposed, false, dpi, frame, work_of);
+            assert_eq!((client.right, client.bottom), (work_b.right, work_b.bottom), "dpi {dpi}: trimmed to B");
+            assert_eq!((client.left, client.top), (proposed.left, proposed.top), "dpi {dpi}");
+            let by_window = client_rect_for_nccalc(proposed, false, dpi, frame, work_a);
+            assert_ne!(by_window, client, "dpi {dpi}: the old monitor's work area gives another answer");
+            // A window that stays on its monitor is unchanged by the choice.
+            let on_a = RECT { left: s(100), top: s(100), right: s(900), bottom: s(700) };
+            assert_eq!(nccalc_client(on_a, false, dpi, frame, work_of), client_rect_for_nccalc(on_a, false, dpi, frame, work_a));
+        }
+    }
+
+    /// W-3: in full screen no point of the window is a caption (to drag off the monitor or to
+    /// double-click into a maximised window) or a resize edge, at any DPI and for any chrome under
+    /// it; and the commands a drag, a double click or the HTML chrome would send are refused.
+    #[test]
+    fn a_full_screen_window_has_no_caption_and_refuses_move_size_and_maximise() {
+        use windows::Win32::UI::WindowsAndMessaging::{SC_CLOSE, SC_MAXIMIZE, SC_MINIMIZE, SC_MOVE, SC_RESTORE, SC_SIZE};
+        for dpi in [96, 120, 144, 168, 192] {
+            let size = (1920 * dpi as i32 / 96, 1080 * dpi as i32 / 96);
+            let mut captions = 0;
+            for chrome in [ChromeHit::None, ChromeHit::Drag, ChromeHit::Interactive] {
+                for y in (0..size.1).step_by(7) {
+                    for x in (0..size.0).step_by(13) {
+                        // What the window answers in full screen: `zoomed_or_full` is true there.
+                        let plain = frame_hit_test_with(p(x, y), size, dpi, true, chrome, false);
+                        captions += usize::from(plain == FrameHit::Caption);
+                        let full = in_fullscreen(plain);
+                        assert!(!matches!(full, FrameHit::Caption | FrameHit::Left | FrameHit::Right | FrameHit::Top | FrameHit::Bottom | FrameHit::TopLeft | FrameHit::TopRight | FrameHit::BottomLeft | FrameHit::BottomRight), "dpi {dpi} ({x},{y}) {chrome:?}: {full:?}");
+                    }
+                }
+            }
+            assert!(captions > 0, "dpi {dpi}: the plain answer had captions to take away");
+        }
+        let sc = |command: u32| command as usize;
+        for refused in [SC_MOVE, SC_SIZE, SC_MAXIMIZE] {
+            assert!(fullscreen_refuses(sc(refused), false), "{refused:#x}");
+            assert!(fullscreen_refuses(sc(refused) | 2, false), "{refused:#x} with the low bits a caption drag sends (SC_MOVE | HTCAPTION)");
+        }
+        assert!(fullscreen_refuses(sc(SC_RESTORE), false), "a restore while shown full screen");
+        assert!(!fullscreen_refuses(sc(SC_RESTORE), true), "back from the taskbar after a minimise");
+        assert!(!fullscreen_refuses(sc(SC_MINIMIZE), false));
+        assert!(!fullscreen_refuses(sc(SC_CLOSE), false));
     }
 }
 

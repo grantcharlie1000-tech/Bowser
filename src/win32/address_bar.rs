@@ -430,7 +430,7 @@ pub(super) fn open_many(owner: HWND, app: &AppRef, urls: &[String]) {
         return;
     }
     for url in urls {
-        App::submit_with(app, url, Options { new_tab: true, ..Options::default() });
+        App::submit_with(app, url, Options::picked(true)); // OB-8: bookmarks, not typed
     }
 }
 

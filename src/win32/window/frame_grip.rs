@@ -75,12 +75,15 @@ pub(super) fn sync(hwnd: HWND, hosts: &[RECT], thin_bottom: bool) {
     GRIPS.with(|g| g.borrow_mut().insert(hwnd.0 as isize, windows));
 }
 
-/// Brings the shown grips back above the child windows, after a page window was created on top.
+/// Brings the shown grips back above the child windows, after a page window was created on top or
+/// an HTML chrome host was raised. A grip counts as shown by its own style, whether or not its
+/// top-level window is visible at that moment.
 pub(super) fn raise(hwnd: HWND) {
+    use windows::Win32::UI::WindowsAndMessaging::{GWL_STYLE, GetWindowLongPtrW, WS_VISIBLE};
     let windows = GRIPS.with(|g| g.borrow().get(&(hwnd.0 as isize)).cloned().unwrap_or_default());
     for window in windows {
         unsafe {
-            if windows::Win32::UI::WindowsAndMessaging::IsWindowVisible(window).as_bool() {
+            if (GetWindowLongPtrW(window, GWL_STYLE) as u32 & WS_VISIBLE.0) != 0 {
                 let _ = SetWindowPos(
                     window,
                     Some(HWND_TOP),

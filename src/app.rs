@@ -2045,8 +2045,23 @@ impl App {
             let _ = state.workspaces.select_tab(id);
             split
         };
-        let bounds = app.borrow().split_bounds;
+        // The window may have been resized, or a panel opened, while the pair was parked: its old
+        // bounds would show the panes at the old size first, then jump (split restore flash).
+        let (stale, hwnd) = {
+            let state = app.borrow();
+            (state.split_bounds, state.hwnd)
+        };
+        let bounds = Self::split_rects_now(hwnd, split).or(stale);
         Self::show_split(app, split, bounds)
+    }
+
+    /// The window's pane rectangles for `view` as it is laid out now; `None` before a layout.
+    fn split_rects_now(hwnd: HWND, view: SplitView) -> Option<SplitBounds> {
+        #[cfg(test)]
+        if let Some(bounds) = tests::SPLIT_RECTS_NOW.with(std::cell::Cell::get) {
+            return Some(bounds);
+        }
+        win32::split_rects_now(hwnd, view)
     }
     // --- end split view ---
 
@@ -5584,8 +5599,18 @@ impl App {
         Self::submit_with(app, input, crate::address_input::Options::default());
     }
 
+    /// [`App::submit`], and whether it opened anything: `false` for empty text or a refusal, after
+    /// which the address field keeps the focus (OB-11).
+    pub fn submit_opened(app: &AppRef, input: &str) -> bool {
+        Self::submit_checked(app, input, crate::address_input::Options::default())
+    }
+
     /// [`App::submit`] with how the text was submitted (new tab, domain expansion, the search field).
     pub fn submit_with(app: &AppRef, input: &str, options: crate::address_input::Options<'_>) {
+        let _ = Self::submit_checked(app, input, options);
+    }
+
+    fn submit_checked(app: &AppRef, input: &str, options: crate::address_input::Options<'_>) -> bool {
         // `bowser://settings...` opens the settings page (a blank tab becomes it); other internal
         // hosts fall through and are reported as an unsupported address, as before.
         if let Some(page) = crate::internal_page::parse_input(input) {
@@ -5600,7 +5625,7 @@ impl App {
             } else {
                 win32::open_settings_page(hwnd, app, page.section(), true);
             }
-            return;
+            return true;
         }
         // Address bar, search and bookmark options (src/address_input.rs): scoped nicknames, engine
         // nicknames, the private-window engine, HTTPS upgrade, domain expansion, new-tab searches.
@@ -5613,16 +5638,19 @@ impl App {
         let engines = crate::address_runtime::engines();
         let options = crate::address_input::Options { private, ..options };
         match crate::address_input::resolve(input, &address, &engines, options) {
-            crate::address_input::Outcome::Empty => {}
+            crate::address_input::Outcome::Empty => false,
             crate::address_input::Outcome::Refused(message) => {
                 win32::show_error_message(&format!("This address or search could not be used: {message}"));
+                false
             }
             crate::address_input::Outcome::Scoped { scope, rest } => {
                 let hwnd = app.borrow().hwnd;
                 win32::address_scoped_submit(hwnd, app, scope, &rest);
+                true
             }
             crate::address_input::Outcome::Open { destination, new_tab } => {
-                Self::open_destination(app, input, destination, new_tab, private);
+                Self::open_destination(app, options.typed_text(input), destination, new_tab, private);
+                true
             }
         }
     }
@@ -5661,7 +5689,8 @@ impl App {
         match pick {
             engine::ContextSearchPick::Selection(text) => {
                 let before = app.borrow().tab_model.active();
-                let options = crate::address_input::Options { new_tab: true, from_search_field: true, ..Default::default() };
+                // Page text, not typed: it is searched but not kept in the typed list (OB-8).
+                let options = crate::address_input::Options { new_tab: true, from_search_field: true, not_typed: true, ..Default::default() };
                 Self::submit_with(app, &text, options);
                 // "Search for selected text in a background tab": the page you were reading stays shown.
                 if background {
@@ -5672,15 +5701,18 @@ impl App {
                 let Some(engine) = engines.image_engine() else { return };
                 let Some(request) = engine.image_request(url.as_str()) else { return };
                 let destination = Destination::Search { request, query: url.to_string(), engine: engine.id.clone() };
-                Self::open_destination(app, "", destination, true, private);
+                Self::open_destination(app, None, destination, true, private);
             }
         }
     }
 
-    /// Opens what Enter resolved to, in the shown tab or a new one, and remembers the typed text.
-    fn open_destination(app: &AppRef, typed: &str, destination: crate::address_input::Destination, new_tab: bool, private: bool) {
+    /// Opens what Enter resolved to, in the shown tab or a new one, and remembers `typed` (the text
+    /// as the user typed it; `None` when it was not typed).
+    fn open_destination(app: &AppRef, typed: Option<&str>, destination: crate::address_input::Destination, new_tab: bool, private: bool) {
         use crate::address_input::Destination;
-        crate::address_runtime::record_typed(typed, matches!(destination, Destination::Search { .. }), private);
+        if let Some(typed) = typed {
+            crate::address_runtime::record_typed(typed, matches!(destination, Destination::Search { .. }), private);
+        }
         if new_tab {
             if private {
                 Self::new_private_tab(app);
@@ -7953,6 +7985,11 @@ mod tests {
     mod workspace_restore; // workspaces across a restart, refused moves and creates
     mod window_flow; // main window moves and resizes
 
+    thread_local! {
+        /// What `App::split_rects_now` answers in a test (the test app has no laid-out window).
+        pub(super) static SPLIT_RECTS_NOW: std::cell::Cell<Option<SplitBounds>> = const { std::cell::Cell::new(None) };
+    }
+
     // L-2: a local .html file opened from the command line must be the file the engine allows.
     #[test]
     fn launch_allowed_file_admits_only_the_opened_local_file() {
@@ -8734,6 +8771,33 @@ mod tests {
         assert_eq!(App::tab_ids(&app), [left]);
         assert_eq!(App::active_tab_id(&app), left);
         assert!(App::split_view(&app).is_none());
+    }
+
+    /// Split restore flash: a pair parked while the window changed size is shown again at the
+    /// window's pane rectangles now, not at the ones it had when it was parked.
+    #[test]
+    fn a_parked_split_shown_again_takes_the_window_s_pane_bounds_now() {
+        let app = app_with_pending(rect(800, 600));
+        let left = App::active_tab_id(&app);
+        let right = App::new_tab(&app);
+        let other = App::new_tab(&app);
+        assert!(App::open_split_view(&app, left, right, crate::split_view::Pane::Right, (rect(0, 0), rect(400, 0))));
+        let old = App::split_bounds(&app).expect("pane bounds");
+        assert!(App::select_tab(&app, other));
+        assert!(App::split_view(&app).is_none(), "parked");
+        // The window grew while the pair was parked: these are the pane bounds of a wider one.
+        let wide = app_with_pending(rect(1200, 700));
+        let now_left = App::new_tab(&wide);
+        let now_right = App::new_tab(&wide);
+        assert!(App::open_split_view(&wide, now_left, now_right, crate::split_view::Pane::Right, (rect(0, 0), rect(600, 0))));
+        let now = App::split_bounds(&wide).expect("bounds");
+        assert_ne!(now, old);
+        SPLIT_RECTS_NOW.with(|cell| cell.set(Some(now)));
+        let shown = App::select_tab(&app, right);
+        SPLIT_RECTS_NOW.with(|cell| cell.set(None));
+        assert!(shown);
+        assert!(App::split_view(&app).is_some(), "the pair is shown again");
+        assert_eq!(App::split_bounds(&app), Some(now), "at the window's pane bounds now");
     }
 
     /// Mirrors the WebView2 engine's tab bookkeeping: `set_visible_tabs` registers only the panes

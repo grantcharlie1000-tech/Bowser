@@ -495,7 +495,7 @@ fn opens_in_new_tab(asked: bool, address: &crate::address_settings::AddressSetti
 
 fn open_url(owner: HWND, app: &AppRef, url: &str, new_tab: bool) {
     let new_tab = opens_in_new_tab(new_tab, &App::settings(app).address);
-    App::submit_with(app, url, Options { new_tab, ..Options::default() });
+    App::submit_with(app, url, Options::picked(new_tab)); // OB-8: clicked, not typed
     App::focus_page(app);
     super::window::split_ui_invalidate(owner);
 }
@@ -649,7 +649,7 @@ fn run(owner: HWND, app: &AppRef, action: BarAction) {
                         let _ = App::select_tab(app, id);
                     }
                 }
-                None => App::submit_with(app, &format!("https://{key}/"), Options { new_tab: true, ..Options::default() }),
+                None => App::submit_with(app, &format!("https://{key}/"), Options::picked(true)),
             }
             super::window::split_ui_invalidate(owner);
         }
