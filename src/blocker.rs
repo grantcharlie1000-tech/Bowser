@@ -601,6 +601,21 @@ pub fn same_site(a: &str, b: &str) -> bool {
     a.eq_ignore_ascii_case(b) || registrable_domain(a).eq_ignore_ascii_case(registrable_domain(b))
 }
 
+/// A dotted host that is itself a public suffix (`github.io`, `co.uk`): it has no registrable
+/// domain of its own, and a rule for it covers many unrelated sites.
+fn is_public_suffix(host: &str) -> bool {
+    host.contains('.') && !is_ip_address(host) && psl::domain(host.as_bytes()).is_none()
+}
+
+/// True when a DevTools pattern for a rule on `rule_host` would also fail requests a page on
+/// `page_host` makes to its own site: the rule host is on the page's site, or it is a public
+/// suffix above the page (`||github.io^` on `foo.github.io`). The in-process matcher calls those
+/// requests first-party; a URL pattern cannot leave them out, so the page gets no such pattern.
+fn rule_host_covers_page(rule_host: &str, page_host: &str) -> bool {
+    same_site(rule_host, page_host)
+        || (is_public_suffix(rule_host) && host_suffixes(page_host).any(|suffix| suffix == rule_host))
+}
+
 /// DevTools `Network.setBlockedURLs` patterns for every host in `hosts`, excluding any whose
 /// registrable domain equals `page_host`'s (first-party), or an empty list when `blocking` is
 /// false. Both the bare host and its subdomains are covered (`Network.setBlockedURLs` does no
@@ -615,7 +630,7 @@ pub fn blocked_url_patterns<'a>(
     }
     let mut patterns: Vec<String> = hosts
         .into_iter()
-        .filter(|host| !same_site(host, page_host))
+        .filter(|host| !rule_host_covers_page(host, page_host))
         .flat_map(host_url_patterns)
         .collect();
     patterns.sort_unstable();
@@ -707,7 +722,7 @@ pub fn exact_url_patterns<'a>(
         return Vec::new();
     }
     urls.into_iter()
-        .filter(|(host, _)| !same_site(host, page_host))
+        .filter(|(host, _)| !rule_host_covers_page(host, page_host))
         .flat_map(|(host, path)| exact_rule_url_patterns(host, path))
         .collect()
 }
@@ -767,12 +782,16 @@ impl DevtoolsPatterns {
     }
 
     /// The patterns for a document on `page_host` (lowercase, as a URL host is): every pattern
-    /// whose rule host is not on the page's registrable domain. Same exemption as [`same_site`].
+    /// whose rule host is not on the page's registrable domain, nor a public suffix above the page
+    /// (see [`rule_host_covers_page`]). A public-suffix rule host is its own site key here.
     fn for_page(&self, page_host: &str) -> Vec<String> {
-        let own = self.sites.get(registrable_domain(page_host)).copied();
+        let own: Vec<u32> = std::iter::once(registrable_domain(page_host))
+            .chain(host_suffixes(page_host).filter(|suffix| is_public_suffix(suffix)))
+            .filter_map(|site| self.sites.get(site).copied())
+            .collect();
         self.patterns
             .iter()
-            .filter(|(site, _)| Some(*site) != own)
+            .filter(|(site, _)| !own.contains(site))
             .map(|(_, pattern)| pattern.to_string())
             .collect()
     }
@@ -937,6 +956,18 @@ impl Blocker {
         for (host, path) in self.exact_urls() {
             if path.bytes().any(|b| b.is_ascii_alphabetic()) {
                 filters.insert(format!("*://*{host}{}", request_filter_text(path)));
+            }
+        }
+        // A rule on a public suffix gets no DevTools pattern on the sites under it (see
+        // [`rule_host_covers_page`]), so the matcher has to see those requests.
+        for host in self.hosts() {
+            if is_public_suffix(host) {
+                filters.insert(format!("*://*{}/*", request_filter_text(host)));
+            }
+        }
+        for (host, _) in self.exact_urls().chain(self.path_rules()) {
+            if is_public_suffix(host) {
+                filters.insert(format!("*://*{}/*", request_filter_text(host)));
             }
         }
         filters
@@ -2078,6 +2109,21 @@ mod tests {
         let patterns = s.blocked_url_patterns("news.example");
         assert!(patterns.iter().all(|pattern| !pattern.contains("/ads/")), "{patterns:?}");
         assert!(!s.request_filters().is_empty());
+    }
+
+    #[test]
+    fn a_rule_for_a_public_suffix_spares_the_page_in_both_engines() {
+        let s = state("||github.io^\n", &[]);
+        let own = "https://foo.github.io/a.js";
+        assert!(!s.should_block(own, "foo.github.io"), "the page's own script is first-party");
+        assert!(s.blocked_url_patterns("foo.github.io").is_empty(), "DevTools must not block it either");
+        // Another site on the suffix is still blocked, by the matcher, which the filters reach.
+        assert!(s.should_block("https://bar.github.io/a.js", "foo.github.io"));
+        let filters = s.request_filters();
+        assert!(!filters.is_empty(), "the matcher sees requests on the suffix");
+        // A page elsewhere still gets DevTools patterns for the rule.
+        assert!(!s.blocked_url_patterns("news.example").is_empty());
+        assert!(s.should_block(own, "news.example"));
     }
 
     #[test]
