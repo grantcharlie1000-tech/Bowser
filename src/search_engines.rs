@@ -14,7 +14,10 @@ use crate::navigation::SearchEngine;
 
 pub const FILE_NAME: &str = "search-engines.txt";
 pub const MAX_ENGINES: usize = 40;
-const MAX_FILE_BYTES: u64 = 64 * 1024;
+/// Largest `search-engines.txt` read or written: room for a full list of the longest engines
+/// ([`MAX_ENGINES`] with four templates of [`MAX_URL_BYTES`], about 170 KB). At 64 KiB such a list
+/// was written but read back as the built-in list (R-8).
+const MAX_FILE_BYTES: u64 = 256 * 1024;
 pub const MAX_NAME_CHARS: usize = 40;
 pub const MAX_NICKNAME_CHARS: usize = 16;
 pub const MAX_URL_BYTES: usize = 1024;
@@ -557,9 +560,8 @@ impl EngineStore {
     /// `search-provider.txt`, with `{query}`) is valid, a "Custom" engine made from it.
     pub fn load(root: &Path, legacy: Option<SearchEngine>, provider_template: Option<&str>) -> Self {
         match fs::read(root.join(FILE_NAME)) {
-            Ok(bytes) if bytes.len() as u64 <= MAX_FILE_BYTES => {
-                String::from_utf8(bytes).map(|text| Self::parse(&text)).unwrap_or_default()
-            }
+            // A byte that is not UTF-8 (a hand edit saved as ANSI) spoils only its own line.
+            Ok(bytes) if bytes.len() as u64 <= MAX_FILE_BYTES => Self::parse(&String::from_utf8_lossy(&bytes)),
             Ok(_) => Self::default(),
             Err(_) => Self::from_legacy(legacy, provider_template),
         }
@@ -583,12 +585,28 @@ impl EngineStore {
         store
     }
 
-    /// Writes the list atomically.
+    /// Writes the list atomically. Refused when the list would be too large to read back, or when
+    /// a file is there that `load` could not have read (locked, oversized): the list in memory is
+    /// then the built-in or legacy one, and saving it would replace every custom engine (R-8).
     pub fn save(&self, root: &Path) -> io::Result<()> {
         let path = root.join(FILE_NAME);
+        let text = self.serialize();
+        if text.len() as u64 > MAX_FILE_BYTES {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "the search engines are too large to save"));
+        }
+        match fs::metadata(&path) {
+            Ok(meta) if meta.len() > MAX_FILE_BYTES => {
+                return Err(io::Error::new(io::ErrorKind::InvalidData, "search-engines.txt is too large to read, so it was not replaced"));
+            }
+            Ok(_) => {
+                fs::read(&path)?;
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
         fs::create_dir_all(root)?;
         let temporary = path.with_extension(format!("txt.{}.tmp", std::process::id()));
-        let written = fs::write(&temporary, self.serialize().as_bytes());
+        let written = fs::write(&temporary, text.as_bytes());
         if let Err(error) = written.and_then(|()| fs::rename(&temporary, &path)) {
             let _ = fs::remove_file(&temporary);
             return Err(error);
@@ -818,8 +836,52 @@ mod tests {
         saved.set_default("bing").unwrap();
         saved.save(&dir).unwrap();
         assert_eq!(EngineStore::load(&dir, Some(SearchEngine::Google), None).default_id(), "bing", "the file wins over the legacy setting");
-        fs::write(dir.join(FILE_NAME), vec![b'#'; 70 * 1024]).unwrap();
+        fs::write(dir.join(FILE_NAME), vec![b'#'; MAX_FILE_BYTES as usize + 1]).unwrap();
         assert_eq!(EngineStore::load(&dir, None, None), EngineStore::default(), "an oversized file is ignored");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// R-8: a full list of engines with long addresses (about 170 KB) was written past the 64 KiB
+    /// read cap, one byte that is not UTF-8 (a hand edit saved as ANSI) read the whole file as the
+    /// built-in list, and the next engine edit then saved that over every custom engine.
+    #[test]
+    fn custom_engines_survive_a_full_list_a_bad_byte_and_an_unreadable_file() {
+        let dir = std::env::temp_dir().join(format!("bowser-engines-r8-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let long = |n: usize, host: &str| {
+            let base = format!("https://{host}{n}.example/?q=%s&pad=");
+            format!("{base}{}", "p".repeat(MAX_URL_BYTES - base.len()))
+        };
+        let mut store = EngineStore::default();
+        for n in 0.. {
+            let engine = Engine {
+                name: format!("Engine {n} {}", "n".repeat(MAX_NAME_CHARS - 12)),
+                url: long(n, "s"),
+                suggest: long(n, "g"),
+                image: long(n, "i"),
+                ..Engine::default()
+            };
+            if store.add(engine).is_err() {
+                break;
+            }
+        }
+        assert_eq!(store.engines().len(), MAX_ENGINES);
+        store.save(&dir).unwrap();
+        assert!(EngineStore::load(&dir, None, None) == store, "a full list did not read back");
+
+        // One bad byte spoils its own line only.
+        let mut bytes = fs::read(dir.join(FILE_NAME)).unwrap();
+        bytes.extend_from_slice(b"# caf\xe9\n");
+        fs::write(dir.join(FILE_NAME), &bytes).unwrap();
+        assert!(EngineStore::load(&dir, None, None) == store, "a byte that is not UTF-8 dropped the custom engines");
+
+        // A file that cannot be read is never saved over.
+        let oversized = vec![b'#'; MAX_FILE_BYTES as usize + 1];
+        fs::write(dir.join(FILE_NAME), &oversized).unwrap();
+        let loaded = EngineStore::load(&dir, None, None);
+        assert!(loaded.save(&dir).is_err(), "the built-in list was saved over a file that was not read");
+        assert!(fs::read(dir.join(FILE_NAME)).unwrap() == oversized, "the unread file was replaced");
         let _ = fs::remove_dir_all(&dir);
     }
 }
