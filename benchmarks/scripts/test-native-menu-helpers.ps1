@@ -107,6 +107,9 @@ $native=$type.GetMethod('NativeMismatch',$flags)
 $absent=$native.Invoke($null,@([IntPtr]::Zero,[IntPtr]::Zero,[IntPtr]::Zero))|ConvertFrom-Json
 if($absent.status -cne 'no-native-hwnd'){throw 'No-HWND diagnostic branch changed.'}
 $hostType=$compiled['probe-app-host-context-menu.ps1']
+$initializedPolicy=$hostType.GetMethod('CheckInitializedClipboardPolicy',[Reflection.BindingFlags]::Public -bor [Reflection.BindingFlags]::Static)
+if(!$initializedPolicy){throw 'Exact initialized-fixture synthetic policy entrypoint missing.'}
+$null=$initializedPolicy.Invoke($null,@())
 $objectFlags=$hostType.GetNestedType('OBJECTFLAGS',[Reflection.BindingFlags]::NonPublic)
 # PS5.1 can otherwise bind the generic/object overload and try to marshal RuntimeType.
 # Select the non-generic System.Type overload explicitly; retain the exact layout assertion.

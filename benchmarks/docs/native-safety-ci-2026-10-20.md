@@ -496,3 +496,58 @@ Clipboard sequence zero is still refused before input or mutation. The observed
 attached station had the clipboard access bit, so a missing-rights cause is not
 established. No clipboard initializer, station/security change, sequence retry,
 zero acceptance or permission grant is part of this candidate.
+
+## Separate initialized-empty Copy experiment (local, held for exact review)
+
+This is a different, opt-in environment precondition, not a fallback, a repair of
+sequence zero or an assertion that the uninitialized runner is healthy. Its job
+requires a new, dedicated standard GitHub-hosted Windows VM, serial execution,
+no personal profile/cache import, no human desktop/RDP clipboard connection and no
+other clipboard workload. Runtime job/run/attempt/checkout/image bindings are
+necessary refusal checks, not independent proof of exclusivity; the reviewed
+provisioning/job plan is the out-of-band disposable-resource contract. Self-hosted,
+unknown or mismatching context refuses. Nothing may run on a personal desktop.
+
+The separate initializer opens exclusively with its own live message-pumped HWND,
+requires empty formats with successful error-qualified enumeration and null-or-exact
+owner from a successful cleared/immediate-error-qualified query, and attempts
+EmptyClipboard exactly once. A null owner with an API error or unknown query refuses;
+it is not evidence of an unowned clipboard. It reads no content and writes no
+seed. It requires nonzero sequence, exact own owner, still-empty formats and confirmed
+close before independent strict guard admission. Zero/unknown/failure never retries
+or permits native input. The initializer retains no cleanup authority and destroys
+only its own lexical window after admission, before input. No atomic handoff or
+continuous foreign-HWND lifetime is claimed.
+
+The original ClipboardGuard class, ordinary lane and zero refusal remain byte-for-
+byte unchanged, including the separately identified ordinary cleanup limitation.
+This first experiment does not silently change ordinary cleanup or make a valid
+nonzero ordinary run permanently fail. The original uninitialized result remains
+independently reported and is never relabeled as pass/skip by this experiment.
+
+A separate strict guard arms browser-epoch cleanup only after matching production
+completion, genuine native Copy, bounded exact generated-text/sequence/owner/process
+verification and confirmed close. It retains the browser process lease and exact
+observed owner HWND/PID/TID/class. Under one exclusive open, two fresh latest-epoch/
+owner checks and live lexical-helper identity checks precede its one reentry-protected
+EmptyClipboard attempt, without
+intervening message pump, COM or content access. Zero/foreign/exit/unknown/late read
+or close uncertainty disarms cleanup and leaves the resource untouched. Successful
+cleanup requires its helper owner, a nonzero resulting sequence, empty formats and
+confirmed close before browser teardown. These are repeated observations in the
+disposable-VM contract, not an external HWND lease or race-free atomic revocation.
+
+The new ignored Rust test exercises only one real native Copy with an unchanged
+negative document, current source/document proof, trusted source event, complete
+native menu/current command and one successful production completion. It requires
+both explicit initialization and strict cleanup receipts in addition to exact
+native generated text, no source/negative/storage/tab effects and native handler
+removal. No permission grant, clipboard API substitution or label-based dispatch
+is involved. Existing activation/pump/helper/watchdog deadlines are not increased.
+
+Managed operation-count negatives exercise the shared initializer, Copy observation/
+cleanup arming and cleanup engines with synthetic operations. Two Rust supplied-
+metadata cases and source-only boundaries are separately wired for exact discovery.
+These are not native clipboard observations. C#/PowerShell/Rust compilation and any
+native experiment remain unrun locally and held for exact independent review plus
+execution authorization. No release, updater, production or settings work is included.

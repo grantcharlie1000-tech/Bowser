@@ -14,6 +14,8 @@ on:
       - 'benchmarks/scripts/probe-app-context-menu-reload.ps1'
       - 'benchmarks/scripts/test-native-menu-helpers.ps1'
       - 'benchmarks/test-native-safety-source.py'
+      - 'benchmarks/test-initialized-clipboard-helper-source.py'
+      - 'benchmarks/test-initialized-copy-lane-source.py'
       - 'benchmarks/scripts/probe-custom-context-menu.ps1'
       - 'benchmarks/scripts/probe-app-context-menu.ps1'
       - 'benchmarks/scripts/probe-app-host-context-menu.ps1'
@@ -559,6 +561,79 @@ jobs:
             store-update-probe.log
           if-no-files-found: warn
           retention-days: 14
+  # Separate explicit environment-precondition experiment, not a retry/rescue of
+  # native-safety's untouched uninitialized clipboard lane. Standard hosted Windows
+  # provides a NEW disposable VM for this job. No cache/profile import, desktop/RDP
+  # connection or other clipboard workload is part of this serial job plan.
+  # Metadata binds provenance; it alone cannot prove exclusive resource custody.
+  initialized-empty-copy:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      BOWSER_INITIALIZED_EMPTY_CLIPBOARD_CONTRACT: github-hosted-fresh-exclusive-empty-v1
+      BOWSER_INITIALIZED_EMPTY_CLIPBOARD_JOB: initialized-empty-copy
+      BOWSER_INITIALIZED_EMPTY_CLIPBOARD_CHECKOUT: ${{ github.sha }}
+      BOWSER_INITIALIZED_EMPTY_CLIPBOARD_RUN: ${{ github.run_id }}
+      BOWSER_INITIALIZED_EMPTY_CLIPBOARD_ATTEMPT: ${{ github.run_attempt }}
+    steps:
+      - name: Preserve exact source bytes in the new disposable hosted VM
+        run: git config --global core.autocrlf false
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Check generated-data clipboard policies without touching the clipboard
+        run: |
+          powershell.exe -NoProfile -File ./benchmarks/scripts/test-native-menu-helpers.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'Managed synthetic clipboard/source contract failed; native fixture not run.' }
+          python ./benchmarks/test-native-safety-source.py
+          if ($LASTEXITCODE -ne 0) { throw 'Original fail-closed source contracts failed.' }
+          python ./benchmarks/test-initialized-clipboard-helper-source.py
+          if ($LASTEXITCODE -ne 0) { throw 'Initialized helper source boundaries failed.' }
+          python ./benchmarks/test-initialized-copy-lane-source.py
+          if ($LASTEXITCODE -ne 0) { throw 'Separate initialized Copy lane boundaries failed.' }
+      - name: Install official Rust toolchain
+        run: rustup toolchain install stable --profile minimal
+      - name: Build one exact experimental test variant without marketplace workloads
+        run: |
+          cargo +stable test --locked --lib --features html-chrome-default,experimental-engine-context-menu --no-run
+          if ($LASTEXITCODE -ne 0) { throw 'Initialized Copy fixture test binary failed to build.' }
+      - name: Execute two generated-data contract tests using that exact binary
+        run: |
+          $test = @(Get-ChildItem target/debug/deps/bowser-*.exe)
+          if ($test.Count -ne 1) { throw 'Exactly one initialized fixture test binary required.' }
+          $filter = 'engine::app_host_menu_probe::live::initialized_clipboard::synthetic_contract_tests'
+          $cases = @(& $test[0].FullName $filter --list)
+          if ($LASTEXITCODE -ne 0 -or @($cases | Where-Object { $_ -cmatch '^engine::app_host_menu_probe::live::initialized_clipboard::synthetic_contract_tests::[^ ]+: test$' }).Count -ne 2) { throw 'Exact two synthetic initialized contract cases not discovered.' }
+          & $test[0].FullName $filter --nocapture --test-threads=1 2>&1 | Tee-Object initialized-copy-contract.log
+          if ($LASTEXITCODE -ne 0) { throw 'Synthetic initialized metadata contract failed; no clipboard authority.' }
+      - name: Exercise one genuine native Copy under the explicit initialized-empty precondition
+        run: |
+          $test = @(Get-ChildItem target/debug/deps/bowser-*.exe)
+          if ($test.Count -ne 1) { throw 'Exact single disposable test executable unavailable.' }
+          $live = 'engine::app_host_menu_probe::live::initialized_clipboard::live_probe_initialized_empty_native_copy'
+          $cases = @(& $test[0].FullName $live --exact --ignored --list)
+          if ($LASTEXITCODE -ne 0 -or @($cases | Where-Object { $_ -ceq ($live + ': test') }).Count -ne 1) { throw 'Exact ignored initialized Copy test unavailable.' }
+          Get-FileHash -Algorithm SHA256 -LiteralPath $test[0].FullName | Format-List | Out-String | Tee-Object initialized-copy-binary.log
+          $env:BOWSER_EXTENSION_TRACE = '1'
+          $env:LOCALAPPDATA = Join-Path $env:RUNNER_TEMP 'bowser-initialized-empty-copy-localappdata'
+          New-Item -ItemType Directory -Force $env:LOCALAPPDATA | Out-Null
+          & $test[0].FullName $live --exact --ignored --nocapture --test-threads=1 2>&1 | Tee-Object initialized-copy-native.log
+          if ($LASTEXITCODE -ne 0) { throw 'Initialized disposable-VM native Copy failed; uninitialized zero lane is not remediated.' }
+      - name: Preserve independent initialized fixture evidence even on refusal
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: initialized-empty-copy-diagnostics-${{ github.sha }}
+          path: |
+            initialized-copy-*.log
+            store-initialized-empty-copy/**/*.json
+            store-initialized-empty-copy/**/*.txt
+          if-no-files-found: warn
+          retention-days: 14
+
   native-store-journey:
     runs-on: windows-latest
     timeout-minutes: 20

@@ -103,6 +103,10 @@ struct ObserverScope;
 impl Drop for ObserverScope {fn drop(&mut self){set_observer(None);}}
 
 fn native_input(app:&AppRef,h:&NativeContextProbeHandles,tab:TabId,proof:(u64,u64,u64),mode:&str,control:&str,token:&str,out:&Path)->i32 {
+    native_input_in_fixture(app,h,tab,proof,mode,control,token,out,false)
+}
+fn native_input_in_fixture(app:&AppRef,h:&NativeContextProbeHandles,tab:TabId,proof:(u64,u64,u64),mode:&str,control:&str,token:&str,out:&Path,initialized_empty:bool)->i32 {
+    if initialized_empty {assert_eq!(mode,"Copy");initialized_clipboard::contract();}
     current(h,proof);assert_eq!(App::active_tab_id(app),tab);ordinary_profile(&h.view);isolated_environment(app,h);
     let owner=app.borrow().hwnd;let mut class=[0;64];let n=unsafe{GetClassNameW(owner,&mut class)};
     assert_eq!(String::from_utf16_lossy(&class[..n as usize]),"BowserNativeWindow");assert!(unsafe{IsWindow(Some(owner))}.as_bool());
@@ -147,10 +151,13 @@ fn native_input(app:&AppRef,h:&NativeContextProbeHandles,tab:TabId,proof:(u64,u6
         sink.borrow_mut().push(event);
     })));
     let _observer=ObserverScope;current(h,proof);
-    let mut child=Command::new("powershell.exe").args(["-NoProfile","-File"]).arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("benchmarks/scripts/probe-app-host-context-menu.ps1"))
+    let mut command=Command::new("powershell.exe");
+    command.args(["-NoProfile","-File"]).arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("benchmarks/scripts/probe-app-host-context-menu.ps1"))
         .args(["-OwnerPid",&std::process::id().to_string(),"-OwnerHandle",&(owner.0 as isize).to_string()]).arg("-OwnerExe").arg(std::env::current_exe().unwrap())
         .args(["-BrowserPid",&browser.to_string(),"-ClientX",&px.to_string(),"-ClientY",&py.to_string(),"-ViewportWidth",&client.right.to_string(),"-ViewportHeight",&client.bottom.to_string(),"-ControlLeft",&left.to_string(),"-ControlTop",&top.to_string(),"-ControlRight",&right.to_string(),"-ControlBottom",&bottom.to_string(),"-ProbeNonce",&nonce,"-SourceViewIdentity",&expected.to_string(),"-Proof0",&proof.0.to_string(),"-Proof1",&proof.1.to_string(),"-Proof2",&proof.2.to_string(),"-Mode",mode,"-SyntheticToken",token])
-        .arg("-RequestReceipt").arg(&request_file).arg("-CompletedReceipt").arg(&completed_file).arg("-Out").arg(out).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+        .arg("-RequestReceipt").arg(&request_file).arg("-CompletedReceipt").arg(&completed_file).arg("-Out").arg(out).stdout(Stdio::piped()).stderr(Stdio::piped());
+    if initialized_empty {command.arg("-InitializedEmptyClipboardFixture");}
+    let mut child=command.spawn().unwrap();
     // Never kill the external clipboard owner from Rust. Its bounded failure path restores only
     // its last owned sequence before its retained-handle termination of this single test process.
     assert!(pump_until(Duration::from_secs(40),||child.try_wait().is_ok_and(|status|status.is_some())),"external native/clipboard guard did not settle; no acceptance (guard deliberately not killed)");
@@ -167,6 +174,7 @@ fn native_input(app:&AppRef,h:&NativeContextProbeHandles,tab:TabId,proof:(u64,u6
     assert_eq!(text(&report,"status"),if mode=="Cancel"{"observed-actual-App-native-cancellation"}else{"observed-actual-App-native-selection"});
     if mode!="Cancel"{assert_eq!(number(&report,"selected_command_id"),selected.unwrap() as i64)}
     if matches!(mode,"Copy"|"Paste"){assert_eq!(text(&report,"clipboard"),"restored-empty");assert!(array(&report,"owned_clipboard_sequences").len()>=3)}
+    if initialized_empty {initialized_clipboard::assert_initialized_evidence(&report);}
     selected.unwrap_or(0)
 }
 
@@ -280,3 +288,5 @@ fn host_probe_selection_uses_native_name_or_inserted_role_not_command_range() {
 
 // Independent exact-test process and disposable profile; original clipboard lane is unchanged.
 mod note_split;
+// Separate opt-in initialized-empty environment precondition; never a zero-refusal fallback.
+mod initialized_clipboard;
