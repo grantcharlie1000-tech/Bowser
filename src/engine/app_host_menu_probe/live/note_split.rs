@@ -5,6 +5,77 @@ use super::*;
 const NOTE_SPLIT_TEST_NAME: &str = "engine::app_host_menu_probe::live::note_split::live_probe_real_app_host_note_split_context_menu";
 const NOTE_SPLIT_CONSENT: &str = "disposable-app-host-menu-note-split-no-clipboard";
 
+// Diagnostic only: six fixed checkpoints distinguish startup from the initial pump interval.
+// One CreateNew handle is retained; capped direct UTF-8 writes are best-effort, never a verdict.
+// This does not identify a particular native call or make either existing deadline a hard bound.
+#[derive(Clone, Copy)]
+#[repr(usize)]
+enum ReadinessStage { BeforeAppRun, ReadyHook, PumpBefore, PumpAfter, WatchdogExpired, AppReturned }
+impl ReadinessStage {
+    fn name(self) -> &'static str {
+        match self {
+            Self::BeforeAppRun => "before-app-run", Self::ReadyHook => "ready-hook-entry",
+            Self::PumpBefore => "initial-pump-before", Self::PumpAfter => "initial-pump-after",
+            Self::WatchdogExpired => "watchdog-first-expiry", Self::AppReturned => "app-run-returned",
+        }
+    }
+}
+struct ReadinessPhases {
+    file: Cell<Option<std::fs::File>>,
+    started: Instant,
+    write_attempt: Cell<u64>,
+    // Fixed array order is ReadinessStage declaration order; later snapshots retain earlier marks.
+    stage_test_elapsed_ms: Cell<[Option<u64>; 6]>,
+    pump_started: Cell<Option<Instant>>,
+    pump_elapsed_ms: Cell<Option<u64>>,
+    ready: Cell<Option<bool>>,
+    watchdog: Rc<Cell<bool>>,
+    io_failed: Cell<bool>,
+}
+impl ReadinessPhases {
+    fn open(path: &Path, started: Instant, watchdog: Rc<Cell<bool>>) -> Self {
+        let file = std::fs::OpenOptions::new().write(true).create_new(true).open(path).ok();
+        let io_failed = file.is_none();
+        Self { file: Cell::new(file), started, write_attempt: Cell::new(0), stage_test_elapsed_ms: Cell::new([None; 6]), pump_started: Cell::new(None),
+            pump_elapsed_ms: Cell::new(None), ready: Cell::new(None), watchdog, io_failed: Cell::new(io_failed) }
+    }
+    fn millis(elapsed: Duration) -> u64 { elapsed.as_millis().min(u128::from(u64::MAX)) as u64 }
+    fn record(&self, stage: ReadinessStage) {
+        let previous = self.write_attempt.get();
+        if previous >= 6 { return }
+        let write_attempt = previous + 1;
+        self.write_attempt.set(write_attempt);
+        let test_elapsed_ms = Self::millis(self.started.elapsed());
+        let mut stages = self.stage_test_elapsed_ms.get();
+        if let Some(mark) = stages.get_mut(stage as usize) { *mark = Some(test_elapsed_ms); }
+        self.stage_test_elapsed_ms.set(stages);
+        let stage_times = stages.iter().map(|value| value.map(|value| value.to_string()).unwrap_or_else(|| "null".into())).collect::<Vec<_>>().join(",");
+        let pump_elapsed = self.pump_elapsed_ms.get().or_else(|| self.pump_started.get().map(|start| Self::millis(start.elapsed())))
+            .map(|value| value.to_string()).unwrap_or_else(|| "null".into());
+        let ready = self.ready.get().map(|value| value.to_string()).unwrap_or_else(|| "null".into());
+        let snapshot = format!(r#"{{"schema":"host-initial-readiness-phase-v1","write_attempt":{},"stage":"{}","test_elapsed_ms":{},"stage_test_elapsed_ms":[{}],"pump_elapsed_ms":{},"ready":{},"watchdog":{},"prior_io_failed":{}}}"#,
+            write_attempt, stage.name(), test_elapsed_ms, stage_times, pump_elapsed, ready, self.watchdog.get(), self.io_failed.get());
+        // Take the retained handle out of Cell: no App or RefCell borrow spans diagnostic I/O.
+        let Some(mut file) = self.file.take() else { return };
+        if snapshot.len() <= 512 {
+            let result = std::io::Seek::rewind(&mut file).and_then(|_| file.write_all(snapshot.as_bytes()))
+                .and_then(|_| file.set_len(snapshot.len() as u64)).and_then(|_| file.flush());
+            if result.is_err() { self.io_failed.set(true); }
+        } else { self.io_failed.set(true); }
+        self.file.set(Some(file));
+    }
+    fn pump_before(&self) {
+        self.record(ReadinessStage::PumpBefore);
+        // Start after the pre-call diagnostic write so that its I/O is not pump elapsed time.
+        self.pump_started.set(Some(Instant::now()));
+    }
+    fn pump_after(&self, ready: bool) {
+        self.pump_elapsed_ms.set(self.pump_started.get().map(|start| Self::millis(start.elapsed())));
+        self.ready.set(Some(ready));
+        self.record(ReadinessStage::PumpAfter);
+    }
+}
+
 #[derive(Clone, Copy)]
 enum HostOnlyMode {
     Note,
@@ -89,13 +160,16 @@ fn pristine_fixture(value: &Value, url: &url::Url, token: &str) {
     }
 }
 
-fn host_only_sequence(app: &AppRef, root: &Path, server: &Loopback, out: &Path) {
+fn host_only_sequence(app: &AppRef, root: &Path, server: &Loopback, out: &Path, phases: &ReadinessPhases) {
     let source_tab = App::active_tab_id(app);
     let mut source = None;
-    assert!(pump_until(Duration::from_secs(60), || {
+    phases.pump_before();
+    let source_ready = pump_until(Duration::from_secs(60), || {
         source = handles(app, source_tab);
         source.as_ref().is_some_and(|h| (h.proof)().is_some())
-    }), "fresh actual source controller/document did not settle");
+    });
+    phases.pump_after(source_ready);
+    assert!(source_ready, "fresh actual source controller/document did not settle");
     let source = source.unwrap();
     let proof = (source.proof)().unwrap();
     current(&source, proof);
@@ -289,10 +363,14 @@ fn live_probe_real_app_host_note_split_context_menu() {
     let started = Instant::now();
     let timed_out = Rc::new(Cell::new(false));
     let expired = timed_out.clone();
+    let phases = Rc::new(ReadinessPhases::open(&evidence.join("source-readiness-phase.json"), started, timed_out.clone()));
+    let ready_phases = phases.clone();
+    let watchdog_phases = phases.clone();
     let deregistrations = Rc::new(RefCell::new(Vec::<Option<i32>>::new()));
     let removal = deregistrations.clone();
     crate::win32::set_app_menu_probe_hooks(Box::new(move |app| {
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| host_only_sequence(&app, &destination, &server, &output)));
+        ready_phases.record(ReadinessStage::ReadyHook);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| host_only_sequence(&app, &destination, &server, &output, &ready_phases)));
         *sink.borrow_mut() = Some(result.map_err(|_| "independent actual App note/Split regression failed; inspect host-only diagnostics".to_owned()));
         set_observer(Some(Rc::new(move |event| if let HostProbeEvent::Lifecycle(MenuProbeEvent::Deregistered { native_error }) = event {
             removal.borrow_mut().push(native_error);
@@ -300,11 +378,14 @@ fn live_probe_real_app_host_note_split_context_menu() {
         let owner = app.borrow().hwnd;
         unsafe { let _ = PostMessageW(Some(owner), WM_CLOSE, WPARAM(0), LPARAM(0)); }
     }), Box::new(move |app| if started.elapsed() > Duration::from_secs(240) && !expired.replace(true) {
+        watchdog_phases.record(ReadinessStage::WatchdogExpired);
         let owner = app.borrow().hwnd;
         unsafe { let _ = PostMessageW(Some(owner), WM_CLOSE, WPARAM(0), LPARAM(0)); }
     }));
     unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED).ok().unwrap() };
+    phases.record(ReadinessStage::BeforeAppRun);
     let run = App::run(options, Rc::new(PerfLog::new(None).unwrap()));
+    phases.record(ReadinessStage::AppReturned);
     unsafe { CoUninitialize() };
     set_observer(None);
     assert!(run.is_ok(), "actual App::run failed: {run:?}");
