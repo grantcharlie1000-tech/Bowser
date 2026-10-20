@@ -1427,12 +1427,19 @@ pub fn read_strict(path: &Path) -> io::Result<Settings> {
 /// The text goes to a temporary file that then replaces the original, so an interrupted save never
 /// leaves a partial settings file. A file too large to read in full is refused, not overwritten.
 pub fn save(path: &Path, settings: &Settings) -> io::Result<()> {
+    save_edited(path, |existing| render_updated(existing, settings))
+}
+
+/// [`save`] for a line `save` does not own (the notes popup's width): `edit` turns the file's text
+/// into the new text, with the same guards. An unreadable, oversized or non-UTF-8 file is refused,
+/// never read as empty and replaced.
+pub fn save_edited(path: &Path, edit: impl FnOnce(&str) -> String) -> io::Result<()> {
     let existing = match read_text(path) {
         Ok(text) => text,
         Err(error) if error.kind() == io::ErrorKind::NotFound => String::new(),
         Err(error) => return Err(error),
     };
-    let text = render_updated(&existing, settings);
+    let text = edit(&existing);
     // `load` ignores files over the limit, so writing one would silently reset every setting.
     if text.len() > MAX_FILE_BYTES {
         return Err(io::Error::new(
