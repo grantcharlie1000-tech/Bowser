@@ -15,6 +15,11 @@ pub fn parse_netscape_bookmarks_detailed(html: &str) -> (Vec<Bookmark>, usize) {
         return (Vec::new(), 0);
     }
     let bytes = html.as_bytes();
+    // Lower-cased once (ASCII only, so every byte offset matches `html`); each closing tag is
+    // then found from a remembered position instead of re-scanning the rest of the file.
+    let lowered = html.to_ascii_lowercase();
+    let mut h3_close = Closer::new("</h3>");
+    let mut a_close = Closer::new("</a>");
     let mut pos = 0;
     let mut folders: Vec<String> = Vec::new();
     let mut entries = Vec::new();
@@ -29,7 +34,7 @@ pub fn parse_netscape_bookmarks_detailed(html: &str) -> (Vec<Bookmark>, usize) {
             .next()
             .is_some_and(|name| name.eq_ignore_ascii_case("h3"))
         {
-            if let Some(close) = find_ascii_case_insensitive(html, "</h3>", end + 1) {
+            if let Some(close) = h3_close.find(&lowered, end + 1) {
                 if folders.len() < MAX_DEPTH {
                     let name = decode_entities(&html[end + 1..close]);
                     folders.push(clean_field(&name, 512));
@@ -41,7 +46,7 @@ pub fn parse_netscape_bookmarks_detailed(html: &str) -> (Vec<Bookmark>, usize) {
             && (lower.len() == 1 || lower.as_bytes().get(1).is_some_and(u8::is_ascii_whitespace))
         {
             if let Some(href) = attribute(tag, "href") {
-                if let Some(close) = find_ascii_case_insensitive(html, "</a>", end + 1) {
+                if let Some(close) = a_close.find(&lowered, end + 1) {
                     let candidate = Bookmark::new(
                         decode_entities(&html[end + 1..close]),
                         decode_entities(&href),
@@ -73,11 +78,37 @@ fn find_byte(bytes: &[u8], byte: u8, from: usize) -> Option<usize> {
         .map(|i| from + i)
 }
 
-fn find_ascii_case_insensitive(text: &str, needle: &str, from: usize) -> Option<usize> {
-    text.get(from..)?
-        .to_ascii_lowercase()
-        .find(&needle.to_ascii_lowercase())
-        .map(|i| from + i)
+/// Finds a lower-case `needle` in already lower-cased text for positions that only move forward,
+/// remembering the last answer: the next match at or after a later `from` is the same one, and
+/// once there is none there never is. All the calls together scan the text once.
+struct Closer {
+    needle: &'static str,
+    /// The last search's `from` and its result.
+    last: Option<(usize, Option<usize>)>,
+}
+
+impl Closer {
+    fn new(needle: &'static str) -> Self {
+        Self { needle, last: None }
+    }
+
+    fn find(&mut self, lowered: &str, from: usize) -> Option<usize> {
+        if let Some((searched_from, found)) = self.last {
+            if from >= searched_from {
+                match found {
+                    None => return None,
+                    Some(at) if at >= from => return Some(at),
+                    Some(_) => {}
+                }
+            }
+        }
+        let found = lowered
+            .get(from..)
+            .and_then(|rest| rest.find(self.needle))
+            .map(|i| from + i);
+        self.last = Some((from, found));
+        found
+    }
 }
 
 fn attribute(tag: &str, name: &str) -> Option<String> {
