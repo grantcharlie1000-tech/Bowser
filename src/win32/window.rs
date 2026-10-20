@@ -1083,6 +1083,7 @@ impl WindowChrome {
             arrangement, w, h, self.dpi, self.slots.len().max(1), i, maximised,
             i32::from(sidebar_width), centred_address_bar, density.sidebar_row_height(), hide,
         );
+        let layout = if self.ah.rail_hidden { layout::without_rail(layout, self.dpi, maximised) } else { layout };
         let shown = if hide.is_off() {
             None
         } else {
