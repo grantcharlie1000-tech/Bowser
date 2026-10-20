@@ -577,11 +577,15 @@ public static class BowserHostMenu {
   CheckCleanupCase("synthetic distinct browser epoch exact live helper",new SyntheticClipboardPolicyOps{CurrentOwner=new IntPtr(22),Epoch=browserEpoch},true,1);
   var deadHelper=new SyntheticClipboardPolicyOps{CurrentOwner=new IntPtr(22),Epoch=browserEpoch,HelperAlive=false};CheckCleanupCase("synthetic browser valid but helper dead",deadHelper,false,0);PolicyAssert(deadHelper.OpenCalls==0,"dead helper refuses before clipboard open");
   var unknownHelper=new SyntheticClipboardPolicyOps{CurrentOwner=new IntPtr(22),Epoch=browserEpoch,HelperKnown=false};CheckCleanupCase("synthetic browser valid but helper unknown",unknownHelper,false,0);PolicyAssert(unknownHelper.OpenCalls==0,"unknown helper refuses before clipboard open");
+  var wrongHelperPid=new SyntheticClipboardPolicyOps{CurrentOwner=new IntPtr(22),Epoch=browserEpoch,HelperPid=false};CheckCleanupCase("synthetic browser valid but helper process wrong",wrongHelperPid,false,0);PolicyAssert(wrongHelperPid.OpenCalls==0,"wrong helper process refuses before clipboard open");
+  var wrongHelperThread=new SyntheticClipboardPolicyOps{CurrentOwner=new IntPtr(22),Epoch=browserEpoch,HelperThread=false};CheckCleanupCase("synthetic browser valid but helper thread wrong",wrongHelperThread,false,0);PolicyAssert(wrongHelperThread.OpenCalls==0,"wrong helper thread refuses before clipboard open");
+  var wrongHelperClass=new SyntheticClipboardPolicyOps{CurrentOwner=new IntPtr(22),Epoch=browserEpoch,HelperClass=false};CheckCleanupCase("synthetic browser valid but helper class wrong",wrongHelperClass,false,0);PolicyAssert(wrongHelperClass.OpenCalls==0,"wrong helper class refuses before clipboard open");
   var lateHelper=new SyntheticClipboardPolicyOps{CurrentOwner=new IntPtr(22),Epoch=browserEpoch,HelperFailAtMatch=2};CheckCleanupCase("synthetic browser valid but final helper lost",lateHelper,false,0);PolicyAssert(lateHelper.OpenCalls==1,"final helper loss leaves exclusive clipboard untouched");
   var finalDeadHelper=new SyntheticClipboardPolicyOps{CurrentOwner=new IntPtr(22),Epoch=browserEpoch,HelperDiesAtMatch=2};CheckCleanupCase("synthetic browser valid but final helper dead",finalDeadHelper,false,0);PolicyAssert(finalDeadHelper.OpenCalls==1,"final helper death leaves clipboard untouched");
   var finalUnknownHelper=new SyntheticClipboardPolicyOps{CurrentOwner=new IntPtr(22),Epoch=browserEpoch,HelperUnknownAtMatch=2};CheckCleanupCase("synthetic browser valid but final helper unknown",finalUnknownHelper,false,0);PolicyAssert(finalUnknownHelper.OpenCalls==1,"final helper uncertainty leaves clipboard untouched");
   CheckCleanupCase("cleanup post-clear null owner error",new SyntheticClipboardPolicyOps{CurrentOwner=new IntPtr(22),Epoch=browserEpoch,OwnerErrorAfterEmpty=true},false,1);
   CheckCleanupCase("foreign same-sequence owner",new SyntheticClipboardPolicyOps{CurrentOwner=new IntPtr(99)},false,0);
+  CheckCleanupCase("failed exact owner predicate",new SyntheticClipboardPolicyOps{CurrentOwner=new IntPtr(11),Exact=false},false,0);
   CheckCleanupCase("same owner changed sequence",new SyntheticClipboardPolicyOps{CurrentOwner=new IntPtr(11),CurrentSequence=8},false,0);
   CheckCleanupCase("zero epoch",new SyntheticClipboardPolicyOps{CurrentOwner=new IntPtr(11),CurrentSequence=0},false,0);
   CheckCleanupCase("wrong process",new SyntheticClipboardPolicyOps{CurrentOwner=new IntPtr(11),Pid=false},false,0);
@@ -591,11 +595,13 @@ public static class BowserHostMenu {
   CheckCleanupCase("unknown identity",new SyntheticClipboardPolicyOps{CurrentOwner=new IntPtr(11),Unknown=true},false,0);
   CheckCleanupCase("late owner mismatch",new SyntheticClipboardPolicyOps{CurrentOwner=new IntPtr(11),LateMismatchAtMatch=2},false,0);
   CheckCleanupCase("cleanup owner query error",new SyntheticClipboardPolicyOps{CurrentOwner=new IntPtr(11),OwnerQueryError=5},false,0);
+  CheckCleanupCase("cleanup owner query unknown without error",new SyntheticClipboardPolicyOps{CurrentOwner=new IntPtr(11),OwnerQueryOk=false},false,0);
   CheckCleanupCase("cleanup lock",new SyntheticClipboardPolicyOps{CurrentOwner=new IntPtr(11),OpenOk=false},false,0);
   CheckCleanupCase("cleanup no dedicated contract",new SyntheticClipboardPolicyOps{CurrentOwner=new IntPtr(11),Contract=false},false,0);
   CheckCleanupCase("cleanup failed clear once",new SyntheticClipboardPolicyOps{CurrentOwner=new IntPtr(11),EmptyOk=false},false,1);
   CheckCleanupCase("cleanup resulting zero",new SyntheticClipboardPolicyOps{CurrentOwner=new IntPtr(11),ZeroAfterEmpty=true},false,1);
   CheckCleanupCase("cleanup resulting foreign owner",new SyntheticClipboardPolicyOps{CurrentOwner=new IntPtr(11),WrongOwnerAfterEmpty=true},false,1);
+  CheckCleanupCase("cleanup post-clear enumeration error",new SyntheticClipboardPolicyOps{CurrentOwner=new IntPtr(11),FailAfterEnum=true},false,1);
   CheckCleanupCase("cleanup close uncertainty",new SyntheticClipboardPolicyOps{CurrentOwner=new IntPtr(11),CloseOk=false},false,1);
   CheckCleanupCase("cleanup reentry",new SyntheticClipboardPolicyOps{CurrentOwner=new IntPtr(11),Reenter=true},true,1);
   var disarmed=new ClipboardCleanupFence();var fake=new SyntheticClipboardPolicyOps{CurrentOwner=new IntPtr(11)};disarmed.Arm(7,fake.Epoch);disarmed.Disarm();uint ignored;PolicyAssert(!disarmed.Finish(fake,out ignored)&&fake.EmptyCalls==0&&fake.OpenCalls==0,"late read or close uncertainty disarms cleanup");
@@ -616,9 +622,11 @@ public static class BowserHostMenu {
   proof=SyntheticCompletion();proof.CleanupOk=false;CheckCopyCase("failed production cleanup",new SyntheticCopyPolicyOps(),proof,false,0,0);
   proof=SyntheticCompletion();proof.Schema="wrong";CheckCopyCase("wrong completion schema",new SyntheticCopyPolicyOps(),proof,false,0,0);
   CheckCopyCase("Copy wrong process",new SyntheticCopyPolicyOps{CurrentSequence=8,CurrentOwner=new IntPtr(11),Pid=false},SyntheticCompletion(),false,0,0);
+  CheckCopyCase("Copy failed exact owner predicate",new SyntheticCopyPolicyOps{CurrentSequence=8,CurrentOwner=new IntPtr(11),Exact=false},SyntheticCompletion(),false,0,0);
   CheckCopyCase("Copy wrong thread",new SyntheticCopyPolicyOps{CurrentSequence=8,CurrentOwner=new IntPtr(11),Thread=false},SyntheticCompletion(),false,0,0);
   CheckCopyCase("Copy wrong class",new SyntheticCopyPolicyOps{CurrentSequence=8,CurrentOwner=new IntPtr(11),WindowClass=false},SyntheticCompletion(),false,0,0);
   CheckCopyCase("Copy owner query error",new SyntheticCopyPolicyOps{CurrentSequence=8,CurrentOwner=new IntPtr(11),OwnerQueryError=5},SyntheticCompletion(),false,0,0);
+  CheckCopyCase("Copy owner query unknown without error",new SyntheticCopyPolicyOps{CurrentSequence=8,CurrentOwner=new IntPtr(11),OwnerQueryOk=false},SyntheticCompletion(),false,0,0);
   CheckCopyCase("Copy unknown owner",new SyntheticCopyPolicyOps{CurrentSequence=8,CurrentOwner=new IntPtr(11),Unknown=true},SyntheticCompletion(),false,0,0);
   CheckCopyCase("unchanged sequence cannot prove Copy",new SyntheticCopyPolicyOps{CurrentOwner=new IntPtr(11)},SyntheticCompletion(),false,0,0);
   CheckCopyCase("zero Copy sequence",new SyntheticCopyPolicyOps{CurrentSequence=0,CurrentOwner=new IntPtr(11)},SyntheticCompletion(),false,0,0);
@@ -634,6 +642,7 @@ public static class BowserHostMenu {
   CheckCopyCase("zero-sized text",new SyntheticCopyPolicyOps{CurrentSequence=8,CurrentOwner=new IntPtr(11),ZeroSize=true},SyntheticCompletion(),false,1,0);
   CheckCopyCase("oversized text",new SyntheticCopyPolicyOps{CurrentSequence=8,CurrentOwner=new IntPtr(11),Oversized=true},SyntheticCompletion(),false,1,0);
   CheckCopyCase("malformed odd-sized text",new SyntheticCopyPolicyOps{CurrentSequence=8,CurrentOwner=new IntPtr(11),OddSize=true},SyntheticCompletion(),false,1,0);
+  CheckCopyCase("native Copy data lock unavailable",new SyntheticCopyPolicyOps{CurrentSequence=8,CurrentOwner=new IntPtr(11),LockFails=true},SyntheticCompletion(),false,1,0);
   CheckCopyCase("memory unlock uncertainty",new SyntheticCopyPolicyOps{CurrentSequence=8,CurrentOwner=new IntPtr(11),UnlockFails=true},SyntheticCompletion(),false,1,1);
   CheckCopyCase("Copy close uncertainty",new SyntheticCopyPolicyOps{CurrentSequence=8,CurrentOwner=new IntPtr(11),CloseOk=false},SyntheticCompletion(),false,1,1);
 

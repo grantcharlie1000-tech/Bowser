@@ -131,6 +131,23 @@ class InitializedClipboardHelperSourceContracts(unittest.TestCase):
         checker = (ROOT / "benchmarks/scripts/test-native-menu-helpers.ps1").read_text()
         self.assertNotIn("-IgnoreWarnings", checker)
 
+    def test_synthetic_data_lock_failure_exercises_the_existing_refusal(self):
+        cases = block("public static void CheckInitializedClipboardPolicy()")
+        self.assertIn('"native Copy data lock unavailable",new SyntheticCopyPolicyOps{CurrentSequence=8,CurrentOwner=new IntPtr(11),LockFails=true},SyntheticCompletion(),false,1,0', cases)
+        copy = block("static void ObserveNativeCopyOnce(")
+        self.assertIn('if(pointer==IntPtr.Zero)throw new InvalidOperationException("Known native Copy data unavailable.")', copy)
+
+    def test_every_synthetic_refusal_switch_is_exercised_without_warning_suppression(self):
+        cases = block("public static void CheckInitializedClipboardPolicy()")
+        for name in ("Contract", "OpenOk", "CloseOk", "EmptyOk", "Exact", "Alive", "Pid", "Thread", "WindowClass", "HelperAlive", "HelperKnown", "HelperPid", "HelperThread", "HelperClass", "OwnerQueryOk"):
+            self.assertIn(name + "=false", cases, name)
+        for name in ("Unknown", "OwnerErrorAfterEmpty", "ZeroAfterEmpty", "WrongOwnerAfterEmpty", "FailAfterEnum", "Reenter", "MissingData", "ZeroSize", "Oversized", "OddSize", "LockFails", "UnlockFails", "Unterminated", "ChangeOnData", "ChangeOnRead", "ExitOnData", "OwnerErrorAfterData", "OwnerErrorAfterContent"):
+            self.assertIn(name + "=true", cases, name)
+        for name in ("LateMismatchAtMatch", "HelperFailAtMatch", "HelperDiesAtMatch", "HelperUnknownAtMatch"):
+            self.assertIn(name + "=2", cases, name)
+        for label in ("helper process wrong", "helper thread wrong", "helper class wrong", "cleanup owner query unknown without error", "cleanup post-clear enumeration error", "Copy owner query unknown without error"):
+            self.assertIn(label, cases)
+
     def test_initializer_handoff_is_not_cleanup_or_custody(self):
         fixture = block("public sealed class InitializedEmptyClipboardFixture:")
         dispose = block("public void Dispose()", fixture)
