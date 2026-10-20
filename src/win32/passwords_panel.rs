@@ -1723,9 +1723,7 @@ fn save_draft(hwnd: HWND) {
         return;
     };
     let result = PasswordStore::open_default().and_then(|mut vault| match draft.id {
-        Some(id) => vault
-            .update(id, &draft.origin, &draft.username, &draft.password)
-            .map(|()| id),
+        Some(id) => vault.update(id, &draft.origin, &draft.username, &draft.password),
         None => vault.add(&draft.origin, &draft.username, &draft.password),
     });
     if let Some(panel) = state(hwnd) {

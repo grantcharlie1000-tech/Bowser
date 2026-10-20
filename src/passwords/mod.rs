@@ -88,9 +88,30 @@ impl fmt::Debug for PasswordStore {
     }
 }
 
-/// Opaque index for one entry in a currently opened vault.
+/// Opaque name for one entry: where it was in the vault it was listed from, and which login
+/// (origin and username, unique in a vault) it was. The vault is read again for every action, and
+/// another window of the profile may have added or deleted entries since the list was made, so an
+/// action finds the login by `key`, never by position alone.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct CredentialId(usize);
+pub struct CredentialId {
+    index: usize,
+    key: u64,
+}
+
+impl CredentialId {
+    fn of(index: usize, record: &Record) -> Self {
+        Self { index, key: record_key(record) }
+    }
+}
+
+/// Which login a record is: its origin and username (a vault holds at most one entry for each).
+fn record_key(record: &Record) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::hash::DefaultHasher::new();
+    record.url.hash(&mut hasher);
+    record.username.hash(&mut hasher);
+    hasher.finish()
+}
 
 /// Non-secret metadata for a vault entry. The password is never included in this value.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -322,22 +343,31 @@ impl PasswordStore {
             return LoginMatch::Missing;
         };
         if first_record.password == password {
-            return LoginMatch::Unchanged(CredentialId(first_index));
+            return LoginMatch::Unchanged(CredentialId::of(first_index, first_record));
         }
         matches
             .find(|(_, record)| record.password == password)
             .map_or(
-                LoginMatch::Changed(CredentialId(first_index)),
-                |(index, _)| LoginMatch::Unchanged(CredentialId(index)),
+                LoginMatch::Changed(CredentialId::of(first_index, first_record)),
+                |(index, record)| LoginMatch::Unchanged(CredentialId::of(index, record)),
             )
+    }
+
+    /// Where the login `id` names is in this vault now, or `MissingEntry` when it is gone.
+    fn position(&self, id: CredentialId) -> Result<usize, PasswordError> {
+        if self.records.get(id.index).is_some_and(|record| record_key(record) == id.key) {
+            return Ok(id.index);
+        }
+        self.records
+            .iter()
+            .position(|record| record_key(record) == id.key)
+            .ok_or(PasswordError::MissingEntry)
     }
 
     /// Returns a password only through this explicit reveal operation.
     pub fn reveal(&self, id: CredentialId) -> Result<SecretString, PasswordError> {
-        self.records
-            .get(id.0)
-            .map(|record| SecretString::new(record.password.clone()))
-            .ok_or(PasswordError::MissingEntry)
+        let index = self.position(id)?;
+        Ok(SecretString::new(self.records[index].password.clone()))
     }
 
     /// Adds a new HTTPS credential, or an HTTP credential for localhost.
@@ -362,7 +392,7 @@ impl PasswordStore {
             Classification::Reject => return Err(PasswordError::InvalidStore),
             Classification::New => {}
         }
-        let id = CredentialId(self.records.len());
+        let id = CredentialId::of(self.records.len(), &candidate);
         self.records.push(candidate);
         if let Err(error) = self.persist() {
             self.records.pop();
@@ -371,17 +401,17 @@ impl PasswordStore {
         Ok(id)
     }
 
-    /// Replaces one entry after checking that it does not create a duplicate or conflict.
+    /// Replaces one entry after checking that it does not create a duplicate or conflict. Returns
+    /// the entry's id from now on (a new origin or username makes it another login).
     pub fn update(
         &mut self,
         id: CredentialId,
         url: &str,
         username: &str,
         password: &str,
-    ) -> Result<(), PasswordError> {
-        let Some(existing) = self.records.get(id.0) else {
-            return Err(PasswordError::MissingEntry);
-        };
+    ) -> Result<CredentialId, PasswordError> {
+        let index = self.position(id)?;
+        let existing = &self.records[index];
         let origin = secure_origin(url).ok_or(PasswordError::InsecureOrigin)?;
         if !valid_record(&origin, username, password) {
             return Err(PasswordError::InvalidStore);
@@ -395,32 +425,31 @@ impl PasswordStore {
             .records
             .iter()
             .enumerate()
-            .filter_map(|(index, record)| (index != id.0).then_some(record));
+            .filter_map(|(other, record)| (other != index).then_some(record));
         match classify(&candidate, other_records) {
             Classification::ExactDuplicate => return Err(PasswordError::Duplicate),
             Classification::Conflict => return Err(PasswordError::Conflict),
             Classification::Reject => return Err(PasswordError::InvalidStore),
             Classification::New => {}
         }
+        let updated = CredentialId::of(index, &candidate);
         if existing == &candidate {
-            return Ok(());
+            return Ok(updated);
         }
-        let old = std::mem::replace(&mut self.records[id.0], candidate);
+        let old = std::mem::replace(&mut self.records[index], candidate);
         if let Err(error) = self.persist() {
-            self.records[id.0] = old;
+            self.records[index] = old;
             return Err(error);
         }
-        Ok(())
+        Ok(updated)
     }
 
     /// Deletes an entry and restores it in memory if the atomic write fails.
     pub fn delete(&mut self, id: CredentialId) -> Result<(), PasswordError> {
-        if id.0 >= self.records.len() {
-            return Err(PasswordError::MissingEntry);
-        }
-        let removed = self.records.remove(id.0);
+        let index = self.position(id)?;
+        let removed = self.records.remove(index);
         if let Err(error) = self.persist() {
-            self.records.insert(id.0, removed);
+            self.records.insert(index, removed);
             return Err(error);
         }
         Ok(())
@@ -484,7 +513,7 @@ impl PasswordStore {
                     .and_then(|url| url.host_str().map(str::to_owned))
                     .unwrap_or_default();
                 CredentialSummary {
-                    id: CredentialId(index),
+                    id: CredentialId::of(index, record),
                     origin: record.url.clone(),
                     host,
                     username: record.username.clone(),
@@ -1628,7 +1657,7 @@ mod tests {
         );
         assert_eq!(&*vault.reveal(id).unwrap(), "crud-secret-a");
 
-        vault
+        let id = vault
             .update(
                 id,
                 "https://example.test/login",
@@ -1745,7 +1774,7 @@ mod tests {
         assert_eq!(vault.len(), 1);
         vault
             .update(
-                CredentialId(0),
+                vault.list()[0].id,
                 "https://legacy.example.test",
                 "alice",
                 "synthetic-updated-secret",
@@ -1896,6 +1925,36 @@ mod tests {
         let dir = root.join("dir");
         fs::create_dir(&dir).unwrap();
         assert!(!vault_file_usable(&dir));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn an_id_from_an_older_list_acts_on_its_own_login_or_none() {
+        let root = temp_vault_root();
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("Passwords.dat");
+        let mut setup = PasswordStore::open(&path).unwrap();
+        for user in ["alice", "bob", "carol"] {
+            setup.add("https://a.example.test", user, &format!("synthetic-{user}-secret")).unwrap();
+        }
+        // Window 1 lists the logins; window 2 (another process, same file) deletes the first.
+        let listed = PasswordStore::open(&path).unwrap().list();
+        let mut other = PasswordStore::open(&path).unwrap();
+        other.delete(listed[0].id).unwrap();
+        // Window 1 now acts on bob from its older list: it must be bob, never carol.
+        let vault = PasswordStore::open(&path).unwrap();
+        assert_eq!(&*vault.reveal(listed[1].id).unwrap(), "synthetic-bob-secret");
+        let mut vault = PasswordStore::open(&path).unwrap();
+        vault.update(listed[1].id, "https://a.example.test", "bob", "synthetic-bob-new").unwrap();
+        let mut vault = PasswordStore::open(&path).unwrap();
+        vault.delete(listed[1].id).unwrap();
+        let left: Vec<String> = PasswordStore::open(&path).unwrap().list().into_iter().map(|e| e.username).collect();
+        assert_eq!(left, vec!["carol".to_owned()], "bob was deleted, carol kept");
+        // An id whose login is gone names nothing.
+        let mut vault = PasswordStore::open(&path).unwrap();
+        assert_eq!(vault.reveal(listed[0].id).map(|_| ()), Err(PasswordError::MissingEntry));
+        assert_eq!(vault.delete(listed[0].id), Err(PasswordError::MissingEntry));
+        assert_eq!(PasswordStore::open(&path).unwrap().len(), 1);
         fs::remove_dir_all(root).unwrap();
     }
 
