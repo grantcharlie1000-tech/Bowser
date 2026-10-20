@@ -324,6 +324,9 @@ export function startSplit(root: HTMLElement): void {
         break;
       case 'privatepage':
         if (mode !== 'private') {
+          // Rust sends no splithide between the start page and the private page (U9).
+          leaveStart();
+          startQueue = [];
           mode = 'private';
           side = null;
           root.classList.add('is-private');
