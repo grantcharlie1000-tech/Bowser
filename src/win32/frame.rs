@@ -191,6 +191,25 @@ pub fn frame_hit_test_with(
     FrameHit::Caption
 }
 
+/// W-3: in full screen (F11 or a page's) the window is the whole monitor. Empty chrome is not a
+/// caption there: a drag on the revealed toolbar would move the window off its monitor, and a
+/// double click would maximise it to the work area. `hit` is what [`frame_hit_test_with`] answered.
+pub fn in_fullscreen(hit: FrameHit) -> FrameHit {
+    match hit {
+        FrameHit::Caption => FrameHit::Client,
+        other => other,
+    }
+}
+
+/// W-3: the `WM_SYSCOMMAND` commands a full-screen window refuses: move, size and maximise (every
+/// drag and double click on a caption comes here, as do the HTML chrome's drag and maximise), and a
+/// restore unless it is the one that brings the window back from the taskbar (`iconic`).
+pub fn fullscreen_refuses(command: usize, iconic: bool) -> bool {
+    use windows::Win32::UI::WindowsAndMessaging::{SC_MAXIMIZE, SC_MOVE, SC_RESTORE, SC_SIZE};
+    let command = (command & 0xFFF0) as u32;
+    command == SC_MOVE || command == SC_SIZE || command == SC_MAXIMIZE || (command == SC_RESTORE && !iconic)
+}
+
 pub fn client_rect_for_nccalc(
     window_rect: RECT,
     maximised: bool,
@@ -413,6 +432,39 @@ mod tests {
         }
         assert_eq!(frame_hit_test_with(POINT { x: 500, y: 699 }, size, 96, false, ChromeHit::Drag, true), FrameHit::Bottom, "the grip still comes first");
         assert_eq!(frame_hit_test_with(POINT { x: 980, y: 10 }, size, 96, false, ChromeHit::Drag, true), FrameHit::Close, "the caption buttons stay at the top");
+    }
+
+    /// W-3: in full screen no point of the window is a caption (to drag off the monitor or to
+    /// double-click into a maximised window) or a resize edge, at any DPI and for any chrome under
+    /// it; and the commands a drag, a double click or the HTML chrome would send are refused.
+    #[test]
+    fn a_full_screen_window_has_no_caption_and_refuses_move_size_and_maximise() {
+        use windows::Win32::UI::WindowsAndMessaging::{SC_CLOSE, SC_MAXIMIZE, SC_MINIMIZE, SC_MOVE, SC_RESTORE, SC_SIZE};
+        for dpi in [96, 120, 144, 168, 192] {
+            let size = (1920 * dpi as i32 / 96, 1080 * dpi as i32 / 96);
+            let mut captions = 0;
+            for chrome in [ChromeHit::None, ChromeHit::Drag, ChromeHit::Interactive] {
+                for y in (0..size.1).step_by(7) {
+                    for x in (0..size.0).step_by(13) {
+                        // What the window answers in full screen: `zoomed_or_full` is true there.
+                        let plain = frame_hit_test_with(p(x, y), size, dpi, true, chrome, false);
+                        captions += usize::from(plain == FrameHit::Caption);
+                        let full = in_fullscreen(plain);
+                        assert!(!matches!(full, FrameHit::Caption | FrameHit::Left | FrameHit::Right | FrameHit::Top | FrameHit::Bottom | FrameHit::TopLeft | FrameHit::TopRight | FrameHit::BottomLeft | FrameHit::BottomRight), "dpi {dpi} ({x},{y}) {chrome:?}: {full:?}");
+                    }
+                }
+            }
+            assert!(captions > 0, "dpi {dpi}: the plain answer had captions to take away");
+        }
+        let sc = |command: u32| command as usize;
+        for refused in [SC_MOVE, SC_SIZE, SC_MAXIMIZE] {
+            assert!(fullscreen_refuses(sc(refused), false), "{refused:#x}");
+            assert!(fullscreen_refuses(sc(refused) | 2, false), "{refused:#x} with the low bits a caption drag sends (SC_MOVE | HTCAPTION)");
+        }
+        assert!(fullscreen_refuses(sc(SC_RESTORE), false), "a restore while shown full screen");
+        assert!(!fullscreen_refuses(sc(SC_RESTORE), true), "back from the taskbar after a minimise");
+        assert!(!fullscreen_refuses(sc(SC_MINIMIZE), false));
+        assert!(!fullscreen_refuses(sc(SC_CLOSE), false));
     }
 }
 

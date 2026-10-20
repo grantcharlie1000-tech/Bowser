@@ -2428,7 +2428,7 @@ unsafe extern "system" fn window_proc(
                 );
                 // --- layout (thread T6) --- a row along the bottom edge keeps the bottom grip thin.
                 let thin_bottom = with_chrome(hwnd, |s| s.last_relayout.as_ref().is_some_and(|inputs| inputs.arrangement.thin_bottom_edge())).unwrap_or(false);
-                frame::frame_hit_test_with(
+                let hit = frame::frame_hit_test_with(
                     p,
                     (r.right, r.bottom),
                     dpi(hwnd),
@@ -2441,8 +2441,19 @@ unsafe extern "system" fn window_proc(
                         frame::ChromeHit::None
                     },
                     thin_bottom,
-                )
-                .lresult()
+                );
+                // W-3: a full-screen window has no caption to drag or double-click.
+                let full = auto_hide::fullscreen_of(hwnd) != crate::auto_hide::Fullscreen::No;
+                let hit = if full { frame::in_fullscreen(hit) } else { hit };
+                hit.lresult()
+            }
+            // W-3: nor does it move, size or maximise by any other way in (the HTML chrome's drag
+            // and double click, the system menu).
+            WM_SYSCOMMAND
+                if auto_hide::fullscreen_of(hwnd) != crate::auto_hide::Fullscreen::No
+                    && frame::fullscreen_refuses(wparam.0, IsIconic(hwnd).as_bool()) =>
+            {
+                LRESULT(0)
             }
             WM_NCMOUSEMOVE => {
                 set_hover(hwnd, caption_hit(wparam.0 as u32));
