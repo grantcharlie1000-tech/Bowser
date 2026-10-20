@@ -275,3 +275,11 @@ test('harness retains exact budgets, retries, launch URLs, endpoint assertions a
   assert.doesNotMatch(source, /res\.once\('error'/);
   assert.doesNotMatch(source, /assert\.(?:match|doesNotMatch)\(result\.out|result\.err\.slice/);
 });
+
+
+test('npm pretest runs diagnostics once while the existing surface smoke remains in test', () => {
+  const { scripts } = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+  assert.equal(scripts.pretest, 'node --test --test-concurrency=1 test/surface-failure-diagnostic.mjs');
+  assert.equal(scripts.test.includes('test/surface-failure-diagnostic.mjs'), false);
+  assert.equal(scripts.test.split(/\s+/).filter((entry) => entry === 'test/surface-modules.mjs').length, 1);
+});
