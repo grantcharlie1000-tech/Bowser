@@ -1796,6 +1796,8 @@ impl App {
             }
             // --- end split view ---
             if state.tabs.len() == 1 {
+                // The tab is replaced by a new one: its thumbnail and capture time go too.
+                state.tab_state.forget(id);
                 let outcome = state.tab_model.close(id);
                 let _ = state.workspaces.replace_tab(id, outcome.new_active);
                 state.tabs[0] = AppTab::empty(outcome.new_active);
@@ -4821,6 +4823,11 @@ impl App {
 
     pub fn tab_ids(app: &AppRef) -> Vec<TabId> {
         app.borrow().workspaces.active().tabs().to_vec()
+    }
+
+    /// Every open tab of this window, in all workspaces.
+    pub fn all_tab_ids(app: &AppRef) -> Vec<TabId> {
+        app.borrow().tabs.iter().map(|tab| tab.id).collect()
     }
 
     pub fn tab_opener(app: &AppRef, id: TabId) -> Option<TabId> {
@@ -8094,6 +8101,21 @@ mod tests {
         assert_ne!(empty, first);
         assert_eq!(App::tab_progress_percent(&app, empty), None);
         assert!(!App::tab_loading(&app, empty));
+    }
+
+    #[test]
+    fn closing_the_last_tab_forgets_its_thumbnail() {
+        let app = app_with_pending(rect(800, 600));
+        let first = App::active_tab_id(&app);
+        {
+            let mut state = app.borrow_mut();
+            state.tab_state.thumbs.insert(first, vec![1, 2, 3]);
+            state.tab_state.thumb_at.insert(first, std::time::Instant::now());
+        }
+        assert!(App::close_tab(&app, first));
+        let state = app.borrow();
+        assert!(state.tab_state.thumbs.is_empty(), "the replaced tab's thumbnail leaked");
+        assert!(state.tab_state.thumb_at.is_empty(), "the replaced tab's capture time leaked");
     }
 
     #[test]

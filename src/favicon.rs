@@ -140,12 +140,13 @@ pub fn favicon_url_candidates(page_url: &str) -> Vec<String> {
         .collect()
 }
 
-/// Stores bounded bytes under a SHA-256 host-derived filename in the active profile.
-pub fn store_favicon(host: &str, bytes: &[u8]) -> io::Result<()> {
+/// Stores bounded bytes under a SHA-256 host-derived filename in the active profile and returns
+/// that file name, so callers never have to search the cache folder for it.
+pub fn store_favicon(host: &str, bytes: &[u8]) -> io::Result<String> {
     store_favicon_in(&favicon_dir()?, host, bytes)
 }
 
-fn store_favicon_in(dir: &std::path::Path, host: &str, bytes: &[u8]) -> io::Result<()> {
+fn store_favicon_in(dir: &std::path::Path, host: &str, bytes: &[u8]) -> io::Result<String> {
     if bytes.is_empty() || bytes.len() > MAX_FAVICON_FILE_BYTES {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -154,11 +155,12 @@ fn store_favicon_in(dir: &std::path::Path, host: &str, bytes: &[u8]) -> io::Resu
     }
     let host = normalized_host(host)
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "invalid favicon host"))?;
-    let path = dir.join(format!("{}.ico", hex(&sha256(host.as_bytes()))));
+    let name = format!("{}.ico", hex(&sha256(host.as_bytes())));
+    let path = dir.join(&name);
     // The same bytes again (every page load of a web app reports its icon): no rewrite, and no scan
     // of the cache folder, whose file count cannot have changed.
     if file_holds(&path, bytes) {
-        return Ok(());
+        return Ok(name);
     }
     fs::create_dir_all(dir)?;
     let temp = path.with_extension("tmp");
@@ -183,7 +185,7 @@ fn store_favicon_in(dir: &std::path::Path, host: &str, bytes: &[u8]) -> io::Resu
     #[cfg(not(windows))]
     fs::rename(temp, &path)?;
     evict_old_favicons(dir)?;
-    Ok(())
+    Ok(name)
 }
 
 /// Whether `path` already holds exactly `bytes`. Compares lengths first, so only a file of the same
@@ -741,8 +743,9 @@ mod tests {
     fn storing_unchanged_favicon_bytes_does_not_rewrite_or_rescan() {
         let root = std::env::temp_dir().join(format!("bowser-favicon-same-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
-        store_favicon_in(&root, "same.example", b"icon").unwrap();
+        let name = store_favicon_in(&root, "same.example", b"icon").unwrap();
         let path = root.join(format!("{}.ico", hex(&sha256(b"same.example"))));
+        assert_eq!(root.join(&name), path, "the stored file's name is returned, so no folder search is needed");
         // Age the file; a rewrite would give it a fresh modified time.
         let aged = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000);
         fs::File::options().write(true).open(&path).unwrap().set_modified(aged).unwrap();
@@ -750,7 +753,7 @@ mod tests {
         for n in 0..MAX_PERSISTENT_FAVICONS {
             fs::write(root.join(format!("stray{n}.ico")), b"x").unwrap();
         }
-        store_favicon_in(&root, "same.example", b"icon").unwrap();
+        assert_eq!(store_favicon_in(&root, "same.example", b"icon").unwrap(), name);
         assert_eq!(fs::metadata(&path).unwrap().modified().unwrap(), aged);
         assert_eq!(fs::read_dir(&root).unwrap().count(), MAX_PERSISTENT_FAVICONS + 1, "no scan ran");
         // Different bytes of the same length are still written.

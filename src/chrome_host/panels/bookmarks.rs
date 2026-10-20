@@ -15,6 +15,14 @@ pub(crate) enum Action {
     Move { id: u64, parent: Option<u64>, index: usize },
 }
 
+impl Action {
+    /// Whether the action edits the store. Searching and opening are read-only, so the
+    /// panel must not rewrite (and fsync) `bookmarks-v2.txt` for them.
+    pub(crate) fn mutates(&self) -> bool {
+        !matches!(self, Action::Search(_) | Action::Open { .. } | Action::OpenAll(_))
+    }
+}
+
 /// `single_click` is the `bm_panel_single_click` option: panel items open with one click (else two).
 pub(crate) fn snapshot(store: &BookmarkStore, query: &str, single_click: bool) -> String {
     let searching = !query.trim().is_empty();
@@ -186,6 +194,19 @@ mod tests {
         assert_eq!(map_command(&store, command("newtab", Some(2), None, None, None)), Some(Action::Open { url: "https://example.com/docs".into(), new_tab: true }));
         assert_eq!(map_command(&store, command("delete", Some(90), None, None, None)), None);
         assert_eq!(map_command(&store, command("move", Some(2), Some(0), Some(90), None)), None);
+    }
+
+    #[test]
+    fn search_and_open_are_read_only_so_the_panel_does_not_save() {
+        let store = fixture();
+        let search = map_command(&store, command("search", None, None, None, Some("doc"))).unwrap();
+        assert_eq!(search, Action::Search("doc".into()));
+        assert!(!search.mutates(), "typing in the search box must not rewrite bookmarks-v2.txt");
+        let open = map_command(&store, command("newtab", Some(2), None, None, None)).unwrap();
+        assert!(!open.mutates());
+        assert!(!Action::OpenAll(vec!["https://a.example/".into()]).mutates());
+        assert!(map_command(&store, command("delete", Some(2), None, None, None)).unwrap().mutates());
+        assert!(Action::Rename { id: 2, title: "x".into() }.mutates());
     }
 
     fn command(a: &str, id: Option<u64>, parent: Option<u64>, before: Option<u64>, text: Option<&str>) -> PanelFields {

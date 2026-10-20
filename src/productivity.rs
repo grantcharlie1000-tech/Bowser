@@ -667,13 +667,7 @@ fn flush_history_locked(path: &Path) -> std::io::Result<()> {
     }
     // A file that exists but cannot be read must never be replaced by the queued entries.
     let result = load_history(path).and_then(|(mut entries, _)| {
-        for (timestamp, url, title) in &visits {
-            entries.retain(|(_, existing, _)| existing != url);
-            entries.push((*timestamp, url.clone(), title.clone()));
-        }
-        if entries.len() > MAX_HISTORY {
-            entries.drain(..entries.len() - MAX_HISTORY);
-        }
+        merge_visits(&mut entries, &visits);
         write_history(path, &entries)
     });
     if result.is_err() {
@@ -693,6 +687,18 @@ fn flush_history_locked(path: &Path) -> std::io::Result<()> {
         }
     }
     result
+}
+
+/// Adds `visits` (oldest first) to `entries`: a revisit moves to the end, and only the newest
+/// `MAX_HISTORY` are kept. The same merge the writer applies to the file.
+fn merge_visits(entries: &mut Vec<HistoryEntry>, visits: &[HistoryEntry]) {
+    for (timestamp, url, title) in visits {
+        entries.retain(|(_, existing, _)| existing != url);
+        entries.push((*timestamp, url.clone(), title.clone()));
+    }
+    if entries.len() > MAX_HISTORY {
+        entries.drain(..entries.len() - MAX_HISTORY);
+    }
 }
 
 /// Entries for a read-modify-write: queued visits are flushed first. Hold [`HISTORY_IO`].
@@ -890,9 +896,16 @@ pub fn read_history(path: &Path) -> Vec<(u64, String, String)> {
 /// Malformed lines are skipped; the newest `MAX_HISTORY` entries are kept (the file is oldest
 /// first). Tolerates CRLF line ends, a UTF-8 byte order mark and invalid UTF-8.
 pub(crate) fn read_history_strict(path: &Path) -> std::io::Result<Vec<(u64, String, String)>> {
-    // Queued visits reach the file first, so a reader never sees a stale history.
+    // Queued visits are merged in memory, so a reader never sees a stale history and never writes:
+    // the UI thread reads history on every visit while the History flyout or page is open, and the
+    // write (with its fsync) is the writer thread's job.
     let _io = lock_history(&HISTORY_IO);
-    read_history_for_update(path)
+    let (mut entries, _) = load_history(path)?;
+    let queued = lock_history(&PENDING_HISTORY).iter().find(|(queued, _)| queued == path).map(|(_, visits)| visits.clone());
+    if let Some(visits) = queued {
+        merge_visits(&mut entries, &visits);
+    }
+    Ok(entries)
 }
 
 fn read_history_file(path: &Path) -> std::io::Result<Vec<(u64, String, String)>> {
@@ -1051,9 +1064,16 @@ fn write_history(path: &Path, entries: &[HistoryEntry]) -> std::io::Result<()> {
         .collect::<String>();
     // The file may be half-replaced if this fails, so the parse in memory is dropped.
     forget_history(path);
+    #[cfg(test)]
+    HISTORY_WRITES_ON_THIS_THREAD.with(|count| count.set(count.get() + 1));
     atomic_write_with(path, text.as_bytes(), false)?;
     remember_history(path, entries);
     Ok(())
+}
+#[cfg(test)]
+thread_local! {
+    /// History file writes made by the current thread (a test seam: reads must not write).
+    static HISTORY_WRITES_ON_THIS_THREAD: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 fn civil_from_days(days: i64) -> String {
     let z = days + 719468;
@@ -1608,6 +1628,7 @@ mod tests {
         let entries = read_history(&path);
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].2, title);
+        flush_pending_history();
         let text = fs::read_to_string(&path).unwrap();
         assert_eq!(text.lines().count(), 2, "escaped newlines must not add lines");
         assert!(!root.join("history.tmp").exists(), "the temp file is renamed away");
@@ -1730,9 +1751,10 @@ mod tests {
         add_history_entry_at(&path, 1, "https://a.test/", "A").unwrap();
         add_history_entry_at(&path, 2, "https://b.test/", "B").unwrap();
         add_history_entry_at(&path, 3, "https://a.test/", "A again").unwrap();
-        // Reads flush first: one entry per URL, the latest visit last.
+        // Reads merge the queue in memory: one entry per URL, the latest visit last.
         let entries = read_history_strict(&path).unwrap();
         assert_eq!(entries, [(2, "https://b.test/".into(), "B".into()), (3, "https://a.test/".into(), "A again".into())]);
+        flush_pending_history();
         assert_eq!(fs::read_to_string(&path).unwrap().lines().count(), 2);
         // An edit also sees a visit that is still queued.
         add_history_entry_at(&path, 4, "https://c.test/", "C").unwrap();
@@ -1748,6 +1770,28 @@ mod tests {
         assert!(read_history(&path).is_empty());
         flush_pending_history();
         assert_eq!(fs::read_to_string(&other).unwrap(), "6\thttps://e.test/\tE\n");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn reading_history_never_writes_the_file_on_the_calling_thread() {
+        let root = history_temp("readonly");
+        let path = root.join("history.txt");
+        fs::write(&path, "1	https://a.test/	A
+").unwrap();
+        let before = HISTORY_WRITES_ON_THIS_THREAD.with(std::cell::Cell::get);
+        // A visit is queued; the open History flyout re-reads on every visit.
+        queue_history_visit(&path, (2, "https://b.test/".into(), "B".into()));
+        let entries = read_history_strict(&path).unwrap();
+        assert_eq!(entries.last().map(|e| e.1.as_str()), Some("https://b.test/"), "a queued visit is visible");
+        assert_eq!(search_history(&path, "b.test", 10).len(), 1);
+        assert_eq!(
+            HISTORY_WRITES_ON_THIS_THREAD.with(std::cell::Cell::get),
+            before,
+            "a read must not flush (write + fsync) history on the UI thread"
+        );
+        flush_pending_history();
+        assert_eq!(read_history(&path).len(), 2);
         let _ = fs::remove_dir_all(root);
     }
 

@@ -529,8 +529,8 @@ fn make_events(weak: Weak<RefCell<Shared>>, app: AppRef) -> WebAppEvents {
             let host = url.as_ref().and_then(Url::host_str).map(str::to_owned)
                 .or_else(|| lookup_view(&shared, id).and_then(|view| Url::parse(&view.borrow().current_url).ok()).and_then(|url| url.host_str().map(str::to_owned)));
             if let Some(host) = host {
-                if crate::favicon::store_favicon(&host, &bytes).is_ok() {
-                    persist_favicon_pointer(id, &bytes);
+                if let Ok(file_name) = crate::favicon::store_favicon(&host, &bytes) {
+                    persist_favicon_pointer(id, file_name);
                 }
             }
             ICON_CHANGED.with(|slot| { if let Some(callback) = slot.borrow().as_ref() { callback(); } });
@@ -573,23 +573,32 @@ fn invalidate_shared(shared: &SharedRef) {
     if let Some(parent) = shared.borrow().parent { unsafe { let _ = InvalidateRect(Some(parent), None, false); } }
 }
 
-fn persist_favicon_pointer(id: &str, bytes: &[u8]) {
+thread_local! {
+    /// The favicon file last recorded in `sidebar.txt` per (profile, app), so a repeated
+    /// FaviconChanged (badge updates in Gmail/Slack) costs neither a read nor a rewrite of it.
+    static PERSISTED_FAVICONS: RefCell<HashMap<(std::path::PathBuf, u32), String>> = RefCell::new(HashMap::new());
+}
+
+/// Records `file_name` (the name `favicon::store_favicon` just wrote) as app `id`'s icon. Writes
+/// `sidebar.txt` only when the pointer actually changes.
+fn persist_favicon_pointer(id: &str, file_name: String) {
+    let Ok(id) = id.parse::<u32>() else { return; };
     let Ok(profile) = profile::active() else { return; };
     if profile.is_guest() { return; }
-    let Ok(entries) = std::fs::read_dir(profile.favicons_dir()) else { return; };
-    let Some(file_name) = entries.flatten().find_map(|entry| {
-        let path = entry.path();
-        (path.extension().is_some_and(|ext| ext == "ico")
-            && std::fs::read(&path).is_ok_and(|stored| stored == bytes))
-        .then(|| path.file_name().map(|name| name.to_string_lossy().into_owned()))
-        .flatten()
-    }) else { return; };
-    let Ok(id) = id.parse::<u32>() else { return; };
     let root = profile.root();
+    let key = (root.to_path_buf(), id);
+    if PERSISTED_FAVICONS.with(|seen| seen.borrow().get(&key) == Some(&file_name)) { return; }
     let Ok(mut config) = SidebarConfig::load(root) else { return; };
-    let Some(app) = config.apps.iter_mut().find(|app| app.id == id) else { return; };
-    app.favicon_file = Some(file_name);
-    let _ = config.save(root);
+    let saved = !set_favicon_pointer(&mut config, id, &file_name) || config.save(root).is_ok();
+    if saved { PERSISTED_FAVICONS.with(|seen| seen.borrow_mut().insert(key, file_name)); }
+}
+
+/// Points app `id` at `file_name`; returns whether the config changed (and so needs saving). Pure.
+fn set_favicon_pointer(config: &mut SidebarConfig, id: u32, file_name: &str) -> bool {
+    let Some(app) = config.apps.iter_mut().find(|app| app.id == id) else { return false; };
+    if app.favicon_file.as_deref() == Some(file_name) { return false; }
+    app.favicon_file = Some(file_name.to_owned());
+    true
 }
 
 fn draw_status(hdc: HDC, text: &str, rect: RECT, dpi: u32, palette: &Palette) {
@@ -631,6 +640,17 @@ mod tests {
         assert_eq!(state, ViewState::Removed);
         state.retry();
         assert_eq!(state, ViewState::Removed);
+    }
+
+    #[test]
+    fn an_unchanged_favicon_pointer_does_not_need_a_sidebar_save() {
+        let mut config = SidebarConfig::default();
+        let id = config.add_app("Mail", "https://mail.example/").unwrap();
+        assert!(set_favicon_pointer(&mut config, id, "abc.ico"), "a new icon is saved");
+        assert!(!set_favicon_pointer(&mut config, id, "abc.ico"), "the same icon again must not rewrite sidebar.txt");
+        assert!(set_favicon_pointer(&mut config, id, "def.ico"));
+        assert!(!set_favicon_pointer(&mut config, id + 1, "abc.ico"), "an unknown app changes nothing");
+        assert_eq!(config.apps[0].favicon_file.as_deref(), Some("def.ico"));
     }
 
     #[test]

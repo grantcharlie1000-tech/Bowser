@@ -10611,6 +10611,13 @@ fn html_group_action(hwnd: HWND, action: GroupAction, key: u32) {
     }
 }
 
+/// Drops the addresses kept for tabs that are no longer open, so `urls` and `full_urls` do not
+/// grow with every tab ever shown (a big `data:` address would otherwise be held twice per closed tab).
+fn forget_closed_tab_urls(s: &mut WindowChrome, open: &HashSet<TabId>) {
+    s.urls.retain(|id, _| open.contains(id));
+    s.full_urls.retain(|id, _| open.contains(id));
+}
+
 /// Keeps each live tab's favicon key and, when it passes the protocol's gate, its PNG bytes. The App
 /// is read only for tabs whose favicon key changed, and entries of closed tabs are dropped. Returns
 /// the tabs that have a sendable favicon.
@@ -10891,6 +10898,9 @@ fn html_tabs_sync(hwnd: HWND) {
     let group_of: HashMap<TabId, Option<tab_groups::TabGroupKey>> =
         inputs.iter().map(|input| input.id).zip(keys).collect();
     let with_png = html_tabs_favicons(hwnd, &app, &ids);
+    // Closed tabs' addresses go too (the strip shows one workspace, so every open tab is kept).
+    let open: HashSet<TabId> = App::all_tab_ids(&app).into_iter().collect();
+    let _ = with_chrome(hwnd, |s| forget_closed_tab_urls(s, &open));
     // The pinned, muted and private flags were read once for the comparison above; App finds each
     // tab by a scan, so reading them again per row would scan every tab for every tab once more.
     let rows: Vec<chrome_host::TabRow> = current_inputs
@@ -12603,6 +12613,20 @@ fn selection(hwnd: HWND) -> (usize, usize) {
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    #[test]
+    fn closed_tabs_addresses_are_forgotten() {
+        let mut s = WindowChrome::new(1000, 700, 96, HWND::default());
+        for n in 0..1000 {
+            s.urls.insert(TabId(n), format!("https://t{n}.example/"));
+            s.full_urls.insert(TabId(n), format!("https://t{n}.example/?q"));
+        }
+        let open: HashSet<TabId> = [TabId(3), TabId(7)].into_iter().collect();
+        forget_closed_tab_urls(&mut s, &open);
+        assert_eq!(s.urls.len(), 2, "only open tabs keep an address");
+        assert_eq!(s.full_urls.len(), 2);
+        assert_eq!(s.urls.get(&TabId(7)).map(String::as_str), Some("https://t7.example/"));
+    }
 
     /// --- final --- every private message the main window's procedure matches has its own number, so
     /// no thread's message is taken for another's after the merges.

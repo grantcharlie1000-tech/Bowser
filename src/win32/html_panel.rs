@@ -599,6 +599,7 @@ fn run_command(runtime: &Rc<RefCell<Runtime>>, command: Command) {
             let profile_dir = profile.root();
             let Ok(mut store) = BookmarkStore::load(profile_dir) else { return; };
             let Some(action) = chrome_host::panels::bookmarks::map_command(&store, f) else { return; };
+            let mutates = action.mutates();
             let mut deleted = false;
             match action {
                 chrome_host::panels::bookmarks::Action::Search(query) => {
@@ -625,20 +626,23 @@ fn run_command(runtime: &Rc<RefCell<Runtime>>, command: Command) {
                 chrome_host::panels::bookmarks::Action::AddLink { parent, title, url } => { let _ = store.add_bookmark(parent, &title, &url); }
                 chrome_host::panels::bookmarks::Action::Move { id, parent, index } => { let _ = store.move_item(id, parent, index); }
             }
-            match store.save(profile_dir) {
-                Err(error) => holding(runtime, || show_error_message(&format!("Bookmarks could not be saved: {error}"))),
-                // The nickname and description of what was deleted (a folder takes its contents) go
-                // with it, as the bookmark bar and the bookmark dialog already do.
-                Ok(()) if deleted => {
-                    if let Ok(mut extras) = crate::bookmark_extras::Extras::load_for_change(profile_dir) {
-                        let before = extras.len();
-                        extras.prune(&store);
-                        if extras.len() != before {
-                            let _ = extras.save(profile_dir);
+            // Searching and opening are read-only: no rewrite (and fsync) of bookmarks-v2.txt.
+            if mutates {
+                match store.save(profile_dir) {
+                    Err(error) => holding(runtime, || show_error_message(&format!("Bookmarks could not be saved: {error}"))),
+                    // The nickname and description of what was deleted (a folder takes its contents) go
+                    // with it, as the bookmark bar and the bookmark dialog already do.
+                    Ok(()) if deleted => {
+                        if let Ok(mut extras) = crate::bookmark_extras::Extras::load_for_change(profile_dir) {
+                            let before = extras.len();
+                            extras.prune(&store);
+                            if extras.len() != before {
+                                let _ = extras.save(profile_dir);
+                            }
                         }
                     }
+                    Ok(()) => {}
                 }
-                Ok(()) => {}
             }
             send_current(runtime);
         }
