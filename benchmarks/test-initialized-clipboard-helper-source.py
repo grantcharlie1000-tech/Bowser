@@ -263,6 +263,124 @@ class InitializedClipboardHelperSourceContracts(unittest.TestCase):
         final = HELPER.split("}finally{if($clipboard){$clipboard.Dispose()}", 1)[1]
         self.assertLess(final.index("$initializer.Dispose()"), final.index("$browserGuard.Dispose()"))
 
+class RequireOwnedMismatchSourceContracts(unittest.TestCase):
+    """Portable source contracts only, not executed Win32 or managed-policy tests."""
+
+    def strict(self):
+        return block("public sealed class InitializedFixtureClipboardGuard:")
+
+    def test_mismatch_receipt_has_only_bounded_scalar_fields_and_fixed_categories(self):
+        receipt = block("public sealed class RequireOwnedMismatchReceipt", self.strict())
+        fields = {}
+        for kind, declarations in re.findall(r"public (string|uint\??|int\??|bool) ([^;]+);", receipt):
+            for declaration in declarations.split(","):
+                name = declaration.split("=", 1)[0].strip()
+                fields[name] = kind
+        self.assertEqual(fields, {
+            "scope": "string", "observation_timing": "string",
+            "expected_sequence": "uint", "observed_sequence": "uint?",
+            "observed_sequence_status": "string", "checked_owner": "string",
+            "helper_liveness": "string", "owner_query_attempted": "bool",
+            "owner_query_succeeded": "bool", "owner_query_error": "int?",
+        })
+        self.assertIn('scope="initialized-fixture-require-owned-refusal-read-only-not-authority"', receipt)
+        self.assertIn('observation_timing="later-after-refusal-and-confirmed-close-non-atomic-not-failing-check"', receipt)
+        self.assertIn('observed_sequence_status="unavailable",checked_owner="unknown-query",helper_liveness="unknown"', receipt)
+        capture = block("void CaptureRequireOwnedMismatchLater()", self.strict())
+        # Every emitted category is a literal. No handles, identities, arbitrary errors or content.
+        self.assertEqual(set(re.findall(r'"([^"\\]*)"', receipt + capture)), {
+            "initialized-fixture-require-owned-refusal-read-only-not-authority",
+            "later-after-refusal-and-confirmed-close-non-atomic-not-failing-check",
+            "unavailable", "observed", "unknown-query", "null-error0",
+            "exact-helper", "other-or-not-proven", "unknown", "exact-live-helper", "not-proven",
+        })
+        for forbidden in ("IntPtr", "Exception", "Class", "Title", "Path", "Url", "object", "List<"):
+            self.assertNotIn(forbidden, receipt)
+
+    def test_original_predicate_short_circuit_api_order_and_throw_are_retained(self):
+        require = block("public void RequireOwned()", self.strict())
+        self.assertIn("if(Sequence()!=last||!policyOps.ExactOwner(policyOps.Owner(),helperEpoch))", require)
+        self.assertIn('throw new InvalidOperationException("Clipboard sequence/owner changed before native input; no input.")', require)
+        # Removing only local failure instrumentation recreates the exact baseline method.
+        original = require.replace("   bool closeConfirmed=false;\n", "")
+        original = original.replace("CloseChecked();closeConfirmed=true;", "CloseChecked();")
+        original = original.replace("if(closeConfirmed){try{CaptureRequireOwnedMismatchLater();}catch{}}", "")
+        self.assertEqual(hashlib.sha256(original.encode()).hexdigest(),
+                         "2f4fedf2f519c61e90eec4e809d993c0607f964428c02569f623c3cc739c4860")
+        self.assertIn("bool closeConfirmed=false;", require)
+        self.assertIn("finally{CloseChecked();closeConfirmed=true;}", require)
+        # Capture is reachable only after refusal irrevocably disarms cleanup and close returned.
+        self.assertIn("catch{uncertain=true;cleanup.Disarm();if(closeConfirmed){try{CaptureRequireOwnedMismatchLater();}catch{}}throw;}", require)
+        self.assertEqual(require.count("CaptureRequireOwnedMismatchLater();"), 1)
+        self.assertNotIn("return", require)
+
+    def test_success_ordinary_setup_close_and_cleanup_paths_get_no_new_operations(self):
+        strict = self.strict()
+        hashes = {
+            "uint Sequence()": "8411bd80fc84398fd74e35981efe06492c017c1c271cbd7c9c9933fd45f71669",
+            "void CloseChecked()": "18a7996e8591277ea8b9819e861f2a28e67174c67e6ce2ead9c44429c63f1f78",
+            "public InitializedFixtureClipboardGuard(string generated)": "ac4739fa66af4aab3d40c2665e16627e58a5ff086e3e4e9e0a25f597557851fc",
+            "public void ObserveNativeCopy(": "cf3a87f9d42ae9213a21e2ea2ee63f1bbcf2fcda3e48ed6aafa8e1f12e7d9515",
+            "public bool Finish()": "9d66bf57cb0353509ef29baf3a189825208d2e206db9b1f1f6c6a2e5e96bb9d8",
+            "public void Dispose()": "a760af8c5c1a0d87d871c1c03ef7f17c59ff6041be7b9fd3c412d70b4c5ed162",
+        }
+        for signature, digest in hashes.items():
+            with self.subTest(signature=signature):
+                self.assertEqual(hashlib.sha256(block(signature, strict).encode()).hexdigest(), digest)
+        ordinary = " " + block("public sealed class ClipboardGuard:IDisposable")
+        self.assertEqual(hashlib.sha256(ordinary.encode()).hexdigest(), ORDINARY_CLASS_SHA256)
+        self.assertNotIn("Mismatch", ordinary)
+        # Definition plus one invocation, solely in the failure catch checked above.
+        self.assertEqual(CS.count("CaptureRequireOwnedMismatchLater("), 2)
+        self.assertEqual(CS.count("new RequireOwnedMismatchReceipt"), 1)
+
+    def test_capture_is_one_later_snapshot_without_open_content_mutation_input_or_adoption(self):
+        capture = block("void CaptureRequireOwnedMismatchLater()", self.strict())
+        claim = "if(System.Threading.Interlocked.CompareExchange(ref mismatchCaptureClaim,1,0)!=0)return;"
+        self.assertIn(claim, capture)
+        self.assertLess(capture.index(claim), capture.index("new RequireOwnedMismatchReceipt"))
+        self.assertLess(capture.index("expected_sequence=last"), capture.index("GetClipboardSequenceNumber()"))
+        self.assertEqual(capture.count("GetClipboardSequenceNumber()"), 1)
+        self.assertEqual(capture.count("policyOps.TryOwner("), 1)
+        self.assertEqual(capture.count("policyOps.ExactOwner("), 2)
+        self.assertEqual(capture.count(".SameAlive("), 0)
+        self.assertIn('receipt.observed_sequence=observed;receipt.observed_sequence_status=observed==0?"unavailable":"observed"', capture)
+        for forbidden in ("OpenClipboard(", "CloseClipboard(", "EmptyClipboard(", "SetClipboardData(",
+                          "GetClipboardData(", "EnumClipboardFormats(", "GlobalLock(", "GlobalSize(",
+                          "GlobalAlloc(", "ReadBounded(", ".Open(", ".Close(", ".Empty(", ".Data(",
+                          "mouse_event(", "keybd_event(", "SendInput(", "Invoke(", "Sleep(",
+                          "while(", "for(", "foreach(", "cleanup.", "OwnedSequences.", "Sequence()"):
+            self.assertNotIn(forbidden, capture)
+        for name in ("last", "owner", "helperEpoch", "window", "uncertain", "changed", "finished", "Status"):
+            self.assertNotRegex(capture, r"\b" + name + r"\s*=(?!=)")
+        self.assertNotIn("throw", capture)
+        self.assertNotIn("catch(Exception", capture)
+
+    def test_owner_error_is_immediate_and_null_error_or_unknown_remain_distinct(self):
+        capture = block("void CaptureRequireOwnedMismatchLater()", self.strict())
+        self.assertIn("receipt.owner_query_attempted=true;bool ok=policyOps.TryOwner(out actual,out error);", capture)
+        self.assertIn("receipt.owner_query_error=error;receipt.owner_query_succeeded=ok&&error==0;", capture)
+        self.assertIn('if(receipt.owner_query_succeeded)receipt.checked_owner=actual==IntPtr.Zero?"null-error0":policyOps.ExactOwner(actual,helperEpoch)?"exact-helper":"other-or-not-proven";', capture)
+        # Existing checked wrapper clears last error, reads it immediately, then returns.
+        query = block("public bool TryOwner(", block("class NativeClipboardPolicyOps:"))
+        self.assertIn("SetLastError(0);owner=InitializedClipboardOwner();error=Marshal.GetLastWin32Error();return error==0;", query)
+        self.assertLess(capture.index("receipt.owner_query_error=error"), capture.index("policyOps.ExactOwner("))
+        self.assertIn('if(helperEpoch!=null)receipt.helper_liveness=policyOps.ExactOwner(helperEpoch.Window,helperEpoch)?"exact-live-helper":"not-proven";', capture)
+        same_alive = block("public bool SameAlive(", block("sealed class ClipboardOwnerWindow:"))
+        for forbidden in ("IsWindow(", "Class(", "GetWindowThreadProcessId(", "GetClipboard", "EmptyClipboard("):
+            self.assertNotIn(forbidden, same_alive)
+
+    def test_receipt_export_is_opt_in_failure_only_and_does_not_reenter_guard(self):
+        export = "try{if($clipboard -and $clipboard.MismatchEvidence){$report.initialized_guard_require_owned_mismatch=$clipboard.MismatchEvidence}}catch{}"
+        self.assertEqual(HELPER.count(export), 1)
+        failure = HELPER.split("}catch{\n $report.error=$_.Exception.Message", 1)[1]
+        opt_in = failure.split(" if($InitializedEmptyClipboardFixture){", 1)[1].split("\n }", 1)[0]
+        self.assertIn(export, opt_in)
+        self.assertLess(failure.index(export), failure.index("$restored=$clipboard.Finish()"))
+        self.assertNotIn("MismatchEvidence", HELPER.split("}catch{\n $report.error=$_.Exception.Message", 1)[0].split("\n'@", 1)[1])
+        for forbidden in ("RequireOwned(", "CaptureRequireOwnedMismatchLater(", "Sequence(", "EmptyClipboard(", "GetClipboardData(", "SetClipboardData("):
+            self.assertNotIn(forbidden, export)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -3,11 +3,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
+import { errorMonitor } from 'node:events';
 import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createSurfaceFailureDiagnostics, installSurfaceFailureObservation, surfacePredicates } from './surface-failure-diagnostic-helpers.mjs';
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const browser = [process.env.BOWSER_TEST_EDGE, 'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe', 'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe'].find((p) => p && existsSync(p));
 const views = ['toolbar', 'tabs', 'rail', 'panel', 'popup', 'bar', 'dialog', 'hover', 'split', 'settings', 'history', 'downloads'];
@@ -27,16 +29,21 @@ const killProfileProcesses = (profile) => {
     spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', `Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -and $_.CommandLine.Contains('${escaped}') } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }`], { stdio: 'ignore', timeout: 30000 });
   } else spawnSync('pkill', ['-9', '-f', profile], { stdio: 'ignore' });
 };
-const launchOnce = (args, view) => new Promise((resolve, reject) => {
+const spawnErrors = new WeakSet();
+const launchOnce = (args, view, diagnostic, receipt) => new Promise((resolve, reject) => {
   const child = spawn(browser, args, { detached: process.platform !== 'win32' }); let out = '', err = '';
-  const timer = setTimeout(() => { killTree(child); reject(new Error(`${view}: browser timeout`)); }, LAUNCH_TIMEOUT_MS);
+  const timer = setTimeout(() => { killTree(child); diagnostic.browserOutcome(receipt, 'timeout'); console.log(`module failure diagnostic ${diagnostic.serialize(receipt, out, err)}`); reject(new Error(`${view}: browser timeout`)); }, LAUNCH_TIMEOUT_MS);
   child.stdout.on('data', (d) => { out += d; }); child.stderr.on('data', (d) => { err += d; });
-  child.on('error', (e) => { clearTimeout(timer); reject(e); }); child.on('close', (code) => { clearTimeout(timer); resolve({ out, err, code }); });
+  child.on('error', (error) => { clearTimeout(timer); diagnostic.browserOutcome(receipt, 'spawn_error'); console.log(`module failure diagnostic ${diagnostic.serialize(receipt, out, err)}`); spawnErrors.add(error); reject(error); }); child.on('close', (code) => { clearTimeout(timer); diagnostic.browserOutcome(receipt, 'closed', code); resolve({ out, err, code, receipt }); });
 });
-const launch = async (args, view) => {
+const launch = async (args, view, diagnostic, context) => {
   for (let attempt = 1; ; attempt++) {
-    try { return await launchOnce(args, view); }
-    catch (e) { if (attempt >= LAUNCH_ATTEMPTS || !/browser timeout/.test(e.message)) throw e; console.log(`${view}: browser timeout, retrying launch (${attempt}/${LAUNCH_ATTEMPTS})`); }
+    try { return await launchOnce(args, view, diagnostic, diagnostic.beginAttempt({ ...context, attempt })); }
+    catch (e) { if (attempt >= LAUNCH_ATTEMPTS || !/browser timeout/.test(e.message)) {
+      // Use the original error for the unchanged retry decision, then redact spawn paths.
+      if (spawnErrors.has(e)) throw new Error(`${view}: browser launch failed`);
+      throw e;
+    } console.log(`${view}: browser timeout, retrying launch (${attempt}/${LAUNCH_ATTEMPTS})`); }
   }
 };
 const startFixture = JSON.parse(readFileSync(join(root, 'test/fixtures/start-page-messages.json'), 'utf8')).empty;
@@ -48,11 +55,11 @@ const shim = `const listeners = []; window.chrome = { webview: { addEventListene
 } } }; const observer = new MutationObserver(() => {
  if (document.getElementById('app')?.classList.contains('is-start') && !document.documentElement.hasAttribute('data-start-page-ready-ms')) document.documentElement.setAttribute('data-start-page-ready-ms', performance.now().toFixed(3));
 }); observer.observe(document.documentElement, { attributes: true, childList: true, subtree: true });
-window.addEventListener('error', () => document.documentElement.setAttribute('data-surface-error', 'yes'));
-window.addEventListener('unhandledrejection', () => document.documentElement.setAttribute('data-surface-error', 'yes'));`;
+(${installSurfaceFailureObservation.toString()})(window, document);`;
 
 test('every surface starts through actual assets under the production CSP', { skip: !browser, timeout: 180000 }, async () => {
   const requested = new Set();
+  const diagnostic = createSurfaceFailureDiagnostics();
   const sources = { candidate: join(root, 'dist') };
   if (process.env.BOWSER_UI_BASELINE_DIST) sources.baseline = process.env.BOWSER_UI_BASELINE_DIST;
   const html = readFileSync(join(sources.candidate, 'index.html'), 'utf8');
@@ -64,16 +71,21 @@ test('every surface starts through actual assets under the production CSP', { sk
   const server = createServer((req, res) => {
     const [label, ...parts] = new URL(req.url, 'http://localhost').pathname.slice(1).split('/');
     const path = parts.join('/');
-    if (!Object.hasOwn(sources, label)) { res.writeHead(404); res.end(); return; }
+    const receipt = diagnostic.beginRequest(path);
+    res.once('finish', () => receipt.finish());
+    res.once('close', () => receipt.close());
+    res.once(errorMonitor, () => receipt.fail());
+    const end = (body) => { receipt.submitted(res.statusCode, typeof body === 'string' ? Buffer.byteLength(body) : body?.byteLength ?? 0); res.end(body); };
+    if (!Object.hasOwn(sources, label)) { res.writeHead(404); end(); return; }
     requested.add(`${label}/${path}`);
     res.setHeader('Content-Security-Policy', csp);
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('Cache-Control', 'no-store');
-    if (path === 'shim.js') { res.setHeader('Content-Type', 'text/javascript'); res.end(shim); return; }
-    if (path === 'index.html') { res.setHeader('Content-Type', 'text/html'); res.end(readFileSync(join(sources[label], 'index.html'), 'utf8').replace('<script ', '<script src="shim.js"></script><script ')); return; }
-    if (!/^(?:[a-z-]+\.js|chunks\/chunk-[A-Z0-9]+\.js|app\.css)$/.test(path)) { res.writeHead(404); res.end(); return; }
-    try { res.setHeader('Content-Type', path.endsWith('.css') ? 'text/css' : 'text/javascript'); res.end(readFileSync(join(sources[label], path))); }
-    catch { res.writeHead(404); res.end(); }
+    if (path === 'shim.js') { res.setHeader('Content-Type', 'text/javascript'); end(shim); return; }
+    if (path === 'index.html') { res.setHeader('Content-Type', 'text/html'); end(readFileSync(join(sources[label], 'index.html'), 'utf8').replace('<script ', '<script src="shim.js"></script><script ')); return; }
+    if (!/^(?:[a-z-]+\.js|chunks\/chunk-[A-Z0-9]+\.js|app\.css)$/.test(path)) { res.writeHead(404); end(); return; }
+    try { res.setHeader('Content-Type', path.endsWith('.css') ? 'text/css' : 'text/javascript'); end(readFileSync(join(sources[label], path))); }
+    catch { res.writeHead(404); end(); }
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   const profile = mkdtempSync(join(tmpdir(), 'bowser-module-smoke-'));
@@ -87,14 +99,20 @@ test('every surface starts through actual assets under the production CSP', { sk
           const args = ['--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check', `--user-data-dir=${join(profile, label)}`, '--virtual-time-budget=2500', '--dump-dom', `http://127.0.0.1:${server.address().port}/${label}/index.html?view=${view}${view === 'dialog' ? '&p=notes' : ''}`];
           // Container-only test runner constraint, never a product/benchmark launch flag.
           if (process.platform !== 'win32' && process.getuid?.() === 0) args.unshift('--no-sandbox');
-          const result = await launch(args, view);
-          assert.equal(result.code, 0, `${view}: ${result.err.slice(-1000)}`);
-          assert.match(result.out, /data-surface-ready="yes"/, `${view}: module did not register and send ready`);
-          assert.doesNotMatch(result.out, /data-surface-error="yes"|page-load-failed|csp-not-enforced/, view);
+          const result = await launch(args, view, diagnostic, { view, source: label, use });
+          const predicates = surfacePredicates(result.out);
           const readyMs = Number(/data-surface-ready-ms="([0-9.]+)"/.exec(result.out)?.[1]);
-          assert.ok(Number.isFinite(readyMs), `${view}: missing document-navigation-to-ready endpoint`);
           const startMs = view === 'split' ? Number(/data-start-page-ready-ms="([0-9.]+)"/.exec(result.out)?.[1]) : null;
-          if (view === 'split') assert.ok(Number.isFinite(startMs), `${label}: lazy start-page module did not render`);
+          try {
+            assert.equal(result.code, 0, `${view}: browser exit was nonzero`);
+            assert.ok(predicates.ready, `${view}: module did not register and send ready`);
+            assert.ok(predicates.clean, view);
+            assert.ok(Number.isFinite(readyMs), `${view}: missing document-navigation-to-ready endpoint`);
+            if (view === 'split') assert.ok(Number.isFinite(startMs), `${label}: lazy start-page module did not render`);
+          } catch (error) {
+            console.log(`module failure diagnostic ${diagnostic.serialize(result.receipt, result.out, result.err)}`);
+            throw error;
+          }
           reports.push({ label, view, use, virtual_document_navigation_to_start_page_proxy_ms: startMs, virtual_document_navigation_to_bridge_ready_ms: readyMs, external_browser_launch_load_proxy_ms: performance.now() - started });
           console.log(`module smoke ${label} ${view} ${use}: ${(performance.now() - started).toFixed(1)}ms external browser launch/load proxy (not native benchmark)`);
         }

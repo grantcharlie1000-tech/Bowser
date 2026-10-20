@@ -651,6 +651,30 @@ public static class BowserHostMenu {
 
  // Separate opt-in guard. The original class and ordinary cleanup gap above remain unchanged.
  public sealed class InitializedFixtureClipboardGuard:IDisposable {
+  // Failure-only evidence, never original-check evidence or admission/cleanup authority.
+  public sealed class RequireOwnedMismatchReceipt {
+   public string scope="initialized-fixture-require-owned-refusal-read-only-not-authority";
+   public string observation_timing="later-after-refusal-and-confirmed-close-non-atomic-not-failing-check";
+   public uint expected_sequence;public uint? observed_sequence;
+   // "other-or-not-proven" is not evidence of another actor or a live HWND lease.
+   public string observed_sequence_status="unavailable",checked_owner="unknown-query",helper_liveness="unknown";
+   public bool owner_query_attempted,owner_query_succeeded;public int? owner_query_error;
+  }
+  RequireOwnedMismatchReceipt mismatchEvidence;int mismatchCaptureClaim;
+  public RequireOwnedMismatchReceipt MismatchEvidence {get{return mismatchEvidence;}}
+  // No clipboard open, format/content access, mutation, input, authority update or retry.
+  // Each field is a later independent observation; unknowns never become acceptance.
+  void CaptureRequireOwnedMismatchLater(){
+   if(System.Threading.Interlocked.CompareExchange(ref mismatchCaptureClaim,1,0)!=0)return;
+   var receipt=new RequireOwnedMismatchReceipt{expected_sequence=last};mismatchEvidence=receipt;
+   try{uint observed=GetClipboardSequenceNumber();receipt.observed_sequence=observed;receipt.observed_sequence_status=observed==0?"unavailable":"observed";}catch{}
+   try{
+    IntPtr actual;int error;receipt.owner_query_attempted=true;bool ok=policyOps.TryOwner(out actual,out error);
+    receipt.owner_query_error=error;receipt.owner_query_succeeded=ok&&error==0;
+    if(receipt.owner_query_succeeded)receipt.checked_owner=actual==IntPtr.Zero?"null-error0":policyOps.ExactOwner(actual,helperEpoch)?"exact-helper":"other-or-not-proven";
+   }catch{}
+   try{if(helperEpoch!=null)receipt.helper_liveness=policyOps.ExactOwner(helperEpoch.Window,helperEpoch)?"exact-live-helper":"not-proven";}catch{}
+  }
   // Fixed scalars from existing calls only; never clipboard contents or admission authority.
   public static int AdmissionStage,AdmissionFailureStage,AdmissionEnumError;
   public static bool AdmissionStarted,AdmissionOpened,AdmissionFormatObserved,AdmissionFirstFormatZero,AdmissionSequenceObserved,AdmissionCloseAttempted,AdmissionCloseConfirmed;
@@ -683,8 +707,9 @@ public static class BowserHostMenu {
    finally{admission=false;if(memory!=IntPtr.Zero)GlobalFree(memory);}
   }
   public void RequireOwned(){
-   try{if(!OpenClipboard(owner))throw new InvalidOperationException("Clipboard locked before native input; no input.");try{if(Sequence()!=last||!policyOps.ExactOwner(policyOps.Owner(),helperEpoch))throw new InvalidOperationException("Clipboard sequence/owner changed before native input; no input.");}finally{CloseChecked();}}
-   catch{uncertain=true;cleanup.Disarm();throw;}
+   bool closeConfirmed=false;
+   try{if(!OpenClipboard(owner))throw new InvalidOperationException("Clipboard locked before native input; no input.");try{if(Sequence()!=last||!policyOps.ExactOwner(policyOps.Owner(),helperEpoch))throw new InvalidOperationException("Clipboard sequence/owner changed before native input; no input.");}finally{CloseChecked();closeConfirmed=true;}}
+   catch{uncertain=true;cleanup.Disarm();if(closeConfirmed){try{CaptureRequireOwnedMismatchLater();}catch{}}throw;}
   }
   /// Genuine native Copy requires matching production completion before any content getter.
   /// Retained sequence/HWND/PID/TID/class/process checks do NOT prove continuous HWND lifetime.
@@ -931,6 +956,7 @@ try {
  if($InitializedEmptyClipboardFixture -and [BowserHostMenu+InitializedEmptyClipboardFixture]::LastReceipt){$report.initialized_empty_fixture=[BowserHostMenu+InitializedEmptyClipboardFixture]::LastReceipt}
  if($InitializedEmptyClipboardFixture){
   try{if([BowserHostMenu+InitializedFixtureClipboardGuard]::AdmissionStarted){$report.initialized_guard_admission=@{stage=[BowserHostMenu+InitializedFixtureClipboardGuard]::AdmissionStage;failure_stage=[BowserHostMenu+InitializedFixtureClipboardGuard]::AdmissionFailureStage;open_succeeded=[BowserHostMenu+InitializedFixtureClipboardGuard]::AdmissionOpened;format_observed=[BowserHostMenu+InitializedFixtureClipboardGuard]::AdmissionFormatObserved;first_format_zero=[BowserHostMenu+InitializedFixtureClipboardGuard]::AdmissionFirstFormatZero;enum_error=[BowserHostMenu+InitializedFixtureClipboardGuard]::AdmissionEnumError;sequence_observed=[BowserHostMenu+InitializedFixtureClipboardGuard]::AdmissionSequenceObserved;sequence=[BowserHostMenu+InitializedFixtureClipboardGuard]::AdmissionSequence;close_attempted=[BowserHostMenu+InitializedFixtureClipboardGuard]::AdmissionCloseAttempted;close_confirmed=[BowserHostMenu+InitializedFixtureClipboardGuard]::AdmissionCloseConfirmed}}}catch{}
+  try{if($clipboard -and $clipboard.MismatchEvidence){$report.initialized_guard_require_owned_mismatch=$clipboard.MismatchEvidence}}catch{}
  }
  # Constructor cleanup has already run, even when assignment never returned an object.
  try {if([BowserHostMenu+ClipboardGuard]::AdmissionStarted){$report.clipboard_admission=@{stage=[BowserHostMenu+ClipboardGuard]::AdmissionStage;failure_stage=[BowserHostMenu+ClipboardGuard]::AdmissionFailureStage;open_succeeded=[BowserHostMenu+ClipboardGuard]::AdmissionOpened;format_observed=[BowserHostMenu+ClipboardGuard]::AdmissionFormatObserved;first_format_zero=[BowserHostMenu+ClipboardGuard]::AdmissionFirstFormatZero;enum_error=[BowserHostMenu+ClipboardGuard]::AdmissionEnumError;sequence_observed=[BowserHostMenu+ClipboardGuard]::AdmissionSequenceObserved;sequence=[BowserHostMenu+ClipboardGuard]::AdmissionSequence;close_attempted=[BowserHostMenu+ClipboardGuard]::AdmissionCloseAttempted;close_confirmed=[BowserHostMenu+ClipboardGuard]::AdmissionCloseConfirmed}}}catch{}
