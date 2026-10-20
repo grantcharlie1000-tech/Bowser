@@ -9,7 +9,7 @@ import { wheelNotches } from './rail-logic'; // --- tab stacks and workspaces (T
 import { setTip } from './tooltip';
 import { el, icon, place, type IconName } from './dom';
 import { DRAG_ATTR } from './view';
-import { beforeId, dragScrollDelta, privateTabName } from './tabs-logic';
+import { beforeId, dragScrollDelta, focusHeir, privateTabName } from './tabs-logic';
 // --- tab options ---
 import { clickSelection, loadMark, markedName, notifyLabel, pruneSelection, type LoadIndicatorChoice } from './tab-marks-logic';
 // --- end tab options ---
@@ -421,6 +421,10 @@ export function createSidebarRenderer(root: HTMLElement): {
 
     const rows: HTMLElement[] = [];
     const live = new Set(msg.items.map((item) => item.id));
+    // A closed row that had the keyboard (Delete) hands it to the row beside it, not to the body (U10).
+    const shownTabs = Array.from(root.querySelectorAll<HTMLElement>('.side-tab:not(.leaving)'));
+    const hadFocus = shownTabs.find((row) => row === document.activeElement);
+    const heir = hadFocus ? focusHeir(shownTabs.map((row) => Number(row.dataset.id)), Number(hadFocus.dataset.id), live) : 0;
     for (const id of tabs.keys()) if (!live.has(id)) tabs.delete(id);
     // --- tab options --- a closed tab leaves the selection.
     const keptPicked = pruneSelection(picked, live);
@@ -496,13 +500,15 @@ export function createSidebarRenderer(root: HTMLElement): {
     const entering = rows.filter((row) => row.parentNode !== list && row !== separator && row !== empty && row !== pinGrid && !row.classList.contains('leaving'));
     for (const row of rows) if (!row.classList.contains('leaving')) row.classList.remove('leaving');
     // Roving tabindex: keep it where the user is, else on the active tab.
-    const focused = list.contains(document.activeElement) ? (document.activeElement as HTMLElement).closest<HTMLElement>('.side-tab, .side-group') : null;
+    const heirRow = heir !== 0 ? tabs.get(heir)?.root : undefined;
+    const focused = heirRow ?? (list.contains(document.activeElement) ? (document.activeElement as HTMLElement).closest<HTMLElement>('.side-tab, .side-group') : null);
     place(list, rows);
     place(root, [top, list]);
     const activeRow = tabs.get(msg.active)?.root;
     const all = rowsOf();
     const target = focused ?? activeRow ?? all[0];
     for (const row of all) if (row.tabIndex !== (row === target ? 0 : -1)) row.tabIndex = row === target ? 0 : -1;
+    heirRow?.focus({ preventScroll: true });
     if (rendered && entering.length > 0 && entering.length <= MAX_ENTER) {
       for (const row of entering) row.classList.add('bw-enter');
     }

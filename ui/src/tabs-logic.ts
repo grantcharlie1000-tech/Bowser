@@ -216,6 +216,19 @@ export function stepMoveBefore(ids: readonly number[], at: number, dir: -1 | 1, 
 }
 
 /**
+ * The tab that takes the keyboard when the focused tab `focused` closes: the next one in `order` that
+ * is still `live`, else the one before it; 0 when `focused` did not close (or nothing is left). Keeps
+ * focus on a tab after Delete instead of dropping it to the page body.
+ */
+export function focusHeir(order: readonly number[], focused: number, live: ReadonlySet<number>): number {
+  const at = order.indexOf(focused);
+  if (at < 0 || live.has(focused)) return 0;
+  const after = order.slice(at + 1).find((id) => live.has(id));
+  if (after !== undefined) return after;
+  return order.slice(0, at).reverse().find((id) => live.has(id)) ?? 0;
+}
+
+/**
  * Palette index (0-7) of a group. Rust sends the chosen colour id, or a negative id for an automatic
  * group (one folded per site); those get a stable palette colour from the group's name (or key) so
  * every group is told apart, instead of all sharing the theme accent.

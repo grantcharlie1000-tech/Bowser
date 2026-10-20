@@ -615,6 +615,23 @@ test('a closed tab leaves the selection', () => {
   assert.deepEqual(sent, [{ v: 1, t: 'tabsel', ids: '2' }]);
 });
 
+test('Delete on a focused tab closes it and the keyboard stays on the strip (U10)', () => {
+  deliver(tabsMsg([item(1, { pinned: true }), item(2), item(3), item(4)], 2));
+  try {
+    tabNode(3).focus();
+    sent.length = 0;
+    stripRoot.dispatch('keydown', { key: 'Delete', target: tabNode(3) });
+    assert.deepEqual(sent, [{ v: 1, t: 'tab', a: 'close', id: 3 }]);
+    deliver(tabsMsg([item(1, { pinned: true }), item(2), item(4)], 2));
+    assert.equal(document.activeElement, tabNode(4), 'the tab after it has the keyboard');
+    assert.equal(tabNode(4).tabIndex, 0);
+    tabNode(4).dispatch('keydown', { key: 'ArrowLeft', target: tabNode(4) });
+    assert.equal(document.activeElement, tabNode(2), 'and the arrows go on working');
+  } finally {
+    deliver(tabsMsg([item(1, { pinned: true }), item(2), item(3)], 2));
+  }
+});
+
 test('a double click on a tab goes to Rust, which decides what it does; the close button is not a tab', () => {
   sent.length = 0;
   tabNode(3).dispatch('dblclick');

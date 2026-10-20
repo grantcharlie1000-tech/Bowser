@@ -143,6 +143,16 @@ test('stepMoveBefore gives the host the id to the right of the new slot', () => 
   assert.equal(logic.stepMoveBefore(ids, 3, 1), null);
 });
 
+test('a closed focused tab hands the keyboard to the next tab, else the one before (U10)', () => {
+  const order = [1, 2, 3, 4];
+  assert.equal(logic.focusHeir(order, 2, new Set([1, 3, 4])), 3);
+  assert.equal(logic.focusHeir(order, 4, new Set([1, 2, 3])), 3, 'the last tab: the one before');
+  assert.equal(logic.focusHeir(order, 2, new Set([1, 4])), 4, 'skips tabs that closed with it');
+  assert.equal(logic.focusHeir(order, 2, new Set([1, 2, 3, 4])), 0, 'still open: nothing to move');
+  assert.equal(logic.focusHeir(order, 9, new Set([1])), 0);
+  assert.equal(logic.focusHeir([5], 5, new Set()), 0, 'nothing left');
+});
+
 test('a keyboard step over a collapsed group lands before its first member, as a drag does (U2)', () => {
   // Visible [1, 11, 2]: group 7 = 10, 11 (shown, active), 12 is collapsed.
   const visible = [1, 11, 2];

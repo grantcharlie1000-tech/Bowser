@@ -18,6 +18,7 @@ import { DRAG_START_PX, dragAnnouncement, dropOutcome, gapShifts, grabOffset, ne
 // --- end tab ghost ---
 import {
   beforeSlotId,
+  focusHeir,
   groupColourIndex,
   buildEntries,
   dropIndex,
@@ -586,6 +587,13 @@ export function startTabs(strip: HTMLElement): HTMLElement {
     activeId = msg.active;
     const entries: Entry[] = buildEntries(msg.items, msg.active);
     const live = new Set<number>(msg.items.map((it) => it.id));
+    // A closed tab that had the keyboard (Delete) hands it to the tab beside it, not to the body (U10).
+    {
+      const shown = row2.hidden ? visibleTabs() : [...visibleTabs(), ...tabsIn(row2)];
+      const had = shown.find((n) => n.root === document.activeElement);
+      const heir = had ? focusHeir(shown.map((n) => n.id), had.id, live) : 0;
+      if (heir !== 0 && refocus === 0) refocus = heir;
+    }
     // --- tab options --- a closed tab leaves the selection.
     const kept = pruneSelection(picked, live);
     if (kept.length !== picked.length) { picked = kept; sendTabSelection(picked); }
@@ -745,7 +753,11 @@ export function startTabs(strip: HTMLElement): HTMLElement {
     rendered = true;
     applyRoving();
     if (refocus !== 0) {
-      tabNodes.get(refocus)?.root.focus({ preventScroll: true });
+      const node = tabNodes.get(refocus);
+      if (node) {
+        applyRoving(node); // the focused tab is the one in the tab order
+        node.root.focus({ preventScroll: true });
+      }
       refocus = 0;
     }
     tabNodes.get(activeId)?.root.scrollIntoView({
