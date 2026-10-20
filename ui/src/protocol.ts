@@ -17,14 +17,19 @@ export type { TabDragCommand, TabGhostMsg } from './tab-drag-protocol';
 // --- end tab ghost ---
 
 export const PROTOCOL_VERSION = 1;
-// Raised from 2048 so the settings page's `save` payload (every profile setting) fits; mirrors
-// chrome_host::protocol::MAX_TEXT_CHARS.
+// Mirrors chrome_host::protocol::MAX_TEXT_CHARS.
 export const MAX_TEXT = 4096;
+/**
+ * The settings page's `{t:'set',a:'save'}` text alone, in UTF-8 bytes: every profile setting with each
+ * list at its cap. Mirrors chrome_host::protocol::MAX_SETTINGS_SAVE_CHARS and chrome_host::settings::MAX_SAVE_TEXT.
+ */
+export const MAX_SETTINGS_SAVE = 48 * 1024;
 const MAX_LABEL = 512;
 /** Rail button label (also its tooltip and letter-tile source). */
 const MAX_RAIL_LABEL = 64;
 const MAX_COLOR = 64;
-const MAX_WIRE = 16 * 1024;
+/** Largest message to Rust in UTF-8 bytes (chrome_host::protocol::MAX_RAW_BYTES). */
+export const MAX_WIRE = 64 * 1024;
 const MAX_INBOUND = 256 * 1024;
 const MAX_SEQ = 0x7fffffff;
 export const MAX_ID = 0xffffffff;
@@ -662,6 +667,11 @@ function isStr(v: unknown, max: number): v is string {
   return typeof v === 'string' && v.length <= max;
 }
 
+/** UTF-8 length of `text`: Rust counts bytes. */
+export function utf8Bytes(text: string): number {
+  return new TextEncoder().encode(text).length;
+}
+
 function isInt(v: unknown, min: number, max: number): v is number {
   return typeof v === 'number' && Number.isInteger(v) && v >= min && v <= max;
 }
@@ -700,7 +710,8 @@ export function sendPanel(t: PanelKind, fields: PanelFields): boolean {
   }
   if (fields.n !== undefined && !isInt(fields.n, -0x80000000, 0x7fffffff)) return false;
   if (fields.on !== undefined && !isBool(fields.on)) return false;
-  if (fields.text !== undefined && !isStr(fields.text, MAX_TEXT)) return false;
+  const maxText = t === 'set' && fields.a === 'save' ? MAX_SETTINGS_SAVE : MAX_TEXT;
+  if (fields.text !== undefined && !isStr(fields.text, maxText)) return false;
   if (fields.url !== undefined && !isStr(fields.url, MAX_TEXT)) return false;
   return send({ v: 1, t, ...fields });
 }
@@ -1034,7 +1045,7 @@ export function send(cmd: Command): boolean {
   const wv = window.chrome?.webview;
   if (!wv) return false;
   const wire = JSON.stringify(cmd);
-  if (wire.length > MAX_WIRE) return false;
+  if (wire.length > MAX_WIRE || utf8Bytes(wire) > MAX_WIRE) return false;
   wv.postMessage(wire);
   return true;
 }

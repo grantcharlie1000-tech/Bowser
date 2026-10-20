@@ -341,6 +341,7 @@ export function startSettingsPage(root: HTMLElement): void {
     const text = saveText(draft);
     if (text === null) { showToast('That value is not allowed.', false); return; }
     if (cmd({ a: 'save', text })) pending += 1;
+    else showToast('Settings could not be sent. Nothing was saved.', false);
   };
   const change = (edit: (d: Draft) => void): void => {
     if (!draft) return;

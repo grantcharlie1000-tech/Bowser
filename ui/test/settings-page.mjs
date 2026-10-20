@@ -143,6 +143,51 @@ test('browser-customizability fields: parse, draftOf and save', () => {
   assert.ok(logic.saveText({ ...draft, toolbarButtons: '' }));
 });
 
+// H3-3: every change sends the whole profile, which used to be capped at 4096 characters, so 100+
+// allow-list sites or long startup pages made every row answer "That value is not allowed.".
+test('a profile with every list at its cap still saves, and over the caps it is refused with a reason', async () => {
+  const { MAX_SETTINGS_SAVE, MAX_WIRE, sendPanel } = await bundle('protocol.ts');
+  const { MAX_STARTUP_PAGES, MAX_URL } = await bundle('start-page-logic.ts');
+  const address = (n) => `https://example.com/${n}/${'a'.repeat(MAX_URL - 21 - String(n).length)}`;
+  const sites = Array.from({ length: logic.MAX_ALLOW }, (_, n) => `${String(n).padStart(3, '0')}${'a'.repeat(28)}.example`);
+  assert.ok(sites.join(',').length <= logic.MAX_ALLOW_BYTES);
+  const d = fixture.snap.d;
+  const pages = Array.from({ length: MAX_STARTUP_PAGES }, (_, n) => address(n));
+  const big = { ...d, blockerAllow: sites, uiFont: 'f'.repeat(64), start: { ...d.start, homepage: address(9), startup: 'specific_pages', startupPages: pages } };
+  const snap = logic.parseSettingsSnapshot(big);
+  assert.ok(snap, 'Rust may send every list at its cap');
+  const text = logic.saveText(logic.draftOf(snap));
+  assert.ok(text, 'the full profile is still a valid save');
+  assert.ok(text.length > 32 * 1024 && new TextEncoder().encode(text).length <= MAX_SETTINGS_SAVE, String(text.length));
+  assert.ok(text.split('\n').includes(`blocker_allow=${sites.join(',')}`), 'every site is saved');
+  assert.ok(text.split('\n').includes(`startup_pages=${pages.join(' ')}`), 'every startup page is saved');
+
+  const sent = [];
+  const hadWindow = 'window' in globalThis;
+  const before = globalThis.window;
+  globalThis.window = { chrome: { webview: { postMessage: (wire) => sent.push(wire) } } };
+  try {
+    assert.equal(sendPanel('set', { a: 'save', text }), true, 'the save fits the wire');
+    assert.ok(new TextEncoder().encode(sent[0]).length <= MAX_WIRE);
+    assert.equal(JSON.parse(sent[0]).text, text);
+    assert.equal(sendPanel('set', { a: 'save', text: 'x'.repeat(MAX_SETTINGS_SAVE + 1) }), false);
+    assert.equal(sendPanel('set', { a: 'tabopt', text: 'x'.repeat(4097) }), false, 'every other text keeps its 4096 cap');
+    assert.equal(sent.length, 1);
+  } finally {
+    if (hadWindow) globalThis.window = before;
+    else delete globalThis.window;
+  }
+
+  // Over the allow list's byte cap: the list refuses the site and says why; Rust's list never gets there.
+  const long = Array.from({ length: 400 }, (_, n) => `${String(n).padStart(3, '0')}${'b'.repeat(48)}.example`);
+  assert.ok(long.join(',').length > logic.MAX_ALLOW_BYTES);
+  const fits = long.slice(0, Math.floor((logic.MAX_ALLOW_BYTES + 1) / (long[0].length + 1)));
+  assert.match(logic.addSite(fits, `${'c'.repeat(50)}.example`).error, /full.*characters/);
+  assert.deepEqual(logic.addSite(fits, 'c.example').list?.length, fits.length + 1, 'a shorter site still fits');
+  assert.equal(logic.parseSettingsSnapshot({ ...big, blockerAllow: long }), null);
+  assert.equal(logic.saveText({ ...logic.draftOf(snap), blockerAllow: long }), null);
+});
+
 test('settingsgo carries one known section or the top, nothing else', () => {
   assert.deepEqual(parseInbound(JSON.stringify(fixture.go)), { t: 'settingsgo', s: 'privacy' });
   assert.deepEqual(parseInbound(JSON.stringify(fixture.goTop)), { t: 'settingsgo', s: '' });
@@ -191,7 +236,8 @@ test('save sends every profile setting exactly once in the order Rust expects', 
   for (const broken of [{ sidebarWidth: 999 }, { sleepAfterSecs: 10 }, { blockerAllow: ['a b'] }, { tabLayout: 'sideways' }, { efficiencyMode: 'max' }, { searchEngine: 'bing' }]) {
     assert.equal(logic.saveText({ ...draft, ...broken }), null, JSON.stringify(broken));
   }
-  assert.equal(logic.saveText({ ...draft, blockerAllow: Array.from({ length: 300 }, (_, i) => `site${i}.example`) }), null, 'over the MAX_TEXT cap');
+  assert.ok(logic.saveText({ ...draft, blockerAllow: Array.from({ length: 300 }, (_, i) => `site${i}.example`) }), '300 sites save (H3-3)');
+  assert.equal(logic.saveText({ ...draft, blockerAllow: Array.from({ length: logic.MAX_ALLOW + 1 }, (_, i) => `site${i}.example`) }), null, 'over MAX_ALLOW');
 });
 
 test('search matches every word across label, description, keywords and section; marks are merged', () => {

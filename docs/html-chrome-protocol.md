@@ -30,7 +30,7 @@ Cache-Control: no-store
 
 ## JS -> Rust (`chrome.webview.postMessage(string)`, JSON text)
 
-Rules: UTF-8 text <= 16 KiB; one flat JSON object; unknown keys rejected; `v` must be `1`; `t` selects the command. No nesting, no arrays.
+Rules: UTF-8 text <= 64 KiB; one flat JSON object; unknown keys rejected; `v` must be `1`; `t` selects the command. No nesting, no arrays.
 
 | `t` | extra fields | meaning |
 |---|---|---|
@@ -78,9 +78,9 @@ Enforced by Rust (`protocol.rs`, `host.rs`, `window.rs`), with the matching limi
 
 | Limit | Value |
 |---|---|
-| Raw message from the page | <= 16 KiB (`MAX_RAW_BYTES`) |
+| Raw message from the page | <= 64 KiB (`MAX_RAW_BYTES`), so the settings page's `save` fits |
 | Keys in one JS -> Rust object | <= 6 (`MAX_FIELDS`); the seventh key is rejected before the duplicate check |
-| Text field (`edit`, `submit`) | <= 2048 characters |
+| Text field (`edit`, `submit`, panel `text`) | <= 4096 characters (`MAX_TEXT_CHARS`); the settings page's `save` text alone <= 48 KiB (`MAX_SETTINGS_SAVE_CHARS`) |
 | Page message rate, per host | token bucket: 120 per second, burst 60 (`MESSAGE_RATE_PER_SEC`, `MESSAGE_BURST`); excess messages are dropped unparsed |
 | Menu, popup and window commands, per host | at most one per 250 ms (`POPUP_COMMAND_INTERVAL`): `drag`, `caption`, `open` with `menu`/`site`/`split`, `tab` with `menu`, `group` with `menu`; extra ones are dropped |
 | Deferred command queue, per host | 8 (`HTML_DEFERRED_LIMIT`); a full queue drops the command |
@@ -416,7 +416,7 @@ Strict tracking prevention read back, else the tab is not created. The wire carr
 - `siteinfo` carries an optional `private: true` (sent only for a private tab): `perms` is then empty,
   `reset` is false and no permission or blocker action is declared.
 
-Nothing new goes JS -> Rust: the six-key and 16 KiB inbound limits are unchanged, and the page cannot make a tab
+Nothing new goes JS -> Rust: the six-key and 64 KiB inbound limits are unchanged, and the page cannot make a tab
 private (only the native `New private tab` command, Ctrl+Shift+P, can).
 
 Interaction with per-site zoom and the permissions dashboard: a private tab keeps its zoom in the tab only (no
@@ -583,7 +583,7 @@ shapes); the UI parsers are `ui/src/downloads-logic.ts` (`parseEntry`, `parseBub
 | Rust -> page | `state` (`solid:true`), `{v:1,t:"snap",p:"downloadspage",d:{state,query,rows,more,undo,ack,active}}` | `state` `on error guest` (a guest window lists its in-memory downloads); `rows` day headers `{label,date,count}` each followed by its entries; `more` bool; `ack` `none removed restored cleared failed` |
 | page -> Rust | `{v:1,t:"dpage",a,...}` | `search` (`text` <= 256, no control characters); `open show remove pause resume cancel retry copy` with `id`; bare `undo clear folder refresh settings`. Only `View::DownloadsPage` (exact start URL `bowser-ui://app/index.html?view=downloads`) accepts `dpage` |
 
-Every JS -> Rust message stays within six keys and 16 KiB. Text from Rust reaches the DOM through
+Every JS -> Rust message stays within six keys and 64 KiB. Text from Rust reaches the DOM through
 `textContent` only; the page and bubble render no links (rows are buttons, and Rust acts on the
 recorded path or address of the id).
 
