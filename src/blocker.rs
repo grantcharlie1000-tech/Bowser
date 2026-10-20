@@ -1334,8 +1334,9 @@ impl BlockerState {
     }
 
     /// The shield's level choice for the page on `top_host`: what this site should get from now on.
-    /// A level that equals the global one clears the site's own choice instead of saving a copy of
-    /// it, so the site follows the global level again; any other level is saved. The rule in force
+    /// A level that equals what the site would get without its own choice (a parent's rule, else
+    /// the global level) clears that choice instead of saving a copy of it; any other level is
+    /// saved, so the page always ends at the level chosen. The rule in force
     /// (it may be for a subdomain) is the one that changes, else the site's own.
     pub fn choose_level_for_page(&mut self, top_host: &str, level: Level) -> SiteChoice {
         let top_host = top_host.to_ascii_lowercase();
@@ -1348,7 +1349,9 @@ impl BlockerState {
         let key = host_suffixes(&top_host)
             .find(|suffix| self.site_rules.get(suffix).is_some_and(|rule| rule.level.is_some()))
             .map_or_else(|| registrable_domain(&top_host).to_owned(), str::to_owned);
-        let wanted = (level != self.global_level()).then_some(level);
+        // Clearing is right only when what is left (a parent's rule, else the global level) is the
+        // level asked for; under a parent with its own rule, the choice has to be saved.
+        let wanted = (self.level_without(&top_host, &key) != level).then_some(level);
         if self.site_rules.set_level(&key, wanted) {
             self.sites_changed();
             SiteChoice::Saved
@@ -1358,7 +1361,8 @@ impl BlockerState {
     }
 
     /// The shield's cookie-notice choice for the page on `top_host`: hide them or leave them. A
-    /// choice that equals the global switch clears the site's own choice.
+    /// choice that equals what the site would get without its own (a parent's choice, else the
+    /// global switch) clears the site's own choice.
     pub fn choose_cookie_notices_for_page(&mut self, top_host: &str, hide: bool) -> SiteChoice {
         let top_host = top_host.to_ascii_lowercase();
         if top_host.is_empty() || !top_host.contains('.') {
@@ -1367,13 +1371,32 @@ impl BlockerState {
         let key = host_suffixes(&top_host)
             .find(|suffix| self.site_rules.get(suffix).is_some_and(|rule| rule.cookies.is_some()))
             .map_or_else(|| registrable_domain(&top_host).to_owned(), str::to_owned);
-        let wanted = (hide != self.cookie_notices).then_some(hide);
+        let wanted = (self.cookies_without(&top_host, &key) != hide).then_some(hide);
         if self.site_rules.set_cookies(&key, wanted) {
             self.sites_changed();
             SiteChoice::Saved
         } else {
             SiteChoice::NoSite
         }
+    }
+
+    /// The level `top_host` would get if the saved rule for `key` (one of its suffixes) set none:
+    /// the nearest parent's rule, else the global level.
+    fn level_without(&self, top_host: &str, key: &str) -> Level {
+        host_suffixes(top_host)
+            .skip_while(|suffix| *suffix != key)
+            .skip(1)
+            .find_map(|suffix| self.site_rules.get(suffix).and_then(|rule| rule.level))
+            .unwrap_or_else(|| self.global_level())
+    }
+
+    /// As [`Self::level_without`], for the cookie-notice choice.
+    fn cookies_without(&self, top_host: &str, key: &str) -> bool {
+        host_suffixes(top_host)
+            .skip_while(|suffix| *suffix != key)
+            .skip(1)
+            .find_map(|suffix| self.site_rules.get(suffix).and_then(|rule| rule.cookies))
+            .unwrap_or(self.cookie_notices)
     }
 
     fn sites_changed(&mut self) {
@@ -1600,17 +1623,20 @@ impl BlockerState {
         if self.config_allow_hit(&top_host) {
             return SiteToggle::ConfiguredInSettings;
         }
-        let (level, result) = if self.level_for(&top_host, false) != Level::None {
-            (Some(Level::None), SiteToggle::Allowed)
-        } else if self.global_level() == Level::None {
-            (Some(Level::Ads), SiteToggle::Blocking)
-        } else {
-            (None, SiteToggle::Blocking)
-        };
         // Change the saved rule that is in force (it may be for a subdomain), else the site's own.
         let key = host_suffixes(&top_host)
             .find(|suffix| self.site_rules.get(suffix).is_some_and(|rule| rule.level.is_some()))
             .map_or(site, str::to_owned);
+        let (level, result) = if self.level_for(&top_host, false) != Level::None {
+            (Some(Level::None), SiteToggle::Allowed)
+        } else if self.global_level() == Level::None {
+            (Some(Level::Ads), SiteToggle::Blocking)
+        } else if self.level_without(&top_host, &key) == Level::None {
+            // A paused parent would take over again: block at the global level explicitly.
+            (Some(self.global_level()), SiteToggle::Blocking)
+        } else {
+            (None, SiteToggle::Blocking)
+        };
         if !self.site_rules.set_level(&key, level) {
             return SiteToggle::NoSite;
         }
@@ -3434,6 +3460,36 @@ mod level_tests {
         assert_eq!(excepted.choose_level_for_page("skip.test", Level::Ads), SiteChoice::ConfiguredInSettings);
         assert_eq!(s.choose_level_for_page("localhost", Level::Ads), SiteChoice::NoSite);
         assert_eq!(s.choose_level_for_page("", Level::Ads), SiteChoice::NoSite);
+    }
+
+    #[test]
+    fn choosing_the_global_level_on_a_subdomain_gives_the_global_level_not_the_parents() {
+        let (mut s, _dir) = state("shield-subdomain-global");
+        s.enabled = true;
+        s.level = Level::Ads;
+        assert!(s.set_site_level("example.com", Some(Level::None)));
+        assert!(s.set_site_level("shop.example.com", Some(Level::Trackers)));
+        assert_eq!(s.choose_level_for_page("shop.example.com", Level::Ads), SiteChoice::Saved);
+        assert_eq!(s.level_for("shop.example.com", false), Level::Ads, "what the user chose");
+        assert_eq!(s.level_for("example.com", false), Level::None, "the parent keeps its own choice");
+        // With no parent rule, the global level still clears the subdomain's own rule.
+        assert!(s.set_site_level("example.com", None));
+        assert_eq!(s.choose_level_for_page("shop.example.com", Level::Ads), SiteChoice::Saved);
+        assert!(s.site_rules().is_empty(), "no copy of the global level is kept");
+
+        // Ctrl+Shift+B back to blocking under a paused parent blocks again.
+        assert!(s.set_site_level("example.com", Some(Level::None)));
+        assert!(s.set_site_level("shop.example.com", Some(Level::None)));
+        assert_eq!(s.toggle_site("shop.example.com"), SiteToggle::Blocking);
+        assert_eq!(s.level_for("shop.example.com", false), Level::Ads);
+
+        // The cookie-notice choice works the same way.
+        s.cookie_notices = true;
+        assert!(s.set_site_cookies("example.com", Some(false)));
+        assert!(s.set_site_cookies("shop.example.com", Some(false)));
+        assert_eq!(s.choose_cookie_notices_for_page("shop.example.com", true), SiteChoice::Saved);
+        assert!(s.cookie_notices_for("shop.example.com", false), "hidden as the user chose");
+        assert!(!s.cookie_notices_for("example.com", false));
     }
 
     #[test]
