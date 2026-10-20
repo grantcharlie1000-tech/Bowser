@@ -20,6 +20,8 @@ on:
       - 'benchmarks/scripts/validate-app-host-menu-fixture.mjs'
       - 'benchmarks/fixtures/app-host-context-menu/**'
       - 'benchmarks/scripts/probe-native-store.ps1'
+      - 'benchmarks/scripts/test-native-store-document-diagnostics.ps1'
+      - 'benchmarks/test-native-store-document-diagnostics-source.py'
       - 'benchmarks/scripts/measure-native-extensions.ps1'
       - 'benchmarks/scripts/test-native-extension-address-guards.ps1'
       - 'benchmarks/test-native-extension-address-source.py'
@@ -152,6 +154,10 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Native helper source compilation or pure serializer contract failed.' }
           python ./benchmarks/test-native-safety-source.py
           if ($LASTEXITCODE -ne 0) { throw 'Fail-closed native helper source contracts failed.' }
+          powershell.exe -NoProfile -File ./benchmarks/scripts/test-native-store-document-diagnostics.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'Native Store document diagnostic compilation or synthetic contract failed.' }
+          python ./benchmarks/test-native-store-document-diagnostics-source.py
+          if ($LASTEXITCODE -ne 0) { throw 'Native Store document diagnostic source contracts failed.' }
       - name: Install official Rust toolchain
         run: rustup toolchain install stable --profile minimal
       - name: Build independent native safety executable without marketplace or resource dependencies

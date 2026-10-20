@@ -463,3 +463,36 @@ Only type/HWND/bounds shapes are queried in addition to the unchanged identity,
 parent and root fences. All full-JSON size checks, caps, clocks and original refusal
 remain identical. Reduced provider work is expected, but complete capture and any
 native acceptance remain unproved; the new exact candidate needs review/approval/CI.
+
+## Current-main diagnostic follow-up (local candidate)
+
+The resumed work verifies main at `646afef3aa231b29e2feea688c494fd47a052e0e`
+(`0.0.21`, stable revision 22). A separate local integration applies the previously
+reviewed safety changes without altering the version, release workflow, updater
+feed or production state. Of the 22 safety paths, only `webview2.rs` changed on
+main independently: successful hide invalidates the bounds cache. Its behavior
+and the newer main UI timing must be exercised by the actual integration CI,
+not inferred from the earlier `43fc4cfa`/`6a3b8c6c` results.
+
+Both `43fc4cfa` failure-only popup observations still stopped at seven nodes under
+the unchanged 750 ms cooperative budget, below the output cap. Optional flag
+removal did not establish deeper coverage. The next diagnostic-only change caches
+only finalized serialized rows. Every live header/root and active-row mutation
+still participates in exact size accounting; provider/root/parent checks, traversal
+order, caps, two deadline reads and the unconditional original refusal remain.
+Synthetic managed cases compare the cached representation/accounting to the full
+serializer. This removes known repeated serialization, not a demonstrated dominant
+cost or a guarantee that more provider nodes will be reached.
+
+The previous journey failure occurred while Settings was loading, before any
+installation consent. Its native lookup error combined zero and multiple runtime-ID
+matches, so it did not establish ambiguity or a particular race. The follow-up
+retains bounded numeric/runtime/stage diagnostics from existing observations only;
+it does not retry, choose a document, change the `matches != 1` refusal or send input
+after unresolved identity. Diagnostics are failure-only and non-atomic. Native
+execution on current main remains required.
+
+Clipboard sequence zero is still refused before input or mutation. The observed
+attached station had the clipboard access bit, so a missing-rights cause is not
+established. No clipboard initializer, station/security change, sequence retry,
+zero acceptance or permission grant is part of this candidate.

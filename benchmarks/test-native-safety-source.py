@@ -299,6 +299,26 @@ class NativeSafetySourceContracts(unittest.TestCase):
         for optional in ("IsControlElementProperty", "IsContentElementProperty", "IsEnabledProperty", "IsKeyboardFocusableProperty", "HasKeyboardFocusProperty", "IsOffscreenProperty"):
             self.assertNotIn(optional, shapes)
         self.assertIn("not-attempted/unqueried", shapes)
+        check = diagnostic.split("public void Check(){", 1)[1].split("\n  }", 1)[0]
+        self.assertEqual(check.count("Now()>=Deadline"), 2)
+        self.assertIn("int length=RejectedLength(this);", check)
+        self.assertNotIn("RejectedJson(", check)
+        length = diagnostic.split("static int RejectedLength(", 1)[1].split("static string RejectedJson(", 1)[0]
+        self.assertIn("c.FinalizedLength", length)
+        self.assertIn("c.Active.Render().Length", length)
+        self.assertIn("RejectedHeader(c,c.NodeCount).Length", length)
+        self.assertNotIn("foreach", length)
+        self.assertNotIn("String.Join", length)
+        freeze = diagnostic.split("public void AddNode(", 1)[1].split("public void Check(){", 1)[0]
+        self.assertEqual(freeze.count("Active.Render()"), 1)
+        self.assertIn("FinalizedRows.Add(frozen)", freeze)
+        self.assertIn("FinalizedLength+=frozen.Length", freeze)
+        self.assertIn("static string RejectedFullJson(", diagnostic)
+        self.assertIn("CheckRejectedSerializationCache();", diagnostic)
+        for required in ("AssertRejectedCache(c,full)", "row.EnumerationParentLater", "row.LastQueuedRuntime", "c.RootFence=new RejectedReading()", "exact output boundary", "one-character output excess", "after-render clock", "before.Check()", "after.Check()"):
+            self.assertIn(required, diagnostic)
+        for required in ('CheckRejectedMutationCap("active-last-property"', 'CheckRejectedMutationCap("parent-runtime"', 'CheckRejectedMutationCap("sibling-query"', 'CheckRejectedMutationCap("root-runtime"', 'retained.Status="synthetic-old-object-mutated"', "RejectedJson(isolated)!=snapshot", "RejectedLength(isolated)!=snapshotLength"):
+            self.assertIn(required, diagnostic)
         workflow = source(".github/workflows/store-probe.yml")
         self.assertLess(workflow.index("name: Preserve bounded native menu proof evidence"), workflow.index("name: Probe default-off native engine menu in actual HTML Bowser App"))
 

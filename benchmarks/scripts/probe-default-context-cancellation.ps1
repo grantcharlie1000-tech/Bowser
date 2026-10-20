@@ -591,23 +591,46 @@ public static class BowserDefaultContext {
  sealed class RejectedContext {
   public ulong Deadline,ReadinessDeadline,OwnershipDeadline;public long Popup;public int[] RootId;public uint BrowserPid;public bool Partial;public string Stop="not-started";public string Outer="null";public Func<ulong> SyntheticClock;public bool GetterFailed;
   public ulong Now(){return SyntheticClock==null?GetTickCount64():SyntheticClock();}
-  public RejectedReading RootFence=new RejectedReading();public readonly List<RejectedNode> Nodes=new List<RejectedNode>();
+  public RejectedReading RootFence=new RejectedReading();public RejectedNode Active;
+  // Only Active can still change. A previous row is serialized once, after its last
+  // enumeration/root-fence mutation, and retained as an immutable string.
+  public readonly List<string> FinalizedRows=new List<string>();public int FinalizedLength;
+  public int NodeCount{get{return FinalizedRows.Count+(Active==null?0:1);}}
+  public void AddNode(RejectedNode node){
+   if(Active!=null){string frozen=Active.Render();if(FinalizedRows.Count!=0)FinalizedLength++;FinalizedRows.Add(frozen);FinalizedLength+=frozen.Length;}
+   Active=node;
+  }
   public void Check(){
    if(Now()>=Deadline)throw new RejectedStop("cooperative-budget-expired");
-   int length=RejectedJson(this).Length;
+   int length=RejectedLength(this);
    if(Now()>=Deadline)throw new RejectedStop("cooperative-budget-expired");
    if(length>RejectedOutputCap-RejectedOutputReserve)throw new RejectedStop("output-cap");
   }
  }
+ static string RejectedHeader(RejectedContext c,int count){
+  return "{\"schema\":\"bowser-rejected-popup-shapes-v1\",\"scope\":\"failure-only-non-atomic-not-input-authority\",\"non_atomic\":true,\"original_browser_witness_rejection_selected\":true,\"original_rejection_preserved\":true,\"acceptance_retry\":false,\"patterns\":\"not-queried\",\"cooperative_budget_ms\":750,\"blocking_provider_call_cannot_be_preempted\":true,\"coverage\":\""+(c.Partial?"partial":"complete-browser-subtrees-only")+"\",\"stop_reason\":\""+c.Stop+"\",\"expected_browser_pid\":"+Number(c.BrowserPid)+",\"captured_popup_hwnd\":"+Number(c.Popup)+",\"captured_root_runtime\":"+JsonIds(c.RootId)+",\"original_readiness_deadline_tick\":"+c.ReadinessDeadline.ToString(System.Globalization.CultureInfo.InvariantCulture)+",\"original_ownership_deadline_tick\":"+c.OwnershipDeadline.ToString(System.Globalization.CultureInfo.InvariantCulture)+",\"diagnostic_deadline_tick\":"+c.Deadline.ToString(System.Globalization.CultureInfo.InvariantCulture)+",\"failed_outer_observation\":"+c.Outer+",\"last_root_fence\":"+c.RootFence.Render()+",\"node_count\":"+Number(count)+",\"nodes\":[";
+ }
+ static int RejectedLength(RejectedContext c){
+  // Account for the exact current header and active row, never re-render or copy
+  // finalized rows during a live check. The closing array/object contributes two.
+  return RejectedHeader(c,c.NodeCount).Length+c.FinalizedLength+(c.Active==null?0:c.Active.Render().Length)+(c.FinalizedRows.Count!=0&&c.Active!=null?1:0)+2;
+ }
  static string RejectedJson(RejectedContext c){
-  var rows=new StringBuilder();foreach(var node in c.Nodes){if(rows.Length!=0)rows.Append(',');rows.Append(node.Render());}
-  return "{\"schema\":\"bowser-rejected-popup-shapes-v1\",\"scope\":\"failure-only-non-atomic-not-input-authority\",\"non_atomic\":true,\"original_browser_witness_rejection_selected\":true,\"original_rejection_preserved\":true,\"acceptance_retry\":false,\"patterns\":\"not-queried\",\"cooperative_budget_ms\":750,\"blocking_provider_call_cannot_be_preempted\":true,\"coverage\":\""+(c.Partial?"partial":"complete-browser-subtrees-only")+"\",\"stop_reason\":\""+c.Stop+"\",\"expected_browser_pid\":"+Number(c.BrowserPid)+",\"captured_popup_hwnd\":"+Number(c.Popup)+",\"captured_root_runtime\":"+JsonIds(c.RootId)+",\"original_readiness_deadline_tick\":"+c.ReadinessDeadline.ToString(System.Globalization.CultureInfo.InvariantCulture)+",\"original_ownership_deadline_tick\":"+c.OwnershipDeadline.ToString(System.Globalization.CultureInfo.InvariantCulture)+",\"diagnostic_deadline_tick\":"+c.Deadline.ToString(System.Globalization.CultureInfo.InvariantCulture)+",\"failed_outer_observation\":"+c.Outer+",\"last_root_fence\":"+c.RootFence.Render()+",\"node_count\":"+Number(c.Nodes.Count)+",\"nodes\":["+rows+"]}";
+  var rows=new StringBuilder();foreach(string frozen in c.FinalizedRows){if(rows.Length!=0)rows.Append(',');rows.Append(frozen);}
+  if(c.Active!=null){if(rows.Length!=0)rows.Append(',');rows.Append(c.Active.Render());}
+  return RejectedHeader(c,c.NodeCount)+rows+"]}";
+ }
+ // Independent full row serializer, used only by pure policy tests as an oracle.
+ // It does not consult the finalized cache or cached length.
+ static string RejectedFullJson(RejectedContext c,List<RejectedNode> nodes){
+  var rows=new StringBuilder();foreach(var node in nodes){if(rows.Length!=0)rows.Append(',');rows.Append(node.Render());}
+  return RejectedHeader(c,nodes.Count)+rows+"]}";
  }
  static string RejectedBoundedJson(RejectedContext c){
   string json=RejectedJson(c);if(json.Length<=RejectedOutputCap)return json;
   // Defensive only: live checks reserve more than the largest bounded field/record.
   // Never emit an oversized or truncated JSON document or turn missing output into proof.
-  return "{\"schema\":\"bowser-rejected-popup-shapes-v1\",\"scope\":\"failure-only-non-atomic-not-input-authority\",\"non_atomic\":true,\"original_rejection_preserved\":true,\"coverage\":\"partial\",\"stop_reason\":\"output-cap-details-discarded\",\"getter_failure_details\":\"not-retained\",\"node_count\":"+Number(c.Nodes.Count)+",\"nodes\":[{\"index\":"+Number(c.Nodes.Count)+",\"status\":\"details-discarded\",\"getter_state\":{\"status\":\""+(c.GetterFailed?"getter-failed":"not-attempted")+"\"}}]}";
+  return "{\"schema\":\"bowser-rejected-popup-shapes-v1\",\"scope\":\"failure-only-non-atomic-not-input-authority\",\"non_atomic\":true,\"original_rejection_preserved\":true,\"coverage\":\"partial\",\"stop_reason\":\"output-cap-details-discarded\",\"getter_failure_details\":\"not-retained\",\"node_count\":"+Number(c.NodeCount)+",\"nodes\":[{\"index\":"+Number(c.NodeCount)+",\"status\":\"details-discarded\",\"getter_state\":{\"status\":\""+(c.GetterFailed?"getter-failed":"not-attempted")+"\"}}]}";
  }
  static ulong RejectedDeadline(ulong now,ulong readiness,ulong ownership){
   ulong local=now>UInt64.MaxValue-750?UInt64.MaxValue:now+750;
@@ -667,10 +690,10 @@ public static class BowserDefaultContext {
   try{
    c.Check();var queue=new Queue<Tuple<AutomationElement,int,int[],int[]>>();var seen=new HashSet<string>(StringComparer.Ordinal);var scheduled=new HashSet<string>(StringComparer.Ordinal){JsonIds(rootId)};queue.Enqueue(Tuple.Create(root,0,(int[])null,(int[])rootId.Clone()));
    while(queue.Count!=0){
-    c.Check();if(c.Nodes.Count>=RejectedNodeCap)throw new RejectedStop("node-or-depth-cap");
-    var work=queue.Dequeue();var row=new RejectedNode{Index=c.Nodes.Count+1,Depth=work.Item2,ExpectedParent=work.Item3};c.Nodes.Add(row);
+    c.Check();if(c.NodeCount>=RejectedNodeCap)throw new RejectedStop("node-or-depth-cap");
+    var work=queue.Dequeue();var row=new RejectedNode{Index=c.NodeCount+1,Depth=work.Item2,ExpectedParent=work.Item3};c.AddNode(row);
     RejectedRootFence(c,host,testPid,hostTid,popup,menuTid,browser,root,rootId);
-    RejectedIdentity(c,work.Item1,row.First);int[] runtime=RejectedRuntime(row.First.Runtime);RejectedVisit(seen,runtime,row.Depth,c.Nodes.Count);
+    RejectedIdentity(c,work.Item1,row.First);int[] runtime=RejectedRuntime(row.First.Runtime);RejectedVisit(seen,runtime,row.Depth,c.NodeCount);
     if(!Same(runtime,work.Item4))throw new RejectedStop("queued-node-runtime-changed");
     if(work.Item3!=null)RejectedParent(c,work.Item1,work.Item3,row.ParentFirst,row.ParentPresenceFirst);
     else if(row.Depth!=0||!Same(runtime,rootId))throw new RejectedStop("captured-root-runtime-changed");
@@ -684,7 +707,7 @@ public static class BowserDefaultContext {
     RejectedRootFence(c,host,testPid,hostTid,popup,menuTid,browser,root,rootId);row.Status="browser-shapes-recorded-not-authority";
     var child=RejectedProvider(c,()=>TreeWalker.RawViewWalker.GetFirstChild(work.Item1),row.FirstChild,"element-presence");
     while(child!=null){
-     if(row.Depth>=128||!InventoryCapacity(c.Nodes.Count,queue.Count+1))throw new RejectedStop("node-queue-or-depth-cap");
+     if(row.Depth>=128||!InventoryCapacity(c.NodeCount,queue.Count+1))throw new RejectedStop("node-queue-or-depth-cap");
      RejectedRootFence(c,host,testPid,hostTid,popup,menuTid,browser,root,rootId);
      // Before reading/advancing this child, prove only its exact retained browser
      // parent's raw runtime/PID edge. This never asks for the captured root's parent.
@@ -713,8 +736,79 @@ public static class BowserDefaultContext {
  // Read this captured string only after the exact failed test process was terminated.
  // No provider/native calls, I/O, digest, MenuProof, membership, retry, or input here.
  public static string RejectedInventoryEvidence(){return rejectedInventoryBuffer;}
+ static void AssertRejectedCache(RejectedContext c,List<RejectedNode> full){
+  string expected=RejectedFullJson(c,full),actual=RejectedJson(c);
+  if(actual!=expected||RejectedLength(c)!=expected.Length||c.NodeCount!=full.Count)throw new InvalidOperationException("Synthetic rejected finalized cache differs from full serializer.");
+ }
+ static void CheckRejectedReadingMutations(RejectedContext c,List<RejectedNode> full,RejectedReading reading,bool identityOnly){
+  var maximum=new int[32];for(int n=0;n<maximum.Length;n++)maximum[n]=n%2==0?Int32.MinValue:Int32.MaxValue;
+  reading.Runtime.Store(maximum,"runtime-id");AssertRejectedCache(c,full);
+  reading.Pid.Store(Int32.MaxValue,"integer");AssertRejectedCache(c,full);
+  if(identityOnly)return;
+  reading.Type.Store(ControlType.MenuBar,"control-type");AssertRejectedCache(c,full);
+  reading.Hwnd.Store(AutomationElement.NotSupported,"integer");AssertRejectedCache(c,full);
+  reading.Bounds.Store(System.Windows.Rect.Empty,"rectangle");AssertRejectedCache(c,full);
+  reading.Bounds.Store(new System.Windows.Rect(Double.NaN,Double.PositiveInfinity,3,4),"rectangle");AssertRejectedCache(c,full);
+  reading.Bounds.Store(new System.Windows.Rect(1,2,3,4),"rectangle");AssertRejectedCache(c,full);
+  foreach(var flag in new[]{reading.Control,reading.Content,reading.Enabled,reading.Focusable,reading.Focused,reading.Offscreen}){flag.Store(false,"boolean");AssertRejectedCache(c,full);flag.Failed();AssertRejectedCache(c,full);}
+ }
+ static void CheckRejectedMutationCap(string field,Action<RejectedContext,RejectedNode> mutate){
+  var c=new RejectedContext{Deadline=1000,SyntheticClock=()=>100,Outer="0"};var row=new RejectedNode{Index=1};c.AddNode(row);var full=new List<RejectedNode>{row};
+  int limit=RejectedOutputCap-RejectedOutputReserve;c.Outer="\""+new string('x',limit-RejectedLength(c)-1)+"\"";
+  AssertRejectedCache(c,full);if(RejectedLength(c)!=limit)throw new InvalidOperationException("Synthetic rejected mutation cap setup failed: "+field);c.Check();
+  mutate(c,row);AssertRejectedCache(c,full);if(RejectedLength(c)<=limit)throw new InvalidOperationException("Synthetic rejected mutation did not cross cap: "+field);
+  bool refused=false;try{c.Check();}catch(RejectedStop stop){refused=stop.Reason=="output-cap";}if(!refused)throw new InvalidOperationException("Synthetic rejected live mutation escaped cap: "+field);
+ }
+ static void CheckRejectedSerializationCache(){
+  var c=new RejectedContext{Deadline=1000,SyntheticClock=()=>100};var full=new List<RejectedNode>();AssertRejectedCache(c,full);
+  var row=new RejectedNode{Index=1};c.AddNode(row);full.Add(row);AssertRejectedCache(c,full);
+  // Each of these changes can occur after a row first receives its recorded status.
+  row.Status="browser-shapes-recorded-not-authority";AssertRejectedCache(c,full);
+  row.Index=128;AssertRejectedCache(c,full);row.Depth=128;AssertRejectedCache(c,full);row.ExpectedParent=new int[32];AssertRejectedCache(c,full);
+  CheckRejectedReadingMutations(c,full,row.First,false);CheckRejectedReadingMutations(c,full,row.Later,false);
+  foreach(var reading in new[]{row.ParentFirst,row.ParentLater,row.SiblingSourceParent,row.ReturnedSiblingParent,row.EnumerationParentLater})CheckRejectedReadingMutations(c,full,reading,true);
+  foreach(var presence in new[]{row.ParentPresenceFirst,row.ParentPresenceLater,row.FirstChild,row.NextSibling,row.SiblingSourcePresence,row.ReturnedSiblingPresence}){presence.Store(new object(),"element-presence");AssertRejectedCache(c,full);presence.Store(null,"element-presence");AssertRejectedCache(c,full);presence.Failed();AssertRejectedCache(c,full);}
+  row.LastQueuedRuntime.Store(new int[32],"runtime-id");AssertRejectedCache(c,full);
+  // Freeze only at the next node. Late enumeration values above must be retained.
+  string frozen=row.Render();row=new RejectedNode{Index=2,Depth=1,Status="foreign-or-unknown-pid-subtree-excluded",ExpectedParent=new[]{42,1}};
+  row.First.Runtime.Store(new[]{42,2},"runtime-id");row.First.Pid.Store(11,"integer");c.AddNode(row);full.Add(row);AssertRejectedCache(c,full);
+  if(c.FinalizedRows.Count!=1||c.FinalizedRows[0]!=frozen||c.FinalizedLength!=frozen.Length)throw new InvalidOperationException("Synthetic rejected row froze before late enumeration mutations.");
+  CheckRejectedReadingMutations(c,full,row.ParentFirst,true);
+  row=new RejectedNode{Index=3,Depth=2};c.AddNode(row);full.Add(row);AssertRejectedCache(c,full);
+  if(c.FinalizedRows.Count!=2||c.FinalizedLength!=c.FinalizedRows[0].Length+c.FinalizedRows[1].Length+1)throw new InvalidOperationException("Synthetic rejected finalized comma accounting changed.");
+  // This separate fixture intentionally retains and mutates the old object. The
+  // production cache must retain its finalized string, not re-render that object.
+  var isolated=new RejectedContext();var retained=new RejectedNode{Index=1};isolated.AddNode(retained);isolated.AddNode(new RejectedNode{Index=2});
+  string snapshot=RejectedJson(isolated),frozenSnapshot=isolated.FinalizedRows[0];int snapshotLength=RejectedLength(isolated);
+  retained.Status="synthetic-old-object-mutated";retained.First.Bounds.Store(System.Windows.Rect.Empty,"rectangle");retained.LastQueuedRuntime.Store(new int[32],"runtime-id");
+  if(retained.Render()==frozenSnapshot||isolated.FinalizedRows[0]!=frozenSnapshot||RejectedJson(isolated)!=snapshot||RejectedLength(isolated)!=snapshotLength)throw new InvalidOperationException("Synthetic rejected frozen row re-rendered retained mutable object.");
+  // Exercise the actual thrown-getter wrapper on the retained partial active row.
+  bool threw=false;try{RejectedProvider<object>(c,()=>{throw new InvalidOperationException("synthetic-only");},row.First.Hwnd,"integer");}catch(RejectedStop stop){threw=stop.Reason=="provider-getter-failed";}
+  if(!threw||!c.GetterFailed||row.First.Hwnd.Status!="getter-failed")throw new InvalidOperationException("Synthetic rejected cache lost active failed getter.");
+  AssertRejectedCache(c,full);
+  // Header and root-fence fields stay live even after earlier rows are frozen.
+  c.Partial=true;AssertRejectedCache(c,full);c.Stop="provider-getter-failed";AssertRejectedCache(c,full);
+  c.BrowserPid=UInt32.MaxValue;AssertRejectedCache(c,full);c.Popup=Int64.MinValue;AssertRejectedCache(c,full);c.RootId=new int[32];AssertRejectedCache(c,full);
+  c.ReadinessDeadline=UInt64.MaxValue;AssertRejectedCache(c,full);c.OwnershipDeadline=UInt64.MaxValue;AssertRejectedCache(c,full);c.Deadline=UInt64.MaxValue;AssertRejectedCache(c,full);
+  c.Outer="{\"late_outer\":true}";AssertRejectedCache(c,full);c.RootFence=new RejectedReading();AssertRejectedCache(c,full);CheckRejectedReadingMutations(c,full,c.RootFence,false);
+  // Actual Check predicates: exact reserve boundary, one-character excess, and
+  // deadline rejection both before rendering and on the unchanged after-render clock.
+  var edge=new RejectedContext{Deadline=1000,SyntheticClock=()=>100,Outer="0"};int limit=RejectedOutputCap-RejectedOutputReserve;
+  edge.Outer="\""+new string('x',limit-RejectedLength(edge)-1)+"\"";
+  AssertRejectedCache(edge,new List<RejectedNode>());if(RejectedLength(edge)!=limit)throw new InvalidOperationException("Synthetic rejected exact output boundary setup failed.");edge.Check();
+  edge.Outer=edge.Outer.Insert(1,"x");AssertRejectedCache(edge,new List<RejectedNode>());threw=false;try{edge.Check();}catch(RejectedStop stop){threw=stop.Reason=="output-cap";}if(!threw)throw new InvalidOperationException("Synthetic rejected cache missed one-character output excess.");
+  CheckRejectedMutationCap("active-last-property",(context,active)=>active.Later.Bounds.Store(new System.Windows.Rect(1,2,3,4),"rectangle"));
+  CheckRejectedMutationCap("parent-runtime",(context,active)=>active.EnumerationParentLater.Runtime.Store(new int[32],"runtime-id"));
+  CheckRejectedMutationCap("sibling-query",(context,active)=>active.NextSibling.Store(null,"element-presence"));
+  CheckRejectedMutationCap("root-runtime",(context,active)=>context.RootFence.Runtime.Store(new int[32],"runtime-id"));
+  int ticks=0;var before=new RejectedContext{Deadline=100,RootFence=null,SyntheticClock=()=>{ticks++;return 100;}};
+  threw=false;try{before.Check();}catch(RejectedStop stop){threw=stop.Reason=="cooperative-budget-expired";}if(!threw||ticks!=1)throw new InvalidOperationException("Synthetic rejected expired clock rendered or continued.");
+  ticks=0;var after=new RejectedContext{Deadline=1000,SyntheticClock=()=>++ticks==1?100UL:1000UL};
+  threw=false;try{after.Check();}catch(RejectedStop stop){threw=stop.Reason=="cooperative-budget-expired";}if(!threw||ticks!=2)throw new InvalidOperationException("Synthetic rejected after-render clock omitted or retried.");
+ }
  // Synthetic only: these are the actual collector/serializer predicates, no native/UIA/I/O.
  public static void CheckRejectedInventoryPolicy(){
+  CheckRejectedSerializationCache();
   if(RejectedDeadline(100,1000,0)!=850||RejectedDeadline(100,700,0)!=700||RejectedDeadline(100,1000,600)!=600||RejectedDeadline(100,99,0)!=99||RejectedDeadline(UInt64.MaxValue-1,UInt64.MaxValue,0)!=UInt64.MaxValue)throw new InvalidOperationException("Synthetic rejected diagnostic budget changed.");
   Action<Action> refuses=action=>{bool refused=false;try{action();}catch(RejectedStop){refused=true;}if(!refused)throw new InvalidOperationException("Synthetic rejected diagnostic guard accepted invalid input.");};
   var seen=new HashSet<string>(StringComparer.Ordinal);RejectedVisit(seen,new[]{42,1},0,1);refuses(()=>RejectedVisit(seen,new[]{42,1},1,2));
@@ -736,12 +830,14 @@ public static class BowserDefaultContext {
   if(!InventoryCapacity(1,127)||InventoryCapacity(1,128)||InventoryCapacity(128,1))throw new InvalidOperationException("Synthetic rejected queue capacity changed.");
   var bounds=new RejectedValue();bounds.Store(System.Windows.Rect.Empty,"rectangle");if(!bounds.Json.Contains("positive-infinity")||!bounds.Json.Contains("negative-infinity")||!bounds.Json.Contains("\"x\":null")||bounds.Json.Contains("Infinity"))throw new InvalidOperationException("Synthetic nonfinite bounds serialized as number/default.");
   if(RejectedNumber(Double.NaN)!="null"||RejectedNumberShape(Double.NaN)!="nan"||RejectedNumber(1.25)!="1.25")throw new InvalidOperationException("Synthetic finite/nonfinite serializer changed.");
-  var c=new RejectedContext{BrowserPid=10,Partial=true,Stop="provider-getter-failed"};var row=new RejectedNode{Index=1,Depth=0};row.First.Hwnd.Failed();c.Nodes.Add(row);
+  var c=new RejectedContext{BrowserPid=10,Partial=true,Stop="provider-getter-failed"};var row=new RejectedNode{Index=1,Depth=0};row.First.Hwnd.Failed();c.AddNode(row);var full=new List<RejectedNode>{row};AssertRejectedCache(c,full);
   string json=RejectedBoundedJson(c);if(!json.Contains("getter-failed")||!json.Contains("\"first\":")||!json.Contains("\"later\":")||!json.Contains("\"coverage\":\"partial\"")||json.Contains("inventory_digest")||json.Contains("inventory_first")||json.Contains("inventory_fresh"))throw new InvalidOperationException("Synthetic rejected schema mixed with authority or lost failure state.");
   var liveCap=new RejectedContext{Deadline=1000,SyntheticClock=()=>100};bool stopped=false;
-  for(int n=0;n<128;n++){try{liveCap.Check();liveCap.Nodes.Add(new RejectedNode{Index=n+1});liveCap.Check();}catch(RejectedStop){stopped=true;liveCap.Partial=true;liveCap.Stop="output-cap";break;}}
+  for(int n=0;n<128;n++){try{liveCap.Check();liveCap.AddNode(new RejectedNode{Index=n+1});liveCap.Check();}catch(RejectedStop){stopped=true;liveCap.Partial=true;liveCap.Stop="output-cap";break;}}
   json=RejectedBoundedJson(liveCap);if(!stopped||json.Length>RejectedOutputCap||json.Contains("output-cap-details-discarded"))throw new InvalidOperationException("Synthetic live collector reserve failed.");
-  c.GetterFailed=true;for(int n=0;n<128;n++)c.Nodes.Add(new RejectedNode{Index=n+2});json=RejectedBoundedJson(c);if(json.Length>RejectedOutputCap||!json.Contains("output-cap-details-discarded")||!json.Contains("getter-failed"))throw new InvalidOperationException("Synthetic rejected serializer exceeded output cap or erased failure state.");
+  c.GetterFailed=true;for(int n=0;n<128;n++){var extra=new RejectedNode{Index=n+2};c.AddNode(extra);full.Add(extra);}AssertRejectedCache(c,full);
+  if(RejectedFullJson(c,full).Length<=RejectedOutputCap)throw new InvalidOperationException("Synthetic rejected hard fallback setup did not exceed cap.");
+  json=RejectedBoundedJson(c);if(json.Length>RejectedOutputCap||!json.Contains("output-cap-details-discarded")||!json.Contains("getter-failed")||!json.Contains("\"node_count\":129"))throw new InvalidOperationException("Synthetic rejected serializer exceeded output cap or erased failure state.");
  }
  public static MenuProof ReadMenu(IntPtr host,uint testPid,uint hostTid,IntPtr popup,uint browserPid,ReadOnlyBrowser browser,ReadOnlyBrowser gpu,ulong ownershipDeadline,string diagnosticDirectory,ulong diagnosticReadinessDeadline){
   uint helperPid=NativeCurrentProcessId(); // Known local identity, captured before UIA traversal.
