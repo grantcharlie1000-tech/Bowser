@@ -6,7 +6,9 @@ $ErrorActionPreference='Stop';Set-StrictMode -Version Latest
 Add-Type -AssemblyName UIAutomationClient,UIAutomationTypes,WindowsBase
 $references=@([System.Windows.Automation.AutomationElement].Assembly.Location,[System.Windows.Automation.ControlType].Assembly.Location,[System.Windows.Rect].Assembly.Location)
 $helpers=@('probe-default-context-cancellation.ps1','probe-native-context-observation.ps1','probe-app-context-menu.ps1','probe-app-context-menu-reload.ps1','probe-app-host-context-menu.ps1')
-$compiled=@{}
+$compiled=@{};$typeNames=[ordered]@{}
+$definitions=[Collections.Generic.List[string]]::new()
+$imports=[Collections.Generic.SortedSet[string]]::new([StringComparer]::Ordinal)
 foreach($name in $helpers){
  $tokens=$null;$errors=$null
  $ast=[Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot $name),[ref]$tokens,[ref]$errors)
@@ -22,12 +24,22 @@ foreach($name in $helpers){
  if(!$match.Success){throw "$name managed helper class unavailable."}
  # Two genuinely independent scripts use BowserAppContext. Rename the compile-only copy,
  # never the actual source or its runtime class, so both can be checked in this process.
- $original=$match.Groups[1].Value;$unique=$original+($compiled.Count.ToString())+'CompileOnly'
+ $original=$match.Groups[1].Value;$unique=$original+($definitions.Count.ToString())+'CompileOnly'
  $source=[regex]::Replace($source,'\b'+[regex]::Escape($original)+'\b',$unique)
- if($name -ceq 'probe-default-context-cancellation.ps1'){
-  Add-Type -TypeDefinition $source -ReferencedAssemblies $references
- }else{Add-Type -TypeDefinition $source}
- $compiled[$name]=($unique -as [type])
+ $prefix=[regex]::Match($source,'\A(?:\s*using\s+[A-Za-z_][A-Za-z0-9_.]*\s*;)+')
+ if(!$prefix.Success){throw "$name must have only ordinary namespace imports before its helper class."}
+ foreach($import in [regex]::Matches($prefix.Value,'using\s+([A-Za-z_][A-Za-z0-9_.]*)\s*;')){
+  $null=$imports.Add('using '+$import.Groups[1].Value+';')
+ }
+ $definitions.Add($source.Substring($prefix.Length));$typeNames[$name]=$unique
+}
+# Compile once: Windows PowerShell 5.1 registers compiler-generated anonymous types by
+# name too. Separate Add-Type calls can collide even after the public classes are renamed.
+# One source unit generates its anonymous types only once; no probe body is invoked.
+$combined=($imports -join "`n")+"`n"+($definitions -join "`n")
+Add-Type -TypeDefinition $combined -ReferencedAssemblies $references
+foreach($name in $typeNames.Keys){
+ $compiled[$name]=($typeNames[$name] -as [type])
  if(!$compiled[$name]){throw "$name managed helper did not compile."}
 }
 # Pure methods only. This verifies exact diagnostic JSON escaping and the no-HWND branch

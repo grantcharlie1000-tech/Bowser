@@ -57,6 +57,13 @@ class NativeSafetySourceContracts(unittest.TestCase):
         self.assertIn("CloseWindowStation(probe)", diagnostics)
         self.assertIn("::AdmissionCloseConfirmed", helper.split("# Admission has already refused", 1)[1])
 
+    def test_managed_helpers_compile_in_one_source_unit(self):
+        checker = source("benchmarks/scripts/test-native-menu-helpers.ps1")
+        self.assertEqual(checker.count("Add-Type -TypeDefinition"), 1)
+        self.assertIn("Add-Type -TypeDefinition $combined -ReferencedAssemblies $references", checker)
+        self.assertIn("$definitions.Add($source.Substring($prefix.Length))", checker)
+        self.assertIn("$typeNames=[ordered]@{}", checker)
+
     def test_reload_has_one_activation_and_observation_only_rechecks(self):
         reload = source("src/engine/app_context_menu_probe/reload.rs")
         self.assertEqual(reload.count("SetForegroundWindow(owner)"), 1)
