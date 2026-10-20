@@ -311,6 +311,16 @@ fn dotted_quad(host: &str) -> bool {
     }) && parts == 4
 }
 
+/// The web address a submit of `input` goes to, as [`resolve_input`] reads it, or `None` for a
+/// search, empty text or a refusal (`javascript:`, `e.g.`). No search engine is needed for that.
+pub fn web_address(input: &str) -> Option<Url> {
+    let no_engine = SearchProvider { template: String::new(), image_template: String::new() };
+    match resolve_input(input, &no_engine) {
+        Ok(NavigationTarget::Web(url)) => Some(url),
+        _ => None,
+    }
+}
+
 /// `input` with each run of tabs and line breaks as one space (borrowed when it has none).
 fn space_out_breaks(input: &str) -> std::borrow::Cow<'_, str> {
     let is_break = |c: char| matches!(c, '\t' | '\r' | '\n');
@@ -503,6 +513,24 @@ mod tests {
                 NavigationTarget::Web(Url::parse(expected).unwrap()),
                 "input: {input}"
             );
+        }
+    }
+
+    #[test]
+    fn the_address_a_submit_shows_is_only_one_it_will_open() {
+        // OB-11: the toolbar shows what Enter opens, never a refused or searched text.
+        for (input, shown) in [
+            ("example.com", Some("https://example.com/")),
+            ("http://example.com/a", Some("http://example.com/a")),
+            ("localhost:8080", Some("https://localhost:8080/")),
+            ("javascript:alert(1)", None),
+            ("e.g.", None),
+            ("foo.", None),
+            ("rust ownership", None),
+            ("Note: buy milk", None),
+            ("   ", None),
+        ] {
+            assert_eq!(web_address(input).map(|url| url.to_string()).as_deref(), shown, "input: {input}");
         }
     }
 

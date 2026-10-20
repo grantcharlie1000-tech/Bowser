@@ -9710,8 +9710,10 @@ fn html_command(hwnd: HWND, command: ChromeCommand) {
             super::html_hover::suggest_hide(hwnd); // --- omnibox suggest ---
             // Same path as the native omnibox: remember the typed text, then let App normalise it.
             remember_url(hwnd, App::active_tab_id(&app), &text, App::settings(&app).minimal_url);
-            App::submit(&app, &text);
-            App::focus_page(&app);
+            // OB-11: after a refusal (or empty text) the address field keeps the keyboard.
+            if App::submit_opened(&app, &text) {
+                App::focus_page(&app);
+            }
         }
         ChromeCommand::Escape => {
             let Some(app) = app_of(hwnd) else { return };
@@ -12046,14 +12048,9 @@ fn read_edit(hwnd: HWND) -> String {
     }
 }
 fn remember_url(hwnd: HWND, id: TabId, value: &str, minimal_url: bool) {
-    let parsed = url::Url::parse(value).or_else(|_| {
-        if value.contains('.') || value.starts_with("localhost") {
-            url::Url::parse(&format!("https://{value}"))
-        } else {
-            Err(url::ParseError::RelativeUrlWithoutBase)
-        }
-    });
-    if let Ok(url) = parsed {
+    // OB-11: only what the submit will really open, read as `resolve_input` reads it. A looser
+    // guess showed `javascript:alert(1)` or `e.g.` as the tab's address after a refusal or search.
+    if let Some(url) = crate::navigation::web_address(value) {
         let shown = omnibox::address_display(&url, minimal_url);
         let full = omnibox::focused_address_display(&url);
         let _ = with_chrome(hwnd, |s| {

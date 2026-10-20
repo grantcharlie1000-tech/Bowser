@@ -5583,8 +5583,18 @@ impl App {
         Self::submit_with(app, input, crate::address_input::Options::default());
     }
 
+    /// [`App::submit`], and whether it opened anything: `false` for empty text or a refusal, after
+    /// which the address field keeps the focus (OB-11).
+    pub fn submit_opened(app: &AppRef, input: &str) -> bool {
+        Self::submit_checked(app, input, crate::address_input::Options::default())
+    }
+
     /// [`App::submit`] with how the text was submitted (new tab, domain expansion, the search field).
     pub fn submit_with(app: &AppRef, input: &str, options: crate::address_input::Options<'_>) {
+        let _ = Self::submit_checked(app, input, options);
+    }
+
+    fn submit_checked(app: &AppRef, input: &str, options: crate::address_input::Options<'_>) -> bool {
         // `bowser://settings...` opens the settings page (a blank tab becomes it); other internal
         // hosts fall through and are reported as an unsupported address, as before.
         if let Some(page) = crate::internal_page::parse_input(input) {
@@ -5599,7 +5609,7 @@ impl App {
             } else {
                 win32::open_settings_page(hwnd, app, page.section(), true);
             }
-            return;
+            return true;
         }
         // Address bar, search and bookmark options (src/address_input.rs): scoped nicknames, engine
         // nicknames, the private-window engine, HTTPS upgrade, domain expansion, new-tab searches.
@@ -5612,16 +5622,19 @@ impl App {
         let engines = crate::address_runtime::engines();
         let options = crate::address_input::Options { private, ..options };
         match crate::address_input::resolve(input, &address, &engines, options) {
-            crate::address_input::Outcome::Empty => {}
+            crate::address_input::Outcome::Empty => false,
             crate::address_input::Outcome::Refused(message) => {
                 win32::show_error_message(&format!("This address or search could not be used: {message}"));
+                false
             }
             crate::address_input::Outcome::Scoped { scope, rest } => {
                 let hwnd = app.borrow().hwnd;
                 win32::address_scoped_submit(hwnd, app, scope, &rest);
+                true
             }
             crate::address_input::Outcome::Open { destination, new_tab } => {
                 Self::open_destination(app, options.typed_text(input), destination, new_tab, private);
+                true
             }
         }
     }
