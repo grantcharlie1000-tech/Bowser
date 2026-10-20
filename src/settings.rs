@@ -113,8 +113,9 @@ pub const TEMPLATE: &str = "# Bowser settings. Restart Bowser after editing.\r\n
     # (more tabs_* options: see Settings > Tabs)\r\n\
     # theme_schedule=system\r\n\
     # (more theme_* options: see Settings > Appearance)\r\n";
-/// Largest settings file that will be read; a larger file is ignored entirely.
-pub const MAX_FILE_BYTES: usize = 16 * 1024;
+/// Largest settings file that will be read; a larger file is ignored entirely. Holds every setting
+/// with each list at its cap (`a_profile_with_every_list_at_its_cap_fits_the_file`).
+pub const MAX_FILE_BYTES: usize = 64 * 1024;
 pub const DEFAULT_SLEEP_AFTER_SECS: u64 = 300;
 /// Hidden tabs are suspended after 30 s, so sleeping earlier would never be eligible.
 pub const MIN_SLEEP_AFTER_SECS: u64 = 30;
@@ -122,6 +123,10 @@ pub const MAX_SLEEP_AFTER_SECS: u64 = 7 * 24 * 60 * 60;
 
 /// Most `blocker_allow` entries kept; the rest of a longer list is ignored.
 pub const MAX_BLOCKER_ALLOW: usize = 500;
+/// Longest `blocker_allow` value in bytes (the sites and the commas between them): 500 sites of up
+/// to 40 characters. Keeps the page's `save` and the file within their caps (the page's
+/// `MAX_ALLOW_BYTES`); the sites past it in a longer list are ignored.
+pub const MAX_BLOCKER_ALLOW_BYTES: usize = 20 * 1024;
 
 /// `efficiency_mode`: when Bowser trims background work to save power. `Auto` follows the power
 /// source (battery or Battery Saver), `On` and `Off` ignore it.
@@ -779,7 +784,11 @@ impl Settings {
                         // is dropped rather than making the whole settings snapshot unsavable.
                         .filter(|site| !site.chars().any(|c| c.is_whitespace() || c.is_control()))
                         .take(MAX_BLOCKER_ALLOW)
-                        .map(str::to_owned)
+                        .scan(0usize, |used, site| {
+                            // Whole sites only, while the joined list stays within its byte cap.
+                            *used += site.len() + usize::from(*used > 0);
+                            (*used <= MAX_BLOCKER_ALLOW_BYTES).then(|| site.to_owned())
+                        })
                         .collect();
                 }
                 "sleep_after_secs" => {
@@ -1150,6 +1159,9 @@ pub fn parse_blocker_allow(text: &str) -> Result<Vec<String>, String> {
     if sites.len() > MAX_BLOCKER_ALLOW {
         return Err(format!("Allow at most {MAX_BLOCKER_ALLOW} sites."));
     }
+    if sites.iter().map(|site| site.len() + 1).sum::<usize>().saturating_sub(1) > MAX_BLOCKER_ALLOW_BYTES {
+        return Err(format!("The allowed sites can use at most {MAX_BLOCKER_ALLOW_BYTES} characters in all."));
+    }
     if let Some(site) = sites
         .iter()
         .find(|site| site.chars().any(|c| c.is_whitespace() || c.is_control()))
@@ -1389,7 +1401,7 @@ fn read_text(path: &Path) -> io::Result<String> {
     if meta.len() > MAX_FILE_BYTES as u64 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            "settings file is larger than the 16 KiB limit",
+            format!("settings file is larger than the {} KiB limit", MAX_FILE_BYTES / 1024),
         ));
     }
     let bytes = std::fs::read(path)?;
@@ -2215,7 +2227,7 @@ nick_tabs=t
         let path = dir.join("settings.txt");
         let _ = std::fs::remove_file(&path);
         // Sites are fine individually but the joined line pushes the saved file past the limit.
-        let site = format!("{}.example", "a".repeat(60));
+        let site = format!("{}.example", "a".repeat(200));
         let huge = Settings {
             blocker_allow: vec![site; MAX_BLOCKER_ALLOW],
             ..Settings::default()
@@ -2223,6 +2235,48 @@ nick_tabs=t
         assert!(save(&path, &huge).is_err());
         assert!(!path.exists());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 500 allow-list sites within `MAX_BLOCKER_ALLOW_BYTES`, the longest homepage and eight of the
+    /// longest startup pages: the page can send all of it, so the file must hold it and read it back.
+    #[test]
+    fn a_profile_with_every_list_at_its_cap_fits_the_file() {
+        let dir = std::env::temp_dir().join(format!("bowser-caps-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.txt");
+        std::fs::write(&path, TEMPLATE).unwrap();
+        let address = |n: usize| format!("https://example.com/{n}/{}", "a".repeat(crate::start_page::MAX_URL_CHARS - 21 - n.to_string().len()));
+        let mut full = Settings {
+            blocker_allow: (0..MAX_BLOCKER_ALLOW).map(|n| format!("{n:03}{}.example", "a".repeat(28))).collect(),
+            ui_font: "f".repeat(MAX_UI_FONT_CHARS),
+            download_dir: format!("C:\\{}", "d".repeat(MAX_DOWNLOAD_DIR_CHARS - 3)),
+            ..sample()
+        };
+        full.start.homepage = address(9);
+        full.start.startup = crate::start_page::Startup::SpecificPages;
+        full.start.startup_pages = (0..crate::start_page::MAX_STARTUP_PAGES).map(address).collect();
+        full.tabs.new_tab_url = crate::tab_options::PageUrl(address(10));
+        assert!(full.blocker_allow.join(",").len() <= MAX_BLOCKER_ALLOW_BYTES);
+        assert!(full.start.startup_pages.iter().all(|page| page.len() == crate::start_page::MAX_URL_CHARS));
+        let written = render_updated(TEMPLATE, &full);
+        assert!(written.len() <= MAX_FILE_BYTES, "{} bytes", written.len());
+        save(&path, &full).unwrap();
+        let back = read_strict(&path).unwrap();
+        assert_eq!(back.blocker_allow, full.blocker_allow);
+        assert_eq!(back.start, full.start);
+        assert_eq!(back, full);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_allow_list_over_its_byte_cap_is_refused_or_cut_at_a_whole_site() {
+        let site = format!("{}.example", "a".repeat(50));
+        let over = vec![site.as_str(); MAX_BLOCKER_ALLOW].join(",");
+        assert!(over.len() > MAX_BLOCKER_ALLOW_BYTES);
+        assert!(parse_blocker_allow(&over).unwrap_err().contains("characters"), "the dialog and the page say why");
+        let read = Settings::parse(&format!("blocker_allow={over}\n")).blocker_allow;
+        assert_eq!(read.len(), (MAX_BLOCKER_ALLOW_BYTES + 1) / (site.len() + 1), "whole sites up to the cap");
+        assert!(read.iter().all(|kept| *kept == site));
     }
 
     #[test]

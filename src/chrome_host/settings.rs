@@ -13,9 +13,13 @@ use crate::settings::{
     BookmarksBar, FontSize, SidePanelPosition, Settings, TabLayout, Theme,
 };
 
-/// Longest `save` payload (the page's `MAX_TEXT`). Raised from 2048 alongside the page's `MAX_TEXT`
-/// to fit the full set of profile settings; still well under `settings::MAX_FILE_BYTES` (16 KiB).
-pub const MAX_SAVE_TEXT: usize = 4096;
+/// Longest `save` payload in bytes (the page's `MAX_SETTINGS_SAVE`, the protocol's
+/// `MAX_SETTINGS_SAVE_CHARS`): every profile setting with each list at its cap fits
+/// (`a_profile_with_every_list_at_its_cap_saves_and_round_trips`), and so does the file it writes
+/// (`settings::MAX_FILE_BYTES`).
+pub const MAX_SAVE_TEXT: usize = super::protocol::MAX_SETTINGS_SAVE_CHARS;
+/// Largest snapshot the page reads (its `MAX_INBOUND`).
+pub const MAX_SNAPSHOT_BYTES: usize = 256 * 1024;
 const MAX_PROFILE_CHARS: usize = 64;
 const MAX_AVATAR_CHARS: usize = 4;
 const MAX_ERROR_CHARS: usize = 240;
@@ -599,6 +603,67 @@ mod tests {
         assert!(!apply_settings_text(&mut settings, &valid.replace("default_zoom=125", "default_zoom=501")), "above the maximum");
         assert!(!apply_settings_text(&mut settings, &valid.replace("frameless=true", "frameless=maybe")));
         assert!(!apply_settings_text(&mut settings, &format!("{valid}\nblock_youtube_video_ads=true")), "duplicate key");
+    }
+
+    /// H3-3: the page sends the whole profile on every change, so with 500 allow-list sites and long
+    /// startup pages every row's change used to fail ("That value is not allowed."). The payload
+    /// with every list at its cap crosses the wire, applies, saves, reads back and snapshots.
+    #[test]
+    fn a_profile_with_every_list_at_its_cap_saves_and_round_trips() {
+        use crate::chrome_host::protocol::{parse_command, Command, PanelType, MAX_RAW_BYTES};
+        let address = |n: usize| format!("https://example.com/{n}/{}", "a".repeat(crate::start_page::MAX_URL_CHARS - 21 - n.to_string().len()));
+        let sites: Vec<String> = (0..crate::settings::MAX_BLOCKER_ALLOW).map(|n| format!("{n:03}{}.example", "a".repeat(28))).collect();
+        assert!(sites.join(",").len() <= crate::settings::MAX_BLOCKER_ALLOW_BYTES);
+        let pages: Vec<String> = (0..crate::start_page::MAX_STARTUP_PAGES).map(address).collect();
+        let text = format!(
+            "tab_layout=vertical\nsidebar_width=300\nsleep_enabled=false\nsleep_after_secs=900\nblocker_enabled=true\nblocker_allow={}\nautomatic_tab_grouping=false\nefficiency_mode=on\ntracking_prevention=strict\n\
+            search_engine=google\ntheme=system\ntheme_accent=#1a2b3c\ntoolbar_buttons=back,reload\ncentred_address_bar=false\nminimal_url=false\nshow_load_progress=false\n\
+            frameless=true\nrounded_content_frame=false\nshow_home_button=false\nbookmarks_bar=always\nbookmarks_bar_tab_groups=true\n\
+            side_panel_position=right\ntab_preview_images=false\ntab_preview_memory=false\nfont_size=large\nui_font={}\n\
+            default_zoom=125\nshow_zoom_indicator=false\nnew_tab_beside_active=false\nctrl_tab_mru=false\nshift_right_click_context=true\n\
+            ctrl_shift_c_copy_link=false\nctrl_s_vertical_tabs=true\npin_new_tab_groups=true\nsplit_edge_drop=false\nblock_youtube_video_ads=false\n\
+            homepage={}\nstartup=specific_pages\nstartup_pages={}",
+            sites.join(","), "f".repeat(crate::settings::MAX_UI_FONT_CHARS), address(9), pages.join(" "),
+        );
+        assert!(text.len() > 32 * 1024 && text.len() <= MAX_SAVE_TEXT, "{} bytes", text.len());
+        let wire = format!(r#"{{"v":1,"t":"set","a":"save","text":"{}"}}"#, text.replace('\n', "\\n"));
+        assert!(wire.len() <= MAX_RAW_BYTES, "{} bytes", wire.len());
+        let Ok(Command::Panel { kind: PanelType::Settings, f }) = parse_command(&wire) else { panic!("the save crosses the wire") };
+        assert_eq!(map_command(&f), Some(Action::Save(text.clone())));
+
+        let mut settings = Settings::default();
+        assert!(apply_page_save(&mut settings, &text));
+        assert_eq!(settings.blocker_allow, sites);
+        assert_eq!(settings.start.startup_pages, pages);
+        let dir = std::env::temp_dir().join(format!("bowser-page-caps-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.txt");
+        std::fs::write(&path, crate::settings::TEMPLATE).unwrap();
+        crate::settings::save(&path, &settings).expect("the file holds the whole profile");
+        let back = crate::settings::read_strict(&path).unwrap();
+        assert_eq!(back, settings);
+        let snap = Snapshot {
+            settings: &back, readable: true, custom_search: false, efficiency_active: false, auto_update: true, history_enabled: true, guest: false,
+            profile: "Default", avatar: "", version: "1.0.0", update: "idle", update_version: "", last_check: "none", check_result: "none",
+            ack: Ack::Saved, error: "", default_browser: "unknown", download_dir: "", download_ask: false, workspace_rules: Vec::new(), workspace_names: Vec::new(),
+        };
+        assert!(snapshot_json(&snap).len() <= MAX_SNAPSHOT_BYTES);
+        let _ = std::fs::remove_dir_all(&dir);
+
+        // Past the caps the payload is refused whole, never cut: a longer allow list, or a longer text.
+        let over = text.replace(&format!("blocker_allow={}", sites.join(",")), &format!("blocker_allow={}", vec!["a".repeat(60); 500].join(",")));
+        assert!(!apply_page_save(&mut Settings::default(), &over));
+        let long = format!("{text}\n#{}", "x".repeat(MAX_SAVE_TEXT));
+        let wire = format!(r#"{{"v":1,"t":"set","a":"save","text":"{}"}}"#, long.replace('\n', "\\n"));
+        assert!(parse_command(&wire).is_err(), "the protocol refuses the text");
+        let mut fields = fields("save");
+        fields.text = Some(long);
+        assert_eq!(map_command(&fields), None);
+        let mut other = fields.clone();
+        other.a = "tabopt".into();
+        other.text = Some("x".repeat(crate::chrome_host::protocol::MAX_TEXT_CHARS + 1));
+        let wire = format!(r#"{{"v":1,"t":"set","a":"tabopt","text":"{}"}}"#, other.text.as_deref().unwrap());
+        assert!(parse_command(&wire).is_err(), "every other text keeps the 4096-character cap");
     }
 
     #[test]

@@ -4,7 +4,7 @@
 import { el } from './dom';
 import { selectField, type SelectField } from './panels/select';
 import {
-  GROUP_REOPEN, MAX_COLUMNS, MAX_STARTUP_PAGES, STARTUP_MODES, WIDGET_BGS, WIDGET_HEIGHTS, normaliseAddress,
+  GROUP_REOPEN, MAX_COLUMNS, MAX_STARTUP_PAGES, MAX_URL, STARTUP_MODES, WIDGET_BGS, WIDGET_HEIGHTS, normaliseAddress,
   type GroupReopen, type StartSettings, type StartupMode, type TitleMode, type WidgetBg, type WidgetHeight,
 } from './start-page-logic';
 
@@ -83,7 +83,7 @@ export function mountStartSection(host: StartSectionHost): { apply(start: StartS
   const homepage = el('input', 'bw-input sp-text-input');
   homepage.type = 'text';
   homepage.placeholder = 'https://example.com';
-  homepage.maxLength = 2048;
+  homepage.maxLength = MAX_URL;
   homepage.autocomplete = 'off';
   homepage.spellcheck = false;
   homepage.setAttribute('aria-labelledby', 'sp-l-startHomepage');
@@ -126,7 +126,7 @@ export function mountStartSection(host: StartSectionHost): { apply(start: StartS
   pages.rows = 4;
   pages.placeholder = 'https://example.com';
   pages.spellcheck = false;
-  pages.maxLength = 4096;
+  pages.maxLength = MAX_STARTUP_PAGES * (MAX_URL + 2); // eight of the longest addresses, one per line
   pages.setAttribute('aria-labelledby', 'sp-l-startupPages');
   pages.addEventListener('change', () => {
     const list = parsePageLines(pages.value);

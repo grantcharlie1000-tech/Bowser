@@ -379,7 +379,7 @@ Storage, WebRequest, DeclarativeNetRequest, ContentScript, Crx, or any later
 These are constraints and existing parts to use, not a UI design.
 
 - **Bridge.** `docs/html-chrome-protocol.md` (v1) is the contract.
-  - JS → Rust: `chrome.webview.postMessage(string)`. One flat JSON object, at most 16 KiB, `v:1`,
+  - JS → Rust: `chrome.webview.postMessage(string)`. One flat JSON object, at most 64 KiB, `v:1`,
     `t` selects the command, unknown keys rejected. It is parsed by `parse_command` in
     `src/chrome_host/protocol.rs`, and `ui/src/protocol.ts` has the matching limits.
   - Rust → JS: `PostWebMessageAsJson`.

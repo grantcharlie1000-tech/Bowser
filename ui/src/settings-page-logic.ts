@@ -1,7 +1,7 @@
 // Pure logic for the settings page (?view=settings, docs/design/settings-page.md): the snapshot
 // contract, the exact-match save payload, the section and row index the nav and the search use,
 // and the words that depend on state. No DOM here; test/settings-page.mjs covers all of it.
-import { MAX_TEXT, SETTINGS_SECTIONS, type SettingsSection } from './protocol';
+import { MAX_SETTINGS_SAVE, SETTINGS_SECTIONS, utf8Bytes, type SettingsSection } from './protocol';
 // --- start page ---
 import { parseStartSettings, startSaveLines, type StartSettings } from './start-page-logic';
 // --- end start page ---
@@ -41,6 +41,12 @@ export const MAX_SIDEBAR = 360;
 export const MIN_SLEEP = 30;
 export const MAX_SLEEP = 604800;
 export const MAX_ALLOW = 500;
+/** The allow list's joined length in UTF-8 bytes, commas included (settings::MAX_BLOCKER_ALLOW_BYTES): 500 sites of up to 40 characters. */
+export const MAX_ALLOW_BYTES = 20 * 1024;
+/** Whether the joined allow list fits `MAX_ALLOW_BYTES`. */
+export function allowFits(list: readonly string[]): boolean {
+  return utf8Bytes(list.join(',')) <= MAX_ALLOW_BYTES;
+}
 
 export const THEME_MODES = ['helium', 'system'] as const;
 export type ThemeMode = typeof THEME_MODES[number];
@@ -331,7 +337,7 @@ export function parseSettingsSnapshot(value: unknown): SettingsSnapshot | null {
   if (!oneOf(v.tabLayout, TAB_LAYOUTS) || !isIntBetween(v.sidebarWidth, MIN_SIDEBAR, MAX_SIDEBAR)) return null;
   if (typeof v.sleepEnabled !== 'boolean' || !isIntBetween(v.sleepAfterSecs, MIN_SLEEP, MAX_SLEEP)) return null;
   if (typeof v.blockerEnabled !== 'boolean' || !Array.isArray(v.blockerAllow) || v.blockerAllow.length > MAX_ALLOW) return null;
-  if (!v.blockerAllow.every((site) => typeof site === 'string' && SITE_RE.test(site))) return null;
+  if (!v.blockerAllow.every((site) => typeof site === 'string' && SITE_RE.test(site)) || !allowFits(v.blockerAllow as string[])) return null;
   if (!(v.searchEngine === null || oneOf(v.searchEngine, SEARCH_ENGINES))) return null;
   if (v.searchFallback !== 'default' && v.searchFallback !== 'custom') return null;
   if (v.searchEngine !== null && v.searchFallback !== 'default') return null;
@@ -482,7 +488,7 @@ export function draftOf(snapshot: SettingsSnapshot): Draft {
  */
 export function saveText(draft: Draft): string | null {
   if (!oneOf(draft.tabLayout, TAB_LAYOUTS) || !isIntBetween(draft.sidebarWidth, MIN_SIDEBAR, MAX_SIDEBAR)) return null;
-  if (!isIntBetween(draft.sleepAfterSecs, MIN_SLEEP, MAX_SLEEP) || draft.blockerAllow.length > MAX_ALLOW) return null;
+  if (!isIntBetween(draft.sleepAfterSecs, MIN_SLEEP, MAX_SLEEP) || draft.blockerAllow.length > MAX_ALLOW || !allowFits(draft.blockerAllow)) return null;
   if (!draft.blockerAllow.every((site) => SITE_RE.test(site))) return null;
   if (!oneOf(draft.efficiencyMode, EFFICIENCY_MODES) || (draft.trackingPrevention !== 'balanced' && draft.trackingPrevention !== 'strict')) return null;
   if (draft.searchEngine !== null && !oneOf(draft.searchEngine, SEARCH_ENGINES)) return null;
@@ -544,7 +550,7 @@ export function saveText(draft: Draft): string | null {
   // --- end layout ---
   lines.push(...windowSaveLines(draft.window)); // --- window and panels (thread T9) ---
   const text = lines.join('\n');
-  return text.length <= MAX_TEXT ? text : null;
+  return utf8Bytes(text) <= MAX_SETTINGS_SAVE ? text : null;
 }
 
 // ---- Sections and rows (the nav, the search index and the deep links) ----
@@ -947,7 +953,9 @@ export function addSite(list: readonly string[], input: string): AddSite {
   if (site === null) return { error: 'Enter a site such as example.com.' };
   if (list.includes(site)) return { error: `${site} is already on the list.` };
   if (list.length >= MAX_ALLOW) return { error: `The list holds at most ${MAX_ALLOW} sites.` };
-  return { list: [...list, site] };
+  const next = [...list, site];
+  if (!allowFits(next)) return { error: `The list is full: its sites can use at most ${MAX_ALLOW_BYTES} characters in all.` };
+  return { list: next };
 }
 
 export interface UpdateView {

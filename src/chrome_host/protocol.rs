@@ -7,11 +7,15 @@
 
 use std::{fmt, time::{Duration, Instant}};
 
-/// Largest raw message accepted from the page, in bytes.
-pub const MAX_RAW_BYTES: usize = 16 * 1024;
-/// Longest text field accepted from the page, in characters. Raised from 2048 so the settings
-/// page's `save` payload (every profile setting, `chrome_host::settings::MAX_SAVE_TEXT`) fits.
+/// Largest raw message accepted from the page, in bytes. Room for the settings page's `save`
+/// ([`MAX_SETTINGS_SAVE_CHARS`]) once JSON-escaped; every field keeps its own, smaller cap.
+pub const MAX_RAW_BYTES: usize = 64 * 1024;
+/// Longest text field accepted from the page, in characters.
 pub const MAX_TEXT_CHARS: usize = 4096;
+/// Longest `text` of the settings page's `{t:"set",a:"save"}` only: every profile setting at once,
+/// with the allow list (`settings::MAX_BLOCKER_ALLOW_BYTES`), the homepage and eight startup pages at
+/// their caps (`chrome_host::settings::MAX_SAVE_TEXT`, the page's `MAX_SETTINGS_SAVE`).
+pub const MAX_SETTINGS_SAVE_CHARS: usize = 48 * 1024;
 /// Longest name a composer page may submit (the page limits names to 40; Rust checks again).
 pub const MAX_COMPOSER_NAME_CHARS: usize = 128;
 /// Most keys one page message may carry (`v` and `t` included). The largest message type uses four
@@ -1063,9 +1067,13 @@ fn optional_i32(fields: &[(String, Value)], name: &'static str) -> Result<Option
 }
 
 fn optional_text(fields: &[(String, Value)], name: &'static str) -> Result<Option<String>, ProtocolError> {
+    optional_text_capped(fields, name, MAX_TEXT_CHARS)
+}
+
+fn optional_text_capped(fields: &[(String, Value)], name: &'static str, max_chars: usize) -> Result<Option<String>, ProtocolError> {
     match field(fields, name) {
         None => Ok(None),
-        Some(Value::Str(value)) if value.chars().count() <= MAX_TEXT_CHARS => Ok(Some(value.clone())),
+        Some(Value::Str(value)) if value.chars().count() <= max_chars => Ok(Some(value.clone())),
         Some(Value::Str(_)) => Err(ProtocolError::TooLong(name)),
         Some(_) => Err(ProtocolError::WrongType(name)),
     }
@@ -1352,7 +1360,12 @@ fn build_command(fields: &[(String, Value)]) -> Result<Command, ProtocolError> {
                 a: a.to_owned(), id: optional_u64(fields, "id")?,
                 parent: optional_u64(fields, "parent")?, before: optional_u64(fields, "before")?,
                 n: optional_i32(fields, "n")?, on,
-                text: optional_text(fields, "text")?, url: optional_text(fields, "url")?,
+                text: if kind == PanelType::Settings && a == "save" {
+                    optional_text_capped(fields, "text", MAX_SETTINGS_SAVE_CHARS)?
+                } else {
+                    optional_text(fields, "text")?
+                },
+                url: optional_text(fields, "url")?,
             }}
         }
         "size" => {
