@@ -203,6 +203,17 @@ pub fn effective(master: bool, settings: &AutoHideSettings, fullscreen: Fullscre
     }
 }
 
+/// Whether the left rail leaves the window with the bars: in full screen, whenever every bar hides
+/// there (always for a page element, for F11 when `auto_hide_fullscreen` is on). The auto-hide
+/// master switch alone never hides the rail.
+pub fn hides_rail(settings: &AutoHideSettings, fullscreen: Fullscreen) -> bool {
+    match fullscreen {
+        Fullscreen::Page => true,
+        Fullscreen::Window => settings.in_fullscreen,
+        Fullscreen::No => false,
+    }
+}
+
 /// What the hidden bars take out of the window, per layout.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct Plan {
@@ -516,6 +527,12 @@ mod tests {
         assert_eq!(effective(false, &settings("tabs", false), Fullscreen::Window).hidden, Bars::NONE, "row off: full screen keeps the bars");
         assert_eq!(effective(true, &settings("tabs", false), Fullscreen::Window).hidden, Bars::TABS, "the master switch still applies");
         assert_eq!(effective(false, &s, Fullscreen::Page), Effective { hidden: ALL_BARS, reveal: false }, "a video fills the window and nothing reveals");
+        // L-3: the rail goes with the bars in full screen, never with the master switch alone.
+        assert!(hides_rail(&s, Fullscreen::Page));
+        assert!(hides_rail(&s, Fullscreen::Window));
+        assert!(!hides_rail(&s, Fullscreen::No));
+        assert!(hides_rail(&settings("tabs", false), Fullscreen::Page), "a page element always fills the window");
+        assert!(!hides_rail(&settings("tabs", false), Fullscreen::Window), "F11 keeping its bars keeps the rail");
         assert_eq!(effective(true, &settings("", true), Fullscreen::No).hidden, Bars::NONE, "on with no bars chosen hides none");
     }
 

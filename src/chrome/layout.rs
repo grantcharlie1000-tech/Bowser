@@ -2287,6 +2287,22 @@ pub fn auto_hide_overlay(
         bottom: Rect::default(),
     }
 }
+
+/// `layout` for a full-screen window (F11 with "hide in full screen", or a page element full
+/// screen): the left rail goes with every bar and the page takes its column, flush with the
+/// window's left edge (`maximised`: no rim) or the rim. A page that starts right of a left sidebar
+/// that stays keeps its edge.
+pub fn without_rail(mut layout: Layout, dpi: u32, maximised: bool) -> Layout {
+    if layout.rail.is_empty() {
+        return layout;
+    }
+    let rim = if maximised { 0 } else { Metrics::new(dpi).px(Metrics::RESIZE_RIM) };
+    if layout.viewport.left <= left_rail_inset(dpi) + rim {
+        layout.viewport.left = rim.min(layout.viewport.right);
+    }
+    layout.rail = Rect::default();
+    layout
+}
 // --- end auto-hide ---
 
 #[cfg(test)]
@@ -4606,6 +4622,31 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// L-3: in full screen (page element or F11) every bar hides, and the left rail with them: no
+    /// rail rectangle, so no HTML rail host and no native rail, and the page reaches the left edge.
+    #[test]
+    fn full_screen_takes_the_rail_out_and_gives_the_page_the_whole_width() {
+        for dpi in [96, 120, 144, 168, 192] {
+            for tabs in TabLayout::ALL {
+                let arrangement = Arrangement { tabs, ..Arrangement::default() };
+                let m = Metrics::new(dpi);
+                let (w, h) = (m.px(1280), m.px(720));
+                let hide = AutoHide { top: true, sidebar: true };
+                let (full, _) = compute_arranged_auto_hide(arrangement, w, h, dpi, 5, 2, true, 260, true, 36, hide);
+                let context = format!("{tabs:?} dpi {dpi}");
+                assert!(!full.rail.is_empty(), "{context}: the rail is laid out before full screen takes it");
+                let full = without_rail(full, dpi, true);
+                assert!(full.rail.is_empty(), "{context}: {:?}", full.rail);
+                assert!(crate::chrome_host::rail_bounds(&full).is_none(), "{context}: no HTML rail host");
+                assert_eq!(full.viewport, Rect::new(0, 0, w, h), "{context}: the page covers the whole screen");
+            }
+        }
+        // Not full screen: a left sidebar that stays keeps the page at its edge.
+        let arrangement = Arrangement { tabs: TabLayout::Vertical, ..Arrangement::default() };
+        let (shown, _) = compute_arranged_auto_hide(arrangement, 1280, 720, 96, 5, 2, false, 260, true, 36, AutoHide::OFF);
+        assert_eq!(without_rail(shown, 96, false).viewport, shown.viewport);
     }
     // --- end auto-hide ---
 }

@@ -532,7 +532,7 @@ impl ChromeHost {
             if state.closed { return Err(fail("Chrome host is closed")); }
             state.wanted_bounds = bounds;
             if !state.revealed { return Ok(()); }
-            if same_rect(state.applied_bounds, bounds) { return Ok(()); }
+            if !needs_set_bounds(state.applied_bounds, bounds) { return Ok(()); }
             state.controller.clone()
         };
         self.observe(unsafe { controller.SetBounds(bounds) })?;
@@ -547,6 +547,9 @@ impl ChromeHost {
             if state.closed { return None; }
             (state.parent, state.applied_bounds)
         };
+        if same_rect(bounds, UNKNOWN_BOUNDS) {
+            return None;
+        }
         let mut origin = windows::Win32::Foundation::POINT::default();
         if !unsafe { windows::Win32::Graphics::Gdi::ClientToScreen(parent, &mut origin) }.as_bool() {
             return None;
@@ -677,7 +680,15 @@ impl ChromeHost {
         self.observe(unsafe { controller.SetIsVisible(visible) })?;
         let mut state = self.state.try_borrow_mut().map_err(|_| fail("Chrome host is busy"))?;
         state.applied_visible = Some(visible);
+        state.applied_bounds = applied_after_visibility(state.applied_bounds, visible);
         state._env.detail(if visible { "chrome_host_shown" } else { "chrome_host_hidden" }, state.view, state.diagnostic_id);
+        // Shown with no `set_bounds` since the hide: put the window back where the caller wants it.
+        let wanted = state.wanted_bounds;
+        let replace = visible && needs_set_bounds(state.applied_bounds, wanted);
+        drop(state);
+        if replace {
+            self.set_bounds(wanted)?;
+        }
         Ok(())
     }
 
@@ -720,6 +731,22 @@ fn fail(message: &str) -> Error {
 
 fn same_rect(a: RECT, b: RECT) -> bool {
     a.left == b.left && a.top == b.top && a.right == b.right && a.bottom == b.bottom
+}
+
+/// Bounds no `set_bounds` ever asks for: the controller's window is somewhere unknown.
+const UNKNOWN_BOUNDS: RECT = RECT { left: i32::MIN, top: i32::MIN, right: i32::MIN, bottom: i32::MIN };
+
+/// Whether `set_bounds(wanted)` must call the controller, given the bounds it last applied.
+fn needs_set_bounds(applied: RECT, wanted: RECT) -> bool {
+    !same_rect(applied, wanted)
+}
+
+/// What a host still knows of its window's position after a visibility change. A hidden
+/// controller's window does not keep the bounds it was given: minimising the main window from
+/// maximised moves it with the client origin (the frame inset, 8 px at 96 DPI), and nothing moves it
+/// back. So after a hide the next `set_bounds` always re-applies, even with unchanged bounds.
+fn applied_after_visibility(applied: RECT, visible: bool) -> RECT {
+    if visible { applied } else { UNKNOWN_BOUNDS }
 }
 
 fn wide(text: &str) -> Vec<u16> {
@@ -1463,6 +1490,24 @@ mod tests {
         assert_eq!((LOADING_BOUNDS.right - LOADING_BOUNDS.left, LOADING_BOUNDS.bottom - LOADING_BOUNDS.top), (1, 1));
         assert!(!same_rect(LOADING_BOUNDS, RECT { left: 0, top: 0, right: 800, bottom: 40 }));
         assert!(same_rect(LOADING_BOUNDS, LOADING_BOUNDS));
+    }
+
+    /// L-1: maximise, minimise, restore. The toolbar host is hidden while the window is iconic and
+    /// its window moves with the client origin; on restore the layout gives the same bounds as
+    /// before, and they must be applied again, not skipped as unchanged. At every DPI.
+    #[test]
+    fn a_host_hidden_and_shown_again_reapplies_unchanged_bounds() {
+        for dpi in [96, 120, 144, 168, 192] {
+            let m = crate::chrome::layout::Metrics::new(dpi);
+            let layout = crate::chrome::layout::compute(m.px(1920), m.px(1040), dpi, 3, true);
+            let bounds = crate::chrome_host::toolbar_bounds(&layout).expect("a maximised window has a toolbar");
+            assert!(!needs_set_bounds(bounds, bounds), "dpi {dpi}: a visible host skips unchanged bounds");
+            let hidden = applied_after_visibility(bounds, false);
+            assert!(needs_set_bounds(hidden, bounds), "dpi {dpi}: after a hide the same bounds are applied again");
+            let shown = applied_after_visibility(hidden, true);
+            assert!(needs_set_bounds(shown, bounds), "dpi {dpi}: showing again does not pretend to know where it is");
+            assert!(!needs_set_bounds(applied_after_visibility(bounds, true), bounds), "dpi {dpi}");
+        }
     }
 
     #[test]

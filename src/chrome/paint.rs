@@ -657,7 +657,7 @@ impl ChromeSurface {
         }
         if self.html_rail {
             self.clear_html_region(crate::chrome_host::rail_bounds(view.layout).map(Rect::from), dirty);
-        } else if !self.html_pending[2] {
+        } else if !self.html_pending[2] && !view.layout.rail.is_empty() {
             self.paint_left_rail(view, dirty);
         }
         // Auto-hide: the top chrome is out of the window, so none of it is painted over the page.

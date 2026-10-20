@@ -91,6 +91,8 @@ pub(super) struct Runtime {
     /// The bars out of the layout now (`rules::effective`), and whether they may be revealed.
     pub hidden: Bars,
     pub reveal_allowed: bool,
+    /// Full screen takes the left rail out of the layout too (`rules::hides_rail`).
+    pub rail_hidden: bool,
     pub machine: Machine,
     /// What the hidden bars take out of the layout, as of the last `relayout`.
     pub plan: Plan,
@@ -246,14 +248,16 @@ pub(super) fn sync_config(hwnd: HWND, app: &AppRef) {
     let settings = crate::app::App::settings(app);
     let tab_layout = settings.tab_layout;
     let effective = effective_for(hwnd, &settings);
+    let rail_hidden = rules::hides_rail(&settings.auto_hide, fullscreen_of(hwnd));
     let plan = rules::plan_for(effective.hidden, tab_layout, settings.tab_bar_visible); // A hidden tab bar hides nothing
     set_panel_floats(hwnd, plan.panel);
     let was_solid = solid(hwnd);
     let now_solid = !effective.hidden.is_empty();
     set_solid(hwnd, now_solid); // this window only
     let changed = with_chrome(hwnd, |s| {
-        let before = (s.ah.hidden, s.ah.reveal_allowed);
+        let before = (s.ah.hidden, s.ah.reveal_allowed, s.ah.rail_hidden);
         s.ah.hidden = effective.hidden;
+        s.ah.rail_hidden = rail_hidden;
         s.ah.reveal_allowed = effective.reveal;
         if !effective.reveal || effective.hidden.is_empty() {
             s.ah.machine.reset();
@@ -264,7 +268,7 @@ pub(super) fn sync_config(hwnd: HWND, app: &AppRef) {
             s.html_tabs_last_state = None;
             s.html_rail_last_state = None;
         }
-        before != (s.ah.hidden, s.ah.reveal_allowed) || was_solid != now_solid
+        before != (s.ah.hidden, s.ah.reveal_allowed, s.ah.rail_hidden) || was_solid != now_solid
     })
     .unwrap_or(false);
     if !changed {
