@@ -51,6 +51,17 @@ $inputText='quote" slash\'+[char]0+[char]9+[char]10+[char]13+[char]31
 $escaped=$escape.Invoke($null,@($inputText))
 $roundTrip=('{"value":"'+$escaped+'"}'|ConvertFrom-Json).value
 if($roundTrip -cne $inputText){throw 'Bounded native class diagnostic JSON did not round-trip control characters.'}
+$boolean=$type.GetMethod('BooleanValue',$flags)
+foreach($value in @($true,$false)){
+ $actual=$boolean.Invoke($null,@($value))|ConvertFrom-Json
+ if($actual.kind -cne 'boolean' -or $actual.value -isnot [bool] -or $actual.value -ne $value){throw 'Actual UIA Boolean diagnostic value was not preserved.'}
+}
+$unsupported=$boolean.Invoke($null,@([System.Windows.Automation.AutomationElement]::NotSupported))|ConvertFrom-Json
+if($unsupported.kind -cne 'not-supported' -or $null -ne $unsupported.value){throw 'Unsupported UIA property must not become false.'}
+foreach($value in @($null,[object]::new(),0)){
+ $actual=$boolean.Invoke($null,[object[]]@($value))|ConvertFrom-Json
+ if($actual.kind -cne 'other-kind' -or $null -ne $actual.value){throw 'Unknown UIA property kind must not become false.'}
+}
 $native=$type.GetMethod('NativeMismatch',$flags)
 $absent=$native.Invoke($null,@([IntPtr]::Zero,[IntPtr]::Zero,[IntPtr]::Zero))|ConvertFrom-Json
 if($absent.status -cne 'no-native-hwnd'){throw 'No-HWND diagnostic branch changed.'}

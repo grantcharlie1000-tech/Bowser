@@ -8,7 +8,8 @@ use windows::{core::BOOL, Win32::{
     System::Threading::GetCurrentThreadId,
     UI::Input::KeyboardAndMouse::IsWindowEnabled,
     UI::WindowsAndMessaging::{
-        EnumWindows, GetGUIThreadInfo, GetMenuBarInfo, GetWindowRect, GetWindowThreadProcessId,
+        EnumWindows, GetAncestor, GetGUIThreadInfo, GetMenuBarInfo, GetWindowRect, GetWindowThreadProcessId,
+        GA_ROOT, IsChild,
         GUITHREADINFO, GUI_POPUPMENUMODE, IsWindowVisible, KillTimer,
         MENUBARINFO, OBJID_CLIENT, SetTimer,
     },
@@ -351,6 +352,69 @@ unsafe extern "system" fn reload_timer(hwnd:HWND,_message:u32,id:usize,_time:u32
     }
 }
 
+// One shared acceptance deadline across the sole activation, sole MoveFocus, sole target
+// focus, and all final preparation reads. Native/COM calls cannot be interrupted, but a late
+// return is always refused before input. Never nest the generic ten-second script pump here.
+fn conditioning_turn(deadline:Instant) {
+    assert!(Instant::now()<deadline,"initial conditioning deadline expired; no input");
+    for _ in 0..32 {
+        assert!(Instant::now()<deadline,"initial conditioning deadline expired during message turn");
+        let mut message=MSG::default();
+        if !unsafe{PeekMessageW(&mut message,None,0,0,PM_REMOVE)}.as_bool(){break;}
+        if message.message==WM_QUIT {
+            unsafe{windows::Win32::UI::WindowsAndMessaging::PostQuitMessage(message.wParam.0 as i32)};
+            panic!("App quit during initial conditioning; no input");
+        }
+        unsafe{let _=TranslateMessage(&message);DispatchMessageW(&message);}
+        assert!(Instant::now()<deadline,"late native dispatch during initial conditioning; no input");
+    }
+    std::thread::yield_now();
+}
+fn conditioning_script(view:&ICoreWebView2,source:&str,deadline:Instant)->Value {
+    assert!(Instant::now()<deadline,"initial conditioning deadline expired before script");
+    let slot=Rc::new(RefCell::new(None::<Result<String,i32>>));let sink=slot.clone();
+    let handler=ExecuteScriptCompletedHandler::create(Box::new(move |status,result|{
+        *sink.borrow_mut()=Some(status.map(|()|result.to_string()).map_err(|error|error.code().0));Ok(())
+    }));
+    let source=CoTaskMemPWSTR::from(source);
+    unsafe{view.ExecuteScript(*source.as_ref().as_pcwstr(),&handler).unwrap()};
+    loop {
+        // Dispatch a bounded real message turn before consuming even an immediate completion.
+        conditioning_turn(deadline);
+        let answer=slot.borrow_mut().take();
+        if let Some(answer)=answer {
+            let answer=answer.expect("exact source conditioning script failed");
+            assert!(answer.len()<=4096,"source conditioning result exceeded bound");
+            let value=json::parse(&answer).expect("source conditioning JSON unavailable");
+            assert!(Instant::now()<deadline,"late source conditioning script; no input");return value;
+        }
+    }
+}
+fn conditioning_owner_focus(owner:HWND)->Option<HWND> {
+    let mut pid=0;let thread=unsafe{GetWindowThreadProcessId(owner,Some(&mut pid))};
+    let mut class=[0;64];let length=unsafe{GetClassNameW(owner,&mut class)};
+    if pid!=std::process::id()||thread!=unsafe{GetCurrentThreadId()}||length<=0
+        ||String::from_utf16_lossy(&class[..length as usize])!="BowserNativeWindow"
+        ||!unsafe{IsWindow(Some(owner))}.as_bool()||!unsafe{IsWindowVisible(owner)}.as_bool()
+        ||!unsafe{IsWindowEnabled(owner)}.as_bool()||unsafe{GetForegroundWindow()}!=owner{return None;}
+    let mut gui=GUITHREADINFO{cbSize:std::mem::size_of::<GUITHREADINFO>() as u32,..Default::default()};
+    if unsafe{GetGUIThreadInfo(thread,&mut gui)}.is_err()||gui.hwndActive!=owner
+        ||!gui.hwndCapture.0.is_null()||!gui.hwndMenuOwner.0.is_null()||gui.flags.contains(GUI_POPUPMENUMODE)
+        ||unsafe{GetForegroundWindow()}!=owner{return None;}
+    Some(gui.hwndFocus)
+}
+fn conditioning_source_focus(owner:HWND,browser:u32)->Option<(isize,u32,u32,String)> {
+    let focus=conditioning_owner_focus(owner)?;let mut pid=0;
+    let thread=unsafe{GetWindowThreadProcessId(focus,Some(&mut pid))};
+    let mut class=[0;64];let length=unsafe{GetClassNameW(focus,&mut class)};
+    if focus.0.is_null()||pid!=browser||thread==0||length<=0||!unsafe{IsWindow(Some(focus))}.as_bool()
+        ||!unsafe{IsChild(owner,focus)}.as_bool()||unsafe{GetAncestor(focus,GA_ROOT)}!=owner{return None;}
+    let name=String::from_utf16_lossy(&class[..length as usize]);let mut after_pid=0;
+    if unsafe{GetWindowThreadProcessId(focus,Some(&mut after_pid))}!=thread||after_pid!=pid
+        ||conditioning_owner_focus(owner)!=Some(focus){return None;}
+    Some((focus.0 as isize,pid,thread,name))
+}
+
 fn reload_input(app:&AppRef,h:&NativeContextProbeHandles,tab:TabId,proof:(u64,u64,u64),out:&Path,receipt_hidden:&dyn Fn()->bool) {
     current(h,proof);ordinary_profile(&h.view);isolated_environment(app,h);
     let owner=app.borrow().hwnd;
@@ -358,18 +422,48 @@ fn reload_input(app:&AppRef,h:&NativeContextProbeHandles,tab:TabId,proof:(u64,u6
     assert_eq!(String::from_utf16_lossy(&class[..n as usize]),"BowserNativeWindow");
     assert!(unsafe{IsWindow(Some(owner))}.as_bool());
     assert!(receipt_hidden(),"receipt window reappeared before activation; no re-hide or input");
-    // This Rust preparation owns the ONLY activation attempt. Require its actual success;
-    // the right-click-only helper may freshly verify foreground, but may never activate again.
-    unsafe{assert!(SetForegroundWindow(owner).as_bool(),"exact-owner activation failed; no retry or helper rescue");h.controller.MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC).unwrap()};
-    assert!(pump_until(Duration::from_secs(3),||unsafe{GetForegroundWindow()}==owner));
-    assert_eq!(script(&h.view,"(()=>{document.getElementById('app-context-target').focus();return document.hasFocus()})()"),Value::Bool(true));
+    std::fs::create_dir_all(out).unwrap();
+    let mut browser=0;unsafe{h.view.BrowserProcessId(&mut browser).unwrap()};assert!(browser>0);
+    let conditioning_deadline=Instant::now()+Duration::from_secs(3);
+    // One activation request. Observe its queued completion before requesting source focus;
+    // do not race MoveFocus/DOM focus against a still-pending cross-input-queue activation.
+    unsafe{assert!(SetForegroundWindow(owner).as_bool(),"exact-owner activation failed; no retry or helper rescue")};
+    loop {
+        conditioning_turn(conditioning_deadline);current(h,proof);assert!(receipt_hidden());
+        if conditioning_owner_focus(owner).is_some(){
+            conditioning_turn(conditioning_deadline);current(h,proof);assert!(receipt_hidden());
+            if conditioning_owner_focus(owner).is_some(){break;}
+        }
+    }
+    // The only controller focus request. Subsequent polling is read-only initial readiness,
+    // not a retry; after the first positive source pair any later loss is a hard refusal.
+    assert!(Instant::now()<conditioning_deadline,"late owner activation observation; no MoveFocus or input");
+    unsafe{h.controller.MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC).unwrap()};
+    let source_focus=loop {
+        conditioning_turn(conditioning_deadline);current(h,proof);assert!(receipt_hidden());
+        assert!(conditioning_owner_focus(owner).is_some(),"owner lost after initial activation; no repair");
+        let Some(first)=conditioning_source_focus(owner,browser) else{continue;};
+        if conditioning_script(&h.view,"document.hasFocus()",conditioning_deadline)!=Value::Bool(true){continue;}
+        conditioning_turn(conditioning_deadline);current(h,proof);assert!(receipt_hidden());
+        assert_eq!(conditioning_source_focus(owner,browser),Some(first.clone()),"native source focus changed after initial readiness; no repair");
+        assert_eq!(conditioning_script(&h.view,"document.hasFocus()",conditioning_deadline),Value::Bool(true),"document focus changed after initial readiness; no repair");
+        break first;
+    };
+    // One DOM target focus only, after native source readiness. Never retry this mutation.
+    current(h,proof);assert!(receipt_hidden());
+    assert_eq!(conditioning_source_focus(owner,browser),Some(source_focus.clone()),"native source focus lost before initial target request; no repair");
+    let target_focus=conditioning_script(&h.view,"(()=>{const t=document.getElementById('app-context-target');t.focus();return {document_focused:document.hasFocus(),target_focused:document.activeElement===t}})()",conditioning_deadline);
+    println!("APP_CONTEXT_MENU_RELOAD initial_target_focus={target_focus:?} native_focus={source_focus:?}");
+    assert_bool(&target_focus,"document_focused",true);assert_bool(&target_focus,"target_focused",true);
+    assert_eq!(conditioning_source_focus(owner,browser),Some(source_focus.clone()),"native source focus changed during initial target request; no repair");
     current(h,proof);
-    let source_script="(()=>{const t=document.getElementById('app-context-target'),r=t.getBoundingClientRect(),x=(r.left+r.right)/2,y=(r.top+r.bottom)/2;return {left:r.left,top:r.top,right:r.right,bottom:r.bottom,width:innerWidth,height:innerHeight,ratio:devicePixelRatio,hit:document.elementFromPoint(x,y)===t,focused:document.hasFocus()&&document.activeElement===t,trusted:Number(document.documentElement.getAttribute('data-app-context-trusted')||0)}})()";
-    let source=script(&h.view,source_script);
+    let source_script="(()=>{const t=document.getElementById('app-context-target'),r=t.getBoundingClientRect(),x=(r.left+r.right)/2,y=(r.top+r.bottom)/2;return {left:r.left,top:r.top,right:r.right,bottom:r.bottom,width:innerWidth,height:innerHeight,ratio:devicePixelRatio,hit:document.elementFromPoint(x,y)===t,focused:document.hasFocus()&&document.activeElement===t,document_focused:document.hasFocus(),target_focused:document.activeElement===t,trusted:Number(document.documentElement.getAttribute('data-app-context-trusted')||0)}})()";
+    let source=conditioning_script(&h.view,source_script,conditioning_deadline);
+    println!("APP_CONTEXT_MENU_RELOAD initial_source_condition={source:?}");
     assert_bool(&source,"hit",true);assert_bool(&source,"focused",true);
-    let mut bounds=RECT::default();let mut client=RECT::default();let mut parent=HWND::default();let mut zoom=0.0;let mut browser=0;
-    unsafe{h.controller.Bounds(&mut bounds).unwrap();h.controller.ParentWindow(&mut parent).unwrap();h.controller.ZoomFactor(&mut zoom).unwrap();GetClientRect(owner,&mut client).unwrap();h.view.BrowserProcessId(&mut browser).unwrap()};
-    assert_eq!(parent,owner);assert_eq!(zoom,1.0);assert!(browser>0);
+    let mut bounds=RECT::default();let mut client=RECT::default();let mut parent=HWND::default();let mut zoom=0.0;let mut current_browser=0;
+    unsafe{h.controller.Bounds(&mut bounds).unwrap();h.controller.ParentWindow(&mut parent).unwrap();h.controller.ZoomFactor(&mut zoom).unwrap();GetClientRect(owner,&mut client).unwrap();h.view.BrowserProcessId(&mut current_browser).unwrap()};
+    assert_eq!(parent,owner);assert_eq!(zoom,1.0);assert_eq!(current_browser,browser);
     assert!(bounds.left>=0&&bounds.top>=0&&bounds.right<=client.right&&bounds.bottom<=client.bottom);
     let numeric=|key|{let Some(Value::Number(v))=field(&source,key) else{panic!("missing source geometry {key}")};v.parse::<f64>().unwrap()};
     let width=numeric("width");let height=numeric("height");let ratio=numeric("ratio");
@@ -419,18 +513,13 @@ fn reload_input(app:&AppRef,h:&NativeContextProbeHandles,tab:TabId,proof:(u64,u6
     current(h,proof);
     // This is an observation, never a second activation or focus repair. Prepare every test
     // observer/timer before taking the final foreground/source-focus conditioning witness.
-    assert_eq!(script(&h.view,source_script),source,"source target focus/hit/geometry/trusted count changed before helper launch");
+    assert_eq!(conditioning_script(&h.view,source_script,conditioning_deadline),source,"source target focus/hit/geometry/trusted count changed before helper launch");
     let mut final_bounds=RECT::default();let mut final_client=RECT::default();let mut final_parent=HWND::default();let mut final_zoom=0.0;
     unsafe{h.controller.Bounds(&mut final_bounds).unwrap();h.controller.ParentWindow(&mut final_parent).unwrap();h.controller.ZoomFactor(&mut final_zoom).unwrap();GetClientRect(owner,&mut final_client).unwrap()};
     assert_eq!([final_bounds.left,final_bounds.top,final_bounds.right,final_bounds.bottom],[bounds.left,bounds.top,bounds.right,bounds.bottom]);
     assert_eq!([final_client.left,final_client.top,final_client.right,final_client.bottom],[client.left,client.top,client.right,client.bottom]);
     assert_eq!(final_parent,owner);assert_eq!(final_zoom,zoom);
-    let no_native_menu=|| {
-        let mut gui=GUITHREADINFO{cbSize:std::mem::size_of::<GUITHREADINFO>() as u32,..Default::default()};
-        unsafe{GetGUIThreadInfo(GetCurrentThreadId(),&mut gui)}.is_ok()
-            && gui.hwndActive==owner && !gui.hwndFocus.0.is_null() && gui.hwndCapture.0.is_null()
-            && gui.hwndMenuOwner.0.is_null() && !gui.flags.contains(GUI_POPUPMENUMODE)
-    };
+    let no_native_menu=||conditioning_source_focus(owner,browser)==Some(source_focus.clone());
     current(h,proof);
     assert!(receipt_hidden(),"receipt window reappeared before conditioning witness; no re-hide or input");
     assert!(no_native_menu(),"source conditioning has unexpected native menu/capture; no repair");
@@ -440,6 +529,7 @@ fn reload_input(app:&AppRef,h:&NativeContextProbeHandles,tab:TabId,proof:(u64,u6
     assert!(receipt_hidden(),"receipt window reappeared at final helper boundary; no re-hide or input");
     assert!(no_native_menu(),"native menu/capture changed after conditioning witness; no repair");
     assert_eq!(unsafe{GetForegroundWindow()},owner,"exact owner foreground changed after conditioning write; no retry");
+    assert!(Instant::now()<conditioning_deadline,"initial conditioning deadline expired before helper; no input");
     let mut child=Command::new("powershell.exe").args(["-NoProfile","-File"])
         .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("benchmarks/scripts/probe-app-context-menu-reload.ps1"))
         .args(["-OwnerPid",&std::process::id().to_string(),"-OwnerHandle",&(owner.0 as isize).to_string()])
@@ -516,8 +606,9 @@ fn sequence(app:&AppRef,root:&Path,page:&url::Url,bowser_id:&str,folder:&Path,id
     };
     assert!((hide_receipt.hide_once)(), "exact fixture receipt window was not hidden; no activation or input");
     let receipt_hidden = hide_receipt.hidden;
-    pump_until(Duration::from_millis(300), || false);
-    assert!(receipt_hidden(),"receipt window reappeared after queued events; no re-hide or input");
+    // Queued activation messages are drained by the bounded conditioning turns below,
+    // whose subsequent hidden checks are observation-only. No arbitrary settling sleep.
+    assert!(receipt_hidden(),"receipt window reappeared after hide preparation; no re-hide or input");
     assert_eq!(receipt_view(app).unwrap().as_raw(), popup.as_raw(), "receipt view changed while hiding fixture window");
     let hidden_receipt = worker(&popup,"native-command-state");
     assert_eq!(text(&hidden_receipt,"workerInstance"),worker_id);

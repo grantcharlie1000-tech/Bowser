@@ -94,13 +94,25 @@ public static class BowserDefaultContext {
   if(tid==0||pid==0||!IsWindow(node))return "{\"status\":\"native-unavailable-before-read\"}";
   string name=Class(node);RECT bounds;bool geometry=GetWindowRect(node,out bounds);
   IntPtr parent=GetParent(node),owner=GetWindow(node,4),root=GetAncestor(node,2),rootOwner=GetAncestor(node,3);
+  DiagnosticSetLastError(0);IntPtr child=DiagnosticGetWindow(node,5);int childError=Marshal.GetLastWin32Error();
   bool visible=IsWindowVisible(node),enabled=IsWindowEnabled(node),popupChild=IsChild(popup,node),hostChild=IsChild(host,node);
   uint afterPid;uint afterTid=GetWindowThreadProcessId(node,out afterPid);
   if(!IsWindow(node)||afterTid!=tid||afterPid!=pid||Class(node)!=name)return "{\"status\":\"native-identity-changed-details-discarded\"}";
   // Native class is a bounded OS identifier, not window text or a UIA Name. Escape it even
   // though this is diagnostic only, and never call GetWindowText on the foreign HWND.
   name=JsonText(name);
-  return "{\"status\":\"captured-nonatomic-not-authority\",\"pid\":"+Number(pid)+",\"thread\":"+Number(tid)+",\"class_name\":\""+name+"\",\"parent\":"+Number(parent.ToInt64())+",\"owner\":"+Number(owner.ToInt64())+",\"root\":"+Number(root.ToInt64())+",\"root_owner\":"+Number(rootOwner.ToInt64())+",\"is_popup_child\":"+(popupChild?"true":"false")+",\"is_host_child\":"+(hostChild?"true":"false")+",\"visible\":"+(visible?"true":"false")+",\"enabled\":"+(enabled?"true":"false")+",\"bounds_ok\":"+(geometry?"true":"false")+",\"left\":"+Number(bounds.Left)+",\"top\":"+Number(bounds.Top)+",\"right\":"+Number(bounds.Right)+",\"bottom\":"+Number(bounds.Bottom)+"}";
+  return "{\"status\":\"captured-nonatomic-not-authority\",\"pid\":"+Number(pid)+",\"thread\":"+Number(tid)+",\"class_name\":\""+name+"\",\"parent\":"+Number(parent.ToInt64())+",\"owner\":"+Number(owner.ToInt64())+",\"root\":"+Number(root.ToInt64())+",\"root_owner\":"+Number(rootOwner.ToInt64())+",\"first_native_child\":"+Number(child.ToInt64())+",\"first_native_child_zero_observed\":"+(child==IntPtr.Zero?"true":"false")+",\"first_native_child_last_error\":"+Number(childError)+",\"is_popup_child\":"+(popupChild?"true":"false")+",\"is_host_child\":"+(hostChild?"true":"false")+",\"visible\":"+(visible?"true":"false")+",\"enabled\":"+(enabled?"true":"false")+",\"bounds_ok\":"+(geometry?"true":"false")+",\"left\":"+Number(bounds.Left)+",\"top\":"+Number(bounds.Top)+",\"right\":"+Number(bounds.Right)+",\"bottom\":"+Number(bounds.Bottom)+"}";
+ }
+ // No-default values distinguish an actual false from UIA's fallback/default value.
+ // This pure formatter is also tested without invoking any provider or native API.
+ static string BooleanValue(object raw){
+  if(raw is bool)return "{\"kind\":\"boolean\",\"value\":"+((bool)raw?"true":"false")+"}";
+  if(Object.ReferenceEquals(raw,AutomationElement.NotSupported))return "{\"kind\":\"not-supported\",\"value\":null}";
+  return "{\"kind\":\"other-kind\",\"value\":null}";
+ }
+ static string BooleanProperty(AutomationElement node,AutomationProperty property){
+  try{return BooleanValue(node.GetCurrentPropertyValue(property,true));}
+  catch{return "{\"kind\":\"getter-failed\",\"value\":null}";}
  }
  static void WriteMismatch(IntPtr host,uint testPid,uint hostTid,IntPtr popup,uint browserPid,uint menuTid,ReadOnlyBrowser browser,AutomationElement root,int[] rootId,AutomationElement node,int depth,int[] expectedParent,int index,int providerPid,uint helperPid,string directory){
   string prefix="{\"scope\":\"failure-only-popup-rooted-numeric-identity-not-input-authority\",\"first_mismatch\":true,\"visited_count\":"+Number(index)+",\"depth\":"+Number(depth)+",\"expected_pid\":"+Number(browserPid)+",\"observed_pid\":"+Number(providerPid)+",\"helper_pid\":"+Number(helperPid)+",\"helper_pid_available\":"+(helperPid!=0?"true":"false")+",\"observed_pid_equals_helper\":"+(helperPid!=0&&providerPid==helperPid?"true":"false")+",\"observed_pid_equals_test\":"+(providerPid==testPid?"true":"false")+",\"observed_pid_equals_browser\":"+(providerPid==browserPid?"true":"false")+",\"expected_pid_equal\":false,";
@@ -114,12 +126,17 @@ public static class BowserDefaultContext {
     int[] parentId=null;int parentPid=0,parentType=0,parentNative=0;bool parentPresent=false,parentMetadataRead=false;
     // Only the known enqueued parent is inspected; never walk beyond the captured root.
     if(expectedParent!=null){var parent=TreeWalker.RawViewWalker.GetParent(node);if(parent!=null){parentPresent=true;parentId=Runtime(parent);if(Same(parentId,expectedParent)){var pc=parent.Current;parentPid=pc.ProcessId;parentType=pc.ControlType.Id;parentNative=pc.NativeWindowHandle;parentMetadataRead=true;}}}
+    // Read only shape/interaction booleans from this exact rejected node. No Name/value,
+    // subtree traversal, provider exception, or input authority follows these diagnostics.
+    string control=BooleanProperty(node,AutomationElement.IsControlElementProperty),content=BooleanProperty(node,AutomationElement.IsContentElementProperty),enabled=BooleanProperty(node,AutomationElement.IsEnabledProperty);
+    string focusable=BooleanProperty(node,AutomationElement.IsKeyboardFocusableProperty),focused=BooleanProperty(node,AutomationElement.HasKeyboardFocusProperty);
+    bool rawChildAbsent=TreeWalker.RawViewWalker.GetFirstChild(node)==null;
     string nativeMetadata=NativeMismatch((IntPtr)native,popup,host);
     bool after=RootFence(host,testPid,hostTid,popup,browserPid,menuTid,browser,root,rootId)&&Same(Runtime(node),id)&&node.Current.ProcessId==providerPid;
     if(!after){json=prefix+"\"status\":\"stale-after-read-details-discarded\"}";}
     else{
      string kind=Same(id,rootId)?"root":type==ControlType.Menu.Id?"menu":type==ControlType.MenuItem.Id?"menu-item-unattributed":"structural-other";
-     json=prefix+"\"status\":\"captured-nonatomic-not-authority\",\"root_identity_before_after\":true,\"node_kind\":\""+kind+"\",\"control_type_id\":"+Number(type)+",\"native_hwnd\":"+Number(native)+",\"native_window\":"+nativeMetadata+",\"pid_no_default_kind\":\""+pidNoDefaultKind+"\",\"pid_no_default_value\":"+pidNoDefaultValue+",\"runtime_id\":"+JsonIds(id)+",\"root_runtime_id\":"+JsonIds(rootId)+",\"parent_already_encountered\":"+(expectedParent!=null?"true":"false")+",\"expected_parent_runtime_id\":"+JsonIds(expectedParent)+",\"parent_present\":"+(parentPresent?"true":"false")+",\"parent_runtime_id\":"+JsonIds(parentId)+",\"parent_matches_enqueued_parent\":"+(expectedParent!=null&&parentId!=null&&Same(parentId,expectedParent)?"true":"false")+",\"parent_metadata_read\":"+(parentMetadataRead?"true":"false")+",\"parent_provider_pid\":"+Number(parentPid)+",\"parent_control_type_id\":"+Number(parentType)+",\"parent_native_hwnd\":"+Number(parentNative)+"}";
+     json=prefix+"\"status\":\"captured-nonatomic-not-authority\",\"root_identity_before_after\":true,\"node_kind\":\""+kind+"\",\"control_type_id\":"+Number(type)+",\"native_hwnd\":"+Number(native)+",\"native_window\":"+nativeMetadata+",\"uia_is_control_no_default\":"+control+",\"uia_is_content_no_default\":"+content+",\"uia_enabled_no_default\":"+enabled+",\"uia_keyboard_focusable_no_default\":"+focusable+",\"uia_has_keyboard_focus_no_default\":"+focused+",\"raw_child_absent\":"+(rawChildAbsent?"true":"false")+",\"pid_no_default_kind\":\""+pidNoDefaultKind+"\",\"pid_no_default_value\":"+pidNoDefaultValue+",\"runtime_id\":"+JsonIds(id)+",\"root_runtime_id\":"+JsonIds(rootId)+",\"parent_already_encountered\":"+(expectedParent!=null?"true":"false")+",\"expected_parent_runtime_id\":"+JsonIds(expectedParent)+",\"parent_present\":"+(parentPresent?"true":"false")+",\"parent_runtime_id\":"+JsonIds(parentId)+",\"parent_matches_enqueued_parent\":"+(expectedParent!=null&&parentId!=null&&Same(parentId,expectedParent)?"true":"false")+",\"parent_metadata_read\":"+(parentMetadataRead?"true":"false")+",\"parent_provider_pid\":"+Number(parentPid)+",\"parent_control_type_id\":"+Number(parentType)+",\"parent_native_hwnd\":"+Number(parentNative)+"}";
     }
    }
   }catch{ /* Getter failures remain diagnostic unavailable; never suppress the original rejection. */ }
@@ -159,6 +176,8 @@ public static class BowserDefaultContext {
  }
  [DllImport("user32.dll")] public static extern IntPtr GetParent(IntPtr h);
  [DllImport("user32.dll")] public static extern IntPtr GetWindow(IntPtr h,uint command);
+ [DllImport("user32.dll",EntryPoint="GetWindow",SetLastError=true)] static extern IntPtr DiagnosticGetWindow(IntPtr h,uint command);
+ [DllImport("kernel32.dll",EntryPoint="SetLastError")] static extern void DiagnosticSetLastError(uint error);
  [DllImport("user32.dll")] public static extern bool EnumChildWindows(IntPtr parent,EnumProc callback,IntPtr data);
  [DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr h,IntPtr dc,uint flags);
  public sealed class ReadOnlyBrowser:IDisposable {

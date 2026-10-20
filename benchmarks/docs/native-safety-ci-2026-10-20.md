@@ -87,3 +87,33 @@ Primary API references:
 - [OpenWindowStationW](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-openwindowstationw)
 - [GetUserObjectInformationW](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-getuserobjectinformationw)
 - [Window station security and access rights](https://learn.microsoft.com/en-us/windows/win32/winstation/window-station-security-and-access-rights)
+
+## Follow-up evidence from PR #68, head 06f4f75
+
+[Native-safety run 39388446363](https://github.com/grantcharlie1000-tech/Bowser/actions/runs/39388446363)
+compiled the four managed helper classes, passed their pure serializer/layout
+checks and five source contracts at that head, and
+built/executed the native lane. The strict native-safety result remained red.
+Both menu refusals now identify an `Intermediate D3D Window` that is an actual
+disabled child of the exact Chromium popup, not a proved unrelated UIA branch.
+The current code collects no-default control/content/focus property kinds and
+values, raw child absence, error-qualified first-native-child observations,
+and a bounded actual WebView2 process-group snapshot with matching
+disposable UDF and browser entry. This is diagnostic only: foreign providers
+still unconditionally throw. No class-only or subtree-skipping exception exists.
+
+The clipboard failure remained sequence zero before input/mutation on
+WinSta0/Default, with an input desktop, matching process sessions, and a
+successful non-mutating right-4 access-open probe. This does not establish a
+missing-rights cause or authorize zero. The precise result is sequence authority
+unavailable on this runner; the required gate stays red.
+
+Reload reached a stronger target-focus check and refused before native input.
+Its initial preparation is now ordered as one owner activation, bounded message
+turns observing that request, one MoveFocus, a positive native/document focus
+pair separated by another message turn, and one target focus request requiring
+separate document/target booleans. All phases share one monotonic three-second
+acceptance deadline; late native/COM returns refuse. No nested ten-second script
+pump, readiness-first bypass, repeated focus, sleep extension, or input rescue
+is used in this preparation. Source focus/geometry/document and post-click
+Reload/completion/disappearance/permission gates remain required.

@@ -57,6 +57,30 @@ class NativeSafetySourceContracts(unittest.TestCase):
         self.assertIn("CloseWindowStation(probe)", diagnostics)
         self.assertIn("::AdmissionCloseConfirmed", helper.split("# Admission has already refused", 1)[1])
 
+    def test_rejected_leaf_diagnostics_cannot_authorize_a_provider(self):
+        helper = source("benchmarks/scripts/probe-default-context-cancellation.ps1")
+        mismatch = helper.split("static void WriteMismatch(", 1)[1].split("public static MenuProof ReadMenu(", 1)[0]
+        for property_name in ("IsControlElement", "IsContentElement", "IsEnabled", "IsKeyboardFocusable", "HasKeyboardFocus"):
+            self.assertIn("AutomationElement." + property_name + "Property", mismatch)
+        self.assertIn("TreeWalker.RawViewWalker.GetFirstChild(node)==null", mismatch)
+        self.assertIn("DiagnosticSetLastError(0);IntPtr child=DiagnosticGetWindow(node,5);int childError=Marshal.GetLastWin32Error();", helper)
+        self.assertIn("node.GetCurrentPropertyValue(property,true)", helper)
+        self.assertIn('"not-supported"', helper.replace('\\"', '"'))
+        self.assertNotIn("current.IsControlElement", mismatch)
+        self.assertNotIn("current.IsContentElement", mismatch)
+        self.assertNotIn("current.IsEnabled", mismatch)
+        self.assertNotIn("current.IsKeyboardFocusable", mismatch)
+        self.assertNotIn("current.HasKeyboardFocus", mismatch)
+        self.assertNotIn("current.Name", mismatch)
+        process = source("src/engine/extension_probe_live.rs").split("fn native_context_process_group_diagnostic(", 1)[1].split("/// Observation/cancellation", 1)[0]
+        self.assertIn("count>64", process)
+        self.assertIn("process-group-browser-mismatch", process)
+        self.assertIn("exact-disposable-udf-mismatch", process)
+        self.assertIn("COREWEBVIEW2_PROCESS_KIND_GPU", process)
+        self.assertIn("create_new(true)", process)
+        for forbidden in ("SelectedCommandId", "SetHandled", "SetForegroundWindow", "TerminateProcess", "MoveFocus"):
+            self.assertNotIn(forbidden, process)
+
     def test_managed_helpers_compile_in_one_source_unit(self):
         checker = source("benchmarks/scripts/test-native-menu-helpers.ps1")
         self.assertEqual(checker.count("Add-Type -TypeDefinition"), 1)
@@ -72,10 +96,10 @@ class NativeSafetySourceContracts(unittest.TestCase):
         reload = source("src/engine/app_context_menu_probe/reload.rs")
         self.assertEqual(reload.count("SetForegroundWindow(owner)"), 1)
         self.assertEqual(reload.count("(hide_receipt.hide_once)()"), 1)
-        self.assertIn('receipt_hidden(),"receipt window reappeared after queued events;', reload)
+        self.assertIn('receipt_hidden(),"receipt window reappeared after hide preparation;', reload)
         self.assertIn('receipt_hidden(),"receipt window reappeared at final helper boundary;', reload)
         self.assertIn('focused:document.hasFocus()&&document.activeElement===t', reload)
-        self.assertIn('assert_eq!(script(&h.view,source_script),source', reload)
+        self.assertIn('assert_eq!(conditioning_script(&h.view,source_script,conditioning_deadline),source', reload)
         self.assertIn('receipt_hidden(),"receipt window reappeared before conditioning witness;', reload)
         self.assertIn('assert!(no_native_menu()', reload)
         helper = source("benchmarks/scripts/probe-app-context-menu-reload.ps1")
@@ -87,6 +111,16 @@ class NativeSafetySourceContracts(unittest.TestCase):
         for fence in ("alive.get()", "std::process::id()", "GetCurrentThreadId()", '"BowserExtensionPage"', "IsWindowVisible(hwnd)"):
             self.assertIn(fence, seam)
         self.assertEqual(seam.count("ShowWindow(hwnd, SW_HIDE)"), 1)
+        preparation = reload.split("fn reload_input(", 1)[1].split("fn deny_all(", 1)[0]
+        self.assertEqual(preparation.count("SetForegroundWindow(owner)"), 1)
+        self.assertEqual(preparation.count("h.controller.MoveFocus("), 1)
+        self.assertEqual(preparation.count("t.focus();"), 1)
+        self.assertEqual(preparation.count("Instant::now()+Duration::from_secs(3)"), 1)
+        self.assertNotIn("pump_until(Duration::from_secs(3)", preparation)
+        self.assertNotIn("script(&h.view,", preparation.replace("conditioning_script(&h.view,", ""))
+        self.assertIn("for _ in 0..32", reload)
+        self.assertIn("PostQuitMessage(message.wParam.0 as i32)", reload)
+        self.assertIn("conditioning_source_focus(owner,browser)==Some(source_focus.clone())", reload)
         self.assertRegex(page, r'#\[cfg\(all\(test, feature = "experimental-engine-context-menu"\)\)\]\s+pub\(super\) fn probe_hide_receipt')
 
 

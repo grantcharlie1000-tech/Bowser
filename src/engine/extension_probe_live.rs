@@ -2137,6 +2137,56 @@ fn native_context_items(collection: &webview2_com::Microsoft::Web::WebView2::Win
     }
 }
 
+/// Read-only UDF/process-group evidence, never a per-view or input authorization. A later
+/// structural-node policy must still establish fresh native process lifetimes and leafness.
+/// Getter/bound/membership failures only make this diagnostic unavailable; they cannot suppress
+/// the original strict foreign-provider refusal in either PowerShell helper.
+fn native_context_process_group_diagnostic(
+    view:&webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2,
+    expected_udf:&Path,browser_pid:u32,out:&Path,
+) {
+    use windows::core::Interface;
+    use webview2_com::{CoTaskMemPWSTR,Microsoft::Web::WebView2::Win32::{
+        ICoreWebView2_2,ICoreWebView2Environment7,ICoreWebView2Environment8,
+        COREWEBVIEW2_PROCESS_KIND,COREWEBVIEW2_PROCESS_KIND_BROWSER,COREWEBVIEW2_PROCESS_KIND_GPU,
+    }};
+    let read=||->Result<String,String>{
+        let environment=unsafe{view.cast::<ICoreWebView2_2>().map_err(|e|format!("view2-hresult-{}",e.code().0))?.Environment()}
+            .map_err(|e|format!("environment-hresult-{}",e.code().0))?;
+        let environment7=environment.cast::<ICoreWebView2Environment7>().map_err(|e|format!("environment7-hresult-{}",e.code().0))?;
+        let mut folder=windows::core::PWSTR::null();
+        unsafe{environment7.UserDataFolder(&mut folder)}.map_err(|e|format!("udf-hresult-{}",e.code().0))?;
+        if folder.is_null(){return Err("udf-null".into());}
+        let actual=std::fs::canonicalize(CoTaskMemPWSTR::from(folder).to_string()).map_err(|_|"udf-canonicalization-unavailable")?;
+        let expected=std::fs::canonicalize(expected_udf).map_err(|_|"expected-udf-unavailable")?;
+        if !actual.to_string_lossy().eq_ignore_ascii_case(&expected.to_string_lossy()){return Err("exact-disposable-udf-mismatch".into());}
+        let environment8=environment.cast::<ICoreWebView2Environment8>().map_err(|e|format!("environment8-hresult-{}",e.code().0))?;
+        let processes=unsafe{environment8.GetProcessInfos()}.map_err(|e|format!("process-infos-hresult-{}",e.code().0))?;
+        let mut count=0;unsafe{processes.Count(&mut count)}.map_err(|e|format!("process-count-hresult-{}",e.code().0))?;
+        if count==0||count>64{return Err("process-group-count-outside-bound".into());}
+        let mut seen=std::collections::BTreeSet::new();let mut entries=Vec::new();let mut browsers=0;
+        for index in 0..count {
+            let process=unsafe{processes.GetValueAtIndex(index)}.map_err(|e|format!("process-item-hresult-{}",e.code().0))?;
+            let mut pid=0;let mut kind=COREWEBVIEW2_PROCESS_KIND::default();
+            unsafe{process.ProcessId(&mut pid)}.map_err(|e|format!("process-pid-hresult-{}",e.code().0))?;
+            unsafe{process.Kind(&mut kind)}.map_err(|e|format!("process-kind-hresult-{}",e.code().0))?;
+            if pid<=0||!seen.insert(pid){return Err("process-pid-invalid-or-duplicate".into());}
+            if kind==COREWEBVIEW2_PROCESS_KIND_BROWSER {
+                if pid as u32!=browser_pid{return Err("process-group-browser-mismatch".into());}browsers+=1;
+            }
+            entries.push(format!(r#"{{"pid":{pid},"kind":{},"gpu":{}}}"#,kind.0,kind==COREWEBVIEW2_PROCESS_KIND_GPU));
+        }
+        let mut current_browser=0;unsafe{view.BrowserProcessId(&mut current_browser)}.map_err(|e|format!("current-browser-hresult-{}",e.code().0))?;
+        if browsers!=1||current_browser!=browser_pid{return Err("retained-browser-membership-unavailable".into());}
+        Ok(format!(r#"{{"scope":"read-only-disposable-UDF-process-group-not-view-or-input-authority","status":"captured-nonatomic-not-authority","exact_disposable_udf":true,"retained_browser_entry":true,"browser_pid":{browser_pid},"processes":[{}]}}"#,entries.join(",")))
+    };
+    let value=match read(){Ok(value)=>value,Err(reason)=>format!(r#"{{"scope":"read-only-disposable-UDF-process-group-not-input-authority","status":"unavailable","reason":"{reason}"}}"#)};
+    if value.len()>8192{return;}
+    let result=std::fs::OpenOptions::new().write(true).create_new(true).open(out.join("native-process-group.json"))
+        .and_then(|mut file|file.write_all(value.as_bytes()).and_then(|()|file.sync_data()));
+    println!("NATIVE_CONTEXT_PROCESS_GROUP diagnostic_write_ok={} scope=UDF-group-not-native-input-authority",result.is_ok());
+}
+
 /// Observation/cancellation only; native selection and activeTab grants remain separate gates.
 #[test]
 #[ignore = "requires real owned native right-click/cancellation in an isolated single-test process"]
@@ -2174,6 +2224,7 @@ fn live_probe_native_context_menu_observation() {
     println!("NATIVE_CONTEXT_MENU browser_pid_query_ok={} normalized_error={:?} native_browser_pid={browser_pid}",browser_pid_result.is_ok(),browser_pid_result.as_ref().err().map(|e|e.code().0));
     browser_pid_result.unwrap();assert!(browser_pid>0&&browser_pid!=std::process::id(),"native browser process identity unavailable before input");
     let out=PathBuf::from("store-native-context-menu-observation");std::fs::create_dir_all(&out).unwrap();
+    native_context_process_group_diagnostic(&view,&profile.join("WebView2"),browser_pid,&out);
     let snapshot=Rc::new(RefCell::new(std::fs::OpenOptions::new().write(true).create_new(true).open(out.join(format!("native-menu-items-{}.log",std::process::id()))).unwrap()));let snapshot_sink=snapshot.clone();
     let requests=Rc::new(RefCell::new(Vec::<NativeContextRequest>::new()));let sink=requests.clone();let observed=Rc::new(std::cell::Cell::new(0usize));let observed_sink=observed.clone();let mut event_token=0;
     let native_clock=Instant::now();
@@ -2274,6 +2325,7 @@ fn live_probe_default_context_menu_cancellation() {
     println!("DEFAULT_CONTEXT_CANCELLATION browser_pid_query_ok={} normalized_error={:?} native_browser_pid={browser_pid}",browser_pid_result.is_ok(),browser_pid_result.as_ref().err().map(|e|e.code().0));
     browser_pid_result.unwrap();assert!(browser_pid>0&&browser_pid!=std::process::id(),"native browser process identity unavailable before input");
     let out=PathBuf::from("store-default-context-menu-cancellation");std::fs::create_dir_all(&out).unwrap();
+    native_context_process_group_diagnostic(&view,&profile.join("WebView2"),browser_pid,&out);
     let snapshot=Rc::new(RefCell::new(std::fs::OpenOptions::new().write(true).create_new(true).open(out.join(format!("native-menu-items-{}.log",std::process::id()))).unwrap()));let snapshot_sink=snapshot.clone();
     let requests=Rc::new(RefCell::new(Vec::<NativeContextRequest>::new()));let sink=requests.clone();let observed=Rc::new(std::cell::Cell::new(0usize));let observed_sink=observed.clone();let mut event_token=0;
     let native_clock=Instant::now();
