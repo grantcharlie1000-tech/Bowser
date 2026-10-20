@@ -108,6 +108,8 @@ pub trait EngineAdapter {
     fn probe_owned_host_context_handles(&self, _tab:crate::tabs::TabId) -> Option<app_context_menu_probe::NativeContextProbeHandles> {None}
     #[cfg(all(test, feature = "experimental-engine-context-menu"))]
     fn probe_extension_receipt_view(&self) -> Option<webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2> {None}
+    #[cfg(all(test, feature = "experimental-engine-context-menu"))]
+    fn probe_hide_extension_receipt(&self, _expected: &webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2) -> Option<app_context_menu_probe::ReceiptWindowProbe> {None}
 
     /// Native controller evidence only; unsupported engines fail closed, never a requested URL.
     fn successful_document_query(&self, _tab: crate::tabs::TabId) -> Option<NativeDocumentQuery> { None }

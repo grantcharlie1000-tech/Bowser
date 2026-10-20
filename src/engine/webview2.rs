@@ -3441,6 +3441,14 @@ impl EngineAdapter for WebView2Engine {
     fn probe_extension_receipt_view(&self)->Option<ICoreWebView2> {
         self.core.try_borrow().ok()?.extension_page.as_ref().map(|page|page.webview.clone())
     }
+    #[cfg(all(test, feature = "experimental-engine-context-menu"))]
+    fn probe_hide_extension_receipt(&self, expected: &ICoreWebView2)->Option<super::app_context_menu_probe::ReceiptWindowProbe> {
+        let state = self.core.try_borrow().ok()?;
+        if state.closed { return None; }
+        let page = state.extension_page.as_ref()?;
+        if page.webview.as_raw() != expected.as_raw() { return None; }
+        Some(page.probe_hide_receipt())
+    }
 
     fn successful_document_query(&self, id: TabId) -> Option<super::NativeDocumentQuery> {
         // Prepare clone-only state; the caller drops App/engine borrows before running the query.

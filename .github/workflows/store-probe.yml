@@ -10,6 +10,10 @@ on:
       - 'src/win32/store.rs'
       - '.github/workflows/store-probe.yml'
       - 'benchmarks/scripts/probe-default-context-cancellation.ps1'
+      - 'benchmarks/scripts/probe-native-context-observation.ps1'
+      - 'benchmarks/scripts/probe-app-context-menu-reload.ps1'
+      - 'benchmarks/scripts/test-native-menu-helpers.ps1'
+      - 'benchmarks/test-native-safety-source.py'
       - 'benchmarks/scripts/probe-custom-context-menu.ps1'
       - 'benchmarks/scripts/probe-app-context-menu.ps1'
       - 'benchmarks/scripts/probe-app-host-context-menu.ps1'
@@ -142,6 +146,12 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
+      - name: Compile native helper sources without running probe bodies
+        run: |
+          powershell.exe -NoProfile -File ./benchmarks/scripts/test-native-menu-helpers.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'Native helper source compilation or pure serializer contract failed.' }
+          python ./benchmarks/test-native-safety-source.py
+          if ($LASTEXITCODE -ne 0) { throw 'Fail-closed native helper source contracts failed.' }
       - name: Install official Rust toolchain
         run: rustup toolchain install stable --profile minimal
       - name: Build independent native safety executable without marketplace or resource dependencies

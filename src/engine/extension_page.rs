@@ -69,6 +69,50 @@ pub(super) struct HostedPage {
 }
 
 impl HostedPage {
+    /// Clone-only test preparation. The caller must release App/Core borrows before invoking
+    /// this one-shot closure. Keep the exact receipt WebView alive, but remove its diagnostic
+    /// window from activation competition before the real App's sole activation attempt.
+    #[cfg(all(test, feature = "experimental-engine-context-menu"))]
+    pub(super) fn probe_hide_receipt(&self) -> super::app_context_menu_probe::ReceiptWindowProbe {
+        use windows::Win32::{
+            System::Threading::GetCurrentThreadId,
+            UI::WindowsAndMessaging::{
+                GetClassNameW, GetWindowThreadProcessId, IsWindow, IsWindowVisible, SW_HIDE,
+            },
+        };
+        let hwnd = self.hwnd;
+        let alive = self.alive.clone();
+        let view = self.webview.clone();
+        let exact_window: Rc<dyn Fn() -> bool> = Rc::new(move || {
+            // Retain the exact receipt COM view without navigating, closing, or granting it.
+            let _retained_view = &view;
+            if !alive.get() || !unsafe { IsWindow(Some(hwnd)) }.as_bool() {
+                return false;
+            }
+            let mut pid = 0;
+            let tid = unsafe { GetWindowThreadProcessId(hwnd, Some(&mut pid)) };
+            let mut class = [0u16; 64];
+            let n = unsafe { GetClassNameW(hwnd, &mut class) };
+            pid == std::process::id()
+                && tid == unsafe { GetCurrentThreadId() }
+                && n > 0
+                && String::from_utf16_lossy(&class[..n as usize]) == "BowserExtensionPage"
+                && alive.get()
+        });
+        let observe = exact_window.clone();
+        let hidden: Rc<dyn Fn() -> bool> = Rc::new(move || {
+            observe() && !unsafe { IsWindowVisible(hwnd) }.as_bool() && observe()
+        });
+        let after_hide = hidden.clone();
+        super::app_context_menu_probe::ReceiptWindowProbe {
+            hide_once: Box::new(move || {
+                if !exact_window() { return false; }
+                unsafe { let _ = ShowWindow(hwnd, SW_HIDE); }
+                after_hide()
+            }),
+            hidden,
+        }
+    }
     /// Closes the window if it is still open. The flag, not `IsWindow`, says so: a destroyed
     /// window's handle can be reused by an unrelated window.
     pub(super) fn close(&self) {

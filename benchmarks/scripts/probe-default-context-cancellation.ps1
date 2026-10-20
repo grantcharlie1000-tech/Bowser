@@ -2,7 +2,7 @@
 [CmdletBinding()]
 param([Parameter(Mandatory)][uint32]$OwnerPid,[Parameter(Mandatory)][long]$OwnerHandle,[Parameter(Mandatory)][string]$OwnerExe,[Parameter(Mandatory)][uint32]$BrowserPid,
  [Parameter(Mandatory)][int]$ClientX,[Parameter(Mandatory)][int]$ClientY,[Parameter(Mandatory)][int]$ViewportWidth,[Parameter(Mandatory)][int]$ViewportHeight,
- [Parameter(Mandatory)][string]$Out)
+ [Parameter(Mandatory)][string]$Out,[ValidateSet('DefaultCancellation','ExtensionObservation')][string]$ProbeKind='DefaultCancellation')
 $ErrorActionPreference='Stop';Set-StrictMode -Version Latest
 Add-Type -AssemblyName UIAutomationClient,UIAutomationTypes,WindowsBase
 $uiaReferences=@([System.Windows.Automation.AutomationElement].Assembly.Location,[System.Windows.Automation.ControlType].Assembly.Location,[System.Windows.Rect].Assembly.Location)
@@ -79,6 +79,29 @@ public static class BowserDefaultContext {
  static bool RootFence(IntPtr host,uint testPid,uint hostTid,IntPtr popup,uint browserPid,uint menuTid,ReadOnlyBrowser browser,AutomationElement root,int[] rootId){
   return browser.SameAlive()&&Host(host,testPid,hostTid)&&PopupIdentity(host,popup,browserPid,menuTid)&&Same(Runtime(root),rootId)&&root.Current.ProcessId==(int)browserPid&&root.Current.NativeWindowHandle==popup.ToInt32()&&PopupIdentity(host,popup,browserPid,menuTid)&&Host(host,testPid,hostTid)&&browser.SameAlive();
  }
+ // Failure-only metadata for the exact HWND surfaced by the mismatched provider. Never
+ // read foreign titles/content, enumerate desktop UIA roots, or use this as input authority.
+ static string JsonText(string value){
+  var result=new StringBuilder();foreach(char unit in value){
+   if(unit=='\\')result.Append("\\\\");else if(unit=='"')result.Append("\\\"");
+   else if(unit<32)result.Append("\\u").Append(((int)unit).ToString("x4",System.Globalization.CultureInfo.InvariantCulture));
+   else result.Append(unit);
+  }return result.ToString();
+ }
+ static string NativeMismatch(IntPtr node,IntPtr popup,IntPtr host){
+  if(node==IntPtr.Zero)return "{\"status\":\"no-native-hwnd\"}";
+  uint pid;uint tid=GetWindowThreadProcessId(node,out pid);
+  if(tid==0||pid==0||!IsWindow(node))return "{\"status\":\"native-unavailable-before-read\"}";
+  string name=Class(node);RECT bounds;bool geometry=GetWindowRect(node,out bounds);
+  IntPtr parent=GetParent(node),owner=GetWindow(node,4),root=GetAncestor(node,2),rootOwner=GetAncestor(node,3);
+  bool visible=IsWindowVisible(node),enabled=IsWindowEnabled(node),popupChild=IsChild(popup,node),hostChild=IsChild(host,node);
+  uint afterPid;uint afterTid=GetWindowThreadProcessId(node,out afterPid);
+  if(!IsWindow(node)||afterTid!=tid||afterPid!=pid||Class(node)!=name)return "{\"status\":\"native-identity-changed-details-discarded\"}";
+  // Native class is a bounded OS identifier, not window text or a UIA Name. Escape it even
+  // though this is diagnostic only, and never call GetWindowText on the foreign HWND.
+  name=JsonText(name);
+  return "{\"status\":\"captured-nonatomic-not-authority\",\"pid\":"+Number(pid)+",\"thread\":"+Number(tid)+",\"class_name\":\""+name+"\",\"parent\":"+Number(parent.ToInt64())+",\"owner\":"+Number(owner.ToInt64())+",\"root\":"+Number(root.ToInt64())+",\"root_owner\":"+Number(rootOwner.ToInt64())+",\"is_popup_child\":"+(popupChild?"true":"false")+",\"is_host_child\":"+(hostChild?"true":"false")+",\"visible\":"+(visible?"true":"false")+",\"enabled\":"+(enabled?"true":"false")+",\"bounds_ok\":"+(geometry?"true":"false")+",\"left\":"+Number(bounds.Left)+",\"top\":"+Number(bounds.Top)+",\"right\":"+Number(bounds.Right)+",\"bottom\":"+Number(bounds.Bottom)+"}";
+ }
  static void WriteMismatch(IntPtr host,uint testPid,uint hostTid,IntPtr popup,uint browserPid,uint menuTid,ReadOnlyBrowser browser,AutomationElement root,int[] rootId,AutomationElement node,int depth,int[] expectedParent,int index,int providerPid,uint helperPid,string directory){
   string prefix="{\"scope\":\"failure-only-popup-rooted-numeric-identity-not-input-authority\",\"first_mismatch\":true,\"visited_count\":"+Number(index)+",\"depth\":"+Number(depth)+",\"expected_pid\":"+Number(browserPid)+",\"observed_pid\":"+Number(providerPid)+",\"helper_pid\":"+Number(helperPid)+",\"helper_pid_available\":"+(helperPid!=0?"true":"false")+",\"observed_pid_equals_helper\":"+(helperPid!=0&&providerPid==helperPid?"true":"false")+",\"observed_pid_equals_test\":"+(providerPid==testPid?"true":"false")+",\"observed_pid_equals_browser\":"+(providerPid==browserPid?"true":"false")+",\"expected_pid_equal\":false,";
   string json=prefix+"\"status\":\"diagnostic-unavailable\"}";
@@ -91,11 +114,12 @@ public static class BowserDefaultContext {
     int[] parentId=null;int parentPid=0,parentType=0,parentNative=0;bool parentPresent=false,parentMetadataRead=false;
     // Only the known enqueued parent is inspected; never walk beyond the captured root.
     if(expectedParent!=null){var parent=TreeWalker.RawViewWalker.GetParent(node);if(parent!=null){parentPresent=true;parentId=Runtime(parent);if(Same(parentId,expectedParent)){var pc=parent.Current;parentPid=pc.ProcessId;parentType=pc.ControlType.Id;parentNative=pc.NativeWindowHandle;parentMetadataRead=true;}}}
+    string nativeMetadata=NativeMismatch((IntPtr)native,popup,host);
     bool after=RootFence(host,testPid,hostTid,popup,browserPid,menuTid,browser,root,rootId)&&Same(Runtime(node),id)&&node.Current.ProcessId==providerPid;
     if(!after){json=prefix+"\"status\":\"stale-after-read-details-discarded\"}";}
     else{
      string kind=Same(id,rootId)?"root":type==ControlType.Menu.Id?"menu":type==ControlType.MenuItem.Id?"menu-item-unattributed":"structural-other";
-     json=prefix+"\"status\":\"captured-nonatomic-not-authority\",\"root_identity_before_after\":true,\"node_kind\":\""+kind+"\",\"control_type_id\":"+Number(type)+",\"native_hwnd\":"+Number(native)+",\"pid_no_default_kind\":\""+pidNoDefaultKind+"\",\"pid_no_default_value\":"+pidNoDefaultValue+",\"runtime_id\":"+JsonIds(id)+",\"root_runtime_id\":"+JsonIds(rootId)+",\"parent_already_encountered\":"+(expectedParent!=null?"true":"false")+",\"expected_parent_runtime_id\":"+JsonIds(expectedParent)+",\"parent_present\":"+(parentPresent?"true":"false")+",\"parent_runtime_id\":"+JsonIds(parentId)+",\"parent_matches_enqueued_parent\":"+(expectedParent!=null&&parentId!=null&&Same(parentId,expectedParent)?"true":"false")+",\"parent_metadata_read\":"+(parentMetadataRead?"true":"false")+",\"parent_provider_pid\":"+Number(parentPid)+",\"parent_control_type_id\":"+Number(parentType)+",\"parent_native_hwnd\":"+Number(parentNative)+"}";
+     json=prefix+"\"status\":\"captured-nonatomic-not-authority\",\"root_identity_before_after\":true,\"node_kind\":\""+kind+"\",\"control_type_id\":"+Number(type)+",\"native_hwnd\":"+Number(native)+",\"native_window\":"+nativeMetadata+",\"pid_no_default_kind\":\""+pidNoDefaultKind+"\",\"pid_no_default_value\":"+pidNoDefaultValue+",\"runtime_id\":"+JsonIds(id)+",\"root_runtime_id\":"+JsonIds(rootId)+",\"parent_already_encountered\":"+(expectedParent!=null?"true":"false")+",\"expected_parent_runtime_id\":"+JsonIds(expectedParent)+",\"parent_present\":"+(parentPresent?"true":"false")+",\"parent_runtime_id\":"+JsonIds(parentId)+",\"parent_matches_enqueued_parent\":"+(expectedParent!=null&&parentId!=null&&Same(parentId,expectedParent)?"true":"false")+",\"parent_metadata_read\":"+(parentMetadataRead?"true":"false")+",\"parent_provider_pid\":"+Number(parentPid)+",\"parent_control_type_id\":"+Number(parentType)+",\"parent_native_hwnd\":"+Number(parentNative)+"}";
     }
    }
   }catch{ /* Getter failures remain diagnostic unavailable; never suppress the original rejection. */ }
@@ -191,10 +215,14 @@ public static class BowserDefaultContext {
 '@
 Add-Type -AssemblyName System.Drawing
 New-Item -ItemType Directory -Force $Out|Out-Null
-$report=[ordered]@{scope='separate-default-Chromium-Views-menu-cancellation-not-selection';status='failed';right_input_called=$false;escape_called=$false;error=$null;failure_cleanup=$null}
+# Both exact tests use the real unhandled WebView2 Chromium Views backend. They retain
+# independent Rust observers/profiles/receipts, but never substitute a guessed Win32 HMENU.
+$reportName=if($ProbeKind -ceq 'ExtensionObservation'){'native-context-observation.json'}else{'default-context-cancellation.json'}
+$reportScope=if($ProbeKind -ceq 'ExtensionObservation'){'single-test-observation-and-cancellation-not-selection'}else{'separate-default-Chromium-Views-menu-cancellation-not-selection'}
+$report=[ordered]@{scope=$reportScope;backend='unhandled-WebView2-Chromium-Views';status='failed';right_input_called=$false;escape_called=$false;error=$null;failure_cleanup=$null}
 $observationClock=[Diagnostics.Stopwatch]::StartNew();$report.topology=@()
 $h=[IntPtr]$OwnerHandle;$pidNow=[uint32]0;$tid=[BowserDefaultContext]::GetWindowThreadProcessId($h,[ref]$pidNow);$guard=$null;$browserGuard=$null
-function Save-Report {[IO.File]::WriteAllText((Join-Path $Out 'default-context-cancellation.json'),($report|ConvertTo-Json -Depth 8),[Text.UTF8Encoding]::new($false))}
+function Save-Report {[IO.File]::WriteAllText((Join-Path $Out $reportName),($report|ConvertTo-Json -Depth 8),[Text.UTF8Encoding]::new($false))}
 function Observe-Topology([string]$Phase) {
  $observation=[ordered]@{phase=$Phase;elapsed_ms=$observationClock.ElapsedMilliseconds;identity_before=$false;identity_after=$false;status='unavailable';native=$null;screenshot_status='not-attempted'}
  try {
@@ -279,4 +307,4 @@ try {
  if($report.right_input_called -and $guard){$report.failure_cleanup=$guard.FailOnly($h,$tid);try{Save-Report}catch{[Console]::Error.WriteLine('Native observation cleanup report write failed.')}}
  [Console]::Error.WriteLine('Native context observation failed; no selection compatibility verdict.');exit 75
 } finally {if($browserGuard){$browserGuard.Dispose()};if($guard){$guard.Dispose()}}
-Write-Output 'DEFAULT_CONTEXT_CANCELLATION exact_owned_right_input=true exact_visible_native_popup=true real_escape_and_disappearance=true selection_performed=false'
+Write-Output "CHROMIUM_CONTEXT_CANCELLATION probe=$ProbeKind exact_owned_right_input=true exact_visible_native_popup=true exact_UIA_fixture_row=true real_escape_and_disappearance=true selection_performed=false"

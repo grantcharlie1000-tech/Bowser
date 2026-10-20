@@ -62,6 +62,12 @@ pub(crate) struct NativeContextProbeHandles {
     pub(crate) document_fence: Rc<dyn Fn() -> bool>,
 }
 
+/// Test-only exact receipt-window preparation. Hiding is one-shot; later checks only observe.
+pub(crate) struct ReceiptWindowProbe {
+    pub(crate) hide_once: Box<dyn FnOnce() -> bool>,
+    pub(crate) hidden: Rc<dyn Fn() -> bool>,
+}
+
 /// Read-only diagnostic emitted at the actual production menu coordinator boundaries.
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum MenuProbeEvent {

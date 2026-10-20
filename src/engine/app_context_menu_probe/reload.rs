@@ -351,20 +351,22 @@ unsafe extern "system" fn reload_timer(hwnd:HWND,_message:u32,id:usize,_time:u32
     }
 }
 
-fn reload_input(app:&AppRef,h:&NativeContextProbeHandles,tab:TabId,proof:(u64,u64,u64),out:&Path) {
+fn reload_input(app:&AppRef,h:&NativeContextProbeHandles,tab:TabId,proof:(u64,u64,u64),out:&Path,receipt_hidden:&dyn Fn()->bool) {
     current(h,proof);ordinary_profile(&h.view);isolated_environment(app,h);
     let owner=app.borrow().hwnd;
     let mut class=[0;64];let n=unsafe{GetClassNameW(owner,&mut class)};
     assert_eq!(String::from_utf16_lossy(&class[..n as usize]),"BowserNativeWindow");
     assert!(unsafe{IsWindow(Some(owner))}.as_bool());
+    assert!(receipt_hidden(),"receipt window reappeared before activation; no re-hide or input");
     // This Rust preparation owns the ONLY activation attempt. Require its actual success;
     // the right-click-only helper may freshly verify foreground, but may never activate again.
     unsafe{assert!(SetForegroundWindow(owner).as_bool(),"exact-owner activation failed; no retry or helper rescue");h.controller.MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC).unwrap()};
     assert!(pump_until(Duration::from_secs(3),||unsafe{GetForegroundWindow()}==owner));
     assert_eq!(script(&h.view,"(()=>{document.getElementById('app-context-target').focus();return document.hasFocus()})()"),Value::Bool(true));
     current(h,proof);
-    let source=script(&h.view,"(()=>{const t=document.getElementById('app-context-target'),r=t.getBoundingClientRect(),x=(r.left+r.right)/2,y=(r.top+r.bottom)/2;return {left:r.left,top:r.top,right:r.right,bottom:r.bottom,width:innerWidth,height:innerHeight,ratio:devicePixelRatio,hit:document.elementFromPoint(x,y)===t,trusted:Number(document.documentElement.getAttribute('data-app-context-trusted')||0)}})()");
-    assert_bool(&source,"hit",true);
+    let source_script="(()=>{const t=document.getElementById('app-context-target'),r=t.getBoundingClientRect(),x=(r.left+r.right)/2,y=(r.top+r.bottom)/2;return {left:r.left,top:r.top,right:r.right,bottom:r.bottom,width:innerWidth,height:innerHeight,ratio:devicePixelRatio,hit:document.elementFromPoint(x,y)===t,focused:document.hasFocus()&&document.activeElement===t,trusted:Number(document.documentElement.getAttribute('data-app-context-trusted')||0)}})()";
+    let source=script(&h.view,source_script);
+    assert_bool(&source,"hit",true);assert_bool(&source,"focused",true);
     let mut bounds=RECT::default();let mut client=RECT::default();let mut parent=HWND::default();let mut zoom=0.0;let mut browser=0;
     unsafe{h.controller.Bounds(&mut bounds).unwrap();h.controller.ParentWindow(&mut parent).unwrap();h.controller.ZoomFactor(&mut zoom).unwrap();GetClientRect(owner,&mut client).unwrap();h.view.BrowserProcessId(&mut browser).unwrap()};
     assert_eq!(parent,owner);assert_eq!(zoom,1.0);assert!(browser>0);
@@ -379,7 +381,6 @@ fn reload_input(app:&AppRef,h:&NativeContextProbeHandles,tab:TabId,proof:(u64,u6
     let (px,py)=((left+right)/2,(top+bottom)/2);
     std::fs::create_dir_all(out).unwrap();let request_file=out.join("current-request.json");assert!(!request_file.exists());
     let nonce=format!("{}-{}",std::process::id(),SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos());
-    write_once(&out.join("source-conditioning.json"),&format!(r#"{{"schema":"bowser-real-app-menu-reload-conditioning-v1","activation_owner":"Rust-exact-original-App-owner","activation_attempts":1,"actual_activation_return":true,"owner":{},"controller":"{}","original_proof":["{}","{}","{}"]}}"#,owner.0 as isize,h.controller.as_raw() as usize,proof.0,proof.1,proof.2));
     let observed=Rc::new(RefCell::new(Vec::new()));let sink=observed.clone();
     let failure=Rc::new(RefCell::new(None::<String>));let errors=failure.clone();
     let show=Rc::new(RefCell::new(None::<ShowWitness>));let pending_show=show.clone();
@@ -416,6 +417,29 @@ fn reload_input(app:&AppRef,h:&NativeContextProbeHandles,tab:TabId,proof:(u64,u6
     let timer_result=Rc::new(RefCell::new(TimerResult::default()));
     let _timer=arm_timer(app,h,tab,proof,show.clone(),out,&nonce,timer_result.clone(),number(&source,"trusted"),journal);
     current(h,proof);
+    // This is an observation, never a second activation or focus repair. Prepare every test
+    // observer/timer before taking the final foreground/source-focus conditioning witness.
+    assert_eq!(script(&h.view,source_script),source,"source target focus/hit/geometry/trusted count changed before helper launch");
+    let mut final_bounds=RECT::default();let mut final_client=RECT::default();let mut final_parent=HWND::default();let mut final_zoom=0.0;
+    unsafe{h.controller.Bounds(&mut final_bounds).unwrap();h.controller.ParentWindow(&mut final_parent).unwrap();h.controller.ZoomFactor(&mut final_zoom).unwrap();GetClientRect(owner,&mut final_client).unwrap()};
+    assert_eq!([final_bounds.left,final_bounds.top,final_bounds.right,final_bounds.bottom],[bounds.left,bounds.top,bounds.right,bounds.bottom]);
+    assert_eq!([final_client.left,final_client.top,final_client.right,final_client.bottom],[client.left,client.top,client.right,client.bottom]);
+    assert_eq!(final_parent,owner);assert_eq!(final_zoom,zoom);
+    let no_native_menu=|| {
+        let mut gui=GUITHREADINFO{cbSize:std::mem::size_of::<GUITHREADINFO>() as u32,..Default::default()};
+        unsafe{GetGUIThreadInfo(GetCurrentThreadId(),&mut gui)}.is_ok()
+            && gui.hwndActive==owner && !gui.hwndFocus.0.is_null() && gui.hwndCapture.0.is_null()
+            && gui.hwndMenuOwner.0.is_null() && !gui.flags.contains(GUI_POPUPMENUMODE)
+    };
+    current(h,proof);
+    assert!(receipt_hidden(),"receipt window reappeared before conditioning witness; no re-hide or input");
+    assert!(no_native_menu(),"source conditioning has unexpected native menu/capture; no repair");
+    assert_eq!(unsafe{GetForegroundWindow()},owner,"exact owner foreground lost before helper launch; no retry");
+    write_once(&out.join("source-conditioning.json"),&format!(r#"{{"schema":"bowser-real-app-menu-reload-conditioning-v1","activation_owner":"Rust-exact-original-App-owner","activation_attempts":1,"actual_activation_return":true,"receipt_window_hidden":true,"final_source_focus":true,"final_owner_foreground":true,"no_native_menu_or_capture":true,"owner":{},"controller":"{}","original_proof":["{}","{}","{}"]}}"#,owner.0 as isize,h.controller.as_raw() as usize,proof.0,proof.1,proof.2));
+    current(h,proof);
+    assert!(receipt_hidden(),"receipt window reappeared at final helper boundary; no re-hide or input");
+    assert!(no_native_menu(),"native menu/capture changed after conditioning witness; no repair");
+    assert_eq!(unsafe{GetForegroundWindow()},owner,"exact owner foreground changed after conditioning write; no retry");
     let mut child=Command::new("powershell.exe").args(["-NoProfile","-File"])
         .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("benchmarks/scripts/probe-app-context-menu-reload.ps1"))
         .args(["-OwnerPid",&std::process::id().to_string(),"-OwnerHandle",&(owner.0 as isize).to_string()])
@@ -482,10 +506,28 @@ fn sequence(app:&AppRef,root:&Path,page:&url::Url,bowser_id:&str,folder:&Path,id
     let before=worker(&popup,"native-command-preflight");assert_eq!(text(&before,"workerInstance"),worker_id);assert_eq!(field(&before,"creation"),Some(&creation));
     let native_ids=deny_all(&before);for view in [&primary.view,&negative.view] {no_effects(view);}
     let out=std::env::current_dir().unwrap().join(EVIDENCE);std::fs::write(out.join("genuine-native-preflight-before.txt"),format!("{before:?}\n")).unwrap();
+    // The receipt page is a separate, genuine extension window. Hide only that exact live
+    // fixture window before conditioning the App; it may otherwise regain activation during
+    // the helper's PowerShell startup. No App/Core borrow survives ShowWindow or pumping.
+    let hide_receipt = {
+        let state = app.try_borrow().expect("App unavailable before receipt preparation");
+        state.engine.as_ref().unwrap().probe_hide_extension_receipt(&popup)
+            .expect("exact retained receipt window unavailable")
+    };
+    assert!((hide_receipt.hide_once)(), "exact fixture receipt window was not hidden; no activation or input");
+    let receipt_hidden = hide_receipt.hidden;
+    pump_until(Duration::from_millis(300), || false);
+    assert!(receipt_hidden(),"receipt window reappeared after queued events; no re-hide or input");
+    assert_eq!(receipt_view(app).unwrap().as_raw(), popup.as_raw(), "receipt view changed while hiding fixture window");
+    let hidden_receipt = worker(&popup,"native-command-state");
+    assert_eq!(text(&hidden_receipt,"workerInstance"),worker_id);
+    assert_eq!(field(&hidden_receipt,"creation"),Some(&creation));
+    assert!(array(&hidden_receipt,"events").is_empty());
+    current(&primary,original);
     assert!(page.as_str().len()<=MAX_START_URL_BYTES,"controlled expected source URL exceeds capture bound");
     START_SOURCE.with(|slot|*slot.borrow_mut()=Some((source_tab,primary.view.as_raw() as usize,page.to_string())));
     let start_offset=STARTS.with(|events|events.borrow().len());assert!(start_offset<64);
-    reload_input(app,&primary,source_tab,original,&out.join("reload"));
+    reload_input(app,&primary,source_tab,original,&out.join("reload"),&*receipt_hidden);
     let mut fresh=None;
     assert!(pump_until(Duration::from_secs(30),||{fresh=(primary.proof)();fresh.is_some_and(|proof|proof!=original)}),"same retained controller/gate did not produce a fresh successful native document proof");
     let fresh=fresh.unwrap();assert_ne!(fresh.0,original.0);assert!(!(primary.document_fence)());

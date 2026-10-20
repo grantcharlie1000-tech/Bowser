@@ -143,6 +143,64 @@ public static class BowserHostMenu {
  [DllImport("kernel32.dll")] static extern bool GlobalUnlock(IntPtr memory);
  [DllImport("kernel32.dll")] static extern IntPtr GlobalFree(IntPtr memory);
  [DllImport("kernel32.dll")] static extern UIntPtr GlobalSize(IntPtr memory);
+ // Failure-only window-station diagnostics. These do not inspect clipboard contents,
+ // repair attachment/access, or establish sequence authority. Borrowed handles are not closed.
+ [StructLayout(LayoutKind.Sequential)] struct OBJECTFLAGS {public int Inherit,Reserved;public uint Flags;}
+ [DllImport("user32.dll",SetLastError=true)] static extern IntPtr GetProcessWindowStation();
+ [DllImport("user32.dll",SetLastError=true)] static extern IntPtr GetThreadDesktop(uint thread);
+ [DllImport("kernel32.dll")] static extern uint GetCurrentThreadId();
+ [DllImport("kernel32.dll",EntryPoint="GetCurrentProcessId")] static extern uint DiagnosticProcessId();
+ [DllImport("kernel32.dll",SetLastError=true)] static extern bool ProcessIdToSessionId(uint pid,out uint session);
+ [DllImport("user32.dll",EntryPoint="GetUserObjectInformationW",SetLastError=true)] static extern bool UserObjectName(IntPtr handle,int index,IntPtr data,uint bytes,out uint needed);
+ [DllImport("user32.dll",EntryPoint="GetUserObjectInformationW",SetLastError=true)] static extern bool UserObjectFlags(IntPtr handle,int index,out OBJECTFLAGS data,uint bytes,out uint needed);
+ [DllImport("user32.dll",EntryPoint="GetUserObjectInformationW",SetLastError=true)] static extern bool UserObjectInput(IntPtr handle,int index,out int data,uint bytes,out uint needed);
+ [DllImport("user32.dll",CharSet=CharSet.Unicode,SetLastError=true)] static extern IntPtr OpenWindowStation(string name,bool inherit,uint access);
+ [DllImport("user32.dll",SetLastError=true)] static extern bool CloseWindowStation(IntPtr station);
+ static string BoundedObjectName(IntPtr handle,out int error){
+  error=0;if(handle==IntPtr.Zero)return null;
+  const uint cap=512;IntPtr data=Marshal.AllocHGlobal((int)cap);
+  try{
+   uint needed;bool ok=UserObjectName(handle,2,data,cap,out needed);int callError=ok?0:Marshal.GetLastWin32Error();
+   if(!ok){error=callError;return null;}
+   // nLength and needed are BYTES. Require a whole bounded, explicitly terminated UTF-16
+   // string and reject embedded NULs before passing the exact name to OpenWindowStation.
+   if(needed<2||needed>cap||(needed&1)!=0)return null;
+   int units=(int)needed/2;if(Marshal.ReadInt16(data,(units-1)*2)!=0)return null;
+   for(int index=0;index<units-1;index++)if(Marshal.ReadInt16(data,index*2)==0)return null;
+   return Marshal.PtrToStringUni(data,units-1);
+  }finally{Marshal.FreeHGlobal(data);}
+ }
+ static object DiagnosticSession(uint pid){
+  uint session;bool ok=ProcessIdToSessionId(pid,out session);int error=ok?0:Marshal.GetLastWin32Error();
+  return new {pid=pid,query_ok=ok,error=error,session_id=ok?(uint?)session:null};
+ }
+ public static object ClipboardEnvironment(uint testPid,uint browserPid){
+  IntPtr station=GetProcessWindowStation();int stationError=station==IntPtr.Zero?Marshal.GetLastWin32Error():0;
+  IntPtr desktop=GetThreadDesktop(GetCurrentThreadId());int desktopError=desktop==IntPtr.Zero?Marshal.GetLastWin32Error():0;
+  int stationNameError,desktopNameError;string stationName=BoundedObjectName(station,out stationNameError),desktopName=BoundedObjectName(desktop,out desktopNameError);
+  OBJECTFLAGS flags=new OBJECTFLAGS();uint flagsNeeded=0;
+  bool flagsOk=station!=IntPtr.Zero&&UserObjectFlags(station,1,out flags,12,out flagsNeeded);int flagsError=flagsOk?0:station==IntPtr.Zero?stationError:Marshal.GetLastWin32Error();
+  bool flagsNativeOk=flagsOk;flagsOk=flagsOk&&flagsNeeded==12;
+  int input=0;uint inputNeeded=0;
+  bool inputOk=desktop!=IntPtr.Zero&&UserObjectInput(desktop,6,out input,4,out inputNeeded);int inputError=inputOk?0:desktop==IntPtr.Zero?desktopError:Marshal.GetLastWin32Error();
+  bool inputNativeOk=inputOk;inputOk=inputOk&&inputNeeded==4;
+  bool accessAttempted=false,accessOpened=false,accessCloseAttempted=false,accessClosed=false;int accessError=0,accessCloseError=0;
+  if(stationName!=null&&stationName.Length>0){
+   // A new non-inheritable, non-mutating access probe only. Never change the process station, DACL,
+   // privileges, desktop, or the borrowed attachment handle. Success is NOT sequence authority.
+   accessAttempted=true;IntPtr probe=OpenWindowStation(stationName,false,0x0004);
+   accessOpened=probe!=IntPtr.Zero;accessError=accessOpened?0:Marshal.GetLastWin32Error();
+   if(accessOpened){try{}finally{accessCloseAttempted=true;accessClosed=CloseWindowStation(probe);accessCloseError=accessClosed?0:Marshal.GetLastWin32Error();}}
+  }
+  return new {scope="failure-only-read-only-not-clipboard-or-input-authority",sequence_zero_still_refused=true,
+   station_handle_available=station!=IntPtr.Zero,station_error=stationError,station_name_available=stationName!=null,station_name=stationName,station_name_error=stationNameError,
+   station_flags_query_attempted=station!=IntPtr.Zero,station_flags_native_ok=flagsNativeOk,station_flags_available=flagsOk,station_flags_error=flagsError,station_flags_bytes=flagsNeeded,station_flags_size_valid=flagsNeeded==12,station_flags=flagsOk?(uint?)flags.Flags:null,station_flags_are_not_granted_access=true,
+   desktop_handle_available=desktop!=IntPtr.Zero,desktop_error=desktopError,desktop_name_available=desktopName!=null,desktop_name=desktopName,desktop_name_error=desktopNameError,
+   desktop_input_query_attempted=desktop!=IntPtr.Zero,desktop_input_native_ok=inputNativeOk,desktop_input_query_ok=inputOk,desktop_input_query_error=inputError,desktop_input_bytes=inputNeeded,desktop_input_size_valid=inputNeeded==4,desktop_receives_input=inputOk?(bool?)(input!=0):null,
+   clipboard_right_probe_attempted=accessAttempted,clipboard_right_requested=4,clipboard_right_opened=accessOpened,clipboard_right_open_error=accessError,
+   clipboard_right_close_attempted=accessCloseAttempted,clipboard_right_closed=accessClosed,clipboard_right_close_error=accessCloseError,
+   helper_session=DiagnosticSession(DiagnosticProcessId()),test_session=DiagnosticSession(testPid),browser_session=DiagnosticSession(browserPid)};
+ }
  /// External to Rust: stores only generated text and clipboard sequence metadata. No backup
  /// claim, no prior content getter, no clipboard logger, no retry on lock/race, no forced clear.
  public sealed class ClipboardGuard:IDisposable {
@@ -426,6 +484,13 @@ try {
  $report.error=$_.Exception.Message
  # Constructor cleanup has already run, even when assignment never returned an object.
  try {if([BowserHostMenu+ClipboardGuard]::AdmissionStarted){$report.clipboard_admission=@{stage=[BowserHostMenu+ClipboardGuard]::AdmissionStage;failure_stage=[BowserHostMenu+ClipboardGuard]::AdmissionFailureStage;open_succeeded=[BowserHostMenu+ClipboardGuard]::AdmissionOpened;format_observed=[BowserHostMenu+ClipboardGuard]::AdmissionFormatObserved;first_format_zero=[BowserHostMenu+ClipboardGuard]::AdmissionFirstFormatZero;enum_error=[BowserHostMenu+ClipboardGuard]::AdmissionEnumError;sequence_observed=[BowserHostMenu+ClipboardGuard]::AdmissionSequenceObserved;sequence=[BowserHostMenu+ClipboardGuard]::AdmissionSequence;close_attempted=[BowserHostMenu+ClipboardGuard]::AdmissionCloseAttempted;close_confirmed=[BowserHostMenu+ClipboardGuard]::AdmissionCloseConfirmed}}}catch{}
+ # Admission has already refused and closed the clipboard. These bounded read-only OS
+ # observations cannot re-enter the constructor, clear/seed data, grant access, or allow input.
+ try {
+  if([BowserHostMenu+ClipboardGuard]::AdmissionFailureStage -gt 0 -and [BowserHostMenu+ClipboardGuard]::AdmissionCloseConfirmed){
+   $report.clipboard_environment=[BowserHostMenu]::ClipboardEnvironment($OwnerPid,$BrowserPid)
+  }
+ }catch{$report.clipboard_environment=@{scope='failure-only-read-only-not-authority';status='diagnostic-unavailable'}}
  # Restore only our exact last-owned sequence BEFORE terminating the exact disposable test.
  if($clipboard){$restored=$clipboard.Finish();$report.clipboard=$clipboard.Status;$report.owned_clipboard_sequences=@($clipboard.OwnedSequences)}
  try{Save-Report}catch{[Console]::Error.WriteLine('Native host regression failure report could not be written.')}
