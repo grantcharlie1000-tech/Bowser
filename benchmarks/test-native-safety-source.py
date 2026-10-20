@@ -27,11 +27,14 @@ class NativeSafetySourceContracts(unittest.TestCase):
             self.assertIn(guard, helper)
         self.assertNotIn("continue-on-error", helper)
 
-    def test_foreign_provider_still_refuses_unconditionally(self):
+    def test_unproved_foreign_provider_refuses_before_any_escape(self):
         helper = source("benchmarks/scripts/probe-default-context-cancellation.ps1")
         branch = helper.split("if(providerPid!=(int)browserPid){", 1)[1].split("\n   }", 1)[0]
         self.assertIn("WriteMismatch(", branch)
-        self.assertIn('throw new InvalidOperationException("UIA menu provider PID mismatch.")', branch)
+        self.assertIn('throw new InvalidOperationException("UIA menu provider PID/owned-leaf proof mismatch.")', branch)
+        self.assertIn("gpu==null||providerPid!=(int)gpu.Pid||gpuLeaves!=0", branch)
+        self.assertIn("ReadGpuLeaf(", branch)
+        self.assertIn("catch{", branch)
         self.assertNotIn("continue", branch)
         diagnostic = helper.split("static string NativeMismatch(", 1)[1].split("static void WriteMismatch(", 1)[0]
         for forbidden in ("GetWindowText", "AutomationElement.FromHandle", "keybd_event", "mouse_event", "SetForegroundWindow", "SetFocus"):
@@ -124,6 +127,64 @@ class NativeSafetySourceContracts(unittest.TestCase):
         self.assertIn("self.0.set(None)", coordinator)
         helper = source("benchmarks/scripts/probe-app-context-menu-reload.ps1")
         self.assertNotIn("EndMenu", helper)
+
+    def test_gpu_category_counts_a_proved_leaf_and_repeats_the_full_inventory(self):
+        helper = source("benchmarks/scripts/probe-default-context-cancellation.ps1")
+        gpu = helper.split("static GpuLeafWitness GpuShape(", 1)[1].split("static string ProtocolProof(", 1)[0]
+        for required in ("ProcessIdProperty", "NativeWindowHandleProperty", "ControlTypeProperty", "BoundingRectangleProperty", "IsEnabledProperty", "HasKeyboardFocusProperty"):
+            self.assertIn(required, gpu)
+        self.assertIn("Required<", gpu)
+        self.assertIn("OptionalBoolean(node,AutomationElement.IsControlElementProperty)", gpu)
+        self.assertIn("ItemContainerPattern.Pattern", gpu)
+        self.assertIn("VirtualizedItemPattern.Pattern", gpu)
+        self.assertIn("before.Signature!=after.Signature", gpu)
+        for forbidden in (".Realize(", ".Expand(", ".Invoke(", "current.Name", "node.Current.Name"):
+            self.assertNotIn(forbidden, gpu)
+        self.assertIn("if(!seen.Add(runtimeKey))", helper)
+        self.assertIn("GPU leaf gained a child.", helper)
+        self.assertIn("a.Inventory==b.Inventory&&a.GpuLeaves==b.GpuLeaves", helper)
+        self.assertIn("Inventory=inventory.ToString(),GpuLeaves=gpuLeaves", helper)
+        self.assertIn("gpuLeaf.Matches(c.ProcessId,observedNative,observedType,box,Runtime(e),queued.Item3,c.IsEnabled,c.HasKeyboardFocus)", helper)
+        self.assertIn("RecheckGpuTyped(e,gpuLeaf)", helper)
+        self.assertIn("var facts=new NativeLeafFacts", helper)
+        self.assertIn("if(!NativeLeafPolicy(facts))", helper)
+        self.assertIn("var facts=new UiaLeafFacts", helper)
+        self.assertIn("if(!UiaLeafPolicy(facts))", helper)
+        checker = source("benchmarks/scripts/test-native-menu-helpers.ps1")
+        self.assertIn("CheckOwnedLeafPolicy", checker)
+        self.assertIn("CheckInventoryPolicy", checker)
+        matrix = helper.split("public static void CheckInventoryPolicy(){", 1)[1].split("public static MenuProof ReadMenu(", 1)[0]
+        for field in ("count", "order", "parent", "runtime", "pid", "hwnd", "type", "bounds", "gpu_proof"):
+            self.assertIn('{"' + field + '",', matrix)
+        self.assertIn("SameProof(baseline,fresh)", matrix)
+        receipt = helper.split("public static void CheckMembershipPolicy(){", 1)[1].split("static MenuProof SyntheticMenuProof(", 1)[0]
+        for field in ("truncated", "browser_pid", "browser_creation", "inventory_digest", "deadline_tick", "duplicate_field"):
+            self.assertIn('{"' + field + '",', receipt)
+        workflow = source(".github/workflows/store-probe.yml")
+        step = workflow.split("id: gpu_ownership_unit", 1)[1].split("      - name:", 1)[0]
+        self.assertIn("$test.Count -ne 1", step)
+        self.assertIn("& $test[0].FullName engine::extension_probe_live::native_menu_ownership::synthetic_policy_tests", step)
+        self.assertNotIn("cargo +stable test", step)
+
+    def test_one_shot_gpu_membership_binds_source_lifetimes_inventory_and_deadline(self):
+        rust = source("src/engine/extension_probe_live/native_menu_ownership.rs")
+        for required in ("PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE", "view.cast::<IUnknown>()", "environment.cast::<IUnknown>()", "original-source-document-fence-unavailable", "source.membership(deadline, processes, None, Some(gpu_pid))", "read_request(&request_path)? != bytes", "readiness-deadline-changed", "deadline_tick", "GetTickCount64", "create_new(true)", "MOVE_FILE_FLAGS(0)"):
+            self.assertIn(required, rust)
+        for forbidden in ("remove_file(self.out.join(RESPONSE))", "SetForegroundWindow(", "SetFocus(", "SetSelectedCommandId("):
+            self.assertNotIn(forbidden, rust)
+        helper = source("benchmarks/scripts/probe-default-context-cancellation.ps1")
+        self.assertIn("ExactMembershipResponse($response,$expected)", helper)
+        self.assertIn("GetTickCount64() -ge $AuthorityDeadlineTick", helper)
+        self.assertLess(helper.index("$response=[BowserDefaultContext]::ReadMembershipResponse"), helper.index("Neutral;$fresh=Menu-State"))
+        self.assertLess(helper.index("Neutral;$fresh=Menu-State"), helper.index("::keybd_event(27,0,0"))
+        self.assertIn("$gpuGuard -and [BowserDefaultContext]::GetTickCount64() -ge $AuthorityDeadlineTick", helper)
+        fence = source("src/engine/webview2.rs").split("fn probe_context_ownership_fence(", 1)[1].split("/// Opens an extension page", 1)[0]
+        self.assertIn("self.core.try_borrow_mut()", fence)
+        self.assertIn("gate.try_borrow_mut()", fence)
+        self.assertIn("current_gate.proof()==Some(proof)", fence)
+        live = source("src/engine/extension_probe_live.rs")
+        self.assertEqual(live.count("authority.service_once(ownership_deadline,ownership_tick)"), 2)
+        self.assertEqual(live.count('assert!(ownership_error.is_none(),"fresh exact GPU membership refused:'), 2)
 
     def test_managed_helpers_compile_in_one_source_unit(self):
         checker = source("benchmarks/scripts/test-native-menu-helpers.ps1")

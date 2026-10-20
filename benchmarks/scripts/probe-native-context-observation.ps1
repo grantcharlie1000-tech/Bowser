@@ -5,7 +5,7 @@
 [CmdletBinding()]
 param([Parameter(Mandatory)][uint32]$OwnerPid,[Parameter(Mandatory)][long]$OwnerHandle,[Parameter(Mandatory)][string]$OwnerExe,[Parameter(Mandatory)][uint32]$BrowserPid,
  [Parameter(Mandatory)][int]$ClientX,[Parameter(Mandatory)][int]$ClientY,[Parameter(Mandatory)][int]$ViewportWidth,[Parameter(Mandatory)][int]$ViewportHeight,
- [Parameter(Mandatory)][string]$Out)
+ [Parameter(Mandatory)][string]$Out,[uint32]$GpuPid=0,[UInt64]$GpuCreation=0,[UInt64]$BrowserCreation=0,[string]$OwnershipNonce='',[string]$SourceProof='',[string]$EnvironmentIdentity='',[UInt64]$AuthorityDeadlineTick=0)
 $ErrorActionPreference='Stop';Set-StrictMode -Version Latest
 $global:LASTEXITCODE=0
 & (Join-Path $PSScriptRoot 'probe-default-context-cancellation.ps1') @PSBoundParameters -ProbeKind ExtensionObservation

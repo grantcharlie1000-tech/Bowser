@@ -325,15 +325,27 @@ jobs:
           $test = Get-ChildItem target/debug/deps/bowser-*.exe | Sort-Object LastWriteTime -Descending | Select-Object -First 1
           & $test.FullName live_probe_native_api_isolation --ignored --nocapture --test-threads=1 2>&1 | Tee-Object store-native-api-isolation.log
           if ($LASTEXITCODE -ne 0) { throw 'Native broad-host API isolation controls failed.' }
-      - name: Observe genuine native extension menu and cancellation without selection
+      - name: Refuse synthetic GPU ownership protocol and membership mismatches before native input
+        id: gpu_ownership_unit
         if: ${{ !cancelled() && steps.native_build.outcome == 'success' }}
+        run: |
+          # Reuse the exact no-feature native_build binary. Do not build a newer feature variant.
+          $test = @(Get-ChildItem target/debug/deps/bowser-*.exe)
+          if ($test.Count -ne 1) { throw 'Exact single native-build executable unavailable for synthetic ownership checks.' }
+          $listed = @(& $test[0].FullName engine::extension_probe_live::native_menu_ownership::synthetic_policy_tests --list)
+          if ($LASTEXITCODE -ne 0 -or @($listed | Where-Object { $_ -cmatch ': test$' }).Count -ne 6) { throw 'Exact six synthetic ownership tests were not discovered.' }
+          & $test[0].FullName engine::extension_probe_live::native_menu_ownership::synthetic_policy_tests --nocapture --test-threads=1 2>&1 | Tee-Object store-native-gpu-ownership-unit.log
+          if ($LASTEXITCODE -ne 0) { throw 'Synthetic GPU ownership refusal policy failed; no native input acceptance.' }
+
+      - name: Observe genuine native extension menu and cancellation without selection
+        if: ${{ !cancelled() && steps.native_build.outcome == 'success' && steps.gpu_ownership_unit.outcome == 'success' }}
         run: |
           $env:LOCALAPPDATA = Join-Path $env:RUNNER_TEMP 'bowser-store-isolated-localappdata'
           $test = Get-ChildItem target/debug/deps/bowser-*.exe | Sort-Object LastWriteTime -Descending | Select-Object -First 1
           & $test.FullName engine::extension_probe_live::live_probe_native_context_menu_observation --exact --ignored --nocapture --test-threads=1 2>&1 | Tee-Object store-native-context-menu.log
           if ($LASTEXITCODE -ne 0) { throw 'Native menu observation/cancellation unavailable or failed; no selection compatibility verdict.' }
       - name: Probe separate default Chromium menu cancellation with native UIA identity
-        if: ${{ !cancelled() && steps.native_build.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.native_build.outcome == 'success' && steps.gpu_ownership_unit.outcome == 'success' }}
         run: |
           $env:LOCALAPPDATA = Join-Path $env:RUNNER_TEMP 'bowser-store-isolated-localappdata'
           $test = Get-ChildItem target/debug/deps/bowser-*.exe | Sort-Object LastWriteTime -Descending | Select-Object -First 1

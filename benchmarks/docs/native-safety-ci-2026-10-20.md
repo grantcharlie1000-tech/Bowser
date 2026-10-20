@@ -182,3 +182,67 @@ station-specific or runner clipboard-authority contract.
 - [NtQueryObject](https://learn.microsoft.com/en-us/windows/win32/api/winternl/nf-winternl-ntqueryobject)
 - [Kernel objects](https://learn.microsoft.com/en-us/windows/win32/sysinfo/kernel-objects)
 - [DuplicateHandle supported object table](https://learn.microsoft.com/en-us/windows/win32/api/handleapi/nf-handleapi-duplicatehandle)
+
+
+## Counted owned-GPU-leaf model (requires native CI acceptance)
+
+The raw popup inventory is genuinely multi-process on this runtime. The proposed
+category is not a foreign-PID allowlist or a skipped subtree: it counts exactly
+one direct raw Pane leaf, bound to a live retained GPU process in the actual
+retained source view's disposable environment. Every Menu, MenuItem and fixture
+row ancestor remains browser-owned. No foreign Name/value is read. Optional
+control/content/focusable properties remain explicitly unknown when unsupported;
+they are not called false or used as noncontrol/noncontent proof.
+
+The Rust test retains browser/GPU process handles with creation/image/liveness
+proof, the exact source COM/environment IUnknown identities and original
+document generation. Actual Env8 membership and canonical UDF are checked again
+after handle acquisition. An optional failure leaves only the unchanged strict
+browser-only path, never invented GPU authority.
+
+After the helper's complete first inventory, one create-new nonce-bound request
+asks the original Rust STA to re-prove membership/source/process lifetimes. The
+single response binds the popup/root runtime/full-inventory digest, original
+source generation, environment/process identities and one immutable shared
+GetTickCount64 deadline. All COM reads are fenced; missing/replayed/malformed,
+unknown or late evidence refuses. The helper then repeats the entire bounded
+raw inventory and all final native/process/foreground/capture proofs before the
+one Escape. The existing 10-second readiness/5-second disappearance budgets are
+not increased. A late publication cannot be made safe by deleting a receipt;
+both processes enforce the shared deadline independently. This remains bounded
+repeated observation, not atomic revocation or continuous document authority
+through Escape: a change after response publication cannot be revoked across
+processes. The source proof is fresh before publication; post-publication source
+checks can fail the test but cannot retroactively stop a helper already reading
+the response. Final native inventory and process/ownership proofs remain required.
+
+The GPU node itself must have supported PID/HWND/Pane/bounds/disabled/unfocused
+values, exact native parent/root/root-owner/class/process identity, successful
+error-qualified zero-owner/zero-child observations, no raw child, and explicit
+absence of ItemContainer/VirtualizedItem patterns. It is fully re-read and
+retained in the complete ordered inventory proof; duplicates, any additional
+foreign node, descendants, missing getters or changed facts refuse. No
+Realize/Expand/Invoke or other tree mutation is permitted to obtain acceptance.
+
+Synthetic Rust packet/membership/publication policy tests and pure managed
+native/UIA-shape/receipt refusal tables are labeled synthetic. They cover wrong
+identity/shape/type/bounds/parent/child/pattern fields, duplicate/unknown packets,
+nonce/generation/root/digest/process changes, oversized/truncated/replayed
+receipts and no-overwrite publication. The managed tests call the real SameProof
+and digest predicates for changed ordered inventory/count/parent/runtime/PID/HWND/
+type/bounds/GPU proof, plus native/root/fixture geometry fields. The Rust synthetic
+step reuses the exact no-feature native-build executable, never creates a newer
+feature variant for subsequent probes. They do not simulate genuine process or
+UIA authority. Both real native observation/cancellation lanes still must
+establish actual visible fixture rows, Escape/disappearance, same source/worker,
+zero events and unchanged native permission denials. Broader dynamic reentry,
+process crash and native identity-reuse races remain unclaimed until exercised.
+
+The preceding attached-handle diagnostic ran successfully at head03d29a4:
+NTSTATUS0, size56, same borrowed handle, mask983935 (0xF037F), bit4 present,
+while sequence0 still refused before input/mutation. Missing bit4 on the actual
+attachment is not supported by that run; undocumented initial-zero semantics
+remain unresolved. The separate original App Cancel lane did not establish its
+primary document before teardown; an unbounded message drain is a latent harness defect, not a
+proven cause of that timeout. Reload still passed. No repeated unchanged
+clipboard run or permission/clipboard workaround is introduced by this model.

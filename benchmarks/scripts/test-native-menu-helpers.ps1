@@ -62,6 +62,12 @@ foreach($value in @($null,[object]::new(),0)){
  $actual=$boolean.Invoke($null,[object[]]@($value))|ConvertFrom-Json
  if($actual.kind -cne 'other-kind' -or $null -ne $actual.value){throw 'Unknown UIA property kind must not become false.'}
 }
+$policy=$type.GetMethod('CheckMembershipPolicy',[Reflection.BindingFlags]::Public -bor [Reflection.BindingFlags]::Static)
+$null=$policy.Invoke($null,@())
+$inventoryPolicy=$type.GetMethod('CheckInventoryPolicy',[Reflection.BindingFlags]::Public -bor [Reflection.BindingFlags]::Static)
+$null=$inventoryPolicy.Invoke($null,@())
+$leafPolicy=$type.GetMethod('CheckOwnedLeafPolicy',[Reflection.BindingFlags]::Public -bor [Reflection.BindingFlags]::Static)
+$null=$leafPolicy.Invoke($null,@())
 $native=$type.GetMethod('NativeMismatch',$flags)
 $absent=$native.Invoke($null,@([IntPtr]::Zero,[IntPtr]::Zero,[IntPtr]::Zero))|ConvertFrom-Json
 if($absent.status -cne 'no-native-hwnd'){throw 'No-HWND diagnostic branch changed.'}

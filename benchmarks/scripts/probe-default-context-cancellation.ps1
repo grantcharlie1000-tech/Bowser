@@ -2,7 +2,8 @@
 [CmdletBinding()]
 param([Parameter(Mandatory)][uint32]$OwnerPid,[Parameter(Mandatory)][long]$OwnerHandle,[Parameter(Mandatory)][string]$OwnerExe,[Parameter(Mandatory)][uint32]$BrowserPid,
  [Parameter(Mandatory)][int]$ClientX,[Parameter(Mandatory)][int]$ClientY,[Parameter(Mandatory)][int]$ViewportWidth,[Parameter(Mandatory)][int]$ViewportHeight,
- [Parameter(Mandatory)][string]$Out,[ValidateSet('DefaultCancellation','ExtensionObservation')][string]$ProbeKind='DefaultCancellation')
+ [Parameter(Mandatory)][string]$Out,[ValidateSet('DefaultCancellation','ExtensionObservation')][string]$ProbeKind='DefaultCancellation',
+ [uint32]$GpuPid=0,[UInt64]$GpuCreation=0,[UInt64]$BrowserCreation=0,[string]$OwnershipNonce='',[string]$SourceProof='',[string]$EnvironmentIdentity='',[UInt64]$AuthorityDeadlineTick=0)
 $ErrorActionPreference='Stop';Set-StrictMode -Version Latest
 Add-Type -AssemblyName UIAutomationClient,UIAutomationTypes,WindowsBase
 $uiaReferences=@([System.Windows.Automation.AutomationElement].Assembly.Location,[System.Windows.Automation.ControlType].Assembly.Location,[System.Windows.Rect].Assembly.Location)
@@ -72,7 +73,7 @@ public static class BowserDefaultContext {
  static bool Same(int[] a,int[] b){if(a.Length!=b.Length)return false;for(int i=0;i<a.Length;i++)if(a[i]!=b[i])return false;return true;}
  static bool Finite(double n){return !Double.IsNaN(n)&&!Double.IsInfinity(n);}
  public sealed class MenuProof {
-  public IntPtr Window,Focus;public uint Thread;public int[] RootId,MenuId,ItemId;public double Left,Top,Width,Height;
+  public IntPtr Window,Focus;public uint Thread;public int[] RootId,MenuId,ItemId;public double Left,Top,Width,Height;public string Inventory;public int GpuLeaves;
  }
  static string Number(long n){return n.ToString(System.Globalization.CultureInfo.InvariantCulture);}
  static string JsonIds(int[] ids){return ids==null?"null":"["+String.Join(",",Array.ConvertAll(ids,n=>Number(n)))+"]";}
@@ -143,32 +144,256 @@ public static class BowserDefaultContext {
   if(json.Length>8192)json=prefix+"\"status\":\"diagnostic-bound-exceeded\"}";
   try{System.IO.File.WriteAllText(System.IO.Path.Combine(directory,"native-provider-mismatch.json"),json,new UTF8Encoding(false));}catch{ /* Missing evidence is inconclusive, never permission to continue. */ }
  }
- public static MenuProof ReadMenu(IntPtr host,uint testPid,uint hostTid,IntPtr popup,uint browserPid,ReadOnlyBrowser browser,string diagnosticDirectory){
+ // Cancellation-only owned compositor category. Optional UIA flags remain unknown; they
+ // are not relabeled noncontrol/noncontent/nonfocusable. No foreign Name/value is read.
+ [DllImport("kernel32.dll")] public static extern ulong GetTickCount64();
+ static void OwnershipBudget(ulong deadline){if(deadline==0||GetTickCount64()>=deadline)throw new InvalidOperationException("Original shared ownership deadline expired.");}
+ static T Required<T>(AutomationElement node,AutomationProperty property){
+  object raw=node.GetCurrentPropertyValue(property,true);
+  if(!(raw is T))throw new InvalidOperationException("Required no-default GPU-leaf property unavailable.");
+  return (T)raw;
+ }
+ static string OptionalBoolean(AutomationElement node,AutomationProperty property){
+  object raw=node.GetCurrentPropertyValue(property,true);
+  if(!(raw is bool)&&!Object.ReferenceEquals(raw,AutomationElement.NotSupported))throw new InvalidOperationException("Optional GPU property returned unknown kind.");
+  return BooleanValue(raw);
+ }
+ static string Real(double value){if(!Finite(value))throw new InvalidOperationException("Nonfinite raw inventory bounds.");return value.ToString("R",System.Globalization.CultureInfo.InvariantCulture);}
+ static bool NoPattern(AutomationElement node,AutomationPattern pattern){
+  object current;bool present=node.TryGetCurrentPattern(pattern,out current);
+  if(present||current!=null)throw new InvalidOperationException("Virtualized/container GPU node refused.");
+  return true;
+ }
+ public sealed class NativeLeafFacts {
+  public long Node,Popup,Host,Parent,Root,RootOwner,Owner,Child;public uint Pid,ExpectedPid,Thread;
+  public int OwnerError,ChildError,Left,Top,Right,Bottom,PopupLeft,PopupTop,PopupRight,PopupBottom;
+  public bool Alive,Visible,Enabled,PopupChild,BoundsAvailable;public string ClassName;
+ }
+ static bool NativeLeafPolicy(NativeLeafFacts f){
+  return f!=null&&f.Node!=0&&f.Popup!=0&&f.Host!=0&&f.Pid!=0&&f.Pid==f.ExpectedPid&&f.Thread!=0
+   &&f.Alive&&f.Visible&&!f.Enabled&&f.ClassName=="Intermediate D3D Window"
+   &&f.Parent==f.Popup&&f.Root==f.Popup&&f.RootOwner==f.Host&&f.Owner==0&&f.OwnerError==0
+   &&f.Child==0&&f.ChildError==0&&f.PopupChild&&f.BoundsAvailable&&f.Right>f.Left&&f.Bottom>f.Top
+   &&f.Left>=f.PopupLeft&&f.Top>=f.PopupTop&&f.Right<=f.PopupRight&&f.Bottom<=f.PopupBottom;
+ }
+ public sealed class UiaLeafFacts {
+  public bool RequiredAvailable,ParentMatches,RawChildAbsent,PatternsAbsent,Enabled,Focused;
+  public int Depth,Pid,ExpectedPid,Native,Type;public double X,Y,Width,Height,PopupLeft,PopupTop,PopupRight,PopupBottom;
+ }
+ static bool UiaLeafPolicy(UiaLeafFacts f){
+  return f!=null&&f.RequiredAvailable&&f.ParentMatches&&f.RawChildAbsent&&f.PatternsAbsent
+   &&f.Depth==1&&f.Pid>0&&f.Pid==f.ExpectedPid&&f.Native>0&&f.Type==ControlType.Pane.Id&&!f.Enabled&&!f.Focused
+   &&Finite(f.X)&&Finite(f.Y)&&Finite(f.Width)&&Finite(f.Height)&&f.Width>0&&f.Height>0
+   &&f.X>=f.PopupLeft&&f.Y>=f.PopupTop&&f.X+f.Width<=f.PopupRight&&f.Y+f.Height<=f.PopupBottom;
+ }
+ public static void CheckOwnedLeafPolicy(){
+  Func<NativeLeafFacts> native=()=>new NativeLeafFacts{Node=1,Popup=2,Host=3,Parent=2,Root=2,RootOwner=3,Pid=4,ExpectedPid=4,Thread=5,Alive=true,Visible=true,PopupChild=true,BoundsAvailable=true,ClassName="Intermediate D3D Window",Left=10,Top=10,Right=20,Bottom=20,PopupLeft=0,PopupTop=0,PopupRight=30,PopupBottom=30};
+  if(!NativeLeafPolicy(native()))throw new InvalidOperationException("Synthetic valid native leaf shape refused.");
+  Action<NativeLeafFacts>[] badNative={f=>f.Node=0,f=>f.Pid=6,f=>f.ExpectedPid=0,f=>f.Thread=0,f=>f.Alive=false,f=>f.Visible=false,f=>f.Enabled=true,f=>f.ClassName="unknown",f=>f.Parent=7,f=>f.Root=7,f=>f.RootOwner=7,f=>f.Owner=7,f=>f.OwnerError=5,f=>f.Child=7,f=>f.ChildError=5,f=>f.PopupChild=false,f=>f.BoundsAvailable=false,f=>f.Right=f.Left,f=>f.Bottom=f.Top,f=>f.Left=-1,f=>f.Top=-1,f=>f.Right=31,f=>f.Bottom=31};
+  foreach(var mutate in badNative){var facts=native();mutate(facts);if(NativeLeafPolicy(facts))throw new InvalidOperationException("Synthetic invalid native leaf accepted.");}
+  Func<UiaLeafFacts> uia=()=>new UiaLeafFacts{RequiredAvailable=true,ParentMatches=true,RawChildAbsent=true,PatternsAbsent=true,Depth=1,Pid=4,ExpectedPid=4,Native=1,Type=ControlType.Pane.Id,X=10,Y=10,Width=10,Height=10,PopupRight=30,PopupBottom=30};
+  if(!UiaLeafPolicy(uia()))throw new InvalidOperationException("Synthetic valid UIA leaf shape refused.");
+  Action<UiaLeafFacts>[] badUia={f=>f.RequiredAvailable=false,f=>f.ParentMatches=false,f=>f.RawChildAbsent=false,f=>f.PatternsAbsent=false,f=>f.Depth=0,f=>f.Depth=2,f=>f.Pid=6,f=>f.Native=0,f=>f.Type=ControlType.Menu.Id,f=>f.Type=ControlType.MenuItem.Id,f=>f.Enabled=true,f=>f.Focused=true,f=>f.X=Double.NaN,f=>f.Y=Double.PositiveInfinity,f=>f.Width=Double.NegativeInfinity,f=>f.Width=0,f=>f.Height=-1,f=>f.X=-1,f=>f.Y=-1,f=>f.Width=31,f=>f.Height=31};
+  foreach(var mutate in badUia){var facts=uia();mutate(facts);if(UiaLeafPolicy(facts))throw new InvalidOperationException("Synthetic invalid UIA leaf accepted.");}
+  var box=new System.Windows.Rect(10,10,10,10);int[] runtime={42,1},parent={42,2};
+  var witness=new GpuLeafWitness(4,1,ControlType.Pane.Id,box,runtime,parent,"synthetic");
+  if(!witness.Matches(4,1,ControlType.Pane.Id,box,runtime,parent,false,false))throw new InvalidOperationException("Synthetic exact outer GPU witness refused.");
+  if(witness.Matches(5,1,ControlType.Pane.Id,box,runtime,parent,false,false)||witness.Matches(4,7,ControlType.Pane.Id,box,runtime,parent,false,false)||witness.Matches(4,1,ControlType.Menu.Id,box,runtime,parent,false,false)||witness.Matches(4,1,ControlType.MenuItem.Id,box,runtime,parent,false,false)||witness.Matches(4,1,ControlType.Pane.Id,new System.Windows.Rect(11,10,10,10),runtime,parent,false,false)||witness.Matches(4,1,ControlType.Pane.Id,box,new[]{42,7},parent,false,false)||witness.Matches(4,1,ControlType.Pane.Id,box,runtime,new[]{42,7},false,false)||witness.Matches(4,1,ControlType.Pane.Id,box,runtime,parent,true,false)||witness.Matches(4,1,ControlType.Pane.Id,box,runtime,parent,false,true))throw new InvalidOperationException("Synthetic inconsistent outer GPU witness accepted.");
+ }
+ static string GpuNativeShape(IntPtr node,IntPtr popup,IntPtr host,ReadOnlyBrowser gpu){
+  uint pid;uint tid=GetWindowThreadProcessId(node,out pid);RECT r,p;
+  if(node==IntPtr.Zero||!gpu.SameAlive())throw new InvalidOperationException("Retained GPU native leaf unavailable.");
+  IntPtr parent=GetParent(node),root=GetAncestor(node,2),rootOwner=GetAncestor(node,3);
+  DiagnosticSetLastError(0);IntPtr owner=DiagnosticGetWindow(node,4);int ownerError=Marshal.GetLastWin32Error();
+  DiagnosticSetLastError(0);IntPtr child=DiagnosticGetWindow(node,5);int childError=Marshal.GetLastWin32Error();
+  bool nodeBounds=GetWindowRect(node,out r),popupBounds=GetWindowRect(popup,out p);
+  var facts=new NativeLeafFacts{Node=node.ToInt64(),Popup=popup.ToInt64(),Host=host.ToInt64(),Pid=pid,ExpectedPid=gpu.Pid,Thread=tid,Parent=parent.ToInt64(),Root=root.ToInt64(),RootOwner=rootOwner.ToInt64(),Owner=owner.ToInt64(),OwnerError=ownerError,Child=child.ToInt64(),ChildError=childError,Alive=IsWindow(node),Visible=IsWindowVisible(node),Enabled=IsWindowEnabled(node),ClassName=Class(node),PopupChild=IsChild(popup,node),BoundsAvailable=nodeBounds&&popupBounds,Left=r.Left,Top=r.Top,Right=r.Right,Bottom=r.Bottom,PopupLeft=p.Left,PopupTop=p.Top,PopupRight=p.Right,PopupBottom=p.Bottom};
+  if(!NativeLeafPolicy(facts))throw new InvalidOperationException("GPU native parent/owner/leaf/bounds proof unavailable.");
+  uint after;uint afterTid=GetWindowThreadProcessId(node,out after);
+  if(after!=pid||afterTid!=tid||!IsWindow(node)||Class(node)!="Intermediate D3D Window"||!gpu.SameAlive())throw new InvalidOperationException("GPU native identity changed.");
+  return Number(node.ToInt64())+":"+Number(pid)+":"+Number(tid)+":"+Number(parent.ToInt64())+":"+Number(root.ToInt64())+":"+Number(rootOwner.ToInt64())+":0:0:0:0:"+Number(r.Left)+":"+Number(r.Top)+":"+Number(r.Right)+":"+Number(r.Bottom);
+ }
+ sealed class GpuLeafWitness {
+  public readonly int Pid,Native,Type;public readonly System.Windows.Rect Bounds;public readonly string Signature;
+  readonly int[] runtime,parent;
+  public GpuLeafWitness(int pid,int native,int type,System.Windows.Rect bounds,int[] id,int[] parentId,string signature){Pid=pid;Native=native;Type=type;Bounds=bounds;runtime=(int[])id.Clone();parent=(int[])parentId.Clone();Signature=signature;}
+  public bool Matches(int pid,int native,int type,System.Windows.Rect bounds,int[] id,int[] parentId,bool enabled,bool focused){
+   return Pid==pid&&Native==native&&Type==type&&type==ControlType.Pane.Id&&Bounds==bounds&&Same(runtime,id)&&Same(parent,parentId)&&!enabled&&!focused;
+  }
+ }
+ static void RecheckGpuTyped(AutomationElement node,GpuLeafWitness proof){
+  var parent=TreeWalker.RawViewWalker.GetParent(node);if(parent==null)throw new InvalidOperationException("GPU typed parent disappeared.");
+  if(!proof.Matches(Required<int>(node,AutomationElement.ProcessIdProperty),Required<int>(node,AutomationElement.NativeWindowHandleProperty),Required<ControlType>(node,AutomationElement.ControlTypeProperty).Id,Required<System.Windows.Rect>(node,AutomationElement.BoundingRectangleProperty),Runtime(node),Runtime(parent),Required<bool>(node,AutomationElement.IsEnabledProperty),Required<bool>(node,AutomationElement.HasKeyboardFocusProperty))||TreeWalker.RawViewWalker.GetFirstChild(node)!=null)throw new InvalidOperationException("GPU typed identity changed after native reads.");
+ }
+ static GpuLeafWitness GpuShape(IntPtr host,IntPtr popup,AutomationElement node,int depth,int[] expectedParent,int[] rootId,uint browserPid,ReadOnlyBrowser gpu,ulong deadline){
+  OwnershipBudget(deadline);
+  if(gpu==null||depth!=1||expectedParent==null||!Same(expectedParent,rootId)||!gpu.SameAlive())throw new InvalidOperationException("No retained exact GPU leaf authority.");
+  int pid=Required<int>(node,AutomationElement.ProcessIdProperty),native=Required<int>(node,AutomationElement.NativeWindowHandleProperty);
+  ControlType type=Required<ControlType>(node,AutomationElement.ControlTypeProperty);
+  bool enabled=Required<bool>(node,AutomationElement.IsEnabledProperty),focused=Required<bool>(node,AutomationElement.HasKeyboardFocusProperty);
+  var bounds=Required<System.Windows.Rect>(node,AutomationElement.BoundingRectangleProperty);
+  RECT popupBounds;if(!GetWindowRect(popup,out popupBounds))throw new InvalidOperationException("GPU popup bounds query failed.");
+  var parent=TreeWalker.RawViewWalker.GetParent(node);
+  bool parentMatches=parent!=null&&Same(Runtime(parent),rootId)&&parent.Current.ProcessId==(int)browserPid&&parent.Current.NativeWindowHandle==popup.ToInt32();
+  bool noChild=TreeWalker.RawViewWalker.GetFirstChild(node)==null;
+  bool noVirtualization=NoPattern(node,ItemContainerPattern.Pattern)&&NoPattern(node,VirtualizedItemPattern.Pattern);
+  var facts=new UiaLeafFacts{RequiredAvailable=true,ParentMatches=parentMatches,RawChildAbsent=noChild,PatternsAbsent=noVirtualization,Depth=depth,Pid=pid,ExpectedPid=(int)gpu.Pid,Native=native,Type=type.Id,Enabled=enabled,Focused=focused,X=bounds.X,Y=bounds.Y,Width=bounds.Width,Height=bounds.Height,PopupLeft=popupBounds.Left,PopupTop=popupBounds.Top,PopupRight=popupBounds.Right,PopupBottom=popupBounds.Bottom};
+  if(!UiaLeafPolicy(facts))throw new InvalidOperationException("GPU node is not an exact disabled/unfocused direct raw root leaf.");
+  string optional=OptionalBoolean(node,AutomationElement.IsControlElementProperty)+":"+OptionalBoolean(node,AutomationElement.IsContentElementProperty)+":"+OptionalBoolean(node,AutomationElement.IsKeyboardFocusableProperty);
+  var id=Runtime(node);var parentId=Runtime(parent);
+  string nativeProof=GpuNativeShape((IntPtr)native,popup,host,gpu);
+  string signature=JsonIds(id)+":"+Number(pid)+":"+Number(native)+":"+Number(type.Id)+":"+Real(bounds.X)+":"+Real(bounds.Y)+":"+Real(bounds.Width)+":"+Real(bounds.Height)+":disabled:unfocused:no-virtualization:"+optional+":"+nativeProof;
+  var proof=new GpuLeafWitness(pid,native,type.Id,bounds,id,parentId,signature);
+  RecheckGpuTyped(node,proof);NoPattern(node,ItemContainerPattern.Pattern);NoPattern(node,VirtualizedItemPattern.Pattern);
+  OwnershipBudget(deadline);return proof;
+ }
+ static GpuLeafWitness ReadGpuLeaf(IntPtr host,IntPtr popup,AutomationElement node,int depth,int[] expectedParent,int[] rootId,uint browserPid,ReadOnlyBrowser gpu,ulong deadline){
+  var before=GpuShape(host,popup,node,depth,expectedParent,rootId,browserPid,gpu,deadline);
+  var after=GpuShape(host,popup,node,depth,expectedParent,rootId,browserPid,gpu,deadline);
+  if(before.Signature!=after.Signature)throw new InvalidOperationException("GPU leaf proof changed across reads.");return before;
+ }
+ public static string InventoryDigest(MenuProof proof){
+  if(proof==null||proof.Inventory==null||proof.Inventory.Length==0||proof.Inventory.Length>65536)throw new InvalidOperationException("Complete raw inventory outside digest bound.");
+  using(var sha=System.Security.Cryptography.SHA256.Create()){return BitConverter.ToString(sha.ComputeHash(Encoding.UTF8.GetBytes(proof.Inventory))).Replace("-","").ToLowerInvariant();}
+ }
+ static string ProtocolProof(string proof){
+  string[] parts=proof.Split(',');if(parts.Length!=3)throw new InvalidOperationException("Source generation triple unavailable.");
+  foreach(string part in parts){ulong value;if(!UInt64.TryParse(part,System.Globalization.NumberStyles.None,System.Globalization.CultureInfo.InvariantCulture,out value)||value.ToString(System.Globalization.CultureInfo.InvariantCulture)!=part)throw new InvalidOperationException("Source generation is not canonical.");}
+  return "[\""+String.Join("\",\"",parts)+"\"]";
+ }
+ static string ProtocolNonce(string nonce){if(!System.Text.RegularExpressions.Regex.IsMatch(nonce,"^[0-9A-Za-z-]{16,128}$"))throw new InvalidOperationException("Run nonce unavailable.");return nonce;}
+ static string ProtocolEnvironment(string identity){ulong value;if(!UInt64.TryParse(identity,System.Globalization.NumberStyles.None,System.Globalization.CultureInfo.InvariantCulture,out value)||value==0||value.ToString(System.Globalization.CultureInfo.InvariantCulture)!=identity)throw new InvalidOperationException("Retained environment identity unavailable.");return identity;}
+ static string MembershipFields(MenuProof proof,string nonce,string generation){
+  return "\"nonce\":\""+ProtocolNonce(nonce)+"\",\"phase\":\"pre-escape\",\"source_proof\":"+ProtocolProof(generation)+",\"popup\":\""+Number(proof.Window.ToInt64())+"\",\"root_runtime\":\""+String.Join(",",Array.ConvertAll(proof.RootId,n=>Number(n)))+"\",\"inventory_digest\":\""+InventoryDigest(proof)+"\"";
+ }
+ public static string MembershipRequest(MenuProof proof,string nonce,string generation){
+  return "{\"schema\":\"bowser-gpu-menu-membership-request-v1\","+MembershipFields(proof,nonce,generation)+"}";
+ }
+ public static string MembershipResponse(MenuProof proof,string nonce,string generation,uint browser,uint gpu,ulong browserCreated,ulong gpuCreated,string environment,ulong deadline){
+  return "{\"schema\":\"bowser-gpu-menu-membership-response-v1\",\"request_schema\":\"bowser-gpu-menu-membership-request-v1\","+MembershipFields(proof,nonce,generation)+",\"browser_pid\":\""+Number(browser)+"\",\"gpu_pid\":\""+Number(gpu)+"\",\"browser_creation\":\""+browserCreated.ToString(System.Globalization.CultureInfo.InvariantCulture)+"\",\"gpu_creation\":\""+gpuCreated.ToString(System.Globalization.CultureInfo.InvariantCulture)+"\",\"environment_identity\":\""+ProtocolEnvironment(environment)+"\",\"deadline_tick\":\""+deadline.ToString(System.Globalization.CultureInfo.InvariantCulture)+"\",\"status\":\"fresh-exact-retained-membership\"}";
+ }
+ public static bool ExactMembershipResponse(string received,string expected){return received!=null&&received.Length>0&&received.Length<=8192&&String.Equals(received,expected,StringComparison.Ordinal);}
+ public static void WriteMembershipRequest(string directory,string request){
+  if(request.Length==0||request.Length>8192)throw new InvalidOperationException("Membership request outside bound.");
+  string pending=System.IO.Path.Combine(directory,"gpu-membership-request.pending"),path=System.IO.Path.Combine(directory,"gpu-membership-request.json");
+  if(System.IO.File.Exists(path)||System.IO.File.Exists(System.IO.Path.Combine(directory,"gpu-membership-response.json"))||System.IO.File.Exists(System.IO.Path.Combine(directory,"gpu-membership-response.pending")))throw new InvalidOperationException("Preexisting/replayed membership protocol file.");
+  byte[] bytes=new UTF8Encoding(false,true).GetBytes(request);
+  using(var file=new System.IO.FileStream(pending,System.IO.FileMode.CreateNew,System.IO.FileAccess.Write,System.IO.FileShare.None)){file.Write(bytes,0,bytes.Length);file.Flush(true);}
+  System.IO.File.Move(pending,path);
+ }
+ public static string ReadMembershipResponse(string path){
+  byte[] bytes=new byte[8193];int count=0;
+  using(var file=new System.IO.FileStream(path,System.IO.FileMode.Open,System.IO.FileAccess.Read,System.IO.FileShare.Read)){
+   while(count<bytes.Length){int read=file.Read(bytes,count,bytes.Length-count);if(read==0)break;count+=read;}
+  }
+  if(count==0||count>8192)throw new InvalidOperationException("Membership response outside bound.");
+  return new UTF8Encoding(false,true).GetString(bytes,0,count);
+ }
+ // Synthetic policy tests only: no provider, process, HWND, filesystem or input is queried.
+ // The actual two native lanes must prove a real owned leaf and cancellation independently.
+ public static void CheckMembershipPolicy(){
+  var proof=new MenuProof{Window=(IntPtr)123,RootId=new[]{42,123},Inventory="synthetic-complete-inventory",GpuLeaves=1};
+  const string nonce="synthetic-run-123456";string expected=MembershipResponse(proof,nonce,"1,2,0",10,20,30,40,"50",60);
+  if(!ExactMembershipResponse(expected,expected)||ExactMembershipResponse(null,expected))throw new InvalidOperationException("Synthetic exact/null receipt policy failed.");
+  var badReceipts=new Dictionary<string,string>{
+   {"empty",""},{"trailing",expected+"\n"},{"truncated",expected.Substring(0,expected.Length-1)},
+   {"schema",expected.Replace("response-v1","response-v2")},{"request_schema",expected.Replace("request-v1","request-v2")},
+   {"nonce",expected.Replace(nonce,"wrong-run-123456789")},{"phase",expected.Replace("pre-escape","wrong-phase")},
+   {"generation",expected.Replace("\"1\",\"2\",\"0\"","\"1\",\"3\",\"0\"")},
+   {"popup",expected.Replace("\"123\"","\"124\"")},{"root_runtime",expected.Replace("42,123","42,124")},
+   {"inventory_digest",expected.Replace(InventoryDigest(proof),new string('f',64))},
+   {"browser_pid",expected.Replace("\"browser_pid\":\"10\"","\"browser_pid\":\"11\"")},
+   {"gpu_pid",expected.Replace("\"gpu_pid\":\"20\"","\"gpu_pid\":\"21\"")},
+   {"browser_creation",expected.Replace("\"browser_creation\":\"30\"","\"browser_creation\":\"31\"")},
+   {"gpu_creation",expected.Replace("\"gpu_creation\":\"40\"","\"gpu_creation\":\"41\"")},
+   {"environment_identity",expected.Replace("\"environment_identity\":\"50\"","\"environment_identity\":\"51\"")},
+   {"deadline_tick",expected.Replace("\"deadline_tick\":\"60\"","\"deadline_tick\":\"61\"")},
+   {"status",expected.Replace("fresh-exact-retained-membership","stale-membership")},
+   {"extra_field",expected.Replace("{","{\"extra\":\"unknown\",")},
+   {"duplicate_field",expected.Replace("{","{\"nonce\":\"duplicate\",")},{"oversized",new string('x',8193)}
+  };
+  foreach(var bad in badReceipts){
+   if(bad.Value==expected||ExactMembershipResponse(bad.Value,expected))throw new InvalidOperationException("Synthetic mismatched receipt accepted or case did not mutate: "+bad.Key);
+  }
+  foreach(string bad in new[]{"1,2","01,2,3","1,-2,3","1,2,18446744073709551616"}){
+   bool rejected=false;try{ProtocolProof(bad);}catch(InvalidOperationException){rejected=true;}if(!rejected)throw new InvalidOperationException("Synthetic invalid source proof accepted.");
+  }
+ }
+ static MenuProof SyntheticMenuProof(string inventory){
+  return new MenuProof{Window=(IntPtr)123,Focus=(IntPtr)124,Thread=10,RootId=new[]{42,123},MenuId=new[]{42,125},ItemId=new[]{42,126},Left=20,Top=30,Width=40,Height=50,Inventory=inventory,GpuLeaves=1};
+ }
+ public static void CheckInventoryPolicy(){
+  // Complete invented rows exercise the actual SameProof/digest integration, not UIA.
+  const string root="1:0:null:[42,123]:10:50032:123:0:0:100:100:browser-owned\n";
+  const string gpu="2:1:[42,123]:[42,456]:20:50033:456:10:10:20:20:synthetic-gpu-proof\n";
+  const string menu="3:1:[42,123]:[42,125]:10:50009:0:0:0:100:100:browser-owned\n";
+  const string item="4:2:[42,125]:[42,126]:10:50011:0:20:30:40:50:browser-owned\n";
+  string inventory=root+gpu+menu+item;var baseline=SyntheticMenuProof(inventory);
+  if(!SameProof(baseline,SyntheticMenuProof(inventory)))throw new InvalidOperationException("Synthetic unchanged complete inventory rejected.");
+  var changedInventories=new Dictionary<string,string>{
+   {"count",root+gpu+menu},{"order",root+menu+gpu+item},
+   {"parent",root+gpu.Replace("2:1:[42,123]","2:1:[42,127]")+menu+item},
+   {"runtime",root+gpu.Replace("[42,456]","[42,457]")+menu+item},
+   {"pid",root+gpu.Replace(":20:50033:",":21:50033:")+menu+item},
+   {"hwnd",root+gpu.Replace(":50033:456:",":50033:457:")+menu+item},
+   {"type",root+gpu.Replace(":50033:",":50009:")+menu+item},
+   {"bounds",root+gpu.Replace(":10:10:20:20:",":11:10:20:20:")+menu+item},
+   {"gpu_proof",root+gpu.Replace("synthetic-gpu-proof","changed-gpu-proof")+menu+item}
+  };
+  foreach(var changed in changedInventories){
+   var fresh=SyntheticMenuProof(changed.Value);
+   if(changed.Value==inventory||SameProof(baseline,fresh)||InventoryDigest(baseline)==InventoryDigest(fresh))throw new InvalidOperationException("Synthetic changed inventory accepted or case did not mutate: "+changed.Key);
+  }
+  foreach(Action<MenuProof> mutate in new Action<MenuProof>[]{
+   p=>p.GpuLeaves=0,p=>p.GpuLeaves=2,p=>p.Window=(IntPtr)127,p=>p.Focus=(IntPtr)128,p=>p.Thread=11,
+   p=>p.RootId=new[]{42,127},p=>p.MenuId=new[]{42,128},p=>p.ItemId=new[]{42,129},
+   p=>p.Left=21,p=>p.Top=31,p=>p.Width=41,p=>p.Height=51
+  }){var fresh=SyntheticMenuProof(inventory);mutate(fresh);if(SameProof(baseline,fresh))throw new InvalidOperationException("Synthetic changed root/fixture/native/count proof accepted.");}
+ }
+ public static MenuProof ReadMenu(IntPtr host,uint testPid,uint hostTid,IntPtr popup,uint browserPid,ReadOnlyBrowser browser,ReadOnlyBrowser gpu,ulong ownershipDeadline,string diagnosticDirectory){
   uint helperPid=NativeCurrentProcessId(); // Known local identity, captured before UIA traversal.
   uint beforePid;uint tid=GetWindowThreadProcessId(popup,out beforePid);if(beforePid!=browserPid||tid==0||!IsWindow(popup))throw new InvalidOperationException("Exact native UIA root unavailable.");
   var root=AutomationElement.FromHandle(popup);if(root==null||root.Current.ProcessId!=(int)browserPid||root.Current.NativeWindowHandle!=popup.ToInt32())throw new InvalidOperationException("Exact native UIA root mismatch.");
   var focusGui=new GUI{cbSize=(uint)Marshal.SizeOf(typeof(GUI))};if(!GetGUIThreadInfo(tid,ref focusGui)||!FocusOwned(host,focusGui.hwndFocus,browserPid,tid))throw new InvalidOperationException("Native focus witness unavailable before UIA read.");
-  int[] rootId=Runtime(root);var walker=TreeWalker.RawViewWalker;var queue=new Queue<Tuple<AutomationElement,int,int[]>>();queue.Enqueue(Tuple.Create(root,0,(int[])null));int examined=0,menus=0,items=0;int[] menuId=null,itemId=null;System.Windows.Rect chosen=new System.Windows.Rect();
-  while(queue.Count>0){if(++examined>128)throw new InvalidOperationException("UIA raw menu inventory incomplete.");var queued=queue.Dequeue();var e=queued.Item1;var c=e.Current;int providerPid=c.ProcessId;
+  int[] rootId=Runtime(root);var walker=TreeWalker.RawViewWalker;var queue=new Queue<Tuple<AutomationElement,int,int[]>>();queue.Enqueue(Tuple.Create(root,0,(int[])null));int examined=0,menus=0,items=0,gpuLeaves=0;int[] menuId=null,itemId=null;System.Windows.Rect chosen=new System.Windows.Rect();var inventory=new StringBuilder();var seen=new HashSet<string>(StringComparer.Ordinal);
+  while(queue.Count>0){if(++examined>128)throw new InvalidOperationException("UIA raw menu inventory incomplete.");
+   if(!RootFence(host,testPid,hostTid,popup,browserPid,tid,browser,root,rootId))throw new InvalidOperationException("Exact root changed during complete raw inventory.");
+   var queued=queue.Dequeue();var e=queued.Item1;var c=e.Current;int providerPid=c.ProcessId;
+   int[] currentId=Runtime(e);string runtimeKey=JsonIds(currentId);if(!seen.Add(runtimeKey))throw new InvalidOperationException("Duplicate/cyclic raw UIA identity.");
+   if(queued.Item3!=null){var parent=walker.GetParent(e);if(parent==null||!Same(Runtime(parent),queued.Item3))throw new InvalidOperationException("Raw parent identity changed.");}
+   GpuLeafWitness gpuLeaf=null;string gpuProof=null;
    if(providerPid!=(int)browserPid){
-    WriteMismatch(host,testPid,hostTid,popup,browserPid,tid,browser,root,rootId,e,queued.Item2,queued.Item3,examined,providerPid,helperPid,diagnosticDirectory);
-    throw new InvalidOperationException("UIA menu provider PID mismatch.");
+    try{
+     if(gpu==null||providerPid!=(int)gpu.Pid||gpuLeaves!=0)throw new InvalidOperationException("Unproved or additional foreign provider.");
+     gpuLeaf=ReadGpuLeaf(host,popup,e,queued.Item2,queued.Item3,rootId,browserPid,gpu,ownershipDeadline);gpuProof=gpuLeaf.Signature;gpuLeaves++;
+    }catch{
+     WriteMismatch(host,testPid,hostTid,popup,browserPid,tid,browser,root,rootId,e,queued.Item2,queued.Item3,examined,providerPid,helperPid,diagnosticDirectory);
+     throw new InvalidOperationException("UIA menu provider PID/owned-leaf proof mismatch.");
+    }
    }
-   int[] currentId=Runtime(e);
-   if(c.ControlType==ControlType.Menu){menus++;menuId=Runtime(e);}
-   if(c.ControlType==ControlType.MenuItem&&String.Equals(c.Name,"Bowser native context permission probe",StringComparison.Ordinal)){
+   var box=c.BoundingRectangle;int observedType=c.ControlType.Id,observedNative=c.NativeWindowHandle;
+   if(gpuLeaf!=null){
+    if(!gpuLeaf.Matches(c.ProcessId,observedNative,observedType,box,Runtime(e),queued.Item3,c.IsEnabled,c.HasKeyboardFocus))throw new InvalidOperationException("Outer inventory differs from immutable GPU Pane/native/bounds witness.");
+    RecheckGpuTyped(e,gpuLeaf);
+   }
+   inventory.Append(Number(examined)).Append(':').Append(Number(queued.Item2)).Append(':').Append(JsonIds(queued.Item3)).Append(':').Append(runtimeKey).Append(':').Append(Number(providerPid)).Append(':').Append(Number(observedType)).Append(':').Append(Number(observedNative)).Append(':').Append(Real(box.X)).Append(':').Append(Real(box.Y)).Append(':').Append(Real(box.Width)).Append(':').Append(Real(box.Height)).Append(':').Append(gpuProof??"browser-owned").Append('\n');
+   if(inventory.Length>65536)throw new InvalidOperationException("Complete raw inventory exceeds bound.");
+   if(providerPid==(int)browserPid&&c.ControlType==ControlType.Menu){menus++;menuId=Runtime(e);}
+   if(providerPid==(int)browserPid&&c.ControlType==ControlType.MenuItem&&String.Equals(c.Name,"Bowser native context permission probe",StringComparison.Ordinal)){
     if(!c.IsEnabled||c.IsOffscreen)throw new InvalidOperationException("Fixture menu leaf unavailable.");
     var child=walker.GetFirstChild(e);if(child!=null)throw new InvalidOperationException("Fixture item is not a leaf.");
     var ancestor=e;bool reached=false;int menuAncestors=0;for(int hop=0;hop<32&&ancestor!=null;hop++){var ac=ancestor.Current;if(ac.ProcessId!=(int)browserPid)throw new InvalidOperationException("UIA raw ancestry provider mismatch.");if(ac.ControlType==ControlType.Menu)menuAncestors++;if(Same(Runtime(ancestor),rootId)){reached=true;break;}if(ac.NativeWindowHandle!=0&&(IntPtr)ac.NativeWindowHandle!=popup)throw new InvalidOperationException("Unexpected native ancestor in menu hierarchy.");ancestor=walker.GetParent(ancestor);}if(!reached||menuAncestors!=1)throw new InvalidOperationException("UIA raw Menu ancestry incomplete or ambiguous.");
     items++;itemId=Runtime(e);chosen=c.BoundingRectangle;
    }
-   for(var child=walker.GetFirstChild(e);child!=null;child=walker.GetNextSibling(child)){if(queue.Count+examined>=128)throw new InvalidOperationException("UIA child inventory exceeds bound.");queue.Enqueue(Tuple.Create(child,queued.Item2+1,currentId));}
+   if(!Same(Runtime(e),currentId)||e.Current.ProcessId!=providerPid)throw new InvalidOperationException("Raw node identity changed across inventory read.");
+   var firstChild=walker.GetFirstChild(e);if(gpuProof!=null&&firstChild!=null)throw new InvalidOperationException("GPU leaf gained a child.");
+   for(var child=firstChild;child!=null;child=walker.GetNextSibling(child)){if(queue.Count+examined>=128)throw new InvalidOperationException("UIA child inventory exceeds bound.");queue.Enqueue(Tuple.Create(child,queued.Item2+1,currentId));}
   }
   RECT r;uint afterPid;uint afterTid=GetWindowThreadProcessId(popup,out afterPid);
-  if(!FocusOwned(host,focusGui.hwndFocus,browserPid,tid)||menus!=1||items!=1||!Same(rootId,Runtime(root))||afterPid!=browserPid||afterTid!=tid||!IsWindow(popup)||!GetWindowRect(popup,out r)||!Finite(chosen.X)||!Finite(chosen.Y)||!Finite(chosen.Width)||!Finite(chosen.Height)||chosen.Width<=0||chosen.Height<=0||chosen.Left<r.Left||chosen.Top<r.Top||chosen.Right>r.Right||chosen.Bottom>r.Bottom)throw new InvalidOperationException("Unique bounded current Menu/MenuItem proof unavailable.");
-  return new MenuProof{Window=popup,Focus=focusGui.hwndFocus,Thread=tid,RootId=rootId,MenuId=menuId,ItemId=itemId,Left=chosen.Left,Top=chosen.Top,Width=chosen.Width,Height=chosen.Height};
+  if(!RootFence(host,testPid,hostTid,popup,browserPid,tid,browser,root,rootId)||(gpuLeaves!=0&&(gpu==null||!gpu.SameAlive()))||!FocusOwned(host,focusGui.hwndFocus,browserPid,tid)||menus!=1||items!=1||!Same(rootId,Runtime(root))||afterPid!=browserPid||afterTid!=tid||!IsWindow(popup)||!GetWindowRect(popup,out r)||!Finite(chosen.X)||!Finite(chosen.Y)||!Finite(chosen.Width)||!Finite(chosen.Height)||chosen.Width<=0||chosen.Height<=0||chosen.Left<r.Left||chosen.Top<r.Top||chosen.Right>r.Right||chosen.Bottom>r.Bottom)throw new InvalidOperationException("Unique bounded current Menu/MenuItem proof unavailable.");
+  return new MenuProof{Window=popup,Focus=focusGui.hwndFocus,Thread=tid,RootId=rootId,MenuId=menuId,ItemId=itemId,Left=chosen.Left,Top=chosen.Top,Width=chosen.Width,Height=chosen.Height,Inventory=inventory.ToString(),GpuLeaves=gpuLeaves};
  }
- public static bool SameProof(MenuProof a,MenuProof b){return a.Window==b.Window&&a.Focus==b.Focus&&a.Thread==b.Thread&&Same(a.RootId,b.RootId)&&Same(a.MenuId,b.MenuId)&&Same(a.ItemId,b.ItemId)&&a.Left==b.Left&&a.Top==b.Top&&a.Width==b.Width&&a.Height==b.Height;}
+ public static bool SameProof(MenuProof a,MenuProof b){return a.Inventory==b.Inventory&&a.GpuLeaves==b.GpuLeaves&&a.Window==b.Window&&a.Focus==b.Focus&&a.Thread==b.Thread&&Same(a.RootId,b.RootId)&&Same(a.MenuId,b.MenuId)&&Same(a.ItemId,b.ItemId)&&a.Left==b.Left&&a.Top==b.Top&&a.Width==b.Width&&a.Height==b.Height;}
  public static bool Released(IntPtr host,uint testPid,uint hostTid,IntPtr popup,uint browserPid,uint menuTid,IntPtr focus){
   var a=new GUI{cbSize=(uint)Marshal.SizeOf(typeof(GUI))};var b=a;
   bool hidden=!IsWindow(popup)||(PopupIdentity(host,popup,browserPid,menuTid)&&!IsWindowVisible(popup));
@@ -186,6 +411,8 @@ public static class BowserDefaultContext {
   string Image(){var b=new StringBuilder(32768);uint n=32768;if(!QueryFullProcessImageName(handle,0,b,ref n))throw new InvalidOperationException("Native browser image query unavailable.");return System.IO.Path.GetFullPath(b.ToString());}
   ulong Creation(){TIME a,b,c,d;if(!GetProcessTimes(handle,out a,out b,out c,out d))throw new InvalidOperationException("Native browser creation query unavailable.");return a.Bits;}
   public bool SameAlive(){return handle!=IntPtr.Zero&&GetProcessId(handle)==pid&&Creation()==created&&String.Equals(Image(),image,StringComparison.OrdinalIgnoreCase)&&WaitForSingleObject(handle,0)==258;}
+  public uint Pid {get{return pid;}}public ulong Created {get{return created;}}
+  public bool SameImageAs(ReadOnlyBrowser other){return other!=null&&String.Equals(image,other.image,StringComparison.OrdinalIgnoreCase);}
   public void Dispose(){if(handle!=IntPtr.Zero){CloseHandle(handle);handle=IntPtr.Zero;}}
  }
  static object GuiSnapshot(uint tid,IntPtr witness,uint pid){
@@ -240,7 +467,7 @@ $reportName=if($ProbeKind -ceq 'ExtensionObservation'){'native-context-observati
 $reportScope=if($ProbeKind -ceq 'ExtensionObservation'){'single-test-observation-and-cancellation-not-selection'}else{'separate-default-Chromium-Views-menu-cancellation-not-selection'}
 $report=[ordered]@{scope=$reportScope;backend='unhandled-WebView2-Chromium-Views';status='failed';right_input_called=$false;escape_called=$false;error=$null;failure_cleanup=$null}
 $observationClock=[Diagnostics.Stopwatch]::StartNew();$report.topology=@()
-$h=[IntPtr]$OwnerHandle;$pidNow=[uint32]0;$tid=[BowserDefaultContext]::GetWindowThreadProcessId($h,[ref]$pidNow);$guard=$null;$browserGuard=$null
+$h=[IntPtr]$OwnerHandle;$pidNow=[uint32]0;$tid=[BowserDefaultContext]::GetWindowThreadProcessId($h,[ref]$pidNow);$guard=$null;$browserGuard=$null;$gpuGuard=$null
 function Save-Report {[IO.File]::WriteAllText((Join-Path $Out $reportName),($report|ConvertTo-Json -Depth 8),[Text.UTF8Encoding]::new($false))}
 function Observe-Topology([string]$Phase) {
  $observation=[ordered]@{phase=$Phase;elapsed_ms=$observationClock.ElapsedMilliseconds;identity_before=$false;identity_after=$false;status='unavailable';native=$null;screenshot_status='not-attempted'}
@@ -282,8 +509,8 @@ function Menu-State {
  if($candidates.Count -eq 0){if($AllowPending){$report.readiness.last_predicate='native-candidate-not-present';return $null};throw 'Native menu candidate unavailable.'}
  $popup=$candidates[0];$menuTid=[BowserDefaultContext]::CandidateThread($popup,$BrowserPid)
  if(!$menuTid -or ![BowserDefaultContext]::NativeReady($h,$OwnerPid,$tid,$popup,$BrowserPid,$menuTid,[IntPtr]::Zero)){if($AllowPending){$report.readiness.last_predicate='exact-native-focus-capture-not-ready';return $null};throw 'Exact menu native focus/capture unavailable.'}
- $proof=[BowserDefaultContext]::ReadMenu($h,$OwnerPid,$tid,$popup,$BrowserPid,$browserGuard,$Out)
- if(![BowserDefaultContext]::NativeReady($h,$OwnerPid,$tid,$popup,$BrowserPid,$menuTid,$proof.Focus)){throw 'Native ownership changed across UIA read.'}
+ $proof=[BowserDefaultContext]::ReadMenu($h,$OwnerPid,$tid,$popup,$BrowserPid,$browserGuard,$gpuGuard,$AuthorityDeadlineTick,$Out)
+ if(($gpuGuard -and [BowserDefaultContext]::GetTickCount64() -ge $AuthorityDeadlineTick) -or ![BowserDefaultContext]::NativeReady($h,$OwnerPid,$tid,$popup,$BrowserPid,$menuTid,$proof.Focus)){throw 'Native ownership changed across UIA read.'}
  return $proof
 }
 
@@ -291,6 +518,11 @@ try {
  if($pidNow -ne $OwnerPid -or ![BowserDefaultContext]::Host($h,$OwnerPid,$tid)){throw 'Exact disposable host unavailable; no input.'}
  $guard=[BowserDefaultContext+OriginalProcess]::new($OwnerPid,$OwnerExe)
  $browserGuard=[BowserDefaultContext+ReadOnlyBrowser]::new($BrowserPid)
+ if($GpuPid -ne 0){
+  if($GpuPid -eq $BrowserPid -or $GpuPid -eq $OwnerPid -or !$GpuCreation -or !$BrowserCreation -or $browserGuard.Created -ne $BrowserCreation -or $OwnershipNonce -cnotmatch '^[0-9A-Za-z-]{16,128}$' -or $SourceProof -cnotmatch '^(0|[1-9][0-9]*),(0|[1-9][0-9]*),(0|[1-9][0-9]*)$' -or $EnvironmentIdentity -cnotmatch '^[1-9][0-9]*$' -or !$AuthorityDeadlineTick -or [BowserDefaultContext]::GetTickCount64() -ge $AuthorityDeadlineTick){throw 'Exact source/GPU process authority arguments unavailable.'}
+  $gpuGuard=[BowserDefaultContext+ReadOnlyBrowser]::new($GpuPid)
+  if($gpuGuard.Created -ne $GpuCreation -or !$gpuGuard.SameImageAs($browserGuard) -or !$gpuGuard.SameAlive()){throw 'GPU helper process lease differs from retained Rust lease.'}
+ }
  $baselineComplete=$false;$baseline=@([BowserDefaultContext]::Candidates($h,$BrowserPid,[ref]$baselineComplete))
  if(!$baselineComplete -or $baseline.Count -ne 0){throw 'Fresh popup absence not established before input.'}
  Observe-Topology 'before-input'
@@ -300,7 +532,8 @@ try {
  if(![BowserDefaultContext]::Input($h,$OwnerPid,$tid,$ClientX,$ClientY,$ViewportWidth,$ViewportHeight,$point)){throw 'Exact owned input target unavailable before cursor.'}
  if(![BowserDefaultContext]::SetCursorPos($point.X,$point.Y)){throw 'Native cursor placement failed.'}
  Neutral
- if(![BowserDefaultContext]::Input($h,$OwnerPid,$tid,$ClientX,$ClientY,$ViewportWidth,$ViewportHeight,$point)){throw 'Exact owned hit target changed before real right-click.'}
+ if(($gpuGuard -and [BowserDefaultContext]::GetTickCount64() -ge $AuthorityDeadlineTick) -or ![BowserDefaultContext]::Input($h,$OwnerPid,$tid,$ClientX,$ClientY,$ViewportWidth,$ViewportHeight,$point)){throw 'Exact owned hit target or shared ownership deadline changed before real right-click.'}
+ if($gpuGuard -and [BowserDefaultContext]::GetTickCount64() -ge $AuthorityDeadlineTick){throw 'Shared ownership deadline expired after final pre-click native reads; no input.'}
  try{[BowserDefaultContext]::mouse_event(0x0008,0,0,0,[UIntPtr]::Zero);$report.right_input_called=$true}finally{[BowserDefaultContext]::mouse_event(0x0010,0,0,0,[UIntPtr]::Zero)}
  $watch=[Diagnostics.Stopwatch]::StartNew();Observe-Topology 'after-right-input';$report.readiness=@{elapsed_ms=0;last_predicate='not-observed';polls=0};$menu=$null
  do {
@@ -309,11 +542,27 @@ try {
   if($menu){$report.readiness.last_predicate='strict-native-menu-ready';break}
   Start-Sleep -Milliseconds 50
  } while($true)
- $watch.Stop();$report.popup=@{window=$menu.Window.ToInt64();thread=$menu.Thread;focus_witness=$menu.Focus.ToInt64();root_runtime=$menu.RootId;menu_runtime=$menu.MenuId;item_runtime=$menu.ItemId;label='exact-fixture-label';provider_pid=$BrowserPid;left=$menu.Left;top=$menu.Top;width=$menu.Width;height=$menu.Height}
+ $report.popup=@{window=$menu.Window.ToInt64();thread=$menu.Thread;focus_witness=$menu.Focus.ToInt64();root_runtime=$menu.RootId;menu_runtime=$menu.MenuId;item_runtime=$menu.ItemId;label='exact-fixture-label';provider_pid=$BrowserPid;left=$menu.Left;top=$menu.Top;width=$menu.Width;height=$menu.Height}
+ if($menu.GpuLeaves -eq 1){
+  if(!$gpuGuard -or !$gpuGuard.SameAlive() -or !$browserGuard.SameAlive() -or $watch.ElapsedMilliseconds -ge 10000){throw 'GPU ownership freshness unavailable before challenge.'}
+  $request=[BowserDefaultContext]::MembershipRequest($menu,$OwnershipNonce,$SourceProof)
+  $expected=[BowserDefaultContext]::MembershipResponse($menu,$OwnershipNonce,$SourceProof,$BrowserPid,$GpuPid,$BrowserCreation,$GpuCreation,$EnvironmentIdentity,$AuthorityDeadlineTick)
+  [BowserDefaultContext]::WriteMembershipRequest($Out,$request)
+  $responsePath=Join-Path $Out 'gpu-membership-response.json'
+  while(![IO.File]::Exists($responsePath)){
+   if($watch.ElapsedMilliseconds -ge 10000 -or [BowserDefaultContext]::GetTickCount64() -ge $AuthorityDeadlineTick -or !$guard.SameAlive() -or !$browserGuard.SameAlive() -or !$gpuGuard.SameAlive() -or ![BowserDefaultContext]::NativeReady($h,$OwnerPid,$tid,$menu.Window,$BrowserPid,$menu.Thread,$menu.Focus)){throw 'Fresh membership response unavailable within original readiness budget.'}
+   Start-Sleep -Milliseconds 10
+  }
+  $response=[BowserDefaultContext]::ReadMembershipResponse($responsePath)
+  if($watch.ElapsedMilliseconds -ge 10000 -or [BowserDefaultContext]::GetTickCount64() -ge $AuthorityDeadlineTick -or ![BowserDefaultContext]::ExactMembershipResponse($response,$expected)){throw 'Fresh membership receipt mismatched, malformed, replayed or late.'}
+  $report.owned_gpu_leaf=@{count=$menu.GpuLeaves;complete_inventory_digest=[BowserDefaultContext]::InventoryDigest($menu);fresh_environment_membership=$true;unknown_optional_UIA_flags_not_reinterpreted=$true}
+ }
  Neutral;$fresh=Menu-State
  if(![BowserDefaultContext]::SameProof($menu,$fresh)){throw 'Captured native/UIA menu identity changed before Escape.'}
  Neutral
- if(!$guard.SameAlive() -or !$browserGuard.SameAlive() -or ![BowserDefaultContext]::NativeReady($h,$OwnerPid,$tid,$menu.Window,$BrowserPid,$menu.Thread,$menu.Focus)){throw 'Exact foreground/native menu changed immediately before Escape.'}
+ if($watch.ElapsedMilliseconds -ge 10000 -or ($gpuGuard -and [BowserDefaultContext]::GetTickCount64() -ge $AuthorityDeadlineTick) -or !$guard.SameAlive() -or !$browserGuard.SameAlive() -or ($gpuGuard -and !$gpuGuard.SameAlive()) -or ![BowserDefaultContext]::NativeReady($h,$OwnerPid,$tid,$menu.Window,$BrowserPid,$menu.Thread,$menu.Focus)){throw 'Exact foreground/native menu changed or original deadline expired immediately before Escape.'}
+ if($watch.ElapsedMilliseconds -ge 10000 -or ($gpuGuard -and [BowserDefaultContext]::GetTickCount64() -ge $AuthorityDeadlineTick)){throw 'Original readiness/shared deadline expired after final native reads; no Escape.'}
+ $watch.Stop()
  try{[BowserDefaultContext]::keybd_event(27,0,0,[UIntPtr]::Zero);$report.escape_called=$true}finally{[BowserDefaultContext]::keybd_event(27,0,2,[UIntPtr]::Zero)}
  $releaseWatch=[Diagnostics.Stopwatch]::StartNew();$released=$false
  do {$released=[BowserDefaultContext]::Released($h,$OwnerPid,$tid,$menu.Window,$BrowserPid,$menu.Thread,$menu.Focus);if($releaseWatch.ElapsedMilliseconds -ge 5000){throw 'Menu disappearance/capture release not confirmed in observation window.'};if($released){break};Start-Sleep -Milliseconds 50}while($true)
@@ -325,5 +574,5 @@ try {
  try{Save-Report}catch{[Console]::Error.WriteLine('Native observation failure report write failed.')}
  if($report.right_input_called -and $guard){$report.failure_cleanup=$guard.FailOnly($h,$tid);try{Save-Report}catch{[Console]::Error.WriteLine('Native observation cleanup report write failed.')}}
  [Console]::Error.WriteLine('Native context observation failed; no selection compatibility verdict.');exit 75
-} finally {if($browserGuard){$browserGuard.Dispose()};if($guard){$guard.Dispose()}}
+} finally {if($gpuGuard){$gpuGuard.Dispose()};if($browserGuard){$browserGuard.Dispose()};if($guard){$guard.Dispose()}}
 Write-Output "CHROMIUM_CONTEXT_CANCELLATION probe=$ProbeKind exact_owned_right_input=true exact_visible_native_popup=true exact_UIA_fixture_row=true real_escape_and_disappearance=true selection_performed=false"

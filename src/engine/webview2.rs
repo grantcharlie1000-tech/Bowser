@@ -6451,6 +6451,20 @@ mod tests {
                 !state.closed&&state.active_tab==Some(tab)&&state.tabs.get(&tab).is_some_and(|current|current.webview.as_ref().is_some_and(|current|current.as_raw()==view.as_raw())&&Rc::ptr_eq(&current.document_gate,&gate))&&gate.try_borrow().is_ok_and(|gate|gate.proof()==Some(proof))
             }))
         }
+        /// Test-only ownership handshake fence. Unlike a read borrow, this also proves no
+        /// preexisting App-independent Core/gate guard can span a subsequent COM read.
+        pub(in crate::engine) fn probe_context_ownership_fence(&self,tab:TabId)->Option<Box<dyn Fn()->bool>> {
+            let state=self.core.try_borrow_mut().ok()?;if state.closed||state.active_tab!=Some(tab){return None;}
+            let current=state.tabs.get(&tab)?;let view=current.webview.clone()?;let gate=current.document_gate.clone();
+            let proof={gate.try_borrow_mut().ok()?.proof()?};drop(state);let core=Rc::downgrade(&self.core);
+            Some(Box::new(move|| {
+                let Some(core)=core.upgrade() else{return false;};let Ok(state)=core.try_borrow_mut() else{return false;};
+                let Ok(current_gate)=gate.try_borrow_mut() else{return false;};
+                !state.closed&&state.active_tab==Some(tab)&&state.tabs.get(&tab).is_some_and(|current|
+                    current.webview.as_ref().is_some_and(|current|current.as_raw()==view.as_raw())&&Rc::ptr_eq(&current.document_gate,&gate))
+                    &&current_gate.proof()==Some(proof)
+            }))
+        }
         /// Opens an extension page without showing a window.
         pub(in crate::engine) fn open_extension_page_hidden(
             &mut self,
