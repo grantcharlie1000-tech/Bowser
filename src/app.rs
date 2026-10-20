@@ -3958,8 +3958,9 @@ impl App {
                     .and_then(|url| crate::permissions::origin_of(url.as_str())),
             )
         {
-            // A full or unwritable store leaves the zoom applied for this tab only.
-            let _ = store.borrow_mut().set_zoom_with_default(&origin, Some(percent), default_zoom);
+            // A full or unwritable store leaves the zoom applied for this tab only. The file is
+            // written on the writer thread: Ctrl+wheel calls this once per notch (R-14).
+            let _ = store.borrow_mut().set_zoom_deferred(&origin, Some(percent), default_zoom);
         }
         Self::post_tab_changed_kind(hwnd, tab, false, false);
     }

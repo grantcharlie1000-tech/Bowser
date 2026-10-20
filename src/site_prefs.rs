@@ -18,8 +18,8 @@
 
 use std::{
     collections::BTreeMap,
-    fs::{self, File},
-    io::{self, Read, Write},
+    fs::File,
+    io::{self, Read},
     path::{Path, PathBuf},
 };
 
@@ -211,6 +211,34 @@ impl SitePrefsStore {
         })
     }
 
+    /// [`Self::set_zoom_with_default`] for the page's own zoom (Ctrl+wheel, one call per notch): the
+    /// file is replaced on the writer thread ([`crate::background_write`]), a burst as one write. An
+    /// unreadable file or a full store is still refused here.
+    pub fn set_zoom_deferred(&mut self, origin: &str, percent: Option<u16>, default: u16) -> io::Result<()> {
+        let wanted = percent
+            .map(|value| value.clamp(ZOOM_MIN, ZOOM_MAX))
+            .filter(|value| *value != default.clamp(ZOOM_MIN, ZOOM_MAX));
+        let previous = self.sites.get(origin).copied();
+        let mut next = previous.unwrap_or_default();
+        if next.zoom == wanted {
+            return Ok(());
+        }
+        next.zoom = wanted;
+        let Some(path) = self.path.clone() else {
+            self.write(origin, next);
+            return Ok(());
+        };
+        if self.unreadable {
+            return Err(io::Error::other(UNREADABLE));
+        }
+        if previous.is_none() && !next.is_default() && self.sites.len() >= MAX_SITES {
+            return Err(io::Error::other("too many sites with stored preferences"));
+        }
+        self.write(origin, next);
+        crate::background_write::queue(path, serialise(&self.sites).into_bytes());
+        Ok(())
+    }
+
     /// The stored translation choice for an origin, or `None` to follow the global setting.
     pub fn translate(&self, origin: &str) -> Option<SiteTranslate> {
         self.sites.get(origin)?.translate
@@ -289,7 +317,8 @@ impl SitePrefsStore {
         if self.unreadable {
             return Err(io::Error::other(UNREADABLE));
         }
-        write_atomic(path, serialise(&self.sites).as_bytes())
+        // In order with a zoom still queued for the writer thread.
+        crate::background_write::write_now(path, serialise(&self.sites).as_bytes())
     }
 }
 
@@ -370,18 +399,10 @@ fn read_capped(path: &Path) -> Option<String> {
     Some(String::from_utf8_lossy(&bytes).into_owned())
 }
 
-fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
-    let temp = path.with_extension("txt.tmp");
-    let mut file = File::create(&temp)?;
-    file.write_all(bytes)?;
-    file.sync_all()?;
-    drop(file);
-    fs::rename(&temp, path)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
 
     fn temp_file(name: &str) -> PathBuf {
         let dir =
@@ -639,6 +660,32 @@ mod tests {
         store.set_translate("https://a.test", Some(SiteTranslate::Never)).unwrap();
         store.set_zoom("https://a.test", None).unwrap();
         assert_eq!(store.translate("https://a.test"), Some(SiteTranslate::Never));
+    }
+
+    /// R-14: every Ctrl+wheel notch stored the site's zoom with a temp write, `sync_all` and rename
+    /// on the UI thread. The page's own zoom changes are now queued for the writer thread: a burst
+    /// of notches writes nothing on the calling thread and lands as the last value.
+    #[test]
+    fn a_burst_of_wheel_zoom_changes_never_writes_on_the_calling_thread() {
+        let path = temp_file("wheel-zoom");
+        let mut store = SitePrefsStore::load(&path);
+        {
+            let _held = crate::background_write::hold_writes();
+            for percent in (110..=200).step_by(10) {
+                store.set_zoom_deferred("https://a.test", Some(percent), 100).unwrap();
+            }
+            assert_eq!(store.zoom("https://a.test"), Some(200));
+            assert!(!path.exists(), "a wheel notch wrote site-prefs.txt on the calling thread");
+        }
+        crate::background_write::flush();
+        assert_eq!(SitePrefsStore::load(&path).zoom("https://a.test"), Some(200));
+        // A store whose file could not be read still refuses at once, and nothing is queued.
+        fs::write(&path, vec![b'x'; MAX_FILE_BYTES + 1]).unwrap();
+        let mut unreadable = SitePrefsStore::load(&path);
+        assert!(unreadable.set_zoom_deferred("https://b.test", Some(150), 100).is_err());
+        assert_eq!(unreadable.zoom("https://b.test"), None);
+        crate::background_write::flush();
+        assert_eq!(fs::metadata(&path).unwrap().len(), MAX_FILE_BYTES as u64 + 1);
     }
 
     #[test]

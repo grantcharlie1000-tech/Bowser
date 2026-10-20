@@ -1760,6 +1760,8 @@ fn flush_for_exit(hwnd: HWND, app: &AppRef) {
         let _ = App::privacy_stats_save_now(app);
     }
     crate::productivity::flush_pending_history();
+    // A zoom or counters still queued for the writer thread.
+    crate::background_write::flush();
     // A session-only history ends with the session (thread T3).
     crate::history_retention::finish_at_exit();
     App::session_finish(app);
