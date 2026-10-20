@@ -12645,6 +12645,8 @@ mod tests {
             crate::engine::ENGINE_MENU_TIMER,
             #[cfg(feature = "experimental-engine-context-menu")]
             APP_MENU_PROBE_TIMER,
+            #[cfg(feature = "experimental-engine-context-menu")]
+            crate::engine::app_context_menu_probe::reload::RELOAD_TIMER,
             WM_IDLE_TRIM_TIMER, WM_CARET_BLINK_TIMER, WM_ANIMATION_TIMER, WM_SESSION_SAVE_TIMER,
             super::super::WM_PRIVACY_STATS_TIMER, WM_PROGRESS_TIMER, WM_SPLIT_BOUNDS_TIMER,
             super::super::WM_POWER_TIMER, super::super::WM_IMPORT_OFFER_TIMER,

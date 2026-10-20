@@ -54,6 +54,8 @@ mod menu_inventory;
 mod owned_context_menu;
 #[cfg(all(test, feature = "experimental-engine-context-menu"))]
 pub(crate) use owned_context_menu::set_probe_observer as set_menu_probe_observer;
+#[cfg(all(test, feature = "experimental-engine-context-menu"))]
+pub(crate) use owned_context_menu::probe_reload_owner_lifetime;
 #[cfg(feature = "experimental-engine-context-menu")]
 pub(crate) use owned_context_menu::{continue_request as engine_menu_continue, owner_destroyed as engine_menu_owner_destroyed, tick as engine_menu_tick, drain_destroyed as engine_menu_drain_destroyed, TIMER as ENGINE_MENU_TIMER};
 
@@ -4973,6 +4975,11 @@ unsafe fn configure_controller(
                     } else {
                         String::new()
                     };
+                    #[cfg(all(test, feature = "experimental-engine-context-menu"))]
+                    if let Some(sender)=_sender.as_ref() {
+                        super::app_context_menu_probe::reload::observe_navigation_start(
+                            tab_id,sender.as_raw() as usize,id,&uri_value);
+                    }
                     let parsed = Url::parse(&uri_value).ok();
                     // A top-level navigation is not cancelled here. Cancelling a typed address or
                     // an ad-click landing left the tab where it was, with no site toggle that

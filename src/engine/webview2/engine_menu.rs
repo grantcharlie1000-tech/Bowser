@@ -581,6 +581,10 @@ impl EngineMenu {
         self.tree.revalidate()?;let snapshot=visit(&self.tree,&[])?;self.tree.revalidate()?;Ok(snapshot)
     }
 
+    // Test-only diagnostic: never a selection or dispatch authority.
+    #[cfg(test)]
+    pub(crate) fn probe_root_menu(&self)->Option<usize> {self.native.handle().ok().map(|menu|menu.0 as usize)}
+
     #[cfg(test)]
     pub(crate) fn probe_fixture_command(&self)->Option<i32> {
         fn visit(tree:&Tree,found:&mut Vec<i32>) {

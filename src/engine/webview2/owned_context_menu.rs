@@ -91,6 +91,19 @@ fn owner(hwnd: HWND) -> Option<Rc<Owner>> {
     OWNERS.with(|all| all.borrow_mut().insert(hwnd.0 as isize,Entry { owner:owned.clone(),claim:None,pending:None }));
     Some(owned)
 }
+// Read-only test lifetime fence, acquired from the EXISTING native Owner before arming.
+// Never creates/revives an owner or changes a registry entry; no native/COM call in the closure.
+#[cfg(test)]
+pub(crate) fn probe_reload_owner_lifetime(hwnd:HWND)->Option<(usize,Rc<dyn Fn()->bool>)> {
+    let owner=OWNERS.with(|all|all.try_borrow().ok()?.get(&(hwnd.0 as isize)).map(|entry|entry.owner.clone()))?;
+    if !owner.alive.get()||owner.token==0 {return None;}
+    let token=owner.token;let weak=Rc::downgrade(&owner);
+    Some((token,Rc::new(move || {
+        let Some(owner)=weak.upgrade() else{return false;};
+        owner.alive.get()&&owner.token==token&&OWNERS.with(|all|all.try_borrow().is_ok_and(|all|
+            all.get(&(hwnd.0 as isize)).is_some_and(|entry|entry.owner.token==token&&Rc::ptr_eq(&entry.owner,&owner))))
+    })))
+}
 fn retire_claim(hwnd:HWND,owner_token:usize,request_token:Option<usize>) {
     OWNERS.with(|all| {let mut all=all.borrow_mut();if let Some(e)=all.get_mut(&(hwnd.0 as isize))
         && e.owner.token==owner_token && e.claim==request_token && e.pending.is_none() {e.claim=None;}});
@@ -165,6 +178,22 @@ impl Request {
         if !(self.available)() || !self.valid.get() || self.owner.request_epoch.get()!=self.request_epoch || !self.owner.current() || unsafe { GetForegroundWindow() }!=self.owner.hwnd { return false; }
         let registered=OWNERS.with(|all|all.try_borrow().is_ok_and(|all|all.get(&(self.owner.hwnd.0 as isize)).is_some_and(|e|
             e.owner.token==self.owner.token && e.pending.as_ref().is_some_and(|p|p.token==self.token))));
+        if !registered { return false; }
+        let Some(core)=self.core.upgrade() else { return false; };
+        let Ok(state)=core.try_borrow() else { return false; };
+        !state.closed && state.parent==self.owner.hwnd && state.active_tab==Some(self.tab)
+            && !state.private_tabs.contains(&self.tab)
+            && state.tabs.get(&self.tab).is_some_and(|tab|Rc::ptr_eq(&tab.document_gate,&self.gate)
+                && tab.webview.as_ref().is_some_and(|v|v.as_raw()==self.view.as_raw())
+                && tab.controller.as_ref().is_some_and(|v|v.as_raw()==self.controller.as_raw()))
+            && self.gate.try_borrow().is_ok_and(|g|g.proof()==Some(self.proof))
+    }
+    // Final test action fence: owner token/request/controller/document only, NO COM/native getters.
+    #[cfg(test)]
+    fn probe_pure_current(&self) -> bool {
+        if !(self.available)() || !self.valid.get() || self.owner.request_epoch.get()!=self.request_epoch || !self.owner.alive.get() { return false; }
+        let registered=OWNERS.with(|all|all.try_borrow().is_ok_and(|all|all.get(&(self.owner.hwnd.0 as isize)).is_some_and(|e|
+            e.owner.token==self.owner.token && Rc::ptr_eq(&e.owner,&self.owner) && e.pending.as_ref().is_some_and(|p|p.token==self.token))));
         if !registered { return false; }
         let Some(core)=self.core.upgrade() else { return false; };
         let Ok(state)=core.try_borrow() else { return false; };
@@ -258,12 +287,15 @@ impl Request {
 // There is deliberately no Drop fallback calling native Complete. All normal retirement is
 // explicit; failed/transient native state is retained by its bounded Rc ownership.
 
-pub(super) struct Registration { native:ICoreWebView2_11, token:Option<i64>, alive:Rc<Cell<bool>> }
+pub(super) struct Registration { native:ICoreWebView2_11, token:Option<i64>, alive:Rc<Cell<bool>>,
+    #[cfg(test)] probe_identity:(TabId,usize),
+}
 impl Registration {
     pub(super) fn close(&mut self)->Result<()> {
         self.alive.set(false);
         if let Some(token)=self.token.take() {
             let result=unsafe {self.native.remove_ContextMenuRequested(token)};
+            #[cfg(test)] super::super::app_context_menu_probe::reload::observe_deregistered(self.probe_identity.0,self.probe_identity.1,result.as_ref().err().map(|error|error.code().0));
             #[cfg(test)] let _=observe(MenuProbeEvent::Deregistered {native_error:result.as_ref().err().map(|error|error.code().0)});
             result
         } else {Ok(())}
@@ -363,7 +395,9 @@ pub(super) fn install(
         }
         Ok(())
     })),&mut registration)?; }
-    Ok(Registration{native,token:Some(registration),alive})
+    Ok(Registration{native,token:Some(registration),alive,
+        #[cfg(test)] probe_identity:(tab,view.as_raw() as usize),
+    })
 }
 
 pub(crate) fn continue_request(hwnd:HWND,token:usize) {
@@ -389,6 +423,22 @@ pub(crate) fn continue_request(hwnd:HWND,token:usize) {
                     super::super::app_host_menu_probe::HostProbeEvent::BeforeShow {request:request.token,tab:request.tab,
                         view:request.view.as_raw() as usize,args:args.as_raw() as usize,proof:request.proof,nodes}));
                 if witness.is_none_or(|event|!super::super::app_host_menu_probe::observe(event)) {request.cancel();return;}
+            }
+            #[cfg(test)]
+            if super::super::app_context_menu_probe::reload::armed() {
+                if let (Some(hmenu),Some(fixture_command))=(menu.probe_root_menu(),menu.probe_fixture_command()) {
+                    let weak=Rc::downgrade(&request);
+                    super::super::app_context_menu_probe::reload::observe_before_show(
+                        super::super::app_context_menu_probe::reload::ShowWitness {
+                            request:request.token,owner:request.owner.hwnd,owner_token:request.owner.token,
+                            request_epoch:request.request_epoch,tab:request.tab,view:request.view.as_raw() as usize,
+                            controller:request.controller.as_raw() as usize,proof:request.proof,hmenu,fixture_command,
+                            current:Rc::new({let weak=weak.clone();move ||weak.upgrade().is_some_and(|request|
+                                request.phase.get()==Phase::Showing && request.current())}),
+                            pure_current:Rc::new(move ||weak.upgrade().is_some_and(|request|
+                                request.phase.get()==Phase::Showing && request.probe_pure_current())),
+                        });
+                }
             }
             request.phase.set(Phase::Showing);
             let choice=menu.show(hwnd,request.point,||

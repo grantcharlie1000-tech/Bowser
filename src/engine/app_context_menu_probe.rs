@@ -24,6 +24,8 @@
 //! host commands, no-activeTab/cross-origin permission matrix, worker restart, multi-profile and
 //! in-modal navigation/close/shutdown races remain NOT RUN. No marketplace compatibility claim.
 
+pub(crate) mod reload;
+
 use std::{
     cell::{Cell, RefCell},
     io::{Read, Write},

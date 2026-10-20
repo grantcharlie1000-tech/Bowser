@@ -388,6 +388,26 @@ jobs:
           $env:BOWSER_APP_MENU_PROBE_CONSENT = 'probe-custom-context-menu'
           cargo +stable test --locked --lib --features html-chrome-default,experimental-engine-context-menu engine::app_context_menu_probe::live_probe_real_app_context_menu -- --exact --ignored --nocapture --test-threads=1 2>&1 | Tee-Object store-real-app-context-menu.log
           if ($LASTEXITCODE -ne 0) { throw 'Actual App native-menu cancellation/selection unavailable or failed; no activation.' }
+      - name: Probe independent actual App in-modal same-URL Reload refusal
+        if: ${{ !cancelled() && steps.experimental_menu_build.outcome == 'success' }}
+        run: |
+          $env:BOWSER_EXTENSION_TRACE = '1'
+          $env:BOWSER_APP_MENU_RELOAD_PROBE_CONSENT = 'probe-custom-context-menu-reload-no-further-input'
+          # Separate exact process/profile. One right-click, then no Escape/selection/rescue input.
+          cargo +stable test --locked --lib --features html-chrome-default,experimental-engine-context-menu engine::app_context_menu_probe::reload::live_probe_real_app_context_menu_same_url_reload -- --exact --ignored --nocapture --test-threads=1 2>&1 | Tee-Object store-real-app-context-menu-reload.log
+          if ($LASTEXITCODE -ne 0) { throw 'Actual App same-URL in-modal Reload refusal unavailable or failed; no spontaneous cancellation acceptance and no activation.' }
+      - name: Save independent actual App Reload refusal evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: store-real-app-context-menu-reload-diagnostics-${{ github.sha }}
+          path: |
+            store-real-app-context-menu-reload.log
+            store-real-app-context-menu-reload/**/*.json
+            store-real-app-context-menu-reload/**/*.txt
+            store-real-app-context-menu-reload/**/*.png
+          if-no-files-found: warn
+          retention-days: 14
       - name: Probe separate actual App native Copy Paste and host note split regressions
         if: ${{ !cancelled() && steps.experimental_menu_build.outcome == 'success' }}
         run: |
