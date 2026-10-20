@@ -735,9 +735,8 @@ fn save_width(profile: &Profile, width: i32) {
         GUEST_WIDTH.with(|saved| saved.set(width.clamp(MIN_WIDTH_DIP, MAX_WIDTH_DIP)));
         return;
     }
-    let path = profile.settings_file();
-    let existing = fs::read_to_string(&path).unwrap_or_default();
-    let _ = fs::write(path, settings_with_width(&existing, width));
+    // Through the settings saver: a file it cannot read is left alone, not replaced by this one line.
+    let _ = crate::settings::save_edited(&profile.settings_file(), |existing| settings_with_width(existing, width));
 }
 
 fn paint(hwnd: HWND) {
@@ -1160,6 +1159,28 @@ mod tests {
         assert!(saved.contains("sleep_enabled=false"));
         assert!(saved.contains("unknown=value"));
         assert_eq!(saved.matches("notes_panel_width=").count(), 1);
+    }
+
+    /// R-1: resizing the popup must not replace a `settings.txt` it cannot read with its one line.
+    #[test]
+    fn resizing_leaves_an_unreadable_settings_file_alone_and_keeps_every_other_setting() {
+        let dir = std::env::temp_dir().join(format!("bowser-notes-width-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let profile = crate::profile::Profile::default_in(&dir);
+        let path = profile.settings_file();
+        let ansi = b"search_engine=duckduckgo\nhome_page=https://caf\xe9.example/\nsleep_enabled=false\n";
+        fs::write(&path, ansi).unwrap();
+        save_width(&profile, 400);
+        assert_eq!(fs::read(&path).unwrap(), ansi, "a non-UTF-8 settings file is left as it was");
+
+        fs::write(&path, "# mine\nsleep_enabled=false\nunknown=value\n").unwrap();
+        let before = crate::settings::save_generation();
+        save_width(&profile, 400);
+        let saved = fs::read_to_string(&path).unwrap();
+        assert_eq!(saved, "# mine\nsleep_enabled=false\nunknown=value\nnotes_panel_width=400\n");
+        assert!(crate::settings::save_generation() > before, "the width save counts as a settings save");
+        let _ = fs::remove_dir_all(&dir);
     }
 }
 

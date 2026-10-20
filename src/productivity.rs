@@ -22,6 +22,12 @@ pub const MAX_SESSIONS: usize = 32;
 pub const MAX_HISTORY: usize = 5_000;
 pub const MAX_BOOKMARKS: usize = 500;
 const MAX_FILE_BYTES: usize = 256 * 1024;
+/// Largest `tasks.txt` or `sessions.txt` read or written: room for every task the panels accept
+/// (500 of 2048 characters) and every saved session (32 of 100 addresses up to 2048 bytes), so a file
+/// Bowser wrote is never too large for Bowser to read back.
+const MAX_LIST_FILE_BYTES: usize = 8 * 1024 * 1024;
+const TASKS_HEADER: &str = "bowser-tasks-v1";
+const SESSIONS_HEADER: &str = "bowser-sessions-v1";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Task {
@@ -150,11 +156,11 @@ fn subsequence_gap(needle: &str, haystack: &str) -> Option<usize> {
 }
 
 pub fn parse_tasks(text: &str) -> Vec<Task> {
-    if text.len() > MAX_FILE_BYTES {
+    if text.len() > MAX_LIST_FILE_BYTES {
         return Vec::new();
     }
-    let mut lines = text.lines();
-    if lines.next() != Some("bowser-tasks-v1") {
+    let mut lines = text.trim_start_matches('\u{feff}').lines();
+    if lines.next() != Some(TASKS_HEADER) {
         return Vec::new();
     }
     lines
@@ -207,7 +213,7 @@ pub fn serialize_notes(notes: &[Note]) -> String {
 }
 
 pub fn serialize_tasks(tasks: &[Task]) -> String {
-    let mut out = String::from("bowser-tasks-v1\n");
+    let mut out = format!("{TASKS_HEADER}\n");
     for task in tasks.iter().take(MAX_TASKS) {
         out.push_str(&format!(
             "{}\t{}\t{}\n",
@@ -220,11 +226,11 @@ pub fn serialize_tasks(tasks: &[Task]) -> String {
 }
 
 pub fn parse_sessions(text: &str) -> Vec<SavedSession> {
-    if text.len() > MAX_FILE_BYTES {
+    if text.len() > MAX_LIST_FILE_BYTES {
         return Vec::new();
     }
-    let mut lines = text.lines();
-    if lines.next() != Some("bowser-sessions-v1") {
+    let mut lines = text.trim_start_matches('\u{feff}').lines();
+    if lines.next() != Some(SESSIONS_HEADER) {
         return Vec::new();
     }
     let mut out: Vec<SavedSession> = Vec::new();
@@ -257,7 +263,7 @@ pub fn parse_sessions(text: &str) -> Vec<SavedSession> {
 }
 
 pub fn serialize_sessions(sessions: &[SavedSession]) -> String {
-    let mut out = String::from("bowser-sessions-v1\n");
+    let mut out = format!("{SESSIONS_HEADER}\n");
     for session in sessions.iter().take(MAX_SESSIONS) {
         let urls: Vec<_> = session
             .urls
@@ -339,7 +345,7 @@ pub fn delete_note(path: &Path, id: u64) -> std::io::Result<bool> {
 }
 
 pub fn add_task(path: &Path, task: Task) -> std::io::Result<()> {
-    let mut tasks = read_tasks(path);
+    let mut tasks = read_tasks_for_change(path)?;
     if tasks.len() >= MAX_TASKS {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
@@ -350,7 +356,7 @@ pub fn add_task(path: &Path, task: Task) -> std::io::Result<()> {
     write_tasks(path, &tasks)
 }
 pub fn edit_task(path: &Path, id: u64, text: String) -> std::io::Result<bool> {
-    let mut tasks = read_tasks(path);
+    let mut tasks = read_tasks_for_change(path)?;
     let Some(task) = tasks.iter_mut().find(|task| task.id == id) else {
         return Ok(false);
     };
@@ -359,7 +365,7 @@ pub fn edit_task(path: &Path, id: u64, text: String) -> std::io::Result<bool> {
     Ok(true)
 }
 pub fn complete_task(path: &Path, id: u64, complete: bool) -> std::io::Result<bool> {
-    let mut tasks = read_tasks(path);
+    let mut tasks = read_tasks_for_change(path)?;
     let Some(task) = tasks.iter_mut().find(|task| task.id == id) else {
         return Ok(false);
     };
@@ -368,7 +374,7 @@ pub fn complete_task(path: &Path, id: u64, complete: bool) -> std::io::Result<bo
     Ok(true)
 }
 pub fn delete_task(path: &Path, id: u64) -> std::io::Result<bool> {
-    let mut tasks = read_tasks(path);
+    let mut tasks = read_tasks_for_change(path)?;
     let len = tasks.len();
     tasks.retain(|task| task.id != id);
     if len == tasks.len() {
@@ -378,16 +384,20 @@ pub fn delete_task(path: &Path, id: u64) -> std::io::Result<bool> {
     Ok(true)
 }
 pub fn save_session(path: &Path, session: SavedSession) -> std::io::Result<()> {
-    let mut sessions = read_sessions(path);
+    let mut sessions = read_sessions_for_change(path)?;
     sessions.retain(|existing| existing.name != session.name);
     if sessions.len() >= MAX_SESSIONS {
         sessions.remove(0);
     }
     sessions.push(session);
+    // Like the count cap: the oldest sessions make room, so the file always stays readable.
+    while sessions.len() > 1 && serialize_sessions(&sessions).len() > MAX_LIST_FILE_BYTES {
+        sessions.remove(0);
+    }
     write_sessions(path, &sessions)
 }
 pub fn delete_session(path: &Path, name: &str) -> std::io::Result<bool> {
-    let mut sessions = read_sessions(path);
+    let mut sessions = read_sessions_for_change(path)?;
     let len = sessions.len();
     sessions.retain(|session| session.name != name);
     if len == sessions.len() {
@@ -407,17 +417,63 @@ pub fn write_notes(path: &Path, notes: &str) -> std::io::Result<()> {
     atomic_write(path, notes.as_bytes())
 }
 
+/// The tasks to show: none when the file is missing or cannot be read.
 pub fn read_tasks(path: &Path) -> Vec<Task> {
-    read_bounded(path).map_or_else(Vec::new, |text| parse_tasks(&text))
+    read_tasks_for_change(path).unwrap_or_default()
 }
+/// The tasks a change rewrites: an error, never an empty list, when the file cannot be read.
+fn read_tasks_for_change(path: &Path) -> std::io::Result<Vec<Task>> {
+    Ok(read_list_for_change(path, TASKS_HEADER)?.map_or_else(Vec::new, |text| parse_tasks(&text)))
+}
+/// Replaces `tasks.txt`. Refused when the list would be too large to read back, or when the file
+/// there cannot be read (what it holds was never loaded, so writing would delete it).
 pub fn write_tasks(path: &Path, tasks: &[Task]) -> std::io::Result<()> {
-    atomic_write(path, serialize_tasks(tasks).as_bytes())
+    write_list(path, TASKS_HEADER, &serialize_tasks(tasks))
 }
+/// The saved sessions to show: none when the file is missing or cannot be read.
 pub fn read_sessions(path: &Path) -> Vec<SavedSession> {
-    read_bounded(path).map_or_else(Vec::new, |text| parse_sessions(&text))
+    read_sessions_for_change(path).unwrap_or_default()
 }
+fn read_sessions_for_change(path: &Path) -> std::io::Result<Vec<SavedSession>> {
+    Ok(read_list_for_change(path, SESSIONS_HEADER)?.map_or_else(Vec::new, |text| parse_sessions(&text)))
+}
+/// Replaces `sessions.txt`, with the same refusals as [`write_tasks`].
 pub fn write_sessions(path: &Path, sessions: &[SavedSession]) -> std::io::Result<()> {
-    atomic_write(path, serialize_sessions(sessions).as_bytes())
+    write_list(path, SESSIONS_HEADER, &serialize_sessions(sessions))
+}
+
+/// The text of a list file that a change will rewrite: `None` when there is none (missing or blank).
+/// A file that is unreadable, larger than [`MAX_LIST_FILE_BYTES`], not UTF-8 or not headed `header`
+/// (a leading BOM is allowed) is an error: treating it as empty would let the next save delete it.
+fn read_list_for_change(path: &Path, header: &str) -> std::io::Result<Option<String>> {
+    let invalid = |why: &str| std::io::Error::new(std::io::ErrorKind::InvalidData, format!("{} {why}", path.display()));
+    let bytes = match fs::metadata(path) {
+        Ok(meta) if meta.len() > MAX_LIST_FILE_BYTES as u64 => return Err(invalid("is too large to read")),
+        Ok(_) => fs::read(path)?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    if bytes.len() > MAX_LIST_FILE_BYTES {
+        return Err(invalid("is too large to read"));
+    }
+    let text = String::from_utf8(bytes).map_err(|_| invalid("is not UTF-8 text"))?;
+    let body = text.trim_start_matches('\u{feff}');
+    if body.trim().is_empty() {
+        return Ok(None);
+    }
+    if body.lines().next() != Some(header) {
+        return Err(invalid("is not a file Bowser can read"));
+    }
+    Ok(Some(text))
+}
+
+/// Writes a list file through [`atomic_write`], refusing what [`read_list_for_change`] could not read.
+fn write_list(path: &Path, header: &str, text: &str) -> std::io::Result<()> {
+    if text.len() > MAX_LIST_FILE_BYTES {
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "the list is too large to save"));
+    }
+    read_list_for_change(path, header)?;
+    atomic_write(path, text.as_bytes())
 }
 
 pub fn add_history_entry(path: &Path, url: &str, title: &str) -> std::io::Result<()> {
@@ -1149,6 +1205,77 @@ pub(crate) fn unescape(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn list_test_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("bowser-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// R-2: 12 sessions of 100 long search addresses pass the old 256 KiB read cap. Every one must
+    /// still read back, and one more save must keep them all.
+    #[test]
+    fn saved_sessions_past_256_kib_read_back_and_survive_the_next_save() {
+        let dir = list_test_dir("sessions-large");
+        let path = dir.join("sessions.txt");
+        for s in 0..12 {
+            let urls = (0..100).map(|t| format!("https://www.google.com/search?q=session{s}tab{t}&{}", "x".repeat(180))).collect();
+            save_session(&path, SavedSession { name: format!("Research {s}"), urls, active: 0 }).unwrap();
+        }
+        assert!(fs::metadata(&path).unwrap().len() > 256 * 1024);
+        assert_eq!(read_sessions(&path).len(), 12);
+        save_session(&path, SavedSession { name: "New".into(), urls: vec!["https://example.com/".into()], active: 0 }).unwrap();
+        assert_eq!(read_sessions(&path).len(), 13);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// R-2: a sessions file that cannot be read is refused by save and delete, never replaced.
+    #[test]
+    fn an_unreadable_sessions_file_is_never_saved_over() {
+        let dir = list_test_dir("sessions-unreadable");
+        let path = dir.join("sessions.txt");
+        let new = || SavedSession { name: "New".into(), urls: vec!["https://example.com/".into()], active: 0 };
+        for bad in [&b"bowser-sessions-v1\nsession\tCaf\xe9\t0\thttps://a.example/\n"[..], b"something else\n"] {
+            fs::write(&path, bad).unwrap();
+            assert!(save_session(&path, new()).is_err());
+            assert!(delete_session(&path, "Caf").is_err());
+            assert_eq!(fs::read(&path).unwrap(), bad);
+        }
+        // A BOM (Notepad's "UTF-8 with BOM") is read, and kept sessions survive the next save.
+        fs::write(&path, "\u{feff}bowser-sessions-v1\nsession\tOld\t0\thttps://a.example/\n").unwrap();
+        save_session(&path, new()).unwrap();
+        assert_eq!(read_sessions(&path).iter().map(|s| s.name.as_str()).collect::<Vec<_>>(), ["Old", "New"]);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// R-3: 130 tasks of 2048 characters (the HTML panel's limit) pass the old 256 KiB read cap.
+    #[test]
+    fn tasks_past_256_kib_read_back_and_survive_the_next_add() {
+        let dir = list_test_dir("tasks-large");
+        let path = dir.join("tasks.txt");
+        let tasks: Vec<Task> = (1..=130).map(|id| Task { id, complete: false, text: "t".repeat(2048) }).collect();
+        write_tasks(&path, &tasks).unwrap();
+        assert_eq!(read_tasks(&path).len(), 130);
+        add_task(&path, Task { id: 999, complete: false, text: "New task".into() }).unwrap();
+        assert_eq!(read_tasks(&path).len(), 131);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// R-3: whoever loaded the tasks, a write over a file that cannot be read is refused.
+    #[test]
+    fn an_unreadable_tasks_file_is_never_saved_over() {
+        let dir = list_test_dir("tasks-unreadable");
+        let path = dir.join("tasks.txt");
+        let bad = b"bowser-tasks-v1\n1\t0\tcaf\xe9\n";
+        fs::write(&path, bad).unwrap();
+        assert!(read_tasks(&path).is_empty());
+        let one = [Task { id: 1, complete: false, text: "New task".into() }];
+        assert!(write_tasks(&path, &one).is_err());
+        assert!(add_task(&path, one[0].clone()).is_err());
+        assert_eq!(fs::read(&path).unwrap(), bad);
+        let _ = fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn tasks_round_trip_and_ignore_malformed_lines() {
