@@ -82,7 +82,9 @@ fn write_key_value(path: &str, name: &str, data: &str) -> windows::core::Result<
 }
 
 /// The `shell\open\command` Windows runs for a link or file: `%1` becomes one bare argument,
-/// which [`crate::performance::LaunchOptions`] opens as the initial address.
+/// which [`crate::performance::LaunchOptions`] opens as the initial address. Windows pastes `%1` in
+/// unescaped, so a `"` in a link can split it into more arguments; the parser therefore treats
+/// every argument after the address as data and refuses any flag there (SEC-2).
 pub(crate) fn open_command(exe: &str) -> String {
     format!("\"{exe}\" \"%1\"")
 }

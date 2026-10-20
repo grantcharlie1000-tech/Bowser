@@ -107,6 +107,16 @@ impl LaunchOptions {
         let mut link_launch = false;
         let mut iter = args.into_iter();
         while let Some(flag) = iter.next() {
+            // SEC-2: once an address is taken, every later argument is data, never a flag.
+            // Windows pastes a link into `"<exe>" "%1"` unescaped, so a `"` in the link can split
+            // its tail into extra arguments such as `--data-dir \\attacker\share`.
+            if link_launch {
+                if flag.starts_with('-') {
+                    return Err(format!("Launch flags must come before the address: {flag}"));
+                }
+                push_initial_url(&mut options, launch_target(&flag)?)?;
+                continue;
+            }
             if flag == "--diagnostic-interaction" {
                 if options.diagnostic_interaction { return Err("Duplicate diagnostic interaction argument".into()); }
                 options.diagnostic_interaction = true;
@@ -146,7 +156,8 @@ impl LaunchOptions {
                 continue;
             }
             // A bare argument is the address Windows hands over for a link or file once Bowser is
-            // the default browser (`"<exe>" "%1"`, see `default_browser::open_command`).
+            // the default browser (`"<exe>" "%1"`, see `default_browser::open_command`). It ends the
+            // flags: the arguments after it can only be further addresses.
             if !flag.starts_with('-') {
                 push_initial_url(&mut options, launch_target(&flag)?)?;
                 link_launch = true;
@@ -292,6 +303,10 @@ impl LaunchOptions {
         if link_launch {
             // Like Ctrl+N: the profile may already be open, and the link opens in a window beside it.
             options.new_window = true;
+            // A link or file launch never keeps its profile on another machine (SEC-2).
+            if explicit_data_dir.as_deref().is_some_and(|dir| !on_local_drive(dir)) {
+                return Err("A launch that opens an address needs a data directory on a local drive".into());
+            }
         }
         if options.diagnostic_interaction && options.diagnostic_log.is_none() {
             return Err("Diagnostic interaction requires --diagnostic-log".into());
@@ -464,6 +479,15 @@ fn launch_target(text: &str) -> Result<Url, String> {
         }
         _ => Err(format!("Unknown argument: {text}")),
     }
+}
+
+/// Whether `path` starts with a drive letter (`C:\`, `\\?\C:\`), not a share or device namespace.
+fn on_local_drive(path: &Path) -> bool {
+    use std::path::{Component, Prefix};
+    matches!(
+        path.components().next(),
+        Some(Component::Prefix(prefix)) if matches!(prefix.kind(), Prefix::Disk(_) | Prefix::VerbatimDisk(_))
+    )
 }
 
 /// The launch flags followed by a value (`--profile <name>`); every other flag stands alone.
@@ -1765,6 +1789,64 @@ mod tests {
             LaunchOptions::parse_from(args(&["--agent", "https://a.example/"]), Path::new("missing")).is_err(),
             "agent mode never opens a window"
         );
+    }
+
+    /// SEC-2: Windows substitutes `%1` into `"<exe>" "%1"` without escaping, so a `"` inside a
+    /// link ends the quote and the rest of the link splits into further arguments. None of them
+    /// may become a launch flag: everything after the address is data.
+    #[test]
+    fn a_link_cannot_add_launch_flags() {
+        let exe = r"C:\Users\me\AppData\Local\Programs\Bowser\Bowser.exe";
+        for hostile in [
+            // The exact link from the report.
+            r#"https://a.example/" --data-dir "\\evil.example\s\d"#,
+            r#"https://a.example/" --data-dir "\\evil\s"#,
+            r#"https://a.example/" --diagnostic-log "\\evil\s\log.csv" --data-dir "\\evil\s"#,
+            r#"https://a.example/" --profile "Work"#,
+            r#"https://a.example/" --dev "#,
+            r#"https://a.example/" --new-window "#,
+            r#"https://a.example/" --agent "#,
+            r#"https://a.example/" --open-url "https://b.example/"#,
+        ] {
+            let command = crate::default_browser::open_command(exe).replace("%1", hostile);
+            let argv = windows_argv(&command);
+            assert!(argv.len() > 2, "the link must split for this test to mean anything: {argv:?}");
+            let result = LaunchOptions::parse_from(argv.into_iter().skip(1), Path::new("missing"));
+            assert!(result.is_err(), "{hostile}: {result:?}");
+        }
+        // Flags after an address are refused however they arrive.
+        for after in [
+            &["https://a.example/", "--data-dir", r"\\evil\s"][..],
+            &["https://a.example/", "--dev"],
+            &["https://a.example/", "https://b.example/", "--profile", "Work"],
+            &[r"C:\Users\me\My Pages\page one.html", "--guest"],
+        ] {
+            let result = LaunchOptions::parse_from(args(after), Path::new("missing"));
+            assert!(result.is_err(), "{after:?}: {result:?}");
+        }
+    }
+
+    /// SEC-2: a launch that opens an address (a link or file handed over by Windows) never
+    /// takes its data directory from a network share.
+    #[test]
+    fn a_link_launch_refuses_a_network_data_directory() {
+        for share in [r"\\evil.example\s\d", r"\\?\UNC\evil.example\s\d", "//evil.example/s/d"] {
+            let result = LaunchOptions::parse_from(
+                args(&["--data-dir", share, "https://a.example/"]),
+                Path::new("missing"),
+            );
+            assert!(result.is_err(), "{share}: {result:?}");
+        }
+        // Flags before the address still work, and a local data directory is fine.
+        let local = std::env::temp_dir().join(format!("bowser-link-data-{}", std::process::id()));
+        let options = LaunchOptions::parse_from(
+            args(&["--profile", "Work", "--data-dir", local.to_str().unwrap(), "https://a.example/"]),
+            Path::new("missing"),
+        )
+        .unwrap();
+        assert_eq!(options.profile.as_deref(), Some("Work"));
+        assert_eq!(options.data_dir.as_deref(), Some(local.as_path()));
+        assert_eq!(options.open_url.unwrap().as_str(), "https://a.example/");
     }
 
     #[test]
