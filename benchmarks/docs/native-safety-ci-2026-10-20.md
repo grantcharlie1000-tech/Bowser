@@ -551,3 +551,26 @@ metadata cases and source-only boundaries are separately wired for exact discove
 These are not native clipboard observations. C#/PowerShell/Rust compilation and any
 native experiment remain unrun locally and held for exact independent review plus
 execution authorization. No release, updater, production or settings work is included.
+
+### First isolated execution and fixed timer attribution (diagnostic follow-up)
+
+The first compiled initialized-empty lane on `84892f46` / tested merge `e25ffbbb`
+failed at its first read-only fixture snapshot, before launching the clipboard/input
+helper. Its script callback succeeded after 95 ms, but the pump later spent 231,642 ms
+inside one `WM_TIMER` dispatch, then correctly refused the late result under the
+unchanged 10-second script budget. The 240-second watchdog closed the App. This is
+not a clipboard initialization/Copy result or evidence of a deadlocked browser.
+The automatic first-run import offer has a source-complete native-modal fallback
+path consistent with the observation, but message ID 275 alone cannot prove that
+handler or exclude another window/timer callback.
+
+The follow-up adds test-only fixed window/handler labels, entry/exit/depth state
+bound to the individual observed pump dispatch. A lexical equality-only token of
+already-dequeued message fields correlates the actual main-procedure entry; it is
+never logged, serialized, exposed, used as input/cleanup authority, or retained after
+that dispatch scope. Unknown or mismatched callbacks remain unavailable. Nested
+watchdog/menu callbacks cannot replace the outer handler label, and independent
+pump records cannot relabel each other. No UIA/property queries or timer behavior
+are added, and onboarding, message dispatch order, readiness acceptance, all budgets,
+clipboard guards and native-input gates remain unchanged. Pure state tests are
+synthetic attribution checks, not reproduction of the native blockage.

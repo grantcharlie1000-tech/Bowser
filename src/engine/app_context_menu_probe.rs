@@ -25,6 +25,7 @@
 //! in-modal navigation/close/shutdown races remain NOT RUN. No marketplace compatibility claim.
 
 pub(crate) mod reload;
+pub(crate) mod dispatch_trace;
 
 use std::{
     cell::{Cell, RefCell},
@@ -46,7 +47,7 @@ use windows::{core::{Interface, PWSTR}, Win32::{
     UI::WindowsAndMessaging::{
         DispatchMessageW, GetClassNameW, GetClientRect, GetForegroundWindow,
         IsWindow, MSG, PM_REMOVE, PeekMessageW, PostMessageW, SetForegroundWindow,
-        TranslateMessage, WM_CLOSE, WM_QUIT,
+        TranslateMessage, WM_CLOSE, WM_QUIT, WM_TIMER,
     },
 }};
 use crate::{app::{App, AppRef}, extensions::{self, json::{self, Value}}, performance::{LaunchOptions, PerfLog}, tabs::TabId};
@@ -123,14 +124,15 @@ pub(super) struct StartupPump {
     in_ready:Cell<bool>, ready_started:Cell<Option<Instant>>, max_ready_ms:Cell<u128>,
     in_peek:Cell<bool>, peek_started:Cell<Option<Instant>>, max_peek_ms:Cell<u128>,
     in_dispatch:Cell<bool>, dispatch_started:Cell<Option<Instant>>,
+    dispatch_trace:Rc<dispatch_trace::DispatchRecord>,
     max_dispatch_ms:Cell<u128>, tab:Cell<Option<TabId>>, phase:Cell<&'static str>, reported:Cell<bool>,
 }
 impl StartupPump {
     fn new()->Self {Self::for_timeout(Duration::from_secs(60))}
-    pub(super) fn for_timeout(budget:Duration)->Self {Self {started:Cell::new(None),budget,exit:Cell::new(PumpExit::NotStarted),polls:Cell::new(0),messages:Cell::new(0),dispatches:Cell::new(0),batch:Cell::new(0),max_batch:Cell::new(0),last_message:Cell::new(0),in_ready:Cell::new(false),ready_started:Cell::new(None),max_ready_ms:Cell::new(0),in_peek:Cell::new(false),peek_started:Cell::new(None),max_peek_ms:Cell::new(0),in_dispatch:Cell::new(false),dispatch_started:Cell::new(None),max_dispatch_ms:Cell::new(0),tab:Cell::new(None),phase:Cell::new("not-started"),reported:Cell::new(false)}}
+    pub(super) fn for_timeout(budget:Duration)->Self {Self {started:Cell::new(None),budget,exit:Cell::new(PumpExit::NotStarted),polls:Cell::new(0),messages:Cell::new(0),dispatches:Cell::new(0),batch:Cell::new(0),max_batch:Cell::new(0),last_message:Cell::new(0),in_ready:Cell::new(false),ready_started:Cell::new(None),max_ready_ms:Cell::new(0),in_peek:Cell::new(false),peek_started:Cell::new(None),max_peek_ms:Cell::new(0),in_dispatch:Cell::new(false),dispatch_started:Cell::new(None),dispatch_trace:dispatch_trace::DispatchRecord::new(),max_dispatch_ms:Cell::new(0),tab:Cell::new(None),phase:Cell::new("not-started"),reported:Cell::new(false)}}
     pub(super) fn diagnostic_json(&self)->String {
-        format!(r#"{{"exit":"{:?}","elapsed_ms":{},"budget_ms":{},"ready_polls":{},"messages":{},"dispatches":{},"current_batch":{},"max_batch":{},"last_message":{},"in_ready":{},"active_ready_ms":{},"max_ready_ms":{},"in_peek":{},"active_peek_ms":{},"max_peek_ms":{},"in_dispatch":{},"active_dispatch_ms":{},"max_dispatch_ms":{}}}"#,
-            self.exit.get(),self.started.get().map_or(0,|t|t.elapsed().as_millis()),self.budget.as_millis(),self.polls.get(),self.messages.get(),self.dispatches.get(),self.batch.get(),self.max_batch.get(),self.last_message.get(),self.in_ready.get(),self.ready_started.get().map_or(0,|t|t.elapsed().as_millis()),self.max_ready_ms.get(),self.in_peek.get(),self.peek_started.get().map_or(0,|t|t.elapsed().as_millis()),self.max_peek_ms.get(),self.in_dispatch.get(),self.dispatch_started.get().map_or(0,|t|t.elapsed().as_millis()),self.max_dispatch_ms.get())
+        format!(r#"{{"exit":"{:?}","elapsed_ms":{},"budget_ms":{},"ready_polls":{},"messages":{},"dispatches":{},"current_batch":{},"max_batch":{},"last_message":{},"in_ready":{},"active_ready_ms":{},"max_ready_ms":{},"in_peek":{},"active_peek_ms":{},"max_peek_ms":{},"in_dispatch":{},"active_dispatch_ms":{},"max_dispatch_ms":{},"dispatch":{}}}"#,
+            self.exit.get(),self.started.get().map_or(0,|t|t.elapsed().as_millis()),self.budget.as_millis(),self.polls.get(),self.messages.get(),self.dispatches.get(),self.batch.get(),self.max_batch.get(),self.last_message.get(),self.in_ready.get(),self.ready_started.get().map_or(0,|t|t.elapsed().as_millis()),self.max_ready_ms.get(),self.in_peek.get(),self.peek_started.get().map_or(0,|t|t.elapsed().as_millis()),self.max_peek_ms.get(),self.in_dispatch.get(),self.dispatch_started.get().map_or(0,|t|t.elapsed().as_millis()),self.max_dispatch_ms.get(),self.dispatch_trace.diagnostic_json())
     }
     fn report(&self,app:&AppRef,reason:&str) {
         if self.reported.replace(true){return;}
@@ -146,7 +148,7 @@ impl StartupPump {
             let h=self.tab.get().and_then(|tab|handles(app,tab));
             let proof=h.as_ref().map(|h|(h.proof)().is_some());
             let fence=h.as_ref().map(|h|(h.document_fence)());
-            println!("APP_CONTEXT_STARTUP failure_only=true reason={reason} phase={} exit={:?} elapsed_ms={} budget_ms={} ready_polls={} messages={} dispatches={} current_batch={} max_batch={} last_message={} in_ready={} active_ready_ms={} max_ready_ms={} in_peek={} active_peek_ms={} max_peek_ms={} in_dispatch={} active_dispatch_ms={} max_dispatch_ms={} app_borrow_available={app_available} engine_present={engine_present:?} active_tab_matches={active_matches:?} handles_with_successful_document_available={} proof_attempted={} proof_present={proof:?} fence_attempted={} fence_value={fence:?}",self.phase.get(),self.exit.get(),self.started.get().map_or(0,|at|at.elapsed().as_millis()),self.budget.as_millis(),self.polls.get(),self.messages.get(),self.dispatches.get(),self.batch.get(),self.max_batch.get(),self.last_message.get(),self.in_ready.get(),self.ready_started.get().map_or(0,|at|at.elapsed().as_millis()),self.max_ready_ms.get(),self.in_peek.get(),self.peek_started.get().map_or(0,|at|at.elapsed().as_millis()),self.max_peek_ms.get(),self.in_dispatch.get(),self.dispatch_started.get().map_or(0,|at|at.elapsed().as_millis()),self.max_dispatch_ms.get(),h.is_some(),h.is_some(),h.is_some());
+            println!("APP_CONTEXT_STARTUP failure_only=true reason={reason} phase={} exit={:?} elapsed_ms={} budget_ms={} ready_polls={} messages={} dispatches={} current_batch={} max_batch={} last_message={} in_ready={} active_ready_ms={} max_ready_ms={} in_peek={} active_peek_ms={} max_peek_ms={} in_dispatch={} active_dispatch_ms={} max_dispatch_ms={} dispatch_trace={} app_borrow_available={app_available} engine_present={engine_present:?} active_tab_matches={active_matches:?} handles_with_successful_document_available={} proof_attempted={} proof_present={proof:?} fence_attempted={} fence_value={fence:?}",self.phase.get(),self.exit.get(),self.started.get().map_or(0,|at|at.elapsed().as_millis()),self.budget.as_millis(),self.polls.get(),self.messages.get(),self.dispatches.get(),self.batch.get(),self.max_batch.get(),self.last_message.get(),self.in_ready.get(),self.ready_started.get().map_or(0,|at|at.elapsed().as_millis()),self.max_ready_ms.get(),self.in_peek.get(),self.peek_started.get().map_or(0,|at|at.elapsed().as_millis()),self.max_peek_ms.get(),self.in_dispatch.get(),self.dispatch_started.get().map_or(0,|at|at.elapsed().as_millis()),self.max_dispatch_ms.get(),self.dispatch_trace.diagnostic_json(),h.is_some(),h.is_some(),h.is_some());
         }));
     }
 }
@@ -206,7 +208,15 @@ pub(super) fn pump_until_observed(timeout:Duration,mut ready:impl FnMut()->bool,
                 let late_before_dispatch=action==PumpMessageAction::DispatchThenRefuse||start.elapsed()>=timeout;
                 let dispatch_start=Instant::now();
                 if let Some(d)=observed {d.dispatches.set(d.dispatches.get().saturating_add(1));d.in_dispatch.set(true);d.dispatch_started.set(Some(dispatch_start));}
-                let _=TranslateMessage(&message);DispatchMessageW(&message);
+                let _=TranslateMessage(&message);
+                {
+                    // Identity is equality-only and dies with this lexical binding. The
+                    // per-pump record retains only fixed classifications and counters.
+                    let kind=dispatch_trace::MessageKind::classify(message.message==WM_TIMER,message.lParam.0!=0,!message.hwnd.0.is_null());
+                    let identity=dispatch_trace::DispatchIdentity::new(message.hwnd.0 as usize,message.wParam.0,message.lParam.0);
+                    let _dispatch=dispatch_trace::DispatchScope::enter(observed.map(|d|&d.dispatch_trace),kind,identity);
+                    DispatchMessageW(&message);
+                }
                 if let Some(d)=observed {d.in_dispatch.set(false);d.dispatch_started.set(None);d.max_dispatch_ms.set(d.max_dispatch_ms.get().max(dispatch_start.elapsed().as_millis()));}
                 if late_before_dispatch {return finish(PumpExit::DeadlineAfterPeek);}
             }

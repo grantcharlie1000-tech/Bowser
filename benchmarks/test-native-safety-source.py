@@ -374,6 +374,93 @@ class NativeSafetySourceContracts(unittest.TestCase):
         for metric in ("in_ready", "active_ready_ms", "max_ready_ms", "in_peek", "active_peek_ms", "max_peek_ms", "in_dispatch", "active_dispatch_ms", "max_dispatch_ms", "active_tab_matches"):
             self.assertIn(metric, diagnostic)
 
+    def test_dispatch_telemetry_binds_each_pump_and_only_wraps_existing_dispatch(self):
+        app = source("src/engine/app_context_menu_probe.rs")
+        self.assertIn("pub(crate) mod dispatch_trace;", app)
+        self.assertIn("dispatch_trace:Rc<dispatch_trace::DispatchRecord>", app)
+        self.assertIn('"dispatch":{}', app)
+        pump = app.split("fn pump_until_observed(", 1)[1].split("#[test]", 1)[0]
+        self.assertIn("MessageKind::classify(message.message==WM_TIMER,message.lParam.0!=0,!message.hwnd.0.is_null())", pump)
+        self.assertIn("DispatchIdentity::new(message.hwnd.0 as usize,message.wParam.0,message.lParam.0)", pump)
+        self.assertIn("DispatchScope::enter(observed.map(|d|&d.dispatch_trace),kind,identity)", pump)
+        self.assertEqual(pump.count("DispatchMessageW("), 1)
+        self.assertLess(pump.index("let _=TranslateMessage(&message)"), pump.index("let _dispatch="))
+        self.assertLess(pump.index("let _dispatch="), pump.index("DispatchMessageW(&message)"))
+        self.assertLess(pump.index("DispatchMessageW(&message)"), pump.index("d.in_dispatch.set(false)"))
+        self.assertNotIn("diagnostic_json", pump)
+        self.assertNotIn("unavailable", pump)
+        self.assertEqual(len(re.findall(r"^fn synthetic_pump_", app, re.M)), 2)
+        self.assertIn("if line.len()<=2048", source("src/engine/app_host_menu_probe/live/script_trace.rs"))
+        trace = source("src/engine/app_context_menu_probe/dispatch_trace.rs")
+        record = trace.split("pub(crate) struct DispatchRecord", 1)[1].split("impl DispatchRecord", 1)[0]
+        self.assertNotIn("identity", record)
+        handler = trace.split("pub(crate) struct HandlerScope", 1)[1].split("impl HandlerScope", 1)[0]
+        self.assertIn("Weak<DispatchBinding>", handler)
+        self.assertIn("Rc<DispatchRecord>", handler)
+        self.assertNotIn("Rc<DispatchBinding>", handler)
+        self.assertIn("previous: Option<Weak<DispatchBinding>>", trace)
+        self.assertIn("retained_token.upgrade().is_none()", trace)
+        diagnostic = trace.split("pub(crate) fn diagnostic_json", 1)[1].split("thread_local!", 1)[0].split("/// Equality-only", 1)[0]
+        for raw in ("identity", "window.0", "timer.0", "callback", "wparam", "lparam", "pointer", "class_name"):
+            self.assertNotIn(raw, diagnostic)
+        for forbidden in ("windows::", "GetClassName", "GetWindow", "PeekMessage", "DispatchMessageW(", "RefCell<", "borrow_mut(", "sleep("):
+            self.assertNotIn(forbidden, trace)
+        for required in ("Rc::ptr_eq", "ACTIVE.try_with", "self.previous.take()", "binding.identity != identity", "MAX_HANDLER_DEPTH: u8 = 32", "value.depth >= MAX_HANDLER_DEPTH", "value.handler = Handler::Unavailable", "if previous_depth == 0 && !value.unavailable", "if self.previous_depth == 0 { value.exited = true; }"):
+            self.assertIn(required, trace)
+
+    def test_main_timer_hook_names_real_branches_without_window_queries(self):
+        window = source("src/win32/window.rs")
+        classifier = window.split("fn main_timer_probe_handler(", 1)[1].split('unsafe extern "system" fn window_proc(', 1)[0]
+        procedure = window.split('unsafe extern "system" fn window_proc(', 1)[1]
+        hook = procedure.split("    unsafe {", 1)[0]
+        self.assertIn('#[cfg(all(test, feature = "experimental-engine-context-menu"))]', hook)
+        self.assertIn("(message == WM_TIMER).then(||", hook)
+        self.assertIn("DispatchIdentity::new(hwnd.0 as usize, wparam.0, lparam.0)", hook)
+        self.assertIn("main_timer_probe_handler(wparam.0)", hook)
+        # Every actual exact-ID WM_TIMER branch has a fixed label using that same constant.
+        actual = set(re.findall(r"WM_TIMER if wparam[.]0 == ([^ ]+) =>", procedure))
+        classified = set(re.findall(r"^        ([^ ]+) => Handler::", classifier, re.M))
+        self.assertTrue(actual <= classified, actual - classified)
+        # Preserve actual match-arm priority, including dynamic hover ranges. A future
+        # accidental collision must be labeled as the handler that really wins.
+        conditions = re.findall(r"WM_TIMER if (.+?) => \{", procedure)
+        expected_priority = [condition.split("wparam.0 == ", 1)[1] if condition.startswith("wparam.0 == ") else "_ if " + condition.replace("wparam.0", "timer") for condition in conditions]
+        classified_priority = re.findall(r"^        (.+?) => Handler::", classifier, re.M)
+        self.assertEqual(classified_priority, expected_priority + ["_"])
+        for constant, label in (("super::WM_IMPORT_OFFER_TIMER", "ImportOffer"), ("APP_MENU_PROBE_TIMER", "ProbeWatchdog"), ("crate::engine::ENGINE_MENU_TIMER", "ContextMenu"), ("WM_HTML_POPUP_PREWARM_TIMER", "PopupPrewarm"), ("WM_TAB_LINK_TIMER", "TabLink"), ("WM_TAB_THUMB_TIMER", "Thumbnail")):
+            self.assertIn(constant + " => Handler::" + label, classifier)
+        self.assertIn("_ if island_menu::is_timer(timer) => Handler::IslandHover", classifier)
+        self.assertIn("_ if card::is_hover_timer(timer) => Handler::CardHover", classifier)
+        self.assertIn("_ => Handler::MainOtherTimer", classifier)
+        for forbidden in ("GetClassName", "GetWindow", "IsWindow", "SetTimer", "KillTimer", "App::", "borrow", "0x"):
+            self.assertNotIn(forbidden, classifier)
+
+    def test_eight_pure_dispatch_cases_use_existing_experimental_binaries(self):
+        trace = source("src/engine/app_context_menu_probe/dispatch_trace.rs")
+        self.assertEqual(len(re.findall(r"^fn synthetic_dispatch_trace_", trace, re.M)), 8)
+        for case in ("nested_watchdog_preserves_outer_handler_and_exit", "independent_pumps_and_unobserved_calls_are_isolated", "raii_unwind_restores_previous_binding", "message_classes_and_unknown_main_timer_stay_explicit", "depth_cap_and_nested_same_record_are_unavailable", "mismatched_scope_is_unavailable_and_output_is_bounded", "nested_foreign_timer_cannot_become_main_window", "identity_lives_only_in_lexical_binding"):
+            self.assertIn("fn synthetic_dispatch_trace_" + case, trace)
+        self.assertIn("assert!(output.len() <= 256)", trace)
+        self.assertIn("Rc::downgrade", trace)
+        self.assertIn("token.upgrade().is_none()", trace)
+        workflow = source(".github/workflows/store-probe.yml")
+        native = workflow.split("id: experimental_menu_build", 1)[1].split("      - name:", 1)[0]
+        self.assertIn("$dispatchTest.Count -ne 1", native)
+        self.assertIn(".Count -eq 8", native)
+        self.assertIn("& $dispatchTest[0].FullName $dispatchFilter --nocapture --test-threads=1", native)
+        initialized = workflow.split("  initialized-empty-copy:", 1)[1].split("  native-store-journey:", 1)[0]
+        dispatch = initialized.split("name: Execute eight pure dispatch-attribution tests", 1)[1].split("      - name:", 1)[0]
+        self.assertIn("$test.Count -ne 1", dispatch)
+        self.assertIn(".Count -ne 8", dispatch)
+        self.assertIn("$test[0].FullName $dispatchFilter --list", dispatch)
+        self.assertIn("$test[0].FullName $dispatchFilter --nocapture --test-threads=1", dispatch)
+        self.assertNotIn("cargo ", dispatch)
+        self.assertNotIn("--ignored", dispatch)
+        self.assertLess(initialized.index("name: Execute two generated-data contract tests"), initialized.index("name: Execute eight pure dispatch-attribution tests"))
+        self.assertLess(initialized.index("name: Execute eight pure dispatch-attribution tests"), initialized.index("name: Exercise one genuine native Copy"))
+        self.assertEqual(initialized.count(" --no-run"), 1)
+        self.assertEqual(workflow.count("$dispatchFilter = 'engine::app_context_menu_probe::dispatch_trace::synthetic_dispatch_trace_'"), 2)
+
     def test_reload_has_one_activation_and_observation_only_rechecks(self):
         reload = source("src/engine/app_context_menu_probe/reload.rs")
         self.assertEqual(reload.count("SetForegroundWindow(owner)"), 1)
