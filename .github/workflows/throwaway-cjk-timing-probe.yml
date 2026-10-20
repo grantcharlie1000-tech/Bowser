@@ -1,0 +1,50 @@
+name: THROWAWAY CJK timing probe (never merge)
+
+on:
+  push:
+    branches: [throwaway/cjk-timing-probe]
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      max-parallel: 20
+      matrix:
+        variant: [after, before, slow]
+        n: [1, 2, 3, 4, 5, 6, 7, 8]
+        exclude:
+          - { variant: slow, n: 4 }
+          - { variant: slow, n: 5 }
+          - { variant: slow, n: 6 }
+          - { variant: slow, n: 7 }
+          - { variant: slow, n: 8 }
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - run: git config --global core.autocrlf false
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Report image
+        run: "Write-Host \"PROBE image=$env:ImageOS/$env:ImageVersion variant=${{ matrix.variant }}\""
+      - name: Use the origin/main test (before)
+        if: matrix.variant == 'before'
+        run: git checkout 42c53e416 -- ui/test/reader.mjs
+      - name: Inject a deliberate 1600 ms slow-down into reader.js toggle (slow)
+        if: matrix.variant == 'slow'
+        run: |
+          $p = 'src/reader/reader.js'
+          $s = [IO.File]::ReadAllText($p)
+          $s = ([regex]"'use strict';").Replace($s, "'use strict'; if (o && o.a === 'toggle') { var __e = Date.now() + 1600; while (Date.now() < __e) {} }", 1)
+          [IO.File]::WriteAllText($p, $s)
+      - name: Check isolated CJK reader baseline (unchanged budget)
+        working-directory: ui
+        run: |
+          node --test --test-concurrency=1 --test-name-pattern="reader: article-cjk.html" test/reader.mjs
