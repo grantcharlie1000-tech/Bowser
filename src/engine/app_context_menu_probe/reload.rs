@@ -22,6 +22,89 @@ const EVIDENCE:&str="store-real-app-context-menu-reload";
 const ARM_LIFETIME:Duration=Duration::from_secs(25);
 const MAX_START_URL_BYTES:usize=4096;
 
+// Diagnostic-only: six write attempts, one retained CreateNew stream, no BOM/raw URLs.
+// Neither missing output nor a returned App call proves native Reload or navigation success.
+const JOURNAL_MAX_BYTES:usize=1024;
+const JOURNAL_MAX_WRITES:u8=6;
+#[derive(Clone,Copy,Default)]
+struct JournalSnapshot {
+    stages:u8,phase:u8,engine:u8,native_seen:u64,recorded:u64,
+    ids:[u64;2],lengths:[u64;2],event_phase:[u8;2],event_elapsed_ms:[u64;2],same_view:[bool;2],url_equal:[bool;2],stored:[bool;2],
+    invalid:bool,saturated:bool,
+}
+struct ReloadJournal {
+    file:Cell<Option<std::fs::File>>,snapshot:Cell<JournalSnapshot>,
+    writes:Cell<u8>,io_failed:Cell<bool>,started:Instant,
+}
+impl ReloadJournal {
+    fn open(path:&Path)->Rc<Self> {
+        let file=std::panic::catch_unwind(std::panic::AssertUnwindSafe(||
+            std::fs::OpenOptions::new().write(true).create_new(true).open(path).ok())).ok().flatten();
+        let unavailable=file.is_none();
+        let journal=Rc::new(Self{file:Cell::new(file),snapshot:Cell::new(JournalSnapshot::default()),
+            writes:Cell::new(0),io_failed:Cell::new(unavailable),started:Instant::now()});
+        journal.record(1);journal
+    }
+    fn record(&self,stage:u8) {
+        // Diagnostic errors/panics must not replace an original error or become an action gate.
+        if std::panic::catch_unwind(std::panic::AssertUnwindSafe(||self.write_snapshot(stage))).is_err() {
+            self.io_failed.set(true);
+        }
+    }
+    fn write_snapshot(&self,stage:u8) {
+        let mut snapshot=self.snapshot.get();snapshot.stages|=stage;self.snapshot.set(snapshot);
+        let previous=self.writes.get();if previous>=JOURNAL_MAX_WRITES{return;}
+        let attempt=previous+1;self.writes.set(attempt);
+        let elapsed=self.started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
+        let value=format!(r#"{{"v":1,"write":{attempt},"stage_bits":{},"call_phase":{},"engine":{},"elapsed_ms":{elapsed},"native_seen":{},"recorded":{},"ids":[{},{}],"url_bytes":[{},{}],"event_phase":[{},{}],"event_elapsed_ms":[{},{}],"same_view":[{},{}],"url_equal":[{},{}],"stored":[{},{}],"invalid":{},"saturated":{},"io_failed_before_write":{}}}"#,
+            snapshot.stages,snapshot.phase,snapshot.engine,snapshot.native_seen,snapshot.recorded,
+            snapshot.ids[0],snapshot.ids[1],snapshot.lengths[0],snapshot.lengths[1],snapshot.event_phase[0],snapshot.event_phase[1],
+            snapshot.event_elapsed_ms[0],snapshot.event_elapsed_ms[1],snapshot.same_view[0],snapshot.same_view[1],
+            snapshot.url_equal[0],snapshot.url_equal[1],snapshot.stored[0],snapshot.stored[1],snapshot.invalid,snapshot.saturated,self.io_failed.get());
+        if value.len()>JOURNAL_MAX_BYTES {self.io_failed.set(true);return;}
+        // Take the sole retained handle out of Cell. No probe-owned App/RefCell/TLS borrow
+        // spans these best-effort synchronous writes; the unchanged caller's Core borrow may.
+        let Some(mut file)=self.file.take() else {self.io_failed.set(true);return;};
+        let result=std::io::Seek::rewind(&mut file).and_then(|_|file.write_all(value.as_bytes()))
+            .and_then(|_|file.set_len(value.len() as u64)).and_then(|_|file.flush());
+        if result.is_err(){self.io_failed.set(true);}self.file.set(Some(file));
+    }
+    fn pre_final_gates(&self,engine:u8) {
+        let mut snapshot=self.snapshot.get();snapshot.engine=engine;self.snapshot.set(snapshot);self.record(2);
+    }
+    fn call_attempt(&self) {
+        // In-memory only, after all refusal fences directly beside App::reload. NO I/O.
+        let mut snapshot=self.snapshot.get();snapshot.phase=1;self.snapshot.set(snapshot);
+    }
+    fn returned(&self) {
+        let mut snapshot=self.snapshot.get();snapshot.phase=2;self.snapshot.set(snapshot);self.record(8);
+    }
+    fn native_start(&self,id:u64,length:u64,same_view:bool,url_equal:bool,stored:bool,recorded:u64,invalid:bool,saturated:bool) {
+        let mut snapshot=self.snapshot.get();let index=snapshot.native_seen;
+        snapshot.native_seen=snapshot.native_seen.saturating_add(1).min(65);snapshot.recorded=recorded;
+        snapshot.invalid|=invalid;snapshot.saturated|=saturated;
+        if index<2 {let index=index as usize;snapshot.ids[index]=id;snapshot.lengths[index]=length;
+            snapshot.event_phase[index]=snapshot.phase;
+            snapshot.event_elapsed_ms[index]=self.started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
+            snapshot.same_view[index]=same_view;snapshot.url_equal[index]=url_equal;snapshot.stored[index]=stored;}
+        self.snapshot.set(snapshot);
+        // First two classifications are sufficient to distinguish first-event from ambiguity.
+        // Later existing observations update fixed memory only; return/error may persist them.
+        if index<2 {self.record(4);}
+    }
+    fn error(&self) {self.record(16);}
+}
+fn journal_native_start(id:u64,length:usize,same_view:bool,url_equal:bool,stored:bool) {
+    let _=std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let journal=JOURNAL.with(|slot|slot.try_borrow().ok().and_then(|slot|slot.clone()));
+        // Every TLS/vector borrow ends before invoking the recorder's best-effort I/O.
+        let recorded=STARTS.with(|events|events.borrow().len()) as u64;
+        let invalid=STARTS_INVALID.with(Cell::get);let saturated=STARTS_SATURATED.with(Cell::get);
+        if let Some(journal)=journal {journal.native_start(id,length as u64,same_view,url_equal,stored,recorded,invalid,saturated);}
+    }));
+}
+
+
 #[derive(Clone)]
 pub(crate) struct ShowWitness {
     pub(crate) request:usize,pub(crate) owner:HWND,pub(crate) owner_token:usize,
@@ -42,6 +125,7 @@ thread_local! {
     static STARTS_INVALID:Cell<bool> = const {Cell::new(false)};
     static REMOVALS:RefCell<Vec<(TabId,usize,Option<i32>)>> = const {RefCell::new(Vec::new())};
     static TIMER_STATE:RefCell<Option<TimerState>> = const {RefCell::new(None)};
+    static JOURNAL:RefCell<Option<Rc<ReloadJournal>>> = const {RefCell::new(None)};
 }
 pub(crate) fn armed()->bool {SHOW_SINK.with(|slot|slot.borrow().is_some())}
 pub(crate) fn observe_before_show(witness:ShowWitness) {
@@ -55,11 +139,14 @@ pub(crate) fn observe_navigation_start(tab:TabId,view:usize,id:u64,url:&str) {
         (*expected_tab==tab).then_some((*expected_view==view,url==expected_url.as_str()))
     });
     let Some((same_view,url_matches))=source else{return;};
-    if !same_view||url.len()>MAX_START_URL_BYTES {STARTS_INVALID.with(|failed|failed.set(true));return;}
+    if !same_view||url.len()>MAX_START_URL_BYTES {STARTS_INVALID.with(|failed|failed.set(true));
+        journal_native_start(id,url.len(),same_view,url_matches,false);return;}
+    let mut stored=false;
     STARTS.with(|events| {let mut events=events.borrow_mut();
         if events.len()>=64 {STARTS_SATURATED.with(|failed|failed.set(true));return;}
-        events.push(NativeStart {tab,view,id,url_matches,url_length:url.len()});
+        events.push(NativeStart {tab,view,id,url_matches,url_length:url.len()});stored=true;
     });
+    journal_native_start(id,url.len(),same_view,url_matches,stored);
 }
 pub(crate) fn observe_deregistered(tab:TabId,view:usize,error:Option<i32>) {
     if CAPTURE.with(Cell::get) {REMOVALS.with(|events| {let mut events=events.borrow_mut();
@@ -76,6 +163,7 @@ fn write_once(path:&Path,value:&str) {
 struct ProbeScope;
 impl Drop for ProbeScope {fn drop(&mut self) {
     let sink=SHOW_SINK.with(|slot|slot.borrow_mut().take());drop(sink);
+    let journal=JOURNAL.with(|slot|slot.borrow_mut().take());drop(journal);
     install_observer(Rc::new(|_|{}));
 }}
 
@@ -104,7 +192,7 @@ struct TimerResult {arm_return:Option<usize>,reload_calls:u32,kill_timer:Option<
 struct TimerState {
     owner:OwnerLifetime,handles:NativeContextProbeHandles,tab:TabId,proof:(u64,u64,u64),
     witness:Rc<RefCell<Option<ShowWitness>>>,out:std::path::PathBuf,nonce:String,
-    started:Instant,result:Rc<RefCell<TimerResult>>,trusted_before:i64,
+    started:Instant,result:Rc<RefCell<TimerResult>>,trusted_before:i64,journal:Rc<ReloadJournal>,
 }
 struct TimerScope {owner:OwnerLifetime,result:Rc<RefCell<TimerResult>>}
 impl Drop for TimerScope {fn drop(&mut self) {
@@ -117,13 +205,13 @@ impl Drop for TimerScope {fn drop(&mut self) {
         drop(result);drop(state);
     }
 }}
-fn arm_timer(app:&AppRef,h:&NativeContextProbeHandles,tab:TabId,proof:(u64,u64,u64),witness:Rc<RefCell<Option<ShowWitness>>>,out:&Path,nonce:&str,result:Rc<RefCell<TimerResult>>,trusted_before:i64)->TimerScope {
+fn arm_timer(app:&AppRef,h:&NativeContextProbeHandles,tab:TabId,proof:(u64,u64,u64),witness:Rc<RefCell<Option<ShowWitness>>>,out:&Path,nonce:&str,result:Rc<RefCell<TimerResult>>,trusted_before:i64,journal:Rc<ReloadJournal>)->TimerScope {
     let hwnd=app.borrow().hwnd;
     let (token,native_lifetime)=super::super::webview2::probe_reload_owner_lifetime(hwnd).expect("existing native Owner lifetime unavailable before test timer arm");
     let owner=OwnerLifetime{app:Rc::downgrade(app),hwnd,thread:unsafe{GetCurrentThreadId()},token,native_lifetime};
     assert!(owner.current().is_some());
     TIMER_STATE.with(|slot|{let mut slot=slot.borrow_mut();assert!(slot.is_none());*slot=Some(TimerState{
-        owner:owner.clone(),handles:h.clone(),tab,proof,witness,out:out.into(),nonce:nonce.into(),started:Instant::now(),result:result.clone(),trusted_before,
+        owner:owner.clone(),handles:h.clone(),tab,proof,witness,out:out.into(),nonce:nonce.into(),started:Instant::now(),result:result.clone(),trusted_before,journal,
     });});
     // Own cleanup before native setup or its success assertion can fail. With an HWND,
     // the requested ID remains the callback/KillTimer identity; success is merely nonzero.
@@ -204,6 +292,10 @@ fn timer_step(state:&TimerState)->bool {
     // The unchanged production engine.reload path still owns its existing Core RefMut.
     let killed=state.owner.disarm();state.result.borrow_mut().kill_timer=Some(killed);assert!(killed,"actual KillTimer failed");require_arm_lifetime(state);
     write_once(&state.out.join("reload-trigger.json"),&format!(r#"{{"schema":"bowser-real-app-menu-reload-trigger-v1","request":"{}","owner_token":"{}","request_epoch":"{}","menu_handle":{},"popup_handle":{},"actual_kill_timer":true,"original_navigation_id":"{}"}}"#,witness.request,witness.owner_token,witness.request_epoch,witness.hmenu,popup,state.proof.0));require_arm_lifetime(state);
+    // Pure diagnostic classification only: 0 unavailable, 1 missing, 2 present. Release the
+    // App borrow before journal I/O; all existing final action fences still run AFTER it.
+    let engine={app.try_borrow().ok().map(|app|if app.engine.is_some(){2}else{1}).unwrap_or(0)};
+    state.journal.pre_final_gates(engine);
     // Final freshness check after I/O; never rebind the request to a replacement document.
     current(&state.handles,state.proof);require_arm_lifetime(state);assert!(native_popup(&state.owner,&witness,popup));require_arm_lifetime(state);
     assert_eq!(App::active_tab_id(&app),state.tab);
@@ -212,7 +304,9 @@ fn timer_step(state:&TimerState)->bool {
     require_arm_lifetime(state); // Final pure deadline fence after ALL reads and before Reload.
     // Count an actual App call attempt only AFTER every refusal fence, with no native getter.
     {let mut result=state.result.borrow_mut();result.reload_calls=1;result.popup=Some((popup,witness.hmenu));}
+    state.journal.call_attempt(); // Pure phase1, no I/O and no new refusal condition.
     App::reload(&app); // Real ordinary active-tab engine path; no fabricated navigation or input.
+    state.journal.returned(); // Phase2 means App returned, NOT native Reload/navigation success.
     true
 }
 fn reload_timer_inner(hwnd:HWND,id:usize) {
@@ -230,6 +324,7 @@ fn reload_timer_inner(hwnd:HWND,id:usize) {
             let prior={state.result.borrow().kill_timer};let killed=prior.unwrap_or_else(||state.owner.disarm());
             {let mut result=state.result.borrow_mut();if result.kill_timer.is_none(){result.kill_timer=Some(killed);}result.failure=Some("test timer native/request fence or Reload failed".into());}
             let _=std::panic::catch_unwind(std::panic::AssertUnwindSafe(||write_once(&state.out.join("timer-failure.json"),&format!(r#"{{"status":"failed-no-acceptance","actual_kill_timer":{},"no_rescue_input":true}}"#,killed))));
+            state.journal.error();
         }
     }
 }
@@ -240,16 +335,17 @@ unsafe extern "system" fn reload_timer(hwnd:HWND,_message:u32,id:usize,_time:u32
     let mut emergency=None;
     let outcome=std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         emergency=TIMER_STATE.with(|slot|slot.try_borrow().ok().and_then(|state|state.as_ref().map(|state|
-            (state.owner.clone(),state.result.clone(),state.out.clone()))));
+            (state.owner.clone(),state.result.clone(),state.out.clone(),state.journal.clone()))));
         reload_timer_inner(hwnd,id);
     }));
     if outcome.is_err() {
         let _=std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             TIMER_BOUNDARY_FAILED.with(|failed|failed.set(true));
-            if let Some((owner,result,out))=emergency {
+            if let Some((owner,result,out,journal))=emergency {
                 let prior={result.borrow().kill_timer};let killed=prior.unwrap_or_else(||owner.disarm());
                 {let mut result=result.borrow_mut();if result.kill_timer.is_none(){result.kill_timer=Some(killed);}result.failure=Some("contained TIMERPROC panic; no acceptance".into());}
                 write_once(&out.join("timer-boundary-failure.json"),&format!(r#"{{"status":"contained-TIMERPROC-panic-no-acceptance","actual_kill_timer":{killed},"no_rescue_input":true}}"#));
+                journal.error();
             }
         }));
     }
@@ -313,8 +409,12 @@ fn reload_input(app:&AppRef,h:&NativeContextProbeHandles,tab:TabId,proof:(u64,u6
         sink.borrow_mut().push(event);
     }));
     let _scope=ProbeScope;
+    let journal=ReloadJournal::open(&out.join("reload-observations.json"));
+    let _=std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let old=JOURNAL.with(|slot|slot.try_borrow_mut().ok().and_then(|mut slot|slot.replace(journal.clone())));drop(old);
+    }));
     let timer_result=Rc::new(RefCell::new(TimerResult::default()));
-    let _timer=arm_timer(app,h,tab,proof,show.clone(),out,&nonce,timer_result.clone(),number(&source,"trusted"));
+    let _timer=arm_timer(app,h,tab,proof,show.clone(),out,&nonce,timer_result.clone(),number(&source,"trusted"),journal);
     current(h,proof);
     let mut child=Command::new("powershell.exe").args(["-NoProfile","-File"])
         .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("benchmarks/scripts/probe-app-context-menu-reload.ps1"))

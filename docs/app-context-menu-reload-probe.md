@@ -105,3 +105,45 @@ original positive or Copy/Paste tests fail. Its artifacts are separate under
 `store-real-app-context-menu-reload`; all old steps remain required. Source-only
 checks on Linux do not establish Rust/PowerShell compilation or native acceptance.
 An audited later Windows run is still required.
+
+## Bounded observation-only call journal
+
+`reload/reload-observations.json` is best-effort diagnostic output, not a new gate
+or authority. One retained CreateNew file stream writes BOM-free numeric/Boolean
+snapshots of at most 1024 bytes, with at most six write attempts. No snapshot is
+truncated. The fixed write sites are opened, pre-final-gates, first two observed
+source-start classifications, App-returned and timer-error; the global cap also
+contains repeated error paths. Only the first two native classifications/IDs are
+retained. Later existing observations update bounded memory, which a return/error
+snapshot may persist. `native_seen` saturates at 65; `recorded` is the existing
+64-record capture count. Existing invalid/saturation flags remain independent.
+
+`stage_bits` uses opened=1, pre-final-gates=2, native-observation=4,
+App-returned=8 and timer-error=16. `call_phase` is 0 before an attempt, 1 set only
+in memory directly beside App::reload after all final refusal/deadline checks,
+and 2 only after App::reload returns. `engine` classifies a pure pre-final-gates
+App engine observation: 0 unavailable, 1 missing, 2 present. That App borrow ends
+before I/O. This checkpoint is intent before the existing final COM/native/pure
+and deadline rechecks, not proof of call entry. No file I/O is inserted between
+those final action fences and App::reload. Native-start/return snapshots may
+persist the in-memory attempted phase. Fixed numeric `event_phase[2]` and
+`event_elapsed_ms[2]` arrays retain each first-two native ID's call phase and
+monotonic journal-observation time, so a later return/error snapshot cannot erase
+its before/during/after-call classification. These are observation times, not
+engine-provided event timestamps. A returned App call is not native Reload
+or navigation success; a native-start record is not successful document proof.
+
+The journal copies no URL text or topology and makes no extra native, script,
+navigation, input or permission call. Its own SOURCE/STARTS/TLS borrows end before
+writes; the sole file handle is taken out of Cell during I/O. Failures and panics
+are isolated from the original verdict, and zero available I/O adds no pass or
+failure. `io_failed_before_write` reports earlier known errors only. A missing,
+partial, capped or broken journal is inconclusive, never evidence that Reload or
+an event was absent, skipped or successful. The unchanged production Core borrow
+may still surround a synchronous native callback, and synchronous disk latency
+is not a hard wall-clock bound. No existing 5-second/25-second limit is extended.
+
+The original 09e run did not observe the compound popup-destruction/menu-mode/
+capture-release predicate or matching actual Complete within its fixed window.
+Its false compound field does not independently prove the popup remained visible.
+That required failure is preserved, not reclassified by adding this journal.
