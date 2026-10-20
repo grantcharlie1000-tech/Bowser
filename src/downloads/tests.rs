@@ -88,11 +88,15 @@ fn file_names_never_end_in_a_dot_or_space_or_come_out_empty() {
 
 #[test]
 fn reserved_windows_device_names_are_prefixed() {
-    for name in ["con", "CON", "con.txt", "Nul.tar.gz", "COM1", "com9.log", "LPT3", "aux.", "prn .txt", "CONIN$"] {
+    // SEC-3: Windows also reads COM and LPT with a superscript 1, 2 or 3 as a device.
+    for name in [
+        "con", "CON", "con.txt", "Nul.tar.gz", "COM1", "com9.log", "LPT3", "aux.", "prn .txt", "CONIN$",
+        "COM\u{b9}.txt", "lpt\u{b3}", "com\u{b2} .log", "LPT\u{b9}", "Com\u{b3}.tar.gz",
+    ] {
         let clean = sanitize_file_name(name);
         assert!(clean.starts_with('_'), "{name} -> {clean}");
     }
-    for name in ["console.txt", "com10.txt", "lpt0", "auxiliary", "nullable.zip", "com.txt"] {
+    for name in ["console.txt", "com10.txt", "lpt0", "auxiliary", "nullable.zip", "com.txt", "COM\u{b9}0.txt", "lpt\u{b4}"] {
         assert_eq!(sanitize_file_name(name), name);
     }
 }

@@ -30,18 +30,26 @@ jobs:
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
+          fetch-depth: 2
       - name: Require exact release identity
         id: version
         shell: bash
         run: |
           python3 - <<'PY'
-          import os, pathlib, re, tomllib
+          import os, pathlib, re, subprocess, tomllib
           version = tomllib.loads(pathlib.Path('Cargo.toml').read_text())['package']['version']
           revisions = re.findall(r'^const PIN_REVISION: u32 = (\d+);$', pathlib.Path('src/updater.rs').read_text(), re.M)
-          ready = version == '0.0.19' and revisions == ['20']
+          # One-time workflow: arm only on the push that first sets 0.0.19 (the
+          # release-identity merge, whose first parent was 0.0.18). Later pushes
+          # touching Cargo/updater files while main is still 0.0.19, and every
+          # push after main moves to 0.0.20, stay disarmed instead of rebuilding
+          # and failing on the existing v0.0.19 tag.
+          parent = subprocess.run(['git', 'show', 'HEAD^1:Cargo.toml'], capture_output=True, text=True)
+          previous = tomllib.loads(parent.stdout)['package']['version'] if parent.returncode == 0 else None
+          ready = version == '0.0.19' and revisions == ['20'] and previous is not None and previous != '0.0.19'
           with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
               output.write(f'ready={str(ready).lower()}\n')
-          print(f'Cargo {version}; updater revision {revisions}; release enabled: {ready}')
+          print(f'Cargo {version} (parent {previous}); updater revision {revisions}; release enabled: {ready}')
           PY
 
   verify:
