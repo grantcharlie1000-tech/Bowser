@@ -268,10 +268,12 @@ fn parse_line(line: &str) -> Option<Rule> {
                 })
             }
             _ if tail.starts_with('/') || tail.starts_with('?') => {
-                let pattern = tail.trim_end_matches('|');
+                // A trailing `|` (the end anchor) stays: the rule matches the address only up to
+                // its end, never a longer one (see [`glob_core`]).
+                let pattern = end_anchored(tail)?;
                 Some(Rule::Path {
                     host: host.to_owned(),
-                    pattern: pattern.to_owned(),
+                    pattern,
                 })
             }
             _ => None,
@@ -288,15 +290,25 @@ fn parse_line(line: &str) -> Option<Rule> {
     {
         return None;
     }
-    let pattern = pattern.trim_end_matches('|');
-    if pattern.len() < 6 || pattern.contains('|') {
+    let pattern = end_anchored(&pattern)?;
+    if pattern.trim_end_matches('|').len() < 6 {
         return None;
     }
     Some(Rule::Substring {
-        pattern: pattern.to_owned(),
+        pattern,
         third_party_only,
         domains,
     })
+}
+
+/// Rule text with at most one `|`, the end anchor, as its last byte (`a||` is read as `a|`).
+/// `None` when a `|` is anywhere else.
+fn end_anchored(pattern: &str) -> Option<String> {
+    let body = pattern.trim_end_matches('|');
+    if body.contains('|') {
+        return None;
+    }
+    Some(if body.len() < pattern.len() { format!("{body}|") } else { body.to_owned() })
 }
 
 /// Parses the options after `$`: `third-party`/`3p`, and `domain=a|b|...`. Any other option, an
@@ -407,7 +419,9 @@ fn glob_prefix(pattern: &[u8], text: &[u8]) -> bool {
 
 /// Single-pass glob matcher (`*` and `^`) with one backtrack point, so the cost is bounded by
 /// `pattern.len() * text.len()` and never grows with the number of wildcards. When `anchored` is
-/// false the match may start at any offset in `text` (a leading `*`).
+/// false the match may start at any offset in `text` (a leading `*`). A `|` as the pattern's last
+/// byte is the end anchor: the match must reach the end of `text`; otherwise the pattern only has
+/// to match a prefix (the implicit trailing wildcard).
 fn glob_core(pattern: &[u8], text: &[u8], anchored: bool) -> bool {
     let (mut p, mut t) = (0usize, 0usize);
     // (pattern index just after the last `*`, text index that `*` currently consumes up to)
@@ -421,6 +435,11 @@ fn glob_core(pattern: &[u8], text: &[u8], anchored: bool) -> bool {
                 p += 1;
                 star = Some((p, t));
                 continue;
+            }
+            b'|' if p + 1 == pattern.len() => {
+                if t == text.len() {
+                    return true;
+                }
             }
             b'^' => {
                 if t == text.len() {
@@ -453,7 +472,7 @@ fn glob_core(pattern: &[u8], text: &[u8], anchored: bool) -> bool {
 }
 
 fn contains_glob(pattern: &[u8], text: &[u8]) -> bool {
-    if !pattern.iter().any(|b| matches!(b, b'*' | b'^')) {
+    if !pattern.iter().any(|b| matches!(b, b'*' | b'^' | b'|')) {
         return text.len() >= pattern.len()
             && text
                 .windows(pattern.len())
@@ -665,6 +684,8 @@ fn request_filter_text(text: &str) -> String {
         match byte {
             b'a'..=b'z' | b'A'..=b'Z' | b'\\' => out.push('?'),
             b'*' | b'^' => out.push('*'),
+            // The end anchor: the filter stays wider (a `*` follows), the matcher decides.
+            b'|' => {}
             b'?' => out.push_str("\\?"),
             other => out.push(other as char),
         }
@@ -1764,7 +1785,7 @@ mod tests {
             parse_line("||example.com/ads/*.js|"),
             Some(Rule::Path {
                 host: "example.com".into(),
-                pattern: "/ads/*.js".into()
+                pattern: "/ads/*.js|".into()
             })
         );
         assert_eq!(
@@ -2041,6 +2062,22 @@ mod tests {
         // Text that is not a site at all is still dropped.
         let junk = state("||tracker.example^\n", &["#comment", "mailto:a@b.example", ""]);
         assert!(junk.config_allowed_sites().is_empty());
+    }
+
+    #[test]
+    fn an_end_anchor_keeps_a_rule_from_matching_longer_addresses() {
+        let s = state("||cdn.ads.example/ads/*.js|\n/adframe.js|\n", &[]);
+        assert!(s.should_block("https://cdn.ads.example/ads/x.js", "news.example"));
+        assert!(!s.should_block("https://cdn.ads.example/ads/x.json", "news.example"));
+        assert!(!s.should_block("https://cdn.ads.example/ads/x.js?v=1", "news.example"), "a query is more than the rule");
+        assert!(s.should_block("https://news.example/static/adframe.js", "news.example"));
+        assert!(!s.should_block("https://news.example/adframe.json", "news.example"));
+        assert!(!s.should_block("https://news.example/adframe.js/more", "news.example"));
+        // Neither engine applies the rule more broadly: the path rule has no DevTools pattern that
+        // would also match .json, and the request filters still send the .js address to the matcher.
+        let patterns = s.blocked_url_patterns("news.example");
+        assert!(patterns.iter().all(|pattern| !pattern.contains("/ads/")), "{patterns:?}");
+        assert!(!s.request_filters().is_empty());
     }
 
     #[test]
