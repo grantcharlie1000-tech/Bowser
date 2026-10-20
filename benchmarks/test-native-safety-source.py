@@ -294,6 +294,11 @@ class NativeSafetySourceContracts(unittest.TestCase):
         self.assertIn('::RejectedInventoryEvidence()', cleanup)
         self.assertIn("'rejected-popup-shapes.json'", cleanup)
         self.assertIn("CheckRejectedInventoryPolicy", source("benchmarks/scripts/test-native-menu-helpers.ps1"))
+        shapes = helper.split("static void RejectedShapes(", 1)[1].split("static void RejectedNativeFence(", 1)[0]
+        self.assertEqual(shapes.count("RejectedProperty("), 3)
+        for optional in ("IsControlElementProperty", "IsContentElementProperty", "IsEnabledProperty", "IsKeyboardFocusableProperty", "HasKeyboardFocusProperty", "IsOffscreenProperty"):
+            self.assertNotIn(optional, shapes)
+        self.assertIn("not-attempted/unqueried", shapes)
         workflow = source(".github/workflows/store-probe.yml")
         self.assertLess(workflow.index("name: Preserve bounded native menu proof evidence"), workflow.index("name: Probe default-off native engine menu in actual HTML Bowser App"))
 

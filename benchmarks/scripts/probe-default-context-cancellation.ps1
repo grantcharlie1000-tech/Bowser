@@ -643,12 +643,8 @@ public static class BowserDefaultContext {
   RejectedProperty(c,node,AutomationElement.ControlTypeProperty,reading.Type,"control-type");
   RejectedProperty(c,node,AutomationElement.NativeWindowHandleProperty,reading.Hwnd,"integer");
   RejectedProperty(c,node,AutomationElement.BoundingRectangleProperty,reading.Bounds,"rectangle");
-  RejectedProperty(c,node,AutomationElement.IsControlElementProperty,reading.Control,"boolean");
-  RejectedProperty(c,node,AutomationElement.IsContentElementProperty,reading.Content,"boolean");
-  RejectedProperty(c,node,AutomationElement.IsEnabledProperty,reading.Enabled,"boolean");
-  RejectedProperty(c,node,AutomationElement.IsKeyboardFocusableProperty,reading.Focusable,"boolean");
-  RejectedProperty(c,node,AutomationElement.HasKeyboardFocusProperty,reading.Focused,"boolean");
-  RejectedProperty(c,node,AutomationElement.IsOffscreenProperty,reading.Offscreen,"boolean");
+  // Optional flags stay explicitly not-attempted/unqueried. This diagnostic needs
+  // property-availability shapes, not interaction authority, under the same budget.
  }
  static void RejectedNativeFence(RejectedContext c,IntPtr host,uint testPid,uint hostTid,IntPtr popup,uint menuTid,ReadOnlyBrowser browser){
   c.Check();bool valid=browser.SameAlive()&&Host(host,testPid,hostTid)&&PopupIdentity(host,popup,c.BrowserPid,menuTid);c.Check();

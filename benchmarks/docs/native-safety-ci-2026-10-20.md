@@ -453,3 +453,13 @@ Pure managed tests exercise the actual caps/cycle/parent/getter/budget/serialize
 predicates, including unavailable values and nonfinite coordinates with explicit
 shape tags. Source checks preserve unconditional original refusal and post-cleanup
 attachment. Actual PS5.1 compilation/provider behavior remains pending Windows CI.
+
+The head9df8359 run compiled the managed collector and captured seven nodes in
+both lanes before its original750ms deadline; output was about25KiB, below its cap.
+That does not identify provider calls versus repeated serialization as the dominant
+cost. The next local-only diagnostic optimization removes six optional boolean
+getters per reading and leaves those fields explicitly not-attempted/unqueried.
+Only type/HWND/bounds shapes are queried in addition to the unchanged identity,
+parent and root fences. All full-JSON size checks, caps, clocks and original refusal
+remain identical. Reduced provider work is expected, but complete capture and any
+native acceptance remain unproved; the new exact candidate needs review/approval/CI.
