@@ -86,6 +86,21 @@ $leafPolicy=$type.GetMethod('CheckOwnedLeafPolicy',[Reflection.BindingFlags]::Pu
 $null=$leafPolicy.Invoke($null,@())
 $browserPolicy=$type.GetMethod('CheckBrowserStructurePolicy',[Reflection.BindingFlags]::Public -bor [Reflection.BindingFlags]::Static)
 $null=$browserPolicy.Invoke($null,@())
+# Pure JSON/UTF-8 digest evidence round-trip only. No native provider or filesystem operation.
+$proofType=$type.GetNestedType('MenuProof',[Reflection.BindingFlags]::Public)
+$receiptMethod=$type.GetMethod('InventoryReceiptValue',[Reflection.BindingFlags]::Public -bor [Reflection.BindingFlags]::Static)
+$example=[Activator]::CreateInstance($proofType);$example.Window=[IntPtr]123;$example.RootId=[int[]]@(42,123);$example.GpuLeaves=1
+$inventory="1:synthetic-quote`"-slash\-tab"+[char]9+"-nul"+[char]0+"-unicode"+[char]0x2603+"`n"
+$example.Inventory=$inventory
+$sha=[Security.Cryptography.SHA256]::Create()
+try {$digest=([BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($inventory)))).Replace('-','').ToLowerInvariant()} finally {$sha.Dispose()}
+$receipt=$receiptMethod.Invoke($null,@($example,'first-complete','synthetic-run-123456','1,2,0',$digest))|ConvertFrom-Json
+if($receipt.capture_status -cne 'complete' -or $receipt.inventory -cne $inventory -or $receipt.utf8_sha256 -cne $digest -or $receipt.membership_request_digest -cne $digest -or $receipt.matches_issued_request_digest -ne $true -or $receipt.node_count -ne 1 -or $receipt.run_nonce -cne 'synthetic-run-123456' -or ($receipt.source_proof -join ',') -cne '1,2,0' -or ($receipt.root_runtime -join ',') -cne '42,123' -or $receipt.popup -cne '123'){throw 'Complete inventory evidence did not round-trip exact strings, digest or bound identities.'}
+$missing=$receiptMethod.Invoke($null,[object[]]@($null,'fresh-before-escape','synthetic-run-123456','1,2,0',$digest))|ConvertFrom-Json
+if($missing.capture_status -cne 'unavailable'){throw 'Missing inventory capture must not become empty success.'}
+$example.Inventory='1:truncated'
+$incomplete=$receiptMethod.Invoke($null,@($example,'fresh-before-escape','synthetic-run-123456','1,2,0',$digest))|ConvertFrom-Json
+if($incomplete.capture_status -cne 'unavailable'){throw 'Incomplete inventory capture must not become success.'}
 $native=$type.GetMethod('NativeMismatch',$flags)
 $absent=$native.Invoke($null,@([IntPtr]::Zero,[IntPtr]::Zero,[IntPtr]::Zero))|ConvertFrom-Json
 if($absent.status -cne 'no-native-hwnd'){throw 'No-HWND diagnostic branch changed.'}

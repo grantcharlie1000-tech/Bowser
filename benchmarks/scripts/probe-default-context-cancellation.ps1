@@ -302,19 +302,19 @@ public static class BowserDefaultContext {
  static bool CanonicalEmpty(System.Windows.Rect r){return r.IsEmpty&&r.X==Double.PositiveInfinity&&r.Y==Double.PositiveInfinity&&r.Width==Double.NegativeInfinity&&r.Height==Double.NegativeInfinity;}
  sealed class BrowserNodeWitness {
   public readonly int Pid,Type,Native,Depth;public readonly System.Windows.Rect Bounds;
-  public readonly bool UnknownPane;public readonly string NativeToken,BoundsToken,Signature;
+  public readonly bool NativeUnknown,BoundsUnknown;public readonly string NativeToken,BoundsToken,Signature;
   readonly int[] id,parent;
-  public BrowserNodeWitness(int pid,int type,int native,System.Windows.Rect bounds,int depth,int[] runtime,int[] parentId,bool unknown){
-   Pid=pid;Type=type;Native=native;Bounds=bounds;Depth=depth;id=(int[])runtime.Clone();parent=parentId==null?null:(int[])parentId.Clone();UnknownPane=unknown;
-   NativeToken=unknown?"not-supported":"integer:"+Number(native);
-   BoundsToken=unknown?"not-supported":"finite:"+Real(bounds.X)+":"+Real(bounds.Y)+":"+Real(bounds.Width)+":"+Real(bounds.Height);
-   Signature="browser:"+Number(pid)+":"+Number(type)+":"+Number(depth)+":"+JsonIds(id)+":"+JsonIds(parent)+":"+NativeToken+":"+BoundsToken+(unknown?":structural-pane-unknown-no-virtualization":":supported-values");
+  public BrowserNodeWitness(int pid,int type,int native,System.Windows.Rect bounds,int depth,int[] runtime,int[] parentId,bool nativeUnknown,bool boundsUnknown){
+   Pid=pid;Type=type;Native=native;Bounds=bounds;Depth=depth;id=(int[])runtime.Clone();parent=parentId==null?null:(int[])parentId.Clone();NativeUnknown=nativeUnknown;BoundsUnknown=boundsUnknown;
+   NativeToken=nativeUnknown?"not-supported":"integer:"+Number(native);
+   BoundsToken=boundsUnknown?"not-supported":"finite:"+Real(bounds.X)+":"+Real(bounds.Y)+":"+Real(bounds.Width)+":"+Real(bounds.Height);
+   Signature="browser:"+Number(pid)+":"+Number(type)+":"+Number(depth)+":"+JsonIds(id)+":"+JsonIds(parent)+":"+NativeToken+":"+BoundsToken+((nativeUnknown||boundsUnknown)?":structural-pane-unknown-no-virtualization":":supported-values");
   }
   public int[] Parent(){return parent==null?null:(int[])parent.Clone();}
   public int[] Id(){return (int[])id.Clone();}
   public bool MatchesOuter(int pid,int type,int native,System.Windows.Rect bounds,int[] runtime,int[] parentId){
    return pid==Pid&&type==Type&&Same(id,runtime)&&SameOptional(parent,parentId)
-    &&(UnknownPane?native==0&&CanonicalEmpty(bounds):native==Native&&bounds==Bounds);
+    &&(NativeUnknown?native==0:native==Native)&&(BoundsUnknown?CanonicalEmpty(bounds):bounds==Bounds);
   }
  }
  static BrowserNodeWitness CreateBrowserWitness(uint browserPid,int depth,int[] id,int[] parent,object pidValue,object typeValue,object nativeValue,object boundsValue,bool patternsAbsent){
@@ -322,13 +322,17 @@ public static class BowserDefaultContext {
   int pid=(int)pidValue,type=((ControlType)typeValue).Id;
   bool nativeUnknown=Object.ReferenceEquals(nativeValue,AutomationElement.NotSupported),boundsUnknown=Object.ReferenceEquals(boundsValue,AutomationElement.NotSupported);
   if(nativeUnknown||boundsUnknown){
-   if(!nativeUnknown||!boundsUnknown||type!=ControlType.Pane.Id||depth==0||parent==null||!patternsAbsent)throw new InvalidOperationException("Unsupported browser geometry is not the counted non-root structural Pane pair.");
-   return new BrowserNodeWitness(pid,type,0,System.Windows.Rect.Empty,depth,id,parent,true);
+   if(!nativeUnknown||type!=ControlType.Pane.Id||depth==0||parent==null||!patternsAbsent)throw new InvalidOperationException("Unsupported browser geometry is not a counted non-root structural Pane category.");
+   if(boundsUnknown)return new BrowserNodeWitness(pid,type,0,System.Windows.Rect.Empty,depth,id,parent,true,true);
+   if(!(boundsValue is System.Windows.Rect))throw new InvalidOperationException("Browser Pane bounds getter returned unknown kind.");
+   var paneBounds=(System.Windows.Rect)boundsValue;
+   if(!Finite(paneBounds.X)||!Finite(paneBounds.Y)||!Finite(paneBounds.Width)||!Finite(paneBounds.Height)||paneBounds.Width<=0||paneBounds.Height<=0)throw new InvalidOperationException("Mixed unknown-HWND browser Pane requires supported finite non-empty bounds.");
+   return new BrowserNodeWitness(pid,type,0,paneBounds,depth,id,parent,true,false);
   }
   if(!(nativeValue is int)||!(boundsValue is System.Windows.Rect))throw new InvalidOperationException("Browser geometry getter returned unknown kind.");
   var bounds=(System.Windows.Rect)boundsValue;
   if(!Finite(bounds.X)||!Finite(bounds.Y)||!Finite(bounds.Width)||!Finite(bounds.Height))throw new InvalidOperationException("Supported browser geometry is nonfinite; no Empty exception.");
-  return new BrowserNodeWitness(pid,type,(int)nativeValue,bounds,depth,id,parent,false);
+  return new BrowserNodeWitness(pid,type,(int)nativeValue,bounds,depth,id,parent,false,false);
  }
  static BrowserNodeWitness CaptureBrowserNode(AutomationElement node,uint browserPid,int depth,int[] expectedParent,ReadOnlyBrowser browser){
   // No-default values are evidence of availability, never replaced by Current defaults.
@@ -336,19 +340,20 @@ public static class BowserDefaultContext {
   object native=node.GetCurrentPropertyValue(AutomationElement.NativeWindowHandleProperty,true),bounds=node.GetCurrentPropertyValue(AutomationElement.BoundingRectangleProperty,true);
   var id=Runtime(node);int[] parentId=null;
   if(expectedParent!=null){var parent=TreeWalker.RawViewWalker.GetParent(node);if(parent==null||!Same(Runtime(parent),expectedParent)||Required<int>(parent,AutomationElement.ProcessIdProperty)!=(int)browserPid)throw new InvalidOperationException("Browser structural parent changed or is foreign.");parentId=Runtime(parent);}
-  bool unknown=Object.ReferenceEquals(native,AutomationElement.NotSupported)&&Object.ReferenceEquals(bounds,AutomationElement.NotSupported);
+  bool unknown=Object.ReferenceEquals(native,AutomationElement.NotSupported)||Object.ReferenceEquals(bounds,AutomationElement.NotSupported);
   bool patternsAbsent=unknown&&type is ControlType&&((ControlType)type).Id==ControlType.Pane.Id&&depth>0&&NoPattern(node,ItemContainerPattern.Pattern)&&NoPattern(node,VirtualizedItemPattern.Pattern);
   var proof=CreateBrowserWitness(browserPid,depth,id,parentId,pid,type,native,bounds,patternsAbsent);
   if(!browser.SameAlive())throw new InvalidOperationException("Retained browser changed during typed structure read.");return proof;
  }
+ static bool SameBrowserWitness(BrowserNodeWitness before,BrowserNodeWitness after){return before!=null&&after!=null&&before.Signature==after.Signature;}
  static void RecheckBrowserNode(AutomationElement node,BrowserNodeWitness proof,uint browserPid,ReadOnlyBrowser browser){
   var fresh=CaptureBrowserNode(node,browserPid,proof.Depth,proof.Parent(),browser);
-  if(fresh.Signature!=proof.Signature)throw new InvalidOperationException("Typed browser node/availability/parent changed across reads.");
+  if(!SameBrowserWitness(proof,fresh))throw new InvalidOperationException("Typed browser node/availability/parent changed across reads.");
  }
  static BrowserNodeWitness CountedAncestor(Dictionary<string,BrowserNodeWitness> nodes,int[] runtime){
   BrowserNodeWitness proof;if(!nodes.TryGetValue(JsonIds(runtime),out proof)||proof==null||!Same(proof.Id(),runtime))throw new InvalidOperationException("Ancestor absent from exact counted typed inventory.");return proof;
  }
- static bool IsBrowserRow(BrowserNodeWitness node,int type){return node!=null&&!node.UnknownPane&&node.Type==type;}
+ static bool IsBrowserRow(BrowserNodeWitness node,int type){return node!=null&&!node.NativeUnknown&&!node.BoundsUnknown&&node.Type==type;}
  static bool MatchesParentAdvance(int[] expected,int[] observed){return expected!=null&&observed!=null&&Same(expected,observed);}
  static System.Windows.Rect FixtureBounds(BrowserNodeWitness node){
   if(!IsBrowserRow(node,ControlType.MenuItem.Id)||!Finite(node.Bounds.X)||!Finite(node.Bounds.Y)||!Finite(node.Bounds.Width)||!Finite(node.Bounds.Height)||node.Bounds.Width<=0||node.Bounds.Height<=0)throw new InvalidOperationException("Fixture geometry requires its supported counted MenuItem witness.");return node.Bounds;
@@ -370,8 +375,9 @@ public static class BowserDefaultContext {
  public static void CheckBrowserStructurePolicy(){
   var id=new[]{42,6};var parent=new[]{42,4};var missing=AutomationElement.NotSupported;var finite=new System.Windows.Rect(1,2,3,4);
   var unknown=CreateBrowserWitness(10,2,id,parent,10,ControlType.Pane,missing,missing,true);
+  var mixed=CreateBrowserWitness(10,2,id,parent,10,ControlType.Pane,missing,finite,true);
   var supported=CreateBrowserWitness(10,2,id,parent,10,ControlType.Pane,0,finite,false);
-  if(!unknown.MatchesOuter(10,ControlType.Pane.Id,0,System.Windows.Rect.Empty,id,parent)||!supported.MatchesOuter(10,ControlType.Pane.Id,0,finite,id,parent)||unknown.NativeToken!="not-supported"||unknown.BoundsToken!="not-supported"||supported.NativeToken!="integer:0"||!supported.BoundsToken.StartsWith("finite:",StringComparison.Ordinal))throw new InvalidOperationException("Synthetic exact browser witness/tag rejected.");
+  if(!unknown.MatchesOuter(10,ControlType.Pane.Id,0,System.Windows.Rect.Empty,id,parent)||!mixed.MatchesOuter(10,ControlType.Pane.Id,0,finite,id,parent)||!supported.MatchesOuter(10,ControlType.Pane.Id,0,finite,id,parent)||!mixed.NativeUnknown||mixed.BoundsUnknown||mixed.NativeToken!="not-supported"||!mixed.BoundsToken.StartsWith("finite:",StringComparison.Ordinal)||unknown.NativeToken!="not-supported"||unknown.BoundsToken!="not-supported"||supported.NativeToken!="integer:0"||!supported.BoundsToken.StartsWith("finite:",StringComparison.Ordinal))throw new InvalidOperationException("Synthetic exact browser witness/tag rejected.");
   foreach(Func<BrowserNodeWitness> bad in new Func<BrowserNodeWitness>[]{
    ()=>CreateBrowserWitness(10,2,id,parent,missing,ControlType.Pane,missing,missing,true),
    ()=>CreateBrowserWitness(10,2,id,parent,10,missing,missing,missing,true),
@@ -384,7 +390,15 @@ public static class BowserDefaultContext {
    ()=>CreateBrowserWitness(10,2,id,parent,10,ControlType.Pane,null,missing,true),
    ()=>CreateBrowserWitness(10,2,id,parent,10,ControlType.Pane,missing,new object(),true),
    ()=>CreateBrowserWitness(10,2,id,parent,10,ControlType.Pane,0,missing,true),
-   ()=>CreateBrowserWitness(10,2,id,parent,10,ControlType.Pane,missing,finite,true),
+   ()=>CreateBrowserWitness(10,2,id,parent,10,ControlType.Pane,missing,finite,false),
+   ()=>CreateBrowserWitness(10,0,id,null,10,ControlType.Pane,missing,finite,true),
+   ()=>CreateBrowserWitness(10,2,id,parent,10,ControlType.Menu,missing,finite,true),
+   ()=>CreateBrowserWitness(10,2,id,parent,10,ControlType.MenuItem,missing,finite,true),
+   ()=>CreateBrowserWitness(10,2,id,parent,11,ControlType.Pane,missing,finite,true),
+   ()=>CreateBrowserWitness(10,2,id,parent,10,ControlType.Pane,missing,System.Windows.Rect.Empty,true),
+   ()=>CreateBrowserWitness(10,2,id,parent,10,ControlType.Pane,missing,new System.Windows.Rect(1,2,0,4),true),
+   ()=>CreateBrowserWitness(10,2,id,parent,10,ControlType.Pane,missing,new System.Windows.Rect(Double.NaN,2,3,4),true),
+   ()=>CreateBrowserWitness(10,2,id,parent,10,ControlType.Pane,missing,new System.Windows.Rect(Double.PositiveInfinity,2,3,4),true),
    ()=>CreateBrowserWitness(10,2,id,parent,10,ControlType.Pane,0,System.Windows.Rect.Empty,true),
    ()=>CreateBrowserWitness(10,2,id,parent,10,ControlType.Pane,0,new System.Windows.Rect(Double.NaN,2,3,4),true),
    ()=>CreateBrowserWitness(10,2,id,parent,10,ControlType.Pane,0,new System.Windows.Rect(Double.PositiveInfinity,2,3,4),true),
@@ -393,22 +407,28 @@ public static class BowserDefaultContext {
    ()=>CreateBrowserWitness(10,2,new int[0],parent,10,ControlType.Pane,missing,missing,true)
   }){bool refused=false;try{bad();}catch(InvalidOperationException){refused=true;}if(!refused)throw new InvalidOperationException("Synthetic unproved browser shape accepted.");}
   if(unknown.MatchesOuter(11,ControlType.Pane.Id,0,System.Windows.Rect.Empty,id,parent)||unknown.MatchesOuter(10,ControlType.Menu.Id,0,System.Windows.Rect.Empty,id,parent)||unknown.MatchesOuter(10,ControlType.Pane.Id,7,System.Windows.Rect.Empty,id,parent)||unknown.MatchesOuter(10,ControlType.Pane.Id,0,finite,id,parent)||unknown.MatchesOuter(10,ControlType.Pane.Id,0,System.Windows.Rect.Empty,new[]{42,7},parent)||unknown.MatchesOuter(10,ControlType.Pane.Id,0,System.Windows.Rect.Empty,id,new[]{42,5})||supported.MatchesOuter(10,ControlType.Pane.Id,1,finite,id,parent)||supported.MatchesOuter(10,ControlType.Pane.Id,0,new System.Windows.Rect(2,2,3,4),id,parent))throw new InvalidOperationException("Synthetic inconsistent typed/outer browser witness accepted.");
+  if(mixed.MatchesOuter(10,ControlType.Pane.Id,1,finite,id,parent)||mixed.MatchesOuter(10,ControlType.Pane.Id,0,new System.Windows.Rect(2,2,3,4),id,parent)||mixed.MatchesOuter(11,ControlType.Pane.Id,0,finite,id,parent)||mixed.MatchesOuter(10,ControlType.MenuItem.Id,0,finite,id,parent)||mixed.MatchesOuter(10,ControlType.Pane.Id,0,finite,new[]{42,7},parent)||mixed.MatchesOuter(10,ControlType.Pane.Id,0,finite,id,new[]{42,5}))throw new InvalidOperationException("Synthetic inconsistent mixed browser witness accepted.");
   var root=CreateBrowserWitness(10,0,new[]{42,1},null,10,ControlType.Window,123,new System.Windows.Rect(0,0,100,100),false);
   var baseline=SyntheticMenuProof(SyntheticBrowserInventory(root,unknown));
   var changedParent=CreateBrowserWitness(10,2,id,new[]{42,5},10,ControlType.Pane,missing,missing,true);
   foreach(string changed in new[]{SyntheticBrowserInventory(root,supported),SyntheticBrowserInventory(root,changedParent),SyntheticBrowserInventory(root),SyntheticBrowserInventory(unknown,root)}){
    var fresh=SyntheticMenuProof(changed);if(SameProof(baseline,fresh)||InventoryDigest(baseline)==InventoryDigest(fresh))throw new InvalidOperationException("Synthetic real serializer unknown/known/count/order/parent change accepted.");
   }
+  var mixedBaseline=SyntheticMenuProof(SyntheticBrowserInventory(root,mixed));
+  foreach(var changed in new[]{unknown,supported}){
+   var fresh=SyntheticMenuProof(SyntheticBrowserInventory(root,changed));
+   if(SameBrowserWitness(mixed,changed)||SameProof(mixedBaseline,fresh)||InventoryDigest(mixedBaseline)==InventoryDigest(fresh))throw new InvalidOperationException("Synthetic mixed property availability change accepted.");
+  }
   var map=new Dictionary<string,BrowserNodeWitness>{{JsonIds(id),unknown}};
   if(!Object.ReferenceEquals(CountedAncestor(map,id),unknown))throw new InvalidOperationException("Synthetic ancestry did not return its counted witness.");
   foreach(Action bad in new Action[]{()=>CountedAncestor(map,new[]{42,7}),()=>{var wrong=new Dictionary<string,BrowserNodeWitness>{{JsonIds(id),root}};CountedAncestor(wrong,id);},()=>SyntheticBrowserInventory(root,root)}){bool refused=false;try{bad();}catch(InvalidOperationException){refused=true;}if(!refused)throw new InvalidOperationException("Synthetic missing/wrong/duplicate ancestor accepted.");}
-  if(IsBrowserRow(unknown,ControlType.Menu.Id)||IsBrowserRow(unknown,ControlType.MenuItem.Id)||IsBrowserRow(null,ControlType.MenuItem.Id)||!MatchesParentAdvance(parent,parent)||MatchesParentAdvance(parent,new[]{42,5})||MatchesParentAdvance(null,parent)||MatchesParentAdvance(parent,null))throw new InvalidOperationException("Synthetic unknown command or changed ancestry advance accepted.");
+  if(IsBrowserRow(unknown,ControlType.Menu.Id)||IsBrowserRow(unknown,ControlType.MenuItem.Id)||IsBrowserRow(mixed,ControlType.Menu.Id)||IsBrowserRow(mixed,ControlType.MenuItem.Id)||IsBrowserRow(null,ControlType.MenuItem.Id)||!MatchesParentAdvance(parent,parent)||MatchesParentAdvance(parent,new[]{42,5})||MatchesParentAdvance(null,parent)||MatchesParentAdvance(parent,null))throw new InvalidOperationException("Synthetic unknown command or changed ancestry advance accepted.");
   var item=CreateBrowserWitness(10,2,new[]{42,8},parent,10,ControlType.MenuItem,0,finite,false);
   if(!IsBrowserRow(item,ControlType.MenuItem.Id)||FixtureBounds(item)!=finite)throw new InvalidOperationException("Synthetic supported fixture bounds rejected.");
   var middle=CreateBrowserWitness(10,1,parent,root.Id(),10,ControlType.Pane,0,finite,false);
   var chain=new Dictionary<string,BrowserNodeWitness>{{JsonIds(root.Id()),root},{JsonIds(parent),middle},{JsonIds(id),unknown}};
   if(!Object.ReferenceEquals(CountedParent(chain,unknown,parent),middle))throw new InvalidOperationException("Synthetic counted parent not resolved exactly.");
-  foreach(Action bad in new Action[]{()=>FixtureBounds(unknown),()=>FixtureBounds(supported),()=>FixtureBounds(root),()=>CountedParent(chain,unknown,null),()=>CountedParent(chain,unknown,root.Id()),()=>CountedParent(chain,unknown,id),()=>CountedParent(chain,unknown,new[]{42,99})}){bool refused=false;try{bad();}catch(InvalidOperationException){refused=true;}if(!refused)throw new InvalidOperationException("Synthetic unknown fixture geometry or null/wrong/skipped counted edge accepted.");}
+  foreach(Action bad in new Action[]{()=>FixtureBounds(unknown),()=>FixtureBounds(mixed),()=>FixtureBounds(supported),()=>FixtureBounds(root),()=>CountedParent(chain,unknown,null),()=>CountedParent(chain,unknown,root.Id()),()=>CountedParent(chain,unknown,id),()=>CountedParent(chain,unknown,new[]{42,99})}){bool refused=false;try{bad();}catch(InvalidOperationException){refused=true;}if(!refused)throw new InvalidOperationException("Synthetic unknown fixture geometry or null/wrong/skipped counted edge accepted.");}
   if(!InventoryCapacity(128,0)||InventoryCapacity(129,0)||InventoryCapacity(128,1)||InventoryCapacity(0,0))throw new InvalidOperationException("Synthetic inventory count/cap policy changed.");
   var capped=new BrowserNodeWitness[129];for(int n=0;n<capped.Length;n++)capped[n]=CreateBrowserWitness(10,1,new[]{42,300+n},new[]{42,1},10,ControlType.Pane,0,finite,false);
   bool capRefused=false;try{SyntheticBrowserInventory(capped);}catch(InvalidOperationException){capRefused=true;}if(!capRefused)throw new InvalidOperationException("Synthetic real serializer accepted129 raw nodes.");
@@ -416,6 +436,21 @@ public static class BowserDefaultContext {
  public static string InventoryDigest(MenuProof proof){
   if(proof==null||proof.Inventory==null||proof.Inventory.Length==0||proof.Inventory.Length>65536)throw new InvalidOperationException("Complete raw inventory outside digest bound.");
   using(var sha=System.Security.Cryptography.SHA256.Create()){return BitConverter.ToString(sha.ComputeHash(Encoding.UTF8.GetBytes(proof.Inventory))).Replace("-","").ToLowerInvariant();}
+ }
+ public static string InventoryReceiptValue(MenuProof proof,string phase,string nonce,string generation,string requestDigest){
+  if(phase!="first-complete"&&phase!="fresh-before-escape")throw new InvalidOperationException("Inventory evidence phase unavailable.");
+  Func<string,string> unavailable=reason=>"{\"phase\":\""+phase+"\",\"capture_status\":\"unavailable\",\"reason\":\""+reason+"\"}";
+  if(proof==null)return unavailable("not-captured");
+  if(proof.Inventory==null||proof.Inventory.Length==0||proof.Inventory.Length>65536||!proof.Inventory.EndsWith("\n",StringComparison.Ordinal)||proof.Window==IntPtr.Zero||proof.RootId==null||proof.RootId.Length==0||proof.RootId.Length>32||proof.GpuLeaves<0||proof.GpuLeaves>1)return unavailable("invalid-bound-or-completeness");
+  string[] rows=proof.Inventory.Split('\n');int count=rows.Length-1;if(count==0||count>128||rows[count]!="")return unavailable("incomplete-row-count");
+  for(int n=0;n<count;n++)if(!rows[n].StartsWith(Number(n+1)+":",StringComparison.Ordinal))return unavailable("incomplete-row-order");
+  bool bound=!String.IsNullOrEmpty(nonce)&&!String.IsNullOrEmpty(generation);
+  if((String.IsNullOrEmpty(nonce)!=String.IsNullOrEmpty(generation))||(!bound&&proof.GpuLeaves!=0))return unavailable("source-binding-unavailable");
+  string nonceJson=bound?"\""+ProtocolNonce(nonce)+"\"":"null",generationJson=bound?ProtocolProof(generation):"null";
+  if(String.IsNullOrEmpty(requestDigest))requestDigest=null;
+  if(requestDigest!=null&&!System.Text.RegularExpressions.Regex.IsMatch(requestDigest,"^[0-9a-f]{64}$"))return unavailable("request-digest-unavailable");
+  string digest=InventoryDigest(proof);
+  return "{\"phase\":\""+phase+"\",\"capture_status\":\"complete\",\"node_count\":"+Number(count)+",\"gpu_leaves\":"+Number(proof.GpuLeaves)+",\"run_nonce\":"+nonceJson+",\"source_proof\":"+generationJson+",\"source_binding\":\""+(bound?"provided-original-source":"not-provided-browser-only")+"\",\"popup\":\""+Number(proof.Window.ToInt64())+"\",\"root_runtime\":"+JsonIds(proof.RootId)+",\"utf8_sha256\":\""+digest+"\",\"membership_request_digest\":"+(requestDigest==null?"null":"\""+requestDigest+"\"")+",\"matches_issued_request_digest\":"+(requestDigest==null?"null":requestDigest==digest?"true":"false")+",\"inventory\":\""+JsonText(proof.Inventory)+"\"}";
  }
  static string ProtocolProof(string proof){
   string[] parts=proof.Split(',');if(parts.Length!=3)throw new InvalidOperationException("Source generation triple unavailable.");
@@ -542,7 +577,7 @@ public static class BowserDefaultContext {
     try{
      browserNode=CaptureBrowserNode(e,browserPid,queued.Item2,queued.Item3,browser);
      if(!browserNode.MatchesOuter(c.ProcessId,observedType,observedNative,box,currentId,queued.Item3))throw new InvalidOperationException("Outer browser inventory differs from immutable typed witness.");
-     if(queued.Item2==0&&(browserNode.UnknownPane||browserNode.Native!=popup.ToInt32()||!Same(browserNode.Id(),rootId)))throw new InvalidOperationException("Typed browser root differs from exact native popup.");
+     if(queued.Item2==0&&(browserNode.NativeUnknown||browserNode.BoundsUnknown||browserNode.Native!=popup.ToInt32()||!Same(browserNode.Id(),rootId)))throw new InvalidOperationException("Typed browser root differs from exact native popup.");
      if(!RootFence(host,testPid,hostTid,popup,browserPid,tid,browser,root,rootId))throw new InvalidOperationException("Root changed before typed browser recheck.");
      RecheckBrowserNode(e,browserNode,browserPid,browser);browserNodes.Add(runtimeKey,browserNode);
     }catch{
@@ -561,7 +596,7 @@ public static class BowserDefaultContext {
      if(!counted.MatchesOuter(ac.ProcessId,ac.ControlType.Id,ac.NativeWindowHandle,ac.BoundingRectangle,ancestorId,counted.Parent()))throw new InvalidOperationException("Ancestor differs from its exact counted typed witness.");
      RecheckBrowserNode(ancestor,counted,browserPid,browser);
      if(counted.Type==ControlType.Menu.Id)menuAncestors++;if(Same(ancestorId,rootId)){reached=true;break;}
-     if(!counted.UnknownPane&&counted.Native!=0&&(IntPtr)counted.Native!=popup)throw new InvalidOperationException("Unexpected supported native ancestor in menu hierarchy.");
+     if(!counted.NativeUnknown&&counted.Native!=0&&(IntPtr)counted.Native!=popup)throw new InvalidOperationException("Unexpected supported native ancestor in menu hierarchy.");
      var next=walker.GetParent(ancestor);CountedParent(browserNodes,counted,next==null?null:Runtime(next));ancestor=next;
     }if(!reached||menuAncestors!=1)throw new InvalidOperationException("UIA raw Menu ancestry incomplete or ambiguous.");
     items++;itemId=browserNode.Id();chosen=FixtureBounds(browserNode);
@@ -648,8 +683,22 @@ $reportName=if($ProbeKind -ceq 'ExtensionObservation'){'native-context-observati
 $reportScope=if($ProbeKind -ceq 'ExtensionObservation'){'single-test-observation-and-cancellation-not-selection'}else{'separate-default-Chromium-Views-menu-cancellation-not-selection'}
 $report=[ordered]@{scope=$reportScope;backend='unhandled-WebView2-Chromium-Views';status='failed';right_input_called=$false;escape_called=$false;error=$null;failure_cleanup=$null}
 $observationClock=[Diagnostics.Stopwatch]::StartNew();$report.topology=@()
+$firstInventoryProof=$null;$freshInventoryProof=$null;$issuedRequestDigest=$null
+$report.inventory_first=@{phase='first-complete';capture_status='unavailable';reason='not-serialized-before-release-or-cleanup'}
+$report.inventory_fresh=@{phase='fresh-before-escape';capture_status='unavailable';reason='not-serialized-before-release-or-cleanup'}
 $h=[IntPtr]$OwnerHandle;$pidNow=[uint32]0;$tid=[BowserDefaultContext]::GetWindowThreadProcessId($h,[ref]$pidNow);$guard=$null;$browserGuard=$null;$gpuGuard=$null
 function Save-Report {[IO.File]::WriteAllText((Join-Path $Out $reportName),($report|ConvertTo-Json -Depth 8),[Text.UTF8Encoding]::new($false))}
+# Use only already-captured bounded strings. No provider/native read, retry or input.
+# Call only after proved release or confirmed exact test-process failure cleanup.
+function Attach-InventoryEvidence {
+ try {
+  $report.inventory_first=[BowserDefaultContext]::InventoryReceiptValue($firstInventoryProof,'first-complete',$OwnershipNonce,$SourceProof,$issuedRequestDigest)|ConvertFrom-Json
+  $report.inventory_fresh=[BowserDefaultContext]::InventoryReceiptValue($freshInventoryProof,'fresh-before-escape',$OwnershipNonce,$SourceProof,$issuedRequestDigest)|ConvertFrom-Json
+ } catch {
+  $report.inventory_first=@{phase='first-complete';capture_status='unavailable';reason='evidence-serialization-failed'}
+  $report.inventory_fresh=@{phase='fresh-before-escape';capture_status='unavailable';reason='evidence-serialization-failed'}
+ }
+}
 function Observe-Topology([string]$Phase) {
  $observation=[ordered]@{phase=$Phase;elapsed_ms=$observationClock.ElapsedMilliseconds;identity_before=$false;identity_after=$false;status='unavailable';native=$null;screenshot_status='not-attempted'}
  try {
@@ -723,12 +772,14 @@ try {
   if($menu){$report.readiness.last_predicate='strict-native-menu-ready';break}
   Start-Sleep -Milliseconds 50
  } while($true)
+ $firstInventoryProof=$menu
  $report.popup=@{window=$menu.Window.ToInt64();thread=$menu.Thread;focus_witness=$menu.Focus.ToInt64();root_runtime=$menu.RootId;menu_runtime=$menu.MenuId;item_runtime=$menu.ItemId;label='exact-fixture-label';provider_pid=$BrowserPid;left=$menu.Left;top=$menu.Top;width=$menu.Width;height=$menu.Height}
  if($menu.GpuLeaves -eq 1){
   if(!$gpuGuard -or !$gpuGuard.SameAlive() -or !$browserGuard.SameAlive() -or $watch.ElapsedMilliseconds -ge 10000){throw 'GPU ownership freshness unavailable before challenge.'}
   $request=[BowserDefaultContext]::MembershipRequest($menu,$OwnershipNonce,$SourceProof)
   $expected=[BowserDefaultContext]::MembershipResponse($menu,$OwnershipNonce,$SourceProof,$BrowserPid,$GpuPid,$BrowserCreation,$GpuCreation,$EnvironmentIdentity,$AuthorityDeadlineTick)
   [BowserDefaultContext]::WriteMembershipRequest($Out,$request)
+  $issuedRequestDigest=[BowserDefaultContext]::InventoryDigest($menu)
   $responsePath=Join-Path $Out 'gpu-membership-response.json'
   while(![IO.File]::Exists($responsePath)){
    if($watch.ElapsedMilliseconds -ge 10000 -or [BowserDefaultContext]::GetTickCount64() -ge $AuthorityDeadlineTick -or !$guard.SameAlive() -or !$browserGuard.SameAlive() -or !$gpuGuard.SameAlive() -or ![BowserDefaultContext]::NativeReady($h,$OwnerPid,$tid,$menu.Window,$BrowserPid,$menu.Thread,$menu.Focus)){throw 'Fresh membership response unavailable within original readiness budget.'}
@@ -738,7 +789,7 @@ try {
   if($watch.ElapsedMilliseconds -ge 10000 -or [BowserDefaultContext]::GetTickCount64() -ge $AuthorityDeadlineTick -or ![BowserDefaultContext]::ExactMembershipResponse($response,$expected)){throw 'Fresh membership receipt mismatched, malformed, replayed or late.'}
   $report.owned_gpu_leaf=@{count=$menu.GpuLeaves;complete_inventory_digest=[BowserDefaultContext]::InventoryDigest($menu);fresh_environment_membership=$true;unknown_optional_UIA_flags_not_reinterpreted=$true}
  }
- Neutral;$fresh=Menu-State
+ Neutral;$fresh=Menu-State;$freshInventoryProof=$fresh
  if(![BowserDefaultContext]::SameProof($menu,$fresh)){throw 'Captured native/UIA menu identity changed before Escape.'}
  Neutral
  if($watch.ElapsedMilliseconds -ge 10000 -or ($gpuGuard -and [BowserDefaultContext]::GetTickCount64() -ge $AuthorityDeadlineTick) -or !$guard.SameAlive() -or !$browserGuard.SameAlive() -or ($gpuGuard -and !$gpuGuard.SameAlive()) -or ![BowserDefaultContext]::NativeReady($h,$OwnerPid,$tid,$menu.Window,$BrowserPid,$menu.Thread,$menu.Focus)){throw 'Exact foreground/native menu changed or original deadline expired immediately before Escape.'}
@@ -749,11 +800,11 @@ try {
  do {$released=[BowserDefaultContext]::Released($h,$OwnerPid,$tid,$menu.Window,$BrowserPid,$menu.Thread,$menu.Focus);if($releaseWatch.ElapsedMilliseconds -ge 5000){throw 'Menu disappearance/capture release not confirmed in observation window.'};if($released){break};Start-Sleep -Milliseconds 50}while($true)
  if(!$guard.SameAlive() -or !$browserGuard.SameAlive()){throw 'Process identity unavailable after cancellation.'}
  $report.capture_released=$true;$report.menu_hidden_or_destroyed=$true
- $report.status='observed-owned-popup-and-real-cancellation';Save-Report
+ $report.status='observed-owned-popup-and-real-cancellation';Attach-InventoryEvidence;Save-Report
 } catch {
  $report.error=$_.Exception.Message
  try{Save-Report}catch{[Console]::Error.WriteLine('Native observation failure report write failed.')}
- if($report.right_input_called -and $guard){$report.failure_cleanup=$guard.FailOnly($h,$tid);try{Save-Report}catch{[Console]::Error.WriteLine('Native observation cleanup report write failed.')}}
+ if($report.right_input_called -and $guard){$report.failure_cleanup=$guard.FailOnly($h,$tid);if($report.failure_cleanup -ceq 'exact-single-test-process-terminated'){Attach-InventoryEvidence};try{Save-Report}catch{[Console]::Error.WriteLine('Native observation cleanup report write failed.')}}
  [Console]::Error.WriteLine('Native context observation failed; no selection compatibility verdict.');exit 75
 } finally {if($gpuGuard){$gpuGuard.Dispose()};if($browserGuard){$browserGuard.Dispose()};if($guard){$guard.Dispose()}}
 Write-Output "CHROMIUM_CONTEXT_CANCELLATION probe=$ProbeKind exact_owned_right_input=true exact_visible_native_popup=true exact_UIA_fixture_row=true real_escape_and_disappearance=true selection_performed=false"

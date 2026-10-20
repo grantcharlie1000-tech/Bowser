@@ -189,7 +189,7 @@ class NativeSafetySourceContracts(unittest.TestCase):
     def test_raw_browser_unknown_geometry_is_typed_counted_and_not_a_gpu_or_fixture_exception(self):
         helper = source("benchmarks/scripts/probe-default-context-cancellation.ps1")
         policy = helper.split("static BrowserNodeWitness CreateBrowserWitness(", 1)[1].split("static BrowserNodeWitness CaptureBrowserNode(", 1)[0]
-        for guard in ("!nativeUnknown||!boundsUnknown", "type!=ControlType.Pane.Id", "depth==0", "!patternsAbsent", "Supported browser geometry is nonfinite; no Empty exception."):
+        for guard in ("if(!nativeUnknown||type!=ControlType.Pane.Id", "depth==0", "!patternsAbsent", "Supported browser geometry is nonfinite; no Empty exception.", "Mixed unknown-HWND browser Pane requires supported finite non-empty bounds."):
             self.assertIn(guard, policy)
         capture = helper.split("static BrowserNodeWitness CaptureBrowserNode(", 1)[1].split("static void RecheckBrowserNode(", 1)[0]
         self.assertIn("GetCurrentPropertyValue(AutomationElement.ProcessIdProperty,true)", capture)
@@ -205,9 +205,13 @@ class NativeSafetySourceContracts(unittest.TestCase):
         self.assertIn("browserNode.MatchesOuter(c.ProcessId,observedType,observedNative,box,currentId,queued.Item3)", helper)
         self.assertIn("RecheckBrowserNode(ancestor,counted,browserPid,browser)", helper)
         self.assertNotIn("if(ac.NativeWindowHandle!=0", helper)
-        self.assertIn("native==0&&CanonicalEmpty(bounds)", helper)
-        self.assertIn('NativeToken=unknown?"not-supported"', helper)
-        self.assertIn('BoundsToken=unknown?"not-supported"', helper)
+        self.assertIn("(NativeUnknown?native==0:native==Native)&&(BoundsUnknown?CanonicalEmpty(bounds):bounds==Bounds)", helper)
+        self.assertIn('NativeToken=nativeUnknown?"not-supported"', helper)
+        self.assertIn('BoundsToken=boundsUnknown?"not-supported"', helper)
+        self.assertIn("!node.NativeUnknown&&!node.BoundsUnknown", helper)
+        self.assertIn("!counted.NativeUnknown&&counted.Native!=0", helper)
+        self.assertNotIn("UnknownPane", helper)
+        self.assertIn("Synthetic mixed property availability change accepted.", helper)
         self.assertIn("AppendInventoryNode(inventory,examined", helper)
         self.assertIn("CheckBrowserStructurePolicy", source("benchmarks/scripts/test-native-menu-helpers.ps1"))
         diagnostic = helper.split("static void WriteBoundsFailure(", 1)[1].split("static string Real(", 1)[0]
@@ -215,6 +219,26 @@ class NativeSafetySourceContracts(unittest.TestCase):
             self.assertIn(required, diagnostic)
         for forbidden in ("keybd_event(", "mouse_event(", "ReadMenu(", "SetForegroundWindow(", "node.Current.Name"):
             self.assertNotIn(forbidden, diagnostic)
+
+    def test_complete_inventory_evidence_uses_only_captured_strings_after_release_or_cleanup(self):
+        helper = source("benchmarks/scripts/probe-default-context-cancellation.ps1")
+        receipt = helper.split("public static string InventoryReceiptValue(", 1)[1].split("static string ProtocolProof(", 1)[0]
+        for needed in ("capture_status", "unavailable", "65536", "128", "InventoryDigest(proof)", "JsonText(proof.Inventory)", "membership_request_digest", "run_nonce", "source_proof", "root_runtime"):
+            self.assertIn(needed, receipt)
+        for forbidden in ("GetCurrentPropertyValue", "GetWindow", "ReadMenu(", "FileStream", "keybd_event", "mouse_event"):
+            self.assertNotIn(forbidden, receipt)
+        self.assertIn("$firstInventoryProof=$menu", helper)
+        self.assertIn("$fresh=Menu-State;$freshInventoryProof=$fresh", helper)
+        self.assertIn("$report.status='observed-owned-popup-and-real-cancellation';Attach-InventoryEvidence;Save-Report", helper)
+        self.assertIn("if($report.failure_cleanup -ceq 'exact-single-test-process-terminated'){Attach-InventoryEvidence}", helper)
+        attach = helper.split("function Attach-InventoryEvidence {", 1)[1].split("function Observe-Topology(", 1)[0]
+        self.assertNotIn("::ReadMenu", attach)
+        self.assertIn("evidence-serialization-failed", attach)
+        checker = source("benchmarks/scripts/test-native-menu-helpers.ps1")
+        self.assertIn("$receipt.inventory -cne $inventory", checker)
+        self.assertIn("$receipt.utf8_sha256 -cne $digest", checker)
+        workflow = source(".github/workflows/store-probe.yml")
+        self.assertLess(workflow.index("name: Preserve bounded native menu proof evidence"), workflow.index("name: Probe default-off native engine menu in actual HTML Bowser App"))
 
     def test_managed_helpers_compile_in_one_source_unit(self):
         checker = source("benchmarks/scripts/test-native-menu-helpers.ps1")

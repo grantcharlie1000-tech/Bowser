@@ -330,11 +330,56 @@ invisibility, noncontrol or no-HWND claim. A typed immutable witness binds outer
 defaults and no-default tags; every browser node and fixture ancestor resolves to
 its counted witness and is freshly checked. Known nonzero native-ancestor rules
 remain. Root/Menu/MenuItem/GPU/fixture geometry never uses this unknown category;
-supported Empty, arbitrary nonfinite, one-sided unsupported, wrong kind, missing
-getter or changed availability refuses. Full inventory/digest/SameProof retain
+supported Empty, arbitrary nonfinite, unsupported bounds with supported HWND,
+wrong kind, missing getter or changed availability refuses. Full inventory/digest/SameProof retain
 the actual kind/value tags so unknown-to-known changes cannot be hidden by0.
 
 Pure matrices exercise the real witness, serializer, ancestry lookup and proof
 comparison. They are not real UIA/provider race or permission acceptance. Both
 real menu lanes still require the existing one-shot membership response, full
 second inventory, shared deadline and exact native Escape/disappearance proof.
+
+
+## Complete inventory evidence retention
+
+For independent row-by-row audit, retain both already-captured complete inventory
+strings, not only their hash. Reports label first/fresh phase, completeness,
+count/GPU count, original nonce/source/popup/root identities, exact UTF-8 SHA256
+and the issued membership-request digest when available. Missing, malformed or
+incomplete captures remain unavailable, never empty success. Unknown tags remain
+literal tags; the data contains no provider Name/content or process image path.
+
+These strings are only attached/serialized after proven menu release or confirmed
+exact test-process failure cleanup. There are no additional provider/native reads,
+pre-Escape disk writes, retries, deadline changes or truncation. Pure PS5.1 checks
+round-trip JSON including controls/Unicode and independently recompute UTF-8 SHA256.
+A bounded menu-only artifact is saved before later independent App regressions so
+failure evidence is not held back by unrelated startup timeouts. Neither artifact
+creation nor a complete evidence record is an input-authority or acceptance verdict.
+
+## Independent browser-Pane property availability
+
+The head49fb450 integration run checked out merge21c2323e6cbc3420a75582e4a23d1d0d2fab02e0,
+tree d9d7581fed00283a32d8b9f68bdc08820b15b591, not the branch-only tree. Both menu
+receipts now stop at a distinct browser-owned non-root Pane: no-default bounds are
+supported finite (181,81,423,400), while HWND is explicitly NotSupported and its
+outer default is0. Runtime/PID/type/parent and both root fences were stable.
+Neither helper sent Escape; this is not GPU-leaf or native cancellation acceptance.
+
+The typed witness now tracks NativeUnknown and BoundsUnknown independently. In
+addition to the prior double-unknown Pane, only a non-root browser Pane may have
+unsupported HWND with supported finite non-empty bounds. Its outer HWND must
+equal the documented default0 and its outer bounds the exact typed rectangle;
+this consistency does not prove native absence, non-interactivity or invisibility.
+Read-only pattern absence, complete child traversal, exact counted ancestry,
+fresh immutable witness comparison and the original deadlines all remain.
+
+Root, Menu, MenuItem, GPU and fixture geometry do not use this category. Supported
+HWND with unavailable bounds, nonfinite/empty mixed bounds, null/wrong-kind/getter
+failure, changed tags or outer mismatch still refuse. Both unknown categories
+cannot be classified as command rows or supply fixture geometry. Pure matrices
+exercise these rules plus mixed-to-double-unknown/supported-zero Signature,
+SameProof and digest changes. Windows/native execution remains required.
+
+- [UIA NativeWindowHandle property](https://learn.microsoft.com/en-us/dotnet/api/system.windows.automation.automationelement.nativewindowhandleproperty)
+- [UIA BoundingRectangle property](https://learn.microsoft.com/en-us/dotnet/api/system.windows.automation.automationelement.boundingrectangleproperty)

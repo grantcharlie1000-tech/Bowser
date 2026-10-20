@@ -351,6 +351,23 @@ jobs:
           $test = Get-ChildItem target/debug/deps/bowser-*.exe | Sort-Object LastWriteTime -Descending | Select-Object -First 1
           & $test.FullName engine::extension_probe_live::live_probe_default_context_menu_cancellation --exact --ignored --nocapture --test-threads=1 2>&1 | Tee-Object store-default-context-cancellation.log
           if ($LASTEXITCODE -ne 0) { throw 'Default native menu cancellation prerequisite failed or unavailable.' }
+      - name: Preserve bounded native menu proof evidence before later App regressions
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: store-native-menu-proof-diagnostics-${{ github.sha }}
+          path: |
+            store-native-gpu-ownership-unit.log
+            store-native-context-menu.log
+            store-default-context-cancellation.log
+            store-native-context-menu-observation/*.json
+            store-native-context-menu-observation/*.log
+            store-native-context-menu-observation/*.png
+            store-default-context-menu-cancellation/*.json
+            store-default-context-menu-cancellation/*.log
+            store-default-context-menu-cancellation/*.png
+          if-no-files-found: warn
+          retention-days: 14
       - name: Probe documented engine-item native menu cancellation and actual dispatch
         if: ${{ !cancelled() && steps.native_build.outcome == 'success' }}
         run: |
