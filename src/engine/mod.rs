@@ -2,14 +2,24 @@ pub mod download;
 pub mod web_app;
 mod web_app_profile;
 mod extension_page;
+mod extension_links;
+mod document_gate;
 mod webview2;
 #[cfg(test)]
 mod capture_zoom_live;
 #[cfg(test)]
 mod extension_probe_live;
+#[cfg(all(test, feature = "experimental-engine-context-menu"))]
+pub(crate) mod app_context_menu_probe;
+#[cfg(all(test, feature = "experimental-engine-context-menu"))]
+pub(crate) mod app_host_menu_probe;
+#[cfg(all(test, feature = "experimental-engine-context-menu"))]
+pub(crate) use webview2::set_menu_probe_observer;
 pub(crate) use webview2::password_login_messages_enabled;
 
 pub use webview2::{RuntimeUnavailable, WebView2Engine};
+#[cfg(feature = "experimental-engine-context-menu")]
+pub(crate) use webview2::{engine_menu_continue, engine_menu_owner_destroyed, engine_menu_tick, engine_menu_drain_destroyed, ENGINE_MENU_TIMER};
 
 /// Pause, resume and cancel act on the operation the `Started` event named; they work for tab and
 /// web app downloads alike (see `download`).
@@ -89,7 +99,22 @@ impl BrowsingDataRange {
     }
 }
 
+pub type NativeDocumentQuery = Box<dyn FnOnce() -> Option<url::Url>>;
+
 pub trait EngineAdapter {
+    #[cfg(all(test, feature = "experimental-engine-context-menu"))]
+    fn probe_native_context_handles(&self, _tab:crate::tabs::TabId) -> Option<app_context_menu_probe::NativeContextProbeHandles> {None}
+    #[cfg(all(test, feature = "experimental-engine-context-menu"))]
+    fn probe_owned_host_context_handles(&self, _tab:crate::tabs::TabId) -> Option<app_context_menu_probe::NativeContextProbeHandles> {None}
+    #[cfg(all(test, feature = "experimental-engine-context-menu"))]
+    fn probe_extension_receipt_view(&self) -> Option<webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2> {None}
+
+    /// Native controller evidence only; unsupported engines fail closed, never a requested URL.
+    fn successful_document_query(&self, _tab: crate::tabs::TabId) -> Option<NativeDocumentQuery> { None }
+    fn successful_document_url(&self, tab: crate::tabs::TabId) -> Option<url::Url> {
+        let query = self.successful_document_query(tab)?;
+        query()
+    }
     fn navigate(&mut self, url: &url::Url) -> windows::core::Result<()>;
     fn navigate_tab(
         &mut self,
@@ -502,6 +527,12 @@ pub struct EngineEvents {
     pub download_event: Option<std::rc::Rc<dyn Fn(crate::downloads::DownloadEvent)>>,
     /// Where a download from a normal tab goes (a path, the Save dialog, or none).
     pub download_plan: Option<DownloadPlanCallback>,
+    /// Posts an opaque native menu continuation to the real owning window. No website message.
+    #[cfg(feature = "experimental-engine-context-menu")]
+    pub engine_menu_deferred: Option<std::rc::Rc<dyn Fn(usize) -> bool>>,
+    /// Pure clone-only availability check. A mutable App guard is probed and dropped, never held.
+    #[cfg(feature = "experimental-engine-context-menu")]
+    pub engine_menu_available: Option<std::rc::Rc<dyn Fn() -> bool>>,
     // --- split view ---
     /// "Open link in split view" was picked on an http(s) link in this tab's page context menu.
     pub open_in_split: Option<std::rc::Rc<dyn Fn(crate::tabs::TabId, url::Url)>>,
@@ -580,6 +611,8 @@ pub struct EngineExtras {
     /// File that maps Bowser extension ids to WebView2's ids, which differ. Without it a restart
     /// cannot tell which profile extension is which.
     pub extension_ids_file: Option<std::path::PathBuf>,
+    /// Owning profile record file; native lifecycle operations revalidate it under a runtime lease.
+    pub extension_records_file: Option<std::path::PathBuf>,
     /// Stored per-site permission decisions, consulted for every permission request.
     pub permissions: Option<PermissionsHandle>,
     /// HTML chrome mode: registers the `bowser-ui` scheme on the environment so the chrome views

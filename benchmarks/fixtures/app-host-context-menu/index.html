@@ -1,0 +1,26 @@
+<!doctype html><meta charset="utf-8"><title>Disposable actual App host menu fixture</title>
+<style>body{margin:20px}textarea{width:360px;height:58px;display:block;margin-bottom:14px}a{display:block;width:360px;padding:14px}</style>
+<textarea id="copy">copy-__NONCE__</textarea>
+<textarea id="paste"></textarea>
+<textarea id="note"></textarea>
+<a id="split" href="/destination?nonce=__NONCE__">Disposable split destination</a>
+<script>
+'use strict';
+const nonce='__NONCE__';
+const controls=['copy','paste','note','split'];
+const trusted={copy:0,paste:0,note:0,split:0};
+const effects={paste:[],note:[]};
+document.addEventListener('contextmenu',e=>{
+ if(e.isTrusted&&e.button===2&&controls.includes(e.target.id))trusted[e.target.id]++;
+});
+for(const kind of ['paste','note'])document.getElementById(kind).addEventListener('input',e=>{
+ const value=e.target.value;
+ effects[kind].push({value,trusted:e.isTrusted});
+ fetch('/effect?'+new URLSearchParams({nonce,kind,value}),{cache:'no-store'}).then(r=>r.text()).then(answer=>{
+  if(answer===nonce+':'+kind)document.documentElement.setAttribute('data-ack-'+kind,nonce);
+ });
+});
+window.hostMenuSnapshot=()=>({nonce,url:location.href,timeOrigin:performance.timeOrigin,ready:document.readyState,
+ copy:document.getElementById('copy').value,paste:document.getElementById('paste').value,note:document.getElementById('note').value,
+ trusted:{...trusted},effects:JSON.parse(JSON.stringify(effects)),pasteAck:document.documentElement.getAttribute('data-ack-paste'),noteAck:document.documentElement.getAttribute('data-ack-note')});
+</script>

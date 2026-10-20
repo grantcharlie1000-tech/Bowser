@@ -7,8 +7,8 @@
 //! Layout inside a profile: `Extensions\<id>\` holds the copied folder and `extensions.txt` lists
 //! one installed extension per line as `id<TAB>enabled(0|1)<TAB>name<TAB>version`.
 //!
-//! Scope: only unpacked folders and `.crx` files chosen by the user. Chrome Web Store installs are
-//! not supported.
+//! Scope: user-picked unpacked/CRX installs and verified Store packages. Store website script
+//! cannot grant consent or load extension code.
 
 use std::{
     collections::{BTreeMap, hash_map::RandomState},
@@ -20,6 +20,9 @@ use std::{
     sync::Mutex,
     time::{SystemTime, UNIX_EPOCH},
 };
+
+mod artifacts;
+mod script_review;
 
 /// Largest `manifest.json` accepted.
 pub const MAX_MANIFEST_BYTES: u64 = 1024 * 1024;
@@ -121,6 +124,8 @@ pub struct Manifest {
     pub host_permissions: Vec<String>,
     /// Every `content_scripts[].matches` pattern, in manifest order.
     pub content_script_matches: Vec<String>,
+    /// Complete ASCII canonical static declarations, explicit documented defaults and unknown fields.
+    pub content_script_declarations: Vec<String>,
     pub optional_permissions: Vec<String>,
     pub optional_host_permissions: Vec<String>,
 }
@@ -199,6 +204,7 @@ pub fn parse_manifest(bytes: &[u8]) -> Result<Manifest, ExtensionError> {
         permissions: string_list(&fields, "permissions")?,
         host_permissions: string_list(&fields, "host_permissions")?,
         content_script_matches: content_script_matches(&fields)?,
+        content_script_declarations: script_review::declarations(&fields)?,
         optional_permissions: string_list(&fields, "optional_permissions")?,
         optional_host_permissions: string_list(&fields, "optional_host_permissions")?,
     })
@@ -412,6 +418,42 @@ fn walk_with_limits(
     Ok(stats)
 }
 
+/// The existing public native-ID ownership map. Bounded, no links, and no inferred ownership
+/// from an extension name/URL. A missing/damaged entry is not a grant to overwrite runtime data.
+fn recorded_native_identity(records_file: &Path, id: &str) -> Option<String> {
+    let path = records_file.with_file_name("extension_ids.txt");
+    let mut file = fs::OpenOptions::new().read(true).custom_flags(FILE_FLAG_OPEN_REPARSE_POINT).open(path).ok()?;
+    let meta = file.metadata().ok()?;
+    if !is_plain_file(&meta) || meta.len() > 64 * 1024 { return None; }
+    let mut text = String::new(); (&mut file).take(64 * 1024 + 1).read_to_string(&mut text).ok()?;
+    if text.len() > 64 * 1024 { return None; }
+    text.lines().find_map(|line| {
+        let (bowser, native) = line.split_once('\t')?;
+        (bowser == id && crate::crx_fetch::parse_extension_id(native).is_ok()).then(|| native.to_owned())
+    })
+}
+
+/// Native Chromium identity claimed by a manifest public key. This is for duplicate/ownership
+/// collision checks only, not signature verification or publisher attribution. Store packages
+/// must still pass CRX3 verification before preparation.
+pub fn manifest_key_id(folder: &Path) -> Result<Option<String>, ExtensionError> {
+    let mut file = fs::OpenOptions::new().read(true).custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(folder.join(MANIFEST_FILE_NAME)).map_err(|_| ExtensionError::Io)?;
+    let meta = file.metadata().map_err(|_| ExtensionError::Io)?;
+    if !is_plain_file(&meta) { return Err(ExtensionError::LinkNotAllowed); }
+    if meta.len() > MAX_MANIFEST_BYTES { return Err(ExtensionError::ManifestTooLarge); }
+    let mut text = String::new(); (&mut file).take(MAX_MANIFEST_BYTES + 1).read_to_string(&mut text).map_err(|_| ExtensionError::Io)?;
+    if text.len() as u64 > MAX_MANIFEST_BYTES { return Err(ExtensionError::ManifestTooLarge); }
+    let invalid = || ExtensionError::InvalidManifest("The manifest public key cannot be safely bound to its native identity.");
+    let json::Value::Object(fields) = json::parse(&text).ok_or_else(invalid)? else { return Err(invalid()); };
+    let Some(key) = json::get(&fields, "key") else { return Ok(None); };
+    let json::Value::String(key) = key else { return Err(invalid()); };
+    if key.is_empty() || key.len() > 16 * 1024 { return Err(invalid()); }
+    let compact: String = key.chars().filter(|c| !c.is_ascii_whitespace()).collect();
+    let bytes = crate::blocker::json::base64_decode(&compact).filter(|bytes| !bytes.is_empty()).ok_or_else(invalid)?;
+    crate::crx::extension_id_from_public_key(&bytes).map(Some).ok_or(ExtensionError::Io)
+}
+
 /// A single plain name: no separators, no drive or stream syntax, no control characters, and no
 /// trailing dot or space (Windows strips those).
 fn is_valid_entry_name(name: &str) -> bool {
@@ -449,41 +491,198 @@ pub fn install_confirmed(
     records_file: &Path,
     confirm: &mut dyn FnMut(&Inspection) -> bool,
 ) -> Result<Option<Record>, ExtensionError> {
-    let mut records = read_records(records_file)?;
-    if records.len() >= MAX_INSTALLED {
-        return Err(ExtensionError::TooManyInstalled);
+    let prepared = prepare_install(source, extensions_dir, records_file)?;
+    if !confirm(prepared.inspection()) {
+        return Ok(None);
     }
-    if !is_plain_dir(source) {
-        return Err(ExtensionError::NotAFolder);
+    prepared.commit().map(Some)
+}
+
+/// A profile-owned, unrecorded copy. Dropping it (cancel, error, closed window) removes only this
+/// newly-created folder. It cannot load until explicit approval calls `commit` and the UI asks the
+/// owning profile's engine to load the returned record.
+#[derive(Debug)]
+pub struct PreparedInstall {
+    extensions_dir: PathBuf,
+    records_file: PathBuf,
+    id: String,
+    inspection: Inspection,
+    fingerprint: [u8; 32],
+    committed: bool,
+    retained_original: Option<artifacts::Stage>,
+}
+
+/// Cross-process read/modify/write lease. The OS denies a second open while this handle lives,
+/// and deletes the tiny lease file on close/crash. No persistent lock token or ACL changes.
+fn lease_open_error_log_line(runtime: bool, code: Option<i32>) -> String {
+    let kind = if runtime { "runtime" } else { "authority" };
+    let code = code.map_or_else(|| "unavailable".to_owned(), |code| code.to_string());
+    format!("extension call=lease_open kind={kind} result=error win32_code={code}")
+}
+
+pub(crate) struct RecordsLease { _file: File }
+impl RecordsLease {
+    /// Native lifecycle operations hold this separate lease until their async completion and
+    /// owning record commit. Never wait/pump for it: a concurrent change fails honestly busy.
+    pub(crate) fn runtime(records_file: &Path) -> Result<Self, ExtensionError> {
+        Self::acquire(&records_file.with_file_name("extension-runtime"))
     }
+
+    pub(crate) fn acquire(records_file: &Path) -> Result<Self, ExtensionError> {
+        if let Some(parent) = records_file.parent().filter(|parent| !parent.as_os_str().is_empty()) { ensure_plain_dir(parent)?; }
+        let mut path = records_file.as_os_str().to_owned(); path.push(".lease");
+        let file = fs::OpenOptions::new().read(true).write(true).create(true).truncate(false)
+            // GENERIC_READ | GENERIC_WRITE | DELETE, required for DELETE_ON_CLOSE.
+            .access_mode(0x8000_0000 | 0x4000_0000 | 0x0001_0000).share_mode(0)
+            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | 0x0400_0000)
+            .open(PathBuf::from(path)).map_err(|error| {
+                // Existing explicit diagnostic opt-in only. Never print the authority path or
+                // arbitrary error text; raw_os_error is the numeric failure from this exact open.
+                if std::env::var_os("BOWSER_EXTENSION_TRACE").is_some() {
+                    let runtime = records_file.file_name() == Some(std::ffi::OsStr::new("extension-runtime"));
+                    eprintln!("{}", lease_open_error_log_line(runtime, error.raw_os_error()));
+                }
+                ExtensionError::Io
+            })?;
+        if !is_plain_file(&file.metadata().map_err(|_| ExtensionError::Io)?) { return Err(ExtensionError::LinkNotAllowed); }
+        Ok(Self { _file: file })
+    }
+}
+
+impl PreparedInstall {
+    pub fn inspection(&self) -> &Inspection { &self.inspection }
+
+    /// New Store installs retain a reverified original outside their loaded copy. This grants
+    /// no update eligibility by itself and never upgrades an unauthenticated legacy folder.
+    pub(crate) fn retain_verified_store_original(mut self, native_id: &str, bytes: &[u8]) -> Result<Self, ExtensionError> {
+        self.retained_original = Some(artifacts::Stage::prepare(&self, native_id, bytes)?);
+        Ok(self)
+    }
+
+
+    pub fn folder(&self) -> Result<PathBuf, ExtensionError> {
+        contained_path(&self.extensions_dir, &self.id)
+    }
+
+    /// Re-read the actual copy and records after consent. No source folder is consulted and the
+    /// reviewed declarations must still match. Writing the record is the install commit point.
+    pub fn commit(self) -> Result<Record, ExtensionError> {
+        let name = self.inspection.manifest.name.clone();
+        self.commit_named(&name)
+    }
+
+    /// Store callers supply the resolved localized name shown in the matching permission review.
+    /// This affects display only; all declarations and package bytes remain bound to the review.
+    pub(crate) fn commit_named(self, name: &str) -> Result<Record, ExtensionError> {
+        self.commit_checked_named(name, |_| Ok(()))
+    }
+
+    pub(crate) fn commit_checked_named(mut self, name: &str, check: impl FnOnce(&[Record]) -> Result<(), ExtensionError>) -> Result<Record, ExtensionError> {
+        let _runtime = RecordsLease::runtime(&self.records_file)?;
+        let _lease = RecordsLease::acquire(&self.records_file)?;
+        if name.is_empty() || name.chars().count() > MAX_NAME_CHARS
+            || name.chars().any(|c| c.is_control() || is_invisible_format(c))
+        { return Err(ExtensionError::InvalidName); }
+        if inspect_source(&self.folder()?)? != self.inspection
+            || tree_fingerprint(&self.folder()?)? != self.fingerprint
+        {
+            return Err(ExtensionError::InvalidManifest("The staged extension changed. Review it again."));
+        }
+        let mut records = read_authority_records(&self.records_file)?;
+        if let Some(identity) = manifest_key_id(&self.folder()?)? {
+            for record in &records {
+                let folder = contained_path(&self.extensions_dir, &record.id)?;
+                if manifest_key_id(&folder).ok().flatten().as_deref() == Some(identity.as_str())
+                    || recorded_native_identity(&self.records_file, &record.id).as_deref() == Some(identity.as_str())
+                {
+                    return Err(ExtensionError::InvalidManifest("This native extension identity is already installed in this profile."));
+                }
+            }
+        }
+        check(&records)?;
+        if records.len() >= MAX_INSTALLED { return Err(ExtensionError::TooManyInstalled); }
+        if records.iter().any(|record| record.id == self.id) { return Err(ExtensionError::InvalidRecords); }
+        let record = Record {
+            id: self.id.clone(), enabled: true,
+            name: name.to_owned(),
+            version: self.inspection.manifest.version.clone(),
+        };
+        records.push(record.clone());
+        if let Some(original) = self.retained_original.as_mut() { original.publish()?; }
+        write_records(&self.records_file, &records)?;
+        if let Some(original) = self.retained_original.as_mut() { original.accept(); }
+        self.committed = true;
+        Ok(record)
+    }
+}
+
+impl Drop for PreparedInstall {
+    fn drop(&mut self) {
+        if !self.committed { let _ = remove_folder(&self.extensions_dir, &self.id); }
+    }
+}
+
+/// Prepare the exact profile-owned files for a full asynchronous permission review. This reuses
+/// the same link/path/size-checked copy and inspection as local CRX/unpacked installation.
+pub fn prepare_install(
+    source: &Path, extensions_dir: &Path, records_file: &Path,
+) -> Result<PreparedInstall, ExtensionError> {
+    let records = read_records(records_file)?;
+    if records.len() >= MAX_INSTALLED { return Err(ExtensionError::TooManyInstalled); }
+    if !is_plain_dir(source) { return Err(ExtensionError::NotAFolder); }
     ensure_plain_dir(extensions_dir)?;
     let id = new_id(&records, extensions_dir)?;
     let target = contained_path(extensions_dir, &id)?;
     fs::create_dir(&target).map_err(|_| ExtensionError::Io)?;
-    let inspected = copy_tree(source, &target).and_then(|()| inspect_source(&target));
-    let inspection = match inspected {
+    let inspection = match copy_tree(source, &target).and_then(|()| inspect_source(&target)) {
         Ok(inspection) => inspection,
-        Err(error) => {
-            let _ = remove_folder(extensions_dir, &id);
-            return Err(error);
+        Err(error) => { let _ = remove_folder(extensions_dir, &id); return Err(error); }
+    };
+    let fingerprint = match tree_fingerprint(&target) {
+        Ok(fingerprint) => fingerprint,
+        Err(error) => { let _ = remove_folder(extensions_dir, &id); return Err(error); }
+    };
+    Ok(PreparedInstall {
+        fingerprint,
+        extensions_dir: extensions_dir.to_owned(), records_file: records_file.to_owned(),
+        id, inspection, committed: false, retained_original: None,
+    })
+}
+
+/// Deterministic SHA-256 of every staged path/type/length and file byte. The review binds the
+/// entire copied package, not merely manifest declarations or total size. Bounded streaming,
+/// no extra package-sized allocation and no symlink/reparse-point reads.
+fn tree_fingerprint(root: &Path) -> Result<[u8; 32], ExtensionError> {
+    let mut entries = Vec::new();
+    walk_with_limits(root, LIMITS, &mut |path, kind| { entries.push((path.to_owned(), kind)); Ok(()) })?;
+    entries.sort_by(|a, b| a.0.cmp(&b.0));
+    let mut hash = crate::crx::PackageSha256::new().ok_or(ExtensionError::Io)?;
+    for (relative, kind) in entries {
+        let name = relative.to_str().ok_or(ExtensionError::InvalidName)?.replace('\\', "/");
+        if !hash.update(&(name.len() as u64).to_le_bytes()) || !hash.update(name.as_bytes()) {
+            return Err(ExtensionError::Io);
         }
-    };
-    if !confirm(&inspection) {
-        let _ = remove_folder(extensions_dir, &id);
-        return Ok(None);
+        match kind {
+            EntryKind::Folder => { if !hash.update(b"D") { return Err(ExtensionError::Io); } }
+            EntryKind::File => {
+                let mut file = fs::OpenOptions::new().read(true).custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+                    .open(root.join(&relative)).map_err(|_| ExtensionError::Io)?;
+                let meta = file.metadata().map_err(|_| ExtensionError::Io)?;
+                if !is_plain_file(&meta) { return Err(ExtensionError::LinkNotAllowed); }
+                if meta.len() > MAX_TOTAL_BYTES { return Err(ExtensionError::TooLarge); }
+                if !hash.update(b"F") || !hash.update(&meta.len().to_le_bytes()) { return Err(ExtensionError::Io); }
+                let mut read = 0u64; let mut buffer = [0u8; 64 * 1024];
+                loop {
+                    let count = file.read(&mut buffer).map_err(|_| ExtensionError::Io)?;
+                    if count == 0 { break; }
+                    read += count as u64;
+                    if read > meta.len() || !hash.update(&buffer[..count]) { return Err(ExtensionError::Io); }
+                }
+                if read != meta.len() { return Err(ExtensionError::Io); }
+            }
+        }
     }
-    let record = Record {
-        id,
-        enabled: true,
-        name: inspection.manifest.name,
-        version: inspection.manifest.version,
-    };
-    records.push(record.clone());
-    if let Err(error) = write_records(records_file, &records) {
-        let _ = remove_folder(extensions_dir, &record.id);
-        return Err(error);
-    }
-    Ok(Some(record))
+    hash.finish().ok_or(ExtensionError::Io)
 }
 
 /// Copies every entry of `source` under `target` using the same walk and caps as inspection.
@@ -526,7 +725,14 @@ fn copy_file_no_follow(from: &Path, to: &Path) -> Result<(), ExtensionError> {
 
 /// Sets the enabled flag of one installed extension.
 pub fn set_enabled(records_file: &Path, id: &str, enabled: bool) -> Result<(), ExtensionError> {
-    let mut records = read_records(records_file)?;
+    let _runtime = RecordsLease::runtime(records_file)?;
+    set_enabled_under_runtime(records_file, id, enabled)
+}
+
+/// Caller holds the profile runtime lease until the native operation and this commit finish.
+pub(crate) fn set_enabled_under_runtime(records_file: &Path, id: &str, enabled: bool) -> Result<(), ExtensionError> {
+    let _lease = RecordsLease::acquire(records_file)?;
+    let mut records = read_authority_records(records_file)?;
     let record = records
         .iter_mut()
         .find(|record| record.id == id)
@@ -542,14 +748,22 @@ pub fn uninstall(
     records_file: &Path,
     id: &str,
 ) -> Result<(), ExtensionError> {
-    let mut records = read_records(records_file)?;
+    let _runtime = RecordsLease::runtime(records_file)?;
+    uninstall_under_runtime(extensions_dir, records_file, id)
+}
+
+/// Caller owns the runtime lease through native Remove and this durable deletion.
+pub(crate) fn uninstall_under_runtime(extensions_dir: &Path, records_file: &Path, id: &str) -> Result<(), ExtensionError> {
+    let _lease = RecordsLease::acquire(records_file)?;
+    let mut records = read_authority_records(records_file)?;
     let before = records.len();
     records.retain(|record| record.id != id);
     if records.len() == before {
         return Err(ExtensionError::NotInstalled);
     }
     write_records(records_file, &records)?;
-    remove_folder(extensions_dir, id)
+    remove_folder(extensions_dir, id)?;
+    artifacts::remove_for_record(extensions_dir, id)
 }
 
 /// Deletes `<extensions_dir>\<id>` only when it is a plain folder directly inside `extensions_dir`.
@@ -668,6 +882,31 @@ pub fn read_records(records_file: &Path) -> Result<Vec<Record>, ExtensionError> 
     Ok(records)
 }
 
+/// Strict authority reader for native lifecycle decisions. Unlike the display parser, a single
+/// malformed/duplicate row, over-budget file or reparse point fails the entire operation closed.
+pub(crate) fn read_authority_records(path: &Path) -> Result<Vec<Record>, ExtensionError> {
+    let file = match fs::OpenOptions::new().read(true).custom_flags(FILE_FLAG_OPEN_REPARSE_POINT).open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(_) => return Err(ExtensionError::Io),
+    };
+    let meta = file.metadata().map_err(|_| ExtensionError::Io)?;
+    if !is_plain_file(&meta) || meta.len() > 1024 * 1024 { return Err(ExtensionError::Io); }
+    let mut text = String::new(); file.take(1024 * 1024 + 1).read_to_string(&mut text).map_err(|_| ExtensionError::Io)?;
+    if text.len() > 1024 * 1024 { return Err(ExtensionError::Io); }
+    let mut records = Vec::new();
+    for line in text.lines() {
+        let fields: Vec<_> = line.split('\t').collect();
+        let [id, enabled, name, version] = fields.as_slice() else { return Err(ExtensionError::Io); };
+        if !is_valid_id(id) || !matches!(*enabled, "0" | "1") || records.iter().any(|record: &Record| record.id == *id)
+            || name.is_empty() || name.chars().count() > MAX_NAME_CHARS || name.chars().any(|c| c.is_control() || is_invisible_format(c))
+            || version.is_empty() || version.len() > 64 || !version.bytes().all(|b| b.is_ascii_digit() || b == b'.')
+            || records.len() >= MAX_INSTALLED { return Err(ExtensionError::Io); }
+        records.push(Record { id: (*id).into(), enabled: *enabled == "1", name: (*name).into(), version: (*version).into() });
+    }
+    Ok(records)
+}
+
 /// Replaces `extensions.txt` atomically: the new text is written and synced to a temporary file,
 /// which then replaces the old one.
 pub fn write_records(records_file: &Path, records: &[Record]) -> Result<(), ExtensionError> {
@@ -684,24 +923,27 @@ pub fn write_records(records_file: &Path, records: &[Record]) -> Result<(), Exte
             sanitize_text(&record.version)
         ));
     }
-    if let Some(parent) = records_file.parent() {
-        fs::create_dir_all(parent).map_err(|_| ExtensionError::Io)?;
-    }
-    if let Some(parent) = records_file.parent() {
-        fs::create_dir_all(parent).map_err(|_| ExtensionError::Io)?;
+    if let Some(parent) = records_file.parent().filter(|parent| !parent.as_os_str().is_empty()) {
+        ensure_plain_dir(parent)?;
     }
     let mut temporary = records_file.as_os_str().to_owned();
-    temporary.push(".tmp");
+    temporary.push(format!(".tmp-{}", std::process::id()));
     let temporary = PathBuf::from(temporary);
+    let mut created = false;
     let result = (|| -> io::Result<()> {
-        let mut file = File::create(&temporary)?;
+        // Never open an existing temporary file/link, and never delete somebody else's entry
+        // when creation fails. Profile mutation callers already own the records/runtime leases.
+        let mut file = fs::OpenOptions::new().write(true).create_new(true)
+            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT).open(&temporary)?;
+        created = true;
+        if !is_plain_file(&file.metadata()?) { return Err(io::Error::other("unsafe record temporary file")); }
         file.write_all(text.as_bytes())?;
         file.sync_all()?;
         drop(file);
         fs::rename(&temporary, records_file)
     })();
     result.map_err(|_| {
-        let _ = fs::remove_file(&temporary);
+        if created { let _ = fs::remove_file(&temporary); }
         ExtensionError::Io
     })
 }
@@ -725,6 +967,19 @@ const MAX_SUMMARY_LIST_CHARS: usize = 120;
 
 /// Upper bound on the text of the install confirmation (see [`install_prompt`]).
 pub const MAX_PROMPT_CHARS: usize = 2_400;
+
+/// A complete Store permission review must fit the existing 256 KiB trusted snapshot envelope.
+/// Reserve room for catalogue/identity/status JSON rather than silently truncating declarations.
+/// This is an admission bound, not an increased bridge message allowance.
+pub fn store_review_fits(manifest: &Manifest) -> bool {
+    const MAX_REVIEW_JSON_BYTES: usize = 180 * 1024;
+    let lists = [&manifest.permissions, &manifest.host_permissions, &manifest.content_script_matches,
+        &manifest.content_script_declarations, &manifest.optional_permissions, &manifest.optional_host_permissions];
+    let bytes = lists.iter().flat_map(|list| list.iter()).try_fold(0usize, |total, value| {
+        total.checked_add(crate::chrome_host::protocol::json_string(value).len() + 1)
+    });
+    bytes.is_some_and(|bytes| bytes <= MAX_REVIEW_JSON_BYTES)
+}
 
 /// Human-readable summary for the install confirmation. Counts come first, then a flag for access to
 /// every website, then site access and content-script pages, then permissions. Each list is capped,
@@ -1320,6 +1575,114 @@ mod tests {
         "permissions": ["storage", "tabs"], "host_permissions": ["https://example.com/*"]}"#;
 
     #[test]
+    fn record_write_preserves_preexisting_temporary_file_and_authority() {
+        let root = temp_dir("records-create-new-file"); let records = root.join("extensions.txt");
+        let original = Record { id: "ext-0000000000000001".into(), enabled: true, name: "Original".into(), version: "1".into() };
+        write_records(&records, std::slice::from_ref(&original)).unwrap();
+        let before = fs::read(&records).unwrap();
+        let temporary = PathBuf::from(format!("{}.tmp-{}", records.display(), std::process::id()));
+        fs::write(&temporary, b"preexisting data must survive").unwrap();
+        assert_eq!(write_records(&records, &[]), Err(ExtensionError::Io));
+        assert_eq!(fs::read(&records).unwrap(), before);
+        assert_eq!(fs::read(&temporary).unwrap(), b"preexisting data must survive");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// Pins the Windows sharing contract that `test-native-store-record-reader.ps1` models: a
+    /// read-only observer that shares Read|Write|Delete never denies the atomic replacement and keeps
+    /// the old generation, while one that withholds Delete sharing blocks it without damage.
+    #[test]
+    fn record_replacement_passes_delete_sharing_readers_and_stops_at_readwrite_only_readers() {
+        use std::io::Read;
+        let root = temp_dir("records-reader-sharing"); let records = root.join("extensions.txt");
+        let record = |enabled| Record { id: "ext-0000000000000001".into(), enabled, name: "Synthetic".into(), version: "1.0".into() };
+        write_records(&records, &[record(true)]).unwrap();
+        let old = fs::read(&records).unwrap();
+        let mut reader = fs::OpenOptions::new().read(true).share_mode(0x1 | 0x2 | 0x4).open(&records).unwrap();
+        write_records(&records, &[record(false)]).unwrap();
+        let mut held = Vec::new(); reader.read_to_end(&mut held).unwrap(); drop(reader);
+        assert_eq!(held, old);
+        assert_eq!(read_records(&records).unwrap(), vec![record(false)]);
+        let new = fs::read(&records).unwrap();
+        let control = fs::OpenOptions::new().read(true).share_mode(0x1 | 0x2).open(&records).unwrap();
+        assert_eq!(write_records(&records, &[record(true)]), Err(ExtensionError::Io));
+        drop(control);
+        assert_eq!(fs::read(&records).unwrap(), new);
+        assert!(!PathBuf::from(format!("{}.tmp-{}", records.display(), std::process::id())).exists());
+        write_records(&records, &[record(true)]).unwrap();
+        assert_eq!(fs::read(&records).unwrap(), old);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn record_write_preserves_preexisting_temporary_directory() {
+        let root = temp_dir("records-create-new-dir"); let records = root.join("extensions.txt");
+        let temporary = PathBuf::from(format!("{}.tmp-{}", records.display(), std::process::id()));
+        fs::create_dir(&temporary).unwrap(); fs::write(temporary.join("keep"), b"untouched").unwrap();
+        assert_eq!(write_records(&records, &[]), Err(ExtensionError::Io));
+        assert!(!records.exists()); assert_eq!(fs::read(temporary.join("keep")).unwrap(), b"untouched");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn record_write_does_not_follow_or_remove_temporary_junction() {
+        let root = temp_dir("records-create-new-junction"); let outside = temp_dir("records-create-new-junction-outside");
+        let records = root.join("extensions.txt");
+        let temporary = PathBuf::from(format!("{}.tmp-{}", records.display(), std::process::id()));
+        fs::write(outside.join("keep"), b"untouched").unwrap(); make_junction(&temporary, &outside);
+        assert_eq!(write_records(&records, &[]), Err(ExtensionError::Io));
+        assert!(fs::symlink_metadata(&temporary).unwrap().file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0);
+        assert_eq!(fs::read(outside.join("keep")).unwrap(), b"untouched"); assert!(!records.exists());
+        fs::remove_dir(&temporary).unwrap(); let _ = fs::remove_dir_all(root); let _ = fs::remove_dir_all(outside);
+    }
+
+    #[test]
+    fn record_write_refuses_reparse_parent_without_touching_target() {
+        let root = temp_dir("records-parent-junction"); let outside = temp_dir("records-parent-junction-outside");
+        fs::write(outside.join("keep"), b"untouched").unwrap(); let parent = root.join("linked"); make_junction(&parent, &outside);
+        assert_eq!(write_records(&parent.join("extensions.txt"), &[]), Err(ExtensionError::OutsideExtensions));
+        assert!(!outside.join("extensions.txt").exists()); assert_eq!(fs::read(outside.join("keep")).unwrap(), b"untouched");
+        fs::remove_dir(&parent).unwrap(); let _ = fs::remove_dir_all(root); let _ = fs::remove_dir_all(outside);
+    }
+
+    #[test]
+    fn strict_runtime_records_reject_malformed_duplicate_and_oversized_authority() {
+        let root = temp_dir("strict-runtime-records"); let path = root.join("extensions.txt");
+        let good = "ext-0123456789abcdef\t1\tFixture\t1.0\n";
+        fs::write(&path, good).unwrap(); assert_eq!(read_authority_records(&path).unwrap().len(), 1);
+        for bad in [format!("{good}broken\n"), format!("{good}{good}"), good.replace("\t1\t", "\tmaybe\t"), "x".repeat(1024 * 1024 + 1)] {
+            fs::write(&path, bad).unwrap(); assert!(read_authority_records(&path).is_err());
+        }
+        assert!(read_authority_records(&root).is_err()); fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn runtime_lease_blocks_record_mutation_in_another_process() {
+        let root = temp_dir("runtime-cross-process"); let path = root.join("extensions.txt");
+        let guard = RecordsLease::runtime(&path).unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "extensions::tests::runtime_lease_child", "--ignored", "--nocapture"])
+            .env("BOWSER_TEST_RUNTIME_LEASE_PATH", &path).output().unwrap();
+        assert!(output.status.success(), "cross-process exclusion failed: {} {}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+        assert!(String::from_utf8_lossy(&output.stdout).contains("RUNTIME_LEASE_CHILD=blocked"));
+        drop(guard); drop(RecordsLease::runtime(&path).unwrap()); fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    #[ignore = "child of the bounded cross-process runtime lease unit test"]
+    fn runtime_lease_child() {
+        let Some(path) = std::env::var_os("BOWSER_TEST_RUNTIME_LEASE_PATH") else { panic!("Only the owning lease test launches this child."); };
+        assert!(RecordsLease::runtime(Path::new(&path)).is_err()); println!("RUNTIME_LEASE_CHILD=blocked");
+    }
+
+    #[test]
+    fn extension_lease_trace_contains_only_kind_and_numeric_error() {
+        assert_eq!(lease_open_error_log_line(true, Some(32)), "extension call=lease_open kind=runtime result=error win32_code=32");
+        assert_eq!(lease_open_error_log_line(false, Some(5)), "extension call=lease_open kind=authority result=error win32_code=5");
+        assert_eq!(lease_open_error_log_line(false, None), "extension call=lease_open kind=authority result=error win32_code=unavailable");
+    }
+
+    #[test]
     fn accepts_minimal_manifest_v2_and_v3() {
         let v3 = parse_manifest(&manifest(MV3)).unwrap();
         assert_eq!(v3.manifest_version, 3);
@@ -1477,6 +1840,47 @@ mod tests {
             folder_for(&dir, "../../Windows"),
             Err(ExtensionError::InvalidRecords)
         );
+    }
+
+    #[test]
+    fn local_install_cannot_duplicate_an_existing_native_public_key_identity() {
+        let root = temp_dir("duplicate-native-key");
+        let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/extensions/probe-mv3-key");
+        assert_eq!(manifest_key_id(&source).unwrap().as_deref(), Some("ciocoifocbggchcecjgibbaeojegkpen"));
+        let extensions = root.join("Extensions"); let records = root.join("extensions.txt");
+        let first = install(&source, &extensions, &records).unwrap();
+        let prepared = prepare_install(&source, &extensions, &records).unwrap();
+        let rejected = prepared.folder().unwrap();
+        assert!(prepared.commit().is_err()); assert!(!rejected.exists());
+        assert_eq!(read_records(&records).unwrap(), vec![first]);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn records_lease_refuses_overlapping_writer_and_releases_automatically() {
+        let dir = temp_dir("records-lease"); let records = dir.join("extensions.txt");
+        let first = RecordsLease::acquire(&records).unwrap();
+        assert!(RecordsLease::acquire(&records).is_err());
+        drop(first);
+        let second = RecordsLease::acquire(&records).unwrap();
+        drop(second);
+        assert!(!dir.join("extensions.txt.lease").exists());
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn prepared_install_rejects_same_size_code_change_after_review() {
+        let dir = temp_dir("review-code-change");
+        let source = dir.join("source"); fs::create_dir(&source).unwrap();
+        fs::write(source.join("manifest.json"), br#"{"manifest_version":3,"name":"Test","version":"1"}"#).unwrap();
+        fs::write(source.join("worker.js"), b"original").unwrap();
+        let target = dir.join("Extensions"); let records = dir.join("extensions.txt");
+        let prepared = prepare_install(&source, &target, &records).unwrap();
+        let copy = prepared.folder().unwrap();
+        fs::write(copy.join("worker.js"), b"modified").unwrap();
+        assert!(prepared.commit().is_err());
+        assert!(!copy.exists()); assert!(read_records(&records).unwrap().is_empty());
+        let _ = fs::remove_dir_all(dir);
     }
 
     #[test]
@@ -1807,6 +2211,39 @@ mod tests {
     }
 
     #[test]
+    fn prepared_copy_is_not_installed_until_explicit_commit_and_cancel_cleans_it() {
+        let dir = temp_dir("prepared-consent");
+        let extensions = dir.join("Extensions");
+        let records = dir.join("extensions.txt");
+        let prepared = prepare_install(&fixture("probe-mv3"), &extensions, &records).unwrap();
+        let folder = prepared.folder().unwrap();
+        assert!(folder.join("manifest.json").exists());
+        assert!(read_records(&records).unwrap().is_empty());
+        assert!(startup_plan(&extensions, &records).enabled.is_empty());
+        drop(prepared);
+        assert!(!folder.exists());
+        assert!(read_records(&records).unwrap().is_empty());
+        let prepared = prepare_install(&fixture("probe-mv3"), &extensions, &records).unwrap();
+        let record = prepared.commit().unwrap();
+        assert_eq!(read_records(&records).unwrap(), vec![record]);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn changed_reviewed_declarations_cannot_commit() {
+        let dir = temp_dir("prepared-change");
+        let extensions = dir.join("Extensions");
+        let records = dir.join("extensions.txt");
+        let prepared = prepare_install(&fixture("probe-mv3"), &extensions, &records).unwrap();
+        let folder = prepared.folder().unwrap();
+        fs::write(folder.join("manifest.json"), r#"{"manifest_version":3,"name":"Changed","version":"1","permissions":["tabs"]}"#).unwrap();
+        assert!(prepared.commit().is_err());
+        assert!(!folder.exists());
+        assert!(read_records(&records).unwrap().is_empty());
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn locales_fixture_keeps_its_raw_name_and_its_locales_folder_through_install() {
         let source = fixture("probe-mv3-locales");
         assert_eq!(
@@ -1942,6 +2379,7 @@ mod tests {
             permissions: filler("perm"),
             host_permissions,
             content_script_matches: filler("https://script"),
+            content_script_declarations: Vec::new(),
             optional_permissions: filler("opt"),
             optional_host_permissions: filler("https://optsite"),
         }

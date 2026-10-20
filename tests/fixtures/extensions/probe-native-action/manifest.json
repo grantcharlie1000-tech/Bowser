@@ -1,0 +1,28 @@
+{
+  "manifest_version": 3,
+  "name": "Bowser native reserved action grant probe",
+  "version": "0.0.1",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAsIOxnd0e5hIo29QieWtwIVJt8C/jY6M/V1jTJHPx5TjX6tCsJCJC4JxZsBKUgK+TXsyC0RwAnnjJ1iTBEPBIGu1foXMEB40NwjifFyrV4CqFbGtDhTE6EQNI/UNclwkMaTPW8/fpTUoBCguZl95Os8dwmI579q7RjptfJUoFGk9urEFnliLqnxcj3NYQQp/1zBbA7XP50xrflqj5SbAyvwFQIOWnYJvHRoHyqH/dc59++mzwkl/KjZapUqZj/gRK4VG9/tUCwYeJz8z2D7FiLdXCLW+3cQkdmMQzewLotrsY3MH8vO+RWODlteybNfjJHzrYSq3tZQLhHga8qTRV9wIDAQAB",
+  "permissions": [
+    "storage",
+    "scripting",
+    "activeTab"
+  ],
+  "action": {
+    "default_title": "Disposable real action probe"
+  },
+  "background": {
+    "service_worker": "worker.js"
+  },
+  "commands": {
+    "_execute_action": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+X"
+      }
+    }
+  },
+  "options_ui": {
+    "page": "popup.html",
+    "open_in_tab": false
+  }
+}

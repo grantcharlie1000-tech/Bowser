@@ -1,0 +1,5 @@
+# Genuine reserved action probe
+
+Disposable keyed MV3 fixture only. No host permissions, content scripts, default_popup or dynamic setPopup. The manifest assigns Ctrl+Shift+X to _execute_action. Only the genuine native action.onClicked listener attempts primary scripting injection; commands.onCommand is observed independently and cannot invoke that listener. Explicit negative preflight/retry requests also call the injection helper without creating a primary marker. The fixture-supplied manifestAssignment label is not an event-provided command name.
+
+A hidden genuine options page observes worker receipts. Real OS input targets exact owned duplicate-URL browsing views, with trusted F8 focus and unhandled host accelerator controls. The shared original named-command test remains a separate required regression gate. Pre-gesture, ungranted-view, no-activeTab and cross-origin retained-ID permission controls remain mandatory. This proves neither a toolbar button nor popup compatibility or worker cold-start. No credential, bridge, CDP or host-action emulation.

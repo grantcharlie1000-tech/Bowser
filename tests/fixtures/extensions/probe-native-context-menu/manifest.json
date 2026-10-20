@@ -1,0 +1,18 @@
+{
+  "manifest_version": 3,
+  "name": "Bowser genuine native context menu probe",
+  "version": "1.0.0",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAsIOxnd0e5hIo29QieWtwIVJt8C/jY6M/V1jTJHPx5TjX6tCsJCJC4JxZsBKUgK+TXsyC0RwAnnjJ1iTBEPBIGu1foXMEB40NwjifFyrV4CqFbGtDhTE6EQNI/UNclwkMaTPW8/fpTUoBCguZl95Os8dwmI579q7RjptfJUoFGk9urEFnliLqnxcj3NYQQp/1zBbA7XP50xrflqj5SbAyvwFQIOWnYJvHRoHyqH/dc59++mzwkl/KjZapUqZj/gRK4VG9/tUCwYeJz8z2D7FiLdXCLW+3cQkdmMQzewLotrsY3MH8vO+RWODlteybNfjJHzrYSq3tZQLhHga8qTRV9wIDAQAB",
+  "permissions": [
+    "contextMenus",
+    "scripting",
+    "activeTab",
+    "storage"
+  ],
+  "action": {
+    "default_popup": "popup.html"
+  },
+  "background": {
+    "service_worker": "worker.js"
+  }
+}

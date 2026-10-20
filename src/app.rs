@@ -963,16 +963,21 @@ impl App {
     /// Loads an installed extension into the running profile, or unloads it when `enabled` is
     /// false. The outcome goes to the extension status list, which the extension menu shows.
     pub fn set_extension_enabled(app: &AppRef, id: String, folder: PathBuf, enabled: bool) {
+        Self::set_extension_enabled_notify(app, id, folder, enabled, Box::new(|_| {}));
+    }
+
+    pub(crate) fn set_extension_enabled_notify(app: &AppRef, id: String, folder: PathBuf, enabled: bool, done: Box<dyn FnOnce(std::result::Result<(), String>)>) {
         let present = app.borrow().engine.is_some();
         if !present {
             // No engine yet: the saved state takes effect when the window starts.
             let result = if enabled {
                 Err("Bowser is still starting. Restart Bowser to load this extension.".to_owned())
             } else {
-                Ok(())
+                Err("Bowser is still starting. The extension was not switched; try again after a browsing tab opens.".to_owned())
             };
-            crate::extensions::record_load_result(&id, result);
+            crate::extensions::record_load_result(&id, result.clone());
             win32::extensions_changed();
+            done(result);
             return;
         }
         let report = id.clone();
@@ -982,7 +987,8 @@ impl App {
                 &folder,
                 enabled,
                 Box::new(move |result| {
-                    crate::extensions::record_load_result(&report, result);
+                    crate::extensions::record_load_result(&report, result.clone());
+                    done(result);
                     // The toolbar button and the settings page show load results; they catch up later.
                     win32::extensions_changed();
                 }),
@@ -1000,6 +1006,10 @@ impl App {
         kind: crate::extensions::PageKind,
         title: String,
     ) {
+        if Self::active_tab_private(app) {
+            win32::show_error_message("Extensions are not enabled in private tabs. Return to a normal tab to open this extension page.");
+            return;
+        }
         if app.borrow().engine.is_none() {
             win32::show_error_message("Bowser is still starting. Try again in a moment.");
             return;
@@ -1042,7 +1052,7 @@ impl App {
     ) {
         let present = app.borrow().engine.is_some();
         if !present {
-            done(Ok(()));
+            done(Err("Bowser is still starting. Nothing was removed; try again after a browsing tab opens.".into()));
             return;
         }
         Self::with_engine(app, move |engine| {
@@ -2211,6 +2221,19 @@ impl App {
         app.borrow().tab_model.get(id).is_some_and(|tab| tab.pinned)
     }
 
+    /// The native current document must have a matching successful navigation completion.
+    pub fn successful_document_url(app: &AppRef, id: TabId) -> Option<url::Url> {
+        let query = {
+            let state = app.try_borrow().ok()?;
+            if state.closing { return None; }
+            state.engine.as_ref()?.successful_document_query(id)?
+        };
+        let result = query();
+        let state = app.try_borrow().ok()?;
+        if state.closing || !state.tabs.iter().any(|tab| tab.id == id) { return None; }
+        result
+    }
+
     pub fn tab_committed_url(app: &AppRef, id: TabId) -> Option<url::Url> {
         app.borrow()
             .tabs
@@ -2983,6 +3006,8 @@ impl App {
                         .tabs
                         .iter()
                         .find(|tab| tab.id == model.id)
+                        // A dormant Store alias restores into the real website, not review.
+                        .filter(|tab| !page.is_store() || (!tab.discarded && !tab.controller_created && !tab.private))
                         .and_then(|tab| tab.url.as_ref())
                         .and_then(crate::internal_page::parse)
                         .is_some_and(|shown| shown.same_page(page));
@@ -5537,6 +5562,8 @@ impl App {
                 win32::open_history_page(hwnd, app, true);
             } else if page.is_downloads() {
                 win32::open_downloads_page(hwnd, app, true);
+            } else if page.is_store() {
+                win32::open_store_page(hwnd, app, true);
             } else {
                 win32::open_settings_page(hwnd, app, page.section(), true);
             }
@@ -5940,6 +5967,16 @@ impl App {
         });
         let progress_hwnd = hwnd;
         let events = engine::EngineEvents {
+            #[cfg(feature = "experimental-engine-context-menu")]
+            engine_menu_deferred: Some(Rc::new(move |token| win32::queue_engine_context_menu(hwnd, token))),
+            #[cfg(feature = "experimental-engine-context-menu")]
+            engine_menu_available: {
+                let available_app=Rc::downgrade(app);
+                Some(Rc::new(move || {
+                    let Some(app)=available_app.upgrade() else {return false;};
+                    let available=app.try_borrow_mut().is_ok();available
+                }))
+            },
             address_changed: Some(Rc::new(move |tab_id, url| {
                 if let Some(app) = events_app.upgrade() {
                     let mut left_reader = false;
@@ -6465,6 +6502,7 @@ impl App {
             browser_extensions: plan.installed || profile_may_hold_extensions,
             startup_extensions: plan.enabled,
             known_extensions: known_extensions.unwrap_or_default(),
+            extension_records_file: extension_ids_file.as_ref().map(|path| path.with_file_name("extensions.txt")),
             extension_ids_file,
             permissions: app.borrow().permissions.clone(),
             chrome_ui_scheme: crate::chrome_host::html_ui_enabled(),
@@ -6691,6 +6729,14 @@ impl App {
             win32::show_error_message(&format!("Bowser has no page at {}.", url.as_str()));
             return;
         };
+        // A restored/deferred Store address is discovery too, never a privileged copy of Google.
+        // Native consent opens its own settings host directly through open_internal_page.
+        if page.is_store() {
+            if let Ok(destination) = url::Url::parse(crate::store::BROWSE_URL) {
+                Self::navigate_tab(app, tab_id, &destination);
+            }
+            return;
+        }
         let (has_page, private, active) = {
             let state = app.borrow();
             let tab = state.tabs.iter().find(|tab| tab.id == tab_id);
@@ -6707,6 +6753,8 @@ impl App {
                     win32::open_history_page(hwnd, app, false);
                 } else if page.is_downloads() {
                     win32::open_downloads_page(hwnd, app, false);
+                } else if page.is_store() {
+                    win32::open_store_page(hwnd, app, false);
                 } else {
                     win32::open_settings_page(hwnd, app, page.section(), false);
                 }
@@ -6720,6 +6768,8 @@ impl App {
                 win32::history_page_focus(hwnd);
             } else if page.is_downloads() {
                 win32::downloads_page_focus(hwnd);
+            } else if page.is_store() {
+                win32::settings_page_refresh(hwnd);
             } else {
                 win32::settings_page_go(hwnd, page.section());
             }
@@ -9840,6 +9890,14 @@ mod tests {
     }
 
     #[test]
+    #[should_panic(expected = "Extensions are not enabled in private tabs")]
+    fn private_tab_cannot_open_a_normal_profile_extension_page() {
+        let app = app_with_pending(rect(800, 600));
+        App::new_private_tab(&app);
+        App::open_extension_page(&app, "ext-0000000000000001".into(), PathBuf::new(), crate::extensions::PageKind::Popup, "Test popup".into());
+    }
+
+    #[test]
     fn reader_command_during_the_load_probe_says_busy() {
         let app = app_with_pending(rect(800, 600));
         let tab = App::active_tab_id(&app);
@@ -10983,6 +11041,29 @@ mod tests {
             (l.viewport_y, l.viewport_width, l.viewport_height),
             (44, 800, 556)
         );
+    }
+
+    #[test]
+    fn restored_store_alias_is_not_reused_for_trusted_install_review() {
+        let app = app_with_pending(windows::Win32::Foundation::RECT { left:0, top:0, right:800, bottom:600 });
+        let dormant = App::active_tab_id(&app);
+        let store = crate::internal_page::InternalPage::Store;
+        {
+            let mut state = app.borrow_mut();
+            let tab = state.tabs.iter_mut().find(|tab| tab.id == dormant).unwrap();
+            tab.url = Some(store.url()); tab.discarded = true; tab.controller_created = false;
+            state.tab_model.set_url(dormant, Some(store.url().as_str()));
+        }
+        let listing = App::new_tab(&app);
+        crate::app::test_show_page(&app, listing, "https://chromewebstore.google.com/detail/stylus/clngdbkpkpeebahjckkjfobafhncgmne");
+        let review = App::open_internal_page(&app, store, false);
+        assert_ne!(review, dormant); assert_ne!(review, listing);
+        assert_eq!(App::active_tab_id(&app), review);
+        assert_eq!(App::internal_page(&app, review), Some(store));
+        let state = app.borrow();
+        assert!(!state.tabs.iter().find(|tab| tab.id == review).unwrap().controller_created);
+        assert!(state.tabs.iter().find(|tab| tab.id == dormant).unwrap().discarded);
+        assert!(state.tabs.iter().find(|tab| tab.id == listing).unwrap().controller_created);
     }
 
     #[test]

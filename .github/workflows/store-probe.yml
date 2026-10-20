@@ -1,0 +1,538 @@
+name: Probe current Store downloads
+on:
+  pull_request:
+    paths:
+      - 'src/crx*.rs'
+      - 'src/store.rs'
+      - 'src/extensions.rs'
+      - 'src/extensions/**'
+      - 'src/engine/**'
+      - 'src/win32/store.rs'
+      - '.github/workflows/store-probe.yml'
+      - 'benchmarks/scripts/probe-default-context-cancellation.ps1'
+      - 'benchmarks/scripts/probe-custom-context-menu.ps1'
+      - 'benchmarks/scripts/probe-app-context-menu.ps1'
+      - 'benchmarks/scripts/probe-app-host-context-menu.ps1'
+      - 'benchmarks/scripts/validate-app-host-menu-fixture.mjs'
+      - 'benchmarks/fixtures/app-host-context-menu/**'
+      - 'benchmarks/scripts/probe-native-store.ps1'
+      - 'benchmarks/scripts/measure-native-extensions.ps1'
+      - 'benchmarks/scripts/test-native-extension-address-guards.ps1'
+      - 'benchmarks/test-native-extension-address-source.py'
+      - 'benchmarks/scripts/native-store-record-reader.psm1'
+      - 'benchmarks/scripts/test-native-store-record-reader.ps1'
+      - 'benchmarks/scripts/probe-native-installer-band-component.ps1'
+      - 'src/chrome/store_guidance_layout.rs'
+      - 'src/chrome/store_guidance_layout/**'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  download-probe:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Preserve fingerprinted source bytes
+        run: git config --global core.autocrlf false
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Parse resource harness and check generated address guard contracts
+        run: |
+          ./benchmarks/scripts/test-native-extension-address-guards.ps1
+          python ./benchmarks/test-native-extension-address-source.py
+          if ($LASTEXITCODE -ne 0) { throw 'Resource address source contracts failed.' }
+      - name: Install official Rust toolchain
+        run: rustup toolchain install stable --profile minimal
+      - name: Probe current MV3 listings using detected WebView2 runtime
+        run: |
+          $env:BOWSER_EXTENSION_TRACE = '1'
+          cargo +stable test --locked --lib live_current_mv3_store_downloads -- --ignored --nocapture --test-threads=1 2>&1 | Tee-Object store-download-probe.log
+          if ($LASTEXITCODE -ne 0) { throw 'Store diagnostic test failed.' }
+      - name: Load real signed packages in disposable extension-enabled profiles
+        id: real_packages
+        run: |
+          $env:BOWSER_EXTENSION_TRACE = '1'
+          $env:LOCALAPPDATA = Join-Path $env:RUNNER_TEMP 'bowser-store-isolated-localappdata'
+          New-Item -ItemType Directory -Force $env:LOCALAPPDATA | Out-Null
+          $env:BOWSER_EXTENSION_MEASURE_ROOT = Join-Path $env:RUNNER_TEMP ('bowser-extension-measurement-' + [guid]::NewGuid().ToString('N'))
+          "BOWSER_EXTENSION_MEASURE_ROOT=$env:BOWSER_EXTENSION_MEASURE_ROOT" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          $test = Get-ChildItem target/debug/deps/bowser-*.exe | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          & $test.FullName live_store_current_extension_loads --ignored --nocapture --test-threads=1 2>&1 | Tee-Object store-runtime-probe.log
+          if ($LASTEXITCODE -ne 0) { throw 'Real extension load diagnostic failed.' }
+      - name: Save real-package functionality diagnostics before later gates
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: store-real-package-diagnostics-${{ github.sha }}
+          path: |
+            store-download-probe.log
+            store-runtime-probe.log
+            ${{ runner.temp }}/bowser-extension-link-native/
+          if-no-files-found: error
+          retention-days: 14
+      - name: Probe genuine action activeTab through in-process CDP without unsafe flags
+        run: |
+          $env:BOWSER_EXTENSION_TRACE = '1'
+          $env:LOCALAPPDATA = Join-Path $env:RUNNER_TEMP 'bowser-store-isolated-localappdata'
+          $test = Get-ChildItem target/debug/deps/bowser-*.exe | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          & $test.FullName live_probe_native_action_active_tab --ignored --nocapture --test-threads=1 2>&1 | Tee-Object store-action-probe.log
+          if ($LASTEXITCODE -ne 0) { throw 'Action activeTab feasibility fixture failed.' }
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+      - name: Install locked Store renderer dependencies
+        working-directory: ui
+        run: npm ci --no-audit --no-fund
+      - name: Capture real-browser Store rendering, not native installation evidence
+        working-directory: ui
+        run: node scripts/capture-store.mjs "$env:RUNNER_TEMP/bowser-store-rendering"
+      - name: Measure actual native zero versus four extension profiles without benchmark mode
+        if: ${{ !cancelled() && steps.real_packages.outcome == 'success' && env.BOWSER_EXTENSION_MEASURE_ROOT != '' }}
+        run: |
+          cargo +stable build --release --locked --bin bowser --features html-chrome-default
+          if ($LASTEXITCODE -ne 0) { throw 'Release executable for actual extension measurement failed to build.' }
+          ./benchmarks/scripts/measure-native-extensions.ps1 -ProfilesRoot $env:BOWSER_EXTENSION_MEASURE_ROOT
+      - name: Remove only the disposable package measurement copies
+        if: always()
+        run: |
+          $path = $env:BOWSER_EXTENSION_MEASURE_ROOT
+          if ($path) {
+            $full = [IO.Path]::GetFullPath($path)
+            $allowed = [IO.Path]::GetFullPath($env:RUNNER_TEMP).TrimEnd('\') + '\'
+            if (-not $full.StartsWith($allowed, [StringComparison]::OrdinalIgnoreCase) -or -not ([IO.Path]::GetFileName($full).StartsWith('bowser-extension-measurement-'))) { throw 'Refusing cleanup outside the disposable measurement root.' }
+            if (Test-Path -LiteralPath $full) { Remove-Item -LiteralPath $full -Recurse -Force }
+          }
+      - name: Save diagnostic evidence, including unavailable packages
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: store-download-probe-${{ github.sha }}
+          path: |
+            store-download-probe.log
+            store-runtime-probe.log
+            store-fixture-probe.log
+            store-pending-native-probe.log
+            store-crash-recovery-probe.log
+            store-completed-restart-probe.log
+            store-stale-owner-probe.log
+            store-fail-closed-environment-probe.log
+            store-profile-private-isolation-probe.log
+            store-native-api-isolation.log
+            store-update-probe.log
+            store-action-probe.log
+            ${{ runner.temp }}/bowser-store-rendering/
+            ${{ runner.temp }}/bowser-native-store/
+            ${{ runner.temp }}/bowser-extension-metrics/
+          if-no-files-found: error
+          retention-days: 14
+
+  native-safety:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Preserve fingerprinted source bytes
+        run: git config --global core.autocrlf false
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Install official Rust toolchain
+        run: rustup toolchain install stable --profile minimal
+      - name: Build independent native safety executable without marketplace or resource dependencies
+        id: native_build
+        run: |
+          cargo +stable test --locked --lib --no-run
+          if ($LASTEXITCODE -ne 0) { throw 'Native safety executable failed to build.' }
+      - name: Inspect exact test executable imports after pre-test loader failure
+        if: ${{ !cancelled() && steps.native_build.outcome == 'success' }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $test = @(Get-ChildItem target/debug/deps/bowser-*.exe)
+          if ($test.Count -ne 1) { throw 'Exact single test executable unavailable for import inspection.' }
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer/vswhere.exe'
+          $vs = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if ($LASTEXITCODE -ne 0 -or -not $vs) { throw 'Official Visual Studio tools unavailable.' }
+          $dumpbin = @(Get-ChildItem (Join-Path $vs 'VC/Tools/MSVC/*/bin/Hostx64/x64/dumpbin.exe') | Sort-Object FullName -Descending)
+          if ($dumpbin.Count -lt 1) { throw 'Official import inspector unavailable.' }
+          Get-FileHash -Algorithm SHA256 -LiteralPath $test[0].FullName | Format-List | Out-String | Tee-Object store-band-loader-identity.log
+          & $dumpbin[0].FullName /imports $test[0].FullName 2>&1 | Tee-Object store-band-loader-imports.log
+          if ($LASTEXITCODE -ne 0) { throw 'Exact test executable import inspection failed.' }
+          & $dumpbin[0].FullName /exports (Join-Path $env:windir 'System32/comctl32.dll') 2>&1 | Tee-Object store-band-system-comctl-exports.log
+          if ($LASTEXITCODE -ne 0) { throw 'System common-controls export inspection failed.' }
+          $mt = @(Get-ChildItem (Join-Path ${env:ProgramFiles(x86)} 'Windows Kits/10/bin/*/x64/mt.exe') | Sort-Object FullName -Descending)
+          if ($mt.Count -lt 1) { throw 'Official manifest inspector unavailable.' }
+          & $mt[0].FullName "-inputresource:$($test[0].FullName);#1" '-out:store-band-libtest.manifest.xml' 2>&1 | Tee-Object store-band-libtest-manifest.log
+          "manifest_inspection_exit=$LASTEXITCODE" | Add-Content store-band-libtest-manifest.log
+          # Missing manifest is diagnostic evidence, never acceptance of a test or loader fix.
+          $global:LASTEXITCODE = 0
+      - name: Authenticate signed originals and preserve unexpected artifact data
+        if: ${{ !cancelled() && steps.native_build.outcome == 'success' }}
+        run: |
+          $test = Get-ChildItem target/debug/deps/bowser-*.exe | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          & $test.FullName signed_original_ --nocapture --test-threads=1 2>&1 | Tee-Object store-signed-original-probe.log
+          if ($LASTEXITCODE -ne 0) { throw 'Signed-original crypto/filesystem controls failed.' }
+      - name: Reject preexisting record temporary files and junctions
+        if: ${{ !cancelled() && steps.native_build.outcome == 'success' }}
+        run: |
+          $test = Get-ChildItem target/debug/deps/bowser-*.exe | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          & $test.FullName record_write_ --nocapture --test-threads=1 2>&1 | Tee-Object store-record-temp-probe.log
+          if ($LASTEXITCODE -ne 0) { throw 'Record temporary-file preservation controls failed.' }
+      - name: Execute update state contract without enabling production updates
+        if: ${{ !cancelled() && steps.native_build.outcome == 'success' }}
+        run: |
+          $test = Get-ChildItem target/debug/deps/bowser-*.exe | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          & $test.FullName update_model_ --nocapture --test-threads=1 2>&1 | Tee-Object store-update-model-probe.log
+          if ($LASTEXITCODE -ne 0) { throw 'Test-only update state contract failed.' }
+      - name: Gate listing authority on actual successful native documents
+        if: ${{ !cancelled() && steps.native_build.outcome == 'success' }}
+        run: |
+          $test = Get-ChildItem target/debug/deps/bowser-*.exe | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          & $test.FullName engine::document_gate:: --nocapture --test-threads=1 2>&1 | Tee-Object store-document-gate-unit.log
+          if ($LASTEXITCODE -ne 0) { throw 'Native document gate contract failed.' }
+          & $test.FullName live_successful_document_gate --ignored --nocapture --test-threads=1 2>&1 | Tee-Object store-document-gate-native.log
+          if ($LASTEXITCODE -ne 0) { throw 'Actual native document gate controls failed.' }
+      - name: Preserve complete static content-script declarations for consent
+        if: ${{ !cancelled() && steps.native_build.outcome == 'success' }}
+        run: |
+          $test = Get-ChildItem target/debug/deps/bowser-*.exe | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          & $test.FullName content_script_review_ --nocapture --test-threads=1 2>&1 | Tee-Object store-content-script-review.log
+          if ($LASTEXITCODE -ne 0) { throw 'Complete content-script review controls failed.' }
+      - name: Measure actual system message fonts before test-only guidance partition
+        if: ${{ !cancelled() && steps.native_build.outcome == 'success' }}
+        run: |
+          $test = Get-ChildItem target/debug/deps/bowser-*.exe | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          & $test.FullName chrome::store_guidance_layout::tests::actual_message_font_measurements_fit_the_partition_at_supported_scales --exact --nocapture --test-threads=1 2>&1 | Tee-Object store-guidance-font-measurements.log
+          if ($LASTEXITCODE -ne 0) { throw 'Native font measurement prerequisite failed; no rendered-control acceptance.' }
+      - name: Capture isolated native installer band component without install authority
+        if: ${{ !cancelled() && steps.native_build.outcome == 'success' }}
+        run: |
+          $test = Get-ChildItem target/debug/deps/bowser-*.exe | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          & $test.FullName chrome::store_guidance_layout::native_component::actual_native_installer_band_component --exact --ignored --nocapture --test-threads=1 2>&1 | Tee-Object store-native-installer-band-component.log
+          if ($LASTEXITCODE -ne 0) { throw 'Native component prerequisite failed; no production/rendering acceptance.' }
+      - name: Enforce bounded native extension page link parsing and navigation guards
+        if: ${{ !cancelled() && steps.native_build.outcome == 'success' }}
+        run: |
+          $test = Get-ChildItem target/debug/deps/bowser-*.exe | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          & $test.FullName native_page_links_ --nocapture --test-threads=1 2>&1 | Tee-Object store-page-links-controls.log
+          if ($LASTEXITCODE -ne 0) { throw 'Native page-link parsing/navigation controls failed.' }
+      - name: Exercise genuine empty-link notice and stale-menu same-URL reload
+        if: ${{ !cancelled() && steps.native_build.outcome == 'success' }}
+        run: |
+          $env:BOWSER_EXTENSION_TRACE = '1'
+          $env:LOCALAPPDATA = Join-Path $env:RUNNER_TEMP 'bowser-store-page-links-localappdata'
+          New-Item -ItemType Directory -Force $env:LOCALAPPDATA | Out-Null
+          $test = Get-ChildItem target/debug/deps/bowser-*.exe | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          & $test.FullName live_probe_native_page_links_guards --ignored --nocapture --test-threads=1 2>&1 | Tee-Object store-page-links-runtime-controls.log
+          if ($LASTEXITCODE -ne 0) { throw 'Actual native Page links empty/reload controls failed.' }
+      - name: Probe genuine named command delivery without host shortcut interception
+        if: ${{ !cancelled() && steps.native_build.outcome == 'success' }}
+        run: |
+          $env:LOCALAPPDATA = Join-Path $env:RUNNER_TEMP 'bowser-store-native-command-localappdata'
+          New-Item -ItemType Directory -Force $env:LOCALAPPDATA | Out-Null
+          $test = Get-ChildItem target/debug/deps/bowser-*.exe | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          & $test.FullName live_probe_native_named_command --ignored --nocapture --test-threads=1 2>&1 | Tee-Object store-native-command-probe.log
+          if ($LASTEXITCODE -ne 0) { throw 'Named-command native input/control diagnostic failed.' }
+      - name: Probe exact worker current-window query before command injection
+        if: ${{ !cancelled() && steps.native_build.outcome == 'success' }}
+        run: |
+          $env:LOCALAPPDATA = Join-Path $env:RUNNER_TEMP 'bowser-store-native-worker-query-localappdata'
+          New-Item -ItemType Directory -Force $env:LOCALAPPDATA | Out-Null
+          $test = Get-ChildItem target/debug/deps/bowser-*.exe | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          & $test.FullName live_probe_native_worker_current_query --ignored --nocapture --test-threads=1 2>&1 | Tee-Object store-native-worker-query-probe.log
+          if ($LASTEXITCODE -ne 0) { throw 'Exact pre-injection worker query/control diagnostic failed.' }
+      - name: Probe actual CtrlShiftL conflict and explicit disposable binding choice
+        if: ${{ !cancelled() && steps.native_build.outcome == 'success' }}
+        run: |
+          $env:LOCALAPPDATA = Join-Path $env:RUNNER_TEMP 'bowser-store-native-ctrl-l-localappdata'
+          New-Item -ItemType Directory -Force $env:LOCALAPPDATA | Out-Null
+          $test = Get-ChildItem target/debug/deps/bowser-*.exe | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          & $test.FullName live_probe_native_ctrl_l_conflict --ignored --nocapture --test-threads=1 2>&1 | Tee-Object store-native-ctrl-l-probe.log
+          if ($LASTEXITCODE -ne 0) { throw 'Native CtrlShiftL conflict/permission diagnostic failed.' }
+      - name: Probe genuine reserved action without popup or host emulation
+        if: ${{ !cancelled() && steps.native_build.outcome == 'success' }}
+        run: |
+          $env:LOCALAPPDATA = Join-Path $env:RUNNER_TEMP 'bowser-store-native-action-localappdata'
+          New-Item -ItemType Directory -Force $env:LOCALAPPDATA | Out-Null
+          $test = Get-ChildItem target/debug/deps/bowser-*.exe | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          & $test.FullName live_probe_native_reserved_action --ignored --nocapture --test-threads=1 2>&1 | Tee-Object store-native-action-keyboard-probe.log
+          if ($LASTEXITCODE -ne 0) { throw 'Reserved native action keyboard/control diagnostic failed.' }
+      - name: Probe local fixture restart, worker messaging, and hosted-context boundaries
+        if: ${{ !cancelled() && steps.native_build.outcome == 'success' }}
+        run: |
+          $env:BOWSER_EXTENSION_TRACE = '1'
+          $env:LOCALAPPDATA = Join-Path $env:RUNNER_TEMP 'bowser-store-isolated-localappdata'
+          New-Item -ItemType Directory -Force $env:LOCALAPPDATA | Out-Null
+          $test = Get-ChildItem target/debug/deps/bowser-*.exe | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          & $test.FullName live_probe_mv3_extension_executes --ignored --nocapture --test-threads=1 2>&1 | Tee-Object store-fixture-probe.log
+          if ($LASTEXITCODE -ne 0) { throw 'MV3 lifecycle fixture probe failed.' }
+      - name: Probe real pending native callbacks against a second process
+        if: ${{ !cancelled() && steps.native_build.outcome == 'success' }}
+        run: |
+          $env:BOWSER_EXTENSION_TRACE = '1'
+          $env:LOCALAPPDATA = Join-Path $env:RUNNER_TEMP 'bowser-store-isolated-localappdata'
+          $test = Get-ChildItem target/debug/deps/bowser-*.exe | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          & $test.FullName live_probe_pending_native_operations --ignored --nocapture --test-threads=1 2>&1 | Tee-Object store-pending-native-probe.log
+          if ($LASTEXITCODE -ne 0) { throw 'Real pending native operation diagnostic failed.' }
+      - name: Probe completed native revocations across new processes
+        if: ${{ !cancelled() && steps.native_build.outcome == 'success' }}
+        run: |
+          $env:BOWSER_EXTENSION_TRACE = '1'
+          $test = Get-ChildItem target/debug/deps/bowser-*.exe | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          & $test.FullName live_probe_completed_revocations_restart --ignored --nocapture --test-threads=1 2>&1 | Tee-Object store-completed-restart-probe.log
+          if ($LASTEXITCODE -ne 0) { throw 'Completed native revocation restart diagnostic failed.' }
+      - name: Probe stale native owner versus a new signing-identity owner without tracing
+        if: ${{ !cancelled() && steps.native_build.outcome == 'success' }}
+        run: |
+          Remove-Item Env:BOWSER_EXTENSION_TRACE -ErrorAction SilentlyContinue
+          $test = Get-ChildItem target/debug/deps/bowser-*.exe | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          & $test.FullName live_probe_stale_owner_replacement --ignored --nocapture --test-threads=1 2>&1 | Tee-Object store-stale-owner-probe.log
+          if ($LASTEXITCODE -ne 0) { throw 'Stale native owner replacement diagnostic failed.' }
+      - name: Probe fail-closed damaged authority at the actual environment boundary
+        if: ${{ !cancelled() && steps.native_build.outcome == 'success' }}
+        run: |
+          $env:BOWSER_EXTENSION_TRACE = '1'
+          $test = Get-ChildItem target/debug/deps/bowser-*.exe | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          & $test.FullName live_probe_fail_closed_environment --ignored --nocapture --test-threads=1 2>&1 | Tee-Object store-fail-closed-environment-probe.log
+          if ($LASTEXITCODE -ne 0) { throw 'Actual fail-closed environment diagnostic failed.' }
+      - name: Probe actual profile and private-first extension isolation
+        if: ${{ !cancelled() && steps.native_build.outcome == 'success' }}
+        run: |
+          $env:BOWSER_EXTENSION_TRACE = '1'
+          $test = Get-ChildItem target/debug/deps/bowser-*.exe | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          & $test.FullName live_probe_profile_private_isolation --ignored --nocapture --test-threads=1 2>&1 | Tee-Object store-profile-private-isolation-probe.log
+          if ($LASTEXITCODE -ne 0) { throw 'Actual profile/private isolation diagnostic failed.' }
+      - name: Probe broad-host native API effects across private UI and other profiles
+        if: ${{ !cancelled() && steps.native_build.outcome == 'success' }}
+        run: |
+          $env:LOCALAPPDATA = Join-Path $env:RUNNER_TEMP 'bowser-store-api-isolation-localappdata'
+          New-Item -ItemType Directory -Force $env:LOCALAPPDATA | Out-Null
+          $test = Get-ChildItem target/debug/deps/bowser-*.exe | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          & $test.FullName live_probe_native_api_isolation --ignored --nocapture --test-threads=1 2>&1 | Tee-Object store-native-api-isolation.log
+          if ($LASTEXITCODE -ne 0) { throw 'Native broad-host API isolation controls failed.' }
+      - name: Observe genuine native extension menu and cancellation without selection
+        if: ${{ !cancelled() && steps.native_build.outcome == 'success' }}
+        run: |
+          $env:LOCALAPPDATA = Join-Path $env:RUNNER_TEMP 'bowser-store-isolated-localappdata'
+          $test = Get-ChildItem target/debug/deps/bowser-*.exe | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          & $test.FullName engine::extension_probe_live::live_probe_native_context_menu_observation --exact --ignored --nocapture --test-threads=1 2>&1 | Tee-Object store-native-context-menu.log
+          if ($LASTEXITCODE -ne 0) { throw 'Native menu observation/cancellation unavailable or failed; no selection compatibility verdict.' }
+      - name: Probe separate default Chromium menu cancellation with native UIA identity
+        if: ${{ !cancelled() && steps.native_build.outcome == 'success' }}
+        run: |
+          $env:LOCALAPPDATA = Join-Path $env:RUNNER_TEMP 'bowser-store-isolated-localappdata'
+          $test = Get-ChildItem target/debug/deps/bowser-*.exe | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          & $test.FullName engine::extension_probe_live::live_probe_default_context_menu_cancellation --exact --ignored --nocapture --test-threads=1 2>&1 | Tee-Object store-default-context-cancellation.log
+          if ($LASTEXITCODE -ne 0) { throw 'Default native menu cancellation prerequisite failed or unavailable.' }
+      - name: Probe documented engine-item native menu cancellation and actual dispatch
+        if: ${{ !cancelled() && steps.native_build.outcome == 'success' }}
+        run: |
+          $test = Get-ChildItem target/debug/deps/bowser-*.exe | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          & $test.FullName engine::extension_probe_live::custom_context_menu::live_probe_custom_context_menu --exact --ignored --nocapture --test-threads=1 2>&1 | Tee-Object store-custom-context-menu.log
+          if ($LASTEXITCODE -ne 0) { throw 'Documented custom native menu feasibility failed; no compatibility acceptance.' }
+      - name: Refuse a genuinely selected request after real same-URL Reload before dispatch
+        if: ${{ !cancelled() && steps.native_build.outcome == 'success' }}
+        run: |
+          $test = Get-ChildItem target/debug/deps/bowser-*.exe | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          & $test.FullName engine::extension_probe_live::custom_context_menu::live_probe_custom_context_menu_stale_dispatch --exact --ignored --nocapture --test-threads=1 2>&1 | Tee-Object store-custom-context-stale-dispatch.log
+          if ($LASTEXITCODE -ne 0) { throw 'Native post-selection stale-dispatch refusal unavailable or failed.' }
+      - name: Probe signed-keyed process-crash recovery at exact native boundaries
+        if: ${{ !cancelled() && steps.native_build.outcome == 'success' }}
+        run: |
+          $env:BOWSER_EXTENSION_TRACE = '1'
+          $test = Get-ChildItem target/debug/deps/bowser-*.exe | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          & $test.FullName live_probe_native_crash_recovery --ignored --nocapture --test-threads=1 2>&1 | Tee-Object store-crash-recovery-probe.log
+          if ($LASTEXITCODE -ne 0) { throw 'Native process-crash recovery diagnostic failed.' }
+      - name: Probe same-identity immutable replacement and rollback feasibility
+        if: ${{ !cancelled() && steps.native_build.outcome == 'success' }}
+        run: |
+          $env:BOWSER_EXTENSION_TRACE = '1'
+          $env:LOCALAPPDATA = Join-Path $env:RUNNER_TEMP 'bowser-store-isolated-localappdata'
+          New-Item -ItemType Directory -Force $env:LOCALAPPDATA | Out-Null
+          $test = Get-ChildItem target/debug/deps/bowser-*.exe | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          & $test.FullName live_probe_same_identity_update_and_rollback --ignored --nocapture --test-threads=1 2>&1 | Tee-Object store-update-probe.log
+          if ($LASTEXITCODE -ne 0) { throw 'Update/storage/rollback feasibility probe failed.' }
+      - name: Probe genuine privileged Settings UI profile isolation
+        if: ${{ !cancelled() && steps.native_build.outcome == 'success' }}
+        run: |
+          $env:BOWSER_EXTENSION_TRACE = '1'
+          $test = Get-ChildItem target/debug/deps/bowser-*.exe | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          & $test.FullName live_probe_ui_profile_isolation --ignored --nocapture --test-threads=1 2>&1 | Tee-Object store-ui-profile-isolation-probe.log
+          if ($LASTEXITCODE -ne 0) { throw 'Actual Settings UI profile isolation diagnostic failed.' }
+      - name: Compile and test default-off generic menu inventory and presentation
+        id: experimental_menu_build
+        if: ${{ !cancelled() && steps.native_build.outcome == 'success' }}
+        run: |
+          cargo +stable test --locked --lib --features html-chrome-default,experimental-engine-context-menu engine::webview2::engine_menu::tests -- --nocapture --test-threads=1 2>&1 | Tee-Object store-real-app-menu-unit.log
+          if ($LASTEXITCODE -ne 0) { throw 'Experimental engine-menu model failed to compile or test.' }
+          cargo +stable test --locked --lib --features html-chrome-default,experimental-engine-context-menu engine::webview2::menu_inventory::tests -- --nocapture --test-threads=1 2>&1 | Tee-Object -Append store-real-app-menu-unit.log
+          if ($LASTEXITCODE -ne 0) { throw 'Experimental strict native inventory tests failed.' }
+          cargo +stable test --locked --lib --features html-chrome-default,experimental-engine-context-menu engine::webview2::owned_context_menu::tests -- --nocapture --test-threads=1 2>&1 | Tee-Object -Append store-real-app-menu-unit.log
+          if ($LASTEXITCODE -ne 0) { throw 'Experimental owner/request fence tests failed.' }
+          cargo +stable test --locked --lib --features html-chrome-default,experimental-engine-context-menu the_main_window_private_messages_are_unique -- --nocapture --test-threads=1 2>&1 | Tee-Object -Append store-real-app-menu-unit.log
+          if ($LASTEXITCODE -ne 0) { throw 'Experimental main-window message collision guard failed.' }
+          cargo +stable test --locked --lib --features html-chrome-default,experimental-engine-context-menu the_main_window_timer_ids_are_unique_and_outside_hover_ranges -- --nocapture --test-threads=1 2>&1 | Tee-Object -Append store-real-app-menu-unit.log
+          if ($LASTEXITCODE -ne 0) { throw 'Experimental main-window timer collision guard failed.' }
+          cargo +stable test --locked --lib --features html-chrome-default,experimental-engine-context-menu engine::app_host_menu_probe::live::host_probe_selection_uses_native_name_or_inserted_role_not_command_range -- --exact --nocapture --test-threads=1 2>&1 | Tee-Object -Append store-real-app-menu-unit.log
+          if ($LASTEXITCODE -ne 0) { throw 'Separate host-lane read-only selection diagnostic failed.' }
+
+      - name: Probe default-off native engine menu in actual HTML Bowser App
+        if: ${{ !cancelled() && steps.experimental_menu_build.outcome == 'success' }}
+        run: |
+          $env:BOWSER_EXTENSION_TRACE = '1'
+          $env:BOWSER_APP_MENU_PROBE_CONSENT = 'probe-custom-context-menu'
+          cargo +stable test --locked --lib --features html-chrome-default,experimental-engine-context-menu engine::app_context_menu_probe::live_probe_real_app_context_menu -- --exact --ignored --nocapture --test-threads=1 2>&1 | Tee-Object store-real-app-context-menu.log
+          if ($LASTEXITCODE -ne 0) { throw 'Actual App native-menu cancellation/selection unavailable or failed; no activation.' }
+      - name: Probe independent actual App in-modal same-URL Reload refusal
+        if: ${{ !cancelled() && steps.experimental_menu_build.outcome == 'success' }}
+        run: |
+          $env:BOWSER_EXTENSION_TRACE = '1'
+          $env:BOWSER_APP_MENU_RELOAD_PROBE_CONSENT = 'probe-custom-context-menu-reload-no-further-input'
+          # Separate exact process/profile. One right-click, then no Escape/selection/rescue input.
+          cargo +stable test --locked --lib --features html-chrome-default,experimental-engine-context-menu engine::app_context_menu_probe::reload::live_probe_real_app_context_menu_same_url_reload -- --exact --ignored --nocapture --test-threads=1 2>&1 | Tee-Object store-real-app-context-menu-reload.log
+          if ($LASTEXITCODE -ne 0) { throw 'Actual App same-URL in-modal Reload refusal unavailable or failed; no spontaneous cancellation acceptance and no activation.' }
+      - name: Save independent actual App Reload refusal evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: store-real-app-context-menu-reload-diagnostics-${{ github.sha }}
+          path: |
+            store-real-app-context-menu-reload.log
+            store-real-app-context-menu-reload/**/*.json
+            store-real-app-context-menu-reload/**/*.txt
+            store-real-app-context-menu-reload/**/*.png
+          if-no-files-found: warn
+          retention-days: 14
+      - name: Probe separate actual App native Copy Paste and host note split regressions
+        if: ${{ !cancelled() && steps.experimental_menu_build.outcome == 'success' }}
+        run: |
+          $env:BOWSER_APP_HOST_MENU_PROBE_CONSENT = 'disposable-app-host-menu-synthetic-clipboard'
+          # Do not read, back up, or clear the runner clipboard. Non-empty/locked means fail closed.
+          cargo +stable test --locked --lib --features html-chrome-default,experimental-engine-context-menu engine::app_host_menu_probe::live::live_probe_real_app_host_context_menu -- --exact --ignored --nocapture --test-threads=1 2>&1 | Tee-Object store-real-app-host-context-menu.log
+          if ($LASTEXITCODE -ne 0) { throw 'Separate actual App native/host regression unavailable or failed; no activation.' }
+      - name: Probe independent actual App host-only Insert note and Split
+        if: ${{ !cancelled() && steps.experimental_menu_build.outcome == 'success' }}
+        run: |
+          $env:BOWSER_APP_HOST_NOTE_SPLIT_PROBE_CONSENT = 'disposable-app-host-menu-note-split-no-clipboard'
+          # A separate exact libtest process creates its own ordinary profile and evidence directory.
+          # Run even after the original Copy/Paste gate fails; do not continue-on-error or mask it.
+          cargo +stable test --locked --lib --features html-chrome-default,experimental-engine-context-menu engine::app_host_menu_probe::live::note_split::live_probe_real_app_host_note_split_context_menu -- --exact --ignored --nocapture --test-threads=1 2>&1 | Tee-Object store-real-app-host-note-split-context-menu.log
+          if ($LASTEXITCODE -ne 0) { throw 'Independent actual App host-only note/Split regression unavailable or failed; original Copy/Paste gate remains required.' }
+      - name: Save independent host-only note Split evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: store-real-app-host-note-split-diagnostics-${{ github.sha }}
+          path: |
+            store-real-app-host-note-split-context-menu.log
+            store-real-app-host-note-split-context-menu/**/*.json
+          if-no-files-found: warn
+          retention-days: 14
+      - name: Save independent native safety gate evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: store-native-safety-diagnostics-${{ github.sha }}
+          path: |
+            store-signed-original-probe.log
+            store-record-temp-probe.log
+            store-update-model-probe.log
+            store-content-script-review.log
+            store-document-gate-unit.log
+            store-document-gate-native.log
+            store-native-installer-band-component.log
+            store-band-loader-imports.log
+            store-band-loader-identity.log
+            store-band-libtest-manifest.log
+            store-band-libtest.manifest.xml
+            store-band-system-comctl-exports.log
+            store-native-installer-band-component/*.json
+            store-native-installer-band-component/*.png
+            store-native-installer-band-component-v2/*.json
+            store-native-installer-band-component-v2/*.log
+            store-native-installer-band-component-v2/*.png
+            store-native-installer-band-component/*.log
+            store-guidance-font-measurements.log
+            store-page-links-controls.log
+            store-page-links-runtime-controls.log
+            store-native-command-probe.log
+            store-native-worker-query-probe.log
+            store-native-ctrl-l-probe.log
+            store-native-action-keyboard-probe.log
+            ${{ runner.temp }}/bowser-native-page-links-*/*.png
+            ${{ runner.temp }}/bowser-native-page-links-*/*.json
+            store-pending-native-probe.log
+            store-completed-restart-probe.log
+            store-stale-owner-probe.log
+            store-fail-closed-environment-probe.log
+            store-profile-private-isolation-probe.log
+            store-native-api-isolation.log
+            store-native-context-menu.log
+            store-native-context-menu-observation/*.json
+            store-native-context-menu-observation/*.log
+            store-native-context-menu-observation/*.png
+            store-default-context-menu-cancellation/*.json
+            store-default-context-menu-cancellation/*.log
+            store-default-context-menu-cancellation/*.png
+            store-default-context-cancellation.log
+            store-custom-context-stale-dispatch.log
+            store-real-app-menu-unit.log
+            store-real-app-context-menu.log
+            store-real-app-host-context-menu.log
+            store-real-app-host-context-menu/**/*.json
+            store-real-app-context-menu/**/*.json
+            store-real-app-context-menu/**/*.log
+            store-real-app-context-menu/**/*.png
+            store-real-app-context-menu/**/*.txt
+            store-custom-context-menu.log
+            store-custom-context-menu/**/*.json
+            store-custom-context-menu/**/*.log
+            store-custom-context-menu/**/*.png
+            store-ui-profile-isolation-probe.log
+            store-crash-recovery-probe.log
+            store-update-probe.log
+          if-no-files-found: warn
+          retention-days: 14
+  native-store-journey:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Preserve fingerprinted source bytes
+        run: git config --global core.autocrlf false
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Parse native lifecycle scripts
+        run: |
+          [void][scriptblock]::Create((Get-Content benchmarks/scripts/probe-native-store.ps1 -Raw))
+          [void][scriptblock]::Create((Get-Content benchmarks/scripts/native-store-record-reader.psm1 -Raw))
+          [void][scriptblock]::Create((Get-Content benchmarks/scripts/test-native-store-record-reader.ps1 -Raw))
+          [void][scriptblock]::Create((Get-Content benchmarks/scripts/probe-native-extension-link.ps1 -Raw))
+          [void][scriptblock]::Create((Get-Content benchmarks/scripts/probe-native-extension-command.ps1 -Raw))
+          [void][scriptblock]::Create((Get-Content benchmarks/scripts/measure-native-extensions.ps1 -Raw))
+      - name: Install official Rust toolchain
+        run: rustup toolchain install stable --profile minimal
+      - name: Check read-only record observers permit atomic replacement
+        run: ./benchmarks/scripts/test-native-store-record-reader.ps1
+      - name: Build exact native HTML-default debug executable
+        run: |
+          cargo +stable build --locked --bin bowser --features html-chrome-default
+          if ($LASTEXITCODE -ne 0) { throw 'Native Store debug build failed.' }
+      - name: Exercise actual native Store consent lifecycle through Windows accessibility
+        run: ./benchmarks/scripts/probe-native-store.ps1 -InstallJourney
+      - name: Save native-only evidence, never downloaded packages or profile data
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: store-native-journey-${{ github.sha }}
+          path: ${{ runner.temp }}/bowser-native-store/
+          if-no-files-found: warn
+          retention-days: 14

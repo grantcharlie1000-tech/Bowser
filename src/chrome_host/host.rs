@@ -1001,15 +1001,20 @@ fn install_handlers(
         }));
 
         // Popups are swallowed.
+        #[cfg(test)] let window_probe=crate::extension_window_probe::Observer::prepare("privileged-chrome-host",webview);
+        #[cfg(test)] let request_probe=window_probe.clone();
         webview.add_NewWindowRequested(
             &NewWindowRequestedEventHandler::create(Box::new(move |_sender, args| {
                 if let Some(args) = args {
+                    #[cfg(test)] let request_id=request_probe.enter(_sender.as_ref(),&args);
                     args.SetHandled(true)?;
+                    #[cfg(test)] request_probe.finish(request_id,&args,"blocked-existing-policy",false);
                 }
                 Ok(())
             })),
             &mut token,
         )?;
+        #[cfg(test)] window_probe.installed();
         let w = webview.clone();
         removers.push(Box::new(move || {
             let _ = w.remove_NewWindowRequested(token);
@@ -1435,6 +1440,11 @@ mod tests {
         assert_eq!(super::diagnostic_frame_view(&format!("{}&private=1", super::START_URL)), None);
     }
     use super::*;
+
+    impl ChromeHost {
+        /// Rust-only ignored diagnostics. Never a host object, message command or production API.
+        pub(crate) fn probe_native_webview(&self) -> ICoreWebView2 { self.state.borrow().webview.clone() }
+    }
 
     #[test]
     fn three_consecutive_com_failures_trip_and_success_resets() {

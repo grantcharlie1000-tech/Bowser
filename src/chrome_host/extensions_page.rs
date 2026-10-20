@@ -134,6 +134,8 @@ pub enum Action {
     Remove(String),
     /// Open its popup in Bowser's extension page window.
     Popup(String),
+    Options(String),
+    CheckUpdate(String),
     /// Install an unpacked folder: Bowser's folder picker and its native permission confirmation.
     Install,
     /// Install a `.crx` file on disk: Bowser's file picker, verification, then the same confirmation.
@@ -151,6 +153,8 @@ pub fn map_command(f: &PanelFields) -> Option<Action> {
         ("extension", Some(on)) => Action::SetEnabled { id: id()?, on },
         ("extremove", None) => Action::Remove(id()?),
         ("extpopup", None) => Action::Popup(id()?),
+        ("extoptions", None) => Action::Options(id()?),
+        ("extupdate", None) => Action::CheckUpdate(id()?),
         ("extinstall", None) if f.text.is_none() => Action::Install,
         ("extinstallcrx", None) if f.text.is_none() => Action::InstallCrx,
         _ => return None,
@@ -199,6 +203,7 @@ mod tests {
             permissions: vec!["storage".into(), "tabs".into()],
             host_permissions: vec!["https://example.com/*".into()],
             content_script_matches: vec!["<all_urls>".into()],
+            content_script_declarations: Vec::new(),
             optional_permissions: vec!["downloads".into()],
             optional_host_permissions: vec!["https://news.example/*".into()],
         }
@@ -319,6 +324,7 @@ mod tests {
                 permissions: vec!["storage".into()],
                 host_permissions: Vec::new(),
                 content_script_matches: Vec::new(),
+                content_script_declarations: Vec::new(),
                 optional_permissions: Vec::new(),
                 optional_host_permissions: Vec::new(),
             }),

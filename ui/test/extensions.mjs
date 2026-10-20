@@ -293,7 +293,7 @@ test('section: loading, then the list; a labelled card, a row per extension, the
   assert.equal(notes.querySelector('.sp-ext-failure').textContent, 'Load failed: 0x80070002');
   assert.equal(section.root.querySelector('.sp-ext-install').hidden, false);
   assert.match(section.root.querySelector('.sp-ext-note').textContent, /cannot narrow them/);
-  assert.doesNotMatch(visibleText(), /web store|\benforc|badge/i);
+  assert.doesNotMatch(visibleText(), /\benforc|badge/i);
 });
 
 test('section: Install CRX file… sits beside Install unpacked… with the same weight, and they hide together', () => {
@@ -305,7 +305,8 @@ test('section: Install CRX file… sits beside Install unpacked… with the same
   assert.equal(crx.className.replace('sp-ext-install-crx', '').trim(), unpacked.className.replace('sp-ext-install', '').trim(), 'same visual weight');
   assert.equal(crx.hidden, unpacked.hidden);
   assert.equal(crx.getAttribute('aria-describedby'), 'sp-ext-note');
-  assert.doesNotMatch(head.textContent, /\bstore\b|chrome web|add to chrome|one-click/i);
+  assert.doesNotMatch(`${unpacked.textContent} ${crx.textContent}`, /\bstore\b|chrome web|add to chrome|one-click/i);
+  assert.ok(button(head, 'Open Chrome Web Store'), 'discovery is a separate original-site action');
 });
 
 test('section: the switch sends its id and waits for the answer; the answer is a toast', () => {
@@ -420,7 +421,8 @@ test('section: Install CRX file… asks Bowser to open its file picker, once, an
   receive({ ...fixture.empty, d: { ...fixture.empty.d, ack: 'failed', error: 'The extension was not installed. The file did not verify as a signed CRX package: CRX signature does not verify.' } });
   assert.deepEqual(toasts.at(-1), { text: 'The extension was not installed. The file did not verify as a signed CRX package: CRX signature does not verify.', ok: false }, 'a failure uses the existing error toast');
   assert.equal(button(card(), 'Install CRX file…').disabled, false);
-  assert.doesNotMatch(visibleText(), /\bstore\b|chrome web|add to chrome|one-click/i);
+  assert.doesNotMatch(button(card(), 'Install CRX file…').textContent, /\bstore\b|chrome web|add to chrome|one-click/i);
+  assert.ok(button(section.root, 'Open Chrome Web Store'), 'the store is a separate entry point');
 });
 
 test('section: an unreadable list and an invalid snapshot each say so and offer to try again', () => {
@@ -492,4 +494,56 @@ test('settings.css: the section moves only colour and keeps to the page tokens',
   }
   assert.doesNotMatch(block, /var\(--(bg|fill|border|text|placeholder|hover)\)/, 'host inputs only through --bw-* tokens');
   assert.doesNotMatch(block, /#(?!c42b1c\b)[0-9a-f]{3,8}\b/i, 'no new literal colours (the page’s danger red is reused)');
+});
+
+
+test('toolbar: native top-level listing action is visible and resets back to popup mode', () => {
+  const msg = protocol.parseInbound(JSON.stringify({ v: 1, t: 'extbtn', on: true, n: 0, name: 'Add to Bowser', store: true }));
+  assert.ok(msg);
+  view.extensions.apply(msg);
+  assert.equal(ext.hidden, false);
+  assert.equal(ext.getAttribute('aria-label'), 'Add to Bowser');
+  assert.equal(ext.querySelector('.tb-ext-store-copy').hidden, false);
+  assert.equal(ext.querySelector('.tb-ext-store-note').textContent, 'Google installs into Chrome. Bowser support varies.');
+  assert.equal(ext.getAttribute('aria-describedby'), ext.querySelector('.tb-ext-store-note').id);
+  assert.equal(ext.querySelector('.tb-ext-store-label').hidden, false);
+  assert.ok(ext.classList.contains('is-store'));
+  assert.ok(bar.classList.contains('has-store-ext'));
+  assert.equal(ext.getAttribute('aria-haspopup'), null);
+  view.extensions.apply(protocol.parseInbound(JSON.stringify(fixture.buttonOne)));
+  assert.equal(ext.querySelector('.tb-ext-store-label').hidden, true);
+  assert.equal(ext.querySelector('.tb-ext-store-copy').hidden, true);
+  assert.equal(ext.getAttribute('aria-describedby'), null);
+  assert.equal(ext.classList.contains('is-store'), false);
+  assert.equal(bar.classList.contains('has-store-ext'), false);
+  for (const patch of [{ on: false }, { n: 1 }, { name: 'Injected website title' }, { store: 'true' }]) {
+    assert.equal(protocol.parseInbound(JSON.stringify({ v: 1, t: 'extbtn', on: true, n: 0, name: 'Add to Bowser', store: true, ...patch })), null);
+  }
+});
+
+
+test('settings store URL input validates origin and sends native review, not installation approval', () => {
+  receive(fixture.empty);
+  const input = section.root.querySelector('.sp-ext-link').querySelector('input');
+  const review = button(section.root, 'Review extension');
+  input.value = 'https://evil.test/detail/' + 'a'.repeat(32);
+  sent.length = 0; review.click();
+  assert.equal(sent.length, 0);
+  input.value = 'https://chromewebstore.google.com/detail/reader/' + 'a'.repeat(32);
+  review.click();
+  assert.deepEqual(sent, [{ v: 1, t: 'set', a: 'storeurl', text: input.value }]);
+  assert.equal(review.disabled, true);
+});
+
+test('native listing CTA remains visible with Extensions removed from toolbar', () => {
+  bar.classList.add('bar-no-ext');
+  ext.remove();
+  view.extensions.apply({ t: 'extbtn', on:true, n:0, name:'Add to Bowser', store:true });
+  assert.equal(ext.hidden, false);
+  assert.equal(ext.parent, bar.querySelector('.actions'));
+  assert.ok(bar.classList.contains('has-store-ext'));
+  view.extensions.apply({ t:'extbtn', on:true, n:1, name:'Popup extension' });
+  assert.equal(ext.hidden, true);
+  assert.equal(bar.classList.contains('has-ext'), false);
+  bar.classList.remove('bar-no-ext');
 });

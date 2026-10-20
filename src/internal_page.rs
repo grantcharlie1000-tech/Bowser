@@ -121,6 +121,7 @@ pub enum InternalPage {
     Settings(Option<Section>),
     History,
     Downloads,
+    Store,
 }
 
 impl InternalPage {
@@ -131,6 +132,7 @@ impl InternalPage {
             Self::Settings(Some(section)) => format!("{SCHEME}://{SETTINGS_HOST}/{}", section.key()),
             Self::History => format!("{SCHEME}://{HISTORY_HOST}"),
             Self::Downloads => format!("{SCHEME}://{DOWNLOADS_HOST}"),
+            Self::Store => format!("{SCHEME}://store"),
         };
         Url::parse(&text).expect("canonical internal URL parses")
     }
@@ -139,7 +141,7 @@ impl InternalPage {
     pub fn section(self) -> Option<Section> {
         match self {
             Self::Settings(section) => section,
-            Self::History | Self::Downloads => None,
+            Self::History | Self::Downloads | Self::Store => None,
         }
     }
 
@@ -148,6 +150,7 @@ impl InternalPage {
             Self::Settings(_) => SETTINGS_TITLE,
             Self::History => HISTORY_TITLE,
             Self::Downloads => DOWNLOADS_TITLE,
+            Self::Store => "Bowser Store",
         }
     }
 
@@ -157,6 +160,7 @@ impl InternalPage {
             Self::Settings(_) => SETTINGS_FAVICON,
             Self::History => HISTORY_FAVICON,
             Self::Downloads => DOWNLOADS_FAVICON,
+            Self::Store => SETTINGS_FAVICON,
         }
     }
 
@@ -168,6 +172,10 @@ impl InternalPage {
     pub fn is_settings(self) -> bool {
         matches!(self, Self::Settings(_))
     }
+
+    pub fn is_store(self) -> bool { matches!(self, Self::Store) }
+
+    pub fn is_settings_host(self) -> bool { self.is_settings() || self.is_store() }
 
     pub fn is_history(self) -> bool {
         matches!(self, Self::History)
@@ -195,7 +203,8 @@ pub fn parse(url: &Url) -> Option<InternalPage> {
     let host = url.host_str()?;
     let settings = host.eq_ignore_ascii_case(SETTINGS_HOST);
     let history = host.eq_ignore_ascii_case(HISTORY_HOST);
-    if !settings && !history && !host.eq_ignore_ascii_case(DOWNLOADS_HOST) {
+    let store = host.eq_ignore_ascii_case("store");
+    if !settings && !history && !store && !host.eq_ignore_ascii_case(DOWNLOADS_HOST) {
         return None;
     }
     let path = url.path();
@@ -205,7 +214,7 @@ pub fn parse(url: &Url) -> Option<InternalPage> {
         return None;
     }
     if !settings {
-        return path.is_empty().then_some(if history { InternalPage::History } else { InternalPage::Downloads });
+        return path.is_empty().then_some(if history { InternalPage::History } else if store { InternalPage::Store } else { InternalPage::Downloads });
     }
     let section = Section::from_key(&path.to_ascii_lowercase());
     Some(InternalPage::Settings(section))
@@ -264,6 +273,17 @@ mod tests {
 
     fn url(text: &str) -> Url {
         Url::parse(text).unwrap()
+    }
+
+    #[test]
+    fn store_is_a_canonical_internal_route_not_a_website_or_settings() {
+        let page = InternalPage::Store;
+        assert_eq!(parse_input("bowser://store"), Some(page));
+        assert_eq!(parse_input(" BOWSER://Store/ "), Some(page));
+        assert_eq!(page.url().as_str(), "bowser://store");
+        assert!(persistable(&page.url()));
+        assert!(page.is_settings_host() && page.is_store() && !page.is_settings());
+        for bad in ["bowser://store/extra", "bowser://user@store", "bowser://store:42", "https://store", "bowser://store.evil"] { assert_eq!(parse_input(bad), None); }
     }
 
     #[test]

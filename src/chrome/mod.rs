@@ -7,3 +7,6 @@ pub mod rail;
 pub mod rail_icons;
 pub mod tab_card;
 pub mod vertical_paint;
+
+#[cfg(all(test, target_os = "windows"))]
+mod store_guidance_layout;
