@@ -422,7 +422,7 @@ pub fn read_tasks(path: &Path) -> Vec<Task> {
     read_tasks_for_change(path).unwrap_or_default()
 }
 /// The tasks a change rewrites: an error, never an empty list, when the file cannot be read.
-fn read_tasks_for_change(path: &Path) -> std::io::Result<Vec<Task>> {
+pub(crate) fn read_tasks_for_change(path: &Path) -> std::io::Result<Vec<Task>> {
     Ok(read_list_for_change(path, TASKS_HEADER)?.map_or_else(Vec::new, |text| parse_tasks(&text)))
 }
 /// Replaces `tasks.txt`. Refused when the list would be too large to read back, or when the file

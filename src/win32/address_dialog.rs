@@ -361,7 +361,7 @@ fn save_bookmark(app: &AppRef, owner: HWND, url: &str, name: &str, folder: u64, 
         return Err("Bookmarks are not saved in a guest session.".to_owned());
     }
     let mut store = BookmarkStore::load(profile.root()).map_err(|error| format!("Bookmarks could not be loaded: {error}"))?;
-    let mut extras = Extras::load(profile.root());
+    let mut extras = Extras::load_for_change(profile.root()).map_err(|error| format!("Bookmark details could not be loaded: {error}"))?;
     extras.prune(&store);
     let parent = parent_of(folder);
     let existing = store.items().iter().find(|item| matches!(&item.kind, BookmarkKind::Link { url: stored, .. } if stored == url)).map(|item| item.id);
@@ -392,10 +392,12 @@ fn remove_bookmark(owner: HWND, url: &str) {
     let Ok(mut store) = BookmarkStore::load(profile.root()) else { return };
     let Some(id) = store.items().iter().find(|item| matches!(&item.kind, BookmarkKind::Link { url: stored, .. } if stored == url)).map(|item| item.id) else { return };
     store.delete(id);
-    let mut extras = Extras::load(profile.root());
-    extras.remove(id);
+    let extras = Extras::load_for_change(profile.root());
     if store.save(profile.root()).is_ok() {
-        let _ = extras.save(profile.root());
+        if let Ok(mut extras) = extras {
+            extras.remove(id);
+            let _ = extras.save(profile.root());
+        }
         super::post(owner, super::WM_RAIL_CHANGED, WPARAM(0), LPARAM(0));
     }
 }
@@ -504,7 +506,7 @@ pub(super) fn apply_metadata(tab_title: String, user_name: Option<&str>, url: &s
 pub(super) fn save_description(profile: &crate::profile::Profile, url: &str, description: &str) {
     let Ok(store) = BookmarkStore::load(profile.root()) else { return };
     let Some(id) = store.items().iter().find(|item| matches!(&item.kind, BookmarkKind::Link { url: stored, .. } if stored == url)).map(|item| item.id) else { return };
-    let mut extras = Extras::load(profile.root());
+    let Ok(mut extras) = Extras::load_for_change(profile.root()) else { return };
     extras.prune(&store);
     let nickname = extras.nickname(id).to_owned();
     if extras.set(id, &nickname, description).is_ok() {

@@ -16,8 +16,8 @@ pub const MAX_CHAINS: usize = 64;
 pub const MAX_STEPS: usize = 32;
 pub const MAX_DELAY_MS: u32 = 60_000;
 pub const MAX_NAME_CHARS: usize = 48;
-const MAX_FILE_BYTES: usize = 128 * 1024;
-const HEADER: &str = "bowser-chains-v1";
+pub(super) const MAX_FILE_BYTES: usize = 128 * 1024;
+pub(super) const HEADER: &str = "bowser-chains-v1";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Step {
@@ -58,7 +58,7 @@ pub fn parse(text: &str) -> Vec<Chain> {
     if text.len() > MAX_FILE_BYTES {
         return Vec::new();
     }
-    let mut lines = text.lines();
+    let mut lines = text.trim_start_matches('\u{feff}').lines();
     if lines.next().map(str::trim) != Some(HEADER) {
         return Vec::new();
     }

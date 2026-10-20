@@ -581,10 +581,12 @@ fn pick(owner: HWND, app: &AppRef, id: usize) {
             }
             (DELETE, _) => {
                 store.delete(target);
-                let mut extras = crate::bookmark_extras::Extras::load(profile.root());
-                extras.remove(target);
+                let extras = crate::bookmark_extras::Extras::load_for_change(profile.root());
                 if store.save(profile.root()).is_ok() {
-                    let _ = extras.save(profile.root());
+                    if let Ok(mut extras) = extras {
+                        extras.remove(target);
+                        let _ = extras.save(profile.root());
+                    }
                     super::post(owner, super::WM_RAIL_CHANGED, WPARAM(0), LPARAM(0));
                 }
             }
