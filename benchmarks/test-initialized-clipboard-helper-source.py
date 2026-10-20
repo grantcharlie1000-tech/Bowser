@@ -115,12 +115,21 @@ class InitializedClipboardHelperSourceContracts(unittest.TestCase):
         self.assertIn('"initializer unknown owner query"', cases)
         self.assertIn('"cleanup owner query error"', cases)
         self.assertIn('"Copy owner query error"', cases)
+
         for label in ("Copy post-getter null owner error", "Copy post-read null owner error", "cleanup post-clear null owner error"):
             self.assertIn(label, cases)
         fake_query = block("public bool TryOwner(", block("class SyntheticClipboardPolicyOps:"))
         self.assertIn("owner=postError?IntPtr.Zero:CurrentOwner", fake_query)
         self.assertIn("error=postError?5:OwnerQueryError", fake_query)
         self.assertIn("OwnerErrorAfterContent&&ContentReadCompleted", fake_query)
+
+    def test_synthetic_no_input_counter_is_explicit_without_suppressing_compiler_warnings(self):
+        synthetic = block("class SyntheticClipboardPolicyOps:")
+        self.assertIn("InputCalls=0", synthetic)
+        self.assertNotIn("InputCalls++", synthetic)
+        self.assertNotIn("#pragma warning disable", CS)
+        checker = (ROOT / "benchmarks/scripts/test-native-menu-helpers.ps1").read_text()
+        self.assertNotIn("-IgnoreWarnings", checker)
 
     def test_initializer_handoff_is_not_cleanup_or_custody(self):
         fixture = block("public sealed class InitializedEmptyClipboardFixture:")

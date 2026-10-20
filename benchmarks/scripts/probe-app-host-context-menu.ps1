@@ -518,7 +518,7 @@ public static class BowserHostMenu {
  class SyntheticClipboardPolicyOps:ClipboardPolicyOps {
   public bool Contract=true,OpenOk=true,CloseOk=true,EmptyOk=true,Exact=true,Alive=true,Pid=true,Thread=true,WindowClass=true,Unknown=false,HelperAlive=true,HelperKnown=true,HelperPid=true,HelperThread=true,HelperClass=true;
   public uint CurrentSequence=7,CurrentFormat=0;public int EnumError,OwnerQueryError;public IntPtr CurrentOwner=IntPtr.Zero;public bool OwnerQueryOk=true,OwnerErrorAfterEmpty,OwnerErrorAfterData,OwnerErrorAfterContent,ContentReadCompleted,ZeroAfterEmpty,WrongOwnerAfterEmpty,FailAfterEnum,Reenter;
-  public int OpenCalls,EmptyCalls,CloseCalls,SequenceCalls,OwnerCalls,EnumCalls,ContentCalls,InputCalls,MutationsAtReentry;public int LateMismatchAtMatch,HelperFailAtMatch,HelperDiesAtMatch,HelperUnknownAtMatch;int matches,helperMatches;
+  public int OpenCalls,EmptyCalls,CloseCalls,SequenceCalls,OwnerCalls,EnumCalls,ContentCalls,InputCalls=0,MutationsAtReentry;public int LateMismatchAtMatch,HelperFailAtMatch,HelperDiesAtMatch,HelperUnknownAtMatch;int matches,helperMatches;
   public ClipboardCleanupFence ReentryFence;public ClipboardEpoch Epoch=new ClipboardEpoch{Window=new IntPtr(11),Pid=1,Thread=2,WindowClass="Static"};public ClipboardEpoch HelperEpoch=new ClipboardEpoch{Window=new IntPtr(11),Pid=1,Thread=2,WindowClass="Static"};
   public bool DedicatedContract {get{return Contract;}}public ClipboardEpoch Helper{get{return HelperEpoch;}}
   public bool Open(){OpenCalls++;return OpenOk;}public uint Sequence(){SequenceCalls++;return CurrentSequence;}
