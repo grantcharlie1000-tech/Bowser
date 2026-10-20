@@ -9,6 +9,8 @@ use std::{
 const MAX_BYTES: usize = 1024 * 1024;
 const MAX_ITEMS: usize = 5000;
 const MAX_FIELD: usize = 4096;
+/// The row that keeps the next bookmark id: `next<TAB>id`.
+const NEXT_ID_ROW: &str = "next";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum BookmarkKind {
@@ -475,8 +477,17 @@ impl BookmarkStore {
     }
     pub fn serialize(&self) -> String {
         let mut out = String::from("bowser-bookmarks-v2\n");
+        let mut highest = 0;
         for i in self.items.iter().take(MAX_ITEMS) {
+            highest = highest.max(i.id);
             out.push_str(&row_text(i));
+        }
+        // Ids are keys elsewhere (nicknames and descriptions, speed-dial thumbnails), so the next id
+        // is kept when deletions put it past the highest one left: otherwise the next load would
+        // hand a deleted id to a new bookmark. An older build skips this row as one it cannot parse.
+        let next = format!("{NEXT_ID_ROW}\t{}\n", self.next_id);
+        if self.next_id > highest.saturating_add(1) && out.len() + next.len() <= MAX_BYTES {
+            out.push_str(&next);
         }
         out
     }
@@ -509,7 +520,18 @@ impl BookmarkStore {
             let created = f.next()?.parse().ok()?;
             Some((id, parent, kind, title, url, host, created))
         };
-        for line in lines.take(MAX_ITEMS) {
+        let mut rows = 0;
+        for line in lines {
+            if let Some(next) = line.strip_prefix(NEXT_ID_ROW).and_then(|rest| rest.strip_prefix('\t')) {
+                if let Ok(next) = next.parse::<u64>() {
+                    s.next_id = s.next_id.max(next);
+                }
+                continue;
+            }
+            if rows == MAX_ITEMS {
+                continue;
+            }
+            rows += 1;
             let Some((id, parent, kind, title, url, host, created)) = row(line) else {
                 continue;
             };
@@ -840,5 +862,25 @@ mod tests {
         assert_eq!(item(a).title, "A2");
         assert_eq!(item(b).title, "B");
         assert!(matches!(item(folder).kind, BookmarkKind::Folder));
+    }
+
+    /// R-5: every bookmark action reloads the file. Deleting the newest bookmark and then adding
+    /// another must not hand out the deleted id again, or the new bookmark inherits the old one's
+    /// nickname, description and speed-dial thumbnail (all keyed by id).
+    #[test]
+    fn a_deleted_bookmarks_id_is_never_handed_out_again() {
+        let mut store = BookmarkStore::parse("bowser-bookmarks-v2\n").unwrap();
+        store.add_bookmark(None, "Bank", "https://bank.example/").unwrap();
+        let mail = store.add_bookmark(None, "Work mail", "https://mail.work.example/").unwrap();
+        store.delete(mail);
+        let mut reloaded = BookmarkStore::parse(&store.serialize()).unwrap();
+        let other = reloaded.add_bookmark(None, "Other", "https://other.example/").unwrap();
+        assert!(other > mail, "deleted id {mail}, new id {other}");
+        // Still true after the next reload, and a file without deletions is written as before.
+        let again = BookmarkStore::parse(&reloaded.serialize()).unwrap();
+        assert_eq!(again, reloaded);
+        let mut fresh = BookmarkStore::new();
+        fresh.add_bookmark(None, "A", "https://a.example/").unwrap();
+        assert_eq!(fresh.serialize().lines().count(), 2, "{}", fresh.serialize());
     }
 }

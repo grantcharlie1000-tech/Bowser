@@ -570,7 +570,14 @@ fn handle_notes(runtime: &Rc<RefCell<Runtime>>, f: PanelFields) {
     let Ok(profile) = profile::active() else { return; };
     let parent = runtime.borrow().parent;
     let mut book = notes_panel::html_book(&profile);
-    let mut tasks = notes_panel::html_tasks(&profile);
+    // A task edit rewrites the whole list: when `tasks.txt` cannot be read, the edit is refused
+    // rather than saving the change over an empty list (which would delete every task).
+    let read_tasks = notes_panel::html_tasks_for_change(&profile);
+    let mut tasks = read_tasks.as_ref().map_or_else(|_| Vec::new(), Clone::clone);
+    let save_tasks = |tasks: &[crate::productivity::Task]| match &read_tasks {
+        Ok(_) => notes_panel::save_html_tasks(&profile, tasks),
+        Err(error) => Err(std::io::Error::new(error.kind(), error.to_string())),
+    };
     let text_len_ok = |max: usize| f.text.as_ref().is_some_and(|s| s.chars().count() <= max);
     let only = |id: bool, parent_f: bool, n: bool, on: bool, text: bool| (f.id.is_some() == id) && (f.parent.is_some() == parent_f) && (f.n.is_some() == n) && (f.on.is_some() == on) && (f.text.is_some() == text) && f.before.is_none() && f.url.is_none();
     let now = || { let since = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default(); (since.as_secs(), since.as_micros() as u64) };
@@ -633,13 +640,13 @@ fn handle_notes(runtime: &Rc<RefCell<Runtime>>, f: PanelFields) {
             if left_out > 0 { show_error_message(&format!("Imported {added} notes. {left_out} did not fit: there is room for 100 notes.")); }
             notes_panel::save_html_book(&profile, &book)
         }
-        "add-task" if empty_fields(&f, false) => { let id = next_id(tasks.iter().map(|task| task.id)); tasks.push(crate::productivity::Task { id, complete: false, text: "New task".into() }); notes_panel::save_html_tasks(&profile, &tasks) }
+        "add-task" if empty_fields(&f, false) => { let id = next_id(tasks.iter().map(|task| task.id)); tasks.push(crate::productivity::Task { id, complete: false, text: "New task".into() }); save_tasks(&tasks) }
         "save-task" if f.parent.is_none() && f.before.is_none() && f.n.is_none() && f.on.is_none() && f.url.is_none() && f.id.is_some() && f.text.as_ref().is_some_and(|s| s.chars().count() <= 2048) => {
-            let Some(task) = tasks.iter_mut().find(|item| item.id == f.id.unwrap_or_default()) else { return; }; task.text = f.text.unwrap_or_default(); notes_panel::save_html_tasks(&profile, &tasks)
+            let Some(task) = tasks.iter_mut().find(|item| item.id == f.id.unwrap_or_default()) else { return; }; task.text = f.text.unwrap_or_default(); save_tasks(&tasks)
         }
-        "delete-task" if id_only(&f) => { tasks.retain(|item| item.id != f.id.unwrap_or_default()); notes_panel::save_html_tasks(&profile, &tasks) }
+        "delete-task" if id_only(&f) => { tasks.retain(|item| item.id != f.id.unwrap_or_default()); save_tasks(&tasks) }
         "toggle-task" if f.parent.is_none() && f.before.is_none() && f.n.is_none() && f.text.is_none() && f.url.is_none() && f.id.is_some() && f.on.is_some() => {
-            let Some(task) = tasks.iter_mut().find(|item| item.id == f.id.unwrap_or_default()) else { return; }; task.complete = f.on.unwrap_or(false); notes_panel::save_html_tasks(&profile, &tasks)
+            let Some(task) = tasks.iter_mut().find(|item| item.id == f.id.unwrap_or_default()) else { return; }; task.complete = f.on.unwrap_or(false); save_tasks(&tasks)
         }
         _ => return,
     };
