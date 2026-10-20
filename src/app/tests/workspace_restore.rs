@@ -1,5 +1,5 @@
-//! Workspaces across a restart (T1, T2, T3), and strip moves and workspace creation that the model
-//! refuses (T4, T7).
+//! Workspaces across a restart (T1, T2, T3), strip moves and workspace creation that the model
+//! refuses (T4, T7), reopening a closed tab (T6) and crossing workspaces by selecting a tab (T8).
 
 use super::*;
 use crate::workspaces::{WorkspaceId, WorkspaceSet};
@@ -247,4 +247,37 @@ fn a_reopened_tab_returns_to_its_place_in_its_own_workspace() {
     assert_eq!(App::tab_ids(&app), [a0, again, a2]);
     assert_eq!(app.borrow().workspaces.get(work).unwrap().tabs(), [b0, back, b2], "Work is unchanged");
     assert_membership_is_sound(&app);
+}
+
+/// Whether a `WM_RAIL_CHANGED` was posted to this thread (the test app has no window, so its
+/// posts land in the thread's queue). Takes every one of them off the queue.
+fn rail_change_posted() -> bool {
+    use windows::Win32::UI::WindowsAndMessaging::{MSG, PM_REMOVE, PeekMessageW};
+    let mut message = MSG::default();
+    let mut seen = false;
+    while unsafe { PeekMessageW(&mut message, None, crate::win32::WM_RAIL_CHANGED, crate::win32::WM_RAIL_CHANGED, PM_REMOVE) }.as_bool() {
+        seen = true;
+    }
+    seen
+}
+
+/// T8: selecting a tab of another workspace (Ctrl+Tab in MRU order, a search result) switches to
+/// that workspace, so the rail is told to show it, as a switch from the rail would.
+#[test]
+fn selecting_a_tab_of_another_workspace_tells_the_rail() {
+    let _ = rail_change_posted(); // creates the thread's queue and clears it
+    let app = app_with_pending(rect(800, 600));
+    let a0 = App::active_tab_id(&app);
+    let home = app.borrow().workspaces.active().id();
+    let _work = App::create_workspace(&app, "Work").unwrap();
+    let b0 = App::active_tab_id(&app);
+    let _b1 = App::new_tab(&app); // active, so b0 below is a switch within Work
+    let _ = rail_change_posted();
+
+    assert!(App::select_tab(&app, b0));
+    assert!(!rail_change_posted(), "a tab of the same workspace leaves the rail alone");
+
+    assert!(App::select_tab(&app, a0));
+    assert_eq!(app.borrow().workspaces.active().id(), home);
+    assert!(rail_change_posted(), "the rail still marks the old workspace");
 }
