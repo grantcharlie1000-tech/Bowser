@@ -23,6 +23,22 @@ pub struct Options<'a> {
     pub private: bool,
     /// The engine chosen in the search field, used instead of the default.
     pub engine: Option<&'a str>,
+    /// OB-8: the text is not something the user typed (a bookmark or group chip clicked, "Open
+    /// all", a reopened tab, text selected on a page), so it is not remembered as typed.
+    pub not_typed: bool,
+}
+
+impl Options<'_> {
+    /// An address the user picked rather than typed (a bookmark, a group chip, "Open all", a
+    /// closed tab offered again), opened in a new tab when `new_tab`.
+    pub fn picked(new_tab: bool) -> Self {
+        Self { new_tab, not_typed: true, ..Self::default() }
+    }
+
+    /// The text to remember as typed for a submit of `input`: none when it was not typed.
+    pub fn typed_text<'t>(&self, input: &'t str) -> Option<&'t str> {
+        (!self.not_typed).then_some(input)
+    }
 }
 
 /// What to open.
@@ -212,6 +228,22 @@ mod tests {
         assert_eq!((engine.as_str(), new_tab), ("optimised", false));
         assert!(matches!(run("javascript:alert(1)", &settings, Options::default()), Outcome::Refused(_)));
         assert!(matches!(run("ftp://x.example", &settings, Options::default()), Outcome::Refused(_)));
+    }
+
+    /// OB-8: a bookmark, a group chip, "Open all", a reopened tab or page text opens as before, but
+    /// only what the user typed is handed on to be remembered as typed.
+    #[test]
+    fn only_typed_text_is_remembered_as_typed() {
+        let settings = AddressSettings::default();
+        assert_eq!(Options::default().typed_text("rust"), Some("rust"), "the address field");
+        for new_tab in [false, true] {
+            let picked = Options::picked(new_tab);
+            assert_eq!(picked.typed_text("https://docs.example/"), None);
+            assert_eq!(navigate_url(&run("https://docs.example/", &settings, picked)), ("https://docs.example/", new_tab), "it still opens");
+        }
+        let selection = Options { new_tab: true, from_search_field: true, not_typed: true, ..Options::default() };
+        assert_eq!(selection.typed_text("text on a page"), None);
+        assert!(searched(&run("text on a page", &settings, selection)).2, "still searched, in a new tab");
     }
 
     #[test]

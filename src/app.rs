@@ -5621,7 +5621,7 @@ impl App {
                 win32::address_scoped_submit(hwnd, app, scope, &rest);
             }
             crate::address_input::Outcome::Open { destination, new_tab } => {
-                Self::open_destination(app, input, destination, new_tab, private);
+                Self::open_destination(app, options.typed_text(input), destination, new_tab, private);
             }
         }
     }
@@ -5660,7 +5660,8 @@ impl App {
         match pick {
             engine::ContextSearchPick::Selection(text) => {
                 let before = app.borrow().tab_model.active();
-                let options = crate::address_input::Options { new_tab: true, from_search_field: true, ..Default::default() };
+                // Page text, not typed: it is searched but not kept in the typed list (OB-8).
+                let options = crate::address_input::Options { new_tab: true, from_search_field: true, not_typed: true, ..Default::default() };
                 Self::submit_with(app, &text, options);
                 // "Search for selected text in a background tab": the page you were reading stays shown.
                 if background {
@@ -5671,15 +5672,18 @@ impl App {
                 let Some(engine) = engines.image_engine() else { return };
                 let Some(request) = engine.image_request(url.as_str()) else { return };
                 let destination = Destination::Search { request, query: url.to_string(), engine: engine.id.clone() };
-                Self::open_destination(app, "", destination, true, private);
+                Self::open_destination(app, None, destination, true, private);
             }
         }
     }
 
-    /// Opens what Enter resolved to, in the shown tab or a new one, and remembers the typed text.
-    fn open_destination(app: &AppRef, typed: &str, destination: crate::address_input::Destination, new_tab: bool, private: bool) {
+    /// Opens what Enter resolved to, in the shown tab or a new one, and remembers `typed` (the text
+    /// as the user typed it; `None` when it was not typed).
+    fn open_destination(app: &AppRef, typed: Option<&str>, destination: crate::address_input::Destination, new_tab: bool, private: bool) {
         use crate::address_input::Destination;
-        crate::address_runtime::record_typed(typed, matches!(destination, Destination::Search { .. }), private);
+        if let Some(typed) = typed {
+            crate::address_runtime::record_typed(typed, matches!(destination, Destination::Search { .. }), private);
+        }
         if new_tab {
             if private {
                 Self::new_private_tab(app);
