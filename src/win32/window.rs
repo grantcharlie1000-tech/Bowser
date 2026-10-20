@@ -1370,7 +1370,7 @@ impl WindowChrome {
         loaded_history(&mut self.history, &mut self.history_load)
     }
     /// Starts reading the history again (on the worker) when something was deleted from it since
-    /// it was read. Waits for nothing.
+    /// it was read. Waits for nothing: `loaded_history` takes the read once it has finished.
     fn reread_history_after_a_deletion(&mut self) {
         if self.history_removals != crate::productivity::history_removals() {
             self.history = History::default();
@@ -1395,12 +1395,21 @@ fn read_suggestion_history(path: &Path) -> History {
     history
 }
 
-/// `history`, after the startup load has been taken into it if it was still pending. Waits for the
-/// worker only if it has not finished, which is the first keystroke or visit right after launch.
+/// `history`, after a finished read on the worker (at launch, or after a deletion) has been taken
+/// into it. Never waits: a read still running is left running and `history` is what there is so
+/// far (empty after a deletion, so a deleted site is never offered meanwhile). Visits recorded into
+/// it meanwhile are replayed onto the read list when it is taken.
 fn loaded_history<'a>(history: &'a mut History, load: &mut Option<JoinHandle<History>>) -> &'a mut History {
-    if let Some(handle) = load.take()
-        && let Ok(loaded) = handle.join()
+    if load.as_ref().is_some_and(JoinHandle::is_finished)
+        && let Some(Ok(mut loaded)) = load.take().map(JoinHandle::join)
     {
+        let mut interim: Vec<(u64, &str, &str, u32)> = history.iter().map(|(url, title, visits, last)| (last, url, title, visits)).collect();
+        interim.sort_unstable_by_key(|entry| entry.0);
+        for (_, url, title, visits) in interim {
+            for _ in 0..visits {
+                loaded.record(url, title);
+            }
+        }
         *history = loaded;
     }
     history
@@ -1748,9 +1757,11 @@ fn flush_for_exit(hwnd: HWND, app: &AppRef) {
         return;
     }
     if unsafe { KillTimer(Some(hwnd), crate::win32::WM_PRIVACY_STATS_TIMER) }.is_ok() {
-        let _ = App::privacy_stats_save_now(app);
+        App::privacy_stats_save_in_background(app);
     }
     crate::productivity::flush_pending_history();
+    // A zoom or counters still queued for the writer thread.
+    crate::background_write::flush();
     // A session-only history ends with the session (thread T3).
     crate::history_retention::finish_at_exit();
     App::session_finish(app);
@@ -4291,7 +4302,7 @@ unsafe extern "system" fn window_proc(
             WM_TIMER if wparam.0 == crate::win32::WM_PRIVACY_STATS_TIMER => {
                 let _ = KillTimer(Some(hwnd), crate::win32::WM_PRIVACY_STATS_TIMER);
                 if let Some(app) = app {
-                    let _ = App::privacy_stats_save_now(app);
+                    App::privacy_stats_save_in_background(app);
                 }
                 LRESULT(0)
             }
@@ -13141,6 +13152,40 @@ mod tests {
         assert!(view[0].favicon.is_none());
     }
 
+    /// Waits (in a test only) for a pending history read, so the next `loaded_history` takes it.
+    fn wait_for_history_worker(load: &Option<JoinHandle<History>>) {
+        while load.as_ref().is_some_and(|handle| !handle.is_finished()) {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+    }
+
+    /// R-13: the first keystroke after launch, or after any history deletion, joined the history
+    /// worker on the UI thread, so it waited for a full read and parse of history.txt (and at
+    /// launch a retention prune with fsync). A read still running is now left running: the address
+    /// bar uses what it has, and a visit recorded meanwhile is kept when the read is taken.
+    #[test]
+    fn a_history_read_still_running_never_holds_up_the_address_bar() {
+        let (release, wait) = std::sync::mpsc::channel::<()>();
+        let mut history = History::default();
+        let mut load = Some(std::thread::spawn(move || {
+            let _ = wait.recv_timeout(std::time::Duration::from_secs(5));
+            let mut loaded = History::default();
+            loaded.record("https://example.com/", "Example");
+            loaded
+        }));
+        let started = std::time::Instant::now();
+        loaded_history(&mut history, &mut load).record("https://visited.example/", "Visited");
+        assert!(started.elapsed() < std::time::Duration::from_secs(2), "waited {:?} for the history worker", started.elapsed());
+        assert!(load.is_some(), "the running read is left running");
+        release.send(()).unwrap();
+        wait_for_history_worker(&load);
+        let taken = loaded_history(&mut history, &mut load);
+        assert!(load.is_none());
+        let mut urls: Vec<&str> = taken.iter().map(|(url, ..)| url).collect();
+        urls.sort_unstable();
+        assert_eq!(urls, ["https://example.com/", "https://visited.example/"], "the visit made during the read is kept");
+    }
+
     #[test]
     fn the_history_read_on_the_worker_is_taken_on_first_use() {
         let mut history = History::default();
@@ -13149,6 +13194,7 @@ mod tests {
             loaded.record("https://example.com/", "Example");
             loaded
         }));
+        wait_for_history_worker(&load);
         assert_eq!(loaded_history(&mut history, &mut load).len(), 1);
         assert!(load.is_none(), "the worker is joined once");
         // A visit recorded later lands in the loaded history.
@@ -13166,12 +13212,19 @@ mod tests {
         s.load_history_from_file(false);
         let completes = |s: &mut WindowChrome, typed: &str| {
             s.edit_text = typed.to_owned();
+            // The first keystroke after a deletion starts the re-read and never waits for it; until
+            // it is taken the deleted sites are already gone (the old list is dropped at once).
+            s.update_completion();
+            wait_for_history_worker(&s.history_load);
             s.update_completion();
             s.completion.as_ref().map(|c| c.full_url.clone())
         };
         assert_eq!(completes(&mut s, "uniq").as_deref(), Some("https://uniquesite.example/"));
         // Removing one entry on bowser://history (or a retention prune) takes only that site away.
         assert!(crate::productivity::delete_history_entry(&path, "https://uniquesite.example/").unwrap());
+        s.edit_text = "uniq".to_owned();
+        s.update_completion();
+        assert_eq!(s.completion, None, "the deleted site is offered while the history is read again");
         assert_eq!(completes(&mut s, "uniq"), None, "the deleted site is still offered");
         assert_eq!(completes(&mut s, "oth").as_deref(), Some("https://other.example/"));
         // A visit recorded in this window and then Delete browsing data > History > All time.

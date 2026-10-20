@@ -3958,8 +3958,9 @@ impl App {
                     .and_then(|url| crate::permissions::origin_of(url.as_str())),
             )
         {
-            // A full or unwritable store leaves the zoom applied for this tab only.
-            let _ = store.borrow_mut().set_zoom_with_default(&origin, Some(percent), default_zoom);
+            // A full or unwritable store leaves the zoom applied for this tab only. The file is
+            // written on the writer thread: Ctrl+wheel calls this once per notch (R-14).
+            let _ = store.borrow_mut().set_zoom_deferred(&origin, Some(percent), default_zoom);
         }
         Self::post_tab_changed_kind(hwnd, tab, false, false);
     }
@@ -4068,17 +4069,12 @@ impl App {
         }
     }
 
-    pub fn privacy_stats_save_now(app: &AppRef) -> std::io::Result<()> {
-        let (path, stats) = {
-            let state = app.borrow();
-            (
-                state.privacy_stats_path.clone(),
-                state.privacy_stats.clone(),
-            )
-        };
-        match (path, stats) {
-            (Some(path), Some(stats)) => stats.save(&path),
-            _ => Ok(()),
+    /// The privacy counters' debounced save, queued for the writer thread (R-17): it runs about once
+    /// per ad-heavy page load. A clean exit flushes the queue (`background_write::flush`).
+    pub fn privacy_stats_save_in_background(app: &AppRef) {
+        let state = app.borrow();
+        if let (Some(path), Some(stats)) = (&state.privacy_stats_path, &state.privacy_stats) {
+            stats.save_in_background(path);
         }
     }
 

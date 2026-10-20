@@ -40,7 +40,10 @@ pub const RESTART_NAME: &str = "restart.marker";
 /// An older restart marker is ignored, so a relaunch that failed does not restore tabs on some
 /// later, ordinary start.
 const RESTART_MARKER_SECS: u64 = 120;
-pub const MAX_FILE_BYTES: usize = 512 * 1024;
+/// Room for every snapshot `Session::from_tabs` can build: [`MAX_TABS`] tabs with addresses of
+/// [`MAX_URL_BYTES`] and titles of [`MAX_TITLE_CHARS`] four-byte characters come to about 963 KiB.
+/// At 512 KiB such a session was silently never written (R-9).
+pub const MAX_FILE_BYTES: usize = 1024 * 1024;
 pub const MAX_TABS: usize = 200;
 pub const MAX_URL_BYTES: usize = 4096;
 pub const MAX_TITLE_CHARS: usize = 200;
@@ -1060,6 +1063,34 @@ mod tests {
         assert_eq!(s.tabs.len(), MAX_TABS);
         assert_eq!(s.tabs[0].title.chars().count(), MAX_TITLE_CHARS);
         assert!(s.serialize().len() < MAX_FILE_BYTES);
+    }
+
+    /// R-9: 200 tabs with long addresses (search results, mail links) serialize past the 512 KiB
+    /// cap, and `save` then returned Ok without writing, so a crash restored an old snapshot. Every
+    /// snapshot `from_tabs` can build (most tabs, longest addresses, longest titles) now fits.
+    #[test]
+    fn a_crash_snapshot_of_the_most_tabs_with_the_longest_addresses_is_still_written() {
+        let title: String = "\u{1F600}".repeat(MAX_TITLE_CHARS);
+        let urls: Vec<Url> = (0..MAX_TABS)
+            .map(|n| {
+                let base = format!("https://search.example/{n}?q=");
+                url(&format!("{base}{}", "a".repeat(MAX_URL_BYTES - base.len())))
+            })
+            .collect();
+        let mut session = Session::from_tabs(urls.iter().map(|u| (Some(u), title.as_str(), true)), 0).unwrap();
+        assert_eq!(session.tabs.len(), MAX_TABS);
+        for tab in &mut session.tabs {
+            tab.used = u64::MAX;
+        }
+        assert!(session.serialize().len() <= MAX_FILE_BYTES, "{} bytes", session.serialize().len());
+        let dir = temp_dir("long-urls");
+        let (mut store, _) = SessionStore::open(&dir).unwrap();
+        store.begin_run(None);
+        store.save(&session).unwrap();
+        drop(store);
+        let (_, offer) = SessionStore::open(&dir).unwrap();
+        assert_eq!(offer.expect("the crash is offered").session, session, "the snapshot was not written");
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
