@@ -290,15 +290,18 @@ fn clean_source_url(url: &str) -> String {
 // Names and folders
 // ---------------------------------------------------------------------------------------------
 
-const RESERVED_DEVICE_NAMES: [&str; 22] = [
-    "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
-    "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
-];
-
-fn is_reserved_device_name(name: &str) -> bool {
-    // "con", "con.txt" and "CON .txt" are all the console; only the part before the first dot counts.
+/// Whether Windows reads the file name `name` as a device. Only the part before the first dot
+/// counts, with the spaces Windows ignores at its end ("con", "con.txt" and "CON .txt" are all the
+/// console): CON, PRN, AUX, NUL, CONIN$, CONOUT$, CLOCK$, or COM / LPT followed by one digit 1-9 or
+/// a superscript 1, 2 or 3 (`COM¹`). The download and capture name cleaners share it.
+pub fn is_reserved_device_name(name: &str) -> bool {
     let stem = name.split('.').next().unwrap_or("").trim_end_matches([' ', '\u{a0}']).to_ascii_uppercase();
-    RESERVED_DEVICE_NAMES.contains(&stem.as_str()) || matches!(stem.as_str(), "CONIN$" | "CONOUT$" | "CLOCK$")
+    if matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$" | "CLOCK$") {
+        return true;
+    }
+    let Some(number) = stem.strip_prefix("COM").or_else(|| stem.strip_prefix("LPT")) else { return false };
+    let mut chars = number.chars();
+    matches!((chars.next(), chars.next()), (Some('1'..='9' | '\u{b9}' | '\u{b2}' | '\u{b3}'), None))
 }
 
 fn invalid_name_char(c: char) -> bool {

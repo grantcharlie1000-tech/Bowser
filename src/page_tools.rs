@@ -454,17 +454,9 @@ pub fn clean_name_part(text: &str, max: usize) -> String {
     cut.trim_matches(|c: char| c == ' ' || c == '.').to_owned()
 }
 
-/// Whether Windows reads `stem` as a device name: the part before the first dot, with the spaces Windows
-/// ignores at its end (`nul .x` is NUL), is CON, PRN, AUX, NUL, CONIN$, CONOUT$, or COM / LPT with a digit
-/// 1-9 or a superscript 1, 2 or 3.
+/// Whether Windows reads `stem` as a device name (`nul .x` is NUL); the same rule downloads use.
 fn reserved(stem: &str) -> bool {
-    let upper = stem.split('.').next().unwrap_or("").trim_end_matches(' ').to_ascii_uppercase();
-    if matches!(upper.as_str(), "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$") {
-        return true;
-    }
-    let Some(number) = upper.strip_prefix("COM").or_else(|| upper.strip_prefix("LPT")) else { return false };
-    let mut chars = number.chars();
-    matches!((chars.next(), chars.next()), (Some('1'..='9' | '\u{b9}' | '\u{b2}' | '\u{b3}'), None))
+    crate::downloads::is_reserved_device_name(stem)
 }
 
 /// The file name (without extension) a template makes. An empty or reserved result becomes `capture`.
