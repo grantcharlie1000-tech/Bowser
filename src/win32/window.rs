@@ -11601,6 +11601,9 @@ fn raise_html_child(hwnd: HWND, region: RECT) {
             LPARAM(&mut search as *mut Search as isize),
         );
     }
+    // The resize grips stay above it: a host raised over them would take back the edge bands they
+    // stand in for (the rail's left edge, a tab row's top edge) until the next relayout.
+    frame_grip::raise(hwnd);
 }
 
 fn position_edit(hwnd: HWND) {
@@ -12744,6 +12747,48 @@ mod tests {
             let entry = crate::commands::entry(&live, id).expect("a registry command");
             assert!(matches!(entry.handler, EntryHandler::Builtin(Handler::Key(found)) if found == command), "{id}");
         }
+    }
+
+    /// raise_html_child: a chrome host raised to the top when it is created (here the rail, along
+    /// the left edge) stays below the resize grips over its edge band, so the edge can be grabbed.
+    #[test]
+    fn raising_an_html_host_keeps_the_resize_grips_above_it() {
+        use windows::Win32::UI::WindowsAndMessaging::{
+            CreateWindowExW, DestroyWindow, GW_CHILD, GW_HWNDNEXT, GetClassNameW, GetWindow, WINDOW_EX_STYLE, WS_CHILD,
+            WS_CLIPCHILDREN, WS_OVERLAPPEDWINDOW, WS_VISIBLE,
+        };
+        let parent = unsafe {
+            CreateWindowExW(WINDOW_EX_STYLE(0), w!("STATIC"), w!(""), WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN, -32000, -32000, 1000, 700, None, None, None, None)
+        }
+        .expect("a test window");
+        let mut client = RECT::default();
+        unsafe { GetClientRect(parent, &mut client) }.expect("client");
+        let region = RECT { left: 0, top: 0, right: 30, bottom: client.bottom };
+        let host = unsafe {
+            CreateWindowExW(WINDOW_EX_STYLE(0), w!("STATIC"), w!(""), WS_CHILD | WS_VISIBLE, region.left, region.top, region.right, region.bottom, Some(parent), None, None, None)
+        }
+        .expect("a host window");
+        frame_grip::sync(parent, &[region], false);
+        raise_html_child(parent, region);
+        let class = |window: HWND| {
+            let mut name = [0u16; 64];
+            let len = unsafe { GetClassNameW(window, &mut name) } as usize;
+            String::from_utf16_lossy(&name[..len])
+        };
+        let mut order = Vec::new();
+        let mut next = unsafe { GetWindow(parent, GW_CHILD) }.ok();
+        while let Some(window) = next {
+            order.push(window);
+            next = unsafe { GetWindow(window, GW_HWNDNEXT) }.ok();
+        }
+        let at = order.iter().position(|window| *window == host).expect("the host is a child");
+        let grips: Vec<usize> = order.iter().enumerate().filter(|(_, w)| class(**w) == "BowserFrameGrip").map(|(i, _)| i).collect();
+        assert!(!grips.is_empty(), "the left band over the host has a grip");
+        assert!(grips.iter().all(|grip| *grip < at), "a grip is under the raised host: z-order {grips:?}, host at {at}");
+        unsafe {
+            let _ = DestroyWindow(parent);
+        }
+        frame_grip::forget(parent);
     }
 
     /// The system menu offers what the window can do now, and the Windows menu the HTML chrome
