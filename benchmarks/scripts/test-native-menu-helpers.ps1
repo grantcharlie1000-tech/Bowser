@@ -56,5 +56,11 @@ $absent=$native.Invoke($null,@([IntPtr]::Zero,[IntPtr]::Zero,[IntPtr]::Zero))|Co
 if($absent.status -cne 'no-native-hwnd'){throw 'No-HWND diagnostic branch changed.'}
 $hostType=$compiled['probe-app-host-context-menu.ps1']
 $objectFlags=$hostType.GetNestedType('OBJECTFLAGS',[Reflection.BindingFlags]::NonPublic)
-if([Runtime.InteropServices.Marshal]::SizeOf($objectFlags) -ne 12){throw 'USEROBJECTFLAGS layout is not the required two Win32 BOOLs and DWORD.'}
+# PS5.1 can otherwise bind the generic/object overload and try to marshal RuntimeType.
+# Select the non-generic System.Type overload explicitly; retain the exact layout assertion.
+$sizeOfType=@([Runtime.InteropServices.Marshal].GetMethods() | Where-Object {
+ $_.Name -ceq 'SizeOf' -and !$_.IsGenericMethod -and $_.GetParameters().Count -eq 1 -and $_.GetParameters()[0].ParameterType -eq [Type]
+})
+if($sizeOfType.Count -ne 1){throw 'Exact Marshal.SizeOf(System.Type) overload unavailable.'}
+if($sizeOfType[0].Invoke($null,@($objectFlags)) -ne 12){throw 'USEROBJECTFLAGS layout is not the required two Win32 BOOLs and DWORD.'}
 Write-Output "native-menu helper source checks passed; managed_classes=$($compiled.Count); native_behavior=NOT_RUN"

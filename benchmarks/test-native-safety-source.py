@@ -63,6 +63,10 @@ class NativeSafetySourceContracts(unittest.TestCase):
         self.assertIn("Add-Type -TypeDefinition $combined -ReferencedAssemblies $references", checker)
         self.assertIn("$definitions.Add($source.Substring($prefix.Length))", checker)
         self.assertIn("$typeNames=[ordered]@{}", checker)
+        self.assertIn("!$_.IsGenericMethod", checker)
+        self.assertIn("$_.GetParameters()[0].ParameterType -eq [Type]", checker)
+        self.assertIn("$sizeOfType[0].Invoke($null,@($objectFlags)) -ne 12", checker)
+        self.assertNotIn("::SizeOf($objectFlags)", checker)
 
     def test_reload_has_one_activation_and_observation_only_rechecks(self):
         reload = source("src/engine/app_context_menu_probe/reload.rs")
