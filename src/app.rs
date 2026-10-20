@@ -2150,6 +2150,10 @@ impl App {
                 return false;
             }
             let ordered = state.workspaces.active().tabs();
+            // `TabList::move_tab` takes the tab out before it inserts it, so a neighbour to its
+            // right is one place further left by then (T5: else a move right lands one too far).
+            let from = state.tab_model.index_of(id);
+            let after_removal = |at: usize| if from.is_some_and(|from| from < at) { at - 1 } else { at };
             let target = ordered
                 .iter()
                 .position(|tab| *tab == id)
@@ -2157,11 +2161,12 @@ impl App {
                     ordered
                         .get(position + 1)
                         .and_then(|next| state.tab_model.index_of(*next))
+                        .map(after_removal)
                         .or_else(|| {
                             position
                                 .checked_sub(1)
                                 .and_then(|previous| state.tab_model.index_of(ordered[previous]))
-                                .map(|previous| previous + 1)
+                                .map(|previous| after_removal(previous) + 1)
                         })
                 })
                 .unwrap_or(0);

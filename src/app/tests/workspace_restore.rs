@@ -170,3 +170,26 @@ fn failed_workspace_create_leaves_no_new_tab() {
     assert_eq!(App::tab_ids(&app).len(), before, "a stray new tab was left behind");
     assert_eq!(app.borrow().tabs.len(), before);
 }
+
+/// A move to the right (a drag, "Duplicate" beside a tab further right) lands exactly at the
+/// asked-for place in the strip, and the model agrees. `move_tab` takes the index without the tab.
+#[test]
+fn a_tab_moved_right_lands_where_it_was_dropped() {
+    let app = app_with_pending(rect(800, 600));
+    let a = App::active_tab_id(&app);
+    let b = App::new_tab(&app);
+    let c = App::new_tab(&app);
+    let d = App::new_tab(&app);
+    assert_eq!(App::tab_ids(&app), [a, b, c, d]);
+    // The HTML strip drops a before c: post-removal index 1.
+    let index = crate::chrome_host::drop_index(&App::tab_ids(&app), a, c.0 + 1);
+    assert!(App::drop_tab(&app, a, index.expect("a move")));
+    assert_eq!(App::tab_ids(&app), [b, a, c, d]);
+    assert_eq!(App::tab_ids(&app), model_order(&app));
+    assert!(App::move_tab(&app, b, 3));
+    assert_eq!(App::tab_ids(&app), [a, c, d, b], "to the end");
+    assert_eq!(App::tab_ids(&app), model_order(&app));
+    assert!(App::move_tab(&app, a, 1));
+    assert_eq!(App::tab_ids(&app), [c, a, d, b], "one place right");
+    assert_eq!(App::tab_ids(&app), model_order(&app));
+}
