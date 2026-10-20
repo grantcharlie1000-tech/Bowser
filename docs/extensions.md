@@ -1,5 +1,14 @@
 # Browser extensions
 
+## Current unreleased Store checkpoint (2026-10-18)
+
+Store work remains on its draft branch, not a released compatibility promise. A verified current
+MV3 package can be reviewed in the built-in Store and installed with explicit consent. Current
+exact-version functionality and remaining browser-topology blockers are listed in
+[Store catalogue and evidence](store-catalogue.md). Historical Stage 1 observations below are not
+proof that every extension works. Production extension updates/recovery are not enabled.
+
+
 ## What WebView2 offers
 
 Checked against the webview2-com 0.39.1 bindings in the cargo registry:
@@ -17,8 +26,9 @@ Checked against the webview2-com 0.39.1 bindings in the cargo registry:
 
 - WebView2 supports a subset of Chrome extension APIs. Each extension is only as compatible as the
   APIs it uses. Microsoft publishes no list of which ones.
-- Only unpacked folders and `.crx` files chosen by the user are supported. Chrome Web Store install
-  is not supported, and Bowser makes no Web Store compatibility claim.
+- User-picked unpacked folders and `.crx` files remain available. The unreleased Store additionally
+  downloads current signed MV3 packages through the existing protocol. Download/install success
+  is not a general Chrome Web Store or Chrome extension API compatibility claim.
 - Bowser validates manifests itself (manifest version 2 or 3, name, version, permission lists). It
   is stricter than Chrome: non-text permission entries are refused. Declared permissions are shown
   to the user before install. Bowser does not enforce them; WebView2 does what it does.
@@ -53,7 +63,13 @@ declares, so the answer is all or nothing.
   host `*`), then site access and content-script pages, then permissions. Each list line shows the
   first items that fit, each cut to 56 characters, and "and N more" for the rest. The whole prompt
   stays under 2,400 characters however a manifest is padded.
-- A localized name (`__MSG_extName__`) is shown as written. Bowser does not read `_locales`.
+- The legacy local-install summary shows a localized name token as written. Store review resolves
+  its validated `_locales` message before asking for consent; attribution is not publisher identity proof.
+- Store review shows full permission categories and complete static script objects, including
+  exclusions, file order, frame flags, world/timing, explicit documented defaults for omitted flags,
+  and unknown fields without assuming their effect. The canonical ASCII declaration text makes
+  invisible/control characters visible. Packages whose entire review cannot fit the existing trusted
+  snapshot bound are refused, not truncated. Defaults describe the declaration, not runtime API support.
 
 ### Folder rules
 
@@ -67,41 +83,31 @@ declares, so the answer is all or nothing.
 
 ## Profile state across restarts
 
-- The WebView2 profile can keep extensions added with `AddBrowserExtension`. Bowser's records file
-  is the source of truth, so at startup, once the profile is ready, the engine lists the profile's
-  extensions (`GetBrowserExtensions`) and reconciles them:
-  - an extension with no Bowser record is removed;
-  - a recorded but disabled extension is disabled;
-  - an enabled one is turned on, reusing the profile's copy instead of adding a second one.
-- Bowser ids (`ext-...`) are not WebView2's ids. WebView2 derives its own id for each unpacked
-  folder. Bowser keeps the mapping in `extension_ids.txt` beside `extensions.txt`, written when an
-  extension is added and removed when it is unloaded.
-- Removing an extension that is not loaded in this session looks up its WebView2 id in the profile
-  and unloads it before its folder is deleted. If the lookup fails, the removal fails and the
-  folder is kept.
-- An extension is excluded from the startup load if it is removed before the profile is ready.
-- A profile whose `extension_ids.txt` exists is reconciled even when no extension is enabled, so
-  an extension removed while disabled does not linger.
+Current Store-branch ownership handling is deliberately fail closed:
 
-Uncertainty, stated plainly:
+- Bowser records and native-ID ownership are strict, bounded, no-follow authority files. Malformed,
+  duplicate or initialized-but-missing authority blocks extension-enabled environment creation.
+  Unknown native objects, including built-ins, are preserved rather than removed as unowned.
+- A profile-scoped runtime lease serializes inventory, fresh record/ownership checks, native mutation,
+  completion and durable final outcomes. Busy is an explicit no-mutation result. Stale owners cannot
+  mutate a replacement record sharing the same signing ID. Other profiles have independent leases.
+- Signed/keyed identities are durably preclaimed before native Add. Identity validation is independent
+  of diagnostic tracing. Native Add occurs only after accepted installation consent.
+- Completed Disable/Remove waits for native completion and the durable record commit before UI success.
+  Interrupted or failed revocation was not accepted and may restore the previous consented state at
+  restart. A process-crash test is not power-loss durability or a promise of cancellation after crash.
+- New verified Store installs retain the original CRX3 plus an exact package/tree receipt outside the
+  loaded folder. The retained original is reverified/replayed against the reviewed immutable tree.
+  It grants no new consent or updater authority; old legacy folders are not retroactively authenticated.
+- Artifact cleanup deletes only authenticated known entries by held native handles and removes empty
+  owned directories. Changed/replaced/incomplete folders or unknown additions may remain nonexecuting;
+  an explicit partial cleanup error is not a claim that every file vanished.
 
-- Persistence across a restart was observed once on a throwaway profile (see Verification status):
-  a second process listed the extension, reused it with `Enable` (no second `Add`), and its worker
-  answered with the same id and the `chrome.storage.local` value the first process's worker wrote.
-  That is consistent with persistence; it does not show whether `onInstalled` ran again.
-- If `extension_ids.txt` is lost or corrupt, a profile extension cannot be matched to its record.
-  It is removed at startup and re-added as a fresh load, so its extension-held storage may reset.
-  That path was not run live.
-- Ids are compared as WebView2 reports them. Every id observed was 32 lowercase letters `a` to `p`,
-  which Bowser's id parser accepts (ASCII alphanumeric). If a runtime changes that format, the
-  mapping misses and the same fallback applies. The id comes from the folder path unless the
-  manifest has a `key` (see Verification status), so Bowser's copy keeps its id only while it stays
-  at the same path.
-- A fresh WebView2 profile already lists two built-in extensions, "Microsoft Clipboard Extension"
-  and "Microsoft Edge PDF Viewer". They have no Bowser record, so startup reconcile asks WebView2 to
-  remove them, and `Remove` fails with `E_FAIL` (0x80004005). Nothing breaks, but the failure is
-  silent outside the trace, and the log line for them shows the WebView2 id in its `bowser=` field.
-  This was observed once and not changed.
+Windows disposable-profile evidence includes real pending callbacks versus a second process, stale
+same-key owner rejection, four signed/keyed process-crash boundaries, completed revocation across new
+executable processes, damaged-authority environment exclusion, and ordinary/private/UI profile
+inventory/content isolation. Keyless crash ownership, power-loss durability, arbitrary hostile record-
+temp path swaps, every API isolation route, and general extension data-migration safety are not claimed.
 
 ## Diagnostics
 
@@ -276,7 +282,8 @@ shim.
   until the engine answers; one removal at a time). "Install unpacked…" opens Bowser's folder picker
   and the native confirmation that lists the declarations. "Install CRX file…" does the same for a
   `.crx` file on disk (see "CRX file" below). "Open popup" opens the hosted popup. Bowser installs
-  unpacked folders and `.crx` files the user picks, and has no store install.
+  unpacked folders and `.crx` files the user picks, and offers verified Store downloads through
+  `bowser://store`. See [Store catalogue and evidence](store-catalogue.md).
 - **Wire** (`src/chrome_host/extensions_page.rs`). Rust -> page:
   `{v:1,t:"snap",p:"extensions",d:{state:"on"|"error",busy,ack,error,items:[{id,name,version,enabled,popup,failure,readable,all,sites,sitesN,scripts,scriptsN,perms,permsN,optional,optionalN}]}}`.
   Page -> Rust, in the settings page's `set` family: `extension` (`text` id, `on`), `extremove`
@@ -328,9 +335,9 @@ The live probe observed `chrome-extension` as the extension page scheme and Bows
 nothing for tabs. In a tab, `chrome-extension:` and `extension:` are not on the block list: a
 navigation to either goes down the external-protocol path, which only cancels the OS launch.
 Frames, popups and the omnibox refuse both. A test records the tab policy for all three schemes, so
-a later change is a visible decision. Hosted pages use their own exact-URL, one-shot policy
+a later change is a visible decision. Hosted pages use their own initial exact-URL, one-shot policy
 (`HostedPagePolicy`) instead of a scheme allowance, and it takes no part in tab navigation. Its
-tests cover `chrome-extension` (the only scheme that can be granted, and only as one exact URL) and
+tests cover `chrome-extension` (the only scheme that can be granted; the initial exact URL is followed only by safe paths in that same extension) and
 `extension` and `ms-browser-extension` (refused, even with the same id and path).
 
 ## Where the code lives
@@ -352,4 +359,21 @@ tests cover `chrome-extension` (the only scheme that can be granted, and only as
 
 ## Store fetch status
 
-`src/crx_fetch.rs` turns an extension id or a Chrome Web Store URL into verified CRX bytes and a stamped unpack folder, and is not wired to any UI. It follows the protocol Chromium's `ExtensionDownloader` uses: a GET to `https://clients2.google.com/service/update2/crx` (the only fixed host) returns an update manifest (`<gupdate>` XML), and the CRX is downloaded from the `codebase` URL inside it. The query is Chromium's: `os`, `arch`, `prod=chromiumcrx` (the unbranded value; `chromecrx` is Chrome's and is never sent), `prodchannel`, `prodversion` (the WebView2 runtime), `lang`, `acceptformat=crx3` and `x=id%3D<id>%26v%3D0.0.0.0%26uc`. `acceptformat` leaves out Chromium's `puff` because Bowser cannot apply it; a manifest that offers only a puff package is refused with its own error. `response=redirect` is not in Chromium's source and is no longer sent. The request carries the `X-Goog-Update-Updater: chromiumcrx-<prodversion>`, `X-Goog-Update-AppId` and `X-Goog-Update-Interactivity: fg` protocol headers and the user agent `Bowser-CrxFetch/<version>`, never a Chrome identity. The manifest is read the way `extensions/browser/updater/safe_manifest_parser.cc` reads it, for three things only: the `<app appid>` (it must be the requested id), the `<updatecheck status>` (`noupdate`, HTTP 204 or an empty body mean no package) and its `codebase` (HTTPS, a host, no credentials). The codebase download keeps the size cap, the HTTPS-only redirect rule and the five-hop limit; the bytes then go through `verify_crx3` for the requested id and `unpack_stamped` into the caller's empty folder, and a bad signature leaves that folder empty. Live result, 2026-10-14, one attempt: uBlock Origin (`cjpalhdlnbpafiamejdnhcphjbkeiagm`) with `prod=chromiumcrx`, `prodversion=155.0.4283.45` and no `response=redirect` got HTTP 200 and a 333-byte manifest for the requested app id with `<updatecheck status="noupdate"/>` and no `codebase`. So the earlier HTTP 204 answers were this same "no package" verdict, and the endpoint does speak this protocol to a non-Chrome client; it simply has no package to give for this id and runtime version. A second attempt the same day changed only `prodversion`, to Chrome stable `155.0.8059.80` (Windows, release note 2026-10-13), and got the same answer: HTTP 200, a 333-byte manifest for the requested app id with `<updatecheck status="noupdate"/>` and no `codebase`. That closes the unbranded store-download experiment. Nothing was downloaded, verified or unpacked in either attempt, and `chromecrx` was not tried. Store fetch is therefore implemented and covered by loopback tests (manifest accepted, `noupdate`, a different app id, an HTTP codebase and puff-only refused, the CRX download staying on `127.0.0.1`, the production manifest host being only `clients2.google.com`), but not yet shown to return a real CRX: that needs an id the store still offers for this runtime, and has not been observed live.
+The old MV2 uBlock Origin `noupdate` result was not a general Store-download verdict. On
+2026-10-18 the existing unbranded protocol, using the **detected WebView2 154.0.4258.62**, returned
+HTTP 200 update manifests with `updatecheck status="ok"` and HTTP 200 CRX3 packages for current
+MV3 listings. Signature and signing-derived identity verification passed before unpacking.
+No Chrome identity, access bypass, or undocumented search API was used.
+
+The Store uses the existing `crx_fetch` → `crx` → `crx_unpack` pipeline, with the fixed
+`clients2.google.com` manifest endpoint, HTTPS-only bounded redirects, manifest/codebase checks,
+size caps, and CRX3 verification unchanged. Verified Chrome-generated root `_metadata` is counted,
+CRC-validated, and omitted from the unpacked copy. Arbitrary user archives/folders do not acquire
+this exception. A prepared, profile-owned folder is not registered or loaded until its complete
+resolved permission review receives explicit consent. Cancellation drops the unregistered copy.
+
+Package retrieval and native loading are distinct from functional compatibility. The current
+probes demonstrated genuine extension popups/options and extension APIs, but also demonstrated
+that native `chrome.tabs/windows` does not yet correctly model Bowser tabs. Catalogue entries carry exact-version **Partial** or **Untested** evidence, not a global "supported" claim. Production staged updates remain disabled until stable
+identity/storage, increased-permission consent, and rollback have evidence. See
+[Store catalogue and evidence](store-catalogue.md) for reproducible runs and the acceptance gap.

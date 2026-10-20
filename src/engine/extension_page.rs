@@ -5,8 +5,8 @@
 //! shares the profile's extension storage and runtime with the extension's worker.
 //!
 //! What the page gets: no web-message channel and no host objects (Bowser has no message handler
-//! here, and both settings are verified off), denied permissions and downloads, no new windows, no
-//! external-protocol launches, and exactly one navigation (the granted URL, see
+//! here, and both settings are verified off), denied permissions and downloads, no unowned new windows, no
+//! external-protocol launches, and same-extension navigation after the initial granted URL (see
 //! `HostedPagePolicy`). What it does not get from Bowser: the blocker, the privacy counters, tab
 //! history or any tab id. Whether the page has `chrome.*` is the runtime's decision.
 
@@ -14,17 +14,19 @@ use std::{cell::Cell, cell::RefCell, rc::Rc};
 
 use url::Url;
 use webview2_com::{
-    CoTaskMemPWSTR, CreateCoreWebView2ControllerCompletedHandler, DownloadStartingEventHandler,
+    CoTaskMemPWSTR, ContentLoadingEventHandler, NavigationCompletedEventHandler, ContextMenuRequestedEventHandler, CustomItemSelectedEventHandler,
+    CreateCoreWebView2ControllerCompletedHandler, DownloadStartingEventHandler,
     Microsoft::Web::WebView2::Win32::*, NavigationStartingEventHandler,
     NewWindowRequestedEventHandler, PermissionRequestedEventHandler,
 };
 use windows::{
     Win32::{
         Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM},
-        System::LibraryLoader::GetModuleHandleW,
+        System::{LibraryLoader::GetModuleHandleW, Com::IStream},
         UI::WindowsAndMessaging::{
             CW_USEDEFAULT, CreateWindowExW, DefWindowProcW, DestroyWindow, GWLP_USERDATA,
             GetClientRect, GetWindowLongPtrW, IDC_ARROW, LoadCursorW, RegisterClassW, SW_SHOW,
+            AppendMenuW, CreateMenu, DestroyMenu, SetMenu, MF_STRING, WM_COMMAND,
             SetWindowLongPtrW, ShowWindow, WINDOW_EX_STYLE, WM_NCDESTROY, WM_SIZE, WNDCLASSW,
             WS_OVERLAPPEDWINDOW,
         },
@@ -40,6 +42,7 @@ use super::webview2::{
 const WINDOW_WIDTH: i32 = 440;
 const WINDOW_HEIGHT: i32 = 640;
 const MAX_TITLE_CHARS: usize = 128;
+const PAGE_LINKS_COMMAND: usize = 0x4100;
 
 thread_local! {
     static CLASS_REGISTERED: Cell<bool> = const { Cell::new(false) };
@@ -50,6 +53,11 @@ thread_local! {
 struct WindowState {
     controller: ICoreWebView2Controller,
     alive: Rc<Cell<bool>>,
+    webview: ICoreWebView2,
+    policy: Rc<HostedPagePolicy>,
+    navigation: super::extension_links::Navigation,
+    links_busy: Rc<Cell<bool>>,
+    pending_links: super::extension_links::MenuQueue,
 }
 
 /// The engine's handle on an open hosted page.
@@ -79,6 +87,36 @@ unsafe extern "system" fn page_proc(
     lparam: LPARAM,
 ) -> LRESULT {
     match message {
+        #[cfg(test)]
+        windows::Win32::UI::WindowsAndMessaging::WM_TIMER if wparam.0 == super::extension_links::PROBE_RELOAD_TIMER => {
+            unsafe { let _ = windows::Win32::UI::WindowsAndMessaging::KillTimer(Some(hwnd), super::extension_links::PROBE_RELOAD_TIMER); }
+            let state = unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) } as *const WindowState;
+            let webview = unsafe { state.as_ref() }.map(|state| state.webview.clone());
+            let result = webview.is_some_and(|webview| unsafe { webview.Reload() }.is_ok());
+            super::extension_links::probe_reload_result(result);
+            println!("EXTENSION_PAGE_LINKS real_same_url_native_reload={result}");
+            LRESULT(0)
+        }
+        #[cfg(test)]
+        windows::Win32::UI::WindowsAndMessaging::WM_TIMER if super::extension_links::probe_modal_timer(hwnd,wparam.0) => {
+            LRESULT(0)
+        }
+        WM_COMMAND if wparam.0 & 0xffff == PAGE_LINKS_COMMAND => {
+            let state = unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) } as *const WindowState;
+            if let Some(state) = unsafe { state.as_ref() } {
+                let args = (state.webview.clone(), state.policy.clone(), state.alive.clone(), state.navigation.clone(), state.links_busy.clone(), state.pending_links.clone());
+                super::extension_links::show(hwnd, args.0, args.1, args.2, args.3, args.4, args.5);
+            }
+            LRESULT(0)
+        }
+        super::extension_links::SHOW_MESSAGE => {
+            let state = unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) } as *const WindowState;
+            if let Some(state) = unsafe { state.as_ref() } {
+                let pending = state.pending_links.clone();
+                super::extension_links::open_pending(hwnd, pending);
+            }
+            LRESULT(0)
+        }
         WM_SIZE => {
             let state = unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) } as *const WindowState;
             if let Some(state) = unsafe { state.as_ref() } {
@@ -132,7 +170,7 @@ fn create_window(title: &str) -> Result<HWND> {
             }
             CLASS_REGISTERED.with(|registered| registered.set(true));
         }
-        CreateWindowExW(
+        let hwnd = CreateWindowExW(
             WINDOW_EX_STYLE(0),
             w!("BowserExtensionPage"),
             &HSTRING::from(clean_title(title)),
@@ -145,7 +183,12 @@ fn create_window(title: &str) -> Result<HWND> {
             None,
             Some(instance),
             None,
-        )
+        )?;
+        let menu = match CreateMenu() { Ok(menu) => menu, Err(error) => { let _ = DestroyWindow(hwnd); return Err(error); } };
+        if let Err(error) = AppendMenuW(menu, MF_STRING, PAGE_LINKS_COMMAND, w!("Page links…")).and_then(|()| SetMenu(hwnd, Some(menu))) {
+            let _ = DestroyMenu(menu); let _ = DestroyWindow(hwnd); return Err(error);
+        }
+        Ok(hwnd)
     }
 }
 
@@ -177,11 +220,12 @@ pub(super) fn open(
     let slot = Rc::new(RefCell::new(Some(done)));
     let completion = slot.clone();
     let policy = Rc::new(policy);
+    let environment_for_menu = environment.clone();
     let handler = CreateCoreWebView2ControllerCompletedHandler::create(Box::new(
         move |status, controller| {
             let result = match (status, controller) {
                 (Ok(()), Some(controller)) => {
-                    let configured = configure(hwnd, &controller, &url, policy, show);
+                    let configured = configure(hwnd, &controller, &url, policy, show, &environment_for_menu);
                     if configured.is_err() {
                         let _ = unsafe { controller.Close() };
                     }
@@ -213,6 +257,7 @@ fn configure(
     url: &Url,
     policy: Rc<HostedPagePolicy>,
     show: bool,
+    environment: &ICoreWebView2Environment,
 ) -> Result<HostedPage> {
     unsafe {
         let mut bounds = RECT::default();
@@ -237,6 +282,11 @@ fn configure(
             ));
         }
 
+        #[cfg(test)] {
+            let mut native_menus = BOOL::default(); settings.AreDefaultContextMenusEnabled(&mut native_menus)?;
+            println!("EXTENSION_PAGE_MENU default_context_menus_enabled={}", native_menus.as_bool());
+        }
+
         // Never register `WebMessageReceived`, `FrameWebMessageReceived` or a host object on this
         // WebView. Observed on runtime 155.0.4283.45 (see docs/extensions.md): `window.chrome.webview`
         // still exists in the page, but with these settings off a `postMessage` from it reached no
@@ -247,10 +297,16 @@ fn configure(
         observe::attach(&webview)?;
 
         let mut token = 0;
+        let navigation = super::extension_links::Navigation::default();
+        let starting = navigation.clone();
         let navigation_policy = policy.clone();
         webview.add_NavigationStarting(
             &NavigationStartingEventHandler::create(Box::new(move |_sender, args| {
                 if let Some(args) = args {
+                    starting.in_flight.set(true); starting.invalidate();
+                    let mut id = 0;
+                    starting.navigation_id.set(args.NavigationId(&mut id).ok().map(|()| id));
+                    #[cfg(test)] println!("EXTENSION_PAGE_NAVIGATION start=true id={:?}", starting.navigation_id.get());
                     let mut uri = PWSTR::null();
                     let parsed = if args.Uri(&mut uri).is_ok() {
                         Url::parse(&CoTaskMemPWSTR::from(uri).to_string()).ok()
@@ -265,7 +321,23 @@ fn configure(
             })),
             &mut token,
         )?;
-        let frame_policy = policy;
+        let loading = navigation.clone();
+        webview.add_ContentLoading(&ContentLoadingEventHandler::create(Box::new(move |_sender, args| {
+            loading.invalidate();
+            #[cfg(test)] if let Some(args) = args { let mut id = 0; println!("EXTENSION_PAGE_NAVIGATION content_loading=true id={:?}", args.NavigationId(&mut id).ok().map(|()| id)); }
+            #[cfg(not(test))] let _ = args;
+            Ok(())
+        })), &mut token)?;
+        let completed = navigation.clone();
+        webview.add_NavigationCompleted(&NavigationCompletedEventHandler::create(Box::new(move |_sender, args| {
+            let mut id = 0;
+            let id = args.and_then(|args| args.NavigationId(&mut id).ok().map(|()| id));
+            if id.is_some() && id == completed.navigation_id.get() { completed.in_flight.set(false); }
+            completed.invalidate();
+            #[cfg(test)] println!("EXTENSION_PAGE_NAVIGATION completed=true id={id:?} latest_in_flight={}", completed.in_flight.get());
+            Ok(())
+        })), &mut token)?;
+        let frame_policy = policy.clone();
         webview.add_FrameNavigationStarting(
             &NavigationStartingEventHandler::create(Box::new(move |_sender, args| {
                 if let Some(args) = args {
@@ -283,15 +355,57 @@ fn configure(
             })),
             &mut token,
         )?;
+        // A native, user-picked way to follow a real signed-page link even when its ordinary
+        // click handler depends on chrome.tabs.create, which WebView2 cannot map to Bowser tabs.
+        // This grants no website API and never reads a guessed dashboard path.
+        let link_policy = policy.clone();
+        if let (Ok(webview11), Ok(environment9)) = (webview.cast::<ICoreWebView2_11>(), environment.cast::<ICoreWebView2Environment9>()) {
+            webview11.add_ContextMenuRequested(&ContextMenuRequestedEventHandler::create(Box::new(move |sender, args| {
+                let (Some(sender), Some(args)) = (sender, args) else { return Ok(()) };
+                let target = args.ContextMenuTarget()?; let mut has_link = BOOL::default(); target.HasLinkUri(&mut has_link)?;
+                #[cfg(test)] println!("EXTENSION_PAGE_MENU native_context_requested=true has_link={}", has_link.as_bool());
+                if !has_link.as_bool() { return Ok(()); }
+                let mut raw = PWSTR::null(); target.LinkUri(&mut raw)?;
+                let Some(link) = Url::parse(&CoTaskMemPWSTR::from(raw).to_string()).ok().filter(|url| link_policy.allow_new_window(url)) else { return Ok(()) };
+                let item = environment9.CreateContextMenuItem(w!("Open link in this extension window"), None::<&IStream>, COREWEBVIEW2_CONTEXT_MENU_ITEM_KIND_COMMAND)?;
+                #[cfg(test)] println!("EXTENSION_PAGE_MENU offered_same_extension_link={link}");
+                let navigation_policy = link_policy.clone(); let mut selected = 0;
+                item.add_CustomItemSelected(&CustomItemSelectedEventHandler::create(Box::new(move |_sender, _args| {
+                    let mut raw = PWSTR::null(); sender.Source(&mut raw)?;
+                    let source = Url::parse(&CoTaskMemPWSTR::from(raw).to_string()).ok();
+                    #[cfg(test)] println!("EXTENSION_PAGE_MENU custom_item_selected=true source={source:?} link={link}");
+                    if source.as_ref().is_some_and(|source| navigation_policy.allow_new_window(source)) && navigation_policy.allow_new_window(&link) {
+                        let address = CoTaskMemPWSTR::from(link.as_str()); sender.Navigate(*address.as_ref().as_pcwstr())?;
+                    }
+                    Ok(())
+                })), &mut selected)?;
+                args.MenuItems()?.InsertValueAtIndex(0, &item)?; Ok(())
+            })), &mut token)?;
+        }
+        let window_policy = policy.clone();
+        #[cfg(test)] let window_probe=crate::extension_window_probe::Observer::prepare("isolated-extension-page",&webview);
+        #[cfg(test)] let request_probe=window_probe.clone();
         webview.add_NewWindowRequested(
-            &NewWindowRequestedEventHandler::create(Box::new(move |_sender, args| {
+            &NewWindowRequestedEventHandler::create(Box::new(move |sender, args| {
                 if let Some(args) = args {
-                    let _ = args.SetHandled(true);
+                    #[cfg(test)] let request_id=request_probe.enter(sender.as_ref(),&args);
+                    // Always suppress an unowned native window. A signed extension's own link
+                    // may instead navigate this same no-bridge host, using the normal policy.
+                    args.SetHandled(true)?;
+                    let mut uri = PWSTR::null();
+                    let uri = args.Uri(&mut uri).ok().and_then(|()| Url::parse(&CoTaskMemPWSTR::from(uri).to_string()).ok());
+                    let allowed = uri.as_ref().is_some_and(|uri| window_policy.allow_new_window(uri));
+                    #[cfg(test)] println!("EXTENSION_PAGE_NEW_WINDOW uri={uri:?} same_extension_reuse_allowed={allowed}");
+                    #[cfg(test)] request_probe.finish(request_id,&args,if allowed{"same-extension-existing-policy"}else{"blocked-existing-policy"},false);
+                    if let (true, Some(uri), Some(sender)) = (allowed, uri, sender) {
+                        let address = CoTaskMemPWSTR::from(uri.as_str()); sender.Navigate(*address.as_ref().as_pcwstr())?;
+                    }
                 }
                 Ok(())
             })),
             &mut token,
         )?;
+        #[cfg(test)] window_probe.installed();
         webview.add_PermissionRequested(
             &PermissionRequestedEventHandler::create(Box::new(move |_sender, args| {
                 if let Some(args) = args {
@@ -329,6 +443,9 @@ fn configure(
         let state = Box::new(WindowState {
             controller: controller.clone(),
             alive: alive.clone(),
+            webview: webview.clone(), policy, navigation,
+            links_busy: Rc::new(Cell::new(false)),
+            pending_links: Rc::new(RefCell::new(None)),
         });
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, Box::into_raw(state) as isize);
         let page = HostedPage {

@@ -166,6 +166,8 @@ const WM_HTML_TABS_FAILED: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP
 /// Posted once per queued menu, popup or window command from an HTML chrome view. Each post runs
 /// the oldest queued command on the UI thread, outside WebView2's message callback.
 const WM_HTML_DEFERRED: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 0x7E;
+#[cfg(feature = "experimental-engine-context-menu")]
+const WM_ENGINE_CONTEXT_MENU: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 0x86;
 /// Posted when the HTML left rail's WebView2 process fails. Handled on the UI thread.
 const WM_HTML_RAIL_FAILED: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 0x7F;
 /// Posted by the "Check for updates" worker when its check ends; `wparam` is an `UPDATE_*` code.
@@ -596,6 +598,8 @@ struct WindowChrome {
     /// The same for the extensions button (`0` or `EXT_BUTTON_SLOT`, docs/extensions.md): its slot,
     /// the last `extbtn` message the page was sent, and the button's rectangle from its last click.
     html_ext_slot: i32,
+    html_store_listing: bool,
+    html_extensions_private: bool,
     html_ext_last: Option<String>,
     html_ext_rect: Option<chrome_host::protocol::HoverRect>,
     // --- toolbars and feeds (thread T13) --- what the address bar's list (`toolbar_buttons`) does to the
@@ -785,6 +789,8 @@ impl WindowChrome {
             html_dl_slot: 0,
             html_dl_last: None,
             html_ext_slot: 0,
+            html_store_listing: false,
+            html_extensions_private: false,
             html_ext_last: None,
             html_ext_rect: None,
             html_dl_allowed: true,
@@ -1210,7 +1216,7 @@ impl WindowChrome {
     /// CSS px the toolbar page's buttons beside the pill (downloads, extensions) take from it.
     fn toolbar_slot(&self) -> i32 {
         // --- toolbars and feeds (thread T13) --- a button taken off the bar gives its room back.
-        (if self.html_dl_allowed { self.html_dl_slot } else { 0 }) + (if self.html_ext_allowed { self.html_ext_slot } else { 0 }) + self.html_bar_extra
+        (if self.html_dl_allowed { self.html_dl_slot } else { 0 }) + (if self.html_ext_allowed || self.html_ext_slot == STORE_BUTTON_SLOT { self.html_ext_slot } else { 0 }) + self.html_bar_extra
     }
     /// Moves the HTML chrome over the toolbar region and hides it when there is none. Also tells
     /// the surface to leave the region to the page.
@@ -1656,6 +1662,9 @@ fn run_chrome_sync(hwnd: HWND, app: Option<&AppRef>) {
     let _ = with_chrome(hwnd, |s| s.chrome_sync_posted = false);
     sync_html_host_bounds(hwnd);
     html_sync(hwnd);
+    let listing = app.and_then(current_store_listing).is_some();
+    let private = app.is_some_and(App::active_tab_private);
+    if with_chrome(hwnd, |state| state.html_store_listing != listing || state.html_extensions_private != private).unwrap_or(false) { html_refresh_extensions_button(hwnd); }
     html_tabs_sync(hwnd);
     html_rail_sync(hwnd);
     let Some(app) = app else {
@@ -2304,11 +2313,23 @@ pub fn run(app: App) -> windows::core::Result<()> {
         if let Some(url) = benchmark_url {
             App::submit_benchmark_url(&app, url)
         }
+        #[cfg(all(test, feature = "experimental-engine-context-menu"))]
+        {
+            let ready=APP_MENU_PROBE_READY.with(|slot|slot.borrow_mut().take());
+            if let Some(ready)=ready {
+                if SetTimer(Some(hwnd),APP_MENU_PROBE_TIMER,100,None)==0 {return Err(windows::core::Error::from_thread());}
+                ready(app.clone());
+            }
+        }
         let mut m = MSG::default();
         loop {
             match GetMessageW(&mut m, None, 0, 0).0 {
                 -1 => return Err(windows::core::Error::from_thread()),
-                0 => break,
+                0 => {
+                    #[cfg(feature = "experimental-engine-context-menu")]
+                    crate::engine::engine_menu_drain_destroyed();
+                    break;
+                },
                 _ => {
                     if settings_panel::process_message(&m) {
                         continue;
@@ -4039,6 +4060,21 @@ unsafe extern "system" fn window_proc(
                 LRESULT(0)
             }
             // --- end panel host ---
+            #[cfg(all(test, feature = "experimental-engine-context-menu"))]
+            WM_TIMER if wparam.0 == APP_MENU_PROBE_TIMER => {
+                if let Some(app)=app {app_menu_probe_tick(app.clone());}
+                LRESULT(0)
+            }
+            #[cfg(feature = "experimental-engine-context-menu")]
+            WM_ENGINE_CONTEXT_MENU => {
+                crate::engine::engine_menu_continue(hwnd, wparam.0);
+                LRESULT(0)
+            }
+            #[cfg(feature = "experimental-engine-context-menu")]
+            WM_TIMER if wparam.0 == crate::engine::ENGINE_MENU_TIMER => {
+                crate::engine::engine_menu_tick(hwnd);
+                LRESULT(0)
+            }
             WM_HTML_DEFERRED => {
                 if chrome_host::html_ui_enabled() {
                     run_deferred_html_command(hwnd);
@@ -4453,6 +4489,8 @@ unsafe extern "system" fn window_proc(
                 LRESULT(0)
             }
             WM_NCDESTROY => {
+                #[cfg(feature = "experimental-engine-context-menu")]
+                crate::engine::engine_menu_owner_destroyed(hwnd);
                 frame_grip::forget(hwnd);
                 let _ = SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
                 if !raw.is_null() {
@@ -8354,11 +8392,28 @@ fn popup_extensions(profile: &crate::profile::Profile) -> Vec<crate::extensions:
 /// enabled extension has a popup (so the pill's new width is sent first), then sends the `extbtn`
 /// message when it differs from the last one the page got. Runs when the toolbar page is ready and
 /// on `WM_EXTENSIONS_CHANGED`.
+const STORE_BUTTON_SLOT: i32 = 304;
+
+/// The live top-level model is updated by WebView2 SourceChanged. Do not offer installation for a
+/// private tab, a pending navigation, frame URL or unvalidated look-alike listing.
+fn current_store_listing(app: &AppRef) -> Option<String> {
+    let tab = App::active_tab_id(app);
+    if App::active_tab_private(app) || App::tab_loading(app, tab) { return None; }
+    let url = App::successful_document_url(app, tab)?;
+    // Source may reenter navigation, selection or window-close callbacks. Fence host selection too.
+    if App::active_tab_id(app) != tab || App::active_tab_private(app) || App::tab_loading(app, tab) { return None; }
+    crate::crx_fetch::parse_store_url(url.as_str()).ok()
+}
+
 fn html_refresh_extensions_button(hwnd: HWND) {
-    let popups = crate::profile::active().map(|profile| popup_extensions(&profile)).unwrap_or_default();
+    let app = app_of(hwnd);
+    let private = app.as_ref().is_some_and(App::active_tab_private);
+    let popups = if private { Vec::new() } else { crate::profile::active().map(|profile| popup_extensions(&profile)).unwrap_or_default() };
     let names: Vec<&str> = popups.iter().map(|record| record.name.as_str()).collect();
-    let json = chrome_host::extensions_page::button_json(&names);
-    let slot = if popups.is_empty() { 0 } else { chrome_host::EXT_BUTTON_SLOT };
+    let listing = app.as_ref().and_then(current_store_listing).is_some();
+    let _ = with_chrome(hwnd, |state| { state.html_store_listing = listing; state.html_extensions_private = private; });
+    let json = if listing { super::store::listing_button_json() } else { chrome_host::extensions_page::button_json(&names) };
+    let slot = if listing { STORE_BUTTON_SLOT } else if popups.is_empty() { 0 } else { chrome_host::EXT_BUTTON_SLOT };
     let moved = with_chrome(hwnd, |s| std::mem::replace(&mut s.html_ext_slot, slot) != slot).unwrap_or(false);
     if moved {
         html_sync(hwnd);
@@ -8392,6 +8447,8 @@ pub(super) fn post_to_every_window(message: u32) {
 /// The toolbar's extensions button was clicked: the only extension with a popup opens it; with
 /// several, their names hang from the button with "Manage extensions" under them.
 fn show_extensions_button_menu(hwnd: HWND, app: &AppRef) {
+    // The website supplies neither this action nor an ID: revalidate the active top-level URL now.
+    if let Some(id) = current_store_listing(app) { super::store::start(hwnd, app, &id); return; }
     const MANAGE: usize = 1;
     const POPUP_BASE: usize = 100;
     let Ok(profile) = crate::profile::active() else {
@@ -8472,7 +8529,8 @@ pub(super) fn open_extension_popup(app: &AppRef, profile: &crate::profile::Profi
     }
 }
 
-/// Turns an installed extension on or off: the flag in `extensions.txt`, then the engine loads or
+/// Turns an installed extension on or off: native change first, then the durable flag commit under
+/// the same profile runtime lease. The engine loads or
 /// unloads Bowser's existing copy. Nothing is read from the original folder again and nothing is
 /// asked, so turning one back on uses exactly what was installed. The load result arrives later
 /// (`App::set_extension_enabled`) and every window hears about it.
@@ -8483,12 +8541,19 @@ pub(super) fn set_extension_enabled(
     enabled: bool,
 ) -> Result<(), String> {
     use crate::extensions;
-    extensions::set_enabled(&profile.extensions_file(), &record.id, enabled)
-        .map_err(|error| format!("The extension was not changed. {error}"))?;
-    super::extensions_changed();
+    // Native mutation and the durable flag commit are serialized by the engine. Do not revoke
+    // in records first: a crash before native Disable could otherwise auto-run revoked code.
     let folder = extensions::folder_for(&profile.extensions_dir(), &record.id).map_err(|error| error.to_string())?;
     App::set_extension_enabled(app, record.id.clone(), folder, enabled);
     Ok(())
+}
+
+/// Settings waits for the actual native operation AND durable flag commit before showing success.
+pub(super) fn set_extension_enabled_async(app: &AppRef, profile: &crate::profile::Profile, record: &crate::extensions::Record, enabled: bool, done: impl FnOnce(Result<(), String>) + 'static) {
+    let folder = match crate::extensions::folder_for(&profile.extensions_dir(), &record.id) {
+        Ok(folder) => folder, Err(error) => { done(Err(error.to_string())); return; }
+    };
+    App::set_extension_enabled_notify(app, record.id.clone(), folder, enabled, Box::new(done));
 }
 
 /// Unloads an extension, then drops it from the list and deletes Bowser's copy. The caller has
@@ -8511,13 +8576,19 @@ pub(super) fn remove_extension(
             let result = match result {
                 Ok(()) => {
                     extensions::record_load_result(&id, Ok(()));
-                    extensions::uninstall(&extensions_dir, &records_file, &id).map_err(|error| {
-                        format!("The extension was removed from the list, but its files were not deleted. {error}")
+                    extensions::uninstall_under_runtime(&extensions_dir, &records_file, &id).map_err(|error| {
+                        let record_remains = extensions::read_authority_records(&records_file).ok().map(|records| records.iter().any(|record| record.id == id));
+                        let outcome = match record_remains {
+                            Some(true) => "Native removal succeeded, but the installation record was not deleted. The previously consented extension may be restored at restart.",
+                            Some(false) => "Native removal and record deletion succeeded, but package-file cleanup did not finish.",
+                            None => "Native removal succeeded, but the installation record and package cleanup could not be verified.",
+                        };
+                        format!("{outcome} {error}")
                     })
                 }
                 Err(reason) => {
                     extensions::record_load_result(&id, Err(format!("Remove failed: {reason}")));
-                    Err(format!("The extension was not removed. {reason}"))
+                    Err(format!("Removal did not finish; native and saved state may differ. {reason}"))
                 }
             };
             super::extensions_changed();
@@ -8566,7 +8637,7 @@ pub(super) fn install_extension_from_crx_file(
 
 /// What both install paths do with the answer: a recorded extension is loaded from Bowser's copy and
 /// every window hears about it; a declined prompt is `Ok(false)`; a failure is worded for the page.
-fn finish_install(
+pub(super) fn finish_install(
     app: &AppRef,
     profile: &crate::profile::Profile,
     result: Result<Option<crate::extensions::Record>, String>,
@@ -12537,6 +12608,8 @@ mod tests {
     #[test]
     fn the_main_window_private_messages_are_unique() {
         let ids = [
+            #[cfg(feature = "experimental-engine-context-menu")]
+            WM_ENGINE_CONTEXT_MENU,
             WM_CHROME_SYNC, WM_FOREGROUND_SYNC, WM_HISTORY_BACK, WM_HISTORY_FORWARD, WM_HTML_CHROME_ENV,
             WM_HTML_CHROME_FAILED, WM_HTML_CHROME_START, WM_HTML_DEFERRED, WM_HTML_HOVER_START, WM_HTML_PANEL_FAILED,
             WM_HTML_POPUP_FAILED, WM_HTML_RAIL_FAILED, WM_HTML_TABS_FAILED, WM_LOGIN_MESSAGE, WM_NAVIGATION_PROGRESS,
@@ -12560,6 +12633,12 @@ mod tests {
     #[test]
     fn the_main_window_timer_ids_are_unique_and_outside_hover_ranges() {
         let ids = [
+            #[cfg(feature = "experimental-engine-context-menu")]
+            crate::engine::ENGINE_MENU_TIMER,
+            #[cfg(feature = "experimental-engine-context-menu")]
+            APP_MENU_PROBE_TIMER,
+            #[cfg(feature = "experimental-engine-context-menu")]
+            crate::engine::app_context_menu_probe::reload::RELOAD_TIMER,
             WM_IDLE_TRIM_TIMER, WM_CARET_BLINK_TIMER, WM_ANIMATION_TIMER, WM_SESSION_SAVE_TIMER,
             super::super::WM_PRIVACY_STATS_TIMER, WM_PROGRESS_TIMER, WM_SPLIT_BOUNDS_TIMER,
             super::super::WM_POWER_TIMER, super::super::WM_IMPORT_OFFER_TIMER,
@@ -13158,3 +13237,37 @@ mod bar_tests {
     }
 }
 // --- end toolbars and feeds ---
+
+/// Native-only continuation; neither website nor HTML chrome messages can select a menu ID.
+#[cfg(feature = "experimental-engine-context-menu")]
+pub(crate) fn queue_engine_context_menu(hwnd: HWND, token: usize) -> bool {
+    unsafe { PostMessageW(Some(hwnd), WM_ENGINE_CONTEXT_MENU, WPARAM(token), LPARAM(0)) }.is_ok()
+}
+
+// The ignored real-App probe owns these Rust callbacks only on its creating STA. No host object,
+// page message, listener, or external test server can access the App or select a native command.
+#[cfg(all(test, feature = "experimental-engine-context-menu"))]
+thread_local! {
+    static APP_MENU_PROBE_READY: RefCell<Option<Box<dyn FnOnce(AppRef)>>> = RefCell::new(None);
+    static APP_MENU_PROBE_TICK: RefCell<Option<Box<dyn FnMut(AppRef)>>> = RefCell::new(None);
+}
+#[cfg(all(test, feature = "experimental-engine-context-menu"))]
+const APP_MENU_PROBE_TIMER:usize=0xB0A7;
+#[cfg(all(test, feature = "experimental-engine-context-menu"))]
+pub(crate) fn set_app_menu_probe_hooks(ready:Box<dyn FnOnce(AppRef)>,tick:Box<dyn FnMut(AppRef)>) {
+    APP_MENU_PROBE_READY.with(|slot|{assert!(slot.borrow().is_none());*slot.borrow_mut()=Some(ready);});
+    APP_MENU_PROBE_TICK.with(|slot|{assert!(slot.borrow().is_none());*slot.borrow_mut()=Some(tick);});
+}
+#[cfg(all(test, feature = "experimental-engine-context-menu"))]
+fn app_menu_probe_tick(app:AppRef) {
+    let callback=APP_MENU_PROBE_TICK.with(|slot|slot.borrow_mut().take());
+    if let Some(mut callback)=callback {
+        let hwnd=app.borrow().hwnd;
+        if std::panic::catch_unwind(std::panic::AssertUnwindSafe(||callback(app))).is_err() {
+            eprintln!("APP_CONTEXT_MENU probe_tick_panicked=true");
+            unsafe {let _=PostMessageW(Some(hwnd),WM_CLOSE,WPARAM(0),LPARAM(0));}
+            return;
+        }
+        APP_MENU_PROBE_TICK.with(|slot|{if slot.borrow().is_none(){*slot.borrow_mut()=Some(callback);}});
+    }
+}

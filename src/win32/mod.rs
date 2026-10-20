@@ -51,6 +51,7 @@ pub(crate) mod privacy_panel;
 mod protection; // blocking, cookie notices, history retention, website appearance (thread T3)
 mod profile_rename;
 mod settings_page;
+mod store;
 mod history_page; // bowser://history (docs/design/history-page.md)
 mod downloads_page; // bowser://downloads (docs/design/downloads.md)
 mod downloads_ui; // the toolbar download button and the bubble (docs/design/downloads.md)
@@ -252,6 +253,10 @@ pub(crate) const WM_CAPTURE_DONE: u32 = windows::Win32::UI::WindowsAndMessaging:
 // --- settings page (docs/design/settings-page.md) ---
 /// Opens `bowser://settings` at `section` in window `hwnd` (the native Settings window when the
 /// window has no HTML chrome). `reuse_blank`: a blank normal shown tab becomes the page.
+pub(crate) fn open_store_page(hwnd: HWND, app: &crate::app::AppRef, reuse_blank: bool) {
+    store::open(hwnd, app, reuse_blank);
+}
+
 pub(crate) fn open_settings_page(hwnd: HWND, app: &crate::app::AppRef, section: Option<crate::internal_page::Section>, reuse_blank: bool) {
     settings_page::open(hwnd, app, section, reuse_blank);
 }
@@ -435,3 +440,9 @@ mod error_dialog_tests {
         super::show_error_message("settings write failed");
     }
 }
+
+#[cfg(feature = "experimental-engine-context-menu")]
+pub(crate) use window::queue_engine_context_menu;
+
+#[cfg(all(test, feature = "experimental-engine-context-menu"))]
+pub(crate) use window::set_app_menu_probe_hooks;

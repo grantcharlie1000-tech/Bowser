@@ -677,6 +677,8 @@ fn signed_digest(signed_header_data: &[u8], archive: &[u8]) -> Result<[u8; 32], 
 // Windows CNG: SHA-256, RSA PKCS#1 v1.5 and ECDSA P-256 verification
 // ---------------------------------------------------------------------------------------------
 
+pub(crate) use cng::Sha256 as PackageSha256;
+
 mod cng {
     use std::{ffi::c_void, ptr::null_mut};
 

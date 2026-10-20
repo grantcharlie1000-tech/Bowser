@@ -642,17 +642,22 @@ fn configure(controller: &ICoreWebView2Controller, webview: &ICoreWebView2) -> R
             .SetAreDefaultScriptDialogsEnabled(false)
             .map_err(|error| error.to_string())?;
         let mut token = 0;
+        #[cfg(test)] let window_probe=crate::extension_window_probe::Observer::prepare("isolated-agent-host",webview);
+        #[cfg(test)] let request_probe=window_probe.clone();
         webview
             .add_NewWindowRequested(
-                &NewWindowRequestedEventHandler::create(Box::new(|_sender, args| {
+                &NewWindowRequestedEventHandler::create(Box::new(move |_sender, args| {
                     if let Some(args) = args {
+                    #[cfg(test)] let request_id=request_probe.enter(_sender.as_ref(),&args);
                         let _ = args.SetHandled(true);
+                    #[cfg(test)] request_probe.finish(request_id,&args,"existing-policy-unchanged",false);
                     }
                     Ok(())
                 })),
                 &mut token,
             )
             .map_err(|error| error.to_string())?;
+        #[cfg(test)] window_probe.installed();
         webview
             .add_PermissionRequested(
                 &PermissionRequestedEventHandler::create(Box::new(|_sender, args| {

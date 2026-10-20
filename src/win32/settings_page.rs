@@ -75,6 +75,7 @@ struct Runtime {
     /// Last Extensions section snapshot sent, whether a fresh one is due, the extension being
     /// removed (the engine answers later) and how the last extension command went.
     extensions: Option<String>,
+    store_due: bool,
     ext_due: bool,
     ext_busy: String,
     ext_ack: ext::Ack,
@@ -158,7 +159,7 @@ pub(crate) fn go(owner: HWND, section: Option<Section>) {
 
 /// F5 on a settings tab: read everything again.
 pub(crate) fn refresh(owner: HWND) {
-    let _ = with(owner, |rt| rt.dirty = true);
+    let _ = with(owner, |rt| { rt.dirty = true; rt.store_due = true; });
     super::window::split_ui_invalidate(owner);
 }
 
@@ -190,6 +191,11 @@ pub(crate) fn usable(owner: HWND) -> bool {
 
 /// The installed extensions changed (`WM_EXTENSIONS_CHANGED`): the Extensions section reads them
 /// again the next time the page syncs.
+pub(crate) fn store_changed(owner: HWND) {
+    let _ = with(owner, |rt| rt.store_due = true);
+    super::window::split_ui_invalidate(owner);
+}
+
 pub(crate) fn extensions_changed(owner: HWND) {
     let _ = with(owner, |rt| rt.ext_due = true);
     super::window::split_ui_invalidate(owner);
@@ -344,6 +350,7 @@ fn queue(owner: HWND, command: Queued) {
 
 /// Closes the host (window closing or chrome failure).
 pub(crate) fn close(owner: HWND) {
+    super::store::close(owner);
     let removed = RUNTIMES.with(|runtimes| runtimes.try_borrow_mut().ok().and_then(|mut all| all.remove(&(owner.0 as isize))));
     if let Some(runtime) = removed {
         if let Some(host) = runtime.host {
@@ -364,7 +371,7 @@ pub(crate) fn close(owner: HWND) {
 fn wanted(owner: HWND, app: &AppRef) -> Option<Shown> {
     let active = App::active_tab_id(app);
     if let Some(split) = App::split_view(app) {
-        let pane = split.panes_focus_first().find(|pane| App::internal_page(app, split.tab(*pane)).is_some_and(InternalPage::is_settings))?;
+        let pane = split.panes_focus_first().find(|pane| App::internal_page(app, split.tab(*pane)).is_some_and(InternalPage::is_settings_host))?;
         let tab = split.tab(pane);
         let rect = match App::split_bounds(app) {
             // A pane hidden by the collapse rule shows no page host.
@@ -374,7 +381,7 @@ fn wanted(owner: HWND, app: &AppRef) -> Option<Shown> {
         };
         return Some(Shown { tab, rect });
     }
-    App::internal_page(app, active).filter(|page| page.is_settings())?;
+    App::internal_page(app, active).filter(|page| page.is_settings_host())?;
     Some(Shown { tab: active, rect: super::window::split_viewport(owner)? })
 }
 
@@ -424,6 +431,7 @@ pub(crate) fn sync(owner: HWND, app: &AppRef) {
         let section = App::internal_page(app, want.tab).and_then(InternalPage::section);
         let _ = with(owner, |rt| {
             rt.last_tab = Some(want.tab);
+            rt.store_due = true;
             rt.go.get_or_insert(section);
             rt.dirty = true;
         });
@@ -518,6 +526,11 @@ pub(crate) fn sync(owner: HWND, app: &AppRef) {
     }
     if let Some(section) = with(owner, |rt| rt.go.take()).flatten() {
         let _ = host.post_json(&wire::go_json(section));
+    }
+    // Send after settingsgo: the shared host selects exactly one full-page surface.
+    if with(owner, |rt| std::mem::take(&mut rt.store_due)).unwrap_or(false) {
+        let store = super::store::snapshot(owner, App::internal_page(app, want.tab).is_some_and(InternalPage::is_store));
+        let _ = host.post_json(&store);
     }
     if shown != Some(want) {
         App::diagnostic_interaction_event(app,"interaction_settings_show",u64::from(want.tab.0));
@@ -621,6 +634,7 @@ fn answer(owner: HWND, result: Result<(), String>) {
 /// Runs the queued commands for `owner` (from `WM_SETTINGS_COMMAND`). A command acts only while
 /// the page is shown over a settings tab; anything else is dropped.
 pub(crate) fn run_queued(owner: HWND, app: &AppRef) {
+    super::store::apply_completed(owner);
     // A filter list a worker fetched for the Privacy section is stored first (thread T3).
     if super::protection::apply_fetched(app, owner) {
         let _ = with(owner, |rt| rt.dirty = true);
@@ -637,11 +651,18 @@ pub(crate) fn run_queued(owner: HWND, app: &AppRef) {
     });
     for command in commands {
         let Some(tab) = with(owner, |rt| rt.shown.map(|shown| shown.tab)).flatten() else { continue };
-        if !App::internal_page(app, tab).is_some_and(InternalPage::is_settings) {
+        if !App::internal_page(app, tab).is_some_and(InternalPage::is_settings_host) {
             continue;
         }
         match command {
             Queued::Settings(fields) => {
+                if super::store::run(owner, app, &fields) { continue; }
+                if App::internal_page(app, tab).is_some_and(InternalPage::is_store) {
+                    if fields.a == "refresh" { let _ = with(owner, |rt| { rt.ext_due = true; rt.store_due = true; }); }
+                    else if let Some(Action::Section(section)) = wire::map_command(&fields) { open(owner, app, section, false); }
+                    else if let Some(action) = ext::map_command(&fields) { run_extension(owner, app, action); }
+                    continue;
+                }
                 if let Some(action) = wire::map_command(&fields) {
                     run(owner, app, tab, action);
                 } else if let Some(action) = ext::map_command(&fields) {
@@ -655,6 +676,7 @@ pub(crate) fn run_queued(owner: HWND, app: &AppRef) {
                 }
             }
             Queued::Privacy(fields) => {
+                if App::internal_page(app, tab).is_some_and(InternalPage::is_store) { continue; }
                 if super::html_dialog::run_privacy_command(app, owner, &fields) {
                     let _ = with(owner, |rt| rt.dirty = true);
                 }
@@ -1067,10 +1089,12 @@ fn run_extension(owner: HWND, app: &AppRef, action: ext::Action) {
             if record.enabled == on {
                 return ext_answer(owner, ext::Ack::None, String::new());
             }
-            match super::window::set_extension_enabled(app, &profile, &record, on) {
-                Ok(()) => ext_answer(owner, if on { ext::Ack::Enabled } else { ext::Ack::Disabled }, String::new()),
-                Err(error) => ext_answer(owner, ext::Ack::Failed, error),
-            }
+            super::window::set_extension_enabled_async(app, &profile, &record, on, move |result| {
+                match result {
+                    Ok(()) => ext_answer(owner, if on { ext::Ack::Enabled } else { ext::Ack::Disabled }, String::new()),
+                    Err(error) => ext_answer(owner, ext::Ack::Failed, error),
+                }
+            });
         }
         ext::Action::Remove(id) => {
             // One removal at a time: the page shows the one in progress and holds the others.
@@ -1108,6 +1132,21 @@ fn run_extension(owner: HWND, app: &AppRef, action: ext::Action) {
                 }
             }
             Err(error) => ext_answer(owner, ext::Ack::Failed, error),
+        },
+        ext::Action::Options(id) => match installed(&id) {
+            Ok(record) => {
+                let failure = extensions::load_failure(&record.id).unwrap_or_default();
+                if let Some(refusal) = ext::popup_refusal(record.enabled, &failure) { return ext_answer(owner, ext::Ack::Failed, refusal.to_owned()); }
+                match extensions::folder_for(&profile.extensions_dir(), &record.id) {
+                    Ok(folder) => App::open_extension_page(app, record.id, folder, extensions::PageKind::Options, format!("{} options", record.name)),
+                    Err(reason) => ext_answer(owner, ext::Ack::Failed, reason.to_string()),
+                }
+            }
+            Err(reason) => ext_answer(owner, ext::Ack::Failed, reason),
+        },
+        ext::Action::CheckUpdate(id) => match installed(&id) {
+            Ok(_) => ext_answer(owner, ext::Ack::Failed, "Verified extension updates are not enabled until the staged-update and rollback probe passes. Your installed files were not changed.".to_owned()),
+            Err(reason) => ext_answer(owner, ext::Ack::Failed, reason),
         },
         ext::Action::Install => match super::window::install_extension(owner, app, &profile) {
             Ok(true) => ext_answer(owner, ext::Ack::Installed, String::new()),

@@ -1,0 +1,166 @@
+# Actual native component fixture, not Google/Bowser installation or a frontend mockup.
+[CmdletBinding()]
+param([Parameter(Mandatory)][uint32]$OwnerPid,[Parameter(Mandatory)][long]$OwnerHandle,[Parameter(Mandatory)][string]$OwnerExe,
+ [Parameter(Mandatory)][long]$NoteHandle,[Parameter(Mandatory)][long]$ButtonHandle,[Parameter(Mandatory)][long]$PageHandle,
+ [int]$NoteLeft,[int]$NoteTop,[int]$NoteWidth,[int]$NoteHeight,[int]$ButtonLeft,[int]$ButtonTop,[int]$ButtonWidth,[int]$ButtonHeight,[int]$PageTop,
+ [int]$FontScale,[int]$Dpi,[Parameter(Mandatory)][string]$Sample,[Parameter(Mandatory)][string]$Out,[switch]$Click)
+$ErrorActionPreference='Stop';Set-StrictMode -Version Latest
+# Best-effort test-helper diagnostics only, never input/capture authority or a verdict.
+# A missing/partial file is inconclusive. Synchronous file/native calls are not hard bounded.
+# Validate the existing fixed grammar before forming a new diagnostic path; keep its rejection below.
+$script:bandPhaseState=$null
+try {
+ if($Sample -cmatch '\Av2-font-(100|150|200)-width-(960|320)\z'){
+  $script:bandPhaseState=@{path=(Join-Path $Out "$Sample.phases.json");records=[Collections.Generic.List[object]]::new();encoding=[Text.UTF8Encoding]::new($false);frequency=[Diagnostics.Stopwatch]::Frequency;stream=$null}
+ }
+} catch {$script:bandPhaseState=$null}
+function Close-BandPhases {
+ try {
+  $state=$script:bandPhaseState;$script:bandPhaseState=$null
+  if($null -ne $state -and $null -ne $state.stream){$state.stream.Dispose()}
+ } catch {}
+}
+function Write-BandPhase([string]$Stage) {
+ try {
+  $state=$script:bandPhaseState
+  if($null -eq $state -or $state.records.Count -ge 32){return}
+  if($Stage -cnotin @('drawing-add-type-before','drawing-add-type-after','native-add-type-before','native-add-type-after','process-construction-before','process-construction-after','identity-before','identity-after','geometry-before','geometry-after','actual-input-before','actual-input-after','capture-geometry-before','capture-geometry-after','print-window-before','print-window-after','capture-save-before','capture-save-after','capture-postcheck-before','capture-postcheck-after')){return}
+  [void]$state.records.Add([ordered]@{stage=$Stage;qpc=[Diagnostics.Stopwatch]::GetTimestamp()})
+  $json=ConvertTo-Json -InputObject ([ordered]@{scope='best-effort-test-helper-stages-not-acceptance';sample=$Sample;qpc_frequency=$state.frequency;max_records=32;records=$state.records.ToArray()}) -Depth 4 -Compress
+  $bytes=$state.encoding.GetBytes($json)
+  if($null -eq $state.stream){$state.stream=[IO.File]::Open($state.path,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::Read)}
+  $state.stream.Position=0;$state.stream.Write($bytes,0,$bytes.Length);$state.stream.SetLength($bytes.Length);$state.stream.Flush()
+ } catch {Close-BandPhases}
+}
+try {
+Write-BandPhase 'drawing-add-type-before'
+Add-Type -AssemblyName System.Drawing
+Write-BandPhase 'drawing-add-type-after'
+Write-BandPhase 'native-add-type-before'
+Add-Type @'
+using System;using System.Text;using System.Runtime.InteropServices;
+public static class InstallerBandCapture {
+ [StructLayout(LayoutKind.Sequential)]public struct RECT{public int Left,Top,Right,Bottom;}
+ [StructLayout(LayoutKind.Sequential)]public struct MONITOR{public uint Size;public RECT Screen,Work;public uint Flags;}
+ [DllImport("user32.dll")]public static extern IntPtr MonitorFromWindow(IntPtr h,uint flags);
+ [DllImport("user32.dll",CharSet=CharSet.Unicode)]public static extern bool GetMonitorInfo(IntPtr monitor,ref MONITOR info);
+ [DllImport("user32.dll")]public static extern int GetSystemMetrics(int index);
+ [DllImport("user32.dll")]public static extern IntPtr GetThreadDpiAwarenessContext();
+ [DllImport("user32.dll")]public static extern IntPtr GetWindowDpiAwarenessContext(IntPtr h);
+ [DllImport("user32.dll")]public static extern int GetAwarenessFromDpiAwarenessContext(IntPtr context);
+ [DllImport("user32.dll")]public static extern bool AreDpiAwarenessContextsEqual(IntPtr a,IntPtr b);
+ [StructLayout(LayoutKind.Sequential)]public struct POINT{public int X,Y;}
+ [StructLayout(LayoutKind.Sequential)]public struct GUI{public uint cbSize,flags;public IntPtr Active,Focus,Capture,MenuOwner,MoveSize,Caret;public RECT CaretRect;}
+ [StructLayout(LayoutKind.Sequential)]public struct TIME{public uint Low,High;public ulong Bits{get{return ((ulong)High<<32)|Low;}}}
+ [DllImport("user32.dll")]public static extern bool IsWindow(IntPtr h);
+ [DllImport("user32.dll")]public static extern uint GetDpiForWindow(IntPtr h);
+ [DllImport("user32.dll")]public static extern bool IsWindowVisible(IntPtr h);
+ [DllImport("user32.dll")]public static extern bool IsWindowEnabled(IntPtr h);
+ [DllImport("user32.dll")]public static extern uint GetWindowThreadProcessId(IntPtr h,out uint p);
+ [DllImport("user32.dll")]public static extern IntPtr GetParent(IntPtr h);
+ [DllImport("user32.dll")]public static extern int GetDlgCtrlID(IntPtr h);
+ [DllImport("user32.dll",CharSet=CharSet.Unicode)]static extern int GetClassName(IntPtr h,StringBuilder b,int n);
+ [DllImport("user32.dll",CharSet=CharSet.Unicode)]static extern IntPtr SendMessageTimeout(IntPtr h,uint m,UIntPtr n,StringBuilder b,uint flags,uint timeout,out UIntPtr copied);
+ [DllImport("user32.dll")]public static extern bool GetWindowRect(IntPtr h,out RECT r);
+ [DllImport("user32.dll")]public static extern bool GetClientRect(IntPtr h,out RECT r);
+ [DllImport("user32.dll")]public static extern bool ClientToScreen(IntPtr h,ref POINT p);
+ [DllImport("user32.dll")]public static extern IntPtr GetForegroundWindow();
+ [DllImport("user32.dll")]static extern bool GetGUIThreadInfo(uint tid,ref GUI info);
+ public static bool InputReady(IntPtr owner,uint tid){var gui=new GUI{cbSize=(uint)Marshal.SizeOf(typeof(GUI))};return GetForegroundWindow()==owner&&GetGUIThreadInfo(tid,ref gui)&&gui.Active==owner&&gui.Capture==IntPtr.Zero&&GetForegroundWindow()==owner;}
+ [DllImport("user32.dll")]public static extern IntPtr WindowFromPoint(POINT p);
+ [DllImport("user32.dll")]public static extern bool SetCursorPos(int x,int y);
+ [DllImport("user32.dll")]public static extern short GetAsyncKeyState(int key);
+ [DllImport("user32.dll")]public static extern void mouse_event(uint flags,uint x,uint y,uint data,UIntPtr extra);
+ [DllImport("user32.dll")]public static extern bool PrintWindow(IntPtr h,IntPtr dc,uint flags);
+ [DllImport("kernel32.dll")]static extern IntPtr OpenProcess(uint rights,bool inherit,uint pid);
+ [DllImport("kernel32.dll")]static extern bool CloseHandle(IntPtr h);
+ [DllImport("kernel32.dll")]static extern uint GetProcessId(IntPtr h);
+ [DllImport("kernel32.dll")]static extern uint WaitForSingleObject(IntPtr h,uint ms);
+ [DllImport("kernel32.dll")]static extern bool GetProcessTimes(IntPtr h,out TIME a,out TIME b,out TIME c,out TIME d);
+ [DllImport("kernel32.dll",CharSet=CharSet.Unicode)]static extern bool QueryFullProcessImageName(IntPtr h,uint flags,StringBuilder b,ref uint n);
+ public static bool Owned(IntPtr h,uint pid,uint tid,string cls){uint p;var b=new StringBuilder(64);return IsWindow(h)&&GetWindowThreadProcessId(h,out p)==tid&&p==pid&&GetClassName(h,b,64)>0&&String.Equals(b.ToString(),cls,StringComparison.Ordinal);}
+ public static bool Text(IntPtr h,string expected){var b=new StringBuilder(512);UIntPtr copied;return expected.Length<512&&SendMessageTimeout(h,0x000D,(UIntPtr)512,b,0x23,250,out copied)!=IntPtr.Zero&&copied.ToUInt64()==(ulong)expected.Length&&String.Equals(b.ToString(),expected,StringComparison.Ordinal);}
+ public sealed class ProcessIdentity:IDisposable{
+  IntPtr h;uint pid;ulong created;string image;
+  public ProcessIdentity(uint expected,string path){if(!System.Text.RegularExpressions.Regex.IsMatch(System.IO.Path.GetFileName(path),"^bowser-[0-9a-f]+\\.exe$")||!System.IO.Path.GetDirectoryName(path).EndsWith("\\target\\debug\\deps",StringComparison.OrdinalIgnoreCase))throw new InvalidOperationException("Not an isolated test executable.");h=OpenProcess(0x00101000,false,expected);if(h==IntPtr.Zero)throw new InvalidOperationException("Read-only test process handle unavailable.");try{pid=expected;image=System.IO.Path.GetFullPath(path);created=Creation();if(!SameAlive())throw new InvalidOperationException("Exact test executable identity unavailable.");}catch{Dispose();throw;}}
+  ulong Creation(){TIME a,b,c,d;if(!GetProcessTimes(h,out a,out b,out c,out d))throw new InvalidOperationException("Test creation identity unavailable.");return a.Bits;}
+  public bool SameAlive(){var b=new StringBuilder(32768);uint n=32768;return h!=IntPtr.Zero&&GetProcessId(h)==pid&&WaitForSingleObject(h,0)==258&&Creation()==created&&QueryFullProcessImageName(h,0,b,ref n)&&String.Equals(System.IO.Path.GetFullPath(b.ToString()),image,StringComparison.OrdinalIgnoreCase);}
+  public void Dispose(){if(h!=IntPtr.Zero){CloseHandle(h);h=IntPtr.Zero;}}
+ }
+}
+'@
+Write-BandPhase 'native-add-type-after'
+if($Sample -cnotmatch '^v2-font-(100|150|200)-width-(960|320)$'){throw 'Unexpected fixed sample name.'}
+$expectedWidth=[int]($Sample.Split('-')[-1]);$expectedHeight=680
+$h=[IntPtr]$OwnerHandle;$note=[IntPtr]$NoteHandle;$button=[IntPtr]$ButtonHandle;$page=[IntPtr]$PageHandle
+$p=[uint32]0;$tid=[InstallerBandCapture]::GetWindowThreadProcessId($h,[ref]$p);$guard=$null
+$report=[ordered]@{scope='native-component-only-no-App-Store-or-Google';sample_set='v2-contained-960x680-and-320x680-not-original-1044x788';status='failed';font_scale=$FontScale;dpi=$Dpi;sample=$Sample;click_called=$false;visual_verdict='pending-independent-screenshot-review';error=$null}
+function Neutral{foreach($k in @(1,2,16,17,18,27,91,92)){if([InstallerBandCapture]::GetAsyncKeyState($k) -lt 0){throw 'Held input; no repair.'}}}
+function Children {
+ foreach($entry in @(@($note,'Static',0x5b10),@($button,'Button',0x5b11),@($page,'Static',0x5b13))){$window=[IntPtr]$entry[0];if(![InstallerBandCapture]::Owned($window,$OwnerPid,$tid,$entry[1]) -or [InstallerBandCapture]::GetParent($window) -ne $h -or [InstallerBandCapture]::GetDlgCtrlID($window) -ne $entry[2] -or ![InstallerBandCapture]::IsWindowVisible($window)){throw 'Exact direct child identity unavailable.'}}
+}
+function Identity {
+ if(!$guard.SameAlive() -or [InstallerBandCapture]::GetDpiForWindow($h) -ne $Dpi -or ![InstallerBandCapture]::Owned($h,$OwnerPid,$tid,'BowserInstallerBandProbeV2') -or ![InstallerBandCapture]::IsWindowVisible($h) -or ![InstallerBandCapture]::Text($h,'Bowser installer band component - no install authority')){throw 'Exact native component host unavailable.'}
+ Children
+ if(![InstallerBandCapture]::IsWindowEnabled($button) -or ![InstallerBandCapture]::Text($button,'Add to Bowser') -or ![InstallerBandCapture]::Text($note,'Google installs into Chrome. Bowser uses a separate verified package and permission review. Extension compatibility varies.')){throw 'Full native component copy/state unavailable.'}
+ Children
+ if(!$guard.SameAlive() -or [InstallerBandCapture]::GetDpiForWindow($h) -ne $Dpi -or ![InstallerBandCapture]::Owned($h,$OwnerPid,$tid,'BowserInstallerBandProbeV2')){throw 'Host/children changed during text reads.'}
+}
+# Fixed numeric observation only: monitor bounds never widen input or alter layout/capture size.
+function Capture-Geometry {
+ Identity
+ $owner=[InstallerBandCapture+RECT]::new();$clientNow=[InstallerBandCapture+RECT]::new();$origin=[InstallerBandCapture+POINT]::new()
+ $ownerOk=[InstallerBandCapture]::GetWindowRect($h,[ref]$owner);$clientOk=[InstallerBandCapture]::GetClientRect($h,[ref]$clientNow);$originOk=[InstallerBandCapture]::ClientToScreen($h,[ref]$origin)
+ $monitor=[InstallerBandCapture]::MonitorFromWindow($h,0);$info=[InstallerBandCapture+MONITOR]::new();$info.Size=[Runtime.InteropServices.Marshal]::SizeOf($info);$monitorOk=$monitor -ne [IntPtr]::Zero -and [InstallerBandCapture]::GetMonitorInfo($monitor,[ref]$info)
+ $threadContext=[InstallerBandCapture]::GetThreadDpiAwarenessContext();$windowContext=[InstallerBandCapture]::GetWindowDpiAwarenessContext($h)
+ $result=[ordered]@{thread_awareness=[InstallerBandCapture]::GetAwarenessFromDpiAwarenessContext($threadContext);window_awareness=[InstallerBandCapture]::GetAwarenessFromDpiAwarenessContext($windowContext);contexts_equal=[InstallerBandCapture]::AreDpiAwarenessContextsEqual($threadContext,$windowContext);scope='non-atomic-fixed-numeric-capture-diagnostic-not-input-authority';owner_rect_ok=$ownerOk;owner_rect=@($owner.Left,$owner.Top,$owner.Right,$owner.Bottom);client_rect_ok=$clientOk;client_rect=@($clientNow.Left,$clientNow.Top,$clientNow.Right,$clientNow.Bottom);client_origin_ok=$originOk;client_origin=@($origin.X,$origin.Y);monitor_info_ok=$monitorOk;monitor_rect=@($info.Screen.Left,$info.Screen.Top,$info.Screen.Right,$info.Screen.Bottom);work_rect=@($info.Work.Left,$info.Work.Top,$info.Work.Right,$info.Work.Bottom);primary_size=@([InstallerBandCapture]::GetSystemMetrics(0),[InstallerBandCapture]::GetSystemMetrics(1));virtual_xywh=@([InstallerBandCapture]::GetSystemMetrics(76),[InstallerBandCapture]::GetSystemMetrics(77),[InstallerBandCapture]::GetSystemMetrics(78),[InstallerBandCapture]::GetSystemMetrics(79));print_window_flags=2}
+ Identity
+ return $result
+}
+function Contained-Geometry {
+ $g=Capture-Geometry
+ $report.last_containment_observation=$g
+ if($g.owner_rect[2]-$g.owner_rect[0] -ne $expectedWidth -or $g.owner_rect[3]-$g.owner_rect[1] -ne $expectedHeight -or $g.client_rect[2]-$g.client_rect[0] -ne $expectedWidth -or $g.client_rect[3]-$g.client_rect[1] -ne $expectedHeight -or $g.client_origin[0] -ne $g.owner_rect[0] -or $g.client_origin[1] -ne $g.owner_rect[1]){throw 'v2 declared sample and actual borderless owner/client dimensions differ; no repair.'}
+ if($Dpi -ne 96 -or !$g.contexts_equal -or $g.thread_awareness -notin @(0,1,2) -or $g.window_awareness -notin @(0,1,2) -or !$g.owner_rect_ok -or !$g.client_rect_ok -or !$g.client_origin_ok -or !$g.monitor_info_ok){throw 'v2 native coordinate/monitor context unavailable or incompatible; no repair.'}
+ if($g.owner_rect[0] -lt $g.work_rect[0] -or $g.owner_rect[1] -lt $g.work_rect[1] -or $g.owner_rect[2] -gt $g.work_rect[2] -or $g.owner_rect[3] -gt $g.work_rect[3]){throw 'v2 whole owner exceeds reported work area; no resize or retry.'}
+ return $g
+}
+function Bounds([IntPtr]$Window,[int]$Left,[int]$Top,[int]$Width,[int]$Height){$r=[InstallerBandCapture+RECT]::new();$p=[InstallerBandCapture+POINT]::new();$p.X=$Left;$p.Y=$Top;if(![InstallerBandCapture]::ClientToScreen($h,[ref]$p) -or ![InstallerBandCapture]::GetWindowRect($Window,[ref]$r) -or $r.Left -ne $p.X -or $r.Top -ne $p.Y -or $r.Right-$r.Left -ne $Width -or $r.Bottom-$r.Top -ne $Height -or $Width -le 0 -or $Height -le 0){throw 'Native control geometry differs from measured reservation.'};return $r}
+try {
+ Write-BandPhase 'process-construction-before'
+ $guard=[InstallerBandCapture+ProcessIdentity]::new($OwnerPid,$OwnerExe);Write-BandPhase 'process-construction-after';Write-BandPhase 'identity-before';Identity
+ Write-BandPhase 'identity-after'
+ Write-BandPhase 'geometry-before'
+ $nr=Bounds $note $NoteLeft $NoteTop $NoteWidth $NoteHeight;$br=Bounds $button $ButtonLeft $ButtonTop $ButtonWidth $ButtonHeight
+ $client=[InstallerBandCapture+RECT]::new();if(![InstallerBandCapture]::GetClientRect($h,[ref]$client)){throw 'Native client bounds unavailable.'}
+ $null=Bounds $page 0 $PageTop $client.Right ($client.Bottom-$PageTop)
+ if($PageTop -le 0 -or $NoteTop+$NoteHeight -gt $PageTop -or $ButtonTop+$ButtonHeight -gt $PageTop -or $NoteLeft -lt 0 -or $ButtonLeft -lt 0 -or $NoteLeft+$NoteWidth -gt $client.Right -or $ButtonLeft+$ButtonWidth -gt $client.Right){throw 'Native band/page overlap or clipping.'}
+ $report.pre_input_containment=Contained-Geometry
+ Write-BandPhase 'geometry-after'
+ if($Click){
+  # Keep all existing input checks between this observation and the actual dispatch.
+  Write-BandPhase 'actual-input-before'
+  Neutral;Identity;if(![InstallerBandCapture]::InputReady($h,$tid)){throw 'Exact foreground unavailable; no focus repair.'}
+  $point=[InstallerBandCapture+POINT]::new();$point.X=$br.Left+[int](($br.Right-$br.Left)/2);$point.Y=$br.Top+[int](($br.Bottom-$br.Top)/2)
+  if([InstallerBandCapture]::WindowFromPoint($point) -ne $button -or ![InstallerBandCapture]::SetCursorPos($point.X,$point.Y)){throw 'Exact button hit/cursor unavailable.'}
+  Neutral;Identity;$fresh=Bounds $button $ButtonLeft $ButtonTop $ButtonWidth $ButtonHeight
+  if($fresh.Left -ne $br.Left -or $fresh.Top -ne $br.Top -or ![InstallerBandCapture]::InputReady($h,$tid) -or [InstallerBandCapture]::WindowFromPoint($point) -ne $button){throw 'Button changed before real input.'}
+  try{[InstallerBandCapture]::mouse_event(2,0,0,0,[UIntPtr]::Zero);$report.click_called=$true}finally{[InstallerBandCapture]::mouse_event(4,0,0,0,[UIntPtr]::Zero)}
+  Write-BandPhase 'actual-input-after'
+ }
+ Write-BandPhase 'capture-geometry-before'
+ Identity;$r=[InstallerBandCapture+RECT]::new();if(![InstallerBandCapture]::GetWindowRect($h,[ref]$r)){throw 'Capture root geometry unavailable.'}
+ $width=$r.Right-$r.Left;$height=$r.Bottom-$r.Top;if($width -le 0 -or $height -le 0 -or $width -gt 4096 -or $height -gt 4096){throw 'Capture size outside bound.'}
+ $report.capture_geometry_before=Contained-Geometry
+ if($width -ne $expectedWidth -or $height -ne $expectedHeight -or $width -ne $report.capture_geometry_before.owner_rect[2]-$report.capture_geometry_before.owner_rect[0] -or $height -ne $report.capture_geometry_before.owner_rect[3]-$report.capture_geometry_before.owner_rect[1]){throw 'v2 bitmap dimensions differ from declared and fresh contained owner; no capture.'}
+ Write-BandPhase 'capture-geometry-after'
+ $bitmap=[Drawing.Bitmap]::new($width,$height)
+ try{$graphics=[Drawing.Graphics]::FromImage($bitmap);try{$dc=$graphics.GetHdc();try{Write-BandPhase 'print-window-before';$ok=[InstallerBandCapture]::PrintWindow($h,$dc,2);Write-BandPhase 'print-window-after'}finally{$graphics.ReleaseHdc($dc)}}finally{$graphics.Dispose()};if(!$ok){throw 'Owned PrintWindow failed.'};Identity;$null=Bounds $note $NoteLeft $NoteTop $NoteWidth $NoteHeight;$null=Bounds $button $ButtonLeft $ButtonTop $ButtonWidth $ButtonHeight;$null=Bounds $page 0 $PageTop $client.Right ($client.Bottom-$PageTop);$file=Join-Path $Out "$Sample.png";if(Test-Path $file){throw 'Existing sample file refused.'};Write-BandPhase 'capture-save-before';$bitmap.Save($file,[Drawing.Imaging.ImageFormat]::Png);Write-BandPhase 'capture-save-after'}finally{$bitmap.Dispose()}
+ Write-BandPhase 'capture-postcheck-before'
+ $report.capture_geometry_after=Contained-Geometry
+ foreach($key in @('owner_rect','client_rect','client_origin','monitor_rect','work_rect')){if(($report.capture_geometry_before[$key] -join ',') -cne ($report.capture_geometry_after[$key] -join ',')){throw 'v2 reported capture geometry changed; not accepted.'}}
+ Write-BandPhase 'capture-postcheck-after'
+ $report.screenshot="$Sample.png";$sha=[Security.Cryptography.SHA256]::Create();try{$stream=[IO.File]::OpenRead($file);try{$report.sha256=([BitConverter]::ToString($sha.ComputeHash($stream))).Replace('-','').ToLowerInvariant()}finally{$stream.Dispose()}}finally{$sha.Dispose()};$report.status='captured-native-component-visual-review-pending'
+} catch {$report.error=$_.Exception.Message} finally {if($guard){$guard.Dispose()};[IO.File]::WriteAllText((Join-Path $Out "$Sample.json"),($report|ConvertTo-Json -Depth 5),[Text.UTF8Encoding]::new($false))}
+if($report.status -cne 'captured-native-component-visual-review-pending'){throw 'Native component failed; not accepted.'}
+} finally {Close-BandPhases}

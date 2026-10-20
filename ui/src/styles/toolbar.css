@@ -902,6 +902,15 @@ html[data-scheme="dark"] #app {
   margin-inline-end: var(--bw-space-0_5);
 }
 
+#app.placed.has-ext.has-store-ext .actions { left: calc(var(--menu-x) - 304px); }
+#app.placed.has-ext.has-store-ext.has-dl .actions { left: calc(var(--menu-x) - 336px); }
+.tb-ext.is-store { display: inline-flex; align-items: center; justify-content: center; width: 300px; min-width: 300px; gap: var(--bw-space-2); padding-inline: var(--bw-space-2); border-radius: var(--bw-r-control); color: var(--bw-accent); background: var(--bw-accent-soft); font: var(--bw-text-caption)/var(--bw-leading-caption) var(--bw-font); }
+.tb-ext-store-copy { display: flex; flex-direction: column; align-items: flex-start; min-width: 0; text-align: start; }
+.tb-ext-store-copy[hidden] { display: none; }
+.tb-ext-store-label { white-space: nowrap; font-weight: 600; font-size: var(--bw-text-caption); line-height: calc(14px * var(--bw-font-scale)); }
+.tb-ext-store-note { white-space: nowrap; font-size: calc(10px * var(--bw-font-scale)); line-height: calc(11px * var(--bw-font-scale)); color: var(--bw-text); }
+.tb-ext-store-label[hidden] { display: none; }
+
 .tb-ext[hidden] {
   display: none;
 }

@@ -51,3 +51,10 @@ Invoke-BoundedCargo 'compile-native' @('+stable', 'test', '--locked', '--no-run'
 Invoke-BoundedCargo 'theme-flow' @('+stable', 'test', '--locked', 'app::tests::theme_flow', '--', '--nocapture') 120
 Invoke-BoundedCargo 'profile-isolation' @('+stable', 'test', '--locked', 'app_profiles', '--', '--nocapture') 120
 Invoke-BoundedCargo 'error-dialog' @('+stable', 'test', '--locked', 'error_dialog_tests', '--', '--nocapture') 120
+# Diagnose the unchanged main ranking/timing assertion without aggregate test contention.
+# These are additional exact tests, not a replacement or relaxed budget for the aggregate gates.
+foreach ($sample in 1..3) {
+    Invoke-BoundedCargo "top-sites-isolated-$sample" @('+stable', 'test', '--locked', '--lib',
+        'start_page::tests::top_sites_over_5000_distinct_hosts_is_fast_and_keeps_the_ranking',
+        '--', '--exact', '--nocapture', '--test-threads=1') 120
+}
