@@ -1963,7 +1963,15 @@ fn run_check(root: &Path, layout: &Layout, forced: bool) -> Option<Result<CheckO
         Some(config) => check_and_stage(config, layout, Version::current(), gate),
         None => stage_github_pin(layout, Version::current(), gate),
     };
-    let _ = write_atomic(&stamp, &now_secs().to_string());
+    // Only a check that got an answer counts toward the interval. One that never reached the server
+    // (offline, a disk error, switched off mid-download) is tried again at the next launch instead
+    // of waiting a whole interval (24 hours on the signed channel).
+    if !matches!(
+        outcome,
+        Err(UpdateError::Network(_) | UpdateError::Io(_) | UpdateError::SwitchedOff)
+    ) {
+        let _ = write_atomic(&stamp, &now_secs().to_string());
+    }
     let summary = match &outcome {
         Ok(CheckOutcome::UpToDate) => STATUS_UP_TO_DATE.to_owned(),
         Ok(CheckOutcome::AvailableUnverified(version)) => {
@@ -2572,6 +2580,24 @@ mod tests {
             check_due(1_000, Some(5_000_000)),
             "timestamps in the future must not suppress checks forever"
         );
+    }
+
+    #[test]
+    fn a_check_that_never_reached_the_server_is_retried_at_the_next_launch() {
+        let root = temp_dir("offline-check");
+        // Nothing listens on port 1: the check fails at once, as it does offline.
+        fs::write(root.join("update-url.txt"), "https://127.0.0.1:1/manifest.txt").unwrap();
+        let layout = Layout::new(root.join("bowser.exe"), &root);
+        let first = run_check(&root, &layout, false);
+        assert!(matches!(first, Some(Err(UpdateError::Network(_)))), "{first:?}");
+        assert!(
+            run_check(&root, &layout, false).is_some(),
+            "a failed check must not count as today's check"
+        );
+        // A check that got an answer is recorded and waits for the interval as before.
+        write_atomic(&layout.last_check(), &now_secs().to_string()).unwrap();
+        assert!(run_check(&root, &layout, false).is_none());
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
