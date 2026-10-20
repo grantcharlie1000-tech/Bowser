@@ -101,7 +101,10 @@ impl BookmarkStore {
         atomic_write(
             &profile_dir.join("bookmarks-v2.txt"),
             self.serialize().as_bytes(),
-        )
+        )?;
+        // A deleted bookmark's speed-dial image goes with it, wherever it was deleted from.
+        crate::start_page::forget_thumbs_of_deleted(profile_dir, self);
+        Ok(())
     }
     pub fn add_folder(&mut self, parent: Option<u64>, title: &str) -> io::Result<u64> {
         self.check_parent(parent)?;

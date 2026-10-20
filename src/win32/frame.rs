@@ -171,8 +171,10 @@ pub fn frame_hit_test_with(
         return if chrome_hit == ChromeHit::Drag { FrameHit::Caption } else { FrameHit::Client };
     }
     let buttons = CaptionButtons::for_client_width(width, dpi);
-    let button_x = x.clamp(0, width.saturating_sub(1));
-    let button_y = y.clamp(0, strip.saturating_sub(1));
+    // `.max(0)`: a 0-wide or 0-high client (a maximised window being minimised) must not make
+    // `clamp` panic with max < min (R-22).
+    let button_x = x.clamp(0, width.saturating_sub(1).max(0));
+    let button_y = y.clamp(0, strip.saturating_sub(1).max(0));
     if buttons.close.contains(button_x, button_y) {
         return FrameHit::Close;
     }
@@ -401,6 +403,17 @@ mod tests {
         assert_eq!(frame_hit_test_with(POINT { x: 500, y: 10 }, size, 96, false, ChromeHit::None, true), FrameHit::Caption, "the top is unchanged");
     }
     // --- end layout ---
+
+    /// R-22: a maximised or full-screen window whose client is 0 wide, or 0 high with the point just
+    /// above it, made `clamp(0, -1)` panic (release aborts). A degenerate client is hit-tested.
+    #[test]
+    fn a_zero_sized_maximised_client_is_hit_tested_without_panicking() {
+        for (point, size) in [(POINT { x: 0, y: 500 }, (0, 700)), (POINT { x: 800, y: -1 }, (1000, 0)), (POINT { x: 0, y: 0 }, (0, 0))] {
+            for thin in [false, true] {
+                let _ = frame_hit_test_with(point, size, 96, true, ChromeHit::None, thin);
+            }
+        }
+    }
 
     #[test]
     fn a_drag_band_below_the_caption_strip_moves_the_window() {

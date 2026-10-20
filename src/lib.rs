@@ -1,5 +1,6 @@
 pub mod agent;
 pub mod app;
+pub mod background_write; // small files replaced on a writer thread, never on the UI thread
 pub mod blocker;
 pub mod bookmark_extras;
 pub mod bookmarks;

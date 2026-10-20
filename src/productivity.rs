@@ -14,7 +14,10 @@ use std::{
     sync::Mutex,
 };
 
-pub const MAX_NOTES_BYTES: usize = 64 * 1024;
+/// Largest `notes.txt` read or written: room for every list the notes panels accept (100 notes of
+/// 4000 characters with 200-character titles, about 1.7 MB at four bytes a character). At 64 KiB
+/// every edit past about 16 full notes failed (R-10).
+pub const MAX_NOTES_BYTES: usize = 2 * 1024 * 1024;
 pub const MAX_TASKS: usize = 500;
 pub const MAX_SESSIONS: usize = 32;
 /// Most visits kept. History retention (Settings) drops older ones first; this cap only matters for
@@ -300,7 +303,8 @@ pub fn read_notes(path: &Path) -> String {
 }
 
 pub fn read_note_list(path: &Path) -> Vec<Note> {
-    read_bounded(path).map_or_else(Vec::new, |text| parse_notes(&text))
+    let text = fs::metadata(path).ok().filter(|meta| meta.len() <= MAX_NOTES_BYTES as u64).and_then(|_| fs::read_to_string(path).ok());
+    text.map_or_else(Vec::new, |text| parse_notes(&text))
 }
 pub fn write_note_list(path: &Path, notes: &[Note]) -> std::io::Result<()> {
     let text = serialize_notes(notes);
@@ -1247,6 +1251,22 @@ mod tests {
         assert_eq!(read_sessions(&path).len(), 12);
         save_session(&path, SavedSession { name: "New".into(), urls: vec!["https://example.com/".into()], active: 0 }).unwrap();
         assert_eq!(read_sessions(&path).len(), 13);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// R-10: the notes panels accept 100 notes of 4000 characters and 200-character titles, but the
+    /// list was capped at 64 KiB on write (and 256 KiB on read): past about 16 full notes every edit
+    /// failed, and the native popup dropped it silently. Every list the panels accept now saves and
+    /// reads back.
+    #[test]
+    fn the_most_notes_the_panels_accept_save_and_read_back() {
+        let dir = list_test_dir("notes-full");
+        let path = dir.join("notes.txt");
+        let body: String = "\u{4E2D}\n".repeat(crate::notes_book::MAX_BODY_CHARS / 2);
+        let title: String = "\u{1F600}".repeat(crate::notes_book::MAX_TITLE_CHARS);
+        let notes: Vec<Note> = (0..crate::notes_book::MAX_NOTES as u64).map(|id| Note { id: u64::MAX - id, title: title.clone(), body: body.clone() }).collect();
+        write_note_list(&path, &notes).unwrap();
+        assert_eq!(read_note_list(&path), notes);
         let _ = fs::remove_dir_all(&dir);
     }
 

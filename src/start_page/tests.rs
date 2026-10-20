@@ -290,6 +290,34 @@ fn a_chosen_thumbnail_is_kept_small_forgotten_with_its_dial_and_sent_as_a_data_u
     let _ = fs::remove_dir_all(&dir);
 }
 
+/// R-20: a bookmark deleted outside the start page (Bookmarks panel or bar, the star, the palette)
+/// took its chosen tile image with it only on the start page's own remove. Any save of the store
+/// now deletes the image files and `thumb` lines of bookmarks that are gone, and keeps the rest.
+#[test]
+fn a_bookmark_deleted_outside_the_start_page_takes_its_thumbnail_with_it() {
+    let dir = temp_dir("thumb-orphan");
+    let (mut store, mut config, [work, _, a, b, sub, deep]) = fixture();
+    store.save(&dir).unwrap();
+    let jpeg = [0xFF, 0xD8, 0xFF, 0xE0, 0, 1, 2, 3];
+    for id in [a, b, deep] {
+        set_thumb(&mut config, &dir, id, &jpeg).unwrap();
+    }
+    config.save(&dir).unwrap();
+
+    // The Bookmarks panel deletes a link and a sub-folder (with the link inside it) and saves.
+    store.delete(a);
+    store.delete(sub);
+    store.save(&dir).unwrap();
+    assert!(!thumb_path(&dir, a).exists(), "deleted bookmark's image left on disk");
+    assert!(!thumb_path(&dir, deep).exists(), "image of a bookmark inside a deleted folder left on disk");
+    assert!(thumb_path(&dir, b).exists(), "a live dial's image was deleted");
+    let reloaded = SpeedDialConfig::load(&dir);
+    assert_eq!(reloaded.thumbs.keys().copied().collect::<Vec<_>>(), [b]);
+    assert_eq!(reloaded.groups, config.groups, "groups kept");
+    assert!(store.items().iter().any(|i| i.id == work));
+    let _ = fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn widgets_default_round_trip_and_reorder() {
     let mut set = WidgetSet::default();
