@@ -15,14 +15,21 @@ jobs:
       fail-fast: false
       max-parallel: 20
       matrix:
-        variant: [after, before, slow]
-        n: [1, 2, 3, 4, 5, 6, 7, 8]
+        variant: [after, slow]
+        n: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
         exclude:
-          - { variant: slow, n: 4 }
           - { variant: slow, n: 5 }
           - { variant: slow, n: 6 }
           - { variant: slow, n: 7 }
           - { variant: slow, n: 8 }
+          - { variant: slow, n: 9 }
+          - { variant: slow, n: 10 }
+          - { variant: slow, n: 11 }
+          - { variant: slow, n: 12 }
+          - { variant: slow, n: 13 }
+          - { variant: slow, n: 14 }
+          - { variant: slow, n: 15 }
+          - { variant: slow, n: 16 }
     defaults:
       run:
         shell: pwsh
