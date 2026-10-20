@@ -210,6 +210,15 @@ pub fn fullscreen_refuses(command: usize, iconic: bool) -> bool {
     command == SC_MOVE || command == SC_SIZE || command == SC_MAXIMIZE || (command == SC_RESTORE && !iconic)
 }
 
+/// The client rectangle `WM_NCCALCSIZE` gives `proposed` (the window rectangle Windows is about to
+/// set), measured against the work area of the monitor that rectangle is on (`work_of`). A snap or a
+/// move onto another monitor proposes a rectangle there while the window still sits on the old one,
+/// so the window's own monitor would decide the snapped-edge trim with the wrong work area.
+pub fn nccalc_client(proposed: RECT, maximised: bool, dpi: u32, frame: (i32, i32), work_of: impl Fn(RECT) -> Option<RECT>) -> RECT {
+    let work = work_of(proposed).unwrap_or(proposed);
+    client_rect_for_nccalc(proposed, maximised, dpi, frame, work)
+}
+
 pub fn client_rect_for_nccalc(
     window_rect: RECT,
     maximised: bool,
@@ -432,6 +441,34 @@ mod tests {
         }
         assert_eq!(frame_hit_test_with(POINT { x: 500, y: 699 }, size, 96, false, ChromeHit::Drag, true), FrameHit::Bottom, "the grip still comes first");
         assert_eq!(frame_hit_test_with(POINT { x: 980, y: 10 }, size, 96, false, ChromeHit::Drag, true), FrameHit::Close, "the caption buttons stay at the top");
+    }
+
+    /// NCCALCSIZE monitor choice: a window snapped to the right half of monitor B, proposed while it
+    /// still sits on monitor A, is trimmed to B's work area (its frame overhang does not spill past
+    /// B's edge onto the next monitor), at every DPI. The work area of the window's own monitor, as
+    /// the code used before, leaves the overhang.
+    #[test]
+    fn a_snap_onto_another_monitor_is_measured_against_that_monitor() {
+        for dpi in [96, 120, 144, 168, 192] {
+            let s = |v: i32| v * dpi as i32 / 96;
+            let frame = (s(8), s(8));
+            let work_a = RECT { left: 0, top: 0, right: s(1920), bottom: s(1040) };
+            let work_b = RECT { left: s(1920), top: 0, right: s(3840), bottom: s(1040) };
+            let work_of = |r: RECT| {
+                let centre = (r.left + r.right) / 2;
+                Some(if centre >= work_b.left { work_b } else { work_a })
+            };
+            // Windows' snapped rectangle: the work half plus the invisible frame on the outer edges.
+            let proposed = RECT { left: s(2880) - frame.0, top: 0, right: s(3840) + frame.0, bottom: s(1040) + frame.1 };
+            let client = nccalc_client(proposed, false, dpi, frame, work_of);
+            assert_eq!((client.right, client.bottom), (work_b.right, work_b.bottom), "dpi {dpi}: trimmed to B");
+            assert_eq!((client.left, client.top), (proposed.left, proposed.top), "dpi {dpi}");
+            let by_window = client_rect_for_nccalc(proposed, false, dpi, frame, work_a);
+            assert_ne!(by_window, client, "dpi {dpi}: the old monitor's work area gives another answer");
+            // A window that stays on its monitor is unchanged by the choice.
+            let on_a = RECT { left: s(100), top: s(100), right: s(900), bottom: s(700) };
+            assert_eq!(nccalc_client(on_a, false, dpi, frame, work_of), client_rect_for_nccalc(on_a, false, dpi, frame, work_a));
+        }
     }
 
     /// W-3: in full screen no point of the window is a caption (to drag off the monitor or to

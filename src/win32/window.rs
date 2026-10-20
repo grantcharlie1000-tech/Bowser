@@ -2376,14 +2376,13 @@ unsafe extern "system" fn window_proc(
                     + windows::Win32::UI::HiDpi::GetSystemMetricsForDpi(SM_CXPADDEDBORDER, d);
                 let fy = windows::Win32::UI::HiDpi::GetSystemMetricsForDpi(SM_CYFRAME, d)
                     + windows::Win32::UI::HiDpi::GetSystemMetricsForDpi(SM_CXPADDEDBORDER, d);
+                // The monitor of the proposed rectangle, not the window's current one.
                 if wparam.0 != 0 {
                     let p = &mut *(lparam.0 as *mut NCCALCSIZE_PARAMS);
-                    let work = monitor_work_area(hwnd).unwrap_or(p.rgrc[0]);
-                    p.rgrc[0] = frame::client_rect_for_nccalc(p.rgrc[0], mx, d, (fx, fy), work);
+                    p.rgrc[0] = frame::nccalc_client(p.rgrc[0], mx, d, (fx, fy), monitor_work_area_of_rect);
                 } else {
                     let r = &mut *(lparam.0 as *mut RECT);
-                    let work = monitor_work_area(hwnd).unwrap_or(*r);
-                    *r = frame::client_rect_for_nccalc(*r, mx, d, (fx, fy), work);
+                    *r = frame::nccalc_client(*r, mx, d, (fx, fy), monitor_work_area_of_rect);
                 }
                 LRESULT(if wparam.0 != 0 {
                     WVR_REDRAW as isize
@@ -8839,9 +8838,10 @@ fn show_open_tabs_menu(hwnd: HWND, app: &AppRef) {
     // --- end popup host ---
 }
 
-/// The work area of the monitor nearest the window, in screen coordinates.
-fn monitor_work_area(hwnd: HWND) -> Option<RECT> {
-    let monitor = unsafe { MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST) };
+/// The work area of the monitor nearest `rect` (screen coordinates). `WM_NCCALCSIZE` asks for the
+/// proposed window rectangle's monitor, which during a snap or move is not yet the window's own.
+fn monitor_work_area_of_rect(rect: RECT) -> Option<RECT> {
+    let monitor = unsafe { windows::Win32::Graphics::Gdi::MonitorFromRect(&rect, MONITOR_DEFAULTTONEAREST) };
     let mut info = MONITORINFO {
         cbSize: size_of::<MONITORINFO>() as u32,
         ..Default::default()
