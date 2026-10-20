@@ -186,6 +186,33 @@ class NativeSafetySourceContracts(unittest.TestCase):
         self.assertEqual(live.count("authority.service_once(ownership_deadline,ownership_tick)"), 2)
         self.assertEqual(live.count('assert!(ownership_error.is_none(),"fresh exact GPU membership refused:'), 2)
 
+    def test_raw_bounds_diagnostic_does_not_replace_or_relax_nonfinite_refusal(self):
+        helper = source("benchmarks/scripts/probe-default-context-cancellation.ps1")
+        branch = helper.split("if(!Finite(box.X)||!Finite(box.Y)||!Finite(box.Width)||!Finite(box.Height)){", 1)[1].split("   }", 1)[0]
+        self.assertIn("WriteBoundsFailure(", branch)
+        self.assertIn('throw new InvalidOperationException("Nonfinite raw inventory bounds.")', branch)
+        diagnostic = helper.split("static void WriteBoundsFailure(", 1)[1].split("static string Real(", 1)[0]
+        self.assertIn("observed_outer_bounds", diagnostic)
+        self.assertIn("later_no_default_bounds", diagnostic)
+        self.assertIn("node_identity_before_later_query", diagnostic)
+        self.assertIn("node_identity_after_later_query", diagnostic)
+        self.assertIn("observed_category", diagnostic)
+        self.assertIn("catch{beforeFence=", diagnostic)
+        self.assertIn("catch{afterFence=", diagnostic)
+        self.assertIn("NodeIdentityMetadata(node,parentId!=null)", diagnostic)
+        identity = helper.split("static string NodeIdentityMetadata(", 1)[1].split("static void WriteBoundsFailure(", 1)[0]
+        self.assertIn("if(!inspectParent)", identity)
+        self.assertIn("captured-root-parent-not-queried", identity)
+        self.assertIn("BoundingRectangleProperty,true", diagnostic)
+        self.assertIn("FileMode.CreateNew", diagnostic)
+        self.assertIn("json.Length>8192", diagnostic)
+        self.assertIn("catch{}", diagnostic)
+        for forbidden in ("keybd_event(", "mouse_event(", "ReadMenu(", "SetForegroundWindow(", "current.Name", "node.Current.Name", "Real("):
+            self.assertNotIn(forbidden, diagnostic)
+        checker = source("benchmarks/scripts/test-native-menu-helpers.ps1")
+        self.assertIn("Rect]::Empty", checker)
+        self.assertIn("$emptyBounds.rectangle.width -cne '-Infinity'", checker)
+
     def test_managed_helpers_compile_in_one_source_unit(self):
         checker = source("benchmarks/scripts/test-native-menu-helpers.ps1")
         self.assertEqual(checker.count("Add-Type -TypeDefinition"), 1)

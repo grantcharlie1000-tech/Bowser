@@ -158,6 +158,52 @@ public static class BowserDefaultContext {
   if(!(raw is bool)&&!Object.ReferenceEquals(raw,AutomationElement.NotSupported))throw new InvalidOperationException("Optional GPU property returned unknown kind.");
   return BooleanValue(raw);
  }
+ // Pure diagnostic representation only. Infinity/NaN are labeled strings, never zeros.
+ public static string BoundsValue(object value){
+  if(Object.ReferenceEquals(value,AutomationElement.NotSupported))return "{\"kind\":\"not-supported\",\"rectangle\":null}";
+  if(!(value is System.Windows.Rect))return "{\"kind\":\"other-kind\",\"rectangle\":null}";
+  var r=(System.Windows.Rect)value;
+  Func<double,string> raw=n=>"\""+JsonText(n.ToString("R",System.Globalization.CultureInfo.InvariantCulture))+"\"";
+  return "{\"kind\":\"rectangle-value\",\"rectangle\":{\"is_empty\":"+(r.IsEmpty?"true":"false")+",\"canonical_empty\":"+(r.X==Double.PositiveInfinity&&r.Y==Double.PositiveInfinity&&r.Width==Double.NegativeInfinity&&r.Height==Double.NegativeInfinity?"true":"false")+",\"all_finite\":"+(Finite(r.X)&&Finite(r.Y)&&Finite(r.Width)&&Finite(r.Height)?"true":"false")+",\"x\":"+raw(r.X)+",\"y\":"+raw(r.Y)+",\"width\":"+raw(r.Width)+",\"height\":"+raw(r.Height)+"}}";
+ }
+ static string IdentityProperty(AutomationElement node,AutomationProperty property,bool controlType){
+  try{
+   object raw=node.GetCurrentPropertyValue(property,true);
+   if(Object.ReferenceEquals(raw,AutomationElement.NotSupported))return "{\"kind\":\"not-supported\",\"value\":null}";
+   if(controlType&&raw is ControlType)return "{\"kind\":\"control-type\",\"value\":"+Number(((ControlType)raw).Id)+"}";
+   if(!controlType&&raw is int)return "{\"kind\":\"integer\",\"value\":"+Number((int)raw)+"}";
+   return "{\"kind\":\"other-kind\",\"value\":null}";
+  }catch{return "{\"kind\":\"getter-failed\",\"value\":null}";}
+ }
+ static string RuntimeMetadata(AutomationElement node){
+  try{return "{\"kind\":\"runtime-id\",\"value\":"+JsonIds(Runtime(node))+"}";}catch{return "{\"kind\":\"getter-failed\",\"value\":null}";}
+ }
+ static string NodeIdentityMetadata(AutomationElement node,bool inspectParent){
+  string parent;if(!inspectParent){parent="{\"kind\":\"captured-root-parent-not-queried\",\"value\":null}";}
+  else try{var p=TreeWalker.RawViewWalker.GetParent(node);parent=p==null?"{\"kind\":\"absent\",\"value\":null}":RuntimeMetadata(p);}catch{parent="{\"kind\":\"getter-failed\",\"value\":null}";}
+  return "{\"runtime\":"+RuntimeMetadata(node)+",\"pid\":"+IdentityProperty(node,AutomationElement.ProcessIdProperty,false)+",\"type\":"+IdentityProperty(node,AutomationElement.ControlTypeProperty,true)+",\"hwnd\":"+IdentityProperty(node,AutomationElement.NativeWindowHandleProperty,false)+",\"parent_runtime\":"+parent+"}";
+ }
+ static void WriteBoundsFailure(IntPtr host,uint testPid,uint hostTid,IntPtr popup,uint browserPid,uint menuTid,ReadOnlyBrowser browser,AutomationElement root,int[] rootId,AutomationElement node,int[] observedId,int[] parentId,int depth,int index,int observedPid,int observedType,int observedNative,System.Windows.Rect observedBox,bool observedGpuCategory,string directory){
+  // The failed outer observation is retained separately, never replaced by a later getter.
+  // This is failure-only metadata. The caller must still throw, without a retry or Escape.
+  try{
+   bool before=false,attempted=false;
+   string beforeFence,afterFence="{\"kind\":\"not-attempted\",\"value\":null}";
+   try{before=RootFence(host,testPid,hostTid,popup,browserPid,menuTid,browser,root,rootId);beforeFence=BooleanValue(before);}catch{beforeFence="{\"kind\":\"getter-failed\",\"value\":null}";}
+   string later="{\"kind\":\"not-attempted\",\"rectangle\":null}";
+   string identityBefore="{\"kind\":\"not-attempted\"}",identityAfter=identityBefore;
+   if(before){
+    identityBefore=NodeIdentityMetadata(node,parentId!=null);
+    attempted=true;try{later=BoundsValue(node.GetCurrentPropertyValue(AutomationElement.BoundingRectangleProperty,true));}catch{later="{\"kind\":\"getter-failed\",\"rectangle\":null}";}
+    identityAfter=NodeIdentityMetadata(node,parentId!=null);
+    try{afterFence=BooleanValue(RootFence(host,testPid,hostTid,popup,browserPid,menuTid,browser,root,rootId));}catch{afterFence="{\"kind\":\"getter-failed\",\"value\":null}";}
+   }
+   string json="{\"scope\":\"failure-only-raw-bounds-not-input-authority\",\"non_atomic\":true,\"visited_count\":"+Number(index)+",\"depth\":"+Number(depth)+",\"observed_pid\":"+Number(observedPid)+",\"expected_browser_pid\":"+Number(browserPid)+",\"control_type_id\":"+Number(observedType)+",\"native_hwnd\":"+Number(observedNative)+",\"runtime_id\":"+JsonIds(observedId)+",\"root_runtime_id\":"+JsonIds(rootId)+",\"popup_hwnd\":"+Number(popup.ToInt64())+",\"expected_parent_runtime_id\":"+JsonIds(parentId)+",\"observed_category\":\""+(observedGpuCategory?"owned-gpu-category-at-outer-read":observedPid==(int)browserPid?"browser-pid-at-outer-read":"unproved-foreign")+"\",\"observed_outer_bounds\":"+BoundsValue(observedBox)+",\"root_before_later_query\":"+beforeFence+",\"later_no_default_query_attempted\":"+(attempted?"true":"false")+",\"later_no_default_bounds\":"+later+",\"node_identity_before_later_query\":"+identityBefore+",\"node_identity_after_later_query\":"+identityAfter+",\"root_after_later_query\":"+afterFence+"}";
+   if(json.Length>8192)return;
+   byte[] bytes=new UTF8Encoding(false,true).GetBytes(json);
+   using(var file=new System.IO.FileStream(System.IO.Path.Combine(directory,"raw-bounds-failure.json"),System.IO.FileMode.CreateNew,System.IO.FileAccess.Write,System.IO.FileShare.Read)){file.Write(bytes,0,bytes.Length);}
+  }catch{} // Optional metadata must not replace the original strict refusal.
+ }
  static string Real(double value){if(!Finite(value))throw new InvalidOperationException("Nonfinite raw inventory bounds.");return value.ToString("R",System.Globalization.CultureInfo.InvariantCulture);}
  static bool NoPattern(AutomationElement node,AutomationPattern pattern){
   object current;bool present=node.TryGetCurrentPattern(pattern,out current);
@@ -375,6 +421,10 @@ public static class BowserDefaultContext {
    if(gpuLeaf!=null){
     if(!gpuLeaf.Matches(c.ProcessId,observedNative,observedType,box,Runtime(e),queued.Item3,c.IsEnabled,c.HasKeyboardFocus))throw new InvalidOperationException("Outer inventory differs from immutable GPU Pane/native/bounds witness.");
     RecheckGpuTyped(e,gpuLeaf);
+   }
+   if(!Finite(box.X)||!Finite(box.Y)||!Finite(box.Width)||!Finite(box.Height)){
+    WriteBoundsFailure(host,testPid,hostTid,popup,browserPid,tid,browser,root,rootId,e,currentId,queued.Item3,queued.Item2,examined,providerPid,observedType,observedNative,box,gpuLeaf!=null,diagnosticDirectory);
+    throw new InvalidOperationException("Nonfinite raw inventory bounds.");
    }
    inventory.Append(Number(examined)).Append(':').Append(Number(queued.Item2)).Append(':').Append(JsonIds(queued.Item3)).Append(':').Append(runtimeKey).Append(':').Append(Number(providerPid)).Append(':').Append(Number(observedType)).Append(':').Append(Number(observedNative)).Append(':').Append(Real(box.X)).Append(':').Append(Real(box.Y)).Append(':').Append(Real(box.Width)).Append(':').Append(Real(box.Height)).Append(':').Append(gpuProof??"browser-owned").Append('\n');
    if(inventory.Length>65536)throw new InvalidOperationException("Complete raw inventory exceeds bound.");

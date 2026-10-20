@@ -62,6 +62,22 @@ foreach($value in @($null,[object]::new(),0)){
  $actual=$boolean.Invoke($null,[object[]]@($value))|ConvertFrom-Json
  if($actual.kind -cne 'other-kind' -or $null -ne $actual.value){throw 'Unknown UIA property kind must not become false.'}
 }
+# Pure bounds metadata must distinguish supported Empty from NotSupported and malformed kinds.
+$boundsValue=$type.GetMethod('BoundsValue',[Reflection.BindingFlags]::Public -bor [Reflection.BindingFlags]::Static)
+$emptyBounds=$boundsValue.Invoke($null,[object[]]@([System.Windows.Rect]::Empty))|ConvertFrom-Json
+if($emptyBounds.kind -cne 'rectangle-value' -or $emptyBounds.rectangle.is_empty -ne $true -or $emptyBounds.rectangle.canonical_empty -ne $true -or $emptyBounds.rectangle.all_finite -ne $false -or $emptyBounds.rectangle.x -cne 'Infinity' -or $emptyBounds.rectangle.width -cne '-Infinity'){throw 'Supported Rect.Empty diagnostic must retain the real nonfinite sentinel, never coerce it.'}
+$finiteBounds=$boundsValue.Invoke($null,[object[]]@([System.Windows.Rect]::new(1,2,3,4)))|ConvertFrom-Json
+if($finiteBounds.kind -cne 'rectangle-value' -or $finiteBounds.rectangle.all_finite -ne $true -or $finiteBounds.rectangle.is_empty -ne $false){throw 'Finite diagnostic bounds were not preserved.'}
+$nanBounds=$boundsValue.Invoke($null,[object[]]@([System.Windows.Rect]::new([double]::NaN,2,3,4)))|ConvertFrom-Json
+if($nanBounds.rectangle.canonical_empty -ne $false -or $nanBounds.rectangle.all_finite -ne $false -or $nanBounds.rectangle.x -cne 'NaN'){throw 'Arbitrary NaN must not be represented as canonical Empty or numeric zero.'}
+$infiniteBounds=$boundsValue.Invoke($null,[object[]]@([System.Windows.Rect]::new([double]::PositiveInfinity,2,3,4)))|ConvertFrom-Json
+if($infiniteBounds.rectangle.canonical_empty -ne $false -or $infiniteBounds.rectangle.all_finite -ne $false){throw 'Arbitrary infinity must not be represented as canonical Empty.'}
+$unsupportedBounds=$boundsValue.Invoke($null,[object[]]@([System.Windows.Automation.AutomationElement]::NotSupported))|ConvertFrom-Json
+if($unsupportedBounds.kind -cne 'not-supported' -or $null -ne $unsupportedBounds.rectangle){throw 'Unsupported diagnostic bounds must remain unknown.'}
+foreach($value in @($null,[object]::new(),0)){
+ $unknownBounds=$boundsValue.Invoke($null,[object[]]@($value))|ConvertFrom-Json
+ if($unknownBounds.kind -cne 'other-kind' -or $null -ne $unknownBounds.rectangle){throw 'Malformed diagnostic bounds must remain unknown.'}
+}
 $policy=$type.GetMethod('CheckMembershipPolicy',[Reflection.BindingFlags]::Public -bor [Reflection.BindingFlags]::Static)
 $null=$policy.Invoke($null,@())
 $inventoryPolicy=$type.GetMethod('CheckInventoryPolicy',[Reflection.BindingFlags]::Public -bor [Reflection.BindingFlags]::Static)

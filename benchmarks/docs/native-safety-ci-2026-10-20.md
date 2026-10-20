@@ -277,3 +277,27 @@ startup cause or exercise native message starvation. CI explicitly discovers and
 runs the two pure Rust decisions in the already-used experimental feature set
 before the live App lanes; the usual default/shipping suites alone cannot discover
 tests behind this default-off feature.
+
+
+## Nonfinite raw-inventory refusal diagnostic (no exception added)
+
+At head9de75e5, both real menu lanes reached one right-click but refused the first
+complete raw inventory with `Nonfinite raw inventory bounds`; neither sent Escape.
+The typed GPU path would reject nonfinite bounds earlier, so the unwrapped error
+points to the observed browser-PID inventory branch, not a proven GPU leaf. Its
+final node/root fence had not run, so stable ownership is not established.
+
+Microsoft documents both a default Empty and a supported Empty for a non-displaying
+UIA element. System.Windows.Rect.Empty uses positive-infinite X/Y and negative-
+infinite width/height. This does not identify our failed node. The next increment
+only writes one bounded failure-only identity/bounds receipt: already observed
+PID/runtime/type/HWND/depth/parent and box are separate from a later no-default
+bounds query, with root fences and separately labeled node/parent identity readings.
+The diagnostic explicitly distinguishes the canonical four-value Empty shape from
+other NaN/infinity; output is create-new and capped at8192 characters. Unsupported, wrong-kind and getter-failure
+states stay unknown. Nonfinite values are explicit strings, never numeric zero.
+The original nonfinite throw, GPU/fixture finite checks, deadlines and no-Escape
+outcome remain unchanged. No supported-empty policy exception is introduced.
+
+- [UIA BoundingRectangle property](https://learn.microsoft.com/en-us/dotnet/api/system.windows.automation.automationelement.boundingrectangleproperty?view=windowsdesktop-10.0)
+- [System.Windows.Rect.Empty](https://learn.microsoft.com/en-us/dotnet/api/system.windows.rect.empty?view=windowsdesktop-10.0)
