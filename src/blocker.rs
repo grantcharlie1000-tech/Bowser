@@ -1069,7 +1069,7 @@ impl BlockerState {
             cookie_notices: false,
             config_allow: config_allow
                 .iter()
-                .filter_map(|site| normalise_site(site))
+                .filter_map(|site| normalise_allow_site(site))
                 .collect(),
             site_rules: site_rules::SiteRules::default(),
             sites_path: None,
@@ -1215,7 +1215,7 @@ impl BlockerState {
             crate::settings::BlockerLevel::Trackers => Level::Trackers,
             crate::settings::BlockerLevel::Ads => Level::Ads,
         };
-        let allow: HashSet<String> = settings.blocker_allow.iter().filter_map(|site| normalise_site(site)).collect();
+        let allow: HashSet<String> = settings.blocker_allow.iter().filter_map(|site| normalise_allow_site(site)).collect();
         let changed = self.enabled != settings.blocker_enabled || self.level != level || self.config_allow != allow;
         self.enabled = settings.blocker_enabled;
         self.level = level;
@@ -1228,7 +1228,7 @@ impl BlockerState {
 
     /// Replaces the sites `blocker_allow` in settings.txt exempts.
     pub fn set_config_allow(&mut self, config_allow: &[String]) {
-        self.config_allow = config_allow.iter().filter_map(|site| normalise_site(site)).collect();
+        self.config_allow = config_allow.iter().filter_map(|site| normalise_allow_site(site)).collect();
         self.rules_changed();
     }
 
@@ -1652,6 +1652,36 @@ impl BlockerState {
     }
 }
 
+/// A `blocker_allow` entry as the host key [`BlockerState::config_allow_hit`] compares: the
+/// settings page and settings.txt accept an address (`https://news.example/page`), a port
+/// (`news.example:8080`), a `*.` prefix, a Unicode name (kept as punycode, as a URL host is), a
+/// single-label intranet name or an IPv4 address. `None` for text that names no web host.
+fn normalise_allow_site(entry: &str) -> Option<String> {
+    let entry = entry.trim();
+    if entry.is_empty() || entry.starts_with('#') {
+        return None;
+    }
+    let entry = entry.strip_prefix("*.").unwrap_or(entry);
+    let url = if entry.contains("://") {
+        url::Url::parse(entry).ok()?
+    } else {
+        url::Url::parse(&format!("http://{entry}")).ok()?
+    };
+    if !matches!(url.scheme(), "http" | "https") || !url.username().is_empty() {
+        return None;
+    }
+    let host = url.host_str()?.trim_end_matches('.').to_ascii_lowercase();
+    let label_ok = |label: &str| {
+        !label.is_empty()
+            && label.len() <= 63
+            && label.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'-' | b'_'))
+    };
+    let usable = is_ip_address(&host)
+        || valid_rule_host(&host)
+        || (!host.contains('.') && label_ok(&host));
+    usable.then_some(host)
+}
+
 fn normalise_site(entry: &str) -> Option<String> {
     let entry = entry.trim().trim_start_matches("*.").trim_matches('.');
     let entry = entry.to_ascii_lowercase();
@@ -1986,6 +2016,31 @@ mod tests {
         assert!(blocked_url_patterns(["doubleclick.net"], "ad.doubleclick.net", true).is_empty());
         assert!(blocked_url_patterns(["doubleclick.net"], "news.example", false).is_empty());
         assert!(!blocked_url_patterns(["doubleclick.net"], "", true).is_empty());
+    }
+
+    #[test]
+    fn allow_entries_written_as_addresses_ports_or_unicode_names_still_apply() {
+        let entries = [
+            "https://News.Example/some/page",
+            "shop.example:8080",
+            "*.wild.example",
+            "b\u{fc}cher.example",
+            "intranet",
+            "192.168.1.10",
+        ];
+        for entry in entries {
+            assert!(crate::settings::parse_blocker_allow(entry).is_ok(), "settings accepts {entry}");
+        }
+        let s = state("||tracker.example^\n", &entries);
+        for page in ["news.example", "www.news.example", "shop.example", "a.wild.example", "xn--bcher-kva.example", "intranet", "192.168.1.10"] {
+            assert!(!s.should_block("https://tracker.example/x", page), "{page} is allowed");
+            assert!(s.blocked_url_patterns(page).is_empty(), "{page} gets no DevTools patterns");
+        }
+        assert!(s.should_block("https://tracker.example/x", "other.example"), "others still blocked");
+        assert!(s.should_block("https://tracker.example/x", "10.0.1.10"));
+        // Text that is not a site at all is still dropped.
+        let junk = state("||tracker.example^\n", &["#comment", "mailto:a@b.example", ""]);
+        assert!(junk.config_allowed_sites().is_empty());
     }
 
     #[test]
