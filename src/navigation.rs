@@ -158,7 +158,11 @@ pub fn resolve_input(
     input: &str,
     provider: &SearchProvider,
 ) -> Result<NavigationTarget, NavigationError> {
-    let input = input.trim();
+    // OB-12: a pasted tab or line break is white space, so `foo<TAB>bar` is searched instead of
+    // refused. White space never makes a guess navigate, so this cannot open anything new; every
+    // other control character is still refused.
+    let spaced = space_out_breaks(input);
+    let input = spaced.trim();
     if input.is_empty() {
         return Ok(NavigationTarget::Empty);
     }
@@ -305,6 +309,28 @@ fn dotted_quad(host: &str) -> bool {
             && (part == "0" || !part.starts_with('0'))
             && part.parse::<u16>().is_ok_and(|octet| octet <= 255)
     }) && parts == 4
+}
+
+/// `input` with each run of tabs and line breaks as one space (borrowed when it has none).
+fn space_out_breaks(input: &str) -> std::borrow::Cow<'_, str> {
+    let is_break = |c: char| matches!(c, '\t' | '\r' | '\n');
+    if !input.contains(is_break) {
+        return std::borrow::Cow::Borrowed(input);
+    }
+    let mut out = String::with_capacity(input.len());
+    let mut in_break = false;
+    for c in input.chars() {
+        if is_break(c) {
+            if !in_break {
+                out.push(' ');
+            }
+            in_break = true;
+        } else {
+            out.push(c);
+            in_break = false;
+        }
+    }
+    std::borrow::Cow::Owned(out)
 }
 
 fn parse_bare_host(input: &str) -> Option<Url> {
@@ -478,6 +504,29 @@ mod tests {
                 "input: {input}"
             );
         }
+    }
+
+    #[test]
+    fn pasted_tabs_and_line_breaks_are_spaces_not_refusals() {
+        let provider = default_provider();
+        for (input, query) in [
+            ("foo\tbar", "foo bar"),
+            ("rust\r\nlang\ttips", "rust lang tips"),
+            ("two\t\tbreaks", "two breaks"),
+            ("\tNote:\tbuy milk\n", "Note: buy milk"),
+        ] {
+            assert!(
+                matches!(resolve_input(input, &provider), Ok(NavigationTarget::Search { query: ref got, .. }) if got == query),
+                "input: {input:?} gave {:?}",
+                resolve_input(input, &provider)
+            );
+        }
+        // A break never makes anything navigate, and the refusals stay.
+        assert_eq!(resolve_input("example.com\t", &provider).unwrap(), NavigationTarget::Web(Url::parse("https://example.com/").unwrap()));
+        assert!(resolve_input("https://exa\nmple.com", &provider).is_err(), "a URL split by a break is not guessed whole");
+        assert!(matches!(resolve_input("javascript:\talert(1)", &provider), Err(NavigationError::UnsupportedScheme(_))));
+        assert_eq!(resolve_input("a\u{7}b", &provider), Err(NavigationError::InvalidWebUrl), "other control characters");
+        assert_eq!(resolve_input("\t\r\n", &provider).unwrap(), NavigationTarget::Empty);
     }
 
     #[test]
