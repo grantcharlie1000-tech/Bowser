@@ -237,6 +237,40 @@ fn devtools_capture_call(
     }
 }
 
+/// The DevTools parameters that erase everything a web origin stores (local storage, IndexedDB,
+/// service workers, Cache Storage and the rest), or `None` for a page that is not http(s).
+fn clear_origin_params(url: &Url) -> Option<String> {
+    matches!(url.scheme(), "http" | "https")
+        .then(|| format!(r#"{{"origin":"{}","storageTypes":"all"}}"#, url.origin().ascii_serialization()))
+}
+
+/// Erases an origin's stored data with `Storage.clearDataForOrigin`. `done` hears the outcome.
+fn clear_origin_data(webview: &ICoreWebView2, params: &str, done: Box<dyn FnOnce(std::result::Result<(), String>)>) {
+    let slot = Rc::new(RefCell::new(Some(done)));
+    let completion = slot.clone();
+    let handler = CallDevToolsProtocolMethodCompletedHandler::create(Box::new(move |error, result| {
+        let outcome = match error {
+            Ok(()) if devtools_protocol_error(&result) => Err("The browser refused to erase it.".to_owned()),
+            Ok(()) => Ok(()),
+            Err(error) => Err(format!("{error}")),
+        };
+        if let Some(done) = completion.borrow_mut().take() {
+            done(outcome);
+        }
+        Ok(())
+    }));
+    let method = HSTRING::from("Storage.clearDataForOrigin");
+    let params = HSTRING::from(params);
+    let queued = unsafe {
+        webview.CallDevToolsProtocolMethod(PCWSTR(method.as_ptr()), PCWSTR(params.as_ptr()), &handler)
+    };
+    if let Err(error) = queued
+        && let Some(done) = slot.borrow_mut().take()
+    {
+        done(Err(format!("{error}")));
+    }
+}
+
 /// Runs a script that needs no answer in whatever the tab shows now.
 fn run_quiet_script(webview: &ICoreWebView2, script: &str) {
     let wide = CoTaskMemPWSTR::from(script);
@@ -3620,6 +3654,32 @@ impl EngineAdapter for WebView2Engine {
         }
     }
 
+    fn clear_site_data(
+        &mut self,
+        tab: TabId,
+        url: &Url,
+        done: Box<dyn FnOnce(std::result::Result<(), String>)>,
+    ) {
+        let webview = self.core.borrow().tabs.get(&tab).and_then(|tab| tab.webview.clone());
+        let (Some(webview), Some(params)) = (webview, clear_origin_params(url)) else {
+            done(Err("The tab has no web page to erase data for.".to_owned()));
+            return;
+        };
+        // Session storage lives in the page, so the DevTools call below cannot reach it.
+        if current_web_url(&webview).is_some_and(|shown| shown.origin() == url.origin()) {
+            run_quiet_script(&webview, "try{sessionStorage.clear()}catch(e){}");
+        }
+        // The cookies the site would be sent come first: they include ones set on a parent domain.
+        self.clear_site_cookies(
+            tab,
+            url,
+            Box::new(move |cookies| match cookies {
+                Ok(_) => clear_origin_data(&webview, &params, done),
+                Err(error) => done(Err(error)),
+            }),
+        );
+    }
+
     fn clear_browsing_data(
         &mut self,
         tab: TabId,
@@ -6377,6 +6437,18 @@ mod tests {
     type ProbeNetworkEvents = Rc<RefCell<Vec<(String, String)>>>;
     type ProbeNativeInventoryDone = Box<dyn FnOnce(std::result::Result<Vec<(String, bool)>, String>)>;
     type ProbeBrowserExit = (ICoreWebView2Environment5, i64, Rc<Cell<bool>>);
+
+    #[test]
+    fn erasing_site_data_names_the_origin_of_a_web_page_only() {
+        let page = Url::parse("https://user:pw@shop.example:8443/cart?x=1#top").unwrap();
+        assert_eq!(
+            clear_origin_params(&page).as_deref(),
+            Some(r#"{"origin":"https://shop.example:8443","storageTypes":"all"}"#)
+        );
+        for other in ["bowser://settings/", "about:blank", "file:///C:/a.html", "data:text/plain,hi"] {
+            assert_eq!(clear_origin_params(&Url::parse(other).unwrap()), None, "{other}");
+        }
+    }
 
     #[test]
     fn a_pending_post_body_goes_only_to_its_own_navigation() {

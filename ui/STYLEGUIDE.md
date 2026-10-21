@@ -205,9 +205,9 @@ status.append(icon('warning', { label: 'Not secure' })); // role="img" + aria-la
 - Strokes use `vector-effect: non-scaling-stroke`, so a 14px and a 16px glyph have the same weight
   at every DPI (1.5px = 1.5/1.875/2.25/3 device px at 100/125/150/200%). Shapes keep antialiasing
   (`shape-rendering: geometricPrecision`); never use `crispEdges` (it breaks diagonals and curves).
-- Glyphs (116): address-bar, app-tile, archive, back, bell, bookmark, calculator, calendar, camera, caption-maximize, caption-minimize,
+- Glyphs (118): address-bar, app-tile, archive, back, bell, bookmark, calculator, calendar, camera, caption-maximize, caption-minimize,
   caption-restore, cast, check, chevron-down/left/right/up, clock, close, close-others, command, cookie, copy,
-  customize, download, droplet, edit, enter, external, eye, file, file-text, folder, folder-download, folder-open,
+  customize, download, droplet, edit, enter, external, eye, file, file-text, flame, folder, folder-download, folder-open,
   forward, gear, glasses, glint, grid, grip, heart, home, image, info, key, link, location, lock, menu, menu-dots,
   mic, more-horizontal, more-vertical, mute, notes, package, pause, person, pin, pip, play, plus, print, private,
   private-window, puzzle, qr-code, quick-commands, reader, reload, reset, save, search, share, shield, sidebar, split,

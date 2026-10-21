@@ -5923,6 +5923,7 @@ fn show_tab_context_menu(hwnd: HWND, app: &AppRef, id: TabId, x: i32, y: i32, pi
     const CLOSE_LEFT: usize = 14;
     const CLOSE_RIGHT: usize = 15;
     const PICTURE_IN_PICTURE: usize = 18;
+    const ERASE_SITE_DATA: usize = 19;
     let targets = App::selection_targets(app, id); // --- tab options ---
     let pinned = App::tab_pinned(app, id);
     let private = App::tab_private(app, id);
@@ -6094,6 +6095,12 @@ fn show_tab_context_menu(hwnd: HWND, app: &AppRef, id: TabId, x: i32, y: i32, pi
                             .is_some_and(crate::profile::can_open_in_new_window),
                 ),
         ),
+        // Cookies and script-stored data of this tab's site, in the tab's own profile (so private tabs too).
+        Entry::Item(
+            Item::new(ERASE_SITE_DATA, "Erase site data", Icon::None)
+                .glyph("flame")
+                .disabled_if(!url.as_ref().is_some_and(|url| matches!(url.scheme(), "http" | "https"))),
+        ),
     ]);
     // Settings > Page tools > "Offer picture in picture in the tab menu" (the Ctrl+Shift+Y command works either way).
     if crate::page_tools::pip_menu_entry(pip_available, App::settings(app).page_tools.pip_menu) {
@@ -6235,6 +6242,11 @@ fn show_tab_context_menu(hwnd: HWND, app: &AppRef, id: TabId, x: i32, y: i32, pi
                     } else {
                         show_error_message("Bowser could not open this tab in a new window.");
                     }
+                }
+            }
+            ERASE_SITE_DATA => {
+                if let Some(url) = url.as_ref() {
+                    App::erase_site_data(app, id, url);
                 }
             }
             CLOSE => user_close(hwnd, app, id), // --- tab options ---

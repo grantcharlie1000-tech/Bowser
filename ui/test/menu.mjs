@@ -229,6 +229,21 @@ test('New private window has its own glyph, and its shades settle once on the se
   assert.ok(!/infinite/.test(frames));
 });
 
+test('Erase site data has the flame glyph, which flickers once on the selected row only', () => {
+  const rust = readFileSync(join(repo, 'src', 'win32', 'window.rs'), 'utf8');
+  assert.match(rust, /"Erase site data", Icon::None\)\s*\.glyph\("flame"\)/);
+  const gen = readFileSync(join(here, '..', 'src', 'icons.gen.ts'), 'utf8');
+  assert.equal(JSON.parse(gen.match(/^\s*"flame": (\[.*\]),$/m)[1]).length, 2, 'the CSS flickers shape 2: the inner tongue');
+  const css = readFileSync(join(here, '..', 'src', 'styles', 'menu.css'), 'utf8').replace(/\s+/g, ' ');
+  const rule = '.html-menu-row[data-icon="flame"].selected:not(:disabled) .html-menu-lead svg > :nth-child(2) { transform-origin: 12px 18.5px; animation: html-menu-flame-flicker 360ms ease-in-out; }';
+  assert.ok(css.includes(`@media (prefers-reduced-motion: no-preference) { ${rule} }`), 'only under no-preference, only while selected');
+  const frames = css.match(/@keyframes html-menu-flame-flicker \{(.*?\}) \}/)[1];
+  for (const decl of frames.matchAll(/([a-z-]+):/g)) assert.equal(decl[1], 'transform');
+  assert.match(frames, /^ 0% \{ transform: scale\(1\); \}/, 'starts on the resting glyph');
+  assert.match(frames, /100% \{ transform: scale\(1\); \}$/, 'ends on the resting glyph');
+  assert.ok(!/infinite/.test(frames));
+});
+
 test('a submenu card slides out from behind the parent, which never moves: one transform, ease-out, snapped under reduced motion', () => {
   const css = readFileSync(join(here, '..', 'src', 'styles', 'menu.css'), 'utf8').replace(/\r\n/g, '\n');
   const tokens = readFileSync(join(here, '..', 'src', 'styles', 'tokens.css'), 'utf8');

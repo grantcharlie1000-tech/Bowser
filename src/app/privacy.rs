@@ -11,7 +11,9 @@ use crate::{
     engine::BlockerHandle,
     history_retention,
     settings::Settings,
+    tabs::TabId,
     website_look,
+    win32::show_error_message,
 };
 
 pub use crate::browsing_data::DeleteReport;
@@ -247,6 +249,41 @@ impl App {
             if let Some(finish) = finish.borrow_mut().take() {
                 finish(Some(result));
             }
+        }
+    }
+
+    /// Erases a site's cookies and script-stored data from `tab`'s own profile (a private tab has
+    /// its own), then reloads the tab so the page shows the cleared state. A failure is shown.
+    pub fn erase_site_data(app: &AppRef, tab: TabId, url: &url::Url) {
+        let finish: Rc<dyn Fn(Result<(), String>)> = Rc::new({
+            let app = app.clone();
+            move |result| match result {
+                Ok(()) => Self::reload_tab(&app, tab),
+                Err(error) => show_error_message(&format!("Bowser could not erase this site's data: {error}")),
+            }
+        });
+        // The engine may answer inside the call, while App is borrowed; that answer waits until the
+        // call returns, so the reload and the message never run with App borrowed.
+        let in_call = Rc::new(Cell::new(true));
+        let early: Rc<RefCell<Option<Result<(), String>>>> = Rc::new(RefCell::new(None));
+        let answer = {
+            let (finish, in_call, early) = (finish.clone(), in_call.clone(), early.clone());
+            Box::new(move |result: Result<(), String>| {
+                if in_call.get() {
+                    *early.borrow_mut() = Some(result);
+                } else {
+                    finish(result);
+                }
+            })
+        };
+        let started = Self::call_engine(app, |engine| engine.clear_site_data(tab, url, answer));
+        in_call.set(false);
+        let waiting = match started {
+            None => Some(Err("The browser engine is not ready.".to_owned())),
+            Some(()) => early.borrow_mut().take(),
+        };
+        if let Some(result) = waiting {
+            finish(result);
         }
     }
 
