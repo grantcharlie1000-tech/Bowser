@@ -387,6 +387,113 @@ public static class BowserHostMenu {
   public uint FirstFormat(out int error){SetLastError(0);uint first=EnumClipboardFormats(0);error=Marshal.GetLastWin32Error();return first;}
   public bool Empty(){return EmptyClipboard();}public bool Close(){return CloseClipboard();}
  }
+ // Opt-in Copy fixture only: four eager, independent, fully unlocked generated buffers.
+ // This controls fixture construction, not writer attribution or post-Close epoch stability.
+ const uint KnownUnicodeText=13,KnownLocale=16,KnownAnsiText=1,KnownOemText=7,KnownMovableZeroInit=0x0042;
+ const int KnownTokenMaxBytes=128;
+ sealed class KnownFormatPayload {public uint Format;public byte[] Bytes;}
+ sealed class KnownFormatBuffer {public IntPtr Memory;public bool Transferred,OwnershipUncertain,FreeAttempted;}
+ public sealed class KnownFormatsReceipt {
+  public string scope="copy-fixture-four-eager-known-formats-not-production-copy";
+  public uint[] formats=new uint[]{13,16,1,7};public int[] byte_lengths=new int[4];
+  public bool[] transferred=new bool[4],ownership_uncertain=new bool[4],free_attempted=new bool[4],free_failed=new bool[4];
+  public int stage=1,setter_attempts;public bool attempted,opened,format_observed,first_format_zero,sequence_observed,empty_attempted,close_attempted,close_confirmed;
+  public int enum_error;public uint admitted_sequence,final_pre_close_sequence;
+ }
+ interface KnownFormatsOps:ClipboardPolicyOps {
+  IntPtr Allocate(uint flags,int bytes);IntPtr LockBuffer(IntPtr memory);void FillBuffer(IntPtr pointer,byte[] bytes);bool UnlockBuffer(IntPtr memory,out int error);IntPtr FreeBuffer(IntPtr memory);IntPtr SetFormat(uint format,IntPtr memory);
+ }
+ sealed class NativeKnownFormatsOps:NativeClipboardPolicyOps,KnownFormatsOps {
+  public NativeKnownFormatsOps(IntPtr window,ClipboardEpoch epoch):base(window,epoch){}
+  public IntPtr Allocate(uint flags,int bytes){return GlobalAlloc(flags,(UIntPtr)bytes);}
+  public IntPtr LockBuffer(IntPtr memory){return GlobalLock(memory);}public void FillBuffer(IntPtr pointer,byte[] bytes){Marshal.Copy(bytes,0,pointer,bytes.Length);}
+  public bool UnlockBuffer(IntPtr memory,out int error){SetLastError(0);bool remainsLocked=CheckedGlobalUnlock(memory);error=Marshal.GetLastWin32Error();return remainsLocked;}
+  public IntPtr FreeBuffer(IntPtr memory){return GlobalFree(memory);}public IntPtr SetFormat(uint format,IntPtr memory){return SetClipboardData(format,memory);}
+ }
+ static void RequireKnownFormatsClaim(bool contract,string mode,bool ready,ref int claim){
+  if(!contract||mode!="Copy"||!ready||System.Threading.Interlocked.CompareExchange(ref claim,1,0)!=0)throw new InvalidOperationException("One successful separate initialized-empty Copy precondition is required; no fallback or retry.");
+ }
+ static KnownFormatPayload[] BuildKnownFormatPayloads(string generated){
+  if(generated==null||generated.Length>KnownTokenMaxBytes||!System.Text.RegularExpressions.Regex.IsMatch(generated,@"\Asentinel-[0-9]+-[0-9]+\z"))throw new InvalidOperationException("Only bounded one-line ASCII generated Copy sentinel payloads are allowed.");
+  byte[] unicode=new byte[(generated.Length+1)*2],ansi=new byte[generated.Length+1],oem=new byte[generated.Length+1];
+  for(int i=0;i<generated.Length;i++){char c=generated[i];if(c>127||c=='\0')throw new InvalidOperationException("Non-ASCII Copy sentinel refused.");unicode[2*i]=(byte)c;ansi[i]=(byte)c;oem[i]=(byte)c;}
+  return new KnownFormatPayload[]{new KnownFormatPayload{Format=KnownUnicodeText,Bytes=unicode},new KnownFormatPayload{Format=KnownLocale,Bytes=new byte[]{9,4,0,0}},new KnownFormatPayload{Format=KnownAnsiText,Bytes=ansi},new KnownFormatPayload{Format=KnownOemText,Bytes=oem}};
+ }
+ public static void ValidateInitializedCopyPayload(string generated){BuildKnownFormatPayloads(generated);}
+ static void ValidateKnownFormatPayloads(string generated,KnownFormatPayload[] payloads){
+  KnownFormatPayload[] exact=BuildKnownFormatPayloads(generated);
+  if(payloads==null||payloads.Length!=4)throw new InvalidOperationException("Exactly four known fixture payloads required.");
+  for(int i=0;i<4;i++){
+   if(payloads[i]==null||payloads[i].Format!=exact[i].Format||payloads[i].Bytes==null||payloads[i].Bytes.Length!=exact[i].Bytes.Length)throw new InvalidOperationException("Known fixture format or exact byte length refused.");
+   for(int j=0;j<payloads[i].Bytes.Length;j++)if(payloads[i].Bytes[j]!=exact[i].Bytes[j])throw new InvalidOperationException("Known fixture encoding, terminator or locale refused.");
+  }
+ }
+ static bool KnownHelperLive(ClipboardPolicyOps ops){ClipboardEpoch helper=ops.Helper;return helper!=null&&helper.Window!=IntPtr.Zero&&ops.ExactOwner(helper.Window,helper);}
+ static void RequireKnownHelperOwner(ClipboardPolicyOps ops){
+  if(!KnownHelperLive(ops)||!ops.ExactOwner(ops.Owner(),ops.Helper))throw new InvalidOperationException("Exact live lexical fixture owner unavailable; no setter or input.");
+ }
+ static void InstallKnownFormatsOnce(KnownFormatsOps ops,string generated,KnownFormatPayload[] payloads,KnownFormatsReceipt receipt,Action<uint> recordEpoch,Action<bool> closeSnapshot){
+  if(receipt.attempted)throw new InvalidOperationException("Known fixture installation already attempted; no retry.");receipt.attempted=true;
+  if(!ops.DedicatedContract)throw new InvalidOperationException("Dedicated Copy fixture contract required.");
+  ValidateKnownFormatPayloads(generated,payloads);
+  // Allocate all bookkeeping first. Nothing allocates between a successful setter and transfer mark.
+  KnownFormatBuffer[] buffers=new KnownFormatBuffer[]{new KnownFormatBuffer(),new KnownFormatBuffer(),new KnownFormatBuffer(),new KnownFormatBuffer()};
+  bool opened=false,freeFailure=false;
+  try{
+   for(int i=0;i<4;i++){
+    receipt.byte_lengths[i]=payloads[i].Bytes.Length;KnownFormatBuffer buffer=buffers[i];
+    buffer.Memory=ops.Allocate(KnownMovableZeroInit,payloads[i].Bytes.Length);if(buffer.Memory==IntPtr.Zero)throw new InvalidOperationException("Known fixture allocation failed.");
+    for(int j=0;j<i;j++)if(buffer.Memory==buffers[j].Memory){buffer.Memory=IntPtr.Zero;throw new InvalidOperationException("Known fixture allocations must be distinct.");}
+    IntPtr target=ops.LockBuffer(buffer.Memory);if(target==IntPtr.Zero)throw new InvalidOperationException("Known fixture lock failed.");
+    try{ops.FillBuffer(target,payloads[i].Bytes);}finally{int error;bool remainsLocked=ops.UnlockBuffer(buffer.Memory,out error);if(remainsLocked||error!=0)throw new InvalidOperationException("Known fixture single owned lock was not fully unlocked.");}
+   }
+   receipt.stage=2;receipt.opened=ops.Open();if(!receipt.opened)throw new InvalidOperationException("Clipboard locked: no clipboard mutation.");opened=true;
+   receipt.stage=3;int enumError;uint first=ops.FirstFormat(out enumError);receipt.format_observed=true;receipt.first_format_zero=first==0;receipt.enum_error=enumError;
+   if(first!=0||enumError!=0)throw new InvalidOperationException("Clipboard empty state unavailable; no mutation.");
+   receipt.stage=4;receipt.admitted_sequence=ops.Sequence();receipt.sequence_observed=true;
+   if(!OrdinaryAdmissionAllowsMutation(receipt.opened,first,enumError,receipt.admitted_sequence))throw new InvalidOperationException("Ordinary clipboard admission refused; no mutation.");
+   // Helper liveness is separately required before Empty, when ownership is not ours yet.
+   receipt.stage=5;if(!KnownHelperLive(ops))throw new InvalidOperationException("Lexical fixture helper unavailable before Empty.");
+   receipt.empty_attempted=true;if(!ops.Empty())throw new InvalidOperationException("Empty precondition could not be claimed.");
+   RequireKnownHelperOwner(ops);
+   for(int i=0;i<4;i++){
+    RequireKnownHelperOwner(ops);KnownFormatBuffer buffer=buffers[i];receipt.setter_attempts++;
+    IntPtr result;try{result=ops.SetFormat(payloads[i].Format,buffer.Memory);}catch{buffer.OwnershipUncertain=true;receipt.ownership_uncertain[i]=true;throw;}
+    if(result!=IntPtr.Zero)buffer.Transferred=true;
+    else throw new InvalidOperationException("Known eager fixture setter failed; no retry or fallback.");
+    // Ownership transferred already. Throwable bookkeeping cannot make this caller-owned again.
+    receipt.transferred[i]=true;
+   }
+   RequireKnownHelperOwner(ops);uint final=ops.Sequence();if(final==0)throw new InvalidOperationException("Final pre-Close fixture sequence unavailable.");
+   RequireKnownHelperOwner(ops);
+   receipt.final_pre_close_sequence=final;recordEpoch(final);
+   try{closeSnapshot(false);}catch{}
+   // Mark the attempt before invoking Close; even an exception never causes a second Close.
+   opened=false;receipt.close_attempted=true;receipt.close_confirmed=ops.Close();if(!receipt.close_confirmed)throw new InvalidOperationException("Fixture clipboard close unconfirmed.");
+   try{closeSnapshot(true);}catch{}
+  }finally{
+   try{if(opened){opened=false;receipt.close_attempted=true;receipt.close_confirmed=ops.Close();if(!receipt.close_confirmed)throw new InvalidOperationException("Fixture clipboard close unconfirmed.");}}
+   finally{
+    // Each untransferred allocation is attempted once, even when a different free fails.
+    for(int i=0;i<4;i++){
+     KnownFormatBuffer buffer=buffers[i];if(buffer.Memory==IntPtr.Zero||buffer.Transferred||buffer.OwnershipUncertain||buffer.FreeAttempted)continue;
+     buffer.FreeAttempted=true;receipt.free_attempted[i]=true;
+     try{if(ops.FreeBuffer(buffer.Memory)!=IntPtr.Zero){receipt.free_failed[i]=true;freeFailure=true;}}catch{receipt.free_failed[i]=true;freeFailure=true;}
+    }
+    if(freeFailure)throw new InvalidOperationException("Known fixture caller-owned buffer free unconfirmed; all eligible frees attempted once.");
+   }
+  }
+ }
+ // Same control flow admits BOTH live RequireOwned input sites, not a parallel test predicate.
+ static void RequireFixtureOwnedOnce(ClipboardPolicyOps ops,uint expected,ClipboardEpoch helper,ClipboardCleanupFence cleanup,out bool closeConfirmed){
+  closeConfirmed=false;
+  try{
+   if(!ops.Open())throw new InvalidOperationException("Clipboard locked before native input; no input.");
+   try{uint observed=ops.Sequence();if(observed==0||observed!=expected||!ops.ExactOwner(ops.Owner(),helper))throw new InvalidOperationException("Clipboard sequence/owner changed before native input; no input.");}
+   finally{closeConfirmed=ops.Close();if(!closeConfirmed)throw new InvalidOperationException("Clipboard close was not confirmed.");}
+  }catch{cleanup.Disarm();throw;}
+ }
+
  // Primitive-only, non-atomic observations. Never an epoch/admission/cleanup decision.
  public sealed class ClipboardCloseSnapshot {
   public uint? sequence=null;public string sequence_status="unavailable",checked_owner="unknown-query",helper_liveness="unknown";
@@ -573,7 +680,194 @@ public static class BowserHostMenu {
   PolicyAssert(ops.SequenceCalls==1&&ops.OwnerCalls==1&&ops.OpenCalls==0&&ops.CloseCalls==0&&ops.EmptyCalls==0&&ops.EnumCalls==0&&ops.ContentCalls==0&&ops.Reads==0&&ops.InputCalls==0,name+" bounded read-only operations");
   PolicyAssert(ops.CurrentSequence==before&&ops.CurrentOwner==ownerBefore,name+" no epoch adoption or mutation");
  }
+ // Synthetic primitives exercise the installer and the same two input-admission calls.
+ // No Win32 calls, native input, actual clipboard content or native acceptance in this matrix.
+ sealed class SyntheticKnownFormatsOps:SyntheticClipboardPolicyOps,KnownFormatsOps,ClipboardPolicyOps {
+  public string Failure="";public int FailurePosition=0,FailIdentityAt=0,FailOwnerAt=0;
+  public uint FinalSequence=3;public uint? SequenceAfterClose=null;
+  public int Allocations,Locks,Fills,Unlocks,Frees,Setters,IdentityCalls;
+  public int[] FreeCounts=new int[4];public bool[] Transferred=new bool[4],Locked=new bool[4];
+  public List<uint> SetFormats=new List<uint>();public List<IntPtr> SetHandles=new List<IntPtr>();public List<string> Events=new List<string>();
+  public Dictionary<IntPtr,byte[]> Buffers=new Dictionary<IntPtr,byte[]>();
+  public IntPtr Allocate(uint flags,int bytes){
+   Allocations++;Events.Add("allocate");PolicyAssert(flags==KnownMovableZeroInit,"synthetic allocation movable and zero init flags");
+   if(Failure=="allocate"&&Allocations==FailurePosition)return IntPtr.Zero;
+   if(Failure=="shared-handle"&&Allocations==2)return new IntPtr(101);
+   IntPtr memory=new IntPtr(100+Allocations);byte[] buffer=new byte[bytes+8];Buffers.Add(memory,buffer);return memory;
+  }
+  int Index(IntPtr memory){return memory.ToInt32()-101;}
+  public IntPtr LockBuffer(IntPtr memory){Locks++;Events.Add("lock");if(Failure=="lock"&&Locks==FailurePosition)return IntPtr.Zero;Locked[Index(memory)]=true;return memory;}
+  public void FillBuffer(IntPtr pointer,byte[] bytes){Fills++;Events.Add("fill");if(Failure=="fill"&&Fills==FailurePosition)throw new InvalidOperationException("Synthetic copy failure.");Array.Copy(bytes,0,Buffers[pointer],0,bytes.Length);}
+  public bool UnlockBuffer(IntPtr memory,out int error){
+   Unlocks++;Events.Add("unlock");error=Failure=="unlock-error"&&Unlocks==FailurePosition?5:0;
+   bool remains=Failure=="unlock-remains"&&Unlocks==FailurePosition;Locked[Index(memory)]=remains;return remains;
+  }
+  public IntPtr FreeBuffer(IntPtr memory){
+   Frees++;int index=Index(memory);FreeCounts[index]++;PolicyAssert(!Transferred[index]&&FreeCounts[index]==1,"synthetic never free transferred or twice");Events.Add("free");
+   if(Failure=="free-throws"&&Frees==1)throw new InvalidOperationException("Synthetic free exception.");
+   return Failure=="free-fails"&&Frees==1?memory:IntPtr.Zero;
+  }
+  public IntPtr SetFormat(uint format,IntPtr memory){
+   Setters++;Events.Add("set");SetFormats.Add(format);SetHandles.Add(memory);PolicyAssert(memory!=IntPtr.Zero&&!Locked[Index(memory)],"synthetic eager unlocked setter");
+   if(Failure=="setter"&&Setters==FailurePosition)return IntPtr.Zero;
+   Transferred[Index(memory)]=true;
+   if(Failure=="setter-throws"&&Setters==FailurePosition)throw new InvalidOperationException("Synthetic setter outcome uncertain after transfer.");
+   CurrentFormat=format;CurrentSequence=Setters==4?FinalSequence:CurrentSequence+1;return memory;
+  }
+  bool ClipboardPolicyOps.Open(){return Open();}uint ClipboardPolicyOps.Sequence(){return Sequence();}bool ClipboardPolicyOps.Empty(){return Empty();}bool ClipboardPolicyOps.Close(){return Close();}
+  IntPtr ClipboardPolicyOps.Owner(){return Owner();}bool ClipboardPolicyOps.ExactOwner(IntPtr actual,ClipboardEpoch expected){return ExactOwner(actual,expected);}
+  public new bool Open(){Events.Add("open");if(Allocations!=0)PolicyAssert(Allocations==4&&Unlocks==4,"synthetic all buffers prepared before open");return base.Open();}
+  public new uint Sequence(){Events.Add("sequence");return base.Sequence();}
+  public new bool Empty(){Events.Add("empty");return base.Empty();}
+  public new bool Close(){Events.Add("close");bool ok=base.Close();if(Failure=="close-throws")throw new InvalidOperationException("Synthetic close exception.");if(CloseCalls==1&&SequenceAfterClose.HasValue)CurrentSequence=SequenceAfterClose.Value;return ok;}
+  public new IntPtr Owner(){if(FailOwnerAt!=0&&OwnerCalls+1==FailOwnerAt){if(Failure=="owner-foreign")CurrentOwner=new IntPtr(99);else if(Failure=="owner-null")CurrentOwner=IntPtr.Zero;else OwnerQueryError=5;}return base.Owner();}
+  public new bool ExactOwner(IntPtr actual,ClipboardEpoch expected){
+   IdentityCalls++;if(FailIdentityAt!=0&&IdentityCalls>=FailIdentityAt){
+    if(Failure=="helper-pid")HelperPid=false;else if(Failure=="helper-thread")HelperThread=false;else if(Failure=="helper-class")HelperClass=false;else if(Failure=="helper-token")return false;else HelperAlive=false;
+   }
+   return base.ExactOwner(actual,expected);
+  }
+ }
+ static bool TrySyntheticKnownInstall(SyntheticKnownFormatsOps ops,string token,KnownFormatPayload[] payloads,KnownFormatsReceipt receipt,ClipboardCleanupFence cleanup,out uint last,bool failBookkeeping){
+  uint retained=0;bool accepted=false;
+  try{
+   InstallKnownFormatsOnce(ops,token,payloads,receipt,delegate(uint epoch){retained=epoch;},delegate(bool after){CaptureClipboardCloseSnapshot(ops);});
+   cleanup.Arm(retained,ops.Helper);accepted=true;
+  }catch{cleanup.Disarm();}
+  // A malformed bookkeeping target throws immediately after the first successful transfer.
+  PolicyAssert(!failBookkeeping||receipt.transferred==null,"synthetic bookkeeping fault was armed");last=retained;return accepted;
+ }
+ static void AssertKnownInstallStopped(SyntheticKnownFormatsOps ops,KnownFormatsReceipt receipt,ClipboardCleanupFence cleanup,int expectedEmpty,int expectedSetters,string name){
+  PolicyAssert(ops.EmptyCalls==expectedEmpty&&ops.Setters==expectedSetters&&ops.OpenCalls<=1&&ops.CloseCalls==(ops.OpenCalls==1&&ops.OpenOk?1:0),name+" exact mutation/open/close counts");
+  int opens=ops.OpenCalls,empties=ops.EmptyCalls;uint ignored;PolicyAssert(!cleanup.Finish(ops,out ignored)&&ops.OpenCalls==opens&&ops.EmptyCalls==empties,name+" disarmed no cleanup clear");
+  for(int i=0;i<4;i++)PolicyAssert(ops.FreeCounts[i]<=1&&(!ops.Transferred[i]||ops.FreeCounts[i]==0),name+" no transferred/double free");
+  PolicyAssert(ops.ContentCalls==0&&ops.InputCalls==0,name+" no content/input");
+  int allocations=ops.Allocations;try{InstallKnownFormatsOnce(ops,"sentinel-1-2",BuildKnownFormatPayloads("sentinel-1-2"),receipt,delegate(uint epoch){},delegate(bool after){});}catch{}
+  PolicyAssert(ops.Allocations==allocations&&ops.Setters==expectedSetters,name+" no install retry");
+ }
+ static void CheckKnownInstallFailure(string name,SyntheticKnownFormatsOps ops,int empties,int setters){
+  var receipt=new KnownFormatsReceipt();var cleanup=new ClipboardCleanupFence();uint last;
+  PolicyAssert(!TrySyntheticKnownInstall(ops,"sentinel-1-2",BuildKnownFormatPayloads("sentinel-1-2"),receipt,cleanup,out last,false),name+" refused");AssertKnownInstallStopped(ops,receipt,cleanup,empties,setters,name);
+ }
+ static bool TrySyntheticInputSite(ClipboardPolicyOps ops,uint last,ClipboardCleanupFence cleanup,ref int inputCalls){
+  bool closeConfirmed=false;try{RequireFixtureOwnedOnce(ops,last,ops.Helper,cleanup,out closeConfirmed);inputCalls++;return true;}catch{return false;}
+ }
+ static void CheckOwnedInputRefusal(string name,SyntheticKnownFormatsOps ops,bool second){
+  var cleanup=new ClipboardCleanupFence();cleanup.Arm(3,ops.Helper);uint last=3;int inputCalls=0;
+  if(second){
+   // First site succeeds under an independent clean epoch. Later state grants no selection authority.
+   var first=new SyntheticClipboardPolicyOps{CurrentSequence=3,CurrentOwner=new IntPtr(11)};
+   PolicyAssert(TrySyntheticInputSite(first,last,cleanup,ref inputCalls)&&first.OpenCalls==1&&first.CloseCalls==1,name+" initial right-click independently admitted");
+  }
+  PolicyAssert(!TrySyntheticInputSite(ops,last,cleanup,ref inputCalls),name+" actual RequireOwned refusal");
+  PolicyAssert(last==3&&inputCalls==(second?1:0)&&ops.OpenCalls==1&&ops.CloseCalls==(ops.OpenOk?1:0)&&ops.ContentCalls==0,name+" retained epoch and no refused physical input/getter");
+  int opens=ops.OpenCalls;uint ignored;PolicyAssert(!cleanup.Finish(ops,out ignored)&&ops.EmptyCalls==0&&ops.OpenCalls==opens,name+" no cleanup clear");
+ }
+ static void CheckKnownFormatsPolicy(){
+  const string token="sentinel-1-2";
+  // Gate cases use the actual claim flow, before helper creation, allocation or clipboard access.
+  foreach(string wrong in new string[]{"contract","mode","ready","reused"}){
+   int claim=wrong=="reused"?1:0;bool rejected=false;try{RequireKnownFormatsClaim(wrong!="contract",wrong=="mode"?"Paste":"Copy",wrong!="ready",ref claim);}catch{rejected=true;}PolicyAssert(rejected,"known gate "+wrong);
+  }
+  int goodClaim=0;RequireKnownFormatsClaim(true,"Copy",true,ref goodClaim);PolicyAssert(goodClaim==1,"known one successful claim");bool reused=false;try{RequireKnownFormatsClaim(true,"Copy",true,ref goodClaim);}catch{reused=true;}PolicyAssert(reused,"known reused guard refused");
+  foreach(string malformed in new string[]{"paste-1-2","sentinel-1-2\n","sentinel-1-2\r\n","sentinel-1-2\0","sentinel-1-\u00e9","sentinel-1-2-extra","sentinel--2","sentinel-1-",new string('1',129),"sentinel-"+new string('1',118)+"-2",null}){
+   var ops=new SyntheticKnownFormatsOps();var receipt=new KnownFormatsReceipt();var cleanup=new ClipboardCleanupFence();uint last;
+   PolicyAssert(!TrySyntheticKnownInstall(ops,malformed,null,receipt,cleanup,out last,false)&&ops.Allocations==0&&ops.OpenCalls==0&&ops.EmptyCalls==0&&ops.Setters==0,"known malformed bounded ASCII token before Open");
+  }
+  string maxToken="sentinel-"+new string('1',117)+"-2";KnownFormatPayload[] maxPlan=BuildKnownFormatPayloads(maxToken);PolicyAssert(maxToken.Length==KnownTokenMaxBytes&&maxPlan[0].Bytes.Length==258&&maxPlan[2].Bytes.Length==129,"known exact maximum ASCII payload lengths");
+  foreach(string corrupt in new string[]{"locale-length","locale-value","unicode-terminator","unicode-encoding","ansi-terminator","oem-terminator","format-order","missing-format"}){
+   KnownFormatPayload[] plan=BuildKnownFormatPayloads(token);
+   if(corrupt=="locale-length")plan[1].Bytes=new byte[3];else if(corrupt=="locale-value")plan[1].Bytes[0]=0;
+   else if(corrupt=="unicode-terminator")plan[0].Bytes[plan[0].Bytes.Length-1]=1;else if(corrupt=="unicode-encoding")plan[0].Bytes[1]=1;
+   else if(corrupt=="ansi-terminator")plan[2].Bytes[plan[2].Bytes.Length-1]=1;else if(corrupt=="oem-terminator")plan[3].Bytes[plan[3].Bytes.Length-1]=1;
+   else if(corrupt=="format-order")plan[0].Format=KnownAnsiText;else plan=new KnownFormatPayload[3];
+   var ops=new SyntheticKnownFormatsOps();var receipt=new KnownFormatsReceipt();var cleanup=new ClipboardCleanupFence();uint last;
+   PolicyAssert(!TrySyntheticKnownInstall(ops,token,plan,receipt,cleanup,out last,false)&&ops.Allocations==0&&ops.OpenCalls==0,"known malformed payload before Open "+corrupt);
+  }
+  for(int position=1;position<=4;position++){
+   foreach(string failure in new string[]{"allocate","lock","fill","unlock-error","unlock-remains"}){
+    var ops=new SyntheticKnownFormatsOps{Failure=failure,FailurePosition=position};CheckKnownInstallFailure("known prepare "+failure+position,ops,0,0);
+    int created=failure=="allocate"?position-1:position;PolicyAssert(ops.Frees==created&&ops.OpenCalls==0,"known every created pre-open caller buffer freed once");
+   }
+   var failedSetter=new SyntheticKnownFormatsOps{Failure="setter",FailurePosition=position};CheckKnownInstallFailure("known setter position "+position,failedSetter,1,position);PolicyAssert(failedSetter.Frees==5-position,"known failed and not-yet-set buffers freed");
+   var lostHelper=new SyntheticKnownFormatsOps{Failure="helper",FailIdentityAt=2*position+2};CheckKnownInstallFailure("known helper loss before each setter "+position,lostHelper,1,position-1);
+  }
+  CheckKnownInstallFailure("known shared HGLOBAL refused",new SyntheticKnownFormatsOps{Failure="shared-handle"},0,0);
+  CheckKnownInstallFailure("known missing dedicated contract",new SyntheticKnownFormatsOps{Contract=false},0,0);
+  CheckKnownInstallFailure("known clipboard locked",new SyntheticKnownFormatsOps{OpenOk=false},0,0);
+  CheckKnownInstallFailure("known nonempty admission",new SyntheticKnownFormatsOps{CurrentFormat=13},0,0);
+  CheckKnownInstallFailure("known enumeration error",new SyntheticKnownFormatsOps{EnumError=5},0,0);
+  CheckKnownInstallFailure("known zero independent admission",new SyntheticKnownFormatsOps{CurrentSequence=0},0,0);
+  CheckKnownInstallFailure("known helper lost before Empty",new SyntheticKnownFormatsOps{FailIdentityAt=1},0,0);
+  CheckKnownInstallFailure("known failed Empty",new SyntheticKnownFormatsOps{EmptyOk=false},1,0);
+  CheckKnownInstallFailure("known wrong owner after Empty",new SyntheticKnownFormatsOps{WrongOwnerAfterEmpty=true},1,0);
+  CheckKnownInstallFailure("known owner query error after Empty",new SyntheticKnownFormatsOps{OwnerErrorAfterEmpty=true},1,0);
+  CheckKnownInstallFailure("known null owner after Empty",new SyntheticKnownFormatsOps{Failure="owner-null",FailOwnerAt=1},1,0);
+  CheckKnownInstallFailure("known unknown owner after Empty",new SyntheticKnownFormatsOps{OwnerQueryOk=false},1,0);
+  CheckKnownInstallFailure("known helper lost after Empty",new SyntheticKnownFormatsOps{FailIdentityAt=2},1,0);
+  CheckKnownInstallFailure("known final zero",new SyntheticKnownFormatsOps{FinalSequence=0},1,4);
+  CheckKnownInstallFailure("known final helper lost",new SyntheticKnownFormatsOps{FailIdentityAt=12},1,4);
+  CheckKnownInstallFailure("known final owner query error",new SyntheticKnownFormatsOps{FailOwnerAt=6},1,4);
+  CheckKnownInstallFailure("known final foreign owner",new SyntheticKnownFormatsOps{Failure="owner-foreign",FailOwnerAt=6},1,4);
+  CheckKnownInstallFailure("known final null owner",new SyntheticKnownFormatsOps{Failure="owner-null",FailOwnerAt=6},1,4);
+  CheckKnownInstallFailure("known helper lost after final sequence",new SyntheticKnownFormatsOps{FailIdentityAt=14},1,4);
+  CheckKnownInstallFailure("known owner query error after final sequence",new SyntheticKnownFormatsOps{FailOwnerAt=7},1,4);
+  CheckKnownInstallFailure("known foreign owner after final sequence",new SyntheticKnownFormatsOps{Failure="owner-foreign",FailOwnerAt=7},1,4);
+  CheckKnownInstallFailure("known null owner after final sequence",new SyntheticKnownFormatsOps{Failure="owner-null",FailOwnerAt=7},1,4);
+  CheckKnownInstallFailure("known close unconfirmed",new SyntheticKnownFormatsOps{CloseOk=false},1,4);
+  CheckKnownInstallFailure("known close throws",new SyntheticKnownFormatsOps{Failure="close-throws"},1,4);
+  foreach(string freeFailure in new string[]{"free-fails","free-throws"}){
+   var ops=new SyntheticKnownFormatsOps{Failure=freeFailure,OpenOk=false};var receipt=new KnownFormatsReceipt();var cleanup=new ClipboardCleanupFence();uint last;
+   PolicyAssert(!TrySyntheticKnownInstall(ops,token,BuildKnownFormatPayloads(token),receipt,cleanup,out last,false)&&ops.Frees==4&&receipt.free_failed[0],"known failed free still frees every other buffer");
+   AssertKnownInstallStopped(ops,receipt,cleanup,0,0,"known "+freeFailure);
+  }
+  var uncertainSetter=new SyntheticKnownFormatsOps{Failure="setter-throws",FailurePosition=2};var uncertainReceipt=new KnownFormatsReceipt();var uncertainCleanup=new ClipboardCleanupFence();uint uncertainLast;
+  PolicyAssert(!TrySyntheticKnownInstall(uncertainSetter,token,BuildKnownFormatPayloads(token),uncertainReceipt,uncertainCleanup,out uncertainLast,false)&&uncertainReceipt.ownership_uncertain[1]&&uncertainSetter.FreeCounts[1]==0&&uncertainSetter.Frees==2,"known uncertain setter ownership is not caller owned");
+  AssertKnownInstallStopped(uncertainSetter,uncertainReceipt,uncertainCleanup,1,2,"known uncertain setter");
+  var bookkeeping=new SyntheticKnownFormatsOps();var bookkeepingReceipt=new KnownFormatsReceipt{transferred=null};var bookkeepingCleanup=new ClipboardCleanupFence();uint bookkeepingLast;
+  PolicyAssert(!TrySyntheticKnownInstall(bookkeeping,token,BuildKnownFormatPayloads(token),bookkeepingReceipt,bookkeepingCleanup,out bookkeepingLast,true)&&bookkeeping.Setters==1&&bookkeeping.Transferred[0]&&bookkeeping.FreeCounts[0]==0&&bookkeeping.Frees==3,"known transfer before throwable receipt bookkeeping");
+  AssertKnownInstallStopped(bookkeeping,bookkeepingReceipt,bookkeepingCleanup,1,1,"known bookkeeping exception");
+  var positive=new SyntheticKnownFormatsOps();var positiveReceipt=new KnownFormatsReceipt();var positiveCleanup=new ClipboardCleanupFence();uint retained;
+  PolicyAssert(TrySyntheticKnownInstall(positive,token,BuildKnownFormatPayloads(token),positiveReceipt,positiveCleanup,out retained,false)&&retained==3&&positiveReceipt.final_pre_close_sequence==3&&positive.OpenCalls==1&&positive.EmptyCalls==1&&positive.CloseCalls==1&&positive.Setters==4&&positive.Frees==0,"known positive four eager formats and sole final epoch");
+  uint[] order=new uint[]{13,16,1,7};for(int i=0;i<4;i++){
+   PolicyAssert(positive.SetFormats[i]==order[i]&&positiveReceipt.transferred[i]&&positive.FreeCounts[i]==0,"known fixed format order and transfer");
+   for(int j=0;j<i;j++)PolicyAssert(positive.SetHandles[i]!=positive.SetHandles[j],"known four distinct HGLOBALs");
+   byte[] actual=positive.Buffers[positive.SetHandles[i]],expected=BuildKnownFormatPayloads(token)[i].Bytes;
+   for(int j=0;j<expected.Length;j++)PolicyAssert(actual[j]==expected[j],"known exact payload bytes");for(int j=expected.Length;j<actual.Length;j++)PolicyAssert(actual[j]==0,"known allocation padding remains zero");
+  }
+  PolicyAssert(positive.Events.IndexOf("open")>positive.Events.LastIndexOf("unlock")&&positive.Events.LastIndexOf("set")<positive.Events.LastIndexOf("sequence")&&positive.ContentCalls==0,"known prepared before Open final epoch after all setters no getters");
+  int physicalInputs=0;PolicyAssert(TrySyntheticInputSite(positive,retained,positiveCleanup,ref physicalInputs)&&TrySyntheticInputSite(positive,retained,positiveCleanup,ref physicalInputs)&&physicalInputs==2,"known both live input gates independently require same epoch");
+  foreach(uint changed in new uint[]{0,4,6,101}){
+   var ops=new SyntheticKnownFormatsOps{SequenceAfterClose=changed};var receipt=new KnownFormatsReceipt();var cleanup=new ClipboardCleanupFence();uint last;
+   PolicyAssert(TrySyntheticKnownInstall(ops,token,BuildKnownFormatPayloads(token),receipt,cleanup,out last,false)&&last==3&&receipt.close_confirmed&&ops.CurrentSequence==changed,"known pre3 confirmed Close post changed diagnostic only");
+   int inputs=0;PolicyAssert(!TrySyntheticInputSite(ops,last,cleanup,ref inputs)&&last==3&&inputs==0&&ops.ContentCalls==0,"known pre3 post6 same helper actual RequireOwned refuses no adoption");
+   int opens=ops.OpenCalls;uint ignored;PolicyAssert(!cleanup.Finish(ops,out ignored)&&ops.OpenCalls==opens&&ops.EmptyCalls==1,"known mismatch cleanup disarmed no additional clear");
+  }
+  foreach(bool second in new bool[]{false,true}){
+   foreach(uint changed in new uint[]{0,4,6,101})CheckOwnedInputRefusal("known changed epoch "+changed,new SyntheticKnownFormatsOps{CurrentSequence=changed,CurrentOwner=new IntPtr(11)},second);
+   CheckOwnedInputRefusal("known same epoch foreign owner",new SyntheticKnownFormatsOps{CurrentSequence=3,CurrentOwner=new IntPtr(99)},second);
+   CheckOwnedInputRefusal("known same epoch null owner",new SyntheticKnownFormatsOps{CurrentSequence=3,CurrentOwner=IntPtr.Zero},second);
+   CheckOwnedInputRefusal("known same epoch unknown owner",new SyntheticKnownFormatsOps{CurrentSequence=3,CurrentOwner=new IntPtr(11),HelperKnown=false},second);
+   CheckOwnedInputRefusal("known owner query uncertainty",new SyntheticKnownFormatsOps{CurrentSequence=3,CurrentOwner=new IntPtr(11),OwnerQueryOk=false},second);
+   CheckOwnedInputRefusal("known owner query error",new SyntheticKnownFormatsOps{CurrentSequence=3,CurrentOwner=new IntPtr(11),OwnerQueryError=5},second);
+   CheckOwnedInputRefusal("known RequireOwned lock",new SyntheticKnownFormatsOps{CurrentSequence=3,CurrentOwner=new IntPtr(11),OpenOk=false},second);
+   CheckOwnedInputRefusal("known RequireOwned close",new SyntheticKnownFormatsOps{CurrentSequence=3,CurrentOwner=new IntPtr(11),CloseOk=false},second);
+   CheckOwnedInputRefusal("known RequireOwned close throws",new SyntheticKnownFormatsOps{CurrentSequence=3,CurrentOwner=new IntPtr(11),Failure="close-throws"},second);
+   foreach(string identity in new string[]{"helper","helper-pid","helper-thread","helper-class","helper-token"})CheckOwnedInputRefusal("known RequireOwned "+identity,new SyntheticKnownFormatsOps{CurrentSequence=3,CurrentOwner=new IntPtr(11),Failure=identity,FailIdentityAt=1},second);
+  }
+ }
+
+ // Pure generated-payload checks only: no native operations or initializer are reachable.
+ static void CheckInitializedCopyPayloadValidation(){
+  ValidateInitializedCopyPayload("sentinel-1-2");
+  foreach(string invalid in new string[]{"sentinel-1-2\n","sentinel-"+new string('1',118)+"-2"}){
+   bool refused=false;try{ValidateInitializedCopyPayload(invalid);}catch(InvalidOperationException){refused=true;}
+   PolicyAssert(refused,"pure pre-initializer validator refuses final newline and oversized token");
+  }
+ }
  public static void CheckInitializedClipboardPolicy(){
+  CheckInitializedCopyPayloadValidation();
+  CheckKnownFormatsPolicy();
   PolicyAssert(ClipboardMessageLayoutValid(),"synthetic public MSG layout x86-or-x64");
   CheckCloseSnapshotCase("synthetic close snapshot exact helper",new SyntheticCopyPolicyOps{CurrentSequence=3,CurrentOwner=new IntPtr(11)},"observed","exact-helper","exact-live-helper");
   CheckCloseSnapshotCase("synthetic changed close sequence is observation only",new SyntheticCopyPolicyOps{CurrentSequence=6,CurrentOwner=new IntPtr(11)},"observed","exact-helper","exact-live-helper");
@@ -689,7 +983,7 @@ public static class BowserHostMenu {
   }
   ConstructorCloseReceipt constructorCloseEvidence;int beforeCloseCaptureClaim=0,afterCloseCaptureClaim=0;
   public ConstructorCloseReceipt CloseEvidence {get{return constructorCloseEvidence;}}
-  // Exactly one observation on each side of the existing CloseChecked. Never update last.
+  // Exactly one observation on each side of the shared single Close. Never update last.
   void CaptureConstructorClose(bool after){
    if(after){
     if(System.Threading.Interlocked.CompareExchange(ref afterCloseCaptureClaim,1,0)!=0||constructorCloseEvidence==null)return;
@@ -733,33 +1027,23 @@ public static class BowserHostMenu {
   IntPtr owner;uint last;bool changed,finished,uncertain;public string Status="not-started";public List<uint> OwnedSequences=new List<uint>();
   uint Sequence(){uint value=GetClipboardSequenceNumber();if(admission&&AdmissionStage==4){AdmissionSequence=value;AdmissionSequenceObserved=true;}if(value==0){uncertain=true;Status="sequence-unavailable-left-untouched";throw new InvalidOperationException("Clipboard sequence unavailable; no authority to read or restore.");}return value;}
   void CloseChecked(){bool closed=CloseClipboard();if(admission){AdmissionCloseAttempted=true;AdmissionCloseConfirmed=closed;}if(!closed){uncertain=true;cleanup.Disarm();Status="close-unconfirmed-left-untouched";throw new InvalidOperationException("Clipboard close was not confirmed.");}}
+  public KnownFormatsReceipt FixtureEvidence {get{return fixtureEvidence;}}public static KnownFormatsReceipt LastFixtureEvidence=null;KnownFormatsReceipt fixtureEvidence=new KnownFormatsReceipt();
   public InitializedFixtureClipboardGuard(string generated){
-   if(!initializedFixtureReady||System.Threading.Interlocked.CompareExchange(ref initializedGuardClaim,1,0)!=0)throw new InvalidOperationException("One successful separate initialized-empty precondition is required; no fallback or retry.");
+   RequireKnownFormatsClaim(initializedFixtureContract,"Copy",initializedFixtureReady,ref initializedGuardClaim);LastFixtureEvidence=fixtureEvidence;
    AdmissionStarted=true;AdmissionStage=1;AdmissionFailureStage=0;AdmissionEnumError=0;AdmissionOpened=false;AdmissionFormatObserved=false;AdmissionFirstFormatZero=false;AdmissionSequenceObserved=false;AdmissionSequence=0;AdmissionCloseAttempted=false;AdmissionCloseConfirmed=false;
-   if(!System.Text.RegularExpressions.Regex.IsMatch(generated,"^(sentinel|paste)-[0-9]+-[0-9]+$"))throw new InvalidOperationException("Only generated synthetic clipboard payloads are allowed.");
-   window=new ClipboardOwnerWindow();owner=window.Window;helperEpoch=window.Epoch;policyOps=new NativeClipboardPolicyOps(owner,helperEpoch);
+   KnownFormatPayload[] payloads=BuildKnownFormatPayloads(generated);
+   window=new ClipboardOwnerWindow();owner=window.Window;helperEpoch=window.Epoch;var knownOps=new NativeKnownFormatsOps(owner,helperEpoch);policyOps=knownOps;
    if(owner==IntPtr.Zero)throw new InvalidOperationException("External clipboard guard window unavailable.");
-   IntPtr memory=IntPtr.Zero;bool opened=false;try{
-    byte[] bytes=Encoding.Unicode.GetBytes(generated+"\0");memory=GlobalAlloc(2,(UIntPtr)bytes.Length);if(memory==IntPtr.Zero)throw new InvalidOperationException("Synthetic payload allocation failed.");
-    var target=GlobalLock(memory);if(target==IntPtr.Zero)throw new InvalidOperationException("Synthetic payload lock failed.");try{Marshal.Copy(bytes,0,target,bytes.Length);}finally{GlobalUnlock(memory);}
-    AdmissionStage=2;bool openResult=OpenClipboard(owner);AdmissionOpened=openResult;if(!openResult)throw new InvalidOperationException("Clipboard locked: no clipboard mutation.");opened=true;
-    AdmissionStage=3;SetLastError(0);uint first=EnumClipboardFormats(0);int error=Marshal.GetLastWin32Error();
-    AdmissionFormatObserved=true;AdmissionFirstFormatZero=first==0;AdmissionEnumError=error;
-    if(first!=0||error!=0)throw new InvalidOperationException("Clipboard is nonempty or its empty state is unavailable; no content read or mutation.");
-    AdmissionStage=4;last=Sequence();if(!OrdinaryAdmissionAllowsMutation(AdmissionOpened,first,error,last))throw new InvalidOperationException("Ordinary clipboard admission refused; no mutation.");AdmissionStage=5;if(!EmptyClipboard())throw new InvalidOperationException("Empty precondition could not be claimed.");
-    changed=true;last=Sequence();OwnedSequences.Add(last);
-    if(SetClipboardData(13,memory)==IntPtr.Zero)throw new InvalidOperationException("Synthetic payload write failed.");memory=IntPtr.Zero;
-    last=Sequence();OwnedSequences.Add(last);Status="synthetic-payload-owned";
-    try{CaptureConstructorClose(false);}catch{}
-    opened=false;CloseChecked();
-    try{CaptureConstructorClose(true);}catch{}
+   try{
+    InstallKnownFormatsOnce(knownOps,generated,payloads,fixtureEvidence,delegate(uint epoch){changed=true;last=epoch;OwnedSequences.Add(last);Status="synthetic-payload-owned";},delegate(bool after){CaptureConstructorClose(after);});
+    // Only the exclusive pre-Close epoch may arm after a confirmed single Close.
     cleanup.Arm(last,helperEpoch);
-   }catch{AdmissionFailureStage=AdmissionStage;if(opened){opened=false;try{CloseChecked();}catch{}}Finish();window.Dispose();owner=IntPtr.Zero;throw;}
-   finally{admission=false;if(memory!=IntPtr.Zero)GlobalFree(memory);}
+   }catch{AdmissionFailureStage=fixtureEvidence.stage;uncertain=true;cleanup.Disarm();Finish();window.Dispose();owner=IntPtr.Zero;throw;}
+   finally{AdmissionStage=fixtureEvidence.stage;AdmissionOpened=fixtureEvidence.opened;AdmissionFormatObserved=fixtureEvidence.format_observed;AdmissionFirstFormatZero=fixtureEvidence.first_format_zero;AdmissionEnumError=fixtureEvidence.enum_error;AdmissionSequenceObserved=fixtureEvidence.sequence_observed;AdmissionSequence=fixtureEvidence.admitted_sequence;AdmissionCloseAttempted=fixtureEvidence.close_attempted;AdmissionCloseConfirmed=fixtureEvidence.close_confirmed;admission=false;}
   }
   public void RequireOwned(){
    bool closeConfirmed=false;
-   try{if(!OpenClipboard(owner))throw new InvalidOperationException("Clipboard locked before native input; no input.");try{if(Sequence()!=last||!policyOps.ExactOwner(policyOps.Owner(),helperEpoch))throw new InvalidOperationException("Clipboard sequence/owner changed before native input; no input.");}finally{CloseChecked();closeConfirmed=true;}}
+   try{RequireFixtureOwnedOnce(policyOps,last,helperEpoch,cleanup,out closeConfirmed);}
    catch{uncertain=true;cleanup.Disarm();if(closeConfirmed){try{CaptureRequireOwnedMismatchLater();}catch{}}throw;}
   }
   /// Genuine native Copy requires matching production completion before any content getter.
@@ -883,9 +1167,9 @@ try {
  $guard=[BowserHostMenu+OriginalProcess]::new($OwnerPid,$OwnerExe);$browserGuard=[BowserHostMenu+ReadOnlyBrowser]::new($BrowserPid)
  if($Mode -in @('Copy','Paste')){
   $payload=if($Mode -ceq 'Copy'){'sentinel-'+$SyntheticToken}else{'paste-'+$SyntheticToken}
-  if($InitializedEmptyClipboardFixture){$initializer=[BowserHostMenu+InitializedEmptyClipboardFixture]::new();$report.initialized_empty_fixture=$initializer.Receipt}
+  if($InitializedEmptyClipboardFixture){[BowserHostMenu]::ValidateInitializedCopyPayload($payload);$initializer=[BowserHostMenu+InitializedEmptyClipboardFixture]::new();$report.initialized_empty_fixture=$initializer.Receipt}
   $clipboard=if($InitializedEmptyClipboardFixture){[BowserHostMenu+InitializedFixtureClipboardGuard]::new($payload)}else{[BowserHostMenu+ClipboardGuard]::new($payload)}
-  if($initializer){$initializer.CompleteIndependentAdmission()}
+  if($initializer){$report.initialized_fixture_known_formats=$clipboard.FixtureEvidence;$initializer.CompleteIndependentAdmission()}
  }
  Neutral
  if(!$guard.SameAlive() -or !$browserGuard.SameAlive() -or ![BowserHostMenu]::Host($h,$OwnerPid,$tid) -or ![BowserHostMenu]::IsWindowVisible($h) -or ![BowserHostMenu]::IsWindowEnabled($h)){throw 'Retained exact owner unavailable before initial activation.'}
@@ -1007,6 +1291,7 @@ try {
  if($InitializedEmptyClipboardFixture -and [BowserHostMenu+InitializedEmptyClipboardFixture]::LastReceipt){$report.initialized_empty_fixture=[BowserHostMenu+InitializedEmptyClipboardFixture]::LastReceipt}
  if($InitializedEmptyClipboardFixture){
   try{if([BowserHostMenu+InitializedFixtureClipboardGuard]::AdmissionStarted){$report.initialized_guard_admission=@{stage=[BowserHostMenu+InitializedFixtureClipboardGuard]::AdmissionStage;failure_stage=[BowserHostMenu+InitializedFixtureClipboardGuard]::AdmissionFailureStage;open_succeeded=[BowserHostMenu+InitializedFixtureClipboardGuard]::AdmissionOpened;format_observed=[BowserHostMenu+InitializedFixtureClipboardGuard]::AdmissionFormatObserved;first_format_zero=[BowserHostMenu+InitializedFixtureClipboardGuard]::AdmissionFirstFormatZero;enum_error=[BowserHostMenu+InitializedFixtureClipboardGuard]::AdmissionEnumError;sequence_observed=[BowserHostMenu+InitializedFixtureClipboardGuard]::AdmissionSequenceObserved;sequence=[BowserHostMenu+InitializedFixtureClipboardGuard]::AdmissionSequence;close_attempted=[BowserHostMenu+InitializedFixtureClipboardGuard]::AdmissionCloseAttempted;close_confirmed=[BowserHostMenu+InitializedFixtureClipboardGuard]::AdmissionCloseConfirmed}}}catch{}
+  try{if([BowserHostMenu+InitializedFixtureClipboardGuard]::LastFixtureEvidence){$report.initialized_fixture_known_formats=[BowserHostMenu+InitializedFixtureClipboardGuard]::LastFixtureEvidence}}catch{}
   try{if($clipboard -and $clipboard.MismatchEvidence){$report.initialized_guard_require_owned_mismatch=$clipboard.MismatchEvidence}}catch{}
   try{if($clipboard -and $clipboard.CloseEvidence){$report.initialized_guard_constructor_close=$clipboard.CloseEvidence}}catch{}
  }

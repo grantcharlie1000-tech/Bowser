@@ -56,10 +56,12 @@ class InitializedClipboardHelperSourceContracts(unittest.TestCase):
         self.assertLess(HELPER.index("$clipboard=if($InitializedEmptyClipboardFixture)"), HELPER.index("$initializer.CompleteIndependentAdmission()"))
         self.assertLess(HELPER.index("$initializer.CompleteIndependentAdmission()"), HELPER.index("::mouse_event(8,"))
         strict_constructor = block("public InitializedFixtureClipboardGuard(string generated)")
-        self.assertIn("!initializedFixtureReady", strict_constructor)
-        self.assertIn("CompareExchange(ref initializedGuardClaim,1,0)", strict_constructor)
-        self.assertIn("last=Sequence();", strict_constructor)
-        self.assertLess(strict_constructor.index("last=Sequence();"), strict_constructor.index("if(!EmptyClipboard())"))
+        self.assertIn('RequireKnownFormatsClaim(initializedFixtureContract,"Copy",initializedFixtureReady,ref initializedGuardClaim)', strict_constructor)
+        gate = block("static void RequireKnownFormatsClaim(")
+        self.assertIn('!contract||mode!="Copy"||!ready||System.Threading.Interlocked.CompareExchange(ref claim,1,0)!=0', gate)
+        installer = block("static void InstallKnownFormatsOnce(")
+        self.assertLess(installer.index("receipt.admitted_sequence=ops.Sequence()"), installer.index("ops.Empty()"))
+        self.assertIn("OrdinaryAdmissionAllowsMutation(receipt.opened,first,enumError,receipt.admitted_sequence)", installer)
 
     def test_attestation_is_bounded_and_explicitly_not_sole_authority(self):
         contract = block("public static void RequireInitializedFixtureContract()")
@@ -107,7 +109,7 @@ class InitializedClipboardHelperSourceContracts(unittest.TestCase):
         self.assertIn('source==IntPtr.Zero?"null-error0"', initializer)
         self.assertIn("!receipt.after_owner_query_succeeded||ownerError!=0", initializer)
         strict = block("public sealed class InitializedFixtureClipboardGuard:")
-        self.assertIn("policyOps.ExactOwner(policyOps.Owner(),helperEpoch)", strict)
+        self.assertIn("ops.ExactOwner(ops.Owner(),helper)", block("static void RequireFixtureOwnedOnce("))
         self.assertNotIn("GetClipboardOwner()", strict)
         cases = block("public static void CheckInitializedClipboardPolicy()")
         self.assertIn('"initializer null owner error0",new SyntheticClipboardPolicyOps{CurrentOwner=IntPtr.Zero,OwnerQueryError=0},true,1', cases)
@@ -297,29 +299,27 @@ class RequireOwnedMismatchSourceContracts(unittest.TestCase):
         for forbidden in ("IntPtr", "Exception", "Class", "Title", "Path", "Url", "object", "List<"):
             self.assertNotIn(forbidden, receipt)
 
-    def test_original_predicate_short_circuit_api_order_and_throw_are_retained(self):
+    def test_actual_shared_require_owned_retains_short_circuit_fences_and_disarms(self):
         require = block("public void RequireOwned()", self.strict())
-        self.assertIn("if(Sequence()!=last||!policyOps.ExactOwner(policyOps.Owner(),helperEpoch))", require)
-        self.assertIn('throw new InvalidOperationException("Clipboard sequence/owner changed before native input; no input.")', require)
-        # Removing only local failure instrumentation recreates the exact baseline method.
-        original = require.replace("   bool closeConfirmed=false;\n", "")
-        original = original.replace("CloseChecked();closeConfirmed=true;", "CloseChecked();")
-        original = original.replace("if(closeConfirmed){try{CaptureRequireOwnedMismatchLater();}catch{}}", "")
-        self.assertEqual(hashlib.sha256(original.encode()).hexdigest(),
-                         "2f4fedf2f519c61e90eec4e809d993c0607f964428c02569f623c3cc739c4860")
+        self.assertIn("RequireFixtureOwnedOnce(policyOps,last,helperEpoch,cleanup,out closeConfirmed)", require)
+        shared = block("static void RequireFixtureOwnedOnce(")
+        self.assertIn("observed==0||observed!=expected||!ops.ExactOwner(ops.Owner(),helper)", shared)
+        self.assertIn('throw new InvalidOperationException("Clipboard sequence/owner changed before native input; no input.")', shared)
+        self.assertEqual(shared.count("ops.Open()"), 1)
+        self.assertEqual(shared.count("ops.Close()"), 1)
+        self.assertIn("finally{closeConfirmed=ops.Close();if(!closeConfirmed)", shared)
+        self.assertIn("catch{cleanup.Disarm();throw;}", shared)
         self.assertIn("bool closeConfirmed=false;", require)
-        self.assertIn("finally{CloseChecked();closeConfirmed=true;}", require)
-        # Capture is reachable only after refusal irrevocably disarms cleanup and close returned.
         self.assertIn("catch{uncertain=true;cleanup.Disarm();if(closeConfirmed){try{CaptureRequireOwnedMismatchLater();}catch{}}throw;}", require)
         self.assertEqual(require.count("CaptureRequireOwnedMismatchLater();"), 1)
-        self.assertNotIn("return", require)
+        for forbidden in ("last=", "expected=", "OwnedSequences.", "cleanup.Arm", "SetFormat", "FirstFormat", "Data("):
+            self.assertNotIn(forbidden, shared)
 
-    def test_ordinary_and_authority_paths_are_frozen_except_read_only_close_snapshots(self):
+    def test_ordinary_copy_and_cleanup_are_frozen_while_opt_in_installer_is_shared(self):
         strict = self.strict()
         hashes = {
             "uint Sequence()": "8411bd80fc84398fd74e35981efe06492c017c1c271cbd7c9c9933fd45f71669",
             "void CloseChecked()": "18a7996e8591277ea8b9819e861f2a28e67174c67e6ce2ead9c44429c63f1f78",
-            "public InitializedFixtureClipboardGuard(string generated)": "ac4739fa66af4aab3d40c2665e16627e58a5ff086e3e4e9e0a25f597557851fc",
             "public void ObserveNativeCopy(": "cf3a87f9d42ae9213a21e2ea2ee63f1bbcf2fcda3e48ed6aafa8e1f12e7d9515",
             "public bool Finish()": "9d66bf57cb0353509ef29baf3a189825208d2e206db9b1f1f6c6a2e5e96bb9d8",
             "public void Dispose()": "a760af8c5c1a0d87d871c1c03ef7f17c59ff6041be7b9fd3c412d70b4c5ed162",
@@ -327,9 +327,6 @@ class RequireOwnedMismatchSourceContracts(unittest.TestCase):
         for signature, digest in hashes.items():
             with self.subTest(signature=signature):
                 actual = block(signature, strict)
-                if signature == "public InitializedFixtureClipboardGuard(string generated)":
-                    actual = actual.replace("    try{CaptureConstructorClose(false);}catch{}\n", "")
-                    actual = actual.replace("    opened=false;CloseChecked();\n    try{CaptureConstructorClose(true);}catch{}\n    cleanup.Arm(last,helperEpoch);", "    opened=false;CloseChecked();cleanup.Arm(last,helperEpoch);")
                 self.assertEqual(hashlib.sha256(actual.encode()).hexdigest(), digest)
         ordinary = " " + block("public sealed class ClipboardGuard:IDisposable")
         self.assertEqual(hashlib.sha256(ordinary.encode()).hexdigest(), ORDINARY_CLASS_SHA256)
@@ -389,20 +386,27 @@ class RequireOwnedMismatchSourceContracts(unittest.TestCase):
 class ConstructorCloseObservationContracts(unittest.TestCase):
     """Source contracts; managed synthetic checks run separately in Windows CI."""
 
-    def test_snapshots_are_one_shot_around_only_original_successful_constructor_close(self):
+    def test_snapshots_are_one_shot_around_shared_successful_constructor_close(self):
         strict = block("public sealed class InitializedFixtureClipboardGuard:")
         constructor = block("public InitializedFixtureClipboardGuard(string generated)", strict)
-        close = "try{CaptureConstructorClose(false);}catch{}\n    opened=false;CloseChecked();\n    try{CaptureConstructorClose(true);}catch{}\n    cleanup.Arm(last,helperEpoch);"
-        self.assertIn(close, constructor)
-        self.assertLess(constructor.index("last=Sequence();OwnedSequences.Add(last);Status=\"synthetic-payload-owned\""), constructor.index(close))
+        installer = block("static void InstallKnownFormatsOnce(")
+        self.assertIn("delegate(bool after){CaptureConstructorClose(after);}", constructor)
+        self.assertLess(constructor.index("InstallKnownFormatsOnce("), constructor.index("cleanup.Arm(last,helperEpoch)"))
+        self.assertIn('delegate(uint epoch){changed=true;last=epoch;OwnedSequences.Add(last);Status="synthetic-payload-owned";}', constructor)
+        final = installer.index("receipt.final_pre_close_sequence=final;recordEpoch(final);")
+        before = installer.index("try{closeSnapshot(false);}catch{}")
+        close = installer.index("opened=false;receipt.close_attempted=true;receipt.close_confirmed=ops.Close();")
+        after = installer.index("try{closeSnapshot(true);}catch{}")
+        self.assertLess(final, before)
+        self.assertLess(before, close)
+        self.assertLess(close, after)
         capture = block("void CaptureConstructorClose(", strict)
         self.assertIn("CompareExchange(ref beforeCloseCaptureClaim,1,0)", capture)
         self.assertIn("CompareExchange(ref afterCloseCaptureClaim,1,0)", capture)
         self.assertIn("constructorCloseEvidence==null", capture)
         self.assertIn("new ConstructorCloseReceipt{expected_sequence=last}", capture)
         self.assertIn("constructorCloseEvidence.close_confirmed=true", capture)
-        self.assertEqual(CS.count("CaptureConstructorClose(false)"), 1)
-        self.assertEqual(CS.count("CaptureConstructorClose(true)"), 1)
+        self.assertEqual(CS.count("CaptureConstructorClose(after)"), 1)
         for name in ("last", "owner", "helperEpoch", "window", "uncertain", "changed", "finished", "Status"):
             self.assertNotRegex(capture, r"\b" + name + r"\s*=(?!=)")
         self.assertNotIn("cleanup.", capture)
@@ -446,6 +450,178 @@ class ConstructorCloseObservationContracts(unittest.TestCase):
         self.assertNotIn("CloseEvidence", HELPER.split("}catch{\n $report.error=$_.Exception.Message", 1)[0].split("\n'@", 1)[1])
         for forbidden in ("CaptureConstructorClose(", "Sequence(", "EmptyClipboard(", "GetClipboardData(", "SetClipboardData("):
             self.assertNotIn(forbidden, export)
+
+class KnownFormatsSourceContracts(unittest.TestCase):
+    """Portable contracts for shared managed policy, not managed/native execution."""
+
+    def test_pure_pre_initializer_validator_reuses_the_actual_bounded_payload_builder(self):
+        validator = block("public static void ValidateInitializedCopyPayload(")
+        self.assertEqual(validator, "public static void ValidateInitializedCopyPayload(string generated){BuildKnownFormatPayloads(generated);}")
+        build = block("static KnownFormatPayload[] BuildKnownFormatPayloads(")
+        cases = block("static void CheckInitializedCopyPayloadValidation()")
+        self.assertIn('"sentinel-1-2\\n"', cases)
+        self.assertIn('"sentinel-"+new string(\'1\',118)+"-2"', cases)
+        self.assertIn("try{ValidateInitializedCopyPayload(invalid);}catch(InvalidOperationException){refused=true;}", cases)
+        for forbidden in ("ClipboardPolicyOps", "KnownFormatsOps", "InitializeEmptyOnce", "new ClipboardOwnerWindow", "InitializedEmptyClipboardFixture", "OpenClipboard(", "EmptyClipboard(", "SetClipboardData(", "GetClipboardData(", "EnumClipboardFormats(", "GlobalAlloc(", "mouse_event("):
+            self.assertNotIn(forbidden, validator + build + cases)
+        entry = block("public static void CheckInitializedClipboardPolicy()")
+        self.assertLess(entry.index("CheckInitializedCopyPayloadValidation();"), entry.index("CheckKnownFormatsPolicy();"))
+
+    def test_opt_in_validates_before_initializer_and_ordinary_powershell_is_byte_frozen(self):
+        # Source-order evidence, not native mutation coverage or executed PowerShell.
+        ps = HELPER.split("\n'@", 1)[1]
+        call = "[BowserHostMenu]::ValidateInitializedCopyPayload($payload);"
+        constructor = "$initializer=[BowserHostMenu+InitializedEmptyClipboardFixture]::new();"
+        self.assertEqual(ps.count(call), 1)
+        self.assertIn("if($InitializedEmptyClipboardFixture){" + call + constructor, ps)
+        self.assertLess(ps.index(call), ps.index(constructor))
+        # Removing only the gated pure call recreates every byte of the prior PowerShell,
+        # including the ordinary/Paste lane and both existing physical-input sites.
+        self.assertEqual(hashlib.sha256(ps.replace(call, "").encode()).hexdigest(),
+                         "3f82754dcfd37f36e4ab34964db9391d16bff13b1c43553eaa37af2409d0e901")
+
+    def test_known_family_is_fixed_eager_ascii_copy_only_and_bounded(self):
+        self.assertIn("KnownUnicodeText=13,KnownLocale=16,KnownAnsiText=1,KnownOemText=7,KnownMovableZeroInit=0x0042", CS)
+        self.assertIn("const int KnownTokenMaxBytes=128", CS)
+        build = block("static KnownFormatPayload[] BuildKnownFormatPayloads(")
+        self.assertIn('generated.Length>KnownTokenMaxBytes', build)
+        self.assertIn('@"\\Asentinel-[0-9]+-[0-9]+\\z"', build)
+        self.assertNotIn("$", build)
+        self.assertIn("unicode=new byte[(generated.Length+1)*2]", build)
+        self.assertIn("ansi=new byte[generated.Length+1],oem=new byte[generated.Length+1]", build)
+        self.assertIn("unicode[2*i]=(byte)c;ansi[i]=(byte)c;oem[i]=(byte)c", build)
+        self.assertIn("Bytes=new byte[]{9,4,0,0}", build)
+        self.assertNotIn("Encoding.", build)
+        self.assertNotIn("RegisterClipboardFormat", CS)
+
+    def test_actual_installer_validates_exact_payloads_before_allocating_or_opening(self):
+        validate = block("static void ValidateKnownFormatPayloads(")
+        self.assertIn("payloads.Length!=4", validate)
+        self.assertIn("payloads[i].Format!=exact[i].Format", validate)
+        self.assertIn("payloads[i].Bytes.Length!=exact[i].Bytes.Length", validate)
+        self.assertIn("payloads[i].Bytes[j]!=exact[i].Bytes[j]", validate)
+        install = block("static void InstallKnownFormatsOnce(")
+        self.assertLess(install.index("ValidateKnownFormatPayloads(generated,payloads)"), install.index("ops.Allocate("))
+        self.assertLess(install.index("ops.Allocate("), install.index("ops.Open()"))
+        self.assertLess(install.index("ops.UnlockBuffer("), install.index("ops.Open()"))
+        self.assertIn("ops.Allocate(KnownMovableZeroInit,payloads[i].Bytes.Length)", install)
+        self.assertIn("buffer.Memory==buffers[j].Memory", install)
+        self.assertIn("if(remainsLocked||error!=0)", install)
+        native = block("sealed class NativeKnownFormatsOps:")
+        unlock = block("public bool UnlockBuffer(", native)
+        self.assertIn("SetLastError(0);bool remainsLocked=CheckedGlobalUnlock(memory);error=Marshal.GetLastWin32Error();return remainsLocked;", unlock)
+        self.assertNotIn("||", unlock)
+
+    def test_each_mutation_has_lexical_helper_fences_and_final_epoch_is_after_all_sets(self):
+        install = block("static void InstallKnownFormatsOnce(")
+        self.assertEqual(install.count("ops.Open()"), 1)
+        self.assertEqual(install.count("ops.Empty()"), 1)
+        self.assertEqual(install.count("ops.SetFormat("), 1)
+        self.assertEqual(install.count("ops.FirstFormat("), 1)
+        self.assertIn("receipt.stage=5;if(!KnownHelperLive(ops))", install)
+        self.assertIn("RequireKnownHelperOwner(ops);\n   for(int i=0;i<4;i++){\n    RequireKnownHelperOwner(ops);", install)
+        self.assertIn("RequireKnownHelperOwner(ops);uint final=ops.Sequence();if(final==0)", install)
+        final = install.index("uint final=ops.Sequence()")
+        after = install.index("RequireKnownHelperOwner(ops);", final)
+        self.assertLess(final, after)
+        self.assertLess(after, install.index("receipt.final_pre_close_sequence=final;recordEpoch(final)"))
+        fence = block("static void RequireKnownHelperOwner(")
+        self.assertIn("!KnownHelperLive(ops)||!ops.ExactOwner(ops.Owner(),ops.Helper)", fence)
+        self.assertLess(install.index("ops.SetFormat("), install.index("uint final=ops.Sequence()"))
+        for forbidden in ("GetClipboardData", "ReadBounded", "EnumClipboardFormats", "cleanup.", "Thread.Sleep", "RegisterClipboardFormat"):
+            self.assertNotIn(forbidden, install)
+
+    def test_transfer_precedes_any_receipt_bookkeeping_and_uncertain_handles_are_never_freed(self):
+        install = block("static void InstallKnownFormatsOnce(")
+        transfer = install.index("if(result!=IntPtr.Zero)buffer.Transferred=true;")
+        receipt = install.index("receipt.transferred[i]=true;")
+        self.assertLess(transfer, receipt)
+        self.assertIn("catch{buffer.OwnershipUncertain=true;receipt.ownership_uncertain[i]=true;throw;}", install)
+        self.assertIn("buffer.Transferred||buffer.OwnershipUncertain||buffer.FreeAttempted", install)
+        self.assertIn("buffer.FreeAttempted=true;receipt.free_attempted[i]=true;", install)
+        self.assertIn("if(ops.FreeBuffer(buffer.Memory)!=IntPtr.Zero)", install)
+        self.assertIn("catch{receipt.free_failed[i]=true;freeFailure=true;}", install)
+        self.assertLess(install.index("ops.FreeBuffer("), install.index("if(freeFailure)throw"))
+        setter_tail = install[transfer:receipt]
+        for forbidden in (".Add(", "new ", "ops."):
+            self.assertNotIn(forbidden, setter_tail.split("else throw", 1)[0])
+
+    def test_exactly_one_close_attempt_per_successful_open_and_only_pre_close_arms(self):
+        install = block("static void InstallKnownFormatsOnce(")
+        self.assertEqual(install.count("ops.Close()"), 2)  # exclusive success path or failure finally, never both
+        close = "opened=false;receipt.close_attempted=true;receipt.close_confirmed=ops.Close();"
+        self.assertEqual(install.count(close), 2)
+        self.assertIn("if(opened){" + close, install)
+        self.assertIn("if(!receipt.close_confirmed)throw", install)
+        self.assertEqual(install.count("recordEpoch(final)"), 1)
+        self.assertLess(install.index("recordEpoch(final)"), install.index("closeSnapshot(false)"))
+        self.assertLess(install.index("ops.Close()"), install.index("closeSnapshot(true)"))
+        constructor = block("public InitializedFixtureClipboardGuard(string generated)")
+        self.assertEqual(constructor.count("cleanup.Arm(last,helperEpoch)"), 1)
+        self.assertIn("uncertain=true;cleanup.Disarm();Finish();", constructor)
+        self.assertNotIn("CloseClipboard", constructor)
+        self.assertNotIn("GlobalFree", constructor)
+
+    def test_actual_live_and_managed_matrix_call_the_same_installer_and_input_flow(self):
+        constructor = block("public InitializedFixtureClipboardGuard(string generated)")
+        managed = block("static bool TrySyntheticKnownInstall(")
+        self.assertIn("InstallKnownFormatsOnce(knownOps,generated,payloads,fixtureEvidence", constructor)
+        self.assertIn("InstallKnownFormatsOnce(ops,token,payloads,receipt", managed)
+        require = block("public void RequireOwned()", block("public sealed class InitializedFixtureClipboardGuard:"))
+        synthetic = block("static bool TrySyntheticInputSite(")
+        self.assertIn("RequireFixtureOwnedOnce(policyOps,last,helperEpoch,cleanup,out closeConfirmed)", require)
+        self.assertIn("RequireFixtureOwnedOnce(ops,last,ops.Helper,cleanup,out closeConfirmed);inputCalls++", synthetic)
+        self.assertEqual(HELPER.count("if($clipboard){$clipboard.RequireOwned()}"), 2)
+        self.assertIn("CheckKnownFormatsPolicy();", block("public static void CheckInitializedClipboardPolicy()"))
+        self.assertIn("foreach(bool second in new bool[]{false,true})", block("static void CheckKnownFormatsPolicy()"))
+        fake = block("sealed class SyntheticKnownFormatsOps:")
+        self.assertIn("bool ClipboardPolicyOps.Open(){return Open();}", fake)
+        self.assertIn("bool ClipboardPolicyOps.ExactOwner(IntPtr actual,ClipboardEpoch expected){return ExactOwner(actual,expected);}", fake)
+
+    def test_matrix_covers_preparation_partial_transfer_and_each_live_input_negative(self):
+        cases = block("static void CheckKnownFormatsPolicy()")
+        for text in ("contract", "mode", "ready", "reused", "locale-length", "locale-value", "unicode-terminator", "unicode-encoding", "ansi-terminator", "oem-terminator", "format-order", "missing-format", "allocate", "lock", "fill", "unlock-error", "unlock-remains", "free-fails", "free-throws", "setter-throws", "helper-pid", "helper-thread", "helper-class", "helper-token"):
+            self.assertIn('"' + text + '"', cases)
+        self.assertIn('"sentinel-1-2\\n"', cases)
+        self.assertIn('new string(\'1\',129)', cases)
+        self.assertIn("for(int position=1;position<=4;position++)", cases)
+        self.assertIn("FailIdentityAt=2*position+2", cases)
+        self.assertIn("FailurePosition=position", cases)
+        self.assertIn("new KnownFormatsReceipt{transferred=null}", cases)
+        for text in ("known shared HGLOBAL refused", "known missing dedicated contract", "known clipboard locked", "known nonempty admission", "known enumeration error", "known zero independent admission", "known helper lost before Empty", "known helper lost after Empty", "known failed Empty", "known wrong owner after Empty", "known null owner after Empty", "known unknown owner after Empty", "known final zero", "known final helper lost", "known final owner query error", "known final foreign owner", "known final null owner", "known helper lost after final sequence", "known owner query error after final sequence", "known foreign owner after final sequence", "known null owner after final sequence", "known close unconfirmed", "known close throws", "known allocation padding remains zero", "known same epoch foreign owner", "known same epoch null owner", "known same epoch unknown owner", "known owner query uncertainty", "known owner query error", "known RequireOwned lock", "known RequireOwned close", "known RequireOwned close throws"):
+            self.assertIn('"' + text + '"', cases)
+        self.assertIn("uint[]{0,4,6,101}", cases)
+        self.assertIn('"known pre3 post6 same helper actual RequireOwned refuses no adoption"', cases)
+        self.assertIn("last==3&&inputs==0&&ops.ContentCalls==0", cases)
+        self.assertIn("!cleanup.Finish(ops,out ignored)&&ops.OpenCalls==opens&&ops.EmptyCalls==1", cases)
+        self.assertIn("ops.FreeCounts[i]<=1&&(!ops.Transferred[i]||ops.FreeCounts[i]==0)", block("static void AssertKnownInstallStopped("))
+        self.assertNotIn("#pragma warning disable", CS)
+
+    def test_existing_initializer_native_copy_and_cleanup_control_flow_are_byte_frozen(self):
+        frozen = {
+            'class NativeClipboardPolicyOps:': '83a1777485f79f94fe3bdfe796b0de639efc6d4d9be59265b33d4fd4fcd60b90',
+            'sealed class NativeCopyPolicyOps:': '1918f6eb122b01db052df8045f022c2e795ec3ad0b568e94040c5bba3e573705',
+            'static bool MatchingCopyCompletion(': '6d8e930577372eb0397cd5285e845bb2efd75a9e85c57a91f328f0c5cf915eb8',
+            'static void ObserveNativeCopyOnce(': '14ee4fc3b00fcd4a007a13f1ff117dfa3ea46e2bb665923324a654d98788ed27',
+            'static void ObserveCopyAndArmCleanup(': 'fa0076d2b127b4b10c4c1702d63a0c7cf78d9cbecb585369c3a888dad0a573b2',
+            'static bool InitializeEmptyOnce(': 'ec4d2ba1aa086337082d6ee19656603749cf8b64f78dc37df87bb925a96b0ec3',
+            'public sealed class InitializedEmptyClipboardFixture:': 'ad1d37d6ef25c23f8a410b8b5c0b8d458df4a673f9d13826335775207a94e55c',
+            'sealed class ClipboardCleanupFence {': '91acb32ecc0d908e65ef7f504950a520416d4ca02aa4141562dc7a552b969f5a',
+        }
+        for signature, digest in frozen.items():
+            with self.subTest(signature=signature):
+                self.assertEqual(hashlib.sha256(block(signature).encode()).hexdigest(), digest)
+
+    def test_receipt_is_generated_metadata_and_never_production_setter_authority(self):
+        receipt = block("public sealed class KnownFormatsReceipt")
+        for forbidden in ("IntPtr", "generated", "payload", "Owner", "Window", "Text"):
+            self.assertNotIn(forbidden, receipt)
+        self.assertIn('scope="copy-fixture-four-eager-known-formats-not-production-copy"', receipt)
+        self.assertIn("new uint[]{13,16,1,7}", receipt)
+        self.assertIn("proof.SetterCalls==1&&proof.SetterOk", block("static bool MatchingCopyCompletion("))
+        self.assertNotIn("Known", block("static bool MatchingCopyCompletion("))
+        self.assertIn("$report.initialized_fixture_known_formats=$clipboard.FixtureEvidence", HELPER)
+        self.assertIn("::LastFixtureEvidence", HELPER)
 
 
 if __name__ == "__main__":
