@@ -2,31 +2,15 @@
 use std::{cell::{Cell,RefCell},io::{Read,Write},net::TcpListener,path::Path,process::{Command,Stdio},rc::Rc,
     sync::{Arc,Mutex,atomic::{AtomicBool,Ordering}},time::{Duration,Instant,SystemTime,UNIX_EPOCH}};
 use webview2_com::{CoTaskMemPWSTR,ExecuteScriptCompletedHandler,Microsoft::Web::WebView2::Win32::{ICoreWebView2,ICoreWebView2_13,ICoreWebView2Environment7,COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC}};
-use windows::{core::{Interface,PWSTR},Win32::{Foundation::{HWND,RECT,WPARAM,LPARAM},System::Com::{CoInitializeEx,CoUninitialize,COINIT_APARTMENTTHREADED},UI::WindowsAndMessaging::{DispatchMessageW,GetClassNameW,GetClientRect,IsWindow,MSG,PM_REMOVE,PeekMessageW,PostMessageW,TranslateMessage,WM_CLOSE,WM_QUIT}}};
+use windows::{core::{Interface,PWSTR},Win32::{Foundation::{HWND,RECT,WPARAM,LPARAM},System::Com::{CoInitializeEx,CoUninitialize,COINIT_APARTMENTTHREADED},UI::WindowsAndMessaging::{GetClassNameW,GetClientRect,IsWindow,PostMessageW,WM_CLOSE}}};
 use crate::{app::{App,AppRef},extensions::{self,json::{self,Value}},performance::{LaunchOptions,PerfLog},tabs::TabId};
 use super::{HostProbeEvent,HostRole,NodeWitness,set_observer};
 use super::super::app_context_menu_probe::{NativeContextProbeHandles,MenuProbeEvent};
 const TEST_NAME:&str="engine::app_host_menu_probe::live::live_probe_real_app_host_context_menu";
 const CONSENT:&str="disposable-app-host-menu-synthetic-clipboard";
 fn quote(s:&str)->String {crate::chrome_host::protocol::json_string(s)}
-fn pump_until(timeout: Duration, mut ready: impl FnMut() -> bool) -> bool {
-    let start=Instant::now();
-    while start.elapsed()<timeout {
-        if ready(){return true}
-        unsafe {
-            let mut message=MSG::default();
-            while PeekMessageW(&mut message,None,0,0,PM_REMOVE).as_bool(){
-                // Never swallow the real App loop's quit signal in this nested test pump.
-                if message.message==WM_QUIT {
-                    windows::Win32::UI::WindowsAndMessaging::PostQuitMessage(message.wParam.0 as i32);
-                    return false;
-                }
-                let _=TranslateMessage(&message);DispatchMessageW(&message);
-            }
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    ready()
+fn pump_until(timeout: Duration, ready: impl FnMut() -> bool) -> bool {
+    super::super::native_probe_pump::until(timeout,ready)
 }
 
 fn field<'a>(v: &'a Value,k: &str)->Option<&'a Value>{let Value::Object(o)=v else{return None};json::get(o,k)}

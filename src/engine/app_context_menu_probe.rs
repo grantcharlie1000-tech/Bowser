@@ -44,9 +44,8 @@ use windows::{core::{Interface, PWSTR}, Win32::{
     Foundation::{HWND, RECT, WPARAM, LPARAM},
     System::Com::{CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED},
     UI::WindowsAndMessaging::{
-        DispatchMessageW, GetClassNameW, GetClientRect, GetForegroundWindow,
-        IsWindow, MSG, PM_REMOVE, PeekMessageW, PostMessageW, SetForegroundWindow,
-        TranslateMessage, WM_CLOSE, WM_QUIT,
+        GetClassNameW, GetClientRect, GetForegroundWindow,
+        IsWindow, PostMessageW, SetForegroundWindow, WM_CLOSE,
     },
 }};
 use crate::{app::{App, AppRef}, extensions::{self, json::{self, Value}}, performance::{LaunchOptions, PerfLog}, tabs::TabId};
@@ -107,24 +106,8 @@ impl Loopback {
 }
 impl Drop for Loopback {fn drop(&mut self) {self.stop.store(true,Ordering::Relaxed);if let Some(worker)=self.worker.take(){let _=worker.join();}}}
 
-fn pump_until(timeout: Duration, mut ready: impl FnMut() -> bool) -> bool {
-    let start=Instant::now();
-    while start.elapsed()<timeout {
-        if ready(){return true}
-        unsafe {
-            let mut message=MSG::default();
-            while PeekMessageW(&mut message,None,0,0,PM_REMOVE).as_bool(){
-                // Never swallow the real App loop's quit signal in this nested test pump.
-                if message.message==WM_QUIT {
-                    windows::Win32::UI::WindowsAndMessaging::PostQuitMessage(message.wParam.0 as i32);
-                    return false;
-                }
-                let _=TranslateMessage(&message);DispatchMessageW(&message);
-            }
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    ready()
+fn pump_until(timeout: Duration, ready: impl FnMut() -> bool) -> bool {
+    super::native_probe_pump::until(timeout,ready)
 }
 
 fn field<'a>(v: &'a Value,k: &str)->Option<&'a Value>{let Value::Object(o)=v else{return None};json::get(o,k)}

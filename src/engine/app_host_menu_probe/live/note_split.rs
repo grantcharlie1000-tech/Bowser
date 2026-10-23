@@ -53,11 +53,12 @@ impl ReadinessPhases {
         let pump_elapsed = self.pump_elapsed_ms.get().or_else(|| self.pump_started.get().map(|start| Self::millis(start.elapsed())))
             .map(|value| value.to_string()).unwrap_or_else(|| "null".into());
         let ready = self.ready.get().map(|value| value.to_string()).unwrap_or_else(|| "null".into());
-        let snapshot = format!(r#"{{"schema":"host-initial-readiness-phase-v1","write_attempt":{},"stage":"{}","test_elapsed_ms":{},"stage_test_elapsed_ms":[{}],"pump_elapsed_ms":{},"ready":{},"watchdog":{},"prior_io_failed":{}}}"#,
+        let calls=crate::engine::native_probe_pump::diagnostic_json();
+        let snapshot = format!(r#"{{"schema":"host-initial-readiness-phase-v1","write_attempt":{},"stage":"{}","test_elapsed_ms":{},"stage_test_elapsed_ms":[{}],"pump_elapsed_ms":{},"ready":{},"watchdog":{},"prior_io_failed":{},"pump_calls":{calls}}}"#,
             write_attempt, stage.name(), test_elapsed_ms, stage_times, pump_elapsed, ready, self.watchdog.get(), self.io_failed.get());
         // Take the retained handle out of Cell: no App or RefCell borrow spans diagnostic I/O.
         let Some(mut file) = self.file.take() else { return };
-        if snapshot.len() <= 512 {
+        if snapshot.len() <= 8192 {
             let result = std::io::Seek::rewind(&mut file).and_then(|_| file.write_all(snapshot.as_bytes()))
                 .and_then(|_| file.set_len(snapshot.len() as u64)).and_then(|_| file.flush());
             if result.is_err() { self.io_failed.set(true); }

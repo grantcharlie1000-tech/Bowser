@@ -54,22 +54,8 @@ const CHILD_ROOT_ENV: &str = "BOWSER_PROBE_CHILD_ROOT";
 /// The id Chromium derives from the `key` in `probe-mv3-key` (see `tests/fixtures/extensions/README.md`).
 const KEY_FIXTURE_ID: &str = "ciocoifocbggchcecjgibbaeojegkpen";
 
-fn pump_until(timeout: Duration, mut done: impl FnMut() -> bool) -> bool {
-    let started = Instant::now();
-    while started.elapsed() < timeout {
-        if done() {
-            return true;
-        }
-        unsafe {
-            let mut message = MSG::default();
-            while PeekMessageW(&mut message, None, 0, 0, PM_REMOVE).as_bool() {
-                let _ = TranslateMessage(&message);
-                DispatchMessageW(&message);
-            }
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    done()
+fn pump_until(timeout: Duration, ready: impl FnMut() -> bool) -> bool {
+    super::native_probe_pump::until(timeout,ready)
 }
 
 /// Serves one HTML page and records every beacon request path.
