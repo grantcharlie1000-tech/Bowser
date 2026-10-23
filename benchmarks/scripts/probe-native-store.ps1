@@ -20,6 +20,8 @@ $initialUrl=$null;$server=$null;$readyToken=$null
 Add-Type -AssemblyName System.Windows.Forms, System.Drawing, UIAutomationClient, UIAutomationTypes
 Add-Type @'
 using System;
+using System.Collections.Generic;
+using System.Globalization;
 using System.Runtime.InteropServices;
 using System.Text;
 public static class BowserStoreSmoke {
@@ -80,37 +82,122 @@ interface BowserNativeElementArray {
  [PreserveSig] int GetElement(int index,out BowserNativeElement element);
 }
 public static class BowserNativeDocument {
+ // Failure-report metadata only. These observations are NON-ATOMIC, never document authority.
+ // Copy only values already read below: no extra UIA/Win32 query or retry is diagnostic work.
+ public const int DiagnosticRuntimeLimit=128,DiagnosticCandidateLimit=64,DiagnosticJsonLimit=131072;
+ public enum Stage { RequestedIdentity,OwnerBeforeThread,OwnerBeforeClass,OwnerBeforeValidation,AutomationCreate,RootFromHandle,PropertyCondition,FindDocuments,DocumentCount,InventoryBound,CandidateElement,CandidateRuntimeBefore,CandidateValue,CandidateRuntimeAfter,CandidateIdentity,CandidateUrlBound,OwnerAfterThread,OwnerAfterClass,OwnerAfterValidation,ExactMatchCount,Returned,ReleaseCandidate,ReleaseValue,ReleaseCondition,ReleaseDocuments,ReleaseRoot,ReleaseAutomation }
+ public sealed class RuntimeObservation {
+  public string Status="not-read";public int? Length;public int[] Id;
+  public void Record(int[] value) {
+   try { Length=value==null?(int?)null:value.Length;Id=null;
+    if(value==null){Status="missing";return;}if(value.Length==0){Status="empty";return;}
+    if(value.Length>DiagnosticRuntimeLimit){Status="over-bound";return;}
+    Id=(int[])value.Clone();Status="observed";
+   } catch { Status="capture-failed";Id=null; }
+  }
+ }
+ public sealed class OwnerObservation {
+  public uint Pid,Thread;public int ClassResult;public bool ClassIsExpected,Valid;
+ }
+ public sealed class CandidateObservation {
+  public int Index;public RuntimeObservation Runtime=new RuntimeObservation();public bool ExactMatch;public bool? RuntimeAfterSame;
+ }
+ public sealed class IdentityObservation {
+  public Stage CurrentStage=Stage.RequestedIdentity;public Stage? FailureStage,LastHResultStage;public int? LastHResult,FailureHResult,TerminalHResult,NativeDocumentCount,ExactMatchCount,CurrentCandidateIndex;
+  public RuntimeObservation Requested=new RuntimeObservation();public OwnerObservation OwnerBefore,OwnerAfter;
+  public List<CandidateObservation> Candidates=new List<CandidateObservation>();
+  public int CandidateElementsRead,CandidateRuntimeIdsRead,MatchedValuesRead,MatchedRuntimeIdsRechecked;public bool InventoryComplete,CaptureIncomplete,Returned;
+  public void RecordOwner(bool after,uint pid,uint thread,int classResult,bool classExpected,bool valid) {
+   try { var owner=new OwnerObservation {Pid=pid,Thread=thread,ClassResult=classResult,ClassIsExpected=classExpected,Valid=valid};if(after)OwnerAfter=owner;else OwnerBefore=owner; } catch { CaptureIncomplete=true; }
+  }
+  public void RecordCandidate(int index,int[] runtime,bool exact) {
+   try { if(Candidates.Count>=DiagnosticCandidateLimit){CaptureIncomplete=true;return;}
+    var candidate=new CandidateObservation {Index=index,ExactMatch=exact};candidate.Runtime.Record(runtime);Candidates.Add(candidate);
+   } catch { CaptureIncomplete=true; }
+  }
+  static string Number(int? value){return value.HasValue?value.Value.ToString(CultureInfo.InvariantCulture):"null";}
+  static string Boolean(bool value){return value?"true":"false";}
+  static void RuntimeJson(StringBuilder json,RuntimeObservation value) {
+   json.Append("{\"status\":\"").Append(value.Status).Append("\",\"length\":").Append(Number(value.Length)).Append(",\"id\":");
+   if(value.Id==null)json.Append("null");else{json.Append('[');for(int i=0;i<value.Id.Length;i++){if(i!=0)json.Append(',');json.Append(value.Id[i].ToString(CultureInfo.InvariantCulture));}json.Append(']');}json.Append('}');
+  }
+  static void OwnerJson(StringBuilder json,OwnerObservation value) {
+   if(value==null){json.Append("null");return;}
+   json.Append("{\"pid\":").Append(value.Pid.ToString(CultureInfo.InvariantCulture)).Append(",\"thread\":").Append(value.Thread.ToString(CultureInfo.InvariantCulture)).Append(",\"class_result\":").Append(value.ClassResult.ToString(CultureInfo.InvariantCulture)).Append(",\"class_is_expected\":").Append(Boolean(value.ClassIsExpected)).Append(",\"valid\":").Append(Boolean(value.Valid)).Append('}');
+  }
+  public string ToJson() {
+   var json=new StringBuilder();json.Append("{\"schema\":1,\"scope\":\"non-atomic existing-read observations only; not authority\",\"stage\":\"").Append(CurrentStage).Append("\",\"failure_stage\":").Append(FailureStage.HasValue?"\""+FailureStage.Value.ToString()+"\"":"null");
+   json.Append(",\"last_hresult\":").Append(Number(LastHResult)).Append(",\"last_hresult_stage\":").Append(LastHResultStage.HasValue?"\""+LastHResultStage.Value.ToString()+"\"":"null").Append(",\"failure_hresult\":").Append(Number(FailureHResult)).Append(",\"terminal_hresult\":").Append(Number(TerminalHResult));
+   json.Append(",\"requested_runtime\":");RuntimeJson(json,Requested);json.Append(",\"owner_before\":");OwnerJson(json,OwnerBefore);json.Append(",\"owner_after\":");OwnerJson(json,OwnerAfter);
+   json.Append(",\"native_document_count\":").Append(Number(NativeDocumentCount)).Append(",\"exact_match_count\":").Append(Number(ExactMatchCount)).Append(",\"current_candidate_index\":").Append(Number(CurrentCandidateIndex)).Append(",\"candidate_elements_read\":").Append(CandidateElementsRead.ToString(CultureInfo.InvariantCulture)).Append(",\"candidate_runtime_ids_read\":").Append(CandidateRuntimeIdsRead.ToString(CultureInfo.InvariantCulture)).Append(",\"matched_values_read\":").Append(MatchedValuesRead.ToString(CultureInfo.InvariantCulture)).Append(",\"matched_runtime_ids_rechecked\":").Append(MatchedRuntimeIdsRechecked.ToString(CultureInfo.InvariantCulture));
+   json.Append(",\"inventory_complete\":").Append(Boolean(InventoryComplete)).Append(",\"capture_incomplete\":").Append(Boolean(CaptureIncomplete)).Append(",\"returned\":").Append(Boolean(Returned)).Append(",\"candidates\":[");
+   for(int i=0;i<Candidates.Count;i++){if(i!=0)json.Append(',');var candidate=Candidates[i];json.Append("{\"index\":").Append(candidate.Index.ToString(CultureInfo.InvariantCulture)).Append(",\"runtime\":");RuntimeJson(json,candidate.Runtime);json.Append(",\"exact_match\":").Append(Boolean(candidate.ExactMatch)).Append(",\"runtime_after_same\":").Append(candidate.RuntimeAfterSame.HasValue?Boolean(candidate.RuntimeAfterSame.Value):"null").Append('}');}
+   json.Append("]}");if(json.Length>DiagnosticJsonLimit)throw new InvalidOperationException("Native identity diagnostic exceeded its serialization bound.");return json.ToString();
+  }
+ }
+ static IdentityObservation lastObservation;
+ public static string LastIdentityObservationJson(){try{return lastObservation==null?null:lastObservation.ToJson();}catch{return null;}}
+ static void Mark(IdentityObservation observation,Stage stage){if(observation!=null)observation.CurrentStage=stage;}
+ static void Failure(IdentityObservation observation,int hr){if(observation==null)return;if(!observation.FailureStage.HasValue){observation.FailureStage=observation.CurrentStage;observation.FailureHResult=hr;}observation.TerminalHResult=hr;}
+ static void ObservedCheck(int hr,IdentityObservation observation){if(observation!=null){observation.LastHResult=hr;observation.LastHResultStage=observation.CurrentStage;}Check(hr);}
  static void Check(int hr) { Marshal.ThrowExceptionForHR(hr); }
  static void Release(object value) { if(value!=null&&Marshal.IsComObject(value))Marshal.ReleaseComObject(value); }
  static bool Same(int[] a,int[] b) { if(a==null||b==null||a.Length!=b.Length)return false;for(int i=0;i<a.Length;i++)if(a[i]!=b[i])return false;return true; }
  public static string LegacyValue(IntPtr hwnd,uint expectedPid,int[] runtimeId) {
+  IdentityObservation observation=null;lastObservation=null;try{observation=new IdentityObservation();observation.Requested.Record(runtimeId);lastObservation=observation;}catch{}
+  try { string result=ReadLegacyValue(hwnd,expectedPid,runtimeId,observation);if(observation!=null)observation.Returned=true;Mark(observation,Stage.Returned);return result; }
+  catch(Exception error){Failure(observation,error.HResult);throw;}
+ }
+ static string ReadLegacyValue(IntPtr hwnd,uint expectedPid,int[] runtimeId,IdentityObservation observation) {
   if(runtimeId==null||runtimeId.Length==0||runtimeId.Length>128)throw new InvalidOperationException("Invalid native document identity.");
+  Mark(observation,Stage.OwnerBeforeThread);
   uint pid;uint thread=BowserStoreSmoke.GetWindowThreadProcessId(hwnd,out pid);
-  var cls=new StringBuilder(128);BowserStoreSmoke.GetClassName(hwnd,cls,128);
+  Mark(observation,Stage.OwnerBeforeClass);
+  var cls=new StringBuilder(128);int classResult=BowserStoreSmoke.GetClassName(hwnd,cls,128);
+  if(observation!=null)observation.RecordOwner(false,pid,thread,classResult,cls.ToString()=="BowserNativeWindow",thread!=0&&pid==expectedPid&&cls.ToString()=="BowserNativeWindow");
+  Mark(observation,Stage.OwnerBeforeValidation);
   if(thread==0||pid!=expectedPid||cls.ToString()!="BowserNativeWindow")throw new InvalidOperationException("Native document owner unavailable.");
   object instance=null;BowserNativeElement root=null;BowserNativeElementArray documents=null;IntPtr condition=IntPtr.Zero;
   try {
+   Mark(observation,Stage.AutomationCreate);
    instance=Activator.CreateInstance(Type.GetTypeFromCLSID(new Guid("ff48dba4-60ef-4201-aa87-54103eef594e"),true));
    var automation=(BowserNativeAutomation)instance;
-   Check(automation.ElementFromHandle(hwnd,out root));Check(automation.CreatePropertyCondition(30003,50030,out condition));
-   Check(root.FindAll(4,condition,out documents));int count;Check(documents.GetLength(out count));
+   Mark(observation,Stage.RootFromHandle);ObservedCheck(automation.ElementFromHandle(hwnd,out root),observation);
+   Mark(observation,Stage.PropertyCondition);ObservedCheck(automation.CreatePropertyCondition(30003,50030,out condition),observation);
+   Mark(observation,Stage.FindDocuments);ObservedCheck(root.FindAll(4,condition,out documents),observation);
+   int count;Mark(observation,Stage.DocumentCount);ObservedCheck(documents.GetLength(out count),observation);
+   if(observation!=null)observation.NativeDocumentCount=count;Mark(observation,Stage.InventoryBound);
    if(count<0||count>64)throw new InvalidOperationException("Native document inventory exceeded limit.");
    int matches=0;string result=null;
+   if(observation!=null)observation.ExactMatchCount=0;
    for(int i=0;i<count;i++) {
     BowserNativeElement candidate=null;
-    try { Check(documents.GetElement(i,out candidate));int[] before;Check(candidate.GetRuntimeId(out before));if(!Same(before,runtimeId))continue;
+    if(observation!=null)observation.CurrentCandidateIndex=i;
+    try { Mark(observation,Stage.CandidateElement);ObservedCheck(documents.GetElement(i,out candidate),observation);if(observation!=null)observation.CandidateElementsRead++;
+     int[] before;Mark(observation,Stage.CandidateRuntimeBefore);ObservedCheck(candidate.GetRuntimeId(out before),observation);
+     if(observation!=null){observation.CandidateRuntimeIdsRead++;observation.RecordCandidate(i,before,Same(before,runtimeId));}if(!Same(before,runtimeId))continue;
      matches++;object value=null;
-     try { Check(candidate.GetCurrentPropertyValueEx(30093,true,out value));int[] after;Check(candidate.GetRuntimeId(out after));
+     if(observation!=null)observation.ExactMatchCount=matches;
+     try { Mark(observation,Stage.CandidateValue);ObservedCheck(candidate.GetCurrentPropertyValueEx(30093,true,out value),observation);if(observation!=null)observation.MatchedValuesRead++;
+      int[] after;Mark(observation,Stage.CandidateRuntimeAfter);ObservedCheck(candidate.GetRuntimeId(out after),observation);
+      if(observation!=null){observation.MatchedRuntimeIdsRechecked++;if(observation.Candidates.Count!=0&&observation.Candidates[observation.Candidates.Count-1].Index==i)observation.Candidates[observation.Candidates.Count-1].RuntimeAfterSame=Same(before,after);else observation.CaptureIncomplete=true;}Mark(observation,Stage.CandidateIdentity);
       if(!Same(before,after))throw new InvalidOperationException("Native document identity changed during property query.");
+      Mark(observation,Stage.CandidateUrlBound);
       result=value as string;if(result!=null&&result.Length>4096)throw new InvalidOperationException("Native document URL exceeded limit.");
-     } finally { Release(value); }
-    } finally { Release(candidate); }
+     } catch(Exception error){Failure(observation,error.HResult);throw;}finally { Mark(observation,Stage.ReleaseValue);Release(value); }
+    } catch(Exception error){Failure(observation,error.HResult);throw;}finally { Mark(observation,Stage.ReleaseCandidate);Release(candidate); }
    }
-   uint freshPid;uint freshThread=BowserStoreSmoke.GetWindowThreadProcessId(hwnd,out freshPid);cls.Clear();BowserStoreSmoke.GetClassName(hwnd,cls,128);
+   if(observation!=null)observation.InventoryComplete=true;Mark(observation,Stage.OwnerAfterThread);
+   uint freshPid;uint freshThread=BowserStoreSmoke.GetWindowThreadProcessId(hwnd,out freshPid);cls.Clear();Mark(observation,Stage.OwnerAfterClass);classResult=BowserStoreSmoke.GetClassName(hwnd,cls,128);
+   if(observation!=null)observation.RecordOwner(true,freshPid,freshThread,classResult,cls.ToString()=="BowserNativeWindow",freshPid==expectedPid&&freshThread==thread&&cls.ToString()=="BowserNativeWindow");Mark(observation,Stage.OwnerAfterValidation);
    if(freshPid!=expectedPid||freshThread!=thread||cls.ToString()!="BowserNativeWindow")throw new InvalidOperationException("Native document owner changed.");
+   Mark(observation,Stage.ExactMatchCount);
    if(matches!=1)throw new InvalidOperationException("Native document runtime identity was unavailable or ambiguous.");
    return result;
-  } finally { if(condition!=IntPtr.Zero)Marshal.Release(condition);Release(documents);Release(root);Release(instance); }
+  } catch(Exception error){Failure(observation,error.HResult);throw;}finally {
+   Mark(observation,Stage.ReleaseCondition);if(condition!=IntPtr.Zero)Marshal.Release(condition);
+   Mark(observation,Stage.ReleaseDocuments);Release(documents);Mark(observation,Stage.ReleaseRoot);Release(root);Mark(observation,Stage.ReleaseAutomation);Release(instance);
+  }
  }
 }
 '@
@@ -166,17 +253,42 @@ function Capture([string]$Name,[IntPtr]$Target=[IntPtr]::Zero,[switch]$Extension
  } finally { $bitmap.Dispose() }
 }
 function Same-Uia($A,$B) { return $A -and $B -and (($A.GetRuntimeId() -join ',') -ceq ($B.GetRuntimeId() -join ',')) }
+function Record-StoreDocumentFailure([string]$Stage,[int]$HResult,[scriptblock]$ReadNativeObservation) {
+ # Only called on the original failing path. A missing/broken diagnostic cannot replace it.
+ try {
+  $failure=[ordered]@{scope='non-atomic existing-read observations only; not authority';managed_stage=$Stage;exception_hresult=$HResult;capture_status='unavailable';native_observation=$null}
+  $report.native_document_identity_failure=$failure
+  if(!$ReadNativeObservation){$failure.capture_status='native-query-not-attempted';return}
+  try {
+   $json=& $ReadNativeObservation
+   if($json -isnot [string] -or !$json -or $json.Length -gt 131072){$failure.capture_status='unavailable-or-over-bound';return}
+   $failure.native_observation=ConvertFrom-Json -InputObject $json -ErrorAction Stop
+   $failure.capture_status='captured'
+  } catch { $failure.capture_status='capture-failed' }
+ } catch {}
+}
 function Document-Source($Document) {
  # Chromium's native provider exposes tree-data URL for document roles, not an aria/title value.
+ $diagnosticStage='managed-value-pattern';$nativeAttempted=$false
+ try {
  $values=@();$pattern=$null
  if($Document.TryGetCurrentPattern([Windows.Automation.ValuePattern]::Pattern,[ref]$pattern)){$values+=([Windows.Automation.ValuePattern]$pattern).Current.Value}
+ $diagnosticStage='managed-runtime-before'
  $runtimeId=$Document.GetRuntimeId()
+ $diagnosticStage='native-legacy-value';$nativeAttempted=$true
  $legacy=[BowserNativeDocument]::LegacyValue($script:window,[uint32]$app.Id,$runtimeId)
+ $diagnosticStage='managed-runtime-after'
  if(($Document.GetRuntimeId() -join ',') -cne ($runtimeId -join ',')){throw 'Managed document identity changed during native property query.'}
+ $diagnosticStage='managed-source-consensus'
  if($legacy){$values+=$legacy}
  $values=@($values|Where-Object {$_}|Select-Object -Unique)
  if($values.Count -ne 1 -or $values[0].Length -gt 4096){return $null}
  return [string]$values[0]
+ } catch {
+  $readNative=$null;if($nativeAttempted){$readNative={ [BowserNativeDocument]::LastIdentityObservationJson() }}
+  Record-StoreDocumentFailure $diagnosticStage ($_.Exception.GetBaseException().HResult) $readNative
+  throw
+ }
 }
 function Source-Matches([string]$Kind,[string]$Source) {
  if($Kind -eq 'toolbar'){return $Source -ceq 'bowser-ui://app/index.html?view=toolbar'}

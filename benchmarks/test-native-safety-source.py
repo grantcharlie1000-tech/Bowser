@@ -1,0 +1,694 @@
+#!/usr/bin/env python3
+"""Portable fail-closed source contracts, not Windows/native behavior acceptance."""
+from pathlib import Path
+import importlib.util
+import re
+import unittest
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def source(path):
+    return (ROOT / path).read_text(encoding="utf-8")
+
+
+def block(signature, text):
+    """Extract one actual C# declaration, ignoring literal/comment braces."""
+    masked = re.sub(r'//[^\n]*|/\*.*?\*/|@"(?:""|[^"])*"|"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'',
+                    lambda match: "".join("\n" if char == "\n" else " " for char in match.group()), text, flags=re.S)
+    start = masked.index(signature)
+    opening = masked.index("{", start)
+    depth = 1
+    for end in range(opening + 1, len(masked)):
+        depth += (masked[end] == "{") - (masked[end] == "}")
+        if depth == 0:
+            return text[start:end + 1]
+    raise AssertionError(f"Unbalanced C# declaration {signature}")
+
+
+class NativeSafetySourceContracts(unittest.TestCase):
+    def test_observation_uses_one_strict_chromium_backend(self):
+        wrapper = source("benchmarks/scripts/probe-native-context-observation.ps1")
+        self.assertIn("'probe-default-context-cancellation.ps1') @PSBoundParameters -ProbeKind ExtensionObservation", wrapper)
+        self.assertIn("$global:LASTEXITCODE=0", wrapper)
+        self.assertIn("exit $LASTEXITCODE", wrapper)
+        self.assertNotIn("Add-Type", wrapper)
+        helper = source("benchmarks/scripts/probe-default-context-cancellation.ps1")
+        self.assertIn("[ValidateSet('DefaultCancellation','ExtensionObservation')]", helper)
+        self.assertIn("backend='unhandled-WebView2-Chromium-Views'", helper)
+        self.assertIn("'native-context-observation.json'", helper)
+        self.assertIn("'default-context-cancellation.json'", helper)
+        for guard in ("::ReadMenu(", "::NativeReady(", "::SameProof(", "::Released("):
+            self.assertIn(guard, helper)
+        self.assertNotIn("continue-on-error", helper)
+
+    def test_unproved_foreign_provider_refuses_before_any_escape(self):
+        helper = source("benchmarks/scripts/probe-default-context-cancellation.ps1")
+        branch = helper.split("if(providerPid!=(int)browserPid){", 1)[1].split("\n   }", 1)[0]
+        self.assertIn("WriteMismatch(", branch)
+        self.assertIn('throw new InvalidOperationException("UIA menu provider PID/owned-leaf proof mismatch.")', branch)
+        self.assertIn("gpu==null||providerPid!=(int)gpu.Pid||gpuLeaves!=0", branch)
+        self.assertIn("ReadGpuLeaf(", branch)
+        self.assertIn("catch{", branch)
+        self.assertNotIn("continue", branch)
+        diagnostic = helper.split("static string NativeMismatch(", 1)[1].split("static void WriteMismatch(", 1)[0]
+        for forbidden in ("GetWindowText", "AutomationElement.FromHandle", "keybd_event", "mouse_event", "SetForegroundWindow", "SetFocus"):
+            # Comments may describe forbidden operations; executable call sites may not exist.
+            self.assertNotIn(forbidden + "(", diagnostic)
+        self.assertIn("GetWindowThreadProcessId(node,out afterPid)", diagnostic)
+        self.assertIn("IsChild(popup,node)", diagnostic)
+        mismatch = helper.split("static void WriteMismatch(", 1)[1].split("public static MenuProof ReadMenu(", 1)[0]
+        self.assertLess(mismatch.index("string nativeMetadata=NativeMismatch("), mismatch.index("bool after=RootFence("))
+
+    def test_clipboard_zero_refusal_precedes_every_initial_mutation(self):
+        helper = source("benchmarks/scripts/probe-app-host-context-menu.ps1")
+        sequence = helper.split("uint Sequence(){", 1)[1].split("void CloseChecked()", 1)[0]
+        self.assertIn("if(value==0)", sequence)
+        self.assertIn('Status="sequence-unavailable-left-untouched";throw new InvalidOperationException(', sequence)
+        constructor = helper.split("public ClipboardGuard(string generated){", 1)[1].split("public void RequireOwned()", 1)[0]
+        self.assertLess(constructor.index("last=Sequence();"), constructor.index("if(!EmptyClipboard())"))
+        self.assertIn("first!=0||error!=0", constructor)
+        diagnostics = helper.split("public static object ClipboardEnvironment(", 1)[1].split("/// External to Rust", 1)[0]
+        for forbidden in ("GetClipboardData(", "SetClipboardData(", "EmptyClipboard(", "GetClipboardSequenceNumber(", "SetProcessWindowStation(", "SetUserObjectSecurity(", "AdjustTokenPrivileges("):
+            self.assertNotIn(forbidden, diagnostics)
+        self.assertIn("OpenWindowStation(stationName,false,0x0004)", diagnostics)
+        self.assertIn("CloseWindowStation(probe)", diagnostics)
+        self.assertIn("::AdmissionCloseConfirmed", helper.split("# Admission has already refused", 1)[1])
+
+    def test_attached_station_query_is_failure_only_read_only_and_optional(self):
+        helper = source("benchmarks/scripts/probe-app-host-context-menu.ps1")
+        diagnostic = helper.split("static StationAccessDiagnostic AttachedStationAccess(", 1)[1].split('[DllImport("user32.dll",SetLastError=true)] static extern IntPtr GetProcessWindowStation();', 1)[0]
+        for fence in ("ObjectBasicLayoutValid()", "expected==IntPtr.Zero", "before==expected", "after!=IntPtr.Zero&&after==expected", "if(status!=0)", "if(returned!=56)"):
+            self.assertIn(fence, diagnostic)
+        self.assertEqual(diagnostic.count("QueryObjectBasic("), 1)
+        self.assertIn("QueryObjectBasic(expected,0,out data,56,out returned)", diagnostic)
+        self.assertLess(diagnostic.index("if(status!=0)"), diagnostic.index("result.granted_access=data.GrantedAccess"))
+        self.assertLess(diagnostic.index("if(returned!=56)"), diagnostic.index("result.granted_access=data.GrantedAccess"))
+        for forbidden in ("DuplicateHandle(", "CloseHandle(", "CloseWindowStation(", "OpenWindowStation(", "SetProcessWindowStation(", "GetClipboardSequenceNumber(", "OpenClipboard(", "EmptyClipboard(", "GetClipboardData(", "SetClipboardData("):
+            self.assertNotIn(forbidden, diagnostic)
+        self.assertIn("catch(EntryPointNotFoundException)", diagnostic)
+        self.assertIn("catch(DllNotFoundException)", diagnostic)
+        self.assertIn("attached_station_access=AttachedStationAccess(station)", helper)
+        checker = source("benchmarks/scripts/test-native-menu-helpers.ps1")
+        self.assertIn("GetMethod('ObjectBasicLayoutValid',$flags)", checker)
+        self.assertNotIn("GetMethod('AttachedStationAccess'", checker)
+
+    def test_rejected_leaf_diagnostics_cannot_authorize_a_provider(self):
+        helper = source("benchmarks/scripts/probe-default-context-cancellation.ps1")
+        mismatch = helper.split("static void WriteMismatch(", 1)[1].split("public static MenuProof ReadMenu(", 1)[0]
+        for property_name in ("IsControlElement", "IsContentElement", "IsEnabled", "IsKeyboardFocusable", "HasKeyboardFocus"):
+            self.assertIn("AutomationElement." + property_name + "Property", mismatch)
+        self.assertIn("TreeWalker.RawViewWalker.GetFirstChild(node)==null", mismatch)
+        self.assertIn("DiagnosticSetLastError(0);IntPtr child=DiagnosticGetWindow(node,5);int childError=Marshal.GetLastWin32Error();", helper)
+        self.assertIn("node.GetCurrentPropertyValue(property,true)", helper)
+        self.assertIn('"not-supported"', helper.replace('\\"', '"'))
+        self.assertNotIn("current.IsControlElement", mismatch)
+        self.assertNotIn("current.IsContentElement", mismatch)
+        self.assertNotIn("current.IsEnabled", mismatch)
+        self.assertNotIn("current.IsKeyboardFocusable", mismatch)
+        self.assertNotIn("current.HasKeyboardFocus", mismatch)
+        self.assertNotIn("current.Name", mismatch)
+        process = source("src/engine/extension_probe_live.rs").split("fn native_context_process_group_diagnostic(", 1)[1].split("/// Observation/cancellation", 1)[0]
+        self.assertIn("count>64", process)
+        self.assertIn("process-group-browser-mismatch", process)
+        self.assertIn("exact-disposable-udf-mismatch", process)
+        self.assertIn("COREWEBVIEW2_PROCESS_KIND_GPU", process)
+        self.assertIn("create_new(true)", process)
+        for forbidden in ("SelectedCommandId", "SetHandled", "SetForegroundWindow", "TerminateProcess", "MoveFocus"):
+            self.assertNotIn(forbidden, process)
+
+    def test_production_stale_modal_cancellation_is_exact_and_not_a_test_rescue(self):
+        coordinator = source("src/engine/webview2/owned_context_menu.rs")
+        continuation = coordinator.split("pub(crate) fn continue_request(", 1)[1].split("pub(crate) fn tick(", 1)[0]
+        self.assertLess(continuation.index("if request.phase.get()==Phase::Showing {request.cancel_stale_modal();return;}"), continuation.index("if Instant::now()>=request.deadline.get()"))
+        tick = coordinator.split("pub(crate) fn tick(", 1)[1].split("pub(crate) fn drain_destroyed(", 1)[0]
+        self.assertIn("if request.phase.get()==Phase::Showing {request.cancel_stale_modal();}", tick)
+        self.assertIn("else if Instant::now()>=request.deadline.get()", tick)
+        validity = coordinator.split("fn showing_validity(self:", 1)[1].split("fn cancel_stale_modal(", 1)[0]
+        for fence in ("try_borrow_mut()", "Rc::ptr_eq(&entry.owner,&self.owner)", "entry.claim==Some(self.token)", "Rc::ptr_eq(pending,self)", "gate.proof()==Some(self.proof)"):
+            self.assertIn(fence, validity)
+        self.assertNotIn("deadline", validity)
+        self.assertNotIn("EndMenu", validity)
+        cancel = coordinator.split("fn cancel_stale_modal(", 1)[1].split("fn complete(", 1)[0]
+        self.assertEqual(cancel.count("EndMenu()"), 1)
+        self.assertIn("exact_modal_popup(&self.owner,root)!=Some((popup,capture))", cancel)
+        self.assertLess(cancel.index("modal_cancel_attempted.replace(true)"), cancel.index("EndMenu()"))
+        for forbidden in ("self.finish(", "self.complete(", "DestroyMenu(", "SetSelectedCommandId(", "PostMessageW(", "SendMessageW("):
+            self.assertNotIn(forbidden, cancel)
+        popup = coordinator.split("fn modal_popup_capture(", 1)[1].split("struct Owner {", 1)[0]
+        for fence in ("bar.hMenu!=root", "gui.hwndMenuOwner!=owner.hwnd", "gui.flags.contains(GUI_POPUPMENUMODE)", "gui.hwndCapture==owner.hwnd", "gui.hwndCapture==popup", "scan.ambiguous", "scan.complete"):
+            self.assertIn(fence, popup)
+        self.assertIn("let _modal=ModalRoot(&request.modal_root)", continuation)
+        self.assertIn("self.0.set(None)", coordinator)
+        helper = source("benchmarks/scripts/probe-app-context-menu-reload.ps1")
+        self.assertNotIn("EndMenu", helper)
+
+    def test_gpu_category_counts_a_proved_leaf_and_repeats_the_full_inventory(self):
+        helper = source("benchmarks/scripts/probe-default-context-cancellation.ps1")
+        gpu = helper.split("static GpuLeafWitness GpuShape(", 1)[1].split("static string ProtocolProof(", 1)[0]
+        for required in ("ProcessIdProperty", "NativeWindowHandleProperty", "ControlTypeProperty", "BoundingRectangleProperty", "IsEnabledProperty", "HasKeyboardFocusProperty"):
+            self.assertIn(required, gpu)
+        self.assertIn("Required<", gpu)
+        self.assertIn("OptionalBoolean(node,AutomationElement.IsControlElementProperty)", gpu)
+        self.assertIn("ItemContainerPattern.Pattern", gpu)
+        self.assertIn("VirtualizedItemPattern.Pattern", gpu)
+        self.assertIn("before.Signature!=after.Signature", gpu)
+        for forbidden in (".Realize(", ".Expand(", ".Invoke(", "current.Name", "node.Current.Name"):
+            self.assertNotIn(forbidden, gpu)
+        self.assertIn("if(!seen.Add(runtimeKey))", helper)
+        self.assertIn("GPU leaf gained a child.", helper)
+        self.assertIn("a.Inventory==b.Inventory&&a.GpuLeaves==b.GpuLeaves", helper)
+        self.assertIn("Inventory=sealedInventory,GpuLeaves=gpuLeaves", helper)
+        self.assertIn("SerializeBufferedInventory(bufferedRows,menuInvocation)", helper)
+        self.assertIn("gpuLeaf.Matches(c.ProcessId,observedNative,observedType,box,currentId,queued.Item3,c.IsEnabled,c.HasKeyboardFocus)", helper)
+        self.assertIn("RecheckGpuTyped(e,gpuLeaf)", helper)
+        self.assertIn("var facts=new NativeLeafFacts", helper)
+        self.assertIn("if(!NativeLeafPolicy(facts))", helper)
+        self.assertIn("var facts=new UiaLeafFacts", helper)
+        self.assertIn("if(!UiaLeafPolicy(facts))", helper)
+        checker = source("benchmarks/scripts/test-native-menu-helpers.ps1")
+        self.assertIn("CheckOwnedLeafPolicy", checker)
+        self.assertIn("CheckInventoryPolicy", checker)
+        matrix = helper.split("public static void CheckInventoryPolicy(){", 1)[1].split("public static MenuProof ReadMenu(", 1)[0]
+        for field in ("count", "order", "parent", "runtime", "pid", "hwnd", "type", "bounds", "gpu_proof"):
+            self.assertIn('{"' + field + '",', matrix)
+        self.assertIn("SameProof(baseline,fresh)", matrix)
+        receipt = helper.split("public static void CheckMembershipPolicy(){", 1)[1].split("static MenuProof SyntheticMenuProof(", 1)[0]
+        for field in ("truncated", "browser_pid", "browser_creation", "inventory_digest", "deadline_tick", "duplicate_field"):
+            self.assertIn('{"' + field + '",', receipt)
+        workflow = source(".github/workflows/store-probe.yml")
+        step = workflow.split("id: gpu_ownership_unit", 1)[1].split("      - name:", 1)[0]
+        self.assertIn("$test.Count -ne 1", step)
+        self.assertIn("& $test[0].FullName engine::extension_probe_live::native_menu_ownership::synthetic_policy_tests", step)
+        self.assertNotIn("cargo +stable test", step)
+
+    def test_one_shot_gpu_membership_binds_source_lifetimes_inventory_and_deadline(self):
+        rust = source("src/engine/extension_probe_live/native_menu_ownership.rs")
+        for required in ("PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE", "view.cast::<IUnknown>()", "environment.cast::<IUnknown>()", "original-source-document-fence-unavailable", "source.membership(deadline, processes, None, Some(gpu_pid))", "read_request(&request_path)? != bytes", "readiness-deadline-changed", "deadline_tick", "GetTickCount64", "create_new(true)", "MOVE_FILE_FLAGS(0)"):
+            self.assertIn(required, rust)
+        for forbidden in ("remove_file(self.out.join(RESPONSE))", "SetForegroundWindow(", "SetFocus(", "SetSelectedCommandId("):
+            self.assertNotIn(forbidden, rust)
+        helper = source("benchmarks/scripts/probe-default-context-cancellation.ps1")
+        self.assertIn("ExactMembershipResponse($response,$expected)", helper)
+        self.assertIn("GetTickCount64() -ge $AuthorityDeadlineTick", helper)
+        self.assertLess(helper.index("$response=[BowserDefaultContext]::ReadMembershipResponse"), helper.index("Neutral;$fresh=Menu-State"))
+        self.assertLess(helper.index("Neutral;$fresh=Menu-State"), helper.index("::keybd_event(27,0,0"))
+        self.assertIn("$gpuGuard -and [BowserDefaultContext]::GetTickCount64() -ge $AuthorityDeadlineTick", helper)
+        fence = source("src/engine/webview2.rs").split("fn probe_context_ownership_fence(", 1)[1].split("/// Opens an extension page", 1)[0]
+        self.assertIn("self.core.try_borrow_mut()", fence)
+        self.assertIn("gate.try_borrow_mut()", fence)
+        self.assertIn("current_gate.proof()==Some(proof)", fence)
+        live = source("src/engine/extension_probe_live.rs")
+        self.assertEqual(live.count("authority.service_once(ownership_deadline,ownership_tick)"), 2)
+        self.assertEqual(live.count('assert!(ownership_error.is_none(),"fresh exact GPU membership refused:'), 2)
+
+    def test_raw_browser_unknown_geometry_is_typed_counted_and_not_a_gpu_or_generic_exception(self):
+        helper = source("benchmarks/scripts/probe-default-context-cancellation.ps1")
+        policy = helper.split("static BrowserNodeWitness CreateBrowserWitness(", 1)[1].split("static BrowserNodeWitness CaptureBrowserNode(", 1)[0]
+        for guard in ("if(!nativeUnknown||(type!=ControlType.Pane.Id&&type!=ControlType.MenuBar.Id&&type!=ControlType.Menu.Id&&type!=ControlType.MenuItem.Id)", "depth==0", "!patternsAbsent", "Supported browser geometry is nonfinite; no Empty exception.", "Mixed unknown-HWND browser Pane requires supported finite non-empty bounds."):
+            self.assertIn(guard, policy)
+        capture = helper.split("static BrowserNodeWitness CaptureBrowserNode(", 1)[1].split("static BrowserNodeWitness RecheckBrowserNode(", 1)[0]
+        self.assertIn("GetCurrentPropertyValue(AutomationElement.ProcessIdProperty,true)", capture)
+        self.assertIn("GetCurrentPropertyValue(AutomationElement.NativeWindowHandleProperty,true)", capture)
+        self.assertIn("GetCurrentPropertyValue(AutomationElement.BoundingRectangleProperty,true)", capture)
+        self.assertIn("NoPattern(node,ItemContainerPattern.Pattern)", capture)
+        self.assertIn("NoPattern(node,VirtualizedItemPattern.Pattern)", capture)
+        self.assertIn("CountedAncestor(browserNodes,ancestorId)", helper)
+        self.assertIn("IsBrowserRow(node,ControlType.Menu.Id)", helper)
+        self.assertIn("menuInvocation.IsCountedMenu(browserNode,rootedMenu)", helper)
+        self.assertIn("if(browserNode.Type==ControlType.MenuItem.Id)rootedItem=menuInvocation.ProveItem(", helper)
+        self.assertIn("browserNode.Item.FixtureMatch", helper)
+        self.assertIn("chosen=menuInvocation.RootedFixtureBounds(browserNode,rootedItem,", helper)
+        self.assertIn("items++;itemId=browserNode.Id();menuId=rootedItem.Menu.Id()", helper)
+        self.assertIn("if(child!=null)CountedParent(nodes,child,runtime)", helper)
+        self.assertIn("browserNode.MatchesOuter(c.ProcessId,observedType,observedNative,box,currentId,queued.Item3)", helper)
+        self.assertIn("RecheckBrowserNode(ancestor,counted,browserPid,browser,popup,ancestryFence)", helper)
+        self.assertNotIn("if(ac.NativeWindowHandle!=0", helper)
+        self.assertIn("(NativeUnknown?native==0:native==Native)&&(BoundsUnknown?CanonicalEmpty(bounds):bounds==Bounds)", helper)
+        self.assertIn('NativeToken=nativeUnknown?"not-supported"', helper)
+        self.assertIn('BoundsToken=boundsUnknown?"not-supported"', helper)
+        self.assertIn("!node.NativeUnknown&&!node.BoundsUnknown", helper)
+        self.assertIn("!counted.NativeUnknown&&counted.Native!=0&&counted.Native!=popup", helper)
+        self.assertNotIn("UnknownPane", helper)
+        self.assertIn("Synthetic mixed property availability change accepted.", helper)
+        self.assertIn("bufferedRows.Add(new BufferedInventoryRow(examined", helper)
+        self.assertIn("ValidateInventoryClosure(bufferedRows);string sealedInventory=SerializeBufferedInventory(bufferedRows,menuInvocation)", helper)
+        self.assertNotIn("AppendInventoryNode(inventory,examined", block("public static MenuProof ReadMenu(", helper))
+        self.assertIn("CheckBrowserStructurePolicy", source("benchmarks/scripts/test-native-menu-helpers.ps1"))
+        diagnostic = helper.split("static void WriteBoundsFailure(", 1)[1].split("static string Real(", 1)[0]
+        for required in ("observed_outer_bounds", "later_no_default_bounds", "node_identity_before_later_query", "node_identity_after_later_query", "NodeIdentityMetadata(node,parentId!=null)", "catch{beforeFence=", "catch{afterFence=", "json.Length>8192", "FileMode.CreateNew"):
+            self.assertIn(required, diagnostic)
+        for forbidden in ("keybd_event(", "mouse_event(", "ReadMenu(", "SetForegroundWindow(", "node.Current.Name"):
+            self.assertNotIn(forbidden, diagnostic)
+
+    def test_unknown_hwnd_menubar_is_contained_container_with_independent_shared_root_proof(self):
+        helper = source("benchmarks/scripts/probe-default-context-cancellation.ps1")
+        policy = helper.split("static BrowserNodeWitness CreateBrowserWitness(", 1)[1].split("static bool ContainedBrowserBounds(", 1)[0]
+        bar = policy.split("if(type==ControlType.MenuBar.Id||type==ControlType.Menu.Id||type==ControlType.MenuItem.Id){", 1)[1].split("if(boundsUnknown)return", 1)[0]
+        for guard in ("boundsUnknown", "boundsValue is System.Windows.Rect", "ContainedBrowserBounds((System.Windows.Rect)boundsValue,popupBounds)", "true,false"):
+            self.assertIn(guard, bar)
+        contains = helper.split("static bool ContainedBrowserBounds(", 1)[1].split("static BrowserNodeWitness CaptureBrowserNode(", 1)[0]
+        for guard in ("Finite(bounds.Right)", "Finite(bounds.Bottom)", "bounds.Width>0", "bounds.Height>0", "popup.Width>0", "popup.Height>0", "bounds.Left>=popup.Left", "bounds.Top>=popup.Top", "bounds.Right<=popup.Right", "bounds.Bottom<=popup.Bottom"):
+            self.assertIn(guard, contains)
+        ancestry = block("static BrowserAncestryWitness CountedBrowserAncestry<T>(", helper)
+        for guard in ("hop<32", "fence();var fresh=read(current);fence();", "CountedAncestor(nodes,runtime)", "seen.Add(JsonIds(runtime))", "SameBrowserWitness(counted,fresh)", "CountedParent(nodes,child,runtime)", "counted.Pid!=(int)browserPid", "counted.Depth!=0", "counted.Parent()!=null", "counted.NativeUnknown", "counted.BoundsUnknown", "counted.Native!=popup", "child=counted;fence();current=parent(current);fence();"):
+            self.assertIn(guard, ancestry)
+        self.assertLess(ancestry.index("if(Same(runtime,rootId))"), ancestry.index("current=parent(current)"))
+        parent = helper.split("static BrowserNodeWitness CountedParent(", 1)[1].split("static BrowserAncestryWitness CountedBrowserAncestry<T>(", 1)[0]
+        self.assertIn("parent.Depth!=child.Depth-1", parent)
+        self.assertIn("MatchesParentAdvance(child.Parent(),observedParent)", parent)
+        fence = helper.split("static void BrowserAncestryFence(", 1)[1].split("static bool UniqueBrowserFixtureCounts(", 1)[0]
+        self.assertEqual(fence.count("BrowserAncestryBudget(now,readinessDeadline,ownershipDeadline)"), 2)
+        self.assertIn("RootFence(host,testPid,hostTid,popup,browserPid,menuTid,browser,root,rootId)", fence)
+        live = helper.split("public static MenuProof ReadMenu(", 1)[1].split("public static bool SameProof(", 1)[0]
+        self.assertEqual(live.count("CountedBrowserAncestry(e,browserNode,browserNodes,rootId,browserPid,popup.ToInt32(),readAncestor,ancestor=>walker.GetParent(ancestor),ancestryFence,"), 1)
+        self.assertIn("(node,first)=>menuInvocation.CheckAncestryEligibility(node,null)", live)
+        independent = live.split("if(browserNode.NativeUnknown&&browserNode.Type==ControlType.MenuBar.Id)", 1)[1]
+        self.assertLess(independent.index("CountedBrowserAncestry("), independent.index("bufferedRows.Add("))
+        self.assertIn("if(!InventoryCapacity(examined,queue.Count+1))", live)
+        self.assertIn("!UniqueBrowserFixtureCounts(menus,items)", live)
+        self.assertIn("return menus==1&&items==1", helper)
+        for forbidden in ("IsOffscreen", "IsEnabled", "GetFirstChild", "GetNextSibling", ".Name", "MSAA", "Reflection"):
+            self.assertNotIn(forbidden, ancestry)
+
+    def test_menubar_matrix_calls_actual_predicates_and_final_escape_boundary_stays_strict(self):
+        helper = source("benchmarks/scripts/probe-default-context-cancellation.ps1")
+        outer = helper.split("public static void CheckBrowserStructurePolicy(){", 1)[1].split("sealed class SyntheticBrowserNode", 1)[0]
+        self.assertIn("CheckMenuBarAncestryPolicy();", outer)
+        matrix = helper.split("static void CheckMenuBarAncestryPolicy(){", 1)[1].split("public static string InventoryDigest(", 1)[0]
+        for case in ("unknown-pid", "wrong-pid-kind", "foreign-pid", "unknown-type", "wrong-type-kind", "wrong-type", "root-menubar", "unknown-bounds", "null-bounds", "wrong-bounds-kind", "empty-bounds", "zero-width", "zero-height", "nan", "infinite", "overflow-right", "outside-left", "outside-top", "outside-right", "outside-bottom", "missing-popup", "empty-popup", "nonfinite-popup", "wrong-hwnd-kind", "virtualization-or-pattern-unavailable", "unknown-menu-unknown-bounds", "unknown-separator-still-refused", "null-parent", "skipped-parent", "cyclic-parent", "missing-counted-parent", "wrong-counted-key", "reparented", "stale-runtime", "stale-type", "stale-native-tag", "stale-bounds", "foreign-counted-parent", "wrong-native-parent", "wrong-native-start", "stale-counted-depth", "wrong-popup-root", "unknown-popup-root", "wrong-root-runtime", "premature-root", "wrong-popup", "getter-or-pattern-failure", "parent-getter-failure", "33-node-ancestry-cap"):
+            self.assertIn('"' + case + '"', matrix)
+        for predicate in ("CreateBrowserWitness(", "MatchesOuter(", "SameBrowserWitness(", "FixtureBounds(", "NoPatternValue(", "CountedBrowserAncestry(", "BrowserAncestryBudget(", "UniqueBrowserFixtureCounts(", "SyntheticBrowserInventory(", "SameProof(baseline,fresh)", "InventoryDigest(baseline)==InventoryDigest(fresh)"):
+            self.assertIn(predicate, matrix)
+        for forbidden in ("keybd_event(", "mouse_event(", "ReadMenu(", "NativeReady(", "RootFence(", "GetTickCount64(", "GetCurrentPropertyValue("):
+            self.assertNotIn(forbidden, matrix)
+        boundary = helper.split(" Neutral;$fresh=Menu-State;$freshInventoryProof=$fresh", 1)[1].split(" $releaseWatch=", 1)[0]
+        for guard in ("::SameProof($menu,$fresh)", "$watch.ElapsedMilliseconds -ge 10000", "$gpuGuard -and [BowserDefaultContext]::GetTickCount64() -ge $AuthorityDeadlineTick", "!$guard.SameAlive()", "!$browserGuard.SameAlive()", "$gpuGuard -and !$gpuGuard.SameAlive()", "::NativeReady($h,$OwnerPid,$tid,$menu.Window,$BrowserPid,$menu.Thread,$menu.Focus)"):
+            self.assertIn(guard, boundary)
+        self.assertEqual(helper.count("::keybd_event(27,0,0"), 1)
+        self.assertLess(boundary.index("::SameProof("), boundary.index("::keybd_event(27,0,0"))
+        self.assertLess(boundary.index("after final native reads; no Escape."), boundary.index("::keybd_event(27,0,0"))
+        native = helper.split("public static bool NativeReady(", 1)[1].split("static int[] Runtime(", 1)[0]
+        for guard in ("GetForegroundWindow()==host", "a.hwndFocus==b.hwndFocus", "a.hwndFocus==expectedFocus", "a.hwndCapture==popup", "b.hwndCapture==popup", "PopupIdentity(host,popup,browserPid,menuTid)"):
+            self.assertIn(guard, native)
+        self.assertIn("MembershipResponse($menu,$OwnershipNonce,$SourceProof", helper)
+        self.assertLess(helper.index("::ExactMembershipResponse($response,$expected)"), helper.index("Neutral;$fresh=Menu-State"))
+
+    def test_shared_ancestry_binds_first_read_to_original_immutable_start(self):
+        helper = source("benchmarks/scripts/probe-default-context-cancellation.ps1")
+        chain = helper.split("static BrowserAncestryWitness CountedBrowserAncestry<T>(", 1)[1].split("static bool BrowserAncestryBudget(", 1)[0]
+        self.assertIn("T start,BrowserNodeWitness expectedStart,", chain)
+        start_guard = chain.split("if(hop==0&&(", 1)[1].split("\n", 1)[0]
+        for guard in ("expectedStart==null", "!Same(runtime,expectedStart.Id())", "!Same(counted.Id(),expectedStart.Id())", "!SameBrowserWitness(expectedStart,fresh)", "!SameBrowserWitness(expectedStart,counted)"):
+            self.assertIn(guard, start_guard)
+        for processing in ("seen.Add(JsonIds(runtime))", "if(child!=null)", "menus++", "if(Same(runtime,rootId))", "current=parent(current)"):
+            self.assertLess(chain.index("if(hop==0&&("), chain.index(processing))
+        live = helper.split("public static MenuProof ReadMenu(", 1)[1].split("public static bool SameProof(", 1)[0]
+        self.assertEqual(live.count("CountedBrowserAncestry(e,browserNode,browserNodes,rootId,browserPid,popup.ToInt32(),readAncestor,ancestor=>walker.GetParent(ancestor),ancestryFence,"), 1)
+        self.assertIn("menuInvocation.ProveItem(e,browserNode,countedMenu,browserNodes,readAncestor,ancestor=>walker.GetParent(ancestor),ancestryFence)", live)
+        self.assertNotIn("CountedBrowserAncestry(e,CaptureBrowserNode", live)
+        self.assertEqual(live.count("browserNode=CaptureBrowserNode("), 1)
+        self.assertNotIn("browserNode=RecheckBrowserNode(", live)
+        matrix = helper.split("static void CheckBrowserAncestryStartPolicy(){", 1)[1].split("public static string InventoryDigest(", 1)[0]
+        for case in ("counted-root", "counted-ancestor", "counted-peer", "stale-start-tag", "stale-start-parent", "stale-counted-start-tag", "stale-counted-start-parent", "wrong-expected-start", "null-expected-start"):
+            self.assertIn('"' + case + '"', matrix)
+        self.assertIn("var expectedStart=c.Bar.Value;var fresh=expectedStart", matrix)
+        self.assertIn("CountedBrowserAncestry(c.Bar,expectedStart,c.Nodes", matrix)
+        self.assertIn("reads!=1||parents!=0||fences!=2||returned", matrix)
+        self.assertIn("CheckBrowserAncestryStartPolicy();", helper.split("static void CheckMenuBarAncestryPolicy(){", 1)[1].split("static void CheckBrowserAncestryStartPolicy(){", 1)[0])
+
+    def test_unknown_menu_eligibility_requires_successful_invocation_local_expected_start_chain(self):
+        helper = source("benchmarks/scripts/probe-default-context-cancellation.ps1")
+        factory = helper.split("static BrowserNodeWitness CreateBrowserWitness(", 1)[1].split("static bool ContainedBrowserBounds(", 1)[0]
+        self.assertIn("type!=ControlType.Pane.Id&&type!=ControlType.MenuBar.Id&&type!=ControlType.Menu.Id&&type!=ControlType.MenuItem.Id", factory)
+        self.assertIn("if(type==ControlType.MenuBar.Id||type==ControlType.Menu.Id||type==ControlType.MenuItem.Id)", factory)
+        self.assertIn("ContainedBrowserBounds((System.Windows.Rect)boundsValue,popupBounds)", factory)
+        self.assertIn(":menu-unknown-hwnd-pending-root-no-virtualization", helper)
+        row = helper.split("static bool IsBrowserRow(", 1)[1].split("static bool MatchesParentAdvance(", 1)[0]
+        self.assertIn("!node.NativeUnknown&&!node.BoundsUnknown", row)
+        fixture = helper.split("static System.Windows.Rect FixtureBounds(", 1)[1].split("static BrowserNodeWitness CountedParent(", 1)[0]
+        self.assertIn("IsBrowserRow(node,ControlType.MenuItem.Id)", fixture)
+        capture = helper.split("static BrowserNodeWitness CaptureBrowserNode(", 1)[1].split("static bool SameBrowserWitness(", 1)[0]
+        self.assertIn("((ControlType)type).Id==ControlType.Menu.Id", capture)
+        self.assertIn("NoPattern(node,ItemContainerPattern.Pattern)&&NoPattern(node,VirtualizedItemPattern.Pattern)", capture)
+        scope = helper.split("sealed class BrowserMenuInvocation {", 1)[1].split("static bool BrowserAncestryBudget(", 1)[0]
+        self.assertIn("readonly object identity=new object()", scope)
+        self.assertIn("readonly Dictionary<string,RootedMenuWitness> issued=", scope)
+        issue = block("public RootedMenuWitness ProveMenu<T>(", scope)
+        self.assertIn("expectedStart.Type!=ControlType.Menu.Id", issue)
+        self.assertIn("CountedBrowserAncestry(start,expectedStart,nodes,root,browserPid,popup,read,parent,fence,", issue)
+        self.assertIn("(node,first)=>CheckAncestryEligibility(node,first?expectedStart:null)", issue)
+        self.assertLess(issue.index("CountedBrowserAncestry("), issue.index("new RootedMenuWitness("))
+        self.assertLess(issue.index("new RootedMenuWitness("), issue.index("fence();"))
+        self.assertLess(issue.index("fence();"), issue.index("issued.Add(key,proof)"))
+        count = scope.split("public bool IsCountedMenu(", 1)[1].split("public string InventorySignature(", 1)[0]
+        for guard in ("node.Type!=ControlType.Menu.Id", "node.Pid!=(int)browserPid", "IsBrowserRow(node,ControlType.Menu.Id)", "proof==null", "issued.TryGetValue(JsonIds(node.Id()),out registered)", "Object.ReferenceEquals(registered,proof)", "proof.Matches(identity,node,root,popup)", "whole inventory refused"):
+            self.assertIn(guard, count)
+        rooted = helper.split("sealed class RootedMenuWitness {", 1)[1].split("sealed class BrowserMenuInvocation {", 1)[0]
+        for guard in ("Object.ReferenceEquals(invocation,owner)", "popup==popupHandle", "Same(root,rootId)", "Same(expectedStart.Id(),menu.Id())", "SameBrowserWitness(expectedStart,menu)"):
+            self.assertIn(guard, rooted)
+        live = helper.split("public static MenuProof ReadMenu(", 1)[1].split("public static bool SameProof(", 1)[0]
+        self.assertEqual(live.count("new BrowserMenuInvocation(rootId,popup.ToInt32(),browserPid,browser.Created)"), 1)
+        self.assertIn("rootedMenu=menuInvocation.ProveMenu(e,browserNode,browserNodes,readAncestor,ancestor=>walker.GetParent(ancestor),ancestryFence)", live)
+        self.assertLess(live.index("rootedMenu=menuInvocation.ProveMenu("), live.index("}catch{" , live.index("rootedMenu=menuInvocation.ProveMenu(")))
+        serializer = block("static string SerializeBufferedInventory(", helper)
+        self.assertIn("invocation.InventorySignature(row.Browser,row.MenuProof)", serializer)
+        self.assertIn("invocation.ItemInventorySignature(row.Browser,row.ItemProof)", serializer)
+        self.assertIn("SerializeBufferedInventory(bufferedRows,menuInvocation)", live)
+        self.assertIn("menuInvocation.IsCountedMenu(browserNode,rootedMenu)", live)
+        self.assertNotIn("if(IsBrowserRow(browserNode,ControlType.Menu.Id))", live)
+
+    def test_fixture_identifies_same_eligible_menu_and_inventory_serializes_only_stable_semantics(self):
+        helper = source("benchmarks/scripts/probe-default-context-cancellation.ps1")
+        scope = helper.split("sealed class BrowserMenuInvocation {", 1)[1].split("static bool BrowserAncestryBudget(", 1)[0]
+        fixture = scope.split("public BrowserNodeWitness FixtureMenu(", 1)[1]
+        for guard in ("ancestry.SingleMenu()", "Same(actual.Id(),selected.Id())", "SameBrowserWitness(actual,selected)", "Same(countedRoot.Id(),root)", "countedRoot.Native!=popup", "IsCountedMenu(actual,proof)", "proof.Chain!=ancestry.ChainFor(actual)"):
+            self.assertIn(guard, fixture)
+        live = helper.split("public static MenuProof ReadMenu(", 1)[1].split("public static bool SameProof(", 1)[0]
+        self.assertIn("menus++;menuId=browserNode.Id();countedMenu=browserNode", live)
+        self.assertIn("rootedItem=menuInvocation.ProveItem(e,browserNode,countedMenu,browserNodes", live)
+        self.assertIn("chosen=menuInvocation.RootedFixtureBounds(browserNode,rootedItem,", live)
+        self.assertIn("menuId=rootedItem.Menu.Id()", live)
+        item_issuer = block("public RootedItemWitness ProveItem<T>(", helper)
+        self.assertIn("CountedBrowserAncestry(start,expectedStart,nodes,root,browserPid,popup", item_issuer)
+        self.assertIn("FixtureMenu(ancestry,selectedMenu)", item_issuer)
+        self.assertIn("!UniqueBrowserFixtureCounts(menus,items)", live)
+        token = helper.split("sealed class RootedMenuWitness {", 1)[1].split("sealed class BrowserMenuInvocation {", 1)[0]
+        semantic = token.split('Semantic="', 1)[1].split("\n", 1)[0]
+        for included in ("eligible-rooted-menu:popup=", "JsonIds(root)", "JsonIds(menu.Id())", "menu.Signature", "chain-sha256=", "Chain"):
+            self.assertIn(included, semantic)
+        for forbidden in ("identity", "invocation", "owner", "GetHashCode", "Guid"):
+            self.assertNotIn(forbidden, semantic)
+        ancestry = helper.split("sealed class BrowserAncestryWitness {", 1)[1].split("sealed class RootedMenuWitness {", 1)[0]
+        self.assertIn("path=nodes.ToArray()", ancestry)
+        self.assertIn("MenuCount!=1", ancestry)
+        self.assertIn("SameBrowserWitness(path[n],start)", ancestry)
+        self.assertIn("Number(path[n].Signature.Length)", ancestry)
+        self.assertIn("SHA256.Create()", ancestry)
+        signature = scope.split("public string InventorySignature(", 1)[1].split("public BrowserNodeWitness FixtureMenu(", 1)[0]
+        self.assertIn("IsCountedMenu(node,proof)", signature)
+        self.assertIn("proof.Semantic", signature)
+
+    def test_rooted_menu_matrix_exercises_real_predicates_without_native_acceptance_claims(self):
+        helper = source("benchmarks/scripts/probe-default-context-cancellation.ps1")
+        outer = helper.split("public static void CheckBrowserStructurePolicy(){", 1)[1].split("sealed class SyntheticBrowserNode", 1)[0]
+        self.assertIn("CheckRootedMenuPolicy();", outer)
+        matrix = helper.split("static void CheckRootedMenuPolicy(){", 1)[1].split("public static string InventoryDigest(", 1)[0]
+        for case in ("constructed-unproved-menu", "unproved-menu-serialization", "rooted-menu-not-fixture", "menu-unknown-pid", "menu-wrong-pid-kind", "menu-foreign-or-gpu-pid", "menu-unknown-type", "menu-wrong-type-kind", "menu-root", "menu-null-runtime", "menu-empty-runtime", "menu-null-parent", "menu-empty-parent", "menu-negative-depth", "menu-unknown-bounds", "menu-null-bounds", "menu-wrong-bounds-kind", "menu-empty-bounds", "menu-zero-width", "menu-zero-height", "menu-nan", "menu-infinite", "menu-overflow", "menu-outside-left", "menu-outside-top", "menu-outside-right", "menu-outside-bottom", "menu-null-native-kind", "menu-wrong-native-kind", "menu-pattern-present-or-unavailable", "menu-item-unknown-bounds", "duplicate-rooted-issuance", "tag-changed-token-reuse", "foreign-supported-menu", "foreign-invocation-token", "foreign-invocation-serialization", "root-proof-other-menu-signature", "unproved-menu-plus-valid-rooted-sibling", "unproved-menu-plus-valid-supported-sibling", "fixture-path-other-eligible-menu", "fixture-without-selected-menu", "same-process-wrong-popup", "same-process-wrong-root", "fixture-root-chain-changed", "menu-counted-root", "menu-counted-ancestor", "menu-counted-peer", "menu-stale-start-tag", "menu-stale-start-parent", "menu-stale-counted-start-tag", "menu-stale-counted-start-parent", "menu-wrong-expected-start", "menu-null-expected-start", "menu-getter-or-pattern-failed", "menu-parent-getter-failed", "menu-skipped-parent", "menu-cyclic-parent", "menu-foreign-parent", "menu-native-boundary", "menu-stale-depth"):
+            self.assertIn('"' + case + '"', matrix)
+        for predicate in ("IsCountedMenu(", "InventorySignature(", "FixtureBounds(", "CreateBrowserWitness(", "NoPatternValue(", "ProveSyntheticMenu(", "CountedBrowserAncestry(", "FixtureMenu(", "SyntheticRootedMenuInventory(", "SameProof(baseline,independentlyFresh)", "InventoryDigest(baseline)", "UniqueBrowserFixtureCounts("):
+            self.assertIn(predicate, matrix)
+        self.assertIn("fresh.Reads!=4||fresh.Parents!=3", matrix)
+        self.assertIn("proof.Semantic!=freshProof.Semantic", matrix)
+        self.assertIn("scope.ProofFor(w.Menu.Value)!=null", matrix)
+        for forbidden in ("keybd_event(", "mouse_event(", "ReadMenu(", "NativeReady(", "RootFence(", "GetTickCount64(", "GetCurrentPropertyValue("):
+            self.assertNotIn(forbidden, matrix)
+
+    def test_complete_inventory_evidence_uses_only_captured_strings_after_release_or_cleanup(self):
+        helper = source("benchmarks/scripts/probe-default-context-cancellation.ps1")
+        receipt = helper.split("public static string InventoryReceiptValue(", 1)[1].split("static string ProtocolProof(", 1)[0]
+        for needed in ("capture_status", "unavailable", "65536", "128", "InventoryDigest(proof)", "JsonText(proof.Inventory)", "membership_request_digest", "run_nonce", "source_proof", "root_runtime"):
+            self.assertIn(needed, receipt)
+        for forbidden in ("GetCurrentPropertyValue", "GetWindow", "ReadMenu(", "FileStream", "keybd_event", "mouse_event"):
+            self.assertNotIn(forbidden, receipt)
+        self.assertIn("$firstInventoryProof=$menu", helper)
+        self.assertIn("$fresh=Menu-State;$freshInventoryProof=$fresh", helper)
+        self.assertIn("$report.status='observed-owned-popup-and-real-cancellation';Attach-InventoryEvidence;Save-Report", helper)
+        cleanup = helper.split("if($report.failure_cleanup -ceq 'exact-single-test-process-terminated'){", 1)[1]
+        self.assertIn("Attach-InventoryEvidence", cleanup)
+        attach = helper.split("function Attach-InventoryEvidence {", 1)[1].split("function Observe-Topology(", 1)[0]
+        self.assertNotIn("::ReadMenu", attach)
+        self.assertIn("evidence-serialization-failed", attach)
+        checker = source("benchmarks/scripts/test-native-menu-helpers.ps1")
+        self.assertIn("$receipt.inventory -cne $inventory", checker)
+        self.assertIn("$receipt.utf8_sha256 -cne $digest", checker)
+
+    def test_host_script_telemetry_observes_existing_calls_without_authority_or_extra_script(self):
+        live = source("src/engine/app_host_menu_probe/live.rs")
+        script = live.split("fn script(", 1)[1].split("fn current(", 1)[0]
+        self.assertEqual(script.count("view.ExecuteScript("), 1)
+        self.assertIn("Duration::from_secs(10)", script)
+        self.assertIn("pump_until_observed(", script)
+        self.assertLess(script.index("trace.start(label)"), script.index("view.ExecuteScript("))
+        self.assertLess(script.index("call.execute_returned(submitted.is_ok())"), script.index("submitted.unwrap()"))
+        self.assertIn("assert!(completed,\"exact COM script completion timed out\")", script)
+        trace = source("src/engine/app_host_menu_probe/live/script_trace.rs")
+        for primitive in ("ordinal", "ExecuteEntered", "ExecuteReturned", "callback_seen", "callback_ok", "PumpEntered", "PumpExited", "Cell<", "diagnostic_json()", "line.len()<=2048", "self.reports.get()>=4"):
+            self.assertIn(primitive, trace)
+        for forbidden in ("ExecuteScript(", "PostMessage", "SetFocus", "SetForegroundWindow", "App::", "RefCell", "source.as_", "result.to_string()"):
+            self.assertNotIn(forbidden, trace)
+        for lane in (live, source("src/engine/app_host_menu_probe/live/note_split.rs")):
+            self.assertIn('report("watchdog-before-close")', lane)
+            self.assertIn("TraceScope::enter(script_trace.clone())", lane)
+        workflow = source(".github/workflows/store-probe.yml")
+        self.assertIn("Exact two synthetic script-trace tests were not discovered.", workflow)
+
+    def test_host_loopback_uses_complete_headers_and_one_bounded_transport_budget(self):
+        server = source("src/engine/app_host_menu_probe/live/loopback.rs")
+        for needed in ("Duration::from_secs(1)", "HEADER_CAP: usize = 8192", "fn remaining(", "checked_sub(clock.elapsed())", "b\"\\r\\n\\r\\n\"", "Outcome::DuplicateKey", "Outcome::LateCompletion", "fn read_header(", "fn write_response(", "fn serve_connection(", "try_lock()", "DIAGNOSTIC_RECORD_CAP: usize = 32"):
+            self.assertIn(needed, server)
+        self.assertNotIn("write_all(", server)
+        self.assertNotIn("format!(\"{error}", server)
+        live = source("src/engine/app_host_menu_probe/live.rs")
+        self.assertIn("mod loopback;", live)
+        self.assertNotIn("struct Loopback", live)
+        self.assertIn("receipts.paste_full_responses,receipts.note_full_responses,receipts.destination_full_responses", live)
+        self.assertIn("save_transport_diagnostic(&server,&output)", live)
+        fixture = source("benchmarks/fixtures/app-host-context-menu/index.html")
+        self.assertEqual(fixture.count("fetch("), 1)
+        self.assertIn("if(state.exact_body_match)document.documentElement.setAttribute", fixture)
+        self.assertIn("state.response_status=r.status", fixture)
+        self.assertIn(".catch(error=>", fixture)
+        workflow = source(".github/workflows/store-probe.yml")
+        self.assertIn("Exact four synthetic loopback tests were not discovered.", workflow)
+
+    def test_rejected_uia_shape_inventory_is_bounded_non_authority_after_irrevocable_failure(self):
+        helper = source("benchmarks/scripts/probe-default-context-cancellation.ps1")
+        diagnostic = helper.split("static string rejectedInventoryBuffer;", 1)[1].split("public static MenuProof ReadMenu(", 1)[0]
+        for required in ("RejectedNodeCap=128", "RejectedRuntimeCap=32", "RejectedOutputCap=65536", "now+750", "if(readiness<local)", "if(ownership!=0&&ownership<local)", "provider-getter-failed", "getter-failed", "not-supported", "wrong-kind", "not-attempted", "foreign-or-unknown-pid-subtree-excluded", "RejectedParent(c,child,runtime", "GetNextSibling(siblingSource)", "GetCurrentPropertyValue(property,true)", "output-cap-details-discarded", "blocking_provider_call_cannot_be_preempted"):
+            self.assertIn(required, diagnostic)
+        for forbidden in (".Current.Name", "NameProperty", "AutomationElement.FromHandle", "keybd_event(", "mouse_event(", "WriteMembershipRequest(", "FileStream", "Start-Sleep"):
+            self.assertNotIn(forbidden, diagnostic)
+        self.assertLess(diagnostic.index('if(!RejectedBrowserPid(row.First.Pid,browserPid))'), diagnostic.index('GetFirstChild(work.Item1)'))
+        refusal = helper.split('browserNode=CaptureBrowserNode(', 1)[1].split('string nativeToken=', 1)[0]
+        self.assertIn('try{BufferRejectedInventory(', refusal)
+        self.assertIn('catch{}', refusal)
+        self.assertRegex(refusal, r'catch\{\}\s*WriteBoundsFailure\([^;\n]*\);if\(observedType==ControlType.MenuItem.Id\)throw new InvalidOperationException\("MenuItem typed ownership/facts proof unavailable\."\);throw;')
+        self.assertNotIn("continue;", refusal)
+        cleanup = helper.split("if($report.failure_cleanup -ceq 'exact-single-test-process-terminated'){", 1)[1]
+        self.assertIn('::RejectedInventoryEvidence()', cleanup)
+        self.assertIn("'rejected-popup-shapes.json'", cleanup)
+        self.assertIn("CheckRejectedInventoryPolicy", source("benchmarks/scripts/test-native-menu-helpers.ps1"))
+        shapes = helper.split("static void RejectedShapes(", 1)[1].split("static void RejectedNativeFence(", 1)[0]
+        self.assertEqual(shapes.count("RejectedProperty("), 3)
+        for optional in ("IsControlElementProperty", "IsContentElementProperty", "IsEnabledProperty", "IsKeyboardFocusableProperty", "HasKeyboardFocusProperty", "IsOffscreenProperty"):
+            self.assertNotIn(optional, shapes)
+        self.assertIn("not-attempted/unqueried", shapes)
+        check = diagnostic.split("public void Check(){", 1)[1].split("\n  }", 1)[0]
+        self.assertEqual(check.count("Now()>=Deadline"), 2)
+        self.assertIn("int length=RejectedLength(this);", check)
+        self.assertNotIn("RejectedJson(", check)
+        length = diagnostic.split("static int RejectedLength(", 1)[1].split("static string RejectedJson(", 1)[0]
+        self.assertIn("c.FinalizedLength", length)
+        self.assertIn("c.Active.Render().Length", length)
+        self.assertIn("RejectedHeader(c,c.NodeCount).Length", length)
+        self.assertNotIn("foreach", length)
+        self.assertNotIn("String.Join", length)
+        freeze = diagnostic.split("public void AddNode(", 1)[1].split("public void Check(){", 1)[0]
+        self.assertEqual(freeze.count("Active.Render()"), 1)
+        self.assertIn("FinalizedRows.Add(frozen)", freeze)
+        self.assertIn("FinalizedLength+=frozen.Length", freeze)
+        self.assertIn("static string RejectedFullJson(", diagnostic)
+        self.assertIn("CheckRejectedSerializationCache();", diagnostic)
+        for required in ("AssertRejectedCache(c,full)", "row.EnumerationParentLater", "row.LastQueuedRuntime", "c.RootFence=new RejectedReading()", "exact output boundary", "one-character output excess", "after-render clock", "before.Check()", "after.Check()"):
+            self.assertIn(required, diagnostic)
+        for required in ('CheckRejectedMutationCap("active-last-property"', 'CheckRejectedMutationCap("parent-runtime"', 'CheckRejectedMutationCap("sibling-query"', 'CheckRejectedMutationCap("root-runtime"', 'retained.Status="synthetic-old-object-mutated"', "RejectedJson(isolated)!=snapshot", "RejectedLength(isolated)!=snapshotLength"):
+            self.assertIn(required, diagnostic)
+        workflow = source(".github/workflows/store-probe.yml")
+        self.assertLess(workflow.index("name: Preserve bounded native menu proof evidence"), workflow.index("name: Probe default-off native engine menu in actual HTML Bowser App"))
+
+    def test_managed_helpers_compile_in_one_source_unit(self):
+        checker = source("benchmarks/scripts/test-native-menu-helpers.ps1")
+        self.assertEqual(checker.count("Add-Type -TypeDefinition"), 1)
+        self.assertIn("Add-Type -TypeDefinition $combined -ReferencedAssemblies $references", checker)
+        self.assertIn("$definitions.Add($source.Substring($prefix.Length))", checker)
+        self.assertIn("$typeNames=[ordered]@{}", checker)
+        self.assertIn("!$_.IsGenericMethod", checker)
+        self.assertIn("$_.GetParameters()[0].ParameterType -eq [Type]", checker)
+        self.assertIn("$sizeOfType[0].Invoke($null,@($objectFlags)) -ne 12", checker)
+        self.assertNotIn("::SizeOf($objectFlags)", checker)
+
+    def test_app_probe_pump_is_bounded_and_never_accepts_late_readiness(self):
+        app = source("src/engine/app_context_menu_probe.rs")
+        pump = app.split("fn pump_until_observed(", 1)[1].split("#[test]", 1)[0]
+        self.assertIn("for batch in 1..=32", pump)
+        self.assertNotIn("while PeekMessageW", pump)
+        self.assertIn("PostQuitMessage(message.wParam.0 as i32)", pump)
+        self.assertLess(pump.index("if expired {return finish(PumpExit::DeadlineAfterReady);}"), pump.index("if pump_exit_in_budget(expired,is_ready)"))
+        self.assertIn("PumpExit::DeadlineBeforeDispatch", pump)
+        self.assertIn("PumpExit::DeadlineAfterDispatch", pump)
+        self.assertIn("pump_message_action(start.elapsed()>=timeout,present,message.message==WM_QUIT)", pump)
+        self.assertIn("PumpMessageAction::Deadline=>return finish(PumpExit::DeadlineAfterPeek)", pump)
+        self.assertIn("if late_before_dispatch {return finish(PumpExit::DeadlineAfterPeek);}", pump)
+        self.assertEqual(pump.count("PostQuitMessage("), 1)
+        quit_branch = pump.split("PumpMessageAction::Quit=>{", 1)[1].split("PumpMessageAction::Dispatch|", 1)[0]
+        self.assertIn("return finish(PumpExit::Quit)", quit_branch)
+        self.assertNotIn("DispatchMessageW", quit_branch)
+        self.assertEqual(pump.count("let is_ready=ready();"), 1)
+        host = source("src/engine/app_host_menu_probe/live.rs")
+        self.assertIn("NativeContextProbeHandles,MenuProbeEvent,pump_until", host)
+        self.assertNotIn("fn pump_until(", host)
+        self.assertNotIn("PeekMessageW", host)
+        note = source("src/engine/app_host_menu_probe/live/note_split.rs")
+        self.assertIn("pump_until(Duration::from_secs(60)", note)
+        self.assertIn("Duration::from_secs(240)", note)
+        self.assertIn("phases.pump_after(source_ready)", note)
+        self.assertNotIn("SetForegroundWindow", pump)
+        self.assertIn('startup.report(app,"primary-pump-refused-before-teardown")', app)
+        self.assertIn('startup_timer.report(&app,"existing-180s-timer-before-close")', app)
+        diagnostic = app.split("fn report(&self,app:", 1)[1].split("fn pump_exit_in_budget", 1)[0]
+        for forbidden in (".ExecuteScript(", ".Navigate(", "SetForegroundWindow(", "MoveFocus(", "WM_CLOSE", "message.wParam", "message.lParam"):
+            self.assertNotIn(forbidden, diagnostic)
+        self.assertIn("catch_unwind", diagnostic)
+        self.assertIn("handles_with_successful_document_available", diagnostic)
+        workflow = source(".github/workflows/store-probe.yml")
+        experimental = workflow.split("id: experimental_menu_build", 1)[1].split("      - name:", 1)[0]
+        self.assertIn("engine::app_context_menu_probe::synthetic_pump_ -- --list", experimental)
+        self.assertIn("engine::app_context_menu_probe::synthetic_pump_ -- --nocapture", experimental)
+        self.assertIn(".Count -ne 2", experimental)
+        for metric in ("in_ready", "active_ready_ms", "max_ready_ms", "in_peek", "active_peek_ms", "max_peek_ms", "in_dispatch", "active_dispatch_ms", "max_dispatch_ms", "active_tab_matches"):
+            self.assertIn(metric, diagnostic)
+
+    def test_dispatch_telemetry_binds_each_pump_and_only_wraps_existing_dispatch(self):
+        app = source("src/engine/app_context_menu_probe.rs")
+        self.assertIn("pub(crate) mod dispatch_trace;", app)
+        self.assertIn("dispatch_trace:Rc<dispatch_trace::DispatchRecord>", app)
+        self.assertIn('"dispatch":{}', app)
+        pump = app.split("fn pump_until_observed(", 1)[1].split("#[test]", 1)[0]
+        self.assertIn("MessageKind::classify(message.message==WM_TIMER,message.lParam.0!=0,!message.hwnd.0.is_null())", pump)
+        self.assertIn("DispatchIdentity::new(message.hwnd.0 as usize,message.wParam.0,message.lParam.0)", pump)
+        self.assertIn("DispatchScope::enter(observed.map(|d|&d.dispatch_trace),kind,identity)", pump)
+        self.assertEqual(pump.count("DispatchMessageW("), 1)
+        self.assertLess(pump.index("let _=TranslateMessage(&message)"), pump.index("let _dispatch="))
+        self.assertLess(pump.index("let _dispatch="), pump.index("DispatchMessageW(&message)"))
+        self.assertLess(pump.index("DispatchMessageW(&message)"), pump.index("d.in_dispatch.set(false)"))
+        self.assertNotIn("diagnostic_json", pump)
+        self.assertNotIn("unavailable", pump)
+        self.assertEqual(len(re.findall(r"^fn synthetic_pump_", app, re.M)), 2)
+        self.assertIn("if line.len()<=2048", source("src/engine/app_host_menu_probe/live/script_trace.rs"))
+        trace = source("src/engine/app_context_menu_probe/dispatch_trace.rs")
+        record = trace.split("pub(crate) struct DispatchRecord", 1)[1].split("impl DispatchRecord", 1)[0]
+        self.assertNotIn("identity", record)
+        handler = trace.split("pub(crate) struct HandlerScope", 1)[1].split("impl HandlerScope", 1)[0]
+        self.assertIn("Weak<DispatchBinding>", handler)
+        self.assertIn("Rc<DispatchRecord>", handler)
+        self.assertNotIn("Rc<DispatchBinding>", handler)
+        self.assertIn("previous: Option<Weak<DispatchBinding>>", trace)
+        self.assertIn("retained_token.upgrade().is_none()", trace)
+        diagnostic = trace.split("pub(crate) fn diagnostic_json", 1)[1].split("thread_local!", 1)[0].split("/// Equality-only", 1)[0]
+        for raw in ("identity", "window.0", "timer.0", "callback", "wparam", "lparam", "pointer", "class_name"):
+            self.assertNotIn(raw, diagnostic)
+        for forbidden in ("windows::", "GetClassName", "GetWindow", "PeekMessage", "DispatchMessageW(", "RefCell<", "borrow_mut(", "sleep("):
+            self.assertNotIn(forbidden, trace)
+        for required in ("Rc::ptr_eq", "ACTIVE.try_with", "self.previous.take()", "binding.identity != identity", "MAX_HANDLER_DEPTH: u8 = 32", "value.depth >= MAX_HANDLER_DEPTH", "value.handler = Handler::Unavailable", "if previous_depth == 0 && !value.unavailable", "if self.previous_depth == 0 { value.exited = true; }"):
+            self.assertIn(required, trace)
+
+    def test_main_timer_hook_names_real_branches_without_window_queries(self):
+        window = source("src/win32/window.rs")
+        classifier = window.split("fn main_timer_probe_handler(", 1)[1].split('unsafe extern "system" fn window_proc(', 1)[0]
+        procedure = window.split('unsafe extern "system" fn window_proc(', 1)[1]
+        hook = procedure.split("    unsafe {", 1)[0]
+        self.assertIn('#[cfg(all(test, feature = "experimental-engine-context-menu"))]', hook)
+        self.assertIn("(message == WM_TIMER).then(||", hook)
+        self.assertIn("DispatchIdentity::new(hwnd.0 as usize, wparam.0, lparam.0)", hook)
+        self.assertIn("main_timer_probe_handler(wparam.0)", hook)
+        # Every actual exact-ID WM_TIMER branch has a fixed label using that same constant.
+        actual = set(re.findall(r"WM_TIMER if wparam[.]0 == ([^ ]+) =>", procedure))
+        classified = set(re.findall(r"^        ([^ ]+) => Handler::", classifier, re.M))
+        self.assertTrue(actual <= classified, actual - classified)
+        # Preserve actual match-arm priority, including dynamic hover ranges. A future
+        # accidental collision must be labeled as the handler that really wins.
+        conditions = re.findall(r"WM_TIMER if (.+?) => \{", procedure)
+        expected_priority = [condition.split("wparam.0 == ", 1)[1] if condition.startswith("wparam.0 == ") else "_ if " + condition.replace("wparam.0", "timer") for condition in conditions]
+        classified_priority = re.findall(r"^        (.+?) => Handler::", classifier, re.M)
+        self.assertEqual(classified_priority, expected_priority + ["_"])
+        for constant, label in (("super::WM_IMPORT_OFFER_TIMER", "ImportOffer"), ("APP_MENU_PROBE_TIMER", "ProbeWatchdog"), ("crate::engine::ENGINE_MENU_TIMER", "ContextMenu"), ("WM_HTML_POPUP_PREWARM_TIMER", "PopupPrewarm"), ("WM_TAB_LINK_TIMER", "TabLink"), ("WM_TAB_THUMB_TIMER", "Thumbnail")):
+            self.assertIn(constant + " => Handler::" + label, classifier)
+        self.assertIn("_ if island_menu::is_timer(timer) => Handler::IslandHover", classifier)
+        self.assertIn("_ if card::is_hover_timer(timer) => Handler::CardHover", classifier)
+        self.assertIn("_ => Handler::MainOtherTimer", classifier)
+        for forbidden in ("GetClassName", "GetWindow", "IsWindow", "SetTimer", "KillTimer", "App::", "borrow", "0x"):
+            self.assertNotIn(forbidden, classifier)
+
+    def test_eight_pure_dispatch_cases_use_existing_experimental_binaries(self):
+        trace = source("src/engine/app_context_menu_probe/dispatch_trace.rs")
+        self.assertEqual(len(re.findall(r"^fn synthetic_dispatch_trace_", trace, re.M)), 8)
+        for case in ("nested_watchdog_preserves_outer_handler_and_exit", "independent_pumps_and_unobserved_calls_are_isolated", "raii_unwind_restores_previous_binding", "message_classes_and_unknown_main_timer_stay_explicit", "depth_cap_and_nested_same_record_are_unavailable", "mismatched_scope_is_unavailable_and_output_is_bounded", "nested_foreign_timer_cannot_become_main_window", "identity_lives_only_in_lexical_binding"):
+            self.assertIn("fn synthetic_dispatch_trace_" + case, trace)
+        self.assertIn("assert!(output.len() <= 256)", trace)
+        self.assertIn("Rc::downgrade", trace)
+        self.assertIn("token.upgrade().is_none()", trace)
+        workflow = source(".github/workflows/store-probe.yml")
+        native = workflow.split("id: experimental_menu_build", 1)[1].split("      - name:", 1)[0]
+        self.assertIn("$dispatchTest.Count -ne 1", native)
+        self.assertIn(".Count -eq 8", native)
+        self.assertIn("& $dispatchTest[0].FullName $dispatchFilter --nocapture --test-threads=1", native)
+        initialized = workflow.split("  initialized-empty-copy:", 1)[1].split("  native-store-journey:", 1)[0]
+        dispatch = initialized.split("name: Execute eight pure dispatch-attribution tests", 1)[1].split("      - name:", 1)[0]
+        self.assertIn("$test.Count -ne 1", dispatch)
+        self.assertIn(".Count -ne 8", dispatch)
+        self.assertIn("$test[0].FullName $dispatchFilter --list", dispatch)
+        self.assertIn("$test[0].FullName $dispatchFilter --nocapture --test-threads=1", dispatch)
+        self.assertNotIn("cargo ", dispatch)
+        self.assertNotIn("--ignored", dispatch)
+        self.assertLess(initialized.index("name: Execute two generated-data contract tests"), initialized.index("name: Execute eight pure dispatch-attribution tests"))
+        self.assertLess(initialized.index("name: Execute eight pure dispatch-attribution tests"), initialized.index("name: Exercise one genuine native Copy"))
+        self.assertEqual(initialized.count(" --no-run"), 1)
+        self.assertEqual(workflow.count("$dispatchFilter = 'engine::app_context_menu_probe::dispatch_trace::synthetic_dispatch_trace_'"), 2)
+
+    def test_reload_has_one_activation_and_observation_only_rechecks(self):
+        reload = source("src/engine/app_context_menu_probe/reload.rs")
+        self.assertEqual(reload.count("SetForegroundWindow(owner)"), 1)
+        self.assertEqual(reload.count("(hide_receipt.hide_once)()"), 1)
+        self.assertIn('receipt_hidden(),"receipt window reappeared after hide preparation;', reload)
+        self.assertIn('receipt_hidden(),"receipt window reappeared at final helper boundary;', reload)
+        self.assertIn('focused:document.hasFocus()&&document.activeElement===t', reload)
+        self.assertIn('assert_eq!(conditioning_script(&h.view,source_script,conditioning_deadline),source', reload)
+        self.assertIn('receipt_hidden(),"receipt window reappeared before conditioning witness;', reload)
+        self.assertIn('assert!(no_native_menu()', reload)
+        helper = source("benchmarks/scripts/probe-app-context-menu-reload.ps1")
+        self.assertNotIn("extern bool SetForegroundWindow", helper)
+        self.assertNotIn("::SetForegroundWindow", helper)
+        self.assertNotIn("::keybd_event", helper)
+        page = source("src/engine/extension_page.rs")
+        seam = page.split("pub(super) fn probe_hide_receipt", 1)[1].split("/// Closes the window", 1)[0]
+        for fence in ("alive.get()", "std::process::id()", "GetCurrentThreadId()", '"BowserExtensionPage"', "IsWindowVisible(hwnd)"):
+            self.assertIn(fence, seam)
+        self.assertEqual(seam.count("ShowWindow(hwnd, SW_HIDE)"), 1)
+        preparation = reload.split("fn reload_input(", 1)[1].split("fn deny_all(", 1)[0]
+        self.assertEqual(preparation.count("SetForegroundWindow(owner)"), 1)
+        self.assertEqual(preparation.count("h.controller.MoveFocus("), 1)
+        self.assertEqual(preparation.count("t.focus();"), 1)
+        self.assertEqual(preparation.count("Instant::now()+Duration::from_secs(3)"), 1)
+        self.assertNotIn("pump_until(Duration::from_secs(3)", preparation)
+        self.assertNotIn("script(&h.view,", preparation.replace("conditioning_script(&h.view,", ""))
+        self.assertIn("for _ in 0..32", reload)
+        self.assertIn("PostQuitMessage(message.wParam.0 as i32)", reload)
+        self.assertIn("conditioning_source_focus(owner,browser)==Some(source_focus.clone())", reload)
+        self.assertRegex(page, r'#\[cfg\(all\(test, feature = "experimental-engine-context-menu"\)\)\]\s+pub\(super\) fn probe_hide_receipt')
+
+
+def load_tests(loader, tests, pattern):
+    """Keep the existing CI entrypoint authoritative for the rooted-item suite."""
+    path = ROOT / "benchmarks/test-rooted-menuitem-source.py"
+    spec = importlib.util.spec_from_file_location("bowser_rooted_menuitem_source", path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError("Rooted MenuItem source-contract module unavailable")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    tests.addTests(loader.loadTestsFromModule(module))
+    return tests
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)

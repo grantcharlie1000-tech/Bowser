@@ -49,6 +49,9 @@ use windows::{
 use super::{EngineAdapter, EngineEvents, EngineExtras, WebView2Engine};
 use crate::{extensions, tabs::TabId};
 
+mod native_menu_ownership;
+use native_menu_ownership::GpuMenuAuthority;
+
 const BEACON_PREFIX: &str = "/__bowser_probe__/beacon";
 const CHILD_ROOT_ENV: &str = "BOWSER_PROBE_CHILD_ROOT";
 /// The id Chromium derives from the `key` in `probe-mv3-key` (see `tests/fixtures/extensions/README.md`).
@@ -2137,6 +2140,56 @@ fn native_context_items(collection: &webview2_com::Microsoft::Web::WebView2::Win
     }
 }
 
+/// Read-only UDF/process-group evidence, never a per-view or input authorization. A later
+/// structural-node policy must still establish fresh native process lifetimes and leafness.
+/// Getter/bound/membership failures only make this diagnostic unavailable; they cannot suppress
+/// the original strict foreign-provider refusal in either PowerShell helper.
+fn native_context_process_group_diagnostic(
+    view:&webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2,
+    expected_udf:&Path,browser_pid:u32,out:&Path,
+) {
+    use windows::core::Interface;
+    use webview2_com::{CoTaskMemPWSTR,Microsoft::Web::WebView2::Win32::{
+        ICoreWebView2_2,ICoreWebView2Environment7,ICoreWebView2Environment8,
+        COREWEBVIEW2_PROCESS_KIND,COREWEBVIEW2_PROCESS_KIND_BROWSER,COREWEBVIEW2_PROCESS_KIND_GPU,
+    }};
+    let read=||->Result<String,String>{
+        let environment=unsafe{view.cast::<ICoreWebView2_2>().map_err(|e|format!("view2-hresult-{}",e.code().0))?.Environment()}
+            .map_err(|e|format!("environment-hresult-{}",e.code().0))?;
+        let environment7=environment.cast::<ICoreWebView2Environment7>().map_err(|e|format!("environment7-hresult-{}",e.code().0))?;
+        let mut folder=windows::core::PWSTR::null();
+        unsafe{environment7.UserDataFolder(&mut folder)}.map_err(|e|format!("udf-hresult-{}",e.code().0))?;
+        if folder.is_null(){return Err("udf-null".into());}
+        let actual=std::fs::canonicalize(CoTaskMemPWSTR::from(folder).to_string()).map_err(|_|"udf-canonicalization-unavailable")?;
+        let expected=std::fs::canonicalize(expected_udf).map_err(|_|"expected-udf-unavailable")?;
+        if !actual.to_string_lossy().eq_ignore_ascii_case(&expected.to_string_lossy()){return Err("exact-disposable-udf-mismatch".into());}
+        let environment8=environment.cast::<ICoreWebView2Environment8>().map_err(|e|format!("environment8-hresult-{}",e.code().0))?;
+        let processes=unsafe{environment8.GetProcessInfos()}.map_err(|e|format!("process-infos-hresult-{}",e.code().0))?;
+        let mut count=0;unsafe{processes.Count(&mut count)}.map_err(|e|format!("process-count-hresult-{}",e.code().0))?;
+        if count==0||count>64{return Err("process-group-count-outside-bound".into());}
+        let mut seen=std::collections::BTreeSet::new();let mut entries=Vec::new();let mut browsers=0;
+        for index in 0..count {
+            let process=unsafe{processes.GetValueAtIndex(index)}.map_err(|e|format!("process-item-hresult-{}",e.code().0))?;
+            let mut pid=0;let mut kind=COREWEBVIEW2_PROCESS_KIND::default();
+            unsafe{process.ProcessId(&mut pid)}.map_err(|e|format!("process-pid-hresult-{}",e.code().0))?;
+            unsafe{process.Kind(&mut kind)}.map_err(|e|format!("process-kind-hresult-{}",e.code().0))?;
+            if pid<=0||!seen.insert(pid){return Err("process-pid-invalid-or-duplicate".into());}
+            if kind==COREWEBVIEW2_PROCESS_KIND_BROWSER {
+                if pid as u32!=browser_pid{return Err("process-group-browser-mismatch".into());}browsers+=1;
+            }
+            entries.push(format!(r#"{{"pid":{pid},"kind":{},"gpu":{}}}"#,kind.0,kind==COREWEBVIEW2_PROCESS_KIND_GPU));
+        }
+        let mut current_browser=0;unsafe{view.BrowserProcessId(&mut current_browser)}.map_err(|e|format!("current-browser-hresult-{}",e.code().0))?;
+        if browsers!=1||current_browser!=browser_pid{return Err("retained-browser-membership-unavailable".into());}
+        Ok(format!(r#"{{"scope":"read-only-disposable-UDF-process-group-not-view-or-input-authority","status":"captured-nonatomic-not-authority","exact_disposable_udf":true,"retained_browser_entry":true,"browser_pid":{browser_pid},"processes":[{}]}}"#,entries.join(",")))
+    };
+    let value=match read(){Ok(value)=>value,Err(reason)=>format!(r#"{{"scope":"read-only-disposable-UDF-process-group-not-input-authority","status":"unavailable","reason":"{reason}"}}"#)};
+    if value.len()>8192{return;}
+    let result=std::fs::OpenOptions::new().write(true).create_new(true).open(out.join("native-process-group.json"))
+        .and_then(|mut file|file.write_all(value.as_bytes()).and_then(|()|file.sync_data()));
+    println!("NATIVE_CONTEXT_PROCESS_GROUP diagnostic_write_ok={} scope=UDF-group-not-native-input-authority",result.is_ok());
+}
+
 /// Observation/cancellation only; native selection and activeTab grants remain separate gates.
 #[test]
 #[ignore = "requires real owned native right-click/cancellation in an isolated single-test process"]
@@ -2174,6 +2227,7 @@ fn live_probe_native_context_menu_observation() {
     println!("NATIVE_CONTEXT_MENU browser_pid_query_ok={} normalized_error={:?} native_browser_pid={browser_pid}",browser_pid_result.is_ok(),browser_pid_result.as_ref().err().map(|e|e.code().0));
     browser_pid_result.unwrap();assert!(browser_pid>0&&browser_pid!=std::process::id(),"native browser process identity unavailable before input");
     let out=PathBuf::from("store-native-context-menu-observation");std::fs::create_dir_all(&out).unwrap();
+    native_context_process_group_diagnostic(&view,&profile.join("WebView2"),browser_pid,&out);
     let snapshot=Rc::new(RefCell::new(std::fs::OpenOptions::new().write(true).create_new(true).open(out.join(format!("native-menu-items-{}.log",std::process::id()))).unwrap()));let snapshot_sink=snapshot.clone();
     let requests=Rc::new(RefCell::new(Vec::<NativeContextRequest>::new()));let sink=requests.clone();let observed=Rc::new(std::cell::Cell::new(0usize));let observed_sink=observed.clone();let mut event_token=0;
     let native_clock=Instant::now();
@@ -2210,16 +2264,40 @@ fn live_probe_native_context_menu_observation() {
     let Value::Array(bounds)=bounds else{panic!("actual owned textarea geometry missing")};assert_eq!(bounds.len(),4);
     let points:Vec<i32>=bounds.iter().map(|v|match v{Value::Number(n)=>n.parse().unwrap(),_=>panic!("nonintegral owned geometry")}).collect();
     assert_eq!(command_view(&mut session,TabId(1),&format!("document.elementFromPoint({},{})===document.getElementById('context-target')",points[0],points[1])).as_deref(),Some("true"));
-    let mut child=std::process::Command::new("powershell.exe").args(["-NoProfile","-File"]).arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("benchmarks/scripts/probe-native-context-observation.ps1"))
+    let source_proof=session.engine.probe_context_document_proof(TabId(1)).expect("original exact source proof unavailable");
+    let source_fence=session.engine.probe_context_ownership_fence(TabId(1)).expect("original unborrowed source fence unavailable");
+    let mut ownership=match GpuMenuAuthority::new(&view,&profile.join("WebView2"),browser_pid,session.host,source_proof,source_fence,&out) {
+        Ok(authority)=>Some(authority),Err(reason)=>{println!("NATIVE_MENU_GPU_AUTHORITY unavailable={reason} browser_only_strict_path=true");None}
+    };
+    let (ownership_deadline,ownership_tick)=GpuMenuAuthority::readiness_budget().expect("fixed shared readiness clock unavailable");
+    let mut command=std::process::Command::new("powershell.exe");
+    command.args(["-NoProfile","-File"]).arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("benchmarks/scripts/probe-native-context-observation.ps1"))
         .args(["-OwnerPid",&std::process::id().to_string(),"-OwnerHandle",&(session.host.0 as isize).to_string(),"-OwnerExe"]).arg(std::env::current_exe().unwrap())
         .args(["-BrowserPid",&browser_pid.to_string()])
         .args(["-ClientX",&points[0].to_string(),"-ClientY",&points[1].to_string(),"-ViewportWidth",&points[2].to_string(),"-ViewportHeight",&points[3].to_string(),"-Out"]).arg(&out)
-        .stdout(std::process::Stdio::from(std::fs::File::create(out.join("helper.stdout.log")).unwrap())).stderr(std::process::Stdio::from(std::fs::File::create(out.join("helper.stderr.log")).unwrap())).spawn().unwrap();
-    let complete=pump_until(Duration::from_secs(25),||child.try_wait().is_ok_and(|s|s.is_some()));
+        .stdout(std::process::Stdio::from(std::fs::File::create(out.join("helper.stdout.log")).unwrap())).stderr(std::process::Stdio::from(std::fs::File::create(out.join("helper.stderr.log")).unwrap()));
+    if let Some(authority)=ownership.as_ref() {
+        command.args(["-GpuPid",&authority.gpu_pid().to_string(),"-GpuCreation",&authority.gpu_creation().to_string(),"-BrowserCreation",&authority.browser_creation().to_string(),
+            "-OwnershipNonce",authority.nonce(),"-SourceProof",&format!("{},{},{}",source_proof.0,source_proof.1,source_proof.2),
+            "-EnvironmentIdentity",&authority.environment_identity().to_string(),"-AuthorityDeadlineTick",&ownership_tick.to_string()]);
+    }
+    let mut child=command.spawn().unwrap();let mut ownership_served=false;let mut ownership_error=None;
+    let complete=pump_until(Duration::from_secs(25),|| {
+        if !ownership_served&&ownership_error.is_none() {
+            if let Some(authority)=ownership.as_mut() {
+                match authority.service_once(ownership_deadline,ownership_tick) {
+                    Ok(served)=>ownership_served=served,
+                    Err(reason)=>{println!("NATIVE_MENU_GPU_AUTHORITY pre_escape_refused={reason}");ownership_error=Some(reason);}
+                }
+            }
+        }
+        child.try_wait().is_ok_and(|status|status.is_some())
+    });
     if !complete{let _=child.kill();let _=child.wait();panic!("native menu observation helper did not complete; no acceptance")}
     let status=child.wait().unwrap();println!("NATIVE_CONTEXT_MENU helper_status={status:?}");
     for request in requests.borrow().iter(){println!("NATIVE_CONTEXT_MENU same_view={} editable={:?} handled={:?} target_result={} editable_result={} handled_result={} collection_result={} complete={} visited_items={} failures={:?}",request.same_receiving_view,request.editable,request.handled,request.target_result,request.editable_result,request.handled_result,request.collection_result,request.complete,request.visited_items,request.failures);for entry in &request.entries{println!("NATIVE_CONTEXT_MENU path={:?} name={:?} label={:?} kind={} enabled={} request_local_command={} normalized_get_results={:?} children_result={:?} text_truncated={} text_redacted={}",entry.path,entry.name,entry.label,entry.kind,entry.enabled,entry.command,entry.results,entry.children_result,entry.text_truncated,entry.text_redacted);}}
     assert!(status.success(),"actual menu topology/cancellation unavailable or failed; no selection/grant verdict");
+    assert!(ownership_error.is_none(),"fresh exact GPU membership refused: {ownership_error:?}");
     let report=std::fs::read_to_string(out.join("native-context-observation.json")).unwrap();let report=extensions::json::parse(&report).unwrap();assert_eq!(command_field(&report,"status"),Some(&Value::String("observed-owned-popup-and-real-cancellation".into())));
     assert_eq!(observed.get(),1,"native request count differs from the one actual right-click");
     {let requests=requests.borrow();assert_eq!(requests.len(),1);let request=&requests[0];assert!(request.same_receiving_view&&request.complete);assert_eq!(request.editable,Some(true));assert_eq!(request.handled,Some(false));assert!(request.entries.iter().any(|entry|entry.name=="extension"&&entry.label=="Bowser native context permission probe"&&entry.enabled),"no actual native extension-classified expected item in complete inventory");}
@@ -2274,6 +2352,7 @@ fn live_probe_default_context_menu_cancellation() {
     println!("DEFAULT_CONTEXT_CANCELLATION browser_pid_query_ok={} normalized_error={:?} native_browser_pid={browser_pid}",browser_pid_result.is_ok(),browser_pid_result.as_ref().err().map(|e|e.code().0));
     browser_pid_result.unwrap();assert!(browser_pid>0&&browser_pid!=std::process::id(),"native browser process identity unavailable before input");
     let out=PathBuf::from("store-default-context-menu-cancellation");std::fs::create_dir_all(&out).unwrap();
+    native_context_process_group_diagnostic(&view,&profile.join("WebView2"),browser_pid,&out);
     let snapshot=Rc::new(RefCell::new(std::fs::OpenOptions::new().write(true).create_new(true).open(out.join(format!("native-menu-items-{}.log",std::process::id()))).unwrap()));let snapshot_sink=snapshot.clone();
     let requests=Rc::new(RefCell::new(Vec::<NativeContextRequest>::new()));let sink=requests.clone();let observed=Rc::new(std::cell::Cell::new(0usize));let observed_sink=observed.clone();let mut event_token=0;
     let native_clock=Instant::now();
@@ -2310,16 +2389,40 @@ fn live_probe_default_context_menu_cancellation() {
     let Value::Array(bounds)=bounds else{panic!("actual owned textarea geometry missing")};assert_eq!(bounds.len(),4);
     let points:Vec<i32>=bounds.iter().map(|v|match v{Value::Number(n)=>n.parse().unwrap(),_=>panic!("nonintegral owned geometry")}).collect();
     assert_eq!(command_view(&mut session,TabId(1),&format!("document.elementFromPoint({},{})===document.getElementById('context-target')",points[0],points[1])).as_deref(),Some("true"));
-    let mut child=std::process::Command::new("powershell.exe").args(["-NoProfile","-File"]).arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("benchmarks/scripts/probe-default-context-cancellation.ps1"))
+    let source_proof=session.engine.probe_context_document_proof(TabId(1)).expect("original exact source proof unavailable");
+    let source_fence=session.engine.probe_context_ownership_fence(TabId(1)).expect("original unborrowed source fence unavailable");
+    let mut ownership=match GpuMenuAuthority::new(&view,&profile.join("WebView2"),browser_pid,session.host,source_proof,source_fence,&out) {
+        Ok(authority)=>Some(authority),Err(reason)=>{println!("NATIVE_MENU_GPU_AUTHORITY unavailable={reason} browser_only_strict_path=true");None}
+    };
+    let (ownership_deadline,ownership_tick)=GpuMenuAuthority::readiness_budget().expect("fixed shared readiness clock unavailable");
+    let mut command=std::process::Command::new("powershell.exe");
+    command.args(["-NoProfile","-File"]).arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("benchmarks/scripts/probe-default-context-cancellation.ps1"))
         .args(["-OwnerPid",&std::process::id().to_string(),"-OwnerHandle",&(session.host.0 as isize).to_string(),"-OwnerExe"]).arg(std::env::current_exe().unwrap())
         .args(["-BrowserPid",&browser_pid.to_string()])
         .args(["-ClientX",&points[0].to_string(),"-ClientY",&points[1].to_string(),"-ViewportWidth",&points[2].to_string(),"-ViewportHeight",&points[3].to_string(),"-Out"]).arg(&out)
-        .stdout(std::process::Stdio::from(std::fs::File::create(out.join("helper.stdout.log")).unwrap())).stderr(std::process::Stdio::from(std::fs::File::create(out.join("helper.stderr.log")).unwrap())).spawn().unwrap();
-    let complete=pump_until(Duration::from_secs(25),||child.try_wait().is_ok_and(|s|s.is_some()));
+        .stdout(std::process::Stdio::from(std::fs::File::create(out.join("helper.stdout.log")).unwrap())).stderr(std::process::Stdio::from(std::fs::File::create(out.join("helper.stderr.log")).unwrap()));
+    if let Some(authority)=ownership.as_ref() {
+        command.args(["-GpuPid",&authority.gpu_pid().to_string(),"-GpuCreation",&authority.gpu_creation().to_string(),"-BrowserCreation",&authority.browser_creation().to_string(),
+            "-OwnershipNonce",authority.nonce(),"-SourceProof",&format!("{},{},{}",source_proof.0,source_proof.1,source_proof.2),
+            "-EnvironmentIdentity",&authority.environment_identity().to_string(),"-AuthorityDeadlineTick",&ownership_tick.to_string()]);
+    }
+    let mut child=command.spawn().unwrap();let mut ownership_served=false;let mut ownership_error=None;
+    let complete=pump_until(Duration::from_secs(25),|| {
+        if !ownership_served&&ownership_error.is_none() {
+            if let Some(authority)=ownership.as_mut() {
+                match authority.service_once(ownership_deadline,ownership_tick) {
+                    Ok(served)=>ownership_served=served,
+                    Err(reason)=>{println!("NATIVE_MENU_GPU_AUTHORITY pre_escape_refused={reason}");ownership_error=Some(reason);}
+                }
+            }
+        }
+        child.try_wait().is_ok_and(|status|status.is_some())
+    });
     if !complete{let _=child.kill();let _=child.wait();panic!("native menu observation helper did not complete; no acceptance")}
     let status=child.wait().unwrap();println!("DEFAULT_CONTEXT_CANCELLATION helper_status={status:?}");
     for request in requests.borrow().iter(){println!("DEFAULT_CONTEXT_CANCELLATION same_view={} editable={:?} handled={:?} target_result={} editable_result={} handled_result={} collection_result={} complete={} visited_items={} failures={:?}",request.same_receiving_view,request.editable,request.handled,request.target_result,request.editable_result,request.handled_result,request.collection_result,request.complete,request.visited_items,request.failures);for entry in &request.entries{println!("DEFAULT_CONTEXT_CANCELLATION path={:?} name={:?} label={:?} kind={} enabled={} request_local_command={} normalized_get_results={:?} children_result={:?} text_truncated={} text_redacted={}",entry.path,entry.name,entry.label,entry.kind,entry.enabled,entry.command,entry.results,entry.children_result,entry.text_truncated,entry.text_redacted);}}
     assert!(status.success(),"actual menu topology/cancellation unavailable or failed; no selection/grant verdict");
+    assert!(ownership_error.is_none(),"fresh exact GPU membership refused: {ownership_error:?}");
     let report=std::fs::read_to_string(out.join("default-context-cancellation.json")).unwrap();let report=extensions::json::parse(&report).unwrap();assert_eq!(command_field(&report,"status"),Some(&Value::String("observed-owned-popup-and-real-cancellation".into())));
     assert_eq!(observed.get(),1,"native request count differs from the one actual right-click");
     {let requests=requests.borrow();assert_eq!(requests.len(),1);let request=&requests[0];assert!(request.same_receiving_view&&request.complete);assert_eq!(request.editable,Some(true));assert_eq!(request.handled,Some(false));assert!(request.entries.iter().any(|entry|entry.name=="extension"&&entry.label=="Bowser native context permission probe"&&entry.enabled),"no actual native extension-classified expected item in complete inventory");}

@@ -2356,12 +2356,60 @@ pub fn run(app: App) -> windows::core::Result<()> {
     }
 }
 
+// Fixed test-only labels, selected from the same private constants as the actual
+// branches below. No HWND/class/property query and no production dispatch change.
+#[cfg(all(test, feature = "experimental-engine-context-menu"))]
+fn main_timer_probe_handler(timer: usize) -> crate::engine::app_context_menu_probe::dispatch_trace::Handler {
+    use crate::engine::app_context_menu_probe::dispatch_trace::Handler;
+    match timer {
+        crate::win32::passwords_panel::CLIPBOARD_CLEAR_TIMER => Handler::ClipboardClear,
+        WM_RAIL_TOOLTIP_TIMER => Handler::RailTooltip,
+        WM_NEWTAB_TOOLTIP_TIMER => Handler::NewtabTooltip,
+        APP_MENU_PROBE_TIMER => Handler::ProbeWatchdog,
+        crate::engine::ENGINE_MENU_TIMER => Handler::ContextMenu,
+        WM_THEME_SCHEDULE_TIMER => Handler::ThemeSchedule,
+        auto_hide::TIMER_ID => Handler::AutoHide,
+        WM_TAB_TICK_TIMER => Handler::TabTick,
+        WM_TAB_THUMB_TIMER => Handler::Thumbnail,
+        WM_TAB_LINK_TIMER => Handler::TabLink,
+        WM_HTML_POPUP_PREWARM_TIMER => Handler::PopupPrewarm,
+        super::WM_IMPORT_OFFER_TIMER => Handler::ImportOffer,
+        super::WM_DOWNLOADS_TIMER => Handler::Downloads,
+        super::WM_POWER_TIMER => Handler::Power,
+        WM_IDLE_TRIM_TIMER => Handler::IdleTrim,
+        WM_SIDEBAR_RESIZE_TIMER => Handler::SidebarResize,
+        WM_PAGE_IDLE_TIMER => Handler::PageIdle,
+        WM_SIDEBAR_SCROLL_TIMER => Handler::SidebarScroll,
+        _ if island_menu::is_timer(timer) => Handler::IslandHover,
+        _ if card::is_hover_timer(timer) => Handler::CardHover,
+        WM_SESSION_SAVE_TIMER => Handler::SessionSave,
+        crate::win32::WM_PRIVACY_STATS_TIMER => Handler::PrivacyStats,
+        crate::app::BLOCKED_TITLE_TIMER => Handler::BlockedTitle,
+        WM_ANIMATION_TIMER => Handler::Animation,
+        side_panel::TIMER_ID => Handler::SidePanel,
+        super::panel_webapp::RELOAD_TIMER => Handler::PanelReload,
+        super::panel_webapp::IDLE_TIMER => Handler::PanelIdle,
+        super::WM_TRANSLATE_WATCH_TIMER => Handler::TranslateWatch,
+        super::WM_READER_PROBE_TIMER => Handler::ReaderProbe,
+        devtools_dock::TIMER_ID => Handler::DevtoolsDock,
+        WM_PROGRESS_TIMER => Handler::Progress,
+        WM_SPLIT_BOUNDS_TIMER => Handler::SplitBounds,
+        WM_CARET_BLINK_TIMER => Handler::CaretBlink,
+        _ => Handler::MainOtherTimer,
+    }
+}
+
 unsafe extern "system" fn window_proc(
     hwnd: HWND,
     message: u32,
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> LRESULT {
+    #[cfg(all(test, feature = "experimental-engine-context-menu"))]
+    let _timer_probe = (message == WM_TIMER).then(|| {
+        use crate::engine::app_context_menu_probe::dispatch_trace::{DispatchIdentity, enter_main_timer};
+        enter_main_timer(DispatchIdentity::new(hwnd.0 as usize, wparam.0, lparam.0), main_timer_probe_handler(wparam.0))
+    });
     unsafe {
         if message == WM_NCCREATE {
             let c = &*(lparam.0 as *const CREATESTRUCTW);

@@ -3475,6 +3475,14 @@ impl EngineAdapter for WebView2Engine {
     fn probe_extension_receipt_view(&self)->Option<ICoreWebView2> {
         self.core.try_borrow().ok()?.extension_page.as_ref().map(|page|page.webview.clone())
     }
+    #[cfg(all(test, feature = "experimental-engine-context-menu"))]
+    fn probe_hide_extension_receipt(&self, expected: &ICoreWebView2)->Option<super::app_context_menu_probe::ReceiptWindowProbe> {
+        let state = self.core.try_borrow().ok()?;
+        if state.closed { return None; }
+        let page = state.extension_page.as_ref()?;
+        if page.webview.as_raw() != expected.as_raw() { return None; }
+        Some(page.probe_hide_receipt())
+    }
 
     fn successful_document_query(&self, id: TabId) -> Option<super::NativeDocumentQuery> {
         // Prepare clone-only state; the caller drops App/engine borrows before running the query.
@@ -6518,6 +6526,20 @@ mod tests {
             let core=Rc::downgrade(&self.core);
             Some(Box::new(move||{let Some(core)=core.upgrade() else{return false};let Ok(state)=core.try_borrow() else{return false};
                 !state.closed&&state.active_tab==Some(tab)&&state.tabs.get(&tab).is_some_and(|current|current.webview.as_ref().is_some_and(|current|current.as_raw()==view.as_raw())&&Rc::ptr_eq(&current.document_gate,&gate))&&gate.try_borrow().is_ok_and(|gate|gate.proof()==Some(proof))
+            }))
+        }
+        /// Test-only ownership handshake fence. Unlike a read borrow, this also proves no
+        /// preexisting App-independent Core/gate guard can span a subsequent COM read.
+        pub(in crate::engine) fn probe_context_ownership_fence(&self,tab:TabId)->Option<Box<dyn Fn()->bool>> {
+            let state=self.core.try_borrow_mut().ok()?;if state.closed||state.active_tab!=Some(tab){return None;}
+            let current=state.tabs.get(&tab)?;let view=current.webview.clone()?;let gate=current.document_gate.clone();
+            let proof={gate.try_borrow_mut().ok()?.proof()?};drop(state);let core=Rc::downgrade(&self.core);
+            Some(Box::new(move|| {
+                let Some(core)=core.upgrade() else{return false;};let Ok(state)=core.try_borrow_mut() else{return false;};
+                let Ok(current_gate)=gate.try_borrow_mut() else{return false;};
+                !state.closed&&state.active_tab==Some(tab)&&state.tabs.get(&tab).is_some_and(|current|
+                    current.webview.as_ref().is_some_and(|current|current.as_raw()==view.as_raw())&&Rc::ptr_eq(&current.document_gate,&gate))
+                    &&current_gate.proof()==Some(proof)
             }))
         }
         /// Opens an extension page without showing a window.

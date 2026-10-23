@@ -10,17 +10,23 @@ const nonce='__NONCE__';
 const controls=['copy','paste','note','split'];
 const trusted={copy:0,paste:0,note:0,split:0};
 const effects={paste:[],note:[]};
+const network={paste:{started:false,response_status:null,exact_body_match:null,rejected:null},note:{started:false,response_status:null,exact_body_match:null,rejected:null}};
 document.addEventListener('contextmenu',e=>{
  if(e.isTrusted&&e.button===2&&controls.includes(e.target.id))trusted[e.target.id]++;
 });
 for(const kind of ['paste','note'])document.getElementById(kind).addEventListener('input',e=>{
  const value=e.target.value;
  effects[kind].push({value,trusted:e.isTrusted});
- fetch('/effect?'+new URLSearchParams({nonce,kind,value}),{cache:'no-store'}).then(r=>r.text()).then(answer=>{
-  if(answer===nonce+':'+kind)document.documentElement.setAttribute('data-ack-'+kind,nonce);
- });
+ const state=network[kind];
+ state.started=true;state.response_status=null;state.exact_body_match=null;state.rejected=null;
+ fetch('/effect?'+new URLSearchParams({nonce,kind,value}),{cache:'no-store'}).then(r=>{
+  state.response_status=r.status;return r.text();
+ }).then(answer=>{
+  state.exact_body_match=answer===nonce+':'+kind;
+  if(state.exact_body_match)document.documentElement.setAttribute('data-ack-'+kind,nonce);
+ }).catch(error=>{const name=error?.name;state.rejected=['AbortError','TypeError','NetworkError','SecurityError'].includes(name)?name:'OtherError';});
 });
 window.hostMenuSnapshot=()=>({nonce,url:location.href,timeOrigin:performance.timeOrigin,ready:document.readyState,
  copy:document.getElementById('copy').value,paste:document.getElementById('paste').value,note:document.getElementById('note').value,
- trusted:{...trusted},effects:JSON.parse(JSON.stringify(effects)),pasteAck:document.documentElement.getAttribute('data-ack-paste'),noteAck:document.documentElement.getAttribute('data-ack-note')});
+ trusted:{...trusted},effects:JSON.parse(JSON.stringify(effects)),network:JSON.parse(JSON.stringify(network)),pasteAck:document.documentElement.getAttribute('data-ack-paste'),noteAck:document.documentElement.getAttribute('data-ack-note')});
 </script>

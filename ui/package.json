@@ -5,6 +5,7 @@
   "description": "HTML chrome (toolbar, tabs, rail, sidebar, panels, popups) for the Bowser WebView2 chrome host",
   "type": "module",
   "scripts": {
+    "pretest": "node --test --test-concurrency=1 test/surface-failure-diagnostic.mjs",
     "icons": "node scripts/gen-icons.mjs",
     "build": "node scripts/gen-icons.mjs && node build.mjs && node write-manifest.mjs",
     "typecheck": "tsc --noEmit",

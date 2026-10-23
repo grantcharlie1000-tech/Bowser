@@ -10,12 +10,20 @@ on:
       - 'src/win32/store.rs'
       - '.github/workflows/store-probe.yml'
       - 'benchmarks/scripts/probe-default-context-cancellation.ps1'
+      - 'benchmarks/scripts/probe-native-context-observation.ps1'
+      - 'benchmarks/scripts/probe-app-context-menu-reload.ps1'
+      - 'benchmarks/scripts/test-native-menu-helpers.ps1'
+      - 'benchmarks/test-native-safety-source.py'
+      - 'benchmarks/test-initialized-clipboard-helper-source.py'
+      - 'benchmarks/test-initialized-copy-lane-source.py'
       - 'benchmarks/scripts/probe-custom-context-menu.ps1'
       - 'benchmarks/scripts/probe-app-context-menu.ps1'
       - 'benchmarks/scripts/probe-app-host-context-menu.ps1'
       - 'benchmarks/scripts/validate-app-host-menu-fixture.mjs'
       - 'benchmarks/fixtures/app-host-context-menu/**'
       - 'benchmarks/scripts/probe-native-store.ps1'
+      - 'benchmarks/scripts/test-native-store-document-diagnostics.ps1'
+      - 'benchmarks/test-native-store-document-diagnostics-source.py'
       - 'benchmarks/scripts/measure-native-extensions.ps1'
       - 'benchmarks/scripts/test-native-extension-address-guards.ps1'
       - 'benchmarks/test-native-extension-address-source.py'
@@ -142,6 +150,16 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
+      - name: Compile native helper sources without running probe bodies
+        run: |
+          powershell.exe -NoProfile -File ./benchmarks/scripts/test-native-menu-helpers.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'Native helper source compilation or pure serializer contract failed.' }
+          python ./benchmarks/test-native-safety-source.py
+          if ($LASTEXITCODE -ne 0) { throw 'Fail-closed native helper source contracts failed.' }
+          powershell.exe -NoProfile -File ./benchmarks/scripts/test-native-store-document-diagnostics.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'Native Store document diagnostic compilation or synthetic contract failed.' }
+          python ./benchmarks/test-native-store-document-diagnostics-source.py
+          if ($LASTEXITCODE -ne 0) { throw 'Native Store document diagnostic source contracts failed.' }
       - name: Install official Rust toolchain
         run: rustup toolchain install stable --profile minimal
       - name: Build independent native safety executable without marketplace or resource dependencies
@@ -315,20 +333,49 @@ jobs:
           $test = Get-ChildItem target/debug/deps/bowser-*.exe | Sort-Object LastWriteTime -Descending | Select-Object -First 1
           & $test.FullName live_probe_native_api_isolation --ignored --nocapture --test-threads=1 2>&1 | Tee-Object store-native-api-isolation.log
           if ($LASTEXITCODE -ne 0) { throw 'Native broad-host API isolation controls failed.' }
-      - name: Observe genuine native extension menu and cancellation without selection
+      - name: Refuse synthetic GPU ownership protocol and membership mismatches before native input
+        id: gpu_ownership_unit
         if: ${{ !cancelled() && steps.native_build.outcome == 'success' }}
+        run: |
+          # Reuse the exact no-feature native_build binary. Do not build a newer feature variant.
+          $test = @(Get-ChildItem target/debug/deps/bowser-*.exe)
+          if ($test.Count -ne 1) { throw 'Exact single native-build executable unavailable for synthetic ownership checks.' }
+          $listed = @(& $test[0].FullName engine::extension_probe_live::native_menu_ownership::synthetic_policy_tests --list)
+          if ($LASTEXITCODE -ne 0 -or @($listed | Where-Object { $_ -cmatch ': test$' }).Count -ne 6) { throw 'Exact six synthetic ownership tests were not discovered.' }
+          & $test[0].FullName engine::extension_probe_live::native_menu_ownership::synthetic_policy_tests --nocapture --test-threads=1 2>&1 | Tee-Object store-native-gpu-ownership-unit.log
+          if ($LASTEXITCODE -ne 0) { throw 'Synthetic GPU ownership refusal policy failed; no native input acceptance.' }
+
+      - name: Observe genuine native extension menu and cancellation without selection
+        if: ${{ !cancelled() && steps.native_build.outcome == 'success' && steps.gpu_ownership_unit.outcome == 'success' }}
         run: |
           $env:LOCALAPPDATA = Join-Path $env:RUNNER_TEMP 'bowser-store-isolated-localappdata'
           $test = Get-ChildItem target/debug/deps/bowser-*.exe | Sort-Object LastWriteTime -Descending | Select-Object -First 1
           & $test.FullName engine::extension_probe_live::live_probe_native_context_menu_observation --exact --ignored --nocapture --test-threads=1 2>&1 | Tee-Object store-native-context-menu.log
           if ($LASTEXITCODE -ne 0) { throw 'Native menu observation/cancellation unavailable or failed; no selection compatibility verdict.' }
       - name: Probe separate default Chromium menu cancellation with native UIA identity
-        if: ${{ !cancelled() && steps.native_build.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.native_build.outcome == 'success' && steps.gpu_ownership_unit.outcome == 'success' }}
         run: |
           $env:LOCALAPPDATA = Join-Path $env:RUNNER_TEMP 'bowser-store-isolated-localappdata'
           $test = Get-ChildItem target/debug/deps/bowser-*.exe | Sort-Object LastWriteTime -Descending | Select-Object -First 1
           & $test.FullName engine::extension_probe_live::live_probe_default_context_menu_cancellation --exact --ignored --nocapture --test-threads=1 2>&1 | Tee-Object store-default-context-cancellation.log
           if ($LASTEXITCODE -ne 0) { throw 'Default native menu cancellation prerequisite failed or unavailable.' }
+      - name: Preserve bounded native menu proof evidence before later App regressions
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: store-native-menu-proof-diagnostics-${{ github.sha }}
+          path: |
+            store-native-gpu-ownership-unit.log
+            store-native-context-menu.log
+            store-default-context-cancellation.log
+            store-native-context-menu-observation/*.json
+            store-native-context-menu-observation/*.log
+            store-native-context-menu-observation/*.png
+            store-default-context-menu-cancellation/*.json
+            store-default-context-menu-cancellation/*.log
+            store-default-context-menu-cancellation/*.png
+          if-no-files-found: warn
+          retention-days: 14
       - name: Probe documented engine-item native menu cancellation and actual dispatch
         if: ${{ !cancelled() && steps.native_build.outcome == 'success' }}
         run: |
@@ -380,6 +427,33 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Experimental main-window timer collision guard failed.' }
           cargo +stable test --locked --lib --features html-chrome-default,experimental-engine-context-menu engine::app_host_menu_probe::live::host_probe_selection_uses_native_name_or_inserted_role_not_command_range -- --exact --nocapture --test-threads=1 2>&1 | Tee-Object -Append store-real-app-menu-unit.log
           if ($LASTEXITCODE -ne 0) { throw 'Separate host-lane read-only selection diagnostic failed.' }
+
+          # Same already-built experimental feature set; pure pump decisions only, no App/input.
+          $pumpTests = @(cargo +stable test --locked --lib --features html-chrome-default,experimental-engine-context-menu engine::app_context_menu_probe::synthetic_pump_ -- --list)
+          if ($LASTEXITCODE -ne 0 -or @($pumpTests | Where-Object { $_ -cmatch '^engine::app_context_menu_probe::synthetic_pump_[^ ]+: test$' }).Count -ne 2) { throw 'Exact two synthetic pump tests were not discovered.' }
+          cargo +stable test --locked --lib --features html-chrome-default,experimental-engine-context-menu engine::app_context_menu_probe::synthetic_pump_ -- --nocapture --test-threads=1 2>&1 | Tee-Object -Append store-real-app-menu-unit.log
+          if ($LASTEXITCODE -ne 0) { throw 'Synthetic bounded pump/late-refusal policy failed; no live App acceptance.' }
+
+          # Discover the existing experimental executable by its exact pure-test inventory.
+          # No rebuild, second feature variant, App launch, input or clipboard operation.
+          $dispatchFilter = 'engine::app_context_menu_probe::dispatch_trace::synthetic_dispatch_trace_'
+          $dispatchTest = @(Get-ChildItem target/debug/deps/bowser-*.exe | Where-Object {
+            $listed = @(& $_.FullName $dispatchFilter --list)
+            $LASTEXITCODE -eq 0 -and @($listed | Where-Object { $_ -cmatch '^engine::app_context_menu_probe::dispatch_trace::synthetic_dispatch_trace_[^ ]+: test$' }).Count -eq 8
+          })
+          if ($dispatchTest.Count -ne 1) { throw 'Exact single experimental binary with eight dispatch-trace cases unavailable.' }
+          & $dispatchTest[0].FullName $dispatchFilter --nocapture --test-threads=1 2>&1 | Tee-Object -Append store-real-app-menu-unit.log
+          if ($LASTEXITCODE -ne 0) { throw 'Synthetic fixed dispatch attribution failed; no native handler/completion claim.' }
+
+          # Reuse that exact experimental feature variant; no live server/App/input in these cases.
+          $serverTests = @(cargo +stable test --locked --lib --features html-chrome-default,experimental-engine-context-menu engine::app_host_menu_probe::live::loopback::synthetic_loopback_ -- --list)
+          if ($LASTEXITCODE -ne 0 -or @($serverTests | Where-Object { $_ -cmatch '^engine::app_host_menu_probe::live::loopback::synthetic_loopback_[^ ]+: test$' }).Count -ne 4) { throw 'Exact four synthetic loopback tests were not discovered.' }
+          cargo +stable test --locked --lib --features html-chrome-default,experimental-engine-context-menu engine::app_host_menu_probe::live::loopback::synthetic_loopback_ -- --nocapture --test-threads=1 2>&1 | Tee-Object -Append store-real-app-menu-unit.log
+          if ($LASTEXITCODE -ne 0) { throw 'Synthetic fixture HTTP framing/shared-deadline transport policy failed.' }
+          $scriptTests = @(cargo +stable test --locked --lib --features html-chrome-default,experimental-engine-context-menu engine::app_host_menu_probe::live::script_trace::synthetic_script_trace_ -- --list)
+          if ($LASTEXITCODE -ne 0 -or @($scriptTests | Where-Object { $_ -cmatch '^engine::app_host_menu_probe::live::script_trace::synthetic_script_trace_[^ ]+: test$' }).Count -ne 2) { throw 'Exact two synthetic script-trace tests were not discovered.' }
+          cargo +stable test --locked --lib --features html-chrome-default,experimental-engine-context-menu engine::app_host_menu_probe::live::script_trace::synthetic_script_trace_ -- --nocapture --test-threads=1 2>&1 | Tee-Object -Append store-real-app-menu-unit.log
+          if ($LASTEXITCODE -ne 0) { throw 'Synthetic fixed script telemetry state failed; no native completion claim.' }
 
       - name: Probe default-off native engine menu in actual HTML Bowser App
         if: ${{ !cancelled() && steps.experimental_menu_build.outcome == 'success' }}
@@ -498,6 +572,88 @@ jobs:
             store-update-probe.log
           if-no-files-found: warn
           retention-days: 14
+  # Separate explicit environment-precondition experiment, not a retry/rescue of
+  # native-safety's untouched uninitialized clipboard lane. Standard hosted Windows
+  # provides a NEW disposable VM for this job. No cache/profile import, desktop/RDP
+  # connection or other clipboard workload is part of this serial job plan.
+  # Metadata binds provenance; it alone cannot prove exclusive resource custody.
+  initialized-empty-copy:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      BOWSER_INITIALIZED_EMPTY_CLIPBOARD_CONTRACT: github-hosted-fresh-exclusive-empty-v1
+      BOWSER_INITIALIZED_EMPTY_CLIPBOARD_JOB: initialized-empty-copy
+      BOWSER_INITIALIZED_EMPTY_CLIPBOARD_CHECKOUT: ${{ github.sha }}
+      BOWSER_INITIALIZED_EMPTY_CLIPBOARD_RUN: ${{ github.run_id }}
+      BOWSER_INITIALIZED_EMPTY_CLIPBOARD_ATTEMPT: ${{ github.run_attempt }}
+    steps:
+      - name: Preserve exact source bytes in the new disposable hosted VM
+        run: git config --global core.autocrlf false
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Check generated-data clipboard policies without touching the clipboard
+        run: |
+          powershell.exe -NoProfile -File ./benchmarks/scripts/test-native-menu-helpers.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'Managed synthetic clipboard/source contract failed; native fixture not run.' }
+          python ./benchmarks/test-native-safety-source.py
+          if ($LASTEXITCODE -ne 0) { throw 'Original fail-closed source contracts failed.' }
+          python ./benchmarks/test-initialized-clipboard-helper-source.py
+          if ($LASTEXITCODE -ne 0) { throw 'Initialized helper source boundaries failed.' }
+          python ./benchmarks/test-initialized-copy-lane-source.py
+          if ($LASTEXITCODE -ne 0) { throw 'Separate initialized Copy lane boundaries failed.' }
+      - name: Install official Rust toolchain
+        run: rustup toolchain install stable --profile minimal
+      - name: Build one exact experimental test variant without marketplace workloads
+        run: |
+          cargo +stable test --locked --lib --features html-chrome-default,experimental-engine-context-menu --no-run
+          if ($LASTEXITCODE -ne 0) { throw 'Initialized Copy fixture test binary failed to build.' }
+      - name: Execute two generated-data contract tests using that exact binary
+        run: |
+          $test = @(Get-ChildItem target/debug/deps/bowser-*.exe)
+          if ($test.Count -ne 1) { throw 'Exactly one initialized fixture test binary required.' }
+          $filter = 'engine::app_host_menu_probe::live::initialized_clipboard::synthetic_contract_tests'
+          $cases = @(& $test[0].FullName $filter --list)
+          if ($LASTEXITCODE -ne 0 -or @($cases | Where-Object { $_ -cmatch '^engine::app_host_menu_probe::live::initialized_clipboard::synthetic_contract_tests::[^ ]+: test$' }).Count -ne 2) { throw 'Exact two synthetic initialized contract cases not discovered.' }
+          & $test[0].FullName $filter --nocapture --test-threads=1 2>&1 | Tee-Object initialized-copy-contract.log
+          if ($LASTEXITCODE -ne 0) { throw 'Synthetic initialized metadata contract failed; no clipboard authority.' }
+      - name: Execute eight pure dispatch-attribution tests using that exact binary
+        run: |
+          $test = @(Get-ChildItem target/debug/deps/bowser-*.exe)
+          if ($test.Count -ne 1) { throw 'Exact single initialized experimental test executable unavailable.' }
+          $dispatchFilter = 'engine::app_context_menu_probe::dispatch_trace::synthetic_dispatch_trace_'
+          $cases = @(& $test[0].FullName $dispatchFilter --list)
+          if ($LASTEXITCODE -ne 0 -or @($cases | Where-Object { $_ -cmatch '^engine::app_context_menu_probe::dispatch_trace::synthetic_dispatch_trace_[^ ]+: test$' }).Count -ne 8) { throw 'Exact eight synthetic dispatch-attribution cases not discovered.' }
+          & $test[0].FullName $dispatchFilter --nocapture --test-threads=1 2>&1 | Tee-Object initialized-copy-dispatch-contract.log
+          if ($LASTEXITCODE -ne 0) { throw 'Synthetic dispatch attribution failed; live Copy was not reached.' }
+      - name: Exercise one genuine native Copy under the explicit initialized-empty precondition
+        run: |
+          $test = @(Get-ChildItem target/debug/deps/bowser-*.exe)
+          if ($test.Count -ne 1) { throw 'Exact single disposable test executable unavailable.' }
+          $live = 'engine::app_host_menu_probe::live::initialized_clipboard::live_probe_initialized_empty_native_copy'
+          $cases = @(& $test[0].FullName $live --exact --ignored --list)
+          if ($LASTEXITCODE -ne 0 -or @($cases | Where-Object { $_ -ceq ($live + ': test') }).Count -ne 1) { throw 'Exact ignored initialized Copy test unavailable.' }
+          Get-FileHash -Algorithm SHA256 -LiteralPath $test[0].FullName | Format-List | Out-String | Tee-Object initialized-copy-binary.log
+          $env:BOWSER_EXTENSION_TRACE = '1'
+          $env:LOCALAPPDATA = Join-Path $env:RUNNER_TEMP 'bowser-initialized-empty-copy-localappdata'
+          New-Item -ItemType Directory -Force $env:LOCALAPPDATA | Out-Null
+          & $test[0].FullName $live --exact --ignored --nocapture --test-threads=1 2>&1 | Tee-Object initialized-copy-native.log
+          if ($LASTEXITCODE -ne 0) { throw 'Initialized disposable-VM native Copy failed; uninitialized zero lane is not remediated.' }
+      - name: Preserve independent initialized fixture evidence even on refusal
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: initialized-empty-copy-diagnostics-${{ github.sha }}
+          path: |
+            initialized-copy-*.log
+            store-initialized-empty-copy/**/*.json
+            store-initialized-empty-copy/**/*.txt
+          if-no-files-found: warn
+          retention-days: 14
+
   native-store-journey:
     runs-on: windows-latest
     timeout-minutes: 20
