@@ -65,11 +65,14 @@ fn drive<P:Driver>(budget:Duration,mut ready:impl FnMut()->bool,driver:&mut P)->
         for _ in 0..BURST {
             if driver.elapsed()>=budget{return scope.finish("expired");}
             scope.mark(Phase::PeekEnter);let message=driver.peek();scope.mark(Phase::PeekReturn);
-            // PeekMessage may itself dispatch nonqueued callbacks. Even on expiry, never
-            // swallow the application's quit signal that was removed by that call.
+            // PeekMessage may itself dispatch nonqueued callbacks. Every removed message
+            // still needs its exact-once disposition, even if that callback exhausted the
+            // budget. Dispatch ordinary messages in place; never repost pointer-bearing MSG.
             if let Some(code)=message.as_ref().and_then(P::quit){driver.repost_quit(code);return scope.finish("quit");}
-            if driver.elapsed()>=budget{return scope.finish("expired");}
-            let Some(message)=message else{break};
+            let Some(message)=message else{
+                if driver.elapsed()>=budget{return scope.finish("expired");}
+                break;
+            };
             scope.mark(Phase::DispatchEnter);driver.dispatch(message);scope.mark(Phase::DispatchReturn);
             if driver.elapsed()>=budget{return scope.finish("expired");}
         }
@@ -140,10 +143,18 @@ mod tests {
         assert_eq!(driver.peeks,0);assert_eq!(last_frame().unwrap().outcome,"expired");
     }
     #[test]
-    fn peek_nonqueued_callback_expiry_is_refused_without_dispatch(){
-        let clock=Rc::new(Cell::new(0));let mut driver=Fake::new(clock);driver.peek_delay=6;
-        assert!(!drive(Duration::from_millis(5),||false,&mut driver));
-        assert_eq!(driver.dispatched,0);let last=last_frame().unwrap();assert_eq!((last.peek_enter,last.peek_return),(1,1));
+    fn peek_expiry_disposes_removed_message_once_without_late_readiness(){
+        let clock=Rc::new(Cell::new(0));let mut driver=Fake::new(clock);driver.peek_delay=6;let mut checks=0;
+        assert!(!drive(Duration::from_millis(5),||{checks+=1;false},&mut driver));
+        assert_eq!(checks,1);assert_eq!(driver.peeks,1);assert_eq!(driver.dispatched,1);assert_eq!(driver.reposted,None);
+        let last=last_frame().unwrap();assert_eq!((last.peek_enter,last.peek_return),(1,1));
+        assert_eq!((last.dispatch_enter,last.dispatch_return),(1,1));assert_eq!(last.outcome,"expired");
+    }
+    #[test]
+    fn peek_expiry_without_removed_message_never_dispatches_or_rechecks(){
+        let clock=Rc::new(Cell::new(0));let mut driver=Fake::new(clock);driver.peek_delay=6;driver.busy=false;let mut checks=0;
+        assert!(!drive(Duration::from_millis(5),||{checks+=1;false},&mut driver));
+        assert_eq!(checks,1);assert_eq!(driver.peeks,1);assert_eq!(driver.dispatched,0);assert_eq!(driver.reposted,None);
     }
     #[test]
     fn dispatch_callback_expiry_is_refused_without_late_ready_check(){

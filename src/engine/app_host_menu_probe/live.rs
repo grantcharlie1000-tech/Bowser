@@ -232,6 +232,38 @@ fn native_input(app:&AppRef,h:&NativeContextProbeHandles,tab:TabId,proof:(u64,u6
 }
 
 fn snapshot(view:&ICoreWebView2)->Value {script(view,"hostMenuSnapshot()")}
+fn value_class(value:Option<&Value>,token:&str)->&'static str {
+    match value {
+        Some(Value::String(s)) if s.is_empty()=>"empty",
+        Some(Value::String(s)) if s==&format!("note-{token}")=>"exact-note",
+        Some(Value::String(s)) if s==&format!("paste-{token}")=>"exact-paste",
+        Some(Value::String(_))=>"other-string",
+        Some(Value::Null)=>"null",
+        _=>"missing-or-wrong-type",
+    }
+}
+fn note_failure(out:&Path,last:Option<&Value>,before:&Value,server:&Loopback) {
+    // Classify only the snapshot already collected by the existing bounded wait. No
+    // additional script/input, clipboard read, content dump or acknowledgment acceptance.
+    let class=|key|value_class(last.and_then(|v|field(v,key)),&server.nonce);
+    let count=|key|last.and_then(|v|field(v,"effects")).and_then(|v|field(v,key)).and_then(|v|match v {Value::Array(a)=>Some(a.len()),_=>None});
+    let document_same=last.is_some_and(|v|["nonce","url","timeOrigin","ready","copy"].iter().all(|key|field(v,key)==field(before,key)));
+    let ack=|key|last.and_then(|v|field(v,key))==Some(&Value::String(server.nonce.clone()));
+    let receipts=server.receipts.lock().unwrap();
+    let evidence=format!(r#"{{"scope":"bounded-existing-snapshot-classification-not-authority","snapshot_present":{},"document_same":{},"paste_class":"{}","note_class":"{}","paste_ack_matches":{},"note_ack_matches":{},"paste_events":{},"note_events":{},"server_paste":{},"server_note":{},"server_destination":{},"pump_calls":{}}}"#,
+        last.is_some(),document_same,class("paste"),class("note"),ack("pasteAck"),ack("noteAck"),
+        count("paste").map(|v|v.to_string()).unwrap_or_else(||"null".into()),count("note").map(|v|v.to_string()).unwrap_or_else(||"null".into()),
+        receipts.paste,receipts.note,receipts.destination,super::super::native_probe_pump::diagnostic_json());
+    assert!(evidence.len()<8192);
+    std::fs::write(out.join("note-effect-failure.json"),evidence).expect("bounded Note failure classification write");
+}
+#[test]
+fn effect_failure_classification_never_includes_unknown_contents(){
+    for (value,expected) in [(Value::String("".into()),"empty"),(Value::String("note-17-42".into()),"exact-note"),(Value::String("paste-17-42".into()),"exact-paste"),(Value::String("unknown contents".into()),"other-string"),(Value::Null,"null"),(Value::Bool(true),"missing-or-wrong-type")] {
+        assert_eq!(value_class(Some(&value),"17-42"),expected);
+    }
+    assert_eq!(value_class(None,"17-42"),"missing-or-wrong-type");
+}
 fn unchanged_document(now:&Value,before:&Value) {
     for key in ["nonce","url","timeOrigin","ready","copy"]{assert_eq!(field(now,key),field(before,key),"source document identity/content changed: {key}")}
 }
@@ -265,7 +297,9 @@ fn sequence(app:&AppRef,root:&Path,server:&Loopback,out:&Path) {
     let mut pasted=None;assert!(pump_until(Duration::from_secs(10),||{let value=snapshot(&source.view);let ready=field(&value,"pasteAck")==Some(&Value::String(token.clone()));pasted=Some(value);ready}),"native Paste source/server nonce acknowledgment absent");
     let pasted=pasted.unwrap();unchanged_document(&pasted,&before);assert_eq!(text(&pasted,"paste"),format!("paste-{token}"));assert_eq!(text(&pasted,"note"),"");let paste_events=array(field(&pasted,"effects").unwrap(),"paste");assert_eq!(paste_events.len(),1);assert_eq!(text(&paste_events[0],"value"),format!("paste-{token}"));assert_bool(&paste_events[0],"trusted",true);assert!(array(field(&pasted,"effects").unwrap(),"note").is_empty());effects(server,1,0,0);assert_eq!(snapshot(&negative.view),negative_before);assert_eq!(storage(root),persistent_before);assert_eq!(App::tab_ids(app),tabs_before);
     native_input(app,&source,source_tab,proof,"Note","note",token,&out.join("note"));
-    let mut noted=None;assert!(pump_until(Duration::from_secs(10),||{let value=snapshot(&source.view);let ready=field(&value,"noteAck")==Some(&Value::String(token.clone()));noted=Some(value);ready}),"actual host Insert note source/server nonce acknowledgment absent");
+    let mut noted=None;let note_ready=pump_until(Duration::from_secs(10),||{let value=snapshot(&source.view);let ready=field(&value,"noteAck")==Some(&Value::String(token.clone()));noted=Some(value);ready});
+    if !note_ready {note_failure(out,noted.as_ref(),&before,server);}
+    assert!(note_ready,"actual host Insert note source/server nonce acknowledgment absent");
     let noted=noted.unwrap();unchanged_document(&noted,&before);assert_eq!(text(&noted,"paste"),format!("paste-{token}"));assert_eq!(text(&noted,"note"),format!("note-{token}"));let note_events=array(field(&noted,"effects").unwrap(),"note");assert_eq!(note_events.len(),1);assert_eq!(text(&note_events[0],"value"),format!("note-{token}"));assert_eq!(array(field(&noted,"effects").unwrap(),"paste"),paste_events);assert_eq!(snapshot(&negative.view),negative_before);assert_eq!(storage(root),persistent_before);assert_eq!(App::tab_ids(app),tabs_before);effects(server,1,1,0);current(&source,proof);current(&negative,negative_proof);
     // Split is deliberately LAST: require the actual deferred window route to create exactly one
     // AppTab and a live source/destination split, not merely a requested URL or callback receipt.
