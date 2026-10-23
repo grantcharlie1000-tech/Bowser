@@ -126,10 +126,11 @@ jobs:
             @{ tag = 'v0.0.19'; version = '0.0.19'; revision = 20 },
             @{ tag = 'v0.0.20'; version = '0.0.20'; revision = 21 },
             @{ tag = 'v0.0.21'; version = '0.0.21'; revision = 22 },
-            @{ tag = 'v0.0.22'; version = '0.0.22'; revision = 23 }
+            @{ tag = 'v0.0.22'; version = '0.0.22'; revision = 23 },
+            @{ tag = 'v0.0.23'; version = '0.0.23'; revision = 24 }
           )
           $allowed = @($allowedLatest | Where-Object { $pin.tag -ceq $_.tag -and $pin.version -ceq $_.version -and $pin.revision -eq $_.revision })
-          if ($pin.repository -cne $repo -or $allowed.Count -ne 1 -or $pin.asset -cne 'Bowser.exe') { throw 'Latest promotion is restricted to the allow-listed verified releases (v0.0.19 revision 20, v0.0.20 revision 21, v0.0.21 revision 22, v0.0.22 revision 23).' }
+          if ($pin.repository -cne $repo -or $allowed.Count -ne 1 -or $pin.asset -cne 'Bowser.exe') { throw 'Latest promotion is restricted to the allow-listed verified releases (v0.0.19 revision 20, v0.0.20 revision 21, v0.0.21 revision 22, v0.0.22 revision 23, v0.0.23 revision 24).' }
           if ($pin.tag -cne $env:VERIFIED_TAG -or $pin.commit -cne $env:VERIFIED_SOURCE -or $pin.sha256 -cne $env:VERIFIED_SHA256 -or [string]$pin.bytes -cne $env:VERIFIED_BYTES -or [string]$pin.revision -cne $env:VERIFIED_REVISION) { throw 'Pin differs from successful isolated-install verification.' }
           if ($pin.commit -cnotmatch '^[0-9a-f]{40}$' -or $pin.sha256 -cnotmatch '^[0-9a-f]{64}$' -or $pin.bytes -lt 512 -or $pin.bytes -gt 536870912) { throw 'Invalid pinned package identity.' }
           $headers = @{ Accept = 'application/vnd.github+json'; 'X-GitHub-Api-Version' = '2022-11-28'; 'User-Agent' = 'Bowser-stable-latest-verification' }
