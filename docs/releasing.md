@@ -98,12 +98,15 @@ Artifact publication alone is not a stable rollout or an installed update.
 
 ## 6. Rollback
 
-The updater will not downgrade a user already running v0.0.23. To stop rollout,
-a separately reviewed pin can point at v0.0.22 with the higher revision 25:
-commit `5ee87578415e1c9b1784ca25891a5eca3706c44d`, sha256
-`df47e88a46136c30d22b7d7b612d759b00db1bbf1f3a989f26dad2987223353d`,
-8414720 bytes. Its exact tag/version/revision must also be added to the
-latest allow-list. The real repair is a new verified fix-forward release.
+The updater will not downgrade a user already running v0.0.23. Use a newly
+built and verified fix-forward release with a higher version and pin revision.
+Its immutable metadata, stable pin and exact latest allow-list entry must agree.
+
+The current verification contract requires the release metadata revision to
+equal the stable pin revision. The immutable v0.0.22 artifact records revision
+23, so pointing at it with revision 25 would fail verification and is not a
+supported rollback. Never alter published metadata or bypass the identity gates.
+Any emergency rollback needs a separately designed and reviewed procedure.
 Never delete or retag v0.0.22 or v0.0.23.
 
 Leave all older one-time release and recovery workflows unchanged and do not
