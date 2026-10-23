@@ -466,6 +466,7 @@ jobs:
             store-band-loader-imports.log
             store-band-loader-identity.log
             store-native-runner-state.json
+            store-profile-isolation-negative-control.json
             store-band-libtest-manifest.log
             store-band-libtest.manifest.xml
             store-band-system-comctl-exports.log

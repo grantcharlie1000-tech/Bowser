@@ -26,6 +26,11 @@ public static class BowserNativeRunnerState {
     static extern bool ObjectInput(IntPtr handle, int kind, out int value, uint size, out uint needed);
     [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
     [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr handle, out uint pid);
+    [DllImport("user32.dll", CharSet=CharSet.Unicode)] static extern int GetClassNameW(IntPtr handle, StringBuilder text, int count);
+    [DllImport("user32.dll")] static extern bool IsWindow(IntPtr handle);
+    [DllImport("user32.dll")] static extern IntPtr GetParent(IntPtr handle);
+    [DllImport("user32.dll")] static extern IntPtr GetWindow(IntPtr handle, uint command);
+    [DllImport("user32.dll")] static extern IntPtr GetAncestor(IntPtr handle, uint flags);
     [DllImport("user32.dll")] static extern uint GetClipboardSequenceNumber();
     static object Text(IntPtr handle, int kind) {
         var value = new StringBuilder(128); uint needed;
@@ -62,7 +67,25 @@ public static class BowserNativeRunnerState {
     public static object DescribeSequence(uint number) {
         return new { number=number, nonzero_observed=number!=0, authority=false };
     }
-    public static object Capture() {
+    public static object DescribeWindow(IntPtr handle) {
+        uint pid; uint thread=GetWindowThreadProcessId(handle,out pid);
+        if(handle==IntPtr.Zero || thread==0 || pid==0 || !IsWindow(handle))
+            return new { status="unavailable", non_atomic=true, authority=false };
+        var text=new StringBuilder(64); int count=GetClassNameW(handle,text,64);
+        IntPtr parent=GetParent(handle), owner=GetWindow(handle,4), root=GetAncestor(handle,2), rootOwner=GetAncestor(handle,3);
+        uint afterPid; uint afterThread=GetWindowThreadProcessId(handle,out afterPid);
+        if(!IsWindow(handle) || thread!=afterThread || pid!=afterPid)
+            return new { status="changed-during-read-details-discarded", non_atomic=true, authority=false };
+        string name=count>0 && count<63 ? text.ToString() : null;
+        string kind=name=="BowserNativeWindow" ? "bowser-main" : name=="BowserExtensionPage" ? "bowser-extension-page" :
+            name=="ConsoleWindowClass" ? "console" : name=="Chrome_WidgetWin_2" ? "chromium-popup" : "other-or-unavailable";
+        // Same PID/thread does not prove HWND lifetime. Never use this classification for input.
+        return new { status="captured-pid-thread-rechecked-not-lifetime-proof", handle=handle.ToInt64(),
+            process_id=pid, thread_id=thread, class_kind=kind, class_query_complete=name!=null,
+            parent=parent.ToInt64(), owner=owner.ToInt64(), root=root.ToInt64(), root_owner=rootOwner.ToInt64(),
+            non_atomic=true, authority=false };
+    }
+    public static object Capture(bool failureDetails) {
         uint pid=GetCurrentProcessId(), tid=GetCurrentThreadId(), foregroundPid;
         IntPtr foreground=GetForegroundWindow();
         uint foregroundTid=GetWindowThreadProcessId(foreground, out foregroundPid);
@@ -70,7 +93,7 @@ public static class BowserNativeRunnerState {
             window_station=UserObject(GetProcessWindowStation(),false),
             desktop=UserObject(GetThreadDesktop(tid),true),
             foreground=new { handle=foreground.ToInt64(), process_id=foregroundPid,
-                thread_id=foregroundTid, session=Session(foregroundPid) },
+                thread_id=foregroundTid, session=Session(foregroundPid), window=failureDetails ? DescribeWindow(foreground) : null },
             clipboard_sequence=DescribeSequence(GetClipboardSequenceNumber()), non_atomic=true, authority=false };
     }
 }
@@ -95,7 +118,7 @@ function Get-BowserNativeRunnerState {
         }
         state = $null
     }
-    try { $result.state = [BowserNativeRunnerState]::Capture(); $result.status = 'captured' }
+    try { $result.state = [BowserNativeRunnerState]::Capture(($Phase -eq 'failure')); $result.status = 'captured' }
     catch { $result.error_type = $_.Exception.GetType().FullName }
     return $result
 }

@@ -1550,7 +1550,23 @@ fn live_probe_profile_private_isolation() {
     let loopback = Loopback::start(); let mut owner = Session::open(&profile, vec![(id.clone(), folder.clone())], vec![(id.clone(), true)], &loopback.page("owner-positive"));
     assert!(owner.wait_for_add(&profile, &id).1.is_none()); assert!(owner.wait_for_worker_reply(&loopback));
     let other_loopback = Loopback::start(); let mut other = Session::open(&root.join("different-profile"), vec![], vec![], &other_loopback.page("other-profile-negative"));
-    assert!(pump_until(Duration::from_secs(15), || other_loopback.beacons.lock().unwrap().iter().any(|p| p == "/other-profile-negative"))); pump_until(Duration::from_secs(2), || false);
+    let other_loaded=pump_until(Duration::from_secs(15), || other_loopback.beacons.lock().unwrap().iter().any(|p| p == "/other-profile-negative"));
+    if !other_loaded {
+        // Existing controlled-server state only: no extra navigation, native call or acceptance.
+        let records=other_loopback.beacons.lock().unwrap();
+        let observations=records.iter().take(32).map(|path|format!(
+            r#"{{"bytes":{},"expected":{},"beacon":{},"possible_partial_expected_path":{}}}"#,
+            path.len(),path=="/other-profile-negative",path.starts_with(BEACON_PREFIX),
+            !path.is_empty()&&path!="/other-profile-negative"&&"/other-profile-negative".starts_with(path.as_str())
+        )).collect::<Vec<_>>().join(",");
+        let startup=other.engine.probe_extension_startup_state();
+        let report=format!(r#"{{"scope":"failure-only-negative-control-existing-state-not-isolation-authority","authority":false,"fixed_budget_ms":15000,"request_count":{},"truncated":{},"requests":[{}],"native_failure_count":{},"extension_configuration_enabled":{},"startup_failure_present":{}}}"#,
+            records.len(),records.len()>32,observations,other.failures.borrow().len(),startup.0,startup.1.is_some());
+        if let Ok(mut file)=std::fs::OpenOptions::new().write(true).create_new(true).open("store-profile-isolation-negative-control.json") {
+            let _=file.write_all(report.as_bytes());
+        }
+    }
+    assert!(other_loaded,"different-profile negative control request absent within the fixed 15-second budget"); pump_until(Duration::from_secs(2), || false);
     assert_eq!(other.read_marker("data-bowser-probe").as_deref(), Some("null"));
     assert!(!other_loopback.beacons.lock().unwrap().iter().any(|p| p.starts_with(BEACON_PREFIX)));
     assert!(!other.native_inventory().unwrap().iter().any(|(native, _)| native == KEY_FIXTURE_ID));

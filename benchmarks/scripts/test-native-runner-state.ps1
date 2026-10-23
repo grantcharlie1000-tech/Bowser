@@ -19,4 +19,8 @@ Assert-True ($state.status -eq 'captured' -and $state.state.process_id -eq [Diag
 Assert-True ($state.state.non_atomic -and -not $state.state.authority) 'Native observations must preserve their non-atomic, non-authorizing classification.'
 $roundTrip = $state | ConvertTo-Json -Depth 8 | ConvertFrom-Json
 Assert-True (-not $roundTrip.clipboard_authority -and -not $roundTrip.state.clipboard_sequence.authority) 'Serialization must not turn diagnostic observations into authority.'
-Write-Output 'Native runner diagnostic regressions: 7 passed; no input or clipboard mutation performed.'
+$absent = [BowserNativeRunnerState]::DescribeWindow([IntPtr]::Zero)
+Assert-True ($absent.status -eq 'unavailable' -and -not $absent.authority -and $absent.non_atomic) 'A missing foreground window must stay unknown and non-authorizing.'
+$failure = Get-BowserNativeRunnerState -Phase failure
+Assert-True (-not $failure.state.foreground.window.authority -and $failure.state.foreground.window.non_atomic) 'Failure-only foreground metadata must not grant input authority.'
+Write-Output 'Native runner diagnostic regressions: 9 passed; no input or clipboard mutation performed.'
