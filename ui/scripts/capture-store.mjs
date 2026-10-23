@@ -28,7 +28,7 @@ document.querySelector('#app').append(store.root);
 const button = text => Array.from(store.root.querySelectorAll('button')).find(x=>x.textContent===text);
 try {
   sendSnap({});
-  expect(document.activeElement.textContent==='Bowser Store','store entry focus');
+  expect(document.activeElement.textContent==='Extension installation','store entry focus');
   button('Get extension').click();
   expect(results.commands.length===1 && results.commands[0].a==='storeinstall','request before consent');
   sendSnap({phase:'downloading',requestId:'qa-1'});

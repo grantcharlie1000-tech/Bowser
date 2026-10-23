@@ -1257,6 +1257,13 @@ pub fn extension_page_url(
     let bytes = read_page_manifest(folder)?;
     let path = declared_page(&bytes, kind).ok_or(PageError::NoPage)?;
     let url = page_url(webview_id, &path)?;
+    plain_file_chain(folder, &path).ok_or(PageError::MissingFile)?;
+    Ok(url)
+}
+
+/// The on-disk path of `path` (already checked by [`is_plain_page_path`]) under `folder`, only when
+/// every folder on the way and the file itself are plain: no link or junction anywhere in the chain.
+fn plain_file_chain(folder: &Path, path: &str) -> Option<PathBuf> {
     let mut current = folder.to_path_buf();
     let segments: Vec<&str> = path.split('/').collect();
     for (index, segment) in segments.iter().enumerate() {
@@ -1267,10 +1274,32 @@ pub fn extension_page_url(
             is_plain_dir(&current)
         };
         if !plain {
-            return Err(PageError::MissingFile);
+            return None;
         }
     }
-    Ok(url)
+    Some(current)
+}
+
+/// The bytes of a plain file a manifest names by a relative path, read from `folder`. `None` for an
+/// unsafe path (absolute, `..`, backslash, drive, scheme), a link anywhere on the way, a non-file,
+/// a file over `max` bytes or any read error. The open itself refuses to follow a reparse point.
+pub(crate) fn read_declared_file(folder: &Path, path: &str, max: u64) -> Option<Vec<u8>> {
+    if !is_plain_page_path(path) {
+        return None;
+    }
+    let file_path = plain_file_chain(folder, path)?;
+    let mut file = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(file_path)
+        .ok()?;
+    let meta = file.metadata().ok()?;
+    if !is_plain_file(&meta) || meta.len() > max {
+        return None;
+    }
+    let mut bytes = Vec::new();
+    (&mut file).take(max + 1).read_to_end(&mut bytes).ok()?;
+    (bytes.len() as u64 <= max).then_some(bytes)
 }
 
 static LOAD_RESULTS: Mutex<BTreeMap<String, String>> = Mutex::new(BTreeMap::new());

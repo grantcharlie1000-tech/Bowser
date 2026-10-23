@@ -325,6 +325,13 @@ pub(crate) fn extensions_changed() {
     window::post_to_every_window(WM_EXTENSIONS_CHANGED);
 }
 
+/// The Web Store's own installer download was cancelled in the window `owner` hosts (or is a child
+/// of): queues a request for Bowser's explicit install flow for extension `id`, to run from the
+/// window procedure. The request is re-checked against the active Store listing there.
+pub(crate) fn request_store_install(owner: HWND, id: &str) {
+    store::request_from_download(owner, id);
+}
+
 // --- split view ---
 /// Opens `url` beside the shown tab once the window procedure runs (link context menu).
 pub(crate) fn queue_split_link(owner: HWND, url: url::Url) {

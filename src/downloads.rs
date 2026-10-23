@@ -108,6 +108,60 @@ pub struct DownloadRequest {
     pub total: i64,
 }
 
+/// The deliberately dead host the Chrome Web Store's own "Add to Chrome" flow points its download
+/// at. `.invalid` is reserved and never resolves, so nothing can ever be saved from it.
+pub const STORE_PLACEHOLDER_HOST: &str = "permanently-removed.invalid";
+
+/// True when `url` is on exactly [`STORE_PLACEHOLDER_HOST`] (case-insensitively, no trailing dot, no
+/// look-alike suffix or prefix). Such a download can never succeed, so it is never recorded and a
+/// recorded one is never retried or resumed.
+pub fn is_store_placeholder_url(url: &str) -> bool {
+    url::Url::parse(url).is_ok_and(|url| url.host_str() == Some(STORE_PLACEHOLDER_HOST))
+}
+
+/// The extension id of the Web Store's installer placeholder download, or `None` for anything else:
+/// `https://permanently-removed.invalid/?...prod=chromiumcrx...&x=id%3D<32 a-p chars>%26installsource%3Dondemand...`.
+/// Strict on purpose: exact host, `https`, no userinfo or port, one `prod=chromiumcrx` and one `x`
+/// holding exactly one `id` of 32 `a`-`p` characters. The id is only a lead for Bowser's own,
+/// separately validated install flow; it never installs anything by itself.
+pub fn store_placeholder_id(url: &str) -> Option<String> {
+    let url = url::Url::parse(url).ok()?;
+    if url.scheme() != "https"
+        || url.host_str() != Some(STORE_PLACEHOLDER_HOST)
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.port().is_some()
+    {
+        return None;
+    }
+    let only = |wanted: &str| {
+        let mut found = url.query_pairs().filter(|(key, _)| key == wanted);
+        let first = found.next()?.1.into_owned();
+        found.next().is_none().then_some(first)
+    };
+    if only("prod")? != "chromiumcrx" {
+        return None;
+    }
+    let inner = only("x")?;
+    let mut ids = url::form_urlencoded::parse(inner.as_bytes()).filter(|(key, _)| key == "id");
+    let id = ids.next()?.1.into_owned();
+    if ids.next().is_some() {
+        return None;
+    }
+    crate::crx_fetch::parse_extension_id(&id).ok()
+}
+
+/// What a Retry of a recorded download should do with `url`: open it again, open the extension's Web
+/// Store listing (where Bowser's own "Add to Bowser" button lives) when it was the Store's installer
+/// placeholder, or nothing when it is a placeholder without a usable id.
+fn retry_target(url: &str) -> Option<String> {
+    match (is_store_placeholder_url(url), store_placeholder_id(url)) {
+        (false, _) => Some(url.to_owned()),
+        (true, Some(id)) => Some(format!("https://chromewebstore.google.com/detail/{id}")),
+        (true, None) => None,
+    }
+}
+
 /// Where a download goes.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DownloadPlan {
@@ -1101,14 +1155,19 @@ impl DownloadManager {
         let has_url = !entry.url.is_empty();
         match action {
             Action::Pause => entry.state == State::Active && entry.op.is_some(),
+            // The Store's placeholder URL can never be fetched: resuming it only fails again.
             Action::Resume => {
-                entry.op.is_some() && (entry.state == State::Paused || (entry.state == State::Failed && entry.resume))
+                entry.op.is_some()
+                    && (entry.state == State::Paused || (entry.state == State::Failed && entry.resume))
+                    && !is_store_placeholder_url(&entry.url)
             }
             Action::Cancel => entry.state.in_progress() && entry.op.is_some(),
             Action::Open | Action::Show => entry.state == State::Done && !entry.missing,
             Action::Remove => !entry.state.in_progress(),
             Action::CopyLink => has_url,
-            Action::Retry => has_url && matches!(entry.state, State::Failed | State::Cancelled),
+            Action::Retry => {
+                has_url && matches!(entry.state, State::Failed | State::Cancelled) && retry_target(&entry.url).is_some()
+            }
             Action::OpenPage | Action::OpenFolder | Action::ClearAll => false,
         }
     }
@@ -1141,7 +1200,7 @@ impl DownloadManager {
                 Outcome::Changed
             }
             Action::CopyLink => Outcome::CopyLink(entry.url),
-            Action::Retry => Outcome::Retry(entry.url),
+            Action::Retry => retry_target(&entry.url).map_or(Outcome::Rejected, Outcome::Retry),
             Action::OpenPage | Action::OpenFolder | Action::ClearAll => Outcome::Rejected,
         }
     }

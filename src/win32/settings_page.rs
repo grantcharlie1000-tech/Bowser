@@ -635,6 +635,7 @@ fn answer(owner: HWND, result: Result<(), String>) {
 /// the page is shown over a settings tab; anything else is dropped.
 pub(crate) fn run_queued(owner: HWND, app: &AppRef) {
     super::store::apply_completed(owner);
+    super::store::apply_download_requests(owner, app);
     // A filter list a worker fetched for the Privacy section is stored first (thread T3).
     if super::protection::apply_fetched(app, owner) {
         let _ = with(owner, |rt| rt.dirty = true);

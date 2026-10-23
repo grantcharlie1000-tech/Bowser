@@ -184,9 +184,13 @@ pub fn display_form(url: &Url) -> String {
 
 /// The condensed address shown when `minimal_url` is on and the field is unfocused: the registrable
 /// host, plus the path when it is more than just `/`. Query and fragment are dropped, since they are
-/// rarely useful once condensed. Falls back to [`display_form`] for a URL with no host (`file://`,
-/// internal pages).
+/// rarely useful once condensed. Falls back to [`display_form`] for a URL with no host (`file://`)
+/// and for internal `bowser://` pages, whose trusted address is shown intact: a condensed
+/// `bowser://store` would read as just `store`, which looks like any other site's host.
 pub fn minimal_display_form(url: &Url) -> String {
+    if crate::internal_page::is_internal(url) {
+        return display_form(url);
+    }
     let Some(host) = url.host_str() else {
         return display_form(url);
     };
@@ -678,6 +682,25 @@ mod tests {
         assert_eq!(minimal_display_form(&url("http://127.0.0.1:8731/article.html")), "127.0.0.1/article.html");
         assert_eq!(minimal_display_form(&url("http://192.168.1.20/")), "192.168.1.20");
         assert_eq!(minimal_display_form(&url("http://[::1]:8080/a")), "[::1]/a");
+    }
+
+    #[test]
+    fn internal_pages_keep_their_whole_trusted_address_in_the_minimal_form() {
+        for text in [
+            "bowser://store",
+            "bowser://settings",
+            "bowser://settings/search",
+            "bowser://history",
+            "bowser://downloads",
+        ] {
+            assert_eq!(minimal_display_form(&url(text)), text, "{text}");
+            assert_eq!(address_display(&url(text), true), text);
+            assert_eq!(address_display(&url(text), false), text);
+        }
+        // Websites still condense, including one whose host happens to be called `store`.
+        assert_eq!(minimal_display_form(&url("https://www.example.com/a?q=1")), "example.com/a");
+        assert_eq!(minimal_display_form(&url("https://store.example.com/")), "example.com");
+        assert_eq!(minimal_display_form(&url("file:///C:/a.html")), "file:///C:/a.html");
     }
 
     #[test]

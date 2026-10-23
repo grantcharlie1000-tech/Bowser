@@ -1,14 +1,39 @@
 /* Surface: BOWSER STORE (?view=settings over bowser://store). Owner: store.
- * Trusted host child; local glyphs only, theme tokens and shared components. */
+ * Trusted host child; local glyphs only, theme tokens and shared components.
+ *
+ * Two modes. Idle is the curated catalogue (side nav + cards). While a request is in flight
+ * (`.bs.is-install`) the page is one centred column holding the installation card: which package,
+ * the Download / Verify / Review / Install steps, the state, then its actions.
+ * Colour: running work is neutral (a text-tinted bar, never the accent: Rust colours the accent and
+ * the page-load bar with the user's theme colour, which may be red). The accent marks only the
+ * consent step and its primary button. --bs-danger is for real failures only; --bs-ok for done.
+ * Motion: the indeterminate sweep is the one loop, only while work runs with no known size; under
+ * reduced motion it stands still (base.css turns transitions into short fades). */
 #app.sp-root > .sp[hidden], .bs[hidden], .bs [hidden] { display: none; }
-.bs { height: 100%; overflow: auto; padding: var(--bw-space-6); background: var(--bw-window-opaque); color: var(--bw-text); font: var(--bw-text-body)/var(--bw-leading-body) var(--bw-font); }
-.bs h1, .bs h2, .bs h3, .bs p { margin: 0; }
+.bs {
+  --bs-col: 720px;
+  --bs-card: color-mix(in srgb, var(--bw-text) 4%, var(--bw-window-opaque));
+  --bs-tile: color-mix(in srgb, var(--bw-text) 7%, transparent);
+  --bs-edge: color-mix(in srgb, var(--bw-text) 12%, transparent);
+  --bs-track: color-mix(in srgb, var(--bw-text) 12%, transparent);
+  --bs-run: color-mix(in srgb, var(--bw-text) 70%, transparent); /* neutral in-progress fill */
+  --bs-danger: #ff9a8b; /* proposed token: --bw-danger (dark), as downloads.css */
+  --bs-ok: #6dc27d; /* --bw-group-3 */
+  --bs-mono: ui-monospace, "Cascadia Mono", Consolas, monospace;
+  height: 100%; overflow: auto; padding: var(--bw-space-6); background: var(--bw-window-opaque); color: var(--bw-text); font: var(--bw-text-body)/var(--bw-leading-body) var(--bw-font);
+}
+:root[data-scheme="light"] .bs {
+  --bs-card: color-mix(in srgb, #fff 72%, var(--bw-window-opaque));
+  --bs-danger: #c42b1c; /* proposed token: --bw-danger (light) */
+  --bs-ok: #0f7b0f;
+}
+.bs h1, .bs h2, .bs h3, .bs h4, .bs p { margin: 0; }
 .bs h1, .bs h2 { font-size: var(--bw-text-subtitle); line-height: var(--bw-leading-subtitle); font-weight: var(--bw-weight-strong); }
+/* Headings take focus only so the keyboard lands on a new state; they are not controls. */
+.bs [tabindex="-1"]:focus { outline: none; box-shadow: none; }
 .bs-header { max-width: 1200px; margin: 0 auto; display: flex; justify-content: space-between; align-items: center; gap: var(--bw-space-6); padding-block: var(--bw-space-4) var(--bw-space-6); border-bottom: 1px solid var(--bw-hairline); }
 .bs-brand-icon, .bs-card-icon { display: flex; align-items: center; justify-content: center; flex-shrink: 0; width: 48px; height: 48px; border-radius: var(--bw-r-island); color: var(--bw-accent); background: var(--bw-accent-soft); }
 .bs-layout { max-width: 1200px; margin: 0 auto; display: grid; grid-template-columns: 200px minmax(0, 1fr); gap: 48px; padding-block: var(--bw-space-6); }
-.bs-layout.is-review { grid-template-columns: minmax(0, 1fr); }
-.bs-status > .bw-button { max-width: 100%; min-height: 28px; height: auto; white-space: normal; overflow-wrap: anywhere; }
 .bs-side { display: flex; flex-direction: column; gap: var(--bw-space-6); }
 .bs-nav { display: flex; flex-direction: column; gap: var(--bw-space-2); }
 .bs-nav .bw-button { min-height: 40px; justify-content: flex-start; background: transparent; border-color: transparent; }
@@ -32,16 +57,108 @@
 .bs-detail-head { display: flex; flex-wrap: wrap; align-items: center; gap: var(--bw-space-4); }
 .bs-detail-head h2 { flex: 1; }
 .bs-facts { display: grid; grid-template-columns: minmax(120px, 1fr) minmax(0, 3fr); gap: var(--bw-space-4); margin: 0; padding: var(--bw-space-6); border: 1px solid var(--bw-hairline); border-radius: var(--bw-r-island); }
-.bs-facts dt, .bs-permissions dt { color: var(--bw-text-2); font-weight: var(--bw-weight-strong); }
-.bs-review-facts { flex-basis: 100%; }
+.bs-facts dt { color: var(--bw-text-2); font-weight: var(--bw-weight-strong); }
 .bs-facts dd { margin: 0; overflow-wrap: anywhere; }
-.bs-status { display: flex; flex-wrap: wrap; gap: var(--bw-space-4); align-items: center; padding: var(--bw-space-6); margin-bottom: var(--bw-space-6); border: 1px solid var(--bw-accent); border-radius: var(--bw-r-island); background: var(--bw-accent-soft); }
-.bs-status-title, .bs-status > .bs-muted, .bs-permissions { flex-basis: 100%; }
-.bs-status .bs-status-title { font-size: var(--bw-text-body); line-height: var(--bw-leading-body); }
-.bs-permissions { min-width: 0; margin: 0; display: grid; gap: var(--bw-space-3); }
-.bs-permissions dd { margin: 0 0 var(--bw-space-3); }
-.bs-permissions ul { margin: 0; padding-left: var(--bw-space-6); }
-.bs-permissions li { overflow-wrap: anywhere; white-space: pre-wrap; }
+
+/* ---- Installation mode: one centred column ---- */
+.bs.is-install .bs-header { max-width: var(--bs-col); padding-block: 0 var(--bw-space-4); border-bottom: 0; }
+.bs.is-install .bs-brand { gap: var(--bw-space-2); }
+.bs.is-install .bs-brand-icon { width: 24px; height: 24px; background: none; color: var(--bw-text-2); }
+.bs.is-install .bs-brand-icon .bw-icon { width: 16px; height: 16px; }
+.bs.is-install h1 { color: var(--bw-text-2); font-size: var(--bw-text-body); line-height: var(--bw-leading-body); }
+.bs.is-install .bs-header > .bw-button:not(:hover, :active) { border-color: transparent; background: transparent; }
+.bs.is-install { padding-top: clamp(var(--bw-space-6), 7vh, 80px); }
+.bs-layout.is-review { max-width: var(--bs-col); grid-template-columns: minmax(0, 1fr); padding-block: var(--bw-space-2) 48px; }
+
+/* ---- The installation card ---- */
+.bs-status { display: flex; flex-direction: column; gap: var(--bw-space-6); min-width: 0; margin: 0 auto var(--bw-space-6); max-width: var(--bs-col); padding: var(--bw-space-6); border: 1px solid var(--bs-edge); border-radius: var(--bw-r-island); background: var(--bs-card); }
+
+/* Which package */
+.bs-ident { display: flex; align-items: center; gap: var(--bw-space-4); min-width: 0; }
+.bs-ident-icon { position: relative; display: grid; place-items: center; flex: none; width: 48px; height: 48px; border-radius: var(--bw-r-island); background: var(--bs-tile); color: var(--bw-text-2); }
+/* The package's own icon fills the tile (Chrome icons carry their own padding). The tile stays
+ * behind it for transparent icons, clips full-bleed ones to its corners, and a hairline ring drawn
+ * over the picture keeps white or very dark icons from melting into the card in either scheme. */
+.bs-ident-icon.has-image { overflow: hidden; }
+.bs-ident-icon.has-image::after { content: ""; position: absolute; inset: 0; border-radius: inherit; box-shadow: inset 0 0 0 1px var(--bs-edge); pointer-events: none; }
+.bs-ident-img { display: block; width: 100%; height: 100%; object-fit: contain; border-radius: inherit; user-select: none; }
+.bs-ident-text { display: flex; flex-direction: column; gap: var(--bw-space-0_5); min-width: 0; }
+.bs-ident-name { font-size: var(--bw-text-subtitle); line-height: var(--bw-leading-subtitle); font-weight: var(--bw-weight-strong); overflow-wrap: anywhere; text-wrap: balance; }
+.bs-ident-meta { display: flex; flex-wrap: wrap; gap: 0 var(--bw-space-3); color: var(--bw-text-2); font-size: var(--bw-text-caption); line-height: var(--bw-leading-caption); }
+.bs-ident-meta:empty { display: none; }
+.bs-ident-id { font-family: var(--bs-mono); overflow-wrap: anywhere; user-select: text; }
+
+/* Download / Verify / Review / Install */
+.bs-steps { display: flex; align-items: center; gap: var(--bw-space-2); margin: 0; padding: 0; list-style: none; }
+.bs-step { --bs-mark-edge: var(--bs-edge); --bs-line: var(--bs-track); display: flex; flex: 1 1 0; align-items: center; gap: var(--bw-space-2); min-width: 0; color: var(--bw-text-2); font-size: var(--bw-text-caption); line-height: var(--bw-leading-caption); }
+.bs-step:last-child { flex: none; }
+.bs-step:not(:last-child)::after { content: ""; flex: 1 1 auto; min-width: var(--bw-space-3); height: 1px; margin-inline-start: var(--bw-space-1); background: var(--bs-line); }
+.bs-step-mark { display: grid; place-items: center; flex: none; width: 20px; height: 20px; border: 1px solid var(--bs-mark-edge); border-radius: 50%; font-size: var(--bw-text-caption); line-height: 1; font-variant-numeric: tabular-nums; }
+.bs-step-label { white-space: nowrap; }
+.bs-step[data-state="done"] { --bs-line: color-mix(in srgb, var(--bw-text) 40%, transparent); }
+.bs-step[data-state="done"] .bs-step-mark { border-color: transparent; background: color-mix(in srgb, var(--bw-text) 14%, transparent); color: var(--bw-text); }
+.bs-step[data-state="current"] { color: var(--bw-text); font-weight: var(--bw-weight-strong); }
+.bs-step[data-state="current"] .bs-step-mark { border: 1.5px solid var(--bw-text); }
+/* The consent step is the one place the accent marks progress. */
+.bs-status[data-phase="review"] .bs-step[data-state="current"] .bs-step-mark { border-color: var(--bw-accent); background: var(--bw-accent-soft); }
+.bs-step[data-state="failed"] { color: var(--bs-danger); font-weight: var(--bw-weight-strong); }
+.bs-step[data-state="failed"] .bs-step-mark { border-color: var(--bs-danger); background: color-mix(in srgb, var(--bs-danger) 14%, transparent); }
+
+/* The state: heading, explanation, optional glyph */
+.bs-head { display: flex; align-items: flex-start; gap: var(--bw-space-4); min-width: 0; }
+.bs-head-mark { display: grid; place-items: center; flex: none; width: 40px; height: 40px; border-radius: 50%; background: var(--bs-tile); color: var(--bw-text-2); }
+.bs-head-mark[data-tone="ok"] { background: color-mix(in srgb, var(--bs-ok) 16%, transparent); color: var(--bs-ok); }
+.bs-head-mark[data-tone="error"] { background: color-mix(in srgb, var(--bs-danger) 16%, transparent); color: var(--bs-danger); }
+.bs-head-text { display: flex; flex-direction: column; gap: var(--bw-space-1); min-width: 0; }
+.bs-head-mark + .bs-head-text { padding-top: var(--bw-space-2); }
+.bs .bs-status-title { font-size: var(--bw-text-body); line-height: var(--bw-leading-body); text-wrap: balance; }
+.bs-head-body { max-width: 62ch; color: var(--bw-text-2); overflow-wrap: anywhere; text-wrap: pretty; }
+
+/* Progress: determinate only with real byte counts */
+.bs-progress { display: flex; flex-direction: column; gap: var(--bw-space-2); }
+.bs-bar { position: relative; height: 4px; overflow: hidden; border-radius: var(--bw-r-pill); background: var(--bs-track); }
+.bs-bar-fill { position: absolute; inset: 0; border-radius: inherit; background: var(--bs-run); transform-origin: 0 50%; }
+/* 250ms linear: the bar glides between updates, as the downloads bar does. */
+.bs-bar.is-determinate .bs-bar-fill { transform: scaleX(var(--bs-f, 0)); transition: transform var(--bw-dur-slow) linear; }
+.bs-bar.is-indeterminate .bs-bar-fill { right: auto; width: 34%; transform: translateX(-100%); animation: bs-sweep 1100ms linear infinite; }
+@keyframes bs-sweep { to { transform: translateX(300%); } }
+.bs-progress-text { color: var(--bw-text-2); font-size: var(--bw-text-caption); line-height: var(--bw-leading-caption); font-variant-numeric: tabular-nums; }
+@media (prefers-reduced-motion: reduce) {
+  .bs-bar.is-indeterminate .bs-bar-fill { right: 0; width: auto; transform: none; animation: none; opacity: 0.4; }
+}
+
+/* Failure detail: the native message verbatim, folded away */
+.bs-tech { margin-inline-start: 56px; }
+.bs-tech summary { width: fit-content; border-radius: var(--bw-r-control); color: var(--bw-text-2); font-size: var(--bw-text-caption); line-height: var(--bw-leading-caption); cursor: default; }
+.bs-tech summary:hover { color: var(--bw-text); }
+.bs-tech-text { margin-top: var(--bw-space-2); padding: var(--bw-space-3); border-radius: var(--bw-r-control); background: var(--bs-tile); font: var(--bw-text-caption)/var(--bw-leading-caption) var(--bs-mono); white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; }
+
+/* Review: about the package, then what it can access */
+.bs-section { display: flex; flex-direction: column; gap: var(--bw-space-3); min-width: 0; padding-top: var(--bw-space-6); border-top: 1px solid var(--bw-hairline); }
+.bs-section > .bw-section-header { padding: 0; }
+.bs-section > .bw-button { align-self: flex-start; }
+.bs-status .bs-facts { grid-template-columns: minmax(128px, max-content) minmax(0, 1fr); gap: var(--bw-space-2) var(--bw-space-6); padding: 0; border: 0; border-radius: 0; }
+.bs-status .bs-facts dt { font-weight: normal; }
+.bs-permissions { display: flex; flex-direction: column; gap: var(--bw-space-4); min-width: 0; }
+.bs-perm { display: flex; flex-direction: column; gap: var(--bw-space-2); min-width: 0; }
+.bs-perm-name { display: flex; align-items: center; gap: var(--bw-space-2); font-size: var(--bw-text-body); line-height: var(--bw-leading-body); font-weight: var(--bw-weight-strong); }
+.bs-perm-count { min-width: 20px; padding: 0 var(--bw-space-1_5); border-radius: var(--bw-r-pill); background: var(--bs-tile); color: var(--bw-text-2); font-size: var(--bw-text-caption); line-height: var(--bw-leading-caption); font-weight: normal; text-align: center; font-variant-numeric: tabular-nums; }
+.bs-chips, .bs-list, .bs-code { display: flex; gap: var(--bw-space-1); min-width: 0; margin: 0; padding: 0; list-style: none; }
+.bs-chips, .bs-list { flex-wrap: wrap; }
+.bs-code { flex-direction: column; }
+/* As the Extensions settings chips (settings.css .sp-ext-chip). */
+.bs-chips li, .bs-list li { max-width: 100%; padding: 1px var(--bw-space-1_5); border: 1px solid var(--bs-edge); border-radius: var(--bw-r-control); background: var(--bs-tile); font-size: var(--bw-text-caption); line-height: var(--bw-leading-caption); overflow-wrap: anywhere; white-space: pre-wrap; unicode-bidi: isolate; }
+.bs-list li { font-family: var(--bs-mono); }
+.bs-code li { padding: var(--bw-space-3); border-radius: var(--bw-r-control); background: var(--bs-tile); font: var(--bw-text-caption)/var(--bw-leading-caption) var(--bs-mono); white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; }
+.bs-perm > .bs-muted { max-width: 72ch; }
+.bs-perm-none { color: var(--bw-text-2); font-size: var(--bw-text-caption); line-height: var(--bw-leading-caption); }
+
+/* Actions: primary first, then the way out; consent stays reachable under a long review */
+.bs-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: var(--bw-space-2); padding-top: var(--bw-space-4); border-top: 1px solid var(--bw-hairline); }
+.bs-actions .bw-button { max-width: 100%; min-height: 28px; height: auto; white-space: normal; overflow-wrap: anywhere; }
+/* Sticky insets are measured inside the scroller's padding: reach past it to the window edge. */
+.bs-actions.is-sticky { position: sticky; bottom: calc(-1 * var(--bw-space-6)); z-index: 1; margin: 0 calc(-1 * var(--bw-space-6)) calc(-1 * var(--bw-space-6)); padding: var(--bw-space-4) var(--bw-space-6) var(--bw-space-6); border-radius: 0 0 var(--bw-r-island) var(--bw-r-island); background: var(--bs-card); }
+
 .bs-installed .sp-ext-main { flex-wrap: wrap; }
 .bs-installed .sp-ext-actions { flex-wrap: wrap; }
 .bs-installed .sp-ext-installs { flex-wrap: wrap; }
@@ -51,7 +168,22 @@
   .bs-nav { flex-direction: row; flex-wrap: wrap; }
   .bs-side > .bs-muted { display: none; }
   .bs-header { flex-wrap: wrap; }
-  .bs-facts { grid-template-columns: minmax(0, 1fr); }
+  .bs-facts, .bs-status .bs-facts { grid-template-columns: minmax(0, 1fr); }
+  .bs-status .bs-facts { row-gap: var(--bw-space-0_5); }
+  .bs-status .bs-facts dd + dt { margin-top: var(--bw-space-3); }
+  .bs-status { padding: var(--bw-space-4); }
+  .bs-actions.is-sticky { bottom: calc(-1 * var(--bw-space-4)); margin: 0 calc(-1 * var(--bw-space-4)) calc(-1 * var(--bw-space-4)); padding: var(--bw-space-3) var(--bw-space-4) var(--bw-space-4); }
+  .bs-tech { margin-inline-start: 0; }
+}
+@media (max-width: 520px) {
+  .bs-step-label { display: none; }
+  .bs-step[aria-current] .bs-step-label { display: inline; }
+}
+@media (forced-colors: active) {
+  .bs-status, .bs-step-mark, .bs-head-mark, .bs-bar { border: 1px solid CanvasText; }
+  .bs-bar-fill { forced-color-adjust: none; background: Highlight; }
+  .bs-step[aria-current] .bs-step-mark { border: 2px solid Highlight; }
+  .bs-step:not(:last-child)::after { forced-color-adjust: none; background: CanvasText; }
 }
 
 .sp-ext-link { margin-block: var(--bw-space-4); }

@@ -8,9 +8,11 @@
 //!
 //! The caps match `extensions::inspect_source` so an unpacked folder passes that inspection:
 //! 1 MiB manifest, 2000 files, 128 MiB total, depth 12, no links, and no root name starting with `_`
-//! except the `_locales` folder. On top of those: a 32 MiB per-file cap, a 100:1 ratio cap on large
-//! compressed entries, and refusal of encrypted entries and of every compression method other than
-//! stored and deflate.
+//! except the `_locales` folder. On top of those: a per-file cap equal to the total (no single file
+//! may be larger than the whole package is allowed to be), a 100:1 ratio cap on every entry that
+//! expands past 1 MiB, and refusal of encrypted entries and of every compression method other than
+//! stored and deflate. Size-policy rejections carry the entry name and the measured and allowed
+//! sizes so the user can be told what was refused.
 //!
 //! [`manifest_with_key`] is a pure helper and is deliberately not called by [`unpack`];
 //! [`unpack_stamped`] is the entry point that unpacks and then writes the developer key into the
@@ -34,14 +36,18 @@ pub const MAX_FILES: usize = 2_000;
 pub const MAX_TOTAL_BYTES: u64 = 128 * 1024 * 1024;
 /// Deepest folder nesting below the root (same number as `extensions::MAX_DEPTH`).
 pub const MAX_DEPTH: usize = 12;
-/// Largest single file.
-pub const MAX_FILE_BYTES: u64 = 32 * 1024 * 1024;
+/// Largest single file. Equal to [`MAX_TOTAL_BYTES`]: real Web Store packages ship one large asset
+/// (a game's 64 MiB data file, a wasm model), and the aggregate cap already bounds what is written.
+pub const MAX_FILE_BYTES: u64 = MAX_TOTAL_BYTES;
 /// Most central-directory entries, files and folders together.
 pub const MAX_ENTRIES: usize = MAX_FILES * 2;
-/// Entries whose compressed size is over this are checked against [`MAX_RATIO`].
+/// Entries whose expanded size is over this are checked against [`MAX_RATIO`], however small their
+/// compressed size is.
 pub const RATIO_CHECK_FLOOR: u64 = 1024 * 1024;
-/// Worst accepted uncompressed:compressed ratio on an entry over [`RATIO_CHECK_FLOOR`].
+/// Worst accepted uncompressed:compressed ratio on an entry that expands past [`RATIO_CHECK_FLOOR`].
 pub const MAX_RATIO: u64 = 100;
+/// Longest entry name kept in an error, in characters.
+const MAX_ERROR_NAME_CHARS: usize = 60;
 
 const LOCALES_FOLDER: &str = "_locales";
 const MANIFEST_FILE_NAME: &str = "manifest.json";
@@ -49,7 +55,54 @@ const MAX_NAME_BYTES: usize = 255;
 const COPY_CHUNK: usize = 64 * 1024;
 const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// What a size-policy rejection measured: the entry that tripped the rule (bounded and stripped of
+/// control and invisible characters, so it is safe to show), the size it reached and the size the
+/// rule allows.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EntryLimit {
+    pub name: String,
+    pub measured: u64,
+    pub allowed: u64,
+}
+
+impl EntryLimit {
+    fn new(entry_name: &str, measured: u64, allowed: u64) -> Self {
+        Self { name: display_name(entry_name), measured, allowed }
+    }
+}
+
+/// A short, printable form of an archive entry name for an error message: control, bidi and other
+/// invisible characters replaced, and at most [`MAX_ERROR_NAME_CHARS`] characters (the tail is kept,
+/// since the file name is what identifies the entry).
+pub fn display_name(name: &str) -> String {
+    let clean: Vec<char> = name
+        .chars()
+        .map(|c| if c.is_control() || crate::extensions::is_invisible_format(c) { '\u{fffd}' } else { c })
+        .collect();
+    if clean.len() <= MAX_ERROR_NAME_CHARS {
+        return clean.into_iter().collect();
+    }
+    let tail = &clean[clean.len() - (MAX_ERROR_NAME_CHARS - 1)..];
+    std::iter::once('\u{2026}').chain(tail.iter().copied()).collect()
+}
+
+/// A byte count as `64.1 MiB`, `812 KiB` or `37 bytes`.
+pub fn format_size(bytes: u64) -> String {
+    const KIB: u64 = 1024;
+    const MIB: u64 = KIB * 1024;
+    const GIB: u64 = MIB * 1024;
+    if bytes >= GIB {
+        format!("{:.1} GiB", bytes as f64 / GIB as f64)
+    } else if bytes >= MIB {
+        format!("{:.1} MiB", bytes as f64 / MIB as f64)
+    } else if bytes >= KIB {
+        format!("{} KiB", bytes / KIB)
+    } else {
+        format!("{bytes} bytes")
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UnpackError {
     /// The destination is missing, not a plain folder, or a link.
     BadDestination,
@@ -60,13 +113,15 @@ pub enum UnpackError {
     TooManyEntries,
     TooManyFiles,
     TooDeep,
-    /// Declared uncompressed sizes add up to more than [`MAX_TOTAL_BYTES`].
-    TooLarge,
+    /// Declared uncompressed sizes add up to more than [`MAX_TOTAL_BYTES`]. The detail names the
+    /// entry that crossed the cap and the running total including it.
+    TooLarge(EntryLimit),
     /// One entry declares more than [`MAX_FILE_BYTES`].
-    FileTooLarge,
+    FileTooLarge(EntryLimit),
     ManifestTooLarge,
-    /// A large compressed entry claims a ratio worse than [`MAX_RATIO`]:1.
-    CompressionRatio,
+    /// An entry that expands past [`RATIO_CHECK_FLOOR`] claims a ratio worse than [`MAX_RATIO`]:1.
+    /// `measured` is its expanded size and `allowed` the most its compressed size permits.
+    CompressionRatio(EntryLimit),
     /// An entry name is empty, absolute, has a drive, `..`, backslashes, NUL or other unsafe text.
     InvalidName,
     /// A root name starting with `_` that is not `_locales`, or `_locales` as a plain file.
@@ -87,19 +142,89 @@ pub enum UnpackError {
     Io,
 }
 
+impl UnpackError {
+    /// True when Bowser's own package rules refused an otherwise readable archive (size, count,
+    /// depth, names, entry kinds, compression), as opposed to damage, a bad destination or an I/O
+    /// failure. The signature and identity proofs have already passed when this is reported.
+    pub fn is_policy_rejection(&self) -> bool {
+        !matches!(
+            self,
+            Self::BadDestination
+                | Self::DestinationNotEmpty
+                | Self::MalformedArchive
+                | Self::SizeMismatch
+                | Self::CorruptEntry
+                | Self::EscapedDestination
+                | Self::Io
+        )
+    }
+
+    /// A sentence for the user about a policy rejection: what was refused, with the entry name and
+    /// the measured and allowed sizes where the rule has them. `None` for anything else.
+    pub fn policy_message(&self) -> Option<String> {
+        let sizes = |limit: &EntryLimit| {
+            format!("{}, {} > {}", limit.name, format_size(limit.measured), format_size(limit.allowed))
+        };
+        Some(match self {
+            Self::FileTooLarge(limit) => {
+                format!("This extension contains a file larger than Bowser allows ({}).", sizes(limit))
+            }
+            Self::TooLarge(limit) => {
+                format!("This extension unpacks to more than Bowser allows in total ({}).", sizes(limit))
+            }
+            Self::CompressionRatio(limit) => format!(
+                "This extension contains a file that expands far more than its packed size allows ({}).",
+                sizes(limit)
+            ),
+            error if error.is_policy_rejection() => {
+                format!("This extension package breaks one of Bowser's package rules: {error}.")
+            }
+            _ => return None,
+        })
+    }
+}
+
 impl fmt::Display for UnpackError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::TooLarge(limit) => {
+                return write!(
+                    f,
+                    "archive expands to more than the size cap ({}, total {} > {})",
+                    limit.name,
+                    format_size(limit.measured),
+                    format_size(limit.allowed)
+                );
+            }
+            Self::FileTooLarge(limit) => {
+                return write!(
+                    f,
+                    "an archive entry is larger than the per-file cap ({}, {} > {})",
+                    limit.name,
+                    format_size(limit.measured),
+                    format_size(limit.allowed)
+                );
+            }
+            Self::CompressionRatio(limit) => {
+                return write!(
+                    f,
+                    "an archive entry compresses suspiciously well ({}, expands to {}, at most {} allowed)",
+                    limit.name,
+                    format_size(limit.measured),
+                    format_size(limit.allowed)
+                );
+            }
+            _ => {}
+        }
         f.write_str(match self {
+            Self::TooLarge(_) | Self::FileTooLarge(_) | Self::CompressionRatio(_) => unreachable!("written above"),
             Self::BadDestination => "destination is not a plain folder",
             Self::DestinationNotEmpty => "destination folder is not empty",
             Self::MalformedArchive => "archive is not a readable ZIP",
             Self::TooManyEntries => "archive has too many entries",
             Self::TooManyFiles => "archive has too many files",
             Self::TooDeep => "archive nests folders too deeply",
-            Self::TooLarge => "archive expands to more than the size cap",
-            Self::FileTooLarge => "an archive entry is larger than the per-file cap",
             Self::ManifestTooLarge => "manifest.json is larger than Bowser accepts",
-            Self::CompressionRatio => "an archive entry compresses suspiciously well",
             Self::InvalidName => "an archive entry has an unsafe name",
             Self::ReservedRootName => "an archive entry uses a reserved root name",
             Self::DuplicateEntry => "an archive entry appears twice",
@@ -162,7 +287,7 @@ fn unpack_tracked(archive: &[u8], dest: &Path, omit_store_metadata: bool) -> Res
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StampError {
     /// The unpack itself was refused; see [`UnpackError`]. Nothing was stamped.
     Unpack(UnpackError),
@@ -398,14 +523,15 @@ fn plan_entries(zip: &mut ZipArchive<Cursor<&[u8]>>, omit_store_metadata: bool) 
                 return Err(UnpackError::ManifestTooLarge);
             }
             if ratio_exceeded(compressed, size) {
-                return Err(UnpackError::CompressionRatio);
+                let allowed = compressed.max(1).saturating_mul(MAX_RATIO);
+                return Err(UnpackError::CompressionRatio(EntryLimit::new(entry.name(), size, allowed)));
             }
             if size > MAX_FILE_BYTES {
-                return Err(UnpackError::FileTooLarge);
+                return Err(UnpackError::FileTooLarge(EntryLimit::new(entry.name(), size, MAX_FILE_BYTES)));
             }
-            total = total.checked_add(size).ok_or(UnpackError::TooLarge)?;
+            total = total.saturating_add(size);
             if total > MAX_TOTAL_BYTES {
-                return Err(UnpackError::TooLarge);
+                return Err(UnpackError::TooLarge(EntryLimit::new(entry.name(), total, MAX_TOTAL_BYTES)));
             }
         }
         folders.extend(ancestors);
@@ -414,9 +540,12 @@ fn plan_entries(zip: &mut ZipArchive<Cursor<&[u8]>>, omit_store_metadata: bool) 
     Ok(plan)
 }
 
-/// True when a compressed entry over [`RATIO_CHECK_FLOOR`] expands past [`MAX_RATIO`]:1.
+/// True when an entry that expands past [`RATIO_CHECK_FLOOR`] expands past [`MAX_RATIO`]:1 of its
+/// compressed size. Judged on the expanded size: a tiny compressed entry that inflates to many MiB
+/// is the zip bomb, so a small compressed size never exempts it. A legitimate large asset that barely
+/// compresses (64 MiB packed to 53 MiB) is nowhere near the ratio.
 fn ratio_exceeded(compressed: u64, uncompressed: u64) -> bool {
-    compressed > RATIO_CHECK_FLOOR && uncompressed > compressed.saturating_mul(MAX_RATIO)
+    uncompressed > RATIO_CHECK_FLOOR && uncompressed > compressed.max(1).saturating_mul(MAX_RATIO)
 }
 
 /// Splits an entry name into validated components. A trailing `/` marks a folder entry.
@@ -848,12 +977,22 @@ mod tests {
     const FOLDER: u32 = 0o040755 << 16;
 
     fn crc32(data: &[u8]) -> u32 {
+        // Table driven so a 64 MiB fixture is checksummed quickly even in a debug build.
+        static TABLE: std::sync::OnceLock<[u32; 256]> = std::sync::OnceLock::new();
+        let table = TABLE.get_or_init(|| {
+            let mut table = [0u32; 256];
+            for (n, slot) in table.iter_mut().enumerate() {
+                let mut crc = n as u32;
+                for _ in 0..8 {
+                    crc = if crc & 1 == 1 { (crc >> 1) ^ 0xEDB8_8320 } else { crc >> 1 };
+                }
+                *slot = crc;
+            }
+            table
+        });
         let mut crc = !0u32;
         for &byte in data {
-            crc ^= byte as u32;
-            for _ in 0..8 {
-                crc = if crc & 1 == 1 { (crc >> 1) ^ 0xEDB8_8320 } else { crc >> 1 };
-            }
+            crc = table[((crc ^ byte as u32) & 0xFF) as usize] ^ (crc >> 8);
         }
         !crc
     }
@@ -888,6 +1027,50 @@ mod tests {
             data: stream,
             ..stored(name, payload)
         }
+    }
+
+    /// A deflated (method 8) entry of any size whose stream is non-compressed blocks of at most
+    /// 65535 bytes: a real deflate stream at a ratio just under 1:1, like an already-packed asset.
+    fn deflated_large(name: &str, payload: Vec<u8>) -> Entry {
+        let crc = crc32(&payload);
+        let blocks = payload.chunks(u16::MAX as usize).count().max(1);
+        let mut stream = Vec::with_capacity(payload.len() + blocks * 5);
+        let mut chunks = payload.chunks(u16::MAX as usize).peekable();
+        if chunks.peek().is_none() {
+            stream.extend_from_slice(&[0x01, 0, 0, 0xFF, 0xFF]);
+        }
+        while let Some(chunk) = chunks.next() {
+            let len = chunk.len() as u16;
+            stream.push(u8::from(chunks.peek().is_none()));
+            stream.extend_from_slice(&len.to_le_bytes());
+            stream.extend_from_slice(&(!len).to_le_bytes());
+            stream.extend_from_slice(chunk);
+        }
+        Entry {
+            method: 8,
+            crc,
+            compressed_field: stream.len() as u32,
+            size_field: payload.len() as u32,
+            data: stream,
+            ..stored(name, b"")
+        }
+    }
+
+    /// An entry that only claims sizes in its headers (no payload behind them), for rules that run
+    /// on the central directory before any byte is read.
+    fn declared(name: &str, compressed: u64, size: u64) -> Entry {
+        Entry { method: 8, compressed_field: compressed as u32, size_field: size as u32, ..stored(name, b"tiny") }
+    }
+
+    /// Runs only the central-directory planning on `entries`.
+    fn plan(entries: &[Entry]) -> Result<Vec<Planned>, UnpackError> {
+        let archive = zip_bytes(entries);
+        let mut zip = ZipArchive::new(Cursor::new(&archive[..])).expect("readable archive");
+        plan_entries(&mut zip, false)
+    }
+
+    fn limit(name: &str, measured: u64, allowed: u64) -> EntryLimit {
+        EntryLimit { name: name.to_owned(), measured, allowed }
     }
 
     /// Local entries followed by the central directory; returns the bytes, the central directory
@@ -1126,42 +1309,126 @@ mod tests {
 
     #[test]
     fn rejects_a_declared_size_over_the_caps_without_writing() {
-        let mut huge = stored("big.bin", b"tiny");
-        huge.size_field = (MAX_FILE_BYTES + 1) as u32;
-        huge.compressed_field = 4;
-        huge.method = 8;
-        assert_rejected(&[huge], UnpackError::FileTooLarge);
+        // Half-packed claims keep these clear of the ratio rule, so the size rules are what refuse.
+        let huge = declared("big.bin", (MAX_FILE_BYTES + 1) / 2, MAX_FILE_BYTES + 1);
+        assert_rejected(&[huge], UnpackError::FileTooLarge(limit("big.bin", MAX_FILE_BYTES + 1, MAX_FILE_BYTES)));
 
         let mut manifest = stored("manifest.json", b"{}");
         manifest.size_field = (MAX_MANIFEST_BYTES + 1) as u32;
         manifest.method = 8;
         assert_rejected(&[manifest], UnpackError::ManifestTooLarge);
 
-        // Five files at the per-file cap are 160 MiB declared, over the 128 MiB total.
-        let big = |name: &str| {
-            let mut entry = stored(name, b"tiny");
-            entry.size_field = MAX_FILE_BYTES as u32;
-            entry.method = 8;
-            entry
-        };
+        // Three 64 MiB files are 192 MiB declared: the second fills the total, the third crosses it.
+        let half = MAX_TOTAL_BYTES / 2;
         assert_rejected(
-            &[big("a"), big("b"), big("c"), big("d"), big("e")],
-            UnpackError::TooLarge,
+            &[declared("a", half / 2, half), declared("b", half / 2, half), declared("c", half / 2, half)],
+            UnpackError::TooLarge(limit("c", half * 3, MAX_TOTAL_BYTES)),
         );
     }
 
     #[test]
-    fn ratio_cap_applies_only_to_large_compressed_entries() {
-        assert!(ratio_exceeded(2 * 1024 * 1024, 2 * 1024 * 1024 * 101));
-        assert!(!ratio_exceeded(2 * 1024 * 1024, 2 * 1024 * 1024 * 100));
-        assert!(!ratio_exceeded(1024 * 1024, 1024 * 1024 * 1000));
-        assert!(!ratio_exceeded(10, 10_000_000));
+    fn per_file_and_total_limits_have_exact_boundaries() {
+        assert_eq!(MAX_FILE_BYTES, MAX_TOTAL_BYTES, "no single file may exceed the whole package budget");
+        // One file of exactly the cap, or two that add up to exactly the cap, are planned.
+        assert!(plan(&[declared("one", MAX_FILE_BYTES / 2, MAX_FILE_BYTES)]).is_ok());
+        let half = MAX_TOTAL_BYTES / 2;
+        assert_eq!(plan(&[declared("a", half / 2, half), declared("b", half / 2, half)]).map(|p| p.len()), Ok(2));
+        // One byte more on either rule is refused, and the error reports the measured size.
+        assert_eq!(
+            plan(&[declared("one", MAX_FILE_BYTES / 2, MAX_FILE_BYTES + 1)]).unwrap_err(),
+            UnpackError::FileTooLarge(limit("one", MAX_FILE_BYTES + 1, MAX_FILE_BYTES))
+        );
+        assert_eq!(
+            plan(&[declared("a", half / 2, half), declared("b", half / 2, half + 1)]).unwrap_err(),
+            UnpackError::TooLarge(limit("b", MAX_TOTAL_BYTES + 1, MAX_TOTAL_BYTES))
+        );
+    }
 
-        let mut bomb = stored("bomb.bin", b"tiny");
-        bomb.method = 8;
-        bomb.compressed_field = 2 * 1024 * 1024;
-        bomb.size_field = 300 * 1024 * 1024;
-        assert_rejected(&[bomb], UnpackError::CompressionRatio);
+    #[test]
+    fn the_real_store_package_sizes_are_accepted() {
+        // aomkpefnllinimbhddlfhelelngakbbn: one 67,207,321 byte entry packed to 55,332,675 inside an
+        // archive of 88,260,626 bytes expanded over 178 entries.
+        const BIG: u64 = 67_207_321;
+        const PACKED: u64 = 55_332_675;
+        const REST: u64 = 88_260_626 - BIG;
+        assert!(BIG > 32 * 1024 * 1024 && BIG < MAX_FILE_BYTES);
+        assert!(!ratio_exceeded(PACKED, BIG));
+        let mut entries = vec![declared("Game_Source/Build/Ultimate Car Driving.data", PACKED, BIG)];
+        entries.push(declared("Game_Source/Build/rest.bin", REST / 2, REST));
+        assert_eq!(plan(&entries).map(|p| p.len()), Ok(2));
+    }
+
+    #[test]
+    fn unpacks_a_67_mib_deflated_entry_end_to_end() {
+        // Not a checked-in fixture: generated bytes, checksummed and framed as a real deflate stream
+        // (non-compressed blocks, so ratio ~1:1 like an already-packed game data file).
+        const BIG: usize = 67_207_321;
+        let payload: Vec<u8> = (0..BIG).map(|i| (i.wrapping_mul(2_654_435_761) >> 13) as u8).collect();
+        let (scratch, result) = run(&[
+            stored("manifest.json", MANIFEST.as_bytes()),
+            deflated_large("Game_Source/Build/Ultimate Car Driving.data", payload),
+        ]);
+        assert_eq!(result, Ok(UnpackSummary { files: 2, bytes: (MANIFEST.len() + BIG) as u64 }));
+        let written = scratch.0.join("Game_Source").join("Build").join("Ultimate Car Driving.data");
+        assert_eq!(fs::metadata(&written).unwrap().len(), BIG as u64);
+    }
+
+    #[test]
+    fn a_large_entry_still_rolls_back_on_a_crc_or_size_mismatch() {
+        // 33 MiB: over the old 32 MiB cap, so this entry could not even be tried before.
+        let payload = || vec![0x5Au8; 33 * 1024 * 1024];
+        let mut bad_crc = deflated_large("assets/big.bin", payload());
+        bad_crc.crc ^= 1;
+        let (scratch, result) = run(&[stored("manifest.json", b"{}"), stored("sub/ok.txt", b"1"), bad_crc]);
+        assert_eq!(result, Err(UnpackError::CorruptEntry));
+        assert_eq!(listing(&scratch.0), Vec::<String>::new(), "destination must be unchanged");
+
+        let mut short = deflated_large("assets/big.bin", payload());
+        short.size_field -= 1;
+        let (scratch, result) = run(&[stored("manifest.json", b"{}"), short]);
+        assert_eq!(result, Err(UnpackError::SizeMismatch));
+        assert_eq!(listing(&scratch.0), Vec::<String>::new(), "destination must be unchanged");
+    }
+
+    #[test]
+    fn ratio_rule_is_judged_on_the_expanded_size() {
+        const MIB: u64 = 1024 * 1024;
+        // Over 1 MiB expanded, more than 100:1 of the packed size is refused, however small the
+        // packed size (these slipped through when only packed sizes over 1 MiB were checked).
+        assert!(ratio_exceeded(1024, 100 * MIB));
+        assert!(ratio_exceeded(0, 2 * MIB));
+        assert!(ratio_exceeded(10 * 1024, 2 * MIB));
+        assert!(ratio_exceeded(2 * MIB, 2 * MIB * 101));
+        // Exactly 100:1, or at most 1 MiB expanded, is fine; so is a barely compressed large entry.
+        assert!(!ratio_exceeded(20_480, 2_048_000));
+        assert!(!ratio_exceeded(10, MIB));
+        assert!(!ratio_exceeded(1, 1000));
+        assert!(!ratio_exceeded(55_332_675, 67_207_321));
+
+        let bomb = declared("bomb.bin", 1024, 100 * MIB);
+        assert_rejected(&[bomb], UnpackError::CompressionRatio(limit("bomb.bin", 100 * MIB, 1024 * MAX_RATIO)));
+    }
+
+    #[test]
+    fn size_errors_name_the_entry_and_bound_what_they_show() {
+        let long = format!("{}/{}", "d".repeat(40), "f".repeat(100));
+        let error = plan(&[declared(&long, MAX_FILE_BYTES, MAX_FILE_BYTES + 1)]).unwrap_err();
+        let UnpackError::FileTooLarge(detail) = &error else { panic!("{error:?}") };
+        assert_eq!(detail.name.chars().count(), MAX_ERROR_NAME_CHARS);
+        assert!(detail.name.starts_with('\u{2026}') && long.ends_with(&detail.name[detail.name.char_indices().nth(1).unwrap().0..]));
+        assert_eq!(display_name("a\u{202e}b\u{0}c\nd"), "a\u{fffd}b\u{fffd}c\u{fffd}d");
+
+        let message = UnpackError::FileTooLarge(limit("Build/a.data", 67_207_321, MAX_FILE_BYTES)).policy_message().unwrap();
+        assert_eq!(message, "This extension contains a file larger than Bowser allows (Build/a.data, 64.1 MiB > 128.0 MiB).");
+        assert!(error.to_string().contains("per-file cap"), "{error}");
+        assert_eq!(format_size(0), "0 bytes");
+        assert_eq!(format_size(2048), "2 KiB");
+        // Damage and I/O failures are not policy rejections and have no policy sentence.
+        for damage in [UnpackError::CorruptEntry, UnpackError::SizeMismatch, UnpackError::MalformedArchive, UnpackError::Io] {
+            assert!(!damage.is_policy_rejection() && damage.policy_message().is_none(), "{damage:?}");
+        }
+        assert!(UnpackError::Encrypted.is_policy_rejection());
+        assert!(UnpackError::Encrypted.policy_message().unwrap().contains("package rules"));
     }
 
     #[test]
