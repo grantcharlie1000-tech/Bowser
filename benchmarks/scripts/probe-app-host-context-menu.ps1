@@ -11,7 +11,7 @@ param([Parameter(Mandatory)][uint32]$OwnerPid,[Parameter(Mandatory)][long]$Owner
  [Parameter(Mandatory)][ValidateSet('Cancel','Copy','Paste','Note','Split')][string]$Mode,
  [Parameter(Mandatory)][string]$SyntheticToken,[Parameter(Mandatory)][string]$Out)
 $ErrorActionPreference='Stop';Set-StrictMode -Version Latest
-Add-Type @'
+$nativeSource = @'
 using System;using System.Text;using System.Runtime.InteropServices;using System.Collections.Generic;
 public static class BowserHostMenu {
  [StructLayout(LayoutKind.Sequential)] public struct POINT {public int X,Y;}
@@ -166,10 +166,14 @@ public static class BowserHostMenu {
     AdmissionStage=3;SetLastError(0);uint first=EnumClipboardFormats(0);int error=Marshal.GetLastWin32Error();
     AdmissionFormatObserved=true;AdmissionFirstFormatZero=first==0;AdmissionEnumError=error;
     if(first!=0||error!=0)throw new InvalidOperationException("Clipboard is nonempty or its empty state is unavailable; no content read or mutation.");
-    AdmissionStage=4;last=Sequence();AdmissionStage=5;if(!EmptyClipboard())throw new InvalidOperationException("Empty precondition could not be claimed.");
-    changed=true;last=Sequence();OwnedSequences.Add(last);
-    if(SetClipboardData(13,memory)==IntPtr.Zero)throw new InvalidOperationException("Synthetic payload write failed.");memory=IntPtr.Zero;
-    last=Sequence();OwnedSequences.Add(last);Status="synthetic-payload-owned";
+    AdmissionStage=4;
+    BowserClipboardMutationPolicy.WriteGenerated(new BowserClipboardMutation(
+     ()=>{last=Sequence();return last;},
+     ()=>{AdmissionStage=5;bool result=EmptyClipboard();if(result)changed=true;return result;},
+     ()=>{if(SetClipboardData(13,memory)==IntPtr.Zero)return false;memory=IntPtr.Zero;return true;},
+     sequence=>{last=sequence;OwnedSequences.Add(sequence);}
+    ));
+    Status="synthetic-payload-owned";
     opened=false;CloseChecked();
    }catch{AdmissionFailureStage=AdmissionStage;if(opened){opened=false;try{CloseChecked();}catch{}}Finish();DestroyWindow(owner);owner=IntPtr.Zero;throw;}
    finally{admission=false;if(memory!=IntPtr.Zero)GlobalFree(memory);}
@@ -212,6 +216,8 @@ public static class BowserHostMenu {
 
 }
 '@
+$nativeSource += [IO.File]::ReadAllText((Join-Path $PSScriptRoot 'native-clipboard-policy.cs'))
+Add-Type -TypeDefinition $nativeSource
 New-Item -ItemType Directory -Force $Out|Out-Null
 $report=[ordered]@{scope='separate-real-App-native-and-host-regression';status='failed';mode=$Mode;separator_projection_contract=$false;grayed_projection_contract=$false;right_input_called=$false;selection_called=$false;selected_command_id=$null;clipboard='not-used';owned_clipboard_sequences=@();error=$null;failure_cleanup=$null}
 $h=[IntPtr]$OwnerHandle;$pidNow=[uint32]0;$tid=[BowserHostMenu]::GetWindowThreadProcessId($h,[ref]$pidNow)

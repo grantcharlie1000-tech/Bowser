@@ -12,6 +12,12 @@ on:
       - 'benchmarks/scripts/probe-default-context-cancellation.ps1'
       - 'benchmarks/scripts/native-runner-state.psm1'
       - 'benchmarks/scripts/test-native-runner-state.ps1'
+      - 'benchmarks/scripts/native-clipboard-policy.cs'
+      - 'benchmarks/scripts/test-native-clipboard-policy.ps1'
+      - 'benchmarks/scripts/ci-hosted-runner-proof.psm1'
+      - 'benchmarks/scripts/test-ci-hosted-runner-proof.ps1'
+      - 'benchmarks/scripts/ci-clipboard-native.cs'
+      - 'benchmarks/scripts/prepare-ci-empty-clipboard.ps1'
       - 'benchmarks/scripts/probe-custom-context-menu.ps1'
       - 'benchmarks/scripts/probe-app-context-menu.ps1'
       - 'benchmarks/scripts/probe-app-host-context-menu.ps1'
@@ -152,16 +158,31 @@ jobs:
           cargo +stable test --locked --lib --no-run
           if ($LASTEXITCODE -ne 0) { throw 'Native safety executable failed to build.' }
       - name: Record read-only runner prerequisites using the native helper host
+        id: native_fixture_policy
         if: ${{ !cancelled() && steps.native_build.outcome == 'success' }}
         run: |
           # Same Windows PowerShell host as the native helpers; preserve existing execution policy.
           & powershell.exe -NoProfile -File ./benchmarks/scripts/test-native-runner-state.ps1
           if ($LASTEXITCODE -ne 0) { throw 'Read-only runner diagnostic regressions failed.' }
+          & powershell.exe -NoProfile -File ./benchmarks/scripts/test-native-clipboard-policy.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'Actual guard mutation-path zero refusal regression failed.' }
+          & powershell.exe -NoProfile -File ./benchmarks/scripts/test-ci-hosted-runner-proof.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'Disposable runner proof binding regressions failed.' }
           $snapshot = & powershell.exe -NoProfile -Command "Import-Module ./benchmarks/scripts/native-runner-state.psm1; Get-BowserNativeRunnerState -Phase preflight | ConvertTo-Json -Depth 8"
           if ($LASTEXITCODE -ne 0) { throw 'Native helper host could not collect runner state.' }
           $snapshot | Set-Content -Encoding utf8 store-native-runner-state.json
           $parsed = $snapshot | ConvertFrom-Json
           if ($parsed.status -ne 'captured' -or $parsed.input_authority -or $parsed.clipboard_authority) { throw 'Runner diagnostics unavailable or incorrectly authorizing.' }
+      - name: Prepare only a proved disposable job-owned empty clipboard baseline
+        if: ${{ !cancelled() && steps.native_build.outcome == 'success' && steps.native_fixture_policy.outcome == 'success' }}
+        env:
+          BOWSER_PLATFORM_RUNNER_ENVIRONMENT: ${{ runner.environment }}
+        run: |
+          # The script additionally binds retained actual worker/listener identities and the
+          # non-secret .runner AgentId to the active public GitHub job. Env values alone fail.
+          # No local/shared/self-hosted path, permission changes, payloads, retries or fallback.
+          & powershell.exe -NoProfile -File ./benchmarks/scripts/prepare-ci-empty-clipboard.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'Disposable clipboard fixture ownership/baseline refused; original native gates remain required.' }
       - name: Inspect exact test executable imports after pre-test loader failure
         if: ${{ !cancelled() && steps.native_build.outcome == 'success' }}
         run: |
@@ -467,6 +488,7 @@ jobs:
             store-band-loader-identity.log
             store-native-runner-state.json
             store-profile-isolation-negative-control.json
+            ${{ runner.temp }}/bowser-ci-empty-clipboard-*.jsonl
             store-band-libtest-manifest.log
             store-band-libtest.manifest.xml
             store-band-system-comctl-exports.log
