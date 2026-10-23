@@ -370,6 +370,17 @@ pub trait EngineAdapter {
     ) {
         done(Err("This browser engine cannot clear cookies.".to_owned()));
     }
+    /// Erases what the site at `url` keeps in one tab's profile: its cookies and the data its scripts
+    /// store (local and session storage, IndexedDB, service workers, Cache Storage). `done` may run
+    /// later.
+    fn clear_site_data(
+        &mut self,
+        _tab: crate::tabs::TabId,
+        _url: &url::Url,
+        done: Box<dyn FnOnce(Result<(), String>)>,
+    ) {
+        done(Err("This browser engine cannot erase site data.".to_owned()));
+    }
     /// Clears one category from the active engine profile. Saved passwords are never included.
     fn clear_browsing_data(
         &mut self,

@@ -329,6 +329,38 @@
   }
 }
 
+/* Erase site data: the flame's inner tongue flickers once, about its base, while its row is selected
+   (shape 2 of flame, transform only, 360ms). The glyph rests untouched before and after, and
+   nothing moves under reduced motion. */
+@media (prefers-reduced-motion: no-preference) {
+  .html-menu-row[data-icon="flame"].selected:not(:disabled) .html-menu-lead svg > :nth-child(2) {
+    transform-origin: 12px 18.5px;
+    animation: html-menu-flame-flicker 360ms ease-in-out;
+  }
+}
+
+@keyframes html-menu-flame-flicker {
+  0% {
+    transform: scale(1);
+  }
+
+  25% {
+    transform: scale(0.9, 1.18);
+  }
+
+  55% {
+    transform: scale(1.08, 0.92);
+  }
+
+  80% {
+    transform: scale(0.97, 1.06);
+  }
+
+  100% {
+    transform: scale(1);
+  }
+}
+
 /* The chevron on a submenu row eases 2px toward the flyout it opens while the row is selected: a
    short transform, no layout width animation. Snapped under reduced motion below. */
 .html-menu-row[aria-haspopup="menu"] .html-menu-trail {
