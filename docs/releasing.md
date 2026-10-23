@@ -1,11 +1,11 @@
-# Releasing Bowser v0.0.21 (pin revision 22)
+# Releasing Bowser v0.0.22 (pin revision 23)
 
 The build, hash, draft, upload and publication run on a GitHub-hosted
-`windows-latest` runner from `.github/workflows/release-v0.0.21.yml`. The
+`windows-latest` runner from `.github/workflows/release-v0.0.22.yml`. The
 workflow is `workflow_dispatch` only, so nothing publishes on a push or a PR.
 Production changes only when `stable/release.json` changes, and that is always a
-separate, human-merged PR. v0.0.20 shipped the same way from
-`release-v0.0.20.yml`; the v0.0.19 history is in `docs/release-cloud-v0.0.19.md`.
+separate, human-merged PR. v0.0.20 and v0.0.21 shipped the same way from
+`release-v0.0.20.yml` and `release-v0.0.21.yml`; the v0.0.19 history is in `docs/release-cloud-v0.0.19.md`.
 
 `$R = 'grantcharlie1000-tech/Bowser'` in the commands below.
 
@@ -14,18 +14,18 @@ separate, human-merged PR. v0.0.20 shipped the same way from
 - This tooling PR is merged to main on its own, before the version bump.
 - Merge freeze: nothing else merges to main from the version-bump PR until the
   stable pin PR is merged.
-- No `v0.0.21` tag or release exists, drafts included:
-  `gh api repos/$R/releases --paginate --jq '.[]|select(.tag_name=="v0.0.21")|{id,draft}'`
-  prints nothing and `gh api repos/$R/git/ref/tags/v0.0.21` returns 404.
-- `stable/release.json` on main is still v0.0.20, revision 21.
+- No `v0.0.22` tag or release exists, drafts included:
+  `gh api repos/$R/releases --paginate --jq '.[]|select(.tag_name=="v0.0.22")|{id,draft}'`
+  prints nothing and `gh api repos/$R/git/ref/tags/v0.0.22` returns 404.
+- `stable/release.json` on main is still v0.0.21, revision 22.
 
 ## 1. Version-bump PR (the commit that ships)
 
 Branch from current `origin/main` and change exactly three things:
 
-- `Cargo.toml`: `version = "0.0.21"`
-- `Cargo.lock`: the `bowser` package entry: `version = "0.0.21"` (that line only)
-- `src/updater.rs`: `const PIN_REVISION: u32 = 22;`
+- `Cargo.toml`: `version = "0.0.22"`
+- `Cargo.lock`: the `bowser` package entry: `version = "0.0.22"` (that line only)
+- `src/updater.rs`: `const PIN_REVISION: u32 = 23;`
 
 Do not touch `stable/release.json`. Run `cargo test --locked --lib updater::`,
 open the PR, wait for `windows-verify` to pass, then merge with a merge commit.
@@ -48,7 +48,7 @@ gh run watch <RUN_ID> --repo $R --exit-status   # headSha must be <BUILD_SHA>
 start again from step 2.
 
 ```powershell
-gh workflow run release-v0.0.21.yml --repo $R --ref main -f commit=<BUILD_SHA> -f dry_run=true
+gh workflow run release-v0.0.22.yml --repo $R --ref main -f commit=<BUILD_SHA> -f dry_run=true
 gh run watch <RUN_ID> --repo $R --exit-status
 ```
 
@@ -61,9 +61,9 @@ releasable, even though the build passed.
 When the dry run is green, dispatch again with `-f dry_run=false`. The publish
 job then:
 
-1. re-checks the candidate's provenance (commit, 0.0.21, revision 22, run id,
+1. re-checks the candidate's provenance (commit, 0.0.22, revision 23, run id,
    smoke report),
-2. creates draft `v0.0.21` targeting `<BUILD_SHA>`, keeping the release id the
+2. creates draft `v0.0.22` targeting `<BUILD_SHA>`, keeping the release id the
    API returns (a draft has no tag, so it is never looked up by tag),
 3. uploads `Bowser.exe` and `build-metadata.json` to that release id,
 4. downloads both back by asset id and compares hash and size,
@@ -79,43 +79,44 @@ creates nothing remotely, so a fresh dispatch is safe after diagnosing it.
 ## 4. Independent verification
 
 ```powershell
-$d = "$env:TEMP\bowser-v0.0.21-check"; New-Item -ItemType Directory -Force $d | Out-Null
-gh release download v0.0.21 --repo $R --pattern Bowser.exe --pattern build-metadata.json --dir $d
+$d = "$env:TEMP\bowser-v0.0.22-check"; New-Item -ItemType Directory -Force $d | Out-Null
+gh release download v0.0.22 --repo $R --pattern Bowser.exe --pattern build-metadata.json --dir $d
 (Get-FileHash "$d\Bowser.exe" -Algorithm SHA256).Hash.ToLower(); (Get-Item "$d\Bowser.exe").Length
-gh api repos/$R/git/ref/tags/v0.0.21 --jq .object   # commit <BUILD_SHA>
+gh api repos/$R/git/ref/tags/v0.0.22 --jq .object   # commit <BUILD_SHA>
 ```
 
 The hash, bytes, metadata commit, tag commit and run summary must all agree.
-Then run the real-app checks (clean profile, an upgraded copy of a v0.0.20
+Then run the real-app checks (clean profile, an upgraded copy of a v0.0.21
 profile, link launch) against the downloaded file.
 
 ## 5. Stable pin PR (the production switch)
 
 Change only `stable/release.json`, keeping its key order and 4-space indent:
-version `0.0.21`, revision `22`, commit `<BUILD_SHA>`, tag `v0.0.21`,
+version `0.0.22`, revision `23`, commit `<BUILD_SHA>`, tag `v0.0.22`,
 repository, asset `Bowser.exe`, and the sha256 and bytes from step 4. Check
-by eye that the pin revision (22) equals `PIN_REVISION`, because no test
+by eye that the pin revision (23) equals `PIN_REVISION`, because no test
 compares them. `stable-package.yml` verifies the PR. After the merge, its
-`mark-latest` job promotes v0.0.21 to latest. v0.0.21 revision 22 is on that
+`mark-latest` job promotes v0.0.22 to latest. v0.0.22 revision 23 is on that
 job's allow-list.
 
 ## 6. Rollback
 
-The updater never downgrades a user who already runs v0.0.21. To stop the
-rollout, merge a pin PR that points back at the v0.0.20 asset
-(`d637f8fe2a4dee4e5b025c813c5952fca8672053`,
-sha256 `f47e76de9846a29078d0748fceda725868d21aee9e3e11b5f83c704bf0aa9cac`,
-8356352 bytes) with a higher revision, `23`. Add that exact
-`{v0.0.20, 0.0.20, 23}` entry to `mark-latest`'s allow-list in the same PR,
-otherwise latest stays on v0.0.21. The real fix is to fix forward: release
-v0.0.22 with revision 23 by the same procedure. Never delete or retag
-v0.0.21, v0.0.20 or v0.0.19.
+The updater never downgrades a user who already runs v0.0.22. To stop the
+rollout, merge a pin PR that points back at the v0.0.21 asset
+(`035b72214d8ce07eef4a2fa86fb2cd99fb1f60a4`,
+sha256 `3f3ddd53382b7633551d2d10069c814bb7b12e08feb1cd50a94709f6463f2ba0`,
+8407040 bytes) with a higher revision, `24`. Add that exact
+`{v0.0.21, 0.0.21, 24}` entry to `mark-latest`'s allow-list in the same PR,
+otherwise latest stays on v0.0.22. The real fix is to fix forward: release
+v0.0.23 with revision 24 by the same procedure. Never delete or retag
+v0.0.22, v0.0.21, v0.0.20 or v0.0.19.
 
-## One-time v0.0.19 and v0.0.20 workflows
+## One-time v0.0.19, v0.0.20 and v0.0.21 workflows
 
-`release-v0.0.20.yml` is `workflow_dispatch` only, so no push re-runs it. Do
-not dispatch it again: with main at 0.0.21 its gate is never releasable, and
-v0.0.20 is already public. Leave it unedited.
+`release-v0.0.20.yml` and `release-v0.0.21.yml` are `workflow_dispatch` only, so
+no push re-runs them. Do not dispatch them again: with main at 0.0.22 their
+gates are never releasable, and v0.0.20 and v0.0.21 are already public. Leave
+them unedited.
 
 `release-v0.0.19.yml` now arms only on the push that first sets Cargo to 0.0.19.
 Later pushes that touch Cargo or updater files run a short gate and skip.
