@@ -14,7 +14,7 @@ public static class BowserMembershipTests {
  }
  sealed class Harness {
   public Identity Process=new Identity();public bool Native=true;public long Elapsed;
-  public BowserMenuWrapper Stamp=new BowserMenuWrapper(10,20,21,3,7,9,new int[]{42,20},new int[]{42,21},new int[]{42,20});
+  public BowserMenuWrapper Stamp=new BowserMenuWrapper(10,20,21,3,7,9,new int[]{42,20},new int[]{42,21},new int[]{42,20},true);
   public BowserMenuMembershipSession Session;
   public Harness(){Session=new BowserMenuMembershipSession(1,100,3,30,Stamp,Process,s=>Native,()=>Elapsed);}
  }
@@ -25,6 +25,7 @@ public static class BowserMembershipTests {
  static void First(Harness h){h.Session.Begin(0,"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");h.Session.Consume(Reply());}
  static bool Refuses(Action action){try{action();return false;}catch(InvalidOperationException){return true;}}
  public static int Run(){int passed=0;
+  Require(Refuses(()=>new BowserMenuWrapper(10,20,21,3,7,9,new int[]{42,20},new int[]{42,21},new int[]{42,20},false)),"Input-enabled child must never be admitted as the disabled structural D3D wrapper.");passed++;
   string wire="BOWSER-MEMBERSHIP-REPLY-V1|0|aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa|1|100|200|300|5|1|1|10|20|21|3|30|7|70|4";
   var parsed=BowserMenuMembershipWire.Parse(wire);Require(parsed.Args==200&&parsed.GpuCreated==70&&parsed.Phase==0,"Exact bounded private reply must parse.");passed++;
   foreach(string bad in new string[]{null,new string('x',8193),wire+"|extra",wire.Replace("|100|","|0100|"),wire.Replace("|70|","|0|"),wire+"\r",wire.Replace("|0|","|2|"),wire.Replace("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"),wire.Replace("|4","|6"),wire.Replace("|3|30|","|4294967296|30|")}){

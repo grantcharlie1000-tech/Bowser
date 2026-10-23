@@ -82,8 +82,10 @@ public static class BowserDefaultContext {
    this.host=host;this.testPid=testPid;this.hostTid=hostTid;this.browserPid=browserPid;this.sourceView=sourceView;this.browser=browser;this.clock=clock;
   }
   bool Child(BowserMenuWrapper s){
+   // Chromium's D3D rendering child is WS_DISABLED and input-transparent. It is
+   // structural only; the enabled owned popup and browser-owned actions stay separate.
    IntPtr child=new IntPtr(s.Child);uint p;uint tid=GetWindowThreadProcessId(child,out p);
-   return tid==s.Thread&&p==s.GpuPid&&IsWindow(child)&&IsWindowVisible(child)&&IsWindowEnabled(child)&&Class(child)=="Intermediate D3D Window"&&GetParent(child)==popup&&GetAncestor(child,2)==popup&&IsChild(popup,child);
+   return tid==s.Thread&&p==s.GpuPid&&IsWindow(child)&&IsWindowVisible(child)&&!IsWindowEnabled(child)&&Class(child)=="Intermediate D3D Window"&&GetParent(child)==popup&&GetAncestor(child,2)==popup&&IsChild(popup,child);
   }
   bool Current(BowserMenuWrapper s){
    try{
@@ -112,7 +114,7 @@ public static class BowserDefaultContext {
     if(session==null){
      popup=candidate;menuTid=tid;focus=expectedFocus;root=candidateRoot;node=e;rootId=(int[])candidateRootId.Clone();nodeId=(int[])id.Clone();
      uint nativePid;uint childTid=GetWindowThreadProcessId(new IntPtr(c.NativeWindowHandle),out nativePid);if(nativePid!=(uint)c.ProcessId||childTid==0)throw new InvalidOperationException("Unknown native wrapper process.");
-     gpu=new ReadOnlyBrowser((uint)c.ProcessId);stamp=new BowserMenuWrapper(host.ToInt64(),popup.ToInt64(),c.NativeWindowHandle,browserPid,(uint)c.ProcessId,childTid,rootId,nodeId,Runtime(parent));
+     gpu=new ReadOnlyBrowser((uint)c.ProcessId);stamp=new BowserMenuWrapper(host.ToInt64(),popup.ToInt64(),c.NativeWindowHandle,browserPid,(uint)c.ProcessId,childTid,rootId,nodeId,Runtime(parent),!IsWindowEnabled(new IntPtr(c.NativeWindowHandle)));
      if(!Current(stamp))throw new InvalidOperationException("Current native wrapper proof unavailable.");
      session=new BowserMenuMembershipSession(testPid,sourceView,browserPid,browser.Created,stamp,gpu,Current,()=>clock.ElapsedMilliseconds);Exchange(0);
     }

@@ -34,19 +34,19 @@ public static class BowserMenuMembershipWire {
     }
 }
 public sealed class BowserMenuWrapper {
-    public readonly long Owner,Popup,Child;public readonly uint BrowserPid,GpuPid,Thread;
+    public readonly long Owner,Popup,Child;public readonly uint BrowserPid,GpuPid,Thread;public readonly bool InputDisabled;
     readonly int[] root,node,parent;
-    public BowserMenuWrapper(long owner,long popup,long child,uint browserPid,uint gpuPid,uint thread,int[] root,int[] node,int[] parent){
-        if(owner<=0||popup<=0||child<=0||popup==child||browserPid==0||gpuPid==0||browserPid==gpuPid||thread==0||!Ids(root)||!Ids(node)||!Ids(parent)||!Same(root,parent)||Same(root,node))
+    public BowserMenuWrapper(long owner,long popup,long child,uint browserPid,uint gpuPid,uint thread,int[] root,int[] node,int[] parent,bool inputDisabled){
+        if(!inputDisabled||owner<=0||popup<=0||child<=0||popup==child||browserPid==0||gpuPid==0||browserPid==gpuPid||thread==0||!Ids(root)||!Ids(node)||!Ids(parent)||!Same(root,parent)||Same(root,node))
             throw new System.InvalidOperationException("Unknown/ambiguous native or UIA wrapper identity.");
-        Owner=owner;Popup=popup;Child=child;BrowserPid=browserPid;GpuPid=gpuPid;Thread=thread;
+        Owner=owner;Popup=popup;Child=child;BrowserPid=browserPid;GpuPid=gpuPid;Thread=thread;InputDisabled=inputDisabled;
         this.root=(int[])root.Clone();this.node=(int[])node.Clone();this.parent=(int[])parent.Clone();
     }
     static bool Ids(int[] ids){return ids!=null&&ids.Length>0&&ids.Length<=32;}
     static bool Same(int[] a,int[] b){if(!Ids(a)||!Ids(b)||a.Length!=b.Length)return false;for(int i=0;i<a.Length;i++)if(a[i]!=b[i])return false;return true;}
-    public BowserMenuWrapper Copy(){return new BowserMenuWrapper(Owner,Popup,Child,BrowserPid,GpuPid,Thread,root,node,parent);}
+    public BowserMenuWrapper Copy(){return new BowserMenuWrapper(Owner,Popup,Child,BrowserPid,GpuPid,Thread,root,node,parent,InputDisabled);}
     public bool Node(int provider,int type,long native,int[] id,int[] parentId){return provider>0&&(uint)provider==GpuPid&&type==50033&&native==Child&&Same(id,node)&&Same(parentId,parent);}
-    public bool Matches(BowserMenuWrapper other){return other!=null&&Owner==other.Owner&&Popup==other.Popup&&Child==other.Child&&BrowserPid==other.BrowserPid&&GpuPid==other.GpuPid&&Thread==other.Thread&&Same(root,other.root)&&Same(node,other.node)&&Same(parent,other.parent);}
+    public bool Matches(BowserMenuWrapper other){return other!=null&&InputDisabled&&other.InputDisabled&&Owner==other.Owner&&Popup==other.Popup&&Child==other.Child&&BrowserPid==other.BrowserPid&&GpuPid==other.GpuPid&&Thread==other.Thread&&Same(root,other.root)&&Same(node,other.node)&&Same(parent,other.parent);}
 }
 public sealed class BowserMenuMembershipSession {
     readonly uint source,browser;readonly ulong view,browserCreated,created;readonly uint gpu;

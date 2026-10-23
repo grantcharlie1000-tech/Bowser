@@ -87,7 +87,9 @@ fn native(host:HWND,browser:u32,r:&Request)->Option<Native>{unsafe{
     // This owned host's fixed caption is checked without writing or switching foreground.
     let mut title=[0u16;64];let n=GetWindowTextW(host,&mut title);if n!=22||String::from_utf16_lossy(&title[..n as usize])!="bowser-extension-probe"{return None}
     let popup_ok=||IsWindow(Some(popup)).as_bool()&&IsWindowVisible(popup).as_bool()&&IsWindowEnabled(popup).as_bool()&&class(popup,"Chrome_WidgetWin_2")&&GetParent(popup).ok()==Some(host)&&GetWindow(popup,GW_OWNER).ok()==Some(host)&&GetAncestor(popup,GA_ROOTOWNER)==host&&GetAncestor(popup,GA_ROOT)==popup;
-    let child_ok=||IsWindow(Some(child)).as_bool()&&IsWindowVisible(child).as_bool()&&IsWindowEnabled(child).as_bool()&&class(child,"Intermediate D3D Window")&&GetParent(child).ok()==Some(popup)&&GetAncestor(child,GA_ROOT)==popup&&IsChild(popup,child).as_bool();
+    // ChildWindowWin creates an input-transparent WS_DISABLED rendering child.
+    // Only that structural child is disabled; the owned popup above remains enabled.
+    let child_ok=||IsWindow(Some(child)).as_bool()&&IsWindowVisible(child).as_bool()&&!IsWindowEnabled(child).as_bool()&&class(child,"Intermediate D3D Window")&&GetParent(child).ok()==Some(popup)&&GetAncestor(child,GA_ROOT)==popup&&IsChild(popup,child).as_bool();
     let mut a=GUITHREADINFO{cbSize:std::mem::size_of::<GUITHREADINFO>() as u32,..Default::default()};let mut b=a;let mut rect=RECT::default();
     if !popup_ok()||!child_ok()||GetWindowRect(popup,&mut rect).is_err()||rect.right<=rect.left||rect.bottom<=rect.top||GetGUIThreadInfo(host_thread,&mut a).is_err()||GetGUIThreadInfo(menu_thread,&mut b).is_err(){return None}
     let focus=a.hwndFocus;
