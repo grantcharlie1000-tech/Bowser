@@ -271,6 +271,20 @@ fn storage(root:&Path)->Vec<(String,Option<Vec<u8>>)> {
     ["notes.txt","notes-meta.txt","extensions.txt","extension_ids.txt"].iter().map(|name|((*name).into(),match std::fs::read(root.join(name)) { Ok(bytes)=>Some(bytes), Err(error) if error.kind()==std::io::ErrorKind::NotFound=>None, Err(error)=>panic!("storage snapshot read failed: {error}") })).collect()
 }
 fn effects(server:&Loopback,paste:usize,note:usize,destination:usize){let receipts=server.receipts.lock().unwrap();assert_eq!((receipts.paste,receipts.note,receipts.destination),(paste,note,destination));}
+fn note_fixture_url(ip_url:&url::Url)->url::Url {
+    assert_eq!(ip_url.scheme(),"http");assert_eq!(ip_url.host_str(),Some("127.0.0.1"));
+    assert!(crate::passwords::secure_origin(ip_url.as_str()).is_none(),"HTTP IP must remain rejected by the production origin guard");
+    let mut local=ip_url.clone();local.set_host(Some("localhost")).unwrap();
+    assert_eq!(local.port(),ip_url.port());assert_eq!(local.path(),ip_url.path());assert_eq!(local.query(),ip_url.query());
+    assert_eq!(crate::passwords::secure_origin(local.as_str()),crate::permissions::origin_of(local.as_str()));
+    assert!(crate::passwords::secure_origin(local.as_str()).is_some(),"only the existing literal-localhost policy admits this controlled fixture");local
+}
+#[test]
+fn note_fixture_uses_existing_localhost_origin_without_relaxing_ip_refusal(){
+    let ip=url::Url::parse("http://127.0.0.1:4321/source?nonce=17-42").unwrap();let local=note_fixture_url(&ip);
+    assert_eq!(local.as_str(),"http://localhost:4321/source?nonce=17-42");
+    assert!(crate::passwords::secure_origin(ip.as_str()).is_none());
+}
 fn controller_bounds(h:&NativeContextProbeHandles,owner:HWND)->RECT {
     let mut bounds=RECT::default();let mut parent=HWND::default();let mut visible=windows::core::BOOL::default();
     unsafe{h.controller.Bounds(&mut bounds).unwrap();h.controller.ParentWindow(&mut parent).unwrap();h.controller.IsVisible(&mut visible).unwrap()};assert_eq!(parent,owner);assert!(visible.as_bool());assert!(bounds.right>bounds.left&&bounds.bottom>bounds.top);bounds
@@ -330,7 +344,7 @@ fn live_probe_real_app_host_context_menu() {
     assert!(crate::profile::data_root_override().is_none());assert!(std::env::var_os("BOWSER_DATA_DIR").is_none());
     let stamp=SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();let token=format!("{}-{stamp}",std::process::id());let root=std::env::temp_dir().join(format!("bowser-real-app-host-menu-{token}"));std::fs::create_dir(&root).unwrap();
     let evidence=std::env::current_dir().unwrap().join("store-real-app-host-context-menu");std::fs::create_dir(&evidence).expect("do not reuse evidence from a previous run");
-    let server=Loopback::start(token.clone());let profile=crate::profile::Profile::default_in(&root);
+    let mut server=Loopback::start(token.clone());server.url=note_fixture_url(&server.url);let profile=crate::profile::Profile::default_in(&root);
     crate::profile::set_data_root(root.clone()).unwrap();crate::profile::set_dev_launch(true);
     // Empty bounded BOWSER records/map only. Never demand an empty native runtime inventory,
     // remove an unknown native entry, or classify it as trusted. Production retains every entry.
