@@ -1073,6 +1073,16 @@ impl App {
         });
     }
 
+    /// Test-only worker receipt setup. Keep this data-only hosted page hidden so it
+    /// cannot compete with the two real App tabs for foreground during native input.
+    #[cfg(all(test, feature = "experimental-engine-context-menu"))]
+    pub(crate) fn probe_open_extension_receipt(app:&AppRef,id:&str,folder:&std::path::Path,done:Box<dyn FnOnce(std::result::Result<(),String>)>){
+        if Self::active_tab_private(app){done(Err("Fixture receipt requires an ordinary tab.".into()));return}
+        if app.borrow().engine.is_none(){done(Err("Fixture receipt engine is absent.".into()));return}
+        // with_engine takes the engine out; no App borrow survives native creation/callbacks.
+        Self::with_engine(app,move|engine|{engine.probe_open_extension_receipt(id,folder,done);Ok(())});
+    }
+
     fn with_engine(
         app: &AppRef,
         operation: impl FnOnce(&mut dyn engine::EngineAdapter) -> windows::core::Result<()>,
@@ -1664,7 +1674,7 @@ impl App {
     /// which the "New tab position" option can keep it next to.
     pub(crate) fn spawn_tab(app: &AppRef, private: bool, opener: Option<TabId>) -> TabId {
         let hwnd = app.borrow().hwnd;
-        win32::page_fullscreen(hwnd, app, false, None);
+        win32::page_fullscreen(hwnd, app, false);
         let (id, hwnd, old, old_has_controller, in_split) = {
             let mut state = app.borrow_mut();
             let old = state.tab_model.active();
@@ -1748,7 +1758,7 @@ impl App {
 
     pub fn close_tab(app: &AppRef, id: TabId) -> bool {
         let hwnd = app.borrow().hwnd;
-        win32::page_fullscreen(hwnd, app, false, None);
+        win32::page_fullscreen(hwnd, app, false);
         let mut dissolved_split = false;
         let (changed, hwnd, active, was_active, last_tab) = {
             let mut state = app.borrow_mut();
@@ -1916,7 +1926,7 @@ impl App {
 
     pub fn select_tab(app: &AppRef, id: TabId) -> bool {
         let hwnd = app.borrow().hwnd;
-        win32::page_fullscreen(hwnd, app, false, None);
+        win32::page_fullscreen(hwnd, app, false);
         let _ = Self::expand_group_for_tab(app, id);
         // --- split view ---
         let (shown, parked, known) = {
@@ -4785,7 +4795,7 @@ impl App {
         let active_window = app.try_borrow().ok().and_then(|state|
             (state.tab_model.active() == tab).then_some(state.hwnd));
         if let Some(hwnd) = active_window {
-            win32::page_fullscreen(hwnd, app, false, None);
+            win32::page_fullscreen(hwnd, app, false);
         }
         let reading = app.try_borrow().is_ok_and(|state| {
             state
@@ -6152,7 +6162,7 @@ impl App {
             // --- auto-hide (T11) --- a page element (a video) asks for full screen, or leaves it.
             fullscreen_changed: {
                 let events_app = Rc::downgrade(app);
-                Some(Rc::new(move |tab_id, on, source| {
+                Some(Rc::new(move |tab_id, on| {
                     if let Some(app) = events_app.upgrade() {
                         let (hwnd, active) = {
                             let state = app.borrow();
@@ -6160,7 +6170,7 @@ impl App {
                         };
                         let owns = win32::page_fullscreen_owner(hwnd) == Some(tab_id);
                         if crate::auto_hide::page_fullscreen_event_applies(on, active, owns) {
-                            win32::page_fullscreen(hwnd, &app, on, source.as_ref());
+                            win32::page_fullscreen(hwnd, &app, on);
                         }
                     }
                 }))
@@ -6285,7 +6295,7 @@ impl App {
                         );
                         if found && app.borrow().tab_model.active() == tab_id {
                             // A new document must never inherit another document's fullscreen identity.
-                            win32::page_fullscreen(progress_hwnd, &app, false, None);
+                            win32::page_fullscreen(progress_hwnd, &app, false);
                             win32::post(
                                 progress_hwnd,
                                 win32::WM_NAVIGATION_PROGRESS,

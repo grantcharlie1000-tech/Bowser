@@ -357,11 +357,8 @@ fn reload_input(app:&AppRef,h:&NativeContextProbeHandles,tab:TabId,proof:(u64,u6
     let mut class=[0;64];let n=unsafe{GetClassNameW(owner,&mut class)};
     assert_eq!(String::from_utf16_lossy(&class[..n as usize]),"BowserNativeWindow");
     assert!(unsafe{IsWindow(Some(owner))}.as_bool());
-    // This Rust preparation owns the ONLY activation attempt. Require its actual success;
-    // the right-click-only helper may freshly verify foreground, but may never activate again.
-    unsafe{assert!(SetForegroundWindow(owner).as_bool(),"exact-owner activation failed; no retry or helper rescue");h.controller.MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC).unwrap()};
-    assert!(pump_until(Duration::from_secs(3),||unsafe{GetForegroundWindow()}==owner));
-    assert_eq!(script(&h.view,"(()=>{document.getElementById('app-context-target').focus();return document.hasFocus()})()"),Value::Bool(true));
+    // Complete DOM/geometry/observer preparation before the one native activation below.
+    assert_eq!(script(&h.view,"(()=>{const t=document.getElementById('app-context-target');t.focus();return document.activeElement===t})()"),Value::Bool(true));
     current(h,proof);
     let source=script(&h.view,"(()=>{const t=document.getElementById('app-context-target'),r=t.getBoundingClientRect(),x=(r.left+r.right)/2,y=(r.top+r.bottom)/2;return {left:r.left,top:r.top,right:r.right,bottom:r.bottom,width:innerWidth,height:innerHeight,ratio:devicePixelRatio,hit:document.elementFromPoint(x,y)===t,trusted:Number(document.documentElement.getAttribute('data-app-context-trusted')||0)}})()");
     assert_bool(&source,"hit",true);
@@ -379,7 +376,6 @@ fn reload_input(app:&AppRef,h:&NativeContextProbeHandles,tab:TabId,proof:(u64,u6
     let (px,py)=((left+right)/2,(top+bottom)/2);
     std::fs::create_dir_all(out).unwrap();let request_file=out.join("current-request.json");assert!(!request_file.exists());
     let nonce=format!("{}-{}",std::process::id(),SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos());
-    write_once(&out.join("source-conditioning.json"),&format!(r#"{{"schema":"bowser-real-app-menu-reload-conditioning-v1","activation_owner":"Rust-exact-original-App-owner","activation_attempts":1,"actual_activation_return":true,"owner":{},"controller":"{}","original_proof":["{}","{}","{}"]}}"#,owner.0 as isize,h.controller.as_raw() as usize,proof.0,proof.1,proof.2));
     let observed=Rc::new(RefCell::new(Vec::new()));let sink=observed.clone();
     let failure=Rc::new(RefCell::new(None::<String>));let errors=failure.clone();
     let show=Rc::new(RefCell::new(None::<ShowWitness>));let pending_show=show.clone();
@@ -416,6 +412,17 @@ fn reload_input(app:&AppRef,h:&NativeContextProbeHandles,tab:TabId,proof:(u64,u6
     let timer_result=Rc::new(RefCell::new(TimerResult::default()));
     let _timer=arm_timer(app,h,tab,proof,show.clone(),out,&nonce,timer_result.clone(),number(&source,"trusted"),journal);
     current(h,proof);
+    // All receipt/script/observer setup is now complete. This remains the ONLY activation;
+    // neither this Rust path nor the right-click-only helper may retry or choose another HWND.
+    unsafe{assert!(SetForegroundWindow(owner).as_bool(),"exact-owner activation failed; no retry or helper rescue");h.controller.MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC).unwrap()};
+    assert!(pump_until(Duration::from_secs(3),||unsafe{GetForegroundWindow()}==owner));
+    assert_eq!(script(&h.view,"document.hasFocus()&&document.activeElement===document.getElementById('app-context-target')"),Value::Bool(true));
+    current(h,proof);
+    let foreground=unsafe{GetForegroundWindow()};
+    if foreground!=owner {super::record_foreground_refusal(out,owner,foreground,browser);}
+    assert_eq!(foreground,owner,"exact owner displaced after final script; no retry or helper launch");
+    write_once(&out.join("source-conditioning.json"),&format!(r#"{{"schema":"bowser-real-app-menu-reload-conditioning-v1","setup_complete_before_activation":true,"activation_owner":"Rust-exact-original-App-owner","activation_attempts":1,"actual_activation_return":true,"owner":{},"foreground_after_final_script":{},"controller":"{}","original_proof":["{}","{}","{}"]}}"#,owner.0 as isize,foreground.0 as isize,h.controller.as_raw() as usize,proof.0,proof.1,proof.2));
+    assert_eq!(unsafe{GetForegroundWindow()},owner,"exact owner displaced before helper launch; no retry");
     let mut child=Command::new("powershell.exe").args(["-NoProfile","-File"])
         .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("benchmarks/scripts/probe-app-context-menu-reload.ps1"))
         .args(["-OwnerPid",&std::process::id().to_string(),"-OwnerHandle",&(owner.0 as isize).to_string()])
@@ -473,9 +480,7 @@ fn sequence(app:&AppRef,root:&Path,page:&url::Url,bowser_id:&str,folder:&Path,id
     assert_ne!(primary.view.as_raw(),negative.view.as_raw());
     {let mut ids=identities.borrow_mut();ids.push((source_tab,primary.view.as_raw() as usize));ids.push((other_tab,negative.view.as_raw() as usize));}
     assert!(App::select_tab(app,source_tab));current(&primary,original);
-    App::open_extension_page(app,bowser_id.into(),folder.into(),extensions::PageKind::Popup,"Disposable Reload fixture receipt".into());
-    let mut popup=None;assert!(pump_until(Duration::from_secs(30),||{popup=receipt_view(app);popup.is_some()}));let popup=popup.unwrap();
-    assert!(pump_until(Duration::from_secs(20),||script(&popup,"document.documentElement.getAttribute('data-ready')")==Value::String("yes".into())));
+    let popup=open_receipt_view(app,bowser_id,folder);
     let mut ready=None;assert!(pump_until(Duration::from_secs(10),||{let receipt=worker(&popup,"native-command-state");let complete=field(&receipt,"creation").is_some_and(|creation|field(creation,"complete")==Some(&Value::Bool(true)));ready=Some(receipt);complete}));
     let ready=ready.unwrap();let worker_id=text(&ready,"workerInstance").to_owned();let creation=field(&ready,"creation").unwrap().clone();
     assert_bool(&creation,"ok",true);assert_eq!(field(&creation,"error"),Some(&Value::Null));

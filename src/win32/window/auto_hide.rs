@@ -28,9 +28,10 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 use windows::core::{PCWSTR, w};
 
-use crate::app::AppRef;
+use crate::app::{App, AppRef};
 use crate::auto_hide::{self as rules, Bars, Fullscreen, Machine, Plan, Tick, Zone, Zones};
 use crate::chrome::layout::{AutoHideOverlay, Metrics, Rect as LRect};
+use crate::tabs::TabId;
 
 use super::{
     WM_MOUSELEAVE, WindowChrome, apply_sidebar_bounds, repaint, sync_html_host_bounds, with_chrome,
@@ -605,6 +606,12 @@ struct Saved {
 
 thread_local! {
     static SAVED: RefCell<HashMap<isize, Saved>> = RefCell::new(HashMap::new());
+    static PAGE_OWNERS: RefCell<HashMap<isize, TabId>> = RefCell::new(HashMap::new());
+}
+
+/// The tab whose page holds full screen in this window, independent of browser chrome.
+pub(crate) fn page_fullscreen_owner(hwnd: HWND) -> Option<TabId> {
+    PAGE_OWNERS.with(|owners| owners.borrow().get(&(hwnd.0 as isize)).copied())
 }
 
 /// What a full-screen change does to the window frame.
@@ -655,20 +662,16 @@ pub(crate) fn toggle_fullscreen(hwnd: HWND, app: &AppRef) {
 
 /// A page element (a video) went full screen or came back. The window fills its monitor too, every
 /// bar hides and nothing reveals them; Esc, which the page handles, ends it.
-pub(crate) fn page_fullscreen(hwnd: HWND, app: &AppRef, on: bool, source: Option<&url::Url>) {
+pub(crate) fn page_fullscreen(hwnd: HWND, app: &AppRef, on: bool) {
     let bits = fullscreen_bits(hwnd);
     // Repeated events must not overwrite the saved pre-fullscreen window placement.
     if on == (bits & 2 != 0) { return; }
     let Some((next, step)) = page_step(bits, on) else { return };
     if on {
+        PAGE_OWNERS.with(|owners| owners.borrow_mut().insert(hwnd.0 as isize, App::active_tab_id(app)));
         apply_step(hwnd, app, next, step);
-        // Browser-owned, persistent identity/exit surface. If it cannot be displayed, keep
-        // browser chrome visible rather than enter an unlabelled page full-screen state.
-        if !super::fullscreen_notice::show(hwnd, app, source) {
-            page_fullscreen(hwnd, app, false, None);
-        }
     } else {
-        super::fullscreen_notice::hide(hwnd);
+        PAGE_OWNERS.with(|owners| owners.borrow_mut().remove(&(hwnd.0 as isize)));
         apply_step(hwnd, app, next, step);
     }
 }
@@ -726,7 +729,7 @@ fn leave_window(hwnd: HWND, app: &AppRef) {
 
 /// The window is going away: forget what it saved.
 pub(crate) fn forget(hwnd: HWND) {
-    super::fullscreen_notice::hide(hwnd);
+    PAGE_OWNERS.with(|owners| owners.borrow_mut().remove(&(hwnd.0 as isize)));
     SAVED.with(|saved| saved.borrow_mut().remove(&(hwnd.0 as isize)));
     set_solid(hwnd, false);
 }
@@ -734,6 +737,20 @@ pub(crate) fn forget(hwnd: HWND) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn page_fullscreen_owner_is_per_window_and_cleared_when_the_window_closes() {
+        let (first, second) = (HWND(0x2001 as *mut _), HWND(0x2002 as *mut _));
+        assert_eq!(page_fullscreen_owner(first), None);
+        PAGE_OWNERS.with(|owners| owners.borrow_mut().insert(first.0 as isize, TabId(7)));
+        assert_eq!(page_fullscreen_owner(first), Some(TabId(7)));
+        assert_eq!(page_fullscreen_owner(second), None);
+        PAGE_OWNERS.with(|owners| owners.borrow_mut().insert(second.0 as isize, TabId(8)));
+        forget(first);
+        assert_eq!(page_fullscreen_owner(first), None);
+        assert_eq!(page_fullscreen_owner(second), Some(TabId(8)));
+        forget(second);
+    }
 
     /// Plays F11 presses (`'k'`) and page full-screen changes (`'p'` on, `'e'` off/Esc) against a
     /// model window whose frame is "framed" until it fills its monitor, with one saved slot as in

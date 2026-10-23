@@ -113,7 +113,6 @@ use windows::{
 const CLASS_NAME: windows::core::PCWSTR = w!("BowserNativeWindow");
 // --- auto-hide (T11) --- the window's side of auto-hide and full screen (window/auto_hide.rs).
 mod auto_hide;
-mod fullscreen_notice;
 // --- end auto-hide ---
 // --- look state (fix group B) --- the page and panel hosts' `state` (window/host_state.rs).
 mod host_state;
@@ -1857,12 +1856,12 @@ pub(crate) fn zoomed_or_full(hwnd: HWND) -> bool {
 pub(crate) fn toggle_fullscreen(hwnd: HWND, app: &AppRef) {
     auto_hide::toggle_fullscreen(hwnd, app);
 }
-pub(crate) fn page_fullscreen(hwnd: HWND, app: &AppRef, on: bool, source: Option<&url::Url>) {
-    auto_hide::page_fullscreen(hwnd, app, on, source);
+pub(crate) fn page_fullscreen(hwnd: HWND, app: &AppRef, on: bool) {
+    auto_hide::page_fullscreen(hwnd, app, on);
 }
 /// The tab whose page holds page full screen in `hwnd`, if any.
 pub(crate) fn page_fullscreen_owner(hwnd: HWND) -> Option<crate::tabs::TabId> {
-    fullscreen_notice::owner(hwnd)
+    auto_hide::page_fullscreen_owner(hwnd)
 }
 pub(super) fn bookmark_bar_placement(hwnd: HWND) -> Option<(RECT, bool)> {
     auto_hide::bookmark_bar_placement(hwnd)
@@ -3017,8 +3016,8 @@ unsafe extern "system" fn window_proc(
             }
             WM_TABS_CHANGED => {
                 if let Some(app) = app {
-                    if !fullscreen_notice::belongs_to_active_tab(hwnd, app) {
-                        auto_hide::page_fullscreen(hwnd, app, false, None);
+                    if auto_hide::page_fullscreen_owner(hwnd).is_some_and(|owner| owner != App::active_tab_id(app)) {
+                        auto_hide::page_fullscreen(hwnd, app, false);
                     }
                     let (structural, persisted) = App::take_tab_change_flags();
                     if structural {
@@ -3918,7 +3917,7 @@ unsafe extern "system" fn window_proc(
                 if wparam.0 == windows::Win32::UI::Input::KeyboardAndMouse::VK_ESCAPE.0 as usize
                     && auto_hide::fullscreen_of(hwnd) == crate::auto_hide::Fullscreen::Page
                 {
-                    if let Some(app) = app { auto_hide::page_fullscreen(hwnd, app, false, None); }
+                    if let Some(app) = app { auto_hide::page_fullscreen(hwnd, app, false); }
                     return LRESULT(0);
                 }
                 if wparam.0 == windows::Win32::UI::Input::KeyboardAndMouse::VK_ESCAPE.0 as usize

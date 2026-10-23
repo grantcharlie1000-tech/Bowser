@@ -10,6 +10,14 @@ on:
       - 'src/win32/store.rs'
       - '.github/workflows/store-probe.yml'
       - 'benchmarks/scripts/probe-default-context-cancellation.ps1'
+      - 'benchmarks/scripts/native-runner-state.psm1'
+      - 'benchmarks/scripts/test-native-runner-state.ps1'
+      - 'benchmarks/scripts/native-clipboard-policy.cs'
+      - 'benchmarks/scripts/test-native-clipboard-policy.ps1'
+      - 'benchmarks/scripts/ci-hosted-runner-proof.psm1'
+      - 'benchmarks/scripts/test-ci-hosted-runner-proof.ps1'
+      - 'benchmarks/scripts/ci-clipboard-native.cs'
+      - 'benchmarks/scripts/prepare-ci-empty-clipboard.ps1'
       - 'benchmarks/scripts/probe-custom-context-menu.ps1'
       - 'benchmarks/scripts/probe-app-context-menu.ps1'
       - 'benchmarks/scripts/probe-app-host-context-menu.ps1'
@@ -149,6 +157,32 @@ jobs:
         run: |
           cargo +stable test --locked --lib --no-run
           if ($LASTEXITCODE -ne 0) { throw 'Native safety executable failed to build.' }
+      - name: Record read-only runner prerequisites using the native helper host
+        id: native_fixture_policy
+        if: ${{ !cancelled() && steps.native_build.outcome == 'success' }}
+        run: |
+          # Same Windows PowerShell host as the native helpers; preserve existing execution policy.
+          & powershell.exe -NoProfile -File ./benchmarks/scripts/test-native-runner-state.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'Read-only runner diagnostic regressions failed.' }
+          & powershell.exe -NoProfile -File ./benchmarks/scripts/test-native-clipboard-policy.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'Actual guard mutation-path zero refusal regression failed.' }
+          & powershell.exe -NoProfile -File ./benchmarks/scripts/test-ci-hosted-runner-proof.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'Disposable runner proof binding regressions failed.' }
+          $snapshot = & powershell.exe -NoProfile -Command "Import-Module ./benchmarks/scripts/native-runner-state.psm1; Get-BowserNativeRunnerState -Phase preflight | ConvertTo-Json -Depth 8"
+          if ($LASTEXITCODE -ne 0) { throw 'Native helper host could not collect runner state.' }
+          $snapshot | Set-Content -Encoding utf8 store-native-runner-state.json
+          $parsed = $snapshot | ConvertFrom-Json
+          if ($parsed.status -ne 'captured' -or $parsed.input_authority -or $parsed.clipboard_authority) { throw 'Runner diagnostics unavailable or incorrectly authorizing.' }
+      - name: Prepare only a proved disposable job-owned empty clipboard baseline
+        if: ${{ !cancelled() && steps.native_build.outcome == 'success' && steps.native_fixture_policy.outcome == 'success' }}
+        env:
+          BOWSER_PLATFORM_RUNNER_ENVIRONMENT: ${{ runner.environment }}
+        run: |
+          # The script additionally binds retained actual worker/listener identities and the
+          # non-secret .runner AgentId to the active public GitHub job. Env values alone fail.
+          # No local/shared/self-hosted path, permission changes, payloads, retries or fallback.
+          & powershell.exe -NoProfile -File ./benchmarks/scripts/prepare-ci-empty-clipboard.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'Disposable clipboard fixture ownership/baseline refused; original native gates remain required.' }
       - name: Inspect exact test executable imports after pre-test loader failure
         if: ${{ !cancelled() && steps.native_build.outcome == 'success' }}
         run: |
@@ -370,6 +404,12 @@ jobs:
         run: |
           cargo +stable test --locked --lib --features html-chrome-default,experimental-engine-context-menu engine::webview2::engine_menu::tests -- --nocapture --test-threads=1 2>&1 | Tee-Object store-real-app-menu-unit.log
           if ($LASTEXITCODE -ne 0) { throw 'Experimental engine-menu model failed to compile or test.' }
+          cargo +stable test --locked --lib --features html-chrome-default,experimental-engine-context-menu engine::native_probe_pump::tests -- --nocapture --test-threads=1 2>&1 | Tee-Object -Append store-real-app-menu-unit.log
+          if ($LASTEXITCODE -ne 0) { throw 'Native probe deadline and callback checkpoint regressions failed.' }
+          powershell -NoProfile -File benchmarks/scripts/test-native-menu-membership.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'Private native-menu membership adversarial regressions failed.' }
+          cargo +stable test --locked --lib --features html-chrome-default,experimental-engine-context-menu engine::native_menu_membership::tests -- --nocapture --test-threads=1 2>&1 | Tee-Object -Append store-real-app-menu-unit.log
+          if ($LASTEXITCODE -ne 0) { throw 'Private native-menu membership request framing regressions failed.' }
           cargo +stable test --locked --lib --features html-chrome-default,experimental-engine-context-menu engine::webview2::menu_inventory::tests -- --nocapture --test-threads=1 2>&1 | Tee-Object -Append store-real-app-menu-unit.log
           if ($LASTEXITCODE -ne 0) { throw 'Experimental strict native inventory tests failed.' }
           cargo +stable test --locked --lib --features html-chrome-default,experimental-engine-context-menu engine::webview2::owned_context_menu::tests -- --nocapture --test-threads=1 2>&1 | Tee-Object -Append store-real-app-menu-unit.log
@@ -380,6 +420,16 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Experimental main-window timer collision guard failed.' }
           cargo +stable test --locked --lib --features html-chrome-default,experimental-engine-context-menu engine::app_host_menu_probe::live::host_probe_selection_uses_native_name_or_inserted_role_not_command_range -- --exact --nocapture --test-threads=1 2>&1 | Tee-Object -Append store-real-app-menu-unit.log
           if ($LASTEXITCODE -ne 0) { throw 'Separate host-lane read-only selection diagnostic failed.' }
+          cargo +stable test --locked --lib --features html-chrome-default,experimental-engine-context-menu engine::app_host_menu_probe::live::loopback_effect_ack_waits_for_fragmented_request -- --exact --nocapture --test-threads=1 2>&1 | Tee-Object -Append store-real-app-menu-unit.log
+          if ($LASTEXITCODE -ne 0) { throw 'Fragmented real TCP fixture acknowledgment regression failed.' }
+          cargo +stable test --locked --lib --features html-chrome-default,experimental-engine-context-menu engine::app_host_menu_probe::live::loopback_rejects_oversize_headers_without_recording_an_effect -- --exact --nocapture --test-threads=1 2>&1 | Tee-Object -Append store-real-app-menu-unit.log
+          if ($LASTEXITCODE -ne 0) { throw 'Oversize real TCP fixture refusal regression failed.' }
+          cargo +stable test --locked --lib --features html-chrome-default,experimental-engine-context-menu engine::app_host_menu_probe::live::effect_failure_classification_never_includes_unknown_contents -- --exact --nocapture --test-threads=1 2>&1 | Tee-Object -Append store-real-app-menu-unit.log
+          if ($LASTEXITCODE -ne 0) { throw 'Bounded source-effect failure classification regression failed.' }
+          cargo +stable test --locked --lib --features html-chrome-default,experimental-engine-context-menu engine::app_host_menu_probe::live::note_fixture_uses_existing_localhost_origin_without_relaxing_ip_refusal -- --exact --nocapture --test-threads=1 2>&1 | Tee-Object -Append store-real-app-menu-unit.log
+          if ($LASTEXITCODE -ne 0) { throw 'Controlled localhost fixture and preserved IP-origin refusal regression failed.' }
+          cargo +stable test --locked --lib --features html-chrome-default,experimental-engine-context-menu engine::app_context_menu_probe::app_loopback_ -- --nocapture --test-threads=1 2>&1 | Tee-Object -Append store-real-app-menu-unit.log
+          if ($LASTEXITCODE -ne 0) { throw 'Real App fixture delayed/fragmented TCP header regressions failed.' }
 
       - name: Probe default-off native engine menu in actual HTML Bowser App
         if: ${{ !cancelled() && steps.experimental_menu_build.outcome == 'success' }}
@@ -448,6 +498,9 @@ jobs:
             store-native-installer-band-component.log
             store-band-loader-imports.log
             store-band-loader-identity.log
+            store-native-runner-state.json
+            store-profile-isolation-negative-control.json
+            ${{ runner.temp }}/bowser-ci-empty-clipboard-*.jsonl
             store-band-libtest-manifest.log
             store-band-libtest.manifest.xml
             store-band-system-comctl-exports.log

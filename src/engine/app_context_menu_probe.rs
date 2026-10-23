@@ -4,7 +4,7 @@
 //! - `engine::mod`: `pub(crate) mod app_context_menu_probe;` and a forwarding
 //!   `set_menu_probe_observer(Rc<dyn Fn(MenuProbeEvent)>)` into the production coordinator.
 //! - `EngineAdapter::probe_native_context_handles(TabId) -> Option<NativeContextProbeHandles>`
-//!   and `probe_extension_receipt_view() -> Option<ICoreWebView2>`, both defaulting to `None`.
+//!   and clone-only `probe_extension_receipt_handles()`, both defaulting to `None`.
 //!   Implementations only clone handles/closures under App/Core borrows. All native reads,
 //!   script calls, fences and nested pumping happen after those borrows have ended.
 //! - `win32::set_app_menu_probe_hooks(Box<dyn FnOnce(AppRef)>, Box<dyn FnMut(AppRef)>)`:
@@ -44,9 +44,8 @@ use windows::{core::{Interface, PWSTR}, Win32::{
     Foundation::{HWND, RECT, WPARAM, LPARAM},
     System::Com::{CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED},
     UI::WindowsAndMessaging::{
-        DispatchMessageW, GetClassNameW, GetClientRect, GetForegroundWindow,
-        IsWindow, MSG, PM_REMOVE, PeekMessageW, PostMessageW, SetForegroundWindow,
-        TranslateMessage, WM_CLOSE, WM_QUIT,
+        GetClassNameW, GetClientRect, GetForegroundWindow,
+        IsWindow, PostMessageW, SetForegroundWindow, WM_CLOSE,
     },
 }};
 use crate::{app::{App, AppRef}, extensions::{self, json::{self, Value}}, performance::{LaunchOptions, PerfLog}, tabs::TabId};
@@ -60,6 +59,36 @@ pub(crate) struct NativeContextProbeHandles {
     pub(crate) environment: ICoreWebView2Environment,
     pub(crate) proof: Rc<dyn Fn() -> Option<(u64, u64, u64)>>,
     pub(crate) document_fence: Rc<dyn Fn() -> bool>,
+}
+pub(crate) struct NativeReceiptHandles {
+    pub(crate) view:ICoreWebView2,pub(crate) controller:ICoreWebView2Controller,pub(crate) environment:ICoreWebView2Environment,pub(crate) owner:HWND,
+    pub(crate) proof:Rc<dyn Fn()->Option<(u64,u64)>>,
+}
+struct Receipt {handles:NativeReceiptHandles,expected:url::Url,captured:(u64,u64)}
+impl std::ops::Deref for Receipt {type Target=ICoreWebView2;fn deref(&self)->&ICoreWebView2{&self.handles.view}}
+impl Receipt {
+    fn current(&self){
+        use windows::Win32::UI::WindowsAndMessaging::{GetWindowThreadProcessId,IsWindowVisible};
+        assert_eq!((self.handles.proof)(),Some(self.captured),"exact hidden receipt/document changed");
+        let mut pid=0;let mut name=[0u16;64];let mut parent=HWND::default();let mut source=PWSTR::null();
+        unsafe{
+            assert_eq!(GetWindowThreadProcessId(self.handles.owner,Some(&mut pid)),windows::Win32::System::Threading::GetCurrentThreadId());assert_eq!(pid,std::process::id());
+            assert!(IsWindow(Some(self.handles.owner)).as_bool());assert!(!IsWindowVisible(self.handles.owner).as_bool(),"data-only receipt must remain hidden");
+            let n=GetClassNameW(self.handles.owner,&mut name);assert_eq!(String::from_utf16_lossy(&name[..n as usize]),"BowserExtensionPage");
+            self.handles.controller.ParentWindow(&mut parent).unwrap();assert_eq!(parent,self.handles.owner);
+            let view=self.handles.controller.CoreWebView2().unwrap();assert_eq!(view.cast::<windows::core::IUnknown>().unwrap().as_raw(),self.handles.view.cast::<windows::core::IUnknown>().unwrap().as_raw());
+            let environment=self.handles.view.cast::<webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2_2>().unwrap().Environment().unwrap();
+            assert_eq!(environment.cast::<windows::core::IUnknown>().unwrap().as_raw(),self.handles.environment.cast::<windows::core::IUnknown>().unwrap().as_raw());
+            let settings=self.handles.view.Settings().unwrap();let mut messages=windows::core::BOOL::default();let mut objects=messages;
+            settings.IsWebMessageEnabled(&mut messages).unwrap();settings.AreHostObjectsAllowed(&mut objects).unwrap();assert!(!messages.as_bool()&&!objects.as_bool());
+            self.handles.view.Source(&mut source).unwrap();
+        }
+        assert!(!source.is_null());let allocation=CoTaskMemPWSTR::from(source);
+        let length=(0..=2048).find(|index|unsafe{*source.0.add(*index)==0}).expect("bounded native receipt URI unavailable");
+        let actual=String::from_utf16(unsafe{std::slice::from_raw_parts(source.0,length)}).unwrap();drop(allocation);
+        assert_eq!(actual,self.expected.as_str());ordinary_profile(self);
+        assert_eq!((self.handles.proof)(),Some(self.captured),"hidden receipt changed across native identity reads");
+    }
 }
 
 /// Read-only diagnostic emitted at the actual production menu coordinator boundaries.
@@ -87,44 +116,65 @@ const TARGET_PAGE: &str = r#"<!doctype html><meta charset="utf-8"><title>Disposa
  }
 });</script>"#;
 
-struct Loopback { url: url::Url, stop: Arc<AtomicBool>, worker: Option<std::thread::JoinHandle<()>> }
+#[derive(Default)]
+struct LoopbackReads {accepted:std::sync::atomic::AtomicUsize,parsed:std::sync::atomic::AtomicUsize,served:std::sync::atomic::AtomicUsize}
+fn app_loopback_target(socket:&mut std::net::TcpStream)->Option<String>{
+    // Winsock accepts may inherit nonblocking mode. Keep the original one-second,
+    // 2048-byte bound, but wait for complete headers before serving the document.
+    socket.set_nonblocking(false).ok()?;let deadline=Instant::now()+Duration::from_secs(1);
+    let mut bytes=[0u8;2048];let mut used=0;
+    loop {
+        socket.set_read_timeout(Some(deadline.checked_duration_since(Instant::now())?)).ok()?;
+        let count=socket.read(&mut bytes[used..]).ok()?;if count==0{return None}used+=count;
+        if used>=bytes.len()||Instant::now()>=deadline{return None}
+        if bytes[..used].windows(4).any(|part|part==b"\r\n\r\n"){break}
+    }
+    std::str::from_utf8(&bytes[..used]).ok()?.lines().next()?.strip_prefix("GET ")?.split_whitespace().next().map(str::to_owned)
+}
+struct Loopback { url: url::Url, stop: Arc<AtomicBool>, reads:Arc<LoopbackReads>, worker: Option<std::thread::JoinHandle<()>> }
 impl Loopback {
     fn start() -> Self {
         let listener=TcpListener::bind("127.0.0.1:0").unwrap();
         let url=url::Url::parse(&format!("http://127.0.0.1:{}/app-native-menu",listener.local_addr().unwrap().port())).unwrap();
         listener.set_nonblocking(true).unwrap();
-        let stop=Arc::new(AtomicBool::new(false)); let stopping=stop.clone();
+        let stop=Arc::new(AtomicBool::new(false)); let stopping=stop.clone();let reads=Arc::new(LoopbackReads::default());let observed=reads.clone();
         let worker=std::thread::spawn(move || while !stopping.load(Ordering::Relaxed) {
             let Ok((mut socket,_))=listener.accept() else {std::thread::sleep(Duration::from_millis(10));continue};
-            let _=socket.set_read_timeout(Some(Duration::from_secs(1)));
-            let mut request=[0;2048]; let Ok(n)=socket.read(&mut request) else {continue};
-            let path=std::str::from_utf8(&request[..n]).ok().and_then(|s|s.lines().next()).and_then(|l|l.split_whitespace().nth(1));
-            let (status,body)=if path==Some("/app-native-menu") {("200 OK",TARGET_PAGE)} else {("404 Not Found","")};
+            observed.accepted.fetch_add(1,Ordering::Relaxed);
+            let Some(path)=app_loopback_target(&mut socket) else{continue};observed.parsed.fetch_add(1,Ordering::Relaxed);
+            let (status,body)=if path=="/app-native-menu" {observed.served.fetch_add(1,Ordering::Relaxed);("200 OK",TARGET_PAGE)} else {("404 Not Found","")};
             let _=write!(socket,"HTTP/1.1 {status}\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n{body}",body.len());
         });
-        Self {url,stop,worker:Some(worker)}
+        Self {url,stop,reads,worker:Some(worker)}
     }
 }
 impl Drop for Loopback {fn drop(&mut self) {self.stop.store(true,Ordering::Relaxed);if let Some(worker)=self.worker.take(){let _=worker.join();}}}
 
-fn pump_until(timeout: Duration, mut ready: impl FnMut() -> bool) -> bool {
-    let start=Instant::now();
-    while start.elapsed()<timeout {
-        if ready(){return true}
-        unsafe {
-            let mut message=MSG::default();
-            while PeekMessageW(&mut message,None,0,0,PM_REMOVE).as_bool(){
-                // Never swallow the real App loop's quit signal in this nested test pump.
-                if message.message==WM_QUIT {
-                    windows::Win32::UI::WindowsAndMessaging::PostQuitMessage(message.wParam.0 as i32);
-                    return false;
-                }
-                let _=TranslateMessage(&message);DispatchMessageW(&message);
-            }
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    ready()
+#[test]
+fn app_loopback_waits_for_late_fragmented_headers(){
+    let server=Loopback::start();let address=format!("127.0.0.1:{}",server.url.port().unwrap());
+    let mut socket=std::net::TcpStream::connect(address).unwrap();socket.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+    // Force accept to precede the first payload, then split the request target itself.
+    std::thread::sleep(Duration::from_millis(50));
+    socket.write_all(b"GET /app-native-").expect("accepted socket must wait for fixture bytes");
+    std::thread::sleep(Duration::from_millis(20));
+    socket.write_all(b"menu HTTP/1.1\r\nHost: 127.0.0.1\r\n").expect("partial headers must not cause premature response/close");
+    std::thread::sleep(Duration::from_millis(20));socket.write_all(b"\r\n").unwrap();
+    let mut response=String::new();socket.read_to_string(&mut response).unwrap();
+    assert!(response.starts_with("HTTP/1.1 200 OK\r\n"),"complete fixture request was lost: {response}");
+    assert!(response.ends_with(TARGET_PAGE));
+}
+#[test]
+fn app_loopback_refuses_oversize_incomplete_headers(){
+    let server=Loopback::start();let mut socket=std::net::TcpStream::connect(format!("127.0.0.1:{}",server.url.port().unwrap())).unwrap();
+    socket.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+    let mut bytes=b"GET /app-native-menu HTTP/1.1\r\nX: ".to_vec();bytes.extend(std::iter::repeat_n(b'a',2048));
+    let _=socket.write_all(&bytes);let mut response=String::new();let _=socket.read_to_string(&mut response);
+    assert!(!response.contains(TARGET_PAGE),"incomplete/oversize request must never receive the controlled page");
+}
+
+fn pump_until(timeout: Duration, ready: impl FnMut() -> bool) -> bool {
+    super::native_probe_pump::until(timeout,ready)
 }
 
 fn field<'a>(v: &'a Value,k: &str)->Option<&'a Value>{let Value::Object(o)=v else{return None};json::get(o,k)}
@@ -138,9 +188,21 @@ fn handles(app: &AppRef,tab: TabId)->Option<NativeContextProbeHandles>{
     let app=app.try_borrow().ok()?;
     app.engine.as_ref()?.probe_native_context_handles(tab)
 }
-fn receipt_view(app: &AppRef)->Option<ICoreWebView2>{
+fn receipt_handles(app: &AppRef)->Option<NativeReceiptHandles>{
     let app=app.try_borrow().ok()?;
-    app.engine.as_ref()?.probe_extension_receipt_view()
+    app.engine.as_ref()?.probe_extension_receipt_handles()
+}
+fn open_receipt_view(app:&AppRef,id:&str,folder:&Path)->Receipt{
+    let outcome=Rc::new(RefCell::new(None));let completed=outcome.clone();
+    App::probe_open_extension_receipt(app,id,folder,Box::new(move|result|*completed.borrow_mut()=Some(result)));
+    assert!(pump_until(Duration::from_secs(30),||outcome.borrow().is_some()),"hidden native fixture receipt did not open");
+    outcome.borrow_mut().take().unwrap().expect("real loaded-extension receipt creation failed");
+    let handles=receipt_handles(app).expect("completed native receipt has no exact controller/view");
+    assert!(pump_until(Duration::from_secs(20),||(handles.proof)().is_some()&&script(&handles.view,"document.documentElement.getAttribute('data-ready')")==Value::String("yes".into())),"successful hidden receipt document did not settle");
+    let captured=(handles.proof)().unwrap();let expected=extensions::extension_page_url(folder,extensions::PageKind::Popup,FIXTURE_ID).unwrap();
+    let receipt=Receipt{handles,expected,captured};receipt.current();
+    println!("APP_MENU_RECEIPT receipt_only=true hidden_native_host={} exact_controller={} exact_view={} successful_navigation={} epoch={} ordinary_profile=true fixed_native_document=true web_messages=false host_objects=false",receipt.handles.owner.0 as usize,receipt.handles.controller.as_raw() as usize,receipt.handles.view.as_raw() as usize,captured.0,captured.1);
+    receipt
 }
 fn script(view: &ICoreWebView2,source: &str)->Value {
     let slot=Rc::new(RefCell::new(None));let sink=slot.clone();
@@ -153,7 +215,8 @@ fn script(view: &ICoreWebView2,source: &str)->Value {
     let result=slot.borrow_mut().take().flatten().expect("exact COM script failed");
     assert!(result.len()<=64*1024,"fixture receipt exceeded bound");json::parse(&result).expect("native JSON result")
 }
-fn worker(view: &ICoreWebView2,kind: &str)->Value {
+fn worker(view: &Receipt,kind: &str)->Value {
+    view.current();
     assert!(["native-command-state","native-command-preflight"].contains(&kind));
     let request=format!("(()=>{{document.documentElement.removeAttribute('data-app-menu-receipt');chrome.runtime.sendMessage({{type:{}}},answer=>document.documentElement.setAttribute('data-app-menu-receipt',JSON.stringify(answer)));return true}})()",crate::chrome_host::protocol::json_string(kind));
     assert_eq!(script(view,&request),Value::Bool(true));
@@ -161,7 +224,7 @@ fn worker(view: &ICoreWebView2,kind: &str)->Value {
     assert!(pump_until(Duration::from_secs(10),||{
         let value=script(view,"JSON.parse(document.documentElement.getAttribute('data-app-menu-receipt')||'null')");
         if matches!(value,Value::Object(_)){answer=Some(value);true}else{false}
-    }),"genuine fixture worker receipt absent");answer.unwrap()
+    }),"genuine fixture worker receipt absent");view.current();answer.unwrap()
 }
 fn marker(view: &ICoreWebView2,role: &str)->Value {
     assert!(["primary","negative"].contains(&role));
@@ -173,6 +236,24 @@ fn document(view: &ICoreWebView2,page: &url::Url)->Value {
 }
 fn current(h: &NativeContextProbeHandles,proof: (u64,u64,u64)) {
     assert!((h.document_fence)(),"source COM/document fence refused");assert_eq!((h.proof)(),Some(proof));
+}
+fn record_foreground_refusal(out:&Path,owner:HWND,observed:HWND,browser:u32){
+    // Failure-only metadata for the exact observed HWND. Do not inspect class/text of a
+    // foreign process, walk its UI, activate anything, or change the original refusal.
+    use windows::Win32::UI::WindowsAndMessaging::{GetWindowThreadProcessId,GetParent,GetAncestor,GA_ROOT,GA_ROOTOWNER};
+    let mut pid=0;let thread=unsafe{GetWindowThreadProcessId(observed,Some(&mut pid))};
+    let known=pid!=0&&(pid==std::process::id()||pid==browser);let mut name=[0u16;64];
+    let (class,parent,root,root_owner)=if known&&unsafe{GetForegroundWindow()}==observed {
+        let n=unsafe{GetClassNameW(observed,&mut name)};
+        let class=if n>0&&n<63 {crate::chrome_host::protocol::json_string(&String::from_utf16_lossy(&name[..n as usize]))}else{"null".into()};
+        unsafe{(class,GetParent(observed).unwrap_or_default(),GetAncestor(observed,GA_ROOT),GetAncestor(observed,GA_ROOTOWNER))}
+    }else{("null".into(),HWND::default(),HWND::default(),HWND::default())};
+    let mut after=0;let after_thread=unsafe{GetWindowThreadProcessId(observed,Some(&mut after))};
+    let same=pid!=0&&thread!=0&&!observed.is_invalid()&&pid==after&&thread==after_thread&&unsafe{GetForegroundWindow()}==observed;
+    let (parent,root,root_owner)=if same{(parent,root,root_owner)}else{(HWND::default(),HWND::default(),HWND::default())};
+    let text=format!(r#"{{"scope":"failure-only-exact-observed-foreground-not-authority","owner":{},"observed":{},"pid":{},"thread":{},"known_test_or_browser_process":{},"identity_same_after_read":{},"class":{},"parent":{},"root":{},"root_owner":{},"helper_launched":false,"activation_retry":false}}"#,
+        owner.0 as isize,observed.0 as isize,pid,thread,known,same,if same{class}else{"null".into()},parent.0 as isize,root.0 as isize,root_owner.0 as isize);
+    if text.len()<=2048 {let _=std::fs::write(out.join("foreground-refusal.json"),text);}
 }
 fn isolated_environment(app: &AppRef,h: &NativeContextProbeHandles) {
     let expected=app.borrow().user_data_dir.clone();
@@ -217,10 +298,8 @@ fn native_input(app: &AppRef,h: &NativeContextProbeHandles,tab: TabId,proof:(u64
     let mut class=[0;64];let n=unsafe{GetClassNameW(owner,&mut class)};
     assert_eq!(String::from_utf16_lossy(&class[..n as usize]),"BowserNativeWindow");
     assert!(unsafe{IsWindow(Some(owner))}.as_bool());
-    // Activation is requested here through this already-owned native HWND, never by helper search.
-    unsafe{let _=SetForegroundWindow(owner);h.controller.MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC).unwrap()};
-    assert!(pump_until(Duration::from_secs(3),||unsafe{GetForegroundWindow()}==owner));
-    assert_eq!(script(&h.view,"(()=>{document.getElementById('app-context-target').focus();return document.hasFocus()})()"),Value::Bool(true));
+    // Complete DOM/receipt setup before the sole Rust activation, as in the Reload lane.
+    assert_eq!(script(&h.view,"(()=>{const t=document.getElementById('app-context-target');t.focus();return document.activeElement===t})()"),Value::Bool(true));
     current(h,proof);
     let source=script(&h.view,"(()=>{const t=document.getElementById('app-context-target'),r=t.getBoundingClientRect(),x=(r.left+r.right)/2,y=(r.top+r.bottom)/2;return {left:r.left,top:r.top,right:r.right,bottom:r.bottom,width:innerWidth,height:innerHeight,ratio:devicePixelRatio,hit:document.elementFromPoint(x,y)===t,trusted:Number(document.documentElement.getAttribute('data-app-context-trusted')||0)}})()");
     assert_bool(&source,"hit",true);
@@ -255,6 +334,12 @@ fn native_input(app: &AppRef,h: &NativeContextProbeHandles,tab: TabId,proof:(u64
     }));
     let _observer=ObserverScope;
     current(h,proof);
+    unsafe{assert!(SetForegroundWindow(owner).as_bool(),"exact-owner activation failed; no retry or helper rescue");h.controller.MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC).unwrap()};
+    assert!(pump_until(Duration::from_secs(3),||unsafe{GetForegroundWindow()}==owner));
+    assert_eq!(script(&h.view,"document.hasFocus()&&document.activeElement===document.getElementById('app-context-target')"),Value::Bool(true));
+    current(h,proof);let foreground=unsafe{GetForegroundWindow()};if foreground!=owner {record_foreground_refusal(out,owner,foreground,browser);}assert_eq!(foreground,owner,"exact owner displaced after final script; no retry or helper launch");
+    std::fs::write(out.join("source-conditioning.json"),format!(r#"{{"schema":"bowser-real-app-menu-conditioning-v1","setup_complete_before_activation":true,"activation_owner":"Rust-exact-original-App-owner","activation_attempts":1,"actual_activation_return":true,"owner":{},"foreground_after_final_script":{}}}"#,owner.0 as isize,foreground.0 as isize)).unwrap();
+    assert_eq!(unsafe{GetForegroundWindow()},owner,"exact owner displaced before helper launch; no retry");
     let mut child=Command::new("powershell.exe").args(["-NoProfile","-File"])
         .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("benchmarks/scripts/probe-app-context-menu.ps1"))
         .args(["-OwnerPid",&std::process::id().to_string(),"-OwnerHandle",&(owner.0 as isize).to_string()])
@@ -292,9 +377,19 @@ fn native_input(app: &AppRef,h: &NativeContextProbeHandles,tab: TabId,proof:(u64
     fixture_command
 }
 
-fn sequence(app: &AppRef,root: &Path,page: &url::Url,bowser_id: &str,folder: &Path) {
+fn sequence(app: &AppRef,root: &Path,page: &url::Url,bowser_id: &str,folder: &Path,reads:&LoopbackReads) {
     let source_tab=App::active_tab_id(app);let mut primary=None;
-    assert!(pump_until(Duration::from_secs(60),||{primary=handles(app,source_tab);primary.as_ref().is_some_and(|h|(h.proof)().is_some())}),"real App controller/successful document did not settle");
+    let source_ready=pump_until(Duration::from_secs(60),||{primary=handles(app,source_tab);primary.as_ref().is_some_and(|h|(h.proof)().is_some())});
+    if !source_ready {
+        // Original result remains a refusal. These are Rust App state classifications,
+        // not another script/readiness attempt or a substitute for the native gate proof.
+        let ids=App::tab_ids(app);let active=(!ids.is_empty()).then(||App::active_tab_id(app));
+        let current_url=App::tab_committed_url(app,source_tab);
+        let receipt=format!(r#"{{"scope":"initial-source-readiness-failure-not-authority","source_tab":"{}","source_present":{},"tab_count":{},"active_matches_source":{},"committed_url_matches_fixture":{},"last_handle_available":{},"loopback_accepted":{},"loopback_complete_gets":{},"fixture_response_attempts":{},"pump_calls":{}}}"#,
+            source_tab.0,ids.contains(&source_tab),ids.len(),active==Some(source_tab),current_url.as_ref()==Some(page),primary.is_some(),reads.accepted.load(Ordering::Relaxed),reads.parsed.load(Ordering::Relaxed),reads.served.load(Ordering::Relaxed),super::native_probe_pump::diagnostic_json());
+        if receipt.len()<=8192 {let _=std::fs::write(std::env::current_dir().unwrap().join("store-real-app-context-menu/initial-source-readiness.json"),receipt);}
+    }
+    assert!(source_ready,"real App controller/successful document did not settle");
     let primary=primary.unwrap();let primary_proof=(primary.proof)().unwrap();ordinary_profile(&primary.view);
     let before_doc=document(&primary.view,page);current(&primary,primary_proof);isolated_environment(app,&primary);
     assert!(pump_until(Duration::from_secs(30),||std::fs::read_to_string(root.join("extension_ids.txt")).is_ok_and(|s|s.lines().any(|line|line==format!("{bowser_id}\t{FIXTURE_ID}")))),"real native fixture startup did not persist its exact ID");
@@ -304,10 +399,7 @@ fn sequence(app: &AppRef,root: &Path,page: &url::Url,bowser_id: &str,folder: &Pa
     let negative=negative.unwrap();let negative_doc=document(&negative.view,page);
     assert_ne!(primary.view.as_raw(),negative.view.as_raw(),"negative must be a different COM-owned page");
     assert!(App::select_tab(app,source_tab));current(&primary,primary_proof);
-    App::open_extension_page(app,bowser_id.into(),folder.into(),extensions::PageKind::Popup,"Disposable real App menu fixture receipt".into());
-    let mut popup=None;
-    assert!(pump_until(Duration::from_secs(30),||{popup=receipt_view(app);popup.is_some()}));let popup=popup.unwrap();
-    assert!(pump_until(Duration::from_secs(20),||script(&popup,"document.documentElement.getAttribute('data-ready')")==Value::String("yes".into())));
+    let popup=open_receipt_view(app,bowser_id,folder);
     let mut ready=None;
     assert!(pump_until(Duration::from_secs(10),||{let r=worker(&popup,"native-command-state");let ok=field(&r,"creation").is_some_and(|v|field(v,"complete")==Some(&Value::Bool(true)));ready=Some(r);ok}));
     let ready=ready.unwrap();let worker_id=text(&ready,"workerInstance").to_owned();let creation=field(&ready,"creation").unwrap().clone();assert_bool(&creation,"ok",true);assert_eq!(field(&creation,"error"),Some(&Value::Null));
@@ -375,10 +467,10 @@ fn live_probe_real_app_context_menu() {
     let record=extensions::install(&Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/extensions/probe-custom-context-menu"),&root.join("Extensions"),&root.join("extensions.txt")).unwrap();
     let folder=extensions::folder_for(&root.join("Extensions"),&record.id).unwrap();
     DEREGISTRATIONS.with(|events|events.borrow_mut().clear());install_observer(Rc::new(|_|{}));
-    let outcome=Rc::new(RefCell::new(None));let sink=outcome.clone();let destination=root.clone();let page=server.url.clone();
+    let outcome=Rc::new(RefCell::new(None));let sink=outcome.clone();let destination=root.clone();let page=server.url.clone();let reads=server.reads.clone();
     let started=Instant::now();let timed_out=Rc::new(Cell::new(false));let expired=timed_out.clone();
     crate::win32::set_app_menu_probe_hooks(Box::new(move |app|{
-        let result=std::panic::catch_unwind(std::panic::AssertUnwindSafe(||sequence(&app,&destination,&page,&record.id,&folder)));
+        let result=std::panic::catch_unwind(std::panic::AssertUnwindSafe(||sequence(&app,&destination,&page,&record.id,&folder,&reads)));
         *sink.borrow_mut()=Some(result.map_err(|_|"real App native menu sequence failed; inspect native helper diagnostics".to_owned()));
         let owner=app.borrow().hwnd;unsafe{let _=PostMessageW(Some(owner),WM_CLOSE,WPARAM(0),LPARAM(0));}
     }),Box::new(move |app|{

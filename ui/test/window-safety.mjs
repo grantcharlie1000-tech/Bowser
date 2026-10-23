@@ -2,12 +2,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { runInNewContext } from 'node:vm';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 const read = (file) => readFileSync(new URL(`../../${file}`, import.meta.url), 'utf8');
 const window = read('src/win32/window.rs');
 const mod = read('src/win32/mod.rs');
 const auto = read('src/win32/window/auto_hide.rs');
-const notice = read('src/win32/window/fullscreen_notice.rs');
 const app = read('src/app.rs');
 const engine = read('src/engine/webview2.rs');
 const constant = (source, name) => {
@@ -23,30 +22,38 @@ test('feature timers cannot collide in the main window dispatcher', () => {
   assert.equal(new Set(values).size, values.length);
   assert.match(window, /fn the_main_window_timer_ids_are_unique_and_outside_hover_ranges/);
 });
-test('fullscreen identity is browser-owned, persistent, ASCII-origin only and fail-closed', () => {
-  assert.match(notice, /url\.origin\(\)\.ascii_serialization\(\)/);
-  assert.match(notice, /Press Esc to exit full screen/);
-  assert.match(notice, /CreateWindowExW\(/);
-  assert.match(notice, /WS_EX_NOACTIVATE \| WS_EX_TOOLWINDOW/);
-  assert.doesNotMatch(notice, /ExecuteScript|execute_script|innerHTML|SetTimer\(/);
-  assert.match(auto, /if !super::fullscreen_notice::show\(hwnd, app, source\) \{\s*page_fullscreen\(hwnd, app, false, None\)/);
-  assert.match(auto, /super::fullscreen_notice::hide\(hwnd\)/);
-  assert.match(auto, /if on == \(bits & 2 != 0\) \{ return; \}/);
-});
-test('Escape, navigation and tab switching cannot leave stale fullscreen identity', () => {
-  assert.match(app, /pub fn reader_escape[\s\S]*?win32::page_fullscreen\(hwnd, app, false, None\)/);
-  assert.match(app, /new document must never inherit[\s\S]*?win32::page_fullscreen\(progress_hwnd, &app, false, None\)/);
-  assert.match(window, /WM_KEYDOWN \| WM_SYSKEYDOWN =>[\s\S]*?Fullscreen::Page[\s\S]*?auto_hide::page_fullscreen\(hwnd, app, false, None\)/);
-  assert.match(window, /WM_TABS_CHANGED =>[\s\S]*?fullscreen_notice::belongs_to_active_tab[\s\S]*?auto_hide::page_fullscreen\(hwnd, app, false, None\)/);
+test('page fullscreen has no native notice or replacement popup', () => {
+  assert.equal(existsSync(new URL('../../src/win32/window/fullscreen_notice.rs', import.meta.url)), false);
+  assert.doesNotMatch(window, /mod fullscreen_notice|fullscreen_notice::/);
+  const page = auto.slice(auto.indexOf('pub(crate) fn page_fullscreen('), auto.indexOf('fn apply_step('));
+  assert.doesNotMatch(page, /notice|CreateWindowExW|SetTimer|popup|toast|warning/i);
+  assert.match(page, /apply_step\(hwnd, app, next, step\)/);
+  assert.match(page, /if on == \(bits & 2 != 0\) \{ return; \}/);
+  const smoke = read('benchmarks/scripts/verify-release-candidate.ps1');
+  assert.match(smoke, /page_fullscreen_without_notice_and_escape = \$true/);
+  assert.match(smoke, /throw 'Page fullscreen must not show the removed Bowser fullscreen notice'/);
+  assert.match(smoke, /page fullscreen restored window bounds/);
 });
 
-test('fullscreen event captures native WebView2 Source, not optimistic app URL or page script', () => {
-  assert.match(engine, /fullscreen_changed\(tab_id, on.as_bool\(\), current_web_url\(&sender\)\)/);
-  assert.match(engine, /fn current_web_url[\s\S]*?webview.Source\(&mut source\)/);
-  assert.doesNotMatch(notice, /App::active_site|tab_committed_url|tab\.url/);
-  assert.match(notice, /source.and_then\(notice_text\)/);
-  assert.match(notice, /chunks\(columns\)/);
-  assert.match(notice, /bounds.bottom - bounds.top < height/);
+test('Escape, navigation and tab switching still end page fullscreen', () => {
+  assert.match(app, /pub fn reader_escape[\s\S]*?win32::page_fullscreen\(hwnd, app, false\)/);
+  assert.match(app, /new document must never inherit[\s\S]*?win32::page_fullscreen\(progress_hwnd, &app, false\)/);
+  assert.match(window, /WM_KEYDOWN \| WM_SYSKEYDOWN =>[\s\S]*?Fullscreen::Page[\s\S]*?auto_hide::page_fullscreen\(hwnd, app, false\)/);
+  assert.match(window, /WM_TABS_CHANGED =>[\s\S]*?page_fullscreen_owner\(hwnd\).is_some_and\(\|owner\| owner != App::active_tab_id\(app\)\)[\s\S]*?auto_hide::page_fullscreen\(hwnd, app, false\)/);
+  for (const method of ['spawn_tab', 'close_tab', 'select_tab']) {
+    assert.match(app, new RegExp(`pub(?:\\(crate\\))? fn ${method}[\\s\\S]*?win32::page_fullscreen\\(hwnd, app, false\\)`));
+  }
+});
+
+test('native fullscreen events retain per-window tab ownership without notice URL plumbing', () => {
+  assert.match(engine, /fullscreen_changed\(tab_id, on.as_bool\(\)\)/);
+  assert.match(read('src/engine/mod.rs'), /type FullscreenChangedCallback = std::rc::Rc<dyn Fn\(crate::tabs::TabId, bool\)>/);
+  assert.match(app, /page_fullscreen_owner\(hwnd\) == Some\(tab_id\)[\s\S]*?page_fullscreen_event_applies\(on, active, owns\)/);
+  assert.match(auto, /PAGE_OWNERS: RefCell<HashMap<isize, TabId>>/);
+  assert.match(auto, /owners.borrow_mut\(\).insert\(hwnd.0 as isize, App::active_tab_id\(app\)\)/);
+  assert.match(auto, /pub\(crate\) fn forget\(hwnd: HWND\)[\s\S]*?PAGE_OWNERS.with\(\|owners\| owners.borrow_mut\(\).remove\(&\(hwnd.0 as isize\)\)\)/);
+  assert.match(auto, /fn page_fullscreen_owner_is_per_window_and_cleared_when_the_window_closes/);
+  assert.match(read('src/auto_hide.rs'), /fn page_full_screen_belongs_to_the_shown_tab_and_a_late_exit_from_another_tab_is_ignored/);
 });
 
 test('foreground fading refreshes page and panel state without resetting dirty drafts', () => {

@@ -3472,8 +3472,26 @@ impl EngineAdapter for WebView2Engine {
             proof,document_fence:Rc::new(move || current()==Some(initial))})
     }
     #[cfg(all(test, feature = "experimental-engine-context-menu"))]
-    fn probe_extension_receipt_view(&self)->Option<ICoreWebView2> {
-        self.core.try_borrow().ok()?.extension_page.as_ref().map(|page|page.webview.clone())
+    fn probe_extension_receipt_handles(&self)->Option<super::app_context_menu_probe::NativeReceiptHandles> {
+        // Clone-only. All native controller/profile/document queries run after this borrow.
+        let state=self.core.try_borrow().ok()?;if state.closed{return None}let page=state.extension_page.as_ref()?;
+        let view=page.webview.clone();let controller=page.probe_controller.clone();let environment=state.environment.clone()?;
+        let (owner,alive)=page.probe_owner();let navigation=page.probe_navigation.clone();let completed=page.probe_completed.clone();
+        let expected_view=view.clone();let expected_controller=controller.clone();let expected_environment=environment.clone();let core=Rc::downgrade(&self.core);drop(state);
+        let proof=Rc::new(move||{
+            if !alive.get()||navigation.in_flight.get()||navigation.epoch.get()==u64::MAX{return None}
+            let (id,true)=completed.get()? else{return None};if id==0||navigation.navigation_id.get()!=Some(id){return None}
+            let core=core.upgrade()?;let state=core.try_borrow().ok()?;if state.closed{return None}let current=state.extension_page.as_ref()?;
+            let (current_owner,current_alive)=current.probe_owner();
+            if current_owner!=owner||!Rc::ptr_eq(&alive,&current_alive)||current.webview.as_raw()!=expected_view.as_raw()||current.probe_controller.as_raw()!=expected_controller.as_raw()||state.environment.as_ref()?.as_raw()!=expected_environment.as_raw(){return None}
+            Some((id,navigation.epoch.get()))
+        });
+        Some(super::app_context_menu_probe::NativeReceiptHandles{view,controller,environment,owner,proof})
+    }
+    #[cfg(all(test, feature = "experimental-engine-context-menu"))]
+    fn probe_open_extension_receipt(&mut self,id:&str,folder:&Path,done:Box<dyn FnOnce(std::result::Result<(),String>)>){
+        // Same loaded-extension policy and host as the existing isolated Session probes.
+        self.open_extension_page_hidden(id,folder,crate::extensions::PageKind::Popup,done);
     }
 
     fn successful_document_query(&self, id: TabId) -> Option<super::NativeDocumentQuery> {
@@ -5362,7 +5380,7 @@ unsafe fn configure_controller(
                     if let Some(sender) = sender {
                         let mut on = BOOL(0);
                         if sender.ContainsFullScreenElement(&mut on).is_ok() {
-                            fullscreen_changed(tab_id, on.as_bool(), current_web_url(&sender));
+                            fullscreen_changed(tab_id, on.as_bool());
                         }
                     }
                     Ok(())
@@ -6495,6 +6513,19 @@ mod tests {
         /// Exact disposable controller for native event registration; no message/host endpoint.
         pub(in crate::engine) fn probe_document_webview(&self, tab: TabId) -> Option<ICoreWebView2> {
             self.core.borrow().tabs.get(&tab)?.webview.clone()
+        }
+        /// Clone-only current source binding for the private ignored-test membership pipe.
+        pub(in crate::engine) fn probe_menu_membership_parts(&self,tab:TabId)->Option<super::super::native_menu_membership::Parts>{
+            let state=self.core.try_borrow().ok()?;if state.closed||state.active_tab!=Some(tab)||state.private_tabs.contains(&tab){return None}
+            let current=state.tabs.get(&tab)?;let view=current.webview.clone()?;let controller=current.controller.clone()?;let environment=current.environment.clone()?;let gate=current.document_gate.clone();
+            let expected_view=view.clone();let expected_controller=controller.clone();let expected_environment=environment.clone();let core=Rc::downgrade(&self.core);drop(state);
+            let current=Box::new(move||{
+                let core=core.upgrade()?;let state=core.try_borrow().ok()?;if state.closed||state.active_tab!=Some(tab)||state.private_tabs.contains(&tab){return None}
+                let current=state.tabs.get(&tab)?;
+                if current.webview.as_ref()?.as_raw()!=expected_view.as_raw()||current.controller.as_ref()?.as_raw()!=expected_controller.as_raw()||current.environment.as_ref()?.as_raw()!=expected_environment.as_raw()||!Rc::ptr_eq(&current.document_gate,&gate){return None}
+                let proof=gate.try_borrow().ok()?.proof();proof
+            });
+            Some(super::super::native_menu_membership::Parts{view,controller,environment,current})
         }
         /// Strict current authority snapshot for one isolated feasibility test, never a production epoch.
         pub(in crate::engine) fn probe_context_authority(&self) -> Option<(Vec<crate::extensions::Record>,HashMap<String,String>)> {

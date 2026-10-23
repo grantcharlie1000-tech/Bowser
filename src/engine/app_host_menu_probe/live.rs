@@ -2,31 +2,15 @@
 use std::{cell::{Cell,RefCell},io::{Read,Write},net::TcpListener,path::Path,process::{Command,Stdio},rc::Rc,
     sync::{Arc,Mutex,atomic::{AtomicBool,Ordering}},time::{Duration,Instant,SystemTime,UNIX_EPOCH}};
 use webview2_com::{CoTaskMemPWSTR,ExecuteScriptCompletedHandler,Microsoft::Web::WebView2::Win32::{ICoreWebView2,ICoreWebView2_13,ICoreWebView2Environment7,COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC}};
-use windows::{core::{Interface,PWSTR},Win32::{Foundation::{HWND,RECT,WPARAM,LPARAM},System::Com::{CoInitializeEx,CoUninitialize,COINIT_APARTMENTTHREADED},UI::WindowsAndMessaging::{DispatchMessageW,GetClassNameW,GetClientRect,IsWindow,MSG,PM_REMOVE,PeekMessageW,PostMessageW,TranslateMessage,WM_CLOSE,WM_QUIT}}};
+use windows::{core::{Interface,PWSTR},Win32::{Foundation::{HWND,RECT,WPARAM,LPARAM},System::Com::{CoInitializeEx,CoUninitialize,COINIT_APARTMENTTHREADED},UI::WindowsAndMessaging::{GetClassNameW,GetClientRect,IsWindow,PostMessageW,WM_CLOSE}}};
 use crate::{app::{App,AppRef},extensions::{self,json::{self,Value}},performance::{LaunchOptions,PerfLog},tabs::TabId};
 use super::{HostProbeEvent,HostRole,NodeWitness,set_observer};
 use super::super::app_context_menu_probe::{NativeContextProbeHandles,MenuProbeEvent};
 const TEST_NAME:&str="engine::app_host_menu_probe::live::live_probe_real_app_host_context_menu";
 const CONSENT:&str="disposable-app-host-menu-synthetic-clipboard";
 fn quote(s:&str)->String {crate::chrome_host::protocol::json_string(s)}
-fn pump_until(timeout: Duration, mut ready: impl FnMut() -> bool) -> bool {
-    let start=Instant::now();
-    while start.elapsed()<timeout {
-        if ready(){return true}
-        unsafe {
-            let mut message=MSG::default();
-            while PeekMessageW(&mut message,None,0,0,PM_REMOVE).as_bool(){
-                // Never swallow the real App loop's quit signal in this nested test pump.
-                if message.message==WM_QUIT {
-                    windows::Win32::UI::WindowsAndMessaging::PostQuitMessage(message.wParam.0 as i32);
-                    return false;
-                }
-                let _=TranslateMessage(&message);DispatchMessageW(&message);
-            }
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    ready()
+fn pump_until(timeout: Duration, ready: impl FnMut() -> bool) -> bool {
+    super::super::native_probe_pump::until(timeout,ready)
 }
 
 fn field<'a>(v: &'a Value,k: &str)->Option<&'a Value>{let Value::Object(o)=v else{return None};json::get(o,k)}
@@ -73,6 +57,26 @@ fn ordinary_profile(view: &ICoreWebView2) {
 
 #[derive(Default)]
 struct Receipts {paste:usize,note:usize,destination:usize}
+// TCP reads may end anywhere in a request. Keep the existing size and one-second budget,
+// but require complete headers before parsing the nonce or issuing an acknowledgment.
+fn loopback_request_target(socket:&mut std::net::TcpStream)->Option<String> {
+    // Winsock accept inherits the listener's nonblocking mode. Give this one accepted
+    // connection a bounded blocking read; the listener itself must stay nonblocking.
+    socket.set_nonblocking(false).ok()?;
+    let deadline=Instant::now()+Duration::from_secs(1);
+    let mut bytes=[0;8192];let mut used=0;
+    loop {
+        let remaining=deadline.checked_duration_since(Instant::now())?;
+        socket.set_read_timeout(Some(remaining)).ok()?;
+        let count=socket.read(&mut bytes[used..]).ok()?;
+        if count==0 {return None;}
+        used+=count;
+        if used>=bytes.len()||Instant::now()>=deadline {return None;}
+        if bytes[..used].windows(4).any(|part|part==b"\r\n\r\n") {break;}
+    }
+    std::str::from_utf8(&bytes[..used]).ok()?.lines().next()?.strip_prefix("GET ")?
+        .split_whitespace().next().map(str::to_owned)
+}
 struct Loopback {url:url::Url,nonce:String,stop:Arc<AtomicBool>,receipts:Arc<Mutex<Receipts>>,worker:Option<std::thread::JoinHandle<()>>}
 impl Loopback {
     fn start(nonce:String)->Self {
@@ -82,9 +86,8 @@ impl Loopback {
         let source=include_str!("../../../benchmarks/fixtures/app-host-context-menu/index.html").replace("__NONCE__",&nonce);
         let worker=std::thread::spawn(move ||while !stopping.load(Ordering::Relaxed) {
             let Ok((mut socket,peer))=listener.accept() else{std::thread::sleep(Duration::from_millis(10));continue};
-            if !peer.ip().is_loopback(){continue}let _=socket.set_read_timeout(Some(Duration::from_secs(1)));
-            let mut bytes=[0;8192];let Ok(n)=socket.read(&mut bytes) else{continue};if n==bytes.len(){continue}
-            let Some(target)=std::str::from_utf8(&bytes[..n]).ok().and_then(|r|r.lines().next()).and_then(|line|line.strip_prefix("GET ")).and_then(|r|r.split_whitespace().next()) else{continue};
+            if !peer.ip().is_loopback(){continue}
+            let Some(target)=loopback_request_target(&mut socket) else{continue};
             let Ok(request)=url::Url::parse(&format!("http://127.0.0.1{target}")) else{continue};
             let query=request.query_pairs().collect::<std::collections::BTreeMap<_,_>>();
             let valid=query.get("nonce").is_some_and(|value|value.as_ref()==token);
@@ -99,6 +102,38 @@ impl Loopback {
     }
 }
 impl Drop for Loopback {fn drop(&mut self){self.stop.store(true,Ordering::Relaxed);if let Some(worker)=self.worker.take(){let _=worker.join();}}}
+
+#[test]
+fn loopback_effect_ack_waits_for_fragmented_request() {
+    use std::net::TcpStream;
+    let server=Loopback::start("fragmented-request".into());
+    let mut socket=TcpStream::connect(("127.0.0.1",server.url.port().unwrap())).unwrap();
+    socket.set_nodelay(true).unwrap();
+    socket.set_read_timeout(Some(Duration::from_millis(100))).unwrap();
+    socket.write_all(b"GET /effect?nonce=").unwrap();
+    let mut first=[0];
+    let pending=socket.read(&mut first).expect_err("incomplete request must not be answered or closed");
+    assert!(matches!(pending.kind(),std::io::ErrorKind::WouldBlock|std::io::ErrorKind::TimedOut));
+    socket.write_all(b"fragmented-request&kind=note&value=note-fragmented-request HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n").unwrap();
+    socket.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+    let mut response=String::new();socket.read_to_string(&mut response).unwrap();
+    assert!(response.starts_with("HTTP/1.1 200 OK\r\n"),"{response}");
+    assert!(response.ends_with("fragmented-request:note"),"{response}");
+    assert_eq!(server.receipts.lock().unwrap().note,1);
+}
+
+#[test]
+fn loopback_rejects_oversize_headers_without_recording_an_effect() {
+    use std::net::TcpStream;
+    let server=Loopback::start("oversize".into());
+    let mut socket=TcpStream::connect(("127.0.0.1",server.url.port().unwrap())).unwrap();
+    socket.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+    let mut request=b"GET /effect?nonce=oversize&kind=note&value=note-oversize HTTP/1.1\r\nX: ".to_vec();
+    request.resize(8192,b'x');socket.write_all(&request).unwrap();
+    let mut response=Vec::new();let result=socket.read_to_end(&mut response);
+    assert!(result.is_ok()||result.is_err_and(|error|error.kind()==std::io::ErrorKind::ConnectionReset));
+    assert!(response.is_empty());assert_eq!(server.receipts.lock().unwrap().note,0);
+}
 
 fn atomic_receipt(path:&Path,text:&str)->std::io::Result<()> {
     assert!(text.len()<=1024*1024);let pending=path.with_extension("pending");
@@ -197,6 +232,38 @@ fn native_input(app:&AppRef,h:&NativeContextProbeHandles,tab:TabId,proof:(u64,u6
 }
 
 fn snapshot(view:&ICoreWebView2)->Value {script(view,"hostMenuSnapshot()")}
+fn value_class(value:Option<&Value>,token:&str)->&'static str {
+    match value {
+        Some(Value::String(s)) if s.is_empty()=>"empty",
+        Some(Value::String(s)) if s==&format!("note-{token}")=>"exact-note",
+        Some(Value::String(s)) if s==&format!("paste-{token}")=>"exact-paste",
+        Some(Value::String(_))=>"other-string",
+        Some(Value::Null)=>"null",
+        _=>"missing-or-wrong-type",
+    }
+}
+fn note_failure(out:&Path,last:Option<&Value>,before:&Value,server:&Loopback) {
+    // Classify only the snapshot already collected by the existing bounded wait. No
+    // additional script/input, clipboard read, content dump or acknowledgment acceptance.
+    let class=|key|value_class(last.and_then(|v|field(v,key)),&server.nonce);
+    let count=|key|last.and_then(|v|field(v,"effects")).and_then(|v|field(v,key)).and_then(|v|match v {Value::Array(a)=>Some(a.len()),_=>None});
+    let document_same=last.is_some_and(|v|["nonce","url","timeOrigin","ready","copy"].iter().all(|key|field(v,key)==field(before,key)));
+    let ack=|key|last.and_then(|v|field(v,key))==Some(&Value::String(server.nonce.clone()));
+    let receipts=server.receipts.lock().unwrap();
+    let evidence=format!(r#"{{"scope":"bounded-existing-snapshot-classification-not-authority","snapshot_present":{},"document_same":{},"paste_class":"{}","note_class":"{}","paste_ack_matches":{},"note_ack_matches":{},"paste_events":{},"note_events":{},"server_paste":{},"server_note":{},"server_destination":{},"pump_calls":{}}}"#,
+        last.is_some(),document_same,class("paste"),class("note"),ack("pasteAck"),ack("noteAck"),
+        count("paste").map(|v|v.to_string()).unwrap_or_else(||"null".into()),count("note").map(|v|v.to_string()).unwrap_or_else(||"null".into()),
+        receipts.paste,receipts.note,receipts.destination,super::super::native_probe_pump::diagnostic_json());
+    assert!(evidence.len()<8192);
+    std::fs::write(out.join("note-effect-failure.json"),evidence).expect("bounded Note failure classification write");
+}
+#[test]
+fn effect_failure_classification_never_includes_unknown_contents(){
+    for (value,expected) in [(Value::String("".into()),"empty"),(Value::String("note-17-42".into()),"exact-note"),(Value::String("paste-17-42".into()),"exact-paste"),(Value::String("unknown contents".into()),"other-string"),(Value::Null,"null"),(Value::Bool(true),"missing-or-wrong-type")] {
+        assert_eq!(value_class(Some(&value),"17-42"),expected);
+    }
+    assert_eq!(value_class(None,"17-42"),"missing-or-wrong-type");
+}
 fn unchanged_document(now:&Value,before:&Value) {
     for key in ["nonce","url","timeOrigin","ready","copy"]{assert_eq!(field(now,key),field(before,key),"source document identity/content changed: {key}")}
 }
@@ -204,6 +271,20 @@ fn storage(root:&Path)->Vec<(String,Option<Vec<u8>>)> {
     ["notes.txt","notes-meta.txt","extensions.txt","extension_ids.txt"].iter().map(|name|((*name).into(),match std::fs::read(root.join(name)) { Ok(bytes)=>Some(bytes), Err(error) if error.kind()==std::io::ErrorKind::NotFound=>None, Err(error)=>panic!("storage snapshot read failed: {error}") })).collect()
 }
 fn effects(server:&Loopback,paste:usize,note:usize,destination:usize){let receipts=server.receipts.lock().unwrap();assert_eq!((receipts.paste,receipts.note,receipts.destination),(paste,note,destination));}
+fn note_fixture_url(ip_url:&url::Url)->url::Url {
+    assert_eq!(ip_url.scheme(),"http");assert_eq!(ip_url.host_str(),Some("127.0.0.1"));
+    assert!(crate::passwords::secure_origin(ip_url.as_str()).is_none(),"HTTP IP must remain rejected by the production origin guard");
+    let mut local=ip_url.clone();local.set_host(Some("localhost")).unwrap();
+    assert_eq!(local.port(),ip_url.port());assert_eq!(local.path(),ip_url.path());assert_eq!(local.query(),ip_url.query());
+    assert_eq!(crate::passwords::secure_origin(local.as_str()),crate::permissions::origin_of(local.as_str()));
+    assert!(crate::passwords::secure_origin(local.as_str()).is_some(),"only the existing literal-localhost policy admits this controlled fixture");local
+}
+#[test]
+fn note_fixture_uses_existing_localhost_origin_without_relaxing_ip_refusal(){
+    let ip=url::Url::parse("http://127.0.0.1:4321/source?nonce=17-42").unwrap();let local=note_fixture_url(&ip);
+    assert_eq!(local.as_str(),"http://localhost:4321/source?nonce=17-42");
+    assert!(crate::passwords::secure_origin(ip.as_str()).is_none());
+}
 fn controller_bounds(h:&NativeContextProbeHandles,owner:HWND)->RECT {
     let mut bounds=RECT::default();let mut parent=HWND::default();let mut visible=windows::core::BOOL::default();
     unsafe{h.controller.Bounds(&mut bounds).unwrap();h.controller.ParentWindow(&mut parent).unwrap();h.controller.IsVisible(&mut visible).unwrap()};assert_eq!(parent,owner);assert!(visible.as_bool());assert!(bounds.right>bounds.left&&bounds.bottom>bounds.top);bounds
@@ -230,7 +311,9 @@ fn sequence(app:&AppRef,root:&Path,server:&Loopback,out:&Path) {
     let mut pasted=None;assert!(pump_until(Duration::from_secs(10),||{let value=snapshot(&source.view);let ready=field(&value,"pasteAck")==Some(&Value::String(token.clone()));pasted=Some(value);ready}),"native Paste source/server nonce acknowledgment absent");
     let pasted=pasted.unwrap();unchanged_document(&pasted,&before);assert_eq!(text(&pasted,"paste"),format!("paste-{token}"));assert_eq!(text(&pasted,"note"),"");let paste_events=array(field(&pasted,"effects").unwrap(),"paste");assert_eq!(paste_events.len(),1);assert_eq!(text(&paste_events[0],"value"),format!("paste-{token}"));assert_bool(&paste_events[0],"trusted",true);assert!(array(field(&pasted,"effects").unwrap(),"note").is_empty());effects(server,1,0,0);assert_eq!(snapshot(&negative.view),negative_before);assert_eq!(storage(root),persistent_before);assert_eq!(App::tab_ids(app),tabs_before);
     native_input(app,&source,source_tab,proof,"Note","note",token,&out.join("note"));
-    let mut noted=None;assert!(pump_until(Duration::from_secs(10),||{let value=snapshot(&source.view);let ready=field(&value,"noteAck")==Some(&Value::String(token.clone()));noted=Some(value);ready}),"actual host Insert note source/server nonce acknowledgment absent");
+    let mut noted=None;let note_ready=pump_until(Duration::from_secs(10),||{let value=snapshot(&source.view);let ready=field(&value,"noteAck")==Some(&Value::String(token.clone()));noted=Some(value);ready});
+    if !note_ready {note_failure(out,noted.as_ref(),&before,server);}
+    assert!(note_ready,"actual host Insert note source/server nonce acknowledgment absent");
     let noted=noted.unwrap();unchanged_document(&noted,&before);assert_eq!(text(&noted,"paste"),format!("paste-{token}"));assert_eq!(text(&noted,"note"),format!("note-{token}"));let note_events=array(field(&noted,"effects").unwrap(),"note");assert_eq!(note_events.len(),1);assert_eq!(text(&note_events[0],"value"),format!("note-{token}"));assert_eq!(array(field(&noted,"effects").unwrap(),"paste"),paste_events);assert_eq!(snapshot(&negative.view),negative_before);assert_eq!(storage(root),persistent_before);assert_eq!(App::tab_ids(app),tabs_before);effects(server,1,1,0);current(&source,proof);current(&negative,negative_proof);
     // Split is deliberately LAST: require the actual deferred window route to create exactly one
     // AppTab and a live source/destination split, not merely a requested URL or callback receipt.
@@ -261,7 +344,7 @@ fn live_probe_real_app_host_context_menu() {
     assert!(crate::profile::data_root_override().is_none());assert!(std::env::var_os("BOWSER_DATA_DIR").is_none());
     let stamp=SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();let token=format!("{}-{stamp}",std::process::id());let root=std::env::temp_dir().join(format!("bowser-real-app-host-menu-{token}"));std::fs::create_dir(&root).unwrap();
     let evidence=std::env::current_dir().unwrap().join("store-real-app-host-context-menu");std::fs::create_dir(&evidence).expect("do not reuse evidence from a previous run");
-    let server=Loopback::start(token.clone());let profile=crate::profile::Profile::default_in(&root);
+    let mut server=Loopback::start(token.clone());server.url=note_fixture_url(&server.url);let profile=crate::profile::Profile::default_in(&root);
     crate::profile::set_data_root(root.clone()).unwrap();crate::profile::set_dev_launch(true);
     // Empty bounded BOWSER records/map only. Never demand an empty native runtime inventory,
     // remove an unknown native entry, or classify it as trusted. Production retains every entry.

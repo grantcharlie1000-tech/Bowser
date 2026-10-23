@@ -9,6 +9,10 @@ mod webview2;
 mod capture_zoom_live;
 #[cfg(test)]
 mod extension_probe_live;
+#[cfg(test)]
+mod native_probe_pump;
+#[cfg(test)]
+mod native_menu_membership;
 #[cfg(all(test, feature = "experimental-engine-context-menu"))]
 pub(crate) mod app_context_menu_probe;
 #[cfg(all(test, feature = "experimental-engine-context-menu"))]
@@ -28,7 +32,7 @@ pub use download::{cancel as cancel_download, pause as pause_download, resume as
 use windows::Win32::Foundation::RECT;
 
 pub type TabMemoryUsageCallback = Box<dyn FnOnce(Vec<(crate::tabs::TabId, u64)>)>;
-pub type FullscreenChangedCallback = std::rc::Rc<dyn Fn(crate::tabs::TabId, bool, Option<url::Url>)>;
+pub type FullscreenChangedCallback = std::rc::Rc<dyn Fn(crate::tabs::TabId, bool)>;
 pub type LinkNavigationCallback = std::rc::Rc<dyn Fn(crate::tabs::TabId, &url::Url) -> bool>;
 pub type BlockedChangedCallback = std::rc::Rc<dyn Fn(crate::tabs::TabId, u32, String)>;
 pub type PermissionDeniedCallback =
@@ -107,7 +111,9 @@ pub trait EngineAdapter {
     #[cfg(all(test, feature = "experimental-engine-context-menu"))]
     fn probe_owned_host_context_handles(&self, _tab:crate::tabs::TabId) -> Option<app_context_menu_probe::NativeContextProbeHandles> {None}
     #[cfg(all(test, feature = "experimental-engine-context-menu"))]
-    fn probe_extension_receipt_view(&self) -> Option<webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2> {None}
+    fn probe_extension_receipt_handles(&self) -> Option<app_context_menu_probe::NativeReceiptHandles> {None}
+    #[cfg(all(test, feature = "experimental-engine-context-menu"))]
+    fn probe_open_extension_receipt(&mut self,_id:&str,_folder:&std::path::Path,done:Box<dyn FnOnce(Result<(),String>)>){done(Err("Hidden fixture receipt is unsupported.".into()));}
 
     /// Native controller evidence only; unsupported engines fail closed, never a requested URL.
     fn successful_document_query(&self, _tab: crate::tabs::TabId) -> Option<NativeDocumentQuery> { None }
@@ -492,8 +498,7 @@ pub struct EngineEvents {
     pub page_usable: Option<std::rc::Rc<dyn Fn(crate::tabs::TabId)>>,
     pub controller_ready: Option<std::rc::Rc<dyn Fn(crate::tabs::TabId)>>,
     /// A page element went full screen or left it (a video's full-screen button). The window then
-    /// fills its monitor and every bar hides (auto-hide, `src/auto_hide.rs`). The optional URL
-    /// is the native top-level WebView2 Source at the event, never an optimistic navigation target.
+    /// fills its monitor and every bar hides (auto-hide, `src/auto_hide.rs`).
     pub fullscreen_changed: Option<FullscreenChangedCallback>,
     /// A WebView2 pane received focus from the user.
     pub focus_changed: Option<std::rc::Rc<dyn Fn(crate::tabs::TabId)>>,

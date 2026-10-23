@@ -108,7 +108,7 @@ public static class BowserNativeDocument {
    }
    uint freshPid;uint freshThread=BowserStoreSmoke.GetWindowThreadProcessId(hwnd,out freshPid);cls.Clear();BowserStoreSmoke.GetClassName(hwnd,cls,128);
    if(freshPid!=expectedPid||freshThread!=thread||cls.ToString()!="BowserNativeWindow")throw new InvalidOperationException("Native document owner changed.");
-   if(matches!=1)throw new InvalidOperationException("Native document runtime identity was unavailable or ambiguous.");
+   if(matches!=1)throw new InvalidOperationException("Native document runtime identity was unavailable or ambiguous. requested_runtime_id=["+String.Join(",",Array.ConvertAll(runtimeId,item=>item.ToString(System.Globalization.CultureInfo.InvariantCulture)))+"]; document_count="+count.ToString(System.Globalization.CultureInfo.InvariantCulture)+"; exact_match_count="+matches.ToString(System.Globalization.CultureInfo.InvariantCulture));
    return result;
   } finally { if(condition!=IntPtr.Zero)Marshal.Release(condition);Release(documents);Release(root);Release(instance); }
  }
