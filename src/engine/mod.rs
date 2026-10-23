@@ -111,7 +111,9 @@ pub trait EngineAdapter {
     #[cfg(all(test, feature = "experimental-engine-context-menu"))]
     fn probe_owned_host_context_handles(&self, _tab:crate::tabs::TabId) -> Option<app_context_menu_probe::NativeContextProbeHandles> {None}
     #[cfg(all(test, feature = "experimental-engine-context-menu"))]
-    fn probe_extension_receipt_view(&self) -> Option<webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2> {None}
+    fn probe_extension_receipt_handles(&self) -> Option<app_context_menu_probe::NativeReceiptHandles> {None}
+    #[cfg(all(test, feature = "experimental-engine-context-menu"))]
+    fn probe_open_extension_receipt(&mut self,_id:&str,_folder:&std::path::Path,done:Box<dyn FnOnce(Result<(),String>)>){done(Err("Hidden fixture receipt is unsupported.".into()));}
 
     /// Native controller evidence only; unsupported engines fail closed, never a requested URL.
     fn successful_document_query(&self, _tab: crate::tabs::TabId) -> Option<NativeDocumentQuery> { None }

@@ -66,9 +66,17 @@ pub(super) struct HostedPage {
     alive: Rc<Cell<bool>>,
     #[cfg(test)]
     pub(super) webview: ICoreWebView2,
+    #[cfg(all(test, feature = "experimental-engine-context-menu"))]
+    pub(super) probe_controller: ICoreWebView2Controller,
+    #[cfg(all(test, feature = "experimental-engine-context-menu"))]
+    pub(super) probe_navigation: super::extension_links::Navigation,
+    #[cfg(all(test, feature = "experimental-engine-context-menu"))]
+    pub(super) probe_completed: Rc<Cell<Option<(u64,bool)>>>,
 }
 
 impl HostedPage {
+    #[cfg(all(test, feature = "experimental-engine-context-menu"))]
+    pub(super) fn probe_owner(&self)->(HWND,Rc<Cell<bool>>){(self.hwnd,self.alive.clone())}
     /// Closes the window if it is still open. The flag, not `IsWindow`, says so: a destroyed
     /// window's handle can be reused by an unrelated window.
     pub(super) fn close(&self) {
@@ -329,7 +337,10 @@ fn configure(
             Ok(())
         })), &mut token)?;
         let completed = navigation.clone();
+        #[cfg(all(test, feature = "experimental-engine-context-menu"))] let probe_completed=Rc::new(Cell::new(None));
+        #[cfg(all(test, feature = "experimental-engine-context-menu"))] let probe_completion=probe_completed.clone();
         webview.add_NavigationCompleted(&NavigationCompletedEventHandler::create(Box::new(move |_sender, args| {
+            #[cfg(all(test, feature = "experimental-engine-context-menu"))] probe_completion.set(args.as_ref().and_then(|args|{let mut id=0;let mut ok=BOOL::default();args.NavigationId(&mut id).ok()?;args.IsSuccess(&mut ok).ok()?;Some((id,ok.as_bool()))}));
             let mut id = 0;
             let id = args.and_then(|args| args.NavigationId(&mut id).ok().map(|()| id));
             if id.is_some() && id == completed.navigation_id.get() { completed.in_flight.set(false); }
@@ -440,6 +451,7 @@ fn configure(
         webview18.add_LaunchingExternalUriScheme(&external, &mut token)?;
 
         let alive = Rc::new(Cell::new(true));
+        #[cfg(all(test, feature = "experimental-engine-context-menu"))] let probe_navigation=navigation.clone();
         let state = Box::new(WindowState {
             controller: controller.clone(),
             alive: alive.clone(),
@@ -453,6 +465,9 @@ fn configure(
             alive,
             #[cfg(test)]
             webview: webview.clone(),
+            #[cfg(all(test, feature = "experimental-engine-context-menu"))] probe_controller:controller.clone(),
+            #[cfg(all(test, feature = "experimental-engine-context-menu"))] probe_navigation,
+            #[cfg(all(test, feature = "experimental-engine-context-menu"))] probe_completed,
         };
         if show {
             let _ = ShowWindow(hwnd, SW_SHOW);

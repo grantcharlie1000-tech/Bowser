@@ -4,7 +4,7 @@
 //! - `engine::mod`: `pub(crate) mod app_context_menu_probe;` and a forwarding
 //!   `set_menu_probe_observer(Rc<dyn Fn(MenuProbeEvent)>)` into the production coordinator.
 //! - `EngineAdapter::probe_native_context_handles(TabId) -> Option<NativeContextProbeHandles>`
-//!   and `probe_extension_receipt_view() -> Option<ICoreWebView2>`, both defaulting to `None`.
+//!   and clone-only `probe_extension_receipt_handles()`, both defaulting to `None`.
 //!   Implementations only clone handles/closures under App/Core borrows. All native reads,
 //!   script calls, fences and nested pumping happen after those borrows have ended.
 //! - `win32::set_app_menu_probe_hooks(Box<dyn FnOnce(AppRef)>, Box<dyn FnMut(AppRef)>)`:
@@ -59,6 +59,36 @@ pub(crate) struct NativeContextProbeHandles {
     pub(crate) environment: ICoreWebView2Environment,
     pub(crate) proof: Rc<dyn Fn() -> Option<(u64, u64, u64)>>,
     pub(crate) document_fence: Rc<dyn Fn() -> bool>,
+}
+pub(crate) struct NativeReceiptHandles {
+    pub(crate) view:ICoreWebView2,pub(crate) controller:ICoreWebView2Controller,pub(crate) environment:ICoreWebView2Environment,pub(crate) owner:HWND,
+    pub(crate) proof:Rc<dyn Fn()->Option<(u64,u64)>>,
+}
+struct Receipt {handles:NativeReceiptHandles,expected:url::Url,captured:(u64,u64)}
+impl std::ops::Deref for Receipt {type Target=ICoreWebView2;fn deref(&self)->&ICoreWebView2{&self.handles.view}}
+impl Receipt {
+    fn current(&self){
+        use windows::Win32::UI::WindowsAndMessaging::{GetWindowThreadProcessId,IsWindowVisible};
+        assert_eq!((self.handles.proof)(),Some(self.captured),"exact hidden receipt/document changed");
+        let mut pid=0;let mut name=[0u16;64];let mut parent=HWND::default();let mut source=PWSTR::null();
+        unsafe{
+            assert_eq!(GetWindowThreadProcessId(self.handles.owner,Some(&mut pid)),windows::Win32::System::Threading::GetCurrentThreadId());assert_eq!(pid,std::process::id());
+            assert!(IsWindow(Some(self.handles.owner)).as_bool());assert!(!IsWindowVisible(self.handles.owner).as_bool(),"data-only receipt must remain hidden");
+            let n=GetClassNameW(self.handles.owner,&mut name);assert_eq!(String::from_utf16_lossy(&name[..n as usize]),"BowserExtensionPage");
+            self.handles.controller.ParentWindow(&mut parent).unwrap();assert_eq!(parent,self.handles.owner);
+            let view=self.handles.controller.CoreWebView2().unwrap();assert_eq!(view.cast::<windows::core::IUnknown>().unwrap().as_raw(),self.handles.view.cast::<windows::core::IUnknown>().unwrap().as_raw());
+            let environment=self.handles.view.cast::<webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2_2>().unwrap().Environment().unwrap();
+            assert_eq!(environment.cast::<windows::core::IUnknown>().unwrap().as_raw(),self.handles.environment.cast::<windows::core::IUnknown>().unwrap().as_raw());
+            let settings=self.handles.view.Settings().unwrap();let mut messages=windows::core::BOOL::default();let mut objects=messages;
+            settings.IsWebMessageEnabled(&mut messages).unwrap();settings.AreHostObjectsAllowed(&mut objects).unwrap();assert!(!messages.as_bool()&&!objects.as_bool());
+            self.handles.view.Source(&mut source).unwrap();
+        }
+        assert!(!source.is_null());let allocation=CoTaskMemPWSTR::from(source);
+        let length=(0..=2048).find(|index|unsafe{*source.0.add(*index)==0}).expect("bounded native receipt URI unavailable");
+        let actual=String::from_utf16(unsafe{std::slice::from_raw_parts(source.0,length)}).unwrap();drop(allocation);
+        assert_eq!(actual,self.expected.as_str());ordinary_profile(self);
+        assert_eq!((self.handles.proof)(),Some(self.captured),"hidden receipt changed across native identity reads");
+    }
 }
 
 /// Read-only diagnostic emitted at the actual production menu coordinator boundaries.
@@ -158,9 +188,21 @@ fn handles(app: &AppRef,tab: TabId)->Option<NativeContextProbeHandles>{
     let app=app.try_borrow().ok()?;
     app.engine.as_ref()?.probe_native_context_handles(tab)
 }
-fn receipt_view(app: &AppRef)->Option<ICoreWebView2>{
+fn receipt_handles(app: &AppRef)->Option<NativeReceiptHandles>{
     let app=app.try_borrow().ok()?;
-    app.engine.as_ref()?.probe_extension_receipt_view()
+    app.engine.as_ref()?.probe_extension_receipt_handles()
+}
+fn open_receipt_view(app:&AppRef,id:&str,folder:&Path)->Receipt{
+    let outcome=Rc::new(RefCell::new(None));let completed=outcome.clone();
+    App::probe_open_extension_receipt(app,id,folder,Box::new(move|result|*completed.borrow_mut()=Some(result)));
+    assert!(pump_until(Duration::from_secs(30),||outcome.borrow().is_some()),"hidden native fixture receipt did not open");
+    outcome.borrow_mut().take().unwrap().expect("real loaded-extension receipt creation failed");
+    let handles=receipt_handles(app).expect("completed native receipt has no exact controller/view");
+    assert!(pump_until(Duration::from_secs(20),||(handles.proof)().is_some()&&script(&handles.view,"document.documentElement.getAttribute('data-ready')")==Value::String("yes".into())),"successful hidden receipt document did not settle");
+    let captured=(handles.proof)().unwrap();let expected=extensions::extension_page_url(folder,extensions::PageKind::Popup,FIXTURE_ID).unwrap();
+    let receipt=Receipt{handles,expected,captured};receipt.current();
+    println!("APP_MENU_RECEIPT receipt_only=true hidden_native_host={} exact_controller={} exact_view={} successful_navigation={} epoch={} ordinary_profile=true fixed_native_document=true web_messages=false host_objects=false",receipt.handles.owner.0 as usize,receipt.handles.controller.as_raw() as usize,receipt.handles.view.as_raw() as usize,captured.0,captured.1);
+    receipt
 }
 fn script(view: &ICoreWebView2,source: &str)->Value {
     let slot=Rc::new(RefCell::new(None));let sink=slot.clone();
@@ -173,7 +215,8 @@ fn script(view: &ICoreWebView2,source: &str)->Value {
     let result=slot.borrow_mut().take().flatten().expect("exact COM script failed");
     assert!(result.len()<=64*1024,"fixture receipt exceeded bound");json::parse(&result).expect("native JSON result")
 }
-fn worker(view: &ICoreWebView2,kind: &str)->Value {
+fn worker(view: &Receipt,kind: &str)->Value {
+    view.current();
     assert!(["native-command-state","native-command-preflight"].contains(&kind));
     let request=format!("(()=>{{document.documentElement.removeAttribute('data-app-menu-receipt');chrome.runtime.sendMessage({{type:{}}},answer=>document.documentElement.setAttribute('data-app-menu-receipt',JSON.stringify(answer)));return true}})()",crate::chrome_host::protocol::json_string(kind));
     assert_eq!(script(view,&request),Value::Bool(true));
@@ -181,7 +224,7 @@ fn worker(view: &ICoreWebView2,kind: &str)->Value {
     assert!(pump_until(Duration::from_secs(10),||{
         let value=script(view,"JSON.parse(document.documentElement.getAttribute('data-app-menu-receipt')||'null')");
         if matches!(value,Value::Object(_)){answer=Some(value);true}else{false}
-    }),"genuine fixture worker receipt absent");answer.unwrap()
+    }),"genuine fixture worker receipt absent");view.current();answer.unwrap()
 }
 fn marker(view: &ICoreWebView2,role: &str)->Value {
     assert!(["primary","negative"].contains(&role));
@@ -356,10 +399,7 @@ fn sequence(app: &AppRef,root: &Path,page: &url::Url,bowser_id: &str,folder: &Pa
     let negative=negative.unwrap();let negative_doc=document(&negative.view,page);
     assert_ne!(primary.view.as_raw(),negative.view.as_raw(),"negative must be a different COM-owned page");
     assert!(App::select_tab(app,source_tab));current(&primary,primary_proof);
-    App::open_extension_page(app,bowser_id.into(),folder.into(),extensions::PageKind::Popup,"Disposable real App menu fixture receipt".into());
-    let mut popup=None;
-    assert!(pump_until(Duration::from_secs(30),||{popup=receipt_view(app);popup.is_some()}));let popup=popup.unwrap();
-    assert!(pump_until(Duration::from_secs(20),||script(&popup,"document.documentElement.getAttribute('data-ready')")==Value::String("yes".into())));
+    let popup=open_receipt_view(app,bowser_id,folder);
     let mut ready=None;
     assert!(pump_until(Duration::from_secs(10),||{let r=worker(&popup,"native-command-state");let ok=field(&r,"creation").is_some_and(|v|field(v,"complete")==Some(&Value::Bool(true)));ready=Some(r);ok}));
     let ready=ready.unwrap();let worker_id=text(&ready,"workerInstance").to_owned();let creation=field(&ready,"creation").unwrap().clone();assert_bool(&creation,"ok",true);assert_eq!(field(&creation,"error"),Some(&Value::Null));

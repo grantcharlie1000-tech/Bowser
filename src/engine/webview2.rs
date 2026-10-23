@@ -3472,8 +3472,26 @@ impl EngineAdapter for WebView2Engine {
             proof,document_fence:Rc::new(move || current()==Some(initial))})
     }
     #[cfg(all(test, feature = "experimental-engine-context-menu"))]
-    fn probe_extension_receipt_view(&self)->Option<ICoreWebView2> {
-        self.core.try_borrow().ok()?.extension_page.as_ref().map(|page|page.webview.clone())
+    fn probe_extension_receipt_handles(&self)->Option<super::app_context_menu_probe::NativeReceiptHandles> {
+        // Clone-only. All native controller/profile/document queries run after this borrow.
+        let state=self.core.try_borrow().ok()?;if state.closed{return None}let page=state.extension_page.as_ref()?;
+        let view=page.webview.clone();let controller=page.probe_controller.clone();let environment=state.environment.clone()?;
+        let (owner,alive)=page.probe_owner();let navigation=page.probe_navigation.clone();let completed=page.probe_completed.clone();
+        let expected_view=view.clone();let expected_controller=controller.clone();let expected_environment=environment.clone();let core=Rc::downgrade(&self.core);drop(state);
+        let proof=Rc::new(move||{
+            if !alive.get()||navigation.in_flight.get()||navigation.epoch.get()==u64::MAX{return None}
+            let (id,true)=completed.get()? else{return None};if id==0||navigation.navigation_id.get()!=Some(id){return None}
+            let core=core.upgrade()?;let state=core.try_borrow().ok()?;if state.closed{return None}let current=state.extension_page.as_ref()?;
+            let (current_owner,current_alive)=current.probe_owner();
+            if current_owner!=owner||!Rc::ptr_eq(&alive,&current_alive)||current.webview.as_raw()!=expected_view.as_raw()||current.probe_controller.as_raw()!=expected_controller.as_raw()||state.environment.as_ref()?.as_raw()!=expected_environment.as_raw(){return None}
+            Some((id,navigation.epoch.get()))
+        });
+        Some(super::app_context_menu_probe::NativeReceiptHandles{view,controller,environment,owner,proof})
+    }
+    #[cfg(all(test, feature = "experimental-engine-context-menu"))]
+    fn probe_open_extension_receipt(&mut self,id:&str,folder:&Path,done:Box<dyn FnOnce(std::result::Result<(),String>)>){
+        // Same loaded-extension policy and host as the existing isolated Session probes.
+        self.open_extension_page_hidden(id,folder,crate::extensions::PageKind::Popup,done);
     }
 
     fn successful_document_query(&self, id: TabId) -> Option<super::NativeDocumentQuery> {

@@ -480,9 +480,7 @@ fn sequence(app:&AppRef,root:&Path,page:&url::Url,bowser_id:&str,folder:&Path,id
     assert_ne!(primary.view.as_raw(),negative.view.as_raw());
     {let mut ids=identities.borrow_mut();ids.push((source_tab,primary.view.as_raw() as usize));ids.push((other_tab,negative.view.as_raw() as usize));}
     assert!(App::select_tab(app,source_tab));current(&primary,original);
-    App::open_extension_page(app,bowser_id.into(),folder.into(),extensions::PageKind::Popup,"Disposable Reload fixture receipt".into());
-    let mut popup=None;assert!(pump_until(Duration::from_secs(30),||{popup=receipt_view(app);popup.is_some()}));let popup=popup.unwrap();
-    assert!(pump_until(Duration::from_secs(20),||script(&popup,"document.documentElement.getAttribute('data-ready')")==Value::String("yes".into())));
+    let popup=open_receipt_view(app,bowser_id,folder);
     let mut ready=None;assert!(pump_until(Duration::from_secs(10),||{let receipt=worker(&popup,"native-command-state");let complete=field(&receipt,"creation").is_some_and(|creation|field(creation,"complete")==Some(&Value::Bool(true)));ready=Some(receipt);complete}));
     let ready=ready.unwrap();let worker_id=text(&ready,"workerInstance").to_owned();let creation=field(&ready,"creation").unwrap().clone();
     assert_bool(&creation,"ok",true);assert_eq!(field(&creation,"error"),Some(&Value::Null));

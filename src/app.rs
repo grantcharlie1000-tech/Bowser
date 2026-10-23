@@ -1073,6 +1073,16 @@ impl App {
         });
     }
 
+    /// Test-only worker receipt setup. Keep this data-only hosted page hidden so it
+    /// cannot compete with the two real App tabs for foreground during native input.
+    #[cfg(all(test, feature = "experimental-engine-context-menu"))]
+    pub(crate) fn probe_open_extension_receipt(app:&AppRef,id:&str,folder:&std::path::Path,done:Box<dyn FnOnce(std::result::Result<(),String>)>){
+        if Self::active_tab_private(app){done(Err("Fixture receipt requires an ordinary tab.".into()));return}
+        if app.borrow().engine.is_none(){done(Err("Fixture receipt engine is absent.".into()));return}
+        // with_engine takes the engine out; no App borrow survives native creation/callbacks.
+        Self::with_engine(app,move|engine|{engine.probe_open_extension_receipt(id,folder,done);Ok(())});
+    }
+
     fn with_engine(
         app: &AppRef,
         operation: impl FnOnce(&mut dyn engine::EngineAdapter) -> windows::core::Result<()>,
