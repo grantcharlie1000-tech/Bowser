@@ -452,7 +452,7 @@ try {
  }while($true)
  $report.completed=$settled
  if($Mode -ceq 'Copy'){$clipboard.ObserveNativeCopy($BrowserPid,$browserGuard,('copy-'+$SyntheticToken))}
- if($clipboard){if(!$clipboard.Finish()){throw 'Clipboard changed or locked: left untouched; regression gate failed.'};$report.clipboard=$clipboard.Status;$report.owned_clipboard_sequences=@($clipboard.OwnedSequences)}
+ if($clipboard){if(!$clipboard.Finish()){throw 'Clipboard changed or locked: left untouched; regression gate failed.'};$report.clipboard=$clipboard.Status;$report.owned_clipboard_sequences=@($clipboard.OwnedSequences);$report.clipboard_sequence_metadata=@{before_initial_close=$clipboard.BeforeInitialClose;after_initial_close=$clipboard.AfterInitialClose;failed_require_owned=$clipboard.LastRequireOwned}}
  $report.status=if($Mode -ceq 'Cancel'){'observed-actual-App-native-cancellation'}else{'observed-actual-App-native-selection'};Save-Report
 }catch{
  $report.error=$_.Exception.Message

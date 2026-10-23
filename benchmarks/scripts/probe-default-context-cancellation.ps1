@@ -79,6 +79,29 @@ public static class BowserDefaultContext {
  static bool RootFence(IntPtr host,uint testPid,uint hostTid,IntPtr popup,uint browserPid,uint menuTid,ReadOnlyBrowser browser,AutomationElement root,int[] rootId){
   return browser.SameAlive()&&Host(host,testPid,hostTid)&&PopupIdentity(host,popup,browserPid,menuTid)&&Same(Runtime(root),rootId)&&root.Current.ProcessId==(int)browserPid&&root.Current.NativeWindowHandle==popup.ToInt32()&&PopupIdentity(host,popup,browserPid,menuTid)&&Host(host,testPid,hostTid)&&browser.SameAlive();
  }
+ static string RetainedChildMetadata(IntPtr host,uint testPid,uint hostTid,IntPtr popup,uint browserPid,uint menuTid,ReadOnlyBrowser browser,AutomationElement root,int[] rootId,AutomationElement node,int[] nodeId,int providerPid,int native,int type){
+  const string prefix="{\"scope\":\"failure-only-retained-process-direct-child-not-traversal-authority\",\"authority\":false,\"fresh_request_membership_proved\":false,";
+  try{
+   // Inspect only the rejected structural node's own HWND. Never enumerate other providers,
+   // traverse through the rejected node, or infer GPU kind from the process image/class.
+   if(providerPid<=0||native==0||type!=ControlType.Pane.Id)return prefix+"\"status\":\"not-a-native-structural-pane\"}";
+   IntPtr child=new IntPtr(native);uint nativePid;uint tid=GetWindowThreadProcessId(child,out nativePid);
+   if(tid==0||nativePid!=(uint)providerPid||!IsWindow(child)||Class(child)!="Intermediate D3D Window")return prefix+"\"status\":\"native-node-identity-unavailable\"}";
+   using(var retained=new ReadOnlyBrowser((uint)providerPid)){
+    bool before=retained.SameAlive()&&retained.SameRuntimeImage(browser)&&RootFence(host,testPid,hostTid,popup,browserPid,menuTid,browser,root,rootId)&&NativeReady(host,testPid,hostTid,popup,browserPid,menuTid,IntPtr.Zero)&&Same(Runtime(node),nodeId)&&node.Current.NativeWindowHandle==native&&node.Current.ProcessId==providerPid;
+    if(!before)return prefix+"\"status\":\"identity-or-current-root-fence-unavailable-before-read\"}";
+    uint pidBefore;uint threadBefore=GetWindowThreadProcessId(child,out pidBefore);
+    IntPtr parentBefore=GetParent(child),rootBefore=GetAncestor(child,2);
+    bool directBefore=parentBefore==popup&&rootBefore==popup&&IsChild(popup,child)&&Class(child)=="Intermediate D3D Window";
+    uint pidAfter;uint threadAfter=GetWindowThreadProcessId(child,out pidAfter);
+    IntPtr parentAfter=GetParent(child),rootAfter=GetAncestor(child,2);
+    bool directAfter=parentAfter==popup&&rootAfter==popup&&IsChild(popup,child)&&Class(child)=="Intermediate D3D Window";
+    bool after=retained.SameAlive()&&retained.SameRuntimeImage(browser)&&RootFence(host,testPid,hostTid,popup,browserPid,menuTid,browser,root,rootId)&&NativeReady(host,testPid,hostTid,popup,browserPid,menuTid,IntPtr.Zero)&&Same(Runtime(node),nodeId)&&node.Current.NativeWindowHandle==native&&node.Current.ProcessId==providerPid;
+    if(!after)return prefix+"\"status\":\"identity-or-current-root-fence-unavailable-after-read-details-discarded\"}";
+    return prefix+"\"status\":\"captured-nonatomic-not-hwnd-lifetime-proof\",\"retained_process_alive_before_after\":true,\"same_retained_runtime_image_before_after\":true,\"process_creation_identity\":\""+retained.CreationIdentity+"\",\"pid\":"+Number(providerPid)+",\"native_hwnd\":"+Number(native)+",\"popup\":"+Number(popup.ToInt64())+",\"native_pid_thread_same\":"+(pidBefore==(uint)providerPid&&pidAfter==pidBefore&&threadBefore==tid&&threadAfter==tid?"true":"false")+",\"direct_child_before\":"+(directBefore?"true":"false")+",\"direct_child_after\":"+(directAfter?"true":"false")+",\"native_parent_before\":"+Number(parentBefore.ToInt64())+",\"native_parent_after\":"+Number(parentAfter.ToInt64())+",\"native_root_before\":"+Number(rootBefore.ToInt64())+",\"native_root_after\":"+Number(rootAfter.ToInt64())+",\"uia_runtime_and_native_identity_same_before_after\":true,\"foreground_capture_root_fences_before_after\":true}";
+   }
+  }catch{return prefix+"\"status\":\"read-only-process-or-node-query-unavailable-no-fallback\"}";}
+ }
  static void WriteMismatch(IntPtr host,uint testPid,uint hostTid,IntPtr popup,uint browserPid,uint menuTid,ReadOnlyBrowser browser,AutomationElement root,int[] rootId,AutomationElement node,int depth,int[] expectedParent,int index,int providerPid,uint helperPid,string directory){
   string prefix="{\"scope\":\"failure-only-popup-rooted-numeric-identity-not-input-authority\",\"first_mismatch\":true,\"visited_count\":"+Number(index)+",\"depth\":"+Number(depth)+",\"expected_pid\":"+Number(browserPid)+",\"observed_pid\":"+Number(providerPid)+",\"helper_pid\":"+Number(helperPid)+",\"helper_pid_available\":"+(helperPid!=0?"true":"false")+",\"observed_pid_equals_helper\":"+(helperPid!=0&&providerPid==helperPid?"true":"false")+",\"observed_pid_equals_test\":"+(providerPid==testPid?"true":"false")+",\"observed_pid_equals_browser\":"+(providerPid==browserPid?"true":"false")+",\"expected_pid_equal\":false,";
   string json=prefix+"\"status\":\"diagnostic-unavailable\"}";
@@ -96,12 +119,14 @@ public static class BowserDefaultContext {
     int[] parentId=null;int parentPid=0,parentType=0,parentNative=0;bool parentPresent=false,parentMetadataRead=false;
     // Only the known enqueued parent is inspected; never walk beyond the captured root.
     if(expectedParent!=null){var parent=TreeWalker.RawViewWalker.GetParent(node);if(parent!=null){parentPresent=true;parentId=Runtime(parent);if(Same(parentId,expectedParent)){var pc=parent.Current;parentPid=pc.ProcessId;parentType=pc.ControlType.Id;parentNative=pc.NativeWindowHandle;parentMetadataRead=true;}}}
+    string retainedChild=RetainedChildMetadata(host,testPid,hostTid,popup,browserPid,menuTid,browser,root,rootId,node,id,providerPid,native,type);
     bool after=RootFence(host,testPid,hostTid,popup,browserPid,menuTid,browser,root,rootId)&&Same(Runtime(node),id)&&node.Current.ProcessId==providerPid;
     if(!after){json=prefix+"\"status\":\"stale-after-read-details-discarded\"}";}
     else{
      string kind=Same(id,rootId)?"root":type==ControlType.Menu.Id?"menu":type==ControlType.MenuItem.Id?"menu-item-unattributed":"structural-other";
      string nativeKind=nativeClass=="Intermediate D3D Window"?"intermediate-d3d":nativeClass=="Chrome_WidgetWin_2"?"chromium-popup":"other-or-unavailable";
      prefix+="\"native_query\":{\"non_atomic\":true,\"authority\":false,\"stable_pid_thread\":"+(nativeStable?"true":"false")+",\"pid\":"+Number(nativePid)+",\"thread\":"+Number(nativeTid)+",\"parent\":"+Number(nativeParent.ToInt64())+",\"class_kind\":\""+nativeKind+"\"},";
+     prefix+="\"retained_child_metadata\":"+retainedChild+",";
      json=prefix+"\"status\":\"captured-nonatomic-not-authority\",\"root_identity_before_after\":true,\"node_kind\":\""+kind+"\",\"control_type_id\":"+Number(type)+",\"native_hwnd\":"+Number(native)+",\"pid_no_default_kind\":\""+pidNoDefaultKind+"\",\"pid_no_default_value\":"+pidNoDefaultValue+",\"runtime_id\":"+JsonIds(id)+",\"root_runtime_id\":"+JsonIds(rootId)+",\"parent_already_encountered\":"+(expectedParent!=null?"true":"false")+",\"expected_parent_runtime_id\":"+JsonIds(expectedParent)+",\"parent_present\":"+(parentPresent?"true":"false")+",\"parent_runtime_id\":"+JsonIds(parentId)+",\"parent_matches_enqueued_parent\":"+(expectedParent!=null&&parentId!=null&&Same(parentId,expectedParent)?"true":"false")+",\"parent_metadata_read\":"+(parentMetadataRead?"true":"false")+",\"parent_provider_pid\":"+Number(parentPid)+",\"parent_control_type_id\":"+Number(parentType)+",\"parent_native_hwnd\":"+Number(parentNative)+"}";
     }
    }
@@ -150,6 +175,8 @@ public static class BowserDefaultContext {
   string Image(){var b=new StringBuilder(32768);uint n=32768;if(!QueryFullProcessImageName(handle,0,b,ref n))throw new InvalidOperationException("Native browser image query unavailable.");return System.IO.Path.GetFullPath(b.ToString());}
   ulong Creation(){TIME a,b,c,d;if(!GetProcessTimes(handle,out a,out b,out c,out d))throw new InvalidOperationException("Native browser creation query unavailable.");return a.Bits;}
   public bool SameAlive(){return handle!=IntPtr.Zero&&GetProcessId(handle)==pid&&Creation()==created&&String.Equals(Image(),image,StringComparison.OrdinalIgnoreCase)&&WaitForSingleObject(handle,0)==258;}
+  public bool SameRuntimeImage(ReadOnlyBrowser other){return String.Equals(image,other.image,StringComparison.OrdinalIgnoreCase);}
+  public string CreationIdentity {get{return created.ToString(System.Globalization.CultureInfo.InvariantCulture);}}
   public void Dispose(){if(handle!=IntPtr.Zero){CloseHandle(handle);handle=IntPtr.Zero;}}
  }
  static object GuiSnapshot(uint tid,IntPtr witness,uint pid){
