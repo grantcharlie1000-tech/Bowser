@@ -152,6 +152,29 @@ public static class BowserHostMenu {
   public static uint AdmissionSequence;
   bool admission=true;
   IntPtr owner;uint last;bool changed,finished,uncertain;public string Status="not-started";public List<uint> OwnedSequences=new List<uint>();
+  public object BeforeInitialClose,AfterInitialClose,LastRequireOwned;
+  // Read-only bounded metadata, never a replacement ownership proof. Format IDs are queried
+  // only under an ALREADY held lock. No contents, additional Open, mutator, or sequence adoption.
+  object Metadata(string stage,bool alreadyOpen,uint? checkedSequence){
+   try{
+    uint before=GetClipboardSequenceNumber();IntPtr source=GetClipboardOwner();
+    var formats=new List<uint>();bool complete=false;int error=0;
+    if(alreadyOpen){
+     uint previous=0;for(int index=0;index<16;index++){
+      SetLastError(0);uint next=EnumClipboardFormats(previous);error=Marshal.GetLastWin32Error();
+      if(next==0){complete=error==0;break;}
+      if(error!=0||formats.Contains(next))break;formats.Add(next);previous=next;
+     }
+    }
+    IntPtr afterOwner=GetClipboardOwner();uint after=GetClipboardSequenceNumber();
+    return new {stage=stage,non_atomic=true,authority=false,lock_already_held=alreadyOpen,
+     expected_last=last,checked_sequence=checkedSequence,sequence_before=before,sequence_after=after,
+     guard_window=owner.ToInt64(),owner_before=source.ToInt64(),owner_after=afterOwner.ToInt64(),
+     owner_matches_guard_before=source==owner,owner_matches_guard_after=afterOwner==owner,
+     format_ids=formats,format_query_performed=alreadyOpen,format_enumeration_complete=complete,
+     format_error=error,format_bound=16};
+   }catch{return new {stage=stage,status="metadata-unavailable-no-acceptance",authority=false};}
+  }
   uint Sequence(){uint value=GetClipboardSequenceNumber();if(admission&&AdmissionStage==4){AdmissionSequence=value;AdmissionSequenceObserved=true;}if(value==0){uncertain=true;Status="sequence-unavailable-left-untouched";throw new InvalidOperationException("Clipboard sequence unavailable; no authority to read or restore.");}return value;}
   void CloseChecked(){bool closed=CloseClipboard();if(admission){AdmissionCloseAttempted=true;AdmissionCloseConfirmed=closed;}if(!closed){uncertain=true;Status="close-unconfirmed-left-untouched";throw new InvalidOperationException("Clipboard close was not confirmed.");}}
   public ClipboardGuard(string generated){
@@ -174,11 +197,14 @@ public static class BowserHostMenu {
      sequence=>{last=sequence;OwnedSequences.Add(sequence);}
     ));
     Status="synthetic-payload-owned";
+    BeforeInitialClose=Metadata("before-existing-initial-checked-close",true,null);
     opened=false;CloseChecked();
+    // EnumClipboardFormats requires an open clipboard: never introduce an extra open here.
+    AfterInitialClose=Metadata("after-existing-initial-checked-close-no-format-query",false,null);
    }catch{AdmissionFailureStage=AdmissionStage;if(opened){opened=false;try{CloseChecked();}catch{}}Finish();DestroyWindow(owner);owner=IntPtr.Zero;throw;}
    finally{admission=false;if(memory!=IntPtr.Zero)GlobalFree(memory);}
   }
-  public void RequireOwned(){if(!OpenClipboard(owner))throw new InvalidOperationException("Clipboard locked before native input; no input.");try{if(Sequence()!=last||GetClipboardOwner()!=owner)throw new InvalidOperationException("Clipboard sequence changed before native input; no input.");}finally{CloseChecked();}}
+  public void RequireOwned(){if(!OpenClipboard(owner))throw new InvalidOperationException("Clipboard locked before native input; no input.");try{uint observed=Sequence();if(observed!=last||GetClipboardOwner()!=owner){LastRequireOwned=Metadata("failed-existing-require-owned-check",true,observed);throw new InvalidOperationException("Clipboard sequence changed before native input; no input.");}}finally{CloseChecked();}}
   /// The only content getter follows the settled physical Copy. Unknown/zero sequences and
   /// different owners are refused before content access; no unrelated clipboard backup exists.
   public void ObserveNativeCopy(uint browserPid,ReadOnlyBrowser browser,string expected){
@@ -433,7 +459,7 @@ try {
  # Constructor cleanup has already run, even when assignment never returned an object.
  try {if([BowserHostMenu+ClipboardGuard]::AdmissionStarted){$report.clipboard_admission=@{stage=[BowserHostMenu+ClipboardGuard]::AdmissionStage;failure_stage=[BowserHostMenu+ClipboardGuard]::AdmissionFailureStage;open_succeeded=[BowserHostMenu+ClipboardGuard]::AdmissionOpened;format_observed=[BowserHostMenu+ClipboardGuard]::AdmissionFormatObserved;first_format_zero=[BowserHostMenu+ClipboardGuard]::AdmissionFirstFormatZero;enum_error=[BowserHostMenu+ClipboardGuard]::AdmissionEnumError;sequence_observed=[BowserHostMenu+ClipboardGuard]::AdmissionSequenceObserved;sequence=[BowserHostMenu+ClipboardGuard]::AdmissionSequence;close_attempted=[BowserHostMenu+ClipboardGuard]::AdmissionCloseAttempted;close_confirmed=[BowserHostMenu+ClipboardGuard]::AdmissionCloseConfirmed}}}catch{}
  # Restore only our exact last-owned sequence BEFORE terminating the exact disposable test.
- if($clipboard){$restored=$clipboard.Finish();$report.clipboard=$clipboard.Status;$report.owned_clipboard_sequences=@($clipboard.OwnedSequences)}
+ if($clipboard){$restored=$clipboard.Finish();$report.clipboard=$clipboard.Status;$report.owned_clipboard_sequences=@($clipboard.OwnedSequences);$report.clipboard_sequence_metadata=@{before_initial_close=$clipboard.BeforeInitialClose;after_initial_close=$clipboard.AfterInitialClose;failed_require_owned=$clipboard.LastRequireOwned}}
  # Failure-only observation; no input/clipboard/process authority is derived from this snapshot.
  try {
   Import-Module (Join-Path $PSScriptRoot 'native-runner-state.psm1') -ErrorAction Stop
