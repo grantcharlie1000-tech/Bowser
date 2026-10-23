@@ -250,6 +250,8 @@ pub(crate) const WM_TRANSLATE_WATCH_TIMER: usize = 0xB072;
 /// A capture's join/encode/save worker finished; `WPARAM` is the worker id whose result is waiting in
 /// `app::page_actions`.
 pub(crate) const WM_CAPTURE_DONE: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 0x5D9;
+/// The profile-scoped favicon worker has cached/refreshed icons for sleeping restored tabs.
+pub(crate) const WM_RESTORED_FAVICONS: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 0x5DA;
 
 // --- settings page (docs/design/settings-page.md) ---
 /// Opens `bowser://settings` at `section` in window `hwnd` (the native Settings window when the

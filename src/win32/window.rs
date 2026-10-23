@@ -4359,6 +4359,10 @@ unsafe extern "system" fn window_proc(
                 App::capture_worker_done(wparam.0 as u64);
                 LRESULT(0)
             }
+            super::WM_RESTORED_FAVICONS => {
+                if let Some(app) = app { App::restored_favicons_ready(app); }
+                LRESULT(0)
+            }
             WM_TIMER if wparam.0 == super::WM_TRANSLATE_WATCH_TIMER => {
                 let _ = KillTimer(Some(hwnd), super::WM_TRANSLATE_WATCH_TIMER);
                 if let Some(app) = app {
@@ -12722,7 +12726,7 @@ mod tests {
             super::super::WM_CHAIN_STEP, super::super::WM_DOWNLOADS_CHANGED, super::super::WM_DOWNLOADS_PAGE_COMMAND,
             super::super::WM_EXTENSIONS_CHANGED, super::super::WM_HISTORY_PAGE_COMMAND, super::super::WM_SETTINGS_COMMAND,
             super::super::WM_SPLIT_COMMAND, super::super::WM_SPLIT_LINK, super::super::WM_SPLIT_LOOK,
-            super::super::WM_TRANSLATE_NET, super::super::WM_CAPTURE_DONE, super::super::address_bar::WM_ADDRESS_SUGGEST,
+            super::super::WM_TRANSLATE_NET, super::super::WM_CAPTURE_DONE, super::super::WM_RESTORED_FAVICONS, super::super::address_bar::WM_ADDRESS_SUGGEST,
             super::super::bookmark_bar::WM_BOOKMARK_BAR_COMMAND,
         ];
         let mut seen = std::collections::HashSet::new();
