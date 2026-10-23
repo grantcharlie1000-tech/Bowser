@@ -9,6 +9,10 @@ using System.Runtime.InteropServices;
 using System.Text;
 public static class BowserNativeRunnerState {
     [StructLayout(LayoutKind.Sequential)] struct Flags { public int inherit, reserved; public uint flags; }
+    [StructLayout(LayoutKind.Sequential, Size=56)] struct ObjectBasic {
+        public uint attributes, grantedAccess, handleCount, pointerCount;
+    }
+    [DllImport("ntdll.dll")] static extern int NtQueryObject(IntPtr handle, int kind, out ObjectBasic value, uint size, out uint needed);
     [DllImport("kernel32.dll")] static extern uint GetCurrentProcessId();
     [DllImport("kernel32.dll")] static extern uint GetCurrentThreadId();
     [DllImport("kernel32.dll", SetLastError=true)] static extern bool ProcessIdToSessionId(uint pid, out uint session);
@@ -35,12 +39,22 @@ public static class BowserNativeRunnerState {
         int? error=performed ? (int?)(ok ? 0 : Marshal.GetLastWin32Error()) : null;
         return new { query_performed=performed, query_ok=ok, error=error, value=ok ? (uint?)value : null };
     }
+    static object Access(IntPtr handle) {
+        // Optional diagnostic for this already-borrowed handle; never request more access.
+        try {
+            ObjectBasic value; uint needed; int status=NtQueryObject(handle,0,out value,56,out needed);
+            bool ok=status==0 && needed==56;
+            return new { query_ok=ok, ntstatus=status, needed_bytes=needed,
+                granted_access=ok ? (uint?)value.grantedAccess : null, authority=false };
+        } catch { return new { query_ok=false, status="unavailable", authority=false }; }
+    }
     static object UserObject(IntPtr handle, bool desktop) {
         Flags flags; uint needed; bool ok=ObjectFlags(handle, 1, out flags, 12, out needed);
         int error=ok ? 0 : Marshal.GetLastWin32Error();
         int input=0; uint inputNeeded=0; bool inputOk=desktop && ObjectInput(handle, 6, out input, 4, out inputNeeded);
         int? inputError=desktop ? (int?)(inputOk ? 0 : Marshal.GetLastWin32Error()) : null;
         return new { borrowed_handle=handle.ToInt64(), name=Text(handle,2), type=Text(handle,3),
+            access=Access(handle),
             flags=new { query_ok=ok, error=error, needed_bytes=needed, value=ok ? (uint?)flags.flags : null },
             receives_input=new { query_performed=desktop, query_ok=inputOk, error=inputError,
                 value=inputOk ? (bool?)(input!=0) : null }, authority=false };

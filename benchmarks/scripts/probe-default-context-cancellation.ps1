@@ -88,6 +88,11 @@ public static class BowserDefaultContext {
     var id=Runtime(node);var current=node.Current;int type=current.ControlType.Id;int native=current.NativeWindowHandle;
     string pidNoDefaultKind="getter-failed",pidNoDefaultValue="null";
     try{var raw=node.GetCurrentPropertyValue(AutomationElement.ProcessIdProperty,true);if(raw is int){pidNoDefaultKind="integer";pidNoDefaultValue=Number((int)raw);}else if(Object.ReferenceEquals(raw,AutomationElement.NotSupported)){pidNoDefaultKind="not-supported";}else{pidNoDefaultKind="other-kind";}}catch{}
+    // Numeric metadata from this rejected node's own HWND only; never process or input authority.
+    IntPtr nativeWindow=new IntPtr(native);uint nativePid=0;uint nativeTid=native==0?0:GetWindowThreadProcessId(nativeWindow,out nativePid);
+    string nativeClass=native==0?null:Class(nativeWindow);IntPtr nativeParent=native==0?IntPtr.Zero:GetParent(nativeWindow);
+    uint nativePidAfter=0;uint nativeTidAfter=native==0?0:GetWindowThreadProcessId(nativeWindow,out nativePidAfter);
+    bool nativeStable=native!=0&&IsWindow(nativeWindow)&&nativeTid!=0&&nativeTid==nativeTidAfter&&nativePid==nativePidAfter;
     int[] parentId=null;int parentPid=0,parentType=0,parentNative=0;bool parentPresent=false,parentMetadataRead=false;
     // Only the known enqueued parent is inspected; never walk beyond the captured root.
     if(expectedParent!=null){var parent=TreeWalker.RawViewWalker.GetParent(node);if(parent!=null){parentPresent=true;parentId=Runtime(parent);if(Same(parentId,expectedParent)){var pc=parent.Current;parentPid=pc.ProcessId;parentType=pc.ControlType.Id;parentNative=pc.NativeWindowHandle;parentMetadataRead=true;}}}
@@ -95,6 +100,8 @@ public static class BowserDefaultContext {
     if(!after){json=prefix+"\"status\":\"stale-after-read-details-discarded\"}";}
     else{
      string kind=Same(id,rootId)?"root":type==ControlType.Menu.Id?"menu":type==ControlType.MenuItem.Id?"menu-item-unattributed":"structural-other";
+     string nativeKind=nativeClass=="Intermediate D3D Window"?"intermediate-d3d":nativeClass=="Chrome_WidgetWin_2"?"chromium-popup":"other-or-unavailable";
+     prefix+="\"native_query\":{\"non_atomic\":true,\"authority\":false,\"stable_pid_thread\":"+(nativeStable?"true":"false")+",\"pid\":"+Number(nativePid)+",\"thread\":"+Number(nativeTid)+",\"parent\":"+Number(nativeParent.ToInt64())+",\"class_kind\":\""+nativeKind+"\"},";
      json=prefix+"\"status\":\"captured-nonatomic-not-authority\",\"root_identity_before_after\":true,\"node_kind\":\""+kind+"\",\"control_type_id\":"+Number(type)+",\"native_hwnd\":"+Number(native)+",\"pid_no_default_kind\":\""+pidNoDefaultKind+"\",\"pid_no_default_value\":"+pidNoDefaultValue+",\"runtime_id\":"+JsonIds(id)+",\"root_runtime_id\":"+JsonIds(rootId)+",\"parent_already_encountered\":"+(expectedParent!=null?"true":"false")+",\"expected_parent_runtime_id\":"+JsonIds(expectedParent)+",\"parent_present\":"+(parentPresent?"true":"false")+",\"parent_runtime_id\":"+JsonIds(parentId)+",\"parent_matches_enqueued_parent\":"+(expectedParent!=null&&parentId!=null&&Same(parentId,expectedParent)?"true":"false")+",\"parent_metadata_read\":"+(parentMetadataRead?"true":"false")+",\"parent_provider_pid\":"+Number(parentPid)+",\"parent_control_type_id\":"+Number(parentType)+",\"parent_native_hwnd\":"+Number(parentNative)+"}";
     }
    }

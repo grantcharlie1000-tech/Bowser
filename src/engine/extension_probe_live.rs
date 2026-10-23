@@ -2137,6 +2137,32 @@ fn native_context_items(collection: &webview2_com::Microsoft::Web::WebView2::Win
     }
 }
 
+// Failure investigation only. This bounded startup observation cannot authorize UIA input:
+// process membership is non-atomic and no handles/creation identities are retained here.
+fn observe_native_process_kinds(view:&webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2,out:&Path) {
+    use windows::core::Interface;
+    use webview2_com::Microsoft::Web::WebView2::Win32::{
+        ICoreWebView2_2,ICoreWebView2Environment8,COREWEBVIEW2_PROCESS_KIND,
+    };
+    let observed=(|| -> windows::core::Result<String> {
+        let environment=unsafe{view.cast::<ICoreWebView2_2>()?.Environment()?};
+        let processes=unsafe{environment.cast::<ICoreWebView2Environment8>()?.GetProcessInfos()?};
+        let mut count=0;unsafe{processes.Count(&mut count)?};
+        if count==0||count>64 {return Ok(format!(r#"{{"status":"count-outside-bound","count":{count}}}"#));}
+        let mut entries=Vec::new();
+        for index in 0..count {
+            let process=unsafe{processes.GetValueAtIndex(index)?};let mut pid=0;let mut kind=COREWEBVIEW2_PROCESS_KIND(0);
+            unsafe{process.ProcessId(&mut pid)?;process.Kind(&mut kind)?};
+            entries.push(format!(r#"{{"pid":{pid},"kind":{}}}"#,kind.0));
+        }
+        Ok(format!(r#"{{"status":"captured","entries":[{}]}}"#,entries.join(",")))
+    })();
+    let observation=observed.unwrap_or_else(|error|format!(r#"{{"status":"unavailable","hresult":{}}}"#,error.code().0));
+    let report=format!(r#"{{"scope":"same-view-environment-startup-process-kinds-not-authority","non_atomic":true,"authority":false,"observation":{observation}}}"#);
+    // Existing evidence is never overwritten. Missing diagnostics never change a gate result.
+    if report.len()<=8192 {if let Ok(mut file)=std::fs::OpenOptions::new().write(true).create_new(true).open(out.join("native-process-kinds.json")){let _=file.write_all(report.as_bytes());}}
+}
+
 /// Observation/cancellation only; native selection and activeTab grants remain separate gates.
 #[test]
 #[ignore = "requires real owned native right-click/cancellation in an isolated single-test process"]
@@ -2274,6 +2300,7 @@ fn live_probe_default_context_menu_cancellation() {
     println!("DEFAULT_CONTEXT_CANCELLATION browser_pid_query_ok={} normalized_error={:?} native_browser_pid={browser_pid}",browser_pid_result.is_ok(),browser_pid_result.as_ref().err().map(|e|e.code().0));
     browser_pid_result.unwrap();assert!(browser_pid>0&&browser_pid!=std::process::id(),"native browser process identity unavailable before input");
     let out=PathBuf::from("store-default-context-menu-cancellation");std::fs::create_dir_all(&out).unwrap();
+    observe_native_process_kinds(&view,&out);
     let snapshot=Rc::new(RefCell::new(std::fs::OpenOptions::new().write(true).create_new(true).open(out.join(format!("native-menu-items-{}.log",std::process::id()))).unwrap()));let snapshot_sink=snapshot.clone();
     let requests=Rc::new(RefCell::new(Vec::<NativeContextRequest>::new()));let sink=requests.clone();let observed=Rc::new(std::cell::Cell::new(0usize));let observed_sink=observed.clone();let mut event_token=0;
     let native_clock=Instant::now();

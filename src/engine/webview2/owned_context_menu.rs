@@ -28,6 +28,60 @@ fn observe(event:MenuProbeEvent)->bool {
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Phase { Inventory, Show, Showing, Refresh, Dispatch, Dispatching, Done }
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+enum ShowingValidity { Current, Stale, Unknown }
+fn showing_validity(available:bool,registered:bool,context_free:bool,unchanged:bool)->ShowingValidity {
+    if !available||!registered||!context_free {ShowingValidity::Unknown}
+    else if unchanged {ShowingValidity::Current} else {ShowingValidity::Stale}
+}
+// The root stays owned by EngineMenu on this same stack. Clearing it on every return/unwind
+// prevents a queued continuation from treating a retired/reused HMENU as a live modal loop.
+struct ModalRoot<'a>(&'a Cell<Option<HMENU>>);
+impl Drop for ModalRoot<'_> {fn drop(&mut self){self.0.set(None);}}
+struct ModalPopupScan {pid:u32,thread:u32,root:HMENU,examined:usize,complete:bool,popup:Option<HWND>,ambiguous:bool}
+unsafe extern "system" fn modal_popup_window(hwnd:HWND,param:LPARAM)->BOOL {
+    let outcome=std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        // EnumWindows is synchronous; this pointer cannot outlive its stack-owned scan.
+        let scan=unsafe{&mut *(param.0 as *mut ModalPopupScan)};scan.examined+=1;
+        if scan.examined>128 {scan.complete=false;return BOOL(0);}
+        let mut pid=0;let thread=unsafe{GetWindowThreadProcessId(hwnd,Some(&mut pid))};
+        if pid==scan.pid&&thread==scan.thread&&unsafe{IsWindowVisible(hwnd)}.as_bool() {
+            let mut class=[0u16;64];let n=unsafe{GetClassNameW(hwnd,&mut class)};
+            if n<=0 {scan.complete=false;return BOOL(0);}
+            if String::from_utf16_lossy(&class[..n as usize])=="#32768" {
+                let mut bar=MENUBARINFO{cbSize:std::mem::size_of::<MENUBARINFO>() as u32,..Default::default()};
+                if unsafe{GetMenuBarInfo(hwnd,OBJID_CLIENT,0,&mut bar)}.is_err() {scan.complete=false;return BOOL(0);}
+                if bar.hMenu!=scan.root||scan.popup.replace(hwnd).is_some() {scan.ambiguous=true;}
+            }
+        }
+        BOOL(1)
+    }));
+    outcome.unwrap_or(BOOL(0))
+}
+fn modal_popup_capture(owner:&Owner,root:HMENU,popup:HWND)->Option<HWND> {
+    if !owner.current()||unsafe{GetForegroundWindow()}!=owner.hwnd {return None;}
+    let mut pid=0;let mut class=[0u16;64];let mut bounds=RECT::default();
+    if !unsafe{IsWindow(Some(popup))}.as_bool()||!unsafe{IsWindowVisible(popup)}.as_bool()
+        ||unsafe{GetWindowThreadProcessId(popup,Some(&mut pid))}!=owner.thread||pid!=owner.pid {return None;}
+    let n=unsafe{GetClassNameW(popup,&mut class)};
+    if n!=6||String::from_utf16_lossy(&class[..n as usize])!="#32768"
+        ||unsafe{GetWindowRect(popup,&mut bounds)}.is_err()||bounds.right<=bounds.left||bounds.bottom<=bounds.top {return None;}
+    let mut bar=MENUBARINFO{cbSize:std::mem::size_of::<MENUBARINFO>() as u32,..Default::default()};
+    if unsafe{GetMenuBarInfo(popup,OBJID_CLIENT,0,&mut bar)}.is_err()||bar.hMenu!=root {return None;}
+    let mut gui=GUITHREADINFO{cbSize:std::mem::size_of::<GUITHREADINFO>() as u32,..Default::default()};
+    if unsafe{GetGUIThreadInfo(owner.thread,&mut gui)}.is_err()||gui.hwndActive!=owner.hwnd
+        ||gui.hwndMenuOwner!=owner.hwnd||!gui.flags.contains(GUI_POPUPMENUMODE)
+        ||!(gui.hwndCapture.0.is_null()||gui.hwndCapture==owner.hwnd||gui.hwndCapture==popup)
+        ||!owner.current()||unsafe{GetForegroundWindow()}!=owner.hwnd {return None;}
+    Some(gui.hwndCapture)
+}
+fn exact_modal_popup(owner:&Owner,root:HMENU)->Option<(HWND,HWND)> {
+    if !owner.current() {return None;}
+    let mut scan=ModalPopupScan{pid:owner.pid,thread:owner.thread,root,examined:0,complete:true,popup:None,ambiguous:false};
+    let result=unsafe{EnumWindows(Some(modal_popup_window),LPARAM(std::ptr::addr_of_mut!(scan) as isize))};
+    if result.is_err()||!scan.complete||scan.ambiguous {return None;}
+    let popup=scan.popup?;let capture=modal_popup_capture(owner,root,popup)?;Some((popup,capture))
+}
 struct Owner { hwnd: HWND, pid: u32, thread: u32, token: usize, alive: Cell<bool>, request_epoch: Cell<u64> }
 impl Owner {
     fn next_request_epoch(&self)->Option<u64> {
@@ -161,6 +215,7 @@ struct Request {
     complete_calls:Cell<u32>,complete_error:Cell<Option<i32>>,selected:Cell<Option<i32>>,cleanup_ok:Cell<bool>,
     _permit:CompletionPermit,
     uncertain_preserved:Cell<bool>,
+    modal_root:Cell<Option<HMENU>>,modal_cancel_attempted:Cell<bool>,
 }
 impl Request {
     /// No Core or gate borrow survives any COM getter. The final pure check follows all getters.
@@ -204,6 +259,44 @@ impl Request {
                 && tab.controller.as_ref().is_some_and(|v|v.as_raw()==self.controller.as_raw()))
             && self.gate.try_borrow().is_ok_and(|g|g.proof()==Some(self.proof))
     }
+    // Read-only tri-state: a borrowed/unknown context is not evidence of stale authority.
+    // Every App/Core/gate/registry guard ends before any Win32 cancellation call.
+    fn showing_validity(self:&Rc<Self>)->ShowingValidity {
+        if self.phase.get()!=Phase::Showing||self.modal_root.get().is_none()||!(self.available)() {return ShowingValidity::Unknown;}
+        let registered=OWNERS.with(|all|all.try_borrow().ok().map(|all|
+            all.get(&(self.owner.hwnd.0 as isize)).is_some_and(|entry|
+                Rc::ptr_eq(&entry.owner,&self.owner)&&entry.owner.token==self.owner.token
+                &&entry.claim==Some(self.token)&&entry.pending.as_ref().is_some_and(|pending|Rc::ptr_eq(pending,self)))));
+        if registered!=Some(true) {return ShowingValidity::Unknown;}
+        let Some(core)=self.core.upgrade() else {return ShowingValidity::Unknown;};
+        let unchanged={
+            let Ok(state)=core.try_borrow_mut() else {return ShowingValidity::Unknown;};
+            let Ok(gate)=self.gate.try_borrow_mut() else {return ShowingValidity::Unknown;};
+            self.valid.get()&&self.owner.request_epoch.get()==self.request_epoch&&!state.closed
+                &&state.parent==self.owner.hwnd&&state.active_tab==Some(self.tab)&&!state.private_tabs.contains(&self.tab)
+                &&state.tabs.get(&self.tab).is_some_and(|tab|Rc::ptr_eq(&tab.document_gate,&self.gate)
+                    &&tab.webview.as_ref().is_some_and(|view|view.as_raw()==self.view.as_raw())
+                    &&tab.controller.as_ref().is_some_and(|controller|controller.as_raw()==self.controller.as_raw()))
+                &&gate.proof()==Some(self.proof)
+        };
+        showing_validity((self.available)(),true,self.owner.current(),unchanged)
+    }
+    fn cancel_stale_modal(self:&Rc<Self>) {
+        if self.modal_cancel_attempted.get()||self.showing_validity()!=ShowingValidity::Stale {return;}
+        let Some(root)=self.modal_root.get() else {return;};
+        let Some((popup,capture))=exact_modal_popup(&self.owner,root) else {return;};
+        // Native reads may reenter. Re-prove the original stale context and exact modal root;
+        // no inventory deadline, test hook, input, generic cancel message or fallback is used.
+        if self.showing_validity()!=ShowingValidity::Stale||self.modal_root.get()!=Some(root)
+            ||exact_modal_popup(&self.owner,root)!=Some((popup,capture))||self.showing_validity()!=ShowingValidity::Stale {return;}
+        self.valid.set(false);
+        if self.modal_cancel_attempted.replace(true) {return;}
+        // EndMenu ends the CALLING THREAD's menu: proof above binds that thread to this exact
+        // retained HMENU/owner/request. Its result is not completion. Never destroy/Complete
+        // in-modal; only the genuine TrackPopupMenu return can enter ordinary retirement.
+        let result=unsafe{EndMenu()};
+        extension_trace(&format!("engine_menu_stale_modal_cancel request={} root={} popup={} capture={} native_error={:?}",self.token,root.0 as usize,popup.0 as usize,capture.0 as usize,result.err().map(|error|error.code().0)));
+    }
     fn complete(&self)->bool {
         if self.complete_calls.get()!=0 {return self.complete_error.get().is_none();}
         let deferral={self.deferral.borrow_mut().take()};
@@ -219,7 +312,8 @@ impl Request {
     fn post(self:&Rc<Self>) { if !(self.post)(self.token) { self.cancel(); } }
     fn cancel(self:&Rc<Self>) {
         self.valid.set(false);
-        if matches!(self.phase.get(),Phase::Showing|Phase::Dispatching) { return; }
+        if self.phase.get()==Phase::Showing {self.cancel_stale_modal();return;}
+        if self.phase.get()==Phase::Dispatching {return;}
         self.finish();
     }
     fn finish(self:&Rc<Self>) {
@@ -372,7 +466,7 @@ pub(super) fn install(
                 view:receiving.clone(),controller:receiving_controller.clone(),gate:gate.clone(),proof,
                 args:args.clone(),deferral:RefCell::new(Some(deferral.take()?)),authority:acquired_authority.take()?,menu:RefCell::new(Some(menu)),
                 selection:RefCell::new(None),shown:RefCell::new(None),fresh:RefCell::new(None),phase:Cell::new(Phase::Inventory),
-                valid:Cell::new(true),deadline:Cell::new(Instant::now()+INVENTORY_WAIT),point,bounds,post:post.clone(),available:available.clone(),setter_called:Cell::new(false),setter_result:Cell::new(None),complete_calls:Cell::new(0),complete_error:Cell::new(None),selected:Cell::new(None),cleanup_ok:Cell::new(true),_permit:permit.take()?,uncertain_preserved:Cell::new(false) });
+                valid:Cell::new(true),deadline:Cell::new(Instant::now()+INVENTORY_WAIT),point,bounds,post:post.clone(),available:available.clone(),setter_called:Cell::new(false),setter_result:Cell::new(None),complete_calls:Cell::new(0),complete_error:Cell::new(None),selected:Cell::new(None),cleanup_ok:Cell::new(true),_permit:permit.take()?,uncertain_preserved:Cell::new(false),modal_root:Cell::new(None),modal_cancel_attempted:Cell::new(false) });
             let installed=OWNERS.with(|all| {let mut all=all.borrow_mut();
                 let Some(e)=all.get_mut(&(parent.0 as isize)) else {return false;};
                 if e.owner.token!=owned.token || e.claim!=token || e.pending.is_some() {return false;}
@@ -404,6 +498,8 @@ pub(crate) fn continue_request(hwnd:HWND,token:usize) {
     drain_destroyed();
     let request=OWNERS.with(|all|all.borrow().get(&(hwnd.0 as isize)).and_then(|e|e.pending.as_ref().filter(|p|p.token==token).cloned()));
     let Some(request)=request else {return;};
+    // The inventory deadline must not cancel a healthy user-controlled modal menu.
+    if request.phase.get()==Phase::Showing {request.cancel_stale_modal();return;}
     if Instant::now()>=request.deadline.get() || !request.current() {request.cancel();return;}
     let Some(core)=request.core.upgrade() else {request.cancel();return;};
     match request.phase.get() {
@@ -440,9 +536,13 @@ pub(crate) fn continue_request(hwnd:HWND,token:usize) {
                         });
                 }
             }
+            let root=match menu.modal_root() {Ok(root)=>root,Err(_)=>{request.cancel();return;}};
             request.phase.set(Phase::Showing);
-            let choice=menu.show(hwnd,request.point,||
-                request.authority.validate(&core,&request.view,&inventory).is_ok() && request.current());
+            let choice={
+                request.modal_root.set(Some(root));let _modal=ModalRoot(&request.modal_root);
+                menu.show(hwnd,request.point,||
+                    request.authority.validate(&core,&request.view,&inventory).is_ok() && request.current())
+            };
             request.phase.set(Phase::Show);
             *request.menu.borrow_mut()=Some(menu);
             if !request.current() {request.cancel();return;}
@@ -486,7 +586,8 @@ pub(crate) fn tick(hwnd:HWND) {
     drain_destroyed();
     let request=OWNERS.with(|all|all.borrow().get(&(hwnd.0 as isize)).and_then(|e|e.pending.clone()));
     if let Some(request)=request {
-        if request.phase.get()!=Phase::Showing && (Instant::now()>=request.deadline.get() || !request.pure_current()) {request.cancel();}
+        if request.phase.get()==Phase::Showing {request.cancel_stale_modal();}
+        else if Instant::now()>=request.deadline.get() || !request.pure_current() {request.cancel();}
     } else {unsafe {let _=KillTimer(Some(hwnd),TIMER);}}
 }
 pub(crate) fn drain_destroyed() {
@@ -517,6 +618,21 @@ mod tests {
         // Opaque key only. No test dereferences this pointer or calls a native function with it.
         Rc::new(Owner {hwnd:HWND(std::ptr::dangling_mut()),pid:0,thread:0,token,
             alive:Cell::new(true),request_epoch:Cell::new(0)})
+    }
+    #[test]
+    fn showing_cancellation_requires_explicit_staleness_not_unknown_context() {
+        assert_eq!(showing_validity(true,true,true,true),ShowingValidity::Current);
+        assert_eq!(showing_validity(true,true,true,false),ShowingValidity::Stale);
+        for (available,registered,free) in [(false,true,true),(true,false,true),(true,true,false),(false,false,false)] {
+            for unchanged in [true,false] {assert_eq!(showing_validity(available,registered,free,unchanged),ShowingValidity::Unknown);}
+        }
+    }
+    #[test]
+    fn modal_root_is_cleared_on_normal_return_and_unwind() {
+        let root=HMENU(std::ptr::dangling_mut());let slot=Cell::new(Some(root));
+        {let _guard=ModalRoot(&slot);assert_eq!(slot.get(),Some(root));}assert_eq!(slot.get(),None);
+        slot.set(Some(root));let result=std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {let _guard=ModalRoot(&slot);panic!("test unwind");}));
+        assert!(result.is_err());assert_eq!(slot.get(),None);
     }
     #[test]
     fn every_request_advances_the_owner_fence_and_overflow_refuses() {
