@@ -2,7 +2,7 @@
 [CmdletBinding()]
 param([Parameter(Mandatory)][uint32]$OwnerPid,[Parameter(Mandatory)][long]$OwnerHandle,[Parameter(Mandatory)][string]$OwnerExe,[Parameter(Mandatory)][uint32]$BrowserPid,
  [Parameter(Mandatory)][int]$ClientX,[Parameter(Mandatory)][int]$ClientY,[Parameter(Mandatory)][int]$ViewportWidth,[Parameter(Mandatory)][int]$ViewportHeight,
- [Parameter(Mandatory)][uint64]$SourceViewIdentity,[Parameter(Mandatory)][string]$Out)
+ [Parameter(Mandatory)][uint64]$SourceViewIdentity,[ValidateSet('default-context-cancellation.json','native-context-observation.json')][string]$ReportName='default-context-cancellation.json',[Parameter(Mandatory)][string]$Out)
 $ErrorActionPreference='Stop';Set-StrictMode -Version Latest
 Add-Type -AssemblyName UIAutomationClient,UIAutomationTypes,WindowsBase
 $uiaReferences=@([System.Windows.Automation.AutomationElement].Assembly.Location,[System.Windows.Automation.ControlType].Assembly.Location,[System.Windows.Rect].Assembly.Location)
@@ -290,9 +290,11 @@ Add-Type -ReferencedAssemblies $uiaReferences -TypeDefinition ($nativeSource+[IO
 Add-Type -AssemblyName System.Drawing
 New-Item -ItemType Directory -Force $Out|Out-Null
 $report=[ordered]@{scope='separate-default-Chromium-Views-menu-cancellation-not-selection';status='failed';right_input_called=$false;escape_called=$false;error=$null;failure_cleanup=$null}
+if($ReportName -eq 'native-context-observation.json'){$report.scope='single-test-native-Views-observation-and-cancellation-not-selection'}
+$report.native_backend='Chromium-Views-owned-popup-and-UIA'
 $observationClock=[Diagnostics.Stopwatch]::StartNew();$report.topology=@()
 $h=[IntPtr]$OwnerHandle;$pidNow=[uint32]0;$tid=[BowserDefaultContext]::GetWindowThreadProcessId($h,[ref]$pidNow);$guard=$null;$browserGuard=$null;$membership=$null
-function Save-Report {if($membership){$report.fresh_membership_responses=$membership.FreshResponses;$report.structural_wrapper_present=($null -ne $membership.Stamp)};[IO.File]::WriteAllText((Join-Path $Out 'default-context-cancellation.json'),($report|ConvertTo-Json -Depth 8),[Text.UTF8Encoding]::new($false))}
+function Save-Report {if($membership){$report.fresh_membership_responses=$membership.FreshResponses;$report.structural_wrapper_present=($null -ne $membership.Stamp)};[IO.File]::WriteAllText((Join-Path $Out $ReportName),($report|ConvertTo-Json -Depth 8),[Text.UTF8Encoding]::new($false))}
 function Observe-Topology([string]$Phase) {
  $observation=[ordered]@{phase=$Phase;elapsed_ms=$observationClock.ElapsedMilliseconds;identity_before=$false;identity_after=$false;status='unavailable';native=$null;screenshot_status='not-attempted'}
  try {
