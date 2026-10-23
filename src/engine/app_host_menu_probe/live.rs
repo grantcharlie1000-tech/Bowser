@@ -73,6 +73,26 @@ fn ordinary_profile(view: &ICoreWebView2) {
 
 #[derive(Default)]
 struct Receipts {paste:usize,note:usize,destination:usize}
+// TCP reads may end anywhere in a request. Keep the existing size and one-second budget,
+// but require complete headers before parsing the nonce or issuing an acknowledgment.
+fn loopback_request_target(socket:&mut std::net::TcpStream)->Option<String> {
+    // Winsock accept inherits the listener's nonblocking mode. Give this one accepted
+    // connection a bounded blocking read; the listener itself must stay nonblocking.
+    socket.set_nonblocking(false).ok()?;
+    let deadline=Instant::now()+Duration::from_secs(1);
+    let mut bytes=[0;8192];let mut used=0;
+    loop {
+        let remaining=deadline.checked_duration_since(Instant::now())?;
+        socket.set_read_timeout(Some(remaining)).ok()?;
+        let count=socket.read(&mut bytes[used..]).ok()?;
+        if count==0 {return None;}
+        used+=count;
+        if used>=bytes.len()||Instant::now()>=deadline {return None;}
+        if bytes[..used].windows(4).any(|part|part==b"\r\n\r\n") {break;}
+    }
+    std::str::from_utf8(&bytes[..used]).ok()?.lines().next()?.strip_prefix("GET ")?
+        .split_whitespace().next().map(str::to_owned)
+}
 struct Loopback {url:url::Url,nonce:String,stop:Arc<AtomicBool>,receipts:Arc<Mutex<Receipts>>,worker:Option<std::thread::JoinHandle<()>>}
 impl Loopback {
     fn start(nonce:String)->Self {
@@ -82,9 +102,8 @@ impl Loopback {
         let source=include_str!("../../../benchmarks/fixtures/app-host-context-menu/index.html").replace("__NONCE__",&nonce);
         let worker=std::thread::spawn(move ||while !stopping.load(Ordering::Relaxed) {
             let Ok((mut socket,peer))=listener.accept() else{std::thread::sleep(Duration::from_millis(10));continue};
-            if !peer.ip().is_loopback(){continue}let _=socket.set_read_timeout(Some(Duration::from_secs(1)));
-            let mut bytes=[0;8192];let Ok(n)=socket.read(&mut bytes) else{continue};if n==bytes.len(){continue}
-            let Some(target)=std::str::from_utf8(&bytes[..n]).ok().and_then(|r|r.lines().next()).and_then(|line|line.strip_prefix("GET ")).and_then(|r|r.split_whitespace().next()) else{continue};
+            if !peer.ip().is_loopback(){continue}
+            let Some(target)=loopback_request_target(&mut socket) else{continue};
             let Ok(request)=url::Url::parse(&format!("http://127.0.0.1{target}")) else{continue};
             let query=request.query_pairs().collect::<std::collections::BTreeMap<_,_>>();
             let valid=query.get("nonce").is_some_and(|value|value.as_ref()==token);
@@ -99,6 +118,38 @@ impl Loopback {
     }
 }
 impl Drop for Loopback {fn drop(&mut self){self.stop.store(true,Ordering::Relaxed);if let Some(worker)=self.worker.take(){let _=worker.join();}}}
+
+#[test]
+fn loopback_effect_ack_waits_for_fragmented_request() {
+    use std::net::TcpStream;
+    let server=Loopback::start("fragmented-request".into());
+    let mut socket=TcpStream::connect(("127.0.0.1",server.url.port().unwrap())).unwrap();
+    socket.set_nodelay(true).unwrap();
+    socket.set_read_timeout(Some(Duration::from_millis(100))).unwrap();
+    socket.write_all(b"GET /effect?nonce=").unwrap();
+    let mut first=[0];
+    let pending=socket.read(&mut first).expect_err("incomplete request must not be answered or closed");
+    assert!(matches!(pending.kind(),std::io::ErrorKind::WouldBlock|std::io::ErrorKind::TimedOut));
+    socket.write_all(b"fragmented-request&kind=note&value=note-fragmented-request HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n").unwrap();
+    socket.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+    let mut response=String::new();socket.read_to_string(&mut response).unwrap();
+    assert!(response.starts_with("HTTP/1.1 200 OK\r\n"),"{response}");
+    assert!(response.ends_with("fragmented-request:note"),"{response}");
+    assert_eq!(server.receipts.lock().unwrap().note,1);
+}
+
+#[test]
+fn loopback_rejects_oversize_headers_without_recording_an_effect() {
+    use std::net::TcpStream;
+    let server=Loopback::start("oversize".into());
+    let mut socket=TcpStream::connect(("127.0.0.1",server.url.port().unwrap())).unwrap();
+    socket.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+    let mut request=b"GET /effect?nonce=oversize&kind=note&value=note-oversize HTTP/1.1\r\nX: ".to_vec();
+    request.resize(8192,b'x');socket.write_all(&request).unwrap();
+    let mut response=Vec::new();let result=socket.read_to_end(&mut response);
+    assert!(result.is_ok()||result.is_err_and(|error|error.kind()==std::io::ErrorKind::ConnectionReset));
+    assert!(response.is_empty());assert_eq!(server.receipts.lock().unwrap().note,0);
+}
 
 fn atomic_receipt(path:&Path,text:&str)->std::io::Result<()> {
     assert!(text.len()<=1024*1024);let pending=path.with_extension("pending");
