@@ -157,6 +157,24 @@ fn document(view: &ICoreWebView2,page: &url::Url)->Value {
 fn current(h: &NativeContextProbeHandles,proof: (u64,u64,u64)) {
     assert!((h.document_fence)(),"source COM/document fence refused");assert_eq!((h.proof)(),Some(proof));
 }
+fn record_foreground_refusal(out:&Path,owner:HWND,observed:HWND,browser:u32){
+    // Failure-only metadata for the exact observed HWND. Do not inspect class/text of a
+    // foreign process, walk its UI, activate anything, or change the original refusal.
+    use windows::Win32::UI::WindowsAndMessaging::{GetWindowThreadProcessId,GetParent,GetAncestor,GA_ROOT,GA_ROOTOWNER};
+    let mut pid=0;let thread=unsafe{GetWindowThreadProcessId(observed,Some(&mut pid))};
+    let known=pid!=0&&(pid==std::process::id()||pid==browser);let mut name=[0u16;64];
+    let (class,parent,root,root_owner)=if known&&unsafe{GetForegroundWindow()}==observed {
+        let n=unsafe{GetClassNameW(observed,&mut name)};
+        let class=if n>0&&n<63 {crate::chrome_host::protocol::json_string(&String::from_utf16_lossy(&name[..n as usize]))}else{"null".into()};
+        unsafe{(class,GetParent(observed).unwrap_or_default(),GetAncestor(observed,GA_ROOT),GetAncestor(observed,GA_ROOTOWNER))}
+    }else{("null".into(),HWND::default(),HWND::default(),HWND::default())};
+    let mut after=0;let after_thread=unsafe{GetWindowThreadProcessId(observed,Some(&mut after))};
+    let same=pid!=0&&thread!=0&&!observed.is_invalid()&&pid==after&&thread==after_thread&&unsafe{GetForegroundWindow()}==observed;
+    let (parent,root,root_owner)=if same{(parent,root,root_owner)}else{(HWND::default(),HWND::default(),HWND::default())};
+    let text=format!(r#"{{"scope":"failure-only-exact-observed-foreground-not-authority","owner":{},"observed":{},"pid":{},"thread":{},"known_test_or_browser_process":{},"identity_same_after_read":{},"class":{},"parent":{},"root":{},"root_owner":{},"helper_launched":false,"activation_retry":false}}"#,
+        owner.0 as isize,observed.0 as isize,pid,thread,known,same,if same{class}else{"null".into()},parent.0 as isize,root.0 as isize,root_owner.0 as isize);
+    if text.len()<=2048 {let _=std::fs::write(out.join("foreground-refusal.json"),text);}
+}
 fn isolated_environment(app: &AppRef,h: &NativeContextProbeHandles) {
     let expected=app.borrow().user_data_dir.clone();
     let environment=h.environment.cast::<ICoreWebView2Environment7>().unwrap();
@@ -239,7 +257,7 @@ fn native_input(app: &AppRef,h: &NativeContextProbeHandles,tab: TabId,proof:(u64
     unsafe{assert!(SetForegroundWindow(owner).as_bool(),"exact-owner activation failed; no retry or helper rescue");h.controller.MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC).unwrap()};
     assert!(pump_until(Duration::from_secs(3),||unsafe{GetForegroundWindow()}==owner));
     assert_eq!(script(&h.view,"document.hasFocus()&&document.activeElement===document.getElementById('app-context-target')"),Value::Bool(true));
-    current(h,proof);let foreground=unsafe{GetForegroundWindow()};assert_eq!(foreground,owner,"exact owner displaced after final script; no retry or helper launch");
+    current(h,proof);let foreground=unsafe{GetForegroundWindow()};if foreground!=owner {record_foreground_refusal(out,owner,foreground,browser);}assert_eq!(foreground,owner,"exact owner displaced after final script; no retry or helper launch");
     std::fs::write(out.join("source-conditioning.json"),format!(r#"{{"schema":"bowser-real-app-menu-conditioning-v1","setup_complete_before_activation":true,"activation_owner":"Rust-exact-original-App-owner","activation_attempts":1,"actual_activation_return":true,"owner":{},"foreground_after_final_script":{}}}"#,owner.0 as isize,foreground.0 as isize)).unwrap();
     assert_eq!(unsafe{GetForegroundWindow()},owner,"exact owner displaced before helper launch; no retry");
     let mut child=Command::new("powershell.exe").args(["-NoProfile","-File"])

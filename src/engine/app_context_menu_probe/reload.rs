@@ -419,6 +419,7 @@ fn reload_input(app:&AppRef,h:&NativeContextProbeHandles,tab:TabId,proof:(u64,u6
     assert_eq!(script(&h.view,"document.hasFocus()&&document.activeElement===document.getElementById('app-context-target')"),Value::Bool(true));
     current(h,proof);
     let foreground=unsafe{GetForegroundWindow()};
+    if foreground!=owner {super::record_foreground_refusal(out,owner,foreground,browser);}
     assert_eq!(foreground,owner,"exact owner displaced after final script; no retry or helper launch");
     write_once(&out.join("source-conditioning.json"),&format!(r#"{{"schema":"bowser-real-app-menu-reload-conditioning-v1","setup_complete_before_activation":true,"activation_owner":"Rust-exact-original-App-owner","activation_attempts":1,"actual_activation_return":true,"owner":{},"foreground_after_final_script":{},"controller":"{}","original_proof":["{}","{}","{}"]}}"#,owner.0 as isize,foreground.0 as isize,h.controller.as_raw() as usize,proof.0,proof.1,proof.2));
     assert_eq!(unsafe{GetForegroundWindow()},owner,"exact owner displaced before helper launch; no retry");
