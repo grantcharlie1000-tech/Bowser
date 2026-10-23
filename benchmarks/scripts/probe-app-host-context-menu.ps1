@@ -140,7 +140,7 @@ public static class BowserHostMenu {
  [DllImport("user32.dll")] static extern IntPtr GetClipboardData(uint format);
  [DllImport("kernel32.dll")] static extern IntPtr GlobalAlloc(uint flags,UIntPtr bytes);
  [DllImport("kernel32.dll")] static extern IntPtr GlobalLock(IntPtr memory);
- [DllImport("kernel32.dll")] static extern bool GlobalUnlock(IntPtr memory);
+ [DllImport("kernel32.dll",SetLastError=true)] static extern bool GlobalUnlock(IntPtr memory);
  [DllImport("kernel32.dll")] static extern IntPtr GlobalFree(IntPtr memory);
  [DllImport("kernel32.dll")] static extern UIntPtr GlobalSize(IntPtr memory);
  /// External to Rust: stores only generated text and clipboard sequence metadata. No backup
@@ -150,6 +150,7 @@ public static class BowserHostMenu {
   public static int AdmissionStage,AdmissionFailureStage,AdmissionEnumError;
   public static bool AdmissionStarted,AdmissionOpened,AdmissionFormatObserved,AdmissionFirstFormatZero,AdmissionSequenceObserved,AdmissionCloseAttempted,AdmissionCloseConfirmed;
   public static uint AdmissionSequence;
+  public static object AdmissionBundleClose;
   bool admission=true;
   IntPtr owner;uint last;bool changed,finished,uncertain;public string Status="not-started";public List<uint> OwnedSequences=new List<uint>();
   public object BeforeInitialClose,AfterInitialClose,LastRequireOwned;
@@ -177,23 +178,36 @@ public static class BowserHostMenu {
   }
   uint Sequence(){uint value=GetClipboardSequenceNumber();if(admission&&AdmissionStage==4){AdmissionSequence=value;AdmissionSequenceObserved=true;}if(value==0){uncertain=true;Status="sequence-unavailable-left-untouched";throw new InvalidOperationException("Clipboard sequence unavailable; no authority to read or restore.");}return value;}
   void CloseChecked(){bool closed=CloseClipboard();if(admission){AdmissionCloseAttempted=true;AdmissionCloseConfirmed=closed;}if(!closed){uncertain=true;Status="close-unconfirmed-left-untouched";throw new InvalidOperationException("Clipboard close was not confirmed.");}}
+  static IntPtr AllocateGenerated(byte[] bytes){
+   IntPtr memory=GlobalAlloc(2,(UIntPtr)bytes.Length);if(memory==IntPtr.Zero)throw new InvalidOperationException("Generated buffer allocation failed.");
+   try{
+    IntPtr target=GlobalLock(memory);if(target==IntPtr.Zero)throw new InvalidOperationException("Generated buffer lock failed.");
+    try{Marshal.Copy(bytes,0,target,bytes.Length);}finally{SetLastError(0);if(!GlobalUnlock(memory)&&Marshal.GetLastWin32Error()!=0)throw new InvalidOperationException("Generated buffer unlock failed.");}
+    return memory;
+   }catch{GlobalFree(memory);throw;}
+  }
   public ClipboardGuard(string generated){
    AdmissionStarted=true;AdmissionStage=1;AdmissionFailureStage=0;AdmissionEnumError=0;AdmissionOpened=false;AdmissionFormatObserved=false;AdmissionFirstFormatZero=false;AdmissionSequenceObserved=false;AdmissionSequence=0;AdmissionCloseAttempted=false;AdmissionCloseConfirmed=false;
-   if(!System.Text.RegularExpressions.Regex.IsMatch(generated,"^(sentinel|paste)-[0-9]+-[0-9]+$"))throw new InvalidOperationException("Only generated synthetic clipboard payloads are allowed.");
+   AdmissionBundleClose=null;
+   var bundle=BowserGeneratedClipboardData.Create(generated);
    owner=CreateWindowEx(0,"STATIC","",0,0,0,0,0,new IntPtr(-3),IntPtr.Zero,IntPtr.Zero,IntPtr.Zero);
    if(owner==IntPtr.Zero)throw new InvalidOperationException("External clipboard guard window unavailable.");
-   IntPtr memory=IntPtr.Zero;bool opened=false;try{
-    byte[] bytes=Encoding.Unicode.GetBytes(generated+"\0");memory=GlobalAlloc(2,(UIntPtr)bytes.Length);if(memory==IntPtr.Zero)throw new InvalidOperationException("Synthetic payload allocation failed.");
-    var target=GlobalLock(memory);if(target==IntPtr.Zero)throw new InvalidOperationException("Synthetic payload lock failed.");try{Marshal.Copy(bytes,0,target,bytes.Length);}finally{GlobalUnlock(memory);}
+   var buffers=new Dictionary<uint,BowserClipboardBuffer>();bool opened=false;try{
+    // Allocate/copy/unlock ALL generated buffers before the one existing clipboard transaction.
+    foreach(uint format in new uint[]{13,16,1,7}){
+     IntPtr memory=AllocateGenerated(bundle.Payload(format));
+     try{buffers.Add(format,new BowserClipboardBuffer(format,memory,SetClipboardData,owned=>{if(GlobalFree(owned)!=IntPtr.Zero)throw new InvalidOperationException("Untransferred generated buffer cleanup failed.");}));}
+     catch{GlobalFree(memory);throw;}
+    }
     AdmissionStage=2;bool openResult=OpenClipboard(owner);AdmissionOpened=openResult;if(!openResult)throw new InvalidOperationException("Clipboard locked: no clipboard mutation.");opened=true;
     AdmissionStage=3;SetLastError(0);uint first=EnumClipboardFormats(0);int error=Marshal.GetLastWin32Error();
     AdmissionFormatObserved=true;AdmissionFirstFormatZero=first==0;AdmissionEnumError=error;
     if(first!=0||error!=0)throw new InvalidOperationException("Clipboard is nonempty or its empty state is unavailable; no content read or mutation.");
     AdmissionStage=4;
     BowserClipboardMutationPolicy.WriteGenerated(new BowserClipboardMutation(
-     ()=>{last=Sequence();return last;},
+     ()=>Sequence(),
      ()=>{AdmissionStage=5;bool result=EmptyClipboard();if(result)changed=true;return result;},
-     ()=>{if(SetClipboardData(13,memory)==IntPtr.Zero)return false;memory=IntPtr.Zero;return true;},
+     format=>{BowserClipboardBuffer buffer;if(!buffers.TryGetValue(format,out buffer))throw new InvalidOperationException("Unallocated generated format refused.");try{return buffer.Transfer();}catch{uncertain=true;throw;}},
      sequence=>{last=sequence;OwnedSequences.Add(sequence);}
     ));
     Status="synthetic-payload-owned";
@@ -201,8 +215,12 @@ public static class BowserHostMenu {
     opened=false;CloseChecked();
     // EnumClipboardFormats requires an open clipboard: never introduce an extra open here.
     AfterInitialClose=Metadata("after-existing-initial-checked-close-no-format-query",false,null);
+    uint observed=GetClipboardSequenceNumber();bool sameOwner=GetClipboardOwner()==owner;
+    AdmissionBundleClose=new {before=BeforeInitialClose,after=AfterInitialClose,expected_last=last,observed_sequence=observed,owner_matches_guard=sameOwner,authority=false};
+    try{BowserClipboardMutationPolicy.RequireTrackedAfterClose(last,observed,sameOwner);}
+    catch{uncertain=true;Status="post-close-change-left-untouched";throw;}
    }catch{AdmissionFailureStage=AdmissionStage;if(opened){opened=false;try{CloseChecked();}catch{}}Finish();DestroyWindow(owner);owner=IntPtr.Zero;throw;}
-   finally{admission=false;if(memory!=IntPtr.Zero)GlobalFree(memory);}
+   finally{admission=false;bool cleanupFailed=false;foreach(var buffer in buffers.Values){try{buffer.Dispose();}catch{cleanupFailed=true;}}if(cleanupFailed)throw new InvalidOperationException("Generated buffer cleanup unconfirmed; no input.");}
   }
   public void RequireOwned(){if(!OpenClipboard(owner))throw new InvalidOperationException("Clipboard locked before native input; no input.");try{uint observed=Sequence();if(observed!=last||GetClipboardOwner()!=owner){LastRequireOwned=Metadata("failed-existing-require-owned-check",true,observed);throw new InvalidOperationException("Clipboard sequence changed before native input; no input.");}}finally{CloseChecked();}}
   /// The only content getter follows the settled physical Copy. Unknown/zero sequences and
@@ -452,10 +470,11 @@ try {
  }while($true)
  $report.completed=$settled
  if($Mode -ceq 'Copy'){$clipboard.ObserveNativeCopy($BrowserPid,$browserGuard,('copy-'+$SyntheticToken))}
- if($clipboard){if(!$clipboard.Finish()){throw 'Clipboard changed or locked: left untouched; regression gate failed.'};$report.clipboard=$clipboard.Status;$report.owned_clipboard_sequences=@($clipboard.OwnedSequences);$report.clipboard_sequence_metadata=@{before_initial_close=$clipboard.BeforeInitialClose;after_initial_close=$clipboard.AfterInitialClose;failed_require_owned=$clipboard.LastRequireOwned}}
+ if($clipboard){if(!$clipboard.Finish()){throw 'Clipboard changed or locked: left untouched; regression gate failed.'};$report.clipboard=$clipboard.Status;$report.owned_clipboard_sequences=@($clipboard.OwnedSequences);$report.clipboard_bundle_close=[BowserHostMenu+ClipboardGuard]::AdmissionBundleClose;$report.clipboard_sequence_metadata=@{before_initial_close=$clipboard.BeforeInitialClose;after_initial_close=$clipboard.AfterInitialClose;failed_require_owned=$clipboard.LastRequireOwned}}
  $report.status=if($Mode -ceq 'Cancel'){'observed-actual-App-native-cancellation'}else{'observed-actual-App-native-selection'};Save-Report
 }catch{
  $report.error=$_.Exception.Message
+ try{$report.clipboard_bundle_close=[BowserHostMenu+ClipboardGuard]::AdmissionBundleClose}catch{}
  # Constructor cleanup has already run, even when assignment never returned an object.
  try {if([BowserHostMenu+ClipboardGuard]::AdmissionStarted){$report.clipboard_admission=@{stage=[BowserHostMenu+ClipboardGuard]::AdmissionStage;failure_stage=[BowserHostMenu+ClipboardGuard]::AdmissionFailureStage;open_succeeded=[BowserHostMenu+ClipboardGuard]::AdmissionOpened;format_observed=[BowserHostMenu+ClipboardGuard]::AdmissionFormatObserved;first_format_zero=[BowserHostMenu+ClipboardGuard]::AdmissionFirstFormatZero;enum_error=[BowserHostMenu+ClipboardGuard]::AdmissionEnumError;sequence_observed=[BowserHostMenu+ClipboardGuard]::AdmissionSequenceObserved;sequence=[BowserHostMenu+ClipboardGuard]::AdmissionSequence;close_attempted=[BowserHostMenu+ClipboardGuard]::AdmissionCloseAttempted;close_confirmed=[BowserHostMenu+ClipboardGuard]::AdmissionCloseConfirmed}}}catch{}
  # Restore only our exact last-owned sequence BEFORE terminating the exact disposable test.

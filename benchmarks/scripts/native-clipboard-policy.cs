@@ -2,20 +2,21 @@
 public interface IBowserClipboardMutation {
     uint Sequence();
     bool Empty();
-    bool SetGenerated();
+    bool SetGenerated(uint format);
     void RecordOwned(uint sequence);
 }
 public sealed class BowserClipboardMutation : IBowserClipboardMutation {
     readonly System.Func<uint> sequence;
-    readonly System.Func<bool> empty, setGenerated;
+    readonly System.Func<bool> empty;
+    readonly System.Func<uint,bool> setGenerated;
     readonly System.Action<uint> record;
     public BowserClipboardMutation(System.Func<uint> sequence, System.Func<bool> empty,
-        System.Func<bool> setGenerated, System.Action<uint> record) {
+        System.Func<uint,bool> setGenerated, System.Action<uint> record) {
         this.sequence=sequence;this.empty=empty;this.setGenerated=setGenerated;this.record=record;
     }
     public uint Sequence(){return sequence();}
     public bool Empty(){return empty();}
-    public bool SetGenerated(){return setGenerated();}
+    public bool SetGenerated(uint format){return setGenerated(format);}
     public void RecordOwned(uint value){record(value);}
 }
 public static class BowserClipboardMutationPolicy {
@@ -29,8 +30,61 @@ public static class BowserClipboardMutationPolicy {
         Nonzero(api.Sequence());
         if(!api.Empty())throw new System.InvalidOperationException("Empty precondition could not be claimed.");
         api.RecordOwned(Nonzero(api.Sequence()));
-        if(!api.SetGenerated())throw new System.InvalidOperationException("Synthetic payload write failed.");
-        api.RecordOwned(Nonzero(api.Sequence()));
+        foreach(uint format in new uint[]{13,16,1,7}) {
+            if(!api.SetGenerated(format))throw new System.InvalidOperationException("Synthetic format write failed; no retry.");
+            api.RecordOwned(Nonzero(api.Sequence()));
+        }
+    }
+    public static void RequireTrackedAfterClose(uint known,uint observed,bool sameOwner) {
+        Nonzero(known);Nonzero(observed);
+        if(observed!=known||!sameOwner)throw new System.InvalidOperationException("Post-close ownership changed; no sequence adoption or input.");
+    }
+}
+
+// Only the existing generated ASCII token, bounded before any native allocation. LCID 0409
+// has ANSI 1252/OEM 437: the restricted ASCII bytes are exact in both, with no replacement.
+public sealed class BowserGeneratedClipboardData {
+    readonly string generated;
+    BowserGeneratedClipboardData(string generated){this.generated=generated;}
+    public static BowserGeneratedClipboardData Create(string generated) {
+        if(generated==null||generated.Length>128||!System.Text.RegularExpressions.Regex.IsMatch(generated,@"\A(?:sentinel|paste)-[0-9]+-[0-9]+\z"))
+            throw new System.InvalidOperationException("Only the bounded generated ASCII token is allowed.");
+        return new BowserGeneratedClipboardData(generated);
+    }
+    public byte[] Payload(uint format) {
+        if(format==13)return System.Text.Encoding.Unicode.GetBytes(generated+"\0");
+        if(format==16)return new byte[]{9,4,0,0};
+        if(format==1||format==7)return System.Text.Encoding.ASCII.GetBytes(generated+"\0");
+        throw new System.InvalidOperationException("Unknown generated format; no native write.");
+    }
+}
+
+// Owns only a preallocated generated buffer. A successful Set transfers the handle exactly
+// once; Dispose frees only a definitely untransferred handle. An exception has an uncertain
+// native outcome, so refuse and abandon that bounded allocation rather than risk a double free.
+public sealed class BowserClipboardBuffer : System.IDisposable {
+    readonly uint format;
+    readonly System.Func<uint,System.IntPtr,System.IntPtr> set;
+    readonly System.Action<System.IntPtr> free;
+    System.IntPtr memory;
+    bool attempted,disposed;
+    public BowserClipboardBuffer(uint format,System.IntPtr memory,
+        System.Func<uint,System.IntPtr,System.IntPtr> set,System.Action<System.IntPtr> free) {
+        if(memory==System.IntPtr.Zero||(format!=13&&format!=16&&format!=1&&format!=7))throw new System.InvalidOperationException("Preallocated known generated buffer unavailable.");
+        this.format=format;this.memory=memory;this.set=set;this.free=free;
+    }
+    public bool Transfer() {
+        if(disposed||attempted||memory==System.IntPtr.Zero)throw new System.InvalidOperationException("Generated handle cannot be transferred twice.");
+        attempted=true;
+        System.IntPtr result;
+        try{result=set(format,memory);}catch{memory=System.IntPtr.Zero;throw;}
+        if(result==System.IntPtr.Zero)return false;
+        memory=System.IntPtr.Zero;return true;
+    }
+    public void Dispose() {
+        if(disposed)return;disposed=true;
+        var owned=memory;memory=System.IntPtr.Zero;
+        if(owned!=System.IntPtr.Zero)free(owned);
     }
 }
 
