@@ -86,25 +86,62 @@ const TARGET_PAGE: &str = r#"<!doctype html><meta charset="utf-8"><title>Disposa
  }
 });</script>"#;
 
-struct Loopback { url: url::Url, stop: Arc<AtomicBool>, worker: Option<std::thread::JoinHandle<()>> }
+#[derive(Default)]
+struct LoopbackReads {accepted:std::sync::atomic::AtomicUsize,parsed:std::sync::atomic::AtomicUsize,served:std::sync::atomic::AtomicUsize}
+fn app_loopback_target(socket:&mut std::net::TcpStream)->Option<String>{
+    // Winsock accepts may inherit nonblocking mode. Keep the original one-second,
+    // 2048-byte bound, but wait for complete headers before serving the document.
+    socket.set_nonblocking(false).ok()?;let deadline=Instant::now()+Duration::from_secs(1);
+    let mut bytes=[0u8;2048];let mut used=0;
+    loop {
+        socket.set_read_timeout(Some(deadline.checked_duration_since(Instant::now())?)).ok()?;
+        let count=socket.read(&mut bytes[used..]).ok()?;if count==0{return None}used+=count;
+        if used>=bytes.len()||Instant::now()>=deadline{return None}
+        if bytes[..used].windows(4).any(|part|part==b"\r\n\r\n"){break}
+    }
+    std::str::from_utf8(&bytes[..used]).ok()?.lines().next()?.strip_prefix("GET ")?.split_whitespace().next().map(str::to_owned)
+}
+struct Loopback { url: url::Url, stop: Arc<AtomicBool>, reads:Arc<LoopbackReads>, worker: Option<std::thread::JoinHandle<()>> }
 impl Loopback {
     fn start() -> Self {
         let listener=TcpListener::bind("127.0.0.1:0").unwrap();
         let url=url::Url::parse(&format!("http://127.0.0.1:{}/app-native-menu",listener.local_addr().unwrap().port())).unwrap();
         listener.set_nonblocking(true).unwrap();
-        let stop=Arc::new(AtomicBool::new(false)); let stopping=stop.clone();
+        let stop=Arc::new(AtomicBool::new(false)); let stopping=stop.clone();let reads=Arc::new(LoopbackReads::default());let observed=reads.clone();
         let worker=std::thread::spawn(move || while !stopping.load(Ordering::Relaxed) {
             let Ok((mut socket,_))=listener.accept() else {std::thread::sleep(Duration::from_millis(10));continue};
-            let _=socket.set_read_timeout(Some(Duration::from_secs(1)));
-            let mut request=[0;2048]; let Ok(n)=socket.read(&mut request) else {continue};
-            let path=std::str::from_utf8(&request[..n]).ok().and_then(|s|s.lines().next()).and_then(|l|l.split_whitespace().nth(1));
-            let (status,body)=if path==Some("/app-native-menu") {("200 OK",TARGET_PAGE)} else {("404 Not Found","")};
+            observed.accepted.fetch_add(1,Ordering::Relaxed);
+            let Some(path)=app_loopback_target(&mut socket) else{continue};observed.parsed.fetch_add(1,Ordering::Relaxed);
+            let (status,body)=if path=="/app-native-menu" {observed.served.fetch_add(1,Ordering::Relaxed);("200 OK",TARGET_PAGE)} else {("404 Not Found","")};
             let _=write!(socket,"HTTP/1.1 {status}\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n{body}",body.len());
         });
-        Self {url,stop,worker:Some(worker)}
+        Self {url,stop,reads,worker:Some(worker)}
     }
 }
 impl Drop for Loopback {fn drop(&mut self) {self.stop.store(true,Ordering::Relaxed);if let Some(worker)=self.worker.take(){let _=worker.join();}}}
+
+#[test]
+fn app_loopback_waits_for_late_fragmented_headers(){
+    let server=Loopback::start();let address=format!("127.0.0.1:{}",server.url.port().unwrap());
+    let mut socket=std::net::TcpStream::connect(address).unwrap();socket.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+    // Force accept to precede the first payload, then split the request target itself.
+    std::thread::sleep(Duration::from_millis(50));
+    socket.write_all(b"GET /app-native-").expect("accepted socket must wait for fixture bytes");
+    std::thread::sleep(Duration::from_millis(20));
+    socket.write_all(b"menu HTTP/1.1\r\nHost: 127.0.0.1\r\n").expect("partial headers must not cause premature response/close");
+    std::thread::sleep(Duration::from_millis(20));socket.write_all(b"\r\n").unwrap();
+    let mut response=String::new();socket.read_to_string(&mut response).unwrap();
+    assert!(response.starts_with("HTTP/1.1 200 OK\r\n"),"complete fixture request was lost: {response}");
+    assert!(response.ends_with(TARGET_PAGE));
+}
+#[test]
+fn app_loopback_refuses_oversize_incomplete_headers(){
+    let server=Loopback::start();let mut socket=std::net::TcpStream::connect(format!("127.0.0.1:{}",server.url.port().unwrap())).unwrap();
+    socket.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+    let mut bytes=b"GET /app-native-menu HTTP/1.1\r\nX: ".to_vec();bytes.extend(std::iter::repeat_n(b'a',2048));
+    let _=socket.write_all(&bytes);let mut response=String::new();let _=socket.read_to_string(&mut response);
+    assert!(!response.contains(TARGET_PAGE),"incomplete/oversize request must never receive the controlled page");
+}
 
 fn pump_until(timeout: Duration, ready: impl FnMut() -> bool) -> bool {
     super::native_probe_pump::until(timeout,ready)
@@ -297,9 +334,19 @@ fn native_input(app: &AppRef,h: &NativeContextProbeHandles,tab: TabId,proof:(u64
     fixture_command
 }
 
-fn sequence(app: &AppRef,root: &Path,page: &url::Url,bowser_id: &str,folder: &Path) {
+fn sequence(app: &AppRef,root: &Path,page: &url::Url,bowser_id: &str,folder: &Path,reads:&LoopbackReads) {
     let source_tab=App::active_tab_id(app);let mut primary=None;
-    assert!(pump_until(Duration::from_secs(60),||{primary=handles(app,source_tab);primary.as_ref().is_some_and(|h|(h.proof)().is_some())}),"real App controller/successful document did not settle");
+    let source_ready=pump_until(Duration::from_secs(60),||{primary=handles(app,source_tab);primary.as_ref().is_some_and(|h|(h.proof)().is_some())});
+    if !source_ready {
+        // Original result remains a refusal. These are Rust App state classifications,
+        // not another script/readiness attempt or a substitute for the native gate proof.
+        let ids=App::tab_ids(app);let active=(!ids.is_empty()).then(||App::active_tab_id(app));
+        let current_url=App::tab_committed_url(app,source_tab);
+        let receipt=format!(r#"{{"scope":"initial-source-readiness-failure-not-authority","source_tab":"{}","source_present":{},"tab_count":{},"active_matches_source":{},"committed_url_matches_fixture":{},"last_handle_available":{},"loopback_accepted":{},"loopback_complete_gets":{},"fixture_response_attempts":{},"pump_calls":{}}}"#,
+            source_tab.0,ids.contains(&source_tab),ids.len(),active==Some(source_tab),current_url.as_ref()==Some(page),primary.is_some(),reads.accepted.load(Ordering::Relaxed),reads.parsed.load(Ordering::Relaxed),reads.served.load(Ordering::Relaxed),super::native_probe_pump::diagnostic_json());
+        if receipt.len()<=8192 {let _=std::fs::write(std::env::current_dir().unwrap().join("store-real-app-context-menu/initial-source-readiness.json"),receipt);}
+    }
+    assert!(source_ready,"real App controller/successful document did not settle");
     let primary=primary.unwrap();let primary_proof=(primary.proof)().unwrap();ordinary_profile(&primary.view);
     let before_doc=document(&primary.view,page);current(&primary,primary_proof);isolated_environment(app,&primary);
     assert!(pump_until(Duration::from_secs(30),||std::fs::read_to_string(root.join("extension_ids.txt")).is_ok_and(|s|s.lines().any(|line|line==format!("{bowser_id}\t{FIXTURE_ID}")))),"real native fixture startup did not persist its exact ID");
@@ -380,10 +427,10 @@ fn live_probe_real_app_context_menu() {
     let record=extensions::install(&Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/extensions/probe-custom-context-menu"),&root.join("Extensions"),&root.join("extensions.txt")).unwrap();
     let folder=extensions::folder_for(&root.join("Extensions"),&record.id).unwrap();
     DEREGISTRATIONS.with(|events|events.borrow_mut().clear());install_observer(Rc::new(|_|{}));
-    let outcome=Rc::new(RefCell::new(None));let sink=outcome.clone();let destination=root.clone();let page=server.url.clone();
+    let outcome=Rc::new(RefCell::new(None));let sink=outcome.clone();let destination=root.clone();let page=server.url.clone();let reads=server.reads.clone();
     let started=Instant::now();let timed_out=Rc::new(Cell::new(false));let expired=timed_out.clone();
     crate::win32::set_app_menu_probe_hooks(Box::new(move |app|{
-        let result=std::panic::catch_unwind(std::panic::AssertUnwindSafe(||sequence(&app,&destination,&page,&record.id,&folder)));
+        let result=std::panic::catch_unwind(std::panic::AssertUnwindSafe(||sequence(&app,&destination,&page,&record.id,&folder,&reads)));
         *sink.borrow_mut()=Some(result.map_err(|_|"real App native menu sequence failed; inspect native helper diagnostics".to_owned()));
         let owner=app.borrow().hwnd;unsafe{let _=PostMessageW(Some(owner),WM_CLOSE,WPARAM(0),LPARAM(0));}
     }),Box::new(move |app|{

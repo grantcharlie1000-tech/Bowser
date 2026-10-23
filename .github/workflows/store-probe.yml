@@ -428,6 +428,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Bounded source-effect failure classification regression failed.' }
           cargo +stable test --locked --lib --features html-chrome-default,experimental-engine-context-menu engine::app_host_menu_probe::live::note_fixture_uses_existing_localhost_origin_without_relaxing_ip_refusal -- --exact --nocapture --test-threads=1 2>&1 | Tee-Object -Append store-real-app-menu-unit.log
           if ($LASTEXITCODE -ne 0) { throw 'Controlled localhost fixture and preserved IP-origin refusal regression failed.' }
+          cargo +stable test --locked --lib --features html-chrome-default,experimental-engine-context-menu engine::app_context_menu_probe::app_loopback_ -- --nocapture --test-threads=1 2>&1 | Tee-Object -Append store-real-app-menu-unit.log
+          if ($LASTEXITCODE -ne 0) { throw 'Real App fixture delayed/fragmented TCP header regressions failed.' }
 
       - name: Probe default-off native engine menu in actual HTML Bowser App
         if: ${{ !cancelled() && steps.experimental_menu_build.outcome == 'success' }}
