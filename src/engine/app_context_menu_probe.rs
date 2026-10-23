@@ -200,10 +200,8 @@ fn native_input(app: &AppRef,h: &NativeContextProbeHandles,tab: TabId,proof:(u64
     let mut class=[0;64];let n=unsafe{GetClassNameW(owner,&mut class)};
     assert_eq!(String::from_utf16_lossy(&class[..n as usize]),"BowserNativeWindow");
     assert!(unsafe{IsWindow(Some(owner))}.as_bool());
-    // Activation is requested here through this already-owned native HWND, never by helper search.
-    unsafe{let _=SetForegroundWindow(owner);h.controller.MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC).unwrap()};
-    assert!(pump_until(Duration::from_secs(3),||unsafe{GetForegroundWindow()}==owner));
-    assert_eq!(script(&h.view,"(()=>{document.getElementById('app-context-target').focus();return document.hasFocus()})()"),Value::Bool(true));
+    // Complete DOM/receipt setup before the sole Rust activation, as in the Reload lane.
+    assert_eq!(script(&h.view,"(()=>{const t=document.getElementById('app-context-target');t.focus();return document.activeElement===t})()"),Value::Bool(true));
     current(h,proof);
     let source=script(&h.view,"(()=>{const t=document.getElementById('app-context-target'),r=t.getBoundingClientRect(),x=(r.left+r.right)/2,y=(r.top+r.bottom)/2;return {left:r.left,top:r.top,right:r.right,bottom:r.bottom,width:innerWidth,height:innerHeight,ratio:devicePixelRatio,hit:document.elementFromPoint(x,y)===t,trusted:Number(document.documentElement.getAttribute('data-app-context-trusted')||0)}})()");
     assert_bool(&source,"hit",true);
@@ -238,6 +236,12 @@ fn native_input(app: &AppRef,h: &NativeContextProbeHandles,tab: TabId,proof:(u64
     }));
     let _observer=ObserverScope;
     current(h,proof);
+    unsafe{assert!(SetForegroundWindow(owner).as_bool(),"exact-owner activation failed; no retry or helper rescue");h.controller.MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC).unwrap()};
+    assert!(pump_until(Duration::from_secs(3),||unsafe{GetForegroundWindow()}==owner));
+    assert_eq!(script(&h.view,"document.hasFocus()&&document.activeElement===document.getElementById('app-context-target')"),Value::Bool(true));
+    current(h,proof);let foreground=unsafe{GetForegroundWindow()};assert_eq!(foreground,owner,"exact owner displaced after final script; no retry or helper launch");
+    std::fs::write(out.join("source-conditioning.json"),format!(r#"{{"schema":"bowser-real-app-menu-conditioning-v1","setup_complete_before_activation":true,"activation_owner":"Rust-exact-original-App-owner","activation_attempts":1,"actual_activation_return":true,"owner":{},"foreground_after_final_script":{}}}"#,owner.0 as isize,foreground.0 as isize)).unwrap();
+    assert_eq!(unsafe{GetForegroundWindow()},owner,"exact owner displaced before helper launch; no retry");
     let mut child=Command::new("powershell.exe").args(["-NoProfile","-File"])
         .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("benchmarks/scripts/probe-app-context-menu.ps1"))
         .args(["-OwnerPid",&std::process::id().to_string(),"-OwnerHandle",&(owner.0 as isize).to_string()])
