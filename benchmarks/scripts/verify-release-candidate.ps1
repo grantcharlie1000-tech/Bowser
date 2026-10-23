@@ -132,9 +132,6 @@ public static class BowserReleaseSmokeNative {
         }, IntPtr.Zero);
         return found;
     }
-    public static string WindowText(IntPtr window) {
-        var text = new StringBuilder(2048); GetWindowText(window, text, text.Capacity); return text.ToString();
-    }
     [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
     [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
     [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
@@ -214,23 +211,24 @@ server.listen(0, '127.0.0.1', () => fs.writeFileSync(portFile, String(server.add
         # A real page keyboard gesture, not injected script or a browser-only F11 transition.
         Send-OwnedKeys 'f'
         Wait-Until { Has-Marker '/fullscreen/entered' } 'page Fullscreen API entry'
-        $script:notice = [IntPtr]::Zero
-        Wait-Until { $script:notice = [BowserReleaseSmokeNative]::FindFullscreenNotice([uint32]$app.Id, $script:hwnd); $script:notice -ne [IntPtr]::Zero } 'owned native fullscreen security notice'
-        $noticeText = [BowserReleaseSmokeNative]::WindowText($script:notice)
-        $compact = $noticeText -replace '\s', ''
-        foreach ($required in @('Bowserfullscreen', ('Top-levelpageat' + $base), 'PressEsctoexitfullscreen')) {
-            if (-not $compact.Contains($required)) { throw "Native fullscreen notice is missing trusted identity/exit text: $required" }
+        Wait-Until {
+            $r = Window-Rect
+            $screen = [Windows.Forms.Screen]::FromHandle($script:hwnd).Bounds
+            [Math]::Abs($r.left - $screen.Left) -le 2 -and [Math]::Abs($r.top - $screen.Top) -le 2 -and [Math]::Abs($r.width - $screen.Width) -le 2 -and [Math]::Abs($r.height - $screen.Height) -le 2
+        } 'page fullscreen monitor-sized window'
+        if ([BowserReleaseSmokeNative]::FindFullscreenNotice([uint32]$app.Id, $script:hwnd) -ne [IntPtr]::Zero) {
+            throw 'Page fullscreen must not show the removed Bowser fullscreen notice'
         }
-        $report.fullscreen_notice_text = $noticeText
-        Save-NativeScreenshot '04-native-page-fullscreen'
-        Save-NativeScreenshot '05-native-page-fullscreen-notice' $script:notice
+        Save-NativeScreenshot '04-native-page-fullscreen-without-notice'
+        if ([BowserReleaseSmokeNative]::FindFullscreenNotice([uint32]$app.Id, $script:hwnd) -ne [IntPtr]::Zero) {
+            throw 'Page fullscreen showed the removed notice after rendering'
+        }
         Send-OwnedKeys '{ESC}'
         Wait-Until { Has-Marker '/fullscreen/exited' } 'page Fullscreen API exit'
-        Wait-Until { [BowserReleaseSmokeNative]::FindFullscreenNotice([uint32]$app.Id, $script:hwnd) -eq [IntPtr]::Zero } 'native fullscreen notice removal'
         Wait-Until { $r = Window-Rect; $r.left -eq $before.left -and $r.top -eq $before.top -and $r.width -eq $before.width -and $r.height -eq $before.height } 'page fullscreen restored window bounds'
-        $report.checks.page_fullscreen_origin_notice_and_escape = $true
+        $report.checks.page_fullscreen_without_notice_and_escape = $true
     } else {
-        $report.unverified += @('Ctrl+L navigation', 'F11 enter/exit', 'Page-requested fullscreen origin/exit notice')
+        $report.unverified += @('Ctrl+L navigation', 'F11 enter/exit', 'Page-requested fullscreen without notice and Esc exit')
     }
     if (-not $app.CloseMainWindow()) { throw 'Native window did not accept graceful close' }
     if (-not $app.WaitForExit(15000)) { throw 'Bowser did not exit within 15 seconds' }

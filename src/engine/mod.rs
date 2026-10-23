@@ -32,7 +32,7 @@ pub use download::{cancel as cancel_download, pause as pause_download, resume as
 use windows::Win32::Foundation::RECT;
 
 pub type TabMemoryUsageCallback = Box<dyn FnOnce(Vec<(crate::tabs::TabId, u64)>)>;
-pub type FullscreenChangedCallback = std::rc::Rc<dyn Fn(crate::tabs::TabId, bool, Option<url::Url>)>;
+pub type FullscreenChangedCallback = std::rc::Rc<dyn Fn(crate::tabs::TabId, bool)>;
 pub type LinkNavigationCallback = std::rc::Rc<dyn Fn(crate::tabs::TabId, &url::Url) -> bool>;
 pub type BlockedChangedCallback = std::rc::Rc<dyn Fn(crate::tabs::TabId, u32, String)>;
 pub type PermissionDeniedCallback =
@@ -498,8 +498,7 @@ pub struct EngineEvents {
     pub page_usable: Option<std::rc::Rc<dyn Fn(crate::tabs::TabId)>>,
     pub controller_ready: Option<std::rc::Rc<dyn Fn(crate::tabs::TabId)>>,
     /// A page element went full screen or left it (a video's full-screen button). The window then
-    /// fills its monitor and every bar hides (auto-hide, `src/auto_hide.rs`). The optional URL
-    /// is the native top-level WebView2 Source at the event, never an optimistic navigation target.
+    /// fills its monitor and every bar hides (auto-hide, `src/auto_hide.rs`).
     pub fullscreen_changed: Option<FullscreenChangedCallback>,
     /// A WebView2 pane received focus from the user.
     pub focus_changed: Option<std::rc::Rc<dyn Fn(crate::tabs::TabId)>>,
