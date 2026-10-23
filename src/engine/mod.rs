@@ -11,6 +11,8 @@ mod capture_zoom_live;
 mod extension_probe_live;
 #[cfg(test)]
 mod native_probe_pump;
+#[cfg(test)]
+mod native_menu_membership;
 #[cfg(all(test, feature = "experimental-engine-context-menu"))]
 pub(crate) mod app_context_menu_probe;
 #[cfg(all(test, feature = "experimental-engine-context-menu"))]

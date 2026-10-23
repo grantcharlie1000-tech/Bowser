@@ -406,6 +406,10 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Experimental engine-menu model failed to compile or test.' }
           cargo +stable test --locked --lib --features html-chrome-default,experimental-engine-context-menu engine::native_probe_pump::tests -- --nocapture --test-threads=1 2>&1 | Tee-Object -Append store-real-app-menu-unit.log
           if ($LASTEXITCODE -ne 0) { throw 'Native probe deadline and callback checkpoint regressions failed.' }
+          powershell -NoProfile -File benchmarks/scripts/test-native-menu-membership.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'Private native-menu membership adversarial regressions failed.' }
+          cargo +stable test --locked --lib --features html-chrome-default,experimental-engine-context-menu engine::native_menu_membership::tests -- --nocapture --test-threads=1 2>&1 | Tee-Object -Append store-real-app-menu-unit.log
+          if ($LASTEXITCODE -ne 0) { throw 'Private native-menu membership request framing regressions failed.' }
           cargo +stable test --locked --lib --features html-chrome-default,experimental-engine-context-menu engine::webview2::menu_inventory::tests -- --nocapture --test-threads=1 2>&1 | Tee-Object -Append store-real-app-menu-unit.log
           if ($LASTEXITCODE -ne 0) { throw 'Experimental strict native inventory tests failed.' }
           cargo +stable test --locked --lib --features html-chrome-default,experimental-engine-context-menu engine::webview2::owned_context_menu::tests -- --nocapture --test-threads=1 2>&1 | Tee-Object -Append store-real-app-menu-unit.log

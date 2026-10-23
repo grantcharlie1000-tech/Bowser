@@ -6496,6 +6496,19 @@ mod tests {
         pub(in crate::engine) fn probe_document_webview(&self, tab: TabId) -> Option<ICoreWebView2> {
             self.core.borrow().tabs.get(&tab)?.webview.clone()
         }
+        /// Clone-only current source binding for the private ignored-test membership pipe.
+        pub(in crate::engine) fn probe_menu_membership_parts(&self,tab:TabId)->Option<super::super::native_menu_membership::Parts>{
+            let state=self.core.try_borrow().ok()?;if state.closed||state.active_tab!=Some(tab)||state.private_tabs.contains(&tab){return None}
+            let current=state.tabs.get(&tab)?;let view=current.webview.clone()?;let controller=current.controller.clone()?;let environment=current.environment.clone()?;let gate=current.document_gate.clone();
+            let expected_view=view.clone();let expected_controller=controller.clone();let expected_environment=environment.clone();let core=Rc::downgrade(&self.core);drop(state);
+            let current=Box::new(move||{
+                let core=core.upgrade()?;let state=core.try_borrow().ok()?;if state.closed||state.active_tab!=Some(tab)||state.private_tabs.contains(&tab){return None}
+                let current=state.tabs.get(&tab)?;
+                if current.webview.as_ref()?.as_raw()!=expected_view.as_raw()||current.controller.as_ref()?.as_raw()!=expected_controller.as_raw()||current.environment.as_ref()?.as_raw()!=expected_environment.as_raw()||!Rc::ptr_eq(&current.document_gate,&gate){return None}
+                let proof=gate.try_borrow().ok()?.proof();proof
+            });
+            Some(super::super::native_menu_membership::Parts{view,controller,environment,current})
+        }
         /// Strict current authority snapshot for one isolated feasibility test, never a production epoch.
         pub(in crate::engine) fn probe_context_authority(&self) -> Option<(Vec<crate::extensions::Record>,HashMap<String,String>)> {
             let (records,map)={let core=self.core.try_borrow().ok()?;if core.closed{return None}(core.extension_records_file.clone()?,core.extension_ids_file.clone()?)};

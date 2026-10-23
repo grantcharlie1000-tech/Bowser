@@ -2,11 +2,11 @@
 [CmdletBinding()]
 param([Parameter(Mandatory)][uint32]$OwnerPid,[Parameter(Mandatory)][long]$OwnerHandle,[Parameter(Mandatory)][string]$OwnerExe,[Parameter(Mandatory)][uint32]$BrowserPid,
  [Parameter(Mandatory)][int]$ClientX,[Parameter(Mandatory)][int]$ClientY,[Parameter(Mandatory)][int]$ViewportWidth,[Parameter(Mandatory)][int]$ViewportHeight,
- [Parameter(Mandatory)][string]$Out)
+ [Parameter(Mandatory)][uint64]$SourceViewIdentity,[Parameter(Mandatory)][string]$Out)
 $ErrorActionPreference='Stop';Set-StrictMode -Version Latest
 Add-Type -AssemblyName UIAutomationClient,UIAutomationTypes,WindowsBase
 $uiaReferences=@([System.Windows.Automation.AutomationElement].Assembly.Location,[System.Windows.Automation.ControlType].Assembly.Location,[System.Windows.Rect].Assembly.Location)
-Add-Type -ReferencedAssemblies $uiaReferences @'
+$nativeSource=@'
 using System;using System.Text;using System.Runtime.InteropServices;using System.Collections.Generic;using System.Windows.Automation;
 public static class BowserDefaultContext {
  [StructLayout(LayoutKind.Sequential)] public struct POINT {public int X,Y;}
@@ -72,7 +72,65 @@ public static class BowserDefaultContext {
  static bool Same(int[] a,int[] b){if(a.Length!=b.Length)return false;for(int i=0;i<a.Length;i++)if(a[i]!=b[i])return false;return true;}
  static bool Finite(double n){return !Double.IsNaN(n)&&!Double.IsInfinity(n);}
  public sealed class MenuProof {
-  public IntPtr Window,Focus;public uint Thread;public int[] RootId,MenuId,ItemId;public double Left,Top,Width,Height;
+  public IntPtr Window,Focus;public uint Thread;public int[] RootId,MenuId,ItemId;public double Left,Top,Width,Height;public BowserMenuWrapper Wrapper;
+ }
+ public sealed class Membership:IDisposable {
+  readonly IntPtr host;readonly uint testPid,hostTid,browserPid;readonly ulong sourceView;readonly ReadOnlyBrowser browser;readonly System.Diagnostics.Stopwatch clock;
+  ReadOnlyBrowser gpu;AutomationElement root,node;int[] rootId,nodeId;IntPtr popup,focus;uint menuTid;BowserMenuWrapper stamp;BowserMenuMembershipSession session;bool failed;int responses;
+  public Membership(IntPtr host,uint testPid,uint hostTid,uint browserPid,ulong sourceView,ReadOnlyBrowser browser,System.Diagnostics.Stopwatch clock){
+   if(sourceView==0||clock==null||!clock.IsRunning)throw new InvalidOperationException("Private current source/deadline binding unavailable.");
+   this.host=host;this.testPid=testPid;this.hostTid=hostTid;this.browserPid=browserPid;this.sourceView=sourceView;this.browser=browser;this.clock=clock;
+  }
+  bool Child(BowserMenuWrapper s){
+   IntPtr child=new IntPtr(s.Child);uint p;uint tid=GetWindowThreadProcessId(child,out p);
+   return tid==s.Thread&&p==s.GpuPid&&IsWindow(child)&&IsWindowVisible(child)&&IsWindowEnabled(child)&&Class(child)=="Intermediate D3D Window"&&GetParent(child)==popup&&GetAncestor(child,2)==popup&&IsChild(popup,child);
+  }
+  bool Current(BowserMenuWrapper s){
+   try{
+    if(failed||clock.ElapsedMilliseconds>=10000||gpu==null||stamp==null||!stamp.Matches(s)||!gpu.SameAlive()||!browser.SameAlive()||!gpu.SameRuntimeImage(browser)||!Child(s)||!RootFence(host,testPid,hostTid,popup,browserPid,menuTid,browser,root,rootId)||!NativeReady(host,testPid,hostTid,popup,browserPid,menuTid,focus))return false;
+    var c=node.Current;var parent=TreeWalker.RawViewWalker.GetParent(node);
+    if(parent==null||c.ProcessId!=(int)s.GpuPid||c.ControlType!=ControlType.Pane||c.NativeWindowHandle!=s.Child||!Same(Runtime(node),nodeId)||!Same(Runtime(parent),rootId)||parent.Current.ProcessId!=(int)browserPid||parent.Current.NativeWindowHandle!=popup.ToInt32())return false;
+    return clock.ElapsedMilliseconds<10000&&gpu.SameAlive()&&browser.SameAlive()&&gpu.SameRuntimeImage(browser)&&Child(s)&&RootFence(host,testPid,hostTid,popup,browserPid,menuTid,browser,root,rootId)&&NativeReady(host,testPid,hostTid,popup,browserPid,menuTid,focus)&&clock.ElapsedMilliseconds<10000;
+   }catch{return false;}
+  }
+  static string ReadBounded(){var b=new StringBuilder();for(;;){int c=Console.In.Read();if(c<0)throw new InvalidOperationException("Private membership pipe closed.");if(c==10)break;if(c>127||b.Length>=8192)throw new InvalidOperationException("Malformed/oversize private membership reply.");b.Append((char)c);}if(b.Length>0&&b[b.Length-1]=='\r')b.Length--;return b.ToString();}
+  void Exchange(int phase){
+   if(failed||clock.ElapsedMilliseconds>=10000||session==null)throw new InvalidOperationException("Fresh private membership proof unavailable.");
+   string nonce=Guid.NewGuid().ToString("N");session.Begin(phase,nonce);
+   string response=null;Exception error=null;
+   // One bounded background read per phase; never reuse a timed-out read or retry a request.
+   var reader=new System.Threading.Thread(()=>{try{response=ReadBounded();}catch(Exception e){error=e;}});reader.IsBackground=true;
+   Console.Out.WriteLine(BowserMenuMembershipWire.Request(phase,nonce,stamp.Popup,stamp.Child,stamp.GpuPid,gpu.Created));Console.Out.Flush();reader.Start();
+   int remaining=checked((int)Math.Max(0,10000-clock.ElapsedMilliseconds));
+   if(remaining==0||!reader.Join(remaining)||clock.ElapsedMilliseconds>=10000||error!=null){failed=true;throw new InvalidOperationException("Private current request response absent/late/refused.");}
+   try{session.Consume(BowserMenuMembershipWire.Parse(response));responses++;}catch{failed=true;throw;}
+  }
+  public bool Allow(IntPtr candidate,uint tid,IntPtr expectedFocus,AutomationElement candidateRoot,int[] candidateRootId,AutomationElement e,int[] expectedParent){
+   try{
+    var c=e.Current;int[] id=Runtime(e);var parent=TreeWalker.RawViewWalker.GetParent(e);
+    if(c.ProcessId<=0||c.ProcessId==(int)browserPid||c.ControlType!=ControlType.Pane||c.NativeWindowHandle==0||expectedParent==null||!Same(expectedParent,candidateRootId)||parent==null||!Same(Runtime(parent),candidateRootId)||parent.Current.ProcessId!=(int)browserPid||parent.Current.NativeWindowHandle!=candidate.ToInt32())throw new InvalidOperationException("Unproved structural wrapper.");
+    if(session==null){
+     popup=candidate;menuTid=tid;focus=expectedFocus;root=candidateRoot;node=e;rootId=(int[])candidateRootId.Clone();nodeId=(int[])id.Clone();
+     uint nativePid;uint childTid=GetWindowThreadProcessId(new IntPtr(c.NativeWindowHandle),out nativePid);if(nativePid!=(uint)c.ProcessId||childTid==0)throw new InvalidOperationException("Unknown native wrapper process.");
+     gpu=new ReadOnlyBrowser((uint)c.ProcessId);stamp=new BowserMenuWrapper(host.ToInt64(),popup.ToInt64(),c.NativeWindowHandle,browserPid,(uint)c.ProcessId,childTid,rootId,nodeId,Runtime(parent));
+     if(!Current(stamp))throw new InvalidOperationException("Current native wrapper proof unavailable.");
+     session=new BowserMenuMembershipSession(testPid,sourceView,browserPid,browser.Created,stamp,gpu,Current,()=>clock.ElapsedMilliseconds);Exchange(0);
+    }
+    if(candidate!=popup||tid!=menuTid||expectedFocus!=focus||!Same(candidateRootId,rootId))throw new InvalidOperationException("Native wrapper root changed.");
+    return session.CanTraverse(c.ProcessId,c.ControlType.Id,c.NativeWindowHandle,id,Runtime(parent));
+   }catch{failed=true;throw;}
+  }
+  public bool Ancestor(AutomationElement e){
+   try{if(session==null||failed)return false;var c=e.Current;var parent=TreeWalker.RawViewWalker.GetParent(e);return parent!=null&&session.CanTraverse(c.ProcessId,c.ControlType.Id,c.NativeWindowHandle,Runtime(e),Runtime(parent));}catch{failed=true;return false;}
+  }
+  public int FreshResponses {get{return responses;}}
+  public BowserMenuWrapper Stamp {get{return stamp==null?null:stamp.Copy();}}
+  public bool Final(BowserMenuWrapper witness){
+   if(failed)return false;if(session==null)return witness==null&&clock.ElapsedMilliseconds<10000;
+   if(witness==null||!stamp.Matches(witness)){failed=true;return false;}Exchange(1);return session.CanCancel(witness);
+  }
+  public bool CanCancel(BowserMenuWrapper witness){return !failed&&(session==null?witness==null&&clock.ElapsedMilliseconds<10000:session.CanCancel(witness));}
+  public void Dispose(){if(gpu!=null){gpu.Dispose();gpu=null;}}
  }
  static string Number(long n){return n.ToString(System.Globalization.CultureInfo.InvariantCulture);}
  static string JsonIds(int[] ids){return ids==null?"null":"["+String.Join(",",Array.ConvertAll(ids,n=>Number(n)))+"]";}
@@ -134,32 +192,34 @@ public static class BowserDefaultContext {
   if(json.Length>8192)json=prefix+"\"status\":\"diagnostic-bound-exceeded\"}";
   try{System.IO.File.WriteAllText(System.IO.Path.Combine(directory,"native-provider-mismatch.json"),json,new UTF8Encoding(false));}catch{ /* Missing evidence is inconclusive, never permission to continue. */ }
  }
- public static MenuProof ReadMenu(IntPtr host,uint testPid,uint hostTid,IntPtr popup,uint browserPid,ReadOnlyBrowser browser,string diagnosticDirectory){
+ public static MenuProof ReadMenu(IntPtr host,uint testPid,uint hostTid,IntPtr popup,uint browserPid,ReadOnlyBrowser browser,string diagnosticDirectory,Membership membership){
   uint helperPid=NativeCurrentProcessId(); // Known local identity, captured before UIA traversal.
   uint beforePid;uint tid=GetWindowThreadProcessId(popup,out beforePid);if(beforePid!=browserPid||tid==0||!IsWindow(popup))throw new InvalidOperationException("Exact native UIA root unavailable.");
   var root=AutomationElement.FromHandle(popup);if(root==null||root.Current.ProcessId!=(int)browserPid||root.Current.NativeWindowHandle!=popup.ToInt32())throw new InvalidOperationException("Exact native UIA root mismatch.");
   var focusGui=new GUI{cbSize=(uint)Marshal.SizeOf(typeof(GUI))};if(!GetGUIThreadInfo(tid,ref focusGui)||!FocusOwned(host,focusGui.hwndFocus,browserPid,tid))throw new InvalidOperationException("Native focus witness unavailable before UIA read.");
-  int[] rootId=Runtime(root);var walker=TreeWalker.RawViewWalker;var queue=new Queue<Tuple<AutomationElement,int,int[]>>();queue.Enqueue(Tuple.Create(root,0,(int[])null));int examined=0,menus=0,items=0;int[] menuId=null,itemId=null;System.Windows.Rect chosen=new System.Windows.Rect();
+  int[] rootId=Runtime(root);var walker=TreeWalker.RawViewWalker;var queue=new Queue<Tuple<AutomationElement,int,int[]>>();queue.Enqueue(Tuple.Create(root,0,(int[])null));int examined=0,menus=0,items=0,wrappers=0;int[] menuId=null,itemId=null;System.Windows.Rect chosen=new System.Windows.Rect();
   while(queue.Count>0){if(++examined>128)throw new InvalidOperationException("UIA raw menu inventory incomplete.");var queued=queue.Dequeue();var e=queued.Item1;var c=e.Current;int providerPid=c.ProcessId;
    if(providerPid!=(int)browserPid){
-    WriteMismatch(host,testPid,hostTid,popup,browserPid,tid,browser,root,rootId,e,queued.Item2,queued.Item3,examined,providerPid,helperPid,diagnosticDirectory);
-    throw new InvalidOperationException("UIA menu provider PID mismatch.");
+    try{if(membership==null||!membership.Allow(popup,tid,focusGui.hwndFocus,root,rootId,e,queued.Item3))throw new InvalidOperationException("UIA menu provider PID mismatch.");}
+    catch{WriteMismatch(host,testPid,hostTid,popup,browserPid,tid,browser,root,rootId,e,queued.Item2,queued.Item3,examined,providerPid,helperPid,diagnosticDirectory);throw;}
+    if(++wrappers!=1)throw new InvalidOperationException("Ambiguous structural wrapper inventory.");
    }
    int[] currentId=Runtime(e);
    if(c.ControlType==ControlType.Menu){menus++;menuId=Runtime(e);}
    if(c.ControlType==ControlType.MenuItem&&String.Equals(c.Name,"Bowser native context permission probe",StringComparison.Ordinal)){
     if(!c.IsEnabled||c.IsOffscreen)throw new InvalidOperationException("Fixture menu leaf unavailable.");
     var child=walker.GetFirstChild(e);if(child!=null)throw new InvalidOperationException("Fixture item is not a leaf.");
-    var ancestor=e;bool reached=false;int menuAncestors=0;for(int hop=0;hop<32&&ancestor!=null;hop++){var ac=ancestor.Current;if(ac.ProcessId!=(int)browserPid)throw new InvalidOperationException("UIA raw ancestry provider mismatch.");if(ac.ControlType==ControlType.Menu)menuAncestors++;if(Same(Runtime(ancestor),rootId)){reached=true;break;}if(ac.NativeWindowHandle!=0&&(IntPtr)ac.NativeWindowHandle!=popup)throw new InvalidOperationException("Unexpected native ancestor in menu hierarchy.");ancestor=walker.GetParent(ancestor);}if(!reached||menuAncestors!=1)throw new InvalidOperationException("UIA raw Menu ancestry incomplete or ambiguous.");
+    var ancestor=e;bool reached=false;int menuAncestors=0;for(int hop=0;hop<32&&ancestor!=null;hop++){var ac=ancestor.Current;bool wrapper=ac.ProcessId!=(int)browserPid;if(wrapper&&(membership==null||!membership.Ancestor(ancestor)))throw new InvalidOperationException("UIA raw ancestry provider mismatch.");if(ac.ControlType==ControlType.Menu)menuAncestors++;if(Same(Runtime(ancestor),rootId)){reached=true;break;}if(!wrapper&&ac.NativeWindowHandle!=0&&(IntPtr)ac.NativeWindowHandle!=popup)throw new InvalidOperationException("Unexpected native ancestor in menu hierarchy.");ancestor=walker.GetParent(ancestor);}if(!reached||menuAncestors!=1)throw new InvalidOperationException("UIA raw Menu ancestry incomplete or ambiguous.");
     items++;itemId=Runtime(e);chosen=c.BoundingRectangle;
    }
    for(var child=walker.GetFirstChild(e);child!=null;child=walker.GetNextSibling(child)){if(queue.Count+examined>=128)throw new InvalidOperationException("UIA child inventory exceeds bound.");queue.Enqueue(Tuple.Create(child,queued.Item2+1,currentId));}
   }
   RECT r;uint afterPid;uint afterTid=GetWindowThreadProcessId(popup,out afterPid);
   if(!FocusOwned(host,focusGui.hwndFocus,browserPid,tid)||menus!=1||items!=1||!Same(rootId,Runtime(root))||afterPid!=browserPid||afterTid!=tid||!IsWindow(popup)||!GetWindowRect(popup,out r)||!Finite(chosen.X)||!Finite(chosen.Y)||!Finite(chosen.Width)||!Finite(chosen.Height)||chosen.Width<=0||chosen.Height<=0||chosen.Left<r.Left||chosen.Top<r.Top||chosen.Right>r.Right||chosen.Bottom>r.Bottom)throw new InvalidOperationException("Unique bounded current Menu/MenuItem proof unavailable.");
-  return new MenuProof{Window=popup,Focus=focusGui.hwndFocus,Thread=tid,RootId=rootId,MenuId=menuId,ItemId=itemId,Left=chosen.Left,Top=chosen.Top,Width=chosen.Width,Height=chosen.Height};
+  if(membership.Stamp!=null&&wrappers!=1)throw new InvalidOperationException("Structural wrapper disappeared from complete inventory.");
+  return new MenuProof{Wrapper=membership.Stamp,Window=popup,Focus=focusGui.hwndFocus,Thread=tid,RootId=rootId,MenuId=menuId,ItemId=itemId,Left=chosen.Left,Top=chosen.Top,Width=chosen.Width,Height=chosen.Height};
  }
- public static bool SameProof(MenuProof a,MenuProof b){return a.Window==b.Window&&a.Focus==b.Focus&&a.Thread==b.Thread&&Same(a.RootId,b.RootId)&&Same(a.MenuId,b.MenuId)&&Same(a.ItemId,b.ItemId)&&a.Left==b.Left&&a.Top==b.Top&&a.Width==b.Width&&a.Height==b.Height;}
+ public static bool SameProof(MenuProof a,MenuProof b){return ((a.Wrapper==null&&b.Wrapper==null)||(a.Wrapper!=null&&a.Wrapper.Matches(b.Wrapper)))&&a.Window==b.Window&&a.Focus==b.Focus&&a.Thread==b.Thread&&Same(a.RootId,b.RootId)&&Same(a.MenuId,b.MenuId)&&Same(a.ItemId,b.ItemId)&&a.Left==b.Left&&a.Top==b.Top&&a.Width==b.Width&&a.Height==b.Height;}
  public static bool Released(IntPtr host,uint testPid,uint hostTid,IntPtr popup,uint browserPid,uint menuTid,IntPtr focus){
   var a=new GUI{cbSize=(uint)Marshal.SizeOf(typeof(GUI))};var b=a;
   bool hidden=!IsWindow(popup)||(PopupIdentity(host,popup,browserPid,menuTid)&&!IsWindowVisible(popup));
@@ -169,13 +229,14 @@ public static class BowserDefaultContext {
  [DllImport("user32.dll")] public static extern IntPtr GetWindow(IntPtr h,uint command);
  [DllImport("user32.dll")] public static extern bool EnumChildWindows(IntPtr parent,EnumProc callback,IntPtr data);
  [DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr h,IntPtr dc,uint flags);
- public sealed class ReadOnlyBrowser:IDisposable {
+ public sealed class ReadOnlyBrowser:IDisposable,IBowserMenuProcessIdentity {
   IntPtr handle;uint pid;ulong created;string image;
   public ReadOnlyBrowser(uint expected){handle=OpenProcess(0x00101000,false,expected);if(handle==IntPtr.Zero)throw new InvalidOperationException("Native browser read-only handle unavailable.");try{pid=expected;image=Image();created=Creation();if(!String.Equals(System.IO.Path.GetFileName(image),"msedgewebview2.exe",StringComparison.OrdinalIgnoreCase)||!SameAlive())throw new InvalidOperationException("Native browser read-only identity unavailable.");}catch{Dispose();throw;}}
   string Image(){var b=new StringBuilder(32768);uint n=32768;if(!QueryFullProcessImageName(handle,0,b,ref n))throw new InvalidOperationException("Native browser image query unavailable.");return System.IO.Path.GetFullPath(b.ToString());}
   ulong Creation(){TIME a,b,c,d;if(!GetProcessTimes(handle,out a,out b,out c,out d))throw new InvalidOperationException("Native browser creation query unavailable.");return a.Bits;}
   public bool SameAlive(){return handle!=IntPtr.Zero&&GetProcessId(handle)==pid&&Creation()==created&&String.Equals(Image(),image,StringComparison.OrdinalIgnoreCase)&&WaitForSingleObject(handle,0)==258;}
   public bool SameRuntimeImage(ReadOnlyBrowser other){return String.Equals(image,other.image,StringComparison.OrdinalIgnoreCase);}
+  public uint Pid {get{return pid;}}public ulong Created {get{return created;}}public bool LiveSameRuntime(){return SameAlive();}
   public string CreationIdentity {get{return created.ToString(System.Globalization.CultureInfo.InvariantCulture);}}
   public void Dispose(){if(handle!=IntPtr.Zero){CloseHandle(handle);handle=IntPtr.Zero;}}
  }
@@ -223,12 +284,13 @@ public static class BowserDefaultContext {
  }
 }
 '@
+Add-Type -ReferencedAssemblies $uiaReferences -TypeDefinition ($nativeSource+[IO.File]::ReadAllText((Join-Path $PSScriptRoot 'native-menu-membership-policy.cs')))
 Add-Type -AssemblyName System.Drawing
 New-Item -ItemType Directory -Force $Out|Out-Null
 $report=[ordered]@{scope='separate-default-Chromium-Views-menu-cancellation-not-selection';status='failed';right_input_called=$false;escape_called=$false;error=$null;failure_cleanup=$null}
 $observationClock=[Diagnostics.Stopwatch]::StartNew();$report.topology=@()
-$h=[IntPtr]$OwnerHandle;$pidNow=[uint32]0;$tid=[BowserDefaultContext]::GetWindowThreadProcessId($h,[ref]$pidNow);$guard=$null;$browserGuard=$null
-function Save-Report {[IO.File]::WriteAllText((Join-Path $Out 'default-context-cancellation.json'),($report|ConvertTo-Json -Depth 8),[Text.UTF8Encoding]::new($false))}
+$h=[IntPtr]$OwnerHandle;$pidNow=[uint32]0;$tid=[BowserDefaultContext]::GetWindowThreadProcessId($h,[ref]$pidNow);$guard=$null;$browserGuard=$null;$membership=$null
+function Save-Report {if($membership){$report.fresh_membership_responses=$membership.FreshResponses;$report.structural_wrapper_present=($null -ne $membership.Stamp)};[IO.File]::WriteAllText((Join-Path $Out 'default-context-cancellation.json'),($report|ConvertTo-Json -Depth 8),[Text.UTF8Encoding]::new($false))}
 function Observe-Topology([string]$Phase) {
  $observation=[ordered]@{phase=$Phase;elapsed_ms=$observationClock.ElapsedMilliseconds;identity_before=$false;identity_after=$false;status='unavailable';native=$null;screenshot_status='not-attempted'}
  try {
@@ -269,7 +331,7 @@ function Menu-State {
  if($candidates.Count -eq 0){if($AllowPending){$report.readiness.last_predicate='native-candidate-not-present';return $null};throw 'Native menu candidate unavailable.'}
  $popup=$candidates[0];$menuTid=[BowserDefaultContext]::CandidateThread($popup,$BrowserPid)
  if(!$menuTid -or ![BowserDefaultContext]::NativeReady($h,$OwnerPid,$tid,$popup,$BrowserPid,$menuTid,[IntPtr]::Zero)){if($AllowPending){$report.readiness.last_predicate='exact-native-focus-capture-not-ready';return $null};throw 'Exact menu native focus/capture unavailable.'}
- $proof=[BowserDefaultContext]::ReadMenu($h,$OwnerPid,$tid,$popup,$BrowserPid,$browserGuard,$Out)
+ $proof=[BowserDefaultContext]::ReadMenu($h,$OwnerPid,$tid,$popup,$BrowserPid,$browserGuard,$Out,$membership)
  if(![BowserDefaultContext]::NativeReady($h,$OwnerPid,$tid,$popup,$BrowserPid,$menuTid,$proof.Focus)){throw 'Native ownership changed across UIA read.'}
  return $proof
 }
@@ -289,18 +351,19 @@ try {
  Neutral
  if(![BowserDefaultContext]::Input($h,$OwnerPid,$tid,$ClientX,$ClientY,$ViewportWidth,$ViewportHeight,$point)){throw 'Exact owned hit target changed before real right-click.'}
  try{[BowserDefaultContext]::mouse_event(0x0008,0,0,0,[UIntPtr]::Zero);$report.right_input_called=$true}finally{[BowserDefaultContext]::mouse_event(0x0010,0,0,0,[UIntPtr]::Zero)}
- $watch=[Diagnostics.Stopwatch]::StartNew();Observe-Topology 'after-right-input';$report.readiness=@{elapsed_ms=0;last_predicate='not-observed';polls=0};$menu=$null
+ $watch=[Diagnostics.Stopwatch]::StartNew();$membership=[BowserDefaultContext+Membership]::new($h,$OwnerPid,$tid,$BrowserPid,$SourceViewIdentity,$browserGuard,$watch);Observe-Topology 'after-right-input';$report.readiness=@{elapsed_ms=0;last_predicate='not-observed';polls=0};$menu=$null
  do {
   $report.readiness.polls++;$menu=Menu-State -AllowPending;$report.readiness.elapsed_ms=$watch.ElapsedMilliseconds
   if($watch.ElapsedMilliseconds -ge 10000){Observe-Topology 'readiness-expired';throw 'Native popup readiness window expired; topology unavailable.'}
   if($menu){$report.readiness.last_predicate='strict-native-menu-ready';break}
   Start-Sleep -Milliseconds 50
  } while($true)
- $watch.Stop();$report.popup=@{window=$menu.Window.ToInt64();thread=$menu.Thread;focus_witness=$menu.Focus.ToInt64();root_runtime=$menu.RootId;menu_runtime=$menu.MenuId;item_runtime=$menu.ItemId;label='exact-fixture-label';provider_pid=$BrowserPid;left=$menu.Left;top=$menu.Top;width=$menu.Width;height=$menu.Height}
+ $report.popup=@{window=$menu.Window.ToInt64();thread=$menu.Thread;focus_witness=$menu.Focus.ToInt64();root_runtime=$menu.RootId;menu_runtime=$menu.MenuId;item_runtime=$menu.ItemId;label='exact-fixture-label';provider_pid=$BrowserPid;left=$menu.Left;top=$menu.Top;width=$menu.Width;height=$menu.Height}
  Neutral;$fresh=Menu-State
  if(![BowserDefaultContext]::SameProof($menu,$fresh)){throw 'Captured native/UIA menu identity changed before Escape.'}
+ if(!$membership.Final($fresh.Wrapper)){throw 'Second fresh current request/wrapper proof refused.'}
  Neutral
- if(!$guard.SameAlive() -or !$browserGuard.SameAlive() -or ![BowserDefaultContext]::NativeReady($h,$OwnerPid,$tid,$menu.Window,$BrowserPid,$menu.Thread,$menu.Focus)){throw 'Exact foreground/native menu changed immediately before Escape.'}
+ if(!$guard.SameAlive() -or !$browserGuard.SameAlive() -or ![BowserDefaultContext]::NativeReady($h,$OwnerPid,$tid,$menu.Window,$BrowserPid,$menu.Thread,$menu.Focus) -or !$membership.CanCancel($fresh.Wrapper) -or $watch.ElapsedMilliseconds -ge 10000){throw 'Exact foreground/native menu changed immediately before Escape.'}
  try{[BowserDefaultContext]::keybd_event(27,0,0,[UIntPtr]::Zero);$report.escape_called=$true}finally{[BowserDefaultContext]::keybd_event(27,0,2,[UIntPtr]::Zero)}
  $releaseWatch=[Diagnostics.Stopwatch]::StartNew();$released=$false
  do {$released=[BowserDefaultContext]::Released($h,$OwnerPid,$tid,$menu.Window,$BrowserPid,$menu.Thread,$menu.Focus);if($releaseWatch.ElapsedMilliseconds -ge 5000){throw 'Menu disappearance/capture release not confirmed in observation window.'};if($released){break};Start-Sleep -Milliseconds 50}while($true)
@@ -317,5 +380,5 @@ try {
  try{Save-Report}catch{[Console]::Error.WriteLine('Native observation failure report write failed.')}
  if($report.right_input_called -and $guard){$report.failure_cleanup=$guard.FailOnly($h,$tid);try{Save-Report}catch{[Console]::Error.WriteLine('Native observation cleanup report write failed.')}}
  [Console]::Error.WriteLine('Native context observation failed; no selection compatibility verdict.');exit 75
-} finally {if($browserGuard){$browserGuard.Dispose()};if($guard){$guard.Dispose()}}
+} finally {if($membership){$membership.Dispose()};if($browserGuard){$browserGuard.Dispose()};if($guard){$guard.Dispose()}}
 Write-Output 'DEFAULT_CONTEXT_CANCELLATION exact_owned_right_input=true exact_visible_native_popup=true real_escape_and_disappearance=true selection_performed=false'
