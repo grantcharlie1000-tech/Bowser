@@ -76,6 +76,9 @@ pub struct Review {
     pub prepared: PreparedInstall,
     pub name: String,
     pub store_id: String,
+    /// The extension's own icon as a `data:image/...;base64,` URL, or empty when it declares none
+    /// or the file is not a small plain PNG/JPEG/GIF/WebP. Never blocks or fails the review.
+    pub icon: String,
     extensions_dir: PathBuf,
     records_file: PathBuf,
 }
@@ -132,20 +135,37 @@ pub fn prepare(
     let staging = Staging::new()?;
     let original = crx_fetch::download_crx_cancellable(id, runtime, cancelled).map_err(|error| format!("Package download failed: {error}. This is not a runtime compatibility verdict."))?;
     check_cancelled()?;
-    crx_fetch::verify_and_unpack(&original, id, &staging.0).map_err(|error| format!("Package verification failed: {error}. This is not a runtime compatibility verdict."))?;
+    crx_fetch::verify_and_unpack(&original, id, &staging.0).map_err(|error| verify_failure_message(&error))?;
     check_cancelled()?;
     let inspection = extensions::inspect_source(&staging.0).map_err(|error| error.to_string())?;
     let name = resolved_name(&staging.0, &inspection.manifest)?;
     if !extensions::store_review_fits(&inspection.manifest) {
         return Err("The complete permission and content-script review is too large for Bowser to display safely. Nothing was installed; declarations were not truncated.".to_owned());
     }
+    let icon = icon_data_url(&staging.0);
     let marker = staging.0.join(SOURCE_MARKER);
     if marker.exists() { return Err("The package contains a reserved Bowser source marker.".to_owned()); }
     fs::write(&marker, id).map_err(|_| "The verified package source could not be recorded.".to_owned())?;
     let prepared = extensions::prepare_install(&staging.0, extensions_dir, records_file).map_err(|error| error.to_string())?;
     let prepared = prepared.retain_verified_store_original(id, &original).map_err(|error| format!("Installation was not accepted. {error} Nonexecuting staging may remain."))?;
     check_cancelled()?;
-    Ok(Review { prepared, name, store_id: id.to_owned(), extensions_dir: extensions_dir.to_owned(), records_file: records_file.to_owned() })
+    Ok(Review { prepared, name, store_id: id.to_owned(), icon, extensions_dir: extensions_dir.to_owned(), records_file: records_file.to_owned() })
+}
+
+/// The review-screen text for a package that did not make it from verified bytes to a staged
+/// folder. A signature or identity failure and a rejection by Bowser's own extraction rules are
+/// different facts for the user, so they are worded differently; neither is a compatibility verdict.
+fn verify_failure_message(error: &crx_fetch::FetchError) -> String {
+    use crate::crx_unpack::StampError;
+    const NOT_A_VERDICT: &str = "Nothing was installed. This is not a runtime compatibility verdict.";
+    match error {
+        crx_fetch::FetchError::Unpack(StampError::Unpack(rejection)) => match rejection.policy_message() {
+            Some(message) => format!("{message} {NOT_A_VERDICT}"),
+            None => format!("The package verified, but it could not be unpacked: {rejection}. {NOT_A_VERDICT}"),
+        },
+        crx_fetch::FetchError::Unpack(other) => format!("The package verified, but it could not be unpacked: {other}. {NOT_A_VERDICT}"),
+        _ => format!("Package verification failed: {error}. {NOT_A_VERDICT}"),
+    }
 }
 
 pub fn installed_source(folder: &Path) -> Option<String> {
@@ -176,6 +196,69 @@ pub fn resolved_name(folder: &Path, manifest: &Manifest) -> Result<String, Strin
     let Some(Value::String(name)) = json::get(message, "message") else { return Err("The localized name message is malformed.".into()); };
     if name.is_empty() || name.chars().count() > 128 || name.chars().any(|c| c.is_control() || extensions::is_invisible_format(c)) || name.contains('$') { return Err("The localized extension name is unsafe or needs unsupported substitutions.".into()); }
     Ok(name.clone())
+}
+
+/// Largest icon file read for the review, and the largest declared size still worth showing: the
+/// tile is far smaller than either, so a larger declaration is a heavy file, not a better one.
+const MAX_ICON_BYTES: u64 = 64 * 1024;
+const PREFERRED_ICON_SIZE: u32 = 128;
+const MAX_ICON_SIZE: u32 = 256;
+const MAX_ICON_ATTEMPTS: usize = 6;
+
+/// `(size, path)` pairs from an `icons`-style object (`{"16": "a.png", "128": "b.png"}`). A bare string
+/// (only valid for `default_icon`) names one file of unknown size and counts as the preferred size.
+/// Keys that are not plain sizes and values that are not strings are skipped.
+fn declared_sizes(value: Option<&extensions::json::Value>) -> Vec<(u32, String)> {
+    use extensions::json::Value;
+    match value {
+        Some(Value::String(path)) => vec![(PREFERRED_ICON_SIZE, path.clone())],
+        Some(Value::Object(fields)) => fields.iter().filter_map(|(key, value)| match value {
+            Value::String(path) if !key.is_empty() && key.len() <= 4 && key.bytes().all(|b| b.is_ascii_digit()) => Some((key.parse().ok()?, path.clone())),
+            _ => None,
+        }).collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// Best first: the largest size up to 128, then the smallest above it up to 256. Sizes outside
+/// 1..=256 are dropped.
+fn icon_preference(mut sizes: Vec<(u32, String)>) -> Vec<String> {
+    sizes.retain(|(size, _)| (1..=MAX_ICON_SIZE).contains(size));
+    sizes.sort_by_key(|(size, _)| if *size <= PREFERRED_ICON_SIZE { (0, u32::MAX - size) } else { (1, *size) });
+    sizes.into_iter().map(|(_, path)| path).collect()
+}
+
+/// Icon paths in the order to try: `icons`, then the toolbar action's `default_icon`.
+fn icon_candidates(manifest: &str) -> Vec<String> {
+    use extensions::json::{self, Value};
+    let Some(Value::Object(fields)) = json::parse(manifest.strip_prefix('\u{feff}').unwrap_or(manifest)) else { return Vec::new(); };
+    let mut paths = icon_preference(declared_sizes(json::get(&fields, "icons").filter(|icons| matches!(icons, Value::Object(_)))));
+    for key in ["action", "browser_action"] {
+        if let Some(Value::Object(action)) = json::get(&fields, key) { paths.extend(icon_preference(declared_sizes(json::get(action, "default_icon")))); }
+    }
+    paths
+}
+
+/// The image type the bytes themselves show, for the formats the review tile accepts. The file name
+/// is never consulted, and SVG (which can carry script) is not an accepted format.
+fn sniff_image_mime(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.starts_with(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]) { Some("image/png") }
+    else if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) { Some("image/jpeg") }
+    else if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") { Some("image/gif") }
+    else if bytes.len() >= 12 && &bytes[..4] == b"RIFF" && &bytes[8..12] == b"WEBP" { Some("image/webp") }
+    else { None }
+}
+
+/// The extension's icon from its verified, unpacked folder as a data URL, or empty. Every problem
+/// (no declaration, unsafe path, link, over 64 KiB, not a PNG/JPEG/GIF/WebP) simply gives no icon.
+pub fn icon_data_url(folder: &Path) -> String {
+    let Some(manifest) = extensions::read_declared_file(folder, "manifest.json", extensions::MAX_MANIFEST_BYTES) else { return String::new(); };
+    let Ok(manifest) = String::from_utf8(manifest) else { return String::new(); };
+    icon_candidates(&manifest).iter().take(MAX_ICON_ATTEMPTS).find_map(|path| {
+        let bytes = extensions::read_declared_file(folder, path, MAX_ICON_BYTES)?;
+        let mime = sniff_image_mime(&bytes)?;
+        Some(format!("data:{mime};base64,{}", crate::chrome_host::protocol::base64_encode(&bytes)))
+    }).unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -225,7 +308,7 @@ mod tests {
         let extensions_dir = root.join("Extensions"); let records_file = root.join("extensions.txt");
         let review = || Review {
             prepared: extensions::prepare_install(&source, &extensions_dir, &records_file).unwrap(),
-            name: "Resolved name".into(), store_id: id.into(),
+            name: "Resolved name".into(), store_id: id.into(), icon: String::new(),
             extensions_dir: extensions_dir.clone(), records_file: records_file.clone(),
         };
         let first = review(); let second = review();
@@ -249,9 +332,213 @@ mod tests {
     }
 
     #[test]
+    fn extraction_policy_and_signature_failures_read_differently() {
+        use crate::crx_unpack::{EntryLimit, StampError, UnpackError};
+        let big = crx_fetch::FetchError::Unpack(StampError::Unpack(UnpackError::FileTooLarge(EntryLimit {
+            name: "Build/Ultimate Car Driving.data".into(), measured: 150 << 20, allowed: 128 << 20,
+        })));
+        let message = verify_failure_message(&big);
+        assert_eq!(message, "This extension contains a file larger than Bowser allows (Build/Ultimate Car Driving.data, 150.0 MiB > 128.0 MiB). Nothing was installed. This is not a runtime compatibility verdict.");
+        assert!(!message.contains("verification failed"));
+
+        let verify = verify_failure_message(&crx_fetch::FetchError::AppIdMismatch);
+        assert!(verify.starts_with("Package verification failed:") && verify.ends_with("not a runtime compatibility verdict."), "{verify}");
+
+        let damaged = verify_failure_message(&crx_fetch::FetchError::Unpack(StampError::Unpack(UnpackError::CorruptEntry)));
+        assert!(damaged.starts_with("The package verified, but it could not be unpacked:"), "{damaged}");
+        let manifest = verify_failure_message(&crx_fetch::FetchError::Unpack(StampError::ManifestMissing));
+        assert!(manifest.contains("could not be unpacked") && manifest.contains("manifest.json"), "{manifest}");
+        let rule = verify_failure_message(&crx_fetch::FetchError::Unpack(StampError::Unpack(UnpackError::Encrypted)));
+        assert!(rule.contains("package rules"), "{rule}");
+    }
+
+    #[test]
     fn review_tokens_are_bounded_and_not_paths() {
         assert!(valid_request_id(&request_id()));
         for bad in ["", "../a", "a b", "a\\b", "a\n"] { assert!(!valid_request_id(bad)); }
         assert!(!valid_request_id(&"a".repeat(65)));
+    }
+
+    // ---- Extension icon ----
+
+    const PNG: &[u8] = &[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 0, 0, 0, 0x0D];
+    const JPEG: &[u8] = &[0xFF, 0xD8, 0xFF, 0xE0, 0, 0x10, b'J', b'F', b'I', b'F'];
+    const GIF: &[u8] = b"GIF89a\x01\x00\x01\x00";
+    const WEBP: &[u8] = b"RIFF\x04\x00\x00\x00WEBPVP8 ";
+
+    /// A throwaway package folder `root/pkg` with `manifest.json` and the given files.
+    fn icon_package(name: &str, manifest: &str, files: &[(&str, &[u8])]) -> (PathBuf, PathBuf) {
+        let root = std::env::temp_dir().join(format!("bowser-store-icon-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let pkg = root.join("pkg"); fs::create_dir_all(&pkg).unwrap();
+        fs::write(pkg.join("manifest.json"), manifest).unwrap();
+        for (path, bytes) in files {
+            let target = pkg.join(path);
+            fs::create_dir_all(target.parent().unwrap()).unwrap();
+            fs::write(target, bytes).unwrap();
+        }
+        (root, pkg)
+    }
+    fn data_url(mime: &str, bytes: &[u8]) -> String { format!("data:{mime};base64,{}", crate::chrome_host::protocol::base64_encode(bytes)) }
+    fn png_with(tag: &[u8]) -> Vec<u8> { [PNG, tag].concat() }
+
+    #[test]
+    fn the_icon_is_the_largest_declared_size_up_to_128() {
+        let (root, pkg) = icon_package("largest", r#"{"icons":{"16":"a16.png","48":"a48.png","128":"a128.png","512":"a512.png"}}"#,
+            &[("a16.png", &png_with(b"16")), ("a48.png", &png_with(b"48")), ("a128.png", &png_with(b"128")), ("a512.png", &png_with(b"512"))]);
+        assert_eq!(icon_data_url(&pkg), data_url("image/png", &png_with(b"128")));
+        // Declaration order does not matter, and a missing 128 file falls to the next best.
+        fs::write(pkg.join("manifest.json"), r#"{"icons":{"512":"a512.png","48":"a48.png","128":"gone.png","16":"a16.png"}}"#).unwrap();
+        assert_eq!(icon_data_url(&pkg), data_url("image/png", &png_with(b"48")));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn with_nothing_up_to_128_the_smallest_larger_icon_is_used_up_to_256() {
+        let (root, pkg) = icon_package("above", r#"{"icons":{"300":"c.png","200":"b.png","160":"a.png"}}"#,
+            &[("a.png", &png_with(b"160")), ("b.png", &png_with(b"200")), ("c.png", &png_with(b"300"))]);
+        assert_eq!(icon_data_url(&pkg), data_url("image/png", &png_with(b"160")));
+        fs::write(pkg.join("manifest.json"), r#"{"icons":{"300":"c.png","512":"d.png"}}"#).unwrap();
+        assert_eq!(icon_data_url(&pkg), "", "nothing small enough is declared");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn the_action_default_icon_is_used_when_icons_is_absent() {
+        let files: &[(&str, &[u8])] = &[("x16.png", &png_with(b"x16")), ("x32.png", &png_with(b"x32")), ("one.png", &png_with(b"one"))];
+        for (name, manifest, tag) in [
+            ("action-map", r#"{"action":{"default_icon":{"16":"x16.png","32":"x32.png"}}}"#, &b"x32"[..]),
+            ("action-string", r#"{"action":{"default_icon":"one.png"}}"#, b"one"),
+            ("browser-action", r#"{"browser_action":{"default_icon":{"16":"x16.png"}}}"#, b"x16"),
+            ("icons-first", r#"{"icons":{"16":"x16.png"},"action":{"default_icon":"one.png"}}"#, b"x16"),
+        ] {
+            let (root, pkg) = icon_package(name, manifest, files);
+            assert_eq!(icon_data_url(&pkg), data_url("image/png", &png_with(tag)), "{name}");
+            let _ = fs::remove_dir_all(root);
+        }
+    }
+
+    #[test]
+    fn an_unsafe_icon_path_is_never_read() {
+        let (root, pkg) = icon_package("paths", "{}", &[("real.png", PNG)]);
+        fs::write(root.join("evil.png"), PNG).unwrap();
+        let absolute = pkg.join("real.png").to_string_lossy().replace('\\', "/");
+        for bad in ["../evil.png", "a/../../evil.png", "./real.png", "/real.png", absolute.as_str(), "C:/Windows/x.png", "C:real.png", "..\\evil.png", "real.png\\", "sub\\real.png",
+                    "", "real.png:stream", "https://example.com/a.png", "data:image/png;base64,AAAA", "real.png ", "rea%6c.png", "nul", "real.png."] {
+            let manifest = format!(r#"{{"icons":{{"128":{}}}}}"#, crate::chrome_host::protocol::json_string(bad));
+            fs::write(pkg.join("manifest.json"), manifest).unwrap();
+            assert_eq!(icon_data_url(&pkg), "", "{bad:?}");
+        }
+        // The same declaration is fine when it is a plain relative path.
+        fs::write(pkg.join("manifest.json"), r#"{"icons":{"128":"real.png"}}"#).unwrap();
+        assert_eq!(icon_data_url(&pkg), data_url("image/png", PNG));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_folder_a_link_or_a_junction_is_not_an_icon_file() {
+        let (root, pkg) = icon_package("links", r#"{"icons":{"128":"dir.png"}}"#, &[]);
+        fs::create_dir(pkg.join("dir.png")).unwrap();
+        assert_eq!(icon_data_url(&pkg), "", "a folder named like an image");
+
+        // A junction inside the package must not lead out of it.
+        let outside = root.join("outside"); fs::create_dir(&outside).unwrap();
+        fs::write(outside.join("icon.png"), PNG).unwrap();
+        let link = pkg.join("img");
+        let made = std::process::Command::new("cmd").args(["/C", "mklink", "/J"]).arg(&link).arg(&outside).output().expect("cmd.exe runs");
+        assert!(made.status.success() && link.is_dir(), "mklink /J failed");
+        fs::write(pkg.join("manifest.json"), r#"{"icons":{"128":"img/icon.png"}}"#).unwrap();
+        assert_eq!(icon_data_url(&pkg), "", "a junction in the path");
+
+        // A file symlink needs a privilege some accounts lack; check it when it can be made.
+        let target = pkg.join("target.png"); fs::write(&target, PNG).unwrap();
+        if std::os::windows::fs::symlink_file(&target, pkg.join("link.png")).is_ok() {
+            fs::write(pkg.join("manifest.json"), r#"{"icons":{"128":"link.png"}}"#).unwrap();
+            assert_eq!(icon_data_url(&pkg), "", "a symlinked icon file");
+        }
+        // Remove the junction itself first so cleanup cannot reach into `outside`'s target by link.
+        let _ = fs::remove_dir(&link);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn an_oversize_icon_is_skipped_without_failing_anything() {
+        let mut exact = PNG.to_vec(); exact.resize(MAX_ICON_BYTES as usize, 7);
+        let mut over = PNG.to_vec(); over.resize(MAX_ICON_BYTES as usize + 1, 7);
+        let (root, pkg) = icon_package("size", r#"{"icons":{"128":"big.png"}}"#, &[("big.png", &over), ("exact.png", &exact), ("small.png", &png_with(b"s"))]);
+        assert_eq!(icon_data_url(&pkg), "");
+        fs::write(pkg.join("manifest.json"), r#"{"icons":{"128":"exact.png"}}"#).unwrap();
+        let url = icon_data_url(&pkg);
+        assert_eq!(url, data_url("image/png", &exact), "exactly 64 KiB is allowed");
+        assert!(url.len() < 90 * 1024, "{}", url.len());
+        // Too big at 128 falls to a smaller usable icon.
+        fs::write(pkg.join("manifest.json"), r#"{"icons":{"128":"big.png","32":"small.png"}}"#).unwrap();
+        assert_eq!(icon_data_url(&pkg), data_url("image/png", &png_with(b"s")));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn svg_and_non_images_are_refused_whatever_the_file_is_called() {
+        let svg: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" onload="alert(1)"/>"#;
+        let (root, pkg) = icon_package("kinds", "{}", &[("a.svg", svg), ("b.png", svg), ("c.png", b"hello, not an image"), ("d.png", b""), ("e.png", b"\x89PNG"), ("f.png", b"<html><script>1</script></html>")]);
+        for name in ["a.svg", "b.png", "c.png", "d.png", "e.png", "f.png"] {
+            fs::write(pkg.join("manifest.json"), format!(r#"{{"icons":{{"128":"{name}"}}}}"#)).unwrap();
+            assert_eq!(icon_data_url(&pkg), "", "{name}");
+        }
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn the_sniffed_type_wins_over_the_file_extension() {
+        let (root, pkg) = icon_package("sniff", "{}", &[("jpeg-as.png", JPEG), ("png-as.svg", PNG), ("gif-as.jpg", GIF), ("webp-as.png", WEBP), ("png-as.bin", PNG)]);
+        for (name, mime, bytes) in [("jpeg-as.png", "image/jpeg", JPEG), ("png-as.svg", "image/png", PNG), ("gif-as.jpg", "image/gif", GIF), ("webp-as.png", "image/webp", WEBP), ("png-as.bin", "image/png", PNG)] {
+            fs::write(pkg.join("manifest.json"), format!(r#"{{"icons":{{"128":"{name}"}}}}"#)).unwrap();
+            assert_eq!(icon_data_url(&pkg), data_url(mime, bytes), "{name}");
+        }
+        for (bytes, expected) in [(PNG, Some("image/png")), (JPEG, Some("image/jpeg")), (GIF, Some("image/gif")), (&b"GIF87a.."[..], Some("image/gif")), (WEBP, Some("image/webp")),
+            (&b"RIFF\0\0\0\0WAVEfmt "[..], None), (&b"RIFF\0\0\0\0WEB"[..], None), (&b"GIF8"[..], None), (&[0xFF, 0xD8][..], None), (&b"BM\0\0"[..], None), (&b"<svg"[..], None), (&b""[..], None)] {
+            assert_eq!(sniff_image_mime(bytes), expected, "{bytes:?}");
+        }
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn malformed_icon_declarations_give_an_empty_icon_not_an_error() {
+        let (root, pkg) = icon_package("malformed", "{}", &[("a.png", PNG)]);
+        for manifest in [
+            "", "not json", "[]", "null", r#"{"icons":5}"#, r#"{"icons":null}"#, r#"{"icons":["a.png"]}"#, r#"{"icons":"a.png"}"#, r#"{"icons":{}}"#,
+            r#"{"icons":{"128":3}}"#, r#"{"icons":{"128":null}}"#, r#"{"icons":{"128":["a.png"]}}"#, r#"{"icons":{"big":"a.png","-1":"a.png","1e2":"a.png","":"a.png","0":"a.png","99999999999":"a.png"}}"#,
+            r#"{"action":"x","browser_action":5}"#, r#"{"action":{"default_icon":7}}"#, r#"{"action":{"default_icon":{"16":false}}}"#, r#"{"icons":{"128":"missing.png"}}"#,
+        ] {
+            fs::write(pkg.join("manifest.json"), manifest).unwrap();
+            assert_eq!(icon_data_url(&pkg), "", "{manifest}");
+        }
+        fs::write(pkg.join("manifest.json"), [0xFF, 0xFE, 0x00]).unwrap();
+        assert_eq!(icon_data_url(&pkg), "", "not UTF-8");
+        fs::remove_file(pkg.join("manifest.json")).unwrap();
+        assert_eq!(icon_data_url(&pkg), "", "no manifest");
+        assert_eq!(icon_data_url(&root.join("no-such-folder")), "");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_byte_order_mark_does_not_hide_the_icon() {
+        let (root, pkg) = icon_package("bom", "\u{feff}{\"icons\":{\"16\":\"a.png\"}}", &[("a.png", PNG)]);
+        assert_eq!(icon_data_url(&pkg), data_url("image/png", PNG));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn the_icon_data_url_round_trips_for_every_length_modulo_three() {
+        for len in [12, 13, 14, 100, 101, 102, 4096, 4097, 4098] {
+            let mut bytes = PNG.to_vec(); bytes.resize(len, 0);
+            for (i, b) in bytes.iter_mut().enumerate().skip(PNG.len()) { *b = (i * 31 % 251) as u8; }
+            let (root, pkg) = icon_package(&format!("rt-{len}"), r#"{"icons":{"128":"i.png"}}"#, &[("i.png", &bytes)]);
+            let url = icon_data_url(&pkg);
+            let encoded = url.strip_prefix("data:image/png;base64,").unwrap_or_else(|| panic!("{len}: {url}"));
+            assert_eq!(encoded.len() % 4, 0, "{len}");
+            assert_eq!(crate::blocker::json::base64_decode(encoded).as_deref(), Some(&bytes[..]), "{len}");
+            let _ = fs::remove_dir_all(root);
+        }
     }
 }

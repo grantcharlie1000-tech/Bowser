@@ -216,7 +216,7 @@ test('status lines per state, as the design doc writes them', () => {
   const at = (extra) => ({ state: 'active', got: Math.round(12.3 * MB), total: Math.round(45.6 * MB), eta: 14, bps: Math.round(2.5 * MB), err: '', ...extra });
   assert.equal(logic.statusText(at({})), '12.3 MB of 45.6 MB, 14 sec left');
   assert.equal(logic.statusText(at({}), 'page'), '2.5 MB/s • 12.3 MB of 45.6 MB, 14 sec left');
-  assert.equal(logic.statusText(at({ total: -1, eta: -1 })), '12.3 MB');
+  assert.equal(logic.statusText(at({ total: -1, eta: -1 })), 'Downloading… 12.3 MB');
   assert.equal(logic.statusText(at({ eta: -1 })), '12.3 MB of 45.6 MB');
   assert.equal(logic.statusText(at({ state: 'paused', bps: 0 })), 'Paused, 12.3 MB of 45.6 MB');
   assert.equal(logic.statusText(at({ state: 'paused', bps: 0, total: -1 })), 'Paused, 12.3 MB');
@@ -232,7 +232,9 @@ test('status lines per state, as the design doc writes them', () => {
   assert.equal(logic.statusTone('active'), 'normal');
   assert.equal(logic.fraction(at({})), Math.round(12.3 * MB) / Math.round(45.6 * MB));
   assert.equal(logic.fraction(at({ total: -1 })), null, 'indeterminate');
-  assert.equal(logic.fraction(at({ total: 0, got: 0 })), 1);
+  assert.equal(logic.fraction(at({ total: 0, got: 0 })), null, 'total 0 while running is not 100%');
+  assert.equal(logic.fraction(at({ total: 0, got: 5 * MB })), null);
+  assert.equal(logic.fraction(at({ state: 'paused', total: 0, got: 5 * MB })), null);
   assert.equal(logic.fraction(at({ state: 'done' })), null);
   assert.equal(logic.fraction(at({ got: 99 * MB })), 1, 'clamped');
 });
@@ -404,4 +406,37 @@ test('sources: text only, no links or navigation, and each surface sends only it
   assert.deepEqual([...new Set([...bubble.matchAll(/\b(send\w*)\(/g)].map((m) => m[1]))].sort(), ['sendDownloadAct', 'sendPopupDismiss', 'sendPopupSize']);
   assert.match(read(join(srcDir, 'popup.ts')), /case 'downloads': downloads\.show\(value\); break;/);
   assert.match(read(join(srcDir, 'main.ts')), /view === 'downloads'/);
+});
+
+test('an active download with no known size is indeterminate, never "0 B of 0 B" or 100%', () => {
+  const at = (extra) => ({ state: 'active', got: 0, total: 0, eta: -1, bps: 0, err: '', ...extra });
+  // The Web Store's dead placeholder download: WebView2 reports total 0 and got 0.
+  assert.equal(logic.statusText(at({})), 'Downloading…');
+  assert.equal(logic.statusText(at({ total: -1 })), 'Downloading…');
+  assert.equal(logic.statusText(at({ got: Math.round(1.25 * MB) })), 'Downloading… 1.2 MB');
+  assert.equal(logic.statusText(at({ got: Math.round(1.25 * MB), total: -1 })), 'Downloading… 1.2 MB');
+  assert.equal(logic.statusText(at({ got: Math.round(1.25 * MB), bps: Math.round(2.5 * MB) }), 'page'), '2.5 MB/s • Downloading… 1.2 MB');
+  assert.equal(logic.statusText(at({ got: Math.round(1.25 * MB), eta: 30 })), 'Downloading… 1.2 MB', 'no time left without a size');
+  for (const text of [logic.statusText(at({})), logic.statusText(at({ total: -1 })), logic.statusText(at({ state: 'paused' }))]) {
+    assert.ok(!/of 0 B/.test(text), text);
+  }
+  assert.equal(logic.statusText(at({ state: 'paused', got: Math.round(1.25 * MB) })), 'Paused, 1.2 MB');
+  assert.equal(logic.fraction(at({})), null);
+  assert.equal(logic.fraction(at({ total: -1 })), null);
+  assert.equal(logic.hasKnownTotal(0), false);
+  assert.equal(logic.hasKnownTotal(-1), false);
+  assert.equal(logic.hasKnownTotal(1), true);
+  // A sized download is unchanged.
+  assert.equal(logic.statusText(at({ got: 5 * MB, total: 10 * MB, eta: 5 })), '5.0 MB of 10.0 MB, 5 sec left');
+  assert.equal(logic.fraction(at({ got: 5 * MB, total: 10 * MB })), 0.5);
+});
+
+test('finished downloads read right whatever total the engine ended with', () => {
+  const at = (extra) => ({ state: 'done', got: 0, total: 0, eta: -1, bps: 0, err: '', ...extra });
+  assert.equal(logic.statusText(at({})), '0 B • Done', 'a genuinely empty file');
+  assert.equal(logic.statusText(at({}), 'page'), '0 B');
+  assert.equal(logic.statusText(at({ got: 2048, total: 0 })), '2.0 KB • Done', 'length never announced: what arrived');
+  assert.equal(logic.statusText(at({ got: 2048, total: -1 })), '2.0 KB • Done');
+  assert.equal(logic.statusText(at({ got: 2048, total: 2048 })), '2.0 KB • Done');
+  assert.equal(logic.fraction(at({})), null, 'finished rows have no bar');
 });

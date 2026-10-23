@@ -8,8 +8,11 @@ use crate::{app::{App, AppRef}, chrome_host::{json::Json, protocol::PanelFields}
 struct State {
     request: String, id: String, name: String, version: String, phase: &'static str,
     error: String, restart: bool, profile: PathBuf,
+    /// The verified package's icon data URL; sent only in the phases after verification (see `snapshot`).
+    icon: String,
     cancelled: Option<Arc<AtomicBool>>, review: Option<store::Review>,
 }
+const MAX_SNAPSHOT_BYTES: usize = 240 * 1024;
 thread_local! { static STATES: RefCell<HashMap<isize, State>> = RefCell::new(HashMap::new()); }
 struct Completed { owner: isize, request: String, outcome: Result<store::Review, String> }
 static COMPLETED: Mutex<Vec<Completed>> = Mutex::new(Vec::new());
@@ -18,9 +21,17 @@ fn with<T>(owner: HWND, f: impl FnOnce(&mut State) -> T) -> T {
     STATES.with(|states| f(states.borrow_mut().entry(owner.0 as isize).or_default()))
 }
 fn changed(owner: HWND) { super::settings_page::store_changed(owner); }
+fn set_error(state: &mut State, text: String) {
+    state.phase = "error"; state.error = text.chars().take(1500).map(|c| if c.is_control() { ' ' } else { c }).collect(); state.review = None; state.icon.clear();
+}
 fn error(owner: HWND, text: impl Into<String>) {
-    with(owner, |state| { state.phase = "error"; state.error = text.into().chars().take(1500).map(|c| if c.is_control() { ' ' } else { c }).collect(); state.review = None; });
+    with(owner, |state| set_error(state, text.into()));
     changed(owner);
+}
+/// A cancelled request keeps nothing of the package, including its icon.
+fn set_cancelled(state: &mut State) {
+    if let Some(cancelled) = &state.cancelled { cancelled.store(true, Ordering::Release); }
+    state.review = None; state.icon.clear(); state.phase = "cancelled"; state.error.clear();
 }
 
 /// Discovery is Google's real website in an ordinary browsing tab. It receives no Bowser bridge.
@@ -86,14 +97,22 @@ pub(crate) fn apply_completed(owner: HWND) {
         if !current { continue; }
         match item.outcome {
             Ok(review) => {
-                with(owner, |state| { state.name = review.name.clone(); state.version = review.prepared.inspection().manifest.version.clone(); state.phase = "review"; state.review = Some(review); });
+                with(owner, |state| { let mut review = review; state.name = review.name.clone(); state.version = review.prepared.inspection().manifest.version.clone(); state.phase = "review"; state.icon = std::mem::take(&mut review.icon); state.review = Some(review); });
+                // The icon is decoration: if it alone pushes the snapshot over budget, drop it, never the review.
+                if snapshot(owner, true).len() > MAX_SNAPSHOT_BYTES { with(owner, |state| state.icon.clear()); }
                 // Never shorten a permission review to fit the bridge. Over-budget fails closed.
-                if snapshot(owner, true).len() > 240 * 1024 { error(owner, "The full permission review is too large to show safely. Nothing was installed."); }
+                if snapshot(owner, true).len() > MAX_SNAPSHOT_BYTES { error(owner, "The full permission review is too large to show safely. Nothing was installed."); }
                 changed(owner);
             }
             Err(reason) => error(owner, reason),
         }
     }
+}
+
+/// The icon belongs to the verified package, so it shows only once one exists (review, installing,
+/// ready). In every other phase, including a new request, error and cancel, it is empty.
+fn visible_icon(state: &State) -> &str {
+    if matches!(state.phase, "review" | "installing" | "ready") { &state.icon } else { "" }
 }
 
 pub(crate) fn snapshot(owner: HWND, shown: bool) -> String {
@@ -111,6 +130,7 @@ pub(crate) fn snapshot(owner: HWND, shown: bool) -> String {
         out.string("phase", if state.phase.is_empty() { "idle" } else { state.phase });
         out.string("requestId", &state.request); out.string("extensionId", &state.id); out.string("name", &state.name); out.string("version", &state.version);
         out.string("error", &state.error); out.bool("restart", state.restart);
+        out.string("icon", visible_icon(state));
         let manifest = state.review.as_ref().map(|review| &review.prepared.inspection().manifest);
         for (key, values) in [
             ("permissions", manifest.map(|m| &m.permissions)), ("hostPermissions", manifest.map(|m| &m.host_permissions)),
@@ -136,10 +156,7 @@ pub(crate) fn run(owner: HWND, app: &AppRef, fields: &PanelFields) -> bool {
         "storesource" => if let Some(entry) = fields.text.as_deref().and_then(store::entry) { open_web(app, entry.homepage); },
         "storecancel" => {
             if let Some(request) = fields.text.as_deref().filter(|id| store::valid_request_id(id)) {
-                with(owner, |state| if state.request == request && matches!(state.phase, "downloading" | "review") {
-                    if let Some(cancelled) = &state.cancelled { cancelled.store(true, Ordering::Release); }
-                    state.review = None; state.phase = "cancelled"; state.error.clear();
-                }); changed(owner);
+                with(owner, |state| if state.request == request && matches!(state.phase, "downloading" | "review") { set_cancelled(state); }); changed(owner);
             }
         }
         "storeapprove" => {
@@ -166,6 +183,130 @@ fn open_web(app: &AppRef, text: &str) {
     if let Ok(url) = url::Url::parse(text) { App::new_tab(app); App::navigate_current(app, &url); }
 }
 
+// Store-installer downloads the engine cancelled, as (window, extension id), until the window
+// procedure answers them. Bounded: a page that fires them in a loop cannot grow it.
+thread_local! { static DOWNLOAD_REQUESTS: RefCell<Vec<(isize, String)>> = const { RefCell::new(Vec::new()) }; }
+const MAX_DOWNLOAD_REQUESTS: usize = 4;
+
+/// The Web Store's own "Add to Chrome" download was cancelled (`engine::download`); this is called
+/// from inside WebView2's `DownloadStarting`, so it only queues and posts. The answer comes from
+/// [`apply_download_requests`] in the window procedure.
+pub(crate) fn request_from_download(owner: HWND, id: &str) {
+    use windows::Win32::UI::WindowsAndMessaging::{GA_ROOT, GetAncestor};
+    if owner.0.is_null() || crate::crx_fetch::parse_extension_id(id).is_err() { return; }
+    let root = unsafe { GetAncestor(owner, GA_ROOT) };
+    let root = if root.0.is_null() { owner } else { root };
+    DOWNLOAD_REQUESTS.with(|queue| {
+        let mut queue = queue.borrow_mut();
+        let entry = (root.0 as isize, id.to_owned());
+        if queue.contains(&entry) { return; }
+        if queue.len() >= MAX_DOWNLOAD_REQUESTS { queue.remove(0); }
+        queue.push(entry);
+    });
+    super::post(root, super::WM_SETTINGS_COMMAND, WPARAM(0), LPARAM(0));
+}
+
+/// Whether a cancelled Store-installer download may start Bowser's install flow: only for the id of
+/// the Store listing the user is on right now, exactly what the "Add to Bowser" button would install.
+/// A website cannot name any other extension through this path.
+fn matches_active_listing(listing: Option<&str>, requested: &str) -> bool {
+    listing.is_some_and(|listing| listing == requested)
+}
+
+/// Answers the queued requests for `owner` (from `WM_SETTINGS_COMMAND`). A request for the extension
+/// on the active listing goes through [`start`] (same checks, same permission review, no automatic
+/// install); any other gets a passive toast pointing at the real button.
+pub(crate) fn apply_download_requests(owner: HWND, app: &AppRef) {
+    let mine: Vec<String> = DOWNLOAD_REQUESTS.with(|queue| {
+        let mut queue = queue.borrow_mut();
+        let (mine, rest): (Vec<_>, Vec<_>) = queue.drain(..).partition(|(window, _)| *window == owner.0 as isize);
+        *queue = rest;
+        mine.into_iter().map(|(_, id)| id).collect()
+    });
+    for id in mine {
+        let listing = super::window::current_store_listing(app);
+        if matches_active_listing(listing.as_deref(), &id) {
+            start(owner, app, &id);
+        } else {
+            super::window::show_toast(owner, "Chrome's installer can't run in Bowser. Open the extension's Chrome Web Store page and use Add to Bowser.", "");
+        }
+    }
+}
+
 pub(crate) fn listing_button_json() -> String {
     Json::object(|out| { out.int("v", 1); out.string("t", "extbtn"); out.bool("on", true); out.uint("n", 0); out.string("name", "Add to Bowser"); out.bool("store", true); })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const ID: &str = "aomkpefnllinimbhddlfhelelngakbbn";
+
+    const ICON: &str = "data:image/png;base64,iVBORw0KGgo=";
+
+    #[test]
+    fn the_icon_shows_only_in_the_phases_after_the_package_is_verified() {
+        let owner = HWND(0x1c0 as *mut _);
+        for (phase, shown) in [("", false), ("idle", false), ("downloading", false), ("review", true), ("installing", true), ("ready", true), ("error", false), ("cancelled", false)] {
+            with(owner, |state| *state = State { phase, icon: ICON.into(), ..State::default() });
+            let json = snapshot(owner, true);
+            assert_eq!(json.contains(&format!(r#""icon":"{ICON}""#)), shown, "{phase:?}");
+            if !shown { assert!(json.contains(r#""icon":"""#), "{phase:?}: {json}"); }
+        }
+        close(owner);
+    }
+
+    #[test]
+    fn a_previous_icon_cannot_survive_a_new_request_an_error_or_a_cancel() {
+        let owner = HWND(0x1c1 as *mut _);
+        let reviewing = || State { request: "store-1-1".into(), phase: "review", icon: ICON.into(), cancelled: Some(Arc::new(AtomicBool::new(false))), ..State::default() };
+        with(owner, |state| { *state = reviewing(); set_error(state, "No.".into()); });
+        assert!(with(owner, |state| state.icon.is_empty()) && snapshot(owner, true).contains(r#""icon":"""#));
+        with(owner, |state| { *state = reviewing(); set_cancelled(state); });
+        assert!(with(owner, |state| state.icon.is_empty() && state.phase == "cancelled") && snapshot(owner, true).contains(r#""icon":"""#));
+        // `start` replaces the whole state, so a new request begins with no icon at all.
+        assert!(State::default().icon.is_empty());
+        let production = &include_str!("store.rs")[..include_str!("store.rs").find("#[cfg(test)]").unwrap()];
+        let start = production.split("pub(crate) fn start(").nth(1).unwrap().split("pub(crate) fn apply_completed").next().unwrap();
+        assert!(start.contains("*state = State {") && start.contains("..State::default() }"));
+        close(owner);
+    }
+
+    #[test]
+    fn the_icon_is_decoration_it_is_dropped_before_the_review_is_refused() {
+        let source = include_str!("store.rs");
+        let apply = source.split("pub(crate) fn apply_completed(").nth(1).unwrap().split("fn visible_icon").next().unwrap();
+        let drop_icon = apply.find("state.icon.clear()").unwrap();
+        let refuse = apply.find("The full permission review is too large").unwrap();
+        assert!(drop_icon < refuse, "the icon must be shed before the review fails closed");
+    }
+
+    #[test]
+    fn a_cancelled_installer_download_only_routes_for_the_listing_the_user_is_on() {
+        assert!(matches_active_listing(Some(ID), ID));
+        assert!(!matches_active_listing(None, ID), "no Store listing is open");
+        assert!(!matches_active_listing(Some("ddkjiahejlhfcafbddmgiahcphecmpfh"), ID), "a page cannot name another extension");
+        assert!(!matches_active_listing(Some(ID), &ID.to_uppercase()));
+    }
+
+    #[test]
+    fn the_download_request_queue_ignores_bad_ids_and_a_null_window() {
+        use windows::Win32::Foundation::HWND;
+        request_from_download(HWND::default(), ID);
+        request_from_download(HWND(1 as *mut _), "not-an-id");
+        assert!(DOWNLOAD_REQUESTS.with(|queue| queue.borrow().is_empty()));
+    }
+
+    #[test]
+    fn a_cancelled_download_never_installs_without_the_existing_consent_path() {
+        let source = include_str!("store.rs");
+        let production = &source[..source.find("#[cfg(test)]").unwrap()];
+        let apply = production.split("pub(crate) fn apply_download_requests(").nth(1).unwrap().split("pub(crate) fn listing_button_json").next().unwrap();
+        // The only things it may call are the listing check, `start` (which stops at the review) and a toast.
+        assert!(apply.contains("current_store_listing(app)") && apply.contains("start(owner, app, &id)") && apply.contains("show_toast("));
+        for forbidden in ["commit(", "storeapprove", "prepare(", "download_crx"] {
+            assert!(!apply.contains(forbidden), "{forbidden}");
+        }
+    }
 }

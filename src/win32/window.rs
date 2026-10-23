@@ -8474,7 +8474,7 @@ const STORE_BUTTON_SLOT: i32 = 304;
 
 /// The live top-level model is updated by WebView2 SourceChanged. Do not offer installation for a
 /// private tab, a pending navigation, frame URL or unvalidated look-alike listing.
-fn current_store_listing(app: &AppRef) -> Option<String> {
+pub(super) fn current_store_listing(app: &AppRef) -> Option<String> {
     let tab = App::active_tab_id(app);
     if App::active_tab_private(app) || App::tab_loading(app, tab) { return None; }
     let url = App::successful_document_url(app, tab)?;

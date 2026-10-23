@@ -1200,3 +1200,132 @@ fn a_removal_in_one_window_is_not_undone_by_the_other() {
     assert!(DownloadManager::open(&file).get(y).is_none());
     assert!(a.get(y).is_none());
 }
+
+// --- the Web Store's dead installer placeholder ---
+
+const STORE_ID: &str = "aomkpefnllinimbhddlfhelelngakbbn";
+
+fn placeholder(id: &str) -> String {
+    format!(
+        "https://permanently-removed.invalid/?response=redirect&os=win&arch=x64&os_arch=x86_64&nacl_arch=x86-64&prod=chromiumcrx&prodchannel=unknown&prodversion=9999.0.9999.0&acceptformat=crx2,crx3&x=id%3D{id}%26installsource%3Dondemand%26uc&authuser=0"
+    )
+}
+
+#[test]
+fn the_store_placeholder_url_yields_its_extension_id() {
+    assert_eq!(store_placeholder_id(&placeholder(STORE_ID)).as_deref(), Some(STORE_ID));
+    assert!(is_store_placeholder_url(&placeholder(STORE_ID)));
+    // Host case is folded by URL parsing; the id still must be lower-case a-p.
+    let shouty = placeholder(STORE_ID).replace("permanently-removed.invalid", "Permanently-Removed.INVALID");
+    assert_eq!(store_placeholder_id(&shouty).as_deref(), Some(STORE_ID));
+}
+
+#[test]
+fn spoofed_or_incomplete_placeholders_are_not_recognised() {
+    let good = placeholder(STORE_ID);
+    let swap = |from: &str, to: &str| good.replacen(from, to, 1);
+    for bad in [
+        // Look-alike hosts.
+        swap("permanently-removed.invalid", "permanently-removed.invalid.evil.com"),
+        swap("permanently-removed.invalid", "evil-permanently-removed.invalid"),
+        swap("permanently-removed.invalid", "permanently-removed.invalid."),
+        swap("permanently-removed.invalid", "www.permanently-removed.invalid"),
+        swap("permanently-removed.invalid", "example.com"),
+        // Userinfo tricks: the real host is the one after `@`.
+        swap("https://permanently-removed.invalid", "https://permanently-removed.invalid@evil.com"),
+        swap("https://permanently-removed.invalid", "https://evil.com@permanently-removed.invalid"),
+        swap("https://permanently-removed.invalid", "https://user:pw@permanently-removed.invalid"),
+        // Wrong scheme or port.
+        swap("https://", "http://"),
+        swap("https://", "ftp://"),
+        swap("https://permanently-removed.invalid", "https://permanently-removed.invalid:8443"),
+        // Missing or wrong parts.
+        swap("prod=chromiumcrx", "prod=chrome"),
+        swap("&prod=chromiumcrx", ""),
+        swap("x=id%3D", "y=id%3D"),
+        swap("id%3D", "xid%3D"),
+        placeholder("short"),
+        placeholder(&STORE_ID.to_uppercase()),
+        placeholder(&format!("{STORE_ID}a")),
+        placeholder("zomkpefnllinimbhddlfhelelngakbbn"),
+        "https://permanently-removed.invalid/".into(),
+        "https://permanently-removed.invalid/?prod=chromiumcrx".into(),
+        "not a url".into(),
+        String::new(),
+    ] {
+        assert_eq!(store_placeholder_id(&bad), None, "{bad}");
+    }
+    // Two competing ids or two `x` parameters are ambiguous, so neither is trusted.
+    let two_ids = placeholder(STORE_ID).replace("%26installsource", &format!("%26id%3D{}%26installsource", "p".repeat(32)));
+    assert_eq!(store_placeholder_id(&two_ids), None);
+    assert_eq!(store_placeholder_id(&format!("{}&x=id%3D{}", placeholder(STORE_ID), "p".repeat(32))), None);
+    assert_eq!(store_placeholder_id(&format!("{}&prod=chromiumcrx", placeholder(STORE_ID))), None);
+}
+
+#[test]
+fn only_the_exact_dead_host_counts_as_the_placeholder_host() {
+    assert!(is_store_placeholder_url("https://permanently-removed.invalid/anything"));
+    assert!(is_store_placeholder_url("http://permanently-removed.invalid/"), "any scheme: the host never resolves");
+    for other in [
+        "https://permanently-removed.invalid.evil.com/",
+        "https://evil.com/?permanently-removed.invalid",
+        "https://evil.com/permanently-removed.invalid",
+        "https://notpermanently-removed.invalid/",
+        "https://www.example.com/files/a.bin",
+        "",
+    ] {
+        assert!(!is_store_placeholder_url(other), "{other}");
+    }
+}
+
+fn start_url(m: &mut DownloadManager, key: u64, url: &str, now_ms: u64) -> u32 {
+    m.on_event(DownloadEvent::Started { key, url: url.to_owned(), path: path("download.crx"), total: 0 }, now_ms);
+    m.entries().iter().find(|e| e.op == Some(key)).map(|e| e.id).expect("started")
+}
+
+#[test]
+fn retry_of_a_store_placeholder_opens_the_listing_and_never_the_dead_url() {
+    let mut m = DownloadManager::in_memory(false);
+    let id = start_url(&mut m, 1, &placeholder(STORE_ID), 1_000);
+    fail(&mut m, 1, "Network error", false, 2_000);
+    assert!(m.allowed(id, Action::Retry));
+    assert_eq!(
+        m.act(id, Action::Retry),
+        Outcome::Retry(format!("https://chromewebstore.google.com/detail/{STORE_ID}")),
+        "Retry goes to the page with Bowser's own Add to Bowser button"
+    );
+
+    // A placeholder with no usable id has nothing to retry.
+    let nameless = start_url(&mut m, 2, "https://permanently-removed.invalid/?prod=chromiumcrx", 1_000);
+    fail(&mut m, 2, "Network error", false, 2_000);
+    assert!(!m.allowed(nameless, Action::Retry));
+    assert_eq!(m.act(nameless, Action::Retry), Outcome::Rejected);
+
+    // An ordinary failed download retries exactly as before.
+    let ordinary = start(&mut m, 3, "b.bin", 100, 1_000);
+    fail(&mut m, 3, "Blocked", false, 2_000);
+    assert_eq!(m.act(ordinary, Action::Retry), Outcome::Retry("https://www.example.com/files/b.bin".into()));
+}
+
+#[test]
+fn resume_of_a_store_placeholder_is_refused_even_when_the_engine_says_it_can_resume() {
+    let mut m = DownloadManager::in_memory(false);
+    let id = start_url(&mut m, 1, &placeholder(STORE_ID), 1_000);
+    fail(&mut m, 1, "Network error", true, 2_000);
+    assert!(!m.allowed(id, Action::Resume));
+    assert_eq!(m.act(id, Action::Resume), Outcome::Rejected);
+    // The same failure on a normal URL still resumes.
+    let normal = start(&mut m, 2, "c.bin", 100, 1_000);
+    fail(&mut m, 2, "Network error", true, 2_000);
+    assert!(m.allowed(normal, Action::Resume));
+}
+
+#[test]
+fn a_normal_crx_download_is_unchanged() {
+    let url = "https://example.com/files/tool.crx";
+    assert!(!is_store_placeholder_url(url) && store_placeholder_id(url).is_none());
+    let mut m = DownloadManager::in_memory(false);
+    let id = start_url(&mut m, 1, url, 1_000);
+    fail(&mut m, 1, "Blocked", false, 2_000);
+    assert_eq!(m.act(id, Action::Retry), Outcome::Retry(url.into()));
+}

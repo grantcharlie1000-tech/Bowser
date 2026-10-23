@@ -209,9 +209,18 @@ export function formatEta(secs: number): string {
   return days === 1 ? '1 day left' : `${days} days left`;
 }
 
+/**
+ * Whether an in-progress download has a size to measure against. WebView2 reports -1 for "unknown"
+ * and also 0 for a download whose length it has not been told yet (or that never starts); neither is
+ * a size, and a bar or "of 0 B" built from them would read as finished or empty.
+ */
+export function hasKnownTotal(total: number): boolean {
+  return total > 0;
+}
+
 /** `12.3 MB of 45.6 MB`, or just what arrived when the size is unknown. */
 export function progressText(got: number, total: number): string {
-  return total >= 0 ? `${formatBytes(got)} of ${formatBytes(total)}` : formatBytes(got);
+  return hasKnownTotal(total) ? `${formatBytes(got)} of ${formatBytes(total)}` : formatBytes(got);
 }
 
 /** The bullet Chrome's bubble puts between parts of a status line. */
@@ -224,14 +233,22 @@ export const SEP = ' • ';
 export function statusText(entry: Pick<DlEntry, 'state' | 'got' | 'total' | 'eta' | 'bps' | 'err'>, where: 'bubble' | 'page' = 'bubble'): string {
   switch (entry.state) {
     case 'active': {
-      const left = entry.total >= 0 ? formatEta(entry.eta) : '';
+      // No known size: say it is working and what arrived, never "of 0 B" or a time left.
+      if (!hasKnownTotal(entry.total)) {
+        const arrived = entry.got > 0 ? ` ${formatBytes(entry.got)}` : '';
+        const speed = where === 'page' ? formatSpeed(entry.bps) : '';
+        return `${speed ? `${speed}${SEP}` : ''}Downloading…${arrived}`;
+      }
+      const left = formatEta(entry.eta);
       const text = `${progressText(entry.got, entry.total)}${left ? `, ${left}` : ''}`;
       const speed = where === 'page' ? formatSpeed(entry.bps) : '';
       return speed ? `${speed}${SEP}${text}` : text;
     }
     case 'paused': return `Paused, ${progressText(entry.got, entry.total)}`;
     case 'done': {
-      const size = formatBytes(entry.total >= 0 ? entry.total : entry.got);
+      // A finished file is what arrived unless a real size says otherwise: a total of 0 or -1 only
+      // means the length was never announced (a genuinely empty file has got 0 too, and reads 0 B).
+      const size = formatBytes(hasKnownTotal(entry.total) ? entry.total : entry.got);
       return where === 'page' ? size : `${size}${SEP}Done`;
     }
     case 'failed': return entry.err.trim() !== '' ? `Failed, ${entry.err.trim()}` : 'Failed';
@@ -245,10 +262,13 @@ export function statusTone(state: DlState): 'normal' | 'warn' | 'quiet' {
   return state === 'failed' ? 'warn' : state === 'cancelled' || state === 'missing' ? 'quiet' : 'normal';
 }
 
-/** How far along a row is, 0..1, or `null` when there is no bar (finished) or no size (indeterminate). */
+/**
+ * How far along a row is, 0..1, or `null` when there is no bar (finished) or no size (indeterminate:
+ * an unknown total of -1, or 0 while the download is still running, which is not "100%").
+ */
 export function fraction(entry: Pick<DlEntry, 'state' | 'got' | 'total'>): number | null {
   if (entry.state !== 'active' && entry.state !== 'paused') return null;
-  if (entry.total <= 0) return entry.total === 0 ? 1 : null;
+  if (!hasKnownTotal(entry.total)) return null;
   return Math.max(0, Math.min(1, entry.got / entry.total));
 }
 

@@ -31,6 +31,9 @@ pub const HISTORY_FAVICON: &[u8] = include_bytes!("../icons/history-favicon.png"
 pub const DOWNLOADS_HOST: &str = "downloads";
 /// Title of a downloads tab.
 pub const DOWNLOADS_TITLE: &str = "Downloads";
+/// Title of the store tab. It opens only for an install request (browsing is Google's own site), so
+/// the tab says what the page is for, and the page's heading uses the same words.
+pub const STORE_TITLE: &str = "Extension installation";
 /// The download arrow as a 32px PNG favicon (icons/downloads-favicon.png, drawn from
 /// icons/extra/download.svg in the settings gear's slate and the history clock's weight).
 pub const DOWNLOADS_FAVICON: &[u8] = include_bytes!("../icons/downloads-favicon.png");
@@ -150,7 +153,7 @@ impl InternalPage {
             Self::Settings(_) => SETTINGS_TITLE,
             Self::History => HISTORY_TITLE,
             Self::Downloads => DOWNLOADS_TITLE,
-            Self::Store => "Bowser Store",
+            Self::Store => STORE_TITLE,
         }
     }
 
@@ -281,6 +284,7 @@ mod tests {
         assert_eq!(parse_input("bowser://store"), Some(page));
         assert_eq!(parse_input(" BOWSER://Store/ "), Some(page));
         assert_eq!(page.url().as_str(), "bowser://store");
+        assert_eq!(page.title(), "Extension installation");
         assert!(persistable(&page.url()));
         assert!(page.is_settings_host() && page.is_store() && !page.is_settings());
         for bad in ["bowser://store/extra", "bowser://user@store", "bowser://store:42", "https://store", "bowser://store.evil"] { assert_eq!(parse_input(bad), None); }

@@ -183,3 +183,200 @@ test('review-only single-column layout resets with idle catalogue state', () => 
   store.receive(message(snap()));
   assert.equal(store.root.querySelector('.bs-layout').classList.contains('is-review'),false);
 });
+
+// ---- Installation card: steps, progress, failures, recovery ----
+const VERIFY_CAP = 'Package verification failed: unpack failed: an archive entry is larger than the per-file cap. This is not a runtime compatibility verdict.';
+const stateOf = (steps) => steps.map((step) => `${step.key}:${step.state}`).join(' ');
+
+test('optional progress fields parse strictly and never appear unless both byte counts are sane', () => {
+  assert.ok(logic.parseStoreSnapshot(snap({ phase: 'downloading', requestId: 'p-1', stage: 'download', received: 10, total: 20 })));
+  assert.ok(logic.parseStoreSnapshot(snap({ phase: 'downloading', requestId: 'p-1', stage: 'verify' })));
+  for (const patch of [{ stage: 'unpack' }, { received: 5 }, { total: 5 }, { received: 6, total: 5 }, { received: -1, total: 5 }, { received: 1, total: 0 }, { received: 1.5, total: 5 }, { received: '1', total: 5 }]) assert.equal(logic.parseStoreSnapshot(snap({ phase: 'downloading', requestId: 'p-1', ...patch })), null, JSON.stringify(patch));
+});
+
+test('steps follow the phase; without a stage download and verification are both in progress', () => {
+  const steps = (patch) => stateOf(logic.storeSteps(logic.parseStoreSnapshot(snap(patch))));
+  assert.equal(steps({ phase: 'downloading', requestId: 's' }), 'download:current verify:current review:todo install:todo');
+  assert.equal(steps({ phase: 'downloading', requestId: 's', stage: 'download' }), 'download:current verify:todo review:todo install:todo');
+  assert.equal(steps({ phase: 'downloading', requestId: 's', stage: 'verify' }), 'download:done verify:current review:todo install:todo');
+  assert.equal(steps({ phase: 'review', requestId: 's', name: 'X', version: '1' }), 'download:done verify:done review:current install:todo');
+  assert.equal(steps({ phase: 'installing' }), 'download:done verify:done review:done install:current');
+  assert.equal(steps({ phase: 'ready' }), 'download:done verify:done review:done install:done');
+  assert.equal(steps({ phase: 'error', error: VERIFY_CAP }), 'download:done verify:failed review:todo install:todo');
+  assert.equal(steps({ phase: 'error', error: 'Package download failed: offline. This is not a runtime compatibility verdict.' }), 'download:failed verify:todo review:todo install:todo');
+  for (const patch of [{ phase: 'idle' }, { phase: 'cancelled' }, { phase: 'error', error: 'Something new went wrong.' }]) assert.equal(steps(patch), '', JSON.stringify(patch));
+});
+
+test('progress is determinate only with real byte counts and only while work runs', () => {
+  const progress = (patch) => logic.storeProgress(logic.parseStoreSnapshot(snap(patch)));
+  assert.equal(progress({ phase: 'downloading', requestId: 'p' }).kind, 'indeterminate');
+  const known = progress({ phase: 'downloading', requestId: 'p', stage: 'download', received: 1468006, total: 3355443 });
+  assert.equal(known.kind, 'determinate');
+  assert.equal(known.text, '1.4 MB of 3.2 MB');
+  assert.ok(Math.abs(known.value - 0.4375) < 0.001);
+  assert.equal(progress({ phase: 'downloading', requestId: 'p', stage: 'verify', received: 5, total: 5 }).kind, 'indeterminate', 'verification has no byte progress');
+  assert.equal(progress({ phase: 'installing' }).kind, 'indeterminate');
+  for (const phase of ['idle', 'ready', 'error', 'cancelled']) assert.equal(progress({ phase }), null, phase);
+});
+
+test('failures read in plain language, keep the native text verbatim and offer only honest retries', () => {
+  const cap = logic.storeFailure(VERIFY_CAP);
+  assert.equal(cap.step, 'verify');
+  assert.equal(cap.detail, VERIFY_CAP, 'technical detail is the native message unchanged');
+  assert.equal(cap.retry, 'offer', 'a size-cap failure repeats, so retry is not pushed');
+  assert.ok(cap.body.includes('not a verdict on whether the extension works'));
+  assert.equal(logic.storeFailure('Package download failed: timed out. This is not a runtime compatibility verdict.').retry, 'suggest');
+  // Raised before a request starts: Rust keeps the previous request's ID, so neither show nor retry it.
+  for (const error of ['Other extension downloads are finishing. Wait a moment and try again. Nothing was installed.', 'Use a persistent normal profile to install extensions.', 'That extension ID is not valid.', 'This WebView2 runtime cannot run supported extensions. Update the WebView2 runtime before installing; restarting alone will not fix this. Nothing was installed.']) {
+    const failure = logic.storeFailure(error);
+    assert.equal(failure.identity, false, error);
+    assert.equal(failure.retry, 'none', error);
+  }
+  const duplicate = logic.storeFailure('This extension identity is already installed in this profile. Verified extension updates are not enabled yet.');
+  assert.equal(duplicate.manage, true);
+  assert.equal(duplicate.retry, 'none');
+  const unknown = logic.storeFailure('A brand new native message.');
+  assert.equal(unknown.body, 'A brand new native message.');
+  assert.equal(unknown.detail, '', 'an unrecognised message is shown once, as the explanation');
+  assert.ok(logic.storeFailure('').body.includes('Nothing was approved automatically'));
+});
+
+test('try again reuses storeinstall with the request ID only after a cancel or a retryable error', () => {
+  const retry = (patch) => logic.storeRetryCommand(logic.parseStoreSnapshot(snap(patch)));
+  assert.deepEqual(retry({ phase: 'error', error: VERIFY_CAP }), { a: 'storeinstall', text: id });
+  assert.deepEqual(retry({ phase: 'cancelled' }), { a: 'storeinstall', text: id });
+  assert.equal(retry({ phase: 'error', error: 'Other extension downloads are finishing. Wait a moment and try again. Nothing was installed.' }), null);
+  assert.equal(retry({ phase: 'error', error: VERIFY_CAP, extensionId: '' }), null);
+  for (const phase of ['idle', 'ready']) assert.equal(retry({ phase }), null, phase);
+});
+
+test('error card: title, explanation, folded native detail, and working recovery actions', () => {
+  const store = mount();
+  store.receive(message(snap({ phase: 'error', requestId: 'e-1', name: entry.name, error: VERIFY_CAP })));
+  const card = store.root.querySelector('.bs-status');
+  assert.equal(card.dataset.phase, 'error');
+  assert.equal(card.querySelector('h2').textContent, 'This package did not pass Bowser’s checks');
+  assert.equal(card.querySelector('.bs-tech').querySelector('.bs-tech-text').textContent, VERIFY_CAP);
+  assert.ok(card.querySelector('.bs-ident').textContent.includes(entry.name));
+  assert.equal(card.querySelector('.bs-step[data-state="failed"]').textContent.startsWith('Verify'), true);
+  assert.equal(store.root.querySelector('[role="alert"]').textContent.startsWith('This package did not pass'), true, 'errors are announced assertively');
+  btn(card, 'Open Chrome Web Store').click();
+  assert.deepEqual(store.sent.at(-1), { a: 'storebrowse' });
+  btn(card, 'Try again').click();
+  assert.deepEqual(store.sent.at(-1), { a: 'storeinstall', text: id });
+  assert.equal(store.root.querySelector('.bs-status').querySelector('h2').textContent, 'Requesting the extension package…');
+  assert.ok(store.root.querySelector('.bs-status').querySelector('.bs-ident').textContent.includes(entry.name), 'the pending card still names the package');
+  assert.equal(store.root.querySelector('[role="alert"]').textContent, '', 'the error announcement is withdrawn');
+});
+
+test('an error raised before a request started shows neither the stale package nor a retry', () => {
+  const store = mount();
+  store.receive(message(snap({ phase: 'error', requestId: 'old', name: 'Previous extension', error: 'Other extension downloads are finishing. Wait a moment and try again. Nothing was installed.' })));
+  const card = store.root.querySelector('.bs-status');
+  assert.equal(card.querySelector('.bs-ident'), null);
+  assert.equal(btn(card, 'Try again'), undefined);
+  assert.ok(btn(card, 'Open Chrome Web Store'));
+  assert.equal(card.querySelector('.bs-tech'), null);
+});
+
+test('in-progress card: neutral bar, secondary cancel, status announced once', () => {
+  const store = mount();
+  store.receive(message(snap({ phase: 'downloading', requestId: 'd-1', name: entry.name })));
+  const live = store.root.querySelector('[role="status"]');
+  assert.equal(live.textContent, 'Downloading and verifying the package…');
+  let bar = store.root.querySelector('[role="progressbar"]');
+  assert.equal(bar.getAttribute('aria-valuenow'), null, 'unknown progress is indeterminate');
+  const cancel = btn(store.root, 'Cancel installation');
+  assert.equal(cancel.classList.contains('is-primary'), false);
+  cancel.focus();
+  store.receive(message(snap({ phase: 'downloading', requestId: 'd-1', name: entry.name, stage: 'download', received: 512 * 1024, total: 1024 * 1024 })));
+  bar = store.root.querySelector('[role="progressbar"]');
+  assert.equal(bar.getAttribute('aria-valuenow'), '50');
+  assert.equal(bar.style.getPropertyValue('--bs-f'), '0.5');
+  assert.equal(document.activeElement.textContent, 'Cancel installation', 'a progress tick keeps focus on Cancel');
+  assert.equal(store.root.querySelector('[role="status"]'), live, 'the live region persists across renders');
+  store.receive(message(snap({ phase: 'cancelled', requestId: 'd-1', name: entry.name })));
+  assert.equal(document.activeElement.tagName, 'h2', 'focus moves to the new state when its control goes away');
+  assert.equal(document.activeElement.textContent, 'Installation cancelled');
+  assert.ok(btn(store.root, 'Try again'));
+});
+
+test('review card: consent first in the action row, cancel after it, both bound to the request', () => {
+  const store = mount();
+  store.receive(message(snap({ phase: 'review', requestId: 'r-1', name: entry.name, version: '3', permissions: ['storage'] })));
+  const actions = store.root.querySelector('.bs-actions');
+  assert.ok(actions.classList.contains('is-sticky'));
+  const [approve, cancel] = actions.querySelectorAll('button');
+  assert.equal(approve.textContent, `Install ${entry.name} 3`);
+  assert.ok(approve.classList.contains('is-primary'));
+  assert.equal(cancel.textContent, 'Cancel installation');
+  assert.ok(store.root.textContent.includes('None declared: Required site access'));
+  assert.equal(store.root.querySelector('.bs-step[aria-current="step"]').dataset.state, 'current');
+});
+test('package icon: only bounded base64 raster data URLs survive parsing, anything else becomes empty', async () => {
+  const { storeIcons } = await import('../shots/store-icons.mjs');
+  const real = storeIcons().brand;
+  assert.match(real, /^data:image\/png;base64,/);
+  const review = (extra) => snap({ phase: 'review', requestId: 'req-icon', name: entry.name, version: '1', ...extra });
+  const pixel = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=';
+  for (const good of [real, `data:image/png;base64,${pixel}`, 'data:image/jpeg;base64,/9j/4AAQ', 'data:image/gif;base64,R0lGODlh', 'data:image/webp;base64,UklGRg==']) {
+    assert.equal(logic.parseStoreSnapshot(review({ icon: good })).icon, good);
+  }
+  for (const bad of [
+    'data:image/svg+xml;base64,PHN2Zz48L3N2Zz4=', 'data:image/svg+xml,<svg onload="alert(1)"/>', 'javascript:alert(1)', 'http://example.com/icon.png',
+    'https://example.com/icon.png', 'data:image/png,rawbytes', 'data:image/png;base64,abc def', 'data:image/png;base64,abc===', 'data:image/png;base64,',
+    ' data:image/png;base64,AAAA', 'data:image/png;base64,AAAA\n', 'DATA:IMAGE/PNG;BASE64,AAAA', 'data:text/html;base64,PGI+', 'garbage',
+    `data:image/png;base64,${'A'.repeat(131072)}`, 42, null, {}, ['data:image/png;base64,AAAA'],
+  ]) {
+    const parsed = logic.parseStoreSnapshot(review({ icon: bad }));
+    assert.ok(parsed, `a bad icon must not reject the snapshot: ${String(bad).slice(0, 40)}`);
+    assert.equal(parsed.icon, '');
+  }
+  assert.equal(logic.parseStoreSnapshot(review({ icon: `data:image/png;base64,${'A'.repeat(131072 - 22)}` })).icon.length, 131072);
+  assert.equal(logic.parseStoreSnapshot(snap()).icon, '', 'absent field defaults to empty for older senders');
+});
+test('identity tile shows the package icon from review onwards, the puzzle otherwise, and falls back when it fails', async () => {
+  const { storeIcons } = await import('../shots/store-icons.mjs');
+  const real = storeIcons().tile;
+  const store = mount();
+  const tile = () => store.root.querySelector('.bs-ident-icon');
+  const img = () => tile()?.querySelector('img') ?? null;
+  const run = { requestId: 'req-i', name: entry.name, version: '3', icon: real };
+  store.receive(message(snap({ ...run, phase: 'downloading' })));
+  assert.equal(img(), null, 'no icon while downloading, even if one is sent');
+  assert.ok(tile().querySelector('svg'));
+  for (const phase of ['review', 'installing', 'ready']) {
+    store.receive(message(snap({ ...run, phase })));
+    assert.equal(img()?.src, real, phase);
+    assert.equal(img().alt, '');
+    assert.ok(tile().classList.contains('has-image'));
+    assert.equal(tile().querySelector('svg'), null);
+  }
+  store.receive(message(snap({ ...run, phase: 'review', icon: 'data:image/svg+xml;base64,PHN2Zz4=' })));
+  assert.equal(img(), null, 'an invalid icon renders the puzzle');
+  assert.ok(tile().querySelector('svg'));
+  store.receive(message(snap({ ...run, phase: 'review', icon: '' })));
+  assert.equal(img(), null);
+  // A well-formed URL that does not decode: the error swaps in the puzzle and later snapshots skip it.
+  const broken = 'data:image/png;base64,AAAA';
+  store.receive(message(snap({ ...run, phase: 'review', icon: broken })));
+  img().dispatch('error');
+  assert.equal(img(), null);
+  assert.ok(tile().querySelector('svg'));
+  assert.ok(!tile().classList.contains('has-image'));
+  store.receive(message(snap({ ...run, phase: 'installing', icon: broken })));
+  assert.equal(img(), null, 'a failed icon is not retried on the next snapshot');
+  store.receive(message(snap({ ...run, phase: 'ready', icon: real })));
+  assert.equal(img()?.src, real, 'a different icon is tried');
+  // Catalogue cards never get package icons.
+  store.receive(message(snap()));
+  assert.equal(store.root.querySelectorAll('img').length, 0);
+});
+test('the page heading is "Extension installation" in every mode', () => {
+  const store = mount();
+  assert.equal(store.root.querySelector('h1').textContent, 'Extension installation');
+  store.receive(message(snap({ phase: 'review', requestId: 'req-h', name: entry.name, version: '1' })));
+  assert.equal(store.root.querySelector('h1').textContent, 'Extension installation');
+  store.receive(message(snap()));
+  assert.equal(store.root.querySelector('h1').textContent, 'Extension installation');
+});

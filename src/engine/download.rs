@@ -100,6 +100,11 @@ pub fn handle_starting(args: &ICoreWebView2DownloadStartingEventArgs, source: &S
     let Some((request, op)) = read_request(args) else {
         return cancel_start(args, hooks);
     };
+    // The Web Store's own installer download points at a dead host. It is dropped before `plan` or
+    // `begin` can give it a destination or a list row, and Bowser's own install flow takes over.
+    if crate::downloads::is_store_placeholder_url(&request.url) {
+        return redirect_store_placeholder(args, &request.url, source, hooks);
+    }
     match plan(&request) {
         DownloadPlan::Cancel => cancel_start(args, hooks),
         DownloadPlan::Save { path } => begin(args, &op, &path, &request, source, event, hooks),
@@ -129,6 +134,23 @@ pub fn handle_starting(args: &ICoreWebView2DownloadStartingEventArgs, source: &S
             }
             let _ = unsafe { deferral.Complete() };
         }
+    }
+}
+
+/// Cancels the Store's installer placeholder download and, when its URL names an extension, asks the
+/// window to start Bowser's explicit installation flow for that id. The window re-checks the id
+/// against the page the user is on and the flow still stops at its permission review; nothing is
+/// installed from here, and nothing is recorded in the downloads list.
+fn redirect_store_placeholder(
+    args: &ICoreWebView2DownloadStartingEventArgs,
+    url: &str,
+    source: &Source,
+    hooks: &DownloadHooks,
+) {
+    let _ = unsafe { args.SetCancel(true) };
+    log(hooks, "download_store_placeholder_cancelled");
+    if let Some(id) = crate::downloads::store_placeholder_id(url) {
+        crate::win32::request_store_install(source.parent, &id);
     }
 }
 
@@ -283,7 +305,7 @@ const REASONS: [(COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON, &str); 27] = [
     (COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_NETWORK_TIMEOUT, "Network timeout"),
     (COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_NETWORK_DISCONNECTED, "Network disconnected"),
     (COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_NETWORK_FAILED, "Network error"),
-    (COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_NETWORK_INVALID_REQUEST, "Network error"),
+    (COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_NETWORK_INVALID_REQUEST, "Invalid request"),
     (COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_NETWORK_SERVER_DOWN, "Server unavailable"),
     (COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_SERVER_FAILED, "Server error"),
     (COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_SERVER_NO_RANGE, "Server error"),
@@ -448,6 +470,11 @@ mod tests {
         assert_eq!(reason_text(COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_NONE), "Failed");
         assert_eq!(reason_text(COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_TOO_LARGE), "File too large");
         assert_eq!(reason_text(COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_NETWORK_FAILED), "Network error");
+        assert_eq!(
+            reason_text(COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_NETWORK_INVALID_REQUEST),
+            "Invalid request",
+            "a request WebView2 refused to send reads differently from a network that failed"
+        );
         assert_eq!(reason_text(COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_MALICIOUS), "Blocked");
     }
 
@@ -476,6 +503,8 @@ mod tests {
         for needle in [
             "let (Some(event), Some(plan)) = (hooks.event.clone(), hooks.plan.clone()) else {",
             "if source.private {",
+            "if crate::downloads::is_store_placeholder_url(&request.url) {",
+            "return redirect_store_placeholder(args, &request.url, source, hooks);",
             "log(hooks, \"download_cancelled\")",
             "args.SetCancel(true)",
             "args.SetHandled(true)",
