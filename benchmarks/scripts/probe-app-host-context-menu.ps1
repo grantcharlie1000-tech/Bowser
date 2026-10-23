@@ -428,6 +428,11 @@ try {
  try {if([BowserHostMenu+ClipboardGuard]::AdmissionStarted){$report.clipboard_admission=@{stage=[BowserHostMenu+ClipboardGuard]::AdmissionStage;failure_stage=[BowserHostMenu+ClipboardGuard]::AdmissionFailureStage;open_succeeded=[BowserHostMenu+ClipboardGuard]::AdmissionOpened;format_observed=[BowserHostMenu+ClipboardGuard]::AdmissionFormatObserved;first_format_zero=[BowserHostMenu+ClipboardGuard]::AdmissionFirstFormatZero;enum_error=[BowserHostMenu+ClipboardGuard]::AdmissionEnumError;sequence_observed=[BowserHostMenu+ClipboardGuard]::AdmissionSequenceObserved;sequence=[BowserHostMenu+ClipboardGuard]::AdmissionSequence;close_attempted=[BowserHostMenu+ClipboardGuard]::AdmissionCloseAttempted;close_confirmed=[BowserHostMenu+ClipboardGuard]::AdmissionCloseConfirmed}}}catch{}
  # Restore only our exact last-owned sequence BEFORE terminating the exact disposable test.
  if($clipboard){$restored=$clipboard.Finish();$report.clipboard=$clipboard.Status;$report.owned_clipboard_sequences=@($clipboard.OwnedSequences)}
+ # Failure-only observation; no input/clipboard/process authority is derived from this snapshot.
+ try {
+  Import-Module (Join-Path $PSScriptRoot 'native-runner-state.psm1') -ErrorAction Stop
+  $report.runner_state=Get-BowserNativeRunnerState -Phase failure
+ } catch { $report.runner_state=@{status='unavailable';input_authority=$false;clipboard_authority=$false} }
  try{Save-Report}catch{[Console]::Error.WriteLine('Native host regression failure report could not be written.')}
  if($report.right_input_called -and $guard){$report.failure_cleanup=$guard.FailOnly($h,$tid);try{Save-Report}catch{}}
  [Console]::Error.WriteLine('Actual App host regression failed; no compatibility acceptance.');exit 75

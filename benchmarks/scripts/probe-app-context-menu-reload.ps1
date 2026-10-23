@@ -280,6 +280,11 @@ try {
  $report.status='observed-real-App-owned-popup-spontaneous-reload-disappearance-and-actual-completion';Save-Report
 } catch {
  $report.error=$_.Exception.Message
+ # Failure-only observation; no input/clipboard/process authority is derived from this snapshot.
+ try {
+  Import-Module (Join-Path $PSScriptRoot 'native-runner-state.psm1') -ErrorAction Stop
+  $report.runner_state=Get-BowserNativeRunnerState -Phase failure
+ } catch { $report.runner_state=@{status='unavailable';input_authority=$false;clipboard_authority=$false} }
  try{Save-Report}catch{[Console]::Error.WriteLine('Native observation failure report write failed.')}
  if($report.right_input_called -and $guard){$report.failure_cleanup=$guard.FailOnly($h,$tid);try{Save-Report}catch{[Console]::Error.WriteLine('Native observation cleanup report write failed.')}}
  [Console]::Error.WriteLine('Real App native observation failed; no selection or compatibility acceptance.');exit 75

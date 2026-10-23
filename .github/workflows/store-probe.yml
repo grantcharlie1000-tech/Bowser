@@ -10,6 +10,8 @@ on:
       - 'src/win32/store.rs'
       - '.github/workflows/store-probe.yml'
       - 'benchmarks/scripts/probe-default-context-cancellation.ps1'
+      - 'benchmarks/scripts/native-runner-state.psm1'
+      - 'benchmarks/scripts/test-native-runner-state.ps1'
       - 'benchmarks/scripts/probe-custom-context-menu.ps1'
       - 'benchmarks/scripts/probe-app-context-menu.ps1'
       - 'benchmarks/scripts/probe-app-host-context-menu.ps1'
@@ -149,6 +151,17 @@ jobs:
         run: |
           cargo +stable test --locked --lib --no-run
           if ($LASTEXITCODE -ne 0) { throw 'Native safety executable failed to build.' }
+      - name: Record read-only runner prerequisites using the native helper host
+        if: ${{ !cancelled() && steps.native_build.outcome == 'success' }}
+        run: |
+          # Same Windows PowerShell host as the native helpers; preserve existing execution policy.
+          & powershell.exe -NoProfile -File ./benchmarks/scripts/test-native-runner-state.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'Read-only runner diagnostic regressions failed.' }
+          $snapshot = & powershell.exe -NoProfile -Command "Import-Module ./benchmarks/scripts/native-runner-state.psm1; Get-BowserNativeRunnerState -Phase preflight | ConvertTo-Json -Depth 8"
+          if ($LASTEXITCODE -ne 0) { throw 'Native helper host could not collect runner state.' }
+          $snapshot | Set-Content -Encoding utf8 store-native-runner-state.json
+          $parsed = $snapshot | ConvertFrom-Json
+          if ($parsed.status -ne 'captured' -or $parsed.input_authority -or $parsed.clipboard_authority) { throw 'Runner diagnostics unavailable or incorrectly authorizing.' }
       - name: Inspect exact test executable imports after pre-test loader failure
         if: ${{ !cancelled() && steps.native_build.outcome == 'success' }}
         run: |
@@ -448,6 +461,7 @@ jobs:
             store-native-installer-band-component.log
             store-band-loader-imports.log
             store-band-loader-identity.log
+            store-native-runner-state.json
             store-band-libtest-manifest.log
             store-band-libtest.manifest.xml
             store-band-system-comctl-exports.log

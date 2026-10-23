@@ -202,6 +202,11 @@ try {
  $report.status='observed-owned-popup-and-real-cancellation';Save-Report
 } catch {
  $report.error=$_.Exception.Message
+ # Failure-only observation; no input/clipboard/process authority is derived from this snapshot.
+ try {
+  Import-Module (Join-Path $PSScriptRoot 'native-runner-state.psm1') -ErrorAction Stop
+  $report.runner_state=Get-BowserNativeRunnerState -Phase failure
+ } catch { $report.runner_state=@{status='unavailable';input_authority=$false;clipboard_authority=$false} }
  try{Save-Report}catch{[Console]::Error.WriteLine('Native observation failure report write failed.')}
  if($report.right_input_called -and $guard){$report.failure_cleanup=$guard.FailOnly($h,$tid);try{Save-Report}catch{[Console]::Error.WriteLine('Native observation cleanup report write failed.')}}
  [Console]::Error.WriteLine('Native context observation failed; no selection compatibility verdict.');exit 75
