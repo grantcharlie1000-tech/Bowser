@@ -393,6 +393,10 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Experimental main-window timer collision guard failed.' }
           cargo +stable test --locked --lib --features html-chrome-default,experimental-engine-context-menu engine::app_host_menu_probe::live::host_probe_selection_uses_native_name_or_inserted_role_not_command_range -- --exact --nocapture --test-threads=1 2>&1 | Tee-Object -Append store-real-app-menu-unit.log
           if ($LASTEXITCODE -ne 0) { throw 'Separate host-lane read-only selection diagnostic failed.' }
+          cargo +stable test --locked --lib --features html-chrome-default,experimental-engine-context-menu engine::app_host_menu_probe::live::loopback_effect_ack_waits_for_fragmented_request -- --exact --nocapture --test-threads=1 2>&1 | Tee-Object -Append store-real-app-menu-unit.log
+          if ($LASTEXITCODE -ne 0) { throw 'Fragmented real TCP fixture acknowledgment regression failed.' }
+          cargo +stable test --locked --lib --features html-chrome-default,experimental-engine-context-menu engine::app_host_menu_probe::live::loopback_rejects_oversize_headers_without_recording_an_effect -- --exact --nocapture --test-threads=1 2>&1 | Tee-Object -Append store-real-app-menu-unit.log
+          if ($LASTEXITCODE -ne 0) { throw 'Oversize real TCP fixture refusal regression failed.' }
 
       - name: Probe default-off native engine menu in actual HTML Bowser App
         if: ${{ !cancelled() && steps.experimental_menu_build.outcome == 'success' }}
