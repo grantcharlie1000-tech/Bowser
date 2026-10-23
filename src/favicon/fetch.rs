@@ -30,6 +30,9 @@ pub(super) fn fetch(url: &Url, deadline: Deadline) -> Option<Vec<u8>> {
 /// independent of this gate. Unknown routing fails closed, before even resolving a browsing host.
 fn routing_is_direct() -> bool {
     use windows::Win32::Foundation::{GlobalFree, HGLOBAL};
+    if !browser_arguments_policy_absent() {
+        return false;
+    }
     let mut user = WINHTTP_CURRENT_USER_IE_PROXY_CONFIG::default();
     let user_ok = unsafe { WinHttpGetIEProxyConfigForCurrentUser(&mut user) }.is_ok();
     let mut machine = WINHTTP_PROXY_INFO::default();
@@ -57,6 +60,49 @@ fn routing_is_direct() -> bool {
         }
     }
     direct
+}
+
+/// WebView2 can append proxy switches from policy even when Windows reports direct routing.
+/// Conservatively refuse any argument-policy key, including values for other app identities:
+/// reproducing WebView2's AUMID/executable/wildcard selection risks missing an override. Read both
+/// registry views and hives; a missing key is safe, while inaccessible/unknown policy fails closed.
+fn browser_arguments_policy_absent() -> bool {
+    use windows::Win32::System::Registry::{
+        HKEY, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_QUERY_VALUE, KEY_WOW64_32KEY,
+        KEY_WOW64_64KEY, RegCloseKey, RegOpenKeyExW,
+    };
+    let statuses = [
+        (HKEY_LOCAL_MACHINE, KEY_WOW64_64KEY),
+        (HKEY_LOCAL_MACHINE, KEY_WOW64_32KEY),
+        (HKEY_CURRENT_USER, KEY_WOW64_64KEY),
+        (HKEY_CURRENT_USER, KEY_WOW64_32KEY),
+    ]
+    .map(|(root, view)| {
+        let mut key = HKEY::default();
+        let status = unsafe {
+            RegOpenKeyExW(
+                root,
+                w!("Software\\Policies\\Microsoft\\Edge\\WebView2\\AdditionalBrowserArguments"),
+                None,
+                KEY_QUERY_VALUE | view,
+                &mut key,
+            )
+        };
+        if status.is_ok() {
+            unsafe {
+                let _ = RegCloseKey(key);
+            }
+        }
+        status
+    });
+    argument_policy_allows_direct(statuses)
+}
+
+fn argument_policy_allows_direct(statuses: [windows::Win32::Foundation::WIN32_ERROR; 4]) -> bool {
+    use windows::Win32::Foundation::{ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND};
+    statuses
+        .into_iter()
+        .all(|status| status == ERROR_FILE_NOT_FOUND || status == ERROR_PATH_NOT_FOUND)
 }
 
 fn direct_configuration(
@@ -384,6 +430,31 @@ mod tests {
                 machine_direct,
                 machine_proxy
             ));
+        }
+    }
+
+    #[test]
+    fn webview_argument_policy_in_either_hive_or_view_prevents_direct_refresh() {
+        use windows::Win32::Foundation::{
+            ERROR_ACCESS_DENIED, ERROR_FILE_NOT_FOUND, ERROR_INVALID_PARAMETER,
+            ERROR_PATH_NOT_FOUND, ERROR_SUCCESS,
+        };
+        let absent = [
+            ERROR_FILE_NOT_FOUND,
+            ERROR_PATH_NOT_FOUND,
+            ERROR_FILE_NOT_FOUND,
+            ERROR_PATH_NOT_FOUND,
+        ];
+        assert!(argument_policy_allows_direct(absent));
+        for status in [ERROR_SUCCESS, ERROR_ACCESS_DENIED, ERROR_INVALID_PARAMETER] {
+            for slot in 0..4 {
+                let mut present_or_unknown = absent;
+                present_or_unknown[slot] = status;
+                assert!(
+                    !argument_policy_allows_direct(present_or_unknown),
+                    "an override or unreadable policy in scope {slot} must fail closed"
+                );
+            }
         }
     }
 
