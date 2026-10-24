@@ -156,6 +156,7 @@ finally { Exit-BowserInstallMutex -Mutex $testMutex }
 # Only synthetic fixtures under this suite's unique temp directory are written below.
 $temp = Join-Path ([IO.Path]::GetTempPath()) ('bowser-installer-unit-' + [guid]::NewGuid().ToString('n'))
 New-Item -ItemType Directory -Path $temp | Out-Null
+$junction = Join-Path $temp 'junction'
 try {
     $managed = Join-Path $temp 'managed'
     New-Item -ItemType Directory -Path $managed | Out-Null
@@ -177,12 +178,23 @@ try {
     [IO.File]::WriteAllText($stage, 'new synthetic fixture')
     Assert-Throws { Install-StagedFile -Staged $stage -Destination $old -PreviousHash $oldHash } 'A changed destination is never overwritten'
     Assert-Equal ([IO.File]::ReadAllText($stage)) 'new synthetic fixture' 'A refused replacement preserves its staged fixture'
-    $junction = Join-Path $temp 'junction'
+    $receiptBefore = [IO.File]::ReadAllText((Join-Path $managed 'STABLE.txt'))
     New-Item -ItemType Junction -Path $junction -Target $managed | Out-Null
     Assert-Throws { Assert-NoReparsePath -Path (Join-Path $junction 'Bowser.exe') } 'A junction ancestor is refused'
-    Remove-Item -LiteralPath $junction -Force
+    # WinPS 5.1's FileSystem provider can throw while removing a junction. Nonrecursive .NET
+    # deletion unlinks only this synthetic junction, never the directory it points at.
+    [IO.Directory]::Delete($junction, $false)
+    Assert-Equal ([IO.Directory]::Exists($junction)) $false 'The synthetic junction is removed'
+    Assert-Equal ([IO.Directory]::Exists($managed)) $true 'Removing the fixture junction preserves its target directory'
+    Assert-Equal ([IO.File]::ReadAllText($old)) 'old synthetic fixture, not an executablechanged' 'Removing the fixture junction preserves its target bytes'
+    Assert-Equal ([IO.File]::ReadAllText($stage)) 'new synthetic fixture' 'Removing the fixture junction preserves staged fixture bytes'
+    Assert-Equal ([IO.File]::ReadAllText((Join-Path $managed 'STABLE.txt'))) $receiptBefore 'Removing the fixture junction preserves its target receipt'
 }
-finally { Remove-Item -LiteralPath $temp -Recurse -Force }
+finally {
+    # An earlier failed assertion must not leave a junction for WinPS's recursive provider cleanup.
+    if ([IO.Directory]::Exists($junction)) { [IO.Directory]::Delete($junction, $false) }
+    Remove-Item -LiteralPath $temp -Recurse -Force
+}
 
 # Stale-pin exit is part of the native wrapper protocol and must occur before installation work.
 $text = [IO.File]::ReadAllText($installer)
