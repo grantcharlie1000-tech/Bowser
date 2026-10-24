@@ -81,6 +81,25 @@ test('roving focus clamps at both ends and ignores other keys', () => {
   assert.equal(logic.rovingTarget('x', 2, 5), 2);
 });
 
+test('the rail waits briefly before opening or closing, and focus opens at once', () => {
+  const open = logic.railHoverAdvance(false, true, null, 1000, false);
+  assert.equal(open.emit, null);
+  assert.equal(open.due, 1000 + logic.RAIL_OPEN_MS);
+  assert.equal(open.sent, false);
+  const still = logic.railHoverAdvance(open.sent, true, open.due, open.due - 1, false);
+  assert.equal(still.emit, null);
+  const opened = logic.railHoverAdvance(still.sent, true, still.due, still.due, false);
+  assert.deepEqual(opened, { sent: true, due: null, emit: true });
+  const hold = logic.railHoverAdvance(true, true, null, 2000, false);
+  assert.deepEqual(hold, { sent: true, due: null, emit: null });
+  const close = logic.railHoverAdvance(true, false, null, 3000, false);
+  assert.equal(close.due, 3000 + logic.RAIL_CLOSE_MS);
+  const closed = logic.railHoverAdvance(close.sent, false, close.due, close.due, false);
+  assert.deepEqual(closed, { sent: false, due: null, emit: false });
+  const focus = logic.railHoverAdvance(false, true, null, 4000, true);
+  assert.deepEqual(focus, { sent: true, due: null, emit: true });
+});
+
 test('private rows sort and group exactly like normal rows (never inside a group)', () => {
   const items = [tab(1, { pinned: true, private: true }), tab(2, { g: 9, gl: true, gname: 'R', gcol: 1, gcollapsed: false, gsize: 1 }), tab(3, { private: true })];
   const plain = items.map((t) => ({ ...t, private: false }));

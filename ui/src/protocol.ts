@@ -103,6 +103,7 @@ export type Command =
   | { v: 1; t: 'group'; a: GroupAction; key: number }
   // --- vertical sidebar (lane S) ---
   | { v: 1; t: 'side'; a: 'workspace' | 'newtab' | 'collapse' }
+  | { v: 1; t: 'side'; a: 'hover'; on: boolean }
   // --- end vertical sidebar ---
   // --- toolbars and feeds (thread T13) --- a command button of the address bar or the tab bar: its item id and its place in the bar's list.
   | { v: 1; t: 'tool'; b: 'address' | 'tabs'; k: string; i: number }
@@ -509,8 +510,9 @@ export interface PanelShowMsg { readonly t: 'panelshow'; readonly p: PanelToken 
 export interface FlyoutMsg { readonly t: 'flyout'; readonly caret: number }
 export const MAX_FLYOUT_CARET = 4000;
 // --- end rail flyouts ---
-/** `side` is the far side the tabs sit on (`right` for a vertical sidebar, `bottom` for a strip); absent, the near one. */
-export interface LayoutMsg { readonly t: 'layout'; readonly mode: 'vertical' | 'horizontal'; readonly side?: 'right' | 'bottom' }
+/** `side` is the far side the tabs sit on (`right` for a vertical sidebar, `bottom` for a strip); absent, the near one.
+ *  `rail` is the unpinned vertical strip: icons until the pointer rests on it. */
+export interface LayoutMsg { readonly t: 'layout'; readonly mode: 'vertical' | 'horizontal'; readonly side?: 'right' | 'bottom'; readonly rail?: true }
 // --- tab options ---
 export const LOAD_INDICATORS = ['spinner', 'bar', 'favicon', 'none'] as const;
 export type LoadIndicator = typeof LOAD_INDICATORS[number];
@@ -719,6 +721,11 @@ export function sendPanel(t: PanelKind, fields: PanelFields): boolean {
 // --- vertical sidebar (lane S) ---
 export function sendSide(a: 'workspace' | 'newtab' | 'collapse'): boolean {
   return (a === 'workspace' || a === 'newtab' || a === 'collapse') && send({ v: 1, t: 'side', a });
+}
+
+/** Pointer entered or left the unpinned vertical rail. `on` is required; other side commands reject it. */
+export function sendSideHover(on: boolean): boolean {
+  return isBool(on) && send({ v: 1, t: 'side', a: 'hover', on });
 }
 // --- end vertical sidebar ---
 
@@ -1165,11 +1172,13 @@ export function parseInbound(data: unknown): Inbound | null {
     }
     // --- end rail flyouts ---
     case 'layout': {
-      if (!hasOnlyKeys(raw, ['v', 't', 'mode', 'side']) || raw.v !== 1 || !isOneOf(raw.mode, ['vertical', 'horizontal'] as const)) return null;
-      if (raw.side === undefined) return { t: 'layout', mode: raw.mode };
+      if (!hasOnlyKeys(raw, ['v', 't', 'mode', 'side', 'rail']) || raw.v !== 1 || !isOneOf(raw.mode, ['vertical', 'horizontal'] as const)) return null;
+      if ('rail' in raw && (raw.rail !== true || raw.mode !== 'vertical')) return null;
+      const rail = raw.rail === true ? { rail: true as const } : {};
+      if (raw.side === undefined) return { t: 'layout', mode: raw.mode, ...rail };
       const far = raw.mode === 'vertical' ? 'right' : 'bottom';
       if (raw.side !== far) return null;
-      return { t: 'layout', mode: raw.mode, side: far };
+      return { t: 'layout', mode: raw.mode, side: far, ...rail };
     }
     // --- vertical sidebar (lane S) ---
     case 'workspace': {

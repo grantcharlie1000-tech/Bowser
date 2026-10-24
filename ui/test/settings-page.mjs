@@ -228,7 +228,7 @@ test('sections match the Rust routes, in page order, and every row belongs to on
 test('save sends every profile setting exactly once in the order Rust expects', () => {
   const s = logic.parseSettingsSnapshot(fixture.snap.d);
   const draft = logic.draftOf(s);
-  assert.equal(logic.saveText(draft), 'tab_layout=horizontal\nsidebar_width=260\nsleep_enabled=true\nsleep_after_secs=300\nblocker_enabled=true\nblocker_allow=example.com,news.example\nautomatic_tab_grouping=true\nefficiency_mode=auto\ntracking_prevention=balanced\nsearch_engine=optimised\ntheme=helium\ntheme_accent=\ntoolbar_buttons=back,forward,reload,site-info,split,reader,extensions,downloads\ncentred_address_bar=true\nminimal_url=true\nshow_load_progress=true\nframeless=false\nauto_hide_bars=tabs,address,bookmarks\nauto_hide_fullscreen=true\nrounded_content_frame=true\nshow_home_button=true\nbookmarks_bar=never\nbookmarks_bar_tab_groups=false\nside_panel_position=left\ntab_preview_images=true\ntab_preview_memory=true\nfont_size=medium\nui_font=\ndefault_zoom=100\nshow_zoom_indicator=true\nnew_tab_beside_active=true\nctrl_tab_mru=true\nshift_right_click_context=false\nctrl_shift_c_copy_link=true\nctrl_s_vertical_tabs=false\npin_new_tab_groups=false\nsplit_edge_drop=true\nblock_youtube_video_ads=true\nstart_group_reopen=last\nstart_titles=always\nstart_add_button=true\nstart_columns=6\nstart_thumb_size=3\nstart_drag_reorder=true\nhomepage=\nstartup=start_page\nstartup_pages=\nstart_widgets=false\nstart_widget_columns=2\nstart_widget_height=regular\nstart_widget_bg=translucent\nstart_widget_color=#1f2933\nstart_widget_drag=true\ntab_bar_visible=true\naddress_bar_position=top\naddress_bar_visible=true\nshow_title_bar=false\nstatus_bar=overlay\nui_density=regular\ncompact_menus=false\nui_zoom=100\nlayout_saved=\nanimations=true\nrange_buttons=false\nfade_background=false\nsimple_scrollbars=false\nmono_icons=false\npanel_close_button=true\npanel_folder_counts=true\npanel_auto_close=true');
+  assert.equal(logic.saveText(draft), 'tab_layout=horizontal\nsidebar_width=260\nsidebar_collapsed=false\nsleep_enabled=true\nsleep_after_secs=300\nblocker_enabled=true\nblocker_allow=example.com,news.example\nautomatic_tab_grouping=true\nefficiency_mode=auto\ntracking_prevention=balanced\nsearch_engine=optimised\ntheme=helium\ntheme_accent=\ntoolbar_buttons=back,forward,reload,site-info,split,reader,extensions,downloads\ncentred_address_bar=true\nminimal_url=true\nshow_load_progress=true\nframeless=false\nauto_hide_bars=tabs,address,bookmarks\nauto_hide_fullscreen=true\nrounded_content_frame=true\nshow_home_button=true\nbookmarks_bar=never\nbookmarks_bar_tab_groups=false\nside_panel_position=left\ntab_preview_images=true\ntab_preview_memory=true\nfont_size=medium\nui_font=\ndefault_zoom=100\nshow_zoom_indicator=true\nnew_tab_beside_active=true\nctrl_tab_mru=true\nshift_right_click_context=false\nctrl_shift_c_copy_link=true\nctrl_s_vertical_tabs=false\npin_new_tab_groups=false\nsplit_edge_drop=true\nblock_youtube_video_ads=true\nstart_group_reopen=last\nstart_titles=always\nstart_add_button=true\nstart_columns=6\nstart_thumb_size=3\nstart_drag_reorder=true\nhomepage=\nstartup=start_page\nstartup_pages=\nstart_widgets=false\nstart_widget_columns=2\nstart_widget_height=regular\nstart_widget_bg=translucent\nstart_widget_color=#1f2933\nstart_widget_drag=true\ntab_bar_visible=true\naddress_bar_position=top\naddress_bar_visible=true\nshow_title_bar=false\nstatus_bar=overlay\nui_density=regular\ncompact_menus=false\nui_zoom=100\nlayout_saved=\nanimations=true\nrange_buttons=false\nfade_background=false\nsimple_scrollbars=false\nmono_icons=false\npanel_close_button=true\npanel_folder_counts=true\npanel_auto_close=true');
   const none = logic.saveText({ ...draft, searchEngine: null });
   assert.doesNotMatch(none, /search_engine/);
   assert.doesNotMatch(logic.saveText(draft), /auto_update|history|efficiencyActive/);
@@ -1762,9 +1762,25 @@ test('layout: the snapshot carries the Layout block, refuses anything else, and 
   // The side panel's edge stays the older key; the row that carried it alone is gone.
   assert.equal(logic.ROWS.find((row) => row.id === 'sidePanelPosition'), undefined);
   for (const id of ['layoutPreset', 'layoutBars']) assert.equal(logic.rowTier(logic.ROWS.find((row) => row.id === id)), 'core', id);
-  for (const id of ['layout', 'sidebarWidth', 'tabBarVisible', 'addressBarVisible', 'showTitleBar', 'statusBar', 'uiDensity', 'compactMenus', 'uiZoom']) {
+  for (const id of ['layout', 'sidebarWidth', 'sidebarPinned', 'tabBarVisible', 'addressBarVisible', 'showTitleBar', 'statusBar', 'uiDensity', 'compactMenus', 'uiZoom']) {
     assert.equal(logic.rowTier(logic.ROWS.find((row) => row.id === id)), 'more', id);
   }
+});
+
+test('Pin vertical tabs saves sidebar_collapsed and stays disabled for a horizontal layout', () => {
+  const parsed = logic.parseSettingsSnapshot(fixture.snap.d);
+  assert.equal(parsed.sidebarPinned, true);
+  deliver({ ...fixture.snap, d: { ...fixture.snap.d, tabLayout: 'vertical', sidebarPinned: true } });
+  const sw = app.querySelector('[data-row="sidebarPinned"]').querySelector('[role="switch"]');
+  assert.equal(sw.disabled, false);
+  assert.equal(sw.getAttribute('aria-checked'), 'true');
+  sent.length = 0;
+  sw.click();
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].a, 'save');
+  assert.match(sent[0].text, /\nsidebar_collapsed=true\n/);
+  deliver({ ...fixture.snap, d: { ...fixture.snap.d, tabLayout: 'horizontal', sidebarPinned: true } });
+  assert.equal(app.querySelector('[data-row="sidebarPinned"]').querySelector('[role="switch"]').disabled, true);
 });
 
 test('layout: presets choose a configuration, the edges derive from the tab layout, and the user’s own arrangement is kept as Saved', () => {

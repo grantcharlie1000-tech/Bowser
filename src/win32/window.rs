@@ -129,6 +129,10 @@ const WM_NEWTAB_TOOLTIP_TIMER: usize = 0xB05A;
 const NEWTAB_TOOLTIP_TEXT: &str = "New tab (Ctrl+T)";
 /// Frame timer of a vertical sidebar width drag: the moves of one frame end in one relayout.
 const WM_SIDEBAR_RESIZE_TIMER: usize = 0xB05B;
+/// Unpinned vertical tabs sliding over the page. 16 ms while the width moves, then slow, and only
+/// while the flyout is open. Idle chrome does not keep it.
+const WM_SIDEBAR_FLYOUT_TIMER: usize = 0xB0A9;
+const SIDEBAR_FLYOUT_RAISE_MS: u32 = 400;
 /// Slow check, armed only while a settings, history or split page host is hidden, that closes a
 /// host hidden for `PAGE_IDLE_CLOSE`. The next use creates it again.
 const WM_PAGE_IDLE_TIMER: usize = 0xB05C;
@@ -458,6 +462,26 @@ struct HtmlTabsInputs {
     // --- end tab options ---
 }
 
+/// Unpinned vertical tabs. The page stays at the rail; only the tabs host grows over it.
+struct RailFlyout {
+    open: bool,
+    from: i32,
+    to: i32,
+    started: Instant,
+    /// Saved sidebar width in logical pixels, reclamped when the window changes size.
+    want_logical: i32,
+    width: i32,
+}
+
+enum RailFlyoutTick {
+    /// Width is still moving.
+    Animating,
+    /// Open and settled. A slow timer keeps the host above page windows created later.
+    Open,
+    /// Closed. The timer stops.
+    Closed,
+}
+
 struct WindowChrome {
     /// Auto-hide: which bars are out of the layout, what is revealed (`auto_hide.rs`).
     ah: auto_hide::Runtime, // --- auto-hide (T11) ---
@@ -476,6 +500,10 @@ struct WindowChrome {
     /// empty while no second row is laid out.
     stack_tabs: Vec<TabId>,
     sidebar: Option<crate::vertical_tabs::SidebarLayout>,
+    /// Unpinned vertical tabs open over the page. `None` while pinned, horizontal, or fully closed.
+    rail_flyout: Option<RailFlyout>,
+    /// Last flyout width pushed to the tabs host. `0` is the settled rail.
+    rail_flyout_posted: i32,
     sidebar_rows: Vec<crate::chrome::vertical_paint::SidebarRow>,
     sidebar_scroll: i32,
     sidebar_scroll_target: i32,
@@ -713,6 +741,8 @@ impl WindowChrome {
             slots: Vec::with_capacity(8),
             stack_tabs: Vec::new(), // --- two-level stacks (T10b) ---
             sidebar: None,
+            rail_flyout: None,
+            rail_flyout_posted: 0,
             sidebar_rows: Vec::new(),
             sidebar_scroll: 0,
             sidebar_scroll_target: 0,
@@ -1129,6 +1159,7 @@ impl WindowChrome {
         } else {
             self.sidebar = None;
         }
+        self.reconcile_rail_flyout(i32::from(sidebar_width));
         if was_vertical != self.sidebar.is_some() {
             self.html_tabs_layout = None;
             self.html_tabs_opts = None; // --- tab options ---
@@ -1160,8 +1191,145 @@ impl WindowChrome {
     }
     // --- vertical sidebar (lane S) ---
     fn html_tabs_bounds(&self) -> Option<RECT> {
-        self.sidebar.as_ref().and_then(chrome_host::sidebar_bounds)
-            .or_else(|| chrome_host::tab_row_bounds(&self.layout))
+        if let Some(sidebar) = self.sidebar.as_ref() {
+            if let Some(fly) = self.rail_flyout.as_ref() {
+                if fly.width > sidebar.sidebar.width() {
+                    let rect = crate::vertical_tabs::flyout_rect(
+                        sidebar,
+                        fly.width,
+                        Metrics::new(self.dpi).px(crate::vertical_tabs::FLYOUT_KEEP),
+                    );
+                    if rect.right > rect.left && rect.bottom > rect.top {
+                        return Some(to_win_rect(rect));
+                    }
+                }
+            }
+            return chrome_host::sidebar_bounds(sidebar);
+        }
+        chrome_host::tab_row_bounds(&self.layout)
+    }
+    /// The laid-out sidebar is the collapsed icon rail (the page is not pushed aside).
+    fn rail_collapsed(&self) -> bool {
+        self.sidebar.as_ref().is_some_and(|sidebar| {
+            sidebar.sidebar.width()
+                <= Metrics::new(self.dpi).px(crate::vertical_tabs::COLLAPSED_WIDTH).saturating_add(1)
+        })
+    }
+    /// Physical width the tabs host should be: the rail, or the saved width clamped to the window.
+    fn flyout_target(&self, open: bool, want_logical: i32) -> i32 {
+        let Some(sidebar) = self.sidebar.as_ref() else { return 0 };
+        let rail = sidebar.sidebar.width().max(1);
+        if !open {
+            return rail;
+        }
+        let metrics = Metrics::new(self.dpi);
+        let want = metrics.px(want_logical).max(rail);
+        crate::vertical_tabs::flyout_rect(sidebar, want, metrics.px(crate::vertical_tabs::FLYOUT_KEEP)).width()
+    }
+    /// Starts or retargets the overlay. False when the request is already where the flyout is going.
+    fn set_rail_hover(&mut self, open: bool, want_logical: i32, now: Instant) -> bool {
+        if !self.rail_collapsed() || self.ah.sidebar_hidden() {
+            let had = self.rail_flyout.take().is_some();
+            if had {
+                self.rail_flyout_posted = 0;
+            }
+            return had;
+        }
+        let target = self.flyout_target(open, want_logical);
+        if self.rail_flyout.as_ref().is_some_and(|fly| fly.open == open && fly.to == target && fly.want_logical == want_logical) {
+            return false;
+        }
+        let current = self.rail_flyout.as_ref().map(|fly| fly.width).unwrap_or_else(|| {
+            self.sidebar.map(|sidebar| sidebar.sidebar.width()).unwrap_or(target)
+        });
+        let snap = !animations_enabled() || current == target;
+        self.rail_flyout = Some(RailFlyout {
+            open,
+            from: current,
+            to: target,
+            started: now,
+            want_logical,
+            width: if snap { target } else { current },
+        });
+        if snap && !open {
+            self.rail_flyout = None;
+        }
+        true
+    }
+    /// One frame of the overlay. Closing all the way drops the flyout.
+    fn step_rail_flyout(&mut self, now: Instant) -> RailFlyoutTick {
+        if self.rail_flyout.is_none() {
+            return RailFlyoutTick::Closed;
+        }
+        if !self.rail_collapsed() || self.ah.sidebar_hidden() {
+            self.rail_flyout = None;
+            return RailFlyoutTick::Closed;
+        }
+        let (from, to, started, open) = {
+            let fly = self.rail_flyout.as_ref().expect("checked");
+            (fly.from, fly.to, fly.started, fly.open)
+        };
+        let elapsed_ms = now.saturating_duration_since(started).as_secs_f32() * 1000.0;
+        let t = if animations_enabled() {
+            (elapsed_ms / crate::vertical_tabs::FLYOUT_MS as f32).clamp(0.0, 1.0)
+        } else {
+            1.0
+        };
+        let width = crate::vertical_tabs::flyout_width_at(from, to, t);
+        if t < 1.0 {
+            if let Some(fly) = self.rail_flyout.as_mut() {
+                fly.width = width;
+            }
+            return RailFlyoutTick::Animating;
+        }
+        if open {
+            if let Some(fly) = self.rail_flyout.as_mut() {
+                fly.width = to;
+            }
+            RailFlyoutTick::Open
+        } else {
+            self.rail_flyout = None;
+            RailFlyoutTick::Closed
+        }
+    }
+    /// Steps the flyout and reports whether the host width changed since the last push.
+    fn advance_rail_flyout(&mut self, now: Instant) -> (RailFlyoutTick, bool) {
+        let tick = self.step_rail_flyout(now);
+        let width = self.rail_flyout.as_ref().map(|fly| fly.width).unwrap_or(0);
+        let changed = width != self.rail_flyout_posted;
+        if changed {
+            self.rail_flyout_posted = width;
+        }
+        (tick, changed)
+    }
+    /// A resize while the rail is open reclamps the flyout. The page width is untouched.
+    fn reconcile_rail_flyout(&mut self, logical_width: i32) {
+        if self.sidebar.is_none()
+            || logical_width > crate::vertical_tabs::COLLAPSED_WIDTH
+            || self.ah.sidebar_hidden()
+        {
+            // The host is about to be synced to the laid-out sidebar. Forget the last flyout
+            // width so a later snap-open (animations off) still pushes bounds.
+            self.rail_flyout = None;
+            self.rail_flyout_posted = 0;
+            return;
+        }
+        let Some(fly) = self.rail_flyout.as_ref() else { return };
+        let open = fly.open;
+        let want = fly.want_logical;
+        let settled = fly.width == fly.to;
+        let current = fly.width;
+        let next = self.flyout_target(open, want);
+        let Some(fly) = self.rail_flyout.as_mut() else { return };
+        if settled || !animations_enabled() {
+            fly.from = next;
+            fly.to = next;
+            fly.width = next;
+        } else if fly.to != next {
+            fly.from = current;
+            fly.to = next;
+            fly.started = Instant::now();
+        }
     }
     // --- end vertical sidebar ---
     /// The tab row or vertical sidebar covered by the Tabs host, in client pixels.
@@ -1174,7 +1342,7 @@ impl WindowChrome {
             if self.ah.sidebar_hidden() {
                 return None; // --- auto-hide (T11) ---
             }
-            return sidebar_html_region(self.sidebar.as_ref(), true);
+            return self.html_tabs_bounds().map(Rect::from);
         }
         // --- end vertical sidebar ---
         if self.ah.top_hidden() {
@@ -1837,6 +2005,56 @@ fn sync_html_host_bounds(hwnd: HWND) {
     }
     auto_hide::after_layout(hwnd); // --- auto-hide (T11) --- sensors, and raising what is shown
     frame_grip::sync(hwnd, &covering, thin_bottom); // above the hosts and the sensors
+    raise_rail_flyout(hwnd);
+}
+
+/// The open rail sits over page windows, which are created later and would otherwise cover it.
+/// Resize grips stay above the flyout.
+fn raise_rail_flyout(hwnd: HWND) {
+    let host = with_chrome(hwnd, |s| {
+        let wider = s.rail_flyout.as_ref().zip(s.sidebar.as_ref())
+            .is_some_and(|(fly, sidebar)| fly.width > sidebar.sidebar.width());
+        wider.then(|| s.html_tabs.clone()).flatten()
+    })
+    .flatten();
+    if let Some(host) = host {
+        host.raise_to_top();
+        frame_grip::raise(hwnd);
+    }
+}
+
+fn arm_sidebar_flyout(hwnd: HWND, tick: RailFlyoutTick) {
+    unsafe {
+        match tick {
+            RailFlyoutTick::Animating => {
+                let _ = SetTimer(Some(hwnd), WM_SIDEBAR_FLYOUT_TIMER, ANIMATION_FRAME_MS, None);
+            }
+            RailFlyoutTick::Open => {
+                let _ = SetTimer(Some(hwnd), WM_SIDEBAR_FLYOUT_TIMER, SIDEBAR_FLYOUT_RAISE_MS, None);
+            }
+            RailFlyoutTick::Closed => {
+                let _ = KillTimer(Some(hwnd), WM_SIDEBAR_FLYOUT_TIMER);
+            }
+        }
+    }
+}
+
+/// Pointer entered or left the unpinned rail. The page is not resized; only the tabs host moves.
+fn rail_hover(hwnd: HWND, open: bool) {
+    let Some(app) = app_of(hwnd) else { return };
+    let want = i32::from(App::settings(&app).sidebar_width);
+    let changed = with_chrome(hwnd, |s| s.set_rail_hover(open, want, Instant::now())).unwrap_or(false);
+    if !changed {
+        return;
+    }
+    let (tick, moved) = with_chrome(hwnd, |s| s.advance_rail_flyout(Instant::now()))
+        .unwrap_or((RailFlyoutTick::Closed, true));
+    if moved || !matches!(tick, RailFlyoutTick::Open) {
+        sync_html_host_bounds(hwnd);
+    } else {
+        raise_rail_flyout(hwnd);
+    }
+    arm_sidebar_flyout(hwnd, tick);
 }
 // --- auto-hide (T11) --- what the rest of the app calls (window/auto_hide.rs does the work).
 pub(crate) fn auto_hide_sync(hwnd: HWND, app: &AppRef) {
@@ -4322,6 +4540,22 @@ unsafe extern "system" fn window_proc(
                 }
                 LRESULT(0)
             }
+            WM_TIMER if wparam.0 == WM_SIDEBAR_FLYOUT_TIMER => {
+                let (tick, moved) = with_chrome(hwnd, |s| s.advance_rail_flyout(Instant::now()))
+                    .unwrap_or((RailFlyoutTick::Closed, true));
+                match tick {
+                    RailFlyoutTick::Closed => {
+                        unsafe { let _ = KillTimer(Some(hwnd), WM_SIDEBAR_FLYOUT_TIMER); }
+                        sync_html_host_bounds(hwnd);
+                    }
+                    RailFlyoutTick::Animating => sync_html_host_bounds(hwnd),
+                    RailFlyoutTick::Open => {
+                        unsafe { let _ = SetTimer(Some(hwnd), WM_SIDEBAR_FLYOUT_TIMER, SIDEBAR_FLYOUT_RAISE_MS, None); }
+                        if moved { sync_html_host_bounds(hwnd); } else { raise_rail_flyout(hwnd); }
+                    }
+                }
+                LRESULT(0)
+            }
             WM_TIMER if wparam.0 == WM_ANIMATION_TIMER => {
                 let running =
                     with_chrome(hwnd, |s| s.animate(hwnd, Instant::now())).unwrap_or(false);
@@ -4453,6 +4687,7 @@ unsafe extern "system" fn window_proc(
                 let _ = KillTimer(Some(hwnd), WM_SESSION_SAVE_TIMER);
                 let _ = KillTimer(Some(hwnd), super::WM_IMPORT_OFFER_TIMER);
                 let _ = KillTimer(Some(hwnd), WM_SIDEBAR_RESIZE_TIMER);
+                let _ = KillTimer(Some(hwnd), WM_SIDEBAR_FLYOUT_TIMER);
                 let _ = KillTimer(Some(hwnd), WM_PAGE_IDLE_TIMER);
                 card::cancel(hwnd);
                 // The chrome hosts live in the engine's environment: close them first.
@@ -4488,6 +4723,7 @@ unsafe extern "system" fn window_proc(
                 let _ = KillTimer(Some(hwnd), WM_SPLIT_BOUNDS_TIMER);
                 let _ = KillTimer(Some(hwnd), super::WM_IMPORT_OFFER_TIMER);
                 let _ = KillTimer(Some(hwnd), WM_SIDEBAR_RESIZE_TIMER);
+                let _ = KillTimer(Some(hwnd), WM_SIDEBAR_FLYOUT_TIMER);
                 let _ = KillTimer(Some(hwnd), WM_PAGE_IDLE_TIMER);
                 let _ = KillTimer(Some(hwnd), crate::win32::WM_PRIVACY_STATS_TIMER);
                 card::cancel(hwnd);
@@ -10227,6 +10463,10 @@ fn html_tabs_command(hwnd: HWND, command: ChromeCommand) {
         ChromeCommand::Group { action, key } => html_group_action(hwnd, action, key),
         // --- vertical sidebar (lane S) ---
         ChromeCommand::Side(action) => {
+            if let SideAction::Hover(open) = action {
+                rail_hover(hwnd, open);
+                return;
+            }
             let vertical = with_chrome(hwnd, |s| s.sidebar.is_some() && s.html_tab_region().is_some()).unwrap_or(false);
             if !vertical { return; }
             match action {
@@ -10246,6 +10486,7 @@ fn html_tabs_command(hwnd: HWND, command: ChromeCommand) {
                         toggle_sidebar(hwnd, &app);
                     }
                 }
+                SideAction::Hover(_) => {}
             }
         }
         // --- end vertical sidebar ---
@@ -10872,12 +11113,16 @@ fn html_tabs_sync(hwnd: HWND) {
     };
     // Titles, loading and markers come from the snapshot the native strip paints.
     let tab_layout = App::tab_layout(&app);
+    let rail = App::sidebar_collapsed(&app);
     let Some((host, snapshot, mode)) = with_chrome(hwnd, |s| {
         s.html_tab_region()?;
         // --- vertical sidebar (lane S) ---
         // The side tells the strip which way the page is, for dragging a tab out onto it.
         let mode = if s.sidebar.is_some() {
-            chrome_host::protocol::LayoutMode::Vertical { right: tab_layout == crate::settings::TabLayout::VerticalRight }
+            chrome_host::protocol::LayoutMode::Vertical {
+                right: tab_layout == crate::settings::TabLayout::VerticalRight,
+                rail,
+            }
         } else {
             chrome_host::protocol::LayoutMode::Horizontal { bottom: tab_layout == crate::settings::TabLayout::TabsBottom }
         };
@@ -12749,7 +12994,7 @@ mod tests {
             super::super::WM_READER_PROBE_TIMER, super::super::WM_TRANSLATE_WATCH_TIMER,
             super::super::WM_DOWNLOADS_TIMER, crate::app::BLOCKED_TITLE_TIMER,
             WM_SIDEBAR_SCROLL_TIMER, WM_RAIL_TOOLTIP_TIMER, WM_NEWTAB_TOOLTIP_TIMER,
-            WM_SIDEBAR_RESIZE_TIMER, WM_PAGE_IDLE_TIMER, WM_HTML_POPUP_PREWARM_TIMER,
+            WM_SIDEBAR_RESIZE_TIMER, WM_SIDEBAR_FLYOUT_TIMER, WM_PAGE_IDLE_TIMER, WM_HTML_POPUP_PREWARM_TIMER,
             WM_TAB_TICK_TIMER, WM_TAB_THUMB_TIMER, WM_TAB_LINK_TIMER, WM_THEME_SCHEDULE_TIMER,
             auto_hide::TIMER_ID, side_panel::TIMER_ID, super::super::panel_webapp::RELOAD_TIMER,
             super::super::panel_webapp::IDLE_TIMER, devtools_dock::TIMER_ID,

@@ -126,6 +126,8 @@ export type Ack = typeof ACKS[number];
 export interface SettingsSnapshot {
   tabLayout: TabLayout;
   sidebarWidth: number;
+  /** Vertical tabs stay open and push the page. Off, they are a hover rail over the page. */
+  sidebarPinned: boolean;
   sleepEnabled: boolean;
   sleepAfterSecs: number;
   blockerEnabled: boolean;
@@ -293,7 +295,7 @@ const isRecord = (value: unknown): value is RecordValue => typeof value === 'obj
 const isIntBetween = (value: unknown, min: number, max: number): value is number => typeof value === 'number' && Number.isInteger(value) && value >= min && value <= max;
 const isStrUpTo = (value: unknown, max: number): value is string => typeof value === 'string' && value.length <= max;
 const oneOf = <T extends string>(value: unknown, list: readonly T[]): value is T => typeof value === 'string' && (list as readonly string[]).includes(value);
-const KEYS = ['tabLayout', 'sidebarWidth', 'sleepEnabled', 'sleepAfterSecs', 'blockerEnabled', 'blockerAllow', 'searchEngine', 'searchFallback',
+const KEYS = ['tabLayout', 'sidebarWidth', 'sidebarPinned', 'sleepEnabled', 'sleepAfterSecs', 'blockerEnabled', 'blockerAllow', 'searchEngine', 'searchFallback',
   'automaticTabGrouping', 'efficiencyMode', 'efficiencyActive', 'trackingPrevention', 'autoUpdate', 'historyEnabled', 'guest', 'profile', 'avatar',
   'version', 'update', 'updateVersion', 'lastCheck', 'checkResult', 'ack', 'error', 'readable',
   'theme', 'themeAccent', 'toolbarButtons', 'centredAddressBar', 'minimalUrl', 'showLoadProgress', 'frameless', 'autoHideBars', 'autoHideFullscreen', 'roundedContentFrame', 'showHomeButton',
@@ -334,7 +336,7 @@ const SITE_RE = /^[^\s\u0000-\u001f\u007f,]{1,253}$/u;
 export function parseSettingsSnapshot(value: unknown): SettingsSnapshot | null {
   if (!isRecord(value) || Object.keys(value).length !== KEYS.length || Object.keys(value).some((key) => !KEYS.includes(key))) return null;
   const v = value;
-  if (!oneOf(v.tabLayout, TAB_LAYOUTS) || !isIntBetween(v.sidebarWidth, MIN_SIDEBAR, MAX_SIDEBAR)) return null;
+  if (!oneOf(v.tabLayout, TAB_LAYOUTS) || !isIntBetween(v.sidebarWidth, MIN_SIDEBAR, MAX_SIDEBAR) || typeof v.sidebarPinned !== 'boolean') return null;
   if (typeof v.sleepEnabled !== 'boolean' || !isIntBetween(v.sleepAfterSecs, MIN_SLEEP, MAX_SLEEP)) return null;
   if (typeof v.blockerEnabled !== 'boolean' || !Array.isArray(v.blockerAllow) || v.blockerAllow.length > MAX_ALLOW) return null;
   if (!v.blockerAllow.every((site) => typeof site === 'string' && SITE_RE.test(site)) || !allowFits(v.blockerAllow as string[])) return null;
@@ -384,6 +386,7 @@ export function parseSettingsSnapshot(value: unknown): SettingsSnapshot | null {
   return {
     tabLayout: v.tabLayout,
     sidebarWidth: v.sidebarWidth,
+    sidebarPinned: v.sidebarPinned as boolean,
     sleepEnabled: v.sleepEnabled,
     sleepAfterSecs: v.sleepAfterSecs,
     blockerEnabled: v.blockerEnabled,
@@ -454,7 +457,7 @@ export function parseSettingsSnapshot(value: unknown): SettingsSnapshot | null {
 
 /** The profile settings `save` carries (everything else in the snapshot is read-only). */
 export type Draft = Pick<SettingsSnapshot,
-  | 'tabLayout' | 'sidebarWidth' | 'sleepEnabled' | 'sleepAfterSecs' | 'blockerEnabled' | 'blockerAllow' | 'searchEngine' | 'automaticTabGrouping'
+  | 'tabLayout' | 'sidebarWidth' | 'sidebarPinned' | 'sleepEnabled' | 'sleepAfterSecs' | 'blockerEnabled' | 'blockerAllow' | 'searchEngine' | 'automaticTabGrouping'
   | 'efficiencyMode' | 'trackingPrevention' | 'theme' | 'themeAccent' | 'toolbarButtons' | 'centredAddressBar' | 'minimalUrl' | 'showLoadProgress'
   | 'frameless' | 'autoHideBars' | 'autoHideFullscreen' | 'roundedContentFrame' | 'showHomeButton' | 'bookmarksBar' | 'bookmarksBarTabGroups' | 'sidePanelPosition' | 'tabPreviewImages'
   | 'tabPreviewMemory' | 'fontSize' | 'uiFont' | 'defaultZoom' | 'showZoomIndicator' | 'newTabBesideActive' | 'ctrlTabMru' | 'shiftRightClickContext'
@@ -465,14 +468,14 @@ export type Draft = Pick<SettingsSnapshot,
 
 export function draftOf(snapshot: SettingsSnapshot): Draft {
   const {
-    tabLayout, sidebarWidth, sleepEnabled, sleepAfterSecs, blockerEnabled, blockerAllow, searchEngine, automaticTabGrouping, efficiencyMode,
+    tabLayout, sidebarWidth, sidebarPinned, sleepEnabled, sleepAfterSecs, blockerEnabled, blockerAllow, searchEngine, automaticTabGrouping, efficiencyMode,
     trackingPrevention, theme, themeAccent, toolbarButtons, centredAddressBar, minimalUrl, showLoadProgress, frameless, autoHideBars, autoHideFullscreen, roundedContentFrame,
     showHomeButton, bookmarksBar, bookmarksBarTabGroups, sidePanelPosition, tabPreviewImages, tabPreviewMemory, fontSize, uiFont, defaultZoom,
     showZoomIndicator, newTabBesideActive, ctrlTabMru, shiftRightClickContext, ctrlShiftCCopyLink, ctrlSVerticalTabs, pinNewTabGroups, splitEdgeDrop,
     blockYoutubeVideoAds, start, layout, window,
   } = snapshot;
   return {
-    tabLayout, sidebarWidth, sleepEnabled, sleepAfterSecs, blockerEnabled, blockerAllow: [...blockerAllow], searchEngine, automaticTabGrouping,
+    tabLayout, sidebarWidth, sidebarPinned, sleepEnabled, sleepAfterSecs, blockerEnabled, blockerAllow: [...blockerAllow], searchEngine, automaticTabGrouping,
     efficiencyMode, trackingPrevention, theme, themeAccent, toolbarButtons, centredAddressBar, minimalUrl, showLoadProgress, frameless, autoHideBars, autoHideFullscreen,
     roundedContentFrame, showHomeButton, bookmarksBar, bookmarksBarTabGroups, sidePanelPosition, tabPreviewImages, tabPreviewMemory, fontSize, uiFont,
     defaultZoom, showZoomIndicator, newTabBesideActive, ctrlTabMru, shiftRightClickContext, ctrlShiftCCopyLink, ctrlSVerticalTabs, pinNewTabGroups,
@@ -499,6 +502,7 @@ export function saveText(draft: Draft): string | null {
   const lines = [
     `tab_layout=${draft.tabLayout}`,
     `sidebar_width=${draft.sidebarWidth}`,
+    `sidebar_collapsed=${draft.sidebarPinned ? 'false' : 'true'}`,
     `sleep_enabled=${draft.sleepEnabled}`,
     `sleep_after_secs=${draft.sleepAfterSecs}`,
     `blocker_enabled=${draft.blockerEnabled}`,
@@ -736,6 +740,7 @@ export const ROWS: readonly RowSpec[] = [
   { id: 'layoutBars', section: 'appearance', label: 'Tab bar, address bar and panels', description: 'Which edge each one sits on. The address bar along the bottom keeps a title row at the top for the window buttons.', keywords: 'tab bar position top left right bottom address bar side panel dock helium edge' },
   { id: 'layout', section: 'appearance', label: 'Tab bar style at the top', description: 'How the tabs and the address bar share the top of the window.', keywords: 'tabs toolbar horizontal single row top browser layout' },
   { id: 'sidebarWidth', section: 'appearance', label: 'Sidebar width', description: 'Width of the tab sidebar in the vertical layouts.', keywords: 'vertical tabs size wide narrow pixels' },
+  { id: 'sidebarPinned', section: 'appearance', label: 'Pin vertical tabs', description: 'Keeps the vertical tab strip open and moves the page aside. Off, it is a narrow rail of icons that opens over the page when the pointer rests on it.', keywords: 'vertical tabs pin sidebar hover expand overlay edge rail icons' },
   { id: 'tabBarVisible', section: 'appearance', label: 'Show the tab bar', description: 'Off, the tabs are reached with Ctrl+Tab, the tab list and Quick commands.', keywords: 'tab bar show hide tabs visible' },
   { id: 'addressBarVisible', section: 'appearance', label: 'Show the address bar row', description: 'The whole row: navigation, the address field and the menu. Off, Ctrl+L brings it back until the address field loses focus.', keywords: 'address bar show hide toolbar row visible ctrl l' },
   { id: 'showTitleBar', section: 'appearance', label: 'Show the title bar when the tab bar is on a side', description: 'A row above the address bar with the page title and the window buttons. With the address bar along the bottom, the row is always there.', keywords: 'title bar window buttons caption vertical side page title' },

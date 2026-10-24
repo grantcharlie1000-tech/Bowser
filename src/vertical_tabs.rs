@@ -6,6 +6,10 @@ use crate::settings::{SidePanelPosition, TabLayout};
 pub const MIN_WIDTH: i32 = 180;
 /// Width of the collapsed, icons-only sidebar strip.
 pub const COLLAPSED_WIDTH: i32 = 48;
+/// How long an unpinned rail takes to open or close over the page, in milliseconds.
+pub const FLYOUT_MS: u32 = 180;
+/// Logical pixels of the page that stay visible beside an open flyout.
+pub const FLYOUT_KEEP: i32 = 64;
 pub const MAX_WIDTH: i32 = 360;
 pub const DEFAULT_WIDTH: i32 = 260;
 pub const RESIZE_HANDLE_WIDTH: i32 = 5;
@@ -229,6 +233,40 @@ impl SidebarLayout {
     }
 }
 
+/// Width of an overlay at progress `t` in `0.0..=1.0`, ease-out cubic.
+/// `t <= 0` is `from`. Non-finite or `t >= 1` is `to`.
+pub fn flyout_width_at(from: i32, to: i32, t: f32) -> i32 {
+    if !t.is_finite() || t >= 1.0 {
+        return to;
+    }
+    if t <= 0.0 {
+        return from;
+    }
+    let eased = 1.0 - (1.0 - t).powi(3);
+    from.saturating_add(((to - from) as f32 * eased).round() as i32)
+}
+
+/// Tabs-host rectangle while an unpinned rail is open. It grows from the sidebar's outer edge over
+/// the page and does not move `viewport`. `width_px` and `keep_px` are physical pixels. The result
+/// is never narrower than the laid-out sidebar.
+pub fn flyout_rect(layout: &SidebarLayout, width_px: i32, keep_px: i32) -> Rect {
+    let rail = layout.sidebar.width().max(1);
+    let width = width_px.max(rail);
+    let keep = keep_px.max(0);
+    match layout.side {
+        SidePanelPosition::Left => {
+            let max_right = (layout.viewport.right - keep).max(layout.sidebar.left.saturating_add(rail));
+            let right = layout.sidebar.left.saturating_add(width).min(max_right);
+            Rect::new(layout.sidebar.left, layout.sidebar.top, right, layout.sidebar.bottom)
+        }
+        SidePanelPosition::Right => {
+            let min_left = (layout.viewport.left + keep).min(layout.sidebar.right.saturating_sub(rail));
+            let left = layout.sidebar.right.saturating_sub(width).max(min_left);
+            Rect::new(left, layout.sidebar.top, layout.sidebar.right, layout.sidebar.bottom)
+        }
+    }
+}
+
 /// Classifies a point in the sidebar after applying the current scroll offset.
 pub fn hit_test(
     layout: &SidebarLayout,
@@ -358,5 +396,57 @@ mod tests {
                 "dpi={dpi}"
             );
         }
+    }
+
+    #[test]
+    fn flyout_grows_over_the_page_without_moving_the_viewport() {
+        let layout = SidebarLayout::compute(900, 700, 96, COLLAPSED_WIDTH, false);
+        let page = layout.viewport;
+        let open = flyout_rect(&layout, 260, FLYOUT_KEEP);
+        assert_eq!(layout.viewport, page, "the flyout must not push the page");
+        assert_eq!(open.left, layout.sidebar.left);
+        assert_eq!(open.top, layout.sidebar.top);
+        assert_eq!(open.bottom, layout.sidebar.bottom);
+        assert_eq!(open.right, layout.sidebar.left + 260);
+        assert!(open.width() > layout.sidebar.width());
+        assert!(open.right <= page.right - FLYOUT_KEEP);
+
+        let tight = SidebarLayout::compute(200, 400, 96, COLLAPSED_WIDTH, false);
+        let clamped = flyout_rect(&tight, MAX_WIDTH, FLYOUT_KEEP);
+        assert!(clamped.width() >= tight.sidebar.width());
+        assert!(clamped.right <= tight.viewport.right - FLYOUT_KEEP || clamped.width() == tight.sidebar.width());
+    }
+
+    #[test]
+    fn flyout_on_the_right_grows_toward_the_page() {
+        let layout = SidebarLayout::compute_in_frame_at(
+            900,
+            700,
+            96,
+            COLLAPSED_WIDTH,
+            false,
+            SidePanelPosition::Right,
+            8,
+            700,
+            TAB_ROW_HEIGHT,
+        );
+        let open = flyout_rect(&layout, 260, FLYOUT_KEEP);
+        assert_eq!(open.right, layout.sidebar.right);
+        assert_eq!(open.top, layout.sidebar.top);
+        assert!(open.left < layout.sidebar.left);
+        assert!(open.left >= layout.viewport.left + FLYOUT_KEEP || open.width() == layout.sidebar.width());
+        assert_eq!(layout.viewport.right, layout.sidebar.left);
+    }
+
+    #[test]
+    fn flyout_width_eases_out_and_settles_on_the_endpoints() {
+        assert_eq!(flyout_width_at(48, 260, 0.0), 48);
+        assert_eq!(flyout_width_at(48, 260, 1.0), 260);
+        assert_eq!(flyout_width_at(48, 260, f32::NAN), 260);
+        assert_eq!(flyout_width_at(260, 48, -1.0), 260);
+        // Ease-out cubic at t=0.5 is 1 - 0.5^3 = 0.875.
+        assert_eq!(flyout_width_at(0, 100, 0.5), 88);
+        let early = flyout_width_at(48, 260, 0.2);
+        assert!(early > 48 && early < 260);
     }
 }

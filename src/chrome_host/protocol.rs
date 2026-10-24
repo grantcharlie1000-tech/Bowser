@@ -188,14 +188,15 @@ pub struct PanelFields {
 
 /// The tab list's form, and whether it sits on the far side of the page (a sidebar at the right, or a
 /// strip along the bottom), where a tab is dragged left or up onto the page.
+/// `rail` is the unpinned vertical strip: icons until the pointer rests on it, then a flyout over the page.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum LayoutMode { Vertical { right: bool }, Horizontal { bottom: bool } }
+pub enum LayoutMode { Vertical { right: bool, rail: bool }, Horizontal { bottom: bool } }
 pub fn layout_needs_sync(cached: Option<LayoutMode>, current: LayoutMode) -> bool {
     cached != Some(current)
 }
 // --- vertical sidebar (lane S) ---
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SideAction { Workspace, NewTab, Collapse }
+pub enum SideAction { Workspace, NewTab, Collapse, Hover(bool) }
 // --- end vertical sidebar ---
 
 
@@ -1155,7 +1156,7 @@ fn build_command(fields: &[(String, Value)]) -> Result<Command, ProtocolError> {
         // --- end tab options ---
         "group" => &["a", "key"],
         // --- vertical sidebar (lane S) ---
-        "side" => &["a"],
+        "side" => &["a", "on"],
         // --- end vertical sidebar ---
         "tool" => &["b", "k", "i"], // --- toolbars and feeds (thread T13) ---
         "rail" => &["a", "k", "r"],
@@ -1280,6 +1281,10 @@ fn build_command(fields: &[(String, Value)]) -> Result<Command, ProtocolError> {
         },
         // --- vertical sidebar (lane S) ---
         "side" => Command::Side(match str_field(fields, "a")? {
+            "hover" => SideAction::Hover(bool_field(fields, "on")?),
+            "workspace" | "newtab" | "collapse" if field(fields, "on").is_some() => {
+                return Err(ProtocolError::UnknownKey("on".to_owned()));
+            }
             "workspace" => SideAction::Workspace,
             "newtab" => SideAction::NewTab,
             "collapse" => SideAction::Collapse,
@@ -1475,11 +1480,18 @@ pub fn flyout_json(caret: i32) -> String {
 }
 
 pub fn layout_json(mode: LayoutMode) -> String {
-    let (mode, side) = match mode {
-        LayoutMode::Vertical { right } => ("vertical", if right { ",\"side\":\"right\"" } else { "" }),
-        LayoutMode::Horizontal { bottom } => ("horizontal", if bottom { ",\"side\":\"bottom\"" } else { "" }),
-    };
-    format!("{{\"v\":1,\"t\":\"layout\",\"mode\":\"{mode}\"{side}}}")
+    match mode {
+        LayoutMode::Vertical { right, rail } => {
+            let side = if right { ",\"side\":\"right\"" } else { "" };
+            // Absent unless the strip is the unpinned rail, so older fixtures keep their bytes.
+            let rail = if rail { ",\"rail\":true" } else { "" };
+            format!("{{\"v\":1,\"t\":\"layout\",\"mode\":\"vertical\"{side}{rail}}}")
+        }
+        LayoutMode::Horizontal { bottom } => {
+            let side = if bottom { ",\"side\":\"bottom\"" } else { "" };
+            format!("{{\"v\":1,\"t\":\"layout\",\"mode\":\"horizontal\"{side}}}")
+        }
+    }
 }
 
 // --- vertical sidebar (lane S) ---
@@ -2688,7 +2700,7 @@ mod tests {
             set_text_json("https://example.test/😀", false),
             completion_json(9, ".test/"),
             panelshow_json("history").expect("panel token"),
-            layout_json(LayoutMode::Vertical { right: false }),
+            layout_json(LayoutMode::Vertical { right: false, rail: false }),
             snap,
         );
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -2706,7 +2718,7 @@ mod tests {
     fn sidebar_messages_match_own_committed_fixture() {
         let content = format!(
             "{{\"layoutVertical\":{},\"layoutHorizontal\":{},\"workspace\":{}}}\n",
-            layout_json(LayoutMode::Vertical { right: false }),
+            layout_json(LayoutMode::Vertical { right: false, rail: false }),
             layout_json(LayoutMode::Horizontal { bottom: false }),
             workspace_json("Work & Play", "g:code").expect("workspace glyph"),
         );
@@ -2722,9 +2734,9 @@ mod tests {
 
     #[test]
     fn layout_sync_is_required_after_mode_changes_and_host_ready() {
-        assert!(layout_needs_sync(None, LayoutMode::Vertical { right: false }));
-        assert!(layout_needs_sync(Some(LayoutMode::Horizontal { bottom: false }), LayoutMode::Vertical { right: false }));
-        assert!(!layout_needs_sync(Some(LayoutMode::Vertical { right: false }), LayoutMode::Vertical { right: false }));
+        assert!(layout_needs_sync(None, LayoutMode::Vertical { right: false, rail: false }));
+        assert!(layout_needs_sync(Some(LayoutMode::Horizontal { bottom: false }), LayoutMode::Vertical { right: false, rail: false }));
+        assert!(!layout_needs_sync(Some(LayoutMode::Vertical { right: false, rail: false }), LayoutMode::Vertical { right: false, rail: false }));
     }
 
     #[test]
@@ -2732,9 +2744,16 @@ mod tests {
         assert_eq!(ok(r#"{"v":1,"t":"side","a":"workspace"}"#), Command::Side(SideAction::Workspace));
         assert_eq!(ok(r#"{"v":1,"t":"side","a":"newtab"}"#), Command::Side(SideAction::NewTab));
         assert_eq!(ok(r#"{"v":1,"t":"side","a":"collapse"}"#), Command::Side(SideAction::Collapse));
+        assert_eq!(ok(r#"{"v":1,"t":"side","a":"hover","on":true}"#), Command::Side(SideAction::Hover(true)));
+        assert_eq!(ok(r#"{"v":1,"t":"side","a":"hover","on":false}"#), Command::Side(SideAction::Hover(false)));
         assert!(parse_command(r#"{"v":1,"t":"side","a":"collapse","id":1}"#).is_err());
         assert!(parse_command(r#"{"v":1,"t":"side","a":"menu"}"#).is_err());
         assert!(parse_command(r#"{"v":1,"t":"side","a":"workspace","id":1}"#).is_err());
+        assert!(parse_command(r#"{"v":1,"t":"side","a":"hover"}"#).is_err());
+        assert!(parse_command(r#"{"v":1,"t":"side","a":"hover","on":"true"}"#).is_err());
+        assert!(parse_command(r#"{"v":1,"t":"side","a":"collapse","on":true}"#).is_err());
+        assert!(parse_command(r#"{"v":1,"t":"side","a":"newtab","on":false}"#).is_err());
+        assert!(!is_popup_command(&Command::Side(SideAction::Hover(true))));
     }
     // --- end vertical sidebar ---
 
@@ -2801,12 +2820,15 @@ mod tests {
         assert_eq!(flyout_json(22), r#"{"v":1,"t":"flyout","caret":22}"#);
         assert_eq!(flyout_json(-1), r#"{"v":1,"t":"flyout","caret":-1}"#);
         assert_eq!(flyout_json(MAX_FLYOUT_CARET + 1), r#"{"v":1,"t":"flyout","caret":-1}"#);
-        assert_eq!(layout_json(LayoutMode::Vertical { right: false }), r#"{"v":1,"t":"layout","mode":"vertical"}"#);
+        assert_eq!(layout_json(LayoutMode::Vertical { right: false, rail: false }), r#"{"v":1,"t":"layout","mode":"vertical"}"#);
         assert_eq!(layout_json(LayoutMode::Horizontal { bottom: false }), r#"{"v":1,"t":"layout","mode":"horizontal"}"#);
         // The far side rides only when the tabs are there, so the near-side shape is unchanged.
-        assert_eq!(layout_json(LayoutMode::Vertical { right: true }), r#"{"v":1,"t":"layout","mode":"vertical","side":"right"}"#);
+        assert_eq!(layout_json(LayoutMode::Vertical { right: true, rail: false }), r#"{"v":1,"t":"layout","mode":"vertical","side":"right"}"#);
         assert_eq!(layout_json(LayoutMode::Horizontal { bottom: true }), r#"{"v":1,"t":"layout","mode":"horizontal","side":"bottom"}"#);
-        assert!(layout_needs_sync(Some(LayoutMode::Vertical { right: false }), LayoutMode::Vertical { right: true }));
+        assert_eq!(layout_json(LayoutMode::Vertical { right: false, rail: true }), r#"{"v":1,"t":"layout","mode":"vertical","rail":true}"#);
+        assert_eq!(layout_json(LayoutMode::Vertical { right: true, rail: true }), r#"{"v":1,"t":"layout","mode":"vertical","side":"right","rail":true}"#);
+        assert!(layout_needs_sync(Some(LayoutMode::Vertical { right: false, rail: false }), LayoutMode::Vertical { right: true, rail: false }));
+        assert!(layout_needs_sync(Some(LayoutMode::Vertical { right: false, rail: false }), LayoutMode::Vertical { right: false, rail: true }));
         // --- vertical sidebar (lane S) ---
         assert_eq!(workspace_json("Work & Play", "g:code").as_deref(), Some(r#"{"v":1,"t":"workspace","name":"Work & Play","icon":"g:code"}"#));
         assert_eq!(workspace_json("Work", "javascript:alert(1)"), None);

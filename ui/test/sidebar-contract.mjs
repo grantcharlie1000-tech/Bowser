@@ -29,6 +29,10 @@ test('layout names the far side the tabs sit on, and only a side that fits the m
   assert.deepEqual(parseInbound('{"v":1,"t":"layout","mode":"horizontal","side":"bottom"}'), { t: 'layout', mode: 'horizontal', side: 'bottom' });
   assert.equal(parseInbound('{"v":1,"t":"layout","mode":"vertical","side":"bottom"}'), null);
   assert.equal(parseInbound('{"v":1,"t":"layout","mode":"horizontal","side":"left"}'), null);
+  assert.deepEqual(parseInbound('{"v":1,"t":"layout","mode":"vertical","rail":true}'), { t: 'layout', mode: 'vertical', rail: true });
+  assert.deepEqual(parseInbound('{"v":1,"t":"layout","mode":"vertical","side":"right","rail":true}'), { t: 'layout', mode: 'vertical', side: 'right', rail: true });
+  assert.equal(parseInbound('{"v":1,"t":"layout","mode":"vertical","rail":false}'), null);
+  assert.equal(parseInbound('{"v":1,"t":"layout","mode":"horizontal","rail":true}'), null);
 });
 
 test('workspace sidebar metadata rejects extra, unsafe, and malformed fields', () => {

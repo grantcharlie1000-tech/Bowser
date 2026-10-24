@@ -1927,6 +1927,12 @@ mod tests {
                 assert!(!view_accepts_command(view, &side), "{view:?} {action}");
             }
         }
+        let hover = parse_command(r#"{"v":1,"t":"side","a":"hover","on":true}"#).unwrap();
+        assert!(view_accepts_command(View::Tabs, &hover));
+        assert!(!is_popup_command(&hover));
+        for view in [View::Toolbar, View::Rail, View::Panel, View::Popup, View::Dialog] {
+            assert!(!view_accepts_command(view, &hover), "{view:?}");
+        }
         let panel = parse_command(r#"{"v":1,"t":"hist","a":"open","id":1}"#).unwrap();
         let popup = parse_command(r#"{"v":1,"t":"pick","tok":1,"id":2}"#).unwrap();
         for view in [View::Toolbar, View::Tabs, View::Rail] {

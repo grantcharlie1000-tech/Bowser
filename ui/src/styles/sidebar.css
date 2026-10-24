@@ -425,6 +425,16 @@
 #app.sidebar.is-collapsed .side-group-chevron { display: none; }
 #app.sidebar.is-collapsed .side-empty-label { display: none; }
 
+/* Unpinned rail: the host grows over the page. Opaque once it is wider than the icon strip,
+   so the page does not show through the titles. The shadow is inset because the webview clips. */
+#app.sidebar.is-rail.is-open {
+  background: var(--bw-window-opaque);
+  box-shadow: inset -1px 0 0 var(--bw-border);
+}
+#app.sidebar.is-rail.is-right.is-open { box-shadow: inset 1px 0 0 var(--bw-border); }
+#app.sidebar.is-rail > .side-newtab { margin: var(--bw-space-1) var(--bw-space-2) var(--bw-space-2); }
+#app.sidebar.is-rail.is-collapsed > .side-newtab { margin-inline: auto; }
+
 /* ---- Tab options (Settings > Tabs): the same marks as the horizontal strip, and the Closed tabs row ---- */
 .side-closed,
 .side-tool {

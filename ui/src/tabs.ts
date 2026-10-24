@@ -1329,6 +1329,7 @@ export function startTabs(strip: HTMLElement): HTMLElement {
         layoutMode = msg.mode;
         stripAtBottom = msg.mode === 'horizontal' && msg.side === 'bottom';
         sidebar.side(msg.mode === 'vertical' && msg.side === 'right');
+        sidebar.rail(msg.mode === 'vertical' && msg.rail === true);
         if (latest) {
           dirty = true;
           schedule();
