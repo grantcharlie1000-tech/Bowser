@@ -29,7 +29,7 @@ use std::{
     fmt, fs,
     io::{Read, Write},
     path::{Path, PathBuf},
-    sync::atomic::{AtomicBool, Ordering},
+    sync::atomic::{AtomicBool, AtomicU8, Ordering},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -646,6 +646,55 @@ pub fn installed_location(exe: &Path, local_app_data: Option<&Path>) -> bool {
 fn running_installed_copy() -> bool {
     let local_app_data = std::env::var_os("LOCALAPPDATA").map(PathBuf::from);
     std::env::current_exe().is_ok_and(|exe| installed_location(&exe, local_app_data.as_deref()))
+}
+
+/// Installation is offered to ordinary downloaded copies, never to development/benchmark runs.
+/// This is only permission to run our pinned installer; it does not authorize swapping this path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+enum LaunchMode {
+    Unavailable = 0,
+    Installed = 1,
+    InstallRequired = 2,
+    Blocked = 3,
+    CustomData = 4,
+}
+
+fn launch_mode(
+    benchmark: bool,
+    dev: bool,
+    debug_build: bool,
+    exe: Option<&Path>,
+    local_app_data: Option<&Path>,
+    has_data_root: bool,
+    custom_data_root: bool,
+) -> LaunchMode {
+    if benchmark || dev || debug_build {
+        return LaunchMode::Unavailable;
+    }
+    let Some(exe) = exe else { return LaunchMode::Blocked };
+    // Moving a local target build into an install directory does not turn a --dev launch into a
+    // shipping one. These source-tree locations also remain excluded without an explicit flag.
+    if exe.components().any(|part| {
+        let name = part.as_os_str().to_string_lossy();
+        name.eq_ignore_ascii_case("target")
+            || name.eq_ignore_ascii_case("Bowser Dev")
+            || name.eq_ignore_ascii_case("Bowser-Dev")
+    }) {
+        return LaunchMode::Unavailable;
+    }
+    if !has_data_root || local_app_data.is_none_or(|path| !path.is_absolute()) {
+        return LaunchMode::Blocked;
+    }
+    if installed_location(exe, local_app_data) {
+        LaunchMode::Installed
+    } else if custom_data_root {
+        // Clean installed shortcuts intentionally do not forward arbitrary --data-dir arguments.
+        // Do not claim that a different data root would preserve this launch's update preference.
+        LaunchMode::CustomData
+    } else {
+        LaunchMode::InstallRequired
+    }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1305,7 +1354,7 @@ pub enum StartupAction {
 /// Benchmark launches (any `--benchmark-*` flag) and `--dev` never touch update state.
 pub fn startup(benchmark: bool, dev: bool) -> StartupAction {
     // A local build never takes a staged build over itself, even one staged by an installed copy.
-    if benchmark || dev || !running_installed_copy() {
+    if benchmark || dev || cfg!(debug_assertions) || !running_installed_copy() {
         return StartupAction::Continue;
     }
     let (Some(root), Ok(exe)) = (data_root(), std::env::current_exe()) else {
@@ -1812,6 +1861,8 @@ fn stage_github_pin(layout: &Layout, current: Version, gate: Option<&Path>) -> R
 
 /// Set once this process may check for updates: an installed launch, not a dev or benchmark one.
 static CHANNEL_OPEN: AtomicBool = AtomicBool::new(false);
+static LAUNCH_MODE: AtomicU8 = AtomicU8::new(LaunchMode::Unavailable as u8);
+static INSTALL_COMPLETE: AtomicBool = AtomicBool::new(false);
 /// Set while a background or requested check is running, so two never overlap.
 static CHECKING: AtomicBool = AtomicBool::new(false);
 /// Set by "Restart to update": `main` starts Bowser again after a clean exit.
@@ -1885,6 +1936,14 @@ pub enum LastCheck {
 pub enum Status {
     /// Dev and benchmark launches never check.
     Unavailable,
+    /// An ordinary download is not updated in place; install the verified release first.
+    InstallRequired,
+    Installing,
+    /// Installation completed without launching another browser over the open profile.
+    Installed,
+    /// Windows did not supply the paths required for safe installation/updating.
+    Blocked,
+    CustomData,
     Checking,
     /// A verified build is staged; the next start installs it.
     Ready(Version),
@@ -1893,6 +1952,20 @@ pub enum Status {
 }
 
 pub fn status() -> Status {
+    match LAUNCH_MODE.load(Ordering::Acquire) {
+        mode if mode == LaunchMode::InstallRequired as u8 => {
+            return if CHECKING.load(Ordering::Acquire) {
+                Status::Installing
+            } else if INSTALL_COMPLETE.load(Ordering::Acquire) {
+                Status::Installed
+            } else {
+                Status::InstallRequired
+            };
+        }
+        mode if mode == LaunchMode::Blocked as u8 => return Status::Blocked,
+        mode if mode == LaunchMode::CustomData as u8 => return Status::CustomData,
+        _ => {}
+    }
     if !CHANNEL_OPEN.load(Ordering::Acquire) {
         return Status::Unavailable;
     }
@@ -1937,6 +2010,140 @@ impl Drop for CheckGuard {
     fn drop(&mut self) {
         CHECKING.store(false, Ordering::Release);
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InstallError {
+    /// The published pin is behind this build; never install a downgrade to enable updates.
+    StalePin,
+    Failed(String),
+}
+
+static INSTALL_ERROR: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+pub fn install_error() -> Option<String> {
+    INSTALL_ERROR.lock().ok().and_then(|error| error.clone())
+}
+
+/// Atomically created, read-locked payload. Only our compiled-in installer/pin are executed: no
+/// downloaded code and no script or pin next to a downloaded Bowser.exe is ever trusted.
+struct InstallerPayload(PathBuf, Vec<fs::File>);
+
+impl InstallerPayload {
+    fn create(parent: &Path) -> Result<Self, UpdateError> {
+        let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos();
+        let mut payload = None;
+        for attempt in 0..32 {
+            let directory = parent.join(format!("Bowser-setup-{}-{nonce}-{attempt}", std::process::id()));
+            match fs::create_dir(&directory) {
+                Ok(()) => { payload = Some(Self(directory, Vec::new())); break; }
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => return Err(error.into()),
+            }
+        }
+        let mut payload = payload.ok_or_else(|| UpdateError::Io("could not create a setup folder".into()))?;
+        fs::create_dir(payload.0.join("stable"))?;
+        for (name, contents) in [
+            ("Open-Bowser.ps1", include_str!("../Open-Bowser.ps1")),
+            ("stable/release.json", include_str!("../stable/release.json")),
+        ] {
+            let mut file = fs::OpenOptions::new().write(true).create_new(true).open(payload.0.join(name))?;
+            file.write_all(contents.as_bytes())?;
+            file.sync_all()?;
+            drop(file);
+            // Keep read handles that deny later write/delete access until PowerShell exits, and
+            // compare the locked bytes. This is not a privilege boundary against a hostile same-
+            // user process controlling the temp directory's parent namespace.
+            use std::os::windows::fs::OpenOptionsExt;
+            let mut locked = fs::OpenOptions::new().read(true).share_mode(1).open(payload.0.join(name))?;
+            let mut bytes = Vec::new();
+            (&mut locked).take(contents.len() as u64 + 1).read_to_end(&mut bytes)?;
+            if bytes != contents.as_bytes() { return Err(UpdateError::HashMismatch); }
+            payload.1.push(locked);
+        }
+        Ok(payload)
+    }
+}
+
+impl Drop for InstallerPayload {
+    fn drop(&mut self) {
+        self.1.clear();
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
+fn system_powershell() -> Result<PathBuf, UpdateError> {
+    use std::os::windows::ffi::OsStringExt;
+    use windows::Win32::System::SystemInformation::GetSystemDirectoryW;
+    let mut buffer = [0u16; 512];
+    let length = unsafe { GetSystemDirectoryW(Some(&mut buffer)) } as usize;
+    if length == 0 || length >= buffer.len() {
+        return Err(UpdateError::Io("Windows did not provide its system directory".into()));
+    }
+    let path = PathBuf::from(std::ffi::OsString::from_wide(&buffer[..length]))
+        .join("WindowsPowerShell").join("v1.0").join("powershell.exe");
+    if !path.is_absolute() || !path.is_file() {
+        return Err(UpdateError::Io("Windows PowerShell is not installed in the Windows system directory".into()));
+    }
+    Ok(path)
+}
+
+fn installer_command(powershell: &Path, payload: &Path) -> std::process::Command {
+    use std::os::windows::process::CommandExt;
+    let mut command = std::process::Command::new(powershell);
+    command.args(["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File"])
+        .arg(payload.join("Open-Bowser.ps1"))
+        .arg("-NoLaunch")
+        .arg("-MinimumVersion").arg(env!("CARGO_PKG_VERSION"))
+        .arg("-MinimumRevision").arg(PIN_REVISION.to_string())
+        .current_dir(payload)
+        .stdin(std::process::Stdio::null())
+        // This is a process-only policy override, matching Open-Bowser.cmd; machine/user policy
+        // and enterprise application controls are never changed. Failures are surfaced to the UI.
+        .creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    command
+}
+
+/// An explicit install request, not an updater check. Never writes update pending/trial records,
+/// copies an unverified running binary, or launches another browser over this process's profile.
+/// Run off the UI thread. A successful installer creates the verified executable and shortcuts;
+/// the user closes Bowser and uses that shortcut. Automatic-update preferences are untouched.
+pub fn install_now() -> Result<Result<(), InstallError>, CheckRefused> {
+    if LAUNCH_MODE.load(Ordering::Acquire) != LaunchMode::InstallRequired as u8
+        || INSTALL_COMPLETE.load(Ordering::Acquire)
+    {
+        return Err(CheckRefused::Unavailable);
+    }
+    let _guard = CheckGuard::take().ok_or(CheckRefused::Busy)?;
+    // A delayed second request may have passed the first test before the first install completed.
+    if INSTALL_COMPLETE.load(Ordering::Acquire) { return Err(CheckRefused::Unavailable); }
+    if let Ok(mut error) = INSTALL_ERROR.lock() { *error = None; }
+    let outcome = (|| -> Result<(), InstallError> {
+        let run = (|| -> Result<std::process::Output, UpdateError> {
+            let powershell = system_powershell()?;
+            let payload = InstallerPayload::create(&std::env::temp_dir())?;
+            Ok(installer_command(&powershell, &payload.0).output()?)
+        })();
+        let output = run.map_err(|error| InstallError::Failed(error.to_string()))?;
+        if output.status.success() { return Ok(()); }
+        if output.status.code() == Some(23) { return Err(InstallError::StalePin); }
+        let details = format!("{}\n{}", String::from_utf8_lossy(&output.stderr), String::from_utf8_lossy(&output.stdout));
+        let details: String = details.trim().chars().take(4000).collect();
+        Err(InstallError::Failed(if details.is_empty() {
+            format!("The Bowser installer exited with {}. Windows may have blocked PowerShell.", output.status)
+        } else { details }))
+    })();
+    match &outcome {
+        Ok(()) => INSTALL_COMPLETE.store(true, Ordering::Release),
+        Err(error) => {
+            let detail = match error {
+                InstallError::StalePin => "The published stable release is older than this build. Nothing was downgraded. Try again after the stable release is published.".to_owned(),
+                InstallError::Failed(detail) => detail.clone(),
+            };
+            if let Ok(mut error) = INSTALL_ERROR.lock() { *error = Some(detail); }
+        }
+    }
+    Ok(outcome)
 }
 
 /// One check of whichever channel is configured: the signed manifest, otherwise the GitHub pin.
@@ -1990,13 +2197,16 @@ fn run_check(root: &Path, layout: &Layout, forced: bool) -> Option<Result<CheckO
 /// signed channel is used as before. Otherwise the GitHub pin is checked, at most once an hour.
 /// Failures are silent. Dev launches do not start the thread.
 pub fn spawn_background(benchmark: bool, dev: bool) {
-    // A local build (not an installed copy) never checks, so it is never staged over (L-4).
-    if benchmark || dev || !running_installed_copy() {
-        return;
-    }
-    let Some(root) = data_root() else {
-        return;
-    };
+    // Merely classifying a downloaded copy does no updater I/O and starts no worker. In-place
+    // staging/swap remains strictly installed-only (L-4).
+    let exe = std::env::current_exe().ok();
+    let local_app_data = std::env::var_os("LOCALAPPDATA").map(PathBuf::from);
+    // Explicit dev/benchmark runs must not even resolve the profile data directory.
+    let root = if benchmark || dev || cfg!(debug_assertions) { None } else { data_root() };
+    let mode = launch_mode(benchmark, dev, cfg!(debug_assertions), exe.as_deref(), local_app_data.as_deref(), root.is_some(), crate::profile::data_root_override().is_some());
+    LAUNCH_MODE.store(mode as u8, Ordering::Release);
+    if mode != LaunchMode::Installed { return; }
+    let Some(root) = root else { return };
     CHANNEL_OPEN.store(true, Ordering::Release);
     let _ = std::thread::Builder::new()
         .name("bowser-updater".into())
@@ -2132,6 +2342,70 @@ mod tests {
         let exe = Path::new(r"C:\Users\me\AppData\Local\Programs\Bowser\Bowser.exe");
         assert!(!installed_location(exe, None));
         assert!(!installed_location(exe, Some(Path::new("relative"))));
+    }
+
+    #[test]
+    fn downloads_need_installation_without_becoming_swap_targets() {
+        let local = Path::new(r"C:\Users\me\AppData\Local");
+        for exe in [r"C:\Users\me\Downloads\Bowser.exe", r"C:\Users\me\Desktop\Bowser.exe", r"C:\Portable\Bowser.exe"] {
+            let exe = Path::new(exe);
+            assert_eq!(launch_mode(false, false, false, Some(exe), Some(local), true, false), LaunchMode::InstallRequired);
+            assert!(!installed_location(exe, Some(local)));
+        }
+        assert_eq!(launch_mode(false, false, false, Some(Path::new(r"C:\Users\me\Downloads\Bowser.exe")), Some(local), true, true), LaunchMode::CustomData);
+        let exe = Path::new(r"C:\Users\me\AppData\Local\Programs\Bowser\Bowser.exe");
+        assert_eq!(launch_mode(false, false, false, Some(exe), Some(local), true, false), LaunchMode::Installed);
+        for (benchmark, dev, debug) in [(true, false, false), (false, true, false), (false, false, true)] {
+            assert_eq!(launch_mode(benchmark, dev, debug, Some(exe), None, false, false), LaunchMode::Unavailable);
+        }
+        for exe in [r"C:\src\Bowser\target\release\bowser.exe", r"C:\src\Bowser\target\debug\bowser.exe", r"C:\Users\me\AppData\Local\Programs\Bowser Dev\Bowser.exe"] {
+            assert_eq!(launch_mode(false, false, false, Some(Path::new(exe)), Some(local), true, false), LaunchMode::Unavailable);
+        }
+    }
+
+    #[test]
+    fn missing_windows_paths_are_blocked_not_labelled_as_development() {
+        let exe = Path::new(r"C:\Users\me\Downloads\Bowser.exe");
+        let local = Path::new(r"C:\Users\me\AppData\Local");
+        assert_eq!(launch_mode(false, false, false, Some(exe), None, true, false), LaunchMode::Blocked);
+        assert_eq!(launch_mode(false, false, false, Some(exe), Some(Path::new("relative")), true, false), LaunchMode::Blocked);
+        assert_eq!(launch_mode(false, false, false, Some(exe), Some(local), false, false), LaunchMode::Blocked);
+        assert_eq!(launch_mode(false, false, false, None, Some(local), true, false), LaunchMode::Blocked);
+    }
+
+    #[test]
+    fn installer_payload_is_compiled_in_and_removed_without_running_it() {
+        let parent = temp_dir("installer-payload");
+        let directory;
+        {
+            let payload = InstallerPayload::create(&parent).unwrap();
+            directory = payload.0.clone();
+            assert_eq!(fs::read_to_string(directory.join("Open-Bowser.ps1")).unwrap(), include_str!("../Open-Bowser.ps1"));
+            assert_eq!(fs::read_to_string(directory.join("stable/release.json")).unwrap(), include_str!("../stable/release.json"));
+            assert!(fs::OpenOptions::new().write(true).open(directory.join("Open-Bowser.ps1")).is_err());
+            assert!(fs::remove_file(directory.join("Open-Bowser.ps1")).is_err());
+            let other = InstallerPayload::create(&parent).unwrap();
+            assert_ne!(payload.0, other.0);
+        }
+        assert!(!directory.exists());
+        let _ = fs::remove_dir_all(parent);
+    }
+
+    #[test]
+    fn installer_arguments_cannot_forward_untrusted_launch_options() {
+        let shell = Path::new(r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe");
+        let payload = Path::new(r"C:\Users\me\Temp\setup with spaces & punctuation");
+        let command = installer_command(shell, payload);
+        assert_eq!(command.get_program(), shell.as_os_str());
+        let args: Vec<_> = command.get_args().map(|arg| arg.to_string_lossy().into_owned()).collect();
+        assert_eq!(args, vec![
+            "-NoLogo".to_owned(), "-NoProfile".to_owned(), "-NonInteractive".to_owned(),
+            "-ExecutionPolicy".to_owned(), "Bypass".to_owned(), "-File".to_owned(),
+            payload.join("Open-Bowser.ps1").to_string_lossy().into_owned(), "-NoLaunch".to_owned(),
+            "-MinimumVersion".to_owned(), env!("CARGO_PKG_VERSION").to_owned(),
+            "-MinimumRevision".to_owned(), PIN_REVISION.to_string(),
+        ]);
+        assert_eq!(command.get_current_dir(), Some(payload));
     }
 
     fn temp_dir(name: &str) -> PathBuf {

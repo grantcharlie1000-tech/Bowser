@@ -177,6 +177,9 @@ const UPDATE_UNVERIFIED: usize = 2;
 const UPDATE_FAILED: usize = 3;
 const UPDATE_BUSY: usize = 4;
 const UPDATE_UNAVAILABLE: usize = 5;
+const UPDATE_INSTALLED: usize = 6;
+const UPDATE_INSTALL_FAILED: usize = 7;
+const UPDATE_INSTALL_STALE_PIN: usize = 8;
 /// Most deferred chrome commands waiting at once. A command that finds the queue full is dropped.
 const HTML_DEFERRED_LIMIT: usize = 8;
 
@@ -4105,6 +4108,11 @@ unsafe extern "system" fn window_proc(
             WM_UPDATE_CHECKED => {
                 if lparam.0 == UPDATE_FROM_PAGE {
                     super::settings_page::update_checked(hwnd, update_result_key(wparam.0));
+                    if matches!(wparam.0, UPDATE_INSTALL_FAILED | UPDATE_INSTALL_STALE_PIN)
+                        && let Some(error) = crate::updater::install_error()
+                    {
+                        show_error_message(&format!("Bowser could not be installed: {error}"));
+                    }
                 } else {
                     show_update_result(hwnd, wparam.0);
                 }
@@ -7249,6 +7257,11 @@ fn update_footer(status: &crate::updater::Status) -> String {
         Status::Ready(version) if *version > running => Some(format!("Update {version} ready")),
         Status::Ready(_) => Some("Update ready".to_owned()),
         Status::Checking => Some("Checking for updates".to_owned()),
+        Status::InstallRequired => Some("Install Bowser in Settings to enable updates".to_owned()),
+        Status::Installing => Some("Installing Bowser".to_owned()),
+        Status::Installed => Some("Installed · close Bowser and use its new shortcut".to_owned()),
+        Status::Blocked => Some("Updates unavailable · Windows application data is missing".to_owned()),
+        Status::CustomData => Some("Installation unavailable with a custom data folder".to_owned()),
         Status::Idle { last: Some(LastCheck::UpToDate) } => Some("Up to date".to_owned()),
         Status::Idle { last: Some(LastCheck::Failed) } => Some("Last update check failed".to_owned()),
         Status::Idle { .. } | Status::Unavailable => None,
@@ -7268,6 +7281,22 @@ pub(super) fn check_for_updates_from_page(hwnd: HWND) -> bool {
     start_update_check(hwnd, UPDATE_FROM_PAGE)
 }
 
+/// Installs a pinned release using our own embedded installer, never on the UI thread.
+pub(super) fn install_updates_from_page(hwnd: HWND) -> bool {
+    let window = hwnd.0 as isize;
+    std::thread::Builder::new().name("bowser-install".into()).spawn(move || {
+        use crate::updater::{CheckRefused, InstallError};
+        let code = match crate::updater::install_now() {
+            Ok(Ok(())) => UPDATE_INSTALLED,
+            Ok(Err(InstallError::StalePin)) => UPDATE_INSTALL_STALE_PIN,
+            Ok(Err(InstallError::Failed(_))) => UPDATE_INSTALL_FAILED,
+            Err(CheckRefused::Busy) => UPDATE_BUSY,
+            Err(CheckRefused::Unavailable) => UPDATE_UNAVAILABLE,
+        };
+        super::post(HWND(window as *mut _), WM_UPDATE_CHECKED, WPARAM(code), LPARAM(UPDATE_FROM_PAGE));
+    }).is_ok()
+}
+
 /// The page's word for a check result (`checkResult` in the settings snapshot).
 fn update_result_key(code: usize) -> &'static str {
     match code {
@@ -7276,6 +7305,9 @@ fn update_result_key(code: usize) -> &'static str {
         UPDATE_UNVERIFIED => "unverified",
         UPDATE_BUSY => "busy",
         UPDATE_UNAVAILABLE => "unavailable",
+        UPDATE_INSTALLED => "none",
+        UPDATE_INSTALL_FAILED => "installfailed",
+        UPDATE_INSTALL_STALE_PIN => "stalepin",
         _ => "failed",
     }
 }

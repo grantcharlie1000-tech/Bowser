@@ -264,6 +264,60 @@ test('search matches every word across label, description, keywords and section;
   assert.equal(logic.resultCountText(3, 'a'), '3 settings found');
 });
 
+test('download installation states and results are explicit members of the strict settings contract', () => {
+  for (const update of ['installrequired', 'installing', 'installed', 'blocked', 'customdata']) {
+    const parsed = logic.parseSettingsSnapshot({ ...fixture.snap.d, update, updateVersion: '', checkResult: 'none' });
+    assert.equal(parsed?.update, update);
+  }
+  for (const checkResult of ['installfailed', 'stalepin']) {
+    const parsed = logic.parseSettingsSnapshot({ ...fixture.snap.d, update: 'installrequired', checkResult });
+    assert.equal(parsed?.checkResult, checkResult);
+  }
+  for (const update of ['install', 'downloaded', 'INSTALLREQUIRED']) assert.equal(logic.parseSettingsSnapshot({ ...fixture.snap.d, update }), null);
+  for (const checkResult of ['installed', 'stale', 'installok']) assert.equal(logic.parseSettingsSnapshot({ ...fixture.snap.d, checkResult }), null);
+});
+
+test('download update card explains installation, preserves auto-update off, and never offers dev installation', () => {
+  const base = { update: 'installrequired', updateVersion: '', lastCheck: 'none', checkResult: 'none', version: '0.0.24', autoUpdate: true };
+  const install = logic.updateView(base);
+  assert.equal(install.action, 'install');
+  assert.equal(install.busy, false);
+  assert.match(install.title, /Install Bowser/);
+  assert.match(install.detail, /do not update in place/);
+  assert.match(install.detail, /verified official release/);
+  assert.match(install.detail, /browser data is kept/);
+  assert.doesNotMatch(install.detail, /[Dd]evelopment|benchmark/);
+  assert.match(logic.updateView({ ...base, autoUpdate: false }).detail, /Automatic updates will stay off/);
+  for (const checkResult of ['installfailed', 'stalepin']) {
+    const failed = logic.updateView({ ...base, checkResult });
+    assert.equal(failed.action, 'install');
+    assert.equal(failed.tone, 'warn');
+  }
+  assert.match(logic.updateView({ ...base, checkResult: 'stalepin' }).detail, /No older release was installed/);
+  const installing = logic.updateView({ ...base, update: 'installing' });
+  assert.equal(installing.action, null);
+  assert.equal(installing.busy, true);
+  const installed = logic.updateView({ ...base, update: 'installed' });
+  assert.equal(installed.action, null);
+  assert.match(installed.detail, /Close all Bowser windows, then open the new Bowser shortcut/);
+  assert.match(logic.updateView({ ...base, update: 'installed', autoUpdate: false }).detail, /Automatic updates are still off/);
+  const unavailable = logic.updateView({ ...base, update: 'unavailable' });
+  assert.equal(unavailable.action, null);
+  assert.match(unavailable.detail, /Development and benchmark/);
+  const blocked = logic.updateView({ ...base, update: 'blocked' });
+  assert.equal(blocked.action, null);
+  assert.match(blocked.detail, /application data folder/);
+  assert.doesNotMatch(blocked.detail, /[Dd]evelopment|benchmark/);
+  const custom = logic.updateView({ ...base, update: 'customdata', autoUpdate: false });
+  assert.equal(custom.title, 'Installation is unavailable for this launch');
+  assert.equal(custom.action, null);
+  assert.equal(custom.busy, false);
+  assert.match(custom.detail, /custom data folder/);
+  assert.match(custom.detail, /open Bowser normally/);
+  assert.match(custom.detail, /without changing which data or update preferences are used/);
+  assert.doesNotMatch(custom.detail, /[Dd]evelopment|benchmark|application data folder/);
+});
+
 test('values: sleep delays, sites for the allow list and the update card', () => {
   assert.equal(logic.durationLabel(30), '30 seconds');
   assert.equal(logic.durationLabel(60), '1 minute');
@@ -443,6 +497,101 @@ test('the page renders landmarks, every section and row, and labelled controls',
   assert.equal(app.querySelector('.sp-sr[role="status"]')?.getAttribute('aria-live'), 'polite');
   assert.equal(app.querySelector('.sp-avatar').textContent, 'W');
   assert.equal(app.querySelector('.sp-tile[aria-checked="true"]')?.querySelector('.sp-tile-name').textContent, 'Toolbar above tabs');
+});
+
+test('the downloaded copy installs only on an explicit click, ignores repeats and stays busy across navigation', () => {
+  const snap = (patch = {}) => ({ ...fixture.snap, d: { ...fixture.snap.d, update: 'installrequired', updateVersion: '', lastCheck: 'none', checkResult: 'none', autoUpdate: false, ...patch } });
+  const card = app.querySelector('.sp-update');
+  const action = card.querySelector('button');
+  const automatic = app.querySelector('.sp-row[data-row="autoUpdate"]').querySelector('[role="switch"]');
+  sent.length = 0;
+  deliver(snap());
+  assert.deepEqual(sent, [], 'showing the downloaded-copy card never installs');
+  assert.equal(action.textContent, 'Install Bowser');
+  assert.equal(action.hidden, false);
+  assert.equal(action.disabled, false);
+  assert.equal(automatic.disabled, false);
+  assert.equal(automatic.getAttribute('aria-checked'), 'false');
+  action.click();
+  action.click();
+  action.dispatch('click');
+  assert.deepEqual(sent, [{ v: 1, t: 'set', a: 'installupdates' }], 'one bare install command, never a settings or automatic-update change');
+  assert.equal(action.disabled, true, 'disabled immediately before the native acknowledgement');
+  assert.equal(card.querySelector('.sp-label').textContent, 'Installing Bowser…');
+  deliver(snap({ update: 'installing' }));
+  assert.equal(action.hidden, true);
+  assert.equal(action.disabled, true);
+  deliver({ v: 1, t: 'settingsgo', s: 'about' });
+  deliver({ v: 1, t: 'settingsgo', s: 'updates' });
+  action.dispatch('click');
+  assert.deepEqual(sent, [{ v: 1, t: 'set', a: 'installupdates' }], 'moving away and back cannot submit a second install');
+  deliver(snap({ checkResult: 'installfailed' }));
+  assert.equal(action.hidden, false);
+  assert.equal(action.disabled, false);
+  assert.match(card.querySelector('.sp-label').textContent, /could not be installed/);
+  action.click();
+  assert.equal(sent.filter((m) => m.a === 'installupdates').length, 2, 'a failed install can be retried');
+  deliver(snap({ checkResult: 'stalepin' }));
+  assert.equal(action.disabled, false);
+  assert.match(card.querySelector('.sp-desc').textContent, /No older release was installed/);
+  action.click();
+  assert.equal(sent.filter((m) => m.a === 'installupdates').length, 3, 'a stale pin can be retried after publication');
+  deliver(fixture.snap);
+});
+
+test('the install button does not claim to start without the host bridge', () => {
+  deliver({ ...fixture.snap, d: { ...fixture.snap.d, update: 'installrequired', updateVersion: '', checkResult: 'none' } });
+  const card = app.querySelector('.sp-update');
+  const action = card.querySelector('button');
+  const bridge = globalThis.chrome;
+  sent.length = 0;
+  try {
+    globalThis.chrome = undefined;
+    action.click();
+    assert.deepEqual(sent, []);
+    assert.equal(action.disabled, false);
+    assert.equal(card.querySelector('.sp-label').textContent, 'Install Bowser to enable updates');
+  } finally { globalThis.chrome = bridge; }
+  deliver(fixture.snap);
+});
+
+test('existing check and restart actions still send once and the authoritative snapshot restores them', () => {
+  const action = app.querySelector('.sp-update').querySelector('button');
+  deliver({ ...fixture.snap, d: { ...fixture.snap.d, update: 'idle', updateVersion: '', lastCheck: 'none', checkResult: 'none' } });
+  sent.length = 0;
+  action.click(); action.dispatch('click');
+  assert.deepEqual(sent, [{ v: 1, t: 'set', a: 'checkupdates' }]);
+  assert.equal(action.disabled, true);
+  deliver({ ...fixture.snap, d: { ...fixture.snap.d, update: 'checking', updateVersion: '', checkResult: 'none' } });
+  assert.equal(action.hidden, true);
+  assert.equal(action.disabled, true);
+  deliver({ ...fixture.snap, d: { ...fixture.snap.d, update: 'ready', updateVersion: '0.0.25', checkResult: 'none' } });
+  assert.equal(action.textContent, 'Restart to update');
+  assert.equal(action.disabled, false);
+  sent.length = 0;
+  action.click(); action.dispatch('click');
+  assert.deepEqual(sent, [{ v: 1, t: 'set', a: 'restartupdate' }]);
+  assert.equal(action.disabled, true);
+  deliver(fixture.snap);
+});
+
+test('installed, development, custom-data and unavailable-folder cards never offer install or restart actions', () => {
+  const card = app.querySelector('.sp-update');
+  const action = card.querySelector('button');
+  const automatic = app.querySelector('.sp-row[data-row="autoUpdate"]').querySelector('[role="switch"]');
+  for (const update of ['installed', 'unavailable', 'blocked', 'customdata']) {
+    deliver({ ...fixture.snap, d: { ...fixture.snap.d, update, updateVersion: '', checkResult: 'none', autoUpdate: false } });
+    sent.length = 0;
+    assert.equal(action.hidden, true, update);
+    action.dispatch('click');
+    assert.deepEqual(sent, [], update);
+    assert.equal(automatic.disabled, update !== 'installed', update);
+    if (update === 'customdata') assert.match(card.querySelector('.sp-desc').textContent, /custom data folder/);
+  }
+  deliver({ ...fixture.snap, d: { ...fixture.snap.d, update: 'installed', updateVersion: '', checkResult: 'none', autoUpdate: false } });
+  assert.match(card.querySelector('.sp-desc').textContent, /Close all Bowser windows/);
+  assert.match(card.querySelector('.sp-desc').textContent, /Automatic updates are still off/);
+  deliver(fixture.snap);
 });
 
 test('Downloads: the location and Change, the ask switch, each its own command', () => {

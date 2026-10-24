@@ -1314,9 +1314,11 @@ export function startSettingsPage(root: HTMLElement): void {
   const statusDetail = el('span', 'sp-desc');
   statusText.append(statusTitle, statusDetail);
   const updateAction = textButton('Check for updates', () => {
+    if (updateAction.disabled || updateAction.hidden) return;
     const view = snapshot ? updateView(snapshot) : null;
-    if (view?.action === 'restart') cmd({ a: 'restartupdate' });
+    if (view?.action === 'restart' && cmd({ a: 'restartupdate' })) updateAction.disabled = true;
     else if (view?.action === 'check' && cmd({ a: 'checkupdates' })) { updateAction.disabled = true; statusTitle.textContent = 'Checking for updates…'; }
+    else if (view?.action === 'install' && cmd({ a: 'installupdates' })) { updateAction.disabled = true; statusTitle.textContent = 'Installing Bowser…'; }
   });
   statusBox.append(statusIcon, statusText, updateAction);
   const updateRow = row(updateCard, 'updateStatus');
@@ -1747,16 +1749,16 @@ export function startSettingsPage(root: HTMLElement): void {
     for (const control of tabControls.values()) { control.set(s.tabOptions); control.disable(!s.readable); }
     themeRows.apply(s.themeOptions, s.readable, d.window.rangeButtons); // --- theme options ---
     autoUpdate.set(s.autoUpdate);
-    autoUpdate.disable(s.update === 'unavailable');
+    autoUpdate.disable(s.update === 'unavailable' || s.update === 'blocked' || s.update === 'customdata');
     const view = updateView(s);
     statusBox.dataset.tone = view.tone;
-    statusIcon.replaceChildren(view.busy ? el('span', 'bw-spinner') : icon(view.tone === 'warn' ? 'warning' : view.action === 'restart' ? 'download' : 'check', { size: 20 }));
+    statusIcon.replaceChildren(view.busy ? el('span', 'bw-spinner') : icon(view.tone === 'warn' ? 'warning' : view.action === 'restart' || view.action === 'install' ? 'download' : 'check', { size: 20 }));
     statusTitle.textContent = view.title;
     statusDetail.textContent = view.detail;
     updateAction.hidden = view.action === null;
     updateAction.disabled = view.busy;
-    updateAction.lastChild!.textContent = view.action === 'restart' ? 'Restart to update' : 'Check for updates';
-    updateAction.classList.toggle('is-primary', view.action === 'restart');
+    updateAction.lastChild!.textContent = view.action === 'restart' ? 'Restart to update' : view.action === 'install' ? 'Install Bowser' : 'Check for updates';
+    updateAction.classList.toggle('is-primary', view.action === 'restart' || view.action === 'install');
     version.textContent = `Bowser ${s.version}`;
     avatar.textContent = s.avatar;
     profileRow.label.textContent = s.guest ? 'Guest' : s.profile === '' ? 'Default' : s.profile;

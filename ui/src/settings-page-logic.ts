@@ -114,9 +114,9 @@ function isUiFont(value: unknown): value is string {
   return typeof value === 'string' && value.length <= MAX_UI_FONT && !CONTROL_CHAR_RE.test(value);
 }
 
-const UPDATE_STATES = ['unavailable', 'checking', 'ready', 'idle'] as const;
+const UPDATE_STATES = ['unavailable', 'checking', 'ready', 'idle', 'installrequired', 'installing', 'installed', 'blocked', 'customdata'] as const;
 const LAST_CHECKS = ['none', 'uptodate', 'failed', 'other'] as const;
-const CHECK_RESULTS = ['none', 'staged', 'uptodate', 'unverified', 'busy', 'unavailable', 'failed'] as const;
+const CHECK_RESULTS = ['none', 'staged', 'uptodate', 'unverified', 'busy', 'unavailable', 'failed', 'installfailed', 'stalepin'] as const;
 const ACKS = ['none', 'saved', 'failed'] as const;
 export type UpdateState = typeof UPDATE_STATES[number];
 export type LastCheck = typeof LAST_CHECKS[number];
@@ -856,8 +856,8 @@ export const ROWS: readonly RowSpec[] = [
   { id: 'downloadAsk', section: 'downloads', label: 'Ask where to save each file before downloading', description: 'When this is off, files go straight to the location above.', keywords: 'save as prompt dialog ask where download location' },
   { id: 'media', section: 'media', label: 'Media support', description: 'Runs on this device only and sends nothing.', keywords: 'video codec h264 vp9 av1 hevc widevine playready drm netflix hardware decode' },
   { id: 'extensions', section: 'extensions', label: 'Installed extensions', description: 'Turn extensions on or off, open a popup, see what each one declares, or remove one.', keywords: 'extension add-on addon plugin unpacked crx file manifest permissions popup install remove uninstall disable enable' },
-  { id: 'autoUpdate', section: 'updates', label: 'Update automatically', description: 'Checks in the background and installs the update the next time Bowser starts. Applies to every profile.', keywords: 'auto update upgrade version' },
-  { id: 'updateStatus', section: 'updates', label: 'Bowser updates', description: '', keywords: 'check for updates restart version upgrade' },
+  { id: 'autoUpdate', section: 'updates', label: 'Update automatically', description: 'The installed copy checks in the background and installs the update the next time Bowser starts. Applies to every profile.', keywords: 'auto update upgrade version' },
+  { id: 'updateStatus', section: 'updates', label: 'Bowser updates', description: '', keywords: 'check for updates restart version upgrade install GitHub download' },
   { id: 'version', section: 'about', label: 'Version', description: '', keywords: 'about build release' },
   { id: 'file', section: 'about', label: 'Settings file', description: 'Most settings are saved in this profile’s settings.txt, which you can also edit by hand. Kept in their own files: shortcuts and command chains, search engines, the history switch, workspace rules, and blocker rules and lists. Automatic updates are shared by all profiles.', keywords: 'settings.txt advanced edit text' },
   { id: 'reset', section: 'about', label: 'Reset settings', description: 'Puts layout, appearance, toolbars, tabs, start page, address bar, search engines, bookmarks bar, page tools, feeds, blocking and website appearance, performance, downloads and translation back to their defaults. Tracking prevention goes back to its default the next time Bowser starts. Not changed: how long history is kept, your history and bookmarks, the Keyboard section and Quick commands, extensions, site permissions and updates.', keywords: 'defaults restore factory start over' },
@@ -961,7 +961,7 @@ export function addSite(list: readonly string[], input: string): AddSite {
 export interface UpdateView {
   readonly title: string;
   readonly detail: string;
-  readonly action: 'check' | 'restart' | null;
+  readonly action: 'check' | 'restart' | 'install' | null;
   readonly busy: boolean;
   readonly tone: 'ok' | 'warn' | 'info';
 }
@@ -969,6 +969,19 @@ export interface UpdateView {
 /** What the update card says and offers. */
 export function updateView(s: Pick<SettingsSnapshot, 'update' | 'updateVersion' | 'lastCheck' | 'checkResult' | 'version' | 'autoUpdate'>): UpdateView {
   if (s.update === 'unavailable') return { title: 'Updates are off for this copy', detail: 'Development and benchmark launches never update.', action: null, busy: false, tone: 'info' };
+  if (s.update === 'blocked') return { title: 'Updates are unavailable', detail: 'Windows could not provide a usable application data folder. No installation or update was started.', action: null, busy: false, tone: 'warn' };
+  if (s.update === 'customdata') return { title: 'Installation is unavailable for this launch', detail: 'This launch uses a custom data folder. Close it and open Bowser normally to install without changing which data or update preferences are used.', action: null, busy: false, tone: 'info' };
+  if (s.update === 'installing') return { title: 'Installing Bowser…', detail: 'Downloading and verifying the official release. This copy stays open; your browser data is kept.', action: null, busy: true, tone: 'info' };
+  if (s.update === 'installed') return { title: 'Bowser is installed', detail: `Close all Bowser windows, then open the new Bowser shortcut. ${s.autoUpdate ? 'The installed copy can update automatically.' : 'Automatic updates are still off.'} Your browser data is kept.`, action: null, busy: false, tone: 'ok' };
+  if (s.update === 'installrequired') {
+    const title = s.checkResult === 'stalepin' ? 'The official release is not ready for this build' : s.checkResult === 'installfailed' ? 'Bowser could not be installed' : 'Install Bowser to enable updates';
+    const detail = s.checkResult === 'stalepin'
+      ? 'The release pin is older than this build. No older release was installed. Try again after the official release is ready.'
+      : s.checkResult === 'installfailed'
+        ? 'Setup did not finish. Check your connection and Windows permissions, then try again. This downloaded copy was not replaced.'
+        : `Downloaded copies do not update in place. Install the verified official release and use its Bowser shortcut; your browser data is kept.${s.autoUpdate ? '' : ' Automatic updates will stay off.'}`;
+    return { title, detail, action: 'install', busy: false, tone: s.checkResult === 'installfailed' || s.checkResult === 'stalepin' ? 'warn' : 'info' };
+  }
   if (s.update === 'checking') return { title: 'Checking for updates…', detail: `Bowser ${s.version}`, action: null, busy: true, tone: 'info' };
   if (s.update === 'ready') {
     const which = s.updateVersion !== '' ? `Bowser ${s.updateVersion}` : 'An update';
@@ -980,11 +993,13 @@ export function updateView(s: Pick<SettingsSnapshot, 'update' | 'updateVersion' 
     uptodate: 'Bowser is up to date.',
     unverified: 'A newer version could not be verified, so it was not downloaded.',
     busy: 'A check is already running.',
-    unavailable: 'Development builds do not update.',
+    unavailable: 'Development and benchmark launches never update.',
     failed: 'The update check failed. Try again later.',
+    installfailed: 'Bowser could not be installed. Try again.',
+    stalepin: 'The official release is older than this build. No older release was installed.',
   };
   if (s.checkResult !== 'none') {
-    const warn = s.checkResult === 'failed' || s.checkResult === 'unverified';
+    const warn = s.checkResult === 'failed' || s.checkResult === 'unverified' || s.checkResult === 'installfailed' || s.checkResult === 'stalepin';
     return { title: result[s.checkResult], detail: `Bowser ${s.version}`, action: 'check', busy: false, tone: warn ? 'warn' : 'ok' };
   }
   const title = s.lastCheck === 'uptodate' ? 'Bowser is up to date' : s.lastCheck === 'failed' ? 'The last update check failed' : `Bowser ${s.version}`;
