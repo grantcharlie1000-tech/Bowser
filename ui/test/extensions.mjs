@@ -354,8 +354,8 @@ test('section: remove asks in the row first; Cancel and Escape back out; Remove 
   assert.deepEqual(sent, [], 'nothing is sent before the question is answered');
   let ask = rowOf(ID).querySelector('.sp-ext-confirm');
   assert.equal(ask.getAttribute('aria-label'), 'Confirm removing Reader "<b>"');
-  assert.match(ask.textContent, /Cannot be undone/);
-  assert.equal(ask.querySelector('.sp-desc').textContent, 'Cannot be undone');
+  assert.match(ask.textContent, /Remove\?/);
+  assert.equal(ask.querySelector('.sp-desc').textContent, 'Remove?');
   assert.equal(globalThis.document.activeElement?.textContent, 'Cancel', 'the safe answer has the keyboard');
   button(ask, 'Cancel').click();
   assert.equal(rowOf(ID).querySelector('.sp-ext-confirm'), null);

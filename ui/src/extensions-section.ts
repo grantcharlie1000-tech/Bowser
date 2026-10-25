@@ -234,7 +234,7 @@ export function mountExtensionsSection(options: ExtensionsSectionOptions): Exten
       ask.setAttribute('role', 'group');
       ask.setAttribute('aria-label', `Confirm removing ${item.name}`);
       const question = el('p', 'sp-desc');
-      question.textContent = 'Cannot be undone';
+      question.textContent = 'Remove?';
       const buttons = el('div', 'sp-reset');
       const cancel = textButton('Cancel', () => { confirming = null; render(`${item.id}:remove`); });
       cancel.dataset.focus = `${item.id}:cancel`;
