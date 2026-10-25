@@ -97,7 +97,7 @@
   place-items: center;
   width: 16px;
   height: 16px;
-  color: var(--bw-accent);
+  color: var(--bw-text-dim);
 }
 
 .side-workspace-icon svg { width: 16px; height: 16px; }
@@ -146,22 +146,36 @@
   width: auto;
   height: var(--bw-side-row-h); /* the pill height; 22px at the compact density (thread T6) */
   padding: 0 var(--bw-space-1) 0 var(--bw-space-2);
+  border-color: transparent;
+  background-color: transparent;
+  background-image: none;
+  box-shadow: none;
   font-size: var(--bw-text-chrome);
   line-height: 1;
   touch-action: none;
   transition: transform var(--bw-dur-base) var(--bw-ease-out), background-color var(--bw-dur-fast) var(--bw-ease-fade);
 }
 
-/* In the light scheme the shared idle island (black 22%) reads as heavy grey blocks in a
-   column; a faint text-tinted wash keeps the active island clearly raised. */
-[data-scheme="light"] .side-tab:not(.is-active) { background-color: color-mix(in srgb, var(--bw-text) 6%, transparent); }
+/* Inactive rows sit on the island with no fill. The selector stays so a picked row still
+   outranks it (U11). Hover is the only wash, and it is neutral. */
+[data-scheme="light"] .side-tab:not(.is-active) { background-color: transparent; }
 
-/* Inactive rows are dim; the raised island (below) is the one thing that stands out. */
 .side-tab:not(.is-active) { color: var(--bw-text-dim); }
-.side-tab:not(.is-active):hover { color: var(--bw-text); }
+.side-tab:not(.is-active):hover,
+[data-scheme="light"] .side-tab:not(.is-active):hover {
+  background-color: var(--bw-hover);
+  background-image: none;
+  color: var(--bw-text);
+}
 
-/* Raised island for the active row. */
-.side-tab.is-active { box-shadow: var(--bw-sh-tip); color: var(--bw-text); }
+/* The active row is the one highlight: a faint neutral fill, not a bordered box. */
+.side-tab.is-active {
+  border-color: transparent;
+  background-color: color-mix(in srgb, var(--bw-text) 8%, transparent);
+  background-image: none;
+  box-shadow: none;
+  color: var(--bw-text);
+}
 
 /* Keyboard focus: the shared inset ring (2px accent from .bw-focus-inset plus this 1px contrast
    ring inside it). It must be restated here because the active row's elevation shadow above
@@ -194,24 +208,21 @@
 #app.sidebar .side-pinned .side-tab .side-pin,
 #app.sidebar .side-pinned .side-tab .side-close { display: none; }
 
-/* Grouped rows sit in a tinted run under the header, joined by a colour rail.
-   The light-scheme wash below matches that wash's weight and still loses to #app .side-tab.picked. */
-.side-tab.in-group { margin-left: var(--bw-space-3); }
-.side-tab.in-group:not(.is-active) {
-  background-color: color-mix(in srgb, var(--gc, var(--bw-text)) 10%, transparent);
-}
+/* Grouped rows: the colour is a 2px bar in the gap, not a tinted box. The light rule stays
+   so it still loses to #app .side-tab.picked (U11). */
+.side-tab.in-group { margin-left: var(--bw-space-2); }
+.side-tab.in-group:not(.is-active),
 [data-scheme="light"] .side-tab.in-group:not(.is-active) {
-  background-color: color-mix(in srgb, var(--gc, var(--bw-text)) 12%, transparent);
+  background-color: transparent;
 }
 .side-tab.in-group::before {
   position: absolute;
-  top: -3px;
-  bottom: -3px;
-  left: calc(-1 * var(--bw-space-2));
-  width: 3px;
-  border-radius: var(--bw-r-pill);
+  top: var(--bw-space-1);
+  bottom: var(--bw-space-1);
+  left: calc(-1 * var(--bw-space-1_5));
+  width: 2px;
+  border-radius: 1px;
   background: var(--gc, var(--bw-hairline));
-  opacity: 0.9;
   content: "";
   pointer-events: none;
 }
@@ -231,7 +242,8 @@
 .side-face[data-state="glyph"] > .side-glyph,
 .side-face[data-state="spin"] > .side-spin { display: grid; }
 .side-fav { width: 16px; height: 16px; border-radius: 3px; object-fit: contain; }
-.side-glyph { place-items: center; width: 16px; height: 16px; border-radius: 4px; background: var(--bw-glyph-fill); color: var(--bw-on-glyph); }
+.side-glyph { place-items: center; width: 16px; height: 16px; border-radius: 0; background: transparent; color: var(--bw-text-dim); }
+.side-tab.is-active .side-glyph { color: var(--bw-text); }
 .side-spin { box-sizing: border-box; width: 14px; height: 14px; border: 2px solid var(--bw-border); border-top-color: var(--bw-accent); border-radius: 50%; animation: bw-spin var(--bw-dur-spin) linear infinite; }
 .side-tab.muted .side-fav { opacity: 0.55; }
 
@@ -332,33 +344,30 @@
   pointer-events: none;
 }
 
-/* ---- Group header: colour chip, name, count, chevron. Members fold away in the list. ---- */
+/* ---- Group header: a colour dot and the name. Members carry the same colour as a slim bar. ---- */
 .side-group {
   position: relative;
   box-sizing: border-box;
   display: flex;
   align-items: center;
   flex: none;
-  gap: var(--bw-space-1_5);
+  gap: var(--bw-space-2);
   min-width: 0;
   height: var(--bw-side-row-h); /* the pill height; 22px at the compact density (thread T6) */
-  margin-top: var(--bw-space-1);
+  margin-top: var(--bw-space-2);
   padding: 0 var(--bw-space-2);
   overflow: hidden;
-  border-radius: var(--bw-r-pill);
-  background: color-mix(in srgb, var(--gc, var(--bw-accent)) 16%, transparent);
+  border-radius: var(--bw-r-tab);
+  background: transparent;
   color: var(--bw-text);
   font-size: var(--bw-text-chrome);
   line-height: 1;
   cursor: default;
   --gc: var(--bw-accent);
-  transition:
-    background-color var(--bw-dur-fast) var(--bw-ease-fade),
-    width var(--bw-dur-group) var(--bw-ease-group),
-    height var(--bw-dur-group) var(--bw-ease-group);
+  transition: background-color var(--bw-dur-fast) var(--bw-ease-fade);
 }
 .side-group:hover {
-  background: color-mix(in srgb, var(--gc, var(--bw-accent)) 26%, transparent);
+  background: var(--bw-hover);
   color: var(--bw-text);
 }
 .side-group-dot {
@@ -430,7 +439,10 @@
   padding: 0;
   border-radius: var(--bw-r-row);
 }
-#app.sidebar.is-collapsed .side-collapse { order: -1; }
+#app.sidebar.is-collapsed .side-collapse { order: -1; color: color-mix(in srgb, var(--bw-text) 58%, transparent); }
+#app.sidebar.is-collapsed .side-workspace,
+#app.sidebar.is-collapsed .side-newtab,
+#app.sidebar.is-collapsed .side-workspace-icon { color: color-mix(in srgb, var(--bw-text) 58%, transparent); }
 #app.sidebar.is-collapsed .side-workspace-name,
 #app.sidebar.is-collapsed .side-workspace-chevron,
 #app.sidebar.is-collapsed .side-newtab-label { display: none; }
@@ -452,26 +464,30 @@
 #app.sidebar.is-collapsed .side-tab:not(.pinned) .side-flags,
 #app.sidebar.is-collapsed .side-tab:not(.pinned) .side-pin,
 #app.sidebar.is-collapsed .side-tab:not(.pinned) .side-close { display: none; }
-#app.sidebar.is-collapsed .side-tab.in-group::before { left: -4px; width: 2px; }
+.sidebar.is-collapsed .side-tab.is-active {
+  background-color: color-mix(in srgb, var(--bw-text) 10%, transparent);
+  box-shadow: none;
+}
+#app.sidebar.is-collapsed .side-tab.in-group::before { left: 2px; top: 6px; bottom: 6px; width: 2px; }
 #app.sidebar.is-collapsed .side-group {
   justify-content: center;
   gap: 0;
-  width: 18px;
-  height: 18px;
-  margin-top: var(--bw-space-1);
+  width: 8px;
+  height: 8px;
+  margin-top: var(--bw-space-2);
   padding: 0;
-  border-radius: var(--bw-r-pill);
+  border-radius: 50%;
   background: var(--gc, var(--bw-accent));
 }
 #app.sidebar.is-collapsed .side-group:hover {
-  width: 26px;
-  height: 26px;
-  background: color-mix(in srgb, var(--gc, var(--bw-accent)) 82%, var(--bw-text));
-}
-#app.sidebar.is-collapsed .side-group-dot {
   width: 8px;
   height: 8px;
-  background: color-mix(in srgb, var(--bw-window-opaque) 88%, var(--gc, var(--bw-accent)));
+  background: var(--gc, var(--bw-accent));
+}
+#app.sidebar.is-collapsed .side-group-dot {
+  width: 0;
+  height: 0;
+  opacity: 0;
   box-shadow: none;
 }
 #app.sidebar.is-collapsed .side-group-name,

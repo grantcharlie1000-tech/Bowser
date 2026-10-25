@@ -72,15 +72,17 @@
     --bw-scrim: rgba(0, 0, 0, 0.4); /* behind modal dialogs */
 
     /* Colour: group palette (not themed; index 0-7 is the stored colour id, the same eight as
-       theme::ISLAND_COLOURS). Chips, underlines and the colour picker all read these. */
-    --bw-group-0: #e74f5f;
-    --bw-group-1: #f08a24;
-    --bw-group-2: #e9b949;
-    --bw-group-3: #2e9e5b;
-    --bw-group-4: #1fa2c7;
-    --bw-group-5: #3b7be0;
-    --bw-group-6: #7b5cd6;
-    --bw-group-7: #e0457b;
+       theme::ISLAND_COLOURS). Muted enough to sit on a neutral strip, deep enough for white
+       label text (each pair is at least 4.5:1). Chips, the group line and the colour picker
+       all read these. */
+    --bw-group-0: #b5525b;
+    --bw-group-1: #a85e2c;
+    --bw-group-2: #8d6920;
+    --bw-group-3: #2f7d56;
+    --bw-group-4: #2f7c88;
+    --bw-group-5: #4a6caf;
+    --bw-group-6: #6d5c9e;
+    --bw-group-7: #b35a78;
 
     /* Colour: private tabs (docs/design/private-tabs.md). One fixed violet per scheme, independent of
        the theme accent, so a private tab reads as private whatever accent the profile chose. Dark
@@ -188,6 +190,9 @@
     --bw-float-fill: color-mix(in srgb, #fff 16%, var(--bw-window-opaque));
     /* Edge of the floating sidebar. A mix of text and border so it reads on the window and the page. */
     --bw-float-edge: color-mix(in srgb, var(--bw-text) 32%, var(--bw-border));
+    /* The one raised tab. On the dark window it is a step lighter; light overrides it to white. */
+    --bw-tab-raised: color-mix(in srgb, #fff 12%, var(--bw-window-opaque));
+    --bw-sh-tab: 0 1px 2px rgba(0, 0, 0, 0.28);
 
     /* Motion. fast = opacity/colour fades, base = position and scale, slow = sidebar width.
        group = a tab group folding into its chip. */
@@ -237,6 +242,8 @@
     --bw-text-dim: color-mix(in srgb, var(--bw-text) 86%, transparent);
     --bw-island-active: rgba(255, 255, 255, 0.92);
     --bw-float-fill: #fff;
+    --bw-tab-raised: #fff;
+    --bw-sh-tab: 0 1px 2px rgba(20, 24, 29, 0.06), 0 0 0 1px rgba(20, 24, 29, 0.05);
     --bw-private: #6440d0;
     --bw-private-soft: color-mix(in srgb, var(--bw-private) 13%, transparent);
     --bw-omni-row-selected: color-mix(in srgb, var(--bw-text) 10%, transparent);
