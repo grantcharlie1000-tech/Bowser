@@ -41,7 +41,7 @@ pub type DownloadPlanCallback =
     std::rc::Rc<dyn Fn(&crate::downloads::DownloadRequest) -> crate::downloads::DownloadPlan>;
 pub type ContextNotesCallback = std::rc::Rc<dyn Fn(crate::tabs::TabId) -> Vec<(u64, String)>>;
 
-pub type FaviconChangedCallback = std::rc::Rc<dyn Fn(crate::tabs::TabId, Vec<u8>)>;
+pub type FaviconChangedCallback = std::rc::Rc<dyn Fn(crate::tabs::TabId, url::Url, Vec<u8>)>;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TrackingPreventionLevel {
