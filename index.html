@@ -275,39 +275,41 @@ try {
         </article>
         <article class="tile span-6">
           <div class="tile-copy">
-            <h3>Search ads off</h3>
-            <p>DuckDuckGo by default, with ads turned off.</p>
+            <h3>No YouTube ads. No promoted posts on X.</h3>
+            <p>The player ad schedule is removed. Posts labelled Ad are hidden.</p>
           </div>
-          <div class="split">
+          <div class="split yx">
             <div class="pane">
-              <p class="pane-label">Typical browser</p>
-              <div class="serp">
-                <p class="q">cheap flights</p>
-                <div class="adbox">
-                  <div class="adbox-top">
-                    <span class="ad-pill">Ad</span>
-                    <span class="ad-url">fareway.example</span>
-                  </div>
-                  <strong>London to Lisbon, from £49</strong>
-                  <p>Compare this week’s fares. No account needed.</p>
-                  <div class="fares" aria-hidden="true">
-                    <span><b>Thu</b>£49</span>
-                    <span><b>Fri</b>£61</span>
-                    <span><b>Sat</b>£54</span>
-                  </div>
-                </div>
-                <div class="hit"><strong>Cheap flights</strong><span class="url">www.skyscanner.com</span><span>Compare fares from airlines and agents.</span></div>
-                <div class="hit"><strong>Airline tickets</strong><span class="url">www.kayak.com</span><span>Search dates and see the lowest fare.</span></div>
+              <p class="pane-label">YouTube</p>
+              <div class="player" aria-hidden="true">
+                <div class="stage"><span class="play"></span></div>
+                <div class="skip-ad"><span>Skip ad</span><span>0:05</span></div>
               </div>
             </div>
             <div class="pane">
-              <p class="pane-label">Bowser</p>
-              <div class="serp">
-                <p class="q">cheap flights</p>
-                <p class="host">html.duckduckgo.com</p>
-                <div class="hit"><strong>Cheap flights</strong><span class="url">www.skyscanner.com</span><span>Compare fares from airlines and agents.</span></div>
-                <div class="hit"><strong>Airline tickets</strong><span class="url">www.kayak.com</span><span>Search dates and see the lowest fare.</span></div>
-                <div class="hit"><strong>Find a fare</strong><span class="url">www.expedia.com/flights</span><span>Pick a date and book the ticket.</span></div>
+              <p class="pane-label">X</p>
+              <div class="xfeed" aria-hidden="true">
+                <div class="xpost">
+                  <span class="xav" style="background:#1d9bf0">R</span>
+                  <div>
+                    <p class="xwho">River <span>@river</span></p>
+                    <p>Morning light on the water.</p>
+                  </div>
+                </div>
+                <div class="xpost is-ad">
+                  <span class="xav" style="background:#f5c518;color:#1a1408">B</span>
+                  <div>
+                    <p class="xwho">Brand shop <span class="xad">Ad</span></p>
+                    <p>A post labelled Ad.</p>
+                  </div>
+                </div>
+                <div class="xpost">
+                  <span class="xav" style="background:#e23b2f">K</span>
+                  <div>
+                    <p class="xwho">Kitchen <span>@oven</span></p>
+                    <p>Cookies out of the oven.</p>
+                  </div>
+                </div>
               </div>
             </div>
           </div>
@@ -321,14 +323,20 @@ try {
             <figure class="pane">
               <figcaption class="pane-label">Typical browser</figcaption>
               <div class="chrome-bar" aria-hidden="true"><span class="chrome-dots"><i></i><i></i><i></i></span><span class="chrome-url">allrecipes.com</span></div>
-              <img class="shot-wide" src="img/ads-typical.webp" width="660" height="382" alt="Allrecipes chocolate chip cookie recipe in a normal browser, with a supplement ad above the title.">
-              <img class="shot-narrow" src="img/ads-typical-phone.webp" width="390" height="652" alt="The same Allrecipes recipe on a phone in a normal browser.">
+              <div class="shot">
+              <img class="shot-wide" src="img/ads-typical.webp" width="1022" height="380" alt="Allrecipes chocolate chip cookie recipe in a normal browser. A MyRecipes ad sits beside the recipe, labelled Advertisement.">
+              <img class="shot-narrow" src="img/ads-typical-phone.webp" width="368" height="280" alt="That MyRecipes ad from the Allrecipes recipe, large enough to read on a phone.">
+              <span class="ad-mark ad-mark-wide" aria-hidden="true"></span>
+              <span class="ad-mark ad-mark-narrow" aria-hidden="true"></span>
+              </div>
             </figure>
             <figure class="pane">
               <figcaption class="pane-label">Bowser</figcaption>
               <div class="chrome-bar" aria-hidden="true"><span class="chrome-dots"><i></i><i></i><i></i></span><span class="chrome-url">allrecipes.com</span></div>
-              <img class="shot-wide" src="img/ads-bowser.webp" width="660" height="382" alt="The same Allrecipes recipe with Bowser’s blocker on. The supplement ad is gone.">
-              <img class="shot-narrow" src="img/ads-bowser-phone.webp" width="390" height="652" alt="The same Allrecipes recipe on a phone with Bowser’s blocker on.">
+              <div class="shot">
+              <img class="shot-wide" src="img/ads-bowser.webp" width="1022" height="380" alt="The same Allrecipes section with Bowser’s blocker on. The MyRecipes ad is gone.">
+              <img class="shot-narrow" src="img/ads-bowser-phone.webp" width="368" height="280" alt="The same ad slot with Bowser’s blocker on. It is empty.">
+              </div>
             </figure>
           </div>
         </article>
