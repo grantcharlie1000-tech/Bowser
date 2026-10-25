@@ -13,6 +13,9 @@ pub const FLYOUT_KEEP: i32 = 64;
 pub const MAX_WIDTH: i32 = 360;
 pub const DEFAULT_WIDTH: i32 = 260;
 pub const RESIZE_HANDLE_WIDTH: i32 = 5;
+/// Logical pixels of window (and page, on a flyout) kept clear around the sidebar so it reads as a
+/// floating panel. The HTML host is this island; the gap is not part of the webview.
+pub const ISLAND_INSET: i32 = 8;
 pub const HEADER_HEIGHT: i32 = 46;
 pub const TAB_ROW_HEIGHT: i32 = 36;
 /// --- layout (thread T6) --- the row height at the compact UI density.
@@ -38,9 +41,41 @@ pub struct SidebarLayout {
     pub viewport: Rect,
     pub max_scroll: i32,
     row_height: i32,
+    /// Physical pixels the floating island is inset from [`Self::sidebar`] on every side.
+    inset: i32,
     /// --- layout (thread T6) --- which edge the sidebar is docked to. The resize handle is on
     /// its inner edge: the right edge of a left sidebar, the left edge of a right one.
     pub side: SidePanelPosition,
+}
+
+/// Where a click in the sidebar slot but outside the floating island should go.
+/// The island itself and the resize handle are `None` (the HTML host, or the native handle).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum GapTarget {
+    /// The point is also inside the page viewport, so the page window owns it.
+    Page,
+    /// Padding around the island. The page does not cover the inner gutter, so this drags the window.
+    Drag,
+}
+
+/// Inset that keeps a slot of `slot_w` by `slot_h` physical pixels from inverting.
+pub fn island_inset(slot_w: i32, slot_h: i32, dpi: u32) -> i32 {
+    let want = Metrics::new(dpi).px(ISLAND_INSET);
+    let room = slot_w.max(0).min(slot_h.max(0)) / 4;
+    want.min(room).max(0)
+}
+
+fn inset_rect(rect: Rect, inset: i32) -> Rect {
+    if inset <= 0 || rect.is_empty() {
+        return rect;
+    }
+    let inset = inset.min(rect.width() / 4).min(rect.height() / 4);
+    Rect::new(
+        rect.left.saturating_add(inset),
+        rect.top.saturating_add(inset),
+        rect.right.saturating_sub(inset),
+        rect.bottom.saturating_sub(inset),
+    )
 }
 
 impl SidebarLayout {
@@ -64,20 +99,21 @@ impl SidebarLayout {
         let m = Metrics::new(dpi);
         let client_w = client_w.max(0);
         let client_h = client_h.max(0);
-        let inset = layout::left_rail_inset(dpi);
+        let rail = layout::left_rail_inset(dpi);
         let top = top.clamp(0, client_h);
         let bottom = bottom.clamp(top, client_h);
         let rim = if maximised { 0 } else { m.px(Metrics::RESIZE_RIM).min(client_w / 2) };
-        let available_width = (client_w - inset - rim).saturating_sub(1).max(0);
+        let available_width = (client_w - rail - rim).saturating_sub(1).max(0);
         let floor = if requested_width <= COLLAPSED_WIDTH { COLLAPSED_WIDTH } else { MIN_WIDTH };
         let min_width = m.px(floor).min(available_width);
         let max_width = m.px(MAX_WIDTH).min(available_width);
         let side_width = m.px(requested_width).clamp(min_width, max_width);
         let (left, right) = match side {
-            SidePanelPosition::Left => (inset, inset + side_width),
-            SidePanelPosition::Right => ((client_w - rim - side_width).max(inset), (client_w - rim).max(inset)),
+            SidePanelPosition::Left => (rail, rail + side_width),
+            SidePanelPosition::Right => ((client_w - rim - side_width).max(rail), (client_w - rim).max(rail)),
         };
         let sidebar = Rect::new(left, top, right, bottom);
+        let inset = island_inset(sidebar.width(), sidebar.height(), dpi);
         let header_height = m.px(HEADER_HEIGHT).min(bottom - top);
         let header = Rect::new(left, top, right, top + header_height);
         let rows = Rect::new(left, header.bottom, right, bottom);
@@ -88,7 +124,7 @@ impl SidebarLayout {
         };
         let viewport = match side {
             SidePanelPosition::Left => Rect::new(right, top, (client_w - rim).max(right), bottom),
-            SidePanelPosition::Right => Rect::new(inset, top, left.max(inset), bottom),
+            SidePanelPosition::Right => Rect::new(rail, top, left.max(rail), bottom),
         };
         Self {
             sidebar,
@@ -98,6 +134,7 @@ impl SidebarLayout {
             viewport,
             max_scroll: 0,
             row_height: m.px(row_height).max(1),
+            inset,
             side,
         }
     }
@@ -151,6 +188,7 @@ impl SidebarLayout {
         let side_width = m.px(requested_width).clamp(min_width, max_width);
         let top_margin = m.px(Metrics::TOP_MARGIN).min(height);
         let sidebar = Rect::new(0, top_margin, side_width, height);
+        let inset = island_inset(sidebar.width(), sidebar.height(), dpi);
         let header_height = m.px(HEADER_HEIGHT).min(height);
         let header = Rect::new(0, top_margin, side_width, top_margin.saturating_add(header_height).min(height));
         let row_top = header.bottom;
@@ -173,6 +211,7 @@ impl SidebarLayout {
             viewport,
             max_scroll,
             row_height,
+            inset,
             side: SidePanelPosition::Left,
         }
     }
@@ -220,6 +259,11 @@ impl SidebarLayout {
             .clamp(0, self.max_scroll)
     }
 
+    /// The floating panel inside the slot. The HTML tabs host uses this, not the full slot.
+    pub fn island(&self) -> Rect {
+        inset_rect(self.sidebar, self.inset)
+    }
+
     pub fn new_tab_button(&self) -> Rect {
         let size = NEW_TAB_BUTTON_SIZE
             .min(self.header.height())
@@ -246,10 +290,10 @@ pub fn flyout_width_at(from: i32, to: i32, t: f32) -> i32 {
     from.saturating_add(((to - from) as f32 * eased).round() as i32)
 }
 
-/// Tabs-host rectangle while an unpinned rail is open. It grows from the sidebar's outer edge over
+/// Un-inset overlay while an unpinned rail is open. It grows from the sidebar's outer edge over
 /// the page and does not move `viewport`. `width_px` and `keep_px` are physical pixels. The result
-/// is never narrower than the laid-out sidebar.
-pub fn flyout_rect(layout: &SidebarLayout, width_px: i32, keep_px: i32) -> Rect {
+/// is never narrower than the laid-out sidebar. Animation compares this width with the slot.
+pub fn flyout_span(layout: &SidebarLayout, width_px: i32, keep_px: i32) -> Rect {
     let rail = layout.sidebar.width().max(1);
     let width = width_px.max(rail);
     let keep = keep_px.max(0);
@@ -264,6 +308,24 @@ pub fn flyout_rect(layout: &SidebarLayout, width_px: i32, keep_px: i32) -> Rect 
             let left = layout.sidebar.right.saturating_sub(width).max(min_left);
             Rect::new(left, layout.sidebar.top, layout.sidebar.right, layout.sidebar.bottom)
         }
+    }
+}
+
+/// Tabs-host rectangle while an unpinned rail is open: [`flyout_span`] inset to the floating island.
+pub fn flyout_rect(layout: &SidebarLayout, width_px: i32, keep_px: i32) -> Rect {
+    inset_rect(flyout_span(layout, width_px, keep_px), layout.inset)
+}
+
+/// A point in the sidebar slot that is neither the floating island nor the resize handle.
+/// `None` when the HTML host or the native handle should keep the click.
+pub fn gap_target(layout: &SidebarLayout, x: i32, y: i32) -> Option<GapTarget> {
+    if !layout.sidebar.contains(x, y) || layout.island().contains(x, y) || layout.handle.contains(x, y) {
+        return None;
+    }
+    if layout.viewport.contains(x, y) {
+        Some(GapTarget::Page)
+    } else {
+        Some(GapTarget::Drag)
     }
 }
 
@@ -404,17 +466,19 @@ mod tests {
         let page = layout.viewport;
         let open = flyout_rect(&layout, 260, FLYOUT_KEEP);
         assert_eq!(layout.viewport, page, "the flyout must not push the page");
-        assert_eq!(open.left, layout.sidebar.left);
-        assert_eq!(open.top, layout.sidebar.top);
-        assert_eq!(open.bottom, layout.sidebar.bottom);
-        assert_eq!(open.right, layout.sidebar.left + 260);
-        assert!(open.width() > layout.sidebar.width());
+        assert_eq!(open.left, layout.sidebar.left + layout.inset);
+        assert_eq!(open.top, layout.sidebar.top + layout.inset);
+        assert_eq!(open.bottom, layout.sidebar.bottom - layout.inset);
+        assert_eq!(open.right, layout.sidebar.left + 260 - layout.inset);
+        assert!(open.width() > layout.island().width());
         assert!(open.right <= page.right - FLYOUT_KEEP);
+        let span = flyout_span(&layout, 260, FLYOUT_KEEP);
+        assert_eq!(span.right, layout.sidebar.left + 260, "animation still measures the un-inset span");
 
         let tight = SidebarLayout::compute(200, 400, 96, COLLAPSED_WIDTH, false);
         let clamped = flyout_rect(&tight, MAX_WIDTH, FLYOUT_KEEP);
-        assert!(clamped.width() >= tight.sidebar.width());
-        assert!(clamped.right <= tight.viewport.right - FLYOUT_KEEP || clamped.width() == tight.sidebar.width());
+        assert!(clamped.width() >= tight.island().width());
+        assert!(clamped.right <= tight.viewport.right - FLYOUT_KEEP || clamped.width() == tight.island().width());
     }
 
     #[test]
@@ -431,8 +495,8 @@ mod tests {
             TAB_ROW_HEIGHT,
         );
         let open = flyout_rect(&layout, 260, FLYOUT_KEEP);
-        assert_eq!(open.right, layout.sidebar.right);
-        assert_eq!(open.top, layout.sidebar.top);
+        assert_eq!(open.right, layout.sidebar.right - layout.inset);
+        assert_eq!(open.top, layout.sidebar.top + layout.inset);
         assert!(open.left < layout.sidebar.left);
         assert!(open.left >= layout.viewport.left + FLYOUT_KEEP || open.width() == layout.sidebar.width());
         assert_eq!(layout.viewport.right, layout.sidebar.left);
@@ -448,5 +512,40 @@ mod tests {
         assert_eq!(flyout_width_at(0, 100, 0.5), 88);
         let early = flyout_width_at(48, 260, 0.2);
         assert!(early > 48 && early < 260);
+    }
+
+    #[test]
+    fn the_sidebar_host_is_an_island_inset_from_the_slot() {
+        for dpi in [96, 120, 144, 192] {
+            let m = Metrics::new(dpi);
+            let layout = SidebarLayout::compute(900, 700, dpi, 260, false);
+            let want = m.px(ISLAND_INSET);
+            assert_eq!(layout.inset, want, "dpi={dpi}");
+            let island = layout.island();
+            assert_eq!(island.left, layout.sidebar.left + want, "dpi={dpi}");
+            assert_eq!(island.top, layout.sidebar.top + want, "dpi={dpi}");
+            assert_eq!(island.right, layout.sidebar.right - want, "dpi={dpi}");
+            assert_eq!(island.bottom, layout.sidebar.bottom - want, "dpi={dpi}");
+            assert!(island.right <= layout.handle.left, "the island stays clear of the resize handle, dpi={dpi}");
+
+            let collapsed = SidebarLayout::compute(900, 700, dpi, COLLAPSED_WIDTH, false);
+            assert_eq!(collapsed.island().width(), m.px(COLLAPSED_WIDTH) - 2 * collapsed.inset, "dpi={dpi}");
+            assert!(collapsed.island().width() > 0, "dpi={dpi}");
+        }
+        let tiny = SidebarLayout::compute(40, 80, 96, COLLAPSED_WIDTH, true);
+        assert!(tiny.inset <= tiny.sidebar.width() / 4);
+        assert!(tiny.island().width() > 0 && tiny.island().height() > 0);
+    }
+
+    #[test]
+    fn gap_around_the_island_drags_and_the_handle_stays_a_resize() {
+        let layout = SidebarLayout::compute(900, 700, 96, 260, false);
+        let island = layout.island();
+        assert_eq!(gap_target(&layout, island.left + 4, island.top + 8), None, "the island is the host");
+        assert_eq!(gap_target(&layout, layout.handle.left + 1, island.top + 8), None, "the handle is a native resize");
+        assert_eq!(gap_target(&layout, island.right + 1, island.top + 20), Some(GapTarget::Drag), "the inner gutter is not covered by the page");
+        assert_eq!(gap_target(&layout, island.left + 6, layout.sidebar.top + 1), Some(GapTarget::Drag), "the outer padding drags the window");
+        assert_eq!(gap_target(&layout, layout.viewport.left + 4, layout.viewport.top + 4), None);
+        assert_eq!(gap_target(&layout, -4, island.top + 4), None);
     }
 }
