@@ -13,7 +13,7 @@
     themeButton.setAttribute("aria-pressed", dark ? "true" : "false");
     themeButton.textContent = dark ? "Light" : "Dark";
     var color = document.querySelector('meta[name="theme-color"]');
-    if (color) color.setAttribute("content", dark ? "#121211" : "#f3f2ee");
+    if (color) color.setAttribute("content", dark ? "#111111" : "#ffffff");
   }
 
   themeButton.addEventListener("click", function () {
@@ -22,7 +22,6 @@
     try { localStorage.setItem("bowser-theme", next); } catch (e) {}
     paintTheme();
   });
-
   window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", function () {
     if (!root.hasAttribute("data-theme")) paintTheme();
   });
@@ -37,10 +36,10 @@
     });
   });
 
-  var motion = window.matchMedia("(prefers-reduced-motion: reduce)");
   var demo = document.querySelector("[data-rail-demo]");
   var rail = demo ? demo.querySelector("[data-rail]") : null;
   var railHeld = false;
+  var railTimer = 0;
 
   function setRail(open) {
     if (!demo) return;
@@ -49,67 +48,39 @@
   }
 
   if (rail) {
-    rail.addEventListener("pointerenter", function () {
-      railHeld = true;
-      setRail(true);
-    });
+    rail.addEventListener("pointerenter", function () { railHeld = true; setRail(true); });
     rail.addEventListener("pointerdown", function () { railHeld = true; });
-    rail.addEventListener("pointerleave", function () {
-      railHeld = false;
-      setRail(false);
-    });
+    rail.addEventListener("pointerleave", function () { railHeld = false; setRail(false); });
     rail.addEventListener("focusin", function () { setRail(true); });
     rail.addEventListener("focusout", function (event) {
       if (!rail.contains(event.relatedTarget)) setRail(false);
     });
-    rail.addEventListener("click", function () {
-      if (window.matchMedia("(hover: none)").matches) {
-        setRail(!demo.classList.contains("is-rail-open"));
-      }
-    });
   }
 
-  if (motion.matches || !("IntersectionObserver" in window)) return;
-
-  var revealTargets = document.querySelectorAll(
-    ".section-head, .shot, .card, .faq details, .cta .wrap"
-  );
-  revealTargets.forEach(function (el) {
-    el.classList.add("reveal");
-    var group = el.parentElement ? el.parentElement.children : [];
-    var index = 0;
-    for (var i = 0; i < group.length; i++) {
-      if (group[i] === el) index = i;
-    }
-    if (index > 0) el.style.transitionDelay = Math.min(index, 5) * 70 + "ms";
-  });
-  var seen = new IntersectionObserver(function (entries) {
-    entries.forEach(function (entry) {
-      if (!entry.isIntersecting) return;
-      entry.target.classList.add("is-in");
-      seen.unobserve(entry.target);
+  function show(name) {
+    document.querySelectorAll("[data-panel]").forEach(function (panel) {
+      panel.hidden = panel.getAttribute("data-panel") !== name;
     });
-  }, { rootMargin: "0px 0px -10% 0px", threshold: 0.08 });
-  revealTargets.forEach(function (el) {
-    var top = el.getBoundingClientRect().top;
-    if (top < window.innerHeight * 0.92) el.classList.add("is-in");
-    else seen.observe(el);
-  });
-
-  if (!demo || !rail) return;
-
-  var railDemoPlayed = false;
-  var railDemo = new IntersectionObserver(function (entries) {
-    entries.forEach(function (entry) {
-      if (!entry.isIntersecting || railDemoPlayed) return;
-      railDemoPlayed = true;
-      railDemo.disconnect();
+    document.querySelectorAll("[data-tab]").forEach(function (tab) {
+      var on = tab.getAttribute("data-tab") === name;
+      tab.setAttribute("aria-selected", on ? "true" : "false");
+    });
+    window.clearTimeout(railTimer);
+    if (name === "vertical") {
       setRail(true);
-      window.setTimeout(function () {
-        if (railHeld || rail.matches(":hover")) return;
+      railTimer = window.setTimeout(function () {
+        if (railHeld || (rail && rail.matches(":hover"))) return;
         setRail(false);
       }, 2200);
+    } else {
+      setRail(false);
+    }
+  }
+
+  document.querySelectorAll("[data-tab]").forEach(function (tab) {
+    tab.addEventListener("click", function () {
+      show(tab.getAttribute("data-tab"));
     });
-  }, { threshold: 0.45 });
-  railDemo.observe(demo);
+  });
+  show("tabs");
 })();
