@@ -77,6 +77,7 @@ class Node {
   append(...nodes) { for (const n of nodes) { const node = typeof n === 'string' ? new Node('#text', n) : n; this.ownText = null; this.detach(node); this.children.push(node); } }
   prepend(node) { this.detach(node); this.children.unshift(node); }
   insertBefore(node, ref) { this.detach(node); const at = ref ? this.children.indexOf(ref) : -1; if (at < 0) this.children.push(node); else this.children.splice(at, 0, node); return node; }
+  before(node) { const p = this.parent; p.detach(node); p.children.splice(p.children.indexOf(this), 0, node); }
   after(node) { const p = this.parent; p.detach(node); p.children.splice(p.children.indexOf(this) + 1, 0, node); }
   replaceWith(node) { const p = this.parent; const at = p.children.indexOf(this); p.detach(node); p.children.splice(at, 1, node); this.parent = null; }
   replaceChildren(...nodes) { this.children = []; this.ownText = null; this.append(...nodes); }
@@ -158,7 +159,7 @@ test('the Tabs section lists every option in cards, each with its own control an
   // one Tabs card and every other option keeps its card heading behind the area's More options.
   const section = page.querySelector('section[data-area="tabs"]');
   assert.ok(section, 'a Tabs area');
-  assert.equal(section.querySelector('h2').textContent, 'Tabs and start page');
+  assert.equal(section.querySelector('h2').textContent, 'Tabs');
   assert.ok(section.querySelector('section[data-section="tabs"]'), 'with a Tabs part');
   const cards = section.querySelector('.sp-more').querySelectorAll('.sp-group-h').map((h) => h.textContent);
   for (const card of options.TAB_CARDS) assert.ok(cards.includes(options.TAB_CARD_TITLES[card]), card);
@@ -173,7 +174,7 @@ test('the Tabs section lists every option in cards, each with its own control an
   }
   const nav = page.querySelector('.sp-nav-item[data-section="tabs"]');
   assert.ok(nav);
-  assert.equal(nav.textContent, 'Tabs and start page');
+  assert.equal(nav.textContent, 'Tabs');
 });
 
 test('a switch, a choice, a number and the address each send one tabopt command and nothing else', () => {

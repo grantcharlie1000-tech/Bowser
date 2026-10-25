@@ -47,7 +47,7 @@ function harness({ ready = true, snapshot = true, reduced = false } = {}) {
     requestAnimationFrame: (callback) => { const id = ++frameId; frames.set(id, callback); return id; },
     cancelAnimationFrame: (id) => frames.delete(id),
     addEventListener() {}, removeEventListener() {},
-    localStorage: { getItem: () => null, setItem() {} },
+    localStorage: { getItem: (key) => key === 'bowser.settings.view' ? 'all' : null, setItem() {} },
     ResizeObserver: class {
       constructor(callback) { this.callback = callback; this.targets = new Map(); observers.push(this); }
       observe(node) { this.targets.set(node, null); }
@@ -141,36 +141,47 @@ function harness({ ready = true, snapshot = true, reduced = false } = {}) {
 
 const storeSnapshot = { v: 1, t: 'snap', p: 'store', d: { shown: true, catalogue: [], phase: 'idle', requestId: '', extensionId: '', name: '', version: '', error: '', restart: false, permissions: [], hostPermissions: [], contentScripts: [], contentScriptDeclarations: [], optionalPermissions: [], optionalHostPermissions: [] } };
 
-test('Extensions stays selected AND its real popup stays visible after delayed Media expands', async () => {
+test('About stays selected AND a control in it stays visible after delayed Media expands', async () => {
   const h = harness();
-  h.go('extensions'); h.flush();
-  assert.equal(h.current(), 'extensions');
-  assert.equal(h.main.scrollTop, h.target('extensions'));
-  assert.ok(h.visible());
+  // Media sits above About, so a late media report pushes About down until layout repair scrolls it back.
+  const probe = h.app.querySelector('section[data-area="about"] button');
+  assert.ok(probe, 'About has a control below Media');
+  probe.getBoundingClientRect = () => {
+    const y = h.area('about').offsetTop + 120 - h.main.scrollTop;
+    return { top: y, bottom: y + 30, height: 30, left: 0, right: 80, width: 80 };
+  };
+  const seen = () => {
+    const box = probe.getBoundingClientRect();
+    return box.top >= 0 && box.bottom <= h.main.clientHeight;
+  };
+  h.go('about'); h.flush();
+  assert.equal(h.current(), 'about');
+  assert.equal(h.main.scrollTop, h.target('about'));
+  assert.ok(seen());
   h.startMedia();
   const oldTop = h.main.scrollTop;
   await h.finishMedia();
   assert.equal(h.main.scrollTop, oldTop, 'Promise completion does not itself fake a scroll');
-  assert.ok(!h.visible(), 'late rendered content reproduces the selected-but-offscreen contract');
+  assert.ok(!seen(), 'late rendered content reproduces the selected-but-offscreen contract');
   h.resize(); h.resize();
   assert.equal(h.frames.size, 1, 'layout notifications coalesce');
   h.flush();
-  assert.equal(h.current(), 'extensions');
-  assert.equal(h.main.scrollTop, h.target('extensions'));
-  assert.ok(h.visible());
+  assert.equal(h.current(), 'about');
+  assert.equal(h.main.scrollTop, h.target('about'));
+  assert.ok(seen());
   assert.deepEqual(h.sent, [{ v: 1, t: 'ready' }], 'layout repair sends no navigation or extension command');
 });
 
 test('every existing user-input unpin defeats a queued correction and restores scroll tracking', () => {
   for (const type of ['wheel', 'pointerdown', 'keydown', 'touchstart']) {
     const h = harness(); h.go('extensions'); h.flush();
-    h.grow('downloads', 700); h.resize();
+    h.grow('address', 700); h.resize();
     h.main.dispatch(type, { key: 'PageUp' });
-    h.main.scrollTop = h.area('downloads').offsetTop;
+    h.main.scrollTop = h.area('address').offsetTop;
     h.main.dispatch('scroll');
     h.flush();
-    assert.equal(h.main.scrollTop, h.area('downloads').offsetTop, type);
-    assert.equal(h.current(), 'downloads', type);
+    assert.equal(h.main.scrollTop, h.area('address').offsetTop, type);
+    assert.equal(h.current(), 'address', type);
   }
 });
 
@@ -197,7 +208,7 @@ test('latest navigation wins queued layout and pre-navigation scroll-spy callbac
   h.main.dispatch('scroll'); // An old scroll spy is already queued.
   h.go('extensions'); h.flush();
   assert.equal(h.current(), 'extensions', 'a pre-navigation scroll spy must respect the new pin even at a clamped destination');
-  h.grow('downloads', 500); h.resize();
+  h.grow('appearance', 500); h.resize();
   h.go('privacy'); h.flush();
   assert.equal(h.current(), 'privacy');
   assert.equal(h.main.scrollTop, h.target('privacy'));
@@ -209,10 +220,10 @@ test('latest navigation wins queued layout and pre-navigation scroll-spy callbac
 test('merged subsection geometry and opposing area size changes keep the precise target', () => {
   const h = harness(); h.go('search'); h.flush();
   const part = h.app.querySelector('section.sp-part[data-section="search"]');
-  assert.equal(h.current(), 'address');
+  assert.equal(h.current(), 'profile', 'search lives in General');
   assert.equal(h.main.scrollTop, part.offsetTop - 8);
   const height = h.main.scrollHeight;
-  h.grow('appearance', 120); h.grow('updates', -120); h.resize(); h.flush();
+  h.grow('appearance', 120); h.grow('about', -120); h.resize(); h.flush();
   assert.equal(h.main.scrollHeight, height);
   assert.equal(h.main.scrollTop, part.offsetTop - 8, 'area observation catches an unchanged total column size');
 });
@@ -220,17 +231,17 @@ test('merged subsection geometry and opposing area size changes keep the precise
 test('opposing subsection size changes inside one merged area retain the exact deep-link target', () => {
   const h = harness(); h.go('search'); h.flush();
   const target = h.app.querySelector('section.sp-part[data-section="search"]');
-  const areaHeight = h.area('address').offsetHeight;
+  const areaHeight = h.area('profile').offsetHeight;
   const columnHeight = h.main.scrollHeight;
   const oldTop = h.main.scrollTop;
-  h.growPart('address', 40); h.growPart('bookmarks', -40);
-  assert.equal(h.area('address').offsetHeight, areaHeight);
+  h.growPart('profile', 40); h.growPart('startpage', -40);
+  assert.equal(h.area('profile').offsetHeight, areaHeight);
   assert.equal(h.main.scrollHeight, columnHeight);
   assert.equal(target.offsetTop - 8, oldTop + 40, 'only the retained subsection destination moves');
   h.resize();
   assert.equal(h.frames.size, 1, 'the changed section roots schedule one correction');
   h.flush();
-  assert.equal(h.current(), 'address');
+  assert.equal(h.current(), 'profile', 'search lives in General');
   assert.equal(h.main.scrollTop, target.offsetTop - 8);
 });
 
@@ -238,7 +249,7 @@ test('search, a subpage, and Store stay in control when delayed Media resolves',
   for (const surface of ['search', 'subpage', 'store']) {
     const h = harness(); h.go('extensions'); h.flush(); h.startMedia();
     // Queue old work first; cancellation must be checked when the callback actually runs.
-    h.grow('downloads', 50); h.resize();
+    h.grow('appearance', 50); h.resize();
     if (surface === 'search') {
       const input = h.app.querySelector('.sp-search-input'); input.value = 'privacy'; input.dispatch('input');
     } else if (surface === 'subpage') h.app.querySelector('[data-opens="engines"]').querySelector('button').click();
@@ -256,7 +267,7 @@ test('search, a subpage, and Store stay in control when delayed Media resolves',
     else h.deliver({ ...storeSnapshot, d: { ...storeSnapshot.d, shown: false } });
     const afterReturn = h.main.scrollTop;
     const afterCalls = h.main.scrollCalls.length;
-    h.grow('downloads', 40); h.resize(); h.flush();
+    h.grow('appearance', 40); h.resize(); h.flush();
     assert.equal(h.main.scrollTop, afterReturn, `${surface} return`);
     assert.equal(h.main.scrollCalls.length, afterCalls, `${surface} return`);
   }
@@ -270,7 +281,7 @@ test('unchanged observer delivery preserves smooth navigation and reduced motion
     const calls = h.main.scrollCalls.length;
     h.resize(); h.flush();
     assert.equal(h.main.scrollCalls.length, calls, 'a pending smooth scroll is not mistaken for drift');
-    h.grow('downloads', 150); h.resize(); h.flush();
+    h.grow('appearance', 150); h.resize(); h.flush();
     assert.equal(h.main.scrollCalls.at(-1).behavior, 'auto', 'genuine reflow stabilizes without another animation');
     assert.equal(h.main.scrollTop, h.target('extensions'));
   }
@@ -283,6 +294,6 @@ test('a deep link received before the Settings snapshot anchors after it arrives
   h.deliver(fixture.snap); h.flush();
   assert.equal(h.current(), 'extensions');
   assert.equal(h.main.scrollTop, h.target('extensions'));
-  h.grow('downloads', 180); h.resize(); h.flush();
+  h.grow('appearance', 180); h.resize(); h.flush();
   assert.ok(h.visible());
 });
