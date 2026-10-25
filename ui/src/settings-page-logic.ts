@@ -739,7 +739,7 @@ export const ROWS: readonly RowSpec[] = [
   { id: 'profiles', section: 'profile', label: 'Manage profiles', description: 'Switch, create, rename or delete profiles.', keywords: 'switch new guest delete rename' },
   { id: 'import', section: 'profile', label: 'Import bookmarks', description: 'Bring bookmarks over from another browser on this PC.', keywords: 'chrome edge firefox migrate transfer bookmarks import' },
   // --- layout (thread T6) --- the Layout block: presets and the three edges in view, the rest behind More options.
-  { id: 'layoutPreset', section: 'appearance', label: 'Presets', description: 'A starting arrangement. Change any part of it and Bowser keeps yours as Saved.', keywords: 'layout preset simple classic vertical left right bottom saved thumbnails arrangement tabs top side' },
+  { id: 'layoutPreset', section: 'appearance', label: 'Presets', description: 'A starting arrangement. Change any part of it and Bowser keeps yours as Saved.', keywords: 'layout preset presets simple classic vertical left right bottom saved thumbnails arrangement tabs top side' },
   { id: 'layoutBars', section: 'appearance', label: 'Tab bar, address bar and panels', description: 'Which edge each one sits on.', keywords: 'tab bar position top left right bottom address bar side panel dock helium edge title row window buttons' },
   { id: 'layout', section: 'appearance', label: 'Tab bar style at the top', description: 'How the tabs and the address bar share the top of the window.', keywords: 'tabs toolbar horizontal single row top browser layout' },
   { id: 'sidebarWidth', section: 'appearance', label: 'Sidebar width', description: 'Width of the tab sidebar in the vertical layouts.', keywords: 'vertical tabs size wide narrow pixels' },
