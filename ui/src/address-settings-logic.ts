@@ -284,6 +284,14 @@ export function engineChoiceLabel(id: string, name: string): string {
   return name;
 }
 
+/** The short name Simple shows for the settings.txt search engine, before the address list arrives. */
+export function searchEngineLabel(id: string | null): string {
+  if (id === 'optimised') return 'DuckDuckGo';
+  if (id === 'google') return 'Google';
+  if (id === 'duckduckgo') return 'DuckDuckGo.com';
+  return '';
+}
+
 /** The label an engine shows in lists: its name, and its nickname when asked. */
 export function engineLabel(engine: Pick<EngineView, 'name' | 'nick'>, showNickname: boolean): string {
   return showNickname && engine.nick !== '' ? `${engine.name} (${engine.nick})` : engine.name;

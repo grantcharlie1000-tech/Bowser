@@ -721,14 +721,21 @@ test('the theme reset button clears both theme and accent in one save', () => {
 test('default browser status reflects the snapshot and the button sends a bare setdefault', () => {
   deliver(fixture.snap);
   const row = app.querySelector('.sp-row[data-row="defaultBrowser"]');
-  assert.equal(row.querySelector('.sp-value').textContent, 'Default');
-  sent.length = 0;
-  row.querySelector('button').click();
-  assert.deepEqual(sent, [{ v: 1, t: 'set', a: 'setdefault' }]);
+  const button = row.querySelector('button');
+  assert.equal(row.querySelector('.sp-value'), null);
+  assert.equal(button.textContent, 'Default');
+  assert.equal(button.disabled, true);
+  assert.equal(button.getAttribute('aria-label'), 'Bowser is the default browser');
   deliver({ ...fixture.snap, d: { ...fixture.snap.d, defaultBrowser: 'no' } });
-  assert.equal(row.querySelector('.sp-value').textContent, 'Not default');
+  assert.equal(button.textContent, 'Make default');
+  assert.equal(button.disabled, false);
+  sent.length = 0;
+  button.click();
+  assert.deepEqual(sent, [{ v: 1, t: 'set', a: 'setdefault' }]);
   deliver({ ...fixture.snap, d: { ...fixture.snap.d, defaultBrowser: 'unknown' } });
-  assert.equal(row.querySelector('.sp-value').textContent, 'Unknown');
+  assert.equal(button.textContent, 'Make default');
+  assert.equal(button.disabled, false);
+  assert.equal(button.getAttribute('aria-label'), 'Make Bowser the default browser');
 });
 
 test('an unreadable settings file disables the new controls too, except the setdefault button', () => {
@@ -744,8 +751,12 @@ test('an unreadable settings file disables the new controls too, except the setd
   assert.equal(app.querySelector('.sp-row[data-row="defaultZoom"]').querySelector('input').disabled, true);
   assert.equal(app.querySelector('.sp-row[data-row="centredAddressBar"]').querySelector('[role="switch"]').disabled, true);
   assert.equal(app.querySelector('.sp-row[data-row="fontSize"]').querySelectorAll('[role="radio"]').every((b) => b.disabled), true);
-  // A registry action, not a settings.txt value: stays enabled like "Open settings file" and "Reset settings".
+  // Already the default, so the button shows that and does not offer the action again.
+  assert.equal(app.querySelector('.sp-row[data-row="defaultBrowser"]').querySelector('button').disabled, true);
+  // A registry action, not a settings.txt value: stays enabled when Bowser is not the default.
+  deliver({ ...fixture.snap, d: { ...fixture.snap.d, readable: false, defaultBrowser: 'no' } });
   assert.equal(app.querySelector('.sp-row[data-row="defaultBrowser"]').querySelector('button').disabled, false);
+  assert.equal(app.querySelector('.sp-row[data-row="defaultBrowser"]').querySelector('button').textContent, 'Make default');
   deliver(fixture.snap);
 });
 
@@ -2263,6 +2274,15 @@ test('simple settings is the calm default, and All settings is one switch away',
   assert.deepEqual(app.querySelector('.sp-simple').querySelectorAll('.sp-label').map((node) => node.textContent), [
     'Search engine', 'Homepage', 'Startup', 'Theme', 'Accent', 'Tabs', 'Import', 'Clear data', 'Extensions', 'Default browser',
   ]);
+  const engineRow = app.querySelector('.sp-row[data-row="searchDefault"]');
+  assert.ok(app.querySelector('.sp-simple').contains(engineRow));
+  assert.equal(engineRow.querySelector('.sp-engine-value').textContent, 'DuckDuckGo');
+  const browserRow = app.querySelector('.sp-row[data-row="defaultBrowser"]');
+  assert.ok(app.querySelector('.sp-simple').contains(browserRow));
+  assert.equal(browserRow.querySelector('.sp-desc'), null);
+  assert.equal(browserRow.querySelector('.sp-value'), null);
+  assert.equal(browserRow.querySelector('button').textContent, 'Default');
+  assert.equal(browserRow.querySelector('button').disabled, true);
   assert.equal(app.querySelector('.sp-show-all').textContent, logic.SIMPLE_ALL_LABEL);
   const themeButtons = app.querySelector('[data-simple="simpleTheme"]').querySelectorAll('[role="radio"]');
   assert.deepEqual([...themeButtons].map((button) => button.textContent), ['Light', 'Dark', 'System']);

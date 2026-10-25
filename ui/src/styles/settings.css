@@ -1155,6 +1155,11 @@
   padding-block: 14px;
 }
 
+/* Simple shows the current engine as a value. All settings keeps the menu. */
+.sp-engine-value { display: none; }
+.sp.is-simple .sp-row[data-row="searchDefault"] > .sp-ctl > .sp-select-host { display: none; }
+.sp.is-simple .sp-engine-value { display: inline; }
+
 .sp-simple .sp-label {
   font-size: var(--bw-text-body);
   font-weight: var(--bw-weight-strong);

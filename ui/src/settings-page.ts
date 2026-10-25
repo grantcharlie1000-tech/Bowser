@@ -20,6 +20,7 @@ import { mountStartSection } from './settings-start'; // --- start page ---
 import { mountThemeRows } from './settings-themes'; // --- theme options ---
 import { themeAssignment, type ThemeOptionValue } from './theme-options-logic'; // --- theme options ---
 import { mountAddressSections } from './address-section'; // --- address bar, search and bookmarks ---
+import { searchEngineLabel } from './address-settings-logic';
 import { WINDOW_APPEARANCE_KEYS, WINDOW_PANEL_KEYS, resetWindowGroup, stepValue, windowGroupIsDefault } from './window-logic'; // --- window and panels (thread T9) ---
 // --- toolbars and feeds (thread T13) ---
 import { mountToolbarEditor, type EditorCommand } from './toolbar-editor';
@@ -1167,6 +1168,9 @@ export function startSettingsPage(root: HTMLElement): void {
     switchControl,
     segmentedControl,
   });
+  // Simple cannot wait for the address list: the settings engine id is enough for a right-aligned name.
+  const engineValue = el('span', 'sp-value sp-engine-value');
+  rows.get('searchDefault')?.root.querySelector('.sp-ctl')?.append(engineValue);
 
   // Page tools (src/page-tools-section.ts): its own snapshot and commands in the `set` family. The few core
   // rows and the rest behind "More options" are decided by row id in settings-page-logic.ts.
@@ -1360,8 +1364,6 @@ export function startSettingsPage(root: HTMLElement): void {
   const defaultBrowserButton = textButton('Make default', () => cmd({ a: 'setdefault' }), { aria: 'Make Bowser the default browser' });
   const defaultBrowserRow = row(defaultBrowserCard, 'defaultBrowser', defaultBrowserButton);
   defaultBrowserRow.root.classList.add('is-tight');
-  const defaultBrowserStatus = el('span', 'sp-value');
-  defaultBrowserRow.label.after(defaultBrowserStatus);
 
   // ---- --- settings slim --- arranging the rows: core, "More options", sub-pages, "Not active yet" ----
 
@@ -1820,7 +1822,11 @@ export function startSettingsPage(root: HTMLElement): void {
     shiftRightClick.set(d.shiftRightClickContext);
     copyLink.set(d.ctrlShiftCCopyLink);
     blockYoutube.set(d.blockYoutubeVideoAds);
-    defaultBrowserStatus.textContent = s.defaultBrowser === 'yes' ? 'Default' : s.defaultBrowser === 'no' ? 'Not default' : 'Unknown';
+    if (engineValue.dataset.source !== 'address') engineValue.textContent = searchEngineLabel(s.searchEngine);
+    const isDefault = s.defaultBrowser === 'yes';
+    defaultBrowserButton.disabled = isDefault;
+    defaultBrowserButton.lastChild!.textContent = isDefault ? 'Default' : 'Make default';
+    defaultBrowserButton.setAttribute('aria-label', isDefault ? 'Bowser is the default browser' : 'Make Bowser the default browser');
     paintSites();
     tracking.set(d.trackingPrevention);
     history.set(s.historyEnabled);

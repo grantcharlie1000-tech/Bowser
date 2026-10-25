@@ -295,6 +295,12 @@ function sourceItem(id: SourceId, on: boolean, enabled: readonly SourceId[], com
 
 interface EnginePicker { paint(snapshot: AddressSnapshot, value: string, only?: (engine: EngineView) => boolean): void }
 
+/** The Simple row's value sits beside the menu. Tests' fake DOM links nodes with `.parent`. */
+function engineValueSlot(hostNode: HTMLElement): HTMLElement | null {
+  const wrap = hostNode.parentElement ?? (hostNode as HTMLElement & { parent?: HTMLElement | null }).parent ?? null;
+  return wrap?.querySelector<HTMLElement>('.sp-engine-value') ?? null;
+}
+
 function engineSelect(host: AddressHost, into: HTMLElement, id: string, label: string, allowDefault: boolean, onPick: (id: string) => void): EnginePicker {
   const hostNode = el('div', 'sp-select-host');
   host.row(into, id, hostNode);
@@ -319,6 +325,12 @@ function engineSelect(host: AddressHost, into: HTMLElement, id: string, label: s
         hostNode.replaceChildren(select.root);
       } else {
         select.set(current);
+      }
+      const shown = engines.find((engine) => engine.id === current);
+      const slot = engineValueSlot(hostNode);
+      if (shown && slot) {
+        slot.dataset.source = 'address';
+        slot.textContent = engineChoiceLabel(shown.id, shown.name);
       }
     },
   };
