@@ -1118,14 +1118,26 @@
   opacity: 0.5;
 }
 
-/* ---- Simple or All. The switch sits under the title; Simple is one short page. ---- */
-.sp-view {
+/* ---- Simple or All. A solid track with a raised segment for the choice that is on. ---- */
+.sp .sp-view {
   width: 100%;
+  background: color-mix(in srgb, var(--bw-text) 10%, var(--bw-window-opaque));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--bw-text) 16%, transparent);
 }
 
-.sp-view > button {
+.sp .sp-view > button {
   flex: 1 1 0;
   height: 32px;
+  color: var(--bw-text);
+  font-size: var(--bw-text-body);
+  font-weight: var(--bw-weight-strong);
+}
+
+.sp .sp-view > button[aria-checked="true"] {
+  background: var(--bw-window-opaque);
+  color: var(--bw-text);
+  border-color: color-mix(in srgb, var(--bw-text) 14%, transparent);
+  box-shadow: 0 1px 2px color-mix(in srgb, #000 18%, transparent);
 }
 
 .sp-simple .sp-row {

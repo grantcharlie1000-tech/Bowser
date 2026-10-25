@@ -1397,6 +1397,7 @@ test('Search field, scoped nicknames and bookmark rows send their own keys; bar 
   assert.equal(headingOf('bmBarDisplay'), headingOf('bookmarksBar'), 'under the page\'s own Bookmarks bar heading');
   assert.equal(headingOf('bmBarDisplay'), 'Bookmarks bar');
   assert.equal(rowOf('bmBarFolder').querySelector('.bw-select-button') !== null, true);
+  assert.equal(rowOf('searchDefault').querySelector('.bw-select-value').textContent, 'DuckDuckGo', 'the default engine is DuckDuckGo, stored as optimised');
   // A bad snapshot is dropped and leaves the page as it was.
   deliver({ ...addressFixture.snap, d: { ...addressFixture.snap.d, def: 'gone' } });
   assert.equal(app.querySelectorAll('.ad-engine').length, 7);

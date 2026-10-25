@@ -273,6 +273,17 @@ export function moved(engines: readonly EngineView[], id: string, index: number)
   return ids;
 }
 
+/**
+ * The name in the search-engine menu. The stored default id is `optimised`: DuckDuckGo’s HTML
+ * search with sponsored results off (`k1=-1`). The id stays, so settings.txt is unchanged.
+ * The separate `duckduckgo` engine is the main site, so the menu can tell the two apart.
+ */
+export function engineChoiceLabel(id: string, name: string): string {
+  if (id === 'optimised') return 'DuckDuckGo';
+  if (id === 'duckduckgo') return 'DuckDuckGo.com';
+  return name;
+}
+
 /** The label an engine shows in lists: its name, and its nickname when asked. */
 export function engineLabel(engine: Pick<EngineView, 'name' | 'nick'>, showNickname: boolean): string {
   return showNickname && engine.nick !== '' ? `${engine.name} (${engine.nick})` : engine.name;
@@ -309,7 +320,7 @@ export const ADDRESS_ROWS: readonly RowSpec[] = [
   S('secBase', 'address', 'Highlight the base domain', 'Emphasises only the main domain of the address, so a lookalike host stands out.', 'highlight base domain security phishing emphasis'),
   S('addrExpansion', 'address', 'Domain expansion', 'Ctrl+Enter turns one word into www.word.suffix. Empty turns it off.', 'domain expansion ctrl enter suffix com www'),
   S('engines', 'search', 'Search engines', 'Add, edit, order and remove the engines the address bar and the search field use.', 'search engines add edit remove reorder nickname url suggest post image restore defaults'),
-  S('searchDefault', 'search', 'Search engine', 'Used when you search from the address bar. Type img before a query for images.', 'default engine google duckduckgo bing search address bar'),
+  S('searchDefault', 'search', 'Search engine', 'DuckDuckGo, with no sponsored results. Type img before a query for images.', 'default engine optimised google duckduckgo bing search address bar'),
   S('searchPrivate', 'search', 'Private window search engine', 'Used in private tabs. Default means the engine above.', 'private window search engine incognito'),
   S('searchImage', 'search', 'Image search engine', 'Used by “Search for this image” on a picture.', 'image search engine reverse picture'),
   S('searchField', 'search', 'Search field', 'A separate field beside the address field, as a text field or a button.', 'search field toolbar button text box'),
