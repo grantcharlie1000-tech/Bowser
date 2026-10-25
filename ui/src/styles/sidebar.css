@@ -13,14 +13,14 @@
   height: 100%;
   overflow: hidden;
   user-select: none;
-  /* The host is the island (Rust insets the slot). Fill, a 1px edge and an inset highlight stay
-     inside that window; an outer shadow would be clipped. */
+  /* The host is the island (Rust insets the slot). The fill sits off the window colour so the gap
+     reads; the 1px edge and the inset highlight stay inside the host (an outer shadow is clipped). */
   border: 1px solid var(--bw-float-edge);
   border-radius: var(--bw-r-float);
-  background: var(--bw-window-opaque);
+  background: var(--bw-float-fill);
   box-shadow:
-    inset 0 1px 0 color-mix(in srgb, var(--bw-text) 16%, transparent),
-    inset 0 0 0 1px color-mix(in srgb, var(--bw-text) 6%, transparent);
+    inset 0 1px 0 color-mix(in srgb, #fff 42%, transparent),
+    inset 0 0 0 1px color-mix(in srgb, var(--bw-text) 8%, transparent);
 }
 
 .sidebar [hidden] { display: none !important; }
@@ -487,8 +487,9 @@
 }
 #app.sidebar.is-collapsed .side-empty-label { display: none; }
 
-/* Unpinned rail: the same island, grown over the page. The fill above already hides the page. */
-#app.sidebar.is-rail.is-open { background: var(--bw-window-opaque); }
+/* Unpinned rail: the same island, grown over the page. Keep the lifted fill so the flyout
+   does not flatten back into the window colour. */
+#app.sidebar.is-rail.is-open { background: var(--bw-float-fill); }
 #app.sidebar.is-rail > .side-newtab { margin: var(--bw-space-1) var(--bw-space-2) var(--bw-space-2); }
 #app.sidebar.is-rail.is-collapsed > .side-newtab { margin-inline: auto; }
 

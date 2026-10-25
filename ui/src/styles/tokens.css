@@ -182,6 +182,10 @@
     --bw-sh-tip: 0 2px 4px rgba(0, 0, 0, 0.14);
     --bw-sh-flyout: 0 8px 16px rgba(0, 0, 0, 0.14), 0 0 2px rgba(0, 0, 0, 0.12);
     --bw-sh-dialog: 0 32px 64px rgba(0, 0, 0, 0.24);
+    /* Floating sidebar. The host is the island (Rust leaves a gap of the window colour around it),
+       and an outer shadow is clipped by that window, so the panel has to sit a step off the window
+       colour or the gap disappears. Dark lifts toward white; light uses a white card. */
+    --bw-float-fill: color-mix(in srgb, #fff 16%, var(--bw-window-opaque));
     /* Edge of the floating sidebar. A mix of text and border so it reads on the window and the page. */
     --bw-float-edge: color-mix(in srgb, var(--bw-text) 32%, var(--bw-border));
 
@@ -232,6 +236,7 @@
        the 62% placeholder, so inactive tabs and rail glyphs keep their contrast there. */
     --bw-text-dim: color-mix(in srgb, var(--bw-text) 86%, transparent);
     --bw-island-active: rgba(255, 255, 255, 0.92);
+    --bw-float-fill: #fff;
     --bw-private: #6440d0;
     --bw-private-soft: color-mix(in srgb, var(--bw-private) 13%, transparent);
     --bw-omni-row-selected: color-mix(in srgb, var(--bw-text) 10%, transparent);

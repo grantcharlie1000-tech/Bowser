@@ -90,8 +90,13 @@ test('tab groups use one chip, tint and underline, and the island is inset from 
   assert.match(tabs, /\.strip \.group\.collapsed \.ball/);
   assert.match(tabs, /flex-grow var\(--bw-dur-group\) var\(--bw-ease-group\)/);
   assert.match(tabs, /\.strip\.at-bottom \.group::before/);
+  assert.match(tabs, /\.strip \.group\.collapsed:not\(:has\(\.tab:not\(\[hidden\]\)\)\)::before/);
+  assert.match(tabs, /\.strip \.group\.collapsed:not\(:has\(\.tab:not\(\[hidden\]\)\)\)[\s\S]*flex: 0 0 auto;/);
+  assert.match(tokens, /--bw-float-fill:/);
+  assert.match(side, /background: var\(--bw-float-fill\)/);
   assert.match(side, /border-radius: var\(--bw-r-float\)/);
   assert.match(side, /#app\.sidebar\.is-collapsed \.side-group \{[^}]*background: var\(--gc, var\(--bw-accent\)\)/s);
+  assert.match(side, /#app\.sidebar\.is-rail\.is-open \{ background: var\(--bw-float-fill\); \}/);
   assert.match(side, /height: var\(--bw-side-row-h\)/);
 });
 

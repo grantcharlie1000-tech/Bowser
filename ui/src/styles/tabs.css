@@ -464,6 +464,20 @@
   opacity: 0;
 }
 
+/* Every member hidden: the group is the chip and nothing else. The tinted run and the underline
+   belong to tabs that are still on the row (the active one stays when the group is collapsed).
+   flex-grow stays 0 from --gw, and this basis keeps a stale chip width from stretching the chip
+   into an empty pill. */
+.strip .group.collapsed:not(:has(.tab:not([hidden]))) {
+  flex: 0 0 auto;
+  min-width: 0;
+  gap: 0;
+}
+.strip .group.collapsed:not(:has(.tab:not([hidden])))::before,
+.strip .group.collapsed:not(:has(.tab:not([hidden])))::after {
+  content: none;
+}
+
 /* ---- Tab options (Settings > Tabs): the strip classes tabs.ts sets from the host's `tabopts` ---- */
 
 /* Close button on the left side of the tab, and on every tab. */
