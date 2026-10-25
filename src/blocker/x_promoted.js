@@ -1,6 +1,6 @@
 // X promoted posts: mark the timeline cell of every promoted post so the cosmetic rule in
 // `x_promoted.rs` hides it. Runs only on x.com / twitter.com when the blocker is at the
-// "trackers and ads" level for the site. It reads nothing but the label text of timeline posts,
+// "trackers and ads" level for the site. It reads only timeline badge text/accessibility labels,
 // keeps nothing and sends nothing. No class names: only roles, data-testid and the label text.
 // If X changes its markup, edit the constants below. Debug: a console.debug line each time the
 // number of hidden cells changes, and window.__bowserXPromoted.stats ({scans, posts, hidden}).
@@ -8,48 +8,51 @@
   if (window.__bowserXPromoted) return;
   const CELL = '[data-testid="cellInnerDiv"]';
   const POST = 'article[data-testid="tweet"],article[role="article"]';
-  // The label X puts in a promoted post's header, per UI language, matched on a whole text node.
+  // Exact badge labels, including badges split over several child text nodes.
   const LABELS = ['ad', 'ads', 'promoted', 'sponsored', 'anzeige', 'annonce', 'publicidad', 'promocionado', 'sponsorizzato', 'promovido', 'reklam'];
   // Text in these is the author's, not X's label: the post text, a quoted post.
-  const NOT_LABEL = '[data-testid="tweetText"],[data-testid="quoteTweet"]';
+  const NOT_LABEL = '[data-testid="User-Name"],[data-testid="tweetText"],[data-testid="quoteTweet"],button,[role="button"],time';
   const CARET = '[data-testid="caret"]';
   // Post content below the header row: a label word in these (a poll option "Ads") is never X's label.
   const BODY = '[data-testid="tweetText"],[data-testid="cardPoll"],[data-testid="card.wrapper"],[data-testid="tweetPhoto"],[data-testid="quoteTweet"]';
   const MARK = 'data-bowser-ad';
   const stats = { scans: 0, posts: 0, hidden: 0 };
-  window.__bowserXPromoted = { stats };
-  // A label text node: a whole node that is just the word, in the post but not in its text, not
-  // in a link (display names and handles are links) unless that link is the post's own header row
-  // (it holds the "..." menu), and not inside a quoted post (a link that holds no menu). It must
-  // sit in the header row next to the "..." menu: the smallest box around both the menu and the
-  // word is below the article and holds no post content (text, poll, card, media).
-  const inHeader = (post, caret, el) => {
-    let box = caret.parentElement;
+  const stop = () => {
+    observer.disconnect();
+    clearTimeout(timer);
+    timer = 0;
+    document.removeEventListener('DOMContentLoaded', start);
+    for (const cell of document.querySelectorAll('[' + MARK + ']')) cell.removeAttribute(MARK);
+    stats.hidden = 0;
+    window.__bowserXPromoted = null;
+  };
+  window.__bowserXPromoted = { stats, stop };
+  // The smallest box around the author/menu and badge must be a header, below the article and
+  // without post content. The author anchor also handles headers whose menu has no caret test id.
+  const inHeader = (post, anchor, el) => {
+    let box = anchor.parentElement;
     while (box && box !== post && !box.contains(el)) box = box.parentElement;
     return !!box && box !== post && post.contains(box) && !box.querySelector(BODY);
   };
+  const isLabel = (text) => LABELS.includes(text.trim().toLowerCase());
   const promoted = (post) => {
-    const caret = post.querySelector(CARET);
-    if (!caret) return false;
-    const walker = document.createTreeWalker(post, NodeFilter.SHOW_TEXT);
-    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
-      const text = node.data.trim();
-      if (text.length === 0 || text.length > 12 || !LABELS.includes(text.toLowerCase())) continue;
-      const el = node.parentElement;
-      if (!el || el.closest(NOT_LABEL)) continue;
+    const anchor = post.querySelector('[data-testid="User-Name"]') || post.querySelector(CARET);
+    if (!anchor) return false;
+    for (const el of post.querySelectorAll('span,div,[aria-label],[title]')) {
+      const text = el.textContent.trim();
+      if (!isLabel(text) && (text || ![el.getAttribute('aria-label'), el.getAttribute('title')].some((value) => value && isLabel(value)))) continue;
+      if (el.contains(anchor) || el.closest(NOT_LABEL) || el.closest(POST) !== post) continue;
       const link = el.closest('a,[role="link"]');
-      if (link && post.contains(link) && !link.querySelector(CARET)) continue;
-      if (!inHeader(post, caret, el)) continue;
+      if (link && post.contains(link) && !link.contains(anchor)) continue;
+      if (!inHeader(post, anchor, el)) continue;
       return true;
     }
     return false;
   };
   const scan = () => {
-    // The cosmetic style is the on switch: gone means the site went back to a lower level.
+    // Style removal is a fallback; the engine explicitly calls stop even when cookie CSS stays.
     if (!document.getElementById('bowser-cosmetic')) {
-      observer.disconnect();
-      window.__bowserXPromoted = null;
-      for (const cell of document.querySelectorAll('[' + MARK + ']')) cell.removeAttribute(MARK);
+      stop();
       return;
     }
     stats.scans++;
@@ -77,10 +80,10 @@
   };
   // Added or removed nodes and changed text all count: a recycled cell can change either way.
   const observer = new MutationObserver((records) => {
-    for (const record of records) if (record.type === 'characterData' || record.addedNodes.length || record.removedNodes.length) return later();
+    for (const record of records) if (record.type === 'attributes' || record.type === 'characterData' || record.addedNodes.length || record.removedNodes.length) return later();
   });
   const start = () => {
-    observer.observe(document.body, { childList: true, subtree: true, characterData: true });
+    observer.observe(document.documentElement, { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ['aria-label', 'title', 'data-testid', 'role'] });
     scan();
   };
   if (document.body) start();

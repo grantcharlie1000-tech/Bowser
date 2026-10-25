@@ -7,6 +7,10 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
+use crate::blocker::{
+    json::string_literal as json_string_literal,
+    response::{PausedResponse, PausedStage, fulfill_params, paused_stage, response_body_text, response_can_rewrite},
+};
 use url::Url;
 use webview2_com::{
     AcceleratorKeyPressedEventHandler, AddScriptToExecuteOnDocumentCreatedCompletedHandler,
@@ -789,11 +793,13 @@ struct TabBlockState {
     doc_filter: RefCell<Option<(String, crate::blocker::Level, bool, u32)>>,
     /// `Fetch.requestPaused` is subscribed, so `Fetch.enable` will not pause requests nobody answers.
     fetch_listener: Cell<bool>,
+    fetch_reads: RefCell<crate::blocker::response_lifecycle::ResponseLifecycle>,
     /// `Network.enable` has been accepted, so later refreshes only update `setBlockedURLs`.
     network_enabled: Cell<bool>,
     /// The last cosmetic script sent to this tab installed a style, so a page with no cosmetic
     /// CSS still has one to remove.
     cosmetic_installed: Cell<bool>,
+    x_promoted_installed: Cell<bool>,
     /// The `WebResourceRequested` filters this tab registered and the rule generation they came
     /// from; `None` until the webview is configured. A newer build registers them again.
     request_filters: RefCell<Option<(u32, Vec<RequestFilter>)>>,
@@ -858,28 +864,6 @@ fn sync_request_filters(
 
 fn blocker_detail(block: &TabBlockState, name: &'static str, count: u64) {
     if let Some((tab, log)) = block.diagnostic.as_ref() { log(name, *tab, count); }
-}
-
-/// Escapes `value` for embedding as a double-quoted JavaScript or JSON string literal. Defence in
-/// depth: callers only ever pass cosmetic CSS (whose selector grammar already forbids quotes and
-/// backslashes, see `valid_cosmetic_selector`) or DevTools URL patterns built from rule hosts, so
-/// none of this should ever fire in practice, but string-building code must not depend on that.
-fn json_string_literal(value: &str) -> String {
-    let mut out = String::with_capacity(value.len() + 2);
-    out.push('"');
-    for ch in value.chars() {
-        match ch {
-            '\\' => out.push_str("\\\\"),
-            '"' => out.push_str("\\\""),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '<' => out.push_str("\\u003c"),
-            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
-            c => out.push(c),
-        }
-    }
-    out.push('"');
-    out
 }
 
 const COSMETIC_STYLE_ID: &str = "bowser-cosmetic";
@@ -1104,139 +1088,33 @@ fn enable_network_then_block(webview: &ICoreWebView2, block: &Rc<TabBlockState>,
 }
 
 fn fetch_continue(webview: &ICoreWebView2, request_id: &str) {
+    fetch_continue_attempt(webview, request_id, true);
+}
+
+// A continuation can itself fail to queue or return a protocol/HRESULT error. Retry it once,
+// without a timer or a Fetch reset (another response may still be reading its body).
+fn fetch_continue_attempt(webview: &ICoreWebView2, request_id: &str, retry: bool) {
     let params = format!("{{\"requestId\":{}}}", json_string_literal(request_id));
-    call_devtools(webview, "Fetch.continueRequest", &params);
-}
-
-/// Largest response body the player-ads rewrite will hold; anything bigger passes through.
-const MAX_REWRITE_BODY_BYTES: usize = 16 * 1024 * 1024;
-
-/// A `Fetch.requestPaused` event at the Response stage: the request's URL, its HTTP status
-/// (`None` when the response failed) and the response headers.
-#[derive(Debug, Eq, PartialEq)]
-struct PausedResponse {
-    url: String,
-    status: Option<u16>,
-    headers: Vec<(String, String)>,
-}
-
-/// Which stage a `Fetch.requestPaused` event paused at. A Response-stage event that cannot be
-/// read is still a response, so it is continued rather than failed as a blocked request.
-#[derive(Debug, Eq, PartialEq)]
-enum PausedStage {
-    Request,
-    Response(Option<PausedResponse>),
-}
-
-fn paused_stage(event: &str) -> PausedStage {
-    use crate::blocker::json;
-    let Some(members) = json::whole_object(event) else {
-        return if event.contains("\"responseStatusCode\"")
-            || event.contains("\"responseErrorReason\"")
-        {
-            PausedStage::Response(None)
-        } else {
-            PausedStage::Request
-        };
-    };
-    let status = json::field(&members, "responseStatusCode");
-    if status.is_none() && json::field(&members, "responseErrorReason").is_none() {
-        return PausedStage::Request;
-    }
-    let url = json::field(&members, "request")
-        .and_then(json::whole_object)
-        .and_then(|request| json::field(&request, "url").and_then(json::string_value));
-    let headers = json::field(&members, "responseHeaders")
-        .and_then(json::array_elements)
-        .map(|entries| {
-            entries
-                .into_iter()
-                .filter_map(|entry| {
-                    let entry = json::whole_object(entry)?;
-                    Some((
-                        json::string_value(json::field(&entry, "name")?)?,
-                        json::string_value(json::field(&entry, "value")?)?,
-                    ))
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-    PausedStage::Response(url.map(|url| PausedResponse {
-        url,
-        status: status.and_then(|status| status.parse().ok()),
-        headers,
-    }))
-}
-
-/// True for a JSON or HTML response that is UTF-8 (stated, or the default for JSON and for
-/// YouTube's pages): the only bodies the rewrite will read and re-encode.
-fn utf8_text_response(headers: &[(String, String)]) -> bool {
-    let Some(content_type) = headers
-        .iter()
-        .find(|(name, _)| name.eq_ignore_ascii_case("content-type"))
-        .map(|(_, value)| value.to_ascii_lowercase())
-    else {
-        return false;
-    };
-    let mut parts = content_type.split(';');
-    let essence = parts.next().unwrap_or("").trim();
-    matches!(essence, "application/json" | "text/html")
-        && parts.all(|part| {
-            part.trim()
-                .strip_prefix("charset=")
-                .is_none_or(|charset| charset.trim_matches('"') == "utf-8")
-        })
-}
-
-/// The text of a `Fetch.getResponseBody` result, or `None` when it is not UTF-8 or is too big.
-fn response_body_text(result: &str) -> Option<String> {
-    use crate::blocker::json;
-    let members = json::whole_object(result)?;
-    let body = json::string_value(json::field(&members, "body")?)?;
-    let text = if json::field(&members, "base64Encoded") == Some("true") {
-        String::from_utf8(json::base64_decode(&body)?).ok()?
-    } else {
-        body
-    };
-    (text.len() <= MAX_REWRITE_BODY_BYTES).then_some(text)
-}
-
-/// `Fetch.fulfillRequest` parameters for a rewritten body. DevTools hands the body over already
-/// decoded, so the headers that described the network bytes (length, content and transfer
-/// encoding) are dropped; every other header, `Set-Cookie` included, is passed on as received.
-fn fulfill_params(
-    request_id: &str,
-    status: u16,
-    headers: &[(String, String)],
-    body: &[u8],
-) -> String {
-    let mut json = format!(
-        "{{\"requestId\":{},\"responseCode\":{status},\"responseHeaders\":[",
-        json_string_literal(request_id)
-    );
-    let kept = headers.iter().filter(|(name, _)| {
-        !["content-length", "content-encoding", "transfer-encoding"]
-            .iter()
-            .any(|dropped| name.eq_ignore_ascii_case(dropped))
-    });
-    for (index, (name, value)) in kept.enumerate() {
-        if index > 0 {
-            json.push(',');
+    let target = webview.clone();
+    let id = request_id.to_owned();
+    let completed = Rc::new(Cell::new(false));
+    let answered = Rc::clone(&completed);
+    let handler = CallDevToolsProtocolMethodCompletedHandler::create(Box::new(move |error, result| {
+        if !answered.replace(true) && retry && (error.is_err() || devtools_protocol_error(&result)) {
+            fetch_continue_attempt(&target, &id, false);
         }
-        json.push_str("{\"name\":");
-        json.push_str(&json_string_literal(name));
-        json.push_str(",\"value\":");
-        json.push_str(&json_string_literal(value));
-        json.push('}');
+        Ok(())
+    }));
+    let method = HSTRING::from("Fetch.continueRequest");
+    let params = HSTRING::from(params);
+    let queued = unsafe { webview.CallDevToolsProtocolMethod(PCWSTR(method.as_ptr()), PCWSTR(params.as_ptr()), &handler) };
+    if queued.is_err() && !completed.replace(true) && retry {
+        fetch_continue_attempt(webview, request_id, false);
     }
-    json.push_str("],\"body\":\"");
-    json.push_str(&crate::blocker::json::base64_encode(body));
-    json.push_str("\"}");
-    json
 }
 
 /// Calls `method` for a paused request and continues the request unchanged if the call fails,
-/// so a paused request is never left waiting.
+/// so failures in the rewrite path fall back to the original response.
 fn call_devtools_or_continue(
     webview: &ICoreWebView2,
     method: &str,
@@ -1245,8 +1123,8 @@ fn call_devtools_or_continue(
 ) {
     let target = webview.clone();
     let id = request_id.to_owned();
-    let handler = CallDevToolsProtocolMethodCompletedHandler::create(Box::new(move |error, _| {
-        if error.is_err() {
+    let handler = CallDevToolsProtocolMethodCompletedHandler::create(Box::new(move |error, result| {
+        if error.is_err() || devtools_protocol_error(&result) {
             fetch_continue(&target, &id);
         }
         Ok(())
@@ -1272,30 +1150,37 @@ fn answer_paused_response(
     webview: &ICoreWebView2,
     request_id: &str,
     paused: Option<PausedResponse>,
-    block: &TabBlockState,
+    block: &Rc<TabBlockState>,
     blocker: &super::BlockerHandle,
     private: bool,
 ) {
     let rewrite = paused
-        .filter(|paused| paused.status == Some(200) && utf8_text_response(&paused.headers))
         .and_then(|paused| {
             let top_host = block.top_host.borrow();
             let payload = blocker
                 .borrow()
                 .player_ads_rewrite(&paused.url, &top_host, private)?;
-            Some((paused, payload))
+            response_can_rewrite(&paused, payload).then_some((paused, payload))
         });
     let Some((paused, payload)) = rewrite else {
         fetch_continue(webview, request_id);
         return;
     };
+    let epoch = block.fetch_reads.borrow_mut().begin();
+    let reader = Rc::clone(block);
+    let policy = Rc::clone(blocker);
     let target = webview.clone();
     let id = request_id.to_owned();
+    // A synchronous queue failure and an asynchronous completion share exactly one finalizer.
+    let answered = Rc::new(Cell::new(false));
+    let completed = Rc::clone(&answered);
     let handler =
         CallDevToolsProtocolMethodCompletedHandler::create(Box::new(move |error, result| {
-            let stripped = error
-                .ok()
-                .and_then(|()| response_body_text(&result))
+            if completed.replace(true) { return Ok(()); }
+            let allows = policy.borrow().player_ads_rewrite(&paused.url, &reader.top_host.borrow(), private) == Some(payload);
+            let (rewrite, deferred) = reader.fetch_reads.borrow_mut().finish(epoch, allows);
+            let stripped = (rewrite && error.is_ok() && !devtools_protocol_error(&result))
+                .then(|| response_body_text(&result)).flatten()
                 .and_then(|text| crate::blocker::youtube::strip_player_ads(&text, payload));
             match stripped {
                 Some(body) => call_devtools_or_continue(
@@ -1305,6 +1190,9 @@ fn answer_paused_response(
                     &id,
                 ),
                 None => fetch_continue(&target, &id),
+            }
+            if let Some(params) = deferred {
+                call_devtools(&target, "Fetch.enable", &params);
             }
             Ok(())
         }));
@@ -1318,8 +1206,12 @@ fn answer_paused_response(
             &handler,
         )
     };
-    if queued.is_err() {
+    if queued.is_err() && !answered.replace(true) {
+        let (_, deferred) = block.fetch_reads.borrow_mut().finish(epoch, false);
         fetch_continue(webview, request_id);
+        if let Some(params) = deferred {
+            call_devtools(webview, "Fetch.enable", &params);
+        }
     }
 }
 
@@ -1480,7 +1372,8 @@ fn refresh_blocked_urls(
     // 403 below answers what only the in-process matcher can decide (`request_filters`).
     enable_network_then_block(webview, block, patterns);
     if block.fetch_listener.get() {
-        call_devtools(webview, "Fetch.enable", &fetch_enable_params(responses));
+        let params = block.fetch_reads.borrow_mut().configure(fetch_enable_params(responses));
+        if let Some(params) = params { call_devtools(webview, "Fetch.enable", &params); }
     }
 }
 
@@ -1492,6 +1385,17 @@ fn cosmetic_script(css: Option<&str>, installed: bool) -> Option<String> {
         Some(css) => Some(cosmetic_install_script(css)),
         None if installed => Some(COSMETIC_REMOVE_SCRIPT.to_owned()),
         None => None,
+    }
+}
+
+/// X has its own lifecycle, independently of shared cookie-notice CSS.
+fn cosmetic_update_script(css: Option<&str>, installed: bool, x_script: Option<&str>, x_installed: bool) -> Option<String> {
+    let cosmetic = cosmetic_script(css, installed);
+    let marker = x_script.or(x_installed.then_some(crate::blocker::x_promoted::STOP_SCRIPT));
+    match (cosmetic, marker) {
+        (Some(css), Some(marker)) => Some(format!("{css};\n{marker}")),
+        (css, None) => css,
+        (None, Some(marker)) => Some(marker.to_owned()),
     }
 }
 
@@ -1517,14 +1421,8 @@ fn apply_cosmetic_css(
     let x_script = state.x_promoted_script(&top_host, private);
     drop(state);
     let installed = block.cosmetic_installed.replace(css.is_some());
-    let Some(script) = cosmetic_script(css.as_deref(), installed) else {
-        return;
-    };
-    // X promoted posts: the marker script runs after the style it depends on.
-    let script = match x_script {
-        Some(marker) => format!("{script};\n{marker}"),
-        None => script,
-    };
+    let x_installed = block.x_promoted_installed.replace(x_script.is_some());
+    let Some(script) = cosmetic_update_script(css.as_deref(), installed, x_script, x_installed) else { return; };
     // Fire-and-forget: a cosmetic touch-up must never gate on the completion handler (see
     // `engine_never_blocks_on_a_webview2_completion`).
     let handler = ExecuteScriptCompletedHandler::create(Box::new(|_, _| Ok(())));
@@ -5063,6 +4961,7 @@ unsafe fn configure_controller(
                         super::app_context_menu_probe::reload::observe_navigation_start(
                             tab_id,sender.as_raw() as usize,id,&uri_value);
                     }
+                    nav_block_tab.fetch_reads.borrow_mut().invalidate();
                     let parsed = Url::parse(&uri_value).ok();
                     // A top-level navigation is not cancelled here. Cancelling a typed address or
                     // an ad-click landing left the tab where it was, with no site toggle that
@@ -7132,6 +7031,18 @@ mod tests {
     }
 
     #[test]
+    fn x_stops_even_when_cookie_cosmetics_remain_and_can_be_reenabled() {
+        let cookie_css = ".cookie-notice{display:none!important}";
+        let stopped = cosmetic_update_script(Some(cookie_css), true, None, true).unwrap();
+        assert!(stopped.contains(cookie_css));
+        assert!(stopped.contains(crate::blocker::x_promoted::STOP_SCRIPT));
+        assert!(!stopped.contains(crate::blocker::x_promoted::SCRIPT));
+        let started = cosmetic_update_script(Some(crate::blocker::x_promoted::CSS), true, Some(crate::blocker::x_promoted::SCRIPT), false).unwrap();
+        assert!(started.contains(crate::blocker::x_promoted::SCRIPT));
+        assert_eq!(cosmetic_update_script(None, false, None, false), None);
+    }
+
+    #[test]
     fn page_requests_reach_the_matcher_only_through_narrow_filters() {
         let workers = COREWEBVIEW2_WEB_RESOURCE_REQUEST_SOURCE_KINDS_SHARED_WORKER
             | COREWEBVIEW2_WEB_RESOURCE_REQUEST_SOURCE_KINDS_SERVICE_WORKER;
@@ -7253,110 +7164,16 @@ mod tests {
 
     #[test]
     fn fetch_enable_params_add_the_youtube_player_responses_at_the_response_stage() {
-        let responses = &crate::blocker::youtube::RESPONSE_PATTERNS;
-        assert_eq!(
-            fetch_enable_params(responses),
-            concat!(
-                r#"{"patterns":["#,
-                r#"{"urlPattern":"*://*.youtube.com/youtubei/v1/player\\?*","requestStage":"Response"},"#,
-                r#"{"urlPattern":"*://*.youtube-nocookie.com/youtubei/v1/player\\?*","requestStage":"Response"},"#,
-                r#"{"urlPattern":"*://*.youtube.com/watch\\?*","resourceType":"Document","requestStage":"Response"}]}"#,
-            )
-        );
-        assert!(
-            fetch_enable_params(responses)
-                .starts_with(r#"{"patterns":[{"urlPattern":"*://*.youtube.com/"#)
-        );
-        assert!(!fetch_enable_params(responses).contains("Request\"}"));
-    }
-
-    #[test]
-    fn a_response_stage_pause_is_never_mistaken_for_a_blocked_request() {
-        let request = r#"{"requestId":"interception-job-1.0","request":{"url":"https://doubleclick.net/x","headers":{"responseStatusCode":"1"}},"resourceType":"Fetch"}"#;
-        assert_eq!(paused_stage(request), PausedStage::Request);
-        let response = r#"{"requestId":"interception-job-2.0","request":{"url":"https://www.youtube.com/youtubei/v1/player?prettyPrint=false","method":"POST","headers":{}},"frameId":"F","resourceType":"Fetch","responseStatusCode":200,"responseHeaders":[{"name":"content-type","value":"application/json; charset=UTF-8"},{"name":"content-encoding","value":"br"},{"name":"set-cookie","value":"YSC=a; Path=/"}],"networkId":"N"}"#;
-        assert_eq!(
-            paused_stage(response),
-            PausedStage::Response(Some(PausedResponse {
-                url: "https://www.youtube.com/youtubei/v1/player?prettyPrint=false".to_owned(),
-                status: Some(200),
-                headers: vec![
-                    (
-                        "content-type".to_owned(),
-                        "application/json; charset=UTF-8".to_owned()
-                    ),
-                    ("content-encoding".to_owned(), "br".to_owned()),
-                    ("set-cookie".to_owned(), "YSC=a; Path=/".to_owned()),
-                ],
-            }))
-        );
-        let failed = r#"{"requestId":"r","request":{"url":"https://www.youtube.com/watch?v=x"},"resourceType":"Document","responseErrorReason":"ConnectionReset"}"#;
-        assert!(matches!(
-            paused_stage(failed),
-            PausedStage::Response(Some(PausedResponse { status: None, .. }))
-        ));
-        // Unreadable, but plainly a response: continued, not failed.
-        assert_eq!(
-            paused_stage(r#"{"requestId":"r","responseStatusCode":200,"#),
-            PausedStage::Response(None)
-        );
-    }
-
-    #[test]
-    fn only_utf8_json_and_html_bodies_are_rewritten() {
-        let headers = |value: &str| vec![("Content-Type".to_owned(), value.to_owned())];
-        for ok in [
-            "application/json; charset=UTF-8",
-            "application/json",
-            "text/html; charset=utf-8",
-            "text/html; charset=\"utf-8\"",
-        ] {
-            assert!(utf8_text_response(&headers(ok)), "{ok}");
+        let responses = crate::blocker::youtube::RESPONSE_PATTERNS;
+        let params = fetch_enable_params(responses);
+        let members = crate::blocker::json::whole_object(&params).unwrap();
+        let patterns = crate::blocker::json::array_elements(crate::blocker::json::field(&members, "patterns").unwrap()).unwrap();
+        assert_eq!(patterns.len(), responses.len());
+        for (pattern, response) in patterns.iter().zip(responses) {
+            let members = crate::blocker::json::whole_object(pattern).unwrap();
+            assert_eq!(crate::blocker::json::field(&members, "requestStage"), Some("\"Response\""));
+            assert_eq!(crate::blocker::json::field(&members, "urlPattern").and_then(crate::blocker::json::string_value).as_deref(), Some(response.url_pattern));
         }
-        for not in [
-            "text/html; charset=windows-1252",
-            "application/x-protobuf",
-            "video/mp4",
-            "text/plain",
-        ] {
-            assert!(!utf8_text_response(&headers(not)), "{not}");
-        }
-        assert!(!utf8_text_response(&[]));
-    }
-
-    #[test]
-    fn a_response_body_is_read_whether_or_not_devtools_base64_encoded_it() {
-        assert_eq!(
-            response_body_text(r#"{"body":"{\"adSlots\":[]}","base64Encoded":false}"#).as_deref(),
-            Some(r#"{"adSlots":[]}"#)
-        );
-        assert_eq!(
-            response_body_text(r#"{"body":"eyJhZFNsb3RzIjpbXX0=","base64Encoded":true}"#)
-                .as_deref(),
-            Some(r#"{"adSlots":[]}"#)
-        );
-        assert_eq!(
-            response_body_text(r#"{"body":"/w==","base64Encoded":true}"#),
-            None
-        );
-        assert_eq!(response_body_text(r#"{"base64Encoded":false}"#), None);
-    }
-
-    #[test]
-    fn fulfill_params_keep_status_and_headers_but_drop_the_wire_encoding() {
-        let headers = vec![
-            (
-                "content-type".to_owned(),
-                "application/json; charset=UTF-8".to_owned(),
-            ),
-            ("Content-Encoding".to_owned(), "br".to_owned()),
-            ("content-length".to_owned(), "999".to_owned()),
-            ("set-cookie".to_owned(), "YSC=a; Path=/".to_owned()),
-        ];
-        assert_eq!(
-            fulfill_params("job-1", 200, &headers, b"{}"),
-            r#"{"requestId":"job-1","responseCode":200,"responseHeaders":[{"name":"content-type","value":"application/json; charset=UTF-8"},{"name":"set-cookie","value":"YSC=a; Path=/"}],"body":"e30="}"#
-        );
     }
 
     #[test]

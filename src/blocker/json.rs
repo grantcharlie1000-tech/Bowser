@@ -339,3 +339,23 @@ mod tests {
         }
     }
 }
+
+/// Escapes a value for a double-quoted JavaScript or JSON string literal. Also escapes `<`
+/// so a literal embedded in a script cannot close its surrounding HTML element.
+pub(crate) fn string_literal(value: &str) -> String {
+    let mut out = String::with_capacity(value.len() + 2);
+    out.push('"');
+    for ch in value.chars() {
+        match ch {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '<' => out.push_str("\\u003c"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}

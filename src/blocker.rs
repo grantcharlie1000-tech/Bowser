@@ -55,12 +55,15 @@ pub mod fetch;
 pub(crate) mod json;
 pub mod site_rules;
 mod registration;
+mod request_url;
+pub(crate) mod response;
+pub(crate) mod response_lifecycle;
 pub mod sources;
 pub mod x_promoted;
 pub mod youtube;
 
+use request_url::split_url;
 use std::{
-    borrow::Cow,
     cell::{OnceCell, RefCell},
     collections::{BTreeSet, HashMap, HashSet},
     fs::{self, File},
@@ -495,38 +498,6 @@ fn capped(text: &str, max: usize) -> &str {
         end -= 1;
     }
     &text[..end]
-}
-
-/// Splits an `http(s)` URL into (lowercased host, path+query). `None` for other schemes,
-/// IPv6 literals and malformed input. Allocates only when the host contains uppercase.
-fn split_url(url: &str) -> Option<(Cow<'_, str>, &str)> {
-    let rest = url
-        .strip_prefix("https://")
-        .or_else(|| url.strip_prefix("http://"))
-        .or_else(|| {
-            let (scheme, rest) = url.split_once("://")?;
-            (scheme.eq_ignore_ascii_case("http") || scheme.eq_ignore_ascii_case("https"))
-                .then_some(rest)
-        })?;
-    let authority_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
-    let (authority, tail) = rest.split_at(authority_end);
-    let authority = authority.rsplit('@').next()?;
-    if authority.starts_with('[') {
-        return None;
-    }
-    let host = authority.split(':').next()?;
-    let host = host.strip_suffix('.').unwrap_or(host);
-    if host.is_empty() {
-        return None;
-    }
-    let tail = tail.split('#').next().unwrap_or("");
-    let path = if tail.is_empty() { "/" } else { tail };
-    let host = if host.bytes().any(|b| b.is_ascii_uppercase()) {
-        Cow::Owned(host.to_ascii_lowercase())
-    } else {
-        Cow::Borrowed(host)
-    };
-    Some((host, path))
 }
 
 /// An IPv4 address: it has no parent domains and no registrable site of its own.
@@ -1619,7 +1590,7 @@ impl BlockerState {
             || self.global_level() == Level::Ads
             || self.site_rules.any_level(Level::Ads);
         if video_ads_on && youtube::is_youtube_host(page_host) && ads_possible {
-            &youtube::RESPONSE_PATTERNS
+            youtube::RESPONSE_PATTERNS
         } else {
             &[]
         }
@@ -2049,6 +2020,26 @@ mod tests {
         // A private tab always blocks, exceptions and the switch notwithstanding.
         assert!(s.x_promoted_script("twitter.com", true).is_some());
         assert_eq!(s.cosmetic_css_for_host_private("twitter.com").as_deref(), Some(x_promoted::CSS));
+    }
+
+    #[test]
+    fn x_marker_policy_stops_while_cookie_css_remains_then_reenables() {
+        let mut s = state("", &[]);
+        s.cookies.add_list("##.cookie-notice");
+        s.cookie_notices = true;
+        assert!(s.x_promoted_script("x.com", false).is_some());
+        for level in [Level::Trackers, Level::None] {
+            assert!(s.set_site_level("x.com", Some(level)));
+            assert!(s.x_promoted_script("x.com", false).is_none());
+            let css = s.cosmetic_css_for_host("x.com").unwrap();
+            assert!(css.contains(".cookie-notice"));
+            assert!(!css.contains(x_promoted::CSS));
+        }
+        assert!(s.set_site_level("x.com", None));
+        assert!(s.x_promoted_script("x.com", false).is_some());
+        s.enabled = false;
+        assert!(s.x_promoted_script("x.com", false).is_none());
+        assert!(s.cosmetic_css_for_host("x.com").unwrap().contains(".cookie-notice"));
     }
 
     #[test]
@@ -2957,6 +2948,27 @@ mod tests {
                 s.player_ads_rewrite_gated(YOUTUBE_WATCH, "news.example", private, false),
                 None
             );
+        }
+    }
+
+    #[test]
+    fn inline_embed_shorts_and_live_documents_honor_destination_exceptions_and_video_switch() {
+        use youtube::PlayerPayload::WatchPage;
+        for url in [
+            "https://youtube.com/embed/dQw4w9WgXcQ",
+            "https://www.youtube-nocookie.com/embed/dQw4w9WgXcQ?start=12",
+            "https://www.youtube.com/shorts/dQw4w9WgXcQ",
+            "https://www.youtube.com/live/dQw4w9WgXcQ",
+        ] {
+            let host = split_url(url).unwrap().0.into_owned();
+            let mut s = builtin();
+            assert_eq!(s.player_ads_rewrite_gated(url, "news.example", false, true), Some(WatchPage));
+            assert_eq!(s.player_ads_rewrite_gated(url, &host, true, false), None);
+            assert!(s.set_site_level(&host, Some(Level::None)));
+            assert_eq!(s.player_ads_rewrite_gated(url, "news.example", false, true), None);
+            assert_eq!(s.player_ads_rewrite_gated(url, "news.example", true, true), Some(WatchPage));
+            assert!(s.set_site_level(&host, None));
+            assert_eq!(s.player_ads_rewrite_gated(url, "news.example", false, true), Some(WatchPage));
         }
     }
 

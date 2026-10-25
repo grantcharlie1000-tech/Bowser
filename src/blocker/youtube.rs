@@ -27,7 +27,7 @@ pub const PLAYER_AD_KEYS: [&str; 4] = [
 pub enum PlayerPayload {
     /// `/youtubei/v1/player`: the body is the player response object.
     Json,
-    /// A `/watch` page: the player response is the inline `ytInitialPlayerResponse` object.
+    /// A watch, embed, Shorts or live document with an inline player response.
     WatchPage,
 }
 
@@ -41,9 +41,69 @@ pub struct ResponsePattern {
 /// The responses the engine pauses for [`strip_player_ads`]. In these patterns `*` is any run,
 /// an unescaped `?` is any one character and `\?` is a literal `?`. They only narrow what pauses:
 /// [`player_payload`] makes the exact host and path check, and anything else continues untouched.
-pub const RESPONSE_PATTERNS: [ResponsePattern; 3] = [
+pub const RESPONSE_PATTERNS: &[ResponsePattern] = &[
+    ResponsePattern {
+        url_pattern: "*://youtube.com/youtubei/v1/player",
+        resource_type: None,
+    },
+    ResponsePattern {
+        url_pattern: "*://youtube.com/youtubei/v1/player\\?*",
+        resource_type: None,
+    },
+    ResponsePattern {
+        url_pattern: "*://youtube.com/embed/*",
+        resource_type: Some("Document"),
+    },
+    ResponsePattern {
+        url_pattern: "*://youtube.com/watch*",
+        resource_type: Some("Document"),
+    },
+    ResponsePattern {
+        url_pattern: "*://youtube.com/shorts/*",
+        resource_type: Some("Document"),
+    },
+    ResponsePattern {
+        url_pattern: "*://youtube.com/live/*",
+        resource_type: Some("Document"),
+    },
+    ResponsePattern {
+        url_pattern: "*://*.youtube.com/youtubei/v1/player",
+        resource_type: None,
+    },
     ResponsePattern {
         url_pattern: "*://*.youtube.com/youtubei/v1/player\\?*",
+        resource_type: None,
+    },
+    ResponsePattern {
+        url_pattern: "*://*.youtube.com/embed/*",
+        resource_type: Some("Document"),
+    },
+    ResponsePattern {
+        url_pattern: "*://*.youtube.com/watch*",
+        resource_type: Some("Document"),
+    },
+    ResponsePattern {
+        url_pattern: "*://*.youtube.com/shorts/*",
+        resource_type: Some("Document"),
+    },
+    ResponsePattern {
+        url_pattern: "*://*.youtube.com/live/*",
+        resource_type: Some("Document"),
+    },
+    ResponsePattern {
+        url_pattern: "*://youtube-nocookie.com/youtubei/v1/player",
+        resource_type: None,
+    },
+    ResponsePattern {
+        url_pattern: "*://youtube-nocookie.com/youtubei/v1/player\\?*",
+        resource_type: None,
+    },
+    ResponsePattern {
+        url_pattern: "*://youtube-nocookie.com/embed/*",
+        resource_type: Some("Document"),
+    },
+    ResponsePattern {
+        url_pattern: "*://*.youtube-nocookie.com/youtubei/v1/player",
         resource_type: None,
     },
     ResponsePattern {
@@ -51,7 +111,7 @@ pub const RESPONSE_PATTERNS: [ResponsePattern; 3] = [
         resource_type: None,
     },
     ResponsePattern {
-        url_pattern: "*://*.youtube.com/watch\\?*",
+        url_pattern: "*://*.youtube-nocookie.com/embed/*",
         resource_type: Some("Document"),
     },
 ];
@@ -75,10 +135,22 @@ pub fn is_youtube_host(host: &str) -> bool {
 pub fn player_payload(url: &str) -> Option<PlayerPayload> {
     let (host, path) = super::split_url(url)?;
     let site = site_host(&host, &["youtube.com", "youtube-nocookie.com"])?;
-    match path.split('?').next().unwrap_or(path) {
+    let path = path.split('?').next().unwrap_or(path);
+    match path {
         "/youtubei/v1/player" => Some(PlayerPayload::Json),
         "/watch" if site == "youtube.com" => Some(PlayerPayload::WatchPage),
-        _ => None,
+        _ => {
+            let (kind, id) = path.strip_prefix('/')?.split_once('/')?;
+            let document =
+                kind == "embed" || (site == "youtube.com" && matches!(kind, "shorts" | "live"));
+            (document
+                && !matches!(id, "videoseries" | "live_stream")
+                && id.len() == 11
+                && id
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_')))
+            .then_some(PlayerPayload::WatchPage)
+        }
     }
 }
 
@@ -123,8 +195,12 @@ pub fn video_ads_blocked_in_file(path: &std::path::Path, cap: usize) -> bool {
     if len > cap as u64 {
         return true;
     }
-    let mut last = LAST.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    if let (Some((cached, cached_len, cached_modified, blocked)), Some(modified)) = (&*last, modified) {
+    let mut last = LAST
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let (Some((cached, cached_len, cached_modified, blocked)), Some(modified)) =
+        (&*last, modified)
+    {
         if cached == path && *cached_len == len && *cached_modified == modified {
             return *blocked;
         }
@@ -163,31 +239,218 @@ fn without_ad_members(text: &str, start: usize) -> Option<(String, usize)> {
 
 const INLINE_PLAYER_RESPONSE: &str = "ytInitialPlayerResponse";
 
-/// Every inline `ytInitialPlayerResponse = {...}` in a watch page, stripped in place.
+// Only a first-statement global assignment is accepted. This deliberately avoids interpreting
+// arbitrary JavaScript (strings, templates, regular expressions, functions or property chains).
+fn strip_inline_script(script: &str) -> Option<String> {
+    let bytes = script.as_bytes();
+    let mut start = json::skip_ws(bytes, 0);
+    for declaration in ["var", "let", "const"] {
+        if script[start..].starts_with(declaration)
+            && bytes
+                .get(start + declaration.len())
+                .is_some_and(u8::is_ascii_whitespace)
+        {
+            start = json::skip_ws(bytes, start + declaration.len());
+            break;
+        }
+    }
+    let target = [
+        INLINE_PLAYER_RESPONSE,
+        "window.ytInitialPlayerResponse",
+        "window[\"ytInitialPlayerResponse\"]",
+        "window['ytInitialPlayerResponse']",
+    ]
+    .iter()
+    .find(|target| script[start..].starts_with(**target))?;
+    let equals = json::skip_ws(bytes, start + target.len());
+    if bytes.get(equals) != Some(&b'=') || matches!(bytes.get(equals + 1), Some(b'=' | b'>')) {
+        return None;
+    }
+    let open = json::skip_ws(bytes, equals + 1);
+    let (object, end) = without_ad_members(script, open)?;
+    let tail = json::skip_ws(bytes, end);
+    if tail < bytes.len() && bytes[tail] != b';' {
+        return None;
+    }
+    Some(format!("{}{object}{}", &script[..open], &script[end..]))
+}
+
+// Walk HTML tag boundaries respecting quoted attributes. Unknown or truncated markup fails open.
+fn tag_end(bytes: &[u8], mut index: usize) -> Option<usize> {
+    let mut quote = None;
+    while let Some(&byte) = bytes.get(index) {
+        match (quote, byte) {
+            (Some(q), b) if q == b => quote = None,
+            (None, b'\'' | b'"') => quote = Some(byte),
+            (None, b'>') => return Some(index + 1),
+            _ => {}
+        }
+        index += 1;
+    }
+    None
+}
+
+fn executable_inline_script(attributes: &str) -> bool {
+    let bytes = attributes.as_bytes();
+    let mut i = 0;
+    let mut saw_type = false;
+    while i < bytes.len() {
+        i = json::skip_ws(bytes, i);
+        if i == bytes.len() {
+            break;
+        }
+        if bytes[i] == b'/' {
+            return false;
+        }
+        let start = i;
+        while i < bytes.len() && !bytes[i].is_ascii_whitespace() && !matches!(bytes[i], b'=' | b'/')
+        {
+            i += 1;
+        }
+        if i == start {
+            return false;
+        }
+        let name = &attributes[start..i];
+        i = json::skip_ws(bytes, i);
+        let mut value = "";
+        if bytes.get(i) == Some(&b'=') {
+            i = json::skip_ws(bytes, i + 1);
+            let Some(&first) = bytes.get(i) else {
+                return false;
+            };
+            if matches!(first, b'\'' | b'"') {
+                let start = i + 1;
+                let Some(end) = bytes[start..]
+                    .iter()
+                    .position(|b| *b == first)
+                    .map(|n| start + n)
+                else {
+                    return false;
+                };
+                value = &attributes[start..end];
+                i = end + 1;
+            } else {
+                let start = i;
+                while i < bytes.len() && !bytes[i].is_ascii_whitespace() {
+                    i += 1;
+                }
+                value = &attributes[start..i];
+            }
+        }
+        if ["src", "nomodule", "language"]
+            .iter()
+            .any(|excluded| name.eq_ignore_ascii_case(excluded))
+        {
+            return false;
+        }
+        if name.eq_ignore_ascii_case("type") {
+            if saw_type
+                || !["", "text/javascript", "application/javascript"]
+                    .iter()
+                    .any(|kind| value.trim().eq_ignore_ascii_case(kind))
+            {
+                return false;
+            }
+            saw_type = true;
+        }
+    }
+    true
+}
+
+fn raw_text_close(lower: &str, start: usize, name: &str) -> Option<(usize, usize)> {
+    let pattern = format!("</{name}");
+    let mut search = start;
+    while let Some(found) = lower[search..].find(&pattern) {
+        let close = search + found;
+        let after_name = close + pattern.len();
+        if lower
+            .as_bytes()
+            .get(after_name)
+            .is_some_and(|b| b.is_ascii_whitespace() || matches!(b, b'/' | b'>'))
+        {
+            return Some((close, tag_end(lower.as_bytes(), after_name)?));
+        }
+        search = after_name;
+    }
+    None
+}
+
+/// Rewrite executable inline scripts only. Skip comments, quoted tag attributes and inert/raw
+/// text containers, and retain every byte outside the player object (including script nonces).
 fn strip_watch_page(html: &str) -> Option<String> {
-    let bytes = html.as_bytes();
+    let lower = html.to_ascii_lowercase();
+    let bytes = lower.as_bytes();
     let mut out = String::new();
     let mut copied = 0;
     let mut search = 0;
-    while let Some(found) = html[search..].find(INLINE_PLAYER_RESPONSE) {
-        let mut i = search + found + INLINE_PLAYER_RESPONSE.len();
-        search = i;
-        // `var ytInitialPlayerResponse = {` and `window["ytInitialPlayerResponse"] = {`.
-        if bytes[i..].starts_with(b"\"]") || bytes[i..].starts_with(b"']") {
-            i += 2;
-        }
-        let equals = json::skip_ws(bytes, i);
-        if bytes.get(equals) != Some(&b'=') || bytes.get(equals + 1) == Some(&b'=') {
+    let mut template_depth = 0usize;
+    while let Some(found) = lower[search..].find('<') {
+        let tag = search + found;
+        if lower[tag..].starts_with("<!--") {
+            let Some(end) = lower[tag + 4..].find("-->") else {
+                break;
+            };
+            search = tag + 4 + end + 3;
             continue;
         }
-        let open = json::skip_ws(bytes, equals + 1);
-        let Some((object, end)) = without_ad_members(html, open) else {
-            continue;
+        let Some(end) = tag_end(bytes, tag + 1) else {
+            break;
         };
-        out.push_str(&html[copied..open]);
-        out.push_str(&object);
-        copied = end;
         search = end;
+        let closing = bytes.get(tag + 1) == Some(&b'/');
+        let start = tag + if closing { 2 } else { 1 };
+        let mut name_end = start;
+        while bytes.get(name_end).is_some_and(u8::is_ascii_alphanumeric) {
+            name_end += 1;
+        }
+        if !bytes
+            .get(name_end)
+            .is_some_and(|b| b.is_ascii_whitespace() || matches!(b, b'/' | b'>'))
+        {
+            continue;
+        }
+        let name = &lower[start..name_end];
+        if name == "template" {
+            if closing {
+                template_depth = template_depth.saturating_sub(1);
+            } else {
+                template_depth += 1;
+            }
+            continue;
+        }
+        if closing {
+            continue;
+        }
+        if name == "plaintext" {
+            break;
+        }
+        if matches!(
+            name,
+            "script"
+                | "style"
+                | "textarea"
+                | "title"
+                | "xmp"
+                | "iframe"
+                | "noembed"
+                | "noframes"
+                | "noscript"
+        ) {
+            let Some((close, close_end)) = raw_text_close(&lower, end, name) else {
+                break;
+            };
+            search = close_end;
+            if name == "script"
+                && template_depth == 0
+                && executable_inline_script(&html[name_end..end - 1])
+            {
+                if let Some(script) = strip_inline_script(&html[end..close]) {
+                    out.push_str(&html[copied..end]);
+                    out.push_str(&script);
+                    copied = close;
+                }
+            }
+        }
     }
     if copied == 0 {
         return None;
@@ -275,12 +538,14 @@ mod tests {
         assert_eq!(stripped, format!("{head}{expected}{tail}"));
 
         let bracketed = format!(
-            "window[\"ytInitialPlayerResponse\"] = {};",
+            "<script>window[\"ytInitialPlayerResponse\"] = {};</script>",
             player_response()
         );
         assert_eq!(
             strip_player_ads(&bracketed, PlayerPayload::WatchPage),
-            Some(format!("window[\"ytInitialPlayerResponse\"] = {expected};"))
+            Some(format!(
+                "<script>window[\"ytInitialPlayerResponse\"] = {expected};</script>"
+            ))
         );
     }
 
@@ -379,7 +644,8 @@ mod tests {
 
     #[test]
     fn the_settings_file_is_reread_only_when_it_changes() {
-        let dir = std::env::temp_dir().join(format!("bowser-youtube-setting-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("bowser-youtube-setting-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("settings.txt");
@@ -389,7 +655,12 @@ mod tests {
         assert!(!video_ads_blocked_in_file(&path, 1024));
         // Same length and modified time: the answer comes from memory, not from the new bytes.
         std::fs::write(&path, "block_youtube_video_ads=maybe\n").unwrap();
-        std::fs::File::options().write(true).open(&path).unwrap().set_modified(stamp).unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(stamp)
+            .unwrap();
         assert!(!video_ads_blocked_in_file(&path, 1024));
         // A changed length is noticed at once.
         std::fs::write(&path, "block_youtube_video_ads=true\n").unwrap();
@@ -421,9 +692,156 @@ mod tests {
     }
 
     #[test]
-    fn response_patterns_escape_the_query_mark() {
-        for pattern in &RESPONSE_PATTERNS {
-            assert!(pattern.url_pattern.contains("\\?*"), "{pattern:?}");
+    fn response_patterns_escape_query_marks_and_scope_documents() {
+        for pattern in RESPONSE_PATTERNS {
+            if pattern.url_pattern.contains('?') {
+                assert!(pattern.url_pattern.contains("\\?*"), "{pattern:?}");
+            }
+            if !pattern.url_pattern.contains("/youtubei/v1/player") {
+                assert_eq!(pattern.resource_type, Some("Document"));
+            }
         }
+    }
+
+    // CDP's documented wildcard semantics, including escaped literal query marks. Exercise the
+    // registration patterns as well as the exact parser: the old parser-only tests missed bare URLs.
+    fn pattern_matches(pattern: &[u8], text: &[u8]) -> bool {
+        match pattern.split_first() {
+            None => text.is_empty(),
+            Some((b'*', rest)) => (0..=text.len()).any(|n| pattern_matches(rest, &text[n..])),
+            Some((b'\\', rest)) => rest.first().is_some_and(|literal| {
+                text.first() == Some(literal) && pattern_matches(&rest[1..], &text[1..])
+            }),
+            Some((b'?', rest)) => !text.is_empty() && pattern_matches(rest, &text[1..]),
+            Some((literal, rest)) => {
+                text.first() == Some(literal) && pattern_matches(rest, &text[1..])
+            }
+        }
+    }
+
+    #[test]
+    fn bare_query_player_and_inline_document_routes_are_both_registered_and_classified() {
+        for host in [
+            "youtube.com",
+            "www.youtube.com",
+            "m.youtube.com",
+            "music.youtube.com",
+            "youtube-nocookie.com",
+            "www.youtube-nocookie.com",
+        ] {
+            let mut routes = vec![
+                "/youtubei/v1/player",
+                "/youtubei/v1/player?prettyPrint=false",
+                "/embed/dQw4w9WgXcQ",
+                "/embed/dQw4w9WgXcQ?start=12",
+            ];
+            if !host.contains("nocookie") {
+                routes.extend([
+                    "/watch",
+                    "/watch?v=dQw4w9WgXcQ",
+                    "/shorts/dQw4w9WgXcQ",
+                    "/live/dQw4w9WgXcQ?feature=share",
+                ]);
+            }
+            for route in routes {
+                let url = format!("https://{host}{route}");
+                let payload = player_payload(&url).expect(&url);
+                assert!(
+                    RESPONSE_PATTERNS
+                        .iter()
+                        .any(|p| pattern_matches(p.url_pattern.as_bytes(), url.as_bytes())),
+                    "unregistered {url}"
+                );
+                if !route.contains("youtubei") {
+                    assert_eq!(payload, PlayerPayload::WatchPage);
+                }
+            }
+        }
+        for route in [
+            "/embed/",
+            "/embed/videoseries?list=fixture",
+            "/embed/dQw4w9WgXcQ/extra",
+            "/shorts",
+            "/shorts/invalid-long-id",
+            "/live/chat",
+            "/live_chat?v=dQw4w9WgXcQ",
+            "/watchlater",
+            "/youtubei/v1/player/heartbeat",
+            "/youtubei/v1/player_extra",
+        ] {
+            assert_eq!(
+                player_payload(&format!("https://www.youtube.com{route}")),
+                None,
+                "{route}"
+            );
+        }
+    }
+
+    #[test]
+    fn inline_rewrite_keeps_nonplayer_text_literals_comments_and_other_objects() {
+        for script in [
+            r#"const text = 'ytInitialPlayerResponse = {"adSlots":[]}';"#,
+            "const text = `ytInitialPlayerResponse = {\"adSlots\":[]}`;",
+            "// ytInitialPlayerResponse = {\"adSlots\":[]};",
+            "/* ytInitialPlayerResponse = {\"adSlots\":[]}; */",
+            "var notytInitialPlayerResponse = {\"adSlots\":[]};",
+            "other.ytInitialPlayerResponse = {\"adSlots\":[]};",
+            "other. ytInitialPlayerResponse = {\"adSlots\":[]};",
+            "other.window.ytInitialPlayerResponse = {\"adSlots\":[]};",
+            "window.ytInitialPlayerResponseExtra = {\"adSlots\":[]};",
+            "if (ytInitialPlayerResponse == {\"adSlots\":[]}) {}",
+            "const regex = /ytInitialPlayerResponse = {\"adSlots\":[]}/;",
+            "const text = `${`ytInitialPlayerResponse = {\"adSlots\":[]}`}`;",
+        ] {
+            assert_eq!(
+                strip_player_ads(
+                    &format!("<script>{script}</script>"),
+                    PlayerPayload::WatchPage
+                ),
+                None,
+                "{script}"
+            );
+        }
+        for html in [
+            "<p>ytInitialPlayerResponse = {\"adSlots\":[]}</p>",
+            "<div title='ytInitialPlayerResponse = {\"adSlots\":[]}'></div>",
+            "<!-- <script>ytInitialPlayerResponse = {\"adSlots\":[]};</script> -->",
+            "<div title='<script>ytInitialPlayerResponse = {\"adSlots\":[]};</script>'></div>",
+            "<script type='text/plain'>ytInitialPlayerResponse = {\"adSlots\":[]};</script>",
+            "<script type='application/json'>ytInitialPlayerResponse = {\"adSlots\":[]};</script>",
+            "<script src='/fixture.js'>ytInitialPlayerResponse = {\"adSlots\":[]};</script>",
+            "<textarea><script>ytInitialPlayerResponse = {\"adSlots\":[]};</script></textarea>",
+            "<style><script>ytInitialPlayerResponse = {\"adSlots\":[]};</script></style>",
+            "<template><template></template><script>ytInitialPlayerResponse = {\"adSlots\":[]};</script></template>",
+            "<noscript><script>ytInitialPlayerResponse = {\"adSlots\":[]};</script></noscript>",
+            "<textarea></textarea-extra><script>ytInitialPlayerResponse={\"adSlots\":[],\"keep\":1};</script></textarea>",
+            "<script / type='text/plain'>ytInitialPlayerResponse={\"adSlots\":[]};</script>",
+            "<script nomodule>ytInitialPlayerResponse={\"adSlots\":[]};</script>",
+            "<script language='vbscript'>ytInitialPlayerResponse={\"adSlots\":[]};</script>",
+            "<script>var ytInitialPlayerResponse = {\"adSlots\":[]}.unrelated;</script>",
+        ] {
+            assert_eq!(strip_player_ads(html, PlayerPayload::WatchPage), None);
+        }
+    }
+
+    #[test]
+    fn multiple_inline_responses_preserve_playability_errors_streams_and_document_bytes() {
+        let blocked = r#"{"playabilityStatus":{"status":"LOGIN_REQUIRED","reason":"Age restricted"},"adSlots":[],"videoDetails":{"videoId":"fixture"}}"#;
+        let body = format!(
+            "<html><script nonce='fixture'>window.ytInitialPlayerResponse={blocked};</script><script>window['ytInitialPlayerResponse']={};</script></html>",
+            player_response()
+        );
+        let expected = format!(
+            "<html><script nonce='fixture'>window.ytInitialPlayerResponse={};</script><script>window['ytInitialPlayerResponse']={};</script></html>",
+            strip_player_ads(blocked, PlayerPayload::Json).unwrap(),
+            strip_player_ads(&player_response(), PlayerPayload::Json).unwrap()
+        );
+        let result = strip_player_ads(&body, PlayerPayload::WatchPage).unwrap();
+        assert_eq!(result, expected);
+        assert!(result.contains(
+            r#""playabilityStatus":{"status":"LOGIN_REQUIRED","reason":"Age restricted"}"#
+        ));
+        assert!(result.contains(STREAMING));
+        assert_eq!(strip_player_ads(&result, PlayerPayload::WatchPage), None);
     }
 }

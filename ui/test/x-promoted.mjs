@@ -13,6 +13,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 const here = dirname(fileURLToPath(import.meta.url));
 const dir = join(here, '..', '..', 'src', 'blocker');
 const SCRIPT = readFileSync(join(dir, 'x_promoted.js'), 'utf8');
+const STOP = /pub const STOP_SCRIPT: &str = "([^"]+)";/.exec(readFileSync(join(dir, 'x_promoted.rs'), 'utf8'))[1];
 const CSS = /pub const CSS: &str = "([^"]+)";/.exec(readFileSync(join(dir, 'x_promoted.rs'), 'utf8'))[1];
 const EDGE = [
   process.env.BOWSER_TEST_EDGE,
@@ -35,7 +36,7 @@ const normal = (id, body = 'hello', extra = '') => cell(id, { name: 'Someone', h
 const label = (text, style) => `<div class="x2">${style === 'wrapped' ? `<div><span>${text}</span><svg></svg></div>` : style === 'bare' ? text : `<span class="x1">${text}</span>`}</div>`;
 const ad = (id, text = 'Ad', style = 'span') => cell(id, { name: 'riffle', handle: 'rifflerdotstudio', label: label(text, style) }, 'Buy now', '<div><a href="https://riffle.studio">From riffle.studio</a></div>');
 
-const PAGE = (initial, later, change = '') => `<!doctype html><html><body><div id="tl">${initial}</div><script>
+const PAGE = (initial, later, change = '', off = 's.remove();') => `<!doctype html><html><body><div id="tl">${initial}</div><script>
   var out = { errors: [] };
   function hidden() { var r = {}; document.querySelectorAll('[data-testid=cellInnerDiv]').forEach(function (c) { r[c.id] = getComputedStyle(c).display === 'none'; }); return r; }
   try {
@@ -47,11 +48,13 @@ const PAGE = (initial, later, change = '') => `<!doctype html><html><body><div i
       ${change}
       setTimeout(function () {
         out.second = hidden(); out.statsHidden = window.__bowserXPromoted.stats.hidden;
-        s.remove();
+        ${off}
         document.getElementById('tl').insertAdjacentHTML('beforeend', ${JSON.stringify(ad('late'))});
         setTimeout(function () {
           out.afterOff = hidden(); out.marked = document.querySelectorAll('[data-bowser-ad]').length; out.flag = window.__bowserXPromoted;
-          finish();
+          s.textContent = ${JSON.stringify(CSS)}; if (!s.isConnected) document.documentElement.appendChild(s);
+          ${SCRIPT.trim()};
+          setTimeout(function () { out.afterOn = hidden(); finish(); }, 700);
         }, 700);
       }, 700);
     }, 400);
@@ -122,4 +125,26 @@ test('removing the cosmetic style stops the script and unmarks every cell', { sk
   assert.equal(r.afterOff.late, false);
   assert.equal(r.marked, 0);
   assert.ok(!r.flag);
+});
+
+
+test('split and attribute-only badges work without caret, and attribute recycling reveals a normal post', { skip }, () => {
+  const split = cell('split', { name: 'Someone', handle: 'fixture', label: '<div><span>Pro</span><span>moted</span></div>' }, 'fixture');
+  const attr = cell('attr', { name: 'Someone', handle: 'fixture', label: '<span title="Sponsored"></span>' }, 'fixture').replace('data-testid="caret"', 'data-testid="menu"');
+  const change = `document.querySelector('#attr [title]').setAttribute('title', 'Normal');`;
+  const r = run(PAGE(split + attr + cell('author', { name: 'Ad', handle: 'ad' }, 'hello'), '', change));
+  assert.deepEqual(r.first, { split: true, attr: true, author: false });
+  assert.deepEqual(r.second, { split: true, attr: false, author: false });
+});
+
+test('explicit off with cookie CSS remaining stops the script, reveals ads and supports reenable', { skip }, () => {
+  const off = `s.textContent = '.cookie-notice{display:none!important}'; ${STOP};`;
+  const r = run(PAGE(ad('ad'), '', '', off));
+  assert.equal(r.first.ad, true);
+  assert.equal(r.afterOff.ad, false);
+  assert.equal(r.afterOff.late, false);
+  assert.equal(r.marked, 0);
+  assert.ok(!r.flag);
+  assert.equal(r.afterOn.ad, true);
+  assert.equal(r.afterOn.late, true);
 });

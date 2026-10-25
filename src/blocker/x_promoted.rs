@@ -6,10 +6,13 @@
 //! fixed CSS rule ([`CSS`]) hides marked cells. Both apply only on X hosts, and only where the
 //! blocker is at the "trackers and ads" level for the site (a site exception or a lower level
 //! turns them off), so there is no setting of its own. Nothing from the page is read beyond the
-//! label text of timeline posts, and nothing leaves the page.
+//! badge text/accessibility labels of timeline posts, and nothing leaves the page.
 
-/// The page script. Needs the `bowser-cosmetic` style to be installed (it stops when it goes).
+/// The page script. The engine calls [`STOP_SCRIPT`] when its site policy stops applying.
 pub const SCRIPT: &str = include_str!("x_promoted.js");
+
+/// Stop observing and reveal recycled/marked cells even if cookie-notice CSS remains installed.
+pub const STOP_SCRIPT: &str = "window.__bowserXPromoted?.stop()";
 
 /// The cosmetic rule that hides the cells [`SCRIPT`] marks.
 pub const CSS: &str = "[data-bowser-ad]{display:none!important}";
