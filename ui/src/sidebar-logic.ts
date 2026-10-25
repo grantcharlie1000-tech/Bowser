@@ -119,4 +119,26 @@ export function rovingTarget(key: string, at: number, count: number): number {
   }
 }
 
+/** How long the pointer must rest on the rail before it opens, and before it closes after leaving. */
+export const RAIL_OPEN_MS = 80;
+export const RAIL_CLOSE_MS = 140;
+
+/**
+ * Next hover command for the unpinned rail.
+ * Pass `due: null` when `want` changes. `immediate` (keyboard focus) sends on this call.
+ * `emit` is the boolean to send, or null when nothing should be sent yet.
+ */
+export function railHoverAdvance(
+  sent: boolean,
+  want: boolean,
+  due: number | null,
+  now: number,
+  immediate: boolean,
+): { sent: boolean; due: number | null; emit: boolean | null } {
+  if (sent === want) return { sent, due: null, emit: null };
+  if (immediate || (due !== null && now >= due)) return { sent: want, due: null, emit: want };
+  if (due === null) return { sent, due: now + (want ? RAIL_OPEN_MS : RAIL_CLOSE_MS), emit: null };
+  return { sent, due, emit: null };
+}
+
 export type { Entry };

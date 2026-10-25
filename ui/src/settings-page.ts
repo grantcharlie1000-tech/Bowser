@@ -555,6 +555,8 @@ export function startSettingsPage(root: HTMLElement): void {
   width.addEventListener('input', paintWidth);
   width.addEventListener('change', () => change((d) => { d.sidebarWidth = Number(width.value); }));
   row(layoutCard, 'sidebarWidth', widthWrap);
+  const pinStrip = switchControl((on) => change((d) => { d.sidebarPinned = on; }));
+  row(layoutCard, 'sidebarPinned', pinStrip.root);
   // --- layout (thread T6) --- the rest of the Layout block
   const tabBarVisible = switchControl((on) => change((d) => { d.layout.tabBarVisible = on; rememberOwnLayout(d); }));
   row(layoutCard, 'tabBarVisible', tabBarVisible.root);
@@ -1689,6 +1691,8 @@ export function startSettingsPage(root: HTMLElement): void {
     // --- end window and panels ---
     width.value = String(d.sidebarWidth);
     paintWidth();
+    pinStrip.set(d.sidebarPinned);
+    pinStrip.disable(!s.readable || (d.tabLayout !== 'vertical' && d.tabLayout !== 'vertical-right'));
     grouping.set(d.automaticTabGrouping);
     previewImages.set(d.tabPreviewImages);
     previewMemory.set(d.tabPreviewMemory);

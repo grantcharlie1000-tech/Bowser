@@ -104,6 +104,7 @@ pub fn snapshot_json(s: &Snapshot<'_>) -> String {
     snap_json("settings", |out| {
         out.string("tabLayout", settings.tab_layout.key());
         out.uint("sidebarWidth", u64::from(settings.sidebar_width));
+        out.bool("sidebarPinned", !settings.sidebar_collapsed);
         out.bool("sleepEnabled", settings.sleep_enabled);
         out.uint("sleepAfterSecs", settings.sleep_after_secs);
         out.bool("blockerEnabled", settings.blocker_enabled);
@@ -437,6 +438,8 @@ pub fn apply_settings_text(settings: &mut Settings, text: &str) -> bool {
         match key {
             "tab_layout" => settings.tab_layout = match TabLayout::ALL.into_iter().find(|layout| layout.key() == value) { Some(layout) => layout, None => return false },
             "sidebar_width" => { let Ok(width) = value.parse::<u16>() else { return false; }; if !(crate::settings::MIN_SIDEBAR_WIDTH..=crate::settings::MAX_SIDEBAR_WIDTH).contains(&width) { return false; } settings.sidebar_width = width; }
+            // Optional, like layout: a payload without it leaves the pin as it is. `true` is the unpinned icon rail.
+            "sidebar_collapsed" => settings.sidebar_collapsed = match value { "true" => true, "false" => false, _ => return false },
             "sleep_enabled" => settings.sleep_enabled = match value { "true" => true, "false" => false, _ => return false },
             "sleep_after_secs" => { let Ok(value) = crate::settings::parse_sleep_after_secs(value) else { return false; }; settings.sleep_after_secs = value; }
             "blocker_enabled" => settings.blocker_enabled = match value { "true" => true, "false" => false, _ => return false },

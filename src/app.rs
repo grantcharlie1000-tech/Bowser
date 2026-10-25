@@ -7190,6 +7190,8 @@ impl App {
     /// now holds the value just written counts as agreed with the file, so a later save from memory does
     /// not push this window's layout, efficiency or sleep values over a newer value another window saved.
     pub fn apply_page_settings(app: &AppRef, settings: &crate::settings::Settings) {
+        // The layout pass below reads the pin. Copying it afterwards would resize at the old width.
+        app.borrow_mut().settings.sidebar_collapsed = settings.sidebar_collapsed;
         Self::apply_tab_layout_settings(app, settings.tab_layout, settings.sidebar_width);
         Self::apply_efficiency_mode(app, settings.efficiency_mode);
         Self::apply_sleep_settings(app, settings.sleep_enabled, settings.sleep_after_secs);

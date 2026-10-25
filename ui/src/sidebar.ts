@@ -4,7 +4,7 @@
 //   #app.sidebar (role=none)
 //     .side-top      workspace switcher row + new-tab row (never scrolls)
 //     .side-list     role=tree scroller: group headers, tab rows, pinned separator, empty state
-import { send, sendClosedTabs, sendRailWheel, sendSide, sendTabSelection, sendTool, type TabItem, type TabOptsMsg, type TabsMsg } from './protocol';
+import { send, sendClosedTabs, sendRailWheel, sendSide, sendSideHover, sendTabSelection, sendTool, type TabItem, type TabOptsMsg, type TabsMsg } from './protocol';
 import { wheelNotches } from './rail-logic'; // --- tab stacks and workspaces (T10) ---
 import { setTip } from './tooltip';
 import { el, icon, place, type IconName } from './dom';
@@ -14,7 +14,7 @@ import { beforeId, dragScrollDelta, focusHeir, privateTabName } from './tabs-log
 import { clickSelection, loadMark, markedName, notifyLabel, pruneSelection, type LoadIndicatorChoice } from './tab-marks-logic';
 // --- end tab options ---
 import {
-  buildSidebarEntries, dropIndexVertical, nearestTile, pinnedBeforeId, rovingTarget, scrollIntoViewDelta, tileShift,
+  buildSidebarEntries, dropIndexVertical, nearestTile, pinnedBeforeId, railHoverAdvance, rovingTarget, scrollIntoViewDelta, tileShift,
   verticalSlotShift, workspaceIconName, type TilePoint,
 } from './sidebar-logic';
 // --- split view ---
@@ -230,8 +230,16 @@ export function createSidebarRenderer(root: HTMLElement): {
   clearSelection(): void;
   /** Whether the sidebar is docked at the right of the window (the page is to its left). */
   side(right: boolean): void;
+  /** Unpinned vertical tabs: a narrow icon rail that opens over the page on hover. */
+  rail(on: boolean): void;
 } {
   let sideRight = false;
+  let rail = false;
+  let pointerIn = false;
+  let hoverSent = false;
+  let hoverWant = false;
+  let hoverDue: number | null = null;
+  let hoverTimer = 0;
   const tabs = new Map<number, SidebarTabNode>();
   const groups = new Map<number, SidebarGroupNode>();
   let latest: TabsMsg | null = null;
@@ -326,18 +334,52 @@ export function createSidebarRenderer(root: HTMLElement): {
   const pinGrid = el('div', 'side-pinned');
   pinGrid.setAttribute('role', 'none');
   const COLLAPSED_MAX_PX = 72;
-  const syncCollapsed = (): void => {
-    const narrow = root.clientWidth > 0 && root.clientWidth <= COLLAPSED_MAX_PX;
-    if (root.classList.contains('is-collapsed') !== narrow) root.classList.toggle('is-collapsed', narrow);
-    const text = narrow ? 'Expand sidebar' : 'Collapse sidebar';
-    if (collapse.getAttribute('aria-label') !== text) {
-      collapse.setAttribute('aria-label', text);
-      collapse.setAttribute('aria-expanded', String(!narrow));
-      setTip(collapse, text);
+  const OPEN_MIN_PX = 52;
+  const hostOf = (node: HTMLElement): Node | null => node.parentElement ?? node.parentNode;
+  const placeNewTab = (): void => {
+    if (rail) {
+      if (hostOf(add) !== root) root.append(add);
+    } else if (hostOf(add) !== top) {
+      top.insertBefore(add, closedRow);
     }
   };
-  new ResizeObserver(syncCollapsed).observe(root);
-  syncCollapsed();
+  const focusInside = (): boolean => root.contains(document.activeElement);
+  const paintRail = (): void => {
+    root.classList.toggle('is-rail', rail);
+    root.classList.toggle('is-right', sideRight);
+    const narrow = root.clientWidth > 0 && root.clientWidth <= COLLAPSED_MAX_PX;
+    root.classList.toggle('is-collapsed', narrow);
+    root.classList.toggle('is-open', rail && root.clientWidth > OPEN_MIN_PX);
+    const text = rail ? 'Pin sidebar' : 'Unpin sidebar';
+    if (collapse.getAttribute('aria-label') !== text) {
+      collapse.setAttribute('aria-label', text);
+      setTip(collapse, text);
+    }
+    collapse.setAttribute('aria-expanded', String(!rail));
+    placeNewTab();
+  };
+  const emitHover = (now: number, immediate: boolean): void => {
+    const step = railHoverAdvance(hoverSent, hoverWant, hoverDue, now, immediate);
+    hoverSent = step.sent;
+    hoverDue = step.due;
+    if (step.emit !== null) sendSideHover(step.emit);
+    window.clearTimeout(hoverTimer);
+    if (hoverDue !== null) {
+      hoverTimer = window.setTimeout(() => emitHover(performance.now(), false), Math.max(0, hoverDue - performance.now()));
+    }
+  };
+  const setHoverWant = (want: boolean, immediate: boolean): void => {
+    if (!rail) return;
+    if (hoverWant !== want) hoverDue = null;
+    hoverWant = want;
+    emitHover(performance.now(), immediate);
+  };
+  const releaseIfLeft = (inside: boolean): void => {
+    if (!rail || drag?.active || focusInside() || inside) return;
+    setHoverWant(false, false);
+  };
+  new ResizeObserver(paintRail).observe(root);
+  paintRail();
 
   const list = el('div', 'side-list');
   list.setAttribute('role', 'tree');
@@ -504,6 +546,7 @@ export function createSidebarRenderer(root: HTMLElement): {
     const focused = heirRow ?? (list.contains(document.activeElement) ? (document.activeElement as HTMLElement).closest<HTMLElement>('.side-tab, .side-group') : null);
     place(list, rows);
     place(root, [top, list]);
+    placeNewTab();
     const activeRow = tabs.get(msg.active)?.root;
     const all = rowsOf();
     const target = focused ?? activeRow ?? all[0];
@@ -882,8 +925,31 @@ export function createSidebarRenderer(root: HTMLElement): {
     target.focus();
     reveal(target);
   });
-  window.addEventListener('pointerup', (event) => { if (drag?.pointerId === event.pointerId) endDrag(true); });
-  window.addEventListener('pointercancel', (event) => { if (drag?.pointerId === event.pointerId) endDrag(false); });
+  root.addEventListener('pointerenter', () => {
+    pointerIn = true;
+    setHoverWant(true, false);
+  });
+  root.addEventListener('pointerleave', () => {
+    pointerIn = false;
+    if (drag?.active || focusInside()) return;
+    setHoverWant(false, false);
+  });
+  root.addEventListener('focusin', () => setHoverWant(true, true));
+  root.addEventListener('focusout', () => {
+    window.setTimeout(() => releaseIfLeft(pointerIn), 0);
+  });
+  window.addEventListener('pointerup', (event) => {
+    if (drag?.pointerId !== event.pointerId) return;
+    endDrag(true);
+    const box = root.getBoundingClientRect();
+    const inside = event.clientX >= box.left && event.clientX < box.right && event.clientY >= box.top && event.clientY < box.bottom;
+    releaseIfLeft(inside);
+  });
+  window.addEventListener('pointercancel', (event) => {
+    if (drag?.pointerId !== event.pointerId) return;
+    endDrag(false);
+    releaseIfLeft(false);
+  });
   window.addEventListener('blur', () => endDrag(false));
 
   return {
@@ -915,6 +981,23 @@ export function createSidebarRenderer(root: HTMLElement): {
     },
     side(right) {
       sideRight = right;
+      root.classList.toggle('is-right', right);
+    },
+    rail(on) {
+      if (rail === on) {
+        paintRail();
+        return;
+      }
+      rail = on;
+      paintRail();
+      if (!on) {
+        hoverWant = false;
+        hoverDue = null;
+        emitHover(performance.now(), true);
+        return;
+      }
+      if (focusInside()) setHoverWant(true, true);
+      else if (pointerIn) setHoverWant(true, false);
     },
     // --- end tab options ---
   };
