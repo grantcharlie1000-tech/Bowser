@@ -98,6 +98,41 @@ test('names, body, quotes, poll, media, cards, links and menu labels stay visibl
   assert.deepEqual(marked(...posts), posts.map(() => false));
 });
 
+for (const anchor of ['caret', 'User-Name']) {
+  test(`wrapped links and controls stay visible under the ${anchor} anchor`, () => {
+    const withAnchor = (label, name = 'Someone') => {
+      const result = post(label, { name, caret: anchor === 'caret' });
+      if (anchor === 'caret') result.author.removeAttribute('data-testid');
+      return result;
+    };
+    const ordinary = [
+      withAnchor(null, 'Ad'),
+      withAnchor(badge(el('a', { href: '/fixture' }, el('span', {}, 'Ad')))),
+      withAnchor(badge(badge(el('div', { role: 'link' }, el('span', {}, 'Sponsored'))))),
+      withAnchor(badge(el('button', {}, el('span', {}, 'Ads')))),
+      withAnchor(badge(el('div', { role: 'button' }, el('span', {}, 'Promoted')))),
+      withAnchor(badge(el('time', {}, 'Ad'))),
+      // Excluded text must not complete a partial badge into the exact label "Ad".
+      withAnchor(badge(el('span', {}, 'A'), el('a', { href: '/fixture' }, 'd'))),
+    ];
+    const split = withAnchor(badge(el('span', {}, 'A'), el('span', {}, 'd')));
+    const attribute = withAnchor(el('span', { 'aria-label': 'Sponsored' }));
+    const f = fixture(...ordinary, split, attribute);
+    assert.deepEqual(marked(...ordinary), ordinary.map(() => false));
+    assert.deepEqual(marked(split, attribute), [true, true]);
+
+    // Recycled markup may retain the same text while changing whether it is a badge.
+    split.label.children = [];
+    split.label.append(el('a', { href: '/fixture' }, el('span', {}, 'Ad')));
+    f.mutate();
+    assert.deepEqual(marked(split), [false]);
+    split.label.children = [];
+    split.label.append(el('span', {}, 'A'), el('span', {}, 'd'));
+    f.mutate();
+    assert.deepEqual(marked(split), [true]);
+  });
+}
+
 test('attribute and text recycling and removal of the menu/name anchor reveal old cells', () => {
   const first = post(el('span', { 'aria-label': 'Ad' }));
   const second = post(el('span', { title: 'Normal' }), { caret: false });

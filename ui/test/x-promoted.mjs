@@ -148,3 +148,16 @@ test('explicit off with cookie CSS remaining stops the script, reveals ads and s
   assert.equal(r.afterOn.ad, true);
   assert.equal(r.afterOn.late, true);
 });
+
+test('wrapped header links remain visible with either anchor while split badges still hide', { skip }, () => {
+  const wrapped = '<div><a href="/fixture"><span>Ad</span></a></div>';
+  const username = cell('username', { name: 'Someone', handle: 'fixture', label: wrapped }, 'ordinary')
+    .replace('data-testid="caret"', 'data-testid="menu"');
+  const caret = cell('caret', { name: 'Ad', handle: 'fixture', label: wrapped }, 'ordinary')
+    .replace('data-testid="User-Name"', 'data-testid="legacy-name"');
+  const split = cell('split', { name: 'Someone', handle: 'fixture', label: '<div><span>A</span><span>d</span></div>' }, 'promoted');
+  const r = run(PAGE(username + caret + split, ''));
+  assert.deepEqual(r.first, { username: false, caret: false, split: true });
+  assert.deepEqual(r.second, r.first);
+  assert.deepEqual(r.afterOn, { username: false, caret: false, split: true, late: true });
+});

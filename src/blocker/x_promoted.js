@@ -42,6 +42,8 @@
       const text = el.textContent.trim();
       if (!isLabel(text) && (text || ![el.getAttribute('aria-label'), el.getAttribute('title')].some((value) => value && isLabel(value)))) continue;
       if (el.contains(anchor) || el.closest(NOT_LABEL) || el.closest(POST) !== post) continue;
+      // Aggregated badge text must not inherit a label from a nested profile link or control.
+      if (el.querySelector(NOT_LABEL + ',a,[role="link"]')) continue;
       const link = el.closest('a,[role="link"]');
       if (link && post.contains(link) && !link.contains(anchor)) continue;
       if (!inHeader(post, anchor, el)) continue;
