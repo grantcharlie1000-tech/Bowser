@@ -445,10 +445,10 @@ mod tests {
         assert_eq!(flyout_width_at(48, 260, 1.0), 260);
         assert_eq!(flyout_width_at(48, 260, f32::NAN), 260);
         assert_eq!(flyout_width_at(260, 48, -1.0), 260);
-        // Ease-out cubic at t=0.5 is 1 - 0.5^3 = 0.875.
+        // Ease-out cubic at t=0.5 is 1 - 0.5^3 = 0.875, so 100 * 0.875 = 87.5, which rounds to 88.
         assert_eq!(flyout_width_at(0, 100, 0.5), 88);
-        // Ease-in cubic at t=0.5 is 0.125, so a close has barely started.
-        assert_eq!(flyout_width_at(100, 0, 0.5), 88);
+        // Ease-in cubic at t=0.5 is 0.125. The delta is -12.5, and half rounds away from zero, so 87.
+        assert_eq!(flyout_width_at(100, 0, 0.5), 87);
         assert!(flyout_width_at(260, 48, 0.5) > 200);
         let early = flyout_width_at(48, 260, 0.2);
         assert!(early > 48 && early < 260);
