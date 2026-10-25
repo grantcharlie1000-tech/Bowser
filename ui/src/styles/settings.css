@@ -1134,8 +1134,18 @@
 }
 
 .sp .sp-view > button[aria-checked="true"] {
-  background: var(--bw-window-opaque);
+  background: transparent;
   color: var(--bw-text);
+  border-color: transparent;
+  box-shadow: none;
+}
+
+.sp .sp-view > button > .bw-seg-label {
+  font-weight: var(--bw-weight-strong);
+}
+
+.sp .sp-view .bw-seg-thumb-face {
+  background: var(--bw-window-opaque);
   border-color: color-mix(in srgb, var(--bw-text) 14%, transparent);
   box-shadow: 0 1px 2px color-mix(in srgb, #000 18%, transparent);
 }
