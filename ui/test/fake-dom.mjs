@@ -64,6 +64,7 @@ export class Node {
   detach(node) { if (node.parent) node.parent.children = node.parent.children.filter((c) => c !== node); node.parent = this; }
   append(...nodes) { for (const n of nodes) { const node = typeof n === 'string' ? new Node('#text', n) : n; this.ownText = null; this.detach(node); this.children.push(node); } }
   prepend(node) { this.detach(node); this.children.unshift(node); }
+  before(node) { const p = this.parent; p.detach(node); p.children.splice(p.children.indexOf(this), 0, node); }
   replaceChildren(...nodes) { this.children = []; this.ownText = null; this.append(...nodes); }
   remove() { if (this.parent) this.parent.children = this.parent.children.filter((c) => c !== this); this.parent = null; }
   all() { return this.children.flatMap((c) => [c, ...c.all()]); }

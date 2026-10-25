@@ -273,6 +273,17 @@ export function moved(engines: readonly EngineView[], id: string, index: number)
   return ids;
 }
 
+/**
+ * The name in the search-engine menu. The stored default id is `optimised`: DuckDuckGo’s HTML
+ * search with sponsored results off (`k1=-1`). The id stays, so settings.txt is unchanged.
+ * The separate `duckduckgo` engine is the main site, so the menu can tell the two apart.
+ */
+export function engineChoiceLabel(id: string, name: string): string {
+  if (id === 'optimised') return 'DuckDuckGo';
+  if (id === 'duckduckgo') return 'DuckDuckGo.com';
+  return name;
+}
+
 /** The label an engine shows in lists: its name, and its nickname when asked. */
 export function engineLabel(engine: Pick<EngineView, 'name' | 'nick'>, showNickname: boolean): string {
   return showNickname && engine.nick !== '' ? `${engine.name} (${engine.nick})` : engine.name;
@@ -290,7 +301,7 @@ const S = (id: string, section: RowSpec['section'], label: string, description: 
 
 export const ADDRESS_ROWS: readonly RowSpec[] = [
   S('addrShow', 'address', 'Show the address field', 'Off, the address field appears only while it has focus (Ctrl+L). The search field and page buttons stay.', 'address bar hide show url field toolbar omnibox'),
-  S('addrAutocomplete', 'address', 'Complete addresses as you type', 'Fills in the rest of a site you have visited before.', 'autocomplete inline completion address typing history'),
+  S('addrAutocomplete', 'address', 'Suggest sites as you type', 'Completes an address you have visited before.', 'autocomplete inline completion address typing history complete'),
   S('addrFull', 'address', 'Show the full address', 'Keeps https:// and www. in the address instead of hiding them.', 'full url scheme www https protocol show address'),
   S('addrSelect', 'address', 'Select the address when the field is activated', 'Clicking or tabbing into the field selects all of its text.', 'select all on click focus activation address'),
   S('addrEncoded', 'address', 'Copy and cut the encoded address', 'Copying the whole address puts its percent-encoded form on the clipboard.', 'copy cut encoded url percent encoding clipboard'),
@@ -304,12 +315,12 @@ export const ADDRESS_ROWS: readonly RowSpec[] = [
   S('ddPriorityBookmarks', 'address', 'Prioritise bookmarks', 'Bookmark rows come before the other sources.', 'prioritise bookmarks first suggestions order'),
   S('ddPriorityDirect', 'address', 'Prioritise the direct match', 'A page whose address is exactly what you typed comes right after the first row.', 'prioritise direct match exact address suggestions'),
   S('ddSources', 'address', 'Suggestion sources and order', 'Turn sources on or off and move them up or down.', 'sources order priority bookmarks nicknames search suggestions history calculator'),
-  S('secHttps', 'address', 'Always use HTTPS', 'Addresses you type that start with http:// open over HTTPS instead. Local and private network hosts are left alone.', 'https secure upgrade http always security'),
+  S('secHttps', 'address', 'Always use HTTPS', 'Addresses you type open over HTTPS when they can.', 'https secure upgrade http always security local private'),
   S('secJs', 'address', 'Remove JavaScript from pasted addresses', 'A pasted javascript: prefix is removed, so a pasted script is text, not code.', 'javascript paste strip security xss self'),
   S('secBase', 'address', 'Highlight the base domain', 'Emphasises only the main domain of the address, so a lookalike host stands out.', 'highlight base domain security phishing emphasis'),
   S('addrExpansion', 'address', 'Domain expansion', 'Ctrl+Enter turns one word into www.word.suffix. Empty turns it off.', 'domain expansion ctrl enter suffix com www'),
   S('engines', 'search', 'Search engines', 'Add, edit, order and remove the engines the address bar and the search field use.', 'search engines add edit remove reorder nickname url suggest post image restore defaults'),
-  S('searchDefault', 'search', 'Default search engine', 'Used for searches typed in the address bar. Type img before a query for images.', 'default engine google duckduckgo bing search address bar'),
+  S('searchDefault', 'search', 'Search engine', 'DuckDuckGo, with no sponsored results. Type img before a query for images.', 'default engine optimised google duckduckgo bing search address bar'),
   S('searchPrivate', 'search', 'Private window search engine', 'Used in private tabs. Default means the engine above.', 'private window search engine incognito'),
   S('searchImage', 'search', 'Image search engine', 'Used by “Search for this image” on a picture.', 'image search engine reverse picture'),
   S('searchField', 'search', 'Search field', 'A separate field beside the address field, as a text field or a button.', 'search field toolbar button text box'),
