@@ -76,8 +76,12 @@
     if (name !== "vertical") setRail(false);
   }
 
+  var layoutChosen = false;
+  var railHeld = false;
+
   mock.querySelectorAll("[data-layout-btn]").forEach(function (button) {
     button.addEventListener("click", function () {
+      layoutChosen = true;
       setLayout(button.getAttribute("data-layout-btn"));
     });
   });
@@ -88,7 +92,11 @@
     rail.setAttribute("aria-expanded", open ? "true" : "false");
   }
 
-  rail.addEventListener("pointerenter", function () { setRail(true); });
+  rail.addEventListener("pointerenter", function () {
+    railHeld = true;
+    setRail(true);
+  });
+  rail.addEventListener("pointerdown", function () { railHeld = true; });
   rail.addEventListener("pointerleave", function () { setRail(false); });
   rail.addEventListener("focusin", function () { setRail(true); });
   rail.addEventListener("focusout", function (event) {
@@ -114,4 +122,48 @@
       });
     });
   });
+
+  var motion = window.matchMedia("(prefers-reduced-motion: reduce)");
+  if (!motion.matches && "IntersectionObserver" in window) {
+    var revealTargets = document.querySelectorAll(
+      ".section-head, .stage, .realshot, .placeholder, .card, .prose, .release, .faq details, .cta .wrap"
+    );
+    revealTargets.forEach(function (el) {
+      el.classList.add("reveal");
+      var group = el.parentElement ? el.parentElement.children : [];
+      var index = 0;
+      for (var i = 0; i < group.length; i++) {
+        if (group[i] === el) index = i;
+      }
+      if (index > 0) el.style.transitionDelay = Math.min(index, 5) * 70 + "ms";
+    });
+    var seen = new IntersectionObserver(function (entries) {
+      entries.forEach(function (entry) {
+        if (!entry.isIntersecting) return;
+        entry.target.classList.add("is-in");
+        seen.unobserve(entry.target);
+      });
+    }, { rootMargin: "0px 0px -10% 0px", threshold: 0.08 });
+    revealTargets.forEach(function (el) {
+      var top = el.getBoundingClientRect().top;
+      if (top < window.innerHeight * 0.92) el.classList.add("is-in");
+      else seen.observe(el);
+    });
+
+    var railDemoPlayed = false;
+    var railDemo = new IntersectionObserver(function (entries) {
+      entries.forEach(function (entry) {
+        if (!entry.isIntersecting || railDemoPlayed || layoutChosen) return;
+        railDemoPlayed = true;
+        railDemo.disconnect();
+        setLayout("vertical");
+        setRail(true);
+        window.setTimeout(function () {
+          if (layoutChosen || railHeld || rail.matches(":hover")) return;
+          setRail(false);
+        }, 2200);
+      });
+    }, { threshold: 0.45 });
+    railDemo.observe(win);
+  }
 })();
