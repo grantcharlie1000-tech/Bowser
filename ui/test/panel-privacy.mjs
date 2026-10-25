@@ -147,6 +147,8 @@ test('the Private tabs note says, in plain words, what private tabs keep and blo
     'Strict tracking prevention and the blocker are always on', 'Per-site blocker exceptions are ignored',
     'Every permission request and download in a private tab is blocked',
   ]) assert.ok(text.includes(phrase), phrase);
+  const close = logic.PRIVATE_TABS_NOTE.find(([label]) => label === 'Close them all');
+  assert.equal(close[1], 'Choose Close all private tabs in the main menu, a private tab’s menu or the command palette.');
   // Sentence case, no uppercase eyebrows.
   for (const [label] of logic.PRIVATE_TABS_NOTE) assert.notEqual(label, label.toUpperCase());
   assert.notEqual(logic.PRIVATE_TABS_TITLE, logic.PRIVATE_TABS_TITLE.toUpperCase());

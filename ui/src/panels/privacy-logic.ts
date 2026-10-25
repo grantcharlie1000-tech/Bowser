@@ -69,7 +69,7 @@ export const PRIVATE_TABS_NOTE: readonly (readonly [string, string])[] = [
   ['Protection', 'Strict tracking prevention and the blocker are always on. Per-site blocker exceptions are ignored.'],
   ['Permissions and downloads', 'Every permission request and download in a private tab is blocked.'],
   ['Still visible', 'Websites you visit, and your internet provider, employer or school, can still see your activity.'],
-  ['Close them all', 'Choose Close all private tabs in the main menu, a private tab’s menu or the new private tab page.'],
+  ['Close them all', 'Choose Close all private tabs in the main menu, a private tab’s menu or the command palette.'],
 ];
 
 type Fields = { id?: number; n?: number; on?: boolean; text?: string };
