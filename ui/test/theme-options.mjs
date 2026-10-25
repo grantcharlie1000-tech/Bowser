@@ -82,7 +82,7 @@ test('the rows cover every option once, are searchable, and only the schedule is
   const covered = Object.values(options.THEME_ROW_KEYS).flat();
   assert.deepEqual([...covered].sort(), [...options.THEME_OPTION_KEYS].sort(), 'every option has a row and no row names another');
   for (const row of options.THEME_ROWS) {
-    assert.ok(row.label !== '' && row.description !== '' && row.keywords !== '', row.id);
+    assert.ok(row.label !== '' && row.description === '' && row.keywords !== '', row.id);
     assert.doesNotMatch(row.description, /restart/i, `${row.id} acts at once`);
     assert.ok(logic.ROWS.some((r) => r.id === row.id), `${row.id} is in the page's index`);
   }
@@ -237,7 +237,7 @@ test('the theme rows are drawn once each, labelled, with their own control', () 
     assert.ok(row, spec.id);
     assert.equal(app.querySelectorAll(`[data-row="${spec.id}"]`).length, 1, `${spec.id} once`);
     assert.equal(row.querySelector('.sp-label').textContent, spec.label);
-    assert.ok(row.querySelector('.sp-desc').textContent.startsWith(spec.description), spec.id);
+    assert.equal(row.querySelector('.sp-desc'), null, spec.id);
     assert.equal(row.querySelector('.sp-flag'), null, `${spec.id} acts now: no "no effect yet" note`);
   }
   for (const id of ['themeSchedule', 'themeLook', 'themeColouring', 'themeContrast']) assert.ok(rowNode(id).querySelector('[role="radiogroup"]'), id);
@@ -245,7 +245,7 @@ test('the theme rows are drawn once each, labelled, with their own control', () 
   assert.equal(rowNode('themeSaturation').querySelector('input').type, 'range');
   assert.equal(rowNode('themeTimes').querySelectorAll('input').length, 2);
   assert.equal(rowNode('themeColours').querySelectorAll('input').length, 3);
-  assert.deepEqual(rowNode('themeFile').querySelectorAll('button').map((b) => b.textContent).filter((t) => t !== 'Cancel'), ['Export…', 'Import…', 'Reset theme']);
+  assert.deepEqual(rowNode('themeFile').querySelectorAll('button').map((b) => b.textContent).filter((t) => t !== 'Cancel'), ['Export…', 'Import…', 'Reset']);
 });
 
 test('every theme row sits behind More options; the main view keeps its ten rows', () => {
@@ -275,7 +275,7 @@ test('each control sends one themeopt command with its key=value and nothing els
   assert.deepEqual(radios('themeLook').map((r) => r.textContent), ['Light', 'Dark']);
   radios('themeLook')[1].click();
   assert.deepEqual(themeCommands(), [{ v: 1, t: 'set', a: 'themeopt', text: 'theme_look=dark' }]);
-  assert.deepEqual(radios('themeColouring').map((r) => r.textContent), ['Off', 'Tab bar', 'Address bar', 'Both']);
+  assert.deepEqual(radios('themeColouring').map((r) => r.textContent), ['Off', 'Tabs', 'Address', 'Both']);
   for (const [index, value] of ['off', 'tab_bar', 'address_bar', 'unified'].entries()) {
     if (index === 0) deliver(snapshotWith({ theme_colouring: 'tab_bar' })); // so that Off is a change
     radios('themeColouring')[index].click();
@@ -345,16 +345,14 @@ test('the times are sent when they are good, and put back when they are not', ()
 });
 
 test('the schedule row says what it means now, and the next snapshot is the truth for every control', () => {
-  const note = () => rowNode('themeSchedule').querySelector('.sp-schedule-note').textContent;
   deliver(snapshotWith());
-  assert.equal(note(), 'Follows the Windows app mode.');
-  assert.equal(checked('themeSchedule'), 'Follow Windows');
+  assert.equal(rowNode('themeSchedule').querySelector('.sp-schedule-note'), null);
+  assert.equal(checked('themeSchedule'), 'System');
   deliver(snapshotWith({
     theme_schedule: 'time', theme_look: 'dark', theme_light_from: '06:15', theme_dark_from: '21:45', theme_background: '#102030', theme_foreground: '#eeeeee', theme_highlight: '#336699',
     theme_colouring: 'unified', theme_accent_page: true, theme_saturation: 45, theme_contrast: 'high',
   }));
-  assert.equal(note(), 'Light from 06:15, dark from 21:45.');
-  assert.equal(checked('themeSchedule'), 'By time');
+  assert.equal(checked('themeSchedule'), 'Timed');
   assert.equal(checked('themeLook'), 'Dark');
   assert.equal(checked('themeColouring'), 'Both');
   assert.equal(checked('themeContrast'), 'High');
@@ -381,16 +379,16 @@ test('the theme file row opens Windows’ own dialogs by a bare command and rese
   assert.deepEqual(themeCommands(), [{ v: 1, t: 'set', a: 'themeimport' }]);
   reset.click();
   assert.deepEqual(themeCommands(), [], 'the first click only asks');
-  assert.equal(reset.textContent, 'Reset all theme settings');
+  assert.equal(reset.textContent, 'Confirm');
   const cancel = rowNode('themeFile').querySelectorAll('button')[2];
   assert.equal(cancel.hidden, false);
   cancel.click();
-  assert.equal(reset.textContent, 'Reset theme');
+  assert.equal(reset.textContent, 'Reset');
   assert.deepEqual(themeCommands(), []);
   reset.click();
   reset.click();
   assert.deepEqual(themeCommands(), [{ v: 1, t: 'set', a: 'themereset' }]);
-  assert.equal(reset.textContent, 'Reset theme', 'and the row is back to normal');
+  assert.equal(reset.textContent, 'Reset', 'and the row is back to normal');
 });
 
 test('the theme rows touch no network or page API and add no inline styles beyond the slider fill', () => {

@@ -10,7 +10,7 @@ import { el, icon } from './dom';
 import { textButton } from './panels/kit';
 import { setTip } from './tooltip';
 import {
-  EMPTY_DETAIL, EXTENSIONS_NOTE, INSTALL_COMMAND, INSTALL_CRX_COMMAND, INSTALL_CRX_LABEL, INSTALL_CRX_TIP, ackToast, declarationGroups, parseExtensionsSnapshot, popupCommand, reachText, removeCommand, removeQuestion,
+  INSTALL_COMMAND, INSTALL_CRX_COMMAND, INSTALL_CRX_LABEL, ackToast, declarationGroups, parseExtensionsSnapshot, popupCommand, reachText, removeCommand,
   setEnabledCommand, statusText, switchLabel, type ExtensionItem, type ExtensionsSnapshot,
 } from './extensions-logic';
 import { storeUrlCommand } from './store-logic';
@@ -52,10 +52,8 @@ export function mountExtensionsSection(options: ExtensionsSectionOptions): Exten
   heading.textContent = 'Installed';
   const install = textButton('Install unpacked…', () => sendInstall(), { icon: 'folder' });
   install.classList.add('sp-ext-install');
-  install.setAttribute('aria-describedby', `${prefix}-ext-note`);
   const installCrx = crxButton();
   installCrx.classList.add('sp-ext-install-crx');
-  installCrx.setAttribute('aria-describedby', `${prefix}-ext-note`);
   const installs = el('div', 'sp-ext-installs');
   installs.append(textButton('Open Chrome Web Store', () => options.send({ a: 'storeopen' }), { icon: 'puzzle', primary: true }), install, installCrx);
   head.append(heading, installs);
@@ -64,15 +62,11 @@ export function mountExtensionsSection(options: ExtensionsSectionOptions): Exten
   box.setAttribute('aria-labelledby', heading.id);
   box.setAttribute('aria-busy', 'true');
   group.append(head, box);
-  const note = el('p', 'sp-flag sp-ext-note');
-  note.id = `${prefix}-ext-note`;
-  const noteText = el('span');
-  noteText.textContent = EXTENSIONS_NOTE;
-  note.append(icon('info', { size: 12, fine: true }), noteText);
   const fromLink = el('details', 'sp-ext-link');
-  const linkSummary = el('summary'); linkSummary.textContent = 'Install from a store link';
-  const linkLabel = el('label'); linkLabel.textContent = 'Chrome Web Store listing URL'; linkLabel.htmlFor = `${prefix}-ext-url`;
-  const linkInput = el('input', 'bw-input'); linkInput.id = `${prefix}-ext-url`; linkInput.type = 'url'; linkInput.maxLength = 2048; linkInput.placeholder = 'https://chromewebstore.google.com/detail/…';
+  const linkSummary = el('summary'); linkSummary.textContent = 'Store link';
+  const linkLabel = el('label'); linkLabel.textContent = 'Listing URL'; linkLabel.htmlFor = `${prefix}-ext-url`;
+  const linkInput = el('input', 'bw-input'); linkInput.id = `${prefix}-ext-url`; linkInput.type = 'url'; linkInput.maxLength = 2048; linkInput.placeholder = '';
+  linkInput.setAttribute('aria-label', 'Chrome Web Store listing URL');
   const linkError = el('p', 'sp-desc'); linkError.hidden = true; linkError.setAttribute('role', 'alert');
   const linkInstall = textButton('Review extension', () => {
     const fields = storeUrlCommand(linkInput.value);
@@ -80,7 +74,7 @@ export function mountExtensionsSection(options: ExtensionsSectionOptions): Exten
     linkError.hidden = true; sendInstall(fields);
   });
   fromLink.append(linkSummary, linkLabel, linkInput, linkInstall, linkError);
-  root.append(group, note, fromLink);
+  root.append(group, fromLink);
 
   const sendInstall = (command: PanelFields = INSTALL_COMMAND): void => {
     if (installing) return;
@@ -88,9 +82,7 @@ export function mountExtensionsSection(options: ExtensionsSectionOptions): Exten
   };
   /** A file on disk, not a store: the tip says so. Same weight as the folder button next to it. */
   function crxButton(): HTMLButtonElement {
-    const button = textButton(INSTALL_CRX_LABEL, () => sendInstall(INSTALL_CRX_COMMAND), { icon: 'puzzle' });
-    setTip(button, INSTALL_CRX_TIP);
-    return button;
+    return textButton(INSTALL_CRX_LABEL, () => sendInstall(INSTALL_CRX_COMMAND), { icon: 'puzzle' });
   }
 
   /** The message in the card when there is no list to show: loading, unreadable, invalid or empty. */
@@ -240,7 +232,7 @@ export function mountExtensionsSection(options: ExtensionsSectionOptions): Exten
       ask.setAttribute('role', 'group');
       ask.setAttribute('aria-label', `Confirm removing ${item.name}`);
       const question = el('p', 'sp-desc');
-      question.textContent = removeQuestion(item);
+      question.textContent = `Remove ${item.name}?`;
       const buttons = el('div', 'sp-reset');
       const cancel = textButton('Cancel', () => { confirming = null; render(`${item.id}:remove`); });
       cancel.dataset.focus = `${item.id}:cancel`;
@@ -293,7 +285,7 @@ export function mountExtensionsSection(options: ExtensionsSectionOptions): Exten
       chooseCrx.disabled = installing;
       const choices = el('div', 'sp-ext-state-actions');
       choices.append(choose, chooseCrx);
-      box.replaceChildren(stateBlock('empty', 'No extensions installed', EMPTY_DETAIL, choices));
+      box.replaceChildren(stateBlock('empty', 'None', '', choices));
     } else {
       const busy = snapshot.busy;
       box.replaceChildren(...snapshot.items.map((item) => itemRow(item, busy)));

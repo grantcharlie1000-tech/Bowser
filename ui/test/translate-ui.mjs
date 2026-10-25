@@ -276,11 +276,13 @@ test('settings snapshot: the translate settings never ride in the Save-all text'
 
 test('settings rows: three translation rows with the agreed words, in a real section, searchable', () => {
   const byId = (id) => logic.ROWS.find((row) => row.id === id);
-  assert.equal(byId('translateOffer').label, 'Offer to translate pages in other languages');
-  assert.equal(byId('translateOffer').description, 'Shows a button in the toolbar when a page is in another language. Nothing is sent until you click it. Pages are translated by Google Translate, so their text is sent to Google.');
-  assert.equal(byId('translateAuto').label, 'Translate automatically on sites set to always translate');
-  assert.equal(byId('translateAuto').description, 'Sites set to always translate are translated as soon as they load, which sends their text to Google Translate.');
-  assert.equal(byId('translateTarget').label, 'Translate into');
+  assert.equal(byId('translateOffer').label, 'Offer translate');
+  assert.equal(byId('translateOffer').description, '');
+  assert.match(byId('translateOffer').keywords, /Google Translate/);
+  assert.equal(byId('translateAuto').label, 'Auto-translate');
+  assert.equal(byId('translateAuto').description, '');
+  assert.match(byId('translateAuto').keywords, /Google Translate/);
+  assert.equal(byId('translateTarget').label, 'Translate to');
   for (const id of ['translateOffer', 'translateAuto', 'translateTarget']) {
     assert.ok(logic.isSection(byId(id).section), id);
     assert.ok(logic.matchRows('translate translation language foreign page').has(id), id);

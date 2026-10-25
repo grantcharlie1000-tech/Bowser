@@ -23,7 +23,7 @@ export interface AddressHost {
   /** The card of the page's existing "Bookmarks bar" rows (Appearance), where the bar's own rows join them. */
   readonly barCard: HTMLElement;
   readonly switchControl: (onChange: (on: boolean) => void) => { readonly root: HTMLElement; set(value: boolean): void; disable(off: boolean): void };
-  readonly segmentedControl: <T extends string>(label: string, options: ReadonlyArray<readonly [T, string]>, onSelect: (value: T) => void) => { readonly root: HTMLElement; set(value: T | null): void; disable(off: boolean): void };
+  readonly segmentedControl: <T extends string>(label: string, options: ReadonlyArray<readonly [T, string] | readonly [T, string, string]>, onSelect: (value: T) => void) => { readonly root: HTMLElement; set(value: T | null): void; disable(off: boolean): void };
 }
 
 export interface AddressSection {
@@ -268,9 +268,12 @@ function sourceItem(id: SourceId, on: boolean, enabled: readonly SourceId[], com
   const text = el('span', 'sp-text');
   const name = el('span', 'sp-label');
   name.textContent = SOURCE_LABELS[id].label;
-  const hint = el('span', 'sp-desc');
-  hint.textContent = SOURCE_LABELS[id].hint;
-  text.append(name, hint);
+  text.append(name);
+  if (SOURCE_LABELS[id].hint !== '') {
+    const hint = el('span', 'sp-desc');
+    hint.textContent = SOURCE_LABELS[id].hint;
+    text.append(hint);
+  }
   const toggle = el('button', 'bw-toggle sp-switch');
   toggle.type = 'button';
   toggle.setAttribute('role', 'switch');
@@ -343,9 +346,12 @@ function mountEngineEditor(host: AddressHost, current: () => AddressSnapshot | n
     input.autocomplete = 'off';
     input.spellcheck = false;
     input.dir = 'ltr';
-    const note = el('span', 'sp-desc');
-    note.textContent = hint;
-    wrap.append(name, input, note);
+    wrap.append(name, input);
+    if (hint !== '') {
+      const note = el('span', 'sp-desc');
+      note.textContent = hint;
+      wrap.append(note);
+    }
     fields.set(key, input);
     return wrap;
   };
@@ -360,13 +366,13 @@ function mountEngineEditor(host: AddressHost, current: () => AddressSnapshot | n
   actions.append(save, cancel);
   form.append(
     title,
-    inputFor('name', 'Name', '', 'My search', 40),
-    inputFor('nick', 'Nickname', 'Type it before a query to use this engine (optional).', 'ms', 16),
-    inputFor('url', 'Search address', 'Use %s where the search text goes.', 'https://example.com/search?q=%s', 1024),
-    inputFor('post', 'POST parameters', 'Only for engines that take the query as a form post. Use %s once. Leave empty for a plain address.', 'q=%s&lang=en', 512),
-    inputFor('suggest', 'Suggestions address', 'Optional. Use %s where the text goes; the engine is asked only after its nickname or in the search field.', 'https://example.com/suggest?q=%s', 1024),
-    inputFor('image', 'Image search address', 'Optional. Use %s where the address of the image goes.', 'https://example.com/lens?url=%s', 1024),
-    inputFor('imagePost', 'Image POST parameters', 'Optional. Only with an image search address that takes a form post.', 'img=%s', 512),
+    inputFor('name', 'Name', '', '', 40),
+    inputFor('nick', 'Nickname', '', '', 16),
+    inputFor('url', 'Address', '', '%s', 1024),
+    inputFor('post', 'POST', '', '%s', 512),
+    inputFor('suggest', 'Suggestions', '', '%s', 1024),
+    inputFor('image', 'Image search', '', '%s', 1024),
+    inputFor('imagePost', 'Image POST', '', '%s', 512),
     problem,
     actions,
   );

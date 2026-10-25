@@ -29,23 +29,23 @@ import { parseCommandsSnapshot } from './commands-logic';
 // --- end toolbars and feeds ---
 // --- layout (thread T6) --- the Layout block's presets, edges and values
 import {
-  BAR_POSITIONS, DEFAULT_LAYOUT_CONFIG, DEFAULT_UI_ZOOM, MAX_UI_ZOOM, MIN_UI_ZOOM, PRESETS, PRESET_HINTS, PRESET_LABELS, STATUS_BARS, STATUS_BAR_LABELS,
-  TAB_BAR_EDGES, TAB_BAR_EDGE_LABELS, TOP_TAB_STYLES, UI_DENSITIES, UI_ZOOM_STEP, applyLayoutConfig, panelEdgeNote, parseLayoutConfig, parseUiZoom, presetConfig,
+  BAR_POSITIONS, DEFAULT_LAYOUT_CONFIG, DEFAULT_UI_ZOOM, MAX_UI_ZOOM, MIN_UI_ZOOM, PRESETS, PRESET_LABELS, STATUS_BARS, STATUS_BAR_LABELS,
+  TAB_BAR_EDGES, TAB_BAR_EDGE_LABELS, TOP_TAB_STYLES, UI_DENSITIES, UI_ZOOM_STEP, applyLayoutConfig, parseLayoutConfig, parseUiZoom, presetConfig,
   rememberOwnLayout, selectedTile, tabBarEdge, tabLayoutForEdge, uiZoomText, type BarPosition, type LayoutConfig, type Preset, type StatusBar,
   type TabBarEdge, type UiDensity,
 } from './layout-logic';
 // --- end layout ---
 import { mountPageToolsSection } from './page-tools-section'; // --- page tools (T7) ---
-import { browserProbes, codecDetail, drmText, guidance, runMediaCheck, verdictText, type MediaReport } from './panels/media-logic';
+import { browserProbes, drmText, runMediaCheck, verdictText, type MediaReport } from './panels/media-logic';
 import { TAB_CARDS, TAB_CARD_TITLES, assignmentText, cardSpecs, clampNumber, numberLabel, textApplies, toggleApplies, type TabOptionSpec, type TabOptionValues } from './tab-options-logic';
 import {
-  BOOKMARKS_BAR_MODES, EFFICIENCY_MODES, FONT_SIZES, LAYOUT_HINTS, MAX_SIDEBAR, MAX_UI_FONT, MAX_ZOOM, MIN_SIDEBAR, MIN_ZOOM,
-  NOT_YET_GROUP_NOTE, NOT_YET_NOTE, RESTART_NOTE, ROWS, SIDE_PANEL_POSITIONS, TAB_LAYOUT_LABELS, THEME_MODES,
+  BOOKMARKS_BAR_MODES, EFFICIENCY_MODES, FONT_SIZES, MAX_SIDEBAR, MAX_UI_FONT, MAX_ZOOM, MIN_SIDEBAR, MIN_ZOOM,
+  ROWS, SIDE_PANEL_POSITIONS, TAB_LAYOUT_ARIA, TAB_LAYOUT_LABELS, THEME_MODES,
   addSite, draftOf, durationLabel, highlightRanges, isSection, matchRows, parseSettingsSnapshot, resultCountText,
   saveText, sleepOptions, translateTargetOptions, updateView, type BookmarksBarMode, type Draft, type EfficiencyMode, type FontSize, type RowSpec,
   type SettingsSnapshot, type SidePanelPosition, type TabLayout, type ThemeMode, type TrackingPrevention,
-  AREAS, LATER_LABEL, LATER_LEAD, LATER_TITLE, MORE_LABEL, PAGE_ROWS, areaOf, moreCountText, partTitle, rowTier, type AreaSpec,
-  SETTINGS_VIEW_KEY, SIMPLE_ALL_LABEL, SIMPLE_LEAD, SIMPLE_MOVED, SIMPLE_TITLE, readSettingsView, simpleTabChoice, simpleThemeChoice, type SettingsView,
+  AREAS, LATER_LABEL, LATER_TITLE, MORE_LABEL, PAGE_ROWS, areaOf, partTitle, rowTier, type AreaSpec,
+  SETTINGS_VIEW_KEY, SIMPLE_ALL_LABEL, SIMPLE_MOVED, SIMPLE_TITLE, readSettingsView, simpleTabChoice, simpleThemeChoice, type SettingsView,
   AUTO_HIDE_BARS, AUTO_HIDE_BAR_LABELS, autoHideBarsList, autoHideBarsText, type AutoHideBar, // --- auto-hide (T11) ---
   addRuleText, removeRuleText, ruleExists, ruleSite as ruleSiteOf, type WorkspaceRules, // --- tab stacks (T10) ---
 } from './settings-page-logic';
@@ -145,8 +145,14 @@ function radioGroup<T extends string>(className: string, label: string, items: R
   };
 }
 
-export function segmentedControl<T extends string>(label: string, options: ReadonlyArray<readonly [T, string]>, onSelect: (value: T) => void): Control<T | null> {
-  const control = radioGroup('bw-segmented sp-seg', label, options.map(([value, text]) => [value, (button: HTMLButtonElement) => { button.textContent = text; }] as const), onSelect);
+export function segmentedControl<T extends string>(label: string, options: ReadonlyArray<readonly [T, string] | readonly [T, string, string]>, onSelect: (value: T) => void): Control<T | null> {
+  const control = radioGroup('bw-segmented sp-seg', label, options.map((option) => {
+    const [value, text, aria] = option;
+    return [value, (button: HTMLButtonElement) => {
+      button.textContent = text;
+      if (aria) button.setAttribute('aria-label', aria);
+    }] as const;
+  }), onSelect);
   attachSegmentThumb(control.root);
   return control;
 }
@@ -240,17 +246,6 @@ interface RowNode {
 }
 /** A group: its heading (outside the card) and the card that holds its rows. */
 interface Group { readonly root: HTMLElement; readonly heading: HTMLElement | null; readonly card: HTMLElement }
-
-/** "Applies after restart" or "no effect yet" under a row's description, or `null`. */
-function rowFlag(spec: RowSpec): HTMLElement | null {
-  if (!spec.notYet && !spec.restart) return null;
-  const flag = el('span', `sp-flag${spec.notYet ? ' is-later' : ''}`);
-  flag.id = `sp-f-${spec.id}`;
-  const text = el('span');
-  text.textContent = spec.notYet ? NOT_YET_NOTE : RESTART_NOTE;
-  flag.append(icon(spec.notYet ? 'clock' : 'reload', { size: 12, fine: true }), text);
-  return flag;
-}
 
 export function startSettingsPage(root: HTMLElement): void {
   root.classList.add('sp-root');
@@ -380,9 +375,12 @@ export function startSettingsPage(root: HTMLElement): void {
     heading.id = `sp-h-${spec.key}`;
     heading.textContent = spec.title;
     area.setAttribute('aria-labelledby', heading.id);
-    const lead = el('p', 'sp-lead');
-    lead.textContent = spec.lead;
-    area.append(heading, lead);
+    area.append(heading);
+    if (spec.lead !== '') {
+      const lead = el('p', 'sp-lead');
+      lead.textContent = spec.lead;
+      area.append(lead);
+    }
     areaNodes.set(spec.key, area);
     column.append(area);
     for (const key of spec.parts) {
@@ -452,21 +450,23 @@ export function startSettingsPage(root: HTMLElement): void {
       desc.textContent = spec.description;
       text.append(desc);
     }
-    const flag = rowFlag(spec);
-    if (flag) text.append(flag);
     node.append(text);
     let target: HTMLElement | null = null;
     if (control) {
       const wrap = el('div', 'sp-ctl');
       wrap.append(control);
       target = control.matches('button, input, [role="radiogroup"]') ? control : control.querySelector<HTMLElement>('button, input, [role="radiogroup"]');
-      if (target && !target.hasAttribute('aria-label')) target.setAttribute('aria-labelledby', label.id);
-      const described = [desc?.id, flag?.id].filter(Boolean).join(' ');
-      if (target && described !== '') target.setAttribute('aria-describedby', described);
+      if (target) {
+        if (!target.hasAttribute('aria-label')) {
+          if (spec.aria) target.setAttribute('aria-label', spec.aria);
+          else target.setAttribute('aria-labelledby', label.id);
+        }
+        if (desc && !target.hasAttribute('aria-describedby')) target.setAttribute('aria-describedby', desc.id);
+      }
       node.append(wrap);
     }
     into.append(node);
-    const result = { spec, root: node, label, desc, card: into, flag, target };
+    const result = { spec, root: node, label, desc, card: into, flag: null, target };
     rows.set(id, result);
     return result;
   };
@@ -494,7 +494,7 @@ export function startSettingsPage(root: HTMLElement): void {
   const profileRow = row(profileCard, 'profile', avatar);
   profileRow.root.classList.add('is-profile');
   profileRow.root.prepend(profileRow.root.lastElementChild ?? avatar);
-  const manage = textButton('Manage profiles', () => cmd({ a: 'profiles' }), { icon: 'person' });
+  const manage = textButton('Manage', () => cmd({ a: 'profiles' }), { icon: 'person', aria: 'Manage profiles' });
   row(profileCard, 'profiles', manage);
   row(profileCard, 'import', textButton('Import', () => cmd({ a: 'import' }), { icon: 'download' }));
 
@@ -510,15 +510,12 @@ export function startSettingsPage(root: HTMLElement): void {
     button.dataset.preset = key;
     const name = el('span', 'sp-tile-name');
     name.textContent = PRESET_LABELS[key];
-    const hint = el('span', 'sp-tile-hint');
-    hint.textContent = PRESET_HINTS[key];
-    button.append(layoutArt(key === 'saved' ? DEFAULT_LAYOUT_CONFIG : presetConfig(key)), name, hint);
+    button.append(layoutArt(key === 'saved' ? DEFAULT_LAYOUT_CONFIG : presetConfig(key)), name);
     if (key === 'saved') savedTile = button;
   };
   const presets = radioGroup<Preset | 'saved'>('sp-tiles is-presets', 'Presets', [...PRESETS, 'saved' as const].map((key) => [key, presetTile(key)] as const), (value) => change((d) => {
     const config = value === 'saved' ? parseLayoutConfig(d.layout.saved) : presetConfig(value);
     if (config) applyLayoutConfig(d, config);
-    paintPanelEdge(d);
   }));
   row(layoutCard, 'layoutPreset', presets.root, { stack: true });
   /** The Saved tile shows the saved arrangement, or stays dimmed until there is one. */
@@ -537,31 +534,20 @@ export function startSettingsPage(root: HTMLElement): void {
     box.append(text, control.root);
     bars.append(box);
   };
-  const tabEdge = segmentedControl<TabBarEdge>('Tab bar', TAB_BAR_EDGES.map((key) => [key, TAB_BAR_EDGE_LABELS[key]] as const), (value) => change((d) => { d.tabLayout = tabLayoutForEdge(value, d.tabLayout); rememberOwnLayout(d); paintPanelEdge(d); }));
+  const tabEdge = segmentedControl<TabBarEdge>('Tab bar', TAB_BAR_EDGES.map((key) => [key, TAB_BAR_EDGE_LABELS[key]] as const), (value) => change((d) => { d.tabLayout = tabLayoutForEdge(value, d.tabLayout); rememberOwnLayout(d); }));
   const addressEdge = segmentedControl<BarPosition>('Address bar', BAR_POSITIONS.map((key) => [key, key === 'top' ? 'Top' : 'Bottom'] as const), (value) => change((d) => { d.layout.addressBarPosition = value; rememberOwnLayout(d); }));
-  const panelEdge = segmentedControl<SidePanelPosition>('Panels', SIDE_PANEL_POSITIONS.map((key) => [key, key === 'left' ? 'Left' : 'Right'] as const), (value) => change((d) => { d.sidePanelPosition = value; rememberOwnLayout(d); paintPanelEdge(d); }));
-  const panelHint = el('span', 'sp-bar-label sp-panel-edge-hint');
-  panelHint.id = 'sp-panel-edge-hint';
-  panelHint.hidden = true;
+  const panelEdge = segmentedControl<SidePanelPosition>('Panels', SIDE_PANEL_POSITIONS.map((key) => [key, key === 'left' ? 'Left' : 'Right'] as const), (value) => change((d) => { d.sidePanelPosition = value; rememberOwnLayout(d); }));
   barGroup('Tab bar', tabEdge);
   barGroup('Address bar', addressEdge);
   barGroup('Panels', panelEdge);
-  bars.lastElementChild?.append(panelHint);
-  /** The Panels control keeps the saved edge. The note says where a vertical tab bar actually puts the panel. */
-  function paintPanelEdge(d: Draft): void {
-    const note = panelEdgeNote(d.sidePanelPosition, d.tabLayout, d.layout.tabBarVisible);
-    panelHint.hidden = note === '';
-    panelHint.textContent = note;
-  }
   row(layoutCard, 'layoutBars', bars, { stack: true });
   const layout = radioGroup<TabLayout>('sp-tiles', 'Tab bar style at the top', TOP_TAB_STYLES.map((key) => [key, (button: HTMLButtonElement) => {
     button.className = 'sp-tile';
     const name = el('span', 'sp-tile-name');
     name.textContent = TAB_LAYOUT_LABELS[key];
-    const hint = el('span', 'sp-tile-hint');
-    hint.textContent = LAYOUT_HINTS[key];
-    button.append(layoutArt(key), name, hint);
-  }] as const), (value) => change((d) => { d.tabLayout = value; rememberOwnLayout(d); paintPanelEdge(d); }));
+    button.setAttribute('aria-label', TAB_LAYOUT_ARIA[key]);
+    button.append(layoutArt(key), name);
+  }] as const), (value) => change((d) => { d.tabLayout = value; rememberOwnLayout(d); }));
   row(layoutCard, 'layout', layout.root, { stack: true });
   // --- end layout --- (the rest of the block follows the sidebar width row)
   const width = el('input', 'sp-range');
@@ -583,15 +569,15 @@ export function startSettingsPage(root: HTMLElement): void {
   const pinStrip = switchControl((on) => change((d) => { d.sidebarPinned = on; }));
   row(layoutCard, 'sidebarPinned', pinStrip.root);
   // --- layout (thread T6) --- the rest of the Layout block
-  const tabBarVisible = switchControl((on) => change((d) => { d.layout.tabBarVisible = on; rememberOwnLayout(d); paintPanelEdge(d); }));
+  const tabBarVisible = switchControl((on) => change((d) => { d.layout.tabBarVisible = on; rememberOwnLayout(d); }));
   row(layoutCard, 'tabBarVisible', tabBarVisible.root);
   const addressBarVisible = switchControl((on) => change((d) => { d.layout.addressBarVisible = on; rememberOwnLayout(d); }));
   row(layoutCard, 'addressBarVisible', addressBarVisible.root);
   const titleBar = switchControl((on) => change((d) => { d.layout.showTitleBar = on; rememberOwnLayout(d); }));
   row(layoutCard, 'showTitleBar', titleBar.root);
-  const statusBarCtl = segmentedControl<StatusBar>('Status bar', STATUS_BARS.map((key) => [key, STATUS_BAR_LABELS[key]] as const), (value) => change((d) => { d.layout.statusBar = value; rememberOwnLayout(d); }));
+  const statusBarCtl = segmentedControl<StatusBar>('Status bar', STATUS_BARS.map((key) => [key, key === 'overlay' ? 'Overlay' : 'Hidden', STATUS_BAR_LABELS[key]] as const), (value) => change((d) => { d.layout.statusBar = value; rememberOwnLayout(d); }));
   row(layoutCard, 'statusBar', statusBarCtl.root);
-  const densityCtl = segmentedControl<UiDensity>('User interface density', UI_DENSITIES.map((key) => [key, key === 'regular' ? 'Regular' : 'Compact'] as const), (value) => change((d) => { d.layout.uiDensity = value; }));
+  const densityCtl = segmentedControl<UiDensity>('Density', UI_DENSITIES.map((key) => [key, key === 'regular' ? 'Regular' : 'Compact'] as const), (value) => change((d) => { d.layout.uiDensity = value; }));
   row(layoutCard, 'uiDensity', densityCtl.root);
   const compactMenus = switchControl((on) => change((d) => { d.layout.compactMenus = on; }));
   row(layoutCard, 'compactMenus', compactMenus.root);
@@ -633,13 +619,13 @@ export function startSettingsPage(root: HTMLElement): void {
 
   // Theme
   const themeCard = card('appearance', 'Theme');
-  const theme = segmentedControl<ThemeMode>('Theme', THEME_MODES.map((key) => [key, key === 'helium' ? 'Helium colours' : 'System'] as const), (value) => change((d) => { d.theme = value; }));
+  const theme = segmentedControl<ThemeMode>('Palette', THEME_MODES.map((key) => [key, key === 'helium' ? 'Helium' : 'System', key === 'helium' ? 'Helium colours' : 'System'] as const), (value) => change((d) => { d.theme = value; }));
   row(themeCard, 'theme', theme.root);
   const accentInput = el('input', 'sp-color');
   accentInput.type = 'color';
   accentInput.setAttribute('aria-label', 'Accent colour');
   accentInput.addEventListener('change', () => change((d) => { d.themeAccent = accentInput.value.toLowerCase(); }));
-  const accentReset = textButton('Reset to default', () => change((d) => { d.theme = 'helium'; d.themeAccent = ''; }));
+  const accentReset = textButton('Reset', () => change((d) => { d.theme = 'helium'; d.themeAccent = ''; }), { aria: 'Reset accent colour' });
   const accentWrap = el('div', 'sp-reset');
   accentWrap.append(accentInput, accentReset);
   row(themeCard, 'themeAccent', accentWrap);
@@ -696,7 +682,7 @@ export function startSettingsPage(root: HTMLElement): void {
 
   // Tab groups and split view. The new-tab position, Ctrl+Tab order and tab preview rows live in the
   // Tabs section (wave-1 integration), which also owns `new_tab_beside_active` through its position row.
-  const tabsCard = card('appearance', 'Tab groups and split view');
+  const tabsCard = card('appearance', 'Groups');
   const grouping = switchControl((on) => change((d) => { d.automaticTabGrouping = on; }));
   row(tabsCard, 'grouping', grouping.root);
   const mru = switchControl((on) => change((d) => { d.ctrlTabMru = on; }));
@@ -746,7 +732,7 @@ export function startSettingsPage(root: HTMLElement): void {
   row(windowCard, 'winScrollbars', winScrollbars.root);
   const winMonoIcons = switchControl((on) => change((d) => { d.window.monoIcons = on; }));
   row(windowCard, 'winMonoIcons', winMonoIcons.root);
-  const winReset = textButton('Reset window options', () => change((d) => { d.window = resetWindowGroup(d.window, WINDOW_APPEARANCE_KEYS); }));
+  const winReset = textButton('Reset', () => change((d) => { d.window = resetWindowGroup(d.window, WINDOW_APPEARANCE_KEYS); }), { aria: 'Reset window options' });
   row(windowCard, 'winReset', winReset);
   const panelsCard = card('appearance', 'Panels');
   const panelClose = switchControl((on) => change((d) => { d.window.panelCloseButton = on; }));
@@ -755,7 +741,7 @@ export function startSettingsPage(root: HTMLElement): void {
   row(panelsCard, 'panelFolderCounts', panelCounts.root);
   const panelAutoClose = switchControl((on) => change((d) => { d.window.panelAutoClose = on; }));
   row(panelsCard, 'panelAutoClose', panelAutoClose.root);
-  const panelReset = textButton('Reset panel options', () => change((d) => { d.window = resetWindowGroup(d.window, WINDOW_PANEL_KEYS); }));
+  const panelReset = textButton('Reset', () => change((d) => { d.window = resetWindowGroup(d.window, WINDOW_PANEL_KEYS); }), { aria: 'Reset panel options' });
   row(panelsCard, 'panelReset', panelReset);
   // The slider rows get minus and plus buttons; which of the two shows follows "Buttons instead of sliders".
   const addSteppers = (wrap: HTMLElement, range: HTMLInputElement, label: string, commit: (value: number) => void): void => {
@@ -777,8 +763,8 @@ export function startSettingsPage(root: HTMLElement): void {
   // --- end window and panels ---
 
   // Bookmarks bar
-  const bookmarksCard = card('appearance', 'Bookmarks bar');
-  const bookmarksBarCtl = segmentedControl<BookmarksBarMode>('Bookmarks bar', BOOKMARKS_BAR_MODES.map((key) => [key, key === 'always' ? 'Always show' : key === 'never' ? 'Always hide' : 'Only on the new tab'] as const), (value) => change((d) => { d.bookmarksBar = value; }));
+  const bookmarksCard = card('appearance', 'Bookmarks');
+  const bookmarksBarCtl = segmentedControl<BookmarksBarMode>('Bookmarks bar', BOOKMARKS_BAR_MODES.map((key) => [key, key === 'always' ? 'Always' : key === 'never' ? 'Never' : 'New tab', key === 'always' ? 'Always show' : key === 'never' ? 'Always hide' : 'Only on the new tab'] as const), (value) => change((d) => { d.bookmarksBar = value; }));
   row(bookmarksCard, 'bookmarksBar', bookmarksBarCtl.root);
   const bookmarksGroups = switchControl((on) => change((d) => { d.bookmarksBarTabGroups = on; }));
   row(bookmarksCard, 'bookmarksBarTabGroups', bookmarksGroups.root);
@@ -786,12 +772,12 @@ export function startSettingsPage(root: HTMLElement): void {
   // --- layout (thread T6) --- the side panel's edge is the Panels choice of the Layout block above.
 
   // Fonts and zoom (--- settings slim --- one card)
-  const fontsCard = card('appearance', 'Text and zoom');
-  const fontSizeCtl = segmentedControl<FontSize>('Font size', FONT_SIZES.map((key) => [key, key === 'small' ? 'Small' : key === 'medium' ? 'Medium (recommended)' : 'Large'] as const), (value) => change((d) => { d.fontSize = value; }));
+  const fontsCard = card('appearance', 'Text');
+  const fontSizeCtl = segmentedControl<FontSize>('Font size', FONT_SIZES.map((key) => [key, key === 'small' ? 'Small' : key === 'medium' ? 'Medium' : 'Large', key === 'medium' ? 'Medium (recommended)' : key === 'small' ? 'Small' : 'Large'] as const), (value) => change((d) => { d.fontSize = value; }));
   row(fontsCard, 'fontSize', fontSizeCtl.root);
   const uiFont = el('input', 'bw-input sp-ui-font-input');
   uiFont.type = 'text';
-  uiFont.placeholder = 'System font';
+  uiFont.placeholder = '';
   uiFont.maxLength = MAX_UI_FONT;
   uiFont.autocomplete = 'off';
   uiFont.spellcheck = false;
@@ -875,7 +861,10 @@ export function startSettingsPage(root: HTMLElement): void {
         return sw.root;
       }
       case 'choice': {
-        const seg = segmentedControl<string>(spec.label, spec.choices.map(([value, label]) => [value, label] as const), (value) => sendTabOption(spec.key, value));
+        const seg = segmentedControl<string>(spec.label, spec.choices.map((choice) => {
+          const [value, text, aria] = choice;
+          return aria ? [value, text, aria] as const : [value, text] as const;
+        }), (value) => sendTabOption(spec.key, value));
         tabControls.set(spec.key, { set: (values) => seg.set(String(values[spec.key] ?? spec.default)), disable: (off) => seg.disable(off) });
         return seg.root;
       }
@@ -945,7 +934,7 @@ export function startSettingsPage(root: HTMLElement): void {
   const rulesForm = el('div', 'sp-allow-add');
   const ruleSite = el('input', 'bw-input sp-allow-input');
   ruleSite.type = 'text';
-  ruleSite.placeholder = 'example.com';
+  ruleSite.placeholder = '';
   ruleSite.autocomplete = 'off';
   ruleSite.spellcheck = false;
   ruleSite.maxLength = 253;
@@ -956,7 +945,7 @@ export function startSettingsPage(root: HTMLElement): void {
   const ruleError = el('p', 'sp-field-error');
   ruleError.setAttribute('role', 'alert');
   const addRule = (): void => {
-    if (ruleSiteOf(ruleSite.value) === null) { ruleError.textContent = 'Enter a site such as example.com.'; return; }
+    if (ruleSiteOf(ruleSite.value) === null) { ruleError.textContent = 'Enter a site.'; return; }
     if (ruleExists(ruleList, ruleSite.value)) { ruleError.textContent = 'That site already has a rule.'; return; }
     const text = addRuleText(ruleSite.value, ruleWorkspace);
     if (text === null) { ruleError.textContent = 'Choose a workspace.'; return; }
@@ -1040,7 +1029,7 @@ export function startSettingsPage(root: HTMLElement): void {
   const allowForm = el('div', 'sp-allow-add');
   const allowInput = el('input', 'bw-input sp-allow-input');
   allowInput.type = 'text';
-  allowInput.placeholder = 'example.com';
+  allowInput.placeholder = '';
   allowInput.autocomplete = 'off';
   allowInput.spellcheck = false;
   allowInput.maxLength = 253;
@@ -1087,11 +1076,11 @@ export function startSettingsPage(root: HTMLElement): void {
   const allowRow = row(blockCard, 'allow', allowForm);
   allowRow.root.classList.add('is-wrap', 'is-tight');
   allowRow.root.append(allowList, allowError);
-  const trackCard = card('privacy', 'Tracking and history');
+  const trackCard = card('privacy', 'Tracking');
   const tracking = segmentedControl<TrackingPrevention>('Tracking prevention', [['balanced', 'Balanced'], ['strict', 'Strict']], (value) => change((d) => { d.trackingPrevention = value; }));
   row(trackCard, 'tracking', tracking.root);
   const history = switchControl((on) => { if (cmd({ a: 'history', on })) pending += 1; });
-  const historyRow = row(trackCard, 'history', history.root);
+  row(trackCard, 'history', history.root);
   row(trackCard, 'historyRetention', protection.retention.root);
 
   // The blocks of the protection controls (thread T3): per-site choices, the rule lists and Delete
@@ -1123,7 +1112,7 @@ export function startSettingsPage(root: HTMLElement): void {
   const efficiency = segmentedControl<EfficiencyMode>('Efficiency mode', EFFICIENCY_MODES.map((mode) => [mode, mode === 'auto' ? 'Auto' : mode === 'on' ? 'On' : 'Off'] as const), (value) => change((d) => { d.efficiencyMode = value; }));
   const efficiencyRow = row(powerCard, 'efficiency', efficiency.root);
   const activeBadge = el('span', 'sp-badge');
-  activeBadge.textContent = 'Active now';
+  activeBadge.textContent = 'Active';
   const labelLine = el('span', 'sp-label-line');
   efficiencyRow.label.replaceWith(labelLine);
   labelLine.append(efficiencyRow.label, activeBadge);
@@ -1193,7 +1182,7 @@ export function startSettingsPage(root: HTMLElement): void {
   // Feeds (thread T13, docs/feeds.md): open the panel, the address bar's feed button, and when Feeds fetches. Each is
   // its own command (`openfeeds`, `baropt`), applied at once; the rows join the page's search like any other.
   const feedsCard = card('address', 'Feeds');
-  const feedsOpen = textButton('Open Feeds', () => cmd({ a: 'openfeeds' }), { icon: 'feed' });
+  const feedsOpen = textButton('Open', () => cmd({ a: 'openfeeds' }), { icon: 'feed', aria: 'Open Feeds' });
   row(feedsCard, 'feedsOpen', feedsOpen);
   const feedsDetect = switchControl((on) => sendBarOption(feedAssignment('feeds_detect', on)));
   row(feedsCard, 'feedsDetect', feedsDetect.root);
@@ -1256,7 +1245,7 @@ export function startSettingsPage(root: HTMLElement): void {
   // Media
   const mediaCard = card('media');
   const mediaStatus = el('span', 'sp-media-status');
-  const recheck = textButton('Check again', () => checkMedia(), { icon: 'reload' });
+  const recheck = textButton('Check', () => checkMedia(), { icon: 'reload', aria: 'Check again' });
   const mediaHead = el('div', 'sp-media-head');
   mediaHead.append(mediaStatus, recheck);
   row(mediaCard, 'media', mediaHead);
@@ -1272,13 +1261,12 @@ export function startSettingsPage(root: HTMLElement): void {
       const h = el('h3', 'sp-card-h');
       h.textContent = heading;
       const list = el('ul', 'sp-media-list');
-      for (const [label, detail, value, tone] of items) {
+      for (const [label, , value, tone] of items) {
         const item = el('li', 'sp-media-item');
         const text = el('span', 'sp-text');
         const name = el('span', 'sp-label');
         name.textContent = label;
         text.append(name);
-        if (detail) { const d = el('span', 'sp-desc'); d.textContent = detail; text.append(d); }
         const chip = el('span', `sp-pill is-${tone}`);
         chip.textContent = value;
         item.append(text, chip);
@@ -1287,13 +1275,9 @@ export function startSettingsPage(root: HTMLElement): void {
       box.append(h, list);
       return box;
     };
-    const advice = guidance(report);
-    const hints = el('ul', 'sp-hints');
-    for (const line of advice.length > 0 ? advice : ['Nothing needs attention.']) { const li = el('li'); li.textContent = line; hints.append(li); }
     mediaResults.append(
-      group('Video decoding', report.codecs.map((codec) => [codec.label, codecDetail(codec), verdictText(codec.verdict), codec.verdict] as const)),
-      group('Protected streaming', report.drm.map((system) => [system.label, '', drmText(system.state), system.state] as const)),
-      hints,
+      group('Video', report.codecs.map((codec) => [codec.label, '', verdictText(codec.verdict), codec.verdict] as const)),
+      group('Streaming', report.drm.map((system) => [system.label, '', drmText(system.state), system.state] as const)),
     );
   };
   const checkMedia = (): void => {
@@ -1309,10 +1293,10 @@ export function startSettingsPage(root: HTMLElement): void {
     }, () => {
       if (run !== mediaRun) return;
       recheck.disabled = false;
-      mediaStatus.textContent = 'The check could not run';
+      mediaStatus.textContent = 'Check failed';
     });
   };
-  mediaStatus.textContent = 'Runs when you open this section';
+  mediaStatus.textContent = '';
   // The check runs once, the first time the Media card comes into view.
   new IntersectionObserver((entries, observer) => {
     if (entries.some((entry) => entry.isIntersecting) && snapshot) {
@@ -1340,10 +1324,10 @@ export function startSettingsPage(root: HTMLElement): void {
   const statusTitle = el('span', 'sp-label');
   const statusDetail = el('span', 'sp-desc');
   statusText.append(statusTitle, statusDetail);
-  const updateAction = textButton('Check for updates', () => {
+  const updateAction = textButton('Check', () => {
     const view = snapshot ? updateView(snapshot) : null;
     if (view?.action === 'restart') cmd({ a: 'restartupdate' });
-    else if (view?.action === 'check' && cmd({ a: 'checkupdates' })) { updateAction.disabled = true; statusTitle.textContent = 'Checking for updates…'; }
+    else if (view?.action === 'check' && cmd({ a: 'checkupdates' })) { updateAction.disabled = true; statusTitle.textContent = 'Checking…'; }
   });
   statusBox.append(statusIcon, statusText, updateAction);
   const updateRow = row(updateCard, 'updateStatus');
@@ -1354,10 +1338,10 @@ export function startSettingsPage(root: HTMLElement): void {
   const aboutCard = card('about');
   const version = el('span', 'sp-value');
   row(aboutCard, 'version', version);
-  row(aboutCard, 'file', textButton('Open settings file', () => cmd({ a: 'openfile' }), { icon: 'external' }));
+  row(aboutCard, 'file', textButton('Open', () => cmd({ a: 'openfile' }), { icon: 'external', aria: 'Open settings file' }));
   const resetBox = el('div', 'sp-reset');
   let confirming = false;
-  const reset = textButton('Reset settings', () => {
+  const reset = textButton('Reset', () => {
     if (!confirming) { confirming = true; paintReset(); cancel.focus(); return; }
     confirming = false;
     paintReset();
@@ -1365,7 +1349,7 @@ export function startSettingsPage(root: HTMLElement): void {
   }, { icon: 'reset' });
   const cancel = textButton('Cancel', () => { confirming = false; paintReset(); reset.focus(); });
   const paintReset = (): void => {
-    reset.lastChild!.textContent = confirming ? 'Reset all settings' : 'Reset settings';
+    reset.lastChild!.textContent = confirming ? 'Confirm' : 'Reset';
     reset.classList.toggle('is-danger', confirming);
     cancel.hidden = !confirming;
   };
@@ -1373,33 +1357,17 @@ export function startSettingsPage(root: HTMLElement): void {
   paintReset();
   row(aboutCard, 'reset', resetBox);
   const defaultBrowserCard = card('about');
-  const defaultBrowserButton = textButton('Make Bowser the default browser', () => cmd({ a: 'setdefault' }));
+  const defaultBrowserButton = textButton('Make default', () => cmd({ a: 'setdefault' }), { aria: 'Make Bowser the default browser' });
   const defaultBrowserRow = row(defaultBrowserCard, 'defaultBrowser', defaultBrowserButton);
   defaultBrowserRow.root.classList.add('is-tight');
-  const defaultBrowserStatus = defaultBrowserRow.desc!;
-
-  // A group whose every row has no effect yet says so once, under its heading, not on each row.
-  for (const group of groups) {
-    const inGroup = [...rows.values()].filter((node) => node.card === group.card);
-    if (inGroup.length < 2 || !inGroup.every((node) => node.spec.notYet) || !group.heading) continue;
-    const note = el('p', 'sp-flag is-later sp-group-note');
-    note.id = `${group.heading.id}-note`;
-    const text = el('span');
-    text.textContent = NOT_YET_GROUP_NOTE;
-    note.append(icon('clock', { size: 12, fine: true }), text);
-    group.heading.after(note);
-    group.card.setAttribute('aria-describedby', note.id);
-    for (const node of inGroup) {
-      node.flag?.remove();
-      if (node.desc) node.target?.setAttribute('aria-describedby', node.desc.id); else node.target?.removeAttribute('aria-describedby');
-    }
-  }
+  const defaultBrowserStatus = el('span', 'sp-value');
+  defaultBrowserRow.label.after(defaultBrowserStatus);
 
   // ---- --- settings slim --- arranging the rows: core, "More options", sub-pages, "Not active yet" ----
 
   interface Disclosure {
     readonly key: string; readonly root: HTMLElement; readonly button: HTMLButtonElement; readonly body: HTMLElement;
-    readonly desc: HTMLElement; readonly groups: Map<string, HTMLElement>; count: number;
+    readonly groups: Map<string, HTMLElement>; count: number;
   }
   /** Where each row ended up: its area, the part it shows in (null inside a disclosure), its disclosure, or its sub-page. */
   interface Place { readonly area: string; readonly part: SettingsSection | null; readonly disclosure: Disclosure | null; readonly page: boolean }
@@ -1428,8 +1396,7 @@ export function startSettingsPage(root: HTMLElement): void {
     const text = el('span', 'sp-text');
     const name = el('span', 'sp-label');
     name.textContent = label;
-    const desc = el('span', 'sp-desc');
-    text.append(name, desc);
+    text.append(name);
     button.append(text, icon('chevron-down', { size: 16, className: 'sp-more-chev' }));
     const head = el('div', 'sp-card sp-more-card');
     head.append(button);
@@ -1439,7 +1406,7 @@ export function startSettingsPage(root: HTMLElement): void {
     body.setAttribute('aria-labelledby', button.id);
     button.setAttribute('aria-controls', body.id);
     root.append(head, body);
-    const d: Disclosure = { key, root, button, body, desc, groups: new Map(), count: 0 };
+    const d: Disclosure = { key, root, button, body, groups: new Map(), count: 0 };
     button.addEventListener('click', () => {
       const open = button.getAttribute('aria-expanded') !== 'true';
       if (open) openState.add(key); else openState.delete(key);
@@ -1526,8 +1493,9 @@ export function startSettingsPage(root: HTMLElement): void {
       desc.textContent = spec.description;
       text.append(desc);
     }
-    const button = textButton(PAGE_ROWS[id]!.button, () => showPage(id));
-    button.setAttribute('aria-describedby', [label.id, desc?.id].filter(Boolean).join(' '));
+    const pageSpec = PAGE_ROWS[id]!;
+    const button = textButton(pageSpec.button, () => showPage(id), { aria: pageSpec.aria });
+    if (!pageSpec.aria) button.setAttribute('aria-describedby', [label.id, desc?.id].filter(Boolean).join(' '));
     const wrap = el('div', 'sp-ctl');
     wrap.append(button);
     node.append(text, wrap);
@@ -1547,9 +1515,12 @@ export function startSettingsPage(root: HTMLElement): void {
     heading.tabIndex = -1;
     heading.textContent = node.spec.label;
     sub.setAttribute('aria-labelledby', heading.id);
-    const lead = el('p', 'sp-lead');
-    lead.textContent = node.spec.description;
-    sub.append(back, heading, lead);
+    sub.append(back, heading);
+    if (node.spec.description !== '') {
+      const lead = el('p', 'sp-lead');
+      lead.textContent = node.spec.description;
+      sub.append(lead);
+    }
     // The editor's own title and lead would repeat the page's: they stay for the search marks, unseen.
     if (node.root.classList.contains('sp-row')) {
       node.root.classList.add('is-page');
@@ -1578,9 +1549,7 @@ export function startSettingsPage(root: HTMLElement): void {
     heading.tabIndex = -1;
     heading.textContent = LATER_TITLE;
     laterNode.setAttribute('aria-labelledby', heading.id);
-    const lead = el('p', 'sp-lead');
-    lead.textContent = LATER_LEAD;
-    laterNode.append(heading, lead);
+    laterNode.append(heading);
   }
   const laterDisclosure = disclosure('later', LATER_LABEL);
   laterNode.append(laterDisclosure.root);
@@ -1655,9 +1624,6 @@ export function startSettingsPage(root: HTMLElement): void {
       }
     }
     for (const d of disclosures) {
-      d.desc.textContent = d === laterDisclosure
-        ? ordered.filter((node) => places.get(node.spec.id)?.disclosure === d).map((node) => node.spec.label).join(', ')
-        : moreCountText(d.count);
       if (d.count === 0) d.root.remove();
     }
     // A note that belongs to a row follows it: "shortcuts are off" sits under the Keyboard shortcuts switch.
@@ -1675,8 +1641,6 @@ export function startSettingsPage(root: HTMLElement): void {
   simpleHeading.tabIndex = -1;
   simpleHeading.textContent = SIMPLE_TITLE;
   simpleNode.setAttribute('aria-labelledby', simpleHeading.id);
-  const simpleLead = el('p', 'sp-lead');
-  simpleLead.textContent = SIMPLE_LEAD;
   const simpleCard = el('div', 'sp-card');
   simpleCard.setAttribute('role', 'group');
   simpleCard.setAttribute('aria-label', 'Simple settings');
@@ -1692,33 +1656,30 @@ export function startSettingsPage(root: HTMLElement): void {
   const simpleExtensions = textButton('Manage', () => { prefer = 'all'; sectionHold = false; writeView('all'); go('extensions', true, true); });
   const showAll = textButton(SIMPLE_ALL_LABEL, () => chooseView('all'), { primary: true });
   showAll.classList.add('sp-show-all');
-  const simpleRow = (id: string, label: string, description: string, control: HTMLElement): HTMLElement => {
+  const simpleRow = (id: string, label: string, control: HTMLElement): HTMLElement => {
     const node = el('div', 'sp-row');
     node.dataset.simple = id;
     const text = el('div', 'sp-text');
     const labelNode = el('span', 'sp-label');
     labelNode.id = `sp-l-${id}`;
     labelNode.textContent = label;
-    const desc = el('span', 'sp-desc');
-    desc.id = `sp-d-${id}`;
-    desc.textContent = description;
-    text.append(labelNode, desc);
+    text.append(labelNode);
     if (!control.hasAttribute('aria-label') && !control.hasAttribute('aria-labelledby')) control.setAttribute('aria-labelledby', labelNode.id);
     const wrap = el('div', 'sp-ctl');
     wrap.append(control);
     node.append(text, wrap);
     return node;
   };
-  const themeSlot = simpleRow('simpleTheme', 'Theme', 'Light, dark, or the same as Windows.', simpleTheme.root);
-  const tabsSlot = simpleRow('simpleTabs', 'Tabs', 'Across the top, or down the side.', simpleTabs.root);
-  const extensionsSlot = simpleRow('simpleExtensions', 'Extensions', 'Turn add-ons on or off.', simpleExtensions);
+  const themeSlot = simpleRow('simpleTheme', 'Theme', simpleTheme.root);
+  const tabsSlot = simpleRow('simpleTabs', 'Tabs', simpleTabs.root);
+  const extensionsSlot = simpleRow('simpleExtensions', 'Extensions', simpleExtensions);
   const simpleExtras = new Map<string, HTMLElement>([['simpleTheme', themeSlot], ['simpleTabs', tabsSlot], ['simpleExtensions', extensionsSlot]]);
   const simpleOrder = ['searchDefault', 'startHomepage', 'startupMode', 'simpleTheme', 'themeAccent', 'simpleTabs', 'import', 'deleteData', 'simpleExtensions', 'defaultBrowser'];
   const simpleSlots: ReadonlyArray<{ readonly id: string; readonly moved: boolean; readonly el?: HTMLElement }> = simpleOrder.map((id) => {
     const extra = simpleExtras.get(id);
     return extra ? { id, moved: false, el: extra } : { id, moved: (SIMPLE_MOVED as readonly string[]).includes(id) };
   });
-  simpleNode.append(simpleHeading, simpleLead, simpleCard, showAll);
+  simpleNode.append(simpleHeading, simpleCard, showAll);
   column.append(simpleNode);
   const parks = new Map<string, HTMLElement>();
   const movedNode = (id: string): HTMLElement | null => id === 'deleteData' ? openers.get(id)?.root ?? null : rows.get(id)?.root ?? null;
@@ -1793,7 +1754,6 @@ export function startSettingsPage(root: HTMLElement): void {
     tabEdge.set(tabBarEdge(d.tabLayout));
     addressEdge.set(d.layout.addressBarPosition);
     panelEdge.set(d.sidePanelPosition);
-    paintPanelEdge(d);
     layout.set((TOP_TAB_STYLES as readonly string[]).includes(d.tabLayout) ? d.tabLayout : null);
     tabBarVisible.set(d.layout.tabBarVisible);
     addressBarVisible.set(d.layout.addressBarVisible);
@@ -1860,19 +1820,17 @@ export function startSettingsPage(root: HTMLElement): void {
     shiftRightClick.set(d.shiftRightClickContext);
     copyLink.set(d.ctrlShiftCCopyLink);
     blockYoutube.set(d.blockYoutubeVideoAds);
-    defaultBrowserStatus.textContent = s.defaultBrowser === 'yes' ? 'Bowser is your default browser.'
-      : s.defaultBrowser === 'no' ? 'Bowser is not your default browser.' : 'Bowser could not check whether it is the default browser.';
+    defaultBrowserStatus.textContent = s.defaultBrowser === 'yes' ? 'Default' : s.defaultBrowser === 'no' ? 'Not default' : 'Unknown';
     paintSites();
     tracking.set(d.trackingPrevention);
     history.set(s.historyEnabled);
     history.disable(s.guest);
-    historyRow.desc!.textContent = s.guest ? 'Guest windows never save history.' : ROWS.find((r) => r.id === 'history')!.description;
     efficiency.set(d.efficiencyMode);
     activeBadge.hidden = !s.efficiencyActive;
     sleep.set(d.sleepEnabled);
     paintSleepSelect(d.sleepAfterSecs);
     sleepSelect?.button.toggleAttribute('disabled', !d.sleepEnabled);
-    downloadPath.textContent = s.downloadDir !== '' ? s.downloadDir : 'Your Downloads folder';
+    downloadPath.textContent = s.downloadDir !== '' ? s.downloadDir : 'Downloads';
     downloadAsk.set(s.downloadAsk);
     translateOffer.set(s.translateOffer);
     translateAuto.set(s.translateAuto);
@@ -1888,15 +1846,15 @@ export function startSettingsPage(root: HTMLElement): void {
     statusDetail.textContent = view.detail;
     updateAction.hidden = view.action === null;
     updateAction.disabled = view.busy;
-    updateAction.lastChild!.textContent = view.action === 'restart' ? 'Restart to update' : 'Check for updates';
+    updateAction.lastChild!.textContent = view.action === 'restart' ? 'Restart' : 'Check';
+    updateAction.setAttribute('aria-label', view.action === 'restart' ? 'Restart to update' : 'Check for updates');
     updateAction.classList.toggle('is-primary', view.action === 'restart');
     version.textContent = `Bowser ${s.version}`;
     avatar.textContent = s.avatar;
     profileRow.label.textContent = s.guest ? 'Guest' : s.profile === '' ? 'Default' : s.profile;
-    profileRow.desc!.textContent = s.guest ? 'A guest window keeps nothing after it closes. Changes here last until then.' : ROWS.find((r) => r.id === 'profile')!.description;
     manage.disabled = false;
     banner.hidden = s.readable;
-    banner.textContent = s.readable ? '' : 'settings.txt could not be read, so the defaults are shown and changes are not saved. Open the settings file to fix it.';
+    banner.textContent = s.readable ? '' : 'Settings file could not be read.';
     for (const control of [
       layout, grouping, tracking, efficiency, sleep,
       previewImages, previewMemory, mru, pinGroups, edgeDrop, vTabs, theme, showHome, centred, minimal, loadProgress, frameless, autoHideFullscreen,
@@ -2035,8 +1993,32 @@ export function startSettingsPage(root: HTMLElement): void {
     target.replaceChildren(...parts);
   };
   /** A card shows while any row in it shows (an emptied card, its rows moved elsewhere, never). */
+  const parentOf = (node: HTMLElement): HTMLElement | null => node.parentElement ?? (node as HTMLElement & { parent?: HTMLElement | null }).parent ?? null;
+  const ancestor = (node: HTMLElement, className: string): HTMLElement | null => {
+    let current = parentOf(node);
+    while (current) {
+      if (current.classList.contains(className)) return current;
+      current = parentOf(current);
+    }
+    return null;
+  };
   const paintGroups = (): void => {
-    for (const group of groups) group.root.hidden = !group.card.querySelector('.sp-row:not([hidden])');
+    for (const group of groups) {
+      const visible = Array.from(group.card.children).filter((node) => {
+        const el = node as HTMLElement;
+        return el.classList.contains('sp-row') && !el.hidden;
+      });
+      group.root.hidden = visible.length === 0;
+      const heading = group.heading;
+      if (!heading) continue;
+      const section = ancestor(heading, 'sp-sec');
+      const areaTitle = Array.from(section?.children ?? []).find((child) => child.classList.contains('sp-h'))?.textContent ?? '';
+      const partLabel = ancestor(heading, 'sp-part')?.getAttribute('aria-label') ?? '';
+      const redundant = visible.length <= 1 || (areaTitle !== '' && heading.textContent === areaTitle) || (partLabel !== '' && heading.textContent === partLabel);
+      heading.hidden = redundant;
+      if (redundant) group.card.removeAttribute('aria-labelledby');
+      else if (heading.id) group.card.setAttribute('aria-labelledby', heading.id);
+    }
   };
   function filter(): void {
     unpinSection();
@@ -2188,7 +2170,7 @@ export function startSettingsPage(root: HTMLElement): void {
     if (message.t === 'snap' && message.p === 'address') { addressSections.receive(message); return; } // --- address bar, search and bookmarks ---
     if (message.t !== 'snap' || message.p !== 'settings') return;
     const parsed = parseSettingsSnapshot(message.d);
-    if (!parsed) { banner.hidden = false; banner.textContent = 'Settings could not be loaded. The response was invalid.'; return; }
+    if (!parsed) { banner.hidden = false; banner.textContent = 'Settings could not be loaded.'; return; }
     if (parsed.ack !== 'none') {
       // Bowser runs queued commands together and answers once: this snapshot is the saved state.
       pending = 0;

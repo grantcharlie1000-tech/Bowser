@@ -306,7 +306,7 @@ export function groupCommands(commands: readonly CommandInfo[], query: string): 
 
 /** A typed site for the prioritised list (the same rules as the blocker's list, see settings-page-logic normaliseSite). */
 export function siteError(list: readonly string[], site: string | null): string | null {
-  if (site === null) return 'Enter a site such as example.com.';
+  if (site === null) return 'Enter a site.';
   if (list.includes(site)) return `${site} is already on the list.`;
   if (list.length >= MAX_SITES) return `The list holds at most ${MAX_SITES} sites.`;
   return null;

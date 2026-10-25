@@ -43,10 +43,10 @@ test('the refresh choices of the Feeds panel match feeds::REFRESH_CHOICES', () =
   const feeds = read(join(root, 'src', 'feeds', 'mod.rs'));
   const rustChoices = /REFRESH_CHOICES: \[u32; \d+\] = \[([^\]]*)\]/.exec(feeds)[1].split(',').map((n) => Number(n.trim()));
   assert.deepEqual([...feedsLogic.REFRESH_CHOICES], rustChoices);
-  assert.equal(feedsLogic.refreshLabel(0), 'Never (only when I press Refresh)');
-  assert.equal(feedsLogic.refreshLabel(60), 'After 1 hour');
-  assert.equal(feedsLogic.refreshLabel(15), 'After 15 minutes');
-  assert.equal(feedsLogic.refreshLabel(720), 'After 12 hours');
+  assert.equal(feedsLogic.refreshLabel(0), 'Never');
+  assert.equal(feedsLogic.refreshLabel(60), '1 hour');
+  assert.equal(feedsLogic.refreshLabel(15), '15 min');
+  assert.equal(feedsLogic.refreshLabel(720), '12 hours');
   assert.equal(feedsLogic.feedAssignment('feeds_detect', false), 'feeds_detect=false');
   assert.equal(feedsLogic.feedAssignment('feeds_refresh_minutes', 30), 'feeds_refresh_minutes=30');
   for (const bad of [7, -1, 1.5, '30', null, true]) assert.equal(feedsLogic.feedAssignment('feeds_refresh_minutes', bad), null, String(bad));

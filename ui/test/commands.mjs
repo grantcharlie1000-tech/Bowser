@@ -212,7 +212,7 @@ test('the shortcut list filters on every word of name, category and shortcuts, a
 
 test('sites, answers and words', () => {
   assert.equal(logic.siteError(['a.example'], 'a.example'), 'a.example is already on the list.');
-  assert.equal(logic.siteError([], null), 'Enter a site such as example.com.');
+  assert.equal(logic.siteError([], null), 'Enter a site.');
   assert.equal(logic.siteError(['a.example'], 'b.example'), null);
   assert.equal(logic.siteError(Array.from({ length: 200 }, (_, i) => `s${i}.example`), 'new.example'), 'The list holds at most 200 sites.');
   assert.deepEqual(logic.ackToast({ ack: 'saved', error: '' }), { text: 'Saved', ok: true });

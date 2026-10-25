@@ -13,7 +13,7 @@ import { selectField, type SelectField } from './select';
 import {
   APPEARANCES, APPEARANCE_LABELS, DEFAULT_DELETE_KINDS, DELETE_KINDS, DELETE_RANGES, LEVELS, LEVEL_LABELS, LOGINS_BIT, PRIVATE_THEMES, PRIVATE_THEME_LABELS,
   RETENTIONS, RETENTION_LABELS, SITE_COOKIES, SITE_COOKIE_LABELS, SITE_COOKIE_N, SITE_LEVELS, SITE_LEVEL_LABELS, SITE_LEVEL_N, SOURCE_KINDS, SOURCE_KIND_LABELS,
-  blockedText, deleteSummary, kindsBits, levelDescription, listUrlProblem, parseProtectionSnapshot, protectionCommand, siteFromInput, sourceDetail,
+  blockedText, deleteSummary, kindsBits, listUrlProblem, parseProtectionSnapshot, protectionCommand, siteFromInput, sourceDetail,
   type Appearance, type DeleteKind, type DeleteRangeKey, type Level, type PrivateThemeKey, type ProtectionSnapshot, type Retention, type SiteCookies, type SiteLevel,
   type SourceKind, type SourceRow,
 } from './protection-logic';
@@ -181,34 +181,34 @@ export function mountProtection(options: ProtectionOptions): Protection {
   function paintSites(): void {
     withFocus(sites, () => {
       const data = snapshot;
-      const block = section('Sites with their own choices');
+      const block = section('Site rules');
       sites.replaceChildren(block.root);
       if (!data) return;
       const off = !data.readable;
       const addSite = (): void => {
         const site = siteFromInput(siteDraft);
-        if (site === null) { siteError = 'Enter a site such as example.com.'; paintSites(); return; }
+        if (site === null) { siteError = 'Enter a site.'; paintSites(); return; }
         siteError = '';
         siteDraft = '';
         command('site-level', { text: site, n: SITE_LEVEL_N[siteLevelDraft] });
         paintSites();
       };
       // Add a site: its name, the level it gets, Add.
-      const input = textField('Site to add', 'example.com', siteDraft, 'site-input', (value) => { siteDraft = value; siteError = ''; siteProblem?.remove(); siteProblem = null; }, addSite);
+      const input = textField('Site to add', '', siteDraft, 'site-input', (value) => { siteDraft = value; siteError = ''; siteProblem?.remove(); siteProblem = null; }, addSite);
       const levelSelect = selectControl<SiteLevel>('Level for the new site', ['none', 'trackers', 'ads'], SITE_LEVEL_LABELS, (value) => { siteLevelDraft = value; });
       levelSelect.set(siteLevelDraft);
       const add = focusKey(textButton('Add', addSite, { icon: 'plus' }), 'site-add');
       const adder = el('div', 'pg-pair pg-protect-add');
       adder.append(input, levelSelect.root, add);
       if (off) { input.disabled = true; add.disabled = true; levelSelect.disable(true); }
-      block.body.append(settingRow('Add a site', 'Choose how much is blocked on one site, whatever the level is everywhere else.', adder));
+      block.body.append(settingRow('Add a site', null, adder));
       siteProblem = null;
       if (siteError !== '') { siteProblem = errorLine(siteError); block.body.append(siteProblem); }
 
       if (data.current && !data.current.private) {
         const here = data.current;
         const fill = textButton(`Use ${here.host}`, () => { siteDraft = here.host; paintSites(); }, { subtle: true });
-        block.body.append(settingRow('The site you are on', `${here.host}: ${LEVEL_LABELS[here.level].toLowerCase()}, cookie notices ${here.cookies ? 'hidden' : 'shown'}`, fill));
+        block.body.append(settingRow('This site', `${here.host}: ${LEVEL_LABELS[here.level].toLowerCase()}, notices ${here.cookies ? 'hidden' : 'shown'}`, fill));
       }
 
       for (const row of data.sites) {
@@ -224,7 +224,7 @@ export function mountProtection(options: ProtectionOptions): Protection {
         line.querySelector('.pg-label')?.setAttribute('dir', 'auto');
         block.body.append(line);
       }
-      if (data.sites.length === 0) block.body.append(settingRow('No saved choices yet', 'Sites you add here, switch with Ctrl+Shift+B or change in the shield appear in this list.'));
+      if (data.sites.length === 0) block.body.append(settingRow('None', null));
       if (data.allow.length > 0) block.body.append(settingRow('Skipped in settings', data.allow.join(', ')));
     });
   }
@@ -268,30 +268,30 @@ export function mountProtection(options: ProtectionOptions): Protection {
         listUrl = '';
         paintLists();
       };
-      const input = textField('Address of a filter list', 'https://example.org/list.txt', listUrl, 'list-input', (value) => { listUrl = value; listError = ''; listProblem?.remove(); listProblem = null; }, addFromUrl);
+      const input = textField('Address of a filter list', '', listUrl, 'list-input', (value) => { listUrl = value; listError = ''; listProblem?.remove(); listProblem = null; }, addFromUrl);
       const kindPick = selectControl<SourceKind>('What the list blocks', SOURCE_KINDS, SOURCE_KIND_LABELS, (value) => { listKind = value; });
       kindPick.set(listKind);
       const addUrl = focusKey(textButton(data.busy ? 'Fetching…' : 'Add', addFromUrl, { icon: 'plus' }), 'list-add');
       const adder = el('div', 'pg-pair pg-protect-add');
       adder.append(input, kindPick.root, addUrl);
       if (off || data.busy) { input.disabled = true; addUrl.disabled = true; kindPick.disable(true); }
-      block.body.append(settingRow('Add a list from an address', 'Fetched once, now, over https. Bowser never checks it again unless you press Update.', adder));
+      block.body.append(settingRow('Add from address', null, adder));
       listProblem = null;
       if (listError !== '') { listProblem = errorLine(listError); block.body.append(listProblem); }
       const fileKind = selectControl<SourceKind>('What the file blocks', SOURCE_KINDS, SOURCE_KIND_LABELS, (value) => { listKind = value; });
       fileKind.set(listKind);
-      const addFile = focusKey(textButton('Choose file…', () => command('src-add-file', { text: listKind }), { icon: 'folder' }), 'list-file');
+      const addFile = focusKey(textButton('File', () => command('src-add-file', { text: listKind }), { icon: 'folder', aria: 'Choose file' }), 'list-file');
       const fileControls = el('div', 'pg-pair');
       fileControls.append(fileKind.root, addFile);
       if (off || data.busy) { fileKind.disable(true); addFile.disabled = true; }
-      block.body.append(settingRow('Add a list from a file', 'A text file on this computer in the usual filter list format. Bowser keeps a copy.', fileControls));
+      block.body.append(settingRow('Add from file', null, fileControls));
     });
   }
 
   function paintDelete(): void {
     withFocus(deleteData, () => {
       const data = snapshot;
-      const block = section('Delete browsing data');
+      const block = section('Clear data');
       deleteData.replaceChildren(block.root);
       if (!data) return;
       const withLogins = chosen.has('logins') && !data.guest;
@@ -309,14 +309,14 @@ export function mountProtection(options: ProtectionOptions): Protection {
         toggle.set(chosen.has(kind.key) && !gone);
         focusKey(toggle.root, `kind:${kind.key}`);
         if (gone) toggle.disable(true);
-        block.body.append(settingRow(kind.label, gone ? 'Guest windows keep no saved sign-ins.' : kind.hint, toggle.root));
+        block.body.append(settingRow(kind.label, null, toggle.root));
       }
       if (withLogins) {
         // The one irreversible kind needs its own yes, beside the Delete button's.
         const sure = switchControl('I understand that deleting saved sign-ins cannot be undone', (on) => { understood = on; armed = false; paintDelete(); });
         sure.set(understood);
         focusKey(sure.root, 'logins-sure');
-        block.body.append(settingRow('Confirm deleting saved sign-ins', 'Every login Bowser has saved for you is deleted for good, whatever period is chosen.', sure.root));
+        block.body.append(settingRow('Confirm', 'Cannot be undone', sure.root));
       }
       const effective = DELETE_KINDS.filter((kind) => chosen.has(kind.key) && !(data.guest && kind.key === 'logins')).map((kind) => kind.key);
       const ready = effective.length > 0 && (!withLogins || understood);
@@ -335,24 +335,24 @@ export function mountProtection(options: ProtectionOptions): Protection {
       cancel.hidden = !armed;
       const actions = el('div', 'pg-pair');
       actions.append(cancel, run);
-      block.body.append(settingRow(summary, armed ? 'This cannot be undone.' : 'Nothing is deleted until you confirm.', actions));
+      block.body.append(settingRow('Delete', armed ? 'Cannot be undone' : null, actions));
     });
   }
 
   const sectionsFor = (): HTMLElement[] => {
     const blocking = section('Blocking');
     blocking.body.append(
-      settingRow('Blocking level', snapshot ? levelDescription(snapshot.level, snapshot.cookieNotices) : null, level.root),
-      settingRow('Hide cookie notices', 'Hides cookie-consent banners, with or without blocking. A site can switch it off.', cookieNotices.root),
+      settingRow('Blocking', null, level.root),
+      settingRow('Cookie notices', null, cookieNotices.root),
     );
     if (snapshot) blocking.body.append(settingRow('Blocked', null, blockedText(snapshot.blocked.page, snapshot.blocked.session)));
     const history = section('History');
-    history.body.append(settingRow('Keep history for', 'Older visits are deleted from the history list.', retention.root));
-    const appearance = section('Website appearance');
+    history.body.append(settingRow('History', null, retention.root));
+    const appearance = section('Websites');
     appearance.body.append(
-      settingRow('Websites look', 'The colour scheme sites are asked to use.', websiteAppearance.root),
-      settingRow('Force dark theme on all websites', 'Darkens pages that have no dark theme of their own.', forceDark.root),
-      settingRow('Private tab theme', 'How Bowser’s own windows look while a private tab is shown.', privateTheme.root),
+      settingRow('Appearance', null, websiteAppearance.root),
+      settingRow('Force dark', null, forceDark.root),
+      settingRow('Private', null, privateTheme.root),
     );
     return [blocking.root, sites, lists, history.root, deleteData, appearance.root];
   };

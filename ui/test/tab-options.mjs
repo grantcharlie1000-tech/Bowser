@@ -38,7 +38,7 @@ test('every option the page lists is one Rust stores, and the other way round', 
   assert.equal(new Set(options.TAB_OPTION_KEYS).size, options.TAB_OPTION_KEYS.length, 'no key twice');
   for (const spec of options.TAB_OPTIONS) {
     assert.ok(options.TAB_CARDS.includes(spec.card), spec.key);
-    assert.ok(spec.label !== '' && spec.description !== '' && spec.keywords !== '', spec.key);
+    assert.ok(spec.label !== '' && spec.description === '' && spec.keywords !== '', spec.key);
     assert.doesNotMatch(spec.description, /restart/i, `${spec.key}: every Tabs option applies at once`);
   }
   for (const card of options.TAB_CARDS) assert.ok(options.cardSpecs(card).length > 0, `${card} has rows`);
@@ -338,6 +338,6 @@ test('the panel sends only commands Rust accepts', () => {
 test('"Prioritise the active tab" reads as what Rust does: other tabs are muted, not paused', () => {
   const spec = options.TAB_OPTIONS.find((s) => s.key === 'tabs_mute_mode');
   // app/tab_features.rs mutes the other tabs' audio while the active tab plays; their pages keep running.
-  assert.match(spec.description, /other tabs are muted while the active tab is playing/);
-  assert.doesNotMatch(spec.description, /wait/);
+  assert.match(spec.keywords, /other tabs are muted while the active tab is playing/);
+  assert.doesNotMatch(spec.keywords, /\bwait\b/);
 });

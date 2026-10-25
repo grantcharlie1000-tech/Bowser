@@ -11,8 +11,8 @@ import { el, icon } from './dom';
 import { selectField, type SelectField } from './panels/select';
 import { iconButton, textButton } from './panels/kit';
 import {
-  CHEAT_SHEET_COMMAND, captureModeCommand, MAX_CHAIN_NAME, MAX_DELAY_MS, MAX_RESULTS, MAX_STEPS, MIN_RESULTS, RESTORE_ALL_COMMAND, RESULT_TYPES, RESULT_TYPE_HINTS, RESULT_TYPE_LABELS,
-  SHORTCUTS_OFF_NOTE, TYPES_RESET_COMMAND, ackToast, assignCommand, captureChord, chainCloneCommand, chainDeleteCommand, chainSaveCommand, chainTestCommand, clearCommand,
+  CHEAT_SHEET_COMMAND, captureModeCommand, MAX_CHAIN_NAME, MAX_DELAY_MS, MAX_RESULTS, MAX_STEPS, MIN_RESULTS, RESTORE_ALL_COMMAND, RESULT_TYPES, RESULT_TYPE_LABELS,
+  TYPES_RESET_COMMAND, ackToast, assignCommand, captureChord, chainCloneCommand, chainDeleteCommand, chainSaveCommand, chainTestCommand, clearCommand,
   conflictText, draftError, flagCommand, groupCommands, moveItem, parseCommandsSnapshot, parseDelay, priorityCommand, removeChordCommand, restoreCommand, resultsMaxCommand,
   siteAddCommand, siteError, siteRemoveCommand, toggleType, typesCommand,
   type ChainDraft, type ChainInfo, type CommandInfo, type CommandsSnapshot, type FlagName, type ResultTypeKey,
@@ -139,12 +139,6 @@ export function mountCommandsSections(options: CommandsSectionsOptions): Command
   addFlag('kbSingleKey', 'single_key_shortcuts', (s) => s.singleKey);
   addFlag('kbAltMenu', 'alt_opens_menu', (s) => s.altMenu);
   addFlag('kbFocusCycling', 'focus_cycling', (s) => s.focusCycling);
-  const offNote = el('p', 'sp-flag sp-cmd-note');
-  const offNoteText = el('span');
-  offNoteText.textContent = SHORTCUTS_OFF_NOTE;
-  offNote.append(icon('info', { size: 12, fine: true }), offNoteText);
-  offNote.hidden = true;
-  optionsGroup.root.append(offNote);
 
   // Sites that prioritise their own shortcuts.
   const sitesGroup = group('Websites');
@@ -153,7 +147,7 @@ export function mountCommandsSections(options: CommandsSectionsOptions): Command
   const siteForm = el('div', 'sp-allow-add');
   const siteInput = el('input', 'bw-input sp-allow-input');
   siteInput.type = 'text';
-  siteInput.placeholder = 'example.com';
+  siteInput.placeholder = '';
   siteInput.autocomplete = 'off';
   siteInput.spellcheck = false;
   siteInput.maxLength = 253;
@@ -207,23 +201,20 @@ export function mountCommandsSections(options: CommandsSectionsOptions): Command
   sheetButton.setAttribute('aria-label', 'Show the keyboard cheat sheet');
   let confirmingRestore = false;
   const cancelRestore = textButton('Cancel', () => { confirmingRestore = false; paintRestore(); });
-  const restoreAll = textButton('Restore all', () => {
+  const restoreAll = textButton('Restore', () => {
     if (!confirmingRestore) { confirmingRestore = true; paintRestore(); cancelRestore.focus(); return; }
     confirmingRestore = false;
     paintRestore();
     send(RESTORE_ALL_COMMAND);
   }, { icon: 'reset' });
   const paintRestore = (): void => {
-    restoreAll.lastChild!.textContent = confirmingRestore ? 'Restore every shortcut' : 'Restore all';
+    restoreAll.lastChild!.textContent = confirmingRestore ? 'Confirm' : 'Restore';
     restoreAll.classList.toggle('is-danger', confirmingRestore);
     cancelRestore.hidden = !confirmingRestore;
   };
   editorTools.append(sheetButton, cancelRestore, restoreAll);
   paintRestore();
   editorHead.append(editorHeading, editorTools);
-  const editorNote = el('p', 'sp-desc sp-kb-lead');
-  editorNote.id = 'sp-kb-d';
-  editorNote.textContent = editorSpec.description;
   const filter = el('input', 'bw-input sp-kb-filter');
   filter.type = 'search';
   filter.placeholder = 'Filter shortcuts';
@@ -232,7 +223,7 @@ export function mountCommandsSections(options: CommandsSectionsOptions): Command
   filter.maxLength = 64;
   filter.setAttribute('aria-label', 'Filter shortcuts');
   const editorList = el('div', 'sp-kb-list');
-  editor.append(editorHead, editorNote, filter, editorList);
+  editor.append(editorHead, filter, editorList);
 
   /** The command waiting for a key press, and a chord waiting for the user to say "reassign". */
   let capturing: string | null = null;
@@ -410,9 +401,7 @@ export function mountCommandsSections(options: CommandsSectionsOptions): Command
       const text = el('span', 'sp-qc-type-text');
       const name = el('span', 'sp-label');
       name.textContent = RESULT_TYPE_LABELS[type];
-      const hint = el('span', 'sp-desc');
-      hint.textContent = RESULT_TYPE_HINTS[type];
-      text.append(name, hint);
+      text.append(name);
       const up = iconButton('chevron-up', `Move ${RESULT_TYPE_LABELS[type]} up`, () => { send(typesCommand(moveItem(shown, at, at - 1))); }, 'sp-qc-move');
       const down = iconButton('chevron-down', `Move ${RESULT_TYPE_LABELS[type]} down`, () => { send(typesCommand(moveItem(shown, at, at + 1))); }, 'sp-qc-move');
       up.disabled = !on || at === 0;
@@ -457,8 +446,6 @@ export function mountCommandsSections(options: CommandsSectionsOptions): Command
   chainsHeading.textContent = chainsSpec.label;
   const newChain = textButton('New chain', () => { openEditor({ id: 0, name: '', steps: [] }); }, { icon: 'plus' });
   chainsHead.append(chainsHeading, newChain);
-  const chainsNote = el('p', 'sp-desc sp-kb-lead');
-  chainsNote.textContent = chainsSpec.description;
   const chainsCard = el('div', 'sp-card sp-chains-card');
   chainsCard.setAttribute('role', 'group');
   chainsCard.setAttribute('aria-labelledby', chainsHeading.id);
@@ -466,7 +453,7 @@ export function mountCommandsSections(options: CommandsSectionsOptions): Command
   editorCard.hidden = true;
   editorCard.setAttribute('role', 'group');
   editorCard.setAttribute('aria-label', 'Edit chain');
-  chainsBlock.append(chainsHead, chainsNote, chainsCard, editorCard);
+  chainsBlock.append(chainsHead, chainsCard, editorCard);
   rows.push({ spec: chainsSpec, root: chainsBlock, label: chainsHeading, desc: null, card: chainsBlock });
 
   let draft: ChainDraft | null = null;
@@ -554,7 +541,7 @@ export function mountCommandsSections(options: CommandsSectionsOptions): Command
     });
     if (current.steps.length === 0) {
       const none = el('p', 'sp-desc sp-chain-none');
-      none.textContent = 'No commands yet. Add the first one below.';
+      none.textContent = 'None';
       steps.append(none);
     }
     const adder = selectField<string>({
@@ -570,10 +557,8 @@ export function mountCommandsSections(options: CommandsSectionsOptions): Command
       },
     });
     commandSelects.push(adder);
-    const delayNote = el('p', 'sp-desc sp-chain-lead');
-    delayNote.textContent = 'Each delay is how long to wait before that command runs. A chain runs its commands one after another.';
     const stepsRow = el('div', 'sp-chain-line is-stack');
-    stepsRow.append(delayNote, steps, adder.root);
+    stepsRow.append(steps, adder.root);
 
     const error = el('p', 'sp-field-error sp-chain-error');
     error.setAttribute('role', 'alert');
@@ -607,10 +592,8 @@ export function mountCommandsSections(options: CommandsSectionsOptions): Command
       const empty = el('div', 'sp-chain-line sp-chains-empty');
       const text = el('div', 'sp-text');
       const label = el('span', 'sp-label');
-      label.textContent = 'No chains yet';
-      const desc = el('span', 'sp-desc');
-      desc.textContent = 'A chain runs several commands one after another. Make one, then run it from Quick commands or give it a shortcut.';
-      text.append(label, desc);
+      label.textContent = 'None';
+      text.append(label);
       empty.append(text);
       chainsCard.replaceChildren(empty);
       return;
@@ -649,7 +632,6 @@ export function mountCommandsSections(options: CommandsSectionsOptions): Command
   // ======================= applying a snapshot =======================
   const apply = (s: CommandsSnapshot): void => {
     for (const entry of flags) entry.control.set(entry.read(s));
-    offNote.hidden = s.shortcutsEnabled;
     paintSites(s.sites);
     paintTypes(s);
     maxInput.value = String(s.paletteMax);

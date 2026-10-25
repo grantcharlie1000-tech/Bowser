@@ -6,7 +6,7 @@ import { el } from './dom';
 import { textButton } from './panels/kit';
 import { stepValue } from './window-logic';
 import {
-  COLOURINGS, COLOUR_KEYS, CONTRASTS, LOOKS, MAX_SATURATION, MIN_SATURATION, SCHEDULES, TIME_KEYS, lookApplies, percentText, scheduleNote, timesApply,
+  COLOURINGS, COLOUR_KEYS, CONTRASTS, LOOKS, MAX_SATURATION, MIN_SATURATION, SCHEDULES, TIME_KEYS, lookApplies, percentText, timesApply,
   type ColourKey, type ThemeOptionValue, type ThemeOptionValues, type TimeKey,
 } from './theme-options-logic';
 
@@ -17,7 +17,7 @@ export interface ThemeRowsHost {
   readonly card: HTMLElement;
   row(into: HTMLElement, id: string, control?: HTMLElement, options?: { stack?: boolean }): { readonly root: HTMLElement; readonly desc: HTMLElement | null };
   switchControl(onChange: (on: boolean) => void): Ctl<boolean>;
-  segmentedControl<T extends string>(label: string, options: ReadonlyArray<readonly [T, string]>, onSelect: (value: T) => void): Ctl<T | null>;
+  segmentedControl<T extends string>(label: string, options: ReadonlyArray<readonly [T, string] | readonly [T, string, string]>, onSelect: (value: T) => void): Ctl<T | null>;
   /** Sends one option change (`themeopt`). */
   send(key: string, value: ThemeOptionValue): void;
   /** Sends the theme file's commands. */
@@ -30,9 +30,7 @@ export function mountThemeRows(host: ThemeRowsHost): { apply(values: ThemeOption
 
   // Theme schedule: the one core row. A line under its description says what it means now.
   const schedule = host.segmentedControl<string>('Theme schedule', SCHEDULES, (value) => host.send('theme_schedule', value));
-  const scheduleRow = host.row(host.card, 'themeSchedule', schedule.root);
-  const scheduleNoteText = el('span', 'sp-desc sp-schedule-note');
-  scheduleRow.desc?.after(scheduleNoteText);
+  host.row(host.card, 'themeSchedule', schedule.root);
 
   const look = host.segmentedControl<string>('Look without a schedule', LOOKS, (value) => host.send('theme_look', value));
   host.row(host.card, 'themeLook', look.root);
@@ -125,7 +123,7 @@ export function mountThemeRows(host: ThemeRowsHost): { apply(values: ThemeOption
   const exportButton = textButton('Export…', () => host.action('themeexport'), { icon: 'save' });
   const importButton = textButton('Import…', () => host.action('themeimport'), { icon: 'download' });
   let confirming = false;
-  const resetButton = textButton('Reset theme', () => {
+  const resetButton = textButton('Reset', () => {
     if (!confirming) { confirming = true; paintReset(); cancelButton.focus(); return; }
     confirming = false;
     paintReset();
@@ -133,7 +131,7 @@ export function mountThemeRows(host: ThemeRowsHost): { apply(values: ThemeOption
   }, { icon: 'reset' });
   const cancelButton = textButton('Cancel', () => { confirming = false; paintReset(); resetButton.focus(); });
   const paintReset = (): void => {
-    resetButton.lastChild!.textContent = confirming ? 'Reset all theme settings' : 'Reset theme';
+    resetButton.lastChild!.textContent = confirming ? 'Confirm' : 'Reset';
     resetButton.classList.toggle('is-danger', confirming);
     cancelButton.hidden = !confirming;
   };
@@ -148,7 +146,6 @@ export function mountThemeRows(host: ThemeRowsHost): { apply(values: ThemeOption
       const disabled = unreadable;
       schedule.set(String(values.theme_schedule));
       schedule.disable(disabled);
-      scheduleNoteText.textContent = scheduleNote(values);
       look.set(String(values.theme_look));
       look.disable(disabled || !lookApplies(values));
       for (const [key, input] of timeInputs) {

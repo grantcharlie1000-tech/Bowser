@@ -9,10 +9,10 @@ export const REFRESH_CHOICES = [0, 15, 30, 60, 180, 720] as const;
 export type RefreshChoice = typeof REFRESH_CHOICES[number];
 
 export function refreshLabel(minutes: number): string {
-  if (minutes === 0) return 'Never (only when I press Refresh)';
-  if (minutes < 60) return `After ${minutes} minutes`;
+  if (minutes === 0) return 'Never';
+  if (minutes < 60) return `${minutes} min`;
   const hours = minutes / 60;
-  return `After ${hours} ${hours === 1 ? 'hour' : 'hours'}`;
+  return hours === 1 ? '1 hour' : `${hours} hours`;
 }
 
 export function isRefreshChoice(value: unknown): value is RefreshChoice {
@@ -27,8 +27,8 @@ export function feedAssignment(key: 'feeds_detect' | 'feeds_refresh_minutes', va
 
 /** The three rows the page shows for feeds, in the Address bar area. */
 export const FEED_ROWS: readonly RowSpec[] = [
-  { id: 'feedsOpen', section: 'address', label: 'Feeds', description: 'Subscribe to feeds, read them and play podcast episodes. Bowser fetches only the feeds you subscribe to, when you open Feeds or press Refresh, and sends nothing to anyone else.', keywords: 'feeds rss atom podcast reader subscribe news youtube opml' },
-  { id: 'feedsDetect', section: 'address', label: 'Show a feed button when a page offers one', description: 'A button appears in the address field to preview the page’s feed and subscribe. Bowser only reads the page’s own feed links; nothing is fetched until you press the button.', keywords: 'feed button address bar rss atom detect subscribe icon' },
-  { id: 'feedsRefresh', section: 'address', label: 'Fetch feeds again when Feeds opens', description: 'Feeds that have not been fetched for longer than this are fetched when the Feeds panel opens. Never fetches only when you press Refresh. Bowser fetches nothing in the background.', keywords: 'feeds refresh interval update fetch minutes hour when opens' },
+  { id: 'feedsOpen', section: 'address', label: 'Feeds', description: '', keywords: 'feeds rss atom podcast reader subscribe news youtube opml Feeds Subscribe to feeds, read them and play podcast episodes. Bowser fetches only the feeds you subscribe to, when you open Feeds or press Refresh, and sends nothing to anyone else.' },
+  { id: 'feedsDetect', section: 'address', label: 'Feed button', aria: 'Show a feed button when a page offers one', description: '', keywords: 'feed button address bar rss atom detect subscribe icon Show a feed button when a page offers one A button appears in the address field to preview the page’s feed and subscribe. Bowser only reads the page’s own feed links; nothing is fetched until you press the button.' },
+  { id: 'feedsRefresh', section: 'address', label: 'Refresh', aria: 'Fetch feeds again when Feeds opens', description: '', keywords: 'feeds refresh interval update fetch minutes hour when opens Fetch feeds again when Feeds opens Feeds that have not been fetched for longer than this are fetched when the Feeds panel opens. Never fetches only when you press Refresh. Bowser fetches nothing in the background.' },
 ];
 // --- end toolbars and feeds ---

@@ -9,6 +9,15 @@ export type TabLayout = typeof TAB_LAYOUTS[number];
 /** The layouts whose tab bar is a row at the top: the "style at the top" sub-choice. */
 export const TOP_TAB_STYLES = ['horizontal', 'tabs-top', 'single-row'] as const;
 export const TAB_LAYOUT_LABELS: Readonly<Record<TabLayout, string>> = {
+  horizontal: 'Address',
+  'tabs-top': 'Tabs',
+  'single-row': 'One row',
+  vertical: 'Left',
+  'vertical-right': 'Right',
+  bottom: 'Bottom',
+};
+/** Fuller names for the top-style tiles. Never shown. */
+export const TAB_LAYOUT_ARIA: Readonly<Record<TabLayout, string>> = {
   horizontal: 'Toolbar above tabs',
   'tabs-top': 'Tabs above toolbar',
   'single-row': 'Single row',
