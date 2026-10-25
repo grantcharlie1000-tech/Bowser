@@ -121,7 +121,7 @@ export interface ThemeRowSpec {
 }
 
 export const THEME_ROWS: readonly ThemeRowSpec[] = [
-  { id: 'themeSchedule', section: 'appearance', label: 'Theme schedule', description: 'Light or dark: follow Windows, stay on one look, or switch at set times of day.', keywords: 'dark light mode schedule automatic night day time follow windows operating system none manual' },
+  { id: 'themeSchedule', section: 'appearance', label: 'Light or dark', description: 'Follow Windows, keep one look, or switch at set times.', keywords: 'dark light mode schedule automatic night day time follow windows operating system none manual theme' },
   { id: 'themeLook', section: 'appearance', label: 'Look without a schedule', description: 'The look Bowser keeps while the schedule is set to one look.', keywords: 'light dark fixed always theme no schedule' },
   { id: 'themeTimes', section: 'appearance', label: 'Schedule times', description: 'The light look starts at the first time and the dark look at the second. Used while the schedule is by time.', keywords: 'time schedule sunrise sunset night day hours light dark manual' },
   { id: 'themeColours', section: 'appearance', label: 'Custom colours', description: 'The background, text and highlight of Bowser’s own window. Text and highlights are kept readable on the colours you choose.', keywords: 'background foreground text highlight selection colour color custom window theme' },

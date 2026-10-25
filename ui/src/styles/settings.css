@@ -1118,6 +1118,89 @@
   opacity: 0.5;
 }
 
+/* ---- Simple or All. The switch sits under the title; Simple is one short page. ---- */
+.sp-view {
+  width: 100%;
+}
+
+.sp-view > button {
+  flex: 1 1 0;
+  height: 32px;
+}
+
+.sp-simple .sp-row {
+  min-height: 64px;
+  padding-block: 14px;
+}
+
+.sp-simple .sp-label {
+  font-size: var(--bw-text-body);
+  font-weight: var(--bw-weight-strong);
+}
+
+.sp-simple .bw-segmented > button {
+  height: 36px;
+  padding-inline: var(--bw-space-4);
+}
+
+.sp-simple .sp-color {
+  width: 44px;
+  height: 40px;
+}
+
+.sp-simple :is(.bw-button, .bw-select-button) {
+  min-height: 36px;
+}
+
+.sp-show-all {
+  width: 100%;
+  justify-content: center;
+  min-height: 44px;
+  margin-top: var(--bw-space-4);
+}
+
+/* Simple is one page: the sidebar becomes a short header, and the section list stays hidden. */
+.sp.is-simple {
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
+.sp.is-simple .sp-side {
+  display: grid;
+  grid-template-columns: auto minmax(220px, 420px);
+  justify-content: start;
+  align-items: center;
+  gap: var(--bw-space-3) var(--bw-space-4);
+  padding: var(--bw-space-4) var(--bw-space-6) var(--bw-space-4);
+  border-bottom: 1px solid var(--sp-card-edge);
+}
+
+.sp.is-simple .sp-brand { grid-column: 1; grid-row: 1; }
+.sp.is-simple .sp-search { grid-column: 2; grid-row: 1; }
+
+.sp.is-simple .sp-view {
+  grid-column: 1 / -1;
+  grid-row: 2;
+  max-width: 420px;
+}
+
+.sp.is-simple > .sp-main { grid-row: 2; min-height: 0; }
+.sp.is-simple > .sp-sr,
+.sp.is-simple > .sp-toast { grid-row: 1; grid-column: 1; }
+
+/* The window title already says Settings. The heading stays for the section's accessible name. */
+.sp.is-simple .sp-simple > .sp-h {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 /* ---- Theme options: the schedule note, the two times, the three custom colours ---- */
 .sp-schedule-note {
   display: block;
@@ -1772,8 +1855,18 @@
   border-bottom: 1px solid var(--sp-card-edge);
 }
 
+.sp.is-narrow .sp-brand { grid-column: 1; grid-row: 1; }
+.sp.is-narrow .sp-search { grid-column: 2; grid-row: 1; }
+
+.sp.is-narrow .sp-view {
+  grid-column: 1 / -1;
+  grid-row: 2;
+  width: 100%;
+}
+
 .sp.is-narrow .sp-nav {
   grid-column: 1 / -1;
+  grid-row: 3;
   min-width: 0;
   margin-top: 0;
   overflow-x: auto;

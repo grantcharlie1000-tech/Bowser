@@ -58,7 +58,9 @@ test('Page tools is one short block: a few core rows and the rest behind More op
   assert.deepEqual(core.sort(), ['ptCaptureDir', 'ptCaptureName', 'ptSpatial', 'ptWheelZoom', 'ptZoomScope']);
   assert.ok(rows.filter((row) => page.rowTier(row) === 'more').length >= 8);
   assert.equal(rows.filter((row) => page.rowTier(row) === 'later').length, 0, 'no row is a dead toggle');
-  assert.ok(page.AREAS.some((area) => area.key === 'pagetools'));
+  const browsing = page.AREAS.find((area) => area.parts.includes('pagetools'));
+  assert.equal(browsing?.key, 'address');
+  assert.equal(browsing?.nav, 'Browsing');
 });
 
 // ---- headless Edge ----
