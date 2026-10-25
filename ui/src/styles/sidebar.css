@@ -13,6 +13,14 @@
   height: 100%;
   overflow: hidden;
   user-select: none;
+  /* The host is the island (Rust insets the slot). Fill, a 1px edge and an inset highlight stay
+     inside that window; an outer shadow would be clipped. */
+  border: 1px solid var(--bw-float-edge);
+  border-radius: var(--bw-r-float);
+  background: var(--bw-window-opaque);
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, var(--bw-text) 16%, transparent),
+    inset 0 0 0 1px color-mix(in srgb, var(--bw-text) 6%, transparent);
 }
 
 .sidebar [hidden] { display: none !important; }
@@ -186,15 +194,22 @@
 #app.sidebar .side-pinned .side-tab .side-pin,
 #app.sidebar .side-pinned .side-tab .side-close { display: none; }
 
-/* Grouped rows are indented under their header; a colour rail joins them. */
+/* Grouped rows sit in a tinted run under the header, joined by a colour rail.
+   The light-scheme wash below matches that wash's weight and still loses to #app .side-tab.picked. */
 .side-tab.in-group { margin-left: var(--bw-space-3); }
+.side-tab.in-group:not(.is-active) {
+  background-color: color-mix(in srgb, var(--gc, var(--bw-text)) 10%, transparent);
+}
+[data-scheme="light"] .side-tab.in-group:not(.is-active) {
+  background-color: color-mix(in srgb, var(--gc, var(--bw-text)) 12%, transparent);
+}
 .side-tab.in-group::before {
   position: absolute;
   top: -3px;
   bottom: -3px;
-  left: -5px;
-  width: 2px;
-  border-radius: 1px;
+  left: calc(-1 * var(--bw-space-2));
+  width: 3px;
+  border-radius: var(--bw-r-pill);
   background: var(--gc, var(--bw-hairline));
   opacity: 0.9;
   content: "";
@@ -317,42 +332,68 @@
   pointer-events: none;
 }
 
-/* ---- Group header: 6px colour dot, regular-weight name, 2px colour underline; no pill chrome ---- */
+/* ---- Group header: colour chip, name, count, chevron. Members fold away in the list. ---- */
 .side-group {
   position: relative;
   box-sizing: border-box;
   display: flex;
   align-items: center;
   flex: none;
-  gap: var(--bw-space-2);
+  gap: var(--bw-space-1_5);
   min-width: 0;
   height: var(--bw-side-row-h); /* the pill height; 22px at the compact density (thread T6) */
   margin-top: var(--bw-space-1);
   padding: 0 var(--bw-space-2);
-  border-radius: var(--bw-r-tab);
-  color: var(--bw-text-dim);
+  overflow: hidden;
+  border-radius: var(--bw-r-pill);
+  background: color-mix(in srgb, var(--gc, var(--bw-accent)) 16%, transparent);
+  color: var(--bw-text);
   font-size: var(--bw-text-chrome);
   line-height: 1;
   cursor: default;
   --gc: var(--bw-accent);
-  transition: background-color var(--bw-dur-fast) var(--bw-ease-fade);
+  transition:
+    background-color var(--bw-dur-fast) var(--bw-ease-fade),
+    width var(--bw-dur-group) var(--bw-ease-group),
+    height var(--bw-dur-group) var(--bw-ease-group);
 }
-.side-group::after {
-  position: absolute;
-  right: var(--bw-space-2);
-  bottom: 0;
-  left: var(--bw-space-2);
-  height: 2px;
-  border-radius: 1px;
-  background: var(--gc);
-  content: "";
-  pointer-events: none;
+.side-group:hover {
+  background: color-mix(in srgb, var(--gc, var(--bw-accent)) 26%, transparent);
+  color: var(--bw-text);
 }
-.side-group:hover { background: var(--bw-hover); color: var(--bw-text); }
-.side-group-dot { flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--gc); }
-.side-group-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; unicode-bidi: isolate; }
-.side-group-count { flex: none; font-variant-numeric: tabular-nums; }
-.side-group-chevron { flex: none; transition: transform var(--bw-dur-base) var(--bw-ease-move); }
+.side-group-dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--gc, var(--bw-accent));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--bw-text) 18%, transparent);
+}
+.side-group-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  unicode-bidi: isolate;
+  font-weight: var(--bw-weight-strong);
+  opacity: 1;
+  transition: max-width var(--bw-dur-group) var(--bw-ease-group), opacity var(--bw-dur-group) var(--bw-ease-group);
+}
+.side-group-count {
+  flex: none;
+  color: var(--bw-text-dim);
+  font-variant-numeric: tabular-nums;
+  opacity: 1;
+  transition: max-width var(--bw-dur-group) var(--bw-ease-group), opacity var(--bw-dur-group) var(--bw-ease-group);
+}
+.side-group-chevron {
+  flex: none;
+  color: var(--bw-text-dim);
+  opacity: 1;
+  transition: transform var(--bw-dur-group) var(--bw-ease-group), max-width var(--bw-dur-group) var(--bw-ease-group), opacity var(--bw-dur-group) var(--bw-ease-group);
+}
 .side-group[aria-expanded="false"] .side-group-chevron { transform: rotate(-90deg); }
 
 /* ---- Pinned divider and empty state ---- */
@@ -377,15 +418,15 @@
 .side-tab.bw-enter,
 .side-group.bw-enter { --bw-enter-scale: 1; }
 
-/* ---- Collapsed (48px, icons only): the host narrows the view; width alone switches the layout ---- */
-#app.sidebar.is-collapsed .side-top { align-items: center; padding: var(--bw-space-2) var(--bw-space-2) var(--bw-space-1); }
-#app.sidebar.is-collapsed .side-head { flex-direction: column; gap: var(--bw-space-1); width: 32px; }
+/* ---- Collapsed rail: the host is the 32px island. Width alone switches the layout. ---- */
+#app.sidebar.is-collapsed .side-top { align-items: center; padding: var(--bw-space-0_5) 1px var(--bw-space-0_5); }
+#app.sidebar.is-collapsed .side-head { flex-direction: column; gap: var(--bw-space-0_5); width: 28px; }
 #app.sidebar.is-collapsed .side-head .side-workspace,
 #app.sidebar.is-collapsed .side-collapse,
 #app.sidebar.is-collapsed .side-newtab {
   justify-content: center;
-  width: 32px;
-  height: 32px;
+  width: 28px;
+  height: 28px;
   padding: 0;
   border-radius: var(--bw-r-row);
 }
@@ -393,15 +434,16 @@
 #app.sidebar.is-collapsed .side-workspace-name,
 #app.sidebar.is-collapsed .side-workspace-chevron,
 #app.sidebar.is-collapsed .side-newtab-label { display: none; }
-#app.sidebar.is-collapsed .side-list { align-items: center; padding-inline: var(--bw-space-2); }
-#app.sidebar.is-collapsed .side-pinned { grid-template-columns: 32px; }
-#app.sidebar.is-collapsed .side-sep { width: 20px; margin-inline: 0; }
+#app.sidebar.is-collapsed .side-list { align-items: center; padding-inline: 1px; }
+#app.sidebar.is-collapsed .side-pinned { grid-template-columns: 28px; }
+#app.sidebar.is-collapsed .side-tab.pinned { width: 28px; height: 28px; }
+#app.sidebar.is-collapsed .side-sep { width: 16px; margin-inline: 0; }
 #app.sidebar.is-collapsed .side-tab:not(.pinned) {
   display: grid;
   grid-template-columns: 16px;
   place-content: center;
-  width: 32px;
-  height: 32px;
+  width: 28px;
+  height: 28px;
   margin-left: 0;
   padding: 0;
   border-radius: var(--bw-r-row);
@@ -410,28 +452,43 @@
 #app.sidebar.is-collapsed .side-tab:not(.pinned) .side-flags,
 #app.sidebar.is-collapsed .side-tab:not(.pinned) .side-pin,
 #app.sidebar.is-collapsed .side-tab:not(.pinned) .side-close { display: none; }
-#app.sidebar.is-collapsed .side-tab.in-group::before { left: -5px; }
+#app.sidebar.is-collapsed .side-tab.in-group::before { left: -4px; width: 2px; }
 #app.sidebar.is-collapsed .side-group {
   justify-content: center;
-  width: 32px;
-  height: 32px;
+  gap: 0;
+  width: 18px;
+  height: 18px;
   margin-top: var(--bw-space-1);
   padding: 0;
-  border-radius: var(--bw-r-row);
+  border-radius: var(--bw-r-pill);
+  background: var(--gc, var(--bw-accent));
 }
-#app.sidebar.is-collapsed .side-group::after { right: 6px; left: 6px; }
+#app.sidebar.is-collapsed .side-group:hover {
+  width: 26px;
+  height: 26px;
+  background: color-mix(in srgb, var(--gc, var(--bw-accent)) 82%, var(--bw-text));
+}
+#app.sidebar.is-collapsed .side-group-dot {
+  width: 8px;
+  height: 8px;
+  background: color-mix(in srgb, var(--bw-window-opaque) 88%, var(--gc, var(--bw-accent)));
+  box-shadow: none;
+}
 #app.sidebar.is-collapsed .side-group-name,
 #app.sidebar.is-collapsed .side-group-count,
-#app.sidebar.is-collapsed .side-group-chevron { display: none; }
+#app.sidebar.is-collapsed .side-group-chevron {
+  flex: 0 0 0;
+  width: 0;
+  max-width: 0;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  opacity: 0;
+}
 #app.sidebar.is-collapsed .side-empty-label { display: none; }
 
-/* Unpinned rail: the host grows over the page. Opaque once it is wider than the icon strip,
-   so the page does not show through the titles. The shadow is inset because the webview clips. */
-#app.sidebar.is-rail.is-open {
-  background: var(--bw-window-opaque);
-  box-shadow: inset -1px 0 0 var(--bw-border);
-}
-#app.sidebar.is-rail.is-right.is-open { box-shadow: inset 1px 0 0 var(--bw-border); }
+/* Unpinned rail: the same island, grown over the page. The fill above already hides the page. */
+#app.sidebar.is-rail.is-open { background: var(--bw-window-opaque); }
 #app.sidebar.is-rail > .side-newtab { margin: var(--bw-space-1) var(--bw-space-2) var(--bw-space-2); }
 #app.sidebar.is-rail.is-collapsed > .side-newtab { margin-inline: auto; }
 
@@ -469,7 +526,7 @@
 .side-tool-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .side-tools { display: flex; flex-direction: column; flex: none; }
 #app.sidebar.is-collapsed .side-closed,
-#app.sidebar.is-collapsed .side-tool { justify-content: center; width: 32px; height: 32px; padding: 0; border-radius: var(--bw-r-row); }
+#app.sidebar.is-collapsed .side-tool { justify-content: center; width: 28px; height: 28px; padding: 0; border-radius: var(--bw-r-row); }
 #app.sidebar.is-collapsed .side-closed-label,
 #app.sidebar.is-collapsed .side-tool-label { display: none; }
 

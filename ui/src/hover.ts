@@ -239,7 +239,7 @@ function buildIsland(msg: HoverIslandMsg, act: Act): IslandView {
   input.autocomplete = 'off';
   input.dir = 'auto';
   input.maxLength = MAX_ISLAND_NAME;
-  input.setAttribute('aria-label', 'Tab island name');
+  input.setAttribute('aria-label', 'Group name');
   input.value = msg.name;
   const clear = el('button', 'bw-island-clear');
   clear.type = 'button';
@@ -299,10 +299,13 @@ function fillIsland(view: IslandView, msg: HoverIslandMsg, act: Act, keepDraft: 
   while (view.field.nextSibling) view.field.nextSibling.remove();
 
   const swatches = el('div', 'bw-island-swatches');
+  swatches.setAttribute('role', 'group');
+  swatches.setAttribute('aria-label', 'Group colour');
+  const swatchName = ['Theme colour', 'Red', 'Orange', 'Yellow', 'Green', 'Teal', 'Blue', 'Violet', 'Pink'];
   msg.swatches.forEach((colour, index) => {
     const button = el('button', 'bw-island-swatch');
     button.type = 'button';
-    button.setAttribute('aria-label', index === 0 ? 'Theme colour' : `Colour ${index}`);
+    button.setAttribute('aria-label', swatchName[index] ?? `Colour ${index}`);
     button.setAttribute('aria-pressed', String(msg.slot === index));
     button.classList.toggle('is-selected', msg.slot === index);
     if (colour !== '') button.style.setProperty('--hover-swatch', colour);

@@ -257,13 +257,14 @@ pub fn tab_row_bounds(layout: &Layout) -> Option<RECT> {
 }
 
 // --- vertical sidebar (lane S) ---
-/// Client-relative HTML sidebar bounds, stopping at the native resize handle's left edge.
+/// Client-relative HTML sidebar bounds: the floating island, stopping before the native resize handle.
 pub fn sidebar_bounds(layout: &crate::vertical_tabs::SidebarLayout) -> Option<RECT> {
-    let bounds = layout.sidebar;
+    let island = layout.island();
     // --- layout (thread T6) --- the handle is on the inner edge: right of a left sidebar, left of a right one.
-    let (left, right) = (layout.content_left(), layout.content_right());
-    if right <= left || bounds.bottom <= bounds.top { return None; }
-    Some(RECT { left, top: bounds.top, right, bottom: bounds.bottom })
+    let left = island.left.max(layout.content_left());
+    let right = island.right.min(layout.content_right());
+    if right <= left || island.bottom <= island.top { return None; }
+    Some(RECT { left, top: island.top, right, bottom: island.bottom })
 }
 // --- end vertical sidebar ---
 
@@ -669,7 +670,7 @@ mod tests {
             assert_eq!(tab_row_bounds(&wide).unwrap().top, wide.tab_row.top);
             assert_eq!(rail_bounds(&wide).unwrap().top, wide.rail.top);
             let sidebar = crate::vertical_tabs::SidebarLayout::compute_in_frame(1600, 900, dpi, 260, true);
-            assert_eq!(sidebar_bounds(&sidebar).unwrap().top, Metrics::new(dpi).px(Metrics::TOP_MARGIN));
+            assert_eq!(sidebar_bounds(&sidebar).unwrap().top, sidebar.island().top);
         }
     }
 
@@ -816,10 +817,12 @@ mod tests {
         for dpi in [96, 120, 144, 192] {
             let layout = crate::vertical_tabs::SidebarLayout::compute_in_frame(1200, 700, dpi, 260, false);
             let bounds = sidebar_bounds(&layout).expect("usable sidebar area");
-            assert_eq!(bounds.left, layout.sidebar.left, "dpi={dpi}");
-            assert_eq!(bounds.top, layout.sidebar.top, "dpi={dpi}");
-            assert_eq!(bounds.right, layout.handle.left, "dpi={dpi}");
-            assert_eq!(bounds.bottom, layout.sidebar.bottom, "dpi={dpi}");
+            let island = layout.island();
+            assert_eq!(bounds.left, island.left, "dpi={dpi}");
+            assert_eq!(bounds.top, island.top, "dpi={dpi}");
+            assert_eq!(bounds.right, island.right.min(layout.content_right()), "dpi={dpi}");
+            assert_eq!(bounds.bottom, island.bottom, "dpi={dpi}");
+            assert!(bounds.right <= layout.handle.left, "the host stops before the resize handle, dpi={dpi}");
         }
         let mut narrow = crate::vertical_tabs::SidebarLayout::compute(20, 300, 96, 260, false);
         narrow.handle.left = narrow.sidebar.left;
@@ -858,7 +861,7 @@ mod tests {
             ] {
                 assert!(disjoint(a, b), "dpi={dpi}: {name_a} overlaps {name_b}: {a:?} vs {b:?}");
             }
-            assert_eq!(sidebar.top, crate::chrome::layout::Metrics::new(dpi).px(crate::chrome::layout::Metrics::TOP_MARGIN));
+            assert_eq!(sidebar.top, native_sidebar.island().top);
             assert!(sidebar.left >= rail.right, "dpi={dpi}");
         }
     }

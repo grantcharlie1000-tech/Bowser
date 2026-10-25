@@ -306,7 +306,7 @@
 .strip .tab.pinned .audio,
 .strip .tab.pinned .marker { display: none; }
 
-/* ---- Groups: a tinted island around the member tabs with a coloured header chip ---- */
+/* ---- Groups: a colour chip, then the member tabs on a tinted run with a coloured underline ---- */
 .strip .group {
   position: relative;
   isolation: isolate;
@@ -315,67 +315,101 @@
   gap: var(--bw-space-1);
   /* One flex item that weighs as much as its visible tabs (--gw, set from tabs.ts: 1 each, 1.5 for the
      active one). The basis is the island's own chrome (header chip --go, a gap per child, padding), so
-     what is left over is shared exactly like top-level tabs: a group never leaves the row short. */
+     what is left over is shared exactly like top-level tabs: a group never leaves the row short.
+     flex-grow and flex-basis ease as members fold into the chip. */
   flex: var(--gw, 1) 1 calc(var(--go, 0px) + var(--gn, 1) * var(--bw-space-1));
   min-width: min-content;
   height: var(--bw-tab-h);
   padding: 0;
+  transition: flex-grow var(--bw-dur-group) var(--bw-ease-group), flex-basis var(--bw-dur-group) var(--bw-ease-group);
 }
 
-/* The group's colour is a 2px underline running under the header and its tabs, not a pill around them. */
-.strip .group::before {
+/* Tinted run behind the chip and its tabs. Stays inside the group, so a narrow or scrolling row
+   does not paint into the next tab. */
+.strip .group::after {
   content: "";
   position: absolute;
-  left: 0;
-  right: 0;
-  bottom: -3px;
   z-index: -1;
-  height: 2px;
-  border-radius: 1px;
-  background: var(--gc, var(--bw-focus));
+  top: 2px;
+  right: 0;
+  bottom: 3px;
+  left: 0;
+  border-radius: var(--bw-r-pill);
+  background: color-mix(in srgb, var(--gc, var(--bw-focus)) 14%, transparent);
   pointer-events: none;
 }
 
-/* Group header: a 6px colour dot, the name and a small disclosure chevron. It is deliberately quieter
-   than a tab: no island fill, regular weight, a smaller footprint, so the selected tab (the strongest
-   fill and edge in the strip) is never confused with a collapsed group. */
+/* Coloured underline in the group colour, toward the page. */
+.strip .group::before {
+  content: "";
+  position: absolute;
+  left: var(--bw-space-2);
+  right: var(--bw-space-2);
+  bottom: 0;
+  z-index: 1;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--gc, var(--bw-focus));
+  opacity: 0.8;
+  pointer-events: none;
+}
+
+.strip .group:has(.tab.active)::before { height: 3px; opacity: 1; }
+.strip .group:hover::after { background: color-mix(in srgb, var(--gc, var(--bw-focus)) 20%, transparent); }
+
+/* Tabs along the bottom: the underline sits on the top edge, toward the page. */
+.strip.at-bottom .group::before { top: 0; bottom: auto; }
+.strip.at-bottom .group:has(.tab.active)::before { top: 0; }
+
+/* Group chip: colour dot, name and chevron. Collapsed, the name and chevron fold into the dot. */
 .strip .ball {
   display: flex;
   flex: none;
   align-items: center;
   gap: var(--bw-space-1);
   height: 20px;
-  max-width: 96px;
+  min-width: 18px;
+  max-width: 128px;
   margin: 0;
-  padding: 0 var(--bw-space-1) 0 var(--bw-space-1_5);
+  padding: 0 var(--bw-space-1_5) 0 var(--bw-space-1);
+  overflow: hidden;
   border: 0;
-  border-radius: var(--bw-r-control);
-  background: transparent;
-  color: var(--bw-text-dim);
+  border-radius: var(--bw-r-pill);
+  background: color-mix(in srgb, var(--gc, var(--bw-focus)) 22%, var(--bw-window-opaque));
+  color: var(--bw-text);
   font: inherit;
-  font-weight: 400;
+  font-weight: var(--bw-weight-strong);
   cursor: default;
-  transition: background-color var(--bw-dur-fast) var(--bw-ease-fade);
+  transition:
+    background-color var(--bw-dur-fast) var(--bw-ease-fade),
+    max-width var(--bw-dur-group) var(--bw-ease-group),
+    padding var(--bw-dur-group) var(--bw-ease-group),
+    gap var(--bw-dur-group) var(--bw-ease-group);
 }
 
 .strip .ball:hover {
-  background: var(--bw-hover);
+  background: color-mix(in srgb, var(--gc, var(--bw-focus)) 34%, var(--bw-window-opaque));
   color: var(--bw-text);
 }
 
 .strip .ball .dot {
   flex: none;
-  width: 6px;
-  height: 6px;
+  width: 8px;
+  height: 8px;
   border-radius: 50%;
   background: var(--gc, var(--bw-focus));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--bw-text) 18%, transparent);
+  transition: width var(--bw-dur-group) var(--bw-ease-group), height var(--bw-dur-group) var(--bw-ease-group), opacity var(--bw-dur-group) var(--bw-ease-group);
 }
 
 .strip .ball .gname {
   min-width: 0;
+  max-width: 78px;
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
+  opacity: 1;
+  transition: max-width var(--bw-dur-group) var(--bw-ease-group), opacity var(--bw-dur-group) var(--bw-ease-group);
 }
 
 .strip .ball .gname:empty { display: none; }
@@ -385,20 +419,49 @@
   display: grid;
   place-items: center;
   width: 12px;
+  max-width: 12px;
   height: 12px;
   opacity: 0.8;
-  transition: transform var(--bw-dur-fast) var(--bw-ease-out);
+  overflow: hidden;
+  transition:
+    transform var(--bw-dur-group) var(--bw-ease-group),
+    max-width var(--bw-dur-group) var(--bw-ease-group),
+    opacity var(--bw-dur-group) var(--bw-ease-group);
 }
 
 .strip .ball[aria-expanded="true"] .disclose { transform: rotate(90deg); }
 
-/* Collapsed: a faint tint of the group's colour, never an island fill. */
+/* Collapsed: one colour dot. The name and chevron fold shut; the active member, if any, stays. */
+.strip .group.collapsed .ball,
 .strip .ball[aria-expanded="false"] {
-  background: color-mix(in srgb, var(--gc, var(--bw-focus)) 14%, transparent);
+  gap: 0;
+  max-width: 18px;
+  padding: 0;
+  justify-content: center;
+  background: var(--gc, var(--bw-focus));
+  color: transparent;
 }
 
+.strip .group.collapsed .ball:hover,
 .strip .ball[aria-expanded="false"]:hover {
-  background: color-mix(in srgb, var(--gc, var(--bw-focus)) 24%, transparent);
+  background: color-mix(in srgb, var(--gc, var(--bw-focus)) 84%, var(--bw-text));
+  color: transparent;
+}
+
+.strip .group.collapsed .ball .dot,
+.strip .ball[aria-expanded="false"] .dot {
+  width: 0;
+  height: 0;
+  opacity: 0;
+  box-shadow: none;
+}
+
+.strip .group.collapsed .ball .gname,
+.strip .group.collapsed .ball .disclose,
+.strip .ball[aria-expanded="false"] .gname,
+.strip .ball[aria-expanded="false"] .disclose {
+  max-width: 0;
+  opacity: 0;
 }
 
 /* ---- Tab options (Settings > Tabs): the strip classes tabs.ts sets from the host's `tabopts` ---- */
@@ -411,8 +474,10 @@
 /* The active tab's minimum width (a px value set from tabs.ts as --tab-active-min). */
 .strip .tab.active:not(.pinned) { min-width: var(--tab-active-min, 96px); }
 
-/* Horizontal scrolling: tabs keep a readable width and the strip scrolls when they do not fit. */
+/* Horizontal scrolling: tabs keep a readable width and the strip scrolls when they do not fit.
+   A group keeps its tabs together instead of being crushed while the row scrolls. */
 .strip.scrolling .tab:not(.pinned) { flex: 1 0 140px; }
+.strip.scrolling .group { flex-shrink: 0; }
 .strip.scrolling .tab.active:not(.pinned) { flex-grow: 1.5; }
 
 /* After a close by the pointer, every tab holds the closed tab's width until the pointer leaves. */
