@@ -78,6 +78,29 @@ test('maximised with the spacing removed, grouped tabs reach the top edge as oth
   assert.match(built, /align-items:stretch/, 'the built sheet has it');
 });
 
+test('tab groups use one label and a member line, and the island is inset from the window', () => {
+  const tabs = readFileSync(join(stylesDir, 'tabs.css'), 'utf8');
+  const side = readFileSync(join(stylesDir, 'sidebar.css'), 'utf8');
+  const tokens = readFileSync(join(stylesDir, 'tokens.css'), 'utf8');
+  assert.match(tokens, /--bw-dur-group: 200ms;/);
+  assert.match(tokens, /--bw-ease-group: cubic-bezier\(0\.32, 0\.72, 0, 1\);/);
+  assert.match(tokens, /--bw-group-0: #b5525b;/);
+  assert.match(tokens, /--bw-dur-group: 0ms;/, 'reduced motion drops the fold');
+  assert.match(tabs, /\.strip \.group::after \{ content: none; \}/);
+  assert.match(tabs, /\.strip \.ball \{[^}]*background: var\(--gc, var\(--bw-focus\)\);/s);
+  assert.match(tabs, /\.strip \.group\.collapsed \.ball/);
+  assert.match(tabs, /flex-grow var\(--bw-dur-group\) var\(--bw-ease-group\)/);
+  assert.match(tabs, /\.strip\.at-bottom \.group::before/);
+  assert.match(tabs, /\.strip \.group\.collapsed:not\(:has\(\.tab:not\(\[hidden\]\)\)\)::before/);
+  assert.match(tabs, /\.strip \.group\.collapsed:not\(:has\(\.tab:not\(\[hidden\]\)\)\)[\s\S]*flex: 0 0 auto;/);
+  assert.match(tokens, /--bw-float-fill:/);
+  assert.match(side, /background: var\(--bw-float-fill\)/);
+  assert.match(side, /border-radius: var\(--bw-r-float\)/);
+  assert.match(side, /#app\.sidebar\.is-collapsed \.side-group \{[^}]*background: var\(--gc, var\(--bw-accent\)\)/s);
+  assert.match(side, /#app\.sidebar\.is-rail\.is-open \{ background: var\(--bw-float-fill\); \}/);
+  assert.match(side, /height: var\(--bw-side-row-h\)/);
+});
+
 // ---- U11: what wins the cascade on a picked or stack-target tab ----
 
 /** CSS specificity [ids, classes, types] of one complex selector (:is/:not/:has count their heaviest argument, :where nothing). */

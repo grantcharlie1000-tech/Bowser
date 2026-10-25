@@ -16,7 +16,7 @@
   mask-image: linear-gradient(to right, transparent 0, #000 var(--fade-left, 0px), #000 calc(100% - var(--fade-right, 0px)), transparent 100%);
   height: 100%;
   gap: var(--bw-space-1);
-  padding: 0 var(--bw-space-1);
+  padding: 0 var(--bw-space-2);
   align-items: center;
 }
 
@@ -34,7 +34,7 @@
   min-width: 32px;
   height: var(--bw-tab-h);
   padding: 0 var(--bw-space-0_5) 0 7px; /* 1px border + 7px = the 8px favicon inset */
-  border: 1px solid var(--bw-island-edge);
+  border: 1px solid transparent; /* the width stays, so private and flush geometry do not move */
   border-radius: var(--bw-r-tab);
   color: var(--bw-text-dim);
   cursor: default;
@@ -64,9 +64,9 @@
   min-width: 96px;
 }
 
-/* Inactive tabs are a recessed translucent fill with dim text; the active tab is a raised island:
-   the strongest fill in the strip, a hairline edge, a soft shadow and full-strength text. */
-.strip .tab::before { background: var(--bw-island-idle); }
+/* Inactive tabs are favicon and title on the strip. Hover is a faint wash. The active tab is
+   the only raised surface: a solid fill and a very soft shadow, no border of its own. */
+.strip .tab::before { background: transparent; }
 
 .strip .tab::after {
   background: var(--bw-hover);
@@ -74,28 +74,28 @@
 }
 
 .strip .tab:hover { color: var(--bw-text); }
-.strip .tab:hover::after { opacity: 1; }
-.strip .tab:active::after { opacity: 1; background: var(--bw-island); }
+.strip .tab:not(.active):hover::after { opacity: 1; }
+.strip .tab:not(.active):active::after { opacity: 1; }
 
 .strip .tab.active {
-  border-color: var(--bw-pill-edge);
-  box-shadow: var(--bw-sh-tip);
+  border-color: transparent;
+  box-shadow: var(--bw-sh-tab);
   color: var(--bw-text);
 }
 
-.strip .tab.active::before { background: var(--bw-island-active); }
+.strip .tab.active::before { background: var(--bw-tab-raised); }
 .strip .tab.active::after { opacity: 0; }
-.strip .tab.active:hover::after { opacity: 1; }
+.strip .tab.active:hover::after { opacity: 0; }
 
 /* Selection is instant; only the tab that loses it fades out. :where() keeps this at the same specificity as .strip.settle .tab below, which must still win for the FLIP settle frame. */
 .strip .tab.active:where(:not(.landing, .dragging)) { transition-property: transform; }
 .strip .tab.active::before { transition: none; }
 
-/* Light scheme: the shared idle wash is a black 22%, which dulls the glass. Inactive tabs get a faint
-   ink wash instead; the active tab is a near-white island (as in the native strip, where the selected
-   tab is the lightest surface). */
-:root[data-scheme="light"] .strip .tab::before { background: color-mix(in srgb, var(--bw-text) 7%, transparent); }
-:root[data-scheme="light"] .strip .tab:not(.active) { border-color: color-mix(in srgb, var(--bw-text) 14%, transparent); }
+/* Light scheme keeps the same quiet strip. The selector stays so a picked tab's mark still outranks
+   it (U11). The active rule below is heavier, so the raised surface is not washed out. */
+:root[data-scheme="light"] .strip .tab::before { background: transparent; }
+:root[data-scheme="light"] .strip .tab:not(.active) { border-color: transparent; }
+:root[data-scheme="light"] .strip .tab.active::before { background: var(--bw-tab-raised); }
 
 /* Applied for one frame while a position animation is set up (and by FLIP re-measuring). */
 .strip.settle .tab { transition: none; }
@@ -306,7 +306,7 @@
 .strip .tab.pinned .audio,
 .strip .tab.pinned .marker { display: none; }
 
-/* ---- Groups: a tinted island around the member tabs with a coloured header chip ---- */
+/* ---- Groups: one colour. A filled label, then a 2px line under the member tabs. No tint. ---- */
 .strip .group {
   position: relative;
   isolation: isolate;
@@ -314,65 +314,68 @@
   align-items: center;
   gap: var(--bw-space-1);
   /* One flex item that weighs as much as its visible tabs (--gw, set from tabs.ts: 1 each, 1.5 for the
-     active one). The basis is the island's own chrome (header chip --go, a gap per child, padding), so
-     what is left over is shared exactly like top-level tabs: a group never leaves the row short. */
+     active one). The basis is the label (--go) plus a gap per child, so what is left over is shared
+     like top-level tabs. min-width 0 lets the members shrink before a collapsed label is pushed
+     off the row; the label itself does not shrink (below). */
   flex: var(--gw, 1) 1 calc(var(--go, 0px) + var(--gn, 1) * var(--bw-space-1));
-  min-width: min-content;
+  min-width: 0;
   height: var(--bw-tab-h);
   padding: 0;
+  transition: flex-grow var(--bw-dur-group) var(--bw-ease-group), flex-basis var(--bw-dur-group) var(--bw-ease-group);
 }
 
-/* The group's colour is a 2px underline running under the header and its tabs, not a pill around them. */
+/* The line starts after the label (--go is the label's width) and runs under the member tabs only. */
 .strip .group::before {
   content: "";
   position: absolute;
-  left: 0;
-  right: 0;
-  bottom: -3px;
-  z-index: -1;
+  left: calc(var(--go, 0px) + var(--bw-space-2));
+  right: var(--bw-space-2);
+  bottom: 0;
+  z-index: 1;
   height: 2px;
   border-radius: 1px;
   background: var(--gc, var(--bw-focus));
   pointer-events: none;
 }
 
-/* Group header: a 6px colour dot, the name and a small disclosure chevron. It is deliberately quieter
-   than a tab: no island fill, regular weight, a smaller footprint, so the selected tab (the strongest
-   fill and edge in the strip) is never confused with a collapsed group. */
+/* No second colour signal. The selector stays so a later wash cannot grow back in unnoticed. */
+.strip .group::after { content: none; }
+
+/* Tabs along the bottom: the line sits on the top edge, toward the page. */
+.strip.at-bottom .group::before { top: 0; bottom: auto; }
+
+/* Group label: the colour is the pill, the name is white on it. The dot is not a second mark. */
 .strip .ball {
   display: flex;
   flex: none;
   align-items: center;
   gap: var(--bw-space-1);
-  height: 20px;
-  max-width: 96px;
+  height: 18px;
+  min-width: 0;
+  max-width: 132px;
   margin: 0;
-  padding: 0 var(--bw-space-1) 0 var(--bw-space-1_5);
+  padding: 0 var(--bw-space-2);
+  overflow: hidden;
   border: 0;
-  border-radius: var(--bw-r-control);
-  background: transparent;
-  color: var(--bw-text-dim);
+  border-radius: var(--bw-r-pill);
+  background: var(--gc, var(--bw-focus));
+  color: #fff;
   font: inherit;
-  font-weight: 400;
+  font-weight: var(--bw-weight-strong);
   cursor: default;
   transition: background-color var(--bw-dur-fast) var(--bw-ease-fade);
 }
 
 .strip .ball:hover {
-  background: var(--bw-hover);
-  color: var(--bw-text);
+  background: color-mix(in srgb, #fff 14%, var(--gc, var(--bw-focus)));
+  color: #fff;
 }
 
-.strip .ball .dot {
-  flex: none;
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--gc, var(--bw-focus));
-}
+.strip .ball .dot { display: none; }
 
 .strip .ball .gname {
   min-width: 0;
+  max-width: 96px;
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
@@ -386,19 +389,24 @@
   place-items: center;
   width: 12px;
   height: 12px;
-  opacity: 0.8;
-  transition: transform var(--bw-dur-fast) var(--bw-ease-out);
+  opacity: 0.9;
 }
 
 .strip .ball[aria-expanded="true"] .disclose { transform: rotate(90deg); }
 
-/* Collapsed: a faint tint of the group's colour, never an island fill. */
-.strip .ball[aria-expanded="false"] {
-  background: color-mix(in srgb, var(--gc, var(--bw-focus)) 14%, transparent);
-}
+/* Collapsed, the label stays this pill. Members fold away; the name does not. */
+.strip .group.collapsed .ball { max-width: 132px; }
 
-.strip .ball[aria-expanded="false"]:hover {
-  background: color-mix(in srgb, var(--gc, var(--bw-focus)) 24%, transparent);
+/* Every member hidden: the group is the label and nothing else, and it does not shrink or stretch,
+   so the pill is never clipped into a sliver at the end of the row. */
+.strip .group.collapsed:not(:has(.tab:not([hidden]))) {
+  flex: 0 0 auto;
+  min-width: max-content;
+  gap: 0;
+}
+.strip .group.collapsed:not(:has(.tab:not([hidden])))::before,
+.strip .group.collapsed:not(:has(.tab:not([hidden])))::after {
+  content: none;
 }
 
 /* ---- Tab options (Settings > Tabs): the strip classes tabs.ts sets from the host's `tabopts` ---- */
@@ -411,8 +419,10 @@
 /* The active tab's minimum width (a px value set from tabs.ts as --tab-active-min). */
 .strip .tab.active:not(.pinned) { min-width: var(--tab-active-min, 96px); }
 
-/* Horizontal scrolling: tabs keep a readable width and the strip scrolls when they do not fit. */
+/* Horizontal scrolling: tabs keep a readable width and the strip scrolls when they do not fit.
+   A group keeps its tabs together instead of being crushed while the row scrolls. */
 .strip.scrolling .tab:not(.pinned) { flex: 1 0 140px; }
+.strip.scrolling .group { flex-shrink: 0; }
 .strip.scrolling .tab.active:not(.pinned) { flex-grow: 1.5; }
 
 /* After a close by the pointer, every tab holds the closed tab's width until the pointer leaves. */

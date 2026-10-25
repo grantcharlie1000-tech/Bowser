@@ -607,8 +607,18 @@ mod grip_and_gap_tests {
                         covered_edges[match hit { FrameHit::Left | FrameHit::TopLeft | FrameHit::BottomLeft => 0, FrameHit::Right | FrameHit::TopRight | FrameHit::BottomRight => 1, FrameHit::Top => 2, _ => 3 }] = true;
                     }
                 }
-                // The rail stands on the left edge and the page on the right one.
-                assert!(covered_edges[0] && covered_edges[1], "{context}: {covered_edges:?} {grips:?}");
+                // The rail stands on the left edge. The page stands on the right, except a right-hand
+                // vertical sidebar: its floating island stops short of the resize band, so the parent
+                // still owns that edge and no grip has to cover a host there.
+                if tabs == TabLayout::VerticalRight {
+                    assert!(covered_edges[0], "{context}: {covered_edges:?} {grips:?}");
+                    let x = size.0 - edge / 2;
+                    let y = size.1 / 2;
+                    assert!(is_resize(frame_hit_test_with(POINT { x, y }, size, dpi, false, ChromeHit::None, thin)), "{context}: the clear right edge still resizes");
+                    assert!(!hosts.iter().any(|h| inside(h, x, y)), "{context}: the island stays out of the right grip");
+                } else {
+                    assert!(covered_edges[0] && covered_edges[1], "{context}: {covered_edges:?} {grips:?}");
+                }
                 assert!(edge_grip_rects(size, dpi, true, thin, &hosts).is_empty(), "maximised: no grips");
             }
         }

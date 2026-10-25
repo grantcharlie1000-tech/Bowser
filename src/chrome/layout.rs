@@ -4747,7 +4747,9 @@ mod arrangement_tests {
             assert!(layout.main_menu_button.right <= layout.caption_area.left);
             // The HTML sidebar host stops at the handle; the handle is a resize hit.
             let bounds = crate::chrome_host::sidebar_bounds(&sidebar).expect("a sidebar host");
-            assert_eq!((bounds.left, bounds.right), (sidebar.handle.right, sidebar.sidebar.right));
+            let island = sidebar.island();
+            assert_eq!((bounds.left, bounds.right), (island.left, island.right));
+            assert!(bounds.left >= sidebar.handle.right, "the host starts after the resize handle");
             assert_eq!(crate::vertical_tabs::hit_test(&sidebar, sidebar.handle.left + 1, sidebar.rows.top + 5, 0, 5), Some(SidebarHit::Resize));
             // A drag of the handle measures the width from the window's edge.
             assert_eq!(sidebar.drag_width_px(sidebar.sidebar.right - 300), 300);

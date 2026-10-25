@@ -105,14 +105,14 @@ pub const MARKER_COLOURS: [Rgba; 5] = [
 /// Tab island colours, indexed by the stored colour id (`tab_groups::COLOUR_COUNT` entries).
 /// Id `None` means the theme accent instead.
 pub const ISLAND_COLOURS: [Rgba; 8] = [
-    Rgba::hex(0xE74F5F, 0xFF),
-    Rgba::hex(0xF08A24, 0xFF),
-    Rgba::hex(0xE9B949, 0xFF),
-    Rgba::hex(0x2E9E5B, 0xFF),
-    Rgba::hex(0x1FA2C7, 0xFF),
-    Rgba::hex(0x3B7BE0, 0xFF),
-    Rgba::hex(0x7B5CD6, 0xFF),
-    Rgba::hex(0xE0457B, 0xFF),
+    Rgba::hex(0xB5525B, 0xFF),
+    Rgba::hex(0xA85E2C, 0xFF),
+    Rgba::hex(0x8D6920, 0xFF),
+    Rgba::hex(0x2F7D56, 0xFF),
+    Rgba::hex(0x2F7C88, 0xFF),
+    Rgba::hex(0x4A6CAF, 0xFF),
+    Rgba::hex(0x6D5C9E, 0xFF),
+    Rgba::hex(0xB35A78, 0xFF),
 ];
 
 const LIGHT_GLASS: Palette = Palette {
