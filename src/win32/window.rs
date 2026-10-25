@@ -1977,13 +1977,6 @@ fn ensure_flyout_panel(hwnd: HWND) -> bool {
     html_panel::available(hwnd)
 }
 
-// --- vertical sidebar (lane S) ---
-fn sidebar_html_region(layout: Option<&crate::vertical_tabs::SidebarLayout>, active: bool) -> Option<Rect> {
-    if !active { return None; }
-    layout.and_then(chrome_host::sidebar_bounds).map(Rect::from)
-}
-// --- end vertical sidebar ---
-
 /// Snapshot hosts and geometry, then call WebView2 after the window borrow has ended.
 fn sync_html_host_bounds(hwnd: HWND) {
     let Some((hosts, pages, thin_bottom)) = with_chrome(hwnd, |s| ([
@@ -4545,12 +4538,12 @@ unsafe extern "system" fn window_proc(
                     .unwrap_or((RailFlyoutTick::Closed, true));
                 match tick {
                     RailFlyoutTick::Closed => {
-                        unsafe { let _ = KillTimer(Some(hwnd), WM_SIDEBAR_FLYOUT_TIMER); }
+                        let _ = KillTimer(Some(hwnd), WM_SIDEBAR_FLYOUT_TIMER);
                         sync_html_host_bounds(hwnd);
                     }
                     RailFlyoutTick::Animating => sync_html_host_bounds(hwnd),
                     RailFlyoutTick::Open => {
-                        unsafe { let _ = SetTimer(Some(hwnd), WM_SIDEBAR_FLYOUT_TIMER, SIDEBAR_FLYOUT_RAISE_MS, None); }
+                        let _ = SetTimer(Some(hwnd), WM_SIDEBAR_FLYOUT_TIMER, SIDEBAR_FLYOUT_RAISE_MS, None);
                         if moved { sync_html_host_bounds(hwnd); } else { raise_rail_flyout(hwnd); }
                     }
                 }
@@ -13293,19 +13286,6 @@ mod tests {
             "the notes popup sits at screen coordinates and follows a move"
         );
     }
-
-    // --- vertical sidebar (lane S) ---
-    #[test]
-    fn html_sidebar_region_skips_native_sidebar_hits_but_leaves_resize_handle() {
-        let layout = crate::vertical_tabs::SidebarLayout::compute_in_frame(1200, 700, 96, 260, false);
-        let region = sidebar_html_region(Some(&layout), true).expect("active HTML sidebar");
-        assert_eq!(region.right, layout.handle.left);
-        assert!(region.contains(layout.sidebar.left + 1, layout.sidebar.top + 1));
-        assert!(!region.contains(layout.handle.left, layout.handle.top + 1));
-        assert!(sidebar_html_region(Some(&layout), false).is_none());
-        assert!(sidebar_html_region(None, true).is_none());
-    }
-    // --- end vertical sidebar ---
 
     #[test]
     fn overflow_menu_contains_only_tabs_outside_the_visible_window() {
