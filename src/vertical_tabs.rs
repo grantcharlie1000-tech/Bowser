@@ -7,7 +7,7 @@ pub const MIN_WIDTH: i32 = 180;
 /// Width of the collapsed, icons-only sidebar strip.
 pub const COLLAPSED_WIDTH: i32 = 48;
 /// How long an unpinned rail takes to open or close over the page, in milliseconds.
-pub const FLYOUT_MS: u32 = 180;
+pub const FLYOUT_MS: u32 = 220;
 /// Logical pixels of the page that stay visible beside an open flyout.
 pub const FLYOUT_KEEP: i32 = 64;
 pub const MAX_WIDTH: i32 = 360;
@@ -277,8 +277,8 @@ impl SidebarLayout {
     }
 }
 
-/// Width of an overlay at progress `t` in `0.0..=1.0`, ease-out cubic.
-/// `t <= 0` is `from`. Non-finite or `t >= 1` is `to`.
+/// Width of an overlay at progress `t` in `0.0..=1.0`.
+/// Opening eases out; closing eases in. `t <= 0` is `from`. Non-finite or `t >= 1` is `to`.
 pub fn flyout_width_at(from: i32, to: i32, t: f32) -> i32 {
     if !t.is_finite() || t >= 1.0 {
         return to;
@@ -286,7 +286,7 @@ pub fn flyout_width_at(from: i32, to: i32, t: f32) -> i32 {
     if t <= 0.0 {
         return from;
     }
-    let eased = 1.0 - (1.0 - t).powi(3);
+    let eased = if to < from { t.powi(3) } else { 1.0 - (1.0 - t).powi(3) };
     from.saturating_add(((to - from) as f32 * eased).round() as i32)
 }
 
@@ -503,13 +503,17 @@ mod tests {
     }
 
     #[test]
-    fn flyout_width_eases_out_and_settles_on_the_endpoints() {
+    fn flyout_width_eases_out_on_open_and_in_on_close() {
+        assert!((180..=250).contains(&FLYOUT_MS));
         assert_eq!(flyout_width_at(48, 260, 0.0), 48);
         assert_eq!(flyout_width_at(48, 260, 1.0), 260);
         assert_eq!(flyout_width_at(48, 260, f32::NAN), 260);
         assert_eq!(flyout_width_at(260, 48, -1.0), 260);
-        // Ease-out cubic at t=0.5 is 1 - 0.5^3 = 0.875.
+        // Ease-out cubic at t=0.5 is 1 - 0.5^3 = 0.875, so 100 * 0.875 = 87.5, which rounds to 88.
         assert_eq!(flyout_width_at(0, 100, 0.5), 88);
+        // Ease-in cubic at t=0.5 is 0.125. The delta is -12.5, and half rounds away from zero, so 87.
+        assert_eq!(flyout_width_at(100, 0, 0.5), 87);
+        assert!(flyout_width_at(260, 48, 0.5) > 200);
         let early = flyout_width_at(48, 260, 0.2);
         assert!(early > 48 && early < 260);
     }

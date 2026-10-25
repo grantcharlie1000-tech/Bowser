@@ -27,6 +27,8 @@ pub const HIDE_MARGIN_DIP: i32 = 8;
 pub const SENSOR_DIP: i32 = 4;
 /// How often the pointer is checked while bars are shown or a reveal is pending (never otherwise).
 pub const POLL_MS: u32 = 50;
+/// How long a bar takes to slide into place or away. Inside the 180–250 ms range.
+pub const SLIDE_MS: u64 = 220;
 
 /// A set of bars. Add a bar by giving it a bit and a row in [`BAR_TABLE`]; nothing else enumerates them.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Hash)]
@@ -221,10 +223,20 @@ pub struct Plan {
     pub top: bool,
     /// The vertical layout's sidebar.
     pub sidebar: bool,
-    /// An open side panel floats over the page instead of taking room from it.
+    /// The panel bar is in the hidden set. Frameless mode floats an open panel even when this is
+    /// false; [`panel_overlays`] is what decides whether the page gives up a column.
     pub panel: bool,
     /// The bookmarks bar.
     pub bookmarks: bool,
+}
+
+/// Whether an open side panel covers the page instead of narrowing it.
+///
+/// Auto-hide (the frameless master switch) always does, so the panel stays out of the layout until
+/// the user opens it and then slides over the page. A hidden-bar set that includes the panel does
+/// too (full screen, or the panel chosen on its own). Neither case rewrites `auto_hide_bars`.
+pub fn panel_overlays(master: bool, hidden: Bars) -> bool {
+    master || hidden.contains(Bars::PANEL)
 }
 
 /// Which parts of the window `hidden` takes out of `layout`. Hiding tabs in a horizontal layout hides
@@ -404,6 +416,103 @@ pub struct Machine {
     outside_since: Option<u64>,
 }
 
+/// One bar's slide. `amount` 0 is resting in view, 1 is fully off its edge.
+/// Reveal eases out (fast, then settles). Hide eases in (settles, then leaves).
+/// A settled slide has `from == to` and does not need a timer.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Slide {
+    pub from: f32,
+    pub to: f32,
+    pub started: u64,
+}
+
+impl Slide {
+    pub const fn settled(amount: f32) -> Self {
+        Self { from: amount, to: amount, started: 0 }
+    }
+
+    /// Where the bar is at `now`. `animate` false snaps to the target.
+    pub fn amount(self, now: u64, animate: bool) -> f32 {
+        if !animate || (self.from - self.to).abs() < 0.000_1 {
+            return self.to;
+        }
+        let t = (now.saturating_sub(self.started) as f32 / SLIDE_MS as f32).clamp(0.0, 1.0);
+        if t >= 1.0 {
+            return self.to;
+        }
+        let eased = if self.to > self.from { ease_in(t) } else { ease_out(t) };
+        self.from + (self.to - self.from) * eased
+    }
+
+    /// A frame timer is needed. False when settled, snapped, or the duration has elapsed.
+    pub fn running(self, now: u64, animate: bool) -> bool {
+        animate && (self.from - self.to).abs() >= 0.000_1 && now.saturating_sub(self.started) < SLIDE_MS
+    }
+
+    /// Aims at shown (`to` 0) or hidden (`to` 1), continuing from the current position.
+    pub fn retarget(self, shown: bool, now: u64, animate: bool) -> Self {
+        let to = if shown { 0.0 } else { 1.0 };
+        let from = self.amount(now, true);
+        if !animate || (from - to).abs() < 0.000_1 {
+            Self::settled(to)
+        } else {
+            Self { from, to, started: now }
+        }
+    }
+}
+
+/// The three bars that slide. Defaults to fully hidden so turning auto-hide on does not animate.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ChromeMotion {
+    pub top: Slide,
+    pub sidebar: Slide,
+    pub bookmarks: Slide,
+}
+
+impl Default for ChromeMotion {
+    fn default() -> Self {
+        Self { top: Slide::settled(1.0), sidebar: Slide::settled(1.0), bookmarks: Slide::settled(1.0) }
+    }
+}
+
+impl ChromeMotion {
+    pub fn retarget(&mut self, shown: Zones, bookmarks_with_top: bool, now: u64, animate: bool) {
+        self.top = self.top.retarget(shown.contains(Zone::Top), now, animate);
+        self.sidebar = self.sidebar.retarget(shown.contains(Zone::Sidebar), now, animate);
+        let marks = shown.contains(Zone::Bookmarks) || (bookmarks_with_top && shown.contains(Zone::Top));
+        self.bookmarks = self.bookmarks.retarget(marks, now, animate);
+    }
+
+    /// Jumps to the logical state. Used when auto-hide turns on or off, and when animation is not wanted.
+    pub fn snap_to(&mut self, shown: Zones, bookmarks_with_top: bool) {
+        self.retarget(shown, bookmarks_with_top, 0, false);
+    }
+
+    pub fn running(&self, now: u64, animate: bool) -> bool {
+        self.top.running(now, animate) || self.sidebar.running(now, animate) || self.bookmarks.running(now, animate)
+    }
+}
+
+/// Cubic ease-out: fast start, soft landing.
+fn ease_out(t: f32) -> f32 {
+    let t = t.clamp(0.0, 1.0);
+    1.0 - (1.0 - t).powi(3)
+}
+
+/// Cubic ease-in: holds, then leaves.
+fn ease_in(t: f32) -> f32 {
+    let t = t.clamp(0.0, 1.0);
+    t * t * t
+}
+
+/// Pixels from the resting place toward the outside edge. `amount` 0 stays put.
+/// `outward_positive` is the bottom edge and a right-hand sidebar; the top and the left go negative.
+pub fn slide_offset(amount: f32, span: i32, outward_positive: bool) -> i32 {
+    let amount = if amount.is_finite() { amount.clamp(0.0, 1.0) } else { 1.0 };
+    let mag = (amount * span.max(0) as f32).round() as i32;
+    if outward_positive { mag } else { -mag }
+}
+
 impl Machine {
     pub fn shown(&self) -> Zones {
         self.shown
@@ -549,6 +658,12 @@ mod tests {
         assert_eq!(plan(Bars::ADDRESS, TabLayout::Vertical), Plan { top: true, ..Plan::default() }, "vertical: address is the toolbar");
         assert_eq!(plan(Bars::BOOKMARKS, TabLayout::ToolbarTop), Plan { bookmarks: true, ..Plan::default() });
         assert_eq!(plan(Bars::PANEL, TabLayout::ToolbarTop), Plan { panel: true, ..Plan::default() });
+        assert!(panel_overlays(true, DEFAULT_BARS), "frameless: the panel overlays even though it is not a default bar");
+        assert!(!DEFAULT_BARS.contains(Bars::PANEL));
+        assert!(panel_overlays(true, Bars::NONE));
+        assert!(!panel_overlays(false, Bars::NONE), "framed: an open panel keeps its column");
+        assert!(panel_overlays(false, Bars::PANEL), "the panel bar still overlays when it is the bar that hides");
+        assert!(panel_overlays(false, ALL_BARS), "full screen hides every bar, including the panel");
         assert_eq!(plan(all, TabLayout::Vertical), Plan { top: true, sidebar: true, panel: true, bookmarks: true });
         assert_eq!(plan(Bars::TABS, TabLayout::Vertical).layout(), crate::chrome::layout::AutoHide { top: false, sidebar: true });
         assert!(plan(Bars::NONE, TabLayout::Vertical).layout().is_off());
@@ -681,6 +796,59 @@ mod tests {
         assert_eq!(m.shown(), Zones::NONE.with(Zone::Top).with(Zone::Sidebar));
         m.enter_sensor(Zone::Top, 3000); // already shown: only keeps it up
         assert_eq!(m.shown(), Zones::NONE.with(Zone::Top).with(Zone::Sidebar));
+    }
+
+    #[test]
+    fn a_reveal_eases_out_and_a_hide_eases_in_and_both_snap_when_animation_is_off() {
+        assert!((180..=250).contains(&SLIDE_MS));
+        let hidden = Slide::settled(1.0);
+        let reveal = hidden.retarget(true, 1_000, true);
+        assert!((reveal.amount(1_000, true) - 1.0).abs() < 0.001, "reveal starts off-screen");
+        assert!((reveal.amount(1_000 + SLIDE_MS, true)).abs() < 0.001, "reveal ends in place");
+        let mid = reveal.amount(1_000 + SLIDE_MS / 2, true);
+        assert!(mid < 0.5, "ease-out has covered most of the slide by halfway, got {mid}");
+        assert!(reveal.running(1_000 + SLIDE_MS / 2, true));
+        assert!(!reveal.running(1_000 + SLIDE_MS, true), "no timer once the slide has landed");
+        assert!(!reveal.running(1_000, false), "animation off never runs a timer");
+
+        let shown = Slide::settled(0.0);
+        let hide = shown.retarget(false, 2_000, true);
+        let hide_mid = hide.amount(2_000 + SLIDE_MS / 2, true);
+        assert!(hide_mid < 0.5, "ease-in has barely left by halfway, got {hide_mid}");
+        assert!((hide.amount(2_000 + SLIDE_MS, true) - 1.0).abs() < 0.001);
+
+        let snapped = hidden.retarget(true, 0, false);
+        assert_eq!(snapped.amount(0, false), 0.0);
+        assert!(!snapped.running(0, false));
+
+        let reversed = reveal.retarget(false, 1_000 + SLIDE_MS / 2, true);
+        assert!((reversed.from - mid).abs() < 0.02, "a reversal continues from where the bar is");
+    }
+
+    #[test]
+    fn slide_offset_moves_each_edge_outward_and_rests_at_zero() {
+        assert_eq!(slide_offset(0.0, 40, false), 0);
+        assert_eq!(slide_offset(1.0, 40, false), -40, "top and left leave upward or leftward");
+        assert_eq!(slide_offset(1.0, 40, true), 40, "bottom and right leave downward or rightward");
+        assert_eq!(slide_offset(0.5, 40, false), -20);
+        assert_eq!(slide_offset(f32::NAN, 10, true), 10, "a bad sample hides rather than jumping inward");
+    }
+
+    #[test]
+    fn chrome_motion_is_idle_until_a_bar_is_aimed_and_snaps_with_the_logical_state() {
+        let idle = ChromeMotion::default();
+        assert!(!idle.running(0, true), "startup and idle do not run a frame timer");
+        assert_eq!(idle.top.amount(0, true), 1.0);
+        let mut motion = idle;
+        motion.retarget(Zones::NONE.with(Zone::Top).with(Zone::Sidebar), false, 50, true);
+        assert!(motion.running(50, true));
+        assert!(!motion.bookmarks.running(50, true), "a bar that did not change stays settled");
+        motion.snap_to(Zones::NONE, false);
+        assert!(!motion.running(50, true));
+        assert_eq!(motion.top.amount(50, true), 1.0);
+        motion.snap_to(Zones::NONE.with(Zone::Top), true);
+        assert_eq!(motion.top.amount(0, true), 0.0);
+        assert_eq!(motion.bookmarks.amount(0, true), 0.0, "bookmarks that ride with the top snap with it");
     }
 
     /// The cost of the rules themselves: they run only while a reveal is pending or bars are up.

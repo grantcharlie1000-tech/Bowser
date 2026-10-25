@@ -30,7 +30,7 @@ import { parseCommandsSnapshot } from './commands-logic';
 // --- layout (thread T6) --- the Layout block's presets, edges and values
 import {
   BAR_POSITIONS, DEFAULT_LAYOUT_CONFIG, DEFAULT_UI_ZOOM, MAX_UI_ZOOM, MIN_UI_ZOOM, PRESETS, PRESET_HINTS, PRESET_LABELS, STATUS_BARS, STATUS_BAR_LABELS,
-  TAB_BAR_EDGES, TAB_BAR_EDGE_LABELS, TOP_TAB_STYLES, UI_DENSITIES, UI_ZOOM_STEP, applyLayoutConfig, parseLayoutConfig, parseUiZoom, presetConfig,
+  TAB_BAR_EDGES, TAB_BAR_EDGE_LABELS, TOP_TAB_STYLES, UI_DENSITIES, UI_ZOOM_STEP, applyLayoutConfig, panelEdgeNote, parseLayoutConfig, parseUiZoom, presetConfig,
   rememberOwnLayout, selectedTile, tabBarEdge, tabLayoutForEdge, uiZoomText, type BarPosition, type LayoutConfig, type Preset, type StatusBar,
   type TabBarEdge, type UiDensity,
 } from './layout-logic';
@@ -518,6 +518,7 @@ export function startSettingsPage(root: HTMLElement): void {
   const presets = radioGroup<Preset | 'saved'>('sp-tiles is-presets', 'Presets', [...PRESETS, 'saved' as const].map((key) => [key, presetTile(key)] as const), (value) => change((d) => {
     const config = value === 'saved' ? parseLayoutConfig(d.layout.saved) : presetConfig(value);
     if (config) applyLayoutConfig(d, config);
+    paintPanelEdge(d);
   }));
   row(layoutCard, 'layoutPreset', presets.root, { stack: true });
   /** The Saved tile shows the saved arrangement, or stays dimmed until there is one. */
@@ -536,12 +537,22 @@ export function startSettingsPage(root: HTMLElement): void {
     box.append(text, control.root);
     bars.append(box);
   };
-  const tabEdge = segmentedControl<TabBarEdge>('Tab bar', TAB_BAR_EDGES.map((key) => [key, TAB_BAR_EDGE_LABELS[key]] as const), (value) => change((d) => { d.tabLayout = tabLayoutForEdge(value, d.tabLayout); rememberOwnLayout(d); }));
+  const tabEdge = segmentedControl<TabBarEdge>('Tab bar', TAB_BAR_EDGES.map((key) => [key, TAB_BAR_EDGE_LABELS[key]] as const), (value) => change((d) => { d.tabLayout = tabLayoutForEdge(value, d.tabLayout); rememberOwnLayout(d); paintPanelEdge(d); }));
   const addressEdge = segmentedControl<BarPosition>('Address bar', BAR_POSITIONS.map((key) => [key, key === 'top' ? 'Top' : 'Bottom'] as const), (value) => change((d) => { d.layout.addressBarPosition = value; rememberOwnLayout(d); }));
-  const panelEdge = segmentedControl<SidePanelPosition>('Panels', SIDE_PANEL_POSITIONS.map((key) => [key, key === 'left' ? 'Left' : 'Right'] as const), (value) => change((d) => { d.sidePanelPosition = value; rememberOwnLayout(d); }));
+  const panelEdge = segmentedControl<SidePanelPosition>('Panels', SIDE_PANEL_POSITIONS.map((key) => [key, key === 'left' ? 'Left' : 'Right'] as const), (value) => change((d) => { d.sidePanelPosition = value; rememberOwnLayout(d); paintPanelEdge(d); }));
+  const panelHint = el('span', 'sp-bar-label sp-panel-edge-hint');
+  panelHint.id = 'sp-panel-edge-hint';
+  panelHint.hidden = true;
   barGroup('Tab bar', tabEdge);
   barGroup('Address bar', addressEdge);
   barGroup('Panels', panelEdge);
+  bars.lastElementChild?.append(panelHint);
+  /** The Panels control keeps the saved edge. The note says where a vertical tab bar actually puts the panel. */
+  function paintPanelEdge(d: Draft): void {
+    const note = panelEdgeNote(d.sidePanelPosition, d.tabLayout, d.layout.tabBarVisible);
+    panelHint.hidden = note === '';
+    panelHint.textContent = note;
+  }
   row(layoutCard, 'layoutBars', bars, { stack: true });
   const layout = radioGroup<TabLayout>('sp-tiles', 'Tab bar style at the top', TOP_TAB_STYLES.map((key) => [key, (button: HTMLButtonElement) => {
     button.className = 'sp-tile';
@@ -550,7 +561,7 @@ export function startSettingsPage(root: HTMLElement): void {
     const hint = el('span', 'sp-tile-hint');
     hint.textContent = LAYOUT_HINTS[key];
     button.append(layoutArt(key), name, hint);
-  }] as const), (value) => change((d) => { d.tabLayout = value; rememberOwnLayout(d); }));
+  }] as const), (value) => change((d) => { d.tabLayout = value; rememberOwnLayout(d); paintPanelEdge(d); }));
   row(layoutCard, 'layout', layout.root, { stack: true });
   // --- end layout --- (the rest of the block follows the sidebar width row)
   const width = el('input', 'sp-range');
@@ -572,7 +583,7 @@ export function startSettingsPage(root: HTMLElement): void {
   const pinStrip = switchControl((on) => change((d) => { d.sidebarPinned = on; }));
   row(layoutCard, 'sidebarPinned', pinStrip.root);
   // --- layout (thread T6) --- the rest of the Layout block
-  const tabBarVisible = switchControl((on) => change((d) => { d.layout.tabBarVisible = on; rememberOwnLayout(d); }));
+  const tabBarVisible = switchControl((on) => change((d) => { d.layout.tabBarVisible = on; rememberOwnLayout(d); paintPanelEdge(d); }));
   row(layoutCard, 'tabBarVisible', tabBarVisible.root);
   const addressBarVisible = switchControl((on) => change((d) => { d.layout.addressBarVisible = on; rememberOwnLayout(d); }));
   row(layoutCard, 'addressBarVisible', addressBarVisible.root);
@@ -1782,6 +1793,7 @@ export function startSettingsPage(root: HTMLElement): void {
     tabEdge.set(tabBarEdge(d.tabLayout));
     addressEdge.set(d.layout.addressBarPosition);
     panelEdge.set(d.sidePanelPosition);
+    paintPanelEdge(d);
     layout.set((TOP_TAB_STYLES as readonly string[]).includes(d.tabLayout) ? d.tabLayout : null);
     tabBarVisible.set(d.layout.tabBarVisible);
     addressBarVisible.set(d.layout.addressBarVisible);

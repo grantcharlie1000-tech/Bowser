@@ -7282,7 +7282,12 @@ impl App {
         // --- layout (thread T6) --- the docked panel moves edge at once; the link-address overlay
         // follows the status bar choice in every open tab and the ones opened next.
         if !hwnd.is_invalid() {
-            win32::side_panel::set_position(hwnd, settings.side_panel_position);
+            // The saved edge is what a row layout uses. Vertical tabs take the other edge, and that
+            // derived edge is not written back to settings.txt.
+            win32::side_panel::set_position(
+                hwnd,
+                crate::settings::SidePanelPosition::placed(settings.side_panel_position, settings.tab_layout, settings.tab_bar_visible),
+            );
         }
         crate::layout_prefs::set_status_overlay(settings.status_bar);
         Self::call_engine(app, |engine| engine.apply_status_overlay());
@@ -7821,8 +7826,10 @@ impl App {
         let arrangement = self
             .arranged() // --- two-level stacks (T10b) ---
             .with_address_bar_revealed(crate::win32::address_bar_revealed(self.hwnd));
+        // Frameless, a chosen panel bar, and full screen: an open panel covers the page.
+        let overlays = crate::auto_hide::panel_overlays(self.settings.frameless, hidden);
         let side_panel = (
-            if plan.panel { 0 } else { crate::win32::side_panel::active_width_px(self.hwnd) },
+            if overlays { 0 } else { crate::win32::side_panel::active_width_px(self.hwnd) },
             crate::win32::side_panel::active_position(self.hwnd),
         );
         let bounds = chrome_viewport_bounds_arranged(

@@ -1818,6 +1818,20 @@ test('layout: presets choose a configuration, the edges derive from the tab layo
   assert.equal(L.tabLayoutForEdge('left', 'horizontal'), 'vertical');
   assert.equal(L.tabLayoutForEdge('right', 'horizontal'), 'vertical-right');
   assert.equal(L.tabLayoutForEdge('bottom', 'tabs-top'), 'bottom');
+  // A visible vertical tab bar puts the panel on the other edge. The saved choice is what a row uses.
+  assert.equal(L.effectiveSidePanelPosition('left', 'vertical', true), 'right');
+  assert.equal(L.effectiveSidePanelPosition('right', 'vertical', true), 'right');
+  assert.equal(L.effectiveSidePanelPosition('left', 'vertical-right', true), 'left');
+  assert.equal(L.effectiveSidePanelPosition('right', 'vertical-right', true), 'left');
+  assert.equal(L.effectiveSidePanelPosition('right', 'horizontal', true), 'right');
+  assert.equal(L.effectiveSidePanelPosition('left', 'bottom', true), 'left');
+  assert.equal(L.effectiveSidePanelPosition('left', 'vertical', false), 'left', 'a hidden tab bar keeps the saved edge');
+  assert.equal(L.effectiveSidePanelPosition('right', 'vertical-right', false), 'right');
+  assert.equal(L.panelEdgeNote('left', 'horizontal', true), '');
+  assert.equal(L.panelEdgeNote('left', 'vertical', true), 'Panels open on the right, opposite the vertical tabs. Left is kept for when the tab bar is a row.');
+  assert.equal(L.panelEdgeNote('right', 'vertical', true), 'Panels open on the right, opposite the vertical tabs.');
+  assert.equal(L.panelEdgeNote('right', 'vertical-right', true), 'Panels open on the left, opposite the vertical tabs. Right is kept for when the tab bar is a row.');
+  assert.equal(L.panelEdgeNote('left', 'vertical-right', false), '');
   // Saved: a change away from every preset is remembered; a preset pick leaves it alone.
   const draft = logic.draftOf(logic.parseSettingsSnapshot(fixture.snap.d));
   assert.equal(L.selectedTile(draft), null);
@@ -1894,6 +1908,8 @@ test('layout: the page shows the preset thumbnails and the three edges in view; 
   assert.deepEqual(groups[0].querySelectorAll('[role="radio"]').map((b) => b.textContent), ['Top', 'Left', 'Right', 'Bottom']);
   assert.equal(groups[0].querySelector('[aria-checked="true"]').textContent, 'Top');
   assert.equal(groups[2].querySelector('[aria-checked="true"]').textContent, 'Left');
+  const panelHint = app.querySelector('.sp-panel-edge-hint');
+  assert.equal(panelHint.hidden, true, 'a row of tabs uses the saved panel edge, with no note');
   sent.length = 0;
   groups[0].querySelectorAll('[role="radio"]')[2].click();
   assert.match(sent[0].text, /^tab_layout=vertical-right\n/);
@@ -1903,6 +1919,9 @@ test('layout: the page shows the preset thumbnails and the three edges in view; 
   assert.equal(saved.disabled, false, 'the Saved tile has something to bring back');
   assert.equal(saved.getAttribute('aria-checked'), 'true');
   assert.equal(groups[0].querySelector('[aria-checked="true"]').textContent, 'Right');
+  assert.equal(groups[2].querySelector('[aria-checked="true"]').textContent, 'Left', 'the Panels control keeps the saved edge');
+  assert.equal(panelHint.hidden, false);
+  assert.match(panelHint.textContent, /open on the left/);
   assert.equal(rowNode('layout').querySelector('[aria-checked="true"]'), null, 'no top style while the tabs are on a side');
   // Address bar bottom, panels right: one key each.
   sent.length = 0;
@@ -1910,6 +1929,7 @@ test('layout: the page shows the preset thumbnails and the three edges in view; 
   assert.match(sent[0].text, /\naddress_bar_position=bottom\n/);
   groups[2].querySelectorAll('[role="radio"]')[1].click();
   assert.match(sent[1].text, /\nside_panel_position=right\n/);
+  assert.match(panelHint.textContent, /Right is kept/, 'the click is saved for a tab row; the live edge stays opposite the tabs');
   // Back to a preset through the Saved tile and the top-style tiles.
   deliver({ ...fixture.snap, d: { ...fixture.snap.d, layout: { ...fixture.snap.d.layout, saved: own }, ack: 'saved' } });
   sent.length = 0;
