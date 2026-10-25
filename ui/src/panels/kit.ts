@@ -2,6 +2,7 @@
 // privacy, and the buttons on the settings page): header, search field, empty state, icon buttons,
 // roving list keys.
 import { el, icon, type IconName } from '../dom';
+import { attachSegmentThumb } from '../segment-thumb';
 import { sendPanel } from '../protocol';
 import { isNavKey, navIndex, tileLetter } from './kit-logic';
 
@@ -206,5 +207,6 @@ export function segmented<T extends string>(options: ReadonlyArray<readonly [T, 
   });
   group.append(...buttons);
   paint(current);
+  attachSegmentThumb(group);
   return group;
 }

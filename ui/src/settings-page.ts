@@ -7,6 +7,7 @@
 import { onInbound, send, sendPanel, type Inbound, type PanelFields, type SettingsSection } from './protocol';
 import { applyTheme } from './view';
 import { el, icon, type IconName } from './dom';
+import { attachSegmentThumb } from './segment-thumb';
 import { installTooltips } from './tooltip';
 import { selectField, type SelectField } from './panels/select';
 import { textButton, type PageSection } from './panels/kit';
@@ -144,7 +145,9 @@ function radioGroup<T extends string>(className: string, label: string, items: R
 }
 
 export function segmentedControl<T extends string>(label: string, options: ReadonlyArray<readonly [T, string]>, onSelect: (value: T) => void): Control<T | null> {
-  return radioGroup('bw-segmented sp-seg', label, options.map(([value, text]) => [value, (button: HTMLButtonElement) => { button.textContent = text; }] as const), onSelect);
+  const control = radioGroup('bw-segmented sp-seg', label, options.map(([value, text]) => [value, (button: HTMLButtonElement) => { button.textContent = text; }] as const), onSelect);
+  attachSegmentThumb(control.root);
+  return control;
 }
 
 /**
@@ -501,7 +504,7 @@ export function startSettingsPage(root: HTMLElement): void {
     button.append(layoutArt(key === 'saved' ? DEFAULT_LAYOUT_CONFIG : presetConfig(key)), name, hint);
     if (key === 'saved') savedTile = button;
   };
-  const presets = radioGroup<Preset | 'saved'>('sp-tiles is-presets', 'Layout', [...PRESETS, 'saved' as const].map((key) => [key, presetTile(key)] as const), (value) => change((d) => {
+  const presets = radioGroup<Preset | 'saved'>('sp-tiles is-presets', 'Presets', [...PRESETS, 'saved' as const].map((key) => [key, presetTile(key)] as const), (value) => change((d) => {
     const config = value === 'saved' ? parseLayoutConfig(d.layout.saved) : presetConfig(value);
     if (config) applyLayoutConfig(d, config);
   }));

@@ -8,7 +8,9 @@
  * aria-expanded) and with `.is-*` classes otherwise.
  *
  * Motion rules: animate transform and opacity only; never width/height/top/left/margin/padding.
- * Never set pointer-events:none on an interactive element to cover a transition.
+ * The segmented thumb is the exception: it is position:absolute, so its width can morph without
+ * reflowing the options, and the corner radius stays put. Never set pointer-events:none on an
+ * interactive element to cover a transition.
  */
 
 /* ---- Focus ring: 2px accent outside a 1px contrast ring (reference-spec "Focus ring"). ---- */
@@ -622,6 +624,74 @@
   color: var(--bw-text);
 }
 
+/* Sliding thumb (attachSegmentThumb). The pill is out of flow, so its width can morph without
+   moving the options; the corner radius stays constant, which a scale would squash. The first
+   placement and a resize omit `.is-ready`, so nothing slides in from zero. Reduced motion and
+   `data-motion="off"` (below, and the base-layer rule) drop the transition and the press scale. */
+.bw-segmented.is-thumb {
+  position: relative;
+  --bw-seg-dur: 280ms;
+  --bw-seg-ease: cubic-bezier(0.25, 1, 0.5, 1);
+}
+
+.bw-seg-thumb {
+  position: absolute;
+  z-index: 0;
+  left: 0;
+  top: 0;
+  pointer-events: none;
+  border-radius: calc(var(--bw-r-control) - 1px);
+}
+
+.bw-segmented.is-thumb.is-ready .bw-seg-thumb {
+  transition:
+    transform var(--bw-seg-dur) var(--bw-seg-ease),
+    width var(--bw-seg-dur) var(--bw-seg-ease);
+}
+
+.bw-seg-thumb-face {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border: 1px solid var(--bw-island-edge);
+  border-radius: inherit;
+  background: var(--bw-island-active);
+  box-shadow: var(--bw-sh-tip);
+  transform: scale(1);
+}
+
+.bw-segmented.is-thumb.is-ready .bw-seg-thumb-face {
+  transition: transform 140ms var(--bw-seg-ease);
+}
+
+.bw-segmented.is-thumb.is-pressed .bw-seg-thumb-face {
+  transform: scale(0.95);
+}
+
+.bw-segmented.is-thumb > button {
+  position: relative;
+  z-index: 1;
+  font-weight: 400;
+  transition:
+    background-color var(--bw-dur-fast) var(--bw-ease-fade),
+    color var(--bw-seg-dur) var(--bw-seg-ease),
+    font-weight var(--bw-seg-dur) var(--bw-seg-ease);
+}
+
+.bw-segmented.is-thumb.is-placed > button:is([aria-checked="true"], [aria-pressed="true"], [aria-selected="true"]),
+.bw-segmented.is-thumb.is-placed > button:is([aria-checked="true"], [aria-pressed="true"], [aria-selected="true"]):hover {
+  border-color: transparent;
+  background: transparent;
+  color: var(--bw-text);
+  font-weight: var(--bw-weight-strong);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bw-segmented.is-thumb.is-pressed .bw-seg-thumb-face {
+    transform: none;
+  }
+}
+
 /* ---- Dialog shell: .bw-dialog > .bw-dialog-title, .bw-dialog-body, .bw-dialog-actions. ---- */
 .bw-dialog {
   display: flex;
@@ -787,6 +857,10 @@
   transition: none !important;
   animation: none !important;
   scroll-behavior: auto !important;
+}
+
+:root[data-motion="off"] .bw-segmented.is-thumb.is-pressed .bw-seg-thumb-face {
+  transform: none;
 }
 
 :root[data-scroll="simple"] .bw-scroll {
