@@ -569,6 +569,11 @@ fn snapshot(owner: HWND, app: &AppRef) -> String {
     let status = crate::updater::status();
     let (update, update_version, last_check) = match &status {
         Status::Unavailable => ("unavailable", String::new(), "none"),
+        Status::InstallRequired => ("installrequired", String::new(), "none"),
+        Status::Installing => ("installing", String::new(), "none"),
+        Status::Installed => ("installed", String::new(), "none"),
+        Status::Blocked => ("blocked", String::new(), "none"),
+        Status::CustomData => ("customdata", String::new(), "none"),
         Status::Checking => ("checking", String::new(), "none"),
         Status::Ready(version) => ("ready", version.to_string(), "none"),
         Status::Idle { last } => ("idle", String::new(), match last {
@@ -579,7 +584,8 @@ fn snapshot(owner: HWND, app: &AppRef) -> String {
         }),
     };
     // The page's own check is "checking" until it reports, whatever the background thread says.
-    let update = if checking && update != "ready" { "checking" } else { update };
+    let update = if checking && update == "installrequired" { "installing" }
+        else if checking && update == "idle" { "checking" } else { update };
     let version = crate::updater::Version::current().to_string();
     // Downloads (docs/design/downloads.md): the folder as it is in force now, so an empty setting
     // reads as the Downloads folder.
@@ -746,6 +752,20 @@ fn run(owner: HWND, app: &AppRef, tab: TabId, action: Action) {
             .unwrap_or(false);
             if start && !super::window::check_for_updates_from_page(owner) {
                 update_checked(owner, "failed");
+            }
+        }
+        Action::InstallUpdates => {
+            // This route is deliberately opt-in and unavailable to dev/benchmark/installed runs.
+            if !matches!(crate::updater::status(), crate::updater::Status::InstallRequired) { return; }
+            let start = with(owner, |rt| {
+                if rt.checking { return false; }
+                rt.checking = true;
+                rt.check_result = "none";
+                rt.dirty = true;
+                true
+            }).unwrap_or(false);
+            if start && !super::window::install_updates_from_page(owner) {
+                update_checked(owner, "installfailed");
             }
         }
         Action::RestartUpdate => {

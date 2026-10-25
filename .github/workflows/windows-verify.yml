@@ -31,11 +31,25 @@ jobs:
             if ($parseErrors.Count -gt 0) { $parseErrors | Format-List; throw "$script does not parse." }
           }
       - name: Install official Rust toolchain
+        # Installer tests below extract helpers only; they never install or launch Bowser.
         run: |
           rustup toolchain install stable --profile minimal --component clippy
           if ($LASTEXITCODE -ne 0) { throw 'Rust toolchain installation failed.' }
           rustc +stable --version
           cargo +stable --version
+      - name: Test pinned installer safety helpers without running setup
+        shell: powershell
+        run: ./tests/installer-safety.ps1
+      - name: Check exact legacy PowerShell child harness before building Bowser
+        timeout-minutes: 2
+        run: |
+          # tests/scripts.rs is std-only: isolate the real child launch without building/running Bowser.
+          $env:CARGO_MANIFEST_DIR = $pwd.Path
+          $harness = Join-Path $env:RUNNER_TEMP 'bowser-script-harness.exe'
+          rustc +stable --edition=2024 --test tests/scripts.rs -o $harness
+          if ($LASTEXITCODE -ne 0) { throw 'Standalone script-harness compilation failed.' }
+          & $harness --nocapture
+          if ($LASTEXITCODE -ne 0) { throw 'Standalone PowerShell child harness failed.' }
       - name: Diagnose focused native theme persistence before aggregate tests
         timeout-minutes: 15
         run: ./benchmarks/scripts/test-native-theme-flow.ps1

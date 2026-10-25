@@ -268,6 +268,7 @@ pub enum Action {
     /// The page moved to a section (`None` is the top): the tab's address follows.
     Section(Option<Section>),
     CheckUpdates,
+    InstallUpdates,
     RestartUpdate,
     Privacy,
     Profiles,
@@ -393,6 +394,7 @@ pub fn map_command(f: &PanelFields) -> Option<Action> {
         "reset" if bare => Action::Reset,
         "openfile" if bare => Action::OpenFile,
         "checkupdates" if bare => Action::CheckUpdates,
+        "installupdates" if bare => Action::InstallUpdates,
         "restartupdate" if bare => Action::RestartUpdate,
         "privacy" if bare => Action::Privacy,
         "profiles" if bare => Action::Profiles,
@@ -721,7 +723,7 @@ mod tests {
         section.text = Some("downloads".into());
         assert_eq!(map_command(&section), Some(Action::Section(Some(Section::Downloads))));
 
-        for (name, action) in [("reset", Action::Reset), ("openfile", Action::OpenFile), ("checkupdates", Action::CheckUpdates), ("restartupdate", Action::RestartUpdate), ("privacy", Action::Privacy), ("profiles", Action::Profiles), ("import", Action::Import), ("refresh", Action::Refresh), ("setdefault", Action::SetDefault)] {
+        for (name, action) in [("reset", Action::Reset), ("openfile", Action::OpenFile), ("checkupdates", Action::CheckUpdates), ("installupdates", Action::InstallUpdates), ("restartupdate", Action::RestartUpdate), ("privacy", Action::Privacy), ("profiles", Action::Profiles), ("import", Action::Import), ("refresh", Action::Refresh), ("setdefault", Action::SetDefault)] {
             assert_eq!(map_command(&fields(name)), Some(action), "{name}");
             let mut with_on = fields(name);
             with_on.on = Some(true);

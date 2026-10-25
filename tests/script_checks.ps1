@@ -8,6 +8,12 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+# Record only the interpreter and required built-in module, not the full process environment.
+Write-Output ("script child: edition={0}; version={1}; PSHOME={2}" -f
+    $PSVersionTable.PSEdition, $PSVersionTable.PSVersion, $PSHOME)
+$hashCommand = Get-Command Get-FileHash -ErrorAction Stop
+Write-Output ("script child: hash module={0}; path={1}" -f
+    $hashCommand.ModuleName, $hashCommand.Module.Path)
 $failures = New-Object System.Collections.Generic.List[string]
 
 function Import-ScriptFunctions {
@@ -84,18 +90,27 @@ catch { $failures.Add("Update-Bowser.ps1: $($_.Exception.Message)") }
 
 # P-14: Open-Bowser.ps1
 try {
-    $null = Import-ScriptFunctions -Name 'Open-Bowser.ps1' -Functions @('Test-SameFilePath', 'Install-StagedFile')
+    $null = Import-ScriptFunctions -Name 'Open-Bowser.ps1' -Functions @('Test-SameFilePath', 'Assert-NoReparsePath', 'Get-LowerSha256', 'Install-StagedFile')
     $dir = Join-Path $Temp 'open-bowser'
     $null = New-Item -ItemType Directory -Path $dir -Force
     $dest = Join-Path $dir 'Bowser.exe'
     $staged = Join-Path $dir 'Bowser.exe.download'
     [IO.File]::WriteAllText($dest, 'old')
     [IO.File]::WriteAllText($staged, 'new')
-    Install-StagedFile -Staged $staged -Destination $dest
-    Check 'Open: the staged exe replaces the installed one' { ([IO.File]::ReadAllText($dest) -eq 'new') -and -not (Test-Path -LiteralPath $staged) -and -not (Test-Path -LiteralPath "$dest.previous") }
+    Install-StagedFile -Staged $staged -Destination $dest -PreviousHash (Get-LowerSha256 -Path $dest)
+    Check 'Open: the staged exe replaces the installed one and clears rollback backups' {
+        ([IO.File]::ReadAllText($dest) -eq 'new') -and -not (Test-Path -LiteralPath $staged) -and
+            (@(Get-ChildItem -LiteralPath $dir -Filter 'Bowser.exe.previous*' -Force).Count -eq 0)
+    }
     $failed = $false
-    try { Install-StagedFile -Staged (Join-Path $dir 'missing.download') -Destination $dest } catch { $failed = $true }
+    try { Install-StagedFile -Staged (Join-Path $dir 'missing.download') -Destination $dest -PreviousHash (Get-LowerSha256 -Path $dest) } catch { $failed = $true }
     Check 'Open: a failed replace keeps the installed exe' { $failed -and ([IO.File]::ReadAllText($dest) -eq 'new') }
+    [IO.File]::WriteAllText($staged, 'unrecorded')
+    $failed = $false
+    try { Install-StagedFile -Staged $staged -Destination $dest } catch { $failed = $true }
+    Check 'Open: an unrecorded destination is never replaced' {
+        $failed -and ([IO.File]::ReadAllText($dest) -eq 'new') -and ([IO.File]::ReadAllText($staged) -eq 'unrecorded')
+    }
     Remove-Item -LiteralPath $dest -Force
     [IO.File]::WriteAllText($staged, 'first')
     Install-StagedFile -Staged $staged -Destination $dest
