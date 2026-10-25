@@ -53,7 +53,7 @@ export const TAB_CARD_TITLES: Readonly<Record<TabCardKey, string>> = {
   audio: 'Audio',
   pinned: 'Pinned tabs',
   restore: 'Restoring tabs',
-  stacks: 'Tab stacks, tiling and workspaces', // --- T10 ---
+  stacks: 'Tab groups', // --- T10 --- the part title; tiling and workspaces stay in the section lead and the row text.
 };
 
 const toggle = (key: string, card: TabCardKey, def: boolean, label: string, description: string, keywords: string): ToggleSpec =>
@@ -70,7 +70,7 @@ export const MAX_PAGE_URL = 2048;
 /** Every option, in the order the page lists them. The Rust table lists the same keys (plus the position). */
 export const TAB_OPTIONS: readonly TabOptionSpec[] = [
   choice('tabs_new_tab_page', 'new', 'start', [['start', 'Start page'], ['homepage', 'Homepage'], ['blank', 'Blank page'], ['url', 'Specific page']], 'New tab page',
-    'What a new tab opens. Homepage is the one set in Start page; while none is set, the start page shows. Blank page shows nothing, not even the start page.', 'new tab page start homepage blank url speed dial'),
+    'What a new tab opens: the start page, your homepage, a blank page, or an address.', 'new tab page start homepage blank url speed dial'),
   {
     kind: 'text', key: 'tabs_new_tab_url', card: 'new', default: '', max: MAX_PAGE_URL, placeholder: 'https://example.com', when: ['tabs_new_tab_page', 'url'],
     label: 'Address of the new tab page', description: 'Opened by every new tab while the page above is a specific page.', keywords: 'new tab address url website',
@@ -120,8 +120,8 @@ export const TAB_OPTIONS: readonly TabOptionSpec[] = [
   toggle('tabs_load_pinned', 'restore', false, 'Always load pinned tabs', 'Pinned tabs load as soon as Bowser reopens them, even when the others wait.', 'always load pinned tabs restore'),
 
   // --- tab stacks, tiling and workspaces (T10; src/stacks.rs) --- a stack is a site island.
-  choice('tabs_stack_style', 'stacks', 'islands', [['islands', 'Islands'], ['compact', 'Compact'], ['accordion', 'Accordion'], ['two-level', 'Two-level'], ['off', 'Off']], 'Tab stacks',
-    'Islands sit side by side and fold when you fold them. Compact folds each stack to its ball and the tab in use. Accordion opens only the stack you are in. Two-level shows the tabs of the stack you are in on a second row under the tab bar; with the tab bar on a side, the sidebar shows stacks as usual.',
+  choice('tabs_stack_style', 'stacks', 'islands', [['islands', 'Islands'], ['compact', 'Compact'], ['accordion', 'Accordion'], ['two-level', 'Two-level'], ['off', 'Off']], 'Tab groups',
+    'How grouped tabs are drawn: side by side, compact, accordion, on a second row, or off.',
     'tab stacks stacking islands groups compact accordion two level second row fold off'),
   toggle('tabs_workspaces', 'stacks', true, 'Workspaces', 'Shows workspaces in the rail, the sidebar, the menu and Quick commands. Off hides them; their tabs wait until you turn them back on.',
     'workspaces enable disable rail switcher'),

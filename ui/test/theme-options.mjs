@@ -88,7 +88,7 @@ test('the rows cover every option once, are searchable, and only the schedule is
   }
   assert.deepEqual(options.THEME_ROWS.map((row) => row.id), [...options.THEME_ROW_IDS]);
   const tiers = Object.fromEntries(options.THEME_ROWS.map((row) => [row.id, logic.rowTier(logic.ROWS.find((r) => r.id === row.id))]));
-  assert.deepEqual(Object.entries(tiers).filter(([, tier]) => tier === 'core').map(([id]) => id), [], 'final: no theme row is core; Appearance keeps its ten');
+  assert.deepEqual(Object.entries(tiers).filter(([, tier]) => tier === 'core').map(([id]) => id), ['themeSchedule'], 'light or dark is the one theme row in the main view');
   assert.ok(Object.entries(tiers).filter(([id]) => id !== 'themeSchedule').every(([, tier]) => tier === 'more'), JSON.stringify(tiers));
   assert.ok(logic.matchRows('night').has('themeSchedule'));
   assert.ok(logic.matchRows('saturation').has('themeSaturation'));
@@ -174,6 +174,7 @@ class Node {
   detach(node) { if (node.parent) node.parent.children = node.parent.children.filter((c) => c !== node); node.parent = this; }
   append(...nodes) { for (const n of nodes) { const node = typeof n === 'string' ? new Node('#text', n) : n; this.ownText = null; this.detach(node); this.children.push(node); } }
   prepend(node) { this.detach(node); this.children.unshift(node); }
+  before(node) { const p = this.parent; p.detach(node); p.children.splice(p.children.indexOf(this), 0, node); }
   after(node) { const p = this.parent; p.detach(node); p.children.splice(p.children.indexOf(this) + 1, 0, node); }
   replaceWith(node) { const p = this.parent; const at = p.children.indexOf(this); p.detach(node); p.children.splice(at, 1, node); this.parent = null; }
   replaceChildren(...nodes) { this.children = []; this.ownText = null; this.append(...nodes); }
@@ -209,7 +210,7 @@ Object.assign(globalThis, {
   chrome: { webview: { postMessage: (wire) => sent.push(JSON.parse(wire)), addEventListener: (_t, cb) => listeners.push(cb) } },
 });
 // --- settings slim --- the disclosures remember their state here; Privacy was left open last time.
-const stored = new Map([['bowser.settings.more', JSON.stringify(['privacy'])]]);
+const stored = new Map([['bowser.settings.more', JSON.stringify(['privacy'])], ['bowser.settings.view', 'all']]);
 globalThis.localStorage = { getItem: (k) => stored.get(k) ?? null, setItem: (k, v) => stored.set(k, String(v)), removeItem: (k) => stored.delete(k) };
 globalThis.Element = Node;
 globalThis.HTMLElement = Node;
@@ -250,9 +251,12 @@ test('the theme rows are drawn once each, labelled, with their own control', () 
 test('every theme row sits behind More options; the main view keeps its ten rows', () => {
   // --- final --- the schedule joined Appearance's main view on its own branch; with the layout
   // presets and the auto-hide switch merged, Appearance keeps the ten core rows PR #34 had.
-  for (const id of options.THEME_ROW_IDS) assert.ok(more.contains(rowNode(id)), `${id} is behind More options`);
+  for (const id of options.THEME_ROW_IDS) {
+    if (id === 'themeSchedule') assert.ok(!more.contains(rowNode(id)), 'light or dark stays in the main view');
+    else assert.ok(more.contains(rowNode(id)), `${id} is behind More options`);
+  }
   const core = areaNode.querySelectorAll('.sp-row').filter((row) => !more.contains(row)).map((row) => row.dataset.row).filter((id) => typeof id === 'string');
-  assert.deepEqual(core.filter((id) => id.startsWith('theme')), ['theme', 'themeAccent'], 'the theme card gains no core row');
+  assert.deepEqual(core.filter((id) => id.startsWith('theme')), ['theme', 'themeAccent', 'themeSchedule']);
   assert.ok(core.length <= 10, `${core.length} core rows in Appearance`);
   // Search finds a hidden row and opens the disclosure it is in.
   searchFor('saturation');

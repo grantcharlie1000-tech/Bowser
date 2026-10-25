@@ -9,7 +9,7 @@ import { textButton } from './panels/kit';
 import type { PanelFields, SettingsSection, SnapshotMsg } from './protocol';
 import {
   BAR_DISPLAYS, BAR_DISPLAY_LABELS, BAR_POSITIONS, MAX_CONFIRM, MAX_ENGINES, MAX_RESULTS, MIN_CONFIRM, MIN_RESULTS, SEARCH_FIELD_MODES, SOURCE_LABELS,
-  EMPTY_ENGINE, draftOfEngine, engineFields, engineLabel, engineProblem, isNickWord, isSuffix, monogram, moveSource, parseAddressSnapshot, setFields, sourceList, sourceRows, toggleSource,
+  EMPTY_ENGINE, draftOfEngine, engineChoiceLabel, engineFields, engineLabel, engineProblem, isNickWord, isSuffix, monogram, moveSource, parseAddressSnapshot, setFields, sourceList, sourceRows, toggleSource,
   type AddressKey, type AddressSnapshot, type BarDisplay, type BarPosition, type EngineDraft, type EngineOp, type EngineView, type SearchFieldMode, type SourceId,
 } from './address-settings-logic';
 
@@ -306,7 +306,7 @@ function engineSelect(host: AddressHost, into: HTMLElement, id: string, label: s
         key = nextKey;
         select?.close();
         select = selectField<string>({
-          options: [...(allowDefault ? [{ value: '', label: 'Same as the default engine' }] : []), ...engines.map((e) => ({ value: e.id, label: e.name }))],
+          options: [...(allowDefault ? [{ value: '', label: 'Same as the default engine' }] : []), ...engines.map((e) => ({ value: e.id, label: engineChoiceLabel(e.id, e.name) }))],
           value: current,
           label,
           placeholder: label,
