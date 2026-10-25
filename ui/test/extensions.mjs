@@ -292,7 +292,7 @@ test('section: loading, then the list; a labelled card, a row per extension, the
   assert.equal(button(notes, 'Open Tab Notes popup'), undefined, 'no popup button when it declares none or is off');
   assert.equal(notes.querySelector('.sp-ext-failure').textContent, 'Load failed: 0x80070002');
   assert.equal(section.root.querySelector('.sp-ext-install').hidden, false);
-  assert.match(section.root.querySelector('.sp-ext-note').textContent, /cannot narrow them/);
+  assert.equal(section.root.querySelector('.sp-ext-note'), null);
   assert.doesNotMatch(visibleText(), /\benforc|badge/i);
 });
 
@@ -304,7 +304,7 @@ test('section: Install CRX file… sits beside Install unpacked… with the same
   assert.equal(crx.parent, unpacked.parent, 'side by side');
   assert.equal(crx.className.replace('sp-ext-install-crx', '').trim(), unpacked.className.replace('sp-ext-install', '').trim(), 'same visual weight');
   assert.equal(crx.hidden, unpacked.hidden);
-  assert.equal(crx.getAttribute('aria-describedby'), 'sp-ext-note');
+  assert.equal(crx.getAttribute('aria-describedby'), null);
   assert.doesNotMatch(`${unpacked.textContent} ${crx.textContent}`, /\bstore\b|chrome web|add to chrome|one-click/i);
   assert.ok(button(head, 'Open Chrome Web Store'), 'discovery is a separate original-site action');
 });
@@ -354,7 +354,8 @@ test('section: remove asks in the row first; Cancel and Escape back out; Remove 
   assert.deepEqual(sent, [], 'nothing is sent before the question is answered');
   let ask = rowOf(ID).querySelector('.sp-ext-confirm');
   assert.equal(ask.getAttribute('aria-label'), 'Confirm removing Reader "<b>"');
-  assert.match(ask.textContent, /Bowser unloads it and deletes its copied files/);
+  assert.match(ask.textContent, /Remove\?/);
+  assert.equal(ask.querySelector('.sp-desc').textContent, 'Remove?');
   assert.equal(globalThis.document.activeElement?.textContent, 'Cancel', 'the safe answer has the keyboard');
   button(ask, 'Cancel').click();
   assert.equal(rowOf(ID).querySelector('.sp-ext-confirm'), null);
@@ -386,8 +387,8 @@ test('section: while one is removed it says so, holds every other action, then t
   assert.deepEqual(toasts.at(-1), { text: 'Extension removed', ok: true });
   const empty = card().querySelector('.sp-ext-state.is-empty');
   assert.ok(empty);
-  assert.match(empty.textContent, /No extensions installed/);
-  assert.match(empty.textContent, /manifest\.json/);
+  assert.match(empty.textContent, /^None/);
+  assert.doesNotMatch(empty.textContent, /manifest\.json/);
   assert.equal(section.root.querySelector('.sp-ext-install').hidden, true, 'the empty state has its own button');
 });
 
@@ -430,7 +431,7 @@ test('section: an unreadable list and an invalid snapshot each say so and offer 
   let state = card().querySelector('.sp-ext-state.is-error');
   assert.equal(state.getAttribute('role'), 'alert');
   assert.match(state.textContent, /Extensions could not be read/);
-  assert.match(state.textContent, /The installed extension list is damaged\./);
+  assert.match(state.getAttribute('aria-label'), /The installed extension list is damaged\./);
   sent.length = 0;
   button(state, 'Try again').click();
   assert.deepEqual(sent, [{ v: 1, t: 'set', a: 'refresh' }]);

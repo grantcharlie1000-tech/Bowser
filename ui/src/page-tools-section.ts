@@ -16,7 +16,7 @@ export interface PageToolsHost {
   readonly card: (section: SettingsSection, heading?: string) => HTMLElement;
   readonly row: (into: HTMLElement, id: string, control?: HTMLElement, options?: { stack?: boolean }) => { readonly root: HTMLElement; readonly desc: HTMLElement | null };
   readonly switchControl: (onChange: (on: boolean) => void) => { readonly root: HTMLElement; set(value: boolean): void; disable(off: boolean): void };
-  readonly segmentedControl: <T extends string>(label: string, options: ReadonlyArray<readonly [T, string]>, onSelect: (value: T) => void) => { readonly root: HTMLElement; set(value: T | null): void; disable(off: boolean): void };
+  readonly segmentedControl: <T extends string>(label: string, options: ReadonlyArray<readonly [T, string] | readonly [T, string, string]>, onSelect: (value: T) => void) => { readonly root: HTMLElement; set(value: T | null): void; disable(off: boolean): void };
 }
 
 export interface PageToolsSection { receive(message: SnapshotMsg): void }
@@ -78,8 +78,8 @@ export function mountPageToolsSection(host: PageToolsHost): PageToolsSection {
   };
 
   const capture = host.card('pagetools', 'Capture');
-  const dir = textField('Capture folder', MAX_DIR, 'Pictures\\Bowser', (value) => {
-    if (!isCaptureDir(value)) { host.toast('Use a folder on this PC, such as C:\\Users\\you\\Pictures.', false); return false; }
+  const dir = textField('Capture folder', MAX_DIR, '', (value) => {
+    if (!isCaptureDir(value)) { host.toast('Use a folder on this PC.', false); return false; }
     put('pt_capture_dir', value);
     return true;
   });

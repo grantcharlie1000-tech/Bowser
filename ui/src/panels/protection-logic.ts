@@ -8,7 +8,8 @@ import type { PanelFields } from '../protocol';
 
 export const LEVELS = ['none', 'trackers', 'ads'] as const;
 export type Level = typeof LEVELS[number];
-export const LEVEL_LABELS: Readonly<Record<Level, string>> = { none: 'None', trackers: 'Trackers', ads: 'Trackers and ads' };
+export const LEVEL_LABELS: Readonly<Record<Level, string>> = { none: 'None', trackers: 'Trackers', ads: 'Ads' };
+export const LEVEL_ARIA: Readonly<Record<Level, string>> = { none: 'None', trackers: 'Trackers', ads: 'Trackers and ads' };
 export const LEVEL_HINTS: Readonly<Record<Level, string>> = {
   none: 'Nothing is blocked. Cookie notices can still be hidden.',
   trackers: 'Stops tracking and measurement requests. Ads are left alone.',
@@ -18,21 +19,21 @@ export const LEVEL_HINTS: Readonly<Record<Level, string>> = {
 /** A site's own level: one of the three, or `default` (follow the global level). */
 export const SITE_LEVELS = ['none', 'trackers', 'ads', 'default'] as const;
 export type SiteLevel = typeof SITE_LEVELS[number];
-export const SITE_LEVEL_LABELS: Readonly<Record<SiteLevel, string>> = { none: 'None', trackers: 'Trackers', ads: 'Trackers and ads', default: 'Same as everywhere' };
+export const SITE_LEVEL_LABELS: Readonly<Record<SiteLevel, string>> = { none: 'None', trackers: 'Trackers', ads: 'Ads', default: 'Default' };
 /** The `n` the `site-level` command carries (Rust: 0 none, 1 trackers, 2 trackers and ads, 3 follow the global level). */
 export const SITE_LEVEL_N: Readonly<Record<SiteLevel, number>> = { none: 0, trackers: 1, ads: 2, default: 3 };
 
 /** A site's cookie-notice choice. */
 export const SITE_COOKIES = ['show', 'hide', 'default'] as const;
 export type SiteCookies = typeof SITE_COOKIES[number];
-export const SITE_COOKIE_LABELS: Readonly<Record<SiteCookies, string>> = { show: 'Show notices', hide: 'Hide notices', default: 'Same as everywhere' };
+export const SITE_COOKIE_LABELS: Readonly<Record<SiteCookies, string>> = { show: 'Show', hide: 'Hide', default: 'Default' };
 /** The `n` the `site-cookies` command carries (Rust: 0 show, 1 hide, 2 follow the global switch). */
 export const SITE_COOKIE_N: Readonly<Record<SiteCookies, number>> = { show: 0, hide: 1, default: 2 };
 
 export const RETENTIONS = ['session', '1d', '1w', '1m', '3m', '6m', '1y', 'forever'] as const;
 export type Retention = typeof RETENTIONS[number];
 export const RETENTION_LABELS: Readonly<Record<Retention, string>> = {
-  session: 'Until Bowser closes',
+  session: 'Session',
   '1d': '1 day',
   '1w': '1 week',
   '1m': '1 month',
@@ -48,7 +49,7 @@ export const APPEARANCE_LABELS: Readonly<Record<Appearance, string>> = { auto: '
 
 export const PRIVATE_THEMES = ['follow', 'light', 'dark'] as const;
 export type PrivateThemeKey = typeof PRIVATE_THEMES[number];
-export const PRIVATE_THEME_LABELS: Readonly<Record<PrivateThemeKey, string>> = { follow: 'Same as normal', light: 'Light', dark: 'Dark' };
+export const PRIVATE_THEME_LABELS: Readonly<Record<PrivateThemeKey, string>> = { follow: 'Match', light: 'Light', dark: 'Dark' };
 
 export const SOURCE_KINDS = ['trackers', 'ads', 'cookies'] as const;
 export type SourceKind = typeof SOURCE_KINDS[number];
@@ -60,13 +61,13 @@ export type SourceOrigin = typeof SOURCE_ORIGINS[number];
 
 /** The kinds, in the order Rust numbers their bits (`browsing_data::DataKind::ALL`): bit n is `DELETE_KINDS[n]`. */
 export const DELETE_KINDS = [
-  { key: 'history', label: 'Browsing history', hint: 'Pages you visited, in Bowser’s history list and in the browser engine.' },
-  { key: 'cookies', label: 'Cookies', hint: 'Sites forget that you signed in.' },
-  { key: 'storage', label: 'Site storage', hint: 'Data sites keep on this PC: local storage, offline data, service workers.' },
-  { key: 'cache', label: 'Cached files', hint: 'Copies of pages and images that make sites load faster.' },
-  { key: 'logins', label: 'Saved sign-ins', hint: 'Every login Bowser has saved for you. Sign-ins have no dates, so the period does not apply.' },
-  { key: 'autofill', label: 'Form autofill', hint: 'Names, addresses and other entries the browser filled in for you.' },
-  { key: 'sitesettings', label: 'Site settings', hint: 'Permissions, zoom and translation choices per site. Bowser’s own choices go with “Everything”.' },
+  { key: 'history', label: 'History', hint: '' },
+  { key: 'cookies', label: 'Cookies', hint: '' },
+  { key: 'storage', label: 'Storage', hint: '' },
+  { key: 'cache', label: 'Cache', hint: '' },
+  { key: 'logins', label: 'Sign-ins', hint: '' },
+  { key: 'autofill', label: 'Autofill', hint: '' },
+  { key: 'sitesettings', label: 'Site settings', hint: '' },
 ] as const;
 export type DeleteKind = typeof DELETE_KINDS[number]['key'];
 export const LOGINS_BIT = 1 << DELETE_KINDS.findIndex((kind) => kind.key === 'logins');

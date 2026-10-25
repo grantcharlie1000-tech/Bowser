@@ -5,9 +5,9 @@
 export type ThemeOptionValue = string | number | boolean;
 export type ThemeOptionValues = { readonly [key: string]: ThemeOptionValue };
 
-export const SCHEDULES = [['system', 'Follow Windows'], ['none', 'One look'], ['time', 'By time']] as const;
+export const SCHEDULES = [['system', 'System', 'Follow Windows'], ['none', 'Fixed', 'One look'], ['time', 'Timed', 'By time']] as const;
 export const LOOKS = [['light', 'Light'], ['dark', 'Dark']] as const;
-export const COLOURINGS = [['off', 'Off'], ['tab_bar', 'Tab bar'], ['address_bar', 'Address bar'], ['unified', 'Both']] as const;
+export const COLOURINGS = [['off', 'Off'], ['tab_bar', 'Tabs', 'Tab bar'], ['address_bar', 'Address', 'Address bar'], ['unified', 'Both']] as const;
 export const CONTRASTS = [['standard', 'Standard'], ['high', 'High']] as const;
 
 /** The three optional colours, in the order the page lists them. An empty value is Bowser's own colour. */
@@ -29,7 +29,7 @@ interface Spec {
   readonly key: string;
   readonly kind: Kind;
   readonly default: ThemeOptionValue;
-  readonly choices?: ReadonlyArray<readonly [string, string]>;
+  readonly choices?: ReadonlyArray<readonly [string, string] | readonly [string, string, string]>;
 }
 
 /** Every option, in the order Rust lists them. */
@@ -116,20 +116,21 @@ export interface ThemeRowSpec {
   readonly id: typeof THEME_ROW_IDS[number];
   readonly section: 'appearance';
   readonly label: string;
+  readonly aria?: string;
   readonly description: string;
   readonly keywords: string;
 }
 
 export const THEME_ROWS: readonly ThemeRowSpec[] = [
-  { id: 'themeSchedule', section: 'appearance', label: 'Light or dark', description: 'Follow Windows, keep one look, or switch at set times.', keywords: 'dark light mode schedule automatic night day time follow windows operating system none manual theme' },
-  { id: 'themeLook', section: 'appearance', label: 'Look without a schedule', description: 'The look Bowser keeps while the schedule is set to one look.', keywords: 'light dark fixed always theme no schedule' },
-  { id: 'themeTimes', section: 'appearance', label: 'Schedule times', description: 'The light look starts at the first time and the dark look at the second. Used while the schedule is by time.', keywords: 'time schedule sunrise sunset night day hours light dark manual' },
-  { id: 'themeColours', section: 'appearance', label: 'Custom colours', description: 'The background, text and highlight of Bowser’s own window. Text and highlights are kept readable on the colours you choose.', keywords: 'background foreground text highlight selection colour color custom window theme' },
-  { id: 'themeColouring', section: 'appearance', label: 'Colour the bars with the accent', description: 'The accent colour tints the tab bar, the address bar, or both.', keywords: 'accent colouring coloring tab bar address bar unified tint colour' },
-  { id: 'themeAccentPage', section: 'appearance', label: 'Take the accent from the page', description: 'Uses the page’s own theme colour, or its icon’s colour when it has none. Nothing is fetched for it.', keywords: 'accent colour webpage page theme-color favicon website' },
-  { id: 'themeSaturation', section: 'appearance', label: 'Limit accent saturation', description: 'Keeps a bright accent from being too vivid. 100% leaves it as it is.', keywords: 'accent saturation vivid muted colour limit' },
-  { id: 'themeContrast', section: 'appearance', label: 'Colour contrast', description: 'Standard keeps text readable (WCAG AA). High asks for more wherever the colours allow it.', keywords: 'contrast accessibility readable text high wcag colour' },
-  { id: 'themeFile', section: 'appearance', label: 'Theme file', description: 'Export your colours to a file, import one, or put every theme setting back to Bowser’s own.', keywords: 'theme export import file reset defaults share backup colours' },
+  { id: 'themeSchedule', section: 'appearance', label: 'Mode', aria: 'Light or dark', description: '', keywords: 'dark light mode schedule automatic night day time follow windows operating system none manual theme appearance Light or dark Follow Windows, keep one look, or switch at set times.' },
+  { id: 'themeLook', section: 'appearance', label: 'Look', aria: 'Look without a schedule', description: '', keywords: 'light dark fixed always theme no schedule Look without a schedule The look Bowser keeps while the schedule is set to one look.' },
+  { id: 'themeTimes', section: 'appearance', label: 'Schedule', aria: 'Schedule times', description: '', keywords: 'time schedule sunrise sunset night day hours light dark manual Schedule times The light look starts at the first time and the dark look at the second. Used while the schedule is by time.' },
+  { id: 'themeColours', section: 'appearance', label: 'Colours', aria: 'Custom colours', description: '', keywords: 'background foreground text highlight selection colour color custom window theme Custom colours The background, text and highlight of Bowser’s own window. Text and highlights are kept readable on the colours you choose.' },
+  { id: 'themeColouring', section: 'appearance', label: 'Bar tint', aria: 'Colour the bars with the accent', description: '', keywords: 'accent colouring coloring tab bar address bar unified tint colour Colour the bars with the accent The accent colour tints the tab bar, the address bar, or both.' },
+  { id: 'themeAccentPage', section: 'appearance', label: 'Page accent', aria: 'Take the accent from the page', description: '', keywords: 'accent colour webpage page theme-color favicon website Take the accent from the page Uses the page’s own theme colour, or its icon’s colour when it has none. Nothing is fetched for it.' },
+  { id: 'themeSaturation', section: 'appearance', label: 'Saturation', aria: 'Limit accent saturation', description: '', keywords: 'accent saturation vivid muted colour limit Limit accent saturation Keeps a bright accent from being too vivid. 100% leaves it as it is.' },
+  { id: 'themeContrast', section: 'appearance', label: 'Contrast', aria: 'Colour contrast', description: '', keywords: 'contrast accessibility readable text high wcag colour Colour contrast Standard keeps text readable (WCAG AA). High asks for more wherever the colours allow it.' },
+  { id: 'themeFile', section: 'appearance', label: 'Theme file', description: '', keywords: 'theme export import file reset defaults share backup colours Theme file Export your colours to a file, import one, or put every theme setting back to Bowser’s own.' },
 ];
 
 /** "07:30" as minutes since midnight. */

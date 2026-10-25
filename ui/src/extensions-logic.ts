@@ -129,6 +129,15 @@ export function statusText(item: ExtensionItem, busy: boolean): string {
   return version === '' ? state : `${version} · ${state}`;
 }
 
+/** Short reach on the extension row. `reachText` keeps the full sentence. */
+export function reachLine(item: ExtensionItem): string {
+  if (!item.readable) return 'Unknown';
+  if (item.all) return 'All sites';
+  const patterns = item.declared.sites.total + item.declared.scripts.total;
+  if (patterns === 0) return 'No sites';
+  return patterns === 1 ? '1 pattern' : `${patterns} patterns`;
+}
+
 /** The one-line summary of what it can reach, said plainly. */
 export function reachText(item: ExtensionItem): string {
   if (!item.readable) return 'Bowser could not read its manifest, so what it declares is unknown.';

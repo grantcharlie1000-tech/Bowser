@@ -27,13 +27,7 @@ export interface ToolbarEditor {
   disable(off: boolean): void;
 }
 
-const BAR_LEADS: Readonly<Record<BarId, string>> = {
-  address: 'The buttons around the address field. The menu button always stays last.',
-  tabs: 'The buttons at the end of the tab strip, or under the tabs in the sidebar. The button that opens a new tab stays where it is.',
-  panel: 'Buttons that sit after Bookmarks and History on the panel bar. Home, workspaces, web apps, Bookmarks and History are shown or hidden in Customize.',
-};
-const ZONE_TITLES = { left: 'Before the address field', pill: 'Inside the address field', right: 'After the address field' } as const;
-const ZONE_EMPTY = { left: 'No buttons before the address field.', pill: 'No buttons inside the address field.', right: 'No buttons after the address field.' } as const;
+const ZONE_TITLES = { left: 'Before', pill: 'Inside', right: 'After' } as const;
 const BAR_NAMES: Readonly<Record<BarId, string>> = { address: 'the address bar', tabs: 'the tab bar', panel: 'the panel bar' };
 
 /** Command ids that only exist so shortcuts can reach them: never offered as a button. */
@@ -74,12 +68,6 @@ export function mountToolbarEditor(options: { onChange(bar: BarId, items: string
     name.textContent = label;
     name.dir = 'auto';
     text.append(name);
-    const hint = ITEM_LABELS[id]?.hint ?? (isCommandItem(id) ? (id.startsWith('chain:') ? 'A command chain.' : 'A command.') : '');
-    if (hint !== '') {
-      const desc = el('span', 'sp-desc');
-      desc.textContent = hint;
-      text.append(desc);
-    }
     const tools = el('div', 'sp-ctl sp-tb-tools');
     const up = iconButton('chevron-up', `Move ${label} up`, () => change(bar, moveItem(bar, items, id, -1), `${bar}:${id}:up`));
     const down = iconButton('chevron-down', `Move ${label} down`, () => change(bar, moveItem(bar, items, id, 1), `${bar}:${id}:down`));
@@ -94,7 +82,7 @@ export function mountToolbarEditor(options: { onChange(bar: BarId, items: string
     return row;
   };
 
-  const fixedRow = (name: string, hint: string, iconName: IconName): HTMLElement => {
+  const fixedRow = (name: string, iconName: IconName): HTMLElement => {
     const row = el('div', 'sp-tb-row sp-tb-item is-fixed');
     row.setAttribute('role', 'listitem');
     const lead = el('span', 'sp-tb-glyph');
@@ -103,9 +91,7 @@ export function mountToolbarEditor(options: { onChange(bar: BarId, items: string
     const text = el('div', 'sp-text');
     const label = el('span', 'sp-label');
     label.textContent = name;
-    const desc = el('span', 'sp-desc');
-    desc.textContent = hint;
-    text.append(label, desc);
+    text.append(label);
     row.append(lead, text);
     return row;
   };
@@ -143,8 +129,6 @@ export function mountToolbarEditor(options: { onChange(bar: BarId, items: string
     heading.textContent = BAR_TITLES[bar];
     const reset = textButton('Reset', () => change(bar, [...DEFAULTS[bar]], null), { subtle: true, icon: 'reset', aria: `Reset ${BAR_NAMES[bar]} to its default buttons` });
     top.append(heading, reset);
-    const lead = el('p', 'sp-tbe-lead');
-    lead.textContent = BAR_LEADS[bar];
     const body = el('div', 'sp-card sp-tbe-card');
     body.setAttribute('role', 'list');
     body.setAttribute('aria-label', `Buttons on ${BAR_NAMES[bar]}`);
@@ -152,7 +136,7 @@ export function mountToolbarEditor(options: { onChange(bar: BarId, items: string
     const note = el('p', 'sp-tbe-note');
     note.setAttribute('role', 'status');
     foot.append(note);
-    group.append(top, lead, body, foot);
+    group.append(top, body, foot);
     root.append(group);
     bars.set(bar, { body, reset, note, add: null, addKey: '' });
   };
@@ -171,16 +155,16 @@ export function mountToolbarEditor(options: { onChange(bar: BarId, items: string
         rows.push(zoneHeading(ZONE_TITLES[zone]));
         if (zones[zone].length === 0) {
           const none = el('p', 'sp-tb-none');
-          none.textContent = ZONE_EMPTY[zone];
+          none.textContent = 'None';
           rows.push(none);
         }
         for (const id of zones[zone]) rows.push(itemRow(bar, id, nameOf(id)));
-        if (zone === 'pill') rows.push(fixedRow('Address field', 'Always there.', 'address-bar'));
+        if (zone === 'pill') rows.push(fixedRow('Address field', 'address-bar'));
       }
-      rows.push(fixedRow('Menu', 'Always the last button.', 'menu-dots'));
+      rows.push(fixedRow('Menu', 'menu-dots'));
     } else if (items.length === 0) {
       const none = el('p', 'sp-tb-none');
-      none.textContent = 'No buttons on this bar.';
+      none.textContent = 'None';
       rows.push(none);
     } else {
       for (const id of items) rows.push(itemRow(bar, id, nameOf(id)));

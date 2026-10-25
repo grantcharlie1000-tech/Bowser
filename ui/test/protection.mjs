@@ -163,16 +163,16 @@ test('the closed value sets match the Rust settings', () => {
   for (const key of logic.LEVELS) assert.ok(blocker.includes(`"${key}"`), key);
   assert.deepEqual([...logic.RETENTIONS], ['session', '1d', '1w', '1m', '3m', '6m', '1y', 'forever']);
   assert.equal(logic.RETENTION_LABELS['3m'], '3 months');
-  assert.equal(logic.RETENTION_LABELS.session, 'Until Bowser closes');
+  assert.equal(logic.RETENTION_LABELS.session, 'Session');
 });
 
 // ---- words ----
 
 test('the words say what will happen', () => {
   assert.equal(logic.deleteSummary([], '0'), 'Choose what to delete');
-  assert.equal(logic.deleteSummary(['history'], '0'), 'Delete browsing history from the past hour');
-  assert.equal(logic.deleteSummary(['history', 'cookies'], '3'), 'Delete browsing history and cookies from the past 4 weeks');
-  assert.equal(logic.deleteSummary(['cache', 'cookies', 'autofill'], '4'), 'Delete cookies, cached files and form autofill');
+  assert.equal(logic.deleteSummary(['history'], '0'), 'Delete history from the past hour');
+  assert.equal(logic.deleteSummary(['history', 'cookies'], '3'), 'Delete history and cookies from the past 4 weeks');
+  assert.equal(logic.deleteSummary(['cache', 'cookies', 'autofill'], '4'), 'Delete cookies, cache and autofill');
   assert.equal(logic.blockedText(1, 2500), '1 blocked on this page · 2,500 this session');
   assert.equal(logic.levelDescription('none', true), 'Nothing is blocked. Cookie notices are still hidden.');
   assert.equal(logic.levelDescription('none', false), logic.LEVEL_HINTS.none);
@@ -296,7 +296,7 @@ const checked = (control) => radios(control).filter((b) => b.getAttribute('aria-
 
 test('before Bowser answers the blocks exist, with their headings, and nothing is sent', () => {
   assert.equal(sent.length, 0);
-  for (const [block, title] of [[protection.sites, 'Sites with their own choices'], [protection.lists, 'Blocking lists'], [protection.deleteData, 'Delete browsing data']]) {
+  for (const [block, title] of [[protection.sites, 'Site rules'], [protection.lists, 'Blocking lists'], [protection.deleteData, 'Clear data']]) {
     assert.equal(block.querySelector('.pg-heading').textContent, title);
   }
   assert.equal(protection.sections().length, 6, 'blocking, sites, lists, history, delete, appearance');
@@ -315,8 +315,8 @@ test('the single controls show the snapshot and each sends its own command', () 
   assert.equal(protection.retention.root.querySelector('.bw-select-value').textContent, '3 months');
   assert.deepEqual(checked(protection.websiteAppearance), ['Dark']);
   assert.equal(protection.forceDark.root.getAttribute('aria-checked'), 'true');
-  assert.deepEqual(checked(protection.privateTheme), ['Same as normal']);
-  assert.deepEqual(radios(protection.level).map((b) => b.textContent), ['None', 'Trackers', 'Trackers and ads']);
+  assert.deepEqual(checked(protection.privateTheme), ['Match']);
+  assert.deepEqual(radios(protection.level).map((b) => b.textContent), ['None', 'Trackers', 'Ads']);
 
   sent.length = 0;
   radios(protection.level)[0].click();
@@ -335,7 +335,7 @@ test('the single controls show the snapshot and each sends its own command', () 
   const select = protection.retention.root.querySelector('.bw-select-button');
   select.click();
   const options = protection.retention.root.querySelectorAll('[role="option"]');
-  assert.deepEqual(options.map((o) => o.querySelector('.bw-menu-label').textContent), ['Until Bowser closes', '1 day', '1 week', '1 month', '3 months', '6 months', '1 year', 'Forever']);
+  assert.deepEqual(options.map((o) => o.querySelector('.bw-menu-label').textContent), ['Session', '1 day', '1 week', '1 month', '3 months', '6 months', '1 year', 'Forever']);
   options[2].click();
   assert.deepEqual(last(), { v: 1, t: 'priv', a: 'retention', text: '1w' });
   assert.equal(sent.length, 7, 'one command per change, nothing else');
@@ -369,20 +369,20 @@ test('an unreadable settings file disables every control and the Delete button',
 
 test('sites: saved choices are listed with their level and cookie choice; each change is one command', () => {
   const rows = protection.sites.querySelectorAll('.pg-row');
-  assert.deepEqual(rows.map((r) => r.querySelector('.pg-label').textContent).slice(0, 5), ['Add a site', 'The site you are on', 'a.test', 'b.test', 'Skipped in settings']);
+  assert.deepEqual(rows.map((r) => r.querySelector('.pg-label').textContent).slice(0, 5), ['Add a site', 'This site', 'a.test', 'b.test', 'Skipped in settings']);
   assert.equal(rowOf(protection.sites, 'Skipped in settings').querySelector('.pg-desc').textContent, 'allowed.test');
   const a = rowOf(protection.sites, 'a.test');
   const [levelPick, cookiePick] = a.querySelectorAll('.bw-select-button');
   assert.equal(levelPick.querySelector('.bw-select-value').textContent, 'None');
-  assert.equal(cookiePick.querySelector('.bw-select-value').textContent, 'Same as everywhere');
-  assert.equal(rowOf(protection.sites, 'b.test').querySelectorAll('.bw-select-button')[1].querySelector('.bw-select-value').textContent, 'Hide notices');
+  assert.equal(cookiePick.querySelector('.bw-select-value').textContent, 'Default');
+  assert.equal(rowOf(protection.sites, 'b.test').querySelectorAll('.bw-select-button')[1].querySelector('.bw-select-value').textContent, 'Hide');
   sent.length = 0;
   levelPick.click();
   const choose = (label) => a.querySelectorAll('[role="option"]').find((o) => o.querySelector('.bw-menu-label').textContent === label).click();
-  choose('Trackers and ads');
+  choose('Ads');
   assert.deepEqual(sent, [{ v: 1, t: 'priv', a: 'site-level', text: 'a.test', n: 2 }]);
   cookiePick.click();
-  choose('Show notices');
+  choose('Show');
   assert.deepEqual(last(), { v: 1, t: 'priv', a: 'site-cookies', text: 'a.test', n: 0 });
   a.querySelectorAll('button').find((b) => b.getAttribute('aria-label') === 'Forget the choices for a.test').click();
   assert.deepEqual(last(), { v: 1, t: 'priv', a: 'site-remove', text: 'a.test' });
@@ -397,7 +397,7 @@ test('sites: a typed site is cleaned up first, and text that is not a site sends
   type('not a site');
   button(protection.sites, 'Add').click();
   assert.equal(sent.length, 0);
-  assert.equal(protection.sites.querySelector('.pg-protect-error').textContent, 'Enter a site such as example.com.');
+  assert.equal(protection.sites.querySelector('.pg-protect-error').textContent, 'Enter a site.');
   assert.equal(protection.sites.querySelector('.pg-protect-error').getAttribute('role'), 'alert');
   type('https://www.Shop.Example.org/cart');
   assert.equal(protection.sites.querySelector('.pg-protect-error'), null, 'typing clears the problem');
@@ -449,12 +449,12 @@ test('lists: an address is checked before it is sent; a file is chosen in Bowser
   button(protection.lists, 'Add').click();
   assert.deepEqual(sent, [{ v: 1, t: 'priv', a: 'src-add-url', text: 'cookies', url: 'https://lists.example/cookies.txt' }]);
   assert.equal(protection.lists.querySelector('input').value, '');
-  button(protection.lists, 'Choose file…').click();
+  button(protection.lists, 'File').click();
   assert.deepEqual(last(), { v: 1, t: 'priv', a: 'src-add-file', text: 'cookies' }, 'a kind and nothing that names a file');
   // While a fetch runs the add controls wait.
   deliver(snap({ busy: true, result: null }));
   assert.equal(button(protection.lists, 'Fetching…').disabled, true);
-  assert.equal(button(protection.lists, 'Choose file…').disabled, true);
+  assert.equal(button(protection.lists, 'File').disabled, true);
   assert.equal(protection.lists.querySelector('input').disabled, true);
   assert.equal(button(protection.lists, 'Update').disabled, true);
   deliver(snap({ result: null }));
@@ -463,20 +463,21 @@ test('lists: an address is checked before it is sent; a file is chosen in Bowser
 
 test('Delete browsing data: nothing is sent until the second click, and the summary says exactly what it will do', () => {
   const root = protection.deleteData;
-  const run = () => button(root, 'Delete') ?? button(root, 'Confirm');
-  assert.equal(rowOf(root, 'Delete browsing history, cookies, site storage and cached files from the past day').querySelector('.pg-desc').textContent, 'Nothing is deleted until you confirm.');
+  const run = () => button(root, 'Delete') ?? button(root, 'Cannot be undone');
+  assert.equal(rowOf(root, 'Delete').querySelector('.pg-desc'), null);
+  assert.equal(button(root, 'Delete').getAttribute('aria-label'), 'Delete history, cookies, storage and cache from the past day');
   sent.length = 0;
   button(root, 'Delete').click();
   assert.equal(sent.length, 0, 'the first click only asks');
-  assert.ok(button(root, 'Confirm'), 'the button became Confirm');
-  assert.equal(button(root, 'Confirm').classList.contains('is-danger'), true);
+  assert.ok(button(root, 'Cannot be undone'), 'the warning is the confirming button');
+  assert.equal(button(root, 'Cannot be undone').classList.contains('is-danger'), true);
   assert.equal(button(root, 'Cancel').hidden, false);
-  assert.equal(root.querySelector('.pg-desc:not([hidden])') !== null, true);
+  assert.equal(rowOf(root, 'Delete').querySelector('.pg-desc'), null);
   button(root, 'Cancel').click();
   assert.equal(sent.length, 0);
   assert.ok(button(root, 'Delete'), 'cancel puts it back');
   button(root, 'Delete').click();
-  button(root, 'Confirm').click();
+  button(root, 'Cannot be undone').click();
   assert.deepEqual(sent, [{ v: 1, t: 'priv', a: 'delete-data', id: 15, n: 1, on: false }]);
   assert.ok(button(root, 'Delete'), 'and it is Delete again afterwards');
 });
@@ -484,7 +485,7 @@ test('Delete browsing data: nothing is sent until the second click, and the summ
 test('Delete browsing data: changing the period or a kind withdraws the question; choosing nothing disables the button', () => {
   const root = protection.deleteData;
   const switchOf = (label) => root.querySelectorAll('.pg-row').find((row) => row.querySelector('.pg-label').textContent === label).querySelector('[role="switch"]');
-  assert.deepEqual(root.querySelectorAll('.pg-row').map((r) => r.querySelector('.pg-label').textContent).slice(1, 8), ['Browsing history', 'Cookies', 'Site storage', 'Cached files', 'Saved sign-ins', 'Form autofill', 'Site settings']);
+  assert.deepEqual(root.querySelectorAll('.pg-row').map((r) => r.querySelector('.pg-label').textContent).slice(1, 8), ['History', 'Cookies', 'Storage', 'Cache', 'Sign-ins', 'Autofill', 'Site settings']);
   sent.length = 0;
   button(root, 'Delete').click();
   radios({ root }).find((b) => b.textContent === 'Past week').click();
@@ -494,12 +495,12 @@ test('Delete browsing data: changing the period or a kind withdraws the question
   assert.ok(button(root, 'Delete'), 'a kind changed, so the question is withdrawn');
   assert.deepEqual([...root.querySelectorAll('[role="switch"]')].map((sw) => sw.getAttribute('aria-checked')), ['true', 'false', 'true', 'true', 'false', 'false', 'false']);
   button(root, 'Delete').click();
-  button(root, 'Confirm').click();
+  button(root, 'Cannot be undone').click();
   assert.deepEqual(sent, [{ v: 1, t: 'priv', a: 'delete-data', id: 1 | 4 | 8, n: 2, on: false }], 'history, storage and cache for the past week');
-  for (const label of ['Browsing history', 'Site storage', 'Cached files']) switchOf(label).click();
+  for (const label of ['History', 'Storage', 'Cache']) switchOf(label).click();
   assert.equal(button(root, 'Delete').disabled, true, 'nothing chosen');
-  assert.equal(rowOf(root, 'Choose what to delete') !== undefined, true);
-  for (const label of ['Browsing history', 'Cookies', 'Site storage', 'Cached files']) switchOf(label).click();
+  assert.equal(button(root, 'Delete').getAttribute('aria-label'), 'Choose what to delete');
+  for (const label of ['History', 'Cookies', 'Storage', 'Cache']) switchOf(label).click();
   assert.equal(button(root, 'Delete').disabled, false);
   radios({ root }).find((b) => b.textContent === 'Past day').click();
 });
@@ -507,9 +508,9 @@ test('Delete browsing data: changing the period or a kind withdraws the question
 test('Delete browsing data: saved sign-ins need their own yes beside the confirmation, and the flag goes out with them only', () => {
   const root = protection.deleteData;
   const switchOf = (label) => root.querySelectorAll('.pg-row').find((row) => row.querySelector('.pg-label').textContent === label).querySelector('[role="switch"]');
-  assert.equal(rowOf(root, 'Confirm deleting saved sign-ins'), undefined, 'no second yes until sign-ins are chosen');
-  switchOf('Saved sign-ins').click();
-  const sure = rowOf(root, 'Confirm deleting saved sign-ins');
+  assert.equal(rowOf(root, 'Confirm'), undefined, 'no second yes until sign-ins are chosen');
+  switchOf('Sign-ins').click();
+  const sure = rowOf(root, 'Confirm');
   assert.ok(sure, 'the second yes appears');
   assert.equal(sure.querySelector('[role="switch"]').getAttribute('aria-checked'), 'false');
   assert.equal(button(root, 'Delete').disabled, true, 'the button waits for it');
@@ -518,27 +519,27 @@ test('Delete browsing data: saved sign-ins need their own yes beside the confirm
   assert.equal(button(root, 'Delete').disabled, false);
   button(root, 'Delete').click();
   assert.equal(sent.length, 0);
-  button(root, 'Confirm').click();
+  button(root, 'Cannot be undone').click();
   const bits = 1 | 2 | 4 | 8 | 16;
   assert.deepEqual(sent, [{ v: 1, t: 'priv', a: 'delete-data', id: bits, n: 1, on: true }]);
   // The yes is spent: asking again needs it again.
   assert.equal(button(root, 'Delete').disabled, true);
-  assert.equal(rowOf(root, 'Confirm deleting saved sign-ins').querySelector('[role="switch"]').getAttribute('aria-checked'), 'false');
+  assert.equal(rowOf(root, 'Confirm').querySelector('[role="switch"]').getAttribute('aria-checked'), 'false');
   // Untoggling sign-ins removes the second yes and withdraws it.
-  rowOf(root, 'Confirm deleting saved sign-ins').querySelector('[role="switch"]').click();
-  switchOf('Saved sign-ins').click();
-  assert.equal(rowOf(root, 'Confirm deleting saved sign-ins'), undefined);
+  rowOf(root, 'Confirm').querySelector('[role="switch"]').click();
+  switchOf('Sign-ins').click();
+  assert.equal(rowOf(root, 'Confirm'), undefined);
   assert.equal(button(root, 'Delete').disabled, false);
   button(root, 'Delete').click();
-  button(root, 'Confirm').click();
+  button(root, 'Cannot be undone').click();
   assert.deepEqual(last(), { v: 1, t: 'priv', a: 'delete-data', id: 15, n: 1, on: false }, 'without sign-ins no flag goes out');
 });
 
 test('Delete browsing data: a guest has no saved sign-ins to delete', () => {
   deliver(snap({ guest: true, result: null }));
   const root = protection.deleteData;
-  const row = rowOf(root, 'Saved sign-ins');
-  assert.equal(row.querySelector('.pg-desc').textContent, 'Guest windows keep no saved sign-ins.');
+  const row = rowOf(root, 'Sign-ins');
+  assert.equal(row.querySelector('.pg-desc'), null);
   assert.equal(row.querySelector('[role="switch"]').disabled, true);
   assert.equal(row.querySelector('[role="switch"]').getAttribute('aria-checked'), 'false');
   deliver(snap({ result: null }));

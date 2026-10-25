@@ -23,7 +23,7 @@ export interface AddressHost {
   /** The card of the page's existing "Bookmarks bar" rows (Appearance), where the bar's own rows join them. */
   readonly barCard: HTMLElement;
   readonly switchControl: (onChange: (on: boolean) => void) => { readonly root: HTMLElement; set(value: boolean): void; disable(off: boolean): void };
-  readonly segmentedControl: <T extends string>(label: string, options: ReadonlyArray<readonly [T, string]>, onSelect: (value: T) => void) => { readonly root: HTMLElement; set(value: T | null): void; disable(off: boolean): void };
+  readonly segmentedControl: <T extends string>(label: string, options: ReadonlyArray<readonly [T, string] | readonly [T, string, string]>, onSelect: (value: T) => void) => { readonly root: HTMLElement; set(value: T | null): void; disable(off: boolean): void };
 }
 
 export interface AddressSection {
@@ -268,9 +268,12 @@ function sourceItem(id: SourceId, on: boolean, enabled: readonly SourceId[], com
   const text = el('span', 'sp-text');
   const name = el('span', 'sp-label');
   name.textContent = SOURCE_LABELS[id].label;
-  const hint = el('span', 'sp-desc');
-  hint.textContent = SOURCE_LABELS[id].hint;
-  text.append(name, hint);
+  text.append(name);
+  if (SOURCE_LABELS[id].hint !== '') {
+    const hint = el('span', 'sp-desc');
+    hint.textContent = SOURCE_LABELS[id].hint;
+    text.append(hint);
+  }
   const toggle = el('button', 'bw-toggle sp-switch');
   toggle.type = 'button';
   toggle.setAttribute('role', 'switch');
@@ -292,6 +295,12 @@ function sourceItem(id: SourceId, on: boolean, enabled: readonly SourceId[], com
 
 interface EnginePicker { paint(snapshot: AddressSnapshot, value: string, only?: (engine: EngineView) => boolean): void }
 
+/** The Simple row's value sits beside the menu. Tests' fake DOM links nodes with `.parent`. */
+function engineValueSlot(hostNode: HTMLElement): HTMLElement | null {
+  const wrap = hostNode.parentElement ?? (hostNode as HTMLElement & { parent?: HTMLElement | null }).parent ?? null;
+  return wrap?.querySelector<HTMLElement>('.sp-engine-value') ?? null;
+}
+
 function engineSelect(host: AddressHost, into: HTMLElement, id: string, label: string, allowDefault: boolean, onPick: (id: string) => void): EnginePicker {
   const hostNode = el('div', 'sp-select-host');
   host.row(into, id, hostNode);
@@ -306,7 +315,7 @@ function engineSelect(host: AddressHost, into: HTMLElement, id: string, label: s
         key = nextKey;
         select?.close();
         select = selectField<string>({
-          options: [...(allowDefault ? [{ value: '', label: 'Same as the default engine' }] : []), ...engines.map((e) => ({ value: e.id, label: engineChoiceLabel(e.id, e.name) }))],
+          options: [...(allowDefault ? [{ value: '', label: 'Default' }] : []), ...engines.map((e) => ({ value: e.id, label: engineChoiceLabel(e.id, e.name) }))],
           value: current,
           label,
           placeholder: label,
@@ -316,6 +325,12 @@ function engineSelect(host: AddressHost, into: HTMLElement, id: string, label: s
         hostNode.replaceChildren(select.root);
       } else {
         select.set(current);
+      }
+      const shown = engines.find((engine) => engine.id === current);
+      const slot = engineValueSlot(hostNode);
+      if (shown && slot) {
+        slot.dataset.source = 'address';
+        slot.textContent = engineChoiceLabel(shown.id, shown.name);
       }
     },
   };
@@ -343,9 +358,12 @@ function mountEngineEditor(host: AddressHost, current: () => AddressSnapshot | n
     input.autocomplete = 'off';
     input.spellcheck = false;
     input.dir = 'ltr';
-    const note = el('span', 'sp-desc');
-    note.textContent = hint;
-    wrap.append(name, input, note);
+    wrap.append(name, input);
+    if (hint !== '') {
+      const note = el('span', 'sp-desc');
+      note.textContent = hint;
+      wrap.append(note);
+    }
     fields.set(key, input);
     return wrap;
   };
@@ -360,19 +378,19 @@ function mountEngineEditor(host: AddressHost, current: () => AddressSnapshot | n
   actions.append(save, cancel);
   form.append(
     title,
-    inputFor('name', 'Name', '', 'My search', 40),
-    inputFor('nick', 'Nickname', 'Type it before a query to use this engine (optional).', 'ms', 16),
-    inputFor('url', 'Search address', 'Use %s where the search text goes.', 'https://example.com/search?q=%s', 1024),
-    inputFor('post', 'POST parameters', 'Only for engines that take the query as a form post. Use %s once. Leave empty for a plain address.', 'q=%s&lang=en', 512),
-    inputFor('suggest', 'Suggestions address', 'Optional. Use %s where the text goes; the engine is asked only after its nickname or in the search field.', 'https://example.com/suggest?q=%s', 1024),
-    inputFor('image', 'Image search address', 'Optional. Use %s where the address of the image goes.', 'https://example.com/lens?url=%s', 1024),
-    inputFor('imagePost', 'Image POST parameters', 'Optional. Only with an image search address that takes a form post.', 'img=%s', 512),
+    inputFor('name', 'Name', '', '', 40),
+    inputFor('nick', 'Nickname', '', '', 16),
+    inputFor('url', 'Address', '', '%s', 1024),
+    inputFor('post', 'POST', '', '%s', 512),
+    inputFor('suggest', 'Suggestions', '', '%s', 1024),
+    inputFor('image', 'Image search', '', '%s', 1024),
+    inputFor('imagePost', 'Image POST', '', '%s', 512),
     problem,
     actions,
   );
   const openForm = (engine: EngineView | null): void => {
     editing = engine?.id ?? null;
-    title.textContent = engine ? `Edit ${engine.name}` : 'Add a search engine';
+    title.textContent = engine ? `Edit ${engine.name}` : 'Add engine';
     const draft = engine ? draftOfEngine(engine) : EMPTY_ENGINE;
     for (const [key, input] of fields) input.value = draft[key];
     problem.textContent = '';
@@ -399,8 +417,8 @@ function mountEngineEditor(host: AddressHost, current: () => AddressSnapshot | n
   form.addEventListener('submit', (event) => { event.preventDefault(); submit(); });
   form.addEventListener('keydown', (event) => { if (event.key === 'Escape') { event.stopPropagation(); closeForm(); } });
 
-  const add = textButton('Add a search engine', () => openForm(null), { icon: 'plus' });
-  const restore = textButton('Restore default engines', () => { const sent = engineFields({ op: 'restore' }); if (sent) host.send(sent); }, { icon: 'reset', subtle: true });
+  const add = textButton('Add engine', () => openForm(null), { icon: 'plus', aria: 'Add a search engine' });
+  const restore = textButton('Restore', () => { const sent = engineFields({ op: 'restore' }); if (sent) host.send(sent); }, { icon: 'reset', subtle: true, aria: 'Restore default engines' });
   const bar = el('div', 'ad-engine-bar');
   bar.append(add, restore);
   const rowNode = host.row(into, 'engines', undefined, { stack: true });

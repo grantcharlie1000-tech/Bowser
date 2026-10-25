@@ -282,7 +282,7 @@ test('the privacy panel renders the static Private tabs note as plain setting ro
   rows.forEach((row, i) => {
     assert.ok(row.classList.contains('bw-row') && row.classList.contains('is-setting'));
     assert.equal(row.find('pg-label').textContent, ui.PRIVATE_TABS_NOTE[i][0]);
-    assert.equal(row.find('pg-desc').textContent, ui.PRIVATE_TABS_NOTE[i][1]);
+    assert.equal(row.find('pg-desc') == null, true);
     assert.equal(row.find('pg-control'), null, 'information only: no control');
   });
 });

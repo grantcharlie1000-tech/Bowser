@@ -167,7 +167,7 @@ test('the Tabs section lists every option in cards, each with its own control an
     const row = rowOf(spec.key);
     assert.ok(row, spec.key);
     assert.equal(row.querySelector('.sp-label').textContent, spec.label, spec.key);
-    assert.equal(row.querySelector('.sp-desc').textContent, spec.description, spec.key);
+    assert.equal(row.querySelector('.sp-desc'), spec.description === '' ? null : row.querySelector('.sp-desc'), spec.key);
     assert.equal(row.querySelector('.sp-flag'), null, `${spec.key} acts now: no "no effect yet" note`);
     const control = spec.kind === 'toggle' ? row.querySelector('[role="switch"]') : spec.kind === 'choice' ? row.querySelector('[role="radiogroup"]') : row.querySelector('input');
     assert.ok(control, `${spec.key} has a ${spec.kind} control`);
@@ -187,13 +187,15 @@ test('a switch, a choice, a number and the address each send one tabopt command 
   // Choice.
   const activation = rowOf('tabs_close_activation').querySelector('[role="radiogroup"]');
   const radios = activation.querySelectorAll('[role="radio"]');
-  assert.deepEqual(radios.map((r) => r.textContent), ['Tab on the right', 'Tab on the left', 'Recently used']);
+  assert.deepEqual(radios.map((r) => r.textContent), ['Right', 'Left', 'Recent']);
+  assert.deepEqual(radios.map((r) => r.getAttribute('aria-label')), ['Tab on the right', 'Tab on the left', 'Recently used']);
   assert.deepEqual(radios.map((r) => r.getAttribute('aria-checked')), ['true', 'false', 'false']);
   radios[2].click();
   assert.deepEqual(sent.splice(0), [{ v: 1, t: 'set', a: 'tabopt', text: 'tabs_close_activation=recent' }]);
   // New tab position: the three positions, no stack.
   const position = rowOf('tabs_new_tab_position').querySelectorAll('[role="radio"]');
-  assert.deepEqual(position.map((r) => r.textContent), ['After related', 'After active', 'As last', 'As stack with related']); // --- T10 ---
+  assert.deepEqual(position.map((r) => r.textContent), ['Related', 'Active', 'Last', 'Stack']); // --- T10 ---
+  assert.deepEqual(position.map((r) => r.getAttribute('aria-label')), ['After related', 'After active', 'As last', 'As stack with related']);
   position[0].click();
   assert.deepEqual(sent.splice(0), [{ v: 1, t: 'set', a: 'tabopt', text: 'tabs_new_tab_position=related' }]);
   // Number: typed, clamped, sent once it settles (here: on leaving the field); one tab is not a bulk close.
@@ -264,9 +266,9 @@ test('the next snapshot is the truth: it moves every control, and the address fo
   deliver({ ...settingsFixture.snap, d: { ...settingsFixture.snap.d, tabOptions: values } });
   assert.equal(rowOf('tabs_keep_window').querySelector('[role="switch"]').getAttribute('aria-checked'), 'false');
   const checked = (key) => rowOf(key).querySelectorAll('[role="radio"]').find((r) => r.getAttribute('aria-checked') === 'true')?.textContent;
-  assert.equal(checked('tabs_close_activation'), 'Tab on the left');
-  assert.equal(checked('tabs_mute_mode'), 'Only the active tab');
-  assert.equal(checked('tabs_new_tab_position'), 'As last');
+  assert.equal(checked('tabs_close_activation'), 'Left');
+  assert.equal(checked('tabs_mute_mode'), 'Active');
+  assert.equal(checked('tabs_new_tab_position'), 'Last');
   assert.equal(rowOf('tabs_confirm_close').querySelector('input').value, '7');
   assert.equal(rowOf('tabs_confirm_close').querySelector('.sp-value').textContent, '7 tabs');
   const address = rowOf('tabs_new_tab_url').querySelector('input');
@@ -293,7 +295,7 @@ test('two-level is a choice of the Tab stacks row, and its compact option waits 
   assert.deepEqual(sent.splice(0), [{ v: 1, t: 'set', a: 'tabopt', text: 'tabs_stack_style=two-level' }]);
   const compact = rowOf('tabs_stack_compact_row');
   assert.ok(compact.closest('.sp-more'), 'behind the area’s More options');
-  assert.equal(compact.querySelector('.sp-label').textContent, 'Compact second row');
+  assert.equal(compact.querySelector('.sp-label').textContent, 'Compact row');
   const sw = compact.querySelector('[role="switch"]');
   assert.equal(sw.disabled, true, 'Islands: there is no second row to make smaller');
   const values = { ...settingsFixture.snap.d.tabOptions, tabs_stack_style: 'two-level' };

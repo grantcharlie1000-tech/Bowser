@@ -477,8 +477,8 @@ test('hiding the address field hides only its part of the pill, and its row read
   assert.match(rule, /> :is\(\.tb-site, \.omni-field, \.tb-hist, \.tb-qr\)/, 'only the address part is hidden');
   assert.doesNotMatch(rule, /omni-search/, 'the search field stays');
   const row = rows.ADDRESS_ROWS.find((r) => r.id === 'addrShow');
-  assert.equal(row.label, 'Show the address field');
-  assert.notEqual(row.label, 'Show the address bar row');
+  assert.equal(row.label, 'Address field');
+  assert.notEqual(row.label, 'Address bar');
 });
 
 test('the UI defaults for the address flags match what Rust sends for default settings (highlight_base off)', () => {

@@ -28,9 +28,8 @@ export function mountStoreSection(options: ExtensionsSectionOptions): { readonly
     const button = textButton(label, () => { view = key; selected = ''; category = ''; render(); }, { icon: glyph });
     navButtons.set(key, button); nav.append(button);
   }
-  const browse = textButton('Chrome Web Store', () => options.send({ a: 'storebrowse' }), { icon: 'external' });
-  const asideNote = el('p', 'bs-muted'); asideNote.textContent = 'A curated starting point. Compatibility is reported honestly, not assumed.';
-  side.append(nav, asideNote, browse);
+  const browse = textButton('Web Store', () => options.send({ a: 'storebrowse' }), { icon: 'external', aria: 'Chrome Web Store' });
+  side.append(nav, browse);
   const main = el('main', 'bs-main'); main.setAttribute('aria-label', 'Extension catalogue');
   const search = el('input', 'bw-input bs-search'); search.type = 'search'; search.placeholder = 'Search extensions'; search.setAttribute('aria-label', 'Search extensions'); search.maxLength = 128;
   const body = el('div', 'bs-body');
@@ -72,7 +71,7 @@ export function mountStoreSection(options: ExtensionsSectionOptions): { readonly
     }
     const sources = el('div', 'bs-source-actions');
     sources.append(textButton('View original listing', () => options.send({ a: 'storelisting', text: entry.id }), { icon: 'external' }), textButton('Publisher website', () => options.send({ a: 'storesource', text: entry.id }), { icon: 'external' }));
-    section.append(back, intro, sources, paragraph(entry.description, 'bs-description'), facts, paragraph('Bowser resolves the current package and shows its version and full declared permissions before you choose whether to install. A listing is not an endorsement or a guarantee of compatibility.'));
+    section.append(back, intro, sources, paragraph(entry.description, 'bs-description'), facts);
     return section;
   };
   function renderBody(): void {
@@ -84,9 +83,6 @@ export function mountStoreSection(options: ExtensionsSectionOptions): { readonly
     if (!snapshot) { body.replaceChildren(paragraph('Loading the extension catalogue…')); return; }
     const chosen = snapshot.catalogue.find((entry) => entry.id === selected);
     if (chosen) { body.replaceChildren(detail(chosen)); return; }
-    const lead = el('div', 'bs-lead');
-    const h = el('h2'); h.textContent = view === 'categories' ? 'Find your kind of extension' : 'Make Bowser your own';
-    lead.append(h, paragraph('Useful extensions, a clear source, and a permission review before installation.'));
     const categories = el('div', 'bs-categories'); categories.setAttribute('aria-label', 'Filter by category');
     if (view === 'categories') for (const [index, name] of ['', ...new Set(snapshot.catalogue.map((entry) => entry.category))].entries()) {
       const button = textButton(name || 'All extensions', () => { category = name; renderBody(); root.querySelector<HTMLElement>(`[data-category="${index}"]`)?.focus(); }); button.dataset.category = String(index); button.setAttribute('aria-pressed', String(category === name)); categories.append(button);
@@ -102,7 +98,7 @@ export function mountStoreSection(options: ExtensionsSectionOptions): { readonly
       card.append(glyph, title, meta, paragraph(entry.description, 'bs-card-description'), foot); grid.append(card);
     }
     if (items.length === 0) grid.append(paragraph('No extensions match. Try another search or category.'));
-    body.replaceChildren(lead, categories, grid);
+    body.replaceChildren(categories, grid);
   }
   // ---- The installation card: which package, the four steps, the state, then its actions ----
   const STEP_WORDS = { done: 'done', current: 'in progress', failed: 'failed', todo: 'not started' } as const;
@@ -171,10 +167,10 @@ export function mountStoreSection(options: ExtensionsSectionOptions): { readonly
     if (explain) words.append(paragraph(explain, 'bs-head-body'));
     box.append(words); return box;
   };
-  const action = (label: string, key: string, run: () => void, opts: { primary?: boolean; icon?: 'external' } = {}): HTMLButtonElement => {
+  const action = (label: string, key: string, run: () => void, opts: { primary?: boolean; icon?: 'external'; aria?: string } = {}): HTMLButtonElement => {
     const button = textButton(label, run, opts); button.dataset.focus = key; return button;
   };
-  const browseButton = (): HTMLButtonElement => action('Open Chrome Web Store', 'browse', () => options.send({ a: 'storebrowse' }), { icon: 'external' });
+  const browseButton = (): HTMLButtonElement => action('Web Store', 'browse', () => options.send({ a: 'storebrowse' }), { icon: 'external', aria: 'Open Chrome Web Store' });
   const retry = (command: PanelFields): void => {
     if (pending || !options.send(command)) return;
     pending = true; requested = command.text ?? ''; render();

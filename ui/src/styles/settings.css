@@ -289,7 +289,7 @@
   line-height: var(--bw-leading-subtitle);
   font-weight: var(--bw-weight-strong);
   letter-spacing: -0.01em;
-  text-wrap: balance;
+  white-space: nowrap;
   outline: none;
 }
 
@@ -406,6 +406,7 @@
   font-size: var(--bw-text-body);
   line-height: var(--bw-leading-body);
   font-weight: var(--bw-weight-strong);
+  white-space: nowrap;
 }
 
 .sp-card {
@@ -422,6 +423,7 @@
   font-size: var(--bw-text-caption);
   line-height: var(--bw-leading-caption);
   font-weight: var(--bw-weight-strong);
+  white-space: nowrap;
 }
 
 /* A search jump lights the card up once: a wash fading out over its own surface. */
@@ -480,28 +482,31 @@
 .sp-text {
   display: flex;
   flex: 1 1 auto;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 2px;
+  flex-direction: row;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: var(--bw-space-2);
   min-width: 0;
 }
 
 .sp-label {
   font-size: var(--bw-text-body);
   line-height: var(--bw-leading-body);
+  white-space: nowrap;
 }
 
 .sp-desc {
-  max-width: 62ch;
+  max-width: none;
   color: var(--bw-text-2);
   font-size: var(--bw-text-caption);
   line-height: var(--bw-leading-caption);
+  white-space: nowrap;
 }
 
-/* The download location: a long path wraps anywhere rather than pushing the Change button out. */
+/* The download location stays on the label's line. */
 .sp-path {
-  overflow-wrap: anywhere;
   unicode-bidi: isolate;
+  white-space: nowrap;
 }
 
 /* "Applies after restart" and "Has no effect yet": a quiet line with its own glyph, never a
@@ -563,6 +568,7 @@
 .sp-value {
   color: var(--bw-text-2);
   font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
 .sp-mark-hit {
@@ -584,6 +590,7 @@
   border: 1px solid color-mix(in srgb, var(--sp-warn) 50%, transparent);
   border-radius: var(--bw-r-island);
   background: color-mix(in srgb, var(--sp-warn) 12%, transparent);
+  white-space: nowrap;
 }
 
 :where(#app.sp-root) .sp-empty {
@@ -754,6 +761,7 @@
   font-size: var(--bw-text-body);
   line-height: var(--bw-leading-body);
   font-weight: var(--bw-weight-strong);
+  white-space: nowrap;
 }
 
 .sp-tile-hint {
@@ -908,8 +916,15 @@
 }
 
 .sp .bw-segmented {
+  flex-wrap: nowrap;
   background: var(--sp-field);
   box-shadow: inset 0 0 0 1px var(--sp-field-edge);
+}
+
+.sp .bw-segmented > button,
+.sp .bw-button,
+.sp .bw-select-value {
+  white-space: nowrap;
 }
 
 /* ---- Allow list: the field sits beside the label; skipped sites and errors wrap beneath ---- */
@@ -1033,6 +1048,7 @@
 .sp-media-status {
   color: var(--bw-text-2);
   font-size: var(--bw-text-caption);
+  white-space: nowrap;
 }
 
 .sp-media {
@@ -1154,6 +1170,11 @@
   min-height: 64px;
   padding-block: 14px;
 }
+
+/* Simple shows the current engine as a value. All settings keeps the menu. */
+.sp-engine-value { display: none; }
+.sp.is-simple .sp-row[data-row="searchDefault"] > .sp-ctl > .sp-select-host { display: none; }
+.sp.is-simple .sp-engine-value { display: inline; }
 
 .sp-simple .sp-label {
   font-size: var(--bw-text-body);
@@ -1565,7 +1586,7 @@
 .sp-ext-installs,
 .sp-ext-state-actions {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   align-items: center;
   justify-content: center;
   gap: var(--bw-space-2);
@@ -1587,7 +1608,7 @@
 
 .sp-ext-main {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   gap: var(--bw-space-3);
 }
 
@@ -1610,7 +1631,7 @@
 
 .sp-ext-name {
   font-weight: var(--bw-weight-strong);
-  overflow-wrap: anywhere;
+  white-space: nowrap;
   transition: color var(--bw-dur-fast) var(--bw-ease-fade);
 }
 
@@ -1620,15 +1641,15 @@
 
 .sp-ext-reach {
   display: inline-flex;
-  align-items: flex-start;
+  align-items: center;
   gap: var(--bw-space-1_5);
+  white-space: nowrap;
 }
 
 .sp-ext-reach > svg {
   flex: none;
   width: 12px;
   height: 12px;
-  margin-top: 2px;
   color: var(--sp-warn);
 }
 
@@ -1638,15 +1659,16 @@
 }
 
 .sp-ext-failure {
-  margin-top: var(--bw-space-0_5);
-  overflow-wrap: anywhere;
+  margin: 0;
+  white-space: nowrap;
 }
 
 .sp-ext-toggle-details {
   display: inline-flex;
   align-items: center;
   gap: var(--bw-space-1);
-  margin: var(--bw-space-1) 0 0 calc(var(--bw-space-1) * -1);
+  margin: 0;
+  white-space: nowrap;
   padding: 2px var(--bw-space-1);
   border: 0;
   border-radius: var(--bw-r-control);
@@ -1712,22 +1734,23 @@
 
 .sp-ext-decl > dd {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   align-items: center;
   gap: var(--bw-space-1);
   min-width: 0;
   margin: 0;
+  overflow-x: auto;
 }
 
 .sp-ext-chip {
-  max-width: 100%;
+  max-width: none;
   padding: 1px var(--bw-space-1_5);
   border: 1px solid var(--sp-field-edge);
   border-radius: var(--bw-r-control);
   background: var(--sp-field);
   font-size: var(--bw-text-caption);
   line-height: var(--bw-leading-caption);
-  overflow-wrap: anywhere;
+  white-space: nowrap;
   unicode-bidi: isolate;
 }
 
@@ -1739,6 +1762,7 @@
 
 .sp-ext-confirm {
   display: flex;
+  flex-wrap: nowrap;
   align-items: center;
   gap: var(--bw-space-4);
   border: 1px solid color-mix(in srgb, #c42b1c 45%, transparent);
@@ -1937,25 +1961,10 @@
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  /* Wide controls go under their label; a switch stays at the end of its row. */
-  :where(#app.sp-root) .sp-row:not(.is-profile, .is-status, :has(> .sp-ctl > .sp-switch)) {
-    flex-direction: column;
-    align-items: stretch;
-    gap: var(--bw-space-2);
-  }
-
-  :where(#app.sp-root) .sp-row:not(.is-profile, .is-status, :has(> .sp-ctl > .sp-switch)) > .sp-ctl {
-    margin-inline-start: 0;
-  }
-
   .sp-allow-input,
   .sp-ui-font-input {
     width: auto;
     min-width: 0;
-  }
-
-  .sp-update {
-    flex-wrap: wrap;
   }
 }
 
@@ -2034,7 +2043,7 @@
 .sp-kb-row {
   position: relative;
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   align-items: center;
   gap: var(--bw-space-2) var(--bw-space-4);
   padding: var(--bw-space-3) var(--sp-row-x);
@@ -2126,6 +2135,7 @@
 .sp-kb-empty {
   margin: 0;
   padding: var(--bw-space-3) var(--bw-space-0_5);
+  white-space: nowrap;
 }
 
 /* Quick commands: result types, each with move buttons and a switch, in the inset well the toolbar
@@ -2250,7 +2260,7 @@
 }
 
 .sp-chain-footer {
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   justify-content: space-between;
   gap: var(--bw-space-3);
 }
@@ -2261,15 +2271,8 @@
   margin-inline-start: auto;
 }
 
-@media (max-width: 879px) {
-  .sp-chain-name {
-    width: 100%;
-  }
-
-  .sp-chain-line {
-    flex-wrap: wrap;
-    gap: var(--bw-space-3);
-  }
+.sp-chain-line {
+  flex-wrap: nowrap;
 }
 
 /* --- window and panels (thread T9) --- */

@@ -17,21 +17,24 @@ export interface StartSectionHost {
   /** Edits the draft's start settings and saves. */
   change(edit: (start: StartSettings) => void): void;
   switchControl(onChange: (on: boolean) => void): Ctl<boolean>;
-  segmentedControl<T extends string>(label: string, options: ReadonlyArray<readonly [T, string]>, onSelect: (value: T) => void): Ctl<T | null>;
+  segmentedControl<T extends string>(label: string, options: ReadonlyArray<readonly [T, string] | readonly [T, string, string]>, onSelect: (value: T) => void): Ctl<T | null>;
   toast(text: string, ok: boolean): void;
 }
 
-export const GROUP_REOPEN_LABELS: Readonly<Record<GroupReopen, string>> = { last: 'The group you used last', first: 'The first group' };
-export const TITLE_LABELS: Readonly<Record<TitleMode, string>> = { always: 'Always', auto: 'When needed', never: 'Never' };
+export const GROUP_REOPEN_LABELS: Readonly<Record<GroupReopen, string>> = { last: 'Last', first: 'First' };
+export const GROUP_REOPEN_ARIA: Readonly<Record<GroupReopen, string>> = { last: 'The group you used last', first: 'The first group' };
+export const TITLE_LABELS: Readonly<Record<TitleMode, string>> = { always: 'Always', auto: 'Auto', never: 'Never' };
+export const TITLE_ARIA: Readonly<Record<TitleMode, string>> = { always: 'Always', auto: 'When needed', never: 'Never' };
 export const STARTUP_LABELS: Readonly<Record<StartupMode, string>> = {
-  start_page: 'Open the start page',
-  last_session: 'Continue where you left off',
-  homepage: 'Open the homepage',
-  specific_pages: 'Open specific pages',
+  start_page: 'Start page',
+  last_session: 'Continue',
+  homepage: 'Homepage',
+  specific_pages: 'Pages',
 };
 export const THUMB_LABELS: readonly string[] = ['Tiny', 'Small', 'Medium', 'Large', 'Huge'];
 export const HEIGHT_LABELS: Readonly<Record<WidgetHeight, string>> = { regular: 'Regular', tall: 'Tall' };
-export const BG_LABELS: Readonly<Record<WidgetBg, string>> = { solid: 'Solid', translucent: 'Semi-transparent', transparent: 'Transparent', custom: 'Custom' };
+export const BG_LABELS: Readonly<Record<WidgetBg, string>> = { solid: 'Solid', translucent: 'Tinted', transparent: 'Clear', custom: 'Custom' };
+export const BG_ARIA: Readonly<Record<WidgetBg, string>> = { solid: 'Solid', translucent: 'Semi-transparent', transparent: 'Transparent', custom: 'Custom' };
 
 /** The lines of a "specific pages" box as addresses, or `null` when one is not a web address or there are too many. */
 export function parsePageLines(text: string): string[] | null {
@@ -48,10 +51,10 @@ export function parsePageLines(text: string): string[] | null {
 
 export function mountStartSection(host: StartSectionHost): { apply(start: StartSettings, readable: boolean): void } {
   // Speed dials
-  const dials = host.card('startpage', 'Speed dials');
-  const reopen = host.segmentedControl<GroupReopen>('Open the start page on', GROUP_REOPEN.map((key) => [key, GROUP_REOPEN_LABELS[key]] as const), (value) => host.change((s) => { s.groupReopen = value; }));
+  const dials = host.card('startpage', 'Dials');
+  const reopen = host.segmentedControl<GroupReopen>('Open the start page on', GROUP_REOPEN.map((key) => [key, GROUP_REOPEN_LABELS[key], GROUP_REOPEN_ARIA[key]] as const), (value) => host.change((s) => { s.groupReopen = value; }));
   host.row(dials, 'startGroupReopen', reopen.root);
-  const titles = host.segmentedControl<TitleMode>('Show titles', (['always', 'auto', 'never'] as const).map((key) => [key, TITLE_LABELS[key]] as const), (value) => host.change((s) => { s.titles = value; }));
+  const titles = host.segmentedControl<TitleMode>('Show titles', (['always', 'auto', 'never'] as const).map((key) => [key, TITLE_LABELS[key], TITLE_ARIA[key]] as const), (value) => host.change((s) => { s.titles = value; }));
   host.row(dials, 'startTitles', titles.root);
   const addButton = host.switchControl((on) => host.change((s) => { s.addButton = on; }));
   host.row(dials, 'startAddButton', addButton.root);
@@ -79,10 +82,10 @@ export function mountStartSection(host: StartSectionHost): { apply(start: StartS
   host.row(dials, 'startDragReorder', drag.root);
 
   // Homepage and startup
-  const home = host.card('startpage', 'Homepage and startup');
+  const home = host.card('startpage', 'Startup');
   const homepage = el('input', 'bw-input sp-text-input');
   homepage.type = 'text';
-  homepage.placeholder = 'https://example.com';
+  homepage.placeholder = '';
   homepage.maxLength = MAX_URL;
   homepage.autocomplete = 'off';
   homepage.spellcheck = false;
@@ -113,8 +116,8 @@ export function mountStartSection(host: StartSectionHost): { apply(start: StartS
     startupSelect = selectField<string>({
       options: STARTUP_MODES.map((key) => ({ value: key, label: STARTUP_LABELS[key] })),
       value,
-      label: 'When Bowser starts',
-      placeholder: 'When Bowser starts',
+      label: 'Startup',
+      placeholder: 'Startup',
       minListWidth: 240,
       onChange: (next) => host.change((s) => { s.startup = next as StartupMode; }),
     });
@@ -124,7 +127,7 @@ export function mountStartSection(host: StartSectionHost): { apply(start: StartS
   host.row(home, 'startupMode', startupHost);
   const pages = el('textarea', 'bw-input sp-pages');
   pages.rows = 4;
-  pages.placeholder = 'https://example.com';
+  pages.placeholder = '';
   pages.spellcheck = false;
   pages.maxLength = MAX_STARTUP_PAGES * (MAX_URL + 2); // eight of the longest addresses, one per line
   pages.setAttribute('aria-labelledby', 'sp-l-startupPages');
@@ -140,14 +143,14 @@ export function mountStartSection(host: StartSectionHost): { apply(start: StartS
   host.row(home, 'startupPages', pages, { stack: true });
 
   // Widgets
-  const widgets = host.card('startpage', 'Dashboard widgets');
+  const widgets = host.card('startpage', 'Widgets');
   const widgetsOn = host.switchControl((on) => host.change((s) => { s.widgets = on; }));
   host.row(widgets, 'startWidgets', widgetsOn.root);
   const wcols = host.segmentedControl<string>('Widget columns', ['1', '2', '3', '4'].map((n) => [n, n] as const), (value) => host.change((s) => { s.widgetColumns = Number(value); }));
   host.row(widgets, 'startWidgetColumns', wcols.root);
   const wheight = host.segmentedControl<WidgetHeight>('Widget height', WIDGET_HEIGHTS.map((key) => [key, HEIGHT_LABELS[key]] as const), (value) => host.change((s) => { s.widgetHeight = value; }));
   host.row(widgets, 'startWidgetHeight', wheight.root);
-  const wbg = host.segmentedControl<WidgetBg>('Widget background', WIDGET_BGS.map((key) => [key, BG_LABELS[key]] as const), (value) => host.change((s) => { s.widgetBg = value; }));
+  const wbg = host.segmentedControl<WidgetBg>('Widget background', WIDGET_BGS.map((key) => [key, BG_LABELS[key], BG_ARIA[key]] as const), (value) => host.change((s) => { s.widgetBg = value; }));
   host.row(widgets, 'startWidgetBg', wbg.root);
   const wcolor = el('input', 'sp-color');
   wcolor.type = 'color';

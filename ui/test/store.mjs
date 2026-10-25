@@ -260,7 +260,7 @@ test('error card: title, explanation, folded native detail, and working recovery
   assert.ok(card.querySelector('.bs-ident').textContent.includes(entry.name));
   assert.equal(card.querySelector('.bs-step[data-state="failed"]').textContent.startsWith('Verify'), true);
   assert.equal(store.root.querySelector('[role="alert"]').textContent.startsWith('This package did not pass'), true, 'errors are announced assertively');
-  btn(card, 'Open Chrome Web Store').click();
+  btn(card, 'Web Store').click();
   assert.deepEqual(store.sent.at(-1), { a: 'storebrowse' });
   btn(card, 'Try again').click();
   assert.deepEqual(store.sent.at(-1), { a: 'storeinstall', text: id });
@@ -275,7 +275,7 @@ test('an error raised before a request started shows neither the stale package n
   const card = store.root.querySelector('.bs-status');
   assert.equal(card.querySelector('.bs-ident'), null);
   assert.equal(btn(card, 'Try again'), undefined);
-  assert.ok(btn(card, 'Open Chrome Web Store'));
+  assert.ok(btn(card, 'Web Store'));
   assert.equal(card.querySelector('.bs-tech'), null);
 });
 

@@ -27,10 +27,10 @@ export type EfficiencyMode = typeof EFFICIENCY_MODES[number];
 export type TrackingPrevention = 'balanced' | 'strict';
 // --- layout (thread T6) --- the layouts (six now), the Layout block's `layout` object and its presets live in layout-logic.ts.
 import {
-  LAYOUT_HINTS, SIDE_PANEL_POSITIONS, TAB_LAYOUTS, TAB_LAYOUT_LABELS, layoutSaveLines, parseLayoutSettings,
+  LAYOUT_HINTS, SIDE_PANEL_POSITIONS, TAB_LAYOUTS, TAB_LAYOUT_ARIA, TAB_LAYOUT_LABELS, layoutSaveLines, parseLayoutSettings,
   type LayoutSettings, type SidePanelPosition, type TabLayout,
 } from './layout-logic';
-export { LAYOUT_HINTS, SIDE_PANEL_POSITIONS, TAB_LAYOUTS, TAB_LAYOUT_LABELS, type LayoutSettings, type SidePanelPosition, type TabLayout };
+export { LAYOUT_HINTS, SIDE_PANEL_POSITIONS, TAB_LAYOUTS, TAB_LAYOUT_ARIA, TAB_LAYOUT_LABELS, type LayoutSettings, type SidePanelPosition, type TabLayout };
 // --- end layout ---
 // --- window and panels (thread T9) ---
 import { parseWindowSettings, windowSaveLines, type WindowSettings } from './window-logic';
@@ -63,7 +63,7 @@ export const AUTO_HIDE_BAR_LABELS: Readonly<Record<AutoHideBar, string>> = {
   tabs: 'Tab bar',
   address: 'Address bar',
   bookmarks: 'Bookmarks bar',
-  panel: 'Side panel (opens over the page)',
+  panel: 'Panel',
 };
 /** What hides when nobody has chosen: the three bars above and beside the page. */
 export const DEFAULT_AUTO_HIDE_BARS = 'tabs,address,bookmarks';
@@ -559,27 +559,27 @@ export function saveText(draft: Draft): string | null {
 
 // ---- Sections and rows (the nav, the search index and the deep links) ----
 
-export interface SectionSpec { readonly key: SettingsSection; readonly title: string; readonly nav: string; readonly lead: string }
+export interface SectionSpec { readonly key: SettingsSection; readonly title: string; readonly nav: string; readonly lead: string; readonly aliases?: string }
 export const SECTIONS: readonly SectionSpec[] = [
-  { key: 'profile', title: 'Profile', nav: 'Profile', lead: 'Whose settings these are, and bringing data over from another browser.' },
-  { key: 'appearance', title: 'Appearance', nav: 'Appearance', lead: 'Theme, layout and text size.' },
-  { key: 'tabs', title: 'Tabs', nav: 'Tabs', lead: 'How tabs open, close and come back.' },
+  { key: 'profile', title: 'Profile', nav: 'Profile', lead: '' },
+  { key: 'appearance', title: 'Appearance', nav: 'Appearance', lead: '' },
+  { key: 'tabs', title: 'Tabs', nav: 'Tabs', lead: '' },
   // --- T10 ---
-  { key: 'stacks', title: 'Tab groups', nav: 'Tab groups', lead: 'How tabs group, how tiled pages look, and how workspaces behave.' },
-  { key: 'startpage', title: 'Start page', nav: 'Start page', lead: 'Your homepage, and what a new window opens.' },
-  { key: 'privacy', title: 'Privacy and security', nav: 'Privacy and security', lead: 'Blocking, tracking, history and browsing data.' },
-  { key: 'performance', title: 'Performance', nav: 'Performance', lead: 'Memory and battery while tabs sit in the background.' },
-  { key: 'pagetools', title: 'Page tools', nav: 'Page tools', lead: 'Screenshots, keyboard navigation, zoom and reader view.' }, // --- page tools (T7) ---
-  { key: 'address', title: 'Address bar', nav: 'Address bar', lead: 'The address field and what it suggests.' },
-  { key: 'search', title: 'Search', nav: 'Search', lead: 'The search engine the address bar uses.' },
-  { key: 'bookmarks', title: 'Bookmarks', nav: 'Bookmarks', lead: 'How bookmarks open and how new ones are saved.' },
-  { key: 'keyboard', title: 'Keyboard', nav: 'Keyboard', lead: 'Shortcuts, and how the keyboard behaves.' },
-  { key: 'commands', title: 'Quick commands', nav: 'Quick commands', lead: 'What Quick commands searches, and chains of commands.' },
-  { key: 'downloads', title: 'Downloads', nav: 'Downloads', lead: 'Where files are saved, and whether Bowser asks first.' },
-  { key: 'media', title: 'Media', nav: 'Media', lead: 'Which video and protected streams this device can play.' },
-  { key: 'extensions', title: 'Extensions', nav: 'Extensions', lead: 'Add-ons in this profile.' },
-  { key: 'updates', title: 'Updates', nav: 'Updates', lead: 'How Bowser keeps itself up to date.' },
-  { key: 'about', title: 'About', nav: 'About', lead: 'Version, the settings file, and starting over.' },
+  { key: 'stacks', title: 'Groups', nav: 'Groups', lead: '', aliases: 'tab groups stacking tiling workspaces' },
+  { key: 'startpage', title: 'Start page', nav: 'Start page', lead: '' },
+  { key: 'privacy', title: 'Privacy', nav: 'Privacy', lead: '', aliases: 'privacy and security' },
+  { key: 'performance', title: 'Performance', nav: 'Performance', lead: '' },
+  { key: 'pagetools', title: 'Page tools', nav: 'Page tools', lead: '' }, // --- page tools (T7) ---
+  { key: 'address', title: 'Address', nav: 'Address', lead: '', aliases: 'address bar' },
+  { key: 'search', title: 'Search', nav: 'Search', lead: '' },
+  { key: 'bookmarks', title: 'Bookmarks', nav: 'Bookmarks', lead: '' },
+  { key: 'keyboard', title: 'Keyboard', nav: 'Keyboard', lead: '' },
+  { key: 'commands', title: 'Commands', nav: 'Commands', lead: '', aliases: 'quick commands' },
+  { key: 'downloads', title: 'Downloads', nav: 'Downloads', lead: '' },
+  { key: 'media', title: 'Media', nav: 'Media', lead: '' },
+  { key: 'extensions', title: 'Extensions', nav: 'Extensions', lead: '' },
+  { key: 'updates', title: 'Updates', nav: 'Updates', lead: '' },
+  { key: 'about', title: 'About', nav: 'About', lead: '' },
 ];
 
 export function isSection(value: string): value is SettingsSection {
@@ -590,8 +590,10 @@ export interface RowSpec {
   readonly id: string;
   readonly section: SettingsSection;
   readonly label: string;
+  /** A fuller accessible name when the visible label is terse. Never shown. */
+  readonly aria?: string;
   readonly description: string;
-  /** Extra words the search matches (never shown). */
+  /** Extra words the search matches (never shown). Old labels and descriptions live here. */
   readonly keywords: string;
   /** The change waits for a restart. */
   readonly restart?: boolean;
@@ -614,6 +616,7 @@ export interface AreaSpec {
   readonly title: string;
   readonly nav: string;
   readonly lead: string;
+  readonly aliases?: string;
   /** The Rust sections drawn in this area, in order; the first is the area's own key. */
   readonly parts: readonly SettingsSection[];
 }
@@ -630,15 +633,15 @@ const single = (key: SettingsSection): AreaSpec => {
  * A deep link to any Rust section still lands in the area that contains it.
  */
 export const AREAS: readonly AreaSpec[] = [
-  { key: 'profile', title: 'General', nav: 'General', lead: 'Search, your homepage, downloads and this profile.', parts: ['profile', 'search', 'startpage', 'downloads'] },
-  { key: 'appearance', title: 'Appearance', nav: 'Appearance', lead: 'Theme, layout and text size.', parts: ['appearance'] },
-  { key: 'tabs', title: 'Tabs', nav: 'Tabs', lead: 'How tabs open, group and come back.', parts: ['tabs', 'stacks'] },
-  { key: 'privacy', title: 'Privacy', nav: 'Privacy', lead: 'Blocking, history and memory.', parts: ['privacy', 'performance'] },
-  { key: 'address', title: 'Browsing', nav: 'Browsing', lead: 'The address bar, bookmarks and reading pages.', parts: ['address', 'bookmarks', 'pagetools'] },
-  { key: 'keyboard', title: 'Shortcuts', nav: 'Shortcuts', lead: 'Keyboard shortcuts and Quick commands.', parts: ['keyboard', 'commands'] },
+  { key: 'profile', title: 'General', nav: 'General', lead: '', parts: ['profile', 'search', 'startpage', 'downloads'] },
+  { key: 'appearance', title: 'Appearance', nav: 'Appearance', lead: '', parts: ['appearance'] },
+  { key: 'tabs', title: 'Tabs', nav: 'Tabs', lead: '', parts: ['tabs', 'stacks'] },
+  { key: 'privacy', title: 'Privacy', nav: 'Privacy', lead: '', parts: ['privacy', 'performance'] },
+  { key: 'address', title: 'Browsing', nav: 'Browsing', lead: '', parts: ['address', 'bookmarks', 'pagetools'] },
+  { key: 'keyboard', title: 'Shortcuts', nav: 'Shortcuts', lead: '', aliases: 'keyboard shortcuts quick commands', parts: ['keyboard', 'commands'] },
   single('extensions'),
   single('media'),
-  { key: 'about', title: 'About', nav: 'About', lead: 'Updates, the settings file, and starting over.', parts: ['updates', 'about'] },
+  { key: 'about', title: 'About', nav: 'About', lead: '', parts: ['updates', 'about'] },
 ];
 
 /** The area a Rust section is drawn in. */
@@ -651,10 +654,10 @@ export function partTitle(section: SettingsSection): string {
   return sectionSpec(section).title;
 }
 
-export const MORE_LABEL = 'More options';
-export const LATER_TITLE = 'Not active yet';
-export const LATER_LEAD = 'Bowser saves these choices, but they change nothing yet. Each one starts working when its feature arrives.';
-export const LATER_LABEL = 'Show these settings';
+export const MORE_LABEL = 'More';
+export const LATER_TITLE = 'Inactive';
+export const LATER_LEAD = '';
+export const LATER_LABEL = 'Show';
 
 /** "12 more settings": the disclosure's description. */
 export function moreCountText(count: number): string {
@@ -686,21 +689,23 @@ const CORE_ROWS: ReadonlySet<string> = new Set([
 export interface PageSpec {
   /** The opening row's button. */
   readonly button: string;
+  /** Accessible name when the button is a single word. */
+  readonly aria: string;
   /** Put the opening row after this row (or opening row) instead of where the editor was. */
   readonly after?: string;
 }
 
 /** The big editors and blocks that open as sub-pages, each from one row. */
 export const PAGE_ROWS: Readonly<Record<string, PageSpec>> = {
-  engines: { button: 'Edit search engines…' },
-  siteRules: { button: 'Edit sites…', after: 'history' },
-  blockLists: { button: 'Edit lists…', after: 'siteRules' },
-  deleteData: { button: 'Clear…', after: 'blockLists' },
-  dashboard: { button: 'Open dashboard…', after: 'deleteData' },
-  toolbarButtons: { button: 'Edit toolbars…' }, // --- toolbars and feeds (thread T13) ---
-  kbEditor: { button: 'Edit shortcuts…' },
-  chains: { button: 'Edit chains…' },
-  workspaceRules: { button: 'Edit rules…' }, // --- T10 ---
+  engines: { button: 'Edit', aria: 'Edit search engines' },
+  siteRules: { button: 'Edit', aria: 'Edit sites', after: 'history' },
+  blockLists: { button: 'Edit', aria: 'Edit lists', after: 'siteRules' },
+  deleteData: { button: 'Clear', aria: 'Clear browsing data', after: 'blockLists' },
+  dashboard: { button: 'Open', aria: 'Open dashboard', after: 'deleteData' },
+  toolbarButtons: { button: 'Edit', aria: 'Edit toolbars' }, // --- toolbars and feeds (thread T13) ---
+  kbEditor: { button: 'Edit', aria: 'Edit shortcuts' },
+  chains: { button: 'Edit', aria: 'Edit chains' },
+  workspaceRules: { button: 'Edit', aria: 'Edit rules' }, // --- T10 ---
 };
 
 /** Where a row is drawn. A row Bowser does not act on yet is always `later`, whatever else it says. */
@@ -721,9 +726,9 @@ export const NOT_YET_GROUP_NOTE = 'These have no effect yet. Bowser keeps your c
 // --- wave-1 integration --- the Tabs section: T1's options card by card, with the older tab rows
 // (Ctrl+Tab order, tab previews) at the end of its Tab bar card, where settings-page.ts draws them.
 const OLDER_TAB_ROWS: readonly RowSpec[] = [
-  { id: 'ctrlTabMru', section: 'tabs', label: 'Cycle tabs most-recently-used first with Ctrl+Tab', description: 'Ctrl+Tab steps through tabs in the order you last used them. Off, it follows the tab order.', keywords: 'ctrl tab cycle cycling most recently used mru switch order' },
-  { id: 'tabPreviewImages', section: 'tabs', label: 'Show a thumbnail in tab previews', description: 'Tab hover previews include a snapshot of the page.', keywords: 'tab preview thumbnail hover image popup' },
-  { id: 'tabPreviewMemory', section: 'tabs', label: 'Show memory use in tab previews', description: 'Tab hover previews show how much memory the tab is using.', keywords: 'tab preview memory usage hover popup' },
+  { id: 'ctrlTabMru', section: 'tabs', label: 'Ctrl+Tab', aria: 'Cycle tabs most recently used first with Ctrl+Tab', description: '', keywords: 'ctrl tab cycle cycling most recently used mru switch order Cycle tabs most-recently-used first with Ctrl+Tab Ctrl+Tab steps through tabs in the order you last used them. Off, it follows the tab order.' },
+  { id: 'tabPreviewImages', section: 'tabs', label: 'Preview images', aria: 'Show a thumbnail in tab previews', description: '', keywords: 'tab preview thumbnail hover image popup Show a thumbnail in tab previews Tab hover previews include a snapshot of the page.' },
+  { id: 'tabPreviewMemory', section: 'tabs', label: 'Preview memory', aria: 'Show memory use in tab previews', description: '', keywords: 'tab preview memory usage hover popup Show memory use in tab previews Tab hover previews show how much memory the tab is using.' },
 ];
 const TABS_SECTION_ROWS: readonly RowSpec[] = (() => {
   const rows = tabOptionRows();
@@ -735,141 +740,141 @@ const TABS_SECTION_ROWS: readonly RowSpec[] = (() => {
 
 /** Every row the page draws, in page order. The view builds a control per id. */
 export const ROWS: readonly RowSpec[] = [
-  { id: 'profile', section: 'profile', label: 'This profile', description: 'Settings on this page apply to this profile only.', keywords: 'account person name avatar guest you and bowser profile' },
-  { id: 'profiles', section: 'profile', label: 'Manage profiles', description: 'Switch, create, rename or delete profiles.', keywords: 'switch new guest delete rename' },
-  { id: 'import', section: 'profile', label: 'Import bookmarks', description: 'Bring bookmarks over from another browser on this PC.', keywords: 'chrome edge firefox migrate transfer bookmarks import' },
+  { id: 'profile', section: 'profile', label: 'Profile', aria: 'This profile', description: '', keywords: 'account person name avatar guest you and bowser profile This profile Settings on this page apply to this profile only.' },
+  { id: 'profiles', section: 'profile', label: 'Profiles', aria: 'Manage profiles', description: '', keywords: 'switch new guest delete rename Manage profiles Switch, create, rename or delete profiles.' },
+  { id: 'import', section: 'profile', label: 'Import', aria: 'Import bookmarks', description: '', keywords: 'chrome edge firefox migrate transfer bookmarks import Import bookmarks Bring bookmarks over from another browser on this PC.' },
   // --- layout (thread T6) --- the Layout block: presets and the three edges in view, the rest behind More options.
-  { id: 'layoutPreset', section: 'appearance', label: 'Presets', description: 'A starting arrangement. Change any part of it and Bowser keeps yours as Saved.', keywords: 'layout preset presets simple classic vertical left right bottom saved thumbnails arrangement tabs top side' },
-  { id: 'layoutBars', section: 'appearance', label: 'Tab bar, address bar and panels', description: 'Which edge each one sits on.', keywords: 'tab bar position top left right bottom address bar side panel dock helium edge title row window buttons' },
-  { id: 'layout', section: 'appearance', label: 'Tab bar style at the top', description: 'How the tabs and the address bar share the top of the window.', keywords: 'tabs toolbar horizontal single row top browser layout' },
-  { id: 'sidebarWidth', section: 'appearance', label: 'Sidebar width', description: 'Width of the tab sidebar in the vertical layouts.', keywords: 'vertical tabs size wide narrow pixels' },
-  { id: 'sidebarPinned', section: 'appearance', label: 'Pin vertical tabs', description: 'Keeps vertical tabs open beside the page. Off, they are a narrow rail that opens on hover.', keywords: 'vertical tabs pin sidebar hover expand overlay edge rail icons' },
-  { id: 'tabBarVisible', section: 'appearance', label: 'Show the tab bar', description: 'Off, the tabs are reached with Ctrl+Tab, the tab list and Quick commands.', keywords: 'tab bar show hide tabs visible' },
-  { id: 'addressBarVisible', section: 'appearance', label: 'Show the address bar row', description: 'The whole row: navigation, the address field and the menu. Off, Ctrl+L brings it back until the address field loses focus.', keywords: 'address bar show hide toolbar row visible ctrl l' },
-  { id: 'showTitleBar', section: 'appearance', label: 'Show the title bar when the tab bar is on a side', description: 'A row above the address bar with the page title and the window buttons. With the address bar along the bottom, the row is always there.', keywords: 'title bar window buttons caption vertical side page title' },
-  { id: 'statusBar', section: 'appearance', label: 'Status bar', description: 'Bowser has no status bar of its own. The address of a link under the pointer shows in a small overlay at the bottom of the page; Hidden turns that off.', keywords: 'status bar info overlay link address hover hide' },
-  { id: 'uiDensity', section: 'appearance', label: 'User interface density', description: 'Compact shortens the rows of the tab sidebar, the panels and Bowser’s own pages.', keywords: 'density regular compact rows spacing dense' },
-  { id: 'compactMenus', section: 'appearance', label: 'Compact menu layout', description: 'Shorter rows in Bowser’s menus.', keywords: 'compact menus dense rows menu layout' },
-  { id: 'uiZoom', section: 'appearance', label: 'User interface zoom', description: 'Scales the text of Bowser’s bars, panels and pages, on top of the font size. Select the value to type one.', keywords: 'ui zoom scale interface size percent slider text' },
+  { id: 'layoutPreset', section: 'appearance', label: 'Presets', description: '', keywords: 'layout preset presets simple classic vertical left right bottom saved thumbnails arrangement tabs top side Presets A starting arrangement. Change any part of it and Bowser keeps yours as Saved.' },
+  { id: 'layoutBars', section: 'appearance', label: 'Bar positions', aria: 'Tab bar, address bar and panels', description: '', keywords: 'tab bar position top left right bottom address bar side panel dock helium edge title row window buttons Tab bar, address bar and panels Which edge each one sits on.' },
+  { id: 'layout', section: 'appearance', label: 'Top style', aria: 'Tab bar style at the top', description: '', keywords: 'tabs toolbar horizontal single row top browser layout Tab bar style at the top How the tabs and the address bar share the top of the window.' },
+  { id: 'sidebarWidth', section: 'appearance', label: 'Sidebar width', description: '', keywords: 'vertical tabs size wide narrow pixels Sidebar width Width of the tab sidebar in the vertical layouts.' },
+  { id: 'sidebarPinned', section: 'appearance', label: 'Pin sidebar', aria: 'Pin vertical tabs', description: '', keywords: 'vertical tabs pin sidebar hover expand overlay edge rail icons Pin vertical tabs Keeps vertical tabs open beside the page. Off, they are a narrow rail that opens on hover.' },
+  { id: 'tabBarVisible', section: 'appearance', label: 'Tab bar', aria: 'Show the tab bar', description: '', keywords: 'tab bar show hide tabs visible Show the tab bar Off, the tabs are reached with Ctrl+Tab, the tab list and Quick commands.' },
+  { id: 'addressBarVisible', section: 'appearance', label: 'Address bar', aria: 'Show the address bar row', description: '', keywords: 'address bar show hide toolbar row visible ctrl l Show the address bar row The whole row: navigation, the address field and the menu. Off, Ctrl+L brings it back until the address field loses focus.' },
+  { id: 'showTitleBar', section: 'appearance', label: 'Title bar', aria: 'Show the title bar when the tab bar is on a side', description: '', keywords: 'title bar window buttons caption vertical side page title Show the title bar when the tab bar is on a side A row above the address bar with the page title and the window buttons. With the address bar along the bottom, the row is always there.' },
+  { id: 'statusBar', section: 'appearance', label: 'Status bar', description: '', keywords: 'status bar info overlay link address hover hide Status bar Bowser has no status bar of its own. The address of a link under the pointer shows in a small overlay at the bottom of the page; Hidden turns that off.' },
+  { id: 'uiDensity', section: 'appearance', label: 'Density', aria: 'User interface density', description: '', keywords: 'density regular compact rows spacing dense User interface density Compact shortens the rows of the tab sidebar, the panels and Bowser’s own pages.' },
+  { id: 'compactMenus', section: 'appearance', label: 'Compact menus', aria: 'Compact menu layout', description: '', keywords: 'compact menus dense rows menu layout Compact menu layout Shorter rows in Bowser’s menus.' },
+  { id: 'uiZoom', section: 'appearance', label: 'UI zoom', aria: 'User interface zoom', description: '', keywords: 'ui zoom scale interface size percent slider text User interface zoom Scales the text of Bowser’s bars, panels and pages, on top of the font size. Select the value to type one.' },
   // --- end layout ---
-  { id: 'theme', section: 'appearance', label: 'Colour palette', description: 'Bowser’s own colours, or your Windows accent colour.', keywords: 'dark light colour scheme helium system prefer system colour windows accent palette theme' },
-  { id: 'themeAccent', section: 'appearance', label: 'Accent colour', description: 'A colour for buttons and highlights. Reset uses the default.', keywords: 'colour accent override custom theme reset' },
-  { id: 'websiteAppearance', section: 'appearance', label: 'Websites', description: 'Ask sites for a light page, a dark page, or the same as Windows.', keywords: 'dark light auto mode prefers color scheme websites page theme appearance' },
-  { id: 'forceDark', section: 'appearance', label: 'Force dark theme on all websites', description: 'Darkens pages that have no dark theme of their own, in open tabs at once and in the pages you open next.', keywords: 'force dark mode night websites invert auto dark' },
-  { id: 'privateTheme', section: 'appearance', label: 'Private tab theme', description: 'How Bowser’s own windows look while a private tab is shown: the same as normal, light or dark.', keywords: 'private incognito inprivate theme dark light window colour' },
+  { id: 'theme', section: 'appearance', label: 'Palette', aria: 'Colour palette', description: '', keywords: 'dark light colour scheme helium system prefer system colour windows accent palette theme Colour palette Bowser’s own colours, or your Windows accent colour.' },
+  { id: 'themeAccent', section: 'appearance', label: 'Accent', aria: 'Accent colour', description: '', keywords: 'colour accent override custom theme reset Accent colour A colour for buttons and highlights. Reset uses the default.' },
+  { id: 'websiteAppearance', section: 'appearance', label: 'Websites', description: '', keywords: 'dark light auto mode prefers color scheme websites page theme appearance Websites Ask sites for a light page, a dark page, or the same as Windows.' },
+  { id: 'forceDark', section: 'appearance', label: 'Force dark', aria: 'Force dark theme on all websites', description: '', keywords: 'force dark mode night websites invert auto dark Force dark theme on all websites Darkens pages that have no dark theme of their own, in open tabs at once and in the pages you open next.' },
+  { id: 'privateTheme', section: 'appearance', label: 'Private theme', aria: 'Private tab theme', description: '', keywords: 'private incognito inprivate theme dark light window colour Private tab theme How Bowser’s own windows look while a private tab is shown: the same as normal, light or dark.' },
   // --- theme options --- the schedule, custom colours, colouring mode, page accent, contrast and the theme file.
   ...THEME_ROWS,
   // --- end theme options ---
   // --- toolbars and feeds (thread T13) --- the editor for the three bars (a sub-page); it replaces the old checklist.
-  { id: 'toolbarButtons', section: 'appearance', label: 'Customise your toolbars', description: 'Choose the buttons on the address bar, the tab bar and the panel bar, and put a command or a chain of commands on any of them.', keywords: 'toolbar toolbars buttons customize customise address bar tab bar panel bar back forward reload bookmark new tab split reader site information downloads extensions command chain button add remove move reset' },
-  { id: 'showHomeButton', section: 'appearance', label: 'Show the Home button', description: 'Adds a Home button to the side rail, beside the tabs.', keywords: 'home button toolbar rail sidebar' },
-  { id: 'centredAddressBar', section: 'appearance', label: 'Centre the address bar', description: 'Keeps the address bar centred in the toolbar.', keywords: 'address bar centre centered position' },
-  { id: 'minimalUrl', section: 'appearance', label: 'Show a simplified address while unfocused', description: 'Shows the page’s site and path, without the query or fragment, until you focus the address bar, then the full address.', keywords: 'url simplified host domain minimal address bar focus' },
-  { id: 'showLoadProgress', section: 'appearance', label: 'Show a loading progress bar', description: 'A thin bar tracks page loads in the toolbar.', keywords: 'progress loading bar indicator' },
-  { id: 'grouping', section: 'appearance', label: 'Group tabs by site', description: 'Tabs from one site share an island. Groups you make by hand stay.', keywords: 'automatic tab groups islands domain', restart: true },
+  { id: 'toolbarButtons', section: 'appearance', label: 'Toolbars', aria: 'Customise your toolbars', description: '', keywords: 'toolbar toolbars buttons customize customise address bar tab bar panel bar back forward reload bookmark new tab split reader site information downloads extensions command chain button add remove move reset Customise your toolbars Choose the buttons on the address bar, the tab bar and the panel bar, and put a command or a chain of commands on any of them.' },
+  { id: 'showHomeButton', section: 'appearance', label: 'Home button', aria: 'Show the Home button', description: '', keywords: 'home button toolbar rail sidebar Show the Home button Adds a Home button to the side rail, beside the tabs.' },
+  { id: 'centredAddressBar', section: 'appearance', label: 'Centre address', aria: 'Centre the address bar', description: '', keywords: 'address bar centre centered position Centre the address bar Keeps the address bar centred in the toolbar.' },
+  { id: 'minimalUrl', section: 'appearance', label: 'Short address', aria: 'Show a simplified address while unfocused', description: '', keywords: 'url simplified host domain minimal address bar focus Show a simplified address while unfocused Shows the page’s site and path, without the query or fragment, until you focus the address bar, then the full address.' },
+  { id: 'showLoadProgress', section: 'appearance', label: 'Load progress', aria: 'Show a loading progress bar', description: '', keywords: 'progress loading bar indicator Show a loading progress bar A thin bar tracks page loads in the toolbar.' },
+  { id: 'grouping', section: 'appearance', label: 'Group by site', aria: 'Group tabs by site', description: '', keywords: 'automatic tab groups islands domain Group tabs by site Tabs from one site share an island. Groups you make by hand stay.', restart: true },
   // --- wave-1 integration --- "Open new tabs next to the active tab" is Tabs > New tab position (the
   // same `new_tab_beside_active` key), and the Ctrl+Tab order and tab previews sit in Tabs > Tab bar
   // (TABS_SECTION_ROWS below).
   // --- T10 --- drag and drop tiling, beside the other tiling options.
-  { id: 'splitEdgeDrop', section: 'stacks', label: 'Allow dropping a dragged tab on the window edge to split', description: 'Dragging a tab to the edge of the window opens it in a split view.', keywords: 'split view drag drop edge tab tiling tile' },
-  { id: 'pinNewTabGroups', section: 'appearance', label: 'Pin new tab groups to the bookmarks bar', description: 'A tab group formed from now on is pinned to the bookmarks bar. Needs “Show tab groups in the bookmarks bar”.', keywords: 'pin tab groups bookmarks bar' },
-  { id: 'ctrlSVerticalTabs', section: 'keyboard', label: 'Ctrl+S collapses or expands the sidebar in the vertical layout', description: 'Only does anything in the vertical layout; otherwise Ctrl+S reaches the page as normal.', keywords: 'ctrl s sidebar collapse expand vertical layout shortcut' },
+  { id: 'splitEdgeDrop', section: 'stacks', label: 'Edge split', aria: 'Drop a dragged tab on the window edge to split', description: '', keywords: 'split view drag drop edge tab tiling tile Allow dropping a dragged tab on the window edge to split Dragging a tab to the edge of the window opens it in a split view.' },
+  { id: 'pinNewTabGroups', section: 'appearance', label: 'Pin groups', aria: 'Pin new tab groups to the bookmarks bar', description: '', keywords: 'pin tab groups bookmarks bar Pin new tab groups to the bookmarks bar A tab group formed from now on is pinned to the bookmarks bar. Needs “Show tab groups in the bookmarks bar”.' },
+  { id: 'ctrlSVerticalTabs', section: 'keyboard', label: 'Ctrl+S', aria: 'Ctrl+S collapses or expands the sidebar in the vertical layout', description: '', keywords: 'ctrl s sidebar collapse expand vertical layout shortcut Ctrl+S collapses or expands the sidebar in the vertical layout Only does anything in the vertical layout; otherwise Ctrl+S reaches the page as normal.' },
   // --- window and panels (thread T9) --- each row below acts at once; all sit behind More options. Not here, on purpose:
   // "open settings in a tab" and "open popups in tabs" (Bowser already always does), "show title bar" (Layout's
   // title row), "reset toolbars" (the toolbar editor) and the Windows and Reading list panels (Bowser has neither).
-  { id: 'winAnimations', section: 'appearance', label: 'Use animation', description: 'Bowser’s own transitions and the panel slide. Off, they snap. Bowser also stays still when Windows has animations off.', keywords: 'animation motion transitions reduced motion prefers reduced motion slide' },
-  { id: 'winRangeButtons', section: 'appearance', label: 'Buttons instead of sliders', description: 'Range controls on this page, such as the sidebar width and the interface zoom, show minus and plus buttons instead of a slider.', keywords: 'sliders range buttons stepper plus minus' },
-  { id: 'winFade', section: 'appearance', label: 'Fade colours in background windows', description: 'Bowser’s bars and panels lose their colour while another window is in front.', keywords: 'fade colours background window inactive dim grey desaturate' },
-  { id: 'winScrollbars', section: 'appearance', label: 'Simple scrollbars', description: 'Thin, quiet scrollbars in Bowser’s own pages and panels. Web pages keep theirs.', keywords: 'scrollbars simple thin slim overlay' },
-  { id: 'winMonoIcons', section: 'appearance', label: 'Monochrome settings icons', description: 'The icons in this page’s list draw in plain text colour, without the accent.', keywords: 'monochrome icons settings colour accent plain' },
-  { id: 'panelCloseButton', section: 'appearance', label: 'Show the close button on panels', description: 'The X in a panel’s header. Off, Escape and the panel’s rail button still close it.', keywords: 'panel close button x header' },
-  { id: 'panelFolderCounts', section: 'appearance', label: 'Show folder counters', description: 'How many items a bookmarks folder holds, beside its name.', keywords: 'folder counters count number bookmarks panel items' },
-  { id: 'panelAutoClose', section: 'appearance', label: 'Close floating panels when you click elsewhere', description: 'Bookmarks and Customize float over the page. Off, they stay until you close them.', keywords: 'floating panel auto close dismiss click outside overlay flyout' },
-  { id: 'winReset', section: 'appearance', label: 'Reset window options', description: 'Puts animation, sliders, fading, scrollbars and icons back to their defaults.', keywords: 'reset window defaults restore' },
-  { id: 'panelReset', section: 'appearance', label: 'Reset panel options', description: 'Puts the close button, folder counters and auto-close back to their defaults.', keywords: 'reset panels defaults restore' },
+  { id: 'winAnimations', section: 'appearance', label: 'Animation', aria: 'Use animation', description: '', keywords: 'animation motion transitions reduced motion prefers reduced motion slide Use animation Bowser’s own transitions and the panel slide. Off, they snap. Bowser also stays still when Windows has animations off.' },
+  { id: 'winRangeButtons', section: 'appearance', label: 'Steppers', aria: 'Buttons instead of sliders', description: '', keywords: 'sliders range buttons stepper plus minus Buttons instead of sliders Range controls on this page, such as the sidebar width and the interface zoom, show minus and plus buttons instead of a slider.' },
+  { id: 'winFade', section: 'appearance', label: 'Fade inactive', aria: 'Fade colours in background windows', description: '', keywords: 'fade colours background window inactive dim grey desaturate Fade colours in background windows Bowser’s bars and panels lose their colour while another window is in front.' },
+  { id: 'winScrollbars', section: 'appearance', label: 'Scrollbars', aria: 'Simple scrollbars', description: '', keywords: 'scrollbars simple thin slim overlay Simple scrollbars Thin, quiet scrollbars in Bowser’s own pages and panels. Web pages keep theirs.' },
+  { id: 'winMonoIcons', section: 'appearance', label: 'Plain icons', aria: 'Monochrome settings icons', description: '', keywords: 'monochrome icons settings colour accent plain Monochrome settings icons The icons in this page’s list draw in plain text colour, without the accent.' },
+  { id: 'panelCloseButton', section: 'appearance', label: 'Close button', aria: 'Show the close button on panels', description: '', keywords: 'panel close button x header Show the close button on panels The X in a panel’s header. Off, Escape and the panel’s rail button still close it.' },
+  { id: 'panelFolderCounts', section: 'appearance', label: 'Folder counts', aria: 'Show folder counters', description: '', keywords: 'folder counters count number bookmarks panel items Show folder counters How many items a bookmarks folder holds, beside its name.' },
+  { id: 'panelAutoClose', section: 'appearance', label: 'Auto-close', aria: 'Close floating panels when you click elsewhere', description: '', keywords: 'floating panel auto close dismiss click outside overlay flyout Close floating panels when you click elsewhere Bookmarks and Customize float over the page. Off, they stay until you close them.' },
+  { id: 'winReset', section: 'appearance', label: 'Reset window', aria: 'Reset window options', description: '', keywords: 'reset window defaults restore Restores defaults Reset window options Puts animation, sliders, fading, scrollbars and icons back to their defaults.' },
+  { id: 'panelReset', section: 'appearance', label: 'Reset panels', aria: 'Reset panel options', description: '', keywords: 'reset panels defaults restore Restores defaults Reset panel options Puts the close button, folder counters and auto-close back to their defaults.' },
   // --- end window and panels ---
-  { id: 'roundedContentFrame', section: 'appearance', label: 'Rounded corners around the page', description: 'Rounds the corners of the page area.', keywords: 'rounded corners content frame page' },
+  { id: 'roundedContentFrame', section: 'appearance', label: 'Rounded page', aria: 'Rounded corners around the page', description: '', keywords: 'rounded corners content frame page Rounded corners around the page Rounds the corners of the page area.' },
   // --- auto-hide (T11) --- the master switch is the old `frameless` key (core); the other two sit behind "More options".
-  { id: 'frameless', section: 'appearance', label: 'Auto-hide toolbars and tabs', description: 'Hides the bars you choose until the pointer rests at the edge of the window. Ctrl+F11 turns it on or off.', keywords: 'auto hide autohide frameless toolbar tabs immersive fullscreen full screen bars edge', tier: 'more' },
-  { id: 'autoHideBars', section: 'appearance', label: 'Bars to hide', description: 'The tab bar and address bar share the top edge in the horizontal layouts, so either one hides both. The side panel opens over the page instead of pushing it.', keywords: 'auto hide bars tabs address bookmarks panel status', tier: 'more' },
-  { id: 'autoHideFullscreen', section: 'appearance', label: 'Always auto-hide in full screen', description: 'In full screen (F11, or a video) every bar hides, even with the switch above off.', keywords: 'auto hide full screen fullscreen f11 video', tier: 'more' },
+  { id: 'frameless', section: 'appearance', label: 'Auto-hide', aria: 'Auto-hide toolbars and tabs', description: '', keywords: 'auto hide autohide frameless toolbar tabs immersive fullscreen full screen bars edge Auto-hide toolbars and tabs Hides the bars you choose until the pointer rests at the edge of the window. Ctrl+F11 turns it on or off.', tier: 'more' },
+  { id: 'autoHideBars', section: 'appearance', label: 'Hidden bars', aria: 'Bars to hide', description: '', keywords: 'auto hide bars tabs address bookmarks panel status Bars to hide The tab bar and address bar share the top edge in the horizontal layouts, so either one hides both. The side panel opens over the page instead of pushing it.', tier: 'more' },
+  { id: 'autoHideFullscreen', section: 'appearance', label: 'Full screen', aria: 'Always auto-hide in full screen', description: '', keywords: 'auto hide full screen fullscreen f11 video Always auto-hide in full screen In full screen (F11, or a video) every bar hides, even with the switch above off.', tier: 'more' },
   // --- end auto-hide ---
-  { id: 'bookmarksBar', section: 'appearance', label: 'Bookmarks bar', description: 'When the bookmarks bar is shown.', keywords: 'bookmarks bar show hide newtab always never' },
-  { id: 'bookmarksBarTabGroups', section: 'appearance', label: 'Show tab groups in the bookmarks bar', description: 'Tab groups pinned to the bar appear after the bookmarks. Select one to go to it.', keywords: 'tab groups bookmarks bar islands' },
+  { id: 'bookmarksBar', section: 'appearance', label: 'Bookmarks bar', description: '', keywords: 'bookmarks bar show hide newtab always never Bookmarks bar When the bookmarks bar is shown.' },
+  { id: 'bookmarksBarTabGroups', section: 'appearance', label: 'Groups on bar', aria: 'Show tab groups in the bookmarks bar', description: '', keywords: 'tab groups bookmarks bar islands Show tab groups in the bookmarks bar Tab groups pinned to the bar appear after the bookmarks. Select one to go to it.' },
   ...ADDRESS_ROWS.filter((row) => row.section === 'appearance'),
   // --- layout (thread T6) --- the side panel's edge is the Panels choice of the "Tab bar, address bar and panels" row (layoutBars) above; it acts at once.
-  { id: 'fontSize', section: 'appearance', label: 'Text size', description: 'The size of text on Bowser’s own pages.', keywords: 'font size small medium large text' },
-  { id: 'uiFont', section: 'appearance', label: 'Customise fonts', description: 'A font family to use instead of the system font.', keywords: 'font family typeface custom ui' },
-  { id: 'defaultZoom', section: 'appearance', label: 'Page zoom', description: 'The zoom new pages start at.', keywords: 'zoom default starting percent page' },
-  { id: 'showZoomIndicator', section: 'appearance', label: 'Show the zoom indicator', description: 'Shows the zoom level in the toolbar when it isn’t 100%.', keywords: 'zoom indicator toolbar percent' },
-  { id: 'translateOffer', section: 'appearance', label: 'Offer to translate pages in other languages', description: 'Shows a button in the toolbar when a page is in another language. Nothing is sent until you click it. Pages are translated by Google Translate, so their text is sent to Google.', keywords: 'translate translation language foreign page' },
-  { id: 'translateAuto', section: 'appearance', label: 'Translate automatically on sites set to always translate', description: 'Sites set to always translate are translated as soon as they load, which sends their text to Google Translate.', keywords: 'translate translation language foreign page automatic always' },
-  { id: 'translateTarget', section: 'appearance', label: 'Translate into', description: '', keywords: 'translate translation language foreign page target windows' },
-  { id: 'shiftRightClickContext', section: 'keyboard', label: 'Shift+Right Click shows the system menu', description: 'Shift+Right Click always shows the system menu over Bowser’s own tab and rail menus.', keywords: 'shift right click context menu system' },
-  { id: 'ctrlShiftCCopyLink', section: 'keyboard', label: 'Ctrl+Shift+C copies the address', description: 'Ctrl+Shift+C copies the current page’s address.', keywords: 'ctrl shift c copy link address shortcut' },
+  { id: 'fontSize', section: 'appearance', label: 'Text size', description: '', keywords: 'font size small medium large text Text size The size of text on Bowser’s own pages.' },
+  { id: 'uiFont', section: 'appearance', label: 'Font', aria: 'Customise fonts', description: '', keywords: 'font family typeface custom ui Customise fonts A font family to use instead of the system font.' },
+  { id: 'defaultZoom', section: 'appearance', label: 'Page zoom', description: '', keywords: 'zoom default starting percent page Page zoom The zoom new pages start at.' },
+  { id: 'showZoomIndicator', section: 'appearance', label: 'Zoom indicator', aria: 'Show the zoom indicator', description: '', keywords: 'zoom indicator toolbar percent Show the zoom indicator Shows the zoom level in the toolbar when it isn’t 100%.' },
+  { id: 'translateOffer', section: 'appearance', label: 'Offer translate', aria: 'Offer to translate pages in other languages', description: '', keywords: 'translate translation language foreign page Offer to translate pages in other languages Shows a button in the toolbar when a page is in another language. Nothing is sent until you click it. Pages are translated by Google Translate, so their text is sent to Google.' },
+  { id: 'translateAuto', section: 'appearance', label: 'Auto-translate', aria: 'Translate automatically on sites set to always translate', description: '', keywords: 'translate translation language foreign page automatic always Translate automatically on sites set to always translate Sites set to always translate are translated as soon as they load, which sends their text to Google Translate.' },
+  { id: 'translateTarget', section: 'appearance', label: 'Translate to', aria: 'Translate into', description: '', keywords: 'translate translation language foreign page target windows Translate into' },
+  { id: 'shiftRightClickContext', section: 'keyboard', label: 'Shift+right-click', aria: 'Shift+right click shows the system menu', description: '', keywords: 'shift right click context menu system Shift+Right Click shows the system menu Shift+Right Click always shows the system menu over Bowser’s own tab and rail menus.' },
+  { id: 'ctrlShiftCCopyLink', section: 'keyboard', label: 'Ctrl+Shift+C', aria: 'Ctrl+Shift+C copies the address', description: '', keywords: 'ctrl shift c copy link address shortcut Ctrl+Shift+C copies the address Ctrl+Shift+C copies the current page’s address.' },
   // The Tabs section's rows come from its own table (tab-options-logic.ts).
   ...TABS_SECTION_ROWS,
   // --- tab stacks, tiling and workspaces (T10) ---
-  { id: 'workspaceRules', section: 'stacks', label: 'Workspace rules', description: 'Sites that open in a workspace of their own: a link, an address or a bookmark of the site moves its tab there.', keywords: 'workspace rules sites open automatically named workspace domain' },
+  { id: 'workspaceRules', section: 'stacks', label: 'Rules', aria: 'Workspace rules', description: '', keywords: 'workspace rules sites open automatically named workspace domain Workspace rules Sites that open in a workspace of their own: a link, an address or a bookmark of the site moves its tab there.' },
   // --- start page --- (docs/design/start-page.md)
-  { id: 'startGroupReopen', section: 'startpage', label: 'Open the start page on', description: 'Which speed dial group a new tab shows first.', keywords: 'speed dial group last first new tab start page reopen' },
-  { id: 'startTitles', section: 'startpage', label: 'Show titles', description: 'When a speed dial shows its name. When needed shows it under tiles without a chosen image, and on hover for the rest.', keywords: 'speed dial titles names always never needed labels' },
-  { id: 'startAddButton', section: 'startpage', label: 'Show the add button', description: 'A tile at the end of each group for adding a site.', keywords: 'speed dial add button plus tile new site' },
-  { id: 'startColumns', section: 'startpage', label: 'Maximum columns', description: 'The most speed dials in a row. Fewer show when the window is narrow.', keywords: 'speed dial columns row grid width' },
-  { id: 'startThumbSize', section: 'startpage', label: 'Tile size', description: 'How large each speed dial tile is.', keywords: 'speed dial thumbnail size tiny small medium large huge tiles' },
-  { id: 'startDragReorder', section: 'startpage', label: 'Drag to reorder', description: 'Drag speed dials to reorder them, or onto a folder to put them inside it. Alt and the arrow keys do the same.', keywords: 'speed dial drag drop reorder move sort' },
-  { id: 'startHomepage', section: 'startpage', label: 'Homepage', description: 'The Home button opens this. Leave it empty for the start page.', keywords: 'home page homepage address url' },
-  { id: 'startupMode', section: 'startpage', label: 'On startup', description: 'What opens when Bowser starts.', keywords: 'startup launch open start page last session where you left off homepage specific pages restore when bowser starts' },
-  { id: 'startupPages', section: 'startpage', label: 'Pages to open at startup', description: 'One address per line, up to eight. Used when Bowser starts with specific pages.', keywords: 'startup pages specific urls tabs launch' },
-  { id: 'startWidgets', section: 'startpage', label: 'Show the dashboard', description: 'Widgets under the speed dials: top sites, bookmarks, a sticky note, the date, privacy statistics and a web page.', keywords: 'widgets dashboard top sites sticky note date privacy statistics webpage' },
-  { id: 'startWidgetColumns', section: 'startpage', label: 'Widget columns', description: 'The most widgets in a row, 1 to 4.', keywords: 'widgets columns row dashboard' },
-  { id: 'startWidgetHeight', section: 'startpage', label: 'Widget height', description: 'Regular or tall widgets.', keywords: 'widgets height tall regular dashboard' },
-  { id: 'startWidgetBg', section: 'startpage', label: 'Widget background', description: 'How a widget is filled: solid, semi-transparent, transparent or a colour you choose.', keywords: 'widgets background solid transparent translucent custom colour' },
-  { id: 'startWidgetColor', section: 'startpage', label: 'Custom widget colour', description: 'Used when the widget background is Custom.', keywords: 'widgets colour color custom background' },
-  { id: 'startWidgetDrag', section: 'startpage', label: 'Drag to rearrange widgets', description: 'Drag a widget by its handle, or press Alt and an arrow key on it.', keywords: 'widgets drag rearrange reorder move' },
+  { id: 'startGroupReopen', section: 'startpage', label: 'Start group', aria: 'Open the start page on', description: '', keywords: 'speed dial group last first new tab start page reopen Open the start page on Which speed dial group a new tab shows first.' },
+  { id: 'startTitles', section: 'startpage', label: 'Titles', aria: 'Show titles', description: '', keywords: 'speed dial titles names always never needed labels Show titles When a speed dial shows its name. When needed shows it under tiles without a chosen image, and on hover for the rest.' },
+  { id: 'startAddButton', section: 'startpage', label: 'Add button', aria: 'Show the add button', description: '', keywords: 'speed dial add button plus tile new site Show the add button A tile at the end of each group for adding a site.' },
+  { id: 'startColumns', section: 'startpage', label: 'Columns', aria: 'Maximum columns', description: '', keywords: 'speed dial columns row grid width Maximum columns The most speed dials in a row. Fewer show when the window is narrow.' },
+  { id: 'startThumbSize', section: 'startpage', label: 'Tile size', description: '', keywords: 'speed dial thumbnail size tiny small medium large huge tiles Tile size How large each speed dial tile is.' },
+  { id: 'startDragReorder', section: 'startpage', label: 'Reorder', aria: 'Drag to reorder', description: '', keywords: 'speed dial drag drop reorder move sort Drag to reorder Drag speed dials to reorder them, or onto a folder to put them inside it. Alt and the arrow keys do the same.' },
+  { id: 'startHomepage', section: 'startpage', label: 'Homepage', description: '', keywords: 'home page homepage address url Homepage The Home button opens this. Leave it empty for the start page.' },
+  { id: 'startupMode', section: 'startpage', label: 'Startup', aria: 'On startup', description: '', keywords: 'startup launch open start page last session where you left off homepage specific pages restore when bowser starts On startup What opens when Bowser starts.' },
+  { id: 'startupPages', section: 'startpage', label: 'Startup pages', aria: 'Pages to open at startup', description: '', keywords: 'startup pages specific urls tabs launch Pages to open at startup One address per line, up to eight. Used when Bowser starts with specific pages.' },
+  { id: 'startWidgets', section: 'startpage', label: 'Dashboard', aria: 'Show the dashboard', description: '', keywords: 'widgets dashboard top sites sticky note date privacy statistics webpage Show the dashboard Widgets under the speed dials: top sites, bookmarks, a sticky note, the date, privacy statistics and a web page.' },
+  { id: 'startWidgetColumns', section: 'startpage', label: 'Widget columns', description: '', keywords: 'widgets columns row dashboard Widget columns The most widgets in a row, 1 to 4.' },
+  { id: 'startWidgetHeight', section: 'startpage', label: 'Height', aria: 'Widget height', description: '', keywords: 'widgets height tall regular dashboard Widget height Regular or tall widgets.' },
+  { id: 'startWidgetBg', section: 'startpage', label: 'Background', aria: 'Widget background', description: '', keywords: 'widgets background solid transparent translucent custom colour Widget background How a widget is filled: solid, semi-transparent, transparent or a colour you choose.' },
+  { id: 'startWidgetColor', section: 'startpage', label: 'Colour', aria: 'Custom widget colour', description: '', keywords: 'widgets colour color custom background Custom widget colour Used when the widget background is Custom.' },
+  { id: 'startWidgetDrag', section: 'startpage', label: 'Rearrange', aria: 'Drag to rearrange widgets', description: '', keywords: 'widgets drag rearrange reorder move Drag to rearrange widgets Drag a widget by its handle, or press Alt and an arrow key on it.' },
   // --- end start page ---
-  { id: 'blocker', section: 'privacy', label: 'Blocking', description: 'None, trackers, or trackers and ads. A site can have its own level.', keywords: 'adblock ad blocker shield trackers ads none level block blocking' },
-  { id: 'cookieNotices', section: 'privacy', label: 'Hide cookie notices', description: 'Hides cookie-consent banners on pages, with or without blocking. A site can switch it off.', keywords: 'cookie warning banner consent gdpr popup annoyance i don’t care about cookies easylist' },
-  { id: 'blockYoutubeVideoAds', section: 'privacy', label: 'Block YouTube video ads', description: 'Skips in-video ads on YouTube where the blocking level is Trackers and ads, and in private tabs. At Trackers or None, YouTube ads still play.', keywords: 'youtube video ads block skip' },
-  { id: 'allow', section: 'privacy', label: 'Sites the blocker skips', description: 'The blocker never blocks on these sites.', keywords: 'allow list exceptions whitelist adblock' },
-  { id: 'tracking', section: 'privacy', label: 'Tracking prevention', description: 'Balanced is the default. Strict blocks more trackers but can break some sites.', keywords: 'privacy cookies strict balanced fingerprinting', restart: true },
-  { id: 'history', section: 'privacy', label: 'Save history', description: 'Pages you visit are listed in History and suggested in the address bar.', keywords: 'history visits record browsing save' },
-  { id: 'historyRetention', section: 'privacy', label: 'Keep history for', description: 'Older visits are deleted from the history list. Session only clears it when Bowser closes.', keywords: 'history retention expire delete old days week month year forever session' },
-  { id: 'siteRules', section: 'privacy', label: 'Sites with their own choices', description: 'Give one site its own blocking level or cookie-notice choice.', keywords: 'site exceptions per site level blocking cookie notices list shield' },
-  { id: 'blockLists', section: 'privacy', label: 'Blocking lists', description: 'Switch lists on or off, add one from an address or a file, or remove one you added.', keywords: 'sources filter lists easylist easyprivacy subscription url file add cookie list' },
-  { id: 'deleteData', section: 'privacy', label: 'Clear browsing data', description: 'Delete history, cookies, cache and other site data for a period you choose.', keywords: 'clear delete browsing data history cookies cache storage logins sign-ins autofill site settings hour day week' },
-  { id: 'dashboard', section: 'privacy', label: 'Privacy dashboard', description: 'Review site permissions and blocking statistics.', keywords: 'clear cookies cache data permissions camera microphone location notifications statistics' },
-  { id: 'efficiency', section: 'performance', label: 'Efficiency', description: 'On battery, hidden tabs sleep sooner and use less memory.', keywords: 'battery power eco energy saver laptop efficiency mode' },
-  { id: 'sleep', section: 'performance', label: 'Sleep unused tabs', description: 'Hidden tabs go to sleep after a while to free memory.', keywords: 'memory discard suspend hibernate inactive hidden tabs' },
-  { id: 'sleepAfter', section: 'performance', label: 'Sleep after', description: 'How long a tab stays hidden before it sleeps.', keywords: 'delay timeout minutes memory' },
+  { id: 'blocker', section: 'privacy', label: 'Blocking', description: '', keywords: 'adblock ad blocker shield trackers ads none level block blocking Blocking None, trackers, or trackers and ads. A site can have its own level.' },
+  { id: 'cookieNotices', section: 'privacy', label: 'Cookie notices', aria: 'Hide cookie notices', description: '', keywords: 'cookie warning banner consent gdpr popup annoyance i don’t care about cookies easylist Hide cookie notices Hides cookie-consent banners on pages, with or without blocking. A site can switch it off.' },
+  { id: 'blockYoutubeVideoAds', section: 'privacy', label: 'YouTube ads', aria: 'Block YouTube video ads', description: '', keywords: 'youtube video ads block skip Block YouTube video ads Skips in-video ads on YouTube where the blocking level is Trackers and ads, and in private tabs. At Trackers or None, YouTube ads still play.' },
+  { id: 'allow', section: 'privacy', label: 'Skipped sites', aria: 'Sites the blocker skips', description: '', keywords: 'allow list exceptions whitelist adblock Sites the blocker skips The blocker never blocks on these sites.' },
+  { id: 'tracking', section: 'privacy', label: 'Tracking', aria: 'Tracking prevention', description: '', keywords: 'privacy cookies strict balanced fingerprinting Tracking prevention Balanced is the default. Strict blocks more trackers but can break some sites.', restart: true },
+  { id: 'history', section: 'privacy', label: 'History', aria: 'Save history', description: '', keywords: 'history visits record browsing save Save history Pages you visit are listed in History and suggested in the address bar.' },
+  { id: 'historyRetention', section: 'privacy', label: 'Keep history', aria: 'Keep history for', description: '', keywords: 'history retention expire delete old days week month year forever session Keep history for Older visits are deleted from the history list. Session only clears it when Bowser closes.' },
+  { id: 'siteRules', section: 'privacy', label: 'Site rules', aria: 'Sites with their own choices', description: '', keywords: 'site exceptions per site level blocking cookie notices list shield Sites with their own choices Give one site its own blocking level or cookie-notice choice.' },
+  { id: 'blockLists', section: 'privacy', label: 'Block lists', aria: 'Blocking lists', description: '', keywords: 'sources filter lists easylist easyprivacy subscription url file add cookie list Blocking lists Switch lists on or off, add one from an address or a file, or remove one you added.' },
+  { id: 'deleteData', section: 'privacy', label: 'Clear data', aria: 'Clear browsing data', description: '', keywords: 'clear delete browsing data history cookies cache storage logins sign-ins autofill site settings hour day week Cannot be undone Clear browsing data Delete history, cookies, cache and other site data for a period you choose.' },
+  { id: 'dashboard', section: 'privacy', label: 'Dashboard', aria: 'Privacy dashboard', description: '', keywords: 'clear cookies cache data permissions camera microphone location notifications statistics Privacy dashboard Review site permissions and blocking statistics.' },
+  { id: 'efficiency', section: 'performance', label: 'Efficiency', description: '', keywords: 'battery power eco energy saver laptop efficiency mode Efficiency On battery, hidden tabs sleep sooner and use less memory.' },
+  { id: 'sleep', section: 'performance', label: 'Sleep tabs', aria: 'Sleep unused tabs', description: '', keywords: 'memory discard suspend hibernate inactive hidden tabs Sleep unused tabs Hidden tabs go to sleep after a while to free memory.' },
+  { id: 'sleepAfter', section: 'performance', label: 'Sleep after', description: '', keywords: 'delay timeout minutes memory Sleep after How long a tab stays hidden before it sleeps.' },
   ...ADDRESS_ROWS.filter((row) => row.section !== 'appearance'),
   ...PAGE_TOOLS_ROWS, // --- page tools (T7) ---
   ...FEED_ROWS, // --- toolbars and feeds (thread T13) ---
   // --- keyboard and quick commands (docs/commands.md) ---
-  { id: 'kbEnabled', section: 'keyboard', label: 'Keyboard shortcuts', description: 'Turn Bowser’s shortcuts on or off. Quick commands stays available.', keywords: 'keyboard shortcuts enable disable hotkeys keybindings keys ctrl shift k' },
-  { id: 'kbSingleKey', section: 'keyboard', label: 'Allow single-key shortcuts', description: 'Lets a letter, number or punctuation key be a shortcut on its own. They work only from Bowser’s own bars, never while you type in a page or a text field.', keywords: 'single key shortcuts letter number plain keys' },
-  { id: 'kbAltMenu', section: 'keyboard', label: 'Alt opens the menu', description: 'Pressing and releasing Alt on its own opens the Bowser menu. Off, it does nothing.', keywords: 'alt key menu windows' },
-  { id: 'kbFocusCycling', section: 'keyboard', label: 'F6 moves between the address bar and the page', description: 'F6 jumps from the address bar to the page, and back. Off, F6 always goes to the address bar.', keywords: 'f6 focus cycle address bar page tab' },
-  { id: 'kbSites', section: 'keyboard', label: 'Prioritise website shortcuts on these sites', description: 'On a site listed here, shortcuts the page uses go to the page. The browser keeps the shortcuts marked Browser priority below. The “Prioritise website shortcuts on this site” command adds or removes the site you are on.', keywords: 'website shortcuts priority sites page keys web app gmail docs' },
-  { id: 'kbEditor', section: 'keyboard', label: 'Shortcuts', description: 'Give a command several shortcuts, clear them or restore the defaults. Ctrl+F1 shows the cheat sheet. Editing shortcuts such as Ctrl+C and Ctrl+V cannot be taken.', keywords: 'shortcuts assign rebind remap clear restore reset cheat sheet ctrl f1 keybindings browser priority' },
-  { id: 'qcTypes', section: 'commands', label: 'Result types', description: 'Choose which kinds of result Quick commands shows and in what order. Type bkm:, tb:, cmd: and similar before a search to look in one place. Shift or the right arrow completes the top result.', keywords: 'quick commands palette results types order prefix bookmark note tab history command action workspace calculator' },
-  { id: 'qcMax', section: 'commands', label: 'Visible results', description: 'The most results shown for a typed search.', keywords: 'quick commands palette results limit maximum number' },
-  { id: 'qcKeepLast', section: 'commands', label: 'Keep the last typed search', description: 'Quick commands opens with what you typed last time, selected, so the first key you press replaces it.', keywords: 'quick commands palette remember last typed value query' },
-  { id: 'qcNewTab', section: 'commands', label: 'Open links in a new tab', description: 'A bookmark or history entry picked in Quick commands opens in a new tab, not the one you are on.', keywords: 'quick commands palette new tab bookmark history open link' },
-  { id: 'qcNotesPanel', section: 'commands', label: 'Open notes in the Notes panel', description: 'Picking a note opens the Notes panel; the panel does not yet go to the picked note. Off, it copies the note’s text instead.', keywords: 'quick commands palette notes manager panel copy' },
-  { id: 'qcNickname', section: 'commands', label: 'Open a bookmark when its nickname is typed', description: 'Typing a bookmark’s whole nickname in Quick commands opens it at once, without pressing Enter. Give a bookmark a nickname in its bookmark dialog.', keywords: 'quick commands palette bookmark nickname automatic open match keyword' },
-  { id: 'chains', section: 'commands', label: 'Command chains', description: 'Run several commands one after another, with a delay in milliseconds before each. Run a chain from Quick commands, give it a shortcut in Keyboard, or test it here.', keywords: 'command chains macro sequence delay milliseconds test clone create edit delete automation' },
+  { id: 'kbEnabled', section: 'keyboard', label: 'Shortcuts', aria: 'Keyboard shortcuts', description: '', keywords: 'keyboard shortcuts enable disable hotkeys keybindings keys ctrl shift k Keyboard shortcuts Turn Bowser’s shortcuts on or off. Quick commands stays available.' },
+  { id: 'kbSingleKey', section: 'keyboard', label: 'Single-key', aria: 'Allow single-key shortcuts', description: '', keywords: 'single key shortcuts letter number plain keys Allow single-key shortcuts Lets a letter, number or punctuation key be a shortcut on its own. They work only from Bowser’s own bars, never while you type in a page or a text field.' },
+  { id: 'kbAltMenu', section: 'keyboard', label: 'Alt menu', aria: 'Alt opens the menu', description: '', keywords: 'alt key menu windows Alt opens the menu Pressing and releasing Alt on its own opens the Bowser menu. Off, it does nothing.' },
+  { id: 'kbFocusCycling', section: 'keyboard', label: 'F6 focus', aria: 'F6 moves between the address bar and the page', description: '', keywords: 'f6 focus cycle address bar page tab F6 moves between the address bar and the page F6 jumps from the address bar to the page, and back. Off, F6 always goes to the address bar.' },
+  { id: 'kbSites', section: 'keyboard', label: 'Site shortcuts', aria: 'Prioritise website shortcuts on these sites', description: '', keywords: 'website shortcuts priority sites page keys web app gmail docs Prioritise website shortcuts on these sites On a site listed here, shortcuts the page uses go to the page. The browser keeps the shortcuts marked Browser priority below. The “Prioritise website shortcuts on this site” command adds or removes the site you are on.' },
+  { id: 'kbEditor', section: 'keyboard', label: 'Bindings', aria: 'Edit shortcuts', description: '', keywords: 'shortcuts assign rebind remap clear restore reset cheat sheet ctrl f1 keybindings browser priority Shortcuts Give a command several shortcuts, clear them or restore the defaults. Ctrl+F1 shows the cheat sheet. Editing shortcuts such as Ctrl+C and Ctrl+V cannot be taken.' },
+  { id: 'qcTypes', section: 'commands', label: 'Result types', description: '', keywords: 'quick commands palette results types order prefix bookmark note tab history command action workspace calculator Result types Choose which kinds of result Quick commands shows and in what order. Type bkm:, tb:, cmd: and similar before a search to look in one place. Shift or the right arrow completes the top result.' },
+  { id: 'qcMax', section: 'commands', label: 'Result limit', aria: 'Visible results', description: '', keywords: 'quick commands palette results limit maximum number Visible results The most results shown for a typed search.' },
+  { id: 'qcKeepLast', section: 'commands', label: 'Remember search', aria: 'Keep the last typed search', description: '', keywords: 'quick commands palette remember last typed value query Keep the last typed search Quick commands opens with what you typed last time, selected, so the first key you press replaces it.' },
+  { id: 'qcNewTab', section: 'commands', label: 'Open in tab', aria: 'Open links in a new tab', description: '', keywords: 'quick commands palette new tab bookmark history open link Open links in a new tab A bookmark or history entry picked in Quick commands opens in a new tab, not the one you are on.' },
+  { id: 'qcNotesPanel', section: 'commands', label: 'Notes panel', aria: 'Open notes in the Notes panel', description: '', keywords: 'quick commands palette notes manager panel copy Open notes in the Notes panel Picking a note opens the Notes panel; the panel does not yet go to the picked note. Off, it copies the note’s text instead.' },
+  { id: 'qcNickname', section: 'commands', label: 'Nicknames', aria: 'Open a bookmark when its nickname is typed', description: '', keywords: 'quick commands palette bookmark nickname automatic open match keyword Open a bookmark when its nickname is typed Typing a bookmark’s whole nickname in Quick commands opens it at once, without pressing Enter. Give a bookmark a nickname in its bookmark dialog.' },
+  { id: 'chains', section: 'commands', label: 'Chains', aria: 'Command chains', description: '', keywords: 'command chains macro sequence delay milliseconds test clone create edit delete automation Command chains Run several commands one after another, with a delay in milliseconds before each. Run a chain from Quick commands, give it a shortcut in Keyboard, or test it here.' },
   // --- end keyboard and quick commands ---
-  { id: 'downloadDir', section: 'downloads', label: 'Download folder', description: '', keywords: 'download folder directory save path where change location' },
-  { id: 'downloadAsk', section: 'downloads', label: 'Ask where to save each file', description: 'Off, files go straight to the folder above.', keywords: 'save as prompt dialog ask where download location before downloading' },
-  { id: 'media', section: 'media', label: 'Media support', description: 'Runs on this device only and sends nothing.', keywords: 'video codec h264 vp9 av1 hevc widevine playready drm netflix hardware decode' },
-  { id: 'extensions', section: 'extensions', label: 'Extensions', description: 'Turn extensions on or off, or remove one.', keywords: 'extension add-on addon plugin unpacked crx file manifest permissions popup install remove uninstall disable enable installed' },
-  { id: 'autoUpdate', section: 'updates', label: 'Update automatically', description: 'Checks in the background and installs the update the next time Bowser starts. Applies to every profile.', keywords: 'auto update upgrade version' },
-  { id: 'updateStatus', section: 'updates', label: 'Bowser updates', description: '', keywords: 'check for updates restart version upgrade' },
-  { id: 'version', section: 'about', label: 'Version', description: '', keywords: 'about build release' },
-  { id: 'file', section: 'about', label: 'Settings file', description: 'Most settings are saved in this profile’s settings.txt, which you can also edit by hand. Kept in their own files: shortcuts and command chains, search engines, the history switch, workspace rules, and blocker rules and lists. Automatic updates are shared by all profiles.', keywords: 'settings.txt advanced edit text shortcuts engines history workspace blocker updates' },
-  { id: 'reset', section: 'about', label: 'Reset settings', description: 'Puts layout, appearance, toolbars, tabs, start page, address bar, search engines, bookmarks bar, page tools, feeds, blocking and website appearance, performance, downloads and translation back to their defaults. Tracking prevention goes back to its default the next time Bowser starts. Not changed: how long history is kept, your history and bookmarks, the Keyboard section and Quick commands, extensions, site permissions and updates.', keywords: 'defaults restore factory start over tracking prevention' },
-  { id: 'defaultBrowser', section: 'about', label: 'Default browser', description: 'Open links from other apps in Bowser.', keywords: 'default browser make bowser windows handler http https web links' },
+  { id: 'downloadDir', section: 'downloads', label: 'Folder', aria: 'Download folder', description: '', keywords: 'download folder directory save path where change location Download folder' },
+  { id: 'downloadAsk', section: 'downloads', label: 'Ask where', aria: 'Ask where to save each file', description: '', keywords: 'save as prompt dialog ask where download location before downloading Ask where to save each file Off, files go straight to the folder above.' },
+  { id: 'media', section: 'media', label: 'Playback', aria: 'Media support', description: '', keywords: 'video codec h264 vp9 av1 hevc widevine playready drm netflix hardware decode Media support Runs on this device only and sends nothing.' },
+  { id: 'extensions', section: 'extensions', label: 'Extensions', description: '', keywords: 'extension add-on addon plugin unpacked crx file manifest permissions popup install remove uninstall disable enable installed Extensions Turn extensions on or off, or remove one.' },
+  { id: 'autoUpdate', section: 'updates', label: 'Automatic', aria: 'Update automatically', description: '', keywords: 'auto update upgrade version Update automatically Checks in the background and installs the update the next time Bowser starts. Applies to every profile.' },
+  { id: 'updateStatus', section: 'updates', label: 'Status', aria: 'Bowser updates', description: '', keywords: 'check for updates restart version upgrade Bowser updates' },
+  { id: 'version', section: 'about', label: 'Version', description: '', keywords: 'about build release Version' },
+  { id: 'file', section: 'about', label: 'Settings file', description: '', keywords: 'settings.txt advanced edit text shortcuts engines history workspace blocker updates Settings file Most settings are saved in this profile’s settings.txt, which you can also edit by hand. Kept in their own files: shortcuts and command chains, search engines, the history switch, workspace rules, and blocker rules and lists. Automatic updates are shared by all profiles.' },
+  { id: 'reset', section: 'about', label: 'Reset', aria: 'Reset settings', description: '', keywords: 'defaults restore Restores defaults factory start over tracking prevention Reset settings Puts layout, appearance, toolbars, tabs, start page, address bar, search engines, bookmarks bar, page tools, feeds, blocking and website appearance, performance, downloads and translation back to their defaults. Tracking prevention goes back to its default the next time Bowser starts. Not changed: how long history is kept, your history and bookmarks, the Keyboard section and Quick commands, extensions, site permissions and updates.' },
+  { id: 'defaultBrowser', section: 'about', label: 'Default browser', description: '', keywords: 'default browser make bowser windows handler http https web links Default browser Open links from other apps in Bowser.' },
 ];
 
 /** Lower-case, accent-free, single-spaced text for matching. */
@@ -883,9 +888,10 @@ export function matchRows(query: string, rows: readonly RowSpec[] = ROWS): Set<s
   if (words.length === 0) return null;
   const hits = new Set<string>();
   for (const row of rows) {
-    const section = SECTIONS.find((spec) => spec.key === row.section)?.title ?? '';
     const area = areaOf(row.section);
-    const hay = fold(`${row.label} ${row.description} ${row.keywords} ${section} ${area.title} ${area.nav}`);
+    const sectionSpec = SECTIONS.find((spec) => spec.key === row.section);
+    const section = sectionSpec?.title ?? '';
+    const hay = fold(`${row.label} ${row.aria ?? ''} ${row.description} ${row.keywords} ${section} ${sectionSpec?.aliases ?? ''} ${area.title} ${area.nav} ${area.aliases ?? ''}`);
     if (words.every((word) => hay.includes(word))) hits.add(row.id);
   }
   return hits;
@@ -906,8 +912,8 @@ export function readSettingsView(raw: string | null): SettingsView {
 export const SIMPLE_MOVED: readonly string[] = ['searchDefault', 'startHomepage', 'startupMode', 'themeAccent', 'import', 'deleteData', 'defaultBrowser'];
 
 export const SIMPLE_TITLE = 'Settings';
-export const SIMPLE_LEAD = 'The things most people change.';
-export const SIMPLE_ALL_LABEL = 'Show all settings';
+export const SIMPLE_LEAD = '';
+export const SIMPLE_ALL_LABEL = 'All settings';
 
 /** Light, dark, or follow Windows. `null` when a time-of-day schedule is in use, so the control does not pretend. */
 export function simpleThemeChoice(schedule: string, look: string): 'light' | 'dark' | 'system' | null {
@@ -991,7 +997,7 @@ export type AddSite = { readonly list: string[] } | { readonly error: string };
 
 export function addSite(list: readonly string[], input: string): AddSite {
   const site = normaliseSite(input);
-  if (site === null) return { error: 'Enter a site such as example.com.' };
+  if (site === null) return { error: 'Enter a site.' };
   if (list.includes(site)) return { error: `${site} is already on the list.` };
   if (list.length >= MAX_ALLOW) return { error: `The list holds at most ${MAX_ALLOW} sites.` };
   const next = [...list, site];
@@ -1009,27 +1015,27 @@ export interface UpdateView {
 
 /** What the update card says and offers. */
 export function updateView(s: Pick<SettingsSnapshot, 'update' | 'updateVersion' | 'lastCheck' | 'checkResult' | 'version' | 'autoUpdate'>): UpdateView {
-  if (s.update === 'unavailable') return { title: 'Updates are off for this copy', detail: 'Development and benchmark launches never update.', action: null, busy: false, tone: 'info' };
-  if (s.update === 'checking') return { title: 'Checking for updates…', detail: `Bowser ${s.version}`, action: null, busy: true, tone: 'info' };
+  if (s.update === 'unavailable') return { title: 'Off', detail: '', action: null, busy: false, tone: 'info' };
+  if (s.update === 'checking') return { title: 'Checking…', detail: s.version, action: null, busy: true, tone: 'info' };
   if (s.update === 'ready') {
-    const which = s.updateVersion !== '' ? `Bowser ${s.updateVersion}` : 'An update';
-    return { title: `${which} is ready`, detail: 'Restart to install it. Your tabs come back after the restart.', action: 'restart', busy: false, tone: 'ok' };
+    const which = s.updateVersion !== '' ? s.updateVersion : 'Update';
+    return { title: which, detail: '', action: 'restart', busy: false, tone: 'ok' };
   }
   const result: Record<CheckResult, string> = {
     none: '',
-    staged: 'Update downloaded.',
-    uptodate: 'Bowser is up to date.',
-    unverified: 'A newer version could not be verified, so it was not downloaded.',
-    busy: 'A check is already running.',
-    unavailable: 'Development builds do not update.',
-    failed: 'The update check failed. Try again later.',
+    staged: 'Downloaded',
+    uptodate: 'Up to date',
+    unverified: 'Not verified',
+    busy: 'Checking',
+    unavailable: 'Off',
+    failed: 'Check failed',
   };
   if (s.checkResult !== 'none') {
     const warn = s.checkResult === 'failed' || s.checkResult === 'unverified';
-    return { title: result[s.checkResult], detail: `Bowser ${s.version}`, action: 'check', busy: false, tone: warn ? 'warn' : 'ok' };
+    return { title: result[s.checkResult], detail: s.version, action: 'check', busy: false, tone: warn ? 'warn' : 'ok' };
   }
-  const title = s.lastCheck === 'uptodate' ? 'Bowser is up to date' : s.lastCheck === 'failed' ? 'The last update check failed' : `Bowser ${s.version}`;
-  const detail = s.autoUpdate ? 'Bowser checks for updates about once an hour.' : 'Automatic updates are off. Check by hand.';
+  const title = s.lastCheck === 'uptodate' ? 'Up to date' : s.lastCheck === 'failed' ? 'Check failed' : s.version;
+  const detail = s.autoUpdate ? '' : 'Off';
   return { title, detail, action: 'check', busy: false, tone: s.lastCheck === 'failed' ? 'warn' : 'ok' };
 }
 

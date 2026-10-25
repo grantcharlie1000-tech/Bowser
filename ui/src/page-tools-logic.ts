@@ -89,21 +89,21 @@ export const lineText = (tenths: number): string => (tenths / 10).toFixed(1);
 const S = (id: string, label: string, description: string, keywords: string): RowSpec => ({ id, section: 'pagetools', label, description, keywords });
 
 export const PAGE_TOOLS_ROWS: readonly RowSpec[] = [
-  S('ptCaptureDir', 'Capture folder', 'Where captures are saved. Empty is Pictures\\Bowser. A folder on this PC, such as C:\\Users\\you\\Pictures.', 'capture screenshot folder directory save pictures location'),
-  S('ptCaptureName', 'Capture file name', 'Use {host}, {title}, {date}, {time} and {mode} (visible, full or selection).', 'capture screenshot file name template pattern date time'),
-  S('ptCaptureFormat', 'Capture format', 'PNG keeps every pixel. JPEG makes smaller files.', 'capture screenshot format png jpeg jpg image type'),
-  S('ptSpatial', 'Move between links with Shift and the arrow keys', 'Shift+arrow keys jump to the nearest link, Enter opens it and Ctrl+Enter opens it in a new tab. Not used while you type in a text field.', 'spatial navigation links keyboard arrow shift focus move'),
-  S('ptZoomScope', 'Page zoom belongs to', 'The site keeps its zoom for every tab and the next visit. The tab keeps the zoom you set for every page it shows.', 'zoom tab site scope page remember per'),
-  S('ptWheelZoom', 'Zoom with Ctrl and the mouse wheel', 'Off, Ctrl+scroll does nothing to the page. The zoom shortcuts still work.', 'zoom ctrl scroll wheel mouse'),
-  S('ptPip', 'Offer picture in picture in the tab menu', 'A tab playing a video lists Picture in picture in its menu. The shortcut works either way.', 'picture in picture pop out video popout pip button'),
-  S('ptReaderFont', 'Reader view font', 'The typeface reader view sets the text in.', 'reader view font face serif sans mono typeface'),
-  S('ptReaderSize', 'Reader view text size', 'In pixels. The buttons on the page change it for the page you are reading.', 'reader view font size text'),
-  S('ptReaderLine', 'Reader view line height', 'The space between lines, as a multiple of the text size.', 'reader view line height spacing leading'),
-  S('ptReaderWidth', 'Reader view column width', 'How wide a line of text may be, in characters.', 'reader view column width measure characters'),
-  S('ptReaderTheme', 'Reader view colours', 'Auto follows Bowser. The buttons on the page change it for the page you are reading.', 'reader view colour scheme theme light sepia dark'),
-  S('ptReaderVertical', 'Reader view vertical text', 'Text runs top to bottom, lines from right to left, as in traditional Chinese and Japanese.', 'reader view vertical text writing mode'),
-  S('ptReaderIcon', 'Show the reader controls on the page', 'A small bar on the page changes the text size and colours. Off, reading is undisturbed.', 'reader view settings icon controls bar page'),
-  S('ptReaderTime', 'Show the reading time', 'The reader controls say how many minutes the page takes to read.', 'reader view reading time counter minutes'),
+  S('ptCaptureDir', 'Folder', '', 'capture screenshot folder directory save pictures location Capture folder Where captures are saved. Empty is Pictures\\Bowser. A folder on this PC, such as C:\\Users\\you\\Pictures.'),
+  S('ptCaptureName', 'File name', '', 'capture screenshot file name template pattern date time Capture file name Use {host}, {title}, {date}, {time} and {mode} (visible, full or selection).'),
+  S('ptCaptureFormat', 'Format', '', 'capture screenshot format png jpeg jpg image type Capture format PNG keeps every pixel. JPEG makes smaller files.'),
+  S('ptSpatial', 'Link keys', '', 'spatial navigation links keyboard arrow shift focus move Move between links with Shift and the arrow keys Shift+arrow keys jump to the nearest link, Enter opens it and Ctrl+Enter opens it in a new tab. Not used while you type in a text field.'),
+  S('ptZoomScope', 'Zoom scope', '', 'zoom tab site scope page remember per Page zoom belongs to The site keeps its zoom for every tab and the next visit. The tab keeps the zoom you set for every page it shows.'),
+  S('ptWheelZoom', 'Wheel zoom', '', 'zoom ctrl scroll wheel mouse Zoom with Ctrl and the mouse wheel Off, Ctrl+scroll does nothing to the page. The zoom shortcuts still work.'),
+  S('ptPip', 'Picture in picture', '', 'picture in picture pop out video popout pip button Offer picture in picture in the tab menu A tab playing a video lists Picture in picture in its menu. The shortcut works either way.'),
+  S('ptReaderFont', 'Font', '', 'reader view font face serif sans mono typeface Reader view font The typeface reader view sets the text in.'),
+  S('ptReaderSize', 'Text size', '', 'reader view font size text Reader view text size In pixels. The buttons on the page change it for the page you are reading.'),
+  S('ptReaderLine', 'Line height', '', 'reader view line height spacing leading Reader view line height The space between lines, as a multiple of the text size.'),
+  S('ptReaderWidth', 'Column width', '', 'reader view column width measure characters Reader view column width How wide a line of text may be, in characters.'),
+  S('ptReaderTheme', 'Colours', '', 'reader view colour scheme theme light sepia dark Reader view colours Auto follows Bowser. The buttons on the page change it for the page you are reading.'),
+  S('ptReaderVertical', 'Vertical text', '', 'reader view vertical text writing mode Reader view vertical text Text runs top to bottom, lines from right to left, as in traditional Chinese and Japanese.'),
+  S('ptReaderIcon', 'On-page controls', '', 'reader view settings icon controls bar page Show the reader controls on the page A small bar on the page changes the text size and colours. Off, reading is undisturbed.'),
+  S('ptReaderTime', 'Reading time', '', 'reader view reading time counter minutes Show the reading time The reader controls say how many minutes the page takes to read.'),
 ];
 
 /** The rows a person changes often enough to see without opening "More options". */
