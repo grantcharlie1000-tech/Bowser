@@ -2097,6 +2097,9 @@ fn installer_command(powershell: &Path, payload: &Path) -> std::process::Command
         .arg("-MinimumVersion").arg(env!("CARGO_PKG_VERSION"))
         .arg("-MinimumRevision").arg(PIN_REVISION.to_string())
         .current_dir(payload)
+        // A download launched from pwsh inherits PS7 module paths through Bowser. Let the
+        // system Windows PowerShell child construct its own defaults; never change the parent.
+        .env_remove("PSModulePath")
         .stdin(std::process::Stdio::null())
         // This is a process-only policy override, matching Open-Bowser.cmd; machine/user policy
         // and enterprise application controls are never changed. Failures are surfaced to the UI.
@@ -2406,6 +2409,11 @@ mod tests {
             "-MinimumRevision".to_owned(), PIN_REVISION.to_string(),
         ]);
         assert_eq!(command.get_current_dir(), Some(payload));
+        assert_eq!(
+            command.get_envs().collect::<Vec<_>>(),
+            vec![(std::ffi::OsStr::new("PSModulePath"), None)],
+            "only the child's incompatible module-path override is removed",
+        );
     }
 
     fn temp_dir(name: &str) -> PathBuf {

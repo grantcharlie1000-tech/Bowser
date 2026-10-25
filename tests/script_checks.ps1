@@ -8,6 +8,12 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+# Record only the interpreter and required built-in module, not the full process environment.
+Write-Output ("script child: edition={0}; version={1}; PSHOME={2}" -f
+    $PSVersionTable.PSEdition, $PSVersionTable.PSVersion, $PSHOME)
+$hashCommand = Get-Command Get-FileHash -ErrorAction Stop
+Write-Output ("script child: hash module={0}; path={1}" -f
+    $hashCommand.ModuleName, $hashCommand.Module.Path)
 $failures = New-Object System.Collections.Generic.List[string]
 
 function Import-ScriptFunctions {

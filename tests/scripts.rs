@@ -11,6 +11,9 @@ fn powershell_scripts_survive_odd_paths_and_replace_files_safely() {
     let _ = std::fs::remove_dir_all(&temp);
     std::fs::create_dir_all(&temp).unwrap();
     let output = Command::new("powershell.exe")
+        // pwsh -> Rust -> Windows PowerShell otherwise inherits PS7-only module paths.
+        // Remove only this child's variable so Windows PowerShell rebuilds its own defaults.
+        .env_remove("PSModulePath")
         .args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File"])
         .arg(repo.join("tests").join("script_checks.ps1"))
         .arg("-Repo")
@@ -22,6 +25,7 @@ fn powershell_scripts_survive_odd_paths_and_replace_files_safely() {
     let _ = std::fs::remove_dir_all(&temp);
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
+    eprintln!("{stdout}");
     assert!(
         output.status.success() && stdout.contains("script checks passed"),
         "{stdout}\n{stderr}"
