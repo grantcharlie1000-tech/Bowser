@@ -1,0 +1,87 @@
+name: Bounded host Note Split baseline comparison
+
+# This is deliberately not published yet. Publishing the reviewed files to this exact
+# dedicated branch is the one-shot trigger; there is no PR, schedule, or manual rerun loop.
+on:
+  push:
+    branches: ['diagnostics/host-note-split-comparison-20261025']
+    paths: ['.github/workflows/host-note-split-comparison.yml']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: bowser-host-note-split-comparison-20261025
+  cancel-in-progress: false
+
+jobs:
+  compare:
+    if: github.repository == 'grantcharlie1000-tech/Bowser' && github.event.repository.private == false && github.run_attempt == 1
+    runs-on: windows-2025-vs2026
+    timeout-minutes: 25
+    defaults:
+      run:
+        shell: cmd
+    env:
+      # Process-local Git settings preserve canonical source bytes; no global config write.
+      GIT_CONFIG_COUNT: '1'
+      GIT_CONFIG_KEY_0: core.autocrlf
+      GIT_CONFIG_VALUE_0: 'false'
+      RUSTUP_AUTO_INSTALL: '0'
+      BOWSER_DIAGNOSTIC_RUNNER_ENVIRONMENT: ${{ runner.environment }}
+    steps:
+      - name: Check untouched default native helper policy before preparation
+        run: |
+          if not "%BOWSER_DIAGNOSTIC_RUNNER_ENVIRONMENT%"=="github-hosted" exit /b 61
+          if defined PSExecutionPolicyPreference exit /b 63
+          if defined RC exit /b 64
+          if defined RUSTC_WRAPPER exit /b 64
+          if defined RUSTC_WORKSPACE_WRAPPER exit /b 64
+          if defined RUSTFLAGS exit /b 64
+          if defined CARGO_ENCODED_RUSTFLAGS exit /b 64
+          powershell.exe -NoProfile -NonInteractive -Command "$ErrorActionPreference='Stop'; $p=Get-ExecutionPolicy; Get-ExecutionPolicy -List | Format-Table; if($p -eq 'Restricted' -or $p -eq 'AllSigned'){Write-Error 'Default native helper policy blocks unchanged unsigned helper; no override permitted.';exit 63}"
+          if errorlevel 1 exit /b %errorlevel%
+      - name: Materialize exact public commits with native git only, no action or archive fallback
+        run: |
+          where git.exe
+          if errorlevel 1 exit /b %errorlevel%
+          git init diagnostic
+          if errorlevel 1 exit /b %errorlevel%
+          git -C diagnostic fetch --depth=1 --no-tags https://github.com/grantcharlie1000-tech/Bowser.git "%GITHUB_SHA%"
+          if errorlevel 1 exit /b %errorlevel%
+          git -C diagnostic checkout --detach FETCH_HEAD
+          if errorlevel 1 exit /b %errorlevel%
+          git init baseline
+          if errorlevel 1 exit /b %errorlevel%
+          git -C baseline fetch --depth=1 --no-tags https://github.com/grantcharlie1000-tech/Bowser.git 74123993475e3db4a26686a1727dfc94ed103255
+          if errorlevel 1 exit /b %errorlevel%
+          git -C baseline checkout --detach FETCH_HEAD
+          if errorlevel 1 exit /b %errorlevel%
+          git init candidate
+          if errorlevel 1 exit /b %errorlevel%
+          git -C candidate fetch --depth=1 --no-tags https://github.com/grantcharlie1000-tech/Bowser.git 70b2db35ebbf96ea41eb7a9cb22b5e96146eaab2
+          if errorlevel 1 exit /b %errorlevel%
+          git -C candidate checkout --detach FETCH_HEAD
+          if errorlevel 1 exit /b %errorlevel%
+      - name: Compile diagnostics without PowerShell or policy changes
+        run: |
+          if not "%BOWSER_DIAGNOSTIC_RUNNER_ENVIRONMENT%"=="github-hosted" exit /b 61
+          if not exist "%WINDIR%\Microsoft.NET\Framework64\v4.0.30319\csc.exe" exit /b 62
+          mkdir "%RUNNER_TEMP%\bowser-note-split-comparison"
+          "%WINDIR%\Microsoft.NET\Framework64\v4.0.30319\csc.exe" /nologo /warnaserror+ /optimize+ /r:System.Web.Extensions.dll /out:"%RUNNER_TEMP%\bowser-note-split-comparison\Observer.exe" diagnostic\diagnostics\host-note-split-comparison\Observer.cs
+          if errorlevel 1 exit /b %errorlevel%
+          "%WINDIR%\Microsoft.NET\Framework64\v4.0.30319\csc.exe" /nologo /warnaserror+ /optimize+ /r:System.Web.Extensions.dll /out:"%RUNNER_TEMP%\bowser-note-split-comparison\Compare.exe" diagnostic\diagnostics\host-note-split-comparison\Compare.cs
+          if errorlevel 1 exit /b %errorlevel%
+      - name: Verify one shared preinstalled stable Rust toolchain, no installer or fallback
+        run: |
+          rustup run stable rustc --version
+          if errorlevel 1 exit /b %errorlevel%
+          rustup run stable cargo --version
+          if errorlevel 1 exit /b %errorlevel%
+      - name: Run one matched pair, stopping on policy or observer blocker
+        timeout-minutes: 20
+        run: |
+          "%RUNNER_TEMP%\bowser-note-split-comparison\Compare.exe"
+          exit /b %errorlevel%
+
+# No cache, artifact upload, secrets, clipboard preparation, release, deployment, or write token.
