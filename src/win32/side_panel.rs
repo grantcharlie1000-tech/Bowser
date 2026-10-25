@@ -33,7 +33,7 @@ use windows::{
 const CLASS: PCWSTR = w!("BowserSidePanelHost");
 pub const TIMER_ID: usize = 0xB057;
 pub const WM_RESIZED: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 0x78;
-const ANIMATION_MS: f32 = 140.0;
+const ANIMATION_MS: f32 = 220.0;
 const FRAME_MS: u32 = 16;
 const MIN_WIDTH_DIP: i32 = 280;
 const MAX_WIDTH_DIP: i32 = 520;
@@ -342,7 +342,7 @@ pub fn timer(owner: HWND) -> bool {
         let Some(anim) = &state.animation else { return !state.retired.is_empty() };
         let elapsed = Instant::now().saturating_duration_since(anim.started).as_secs_f32() * 1000.0;
         // --- window and panels (thread T9) --- "Use animation" off: the panel snaps to its width.
-        let t = if crate::window_prefs::animate(true) { (elapsed / ANIMATION_MS).clamp(0.0, 1.0) } else { 1.0 };
+        let t = if super::window::animations_enabled() { (elapsed / ANIMATION_MS).clamp(0.0, 1.0) } else { 1.0 };
         state.width = animation_width(anim.from, anim.to, t);
         if t >= 1.0 { state.width = anim.to; state.animation = None; }
         let inset = crate::chrome::layout::left_rail_inset(dpi(owner));
@@ -574,7 +574,12 @@ pub fn panel_width_px(width_dip: i32, dpi: u32, available: i32) -> Option<i32> {
 }
 #[cfg(test)]
 fn reserve_viewport(viewport: RECT, panel_width: i32) -> RECT { RECT { left: viewport.left+panel_width.max(0), ..viewport } }
-fn animation_width(from: i32, to: i32, t: f32) -> i32 { let t=t.clamp(0.0,1.0); let eased=1.0-(1.0-t).powi(3); (from as f32+(to-from) as f32*eased).round() as i32 }
+fn animation_width(from: i32, to: i32, t: f32) -> i32 {
+    let t = t.clamp(0.0, 1.0);
+    // Opening eases out; closing eases in.
+    let eased = if to < from { t.powi(3) } else { 1.0 - (1.0 - t).powi(3) };
+    (from as f32 + (to - from) as f32 * eased).round() as i32
+}
 fn animation_running(elapsed_ms: f32) -> bool { elapsed_ms < ANIMATION_MS }
 fn colorref(c: theme::Rgba) -> windows::Win32::Foundation::COLORREF { windows::Win32::Foundation::COLORREF(u32::from(c.r)|(u32::from(c.g)<<8)|(u32::from(c.b)<<16)) }
 
@@ -737,9 +742,10 @@ mod tests {
     fn animation_has_eased_endpoints_and_settles() {
         assert_eq!(animation_width(200, 400, 0.0), 200);
         assert_eq!(animation_width(200, 400, 1.0), 400);
-        assert!(animation_width(200, 400, 0.5) > 300);
-        assert!(animation_running(139.0));
-        assert!(!animation_running(140.0));
+        assert!(animation_width(200, 400, 0.5) > 300, "opening eases out");
+        assert!(animation_width(400, 200, 0.5) > 300, "closing eases in and has barely started");
+        assert!(animation_running(219.0));
+        assert!(!animation_running(220.0));
     }
 
     #[test]

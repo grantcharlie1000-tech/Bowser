@@ -119,6 +119,8 @@ mod host_state;
 // --- end look state ---
 // Native grips that keep the top resize edge over the HTML hosts (window/frame_grip.rs).
 mod frame_grip;
+// Caption buttons stay hittable when a child window covers their pixels (window/caption_pass.rs).
+mod caption_pass;
 const WM_NCUAHDRAWCAPTION: u32 = 0x00AE;
 const WM_NCUAHDRAWFRAME: u32 = 0x00AF;
 const WM_MOUSELEAVE: u32 = 0x02A3;
@@ -572,6 +574,9 @@ struct WindowChrome {
     history_dirty: bool,
     hover: Hit,
     pressed: Hit,
+    /// The caption command already ran from `WM_NCLBUTTONDOWN`, so a later client-area release
+    /// must not run it again (that would restore a window the press had just maximised).
+    caption_from_nc: bool,
     drag: Option<(TabId, usize)>,
     /// --- tab stacks (T10) --- the slot the held tab rests over the middle of, and since when
     /// ("Stack tabs by dragging one onto another" in the native strip).
@@ -789,6 +794,7 @@ impl WindowChrome {
             history_dirty: false,
             hover: Hit::None,
             pressed: Hit::None,
+            caption_from_nc: false,
             drag: None,
             split_drag_companion: None,
             stack_hover: None, // --- tab stacks (T10) ---
@@ -1184,7 +1190,7 @@ impl WindowChrome {
     /// The toolbar region the HTML chrome covers, in client pixels. `None` while it is inactive or
     /// the toolbar is too narrow for its region.
     fn html_region(&self) -> Option<Rect> {
-        if !self.html_toolbar_active || self.ah.top_hidden() {
+        if !self.html_toolbar_active || self.ah.visually_hidden(crate::auto_hide::Zone::Top) {
             return None;
         }
         chrome_host::toolbar_bounds(&self.layout).map(Rect::from)
@@ -1339,13 +1345,13 @@ impl WindowChrome {
         }
         // --- vertical sidebar (lane S) ---
         if self.sidebar.is_some() {
-            if self.ah.sidebar_hidden() {
+            if self.ah.visually_hidden(crate::auto_hide::Zone::Sidebar) {
                 return None; // --- auto-hide (T11) ---
             }
             return self.html_tabs_bounds().map(Rect::from);
         }
         // --- end vertical sidebar ---
-        if self.ah.top_hidden() {
+        if self.ah.visually_hidden(crate::auto_hide::Zone::Top) {
             return None; // --- auto-hide (T11) ---
         }
         chrome_host::tab_row_bounds(&self.layout).map(Rect::from)
@@ -1978,19 +1984,43 @@ fn ensure_flyout_panel(hwnd: HWND) -> bool {
 }
 
 /// Snapshot hosts and geometry, then call WebView2 after the window borrow has ended.
+fn shift_rect(rect: RECT, dx: i32, dy: i32) -> RECT {
+    RECT { left: rect.left + dx, top: rect.top + dy, right: rect.right + dx, bottom: rect.bottom + dy }
+}
+
 fn sync_html_host_bounds(hwnd: HWND) {
-    let Some((hosts, pages, thin_bottom)) = with_chrome(hwnd, |s| ([
-        (s.html.clone(), chrome_host::toolbar_bounds(&s.layout).filter(|_| s.html_region().is_some())),
+    let Some((hosts, pages, thin_bottom, backdrop)) = with_chrome(hwnd, |s| {
+        let (top_dy, bottom_dy) = s.ah.band_shift();
+        let side_dx = s.ah.sidebar_shift();
+        let mid = s.layout.client.height() / 2;
+        let toolbar = chrome_host::toolbar_bounds(&s.layout).filter(|_| s.html_region().is_some()).map(|rect| {
+            let dy = if s.layout.toolbar_at_bottom() { bottom_dy } else { top_dy };
+            shift_rect(rect, 0, dy)
+        });
+        let tabs = s.html_tabs_bounds().filter(|_| s.html_tab_region().is_some()).map(|rect| {
+            if s.sidebar.is_some() {
+                shift_rect(rect, side_dx, 0)
+            } else {
+                let dy = if rect.top >= mid { bottom_dy } else { top_dy };
+                shift_rect(rect, 0, dy)
+            }
+        });
+        let palette = auto_hide::chrome_palette(hwnd);
+        let backdrop = auto_hide::solid(hwnd).then_some((palette.window.r, palette.window.g, palette.window.b));
+        ([
+        (s.html.clone(), toolbar),
         // --- vertical sidebar (lane S) ---
-        (s.html_tabs.clone(), s.html_tabs_bounds().filter(|_| s.html_tab_region().is_some())),
+        (s.html_tabs.clone(), tabs),
         // --- end vertical sidebar ---
         (s.html_rail.clone(), chrome_host::rail_bounds(&s.layout).filter(|_| s.html_rail_region().is_some())),
-    ], [s.layout.viewport, s.ah.page], s.last_relayout.as_ref().is_some_and(|i| i.arrangement.thin_bottom_edge()))) else { return; };
+    ], [s.layout.viewport, s.ah.page], s.last_relayout.as_ref().is_some_and(|i| i.arrangement.thin_bottom_edge()), backdrop)
+    }) else { return; };
     // Every child window that can reach a resize edge: the HTML chrome, and the page with its bars and panels.
     let mut covering: Vec<RECT> = hosts.iter().filter_map(|(host, bounds)| host.as_ref().and(*bounds)).collect();
     covering.extend(pages.iter().map(|v| RECT { left: v.left, top: v.top, right: v.right, bottom: v.bottom }));
     for (host, bounds) in hosts {
         let Some(host) = host else { continue; };
+        let _ = host.set_backdrop(backdrop);
         if let Some(bounds) = bounds {
             if host.set_bounds(bounds).is_err() { continue; }
         }
@@ -1999,6 +2029,8 @@ fn sync_html_host_bounds(hwnd: HWND) {
     auto_hide::after_layout(hwnd); // --- auto-hide (T11) --- sensors, and raising what is shown
     frame_grip::sync(hwnd, &covering, thin_bottom); // above the hosts and the sensors
     raise_rail_flyout(hwnd);
+    caption_pass::sync(hwnd);
+    super::bookmark_bar::set_backdrop(hwnd, backdrop);
 }
 
 /// The open rail sits over page windows, which are created later and would otherwise cover it.
@@ -2213,8 +2245,9 @@ fn arm_motion(hwnd: HWND) {
         }
     }
 }
-/// Whether Windows allows animation ("Show animations in Windows"). Transitions snap when it does not.
-fn animations_enabled() -> bool {
+/// Whether Windows allows animation ("Show animations in Windows") and Bowser's own setting does too.
+/// Transitions snap when it does not.
+pub(crate) fn animations_enabled() -> bool {
     let mut enabled = BOOL(1);
     let read = unsafe {
         SystemParametersInfoW(
@@ -2688,6 +2721,7 @@ unsafe extern "system" fn window_proc(
             }
             WM_NCMOUSELEAVE => {
                 set_hover(hwnd, Hit::None);
+                set_pressed(hwnd, Hit::None);
                 LRESULT(0)
             }
             // Only the caption buttons are ours. Dragging the strip and sizing edges use the
@@ -2695,17 +2729,19 @@ unsafe extern "system" fn window_proc(
             WM_NCLBUTTONDOWN | WM_NCLBUTTONUP if caption_hit(wparam.0 as u32) == Hit::None => {
                 DefWindowProcW(hwnd, message, wparam, lparam)
             }
+            // Act on the press. `WM_NCLBUTTONUP` often never arrives for these hits (the down is
+            // not passed to DefWindowProc, and Snap Layouts can take the mouse), so waiting for
+            // the release dropped the click. The release only clears the press visual.
             WM_NCLBUTTONDOWN => {
-                set_pressed(hwnd, caption_hit(wparam.0 as u32));
+                let hit = caption_hit(wparam.0 as u32);
+                let _ = with_chrome(hwnd, |s| s.caption_from_nc = true);
+                set_pressed(hwnd, hit);
+                caption_command(hwnd, hit);
                 LRESULT(0)
             }
             WM_NCLBUTTONUP => {
-                let hit = caption_hit(wparam.0 as u32);
-                let prev = with_chrome(hwnd, |s| s.pressed).unwrap_or(Hit::None);
                 set_pressed(hwnd, Hit::None);
-                if prev == hit {
-                    caption_command(hwnd, hit)
-                }
+                let _ = with_chrome(hwnd, |s| s.caption_from_nc = false);
                 LRESULT(0)
             }
             WM_NCLBUTTONDBLCLK if wparam.0 as u32 == HTCAPTION => {
@@ -3983,7 +4019,10 @@ unsafe extern "system" fn window_proc(
                         {
                             super::split_ui::toolbar_button(hwnd, app); // --- split view ---
                         }
-                        caption_command(hwnd, was)
+                        let from_nc = with_chrome(hwnd, |s| std::mem::take(&mut s.caption_from_nc)).unwrap_or(false);
+                        if !from_nc {
+                            caption_command(hwnd, was)
+                        }
                     }
                 }
                 LRESULT(0)
@@ -4338,6 +4377,10 @@ unsafe extern "system" fn window_proc(
             }
             WM_TIMER if wparam.0 == auto_hide::TIMER_ID => {
                 auto_hide::on_timer(hwnd);
+                LRESULT(0)
+            }
+            WM_TIMER if wparam.0 == auto_hide::SLIDE_TIMER => {
+                auto_hide::on_slide(hwnd);
                 LRESULT(0)
             }
             // --- end auto-hide ---
@@ -9301,6 +9344,30 @@ fn navigate_forward_for_focused_pane(app: &AppRef) {
     App::history(app, true);
 }
 
+/// Caption buttons are painted and should take clicks. False while the top chrome is fully hidden.
+pub(super) fn caption_buttons_live(hwnd: HWND) -> bool {
+    if auto_hide::fullscreen_of(hwnd) == crate::auto_hide::Fullscreen::Page {
+        return false;
+    }
+    with_chrome(hwnd, |s| !s.ah.visually_hidden(crate::auto_hide::Zone::Top)).unwrap_or(true)
+}
+
+/// `x`,`y` are parent-client pixels. True when that point is on a caption button as drawn,
+/// including while the top band is mid-slide (the visible part of the button, not the gap it left).
+pub(super) fn caption_point_is_button(hwnd: HWND, x: i32, y: i32) -> bool {
+    let Some((size, dpi_now, maximised, thin, dy)) = with_chrome(hwnd, |s| {
+        let (dy, _) = s.ah.band_shift();
+        (s.client, s.dpi, s.layout.maximised, s.last_relayout.as_ref().is_some_and(|i| i.arrangement.thin_bottom_edge()), dy)
+    }) else {
+        return false;
+    };
+    let point = POINT { x, y: y - dy };
+    matches!(
+        frame::frame_hit_test_with(point, size, dpi_now, maximised || auto_hide::zoomed_or_full(hwnd), frame::ChromeHit::None, thin),
+        frame::FrameHit::Minimize | frame::FrameHit::Maximize | frame::FrameHit::Close
+    )
+}
+
 fn caption_hit(v: u32) -> Hit {
     match v {
         x if x == HTMINBUTTON => Hit::CaptionMinimize,
@@ -12082,7 +12149,9 @@ fn paint_chrome(hwnd: HWND, app: Option<&AppRef>) {
                     .as_ref()
                     .map_or("", |c| c.completed_suffix.as_str());
                 let text = &s.edit_text;
-                let l = &s.layout;
+                let (top_dy, bottom_dy) = s.ah.band_shift();
+                let paint_layout = s.layout.shift_overlay_bands(top_dy, bottom_dy);
+                let l = &paint_layout;
                 let p = s.palette;
                 let views = &s.views;
                 let mut rail_fades = Vec::new();
@@ -12145,7 +12214,7 @@ fn paint_chrome(hwnd: HWND, app: Option<&AppRef>) {
                 );
                 // --- auto-hide (T11) --- the page's frame is drawn below a bar that floats over its top.
                 let sidebar_viewport = s.ah.paint_viewport(sidebar_viewport);
-                let dirty = if s.surface.set_auto_hidden_top(s.ah.top_hidden()) {
+                let dirty = if s.surface.set_auto_hidden_top(s.ah.visually_hidden(crate::auto_hide::Zone::Top)) {
                     Rect::new(0, 0, s.client.0, s.client.1)
                 } else {
                     dirty
@@ -12194,7 +12263,14 @@ fn paint_chrome(hwnd: HWND, app: Option<&AppRef>) {
                 };
                 let t0 = std::time::Instant::now();
                 s.surface.paint(&view, dirty);
-                if let Some(sidebar) = s.sidebar.filter(|_| !s.ah.sidebar_hidden()) { // --- auto-hide (T11) ---
+                if let Some(mut sidebar) = s.sidebar.filter(|_| !s.ah.visually_hidden(crate::auto_hide::Zone::Sidebar)) { // --- auto-hide (T11) ---
+                    let dx = s.ah.sidebar_shift();
+                    if dx != 0 {
+                        sidebar.sidebar = sidebar.sidebar.translated(dx, 0);
+                        sidebar.header = sidebar.header.translated(dx, 0);
+                        sidebar.rows = sidebar.rows.translated(dx, 0);
+                        sidebar.handle = sidebar.handle.translated(dx, 0);
+                    }
                     s.surface.paint_vertical_sidebar(crate::chrome::paint::SidebarPaintView { layout: &sidebar, rows: &s.sidebar_rows, workspace: &s.paint_prefs.workspace_name, active, scroll: s.sidebar_scroll, hover_row: s.sidebar_hover_row, html_sidebar: s.html_tab_region().is_some() }, dirty, p);
                 }
                 // --- split view --- the native strip's half, or the HTML card's fallback rectangle
@@ -12989,7 +13065,7 @@ mod tests {
             WM_SIDEBAR_SCROLL_TIMER, WM_RAIL_TOOLTIP_TIMER, WM_NEWTAB_TOOLTIP_TIMER,
             WM_SIDEBAR_RESIZE_TIMER, WM_SIDEBAR_FLYOUT_TIMER, WM_PAGE_IDLE_TIMER, WM_HTML_POPUP_PREWARM_TIMER,
             WM_TAB_TICK_TIMER, WM_TAB_THUMB_TIMER, WM_TAB_LINK_TIMER, WM_THEME_SCHEDULE_TIMER,
-            auto_hide::TIMER_ID, side_panel::TIMER_ID, super::super::panel_webapp::RELOAD_TIMER,
+            auto_hide::TIMER_ID, auto_hide::SLIDE_TIMER, side_panel::TIMER_ID, super::super::panel_webapp::RELOAD_TIMER,
             super::super::panel_webapp::IDLE_TIMER, devtools_dock::TIMER_ID,
             super::super::passwords_panel::CLIPBOARD_CLEAR_TIMER,
         ];

@@ -444,6 +444,14 @@ pub(crate) fn sync(owner: HWND, app: &AppRef) {
     }
 }
 
+/// The bar's WebView background while it floats: the solid window colour, or transparent glass.
+pub(crate) fn set_backdrop(owner: HWND, color: Option<(u8, u8, u8)>) {
+    let host = with(owner, |rt| rt.host.clone()).flatten();
+    if let Some(host) = host {
+        let _ = host.set_backdrop(color);
+    }
+}
+
 fn hide(owner: HWND) {
     let Some((host, container, shown)) = with(owner, |rt| (rt.host.clone(), rt.container, rt.shown.take())) else { return };
     if shown.is_none() {

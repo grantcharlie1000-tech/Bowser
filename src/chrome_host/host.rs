@@ -459,6 +459,8 @@ struct State {
     removers: Vec<Box<dyn FnOnce()>>,
     failures: FailureCounter,
     on_failed: Rc<dyn Fn()>,
+    /// Last default background sent to the controller: opaque theme colour, or transparent glass.
+    backdrop: Option<(u8, u8, u8, u8)>,
 }
 
 #[derive(Default)]
@@ -524,6 +526,26 @@ impl ChromeHost {
         };
         env.detail("chrome_host_requested", view, 0);
         create_controller(&env.inner, setup)
+    }
+
+    /// Opaque window colour while chrome floats over a page, or transparent so glass shows through.
+    /// The same colour is not sent twice. A wrong colour here is the white or black frame during a slide.
+    pub fn set_backdrop(&self, opaque: Option<(u8, u8, u8)>) -> Result<()> {
+        let next = match opaque {
+            Some((r, g, b)) => (r, g, b, 255),
+            None => (0, 0, 0, 0),
+        };
+        let controller = {
+            let state = self.state.try_borrow().map_err(|_| fail("Chrome host is busy"))?;
+            if state.closed { return Err(fail("Chrome host is closed")); }
+            if state.backdrop == Some(next) { return Ok(()); }
+            state.controller.clone()
+        };
+        let controller2: ICoreWebView2Controller2 = controller.cast()?;
+        let color = COREWEBVIEW2_COLOR { A: next.3, R: next.0, G: next.1, B: next.2 };
+        self.observe(unsafe { controller2.SetDefaultBackgroundColor(color) })?;
+        self.state.try_borrow_mut().map_err(|_| fail("Chrome host is busy"))?.backdrop = Some(next);
+        Ok(())
     }
 
     pub fn set_bounds(&self, bounds: RECT) -> Result<()> {
@@ -857,6 +879,7 @@ fn configure(
             removers: Vec::new(),
             failures: FailureCounter::default(),
             on_failed: setup.on_failed.clone(),
+            backdrop: None,
         })),
     };
     setup.env.detail("chrome_configure_started", setup.view, host.state.borrow().diagnostic_id);

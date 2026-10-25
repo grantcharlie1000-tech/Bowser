@@ -213,6 +213,11 @@ impl Rect {
         Rect::new(self.left + dx, self.top, self.right + dx, self.bottom)
     }
 
+    /// The same rect moved by `(dx, dy)`.
+    pub fn translated(self, dx: i32, dy: i32) -> Rect {
+        Rect::new(self.left + dx, self.top + dy, self.right + dx, self.bottom + dy)
+    }
+
     /// The smallest rect covering both. An empty rect contributes nothing.
     pub fn union(self, other: Rect) -> Rect {
         if self.is_empty() {
@@ -1918,6 +1923,55 @@ impl Layout {
     /// Whether the toolbar row is along the bottom edge (below the page).
     pub fn toolbar_at_bottom(&self) -> bool {
         !self.strip.is_empty() && self.strip.top >= self.viewport.top
+    }
+
+    /// Slides the chrome bands for an auto-hide reveal without moving the page.
+    /// `top_dy` negative pulls the top band up (hide); `bottom_dy` positive pushes the bottom band down.
+    /// The viewport and the full-height rail stay where they are.
+    pub fn shift_overlay_bands(mut self, top_dy: i32, bottom_dy: i32) -> Self {
+        if top_dy == 0 && bottom_dy == 0 {
+            return self;
+        }
+        let mid = (self.client.height() / 2).max(1);
+        let shift = |rect: &mut Rect| {
+            if rect.is_empty() {
+                return;
+            }
+            let dy = if rect.bottom <= mid {
+                top_dy
+            } else if rect.top >= mid {
+                bottom_dy
+            } else {
+                0
+            };
+            if dy != 0 {
+                *rect = rect.translated(0, dy);
+            }
+        };
+        shift(&mut self.strip);
+        shift(&mut self.tab_row);
+        shift(&mut self.tab_zone);
+        shift(&mut self.tab_menu_button);
+        shift(&mut self.new_tab_button);
+        shift(&mut self.caption_area);
+        shift(&mut self.back_button);
+        shift(&mut self.forward_button);
+        shift(&mut self.reload_button);
+        shift(&mut self.omnibox);
+        shift(&mut self.main_menu_button);
+        shift(&mut self.title_bar);
+        shift(&mut self.stack_row);
+        if self.island_bottom <= mid {
+            self.island_top += top_dy;
+            self.island_bottom += top_dy;
+        } else if self.island_top >= mid {
+            self.island_top += bottom_dy;
+            self.island_bottom += bottom_dy;
+        }
+        let height = self.client.bottom;
+        self.top_chrome = (self.top_chrome + top_dy).clamp(0, height);
+        self.bottom_chrome = (self.bottom_chrome + bottom_dy).clamp(0, height);
+        self
     }
 }
 
@@ -5221,5 +5275,20 @@ mod caption_drag_gap_tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn an_overlay_slide_moves_the_chrome_bands_and_leaves_the_page_where_it_is() {
+        let layout = compute_for(TabLayout::ToolbarTop, 1280, 800, 96, 3, 0, false);
+        let page = layout.viewport;
+        let rail = layout.rail;
+        let captions = layout.caption_area;
+        let slid = layout.shift_overlay_bands(-24, 0);
+        assert_eq!(slid.viewport, page);
+        assert_eq!(slid.rail, rail);
+        assert_eq!(slid.caption_area.top, captions.top - 24);
+        assert_eq!(slid.caption_button(Hit::CaptionClose).top, captions.top - 24);
+        assert_eq!(slid.strip.top, layout.strip.top - 24);
+        assert_eq!(layout.shift_overlay_bands(0, 0), layout);
     }
 }

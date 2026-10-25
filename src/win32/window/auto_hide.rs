@@ -5,9 +5,10 @@
 //! F11 and page full screen. Nothing here runs, and no window or timer exists, while auto-hide is off.
 //!
 //! How a bar floats. The page is laid out as if the hidden bars were gone (`WindowChrome::layout.viewport`)
-//! and is never resized when a bar appears. A revealed bar is the same HTML view in the same place it has
-//! with auto-hide off, raised above the page's window (`ChromeHost::raise_to_top`), with the window's
-//! solid palette so it does not show the page through itself.
+//! and is never resized when a bar appears. A revealed bar is the same HTML view, the same size, slid in
+//! from its outer edge over about 220 ms (ease-out on the way in, ease-in on the way out) and raised above
+//! the page (`ChromeHost::raise_to_top`). The frame timer runs only while that slide is moving. The window's
+//! solid palette is the view's background so the page does not flash through it.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -43,6 +44,8 @@ use super::{
 pub(super) const WM_AUTOHIDE_SENSOR: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 0xA1;
 /// Timer while a reveal is pending or bars are shown. Never armed otherwise.
 pub(super) const TIMER_ID: usize = 0xB0A5;
+/// Frame timer while a bar is sliding. Never armed while the chrome is idle.
+pub(super) const SLIDE_TIMER: usize = 0xB0AA;
 const RAISE: usize = 0xFF;
 const SENSOR_CLASS: PCWSTR = w!("BowserAutoHideSensor");
 const PROP_FULLSCREEN: PCWSTR = w!("BowserFullscreen");
@@ -103,8 +106,11 @@ pub(super) struct Runtime {
     pub bar_float: LRect,
     pub bar_bottom: bool,
     pub overlay: AutoHideOverlay,
+    /// Slide progress for the floating bars. Settled while idle, so no frame timer runs.
+    pub slide: rules::ChromeMotion,
     sensors: Vec<(Zone, HWND)>,
     timer: bool,
+    slide_timer: bool,
     ticks: u32,
 }
 
@@ -115,6 +121,80 @@ impl Runtime {
 
     pub fn sidebar_hidden(&self) -> bool {
         self.plan.sidebar && !self.machine.shown().contains(Zone::Sidebar)
+    }
+
+    /// The bar is out of the layout and not currently sliding, so its view can be hidden.
+    /// A slide keeps it up until the last frame, which is what the page and the caption buttons see.
+    pub fn visually_hidden(&self, zone: Zone) -> bool {
+        let slide = self.slide_for(zone);
+        if slide.running(now_ms(), super::animations_enabled()) {
+            return false;
+        }
+        match zone {
+            Zone::Top => self.top_hidden(),
+            Zone::Sidebar => self.sidebar_hidden(),
+            Zone::Bookmarks => self.plan.bookmarks && !self.bookmarks_revealed(),
+        }
+    }
+
+    fn slide_for(&self, zone: Zone) -> rules::Slide {
+        match zone {
+            Zone::Top => self.slide.top,
+            Zone::Sidebar => self.slide.sidebar,
+            Zone::Bookmarks if rules::bookmarks_ride_with_top(self.plan, self.bar_bottom) => self.slide.top,
+            Zone::Bookmarks => self.slide.bookmarks,
+        }
+    }
+
+    /// Hidden amount in use: the slide while it runs or the bar is logically hidden, otherwise resting.
+    fn shown_amount(&self, slide: rules::Slide, shown: bool) -> f32 {
+        let now = now_ms();
+        let animate = super::animations_enabled();
+        if !shown || slide.running(now, animate) { slide.amount(now, animate) } else { 0.0 }
+    }
+
+    /// `(top dy, bottom dy)` for the floating bands. Zero when those bars are not auto-hidden.
+    pub fn band_shift(&self) -> (i32, i32) {
+        let amount = if self.plan.top {
+            self.shown_amount(self.slide.top, self.machine.shown().contains(Zone::Top))
+        } else {
+            0.0
+        };
+        let top = rules::slide_offset(amount, self.overlay.top.height(), false);
+        let bottom = if self.overlay.bottom.is_empty() {
+            0
+        } else {
+            rules::slide_offset(amount, self.overlay.bottom.height(), true)
+        };
+        (top, bottom)
+    }
+
+    /// Horizontal slide for the tab sidebar. Negative on the left, positive on the right.
+    pub fn sidebar_shift(&self) -> i32 {
+        if !self.plan.sidebar || self.overlay.sidebar.is_empty() {
+            return 0;
+        }
+        let amount = self.shown_amount(self.slide.sidebar, self.machine.shown().contains(Zone::Sidebar));
+        let right = self.overlay.sidebar.left > self.page.left;
+        rules::slide_offset(amount, self.overlay.sidebar.width(), right)
+    }
+
+    /// Vertical slide for the bookmarks bar, matching the top band when the bar rides with it.
+    pub fn bookmark_shift(&self) -> i32 {
+        if !self.plan.bookmarks || self.bar_float.is_empty() {
+            return 0;
+        }
+        let riding = rules::bookmarks_ride_with_top(self.plan, self.bar_bottom);
+        let shown = if riding {
+            self.machine.shown().contains(Zone::Top)
+        } else {
+            self.machine.shown().contains(Zone::Bookmarks)
+        };
+        rules::slide_offset(self.shown_amount(self.slide_for(Zone::Bookmarks), shown), self.bar_float.height(), self.bar_bottom)
+    }
+
+    pub fn motion_running(&self) -> bool {
+        self.slide.running(now_ms(), super::animations_enabled())
     }
 
     /// The bookmarks bar floats now (taken out of the layout and revealed), alone or with the top chrome.
@@ -276,7 +356,12 @@ pub(super) fn sync_config(hwnd: HWND, app: &AppRef) {
         return;
     }
     relayout_all(hwnd, app);
+    let _ = with_chrome(hwnd, |s| {
+        let ride = rules::bookmarks_ride_with_top(s.ah.plan, s.ah.bar_bottom);
+        s.ah.slide.snap_to(s.ah.machine.shown(), ride);
+    });
     ensure_timer(hwnd);
+    arm_slide(hwnd);
 }
 
 /// Lays the window out again with the current bars and puts every view and page where it goes.
@@ -300,7 +385,8 @@ pub(super) fn bookmark_bar_placement(hwnd: HWND) -> Option<(RECT, bool)> {
     with_chrome(hwnd, |s| {
         (s.ah.plan.bookmarks && !s.ah.bar_float.is_empty()).then(|| {
             let r = s.ah.bar_float;
-            (RECT { left: r.left, top: r.top, right: r.right, bottom: r.bottom }, s.ah.bookmarks_revealed())
+            let dy = s.ah.bookmark_shift();
+            (RECT { left: r.left, top: r.top + dy, right: r.right, bottom: r.bottom + dy }, !s.ah.visually_hidden(Zone::Bookmarks))
         })
     })
     .flatten()
@@ -314,6 +400,7 @@ pub(super) fn on_sensor(hwnd: HWND, wparam: WPARAM, lparam: LPARAM) {
     if wparam.0 == RAISE {
         raise_all(hwnd);
         super::frame_grip::raise(hwnd); // the top resize grips stay above a new page window too
+        super::caption_pass::sync(hwnd); // a new page window must not cover the caption buttons
         return;
     }
     let Some(zone) = zone_from_code(wparam.0) else { return };
@@ -391,14 +478,50 @@ pub(super) fn reveal_for_keyboard(hwnd: HWND) {
 }
 
 /// Puts the views, the sensors and the painting in line with which zones are shown now.
+/// A change of that set starts (or retargets) the slide; the frame timer then carries it.
 fn apply_shown(hwnd: HWND) {
+    let _ = with_chrome(hwnd, |s| {
+        let ride = rules::bookmarks_ride_with_top(s.ah.plan, s.ah.bar_bottom);
+        s.ah.slide.retarget(s.ah.machine.shown(), ride, now_ms(), super::animations_enabled());
+        s.sync_html_bounds();
+        s.sync_html_tabs_bounds();
+    });
+    sync_html_host_bounds(hwnd);
+    if let Some(app) = super::app_of(hwnd) {
+        super::super::bookmark_bar::sync(hwnd, &app);
+    }
+    raise_all(hwnd);
+    repaint(hwnd);
+    arm_slide(hwnd);
+}
+
+/// One frame of a slide. The page is not laid out again. The timer stops when every bar has settled.
+pub(super) fn on_slide(hwnd: HWND) {
     let _ = with_chrome(hwnd, |s| {
         s.sync_html_bounds();
         s.sync_html_tabs_bounds();
     });
     sync_html_host_bounds(hwnd);
+    if let Some(app) = super::app_of(hwnd) {
+        super::super::bookmark_bar::sync(hwnd, &app);
+    }
     raise_all(hwnd);
     repaint(hwnd);
+    arm_slide(hwnd);
+}
+
+fn arm_slide(hwnd: HWND) {
+    let want = with_chrome(hwnd, |s| s.ah.motion_running()).unwrap_or(false);
+    let have = with_chrome(hwnd, |s| std::mem::replace(&mut s.ah.slide_timer, want)).unwrap_or(false);
+    if want && !have {
+        unsafe {
+            let _ = SetTimer(Some(hwnd), SLIDE_TIMER, super::ANIMATION_FRAME_MS, None);
+        }
+    } else if !want && have {
+        unsafe {
+            let _ = windows::Win32::UI::WindowsAndMessaging::KillTimer(Some(hwnd), SLIDE_TIMER);
+        }
+    }
 }
 
 /// Raises the views of the bars that are shown, then the sensors of the ones that are not, above the
@@ -408,7 +531,7 @@ fn raise_all(hwnd: HWND) {
         if s.ah.hidden.is_empty() {
             return None;
         }
-        Some((s.html.clone().filter(|_| !s.ah.top_hidden()), s.html_tabs.clone().filter(|_| !(s.ah.top_hidden() && s.sidebar.is_none()) && !(s.sidebar.is_some() && s.ah.sidebar_hidden()))))
+        Some((s.html.clone().filter(|_| !s.ah.visually_hidden(Zone::Top)), s.html_tabs.clone().filter(|_| !(s.ah.visually_hidden(Zone::Top) && s.sidebar.is_none()) && !(s.sidebar.is_some() && s.ah.visually_hidden(Zone::Sidebar)))))
     })
     .flatten();
     let Some((toolbar, tabs)) = hosts else {
@@ -732,6 +855,10 @@ pub(crate) fn forget(hwnd: HWND) {
     PAGE_OWNERS.with(|owners| owners.borrow_mut().remove(&(hwnd.0 as isize)));
     SAVED.with(|saved| saved.borrow_mut().remove(&(hwnd.0 as isize)));
     set_solid(hwnd, false);
+    unsafe {
+        let _ = windows::Win32::UI::WindowsAndMessaging::KillTimer(Some(hwnd), SLIDE_TIMER);
+        let _ = windows::Win32::UI::WindowsAndMessaging::KillTimer(Some(hwnd), TIMER_ID);
+    }
 }
 
 #[cfg(test)]
