@@ -676,8 +676,8 @@ fn pick_content(app: &AppRef, side: DropZone) -> String {
     wire::pick_json(side, &tabs, &closed)
 }
 
-/// A command from the empty side. Only acts while the picker is shown, on its own tab; the private
-/// landing's one command only while the landing is shown.
+/// A command from the split host. Picker commands act only while the picker is shown, on its own
+/// tab. `ClosePrivate` acts only while the private landing is shown.
 fn picker_command(owner: HWND, app: &AppRef, command: SplitCommand) {
     let shown = with(owner, |rt| rt.shown).flatten();
     if let Some(Shown::Private { tab, .. }) = shown {

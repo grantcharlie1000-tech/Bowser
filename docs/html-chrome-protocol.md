@@ -481,7 +481,7 @@ test writes. Tab ids are wire ids (`TabId + 1`). A pair has a *first* and a *sec
 | Rust -> split | `{v:1,t:"splithide"}` / `{v:1,t:"privatepage",id,n}` | clear; the private landing (docs/design/private-tabs.md) |
 | tabs -> Rust | `{v:1,t:"split",a:"over",id,x,y}` | the dragged tab `id` is off the strip (below it) or off the vertical sidebar (right of it); `x`, `y` integers 0 to 16384, CSS px in the tabs view (clamped by the page). Rust maps the point to the page and picks the edge zone (`split_view::drop_zone`). At most one per animation frame |
 | tabs -> Rust | `{v:1,t:"split",a:"drop"\|"end",id}` | released over the page / dragged back onto the strip or cancelled. A `drop` acts only on the zone Rust last showed for that tab; with none it does nothing |
-| split -> Rust | `{v:1,t:"split",a:"pick",id}` / `a:"reopen",n` / `a:"go",text` / `a:"close"` / `a:"focus"` / `a:"closeprivate"` | the empty side's commands, each with exactly its fields |
+| split -> Rust | `{v:1,t:"split",a:"pick",id}` / `a:"reopen",n` / `a:"go",text` / `a:"close"` / `a:"focus"` / `a:"closeprivate"` | the empty side's commands, each with exactly its fields. `closeprivate` is still accepted while the private landing is shown; the landing itself no longer sends it |
 
 The tabs host may send only `over`, `drop` and `end`; the split host only the others. Commands are
 queued and run from `WM_SPLIT_COMMAND`.

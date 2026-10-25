@@ -416,7 +416,8 @@ pub enum SplitCommand {
     Close,
     /// The empty side was clicked: it becomes the focused side.
     Focus,
-    /// The private landing's "Close all private tabs" (docs/design/private-tabs.md).
+    /// "Close all private tabs" while the private landing is shown (docs/design/private-tabs.md).
+    /// The landing no longer sends it; menus and the palette call `App::close_private_tabs`.
     ClosePrivate,
     /// Tab `id` is being dragged at `x`,`y` (CSS pixels of the tab view, negative left of or above
     /// it; past the strip or sidebar edge towards the page means over the page).

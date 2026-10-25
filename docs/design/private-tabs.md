@@ -15,8 +15,8 @@ accent the profile chose.
 | Token | Dark | Light | Use |
 |---|---|---|---|
 | `--bw-private` | #b9a2ff (7.2:1 on #20242c) | #6440d0 (6.1:1 on #f4f6f8) | marks, underline, edge bar, chip glyph; text-grade |
-| `--bw-private-soft` | violet 20% | violet 13% | chip and eyebrow wash, landing icon tiles |
-| `--bw-private-edge` | violet 50% | violet 50% | island border, resting pill edge, landing button |
+| `--bw-private-soft` | violet 20% | violet 13% | chip wash, landing halo |
+| `--bw-private-edge` | violet 50% | violet 50% | island border, resting pill edge |
 
 Only selectors keyed on `data-private`, `.tb-private` or the landing (`.pm-*`) may use them
 (`ui/test/private-page.mjs` checks this).
@@ -50,22 +50,23 @@ the drawing and the indices drift.
 
 Hosted by the split view's existing HTML host (`View::Split`, `src/win32/split_ui.rs`,
 `Shown::Private`), so it adds no WebView2: the host is created on first use and suspended when
-hidden. Rust sends `{"v":1,"t":"privatepage","id":<wire tab id>,"n":<private tabs>}`; the page's
-only command is `{"v":1,"t":"split","a":"closeprivate"}`. The overlay frames the landing like a page
-(rounded mask and edge) instead of painting the opaque new-tab surface over it. The omnibox keeps
-the keyboard; the landing never takes focus.
+hidden. Rust sends `{"v":1,"t":"privatepage","id":<wire tab id>,"n":<private tabs>}`. The landing
+sends nothing. The overlay frames the landing like a page (rounded mask and edge) instead of
+painting the opaque new-tab surface over it. The omnibox keeps the keyboard; the landing never
+takes focus.
 
-Layout: 80px mark on a soft violet halo, "Private tab" eyebrow, title, one-sentence lead, then
-**Close all private tabs** with the open count, then two cards ("Bowser won't keep", "Still visible
-to") and a note that private tabs share one session. Every sentence is checked against the code
-(`private-logic.ts` header lists the sources); change the code and the words together.
+Layout: the 80px mark on a soft violet halo, and under it the title "You’re browsing privately".
+Both are centred horizontally and vertically. Nothing else: no chip, lead, count, button, cards or
+footer. `n` is still sent and ignored. What a private tab keeps is spelled out on the Privacy
+dashboard, not here.
 
 ## Wording
 
 "New private tab" everywhere (main menu, tab menu, command palette, Ctrl+Shift+P), detail "Browse
 without saving history, cookies or site data". "Close all private tabs" in the main menu (only while
-one is open), a private tab's menu, the palette and the landing; it closes this window's private
-tabs only (`App::close_private_tabs`).
+one is open), a private tab's menu and the palette; it closes this window's private tabs only
+(`App::close_private_tabs`). The landing does not offer it. The host still accepts
+`{"v":1,"t":"split","a":"closeprivate"}` while the landing is shown.
 
 ## Motion
 
@@ -79,7 +80,7 @@ chip and the landing just fade in), nothing in native paint.
 | Main menu "New private window": shades lift 1.5 units and settle back (0.5-unit dip) | the row is selected | 240ms | 16px SVG |
 | Landing: hat rises, shades slide on with a 0.6-unit settle | first show for a tab | 320ms + 560ms | 80px SVG, main thread |
 | Landing: glint across both lenses (clipped to the lens fills) | after the shades land, and once more at ~7s | 900ms each | same SVG |
-| Landing: text and cards rise 8px | first show for a tab | 250ms | compositor |
+| Landing: the title rises 8px | first show for a tab | 250ms | compositor |
 
 Showing the same tab's landing again comes back settled (no replay). After about 8.1s nothing on
 the landing runs at all.

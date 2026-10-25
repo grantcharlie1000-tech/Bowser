@@ -1656,7 +1656,7 @@ impl App {
         app.borrow().tabs.iter().filter(|tab| tab.private).map(|tab| tab.id).collect()
     }
 
-    /// "Close all private tabs" (main menu, tab menu, command palette, private landing): closes
+    /// "Close all private tabs" (main menu, tab menu, command palette): closes
     /// every private tab of this window and leaves normal tabs alone. Closing the last tab still
     /// leaves a fresh normal tab, as `close_tab` always does. Returns how many closed.
     pub fn close_private_tabs(app: &AppRef) -> usize {

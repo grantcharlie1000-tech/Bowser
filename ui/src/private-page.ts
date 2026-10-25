@@ -1,6 +1,6 @@
 // Private tab landing (docs/design/private-tabs.md), shown by the split host (?view=split) over a
 // blank private tab. Rust decides when it shows (src/win32/split_ui.rs, Shown::Private) and sends
-// `privatepage` with the private tab count; the one control sends `{t:"split",a:"closeprivate"}`.
+// `privatepage`. The page is the private mark and its title, centred; it sends nothing.
 // Static text only (private-logic.ts); nothing page-controlled is ever shown here.
 //
 // Motion (private.css): the bowler fades up, the shades slide down onto it and settle, then one glint
@@ -9,11 +9,7 @@
 // the same tab's landing is shown again.
 import { icon } from './icons';
 import { el } from './dom';
-import {
-  MARK_PARTS, MARK_SHAPE_COUNT, PRIVATE_CLOSE_ALL, PRIVATE_KEPT_TITLE, PRIVATE_NOT_KEPT, PRIVATE_PAGE_EYEBROW,
-  PRIVATE_PAGE_LEAD, PRIVATE_PAGE_TITLE, PRIVATE_SEEN_TITLE, PRIVATE_SHARED_NOTE, PRIVATE_STILL_SEEN,
-  privateCountText, type PrivateRow,
-} from './private-logic';
+import { MARK_PARTS, MARK_SHAPE_COUNT, PRIVATE_PAGE_TITLE } from './private-logic';
 import type { PrivatePageMsg } from './split-protocol';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
@@ -55,34 +51,12 @@ export function buildMark(size = 80): SVGSVGElement {
   return svg;
 }
 
-function card(title: string, rows: readonly PrivateRow[], className: string): HTMLElement {
-  const section = el('section', `pm-card ${className}`);
-  const heading = el('h2', 'pm-card-title');
-  heading.textContent = title;
-  const list = el('ul', 'pm-list');
-  for (const row of rows) {
-    const item = el('li', 'pm-row');
-    const glyph = el('span', 'pm-row-icon');
-    glyph.append(icon(row.icon));
-    const text = el('span', 'pm-row-text');
-    const label = el('span', 'pm-row-label');
-    label.textContent = row.label;
-    const body = el('span', 'pm-row-body');
-    body.textContent = row.text;
-    text.append(label, body);
-    item.append(glyph, text);
-    list.append(item);
-  }
-  section.append(heading, list);
-  return section;
-}
-
 /**
- * Builds the landing once. `show` (after the root is in the document) updates the count and plays the
- * entrance for a tab it has not shown yet; `hidden` records that the host took the page away, so the
- * same tab's landing comes back settled instead of replaying.
+ * Builds the landing once. `show` (after the root is in the document) plays the entrance for a tab
+ * it has not shown yet; `hidden` records that the host took the page away, so the same tab's landing
+ * comes back settled instead of replaying.
  */
-export function buildPrivatePage(onCloseAll: () => void): {
+export function buildPrivatePage(): {
   readonly root: HTMLElement;
   show(msg: PrivatePageMsg): void;
   hidden(): void;
@@ -91,50 +65,25 @@ export function buildPrivatePage(onCloseAll: () => void): {
   root.setAttribute('role', 'region');
   root.setAttribute('aria-labelledby', 'pm-title');
 
-  const column = el('div', 'pm-column');
   const hero = el('header', 'pm-hero');
   const halo = el('div', 'pm-halo');
   halo.setAttribute('aria-hidden', 'true');
   halo.append(buildMark());
-  const eyebrow = el('span', 'pm-eyebrow');
-  eyebrow.append(icon('private', { size: 14 }), document.createTextNode(PRIVATE_PAGE_EYEBROW));
   const title = el('h1', 'pm-title');
   title.id = 'pm-title';
   title.textContent = PRIVATE_PAGE_TITLE;
-  const lead = el('p', 'pm-lead');
-  lead.textContent = PRIVATE_PAGE_LEAD;
-
-  const cards = el('div', 'pm-cards');
-  cards.append(card(PRIVATE_KEPT_TITLE, PRIVATE_NOT_KEPT, 'is-kept'), card(PRIVATE_SEEN_TITLE, PRIVATE_STILL_SEEN, 'is-seen'));
-
-  const note = el('p', 'pm-note');
-  note.textContent = PRIVATE_SHARED_NOTE;
-
-  const footer = el('div', 'pm-footer');
-  const count = el('span', 'pm-count');
-  count.setAttribute('role', 'status');
-  const close = el('button', 'bw-button pm-close');
-  close.type = 'button';
-  close.append(icon('close'), document.createTextNode(PRIVATE_CLOSE_ALL));
-  close.addEventListener('click', onCloseAll);
-  footer.append(close, count);
-  // The one action sits under the lead, above the fold on any window tall enough for the mark.
-  hero.append(halo, eyebrow, title, lead, footer);
-
-  column.append(hero, cards, note);
-  root.append(column);
+  hero.append(halo, title);
+  root.append(hero);
 
   let shownFor = 0;
   let wasHidden = false;
   return {
     root,
     show(msg: PrivatePageMsg): void {
-      const text = privateCountText(msg.n);
-      if (count.textContent !== text) count.textContent = text;
       const returning = wasHidden;
       wasHidden = false;
       if (msg.id === shownFor) {
-        // Same tab: a count update leaves a running entrance alone; a re-show comes back settled.
+        // Same tab: a later privatepage leaves a running entrance alone; a re-show comes back settled.
         if (returning) root.classList.remove('is-entering');
         return;
       }

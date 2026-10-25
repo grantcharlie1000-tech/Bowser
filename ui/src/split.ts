@@ -250,7 +250,7 @@ export function startSplit(root: HTMLElement): void {
   root.setAttribute('role', 'region');
   installTooltips(root);
   const picker = buildPicker(root);
-  const privatePage = buildPrivatePage(() => sendSplit({ v: 1, t: 'split', a: 'closeprivate' }));
+  const privatePage = buildPrivatePage();
   let mode: 'none' | 'pick' | 'drop' | 'private' | 'start' = 'none';
   // --- start page ---
   let startPage: StartPageHandle | null = null;

@@ -1,4 +1,4 @@
-// Private tab landing and the private mark (docs/design/private-tabs.md): the words, the mark's
+// Private tab landing and the private mark (docs/design/private-tabs.md): the title, the mark's
 // animated parts against the generated icon data, the motion rules (finite, transform/opacity only,
 // off under reduced motion), the private tokens' contrast, and the landing's DOM in a fake document.
 import { test } from 'node:test';
@@ -68,7 +68,7 @@ const out = esbuild.buildSync({
     contents: [
       "export * from './private-logic';",
       "export { buildMark, buildPrivatePage } from './private-page';",
-      "export { ICON_SHAPES, ICON_NAMES } from './icons.gen';",
+      "export { ICON_SHAPES } from './icons.gen';",
     ].join('\n'),
     resolveDir: srcDir,
     loader: 'ts',
@@ -119,32 +119,33 @@ test('the landing mark groups the bowler and the shades and clips the glint to t
   assert.equal(svg.getAttribute('aria-hidden'), 'true');
 });
 
-test('the landing text, count and its one action', () => {
-  const sent = [];
-  const page = ui.buildPrivatePage(() => sent.push('closeprivate'));
-  const text = page.root.text();
-  for (const words of [ui.PRIVATE_PAGE_TITLE, ui.PRIVATE_PAGE_LEAD, ui.PRIVATE_KEPT_TITLE, ui.PRIVATE_SEEN_TITLE, ui.PRIVATE_SHARED_NOTE, ui.PRIVATE_CLOSE_ALL]) {
-    assert.ok(text.includes(words), words);
-  }
-  for (const row of [...ui.PRIVATE_NOT_KEPT, ...ui.PRIVATE_STILL_SEEN]) {
-    assert.ok(ui.ICON_NAMES.includes(row.icon), row.icon);
-    assert.ok(text.includes(row.label) && text.includes(row.text), row.label);
-  }
+test('the landing is the mark and the title, centred, and nothing else', () => {
+  const page = ui.buildPrivatePage();
+  const text = page.root.text().replace(/\s+/g, ' ').trim();
+  assert.equal(text, ui.PRIVATE_PAGE_TITLE);
+  assert.doesNotMatch(text, /\b(anonymous|anonymously|untraceable|invisible|hides? your (ip|identity)|no one can see)\b/i);
   assert.equal(page.root.getAttribute('aria-labelledby'), 'pm-title');
-  page.show({ t: 'privatepage', id: 3, n: 2 });
-  assert.equal(page.root.find('pm-count').textContent, '2 private tabs open');
-  assert.equal(page.root.find('pm-count').getAttribute('role'), 'status');
-  const close = page.root.find('pm-close');
-  assert.equal(close.tagName, 'button');
-  assert.equal(close.type, 'button');
-  close.click();
-  assert.deepEqual(sent, ['closeprivate']);
-  assert.equal(ui.privateCountText(1), '1 private tab open');
-  assert.equal(ui.privateCountText(0), '1 private tab open');
+  const title = page.root.find('pm-title');
+  assert.equal(title.tagName, 'h1');
+  assert.equal(title.id, 'pm-title');
+  assert.equal(title.textContent, ui.PRIVATE_PAGE_TITLE);
+  const mark = page.root.find('pm-mark');
+  assert.equal(mark.getAttribute('width'), '80');
+  assert.equal(mark.style.getPropertyValue('--bw-icon-size'), '80px');
+  assert.equal(page.root.find('pm-halo').getAttribute('aria-hidden'), 'true');
+  assert.equal(page.root.all().some((n) => n.tagName === 'button'), false);
+  for (const gone of ['pm-eyebrow', 'pm-lead', 'pm-cards', 'pm-card', 'pm-note', 'pm-footer', 'pm-count', 'pm-close', 'pm-column']) {
+    assert.equal(page.root.find(gone), null, gone);
+  }
+  const sheet = css('private.css');
+  assert.match(sheet, /\.pm-page \{[^}]*align-items: center;[^}]*justify-content: center;/);
+  for (const gone of ['.pm-eyebrow', '.pm-lead', '.pm-cards', '.pm-card', '.pm-note', '.pm-footer', '.pm-count', '.pm-close', '.pm-column']) {
+    assert.equal(sheet.includes(gone), false, gone);
+  }
 });
 
 test('the entrance plays once per tab, and a re-shown landing comes back settled', () => {
-  const page = ui.buildPrivatePage(() => {});
+  const page = ui.buildPrivatePage();
   page.show({ t: 'privatepage', id: 3, n: 1 });
   assert.ok(page.root.classList.contains('is-entering'), 'first show plays');
   page.show({ t: 'privatepage', id: 3, n: 2 });
@@ -155,18 +156,6 @@ test('the entrance plays once per tab, and a re-shown landing comes back settled
   page.hidden();
   page.show({ t: 'privatepage', id: 5, n: 2 });
   assert.ok(page.root.classList.contains('is-entering'), 'another blank private tab plays again');
-});
-
-test('the words claim only what the code does', () => {
-  const all = [ui.PRIVATE_PAGE_LEAD, ui.PRIVATE_SHARED_NOTE, ...[...ui.PRIVATE_NOT_KEPT, ...ui.PRIVATE_STILL_SEEN].flatMap((r) => [r.label, r.text])].join(' ');
-  // No promise the engine cannot keep: nothing hides you from sites or networks.
-  assert.doesNotMatch(all, /\b(anonymous|anonymously|untraceable|invisible|hides? your (ip|identity)|no one can see)\b/i);
-  // Every store src/private.rs refuses that a user would recognise is named.
-  for (const word of ['History', 'address bar suggestions', 'Recently closed', 'Cookies and site data', 'Permissions', 'restored', 'grouped', 'session', 'workspace', 'Downloads']) {
-    assert.ok(all.includes(word), word);
-  }
-  // The one explicit write a private tab allows (Store::Bookmark) is disclosed.
-  assert.ok(ui.PRIVATE_STILL_SEEN.some((r) => /Bookmark/.test(r.label)));
 });
 
 test('private motion is finite, transform/opacity only, and off under reduced motion', () => {
