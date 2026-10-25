@@ -354,7 +354,8 @@ test('section: remove asks in the row first; Cancel and Escape back out; Remove 
   assert.deepEqual(sent, [], 'nothing is sent before the question is answered');
   let ask = rowOf(ID).querySelector('.sp-ext-confirm');
   assert.equal(ask.getAttribute('aria-label'), 'Confirm removing Reader "<b>"');
-  assert.match(ask.textContent, /Remove Reader "<b>"\?/);
+  assert.match(ask.textContent, /Cannot be undone/);
+  assert.equal(ask.querySelector('.sp-desc').textContent, 'Cannot be undone');
   assert.equal(globalThis.document.activeElement?.textContent, 'Cancel', 'the safe answer has the keyboard');
   button(ask, 'Cancel').click();
   assert.equal(rowOf(ID).querySelector('.sp-ext-confirm'), null);
@@ -430,7 +431,7 @@ test('section: an unreadable list and an invalid snapshot each say so and offer 
   let state = card().querySelector('.sp-ext-state.is-error');
   assert.equal(state.getAttribute('role'), 'alert');
   assert.match(state.textContent, /Extensions could not be read/);
-  assert.match(state.textContent, /The installed extension list is damaged\./);
+  assert.match(state.getAttribute('aria-label'), /The installed extension list is damaged\./);
   sent.length = 0;
   button(state, 'Try again').click();
   assert.deepEqual(sent, [{ v: 1, t: 'set', a: 'refresh' }]);

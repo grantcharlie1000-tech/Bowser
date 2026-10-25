@@ -655,6 +655,7 @@
   font-size: var(--bw-text-body);
   line-height: var(--bw-leading-body);
   font-weight: var(--bw-weight-strong);
+  white-space: nowrap;
 }
 
 .pg-rows {
@@ -673,13 +674,14 @@
 .pg-text {
   display: flex;
   flex: 1;
-  flex-direction: column;
+  flex-direction: row;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: var(--bw-space-2);
   min-width: 0;
 }
 
 .pg-label {
-  overflow: hidden;
-  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
@@ -687,6 +689,7 @@
   color: var(--bw-text-2);
   font-size: var(--bw-text-caption);
   line-height: var(--bw-leading-caption);
+  white-space: nowrap;
 }
 
 .pg-value {
@@ -765,7 +768,9 @@
 
 .pg-confirm {
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
+  flex-wrap: nowrap;
+  align-items: center;
   gap: var(--bw-space-2);
   padding: var(--bw-space-3) var(--bw-space-2);
   border-bottom: 1px solid var(--bw-hairline);
@@ -774,6 +779,7 @@
 
 .pg-confirm-text {
   margin: 0;
+  white-space: nowrap;
 }
 
 .pg-confirm-actions {
@@ -786,7 +792,7 @@
    Only the add forms (a field, a choice and a button in one row), a list that is switched off and
    an inline problem need their own rules. */
 .pg-protect-add {
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
 }
 
 .pg-protect-input {
@@ -797,7 +803,7 @@
 
 .pg-protect-site-controls,
 .pg-protect-source {
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
 }
 
 .pg-protect .pg-row.is-off .pg-label {
@@ -810,6 +816,7 @@
   color: var(--sp-warn, var(--bw-group-1));
   font-size: var(--bw-text-caption);
   line-height: var(--bw-leading-caption);
+  white-space: nowrap;
 }
 
 .pg-seg-host {
@@ -1024,8 +1031,6 @@
 
 .pf-item:is(:hover, :focus-within) .pf-tools { opacity: 1; }
 
-@media (max-width: 640px) {
-  .pg-row {
-    flex-wrap: wrap;
-  }
+.pg-row {
+  flex-wrap: nowrap;
 }

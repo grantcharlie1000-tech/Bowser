@@ -463,21 +463,21 @@ test('lists: an address is checked before it is sent; a file is chosen in Bowser
 
 test('Delete browsing data: nothing is sent until the second click, and the summary says exactly what it will do', () => {
   const root = protection.deleteData;
-  const run = () => button(root, 'Delete') ?? button(root, 'Confirm');
+  const run = () => button(root, 'Delete') ?? button(root, 'Cannot be undone');
   assert.equal(rowOf(root, 'Delete').querySelector('.pg-desc'), null);
   assert.equal(button(root, 'Delete').getAttribute('aria-label'), 'Delete history, cookies, storage and cache from the past day');
   sent.length = 0;
   button(root, 'Delete').click();
   assert.equal(sent.length, 0, 'the first click only asks');
-  assert.ok(button(root, 'Confirm'), 'the button became Confirm');
-  assert.equal(button(root, 'Confirm').classList.contains('is-danger'), true);
+  assert.ok(button(root, 'Cannot be undone'), 'the warning is the confirming button');
+  assert.equal(button(root, 'Cannot be undone').classList.contains('is-danger'), true);
   assert.equal(button(root, 'Cancel').hidden, false);
-  assert.equal(rowOf(root, 'Delete').querySelector('.pg-desc').textContent, 'Cannot be undone');
+  assert.equal(rowOf(root, 'Delete').querySelector('.pg-desc'), null);
   button(root, 'Cancel').click();
   assert.equal(sent.length, 0);
   assert.ok(button(root, 'Delete'), 'cancel puts it back');
   button(root, 'Delete').click();
-  button(root, 'Confirm').click();
+  button(root, 'Cannot be undone').click();
   assert.deepEqual(sent, [{ v: 1, t: 'priv', a: 'delete-data', id: 15, n: 1, on: false }]);
   assert.ok(button(root, 'Delete'), 'and it is Delete again afterwards');
 });
@@ -495,7 +495,7 @@ test('Delete browsing data: changing the period or a kind withdraws the question
   assert.ok(button(root, 'Delete'), 'a kind changed, so the question is withdrawn');
   assert.deepEqual([...root.querySelectorAll('[role="switch"]')].map((sw) => sw.getAttribute('aria-checked')), ['true', 'false', 'true', 'true', 'false', 'false', 'false']);
   button(root, 'Delete').click();
-  button(root, 'Confirm').click();
+  button(root, 'Cannot be undone').click();
   assert.deepEqual(sent, [{ v: 1, t: 'priv', a: 'delete-data', id: 1 | 4 | 8, n: 2, on: false }], 'history, storage and cache for the past week');
   for (const label of ['History', 'Storage', 'Cache']) switchOf(label).click();
   assert.equal(button(root, 'Delete').disabled, true, 'nothing chosen');
@@ -519,7 +519,7 @@ test('Delete browsing data: saved sign-ins need their own yes beside the confirm
   assert.equal(button(root, 'Delete').disabled, false);
   button(root, 'Delete').click();
   assert.equal(sent.length, 0);
-  button(root, 'Confirm').click();
+  button(root, 'Cannot be undone').click();
   const bits = 1 | 2 | 4 | 8 | 16;
   assert.deepEqual(sent, [{ v: 1, t: 'priv', a: 'delete-data', id: bits, n: 1, on: true }]);
   // The yes is spent: asking again needs it again.
@@ -531,7 +531,7 @@ test('Delete browsing data: saved sign-ins need their own yes beside the confirm
   assert.equal(rowOf(root, 'Confirm'), undefined);
   assert.equal(button(root, 'Delete').disabled, false);
   button(root, 'Delete').click();
-  button(root, 'Confirm').click();
+  button(root, 'Cannot be undone').click();
   assert.deepEqual(last(), { v: 1, t: 'priv', a: 'delete-data', id: 15, n: 1, on: false }, 'without sign-ins no flag goes out');
 });
 

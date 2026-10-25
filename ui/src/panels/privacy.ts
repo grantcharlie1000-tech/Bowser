@@ -76,10 +76,10 @@ export function mountPrivacyDashboard({ column, status, scroll, section = pageSe
     if (!snapshot) { siteList.replaceChildren(); return; }
     const matches = filterSites(snapshot.sites, query);
     const nodes: HTMLElement[] = matches.slice(0, shown).map((site) => siteCard(site));
-    if (!snapshot.sites.length) nodes.push(emptyState('shield', 'No sites yet. The current site and any site that asks for a permission appear here.'));
-    else if (!matches.length) nodes.push(emptyState('search', 'No sites match your search.'));
+    if (!snapshot.sites.length) nodes.push(emptyState('shield', 'No sites yet'));
+    else if (!matches.length) nodes.push(emptyState('search', 'No matches'));
     if (matches.length > shown) {
-      const more = textButton(`Show ${Math.min(SITE_PAGE, matches.length - shown)} more of ${matches.length - shown}`, () => { shown += SITE_PAGE; paintSites(); }, { subtle: true });
+      const more = textButton('Show more', () => { shown += SITE_PAGE; paintSites(); }, { subtle: true, aria: `Show ${Math.min(SITE_PAGE, matches.length - shown)} more of ${matches.length - shown}` });
       more.dataset.focus = 'more';
       const wrap = el('div', 'pg-more');
       wrap.append(more);
@@ -131,13 +131,13 @@ export function mountPrivacyDashboard({ column, status, scroll, section = pageSe
       const button = textButton('Reset all', () => { confirmingAll = true; wantFocus = 'reset-all-cancel'; render(); }, { icon: 'reset', aria: 'Reset all site permissions' });
       button.disabled = total === 0;
       button.dataset.focus = 'reset-all';
-      return settingRow('Saved choices', total ? `${plain(total)} saved across ${plain(data.sites.filter(hasStored).length)} sites. Sites never get a prompt; anything not allowed is blocked.` : 'Nothing saved. Sites never get a prompt; anything not allowed is blocked.', button);
+      return settingRow('Saved choices', null, button);
     }
     const box = el('div', 'pg-confirm');
     box.setAttribute('role', 'alertdialog');
     box.setAttribute('aria-label', 'Confirm resetting all site permissions');
     const message = el('p', 'pg-confirm-text');
-    message.textContent = `Reset ${plain(total)} saved ${total === 1 ? 'choice' : 'choices'} for every site? Every site goes back to blocked.`;
+    message.textContent = 'Restores defaults';
     const actions = el('div', 'pg-confirm-actions');
     const cancel = textButton('Cancel', () => { confirmingAll = false; wantFocus = 'reset-all'; render(); });
     cancel.dataset.focus = 'reset-all-cancel';
@@ -170,7 +170,7 @@ export function mountPrivacyDashboard({ column, status, scroll, section = pageSe
       settingRow('Site', null, snapshot.site ?? 'No active site'),
       settingRow('Connection', null, SECURITY[snapshot.security]),
       settingRow('Blocking on this site', null, onOff(snapshot.blocking, 'Active', 'Inactive')),
-      settingRow('Tracking prevention', snapshot.tracking !== null && snapshot.tracking !== snapshot.trackingSetting ? `Set to ${snapshot.trackingSetting} in Settings. Applies after a restart.` : null, snapshot.tracking ?? 'Unavailable'),
+      settingRow('Tracking prevention', null, snapshot.tracking ?? 'Unavailable'),
     );
     sections.push(site.root);
 
@@ -184,11 +184,11 @@ export function mountPrivacyDashboard({ column, status, scroll, section = pageSe
     sections.push(permissions.root);
 
     const denied = section('Recently blocked requests');
-    denied.body.append(settingRow('Last 50 this session', 'Site, kind and time only. Kept in memory and gone when Bowser closes.', textButton('Clear list', () => emit('denied-clear'), { subtle: true, aria: 'Clear the list of recently blocked requests' })));
+    denied.body.append(settingRow('Last 50', null, textButton('Clear list', () => emit('denied-clear'), { subtle: true, aria: 'Clear the list of recently blocked requests' })));
     for (const row of snapshot.denied) {
-      denied.body.append(settingRow(row.origin, deniedText(row)));
+      denied.body.append(settingRow(row.origin, null, deniedText(row)));
     }
-    if (!snapshot.denied.length) denied.body.append(settingRow('Nothing blocked yet', 'Requests from sites for camera, microphone, location, notifications or popups appear here.'));
+    if (!snapshot.denied.length) denied.body.append(settingRow('Nothing blocked yet', null));
     sections.push(denied.root);
 
     const blocked = section('Blocked requests');
@@ -196,7 +196,7 @@ export function mountPrivacyDashboard({ column, status, scroll, section = pageSe
       settingRow('All time', null, plain(stats.allTime)),
       settingRow('This session', null, plain(stats.session)),
       settingRow('This site', null, plain(stats.currentSite)),
-      settingRow('Statistics', 'Resets the counts above and the lists below.', textButton('Clear statistics', () => emit('clear-stats'))),
+      settingRow('Statistics', null, textButton('Clear statistics', () => emit('clear-stats'))),
     );
     sections.push(blocked.root);
 
@@ -222,7 +222,7 @@ export function mountPrivacyDashboard({ column, status, scroll, section = pageSe
     // Static, plain-language note on what a private tab keeps (nothing on disk) and what it blocks.
     const privateTabs = section(PRIVATE_TABS_TITLE);
     privateTabs.root.classList.add('pg-private');
-    for (const [label, text] of PRIVATE_TABS_NOTE) privateTabs.body.append(settingRow(label, text));
+    for (const [label] of PRIVATE_TABS_NOTE) privateTabs.body.append(settingRow(label, null));
     sections.push(privateTabs.root);
 
     // A host with no rows of its own (the dashboard window) shows the protection blocks first.

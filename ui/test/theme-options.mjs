@@ -379,7 +379,7 @@ test('the theme file row opens Windows’ own dialogs by a bare command and rese
   assert.deepEqual(themeCommands(), [{ v: 1, t: 'set', a: 'themeimport' }]);
   reset.click();
   assert.deepEqual(themeCommands(), [], 'the first click only asks');
-  assert.equal(reset.textContent, 'Confirm');
+  assert.equal(reset.textContent, 'Restores defaults');
   const cancel = rowNode('themeFile').querySelectorAll('button')[2];
   assert.equal(cancel.hidden, false);
   cancel.click();

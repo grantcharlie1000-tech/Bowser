@@ -131,7 +131,7 @@ export function mountThemeRows(host: ThemeRowsHost): { apply(values: ThemeOption
   }, { icon: 'reset' });
   const cancelButton = textButton('Cancel', () => { confirming = false; paintReset(); resetButton.focus(); });
   const paintReset = (): void => {
-    resetButton.lastChild!.textContent = confirming ? 'Confirm' : 'Reset';
+    resetButton.lastChild!.textContent = confirming ? 'Restores defaults' : 'Reset';
     resetButton.classList.toggle('is-danger', confirming);
     cancelButton.hidden = !confirming;
   };

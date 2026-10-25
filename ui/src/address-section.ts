@@ -315,7 +315,7 @@ function engineSelect(host: AddressHost, into: HTMLElement, id: string, label: s
         key = nextKey;
         select?.close();
         select = selectField<string>({
-          options: [...(allowDefault ? [{ value: '', label: 'Same as the default engine' }] : []), ...engines.map((e) => ({ value: e.id, label: engineChoiceLabel(e.id, e.name) }))],
+          options: [...(allowDefault ? [{ value: '', label: 'Default' }] : []), ...engines.map((e) => ({ value: e.id, label: engineChoiceLabel(e.id, e.name) }))],
           value: current,
           label,
           placeholder: label,
@@ -390,7 +390,7 @@ function mountEngineEditor(host: AddressHost, current: () => AddressSnapshot | n
   );
   const openForm = (engine: EngineView | null): void => {
     editing = engine?.id ?? null;
-    title.textContent = engine ? `Edit ${engine.name}` : 'Add a search engine';
+    title.textContent = engine ? `Edit ${engine.name}` : 'Add engine';
     const draft = engine ? draftOfEngine(engine) : EMPTY_ENGINE;
     for (const [key, input] of fields) input.value = draft[key];
     problem.textContent = '';
@@ -417,8 +417,8 @@ function mountEngineEditor(host: AddressHost, current: () => AddressSnapshot | n
   form.addEventListener('submit', (event) => { event.preventDefault(); submit(); });
   form.addEventListener('keydown', (event) => { if (event.key === 'Escape') { event.stopPropagation(); closeForm(); } });
 
-  const add = textButton('Add a search engine', () => openForm(null), { icon: 'plus' });
-  const restore = textButton('Restore default engines', () => { const sent = engineFields({ op: 'restore' }); if (sent) host.send(sent); }, { icon: 'reset', subtle: true });
+  const add = textButton('Add engine', () => openForm(null), { icon: 'plus', aria: 'Add a search engine' });
+  const restore = textButton('Restore', () => { const sent = engineFields({ op: 'restore' }); if (sent) host.send(sent); }, { icon: 'reset', subtle: true, aria: 'Restore default engines' });
   const bar = el('div', 'ad-engine-bar');
   bar.append(add, restore);
   const rowNode = host.row(into, 'engines', undefined, { stack: true });

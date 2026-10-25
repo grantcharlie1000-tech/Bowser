@@ -890,7 +890,7 @@ test('the shortcut list: chips, remove one, clear, restore, browser priority, fi
   filter.value = 'zzzz nothing';
   filter.dispatch('input');
   assert.equal(app.querySelectorAll('.sp-kb-row').length, 0);
-  assert.match(app.querySelector('.sp-kb-empty').textContent, /No command or shortcut matches/);
+  assert.equal(app.querySelector('.sp-kb-empty').textContent, 'No matches');
   filter.value = '';
   filter.dispatch('input');
   assert.ok(app.querySelectorAll('.sp-kb-row').length > 50);
@@ -902,7 +902,7 @@ test('the shortcut list: chips, remove one, clear, restore, browser priority, fi
   const restoreAll = buttonNamed(kbPage(), 'Restore');
   restoreAll.click();
   assert.deepEqual(sent, [], 'the first click only asks');
-  assert.equal(restoreAll.textContent, 'Confirm');
+  assert.equal(restoreAll.textContent, 'Restores defaults');
   restoreAll.click();
   assert.deepEqual(sent, [{ v: 1, t: 'set', a: 'kbrestoreall' }]);
 });
@@ -1020,7 +1020,7 @@ test('command chains: the list, clone, delete with a confirmation, and the edito
   assert.deepEqual(sent.pop(), { v: 1, t: 'set', a: 'chaintest', text: '1\tMorning\n0\tnew-tab\n250\thistory' });
   tool('Delete Morning').click();
   assert.deepEqual(sent, [], 'delete asks first');
-  assert.match(chainRows()[0].textContent, /Delete Morning\?/);
+  assert.equal(chainRows()[0].querySelector('.sp-chain-tools').querySelector('.sp-desc').textContent, 'Delete?');
   buttonNamed(chainRows()[0], 'Cancel').click();
   assert.equal(sent.length, 0);
   tool('Delete Morning').click();
@@ -1347,7 +1347,7 @@ test('The engine list shows every engine with its badges, and each action is one
     { v: 1, t: 'set', a: 'engine', text: 'remove\tbing' },
     { v: 1, t: 'set', a: 'engine', text: 'move\tgoogle\t2' },
   ]);
-  const restore = [...app.querySelectorAll('.bw-button')].find((b) => b.textContent === 'Restore default engines');
+  const restore = [...app.querySelectorAll('.bw-button')].find((b) => b.textContent === 'Restore' && b.getAttribute('aria-label') === 'Restore default engines');
   sent.length = 0;
   restore.click();
   assert.deepEqual(sent, [{ v: 1, t: 'set', a: 'engine', text: 'restore' }]);
@@ -1357,7 +1357,7 @@ test('Adding an engine checks the form first, then sends one add command; editin
   deliver(addressFixture.snap);
   const form = app.querySelector('.ad-form');
   assert.equal(form.hidden, true);
-  const add = [...app.querySelectorAll('.bw-button')].find((b) => b.textContent === 'Add a search engine');
+  const add = [...app.querySelectorAll('.bw-button')].find((b) => b.textContent === 'Add engine');
   add.click();
   assert.equal(form.hidden, false);
   const fields = form.querySelectorAll('input');
@@ -1468,7 +1468,8 @@ test('a snapshot sent after Ctrl+F11 replaces the draft, so the next Save keeps 
 
 test('Reset and Settings file say truthfully what they cover', () => {
   const words = (id) => logic.ROWS.find((row) => row.id === id).keywords;
-  assert.equal(logic.ROWS.find((row) => row.id === 'reset').description, 'Restores defaults');
+  assert.equal(logic.ROWS.find((row) => row.id === 'reset').description, '');
+  assert.match(words('reset'), /Restores defaults/);
   for (const word of ['page tools', 'feeds', 'toolbars']) assert.ok(words('reset').includes(word), word);
   assert.match(words('reset'), /Tracking prevention goes back to its default the next time Bowser starts/);
   assert.match(words('reset'), /Not changed: how long history is kept, your history and bookmarks, the Keyboard section/);
@@ -2315,4 +2316,24 @@ test('simple settings is the calm default, and All settings is one switch away',
   assert.ok(areaNode('privacy').contains(app.querySelector('[data-opens="deleteData"]')));
   assert.ok(areaNode('about').contains(rowNode('defaultBrowser')));
   deliver(fixture.snap);
+});
+
+test('settings rows render a single line of text', () => {
+  const described = logic.ROWS.filter((row) => row.description !== '').map((row) => row.id);
+  assert.deepEqual(described, []);
+  deliver(fixture.snap);
+  const nodeOf = (id) => app.querySelector(`[data-opens="${id}"]`) ?? app.querySelector(`.sp-row[data-row="${id}"]`);
+  for (const id of ['reset', 'deleteData', 'winReset', 'panelReset']) {
+    const node = nodeOf(id);
+    assert.ok(node, id);
+    assert.equal(node.querySelector('.sp-desc') == null, true, `${id} has no sub-line`);
+    const label = node.querySelector('.sp-label');
+    assert.ok(label, id);
+    assert.equal(/\n/.test(label.textContent), false, id);
+  }
+  const css = read(join(srcDir, 'styles', 'settings.css'));
+  assert.match(css, /\.sp-label \{[^}]*white-space: nowrap;/);
+  assert.match(css, /\.sp-text \{[^}]*flex-direction: row;/);
+  assert.match(css, /\.sp-h \{[^}]*white-space: nowrap;/);
+  assert.doesNotMatch(css, /\.sp-row:not\(\.is-profile[\s\S]{0,500}flex-direction: column/);
 });

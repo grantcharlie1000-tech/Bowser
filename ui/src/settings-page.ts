@@ -1194,8 +1194,8 @@ export function startSettingsPage(root: HTMLElement): void {
   const feedsRefreshSelect = selectField<string>({
     options: REFRESH_CHOICES.map((minutes) => ({ value: String(minutes), label: refreshLabel(minutes) })),
     value: String(60),
-    label: 'Fetch feeds again when Feeds opens',
-    placeholder: 'Fetch feeds again when Feeds opens',
+    label: 'Refresh',
+    placeholder: 'Refresh',
     onChange: (next) => sendBarOption(feedAssignment('feeds_refresh_minutes', Number(next) as RefreshChoice)),
   });
   feedsRefreshSelect.button.setAttribute('aria-labelledby', 'sp-l-feedsRefresh');
@@ -1353,7 +1353,7 @@ export function startSettingsPage(root: HTMLElement): void {
   }, { icon: 'reset' });
   const cancel = textButton('Cancel', () => { confirming = false; paintReset(); reset.focus(); });
   const paintReset = (): void => {
-    reset.lastChild!.textContent = confirming ? 'Confirm' : 'Reset';
+    reset.lastChild!.textContent = confirming ? 'Restores defaults' : 'Reset';
     reset.classList.toggle('is-danger', confirming);
     cancel.hidden = !confirming;
   };
@@ -1848,8 +1848,8 @@ export function startSettingsPage(root: HTMLElement): void {
     const view = updateView(s);
     statusBox.dataset.tone = view.tone;
     statusIcon.replaceChildren(view.busy ? el('span', 'bw-spinner') : icon(view.tone === 'warn' ? 'warning' : view.action === 'restart' ? 'download' : 'check', { size: 20 }));
-    statusTitle.textContent = view.title;
-    statusDetail.textContent = view.detail;
+    statusTitle.textContent = view.detail === '' ? view.title : `${view.title} · ${view.detail}`;
+    statusDetail.hidden = true;
     updateAction.hidden = view.action === null;
     updateAction.disabled = view.busy;
     updateAction.lastChild!.textContent = view.action === 'restart' ? 'Restart' : 'Check';

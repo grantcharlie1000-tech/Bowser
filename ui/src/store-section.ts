@@ -28,7 +28,7 @@ export function mountStoreSection(options: ExtensionsSectionOptions): { readonly
     const button = textButton(label, () => { view = key; selected = ''; category = ''; render(); }, { icon: glyph });
     navButtons.set(key, button); nav.append(button);
   }
-  const browse = textButton('Chrome Web Store', () => options.send({ a: 'storebrowse' }), { icon: 'external' });
+  const browse = textButton('Web Store', () => options.send({ a: 'storebrowse' }), { icon: 'external', aria: 'Chrome Web Store' });
   side.append(nav, browse);
   const main = el('main', 'bs-main'); main.setAttribute('aria-label', 'Extension catalogue');
   const search = el('input', 'bw-input bs-search'); search.type = 'search'; search.placeholder = 'Search extensions'; search.setAttribute('aria-label', 'Search extensions'); search.maxLength = 128;
@@ -167,10 +167,10 @@ export function mountStoreSection(options: ExtensionsSectionOptions): { readonly
     if (explain) words.append(paragraph(explain, 'bs-head-body'));
     box.append(words); return box;
   };
-  const action = (label: string, key: string, run: () => void, opts: { primary?: boolean; icon?: 'external' } = {}): HTMLButtonElement => {
+  const action = (label: string, key: string, run: () => void, opts: { primary?: boolean; icon?: 'external'; aria?: string } = {}): HTMLButtonElement => {
     const button = textButton(label, run, opts); button.dataset.focus = key; return button;
   };
-  const browseButton = (): HTMLButtonElement => action('Open Chrome Web Store', 'browse', () => options.send({ a: 'storebrowse' }), { icon: 'external' });
+  const browseButton = (): HTMLButtonElement => action('Web Store', 'browse', () => options.send({ a: 'storebrowse' }), { icon: 'external', aria: 'Open Chrome Web Store' });
   const retry = (command: PanelFields): void => {
     if (pending || !options.send(command)) return;
     pending = true; requested = command.text ?? ''; render();

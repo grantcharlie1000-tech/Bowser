@@ -10,7 +10,7 @@ import { el, icon } from './dom';
 import { textButton } from './panels/kit';
 import { setTip } from './tooltip';
 import {
-  INSTALL_COMMAND, INSTALL_CRX_COMMAND, INSTALL_CRX_LABEL, ackToast, declarationGroups, parseExtensionsSnapshot, popupCommand, reachText, removeCommand,
+  INSTALL_COMMAND, INSTALL_CRX_COMMAND, INSTALL_CRX_LABEL, ackToast, declarationGroups, parseExtensionsSnapshot, popupCommand, reachLine, reachText, removeCommand,
   setEnabledCommand, statusText, switchLabel, type ExtensionItem, type ExtensionsSnapshot,
 } from './extensions-logic';
 import { storeUrlCommand } from './store-logic';
@@ -50,12 +50,12 @@ export function mountExtensionsSection(options: ExtensionsSectionOptions): Exten
   const heading = el('h3', 'sp-group-h');
   heading.id = `${prefix}-ext-h`;
   heading.textContent = 'Installed';
-  const install = textButton('Install unpacked…', () => sendInstall(), { icon: 'folder' });
+  const install = textButton('Unpacked', () => sendInstall(), { icon: 'folder', aria: 'Install unpacked…' });
   install.classList.add('sp-ext-install');
   const installCrx = crxButton();
   installCrx.classList.add('sp-ext-install-crx');
   const installs = el('div', 'sp-ext-installs');
-  installs.append(textButton('Open Chrome Web Store', () => options.send({ a: 'storeopen' }), { icon: 'puzzle', primary: true }), install, installCrx);
+  installs.append(textButton('Web Store', () => options.send({ a: 'storeopen' }), { icon: 'puzzle', primary: true, aria: 'Open Chrome Web Store' }), install, installCrx);
   head.append(heading, installs);
   const box = el('div', 'sp-card sp-ext-card');
   box.setAttribute('role', 'group');
@@ -68,11 +68,11 @@ export function mountExtensionsSection(options: ExtensionsSectionOptions): Exten
   const linkInput = el('input', 'bw-input'); linkInput.id = `${prefix}-ext-url`; linkInput.type = 'url'; linkInput.maxLength = 2048; linkInput.placeholder = '';
   linkInput.setAttribute('aria-label', 'Chrome Web Store listing URL');
   const linkError = el('p', 'sp-desc'); linkError.hidden = true; linkError.setAttribute('role', 'alert');
-  const linkInstall = textButton('Review extension', () => {
+  const linkInstall = textButton('Review', () => {
     const fields = storeUrlCommand(linkInput.value);
-    if (!fields) { linkError.hidden = false; linkError.textContent = 'Enter a full HTTPS Chrome Web Store extension listing URL.'; linkInput.focus(); return; }
+    if (!fields) { linkError.hidden = false; linkError.textContent = 'Enter a listing URL'; linkInput.focus(); return; }
     linkError.hidden = true; sendInstall(fields);
-  });
+  }, { aria: 'Review extension' });
   fromLink.append(linkSummary, linkLabel, linkInput, linkInstall, linkError);
   root.append(group, fromLink);
 
@@ -82,7 +82,7 @@ export function mountExtensionsSection(options: ExtensionsSectionOptions): Exten
   };
   /** A file on disk, not a store: the tip says so. Same weight as the folder button next to it. */
   function crxButton(): HTMLButtonElement {
-    return textButton(INSTALL_CRX_LABEL, () => sendInstall(INSTALL_CRX_COMMAND), { icon: 'puzzle' });
+    return textButton('Install CRX', () => sendInstall(INSTALL_CRX_COMMAND), { icon: 'puzzle', aria: INSTALL_CRX_LABEL });
   }
 
   /** The message in the card when there is no list to show: loading, unreadable, invalid or empty. */
@@ -95,7 +95,7 @@ export function mountExtensionsSection(options: ExtensionsSectionOptions): Exten
     const label = el('span', 'sp-label');
     label.textContent = title;
     text.append(label);
-    if (detail !== '') { const desc = el('span', 'sp-desc'); desc.textContent = detail; text.append(desc); }
+    if (detail !== '') block.setAttribute('aria-label', `${title}. ${detail}`);
     block.append(mark, text);
     if (action) block.append(action);
     if (kind !== 'empty') block.setAttribute('role', kind === 'error' ? 'alert' : 'status');
@@ -152,7 +152,8 @@ export function mountExtensionsSection(options: ExtensionsSectionOptions): Exten
     const reach = el('span', `sp-desc sp-ext-reach${item.all ? ' is-broad' : ''}`);
     reach.id = `${prefix}-ext-r-${item.id}`;
     if (item.all) reach.append(icon('warning', { size: 12, fine: true }));
-    reach.append(document.createTextNode(reachText(item)));
+    reach.append(document.createTextNode(reachLine(item)));
+    reach.setAttribute('aria-label', reachText(item));
     text.append(name, status, reach);
     if (item.failure !== '') {
       const failure = el('p', 'sp-flag is-later sp-ext-failure');
@@ -167,7 +168,8 @@ export function mountExtensionsSection(options: ExtensionsSectionOptions): Exten
     more.dataset.focus = `${item.id}:details`;
     more.setAttribute('aria-expanded', String(open));
     more.setAttribute('aria-controls', `${prefix}-ext-d-${item.id}`);
-    more.append(document.createTextNode(open ? 'Hide what it declares' : 'What it declares'), icon(open ? 'chevron-up' : 'chevron-down', { size: 12, fine: true }));
+    more.setAttribute('aria-label', open ? 'Hide what it declares' : 'What it declares');
+    more.append(document.createTextNode(open ? 'Hide' : 'Details'), icon(open ? 'chevron-up' : 'chevron-down', { size: 12, fine: true }));
     more.addEventListener('click', () => {
       if (expanded.has(item.id)) expanded.delete(item.id); else expanded.add(item.id);
       render();
@@ -232,7 +234,7 @@ export function mountExtensionsSection(options: ExtensionsSectionOptions): Exten
       ask.setAttribute('role', 'group');
       ask.setAttribute('aria-label', `Confirm removing ${item.name}`);
       const question = el('p', 'sp-desc');
-      question.textContent = `Remove ${item.name}?`;
+      question.textContent = 'Cannot be undone';
       const buttons = el('div', 'sp-reset');
       const cancel = textButton('Cancel', () => { confirming = null; render(`${item.id}:remove`); });
       cancel.dataset.focus = `${item.id}:cancel`;
@@ -277,7 +279,7 @@ export function mountExtensionsSection(options: ExtensionsSectionOptions): Exten
       retry.dataset.focus = 'retry';
       box.replaceChildren(stateBlock('error', 'Extensions could not be read', snapshot.error, retry));
     } else if (snapshot.items.length === 0) {
-      const choose = textButton('Choose folder…', () => sendInstall(), { icon: 'folder' });
+      const choose = textButton('Folder', () => sendInstall(), { icon: 'folder', aria: 'Choose folder…' });
       choose.dataset.focus = 'choose';
       choose.disabled = installing;
       const chooseCrx = crxButton();

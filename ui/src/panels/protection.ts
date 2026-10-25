@@ -316,12 +316,12 @@ export function mountProtection(options: ProtectionOptions): Protection {
         const sure = switchControl('I understand that deleting saved sign-ins cannot be undone', (on) => { understood = on; armed = false; paintDelete(); });
         sure.set(understood);
         focusKey(sure.root, 'logins-sure');
-        block.body.append(settingRow('Confirm', 'Cannot be undone', sure.root));
+        block.body.append(settingRow('Confirm', null, sure.root));
       }
       const effective = DELETE_KINDS.filter((kind) => chosen.has(kind.key) && !(data.guest && kind.key === 'logins')).map((kind) => kind.key);
       const ready = effective.length > 0 && (!withLogins || understood);
       const summary = deleteSummary(effective, range);
-      const run = focusKey(textButton(armed ? 'Confirm' : 'Delete', () => {
+      const run = focusKey(textButton(armed ? 'Cannot be undone' : 'Delete', () => {
         if (!armed) { armed = true; paintDelete(); return; }
         armed = false;
         const bits = kindsBits(effective);
@@ -335,7 +335,7 @@ export function mountProtection(options: ProtectionOptions): Protection {
       cancel.hidden = !armed;
       const actions = el('div', 'pg-pair');
       actions.append(cancel, run);
-      block.body.append(settingRow('Delete', armed ? 'Cannot be undone' : null, actions));
+      block.body.append(settingRow('Delete', null, actions));
     });
   }
 

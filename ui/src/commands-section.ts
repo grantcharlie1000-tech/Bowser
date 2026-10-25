@@ -208,7 +208,7 @@ export function mountCommandsSections(options: CommandsSectionsOptions): Command
     send(RESTORE_ALL_COMMAND);
   }, { icon: 'reset' });
   const paintRestore = (): void => {
-    restoreAll.lastChild!.textContent = confirmingRestore ? 'Confirm' : 'Restore';
+    restoreAll.lastChild!.textContent = confirmingRestore ? 'Restores defaults' : 'Restore';
     restoreAll.classList.toggle('is-danger', confirmingRestore);
     cancelRestore.hidden = !confirmingRestore;
   };
@@ -359,7 +359,7 @@ export function mountCommandsSections(options: CommandsSectionsOptions): Command
     const grouped = groupCommands(snapshot.commands, editorQuery);
     if (grouped.length === 0) {
       const empty = el('p', 'sp-desc sp-kb-empty');
-      empty.textContent = editorQuery.trim() === '' ? 'No commands.' : `No command or shortcut matches “${editorQuery.trim()}”.`;
+      empty.textContent = editorQuery.trim() === '' ? 'No commands.' : 'No matches';
       editorList.replaceChildren(empty);
       return;
     }
@@ -611,7 +611,7 @@ export function mountCommandsSections(options: CommandsSectionsOptions): Command
       const tools = el('div', 'sp-ctl sp-chain-tools');
       if (confirmingDelete === chain.id) {
         const ask = el('span', 'sp-desc');
-        ask.textContent = `Delete ${chain.name}?`;
+        ask.textContent = 'Delete?';
         const yes = textButton('Delete', () => { confirmingDelete = null; send(chainDeleteCommand(chain.id)); paintChains(s); }, { icon: 'trash' });
         yes.classList.add('is-danger');
         const no = textButton('Cancel', () => { confirmingDelete = null; paintChains(s); });
