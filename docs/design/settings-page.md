@@ -146,10 +146,22 @@ longer hosts HTML; the HTML dialog path (`View::DialogSettings`, `?view=dialog&p
 
 ## Layout and structure
 
-Two columns from 880px: a 248px sticky sidebar (gear mark and "Settings", the search field, the
-section list with a sliding indicator) and a content column of at most 720px. Below 880px the
-sidebar becomes a sticky top bar: title and search on one line, the sections as a scrollable row of
-chips. Below 560px rows stack their control under the label.
+Two columns from 880px: a 248px sticky sidebar (gear mark and "Settings", a Simple / All settings
+switch, the search field, the section list with a sliding indicator) and a content column of at most
+720px. Below 880px the sidebar becomes a sticky top bar. Below 560px rows stack their control under
+the label.
+
+Settings opens on **Simple**: the section list is hidden and the sidebar becomes a short header
+(title, search, and the Simple / All settings switch) over one page with search engine, homepage,
+what opens on startup, light / dark / system theme, accent colour, tabs on top or down the side,
+import bookmarks, clear browsing data, extensions, and the default browser, plus **Show all settings**.
+The choice of Simple or All is remembered in the page (local storage), not in settings.txt.
+
+**All settings** groups the same rows into nine sections, in this order: General (profile, search,
+start page, downloads), Appearance, Tabs (tabs and tab groups), Privacy (privacy and performance),
+Browsing (address bar, bookmarks, page tools), Shortcuts (keyboard and Quick commands), Extensions,
+Media, About (updates and about). Rarely changed rows stay behind More options inside each section.
+No setting is removed, and the settings.txt keys are unchanged.
 
 Sections (only settings Bowser really has):
 

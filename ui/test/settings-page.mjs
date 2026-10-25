@@ -375,6 +375,7 @@ class Node {
   detach(node) { if (node.parent) node.parent.children = node.parent.children.filter((c) => c !== node); node.parent = this; }
   append(...nodes) { for (const n of nodes) { const node = typeof n === 'string' ? new Node('#text', n) : n; this.ownText = null; this.detach(node); this.children.push(node); } }
   prepend(node) { this.detach(node); this.children.unshift(node); }
+  before(node) { const p = this.parent; p.detach(node); p.children.splice(p.children.indexOf(this), 0, node); }
   after(node) { const p = this.parent; p.detach(node); p.children.splice(p.children.indexOf(this) + 1, 0, node); }
   replaceWith(node) { const p = this.parent; const at = p.children.indexOf(this); p.detach(node); p.children.splice(at, 1, node); this.parent = null; }
   replaceChildren(...nodes) { this.children = []; this.ownText = null; this.append(...nodes); }
@@ -410,7 +411,7 @@ Object.assign(globalThis, {
   chrome: { webview: { postMessage: (wire) => sent.push(JSON.parse(wire)), addEventListener: (_t, cb) => listeners.push(cb) } },
 });
 // --- settings slim --- the disclosures remember their state here; Privacy was left open last time.
-const stored = new Map([['bowser.settings.more', JSON.stringify(['privacy'])]]);
+const stored = new Map([['bowser.settings.more', JSON.stringify(['privacy'])], ['bowser.settings.view', 'all']]);
 globalThis.localStorage = { getItem: (k) => stored.get(k) ?? null, setItem: (k, v) => stored.set(k, String(v)), removeItem: (k) => stored.delete(k) };
 globalThis.Element = Node;
 globalThis.HTMLElement = Node;
@@ -428,8 +429,8 @@ test('the page renders landmarks, every section and row, and labelled controls',
   assert.ok(app.querySelector('[role="search"]'));
   // --- settings slim --- twelve areas in the nav, each holding the Rust sections it merges, then
   // "Not active yet" and one sub-page per big editor.
-  assert.equal(app.querySelectorAll('.sp-nav-item').length, 13); // --- page tools (T7) --- is an area of its own
-  assert.equal(app.querySelectorAll('section.sp-part').length, 18); // --- T10 --- Tab stacks, tiling and workspaces is a part of Tabs and start page
+  assert.equal(app.querySelectorAll('.sp-nav-item').length, logic.AREAS.length);
+  assert.equal(app.querySelectorAll('section.sp-part').length, 18); // every Rust section is still a part, grouped into fewer areas
   assert.deepEqual(app.querySelectorAll('section[data-area]').map((s) => s.dataset.area), [...logic.AREAS.map((a) => a.key), 'later']);
   assert.deepEqual(app.querySelectorAll('section.sp-page').map((s) => s.dataset.page).sort(), Object.keys(logic.PAGE_ROWS).sort());
   for (const section of app.querySelectorAll('section')) assert.ok(section.getAttribute('aria-labelledby') || section.getAttribute('aria-label'));
@@ -572,7 +573,7 @@ test('search hides what does not match and settingsgo moves without echoing', ()
   const input = app.querySelector('.sp-search-input');
   input.value = 'img';
   input.dispatch('input');
-  const shown = app.querySelectorAll('.sp-row').filter((row) => !row.hidden).map((row) => row.dataset.row);
+  const shown = app.querySelectorAll('.sp-row').filter((row) => !row.hidden && row.dataset.row).map((row) => row.dataset.row);
   assert.deepEqual(shown, ['searchDefault']);
   assert.ok(app.querySelector('mark'), 'the hit is marked');
   assert.equal(app.querySelector('.sp-sr').textContent, '1 setting found');
@@ -812,7 +813,7 @@ const press = (init) => captureHandlers.at(-1)({ key: '', code: '', ctrlKey: fal
 
 test('Keyboard and Quick commands are two sections whose controls land where Rust put them', () => {
   assert.ok(keyboard() && quick());
-  assert.deepEqual(app.querySelectorAll('.sp-nav-item').map((b) => b.dataset.section), ['profile', 'appearance', 'tabs', 'privacy', 'performance', 'pagetools', 'address', 'keyboard', 'downloads', 'media', 'extensions', 'updates', 'about']);
+  assert.deepEqual(app.querySelectorAll('.sp-nav-item').map((b) => b.dataset.section), logic.AREAS.map((area) => area.key));
   assert.deepEqual(keyboard().querySelectorAll('section.sp-part').map((s) => s.dataset.section), ['keyboard', 'commands']);
   assert.equal(kbPage().querySelector('.sp-kb').dataset.row, 'kbEditor');
   assert.equal(chainsPage().querySelector('.sp-chains').dataset.row, 'chains');
@@ -1396,6 +1397,7 @@ test('Search field, scoped nicknames and bookmark rows send their own keys; bar 
   assert.equal(headingOf('bmBarDisplay'), headingOf('bookmarksBar'), 'under the page\'s own Bookmarks bar heading');
   assert.equal(headingOf('bmBarDisplay'), 'Bookmarks bar');
   assert.equal(rowOf('bmBarFolder').querySelector('.bw-select-button') !== null, true);
+  assert.equal(rowOf('searchDefault').querySelector('.bw-select-value').textContent, 'DuckDuckGo', 'the default engine is DuckDuckGo, stored as optimised');
   // A bad snapshot is dropped and leaves the page as it was.
   deliver({ ...addressFixture.snap, d: { ...addressFixture.snap.d, def: 'gone' } });
   assert.equal(app.querySelectorAll('.ad-engine').length, 7);
@@ -1623,14 +1625,18 @@ test('slim: a deep link to a merged section lands in its area; areas name their 
   sent.length = 0;
   deliver({ v: 1, t: 'settingsgo', s: 'search' });
   assert.deepEqual(sent, []);
-  assert.equal(app.querySelector('.sp-nav-item[aria-current="true"]').dataset.section, 'address');
+  assert.equal(app.querySelector('.sp-nav-item[aria-current="true"]').dataset.section, 'profile');
   deliver({ v: 1, t: 'settingsgo', s: 'startpage' });
-  assert.equal(app.querySelector('.sp-nav-item[aria-current="true"]').dataset.section, 'tabs');
+  assert.equal(app.querySelector('.sp-nav-item[aria-current="true"]').dataset.section, 'profile');
+  deliver({ v: 1, t: 'settingsgo', s: 'performance' });
+  assert.equal(app.querySelector('.sp-nav-item[aria-current="true"]').dataset.section, 'privacy');
   for (const section of logic.SETTINGS_SECTIONS) assert.ok(logic.areaOf(section).parts.includes(section), section);
   assert.deepEqual(logic.AREAS.flatMap((a) => a.parts).sort(), [...logic.SETTINGS_SECTIONS].sort(), 'every Rust section is in exactly one area');
   // A merged area draws each part's core rows as one card under the part's own title.
   const parts = areaNode('address').querySelectorAll('section.sp-part').map((p) => p.querySelector('.sp-group-h').textContent);
-  assert.deepEqual(parts, ['Address bar', 'Search engine', 'Bookmarks']);
+  assert.deepEqual(parts, ['Address bar', 'Bookmarks', 'Page tools']);
+  const general = areaNode('profile').querySelectorAll('section.sp-part').map((p) => p.querySelector('.sp-group-h').textContent);
+  assert.deepEqual(general, ['Profile', 'Search', 'Start page', 'Downloads']);
 });
 
 test('slim: a row nobody placed defaults to More options, so new rows never lengthen the main view', () => {
@@ -1652,7 +1658,7 @@ test('stacks: one small block in Tabs and start page, two core rows, the rest be
   const part = tabsArea.querySelector('section.sp-part[data-section="stacks"]');
   assert.ok(part, 'a part of Tabs and start page, not an area of its own');
   assert.equal(app.querySelectorAll('.sp-nav-item').filter((b) => b.dataset.section === 'stacks').length, 0, 'no nav item of its own');
-  assert.equal(part.querySelector('.sp-group-h').textContent, 'Tab stacks, tiling and workspaces');
+  assert.equal(part.querySelector('.sp-group-h').textContent, 'Tab groups');
   const core = part.querySelectorAll('.sp-row').map((row) => row.dataset.row).filter((id) => id !== undefined);
   assert.deepEqual(core.filter((id) => id === 'tabs_stack_style' || id === 'tabs_workspaces'), ['tabs_stack_style', 'tabs_workspaces']);
   assert.ok(app.querySelector('[data-opens="workspaceRules"]'), 'the rules editor opens from one row');
@@ -1662,7 +1668,7 @@ test('stacks: one small block in Tabs and start page, two core rows, the rest be
     assert.equal(logic.ROWS.find((r) => r.id === id).section, 'stacks', id);
   }
   const headings = more.querySelectorAll('.sp-group-h').map((h) => h.textContent);
-  assert.ok(headings.includes('Tab stacks, tiling and workspaces'), 'under the block\'s own heading behind More options');
+  assert.ok(headings.includes('Tab groups'), 'under the block\'s own heading behind More options');
   // Every row acts: each switch, the style and the delay send exactly one tabopt.
   sent.length = 0;
   rowNode('tabs_stack_style').querySelectorAll('[role="radio"]')[1].click();
@@ -1812,6 +1818,20 @@ test('layout: presets choose a configuration, the edges derive from the tab layo
   assert.equal(L.tabLayoutForEdge('left', 'horizontal'), 'vertical');
   assert.equal(L.tabLayoutForEdge('right', 'horizontal'), 'vertical-right');
   assert.equal(L.tabLayoutForEdge('bottom', 'tabs-top'), 'bottom');
+  // A visible vertical tab bar puts the panel on the other edge. The saved choice is what a row uses.
+  assert.equal(L.effectiveSidePanelPosition('left', 'vertical', true), 'right');
+  assert.equal(L.effectiveSidePanelPosition('right', 'vertical', true), 'right');
+  assert.equal(L.effectiveSidePanelPosition('left', 'vertical-right', true), 'left');
+  assert.equal(L.effectiveSidePanelPosition('right', 'vertical-right', true), 'left');
+  assert.equal(L.effectiveSidePanelPosition('right', 'horizontal', true), 'right');
+  assert.equal(L.effectiveSidePanelPosition('left', 'bottom', true), 'left');
+  assert.equal(L.effectiveSidePanelPosition('left', 'vertical', false), 'left', 'a hidden tab bar keeps the saved edge');
+  assert.equal(L.effectiveSidePanelPosition('right', 'vertical-right', false), 'right');
+  assert.equal(L.panelEdgeNote('left', 'horizontal', true), '');
+  assert.equal(L.panelEdgeNote('left', 'vertical', true), 'Panels open on the right, opposite the vertical tabs. Left is kept for when the tab bar is a row.');
+  assert.equal(L.panelEdgeNote('right', 'vertical', true), 'Panels open on the right, opposite the vertical tabs.');
+  assert.equal(L.panelEdgeNote('right', 'vertical-right', true), 'Panels open on the left, opposite the vertical tabs. Right is kept for when the tab bar is a row.');
+  assert.equal(L.panelEdgeNote('left', 'vertical-right', false), '');
   // Saved: a change away from every preset is remembered; a preset pick leaves it alone.
   const draft = logic.draftOf(logic.parseSettingsSnapshot(fixture.snap.d));
   assert.equal(L.selectedTile(draft), null);
@@ -1845,6 +1865,12 @@ test('layout: the page shows the preset thumbnails and the three edges in view; 
   searchFor('');
   const presets = app.querySelector('.sp-tiles.is-presets');
   const tiles = presets.querySelectorAll('.sp-tile');
+  assert.equal(logic.ROWS.find((r) => r.id === 'layoutPreset').label, 'Presets');
+  assert.match(logic.ROWS.find((r) => r.id === 'layoutPreset').keywords, /\bpresets\b/);
+  assert.ok(logic.matchRows('presets').has('layoutPreset'));
+  assert.equal(rowNode('layoutPreset').querySelector('.sp-label').textContent, 'Presets');
+  assert.equal(presets.getAttribute('aria-label'), 'Presets');
+  assert.equal(rowNode('layoutPreset').parent.parent.querySelector('.sp-group-h').textContent, 'Layout', 'the card keeps its title');
   assert.deepEqual(tiles.map((tile) => tile.dataset.preset), ['simple', 'classic', 'vertical-left', 'vertical-right', 'bottom', 'saved']);
   assert.deepEqual(tiles.map((tile) => tile.querySelector('.sp-tile-name').textContent), ['Simple', 'Classic', 'Vertical left', 'Vertical right', 'Bottom', 'Saved']);
   assert.ok(tiles.every((tile) => tile.querySelector('svg')?.getAttribute('class') === 'sp-art'), 'every tile has a thumbnail in the layout-tile style');
@@ -1882,6 +1908,8 @@ test('layout: the page shows the preset thumbnails and the three edges in view; 
   assert.deepEqual(groups[0].querySelectorAll('[role="radio"]').map((b) => b.textContent), ['Top', 'Left', 'Right', 'Bottom']);
   assert.equal(groups[0].querySelector('[aria-checked="true"]').textContent, 'Top');
   assert.equal(groups[2].querySelector('[aria-checked="true"]').textContent, 'Left');
+  const panelHint = app.querySelector('.sp-panel-edge-hint');
+  assert.equal(panelHint.hidden, true, 'a row of tabs uses the saved panel edge, with no note');
   sent.length = 0;
   groups[0].querySelectorAll('[role="radio"]')[2].click();
   assert.match(sent[0].text, /^tab_layout=vertical-right\n/);
@@ -1891,6 +1919,9 @@ test('layout: the page shows the preset thumbnails and the three edges in view; 
   assert.equal(saved.disabled, false, 'the Saved tile has something to bring back');
   assert.equal(saved.getAttribute('aria-checked'), 'true');
   assert.equal(groups[0].querySelector('[aria-checked="true"]').textContent, 'Right');
+  assert.equal(groups[2].querySelector('[aria-checked="true"]').textContent, 'Left', 'the Panels control keeps the saved edge');
+  assert.equal(panelHint.hidden, false);
+  assert.match(panelHint.textContent, /open on the left/);
   assert.equal(rowNode('layout').querySelector('[aria-checked="true"]'), null, 'no top style while the tabs are on a side');
   // Address bar bottom, panels right: one key each.
   sent.length = 0;
@@ -1898,6 +1929,7 @@ test('layout: the page shows the preset thumbnails and the three edges in view; 
   assert.match(sent[0].text, /\naddress_bar_position=bottom\n/);
   groups[2].querySelectorAll('[role="radio"]')[1].click();
   assert.match(sent[1].text, /\nside_panel_position=right\n/);
+  assert.match(panelHint.textContent, /Right is kept/, 'the click is saved for a tab row; the live edge stays opposite the tabs');
   // Back to a preset through the Saved tile and the top-style tiles.
   deliver({ ...fixture.snap, d: { ...fixture.snap.d, layout: { ...fixture.snap.d.layout, saved: own }, ack: 'saved' } });
   sent.length = 0;
@@ -2194,4 +2226,70 @@ test('built-in Store and Settings share the trusted host without page navigation
   deliver({ v: 1, t: 'settingsgo', s: 'extensions' });
   assert.equal(app.querySelector('.sp').hidden, false);
   assert.equal(app.querySelector('.bs').hidden, true);
+});
+
+test('simple settings is the calm default, and All settings is one switch away', () => {
+  assert.equal(logic.readSettingsView(null), 'simple');
+  assert.equal(logic.readSettingsView(''), 'simple');
+  assert.equal(logic.readSettingsView('all'), 'all');
+  assert.equal(logic.readSettingsView('nope'), 'simple');
+  assert.equal(logic.simpleThemeChoice('system', 'light'), 'system');
+  assert.equal(logic.simpleThemeChoice('none', 'dark'), 'dark');
+  assert.equal(logic.simpleThemeChoice('none', 'light'), 'light');
+  assert.equal(logic.simpleThemeChoice('time', 'dark'), null, 'a time-of-day schedule is not pretended to be one of the three');
+  assert.equal(logic.simpleTabChoice('top'), 'top');
+  assert.equal(logic.simpleTabChoice('left'), 'side');
+  assert.equal(logic.simpleTabChoice('right'), 'side');
+  assert.equal(logic.simpleTabChoice('bottom'), null);
+  assert.deepEqual([...logic.SIMPLE_MOVED], ['searchDefault', 'startHomepage', 'startupMode', 'themeAccent', 'import', 'deleteData', 'defaultBrowser']);
+
+  deliver(fixture.snap);
+  searchFor('');
+  const view = () => app.querySelector('.sp-view').querySelectorAll('[role="radio"]');
+  assert.equal(app.querySelector('.sp-view').getAttribute('aria-label'), 'Settings view');
+  assert.deepEqual([...view()].map((button) => button.textContent), ['Simple', 'All settings']);
+  assert.equal(view()[1].getAttribute('aria-checked'), 'true', 'this fixture opens on All so the other tests see every section');
+  assert.equal(app.querySelector('.sp-simple').hidden, true);
+
+  view()[0].click();
+  assert.equal(stored.get('bowser.settings.view'), 'simple', 'the choice is remembered');
+  assert.equal(app.querySelector('.sp').classList.contains('is-simple'), true);
+  assert.equal(app.querySelector('.sp-simple').hidden, false);
+  assert.equal(app.querySelector('.sp-nav').hidden, true);
+  for (const area of logic.AREAS) assert.equal(areaNode(area.key).hidden, true, area.key);
+  assert.deepEqual(app.querySelector('.sp-simple').querySelectorAll('.sp-label').map((node) => node.textContent), [
+    'Search engine', 'Homepage', 'On startup', 'Theme', 'Accent colour', 'Tabs', 'Import bookmarks', 'Clear browsing data', 'Extensions', 'Default browser',
+  ]);
+  assert.equal(app.querySelector('.sp-show-all').textContent, logic.SIMPLE_ALL_LABEL);
+  const themeButtons = app.querySelector('[data-simple="simpleTheme"]').querySelectorAll('[role="radio"]');
+  assert.deepEqual([...themeButtons].map((button) => button.textContent), ['Light', 'Dark', 'System']);
+  assert.equal(themeButtons[2].getAttribute('aria-checked'), 'true', 'the fixture follows Windows');
+  sent.length = 0;
+  themeButtons[1].click();
+  assert.deepEqual(sent.map((message) => message.text), ['theme_schedule=none', 'theme_look=dark']);
+  sent.length = 0;
+  const tabButtons = app.querySelector('[data-simple="simpleTabs"]').querySelectorAll('[role="radio"]');
+  assert.deepEqual([...tabButtons].map((button) => button.textContent), ['Top', 'Side']);
+  tabButtons[1].click();
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].a, 'save');
+  assert.match(sent[0].text, /^tab_layout=vertical\n/);
+  // A search uses the full index, then clearing it returns to Simple.
+  searchFor('tracking prevention');
+  assert.equal(app.querySelector('.sp-simple').hidden, true);
+  assert.equal(app.querySelector('.sp-nav').hidden, false);
+  assert.equal(rowNode('tracking').hidden, false);
+  searchFor('');
+  assert.equal(app.querySelector('.sp-simple').hidden, false, 'clearing the search restores Simple');
+  assert.equal(app.querySelector('.sp-nav').hidden, true);
+  app.querySelector('.sp-show-all').click();
+  assert.equal(stored.get('bowser.settings.view'), 'all');
+  assert.equal(app.querySelector('.sp-simple').hidden, true);
+  assert.equal(app.querySelector('.sp-nav').hidden, false);
+  for (const area of logic.AREAS) assert.equal(areaNode(area.key).hidden, false, area.key);
+  assert.ok(areaNode('profile').contains(rowNode('searchDefault')), 'the search row is back in General');
+  assert.ok(areaNode('appearance').contains(rowNode('themeAccent')));
+  assert.ok(areaNode('privacy').contains(app.querySelector('[data-opens="deleteData"]')));
+  assert.ok(areaNode('about').contains(rowNode('defaultBrowser')));
+  deliver(fixture.snap);
 });

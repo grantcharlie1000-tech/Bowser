@@ -399,6 +399,66 @@ mod tests {
     }
 
     #[test]
+    fn every_title_bar_hidden_layout_keeps_the_caption_buttons_on_the_frame_hit() {
+        use crate::chrome::layout::{Arrangement, Hit, compute_arranged_in_frame};
+        use crate::layout_prefs::BarPosition;
+        use crate::settings::TabLayout;
+        let buttons = [Hit::CaptionMinimize, Hit::CaptionMaximize, Hit::CaptionClose];
+        let expect = [FrameHit::Minimize, FrameHit::Maximize, FrameHit::Close];
+        for tabs in TabLayout::ALL {
+            for address_bottom in [false, true] {
+                for tab_bar in [true, false] {
+                    let arrangement = Arrangement {
+                        tabs,
+                        tab_bar,
+                        address_bar: if address_bottom { BarPosition::Bottom } else { BarPosition::Top },
+                        address_bar_visible: true,
+                        title_bar: false,
+                        ..Arrangement::default()
+                    };
+                    let (layout, _sidebar) = compute_arranged_in_frame(
+                        arrangement, 1280, 800, 96, 4, 0, true, 260, true, 36,
+                    );
+                    let context = format!("{tabs:?} address_bottom {address_bottom} tab_bar {tab_bar}");
+                    let size = (layout.client.width(), layout.client.height());
+                    for (button, want) in buttons.into_iter().zip(expect) {
+                        let rect = layout.caption_button(button);
+                        let x = rect.left + rect.width() / 2;
+                        let y = rect.top + rect.height() / 2;
+                        assert_eq!(
+                            frame_hit_test(p(x, y), size, 96, true, ChromeHit::None),
+                            want,
+                            "{context} {button:?} center ({x},{y})"
+                        );
+                        // The resize sliver stays a grip when the window is restored. The button body does not.
+                        assert_eq!(
+                            frame_hit_test(p(x, 0), size, 96, false, ChromeHit::None),
+                            if x >= size.0 - 8 { FrameHit::TopRight } else { FrameHit::Top },
+                            "{context} the top edge of {button:?} still resizes"
+                        );
+                    }
+                }
+            }
+        }
+        // Auto-hide lays the page as if the top chrome were gone. On a maximised window that
+        // rectangle starts at y=0, so the page window covers the caption buttons the overlay paints.
+        let arrangement = Arrangement { title_bar: false, ..Arrangement::default() };
+        let (shown, _) = compute_arranged_in_frame(arrangement, 1280, 800, 96, 4, 0, true, 260, true, 36);
+        let page = crate::chrome::layout::auto_hide_arranged_viewport(
+            shown.viewport,
+            shown.client,
+            arrangement,
+            crate::chrome::layout::AutoHide { top: true, ..crate::chrome::layout::AutoHide::OFF },
+            96,
+            true,
+        );
+        let close = shown.caption_button(Hit::CaptionClose);
+        let (x, y) = (close.left + close.width() / 2, close.top + close.height() / 2);
+        assert!(page.contains(x, y), "the full-bleed page covers the close button ({x},{y}) in {page:?}");
+        assert_eq!(frame_hit_test(p(x, y), (1280, 800), 96, true, ChromeHit::None), FrameHit::Close);
+    }
+
+    #[test]
     fn maximised_windows_have_no_resize_grips_and_scaled_strip() {
         assert_eq!(
             frame_hit_test(p(0, 0), (1600, 900), 192, true, ChromeHit::None),
@@ -607,8 +667,18 @@ mod grip_and_gap_tests {
                         covered_edges[match hit { FrameHit::Left | FrameHit::TopLeft | FrameHit::BottomLeft => 0, FrameHit::Right | FrameHit::TopRight | FrameHit::BottomRight => 1, FrameHit::Top => 2, _ => 3 }] = true;
                     }
                 }
-                // The rail stands on the left edge and the page on the right one.
-                assert!(covered_edges[0] && covered_edges[1], "{context}: {covered_edges:?} {grips:?}");
+                // The rail stands on the left edge. The page stands on the right, except a right-hand
+                // vertical sidebar: its floating island stops short of the resize band, so the parent
+                // still owns that edge and no grip has to cover a host there.
+                if tabs == TabLayout::VerticalRight {
+                    assert!(covered_edges[0], "{context}: {covered_edges:?} {grips:?}");
+                    let x = size.0 - edge / 2;
+                    let y = size.1 / 2;
+                    assert!(is_resize(frame_hit_test_with(POINT { x, y }, size, dpi, false, ChromeHit::None, thin)), "{context}: the clear right edge still resizes");
+                    assert!(!hosts.iter().any(|h| inside(h, x, y)), "{context}: the island stays out of the right grip");
+                } else {
+                    assert!(covered_edges[0] && covered_edges[1], "{context}: {covered_edges:?} {grips:?}");
+                }
                 assert!(edge_grip_rects(size, dpi, true, thin, &hosts).is_empty(), "maximised: no grips");
             }
         }

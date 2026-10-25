@@ -7,6 +7,7 @@
 import { onInbound, send, sendPanel, type Inbound, type PanelFields, type SettingsSection } from './protocol';
 import { applyTheme } from './view';
 import { el, icon, type IconName } from './dom';
+import { attachSegmentThumb } from './segment-thumb';
 import { installTooltips } from './tooltip';
 import { selectField, type SelectField } from './panels/select';
 import { textButton, type PageSection } from './panels/kit';
@@ -29,7 +30,7 @@ import { parseCommandsSnapshot } from './commands-logic';
 // --- layout (thread T6) --- the Layout block's presets, edges and values
 import {
   BAR_POSITIONS, DEFAULT_LAYOUT_CONFIG, DEFAULT_UI_ZOOM, MAX_UI_ZOOM, MIN_UI_ZOOM, PRESETS, PRESET_HINTS, PRESET_LABELS, STATUS_BARS, STATUS_BAR_LABELS,
-  TAB_BAR_EDGES, TAB_BAR_EDGE_LABELS, TOP_TAB_STYLES, UI_DENSITIES, UI_ZOOM_STEP, applyLayoutConfig, parseLayoutConfig, parseUiZoom, presetConfig,
+  TAB_BAR_EDGES, TAB_BAR_EDGE_LABELS, TOP_TAB_STYLES, UI_DENSITIES, UI_ZOOM_STEP, applyLayoutConfig, panelEdgeNote, parseLayoutConfig, parseUiZoom, presetConfig,
   rememberOwnLayout, selectedTile, tabBarEdge, tabLayoutForEdge, uiZoomText, type BarPosition, type LayoutConfig, type Preset, type StatusBar,
   type TabBarEdge, type UiDensity,
 } from './layout-logic';
@@ -44,6 +45,7 @@ import {
   saveText, sleepOptions, translateTargetOptions, updateView, type BookmarksBarMode, type Draft, type EfficiencyMode, type FontSize, type RowSpec,
   type SettingsSnapshot, type SidePanelPosition, type TabLayout, type ThemeMode, type TrackingPrevention,
   AREAS, LATER_LABEL, LATER_LEAD, LATER_TITLE, MORE_LABEL, PAGE_ROWS, areaOf, moreCountText, partTitle, rowTier, type AreaSpec,
+  SETTINGS_VIEW_KEY, SIMPLE_ALL_LABEL, SIMPLE_LEAD, SIMPLE_MOVED, SIMPLE_TITLE, readSettingsView, simpleTabChoice, simpleThemeChoice, type SettingsView,
   AUTO_HIDE_BARS, AUTO_HIDE_BAR_LABELS, autoHideBarsList, autoHideBarsText, type AutoHideBar, // --- auto-hide (T11) ---
   addRuleText, removeRuleText, ruleExists, ruleSite as ruleSiteOf, type WorkspaceRules, // --- tab stacks (T10) ---
 } from './settings-page-logic';
@@ -66,7 +68,7 @@ const SVG_NS = 'http://www.w3.org/2000/svg';
 /** How long a Tabs number field waits after its last change before it saves. */
 const TAB_NUMBER_DEBOUNCE_MS = 400;
 const NAV_ICONS: Readonly<Record<SettingsSection, IconName>> = {
-  profile: 'person', appearance: 'sidebar', tabs: 'tab-switch', privacy: 'shield', performance: 'workspace-bolt',
+  profile: 'home', appearance: 'sidebar', tabs: 'tab-switch', privacy: 'shield', performance: 'workspace-bolt',
   search: 'search', keyboard: 'command', commands: 'quick-commands', downloads: 'folder-download', media: 'volume', extensions: 'puzzle', updates: 'download', about: 'info',
   startpage: 'home', // --- start page ---
   address: 'address-bar', bookmarks: 'bookmark', // --- wave-1 integration ---
@@ -144,7 +146,9 @@ function radioGroup<T extends string>(className: string, label: string, items: R
 }
 
 export function segmentedControl<T extends string>(label: string, options: ReadonlyArray<readonly [T, string]>, onSelect: (value: T) => void): Control<T | null> {
-  return radioGroup('bw-segmented sp-seg', label, options.map(([value, text]) => [value, (button: HTMLButtonElement) => { button.textContent = text; }] as const), onSelect);
+  const control = radioGroup('bw-segmented sp-seg', label, options.map(([value, text]) => [value, (button: HTMLButtonElement) => { button.textContent = text; }] as const), onSelect);
+  attachSegmentThumb(control.root);
+  return control;
 }
 
 /**
@@ -293,6 +297,16 @@ export function startSettingsPage(root: HTMLElement): void {
   const navList = el('ul', 'sp-nav-list');
   nav.append(indicator, navList);
   side.append(brand, search, nav);
+  // Simple is the view Settings opens on. All is one click away. The choice is remembered here, not in settings.txt.
+  let prefer: SettingsView = (() => { try { return readSettingsView(localStorage.getItem(SETTINGS_VIEW_KEY)); } catch { return 'simple'; } })();
+  /** A deep link to a section shows All for that visit without forgetting a saved Simple choice. */
+  let sectionHold = false;
+  const writeView = (value: SettingsView): void => { try { localStorage.setItem(SETTINGS_VIEW_KEY, value); } catch { /* this visit only */ } };
+  let chooseView: (value: SettingsView) => void = () => {};
+  const viewCtl = segmentedControl<SettingsView>('Settings view', [['simple', 'Simple'], ['all', 'All settings']], (value) => chooseView(value));
+  viewCtl.root.classList.add('sp-view');
+  viewCtl.set(prefer);
+  search.before(viewCtl.root);
 
   const main = el('main', 'sp-main bw-scroll');
   main.id = 'sp-main';
@@ -501,9 +515,10 @@ export function startSettingsPage(root: HTMLElement): void {
     button.append(layoutArt(key === 'saved' ? DEFAULT_LAYOUT_CONFIG : presetConfig(key)), name, hint);
     if (key === 'saved') savedTile = button;
   };
-  const presets = radioGroup<Preset | 'saved'>('sp-tiles is-presets', 'Layout', [...PRESETS, 'saved' as const].map((key) => [key, presetTile(key)] as const), (value) => change((d) => {
+  const presets = radioGroup<Preset | 'saved'>('sp-tiles is-presets', 'Presets', [...PRESETS, 'saved' as const].map((key) => [key, presetTile(key)] as const), (value) => change((d) => {
     const config = value === 'saved' ? parseLayoutConfig(d.layout.saved) : presetConfig(value);
     if (config) applyLayoutConfig(d, config);
+    paintPanelEdge(d);
   }));
   row(layoutCard, 'layoutPreset', presets.root, { stack: true });
   /** The Saved tile shows the saved arrangement, or stays dimmed until there is one. */
@@ -522,12 +537,22 @@ export function startSettingsPage(root: HTMLElement): void {
     box.append(text, control.root);
     bars.append(box);
   };
-  const tabEdge = segmentedControl<TabBarEdge>('Tab bar', TAB_BAR_EDGES.map((key) => [key, TAB_BAR_EDGE_LABELS[key]] as const), (value) => change((d) => { d.tabLayout = tabLayoutForEdge(value, d.tabLayout); rememberOwnLayout(d); }));
+  const tabEdge = segmentedControl<TabBarEdge>('Tab bar', TAB_BAR_EDGES.map((key) => [key, TAB_BAR_EDGE_LABELS[key]] as const), (value) => change((d) => { d.tabLayout = tabLayoutForEdge(value, d.tabLayout); rememberOwnLayout(d); paintPanelEdge(d); }));
   const addressEdge = segmentedControl<BarPosition>('Address bar', BAR_POSITIONS.map((key) => [key, key === 'top' ? 'Top' : 'Bottom'] as const), (value) => change((d) => { d.layout.addressBarPosition = value; rememberOwnLayout(d); }));
-  const panelEdge = segmentedControl<SidePanelPosition>('Panels', SIDE_PANEL_POSITIONS.map((key) => [key, key === 'left' ? 'Left' : 'Right'] as const), (value) => change((d) => { d.sidePanelPosition = value; rememberOwnLayout(d); }));
+  const panelEdge = segmentedControl<SidePanelPosition>('Panels', SIDE_PANEL_POSITIONS.map((key) => [key, key === 'left' ? 'Left' : 'Right'] as const), (value) => change((d) => { d.sidePanelPosition = value; rememberOwnLayout(d); paintPanelEdge(d); }));
+  const panelHint = el('span', 'sp-bar-label sp-panel-edge-hint');
+  panelHint.id = 'sp-panel-edge-hint';
+  panelHint.hidden = true;
   barGroup('Tab bar', tabEdge);
   barGroup('Address bar', addressEdge);
   barGroup('Panels', panelEdge);
+  bars.lastElementChild?.append(panelHint);
+  /** The Panels control keeps the saved edge. The note says where a vertical tab bar actually puts the panel. */
+  function paintPanelEdge(d: Draft): void {
+    const note = panelEdgeNote(d.sidePanelPosition, d.tabLayout, d.layout.tabBarVisible);
+    panelHint.hidden = note === '';
+    panelHint.textContent = note;
+  }
   row(layoutCard, 'layoutBars', bars, { stack: true });
   const layout = radioGroup<TabLayout>('sp-tiles', 'Tab bar style at the top', TOP_TAB_STYLES.map((key) => [key, (button: HTMLButtonElement) => {
     button.className = 'sp-tile';
@@ -536,7 +561,7 @@ export function startSettingsPage(root: HTMLElement): void {
     const hint = el('span', 'sp-tile-hint');
     hint.textContent = LAYOUT_HINTS[key];
     button.append(layoutArt(key), name, hint);
-  }] as const), (value) => change((d) => { d.tabLayout = value; rememberOwnLayout(d); }));
+  }] as const), (value) => change((d) => { d.tabLayout = value; rememberOwnLayout(d); paintPanelEdge(d); }));
   row(layoutCard, 'layout', layout.root, { stack: true });
   // --- end layout --- (the rest of the block follows the sidebar width row)
   const width = el('input', 'sp-range');
@@ -558,7 +583,7 @@ export function startSettingsPage(root: HTMLElement): void {
   const pinStrip = switchControl((on) => change((d) => { d.sidebarPinned = on; }));
   row(layoutCard, 'sidebarPinned', pinStrip.root);
   // --- layout (thread T6) --- the rest of the Layout block
-  const tabBarVisible = switchControl((on) => change((d) => { d.layout.tabBarVisible = on; rememberOwnLayout(d); }));
+  const tabBarVisible = switchControl((on) => change((d) => { d.layout.tabBarVisible = on; rememberOwnLayout(d); paintPanelEdge(d); }));
   row(layoutCard, 'tabBarVisible', tabBarVisible.root);
   const addressBarVisible = switchControl((on) => change((d) => { d.layout.addressBarVisible = on; rememberOwnLayout(d); }));
   row(layoutCard, 'addressBarVisible', addressBarVisible.root);
@@ -1462,6 +1487,7 @@ export function startSettingsPage(root: HTMLElement): void {
     page.classList.remove('is-sub');
     shown.root.hidden = true;
     for (const node of [...areaNodes.values(), laterNode]) node.hidden = false;
+    syncSimple();
     const opener = openers.get(shown.id);
     if (opener && refocus) {
       opener.root.scrollIntoView({ block: 'center' });
@@ -1476,7 +1502,9 @@ export function startSettingsPage(root: HTMLElement): void {
     if (openPage && openPage !== sub) openPage.root.hidden = true;
     openPage = sub;
     page.classList.add('is-sub');
+    syncSimple();
     for (const node of [...areaNodes.values(), laterNode]) node.hidden = true;
+    simpleNode.hidden = true;
     empty.hidden = true;
     sub.root.hidden = false;
     main.scrollTop = 0;
@@ -1640,6 +1668,106 @@ export function startSettingsPage(root: HTMLElement): void {
   };
   arrange();
 
+  // ---- Simple settings: one calm page of the rows people actually change, plus three friendly controls ----
+  const simpleNode = el('section', 'sp-sec sp-simple');
+  const simpleHeading = el('h2', 'sp-h');
+  simpleHeading.id = 'sp-h-simple';
+  simpleHeading.tabIndex = -1;
+  simpleHeading.textContent = SIMPLE_TITLE;
+  simpleNode.setAttribute('aria-labelledby', simpleHeading.id);
+  const simpleLead = el('p', 'sp-lead');
+  simpleLead.textContent = SIMPLE_LEAD;
+  const simpleCard = el('div', 'sp-card');
+  simpleCard.setAttribute('role', 'group');
+  simpleCard.setAttribute('aria-label', 'Simple settings');
+  const simpleTheme = segmentedControl<'light' | 'dark' | 'system'>('Theme', [['light', 'Light'], ['dark', 'Dark'], ['system', 'System']], (value) => {
+    if (value === 'system') sendThemeOption('theme_schedule', 'system');
+    else { sendThemeOption('theme_schedule', 'none'); sendThemeOption('theme_look', value); }
+  });
+  const simpleTabs = segmentedControl<'top' | 'side'>('Tabs', [['top', 'Top'], ['side', 'Side']], (value) => change((d) => {
+    const edge = tabBarEdge(d.tabLayout);
+    if (value === 'side') { if (edge === 'left' || edge === 'right') return; applyLayoutConfig(d, presetConfig('vertical-left')); }
+    else if (edge !== 'top') applyLayoutConfig(d, presetConfig('classic'));
+  }));
+  const simpleExtensions = textButton('Manage', () => { prefer = 'all'; sectionHold = false; writeView('all'); go('extensions', true, true); });
+  const showAll = textButton(SIMPLE_ALL_LABEL, () => chooseView('all'), { primary: true });
+  showAll.classList.add('sp-show-all');
+  const simpleRow = (id: string, label: string, description: string, control: HTMLElement): HTMLElement => {
+    const node = el('div', 'sp-row');
+    node.dataset.simple = id;
+    const text = el('div', 'sp-text');
+    const labelNode = el('span', 'sp-label');
+    labelNode.id = `sp-l-${id}`;
+    labelNode.textContent = label;
+    const desc = el('span', 'sp-desc');
+    desc.id = `sp-d-${id}`;
+    desc.textContent = description;
+    text.append(labelNode, desc);
+    if (!control.hasAttribute('aria-label') && !control.hasAttribute('aria-labelledby')) control.setAttribute('aria-labelledby', labelNode.id);
+    const wrap = el('div', 'sp-ctl');
+    wrap.append(control);
+    node.append(text, wrap);
+    return node;
+  };
+  const themeSlot = simpleRow('simpleTheme', 'Theme', 'Light, dark, or the same as Windows.', simpleTheme.root);
+  const tabsSlot = simpleRow('simpleTabs', 'Tabs', 'Across the top, or down the side.', simpleTabs.root);
+  const extensionsSlot = simpleRow('simpleExtensions', 'Extensions', 'Turn add-ons on or off.', simpleExtensions);
+  const simpleExtras = new Map<string, HTMLElement>([['simpleTheme', themeSlot], ['simpleTabs', tabsSlot], ['simpleExtensions', extensionsSlot]]);
+  const simpleOrder = ['searchDefault', 'startHomepage', 'startupMode', 'simpleTheme', 'themeAccent', 'simpleTabs', 'import', 'deleteData', 'simpleExtensions', 'defaultBrowser'];
+  const simpleSlots: ReadonlyArray<{ readonly id: string; readonly moved: boolean; readonly el?: HTMLElement }> = simpleOrder.map((id) => {
+    const extra = simpleExtras.get(id);
+    return extra ? { id, moved: false, el: extra } : { id, moved: (SIMPLE_MOVED as readonly string[]).includes(id) };
+  });
+  simpleNode.append(simpleHeading, simpleLead, simpleCard, showAll);
+  column.append(simpleNode);
+  const parks = new Map<string, HTMLElement>();
+  const movedNode = (id: string): HTMLElement | null => id === 'deleteData' ? openers.get(id)?.root ?? null : rows.get(id)?.root ?? null;
+  const park = (id: string, node: HTMLElement): void => {
+    if (parks.has(id)) return;
+    const marker = el('span', 'sp-park');
+    marker.hidden = true;
+    marker.dataset.park = id;
+    node.replaceWith(marker);
+    parks.set(id, marker);
+  };
+  const held = (node: HTMLElement): boolean => {
+    const host = node.parentElement ?? node.parentNode ?? (node as unknown as { parent?: unknown }).parent ?? null;
+    return host !== null;
+  };
+  const unpark = (id: string, node: HTMLElement): void => {
+    const marker = parks.get(id);
+    if (!marker || !held(marker)) return;
+    marker.replaceWith(node);
+    parks.delete(id);
+  };
+  const simpleOn = (): boolean => prefer === 'simple' && query === '' && openPage === null && !sectionHold;
+  const syncSimple = (): void => {
+    const on = simpleOn();
+    page.classList.toggle('is-simple', on);
+    simpleNode.hidden = !on;
+    // The switch matches the page on screen: search results and a deep link show All until Simple is chosen again.
+    viewCtl.set(on ? 'simple' : 'all');
+    if (on) {
+      for (const slot of simpleSlots) {
+        const node = slot.moved ? movedNode(slot.id) : slot.el ?? null;
+        if (!node) continue;
+        if (slot.moved) park(slot.id, node);
+        simpleCard.append(node);
+      }
+      for (const node of areaNodes.values()) node.hidden = true;
+      laterNode.hidden = true;
+      empty.hidden = true;
+      nav.hidden = true;
+    } else {
+      for (const slot of simpleSlots) {
+        if (!slot.moved || !parks.has(slot.id)) continue;
+        const node = movedNode(slot.id);
+        if (node) unpark(slot.id, node);
+      }
+      nav.hidden = false;
+    }
+  };
+
   /** Rows Bowser does not act on yet keep their saved value but never look like a control that works. */
   const lockLater = (): void => {
     for (const [id, place] of places) {
@@ -1665,6 +1793,7 @@ export function startSettingsPage(root: HTMLElement): void {
     tabEdge.set(tabBarEdge(d.tabLayout));
     addressEdge.set(d.layout.addressBarPosition);
     panelEdge.set(d.sidePanelPosition);
+    paintPanelEdge(d);
     layout.set((TOP_TAB_STYLES as readonly string[]).includes(d.tabLayout) ? d.tabLayout : null);
     tabBarVisible.set(d.layout.tabBarVisible);
     addressBarVisible.set(d.layout.addressBarVisible);
@@ -1789,6 +1918,11 @@ export function startSettingsPage(root: HTMLElement): void {
     uiFont.disabled = !s.readable;
     zoomInput.disabled = !s.readable;
     startSection.apply(d.start, s.readable); // --- start page ---
+    simpleTheme.set(simpleThemeChoice(String(s.themeOptions.theme_schedule), String(s.themeOptions.theme_look)));
+    simpleTheme.disable(!s.readable);
+    simpleTabs.set(simpleTabChoice(tabBarEdge(d.tabLayout)));
+    simpleTabs.disable(!s.readable);
+    simpleExtensions.disabled = false;
     lockLater(); // --- settings slim ---
     if (query !== '') filter();
   };
@@ -1843,6 +1977,7 @@ export function startSettingsPage(root: HTMLElement): void {
 
   /** Shows `key`; `tell` reports it to Bowser (the tab's address follows), `smooth` animates. */
   const go = (key: SettingsSection | '', smooth: boolean, tell: boolean): void => {
+    sectionHold = key !== '' && prefer === 'simple';
     closePage(false);
     if (query !== '') { input.value = ''; query = ''; filter(); }
     const area = key === '' ? AREAS[0]! : areaOf(key);
@@ -1949,7 +2084,20 @@ export function startSettingsPage(root: HTMLElement): void {
       const first = AREAS.find((spec) => !areaNodes.get(spec.key)?.hidden);
       if (first && first.key !== current) { current = first.key; paintNav(); }
     }
+    syncSimple();
+    paintGroups();
   }
+  chooseView = (value: SettingsView): void => {
+    prefer = value;
+    sectionHold = false;
+    writeView(value);
+    if (query !== '') { input.value = ''; query = ''; }
+    if (openPage) closePage(false);
+    else filter();
+    main.scrollTop = 0;
+    if (value === 'all') { current = AREAS[0]!.key; paintNav(); }
+  };
+  syncSimple();
   paintGroups();
   input.addEventListener('input', () => { query = input.value; filter(); });
   input.addEventListener('keydown', (event) => {

@@ -66,7 +66,7 @@ body.bw-hover-body {
 }
 
 .bw-card { width: 260px; }
-.bw-island-menu { width: 280px; gap: 8px; }
+.bw-island-menu { width: 260px; gap: 10px; padding: 12px; border-radius: var(--bw-r-float); }
 
 .bw-card button,
 .bw-island-menu button {
@@ -272,9 +272,9 @@ body.bw-hover-body {
   position: relative;
   display: flex;
   align-items: center;
-  height: 28px;
-  border-radius: var(--bw-r-control);
-  background: var(--bw-fill);
+  height: 32px;
+  border-radius: var(--bw-r-pill);
+  background: color-mix(in srgb, var(--bw-text) 6%, transparent);
   box-shadow: inset 0 0 0 1px var(--bw-hairline);
 }
 
@@ -317,27 +317,46 @@ body.bw-hover-body {
 
 .bw-island-swatches {
   display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
+  flex-wrap: nowrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--bw-space-1);
 }
 
 .bw-island-swatch {
-  width: 20px;
-  height: 20px;
+  width: 18px;
+  height: 18px;
+  flex: none;
   border-radius: 50%;
   background: var(--hover-swatch, var(--bw-accent)) !important;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--bw-text) 22%, transparent);
 }
 
-.bw-island-swatch.is-selected {
-  box-shadow: 0 0 0 2px var(--bw-overlay), 0 0 0 4px var(--bw-text);
+.bw-island-swatch:hover {
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--bw-text) 22%, transparent),
+    0 0 0 2px color-mix(in srgb, var(--bw-text) 18%, transparent);
 }
+
+.bw-island-swatch.is-selected,
+.bw-island-swatch.is-selected:hover {
+  box-shadow: 0 0 0 2px var(--bw-window-opaque), 0 0 0 3px var(--bw-text);
+}
+
+.bw-island-row:hover { background: var(--bw-hover); }
 
 .bw-island-close {
-  height: 30px;
+  height: 28px;
   width: 100%;
-  border-radius: var(--bw-r-control);
-  background: var(--bw-hover) !important;
+  border-radius: var(--bw-r-pill);
+  background: transparent !important;
+  color: var(--bw-text-dim);
   text-align: center;
+}
+
+.bw-island-close:hover {
+  background: var(--bw-hover) !important;
+  color: var(--bw-text);
 }
 
 @media (prefers-reduced-motion: reduce) {
