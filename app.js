@@ -4,8 +4,8 @@
   var mock = document.querySelector("[data-mock]");
   var win = mock.querySelector("[data-window]");
   var rail = mock.querySelector("[data-rail]");
-  var flyout = mock.querySelector("[data-flyout]");
   var pill = mock.querySelector("[data-pill]");
+  var omni = pill.querySelector(".bw-omni");
   var note = mock.querySelector("[data-layout-note]");
   var addButton = mock.querySelector("[data-add]");
   var addResult = mock.querySelector("[data-add-result]");
@@ -13,11 +13,11 @@
   var pills = {
     search: "html.duckduckgo.com/html/?q=windows+browser&k1=-1",
     extensions: "chromewebstore.google.com/detail/…",
-    start: "Search or enter an address"
+    start: "Search or enter address"
   };
   var notes = {
-    horizontal: "Rounded tabs and a centred address pill. This is the quiet, Safari-style bar.",
-    vertical: "Hover the icon rail. Titles open over the page. That hover rail is pull request 96, not the current release."
+    horizontal: "Toolbar above the tabs. That is the default horizontal layout in the source.",
+    vertical: "Collapsed rail is 48px. Rest on it and the titles open over the page. That rail is on main, not in the v0.0.23 download."
   };
 
   function appliedTheme() {
@@ -53,9 +53,9 @@
     mock.querySelectorAll("[data-show]").forEach(function (button) {
       var on = button.getAttribute("data-show") === name;
       if (button.getAttribute("role") === "tab") button.setAttribute("aria-selected", on ? "true" : "false");
-      button.classList.toggle("is-on", on);
+      button.classList.toggle("is-on", on && !button.classList.contains("bw-new"));
     });
-    pill.textContent = pills[name] || "";
+    omni.textContent = pills[name] || "";
     pill.classList.toggle("is-empty", name === "start");
   }
 
@@ -86,28 +86,13 @@
     if (win.getAttribute("data-layout") !== "vertical") open = false;
     win.classList.toggle("is-rail-open", open);
     rail.setAttribute("aria-expanded", open ? "true" : "false");
-    flyout.inert = !open;
-  }
-
-  function insideRail(node) {
-    return node && (rail.contains(node) || flyout.contains(node));
   }
 
   rail.addEventListener("pointerenter", function () { setRail(true); });
-  flyout.addEventListener("pointerenter", function () { setRail(true); });
-  rail.addEventListener("pointerleave", function (event) {
-    if (!insideRail(event.relatedTarget)) setRail(false);
-  });
-  flyout.addEventListener("pointerleave", function (event) {
-    if (!insideRail(event.relatedTarget)) setRail(false);
-  });
+  rail.addEventListener("pointerleave", function () { setRail(false); });
   rail.addEventListener("focusin", function () { setRail(true); });
-  flyout.addEventListener("focusin", function () { setRail(true); });
   rail.addEventListener("focusout", function (event) {
-    if (!insideRail(event.relatedTarget)) setRail(false);
-  });
-  flyout.addEventListener("focusout", function (event) {
-    if (!insideRail(event.relatedTarget)) setRail(false);
+    if (!rail.contains(event.relatedTarget)) setRail(false);
   });
   rail.addEventListener("click", function () {
     if (window.matchMedia("(hover: none)").matches) {
