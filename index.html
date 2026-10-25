@@ -3,14 +3,14 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>Bowser — Chrome ships an engine. Bowser doesn't.</title>
-<meta name="description" content="Bowser is Charlie's open-source browser for 64-bit Windows. It draws pages with WebView2, searches with DuckDuckGo advertising turned off, and publishes free builds on GitHub.">
+<title>Bowser — a lighter browser for Windows</title>
+<meta name="description" content="A lighter browser for Windows. Free and open source, with search ads off.">
 <link rel="canonical" href="https://grantcharlie1000-tech.github.io/Bowser/">
 <meta name="color-scheme" content="light dark">
 <meta name="theme-color" content="#f3f2ee" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#121211" media="(prefers-color-scheme: dark)">
-<meta property="og:title" content="Bowser — a small, open-source Windows browser">
-<meta property="og:description" content="No rendering engine in the download. DuckDuckGo with advertising turned off, by default. Free on GitHub.">
+<meta property="og:title" content="Bowser — a lighter browser for Windows">
+<meta property="og:description" content="Free and open source, with search ads off.">
 <meta property="og:type" content="website">
 <meta property="og:url" content="https://grantcharlie1000-tech.github.io/Bowser/">
 <link rel="icon" type="image/png" href="img/bowser-icon.png">
@@ -34,7 +34,6 @@ try {
     <nav class="nav" aria-label="Page">
       <a href="#window">Window</a>
       <a href="#features">Features</a>
-      <a href="#why">Why</a>
       <a href="#questions">Questions</a>
     </nav>
     <div class="bar-actions">
@@ -47,22 +46,20 @@ try {
 <main id="content">
   <section class="hero" id="top">
     <div class="wrap hero-copy">
+      <p class="h1-lead">A lighter browser for Windows.</p>
       <h1>
-        <span class="sr">Chrome, Edge and Firefox ship an engine. Bowser doesn't.</span>
+        <span class="sr">Lighter than Chrome, Edge and Firefox.</span>
         <span class="cycle" aria-hidden="true">
-          <span class="cycle-line">Chrome ships an engine.</span>
-          <span class="cycle-line">Edge ships an engine.</span>
-          <span class="cycle-line">Firefox ships an engine.</span>
+          <span class="cycle-line">Lighter than Chrome.</span>
+          <span class="cycle-line">Lighter than Edge.</span>
+          <span class="cycle-line">Lighter than Firefox.</span>
         </span>
-        <span class="cycle-still" aria-hidden="true">Chrome, Edge and Firefox ship an engine.</span>
-        <span class="h1-rest">Bowser doesn't.</span>
+        <span class="cycle-still" aria-hidden="true">Lighter than Chrome, Edge and Firefox.</span>
       </h1>
-      <p class="lede">Bowser is an open-source browser for 64-bit Windows, written by Charlie. Pages are drawn with WebView2, the runtime Windows already shares with Edge. A new search uses DuckDuckGo's HTML results, with advertising turned off.</p>
+      <p class="lede">Free and open source, with search ads off.</p>
       <div class="actions">
-        <a class="button primary" href="https://github.com/grantcharlie1000-tech/Bowser/releases">Download on GitHub</a>
-        <a class="button ghost" href="https://github.com/grantcharlie1000-tech/Bowser">Read the source</a>
+        <a class="button primary" href="https://github.com/grantcharlie1000-tech/Bowser/releases">Download</a>
       </div>
-      <p class="fine">The button opens the releases page. On 25 October 2026 the latest published build is v0.0.23, and that Bowser.exe is 8,409,600 bytes. The rendering engine is not in the file.</p>
     </div>
 
     <div class="wrap">
@@ -137,210 +134,223 @@ try {
   <section class="band" id="window">
     <div class="wrap">
       <div class="section-head">
-        <h2>The window, instead of a stock photo</h2>
-        <p>The mock is drawn from Bowser's UI source: toolbar height, pill, tab islands and the vertical rail. The pictures beside it are screenshots from the repository. Nothing here loads a site.</p>
+        <h2>The window</h2>
       </div>
-
-      <div class="matchup">
-      <div class="stage" data-mock>
-        <div class="stage-bar">
-          <div class="seg" role="group" aria-label="Tab placement in the mock">
-            <button type="button" data-layout-btn="horizontal" aria-pressed="true">Toolbar above tabs</button>
-            <button type="button" data-layout-btn="vertical" aria-pressed="false">Vertical rail</button>
-          </div>
-          <p class="stage-note" data-layout-note>Toolbar above the tabs. That is the default horizontal layout in the source.</p>
-        </div>
-
-        <div class="bw" data-window data-layout="horizontal">
-          <div class="bw-rail" data-rail aria-expanded="false">
-            <div class="bw-rail-list">
-              <button type="button" class="bw-row" data-show="start">
-                <img class="bw-fav" src="img/bowser-icon.png" width="16" height="16" alt="">
-                <span class="bw-label">New tab</span>
-              </button>
-              <button type="button" class="bw-row is-on" data-show="search">
-                <span class="bw-fav bw-fav-ddg" aria-hidden="true"></span>
-                <span class="bw-label">Search</span>
-              </button>
-              <button type="button" class="bw-row" data-show="extensions">
-                <span class="bw-fav bw-fav-ext" aria-hidden="true"></span>
-                <span class="bw-label">Extensions</span>
-              </button>
-            </div>
-            <button type="button" class="bw-row bw-new" data-show="start">
-              <svg class="bw-ico" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M12 4v16M4 12h16" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" vector-effect="non-scaling-stroke"/></svg>
-              <span class="bw-label">New tab</span>
-            </button>
-          </div>
-
-          <div class="bw-main">
-            <div class="bw-toolbar" aria-hidden="true">
-              <div class="bw-nav">
-                <div class="bw-nav-group">
-                  <span class="bw-icon"><svg class="bw-ico" viewBox="0 0 24 24" width="16" height="16"><path d="M20 12H4m6-6-6 6 6 6" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke"/></svg></span>
-                  <span class="bw-icon"><svg class="bw-ico" viewBox="0 0 24 24" width="16" height="16"><path d="M4 12h16m-6-6 6 6-6 6" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke"/></svg></span>
+      <div class="shots">
+        <figure class="shot shot-wide">
+          <figcaption>Tabs</figcaption>
+          <div class="bw bw-light">
+            <div class="bw-main">
+              <div class="bw-toolbar" aria-hidden="true">
+                <div class="bw-nav">
+                  <div class="bw-nav-group">
+                    <span class="bw-icon"><svg class="bw-ico" viewBox="0 0 24 24" width="16" height="16"><path d="M20 12H4m6-6-6 6 6 6" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke"/></svg></span>
+                    <span class="bw-icon"><svg class="bw-ico" viewBox="0 0 24 24" width="16" height="16"><path d="M4 12h16m-6-6 6 6-6 6" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke"/></svg></span>
+                  </div>
+                  <span class="bw-icon"><svg class="bw-ico" viewBox="0 0 24 24" width="16" height="16"><path d="M20 12A8 8 0 1 1 19 8M19 3v5h-5" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke"/></svg></span>
                 </div>
-                <span class="bw-icon"><svg class="bw-ico" viewBox="0 0 24 24" width="16" height="16"><path d="M20 12A8 8 0 1 1 19 8M19 3v5h-5" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke"/></svg></span>
+                <div class="bw-pill">
+                  <svg class="bw-ico" viewBox="0 0 24 24" width="16" height="16"><rect x="4" y="10" width="16" height="11" rx="2" fill="none" stroke="currentColor" stroke-width="1.25" vector-effect="non-scaling-stroke"/><path d="M7 10V7.5a5 5 0 0 1 10 0V10" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" vector-effect="non-scaling-stroke"/></svg>
+                  <span class="bw-omni">html.duckduckgo.com</span>
+                </div>
+                <span class="bw-icon bw-menu"><svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true"><circle cx="4" cy="12" r="2" fill="currentColor"/><circle cx="12" cy="12" r="2" fill="currentColor"/><circle cx="20" cy="12" r="2" fill="currentColor"/></svg></span>
               </div>
-              <div class="bw-pill" data-pill>
-                <svg class="bw-ico" viewBox="0 0 24 24" width="16" height="16"><rect x="4" y="10" width="16" height="11" rx="2" fill="none" stroke="currentColor" stroke-width="1.25" vector-effect="non-scaling-stroke"/><path d="M7 10V7.5a5 5 0 0 1 10 0V10" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" vector-effect="non-scaling-stroke"/></svg>
-                <span class="bw-omni">html.duckduckgo.com/html/?q=windows+browser&amp;k1=-1</span>
+              <div class="bw-strip">
+                <div class="bw-tab"><img class="bw-fav" src="img/bowser-icon.png" width="16" height="16" alt=""><span>New tab</span></div>
+                <div class="bw-tab" aria-selected="true"><span class="bw-fav bw-fav-ddg"></span><span>Search</span></div>
+                <div class="bw-tab"><span class="bw-fav bw-fav-gh"></span><span>GitHub</span></div>
               </div>
-              <span class="bw-icon bw-menu"><svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true"><circle cx="4" cy="12" r="2" fill="currentColor"/><circle cx="12" cy="12" r="2" fill="currentColor"/><circle cx="20" cy="12" r="2" fill="currentColor"/></svg></span>
-            </div>
-            <div class="bw-strip" role="tablist" aria-label="Mock tabs">
-              <button type="button" role="tab" class="bw-tab" data-show="start" aria-selected="false"><img class="bw-fav" src="img/bowser-icon.png" width="16" height="16" alt=""><span>New tab</span><svg class="bw-x" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" vector-effect="non-scaling-stroke"/></svg></button>
-              <button type="button" role="tab" class="bw-tab" data-show="search" aria-selected="true"><span class="bw-fav bw-fav-ddg" aria-hidden="true"></span><span>Search</span><svg class="bw-x" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" vector-effect="non-scaling-stroke"/></svg></button>
-              <button type="button" role="tab" class="bw-tab" data-show="extensions" aria-selected="false"><span class="bw-fav bw-fav-ext" aria-hidden="true"></span><span>Extensions</span><svg class="bw-x" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" vector-effect="non-scaling-stroke"/></svg></button>
-            </div>
-            <div class="bw-page">
-              <div data-view="search">
-                <p class="page-flag">Advertising off · a mock, not a live search</p>
+              <div class="bw-page">
+                <p class="crumb">html.duckduckgo.com</p>
                 <h3 class="query">windows browser</h3>
                 <ul class="results">
-                  <li>
-                    <span>github.com/grantcharlie1000-tech/Bowser</span>
-                    <strong>Bowser</strong>
-                    <p>The public repository. The release you download is built from this.</p>
-                  </li>
-                  <li>
-                    <span>developer.microsoft.com</span>
-                    <strong>Evergreen WebView2 Runtime</strong>
-                    <p>The shared runtime Bowser draws pages with. Current Edge already includes it.</p>
-                  </li>
-                  <li>
-                    <span>html.duckduckgo.com</span>
-                    <strong>DuckDuckGo HTML</strong>
-                    <p>The page the default web search opens, with the advertising parameter off.</p>
-                  </li>
+                  <li><strong>Bowser</strong><span>github.com</span></li>
+                  <li><strong>GitHub</strong><span>github.com</span></li>
+                  <li><strong>Windows</strong><span>microsoft.com</span></li>
                 </ul>
               </div>
-              <div data-view="extensions" hidden>
-                <p class="page-flag">Mock of a store listing</p>
-                <div class="store-row">
-                  <span class="store-mark" aria-hidden="true"></span>
-                  <div>
-                    <strong>An extension listing</strong>
-                    <p>Bowser's own button is Add to Bowser. Chrome's Add button does not install into Bowser.</p>
-                  </div>
+            </div>
+          </div>
+        </figure>
+
+        <figure class="shot shot-vert">
+          <figcaption>Vertical tabs</figcaption>
+          <div class="bw bw-light" data-layout="vertical" data-rail-demo>
+            <div class="bw-rail" data-rail aria-expanded="false">
+              <div class="bw-rail-list">
+                <div class="bw-row">
+                  <img class="bw-fav" src="img/bowser-icon.png" width="16" height="16" alt="">
+                  <span class="bw-label">New tab</span>
                 </div>
-                <div class="store-actions">
-                  <button type="button" class="button primary thin" data-add>Add to Bowser</button>
-                  <button type="button" class="button ghost thin" disabled>Add to Chrome</button>
+                <div class="bw-row is-on">
+                  <span class="bw-fav bw-fav-ddg"></span>
+                  <span class="bw-label">Search</span>
                 </div>
-                <p class="add-result" data-add-result hidden>In the real browser this asks you to confirm permissions, then loads the extension. A loaded extension is not a promise that every Chrome API works.</p>
+                <div class="bw-row">
+                  <span class="bw-fav bw-fav-gh"></span>
+                  <span class="bw-label">GitHub</span>
+                </div>
               </div>
-              <div data-view="start" hidden>
-                <div class="blank">
-                  <img src="img/bowser-icon.png" width="56" height="56" alt="">
-                  <p>The window opens empty. The address field is focused. WebView2 starts when you begin typing, and nothing is requested until you press Enter.</p>
+              <div class="bw-row bw-new">
+                <svg class="bw-ico" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M12 4v16M4 12h16" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" vector-effect="non-scaling-stroke"/></svg>
+                <span class="bw-label">New tab</span>
+              </div>
+            </div>
+            <div class="bw-main">
+              <div class="bw-toolbar" aria-hidden="true">
+                <div class="bw-nav">
+                  <div class="bw-nav-group">
+                    <span class="bw-icon"><svg class="bw-ico" viewBox="0 0 24 24" width="16" height="16"><path d="M20 12H4m6-6-6 6 6 6" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke"/></svg></span>
+                    <span class="bw-icon"><svg class="bw-ico" viewBox="0 0 24 24" width="16" height="16"><path d="M4 12h16m-6-6 6 6-6 6" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke"/></svg></span>
+                  </div>
+                  <span class="bw-icon"><svg class="bw-ico" viewBox="0 0 24 24" width="16" height="16"><path d="M20 12A8 8 0 1 1 19 8M19 3v5h-5" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke"/></svg></span>
+                </div>
+                <div class="bw-pill">
+                  <svg class="bw-ico" viewBox="0 0 24 24" width="16" height="16"><rect x="4" y="10" width="16" height="11" rx="2" fill="none" stroke="currentColor" stroke-width="1.25" vector-effect="non-scaling-stroke"/><path d="M7 10V7.5a5 5 0 0 1 10 0V10" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" vector-effect="non-scaling-stroke"/></svg>
+                  <span class="bw-omni">html.duckduckgo.com</span>
+                </div>
+                <span class="bw-icon bw-menu"><svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true"><circle cx="4" cy="12" r="2" fill="currentColor"/><circle cx="12" cy="12" r="2" fill="currentColor"/><circle cx="20" cy="12" r="2" fill="currentColor"/></svg></span>
+              </div>
+              <div class="bw-page">
+                <p class="crumb">html.duckduckgo.com</p>
+                <h3 class="query">windows browser</h3>
+              </div>
+            </div>
+          </div>
+        </figure>
+
+        <figure class="shot">
+          <figcaption>New tab</figcaption>
+          <div class="bw bw-light">
+            <div class="bw-main">
+              <div class="bw-toolbar" aria-hidden="true">
+                <div class="bw-nav">
+                  <div class="bw-nav-group">
+                    <span class="bw-icon"><svg class="bw-ico" viewBox="0 0 24 24" width="16" height="16"><path d="M20 12H4m6-6-6 6 6 6" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke"/></svg></span>
+                    <span class="bw-icon"><svg class="bw-ico" viewBox="0 0 24 24" width="16" height="16"><path d="M4 12h16m-6-6 6 6-6 6" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke"/></svg></span>
+                  </div>
+                  <span class="bw-icon"><svg class="bw-ico" viewBox="0 0 24 24" width="16" height="16"><path d="M20 12A8 8 0 1 1 19 8M19 3v5h-5" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke"/></svg></span>
+                </div>
+                <div class="bw-pill is-empty is-focus">
+                  <svg class="bw-ico" viewBox="0 0 24 24" width="16" height="16"><circle cx="10.5" cy="10.5" r="6.5" fill="none" stroke="currentColor" stroke-width="1.25" vector-effect="non-scaling-stroke"/><path d="M15.5 15.5 20 20" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" vector-effect="non-scaling-stroke"/></svg>
+                  <span class="bw-omni">Search or enter address</span>
+                </div>
+                <span class="bw-icon bw-menu"><svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true"><circle cx="4" cy="12" r="2" fill="currentColor"/><circle cx="12" cy="12" r="2" fill="currentColor"/><circle cx="20" cy="12" r="2" fill="currentColor"/></svg></span>
+              </div>
+              <div class="bw-strip">
+                <div class="bw-tab" aria-selected="true"><img class="bw-fav" src="img/bowser-icon.png" width="16" height="16" alt=""><span>New tab</span></div>
+              </div>
+              <div class="bw-page is-start">
+                <div class="sp">
+                  <p>Pin the sites you open most. A group is a bookmark folder, so what you add here is in Bookmarks too.</p>
+                  <span class="sp-cta">Add a group</span>
                 </div>
               </div>
             </div>
           </div>
-        </div>
-        <p class="caption">Toolbar, then tabs: a 30px row, a 26px centred pill, and 26px islands with 9px corners. The vertical rail is the Edge-style strip from <a href="https://github.com/grantcharlie1000-tech/Bowser/pull/96">pull request 96</a>, which is merged on main. Rest on the 48px strip and the titles open over the page. The v0.0.23 download still uses the pinned sidebar.</p>
+        </figure>
+
+        <figure class="shot shot-menu">
+          <figcaption>Extensions</figcaption>
+          <div class="bw bw-light">
+            <div class="bw-fly" aria-hidden="true">
+              <div class="bw-fly-row"><svg class="bw-ico" viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M5 8a2 2 0 0 1 2-2h3V5a2 2 0 1 1 4 0v1h3a2 2 0 0 1 2 2v3h-1a2 2 0 1 0 0 4h1v3a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2z"/></svg><span>uBlock Origin Lite</span></div>
+              <div class="bw-fly-row"><svg class="bw-ico" viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M5 8a2 2 0 0 1 2-2h3V5a2 2 0 1 1 4 0v1h3a2 2 0 0 1 2 2v3h-1a2 2 0 1 0 0 4h1v3a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2z"/></svg><span>Stylus</span></div>
+              <div class="bw-fly-rule"></div>
+              <div class="bw-fly-row"><svg class="bw-ico" viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M8.82 6.22Q9.63 5.84 9.61 4.94L9.58 3.62Q9.57 2.92 10.25 2.76A9.4 9.4 0 0 1 13.75 2.76Q14.43 2.92 14.42 3.62L14.39 4.94Q14.37 5.84 15.18 6.22A6.6 6.6 0 0 1 15.42 6.35Q16.15 6.87 16.92 6.4L18.05 5.72Q18.65 5.35 19.12 5.87A9.4 9.4 0 0 1 20.87 8.9Q21.08 9.57 20.47 9.9L19.31 10.54Q18.52 10.97 18.6 11.86A6.6 6.6 0 0 1 18.6 12.14Q18.52 13.03 19.31 13.46L20.47 14.1Q21.08 14.43 20.87 15.1A9.4 9.4 0 0 1 19.12 18.13Q18.65 18.65 18.05 18.28L16.92 17.6Q16.15 17.13 15.42 17.65A6.6 6.6 0 0 1 15.18 17.78Q14.37 18.16 14.39 19.06L14.42 20.38Q14.43 21.08 13.75 21.24A9.4 9.4 0 0 1 10.25 21.24Q9.57 21.08 9.58 20.38L9.61 19.06Q9.63 18.16 8.82 17.78A6.6 6.6 0 0 1 8.58 17.65Q7.85 17.13 7.08 17.6L5.95 18.28Q5.35 18.65 4.88 18.13A9.4 9.4 0 0 1 3.13 15.1Q2.92 14.43 3.53 14.1L4.69 13.46Q5.48 13.03 5.4 12.14A6.6 6.6 0 0 1 5.4 11.86Q5.48 10.97 4.69 10.54L3.53 9.9Q2.92 9.57 3.13 8.9A9.4 9.4 0 0 1 4.88 5.87Q5.35 5.35 5.95 5.72L7.08 6.4Q7.85 6.87 8.58 6.35A6.6 6.6 0 0 1 8.82 6.22Z"/><circle cx="12" cy="12" r="2.75" fill="var(--bw-overlay, #fcfcfc)"/></svg><span>Manage extensions</span></div>
+              <p class="bw-fly-foot">Extension popups</p>
+            </div>
+            <div class="bw-main">
+              <div class="bw-toolbar" aria-hidden="true">
+                <div class="bw-nav">
+                  <div class="bw-nav-group">
+                    <span class="bw-icon"><svg class="bw-ico" viewBox="0 0 24 24" width="16" height="16"><path d="M20 12H4m6-6-6 6 6 6" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke"/></svg></span>
+                    <span class="bw-icon"><svg class="bw-ico" viewBox="0 0 24 24" width="16" height="16"><path d="M4 12h16m-6-6 6 6-6 6" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke"/></svg></span>
+                  </div>
+                  <span class="bw-icon"><svg class="bw-ico" viewBox="0 0 24 24" width="16" height="16"><path d="M20 12A8 8 0 1 1 19 8M19 3v5h-5" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke"/></svg></span>
+                </div>
+                <div class="bw-pill">
+                  <svg class="bw-ico" viewBox="0 0 24 24" width="16" height="16"><rect x="4" y="10" width="16" height="11" rx="2" fill="none" stroke="currentColor" stroke-width="1.25" vector-effect="non-scaling-stroke"/><path d="M7 10V7.5a5 5 0 0 1 10 0V10" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" vector-effect="non-scaling-stroke"/></svg>
+                  <span class="bw-omni">html.duckduckgo.com</span>
+                </div>
+                <span class="bw-icon bw-ext is-open"><svg class="bw-ico" viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M5 8a2 2 0 0 1 2-2h3V5a2 2 0 1 1 4 0v1h3a2 2 0 0 1 2 2v3h-1a2 2 0 1 0 0 4h1v3a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2z"/></svg></span>
+                <span class="bw-icon bw-menu"><svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true"><circle cx="4" cy="12" r="2" fill="currentColor"/><circle cx="12" cy="12" r="2" fill="currentColor"/><circle cx="20" cy="12" r="2" fill="currentColor"/></svg></span>
+              </div>
+              <div class="bw-strip">
+                <div class="bw-tab" aria-selected="true"><span class="bw-fav bw-fav-ddg"></span><span>Search</span></div>
+              </div>
+              <div class="bw-page"></div>
+            </div>
+          </div>
+        </figure>
+
+        <figure class="shot">
+          <figcaption>Dark</figcaption>
+          <div class="bw bw-dark">
+            <div class="bw-main">
+              <div class="bw-toolbar" aria-hidden="true">
+                <div class="bw-nav">
+                  <div class="bw-nav-group">
+                    <span class="bw-icon"><svg class="bw-ico" viewBox="0 0 24 24" width="16" height="16"><path d="M20 12H4m6-6-6 6 6 6" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke"/></svg></span>
+                    <span class="bw-icon"><svg class="bw-ico" viewBox="0 0 24 24" width="16" height="16"><path d="M4 12h16m-6-6 6 6-6 6" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke"/></svg></span>
+                  </div>
+                  <span class="bw-icon"><svg class="bw-ico" viewBox="0 0 24 24" width="16" height="16"><path d="M20 12A8 8 0 1 1 19 8M19 3v5h-5" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke"/></svg></span>
+                </div>
+                <div class="bw-pill">
+                  <svg class="bw-ico" viewBox="0 0 24 24" width="16" height="16"><rect x="4" y="10" width="16" height="11" rx="2" fill="none" stroke="currentColor" stroke-width="1.25" vector-effect="non-scaling-stroke"/><path d="M7 10V7.5a5 5 0 0 1 10 0V10" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" vector-effect="non-scaling-stroke"/></svg>
+                  <span class="bw-omni">html.duckduckgo.com</span>
+                </div>
+                <span class="bw-icon bw-menu"><svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true"><circle cx="4" cy="12" r="2" fill="currentColor"/><circle cx="12" cy="12" r="2" fill="currentColor"/><circle cx="20" cy="12" r="2" fill="currentColor"/></svg></span>
+              </div>
+              <div class="bw-strip">
+                <div class="bw-tab"><img class="bw-fav" src="img/bowser-icon.png" width="16" height="16" alt=""><span>New tab</span></div>
+                <div class="bw-tab" aria-selected="true"><span class="bw-fav bw-fav-ddg"></span><span>Search</span></div>
+                <div class="bw-tab"><span class="bw-fav bw-fav-gh"></span><span>GitHub</span></div>
+              </div>
+              <div class="bw-page">
+                <p class="crumb">html.duckduckgo.com</p>
+                <h3 class="query">windows browser</h3>
+              </div>
+            </div>
+          </div>
+        </figure>
       </div>
-      <figure class="realshot">
-        <img src="img/bowser-horizontal.png" width="1000" height="720" alt="Dark Bowser window from the repository: centred address pill and a tab row, file 01-main-horizontal.png">
-        <figcaption>Repository screenshot, dark theme. <span class="code">benchmarks/results/baseline-ui/01-main-horizontal.png</span>. The mock follows the page theme and is not a crop of this file.</figcaption>
-      </figure>
-      </div>
-      <figure class="realshot realshot-wide">
-        <img src="img/bowser-vertical.png" width="1000" height="720" alt="Dark Bowser window with the pinned vertical sidebar, from 05-vertical-sidebar.png">
-        <figcaption>Pinned vertical sidebar, same folder, <span class="code">05-vertical-sidebar.png</span>. The repository has no screenshot of the hover rail. The rail in the mock is taken from <span class="code">sidebar.css</span> on main: 48px when collapsed, 32px tiles, radius 6px, titles over the page when it opens.</figcaption>
-      </figure>
     </div>
   </section>
 
-  <section class="band tight" id="speed">
-    <div class="wrap">
-      <div class="placeholder">
-        <p class="stamp">Placeholder for Charlie</p>
-        <h2>Startup, side by side</h2>
-        <p>This comparison is empty on purpose. When there is a measurement against Chrome, Edge or Firefox that you want to publish, replace this box. No time, memory figure or percentage belongs here until then.</p>
-        <ul class="unmeasured">
-          <li><span>Chrome</span><strong>Not measured</strong></li>
-          <li><span>Edge</span><strong>Not measured</strong></li>
-          <li><span>Bowser</span><strong>Not measured</strong></li>
-        </ul>
-        <p class="mechanism">Separate from any timing, this is what the program does. The window opens empty, with the address field focused. WebView2 is created when you begin typing. No network request is sent until you press Enter.</p>
-      </div>
-    </div>
-  </section>
+  <!--
+    Startup comparison. Hidden until there is a real measurement to publish.
+    <section class="band tight" id="speed">
+      <div class="wrap"><div class="placeholder"><h2>Startup, side by side</h2></div></div>
+    </section>
+  -->
 
   <section class="band" id="features">
     <div class="wrap">
       <div class="section-head">
-        <h2>What it actually does</h2>
-        <p>Six things the repository backs up. Nothing here is a download count, a user count, or a quote.</p>
+        <h2>What you get</h2>
       </div>
       <div class="grid">
         <article class="card">
-          <h3>The window comes first</h3>
-          <p>Startup is a blank native window. The engine is not created until you begin typing, and the first request waits for Enter. That is the design. It is not a published race against another browser.</p>
+          <h3>Small download</h3>
+          <p>The file is smaller because Windows already has the engine.</p>
         </article>
         <article class="card">
-          <h3>Search, with advertising off</h3>
-          <p>The default engine is Optimised. A web search opens <span class="code">html.duckduckgo.com</span> with advertising turned off. Image searches from that engine go to Google. Settings can switch to Google, or to DuckDuckGo's regular page. A profile that already saved an engine, or has a valid <span class="code">search-provider.txt</span>, keeps it.</p>
-          <p><a href="https://github.com/grantcharlie1000-tech/Bowser/blob/main/src/navigation.rs">In the source</a></p>
+          <h3>Search ads off</h3>
+          <p>DuckDuckGo by default, with ads turned off.</p>
         </article>
         <article class="card">
-          <h3>Chrome extensions, with limits</h3>
-          <p>Add to Bowser installs from a Chrome Web Store listing. An unpacked folder works, and so does a <span class="code">.crx</span> file on disk. Chrome's own Add button does not install into Bowser. WebView2 does not implement every Chrome API, so loading an extension does not mean the whole thing works.</p>
-        </article>
-        <article class="card">
-          <h3>Free, and public</h3>
-          <p>The code is on GitHub. Builds are ordinary GitHub releases. There is no account and no fee. The v0.0.23 executable is 8,409,600 bytes. It is not Authenticode-signed, so SmartScreen may ask for More info, then Run anyway.</p>
-          <p><a href="https://github.com/grantcharlie1000-tech/Bowser/releases">Releases</a></p>
+          <h3>Chrome extensions</h3>
+          <p>Add to Bowser on a Chrome Web Store page.</p>
         </article>
         <article class="card">
           <h3>Vertical tabs</h3>
-          <p>Settings, Appearance, already offers a vertical sidebar, plus tabs above the toolbar, the toolbar above the tabs, and a single row. The Edge-style rail, a narrow strip of icons that opens over the page when you rest on it, is <a href="https://github.com/grantcharlie1000-tech/Bowser/pull/96">pull request 96</a>. That pull request is merged on main. The latest published download, v0.0.23, still has the pinned sidebar and does not open that rail.</p>
+          <p>Turn them on in Settings, under Appearance.</p>
         </article>
         <article class="card">
-          <h3>A quiet, Safari-style bar</h3>
-          <p>Rounded tab islands and a centred address pill. On Windows 11 the window uses the system translucent backdrop. Safari's compact bar is one of the references in the design notes. Light and dark follow the Windows app mode.</p>
+          <h3>Free and open source</h3>
+          <p>Public code, and free builds on GitHub.</p>
         </article>
-      </div>
-    </div>
-  </section>
-
-  <section class="band" id="why">
-    <div class="wrap prose">
-      <h2>Why I built Bowser</h2>
-      <p>Hi, I'm Charlie. I build Bowser on my own.</p>
-      <p>I wanted a Windows browser I could read, that opens as a small window and then leaves the page alone. Chrome, Edge and Firefox are capable browsers, and each one ships a rendering engine. Bowser is a native window on WebView2, which Windows already shares with Edge. The download is the shell. The engine stays the system's.</p>
-      <p>The window is the part I kept returning to. Rounded tabs, the address in the middle, and a translucent surface on Windows 11. I used Safari's compact bar as one of the references, because I wanted the chrome to take less of the screen than the page.</p>
-      <p>Search was the other decision I did not want to leave on a sponsored list. Unless a profile already has a saved engine, or a valid search-provider.txt, a web search opens DuckDuckGo's HTML results with advertising turned off. Image searches from that default go to Google, which is a different page, and you can change the engine in Settings.</p>
-      <p>So I built it around a few things:</p>
-      <ol>
-        <li>A fast open. The window is up, and the field is ready, before WebView2 exists. I have not put a stopwatch next to Chrome or Edge on this page. The box above stays empty until I measure one I am willing to publish.</li>
-        <li>Open source, and free to download. The repository is public. The builds are the normal GitHub releases. Read it before you run it.</li>
-        <li>Extensions, only as far as WebView2 actually goes. Add to Bowser on a store listing, an unpacked folder, or a .crx file. I will not claim that every Chrome extension works.</li>
-        <li>Vertical tabs that can behave like Edge's. The v0.0.23 release already has the pinned sidebar. The collapsed rail that opens over the page is merged on main, in pull request 96, and it is not what that download does.</li>
-      </ol>
-    </div>
-  </section>
-
-  <section class="band tight" id="release">
-    <div class="wrap">
-      <div class="release">
-        <div>
-          <h2>The release is the download</h2>
-          <p>There is no store and no installer account. Bowser.exe is attached to a GitHub release. v0.0.23, the latest published release on 25 October 2026, is 8,409,600 bytes. A later release can be a different size. This page will not guess it.</p>
-          <p>You need 64-bit Windows 10 or later, and the Evergreen WebView2 Runtime. Current Microsoft Edge already includes that runtime. If it is missing, Bowser says so and points at Microsoft's installer.</p>
-          <div class="actions left">
-            <a class="button primary" href="https://github.com/grantcharlie1000-tech/Bowser/releases">Open releases</a>
-            <a class="button ghost" href="https://developer.microsoft.com/en-us/microsoft-edge/webview2/#download-section">WebView2 runtime</a>
-          </div>
-        </div>
-        <dl class="facts">
-          <div><dt>Price</dt><dd>Free</dd></div>
-          <div><dt>v0.0.23 Bowser.exe</dt><dd>8,409,600 bytes</dd></div>
-          <div><dt>System</dt><dd>Windows x64</dd></div>
-          <div><dt>Engine in the file</dt><dd>None</dd></div>
-        </dl>
       </div>
     </div>
   </section>
@@ -352,36 +362,28 @@ try {
       </div>
       <div class="faq">
         <details>
-          <summary>What does a search do?</summary>
-          <p>With no saved engine and no valid search-provider.txt, web searches use the Optimised template: <span class="code">https://html.duckduckgo.com/html/?q={query}&amp;k1=-1</span>. That is DuckDuckGo's HTML results with advertising turned off. Typing <span class="code">img</span> before a query, on that engine, searches Google Images. Settings offers Google, and DuckDuckGo's regular page, and the choice is saved in the profile. An existing choice is left alone.</p>
+          <summary>Why is the download lighter?</summary>
+          <p>Bowser does not bring its own engine. It uses the one already on Windows, so the file is smaller than Chrome, Edge or Firefox.</p>
         </details>
         <details>
-          <summary>Which Chrome extensions work?</summary>
-          <p>Bowser installs three ways: Add to Bowser on a Chrome Web Store listing, an unpacked folder that contains a manifest, or a .crx file you already have. You confirm the permissions before it is copied in. Chrome's installer cannot run inside Bowser, which is why the store page's own Add button is not the one that works. Extensions run in the normal browsing profile, not in private tabs. WebView2 does not provide every Chrome API, and the project does not claim Chrome Web Store compatibility for every listing. A short curated catalogue names a few extensions and says compatibility still has to be checked.</p>
+          <summary>What about search ads?</summary>
+          <p>A new search uses DuckDuckGo with ads off. You can switch. Picture search uses Google.</p>
         </details>
         <details>
-          <summary>Where are the vertical tabs?</summary>
-          <p>In the v0.0.23 release: Settings, Appearance, then Vertical. The sidebar can be resized, and it scrolls. Horizontal, tabs on top, and a single row are the other layouts. On main, pull request 96 is merged: a 48px icon rail that opens titles over the page on hover and leaves the page where it is. The default stays the pinned sidebar. The file on the releases page does not open that rail yet.</p>
+          <summary>Do Chrome extensions work?</summary>
+          <p>Use Add to Bowser on the store page. Not every extension works, and they stay out of private tabs.</p>
         </details>
         <details>
-          <summary>How fast is it?</summary>
-          <p>Not published here. The window is up before WebView2 is created, and that is a description of the startup sequence, not a comparison. The placeholder on this page is where a measured comparison would go.</p>
-        </details>
-        <details>
-          <summary>Does it block ads?</summary>
-          <p>An ad and tracker blocker is on by default, at the ads level, which covers trackers and ads. It uses a list built into the program, plus an optional filters.txt in the profile if you add one. Bowser does not fetch filter lists itself. A site can be exempted. It does not block every ad on the web, and this page does not claim that it does. Private tabs always block, and they do not record history.</p>
+          <summary>Where are vertical tabs?</summary>
+          <p>Settings, Appearance, Vertical pins the sidebar in the current download. A slimmer rail that opens when you rest on it is in the latest code, not that download.</p>
         </details>
         <details>
           <summary>What does it run on?</summary>
-          <p>64-bit Windows 10 or later. The shared WebView2 runtime has to be installed. Browser data stays in %LOCALAPPDATA%\Bowser, separate from Edge's profile. The build is not Authenticode-signed. SmartScreen may ask you to choose More info, then Run anyway.</p>
+          <p>64-bit Windows 10 or newer. The first open may warn that the file is not signed.</p>
         </details>
         <details>
-          <summary>Does Bowser phone home?</summary>
-          <p>Bowser has no hosted backend and no first-party telemetry. Microsoft Defender SmartScreen reputation checking can still send visited addresses to Microsoft, where Windows allows it. Sites you open, and the search engine you use, receive ordinary requests. This website loads no analytics and no third-party scripts.</p>
-        </details>
-        <details>
-          <summary>Who builds it?</summary>
-          <p>Charlie, on his own. The repository is <a href="https://github.com/grantcharlie1000-tech/Bowser">grantcharlie1000-tech/Bowser</a>. Questions go there, as issues, not to a company.</p>
+          <summary>How fast is it?</summary>
+          <p>No speed test has been published.</p>
         </details>
       </div>
     </div>
@@ -389,11 +391,9 @@ try {
 
   <section class="cta">
     <div class="wrap">
-      <h2>Download the release. Read the code if you want.</h2>
-      <p>Free, for 64-bit Windows. The download is the GitHub releases page, where the executable is actually attached.</p>
+      <h2>Download Bowser.</h2>
       <div class="actions">
-        <a class="button primary" href="https://github.com/grantcharlie1000-tech/Bowser/releases">Download on GitHub</a>
-        <a class="button ghost" href="https://github.com/grantcharlie1000-tech/Bowser">View the source</a>
+        <a class="button primary" href="https://github.com/grantcharlie1000-tech/Bowser/releases">Download</a>
       </div>
     </div>
   </section>
@@ -401,8 +401,8 @@ try {
 
 <footer class="foot">
   <div class="wrap foot-in">
-    <p>Bowser, an open-source browser by Charlie.</p>
-    <p><a href="https://github.com/grantcharlie1000-tech/Bowser">GitHub</a> · <a href="https://github.com/grantcharlie1000-tech/Bowser/releases">Releases</a> · <a href="https://github.com/grantcharlie1000-tech/Bowser/pull/96">Pull request 96</a></p>
+    <p>Built by Charlie Grant, solo developer. <a href="https://x.com/Charlie01748449">@Charlie01748449</a></p>
+    <p><a href="https://github.com/grantcharlie1000-tech/Bowser">GitHub</a> · <a href="https://github.com/grantcharlie1000-tech/Bowser/releases">Releases</a></p>
   </div>
 </footer>
 <script src="app.js" defer></script>
