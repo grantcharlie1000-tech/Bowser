@@ -630,6 +630,10 @@
    `data-motion="off"` (below, and the base-layer rule) drop the transition and the press scale. */
 .bw-segmented.is-thumb {
   position: relative;
+  /* 2px inset: the thumb's capsule sits inside the track's, ends concentric at every height. */
+  --bw-seg-inset: var(--bw-space-0_5);
+  padding: var(--bw-seg-inset);
+  border-radius: var(--bw-r-pill);
   --bw-seg-dur: 280ms;
   --bw-seg-ease: cubic-bezier(0.25, 1, 0.5, 1);
 }
@@ -640,7 +644,7 @@
   left: 0;
   top: 0;
   pointer-events: none;
-  border-radius: calc(var(--bw-r-control) - 1px);
+  border-radius: var(--bw-r-pill);
 }
 
 .bw-segmented.is-thumb.is-ready .bw-seg-thumb {
@@ -671,11 +675,39 @@
 .bw-segmented.is-thumb > button {
   position: relative;
   z-index: 1;
+  display: inline-grid;
+  border-radius: var(--bw-r-pill);
   font-weight: 400;
+  white-space: nowrap;
   transition:
     background-color var(--bw-dur-fast) var(--bw-ease-fade),
     color var(--bw-seg-dur) var(--bw-seg-ease),
     font-weight var(--bw-seg-dur) var(--bw-seg-ease);
+}
+
+/* The bold copy is the only in-flow text, so a segment's box does not change when the visible
+   label crossfades to the strong weight. The label itself is out of flow. */
+.bw-segmented.is-thumb > button::before {
+  content: attr(data-label);
+  font-weight: var(--bw-weight-strong);
+  white-space: nowrap;
+  visibility: hidden;
+}
+
+.bw-segmented.is-thumb > button > .bw-seg-label {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 400;
+  transition:
+    color var(--bw-seg-dur) var(--bw-seg-ease),
+    font-weight var(--bw-seg-dur) var(--bw-seg-ease);
+}
+
+.bw-segmented.is-thumb.is-placed > button:is([aria-checked="true"], [aria-pressed="true"], [aria-selected="true"]) > .bw-seg-label {
+  font-weight: var(--bw-weight-strong);
 }
 
 .bw-segmented.is-thumb.is-placed > button:is([aria-checked="true"], [aria-pressed="true"], [aria-selected="true"]),

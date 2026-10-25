@@ -1,7 +1,8 @@
 // The sliding thumb behind a `.bw-segmented` radio group (Settings, and the shared `segmented()`
 // helper). The highlight is one absolutely positioned pill: it translates and its width morphs when
-// the choice changes, the way a macOS/iOS segmented control does. The first placement, a resize and
-// reduced motion snap; only a later choice animates. Click and arrow keys stay on the buttons.
+// the choice changes, the way a macOS/iOS segmented control does. Each segment reserves its bold
+// width, so the glide is a single move and the row does not reflow. The first placement, a resize
+// and reduced motion snap; only a later choice animates. Click and arrow keys stay on the buttons.
 import { el } from './dom';
 
 /** A segment's border box in the same coordinate space as the pointer, plus whether it can be chosen. */
@@ -56,40 +57,38 @@ function motionOn(): boolean {
 
 interface Box { x: number; y: number; w: number; h: number }
 
-function measure(button: HTMLButtonElement, settle: boolean): Box | null {
+function measure(button: HTMLButtonElement): Box | null {
   const x = button.offsetLeft;
   const y = button.offsetTop;
-  let w = button.offsetWidth;
+  const w = button.offsetWidth;
   const h = button.offsetHeight;
   if (typeof x !== 'number' || typeof y !== 'number' || typeof w !== 'number' || typeof h !== 'number') return null;
   if (w <= 0 || h <= 0) return null;
-  // The strong weight is still crossfading, so the used width is short of the bold label. Read the
-  // settled width, then put the in-flight weight back before paint so the crossfade continues.
-  if (settle) w = settledWidth(button, w);
   return { x, y, w, h };
 }
 
-function settledWidth(button: HTMLButtonElement, current: number): number {
-  const style = button.style;
-  const view = button.ownerDocument?.defaultView;
-  if (!view || typeof view.getComputedStyle !== 'function' || typeof style.removeProperty !== 'function') return current;
-  const weight = Number.parseFloat(view.getComputedStyle(button).fontWeight);
-  if (!Number.isFinite(weight) || weight >= 600) return current;
-  const prevWeight = style.getPropertyValue('font-weight');
-  const prevTransition = style.getPropertyValue('transition');
-  style.setProperty('transition', 'none');
-  style.setProperty('font-weight', '600');
-  const settled = button.offsetWidth;
-  try {
-    style.setProperty('font-weight', String(weight));
-    void button.offsetWidth;
-  } finally {
-    if (prevWeight) style.setProperty('font-weight', prevWeight);
-    else style.removeProperty('font-weight');
-    if (prevTransition) style.setProperty('transition', prevTransition);
-    else style.removeProperty('transition');
+const near = (a: Box, b: Box): boolean =>
+  Math.abs(a.x - b.x) < 0.5 && Math.abs(a.y - b.y) < 0.5 && Math.abs(a.w - b.w) < 0.5 && Math.abs(a.h - b.h) < 0.5;
+
+/**
+ * Keep the button as wide as its bold label. The visible words sit out of flow and may crossfade
+ * weight; the in-flow copy is always the strong weight, so choosing a segment does not reflow the row.
+ */
+function holdBold(button: HTMLButtonElement): void {
+  if (button.querySelector('.bw-seg-label')) return;
+  const text = button.textContent ?? '';
+  if (!text) return;
+  button.setAttribute('data-label', text);
+  const label = el('span', 'bw-seg-label');
+  const kids = button.childNodes;
+  if (kids && typeof kids.length === 'number') {
+    while (kids.length > 0) {
+      const node = kids[0];
+      if (!node) break;
+      label.append(node);
+    }
   }
-  return settled > 0 ? settled : current;
+  button.append(label);
 }
 
 /**
@@ -112,6 +111,7 @@ export function attachSegmentThumb(group: HTMLElement): void {
   let seen = false;
   let gliding = false;
   let glide = 0;
+  let placed: Box | null = null;
   let pointer: { id: number; x: number; y: number; dragged: boolean } | null = null;
   let suppressClick = false;
 
@@ -121,14 +121,24 @@ export function attachSegmentThumb(group: HTMLElement): void {
   };
 
   const commit = (box: Box, animate: boolean): void => {
+    if (!animate && placed && near(placed, box) && !thumb.hidden) return;
     const reveal = thumb.hidden;
     thumb.hidden = false;
+    // A press scale belongs to the hold, not the glide. Drop it before the thumb moves, without
+    // letting the 0.95 scale ease back across the slide.
+    if (animate && group.classList.contains('is-pressed')) {
+      group.classList.remove('is-pressed');
+      face.style.transition = 'none';
+      void face.offsetWidth;
+      face.style.transition = '';
+    }
     if (!animate || reveal) group.classList.remove('is-ready');
     // Set the transitioned properties themselves. A custom property inside translate() does not
     // interpolate unless it is registered, and registration adds a cascade layer the sheet forbids.
     thumb.style.width = `${box.w}px`;
     thumb.style.height = `${box.h}px`;
     thumb.style.transform = `translate(${box.x}px, ${box.y}px)`;
+    placed = box;
     group.classList.add('is-placed');
     if (!animate || reveal) {
       // Flush the snapped box before transitions turn on, so the first paint and a resize do not slide.
@@ -160,8 +170,9 @@ export function attachSegmentThumb(group: HTMLElement): void {
       gliding = false;
       return;
     }
+    for (const option of buttons()) holdBold(option);
     const animate = fromUser && seen && motionOn();
-    const box = measure(button, animate);
+    const box = measure(button);
     if (!box) return;
     commit(box, animate);
   };
@@ -230,6 +241,10 @@ export function attachSegmentThumb(group: HTMLElement): void {
   };
 
   const pressAt = (x: number, y: number): void => {
+    if (gliding || pointer?.dragged) {
+      group.classList.remove('is-pressed');
+      return;
+    }
     const hit = hitButton(x, y);
     group.classList.toggle('is-pressed', hit !== null && checked(hit));
   };
