@@ -1230,7 +1230,7 @@ impl WindowChrome {
         }
         let metrics = Metrics::new(self.dpi);
         let want = metrics.px(want_logical).max(rail);
-        crate::vertical_tabs::flyout_rect(sidebar, want, metrics.px(crate::vertical_tabs::FLYOUT_KEEP)).width()
+        crate::vertical_tabs::flyout_span(sidebar, want, metrics.px(crate::vertical_tabs::FLYOUT_KEEP)).width()
     }
     /// Starts or retargets the overlay. False when the request is already where the flyout is going.
     fn set_rail_hover(&mut self, open: bool, want_logical: i32, now: Instant) -> bool {
@@ -4809,6 +4809,18 @@ fn hit(hwnd: HWND, x: i32, y: i32) -> Hit {
         // native hit tests.
         if s.html_regions().iter().any(|region| region.contains(x, y)) {
             return Hit::None;
+        }
+        // The floating island is the HTML host. Padding inside the slot, but outside that host,
+        // is a drag (or the page, when the point is actually in the viewport). The resize handle
+        // stays a native hit. Native fallback still owns the full slot until the HTML host is live.
+        if s.html_tab_region().is_some()
+            && let Some(sidebar) = s.sidebar
+            && let Some(gap) = crate::vertical_tabs::gap_target(&sidebar, x, y)
+        {
+            return match gap {
+                crate::vertical_tabs::GapTarget::Page => Hit::Viewport,
+                crate::vertical_tabs::GapTarget::Drag => Hit::CaptionArea,
+            };
         }
         if let Some(sidebar) = s.sidebar
             && let Some(sidebar_hit) = crate::chrome::vertical_paint::hit_test(

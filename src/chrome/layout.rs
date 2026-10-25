@@ -4799,9 +4799,11 @@ mod arrangement_tests {
             // The toolbar keeps the full width: the window buttons stay at the top right.
             assert_eq!(layout.caption_area.right, 1400);
             assert!(layout.main_menu_button.right <= layout.caption_area.left);
-            // The HTML sidebar host stops at the handle; the handle is a resize hit.
+            // The HTML sidebar host is the floating island, clear of the resize handle.
             let bounds = crate::chrome_host::sidebar_bounds(&sidebar).expect("a sidebar host");
-            assert_eq!((bounds.left, bounds.right), (sidebar.handle.right, sidebar.sidebar.right));
+            let island = sidebar.island();
+            assert_eq!((bounds.left, bounds.right), (island.left, island.right));
+            assert!(bounds.left >= sidebar.handle.right, "the host starts after the resize handle");
             assert_eq!(crate::vertical_tabs::hit_test(&sidebar, sidebar.handle.left + 1, sidebar.rows.top + 5, 0, 5), Some(SidebarHit::Resize));
             // A drag of the handle measures the width from the window's edge.
             assert_eq!(sidebar.drag_width_px(sidebar.sidebar.right - 300), 300);
@@ -4812,6 +4814,65 @@ mod arrangement_tests {
         let left = left.unwrap();
         assert_eq!(left.drag_width_px(300), 300, "a left sidebar keeps measuring from the window's left edge");
         assert_eq!((left.content_left(), left.content_right()), (left.rows.left, left.handle.left));
+    }
+
+    /// The vertical-tab island stays inside the tab slot. An open side panel uses the other edge of
+    /// the page, including when the saved edge clashes with the tabs, and the two rectangles do not meet.
+    #[test]
+    fn a_vertical_tab_island_and_the_opposite_side_panel_do_not_meet() {
+        const PANEL: i32 = 340;
+        for tabs in [TabLayout::Vertical, TabLayout::VerticalRight] {
+            let (layout, sidebar) = arranged(Arrangement { tabs, ..Default::default() }, 96);
+            let sidebar = sidebar.expect("vertical tabs lay out a sidebar");
+            let island = sidebar.island();
+            assert!(sidebar.sidebar.contains_rect(island), "{tabs:?}: the island is inside the tab slot");
+            let host = crate::chrome_host::sidebar_bounds(&sidebar).expect("the HTML host is the island");
+            assert_eq!((host.left, host.top, host.right, host.bottom), (island.left, island.top, island.right, island.bottom));
+            // The file still names the tab edge. The live panel edge is the other one.
+            let saved = sidebar.side;
+            let live = SidePanelPosition::placed(saved, tabs, true);
+            assert_eq!(live, saved.opposite(), "{tabs:?}");
+            let page = layout.viewport;
+            let panel = match live {
+                SidePanelPosition::Left => Rect::new(page.left, page.top, page.left + PANEL, page.bottom),
+                SidePanelPosition::Right => Rect::new(page.right - PANEL, page.top, page.right, page.bottom),
+            };
+            assert!(page.width() > PANEL, "{tabs:?}");
+            assert!(page.contains_rect(panel), "{tabs:?}: the panel docks in the page column");
+            assert!(island.intersect(panel).is_empty(), "{tabs:?}: the island does not meet the panel");
+            assert!(sidebar.sidebar.intersect(panel).is_empty(), "{tabs:?}: the tab slot does not meet the panel");
+            match sidebar.side {
+                SidePanelPosition::Left => assert!(island.right <= page.left && panel.left >= page.left, "{tabs:?}"),
+                SidePanelPosition::Right => assert!(island.left >= page.right && panel.right <= page.right, "{tabs:?}"),
+            }
+            // With the tab slot taken out of the layout, the page grows under it. The panel stays
+            // on the opposite edge of that wider page, still clear of the island.
+            let (hidden, hidden_sidebar) = compute_arranged_auto_hide(
+                Arrangement { tabs, ..Default::default() },
+                1400,
+                900,
+                96,
+                5,
+                1,
+                false,
+                260,
+                true,
+                TAB_ROW_HEIGHT,
+                AutoHide { top: false, sidebar: true },
+            );
+            let hidden_island = hidden_sidebar.expect("the island keeps its slot").island();
+            assert_eq!(hidden_island, island, "{tabs:?}: hiding the slot does not move the island");
+            let wide = hidden.viewport;
+            let wide_panel = match live {
+                SidePanelPosition::Left => Rect::new(wide.left, wide.top, wide.left + PANEL, wide.bottom),
+                SidePanelPosition::Right => Rect::new(wide.right - PANEL, wide.top, wide.right, wide.bottom),
+            };
+            assert!(wide.contains_rect(wide_panel), "{tabs:?}");
+            assert!(hidden_island.intersect(wide_panel).is_empty(), "{tabs:?}: a revealed island stays clear of the panel");
+        }
+        let (_, sidebar) = arranged(Arrangement { tabs: TabLayout::Vertical, tab_bar: false, ..Default::default() }, 96);
+        assert!(sidebar.is_none(), "a hidden tab bar has no island");
+        assert_eq!(SidePanelPosition::placed(SidePanelPosition::Left, TabLayout::Vertical, false), SidePanelPosition::Left);
     }
 
     #[test]
