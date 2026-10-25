@@ -1,7 +1,12 @@
-//! Rail panel host, docked left or right per `side_panel_position`. The host window is stable
-//! while content changes.
+//! Rail panel host. A row of tabs docks it on the saved `side_panel_position`; a visible vertical
+//! tab bar puts it on the opposite edge ([`SidePanelPosition::placed`]). In frameless mode the open
+//! panel keeps its width and slides over the page. The host window is stable while content changes.
 
-use crate::{settings::SidePanelPosition, theme, win32::glass};
+use crate::{
+    settings::{SidePanelPosition, TabLayout},
+    theme,
+    win32::glass,
+};
 use std::{
     cell::{Cell, RefCell},
     collections::HashMap,
@@ -115,7 +120,13 @@ impl PanelState {
     fn escape(&mut self) -> bool { if self.open.is_some() { self.close(); true } else { false } }
 }
 
-struct Animation { from: i32, to: i32, started: Instant }
+struct Animation {
+    from: i32,
+    to: i32,
+    started: Instant,
+    /// `from`/`to` are x offsets from the resting edge when true, host widths when false.
+    slide: bool,
+}
 pub struct SidePanelHost {
     owner: HWND,
     previous_focus: HWND,
@@ -126,6 +137,10 @@ pub struct SidePanelHost {
     width_dip: i32,
     width: i32,
     position: SidePanelPosition,
+    /// Pixel shift from the resting edge while a frameless panel slides. `0` is at rest.
+    offset: i32,
+    /// The panel covers the page (frameless, or the panel bar is hidden) instead of narrowing it.
+    floats: bool,
     client: RECT,
     resizing: bool,
     animation: Option<Animation>,
@@ -175,7 +190,15 @@ pub fn open(owner: HWND, id: PanelId) -> bool {
             if let Some(previous) = state.content.take() { state.retired.push(previous); state.retired_blur.push(false); }
             state.content = Some(content);
             if let Some(current) = state.content.as_mut() { current.on_focus(true); }
-            state.animation = Some(Animation { from: state.width, to: desired_width(state.width_dip, owner), started: Instant::now() });
+            let target = desired_width(state.width_dip, owner);
+            state.floats = super::window::side_panel_floats(owner);
+            let arm = if state.floats {
+                state.width = target;
+                begin_motion(state, true, state.offset, 0)
+            } else {
+                state.offset = 0;
+                begin_motion(state, false, state.width, target)
+            };
             raise(hwnd);
             unsafe { let _ = ShowWindow(hwnd, SW_SHOW); let _ = SetFocus(Some(hwnd)); }
             // --- panel host (lane P) ---
@@ -183,7 +206,7 @@ pub fn open(owner: HWND, id: PanelId) -> bool {
             // --- end panel host ---
             sync(owner, base_viewport(owner), dpi(owner));
             invalidate(hwnd);
-            arm_animation(owner);
+            release_motion(owner, hwnd, state, arm);
             return true;
         }
     }
@@ -204,24 +227,29 @@ pub fn open(owner: HWND, id: PanelId) -> bool {
     };
     content.on_focus(true);
     let header = content.native_header();
-    let position = crate::profile::active().ok().map(|profile| saved_layout(&profile.settings_file()).position).unwrap_or(SidePanelPosition::Left);
-    let state = Box::new(SidePanelHost { owner, previous_focus: unsafe { GetFocus() }, id: Some(id), content: Some(content), retired: Vec::new(), retired_blur: Vec::new(), width_dip, width: 0, position, client, resizing: false, animation: Some(Animation { from: 0, to: target_width, started: Instant::now() }), header, edit_brush: unsafe { CreateSolidBrush(colorref(theme::palette(glass::appearance(), true).omnibox_fill)) } });
+    let position = placed_position();
+    let floats = super::window::side_panel_floats(owner);
+    let offset = if floats { hidden_offset(target_width, position) } else { 0 };
+    let state = Box::new(SidePanelHost { owner, previous_focus: unsafe { GetFocus() }, id: Some(id), content: Some(content), retired: Vec::new(), retired_blur: Vec::new(), width_dip, width: if floats { target_width } else { 0 }, position, offset, floats, client, resizing: false, animation: None, header, edit_brush: unsafe { CreateSolidBrush(colorref(theme::palette(glass::appearance(), true).omnibox_fill)) } });
     let instance = HINSTANCE(unsafe { GetModuleHandleW(None).unwrap_or_default().0 });
     let hwnd = unsafe { CreateWindowExW(Default::default(), CLASS, w!(""), WS_CHILD | WS_CLIPCHILDREN, panel_left(client, inset, 0, position), client.top, 1, client.bottom-client.top, Some(owner), None, Some(instance), Some(Box::into_raw(state).cast())) };
     let Ok(hwnd) = hwnd else { return false };
     HOSTS.with(|hosts| { hosts.borrow_mut().insert(owner.0 as isize, hwnd.0 as isize); });
-    if let Some(state) = unsafe { host(hwnd) }
-        && let Some(content) = state.content.as_mut()
-    {
-        content.on_host_created(hwnd);
-    }
+    let arm = if let Some(state) = unsafe { host(hwnd) } {
+        if let Some(content) = state.content.as_mut() { content.on_host_created(hwnd); }
+        if state.floats { begin_motion(state, true, state.offset, 0) } else { begin_motion(state, false, state.width, target_width) }
+    } else {
+        false
+    };
+    // Place the first frame before the host is shown, so a frameless panel does not flash at the
+    // resting edge and then jump off it.
+    sync(owner, client, dpi(owner));
     raise(hwnd);
     unsafe { let _ = ShowWindow(hwnd, SW_SHOW); let _ = SetFocus(Some(hwnd)); }
     // --- panel host (lane P) ---
     if let Some(current) = unsafe { host(hwnd) }.and_then(|state| state.content.as_mut()) { current.after_shown(); }
     // --- end panel host ---
-    sync(owner, client, dpi(owner));
-    arm_animation(owner);
+    if let Some(state) = unsafe { host(hwnd) } { release_motion(owner, hwnd, state, arm); }
     true
 }
 
@@ -232,10 +260,15 @@ pub fn close(owner: HWND) {
         if let Some(state) = unsafe { host(hwnd) }.filter(|h| h.owner == owner) {
             state.id = None;
             if let Some(content) = state.content.take() { state.retired.push(content); state.retired_blur.push(true); }
-            state.animation = Some(Animation { from: state.width, to: 0, started: Instant::now() });
+            state.floats = super::window::side_panel_floats(owner);
+            let arm = if state.floats {
+                begin_motion(state, true, state.offset, hidden_offset(state.width, state.position))
+            } else {
+                begin_motion(state, false, state.width, 0)
+            };
             let target = if state.previous_focus.0.is_null() { owner } else { state.previous_focus };
             unsafe { let _ = SetFocus(Some(target)); }
-            arm_animation(owner);
+            release_motion(owner, hwnd, state, arm);
             invalidate(hwnd);
         }
     });
@@ -254,14 +287,44 @@ pub fn sync(owner: HWND, viewport: RECT, window_dpi: u32) {
         let Some(state) = host(hwnd).filter(|h| h.owner == owner) else { return };
         let inset = crate::chrome::layout::left_rail_inset(window_dpi);
         let origin = panel_origin(viewport.left, inset);
+        let floats = super::window::side_panel_floats(owner);
+        if state.floats != floats {
+            // A settings change snaps. The slide belongs to an open or a dismiss, not to the toggle.
+            state.floats = floats;
+            state.offset = 0;
+            state.animation = None;
+            if state.id.is_none() { state.width = 0; }
+        }
         state.client = viewport;
         if state.id.is_some() {
             if let Some(width) = panel_width_px(state.width_dip, window_dpi, viewport.right-origin) {
-                state.width = state.width.min(width);
-                if let Some(animation) = &mut state.animation { animation.to = width; }
-                else { state.width = width; }
+                if state.floats {
+                    let previous = state.width;
+                    let started = state.animation.as_ref().map(|animation| (animation.slide, animation.to, animation.from));
+                    state.width = width;
+                    // The first sync can clamp the width the open animation was built for. Only a
+                    // panel still parked fully off-screen follows that; a slide already underway does not.
+                    if let Some((true, 0, from)) = started
+                        && from == state.offset
+                        && from.saturating_abs() == previous
+                        && previous != width
+                    {
+                        let hidden = hidden_offset(width, state.position);
+                        if let Some(animation) = &mut state.animation { animation.from = hidden; }
+                        state.offset = hidden;
+                    }
+                } else {
+                    state.offset = 0;
+                    state.width = state.width.min(width);
+                    if let Some(animation) = &mut state.animation {
+                        if !animation.slide { animation.to = width; }
+                    } else {
+                        state.width = width;
+                    }
+                }
             } else {
                 state.width = 0;
+                state.offset = 0;
                 state.id = None;
                 if let Some(content) = state.content.take() { state.retired.push(content); state.retired_blur.push(true); }
                 state.animation = None;
@@ -269,8 +332,7 @@ pub fn sync(owner: HWND, viewport: RECT, window_dpi: u32) {
                 STATUS.with(|status| status.set(Some("The window is too narrow for a side panel and a readable page.")));
             }
         }
-        let bounds = panel_bounds(viewport, inset, state.width.max(0), state.position);
-        let _ = SetWindowPos(hwnd, None, bounds.left, bounds.top, bounds.right-bounds.left, bounds.bottom-bounds.top, SWP_NOZORDER | SWP_NOACTIVATE);
+        place_panel(hwnd, state, window_dpi);
         if let Some(child) = state.content.as_ref().and_then(|c| c.wants_native_child()) {
             let header = scale(HEADER_DIP, window_dpi);
             let _ = SetWindowPos(child, None, scale(12, window_dpi), header, (state.width-scale(24, window_dpi)).max(0), (viewport.bottom-viewport.top-header).max(0), SWP_NOZORDER | SWP_NOACTIVATE);
@@ -297,7 +359,20 @@ pub fn set_position(owner: HWND, position: SidePanelPosition) {
         let hwnd = HWND(raw as *mut c_void);
         let Some(state) = host(hwnd).filter(|h| h.owner == owner) else { return false };
         if state.position == position { return false; }
+        let old_hidden = hidden_offset(state.width, state.position);
         state.position = position;
+        if state.floats {
+            let new_hidden = hidden_offset(state.width, position);
+            state.offset = mirrored_offset(state.offset, old_hidden, new_hidden);
+            let offset = state.offset;
+            let opening = state.id.is_some();
+            if let Some(animation) = &mut state.animation
+                && animation.slide
+            {
+                animation.from = offset;
+                animation.to = if opening { 0 } else { new_hidden };
+            }
+        }
         true
     });
     if moved {
@@ -339,15 +414,21 @@ pub fn timer(owner: HWND) -> bool {
         let retired = std::mem::take(&mut state.retired);
         let retired_blur = std::mem::take(&mut state.retired_blur);
         for (mut content, blur) in retired.into_iter().zip(retired_blur) { if blur { content.on_focus(false); } }
-        let Some(anim) = &state.animation else { return !state.retired.is_empty() };
-        let elapsed = Instant::now().saturating_duration_since(anim.started).as_secs_f32() * 1000.0;
+        let Some((from, to, slide, started)) = state.animation.as_ref().map(|anim| (anim.from, anim.to, anim.slide, anim.started)) else { return !state.retired.is_empty() };
+        let elapsed = Instant::now().saturating_duration_since(started).as_secs_f32() * 1000.0;
         // --- window and panels (thread T9) --- "Use animation" off: the panel snaps to its width.
         let t = if super::window::animations_enabled() { (elapsed / ANIMATION_MS).clamp(0.0, 1.0) } else { 1.0 };
-        state.width = animation_width(anim.from, anim.to, t);
-        if t >= 1.0 { state.width = anim.to; state.animation = None; }
-        let inset = crate::chrome::layout::left_rail_inset(dpi(owner));
-        let origin = panel_left(state.client, inset, state.width, state.position);
-        let _ = SetWindowPos(hwnd, None, origin, state.client.top, state.width, state.client.bottom-state.client.top, SWP_NOZORDER | SWP_NOACTIVATE);
+        if slide { state.offset = slide_px(from, to, t); } else { state.width = animation_width(from, to, t); }
+        if t >= 1.0 {
+            if slide {
+                state.offset = to;
+                if state.id.is_none() { state.width = 0; state.offset = 0; }
+            } else {
+                state.width = to;
+            }
+            state.animation = None;
+        }
+        place_panel(hwnd, state, dpi(owner));
         if state.width == 0 && state.id.is_none() { let _ = ShowWindow(hwnd, SW_HIDE); }
         let _ = InvalidateRect(Some(hwnd), None, false);
         (state.animation.is_some() && animation_running(elapsed)) || !state.retired.is_empty()
@@ -355,6 +436,65 @@ pub fn timer(owner: HWND) -> bool {
 }
 
 fn arm_animation(owner: HWND) { unsafe { let _ = windows::Win32::UI::WindowsAndMessaging::SetTimer(Some(owner), TIMER_ID, FRAME_MS, None); } }
+
+/// Starts a docked width change (`slide` false) or a frameless edge slide. Returns false when the
+/// panel snaps there, so the caller does not arm a timer: animation off, or nothing to move.
+fn begin_motion(state: &mut SidePanelHost, slide: bool, from: i32, to: i32) -> bool {
+    if !super::window::animations_enabled() || from == to {
+        if slide {
+            state.offset = to;
+            if state.id.is_none() {
+                state.width = 0;
+                state.offset = 0;
+            }
+        } else {
+            state.width = to;
+            state.offset = 0;
+        }
+        state.animation = None;
+        false
+    } else {
+        state.animation = Some(Animation { from, to, started: Instant::now(), slide });
+        true
+    }
+}
+
+fn flush_retired(state: &mut SidePanelHost) {
+    let retired = std::mem::take(&mut state.retired);
+    let blur = std::mem::take(&mut state.retired_blur);
+    for (mut content, blur) in retired.into_iter().zip(blur) {
+        if blur { content.on_focus(false); }
+    }
+}
+
+/// Arms the frame timer, or settles at once when [`begin_motion`] snapped.
+fn release_motion(owner: HWND, hwnd: HWND, state: &mut SidePanelHost, arm: bool) {
+    if arm {
+        arm_animation(owner);
+        return;
+    }
+    flush_retired(state);
+    if state.width == 0 && state.id.is_none() {
+        unsafe { let _ = ShowWindow(hwnd, SW_HIDE); }
+    }
+    // A docked panel's width is the page's column. A floating one never changes it.
+    if !state.floats {
+        note_resized(owner);
+    }
+}
+
+fn note_resized(owner: HWND) {
+    let _ = unsafe { windows::Win32::UI::WindowsAndMessaging::PostMessageW(Some(owner), WM_RESIZED, WPARAM(0), LPARAM(0)) };
+}
+
+fn place_panel(hwnd: HWND, state: &SidePanelHost, window_dpi: u32) {
+    let inset = crate::chrome::layout::left_rail_inset(window_dpi);
+    let offset = if state.floats { state.offset } else { 0 };
+    let bounds = shifted_bounds(state.client, inset, state.width.max(0), state.position, offset);
+    unsafe {
+        let _ = SetWindowPos(hwnd, None, bounds.left, bounds.top, (bounds.right - bounds.left).max(0), (bounds.bottom - bounds.top).max(0), SWP_NOZORDER | SWP_NOACTIVATE);
+    }
+}
 fn desired_width(width_dip: i32, owner: HWND) -> i32 {
     let mut rect = RECT::default(); unsafe { let _ = GetClientRect(owner, &mut rect); }
     let inset=crate::chrome::layout::left_rail_inset(dpi(owner));
@@ -383,7 +523,7 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
         WM_NCCREATE => { let create=&*(lp.0 as *const CREATESTRUCTW); SetWindowLongPtrW(hwnd,GWLP_USERDATA,create.lpCreateParams as isize); DefWindowProcW(hwnd,msg,wp,lp) }
         WM_ERASEBKGND => LRESULT(1),
         WM_PAINT => { paint(hwnd); LRESULT(0) }
-        WM_MOUSEMOVE => { if let Some(s)=host(hwnd) { let x=lp.0 as u16 as i16 as i32; let y=(lp.0>>16) as u16 as i16 as i32; if s.resizing { s.width=width_from_drag(s.owner,x,s.width,s.position); s.width_dip=(s.width.saturating_mul(96)/dpi(s.owner) as i32).clamp(MIN_WIDTH_DIP,MAX_WIDTH_DIP); let inset=crate::chrome::layout::left_rail_inset(dpi(s.owner)); let _=SetWindowPos(hwnd,None,panel_left(s.client,inset,s.width,s.position),s.client.top,s.width,s.client.bottom-s.client.top,SWP_NOZORDER|SWP_NOACTIVATE); let _=windows::Win32::UI::WindowsAndMessaging::PostMessageW(Some(s.owner),WM_RESIZED,WPARAM(0),LPARAM(0)); } else if over_grip(x,s.width,scale(RESIZE_DIP,dpi(hwnd)),s.position) { if let Ok(cursor)=LoadCursorW(None,IDC_SIZEWE) { let _=SetCursor(Some(cursor)); } } else if let Some(c)=s.content.as_mut() { c.on_mouse_move(x,y); } } LRESULT(0) }
+        WM_MOUSEMOVE => { if let Some(s)=host(hwnd) { let x=lp.0 as u16 as i16 as i32; let y=(lp.0>>16) as u16 as i16 as i32; if s.resizing { s.animation=None; s.offset=0; s.width=width_from_drag(s.owner,x,s.width,s.position); s.width_dip=(s.width.saturating_mul(96)/dpi(s.owner) as i32).clamp(MIN_WIDTH_DIP,MAX_WIDTH_DIP); place_panel(hwnd,s,dpi(s.owner)); let _=windows::Win32::UI::WindowsAndMessaging::PostMessageW(Some(s.owner),WM_RESIZED,WPARAM(0),LPARAM(0)); } else if over_grip(x,s.width,scale(RESIZE_DIP,dpi(hwnd)),s.position) { if let Ok(cursor)=LoadCursorW(None,IDC_SIZEWE) { let _=SetCursor(Some(cursor)); } } else if let Some(c)=s.content.as_mut() { c.on_mouse_move(x,y); } } LRESULT(0) }
         WM_LBUTTONDOWN => {
             let x=lp.0 as u16 as i16 as i32; let y=(lp.0>>16) as u16 as i16 as i32;
             let close_owner = if let Some(s)=host(hwnd) {
@@ -419,7 +559,7 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
 fn paint(hwnd: HWND) {
     unsafe {
         let mut ps=PAINTSTRUCT::default(); let dc=BeginPaint(hwnd,&mut ps); let Some(s)=host(hwnd) else { let _=EndPaint(hwnd,&ps); return; };
-        let p=glass::palette(); let mut r=RECT::default(); let _=GetClientRect(hwnd,&mut r);
+        let p = if s.floats { theme::palette(glass::appearance(), true) } else { glass::palette() }; let mut r=RECT::default(); let _=GetClientRect(hwnd,&mut r);
         let width = r.right - r.left;
         let height = r.bottom - r.top;
         let memory = CreateCompatibleDC(Some(dc));
@@ -481,9 +621,21 @@ fn save_panel_width(id: Option<PanelId>, owner: HWND, width: i32) {
 }
 // --- end window and panels ---
 
-/// The side panel layout saved in a settings file.
+/// The side panel layout saved in a settings file. `position` is the saved edge, not the live one.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct SavedLayout { width: i32, position: SidePanelPosition }
+struct SavedLayout {
+    width: i32,
+    position: SidePanelPosition,
+    tabs: TabLayout,
+    tab_bar_visible: bool,
+}
+
+impl SavedLayout {
+    /// The edge an open panel uses. Switching the tab edge does not change `position`.
+    fn placed(self) -> SidePanelPosition {
+        SidePanelPosition::placed(self.position, self.tabs, self.tab_bar_visible)
+    }
+}
 
 /// What a cached layout was read at: the file's stamp and the `crate::settings::save_generation`.
 type LayoutSeen = (Option<crate::panel_prefs::FileStamp>, u64);
@@ -513,7 +665,7 @@ fn saved_layout_at(settings: &std::path::Path, generation: u64) -> SavedLayout {
         return layout;
     }
     let file = crate::settings::Settings::load(settings);
-    let layout = SavedLayout { width: i32::from(file.side_panel_width), position: file.side_panel_position };
+    let layout = SavedLayout { width: i32::from(file.side_panel_width), position: file.side_panel_position, tabs: file.tab_layout, tab_bar_visible: file.tab_bar_visible };
     SAVED_LAYOUT.with(|slot| *slot.borrow_mut() = Some((settings.to_owned(), stamp, layout)));
     layout
 }
@@ -525,6 +677,34 @@ fn shared_width(settings: &std::path::Path) -> i32 {
 
 fn save_width(_owner: HWND, width: i32) { let width=width.clamp(MIN_WIDTH_DIP,MAX_WIDTH_DIP); if let Ok(profile)=crate::profile::active() { if profile.is_guest() { GUEST_WIDTH.with(|v|v.set(width)); } else { let path=profile.settings_file(); let mut settings=crate::settings::Settings::load(&path); settings.side_panel_width=width as u16; let _=crate::settings::save(&path,&settings); } } else { GUEST_WIDTH.with(|v|v.set(width)); } }
 fn panel_origin(viewport_left: i32, inset: i32) -> i32 { viewport_left.max(inset) }
+
+/// The saved edge, with a visible vertical tab bar taking the opposite one. The file is unchanged.
+fn placed_position() -> SidePanelPosition {
+    crate::profile::active().ok().map(|profile| saved_layout(&profile.settings_file()).placed()).unwrap_or(SidePanelPosition::Left)
+}
+
+/// How far off its resting edge a floating panel of `width` starts. Left hides to the left.
+fn hidden_offset(width: i32, position: SidePanelPosition) -> i32 {
+    match position {
+        SidePanelPosition::Left => -width.max(0),
+        SidePanelPosition::Right => width.max(0),
+    }
+}
+
+/// `offset` shifted from one edge's hidden distance to the other's, keeping the same fraction.
+fn mirrored_offset(offset: i32, old_hidden: i32, new_hidden: i32) -> i32 {
+    if old_hidden == 0 {
+        return 0;
+    }
+    let value = i64::from(offset) * i64::from(new_hidden) / i64::from(old_hidden);
+    i32::try_from(value).unwrap_or(new_hidden)
+}
+
+/// The host rectangle. `offset` slides a floating panel along x; `0` is the docked edge.
+fn shifted_bounds(viewport: RECT, inset: i32, width: i32, position: SidePanelPosition, offset: i32) -> RECT {
+    let base = panel_bounds(viewport, inset, width, position);
+    RECT { left: base.left + offset, right: base.right + offset, ..base }
+}
 
 /// The host window's left edge for a panel of `width`, docked per `position`. Pure.
 fn panel_left(viewport: RECT, inset: i32, width: i32, position: SidePanelPosition) -> i32 {
@@ -580,6 +760,15 @@ fn animation_width(from: i32, to: i32, t: f32) -> i32 {
     let eased = if to < from { t.powi(3) } else { 1.0 - (1.0 - t).powi(3) };
     (from as f32 + (to - from) as f32 * eased).round() as i32
 }
+
+/// Offset of a floating panel. `0` rests on its edge; a left panel hides at `-width` and a right
+/// panel at `+width`. Moving toward 0 (opening) eases out. Moving away eases in. The sign of the
+/// delta is not the direction: a right-edge reveal goes from positive to 0 and still eases out.
+fn slide_px(from: i32, to: i32, t: f32) -> i32 {
+    let t = t.clamp(0.0, 1.0);
+    let eased = if to.saturating_abs() < from.saturating_abs() { 1.0 - (1.0 - t).powi(3) } else { t.powi(3) };
+    (from as f32 + (to - from) as f32 * eased).round() as i32
+}
 fn animation_running(elapsed_ms: f32) -> bool { elapsed_ms < ANIMATION_MS }
 fn colorref(c: theme::Rgba) -> windows::Win32::Foundation::COLORREF { windows::Win32::Foundation::COLORREF(u32::from(c.r)|(u32::from(c.g)<<8)|(u32::from(c.b)<<16)) }
 
@@ -630,10 +819,10 @@ mod tests {
         let before = crate::settings::save_generation();
         crate::settings::save(&path, &settings).unwrap();
         assert!(crate::settings::save_generation() > before, "a settings save invalidates the cached layout");
-        assert_eq!(saved_layout_at(&path, 1), SavedLayout { width: 333, position: SidePanelPosition::Right });
+        assert_eq!(saved_layout_at(&path, 1), SavedLayout { width: 333, position: SidePanelPosition::Right, tabs: crate::settings::TabLayout::ToolbarTop, tab_bar_visible: true });
         // While nothing changed a panel switch does not parse the file: the copy in memory answers
         // (seen here by planting a different copy for the same stamp and generation).
-        let planted = SavedLayout { width: 300, position: SidePanelPosition::Right };
+        let planted = SavedLayout { width: 300, position: SidePanelPosition::Right, tabs: crate::settings::TabLayout::ToolbarTop, tab_bar_visible: true };
         SAVED_LAYOUT.with(|slot| *slot.borrow_mut() = Some((path.clone(), (crate::panel_prefs::file_stamp(&path), 1), planted)));
         assert_eq!(saved_layout_at(&path, 1).width, 300, "served from memory");
         // A settings-page Save or Reset: the generation moved, so the file is read again even when
@@ -644,7 +833,7 @@ mod tests {
         settings.side_panel_width = 410;
         settings.side_panel_position = SidePanelPosition::Left;
         crate::settings::save(&path, &settings).unwrap();
-        assert_eq!(saved_layout_at(&path, 2), SavedLayout { width: 410, position: SidePanelPosition::Left });
+        assert_eq!(saved_layout_at(&path, 2), SavedLayout { width: 410, position: SidePanelPosition::Left, tabs: crate::settings::TabLayout::ToolbarTop, tab_bar_visible: true });
         // The real entry points agree, and a removed file means the default width.
         assert_eq!(shared_width(&path), 410);
         std::fs::remove_file(&path).unwrap();
@@ -739,11 +928,57 @@ mod tests {
     }
 
     #[test]
+    fn a_floating_panel_keeps_its_width_and_slides_in_from_the_outer_edge() {
+        let viewport = RECT { left: 34, top: 70, right: 1276, bottom: 796 };
+        let rest = panel_bounds(viewport, 34, 340, SidePanelPosition::Left);
+        let hidden = shifted_bounds(viewport, 34, 340, SidePanelPosition::Left, hidden_offset(340, SidePanelPosition::Left));
+        assert_eq!(hidden.right - hidden.left, 340, "the width stays constant");
+        assert_eq!(hidden.right, rest.left, "a left panel starts fully past the left edge");
+        let right = panel_bounds(viewport, 34, 340, SidePanelPosition::Right);
+        let right_hidden = shifted_bounds(viewport, 34, 340, SidePanelPosition::Right, hidden_offset(340, SidePanelPosition::Right));
+        assert_eq!(right_hidden.right - right_hidden.left, 340);
+        assert_eq!(right_hidden.left, right.right, "a right panel starts fully past the right edge");
+        // Switching edges mid-slide keeps the same fraction of the way out.
+        assert_eq!(mirrored_offset(-170, -340, 340), 170);
+        assert_eq!(mirrored_offset(0, -340, 340), 0);
+    }
+
+    #[test]
+    fn a_vertical_tab_bar_in_the_file_places_the_panel_opposite_without_changing_the_saved_edge() {
+        let dir = std::env::temp_dir().join(format!("bowser-side-place-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.txt");
+        let mut settings = crate::settings::Settings::default();
+        settings.tab_layout = crate::settings::TabLayout::Vertical;
+        settings.side_panel_position = SidePanelPosition::Left;
+        crate::settings::save(&path, &settings).unwrap();
+        let saved = saved_layout_at(&path, crate::settings::save_generation());
+        assert_eq!(saved.position, SidePanelPosition::Left, "the file still says left");
+        assert_eq!(saved.placed(), SidePanelPosition::Right, "tabs on the left: the panel opens on the right");
+        settings.tab_layout = crate::settings::TabLayout::VerticalRight;
+        crate::settings::save(&path, &settings).unwrap();
+        let moved = saved_layout_at(&path, crate::settings::save_generation());
+        assert_eq!(moved.position, SidePanelPosition::Left, "switching the tab edge does not rewrite the panel edge");
+        assert_eq!(moved.placed(), SidePanelPosition::Left);
+        settings.tab_bar_visible = false;
+        crate::settings::save(&path, &settings).unwrap();
+        assert_eq!(saved_layout_at(&path, crate::settings::save_generation()).placed(), SidePanelPosition::Left, "a hidden tab bar keeps the saved edge");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn animation_has_eased_endpoints_and_settles() {
         assert_eq!(animation_width(200, 400, 0.0), 200);
         assert_eq!(animation_width(200, 400, 1.0), 400);
         assert!(animation_width(200, 400, 0.5) > 300, "opening eases out");
         assert!(animation_width(400, 200, 0.5) > 300, "closing eases in and has barely started");
+        assert_eq!(slide_px(-400, 0, 0.0), -400);
+        assert_eq!(slide_px(-400, 0, 1.0), 0);
+        assert!(slide_px(-400, 0, 0.5) > -200, "opening from the left eases out");
+        assert!(slide_px(0, -400, 0.5) > -200, "closing to the left eases in");
+        assert!(slide_px(400, 0, 0.5) < 200, "a right-edge reveal eases out even though the offset falls");
+        assert!(slide_px(0, 400, 0.5) < 200, "a right-edge hide eases in");
         assert!(animation_running(219.0));
         assert!(!animation_running(220.0));
     }

@@ -223,10 +223,20 @@ pub struct Plan {
     pub top: bool,
     /// The vertical layout's sidebar.
     pub sidebar: bool,
-    /// An open side panel floats over the page instead of taking room from it.
+    /// The panel bar is in the hidden set. Frameless mode floats an open panel even when this is
+    /// false; [`panel_overlays`] is what decides whether the page gives up a column.
     pub panel: bool,
     /// The bookmarks bar.
     pub bookmarks: bool,
+}
+
+/// Whether an open side panel covers the page instead of narrowing it.
+///
+/// Auto-hide (the frameless master switch) always does, so the panel stays out of the layout until
+/// the user opens it and then slides over the page. A hidden-bar set that includes the panel does
+/// too (full screen, or the panel chosen on its own). Neither case rewrites `auto_hide_bars`.
+pub fn panel_overlays(master: bool, hidden: Bars) -> bool {
+    master || hidden.contains(Bars::PANEL)
 }
 
 /// Which parts of the window `hidden` takes out of `layout`. Hiding tabs in a horizontal layout hides
@@ -648,6 +658,12 @@ mod tests {
         assert_eq!(plan(Bars::ADDRESS, TabLayout::Vertical), Plan { top: true, ..Plan::default() }, "vertical: address is the toolbar");
         assert_eq!(plan(Bars::BOOKMARKS, TabLayout::ToolbarTop), Plan { bookmarks: true, ..Plan::default() });
         assert_eq!(plan(Bars::PANEL, TabLayout::ToolbarTop), Plan { panel: true, ..Plan::default() });
+        assert!(panel_overlays(true, DEFAULT_BARS), "frameless: the panel overlays even though it is not a default bar");
+        assert!(!DEFAULT_BARS.contains(Bars::PANEL));
+        assert!(panel_overlays(true, Bars::NONE));
+        assert!(!panel_overlays(false, Bars::NONE), "framed: an open panel keeps its column");
+        assert!(panel_overlays(false, Bars::PANEL), "the panel bar still overlays when it is the bar that hides");
+        assert!(panel_overlays(false, ALL_BARS), "full screen hides every bar, including the panel");
         assert_eq!(plan(all, TabLayout::Vertical), Plan { top: true, sidebar: true, panel: true, bookmarks: true });
         assert_eq!(plan(Bars::TABS, TabLayout::Vertical).layout(), crate::chrome::layout::AutoHide { top: false, sidebar: true });
         assert!(plan(Bars::NONE, TabLayout::Vertical).layout().is_off());

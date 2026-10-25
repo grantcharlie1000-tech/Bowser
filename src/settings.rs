@@ -232,7 +232,7 @@ impl TabLayout {
 
     // --- layout (thread T6) ---
     /// Which edge the sidebar is docked to, for the two sidebar layouts.
-    pub fn sidebar_side(self) -> Option<SidePanelPosition> {
+    pub const fn sidebar_side(self) -> Option<SidePanelPosition> {
         match self {
             Self::Vertical => Some(SidePanelPosition::Left),
             Self::VerticalRight => Some(SidePanelPosition::Right),
@@ -383,7 +383,8 @@ impl BookmarksBar {
 }
 
 /// `side_panel_position=left|right` (default `left`): which edge the rail panels (Helium panels)
-/// are docked to.
+/// use when the tab bar is a row. A visible vertical tab bar takes one edge, and the panel sits
+/// on the other ([`SidePanelPosition::placed`]); that live edge is not written back here.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum SidePanelPosition {
     #[default]
@@ -393,6 +394,24 @@ pub enum SidePanelPosition {
 
 impl SidePanelPosition {
     pub const ALL: [SidePanelPosition; 2] = [Self::Left, Self::Right]; // --- layout (thread T6) ---
+
+    pub const fn opposite(self) -> Self {
+        match self {
+            Self::Left => Self::Right,
+            Self::Right => Self::Left,
+        }
+    }
+
+    /// The edge an open panel uses. `saved` is `side_panel_position` in settings.txt.
+    /// A visible vertical tab bar owns one edge, so the panel takes the other. Every other layout,
+    /// and a vertical layout whose tab bar is hidden, keeps `saved`. Do not write the result back:
+    /// switching the tab edge must not change the file.
+    pub const fn placed(saved: Self, tabs: TabLayout, tab_bar_visible: bool) -> Self {
+        match tabs.sidebar_side() {
+            Some(side) if tab_bar_visible => side.opposite(),
+            _ => saved,
+        }
+    }
 
     pub fn key(self) -> &'static str {
         match self {
@@ -519,8 +538,9 @@ pub struct Settings {
     pub bookmarks_bar: BookmarksBar,
     /// `bookmarks_bar_tab_groups` (default false). Applies immediately (`App::apply_live_settings`).
     pub bookmarks_bar_tab_groups: bool,
-    /// `side_panel_position=left|right` (default left). Read from the file each time the side panel
-    /// opens, so it applies from the next panel opened; memory keeps the startup value.
+    /// `side_panel_position=left|right` (default left). The saved edge, used when the tab bar is a
+    /// row. A visible vertical tab bar places the panel on the opposite edge
+    /// ([`SidePanelPosition::placed`]) without rewriting this field.
     pub side_panel_position: SidePanelPosition,
     /// `tab_preview_images` (default true): the hover card's thumbnail. Applies immediately.
     pub tab_preview_images: bool,
@@ -1509,6 +1529,30 @@ mod tests {
                 ..Settings::default()
             }
         );
+    }
+
+    #[test]
+    fn a_vertical_tab_bar_places_the_panel_on_the_opposite_edge_and_leaves_the_saved_one_alone() {
+        use SidePanelPosition::{Left, Right};
+        use TabLayout::{TabsBottom, ToolbarTop, Vertical, VerticalRight};
+        assert_eq!(Left.opposite(), Right);
+        assert_eq!(Right.opposite(), Left);
+        // Tabs on the left: the panel is on the right, even when the file already says right.
+        assert_eq!(SidePanelPosition::placed(Left, Vertical, true), Right);
+        assert_eq!(SidePanelPosition::placed(Right, Vertical, true), Right);
+        // Tabs on the right: the panel is on the left, whichever edge was saved.
+        assert_eq!(SidePanelPosition::placed(Left, VerticalRight, true), Left);
+        assert_eq!(SidePanelPosition::placed(Right, VerticalRight, true), Left);
+        // A row of tabs, and a hidden tab bar, keep the saved edge.
+        assert_eq!(SidePanelPosition::placed(Right, ToolbarTop, true), Right);
+        assert_eq!(SidePanelPosition::placed(Left, TabsBottom, true), Left);
+        assert_eq!(SidePanelPosition::placed(Left, Vertical, false), Left);
+        assert_eq!(SidePanelPosition::placed(Right, VerticalRight, false), Right);
+        // Switching the tab edge moves only the live result.
+        let saved = Left;
+        assert_eq!(SidePanelPosition::placed(saved, Vertical, true), Right);
+        assert_eq!(SidePanelPosition::placed(saved, VerticalRight, true), Left);
+        assert_eq!(saved, Left);
     }
 
     #[test]

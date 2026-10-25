@@ -44,6 +44,28 @@ export const UI_ZOOM_STEP = 5;
 /** Longest `layout_saved` value Rust keeps. */
 export const MAX_LAYOUT_SAVED = 160;
 
+/**
+ * The edge the side panel uses. A visible vertical tab bar takes one edge, so the panel takes the
+ * other. `saved` is `side_panel_position` and is what a row layout, or a hidden tab bar, uses.
+ * The result is not written back.
+ */
+export function effectiveSidePanelPosition(saved: SidePanelPosition, tabLayout: TabLayout, tabBarVisible: boolean): SidePanelPosition {
+  if (!tabBarVisible) return saved;
+  if (tabLayout === 'vertical') return 'right';
+  if (tabLayout === 'vertical-right') return 'left';
+  return saved;
+}
+
+/** Shown under the Panels control while a vertical tab bar is on screen, or `''` otherwise. */
+export function panelEdgeNote(saved: SidePanelPosition, tabLayout: TabLayout, tabBarVisible: boolean): string {
+  if (!tabBarVisible || (tabLayout !== 'vertical' && tabLayout !== 'vertical-right')) return '';
+  const live = effectiveSidePanelPosition(saved, tabLayout, tabBarVisible);
+  const where = live === 'left' ? 'the left' : 'the right';
+  if (saved === live) return `Panels open on ${where}, opposite the vertical tabs.`;
+  const kept = saved === 'left' ? 'Left' : 'Right';
+  return `Panels open on ${where}, opposite the vertical tabs. ${kept} is kept for when the tab bar is a row.`;
+}
+
 /** Where the tab bar sits for a layout. */
 export function tabBarEdge(layout: TabLayout): TabBarEdge {
   switch (layout) {
@@ -185,8 +207,8 @@ export const PRESET_LABELS: Readonly<Record<Preset | 'saved', string>> = {
 export const PRESET_HINTS: Readonly<Record<Preset | 'saved', string>> = {
   simple: 'One row, no overlay: the quietest chrome.',
   classic: 'Tabs above the address bar.',
-  'vertical-left': 'Tabs and panels on the left.',
-  'vertical-right': 'Tabs and panels on the right.',
+  'vertical-left': 'Tabs on the left, panels on the right.',
+  'vertical-right': 'Tabs on the right, panels on the left.',
   bottom: 'Tabs along the bottom edge.',
   saved: 'Your own arrangement, kept up to date.',
 };

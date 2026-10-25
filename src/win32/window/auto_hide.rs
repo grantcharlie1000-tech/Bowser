@@ -327,11 +327,10 @@ pub(crate) fn effective_for(hwnd: HWND, settings: &crate::settings::Settings) ->
 /// Called at window creation, after every settings change and every full-screen change.
 pub(super) fn sync_config(hwnd: HWND, app: &AppRef) {
     let settings = crate::app::App::settings(app);
-    let tab_layout = settings.tab_layout;
     let effective = effective_for(hwnd, &settings);
     let rail_hidden = rules::hides_rail(&settings.auto_hide, fullscreen_of(hwnd));
-    let plan = rules::plan_for(effective.hidden, tab_layout, settings.tab_bar_visible); // A hidden tab bar hides nothing
-    set_panel_floats(hwnd, plan.panel);
+    // Frameless overlays the panel even when "panel" is not one of the saved bars.
+    set_panel_floats(hwnd, rules::panel_overlays(settings.frameless, effective.hidden));
     let was_solid = solid(hwnd);
     let now_solid = !effective.hidden.is_empty();
     set_solid(hwnd, now_solid); // this window only

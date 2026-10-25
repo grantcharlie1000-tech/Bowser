@@ -2093,6 +2093,10 @@ pub(crate) fn auto_hide_page_created(hwnd: HWND) {
 pub(crate) fn auto_hide_effective(hwnd: HWND, settings: &crate::settings::Settings) -> crate::auto_hide::Effective {
     auto_hide::effective_for(hwnd, settings)
 }
+/// Whether an open side panel covers the page. The side-panel host asks this when it places itself.
+pub(crate) fn side_panel_floats(hwnd: HWND) -> bool {
+    auto_hide::panel_floats(hwnd)
+}
 pub(crate) fn zoomed_or_full(hwnd: HWND) -> bool {
     auto_hide::zoomed_or_full(hwnd)
 }
@@ -13539,17 +13543,24 @@ mod tests {
         assert!(v.sidebar.is_some(), "the sidebar keeps its rectangle: it floats there");
     }
 
-    /// An open side panel floats (takes nothing from the page) when "Side panel" is among the hidden bars.
+    /// An open side panel floats over the page when auto-hide is on, when the panel bar is hidden,
+    /// or in full screen. The master switch does this even though the panel is not a default bar.
     #[test]
     fn the_side_panel_row_decides_whether_an_open_panel_takes_room() {
-        use crate::auto_hide::{effective, plan, AutoHideSettings, Bars, Fullscreen};
+        use crate::auto_hide::{effective, panel_overlays, plan, AutoHideSettings, Bars, Fullscreen, DEFAULT_BARS};
         let on = AutoHideSettings { bars: Bars::PANEL, in_fullscreen: true };
         let off = AutoHideSettings { bars: Bars::TABS, in_fullscreen: true };
+        let defaults = AutoHideSettings::default();
         let tab_layout = crate::settings::TabLayout::ToolbarTop;
         assert!(plan(effective(true, &on, Fullscreen::No).hidden, tab_layout).panel);
         assert!(!plan(effective(true, &off, Fullscreen::No).hidden, tab_layout).panel);
-        assert!(!plan(effective(false, &on, Fullscreen::No).hidden, tab_layout).panel, "the master switch off: panels take room as ever");
-        assert!(plan(effective(false, &off, Fullscreen::Window).hidden, tab_layout).panel, "full screen floats every bar");
+        assert!(!plan(effective(false, &on, Fullscreen::No).hidden, tab_layout).panel, "the master switch off: the saved panel bar is not in effect");
+        assert!(plan(effective(false, &off, Fullscreen::Window).hidden, tab_layout).panel, "full screen hides every bar");
+        let shown = effective(true, &defaults, Fullscreen::No).hidden;
+        assert!(panel_overlays(true, shown), "frameless overlays the panel");
+        assert!(!DEFAULT_BARS.contains(Bars::PANEL));
+        assert!(!panel_overlays(false, effective(false, &on, Fullscreen::No).hidden), "framed: an open panel keeps its column");
+        assert!(panel_overlays(false, effective(false, &off, Fullscreen::Window).hidden), "full screen floats the panel");
     }
     // --- end auto-hide ---
 
