@@ -3,251 +3,352 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Bowser — stupidly light, stupidly fast, and no ads</title>
-<meta name="description" content="Bowser is an open-source browser for 64-bit Windows. Stupidly lightweight, stupidly fast, private, and every ad is gone. It runs your Chrome extensions from their folders.">
-<meta name="color-scheme" content="light">
+<title>Bowser — Chrome, Edge and Firefox ship an engine. Bowser doesn't.</title>
+<meta name="description" content="Bowser is Charlie's open-source browser for 64-bit Windows. It draws pages with WebView2, searches with DuckDuckGo advertising turned off, and publishes free builds on GitHub.">
+<link rel="canonical" href="https://grantcharlie1000-tech.github.io/Bowser/">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#f3f2ee" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#121211" media="(prefers-color-scheme: dark)">
+<meta property="og:title" content="Bowser — a small, open-source Windows browser">
+<meta property="og:description" content="No rendering engine in the download. DuckDuckGo with advertising turned off, by default. Free on GitHub.">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://grantcharlie1000-tech.github.io/Bowser/">
 <link rel="icon" type="image/png" href="img/bowser-icon.png">
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400..700&display=swap" rel="stylesheet">
+<script>
+try {
+  var theme = localStorage.getItem("bowser-theme");
+  if (theme === "light" || theme === "dark") document.documentElement.setAttribute("data-theme", theme);
+} catch (e) {}
+</script>
 <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-<svg width="0" height="0" style="position:absolute" aria-hidden="true">
-  <defs>
-    <linearGradient id="bone-disc" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#3b97ff"/>
-      <stop offset="1" stop-color="#1462dc"/>
-    </linearGradient>
-    <symbol id="bone" viewBox="0 0 100 100">
-      <circle cx="50" cy="50" r="48" fill="url(#bone-disc)"/>
-      <g fill="none" stroke-linecap="round">
-        <path d="M28 60.5Q50 38 72 60.5" stroke="#dde5f4" stroke-width="15"/>
-        <path d="M28 39.5Q50 62 72 39.5" stroke="#fff" stroke-width="15"/>
-      </g>
-    </symbol>
-    <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 4v11m0 0 4.5-4.5M12 15l-4.5-4.5M5 19.5h14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
-    <symbol id="i-code" viewBox="0 0 24 24"><path d="m8.5 7.5-5 4.5 5 4.5m7-9 5 4.5-5 4.5M13.5 5l-3 14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
-    <symbol id="i-out" viewBox="0 0 24 24"><path d="M14 5h5v5m0-5-8 8M18 14v4a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
-    <symbol id="i-chev" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
-    <symbol id="i-check" viewBox="0 0 24 24"><path d="m6.5 12.5 3.5 3.5 7.5-8" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></symbol>
-  </defs>
-</svg>
+<a class="skip" href="#content">Skip to content</a>
 
 <header class="bar">
-  <div class="bar-in">
-    <a class="mark" href="#top" aria-label="Bowser, back to top"><svg width="30" height="30"><use href="#bone"/></svg></a>
-    <nav class="bar-links" aria-label="Page">
+  <div class="wrap bar-in">
+    <a class="brand" href="#top">
+      <img src="img/bowser-icon.png" width="34" height="34" alt="">
+      <span>Bowser</span>
+    </a>
+    <nav class="nav" aria-label="Page">
+      <a href="#window">Window</a>
       <a href="#features">Features</a>
-      <a href="#compare">Compare</a>
-      <a href="#source">Open source</a>
-      <a href="https://github.com/grantcharlie1000-tech/Bowser">GitHub <svg width="15" height="15"><use href="#i-out"/></svg></a>
+      <a href="#why">Why</a>
+      <a href="#questions">Questions</a>
     </nav>
-    <a class="button primary thin" href="https://github.com/grantcharlie1000-tech/Bowser/releases/latest/download/Bowser.exe" download="Bowser.exe"><svg width="18" height="18"><use href="#i-download"/></svg>Download</a>
+    <div class="bar-actions">
+      <button type="button" class="theme" data-theme-toggle aria-pressed="false">Dark</button>
+      <a class="button primary thin" href="https://github.com/grantcharlie1000-tech/Bowser/releases">Download</a>
+    </div>
   </div>
 </header>
 
-<main id="top">
-  <section class="hero">
-    <div class="hero-bands" aria-hidden="true"></div>
+<main id="content">
+  <section class="hero" id="top">
     <div class="wrap hero-copy">
-      <h1>Stupidly light. Stupidly fast.<br><span>And the ads are gone.</span></h1>
-      <p class="lede">Bowser is an open-source browser for 64-bit Windows. It blocks every ad and tracker from the first launch, keeps private tabs private, and runs your Chrome extensions.</p>
-      <div class="hero-actions">
-        <a class="button primary" href="https://github.com/grantcharlie1000-tech/Bowser/releases/latest/download/Bowser.exe" download="Bowser.exe"><svg width="18" height="18"><use href="#i-download"/></svg>Download for Windows</a>
-        <a class="button soft" href="https://github.com/grantcharlie1000-tech/Bowser"><svg width="18" height="18"><use href="#i-code"/></svg>Read the source</a>
+      <h1>Chrome, Edge and Firefox ship an engine. <span class="h1-rest">Bowser doesn't.</span></h1>
+      <p class="lede">Bowser is an open-source browser for 64-bit Windows, written by Charlie. Pages are drawn with WebView2, the runtime Windows already shares with Edge. A new search uses DuckDuckGo's HTML results, with advertising turned off.</p>
+      <div class="actions">
+        <a class="button primary" href="https://github.com/grantcharlie1000-tech/Bowser/releases">Download on GitHub</a>
+        <a class="button ghost" href="https://github.com/grantcharlie1000-tech/Bowser">Read the source</a>
       </div>
+      <p class="fine">The button opens the releases page. On 25 October 2026 the latest published build is v0.0.23, and that Bowser.exe is 8,409,600 bytes. The rendering engine is not in the file.</p>
     </div>
-  </section>
 
-  <section class="wrap highlights" id="highlights" data-highlights>
-    <div class="hl-copy">
-      <div class="hl-panels">
-        <article class="hl-panel is-on" data-panel data-duration="10000">
-          <h2>Watch the ads go</h2>
-          <p>Bowser stops ads and trackers before they reach the page. The article loads. The ads never do.</p>
-          <ul class="hl-facts" aria-label="How blocking works">
-            <li>On from the first launch</li>
-            <li>A per-site switch in the Privacy panel</li>
-            <li>Your own filters.txt, if you want one</li>
-          </ul>
-        </article>
-        <article class="hl-panel" data-panel data-duration="8000">
-          <h2>Private tabs stay private</h2>
-          <p>A private tab always blocks, with strict tracking prevention. Browsing there is not recorded.</p>
-          <p>Its cookies live in memory and are gone when the last private tab closes.</p>
-        </article>
-        <article class="hl-panel" data-panel data-duration="8000">
-          <h2>Bring your Chrome extensions</h2>
-          <p>Point Bowser at an unpacked extension folder and it runs. Manifest V2 and V3 both load.</p>
-          <p class="hl-note">Installs from the Chrome Web Store are not supported.</p>
-        </article>
-        <article class="hl-panel" data-panel data-duration="6400">
-          <h2>Four layouts, no ads in any</h2>
-          <p>Put the tabs where you want them. The blocker comes along.</p>
-          <ol class="hl-legend" aria-label="Layouts">
-            <li data-legend>Vertical tabs</li>
-            <li data-legend>Tabs above the toolbar</li>
-            <li data-legend>Toolbar above the tabs</li>
-            <li data-legend>Single row</li>
-          </ol>
-        </article>
-      </div>
-      <div class="hl-pager" role="group" aria-label="Highlight pagination">
-        <div class="hl-dots">
-          <button type="button" class="hl-dot is-on" aria-label="Show ads disappearing" aria-current="true"><span></span></button>
-          <button type="button" class="hl-dot" aria-label="Show private tabs"><span></span></button>
-          <button type="button" class="hl-dot" aria-label="Show Chrome extensions"><span></span></button>
-          <button type="button" class="hl-dot" aria-label="Show layouts"><span></span></button>
+    <div class="wrap">
+      <figure class="versus" id="compare">
+        <figcaption class="sr">Chrome, Edge and Firefox are crossed out. Bowser is checked.</figcaption>
+        <div class="cluster" aria-hidden="true">
+          <div class="mark">
+            <div class="mini">
+              <span class="glyph chrome"></span>
+              <svg class="scratch" viewBox="0 0 100 100"><path d="M16 18c22 18 40 40 68 66"/><path d="M84 16C62 36 40 58 16 84"/></svg>
+            </div>
+            <span class="mini-name">Chrome</span>
+          </div>
+          <div class="cluster-row">
+            <div class="mark">
+              <div class="mini">
+                <span class="glyph edge"></span>
+                <svg class="scratch" viewBox="0 0 100 100"><path d="M18 20c20 16 38 38 66 64"/><path d="M80 18C58 40 40 56 18 82"/></svg>
+              </div>
+              <span class="mini-name">Edge</span>
+            </div>
+            <div class="mark">
+              <div class="mini">
+                <span class="glyph firefox"></span>
+                <svg class="scratch" viewBox="0 0 100 100"><path d="M17 17c24 20 42 42 66 68"/><path d="M83 15C60 38 38 58 15 85"/></svg>
+              </div>
+              <span class="mini-name">Firefox</span>
+            </div>
+          </div>
         </div>
-        <button type="button" class="hl-pause" aria-pressed="false" aria-label="Pause highlights">
-          <svg class="i-pause" width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="5" width="4" height="14" rx="1.5" fill="currentColor"/><rect x="14" y="5" width="4" height="14" rx="1.5" fill="currentColor"/></svg>
-          <svg class="i-play" width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5.8v12.4a1 1 0 0 0 1.5.9l10-6.2a1 1 0 0 0 0-1.8l-10-6.2A1 1 0 0 0 8 5.8Z" fill="currentColor"/></svg>
-        </button>
-      </div>
+        <svg class="arrow" viewBox="0 0 140 64" aria-hidden="true">
+          <path class="arrow-shaft" d="M8 40C36 42 58 18 118 22"/>
+          <path class="arrow-head" d="M98 10c10 6 18 12 22 16-12 2-20 8-26 14"/>
+        </svg>
+        <div class="mark chosen-mark" aria-hidden="true">
+          <div class="chosen">
+            <img src="img/bowser-icon.png" width="120" height="120" alt="">
+            <svg class="tick" viewBox="0 0 72 72"><path d="M10 36c8 8 14 18 18 22 12-20 24-32 36-40"/></svg>
+          </div>
+          <span class="mini-name">Bowser</span>
+        </div>
+      </figure>
     </div>
+  </section>
 
-    <div class="plate hl-stage" aria-live="off">
-      <div class="scene is-on" data-scene role="img" aria-label="A Bowser window with Block ads and trackers switched on in the main menu. The ads on the page give way to Ad blocked marks.">
-        <div class="frame is-on is-close"><div data-bw='{"layout":"tabs-above","page":"ads","menu":true,"reveal":true,"tab":1}'></div></div>
+  <section class="band" id="window">
+    <div class="wrap">
+      <div class="section-head">
+        <h2>The window, instead of a stock photo</h2>
+        <p>A mock you can click. It is drawn by this page. It is not a screenshot of Bowser, and it does not load a site.</p>
       </div>
-      <div class="scene" data-scene role="img" aria-label="A Bowser private tab. Ads and trackers blocked, with strict tracking prevention. Browsing not recorded. Cookies in memory until the last private tab closes.">
-        <div class="frame is-on"><div data-bw='{"layout":"toolbar-above","page":"private","private":true}'></div></div>
-      </div>
-      <div class="scene" data-scene role="img" aria-label="Bowser's extensions menu, listing extensions loaded from unpacked folders, with a button to load another folder.">
-        <div class="frame is-on is-close"><div data-bw='{"layout":"tabs-above","page":"article","extensions":true,"tab":1}'></div></div>
-      </div>
-      <div class="scene" data-scene role="img" aria-label="A Bowser window with ads blocked, changing between its four layouts: vertical tabs, tabs above the toolbar, toolbar above the tabs, and a single row.">
-        <div class="frame is-on" data-frame><div data-bw='{"layout":"vertical","page":"ads","tab":1}'></div></div>
-        <div class="frame" data-frame><div data-bw='{"layout":"tabs-above","page":"ads","tab":1}'></div></div>
-        <div class="frame" data-frame><div data-bw='{"layout":"toolbar-above","page":"ads","tab":1}'></div></div>
-        <div class="frame" data-frame><div data-bw='{"layout":"single","page":"ads","tab":1}'></div></div>
+
+      <div class="stage" data-mock>
+        <div class="stage-bar">
+          <div class="seg" role="group" aria-label="Tab placement in the mock">
+            <button type="button" data-layout-btn="horizontal" aria-pressed="true">Top tabs</button>
+            <button type="button" data-layout-btn="vertical" aria-pressed="false">Vertical rail</button>
+          </div>
+          <p class="stage-note" data-layout-note>Rounded tabs and a centred address pill. This is the quiet, Safari-style bar.</p>
+        </div>
+
+        <div class="window" data-window data-layout="horizontal">
+          <div class="rail" data-rail aria-expanded="false">
+            <button type="button" class="rail-btn is-on" data-show="start" aria-label="New tab">
+              <img src="img/bowser-icon.png" width="18" height="18" alt="">
+            </button>
+            <button type="button" class="rail-btn" data-show="search" aria-label="Search">
+              <span class="dot ddg"></span>
+            </button>
+            <button type="button" class="rail-btn" data-show="extensions" aria-label="Extensions">
+              <span class="dot ext"></span>
+            </button>
+          </div>
+          <div class="flyout" data-flyout inert>
+            <p class="flyout-kicker">Titles, on hover</p>
+            <button type="button" data-show="start">New tab</button>
+            <button type="button" data-show="search">Search</button>
+            <button type="button" data-show="extensions">Extensions</button>
+            <p class="flyout-foot">Pull request 96. Not in the release you download today.</p>
+          </div>
+
+          <div class="chrome">
+            <div class="tabstrip" role="tablist" aria-label="Mock tabs">
+              <button type="button" role="tab" data-show="start" aria-selected="false">New tab</button>
+              <button type="button" role="tab" data-show="search" aria-selected="true">Search</button>
+              <button type="button" role="tab" data-show="extensions" aria-selected="false">Extensions</button>
+            </div>
+            <div class="toolbar">
+              <span class="nav-btns" aria-hidden="true"><i></i><i></i></span>
+              <p class="pill" data-pill>html.duckduckgo.com/html/?q=windows+browser&amp;k1=-1</p>
+              <span class="menu-dot" aria-hidden="true"></span>
+            </div>
+            <div class="page">
+              <div data-view="search">
+                <p class="page-flag">Advertising off · a mock, not a live search</p>
+                <h3 class="query">windows browser</h3>
+                <ul class="results">
+                  <li>
+                    <span>github.com/grantcharlie1000-tech/Bowser</span>
+                    <strong>Bowser</strong>
+                    <p>The public repository. The release you download is built from this.</p>
+                  </li>
+                  <li>
+                    <span>developer.microsoft.com</span>
+                    <strong>Evergreen WebView2 Runtime</strong>
+                    <p>The shared runtime Bowser draws pages with. Current Edge already includes it.</p>
+                  </li>
+                  <li>
+                    <span>html.duckduckgo.com</span>
+                    <strong>DuckDuckGo HTML</strong>
+                    <p>The page the default web search opens, with the advertising parameter off.</p>
+                  </li>
+                </ul>
+              </div>
+              <div data-view="extensions" hidden>
+                <p class="page-flag">Mock of a store listing</p>
+                <div class="store-row">
+                  <span class="store-mark" aria-hidden="true"></span>
+                  <div>
+                    <strong>An extension listing</strong>
+                    <p>Bowser's own button is Add to Bowser. Chrome's Add button does not install into Bowser.</p>
+                  </div>
+                </div>
+                <div class="store-actions">
+                  <button type="button" class="button primary thin" data-add>Add to Bowser</button>
+                  <button type="button" class="button ghost thin" disabled>Add to Chrome</button>
+                </div>
+                <p class="add-result" data-add-result hidden>In the real browser this asks you to confirm permissions, then loads the extension. A loaded extension is not a promise that every Chrome API works.</p>
+              </div>
+              <div data-view="start" hidden>
+                <div class="blank">
+                  <img src="img/bowser-icon.png" width="56" height="56" alt="">
+                  <p>The window opens empty. The address field is focused. WebView2 starts when you begin typing, and nothing is requested until you press Enter.</p>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <p class="caption">Top tabs are the quiet bar: rounded tabs, address in the middle. Vertical rail is the Edge-style strip from <a href="https://github.com/grantcharlie1000-tech/Bowser/pull/96">pull request 96</a>. Rest on it and the titles slide out over the page. That behaviour is not in the current release. The release already has a pinned vertical sidebar, under Settings, Appearance.</p>
       </div>
     </div>
   </section>
 
-  <section class="wrap rail-sec" id="features">
-    <h2 class="sec-title">Six things Bowser does</h2>
-    <ol class="rail">
-      <li>
-        <span class="rail-n">01</span>
-        <h3>Stupidly lightweight</h3>
-        <p>Bowser draws pages with the WebView2 runtime Windows already shares, so it doesn’t bring an engine of its own.</p>
-      </li>
-      <li>
-        <span class="rail-n">02</span>
-        <h3>Stupidly fast</h3>
-        <p>Pages arrive without their ads and trackers, so there’s less to load before you can read.</p>
-      </li>
-      <li>
-        <span class="rail-n">03</span>
-        <h3>Private</h3>
-        <p>Private tabs always block, run strict tracking prevention, and keep cookies only in memory.</p>
-      </li>
-      <li class="is-lead">
-        <span class="rail-n">04</span>
-        <h3>All ads are gone</h3>
-        <p>Blocking is on from the first launch. Nothing to install, nothing to set up.</p>
-      </li>
-      <li>
-        <span class="rail-n">05</span>
-        <h3>Open source</h3>
-        <p>Every line is public on GitHub, the blocker included. Read it before you run it.</p>
-      </li>
-      <li>
-        <span class="rail-n">06</span>
-        <h3>Chrome extensions</h3>
-        <p>Bowser runs your Chrome extensions from their unpacked folders, Manifest V2 or V3.</p>
-      </li>
-    </ol>
-  </section>
-
-  <section class="wrap compare" id="compare">
-    <div class="compare-copy">
-      <h2>Lighter than Safari and Helium. Tougher on ads.</h2>
-      <p>Put the three side by side. Bowser is the lighter browser, and its ad blocking is the stronger one.</p>
-    </div>
-    <div class="compare-grid" role="table" aria-label="Bowser compared with Safari and Helium">
-      <div class="cmp-col" role="rowgroup">
-        <div class="cmp-name" role="columnheader">Safari</div>
-        <div class="cmp-cell" role="cell"><span class="cmp-k">Weight</span><span class="cmp-v">Heavier</span></div>
-        <div class="cmp-cell" role="cell"><span class="cmp-k">Ad blocking</span><span class="cmp-v">Weaker</span></div>
-      </div>
-      <div class="cmp-col" role="rowgroup">
-        <div class="cmp-name" role="columnheader">Helium</div>
-        <div class="cmp-cell" role="cell"><span class="cmp-k">Weight</span><span class="cmp-v">Heavier</span></div>
-        <div class="cmp-cell" role="cell"><span class="cmp-k">Ad blocking</span><span class="cmp-v">Weaker</span></div>
-      </div>
-      <div class="cmp-col is-us" role="rowgroup">
-        <div class="cmp-name" role="columnheader"><svg width="24" height="24" aria-hidden="true"><use href="#bone"/></svg>Bowser</div>
-        <div class="cmp-cell" role="cell"><span class="cmp-k">Weight</span><span class="cmp-v"><svg width="16" height="16" aria-hidden="true"><use href="#i-check"/></svg>Lighter</span></div>
-        <div class="cmp-cell" role="cell"><span class="cmp-k">Ad blocking</span><span class="cmp-v"><svg width="16" height="16" aria-hidden="true"><use href="#i-check"/></svg>Stronger</span></div>
+  <section class="band tight" id="speed">
+    <div class="wrap">
+      <div class="placeholder">
+        <p class="stamp">Placeholder for Charlie</p>
+        <h2>Startup, side by side</h2>
+        <p>This comparison is empty on purpose. When there is a measurement against Chrome, Edge or Firefox that you want to publish, replace this box. No time, memory figure or percentage belongs here until then.</p>
+        <ul class="unmeasured">
+          <li><span>Chrome</span><strong>Not measured</strong></li>
+          <li><span>Edge</span><strong>Not measured</strong></li>
+          <li><span>Bowser</span><strong>Not measured</strong></li>
+        </ul>
+        <p class="mechanism">Separate from any timing, this is what the program does. The window opens empty, with the address field focused. WebView2 is created when you begin typing. No network request is sent until you press Enter.</p>
       </div>
     </div>
   </section>
 
-  <section class="wrap row" id="source">
-    <div class="plate row-plate plate-b" role="img" aria-label="A Bowser window open on the src folder of the public Bowser repository.">
-      <div class="frame is-on"><div data-bw='{"layout":"vertical","page":"source","tab":0}'></div></div>
-    </div>
-    <div class="row-copy">
-      <h2>Open source, all of it</h2>
-      <p>The whole browser is public on GitHub: the blocker, its built-in list, private tabs, extensions. Bowser never fetches filter lists by itself, so what it blocks is what you can read.</p>
-      <div class="row-actions">
-        <a class="button primary thin" href="https://github.com/grantcharlie1000-tech/Bowser"><svg width="18" height="18"><use href="#i-code"/></svg>Read the source</a>
-        <a class="button soft thin" href="https://github.com/grantcharlie1000-tech/Bowser/releases/latest"><svg width="18" height="18"><use href="#i-download"/></svg>Latest release</a>
+  <section class="band" id="features">
+    <div class="wrap">
+      <div class="section-head">
+        <h2>What it actually does</h2>
+        <p>Six things the repository backs up. Nothing here is a download count, a user count, or a quote.</p>
+      </div>
+      <div class="grid">
+        <article class="card">
+          <h3>The window comes first</h3>
+          <p>Startup is a blank native window. The engine is not created until you begin typing, and the first request waits for Enter. That is the design. It is not a published race against another browser.</p>
+        </article>
+        <article class="card">
+          <h3>Search, with advertising off</h3>
+          <p>The default engine is Optimised. A web search opens <span class="code">html.duckduckgo.com</span> with advertising turned off. Image searches from that engine go to Google. Settings can switch to Google, or to DuckDuckGo's regular page. A profile that already saved an engine, or has a valid <span class="code">search-provider.txt</span>, keeps it.</p>
+          <p><a href="https://github.com/grantcharlie1000-tech/Bowser/blob/main/src/navigation.rs">In the source</a></p>
+        </article>
+        <article class="card">
+          <h3>Chrome extensions, with limits</h3>
+          <p>Add to Bowser installs from a Chrome Web Store listing. An unpacked folder works, and so does a <span class="code">.crx</span> file on disk. Chrome's own Add button does not install into Bowser. WebView2 does not implement every Chrome API, so loading an extension does not mean the whole thing works.</p>
+        </article>
+        <article class="card">
+          <h3>Free, and public</h3>
+          <p>The code is on GitHub. Builds are ordinary GitHub releases. There is no account and no fee. The v0.0.23 executable is 8,409,600 bytes. It is not Authenticode-signed, so SmartScreen may ask for More info, then Run anyway.</p>
+          <p><a href="https://github.com/grantcharlie1000-tech/Bowser/releases">Releases</a></p>
+        </article>
+        <article class="card">
+          <h3>Vertical tabs</h3>
+          <p>Settings, Appearance, already offers a vertical sidebar, plus tabs above the toolbar, the toolbar above the tabs, and a single row. The Edge-style rail, a narrow strip of icons that opens over the page when you rest on it, is <a href="https://github.com/grantcharlie1000-tech/Bowser/pull/96">pull request 96</a>. It is open. It is not in the download yet.</p>
+        </article>
+        <article class="card">
+          <h3>A quiet, Safari-style bar</h3>
+          <p>Rounded tab islands and a centred address pill. On Windows 11 the window uses the system translucent backdrop. Safari's compact bar is one of the references in the design notes. Light and dark follow the Windows app mode.</p>
+        </article>
       </div>
     </div>
   </section>
 
-  <section class="close">
-    <svg class="close-mark" width="96" height="96" aria-hidden="true"><use href="#bone"/></svg>
-    <h2>Lighter, faster, and no ads</h2>
-    <p>Open source, for 64-bit Windows. Bring your Chrome extensions.</p>
-    <a class="button primary thin" href="https://github.com/grantcharlie1000-tech/Bowser/releases/latest/download/Bowser.exe" download="Bowser.exe"><svg width="18" height="18"><use href="#i-download"/></svg>Download for Windows</a>
+  <section class="band" id="why">
+    <div class="wrap prose">
+      <h2>Why I built Bowser</h2>
+      <p>Hi, I'm Charlie. I build Bowser on my own.</p>
+      <p>I wanted a Windows browser I could read, that opens as a small window and then leaves the page alone. Chrome, Edge and Firefox are capable browsers, and each one ships a rendering engine. Bowser is a native window on WebView2, which Windows already shares with Edge. The download is the shell. The engine stays the system's.</p>
+      <p>The window is the part I kept returning to. Rounded tabs, the address in the middle, and a translucent surface on Windows 11. I used Safari's compact bar as one of the references, because I wanted the chrome to take less of the screen than the page.</p>
+      <p>Search was the other decision I did not want to leave on a sponsored list. Unless a profile already has a saved engine, or a valid search-provider.txt, a web search opens DuckDuckGo's HTML results with advertising turned off. Image searches from that default go to Google, which is a different page, and you can change the engine in Settings.</p>
+      <p>So I built it around a few things:</p>
+      <ol>
+        <li>A fast open. The window is up, and the field is ready, before WebView2 exists. I have not put a stopwatch next to Chrome or Edge on this page. The box above stays empty until I measure one I am willing to publish.</li>
+        <li>Open source, and free to download. The repository is public. The builds are the normal GitHub releases. Read it before you run it.</li>
+        <li>Extensions, only as far as WebView2 actually goes. Add to Bowser on a store listing, an unpacked folder, or a .crx file. I will not claim that every Chrome extension works.</li>
+        <li>Vertical tabs that can behave like Edge's. The release already has the sidebar. The collapsed rail that opens over the page is pull request 96, and it is not what the download does today.</li>
+      </ol>
+    </div>
   </section>
 
-  <section class="faq" id="faq">
-    <p class="faq-title">A few details</p>
-    <div class="faq-list">
-      <details>
-        <summary>Is blocking on when I install it?<svg width="18" height="18"><use href="#i-chev"/></svg></summary>
-        <p>Yes. Ads and trackers are blocked from the first launch.</p>
-      </details>
-      <details>
-        <summary>Can I turn it off for one site?<svg width="18" height="18"><use href="#i-chev"/></svg></summary>
-        <p>Yes. The Privacy panel has a blocker switch for the site you’re on. Every other site stays blocked.</p>
-      </details>
-      <details>
-        <summary>Can I use my own filter list?<svg width="18" height="18"><use href="#i-chev"/></svg></summary>
-        <p>Yes. Put a filters.txt in your Bowser profile and it becomes your own list. Bowser doesn’t fetch filter lists by itself.</p>
-      </details>
-      <details>
-        <summary>Which Chrome extensions work?<svg width="18" height="18"><use href="#i-chev"/></svg></summary>
-        <p>Bowser loads unpacked extension folders with manifest version 2 or 3. Installs from the Chrome Web Store are not supported.</p>
-      </details>
-      <details>
-        <summary>What does it run on?<svg width="18" height="18"><use href="#i-chev"/></svg></summary>
-        <p>64-bit Windows. Bowser draws pages with the shared WebView2 runtime.</p>
-      </details>
-      <details>
-        <summary>Where is the source?<svg width="18" height="18"><use href="#i-chev"/></svg></summary>
-        <p>On <a href="https://github.com/grantcharlie1000-tech/Bowser">GitHub</a>. The repository is public, and every release is on the <a href="https://github.com/grantcharlie1000-tech/Bowser/releases/latest">releases page</a>.</p>
-      </details>
+  <section class="band tight" id="release">
+    <div class="wrap">
+      <div class="release">
+        <div>
+          <h2>The release is the download</h2>
+          <p>There is no store and no installer account. Bowser.exe is attached to a GitHub release. v0.0.23, the latest published release on 25 October 2026, is 8,409,600 bytes. A later release can be a different size. This page will not guess it.</p>
+          <p>You need 64-bit Windows 10 or later, and the Evergreen WebView2 Runtime. Current Microsoft Edge already includes that runtime. If it is missing, Bowser says so and points at Microsoft's installer.</p>
+          <div class="actions left">
+            <a class="button primary" href="https://github.com/grantcharlie1000-tech/Bowser/releases">Open releases</a>
+            <a class="button ghost" href="https://developer.microsoft.com/en-us/microsoft-edge/webview2/#download-section">WebView2 runtime</a>
+          </div>
+        </div>
+        <dl class="facts">
+          <div><dt>Price</dt><dd>Free</dd></div>
+          <div><dt>v0.0.23 Bowser.exe</dt><dd>8,409,600 bytes</dd></div>
+          <div><dt>System</dt><dd>Windows x64</dd></div>
+          <div><dt>Engine in the file</dt><dd>None</dd></div>
+        </dl>
+      </div>
+    </div>
+  </section>
+
+  <section class="band" id="questions">
+    <div class="wrap">
+      <div class="section-head">
+        <h2>Questions</h2>
+      </div>
+      <div class="faq">
+        <details>
+          <summary>What does a search do?</summary>
+          <p>With no saved engine and no valid search-provider.txt, web searches use the Optimised template: <span class="code">https://html.duckduckgo.com/html/?q={query}&amp;k1=-1</span>. That is DuckDuckGo's HTML results with advertising turned off. Typing <span class="code">img</span> before a query, on that engine, searches Google Images. Settings offers Google, and DuckDuckGo's regular page, and the choice is saved in the profile. An existing choice is left alone.</p>
+        </details>
+        <details>
+          <summary>Which Chrome extensions work?</summary>
+          <p>Bowser installs three ways: Add to Bowser on a Chrome Web Store listing, an unpacked folder that contains a manifest, or a .crx file you already have. You confirm the permissions before it is copied in. Chrome's installer cannot run inside Bowser, which is why the store page's own Add button is not the one that works. Extensions run in the normal browsing profile, not in private tabs. WebView2 does not provide every Chrome API, and the project does not claim Chrome Web Store compatibility for every listing. A short curated catalogue names a few extensions and says compatibility still has to be checked.</p>
+        </details>
+        <details>
+          <summary>Where are the vertical tabs?</summary>
+          <p>In the release: Settings, Appearance, then Vertical. The sidebar can be resized, and it scrolls. Horizontal, tabs on top, and a single row are the other layouts. The Edge-style behaviour, a 48px icon rail that opens titles over the page on hover and leaves the page where it is, is pull request 96. The default there stays the pinned sidebar. That pull request is not merged, so the file on the releases page does not do it yet.</p>
+        </details>
+        <details>
+          <summary>How fast is it?</summary>
+          <p>Not published here. The window is up before WebView2 is created, and that is a description of the startup sequence, not a comparison. The placeholder on this page is where a measured comparison would go.</p>
+        </details>
+        <details>
+          <summary>Does it block ads?</summary>
+          <p>An ad and tracker blocker is on by default, at the ads level, which covers trackers and ads. It uses a list built into the program, plus an optional filters.txt in the profile if you add one. Bowser does not fetch filter lists itself. A site can be exempted. It does not block every ad on the web, and this page does not claim that it does. Private tabs always block, and they do not record history.</p>
+        </details>
+        <details>
+          <summary>What does it run on?</summary>
+          <p>64-bit Windows 10 or later. The shared WebView2 runtime has to be installed. Browser data stays in %LOCALAPPDATA%\Bowser, separate from Edge's profile. The build is not Authenticode-signed. SmartScreen may ask you to choose More info, then Run anyway.</p>
+        </details>
+        <details>
+          <summary>Does Bowser phone home?</summary>
+          <p>Bowser has no hosted backend and no first-party telemetry. Microsoft Defender SmartScreen reputation checking can still send visited addresses to Microsoft, where Windows allows it. Sites you open, and the search engine you use, receive ordinary requests. This website loads no analytics and no third-party scripts.</p>
+        </details>
+        <details>
+          <summary>Who builds it?</summary>
+          <p>Charlie, on his own. The repository is <a href="https://github.com/grantcharlie1000-tech/Bowser">grantcharlie1000-tech/Bowser</a>. Questions go there, as issues, not to a company.</p>
+        </details>
+      </div>
+    </div>
+  </section>
+
+  <section class="cta">
+    <div class="wrap">
+      <h2>Download the release. Read the code if you want.</h2>
+      <p>Free, for 64-bit Windows. The download is the GitHub releases page, where the executable is actually attached.</p>
+      <div class="actions">
+        <a class="button primary" href="https://github.com/grantcharlie1000-tech/Bowser/releases">Download on GitHub</a>
+        <a class="button ghost" href="https://github.com/grantcharlie1000-tech/Bowser">View the source</a>
+      </div>
     </div>
   </section>
 </main>
 
 <footer class="foot">
-  <div class="foot-in">
-    <a class="mark" href="#top" aria-label="Back to top"><svg width="22" height="22"><use href="#bone"/></svg></a>
-    <span>Bowser</span>
-    <nav aria-label="Footer">
-      <a href="https://github.com/grantcharlie1000-tech/Bowser">Source</a>
-      <a href="https://github.com/grantcharlie1000-tech/Bowser/releases/latest">Releases</a>
-    </nav>
+  <div class="wrap foot-in">
+    <p>Bowser, an open-source browser by Charlie.</p>
+    <p><a href="https://github.com/grantcharlie1000-tech/Bowser">GitHub</a> · <a href="https://github.com/grantcharlie1000-tech/Bowser/releases">Releases</a> · <a href="https://github.com/grantcharlie1000-tech/Bowser/pull/96">Pull request 96</a></p>
   </div>
 </footer>
-<script src="app.js"></script>
+<script src="app.js" defer></script>
 </body>
 </html>
