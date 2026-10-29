@@ -644,7 +644,7 @@ impl Ack {
 pub enum ListState {
     /// Saved in the profile.
     On,
-    /// `downloads.txt` exists but could not be read; the list is memory only and the file is left alone.
+    /// The list could not be read or saved. A later save retries transient failures.
     Error,
     /// A guest window: memory only by design.
     Guest,
@@ -702,6 +702,8 @@ pub struct DownloadManager {
     synced: HashSet<u32>,
     /// Ids this process removed: never written back from the file.
     dropped: HashSet<u32>,
+    /// A save failed after opening the file. Keep the backing path so the next change can retry.
+    save_failed: bool,
 }
 
 impl DownloadManager {
@@ -724,6 +726,7 @@ impl DownloadManager {
             authored: HashSet::new(),
             synced: HashSet::new(),
             dropped: HashSet::new(),
+            save_failed: false,
         }
     }
 
@@ -747,6 +750,7 @@ impl DownloadManager {
         match (&self.store, self.guest) {
             (_, true) => ListState::Guest,
             (Store::Unreadable, _) => ListState::Error,
+            _ if self.save_failed => ListState::Error,
             _ => ListState::On,
         }
     }
@@ -1064,6 +1068,7 @@ impl DownloadManager {
     /// (a header `{label,date,count}` then its entries), `more` = older rows were left out to stay under
     /// [`MAX_SNAPSHOT_BYTES`] (a bool, like the history page's; the bubble's `more` is a count).
     pub fn snapshot_for_page(&self, query: &str, ack: Ack, time: Time) -> String {
+        let ack = if self.save_failed && matches!(ack, Ack::Removed | Ack::Restored | Ack::Cleared) { Ack::Failed } else { ack };
         let found = if self.list_state() == ListState::Error { Vec::new() } else { self.search(query) };
         let query = capped(query, MAX_QUERY_CHARS);
         let mut shown = found.len();
@@ -1270,19 +1275,25 @@ impl DownloadManager {
     /// Writes the list now (atomic), merged with what other windows of the profile wrote since
     /// it was read. Guest and unreadable-file lists never write.
     pub fn save(&mut self) {
-        let Store::File(path) = &self.store else { return };
-        let path = path.clone();
-        // A file that cannot be read now is replaced by this list, as before.
-        let (disk, disk_next) = read_file_as(&path, false).unwrap_or_default();
-        let written = self.merge(disk, disk_next);
-        let text = render(&written, self.next_id);
-        let _ = crate::productivity::atomic_write(&path, text.as_bytes());
-        self.synced = written.iter().map(|e| e.id).collect();
+        let failed = self.try_save().is_err();
+        if self.save_failed != failed {
+            self.save_failed = failed;
+            self.touch();
+        }
     }
 
-    /// Folds the file's entries (as written, in progress or not) into this list and returns what
-    /// to write: this process's own entries, plus every other entry exactly as the file has it.
-    fn merge(&mut self, mut disk: Vec<DownloadEntry>, disk_next: u32) -> Vec<DownloadEntry> {
+    fn try_save(&mut self) -> std::io::Result<()> {
+        let Store::File(path) = &self.store else { return Ok(()) };
+        let path = path.clone();
+        // Only a missing file means an empty list. Never merge deletions from a failed read.
+        let (disk, disk_next) = read_file_as(&path, false)?;
+        self.merge_and_save(&path, disk, disk_next)
+    }
+
+    /// Writes this process's own entries plus every other entry exactly as the file has it.
+    /// Only then fold the file's entries into memory: a failed write must not import unsynced
+    /// foreign entries that a retry could resurrect after another window removes them.
+    fn merge_and_save(&mut self, path: &Path, mut disk: Vec<DownloadEntry>, disk_next: u32) -> std::io::Result<()> {
         let mut changed = false;
         self.next_id = self.next_id.max(disk_next);
         // An id another window handed out at the same moment: this process's entry moves.
@@ -1302,13 +1313,25 @@ impl DownloadManager {
         }
         disk.retain(|d| !self.dropped.contains(&d.id) && !self.authored.contains(&d.id));
         let on_disk: HashSet<u32> = disk.iter().map(|d| d.id).collect();
-        let before = self.entries.len();
         let (authored, synced) = (&self.authored, &self.synced);
+        let mut written: Vec<DownloadEntry> =
+            self.entries.iter().filter(|e| !on_disk.contains(&e.id) && (authored.contains(&e.id) || !synced.contains(&e.id))).cloned().collect();
+        written.extend(disk);
+        written.sort_by_key(|e| e.id);
+        let high = written.iter().map(|e| e.id).max().unwrap_or(0);
+        self.next_id = self.next_id.max(high.saturating_add(1));
+        let text = render(&written, self.next_id);
+        if let Err(error) = crate::productivity::atomic_write(path, text.as_bytes()) {
+            if changed {
+                self.touch(); // A local id may have moved to avoid another window's id.
+            }
+            return Err(error);
+        }
+
+        let before = self.entries.len();
         self.entries.retain(|e| authored.contains(&e.id) || on_disk.contains(&e.id) || !synced.contains(&e.id));
         changed |= self.entries.len() != before;
-        let mut written: Vec<DownloadEntry> =
-            self.entries.iter().filter(|e| !on_disk.contains(&e.id)).cloned().collect();
-        for record in disk {
+        for record in written.iter().filter(|e| on_disk.contains(&e.id)) {
             let mut shown = record.clone();
             if shown.state.in_progress() {
                 // Running in another window: this one cannot control it.
@@ -1330,17 +1353,14 @@ impl DownloadManager {
                     changed = true;
                 }
             }
-            written.push(record);
         }
         if changed {
             self.entries.sort_by_key(|e| e.id);
             self.trim();
             self.touch();
         }
-        written.sort_by_key(|e| e.id);
-        let high = written.iter().map(|e| e.id).max().unwrap_or(0);
-        self.next_id = self.next_id.max(high.saturating_add(1));
-        written
+        self.synced = written.iter().map(|e| e.id).collect();
+        Ok(())
     }
 }
 
