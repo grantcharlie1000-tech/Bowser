@@ -1073,6 +1073,8 @@ pub struct BlockerState {
     config_allow: HashSet<String>,
     site_rules: site_rules::SiteRules,
     sites_path: Option<PathBuf>,
+    /// Choices were not loaded, so an edit must never replace the file with this empty list.
+    sites_unreadable: bool,
     /// Built on first use and rebuilt after the rules change.
     devtools: OnceCell<DevtoolsPatterns>,
     devtools_trackers: OnceCell<DevtoolsPatterns>,
@@ -1129,6 +1131,7 @@ impl BlockerState {
                 .collect(),
             site_rules: site_rules::SiteRules::default(),
             sites_path: None,
+            sites_unreadable: false,
             devtools: OnceCell::new(),
             devtools_trackers: OnceCell::new(),
             generation: 0,
@@ -1147,8 +1150,10 @@ impl BlockerState {
     fn load_site_choices(&mut self, dir: &Path, config_allow: &[String]) {
         self.set_config_allow(config_allow);
         let path = dir.join(SITES_FILE_NAME);
-        if let Some(text) = read_capped(&path, MAX_SITES_BYTES) {
-            self.site_rules = site_rules::SiteRules::parse(&text);
+        match read_capped_for_change(&path, MAX_SITES_BYTES) {
+            Ok(Some(text)) => self.site_rules = site_rules::SiteRules::parse(&text),
+            Ok(None) => {}
+            Err(_) => self.sites_unreadable = true,
         }
         self.sites_path = Some(path);
     }
@@ -1700,6 +1705,9 @@ impl BlockerState {
         let Some(path) = &self.sites_path else {
             return Ok(());
         };
+        if self.sites_unreadable {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "site choices could not be read; restart Bowser after repairing the file"));
+        }
         write_atomic(path, self.site_rules.render().as_bytes())
     }
 }
@@ -1752,16 +1760,22 @@ fn youtube_video_ads_enabled() -> bool {
 }
 
 fn read_capped(path: &Path, cap: usize) -> Option<String> {
+    read_capped_for_change(path, cap).ok().flatten()
+}
+
+/// The same bounded read, retaining errors for stores that will later rewrite what they loaded.
+fn read_capped_for_change(path: &Path, cap: usize) -> io::Result<Option<String>> {
+    let file = match File::open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
     let mut bytes = Vec::new();
-    File::open(path)
-        .ok()?
-        .take(cap as u64 + 1)
-        .read_to_end(&mut bytes)
-        .ok()?;
+    file.take(cap as u64 + 1).read_to_end(&mut bytes)?;
     if bytes.len() > cap {
-        return None;
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "file is too large to read"));
     }
-    String::from_utf8(bytes).ok()
+    String::from_utf8(bytes).map(Some).map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
 }
 
 fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
@@ -3712,6 +3726,33 @@ mod level_tests {
         assert!(s.cookie_notices_for(PAGE, false));
         assert!(s.remove_site_rule("example.com").unwrap());
         assert!(s.site_rules().is_empty());
+    }
+
+    #[test]
+    fn edits_never_replace_site_choices_that_were_not_read_at_load() {
+        let dir = dir("unreadable-sites");
+        let path = dir.join(SITES_FILE_NAME);
+        for bytes in [vec![0xff], vec![b'x'; MAX_SITES_BYTES + 1]] {
+            fs::write(&path, &bytes).unwrap();
+            let mut s = BlockerState::load(&dir, &[]);
+            let generation = s.generation();
+            assert_eq!(s.choose_level_for_page(PAGE, Level::None), SiteChoice::SaveFailed);
+            assert_eq!(s.choose_cookie_notices_for_page(PAGE, true), SiteChoice::SaveFailed);
+            assert_eq!(s.toggle_site(PAGE), SiteToggle::SaveFailed);
+            assert!(s.set_site_level("example.com", Some(Level::None)).is_err());
+            assert_eq!(s.generation(), generation);
+            assert!(s.site_rules().is_empty());
+            assert_eq!(fs::read(&path).unwrap(), bytes);
+            assert!(!path.with_extension("txt.tmp").exists());
+            // The in-memory list never contained the original choices: even if the file is
+            // repaired in place, this process must not write until a restart loads those choices.
+            fs::write(&path, "kept.test\n").unwrap();
+            assert_eq!(s.choose_level_for_page(PAGE, Level::None), SiteChoice::SaveFailed);
+            let mut restarted = BlockerState::load(&dir, &[]);
+            assert_eq!(restarted.choose_level_for_page(PAGE, Level::None), SiteChoice::Saved);
+            assert_eq!(BlockerState::load(&dir, &[]).level_for("kept.test", false), Level::None);
+        }
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
