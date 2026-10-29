@@ -1529,6 +1529,7 @@ impl App {
                 "This site is exempted by blocker_allow in settings.txt. Edit that file to change it.",
             ),
             crate::blocker::SiteToggle::NoSite => {}
+            crate::blocker::SiteToggle::SaveFailed => win32::show_error_message("That site could not be saved."),
         }
     }
 
