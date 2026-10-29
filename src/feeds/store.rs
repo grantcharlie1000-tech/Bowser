@@ -7,9 +7,9 @@
 //! ```
 //!
 //! Fields are escaped (`\\`, `\t`, `\n`, `\r`). A line that does not parse is skipped, so one bad line
-//! never loses the rest, and a file that is too big or has too many records is cut at the limits.
+//! never loses the rest. Extra records are skipped at the limits; files beyond the read cap are refused.
 
-use std::{fs, io, path::Path};
+use std::{fs, io::{self, Read}, path::Path};
 
 use super::parse::{Enclosure, ParsedFeed, ParsedItem, MAX_TITLE_CHARS};
 
@@ -224,11 +224,24 @@ impl Store {
 
     // ---- the file ----
 
-    pub fn load(path: &Path) -> Store {
-        match fs::metadata(path) {
-            Ok(meta) if meta.len() <= MAX_FILE_BYTES => fs::read(path).map(|bytes| Store::parse(&String::from_utf8_lossy(&bytes))).unwrap_or_default(),
-            _ => Store::default(),
+    /// Only a missing file is an empty store. Callers must not replace subscriptions they could
+    /// not read, including an older or externally changed file beyond the read cap.
+    pub fn load(path: &Path) -> io::Result<Store> {
+        let file = match fs::File::open(path) {
+            Ok(file) => file,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Store::default()),
+            Err(error) => return Err(error),
+        };
+        let meta = file.metadata()?;
+        if !meta.is_file() || meta.len() > MAX_FILE_BYTES {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "feeds file is not a regular file within the read limit"));
         }
+        let mut bytes = Vec::with_capacity(meta.len() as usize);
+        file.take(MAX_FILE_BYTES + 1).read_to_end(&mut bytes)?;
+        if bytes.len() as u64 > MAX_FILE_BYTES {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "feeds file is too large to read"));
+        }
+        Ok(Store::parse(&String::from_utf8_lossy(&bytes)))
     }
 
     /// Writes the store. When it would not fit the read cap (100 feeds of 50 items with long links
@@ -411,7 +424,7 @@ mod tests {
         let path = dir.join("feeds.txt");
         store.save(&path).unwrap();
         assert!(fs::metadata(&path).unwrap().len() <= MAX_FILE_BYTES, "written past what is read back");
-        let loaded = Store::load(&path);
+        let loaded = Store::load(&path).unwrap();
         assert_eq!(loaded.feeds.len(), MAX_FEEDS, "subscriptions lost");
         for (kept, full) in loaded.feeds.iter().zip(&store.feeds) {
             assert!(!kept.items.is_empty());
@@ -507,16 +520,38 @@ mod tests {
     }
 
     #[test]
-    fn the_file_loads_from_disk_and_a_missing_or_huge_file_is_an_empty_store() {
+    fn the_file_loads_from_disk_and_only_a_missing_file_is_an_empty_store() {
         let dir = std::env::temp_dir().join(format!("bowser-feeds-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("feeds.txt");
-        assert_eq!(Store::load(&path), Store::default());
+        assert_eq!(Store::load(&path).unwrap(), Store::default());
         let mut store = Store::default();
         store.add("https://a.example/f", "A").unwrap();
         store.save(&path).unwrap();
-        assert_eq!(Store::load(&path), store);
+        assert_eq!(Store::load(&path).unwrap(), store);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_oversized_file_is_an_error_and_is_left_alone() {
+        let dir = std::env::temp_dir().join(format!("bowser-feeds-oversized-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("feeds.txt");
+        fs::File::create(&path).unwrap().set_len(MAX_FILE_BYTES + 1).unwrap();
+        assert_eq!(Store::load(&path).unwrap_err().kind(), io::ErrorKind::InvalidData);
+        assert_eq!(fs::metadata(&path).unwrap().len(), MAX_FILE_BYTES + 1);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_directory_at_the_store_path_is_an_error() {
+        let dir = std::env::temp_dir().join(format!("bowser-feeds-unreadable-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("keep.txt");
+        fs::write(&path, "precious").unwrap();
+        assert!(Store::load(&dir).is_err());
+        assert_eq!(fs::read_to_string(path).unwrap(), "precious");
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
