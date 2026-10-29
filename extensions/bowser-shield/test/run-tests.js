@@ -1674,10 +1674,12 @@ const SW_SOURCE = fs.readFileSync(path.join(ROOT, "background", "service-worker.
 async function bootWorker(opts) {
   const fake = makeChrome(opts);
   const selfObj = {};
+  const oParser = opts && opts.parseChord;
   const importScripts = (...files) => {
     for (const f of files) {
       const src = fs.readFileSync(path.join(ROOT, "background", f), "utf8");
       vm.runInThisContext("(function(self){" + src + "\n})", { filename: f })(selfObj);
+      if (f.endsWith("shield-chord.js") && oParser) selfObj.ShieldChord.parseChord = oParser;
     }
   };
   const fetchFn = async (url) => ({
@@ -2198,6 +2200,15 @@ describe("service worker: the chord and messaging", () => {
     const bad = await w.send({ type: "setChord", value: "K" });
     assert.ok(bad.error);
     assert.equal(w.store["shield.panelChord"], "Alt+Shift+K");
+  });
+
+  test("setChord delegates trimmed values to the shared chord parser", async () => {
+    const calls = [];
+    const w = await bootWorker({ parseChord: (value) => { calls.push(value); return null; } });
+    const reply = await w.send({ type: "setChord", value: " Alt+S " });
+    assert.ok(reply.error);
+    assert.deepEqual(calls, ["Alt+S"]);
+    assert.equal(w.store["shield.panelChord"], "Alt+Shift+S");
   });
 
   test("setChord accepts exactly the chords the panel's parseChord accepts", async () => {

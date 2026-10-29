@@ -6,7 +6,7 @@
 // owns the counters, and answers the content script and the panel. Listeners are registered at the
 // top level, synchronously, as a service worker requires.
 
-importScripts("../lib/shield-core.js", "../lib/shield-dnr.js");
+importScripts("../lib/shield-core.js", "../lib/shield-dnr.js", "../lib/shield-chord.js");
 
 (function () {
   "use strict";
@@ -21,7 +21,6 @@ importScripts("../lib/shield-core.js", "../lib/shield-dnr.js");
   var HIDDEN_BATCH_LIMIT = 1000;
   // Injected into the top frame the first time the chord opens the overlay (see "loadPanel").
   var PANEL_FILES = ["content/panel-css.js", "ui/panel.js"];
-  var CHORD_MODIFIERS = { alt: "alt", shift: "shift", ctrl: "ctrl", control: "ctrl", meta: "meta" };
 
   var DEFAULTS = {
     "shield.version": KNOWN_VERSION,
@@ -85,28 +84,6 @@ importScripts("../lib/shield-core.js", "../lib/shield-dnr.js");
 
   function topUrl(sender) {
     return (sender && sender.tab && sender.tab.url) || (sender && sender.url) || "";
-  }
-
-  // The same chords ui/panel.js parseChord accepts, which a test keeps in step: one key, any modifier
-  // at most once, and at least one of Alt, Ctrl or Meta so the chord cannot be typed into a page.
-  function chordAccepted(text) {
-    var parts = text.split("+");
-    if (parts.length < 2) return false;
-    var seen = {};
-    var key = false;
-    for (var i = 0; i < parts.length; i++) {
-      var word = parts[i].trim();
-      var low = word.toLowerCase();
-      if (Object.prototype.hasOwnProperty.call(CHORD_MODIFIERS, low)) {
-        if (seen[CHORD_MODIFIERS[low]]) return false;
-        seen[CHORD_MODIFIERS[low]] = true;
-      } else if (key || !/^(?:[a-z0-9]|f(?:[1-9]|1[0-2]))$/i.test(word)) {
-        return false;
-      } else {
-        key = true;
-      }
-    }
-    return key && !!(seen.alt || seen.ctrl || seen.meta);
   }
 
   function utf8Bytes(text) {
@@ -625,7 +602,7 @@ importScripts("../lib/shield-core.js", "../lib/shield-dnr.js");
         });
       case "setChord":
         return mutate(sender, async function () {
-          if (typeof msg.value !== "string" || !chordAccepted(msg.value.trim())) {
+          if (typeof msg.value !== "string" || !self.ShieldChord.parseChord(msg.value.trim())) {
             throw new UserError("Use a modifier and a letter, digit or F-key, such as Alt+Shift+S.");
           }
           await write({ "shield.panelChord": msg.value.trim() });
