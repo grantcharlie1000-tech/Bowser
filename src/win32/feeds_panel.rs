@@ -57,6 +57,8 @@ pub(crate) fn detached(window: HWND) {
 #[derive(Default)]
 struct State {
     store: Option<Store>,
+    /// A failed load leaves `store` absent, so no command can save a substitute empty list.
+    load_error: Option<String>,
     selected: u32,
     preview: Option<Preview>,
     page: Vec<FeedLink>,
@@ -64,6 +66,24 @@ struct State {
     error: String,
     /// Worker jobs not yet answered.
     jobs: u32,
+}
+
+impl State {
+    fn load_store(&mut self, path: &std::path::Path) -> Option<&mut Store> {
+        if self.store.is_none() {
+            match Store::load(path) {
+                Ok(store) => {
+                    self.store = Some(store);
+                    self.load_error = None;
+                }
+                Err(error) => {
+                    self.load_error = Some(format!("Feeds could not be read: {error}"));
+                    return None;
+                }
+            }
+        }
+        self.store.as_mut()
+    }
 }
 
 thread_local! {
@@ -82,10 +102,10 @@ fn path() -> Option<std::path::PathBuf> {
     profile().map(|profile| profile.root().join("feeds.txt"))
 }
 
-/// Runs `f` on the store, loading it first when needed. `None` for a guest profile.
+/// Runs `f` on the store, loading it first when needed. `None` for a guest or a failed load.
 fn store<R>(f: impl FnOnce(&mut Store) -> R) -> Option<R> {
     let path = path()?;
-    Some(with(|state| f(state.store.get_or_insert_with(|| Store::load(&path)))))
+    with(|state| state.load_store(&path).map(f))
 }
 
 fn save() {
@@ -141,10 +161,10 @@ pub(crate) fn snapshot_json(app: &AppRef) -> String {
         let mut state = state.borrow_mut();
         if allowed && state.store.is_none() {
             if let Some(path) = path() {
-                state.store = Some(Store::load(&path));
+                let _ = state.load_store(&path);
             }
         }
-        let State { store, selected, preview, page, status, error, jobs } = &*state;
+        let State { store, load_error, selected, preview, page, status, error, jobs } = &*state;
         wire::snapshot_json(&View {
             allowed,
             busy: *jobs > 0,
@@ -154,7 +174,7 @@ pub(crate) fn snapshot_json(app: &AppRef) -> String {
             preview: preview.as_ref(),
             page,
             status,
-            error,
+            error: load_error.as_deref().unwrap_or(error),
         })
     })
 }
@@ -489,6 +509,28 @@ fn pick_opml(owner: HWND) -> Option<std::path::PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_failed_load_prevents_edits_and_retries_after_the_file_is_repaired() {
+        let dir = std::env::temp_dir().join(format!("bowser-feeds-panel-read-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("feeds.txt");
+        let mut state = State::default();
+        // A readable oversized file could previously be replaced by a new subscription.
+        std::fs::File::create(&path).unwrap().set_len(8 * 1024 * 1024 + 1).unwrap();
+        let edited = state.load_store(&path).map(|store| store.add("https://new.example/feed", "New"));
+        assert!(edited.is_none());
+        assert!(state.store.is_none() && state.load_error.is_some());
+        assert_eq!(std::fs::metadata(&path).unwrap().len(), 8 * 1024 * 1024 + 1);
+        assert!(!path.with_extension("tmp").exists());
+        // Repairing the file allows the next command to load its real subscriptions.
+        let mut original = Store::default();
+        original.add("https://kept.example/feed", "Kept").unwrap();
+        original.save(&path).unwrap();
+        assert_eq!(state.load_store(&path).unwrap(), &original);
+        assert!(state.load_error.is_none());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     #[test]
     fn two_spellings_of_one_address_are_the_same() {
