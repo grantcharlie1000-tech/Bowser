@@ -142,6 +142,14 @@ impl SiteRules {
         self.map.remove(site).is_some()
     }
 
+    /// Restores one rule after a failed save, including a rule removed from a full list.
+    pub(super) fn restore(&mut self, site: &str, previous: Option<SiteRule>) {
+        match previous {
+            Some(rule) => { self.map.insert(site.to_owned(), rule); }
+            None => { self.map.remove(site); }
+        }
+    }
+
     fn edit(&mut self, site: &str, change: impl FnOnce(&mut SiteRule)) -> bool {
         if !self.map.contains_key(site) && self.map.len() >= MAX_SITES {
             return false;

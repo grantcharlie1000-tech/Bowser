@@ -971,6 +971,98 @@ fn an_oversized_file_is_an_error_state_too() {
 }
 
 #[test]
+fn a_failed_reread_keeps_memory_and_disk_until_the_file_is_readable_again() {
+    let tmp = TempDir::new("reread-failure");
+    let file = sample_file(&tmp);
+    let mut owner = DownloadManager::open(&file);
+    let foreign = start(&mut owner, 1, "foreign.bin", 10, 1_000);
+    finish(&mut owner, 1, 10, 10, 2_000);
+    let mut m = DownloadManager::open(&file);
+    let saved = std::fs::read(&file).unwrap();
+    let before = m.entries.clone();
+    let synced = m.synced.clone();
+    // This is a read failure even when the test process has permission to replace the file.
+    std::fs::write(&file, vec![b'x'; MAX_FILE_BYTES as usize + 1]).unwrap();
+    let revision = m.revision();
+    m.save();
+    assert_eq!(m.list_state(), ListState::Error);
+    assert!(m.revision() > revision, "the error changes the page snapshot");
+    assert_eq!(m.entries, before, "a failed read must not look like remote deletions");
+    assert_eq!(m.synced, synced);
+    assert_eq!(std::fs::metadata(&file).unwrap().len(), MAX_FILE_BYTES + 1);
+    assert!(!file.with_extension("tmp").exists());
+    let local = start(&mut m, 2, "local.bin", 10, 3_000);
+    assert!(m.get(foreign).is_some(), "another window's entry stays in memory");
+    std::fs::write(&file, saved).unwrap();
+    m.save();
+    assert_eq!(m.list_state(), ListState::On);
+    let reopened = DownloadManager::open(&file);
+    assert!(reopened.get(foreign).is_some() && reopened.get(local).is_some());
+}
+
+#[test]
+fn a_failed_write_is_not_synced_and_pending_changes_are_retried() {
+    let tmp = TempDir::new("write-failure");
+    let file = sample_file(&tmp);
+    let mut m = DownloadManager::open(&file);
+    let removed = start(&mut m, 1, "removed.bin", 10, 1_000);
+    finish(&mut m, 1, 10, 10, 2_000);
+    let saved = std::fs::read(&file).unwrap();
+    let synced = m.synced.clone();
+    // A directory at the atomic writer's temporary path reliably fails on Windows and Linux.
+    std::fs::create_dir(file.with_extension("tmp")).unwrap();
+    assert!(m.remove(removed));
+    let local = start(&mut m, 2, "local.bin", 10, 3_000);
+    assert_eq!(m.list_state(), ListState::Error);
+    assert_eq!(m.synced, synced, "a failed write did not synchronize the computed list");
+    for ack in [Ack::Removed, Ack::Restored, Ack::Cleared] {
+        assert!(m.snapshot_for_page("", ack, time()).contains("\"ack\":\"failed\""));
+    }
+    assert_eq!(std::fs::read(&file).unwrap(), saved);
+    assert!(m.dropped.contains(&removed) && m.authored.contains(&local));
+    std::fs::remove_dir(file.with_extension("tmp")).unwrap();
+    let revision = m.revision();
+    m.save();
+    assert_eq!(m.list_state(), ListState::On);
+    assert!(m.revision() > revision, "recovery changes the page snapshot");
+    assert!(m.synced.contains(&local) && !m.synced.contains(&removed));
+    let reopened = DownloadManager::open(&file);
+    assert!(reopened.get(local).is_some() && reopened.get(removed).is_none());
+}
+
+#[test]
+fn a_path_that_becomes_unreadable_after_open_is_not_replaced() {
+    let tmp = TempDir::new("reread-directory");
+    let file = sample_file(&tmp);
+    let mut m = DownloadManager::open(&file);
+    std::fs::create_dir(&file).unwrap();
+    std::fs::write(file.join("keep.txt"), b"precious").unwrap();
+    start(&mut m, 1, "a.bin", 10, 1_000);
+    assert_eq!(m.list_state(), ListState::Error);
+    assert_eq!(std::fs::read(file.join("keep.txt")).unwrap(), b"precious");
+    assert!(!file.with_extension("tmp").exists());
+}
+
+#[test]
+fn a_write_failure_does_not_import_foreign_entries_that_a_retry_could_resurrect() {
+    let tmp = TempDir::new("failed-foreign-merge");
+    let file = sample_file(&tmp);
+    let mut m = DownloadManager::open(&file);
+    let mut owner = DownloadManager::open(&file);
+    let foreign = start(&mut owner, 1, "foreign.bin", 10, 1_000);
+    finish(&mut owner, 1, 10, 10, 2_000);
+    std::fs::create_dir(file.with_extension("tmp")).unwrap();
+    m.save();
+    assert_eq!(m.list_state(), ListState::Error);
+    assert!(m.get(foreign).is_none(), "a failed write does not commit the merge to memory");
+    std::fs::remove_dir(file.with_extension("tmp")).unwrap();
+    assert!(owner.remove(foreign));
+    m.save();
+    assert_eq!(m.list_state(), ListState::On);
+    assert!(DownloadManager::open(&file).get(foreign).is_none());
+}
+
+#[test]
 fn a_guest_list_never_touches_the_disk() {
     let tmp = TempDir::new("guest");
     let mut m = DownloadManager::in_memory(true);

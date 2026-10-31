@@ -165,19 +165,25 @@ pub(crate) fn run(app: &AppRef, owner: HWND, action: Action) {
         | Action::PrivateTheme(_) => {}
         Action::SiteLevel { site, level } => {
             let Some(blocker) = App::blocker_handle(app) else { return };
-            if !blocker.borrow_mut().set_site_level(&site, level) {
-                set_result(false, "That site could not be saved. The list may be full, or it is not a site.");
+            match blocker.borrow_mut().set_site_level(&site, level) {
+                Ok(true) => {}
+                Ok(false) => set_result(false, "That site could not be saved. The list may be full, or it is not a site."),
+                Err(error) => set_result(false, format!("That site could not be saved: {error}")),
             }
         }
         Action::SiteCookies { site, hide } => {
             let Some(blocker) = App::blocker_handle(app) else { return };
-            if !blocker.borrow_mut().set_site_cookies(&site, hide) {
-                set_result(false, "That site could not be saved. The list may be full, or it is not a site.");
+            match blocker.borrow_mut().set_site_cookies(&site, hide) {
+                Ok(true) => {}
+                Ok(false) => set_result(false, "That site could not be saved. The list may be full, or it is not a site."),
+                Err(error) => set_result(false, format!("That site could not be saved: {error}")),
             }
         }
         Action::SiteRemove(site) => {
             if let Some(blocker) = App::blocker_handle(app) {
-                blocker.borrow_mut().remove_site_rule(&site);
+                if let Err(error) = blocker.borrow_mut().remove_site_rule(&site) {
+                    set_result(false, format!("That site could not be saved: {error}"));
+                }
             }
         }
         Action::SourceToggle { id, on } => {

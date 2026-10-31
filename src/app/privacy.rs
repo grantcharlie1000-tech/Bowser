@@ -102,6 +102,8 @@ impl App {
         if result == SiteChoice::Saved {
             Self::sync_window_title(app);
             Self::reload(app);
+        } else if result == SiteChoice::SaveFailed {
+            show_error_message("That site could not be saved.");
         }
         result
     }
@@ -119,6 +121,8 @@ impl App {
         let result = blocker.borrow_mut().choose_cookie_notices_for_page(&host, hide);
         if result == SiteChoice::Saved {
             Self::reload(app);
+        } else if result == SiteChoice::SaveFailed {
+            show_error_message("That site could not be saved.");
         }
         result
     }

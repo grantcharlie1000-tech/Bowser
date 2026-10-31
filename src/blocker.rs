@@ -1073,6 +1073,8 @@ pub struct BlockerState {
     config_allow: HashSet<String>,
     site_rules: site_rules::SiteRules,
     sites_path: Option<PathBuf>,
+    /// Choices were not loaded, so an edit must never replace the file with this empty list.
+    sites_unreadable: bool,
     /// Built on first use and rebuilt after the rules change.
     devtools: OnceCell<DevtoolsPatterns>,
     devtools_trackers: OnceCell<DevtoolsPatterns>,
@@ -1094,6 +1096,8 @@ pub enum SiteToggle {
     ConfiguredInSettings,
     /// The host has no usable site (new tab, IP address, ...).
     NoSite,
+    /// The file could not be saved; the previous rule is still in force.
+    SaveFailed,
 }
 
 /// How a level or cookie-notice choice made in the shield ended.
@@ -1105,6 +1109,8 @@ pub enum SiteChoice {
     ConfiguredInSettings,
     /// The host has no usable site, or the list of sites is full.
     NoSite,
+    /// The file could not be saved; the previous rule is still in force.
+    SaveFailed,
 }
 
 impl BlockerState {
@@ -1125,6 +1131,7 @@ impl BlockerState {
                 .collect(),
             site_rules: site_rules::SiteRules::default(),
             sites_path: None,
+            sites_unreadable: false,
             devtools: OnceCell::new(),
             devtools_trackers: OnceCell::new(),
             generation: 0,
@@ -1143,8 +1150,10 @@ impl BlockerState {
     fn load_site_choices(&mut self, dir: &Path, config_allow: &[String]) {
         self.set_config_allow(config_allow);
         let path = dir.join(SITES_FILE_NAME);
-        if let Some(text) = read_capped(&path, MAX_SITES_BYTES) {
-            self.site_rules = site_rules::SiteRules::parse(&text);
+        match read_capped_for_change(&path, MAX_SITES_BYTES) {
+            Ok(Some(text)) => self.site_rules = site_rules::SiteRules::parse(&text),
+            Ok(None) => {}
+            Err(_) => self.sites_unreadable = true,
         }
         self.sites_path = Some(path);
     }
@@ -1349,40 +1358,28 @@ impl BlockerState {
     }
 
     /// Saves a level for one site (`None` goes back to the global level). `false` when the site
-    /// is not a usable one or the list is full.
-    pub fn set_site_level(&mut self, site: &str, level: Option<Level>) -> bool {
+    /// is not a usable one or the list is full. A failed save restores the previous rule.
+    pub fn set_site_level(&mut self, site: &str, level: Option<Level>) -> io::Result<bool> {
         let Some(site) = normalise_site(site) else {
-            return false;
+            return Ok(false);
         };
-        let changed = self.site_rules.set_level(&site, level);
-        if changed {
-            self.sites_changed();
-        }
-        changed
+        self.change_site_rule(&site, |rules| rules.set_level(&site, level))
     }
 
     /// Saves the cookie-notice choice for one site (`None` goes back to the global switch).
-    pub fn set_site_cookies(&mut self, site: &str, cookies: Option<bool>) -> bool {
+    pub fn set_site_cookies(&mut self, site: &str, cookies: Option<bool>) -> io::Result<bool> {
         let Some(site) = normalise_site(site) else {
-            return false;
+            return Ok(false);
         };
-        let changed = self.site_rules.set_cookies(&site, cookies);
-        if changed {
-            self.sites_changed();
-        }
-        changed
+        self.change_site_rule(&site, |rules| rules.set_cookies(&site, cookies))
     }
 
     /// Forgets every saved choice for a site. `true` when there was one.
-    pub fn remove_site_rule(&mut self, site: &str) -> bool {
+    pub fn remove_site_rule(&mut self, site: &str) -> io::Result<bool> {
         let Some(site) = normalise_site(site) else {
-            return false;
+            return Ok(false);
         };
-        let removed = self.site_rules.remove(&site);
-        if removed {
-            self.sites_changed();
-        }
-        removed
+        self.change_site_rule(&site, |rules| rules.remove(&site))
     }
 
     /// The shield's level choice for the page on `top_host`: what this site should get from now on.
@@ -1404,11 +1401,10 @@ impl BlockerState {
         // Clearing is right only when what is left (a parent's rule, else the global level) is the
         // level asked for; under a parent with its own rule, the choice has to be saved.
         let wanted = (self.level_without(&top_host, &key) != level).then_some(level);
-        if self.site_rules.set_level(&key, wanted) {
-            self.sites_changed();
-            SiteChoice::Saved
-        } else {
-            SiteChoice::NoSite
+        match self.change_site_rule(&key, |rules| rules.set_level(&key, wanted)) {
+            Ok(true) => SiteChoice::Saved,
+            Ok(false) => SiteChoice::NoSite,
+            Err(_) => SiteChoice::SaveFailed,
         }
     }
 
@@ -1424,11 +1420,10 @@ impl BlockerState {
             .find(|suffix| self.site_rules.get(suffix).is_some_and(|rule| rule.cookies.is_some()))
             .map_or_else(|| registrable_domain(&top_host).to_owned(), str::to_owned);
         let wanted = (self.cookies_without(&top_host, &key) != hide).then_some(hide);
-        if self.site_rules.set_cookies(&key, wanted) {
-            self.sites_changed();
-            SiteChoice::Saved
-        } else {
-            SiteChoice::NoSite
+        match self.change_site_rule(&key, |rules| rules.set_cookies(&key, wanted)) {
+            Ok(true) => SiteChoice::Saved,
+            Ok(false) => SiteChoice::NoSite,
+            Err(_) => SiteChoice::SaveFailed,
         }
     }
 
@@ -1451,9 +1446,19 @@ impl BlockerState {
             .unwrap_or(self.cookie_notices)
     }
 
-    fn sites_changed(&mut self) {
+    /// Saves one edit before tabs are told to use it. Failure restores just that site's rule,
+    /// without cloning the list or invalidating the patterns already in use.
+    fn change_site_rule(&mut self, site: &str, change: impl FnOnce(&mut site_rules::SiteRules) -> bool) -> io::Result<bool> {
+        let previous = self.site_rules.get(site);
+        if !change(&mut self.site_rules) {
+            return Ok(false);
+        }
+        if let Err(error) = self.save_sites() {
+            self.site_rules.restore(site, previous);
+            return Err(error);
+        }
         self.generation = self.generation.wrapping_add(1);
-        let _ = self.save_sites();
+        Ok(true)
     }
 
     /// The decision for one subresource request made by a page on `top_host`.
@@ -1689,17 +1694,20 @@ impl BlockerState {
         } else {
             (None, SiteToggle::Blocking)
         };
-        if !self.site_rules.set_level(&key, level) {
-            return SiteToggle::NoSite;
+        match self.change_site_rule(&key, |rules| rules.set_level(&key, level)) {
+            Ok(true) => result,
+            Ok(false) => SiteToggle::NoSite,
+            Err(_) => SiteToggle::SaveFailed,
         }
-        self.sites_changed();
-        result
     }
 
     fn save_sites(&self) -> io::Result<()> {
         let Some(path) = &self.sites_path else {
             return Ok(());
         };
+        if self.sites_unreadable {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "site choices could not be read; restart Bowser after repairing the file"));
+        }
         write_atomic(path, self.site_rules.render().as_bytes())
     }
 }
@@ -1752,16 +1760,22 @@ fn youtube_video_ads_enabled() -> bool {
 }
 
 fn read_capped(path: &Path, cap: usize) -> Option<String> {
+    read_capped_for_change(path, cap).ok().flatten()
+}
+
+/// The same bounded read, retaining errors for stores that will later rewrite what they loaded.
+fn read_capped_for_change(path: &Path, cap: usize) -> io::Result<Option<String>> {
+    let file = match File::open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
     let mut bytes = Vec::new();
-    File::open(path)
-        .ok()?
-        .take(cap as u64 + 1)
-        .read_to_end(&mut bytes)
-        .ok()?;
+    file.take(cap as u64 + 1).read_to_end(&mut bytes)?;
     if bytes.len() > cap {
-        return None;
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "file is too large to read"));
     }
-    String::from_utf8(bytes).ok()
+    String::from_utf8(bytes).map(Some).map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
 }
 
 fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
@@ -2037,10 +2051,10 @@ mod tests {
         assert_eq!(s.cosmetic_css_for_host("x.com"), None);
         assert!(s.x_promoted_script("x.com", false).is_none());
         s.level = Level::Ads;
-        assert!(s.set_site_level("x.com", Some(Level::Trackers)));
+        assert!(s.set_site_level("x.com", Some(Level::Trackers)).unwrap());
         assert!(s.x_promoted_script("x.com", false).is_none());
         assert!(s.x_promoted_script("twitter.com", false).is_some(), "other X host keeps its own level");
-        assert!(s.set_site_level("x.com", None));
+        assert!(s.set_site_level("x.com", None).unwrap());
         s.toggle_site("twitter.com");
         assert!(s.x_promoted_script("twitter.com", false).is_none());
         assert_eq!(s.cosmetic_css_for_host("twitter.com"), None);
@@ -3306,21 +3320,21 @@ mod level_tests {
     fn a_site_level_overrides_the_global_one_both_ways_and_the_nearer_site_wins() {
         let (mut s, _dir) = state("site");
         s.level = Level::Ads;
-        assert!(s.set_site_level("example.com", Some(Level::None)));
+        assert!(s.set_site_level("example.com", Some(Level::None)).unwrap());
         assert!(!s.should_block(TRACKER, PAGE), "blocking is off on that site");
         assert!(s.should_block(TRACKER, "other.org"), "and still on elsewhere");
-        assert!(s.set_site_level("news.example.com", Some(Level::Trackers)));
+        assert!(s.set_site_level("news.example.com", Some(Level::Trackers)).unwrap());
         assert!(s.should_block(TRACKER, PAGE) && !s.should_block(AD, PAGE), "the subdomain's own level wins");
         // A site can be stricter than the global level, even when blocking is off globally.
         s.enabled = false;
         assert!(!s.should_block(TRACKER, "other.org"));
-        assert!(s.set_site_level("strict.test", Some(Level::Ads)));
+        assert!(s.set_site_level("strict.test", Some(Level::Ads)).unwrap());
         assert!(s.should_block(TRACKER, "strict.test") && s.should_block(AD, "www.strict.test"));
         // Following the global level again.
-        assert!(s.set_site_level("strict.test", None));
+        assert!(s.set_site_level("strict.test", None).unwrap());
         assert!(!s.should_block(TRACKER, "strict.test"));
-        assert!(!s.set_site_level("not a site", Some(Level::None)), "text that is not a site is refused");
-        assert!(!s.set_site_level("localhost", Some(Level::None)));
+        assert!(!s.set_site_level("not a site", Some(Level::None)).unwrap(), "text that is not a site is refused");
+        assert!(!s.set_site_level("localhost", Some(Level::None)).unwrap());
     }
 
     #[test]
@@ -3330,7 +3344,7 @@ mod level_tests {
         assert_eq!(s.level_for(PAGE, false), Level::None, "blocker_allow turns blocking off for a site and its subdomains");
         assert!(s.site_allowed(PAGE));
         assert!(!s.should_block(TRACKER, PAGE));
-        assert!(s.set_site_level("example.com", Some(Level::Ads)));
+        assert!(s.set_site_level("example.com", Some(Level::Ads)).unwrap());
         assert_eq!(s.level_for(PAGE, false), Level::None, "the settings exception still wins");
         // A private tab always gets the full level and ignores every exception and the switch.
         s.enabled = false;
@@ -3354,7 +3368,7 @@ mod level_tests {
         s.enabled = false;
         assert!(s.blocked_url_patterns(PAGE).is_empty());
         // A site at the full level gets the full list while the global level is none.
-        assert!(s.set_site_level(PAGE, Some(Level::Ads)));
+        assert!(s.set_site_level(PAGE, Some(Level::Ads)).unwrap());
         assert!(host_pattern(&s.blocked_url_patterns(PAGE), "doubleclick.net"));
         // A private tab gets it too.
         assert!(host_pattern(&s.blocked_url_patterns_private("other.org"), "doubleclick.net"));
@@ -3376,19 +3390,19 @@ mod level_tests {
         assert!(css.contains("#onetrust-banner-sdk{display:none!important}"));
         assert!(!css.contains("#masthead-ad"), "and no ad rules came with them");
         // The per-site off switch, then the per-site on switch with the global one off.
-        assert!(s.set_site_cookies("example.com", Some(false)));
+        assert!(s.set_site_cookies("example.com", Some(false)).unwrap());
         assert_eq!(s.cosmetic_css_for_host(PAGE), None, "switched off for this site");
         assert!(s.cosmetic_css_for_host("other.org").is_some());
-        assert!(s.set_site_cookies("example.com", None));
+        assert!(s.set_site_cookies("example.com", None).unwrap());
         assert!(s.cosmetic_css_for_host(PAGE).is_some(), "following the global switch again");
         s.cookie_notices = false;
-        assert!(s.set_site_cookies("shown.test", Some(true)));
+        assert!(s.set_site_cookies("shown.test", Some(true)).unwrap());
         assert!(s.cosmetic_css_for_host("shown.test").is_some(), "a site can opt in");
         assert_eq!(s.cosmetic_css_for_host("other.org"), None);
         // A private tab follows the global switch only.
         assert_eq!(s.cosmetic_css_for_host_private("shown.test").is_some(), s.cookie_notices);
         s.cookie_notices = true;
-        assert!(s.set_site_cookies("example.com", Some(false)));
+        assert!(s.set_site_cookies("example.com", Some(false)).unwrap());
         assert!(s.cosmetic_css_for_host_private(PAGE).is_some(), "a private tab ignores the site's saved choice");
     }
 
@@ -3484,7 +3498,7 @@ mod level_tests {
         s.level = Level::Trackers;
         assert_ne!(s.filter_signature(PAGE, false), before, "a new level");
         let trackers = s.filter_signature(PAGE, false);
-        assert!(s.set_site_level("example.com", Some(Level::None)));
+        assert!(s.set_site_level("example.com", Some(Level::None)).unwrap());
         let none = s.filter_signature(PAGE, false);
         assert_ne!(none, trackers);
         assert_eq!(none.0, Level::None);
@@ -3541,8 +3555,8 @@ mod level_tests {
         assert_eq!(s.toggle_site("localhost"), SiteToggle::NoSite);
         // The choices persist: a state loaded from the same folder sees them.
         s.enabled = true;
-        assert!(s.set_site_level("kept.test", Some(Level::Trackers)));
-        assert!(s.set_site_cookies("kept.test", Some(true)));
+        assert!(s.set_site_level("kept.test", Some(Level::Trackers)).unwrap());
+        assert!(s.set_site_cookies("kept.test", Some(true)).unwrap());
         let reloaded = BlockerState::load(&dir, &[]);
         assert_eq!(reloaded.level_for("www.kept.test", false), Level::Trackers);
         assert_eq!(reloaded.site_rules().iter().find(|(site, _)| site == "kept.test").map(|(_, rule)| rule.cookies), Some(Some(true)));
@@ -3568,7 +3582,7 @@ mod level_tests {
         assert_eq!(s.player_ads_rewrite_gated(player, "www.youtube.com", false, true), None, "video ads are ads");
         assert!(s.response_patterns_gated("www.youtube.com", false, true).is_empty());
         assert!(s.player_ads_rewrite_gated(player, "www.youtube.com", true, true).is_some(), "private tabs always strip");
-        assert!(s.set_site_level("youtube.com", Some(Level::Ads)));
+        assert!(s.set_site_level("youtube.com", Some(Level::Ads)).unwrap());
         assert!(s.player_ads_rewrite_gated(player, "www.youtube.com", false, true).is_some(), "a site at the full level strips");
         assert!(!s.response_patterns_gated("www.youtube.com", false, true).is_empty());
     }
@@ -3605,26 +3619,26 @@ mod level_tests {
         let (mut s, _dir) = state("shield-subdomain-global");
         s.enabled = true;
         s.level = Level::Ads;
-        assert!(s.set_site_level("example.com", Some(Level::None)));
-        assert!(s.set_site_level("shop.example.com", Some(Level::Trackers)));
+        assert!(s.set_site_level("example.com", Some(Level::None)).unwrap());
+        assert!(s.set_site_level("shop.example.com", Some(Level::Trackers)).unwrap());
         assert_eq!(s.choose_level_for_page("shop.example.com", Level::Ads), SiteChoice::Saved);
         assert_eq!(s.level_for("shop.example.com", false), Level::Ads, "what the user chose");
         assert_eq!(s.level_for("example.com", false), Level::None, "the parent keeps its own choice");
         // With no parent rule, the global level still clears the subdomain's own rule.
-        assert!(s.set_site_level("example.com", None));
+        assert!(s.set_site_level("example.com", None).unwrap());
         assert_eq!(s.choose_level_for_page("shop.example.com", Level::Ads), SiteChoice::Saved);
         assert!(s.site_rules().is_empty(), "no copy of the global level is kept");
 
         // Ctrl+Shift+B back to blocking under a paused parent blocks again.
-        assert!(s.set_site_level("example.com", Some(Level::None)));
-        assert!(s.set_site_level("shop.example.com", Some(Level::None)));
+        assert!(s.set_site_level("example.com", Some(Level::None)).unwrap());
+        assert!(s.set_site_level("shop.example.com", Some(Level::None)).unwrap());
         assert_eq!(s.toggle_site("shop.example.com"), SiteToggle::Blocking);
         assert_eq!(s.level_for("shop.example.com", false), Level::Ads);
 
         // The cookie-notice choice works the same way.
         s.cookie_notices = true;
-        assert!(s.set_site_cookies("example.com", Some(false)));
-        assert!(s.set_site_cookies("shop.example.com", Some(false)));
+        assert!(s.set_site_cookies("example.com", Some(false)).unwrap());
+        assert!(s.set_site_cookies("shop.example.com", Some(false)).unwrap());
         assert_eq!(s.choose_cookie_notices_for_page("shop.example.com", true), SiteChoice::Saved);
         assert!(s.cookie_notices_for("shop.example.com", false), "hidden as the user chose");
         assert!(!s.cookie_notices_for("example.com", false));
@@ -3646,6 +3660,99 @@ mod level_tests {
         assert_eq!(s.choose_cookie_notices_for_page("news.test", true), SiteChoice::Saved);
         assert!(s.cookie_notices_for("www.news.test", false) && !s.cookie_notices_for(PAGE, false));
         assert_eq!(s.choose_cookie_notices_for_page("localhost", true), SiteChoice::NoSite);
+    }
+
+    #[test]
+    fn failed_shield_choices_restore_the_rule_and_do_not_invalidate_tabs() {
+        let (mut s, dir) = state("shield-save-failure");
+        assert_eq!(s.choose_level_for_page(PAGE, Level::Trackers), SiteChoice::Saved);
+        assert_eq!(s.choose_cookie_notices_for_page(PAGE, true), SiteChoice::Saved);
+        let path = dir.join(SITES_FILE_NAME);
+        let saved = fs::read(&path).unwrap();
+        let rules = s.site_rules();
+        let generation = s.generation();
+        fs::create_dir(path.with_extension("txt.tmp")).unwrap();
+        // Clearing a level must restore the cookie choice too; clearing the last field must
+        // restore the removed map entry. Editing a new site must not leave a new exception.
+        assert_eq!(s.choose_level_for_page(PAGE, Level::Ads), SiteChoice::SaveFailed);
+        assert_eq!(s.choose_cookie_notices_for_page(PAGE, false), SiteChoice::SaveFailed);
+        assert_eq!(s.choose_level_for_page("new.test", Level::None), SiteChoice::SaveFailed);
+        assert_eq!(s.choose_cookie_notices_for_page("new.test", true), SiteChoice::SaveFailed);
+        assert_eq!(s.toggle_site(PAGE), SiteToggle::SaveFailed);
+        assert_eq!(s.site_rules(), rules);
+        assert_eq!(s.generation(), generation);
+        assert_eq!(s.level_for(PAGE, false), Level::Trackers);
+        assert!(s.cookie_notices_for(PAGE, false));
+        assert_eq!(fs::read(&path).unwrap(), saved);
+        fs::remove_dir(path.with_extension("txt.tmp")).unwrap();
+        assert_eq!(s.choose_level_for_page(PAGE, Level::Ads), SiteChoice::Saved);
+        assert_eq!(s.choose_cookie_notices_for_page(PAGE, false), SiteChoice::Saved);
+        assert_eq!(s.generation(), generation.wrapping_add(2));
+        assert!(BlockerState::load(&dir, &[]).site_rules().is_empty());
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn failed_settings_edits_and_removal_restore_the_previous_rule() {
+        let (mut s, dir) = state("settings-save-failure");
+        assert!(s.set_site_level("example.com", Some(Level::Trackers)).unwrap());
+        let path = dir.join(SITES_FILE_NAME);
+        let saved = fs::read(&path).unwrap();
+        let rules = s.site_rules();
+        let generation = s.generation();
+        fs::create_dir(path.with_extension("txt.tmp")).unwrap();
+        assert!(s.set_site_level("example.com", None).is_err());
+        assert!(s.set_site_cookies("example.com", Some(true)).is_err());
+        assert!(s.set_site_level("new.test", Some(Level::None)).is_err());
+        assert!(s.remove_site_rule("example.com").is_err());
+        assert_eq!(s.site_rules(), rules);
+        assert_eq!(s.generation(), generation);
+        assert_eq!(fs::read(&path).unwrap(), saved);
+        // A missing rule is still a no-op even when the file cannot be written.
+        assert!(!s.remove_site_rule("missing.test").unwrap());
+        fs::remove_dir(path.with_extension("txt.tmp")).unwrap();
+        assert!(s.remove_site_rule("example.com").unwrap());
+        assert!(BlockerState::load(&dir, &[]).site_rules().is_empty());
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn memory_only_site_choices_still_succeed_without_a_file() {
+        let mut s = BlockerState::new(Blocker::default(), &[]);
+        assert!(s.sites_path.is_none());
+        assert_eq!(s.choose_level_for_page(PAGE, Level::Trackers), SiteChoice::Saved);
+        assert_eq!(s.choose_cookie_notices_for_page(PAGE, true), SiteChoice::Saved);
+        assert_eq!(s.level_for(PAGE, false), Level::Trackers);
+        assert!(s.cookie_notices_for(PAGE, false));
+        assert!(s.remove_site_rule("example.com").unwrap());
+        assert!(s.site_rules().is_empty());
+    }
+
+    #[test]
+    fn edits_never_replace_site_choices_that_were_not_read_at_load() {
+        let dir = dir("unreadable-sites");
+        let path = dir.join(SITES_FILE_NAME);
+        for bytes in [vec![0xff], vec![b'x'; MAX_SITES_BYTES + 1]] {
+            fs::write(&path, &bytes).unwrap();
+            let mut s = BlockerState::load(&dir, &[]);
+            let generation = s.generation();
+            assert_eq!(s.choose_level_for_page(PAGE, Level::None), SiteChoice::SaveFailed);
+            assert_eq!(s.choose_cookie_notices_for_page(PAGE, true), SiteChoice::SaveFailed);
+            assert_eq!(s.toggle_site(PAGE), SiteToggle::SaveFailed);
+            assert!(s.set_site_level("example.com", Some(Level::None)).is_err());
+            assert_eq!(s.generation(), generation);
+            assert!(s.site_rules().is_empty());
+            assert_eq!(fs::read(&path).unwrap(), bytes);
+            assert!(!path.with_extension("txt.tmp").exists());
+            // The in-memory list never contained the original choices: even if the file is
+            // repaired in place, this process must not write until a restart loads those choices.
+            fs::write(&path, "kept.test\n").unwrap();
+            assert_eq!(s.choose_level_for_page(PAGE, Level::None), SiteChoice::SaveFailed);
+            let mut restarted = BlockerState::load(&dir, &[]);
+            assert_eq!(restarted.choose_level_for_page(PAGE, Level::None), SiteChoice::Saved);
+            assert_eq!(BlockerState::load(&dir, &[]).level_for("kept.test", false), Level::None);
+        }
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

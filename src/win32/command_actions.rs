@@ -242,6 +242,7 @@ pub(crate) fn run_cycle_blocking_level(cx: &Context) {
         SiteChoice::Saved => super::window::show_toast(cx.hwnd, &format!("{site}: {}", level_words(next)), "Blocking"),
         SiteChoice::ConfiguredInSettings => super::window::show_toast(cx.hwnd, &format!("{site} is on the list of sites the blocker skips"), "Blocking"),
         SiteChoice::NoSite => super::window::show_toast(cx.hwnd, "This page has no site to set a level for", "Blocking"),
+        SiteChoice::SaveFailed => {} // The app already showed the save error; no success toast.
     }
 }
 
