@@ -42,6 +42,7 @@ use super::{
     MemoryTargetApply, MemoryUsageTarget, PermissionsHandle, TrackingPreventionLevel,
 };
 use crate::permissions::Permission;
+use crate::split_view::{SwitchStep, visibility_steps};
 use crate::tabs::TabId;
 use crate::{shortcuts, win32};
 
@@ -1657,6 +1658,53 @@ struct EngineCore {
     extension_page: Option<super::extension_page::HostedPage>,
 }
 
+impl EngineCore {
+    /// Applies the same visibility and sleep bookkeeping to single tabs and split panes. This
+    /// does not create controllers: selecting a blank tab must keep controller creation lazy.
+    fn apply_visibility(&mut self, next: &[TabId], active: TabId) -> Result<()> {
+        let steps = visibility_steps(&self.visible_tabs, next);
+        self.visible_tabs = next.iter().copied().collect();
+        self.active_tab = Some(active);
+        for step in &steps {
+            match step {
+                SwitchStep::Show(tab) => {
+                    self.known_tabs.insert(*tab);
+                    self.hidden_since.remove(tab);
+                    self.suspended.remove(tab);
+                }
+                SwitchStep::Hide(tab) => {
+                    self.hidden_since.insert(*tab, Instant::now());
+                    self.suspended.remove(tab);
+                }
+            }
+        }
+        // Size and show all next panes before hiding any old pane, avoiding a blank frame.
+        for step in steps {
+            match step {
+                SwitchStep::Show(tab_id) => {
+                    let bounds = self
+                        .pane_bounds
+                        .get(&tab_id)
+                        .copied()
+                        .unwrap_or(self.bounds);
+                    if let Some(tab) = self.tabs.get_mut(&tab_id) {
+                        EngineAdapter::resize(tab, bounds)?;
+                        EngineAdapter::set_visible(tab, true)?;
+                        let _ = EngineAdapter::set_memory_usage_target(tab, self.target);
+                    }
+                }
+                SwitchStep::Hide(tab_id) => {
+                    if let Some(tab) = self.tabs.get_mut(&tab_id) {
+                        EngineAdapter::set_visible(tab, false)?;
+                        let _ = EngineAdapter::set_memory_usage_target(tab, MemoryUsageTarget::Low);
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
 /// Completion for an extension operation. It runs once, on the UI thread.
 type ExtensionDone = Box<dyn FnOnce(std::result::Result<(), String>)>;
 
@@ -1907,9 +1955,8 @@ impl WebView2Engine {
                 };
                 let (still_open, bounds, visible) = {
                     let mut state = core.borrow_mut();
-                    // The active tab is what the window is showing. A blank tab opened from a
-                    // split is active before it is listed in `visible_tabs`; creating that
-                    // controller hidden leaves the page area empty after the search starts.
+                    // An empty split pane has no controller in `visible_tabs` yet. If its first
+                    // navigation creates one while it is active, show that controller too.
                     if !state.closed
                         && state.known_tabs.contains(&tab_id)
                         && state.active_tab == Some(tab_id)
@@ -1987,8 +2034,8 @@ impl WebView2Engine {
                     state.prewarming.remove(&tab_id);
                     let still_open = !state.closed && state.known_tabs.contains(&tab_id);
                     if still_open {
-                        let active = state.active_tab == Some(tab_id);
-                        if active {
+                        let visible = state.visible_tabs.contains(&tab_id);
+                        if visible {
                             state.hidden_since.remove(&tab_id);
                         } else {
                             state
@@ -1999,7 +2046,7 @@ impl WebView2Engine {
                         state.suspended.remove(&tab_id);
                         (
                             state.pending.remove(&tab_id),
-                            if active {
+                            if visible {
                                 state.target
                             } else {
                                 MemoryUsageTarget::Low
@@ -4187,54 +4234,14 @@ impl EngineAdapter for WebView2Engine {
         if state.closed {
             return Ok(());
         }
-        state.known_tabs.insert(tab_id);
-        let previous = state.active_tab;
-        let was_visible = state.visible_tabs.contains(&tab_id);
-        if !was_visible {
+        let next = if state.visible_tabs.contains(&tab_id) {
+            // Focusing a pane preserves the rest of the split and each pane's bounds.
+            state.visible_tabs.iter().copied().collect::<Vec<_>>()
+        } else {
             state.pane_bounds.clear(); // --- split view ---
-        }
-        let steps = switch_steps(previous, tab_id, was_visible);
-        if previous != Some(tab_id) && !was_visible {
-            if let Some(previous) = previous {
-                if state.known_tabs.contains(&previous) {
-                    state.hidden_since.insert(previous, Instant::now());
-                    state.suspended.remove(&previous);
-                } else {
-                    state.hidden_since.remove(&previous);
-                }
-            }
-            state.active_tab = Some(tab_id);
-        }
-        if !was_visible {
-            state.visible_tabs.clear();
-            state.visible_tabs.insert(tab_id);
-        }
-        state.hidden_since.remove(&tab_id);
-        state.suspended.remove(&tab_id);
-        let bounds = state.bounds;
-        let target = state.target;
-        // Show and size the new tab before hiding the previous one so no blank frame is presented.
-        for step in steps {
-            match step {
-                SwitchStep::Show(shown) => {
-                    if let Some(tab) = state.tabs.get_mut(&shown) {
-                        EngineAdapter::resize(tab, bounds)?;
-                        EngineAdapter::set_visible(tab, true)?;
-                        let _ = EngineAdapter::set_memory_usage_target(tab, target);
-                    }
-                }
-                SwitchStep::Hide(hidden) => {
-                    if state.known_tabs.contains(&hidden) {
-                        if let Some(tab) = state.tabs.get_mut(&hidden) {
-                            EngineAdapter::set_visible(tab, false)?;
-                            let _ =
-                                EngineAdapter::set_memory_usage_target(tab, MemoryUsageTarget::Low);
-                        }
-                    }
-                }
-            }
-        }
-        Ok(())
+            vec![tab_id]
+        };
+        state.apply_visibility(&next, tab_id)
     }
     fn set_visible_tabs(&mut self, panes: &[(TabId, RECT)], active: TabId) -> Result<()> {
         let mut create = Vec::new();
@@ -4243,49 +4250,14 @@ impl EngineAdapter for WebView2Engine {
             if state.closed {
                 return Ok(());
             }
-            let next: HashSet<TabId> = panes.iter().map(|(tab, _)| *tab).collect();
-            let old: Vec<TabId> = state.visible_tabs.difference(&next).copied().collect();
             let shown: Vec<TabId> = panes.iter().map(|(tab, _)| *tab).collect();
-            let steps = pane_switch_steps(&shown, &old);
-            for tab_id in old {
-                state.hidden_since.insert(tab_id, Instant::now());
-                state.suspended.remove(&tab_id);
-            }
-            state.visible_tabs = next;
-            state.active_tab = Some(active);
             // --- split view ---
             state.pane_bounds = panes.iter().copied().collect();
             // --- end split view ---
-            let target = state.target;
+            state.apply_visibility(&shown, active)?;
             for (tab_id, _) in panes {
-                state.known_tabs.insert(*tab_id);
-                state.hidden_since.remove(tab_id);
-                state.suspended.remove(tab_id);
                 if !state.tabs.contains_key(tab_id) && !state.creating.contains(tab_id) {
                     create.push(*tab_id);
-                }
-            }
-            // The next panes are shown and sized before the old ones are hidden, so the host
-            // never presents an empty content area between the two.
-            for step in steps {
-                match step {
-                    SwitchStep::Show(tab_id) => {
-                        let Some(bounds) = state.pane_bounds.get(&tab_id).copied() else {
-                            continue;
-                        };
-                        if let Some(tab) = state.tabs.get_mut(&tab_id) {
-                            EngineAdapter::resize(tab, bounds)?;
-                            EngineAdapter::set_visible(tab, true)?;
-                            let _ = EngineAdapter::set_memory_usage_target(tab, target);
-                        }
-                    }
-                    SwitchStep::Hide(tab_id) => {
-                        if let Some(tab) = state.tabs.get_mut(&tab_id) {
-                            EngineAdapter::set_visible(tab, false)?;
-                            let _ =
-                                EngineAdapter::set_memory_usage_target(tab, MemoryUsageTarget::Low);
-                        }
-                    }
                 }
             }
         }
@@ -4311,6 +4283,7 @@ impl EngineAdapter for WebView2Engine {
             state.known_tabs.remove(&tab_id);
             state.private_tabs.remove(&tab_id);
             state.visible_tabs.remove(&tab_id);
+            state.pane_bounds.remove(&tab_id);
             state.waiting_controllers.retain(|queued| *queued != tab_id);
             if state.prewarm_waiting == Some(tab_id) {
                 state.prewarm_waiting = None;
@@ -6421,34 +6394,6 @@ fn ensure_user_data_dir(user_data_dir: &Path) -> Result<()> {
     })
 }
 
-/// One visibility change in a tab or pane switch.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum SwitchStep {
-    Show(TabId),
-    Hide(TabId),
-}
-
-/// Orders a tab switch so the next tab is shown before the previous one is hidden. Nothing is
-/// hidden when the tab is already the active one or is already on screen in a split view.
-fn switch_steps(previous: Option<TabId>, next: TabId, next_was_visible: bool) -> Vec<SwitchStep> {
-    let mut steps = vec![SwitchStep::Show(next)];
-    if let Some(previous) = previous {
-        if previous != next && !next_was_visible {
-            steps.push(SwitchStep::Hide(previous));
-        }
-    }
-    steps
-}
-
-/// The split-view form of `switch_steps`: every next pane is shown before any old pane is hidden.
-fn pane_switch_steps(next: &[TabId], old: &[TabId]) -> Vec<SwitchStep> {
-    next.iter()
-        .copied()
-        .map(SwitchStep::Show)
-        .chain(old.iter().copied().map(SwitchStep::Hide))
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -6685,39 +6630,6 @@ mod tests {
                 None => done(None),
             }
         }
-    }
-
-    #[test]
-    fn switching_tabs_shows_the_next_before_hiding_the_previous() {
-        let steps = switch_steps(Some(TabId(1)), TabId(2), false);
-        assert_eq!(steps, vec![SwitchStep::Show(TabId(2)), SwitchStep::Hide(TabId(1))]);
-        let show = steps.iter().position(|s| *s == SwitchStep::Show(TabId(2))).unwrap();
-        let hide = steps.iter().position(|s| *s == SwitchStep::Hide(TabId(1))).unwrap();
-        assert!(show < hide);
-    }
-
-    #[test]
-    fn switching_to_the_same_or_an_onscreen_tab_hides_nothing() {
-        let same = switch_steps(Some(TabId(3)), TabId(3), false);
-        assert_eq!(same, vec![SwitchStep::Show(TabId(3))]);
-        let onscreen = switch_steps(Some(TabId(1)), TabId(2), true);
-        assert_eq!(onscreen, vec![SwitchStep::Show(TabId(2))]);
-        let first = switch_steps(None, TabId(2), false);
-        assert_eq!(first, vec![SwitchStep::Show(TabId(2))]);
-    }
-
-    #[test]
-    fn pane_switches_show_every_next_pane_before_hiding_old_ones() {
-        let steps = pane_switch_steps(&[TabId(2), TabId(3)], &[TabId(1), TabId(4)]);
-        assert_eq!(
-            steps,
-            vec![
-                SwitchStep::Show(TabId(2)),
-                SwitchStep::Show(TabId(3)),
-                SwitchStep::Hide(TabId(1)),
-                SwitchStep::Hide(TabId(4)),
-            ]
-        );
     }
 
     #[test]
@@ -8322,8 +8234,7 @@ mod tests {
         );
     }
 
-    #[test]
-    fn minimize_hide_does_not_mark_the_active_tab_for_the_30s_suspend_sweep() {
+    fn engine_without_controllers() -> WebView2Engine {
         let core = Rc::new(RefCell::new(EngineCore {
             parent: HWND::default(),
             bounds: RECT::default(),
@@ -8365,7 +8276,129 @@ mod tests {
             chrome_ui_scheme: false,
             extension_page: None,
         }));
-        let mut engine = WebView2Engine { core: core.clone() };
+        WebView2Engine { core }
+    }
+
+    #[test]
+    fn selecting_a_tab_outside_a_split_tracks_every_hidden_pane() {
+        let mut engine = engine_without_controllers();
+        let already_hidden = Instant::now() - Duration::from_secs(60);
+        {
+            let mut state = engine.core.borrow_mut();
+            state.visible_tabs.insert(TabId(2));
+            state.pane_bounds.insert(TabId(1), RECT::default());
+            state.pane_bounds.insert(TabId(2), RECT::default());
+            state.hidden_since =
+                HashMap::from([(TabId(3), already_hidden), (TabId(4), already_hidden)]);
+            state.suspended = HashSet::from([TabId(1), TabId(2), TabId(3), TabId(4)]);
+        }
+
+        engine.select_tab(TabId(3)).unwrap();
+        let state = engine.core.borrow();
+        assert_eq!(state.visible_tabs, HashSet::from([TabId(3)]));
+        assert_eq!(state.active_tab, Some(TabId(3)));
+        assert!(state.pane_bounds.is_empty());
+        assert!(state.known_tabs.contains(&TabId(3)));
+        assert!(state.hidden_since.contains_key(&TabId(1)));
+        assert!(state.hidden_since.contains_key(&TabId(2)));
+        assert!(!state.hidden_since.contains_key(&TabId(3)));
+        assert_eq!(state.hidden_since[&TabId(4)], already_hidden);
+        assert_eq!(state.suspended, HashSet::from([TabId(4)]));
+        assert!(state.tabs.is_empty(), "selecting a blank tab stays lazy");
+        assert!(state.creating.is_empty());
+    }
+
+    #[test]
+    fn selecting_a_visible_pane_preserves_the_split_and_updates_the_command_target() {
+        let mut engine = engine_without_controllers();
+        let bounds = HashMap::from([
+            (
+                TabId(1),
+                RECT {
+                    left: 0,
+                    top: 0,
+                    right: 396,
+                    bottom: 600,
+                },
+            ),
+            (
+                TabId(2),
+                RECT {
+                    left: 404,
+                    top: 0,
+                    right: 800,
+                    bottom: 600,
+                },
+            ),
+        ]);
+        {
+            let mut state = engine.core.borrow_mut();
+            state.visible_tabs.insert(TabId(2));
+            state.pane_bounds = bounds.clone();
+            state.suspended.insert(TabId(2));
+        }
+
+        engine.select_tab(TabId(2)).unwrap();
+        engine.select_tab(TabId(2)).unwrap();
+        let state = engine.core.borrow();
+        assert_eq!(state.active_tab, Some(TabId(2)));
+        assert_eq!(state.visible_tabs, HashSet::from([TabId(1), TabId(2)]));
+        assert_eq!(state.pane_bounds, bounds);
+        assert!(state.hidden_since.is_empty());
+        assert!(state.suspended.is_empty());
+    }
+
+    #[test]
+    fn switching_splits_keeps_pending_pane_bounds_and_tracks_every_hidden_tab() {
+        let mut engine = engine_without_controllers();
+        let panes = [
+            (
+                TabId(3),
+                RECT {
+                    right: 396,
+                    bottom: 600,
+                    ..RECT::default()
+                },
+            ),
+            (
+                TabId(4),
+                RECT {
+                    left: 404,
+                    right: 800,
+                    bottom: 600,
+                    ..RECT::default()
+                },
+            ),
+        ];
+        {
+            let mut state = engine.core.borrow_mut();
+            state.visible_tabs.insert(TabId(2));
+            state.hidden_since =
+                HashMap::from([(TabId(3), Instant::now()), (TabId(4), Instant::now())]);
+            state.suspended = HashSet::from([TabId(3), TabId(4)]);
+            // Controllers are still being created, so the engine must remember the new view
+            // and its bounds without making a WebView2 call in this test.
+            state.creating = HashSet::from([TabId(3), TabId(4)]);
+        }
+
+        engine.set_visible_tabs(&panes, TabId(4)).unwrap();
+        let state = engine.core.borrow();
+        assert_eq!(state.active_tab, Some(TabId(4)));
+        assert_eq!(state.visible_tabs, HashSet::from([TabId(3), TabId(4)]));
+        assert_eq!(state.pane_bounds, panes.into_iter().collect());
+        assert_eq!(
+            state.hidden_since.keys().copied().collect::<HashSet<_>>(),
+            HashSet::from([TabId(1), TabId(2)])
+        );
+        assert!(state.suspended.is_empty());
+        assert!(state.known_tabs.contains(&TabId(3)));
+        assert!(state.known_tabs.contains(&TabId(4)));
+    }
+
+    #[test]
+    fn minimize_hide_does_not_mark_the_active_tab_for_the_30s_suspend_sweep() {
+        let mut engine = engine_without_controllers();
+        let core = engine.core.clone();
         // On minimize, set_visible(false) is called on the engine:
         let _ = engine.set_visible(false);
         // Active tab must NOT be added to hidden_since:
