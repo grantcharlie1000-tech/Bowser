@@ -5815,12 +5815,14 @@ unsafe fn configure_controller(
             let favicon_handler = FaviconChangedEventHandler::create(Box::new(move |sender, _| {
                 if let (Some(sender), Some(callback)) = (sender, favicon_callback.as_ref()) {
                     if let Ok(webview15) = sender.cast::<ICoreWebView2_15>() {
+                        let Some(page) = current_web_url(&sender) else { return Ok(()); };
+                        let source = sender.clone();
                         let callback = callback.clone();
                         let completed =
                             GetFaviconCompletedHandler::create(Box::new(move |status, stream| {
-                                if status.is_ok() {
+                                if status.is_ok() && current_web_url(&source).as_ref() == Some(&page) {
                                     if let Some(bytes) = stream.and_then(read_favicon_stream) {
-                                        callback(tab_id, bytes);
+                                        callback(tab_id, page.clone(), bytes);
                                     }
                                 }
                                 Ok(())
