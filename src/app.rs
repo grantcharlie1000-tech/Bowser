@@ -734,6 +734,10 @@ pub struct App {
     session_save_pending: bool,
     last_session_snapshot: Option<crate::session::Session>,
     pending_restore: Option<crate::session::Session>,
+    /// Addresses a later process handed this window. Held until startup has finished restoring
+    /// or opening its own launch address, so they are applied once and are not wiped by restore.
+    external_urls: Vec<url::Url>,
+    external_ready: bool,
     privacy_stats: Option<crate::privacy_stats::PrivacyStats>,
     privacy_stats_path: Option<PathBuf>,
     privacy_session_blocked: u64,
@@ -4994,14 +4998,40 @@ impl App {
                 return Ok(());
             }
         };
-        // A plain launch while another live Bowser has this profile open would share its WebView2
-        // folder and session. Refuse before any window, workspace or session state is loaded.
+        // A second process for this profile would share its WebView2 folder and session. An
+        // external address is handed to the window already open. A plain launch is refused.
+        // Either way this process stops before it loads or writes session state. `--new-window`
+        // is the explicit extra window and is not redirected.
+        let launch_urls: Vec<url::Url> = options
+            .open_url
+            .iter()
+            .cloned()
+            .chain(options.more_urls.iter().cloned())
+            .collect();
         let new_window = options.new_window;
         let tracked = options.benchmark_url.is_none() && options.user_data_dir.is_none();
-        let lock = crate::session::lock_state(&profile.session_dir());
-        if crate::session::decide_launch(lock, profile.is_guest(), tracked, new_window)
-            == crate::session::LaunchDecision::RefuseAlreadyOpen
-        {
+        let session_dir = profile.session_dir();
+        let lock = crate::session::lock_state(&session_dir);
+        let route = crate::session::decide_launch(
+            lock,
+            profile.is_guest(),
+            tracked,
+            new_window,
+            !launch_urls.is_empty(),
+        );
+        let attach = tracked && !profile.is_guest() && !new_window;
+        // A secondary window does not hold `running.lock`. The marker can also look like a crash
+        // while a window is still up. Either way an address belongs to that window, and a plain
+        // launch must not start a second session restore.
+        let window_open = attach && crate::instance::profile_is_open(&session_dir);
+        if attach && (window_open || route == crate::session::LaunchDecision::ForwardToRunning) {
+            if launch_urls.is_empty() {
+                win32::show_error_message("Bowser is already open for this profile.");
+                return Ok(());
+            }
+            return Self::hand_launch_to_running(&session_dir, &launch_urls);
+        }
+        if route == crate::session::LaunchDecision::RefuseAlreadyOpen {
             win32::show_error_message("Bowser is already open for this profile.");
             return Ok(());
         }
@@ -5112,17 +5142,33 @@ impl App {
                 &profile.privacy_stats_file(),
             ));
         }
-        if track_session
-            && !app.init_session(&profile.session_dir())
-            && !new_window
-            && crate::session::lock_state(&profile.session_dir())
-                == crate::session::LockState::HeldByLiveInstance
-        {
-            // Another instance took the marker after the early check above (a double-click).
-            win32::show_error_message("Bowser is already open for this profile.");
-            return Ok(());
+        if track_session && !app.init_session(&session_dir) && !new_window {
+            // Another launch took the marker while this one was still starting. Hand an address
+            // over; do not open a window that would rebuild the same session.
+            if !launch_urls.is_empty()
+                && (crate::session::lock_state(&session_dir) == crate::session::LockState::HeldByLiveInstance
+                    || crate::instance::profile_is_open(&session_dir))
+            {
+                return Self::hand_launch_to_running(&session_dir, &launch_urls);
+            }
+            if crate::session::lock_state(&session_dir) == crate::session::LockState::HeldByLiveInstance
+            {
+                win32::show_error_message("Bowser is already open for this profile.");
+                return Ok(());
+            }
         }
         win32::run(app)
+    }
+
+    /// Gives `urls` to the window that already has this profile. Failure leaves that window's
+    /// session alone: this process does not open a second one.
+    fn hand_launch_to_running(dir: &std::path::Path, urls: &[url::Url]) -> Result<()> {
+        if crate::instance::deliver(dir, urls).is_err() {
+            win32::show_error_message(
+                "Bowser is already open. This link could not be opened in the existing window.",
+            );
+        }
+        Ok(())
     }
 
     fn from_launch_options(
@@ -5211,6 +5257,8 @@ impl App {
             session_save_pending: false,
             last_session_snapshot: None,
             pending_restore: None,
+            external_urls: Vec::new(),
+            external_ready: false,
             privacy_stats: None,
             privacy_stats_path: None,
             privacy_session_blocked: 0,
@@ -5234,7 +5282,17 @@ impl App {
 
     /// Opens the crash-recovery state and, after a crash, asks whether to restore.
     /// Returns `false` when the session could not be opened because another Bowser holds it.
+    /// The caller then must not open a window that rebuilds the saved tabs.
     fn init_session(&mut self, dir: &std::path::Path) -> bool {
+        // --- start page --- "continue where you left off": a clean exit's tabs come back too, unless the
+        // launch carries an address of its own.
+        let restore_clean = self.settings.start.startup == crate::start_page::Startup::LastSession && self.initial_url.is_none();
+        // --- end start page ---
+        // Claim the marker before reading workspaces. A launch that loses the claim leaves every
+        // session file untouched.
+        let Some((mut store, offer)) = crate::session::SessionStore::open_with(dir, restore_clean) else {
+            return false; // another Bowser is running; leave its files alone
+        };
         let workspace_path = self
             .workspaces_path
             .clone()
@@ -5242,13 +5300,6 @@ impl App {
         if let Ok(Some(workspaces)) = crate::workspaces::WorkspaceSet::load(&workspace_path) {
             self.workspaces = workspaces;
         }
-        // --- start page --- "continue where you left off": a clean exit's tabs come back too, unless the
-        // launch carries an address of its own.
-        let restore_clean = self.settings.start.startup == crate::start_page::Startup::LastSession && self.initial_url.is_none();
-        // --- end start page ---
-        let Some((mut store, offer)) = crate::session::SessionStore::open_with(dir, restore_clean) else {
-            return false; // another Bowser is running; leave its files alone
-        };
         let accepted = offer.filter(|offer| {
             !offer.ask
                 || win32::ask_yes_no(&format!(
@@ -5774,6 +5825,82 @@ impl App {
             let _ = Self::move_tab(app, id, usize::MAX);
         }
         let _ = Self::select_tab(app, shown);
+    }
+
+    /// Queues addresses from another process until this window has finished its own startup, then
+    /// opens each one once. A blank untouched tab is reused for the first address. Tabs that are
+    /// already open stay as they are.
+    pub fn accept_external_urls(app: &AppRef, urls: Vec<url::Url>) {
+        let urls: Vec<url::Url> = urls
+            .into_iter()
+            .filter(crate::instance::acceptable_launch_url)
+            .take(crate::performance::MAX_OPEN_URLS)
+            .collect();
+        if urls.is_empty() {
+            return;
+        }
+        if !app.borrow().external_ready {
+            let mut state = app.borrow_mut();
+            for url in urls {
+                if state.external_urls.len() >= crate::performance::MAX_OPEN_URLS {
+                    break;
+                }
+                state.external_urls.push(url);
+            }
+            return;
+        }
+        Self::open_external_urls_now(app, &urls);
+    }
+
+    /// Startup has applied session restore and this process's own launch address. Opens anything
+    /// that arrived while that was in progress, once.
+    pub fn release_external_urls(app: &AppRef) {
+        let urls = {
+            let mut state = app.borrow_mut();
+            state.external_ready = true;
+            std::mem::take(&mut state.external_urls)
+        };
+        if !urls.is_empty() {
+            Self::open_external_urls_now(app, &urls);
+        }
+    }
+
+    fn active_launch_blank(app: &AppRef) -> bool {
+        let state = app.borrow();
+        if state.pending.is_some() || state.pending_restore.is_some() || state.split_view.is_some() {
+            return false;
+        }
+        let id = state.tab_model.active();
+        state
+            .tabs
+            .iter()
+            .find(|tab| tab.id == id)
+            .is_some_and(|tab| !tab.private && tab.url.is_none())
+    }
+
+    fn open_external_urls_now(app: &AppRef, urls: &[url::Url]) {
+        let mut prefer_blank = true;
+        for url in urls.iter().take(crate::performance::MAX_OPEN_URLS) {
+            let engine_ready = app.borrow().engine.is_some();
+            let blank = prefer_blank && Self::active_launch_blank(app);
+            prefer_blank = false;
+            if url.scheme() == "file" {
+                app.borrow_mut().allowed_benchmark_file = Some(url.clone());
+            }
+            if blank {
+                Self::submit_url(app, url.clone(), launch_allowed_file(None, Some(url)));
+                continue;
+            }
+            // The engine is not up yet (startup). A background tab keeps the address without
+            // replacing the navigation this process already queued.
+            if engine_ready {
+                Self::new_tab(app);
+                Self::submit_url(app, url.clone(), launch_allowed_file(None, Some(url)));
+            } else {
+                let id = Self::new_background_tab(app, false, None);
+                Self::make_asleep(app, id, url);
+            }
+        }
     }
 
     // --- start page ---
@@ -8021,6 +8148,64 @@ mod tests {
         assert_eq!(launch_allowed_file(None, None), None);
         assert_eq!(launch_allowed_file(Some(&bench), Some(&file)), Some(bench.clone()));
         assert_eq!(launch_allowed_file(Some(&web), None), Some(web));
+    }
+
+    #[test]
+    fn an_external_link_waits_out_startup_then_opens_once_in_the_blank_tab() {
+        let app = app_with_pending(rect(800, 600));
+        app.borrow_mut().initializing = true;
+        app.borrow_mut().pending = None;
+        app.borrow_mut().pending_tab = None;
+        let link = url::Url::parse("https://link.example/once").unwrap();
+        App::accept_external_urls(&app, vec![link.clone()]);
+        assert!(app.borrow().pending.is_none(), "restore has not run yet; the link stays queued");
+        assert_eq!(app.borrow().tab_model.len(), 1);
+        App::release_external_urls(&app);
+        assert_eq!(app.borrow().tab_model.len(), 1, "the untouched blank tab is the one that opens it");
+        assert_eq!(app.borrow().pending.as_ref(), Some(&link));
+        App::release_external_urls(&app);
+        assert_eq!(app.borrow().tab_model.len(), 1, "releasing again does not open it a second time");
+        assert_eq!(app.borrow().pending.as_ref(), Some(&link));
+    }
+
+    #[test]
+    fn an_external_link_does_not_replace_tabs_already_open() {
+        let app = app_with_pending(rect(800, 600));
+        app.borrow_mut().initializing = true;
+        app.borrow_mut().pending = None;
+        app.borrow_mut().pending_tab = None;
+        let kept = url::Url::parse("https://kept.example/a").unwrap();
+        let active = App::active_tab_id(&app);
+        app.borrow_mut().tabs.iter_mut().find(|tab| tab.id == active).unwrap().url = Some(kept.clone());
+        let link = url::Url::parse("https://link.example/new").unwrap();
+        App::accept_external_urls(&app, vec![link.clone()]);
+        App::release_external_urls(&app);
+        let state = app.borrow();
+        assert_eq!(state.tab_model.len(), 2);
+        assert_eq!(
+            state.tabs.iter().find(|tab| tab.id == active).unwrap().url.as_ref(),
+            Some(&kept),
+            "the tab that was already open is not navigated away or duplicated"
+        );
+        assert!(state.tabs.iter().any(|tab| tab.url.as_ref() == Some(&link) && tab.id != active));
+    }
+
+    #[test]
+    fn external_links_queued_during_startup_do_not_clobber_the_launch_address() {
+        let app = app_with_pending(rect(800, 600));
+        app.borrow_mut().initializing = true;
+        app.borrow_mut().pending = None;
+        app.borrow_mut().pending_tab = None;
+        let cold = url::Url::parse("https://cold.example/").unwrap();
+        let extra = url::Url::parse("https://extra.example/").unwrap();
+        app.borrow_mut().initial_url = Some(cold.clone());
+        App::accept_external_urls(&app, vec![extra.clone()]);
+        App::submit_initial_url(&app);
+        App::release_external_urls(&app);
+        let state = app.borrow();
+        assert_eq!(state.tab_model.len(), 2);
+        assert_eq!(state.pending.as_ref(), Some(&cold), "the cold launch address stays the one that loads");
+        assert!(state.tabs.iter().any(|tab| tab.url.as_ref() == Some(&extra) && tab.discarded));
     }
 
     #[test]
@@ -10459,6 +10644,8 @@ mod tests {
             session_save_pending: false,
             last_session_snapshot: None,
             pending_restore: None,
+            external_urls: Vec::new(),
+            external_ready: false,
             privacy_stats: None,
             privacy_stats_path: None,
             privacy_session_blocked: 0,

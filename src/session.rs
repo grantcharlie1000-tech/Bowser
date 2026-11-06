@@ -5,11 +5,12 @@
 //! * `session.prev`    - the snapshot that existed when this run first saved (one-step backup).
 //! * `session.crashed-<unix>` - a snapshot set aside by the crash-loop guard. Never overwritten;
 //!   only the newest [`MAX_CRASHED_KEPT`] are kept. A legacy `session.crashed` is left alone.
-//! * `running.lock`    - created at start, removed on clean exit. Its presence at start means
-//!   the previous run ended unexpectedly. It holds the number of consecutive crashed runs and is
-//!   kept open with no sharing, so a second live instance can tell it apart from a stale marker
-//!   (and then leaves the session files alone). The count is reset to 0 after the first
-//!   successful save of a run, so one crash long after a restore is not a crash loop.
+//! * `running.lock`    - created when the session is opened, removed on clean exit. Its presence
+//!   at the next open means the previous run ended unexpectedly. It holds the number of
+//!   consecutive crashed runs and is kept open with no sharing from the moment the session is
+//!   claimed, so a second live instance can tell it apart from a stale marker (and then leaves
+//!   the session files alone). The count is reset to 0 after the first successful save of a run,
+//!   so one crash long after a restore is not a crash loop.
 //!
 //! Only committed `http`/`https` URLs without embedded credentials are stored, together with the
 //! title, pinned flag and active tab. Per-tab back/forward history is not stored. Bowser has no
@@ -427,24 +428,30 @@ pub enum LaunchDecision {
     Open,
     /// Another live Bowser has this profile open. Show a message and exit without a window.
     RefuseAlreadyOpen,
+    /// Another live Bowser has this profile open and this launch carries an address. Hand the
+    /// address to that window and exit. Do not open a window and do not read the session.
+    ForwardToRunning,
 }
 
-/// A plain launch of a tracked profile is refused while a live Bowser holds its marker. A stale
-/// marker from a crash still opens, so crash restore is unchanged. `new_window` is passed by
-/// "Move tab to new window" and "open profile window": that window intentionally shares the
-/// profile with the one that is already open, so it is never refused. Guests and benchmark or
-/// custom-directory launches are not tracked and always open.
+/// A plain launch of a tracked profile is refused while a live Bowser holds its marker. A launch
+/// that carries an address is forwarded to that window instead, so it does not start a second
+/// session. A stale marker from a crash still opens, so crash restore is unchanged. `new_window`
+/// is passed by "Move tab to new window" and "open profile window": that window intentionally
+/// shares the profile with the one that is already open, so it is never refused or forwarded.
+/// Guests and benchmark or custom-directory launches are not tracked and always open.
 pub fn decide_launch(
     lock: LockState,
     is_guest: bool,
     is_tracked: bool,
     new_window: bool,
+    has_launch_url: bool,
 ) -> LaunchDecision {
     if is_guest || !is_tracked || new_window {
         return LaunchDecision::Open;
     }
     match lock {
         LockState::Free => LaunchDecision::Open,
+        LockState::HeldByLiveInstance if has_launch_url => LaunchDecision::ForwardToRunning,
         LockState::HeldByLiveInstance => LaunchDecision::RefuseAlreadyOpen,
     }
 }
@@ -489,6 +496,12 @@ pub struct SessionStore {
     lock_count: u32,
     rotated: bool,
     last_text: Option<String>,
+    /// This open created `running.lock` (there was no marker yet). Dropped without
+    /// [`begin_run`](Self::begin_run), that new file is removed so a process that never started
+    /// does not look like a crash.
+    created_lock: bool,
+    /// [`begin_run`](Self::begin_run) has written the marker this run will leave behind on a crash.
+    began: bool,
 }
 
 enum SessionCommand {
@@ -571,9 +584,16 @@ fn set_aside_crashed(dir: &Path) {
             .create_new(true)
             .open(&target)
         {
-            Ok(_) => {
+            Ok(file) => {
+                // Drop the placeholder before moving the snapshot onto it. Holding that handle,
+                // or holding `running.lock`, makes the replace fail on some systems.
+                drop(file);
                 if fs::rename(&path, &target).is_err() {
-                    let _ = fs::remove_file(&target);
+                    if fs::copy(&path, &target).is_ok() {
+                        let _ = fs::remove_file(&path);
+                    } else {
+                        let _ = fs::remove_file(&target);
+                    }
                 }
                 break;
             }
@@ -624,17 +644,37 @@ impl SessionStore {
     /// [`open`](Self::open), and with `restore_clean` the tabs of a run that ended cleanly come back
     /// too, without asking (the start page settings' "continue where you left off"). A crash is offered
     /// as always.
+    ///
+    /// The running marker is taken exclusively here, before any restore decision is returned, so two
+    /// launches cannot both read the same snapshot and both rebuild it. `None` means another live
+    /// Bowser already holds the marker: the caller must not restore, rewrite, or open a second
+    /// session.
     pub fn open_with(dir: &Path, restore_clean: bool) -> Option<(Self, Option<Offer>)> {
         fs::create_dir_all(dir).ok()?;
-        let Ok(prior) = read_lock_marker(dir) else {
-            return None; // held open by a live instance
-        };
+        let path = dir.join(LOCK_NAME);
+        let existed = path.is_file();
+        let mut file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .share_mode(0)
+            .open(&path)
+            .ok()?;
+        let mut buf = [0u8; 256];
+        let n = file.read(&mut buf).unwrap_or(0);
+        let text = String::from_utf8_lossy(&buf[..n]);
+        // No marker yet is a clean start. An existing marker, including an empty one, is the crash
+        // count (`parse_lock` treats an unreadable body as zero).
+        let prior = existed.then(|| parse_lock(text.trim()));
         let store = Self {
             dir: dir.to_owned(),
-            lock: None,
+            lock: Some(file),
             lock_count: 0,
             rotated: false,
             last_text: None,
+            created_lock: !existed,
+            began: false,
         };
         let restart = take_restart_marker(dir);
         let offer = match decide_start(prior) {
@@ -672,19 +712,40 @@ impl SessionStore {
 
     /// Creates the running marker. `restored` carries the crash count when the user accepted a
     /// restore; otherwise the count restarts at zero.
+    /// Records the crash count for this run in the marker [`open_with`](Self::open_with) already
+    /// holds. `restored` carries the count when the user accepted a restore; otherwise the count
+    /// restarts at zero. The same handle is rewritten, so the exclusive claim is never dropped
+    /// between the decision and the running window.
     pub fn begin_run(&mut self, restored: Option<&Offer>) {
         let count = restored.map_or(0, |offer| offer.consecutive);
-        let file = OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .share_mode(0)
-            .open(self.dir.join(LOCK_NAME));
-        if let Ok(mut file) = file {
-            let _ = write!(file, "bowser-lock {count}");
-            let _ = file.flush();
-            self.lock = Some(file);
-            self.lock_count = count;
+        if self.lock.is_none() {
+            let path = self.dir.join(LOCK_NAME);
+            let existed = path.is_file();
+            if let Ok(file) = OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .share_mode(0)
+                .open(&path)
+            {
+                self.created_lock = !existed;
+                self.lock = Some(file);
+            }
+        }
+        // Even if the rewrite fails, this run has claimed the marker: dropping the store must not
+        // delete a file another launch could mistake for "never started".
+        self.began = true;
+        if let Some(lock) = self.lock.as_mut() {
+            let rewritten = (|| -> io::Result<()> {
+                lock.set_len(0)?;
+                lock.seek(SeekFrom::Start(0))?;
+                write!(lock, "bowser-lock {count}")?;
+                lock.flush()
+            })();
+            if rewritten.is_ok() {
+                self.lock_count = count;
+            }
         }
     }
 
@@ -744,6 +805,18 @@ impl SessionStore {
             let _ = self.save(session);
         }
         if self.lock.take().is_some() {
+            let _ = fs::remove_file(self.dir.join(LOCK_NAME));
+        }
+    }
+}
+
+impl Drop for SessionStore {
+    fn drop(&mut self) {
+        let created = self.created_lock;
+        let began = self.began;
+        // Close the handle before deleting, or the delete fails while we still hold it.
+        self.lock.take();
+        if created && !began {
             let _ = fs::remove_file(self.dir.join(LOCK_NAME));
         }
     }
@@ -1375,38 +1448,94 @@ mod tests {
     #[test]
     fn stale_lock_from_a_crash_does_not_refuse_the_launch() {
         assert_eq!(
-            decide_launch(LockState::Free, false, true, false),
+            decide_launch(LockState::Free, false, true, false, false),
             LaunchDecision::Open
+        );
+        assert_eq!(
+            decide_launch(LockState::Free, false, true, false, true),
+            LaunchDecision::Open,
+            "a cold external link still opens in a new process"
         );
     }
 
     #[test]
     fn plain_launch_is_refused_when_a_live_instance_owns_a_tracked_profile() {
         assert_eq!(
-            decide_launch(LockState::HeldByLiveInstance, false, true, false),
+            decide_launch(LockState::HeldByLiveInstance, false, true, false, false),
             LaunchDecision::RefuseAlreadyOpen
+        );
+    }
+
+    #[test]
+    fn an_external_link_is_forwarded_when_a_live_instance_owns_the_profile() {
+        assert_eq!(
+            decide_launch(LockState::HeldByLiveInstance, false, true, false, true),
+            LaunchDecision::ForwardToRunning
         );
     }
 
     #[test]
     fn new_window_launch_opens_even_when_the_profile_is_already_open() {
         assert_eq!(
-            decide_launch(LockState::HeldByLiveInstance, false, true, true),
+            decide_launch(LockState::HeldByLiveInstance, false, true, true, false),
             LaunchDecision::Open
+        );
+        assert_eq!(
+            decide_launch(LockState::HeldByLiveInstance, false, true, true, true),
+            LaunchDecision::Open,
+            "an explicit new window is not turned into a handoff"
         );
     }
 
     #[test]
     fn guest_and_untracked_launches_always_open() {
         assert_eq!(
-            decide_launch(LockState::HeldByLiveInstance, true, true, false),
+            decide_launch(LockState::HeldByLiveInstance, true, true, false, true),
             LaunchDecision::Open,
             "guest"
         );
         assert_eq!(
-            decide_launch(LockState::HeldByLiveInstance, false, false, false),
+            decide_launch(LockState::HeldByLiveInstance, false, false, false, true),
             LaunchDecision::Open,
             "benchmark or custom user-data directory"
         );
+    }
+
+    #[test]
+    fn the_session_lock_is_held_as_soon_as_the_store_opens() {
+        let dir = temp_dir("early-lock");
+        let (first, offer) = SessionStore::open(&dir).unwrap();
+        assert!(offer.is_none());
+        assert!(
+            SessionStore::open(&dir).is_none(),
+            "the opener holds the marker before begin_run, so a second launch cannot restore"
+        );
+        drop(first);
+        assert!(
+            !dir.join(LOCK_NAME).exists(),
+            "a process that never called begin_run must not leave a crash marker"
+        );
+        assert!(SessionStore::open(&dir).is_some());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_second_open_does_not_offer_or_rewrite_the_session_while_the_first_is_alive() {
+        let dir = temp_dir("no-replay");
+        let (mut first, _) = SessionStore::open(&dir).unwrap();
+        first.begin_run(None);
+        first.save(&sample()).unwrap();
+        let before = fs::read(dir.join(FILE_NAME)).unwrap();
+        assert!(
+            SessionStore::open_with(&dir, true).is_none(),
+            "continue-where-you-left-off must not run in the second process"
+        );
+        assert_eq!(
+            fs::read(dir.join(FILE_NAME)).unwrap(),
+            before,
+            "the live session file is left untouched"
+        );
+        first.finish(None);
+        let _ = fs::remove_dir_all(&dir);
     }
 }
