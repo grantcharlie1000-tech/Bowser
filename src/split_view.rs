@@ -20,7 +20,32 @@
 //! [`SplitView::cells`] maps the layout onto the page's four quadrants, which is how drops, focus
 //! moves and closing a pane are decided.
 
+use std::collections::HashSet;
+
 use crate::tabs::TabId;
+
+/// One controller visibility change in a tab or pane switch.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum SwitchStep {
+    Show(TabId),
+    Hide(TabId),
+}
+
+/// Shows every next pane before hiding any pane outside the next view. The complete visible set
+/// is needed here: the focused tab alone cannot account for a split's other controllers.
+pub(crate) fn visibility_steps(old_visible: &HashSet<TabId>, next: &[TabId]) -> Vec<SwitchStep> {
+    next.iter()
+        .copied()
+        .map(SwitchStep::Show)
+        .chain(
+            old_visible
+                .iter()
+                .filter(|tab| !next.contains(tab))
+                .copied()
+                .map(SwitchStep::Hide),
+        )
+        .collect()
+}
 
 /// Smallest and largest share of the split axis the first pane may take, in percent.
 pub const MIN_RATIO: u8 = 20;
@@ -1063,6 +1088,79 @@ pub fn drop_target_zone(plan: DropPlan, dragged: TabId, zone: DropZone) -> DropZ
 mod tests {
     use super::*;
     use crate::tabs::TabId;
+
+    fn assert_visibility_switch(old: &[TabId], next: &[TabId], hidden: &[TabId]) {
+        let mut visible = old.iter().copied().collect();
+        let steps = visibility_steps(&visible, next);
+        let (shows, hides) = steps.split_at(next.len());
+        assert_eq!(
+            shows,
+            next.iter()
+                .copied()
+                .map(SwitchStep::Show)
+                .collect::<Vec<_>>()
+        );
+        let mut hidden_tabs = Vec::new();
+        for step in hides {
+            let SwitchStep::Hide(tab) = step else {
+                panic!("all panes must be shown before any are hidden");
+            };
+            hidden_tabs.push(*tab);
+        }
+        hidden_tabs.sort_unstable();
+        assert_eq!(hidden_tabs, hidden);
+        for step in steps {
+            match step {
+                SwitchStep::Show(tab) => {
+                    visible.insert(tab);
+                }
+                SwitchStep::Hide(tab) => {
+                    visible.remove(&tab);
+                }
+            }
+        }
+        assert_eq!(visible, next.iter().copied().collect());
+    }
+
+    #[test]
+    fn visibility_split_to_single_hides_every_old_pane() {
+        assert_visibility_switch(&[TabId(1), TabId(2)], &[TabId(3)], &[TabId(1), TabId(2)]);
+    }
+
+    #[test]
+    fn visibility_single_to_split_shows_both_panes_before_hiding_the_old_tab() {
+        assert_visibility_switch(&[TabId(3)], &[TabId(1), TabId(2)], &[TabId(3)]);
+    }
+
+    #[test]
+    fn visibility_split_to_another_split_hides_both_old_panes() {
+        assert_visibility_switch(
+            &[TabId(1), TabId(2)],
+            &[TabId(3), TabId(4)],
+            &[TabId(1), TabId(2)],
+        );
+    }
+
+    #[test]
+    fn visibility_same_tab_reselected_hides_nothing() {
+        assert_visibility_switch(&[TabId(1)], &[TabId(1)], &[]);
+    }
+
+    #[test]
+    fn visibility_focusing_a_visible_split_pane_hides_nothing() {
+        assert_visibility_switch(&[TabId(1), TabId(2)], &[TabId(2), TabId(1)], &[]);
+    }
+
+    #[test]
+    fn visibility_closing_one_pane_keeps_the_survivor_visible() {
+        assert_visibility_switch(&[TabId(1), TabId(2)], &[TabId(2)], &[TabId(1)]);
+    }
+
+    #[test]
+    fn visibility_blank_view_hides_all_panes_and_first_selection_hides_nothing() {
+        assert_visibility_switch(&[TabId(1), TabId(2)], &[], &[TabId(1), TabId(2)]);
+        assert_visibility_switch(&[], &[TabId(1)], &[]);
+    }
 
     #[test]
     fn pane_transitions_preserve_the_other_tab_and_track_focus_on_swap() {
