@@ -301,8 +301,8 @@ impl LaunchOptions {
             }
         }
         if link_launch {
-            // Like Ctrl+N: the profile may already be open, and the link opens in a window beside it.
-            options.new_window = true;
+            // The address stays on this launch. When the profile is already open, `decide_launch`
+            // hands it to that window; this flag is only the explicit New Window command.
             // A link or file launch never keeps its profile on another machine (SEC-2).
             if explicit_data_dir.as_deref().is_some_and(|dir| !on_local_drive(dir)) {
                 return Err("A launch that opens an address needs a data directory on a local drive".into());
@@ -1754,10 +1754,22 @@ mod tests {
                 .unwrap_or_else(|error| panic!("{target}: {error}"));
             assert_eq!(options.open_url.as_ref().map(Url::as_str), Some(expected.as_str()), "{target}");
             assert!(options.more_urls.is_empty());
-            // Bowser may already be open for the profile; a link must open beside it.
-            assert!(options.new_window, "{target}");
+            // An external link is not a New Window command. A running Bowser receives it in the
+            // window it already has; forcing a new window here is what replayed the saved session.
+            assert!(!options.new_window, "{target}");
         }
         let _ = std::fs::remove_file(page);
+    }
+
+    #[test]
+    fn an_explicit_new_window_flag_still_applies_to_a_link_address() {
+        let options = LaunchOptions::parse_from(
+            args(&["--new-window", "https://a.example/"]),
+            Path::new("missing"),
+        )
+        .unwrap();
+        assert!(options.new_window);
+        assert_eq!(options.open_url.unwrap().as_str(), "https://a.example/");
     }
 
     #[test]

@@ -91,7 +91,7 @@ use windows::{
                 SetWindowPos, SetWindowTextW, ShowWindow, SystemParametersInfoW, TPM_RETURNCMD,
                 TPM_RIGHTBUTTON, TrackPopupMenu, TranslateMessage, WINDOW_STYLE,
                 WINEVENT_OUTOFCONTEXT,
-                WM_CHAR, WM_CLOSE, WM_COMMAND, WM_CREATE, WM_DESTROY, WM_DPICHANGED, WM_ENDSESSION,
+                WM_CHAR, WM_CLOSE, WM_COMMAND, WM_COPYDATA, WM_CREATE, WM_DESTROY, WM_DPICHANGED, WM_ENDSESSION,
                 WM_QUERYENDSESSION,
                 WM_DWMCOLORIZATIONCOLORCHANGED, WM_ERASEBKGND, WM_GETMINMAXINFO, WM_KEYDOWN,
                 WM_KILLFOCUS, WM_LBUTTONDBLCLK, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONUP,
@@ -2539,6 +2539,9 @@ pub fn run(app: App) -> windows::core::Result<()> {
             super::post(hwnd, super::WM_RAIL_CHANGED, WPARAM(0), LPARAM(0));
         }));
         MAIN_WINDOW.with(|m| m.set(hwnd.0 as isize));
+        if let Ok(profile) = crate::profile::active() {
+            crate::instance::claim_window(hwnd, &profile.session_dir());
+        }
         // First reading of the power source; later changes arrive as power broadcasts.
         App::refresh_efficiency(&app);
         let foreground_hook = SetWinEventHook(
@@ -2566,6 +2569,8 @@ pub fn run(app: App) -> windows::core::Result<()> {
         }
         App::submit_initial_url(&app);
         App::apply_startup_plan(&app, launch_decided); // --- start page --- homepage or specific pages
+        // A link that arrived while the window was being created opens now, after restore.
+        App::release_external_urls(&app);
         // Restored and initial tabs exist now, so a standing rule for a site with no open tab is stale.
         App::release_unused_site_rules(&app);
         let benchmark_url = app.borrow_mut().benchmark_url.take();
@@ -4718,6 +4723,17 @@ unsafe extern "system" fn window_proc(
                 }
                 LRESULT(0)
             }
+            WM_COPYDATA => {
+                let Some(app) = app else {
+                    return DefWindowProcW(hwnd, message, wparam, lparam);
+                };
+                // `lparam` is the WM_COPYDATA payload the system delivered to this window.
+                if let Some(urls) = crate::instance::urls_from_copydata(lparam.0) {
+                    App::accept_external_urls(app, urls);
+                    return LRESULT(1);
+                }
+                DefWindowProcW(hwnd, message, wparam, lparam)
+            }
             WM_CLOSE => {
                 let _ = KillTimer(Some(hwnd), WM_IDLE_TRIM_TIMER);
                 let _ = KillTimer(Some(hwnd), WM_CARET_BLINK_TIMER);
@@ -4786,6 +4802,7 @@ unsafe extern "system" fn window_proc(
                 LRESULT(0)
             }
             WM_NCDESTROY => {
+                crate::instance::release_window(hwnd);
                 #[cfg(feature = "experimental-engine-context-menu")]
                 crate::engine::engine_menu_owner_destroyed(hwnd);
                 frame_grip::forget(hwnd);

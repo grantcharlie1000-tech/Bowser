@@ -26,6 +26,7 @@ pub mod extensions;
 pub mod favicon;
 pub mod feeds; // the feed reader: reading, finding, storing and fetching feeds (T13)
 pub mod import;
+pub mod instance;
 pub mod internal_page;
 pub mod navigation;
 pub mod omnibox;
