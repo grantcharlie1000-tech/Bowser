@@ -2026,7 +2026,8 @@ impl App {
             Ok(())
         });
         // --- split view ---
-        // `select_tab` keeps every visible controller; hide the parked pair's other side too.
+        // The engine has hidden the parked panes; reconcile the single page's viewport and
+        // account for a selected tab without a page controller.
         if was_split_shown {
             Self::apply_visible_panes(app);
         }
@@ -2967,8 +2968,7 @@ impl App {
                     .collect();
                 engine.set_visible_tabs(&panes, split.focused_tab())
             } else if let Some(viewport) = viewport {
-                // `select_tab` preserves all currently visible tabs. After leaving split view
-                // that would leave the other pane controller visible over the single page.
+                // Show only the active page at the full viewport; blank tabs need no controller.
                 let panes = if has_page { vec![(active, viewport)] } else { Vec::new() };
                 engine.set_visible_tabs(&panes, active)
             } else {
@@ -8961,8 +8961,14 @@ mod tests {
     #[test]
     fn closing_a_split_pane_closes_its_tab_and_keeps_the_other_as_active_tab() {
         let app = app_with_pending(rect(800, 600));
+        let engine = SplitRegistrationEngine::default();
+        let visible = engine.visible.clone();
+        let bounds = engine.bounds.clone();
+        app.borrow_mut().engine = Some(Box::new(engine));
         let left = App::active_tab_id(&app);
         let right = App::new_tab(&app);
+        test_show_page(&app, left, "https://left.example/");
+        test_show_page(&app, right, "https://right.example/");
         assert!(App::open_split_view(
             &app,
             left,
@@ -8976,6 +8982,8 @@ mod tests {
         assert_eq!(App::tab_ids(&app), [left]);
         assert_eq!(App::active_tab_id(&app), left);
         assert!(App::split_view(&app).is_none());
+        assert_eq!(*visible.borrow(), std::collections::HashSet::from([left]));
+        assert_eq!(*bounds.borrow(), HashMap::from([(left, rect(800, 600))]));
     }
 
     /// Split restore flash: a pair parked while the window changed size is shown again at the
@@ -9007,10 +9015,12 @@ mod tests {
 
     /// Mirrors the WebView2 engine's tab bookkeeping: `set_visible_tabs` registers only the panes
     /// that have a page, and navigating a tab that was never registered is `E_POINTER`.
+    #[derive(Default)]
     struct SplitRegistrationEngine {
         known: Rc<RefCell<std::collections::HashSet<TabId>>>,
         visible: Rc<RefCell<std::collections::HashSet<TabId>>>,
         navigated: Rc<RefCell<Vec<TabId>>>,
+        bounds: Rc<RefCell<HashMap<TabId, windows::Win32::Foundation::RECT>>>,
     }
 
     impl EngineAdapter for SplitRegistrationEngine {
@@ -9047,8 +9057,12 @@ mod tests {
         }
         fn select_tab(&mut self, tab: TabId) -> windows::core::Result<()> {
             self.known.borrow_mut().insert(tab);
-            self.visible.borrow_mut().clear();
-            self.visible.borrow_mut().insert(tab);
+            let mut visible = self.visible.borrow_mut();
+            if !visible.contains(&tab) {
+                visible.clear();
+                visible.insert(tab);
+                self.bounds.borrow_mut().clear();
+            }
             Ok(())
         }
         fn set_visible_tabs(
@@ -9063,6 +9077,13 @@ mod tests {
                 known.insert(*tab);
                 visible.insert(*tab);
             }
+            *self.bounds.borrow_mut() = panes.iter().copied().collect();
+            Ok(())
+        }
+        fn close_tab(&mut self, tab: TabId) -> windows::core::Result<()> {
+            self.known.borrow_mut().remove(&tab);
+            self.visible.borrow_mut().remove(&tab);
+            self.bounds.borrow_mut().remove(&tab);
             Ok(())
         }
         fn set_memory_usage_target(
@@ -9079,16 +9100,15 @@ mod tests {
     #[test]
     fn new_tab_opened_while_a_split_is_shown_is_registered_and_visible_before_search() {
         let app = app_with_pending(rect(800, 600));
-        let known = Rc::new(RefCell::new(std::collections::HashSet::new()));
-        let visible = Rc::new(RefCell::new(std::collections::HashSet::new()));
-        let navigated = Rc::new(RefCell::new(Vec::new()));
-        app.borrow_mut().engine = Some(Box::new(SplitRegistrationEngine {
-            known: known.clone(),
-            visible: visible.clone(),
-            navigated: navigated.clone(),
-        }));
+        let engine = SplitRegistrationEngine::default();
+        let known = engine.known.clone();
+        let visible = engine.visible.clone();
+        let navigated = engine.navigated.clone();
+        app.borrow_mut().engine = Some(Box::new(engine));
         let left = App::active_tab_id(&app);
         let right = App::new_tab(&app);
+        test_show_page(&app, left, "https://left.example/");
+        test_show_page(&app, right, "https://right.example/");
         assert!(App::open_split_view(
             &app,
             left,
@@ -9096,6 +9116,10 @@ mod tests {
             crate::split_view::Pane::Left,
             (rect(0, 0), rect(400, 0)),
         ));
+        assert_eq!(
+            *visible.borrow(),
+            std::collections::HashSet::from([left, right])
+        );
 
         let fresh = App::new_tab(&app);
 
@@ -9105,6 +9129,7 @@ mod tests {
             known.borrow().contains(&fresh),
             "a blank tab opened from a split must be registered before it is searched"
         );
+        assert_eq!(*visible.borrow(), std::collections::HashSet::from([fresh]));
         assert!(
             visible.borrow().contains(&fresh),
             "the active blank tab must be visible, or its page is created hidden"
@@ -9121,6 +9146,62 @@ mod tests {
             [fresh],
             "a closed tab is not navigated, so the engine does not recreate it"
         );
+    }
+
+    #[test]
+    fn switching_out_of_and_back_to_a_split_reconciles_visibility_and_bounds() {
+        use std::collections::HashSet;
+        use windows::Win32::Foundation::RECT;
+
+        let viewport = rect(800, 600);
+        let app = app_with_pending(viewport);
+        let engine = SplitRegistrationEngine::default();
+        let visible = engine.visible.clone();
+        let bounds = engine.bounds.clone();
+        app.borrow_mut().engine = Some(Box::new(engine));
+        let left = App::active_tab_id(&app);
+        let right = App::new_tab(&app);
+        let plain = App::new_tab(&app);
+        for id in [left, right, plain] {
+            test_show_page(&app, id, "https://example.test/");
+        }
+        let panes = (
+            RECT {
+                left: 0,
+                top: 0,
+                right: 396,
+                bottom: 600,
+            },
+            RECT {
+                left: 404,
+                top: 0,
+                right: 800,
+                bottom: 600,
+            },
+        );
+        assert!(App::open_split_view(&app, left, right, Pane::Right, panes));
+        assert_eq!(*visible.borrow(), HashSet::from([left, right]));
+
+        assert!(App::select_tab(&app, plain));
+        assert_eq!(*visible.borrow(), HashSet::from([plain]));
+        assert_eq!(*bounds.borrow(), HashMap::from([(plain, viewport)]));
+        assert!(App::split_view(&app).is_none());
+
+        assert!(App::select_tab(&app, right));
+        assert_eq!(*visible.borrow(), HashSet::from([left, right]));
+        assert_eq!(
+            *bounds.borrow(),
+            HashMap::from([(left, panes.0), (right, panes.1)])
+        );
+        assert!(App::select_tab(&app, left));
+        assert_eq!(*visible.borrow(), HashSet::from([left, right]));
+        assert_eq!(App::active_tab_id(&app), left);
+
+        assert!(App::close_tab(&app, right));
+        assert_eq!(*visible.borrow(), HashSet::from([left]));
+        assert_eq!(*bounds.borrow(), HashMap::from([(left, viewport)]));
+        assert!(App::close_tab(&app, left));
+        assert_eq!(*visible.borrow(), HashSet::from([plain]));
     }
 
     #[test]
