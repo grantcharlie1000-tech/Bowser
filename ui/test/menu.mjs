@@ -35,6 +35,27 @@ test('menu payload caps nested entries and validates selectable row fields', () 
 
 const item = (id, label, extra = {}) => ({ id, label, enabled: true, checked: false, ...extra });
 
+test('currency rows cycle in place with mouse and keyboard instead of picking a command', () => {
+  const currency = item(9, '≈ 1,066.48 GBP', { currency: { symbol: '£', loading: false } });
+  const nav = logic.createNav([currency, item(10, 'Copy')]);
+  assert.deepEqual(logic.activateAt(nav, 0, 0), { kind: 'act', id: 9 });
+  assert.deepEqual(logic.menuKey(nav, 'Enter', {}, 0), { kind: 'act', id: 9 });
+  assert.deepEqual(logic.menuKey(nav, ' ', {}, 1), { kind: 'act', id: 9 });
+  assert.equal(nav.pages.length, 1);
+  assert.deepEqual(logic.activateAt(nav, 0, 1), { kind: 'pick', id: 10 });
+});
+
+test('currency payloads reserve the ordinary icon slot and reject malformed controls', () => {
+  const currency = item(9, '≈ 1,066.48 GBP', { currency: { symbol: '£', loading: false } });
+  const message = { v: 1, t: 'menu', tok: 4, kind: 'currency-selection', entries: [currency] };
+  assert.equal(logic.validMenuPayload(message), true);
+  assert.equal(logic.hasLeadColumn(message.entries), true);
+  for (const bad of [{ symbol: '<img>', loading: false }, { symbol: '£', loading: 'yes' }, { symbol: '£', loading: false, html: 'x' }]) {
+    assert.equal(logic.validMenuPayload({ ...message, entries: [{ ...currency, currency: bad }] }), false);
+  }
+  assert.equal(logic.validMenuPayload({ ...message, entries: [{ ...currency, submenu: [] }] }), false);
+});
+
 test('arrow keys, Home and End move the selection on the current page', () => {
   const nav = logic.createNav([item(1, 'Alpha'), { separator: true }, item(2, 'Beta', { enabled: false }), item(3, 'Gamma')]);
   assert.equal(logic.currentPage(nav).selected, 0);

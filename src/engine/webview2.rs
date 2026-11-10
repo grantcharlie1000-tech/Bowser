@@ -5758,6 +5758,46 @@ unsafe fn configure_controller(
             )?;
         }
         // --- end page tools ---
+        // This is a presentation owner, after the ordinary menu augmenters. The experimental
+        // coordinator retains exclusive ownership of its own deferral and menu presentation.
+        if !coordinated_menu && let Ok(webview11) = webview.cast::<ICoreWebView2_11>() {
+            let currency_controller = controller.clone();
+            let currency_gate = document_gate.clone();
+            crate::currency::refresh();
+            webview11.add_ContextMenuRequested(
+                &ContextMenuRequestedEventHandler::create(Box::new(move |_sender, args| {
+                    let Some(args) = args else { return Ok(()); };
+                    let Some(proof) = currency_gate.try_borrow().ok().and_then(|gate| gate.proof()) else { return Ok(()); };
+                    let target = args.ContextMenuTarget()?;
+                    let mut has_selection = BOOL::default();
+                    target.HasSelection(&mut has_selection)?;
+                    if !has_selection.as_bool() { return Ok(()); }
+                    let mut selected = PWSTR::null();
+                    target.SelectionText(&mut selected)?;
+                    let selection = CoTaskMemPWSTR::from(selected).to_string();
+                    if let Some(price) = crate::currency::parse(&selection) {
+                        crate::currency::refresh();
+                        let mut anchor = windows::Win32::Foundation::POINT::default();
+                        args.Location(&mut anchor)?;
+                        let mut current_bounds = RECT::default();
+                        currency_controller.Bounds(&mut current_bounds)?;
+                        anchor.x += current_bounds.left;
+                        anchor.y += current_bounds.top;
+                        let _ = windows::Win32::Graphics::Gdi::ClientToScreen(parent, &mut anchor);
+                        let gate = currency_gate.clone();
+                        let controller = currency_controller.clone();
+                        let current: Rc<dyn Fn() -> bool> = Rc::new(move || {
+                            let mut visible = BOOL::default();
+                            controller.IsVisible(&mut visible).is_ok() && visible.as_bool()
+                                && gate.try_borrow().is_ok_and(|gate| gate.proof() == Some(proof))
+                        });
+                        if current() { win32::currency_menu::queue(parent, anchor, &args, price, current)?; }
+                    }
+                    Ok(())
+                })),
+                &mut token,
+            )?;
+        }
         #[cfg(feature = "experimental-engine-context-menu")]
         let context_menu_registration = if coordinated_menu {
             Some(owned_context_menu::install(

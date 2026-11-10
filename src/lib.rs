@@ -11,6 +11,7 @@ pub mod address_suggest;
 pub mod calc;
 pub mod chrome;
 pub mod chrome_host;
+pub mod currency;
 pub mod commands;
 pub mod crx;
 pub mod crx_fetch;

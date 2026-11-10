@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>Bowser currency selection test</title>
+<style>
+  body { margin: 64px; font: 18px/1.5 system-ui; background: #f6f7f9; color: #20242a; }
+  main { max-width: 720px; }
+  h1 { font-size: 30px; }
+  article { display: flex; align-items: center; gap: 32px; margin: 16px 0; padding: 18px 24px; background: white; border: 1px solid #ddd; border-radius: 10px; }
+  strong { min-width: 180px; font-size: 24px; }
+  button { padding: 8px 14px; cursor: pointer; }
+</style>
+<main>
+  <h1>Currency conversion</h1>
+  <p>Select a price, then right-click the selected text. Click the currency symbol in the menu to switch currencies. Enter and Space work too.</p>
+  <article><strong>NZ$2,549</strong><button>Select price</button></article>
+  <article><strong>US$199.99</strong><button>Select price</button></article>
+  <article><strong>£49.50</strong><button>Select price</button></article>
+  <article><strong>€1,234.56</strong><button>Select price</button></article>
+  <article><strong>A$89.95</strong><button>Select price</button></article>
+  <article><strong>Ordinary text</strong><button>Select text</button></article>
+  <p>Expected: one standard-height conversion row; five targets (GBP, USD, EUR, NZD, AUD); normal Copy, Search and Inspect actions still work. Ordinary text keeps the standard menu.</p>
+</main>
+<script>
+  document.querySelectorAll('button').forEach(button => button.onclick = () => {
+    const range = document.createRange();
+    range.selectNodeContents(button.previousElementSibling);
+    const selection = getSelection();
+    selection.removeAllRanges();
+    selection.addRange(range);
+  });
+</script>
+</html>

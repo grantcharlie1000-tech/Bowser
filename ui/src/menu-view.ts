@@ -5,7 +5,7 @@ import {
   slideShift, validMenuPayload, validRoom,
   type FlyoutRoom, type MenuBadge, type MenuMessage, type MenuNav, type MenuOutcome, type MenuPage,
 } from './menu-logic';
-import { sendPopupDismiss, sendPopupPick, sendPopupSize, type PopupCards } from './protocol';
+import { sendPopupAct, sendPopupDismiss, sendPopupPick, sendPopupSize, type PopupCards } from './protocol';
 
 // Markup contract (styling lives in menu.css; keep these names stable):
 //   #app.html-menu.is-paned[.has-flyouts][role=menu][data-kind][data-page][data-input]   the transparent surface
@@ -98,6 +98,17 @@ function reveal(list: Element | null, row: HTMLElement): void {
 export function createMenuView(root: HTMLElement, now: () => number = () => performance.now()): MenuView {
   let message: MenuMessage | null = null;
   let nav: MenuNav | null = null;
+  let currencyTimer: ReturnType<typeof setTimeout> | undefined;
+  const refreshCurrency = (): void => {
+    clearTimeout(currencyTimer);
+    const msg = message;
+    const item = msg?.entries.find(entry => 'id' in entry && entry.currency?.loading);
+    if (msg && item && 'id' in item && !closed) {
+      currencyTimer = setTimeout(() => {
+        if (!closed && message?.tok === msg.tok) sendPopupAct(msg.tok, item.id, 0);
+      }, 500);
+    }
+  };
   // Set once a pick or dismissal is sent, so a double click or key repeat sends nothing more.
   let closed = true;
   // The parent card's box, the parent card (built once and kept while it is the parent, so its scroll
@@ -356,7 +367,12 @@ export function createMenuView(root: HTMLElement, now: () => number = () => perf
         slot.className = 'html-menu-lead';
         slot.setAttribute('aria-hidden', 'true');
         const favUri = entry.fav !== undefined ? msg?.favs?.[entry.fav] : undefined;
-        if (favUri) {
+        if (entry.currency) {
+          slot.classList.add('html-menu-currency');
+          slot.textContent = entry.currency.symbol;
+          row.dataset.tip = 'Switch currency';
+          row.setAttribute('aria-label', `${entry.label}. Switch currency`);
+        } else if (favUri) {
           const img = document.createElement('img');
           img.className = 'html-menu-favicon';
           img.alt = '';
@@ -512,6 +528,7 @@ export function createMenuView(root: HTMLElement, now: () => number = () => perf
       case 'select': markSelected(); break;
       case 'page': pagesChanged(); break;
       case 'pick': closed = true; sendPopupPick(message.tok, outcome.id); break;
+      case 'act': sendPopupAct(message.tok, outcome.id, 1); break;
       case 'dismiss': closed = true; sendPopupDismiss(message.tok); break;
       case 'none': break;
     }
@@ -534,6 +551,24 @@ export function createMenuView(root: HTMLElement, now: () => number = () => perf
   return {
     show(raw: unknown): boolean {
       if (!validMenuPayload(raw)) return false;
+      // An in-place conversion refresh leaves selection, open submenus and menu geometry alone.
+      if (message && !closed && message.tok === raw.tok && message.kind === 'currency-selection' && message.kind === raw.kind) {
+        for (const entry of raw.entries) {
+          if (!('id' in entry) || !entry.currency) continue;
+          const previous = message.entries.find(item => 'id' in item && item.id === entry.id);
+          if (!previous || !('id' in previous) || !previous.currency) continue;
+          previous.label = entry.label;
+          previous.currency = entry.currency;
+          const row = root.querySelector<HTMLElement>(`[data-id="${entry.id}"]`);
+          const label = row?.querySelector('.html-menu-label');
+          const symbol = row?.querySelector('.html-menu-currency');
+          if (label) label.textContent = entry.label;
+          if (symbol) symbol.textContent = entry.currency.symbol;
+          row?.setAttribute('aria-label', `${entry.label}. Switch currency`);
+        }
+        refreshCurrency();
+        return true;
+      }
       epoch += 1;
       message = raw;
       nav = createNav(raw.entries);
@@ -554,6 +589,7 @@ export function createMenuView(root: HTMLElement, now: () => number = () => perf
       root.replaceChildren(track);
       rebuild(true);
       measure();
+      refreshCurrency();
       return true;
     },
     room(raw: unknown): boolean {
