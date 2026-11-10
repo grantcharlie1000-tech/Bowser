@@ -3,6 +3,9 @@
 use crate::tabs::FaviconKey;
 use std::{fs, io, path::PathBuf, time::SystemTime};
 
+pub mod restore;
+mod fetch;
+
 const MAX_CACHE_ENTRIES: usize = 64;
 
 /// A tightly packed, top-down BGRA image with premultiplied color channels.
@@ -414,6 +417,11 @@ mod wic {
         })
     }
 
+    /// Worker threads must release their apartment's cached COM object before CoUninitialize.
+    pub(super) fn release_factory() {
+        FACTORY.with(|cell| { cell.borrow_mut().take(); });
+    }
+
     pub(super) fn decode(bytes: &[u8], target_px: u32) -> Option<FaviconBitmap> {
         if bytes.is_empty() || bytes.len() > 256 * 1024 || target_px == 0 || target_px > 512 {
             return None;
@@ -503,6 +511,42 @@ mod wic {
             height: target_px,
             bgra_premultiplied: pixels,
         })
+    }
+
+    /// A small PNG for both chrome implementations, including when the server supplied an ICO.
+    pub(super) fn png(bytes: &[u8]) -> Option<Vec<u8>> {
+        use windows::Win32::{
+            Graphics::Imaging::{GUID_ContainerFormatPng, GUID_WICPixelFormat32bppBGRA, IWICBitmapFrameEncode, WICBitmapEncoderNoCache},
+            System::Com::{IStream, STREAM_SEEK_SET, StructuredStorage::IPropertyBag2},
+            UI::Shell::SHCreateMemStream,
+        };
+        let picture = decode(bytes, 32)?;
+        let factory = factory()?;
+        let bitmap = unsafe { factory.CreateBitmapFromMemory(32, 32, &GUID_WICPixelFormat32bppPBGRA, 128, &picture.bgra_premultiplied).ok()? };
+        let converter = unsafe { factory.CreateFormatConverter().ok()? };
+        unsafe { converter.Initialize(&bitmap, &GUID_WICPixelFormat32bppBGRA, WICBitmapDitherTypeNone, None, 0.0, WICBitmapPaletteTypeCustom).ok()? };
+        let sink: IStream = unsafe { SHCreateMemStream(None) }?;
+        let encoder = unsafe { factory.CreateEncoder(&GUID_ContainerFormatPng, std::ptr::null()).ok()? };
+        unsafe { encoder.Initialize(&sink, WICBitmapEncoderNoCache).ok()? };
+        let mut frame: Option<IWICBitmapFrameEncode> = None;
+        let mut options: Option<IPropertyBag2> = None;
+        unsafe { encoder.CreateNewFrame(&mut frame, &mut options).ok()? };
+        let frame = frame?;
+        unsafe {
+            frame.Initialize(options.as_ref()).ok()?;
+            frame.SetSize(32, 32).ok()?;
+            let mut format = GUID_WICPixelFormat32bppBGRA;
+            frame.SetPixelFormat(&mut format).ok()?;
+            frame.WriteSource(&converter, std::ptr::null()).ok()?;
+            frame.Commit().ok()?;
+            encoder.Commit().ok()?;
+            sink.Seek(0, STREAM_SEEK_SET, None).ok()?;
+        }
+        let mut png = vec![0; crate::chrome_host::protocol::MAX_FAVICON_BYTES + 1];
+        let mut read = 0;
+        unsafe { sink.Read(png.as_mut_ptr().cast(), png.len() as u32, Some(&mut read)).ok().ok()? };
+        png.truncate(read as usize);
+        crate::chrome_host::favicon_sendable(&png).then_some(png)
     }
 }
 

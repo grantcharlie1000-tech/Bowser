@@ -658,6 +658,7 @@ pub struct App {
     title_timer_armed: bool,
     pub loop_shutdown_pending: bool,
     pub user_data_dir: PathBuf,
+    favicon_service: Option<crate::favicon::restore::Service>,
     pub benchmark_url: Option<url::Url>,
     initial_url: Option<url::Url>,
     /// --- tab stacks (T10) --- further `--open-url` addresses, opened after `initial_url`.
@@ -796,6 +797,8 @@ struct AppTab {
     progress: NavigationProgress,
     favicon: Option<Vec<u8>>,
     favicon_key: Option<crate::tabs::FaviconKey>,
+    /// Only the icon worker for this restore may fill this tab, until a live page supplies one.
+    restored_icon_origin: Option<String>,
     can_back: bool,
     can_forward: bool,
     page_usable: bool,
@@ -847,6 +850,7 @@ impl AppTab {
             progress: NavigationProgress::default(),
             favicon: None,
             favicon_key: None,
+            restored_icon_origin: None,
             can_back: false,
             can_forward: false,
             page_usable: false,
@@ -871,6 +875,7 @@ impl AppTab {
 }
 
 mod page_translate;
+mod favicon_restore;
 mod page_actions; // page tools: capture, selection, applying the settings (thread T7)
 pub use page_actions::{CaptureResult, Selected, capture_busy};
 pub use page_translate::Notice as TranslateNotice;
@@ -5206,6 +5211,7 @@ impl App {
             title_timer_armed: false,
             loop_shutdown_pending: false,
             user_data_dir,
+            favicon_service: None,
             allowed_benchmark_file,
             benchmark_url,
             initial_url,
@@ -5371,6 +5377,7 @@ impl App {
                     tab.url = Some(url.clone());
                     tab.title.clone_from(&saved.title);
                     tab.discarded = true;
+                    tab.restored_icon_origin = crate::favicon::restore::origin(&url);
                     // A restored settings or history tab shows its icon before it is first selected.
                     if let Some(page) = crate::internal_page::parse(&url) {
                         tab.favicon = Some(page.favicon().to_vec());
@@ -5452,6 +5459,7 @@ impl App {
             });
             state.hwnd
         };
+        Self::restore_tab_icons(app);
         let Some(url) = active_url else {
             return;
         };
@@ -6136,7 +6144,9 @@ impl App {
     /// Drops the app's reference to the shared environment. Called when the window closes, after
     /// its chrome hosts are closed and before the engine closes.
     pub fn release_chrome_environment(app: &AppRef) {
-        app.borrow_mut().chrome_environment = None;
+        let mut state = app.borrow_mut();
+        state.chrome_environment = None;
+        state.favicon_service = None;
     }
 
     fn start_engine_creation(app: &AppRef) {
@@ -6473,24 +6483,9 @@ impl App {
                     }
                 }
             })),
-            favicon_changed: Some(Rc::new(move |tab_id, bytes| {
+            favicon_changed: Some(Rc::new(move |tab_id, page, bytes| {
                 if let Some(app) = favicon_events_app.upgrade() {
-                    let found = if let Some(tab) = app
-                        .borrow_mut()
-                        .tabs
-                        .iter_mut()
-                        .find(|tab| tab.id == tab_id)
-                    {
-                        tab.favicon_key = Some(crate::favicon::key_for(&bytes));
-                        tab.favicon = Some(bytes);
-                        true
-                    } else {
-                        false
-                    };
-                    if found {
-                        Self::post_tab_changed_kind(app.borrow().hwnd, tab_id, false, false);
-                        Self::note_favicon_colour(&app, tab_id); // --- theme options ---
-                    }
+                    Self::page_favicon_changed(&app, tab_id, &page, bytes);
                 }
             })),
             new_window_requested: {
@@ -8130,6 +8125,7 @@ mod tests {
     mod stack_flow; // --- tab stacks, tiling and workspaces (T10) ---
     mod privacy_flow; // private tabs and history deletion
     mod workspace_restore; // workspaces across a restart, refused moves and creates
+    mod favicon_restore;
     mod window_flow; // main window moves and resizes
 
     thread_local! {
@@ -10673,6 +10669,7 @@ mod tests {
             title_timer_armed: false,
             loop_shutdown_pending: false,
             user_data_dir: PathBuf::new(),
+            favicon_service: None,
             benchmark_url: None,
             initial_url: None,
             more_initial_urls: Vec::new(), // --- tab stacks (T10) ---
