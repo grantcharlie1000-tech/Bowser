@@ -115,7 +115,7 @@ pub unsafe fn queue(
         }
         let mut items = entries(&args.MenuItems()?, 0)?;
         let mut conversion = Item::new(0x7fff_fffe, "Currency conversion", Icon::None)
-            .described("Approximate reference rate Â· Frankfurter. Click the currency symbol or press Enter to switch currency.");
+            .described("Approximate reference rate · Frankfurter. Click the currency symbol or press Enter to switch currency.");
         conversion.currency = Some(Box::new(price));
         items.insert(0, Entry::Item(conversion));
         if !current() {

@@ -6,7 +6,7 @@ use std::sync::{
 use std::time::{Duration, Instant};
 
 pub const CODES: [&str; 5] = ["GBP", "USD", "EUR", "NZD", "AUD"];
-pub const SYMBOLS: [&str; 5] = ["Â£", "$", "â‚¬", "$", "$"];
+pub const SYMBOLS: [&str; 5] = ["£", "$", "€", "$", "$"];
 static TARGET: AtomicUsize = AtomicUsize::new(0);
 static CACHE: Mutex<Cache> = Mutex::new(Cache {
     rates: None,
@@ -41,9 +41,9 @@ pub fn parse(selection: &str) -> Option<Price> {
         ("AUD", 4),
         ("A$", 4),
         ("GBP", 0),
-        ("Â£", 0),
+        ("£", 0),
         ("EUR", 2),
-        ("â‚¬", 2),
+        ("€", 2),
         ("$", 1),
     ];
     let (number, currency) = tokens.iter().find_map(|(token, currency)| {
@@ -166,10 +166,10 @@ pub fn label(price: Price) -> String {
         }
     }
     format!(
-        "{} Â· {}",
+        "{} · {}",
         CODES[target],
         if cache.loading {
-            "Loading rateâ€¦"
+            "Loading rate…"
         } else {
             "Rate unavailable"
         }
@@ -187,17 +187,25 @@ fn converted_label(price: Price, target: usize, rates: &[f64; 5]) -> String {
         }
         grouped.push(digit);
     }
-    format!("â‰ˆ {grouped}.{fraction} {}", CODES[target])
+    format!("≈ {grouped}.{fraction} {}", CODES[target])
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     #[test]
+    fn canonical_unicode_symbols_parse_and_render_without_encoding_round_trips() {
+        assert_eq!(SYMBOLS[0], "\u{a3}");
+        assert_eq!(SYMBOLS[2], "\u{20ac}");
+        assert_eq!(parse("\u{a3}12.50"), Some(Price { cents: 1250, currency: 0 }));
+        assert_eq!(parse("\u{20ac}1,234.56"), Some(Price { cents: 123456, currency: 2 }));
+        assert_eq!(converted_label(Price { cents: 1000, currency: 0 }, 0, &[1.0; 5]), "\u{2248} 10.00 GBP");
+    }
+    #[test]
     fn selected_prices_require_one_unambiguous_amount() {
         for (text, cents, currency) in [
             ("NZ$2,549", 254900, 3),
-            ("Â£12.50", 1250, 0),
+            ("£12.50", 1250, 0),
             ("USD 99.9", 9990, 1),
             ("1 234.56 EUR", 123456, 2),
             ("A$0.05", 5, 4),
@@ -207,13 +215,13 @@ mod tests {
         }
         for text in [
             "Price NZ$2,549 today",
-            "Â£1,2",
+            "£1,2",
             "$1.234",
             "$NaN",
             "$1e3",
             "$-5",
             "$1,234 567",
-            "Â£1 Â£2",
+            "£1 £2",
             "2549",
         ] {
             assert_eq!(parse(text), None, "{text}");
@@ -232,12 +240,12 @@ mod tests {
     fn cross_rates_round_to_cents_and_group_thousands() {
         let rates = [1.0, 1.25, 1.2, 2.5, 2.0];
         let price = parse("NZ$2,549").unwrap();
-        assert_eq!(converted_label(price, 0, &rates), "â‰ˆ 1,019.60 GBP");
-        assert_eq!(converted_label(price, 1, &rates), "â‰ˆ 1,274.50 USD");
-        assert_eq!(converted_label(price, 3, &rates), "â‰ˆ 2,549.00 NZD");
+        assert_eq!(converted_label(price, 0, &rates), "≈ 1,019.60 GBP");
+        assert_eq!(converted_label(price, 1, &rates), "≈ 1,274.50 USD");
+        assert_eq!(converted_label(price, 3, &rates), "≈ 2,549.00 NZD");
         assert_eq!(
             converted_label(parse("$0.01").unwrap(), 0, &rates),
-            "â‰ˆ 0.01 GBP"
+            "≈ 0.01 GBP"
         );
     }
 }
