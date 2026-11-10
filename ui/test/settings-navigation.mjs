@@ -27,7 +27,7 @@ class LayoutNode extends Node {
   }
 }
 
-function harness({ ready = true, snapshot = true, reduced = false } = {}) {
+function harness({ ready = true, snapshot = true, reduced = false, view = 'all' } = {}) {
   const frames = new Map();
   const observers = [];
   const intersections = [];
@@ -47,7 +47,7 @@ function harness({ ready = true, snapshot = true, reduced = false } = {}) {
     requestAnimationFrame: (callback) => { const id = ++frameId; frames.set(id, callback); return id; },
     cancelAnimationFrame: (id) => frames.delete(id),
     addEventListener() {}, removeEventListener() {},
-    localStorage: { getItem: (key) => key === 'bowser.settings.view' ? 'all' : null, setItem() {} },
+    localStorage: { getItem: (key) => key === 'bowser.settings.view' ? view : null, setItem() {} },
     ResizeObserver: class {
       constructor(callback) { this.callback = callback; this.targets = new Map(); observers.push(this); }
       observe(node) { this.targets.set(node, null); }
@@ -296,4 +296,18 @@ test('a deep link received before the Settings snapshot anchors after it arrives
   assert.equal(h.main.scrollTop, h.target('extensions'));
   h.grow('appearance', 180); h.resize(); h.flush();
   assert.ok(h.visible());
+});
+
+for (const snapshot of [true, false]) test(`Extensions deep link leaves Simple settings (snapshot ready: ${snapshot})`, () => {
+  const h = harness({ view: 'simple', snapshot });
+  h.go('extensions');
+  if (!snapshot) h.deliver(fixture.snap);
+  h.flush();
+  assert.equal(h.app.querySelector('.sp-simple').hidden, true);
+  assert.equal(h.app.querySelector('.sp-nav').hidden, false);
+  assert.equal(h.area('extensions').hidden, false);
+  assert.equal(h.main.scrollTop, h.target('extensions'));
+  assert.ok(h.visible());
+  h.go(''); h.flush();
+  assert.equal(h.app.querySelector('.sp-simple').hidden, false, 'top restores the saved Simple preference');
 });

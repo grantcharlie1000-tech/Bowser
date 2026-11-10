@@ -1943,7 +1943,9 @@ export function startSettingsPage(root: HTMLElement): void {
   const go = (key: SettingsSection | '', smooth: boolean, tell: boolean): void => {
     sectionHold = key !== '' && prefer === 'simple';
     closePage(false);
-    if (query !== '') { input.value = ''; query = ''; filter(); }
+    if (query !== '') { input.value = ''; query = ''; }
+    // Reconcile Simple/All and reveal the destination before measuring its position.
+    filter();
     const area = key === '' ? AREAS[0]! : areaOf(key);
     current = area.key;
     // The chosen area stays current even when the page cannot scroll it to the top (the last
