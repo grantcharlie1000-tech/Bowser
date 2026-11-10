@@ -1,7 +1,9 @@
 export type MenuEntry =
   | { separator: true; label?: string }
   | { section: string }
-  | { id: number; label: string; enabled: boolean; checked: boolean; shortcut?: string; icon?: string; fav?: number; badge?: MenuBadge; submenu?: MenuEntry[] };
+  | { id: number; label: string; enabled: boolean; checked: boolean; shortcut?: string; icon?: string; fav?: number; badge?: MenuBadge; submenu?: MenuEntry[]; currency?: MenuCurrency };
+
+export interface MenuCurrency { symbol: '£' | '$' | '€'; loading: boolean }
 
 /** A coloured disc in the icon slot: a profile avatar (one glyph) or a colour swatch (empty). */
 export interface MenuBadge { avatar: string; accent: string }
@@ -53,7 +55,7 @@ export function footerVisible(kind: string): boolean {
 
 /** Whether any row of the page has an icon, favicon or badge, so rows without one reserve the column. */
 export function hasLeadColumn(entries: readonly MenuEntry[]): boolean {
-  return entries.some(entry => 'id' in entry && (entry.icon !== undefined || entry.fav !== undefined || entry.badge !== undefined));
+  return entries.some(entry => 'id' in entry && (entry.icon !== undefined || entry.fav !== undefined || entry.badge !== undefined || entry.currency !== undefined));
 }
 
 /** Whether any row has a check or a submenu chevron, so every row reserves the trailing column. */
@@ -145,6 +147,7 @@ export type MenuOutcome =
   | { kind: 'select' }
   | { kind: 'page' }
   | { kind: 'pick'; id: number }
+  | { kind: 'act'; id: number }
   | { kind: 'dismiss' };
 
 const NONE: MenuOutcome = { kind: 'none' };
@@ -173,7 +176,7 @@ export function activateAt(nav: MenuNav, level: number, index: number): MenuOutc
   if (level === nav.pages.length - 1) return activate(nav, index);
   if (!entry.submenu) {
     page.selected = index;
-    return { kind: 'pick', id: entry.id };
+    return { kind: entry.currency ? 'act' : 'pick', id: entry.id };
   }
   const open = page.selected === index;
   nav.pages.length = level + 1;
@@ -192,7 +195,7 @@ export function activate(nav: MenuNav, index: number): MenuOutcome {
     nav.typed = '';
     return PAGE;
   }
-  return { kind: 'pick', id: entry.id };
+  return { kind: entry.currency ? 'act' : 'pick', id: entry.id };
 }
 
 /** Closes the open submenu, back to the page it came from. False on the top page. */
@@ -336,6 +339,12 @@ function validBadge(value: unknown): value is MenuBadge {
     typeof b.avatar === 'string' && b.avatar.length <= 4 && typeof b.accent === 'string' && /^#[0-9a-f]{6}$/.test(b.accent);
 }
 
+function validCurrency(value: unknown): value is MenuCurrency {
+  return typeof value === 'object' && value !== null && !Array.isArray(value) &&
+    Object.keys(value).length === 2 && 'symbol' in value && 'loading' in value &&
+    (value.symbol === '£' || value.symbol === '$' || value.symbol === '€') && typeof value.loading === 'boolean';
+}
+
 function validHeader(value: unknown): value is MenuHeader {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   const h = value as Record<string, unknown>;
@@ -371,13 +380,14 @@ export function validMenuPayload(value: unknown): value is MenuMessage {
         if (Object.keys(item).length !== 1 || item.section.length > 128) return false;
         continue;
       }
-      if (Object.keys(item).some(key => !['id', 'label', 'enabled', 'checked', 'shortcut', 'icon', 'fav', 'badge', 'submenu'].includes(key)) ||
+      if (Object.keys(item).some(key => !['id', 'label', 'enabled', 'checked', 'shortcut', 'icon', 'fav', 'badge', 'submenu', 'currency'].includes(key)) ||
           !Number.isSafeInteger(item.id) || (item.id as number) < 0 || (item.id as number) > 0xffffffff || typeof item.label !== 'string' || item.label.length > 128 ||
           typeof item.enabled !== 'boolean' || typeof item.checked !== 'boolean') return false;
       if (item.shortcut !== undefined && (typeof item.shortcut !== 'string' || item.shortcut.length > 48)) return false;
       if (item.icon !== undefined && (typeof item.icon !== 'string' || !MENU_ICONS.includes(item.icon))) return false;
       if (item.fav !== undefined && (!Number.isSafeInteger(item.fav) || (item.fav as number) < 0 || (item.fav as number) >= favCount)) return false;
       if (item.badge !== undefined && !validBadge(item.badge)) return false;
+      if (item.currency !== undefined && (!validCurrency(item.currency) || item.submenu !== undefined || item.checked !== false)) return false;
       if (item.submenu !== undefined && (!Array.isArray(item.submenu) || item.submenu.length > 128 || !validEntries(item.submenu, depth + 1))) return false;
     }
     return true;

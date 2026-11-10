@@ -4355,6 +4355,10 @@ unsafe extern "system" fn window_proc(
                 crate::engine::engine_menu_tick(hwnd);
                 LRESULT(0)
             }
+            super::currency_menu::WM_SHOW => {
+                super::currency_menu::run(hwnd);
+                LRESULT(0)
+            }
             WM_HTML_DEFERRED => {
                 if chrome_host::html_ui_enabled() {
                     run_deferred_html_command(hwnd);
@@ -4768,6 +4772,7 @@ unsafe extern "system" fn window_proc(
                 LRESULT(0)
             }
             WM_DESTROY => {
+                super::currency_menu::cancel(hwnd);
                 auto_hide::forget(hwnd); // --- auto-hide (T11) ---
                 super::panel_webapp::shutdown();
                 passwords_panel::clear_password_clipboard_timer(hwnd);
@@ -13062,6 +13067,7 @@ mod tests {
             #[cfg(feature = "experimental-engine-context-menu")]
             WM_ENGINE_CONTEXT_MENU,
             WM_CHROME_SYNC, WM_FOREGROUND_SYNC, WM_HISTORY_BACK, WM_HISTORY_FORWARD, WM_HTML_CHROME_ENV,
+            super::super::currency_menu::WM_SHOW,
             WM_HTML_CHROME_FAILED, WM_HTML_CHROME_START, WM_HTML_DEFERRED, WM_HTML_HOVER_START, WM_HTML_PANEL_FAILED,
             WM_HTML_POPUP_FAILED, WM_HTML_RAIL_FAILED, WM_HTML_TABS_FAILED, WM_LOGIN_MESSAGE, WM_NAVIGATION_PROGRESS,
             WM_PANE_FOCUSED, WM_RAIL_CHANGED, WM_SHORTCUT_KEY, WM_SUBMIT, WM_TABS_CHANGED, WM_UPDATE_CHECKED,

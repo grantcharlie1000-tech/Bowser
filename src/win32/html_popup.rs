@@ -131,6 +131,7 @@ impl Page {
 /// What an in-place action did. `Refresh` re-posts the page under the same token.
 pub(crate) enum ActOutcome {
     Refresh(Page),
+    RefreshMenu(Menu),
     Close,
 }
 
@@ -415,6 +416,14 @@ pub(crate) fn show_menu(
     context: Option<MenuContext>,
     on_result: ResultCallback,
 ) -> Result<(), ShowRefused> {
+    let acts = currency_acts(menu);
+    let on_act: Option<ActHandler> = if acts.is_empty() { None } else {
+        let menu = menu.clone();
+        Some(Rc::new(move |_app, _id, n| {
+            if n == 1 { crate::currency::cycle(); }
+            ActOutcome::RefreshMenu(menu.clone())
+        }))
+    };
     open(
         owner,
         Anchor::Point(anchor, placement),
@@ -422,10 +431,10 @@ pub(crate) fn show_menu(
         context,
         |token| {
             let mut ids = HashSet::new();
-            menu_json(token, kind, menu, &mut ids).map(|json| (json, ids, HashMap::new()))
+            menu_json(token, kind, menu, &mut ids).map(|json| (json, ids, acts))
         },
         on_result,
-        None,
+        on_act,
         None,
         false,
     )
@@ -845,6 +854,20 @@ pub(crate) fn run_compose(owner: HWND, token: u32, app: &AppRef) {
 fn apply_outcome(owner: HWND, token: u32, outcome: ActOutcome, app: &AppRef) {
     match outcome {
         ActOutcome::Close => run_result(owner, token, None, app),
+        ActOutcome::RefreshMenu(menu) => {
+            let kind = POPUPS.with(|p| p.borrow().get(&(owner.0 as isize))
+                .filter(|p| popup_token_matches(p.dismiss.is_active(), p.token, token))
+                .map(|p| p.dismiss.kind.clone()));
+            let Some(kind) = kind else { return; };
+            let mut ids = HashSet::new();
+            let Some(json) = menu_json(token, &kind, &menu, &mut ids) else { close(owner); return; };
+            let host = POPUPS.with(|p| p.borrow_mut().get_mut(&(owner.0 as isize)).map(|popup| {
+                popup.enabled_ids = ids;
+                popup.acts = currency_acts(&menu);
+                popup.host.clone()
+            }));
+            if let Some(host) = host { let _ = host.post_json(&json); }
+        }
         ActOutcome::Refresh(page) => {
             let key = owner.0 as isize;
             let Some(kind) = POPUPS.with(|p| {
@@ -1106,6 +1129,13 @@ fn menu_json(tok: u32, kind: &str, menu: &Menu, ids: &mut HashSet<u32>) -> Optio
     }))
 }
 
+fn currency_acts(menu: &Menu) -> HashMap<u32, u8> {
+    menu.entries.iter().filter_map(|entry| match entry {
+        Entry::Item(item) if item.currency.is_some() && item.enabled => u32::try_from(item.id).ok().map(|id| (id, 1)),
+        _ => None,
+    }).collect()
+}
+
 /// Favicons of one menu, each distinct PNG once: rows refer to an entry by index (`fav`), so a
 /// menu of twenty tabs from one site sends one image. Bounded, and every image passes the same gate
 /// as the tab strip's favicons (a small PNG with sane dimensions), so a refused one is just omitted.
@@ -1158,7 +1188,7 @@ fn validate_entries(
                 {
                     return false;
                 }
-                if item.enabled && item.submenu_entries.is_none() {
+                if item.enabled && item.submenu_entries.is_none() && item.currency.is_none() {
                     ids.insert(id);
                 }
                 if let Some(children) = &item.submenu_entries {
@@ -1199,7 +1229,14 @@ fn write_entries(
             }
             Entry::Item(item) => rows.object(|out| {
                 out.uint("id", item.id as u64);
-                out.string("label", cap16(&item.label, MAX_LABEL));
+                let conversion = item.currency.as_deref().copied().map(crate::currency::label);
+                out.string("label", cap16(conversion.as_ref().unwrap_or(&item.label), MAX_LABEL));
+                if item.currency.is_some() {
+                    out.object("currency", |out| {
+                        out.string("symbol", crate::currency::SYMBOLS[crate::currency::target()]);
+                        out.bool("loading", crate::currency::loading());
+                    });
+                }
                 out.bool("enabled", item.enabled);
                 out.bool("checked", item.checked);
                 if let Some(shortcut) = item.shortcut {
@@ -1433,6 +1470,25 @@ unsafe extern "system" fn window_proc(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn currency_rows_are_in_place_actions_in_the_standard_html_menu() {
+        let mut conversion = menu::Item::new(9, "Currency conversion", Icon::None);
+        conversion.currency = crate::currency::parse("NZ$2,549").map(Box::new);
+        let menu = Menu { header: None, entries: vec![Entry::Item(conversion),
+            Entry::Item(menu::Item::new(10, "Copy", Icon::None))], footer: String::new() };
+        let mut picks = HashSet::new();
+        let json = menu_json(7, "currency-selection", &menu, &mut picks).unwrap();
+        assert!(json.contains("\"currency\":{\"symbol\":"));
+        assert!(!json.contains("Currency conversion"));
+        assert_eq!(picks, HashSet::from([10]));
+        let acts = currency_acts(&menu);
+        assert!(act_allowed(true, 7, 7, 9, 0, &acts));
+        assert!(act_allowed(true, 7, 7, 9, 1, &acts));
+        assert!(!act_allowed(true, 7, 7, 9, 2, &acts));
+        assert!(!act_allowed(true, 8, 7, 9, 1, &acts));
+        assert!(!act_allowed(true, 7, 7, 10, 1, &acts));
+    }
 
     #[test]
     fn geometry_converts_css_pixels_with_monitor_dpi_and_clamps() {

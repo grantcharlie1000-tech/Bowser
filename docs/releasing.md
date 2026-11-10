@@ -1,7 +1,7 @@
-# Releasing Bowser v0.0.25 (pin revision 26)
+# Releasing Bowser v0.0.26 (pin revision 27)
 
-This release ships the external-link fix from PR #111. Use the
-existing guarded process: `.github/workflows/release-v0.0.25.yml` builds,
+This release ships selected-price currency conversion and the current main fixes. Use the
+existing guarded process: `.github/workflows/release-v0.0.26.yml` builds,
 checks, hashes, uploads and publishes on a GitHub-hosted Windows runner.
 It is `workflow_dispatch` only; pushes and PRs cannot publish it.
 Production changes only through a separate, human-merged `stable/release.json`
@@ -11,20 +11,20 @@ Use `$R = 'grantcharlie1000-tech/Bowser'` in the commands below.
 
 ## 0. Preconditions
 
-- PR #111 (external links open in the existing window) is merged.
+- The selected-price currency conversion PR is merged and its Windows checks passed.
 - Merge this release-tooling PR separately before the version-bump PR.
 - Merge freeze: nothing else merges from the version-bump PR until the stable
   pin PR is merged. This release must include only the verified current main,
-  this external-link fix, and its release tooling/identity/pin changes.
-- No v0.0.25 release or tag exists, including drafts. Inspect both:
-  `gh api repos/$R/releases --paginate --jq '.[]|select(.tag_name=="v0.0.25")|{id,draft}'`
-  and `gh api repos/$R/git/ref/tags/v0.0.25` (expected 404).
+  the currency conversion feature, and its release tooling/identity/pin changes.
+- No v0.0.26 release or tag exists, including drafts. v0.0.25 is already published and must remain unchanged. Inspect both:
+  `gh api repos/$R/releases --paginate --jq '.[]|select(.tag_name=="v0.0.26")|{id,draft}'`
+  and `gh api repos/$R/git/ref/tags/v0.0.26` (expected 404).
 - Main's stable pin is v0.0.24, revision 25. Never overwrite v0.0.24.
 
 ## 1. Version-bump PR
 
 Change exactly `Cargo.toml` and the bowser entry in `Cargo.lock` to version
-`0.0.25`, and `src/updater.rs` to `const PIN_REVISION: u32 = 26;`.
+`0.0.26`, and `src/updater.rs` to `const PIN_REVISION: u32 = 27;`.
 Do not change the stable pin. Run `cargo test --locked --lib updater::`,
 wait for the PR's `windows-verify` checks to pass, and merge with a merge
 commit. That exact main commit is `<BUILD_SHA>`.
@@ -45,7 +45,7 @@ Confirm `headSha` equals `<BUILD_SHA>` and main has not moved.
 ## 3. Dry run, then publication
 
 ```powershell
-gh workflow run release-v0.0.25.yml --repo $R --ref main -f commit=<BUILD_SHA> -f dry_run=true
+gh workflow run release-v0.0.26.yml --repo $R --ref main -f commit=<BUILD_SHA> -f dry_run=true
 gh run watch <RUN_ID> --repo $R --exit-status
 ```
 
@@ -71,12 +71,12 @@ dispatched after its cause is fixed.
 Download both assets independently:
 
 ```powershell
-$d = "$env:TEMP\bowser-v0.0.25-check"
+$d = "$env:TEMP\bowser-v0.0.26-check"
 New-Item -ItemType Directory -Force $d | Out-Null
-gh release download v0.0.25 --repo $R --pattern Bowser.exe --pattern build-metadata.json --dir $d
+gh release download v0.0.26 --repo $R --pattern Bowser.exe --pattern build-metadata.json --dir $d
 (Get-FileHash "$d\Bowser.exe" -Algorithm SHA256).Hash.ToLower()
 (Get-Item "$d\Bowser.exe").Length
-gh api repos/$R/git/ref/tags/v0.0.25 --jq .object
+gh api repos/$R/git/ref/tags/v0.0.26 --jq .object
 ```
 
 Require the hash, bytes, metadata version/revision/source/run and tag commit
@@ -87,18 +87,18 @@ never use the owner's real profile for tests.
 ## 5. Stable pin PR: the production switch
 
 Change only `stable/release.json`, preserving its order and four-space indent:
-version `0.0.25`, revision `26`, commit `<BUILD_SHA>`, tag `v0.0.25`, repository
+version `0.0.26`, revision `27`, commit `<BUILD_SHA>`, tag `v0.0.26`, repository
 `grantcharlie1000-tech/Bowser`, asset `Bowser.exe`, and the independently
-verified sha256 and byte length. Check that revision 26 equals PIN_REVISION.
+verified sha256 and byte length. Check that revision 27 equals PIN_REVISION.
 Wait for `stable-package` and all required Windows checks, then merge.
 The push verification must pass; `mark-latest` then promotes only the exact
-v0.0.25/revision-26 allow-list entry after rechecking the public bytes and pin.
+v0.0.26/revision-27 allow-list entry after rechecking the public bytes and pin.
 Verify the raw main manifest and the public latest-download route afterward.
 Artifact publication alone is not a stable rollout or an installed update.
 
 ## 6. Rollback
 
-The updater will not downgrade a user already running v0.0.25. Use a newly
+The updater will not downgrade a user already running v0.0.26. Use a newly
 built and verified fix-forward release with a higher version and pin revision.
 Its immutable metadata, stable pin and exact latest allow-list entry must agree.
 
@@ -107,7 +107,7 @@ equal the stable pin revision. The immutable v0.0.24 artifact records revision
 25, so pointing at it with revision 27 would fail verification and is not a
 supported rollback. Never alter published metadata or bypass the identity gates.
 Any emergency rollback needs a separately designed and reviewed procedure.
-Never delete or retag v0.0.24 or v0.0.25.
+Never delete or retag v0.0.24, v0.0.25 or v0.0.26.
 
 Leave all older one-time release and recovery workflows unchanged and do not
 dispatch them again. See `docs/release-cloud-v0.0.19.md` for historical recovery.

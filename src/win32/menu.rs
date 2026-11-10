@@ -74,6 +74,7 @@ const CHEVRON_NUDGE: i32 = 2;
 const AVATAR: i32 = 36;
 const ICON_FRAME_TIMER: usize = 0xB047;
 const ICON_FRAME_MS: u32 = 16;
+const CURRENCY_FRAME_TIMER: usize = 0xB048;
 const ICON_EASE: Duration = Duration::from_millis(150);
 
 /// One scalar per menu-row channel. Sampling is allocation-free and retargets from the value
@@ -198,6 +199,8 @@ pub(crate) struct Item {
     pub glyph: Option<&'static str>,
     /// HTML popup only: the row's favicon as PNG bytes (gated by the popup before it is sent).
     pub favicon_png: Option<std::rc::Rc<Vec<u8>>>,
+    /// Live conversion in a normal-height row; activating it cycles the target in place.
+    pub currency: Option<Box<crate::currency::Price>>,
 }
 
 /// Optional list presentation for a page or other row that has a title and favicon.
@@ -223,6 +226,7 @@ impl Item {
             badge: None,
             glyph: None,
             favicon_png: None,
+            currency: None,
         }
     }
 
@@ -559,6 +563,15 @@ struct State {
 }
 
 impl State {
+    fn activate(&self, index: usize) {
+        if matches!(&self.menu.entries[index], Entry::Item(item) if item.currency.is_some()) {
+            crate::currency::cycle();
+            crate::currency::refresh();
+        } else {
+            self.chosen.set(Some(index));
+            self.done.set(true);
+        }
+    }
     /// Back on this popup after a flyout returned: the choice and press that opened it are spent.
     fn resume(&self) {
         self.done.set(false);
@@ -740,6 +753,9 @@ fn track_placed(
 
     unsafe {
         let _ = ShowWindow(window, SW_SHOW);
+        if (*state).menu.entries.iter().any(|entry| matches!(entry, Entry::Item(item) if item.currency.is_some())) {
+            let _ = SetTimer(Some(window), CURRENCY_FRAME_TIMER, 250, None);
+        }
     }
     take_input(window);
 
@@ -1131,7 +1147,7 @@ unsafe extern "system" fn menu_proc(
                 paint(hwnd);
                 LRESULT(0)
             }
-            WM_TIMER if wparam.0 == ICON_FRAME_TIMER => {
+            WM_TIMER if wparam.0 == ICON_FRAME_TIMER || wparam.0 == CURRENCY_FRAME_TIMER => {
                 invalidate(hwnd);
                 LRESULT(0)
             }
@@ -1165,11 +1181,10 @@ unsafe extern "system" fn menu_proc(
                     let (x, y) = point(lparam);
                     let released = state.layout.entry_at(x, y, state.scroll.get());
                     if state.layout.inside(x, y)
-                        && released.is_some()
                         && released == state.pressed.get()
+                        && let Some(index) = released
                     {
-                        state.chosen.set(released);
-                        state.done.set(true);
+                        state.activate(index);
                     }
                     state.pressed.set(None);
                     invalidate(hwnd);
@@ -1233,8 +1248,8 @@ unsafe extern "system" fn menu_proc(
                         }
                     } else if is(VK_RETURN) || is(VK_SPACE) {
                         if let Some(index) = state.current.get() {
-                            state.chosen.set(Some(index));
-                            state.done.set(true);
+                            state.activate(index);
+                            invalidate(hwnd);
                         }
                     } else if is(VK_RIGHT) {
                         // Right opens a flyout row, as in native menus; other rows ignore it.
@@ -1588,6 +1603,10 @@ unsafe fn draw_item(
                 theme::Rgba::hex(0xFFFFFF, 255),
                 DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
             );
+        } else if item.currency.is_some() {
+            draw_text(dc, rect(inner.left + s(8), inner.top, inner.left + s(30), inner.bottom),
+                crate::currency::SYMBOLS[crate::currency::target()], glyph_colour,
+                DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
         } else if item.icon != Icon::None {
             let centre = (inner.top + inner.bottom) / 2;
             let size = s(16);
@@ -1605,6 +1624,7 @@ unsafe fn draw_item(
         } else {
             inner.right - s(10)
         };
+        let conversion = item.currency.as_deref().copied().map(crate::currency::label);
         draw_text(
             dc,
             rect(
@@ -1613,7 +1633,7 @@ unsafe fn draw_item(
                 label_right,
                 inner.bottom,
             ),
-            item.rich_row.as_ref().map_or(&item.label, |row| &row.title),
+            conversion.as_ref().unwrap_or_else(|| item.rich_row.as_ref().map_or(&item.label, |row| &row.title)),
             text,
             DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS,
         );
@@ -1954,6 +1974,18 @@ mod tests {
         assert_eq!(initial_item_index(&entries, Some(3)), Some(3));
         assert_eq!(initial_item_index(&entries, Some(2)), None);
         assert_eq!(initial_item_index(&entries, None), None);
+    }
+
+    #[test]
+    fn currency_row_uses_standard_geometry_at_each_dpi() {
+        let normal = Item::new(1, "Copy", Icon::None);
+        let mut conversion = Item::new(2, "Currency conversion", Icon::None);
+        conversion.currency = crate::currency::parse("NZ$2,549").map(Box::new);
+        for dpi in [96, 120, 144, 192] {
+            let plain = Layout::new(&menu(vec![Entry::Item(normal.clone())]), dpi, 900);
+            let currency = Layout::new(&menu(vec![Entry::Item(conversion.clone())]), dpi, 900);
+            assert_eq!(plain, currency);
+        }
     }
 
     #[test]
