@@ -60,9 +60,6 @@ pub(crate) use owned_context_menu::probe_reload_owner_lifetime;
 #[cfg(feature = "experimental-engine-context-menu")]
 pub(crate) use owned_context_menu::{continue_request as engine_menu_continue, owner_destroyed as engine_menu_owner_destroyed, tick as engine_menu_tick, drain_destroyed as engine_menu_drain_destroyed, TIMER as ENGINE_MENU_TIMER};
 
-#[cfg(test)]
-mod background_media_live;
-
 type ContextAugmenter = Rc<dyn Fn(Option<ICoreWebView2>, Option<ICoreWebView2ContextMenuRequestedEventArgs>) -> Result<()>>;
 
 /// The experimental coordinator freezes only after all existing Bowser augmentations run, in
@@ -6540,6 +6537,9 @@ fn ensure_user_data_dir(user_data_dir: &Path) -> Result<()> {
         )
     })
 }
+
+#[cfg(test)]
+mod background_media_live;
 
 #[cfg(test)]
 mod tests {
