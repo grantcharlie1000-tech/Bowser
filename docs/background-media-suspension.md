@@ -82,19 +82,30 @@ cargo test --locked --lib --features html-chrome-default engine::webview2::backg
 
 It uses a hidden owned window, a new disposable profile, loopback-only WAV media
 and no foreground input. For each actual `background_policy` sleep-enabled value,
-it switches the engine from playing muted audio to a lazy blank tab, waits 12
+it confirms the native WebView is muted before unmuting the HTML audio element,
+starts playback with a real native audio signal, then switches to a lazy blank tab and waits 12
 seconds, runs the real efficiency sweep, and requires a separate idle controller
 to suspend. It checks native suspension before any observation script, then
 requires the media timeline to keep progressing after the completed sweep and
 remain unpaused/unended. CI rejects a zero-test run or a missing policy result.
 The test logs exact source/runtime identity and timing, not user profile data.
 
-This verifies muted local media and policy-plus-engine scheduling, not audible
+This verifies native-WebView-muted local audio and policy-plus-engine scheduling, not audible
 hardware output, Spotify/DRM, the App's saved Settings UI/timer, or third-party
-visibility handlers. The production native-audio guard still needs an audible
-fixture or real-world playback check. Owned resource cleanup runs on assertion
+visibility handlers. Native host muting keeps output silent while WebView2 still
+reports the stream as playing audio; it does not validate the output device. Owned resource cleanup runs on assertion
 failure; profile deletion is best effort if WebView2 temporarily retains locks.
 
 A prior attempt to compile this test on the connected laptop was stopped before
 host creation when available memory fell below its safety budget. That attempt
 produced no playback result and left the user's existing browser untouched.
+
+The original fixture loaded HTML audio with `muted` and never unmuted it. Its
+first hosted run failed the no-suspension assertion. Chromium distinguishes such
+never-unmuted media from an audible stream when deciding hidden-page playback;
+the acceptance fixture therefore uses native WebView muting instead. This is a
+fixture/visibility-behavior distinction, not a claim that Spotify was reproduced.
+The original run and subsequent state diagnostics remain available in CI history.
+
+References: [Chromium hidden-playback implementation](https://chromium.googlesource.com/chromium/src/+/HEAD/third_party/blink/renderer/platform/media/web_media_player_impl.cc),
+[WebView2 audio signal and native muting](https://learn.microsoft.com/en-us/microsoft-edge/webview2/reference/win32/icorewebview2_8).

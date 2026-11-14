@@ -1,4 +1,4 @@
-//! Bounded native policy/engine probe. Hidden host + muted local WAV, not Spotify, audible
+//! Bounded native policy/engine probe. Hidden host + WebView-muted WAV, not Spotify, audible
 //! device output, or the App's settings UI/timer. No existing profile or foreground input.
 use super::*;
 use std::{
@@ -145,7 +145,7 @@ fn start_muted_fixture(engine: &mut WebView2Engine, id: TabId) {
 fn windows_media_hidden_sweep_sleep_off_and_on() {
     let runtime = WebView2Engine::availability().expect("WebView2 runtime required, never silently skip");
     let source = std::env::var("BOWSER_MEDIA_PROBE_SOURCE").unwrap_or_else(|_| "unreported-local-source".into());
-    println!("MEDIA_PROBE source={source} runtime={runtime} scope=policy-plus-engine-not-App-UI muted=true hidden_host=true");
+    println!("MEDIA_PROBE source={source} runtime={runtime} scope=policy-plus-engine-not-App-UI webview_muted=true html_muted=false hidden_host=true");
     let (mut probe, port) = Probe::new();
     let engine = probe.engine.as_mut().unwrap();
     for sleep_enabled in [false, true] {
@@ -156,7 +156,13 @@ fn windows_media_hidden_sweep_sleep_off_and_on() {
         let idle = TabId(media.0 + 1); let front = TabId(media.0 + 2);
         load(engine, media, &format!("http://127.0.0.1:{port}/media"));
         assert_eq!(script(engine, media, "document.querySelector('audio').muted"), "true");
+        // Keep the element muted until the native host mute is confirmed. Host muting
+        // silences output without Chromium classifying this as never-unmuted autoplay.
+        engine.set_tab_muted(media, true).unwrap();
+        assert!(engine.tab_muted(media), "native host must be muted before unmuting HTML");
+        assert_eq!(script(engine, media, "document.querySelector('audio').muted=false"), "false");
         start_muted_fixture(engine, media);
+        assert!(pump(5, || engine.tab_playing_audio(media)), "native audio signal required despite host mute");
         pump(2, || false);
         let before: f64 = script(engine, media, "document.querySelector('audio').currentTime").parse().unwrap();
         assert!(before > 0.2, "fixture must actually start before hiding");
@@ -168,6 +174,8 @@ fn windows_media_hidden_sweep_sleep_off_and_on() {
         assert!(!engine.core.borrow().tabs[&media].visible.get());
         let hidden = Instant::now(); pump(12, || false);
         let pre_sweep_native = suspended(engine, media);
+        println!("MEDIA_DIAGNOSTIC sleep_enabled={sleep_enabled} stage=native_before_sweep native_suspended={pre_sweep_native}");
+        assert!(!pre_sweep_native, "never execute an observation script on an already suspended view");
         let pre_sweep_state = media_state(engine, media);
         let dom_blocks = script(engine, media, SLEEP_BLOCK_SCRIPT);
         let native_audio_blocks = {
@@ -175,6 +183,9 @@ fn windows_media_hidden_sweep_sleep_off_and_on() {
             webview_audio_blocks_sleep(&view)
         };
         println!("MEDIA_DIAGNOSTIC sleep_enabled={sleep_enabled} stage=before_sweep native_suspended={pre_sweep_native} native_audio_blocks={native_audio_blocks} dom_blocks={dom_blocks} state={pre_sweep_state}");
+        assert_eq!(field(&pre_sweep_state, "paused"), Some("false"));
+        assert_eq!(field(&pre_sweep_state, "ended"), Some("false"));
+        assert_eq!(field(&pre_sweep_state, "muted"), Some("false"));
         engine.suspend_hidden_tabs(policy.suspend_after.as_millis() as u64).unwrap();
         assert!(pump(15, || {
             let state = engine.core.borrow();
@@ -185,7 +196,7 @@ fn windows_media_hidden_sweep_sleep_off_and_on() {
         assert!(suspended(engine, idle), "positive control proves sweep is not a no-op");
         let first_media_suspended = suspended(engine, media);
         let engine_marked_media = engine.core.borrow().suspended.contains(&media);
-        println!("MEDIA_DIAGNOSTIC sleep_enabled={sleep_enabled} stage=after_sweep native_suspended={first_media_suspended} engine_marked={engine_marked_media} state={}", media_state(engine, media));
+        println!("MEDIA_DIAGNOSTIC sleep_enabled={sleep_enabled} stage=after_sweep native_suspended={first_media_suspended} engine_marked={engine_marked_media}");
         assert!(!first_media_suspended, "media cannot suspend during its check");
         let at_sweep: f64 = script(engine, media, "document.querySelector('audio').currentTime").parse().unwrap();
         pump(2, || false);
@@ -197,7 +208,8 @@ fn windows_media_hidden_sweep_sleep_off_and_on() {
         println!("MEDIA_PROBE sleep_enabled={sleep_enabled} suspend_after_ms={} elapsed_hidden_ms={} before={before} at_sweep={at_sweep} after={after} media_suspended={media_suspended} idle_suspended={idle_suspended} media_state={state}", policy.suspend_after.as_millis(), hidden.elapsed().as_millis());
         assert_eq!(field(&state, "paused"), Some("false"));
         assert_eq!(field(&state, "ended"), Some("false"));
-        assert_eq!(field(&state, "muted"), Some("true"));
+        assert_eq!(field(&state, "muted"), Some("false"));
+        assert!(engine.tab_muted(media), "native output must remain muted throughout");
         assert!(after - before > 10.0, "hidden playback must progress beyond ten seconds");
         assert!(after - at_sweep > 1.0, "playback must also progress after the completed sweep");
         engine.select_tab(media).unwrap(); assert!(!suspended(engine, media));
