@@ -70,3 +70,31 @@ Immediate pause on a particular third-party site, Windows audio-device output,
 minimize/restore, cross-origin players, and long-duration live streaming still
 require native runtime verification. No release, deployment or stable pin change
 is part of this fix.
+
+## Hosted muted-media regression
+
+`Native muted background media probe` runs the exact ignored native test on a
+fresh Windows runner, pinned to the PR head rather than the synthetic merge:
+
+```powershell
+cargo test --locked --lib --features html-chrome-default engine::webview2::background_media_live::windows_media_hidden_sweep_sleep_off_and_on -- --exact --ignored --nocapture --test-threads=1
+```
+
+It uses a hidden owned window, a new disposable profile, loopback-only WAV media
+and no foreground input. For each actual `background_policy` sleep-enabled value,
+it switches the engine from playing muted audio to a lazy blank tab, waits 12
+seconds, runs the real efficiency sweep, and requires a separate idle controller
+to suspend. It checks native suspension before any observation script, then
+requires the media timeline to keep progressing after the completed sweep and
+remain unpaused/unended. CI rejects a zero-test run or a missing policy result.
+The test logs exact source/runtime identity and timing, not user profile data.
+
+This verifies muted local media and policy-plus-engine scheduling, not audible
+hardware output, Spotify/DRM, the App's saved Settings UI/timer, or third-party
+visibility handlers. The production native-audio guard still needs an audible
+fixture or real-world playback check. Owned resource cleanup runs on assertion
+failure; profile deletion is best effort if WebView2 temporarily retains locks.
+
+A prior attempt to compile this test on the connected laptop was stopped before
+host creation when available memory fell below its safety budget. That attempt
+produced no playback result and left the user's existing browser untouched.
