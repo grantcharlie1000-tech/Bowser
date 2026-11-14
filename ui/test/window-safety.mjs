@@ -129,10 +129,15 @@ test('automatic suspension protects media and revalidates async completion', () 
   assert.doesNotMatch(method, /tab\.suspend\(\)/, 'no unchecked automatic TrySuspend path');
   assert.match(method, /webview_audio_blocks_sleep\(&webview\)/);
   assert.match(method, /self\.check_sleep_blocked\(id,[\s\S]*?automatic_suspend_allowed/);
-  assert.match(method, /status\.is_ok\(\) && suspended && current\(\)/);
+  assert.match(method, /finish_automatic_suspend\([\s\S]*?status\.is_ok\(\) && suspended,[\s\S]*?current\(\)/);
   assert.match(method, /completion_api\.Resume\(\)/, 'late activation/navigation cannot stay frozen');
-  assert.match(method, /state\.suspend_checks\.contains\(id\)/, 'only one probe in flight');
+  const completion = method.slice(method.indexOf('TrySuspendCompletedHandler::create'));
+  assert.doesNotMatch(completion, /core\.borrow_mut\(/, 'COM reentrancy cannot panic borrowing core');
+  assert.match(completion, /completion_pending\.set\(false\)/);
+  assert.match(completion, /core\.try_borrow_mut\(\)/);
+  assert.match(method, /state\.suspend_checks\.contains_key\(id\)/, 'only one probe in flight');
   assert.match(engine, /fn automatic_suspend_rechecks_the_fence_after_native_audio_callbacks/);
+  assert.match(engine, /fn automatic_suspend_completion_can_reenter_during_a_core_borrow/);
   assert.match(engine, /fn automatic_suspend_verdict_is_scoped_to_one_hidden_document_and_controller/);
 });
 

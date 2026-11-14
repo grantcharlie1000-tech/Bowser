@@ -7,6 +7,11 @@ That is normal tab visibility behavior and is not established here as the cause
 of an immediate site-specific pause. No JavaScript visibility spoofing, autoplay
 bypass, forced `play()`, or globally visible background controllers are added.
 
+For immediate silence, also inspect the existing `tabs_mute_mode` preference:
+`active` intentionally mutes background tabs and `prioritise` can mute them while
+the active tab is audible. The default is `all`. Muting is not a paused media
+timeline; this patch does not override the user's preference.
+
 The automatic 10-second (efficiency) / 30-second suspension sweep previously
 called `TrySuspend` without the media/unsaved-input probe used by manual
 hibernation and discard. That bypass is a confirmed code defect: the sweep could
@@ -41,8 +46,8 @@ paused/ended media, live/ended capture, PiP, inaccessible frames and dirty draft
 The source contracts ensure the automatic sweep cannot bypass the probe.
 
 Rust unit tests cover stale hidden intervals, active tabs, split panes, document
-navigation/completion, controller replacement, close, and reentrant native audio
-queries. Run these on Windows:
+navigation/completion, controller replacement, close, reentrant native audio
+queries, and completion dispatched while the core is already borrowed. Run these on Windows:
 
 ```powershell
 cargo test --locked automatic_suspend

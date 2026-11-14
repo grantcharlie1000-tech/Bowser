@@ -1630,7 +1630,7 @@ struct EngineCore {
     hidden_since: HashMap<TabId, Instant>,
     suspended: HashSet<TabId>,
     /// One automatic media/sleep probe in flight per controller.
-    suspend_checks: HashSet<TabId>,
+    suspend_checks: HashMap<TabId, Rc<Cell<bool>>>,
     closed: bool,
     /// Whether the environment was created with browser extensions enabled.
     browser_extensions: bool,
@@ -1674,7 +1674,6 @@ impl EngineCore {
             && self.tabs.get(&id).is_some_and(|tab| Rc::ptr_eq(&tab.document_gate, gate))
             && gate.try_borrow().is_ok_and(|gate| gate.proof() == Some(proof))
     }
-
 
     /// Applies the same visibility and sleep bookkeeping to single tabs and split panes. This
     /// does not create controllers: selecting a blank tab must keep controller creation lazy.
@@ -3411,7 +3410,7 @@ impl WebView2Engine {
                         pending_post: HashMap::new(),
                         hidden_since: HashMap::new(),
                         suspended: HashSet::new(),
-                        suspend_checks: HashSet::new(),
+                        suspend_checks: HashMap::new(),
                         closed: false,
                         browser_extensions,
                         extensions_refused: extensions_refused.clone(),
@@ -4468,11 +4467,12 @@ impl EngineAdapter for WebView2Engine {
 
     fn suspend_hidden_tabs(&mut self, hidden_for_ms: u64) -> Result<()> {
         let candidates = {
-            let state = self.core.borrow();
+            let mut state = self.core.borrow_mut();
+            state.suspend_checks.retain(|_, pending| pending.get());
             let now = Instant::now();
             state.hidden_since.iter().filter_map(|(id, hidden)| {
                 if now.duration_since(*hidden) < Duration::from_millis(hidden_for_ms)
-                    || state.suspended.contains(id) || state.suspend_checks.contains(id)
+                    || state.suspended.contains(id) || state.suspend_checks.contains_key(id)
                     || state.active_tab == Some(*id) || state.visible_tabs.contains(id)
                 {
                     return None;
@@ -4488,7 +4488,10 @@ impl EngineAdapter for WebView2Engine {
             if webview_audio_blocks_sleep(&webview) {
                 continue;
             }
-            self.core.borrow_mut().suspend_checks.insert(id);
+            // Completion may be dispatched while a visibility COM call holds EngineCore.
+            // This flag permits cleanup without re-borrowing it from a callback.
+            let pending = Rc::new(Cell::new(true));
+            self.core.borrow_mut().suspend_checks.insert(id, pending.clone());
             let weak = Rc::downgrade(&self.core);
             let current: Rc<dyn Fn() -> bool> = Rc::new(move || {
                 let Some(core) = weak.upgrade() else { return false; };
@@ -4500,29 +4503,38 @@ impl EngineAdapter for WebView2Engine {
                 let Some(core) = weak.upgrade() else { return; };
                 // Both page execution and the native audio query may dispatch tab switches.
                 if !automatic_suspend_allowed(blocked, || current(), || webview_audio_blocks_sleep(&webview)) {
-                    core.borrow_mut().suspend_checks.remove(&id);
+                    pending.set(false);
                     return;
                 }
                 let Ok(api) = webview.cast::<ICoreWebView2_3>() else {
-                    core.borrow_mut().suspend_checks.remove(&id);
+                    pending.set(false);
                     return;
                 };
+                // QueryInterface above is itself a COM call and may dispatch callbacks.
+                if !current() {
+                    pending.set(false);
+                    return;
+                }
                 let completion_core = Rc::downgrade(&core);
                 let completion_api = api.clone();
+                let completion_pending = pending.clone();
                 let handler = TrySuspendCompletedHandler::create(Box::new(move |status, suspended| {
+                    completion_pending.set(false);
                     if let Some(core) = completion_core.upgrade() {
-                        core.borrow_mut().suspend_checks.remove(&id);
-                        if status.is_ok() && suspended && current() {
-                            core.borrow_mut().suspended.insert(id);
-                        } else {
-                            // A late success must not freeze a newly selected tab/document.
-                            let _ = unsafe { completion_api.Resume() };
-                        }
+                        finish_automatic_suspend(
+                            status.is_ok() && suspended,
+                            || current(),
+                            || core.try_borrow_mut().is_ok_and(|mut state| {
+                                state.suspended.insert(id);
+                                true
+                            }),
+                            || { let _ = unsafe { completion_api.Resume() }; },
+                        );
                     }
                     Ok(())
                 }));
                 if unsafe { api.TrySuspend(&handler) }.is_err() {
-                    core.borrow_mut().suspend_checks.remove(&id);
+                    pending.set(false);
                 }
             }));
         }
@@ -4662,6 +4674,19 @@ fn automatic_suspend_allowed(
     audio_blocks: impl FnOnce() -> bool,
 ) -> bool {
     !blocked && current() && !audio_blocks() && current()
+}
+
+/// A late/reentrant success must not freeze a newly selected tab/document. `record` must
+/// release its core borrow before `resume` makes another COM call.
+fn finish_automatic_suspend(
+    successful: bool,
+    current: impl FnOnce() -> bool,
+    record: impl FnOnce() -> bool,
+    resume: impl FnOnce(),
+) {
+    if !(successful && current() && record()) {
+        resume();
+    }
 }
 
 /// Suspension is destructive to page scheduling, so unsupported/failed audio queries fail
@@ -8381,7 +8406,7 @@ mod tests {
             pending_post: HashMap::new(),
             hidden_since: HashMap::from([(TabId(2), Instant::now() - Duration::from_secs(60))]),
             suspended: HashSet::new(),
-            suspend_checks: HashSet::new(),
+            suspend_checks: HashMap::new(),
             closed: false,
             browser_extensions: false,
             extensions_refused: None,
@@ -8410,6 +8435,42 @@ mod tests {
             false
         }));
         assert!(automatic_suspend_allowed(false, || true, || false));
+    }
+
+    #[test]
+    fn automatic_suspend_completion_can_reenter_during_a_core_borrow() {
+        let engine = engine_without_controllers();
+        let resumed = Cell::new(0);
+        let pending = Cell::new(true);
+        let completion = || {
+            pending.set(false);
+            finish_automatic_suspend(
+                true,
+                || engine.core.try_borrow().is_ok(),
+                || engine.core.try_borrow_mut().is_ok_and(|mut state| {
+                    state.suspended.insert(TabId(2));
+                    true
+                }),
+                || resumed.set(resumed.get() + 1),
+            );
+        };
+        {
+            let _visibility_call = engine.core.borrow_mut();
+            completion(); // Native SetIsVisible/Resume dispatched this completion.
+            assert!(!pending.get(), "in-flight cleanup needs no core borrow");
+        }
+        assert_eq!(resumed.get(), 1);
+        assert!(!engine.core.borrow().suspended.contains(&TabId(2)));
+        {
+            let _read_call = engine.core.borrow();
+            completion(); // Current may be readable but recording is still unavailable.
+        }
+        assert_eq!(resumed.get(), 2);
+        completion();
+        assert_eq!(resumed.get(), 2);
+        assert!(engine.core.borrow().suspended.contains(&TabId(2)));
+        finish_automatic_suspend(false, || panic!("failed suspension"), || panic!("failed suspension"), || resumed.set(3));
+        assert_eq!(resumed.get(), 3);
     }
 
     #[test]
