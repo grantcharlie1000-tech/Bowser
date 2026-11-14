@@ -120,6 +120,9 @@ fn field<'a>(object: &'a str, key: &str) -> Option<&'a str> {
     let members = crate::blocker::json::whole_object(object)?;
     crate::blocker::json::field(&members, key)
 }
+fn media_state(engine: &mut WebView2Engine, id: TabId) -> String {
+    script(engine, id, "(()=>{const m=document.querySelector('audio');return {time:m.currentTime,paused:m.paused,ended:m.ended,muted:m.muted,ready:m.readyState,hidden:document.hidden}})()")
+}
 fn start_muted_fixture(engine: &mut WebView2Engine, id: TabId) {
     // Test-only user gesture for our local fixture. The production capture-only CDP adapter
     // deliberately refuses Runtime.evaluate, so call the native test handle directly.
@@ -157,12 +160,21 @@ fn windows_media_hidden_sweep_sleep_off_and_on() {
         pump(2, || false);
         let before: f64 = script(engine, media, "document.querySelector('audio').currentTime").parse().unwrap();
         assert!(before > 0.2, "fixture must actually start before hiding");
+        println!("MEDIA_DIAGNOSTIC sleep_enabled={sleep_enabled} stage=before_hide state={}", media_state(engine, media));
         load(engine, idle, &format!("http://localhost:{port}/idle"));
         // A genuinely blank new tab keeps controller creation lazy. Neither control shares
         // a renderer with a visible document that could itself prevent TrySuspend.
         engine.select_tab(front).unwrap();
         assert!(!engine.core.borrow().tabs[&media].visible.get());
         let hidden = Instant::now(); pump(12, || false);
+        let pre_sweep_native = suspended(engine, media);
+        let pre_sweep_state = media_state(engine, media);
+        let dom_blocks = script(engine, media, SLEEP_BLOCK_SCRIPT);
+        let native_audio_blocks = {
+            let view = engine.core.borrow().tabs[&media].webview.clone().unwrap();
+            webview_audio_blocks_sleep(&view)
+        };
+        println!("MEDIA_DIAGNOSTIC sleep_enabled={sleep_enabled} stage=before_sweep native_suspended={pre_sweep_native} native_audio_blocks={native_audio_blocks} dom_blocks={dom_blocks} state={pre_sweep_state}");
         engine.suspend_hidden_tabs(policy.suspend_after.as_millis() as u64).unwrap();
         assert!(pump(15, || {
             let state = engine.core.borrow();
@@ -171,7 +183,10 @@ fn windows_media_hidden_sweep_sleep_off_and_on() {
         // Check native state before any script can wake a view, then prove continued
         // progression after the completed sweep (not just playback before it ran).
         assert!(suspended(engine, idle), "positive control proves sweep is not a no-op");
-        assert!(!suspended(engine, media), "media cannot suspend during its check");
+        let first_media_suspended = suspended(engine, media);
+        let engine_marked_media = engine.core.borrow().suspended.contains(&media);
+        println!("MEDIA_DIAGNOSTIC sleep_enabled={sleep_enabled} stage=after_sweep native_suspended={first_media_suspended} engine_marked={engine_marked_media} state={}", media_state(engine, media));
+        assert!(!first_media_suspended, "media cannot suspend during its check");
         let at_sweep: f64 = script(engine, media, "document.querySelector('audio').currentTime").parse().unwrap();
         pump(2, || false);
         let media_suspended = suspended(engine, media); let idle_suspended = suspended(engine, idle);
