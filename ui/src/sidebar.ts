@@ -506,7 +506,9 @@ export function createSidebarRenderer(root: HTMLElement): {
         const gc = item.g > 0 && !item.pinned ? groupColour.get(item.g) : undefined;
         if (gc) node.root.style.setProperty('--gc', gc);
         else node.root.style.removeProperty('--gc');
-        if (item.pinned) pinned.push(node.root);
+        // Keep at most twelve tiles; excess pinned tabs remain accessible as full rows.
+        node.root.classList.toggle('pin-overflow', item.pinned && pinned.length >= 12);
+        if (item.pinned && pinned.length < 12) pinned.push(node.root);
         else rows.push(node.root);
       }
     });
