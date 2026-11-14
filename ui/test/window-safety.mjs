@@ -124,6 +124,39 @@ test('sleep script conservatively preserves blurred edits and unreadable frame s
   assert.equal(blocked(deep), true, 'unvisited frame depth is unknown, not safe');
 });
 
+test('automatic suspension protects media and revalidates async completion', () => {
+  const method = engine.slice(engine.indexOf('    fn suspend_hidden_tabs('), engine.indexOf('    fn force_background_memory_low('));
+  assert.doesNotMatch(method, /tab\.suspend\(\)/, 'no unchecked automatic TrySuspend path');
+  assert.match(method, /webview_audio_blocks_sleep\(&webview\)/);
+  assert.match(method, /self\.check_sleep_blocked\(id,[\s\S]*?automatic_suspend_allowed/);
+  assert.match(method, /status\.is_ok\(\) && suspended && current\(\)/);
+  assert.match(method, /completion_api\.Resume\(\)/, 'late activation/navigation cannot stay frozen');
+  assert.match(method, /state\.suspend_checks\.contains\(id\)/, 'only one probe in flight');
+  assert.match(engine, /fn automatic_suspend_rechecks_the_fence_after_native_audio_callbacks/);
+  assert.match(engine, /fn automatic_suspend_verdict_is_scoped_to_one_hidden_document_and_controller/);
+});
+
+test('sleep script keeps buffering, silent, framed and capturing media awake', () => {
+  const script = /const SLEEP_BLOCK_SCRIPT: &str = r#"([\s\S]*?)"#;/.exec(engine)?.[1];
+  const page = (media = []) => ({ document: { querySelectorAll: (selector) => selector === 'video,audio' ? media : [] }, frames: [] });
+  const blocked = (window) => runInNewContext(script, { window });
+  for (const readyState of [0, 1, 2, 3, 4]) {
+    const playing = { paused: false, ended: false, readyState, muted: true, volume: 0 };
+    assert.equal(blocked(page([playing])), true, `readyState=${readyState} cannot stop play intent`);
+    assert.equal(blocked(page([{ ...playing, paused: true }])), false, 'paused media may sleep');
+    assert.equal(blocked(page([{ ...playing, ended: true }])), false, 'ended media may sleep');
+    const framed = page(); framed.frames.push(page([playing]));
+    assert.equal(blocked(framed), true, 'same-origin frame media stays awake');
+  }
+  const track = { readyState: 'live' };
+  const stream = { paused: true, ended: false, srcObject: { getTracks: () => [track] } };
+  assert.equal(blocked(page([stream])), true, 'live capture stays awake even if element paused');
+  track.readyState = 'ended';
+  assert.equal(blocked(page([stream])), false, 'ended capture may sleep');
+  const pip = page(); pip.document.pictureInPictureElement = {};
+  assert.equal(blocked(pip), true, 'PiP stays awake');
+});
+
 test('stable verifier cannot pass without each actual launcher remote response', () => {
   const verifier = read('benchmarks/scripts/verify-stable-package.ps1');
   assert.match(verifier, /GetEnvironmentVariable\('BOWSER_STABLE_VERIFIER_CAPTURE_PATH', 'Process'\)/);

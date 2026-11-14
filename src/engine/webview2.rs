@@ -1629,6 +1629,8 @@ struct EngineCore {
     pending_post: HashMap<TabId, (Url, String)>,
     hidden_since: HashMap<TabId, Instant>,
     suspended: HashSet<TabId>,
+    /// One automatic media/sleep probe in flight per controller.
+    suspend_checks: HashSet<TabId>,
     closed: bool,
     /// Whether the environment was created with browser extensions enabled.
     browser_extensions: bool,
@@ -1659,6 +1661,21 @@ struct EngineCore {
 }
 
 impl EngineCore {
+    /// A media verdict belongs to one controller, completed document and hidden interval.
+    fn automatic_suspend_current(
+        &self,
+        id: TabId,
+        hidden: Instant,
+        gate: &Rc<RefCell<super::document_gate::DocumentGate>>,
+        proof: (u64, u64, u64),
+    ) -> bool {
+        !self.closed && self.active_tab != Some(id) && !self.visible_tabs.contains(&id)
+            && self.hidden_since.get(&id) == Some(&hidden)
+            && self.tabs.get(&id).is_some_and(|tab| Rc::ptr_eq(&tab.document_gate, gate))
+            && gate.try_borrow().is_ok_and(|gate| gate.proof() == Some(proof))
+    }
+
+
     /// Applies the same visibility and sleep bookkeeping to single tabs and split panes. This
     /// does not create controllers: selecting a blank tab must keep controller creation lazy.
     fn apply_visibility(&mut self, next: &[TabId], active: TabId) -> Result<()> {
@@ -3394,6 +3411,7 @@ impl WebView2Engine {
                         pending_post: HashMap::new(),
                         hidden_since: HashMap::new(),
                         suspended: HashSet::new(),
+                        suspend_checks: HashSet::new(),
                         closed: false,
                         browser_extensions,
                         extensions_refused: extensions_refused.clone(),
@@ -4449,22 +4467,64 @@ impl EngineAdapter for WebView2Engine {
     }
 
     fn suspend_hidden_tabs(&mut self, hidden_for_ms: u64) -> Result<()> {
-        let mut state = self.core.borrow_mut();
-        let now = Instant::now();
-        let eligible: Vec<_> = state
-            .hidden_since
-            .iter()
-            .filter(|(id, hidden)| {
-                now.duration_since(**hidden) >= Duration::from_millis(hidden_for_ms)
-                    && !state.suspended.contains(id)
-            })
-            .map(|(id, _)| *id)
-            .collect();
-        for id in eligible {
-            if let Some(tab) = state.tabs.get_mut(&id) {
-                tab.suspend();
-                state.suspended.insert(id);
+        let candidates = {
+            let state = self.core.borrow();
+            let now = Instant::now();
+            state.hidden_since.iter().filter_map(|(id, hidden)| {
+                if now.duration_since(*hidden) < Duration::from_millis(hidden_for_ms)
+                    || state.suspended.contains(id) || state.suspend_checks.contains(id)
+                    || state.active_tab == Some(*id) || state.visible_tabs.contains(id)
+                {
+                    return None;
+                }
+                let tab = state.tabs.get(id)?;
+                let proof = tab.document_gate.borrow().proof()?;
+                Some((*id, *hidden, tab.document_gate.clone(), proof, tab.webview.clone()?))
+            }).collect::<Vec<_>>()
+        };
+        for (id, hidden, gate, proof, webview) in candidates {
+            // Native audio includes Web Audio and muted output, which the DOM media query
+            // cannot see. Unknown native state is not permission to stop playback.
+            if webview_audio_blocks_sleep(&webview) {
+                continue;
             }
+            self.core.borrow_mut().suspend_checks.insert(id);
+            let weak = Rc::downgrade(&self.core);
+            let current: Rc<dyn Fn() -> bool> = Rc::new(move || {
+                let Some(core) = weak.upgrade() else { return false; };
+                let Ok(state) = core.try_borrow() else { return false; };
+                state.automatic_suspend_current(id, hidden, &gate, proof)
+            });
+            let weak = Rc::downgrade(&self.core);
+            self.check_sleep_blocked(id, Box::new(move |blocked| {
+                let Some(core) = weak.upgrade() else { return; };
+                // Both page execution and the native audio query may dispatch tab switches.
+                if !automatic_suspend_allowed(blocked, || current(), || webview_audio_blocks_sleep(&webview)) {
+                    core.borrow_mut().suspend_checks.remove(&id);
+                    return;
+                }
+                let Ok(api) = webview.cast::<ICoreWebView2_3>() else {
+                    core.borrow_mut().suspend_checks.remove(&id);
+                    return;
+                };
+                let completion_core = Rc::downgrade(&core);
+                let completion_api = api.clone();
+                let handler = TrySuspendCompletedHandler::create(Box::new(move |status, suspended| {
+                    if let Some(core) = completion_core.upgrade() {
+                        core.borrow_mut().suspend_checks.remove(&id);
+                        if status.is_ok() && suspended && current() {
+                            core.borrow_mut().suspended.insert(id);
+                        } else {
+                            // A late success must not freeze a newly selected tab/document.
+                            let _ = unsafe { completion_api.Resume() };
+                        }
+                    }
+                    Ok(())
+                }));
+                if unsafe { api.TrySuspend(&handler) }.is_err() {
+                    core.borrow_mut().suspend_checks.remove(&id);
+                }
+            }));
         }
         Ok(())
     }
@@ -4524,6 +4584,7 @@ impl EngineAdapter for WebView2Engine {
             state.creating.clear();
             state.hidden_since.clear();
             state.suspended.clear();
+            state.suspend_checks.clear();
             state.tabs.drain().map(|(_, tab)| tab).collect()
         };
         for mut tab in tabs {
@@ -4543,7 +4604,7 @@ function own(w){try{var d=w.document;
 if(d.pictureInPictureElement)return true;
 var m=d.querySelectorAll('video,audio');
 for(var i=0;i<m.length;i++){var v=m[i];
-if(!v.paused&&!v.ended&&v.readyState>2)return true;
+if(!v.paused&&!v.ended)return true;
 var s=v.srcObject;
 if(s&&s.getTracks&&s.getTracks().some(function(t){return t.readyState==='live'}))return true;}
 var f=d.querySelectorAll('input,textarea,select,[contenteditable]');
@@ -4591,6 +4652,24 @@ fn try_suspend(webview: &ICoreWebView2) {
         let handler = TrySuspendCompletedHandler::create(Box::new(|_, _| Ok(())));
         let _ = unsafe { webview3.TrySuspend(&handler) };
     }
+}
+
+/// Native calls can dispatch callbacks, so check the controller/document fence on both sides
+/// of the final audio query. A failed DOM verdict never even asks for suspension.
+fn automatic_suspend_allowed(
+    blocked: bool,
+    mut current: impl FnMut() -> bool,
+    audio_blocks: impl FnOnce() -> bool,
+) -> bool {
+    !blocked && current() && !audio_blocks() && current()
+}
+
+/// Suspension is destructive to page scheduling, so unsupported/failed audio queries fail
+/// closed. Keep the UI's best-effort "playing" query separate from this permission check.
+fn webview_audio_blocks_sleep(webview: &ICoreWebView2) -> bool {
+    let Ok(audio) = webview.cast::<ICoreWebView2_8>() else { return true; };
+    let mut playing = BOOL::default();
+    unsafe { audio.IsDocumentPlayingAudio(&mut playing) }.is_err() || playing.as_bool()
 }
 
 /// A failed query counts as silent, so an unreadable tab is not kept alive for that reason alone.
@@ -8302,6 +8381,7 @@ mod tests {
             pending_post: HashMap::new(),
             hidden_since: HashMap::from([(TabId(2), Instant::now() - Duration::from_secs(60))]),
             suspended: HashSet::new(),
+            suspend_checks: HashSet::new(),
             closed: false,
             browser_extensions: false,
             extensions_refused: None,
@@ -8317,6 +8397,64 @@ mod tests {
             extension_page: None,
         }));
         WebView2Engine { core }
+    }
+
+    #[test]
+    fn automatic_suspend_rechecks_the_fence_after_native_audio_callbacks() {
+        assert!(!automatic_suspend_allowed(true, || panic!("blocked DOM"), || panic!("blocked DOM")));
+        assert!(!automatic_suspend_allowed(false, || false, || panic!("stale document")));
+        assert!(!automatic_suspend_allowed(false, || true, || true), "audible stays awake");
+        let current = Cell::new(true);
+        assert!(!automatic_suspend_allowed(false, || current.get(), || {
+            current.set(false); // A native call dispatched activation/navigation.
+            false
+        }));
+        assert!(automatic_suspend_allowed(false, || true, || false));
+    }
+
+    #[test]
+    fn automatic_suspend_verdict_is_scoped_to_one_hidden_document_and_controller() {
+        let engine = engine_without_controllers();
+        let mut state = engine.core.borrow_mut();
+        let id = TabId(2);
+        let hidden = state.hidden_since[&id];
+        let gate = Rc::new(RefCell::new(super::super::document_gate::DocumentGate::default()));
+        gate.borrow_mut().started(1);
+        gate.borrow_mut().completed(1, true);
+        let proof = gate.borrow().proof().unwrap();
+        state.tabs.insert(id, WebView2Tab {
+            #[cfg(feature = "experimental-engine-context-menu")]
+            context_menu_registration: None,
+            document_gate: gate.clone(), focus_trace: None,
+            environment: None, controller: None, webview: None, allowed_file: None,
+            memory_target_api: None, visible: Rc::new(Cell::new(false)),
+            applied_bounds: None, spatial_id: Rc::new(RefCell::new(None)),
+        });
+        assert!(state.automatic_suspend_current(id, hidden, &gate, proof));
+        state.active_tab = Some(id);
+        assert!(!state.automatic_suspend_current(id, hidden, &gate, proof), "active");
+        state.active_tab = Some(TabId(1));
+        state.visible_tabs.insert(id);
+        assert!(!state.automatic_suspend_current(id, hidden, &gate, proof), "split pane");
+        state.visible_tabs.remove(&id);
+        state.hidden_since.insert(id, Instant::now());
+        assert!(!state.automatic_suspend_current(id, hidden, &gate, proof), "shown then hidden again");
+        state.hidden_since.insert(id, hidden);
+        gate.borrow_mut().request();
+        assert!(!state.automatic_suspend_current(id, hidden, &gate, proof), "navigation started");
+        gate.borrow_mut().started(2);
+        gate.borrow_mut().completed(2, true);
+        assert!(!state.automatic_suspend_current(id, hidden, &gate, proof), "new document complete");
+        let proof = gate.borrow().proof().unwrap();
+        assert!(state.automatic_suspend_current(id, hidden, &gate, proof));
+        state.tabs.get_mut(&id).unwrap().document_gate = Rc::new(RefCell::new(super::super::document_gate::DocumentGate::default()));
+        assert!(!state.automatic_suspend_current(id, hidden, &gate, proof), "replaced controller");
+        state.tabs.get_mut(&id).unwrap().document_gate = gate.clone();
+        state.closed = true;
+        assert!(!state.automatic_suspend_current(id, hidden, &gate, proof), "engine closed");
+        state.closed = false;
+        state.tabs.remove(&id);
+        assert!(!state.automatic_suspend_current(id, hidden, &gate, proof), "tab closed");
     }
 
     #[test]
