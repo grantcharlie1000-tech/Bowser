@@ -597,3 +597,11 @@
   place-content: normal;
   padding: 0 var(--bw-space-1) 0 var(--bw-space-2);
 }
+
+/* The closed auto-hide host is only an edge sensor, not another icons rail. */
+#app.sidebar.is-rail.is-collapsed {
+  border-color: transparent;
+  background: transparent;
+  box-shadow: none;
+}
+#app.sidebar.is-rail.is-collapsed > * { visibility: hidden; }

@@ -468,8 +468,8 @@ impl FontSize {
 }
 
 pub const MIN_SIDEBAR_WIDTH: u16 = 180;
-/// Logical width of the collapsed (icons-only) vertical sidebar.
-pub const COLLAPSED_SIDEBAR_WIDTH: u16 = 48;
+/// Logical width of the auto-hidden vertical sidebar edge sensor.
+pub const COLLAPSED_SIDEBAR_WIDTH: u16 = 8;
 pub const MAX_SIDEBAR_WIDTH: u16 = 360;
 pub const DEFAULT_SIDEBAR_WIDTH: u16 = 260;
 pub const MIN_SIDE_PANEL_WIDTH: u16 = 280;
@@ -481,7 +481,7 @@ pub struct Settings {
     pub tab_layout: TabLayout,
     /// Sidebar width in logical 96 DPI pixels.
     pub sidebar_width: u16,
-    /// Vertical sidebar collapsed to an icons-only strip. `sidebar_width` is kept so the
+    /// Vertical sidebar auto-hidden to an edge sensor. `sidebar_width` is kept so the
     /// expanded width survives a collapse.
     pub sidebar_collapsed: bool,
     /// Opera-style rail panel width in logical 96 DPI pixels.
@@ -662,7 +662,7 @@ impl Default for Settings {
         Self {
             tab_layout: TabLayout::ToolbarTop,
             sidebar_width: DEFAULT_SIDEBAR_WIDTH,
-            sidebar_collapsed: false,
+            sidebar_collapsed: true,
             side_panel_width: DEFAULT_SIDE_PANEL_WIDTH,
             sleep_enabled: true,
             sleep_after_secs: DEFAULT_SLEEP_AFTER_SECS,
@@ -1673,9 +1673,11 @@ mod tests {
 
     #[test]
     fn sidebar_collapsed_round_trips_and_keeps_the_expanded_width() {
-        assert!(!Settings::default().sidebar_collapsed);
+        assert!(Settings::default().sidebar_collapsed);
         assert!(Settings::parse("sidebar_collapsed=true").sidebar_collapsed);
-        assert!(!Settings::parse("sidebar_collapsed=banana").sidebar_collapsed);
+        assert!(Settings::parse("sidebar_collapsed=banana").sidebar_collapsed);
+        assert!(!Settings::parse("sidebar_collapsed=false").sidebar_collapsed);
+        assert_eq!(Settings::default().effective_sidebar_width(), 8);
         let mut settings = Settings::parse("sidebar_width=300
 ");
         settings.sidebar_collapsed = true;
@@ -2109,7 +2111,7 @@ tabs_new_tab_url=javascript:1
         let pairs: [(Change, Change); 5] = [
             (|s| s.ask_download_location = true, |s| s.tracking_prevention = TrackingLevel::Strict),
             (|s| s.translate_offer = false, |s| s.blocker_level = BlockerLevel::Trackers),
-            (|s| s.sidebar_collapsed = true, |s| s.minimal_url = false),
+            (|s| s.sidebar_collapsed = false, |s| s.minimal_url = false),
             (|s| s.tabs.keep_window = !s.tabs.keep_window, |s| s.theme = Theme::System),
             (|s| s.download_dir = "D:\\Saved".into(), |s| s.address.select_on_activate = !s.address.select_on_activate),
         ];

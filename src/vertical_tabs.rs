@@ -4,8 +4,8 @@ use crate::chrome::layout::{self, Metrics, Rect};
 use crate::settings::{SidePanelPosition, TabLayout};
 
 pub const MIN_WIDTH: i32 = 180;
-/// Width of the collapsed, icons-only sidebar strip.
-pub const COLLAPSED_WIDTH: i32 = 48;
+/// Width of the auto-hidden sidebar edge sensor. Keep in sync with settings.
+pub const COLLAPSED_WIDTH: i32 = crate::settings::COLLAPSED_SIDEBAR_WIDTH as i32;
 /// How long an unpinned rail takes to open or close over the page, in milliseconds.
 pub const FLYOUT_MS: u32 = 220;
 /// Logical pixels of the page that stay visible beside an open flyout.
@@ -60,6 +60,10 @@ pub enum GapTarget {
 
 /// Inset that keeps a slot of `slot_w` by `slot_h` physical pixels from inverting.
 pub fn island_inset(slot_w: i32, slot_h: i32, dpi: u32) -> i32 {
+    // The closed host must reach the edge, with no dead gutter before its hover sensor.
+    if slot_w <= Metrics::new(dpi).px(COLLAPSED_WIDTH) {
+        return 0;
+    }
     let want = Metrics::new(dpi).px(ISLAND_INSET);
     let room = slot_w.max(0).min(slot_h.max(0)) / 4;
     want.min(room).max(0)
@@ -533,7 +537,8 @@ mod tests {
             assert!(island.right <= layout.handle.left, "the island stays clear of the resize handle, dpi={dpi}");
 
             let collapsed = SidebarLayout::compute(900, 700, dpi, COLLAPSED_WIDTH, false);
-            assert_eq!(collapsed.island().width(), m.px(COLLAPSED_WIDTH) - 2 * collapsed.inset, "dpi={dpi}");
+            assert_eq!(collapsed.inset, 0, "edge sensor must have no dead gutter, dpi={dpi}");
+            assert_eq!(collapsed.island().width(), m.px(COLLAPSED_WIDTH), "dpi={dpi}");
             assert!(collapsed.island().width() > 0, "dpi={dpi}");
         }
         let tiny = SidebarLayout::compute(40, 80, 96, COLLAPSED_WIDTH, true);

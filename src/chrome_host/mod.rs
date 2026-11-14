@@ -668,7 +668,7 @@ mod tests {
             assert_ne!(narrow_toolbar.right, wide_toolbar.right, "resize updates toolbar bounds dpi={dpi}");
             assert_ne!(toolbar_css_placement(&narrow, dpi), toolbar_css_placement(&wide, dpi), "resize updates pill state dpi={dpi}");
             assert_eq!(tab_row_bounds(&wide).unwrap().top, wide.tab_row.top);
-            assert_eq!(rail_bounds(&wide).unwrap().top, wide.rail.top);
+            assert!(rail_bounds(&wide).is_none(), "removed apps rail stays absent after resize");
             let sidebar = crate::vertical_tabs::SidebarLayout::compute_in_frame(1600, 900, dpi, 260, true);
             assert_eq!(sidebar_bounds(&sidebar).unwrap().top, sidebar.island().top);
         }
@@ -840,7 +840,8 @@ mod tests {
             let sidebar = crate::chrome::layout::Rect::from(sidebar_bounds(&native_sidebar).expect("sidebar"));
             let toolbar = toolbar_bounds(&layout).expect("toolbar");
             let toolbar = crate::chrome::layout::Rect::from(toolbar);
-            let rail = crate::chrome::layout::Rect::from(rail_bounds(&layout).expect("rail"));
+            assert!(rail_bounds(&layout).is_none(), "removed apps rail has no host");
+            let rail = layout.rail;
             let caption = layout.caption_area;
             let new_tab = layout.new_tab_button;
             assert!(tab_row_bounds(&layout).is_none(), "dpi={dpi}: vertical mode must not expose a horizontal row");
@@ -1013,17 +1014,14 @@ mod tests {
     }
 
     #[test]
-    fn rail_bounds_is_the_full_rail_pill() {
+    fn removed_apps_rail_has_no_host_bounds() {
         let layout = compute_in_frame(1200, 700, 96, 3, 0, false);
-        let bounds = rail_bounds(&layout).expect("wide window has a rail");
-        assert_eq!(bounds.left, layout.rail.left);
-        assert_eq!(bounds.top, layout.rail.top);
-        assert_eq!(bounds.right, layout.rail.right);
-        assert_eq!(bounds.bottom, layout.rail.bottom);
-        assert!(bounds.bottom > bounds.top && bounds.right > bounds.left);
-        let mut empty = layout.clone();
-        empty.rail = Rect::default();
-        assert!(rail_bounds(&empty).is_none());
+        assert!(rail_bounds(&layout).is_none());
+        // Explicit legacy geometry remains supported by the bounds helper.
+        let mut fixture = layout;
+        fixture.rail = Rect::new(8, 8, 44, 692);
+        let bounds = rail_bounds(&fixture).expect("explicit rail fixture");
+        assert_eq!((bounds.left, bounds.top, bounds.right, bounds.bottom), (8, 8, 44, 692));
     }
 
     #[test]
