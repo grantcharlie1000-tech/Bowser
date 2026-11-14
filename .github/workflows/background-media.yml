@@ -1,0 +1,54 @@
+name: Native muted background media probe
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/background-media.yml'
+      - 'src/engine/webview2.rs'
+      - 'src/engine/webview2/background_media_live.rs'
+      - 'src/engine/document_gate.rs'
+      - 'src/efficiency.rs'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  muted-media:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Preserve source bytes
+        run: git config --global core.autocrlf false
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Install official Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal
+          if ($LASTEXITCODE -ne 0) { throw 'Rust installation failed.' }
+          rustc +stable --version
+      - name: Run hidden-host muted playback and positive suspension control
+        timeout-minutes: 12
+        env:
+          BOWSER_MEDIA_PROBE_SOURCE: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          if ((git rev-parse HEAD).Trim() -cne $env:BOWSER_MEDIA_PROBE_SOURCE) { throw 'Probe source identity mismatch.' }
+          cargo +stable test --locked --lib --features html-chrome-default engine::webview2::background_media_live::windows_media_hidden_sweep_sleep_off_and_on -- --exact --ignored --nocapture --test-threads=1 2>&1 | Tee-Object -FilePath "$env:RUNNER_TEMP/bowser-muted-media.log"
+          if ($LASTEXITCODE -ne 0) { throw 'Native muted-media probe failed; no Spotify or App UI acceptance claimed.' }
+          $log = Get-Content "$env:RUNNER_TEMP/bowser-muted-media.log" -Raw
+          foreach ($marker in @('MEDIA_PROBE sleep_enabled=false', 'MEDIA_PROBE sleep_enabled=true', 'MEDIA_PROBE passed_muted_policy_engine', 'test result: ok. 1 passed; 0 failed')) {
+            if (-not $log.Contains($marker)) { throw "Probe did not execute its complete exact test: missing $marker" }
+          }
+      - name: Preserve scoped evidence even on failure
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: muted-media-${{ github.sha }}
+          path: ${{ runner.temp }}/bowser-muted-media.log
+          if-no-files-found: warn
+          retention-days: 14
