@@ -183,6 +183,7 @@ fn dispose(host: Option<ChromeHost>, container: Option<HWND>) {
     if let Some(host) = host { host.close(); }
 }
 
+#[allow(clippy::type_complexity)]
 fn callbacks(owner: HWND, lease: &Lease) -> (Rc<dyn Fn(Command)>, Rc<dyn Fn()>, AccelHandler) {
     let commands = lease.clone();
     let failures = lease.clone();
@@ -621,10 +622,9 @@ pub(crate) fn sync(owner: HWND, app: &AppRef) {
     // --- start page --- an identical snapshot is not posted twice, and then the page is as delivered as it gets
     if matches!(want, Shown::Start { .. })
         && content.as_ref().is_some_and(|c| with_current(owner, &lease, |rt| rt.content.as_deref() == Some(c.as_str())).unwrap_or(false))
+        && !super::start_ui::settled(owner)
     {
-        if !super::start_ui::settled(owner) {
-            super::start_ui::posted(owner, &host);
-        }
+        super::start_ui::posted(owner, &host);
     }
     // --- end start page ---
     if let Some(content) = content

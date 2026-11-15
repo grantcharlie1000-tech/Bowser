@@ -41,7 +41,8 @@ impl Owner {
 
 enum Notice { Command(ChromeCommand), Created(windows::core::Result<ChromeHost>) }
 
-thread_local! { static ACTION_SCOPES: RefCell<Vec<(HWND, Rc<dyn Fn() -> bool>)>> = RefCell::new(Vec::new()); }
+type ActionScopes = RefCell<Vec<(HWND, Rc<dyn Fn() -> bool>)>>;
+thread_local! { static ACTION_SCOPES: ActionScopes = RefCell::new(Vec::new()); }
 pub(super) struct ActionScope(bool);
 impl Drop for ActionScope {
     fn drop(&mut self) { if self.0 { ACTION_SCOPES.with(|scopes| { scopes.borrow_mut().pop(); }); } }
@@ -129,6 +130,7 @@ pub(super) fn accepts_failure(hwnd: HWND, index: usize, token: usize) -> bool {
     !window_closing(hwnd) && with_chrome(hwnd, |s| s.chrome_lifetimes.accepts(index, token)).unwrap_or(false)
 }
 
+#[allow(clippy::type_complexity)]
 pub(super) fn callbacks(hwnd: HWND, index: usize, view: View, _command: fn(HWND, ChromeCommand), failed: u32)
     -> Option<(Lease, Rc<dyn Fn(ChromeCommand)>, AccelHandler, Rc<dyn Fn()>)>
 {
@@ -247,7 +249,7 @@ pub(super) fn input_released(hwnd: HWND, token: usize) {
 
 /// Runs only on the deferred window dispatch, never inside a COM callback.
 pub(super) fn document_command(hwnd: HWND, index: usize, command: ChromeCommand) -> Option<ChromeCommand> {
-    let Some(host) = host(hwnd, index) else { return None; };
+    let host = host(hwnd, index)?;
     let epoch = host.document_epoch();
     match command {
         ChromeCommand::ChromeAction { document, command, .. } => {

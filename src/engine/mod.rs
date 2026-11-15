@@ -545,6 +545,7 @@ pub struct EngineEvents {
     pub process_failed: Option<std::rc::Rc<dyn Fn(ProcessFailure)>>,
     /// Shared browser loss, including environments with no content controller. Defer teardown.
     pub browser_lost: Option<std::rc::Rc<dyn Fn(u32)>>,
+    #[allow(clippy::type_complexity)]
     pub controller_failed: Option<std::rc::Rc<dyn Fn(crate::tabs::TabId, u64, i32)>>,
     /// A blocker stopped a request; includes the current-page count and page host when known.
     pub blocked_changed: Option<BlockedChangedCallback>,

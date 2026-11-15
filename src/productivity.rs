@@ -529,8 +529,14 @@ static HISTORY_CACHE_REVISION: std::sync::atomic::AtomicU64 = std::sync::atomic:
 
 fn advance_history_revision(revision: &std::sync::atomic::AtomicU64) -> u64 {
     use std::sync::atomic::Ordering::Relaxed;
-    revision.fetch_update(Relaxed, Relaxed, |value| Some(value.saturating_add(1)))
-        .unwrap_or_else(|value| value).saturating_add(1)
+    let mut value = revision.load(Relaxed);
+    loop {
+        let next = value.saturating_add(1);
+        match revision.compare_exchange_weak(value, next, Relaxed, Relaxed) {
+            Ok(_) => return next,
+            Err(actual) => value = actual,
+        }
+    }
 }
 
 /// Identifies the exact parsed-history cache entry and queued visits used by a read. Saturation,
@@ -585,9 +591,7 @@ fn history_stamp(path: &Path) -> Option<FileStamp> {
 fn remember_history(path: &Path, entries: &[HistoryEntry]) -> Option<u64> {
     let mut cache = lock_history(&HISTORY_CACHE);
     cache.retain(|cached| cached.path != path);
-    let Some(stamp) = history_stamp(path) else {
-        return None;
-    };
+    let stamp = history_stamp(path)?;
     if cache.len() >= HISTORY_CACHE_FILES {
         cache.remove(0);
     }
