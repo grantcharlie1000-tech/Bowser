@@ -1,8 +1,8 @@
+import { onChromeInbound } from './chrome-handshake';
 import { installInteractionDiagnostic } from './interaction-diagnostic';
 // Toolbar entry point: wires DOM events to the host bridge and host messages to the view.
 import {
   MAX_TEXT,
-  onInbound,
   send,
   sendDownloadToggle,
   sendAddr,
@@ -393,7 +393,7 @@ function startToolbar(root: HTMLElement): void {
     input.setRangeText(msg.suffix, end, end, 'select');
   };
 
-  onInbound((msg) => {
+  onChromeInbound('toolbar', root, (msg) => {
     switch (msg.t) {
       case 'diagnosticInteraction':
         installInteractionDiagnostic(input, (e, n) => { send({ v: 1, t: 'interaction', e, n }); }, () => (Number(composing) << 12) | (Number(pending) << 13) | (Number(list !== null && listSel > 0) << 14) | (Number(list !== null && list.seq === latestSeq) << 15));
@@ -417,6 +417,17 @@ function startToolbar(root: HTMLElement): void {
         if (msg.select && flags.select) input.select();
         showDisplay();
         syncSiteIcon(view);
+        break;
+      case 'nativeText':
+        input.value = msg.text;
+        edited = true;
+        input.setSelectionRange(msg.start, msg.end);
+        showDisplay();
+        syncSiteIcon(view);
+        break;
+      case 'focusNative':
+        input.focus();
+        input.setSelectionRange(msg.start, msg.end);
         break;
       case 'focusOmnibox':
         input.focus();
@@ -475,9 +486,6 @@ function startToolbar(root: HTMLElement): void {
       // --- end split view ---
     }
   });
-
-  // Registered before ready so no state message can be missed.
-  send({ v: 1, t: 'ready' });
 }
 
 /**

@@ -1,6 +1,7 @@
+import { onChromeInbound } from './chrome-handshake';
 // Tab strip view (?view=tabs): keyed reconciliation of the tab list, favicons, groups, pointer and keyboard input.
 // Page-controlled text is written with textContent only; favicons are data: URIs set as img.src.
-import { onInbound, send, sendClosedTabs, sendTabSelection, sendTabStack, sendTool, type TabAction, type TabItem, type TabOptsMsg, type TabsMsg } from './protocol';
+import { send, sendClosedTabs, sendTabSelection, sendTabStack, sendTool, type TabAction, type TabItem, type TabOptsMsg, type TabsMsg } from './protocol';
 import { el, icon, place } from './dom';
 import { applyTheme, DRAG_ATTR } from './view';
 import { setTip } from './tooltip';
@@ -1317,7 +1318,7 @@ export function startTabs(strip: HTMLElement): HTMLElement {
   });
   } // --- end two-level stacks ---
 
-  onInbound((msg) => {
+  onChromeInbound('tabs', strip.parentElement ?? strip, (msg) => {
     switch (msg.t) {
       // --- vertical sidebar (lane S) ---
       case 'layout':
@@ -1385,9 +1386,6 @@ export function startTabs(strip: HTMLElement): HTMLElement {
         routeGhostMessage(msg);
         break;
     }
-  });
-
-  // Registered before ready so no tabs message can be missed.
-  send({ v: 1, t: 'ready' });
+  }, () => { if (frame !== 0) cancelAnimationFrame(frame); flush(); });
   return row2; // --- two-level stacks (T10b) ---
 }

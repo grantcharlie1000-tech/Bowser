@@ -1,3 +1,4 @@
+import { decodeChromeCommand, prepareChromeDom, initializeChrome } from './chrome-harness.mjs';
 // Page translation, the HTML-chrome half: the toolbar `translate` pill in the state
 // message, the `translate` open target, the Translate button (hidden / offered / on, its names and
 // what a click sends), the `translate` glyph, and the translation members of the settings snapshot.
@@ -40,6 +41,7 @@ class Node {
   constructor(tag, text = null) {
     this.tagName = tag; this.className = ''; this.attrs = new Map(); this.childList = []; this.parent = null; this.listeners = {};
     this.classList = new ClassList(this); this.dataset = {}; this.hidden = false; this.disabled = false; this.ownText = text; this.id = '';
+    this.value = ''; this.selectionStart = 0; this.selectionEnd = 0;
     const props = new Map();
     this.style = { setProperty: (k, v) => props.set(k, String(v)), getPropertyValue: (k) => props.get(k) ?? '', removeProperty: (k) => props.delete(k) };
   }
@@ -63,6 +65,8 @@ class Node {
   querySelectorAll(s) { return this.all().filter((n) => n.tagName !== '#text' && n.matches(s)); }
   querySelector(s) { return this.querySelectorAll(s)[0] ?? null; }
   focus() {}
+  select() { this.selectionStart = 0; this.selectionEnd = this.value.length; }
+  setSelectionRange(start, end) { this.selectionStart = start; this.selectionEnd = end; }
   contains(n) { return n === this || this.all().includes(n); }
   getBoundingClientRect() { return { left: 0, top: 0, right: 28, bottom: 28, width: 28, height: 28 }; }
 }
@@ -89,7 +93,7 @@ Object.assign(globalThis, {
   addEventListener() {}, removeEventListener() {},
   getComputedStyle: () => ({}),
   CSS: { escape: (s) => s },
-  chrome: { webview: { postMessage: (wire) => { wires.push(wire); sent.push(JSON.parse(wire)); }, addEventListener: (_t, cb) => listeners.push(cb) } },
+  chrome: { webview: { postMessage: (wire) => { wires.push(wire); sent.push(decodeChromeCommand(wire)); }, addEventListener: (_t, cb) => listeners.push(cb) } },
 });
 globalThis.Element = Node;
 globalThis.HTMLElement = Node;
@@ -102,7 +106,9 @@ const viewMod = await import(bundleSource("export { applyState, applyTranslate, 
 const logic = await import(bundleSource("export * from './settings-page-logic';"));
 const menu = await import(bundleSource("export * from './menu-logic';"));
 // main.ts starts the toolbar on import (no ?view means the toolbar), exactly as the browser does.
+prepareChromeDom(Node);
 await import(bundleSource("import './main';"));
+await initializeChrome(sent, deliver, 'toolbar');
 
 const STATE = { t: 'state', scale: 1, solid: true, dark: true, back: false, forward: false, loading: false, progress: 0, security: 'secure', label: 'Secure', theme: {} };
 const stateMsg = (patch, drop = []) => {
@@ -198,18 +204,18 @@ test('toolbar: the translate and reader buttons do not affect each other', () =>
   assert.equal(view.translate.hidden, false);
 });
 
-test('clicking the toolbar translate button posts exactly {"v":1,"t":"open","a":"translate"}', () => {
+test('clicking the toolbar translate button posts the document-scoped translate action', () => {
   const button = root.querySelector('.tb-translate');
   assert.ok(button, 'main.ts built the toolbar');
   deliver(stateMsg({ translate: 'available' }));
   assert.equal(button.hidden, false);
   wires.length = 0;
   button.click();
-  assert.deepEqual(wires, ['{"v":1,"t":"open","a":"translate"}']);
+  assert.deepEqual(wires.map((wire) => JSON.parse(wire)), [{ v: 1, t: 'chromeAction', view: 'toolbar', doc: window.__bowserChromeDocument, text: '{"v":1,"t":"open","a":"translate"}' }]);
   // The reader button keeps its own target.
   wires.length = 0;
   root.querySelector('.tb-reader').click();
-  assert.deepEqual(wires, ['{"v":1,"t":"open","a":"reader"}']);
+  assert.deepEqual(wires.map((wire) => JSON.parse(wire)), [{ v: 1, t: 'chromeAction', view: 'toolbar', doc: window.__bowserChromeDocument, text: '{"v":1,"t":"open","a":"reader"}' }]);
 });
 
 test('the translate glyph is in the icon family and the menu may use it', () => {

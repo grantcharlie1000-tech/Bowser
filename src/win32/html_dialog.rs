@@ -422,6 +422,17 @@ pub(crate) fn protection_snapshot_json(app: &AppRef) -> Option<String> {
     protocol::snap_json("protection", |out| panels::protection::write(out, &view))
 }
 
+/// Shares the settings page's refresh-local read; standalone dashboards still read afresh.
+pub(crate) fn protection_snapshot_json_with_settings(
+    app: &AppRef,
+    profile: Option<&crate::profile::Profile>,
+    settings: &crate::settings::Settings,
+    readable: bool,
+) -> Option<String> {
+    let view = super::protection::gather_with_settings(app, profile, settings, readable);
+    protocol::snap_json("protection", |out| panels::protection::write(out, &view))
+}
+
 fn handle_privacy(runtime: &Rc<RefCell<Runtime>>, f: PanelFields) {
     let (app, owner) = match runtime.try_borrow() { Ok(state) => (state.app.clone(), state.owner), Err(_) => return };
     if run_privacy_command(&app, owner, &f) { send_current(runtime); }

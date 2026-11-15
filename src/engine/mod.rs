@@ -44,6 +44,29 @@ pub type ContextNotesCallback = std::rc::Rc<dyn Fn(crate::tabs::TabId) -> Vec<(u
 pub type FaviconChangedCallback = std::rc::Rc<dyn Fn(crate::tabs::TabId, Vec<u8>)>;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ProcessFailureKind {
+    BrowserExited,
+    /// This controller's browser exited after another browser attached to the environment.
+    /// Check the controller generation and retire only this tab; the shared engine remains live.
+    ControllerBrowserExited,
+    RendererExited,
+    RendererUnresponsive,
+    FrameRendererExited,
+    GpuExited,
+    UtilityExited,
+    Other(i32),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ProcessFailure {
+    pub tab: crate::tabs::TabId,
+    pub controller_generation: u64,
+    pub kind: ProcessFailureKind,
+    pub reason: Option<i32>,
+    pub exit_code: Option<i32>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TrackingPreventionLevel {
     Balanced,
     Strict,
@@ -106,6 +129,10 @@ impl BrowsingDataRange {
 pub type NativeDocumentQuery = Box<dyn FnOnce() -> Option<url::Url>>;
 
 pub trait EngineAdapter {
+    /// Identity of the current controller request, including creation still in flight.
+    fn controller_generation(&self, _tab: crate::tabs::TabId) -> Option<u64> { None }
+    /// Non-pumping attachment sink, retained separately while the engine is checked out.
+    fn browser_process_observer(&self) -> Option<std::rc::Rc<dyn Fn(u32) -> bool>> { None }
     #[cfg(all(test, feature = "experimental-engine-context-menu"))]
     fn probe_native_context_handles(&self, _tab:crate::tabs::TabId) -> Option<app_context_menu_probe::NativeContextProbeHandles> {None}
     #[cfg(all(test, feature = "experimental-engine-context-menu"))]
@@ -514,8 +541,11 @@ pub struct EngineEvents {
     /// address). Returning true cancels it: the app opened the page in a new tab instead ("Keep pinned
     /// tabs on their site").
     pub link_navigation: Option<LinkNavigationCallback>,
-    /// A tab's render process exited or crashed; the browser itself and other tabs are fine.
-    pub render_process_failed: Option<std::rc::Rc<dyn Fn(crate::tabs::TabId)>>,
+    /// Notification only: consumers must defer UI and teardown until the callback returns.
+    pub process_failed: Option<std::rc::Rc<dyn Fn(ProcessFailure)>>,
+    /// Shared browser loss, including environments with no content controller. Defer teardown.
+    pub browser_lost: Option<std::rc::Rc<dyn Fn(u32)>>,
+    pub controller_failed: Option<std::rc::Rc<dyn Fn(crate::tabs::TabId, u64, i32)>>,
     /// A blocker stopped a request; includes the current-page count and page host when known.
     pub blocked_changed: Option<BlockedChangedCallback>,
     /// A top-level navigation in this tab finished with an error. The flag is true for certificate

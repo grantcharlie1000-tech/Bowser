@@ -1,0 +1,27 @@
+{
+  "version": "bowser-2026-11-15-v1",
+  "baseline_commit": "440575e0870fd35c257d4195ec990d3c02b837aa",
+  "source_workloads_sha256": "6b6f9fa41b17fc75a60810ae9223812f6392c32e5e993b62af677c52dcc9365a",
+  "profile_states": ["fresh_profile", "reused_profile_processes_exited", "warm_browser"],
+  "areas": {
+    "startup": {"trigger": "external_process_launch", "variants": ["fresh_profile", "reused_profile_processes_exited"]},
+    "new_tab": {"trigger": "physical_ctrl_t_or_button", "variants": ["first_use", "reused_host", "configured_web_page"]},
+    "suspended_wake": {"trigger": "selection_input", "variants": ["retained_suspension_confirmed"]},
+    "discarded_wake": {"trigger": "selection_input", "variants": ["new_controller_and_document"]},
+    "page_load": {"trigger": "navigation_action", "variants": ["first_visit", "cached_visit", "redirect", "history_navigation"]},
+    "search": {"trigger": "final_input", "variants": ["local_suggestions", "remote_suggestions", "enter_to_usable_results", "full_new_tab_to_results"], "triggers": {"enter_to_usable_results": "physical_enter", "full_new_tab_to_results": "physical_ctrl_t_or_button"}},
+    "settings": {"trigger": "open_action", "variants": ["open_section", "filter", "reversible_setting_persisted"], "triggers": {"filter": "filter_input", "reversible_setting_persisted": "setting_input"}},
+    "conversation_typing": {"trigger": "input_events", "variants": ["after_idle", "after_wake", "while_chunks_arrive"], "sites": ["synthetic", "chatgpt.com"]},
+    "conversation_scrolling": {"trigger": "wheel_or_gesture", "variants": ["presented_movement", "fixed_transcript_target", "stream_anchoring"], "sites": ["synthetic", "chatgpt.com"]},
+    "open_conversation": {"trigger": "select_from_home", "variants": ["transcript_and_composer"], "sites": ["synthetic", "chatgpt.com"]},
+    "switch_conversation": {"trigger": "select_other_conversation", "variants": ["transcript_and_preserved_drafts"], "sites": ["synthetic", "chatgpt.com"]},
+    "reply_streaming": {"trigger": "controlled_chunk_arrival", "variants": ["chunk_to_visible", "final_text_and_completion"], "sites": ["synthetic", "chatgpt.com"]},
+    "media": {"trigger": "play_action", "variants": ["video_first_frame", "audio_first_sound", "video_seek", "audio_seek"], "triggers": {"video_seek": "seek_action", "audio_seek": "seek_action"}},
+    "download": {"trigger": "actual_download_action", "variants": ["initiation", "durable_completion", "redirect_initiation", "redirect_completion", "collision_initiation", "collision_completion", "resume_initiation", "resume_completion"], "triggers": {"resume_initiation": "resume_action", "resume_completion": "resume_action"}}
+  },
+  "reviews": {
+    "parity": ["features", "correctness", "security", "privacy", "visual", "accessibility", "durability", "background_work", "suspended_same_document", "discarded_new_document_and_protections", "download_hash_size_cancel_resume", "conversation_drafts_characters_caret_anchoring", "stability_browser_process_loss", "stability_renderer_exit_unresponsive", "stability_gpu_utility_recovery", "stability_allocation_failure", "stability_layered_upload_failure", "stability_chrome_navigation_readiness_failure", "stability_close_late_completion", "council_final_source_and_evidence"],
+    "resources": ["ram", "cpu", "gpu", "page_faults", "network", "energy"],
+    "diagnostics": ["limiter_and_work_accounting", "server_renderer_extension_host_costs", "stream_delivery_cadence_and_stalls", "media_rebuffer_drops_steady_state_stalls", "download_transfer_throughput_and_disk_completion"]
+  }
+}

@@ -1,3 +1,4 @@
+import { decodeChromeCommand, prepareChromeDom, initializeChrome } from './chrome-harness.mjs';
 // Toolbars and feeds (thread T13): what the address bar's list, the tab bar's list and the panel bar's list do to
 // the real toolbar and tab strip (src/main.ts, view.ts, tabs.ts), driven through the same inbound messages Rust
 // sends, against a small fake DOM (no browser). The row that edits them is tested in test/settings-page.mjs; the
@@ -93,7 +94,7 @@ Object.assign(globalThis, {
   getComputedStyle: () => ({}),
   CSS: { escape: (s) => s },
   InputEvent: class InputEvent {},
-  chrome: { webview: { postMessage: (wire) => sent.push(JSON.parse(wire)), addEventListener: (_t, cb) => listeners.push(cb) } },
+  chrome: { webview: { postMessage: (wire) => sent.push(decodeChromeCommand(wire)), addEventListener: (_t, cb) => listeners.push(cb) } },
 });
 globalThis.Element = Node;
 globalThis.HTMLElement = Node;
@@ -102,7 +103,9 @@ globalThis.HTMLInputElement = Node;
 const deliver = (msg) => { for (const cb of listeners.slice()) cb({ data: JSON.stringify(msg) }); };
 
 // main.ts starts the toolbar on import (no ?view means the toolbar), exactly as the browser does.
+prepareChromeDom(Node);
 await import(bundleSource("import './main';"));
+await initializeChrome(sent, deliver, 'toolbar');
 
 const STATE = { t: 'state', scale: 1, solid: true, dark: false, back: true, forward: true, loading: false, progress: 0, security: 'secure', label: 'Secure', theme: {} };
 const bar = (items, extra = {}) => ({ ...STATE, items, tools: [], extra: 0, feeds: 0, ...extra });

@@ -357,6 +357,8 @@ class Node {
   get textContent() { return this.ownText ?? this.children.map((c) => c.textContent).join(''); }
   set textContent(v) { this.children = []; this.ownText = null; if (v !== '') this.append(new Node('#text', String(v))); }
   get childElementCount() { return this.children.filter((c) => c.tagName !== '#text').length; }
+  get childNodes() { return this.children; }
+  get nodeType() { return this.tagName === '#text' ? 3 : 1; }
   get lastChild() { return this.children[this.children.length - 1] ?? null; }
   get lastElementChild() { return [...this.children].reverse().find((c) => c.tagName !== '#text') ?? null; }
   setAttribute(k, v) { this.attrs.set(k, String(v)); if (k === 'id') this.id = String(v); }
@@ -372,7 +374,14 @@ class Node {
   removeEventListener() {}
   dispatch(type, event = {}) { for (const cb of this.listeners[type] ?? []) cb({ target: this, preventDefault() {}, key: '', ...event }); }
   click() { if (!this.disabled) this.dispatch('click'); }
-  detach(node) { if (node.parent) node.parent.children = node.parent.children.filter((c) => c !== node); node.parent = this; }
+  detach(node) {
+    if (node.parent) {
+      const siblings = node.parent.children;
+      const index = siblings.indexOf(node);
+      if (index >= 0) siblings.splice(index, 1);
+    }
+    node.parent = this;
+  }
   append(...nodes) { for (const n of nodes) { const node = typeof n === 'string' ? new Node('#text', n) : n; this.ownText = null; this.detach(node); this.children.push(node); } }
   prepend(node) { this.detach(node); this.children.unshift(node); }
   before(node) { const p = this.parent; p.detach(node); p.children.splice(p.children.indexOf(this), 0, node); }
@@ -2336,4 +2345,165 @@ test('settings rows render a single line of text', () => {
   assert.match(css, /\.sp-text \{[^}]*flex-direction: row;/);
   assert.match(css, /\.sp-h \{[^}]*white-space: nowrap;/);
   assert.doesNotMatch(css, /\.sp-row:not\(\.is-profile[\s\S]{0,500}flex-direction: column/);
+});
+
+test('DOM fixture keeps childNodes live during reparenting', () => {
+  const button = new Node('button');
+  const first = new Node('#text', 'Allow');
+  const second = new Node('#text', ' once');
+  button.append(first, second);
+  const children = button.childNodes;
+  const label = new Node('span');
+  label.append(first);
+  assert.equal(children.length, 1);
+  assert.equal(children[0], second);
+  assert.equal(first.parent, label);
+});
+
+test('search DOM: overlapping highlights, case, Unicode and literal markup survive snapshots and clearing', () => {
+  const label = rowNode('searchDefault').querySelector('.sp-label');
+  const marks = (node) => node.querySelectorAll('mark').map((mark) => mark.textContent);
+  searchFor('sea ear');
+  assert.equal(label.textContent, 'Search engine');
+  assert.deepEqual(marks(label), ['Sear']);
+  searchFor('SEARCH search');
+  assert.deepEqual(marks(label), ['Search']);
+  searchFor('search');
+  assert.deepEqual(marks(label), ['Search']);
+  searchFor('engine');
+  assert.deepEqual(marks(label), ['engine']);
+
+  deliver({ ...fixture.snap, d: { ...fixture.snap.d, profile: 'Élan 😀 <b> & İ' } });
+  const profile = rowNode('profile').querySelector('.sp-label');
+  for (const [query, expected] of [['é', ['É']], ['e\u0301', []], ['😀', ['😀']], ['<b>', ['<b>']], ['İ', ['İ']]]) {
+    searchFor(query);
+    assert.equal(profile.textContent, 'Élan 😀 <b> & İ');
+    assert.deepEqual(marks(profile), expected, query);
+    searchFor(query);
+    assert.deepEqual(marks(profile), expected, `repeated ${query}`);
+    assert.equal(profile.querySelector('b'), null, 'markup is text, including inside a mark');
+  }
+  searchFor('é');
+  deliver({ ...fixture.snap, d: { ...fixture.snap.d, profile: 'Café' } });
+  assert.equal(profile.textContent, 'Café');
+  assert.deepEqual(marks(profile), ['é'], 'a changed snapshot is highlighted under the same query');
+  searchFor('');
+  assert.deepEqual(marks(profile), []);
+  assert.equal(profile.textContent, 'Café');
+  deliver(fixture.snap);
+});
+
+test('search DOM: immediate composition input, caret, counts, keyboard and disclosure enforcement', () => {
+  const input = app.querySelector('.sp-search-input');
+  const count = app.querySelector('[id="sp-count"]');
+  const empty = app.querySelector('.sp-empty');
+  input.focus();
+  input.value = 'duckduckgo';
+  input.selectionStart = 3;
+  input.selectionEnd = 7;
+  input.dispatch('input', { isComposing: true });
+  assert.equal(rowNode('searchDefault').hidden, false);
+  assert.equal(count.textContent, '1 setting found');
+  assert.equal(empty.hidden, true);
+  assert.equal(document.activeElement, input);
+  assert.deepEqual([input.selectionStart, input.selectionEnd, input.value], [3, 7, 'duckduckgo']);
+  searchFor('tracking prevention');
+  sent.length = 0;
+  let prevented = false;
+  input.dispatch('keydown', { key: 'Enter', preventDefault: () => { prevented = true; } });
+  assert.equal(prevented, true);
+  assert.ok(rowNode('tracking').contains(document.activeElement));
+  assert.deepEqual(sent, [{ v: 1, t: 'set', a: 'section', text: 'privacy' }]);
+
+  searchFor('<img>');
+  assert.equal(count.textContent, 'No settings match “<img>”');
+  assert.equal(empty.hidden, false);
+  assert.equal(empty.querySelector('p').textContent, count.textContent);
+  assert.equal(empty.querySelector('img'), null);
+  assert.equal(app.querySelector('.sp').classList.contains('is-nomatch'), true);
+  input.focus();
+  input.dispatch('keydown', { key: 'Escape' });
+  assert.equal(input.value, '');
+  assert.equal(count.textContent, '');
+  assert.equal(empty.hidden, true);
+  assert.equal(document.activeElement, input);
+
+  const more = moreOf('tabs');
+  const button = more.querySelector('.sp-more-btn');
+  searchFor('tab audio');
+  button.click();
+  assert.equal(button.getAttribute('aria-expanded'), 'false');
+  searchFor('tab audio');
+  assert.equal(button.getAttribute('aria-expanded'), 'true', 'the same query still enforces the disclosure');
+  app.querySelector('.sp-search-clear').click();
+  assert.equal(button.getAttribute('aria-expanded'), 'false');
+  assert.equal(document.activeElement, input);
+});
+
+test('search DOM: Simple/All round trips restore group visibility and accessible headings', () => {
+  searchFor('');
+  const groups = app.querySelectorAll('.sp-group');
+  const groupState = () => groups.map((group) => [group.hidden, group.querySelector('.sp-group-h')?.hidden,
+    group.querySelector('.sp-card')?.getAttribute('aria-labelledby')]);
+  const before = groupState();
+  const view = app.querySelector('.sp-view').querySelectorAll('[role="radio"]');
+  view[0].click();
+  assert.ok(app.querySelector('.sp-simple').contains(rowNode('searchDefault')));
+  searchFor('duckduckgo');
+  assert.equal(app.querySelector('.sp-simple').hidden, true);
+  assert.ok(areaNode('profile').contains(rowNode('searchDefault')));
+  let group = rowNode('searchDefault').parent;
+  while (!group.classList.contains('sp-group')) group = group.parent;
+  assert.equal(group.hidden, false);
+  assert.equal(group.querySelector('.sp-group-h').hidden, true, 'a single visible row needs no group heading');
+  searchFor('');
+  assert.equal(app.querySelector('.sp-simple').hidden, false);
+  view[1].click();
+  assert.deepEqual(groupState(), before);
+});
+
+// Count calls at the DOM boundary while the real input handler runs. No clock or renderer proxy.
+function searchDomWork(action) {
+  const work = { textWrites: 0, replacements: 0, hiddenWrites: 0, attributeWrites: 0, cardReads: 0 };
+  const restore = [];
+  const text = Object.getOwnPropertyDescriptor(Node.prototype, 'textContent');
+  const nodes = app.all();
+  for (const node of nodes) {
+    const hidden = Object.getOwnPropertyDescriptor(node, 'hidden');
+    let value = node.hidden;
+    Object.defineProperty(node, 'hidden', { configurable: true, get: () => value, set: (next) => { work.hiddenWrites++; value = next; } });
+    Object.defineProperty(node, 'textContent', { configurable: true, get() { return text.get.call(this); }, set(next) { work.textWrites++; text.set.call(this, next); } });
+    for (const name of ['replaceChildren', 'setAttribute', 'removeAttribute']) {
+      const original = node[name];
+      node[name] = function (...args) { work[name === 'replaceChildren' ? 'replacements' : 'attributeWrites']++; return original.apply(this, args); };
+      restore.push(() => { delete node[name]; });
+    }
+    restore.push(() => { Object.defineProperty(node, 'hidden', { ...hidden, value }); delete node.textContent; });
+  }
+  const cards = nodes.filter((node) => node.classList.contains('sp-group')).flatMap((group) => group.children.filter((child) => child.classList.contains('sp-card')));
+  for (const card of cards) {
+    const children = card.children;
+    Object.defineProperty(card, 'children', { configurable: true, get: () => { work.cardReads++; return children; } });
+    restore.push(() => Object.defineProperty(card, 'children', { configurable: true, enumerable: true, writable: true, value: children }));
+  }
+  try { action(); } finally { for (const undo of restore.reverse()) undo(); }
+  return { ...work, cards: cards.length };
+}
+
+test('search DOM work: identical highlights avoid replacements and groups are read once per input', (t) => {
+  searchFor('search');
+  const input = app.querySelector('.sp-search-input');
+  const measure = (query) => searchDomWork(() => { input.value = query; input.dispatch('input'); });
+  const repeat = measure('search');
+  const equivalent = measure(' SEARCH search ');
+  const changed = measure('engine');
+  t.diagnostic(JSON.stringify({ repeat, equivalent, changed }));
+  assert.equal(repeat.replacements, 0, 'unchanged highlights keep their existing DOM');
+  assert.equal(equivalent.replacements, 0, 'equivalent ranges keep their existing DOM');
+  assert.ok(changed.replacements > 0, 'changed highlights really do write to the DOM');
+  for (const work of [repeat, equivalent, changed]) assert.ok(work.cardReads <= work.cards, JSON.stringify(work));
+  assert.equal(repeat.textWrites, 0, 'unchanged counts and labels are not assigned again');
+  // Simple/All sync still sets simple, navigation and view-control state; those writes remain in scope of this counter.
+  assert.ok(repeat.hiddenWrites <= 2, JSON.stringify(repeat));
+  searchFor('');
 });

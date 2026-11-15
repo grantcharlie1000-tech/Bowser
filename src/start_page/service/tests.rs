@@ -4,6 +4,124 @@
 use super::*;
 use crate::start_page::{GroupReopen, TitleMode};
 
+#[test]
+fn top_site_freshness_includes_visits_queued_for_the_history_writer() {
+    let paths = temp("pending-visit");
+    let settings = StartSettings { widgets: true, ..StartSettings::default() };
+    let built = page_with(Some(&paths), false, &settings, None, Ack::None, |_| None);
+    assert!(built.inputs_current(Some(&paths), true));
+    productivity::add_history_entry_at(&paths.history, 100, "https://pending.example/", "Pending visit").unwrap();
+    assert!(!built.inputs_current(Some(&paths), true), "the existing page's widget input changed");
+    assert!(json(&paths, &settings, None).contains("Pending visit"));
+    productivity::flush_pending_history();
+    let _ = fs::remove_dir_all(&paths.dir);
+}
+
+#[test]
+fn privacy_counts_are_refreshed_after_the_cached_day_ends() {
+    let paths = temp("privacy-day");
+    let mut built = page_with(Some(&paths), false, &StartSettings { widgets: true, ..StartSettings::default() }, None, Ack::None, |_| None);
+    assert!(built.inputs_current(Some(&paths), true));
+    built.privacy_day = Some("2000-01-01".into());
+    assert!(!built.inputs_current(Some(&paths), true));
+    let _ = fs::remove_dir_all(&paths.dir);
+}
+
+#[test]
+fn top_site_revisits_refresh_titles_and_ranking_without_changing_the_entry_count() {
+    let paths = temp("dependency-revisit");
+    let settings = StartSettings { widgets: true, ..StartSettings::default() };
+    fs::write(&paths.history, "1\thttps://a.example/\tBefore\n2\thttps://b.example/\tBee\n").unwrap();
+    let built = page_with(Some(&paths), false, &settings, None, Ack::None, |_| None);
+    assert!(built.inputs_current(Some(&paths), true));
+    productivity::add_history_entry_at(&paths.history, 3, "https://a.example/", "After").unwrap();
+    assert!(!built.inputs_current(Some(&paths), true));
+    let fresh = page_with(Some(&paths), false, &settings, None, Ack::None, |_| None);
+    assert_eq!(fresh.top.as_ref().unwrap().iter().map(|site| site.title.as_str()).collect::<Vec<_>>(), ["After", "Bee"]);
+    assert!(fresh.json.contains("After"));
+    assert!(!fresh.json.contains("Before"));
+    productivity::flush_pending_history();
+    assert!(fresh.inputs_current(Some(&paths), true), "a flush with the same rows does not change the page");
+    let _ = fs::remove_dir_all(&paths.dir);
+}
+
+#[test]
+fn history_deletions_ranges_hosts_and_clear_refresh_the_visible_top_sites() {
+    let paths = temp("dependency-removals");
+    let settings = StartSettings { widgets: true, ..StartSettings::default() };
+    fs::write(&paths.history, "1\thttps://a.example/old\tOld\n2\thttps://a.example/new\tNew\n3\thttps://b.example/\tBee\n4\thttps://c.example/\tSee\n").unwrap();
+    let build = || page_with(Some(&paths), false, &settings, None, Ack::None, |_| None);
+    let before = build();
+    assert!(productivity::delete_history_entry(&paths.history, "https://c.example/").unwrap());
+    assert!(!before.inputs_current(Some(&paths), true));
+    let before = build();
+    assert!(!before.json.contains("See"));
+    assert_eq!(crate::history_retention::prune(&paths.history, crate::settings::HistoryRetention::Day, 86_402).unwrap(), 1);
+    assert!(!before.inputs_current(Some(&paths), true));
+    let before = build();
+    assert_eq!(productivity::delete_history_for_host(&paths.history, "a.example").unwrap(), 1);
+    assert!(!before.inputs_current(Some(&paths), true));
+    let before = build();
+    assert_eq!(before.top.as_ref().unwrap().iter().map(|site| site.host.as_str()).collect::<Vec<_>>(), ["b.example"]);
+    productivity::add_history_entry_at(&paths.history, 5, "https://queued.example/", "Queued").unwrap();
+    productivity::clear_history(&paths.history).unwrap();
+    assert!(!before.inputs_current(Some(&paths), true));
+    let after = build();
+    assert_eq!(after.top, Some(Vec::new()));
+    productivity::flush_pending_history();
+    assert!(productivity::read_history(&paths.history).is_empty(), "a cleared queued visit never returns");
+    let _ = fs::remove_dir_all(&paths.dir);
+}
+
+#[test]
+fn missing_unreadable_and_repaired_history_keep_the_existing_retry_policy() {
+    let paths = temp("dependency-repair");
+    let settings = StartSettings { widgets: true, ..StartSettings::default() };
+    let build = || page_with(Some(&paths), false, &settings, None, Ack::None, |_| None);
+    let empty = build();
+    assert_eq!(empty.top, Some(Vec::new()));
+    assert!(empty.inputs_current(Some(&paths), true));
+    fs::create_dir(&paths.history).unwrap();
+    assert!(!empty.inputs_current(Some(&paths), true));
+    assert!(empty.inputs_current(Some(&paths), false), "an already visible page retains its error fallback");
+    let unreadable = build();
+    assert!(!unreadable.inputs_current(Some(&paths), true));
+    fs::remove_dir(&paths.history).unwrap();
+    fs::write(&paths.history, "1\thttps://repaired.example/\tRepaired\n").unwrap();
+    assert!(!unreadable.inputs_current(Some(&paths), true));
+    let repaired = build();
+    assert!(repaired.json.contains("Repaired"));
+    assert!(repaired.inputs_current(Some(&paths), true));
+    fs::remove_file(&paths.history).unwrap();
+    assert!(!repaired.inputs_current(Some(&paths), true));
+    assert_eq!(build().top, Some(Vec::new()));
+    let _ = fs::remove_dir_all(&paths.dir);
+}
+
+#[test]
+fn another_profile_and_disabled_widgets_do_not_change_the_pages_output() {
+    let paths = temp("dependency-profile");
+    let other = temp("dependency-other-profile");
+    let settings = StartSettings { widgets: true, ..StartSettings::default() };
+    fs::write(&paths.history, "1\thttps://own.example/\tOwn profile\n").unwrap();
+    let built = page_with(Some(&paths), false, &settings, None, Ack::None, |_| None);
+    productivity::add_history_entry_at(&other.history, 2, "https://other.example/", "Other profile").unwrap();
+    assert!(built.inputs_current(Some(&paths), true));
+    assert_eq!(built.json, json(&paths, &settings, None));
+    assert!(!built.inputs_current(Some(&other), true));
+    let disabled = page_with(Some(&paths), false, &StartSettings::default(), None, Ack::None, |_| None);
+    let guest = page_with(Some(&paths), true, &settings, None, Ack::None, |_| None);
+    assert!(disabled.top.is_none());
+    assert!(guest.top.is_none());
+    fs::remove_file(&paths.history).unwrap();
+    fs::create_dir(&paths.history).unwrap();
+    assert!(disabled.inputs_current(Some(&paths), true));
+    assert!(guest.inputs_current(Some(&paths), true));
+    productivity::flush_pending_history();
+    let _ = fs::remove_dir_all(&paths.dir);
+    let _ = fs::remove_dir_all(&other.dir);
+}
+
 fn temp(name: &str) -> Paths {
     let dir = std::env::temp_dir().join(format!("bowser-start-svc-{name}-{}", std::process::id()));
     let _ = fs::remove_dir_all(&dir);

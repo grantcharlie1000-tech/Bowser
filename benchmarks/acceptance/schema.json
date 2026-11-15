@@ -1,0 +1,182 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Bowser supplied acceptance evidence v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "synthetic", "plan", "plan_commitment", "builds", "attempt_ledger", "attempts"],
+  "properties": {
+    "schema_version": {"type": "integer", "enum": [1]},
+    "synthetic": {"type": "boolean"},
+    "plan": {"$ref": "#/$defs/plan"},
+    "plan_commitment": {"$ref": "#/$defs/commitment"},
+    "builds": {
+      "type": "object", "additionalProperties": false, "required": ["baseline", "candidate"],
+      "properties": {"baseline": {"$ref": "#/$defs/build"}, "candidate": {"$ref": "#/$defs/build"}}
+    },
+    "attempt_ledger": {"$ref": "#/$defs/ledger"},
+    "attempts": {"type": "array", "items": {"$ref": "#/$defs/attempt"}},
+    "reviews": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "parity": {"$ref": "#/$defs/reviews"},
+        "resources": {"$ref": "#/$defs/reviews"},
+        "diagnostics": {"$ref": "#/$defs/reviews"}
+      }
+    }
+  },
+  "$defs": {
+    "text": {"type": "string", "minLength": 1},
+    "sha": {"type": "string", "pattern": "[a-f0-9]{64}"},
+    "commit": {"type": "string", "pattern": "[a-f0-9]{40}"},
+    "nonce": {"type": "string", "minLength": 8},
+    "utc": {"type": "string", "pattern": ".*(Z|\\+00:00)"},
+    "number": {"type": "number", "minimum": 0},
+    "arm": {"type": "string", "enum": ["baseline", "candidate"]},
+    "texts": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"$ref": "#/$defs/text"}},
+    "plan": {
+      "type": "object", "additionalProperties": false,
+      "required": ["catalog_version", "declared_at", "purpose", "decision_rule", "conditions", "protocol_reference"],
+      "properties": {
+        "catalog_version": {"$ref": "#/$defs/text"},
+        "declared_at": {"$ref": "#/$defs/utc"},
+        "purpose": {"type": "string", "enum": ["exploratory", "acceptance"]},
+        "decision_rule": {"type": "string", "enum": ["median_ratio", "upper_95_bound"]},
+        "conditions": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/condition"}},
+        "protocol_reference": {"$ref": "#/$defs/text"}
+      }
+    },
+    "commitment": {
+      "type": "object", "additionalProperties": false, "required": ["sha256", "reference", "reviewer", "recorded_at"],
+      "properties": {
+        "sha256": {"$ref": "#/$defs/sha"}, "reference": {"$ref": "#/$defs/text"},
+        "reviewer": {"$ref": "#/$defs/text"}, "recorded_at": {"$ref": "#/$defs/utc"}
+      }
+    },
+    "condition": {
+      "type": "object", "additionalProperties": false, "required": ["id", "workload", "pairs", "first_arm", "matching"],
+      "properties": {
+        "id": {"$ref": "#/$defs/text"}, "workload": {"$ref": "#/$defs/text"},
+        "pairs": {"type": "integer", "minimum": 1}, "first_arm": {"$ref": "#/$defs/arm"},
+        "matching": {"$ref": "#/$defs/matching"}
+      }
+    },
+    "matching": {
+      "type": "object", "additionalProperties": false,
+      "required": ["runtime", "machine", "os", "fixture_sha256", "profile_seed_sha256", "profile_state", "os_cache", "browser_cache", "extensions", "protections", "power", "dpi", "viewport", "window_state", "load_policy", "seed", "ordinary_release", "isolation"],
+      "properties": {
+        "runtime": {"$ref": "#/$defs/text"}, "machine": {"$ref": "#/$defs/text"},
+        "os": {"$ref": "#/$defs/text"}, "fixture_sha256": {"$ref": "#/$defs/sha"},
+        "profile_seed_sha256": {"$ref": "#/$defs/sha"},
+        "profile_state": {"type": "string", "enum": ["fresh_profile", "reused_profile_processes_exited", "warm_browser"]},
+        "os_cache": {"type": "string", "enum": ["unknown", "cold_independently_verified", "warm_independently_verified"]},
+        "browser_cache": {"$ref": "#/$defs/text"}, "extensions": {"$ref": "#/$defs/text"},
+        "protections": {"$ref": "#/$defs/text"}, "power": {"$ref": "#/$defs/text"},
+        "dpi": {"$ref": "#/$defs/text"}, "viewport": {"$ref": "#/$defs/text"},
+        "window_state": {"$ref": "#/$defs/text"}, "load_policy": {"$ref": "#/$defs/text"},
+        "seed": {"$ref": "#/$defs/text"}, "ordinary_release": {"type": "boolean", "enum": [true]},
+        "isolation": {"type": "string", "enum": ["isolated_app_data"]}
+      }
+    },
+    "build": {
+      "type": "object", "additionalProperties": false,
+      "required": ["source_commit", "source_tree_sha256", "executable_sha256", "assets_sha256", "lockfile_sha256", "features", "flags", "mode", "runtime", "instrumentation", "toolchain", "manifest_reference"],
+      "properties": {
+        "source_commit": {"$ref": "#/$defs/commit"}, "source_tree_sha256": {"$ref": "#/$defs/sha"},
+        "executable_sha256": {"$ref": "#/$defs/sha"}, "assets_sha256": {"$ref": "#/$defs/sha"},
+        "lockfile_sha256": {"$ref": "#/$defs/sha"}, "features": {"$ref": "#/$defs/texts"},
+        "flags": {"$ref": "#/$defs/text"}, "mode": {"type": "string", "enum": ["release_html_chrome"]},
+        "runtime": {"$ref": "#/$defs/text"}, "instrumentation": {"$ref": "#/$defs/text"},
+        "toolchain": {"$ref": "#/$defs/text"}, "manifest_reference": {"$ref": "#/$defs/text"}
+      }
+    },
+    "ledger": {
+      "type": "object", "additionalProperties": false, "required": ["reference", "sha256", "reviewer", "complete", "attempt_count"],
+      "properties": {
+        "reference": {"$ref": "#/$defs/text"}, "sha256": {"$ref": "#/$defs/sha"},
+        "reviewer": {"$ref": "#/$defs/text"}, "complete": {"type": "boolean"},
+        "attempt_count": {"type": "integer", "minimum": 0}
+      }
+    },
+    "identity": {
+      "type": "object", "additionalProperties": false,
+      "required": ["executable_sha256", "process_creation_identity", "window", "controller", "document", "task_nonce"],
+      "properties": {
+        "executable_sha256": {"$ref": "#/$defs/sha"}, "process_creation_identity": {"$ref": "#/$defs/text"},
+        "window": {"$ref": "#/$defs/text"}, "controller": {"$ref": "#/$defs/text"},
+        "document": {"$ref": "#/$defs/text"}, "task_nonce": {"$ref": "#/$defs/nonce"}
+      }
+    },
+    "timing": {
+      "anyOf": [
+        {"type": "null"},
+        {"type": "object", "additionalProperties": false,
+         "required": ["unit", "clock_id", "start", "end", "start_event", "end_event"],
+         "properties": {
+           "unit": {"type": "string", "enum": ["ms"]}, "clock_id": {"$ref": "#/$defs/text"},
+           "start": {"$ref": "#/$defs/number"}, "end": {"$ref": "#/$defs/number"},
+           "start_event": {"$ref": "#/$defs/text"},
+           "end_event": {"type": "string", "enum": ["presented_and_usable"]}
+         }}
+      ]
+    },
+    "evidence": {
+      "type": "object", "additionalProperties": false,
+      "required": ["nonce", "kind", "reference", "sha256", "identity", "clock_id", "observed_ms"],
+      "properties": {
+        "nonce": {"$ref": "#/$defs/nonce"},
+        "kind": {"type": "string", "enum": ["task_start", "native_presentation", "native_interaction", "work", "proxy"]},
+        "reference": {"$ref": "#/$defs/text"}, "sha256": {"$ref": "#/$defs/sha"},
+        "identity": {"$ref": "#/$defs/identity"}, "clock_id": {"$ref": "#/$defs/text"},
+        "observed_ms": {"$ref": "#/$defs/number"}
+      }
+    },
+    "parent_review": {
+      "type": "object", "additionalProperties": false, "required": ["state", "reviewer", "reference", "checks"],
+      "properties": {
+        "state": {"type": "string", "enum": ["pass", "fail", "outstanding"]},
+        "reviewer": {"$ref": "#/$defs/text"}, "reference": {"$ref": "#/$defs/text"},
+        "checks": {"$ref": "#/$defs/texts"}
+      }
+    },
+    "load": {
+      "type": "object", "additionalProperties": false,
+      "required": ["policy_pass", "competing_owned_work", "cpu_load", "available_ram_bytes", "reference"],
+      "properties": {
+        "policy_pass": {"type": "boolean"}, "competing_owned_work": {"type": "boolean"},
+        "cpu_load": {"$ref": "#/$defs/number"}, "available_ram_bytes": {"$ref": "#/$defs/number"},
+        "reference": {"$ref": "#/$defs/text"}
+      }
+    },
+    "attempt": {
+      "type": "object", "additionalProperties": false,
+      "required": ["sequence", "condition", "pair", "arm", "acquired_at", "action_nonce", "identity", "matching", "load", "status", "reason", "timing", "evidence", "parent_review"],
+      "properties": {
+        "sequence": {"type": "integer", "minimum": 1}, "condition": {"$ref": "#/$defs/text"},
+        "pair": {"type": "integer", "minimum": 1}, "arm": {"$ref": "#/$defs/arm"},
+        "acquired_at": {"$ref": "#/$defs/utc"}, "action_nonce": {"$ref": "#/$defs/nonce"},
+        "identity": {"$ref": "#/$defs/identity"}, "matching": {"$ref": "#/$defs/matching"},
+        "load": {"$ref": "#/$defs/load"},
+        "status": {"type": "string", "enum": ["success", "failure", "timeout", "cancelled"]},
+        "reason": {"type": "string"}, "timing": {"$ref": "#/$defs/timing"},
+        "evidence": {"type": "array", "items": {"$ref": "#/$defs/evidence"}},
+        "parent_review": {"$ref": "#/$defs/parent_review"}
+      }
+    },
+    "reviews": {"type": "object", "additionalProperties": {"$ref": "#/$defs/review"}},
+    "review": {
+      "type": "object", "additionalProperties": false,
+      "required": ["state", "reason", "reviewer", "reference", "evidence", "baseline_source", "candidate_source", "baseline_source_tree_sha256", "candidate_source_tree_sha256", "baseline_executable_sha256", "candidate_executable_sha256", "plan_sha256", "ledger_sha256", "coverage"],
+      "properties": {
+        "state": {"type": "string", "enum": ["pass", "fail", "outstanding"]},
+        "reason": {"$ref": "#/$defs/text"}, "reviewer": {"$ref": "#/$defs/text"},
+        "reference": {"$ref": "#/$defs/text"},
+        "evidence": {"type": "array", "items": {"$ref": "#/$defs/commitment"}},
+        "baseline_source": {"$ref": "#/$defs/commit"}, "candidate_source": {"$ref": "#/$defs/commit"},
+        "baseline_source_tree_sha256": {"$ref": "#/$defs/sha"}, "candidate_source_tree_sha256": {"$ref": "#/$defs/sha"},
+        "baseline_executable_sha256": {"$ref": "#/$defs/sha"}, "candidate_executable_sha256": {"$ref": "#/$defs/sha"},
+        "plan_sha256": {"$ref": "#/$defs/sha"}, "ledger_sha256": {"$ref": "#/$defs/sha"},
+        "coverage": {"$ref": "#/$defs/texts"}
+      }
+    }
+  }
+}

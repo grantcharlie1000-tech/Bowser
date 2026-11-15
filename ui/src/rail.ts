@@ -1,6 +1,7 @@
+import { onChromeInbound } from './chrome-handshake';
 // Left rail view (?view=rail): keyed reconciliation of the rail buttons, favicons, pointer reorder and keyboard.
 // Labels reach the DOM only through textContent and attributes; favicons are validated data: URIs set as img.src.
-import { onInbound, send, sendRail, sendRailWheel, type RailItem, type RailMsg } from './protocol';
+import { send, sendRail, sendRailWheel, type RailItem, type RailMsg } from './protocol';
 import { setTip } from './tooltip';
 import {
   ADD_BUTTONS,
@@ -478,7 +479,7 @@ export function startRail(root: HTMLElement): void {
     target.focus();
   });
 
-  onInbound((msg) => {
+  onChromeInbound('rail', root, (msg) => {
     switch (msg.t) {
       case 'state':
         // Only the theme and mode reach the rail; scale and page state are toolbar concerns.
@@ -495,8 +496,5 @@ export function startRail(root: HTMLElement): void {
         schedule();
         break;
     }
-  });
-
-  // Registered before ready so no rail message can be missed.
-  send({ v: 1, t: 'ready' });
+  }, () => { if (frame !== 0) cancelAnimationFrame(frame); flush(); });
 }

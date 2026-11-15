@@ -2,18 +2,15 @@
 //! told, what they ask for, the drop-down rows under the options, and the engine suggestions that
 //! arrive late from the network (only after an engine nickname or in the search field).
 //!
-//! Every function runs on the UI thread except the suggestion fetch, which runs on one short-lived
-//! thread and hands its answer back through a queue and `WM_ADDRESS_SUGGEST`.
+//! Every function runs on the UI thread except the suggestion fetch, which runs on one persistent
+//! worker thread (latest request wins) and hands its answer back through a queue and `WM_ADDRESS_SUGGEST`.
 
 use std::{
     cell::RefCell,
     collections::HashMap,
-    sync::{
-        Mutex,
-        atomic::{AtomicU64, Ordering},
-    },
+    sync::{Condvar, Mutex},
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
@@ -63,7 +60,71 @@ struct Answer {
 }
 
 static INBOX: Mutex<Vec<Answer>> = Mutex::new(Vec::new());
-static GENERATION: AtomicU64 = AtomicU64::new(0);
+
+/// One suggestion request waiting for its debounce.
+struct Job {
+    at: Instant,
+    url: url::Url,
+    wanted: (String, String),
+    raw: isize,
+}
+
+/// The newest request not yet sent. A newer request replaces an older one still here (latest wins:
+/// the superseded one never reaches the network), and the worker sleeps on `1` between requests.
+static PENDING: (Mutex<Option<Job>>, Condvar) = (Mutex::new(None), Condvar::new());
+static WORKER: Mutex<bool> = Mutex::new(false);
+
+/// Hands the worker the newest request, starting the one persistent worker thread on first use.
+fn submit(job: Job) {
+    if let Ok(mut pending) = PENDING.0.lock() {
+        *pending = Some(job);
+        PENDING.1.notify_one();
+    }
+    if let Ok(mut started) = WORKER.lock()
+        && !*started
+    {
+        *started = thread::Builder::new().name("omnibox-suggest".into()).spawn(worker).is_ok();
+    }
+}
+
+/// Blocks until the newest pending job has waited out `debounce` untouched, then takes it. A newer job
+/// arriving meanwhile replaces it and restarts the wait.
+fn next_job(pending: &(Mutex<Option<Job>>, Condvar), debounce: Duration) -> Option<Job> {
+    let mut slot = pending.0.lock().ok()?;
+    loop {
+        let wait = match slot.as_ref() {
+            None => None,
+            Some(job) => {
+                let due = job.at + debounce;
+                let now = Instant::now();
+                if now >= due {
+                    return slot.take();
+                }
+                Some(due - now)
+            }
+        };
+        slot = match wait {
+            None => pending.1.wait(slot).ok()?,
+            Some(wait) => pending.1.wait_timeout(slot, wait).ok()?.0,
+        };
+    }
+}
+
+/// The one suggestion worker: debounces, then fetches over a session it keeps (one TLS connection per
+/// engine host instead of a handshake per keystroke).
+fn worker() {
+    let mut session = crate::translate::net::HttpsSession::default();
+    while let Some(Job { url, wanted, raw, .. }) = next_job(&PENDING, DEBOUNCE) {
+        let Ok(body) = session.get(&url, 64 * 1024) else { continue };
+        let suggestions = address_suggest::parse_suggestions(&String::from_utf8_lossy(&body), MAX_ANSWERS);
+        if let Ok(mut inbox) = INBOX.lock() {
+            if inbox.len() < 8 {
+                inbox.push(Answer { key: wanted, suggestions });
+            }
+        }
+        super::post(HWND(raw as *mut _), WM_ADDRESS_SUGGEST, WPARAM(0), LPARAM(0));
+    }
+}
 
 thread_local! {
     /// Per window: the generation of the toolbar page, the last `addr` and `sfield` sent to it.
@@ -166,22 +227,7 @@ fn engine_suggestions(hwnd: HWND, engine: &Engine, query: &str, allowed: bool) -
         return hit;
     }
     let Some(url) = engine.suggest_url(query.trim()) else { return Vec::new() };
-    let generation = GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
-    let raw = key(hwnd);
-    thread::spawn(move || {
-        thread::sleep(DEBOUNCE);
-        if GENERATION.load(Ordering::SeqCst) != generation {
-            return; // typed on: the newer request supersedes this one
-        }
-        let Ok(body) = crate::translate::net::get_https(&url, 64 * 1024) else { return };
-        let suggestions = address_suggest::parse_suggestions(&String::from_utf8_lossy(&body), MAX_ANSWERS);
-        if let Ok(mut inbox) = INBOX.lock() {
-            if inbox.len() < 8 {
-                inbox.push(Answer { key: wanted, suggestions });
-            }
-        }
-        super::post(HWND(raw as *mut _), WM_ADDRESS_SUGGEST, WPARAM(0), LPARAM(0));
-    });
+    submit(Job { at: Instant::now(), url, wanted, raw: key(hwnd) });
     Vec::new()
 }
 
@@ -501,5 +547,27 @@ mod wave1_tests {
         settings.address.dropdown_while_typing = true;
         App::apply_live_settings(&app, &settings);
         assert!(!rows(HWND::default(), &app, &history, None, &query(false)).is_empty());
+    }
+
+    fn job(text: &str, at: Instant) -> Job {
+        Job { at, url: url::Url::parse("https://example.test/s").unwrap(), wanted: ("e".into(), text.into()), raw: 0 }
+    }
+
+    #[test]
+    fn the_worker_sends_only_the_newest_request_after_the_debounce() {
+        static SLOT: (Mutex<Option<Job>>, Condvar) = (Mutex::new(None), Condvar::new());
+        let debounce = Duration::from_millis(60);
+        let start = Instant::now();
+        *SLOT.0.lock().unwrap() = Some(job("ru", start));
+        let feeder = thread::spawn(|| {
+            thread::sleep(Duration::from_millis(20));
+            *SLOT.0.lock().unwrap() = Some(job("rust", Instant::now()));
+            SLOT.1.notify_one();
+        });
+        let taken = next_job(&SLOT, debounce).unwrap();
+        feeder.join().unwrap();
+        assert_eq!(taken.wanted.1, "rust", "the superseded request is dropped without being taken");
+        assert!(start.elapsed() >= Duration::from_millis(75), "the newest request waited its own full debounce");
+        assert!(SLOT.0.lock().unwrap().is_none());
     }
 }

@@ -402,22 +402,33 @@ pub fn interrupt_owner(owner: u64) -> Vec<u64> {
     interrupt_where(|t| t.owner == owner)
 }
 
-/// The engine is closing: every download is interrupted.
-pub fn interrupt_all() -> Vec<u64> {
-    interrupt_where(|_| true)
-}
-
-/// Whether the webview `owner` has a download moving (a tab with one must not be put to sleep).
+/// Whether `owner` has an operation that still needs its controller: running, paused or resumable.
+/// Unknown native state fails closed. Terminal operations do not pin an otherwise idle tab.
 pub fn owner_downloading(owner: u64) -> bool {
-    OPS.with(|ops| {
-        ops.borrow().values().any(|t| {
-            t.owner == owner && {
-                let mut state = COREWEBVIEW2_DOWNLOAD_STATE_COMPLETED;
-                unsafe { t.op.State(&mut state).is_ok() && state == COREWEBVIEW2_DOWNLOAD_STATE_IN_PROGRESS }
+    // COM getters can reenter download callbacks. No registry borrow may span those calls.
+    let operations: Vec<_> = OPS.with(|ops| ops.borrow().values()
+        .filter(|tracked| tracked.owner == owner).map(|tracked| tracked.op.clone()).collect());
+    operations.into_iter().any(|op| unsafe {
+        let mut state = COREWEBVIEW2_DOWNLOAD_STATE_COMPLETED;
+        if op.State(&mut state).is_err() { return true; }
+        match state {
+            COREWEBVIEW2_DOWNLOAD_STATE_IN_PROGRESS => true,
+            COREWEBVIEW2_DOWNLOAD_STATE_COMPLETED => false,
+            COREWEBVIEW2_DOWNLOAD_STATE_INTERRUPTED => {
+                let mut reason = COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_NONE;
+                if op.InterruptReason(&mut reason).is_err() { return true; }
+                if reason == COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_USER_PAUSED { return true; }
+                if reason == COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_USER_CANCELED { return false; }
+                let mut resumable = BOOL::default();
+                op.CanResume(&mut resumable).is_err() || resumable.as_bool()
             }
-        })
+            _ => true,
+        }
     })
 }
+
+#[cfg(test)]
+pub(crate) mod recovery_tests;
 
 #[cfg(test)]
 mod tests {

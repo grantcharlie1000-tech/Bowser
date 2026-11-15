@@ -24,7 +24,9 @@ const killTree = (child) => {
 const killProfileProcesses = (profile) => {
   if (process.platform === 'win32') {
     const escaped = profile.replace(/'/g, "''");
-    spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', `Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -and $_.CommandLine.Contains('${escaped}') } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }`], { stdio: 'ignore', timeout: 30000 });
+    // Filtering the executable first also excludes this PowerShell helper: its command line
+    // contains the private path too. Match the user-data argument, not a page URL in another app.
+    spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', `Get-CimInstance Win32_Process -Filter "Name='msedge.exe'" | Where-Object { $_.CommandLine -and $_.CommandLine.Replace('"','').Contains('--user-data-dir=${escaped}\\') } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }`], { stdio: 'ignore', timeout: 30000 });
   } else spawnSync('pkill', ['-9', '-f', profile], { stdio: 'ignore' });
 };
 const launchOnce = (args, view) => new Promise((resolve, reject) => {
@@ -42,7 +44,9 @@ const launch = async (args, view) => {
 const startFixture = JSON.parse(readFileSync(join(root, 'test/fixtures/start-page-messages.json'), 'utf8')).empty;
 const shim = `const listeners = []; window.chrome = { webview: { addEventListener(type, callback) { if (type === 'message') listeners.push(callback); }, postMessage(value) {
  const m = typeof value === 'string' ? JSON.parse(value) : value;
- if (m.t === 'ready') { document.documentElement.setAttribute('data-surface-ready', 'yes'); document.documentElement.setAttribute('data-surface-ready-ms', performance.now().toFixed(3));
+  const view = new URLSearchParams(location.search).get('view');
+  const currentChromeReady = ['toolbar','tabs','rail'].includes(view) && m.t === 'chromeReady' && m.v === 1 && m.view === view && /^[0-9a-f]{32}$/.test(m.doc);
+  if (m.t === 'ready' || currentChromeReady) { document.documentElement.setAttribute('data-surface-ready', 'yes'); document.documentElement.setAttribute('data-surface-ready-ms', performance.now().toFixed(3));
  if (new URLSearchParams(location.search).get('view') === 'split') setTimeout(() => listeners.forEach((callback) => callback({ data: ${JSON.stringify(startFixture)} })), 0);
  }
 } } }; const observer = new MutationObserver(() => {

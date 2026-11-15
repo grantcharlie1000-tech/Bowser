@@ -15,6 +15,16 @@ const out = esbuild.buildSync({ entryPoints: [join(here, '../src/settings-page.t
 const { startSettingsPage } = await import(`data:text/javascript;base64,${Buffer.from(out.outputFiles[0].contents).toString('base64')}`);
 
 class LayoutNode extends Node {
+  get childNodes() { return this.children; }
+  get nodeType() { return this.tagName === '#text' ? 3 : 1; }
+  detach(node) {
+    if (node.parent) {
+      const siblings = node.parent.children;
+      const index = siblings.indexOf(node);
+      if (index >= 0) siblings.splice(index, 1);
+    }
+    node.parent = this;
+  }
   get lastElementChild() { return [...this.children].reverse().find((node) => node.tagName !== '#text') ?? null; }
   after(node) { const parent = this.parent; parent.detach(node); parent.children.splice(parent.children.indexOf(this) + 1, 0, node); }
   replaceWith(node) { const parent = this.parent; const at = parent.children.indexOf(this); parent.detach(node); parent.children.splice(at, 1, node); this.parent = null; }
@@ -26,6 +36,17 @@ class LayoutNode extends Node {
     else { this.scrollTop = destination; this.smoothDestination = null; }
   }
 }
+
+test('layout DOM fixture keeps childNodes live during reparenting', () => {
+  const button = new LayoutNode('button');
+  const first = new LayoutNode('#text');
+  const second = new LayoutNode('#text');
+  button.append(first, second);
+  const children = button.childNodes;
+  new LayoutNode('span').append(first);
+  assert.equal(children.length, 1);
+  assert.equal(children[0], second);
+});
 
 function harness({ ready = true, snapshot = true, reduced = false, view = 'all' } = {}) {
   const frames = new Map();

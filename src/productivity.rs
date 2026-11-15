@@ -496,7 +496,7 @@ pub fn add_history_entry_at(
 ) -> std::io::Result<()> {
     let url = valid_http_url(url).ok_or_else(invalid_url_error)?;
     // The caller only queues the visit: the read-merge-rewrite of the file runs on the history
-    // writer thread, and every history read or edit flushes the queue first. A file that exists
+    // writer thread. Reads merge the queue in memory; edits flush it first. A file that exists
     // but cannot be read is still refused here, cheaply, and again by the writer.
     match fs::metadata(path) {
         Ok(meta) if !meta.is_file() || meta.len() > MAX_HISTORY_FILE_BYTES => {
@@ -521,6 +521,26 @@ static PENDING_HISTORY: Mutex<Vec<(PathBuf, Vec<HistoryEntry>)>> = Mutex::new(Ve
 /// Held across every read-modify-write of a history file so the writer thread and the UI thread
 /// never interleave.
 static HISTORY_IO: Mutex<()> = Mutex::new(());
+
+// These revisions describe the existing parse and queue, not another copy of history. Queue
+// revisions are read/advanced inside PENDING_HISTORY; cache revisions inside HISTORY_CACHE.
+static HISTORY_QUEUE_REVISION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static HISTORY_CACHE_REVISION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn advance_history_revision(revision: &std::sync::atomic::AtomicU64) -> u64 {
+    use std::sync::atomic::Ordering::Relaxed;
+    revision.fetch_update(Relaxed, Relaxed, |value| Some(value.saturating_add(1)))
+        .unwrap_or_else(|value| value).saturating_add(1)
+}
+
+/// Identifies the exact parsed-history cache entry and queued visits used by a read. Saturation,
+/// cache eviction, unknown file metadata or poisoned locks disable the shortcut. File freshness
+/// deliberately uses the same metadata contract as load_history; this does not attest file bytes.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct HistoryDependency {
+    cached: u64,
+    queued: u64,
+}
 
 /// Counts every removal from a history file (an entry, a range, a site, a clear, a retention prune).
 /// Each window's address-bar suggestions are an in-memory copy of the history; a window that sees
@@ -550,6 +570,7 @@ struct HistoryCache {
     path: PathBuf,
     stamp: FileStamp,
     entries: Vec<HistoryEntry>,
+    revision: u64,
 }
 
 /// `None` when the file's state cannot be told apart cheaply (never cached).
@@ -561,20 +582,23 @@ fn history_stamp(path: &Path) -> Option<FileStamp> {
     }
 }
 
-fn remember_history(path: &Path, entries: &[HistoryEntry]) {
+fn remember_history(path: &Path, entries: &[HistoryEntry]) -> Option<u64> {
     let mut cache = lock_history(&HISTORY_CACHE);
     cache.retain(|cached| cached.path != path);
     let Some(stamp) = history_stamp(path) else {
-        return;
+        return None;
     };
     if cache.len() >= HISTORY_CACHE_FILES {
         cache.remove(0);
     }
+    let revision = advance_history_revision(&HISTORY_CACHE_REVISION);
     cache.push(HistoryCache {
         path: path.to_path_buf(),
         stamp,
         entries: entries.to_vec(),
+        revision,
     });
+    (revision != u64::MAX).then_some(revision)
 }
 
 fn forget_history(path: &Path) {
@@ -583,15 +607,26 @@ fn forget_history(path: &Path) {
 
 /// The parsed history of `path` and whether it came from memory. Hold [`HISTORY_IO`].
 fn load_history(path: &Path) -> std::io::Result<(Vec<HistoryEntry>, bool)> {
-    if let Some(stamp) = history_stamp(path) {
+    load_history_with_revision(path).map(|(entries, cached, _)| (entries, cached))
+}
+
+/// The revision comes from the cache entry that supplied (or copied) these exact entries. Hold
+/// HISTORY_IO so a writer or another reader cannot replace that entry before the queue is read.
+fn load_history_with_revision(path: &Path) -> std::io::Result<(Vec<HistoryEntry>, bool, Option<u64>)> {
+    load_history_at_stamp(path, history_stamp(path))
+}
+
+fn load_history_at_stamp(path: &Path, stamp: Option<FileStamp>) -> std::io::Result<(Vec<HistoryEntry>, bool, Option<u64>)> {
+    if let Some(stamp) = stamp {
         let cache = lock_history(&HISTORY_CACHE);
         if let Some(cached) = cache.iter().find(|cached| cached.path == path && cached.stamp == stamp) {
-            return Ok((cached.entries.clone(), true));
+            let revision = (cached.revision != u64::MAX).then_some(cached.revision);
+            return Ok((cached.entries.clone(), true, revision));
         }
     }
     let entries = read_history_file(path)?;
-    remember_history(path, &entries);
-    Ok((entries, false))
+    let revision = remember_history(path, &entries);
+    Ok((entries, false, revision))
 }
 
 fn lock_history<T>(mutex: &'static Mutex<T>) -> std::sync::MutexGuard<'static, T> {
@@ -601,6 +636,7 @@ fn lock_history<T>(mutex: &'static Mutex<T>) -> std::sync::MutexGuard<'static, T
 fn queue_history_visit(path: &Path, visit: HistoryEntry) {
     {
         let mut pending = lock_history(&PENDING_HISTORY);
+        advance_history_revision(&HISTORY_QUEUE_REVISION);
         let queue = match pending.iter().position(|(queued, _)| queued == path) {
             Some(index) => &mut pending[index].1,
             None => {
@@ -662,7 +698,10 @@ fn flush_history_locked(path: &Path) -> std::io::Result<()> {
     let visits = {
         let mut pending = lock_history(&PENDING_HISTORY);
         match pending.iter().position(|(queued, _)| queued == path) {
-            Some(index) => pending.swap_remove(index).1,
+            Some(index) => {
+                advance_history_revision(&HISTORY_QUEUE_REVISION);
+                pending.swap_remove(index).1
+            }
             None => return Ok(()),
         }
     };
@@ -676,6 +715,7 @@ fn flush_history_locked(path: &Path) -> std::io::Result<()> {
     });
     if result.is_err() {
         let mut pending = lock_history(&PENDING_HISTORY);
+        advance_history_revision(&HISTORY_QUEUE_REVISION);
         let mut visits = visits;
         match pending.iter().position(|(queued, _)| queued == path) {
             Some(index) => {
@@ -900,9 +940,6 @@ pub fn read_history(path: &Path) -> Vec<(u64, String, String)> {
 /// Malformed lines are skipped; the newest `MAX_HISTORY` entries are kept (the file is oldest
 /// first). Tolerates CRLF line ends, a UTF-8 byte order mark and invalid UTF-8.
 pub(crate) fn read_history_strict(path: &Path) -> std::io::Result<Vec<(u64, String, String)>> {
-    // Queued visits are merged in memory, so a reader never sees a stale history and never writes:
-    // the UI thread reads history on every visit while the History flyout or page is open, and the
-    // write (with its fsync) is the writer thread's job.
     let _io = lock_history(&HISTORY_IO);
     let (mut entries, _) = load_history(path)?;
     let queued = lock_history(&PENDING_HISTORY).iter().find(|(queued, _)| queued == path).map(|(_, visits)| visits.clone());
@@ -911,6 +948,77 @@ pub(crate) fn read_history_strict(path: &Path) -> std::io::Result<Vec<(u64, Stri
     }
     Ok(entries)
 }
+
+/// The normal strict read plus a bounded dependency token for a derived result. No additional
+/// history is retained. Queue contents and their revision are captured under the same lock.
+pub(crate) fn read_history_with_dependency(path: &Path) -> std::io::Result<(Vec<HistoryEntry>, Option<HistoryDependency>)> {
+    // Queued visits are merged in memory, so a reader never sees a stale history and never writes:
+    // the UI thread reads history on every visit while the History flyout or page is open, and the
+    // write (with its fsync) is the writer thread's job.
+    let _io = lock_history(&HISTORY_IO);
+    read_history_with_dependency_locked(path)
+}
+
+/// Hold HISTORY_IO through both the parse and queue capture.
+fn read_history_with_dependency_locked(path: &Path) -> std::io::Result<(Vec<HistoryEntry>, Option<HistoryDependency>)> {
+    read_history_with_dependency_at_stamp(path, history_stamp(path))
+}
+
+fn read_history_with_dependency_at_stamp(path: &Path, stamp: Option<FileStamp>) -> std::io::Result<(Vec<HistoryEntry>, Option<HistoryDependency>)> {
+    let (mut entries, _, cached) = load_history_at_stamp(path, stamp)?;
+    let (queued, revision) = {
+        let pending = lock_history(&PENDING_HISTORY);
+        let queued = pending.iter().find(|(queued, _)| queued == path).map(|(_, visits)| visits.clone());
+        (queued, HISTORY_QUEUE_REVISION.load(std::sync::atomic::Ordering::Relaxed))
+    };
+    if let Some(visits) = queued {
+        merge_visits(&mut entries, &visits);
+    }
+    let dependency = cached.filter(|_| revision != u64::MAX
+        && !HISTORY_IO.is_poisoned() && !HISTORY_CACHE.is_poisoned() && !PENDING_HISTORY.is_poisoned())
+        .map(|cached| HistoryDependency { cached, queued: revision });
+    Ok((entries, dependency))
+}
+
+/// None permits reuse of the previous derived result; otherwise return a normal strict snapshot.
+/// Validation and fallback share one HISTORY_IO acquisition and metadata lookup. HISTORY_IO
+/// excludes flushes/removals/cache replacement, including the interval after a queue is drained
+/// but before its write. The queue lock captures the internal history state being validated.
+pub(crate) fn read_history_if_changed(path: &Path, dependency: Option<HistoryDependency>) -> std::io::Result<Option<(Vec<HistoryEntry>, Option<HistoryDependency>)>> {
+    let _io = lock_history(&HISTORY_IO);
+    let stamp = history_stamp(path);
+    if !HISTORY_IO.is_poisoned() && dependency.is_some_and(|dependency|
+        history_dependency_current_locked(path, dependency, stamp))
+    {
+        return Ok(None);
+    }
+    read_history_with_dependency_at_stamp(path, stamp).map(Some)
+}
+
+/// Hold HISTORY_IO. A match means load_history would clone these exact cached entries and merge
+/// the same queue. Unknown/poisoned state cannot authorize reuse; the ordinary read still decides
+/// the caller's existing missing-file/error behavior.
+fn history_dependency_current_locked(path: &Path, dependency: HistoryDependency, stamp: Option<FileStamp>) -> bool {
+    let Some(stamp) = stamp else { return false };
+    let Ok(cache) = HISTORY_CACHE.lock() else { return false };
+    let cached = dependency.cached != u64::MAX && cache.iter().any(|cached|
+        cached.path == path && cached.stamp == stamp && cached.revision == dependency.cached);
+    drop(cache);
+    if !cached { return false; }
+    let Ok(_pending) = PENDING_HISTORY.lock() else { return false };
+    dependency.queued != u64::MAX
+        && HISTORY_QUEUE_REVISION.load(std::sync::atomic::Ordering::Relaxed) == dependency.queued
+}
+
+#[cfg(test)]
+fn history_dependency_current(path: &Path, dependency: HistoryDependency) -> bool {
+    let Ok(_io) = HISTORY_IO.lock() else { return false };
+    history_dependency_current_locked(path, dependency, history_stamp(path))
+}
+
+#[cfg(test)]
+#[path = "productivity/history_dependency_tests.rs"]
+mod history_dependency_tests;
 
 fn read_history_file(path: &Path) -> std::io::Result<Vec<(u64, String, String)>> {
     let bytes = match fs::File::open(path) {
@@ -1003,7 +1111,11 @@ pub fn delete_history_for_host(path: &Path, host: &str) -> std::io::Result<usize
 pub fn clear_history(path: &Path) -> std::io::Result<()> {
     let _io = lock_history(&HISTORY_IO);
     // Visits still queued were made before the clear.
-    lock_history(&PENDING_HISTORY).retain(|(queued, _)| queued != path);
+    {
+        let mut pending = lock_history(&PENDING_HISTORY);
+        advance_history_revision(&HISTORY_QUEUE_REVISION);
+        pending.retain(|(queued, _)| queued != path);
+    }
     forget_history(path);
     atomic_write(path, b"")?;
     note_history_removal();
@@ -1071,7 +1183,7 @@ fn write_history(path: &Path, entries: &[HistoryEntry]) -> std::io::Result<()> {
     #[cfg(test)]
     HISTORY_WRITES_ON_THIS_THREAD.with(|count| count.set(count.get() + 1));
     atomic_write_with(path, text.as_bytes(), false)?;
-    remember_history(path, entries);
+    let _ = remember_history(path, entries);
     Ok(())
 }
 #[cfg(test)]

@@ -70,7 +70,7 @@ use windows::{
                 TME_NONCLIENT, TRACKMOUSEEVENT, TrackMouseEvent, VK_CONTROL, VK_DOWN, VK_LBUTTON,
                 VK_MENU, VK_RBUTTON, VK_RETURN, VK_SHIFT, VK_UP,
             },
-            Shell::{DefSubclassProc, SetWindowSubclass},
+            Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass},
             WindowsAndMessaging::{
                 CREATESTRUCTW, CS_DBLCLKS, CW_USEDEFAULT, CreateWindowExW, DefWindowProcW,
                 DestroyWindow, DispatchMessageW, EN_CHANGE, ES_AUTOHSCROLL,
@@ -116,6 +116,9 @@ mod auto_hide;
 // --- end auto-hide ---
 // --- look state (fix group B) --- the page and panel hosts' `state` (window/host_state.rs).
 mod host_state;
+mod surface_recovery;
+pub(super) mod chrome_recovery;
+use chrome_recovery::document_command as html_document_command;
 // --- end look state ---
 // Native grips that keep the top resize edge over the HTML hosts (window/frame_grip.rs).
 mod frame_grip;
@@ -379,8 +382,10 @@ struct PageIdle {
 }
 
 /// Advances `idle` for a host that is `shown` (or not) at `now`. True when the host has been hidden
-/// for `PAGE_IDLE_CLOSE` and should close; its clock then starts over. Pure.
-fn page_idle_step(idle: &mut PageIdle, shown: bool, now: Instant) -> bool {
+/// for `PAGE_IDLE_CLOSE` and should close; its clock then starts over. `may_close` is asked only
+/// once that time has passed; when it says no the host stays (suspended) and its clock keeps
+/// running, so a later check can still close it. Pure apart from `may_close`.
+fn page_idle_step(idle: &mut PageIdle, shown: bool, now: Instant, may_close: impl FnOnce() -> bool) -> bool {
     if shown {
         *idle = PageIdle { seen: true, hidden_since: None };
         return false;
@@ -389,7 +394,7 @@ fn page_idle_step(idle: &mut PageIdle, shown: bool, now: Instant) -> bool {
         return false;
     }
     let since = *idle.hidden_since.get_or_insert(now);
-    if now.saturating_duration_since(since) >= PAGE_IDLE_CLOSE {
+    if now.saturating_duration_since(since) >= PAGE_IDLE_CLOSE && may_close() {
         *idle = PageIdle::default();
         return true;
     }
@@ -491,8 +496,9 @@ struct WindowChrome {
     /// (src/win32/bookmark_bar.rs); `relayout` takes it off the viewport.
     bar_reserve: (i32, bool),
     surface: ChromeSurface,
+    surface_recovery: surface_recovery::Recovery,
     overlay: HWND,
-    /// Client size in physical pixels. The surface only keeps the chrome rows.
+    /// Requested client size in physical pixels, independent of a retained DIB after failure.
     client: (i32, i32),
     layout: Layout,
     palette: &'static Palette,
@@ -613,6 +619,13 @@ struct WindowChrome {
     /// A chrome view failed for good, so its region is painted natively instead of waiting for it
     /// (toolbar, tab strip, rail).
     html_failed: [bool; 3],
+    chrome_lifetimes: chrome_recovery::Lifetimes,
+    html_state_building: [bool; 3],
+    html_initial_native_input: Option<chrome_recovery::NativeInput>,
+    native_ime_composing: bool,
+    html_input_handoff: bool,
+    recovery_buttons: [(HWND, Option<crate::tabs::TabId>); 4],
+    recovery_regions: [Option<Rect>; 4],
     /// The omnibox in the HTML toolbar has keyboard focus (from its `focus` messages).
     html_omnibox_focused: bool,
     /// The user has typed in the omnibox since it last took focus, so a page load must not move the
@@ -679,7 +692,7 @@ struct WindowChrome {
     html_favicons_sent: HashMap<TabId, FaviconKey>,
     /// Menu, popup and window commands from the HTML chrome views, oldest first, run one per
     /// `WM_HTML_DEFERRED` (see `DeferredChromeCommand`). Bounded by `HTML_DEFERRED_LIMIT`.
-    html_deferred: VecDeque<DeferredChromeCommand>,
+    html_deferred: VecDeque<chrome_recovery::DeferredAction>,
     /// The HTML left rail's WebView2 host, once created. Dropped (and closed) on failure.
     html_rail: Option<ChromeHost>,
     /// Set once the HTML rail has been started, so it is never started twice.
@@ -729,15 +742,42 @@ struct HtmlFavicon {
     png: Option<Vec<u8>>,
 }
 impl WindowChrome {
+    fn request_html_environment(&mut self) -> bool {
+        if self.html_requested { return false; }
+        self.html_requested = true;
+        self.html_env_waiting = true;
+        // The engine owns environment startup. The chrome deadline starts only when a live
+        // environment actually accepts the bounded host attempt below.
+        true
+    }
+
+    fn begin_html_hosts(&mut self, generation: u64, now: Instant) -> bool {
+        if !self.html_requested || !self.chrome_lifetimes.environments.eligible(self.html_env_waiting, generation) { return false; }
+        self.chrome_lifetimes.environments.begin(generation);
+        self.chrome_lifetimes.begin(now);
+        self.html_env_waiting = false;
+        self.html_failed = [false; 3];
+        self.html_state_building = [false; 3];
+        self.html_tabs_requested = false;
+        self.html_rail_requested = false;
+        true
+    }
+
     fn new(width: i32, height: i32, dpi: u32, overlay: HWND) -> Self {
+        let mut surface = ChromeSurface::new(width, height, dpi);
+        let _ = surface.set_rail_snap(!animations_enabled(), Instant::now());
+        for view in 0..3 { surface.set_html_pending(view, false); }
+        let mut recovery = surface_recovery::Recovery::new();
+        if let Some(error) = surface.allocation_error() {
+            recovery.fail(surface_recovery::Fault::Storage(error));
+        } else if overlay.is_invalid() {
+            recovery.fail(surface_recovery::Fault::Overlay);
+        }
         Self {
             ah: auto_hide::Runtime::default(), // --- auto-hide (T11) ---
             bar_reserve: (0, false),
-            surface: {
-                let mut surface = ChromeSurface::new(width, height, dpi);
-                let _ = surface.set_rail_snap(!animations_enabled(), Instant::now());
-                surface
-            },
+            surface,
+            surface_recovery: recovery,
             overlay,
             client: (width, height),
             layout: layout::compute_in_frame(width, height, dpi, 1, 0, false),
@@ -817,6 +857,13 @@ impl WindowChrome {
             html_page_ready: false,
             html_toolbar_active: false,
             html_failed: [false; 3],
+            chrome_lifetimes: chrome_recovery::Lifetimes::new(),
+            html_state_building: [false; 3],
+            html_initial_native_input: None,
+            native_ime_composing: false,
+            html_input_handoff: false,
+            recovery_buttons: [(HWND::default(), None); 4],
+            recovery_regions: [None; 4],
             html_omnibox_focused: false,
             omnibox_edited: false,
             omnibox_claimed: false,
@@ -1184,13 +1231,18 @@ impl WindowChrome {
         self.sync_html_bounds();
         self.sync_html_tabs_bounds();
         self.sync_html_rail_bounds();
-        self.surface.resize(w, h, self.dpi);
+        if self.surface_recovery.can_draw() {
+            match self.surface.try_resize(w, h, self.dpi) {
+                Ok(repaint) => self.surface_recovery.full_repaint |= repaint,
+                Err(error) => self.surface_recovery.fail(surface_recovery::Fault::Storage(error)),
+            }
+        }
         self.surface.set_font(font_scale, ui_font);
     }
     /// The toolbar region the HTML chrome covers, in client pixels. `None` while it is inactive or
     /// the toolbar is too narrow for its region.
     fn html_region(&self) -> Option<Rect> {
-        if !self.html_toolbar_active || self.ah.visually_hidden(crate::auto_hide::Zone::Top) {
+        if !self.html_toolbar_active || !self.html.as_ref().is_some_and(ChromeHost::applied) || self.ah.visually_hidden(crate::auto_hide::Zone::Top) {
             return None;
         }
         chrome_host::toolbar_bounds(&self.layout).map(Rect::from)
@@ -1340,7 +1392,7 @@ impl WindowChrome {
     // --- end vertical sidebar ---
     /// The tab row or vertical sidebar covered by the Tabs host, in client pixels.
     fn html_tab_region(&self) -> Option<Rect> {
-        if self.html_tabs.is_none() || !self.html_tabs_page_ready {
+        if !self.html_tabs.as_ref().is_some_and(ChromeHost::applied) || !self.html_tabs_page_ready {
             return None;
         }
         // --- vertical sidebar (lane S) ---
@@ -1359,7 +1411,7 @@ impl WindowChrome {
     /// The left rail the HTML rail covers, in client pixels. `None` until its page is ready, so the
     /// native rail keeps painting and hit-testing until then.
     fn html_rail_region(&self) -> Option<Rect> {
-        if self.html_rail.is_none() || !self.html_rail_page_ready {
+        if !self.html_rail.as_ref().is_some_and(ChromeHost::applied) || !self.html_rail_page_ready {
             return None;
         }
         chrome_host::rail_bounds(&self.layout).map(Rect::from)
@@ -1377,15 +1429,14 @@ impl WindowChrome {
     fn sync_html_rail_bounds(&mut self) {
         let region = self.html_rail_region();
         self.surface.set_html_rail(region.is_some());
-        self.surface.set_html_pending(2, chrome_host::html_ui_enabled() && !self.html_failed[2] && region.is_none());
+        self.surface.set_html_pending(2, false);
     }
     /// Moves the HTML tab strip over the tab row and hides it when there is none. Also tells the
     /// surface to leave the row to the page.
     fn sync_html_tabs_bounds(&mut self) {
         let region = self.html_tab_region();
         self.surface.set_html_tabs(region.is_some());
-        let hidden = if self.sidebar.is_some() { self.ah.sidebar_hidden() } else { self.ah.top_hidden() }; // --- auto-hide (T11) ---
-        self.surface.set_html_pending(1, chrome_host::html_ui_enabled() && !self.html_failed[1] && region.is_none() && !hidden);
+        self.surface.set_html_pending(1, false);
     }
     /// CSS px the toolbar page's buttons beside the pill (downloads, extensions) take from it.
     fn toolbar_slot(&self) -> i32 {
@@ -1397,7 +1448,7 @@ impl WindowChrome {
     fn sync_html_bounds(&mut self) {
         let region = self.html_region();
         self.surface.set_html_toolbar(region.is_some());
-        self.surface.set_html_pending(0, chrome_host::html_ui_enabled() && !self.html_failed[0] && region.is_none() && !self.ah.top_hidden()); // --- auto-hide (T11) ---
+        self.surface.set_html_pending(0, false); // --- auto-hide (T11) ---
     }
     /// The tab under the pointer, by identity, so its emphasis follows it across reorders.
     fn hovered_tab(&self) -> Option<TabId> {
@@ -1671,7 +1722,7 @@ fn rebuild_rail_entries_with(state: &mut WindowChrome, app: &AppRef, icons: bool
     }
     if shown(SidebarKind::Apps) {
         // Only a native rail paints the decoded bitmap; the HTML rail takes the file's bytes.
-        let native_rail = !chrome_host::html_ui_enabled() || state.html_failed[2];
+        let native_rail = state.html_rail_region().is_none();
         let size = Metrics::new(state.dpi).px(Metrics::FAVICON_SIZE).max(1) as u32;
         let epoch = RAIL_ICON_EPOCH.with(|epoch| epoch.get());
         if state.rail_icon_epoch != epoch {
@@ -1859,6 +1910,7 @@ fn run_chrome_sync(hwnd: HWND, app: Option<&AppRef>) {
     super::history_page::sync(hwnd, app);
     super::downloads_page::sync(hwnd, app);
     // --- end split view ---
+    sync_recovery_buttons(hwnd, app);
     track_idle_pages(hwnd);
     auto_hide::after_layout(hwnd); // --- auto-hide (T11) --- the bookmarks bar and page hosts just synced
     let prefs = PaintPrefs::read(app);
@@ -1894,7 +1946,13 @@ fn track_idle_pages(hwnd: HWND) {
         let mut close = [false; 4];
         for (index, idle) in s.page_idle.iter_mut().enumerate() {
             if !dragging {
-                close[index] = page_idle_step(idle, shown[index], now);
+                // The start/split and settings hosts stay suspended while hidden so reopening them
+                // is immediate; they close only under system memory pressure. History and
+                // downloads keep the plain idle close.
+                let keep_alive = index <= 1;
+                close[index] = page_idle_step(idle, shown[index], now, || {
+                    !keep_alive || crate::app::system_memory_pressure()
+                });
             }
         }
         (close, s.page_idle.iter().any(|idle| idle.hidden_since.is_some()))
@@ -2625,7 +2683,8 @@ unsafe extern "system" fn window_proc(
             }
         }
         let raw = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *const AppRef;
-        let app = raw.as_ref();
+        let owned_app = raw.as_ref().cloned();
+        let app = owned_app.as_ref();
         match message {
             WM_NCCALCSIZE => {
                 // --- auto-hide (T11) --- a full-screen window has no frame at all: the client is the window.
@@ -2665,6 +2724,10 @@ unsafe extern "system" fn window_proc(
                 let _ = windows::Win32::Graphics::Gdi::ScreenToClient(hwnd, &mut p);
                 let mut r = RECT::default();
                 let _ = GetClientRect(hwnd, &mut r);
+                if surface_recovery::needs_emergency(hwnd) {
+                    let close = glass::CaptionButtons::for_client_width(r.right, dpi(hwnd)).close;
+                    if close.contains(p.x, p.y) { return LRESULT(HTCLOSE as isize); }
+                }
                 let chrome_hit = hit(hwnd, p.x, p.y); // Also tells a drag band apart
                 let ih = matches!(
                     chrome_hit,
@@ -2759,7 +2822,7 @@ unsafe extern "system" fn window_proc(
             }
             WM_ERASEBKGND => {
                 // Glass leaves the client untouched so DWM shows the native blur through it.
-                if glass::backdrop_mode() == glass::BackdropMode::Solid {
+                if glass::backdrop_mode() == glass::BackdropMode::Solid || surface_recovery::needs_emergency(hwnd) {
                     let mut r = RECT::default();
                     let _ = GetClientRect(hwnd, &mut r);
                     let _ = FillRect(
@@ -2814,6 +2877,7 @@ unsafe extern "system" fn window_proc(
                 // --- end theme options ---
                 glass::refresh_system_state();
                 let _ = glass::apply(hwnd);
+                if surface_recovery::needs_emergency(hwnd) { surface_recovery::make_opaque(hwnd); }
                 let settled = with_chrome(hwnd, |s| {
                     s.palette = auto_hide::chrome_palette(hwnd); // --- auto-hide (T11) --- this window's
                     let settled = s.motion.set_snap(!animations_enabled(), Instant::now());
@@ -2878,9 +2942,6 @@ unsafe extern "system" fn window_proc(
                         Some(WPARAM(font.0 as usize)),
                         Some(LPARAM(1)),
                     );
-                    if !SetWindowSubclass(edit, Some(edit_subclass), 1, hwnd.0 as usize).as_bool() {
-                        return LRESULT(-1);
-                    }
                     // The chrome paints the omnibox text itself. An EDIT also draws directly while
                     // typing (not only in WM_PAINT), so an empty region keeps it invisible while it
                     // still owns focus, IME and clipboard.
@@ -2892,23 +2953,12 @@ unsafe extern "system" fn window_proc(
                     app.borrow_mut().input_font = font;
                     let mut r = RECT::default();
                     let _ = GetClientRect(hwnd, &mut r);
-                    let overlay = CreateWindowExW(
-                        WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW,
-                        w!("STATIC"),
-                        w!(""),
-                        WS_POPUP | WS_VISIBLE,
-                        0,
-                        0,
-                        r.right,
-                        r.bottom,
-                        Some(hwnd),
-                        None,
-                        Some(instance),
-                        None,
-                    )
-                    .unwrap_or_default();
+                    let overlay = surface_recovery::create_overlay(hwnd, (r.right, r.bottom));
                     let mut s = WindowChrome::new(r.right, r.bottom, dpi(hwnd), overlay);
                     s.edit = edit;
+                    if !install_edit_subclass(edit, hwnd, s.surface_recovery.edit_paint_lease()) {
+                        return LRESULT(-1);
+                    }
                     s.start_history_load();
                     s.refresh(app, true);
                     // The web apps' icons are read by the rebuild posted below, after the window shows.
@@ -3089,6 +3139,12 @@ unsafe extern "system" fn window_proc(
                 show_system_menu(hwnd, frame::point_from_lparam(lparam));
                 LRESULT(0)
             }
+            WM_COMMAND if (wparam.0 >> 16) as u32 == 0x0200 => {
+                if let Some(token) = with_chrome(hwnd, |s| (lparam.0 == s.edit.0 as isize).then(|| s.chrome_lifetimes.lease(0).token)).flatten() {
+                    let _ = PostMessageW(Some(hwnd), chrome_recovery::INPUT_RELEASED, WPARAM(token), LPARAM(0));
+                }
+                DefWindowProcW(hwnd, message, wparam, lparam)
+            }
             WM_COMMAND
                 if (wparam.0 & 0xffff) as u16 == INPUT_ID
                     && (wparam.0 >> 16) as u32 == EN_CHANGE =>
@@ -3114,6 +3170,20 @@ unsafe extern "system" fn window_proc(
                 LRESULT(0)
             }
             WM_COMMAND if (wparam.0 & 0xffff) as u16 == INPUT_ID => LRESULT(0),
+            WM_COMMAND if wparam.0 >> 16 == 0 && (wparam.0 & 0xffff) == surface_recovery::RETRY_ID => {
+                surface_recovery::retry(hwnd);
+                LRESULT(0)
+            }
+            WM_COMMAND if wparam.0 >> 16 == 0 && (wparam.0 & 0xffff) == surface_recovery::CLOSE_ID => {
+                let _ = PostMessageW(Some(hwnd), WM_CLOSE, WPARAM(0), LPARAM(0));
+                LRESULT(0)
+            }
+            WM_COMMAND if (RECOVERY_BUTTON_ID..RECOVERY_BUTTON_ID + 4).contains(&(wparam.0 & 0xffff)) && wparam.0 >> 16 == 0 => {
+                let index = (wparam.0 & 0xffff) - RECOVERY_BUTTON_ID;
+                let tab = with_chrome(hwnd, |s| s.recovery_buttons[index].1).flatten();
+                if let (Some(app), Some(tab)) = (app, tab) { App::retry_failed_tab(app, tab); }
+                LRESULT(0)
+            }
             WM_SUBMIT => {
                 if let Some(app) = app {
                     let text = read_edit(app.borrow().edit);
@@ -4310,27 +4380,58 @@ unsafe extern "system" fn window_proc(
                 }
                 LRESULT(0)
             }
+            chrome_recovery::INPUT_RELEASED => {
+                chrome_recovery::input_released(hwnd, wparam.0);
+                LRESULT(0)
+            }
+            chrome_recovery::EVENT => {
+                chrome_recovery::dispatch(hwnd, lparam.0 as usize, wparam.0);
+                LRESULT(0)
+            }
             WM_HTML_CHROME_ENV => {
                 if chrome_host::html_ui_enabled() {
+                    if let Some(app) = app { App::recover_chrome_environment(app); }
                     html_env_settled(hwnd);
                 }
                 LRESULT(0)
             }
+            super::WM_ENGINE_FAILURE => {
+                if let Some(app) = app { App::process_engine_notices(app); }
+                LRESULT(0)
+            }
+            WM_TIMER if wparam.0 == chrome_recovery::TIMER => {
+                chrome_recovery::tick(hwnd, Instant::now());
+                LRESULT(0)
+            }
+            WM_TIMER if wparam.0 == surface_recovery::TIMER => {
+                surface_recovery::tick(hwnd);
+                LRESULT(0)
+            }
+            WM_TIMER if wparam.0 == ENGINE_RECOVERY_TIMER => {
+                if let Some(app) = app {
+                    App::process_engine_notices(app);
+                    if !App::engine_recovery_tick(app, Instant::now()) { let _ = KillTimer(Some(hwnd), ENGINE_RECOVERY_TIMER); }
+                }
+                LRESULT(0)
+            }
             WM_HTML_CHROME_FAILED => {
-                if chrome_host::html_ui_enabled() {
+                if chrome_host::html_ui_enabled() && chrome_recovery::accepts_failure(hwnd, 0, wparam.0) {
                     html_failed(hwnd);
+                    chrome_recovery::schedule(hwnd);
                 }
                 LRESULT(0)
             }
             WM_HTML_TABS_FAILED => {
-                if chrome_host::html_ui_enabled() {
+                if chrome_host::html_ui_enabled() && chrome_recovery::accepts_failure(hwnd, 1, wparam.0) {
                     html_tabs_failed(hwnd);
+                    chrome_recovery::schedule(hwnd);
                 }
                 LRESULT(0)
             }
             WM_HTML_RAIL_FAILED => {
-                if chrome_host::html_ui_enabled() {
+                if chrome_host::html_ui_enabled() && chrome_recovery::accepts_failure(hwnd, 2, wparam.0) {
                     html_rail_failed(hwnd);
+                    chrome_recovery::schedule(hwnd);
                 }
                 LRESULT(0)
             }
@@ -4739,6 +4840,17 @@ unsafe extern "system" fn window_proc(
                 DefWindowProcW(hwnd, message, wparam, lparam)
             }
             WM_CLOSE => {
+                if let Some(app) = app {
+                    let mut state = app.borrow_mut();
+                    if state.closing { return LRESULT(0); }
+                    state.closing = true;
+                }
+                if let Some(app) = app { App::cancel_browser_recovery(app); }
+                let _ = with_chrome(hwnd, |s| { s.surface_recovery.close(); s.chrome_lifetimes.revoke_all(); s.html_deferred.clear(); });
+                super::split_ui::revoke(hwnd);
+                let _ = KillTimer(Some(hwnd), chrome_recovery::TIMER);
+                let _ = KillTimer(Some(hwnd), surface_recovery::TIMER);
+                let _ = KillTimer(Some(hwnd), ENGINE_RECOVERY_TIMER);
                 let _ = KillTimer(Some(hwnd), WM_IDLE_TRIM_TIMER);
                 let _ = KillTimer(Some(hwnd), WM_CARET_BLINK_TIMER);
                 let _ = KillTimer(Some(hwnd), WM_ANIMATION_TIMER);
@@ -4758,7 +4870,6 @@ unsafe extern "system" fn window_proc(
                     flush_for_exit(hwnd, app);
                     let (mut engine, log) = {
                         let mut s = app.borrow_mut();
-                        s.closing = true;
                         (s.engine.take(), s.log.clone())
                     };
                     let _ = App::reset_navigation_progress(app);
@@ -4772,6 +4883,10 @@ unsafe extern "system" fn window_proc(
                 LRESULT(0)
             }
             WM_DESTROY => {
+                let _ = with_chrome(hwnd, |s| { s.surface_recovery.close(); s.chrome_lifetimes.revoke_all(); s.html_deferred.clear(); });
+                super::split_ui::revoke(hwnd);
+                let _ = KillTimer(Some(hwnd), chrome_recovery::TIMER);
+                let _ = KillTimer(Some(hwnd), surface_recovery::TIMER);
                 super::currency_menu::cancel(hwnd);
                 auto_hide::forget(hwnd); // --- auto-hide (T11) ---
                 super::panel_webapp::shutdown();
@@ -5669,8 +5784,8 @@ fn html_broadcast_pair(hwnd: HWND, app: &AppRef) {
     let json = super::split_ui::pair_message(app);
     let Some(hosts) = with_chrome(hwnd, |s| {
         [
-            (s.html_page_ready.then(|| s.html.clone()).flatten(), s.html_state_generation[0]),
-            (s.html_tabs_page_ready.then(|| s.html_tabs.clone()).flatten(), s.html_state_generation[1]),
+            ((s.html_page_ready || s.html_state_building[0] || s.html.as_ref().is_some_and(ChromeHost::awaiting_initial)).then(|| s.html.clone()).flatten(), s.html_state_generation[0]),
+            ((s.html_tabs_page_ready || s.html_state_building[1] || s.html_tabs.as_ref().is_some_and(ChromeHost::awaiting_initial)).then(|| s.html_tabs.clone()).flatten(), s.html_state_generation[1]),
         ]
     }) else {
         return;
@@ -8106,12 +8221,14 @@ pub(super) fn add_bookmark_now(hwnd: HWND, app: &AppRef) {
 /// A new tab from the user's hand (Ctrl+T, the new tab buttons, the menus): what the new tab page
 /// option says opens, and the keyboard goes to the page or the address bar as the options say.
 fn open_user_tab(hwnd: HWND, app: &AppRef) {
+    if let Ok(s)=app.try_borrow(){let _=s.log.record("perf_input_new_tab");}
     let id = App::open_new_tab(app);
     if new_tab_focuses_page(App::tab_is_blank(app, id), App::tab_options(app).focus_page) {
         App::focus_page(app);
     } else {
         focus_omni(hwnd, app, true);
     }
+    if let Ok(s)=app.try_borrow(){let _=s.log.record("perf_new_tab_returned");}
 }
 
 /// --- wave-1 fixes (testable rules of the Tabs options) ---
@@ -8807,7 +8924,7 @@ fn html_refresh_extensions_button(hwnd: HWND) {
         html_sync(hwnd);
     }
     let Some((host, generation)) = with_chrome(hwnd, |s| {
-        (s.html_page_ready && s.html_ext_last.as_deref() != Some(json.as_str()))
+        ((s.html_page_ready || s.html_state_building[0] || s.html.as_ref().is_some_and(ChromeHost::awaiting_initial)) && s.html_ext_last.as_deref() != Some(json.as_str()))
             .then(|| s.html.clone())
             .flatten()
             .map(|host| (host, s.html_state_generation[0]))
@@ -9384,6 +9501,7 @@ fn navigate_forward_for_focused_pane(app: &AppRef) {
 
 /// Caption buttons are painted and should take clicks. False while the top chrome is fully hidden.
 pub(super) fn caption_buttons_live(hwnd: HWND) -> bool {
+    if surface_recovery::needs_emergency(hwnd) { return true; }
     if auto_hide::fullscreen_of(hwnd) == crate::auto_hide::Fullscreen::Page {
         return false;
     }
@@ -9444,60 +9562,40 @@ fn toggle_max(hwnd: HWND) {
 /// profile. When that environment does not exist yet, the engine is asked to create it now, and
 /// `WM_HTML_CHROME_ENV` continues here once it settles. If anything fails, the native chrome stays.
 fn start_html_chrome(hwnd: HWND) {
-    let started = with_chrome(hwnd, |s| {
-        if s.html_requested {
-            return false;
-        }
-        s.html_requested = true;
-        s.html_env_waiting = true;
-        true
-    })
-    .unwrap_or(false);
+    let started = with_chrome(hwnd, WindowChrome::request_html_environment).unwrap_or(false);
     if started {
-        html_env_settled(hwnd);
+        // Startup requests the engine here. A loss has one separate App-owned recovery attempt;
+        // ordinary environment wakes still cannot create engines or refill that budget.
+        if let Some(app) = app_of(hwnd) {
+            if matches!(App::request_chrome_environment(&app), ChromeEnvironment::Unavailable) {
+                html_failed(hwnd); html_tabs_failed(hwnd); html_rail_failed(hwnd);
+                let _ = with_chrome(hwnd, |s| s.html_env_waiting = false);
+            } else { html_env_settled(hwnd); }
+        }
+        chrome_recovery::schedule(hwnd);
     }
 }
 
-/// Continues a waiting HTML chrome start with the engine's environment: both hosts are created
-/// on it, or, when there is none, the native chrome stays. Ignored unless the window is waiting.
 fn html_env_settled(hwnd: HWND) {
-    if !with_chrome(hwnd, |s| s.html_env_waiting).unwrap_or(false) {
-        return;
-    }
-    let Some(app) = app_of(hwnd) else {
-        return;
-    };
-    match App::request_chrome_environment(&app) {
-        ChromeEnvironment::Pending => {}
-        ChromeEnvironment::Ready(environment) => {
-            let env = ChromeEnv::new(environment, App::diagnostic_detail_log(&app), App::diagnostic_interaction_log(&app));
-            let _ = with_chrome(hwnd, |s| {
-                s.html_env_waiting = false;
-                s.html_env = Some(env.clone());
-            });
-            // The two controllers are requested together and are created concurrently. Each one's
-            // failure is its own.
-            start_html_toolbar(hwnd, &env);
-            start_html_tabs(hwnd);
-            start_html_rail(hwnd);
-            // --- popup surfaces (lane PP) ---
-            // The popup is created by `request_popup_prewarm` when the toolbar activates, so the
-            // hidden page does not compete with the visible toolbar.
-            // --- end popup surfaces ---
-            // The flyout panel and the hover layer are created the first time they are used
-            // (`ensure_flyout_panel`, `ensure_hover_layer`).
-        }
-        ChromeEnvironment::Unavailable => {
-            let _ = with_chrome(hwnd, |s| s.html_env_waiting = false);
-            html_failed(hwnd);
-            html_tabs_failed(hwnd);
-            html_rail_failed(hwnd);
-        }
-    }
+    if window_closing(hwnd) { return; }
+    let Some(app) = app_of(hwnd) else { return; };
+    let Some((generation, environment)) = App::current_chrome_environment(&app) else { return; };
+    let begin = with_chrome(hwnd, |s| s.begin_html_hosts(generation, Instant::now())).unwrap_or(false);
+    if !begin { return; }
+    let attachment_owner = Rc::downgrade(&app);
+    let env = ChromeEnv::new(environment, App::diagnostic_detail_log(&app), App::diagnostic_interaction_log(&app), Rc::new(move |pid| {
+        attachment_owner.upgrade().is_some_and(|app| App::chrome_browser_process_attached(&app, generation, pid))
+    }));
+    let _ = with_chrome(hwnd, |s| s.html_env = Some(env.clone()));
+    start_html_toolbar(hwnd, &env);
+    start_html_tabs(hwnd);
+    start_html_rail(hwnd);
+    // Restore only the existing internal start/private/picker surface selected by current App
+    // state. A settled replacement must not wait for a later user action to sync that host.
+    if !window_closing(hwnd) { super::split_ui::sync(hwnd, &app); }
+    chrome_recovery::schedule(hwnd);
 }
 
-/// Closes both chrome hosts and drops the window's reference to the shared environment, so the
-/// engine can close it next. Nothing restarts the HTML chrome afterwards.
 // --- popup host (lane M) ---
 fn prewarm_html_popup(hwnd: HWND) {
     let env = with_chrome(hwnd, |s| s.html_env.clone()).flatten();
@@ -9528,6 +9626,26 @@ fn html_panel_failed(hwnd: HWND) {
 }
 // --- end panel host ---
 fn close_html_chrome(hwnd: HWND) {
+    let _ = with_chrome(hwnd, |s| {
+        s.chrome_lifetimes.revoke_all();
+        s.html_state_building = [false; 3];
+        s.html_deferred.clear();
+        s.html_env_waiting = false;
+    });
+    super::split_ui::revoke(hwnd);
+    let hosts = with_chrome(hwnd, |s| {
+        s.html_requested = true;
+        s.html_tabs_requested = true;
+        s.html_rail_requested = true;
+        s.html_env_waiting = false;
+        s.html_toolbar_active = false;
+        s.html_page_ready = false;
+        s.html_tabs_page_ready = false;
+        s.html_rail_page_ready = false;
+        (s.html.take(), s.html_tabs.take(), s.html_rail.take(), s.html_env.take())
+    });
+    chrome_recovery::discard(hwnd, None);
+    unsafe { let _ = KillTimer(Some(hwnd), chrome_recovery::TIMER); }
     // --- popup host (lane M) ---
     unsafe { let _ = KillTimer(Some(hwnd), WM_HTML_POPUP_PREWARM_TIMER); }
     html_popup::shutdown(hwnd);
@@ -9545,20 +9663,8 @@ fn close_html_chrome(hwnd: HWND) {
     super::downloads_ui::close(hwnd);
     super::bookmark_bar::close(hwnd);
     super::address_bar::forget(hwnd);
-    let hosts = with_chrome(hwnd, |s| {
-        s.html_requested = true;
-        s.html_tabs_requested = true;
-        s.html_rail_requested = true;
-        s.html_env_waiting = false;
-        s.html_toolbar_active = false;
-        s.html_page_ready = false;
-        s.html_tabs_page_ready = false;
-        s.html_rail_page_ready = false;
-        s.html_env = None;
-        (s.html.take(), s.html_tabs.take(), s.html_rail.take())
-    });
     // Closed outside the borrow: closing a controller can pump messages.
-    if let Some((toolbar, tabs, rail)) = hosts {
+    if let Some((toolbar, tabs, rail, environment)) = hosts {
         if let Some(host) = toolbar {
             host.close();
         }
@@ -9568,47 +9674,136 @@ fn close_html_chrome(hwnd: HWND) {
         if let Some(host) = rail {
             host.close();
         }
+        drop(environment);
+    }
+}
+
+/// Fatal shared loss retains native chrome until a new settled engine generation. Detach all
+/// presentation state before closing hosts: Close may pump messages and reenter this window.
+pub(crate) fn recover_native_chrome(hwnd: HWND, app: &AppRef) {
+    if hwnd.is_invalid() { return; }
+    // Revoke before page/fullscreen changes or COM close can pump a late callback.
+    let _ = with_chrome(hwnd, |s| { s.chrome_lifetimes.revoke_all(); s.chrome_lifetimes.environments.lost(); s.html_deferred.clear(); });
+    super::split_ui::revoke(hwnd);
+    chrome_recovery::discard(hwnd, None);
+    page_fullscreen(hwnd, app, false);
+    let edit = with_chrome(hwnd, |s| {
+        s.html_failed = [true; 3];
+        s.html_toolbar_active = false;
+        s.html_page_ready = false;
+        s.html_tabs_page_ready = false;
+        s.html_rail_page_ready = false;
+        s.html_omnibox_focused = false;
+        s.html_env_waiting = false;
+        s.sync_html_bounds();
+        s.sync_html_tabs_bounds();
+        s.sync_html_rail_bounds();
+        s.edit
+    });
+    if let Some(edit) = edit.filter(|edit| !edit.is_invalid()) {
+        unsafe { let _ = ShowWindow(edit, SW_SHOW); }
+    }
+    repaint(hwnd);
+    sync_recovery_buttons(hwnd, app);
+    close_html_chrome(hwnd);
+}
+
+const RECOVERY_BUTTON_ID: usize = 0x6f10;
+const ENGINE_RECOVERY_TIMER: usize = 0x5f1;
+
+pub(crate) fn arm_engine_recovery_timeout(hwnd: HWND) -> bool {
+    if hwnd.is_invalid() { return false; }
+    unsafe { SetTimer(Some(hwnd), ENGINE_RECOVERY_TIMER, 1_000, None) != 0 }
+}
+
+/// Native buttons remain actionable and exposed to accessibility even with no WebView2 process.
+/// They are created only for failed content and follow the existing single/split pane geometry.
+fn sync_recovery_buttons(hwnd: HWND, app: &AppRef) {
+    if hwnd.is_invalid() || app.borrow().closing { return; }
+    let mut shown = [None; 4];
+    if let Some(split) = App::split_view(app) {
+        if let Some(bounds) = split_rects(hwnd, None) {
+            for (pane, tab) in split.panes() {
+                if let (Some(rect), Some(message)) = (bounds.get(pane), App::content_failure_message(app, tab)) {
+                    shown[pane.index()] = Some((tab, rect, message));
+                }
+            }
+        }
+    } else if let (Some(rect), Some(message)) = (split_viewport(hwnd), App::content_failure_message(app, App::active_tab_id(app))) {
+        shown[0] = Some((App::active_tab_id(app), rect, message));
+    }
+    let Some(buttons) = with_chrome(hwnd, |s| s.recovery_buttons) else { return; };
+    let mut regions = [None; 4];
+    for (index, (mut button, _)) in buttons.into_iter().enumerate() {
+        let Some((tab, rect, message)) = shown[index] else {
+            if !button.is_invalid() { unsafe { let _ = ShowWindow(button, SW_HIDE); } }
+            let _ = with_chrome(hwnd, |s| s.recovery_buttons[index].1 = None);
+            continue;
+        };
+        unsafe {
+            if button.is_invalid() {
+                use windows::Win32::UI::WindowsAndMessaging::{BS_MULTILINE, WINDOW_EX_STYLE, WS_TABSTOP};
+                let Ok(created) = CreateWindowExW(WINDOW_EX_STYLE(0), w!("BUTTON"), w!(""),
+                    WS_CHILD | WS_TABSTOP | WINDOW_STYLE(BS_MULTILINE as u32), 0, 0, 1, 1,
+                    Some(hwnd), Some(HMENU((RECOVERY_BUTTON_ID + index) as *mut _)), None, None) else { continue; };
+                button = created;
+            }
+            let font = app.borrow().input_font;
+            let _ = SendMessageW(button, windows::Win32::UI::WindowsAndMessaging::WM_SETFONT, Some(WPARAM(font.0 as usize)), Some(LPARAM(0)));
+            let text: Vec<u16> = message.encode_utf16().chain(std::iter::once(0)).collect();
+            let _ = SetWindowTextW(button, windows::core::PCWSTR(text.as_ptr()));
+            let width = split_px(hwnd, 380).min((rect.right - rect.left - split_px(hwnd, 24)).max(1));
+            let height = split_px(hwnd, 112).min((rect.bottom - rect.top).max(1));
+            let left = rect.left + (rect.right - rect.left - width) / 2;
+            let top = rect.top + (rect.bottom - rect.top - height) / 2;
+            let _ = SetWindowPos(button, Some(HWND_TOP), left, top, width, height, SWP_NOACTIVATE);
+            if with_chrome(hwnd, |s| s.recovery_buttons[index] = (button, Some(tab))).is_none() {
+                let _ = DestroyWindow(button);
+            } else {
+                let _ = ShowWindow(button, SW_SHOW);
+                regions[index] = Some(Rect::new(left, top, left + width, top + height));
+            }
+        }
+    }
+    if with_chrome(hwnd, |s| std::mem::replace(&mut s.recovery_regions, regions) != regions).unwrap_or(false) {
+        // A hole appearing, moving or disappearing must update retained overlay pixels too.
+        unsafe { let _ = InvalidateRect(Some(hwnd), None, false); }
     }
 }
 
 /// True once the window has started closing; a chrome host that finishes creation then is closed
 /// at once instead of being stored.
 fn window_closing(hwnd: HWND) -> bool {
-    app_of(hwnd).is_some_and(|app| app.borrow().closing)
+    app_of(hwnd).is_none_or(|app| app.borrow().closing)
 }
 
 /// Requests the HTML toolbar's controller on the shared environment.
 fn start_html_toolbar(hwnd: HWND, env: &ChromeEnv) {
     let bounds = with_chrome(hwnd, |s| chrome_host::toolbar_bounds(&s.layout).unwrap_or_default())
         .unwrap_or_default();
-    let raw = hwnd.0 as isize;
-    let on_command: Rc<dyn Fn(ChromeCommand)> =
-        Rc::new(move |command| html_command(HWND(raw as *mut _), command));
-    let on_accelerator: AccelHandler =
-        Rc::new(move |accel| html_accelerator(HWND(raw as *mut _), accel, View::Toolbar));
-    let on_failed: Rc<dyn Fn()> = Rc::new(move || unsafe {
-        // Posted, not handled here: the failure can arrive inside the controller's own callback.
-        let _ = PostMessageW(
-            Some(HWND(raw as *mut _)),
-            WM_HTML_CHROME_FAILED,
-            WPARAM(0),
-            LPARAM(0),
-        );
-    });
-    let created = ChromeHost::create(env, crate::chrome_host::host::ChromeHostOptions { parent: hwnd, bounds, view: View::Toolbar, on_command, on_failed, on_accelerator: Some(on_accelerator) }, move |result| html_created(hwnd, result));
+    let Some((lease, on_command, on_accelerator, on_failed)) =
+        chrome_recovery::callbacks(hwnd, 0, View::Toolbar, html_command, WM_HTML_CHROME_FAILED) else { return; };
+    let guard = lease.clone();
+    let Some(completed) = chrome_recovery::creation(hwnd, 0, lease) else { return; };
+    let created = ChromeHost::create_guarded(env, crate::chrome_host::host::ChromeHostOptions { parent: hwnd, bounds, view: View::Toolbar, on_command, on_failed, on_accelerator: Some(on_accelerator) },
+        Rc::new(move || guard.current()), completed);
     if created.is_err() {
         html_failed(hwnd);
     }
 }
 
 /// The controller was created, or failed. A created host is stored, placed and raised, then the
-/// toolbar activates as soon as the page is ready.
-fn html_created(hwnd: HWND, result: windows::core::Result<ChromeHost>) {
+/// toolbar remains parked until its complete state has been acknowledged.
+fn html_created(hwnd: HWND, lease: chrome_recovery::Lease, result: windows::core::Result<ChromeHost>) {
+    if !lease.current() || window_closing(hwnd) {
+        if let Ok(host) = result { host.close(); }
+        return;
+    }
     let Ok(host) = result else {
         html_failed(hwnd);
         return;
     };
-    if window_closing(hwnd) {
+    if window_closing(hwnd) || with_chrome(hwnd, |s| s.html_failed[0]).unwrap_or(true) {
         host.close();
         return;
     }
@@ -9617,98 +9812,13 @@ fn html_created(hwnd: HWND, result: windows::core::Result<ChromeHost>) {
         s.sync_html_bounds();
     });
     if stored.is_some() {
+        chrome_recovery::host_created(hwnd, 0);
         sync_html_host_bounds(hwnd);
         if let Some(region) = with_chrome(hwnd, |s| chrome_host::toolbar_bounds(&s.layout)).flatten()
         {
             raise_html_child(hwnd, region);
         }
-        html_refresh(hwnd);
     }
-}
-
-/// Activates the HTML toolbar once its host exists and the page has said `ready`, then sends the
-/// page its state. The native controls it replaces stop painting and the native address input is
-/// hidden. Runs again on every `ready`, so a reloaded page gets state too.
-fn html_refresh(hwnd: HWND) {
-    let Some((edit, host, activating, generation)) = with_chrome(hwnd, |s| {
-        let activating = s.html.is_some() && s.html_page_ready && !s.html_toolbar_active;
-        if s.html.is_some() && s.html_page_ready && !s.html_toolbar_active {
-            s.html_toolbar_active = true;
-            s.sync_html_bounds();
-        }
-        if !s.html_toolbar_active {
-            return None;
-        }
-        // A freshly loaded page knows nothing yet, so the next sync sends the state and the text.
-        s.html_last_state = None;
-        s.html_dl_last = None;
-        s.html_ext_last = None;
-        s.html_state_generation[0] = s.html_state_generation[0].wrapping_add(1);
-        s.html_text_sent = None;
-        s.html_synced_tab = None;
-        Some((s.edit, s.html.clone()?, activating, s.html_state_generation[0]))
-    })
-    .flatten() else {
-        return;
-    };
-    // --- popup host (lane M) ---
-    if activating {
-        perf_event(hwnd, "html_toolbar_ready");
-        // The normal start of the popup: requested once the toolbar reports ready.
-        request_popup_prewarm(hwnd);
-    }
-    // --- end popup host ---
-    let native_text = (!edit.is_invalid() && activating).then(|| read_edit(edit));
-    let native_focused = unsafe { !edit.is_invalid() && GetFocus() == edit };
-    let handoff = native_text.and_then(|text| {
-        let app = app_of(hwnd)?;
-        let id = App::active_tab_id(&app);
-        let committed = with_chrome(hwnd, |s| s.urls.get(&id).cloned().unwrap_or_default())?;
-        let modified = unsafe {
-            SendMessageW(edit, EM_GETMODIFY, None, None).0 != 0
-        };
-        chrome_host::should_handoff_edit(native_focused, &text, &committed)
-            .then(|| (id, chrome_host::handoff_text(&text, modified, &committed).to_owned()))
-    });
-    sync_html_host_bounds(hwnd);
-    if activating {
-        // Benchmark harnesses assert on this event to know the HTML chrome, not the native one, is live.
-        if let Some(app) = app_of(hwnd) {
-            let _ = app.borrow().log.record("html_chrome_shown");
-        }
-    }
-    html_sync(hwnd);
-    html_refresh_extensions_button(hwnd);
-    // The downloads list reaches the toolbar's download button from here on; a reloaded page gets the
-    // button's current state again.
-    if let Some(app) = app_of(hwnd) {
-        super::downloads_ui::install(hwnd, &app);
-    }
-    if let Some((id, text)) = handoff {
-        if host.post_json(&set_text_json(&text, false)).is_ok() {
-            let current = with_chrome(hwnd, |s| {
-                if s.html_state_generation[0] != generation { return false; }
-                s.html_text_sent = Some((id, text.clone(), String::new()));
-                s.html_synced_tab = Some(id);
-                s.html_omnibox_focused = true;
-                s.edit_text = text;
-                true
-            }).unwrap_or(false);
-            if current {
-                let _ = host.focus();
-                let _ = host.post_json(&focus_json(false));
-            }
-        }
-    }
-    unsafe {
-        if !edit.is_invalid() {
-            if GetFocus() == edit {
-                let _ = SetFocus(Some(hwnd));
-            }
-            let _ = ShowWindow(edit, SW_HIDE);
-        }
-    }
-    repaint(hwnd);
 }
 
 /// The application state behind this window, if it is still alive. The clone is an `Rc` handle, so
@@ -9728,7 +9838,7 @@ fn html_sync(hwnd: HWND) {
         return;
     };
     let Some((_chrome_palette, dpi, layout)) = with_chrome(hwnd, |s| {
-        if !(s.html_page_ready || s.html_tabs_page_ready || s.html_rail_page_ready) { return None; }
+        if !(s.html_page_ready || s.html_tabs_page_ready || s.html_rail_page_ready || s.html_state_building.iter().any(|v| *v) || [&s.html, &s.html_tabs, &s.html_rail].iter().any(|host| host.as_ref().is_some_and(ChromeHost::awaiting_initial))) { return None; }
         Some((s.palette, s.dpi, s.layout))
     })
     .flatten() else {
@@ -9794,13 +9904,13 @@ fn html_sync(hwnd: HWND) {
     let theme_json = state.theme_only().to_json();
     html_broadcast_state(hwnd, &json, &theme_json);
     html_broadcast_pair(hwnd, &app); // --- split view ---
-    let Some(host) = with_chrome(hwnd, |s| s.html_toolbar_active.then(|| s.html.clone()).flatten()).flatten() else {
+    let Some(host) = with_chrome(hwnd, |s| (s.html_toolbar_active || s.html_state_building[0] || s.html.as_ref().is_some_and(ChromeHost::awaiting_initial)).then(|| s.html.clone()).flatten()).flatten() else {
         return;
     };
     // The address field's and the search field's options (src/win32/address_bar.rs).
     let generation = with_chrome(hwnd, |s| s.html_state_generation[0]).unwrap_or_default();
     super::address_bar::sync(hwnd, &app, generation);
-    super::bookmark_bar::sync(hwnd, &app);
+    if host.applied() { super::bookmark_bar::sync(hwnd, &app); }
     let (display, full) = with_chrome(hwnd, |s| {
         (s.urls.get(&id).cloned().unwrap_or_default(), s.full_urls.get(&id).cloned().unwrap_or_default())
     })
@@ -9827,8 +9937,11 @@ fn html_sync(hwnd: HWND) {
                 if s.html_state_generation[0] != generation { return; }
                 s.html_synced_tab = Some(id);
                 s.html_text_sent = Some((id, display.clone(), full.clone()));
-                s.edit_text.clone_from(&display);
-                s.completion = None;
+                // Initial HTML state must not repaint over the native EDIT's ongoing typing.
+                if s.html_toolbar_active || s.edit.is_invalid() || unsafe { GetFocus() != s.edit } {
+                    s.edit_text.clone_from(&display);
+                    s.completion = None;
+                }
             });
     }
 }
@@ -9838,9 +9951,9 @@ fn html_sync(hwnd: HWND) {
 /// successful-send cache.
 fn html_broadcast_state(hwnd: HWND, json: &str, theme_json: &str) {
     let Some(candidates) = with_chrome(hwnd, |s| [
-        (s.html_page_ready && chrome_host::state_differs(&s.html_last_state, json)).then(|| s.html.clone()).flatten(),
-        (s.html_tabs_page_ready && chrome_host::state_differs(&s.html_tabs_last_state, theme_json)).then(|| s.html_tabs.clone()).flatten(),
-        (s.html_rail_page_ready && chrome_host::state_differs(&s.html_rail_last_state, theme_json)).then(|| s.html_rail.clone()).flatten(),
+        ((s.html_page_ready || s.html_state_building[0] || s.html.as_ref().is_some_and(ChromeHost::awaiting_initial)) && chrome_host::state_differs(&s.html_last_state, json)).then(|| s.html.clone()).flatten(),
+        ((s.html_tabs_page_ready || s.html_state_building[1] || s.html_tabs.as_ref().is_some_and(ChromeHost::awaiting_initial)) && chrome_host::state_differs(&s.html_tabs_last_state, theme_json)).then(|| s.html_tabs.clone()).flatten(),
+        ((s.html_rail_page_ready || s.html_state_building[2] || s.html_rail.as_ref().is_some_and(ChromeHost::awaiting_initial)) && chrome_host::state_differs(&s.html_rail_last_state, theme_json)).then(|| s.html_rail.clone()).flatten(),
     ]) else { return; };
     let generations = with_chrome(hwnd, |s| s.html_state_generation).unwrap_or_default();
     for (index, candidate) in candidates.into_iter().enumerate() {
@@ -9870,7 +9983,7 @@ pub(super) fn html_set_download_button(hwnd: HWND, on: bool, json: &str) {
         html_sync(hwnd);
     }
     let Some((host, generation)) = with_chrome(hwnd, |s| {
-        (s.html_page_ready && s.html_dl_last.as_deref() != Some(json))
+        ((s.html_page_ready || s.html_state_building[0] || s.html.as_ref().is_some_and(ChromeHost::awaiting_initial)) && s.html_dl_last.as_deref() != Some(json))
             .then(|| s.html.clone())
             .flatten()
             .map(|host| (host, s.html_state_generation[0]))
@@ -9889,7 +10002,7 @@ pub(super) fn html_set_download_button(hwnd: HWND, on: bool, json: &str) {
 
 /// Whether the HTML toolbar is up (its host exists and its page said `ready`).
 pub(super) fn html_toolbar_active(hwnd: HWND) -> bool {
-    with_chrome(hwnd, |s| s.html_toolbar_active && s.html_page_ready).unwrap_or(false)
+    with_chrome(hwnd, |s| s.html_toolbar_active && s.html_page_ready && s.html.as_ref().is_some_and(ChromeHost::applied)).unwrap_or(false)
 }
 
 /// The screen point the downloads bubble hangs from: under the download button, at its right edge.
@@ -9991,9 +10104,15 @@ pub(super) fn remember_typed_url(hwnd: HWND, app: &AppRef, text: &str) {
 /// Falls back to the native toolbar: the HTML region is released, the native address input comes
 /// back and the host is closed. Safe to call more than once.
 fn html_failed(hwnd: HWND) {
+    let _ = with_chrome(hwnd, |s| {
+        s.chrome_lifetimes.revoke(0);
+        s.html_deferred.clear();
+    });
+    chrome_recovery::discard(hwnd, Some(0));
     let Some((host, edit)) = with_chrome(hwnd, |s| {
         s.html_toolbar_active = false;
         s.html_failed[0] = true;
+        s.html_state_building[0] = false;
         s.html_page_ready = false;
         s.html_omnibox_focused = false;
         s.sync_html_bounds();
@@ -10011,7 +10130,7 @@ fn html_failed(hwnd: HWND) {
         }
     }
     // The downloads page keeps following the list after the fallback, even when the toolbar never
-    // became ready (html_refresh installs the observer otherwise).
+    // became ready (initial_state installs the observer otherwise).
     if let Some(app) = app_of(hwnd) {
         super::downloads_ui::install(hwnd, &app);
     }
@@ -10020,13 +10139,13 @@ fn html_failed(hwnd: HWND) {
 
 /// Handles one validated message from the HTML toolbar. Runs on the UI thread, holding no borrow.
 fn html_command(hwnd: HWND, command: ChromeCommand) {
+    let _document_scope = chrome_recovery::action_scope(hwnd, 0, &command);
+    if window_closing(hwnd) || with_chrome(hwnd, |s| s.html_failed[0]).unwrap_or(true) { return; }
+    let Some(command) = html_document_command(hwnd, 0, command) else { return; };
     match command {
         ChromeCommand::Interaction{..}=>return, // Intercepted by the opt-in host; never an action.
-        ChromeCommand::Ready => {
-            let _ = with_chrome(hwnd, |s| s.html_page_ready = true);
-            html_refresh(hwnd);
-            return;
-        }
+        ChromeCommand::Ready | ChromeCommand::ChromeAction { .. } | ChromeCommand::ChromeReady { .. }
+        | ChromeCommand::ChromeApplied(_) | ChromeCommand::ChromeFailed(_) | ChromeCommand::ChromeNavigating(_) => return,
         // --- hover layer ---
         ChromeCommand::Tip { .. } | ChromeCommand::TipOff => {
             html_hover_command(hwnd, View::Toolbar, command);
@@ -10066,6 +10185,7 @@ fn html_command(hwnd: HWND, command: ChromeCommand) {
         ChromeCommand::Submit(text) => {
             let Some(app) = app_of(hwnd) else { return };
             App::diagnostic_interaction_event(&app,"interaction_window_submit",u64::from(text=="bowser://settings"));
+            if let Ok(s)=app.try_borrow(){let _=s.log.record("perf_omnibox_submit");}
             super::html_hover::suggest_hide(hwnd); // --- omnibox suggest ---
             // Same path as the native omnibox: remember the typed text, then let App normalise it.
             remember_url(hwnd, App::active_tab_id(&app), &text, App::settings(&app).minimal_url);
@@ -10409,34 +10529,29 @@ fn start_html_tabs(hwnd: HWND) {
     .flatten() else {
         return;
     };
-    let raw = hwnd.0 as isize;
-    let on_command: Rc<dyn Fn(ChromeCommand)> =
-        Rc::new(move |command| html_tabs_command(HWND(raw as *mut _), command));
-    let on_accelerator: AccelHandler =
-        Rc::new(move |accel| html_accelerator(HWND(raw as *mut _), accel, View::Tabs));
-    let on_failed: Rc<dyn Fn()> = Rc::new(move || unsafe {
-        // Posted, not handled here: the failure can arrive inside the controller's own callback.
-        let _ = PostMessageW(
-            Some(HWND(raw as *mut _)),
-            WM_HTML_TABS_FAILED,
-            WPARAM(0),
-            LPARAM(0),
-        );
-    });
-    let created = ChromeHost::create(&env, crate::chrome_host::host::ChromeHostOptions { parent: hwnd, bounds, view: View::Tabs, on_command, on_failed, on_accelerator: Some(on_accelerator) }, move |result| html_tabs_created(hwnd, result));
+    let Some((lease, on_command, on_accelerator, on_failed)) =
+        chrome_recovery::callbacks(hwnd, 1, View::Tabs, html_tabs_command, WM_HTML_TABS_FAILED) else { return; };
+    let guard = lease.clone();
+    let Some(completed) = chrome_recovery::creation(hwnd, 1, lease) else { return; };
+    let created = ChromeHost::create_guarded(&env, crate::chrome_host::host::ChromeHostOptions { parent: hwnd, bounds, view: View::Tabs, on_command, on_failed, on_accelerator: Some(on_accelerator) },
+        Rc::new(move || guard.current()), completed);
     if created.is_err() {
         html_tabs_failed(hwnd);
     }
 }
 
 /// The tab strip controller was created, or failed. A created host is stored, placed and raised;
-/// the strip activates once its page says `ready`.
-fn html_tabs_created(hwnd: HWND, result: windows::core::Result<ChromeHost>) {
+/// the strip remains parked until its complete state has been acknowledged.
+fn html_tabs_created(hwnd: HWND, lease: chrome_recovery::Lease, result: windows::core::Result<ChromeHost>) {
+    if !lease.current() || window_closing(hwnd) {
+        if let Ok(host) = result { host.close(); }
+        return;
+    }
     let Ok(host) = result else {
         html_tabs_failed(hwnd);
         return;
     };
-    if window_closing(hwnd) {
+    if window_closing(hwnd) || with_chrome(hwnd, |s| s.html_failed[1]).unwrap_or(true) {
         host.close();
         return;
     }
@@ -10445,6 +10560,7 @@ fn html_tabs_created(hwnd: HWND, result: windows::core::Result<ChromeHost>) {
         s.sync_html_tabs_bounds();
     });
     if stored.is_some() {
+        chrome_recovery::host_created(hwnd, 1);
         sync_html_host_bounds(hwnd);
         // --- vertical sidebar (lane S) ---
         if let Some(region) = with_chrome(hwnd, |s| s.html_tabs_bounds()).flatten()
@@ -10452,36 +10568,21 @@ fn html_tabs_created(hwnd: HWND, result: windows::core::Result<ChromeHost>) {
         {
             raise_html_child(hwnd, region);
         }
-        html_tabs_refresh(hwnd);
     }
-}
-
-/// Activates the tab strip once its page is ready. A freshly loaded page knows nothing yet, so the
-/// whole strip and every favicon are resent. Runs again on every `ready`.
-fn html_tabs_refresh(hwnd: HWND) {
-    let _ = with_chrome(hwnd, |s| {
-        s.html_tabs_last = None;
-        s.html_tabs_last_state = None;
-        // --- vertical sidebar (lane S) ---
-        s.html_tabs_layout = None;
-        s.html_tabs_opts = None; // --- tab options ---
-        s.html_tabs_workspace = None;
-        // --- end vertical sidebar ---
-        s.html_state_generation[1] = s.html_state_generation[1].wrapping_add(1);
-        s.html_favicons_sent.clear();
-        s.sync_html_tabs_bounds();
-    });
-    sync_html_host_bounds(hwnd);
-    html_tabs_sync(hwnd);
-    repaint(hwnd);
 }
 
 /// The tab strip failed: its row goes back to native paint and its host is closed. The toolbar is
 /// unaffected. Safe to call more than once.
 fn html_tabs_failed(hwnd: HWND) {
+    let _ = with_chrome(hwnd, |s| {
+        s.chrome_lifetimes.revoke(1);
+        s.html_deferred.clear();
+    });
+    chrome_recovery::discard(hwnd, Some(1));
     let Some(host) = with_chrome(hwnd, |s| {
         s.html_tabs_page_ready = false;
         s.html_failed[1] = true;
+        s.html_state_building[1] = false;
         s.html_tabs_last = None;
         // --- vertical sidebar (lane S) ---
         s.html_tabs_layout = None;
@@ -10505,13 +10606,11 @@ fn html_tabs_failed(hwnd: HWND) {
 
 /// Handles one validated message from the HTML tab strip. Runs on the UI thread, holding no borrow.
 fn html_tabs_command(hwnd: HWND, command: ChromeCommand) {
+    let _document_scope = chrome_recovery::action_scope(hwnd, 1, &command);
+    if window_closing(hwnd) || with_chrome(hwnd, |s| s.html_failed[1]).unwrap_or(true) { return; }
+    let Some(command) = html_document_command(hwnd, 1, command) else { return; };
     match command {
-        ChromeCommand::Ready => {
-            let _ = with_chrome(hwnd, |s| s.html_tabs_page_ready = true);
-            html_tabs_refresh(hwnd);
-            html_sync(hwnd);
-            return;
-        }
+        ChromeCommand::Ready => return,
         ChromeCommand::BeginDrag | ChromeCommand::Caption(_) => {
             html_window_command(hwnd, command, View::Tabs);
             return;
@@ -10642,7 +10741,7 @@ fn defer_html_command(hwnd: HWND, command: DeferredChromeCommand) {
         if s.html_deferred.len() >= HTML_DEFERRED_LIMIT {
             return false;
         }
-        s.html_deferred.push_back(command);
+        s.html_deferred.push_back(chrome_recovery::DeferredAction { command, current: chrome_recovery::action_lease(hwnd) });
         true
     })
     .unwrap_or(false);
@@ -10816,10 +10915,11 @@ fn run_deferred_html_command(hwnd: HWND) {
     let Some(command) = with_chrome(hwnd, |s| s.html_deferred.pop_front()).flatten() else {
         return;
     };
+    if command.current.as_ref().is_some_and(|current| !current()) { return; }
     let Some(app) = app_of(hwnd) else {
         return;
     };
-    match command {
+    match command.command {
         DeferredChromeCommand::MainMenu => show_main_menu(hwnd, &app),
         DeferredChromeCommand::SiteInfo => {
             let button = with_chrome(hwnd, |s| s.layout.site_info_button()).unwrap_or_default();
@@ -11213,7 +11313,7 @@ fn html_tabs_sync(hwnd: HWND) {
     let tab_layout = App::tab_layout(&app);
     let rail = App::sidebar_collapsed(&app);
     let Some((host, snapshot, mode)) = with_chrome(hwnd, |s| {
-        s.html_tab_region()?;
+        if !s.html_state_building[1] && !s.html_tabs.as_ref().is_some_and(ChromeHost::awaiting_initial) { s.html_tab_region()?; }
         // --- vertical sidebar (lane S) ---
         // The side tells the strip which way the page is, for dragging a tab out onto it.
         let mode = if s.sidebar.is_some() {
@@ -11444,34 +11544,29 @@ fn start_html_rail(hwnd: HWND) {
     .flatten() else {
         return;
     };
-    let raw = hwnd.0 as isize;
-    let on_command: Rc<dyn Fn(ChromeCommand)> =
-        Rc::new(move |command| html_rail_command(HWND(raw as *mut _), command));
-    let on_accelerator: AccelHandler =
-        Rc::new(move |accel| html_accelerator(HWND(raw as *mut _), accel, View::Rail));
-    let on_failed: Rc<dyn Fn()> = Rc::new(move || unsafe {
-        // Posted, not handled here: the failure can arrive inside the controller's own callback.
-        let _ = PostMessageW(
-            Some(HWND(raw as *mut _)),
-            WM_HTML_RAIL_FAILED,
-            WPARAM(0),
-            LPARAM(0),
-        );
-    });
-    let created = ChromeHost::create(&env, crate::chrome_host::host::ChromeHostOptions { parent: hwnd, bounds, view: View::Rail, on_command, on_failed, on_accelerator: Some(on_accelerator) }, move |result| html_rail_created(hwnd, result));
+    let Some((lease, on_command, on_accelerator, on_failed)) =
+        chrome_recovery::callbacks(hwnd, 2, View::Rail, html_rail_command, WM_HTML_RAIL_FAILED) else { return; };
+    let guard = lease.clone();
+    let Some(completed) = chrome_recovery::creation(hwnd, 2, lease) else { return; };
+    let created = ChromeHost::create_guarded(&env, crate::chrome_host::host::ChromeHostOptions { parent: hwnd, bounds, view: View::Rail, on_command, on_failed, on_accelerator: Some(on_accelerator) },
+        Rc::new(move || guard.current()), completed);
     if created.is_err() {
         html_rail_failed(hwnd);
     }
 }
 
 /// The rail controller was created, or failed. A created host is stored, placed and raised; the
-/// rail activates once its page says `ready`.
-fn html_rail_created(hwnd: HWND, result: windows::core::Result<ChromeHost>) {
+/// rail remains parked until its complete state has been acknowledged.
+fn html_rail_created(hwnd: HWND, lease: chrome_recovery::Lease, result: windows::core::Result<ChromeHost>) {
+    if !lease.current() || window_closing(hwnd) {
+        if let Ok(host) = result { host.close(); }
+        return;
+    }
     let Ok(host) = result else {
         html_rail_failed(hwnd);
         return;
     };
-    if window_closing(hwnd) {
+    if window_closing(hwnd) || with_chrome(hwnd, |s| s.html_failed[2]).unwrap_or(true) {
         host.close();
         return;
     }
@@ -11480,6 +11575,7 @@ fn html_rail_created(hwnd: HWND, result: windows::core::Result<ChromeHost>) {
         s.sync_html_rail_bounds();
     });
     if stored.is_some() {
+        chrome_recovery::host_created(hwnd, 2);
         sync_html_host_bounds(hwnd);
         if let Some(region) = with_chrome(hwnd, |s| chrome_host::rail_bounds(&s.layout)).flatten() {
             raise_html_child(hwnd, region);
@@ -11488,34 +11584,18 @@ fn html_rail_created(hwnd: HWND, result: windows::core::Result<ChromeHost>) {
     }
 }
 
-/// Activates the HTML rail once its page is ready. A freshly loaded page knows nothing yet, so the
-/// whole rail and every favicon are resent. Runs again on every `ready`. The native rail stops
-/// painting and hit-testing its area from here on.
-fn html_rail_refresh(hwnd: HWND) {
-    let _ = with_chrome(hwnd, |s| {
-        s.html_rail_last = None;
-        s.html_rail_last_state = None;
-        s.html_state_generation[2] = s.html_state_generation[2].wrapping_add(1);
-        s.html_rail_favs_sent.clear();
-        // A hover or keyboard focus on the native rail belongs to the native buttons, now hidden.
-        if matches!(s.hover, Hit::Rail(_)) {
-            s.hover = Hit::None;
-        }
-        s.rail_keyboard_focus = false;
-        s.sync_html_rail_bounds();
-    });
-    sync_html_host_bounds(hwnd);
-    hide_rail_tooltip(hwnd);
-    html_rail_sync(hwnd);
-    repaint(hwnd);
-}
-
 /// The HTML rail failed: its area goes back to native paint and hit tests and its host is closed.
 /// The toolbar and tab strip are unaffected. Safe to call more than once.
 fn html_rail_failed(hwnd: HWND) {
+    let _ = with_chrome(hwnd, |s| {
+        s.chrome_lifetimes.revoke(2);
+        s.html_deferred.clear();
+    });
+    chrome_recovery::discard(hwnd, Some(2));
     let Some(host) = with_chrome(hwnd, |s| {
         s.html_rail_page_ready = false;
         s.html_failed[2] = true;
+        s.html_state_building[2] = false;
         s.html_rail_last = None;
         s.html_rail_favs_sent.clear();
         let host = s.html_rail.take();
@@ -11536,13 +11616,11 @@ fn html_rail_failed(hwnd: HWND) {
 
 /// Handles one validated message from the HTML rail. Runs on the UI thread, holding no borrow.
 fn html_rail_command(hwnd: HWND, command: ChromeCommand) {
+    let _document_scope = chrome_recovery::action_scope(hwnd, 2, &command);
+    if window_closing(hwnd) || with_chrome(hwnd, |s| s.html_failed[2]).unwrap_or(true) { return; }
+    let Some(command) = html_document_command(hwnd, 2, command) else { return; };
     match command {
-        ChromeCommand::Ready => {
-            let _ = with_chrome(hwnd, |s| s.html_rail_page_ready = true);
-            html_rail_refresh(hwnd);
-            html_sync(hwnd);
-            return;
-        }
+        ChromeCommand::Ready => return,
         ChromeCommand::Rail { action, key, rect } => html_rail_action(hwnd, action, key, rect),
         ChromeCommand::RailMove { key, before } => html_rail_move(hwnd, key, before),
         // --- tab stacks (T10) --- "Switch workspaces by scrolling" (Rust checks the option).
@@ -11636,7 +11714,7 @@ fn html_rail_sync(hwnd: HWND) {
         return;
     }
     let Some((host, json, favicons, generation, rail_gen)) = with_chrome(hwnd, |s| {
-        s.html_rail_region()?;
+        if !s.html_state_building[2] && !s.html_rail.as_ref().is_some_and(ChromeHost::awaiting_initial) { s.html_rail_region()?; }
         let host = s.html_rail.clone()?;
         let items = {
             let entries = rail_entries(s);
@@ -11740,7 +11818,7 @@ fn html_edit(hwnd: HWND, seq: u32, text: &str) {
 // --- omnibox suggest ---
 /// Posts `json` to the HTML toolbar page, if it is ready.
 pub(super) fn html_toolbar_post(hwnd: HWND, json: &str) {
-    if let Some(host) = with_chrome(hwnd, |s| s.html_toolbar_active.then(|| s.html.clone()).flatten()).flatten() {
+    if let Some(host) = with_chrome(hwnd, |s| (s.html_toolbar_active || s.html_state_building[0] || s.html.as_ref().is_some_and(ChromeHost::awaiting_initial)).then(|| s.html.clone()).flatten()).flatten() {
         let _ = host.post_json(json);
     }
 }
@@ -12075,6 +12153,8 @@ fn paint_chrome(hwnd: HWND, app: Option<&AppRef>) {
     unsafe {
         let mut ps = PAINTSTRUCT::default();
         let dc = BeginPaint(hwnd, &mut ps);
+        #[cfg(test)]
+        if let Some(dirty) = surface_recovery_tests::take_paint_damage() { ps.rcPaint = dirty; }
         if let Some(app) = app {
             let active = App::active_tab_id(app);
             let split_view = App::split_view(app);
@@ -12122,6 +12202,16 @@ fn paint_chrome(hwnd: HWND, app: Option<&AppRef>) {
                 let Some(s) = all.get_mut(&(hwnd.0 as isize)) else {
                     return;
                 };
+                s.sync_html_bounds(); s.sync_html_tabs_bounds(); s.sync_html_rail_bounds();
+                let layered_attempt = s.surface_recovery.can_draw();
+                // An upload failure need not freeze native controls while retries wait or are
+                // exhausted. Repaint usable pixels for the opaque DC, without retrying storage
+                // or layered presentation from ordinary paint/input messages.
+                if !layered_attempt && (s.surface.allocation_error().is_some()
+                    || (s.surface.width(), s.surface.height()) != s.client) { return; }
+                let dirty = if layered_attempt && s.surface_recovery.full_repaint {
+                    Rect::new(0, 0, s.client.0, s.client.1)
+                } else { dirty };
                 s.focused = focus;
                 // WindowChrome owns the text and icons. The short-lived references below are used only while
                 // this mutable borrow is held; clearing the vector precedes every snapshot replacement.
@@ -12335,16 +12425,32 @@ fn paint_chrome(hwnd: HWND, app: Option<&AppRef>) {
                         s.surface.paint_tile_titles(&bars, p, dirty);
                     }
                 }
+                // The layered popup is above every child HWND, even a child raised to HWND_TOP.
+                // Leave native recovery controls visible through the otherwise opaque empty pane.
+                for region in s.recovery_regions.into_iter().flatten() {
+                    s.surface.clear_native_child(region, dirty);
+                }
                 let t1 = std::time::Instant::now();
                 let mut origin = windows::Win32::Foundation::POINT { x: 0, y: 0 };
                 let _ = ClientToScreen(hwnd, &mut origin);
-                s.surface.present(s.overlay, origin, dirty);
+                let frame_ok = if let Some(error) = s.surface.allocation_error() {
+                    s.surface_recovery.fail(surface_recovery::Fault::Text(error));
+                    false
+                } else if !layered_attempt {
+                    false
+                } else if !s.surface.present(s.overlay, origin, dirty) {
+                    s.surface_recovery.fail(surface_recovery::Fault::Upload);
+                    false
+                } else {
+                    s.surface_recovery.succeeded();
+                    true
+                };
                 let t2 = std::time::Instant::now();
                 // A rail press or activation that this paint started needs frames to finish.
-                if s.surface.rail_animating(now) || s.motion.animating(now) {
+                if frame_ok && (s.surface.rail_animating(now) || s.motion.animating(now)) {
                     let _ = SetTimer(Some(hwnd), WM_ANIMATION_TIMER, ANIMATION_FRAME_MS, None);
                 }
-                if !s.first_paint_logged {
+                if frame_ok && !s.first_paint_logged {
                     s.first_paint_logged = true;
                     let _ = app.borrow().log.record("chrome_painted");
                     let _ = SetTimer(Some(hwnd), super::WM_IMPORT_OFFER_TIMER, 1800, None);
@@ -12358,7 +12464,7 @@ fn paint_chrome(hwnd: HWND, app: Option<&AppRef>) {
                         );
                     }
                 }
-                if *PAINT_LOG_ENABLED.get_or_init(|| std::env::var_os("BOWSER_PAINT_LOG").is_some())
+                if frame_ok && *PAINT_LOG_ENABLED.get_or_init(|| std::env::var_os("BOWSER_PAINT_LOG").is_some())
                 {
                     use std::io::Write;
                     if let Ok(mut f) = std::fs::OpenOptions::new()
@@ -12400,7 +12506,7 @@ fn paint_chrome(hwnd: HWND, app: Option<&AppRef>) {
                         FillRect(dc, &r, glass::solid_brush(glass::appearance()));
                     }
                 }
-                did = true;
+                did = frame_ok;
             });
             if did
                 && App::navigation_progress_percent(app) == Some(100)
@@ -12413,8 +12519,12 @@ fn paint_chrome(hwnd: HWND, app: Option<&AppRef>) {
                 invalidate_omni(hwnd)
             }
         }
+        if surface_recovery::needs_emergency(hwnd) {
+            surface_recovery::paint(hwnd, dc, ps.rcPaint);
+        }
         let _ = EndPaint(hwnd, &ps);
     }
+    surface_recovery::sync(hwnd);
 }
 fn read_edit(hwnd: HWND) -> String {
     unsafe {
@@ -12836,26 +12946,65 @@ fn persist_profile_history(url: String, title: String) -> bool {
     kept
 }
 
+struct EditSubclass {
+    parent: HWND,
+    recovery: surface_recovery::EditPaintLease,
+}
+
+unsafe fn install_edit_subclass(edit: HWND, parent: HWND, recovery: surface_recovery::EditPaintLease) -> bool {
+    let data = Box::into_raw(Box::new(EditSubclass { parent, recovery }));
+    unsafe {
+        if SetWindowSubclass(edit, Some(edit_subclass), 1, data as usize).as_bool() { return true; }
+        drop(Box::from_raw(data));
+    }
+    false
+}
+
 unsafe extern "system" fn edit_subclass(
     hwnd: HWND,
     msg: u32,
     w: WPARAM,
     l: LPARAM,
     _id: usize,
-    parent: usize,
+    data: usize,
 ) -> LRESULT {
     unsafe {
-        let main = HWND(parent as *mut _);
-        let raw = GetWindowLongPtrW(main, GWLP_USERDATA) as *const AppRef;
-        let app = raw.as_ref();
-        if msg == windows::Win32::UI::WindowsAndMessaging::WM_PAINT {
-            let mut ps = PAINTSTRUCT::default();
-            let _ = BeginPaint(hwnd, &mut ps);
-            let _ = EndPaint(hwnd, &ps);
-            return LRESULT(0);
+        let context = &*(data as *const EditSubclass);
+        let main = context.parent;
+        let (current, emergency) = context.recovery.state();
+        if msg == WM_NCDESTROY {
+            let _ = RemoveWindowSubclass(hwnd, Some(edit_subclass), 1);
+            drop(Box::from_raw(data as *mut EditSubclass));
+            return DefSubclassProc(hwnd, msg, w, l);
         }
-        if msg == WM_ERASEBKGND {
+        let paint = msg == windows::Win32::UI::WindowsAndMessaging::WM_PAINT;
+        if paint || msg == WM_ERASEBKGND {
+            if emergency && GetParent(hwnd).is_ok_and(|parent| parent == main) {
+                return DefSubclassProc(hwnd, msg, w, l);
+            }
+            if paint {
+                let mut ps = PAINTSTRUCT::default();
+                let _ = BeginPaint(hwnd, &mut ps);
+                let _ = EndPaint(hwnd, &ps);
+                return LRESULT(0);
+            }
             return LRESULT(1);
+        }
+        if !current || !GetParent(hwnd).is_ok_and(|parent| parent == main) {
+            return DefSubclassProc(hwnd, msg, w, l);
+        }
+        let raw = GetWindowLongPtrW(main, GWLP_USERDATA) as *const AppRef;
+        let owned_app = raw.as_ref().cloned();
+        let app = owned_app.as_ref();
+        if msg == 0x010D { // WM_IME_STARTCOMPOSITION
+            let _ = with_chrome(main, |s| s.native_ime_composing = true);
+        }
+        if msg == 0x010E { // WM_IME_ENDCOMPOSITION
+            let result = DefSubclassProc(hwnd, msg, w, l);
+            if let Some(token) = with_chrome(main, |s| { s.native_ime_composing = false; s.chrome_lifetimes.lease(0).token }) {
+                let _ = PostMessageW(Some(main), chrome_recovery::INPUT_RELEASED, WPARAM(token), LPARAM(0));
+            }
+            return result;
         }
         if msg == windows::Win32::UI::WindowsAndMessaging::WM_SETTEXT {
             let _ = with_chrome(main, |s| s.programmatic_text_update = true);
@@ -12897,6 +13046,11 @@ unsafe extern "system" fn edit_subclass(
         if msg == WM_KILLFOCUS {
             let _ = KillTimer(Some(main), WM_CARET_BLINK_TIMER);
             let r = DefSubclassProc(hwnd, msg, w, l);
+            if with_chrome(main, |s| s.html_input_handoff).unwrap_or(false) {
+                let _ = with_chrome(main, |s| { s.focused = false; s.caret = false; s.completion = None; });
+                invalidate_omni(main);
+                return r;
+            }
             let display = if let Some(app) = app {
                 with_chrome(main, |s| {
                     s.urls
@@ -13066,6 +13220,8 @@ mod tests {
         let ids = [
             #[cfg(feature = "experimental-engine-context-menu")]
             WM_ENGINE_CONTEXT_MENU,
+            super::super::WM_ENGINE_FAILURE,
+            chrome_recovery::EVENT, chrome_recovery::INPUT_RELEASED,
             WM_CHROME_SYNC, WM_FOREGROUND_SYNC, WM_HISTORY_BACK, WM_HISTORY_FORWARD, WM_HTML_CHROME_ENV,
             super::super::currency_menu::WM_SHOW,
             WM_HTML_CHROME_FAILED, WM_HTML_CHROME_START, WM_HTML_DEFERRED, WM_HTML_HOVER_START, WM_HTML_PANEL_FAILED,
@@ -13090,6 +13246,9 @@ mod tests {
     #[test]
     fn the_main_window_timer_ids_are_unique_and_outside_hover_ranges() {
         let ids = [
+            ENGINE_RECOVERY_TIMER,
+            surface_recovery::TIMER,
+            chrome_recovery::TIMER,
             #[cfg(feature = "experimental-engine-context-menu")]
             crate::engine::ENGINE_MENU_TIMER,
             #[cfg(feature = "experimental-engine-context-menu")]
@@ -13625,22 +13784,42 @@ mod tests {
     }
 
     #[test]
+    fn a_kept_alive_page_host_stays_until_pressure_and_keeps_its_clock() {
+        let start = Instant::now();
+        let mut idle = PageIdle::default();
+        assert!(!page_idle_step(&mut idle, true, start, || false));
+        assert!(!page_idle_step(&mut idle, false, start, || false));
+        // Long past the idle time but no pressure: stays, and is still being timed.
+        let asked = std::cell::Cell::new(0);
+        assert!(!page_idle_step(&mut idle, false, start + PAGE_IDLE_CLOSE * 4, || { asked.set(asked.get() + 1); false }));
+        assert_eq!(asked.get(), 1);
+        assert_eq!(idle.hidden_since, Some(start));
+        // Before the idle time the pressure check is not even asked.
+        let mut fresh = PageIdle::default();
+        assert!(!page_idle_step(&mut fresh, true, start, || unreachable!()));
+        assert!(!page_idle_step(&mut fresh, false, start + Duration::from_secs(1), || unreachable!()));
+        // Pressure arrives later: closes then, and the clock resets.
+        assert!(page_idle_step(&mut idle, false, start + PAGE_IDLE_CLOSE * 5, || true));
+        assert_eq!(idle.hidden_since, None);
+    }
+
+    #[test]
     fn a_hidden_page_host_closes_only_after_it_was_shown_and_then_stayed_hidden() {
         let start = Instant::now();
         let mut idle = PageIdle::default();
         // Never shown (still being created, or never used): never closed.
-        assert!(!page_idle_step(&mut idle, false, start + PAGE_IDLE_CLOSE * 2));
-        assert!(!page_idle_step(&mut idle, true, start));
-        assert!(!page_idle_step(&mut idle, false, start));
-        assert!(!page_idle_step(&mut idle, false, start + PAGE_IDLE_CLOSE - Duration::from_secs(1)));
+        assert!(!page_idle_step(&mut idle, false, start + PAGE_IDLE_CLOSE * 2, || true));
+        assert!(!page_idle_step(&mut idle, true, start, || true));
+        assert!(!page_idle_step(&mut idle, false, start, || true));
+        assert!(!page_idle_step(&mut idle, false, start + PAGE_IDLE_CLOSE - Duration::from_secs(1), || true));
         // Shown again in between: the clock starts over.
         let back = start + PAGE_IDLE_CLOSE;
-        assert!(!page_idle_step(&mut idle, true, back));
-        assert!(!page_idle_step(&mut idle, false, back));
-        assert!(page_idle_step(&mut idle, false, back + PAGE_IDLE_CLOSE));
+        assert!(!page_idle_step(&mut idle, true, back, || true));
+        assert!(!page_idle_step(&mut idle, false, back, || true));
+        assert!(page_idle_step(&mut idle, false, back + PAGE_IDLE_CLOSE, || true));
         // Closed: nothing is timed again until the recreated host has been shown.
         assert_eq!(idle, PageIdle::default());
-        assert!(!page_idle_step(&mut idle, false, back + PAGE_IDLE_CLOSE * 3));
+        assert!(!page_idle_step(&mut idle, false, back + PAGE_IDLE_CLOSE * 3, || true));
     }
 
     #[test]
@@ -13872,3 +14051,7 @@ fn app_menu_probe_tick(app:AppRef) {
         APP_MENU_PROBE_TICK.with(|slot|{if slot.borrow().is_none(){*slot.borrow_mut()=Some(callback);}});
     }
 }
+
+#[cfg(test)]
+#[path = "window/surface_recovery_tests.rs"]
+mod surface_recovery_tests;

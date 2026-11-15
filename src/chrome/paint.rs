@@ -8,6 +8,13 @@
 
 use std::{mem::size_of, ptr, slice, time::Instant};
 
+#[cfg(test)]
+#[path = "dib_tests.rs"]
+mod dib_tests;
+#[cfg(test)]
+#[path = "surface_test_support.rs"]
+pub(crate) mod surface_test_support;
+
 use windows::Win32::{
     Foundation::{COLORREF, HWND, POINT, RECT, SIZE},
     Graphics::Gdi::{
@@ -172,6 +179,8 @@ pub struct ChromeSurface {
     /// when the omnibox is not focused.
     caret_rect: Rect,
     last_presented: Option<PresentedSurface>,
+    /// A skipped label still needs a full repaint even if a later label's allocation succeeds.
+    paint_error: Option<SurfaceError>,
     page_regions: Option<(Rect, Option<layout::SplitPanes>)>,
     /// The viewport of a tab that has no page (a new tab), painted as an opaque themed surface so
     /// it never shows the desktop through the glass. `None` while a page is on screen.
@@ -204,6 +213,15 @@ pub struct ChromeSurface {
     /// tabs until the HTML strip is ready; the vertical sidebar waits for its HTML view. The window
     /// colour, captions and "+" are always drawn.
     html_pending: [bool; 3],
+}
+
+/// The allocation stage that failed. No window or page data is included.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SurfaceError {
+    InvalidSize,
+    CreateDc,
+    CreateBitmap,
+    SelectBitmap,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -269,17 +287,19 @@ impl ChromeSurface {
     /// Creates a surface for a client size. `height` is the client height; only chrome rows are kept.
     pub fn new(width: i32, height: i32, dpi: u32) -> Self {
         let (width, height, dpi) = surface_size(width, height, dpi);
+        let dib = Dib::new(width, height);
         Self {
-            width,
-            height,
+            width: dib.width,
+            height: dib.height,
             dpi,
-            dib: Dib::new(width, height),
+            dib,
             text_units: Vec::new(),
             label_units: Vec::new(),
             text: TextCache::new(width, height, dpi),
             omnibox_scroll: 0,
             caret_rect: Rect::default(),
             last_presented: None,
+            paint_error: None,
             page_regions: None,
             empty_viewport: None,
             auto_hidden_top: false,
@@ -313,18 +333,38 @@ impl ChromeSurface {
         self.rail_motion.set_snap(snap, now)
     }
 
-    /// Rebuilds storage only when client dimensions or DPI change.
+    /// Rebuilds storage when needed, retaining the usable surface on failure. Call `try_resize`
+    /// when the window needs to schedule recovery; `allocation_error` also reports initial failure.
     pub fn resize(&mut self, width: i32, height: i32, dpi: u32) {
+        let _ = self.try_resize(width, height, dpi);
+    }
+
+    /// Retries even at unchanged requested dimensions. `Ok(true)` requires a full repaint before
+    /// presentation, including the independent sidebar and split painters. `Err` leaves the
+    /// previous image size, DPI and pixels intact. Text-mask failures are in `allocation_error`.
+    pub fn try_resize(&mut self, width: i32, height: i32, dpi: u32) -> Result<bool, SurfaceError> {
         let (width, height, dpi) = surface_size(width, height, dpi);
-        if (self.width, self.height, self.dpi) == (width, height, dpi) {
-            return;
-        }
+        let changed = (self.width, self.height, self.dpi) != (width, height, dpi);
+        let repaint_after_error = self.paint_error.is_some() || self.text.dib.last_error.is_some();
+        let replaced = self.dib.resize(width, height)?;
         self.width = width;
         self.height = height;
         self.dpi = dpi;
-        self.dib.resize(width, height);
         self.text.resize(width, height, dpi);
-        self.omnibox_scroll = 0;
+        if changed || replaced {
+            self.omnibox_scroll = 0;
+        }
+        if changed || replaced || repaint_after_error {
+            self.last_presented = None;
+        }
+        Ok(changed || replaced || repaint_after_error)
+    }
+
+    /// Unresolved allocation failure, including text skipped before a later allocation succeeded.
+    /// A successful resize clears that DIB's error; skipped text stays observable until a full
+    /// paint. Inspect after painting as well as after initial construction.
+    pub fn allocation_error(&self) -> Option<SurfaceError> {
+        self.dib.last_error.or(self.paint_error).or(self.text.dib.last_error)
     }
 
     /// Recreates the cached fonts, for when the system message font changes.
@@ -418,6 +458,9 @@ impl ChromeSurface {
     /// the rectangle the new pane will take (a half, a quarter, or a pane it replaces), with an
     /// accent wash and edge.
     pub fn paint_split_drop(&mut self, target: Rect, palette: &Palette, dirty: Rect) {
+        if self.dib.bits.is_null() {
+            return;
+        }
         let m = Metrics::new(self.dpi);
         let radius = m.px(9);
         let tint = Rgba {
@@ -432,6 +475,9 @@ impl ChromeSurface {
     /// each a tab face across the top of its tile with the page's title, the focused tile's lifted
     /// like the active tab. `bars` holds `(bar, title, focused)`.
     pub fn paint_tile_titles(&mut self, bars: &[(Rect, String, bool)], palette: &Palette, dirty: Rect) {
+        if self.dib.bits.is_null() {
+            return;
+        }
         let m = Metrics::new(self.dpi);
         let inset = m.px(10);
         for (bar, title, focused) in bars {
@@ -467,6 +513,9 @@ impl ChromeSurface {
         dirty: Rect,
         palette: &Palette,
     ) {
+        if self.dib.bits.is_null() {
+            return;
+        }
         let SidebarPaintView { layout, rows, workspace, active, scroll, hover_row, html_sidebar } = view;
         let clip = layout.sidebar.intersect(dirty);
         if clip.is_empty() {
@@ -623,6 +672,9 @@ impl ChromeSurface {
         let dirty = dirty.intersect(bounds);
         if dirty.is_empty() || self.dib.bits.is_null() {
             return;
+        }
+        if dirty == bounds {
+            self.paint_error = None;
         }
         let stride = self.stride();
         let pixels = self.dib.pixels_mut();
@@ -862,10 +914,17 @@ impl ChromeSurface {
         }
     }
 
-    /// Updates the layered chrome surface using its premultiplied per-pixel alpha.
-    pub fn present(&mut self, overlay: HWND, origin: POINT, dirty: Rect) {
+    /// Updates the layered chrome surface using its premultiplied per-pixel alpha. Returns false
+    /// if no surface exists or both upload attempts fail, so the window can arrange recovery.
+    pub fn present(&mut self, overlay: HWND, origin: POINT, dirty: Rect) -> bool {
+        #[cfg(test)]
+        if surface_test_support::take_upload_failure() {
+            self.last_presented = None;
+            return false;
+        }
         if self.width <= 0 || self.height <= 0 || self.dib.bits.is_null() {
-            return;
+            self.last_presented = None;
+            return false;
         }
         let dirty = dirty.intersect(Rect::new(0, 0, self.width, self.height));
         let presented = PresentedSurface {
@@ -876,7 +935,7 @@ impl ChromeSurface {
         };
         let upload = upload_decision(self.last_presented, presented, dirty);
         if upload == Upload::Skip {
-            return;
+            return true;
         }
         unsafe {
             let size = SIZE {
@@ -930,6 +989,20 @@ impl ChromeSurface {
                 .is_ok();
             self.last_presented =
                 last_presented_after_upload(self.last_presented, presented, upload, success);
+            success
+        }
+    }
+
+    /// Emergency composition onto an already opaque native window DC. This does not count as a
+    /// successful layered frame and never mutates the normal premultiplied image or upload cache.
+    pub(crate) fn present_opaque(&self, dc: HDC, dirty: Rect) -> bool {
+        if self.dib.bits.is_null() { return false; }
+        let r = dirty.intersect(Rect::new(0, 0, self.width, self.height));
+        if r.is_empty() { return true; }
+        unsafe {
+            windows::Win32::Graphics::Gdi::AlphaBlend(dc, r.left, r.top, r.width(), r.height(),
+                self.dib.dc, r.left, r.top, r.width(), r.height(),
+                BLENDFUNCTION { BlendOp: 0, BlendFlags: 0, SourceConstantAlpha: 255, AlphaFormat: AC_SRC_ALPHA as u8 }).as_bool()
         }
     }
 
@@ -1030,8 +1103,11 @@ impl ChromeSurface {
         );
     }
 
-    /// The left rail: the pill, then, when the app supplies a rail view, its buttons and section
-    /// hairlines on top. Without a view the pill is painted alone.
+    /// Expose a native child through the layered overlay after all opaque viewport painting.
+    pub(crate) fn clear_native_child(&mut self, region: Rect, dirty: Rect) {
+        self.clear_html_region(Some(region.intersect(Rect::new(0, 0, self.width, self.height))), dirty);
+    }
+
     /// Zeroes the pixels of an HTML region where it meets `dirty`, so the overlay is transparent
     /// there and the HTML chrome shows through. `None` (no region) does nothing.
     fn clear_html_region(&mut self, region: Option<Rect>, dirty: Rect) {
@@ -2406,15 +2482,20 @@ impl ChromeSurface {
             return;
         }
         let length = encode_into(&mut self.label_units, value);
-        self.text
-            .draw(&self.label_units[..length], rect, visible, ellipsis);
-        self.composite_mask(visible, color);
+        if self.text.draw(&self.label_units[..length], rect, visible, ellipsis) {
+            self.composite_mask(visible, color);
+        } else {
+            self.paint_error = self.paint_error.or(self.text.dib.last_error);
+        }
     }
 
     fn composite_mask(&mut self, rect: Rect, color: Rgba) {
         if self.text.dib.bits.is_null() || self.dib.bits.is_null() {
             return;
         }
+        let rect = rect
+            .intersect(Rect::new(0, 0, self.dib.width, self.dib.height))
+            .intersect(Rect::new(0, 0, self.text.dib.width, self.text.dib.height));
         let mask = self.text.dib.pixels();
         let mask_stride = self.text.dib.stride();
         let stride = self.dib.stride();
@@ -2940,18 +3021,31 @@ const DIB_STEP: i32 = 64;
 
 /// The bitmap size to allocate for a `size` image, or `None` while the `allocated` bitmap still
 /// holds it with less than two steps of slack each way. A new allocation rounds up to a step. Pure.
-fn dib_allocation(allocated: (i32, i32), size: (i32, i32)) -> Option<(i32, i32)> {
+fn dib_allocation(allocated: (i32, i32), size: (i32, i32)) -> Result<Option<(i32, i32)>, SurfaceError> {
     let fits = |have: i32, want: i32| have >= want && have - want < 2 * DIB_STEP;
     if fits(allocated.0, size.0) && fits(allocated.1, size.1) {
-        return None;
+        return Ok(None);
     }
-    let round = |value: i32| (value.max(1) + DIB_STEP - 1) / DIB_STEP * DIB_STEP;
-    Some((round(size.0), round(size.1)))
+    let round = |value: i32| {
+        value.max(1).checked_add(DIB_STEP - 1)
+            .map(|rounded| rounded / DIB_STEP * DIB_STEP)
+            .ok_or(SurfaceError::InvalidSize)
+    };
+    let rounded = (round(size.0)?, round(size.1)?);
+    // GDI's scan-line width is a LONG and image byte count is a DWORD. Rust slices must also
+    // fit isize; validate the entire rounded allocation before asking GDI for any resources.
+    let stride = (rounded.0 as usize).checked_mul(4).ok_or(SurfaceError::InvalidSize)?;
+    let bytes = stride.checked_mul(rounded.1 as usize).ok_or(SurfaceError::InvalidSize)?;
+    if stride > i32::MAX as usize || bytes > u32::MAX as usize || bytes > isize::MAX as usize {
+        return Err(SurfaceError::InvalidSize);
+    }
+    Ok(Some(rounded))
 }
 
 /// A 32-bit top-down DIB section selected into its own memory DC. The bitmap may be larger than
 /// the image (`width` x `height`): rows are `stride()` bytes apart, and only the image is painted,
 /// read or presented.
+#[derive(Default)]
 struct Dib {
     dc: HDC,
     bitmap: HBITMAP,
@@ -2960,37 +3054,47 @@ struct Dib {
     height: i32,
     /// The bitmap's own size, at least the image's (see `dib_allocation`).
     allocated: (i32, i32),
+    last_error: Option<SurfaceError>,
 }
 impl Dib {
     fn new(width: i32, height: i32) -> Self {
-        let mut value = Self {
-            dc: HDC::default(),
-            bitmap: HBITMAP::default(),
-            bits: ptr::null_mut(),
-            width: 0,
-            height: 0,
-            allocated: (0, 0),
-        };
-        value.resize(width, height);
+        let mut value = Self::default();
+        let _ = value.resize(width, height);
         value
     }
     /// Sets the image size and reports whether the bitmap was reallocated for it. A size the
     /// current bitmap holds keeps it (its pixels outside the old image are stale until painted,
     /// which every resize does in full). A freshly created DIB is zeroed.
-    fn resize(&mut self, width: i32, height: i32) -> bool {
+    fn resize(&mut self, width: i32, height: i32) -> Result<bool, SurfaceError> {
+        let result = self.resize_checked(width, height);
+        self.last_error = result.as_ref().err().copied();
+        result
+    }
+
+    fn resize_checked(&mut self, width: i32, height: i32) -> Result<bool, SurfaceError> {
         let (width, height) = (width.max(1), height.max(1));
         let held = if self.bits.is_null() { (0, 0) } else { self.allocated };
-        let Some(allocated) = dib_allocation(held, (width, height)) else {
+        let Some(allocated) = dib_allocation(held, (width, height))? else {
             self.width = width;
             self.height = height;
-            return false;
+            return Ok(false);
         };
-        self.release();
-        self.width = width;
-        self.height = height;
-        self.allocated = allocated;
+        #[cfg(test)]
+        if surface_test_support::take_allocation_failure() {
+            return Err(SurfaceError::CreateBitmap);
+        }
+        // The candidate owns every handle immediately. Any failed stage drops only it; the
+        // old pixels, stride and DC stay usable until the replacement is selected successfully.
+        let mut replacement = Self { width, height, allocated, ..Self::default() };
         unsafe {
+            #[cfg(test)]
+            let dc = dib_tests::create_dc();
+            #[cfg(not(test))]
             let dc = CreateCompatibleDC(None);
+            replacement.dc = dc;
+            if dc.0.is_null() {
+                return Err(SurfaceError::CreateDc);
+            }
             let info = BITMAPINFO {
                 bmiHeader: BITMAPINFOHEADER {
                     biSize: size_of::<BITMAPINFOHEADER>() as u32,
@@ -3005,17 +3109,30 @@ impl Dib {
                 bmiColors: [Default::default()],
             };
             let mut bits = ptr::null_mut();
-            let bitmap = CreateDIBSection(Some(dc), &info, DIB_RGB_COLORS, &mut bits, None, 0)
-                .unwrap_or_default();
-            let _ = SelectObject(dc, bitmap.into());
-            self.dc = dc;
-            self.bitmap = bitmap;
-            self.bits = bits.cast();
+            #[cfg(test)]
+            let bitmap = dib_tests::create_bitmap(dc, &info, &mut bits);
+            #[cfg(not(test))]
+            let bitmap = CreateDIBSection(Some(dc), &info, DIB_RGB_COLORS, &mut bits, None, 0);
+            replacement.bitmap = bitmap.map_err(|_| SurfaceError::CreateBitmap)?;
+            if replacement.bitmap.0.is_null() || bits.is_null() {
+                return Err(SurfaceError::CreateBitmap);
+            }
+            #[cfg(test)]
+            let previous = dib_tests::select_bitmap(dc, replacement.bitmap);
+            #[cfg(not(test))]
+            let previous = SelectObject(dc, replacement.bitmap.into());
+            if previous.0.is_null() || previous.0 as isize == -1 {
+                return Err(SurfaceError::SelectBitmap);
+            }
+            replacement.bits = bits.cast();
         }
-        true
+        *self = replacement;
+        Ok(true)
     }
     fn release(&mut self) {
         unsafe {
+            // Deleting the owned DC first releases its selected bitmap (and any text font).
+            // DeleteObject must not run while our bitmap is still selected into that DC.
             if !self.dc.0.is_null() {
                 let _ = DeleteDC(self.dc);
             }
@@ -3026,6 +3143,8 @@ impl Dib {
         self.dc = HDC::default();
         self.bitmap = HBITMAP::default();
         self.bits = ptr::null_mut();
+        self.width = 0;
+        self.height = 0;
         self.allocated = (0, 0);
     }
     fn stride(&self) -> usize {
@@ -3093,7 +3212,16 @@ impl TextCache {
     }
     fn resize(&mut self, width: i32, height: i32, dpi: u32) {
         self.wanted = (width.max(1), height.max(1));
-        if self.mask_allocated() && self.dib.resize(width, height) {
+        let resized = if self.dib.bits.is_null() {
+            self.dib.resize(1, 1)
+        } else if self.mask_allocated() {
+            self.dib.resize(width, height)
+        } else {
+            // Revalidate the retained measurement bitmap after a failed mask growth. HTML
+            // takeover can make the large mask unnecessary before any native text is drawn.
+            self.dib.resize(1, 1)
+        };
+        if resized == Ok(true) {
             self.prepare_dc();
             self.select_font();
         }
@@ -3105,13 +3233,19 @@ impl TextCache {
     }
     /// Grows the mask to the surface size when it is smaller. `composite_mask` reads it at surface
     /// coordinates, so every draw goes through here first.
-    fn ensure_mask(&mut self) {
-        if self.dib.width >= self.wanted.0 && self.dib.height >= self.wanted.1 {
-            return;
+    fn ensure_mask(&mut self) -> bool {
+        if !self.dib.bits.is_null() && self.dib.width >= self.wanted.0 && self.dib.height >= self.wanted.1 {
+            return true;
         }
-        if self.dib.resize(self.wanted.0, self.wanted.1) {
-            self.prepare_dc();
-            self.select_font();
+        match self.dib.resize(self.wanted.0, self.wanted.1) {
+            Ok(replaced) => {
+                if replaced {
+                    self.prepare_dc();
+                    self.select_font();
+                }
+                true
+            }
+            Err(_) => false,
         }
     }
     /// Shrinks the mask back to the small bitmap, for when the HTML regions draw all the chrome's
@@ -3121,7 +3255,12 @@ impl TextCache {
             return;
         }
         // Not `Dib::resize`: a bitmap within two steps of the new size would be kept.
-        self.dib = Dib::new(1, 1);
+        let replacement = Dib::new(1, 1);
+        if replacement.bits.is_null() {
+            self.dib.last_error = replacement.last_error;
+            return;
+        }
+        self.dib = replacement;
         self.prepare_dc();
         self.select_font();
     }
@@ -3191,10 +3330,9 @@ impl TextCache {
     }
     /// Draws `text` inside `rect`, touching only `visible`, which is the part that will be read
     /// back. `visible` must lie inside the mask.
-    fn draw(&mut self, text: &[u16], rect: Rect, visible: Rect, ellipsis: bool) {
-        self.ensure_mask();
-        if self.dib.bits.is_null() {
-            return;
+    fn draw(&mut self, text: &[u16], rect: Rect, visible: Rect, ellipsis: bool) -> bool {
+        if !self.ensure_mask() {
+            return false;
         }
         unsafe {
             let _ = PatBlt(
@@ -3210,7 +3348,7 @@ impl TextCache {
         // DrawTextW may still inspect that pointer when the count is zero, so never call GDI for
         // an empty label. Clearing first also prevents a previous mask from being composited.
         if text.is_empty() {
-            return;
+            return true;
         }
         unsafe {
             let _ = IntersectClipRect(
@@ -3239,6 +3377,7 @@ impl TextCache {
             );
             let _ = SelectClipRgn(self.dib.dc, None);
         }
+        true
     }
     /// Pixel width of the first `index` units of `text`.
     fn measure(&self, text: &[u16], index: usize) -> i32 {
@@ -3758,15 +3897,15 @@ mod tests {
 
     #[test]
     fn chrome_bitmaps_keep_their_allocation_through_small_resizes() {
-        let first = dib_allocation((0, 0), (1000, 700)).expect("first allocation");
+        let first = dib_allocation((0, 0), (1000, 700)).unwrap().expect("first allocation");
         assert_eq!(first, (1024, 704));
         // A live resize a few pixels at a time keeps the bitmap, growing or shrinking.
         for size in [(1001, 700), (1024, 704), (990, 690), (961, 641)] {
-            assert_eq!(dib_allocation(first, size), None, "{size:?}");
+            assert_eq!(dib_allocation(first, size), Ok(None), "{size:?}");
         }
         // Past its edge, or with two steps of slack, it is rebuilt at the new size's step.
-        assert_eq!(dib_allocation(first, (1025, 700)), Some((1088, 704)));
-        assert_eq!(dib_allocation(first, (896, 704)), Some((896, 704)));
+        assert_eq!(dib_allocation(first, (1025, 700)), Ok(Some((1088, 704))));
+        assert_eq!(dib_allocation(first, (896, 704)), Ok(Some((896, 704))));
     }
 
     #[test]

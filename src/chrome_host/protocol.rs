@@ -6,6 +6,7 @@
 //! break out of its JSON literal, and theme colours are checked before they are emitted.
 
 use std::{fmt, time::{Duration, Instant}};
+use super::handshake::{ChromeView, DocumentToken, Revision, StateIdentity};
 
 /// Largest raw message accepted from the page, in bytes. Room for the settings page's `save`
 /// ([`MAX_SETTINGS_SAVE_CHARS`]) once JSON-escaped; every field keeps its own, smaller cap.
@@ -129,6 +130,28 @@ fn tools_json(tools: &[ToolButton]) -> String {
     out
 }
 // --- end toolbars and feeds ---
+
+#[cfg(test)]
+mod restoration_protocol_tests {
+    use super::*;
+    #[test]
+    fn chrome_restoration_wire_requires_exact_typed_identity() {
+        let doc = "0123456789abcdef0123456789abcdef";
+        for view in ["toolbar", "tabs", "rail"] {
+            let raw = format!(r#"{{"v":1,"t":"chromeApplied","view":"{view}","doc":"{doc}","rev":1}}"#);
+            assert!(matches!(parse_command(&raw), Ok(Command::ChromeApplied(_))));
+            for invalid in [raw.replace("\"rev\":1", "\"rev\":0"), raw.replace("\"rev\":1", "\"rev\":4294967296"), raw.replace(doc, "ABCDEF"), raw.replace(view, "settings"), raw.replace("\"rev\":1", "\"rev\":1,\"extra\":true")] {
+                assert!(parse_command(&invalid).is_err(), "{invalid}");
+            }
+        }
+        let action = |text: &str| format!(r#"{{"v":1,"t":"chromeAction","view":"toolbar","doc":"{doc}","text":{}}}"#, json_string(text));
+        let submit = r#"{"v":1,"t":"submit","text":"https://example.test/"}"#;
+        assert!(matches!(parse_command(&action(submit)), Ok(Command::ChromeAction { command, .. }) if matches!(*command, Command::Submit(_))));
+        assert!(parse_command(&action(&action(submit))).is_err(), "envelopes never recurse");
+        assert!(parse_command(&action(r#"{"v":1,"t":"chromeReady","view":"toolbar","doc":"0123456789abcdef0123456789abcdef"}"#)).is_err());
+        assert_eq!(parse_command(r#"{"v":1,"t":"ready"}"#), Ok(Command::Ready), "nonpersistent views keep their existing protocol");
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CaptionAction {
@@ -300,6 +323,12 @@ pub struct MenuCards {
 /// A validated message from the chrome page.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Command {
+    ChromeAction { view: ChromeView, document: DocumentToken, command: Box<Command> },
+    ChromeReady { view: ChromeView, document: DocumentToken },
+    ChromeApplied(StateIdentity),
+    ChromeFailed(StateIdentity),
+    /// Native-only notification; never accepted by the wire parser.
+    ChromeNavigating(u64),
     Ready,
     /// Non-action telemetry, accepted only from the toolbar and dropped unless opted in.
     Interaction { event: &'static str, count: u32 },
@@ -663,7 +692,9 @@ impl fmt::Display for ProtocolError {
 impl std::error::Error for ProtocolError {}
 
 /// Parses one page message. Pure: no I/O, no allocation beyond the returned value.
-pub fn parse_command(raw: &str) -> Result<Command, ProtocolError> {
+pub fn parse_command(raw: &str) -> Result<Command, ProtocolError> { parse_message(raw, true) }
+
+fn parse_message(raw: &str, envelope: bool) -> Result<Command, ProtocolError> {
     if raw.len() > MAX_RAW_BYTES {
         return Err(ProtocolError::TooLarge);
     }
@@ -673,6 +704,7 @@ pub fn parse_command(raw: &str) -> Result<Command, ProtocolError> {
     if parser.pos != raw.len() {
         return Err(ProtocolError::Syntax("trailing characters"));
     }
+    if !envelope && matches!(str_field(&fields, "t")?, "chromeAction" | "chromeReady" | "chromeApplied" | "chromeFailed") { return Err(ProtocolError::InvalidValue("t")); }
     build_command(&fields)
 }
 
@@ -1139,6 +1171,9 @@ fn build_command(fields: &[(String, Value)]) -> Result<Command, ProtocolError> {
     let kind = str_field(fields, "t")?;
     let allowed: &[&str] = match kind {
         "ready" | "escape" => &[],
+        "chromeReady" => &["view", "doc"],
+        "chromeAction" => &["view", "doc", "text"],
+        "chromeApplied" | "chromeFailed" => &["view", "doc", "rev"],
         "nav" | "open" => &["a"],
         "interaction" => &["e", "n"],
         "edit" => &["seq", "text"],
@@ -1197,6 +1232,21 @@ fn build_command(fields: &[(String, Value)]) -> Result<Command, ProtocolError> {
     }
     Ok(match kind {
         "ready" => Command::Ready,
+        "chromeAction" => {
+            let view = ChromeView::parse(str_field(fields, "view")?).ok_or(ProtocolError::InvalidValue("view"))?;
+            let document = DocumentToken::parse(str_field(fields, "doc")?).ok_or(ProtocolError::InvalidValue("doc"))?;
+            let command = Box::new(parse_message(str_field(fields, "text")?, false)?);
+            Command::ChromeAction { view, document, command }
+        }
+        "chromeReady" | "chromeApplied" | "chromeFailed" => {
+            let view = ChromeView::parse(str_field(fields, "view")?).ok_or(ProtocolError::InvalidValue("view"))?;
+            let document = DocumentToken::parse(str_field(fields, "doc")?).ok_or(ProtocolError::InvalidValue("doc"))?;
+            if kind == "chromeReady" { Command::ChromeReady { view, document } } else {
+                let revision = Revision::new(uint_field(fields, "rev")?).ok_or(ProtocolError::InvalidValue("rev"))?;
+                let id = StateIdentity { view, document, revision };
+                if kind == "chromeApplied" { Command::ChromeApplied(id) } else { Command::ChromeFailed(id) }
+            }
+        },
         "interaction" => {
             let event=match str_field(fields,"e")? {
                 "armed"=>"interaction_dom_armed", "enter_capture"=>"interaction_dom_enter_capture",
@@ -1735,6 +1785,21 @@ impl ViewState {
 }
 
 /// `{"t":"setText","text":...,"select":...}`: Rust sets the omnibox text.
+/// The native EDIT's UTF-16 selection is transferred without focusing the parked document.
+pub fn native_text_json(text: &str, start: usize, end: usize) -> String {
+    let text = truncate_utf16(text, MAX_TEXT_CHARS);
+    let len = text.encode_utf16().count();
+    let start = start.min(len);
+    let end = end.max(start).min(len);
+    format!(r#"{{"v":1,"t":"nativeText","text":{},"start":{start},"end":{end}}}"#, json_string(text))
+}
+
+pub fn focus_native_json(start: usize, end: usize) -> String {
+    let start = start.min(MAX_TEXT_CHARS);
+    let end = end.max(start).min(MAX_TEXT_CHARS);
+    format!(r#"{{"v":1,"t":"focusNative","start":{start},"end":{end}}}"#)
+}
+
 pub fn set_text_json(text: &str, select: bool) -> String {
     format!(
         "{{\"t\":\"setText\",\"text\":{},\"select\":{select}}}",

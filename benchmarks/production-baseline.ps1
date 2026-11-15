@@ -2,9 +2,9 @@
 # No --benchmark-* arguments, no remote-debugging, no user profile, no disabled security features.
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory)][string]$BaselineExe,
-    [Parameter(Mandatory)][string]$DiagnosticExe,
-    [Parameter(Mandatory)][string]$ReleaseExe,
+    [string]$BaselineExe,
+    [string]$DiagnosticExe,
+    [string]$ReleaseExe,
     [Parameter(Mandatory)][string]$Out,
     [ValidateRange(1,30)][int]$Pairs=5,
     [ValidateSet('light','demanding','redirect','filter-parity')][string[]]$Fixtures=@('light','demanding','redirect'),
@@ -32,6 +32,10 @@ param(
     [switch]$StartupOnly,
     [string]$CandidateExe,
     [string]$CandidateSource,
+    [switch]$ExternalUiDriver,
+    [string]$PairManifest,
+    [string]$PairManifestSha256,
+    [ValidateRange(30,600)][int]$OperatorTimeoutSeconds=180,
     [ValidateSet('timing','resource')][string]$MeasurementMode='resource',
     [ValidateRange(10,20)][int]$ReadinessPollMilliseconds=15,
     [ValidateRange(1,30)][int]$IdleSeconds=3,
@@ -40,9 +44,20 @@ param(
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference='Stop'
+if ($ExternalUiDriver) {
+    # Dispatch before loading any legacy window/input/capture code.
+    $allowed=@('ExternalUiDriver','StartupOnly','BaselineExe','CandidateExe','PairManifest','PairManifestSha256','Out','Pairs','Fixtures','PositiveOnly','MeasurementMode','SampleMilliseconds','OperatorTimeoutSeconds','Verbose','Debug','ErrorAction','WarningAction','InformationAction','ErrorVariable','WarningVariable','InformationVariable','OutVariable','OutBuffer','PipelineVariable')
+    foreach($key in $PSBoundParameters.Keys){if($key -notin $allowed){throw "ExternalUiDriver does not support mixed legacy option: $key"}}
+    if(-not $StartupOnly -or $Fixtures.Count -ne 1 -or $Fixtures[0] -cne 'light' -or -not $PositiveOnly){throw 'ExternalUiDriver requires StartupOnly, PositiveOnly and Fixtures light'}
+    Import-Module "$PSScriptRoot/production-paired-startup.psm1" -Force
+    Invoke-PairedStartup -BaselineExe $BaselineExe -CandidateExe $CandidateExe -PairManifest $PairManifest -PairManifestSha256 $PairManifestSha256 -Out $Out -Pairs $Pairs -MeasurementMode $MeasurementMode -SampleMilliseconds $SampleMilliseconds -OperatorTimeoutSeconds $OperatorTimeoutSeconds
+    return
+}
+if($PairManifest -or $PairManifestSha256){throw 'Explicit pair manifests require ExternalUiDriver'}
+if(-not $BaselineExe -or -not $DiagnosticExe -or -not $ReleaseExe){throw 'Legacy mode requires BaselineExe, DiagnosticExe and ReleaseExe; explicit current pairs use ExternalUiDriver'}
 Import-Module "$PSScriptRoot/measurements.psm1" -Force
 Import-Module "$PSScriptRoot/production-measurements.psm1" -Force
-if (-not $IsWindows) { throw 'Native Windows required' }
+if ([Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT) { throw 'Native Windows required' }
 if($DiagnosticAutoUpdateOff -and -not $ExpectedInputManifest){throw 'Updater-off diagnostic requires the original frozen-input manifest'}
 if($SurfaceInputMethod -ne 'sendkeys' -and -not $IncludeSurfaceSmoke){throw 'UIA value control requires the independent surface lane'}
 if($StartupOnly -and $IncludeTabFlow){throw 'StartupOnly cannot be combined with IncludeTabFlow'}
@@ -71,13 +86,13 @@ $arms=[ordered]@{release=(Resolve-BowserExecutable $ReleaseExe);baseline=(Resolv
 $inputPaths=@($BaselineExe,$DiagnosticExe,$ReleaseExe)
 if ($CandidateExe) {
     if ($CandidateSource -notmatch '^[0-9a-f]{40}$') { throw 'Candidate source must be its exact40-character commit SHA' }
-    $arms=[ordered]@{baseline_on=(Resolve-BowserExecutable $DiagnosticExe);candidate_on=(Resolve-BowserExecutable $CandidateExe)}
+    $arms=[ordered]@{baseline_on=(Resolve-BowserExecutable $BaselineExe);candidate_on=(Resolve-BowserExecutable $CandidateExe)}
     if($DiagnosticDetailPilot) { $arms['candidate_detail_on']=(Resolve-BowserExecutable $CandidateExe) }
-    if($DiagnosticInteractionPilot){$arms['baseline_interaction_on']=(Resolve-BowserExecutable $DiagnosticExe);$arms['candidate_interaction_on']=(Resolve-BowserExecutable $CandidateExe)}
+    if($DiagnosticInteractionPilot){$arms['baseline_interaction_on']=(Resolve-BowserExecutable $BaselineExe);$arms['candidate_interaction_on']=(Resolve-BowserExecutable $CandidateExe)}
     if($BookmarkBarPilot){$arms=[ordered]@{bookmarkbar_off=(Resolve-BowserExecutable $CandidateExe);bookmarkbar_on=(Resolve-BowserExecutable $CandidateExe)}}
-    if($BookmarkBarCompare){$arms=[ordered]@{bookmarkbar_baseline_on=(Resolve-BowserExecutable $DiagnosticExe);bookmarkbar_candidate_on=(Resolve-BowserExecutable $CandidateExe)}}
+    if($BookmarkBarCompare){$arms=[ordered]@{bookmarkbar_baseline_on=(Resolve-BowserExecutable $BaselineExe);bookmarkbar_candidate_on=(Resolve-BowserExecutable $CandidateExe)}}
     if($SidebarLifecyclePilot){$arms=[ordered]@{sidebar_off=(Resolve-BowserExecutable $CandidateExe);sidebar_on=(Resolve-BowserExecutable $CandidateExe)}}
-    if($SidebarLifecycleCompare){$arms=[ordered]@{sidebar_baseline_on=(Resolve-BowserExecutable $DiagnosticExe);sidebar_candidate_on=(Resolve-BowserExecutable $CandidateExe)}}
+    if($SidebarLifecycleCompare){$arms=[ordered]@{sidebar_baseline_on=(Resolve-BowserExecutable $BaselineExe);sidebar_candidate_on=(Resolve-BowserExecutable $CandidateExe)}}
     if($SidebarRouteSmoke){$arms=[ordered]@{sidebar_route_on=(Resolve-BowserExecutable $CandidateExe)}}
     if($SidebarCapabilityPreflight){$arms=[ordered]@{sidebar_preflight_on=(Resolve-BowserExecutable $CandidateExe)}}
     $inputPaths+=@($CandidateExe)

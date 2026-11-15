@@ -1054,6 +1054,8 @@ pub enum BlockHit {
     Rule,
 }
 
+static WEB_RESOURCE_REQUESTS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 /// Matcher plus exceptions plus the enable switch; shared (behind `Rc<RefCell<..>>`) by the
 /// WebView2 hook and the UI toggle.
 pub struct BlockerState {
@@ -1078,6 +1080,8 @@ pub struct BlockerState {
     /// Built on first use and rebuilt after the rules change.
     devtools: OnceCell<DevtoolsPatterns>,
     devtools_trackers: OnceCell<DevtoolsPatterns>,
+    /// The WebView2 request-filter plan and the rule generation it was computed at.
+    request_filter_plan: RefCell<Option<(u32, Vec<String>)>>,
     /// Bumped whenever the rules or the per-site choices change, so a tab that already pushed its
     /// DevTools patterns knows to push them again.
     generation: u32,
@@ -1134,6 +1138,7 @@ impl BlockerState {
             sites_unreadable: false,
             devtools: OnceCell::new(),
             devtools_trackers: OnceCell::new(),
+            request_filter_plan: RefCell::new(None),
             generation: 0,
             pending: None,
         }
@@ -1265,6 +1270,7 @@ impl BlockerState {
     fn rules_changed(&mut self) {
         self.devtools = OnceCell::new();
         self.devtools_trackers = OnceCell::new();
+        *self.request_filter_plan.borrow_mut() = None;
         self.generation = self.generation.wrapping_add(1);
     }
 
@@ -1587,8 +1593,34 @@ impl BlockerState {
 
     /// WebView2 request filters for the rules DevTools cannot enforce; see
     /// [`Blocker::request_filters`]. The same for every page, so a tab installs them once.
+    ///
+    /// Computed once per rule generation and reused by every controller created or configured
+    /// after; any rule or site-choice change bumps the generation and so drops the cached plan.
     pub fn request_filters(&self) -> Vec<String> {
+        if let Some((generation, filters)) = self.request_filter_plan.borrow().as_ref() {
+            if *generation == self.generation {
+                return filters.clone();
+            }
+        }
+        let filters = self.matcher.request_filters();
+        *self.request_filter_plan.borrow_mut() = Some((self.generation, filters.clone()));
+        filters
+    }
+
+    /// The uncached plan, for parity checks.
+    #[cfg(test)]
+    fn request_filters_uncached(&self) -> Vec<String> {
         self.matcher.request_filters()
+    }
+
+    /// Counts one `WebResourceRequested` callback handled by a tab's hook.
+    pub fn note_web_resource_request() {
+        WEB_RESOURCE_REQUESTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// `WebResourceRequested` callbacks handled since start.
+    pub fn web_resource_requests_handled() -> u64 {
+        WEB_RESOURCE_REQUESTS.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// DevTools Response-stage patterns for the YouTube player responses, for a document on
@@ -3041,6 +3073,41 @@ mod tests {
         ||redirector.example.net/|\n\
         /banner-ad/\n\
         /tracker.js$third-party\n";
+
+    #[test]
+    fn cached_request_filter_plan_matches_a_fresh_computation_across_generations() {
+        let mut s = state(DECISION_LIST, &[]);
+        let first_generation = s.generation();
+        assert_eq!(s.request_filters(), s.request_filters_uncached());
+        assert_eq!(s.request_filters(), s.request_filters(), "second call hits the cache");
+        for list in [
+            "||google.com/pagead/\n",
+            "*banner*\n",
+            "******\n",
+            DECISION_LIST,
+            "",
+        ] {
+            let mut all = Blocker::default();
+            all.add_list(list);
+            let built = sources::Built {
+                all,
+                trackers: Blocker::default(),
+                cookies: cookies::CookieRules::default(),
+                counts: HashMap::new(),
+            };
+            s.install(built);
+            assert_ne!(s.generation(), first_generation);
+            assert_eq!(s.request_filters(), s.request_filters_uncached(), "list {list:?}");
+            assert_eq!(s.request_filters(), s.request_filters_uncached());
+        }
+    }
+
+    #[test]
+    fn request_counter_increments() {
+        let before = BlockerState::web_resource_requests_handled();
+        BlockerState::note_web_resource_request();
+        assert!(BlockerState::web_resource_requests_handled() > before);
+    }
 
     #[test]
     fn network_blocklist_and_request_filters_keep_every_old_decision() {

@@ -368,8 +368,8 @@ const SLEEP_MIN_WAIT_MS: u32 = 1_000;
 const SLEEP_CHECK_TIMEOUT: Duration = Duration::from_secs(60);
 /// After a check keeps a tab awake, the page is not asked again for this long.
 const SLEEP_BLOCKED_BACKOFF: Duration = Duration::from_secs(120);
-/// A tab whose render process crashed again within this window is reported, not reloaded.
-const CRASH_RELOAD_MIN_GAP: Duration = Duration::from_secs(10);
+/// A user-requested recovery must not wait forever for an environment/controller completion.
+const ENGINE_RECOVERY_TIMEOUT: Duration = Duration::from_secs(30);
 /// Tabs kept in `tab_mru` (`ctrl_tab_mru`), oldest dropped first.
 const MAX_TAB_MRU: usize = 64;
 
@@ -379,7 +379,7 @@ pub fn memory_pressure(load_percent: u32, available_phys_bytes: u64) -> bool {
         || available_phys_bytes < MEMORY_PRESSURE_FREE_BYTES
 }
 
-fn system_memory_pressure() -> bool {
+pub(crate) fn system_memory_pressure() -> bool {
     let mut status = MEMORYSTATUSEX {
         dwLength: size_of::<MEMORYSTATUSEX>() as u32,
         ..Default::default()
@@ -545,6 +545,9 @@ pub fn background_memory_decision(minimized: bool, page_loaded: bool) -> IdleMem
     }
 }
 
+/// How often a Low foreground page checks for new input (restore latency bound).
+pub const IDLE_RESTORE_POLL_MS: u32 = 200;
+
 pub fn idle_memory_decision(
     minimized: bool,
     page_loaded: bool,
@@ -576,9 +579,10 @@ pub fn idle_memory_decision(
                 timer: IdleTimerAction::Arm(3_000),
             };
         }
+        // Keep a cheap poll while Low so the next keystroke or wheel tick restores Normal.
         return IdleMemoryDecision {
             target: MemoryUsageTarget::Low,
-            timer: IdleTimerAction::Kill,
+            timer: IdleTimerAction::Arm(IDLE_RESTORE_POLL_MS),
         };
     }
     let target = if idle_ms >= 3_000 {
@@ -587,7 +591,7 @@ pub fn idle_memory_decision(
         MemoryUsageTarget::Normal
     };
     let timer = if target == MemoryUsageTarget::Low {
-        IdleTimerAction::Kill
+        IdleTimerAction::Arm(IDLE_RESTORE_POLL_MS)
     } else {
         IdleTimerAction::Arm(1_000)
     };
@@ -633,11 +637,72 @@ pub enum DownloadFollowup {
     Failed,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum EngineNotice {
+    Process(engine::ProcessFailure),
+    BrowserLost(u32),
+    ControllerFailed(TabId, u64, i32),
+    CreationFailed(i32),
+    OperationFailed(i32),
+}
+
+#[derive(Default)]
+struct EngineNotices(Vec<(u64, EngineNotice)>);
+
+impl EngineNotices {
+    fn push(&mut self, generation: u64, notice: EngineNotice) -> bool {
+        let browser_loss = |notice: &EngineNotice| matches!(notice,
+            EngineNotice::BrowserLost(_) | EngineNotice::Process(engine::ProcessFailure { kind: engine::ProcessFailureKind::BrowserExited, .. }));
+        let controller_browser_loss = matches!(notice,
+            EngineNotice::Process(engine::ProcessFailure { kind: engine::ProcessFailureKind::ControllerBrowserExited, .. }));
+        if self.0.iter().any(|(epoch, pending)| *epoch == generation && (browser_loss(pending) || *pending == notice)) {
+            return false;
+        }
+        let was_empty = self.0.is_empty();
+        if browser_loss(&notice) {
+            self.0.retain(|(epoch, _)| *epoch != generation);
+        } else if self.0.len() >= 128 && !controller_browser_loss {
+            return false;
+        }
+        self.0.push((generation, notice));
+        was_empty
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ContentFailure { BrowserLost, RendererExited, Initialization }
+
+#[derive(Clone, Copy)]
+struct BrowserRecovery {
+    generation: u64,
+    /// None until the deferred window dispatch claims the one automatic attempt.
+    started: Option<Instant>,
+}
+
+impl ContentFailure {
+    fn message(self) -> &'static str {
+        match self {
+            Self::BrowserLost => "The browser process stopped.\nReload this address\nSubmitted forms will not be sent again.",
+            Self::RendererExited => "This page stopped.\nReload this address\nSubmitted forms will not be sent again.",
+            Self::Initialization => "This page could not be opened.\nRetry this address",
+        }
+    }
+}
+
 pub struct App {
     pub hwnd: HWND,
     pub edit: HWND,
     pub input_font: HFONT,
     pub engine: Option<Box<dyn engine::EngineAdapter>>,
+    browser_process_observer: Option<Rc<dyn Fn(u32) -> bool>>,
+    engine_generation: u64,
+    engine_in_use: bool,
+    /// One automatic shared-engine replacement per window lifetime. Neither a new generation nor
+    /// successful creation rearms it; ordinary explicit user creation remains available.
+    browser_recovery_used: bool,
+    browser_recovery: Option<BrowserRecovery>,
+    engine_notices: Rc<RefCell<EngineNotices>>,
+    pending_request_body: Option<(TabId, url::Url, String)>,
     pending_login_messages: Vec<(TabId, crate::passwords::LoginMessage)>,
     pub pending: Option<url::Url>,
     pending_tab: Option<TabId>,
@@ -800,6 +865,8 @@ struct AppTab {
     can_forward: bool,
     page_usable: bool,
     controller_created: bool,
+    failure: Option<ContentFailure>,
+    recovery_started: Option<Instant>,
     muted: bool,
     hidden_since: Option<Instant>,
     suspended: bool,
@@ -811,8 +878,6 @@ struct AppTab {
     sleep_check_started: Option<Instant>,
     /// The last check found unsaved input or media; do not ask again before this.
     sleep_blocked_until: Option<Instant>,
-    /// Last time a crashed render process was recovered by reloading this tab.
-    last_crash_reload: Option<Instant>,
     /// Requests the blocker stopped since this document started loading.
     blocked: u32,
     /// A permission request from the current page was denied (toolbar indicator).
@@ -851,13 +916,14 @@ impl AppTab {
             can_forward: false,
             page_usable: false,
             controller_created: false,
+            failure: None,
+            recovery_started: None,
             muted: false,
             hidden_since: None,
             suspended: false,
             discarded: false,
             sleep_check_started: None,
             sleep_blocked_until: None,
-            last_crash_reload: None,
             blocked: 0,
             permission_blocked: false,
             zoom: crate::site_prefs::ZOOM_DEFAULT,
@@ -1087,19 +1153,11 @@ impl App {
         Self::with_engine(app,move|engine|{engine.probe_open_extension_receipt(id,folder,done);Ok(())});
     }
 
-    fn with_engine(
+    fn with_engine<T>(
         app: &AppRef,
-        operation: impl FnOnce(&mut dyn engine::EngineAdapter) -> windows::core::Result<()>,
-    ) -> Option<windows::core::Result<()>> {
-        let mut current = app.borrow_mut().engine.take()?;
-        let result = operation(current.as_mut());
-        let mut state = app.borrow_mut();
-        if state.closing {
-            let _ = current.close();
-        } else {
-            state.engine = Some(current);
-        }
-        Some(result)
+        operation: impl FnOnce(&mut dyn engine::EngineAdapter) -> windows::core::Result<T>,
+    ) -> Option<windows::core::Result<T>> {
+        Self::call_engine(app, operation)
     }
 
     /// Title suffix describing the blocker for the active tab, e.g. ` [12 blocked]`.
@@ -1930,6 +1988,7 @@ impl App {
     }
 
     pub fn select_tab(app: &AppRef, id: TabId) -> bool {
+        if let Ok(s)=app.try_borrow(){let _=s.log.record("perf_tab_select_start");}
         let hwnd = app.borrow().hwnd;
         win32::page_fullscreen(hwnd, app, false);
         let _ = Self::expand_group_for_tab(app, id);
@@ -3137,6 +3196,7 @@ impl App {
             (state.hwnd, state.edit, active)
         };
         Self::diagnostic_interaction_event(app,"interaction_internal_show_applied",u64::from(id.0));
+        if let Ok(s)=app.try_borrow(){let _=s.log.record("perf_internal_shown");}
         if active {
             win32::sync_address_input(hwnd, edit, id, &url, Self::settings(app).minimal_url);
             Self::sync_window_title(app);
@@ -3619,6 +3679,7 @@ impl App {
     }
 
     pub fn reload(app: &AppRef) {
+        if Self::retry_failed_tab(app, Self::active_tab_id(app)) { return; }
         // An internal page has no engine page: reloading it re-reads what it shows.
         if let Some(page) = Self::internal_page(app, Self::active_tab_id(app)) {
             let hwnd = app.borrow().hwnd;
@@ -3638,6 +3699,7 @@ impl App {
 
     /// Reloads the requested tab without selecting it first.
     pub fn reload_tab(app: &AppRef, id: TabId) {
+        if Self::retry_failed_tab(app, id) { return; }
         if id == Self::active_tab_id(app) {
             Self::reload(app);
         } else {
@@ -4453,11 +4515,28 @@ impl App {
         engine::download::release(&keys);
     }
 
-    /// Runs `f` on the engine when one exists. The app is borrowed for the call, so `f` must not
-    /// re-enter the UI; the WebView2 calls used here only queue work.
+    /// Runs `f` with the engine detached and App unborrowed, since COM calls may dispatch callbacks.
+    /// A close or generation change retires the engine instead of reinstalling it after the call.
     pub fn call_engine<R>(app: &AppRef, f: impl FnOnce(&mut dyn EngineAdapter) -> R) -> Option<R> {
+        let (mut current, generation) = {
+            let mut state = app.borrow_mut();
+            if state.closing { return None; }
+            let current = state.engine.take()?;
+            state.engine_in_use = true;
+            (current, state.engine_generation)
+        };
+        let result = f(current.as_mut());
         let mut state = app.borrow_mut();
-        state.engine.as_mut().map(|engine| f(engine.as_mut()))
+        state.engine_in_use = false;
+        if state.closing || state.engine_generation != generation {
+            drop(state);
+            let _ = current.close();
+        } else {
+            state.engine = Some(current);
+            drop(state);
+        }
+        Self::repost_engine_notices(app);
+        Some(result)
     }
 
     /// `done` always runs with App unborrowed: callers open menus that read App. An engine that
@@ -5193,6 +5272,13 @@ impl App {
             edit: HWND::default(),
             input_font: HFONT::default(),
             engine: None,
+            browser_process_observer: None,
+            engine_generation: 0,
+            engine_in_use: false,
+            browser_recovery_used: false,
+            browser_recovery: None,
+            engine_notices: Rc::new(RefCell::new(EngineNotices::default())),
+            pending_request_body: None,
             pending_login_messages: Vec::new(),
             pending: None,
             pending_tab: None,
@@ -5592,49 +5678,329 @@ impl App {
         Self::save_workspaces_now(app);
     }
 
-    /// A tab's render process crashed. The active tab reloads; a hidden tab is marked so that it
-    /// navigates afresh when selected. A repeat within [`CRASH_RELOAD_MIN_GAP`] is reported
-    /// instead of reloaded again, so a page that crashes on load cannot loop.
-    pub fn tab_render_failed(app: &AppRef, id: TabId) {
-        let now = Instant::now();
-        let (focused, visible, failed_pane) = {
-            let mut state = app.borrow_mut();
-            if state.closing {
-                return;
-            }
-            let focused = state.tab_model.active() == id;
-            let split = state.split_view;
-            let visible = focused || split.is_some_and(|split| split.pane_for(id).is_some());
-            let failed_pane = split.and_then(|split| split.pane_for(id));
-            let Some(tab) = state.tabs.iter_mut().find(|tab| tab.id == id) else {
-                return;
-            };
-            if tab
-                .last_crash_reload
-                .is_some_and(|last| now.saturating_duration_since(last) < CRASH_RELOAD_MIN_GAP)
-            {
-                drop(state);
-                win32::show_error_message("WebView2 error: the page process crashed again.");
-                return;
-            }
-            tab.last_crash_reload = Some(now);
-            tab.page_usable = false;
-            if !visible {
-                tab.discarded = true;
-            }
-            (focused, visible, failed_pane)
+    fn enqueue_engine_notice(queue: &Rc<RefCell<EngineNotices>>, hwnd: HWND, generation: u64, notice: EngineNotice) {
+        let post = queue.borrow_mut().push(generation, notice);
+        if post {
+            win32::post_engine_failure(hwnd);
+        }
+    }
+
+    fn process_failure_callback(app: &AppRef, generation: u64) -> Rc<dyn Fn(engine::ProcessFailure)> {
+        let state = app.borrow();
+        let (queue, hwnd) = (state.engine_notices.clone(), state.hwnd);
+        Rc::new(move |failure| Self::enqueue_engine_notice(&queue, hwnd, generation, EngineNotice::Process(failure)))
+    }
+
+    fn browser_loss_callback(app: &AppRef, generation: u64) -> Rc<dyn Fn(u32)> {
+        let state = app.borrow();
+        let (queue, hwnd) = (state.engine_notices.clone(), state.hwnd);
+        Rc::new(move |pid| Self::enqueue_engine_notice(&queue, hwnd, generation, EngineNotice::BrowserLost(pid)))
+    }
+
+    /// Window hook: report each shared chrome controller's BrowserProcessId before publishing it.
+    /// False rejects a late/obsolete attachment. No COM calls or teardown run under the App borrow.
+    pub(crate) fn chrome_browser_process_attached(app: &AppRef, generation: u64, pid: u32) -> bool {
+        let observer = {
+            let state = app.borrow();
+            if state.closing || state.engine_generation != generation { return false; }
+            state.browser_process_observer.clone()
         };
-        let _ = app.borrow().log.record("tab_render_process_failed");
-        if focused {
-            Self::reload(app);
-        } else if visible && let Some(pane) = failed_pane {
-            let previous = app.borrow().split_view.map(|split| split.focused);
-            let _ = Self::focus_split_pane(app, pane);
-            Self::reload(app);
-            if let Some(previous) = previous {
-                let _ = Self::focus_split_pane(app, previous);
+        observer.is_some_and(|observe| observe(pid))
+    }
+
+    /// Called only by the posted window message, after WebView2's event handler returns.
+    pub(crate) fn process_engine_notices(app: &AppRef) {
+        if app.borrow().engine_in_use { return; }
+        let queue = app.borrow().engine_notices.clone();
+        let notices = std::mem::take(&mut queue.borrow_mut().0);
+        for (generation, notice) in notices {
+            if !Self::engine_generation_current(app, generation) { continue; }
+            match notice {
+                EngineNotice::BrowserLost(pid) => {
+                    let log = app.borrow().log.clone();
+                    let _ = log.record("engine_browser_process_exited");
+                    let _ = log.record_detail_count("engine_browser_process_id", 0, u64::from(pid));
+                    let _ = log.record("engine_browser_lost");
+                    Self::invalidate_browser(app, ContentFailure::BrowserLost);
+                }
+                EngineNotice::Process(failure) => {
+                    use engine::ProcessFailureKind::*;
+                    let log = app.borrow().log.clone();
+                    let _ = log.record(match failure.kind {
+                        BrowserExited => "engine_browser_process_exited",
+                        ControllerBrowserExited => "engine_controller_browser_exited",
+                        RendererExited => "engine_renderer_process_exited",
+                        RendererUnresponsive => "engine_renderer_unresponsive",
+                        FrameRendererExited => "engine_frame_process_exited",
+                        GpuExited => "engine_gpu_process_exited",
+                        UtilityExited => "engine_utility_process_exited",
+                        Other(_) => "engine_other_process_exited",
+                    });
+                    let _ = log.record_detail_count("engine_process_generation", u64::from(failure.tab.0), failure.controller_generation);
+                    if let Some(reason) = failure.reason { let _ = log.record_detail_count("engine_process_reason", u64::from(failure.tab.0), reason as u32 as u64); }
+                    if let Some(code) = failure.exit_code { let _ = log.record_detail_count("engine_process_exit", u64::from(failure.tab.0), code as u32 as u64); }
+                    if failure.kind == BrowserExited {
+                        let _ = log.record("engine_browser_lost");
+                        Self::invalidate_browser(app, ContentFailure::BrowserLost);
+                        continue;
+                    }
+                    let current = app.borrow().engine.as_ref().and_then(|engine| engine.controller_generation(failure.tab));
+                    if current != Some(failure.controller_generation) { continue; }
+                    match failure.kind {
+                        ControllerBrowserExited => Self::fail_content_tab(app, failure.tab, ContentFailure::BrowserLost),
+                        RendererExited => Self::tab_render_failed(app, failure.tab),
+                        // A busy renderer can recover with its draft, media and history intact.
+                        // Keep it alive; only an explicit user action may discard that document.
+                        RendererUnresponsive => { let _ = log.record("engine_unresponsive_document_retained"); }
+                        // GPU/utility processes restart themselves. Subframe/other exits leave the
+                        // main document alive; do not reload it or disturb unrelated tabs.
+                        GpuExited | UtilityExited | FrameRendererExited | Other(_) => { let _ = log.record("engine_process_recovery_not_required"); }
+                        BrowserExited => unreachable!(),
+                    }
+                }
+                EngineNotice::ControllerFailed(tab, controller_generation, code) => {
+                    let current = app.borrow().engine.as_ref().and_then(|engine| engine.controller_generation(tab));
+                    if current == Some(controller_generation) {
+                        let _ = app.borrow().log.record_detail_count("engine_controller_failed", u64::from(tab.0), code as u32 as u64);
+                        Self::fail_content_tab(app, tab, ContentFailure::Initialization);
+                    }
+                }
+                EngineNotice::CreationFailed(code) => {
+                    let _ = app.borrow().log.record_detail_count("engine_creation_failed", 0, code as u32 as u64);
+                    Self::invalidate_browser(app, ContentFailure::Initialization);
+                }
+                EngineNotice::OperationFailed(code) => {
+                    // Policy/engine diagnostics do not identify a failed document. A tab-local
+                    // creation/navigation failure uses ControllerFailed with its owner and lease.
+                    let _ = app.borrow().log.record_detail_count("engine_operation_failed", 0, code as u32 as u64);
+                }
             }
         }
+    }
+
+    fn engine_generation_current(app: &AppRef, generation: u64) -> bool {
+        app.try_borrow().is_ok_and(|state| !state.closing && state.engine_generation == generation)
+    }
+
+    fn repost_engine_notices(app: &AppRef) {
+        let state = app.borrow();
+        if !state.closing && !state.engine_notices.borrow().0.is_empty() {
+            win32::post_engine_failure(state.hwnd);
+        }
+    }
+
+    fn clear_failed_content(tab: &mut AppTab, failure: ContentFailure) {
+        tab.failure = Some(failure);
+        tab.recovery_started = None;
+        tab.controller_created = false;
+        tab.page_usable = false;
+        tab.loading = false;
+        tab.progress = NavigationProgress::default();
+        tab.can_back = false;
+        tab.can_forward = false;
+        tab.suspended = false;
+        // Selection, eager loading and reload timers must not replay a failed request.
+        tab.discarded = false;
+        tab.hidden_since = None;
+        tab.sleep_check_started = None;
+        tab.sleep_blocked_until = None;
+        tab.reader.reset();
+        tab.translate.reset();
+        tab.load = LoadState::Failed { certificate: false };
+    }
+
+    fn invalidate_browser(app: &AppRef, failure: ContentFailure) {
+        let (hwnd, mut engine, environment, generation) = {
+            let mut state = app.borrow_mut();
+            state.engine_generation = state.engine_generation.wrapping_add(1);
+            state.browser_recovery = None;
+            state.initializing = false;
+            state.engine_creation_settled = true;
+            state.prewarm_requested = false;
+            state.pending = None;
+            state.pending_tab = None;
+            state.pending_request_body = None;
+            state.pending_login_messages.clear();
+            state.browser_process_observer = None;
+            state.page_loaded = false;
+            state.navigation_progress = NavigationProgress::default();
+            state.effective_memory_target = None;
+            state.reader_probe_pending = None;
+            let affected: Vec<_> = state.tabs.iter().filter(|tab| tab.controller_created || tab.loading || tab.failure.is_some())
+                .map(|tab| tab.id).collect();
+            for id in affected {
+                state.in_flight_domains.finish(id);
+                if let Some(tab) = state.tabs.iter_mut().find(|tab| tab.id == id) { Self::clear_failed_content(tab, failure); }
+            }
+            (state.hwnd, state.engine.take(), state.chrome_environment.take(), state.engine_generation)
+        };
+        // Restore native painting/input before any Close that can pump messages.
+        win32::recover_native_chrome(hwnd, app);
+        if let Some(engine) = engine.as_mut() { let _ = engine.close(); }
+        drop(environment);
+        if failure == ContentFailure::BrowserLost {
+            Self::queue_browser_recovery(app, generation);
+        }
+        Self::post_tab_changed(hwnd, Self::active_tab_id(app));
+    }
+
+    /// Queue only after all old hosts/engine have been retired. Pumping teardown may already have
+    /// closed the window or started a user engine; that newer owner must win.
+    fn queue_browser_recovery(app: &AppRef, generation: u64) {
+        let hwnd = {
+            let mut state = app.borrow_mut();
+            if state.closing || state.engine_generation != generation || state.browser_recovery_used
+                || state.engine.is_some() || state.initializing || state.engine_in_use { return; }
+            state.browser_recovery = Some(BrowserRecovery { generation, started: None });
+            state.hwnd
+        };
+        win32::post(hwnd, win32::WM_HTML_CHROME_ENV, windows::Win32::Foundation::WPARAM(0), windows::Win32::Foundation::LPARAM(0));
+    }
+
+    /// The budget is spent before COM creation, so failure, timeout and repeated loss cannot
+    /// refill it. Ordinary wakes can only claim a ticket queued by an actual shared browser loss.
+    fn begin_browser_recovery(app: &AppRef, now: Instant) -> Option<u64> {
+        let mut state = app.borrow_mut();
+        let recovery = state.browser_recovery?;
+        if state.closing || state.engine_generation != recovery.generation || recovery.started.is_some()
+            || state.browser_recovery_used || state.engine.is_some() || state.initializing || state.engine_in_use { return None; }
+        state.browser_recovery_used = true;
+        state.engine_generation = state.engine_generation.wrapping_add(1);
+        let generation = state.engine_generation;
+        state.initializing = true;
+        state.browser_recovery = Some(BrowserRecovery { generation, started: Some(now) });
+        Some(generation)
+    }
+
+    /// HTML mode alone consumes the queued attempt. No tab controller, startup plan, updater or
+    /// content navigation is requested here. Existing host leases own internal-page restoration.
+    pub(crate) fn recover_chrome_environment(app: &AppRef) {
+        let Some(generation) = Self::begin_browser_recovery(app, Instant::now()) else { return; };
+        let hwnd = app.borrow().hwnd;
+        let armed = win32::arm_engine_recovery_timeout(hwnd);
+        if !Self::engine_generation_current(app, generation) { return; }
+        if !armed {
+            Self::invalidate_browser(app, ContentFailure::Initialization);
+            return;
+        }
+        Self::create_engine_for_generation(app, generation);
+    }
+
+    /// Closing an automatic creation must not leave WM_DESTROY waiting for a completion that
+    /// may never arrive. Late completion retains its old generation and closes outside App.
+    pub(crate) fn cancel_browser_recovery(app: &AppRef) {
+        let mut state = app.borrow_mut();
+        if let Some(recovery) = state.browser_recovery.take()
+            && recovery.generation == state.engine_generation && recovery.started.is_some()
+        {
+            state.engine_generation = state.engine_generation.wrapping_add(1);
+            state.initializing = false;
+        }
+    }
+
+    fn fail_content_tab(app: &AppRef, id: TabId, failure: ContentFailure) {
+        let hwnd = {
+            let mut state = app.borrow_mut();
+            if state.closing { return; }
+            let Some(tab) = state.tabs.iter_mut().find(|tab| tab.id == id) else { return; };
+            Self::clear_failed_content(tab, failure);
+            state.in_flight_domains.finish(id);
+            if state.pending_tab == Some(id) {
+                state.pending = None;
+                state.pending_tab = None;
+                state.pending_request_body = None;
+            }
+            if state.tab_model.active() == id {
+                state.page_loaded = false;
+                state.navigation_progress = NavigationProgress::default();
+            }
+            state.hwnd
+        };
+        if win32::page_fullscreen_owner(hwnd) == Some(id) { win32::page_fullscreen(hwnd, app, false); }
+        // The browser still owns a viable controller after its renderer exits. Keep that
+        // controller (and its back/forward history) for an explicit GET retry. Creation
+        // failures/timeouts do need their broken or pending controller request revoked.
+        if failure != ContentFailure::RendererExited {
+            Self::with_engine(app, |engine| engine.close_tab(id));
+        }
+        Self::post_tab_changed(hwnd, id);
+    }
+
+    /// A crash never automatically resubmits an unknown page request (it may have been a POST).
+    pub fn tab_render_failed(app: &AppRef, id: TabId) {
+        Self::fail_content_tab(app, id, ContentFailure::RendererExited);
+        let _ = app.borrow().log.record("tab_render_process_failed");
+    }
+
+    pub(crate) fn content_failure_message(app: &AppRef, id: TabId) -> Option<&'static str> {
+        app.borrow().tabs.iter().find(|tab| tab.id == id)?.failure.map(ContentFailure::message)
+    }
+
+    pub(crate) fn engine_recovery_tick(app: &AppRef, now: Instant) -> bool {
+        let (expired, creating, browser_expired) = {
+            let state = app.borrow();
+            if state.closing { return false; }
+            if state.engine_in_use { return true; }
+            (state.tabs.iter().filter(|tab| tab.recovery_started.is_some_and(|started|
+                now.saturating_duration_since(started) >= ENGINE_RECOVERY_TIMEOUT)).map(|tab| tab.id).collect::<Vec<_>>(),
+                state.initializing && state.engine.is_none(),
+                state.browser_recovery.is_some_and(|recovery| recovery.generation == state.engine_generation
+                    && recovery.started.is_some_and(|started| now.saturating_duration_since(started) >= ENGINE_RECOVERY_TIMEOUT)))
+        };
+        if browser_expired {
+            let _ = app.borrow().log.record("engine_recovery_timeout");
+            Self::invalidate_browser(app, ContentFailure::Initialization);
+            return false;
+        }
+        if !expired.is_empty() { let _ = app.borrow().log.record("engine_recovery_timeout"); }
+        if !expired.is_empty() && creating {
+            Self::invalidate_browser(app, ContentFailure::Initialization);
+        } else {
+            for tab in expired { Self::fail_content_tab(app, tab, ContentFailure::Initialization); }
+        }
+        let state = app.borrow();
+        state.browser_recovery.is_some_and(|recovery| recovery.started.is_some())
+            || state.tabs.iter().any(|tab| tab.recovery_started.is_some())
+    }
+
+    /// User-requested retry only. Reopens the address; never keeps or replays a submitted body.
+    pub(crate) fn retry_failed_tab(app: &AppRef, id: TabId) -> bool {
+        let (url, start, needs_controller) = {
+            let mut state = app.borrow_mut();
+            if state.closing { return false; }
+            if state.engine.is_none() && state.initializing {
+                return state.tabs.iter().any(|tab| tab.id == id && tab.failure.is_some());
+            }
+            let start = state.engine.is_none();
+            let Some(tab) = state.tabs.iter_mut().find(|tab| tab.id == id && tab.failure.is_some()) else { return false; };
+            // Renderer loss retains the controller. Its explicit GET follows the ordinary
+            // navigation lifecycle; there is no controller completion to settle a creation timer.
+            let needs_controller = start || tab.failure != Some(ContentFailure::RendererExited);
+            tab.failure = None;
+            tab.recovery_started = needs_controller.then(Instant::now);
+            let url = tab.url.clone();
+            (url, start, needs_controller)
+        };
+        if needs_controller { win32::arm_engine_recovery_timeout(app.borrow().hwnd); }
+        if let Some(url) = url {
+            if start {
+                let begin = {
+                    let mut state = app.borrow_mut();
+                    state.pending = Some(url.clone());
+                    state.pending_tab = Some(id);
+                    state.pending_request_body = None;
+                    if let Some(tab) = state.tabs.iter_mut().find(|tab| tab.id == id) { tab.loading = true; }
+                    let begin = !state.initializing;
+                    state.initializing = true;
+                    begin
+                };
+                if begin { Self::start_engine_creation(app); }
+            } else {
+                Self::navigate_tab(app, id, &url);
+            }
+        }
+        Self::post_tab_changed(app.borrow().hwnd, id);
+        true
     }
 
     /// Re-reads the saved engine choice before each search, so a choice saved in Settings applies
@@ -5993,7 +6359,16 @@ impl App {
             }
             state.allowed_benchmark_file = allowed_file;
             state.pending = Some(url.clone());
-            state.pending_tab = Some(state.tab_model.active());
+            let active = state.tab_model.active();
+            state.pending_tab = Some(active);
+            state.pending_request_body = POST_BODY.with(|slot| slot.borrow_mut().take())
+                .filter(|(target, _)| target == &url).map(|(target, body)| (active, target, body));
+            if let Some(tab) = state.tabs.iter_mut().find(|tab| tab.id == active) {
+                tab.url = Some(url.clone());
+                tab.loading = true;
+                if tab.failure.is_some() { tab.recovery_started = Some(Instant::now()); }
+                tab.failure = None;
+            }
             if state.initializing {
                 return;
             }
@@ -6014,7 +6389,7 @@ impl App {
                 .iter()
                 .find(|tab| tab.id == active)
                 .is_some_and(|tab| tab.controller_created);
-            if has_controller {
+            if has_controller || state.tabs.iter().any(|tab| tab.id == active && tab.failure.is_some()) {
                 return;
             }
             if state.engine.is_some() {
@@ -6065,6 +6440,13 @@ impl App {
         state.log.enabled().then(||Rc::downgrade(&state.log))
     }
 
+    /// Read-only current environment snapshot. This accessor never starts an engine.
+    pub(crate) fn current_chrome_environment(app: &AppRef) -> Option<(u64, ICoreWebView2Environment)> {
+        let state = app.try_borrow().ok()?;
+        if state.closing || state.initializing || state.engine.is_none() { return None; }
+        Some((state.engine_generation, state.chrome_environment.clone()?))
+    }
+
     /// HTML chrome mode: the tab environment the chrome views are hosted in. When the engine has
     /// not been started yet (native mode starts it lazily, when the user begins typing), this starts
     /// it now, with no tab controller and no navigation, so the chrome can appear at startup. The
@@ -6111,20 +6493,19 @@ impl App {
 
     /// Records the outcome of engine creation for the HTML chrome and tells the window. Native
     /// mode never posts anything.
-    fn settle_chrome_environment(app: &AppRef, environment: Option<ICoreWebView2Environment>) {
+    fn settle_chrome_environment(app: &AppRef, generation: u64, environment: Option<ICoreWebView2Environment>) {
         if !crate::chrome_host::html_ui_enabled() {
             return;
         }
-        let hwnd = {
+        let (hwnd, retired) = {
             let mut state = app.borrow_mut();
+            if state.closing || state.engine_generation != generation { return; }
             state.engine_creation_settled = true;
-            if state.closing || state.engine.is_none() {
-                state.chrome_environment = None;
-            } else {
-                state.chrome_environment = environment;
-            }
-            state.hwnd
+            let environment = if state.engine.is_some() { environment } else { None };
+            let retired = std::mem::replace(&mut state.chrome_environment, environment);
+            (state.hwnd, retired)
         };
+        drop(retired);
         win32::post(
             hwnd,
             win32::WM_HTML_CHROME_ENV,
@@ -6136,10 +6517,29 @@ impl App {
     /// Drops the app's reference to the shared environment. Called when the window closes, after
     /// its chrome hosts are closed and before the engine closes.
     pub fn release_chrome_environment(app: &AppRef) {
-        app.borrow_mut().chrome_environment = None;
+        let environment = app.borrow_mut().chrome_environment.take();
+        drop(environment);
     }
 
     fn start_engine_creation(app: &AppRef) {
+        if app.borrow().tabs.iter().any(|tab| tab.recovery_started.is_some()) {
+            win32::arm_engine_recovery_timeout(app.borrow().hwnd);
+        }
+        let Some(generation) = Self::begin_engine_creation(app) else { return; };
+        Self::create_engine_for_generation(app, generation);
+    }
+
+    fn begin_engine_creation(app: &AppRef) -> Option<u64> {
+        let mut state = app.borrow_mut();
+        if state.closing { return None; }
+        // A user request that arrived before the deferred recovery owns this creation instead.
+        state.browser_recovery = None;
+        state.engine_generation = state.engine_generation.wrapping_add(1);
+        Some(state.engine_generation)
+    }
+
+    fn create_engine_for_generation(app: &AppRef, generation: u64) {
+        if !Self::engine_generation_current(app, generation) { return; }
         let weak = Rc::downgrade(app);
         let bounds = app.borrow_mut().latest_viewport_bounds();
         let (hwnd, profile, tracking_prevention, blocker, private_blocker) = {
@@ -6184,7 +6584,7 @@ impl App {
                 }))
             },
             address_changed: Some(Rc::new(move |tab_id, url| {
-                if let Some(app) = events_app.upgrade() {
+                if let Some(app) = events_app.upgrade().filter(|app| Self::engine_generation_current(app, generation)) {
                     let mut left_reader = false;
                     let mut left_translate = false;
                     let (edit, log, active, found) = {
@@ -6238,7 +6638,8 @@ impl App {
                 }
             })),
             title_changed: Some(Rc::new(move |tab_id, title| {
-                if let Some(app) = title_events_app.upgrade() {
+                if let Some(app) = title_events_app.upgrade().filter(|app| Self::engine_generation_current(app, generation)) {
+                    if title.starts_with("BOWSER_PERF_READY_") && let Ok(s)=app.try_borrow(){let _=s.log.record_navigation("perf_title_changed",u64::from(tab_id.0),0,None,&title);}
                     let mut state = app.borrow_mut();
                     // --- tab options --- a count in the title ("(3) Inbox") is a notification.
                     let detect = state.settings.tabs.title_notifications;
@@ -6267,7 +6668,7 @@ impl App {
             page_loaded: {
                 let loaded_events_app = Rc::downgrade(app);
                 Some(Rc::new(move |tab_id| {
-                    if let Some(app) = loaded_events_app.upgrade() {
+                    if let Some(app) = loaded_events_app.upgrade().filter(|app| Self::engine_generation_current(app, generation)) {
                         App::tab_page_loaded(&app, tab_id);
                         App::sample_page_accent(&app, tab_id); // --- theme options ---
                         // One read-only probe decides whether the toolbar offers reader view.
@@ -6282,7 +6683,7 @@ impl App {
             escape_pressed: {
                 let escape_app = Rc::downgrade(app);
                 Some(Rc::new(move |tab_id| {
-                    if let Some(app) = escape_app.upgrade() {
+                    if let Some(app) = escape_app.upgrade().filter(|app| Self::engine_generation_current(app, generation)) {
                         App::reader_escape(&app, tab_id);
                     }
                 }))
@@ -6291,7 +6692,7 @@ impl App {
             fullscreen_changed: {
                 let events_app = Rc::downgrade(app);
                 Some(Rc::new(move |tab_id, on| {
-                    if let Some(app) = events_app.upgrade() {
+                    if let Some(app) = events_app.upgrade().filter(|app| Self::engine_generation_current(app, generation)) {
                         let (hwnd, active) = {
                             let state = app.borrow();
                             (state.hwnd, state.tab_model.active() == tab_id)
@@ -6307,7 +6708,7 @@ impl App {
             controller_ready: {
                 let events_app = Rc::downgrade(app);
                 Some(Rc::new(move |tab_id| {
-                    if let Some(app) = events_app.upgrade() {
+                    if let Some(app) = events_app.upgrade().filter(|app| Self::engine_generation_current(app, generation)) {
                         let should_mute = {
                             let mut state = app.borrow_mut();
                             let active = state.tab_model.active() == tab_id;
@@ -6318,6 +6719,7 @@ impl App {
                             win32::auto_hide_page_created(state.hwnd); // --- auto-hide (T11) --- a page created later starts above the bars
                             if let Some(tab) = state.tabs.iter_mut().find(|tab| tab.id == tab_id) {
                                 tab.controller_created = true;
+                                tab.recovery_started = None;
                                 // A new controller starts at 100%; the next commit re-applies
                                 // the site's stored zoom.
                                 tab.zoom = crate::site_prefs::ZOOM_DEFAULT;
@@ -6345,7 +6747,7 @@ impl App {
             focus_changed: {
                 let events_app = Rc::downgrade(app);
                 Some(Rc::new(move |tab_id| {
-                    if let Some(app) = events_app.upgrade() {
+                    if let Some(app) = events_app.upgrade().filter(|app| Self::engine_generation_current(app, generation)) {
                         let hwnd = app.borrow().hwnd;
                         win32::post(
                             hwnd,
@@ -6359,7 +6761,7 @@ impl App {
             page_usable: {
                 let events_app = Rc::downgrade(app);
                 Some(Rc::new(move |tab_id| {
-                    if let Some(app) = events_app.upgrade() {
+                    if let Some(app) = events_app.upgrade().filter(|app| Self::engine_generation_current(app, generation)) {
                         let active = {
                             let mut state = app.borrow_mut();
                             let active = state.tab_model.active() == tab_id;
@@ -6394,7 +6796,7 @@ impl App {
                 let events_app = Rc::downgrade(app);
                 let progress_hwnd = hwnd;
                 Some(Rc::new(move |tab_id, navigation_id| {
-                    if let Some(app) = events_app.upgrade() {
+                    if let Some(app) = events_app.upgrade().filter(|app| Self::engine_generation_current(app, generation)) {
                         let mut left_reader = false;
                         if let Some(tab) = app
                             .borrow_mut()
@@ -6446,7 +6848,7 @@ impl App {
                     engine::NavigationProgressEvent::DomContentLoaded(id) => (id, 2),
                     engine::NavigationProgressEvent::Completed(id) => (id, 3),
                 };
-                if let Some(app) = nav_progress_events_app.upgrade() {
+                if let Some(app) = nav_progress_events_app.upgrade().filter(|app| Self::engine_generation_current(app, generation)) {
                     let active = app.borrow().tab_model.active() == tab_id;
                     let progress_event = match stage {
                         1 => NavigationProgressEvent::Advanced(
@@ -6474,7 +6876,7 @@ impl App {
                 }
             })),
             favicon_changed: Some(Rc::new(move |tab_id, bytes| {
-                if let Some(app) = favicon_events_app.upgrade() {
+                if let Some(app) = favicon_events_app.upgrade().filter(|app| Self::engine_generation_current(app, generation)) {
                     let found = if let Some(tab) = app
                         .borrow_mut()
                         .tabs
@@ -6496,7 +6898,7 @@ impl App {
             new_window_requested: {
                 let popup_app = Rc::downgrade(app);
                 Some(Rc::new(move |source_tab, url| {
-                    if let Some(app) = popup_app.upgrade() {
+                    if let Some(app) = popup_app.upgrade().filter(|app| Self::engine_generation_current(app, generation)) {
                         if app.borrow().tabs.iter().any(|tab| tab.id == source_tab) {
                             let private = crate::private::inherits_privacy(
                                 App::tab_private(&app, source_tab),
@@ -6545,7 +6947,7 @@ impl App {
             context_search_pick: {
                 let search_app = Rc::downgrade(app);
                 Some(Rc::new(move |_tab, pick| {
-                    if let Some(app) = search_app.upgrade() {
+                    if let Some(app) = search_app.upgrade().filter(|app| Self::engine_generation_current(app, generation)) {
                         App::context_search_run(&app, pick);
                     }
                 }))
@@ -6556,24 +6958,24 @@ impl App {
             context_note_pick: {
                 let note_app = Rc::downgrade(app);
                 Some(Rc::new(move |tab, note| {
-                    if let Some(app) = note_app.upgrade() {
+                    if let Some(app) = note_app.upgrade().filter(|app| Self::engine_generation_current(app, generation)) {
                         win32::insert_note_into_page(&app, tab, note);
                     }
                 }))
             },
             // --- end page tools ---
-            render_process_failed: {
-                let crash_app = Rc::downgrade(app);
-                Some(Rc::new(move |tab_id| {
-                    if let Some(app) = crash_app.upgrade() {
-                        App::tab_render_failed(&app, tab_id);
-                    }
+            process_failed: Some(Self::process_failure_callback(app, generation)),
+            browser_lost: Some(Self::browser_loss_callback(app, generation)),
+            controller_failed: {
+                let queue = app.borrow().engine_notices.clone();
+                Some(Rc::new(move |tab, controller_generation, code| {
+                    Self::enqueue_engine_notice(&queue, hwnd, generation, EngineNotice::ControllerFailed(tab, controller_generation, code));
                 }))
             },
             blocked_changed: {
                 let blocked_app = Rc::downgrade(app);
                 Some(Rc::new(move |tab_id, count, site_host| {
-                    if let Some(app) = blocked_app.upgrade() {
+                    if let Some(app) = blocked_app.upgrade().filter(|app| Self::engine_generation_current(app, generation)) {
                         let active = {
                             let mut state = app.borrow_mut();
                             if let Some(tab) = state.tabs.iter_mut().find(|tab| tab.id == tab_id) {
@@ -6595,7 +6997,7 @@ impl App {
             navigation_failed: {
                 let failed_app = Rc::downgrade(app);
                 Some(Rc::new(move |tab_id, certificate| {
-                    if let Some(app) = failed_app.upgrade() {
+                    if let Some(app) = failed_app.upgrade().filter(|app| Self::engine_generation_current(app, generation)) {
                         // "Always use HTTPS": a site that cannot be reached securely is tried once over
                         // plain http (never after a certificate problem, which must not be bypassed).
                         if !certificate {
@@ -6625,13 +7027,16 @@ impl App {
                     }
                 }))
             },
-            failed: Some(Rc::new(|error| {
-                win32::show_error_message(&format!("WebView2 error: {error}"))
-            })),
+            failed: {
+                let queue = app.borrow().engine_notices.clone();
+                Some(Rc::new(move |error| {
+                    Self::enqueue_engine_notice(&queue, hwnd, generation, EngineNotice::OperationFailed(error.code().0));
+                }))
+            },
             permission_denied: {
                 let denied_app = Rc::downgrade(app);
                 Some(Rc::new(move |tab_id, kind, origin| {
-                    if let Some(app) = denied_app.upgrade() {
+                    if let Some(app) = denied_app.upgrade().filter(|app| Self::engine_generation_current(app, generation)) {
                         let changed = app.try_borrow_mut().is_ok_and(|mut state| {
                             // The dashboard's recent list: origin, kind and time, never content.
                             // A private tab's requests are blocked but never listed (the list
@@ -6656,7 +7061,7 @@ impl App {
             zoom_changed: {
                 let zoom_app = Rc::downgrade(app);
                 Some(Rc::new(move |tab_id, percent| {
-                    if let Some(app) = zoom_app.upgrade() {
+                    if let Some(app) = zoom_app.upgrade().filter(|app| Self::engine_generation_current(app, generation)) {
                         Self::page_zoom_changed(&app, tab_id, percent);
                     }
                 }))
@@ -6664,7 +7069,7 @@ impl App {
             login_message: login_messages_enabled.then(|| {
                 let callback: Rc<dyn Fn(TabId, crate::passwords::LoginMessage)> =
                     Rc::new(move |tab_id, message| {
-                        if let Some(app) = login_events_app.upgrade() {
+                        if let Some(app) = login_events_app.upgrade().filter(|app| Self::engine_generation_current(app, generation)) {
                             App::queue_login_message(&app, tab_id, message);
                         }
                     });
@@ -6723,55 +7128,61 @@ impl App {
             extras,
             move |result| {
                 if let Some(app) = weak.upgrade() {
-                    let mut state = app.borrow_mut();
-                    state.initializing = false;
-                    if state.closing {
-                        let post_quit = state.loop_shutdown_pending;
-                        drop(state);
-                        if let Ok(mut engine) = result {
-                            let _ = engine.close();
-                        }
-                        if post_quit {
-                            unsafe {
-                                windows::Win32::UI::WindowsAndMessaging::PostQuitMessage(0);
-                            }
-                        }
-                        return;
-                    }
-                    match result {
+                    let (result, environment) = match result {
                         Ok(engine) => {
-                            drop(state);
-                            let chrome_environment = engine.chrome_environment();
-                            App::complete_engine_creation(&app, Box::new(engine));
-                            App::settle_chrome_environment(&app, chrome_environment);
+                            // Query outside App; even this getter can pump a newer owner/close.
+                            let environment = engine.chrome_environment();
+                            (Ok(Box::new(engine) as Box<dyn EngineAdapter>), environment)
                         }
-                        Err(error) => {
-                            drop(state);
-                            App::settle_chrome_environment(&app, None);
-                            win32::show_error_message(&format!(
-                                "WebView2 could not create its isolated profile or browser controller: {error}"
-                            ));
-                        }
-                    }
+                        Err(error) => (Err(error), None),
+                    };
+                    Self::engine_creation_finished(&app, generation, result, environment);
                 } else if let Ok(mut engine) = result {
                     let _ = engine.close();
                 }
             },
         );
         if let Err(error) = create_result {
-            app.borrow_mut().initializing = false;
-            win32::show_error_message(&format!(
-                "WebView2 initialization could not be started: {error}"
-            ));
+            Self::engine_creation_finished(app, generation, Err(error), None);
         }
     }
 
-    fn complete_engine_creation(app: &AppRef, mut engine: Box<dyn EngineAdapter>) {
-        let (bounds, target, pending, pending_tab, active_tab, tab_ids, prewarm_requested) = {
+    fn engine_creation_finished(app: &AppRef, generation: u64, result: windows::core::Result<Box<dyn EngineAdapter>>,
+        environment: Option<ICoreWebView2Environment>) {
+        let (current, post_quit) = {
+            let state = app.borrow();
+            (!state.closing && state.engine_generation == generation && state.initializing
+                && state.engine.is_none(), state.closing && state.loop_shutdown_pending)
+        };
+        if !current {
+            if let Ok(mut engine) = result { let _ = engine.close(); }
+            if post_quit { unsafe { windows::Win32::UI::WindowsAndMessaging::PostQuitMessage(0); } }
+            return;
+        }
+        match result {
+            Ok(engine) => {
+                // Keep the captured generation through configuration and environment publication.
+                Self::complete_engine_creation(app, generation, engine);
+                Self::settle_chrome_environment(app, generation, environment);
+            }
+            Err(error) => {
+                let (queue, hwnd) = {
+                    let mut state = app.borrow_mut();
+                    state.initializing = false;
+                    (state.engine_notices.clone(), state.hwnd)
+                };
+                Self::settle_chrome_environment(app, generation, None);
+                Self::enqueue_engine_notice(&queue, hwnd, generation, EngineNotice::CreationFailed(error.code().0));
+            }
+        }
+    }
+
+    fn complete_engine_creation(app: &AppRef, generation: u64, mut engine: Box<dyn EngineAdapter>) {
+        let browser_process_observer = engine.browser_process_observer();
+        let (bounds, target, active_tab, tab_ids) = {
             let mut state = app.borrow_mut();
-            state.initializing = false;
-            if state.closing {
-                let post_quit = state.loop_shutdown_pending;
+            if state.closing || state.engine_generation != generation || state.engine.is_some() {
+                let post_quit = state.closing && state.loop_shutdown_pending;
                 drop(state);
                 let _ = engine.close();
                 if post_quit {
@@ -6781,15 +7192,13 @@ impl App {
                 }
                 return;
             }
+            state.engine_in_use = true;
             let _ = state.log.record("engine_ready");
             (
                 state.last_valid_viewport_bounds,
                 state.desired_memory_target,
-                state.pending.take(),
-                state.pending_tab.take(),
                 state.tab_model.active(),
                 state.tabs.iter().map(|tab| tab.id).collect::<Vec<_>>(),
-                std::mem::take(&mut state.prewarm_requested),
             )
         };
         if let Some(bounds) = bounds {
@@ -6822,7 +7231,8 @@ impl App {
         let apply = engine.set_memory_usage_target(target);
         Self::record_memory_target_result(app, target, &apply);
         let mut state = app.borrow_mut();
-        if state.closing {
+        if state.closing || state.engine_generation != generation {
+            if state.engine_generation == generation { state.engine_in_use = false; }
             let post_quit = state.loop_shutdown_pending;
             drop(state);
             let _ = engine.close();
@@ -6833,17 +7243,29 @@ impl App {
             }
             return;
         }
+        state.engine_in_use = false;
         state.effective_memory_target = match apply {
             Ok(MemoryTargetApply::Applied) => Some(target),
             Ok(MemoryTargetApply::Unsupported | MemoryTargetApply::Deferred) | Err(_) => None,
         };
         state.engine = Some(engine);
+        state.browser_process_observer = browser_process_observer;
+        state.initializing = false;
+        let automatic = state.browser_recovery.is_some_and(|recovery| recovery.generation == generation && recovery.started.is_some());
+        state.browser_recovery = None;
+        // Read user requests after pumping setup, so a newer submission replaces an older one
+        // and retains its own tab/body. No automatic content request is manufactured.
+        let pending = state.pending.take();
+        let pending_tab = state.pending_tab.take();
+        let prewarm_requested = std::mem::take(&mut state.prewarm_requested);
         drop(state);
+        Self::repost_engine_notices(app);
         if let Some(pending) = pending {
             Self::navigate_tab(app, pending_tab.unwrap_or(active_tab), &pending);
         } else if prewarm_requested {
             let _ = Self::with_engine(app, |engine| engine.prewarm_tab(active_tab));
         }
+        if automatic { return; }
         let split = { app.borrow().split_view };
         if let Some(split) = split {
             for tab in split.tabs() {
@@ -6860,6 +7282,7 @@ impl App {
     }
 
     fn navigate_tab(app: &AppRef, tab_id: TabId, url: &url::Url) {
+        if app.borrow().closing { return; }
         if !app.borrow().tabs.iter().any(|tab| tab.id == tab_id) {
             // The engine would otherwise create a controller for an id the window already closed.
             return;
@@ -6868,9 +7291,10 @@ impl App {
             Self::navigate_internal(app, tab_id, url);
             return;
         }
-        let (mut engine, closing) = {
+        let (generation, private) = {
             let mut state = app.borrow_mut();
             let is_background = state.tab_model.active() != tab_id;
+            let engine_available = state.engine.is_some() || state.engine_in_use;
             if state.engine.is_some() {
                 state.begin_navigation_grouping(tab_id);
             }
@@ -6878,7 +7302,11 @@ impl App {
             if let Some(tab) = tabs.iter_mut().find(|tab| tab.id == tab_id) {
                 Self::leave_internal_page(tab, tab_model);
                 tab.url = Some(url.clone());
-                tab.controller_created = tab_needs_controller(Some(url));
+                if let Some(failure) = tab.failure {
+                    tab.recovery_started = (failure != ContentFailure::RendererExited || !engine_available).then(Instant::now);
+                }
+                tab.failure = None;
+                tab.controller_created = tab_needs_controller(Some(url)) && tab.recovery_started.is_none();
                 tab.page_usable = false;
                 tab.loading = true;
                 tab.hidden_since = is_background.then(Instant::now);
@@ -6886,43 +7314,40 @@ impl App {
             }
             state.tab_model.set_url(tab_id, Some(url.as_str()));
             state.has_navigated = true;
-            (state.engine.take(), state.closing)
+            let private = state.tabs.iter().any(|tab| tab.id == tab_id && tab.private);
+            (state.engine_generation, private)
         };
-        if closing {
-            if let Some(engine) = engine.as_mut() {
-                let _ = engine.close();
+        let result = Self::with_engine(app, |engine| {
+            if app.borrow().tabs.iter().any(|tab| tab.id == tab_id && tab.recovery_started.is_some()) {
+                win32::arm_engine_recovery_timeout(app.borrow().hwnd);
             }
-            return;
-        }
-        let Some(mut engine) = engine.take() else {
-            return;
-        };
-        // A search with an engine that posts its query goes out as that POST, once.
-        let post = POST_BODY.with(|slot| {
-            let mut slot = slot.borrow_mut();
-            match slot.as_ref() {
-                Some((target, _)) if target == url => slot.take().map(|(_, body)| body),
-                _ => None,
+            // Consume a submitted body only after this operation actually acquires the engine.
+            let owned_post = {
+                let mut state = app.borrow_mut();
+                if state.pending_request_body.as_ref().is_some_and(|(owner, _, _)| *owner == tab_id) {
+                    state.pending_request_body.take().filter(|(_, target, _)| target == url).map(|(_, _, body)| body)
+                } else { None }
+            };
+            let post = owned_post.or_else(|| POST_BODY.with(|slot| {
+                let mut slot = slot.borrow_mut();
+                match slot.as_ref() {
+                    Some((target, _)) if target == url => slot.take().map(|(_, body)| body),
+                    _ => None,
+                }
+            }));
+            if private { engine.set_tab_private(tab_id); }
+            match post {
+                Some(body) => engine.navigate_tab_post(tab_id, url, &body),
+                None => engine.navigate_tab(tab_id, url),
             }
         });
-        let result = match post {
-            Some(body) => engine.navigate_tab_post(tab_id, url, &body),
-            None => engine.navigate_tab(tab_id, url),
-        };
-        let mut state = app.borrow_mut();
-        if state.tab_model.active() == tab_id {
-            state.page_loaded = false;
-        }
-        if state.closing {
-            let _ = engine.close();
-        } else {
-            state.engine = Some(engine);
-        }
-        drop(state);
-        if let Err(error) = result {
+        let Some(result) = result else { return; };
+        if Self::active_tab_id(app) == tab_id { app.borrow_mut().page_loaded = false; }
+        if let Err(error) = result && Self::engine_generation_current(app, generation) {
             // A navigation that never started will not report completion, so release its domain.
             app.borrow_mut().in_flight_domains.finish(tab_id);
-            win32::show_error_message(&format!("Navigation failed: {error}"));
+            let _ = app.borrow().log.record_detail_count("engine_navigation_failed", u64::from(tab_id.0), error.code().0 as u32 as u64);
+            Self::fail_content_tab(app, tab_id, ContentFailure::Initialization);
         }
         Self::schedule_tab_idle_timer(app);
     }
@@ -7012,23 +7437,16 @@ impl App {
             let state = app.borrow();
             (state.split_view, state.split_bounds)
         };
-        let Some(mut engine) = app.borrow_mut().engine.take() else {
-            return;
-        };
-        let result = if let (Some(split), Some(panes)) = (split, panes) {
-            let visible: Vec<_> = split.panes().filter_map(|(pane, tab)| panes.get(pane).map(|rect| (tab, rect))).collect();
-            engine.set_visible_tabs(&visible, split.focused_tab())
-        } else {
-            engine.resize(bounds)
-        };
-        let mut state = app.borrow_mut();
-        if state.closing {
-            let _ = engine.close();
-        } else {
-            state.engine = Some(engine);
-        }
-        drop(state);
-        if let Err(error) = result {
+        let generation = app.borrow().engine_generation;
+        let result = Self::with_engine(app, |engine| {
+            if let (Some(split), Some(panes)) = (split, panes) {
+                let visible: Vec<_> = split.panes().filter_map(|(pane, tab)| panes.get(pane).map(|rect| (tab, rect))).collect();
+                engine.set_visible_tabs(&visible, split.focused_tab())
+            } else {
+                engine.resize(bounds)
+            }
+        });
+        if let Some(Err(error)) = result && Self::engine_generation_current(app, generation) {
             report(error);
         }
     }
@@ -7859,21 +8277,15 @@ impl App {
     }
 
     fn set_memory_target_current(app: &AppRef, target: MemoryUsageTarget) {
-        let Some(mut engine) = app.borrow_mut().engine.take() else {
-            return;
-        };
-        let result = engine.set_memory_usage_target(target);
+        let generation = app.borrow().engine_generation;
+        let Some(result) = Self::with_engine(app, |engine| engine.set_memory_usage_target(target)) else { return; };
+        if !Self::engine_generation_current(app, generation) { return; }
         Self::record_memory_target_result(app, target, &result);
         let mut state = app.borrow_mut();
         state.effective_memory_target = match result {
             Ok(MemoryTargetApply::Applied) => Some(target),
             Ok(MemoryTargetApply::Unsupported | MemoryTargetApply::Deferred) | Err(_) => None,
         };
-        if state.closing {
-            let _ = engine.close();
-        } else {
-            state.engine = Some(engine);
-        }
     }
 
     fn record_memory_target_result(
@@ -7907,30 +8319,16 @@ impl App {
     }
 
     pub fn history(app: &AppRef, forward: bool) {
-        let Some(mut engine) = app.borrow_mut().engine.take() else {
-            return;
-        };
-        let can_move = if forward {
-            engine.can_go_forward()
-        } else {
-            engine.can_go_back()
-        };
-        let result = if can_move {
-            if forward {
-                engine.go_forward()
+        let generation = app.borrow().engine_generation;
+        let result = Self::with_engine(app, |engine| {
+            let can_move = if forward { engine.can_go_forward() } else { engine.can_go_back() };
+            if can_move {
+                if forward { engine.go_forward() } else { engine.go_back() }
             } else {
-                engine.go_back()
+                Ok(())
             }
-        } else {
-            Ok(())
-        };
-        let mut state = app.borrow_mut();
-        if state.closing {
-            let _ = engine.close();
-        } else {
-            state.engine = Some(engine);
-        }
-        if let Err(error) = result {
+        });
+        if let Some(Err(error)) = result && Self::engine_generation_current(app, generation) {
             win32::show_error_message(&format!("History navigation failed: {error}"));
         }
     }
@@ -8131,6 +8529,8 @@ mod tests {
     mod privacy_flow; // private tabs and history deletion
     mod workspace_restore; // workspaces across a restart, refused moves and creates
     mod window_flow; // main window moves and resizes
+    mod engine_recovery;
+    mod idle_restore; // Low -> Normal on renewed input
 
     thread_local! {
         /// What `App::split_rects_now` answers in a test (the test app has no laid-out window).
@@ -8892,22 +9292,22 @@ mod tests {
     }
 
     #[test]
-    fn render_crash_reloads_once_then_reports_and_marks_hidden_tabs() {
+    fn render_crash_leaves_visible_and_hidden_tabs_for_explicit_retry() {
         let (app, hidden, active, _calls) = sleeping_app(300);
         app.borrow_mut().settings.sleep_enabled = false;
         App::tab_render_failed(&app, hidden);
         {
             let state = app.borrow();
             let tab = state.tabs.iter().find(|t| t.id == hidden).unwrap();
-            assert!(tab.discarded, "hidden tab navigates afresh when selected");
-            assert!(tab.last_crash_reload.is_some());
+            assert!(!tab.discarded, "selection must not replay an unknown request");
+            assert_eq!(tab.failure, Some(ContentFailure::RendererExited));
         }
         App::tab_render_failed(&app, active);
         assert!(
             app.borrow()
                 .tabs
                 .iter()
-                .any(|t| t.id == active && t.last_crash_reload.is_some())
+                .any(|t| t.id == active && t.failure == Some(ContentFailure::RendererExited))
         );
     }
 
@@ -10210,6 +10610,10 @@ mod tests {
     }
 
     impl EngineAdapter for TabRecordingEngine {
+        fn navigate_tab_post(&mut self, tab: TabId, url: &url::Url, body: &str) -> windows::core::Result<()> {
+            self.calls.borrow_mut().push(format!("post:{}:{url}:{body}", tab.0));
+            Ok(())
+        }
         fn check_sleep_blocked(&mut self, _tab: TabId, done: Box<dyn FnOnce(bool)>) {
             SLEEP_CHECKS_ASKED.with(|asked| asked.set(asked.get() + 1));
             SLEEP_CHECK.with(|check| match &mut *check.borrow_mut() {
@@ -10660,6 +11064,13 @@ mod tests {
             edit: HWND::default(),
             input_font: HFONT::default(),
             engine: None,
+            browser_process_observer: None,
+            engine_generation: 0,
+            engine_in_use: false,
+            browser_recovery_used: false,
+            browser_recovery: None,
+            engine_notices: Rc::new(RefCell::new(EngineNotices::default())),
+            pending_request_body: None,
             pending_login_messages: Vec::new(),
             pending: Some(url::Url::parse("https://example.test/first").unwrap()),
             pending_tab: Some(TabId(0)),
@@ -10769,7 +11180,7 @@ mod tests {
         let calls = Rc::new(RefCell::new(Vec::new()));
         App::window_size_changed(&app, false, rect(1024, 700));
 
-        App::complete_engine_creation(&app, recording_engine(calls.clone(), []));
+        App::complete_engine_creation(&app, 0, recording_engine(calls.clone(), []));
 
         assert_eq!(
             *calls.borrow(),
@@ -10794,6 +11205,7 @@ mod tests {
 
         App::complete_engine_creation(
             &app,
+            0,
             Box::new(TabRecordingEngine {
                 calls: calls.clone(),
                 playing: Vec::new(),
@@ -10821,7 +11233,7 @@ mod tests {
         App::window_size_changed(&app, true, windows::Win32::Foundation::RECT::default());
         App::window_size_changed(&app, false, rect(1200, 760));
 
-        App::complete_engine_creation(&app, recording_engine(calls.clone(), []));
+        App::complete_engine_creation(&app, 0, recording_engine(calls.clone(), []));
 
         assert_eq!(
             *calls.borrow(),
@@ -10843,7 +11255,7 @@ mod tests {
         let calls = Rc::new(RefCell::new(Vec::new()));
         App::window_size_changed(&app, true, windows::Win32::Foundation::RECT::default());
 
-        App::complete_engine_creation(&app, recording_engine(calls.clone(), []));
+        App::complete_engine_creation(&app, 0, recording_engine(calls.clone(), []));
 
         assert_eq!(
             *calls.borrow(),
@@ -10870,7 +11282,7 @@ mod tests {
                 Ok(MemoryTargetApply::Applied),
             ],
         );
-        App::complete_engine_creation(&app, engine);
+        App::complete_engine_creation(&app, 0, engine);
         App::window_size_changed(&app, true, windows::Win32::Foundation::RECT::default());
         assert_eq!(app.borrow().effective_memory_target, None);
         App::window_size_changed(&app, true, windows::Win32::Foundation::RECT::default());
@@ -10926,7 +11338,7 @@ mod tests {
                 Ok(MemoryTargetApply::Unsupported),
             ],
         );
-        App::complete_engine_creation(&app, engine);
+        App::complete_engine_creation(&app, 0, engine);
         assert!(app.borrow().engine.is_some());
         assert!(app.borrow().has_navigated);
         assert_eq!(app.borrow().effective_memory_target, None);
@@ -10971,6 +11383,7 @@ mod tests {
         App::window_size_changed(&app, false, rect(1120, 730));
         App::complete_engine_creation(
             &app,
+            0,
             Box::new(RecordingEngine {
                 calls,
                 target_results: VecDeque::new(),
@@ -11057,7 +11470,7 @@ mod tests {
             target_results: VecDeque::new(),
             log: Some(log.clone()),
         });
-        App::complete_engine_creation(&app, engine);
+        App::complete_engine_creation(&app, 0, engine);
         App::submit_url(
             &app,
             url::Url::parse("https://example.test/second").unwrap(),
@@ -11157,7 +11570,7 @@ mod tests {
     fn idle_policy_trims_only_loaded_visible_pages_after_three_seconds() {
         let decision = idle_memory_decision(false, true, 3_000, MemoryUsageTarget::Normal);
         assert_eq!(decision.target, MemoryUsageTarget::Low);
-        assert_eq!(decision.timer, IdleTimerAction::Kill);
+        assert_eq!(decision.timer, IdleTimerAction::Arm(IDLE_RESTORE_POLL_MS));
         assert_eq!(
             idle_memory_decision(false, true, 2_999, MemoryUsageTarget::Normal),
             IdleMemoryDecision {
@@ -11214,11 +11627,11 @@ mod tests {
 
         let trimmed = idle_memory_decision(false, true, 3_000, MemoryUsageTarget::Normal);
         assert_eq!(trimmed.target, MemoryUsageTarget::Low);
-        assert_eq!(trimmed.timer, IdleTimerAction::Kill);
+        assert_eq!(trimmed.timer, IdleTimerAction::Arm(IDLE_RESTORE_POLL_MS));
 
         let stable_low = idle_memory_decision(false, true, 10_000, MemoryUsageTarget::Low);
         assert_eq!(stable_low.target, MemoryUsageTarget::Low);
-        assert_eq!(stable_low.timer, IdleTimerAction::Kill);
+        assert_eq!(stable_low.timer, IdleTimerAction::Arm(IDLE_RESTORE_POLL_MS));
 
         let active = idle_memory_decision(false, true, 0, MemoryUsageTarget::Low);
         assert_eq!(active.target, MemoryUsageTarget::Normal);
@@ -11247,11 +11660,11 @@ mod tests {
 
         assert_eq!(
             App::idle_timer_fired(&app, 3_000, true),
-            IdleTimerAction::Kill
+            IdleTimerAction::Arm(IDLE_RESTORE_POLL_MS)
         );
         assert_eq!(
             App::idle_timer_fired(&app, 2_000, true),
-            IdleTimerAction::Kill
+            IdleTimerAction::Arm(IDLE_RESTORE_POLL_MS)
         );
         assert_eq!(
             App::idle_timer_fired(&app, 1_000, true),

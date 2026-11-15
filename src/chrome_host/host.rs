@@ -18,7 +18,7 @@ use webview2_com::{
     AcceleratorKeyPressedEventHandler, CoTaskMemPWSTR, CoreWebView2CustomSchemeRegistration,
     CreateCoreWebView2ControllerCompletedHandler, DownloadStartingEventHandler,
     FrameCreatedEventHandler, FrameNavigationStartingEventHandler, FocusChangedEventHandler, IFixedEnvironmentOptions4,
-    NavigationStartingEventHandler, NewWindowRequestedEventHandler,
+    NavigationStartingEventHandler, NewWindowRequestedEventHandler, ExecuteScriptCompletedHandler,
     PermissionRequestedEventHandler, ProcessFailedEventHandler, WebMessageReceivedEventHandler,
     WebResourceRequestedEventHandler, Microsoft::Web::WebView2::Win32::*,
 };
@@ -49,6 +49,7 @@ use super::{
 use super::{assets::SPLIT_START_URL, protocol::SplitCommand};
 // --- end split view ---
 use crate::shortcuts::{self, Command as Shortcut};
+use super::handshake::{self, ChromeView, DocumentToken, Session, StateIdentity};
 
 const VK_BACK: u32 = 0x08;
 const VK_ESCAPE: u32 = 0x1B;
@@ -209,6 +210,8 @@ pub enum View {
 }
 
 impl View {
+    fn persistent(self) -> Option<ChromeView> { match self { Self::Toolbar => Some(ChromeView::Toolbar), Self::Tabs => Some(ChromeView::Tabs), Self::Rail => Some(ChromeView::Rail), _ => None } }
+
     pub fn start_url(self) -> &'static str {
         match self {
             Self::Toolbar => START_URL,
@@ -283,16 +286,18 @@ pub struct ChromeEnv {
     diagnostic: Option<Rc<crate::performance::PerfLog>>,
     diagnostic_sequence: Rc<Cell<u64>>,
     interaction: Option<Rc<crate::performance::PerfLog>>,
+    browser_attached: Rc<dyn Fn(u32) -> bool>,
 }
 
 impl ChromeEnv {
     /// Wraps the shared tab environment. It must have been created with [`register_ui_scheme`].
-    pub fn new(environment: ICoreWebView2Environment, diagnostic: Option<Rc<crate::performance::PerfLog>>, interaction: Option<Rc<crate::performance::PerfLog>>) -> Self {
+    pub fn new(environment: ICoreWebView2Environment, diagnostic: Option<Rc<crate::performance::PerfLog>>, interaction: Option<Rc<crate::performance::PerfLog>>, browser_attached: Rc<dyn Fn(u32) -> bool>) -> Self {
         Self {
             inner: Rc::new(environment),
             diagnostic,
             diagnostic_sequence: Rc::new(Cell::new(0)),
             interaction,
+            browser_attached,
         }
     }
 }
@@ -434,6 +439,7 @@ struct Setup {
     on_failed: Rc<dyn Fn()>,
     on_accelerator: Option<AccelHandler>,
     ready: ReadySlot<ChromeHost>,
+    is_current: Rc<dyn Fn() -> bool>,
 }
 
 struct State {
@@ -441,6 +447,7 @@ struct State {
     webview: ICoreWebView2,
     /// Keeps the shared environment alive for as long as this host exists.
     _env: ChromeEnv,
+    is_current: Rc<dyn Fn() -> bool>,
     view: View,
     diagnostic_id: u64,
     focus_trace: Option<crate::performance::FocusTrace>,
@@ -455,6 +462,8 @@ struct State {
     applied_visible: Option<bool>,
     /// Set when the page posts `ready`.
     revealed: bool,
+    document: Option<Session>,
+    verifying_document: Option<u64>,
     closed: bool,
     removers: Vec<Box<dyn FnOnce()>>,
     failures: FailureCounter,
@@ -503,14 +512,150 @@ pub struct ChromeHostOptions {
 }
 
 impl ChromeHost {
+    pub(crate) fn owner_current(&self) -> bool {
+        self.state.try_borrow().ok().is_some_and(|s| !s.closed && (s.is_current)())
+    }
+    pub(crate) fn awaiting_initial(&self) -> bool {
+        self.state.try_borrow().ok().is_some_and(|s| !s.closed && (s.is_current)() && s.document.as_ref().is_some_and(Session::awaiting_initial))
+    }
+    pub(crate) fn applied(&self) -> bool {
+        self.state.try_borrow().ok().is_some_and(|s| !s.closed && (s.is_current)() && s.document.as_ref().is_some_and(Session::live))
+    }
+
+    pub(crate) fn document_current(&self, document: &DocumentToken) -> bool {
+        self.state.try_borrow().ok().is_some_and(|s| !s.closed && (s.is_current)() && s.document.as_ref().is_some_and(|d| d.document_current(document)))
+    }
+
+    pub(crate) fn document_lease(&self, document: DocumentToken) -> Rc<dyn Fn() -> bool> {
+        let weak = Rc::downgrade(&self.state);
+        Rc::new(move || weak.upgrade().is_some_and(|state| state.try_borrow().ok().is_some_and(|s|
+            !s.closed && (s.is_current)() && s.document.as_ref().is_some_and(|d| d.live() && d.document_current(&document)))))
+    }
+
+    pub(crate) fn document_epoch(&self) -> Option<u64> {
+        self.state.try_borrow().ok()?.document.as_ref().map(Session::epoch)
+    }
+
+    fn navigation_started(&self) -> Option<u64> {
+        let (epoch, controller, failed) = {
+            let mut s = self.state.try_borrow_mut().ok()?;
+            if s.closed || !(s.is_current)() { return None; }
+            let epoch = s.document.as_mut()?.navigate()?;
+            s.verifying_document = None;
+            s.revealed = false;
+            s.applied_bounds = UNKNOWN_BOUNDS;
+            (epoch, s.controller.clone(), s.on_failed.clone())
+        };
+        let current = || self.state.try_borrow().ok().is_some_and(|s| !s.closed && (s.is_current)() && s.document.as_ref().is_some_and(|d| d.epoch() == epoch && d.awaiting_document()));
+        let result = handshake::reveal_transaction(current, || unsafe { controller.SetBounds(LOADING_BOUNDS) }, || unsafe { controller.SetIsVisible(true) });
+        if result.is_err() && current() {
+            if let Ok(mut s) = self.state.try_borrow_mut() { if let Some(d) = &mut s.document { d.fail(); } }
+            failed();
+        } else if matches!(result, Ok(true)) && let Ok(mut s) = self.state.try_borrow_mut() {
+            s.applied_bounds = LOADING_BOUNDS;
+            s.applied_visible = Some(true);
+        }
+        Some(epoch)
+    }
+
+    fn verify_document(&self, view: ChromeView, document: DocumentToken, command: Rc<dyn Fn(Command)>) {
+        let (epoch, webview) = {
+            let Ok(mut s) = self.state.try_borrow_mut() else { return; };
+            if s.closed || !(s.is_current)() || s.view.persistent() != Some(view) { return; }
+            let Some(d) = &s.document else { return; };
+            if !d.awaiting_document() || s.verifying_document.is_some() { return; }
+            let epoch = d.epoch();
+            s.verifying_document = Some(epoch);
+            (epoch, s.webview.clone())
+        };
+        let weak = Rc::downgrade(&self.state);
+        let script = wide(&format!("window.__bowserChromeDocument === \"{}\"", document.wire()));
+        let handler = ExecuteScriptCompletedHandler::create(Box::new(move |status, result| {
+            let Some(shared) = weak.upgrade() else { return Ok(()); };
+            let accepted = shared.try_borrow_mut().ok().is_some_and(|mut s| {
+                if s.verifying_document != Some(epoch) { return false; }
+                s.verifying_document = None;
+                status.is_ok() && result.to_string().trim() == "true" && !s.closed && (s.is_current)() && s.document.as_mut().is_some_and(|d| d.ready(epoch, document.clone()))
+            });
+            if accepted { command(Command::ChromeReady { view, document: document.clone() }); }
+            Ok(())
+        }));
+        if unsafe { webview.ExecuteScript(PCWSTR(script.as_ptr()), &handler) }.is_err() {
+            if let Ok(mut s) = self.state.try_borrow_mut() { if s.verifying_document == Some(epoch) { s.verifying_document = None; } }
+        }
+    }
+
+    pub(crate) fn begin_initial_state(&self) -> Option<StateIdentity> {
+        let mut s = self.state.try_borrow_mut().ok()?;
+        if s.closed || !(s.is_current)() { return None; }
+        s.document.as_mut()?.begin()
+    }
+
+    pub(crate) fn finish_initial_state(&self) -> Result<()> {
+        let (id, parts, webview) = {
+            let mut s = self.state.try_borrow_mut().map_err(|_| fail("Chrome host is busy"))?;
+            if s.closed || !(s.is_current)() { return Err(fail("Chrome host is closed")); }
+            let (id, parts) = s.document.as_mut().and_then(Session::finish).ok_or_else(|| fail("Incomplete chrome state"))?;
+            (id, parts, s.webview.clone())
+        };
+        for frame in id.frames(parts) {
+            if !self.document_current(&id.document) { return Err(fail("Chrome document changed")); }
+            let message = wide(&frame);
+            unsafe { webview.PostWebMessageAsJson(PCWSTR(message.as_ptr()))?; }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn needs_initial_refresh(&self, id: &StateIdentity) -> bool {
+        self.state.try_borrow().ok().is_some_and(|s| s.document.as_ref().is_some_and(|d| d.needs_refresh(id)))
+    }
+
+    pub(crate) fn applied_identity(&self) -> Option<StateIdentity> {
+        self.state.try_borrow().ok()?.document.as_ref()?.applied_identity()
+    }
+
+    pub(crate) fn reveal_applied(&self, id: &StateIdentity, bounds: RECT, visible: bool) -> Result<bool> {
+        let controller = {
+            let mut s = self.state.try_borrow_mut().map_err(|_| fail("Chrome host is busy"))?;
+            s.wanted_bounds = bounds; s.wanted_visible = visible;
+            s.controller.clone()
+        };
+        let current = || self.state.try_borrow().ok().is_some_and(|s| !s.closed && (s.is_current)() && same_rect(s.wanted_bounds, bounds) && s.wanted_visible == visible && s.document.as_ref().is_some_and(|d| d.can_reveal(id)));
+        let shown = handshake::reveal_transaction(current, || unsafe { controller.SetBounds(bounds) }, || unsafe { controller.SetIsVisible(visible) })?;
+        if !shown { return Ok(false); }
+        let mut s = self.state.try_borrow_mut().map_err(|_| fail("Chrome host is busy"))?;
+        if s.closed || !(s.is_current)() || !s.document.as_mut().is_some_and(|d| d.revealed(id)) { return Ok(false); }
+        s.revealed = true;
+        s.wanted_bounds = bounds;
+        s.applied_bounds = bounds;
+        s.wanted_visible = visible;
+        s.applied_visible = Some(visible);
+        s._env.detail("chrome_state_applied", s.view, s.diagnostic_id);
+        let diagnostic = s.view == View::Toolbar && s._env.interaction.is_some();
+        drop(s);
+        if diagnostic { let _ = self.post_json(r#"{"v":1,"t":"diagnosticInteraction","enabled":true}"#); }
+        Ok(true)
+    }
+
     /// Starts creating a controller for `view` in the shared `env`, as a child of `parent`. `on_ready`
-    /// runs once, with the host or the reason creation failed. The controller stays hidden until the
-    /// page posts `ready`. `on_accelerator`, when given, sees each key the page did not consume (see
+    /// runs once, with the host or the reason creation failed. Persistent chrome stays parked until
+    /// its exact document/state handshake succeeds; other views retain their `ready` contract. `on_accelerator`, when given, sees each key the page did not consume (see
     /// [`AccelHandler`]). Returns an error only when the request could not be started; then
     /// `on_ready` never runs.
     pub fn create(
         env: &ChromeEnv,
         options: ChromeHostOptions,
+        on_ready: impl FnOnce(Result<ChromeHost>) + 'static,
+    ) -> Result<()> {
+        Self::create_guarded(env, options, Rc::new(|| true), on_ready)
+    }
+
+    /// A revocable owner lease, checked before configuring an asynchronously returned controller.
+    /// The window cannot enforce this boundary in on_ready: configure runs before that callback.
+    pub(crate) fn create_guarded(
+        env: &ChromeEnv,
+        options: ChromeHostOptions,
+        is_current: Rc<dyn Fn() -> bool>,
         on_ready: impl FnOnce(Result<ChromeHost>) + 'static,
     ) -> Result<()> {
         let ChromeHostOptions { parent, bounds, view, on_command, on_failed, on_accelerator } = options;
@@ -523,6 +668,7 @@ impl ChromeHost {
             on_failed,
             on_accelerator,
             ready: Rc::new(RefCell::new(Some(Box::new(on_ready)))),
+            is_current,
         };
         env.detail("chrome_host_requested", view, 0);
         create_controller(&env.inner, setup)
@@ -551,7 +697,7 @@ impl ChromeHost {
     pub fn set_bounds(&self, bounds: RECT) -> Result<()> {
         let controller = {
             let mut state = self.state.try_borrow_mut().map_err(|_| fail("Chrome host is busy"))?;
-            if state.closed { return Err(fail("Chrome host is closed")); }
+            if state.closed || !(state.is_current)() { return Err(fail("Chrome host is closed")); }
             state.wanted_bounds = bounds;
             if !state.revealed { return Ok(()); }
             if !needs_set_bounds(state.applied_bounds, bounds) { return Ok(()); }
@@ -624,8 +770,11 @@ impl ChromeHost {
     /// Sends one JSON message to the page and reports failure to the caller.
     pub fn post_json(&self, json: &str) -> Result<()> {
         let webview = {
-            let state = self.state.try_borrow().map_err(|_| fail("Chrome host is busy"))?;
-            if state.closed { return Err(fail("Chrome host is closed")); }
+            let mut state = self.state.try_borrow_mut().map_err(|_| fail("Chrome host is busy"))?;
+            if state.closed || !(state.is_current)() { return Err(fail("Chrome host is closed")); }
+            if let Some(result) = state.document.as_mut().and_then(|d| d.capture(json)) {
+                return if result { Ok(()) } else { Err(fail("Chrome state is not live")) };
+            }
             state.webview.clone()
         };
         let message = wide(json);
@@ -633,6 +782,12 @@ impl ChromeHost {
     }
 
     /// Moves keyboard focus into the chrome page (programmatic move).
+    pub(crate) fn focus_document(&self, document: &DocumentToken) -> Result<()> {
+        if !self.applied() || !self.document_current(document) { return Err(fail("Chrome document changed")); }
+        self.focus()
+    }
+
+    /// Moves keyboard focus into a normal host page (programmatic move).
     pub fn focus(&self) -> Result<()> {
         let controller = {
             let state = self.state.try_borrow().map_err(|_| {
@@ -693,7 +848,7 @@ impl ChromeHost {
     pub fn set_visible(&self, visible: bool) -> Result<()> {
         let controller = {
             let mut state = self.state.try_borrow_mut().map_err(|_| fail("Chrome host is busy"))?;
-            if state.closed { return Err(fail("Chrome host is closed")); }
+            if state.closed || !(state.is_current)() { return Err(fail("Chrome host is closed")); }
             state.wanted_visible = visible;
             if !state.revealed { return Ok(()); }
             if state.applied_visible == Some(visible) { return Ok(()); }
@@ -719,6 +874,7 @@ impl ChromeHost {
             let Ok(mut state) = self.state.try_borrow_mut() else { return; };
             if state.closed { return; }
             state.closed = true;
+            if let Some(document) = &mut state.document { document.fail(); }
             state._env.detail("chrome_host_close_requested", state.view, state.diagnostic_id);
             (state.controller.clone(), std::mem::take(&mut state.removers))
         };
@@ -827,6 +983,12 @@ fn create_controller(environment: &ICoreWebView2Environment, setup: Setup) -> Re
     let handler_setup = setup.clone();
     let handler = CreateCoreWebView2ControllerCompletedHandler::create(Box::new(
         move |status, controller| {
+            if !(handler_setup.is_current)() {
+                // No handler installation, navigation, or reveal on a dead/reused owner HWND.
+                if let Some(controller) = controller { unsafe { let _ = controller.Close(); } }
+                handler_setup.ready.borrow_mut().take();
+                return Ok(());
+            }
             handler_setup.env.detail("chrome_controller_result", handler_setup.view, 0);
             let result = match (status, controller) {
                 (Ok(()), Some(controller)) => {
@@ -866,6 +1028,7 @@ fn configure(
             controller,
             webview,
             _env: setup.env.clone(),
+            is_current: setup.is_current.clone(),
             view: setup.view,
             diagnostic_id: setup.env.next_diagnostic_id(),
             focus_trace,
@@ -875,6 +1038,8 @@ fn configure(
             wanted_visible: true,
             applied_visible: Some(true),
             revealed: false,
+            document: setup.view.persistent().map(Session::new),
+            verifying_document: None,
             closed: false,
             removers: Vec::new(),
             failures: FailureCounter::default(),
@@ -895,14 +1060,23 @@ fn prepare(
     setup: &Setup,
     background_at_creation: bool,
 ) -> Result<()> {
+    let current = || if (setup.is_current)() { Ok(()) } else { Err(fail("Chrome owner changed")) };
     let (controller, webview) = {
         let state = host.state.borrow();
         (state.controller.clone(), state.webview.clone())
     };
+    accept_browser_attachment(&*setup.is_current, || {
+        let mut pid = 0;
+        unsafe { webview.BrowserProcessId(&mut pid)?; }
+        Ok(pid)
+    }, &*setup.env.browser_attached)?;
     unsafe {
         // Loads while visible but parked at one pixel (see `LOADING_BOUNDS`); `reveal` moves it.
+        current()?;
         controller.SetBounds(LOADING_BOUNDS)?;
+        current()?;
         controller.SetIsVisible(true)?;
+        current()?;
         if !background_at_creation {
             let controller2: ICoreWebView2Controller2 = controller.cast()?;
             controller2.SetDefaultBackgroundColor(TRANSPARENT)?;
@@ -911,11 +1085,54 @@ fn prepare(
             controller4.SetAllowExternalDrop(false)?;
         }
     }
+    current()?;
     verify_chrome_profile(&webview)?;
+    current()?;
     configure_settings(&webview)?;
+    current()?;
     install_handlers(host, environment, setup, &webview)?;
+    current()?;
     let start = wide(setup.view.start_url());
     unsafe { webview.Navigate(PCWSTR(start.as_ptr())) }
+}
+
+/// The getter may pump. Only a controller still authorized by its creation lease may attach.
+fn accept_browser_attachment(current: &dyn Fn() -> bool, query: impl FnOnce() -> Result<u32>, observe: &dyn Fn(u32) -> bool) -> Result<()> {
+    if !current() { return Err(fail("Chrome owner changed")); }
+    let pid = query()?;
+    if !current() || !observe(pid) || !current() { return Err(fail("Chrome browser attachment is obsolete")); }
+    Ok(())
+}
+
+#[cfg(test)]
+mod browser_attachment_tests {
+    use super::*;
+    #[test]
+    fn actual_browser_identity_is_reported_before_configuration_can_continue() {
+        let seen = Cell::new(0);
+        assert!(accept_browser_attachment(&|| true, || Ok(732), &|pid| { seen.set(pid); true }).is_ok());
+        assert_eq!(seen.get(), 732);
+        assert!(accept_browser_attachment(&|| true, || Ok(733), &|_| false).is_err());
+    }
+
+    #[test]
+    fn owner_revoked_during_the_getter_cannot_attach_to_the_replacement() {
+        let current = Cell::new(true);
+        let reported = Cell::new(false);
+        assert!(accept_browser_attachment(&|| current.get(), || { current.set(false); Ok(732) }, &|_| {
+            reported.set(true); true
+        }).is_err());
+        assert!(!reported.get());
+    }
+
+    #[test]
+    fn failed_getter_or_obsolete_creation_cannot_authorize_configuration() {
+        let reported = Cell::new(false);
+        let observe = |_| { reported.set(true); true };
+        assert!(accept_browser_attachment(&|| true, || Err(fail("PID unavailable")), &observe).is_err());
+        assert!(accept_browser_attachment(&|| false, || panic!("obsolete controller must not be queried"), &observe).is_err());
+        assert!(!reported.get());
+    }
 }
 
 /// Confirms the controller really runs in the private chrome profile, so a runtime that ignored the
@@ -992,9 +1209,21 @@ fn install_handlers(
             trace.result("interaction_focus_lost_registration",&result);
             if result.is_ok(){let c=controller.clone();let t=token;removers.push(Box::new(move ||{let _=c.remove_LostFocus(t);}));}
         }
-        // Top-level navigation: only this host's start URL may load.
+        // Revoke document identity before any COM operation or queued callback can act.
+        let navigation_host = host.clone();
+        let navigation_weak = Rc::downgrade(&navigation_host.state);
+        drop(navigation_host);
+        let navigation_command = setup.on_command.clone();
         webview.add_NavigationStarting(
             &NavigationStartingEventHandler::create(Box::new(move |_sender, args| {
+                if view.persistent().is_some() {
+                    if let Some(shared) = navigation_weak.upgrade() {
+                        let host = ChromeHost { state: shared, focus_trace: None };
+                        if let Some(epoch) = host.navigation_started() {
+                            navigation_command(Command::ChromeNavigating(epoch));
+                        }
+                    }
+                }
                 if let Some(args) = args {
                     let mut uri = PWSTR::null();
                     let allowed = args.Uri(&mut uri).is_ok()
@@ -1101,6 +1330,7 @@ fn install_handlers(
         }));
 
         let on_failed = setup.on_failed.clone();
+        let failed_weak = weak.clone();
         webview.add_ProcessFailed(
             &ProcessFailedEventHandler::create(Box::new(move |_sender, args| {
                 let kind = args.and_then(|args| {
@@ -1108,6 +1338,12 @@ fn install_handlers(
                     args.ProcessFailedKind(&mut kind).ok().map(|()| kind)
                 });
                 if process_failure_is_fatal(kind) {
+                    if let Some(shared) = failed_weak.upgrade() {
+                        if let Ok(mut state) = shared.try_borrow_mut() {
+                            if let Some(document) = &mut state.document { document.fail(); }
+                            state.revealed = false;
+                        }
+                    }
                     on_failed();
                 }
                 Ok(())
@@ -1192,7 +1428,8 @@ fn install_handlers(
                     return Ok(()); // Unavailable without flag; never reaches action dispatch.
                 }
                 if let Some(log)=&interaction {
-                    let event=match &command {
+                    let action = if let Command::ChromeAction { command, .. } = &command { command.as_ref() } else { &command };
+                    let event=match action {
                         Command::Submit(_)=>Some("interaction_bridge_submit"),
                         Command::SuggestPick{..}=>Some("interaction_bridge_suggestion_pick"),
                         Command::Focus(true)=>Some("interaction_bridge_focus_in"),
@@ -1200,6 +1437,33 @@ fn install_handlers(
                         _=>None,
                     };
                     if let Some(event)=event {let _=log.record(event);}
+                }
+                if view.persistent().is_some() {
+                    let Some(shared) = weak_bridge.upgrade() else { return Ok(()); };
+                    let host = ChromeHost { state: shared, focus_trace: bridge_focus_trace.clone() };
+                    match &command {
+                        Command::ChromeReady { view: chrome_view, document } => {
+                            host.verify_document(*chrome_view, document.clone(), on_command.clone());
+                            return Ok(());
+                        }
+                        Command::ChromeApplied(id) => {
+                            let accepted = host.state.try_borrow_mut().ok().is_some_and(|mut s| !s.closed && (s.is_current)() && s.document.as_mut().is_some_and(|d| d.acknowledge(id)));
+                            if !accepted { return Ok(()); }
+                        }
+                        Command::ChromeFailed(id) => {
+                            let callback = host.state.try_borrow_mut().ok().and_then(|mut s| {
+                                if s.closed || !(s.is_current)() || !s.document.as_ref().is_some_and(|d| d.accepts_failure(id)) { return None; }
+                                s.document.as_mut()?.fail(); Some(s.on_failed.clone())
+                            });
+                            if let Some(callback) = callback { callback(); }
+                            return Ok(());
+                        }
+                        Command::ChromeAction { document, command, .. } => {
+                            if !host.applied() || !host.document_current(document) { return Ok(()); }
+                            if is_popup_command(command) && !popup_gate.allow(Instant::now()) { return Ok(()); }
+                        }
+                        _ => return Ok(()),
+                    }
                 }
                 if matches!(command, Command::Ready) {
                     reveal(&weak_bridge);
@@ -1347,7 +1611,7 @@ fn reveal(weak: &Weak<RefCell<State>>) {
     };
     let (wanted_bounds, wanted_visible,focus_trace) = {
         let Ok(mut state) = shared.try_borrow_mut() else { return; };
-        if state.closed || state.revealed { return; }
+        if state.closed || state.revealed || !(state.is_current)() { return; }
         state.revealed = true;
         state._env.detail("chrome_host_ready", state.view, state.diagnostic_id);
         state._env.snapshot_renderers();
@@ -1399,7 +1663,14 @@ fn interaction_admission(view: View,enabled: bool,raw: &str,diagnostic: &mut Tok
 }
 
 fn view_accepts_command(view: View, command: &Command) -> bool {
-    if matches!(command, Command::Ready) { return true; }
+    match command {
+        Command::ChromeAction { view: requested, command, .. } => return view.persistent() == Some(*requested) && view_accepts_command(view, command),
+        Command::ChromeReady { view: requested, .. } => return view.persistent() == Some(*requested),
+        Command::ChromeApplied(id) | Command::ChromeFailed(id) => return view.persistent() == Some(id.view),
+        Command::ChromeNavigating(_) => return false,
+        Command::Ready => return view.persistent().is_none(),
+        _ => {}
+    }
     match view {
         View::Toolbar => matches!(command, Command::Interaction{..} | Command::Tool { bar: ToolBar::Address, .. } | Command::DownloadsToggle { .. } | Command::ExtensionsButton { .. } | Command::Nav(_) | Command::Edit { .. } | Command::Submit(_) | Command::Escape | Command::Focus(_) | Command::Open(_) | Command::BeginDrag | Command::Caption(_) | Command::Tip { .. } | Command::TipOff | Command::SuggestPick { .. } | Command::SuggestPreview { .. } | Command::SuggestEnd | Command::Panel { kind: PanelType::Address, .. }),
         View::Tabs => matches!(command, Command::Tool { bar: ToolBar::Tabs, .. } | Command::Tab { .. } | Command::TabMove { .. } | Command::TabSelection { .. } | Command::ClosedTabs | Command::Group { .. } | Command::Side(_) | Command::BeginDrag | Command::Caption(_) | Command::Tip { .. } | Command::TipOff | Command::Hover(_))
@@ -1431,6 +1702,28 @@ fn view_accepts_command(view: View, command: &Command) -> bool {
         // Likewise a tab: only its own family, never the rail panel's `hist` or `panel`.
         View::HistoryPage => matches!(command, Command::Panel { kind: PanelType::HistoryPage, .. }),
         View::DownloadsPage => matches!(command, Command::Panel { kind: PanelType::DownloadsPage, .. }),
+    }
+}
+
+#[cfg(test)]
+mod restoration_admission_tests {
+    use super::*;
+    #[test]
+    fn chrome_restoration_envelopes_keep_source_view_and_normal_host_boundaries() {
+        for (view, name) in [(View::Toolbar, "toolbar"), (View::Tabs, "tabs"), (View::Rail, "rail")] {
+            let ready = parse_command(&format!(r#"{{"v":1,"t":"chromeReady","view":"{name}","doc":"0123456789abcdef0123456789abcdef"}}"#)).unwrap();
+            assert!(view_accepts_command(view, &ready));
+            assert!(!view_accepts_command(view, &Command::Ready));
+            for other in [View::Settings, View::HistoryPage, View::DownloadsPage, View::Popup, View::Split] {
+                assert!(!view_accepts_command(other, &ready));
+                assert!(view_accepts_command(other, &Command::Ready));
+            }
+        }
+        let submit = parse_command(r#"{"v":1,"t":"chromeAction","view":"toolbar","doc":"0123456789abcdef0123456789abcdef","text":"{\"v\":1,\"t\":\"submit\",\"text\":\"hello\"}"}"#).unwrap();
+        assert!(view_accepts_command(View::Toolbar, &submit));
+        assert!(!view_accepts_command(View::Tabs, &submit));
+        assert!(!view_accepts_command(View::Rail, &submit));
+        assert!(!view_accepts_command(View::Settings, &submit));
     }
 }
 

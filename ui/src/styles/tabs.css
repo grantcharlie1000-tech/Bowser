@@ -44,6 +44,21 @@
 
 .strip .tab[hidden] { display: none; }
 
+/* Quiet separators share no geometry with the tab's hover/selection surfaces. */
+.strip .tab:has(+ .tab:not([hidden])) {
+  background-image: linear-gradient(var(--bw-hairline), var(--bw-hairline));
+  background-position: right center;
+  background-repeat: no-repeat;
+  background-size: 1px 16px;
+}
+
+.strip .tab:is(.active, :hover, :focus-within, .picked, .stack-target, .dragging, .landing, .lifted, .ghost, [data-pair="shown"]),
+.strip .tab:has(+ .tab:is(.active, :hover, :focus-within, .picked, .stack-target, .dragging, .landing, .lifted, .ghost, [data-pair="shown"])) {
+  background-image: none;
+}
+
+:root[dir="rtl"] .strip .tab { background-position: left center; }
+
 .strip .tab::before,
 .strip .tab::after {
   content: "";

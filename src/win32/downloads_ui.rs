@@ -342,24 +342,40 @@ mod tests {
         assert_eq!(PROGRESS_INTERVAL * 4, Duration::from_secs(1));
     }
 
-    /// The body of the top-level `fn <name>(` in `source`, up to its closing brace in column 0.
-    fn fn_body<'a>(source: &'a str, name: &str) -> &'a str {
-        let start = source.find(&format!("\nfn {name}(")).unwrap_or_else(|| panic!("fn {name} in window.rs"));
-        let rest = &source[start + 1..];
-        &rest[..rest.find("\n}").expect("end of fn")]
-    }
-
     #[test]
-    fn the_list_observer_is_installed_when_the_toolbar_page_is_ready() {
-        // `install` is what makes the list tell this window about changes; without it no
-        // WM_DOWNLOADS_CHANGED is ever posted, so the button never shows, the bubble never opens and
-        // the downloads page never refreshes. It must run on every toolbar `ready` (html_refresh),
-        // not only when the HTML chrome falls back to GDI. Not unit-testable without WebView2.
-        let window = include_str!("window.rs");
-        assert!(
-            fn_body(window, "html_refresh").contains("super::downloads_ui::install(hwnd, &app);"),
-            "html_refresh must install the downloads observer and send the button's state"
-        );
+    fn installed_observer_posts_start_and_progress_after_toolbar_reinstallation() {
+        use windows::{core::w, Win32::UI::WindowsAndMessaging::{
+            CreateWindowExW, DestroyWindow, PeekMessageW, MSG, PM_REMOVE, WS_POPUP,
+        }};
+        struct Owner(HWND);
+        impl Drop for Owner {
+            fn drop(&mut self) {
+                close(self.0);
+                unsafe { let _ = DestroyWindow(self.0); }
+            }
+        }
+        // A real owned message queue and never-shown window, with no browser or disk download.
+        // Production initial-state construction calls install; verifying that takeover wiring
+        // still requires native GUI acceptance, rather than a particular function name.
+        let owner = Owner(unsafe { CreateWindowExW(Default::default(), w!("STATIC"), w!(""),
+            WS_POPUP, -32000, -32000, 1, 1, None, None, None, None) }.unwrap());
+        let app = crate::app::test_app();
+        install(owner.0, &app);
+        App::on_download_event(&app, crate::downloads::DownloadEvent::Started {
+            key: 77123, url: "https://example.test/observer.bin".into(),
+            path: "observer-fixture.bin".into(), total: 100,
+        });
+        let mut message = MSG::default();
+        let changed = super::super::WM_DOWNLOADS_CHANGED;
+        assert!(unsafe { PeekMessageW(&mut message, Some(owner.0), changed, changed, PM_REMOVE) }.as_bool());
+        assert_eq!(message.hwnd, owner.0);
+        assert_eq!(message.wParam.0, 1, "a newly started download posts an immediate change");
+        // A fresh toolbar document must keep the live observer rather than losing updates.
+        install(owner.0, &app);
+        App::on_download_event(&app, crate::downloads::DownloadEvent::Progress { key: 77123, got: 1, total: 100 });
+        assert!(unsafe { PeekMessageW(&mut message, Some(owner.0), changed, changed, PM_REMOVE) }.as_bool());
+        assert_eq!(message.wParam.0, 0, "progress keeps its separate throttling classification");
+        assert!(!unsafe { PeekMessageW(&mut message, Some(owner.0), changed, changed, PM_REMOVE) }.as_bool(), "one observer posts each update once");
     }
 
     #[test]

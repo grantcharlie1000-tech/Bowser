@@ -1,3 +1,4 @@
+import { decodeChromeCommand, prepareChromeDom, initializeChrome } from './chrome-harness.mjs';
 // Wave-1 fixes: what the address bar, search field and toolbar options do to the real toolbar
 // (src/main.ts and src/view.ts), driven through the same inbound messages Rust sends, against a small
 // fake DOM (no browser). The messages come from the Rust-written fixture (address-messages.json).
@@ -94,7 +95,7 @@ Object.assign(globalThis, {
   getComputedStyle: () => ({}),
   CSS: { escape: (s) => s },
   InputEvent: class InputEvent {},
-  chrome: { webview: { postMessage: (wire) => sent.push(JSON.parse(wire)), addEventListener: (_t, cb) => listeners.push(cb) } },
+  chrome: { webview: { postMessage: (wire) => sent.push(decodeChromeCommand(wire)), addEventListener: (_t, cb) => listeners.push(cb) } },
 });
 globalThis.Element = Node;
 globalThis.HTMLElement = Node;
@@ -104,7 +105,9 @@ const deliver = (msg) => { for (const cb of listeners.slice()) cb({ data: JSON.s
 
 const viewMod = await import(bundleSource("export { applyState, buildView, renderDisplay } from './view';"));
 // main.ts starts the toolbar on import (no ?view means the toolbar), exactly as the browser does.
+prepareChromeDom(Node);
 await import(bundleSource("import './main';"));
+await initializeChrome(sent, deliver, 'toolbar');
 
 const omni = root.querySelector('.omni');
 const search = root.querySelector('.omni-search');
@@ -237,4 +240,19 @@ test('show_zoom_indicator: the zoom chip shows at 125% only with the option on',
   assert.equal(view.zoom.hidden, true);
   viewMod.applyState(view, { ...STATE, zoom: 100, showZoom: true });
   assert.equal(view.zoom.hidden, true, 'never at 100%');
+});
+
+
+test('native input handoff preserves edited text and UTF-16 selection without early focus', () => {
+  omni.blur();
+  deliver({ t: 'setText', text: 'example.org', full: 'https://example.org/', select: false });
+  deliver({ v: 1, t: 'nativeText', text: 'typed \u{1f989} query', start: 6, end: 8 });
+  assert.notEqual(document.activeElement, omni, 'parked application cannot steal native focus');
+  assert.equal(omni.value, 'typed \u{1f989} query');
+  assert.deepEqual([omni.selectionStart, omni.selectionEnd], [6, 8]);
+  deliver({ v: 1, t: 'focusNative', start: 6, end: 8 });
+  assert.equal(document.activeElement, omni);
+  assert.equal(omni.value, 'typed \u{1f989} query', 'focus must not substitute the committed URL');
+  assert.deepEqual([omni.selectionStart, omni.selectionEnd], [6, 8]);
+  omni.blur();
 });
