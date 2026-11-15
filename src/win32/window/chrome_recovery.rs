@@ -365,7 +365,7 @@ mod restoration_tests {
 pub(super) fn discard(hwnd: HWND, index: Option<usize>) {
     let detached = with_chrome(hwnd, |s| {
         let mut notices = Vec::new();
-        for i in 0..3 { if index.is_none_or(|index| index == i) { notices.extend(std::mem::take(&mut *s.chrome_lifetimes.inboxes[i].borrow_mut())); } }
+        for (i, inbox) in s.chrome_lifetimes.inboxes.iter().enumerate().take(3) { if index.is_none_or(|index| index == i) { notices.extend(std::mem::take(&mut *inbox.borrow_mut())); } }
         notices
     });
     drop(detached);
