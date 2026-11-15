@@ -1,0 +1,75 @@
+diff --git a/src/app.rs b/src/app.rs
+index 774cd23ef..a7c3b9abf 100644
+--- a/src/app.rs
++++ b/src/app.rs
+@@ -1930,6 +1930,7 @@ impl App {
+     }
+ 
+     pub fn select_tab(app: &AppRef, id: TabId) -> bool {
++        if let Ok(s)=app.try_borrow(){let _=s.log.record("perf_tab_select_start");}
+         let hwnd = app.borrow().hwnd;
+         win32::page_fullscreen(hwnd, app, false);
+         let _ = Self::expand_group_for_tab(app, id);
+@@ -3137,6 +3138,7 @@ impl App {
+             (state.hwnd, state.edit, active)
+         };
+         Self::diagnostic_interaction_event(app,"interaction_internal_show_applied",u64::from(id.0));
++        if let Ok(s)=app.try_borrow(){let _=s.log.record("perf_internal_shown");}
+         if active {
+             win32::sync_address_input(hwnd, edit, id, &url, Self::settings(app).minimal_url);
+             Self::sync_window_title(app);
+@@ -6239,6 +6241,7 @@ impl App {
+             })),
+             title_changed: Some(Rc::new(move |tab_id, title| {
+                 if let Some(app) = title_events_app.upgrade() {
++                    if title.starts_with("BOWSER_PERF_READY_") && let Ok(s)=app.try_borrow(){let _=s.log.record_navigation("perf_title_changed",u64::from(tab_id.0),0,None,&title);}
+                     let mut state = app.borrow_mut();
+                     // --- tab options --- a count in the title ("(3) Inbox") is a notification.
+                     let detect = state.settings.tabs.title_notifications;
+diff --git a/src/win32/settings_page.rs b/src/win32/settings_page.rs
+index f34bba76d..d1364dba6 100644
+--- a/src/win32/settings_page.rs
++++ b/src/win32/settings_page.rs
+@@ -136,6 +136,7 @@ fn available(owner: HWND) -> bool {
+ /// normal shown tab becomes the page (the omnibox) instead of a new tab opening (the menu).
+ pub(crate) fn open(owner: HWND, app: &AppRef, section: Option<Section>, reuse_blank: bool) {
+     App::diagnostic_interaction_event(app,"interaction_settings_open",u64::from(reuse_blank));
++    if let Ok(s)=app.try_borrow(){let _=s.log.record("perf_settings_open");}
+     if !available(owner) {
+         App::diagnostic_interaction_event(app,"interaction_settings_fallback",0);
+         if let Err(error) = super::settings_panel::open(owner, app) {
+@@ -283,6 +284,7 @@ fn ensure_host(owner: HWND) {
+         match command {
+             Command::Ready => {
+                 if let Some(app)=super::window::app_of(owner){App::diagnostic_interaction_event(&app,"interaction_settings_ready",0);}
++                if let Some(app)=super::window::app_of(owner){if let Ok(s)=app.try_borrow(){let _=s.log.record("perf_settings_ready");}}
+                 let _ = with(owner, |rt| {
+                     rt.ready = true;
+                     rt.state = None;
+diff --git a/src/win32/window.rs b/src/win32/window.rs
+index e648e55dd..c33bf5791 100644
+--- a/src/win32/window.rs
++++ b/src/win32/window.rs
+@@ -8106,12 +8106,14 @@ pub(super) fn add_bookmark_now(hwnd: HWND, app: &AppRef) {
+ /// A new tab from the user's hand (Ctrl+T, the new tab buttons, the menus): what the new tab page
+ /// option says opens, and the keyboard goes to the page or the address bar as the options say.
+ fn open_user_tab(hwnd: HWND, app: &AppRef) {
++    if let Ok(s)=app.try_borrow(){let _=s.log.record("perf_input_new_tab");}
+     let id = App::open_new_tab(app);
+     if new_tab_focuses_page(App::tab_is_blank(app, id), App::tab_options(app).focus_page) {
+         App::focus_page(app);
+     } else {
+         focus_omni(hwnd, app, true);
+     }
++    if let Ok(s)=app.try_borrow(){let _=s.log.record("perf_new_tab_returned");}
+ }
+ 
+ /// --- wave-1 fixes (testable rules of the Tabs options) ---
+@@ -10066,6 +10068,7 @@ fn html_command(hwnd: HWND, command: ChromeCommand) {
+         ChromeCommand::Submit(text) => {
+             let Some(app) = app_of(hwnd) else { return };
+             App::diagnostic_interaction_event(&app,"interaction_window_submit",u64::from(text=="bowser://settings"));
++            if let Ok(s)=app.try_borrow(){let _=s.log.record("perf_omnibox_submit");}
+             super::html_hover::suggest_hide(hwnd); // --- omnibox suggest ---
+             // Same path as the native omnibox: remember the typed text, then let App normalise it.
+             remember_url(hwnd, App::active_tab_id(&app), &text, App::settings(&app).minimal_url);

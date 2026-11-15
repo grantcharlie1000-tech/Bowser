@@ -1,3 +1,4 @@
+import { decodeChromeCommand, prepareChromeDom, initializeChrome } from './chrome-harness.mjs';
 // The Tabs options in a fake document: the settings page's Tabs section, the Sessions panel, the tab
 // strip's marks and inputs, and the hover card's thumbnail and memory. Each test names what a click or
 // a snapshot must do, and what crosses the bridge to Rust.
@@ -52,6 +53,8 @@ class Node {
   }
   get textContent() { return this.ownText ?? this.children.map((c) => c.textContent).join(''); }
   set textContent(v) { this.children = []; this.ownText = null; if (v !== '') this.append(new Node('#text', String(v))); }
+  get childNodes() { return this.children; }
+  get nodeType() { return this.tagName === '#text' ? 3 : 1; }
   get childElementCount() { return this.children.filter((c) => c.tagName !== '#text').length; }
   get firstChild() { return this.children[0] ?? null; }
   get lastChild() { return this.children[this.children.length - 1] ?? null; }
@@ -73,7 +76,13 @@ class Node {
     for (let node = this; node; node = node.parent) for (const cb of node.listeners[type] ?? []) cb({ ...e, currentTarget: node });
   }
   click(event = {}) { if (!this.disabled) this.dispatch('click', event); }
-  detach(node) { if (node.parent) node.parent.children = node.parent.children.filter((c) => c !== node); node.parent = this; }
+  detach(node) {
+    if (node.parent) {
+      const index = node.parent.children.indexOf(node);
+      if (index >= 0) node.parent.children.splice(index, 1);
+    }
+    node.parent = this;
+  }
   append(...nodes) { for (const n of nodes) { const node = typeof n === 'string' ? new Node('#text', n) : n; this.ownText = null; this.detach(node); this.children.push(node); } }
   prepend(node) { this.detach(node); this.children.unshift(node); }
   insertBefore(node, ref) { this.detach(node); const at = ref ? this.children.indexOf(ref) : -1; if (at < 0) this.children.push(node); else this.children.splice(at, 0, node); return node; }
@@ -110,7 +119,8 @@ const documentElement = new Node('html');
 const body = new Node('body');
 // Page-level listeners (window and document) are kept so a test can fire pagehide or visibilitychange.
 const pageListeners = { window: {}, document: {} };
-const firePage = (target, type) => { for (const cb of pageListeners[target][type] ?? []) cb({ type }); };
+let settingsLifecycle;
+const firePage = (target, type) => { for (const cb of (settingsLifecycle ?? pageListeners)[target][type] ?? []) cb({ type }); };
 globalThis.document = {
   documentElement, body, activeElement: null, visibilityState: 'visible',
   createElement: (tag) => new Node(tag),
@@ -133,7 +143,7 @@ Object.assign(globalThis, {
   IntersectionObserver: class { observe() {} disconnect() {} },
   ResizeObserver: class { observe() {} disconnect() {} },
   MutationObserver: class { observe() {} disconnect() {} },
-  chrome: { webview: { postMessage: (wire) => sent.push(JSON.parse(wire)), addEventListener: (_t, cb) => listeners.push(cb) } },
+  chrome: { webview: { postMessage: (wire) => sent.push(decodeChromeCommand(wire)), addEventListener: (_t, cb) => listeners.push(cb) } },
 });
 globalThis.Element = Node;
 globalThis.HTMLElement = Node;
@@ -510,7 +520,10 @@ test('the reload countdown counts down locally from what the host said', () => {
 
 const stripRoot = new Node('div');
 stripRoot.id = 'app';
+settingsLifecycle = { window: Object.fromEntries(Object.entries(pageListeners.window).map(([k,v]) => [k, [...v]])), document: Object.fromEntries(Object.entries(pageListeners.document).map(([k,v]) => [k, [...v]])) };
+prepareChromeDom(Node);
 strip.startTabs(stripRoot);
+await initializeChrome(sent, deliver, 'tabs');
 const tabsMsg = (items, active) => ({ v: 1, t: 'tabs', active, items });
 deliver(tabsMsg([item(1, { pinned: true }), item(2), item(3), item(4)], 2));
 const tabNode = (id) => stripRoot.querySelector(`.tab[data-id="${id}"]`);

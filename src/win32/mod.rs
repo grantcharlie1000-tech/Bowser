@@ -96,6 +96,19 @@ use windows::{
 };
 
 pub use window::{rail_activate, run};
+pub(crate) use window::{arm_engine_recovery_timeout, recover_native_chrome};
+
+pub(crate) const WM_ENGINE_FAILURE: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 0x87;
+
+pub(crate) fn post_engine_failure(hwnd: HWND) {
+    if hwnd.is_invalid() { return; }
+    unsafe {
+        if windows::Win32::UI::WindowsAndMessaging::PostMessageW(Some(hwnd), WM_ENGINE_FAILURE,
+            windows::Win32::Foundation::WPARAM(0), windows::Win32::Foundation::LPARAM(0)).is_err() {
+            arm_engine_recovery_timeout(hwnd);
+        }
+    }
+}
 
 pub fn show_runtime_error(error: &crate::engine::RuntimeUnavailable) {
     show_error_message(&format!("{error}"));

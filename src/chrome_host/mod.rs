@@ -9,6 +9,7 @@ mod fingerprint;
 #[cfg(test)]
 mod guard;
 pub mod host;
+pub mod handshake;
 pub mod json;
 pub mod protocol;
 pub mod settings;

@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Synthetic conversation workload</title>
+<style>
+  *{box-sizing:border-box}body{margin:0;background:#18191c;color:#eee;font:16px/1.55 system-ui;display:grid;grid-template-columns:220px 1fr;height:100vh}
+  aside{background:#111216;padding:20px;overflow:auto}button,textarea{font:inherit;color:inherit;background:#292b31;border:1px solid #555;border-radius:8px;padding:10px}
+  button{cursor:pointer}button:focus-visible,textarea:focus-visible{outline:3px solid #86b7ff}button:disabled{opacity:.5;cursor:wait}aside button{display:block;width:100%;margin:8px 0;text-align:left}
+  main{min-width:0;min-height:0;display:flex;flex-direction:column}header{padding:12px 24px;border-bottom:1px solid #444}h1{font-size:18px;margin:0}#fixture-status{display:block;font-size:12px;color:#bbc7dd}
+  #transcript{overflow:auto;flex:1;padding:24px;scrollbar-gutter:stable}article{max-width:850px;margin:0 auto 28px;padding:20px;background:#24262c;border-radius:12px}h3{margin:0;font-size:14px;color:#b6cfff}
+  pre{background:#121316;padding:16px;overflow:auto;white-space:pre-wrap}form{padding:16px 24px;border-top:1px solid #444}textarea{width:100%;height:90px;resize:vertical}form button{margin:8px 8px 0 0}[hidden]{display:none!important}
+</style>
+<aside aria-label="Synthetic conversations"><button id="home" type="button">Home</button><nav id="conversations" aria-label="Conversation list"></nav></aside>
+<main><header><h1 id="heading">Conversation workload</h1><output id="fixture-status">Loading fixture</output></header>
+<section id="transcript" aria-label="Conversation transcript" tabindex="0"></section>
+<form id="composer-form" hidden><label for="composer">Draft</label><textarea id="composer" aria-label="Conversation draft"></textarea><button id="stream" type="button">Stream reply</button><button id="check" type="button">Check draft</button></form></main>
+<script type="module" src="/conversation-client.mjs?token=FIXTURE_TOKEN"></script>
+</html>

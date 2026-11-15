@@ -155,6 +155,8 @@ class Node {
   }
   get textContent() { return this.ownText ?? this.children.map((c) => c.textContent).join(''); }
   set textContent(v) { this.children = []; this.ownText = null; if (v !== '') this.append(new Node('#text', String(v))); }
+  get childNodes() { return this.children; }
+  get nodeType() { return this.tagName === '#text' ? 3 : 1; }
   get childElementCount() { return this.children.filter((c) => c.tagName !== '#text').length; }
   get lastChild() { return this.children[this.children.length - 1] ?? null; }
   get lastElementChild() { return [...this.children].reverse().find((c) => c.tagName !== '#text') ?? null; }
@@ -171,7 +173,13 @@ class Node {
   removeEventListener() {}
   dispatch(type, event = {}) { for (const cb of this.listeners[type] ?? []) cb({ target: this, preventDefault() {}, key: '', ...event }); }
   click() { if (!this.disabled) this.dispatch('click'); }
-  detach(node) { if (node.parent) node.parent.children = node.parent.children.filter((c) => c !== node); node.parent = this; }
+  detach(node) {
+    if (node.parent) {
+      const index = node.parent.children.indexOf(node);
+      if (index >= 0) node.parent.children.splice(index, 1);
+    }
+    node.parent = this;
+  }
   append(...nodes) { for (const n of nodes) { const node = typeof n === 'string' ? new Node('#text', n) : n; this.ownText = null; this.detach(node); this.children.push(node); } }
   prepend(node) { this.detach(node); this.children.unshift(node); }
   before(node) { const p = this.parent; p.detach(node); p.children.splice(p.children.indexOf(this), 0, node); }

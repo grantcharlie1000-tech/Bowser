@@ -28,6 +28,7 @@ use windows::{
 };
 
 use super::menu::{self, Entry, Icon, Item, Menu};
+use super::window::chrome_recovery::{Lease, Owner};
 use crate::{
     app::{App, AppRef},
     chrome_host::{
@@ -71,6 +72,7 @@ struct Drag {
 
 #[derive(Default)]
 struct Runtime {
+    owner: Owner,
     container: Option<HWND>,
     host: Option<ChromeHost>,
     requested: bool,
@@ -135,122 +137,146 @@ unsafe extern "system" fn container_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: L
     unsafe { DefWindowProcW(hwnd, msg, wp, lp) }
 }
 
-/// Creates the container (hidden) and starts the controller inside it, once per window.
-fn ensure_host(owner: HWND) {
-    let start = with(owner, |rt| {
-        if rt.requested || rt.failed {
-            return false;
-        }
-        rt.requested = true;
-        true
+/// Only an existing runtime with the captured lease may accept an asynchronous callback.
+fn with_current<T>(owner: HWND, lease: &Lease, f: impl FnOnce(&mut Runtime) -> T) -> Option<T> {
+    if !lease.current() { return None; }
+    RUNTIMES.with(|all| {
+        let mut all = all.try_borrow_mut().ok()?;
+        let rt = all.get_mut(&(owner.0 as isize))?;
+        lease.current().then(|| f(rt))
     })
-    .unwrap_or(false);
-    if !start {
-        return;
+}
+
+/// Revoke before any window operation or controller Close can pump a late callback.
+pub(crate) fn revoke(owner: HWND) {
+    let container = RUNTIMES.with(|all| {
+        let mut all = all.borrow_mut();
+        let rt = all.get_mut(&(owner.0 as isize))?;
+        rt.owner.revoke();
+        rt.failed = true;
+        rt.ready = false;
+        rt.shown = Some(Shown::Hidden);
+        rt.content = None;
+        rt.state = None;
+        rt.focused_for = None;
+        rt.container
+    });
+    QUEUE.with(|queue| queue.borrow_mut().retain(|item| item.owner != owner.0 as isize));
+    super::start_ui::host_closed(owner);
+    if let Some(container) = container { unsafe { let _ = ShowWindow(container, SW_HIDE); } }
+}
+
+fn failed(owner: HWND, lease: &Lease) {
+    if !lease.current() { return; }
+    revoke(owner);
+    super::window::split_ui_invalidate(owner);
+}
+
+/// Destruction precedes COM Close: a pumping Close must never leave a stale container over a page,
+/// or leave an HWND that this stack could destroy after a nested replacement has reused it.
+fn dispose(host: Option<ChromeHost>, container: Option<HWND>) {
+    if let Some(container) = container {
+        unsafe {
+            if IsWindow(Some(container)).as_bool() { let _ = DestroyWindow(container); }
+        }
     }
+    if let Some(host) = host { host.close(); }
+}
+
+#[allow(clippy::type_complexity)]
+fn callbacks(owner: HWND, lease: &Lease) -> (Rc<dyn Fn(Command)>, Rc<dyn Fn()>, AccelHandler) {
+    let commands = lease.clone();
+    let failures = lease.clone();
+    let accelerators = lease.clone();
+    (Rc::new(move |command| {
+        if !commands.current() { return; }
+        match command {
+            Command::Ready => {
+                if with_current(owner, &commands, |rt| {
+                    rt.ready = true;
+                    rt.content = None;
+                    rt.state = None;
+                }).is_some() { super::window::split_ui_invalidate(owner); }
+            }
+            Command::Split(command) => {
+                queue_command(owner, command, Some(commands.clone()));
+            }
+            Command::Panel { kind: PanelType::StartPage, f } => {
+                super::start_ui::queue(owner, f, commands.clone());
+            }
+            _ => {}
+        }
+    }), Rc::new(move || failed(owner, &failures)), Rc::new(move |accel: Accel| {
+        accelerators.current() && super::window::html_split_accelerator(owner, accel)
+    }))
+}
+
+fn host_created(owner: HWND, lease: &Lease, result: windows::core::Result<ChromeHost>) {
+    match result {
+        Ok(host) => {
+            let keep = with_current(owner, lease, |rt| rt.host = Some(host.clone())).is_some();
+            if !keep { host.close(); } else { super::window::split_ui_invalidate(owner); }
+        }
+        Err(_) => failed(owner, lease),
+    }
+}
+
+/// Creates the container and starts one controller per runtime generation.
+fn ensure_host(owner: HWND) {
+    let Some(lease) = with(owner, |rt| {
+        if rt.requested || rt.failed { return None; }
+        rt.requested = true;
+        Some(rt.owner.begin())
+    }).flatten() else { return; };
     let Some(env) = super::window::html_environment(owner) else {
-        let _ = with(owner, |rt| rt.requested = false);
+        let _ = with_current(owner, &lease, |rt| { rt.requested = false; rt.owner.revoke(); });
         return;
     };
-    if !register_class() {
-        let _ = with(owner, |rt| rt.failed = true);
-        return;
-    }
+    if !register_class() { failed(owner, &lease); return; }
     let instance = unsafe { GetModuleHandleW(None) }.map(|module| module.into()).ok();
-    // Created visible at one pixel: a hidden WebView2 loads at background priority (see host.rs).
     let container = unsafe {
-        CreateWindowExW(
-            Default::default(),
-            CLASS,
-            w!(""),
-            WS_CHILD | WS_CLIPCHILDREN | WS_CLIPSIBLINGS,
-            0,
-            0,
-            1,
-            1,
-            Some(owner),
-            None,
-            instance,
-            None,
-        )
+        CreateWindowExW(Default::default(), CLASS, w!(""), WS_CHILD | WS_CLIPCHILDREN | WS_CLIPSIBLINGS,
+            0, 0, 1, 1, Some(owner), None, instance, None)
     };
-    let Ok(container) = container else {
-        let _ = with(owner, |rt| rt.failed = true);
-        return;
-    };
-    unsafe {
-        let _ = SetWindowPos(container, Some(HWND_TOP), 0, 0, 1, 1, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+    let Ok(container) = container else { failed(owner, &lease); return; };
+    if with_current(owner, &lease, |rt| rt.container = Some(container)).is_none() {
+        dispose(None, Some(container)); return;
     }
-    let _ = with(owner, |rt| rt.container = Some(container));
-    let raw = owner.0 as isize;
-    let on_command: Rc<dyn Fn(Command)> = Rc::new(move |command| {
-        // Never inside WebView2's callback: commands may close tabs or open menus.
-        let owner = HWND(raw as *mut _);
-        if let Command::Ready = command {
-            let _ = with(owner, |rt| {
-                rt.ready = true;
-                rt.content = None;
-                rt.state = None;
-            });
-            super::window::split_ui_invalidate(owner);
-            return;
-        }
-        if let Command::Split(split) = command {
-            queue(owner, split);
-        // --- start page --- the start page's own `spage` family
-        } else if let Command::Panel { kind: PanelType::StartPage, f } = command {
-            super::start_ui::queue(owner, f);
-        // --- end start page ---
-        }
-    });
-    let on_failed: Rc<dyn Fn()> = Rc::new(move || {
-        let owner = HWND(raw as *mut _);
-        let _ = with(owner, |rt| rt.failed = true);
-        super::window::split_ui_invalidate(owner);
-    });
-    let on_accelerator: AccelHandler = Rc::new(move |accel: Accel| super::window::html_split_accelerator(HWND(raw as *mut _), accel));
-    let created = ChromeHost::create(&env, crate::chrome_host::host::ChromeHostOptions {
+    // A visible pixel gives WebView2 foreground loading priority; cleanup also owns this pixel.
+    unsafe { let _ = SetWindowPos(container, Some(HWND_TOP), 0, 0, 1, 1, SWP_NOACTIVATE | SWP_SHOWWINDOW); }
+    if !lease.current() { return; }
+    let (on_command, on_failed, on_accelerator) = callbacks(owner, &lease);
+    let configuring = lease.clone();
+    let completed = lease.clone();
+    let created = ChromeHost::create_guarded(&env, crate::chrome_host::host::ChromeHostOptions {
         parent: container,
         bounds: RECT { left: 0, top: 0, right: 1, bottom: 1 },
         view: View::Split,
         on_command,
         on_failed,
         on_accelerator: Some(on_accelerator),
-    }, move |result| {
-        let owner = HWND(raw as *mut _);
-        match result {
-            Ok(host) => {
-                let keep = with(owner, |rt| {
-                    if rt.failed {
-                        return false;
-                    }
-                    rt.host = Some(host.clone());
-                    true
-                })
-                .unwrap_or(false);
-                if !keep {
-                    host.close();
-                }
-                super::window::split_ui_invalidate(owner);
-            }
-            Err(_) => {
-                let _ = with(owner, |rt| rt.failed = true);
-                super::window::split_ui_invalidate(owner);
-            }
-        }
-    });
-    if created.is_err() {
-        let _ = with(owner, |rt| rt.failed = true);
-    }
+    }, Rc::new(move || configuring.current()), move |result| host_created(owner, &completed, result));
+    if created.is_err() { failed(owner, &lease); }
+}
+
+struct QueuedCommand {
+    owner: isize,
+    command: SplitCommand,
+    lease: Option<Lease>,
 }
 
 thread_local! {
-    static QUEUE: RefCell<Vec<(isize, SplitCommand)>> = const { RefCell::new(Vec::new()) };
+    static QUEUE: RefCell<Vec<QueuedCommand>> = const { RefCell::new(Vec::new()) };
 }
 
 /// Queues a page command and posts `WM_SPLIT_COMMAND` so it runs from the window procedure.
 fn queue(owner: HWND, command: SplitCommand) {
-    let full = QUEUE.with(|queue| push_coalesced(&mut queue.borrow_mut(), owner.0 as isize, command));
+    queue_command(owner, command, None);
+}
+
+fn queue_command(owner: HWND, command: SplitCommand, lease: Option<Lease>) {
+    if lease.as_ref().is_some_and(|lease| !lease.current()) { return; }
+    let full = QUEUE.with(|queue| push_coalesced(&mut queue.borrow_mut(), QueuedCommand { owner: owner.0 as isize, command, lease }));
     if !full {
         crate::win32::post(owner, super::WM_SPLIT_COMMAND, WPARAM(0), LPARAM(0));
     }
@@ -262,18 +288,18 @@ fn queue(owner: HWND, command: SplitCommand) {
 /// queued one, and a `drop` or `end` supersedes them. A drag's `drop` and `end` are never refused:
 /// a full queue used to swallow them while a busy UI thread fell 16 frames behind, so the drop did
 /// nothing, or the preview stayed up after the drag. Pure apart from the queue it is given.
-fn push_coalesced(queue: &mut Vec<(isize, SplitCommand)>, owner: isize, command: SplitCommand) -> bool {
+fn push_coalesced(queue: &mut Vec<QueuedCommand>, item: QueuedCommand) -> bool {
     let is_over = |c: &SplitCommand| matches!(c, SplitCommand::DragOver { .. });
-    match command {
+    match item.command {
         SplitCommand::DragOver { .. } => {
-            if let Some(slot) = queue.iter_mut().find(|(id, c)| *id == owner && is_over(c)) {
-                slot.1 = command;
+            if let Some(slot) = queue.iter_mut().find(|queued| queued.owner == item.owner && is_over(&queued.command)) {
+                *slot = item;
                 return false;
             }
         }
         SplitCommand::Drop { .. } | SplitCommand::DragEnd { .. } => {
-            queue.retain(|(id, c)| !(*id == owner && is_over(c)));
-            queue.push((owner, command));
+            queue.retain(|queued| !(queued.owner == item.owner && is_over(&queued.command)));
+            queue.push(item);
             return false;
         }
         _ => {}
@@ -281,27 +307,30 @@ fn push_coalesced(queue: &mut Vec<(isize, SplitCommand)>, owner: isize, command:
     if queue.len() >= 16 {
         return true;
     }
-    queue.push((owner, command));
+    queue.push(item);
     false
 }
 
 /// Whether a dragged tab's drop zone is showing in `owner` right now (a release there opens it).
 /// The tab ghost asks when the page reports a release over the page: before the queued `drop` runs.
 pub(crate) fn drop_zone_showing(owner: HWND) -> bool {
-    let queued_end = QUEUE.with(|queue| queue.borrow().iter().any(|(id, c)| *id == owner.0 as isize && matches!(c, SplitCommand::DragEnd { .. })));
+    let queued_end = QUEUE.with(|queue| queue.borrow().iter().any(|item| item.owner == owner.0 as isize
+        && item.lease.as_ref().is_none_or(Lease::current) && matches!(item.command, SplitCommand::DragEnd { .. })));
     !queued_end && with(owner, |rt| rt.drag.is_some_and(|drag| drag.target.is_some())).unwrap_or(false)
 }
 
 /// Runs the queued commands for `owner` (from `WM_SPLIT_COMMAND`).
 pub(crate) fn run_queued(owner: HWND, app: &AppRef) {
     super::start_ui::run_queued(owner, app); // --- start page ---
-    let commands: Vec<SplitCommand> = QUEUE.with(|queue| {
+    let commands: Vec<QueuedCommand> = QUEUE.with(|queue| {
         let mut queue = queue.borrow_mut();
-        let (mine, rest): (Vec<_>, Vec<_>) = queue.drain(..).partition(|(id, _)| *id == owner.0 as isize);
+        let (mine, rest): (Vec<_>, Vec<_>) = queue.drain(..).partition(|item| item.owner == owner.0 as isize);
         *queue = rest;
-        mine.into_iter().map(|(_, command)| command).collect()
+        mine
     });
-    for command in commands {
+    for item in commands {
+        if item.lease.as_ref().is_some_and(|lease| !lease.current()) { continue; }
+        let command = item.command;
         match command {
             SplitCommand::DragOver { .. } | SplitCommand::Drop { .. } | SplitCommand::DragEnd { .. } => drag(owner, app, command),
             command => picker_command(owner, app, command),
@@ -311,19 +340,15 @@ pub(crate) fn run_queued(owner: HWND, app: &AppRef) {
 
 /// Closes the host (window closing or chrome failure).
 pub(crate) fn close(owner: HWND) {
-    let removed = RUNTIMES.with(|runtimes| runtimes.try_borrow_mut().ok().and_then(|mut all| all.remove(&(owner.0 as isize))));
-    if let Some(runtime) = removed {
-        if let Some(host) = runtime.host {
-            host.close();
-        }
-        if let Some(container) = runtime.container {
-            unsafe {
-                if IsWindow(Some(container)).as_bool() {
-                    let _ = DestroyWindow(container);
-                }
-            }
-        }
-    }
+    // Detach and revoke before even hiding a child: window messages may also reenter.
+    let removed = RUNTIMES.with(|runtimes| {
+        let runtime = runtimes.borrow_mut().remove(&(owner.0 as isize))?;
+        runtime.owner.revoke();
+        Some(runtime)
+    });
+    QUEUE.with(|queue| queue.borrow_mut().retain(|item| item.owner != owner.0 as isize));
+    super::start_ui::host_closed(owner);
+    if let Some(runtime) = removed { dispose(runtime.host, runtime.container); }
 }
 
 /// Open tabs changed (titles, favicons, order, selection): rebuild the picker's list on the next
@@ -504,6 +529,12 @@ fn wanted(owner: HWND, app: &AppRef) -> Shown {
 /// Brings the host in line with the split state. Cheap when nothing changed; called from every
 /// chrome paint and after tab changes.
 pub(crate) fn sync(owner: HWND, app: &AppRef) {
+    let detached = RUNTIMES.with(|all| {
+        let mut all = all.borrow_mut();
+        let rt = all.get_mut(&(owner.0 as isize))?;
+        rt.failed.then(|| (rt.host.take(), rt.container.take()))
+    });
+    if let Some((host, container)) = detached { dispose(host, container); }
     if !chrome_host::html_ui_enabled() {
         return;
     }
@@ -511,8 +542,8 @@ pub(crate) fn sync(owner: HWND, app: &AppRef) {
     if want != Shown::Hidden {
         ensure_host(owner);
     }
-    let Some((host, container, ready, shown, dirty, focused_for, suspended)) = with(owner, |rt| {
-        (rt.host.clone(), rt.container, rt.ready && !rt.failed, rt.shown, rt.dirty, rt.focused_for, rt.suspended)
+    let Some((lease, host, container, ready, shown, dirty, focused_for, suspended)) = with(owner, |rt| {
+        (rt.owner.lease(), rt.host.clone(), rt.container, rt.ready && !rt.failed, rt.shown, rt.dirty, rt.focused_for, rt.suspended)
     }) else {
         return;
     };
@@ -521,12 +552,14 @@ pub(crate) fn sync(owner: HWND, app: &AppRef) {
     };
     if want == Shown::Hidden {
         if shown.is_some_and(|shown| shown != Shown::Hidden) {
+            // Hide before COM calls: their callbacks can revoke or replace this runtime.
+            unsafe { let _ = ShowWindow(container, SW_HIDE); }
+            if !lease.current() { return; }
             let _ = host.post_json(&wire::hide_json());
+            if !lease.current() { return; }
             let _ = host.set_visible(false);
-            unsafe {
-                let _ = ShowWindow(container, SW_HIDE);
-            }
-            let suspend = with(owner, |rt| {
+            if !lease.current() { return; }
+            let suspend = with_current(owner, &lease, |rt| {
                 rt.shown = Some(Shown::Hidden);
                 rt.content = None;
                 let idle = rt.drag.is_none() && !rt.suspended;
@@ -537,7 +570,7 @@ pub(crate) fn sync(owner: HWND, app: &AppRef) {
             })
             .unwrap_or(false);
             if suspend && host.try_suspend().is_err() {
-                let _ = with(owner, |rt| rt.suspended = false);
+                let _ = with_current(owner, &lease, |rt| rt.suspended = false);
             }
         }
         return;
@@ -546,17 +579,19 @@ pub(crate) fn sync(owner: HWND, app: &AppRef) {
         if host.resume().is_err() {
             return;
         }
-        let _ = with(owner, |rt| rt.suspended = false);
+        let _ = with_current(owner, &lease, |rt| rt.suspended = false);
     }
+    if !lease.current() { return; }
     let rect = match want {
         Shown::Picker { rect, .. } | Shown::Drop { rect, .. } | Shown::Private { rect, .. } | Shown::Start { rect, .. } => rect,
         Shown::Hidden => return,
     };
     // Theme first, then content, then show: the page never appears unthemed or stale.
     let state = super::window::split_host_state(owner, App::settings_accent(app));
-    if with(owner, |rt| rt.state.as_deref() != Some(state.as_str())).unwrap_or(false) && host.post_json(&state).is_ok() {
-        let _ = with(owner, |rt| rt.state = Some(state));
+    if with_current(owner, &lease, |rt| rt.state.as_deref() != Some(state.as_str())).unwrap_or(false) && host.post_json(&state).is_ok() {
+        let _ = with_current(owner, &lease, |rt| rt.state = Some(state));
     }
+    if !lease.current() { return; }
     let content = match want {
         Shown::Picker { tab, side, .. } => {
             // A turned pair (side by side to stacked) renames the empty side, so `side` counts too.
@@ -566,7 +601,7 @@ pub(crate) fn sync(owner: HWND, app: &AppRef) {
         Shown::Drop { zone, .. } => {
             let same = matches!(shown, Some(Shown::Drop { zone: old, .. }) if old == zone);
             (!same).then(|| {
-                let title = with(owner, |rt| rt.drag.map(|drag| drag.tab))
+                let title = with_current(owner, &lease, |rt| rt.drag.map(|drag| drag.tab))
                     .flatten()
                     .and_then(|tab| App::tab_title(app, tab))
                     .filter(|title| !title.trim().is_empty())
@@ -586,16 +621,18 @@ pub(crate) fn sync(owner: HWND, app: &AppRef) {
     };
     // --- start page --- an identical snapshot is not posted twice, and then the page is as delivered as it gets
     if matches!(want, Shown::Start { .. })
-        && content.as_ref().is_some_and(|c| with(owner, |rt| rt.content.as_deref() == Some(c.as_str())).unwrap_or(false))
+        && content.as_ref().is_some_and(|c| with_current(owner, &lease, |rt| rt.content.as_deref() == Some(c.as_str())).unwrap_or(false))
+        && !super::start_ui::settled(owner)
     {
-        super::start_ui::settled(owner);
+        super::start_ui::posted(owner, &host);
     }
     // --- end start page ---
     if let Some(content) = content
-        && with(owner, |rt| rt.content.as_deref() != Some(content.as_str())).unwrap_or(false)
+        && with_current(owner, &lease, |rt| rt.content.as_deref() != Some(content.as_str())).unwrap_or(false)
         && host.post_json(&content).is_ok()
     {
-        let _ = with(owner, |rt| {
+        if !lease.current() { return; }
+        let _ = with_current(owner, &lease, |rt| {
             rt.content = Some(content);
             rt.dirty = false;
         });
@@ -605,6 +642,7 @@ pub(crate) fn sync(owner: HWND, app: &AppRef) {
         }
         // --- end start page ---
     }
+    if !lease.current() { return; }
     let moved = !matches!(shown, Some(old) if old == want);
     if moved {
         let size = rect_size(rect);
@@ -619,16 +657,19 @@ pub(crate) fn sync(owner: HWND, app: &AppRef) {
                 SWP_NOACTIVATE | SWP_SHOWWINDOW,
             );
         }
-        let _ = host.set_bounds(size);
-        let _ = host.set_visible(true);
-        let _ = with(owner, |rt| rt.shown = Some(want));
+        if !lease.current() { return; }
+        if host.set_bounds(size).is_err() { failed(owner, &lease); return; }
+        if !lease.current() { return; }
+        if host.set_visible(true).is_err() { failed(owner, &lease); return; }
+        if !lease.current() { return; }
+        let _ = with_current(owner, &lease, |rt| rt.shown = Some(want));
     }
     // The empty side takes the keyboard once, when it appears as the focused side.
     if let Shown::Picker { tab, pane, .. } = want
         && focused_for != Some(tab)
         && App::split_view(app).is_some_and(|split| split.focused == pane)
     {
-        let _ = with(owner, |rt| rt.focused_for = Some(tab));
+        let _ = with_current(owner, &lease, |rt| rt.focused_for = Some(tab));
         let _ = host.focus();
     }
 }
@@ -1210,6 +1251,14 @@ mod tests {
 mod queue_tests {
     use super::*;
 
+    fn push(queue: &mut Vec<QueuedCommand>, owner: isize, command: SplitCommand) -> bool {
+        push_coalesced(queue, QueuedCommand { owner, command, lease: None })
+    }
+
+    fn commands(queue: &[QueuedCommand]) -> Vec<(isize, SplitCommand)> {
+        queue.iter().map(|item| (item.owner, item.command.clone())).collect()
+    }
+
     fn over(x: i32) -> SplitCommand {
         SplitCommand::DragOver { id: 3, x, y: 400 }
     }
@@ -1221,23 +1270,28 @@ mod queue_tests {
         // included.
         let mut queue = Vec::new();
         for x in 0..40 {
-            assert!(!push_coalesced(&mut queue, 1, over(x)));
+            assert!(!push(&mut queue, 1, over(x)));
         }
         assert_eq!(queue.len(), 1, "moves coalesce to the latest");
-        assert_eq!(queue[0].1, over(39));
-        assert!(!push_coalesced(&mut queue, 1, SplitCommand::Drop { id: 3 }));
-        assert_eq!(queue, vec![(1, SplitCommand::Drop { id: 3 })], "the drop supersedes the queued move");
+        assert_eq!(queue[0].command, over(39));
+        assert!(!push(&mut queue, 1, SplitCommand::Drop { id: 3 }));
+        assert_eq!(commands(&queue), vec![(1, SplitCommand::Drop { id: 3 })], "the drop supersedes the queued move");
     }
 
     #[test]
     fn end_is_kept_even_when_the_queue_is_full_and_other_windows_keep_their_moves() {
-        let mut queue: Vec<(isize, SplitCommand)> = (0..16).map(|i| (100 + i, SplitCommand::Focus)).collect();
-        assert!(push_coalesced(&mut queue, 1, SplitCommand::Close), "picker commands are still capped");
-        assert!(!push_coalesced(&mut queue, 1, SplitCommand::DragEnd { id: 3 }));
-        assert_eq!(queue.last(), Some(&(1, SplitCommand::DragEnd { id: 3 })));
-        let mut two = vec![(2, over(5))];
-        assert!(!push_coalesced(&mut two, 1, over(6)));
-        assert!(!push_coalesced(&mut two, 1, SplitCommand::DragEnd { id: 3 }));
-        assert_eq!(two, vec![(2, over(5)), (1, SplitCommand::DragEnd { id: 3 })]);
+        let mut queue: Vec<_> = (0..16).map(|i| QueuedCommand { owner: 100 + i, command: SplitCommand::Focus, lease: None }).collect();
+        assert!(push(&mut queue, 1, SplitCommand::Close), "picker commands are still capped");
+        assert!(!push(&mut queue, 1, SplitCommand::DragEnd { id: 3 }));
+        assert_eq!(commands(&queue).last(), Some(&(1, SplitCommand::DragEnd { id: 3 })));
+        let mut two = Vec::new();
+        assert!(!push(&mut two, 2, over(5)));
+        assert!(!push(&mut two, 1, over(6)));
+        assert!(!push(&mut two, 1, SplitCommand::DragEnd { id: 3 }));
+        assert_eq!(commands(&two), vec![(2, over(5)), (1, SplitCommand::DragEnd { id: 3 })]);
     }
 }
+
+#[cfg(test)]
+#[path = "split_ui_recovery_tests.rs"]
+mod recovery_tests;

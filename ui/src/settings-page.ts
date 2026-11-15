@@ -1383,10 +1383,13 @@ export function startSettingsPage(root: HTMLElement): void {
   let openPage: SubPage | null = null;
   let searching = false;
 
+  const setHidden = (node: HTMLElement, hidden: boolean): void => { if (node.hidden !== hidden) node.hidden = hidden; };
+  const setClass = (node: HTMLElement, name: string, on: boolean): void => { if (node.classList.contains(name) !== on) node.classList.toggle(name, on); };
   const paintDisclosure = (d: Disclosure, open: boolean): void => {
-    d.button.setAttribute('aria-expanded', String(open));
-    d.root.classList.toggle('is-open', open);
-    d.body.hidden = !open;
+    const expanded = String(open);
+    if (d.button.getAttribute('aria-expanded') !== expanded) d.button.setAttribute('aria-expanded', expanded);
+    setClass(d.root, 'is-open', open);
+    setHidden(d.body, !open);
   };
   /** One disclosure row: a full-width button in a card, its body (groups of rows) below it. */
   const disclosure = (key: string, label: string): Disclosure => {
@@ -1988,6 +1991,21 @@ export function startSettingsPage(root: HTMLElement): void {
   const marked = (target: HTMLElement, text: string): void => {
     const ranges = query === '' ? [] : highlightRanges(text, query);
     if (ranges.length === 0) { if (target.textContent !== text || target.childElementCount > 0) target.textContent = text; return; }
+    // Compare the current DOM so snapshot label changes need no cache invalidation.
+    let childIndex = 0;
+    const samePart = (part: string, mark: boolean): boolean => {
+      const child = target.childNodes[childIndex++];
+      return child !== undefined && child.textContent === part && (mark
+        ? child instanceof HTMLElement && child.matches('mark.sp-mark-hit') && child.childElementCount === 0
+        : child.nodeType === 3);
+    };
+    let endOfPart = 0;
+    const sameRanges = ranges.every(([start, end]) => {
+      if (start > endOfPart && !samePart(text.slice(endOfPart, start), false)) return false;
+      endOfPart = end;
+      return samePart(text.slice(start, end), true);
+    });
+    if (sameRanges && (endOfPart >= text.length || samePart(text.slice(endOfPart), false)) && childIndex === target.childNodes.length) return;
     const parts: Node[] = [];
     let at = 0;
     for (const [start, end] of ranges) {
@@ -2012,20 +2030,20 @@ export function startSettingsPage(root: HTMLElement): void {
   };
   const paintGroups = (): void => {
     for (const group of groups) {
-      const visible = Array.from(group.card.children).filter((node) => {
-        const el = node as HTMLElement;
-        return el.classList.contains('sp-row') && !el.hidden;
-      });
-      group.root.hidden = visible.length === 0;
+      let visible = 0;
+      for (const node of Array.from(group.card.children)) {
+        if (node instanceof HTMLElement && node.classList.contains('sp-row') && !node.hidden && ++visible === 2) break;
+      }
+      setHidden(group.root, visible === 0);
       const heading = group.heading;
       if (!heading) continue;
       const section = ancestor(heading, 'sp-sec');
       const areaTitle = Array.from(section?.children ?? []).find((child) => child.classList.contains('sp-h'))?.textContent ?? '';
       const partLabel = ancestor(heading, 'sp-part')?.getAttribute('aria-label') ?? '';
-      const redundant = visible.length <= 1 || (areaTitle !== '' && heading.textContent === areaTitle) || (partLabel !== '' && heading.textContent === partLabel);
-      heading.hidden = redundant;
-      if (redundant) group.card.removeAttribute('aria-labelledby');
-      else if (heading.id) group.card.setAttribute('aria-labelledby', heading.id);
+      const redundant = visible <= 1 || (areaTitle !== '' && heading.textContent === areaTitle) || (partLabel !== '' && heading.textContent === partLabel);
+      setHidden(heading, redundant);
+      if (redundant) { if (group.card.hasAttribute('aria-labelledby')) group.card.removeAttribute('aria-labelledby'); }
+      else if (heading.id && group.card.getAttribute('aria-labelledby') !== heading.id) group.card.setAttribute('aria-labelledby', heading.id);
     }
   };
   function filter(): void {
@@ -2033,42 +2051,44 @@ export function startSettingsPage(root: HTMLElement): void {
     if (query !== '') closePage(false);
     const hits = matchRows(query);
     searching = hits !== null;
-    page.classList.toggle('is-searching', hits !== null);
+    setClass(page, 'is-searching', hits !== null);
     const shows = (id: string): boolean => hits === null || hits.has(id);
     for (const node of rows.values()) {
-      node.root.hidden = !shows(node.spec.id);
+      setHidden(node.root, !shows(node.spec.id));
       const labelText = node.label.textContent ?? '';
       marked(node.label, labelText);
       if (node.desc) marked(node.desc, node.desc.textContent ?? '');
     }
     // A row on a sub-page is found through the row that opens it.
     for (const opener of openers.values()) {
-      opener.root.hidden = !shows(opener.id);
+      setHidden(opener.root, !shows(opener.id));
       marked(opener.label, opener.label.textContent ?? '');
       if (opener.desc) marked(opener.desc, opener.desc.textContent ?? '');
     }
-    paintGroups();
-    mediaResults.hidden = hits !== null && !hits.has('media');
+    setHidden(mediaResults, hits !== null && !hits.has('media'));
     const seen = (place: Place | undefined, id: string): boolean => place !== undefined && shows(id);
     for (const d of disclosures) {
       const any = [...places].some(([id, place]) => place.disclosure === d && seen(place, id));
-      d.root.hidden = hits !== null && !any;
+      setHidden(d.root, hits !== null && !any);
       paintDisclosure(d, hits !== null ? any : openState.has(d.key));
     }
     const shownIn = (test: (place: Place) => boolean): boolean => [...places].some(([id, place]) => test(place) && seen(place, id));
     for (const spec of AREAS) {
-      for (const key of spec.parts) sectionNodes.get(key)!.hidden = hits !== null && !shownIn((place) => place.part === key);
+      for (const key of spec.parts) setHidden(sectionNodes.get(key)!, hits !== null && !shownIn((place) => place.part === key));
       const any = hits === null || shownIn((place) => place.area === spec.key);
-      areaNodes.get(spec.key)!.hidden = !any;
-      navButtons.get(spec.key)?.classList.toggle('is-empty', !any);
+      setHidden(areaNodes.get(spec.key)!, !any);
+      const button = navButtons.get(spec.key);
+      if (button) setClass(button, 'is-empty', !any);
     }
-    laterNode.hidden = laterDisclosure.count === 0 || (hits !== null && !shownIn((place) => place.area === 'later'));
+    setHidden(laterNode, laterDisclosure.count === 0 || (hits !== null && !shownIn((place) => place.area === 'later')));
     const total = hits?.size ?? 0;
-    empty.hidden = hits === null || total > 0;
-    page.classList.toggle('is-nomatch', hits !== null && total === 0);
-    emptyText.textContent = hits === null ? '' : resultCountText(0, query);
-    count.textContent = hits === null ? '' : resultCountText(total, query);
-    clear.hidden = query === '';
+    setHidden(empty, hits === null || total > 0);
+    setClass(page, 'is-nomatch', hits !== null && total === 0);
+    const noResults = hits === null ? '' : resultCountText(0, query);
+    if (emptyText.textContent !== noResults) emptyText.textContent = noResults;
+    const resultCount = hits === null ? '' : resultCountText(total, query);
+    if (count.textContent !== resultCount) count.textContent = resultCount;
+    setHidden(clear, query === '');
     main.scrollTop = 0;
     if (hits !== null) {
       const first = AREAS.find((spec) => !areaNodes.get(spec.key)?.hidden);

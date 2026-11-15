@@ -8,8 +8,9 @@
 //! the Notes panel and the settings page.
 //!
 //! A new tab must not wait on this page. [`due`] reads nothing when the tab shows an unchanged page:
-//! it compares five file stamps (at most every [`STAMP_EVERY`]) and the settings, and rebuilds only
-//! when one changed or a command ran. Every function runs on the UI thread.
+//! it checks the settings and, at most every [`STAMP_EVERY`] or on appearance, the model's file,
+//! image and widget inputs. Tab identity and delivery retries reuse the model. Every function runs
+//! on the UI thread; top sites still consult history for visits not yet persisted.
 
 use std::{
     cell::RefCell,
@@ -48,9 +49,9 @@ use crate::{
 const STAMP_EVERY: Duration = Duration::from_millis(750);
 /// The largest picture read for a speed dial image; the re-encode keeps what is shown small.
 const MAX_IMAGE_BYTES: u64 = 16 * 1024 * 1024;
-/// How old the process must be before the first start page creates its WebView2 host, so a cold launch
-/// finishes the toolbar and tab strip first (PRODUCT.md: nothing may slow cold launch). Until then a
-/// blank tab shows the plain new-tab surface it always had.
+/// The longest the first start page waits for the toolbar host (a process age), so a cold launch
+/// finishes the toolbar first (PRODUCT.md: nothing may slow cold launch). Until then a blank tab shows
+/// the plain new-tab surface it always had.
 const LAUNCH_DELAY: Duration = Duration::from_millis(1500);
 /// A wake-up is pending / has fired (set from the timer thread, read on the UI thread).
 static WAKING: AtomicBool = AtomicBool::new(false);
@@ -79,20 +80,39 @@ fn process_age() -> Duration {
     Duration::from_nanos(now.saturating_sub(ticks(created)).saturating_mul(100))
 }
 
-/// Whether the window may show its first start page yet: the process is old enough (see
-/// [`LAUNCH_DELAY`]). Before that it wakes the window once, from a short-lived thread, when it is.
+/// How often the wait for the toolbar host re-checks (a message post, no work off the UI thread).
+const READY_POLL: Duration = Duration::from_millis(50);
+/// The toolbar host reported ready (or the delay ran out): the poller can stop.
+static RELEASED: AtomicBool = AtomicBool::new(false);
+
+/// The launch gate: the start page's WebView2 host may start once the toolbar host (the chrome the cold
+/// launch is waiting on) is up, or, whichever comes first, once the process is [`LAUNCH_DELAY`] old.
+/// Native chrome never has a toolbar host, so it keeps the age rule alone.
+fn gate_open(age: Duration, toolbar_up: bool) -> bool {
+    toolbar_up || age >= LAUNCH_DELAY
+}
+
+/// Whether the window may show its first start page yet (see [`gate_open`]). Until then a short-lived
+/// poller wakes the window every [`READY_POLL`], and at the latest when the old age rule would open.
 pub(crate) fn ready(owner: HWND) -> bool {
     let age = process_age();
-    if age >= LAUNCH_DELAY {
+    if gate_open(age, super::window::html_toolbar_active(owner)) {
+        RELEASED.store(true, Ordering::Release);
         return true;
     }
     if !WAKING.swap(true, Ordering::AcqRel) {
         let raw = owner.0 as isize;
-        let wait = LAUNCH_DELAY - age;
+        let deadline = Instant::now() + (LAUNCH_DELAY - age);
         std::thread::spawn(move || {
-            std::thread::sleep(wait);
-            WAKE.store(true, Ordering::Release);
-            crate::win32::post(HWND(raw as *mut _), super::WM_SPLIT_COMMAND, WPARAM(0), LPARAM(0));
+            while !RELEASED.load(Ordering::Acquire) {
+                let now = Instant::now();
+                if now >= deadline {
+                    break;
+                }
+                std::thread::sleep(READY_POLL.min(deadline - now));
+                WAKE.store(true, Ordering::Release);
+                crate::win32::post(HWND(raw as *mut _), super::WM_SPLIT_COMMAND, WPARAM(0), LPARAM(0));
+            }
         });
     }
     false
@@ -101,6 +121,7 @@ pub(crate) fn ready(owner: HWND) -> bool {
 #[derive(Default)]
 struct Built {
     stamp: Stamp,
+    paths: Option<Paths>,
     settings: Option<StartSettings>,
     requested: Option<u64>,
     guest: bool,
@@ -115,7 +136,7 @@ struct Runtime {
     last_tab: Option<TabId>,
     /// A command ran or the settings changed: the next [`due`] rebuilds.
     dirty: bool,
-    /// The answer to the last refused command, sent once with the snapshot that follows it.
+    /// The answer to the last refused command, retained until its snapshot is accepted.
     ack: Option<String>,
     built: Built,
     /// Chosen thumbnails to post after the page.
@@ -123,11 +144,13 @@ struct Runtime {
     /// The host has the snapshot [`due`] last returned (it accepted it, or already showed it). While it
     /// has not, [`due`] returns the page again, so a post that failed is retried on the next sync.
     delivered: bool,
+    /// The host received every thumbnail belonging to the cached model.
+    thumbs_delivered: bool,
 }
 
 thread_local! {
     static RUNTIMES: RefCell<HashMap<isize, Runtime>> = RefCell::new(HashMap::new());
-    static QUEUE: RefCell<Vec<(isize, PanelFields)>> = const { RefCell::new(Vec::new()) };
+    static QUEUE: RefCell<Vec<(isize, PanelFields, super::window::chrome_recovery::Lease)>> = const { RefCell::new(Vec::new()) };
 }
 
 fn with<T>(owner: HWND, f: impl FnOnce(&mut Runtime) -> T) -> Option<T> {
@@ -157,96 +180,127 @@ pub(crate) fn settings_changed(owner: HWND) {
 /// The snapshot to post now, or `None` when what the page shows has not changed. `appeared`: the page
 /// was not showing this tab a moment ago (a new tab, or another tab's page before it).
 pub(crate) fn due(owner: HWND, app: &AppRef, tab: TabId, appeared: bool) -> Option<String> {
-    let settings = App::start_settings(app);
-    let now = Instant::now();
-    // The common case (a chrome sync while the page is up and nothing changed) costs a few comparisons.
-    let unchanged = with(owner, |rt| {
-        !appeared
-            && rt.delivered
-            && !rt.dirty
-            && rt.last_tab == Some(tab)
-            && rt.built.settings.as_ref() == Some(&settings)
-            && rt.built.requested == rt.requested
-            && rt.built.checked.is_some_and(|at| now.duration_since(at) < STAMP_EVERY)
-    });
-    if unchanged == Some(true) {
+    if App::tab_private(app, tab) {
         return None;
     }
-    let (paths, guest) = paths();
-    let (needs, requested) = with(owner, |rt| {
-        if rt.last_tab != Some(tab) {
-            // Another tab's page: it opens on the group the settings name, with no old answer.
+    due_with(owner, App::start_settings(app), tab, appeared, Instant::now(), paths, service::page)
+}
+
+fn due_with(
+    owner: HWND,
+    settings: StartSettings,
+    tab: TabId,
+    appeared: bool,
+    now: Instant,
+    profile: impl FnOnce() -> (Option<Paths>, bool),
+    build: impl FnOnce(Option<&Paths>, bool, &StartSettings, Option<u64>, Ack) -> Page,
+) -> Option<String> {
+    let (paths, guest) = profile();
+    let (rebuild, stamp, requested) = with(owner, |rt| {
+        let profile_changed = rt.built.paths != paths || rt.built.guest != guest;
+        if rt.last_tab != Some(tab) || profile_changed {
+            // Presentation starts over; the model is still reusable if its actual inputs match.
             rt.last_tab = Some(tab);
             rt.requested = None;
             rt.ack = None;
-            rt.dirty = true;
+            rt.delivered = false;
         }
-        let mut needs = rt.dirty || appeared || !rt.delivered || rt.built.settings.as_ref() != Some(&settings) || rt.built.guest != guest || rt.built.requested != rt.requested;
-        if !needs && rt.built.checked.is_none_or(|at| now.duration_since(at) >= STAMP_EVERY) {
-            let fresh = paths.as_ref().map(service::stamp).unwrap_or_default();
-            rt.built.checked = Some(now);
-            needs = fresh != rt.built.stamp;
-        }
-        (needs, rt.requested)
-    })?;
-    if !needs {
-        return None;
-    }
-    let stamp = paths.as_ref().map(service::stamp).unwrap_or_default();
-    let (rebuild, ack) = with(owner, |rt| {
-        let ack = rt.ack.take();
-        let rebuild = rt.dirty
-            || ack.is_some()
+        let inputs_changed = rt.dirty || profile_changed
             || rt.built.page.json.is_empty()
             || rt.built.settings.as_ref() != Some(&settings)
-            || rt.built.guest != guest
-            || rt.built.requested != requested
-            || rt.built.stamp != stamp;
-        (rebuild, ack)
-    })?;
+            || (rt.built.requested != rt.requested && !rt.built.page.shows(rt.requested));
+        if !inputs_changed && !appeared && rt.delivered
+            && rt.built.checked.is_some_and(|at| now.duration_since(at) < STAMP_EVERY)
+        {
+            return None;
+        }
+        let stamp = paths.as_ref().filter(|_| !guest).map(service::stamp).unwrap_or_default();
+        let rebuild = inputs_changed || rt.built.stamp != stamp || !rt.built.page.inputs_current(paths.as_ref(), appeared);
+        rt.built.checked = Some(now);
+        if !rebuild && !appeared && rt.delivered {
+            return None;
+        }
+        Some((rebuild, stamp, rt.requested))
+    })??;
     if rebuild {
-        let answer = ack.map_or(Ack::None, Ack::Failed);
-        let page = service::page(paths.as_ref(), guest, &settings, requested, answer);
-        let _ = with(owner, |rt| rt.built = Built { stamp, settings: Some(settings), requested, guest, page, checked: Some(now) });
+        let page = build(paths.as_ref(), guest, &settings, requested, Ack::None);
+        let _ = with(owner, |rt| {
+            rt.thumbs_delivered &= rt.built.page.thumbs == page.thumbs;
+            rt.built = Built { stamp, paths, settings: Some(settings), requested, guest, page, checked: Some(now) };
+        });
     }
     with(owner, |rt| {
         rt.dirty = false;
         rt.delivered = false;
-        rt.pending_thumbs = rt.built.page.thumbs.clone();
-        rt.built.page.json.clone()
+        if rebuild || appeared || rt.pending_thumbs.is_empty() {
+            rt.pending_thumbs = rt.built.page.thumbs.clone();
+        }
+        rt.built.page.json_with_ack(rt.ack.as_deref())
     })
 }
 
 /// The page accepted its snapshot: the chosen images follow, each in a message under the page's limit.
 pub(crate) fn posted(owner: HWND, host: &ChromeHost) {
+    posted_while(owner, |message| host.post_json(message).is_ok(), || host.owner_current());
+}
+
+#[cfg(test)]
+fn posted_with(owner: HWND, post: impl FnMut(&str) -> bool) {
+    posted_while(owner, post, || true);
+}
+
+fn posted_while(owner: HWND, mut post: impl FnMut(&str) -> bool, current: impl Fn() -> bool) {
+    if !current() { return; }
     let thumbs = with(owner, |rt| {
-        rt.delivered = true;
+        rt.ack = None; // The page itself was accepted, even if an image needs another attempt.
         std::mem::take(&mut rt.pending_thumbs)
     })
     .unwrap_or_default();
-    for message in thumbs {
-        if host.post_json(&message).is_err() {
-            break;
-        }
-    }
+    let sent = thumbs.iter().take_while(|message| current() && post(message)).count();
+    if !current() { return; }
+    let _ = with(owner, |rt| {
+        rt.delivered = sent == thumbs.len();
+        rt.thumbs_delivered = rt.delivered;
+        rt.pending_thumbs = thumbs.into_iter().skip(sent).collect();
+    });
 }
 
-/// The page already shows the snapshot [`due`] returned (the host skipped an identical post).
-pub(crate) fn settled(owner: HWND) {
-    let _ = with(owner, |rt| {
+/// The page already shows this JSON. `false` means its images still need [`posted`], even though the
+/// page message itself can be skipped. An unchanged, fully delivered model sends no images again.
+pub(crate) fn settled(owner: HWND) -> bool {
+    with(owner, |rt| {
+        if !rt.thumbs_delivered {
+            return false;
+        }
         rt.delivered = true;
+        rt.ack = None;
         rt.pending_thumbs.clear();
+        true
+    }).unwrap_or(false)
+}
+
+/// A replacement host must receive the cached page and all its images again. Retain the model;
+/// only delivery and queued commands belonged to the lost document.
+pub(super) fn host_closed(owner: HWND) {
+    QUEUE.with(|queue| queue.borrow_mut().retain(|(id, _, _)| *id != owner.0 as isize));
+    RUNTIMES.with(|all| {
+        if let Some(rt) = all.borrow_mut().get_mut(&(owner.0 as isize)) {
+            rt.delivered = false;
+            rt.thumbs_delivered = false;
+            rt.pending_thumbs.clear();
+        }
     });
 }
 
 /// A command from the page: queued, and run from `WM_SPLIT_COMMAND` (never inside WebView2's callback).
-pub(crate) fn queue(owner: HWND, fields: PanelFields) {
+pub(super) fn queue(owner: HWND, fields: PanelFields, lease: super::window::chrome_recovery::Lease) {
+    if !lease.current() { return; }
     let full = QUEUE.with(|queue| {
         let mut queue = queue.borrow_mut();
         if queue.len() >= 32 {
             return true;
         }
-        queue.push((owner.0 as isize, fields));
+        queue.push((owner.0 as isize, fields, lease));
         false
     });
     if !full {
@@ -260,13 +314,14 @@ pub(crate) fn run_queued(owner: HWND, app: &AppRef) {
     if WAKE.swap(false, Ordering::AcqRel) {
         super::window::split_ui_invalidate(owner);
     }
-    let commands: Vec<PanelFields> = QUEUE.with(|queue| {
+    let commands: Vec<_> = QUEUE.with(|queue| {
         let mut queue = queue.borrow_mut();
-        let (mine, rest): (Vec<_>, Vec<_>) = queue.drain(..).partition(|(id, _)| *id == owner.0 as isize);
+        let (mine, rest): (Vec<_>, Vec<_>) = queue.drain(..).partition(|(id, _, _)| *id == owner.0 as isize);
         *queue = rest;
-        mine.into_iter().map(|(_, fields)| fields).collect()
+        mine.into_iter().map(|(_, fields, lease)| (fields, lease)).collect()
     });
-    for fields in commands {
+    for (fields, lease) in commands {
+        if !lease.current() { continue; }
         // Only while the page is showing: a command that arrives after the tab navigated is stale.
         let Some(action) = wire::map_command(&fields) else { continue };
         run(owner, app, action);
@@ -276,7 +331,7 @@ pub(crate) fn run_queued(owner: HWND, app: &AppRef) {
 fn fail(owner: HWND, message: &str) {
     let _ = with(owner, |rt| {
         rt.ack = Some(message.to_owned());
-        rt.dirty = true;
+        rt.delivered = false;
     });
 }
 
@@ -292,12 +347,15 @@ fn run(owner: HWND, app: &AppRef, action: wire::Action) {
         return;
     }
     let mut requested = with(owner, |rt| rt.requested).flatten();
+    let changes_model = !matches!(action, Action::Show(_) | Action::Open { .. } | Action::OpenUrl { .. } | Action::Settings | Action::WidgetSaveNote(_));
     let result = service::apply(&paths, &mut requested, action);
     match result {
         Ok(effect) => {
             let _ = with(owner, |rt| {
                 rt.requested = requested;
-                rt.dirty = true;
+                rt.dirty |= changes_model;
+                rt.ack = None;
+                rt.delivered = false;
             });
             carry_out(owner, app, &paths, effect);
         }
@@ -453,8 +511,100 @@ pub(crate) fn flatten_on_white(bgra: &[u8]) -> Vec<u8> {
 }
 
 #[cfg(test)]
+#[path = "start_ui/cache_tests.rs"]
+mod cache_tests;
+
+#[cfg(test)]
+mod recovery_tests {
+    use super::*;
+    use std::cell::Cell;
+    use super::super::window::chrome_recovery::Owner;
+
+    #[test]
+    fn replacement_document_gets_cached_page_and_all_images_again_without_rebuilding() {
+        let _profile = profile::TestProfileGuard::isolated();
+        let paths = Paths::in_dir(profile::active().unwrap().root());
+        let mut requested = None;
+        service::apply(&paths, &mut requested, wire::Action::AddGroup("Recovery".into())).unwrap();
+        let group = requested.unwrap();
+        service::apply(&paths, &mut None, wire::Action::Add {
+            folder: group, title: "Recovery fixture".into(), url: "https://example.test/".into(),
+        }).unwrap();
+        let id = service::load(&paths).store.children(Some(group))[0].id;
+        service::set_thumbnail(&paths, id, &[255, 216, 255, 224, 1]).unwrap();
+        let owner = HWND(0x7611usize as *mut _);
+        let now = Instant::now();
+        let builds = Cell::new(0);
+        let due = || due_with(owner, StartSettings::default(), TabId(0), false, now,
+            || (Some(paths.clone()), false), |paths, guest, settings, requested, ack| {
+                builds.set(builds.get() + 1);
+                service::page(paths, guest, settings, requested, ack)
+            });
+        let page = due().unwrap();
+        let mut first = Vec::new();
+        posted_with(owner, |message| { first.push(message.to_owned()); true });
+        assert_eq!(first.len(), 1);
+        assert!(due().is_none());
+        host_closed(owner);
+        assert_eq!(due(), Some(page));
+        let mut replacement = Vec::new();
+        posted_with(owner, |message| { replacement.push(message.to_owned()); true });
+        assert_eq!(replacement, first);
+        assert!(due().is_none());
+        assert_eq!(builds.get(), 1);
+        RUNTIMES.with(|all| all.borrow_mut().remove(&(owner.0 as isize)));
+    }
+
+    #[test]
+    fn replaced_document_cannot_commit_delivery_after_a_pumping_thumbnail_post() {
+        let owner = HWND(0x7612usize as *mut _);
+        let lifetime = Owner::default();
+        let lease = lifetime.begin();
+        with(owner, |rt| rt.pending_thumbs = vec!["first image".into(), "second image".into()]);
+        let mut sent = Vec::new();
+        posted_while(owner, |message| {
+            sent.push(message.to_owned());
+            lifetime.revoke();
+            host_closed(owner);
+            true
+        }, || lease.current());
+        assert_eq!(sent, vec!["first image"]);
+        assert!(!settled(owner), "old completion cannot settle the replacement's images");
+        RUNTIMES.with(|all| all.borrow_mut().remove(&(owner.0 as isize)));
+    }
+
+    #[test]
+    fn revoked_queued_start_page_command_cannot_write_the_isolated_profile() {
+        let _profile = profile::TestProfileGuard::isolated();
+        let paths = Paths::in_dir(profile::active().unwrap().root());
+        let app = crate::app::test_app();
+        let owner = HWND(0x7613usize as *mut _);
+        let lifetime = Owner::default();
+        let command = || PanelFields { a: "addgroup".into(), text: Some("Accepted".into()), ..Default::default() };
+        queue(owner, command(), lifetime.begin());
+        lifetime.revoke();
+        run_queued(owner, &app);
+        assert!(!service::page(Some(&paths), false, &StartSettings::default(), None, Ack::None).json.contains("Accepted"));
+        queue(owner, command(), lifetime.begin());
+        run_queued(owner, &app);
+        assert!(service::page(Some(&paths), false, &StartSettings::default(), None, Ack::None).json.contains("Accepted"));
+        host_closed(owner);
+        RUNTIMES.with(|all| all.borrow_mut().remove(&(owner.0 as isize)));
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn launch_gate_opens_on_toolbar_or_old_age_never_later() {
+        assert!(!gate_open(Duration::from_millis(10), false));
+        assert!(gate_open(Duration::from_millis(10), true));
+        assert!(!gate_open(LAUNCH_DELAY - Duration::from_millis(1), false));
+        assert!(gate_open(LAUNCH_DELAY, false));
+        assert!(gate_open(Duration::MAX, false));
+    }
 
     #[test]
     fn pictures_fit_inside_the_tile_budget_and_are_never_enlarged() {

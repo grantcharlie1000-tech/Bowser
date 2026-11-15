@@ -1,3 +1,4 @@
+import type { ChromeView, DocumentToken, StateRevision } from './chrome-handshake';
 // Typed bridge for the toolbar, tab strip and left rail pages. Mirrors docs/html-chrome-protocol.md (v1).
 // Page-controlled text reaches the DOM only through textContent or attributes (see view.ts, tabs.ts, rail.ts).
 import { MAX_RAIL_ITEMS, isRailIcon, isRailKey, type RailIconName } from './rail-logic';
@@ -82,6 +83,8 @@ export type Theme = Partial<Record<ThemeToken, string>>;
 // JS -> Rust commands (sent as flat JSON text).
 export type Command =
   | { v: 1; t: 'ready' }
+  | { v: 1; t: 'chromeReady'; view: ChromeView; doc: DocumentToken }
+  | { v: 1; t: 'chromeApplied' | 'chromeFailed'; view: ChromeView; doc: DocumentToken; rev: StateRevision }
   | { v: 1; t: 'interaction'; e: InteractionEvent; n: number }
   | { v: 1; t: 'nav'; a: NavAction }
   | { v: 1; t: 'edit'; seq: number; text: string }
@@ -294,6 +297,17 @@ export interface SetTextMsg {
 export interface FocusOmniboxMsg {
   readonly t: 'focusOmnibox';
   readonly select: boolean;
+}
+export interface NativeTextMsg {
+  readonly t: 'nativeText';
+  readonly text: string;
+  readonly start: number;
+  readonly end: number;
+}
+export interface FocusNativeMsg {
+  readonly t: 'focusNative';
+  readonly start: number;
+  readonly end: number;
 }
 // --- omnibox suggest ---
 /** Most rows in one `suggest` message, the default row included (Rust MAX_SUGGEST_ITEMS). */
@@ -602,6 +616,8 @@ export type Inbound =
   | { readonly t: 'diagnosticInteraction'; readonly enabled: true }
   | StateMsg
   | SetTextMsg
+  | NativeTextMsg
+  | FocusNativeMsg
   | FocusOmniboxMsg
   | CompletionMsg
   | TabsMsg
@@ -1047,11 +1063,16 @@ function validSnapshot(value: unknown, depth: number, budget: { keys: number }):
   return keys.every(key => validSnapshot(value[key], depth + 1, budget));
 }
 
+let chromeDocument: { view: ChromeView; document: DocumentToken } | null = null;
+export function bindChromeDocument(view: ChromeView, document: DocumentToken): void { chromeDocument = { view, document }; }
+
 /** Sends one command. Returns false when the host bridge is missing or the message is too large. */
 export function send(cmd: Command): boolean {
   const wv = window.chrome?.webview;
   if (!wv) return false;
-  const wire = JSON.stringify(cmd);
+  const payload = JSON.stringify(cmd);
+  const wire = chromeDocument && cmd.t !== 'chromeReady' && cmd.t !== 'chromeApplied' && cmd.t !== 'chromeFailed' && cmd.t !== 'interaction'
+    ? JSON.stringify({ v: 1, t: 'chromeAction', view: chromeDocument.view, doc: chromeDocument.document, text: payload }) : payload;
   if (wire.length > MAX_WIRE || utf8Bytes(wire) > MAX_WIRE) return false;
   wv.postMessage(wire);
   return true;
@@ -1313,6 +1334,18 @@ export function parseInbound(data: unknown): Inbound | null {
       if (typeof text !== 'string' || !isBool(select)) return null;
       if (full !== undefined && typeof full !== 'string') return null;
       return { t: 'setText', text: truncateCodePoint(text, MAX_TEXT), select, ...(typeof full === 'string' ? { full: truncateCodePoint(full, MAX_TEXT) } : {}) };
+    }
+    case 'nativeText': {
+      const { text, start, end } = raw;
+      if (!hasOnlyKeys(raw, ['v', 't', 'text', 'start', 'end']) || raw.v !== 1 || !isStr(text, MAX_TEXT)
+        || !isInt(start, 0, text.length) || !isInt(end, start, text.length)) return null;
+      return { t: 'nativeText', text, start, end };
+    }
+    case 'focusNative': {
+      const { start, end } = raw;
+      if (!hasOnlyKeys(raw, ['v', 't', 'start', 'end']) || raw.v !== 1
+        || !isInt(start, 0, MAX_TEXT) || !isInt(end, start, MAX_TEXT)) return null;
+      return { t: 'focusNative', start, end };
     }
     case 'focusOmnibox': {
       const { select } = raw;

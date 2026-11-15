@@ -4,6 +4,7 @@
 //! needs a window (opening an address, the image picker, the Notes panel).
 
 use std::{
+    cell::{Cell, RefCell},
     fs, io,
     path::{Path, PathBuf},
     time::UNIX_EPOCH,
@@ -67,6 +68,12 @@ const UNREADABLE: &str = "Your bookmarks could not be read, so the start page wa
 /// Size and modification time of each file a snapshot depends on, so an unchanged page is not rebuilt.
 pub type Stamp = Vec<Option<(u64, u128)>>;
 
+fn file_stamp(path: &Path) -> Option<(u64, u128)> {
+    let meta = fs::metadata(path).ok()?;
+    let modified = meta.modified().ok()?.duration_since(UNIX_EPOCH).ok()?.as_nanos();
+    Some((meta.len(), modified))
+}
+
 pub fn stamp(paths: &Paths) -> Stamp {
     [
         paths.dir.join("bookmarks-v2.txt"),
@@ -76,11 +83,7 @@ pub fn stamp(paths: &Paths) -> Stamp {
         paths.privacy.clone(),
     ]
     .iter()
-    .map(|path| {
-        let meta = fs::metadata(path).ok()?;
-        let modified = meta.modified().ok()?.duration_since(UNIX_EPOCH).ok()?.as_nanos();
-        Some((meta.len(), modified))
-    })
+    .map(|path| file_stamp(path))
     .collect()
 }
 
@@ -89,6 +92,98 @@ pub fn stamp(paths: &Paths) -> Stamp {
 pub struct Page {
     pub json: String,
     pub thumbs: Vec<String>,
+    folder: u64,
+    default_folder: u64,
+    ack_at: Option<usize>,
+    /// Profile-relative names of this page's images: at most 264 favicons and 264 thumbnails.
+    files: Vec<(PathBuf, Option<(u64, u128)>)>,
+    /// At most twelve bounded rows, including visits that are still queued for persistence.
+    top: Option<Vec<model::TopSite>>,
+    history_dependency: Cell<Option<productivity::HistoryDependency>>,
+    privacy_day: Option<String>,
+    cacheable: bool,
+}
+
+impl Page {
+    pub(crate) fn shows(&self, requested: Option<u64>) -> bool {
+        requested.unwrap_or(self.default_folder) == self.folder
+    }
+
+    /// File metadata alone misses queued history visits and a privacy widget crossing midnight.
+    pub(crate) fn inputs_current(&self, paths: Option<&Paths>, appeared: bool) -> bool {
+        (self.cacheable || !appeared)
+            && self.privacy_day.as_ref().is_none_or(|day| *day == privacy_stats::today_utc())
+            && self.files.iter().all(|(path, stamp)| paths.is_some_and(|paths| file_stamp(&paths.dir.join(path)) == *stamp))
+            && self.top.as_ref().is_none_or(|top| {
+                paths.is_some_and(|paths| {
+                    match productivity::read_history_if_changed(&paths.history, self.history_dependency.get()) {
+                        Ok(None) => true,
+                        Ok(Some((history, dependency))) => {
+                            let fresh = bounded_top_sites(model::top_sites(&history, MAX_WIDGET_ROWS));
+                            if fresh != *top { return false; }
+                            self.history_dependency.set(dependency);
+                            true
+                        }
+                        Err(_) => {
+                            self.history_dependency.set(None);
+                            !appeared
+                        }
+                    }
+                })
+            })
+    }
+
+    /// Change only the wire's final acknowledgement fields, keeping one cached page model.
+    pub(crate) fn json_with_ack(&self, error: Option<&str>) -> String {
+        let Some(at) = self.ack_at else { return self.json.clone() };
+        let mut json = self.json[..at].to_owned();
+        if let Some(error) = error {
+            json.push_str(r#""ack":"failed","error":"#);
+            json.push_str(&crate::chrome_host::protocol::json_string(crate::chrome_host::json::capped(error, 200)));
+            json.push_str("}}");
+        } else {
+            json.push_str(NO_ACK);
+        }
+        json
+    }
+}
+
+const NO_ACK: &str = r#""ack":"none","error":""}}"#;
+
+fn bounded_top_sites(mut top: Vec<model::TopSite>) -> Vec<model::TopSite> {
+    // Keep all valid favicon hosts (253 bytes), plus one character distinguishing an invalid long
+    // host. Only titles/URLs use the wire's display bounds; rendering still receives the full input.
+    for site in &mut top {
+        site.host = crate::chrome_host::json::capped(&site.host, 254).to_owned();
+        site.title = crate::chrome_host::json::capped(site.title.trim(), 120).to_owned();
+        site.url = crate::chrome_host::json::capped(&site.url, 400).to_owned();
+    }
+    top
+}
+
+fn missing(path: &Path) -> bool {
+    fs::metadata(path).is_err_and(|error| error.kind() == io::ErrorKind::NotFound)
+}
+
+fn load_for_page(paths: &Paths) -> (Loaded, bool) {
+    let store = BookmarkStore::load(&paths.dir);
+    let config = model::read_small(&paths.dir.join(model::FILE_NAME));
+    let widgets = model::read_small(&paths.dir.join(model::WIDGETS_FILE));
+    let cacheable = store.is_ok()
+        && (config.is_some() || missing(&paths.dir.join(model::FILE_NAME)))
+        && (widgets.is_some() || missing(&paths.dir.join(model::WIDGETS_FILE)));
+    (Loaded {
+        store: store.unwrap_or_default(),
+        config: config.as_deref().map(SpeedDialConfig::parse).unwrap_or_default(),
+        widgets: widgets.as_deref().and_then(WidgetSet::parse).unwrap_or_default(),
+    }, cacheable)
+}
+
+/// Matches favicon.rs's normalized host/SHA-256 filename, without scanning the profile cache.
+fn favicon_path(host: &str) -> Option<PathBuf> {
+    let host = host.trim().trim_end_matches('.').to_ascii_lowercase();
+    let digest = crate::updater::sha256(host.as_bytes()).ok()?;
+    Some(Path::new("favicons").join(format!("{}.ico", crate::updater::hex_encode(&digest))))
 }
 
 /// Builds the page for `settings`, showing folder `requested` (or the group the settings name).
@@ -106,23 +201,40 @@ pub fn page_with(
     ack: Ack,
     favicon_of: impl Fn(&str) -> Option<Vec<u8>>,
 ) -> Page {
-    let loaded = match paths {
-        Some(paths) if !guest => load(paths),
-        _ => Loaded::default(),
+    let (loaded, can_cache) = match paths {
+        Some(paths) if !guest => load_for_page(paths),
+        _ => (Loaded::default(), true),
     };
+    let cacheable = Cell::new(can_cache);
+    let files = RefCell::new(Vec::new());
     let view = model::dial_view(&loaded.store, &loaded.config, settings.group_reopen, requested);
+    let default_folder = if requested.is_none() { view.folder } else {
+        model::dial_view(&loaded.store, &loaded.config, settings.group_reopen, None).folder
+    };
     let widgets_on = settings.widgets;
     let has = |kind: WidgetKind| widgets_on && loaded.widgets.items.iter().any(|w| w.kind == kind);
+    let history_dependency = Cell::new(None);
     let top = match paths {
-        Some(paths) if has(WidgetKind::TopSites) && !guest => model::top_sites(&productivity::read_history(&paths.history), MAX_WIDGET_ROWS),
-        _ => Vec::new(),
+        Some(paths) if has(WidgetKind::TopSites) && !guest => Some(productivity::read_history_with_dependency(&paths.history)
+            .map(|(history, dependency)| {
+                history_dependency.set(dependency);
+                model::top_sites(&history, MAX_WIDGET_ROWS)
+            }).unwrap_or_else(|_| {
+            cacheable.set(false);
+            Vec::new()
+        })),
+        _ => None,
     };
+    let privacy_day = (has(WidgetKind::Privacy) && !guest && paths.is_some()).then(privacy_stats::today_utc);
     let privacy = match paths {
         Some(paths) if has(WidgetKind::Privacy) && !guest => {
+            if fs::File::open(&paths.privacy).is_err() && !missing(&paths.privacy) {
+                cacheable.set(false);
+            }
             let stats = PrivacyStats::load(&paths.privacy);
             let worst = stats.top_sites(1).into_iter().next().map(|(host, count)| (host.to_owned(), count));
             Some(PrivacySummary {
-                today: stats.day_total(&privacy_stats::today_utc()),
+                today: stats.day_total(privacy_day.as_deref().unwrap_or_default()),
                 total: stats.all_time_total(),
                 top_host: worst.as_ref().map(|w| w.0.clone()).unwrap_or_default(),
                 top_count: worst.map_or(0, |w| w.1),
@@ -131,8 +243,17 @@ pub fn page_with(
         _ => None,
     };
     let json = wire::snapshot_json_with(
-        &Snapshot { guest, settings, view: &view, store: &loaded.store, config: &loaded.config, widgets: &loaded.widgets, top: &top, privacy: privacy.as_ref(), ack },
-        favicon_of,
+        &Snapshot { guest, settings, view: &view, store: &loaded.store, config: &loaded.config, widgets: &loaded.widgets, top: top.as_deref().unwrap_or_default(), privacy: privacy.as_ref(), ack: Ack::None },
+        |host| {
+            let path = paths.filter(|_| !guest).and_then(|_| favicon_path(host));
+            let stamp = path.as_deref().and_then(|path| paths.and_then(|paths| file_stamp(&paths.dir.join(path))));
+            let bytes = favicon_of(host);
+            if path.is_none() || (stamp.is_some() && bytes.is_none()) {
+                cacheable.set(false);
+            }
+            if let Some(path) = path { files.borrow_mut().push((path, stamp)); }
+            bytes
+        },
     );
     let thumbs = match paths {
         Some(paths) if !guest => {
@@ -149,13 +270,26 @@ pub fn page_with(
             }
             let items: Vec<(u64, String)> = ids
                 .into_iter()
-                .filter_map(|id| model::thumb_data_uri(&loaded.config, &paths.dir, id).map(|uri| (id, uri)))
+                .filter_map(|id| {
+                    let path = model::thumb_path(Path::new(""), id);
+                    let stamp = file_stamp(&paths.dir.join(&path));
+                    let uri = model::thumb_data_uri(&loaded.config, &paths.dir, id);
+                    if stamp.is_some() && uri.is_none() { cacheable.set(false); }
+                    files.borrow_mut().push((path, stamp));
+                    uri.map(|uri| (id, uri))
+                })
                 .collect();
             wire::thumbs_messages(&items)
         }
         _ => Vec::new(),
     };
-    Page { json, thumbs }
+    let ack_at = json.strip_suffix(NO_ACK).map(str::len);
+    let mut page = Page {
+        json, thumbs, folder: view.folder, default_folder, ack_at,
+        files: files.into_inner(), top: top.map(bounded_top_sites), history_dependency, privacy_day, cacheable: cacheable.get(),
+    };
+    if let Ack::Failed(error) = ack { page.json = page.json_with_ack(Some(&error)); }
+    page
 }
 
 /// What a command needs a window for.

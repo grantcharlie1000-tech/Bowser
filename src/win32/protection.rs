@@ -66,12 +66,22 @@ pub(crate) fn gather(app: &AppRef) -> View {
         Some(Ok(settings)) => settings,
         _ => Settings::default(),
     };
+    gather_with_settings(app, profile.as_ref(), &current_settings, readable)
+}
+
+/// Uses the settings captured for this refresh while gathering current app and list state.
+pub(crate) fn gather_with_settings(
+    app: &AppRef,
+    profile: Option<&crate::profile::Profile>,
+    current_settings: &Settings,
+    readable: bool,
+) -> View {
     let blocker = App::blocker_handle(app);
     let current = App::active_web_site(app).and_then(|(host, _)| {
         let (level, cookies) = App::blocker_state_for(app, &host, false)?;
         Some(CurrentSite { host, level, cookies, private: false })
     });
-    let (sites, sources) = match (&blocker, &profile) {
+    let (sites, sources) = match (&blocker, profile) {
         (Some(blocker), Some(profile)) => {
             let state = blocker.borrow();
             let rows = Registry::load(&profile.blocker_dir())
@@ -103,7 +113,7 @@ pub(crate) fn gather(app: &AppRef) -> View {
         force_dark: current_settings.force_dark_websites,
         private_theme: current_settings.private_theme,
         readable,
-        guest: profile.as_ref().is_some_and(crate::profile::Profile::is_guest),
+        guest: profile.is_some_and(crate::profile::Profile::is_guest),
         current,
         sites,
         allow: current_settings.blocker_allow.clone(),

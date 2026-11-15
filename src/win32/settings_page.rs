@@ -136,6 +136,7 @@ fn available(owner: HWND) -> bool {
 /// normal shown tab becomes the page (the omnibox) instead of a new tab opening (the menu).
 pub(crate) fn open(owner: HWND, app: &AppRef, section: Option<Section>, reuse_blank: bool) {
     App::diagnostic_interaction_event(app,"interaction_settings_open",u64::from(reuse_blank));
+    if let Ok(s)=app.try_borrow(){let _=s.log.record("perf_settings_open");}
     if !available(owner) {
         App::diagnostic_interaction_event(app,"interaction_settings_fallback",0);
         if let Err(error) = super::settings_panel::open(owner, app) {
@@ -283,6 +284,7 @@ fn ensure_host(owner: HWND) {
         match command {
             Command::Ready => {
                 if let Some(app)=super::window::app_of(owner){App::diagnostic_interaction_event(&app,"interaction_settings_ready",0);}
+                if let Some(app)=super::window::app_of(owner){if let Ok(s)=app.try_borrow(){let _=s.log.record("perf_settings_ready");}}
                 let _ = with(owner, |rt| {
                     rt.ready = true;
                     rt.state = None;
@@ -441,6 +443,7 @@ pub(crate) fn sync(owner: HWND, app: &AppRef) {
     if with(owner, |rt| rt.state.as_deref() != Some(state.as_str())).unwrap_or(false) && host.post_json(&state).is_ok() {
         let _ = with(owner, |rt| rt.state = Some(state));
     }
+    let mut refresh_settings = None;
     if with(owner, |rt| std::mem::take(&mut rt.dirty)).unwrap_or(false) {
         let _ = with(owner, |rt| {
             rt.privacy_due = true;
@@ -448,18 +451,19 @@ pub(crate) fn sync(owner: HWND, app: &AppRef) {
             rt.cmd_due = true;
         });
         let (address_ack, address_error) = with(owner, |rt| (rt.ack, rt.error.clone())).unwrap_or((Ack::None, String::new()));
-        let snapshot = snapshot(owner, app);
+        let settings = refresh_settings.insert(RefreshSettings::read(crate::profile::active().ok()));
+        let snapshot = snapshot(owner, app, settings);
         // An answer is always delivered, even when the values did not change (a second identical
         // save still gets its "Saved").
         let fresh = with(owner, |rt| rt.ack != Ack::None || rt.snapshot.as_deref() != Some(snapshot.as_str())).unwrap_or(false);
         // The address bar, search and bookmark section reads the same answer.
-        let address_snapshot = address_snapshot(app, address_ack, &address_error);
+        let address_snapshot = address_snapshot(settings, address_ack, &address_error);
         let address_fresh = with(owner, |rt| address_ack != Ack::None || rt.address.as_deref() != Some(address_snapshot.as_str())).unwrap_or(false);
         if address_fresh && host.post_json(&address_snapshot).is_ok() {
             let _ = with(owner, |rt| rt.address = Some(address_snapshot));
         }
         // --- page tools (T7) --- the Page tools section reads the same answer.
-        let pt_snapshot = pagetools_snapshot(address_ack, &address_error);
+        let pt_snapshot = pagetools_snapshot(settings, address_ack, &address_error);
         let pt_fresh = with(owner, |rt| address_ack != Ack::None || rt.pagetools.as_deref() != Some(pt_snapshot.as_str())).unwrap_or(false);
         if pt_fresh && host.post_json(&pt_snapshot).is_ok() {
             let _ = with(owner, |rt| rt.pagetools = Some(pt_snapshot));
@@ -483,7 +487,13 @@ pub(crate) fn sync(owner: HWND, app: &AppRef) {
             }
         }
         // The blocking, history and appearance controls beside it (thread T3).
-        if let Some(protection) = super::html_dialog::protection_snapshot_json(app) {
+        let protection = match refresh_settings.as_ref() {
+            Some(refresh) => super::html_dialog::protection_snapshot_json_with_settings(
+                app, refresh.profile.as_ref(), &refresh.settings, refresh.readable,
+            ),
+            None => super::html_dialog::protection_snapshot_json(app),
+        };
+        if let Some(protection) = protection {
             let fresh = with(owner, |rt| rt.protection.as_deref() != Some(protection.as_str())).unwrap_or(false);
             if fresh && host.post_json(&protection).is_ok() {
                 let _ = with(owner, |rt| rt.protection = Some(protection));
@@ -552,16 +562,30 @@ pub(crate) fn sync(owner: HWND, app: &AppRef) {
     }
 }
 
-fn snapshot(owner: HWND, app: &AppRef) -> String {
+/// One strict read for the main, address, Page tools and protection sections of a dirty refresh.
+/// Defaults are display values on failure; `readable` still disables the main settings form.
+struct RefreshSettings {
+    profile: Option<crate::profile::Profile>,
+    settings: crate::settings::Settings,
+    readable: bool,
+}
+
+impl RefreshSettings {
+    fn read(profile: Option<crate::profile::Profile>) -> Self {
+        let read = profile.as_ref().map(|profile| crate::settings::read_strict(&profile.settings_file()));
+        let readable = matches!(read, Some(Ok(_)));
+        let settings = match read {
+            Some(Ok(settings)) => settings,
+            _ => crate::settings::Settings::default(),
+        };
+        Self { profile, settings, readable }
+    }
+}
+
+fn snapshot(owner: HWND, app: &AppRef, refresh: &RefreshSettings) -> String {
     use crate::updater::{LastCheck, Status};
     let (ack, error, checking, check_result) = with(owner, |rt| (rt.ack, rt.error.clone(), rt.checking, rt.check_result)).unwrap_or((Ack::None, String::new(), false, "none"));
-    let profile = crate::profile::active().ok();
-    let read = profile.as_ref().map(|profile| crate::settings::read_strict(&profile.settings_file()));
-    let readable = matches!(read, Some(Ok(_)));
-    let settings = match read {
-        Some(Ok(settings)) => settings,
-        _ => crate::settings::Settings::default(),
-    };
+    let profile = &refresh.profile;
     let custom_search = profile.as_ref().is_some_and(|profile| !crate::navigation::SearchProvider::from_config(None, &profile.search_provider_file()).is_default());
     let guest = profile.as_ref().is_some_and(|profile| profile.is_guest());
     let name = profile.as_ref().map_or_else(|| "Bowser".to_owned(), |profile| profile.listed_name().to_owned());
@@ -585,8 +609,8 @@ fn snapshot(owner: HWND, app: &AppRef) -> String {
     // reads as the Downloads folder.
     let download_dir = App::download_dir_display(app);
     wire::snapshot_json(&wire::Snapshot {
-        settings: &settings,
-        readable,
+        settings: &refresh.settings,
+        readable: refresh.readable,
         custom_search,
         efficiency_active: App::efficiency_active(app),
         auto_update: crate::updater::auto_update_enabled(),
@@ -905,10 +929,9 @@ fn run_commands(owner: HWND, app: &AppRef, action: cmdpage::Action) {
 
 // ----- the address bar, search and bookmark sections (src/chrome_host/address_page.rs) -----
 
-/// The section's snapshot: every option, the engine list and the bookmark folders, read now.
-fn address_snapshot(app: &AppRef, ack: Ack, error: &str) -> String {
-    let profile = crate::profile::active().ok();
-    let settings = profile.as_ref().and_then(|profile| crate::settings::read_strict(&profile.settings_file()).ok()).unwrap_or_default();
+/// The section's snapshot: shared options, with the engine list and bookmark folders read now.
+fn address_snapshot(refresh: &RefreshSettings, ack: Ack, error: &str) -> String {
+    let profile = &refresh.profile;
     let engines = crate::address_runtime::engines();
     let folders = profile
         .as_ref()
@@ -916,9 +939,8 @@ fn address_snapshot(app: &AppRef, ack: Ack, error: &str) -> String {
         .and_then(|profile| crate::bookmarks::BookmarkStore::load(profile.root()).ok())
         .map(|store| super::address_dialog::folders_of(&store))
         .unwrap_or_default();
-    let _ = app;
     address_wire::snapshot_json(&address_wire::Snapshot {
-        settings: &settings.address,
+        settings: &refresh.settings.address,
         engines: &engines,
         folders: &folders,
         guest: profile.as_ref().is_some_and(|profile| profile.is_guest()),
@@ -988,13 +1010,11 @@ fn run_address(owner: HWND, app: &AppRef, action: address_wire::Action) {
 
 // ----- the Page tools section (src/chrome_host/page_tools_page.rs) -----
 
-/// The section's snapshot, read now.
-fn pagetools_snapshot(ack: Ack, error: &str) -> String {
-    let profile = crate::profile::active().ok();
-    let settings = profile.as_ref().and_then(|profile| crate::settings::read_strict(&profile.settings_file()).ok()).unwrap_or_default();
+/// The section's snapshot from the same settings read as the main form.
+fn pagetools_snapshot(refresh: &RefreshSettings, ack: Ack, error: &str) -> String {
     pt_wire::snapshot_json(
-        &settings.page_tools,
-        profile.as_ref().is_some_and(|profile| profile.is_guest()),
+        &refresh.settings.page_tools,
+        refresh.profile.as_ref().is_some_and(|profile| profile.is_guest()),
         match ack {
             Ack::None => pt_wire::Ack::None,
             Ack::Saved => pt_wire::Ack::Saved,
@@ -1165,6 +1185,111 @@ fn run_extension(owner: HWND, app: &AppRef, action: ext::Action) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn protection_snapshot(refresh: &RefreshSettings, app: &AppRef) -> String {
+        super::super::html_dialog::protection_snapshot_json_with_settings(
+            app, refresh.profile.as_ref(), &refresh.settings, refresh.readable,
+        ).unwrap()
+    }
+
+    #[test]
+    fn refresh_sections_share_values_until_the_next_read_after_an_external_edit() {
+        let _profile = crate::profile::TestProfileGuard::isolated();
+        let profile = crate::profile::active().unwrap();
+        let path = profile.settings_file();
+        let app = crate::app::test_app();
+        std::fs::write(&path, "theme=helium\naddress_select_on_activate=false\npt_spatial_nav=true\nforce_dark_websites=true\nunknown=keep\n").unwrap();
+        let refresh = RefreshSettings::read(Some(profile.clone()));
+        assert!(refresh.readable);
+        assert_eq!(refresh.settings.theme, crate::settings::Theme::Helium);
+        let address = address_snapshot(&refresh, Ack::Saved, "");
+        let pagetools = pagetools_snapshot(&refresh, Ack::Saved, "");
+        let protection = protection_snapshot(&refresh, &app);
+        assert!(address.contains(r#""address_select_on_activate":false"#));
+        assert!(pagetools.contains(r#""pt_spatial_nav":true"#));
+        assert!(protection.contains(r#""forceDark":true"#));
+        assert_eq!(super::super::html_dialog::protection_snapshot_json(&app).unwrap(), protection);
+
+        let edited = "theme=system\naddress_select_on_activate=true\npt_spatial_nav=false\nforce_dark_websites=false\nunknown=still-kept\n";
+        std::fs::write(&path, edited).unwrap();
+        assert_eq!(address_snapshot(&refresh, Ack::Saved, ""), address);
+        assert_eq!(pagetools_snapshot(&refresh, Ack::Saved, ""), pagetools);
+        assert_eq!(protection_snapshot(&refresh, &app), protection);
+        assert_eq!(refresh.settings.theme, crate::settings::Theme::Helium);
+
+        let next = RefreshSettings::read(Some(profile));
+        assert!(next.readable);
+        assert_eq!(next.settings.theme, crate::settings::Theme::System);
+        assert!(address_snapshot(&next, Ack::None, "").contains(r#""address_select_on_activate":true"#));
+        assert!(pagetools_snapshot(&next, Ack::None, "").contains(r#""pt_spatial_nav":false"#));
+        let next_protection = protection_snapshot(&next, &app);
+        assert!(next_protection.contains(r#""forceDark":false"#));
+        assert_eq!(super::super::html_dialog::protection_snapshot_json(&app).unwrap(), next_protection);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), edited);
+    }
+
+    #[test]
+    fn refresh_keeps_read_failures_distinct_from_a_missing_settings_file() {
+        let _profile = crate::profile::TestProfileGuard::isolated();
+        let profile = crate::profile::active().unwrap();
+        let path = profile.settings_file();
+        let app = crate::app::test_app();
+        let missing = RefreshSettings::read(Some(profile.clone()));
+        assert!(missing.readable);
+        assert_eq!(missing.settings, crate::settings::Settings::default());
+        assert!(!path.exists());
+        assert!(protection_snapshot(&missing, &app).contains(r#""readable":true"#));
+        let unavailable = RefreshSettings::read(None);
+        assert!(!unavailable.readable);
+        assert_eq!(unavailable.settings, missing.settings);
+        assert!(protection_snapshot(&unavailable, &app).contains(r#""readable":false"#));
+
+        for invalid in [vec![0xff, 0xfe], vec![b'#'; crate::settings::MAX_FILE_BYTES + 1]] {
+            std::fs::write(&path, &invalid).unwrap();
+            let failed = RefreshSettings::read(Some(profile.clone()));
+            assert!(!failed.readable);
+            assert_eq!(failed.settings, missing.settings);
+            assert!(protection_snapshot(&failed, &app).contains(r#""readable":false"#));
+            let error = "settings.txt could not be read";
+            let address = address_snapshot(&failed, Ack::Failed, error);
+            let pagetools = pagetools_snapshot(&failed, Ack::Failed, error);
+            assert!(address.contains(r#""address_select_on_activate":true"#));
+            assert!(pagetools.contains(r#""pt_spatial_nav":false"#));
+            for json in [address, pagetools] {
+                assert!(json.contains(r#""ack":"failed","error":"settings.txt could not be read""#));
+            }
+            assert_eq!(std::fs::read(&path).unwrap(), invalid);
+        }
+
+        std::fs::remove_file(&path).unwrap();
+        std::fs::create_dir(&path).unwrap();
+        let directory = RefreshSettings::read(Some(profile.clone()));
+        assert!(!directory.readable);
+        assert_eq!(directory.settings, missing.settings);
+        assert!(protection_snapshot(&directory, &app).contains(r#""readable":false"#));
+        std::fs::remove_dir(&path).unwrap();
+        std::fs::write(&path, "pt_spatial_nav=true\n").unwrap();
+        let repaired = RefreshSettings::read(Some(profile));
+        assert!(repaired.readable);
+        assert!(pagetools_snapshot(&repaired, Ack::None, "").contains(r#""pt_spatial_nav":true"#));
+        assert!(protection_snapshot(&repaired, &app).contains(r#""readable":true"#));
+    }
+
+    #[test]
+    fn refresh_preserves_guest_flags_in_both_sections() {
+        let _profile = crate::profile::TestProfileGuard::isolated();
+        let profile = crate::profile::active().unwrap();
+        let guest = crate::profile::Profile::guest_in(profile.root()).unwrap();
+        let app = crate::app::test_app();
+        for (profile, expected) in [(profile, false), (guest, true)] {
+            let refresh = RefreshSettings::read(Some(profile));
+            assert!(refresh.readable);
+            for json in [address_snapshot(&refresh, Ack::None, ""), pagetools_snapshot(&refresh, Ack::None, "")] {
+                assert!(json.contains(&format!(r#""guest":{expected},"ack":"none","error":"""#)));
+            }
+            assert!(protection_snapshot(&refresh, &app).contains(&format!(r#""guest":{expected},"#)));
+        }
+    }
 
     #[test]
     fn container_rect_is_never_empty() {

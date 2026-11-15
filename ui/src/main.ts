@@ -1,8 +1,8 @@
+import { onChromeInbound } from './chrome-handshake';
 import { installInteractionDiagnostic } from './interaction-diagnostic';
 // Toolbar entry point: wires DOM events to the host bridge and host messages to the view.
 import {
   MAX_TEXT,
-  onInbound,
   send,
   sendDownloadToggle,
   sendAddr,
@@ -393,7 +393,7 @@ function startToolbar(root: HTMLElement): void {
     input.setRangeText(msg.suffix, end, end, 'select');
   };
 
-  onInbound((msg) => {
+  onChromeInbound('toolbar', root, (msg) => {
     switch (msg.t) {
       case 'diagnosticInteraction':
         installInteractionDiagnostic(input, (e, n) => { send({ v: 1, t: 'interaction', e, n }); }, () => (Number(composing) << 12) | (Number(pending) << 13) | (Number(list !== null && listSel > 0) << 14) | (Number(list !== null && list.seq === latestSeq) << 15));
@@ -410,13 +410,27 @@ function startToolbar(root: HTMLElement): void {
         latestSeq = -1;
         lastInputType = '';
         list = null; // --- omnibox suggest ---
+        // The reply to an earlier blur can land after Ctrl+L focused and selected the field; the new
+        // text must not drop that selection (typing would append to the old address).
+        const keepSelectAll = document.activeElement === input && input.value !== '' && input.selectionStart === 0 && input.selectionEnd === input.value.length;
         input.value = msg.text;
         shownText = msg.text;
         fullText = msg.full ?? '';
         edited = false;
-        if (msg.select && flags.select) input.select();
+        if ((msg.select && flags.select) || keepSelectAll) input.select();
         showDisplay();
         syncSiteIcon(view);
+        break;
+      case 'nativeText':
+        input.value = msg.text;
+        edited = true;
+        input.setSelectionRange(msg.start, msg.end);
+        showDisplay();
+        syncSiteIcon(view);
+        break;
+      case 'focusNative':
+        input.focus();
+        input.setSelectionRange(msg.start, msg.end);
         break;
       case 'focusOmnibox':
         input.focus();
@@ -475,9 +489,6 @@ function startToolbar(root: HTMLElement): void {
       // --- end split view ---
     }
   });
-
-  // Registered before ready so no state message can be missed.
-  send({ v: 1, t: 'ready' });
 }
 
 /**

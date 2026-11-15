@@ -40,6 +40,7 @@ use zeroize::{Zeroize, Zeroizing};
 use super::{
     BlockedChangedCallback, BrowsingDataKind, BrowsingDataRange, EngineAdapter, EngineEvents,
     MemoryTargetApply, MemoryUsageTarget, PermissionsHandle, TrackingPreventionLevel,
+    ProcessFailure, ProcessFailureKind,
 };
 use crate::permissions::Permission;
 use crate::split_view::{SwitchStep, visibility_steps};
@@ -827,8 +828,11 @@ fn sync_request_filters(
         // The older call has no source kinds; the kinds are only kept to compare.
         None => request_filters.into_iter().map(|uri| (uri, COREWEBVIEW2_WEB_RESOURCE_REQUEST_SOURCE_KINDS_ALL)).collect(),
     };
-    let registered = block.request_filters.borrow().as_ref().map(|(_, filters)| filters.clone()).unwrap_or_default();
-    let (remove, add) = request_filter_changes(&registered, &wanted);
+    let (remove, add) = {
+        let registered = block.request_filters.borrow();
+        let filters = registered.as_ref().map_or(&[][..], |(_, filters)| filters.as_slice());
+        request_filter_changes(filters, &wanted)
+    };
     for (uri, kinds) in remove {
         let uri = HSTRING::from(uri);
         for context in BLOCKABLE_CONTEXTS {
@@ -1592,6 +1596,7 @@ struct WebView2Tab {
 
 pub struct WebView2Engine {
     core: Rc<RefCell<EngineCore>>,
+    browser_exit_registration: Option<BrowserExitRegistration>,
 }
 
 struct EngineCore {
@@ -1618,6 +1623,11 @@ struct EngineCore {
     tabs: HashMap<TabId, WebView2Tab>,
     known_tabs: HashSet<TabId>,
     creating: HashSet<TabId>,
+    controller_serial: u64,
+    controller_generations: HashMap<TabId, u64>,
+    controller_lifetimes: HashMap<TabId, Rc<Cell<bool>>>,
+    browser_lost: Rc<Cell<bool>>,
+    browser_watch: Rc<BrowserLossWatch>,
     prewarming: HashSet<TabId>,
     prewarm_waiting: Option<TabId>,
     waiting_controllers: VecDeque<TabId>,
@@ -1660,7 +1670,202 @@ struct EngineCore {
     extension_page: Option<super::extension_page::HostedPage>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct BrowserIdentity {
+    pid: u32,
+    created: u64,
+}
+
+/// OS lifetime identity, not just a PID which Windows may reuse. Never waits for a process.
+fn live_browser_identity(pid: u32) -> Option<BrowserIdentity> {
+    use windows::Win32::{
+        Foundation::{CloseHandle, FILETIME, WAIT_TIMEOUT},
+        System::Threading::{GetProcessTimes, OpenProcess, WaitForSingleObject,
+            PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE},
+    };
+    if pid == 0 { return None; }
+    unsafe {
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE, false, pid).ok()?;
+        let result = (|| {
+            let (mut created, mut exited, mut kernel, mut user) =
+                (FILETIME::default(), FILETIME::default(), FILETIME::default(), FILETIME::default());
+            GetProcessTimes(handle, &mut created, &mut exited, &mut kernel, &mut user).ok()?;
+            if WaitForSingleObject(handle, 0) != WAIT_TIMEOUT { return None; }
+            Some(BrowserIdentity { pid, created: (u64::from(created.dwHighDateTime) << 32) | u64::from(created.dwLowDateTime) })
+        })();
+        let _ = CloseHandle(handle);
+        result
+    }
+}
+
+fn environment_live_browser(environment: &ICoreWebView2Environment) -> Option<BrowserIdentity> {
+    // Environment8 is optional; the attachment hook also covers runtimes at the existing floor.
+    let environment = environment.cast::<ICoreWebView2Environment8>().ok()?;
+    unsafe {
+        let infos = environment.GetProcessInfos().ok()?;
+        let mut count = 0;
+        infos.Count(&mut count).ok()?;
+        if count > 4096 { return None; }
+        let mut browser = None;
+        for index in 0..count {
+            let info = infos.GetValueAtIndex(index).ok()?;
+            let mut kind = COREWEBVIEW2_PROCESS_KIND_BROWSER;
+            info.Kind(&mut kind).ok()?;
+            if kind != COREWEBVIEW2_PROCESS_KIND_BROWSER { continue; }
+            let mut pid = 0;
+            info.ProcessId(&mut pid).ok()?;
+            if let Some(identity) = u32::try_from(pid).ok().and_then(live_browser_identity) {
+                if browser.is_some_and(|previous| previous != identity) { return None; }
+                browser = Some(identity);
+            }
+        }
+        // Collection getters may pump; revalidate the returned OS lifetime after the last getter.
+        browser.filter(|identity| live_browser_identity(identity.pid) == Some(*identity))
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum BrowserWatchState {
+    Watching(Option<BrowserIdentity>),
+    Lost,
+    Shutdown,
+}
+
+/// Shared by COM adapters, never borrows App or EngineCore and never owns either one.
+struct BrowserLossWatch {
+    state: Cell<BrowserWatchState>,
+    lost: Rc<Cell<bool>>,
+    notify: Option<Rc<dyn Fn(u32)>>,
+}
+
+impl BrowserLossWatch {
+    fn new(lost: Rc<Cell<bool>>, notify: Option<Rc<dyn Fn(u32)>>) -> Self {
+        Self { state: Cell::new(BrowserWatchState::Watching(None)), lost, notify }
+    }
+
+    fn attach(&self, identity: BrowserIdentity) -> bool {
+        if !matches!(self.state.get(), BrowserWatchState::Watching(_)) { return false; }
+        // Callers supply a live OS snapshot immediately before attaching. Creation times identify
+        // lifetimes; they are not ordered because the system clock can move backwards.
+        self.state.set(BrowserWatchState::Watching(Some(identity)));
+        true
+    }
+
+    fn latch(&self) -> bool {
+        if !matches!(self.state.get(), BrowserWatchState::Watching(_)) { return false; }
+        self.state.set(BrowserWatchState::Lost);
+        self.lost.set(true);
+        true
+    }
+
+    fn environment_exited(&self, pid: u32, live: Option<BrowserIdentity>) {
+        if let Some(live) = live { self.attach(live); }
+        let BrowserWatchState::Watching(current) = self.state.get() else { return; };
+        // A live attachment is stronger evidence than a delayed PID-only exit notification.
+        // In particular, an equal PID with a newer creation time is a different browser.
+        if current.is_some_and(|current| current.pid != pid || live == Some(current)) { return; }
+        if self.latch() && let Some(notify) = self.notify.as_ref() { notify(pid); }
+    }
+
+    fn content_failed(&self, identity: BrowserIdentity, lifetime: &Cell<bool>, callback: &dyn Fn(ProcessFailure), mut failure: ProcessFailure) {
+        if !lifetime.get() { return; }
+        let BrowserWatchState::Watching(current) = self.state.get() else { return; };
+        if failure.kind == ProcessFailureKind::BrowserExited {
+            // A new browser attachment does not revoke the old controller's authority over its tab.
+            // Revoke that controller before notifying App, including during COM callback reentry.
+            lifetime.set(false);
+            if current == Some(identity) {
+                if !self.latch() { return; }
+            } else {
+                failure.kind = ProcessFailureKind::ControllerBrowserExited;
+            }
+        }
+        callback(failure);
+    }
+
+    fn stop(&self) {
+        self.state.set(BrowserWatchState::Shutdown);
+        self.lost.set(true);
+    }
+}
+
+fn browser_exited_handler(watch: &Rc<BrowserLossWatch>, log: Option<Rc<dyn Fn(&'static str)>>) -> ICoreWebView2BrowserProcessExitedEventHandler {
+    let watch = Rc::downgrade(watch);
+    webview2_com::BrowserProcessExitedEventHandler::create(Box::new(move |sender, args| {
+        let Some(watch) = watch.upgrade() else { return Ok(()); };
+        if !matches!(watch.state.get(), BrowserWatchState::Watching(_)) { return Ok(()); }
+        let decoded = args.as_ref().and_then(|args| unsafe {
+            let mut kind = COREWEBVIEW2_BROWSER_PROCESS_EXIT_KIND_NORMAL;
+            let mut pid = 0;
+            args.BrowserProcessExitKind(&mut kind).ok()?;
+            args.BrowserProcessId(&mut pid).ok()?;
+            (pid != 0).then_some((pid, kind))
+        });
+        match decoded {
+            Some((pid, COREWEBVIEW2_BROWSER_PROCESS_EXIT_KIND_FAILED)) => {
+                let live = sender.as_ref().and_then(environment_live_browser).or_else(|| {
+                    let BrowserWatchState::Watching(Some(identity)) = watch.state.get() else { return None; };
+                    live_browser_identity(identity.pid).filter(|live| *live == identity)
+                });
+                watch.environment_exited(pid, live);
+            }
+            Some((_, COREWEBVIEW2_BROWSER_PROCESS_EXIT_KIND_NORMAL)) => {}
+            _ => if let Some(log) = log.as_ref() { log("engine_browser_exit_unreadable"); },
+        }
+        Ok(())
+    }))
+}
+
+/// The removal closure owns the environment; its handler holds only a Weak watch.
+/// Removal (and any COM release it causes) happens without App/EngineCore borrows.
+struct BrowserExitRegistration {
+    watch: Rc<BrowserLossWatch>,
+    unregister: Option<Box<dyn FnOnce()>>,
+}
+
+impl BrowserExitRegistration {
+    fn install(environment: &ICoreWebView2Environment, watch: Rc<BrowserLossWatch>, log: Option<Rc<dyn Fn(&'static str)>>) -> Result<Self> {
+        let environment = environment.cast::<ICoreWebView2Environment5>()?;
+        let mut token = 0;
+        unsafe { environment.add_BrowserProcessExited(&browser_exited_handler(&watch, log.clone()), &mut token)?; }
+        Ok(Self { watch, unregister: Some(Box::new(move || {
+            if unsafe { environment.remove_BrowserProcessExited(token) }.is_err()
+                && let Some(log) = log.as_ref() { log("engine_browser_exit_unregister_failed"); }
+        })) })
+    }
+}
+
+impl Drop for BrowserExitRegistration {
+    fn drop(&mut self) {
+        self.watch.stop();
+        if let Some(unregister) = self.unregister.take() { unregister(); }
+    }
+}
+
+impl Drop for WebView2Engine {
+    fn drop(&mut self) {
+        // A rejected/obsolete environment completion can be dropped without ever being used.
+        drop(self.browser_exit_registration.take());
+    }
+}
+
 impl EngineCore {
+    fn begin_controller_lifetime(&mut self, tab: TabId) -> (u64, Rc<Cell<bool>>) {
+        self.controller_serial = self.controller_serial.wrapping_add(1);
+        let generation = self.controller_serial;
+        self.controller_generations.insert(tab, generation);
+        let lifetime = Rc::new(Cell::new(true));
+        if let Some(previous) = self.controller_lifetimes.insert(tab, lifetime.clone()) { previous.set(false); }
+        (generation, lifetime)
+    }
+
+    fn controller_request_current(&self, tab: TabId, generation: u64) -> bool {
+        !self.closed && !self.browser_lost.get()
+            && self.controller_generations.get(&tab) == Some(&generation)
+            && self.controller_lifetimes.get(&tab).is_some_and(|lifetime| lifetime.get())
+            && self.known_tabs.contains(&tab)
+    }
+
     /// A media verdict belongs to one controller, completed document and hidden interval.
     fn automatic_suspend_current(
         &self,
@@ -1812,6 +2017,22 @@ impl WebView2Engine {
     }
 }
 
+/// Pops the next queued controller creation: the active (foreground) tab first when it is
+/// still queued and valid, otherwise FIFO. Stale entries (closed or already created) are dropped.
+fn take_next_waiting_controller(
+    queue: &mut VecDeque<TabId>,
+    active: Option<TabId>,
+    valid: impl Fn(&TabId) -> bool,
+) -> Option<TabId> {
+    queue.retain(|tab| valid(tab));
+    if let Some(active) = active {
+        if let Some(index) = queue.iter().position(|tab| *tab == active) {
+            return queue.remove(index);
+        }
+    }
+    queue.pop_front()
+}
+
 impl WebView2Engine {
     fn start_waiting_prewarm(core: &Rc<RefCell<EngineCore>>) {
         let (next, prewarm) = {
@@ -1829,17 +2050,16 @@ impl WebView2Engine {
             if let Some(tab) = waiting {
                 (Some(tab), true)
             } else {
-                let next = loop {
-                    let Some(tab) = state.waiting_controllers.pop_front() else {
-                        break None;
-                    };
-                    if !state.closed
-                        && state.known_tabs.contains(&tab)
-                        && !state.tabs.contains_key(&tab)
-                    {
-                        break Some(tab);
-                    }
-                };
+                let state = &mut *state;
+                let next = take_next_waiting_controller(
+                    &mut state.waiting_controllers,
+                    state.active_tab,
+                    |tab| {
+                        !state.closed
+                            && state.known_tabs.contains(tab)
+                            && !state.tabs.contains_key(tab)
+                    },
+                );
                 (next, false)
             }
         };
@@ -1862,9 +2082,12 @@ impl WebView2Engine {
             blocker,
             permissions,
             private,
+            generation,
+            browser_watch,
+            lifetime,
         ) = {
             let mut state = core.borrow_mut();
-            if state.closed || !state.known_tabs.contains(&tab_id) {
+            if state.closed || state.browser_lost.get() || !state.known_tabs.contains(&tab_id) {
                 return Ok(());
             }
             if state.tabs.contains_key(&tab_id) || state.creating.contains(&tab_id) {
@@ -1891,6 +2114,7 @@ impl WebView2Engine {
                 }
                 return Err(error);
             }
+            let (generation, lifetime) = state.begin_controller_lifetime(tab_id);
             state.creating.insert(tab_id);
             if prewarm {
                 if state.creating.len() > 1 {
@@ -1918,6 +2142,9 @@ impl WebView2Engine {
                 },
                 state.permissions.clone(),
                 private,
+                generation,
+                state.browser_watch.clone(),
+                lifetime,
             )
         };
 
@@ -1932,6 +2159,14 @@ impl WebView2Engine {
                 if let Some(log) = completion_events.policy_event.as_ref() {
                     log("webview_controller_result");
                 }
+                let current = weak_core.upgrade().is_some_and(|core| {
+                    let state = core.borrow();
+                    state.controller_request_current(tab_id, generation)
+                });
+                if !current {
+                    if let Some(controller) = controller { let _ = unsafe { controller.Close() }; }
+                    return Ok(());
+                }
                 let controller = match (status, controller) {
                     (Ok(()), Some(controller)) => controller,
                     (Err(error), _) => {
@@ -1940,12 +2175,13 @@ impl WebView2Engine {
                                 let mut state = core.borrow_mut();
                                 state.creating.remove(&tab_id);
                                 state.pending.remove(&tab_id);
+                                state.pending_post.remove(&tab_id);
                                 state.prewarming.remove(&tab_id);
                             }
                             Self::start_waiting_prewarm(&core);
                         }
-                        if let Some(failed) = completion_events.failed.as_ref() {
-                            failed(error);
+                        if let Some(failed) = completion_events.controller_failed.as_ref() {
+                            failed(tab_id, generation, error.code().0);
                         }
                         return Ok(());
                     }
@@ -1955,12 +2191,13 @@ impl WebView2Engine {
                                 let mut state = core.borrow_mut();
                                 state.creating.remove(&tab_id);
                                 state.pending.remove(&tab_id);
+                                state.pending_post.remove(&tab_id);
                                 state.prewarming.remove(&tab_id);
                             }
                             Self::start_waiting_prewarm(&core);
                         }
-                        if let Some(failed) = completion_events.failed.as_ref() {
-                            failed(Error::from(windows::Win32::Foundation::E_POINTER));
+                        if let Some(failed) = completion_events.controller_failed.as_ref() {
+                            failed(tab_id, generation, windows::Win32::Foundation::E_POINTER.0);
                         }
                         return Ok(());
                     }
@@ -1973,15 +2210,14 @@ impl WebView2Engine {
                     let mut state = core.borrow_mut();
                     // An empty split pane has no controller in `visible_tabs` yet. If its first
                     // navigation creates one while it is active, show that controller too.
-                    if !state.closed
+                    if !state.closed && !state.browser_lost.get()
                         && state.known_tabs.contains(&tab_id)
                         && state.active_tab == Some(tab_id)
                     {
                         state.visible_tabs.insert(tab_id);
                     }
                     (
-                        !state.closed
-                            && state.known_tabs.contains(&tab_id)
+                        state.controller_request_current(tab_id, generation)
                             && (!state.prewarming.contains(&tab_id)
                                 || state.active_tab == Some(tab_id)
                                 || state.pending.contains_key(&tab_id)),
@@ -1995,6 +2231,7 @@ impl WebView2Engine {
                         state.creating.remove(&tab_id);
                         state.prewarming.remove(&tab_id);
                         state.pending.remove(&tab_id);
+                        state.pending_post.remove(&tab_id);
                     }
                     let _ = unsafe { controller.Close() };
                     Self::start_waiting_prewarm(&core);
@@ -2013,6 +2250,9 @@ impl WebView2Engine {
                         parent,
                         bounds,
                         tab_id,
+                        generation,
+                        browser_watch.clone(),
+                        lifetime.clone(),
                         allowed_file.clone(),
                         completion_events.clone(),
                         tracking_policy,
@@ -2034,12 +2274,13 @@ impl WebView2Engine {
                                 let mut state = core.borrow_mut();
                                 state.creating.remove(&tab_id);
                                 state.pending.remove(&tab_id);
+                                state.pending_post.remove(&tab_id);
                                 state.prewarming.remove(&tab_id);
                             }
                             Self::start_waiting_prewarm(&core);
                         }
-                        if let Some(failed) = completion_events.failed.as_ref() {
-                            failed(error);
+                        if let Some(failed) = completion_events.controller_failed.as_ref() {
+                            failed(tab_id, generation, error.code().0);
                         }
                         return Ok(());
                     }
@@ -2048,7 +2289,7 @@ impl WebView2Engine {
                     let mut state = core.borrow_mut();
                     state.creating.remove(&tab_id);
                     state.prewarming.remove(&tab_id);
-                    let still_open = !state.closed && state.known_tabs.contains(&tab_id);
+                    let still_open = state.controller_request_current(tab_id, generation);
                     if still_open {
                         let visible = state.visible_tabs.contains(&tab_id);
                         if visible {
@@ -2071,6 +2312,7 @@ impl WebView2Engine {
                         )
                     } else {
                         state.pending.remove(&tab_id);
+                        state.pending_post.remove(&tab_id);
                         (None, MemoryUsageTarget::Low, false)
                     }
                 };
@@ -2113,7 +2355,11 @@ impl WebView2Engine {
                     failed(error);
                 }
                 Self::start_waiting_prewarm(&core);
-                if let Some(url) = pending {
+                let current = {
+                    let state = core.borrow();
+                    state.controller_request_current(tab_id, generation)
+                };
+                if let Some(url) = pending.filter(|_| current) {
                     let handles = core
                         .borrow()
                         .tabs
@@ -2130,9 +2376,9 @@ impl WebView2Engine {
                                 &url,
                             ),
                         }
-                        && let Some(failed) = completion_events.failed.as_ref()
+                        && let Some(failed) = completion_events.controller_failed.as_ref()
                     {
-                        failed(error);
+                        failed(tab_id, generation, error.code().0);
                     }
                 }
                 Ok(())
@@ -2147,7 +2393,10 @@ impl WebView2Engine {
             let mut state = core.borrow_mut();
             state.creating.remove(&tab_id);
             state.prewarming.remove(&tab_id);
+            state.pending.remove(&tab_id);
+            state.pending_post.remove(&tab_id);
             drop(state);
+            if let Some(failed) = events.controller_failed.as_ref() { failed(tab_id, generation, error.code().0); }
             Self::start_waiting_prewarm(core);
             return Err(error);
         }
@@ -2171,7 +2420,7 @@ impl WebView2Engine {
                     url,
                 );
             }
-            if state.closed {
+            if state.closed || state.browser_lost.get() {
                 return Err(Error::from(windows::Win32::Foundation::E_POINTER));
             }
             // Register a tab the window is navigating even if `select_tab` was skipped.
@@ -3382,7 +3631,18 @@ impl WebView2Engine {
                         return Ok(());
                     }
                 }
+                let browser_lost = Rc::new(Cell::new(false));
+                let browser_watch = Rc::new(BrowserLossWatch::new(browser_lost.clone(), event_handlers.browser_lost.clone()));
+                if let Some(identity) = environment_live_browser(&environment) { browser_watch.attach(identity); }
+                let registration = match BrowserExitRegistration::install(&environment, browser_watch.clone(), event_handlers.policy_event.clone()) {
+                    Ok(registration) => registration,
+                    Err(error) => {
+                        if let Some(f) = completion_env.borrow_mut().take() { f(Err(error)); }
+                        return Ok(());
+                    }
+                };
                 let engine = Self {
+                    browser_exit_registration: Some(registration),
                     core: Rc::new(RefCell::new(EngineCore {
                         parent,
                         bounds,
@@ -3403,6 +3663,11 @@ impl WebView2Engine {
                         tabs: HashMap::new(),
                         known_tabs: HashSet::new(),
                         creating: HashSet::new(),
+                        controller_serial: 0,
+                        controller_generations: HashMap::new(),
+                        controller_lifetimes: HashMap::new(),
+                        browser_lost,
+                        browser_watch,
                         prewarming: HashSet::new(),
                         prewarm_waiting: None,
                         waiting_controllers: VecDeque::new(),
@@ -3488,6 +3753,15 @@ impl WebView2Engine {
 }
 
 impl EngineAdapter for WebView2Engine {
+    fn browser_process_observer(&self) -> Option<Rc<dyn Fn(u32) -> bool>> {
+        let watch = Rc::downgrade(&self.core.borrow().browser_watch);
+        Some(Rc::new(move |pid| watch.upgrade().is_some_and(|watch|
+            live_browser_identity(pid).is_some_and(|identity| watch.attach(identity)))))
+    }
+
+    fn controller_generation(&self, tab: TabId) -> Option<u64> {
+        self.core.borrow().controller_generations.get(&tab).copied()
+    }
     #[cfg(all(test, feature = "experimental-engine-context-menu"))]
     fn probe_native_context_handles(&self, tab:TabId) -> Option<super::app_context_menu_probe::NativeContextProbeHandles> {
         // Clone-only; App may still be borrowed by the caller. No COM call in this method.
@@ -4284,20 +4558,18 @@ impl EngineAdapter for WebView2Engine {
         Ok(())
     }
     fn close_tab(&mut self, tab_id: TabId) -> Result<()> {
+        if let Some(lifetime) = self.core.borrow().controller_lifetimes.get(&tab_id) { lifetime.set(false); }
         #[cfg(feature = "experimental-engine-context-menu")]
         owned_context_menu::cancel_core(&self.core, Some(tab_id));
-        if let Some(webview) = self
-            .core
-            .borrow()
-            .tabs
-            .get(&tab_id)
-            .and_then(|tab| tab.webview.clone())
-        {
-            exit_native_picture_in_picture(&webview);
-        }
+        let webview = self.core.borrow().tabs.get(&tab_id).and_then(|tab| tab.webview.clone());
+        if let Some(webview) = webview { exit_native_picture_in_picture(&webview); }
         let removed = {
             let mut state = self.core.borrow_mut();
             state.known_tabs.remove(&tab_id);
+            state.controller_generations.remove(&tab_id);
+            if let Some(lifetime) = state.controller_lifetimes.remove(&tab_id) { lifetime.set(false); }
+            state.creating.remove(&tab_id);
+            state.prewarming.remove(&tab_id);
             state.private_tabs.remove(&tab_id);
             state.visible_tabs.remove(&tab_id);
             state.pane_bounds.remove(&tab_id);
@@ -4318,6 +4590,7 @@ impl EngineAdapter for WebView2Engine {
         };
         // Downloads cannot outlive their webview: they are cancelled and listed as interrupted.
         super::download::interrupt_owner(super::download::tab_owner(tab_id.0));
+        Self::start_waiting_prewarm(&self.core);
         closed
     }
     fn tab_playing_audio(&self, tab_id: TabId) -> bool {
@@ -4581,13 +4854,22 @@ impl EngineAdapter for WebView2Engine {
         }
     }
     fn close(&mut self) -> Result<()> {
+        drop(self.browser_exit_registration.take());
+        {
+            let mut state = self.core.borrow_mut();
+            state.browser_watch.stop();
+            state.closed = true;
+            state.browser_lost.set(true);
+            state.controller_generations.clear();
+            for lifetime in state.controller_lifetimes.drain().map(|(_, lifetime)| lifetime) { lifetime.set(false); }
+        }
         #[cfg(feature = "experimental-engine-context-menu")]
         owned_context_menu::cancel_core(&self.core, None);
         let page = self.core.borrow_mut().extension_page.take();
         if let Some(page) = page {
             page.close();
         }
-        let tabs: Vec<WebView2Tab> = {
+        let tabs: Vec<(TabId, WebView2Tab)> = {
             let mut state = self.core.borrow_mut();
             state.closed = true;
             state.known_tabs.clear();
@@ -4597,13 +4879,16 @@ impl EngineAdapter for WebView2Engine {
             state.hidden_since.clear();
             state.suspended.clear();
             state.suspend_checks.clear();
-            state.tabs.drain().map(|(_, tab)| tab).collect()
+            state.tabs.drain().collect()
         };
-        for mut tab in tabs {
+        for (id, mut tab) in tabs {
+            // The registry also holds operations from independent WebApps environments and
+            // replacement engines. Closing this engine must retire only its own controllers.
+            super::download::interrupt_owner(super::download::tab_owner(id.0));
             let _ = EngineAdapter::close(&mut tab);
         }
-        super::download::interrupt_all();
-        self.core.borrow_mut().environment = None;
+        let environment = self.core.borrow_mut().environment.take();
+        drop(environment);
         Ok(())
     }
 }
@@ -4924,6 +5209,52 @@ struct TrackingPolicy {
     enabled: bool,
 }
 
+fn process_failure_kind(kind: COREWEBVIEW2_PROCESS_FAILED_KIND) -> ProcessFailureKind {
+    match kind {
+        COREWEBVIEW2_PROCESS_FAILED_KIND_BROWSER_PROCESS_EXITED => ProcessFailureKind::BrowserExited,
+        COREWEBVIEW2_PROCESS_FAILED_KIND_RENDER_PROCESS_EXITED => ProcessFailureKind::RendererExited,
+        COREWEBVIEW2_PROCESS_FAILED_KIND_RENDER_PROCESS_UNRESPONSIVE => ProcessFailureKind::RendererUnresponsive,
+        COREWEBVIEW2_PROCESS_FAILED_KIND_FRAME_RENDER_PROCESS_EXITED => ProcessFailureKind::FrameRendererExited,
+        COREWEBVIEW2_PROCESS_FAILED_KIND_GPU_PROCESS_EXITED => ProcessFailureKind::GpuExited,
+        COREWEBVIEW2_PROCESS_FAILED_KIND_UTILITY_PROCESS_EXITED => ProcessFailureKind::UtilityExited,
+        other => ProcessFailureKind::Other(other.0),
+    }
+}
+
+fn process_failure(tab: TabId, controller_generation: u64, args: Option<&ICoreWebView2ProcessFailedEventArgs>) -> ProcessFailure {
+    let mut failure = ProcessFailure { tab, controller_generation, kind: ProcessFailureKind::Other(-1), reason: None, exit_code: None };
+    if let Some(args) = args {
+        unsafe {
+            let mut kind = COREWEBVIEW2_PROCESS_FAILED_KIND::default();
+            if args.ProcessFailedKind(&mut kind).is_ok() { failure.kind = process_failure_kind(kind); }
+            if let Ok(details) = args.cast::<ICoreWebView2ProcessFailedEventArgs2>() {
+                let mut reason = COREWEBVIEW2_PROCESS_FAILED_REASON::default();
+                if details.Reason(&mut reason).is_ok() { failure.reason = Some(reason.0); }
+                let mut code = 0;
+                if details.ExitCode(&mut code).is_ok() { failure.exit_code = Some(code); }
+            }
+        }
+    }
+    failure
+}
+
+fn content_failed_handler(
+    tab: TabId,
+    generation: u64,
+    identity: BrowserIdentity,
+    watch: Rc<BrowserLossWatch>,
+    lifetime: Rc<Cell<bool>>,
+    callback: Rc<dyn Fn(ProcessFailure)>,
+) -> ICoreWebView2ProcessFailedEventHandler {
+    ProcessFailedEventHandler::create(Box::new(move |_, args| {
+        let failure = process_failure(tab, generation, args.as_ref());
+        // The getters above may pump. Check the revocable controller lifetime afterwards, without
+        // borrowing EngineCore, and stop queued requests before the posted App notice is dispatched.
+        watch.content_failed(identity, &lifetime, callback.as_ref(), failure);
+        Ok(())
+    }))
+}
+
 #[allow(clippy::too_many_arguments)]
 unsafe fn configure_controller(
     environment: &ICoreWebView2Environment,
@@ -4932,6 +5263,9 @@ unsafe fn configure_controller(
     parent: HWND,
     bounds: RECT,
     tab_id: TabId,
+    generation: u64,
+    browser_watch: Rc<BrowserLossWatch>,
+    lifetime: Rc<Cell<bool>>,
     allowed_file: Option<Url>,
     events: EngineEvents,
     tracking_policy: TrackingPolicy,
@@ -4949,6 +5283,11 @@ unsafe fn configure_controller(
         controller.SetBounds(bounds)?;
         controller.SetIsVisible(visible)?;
         let webview = controller.CoreWebView2()?;
+        let mut browser_pid = 0;
+        webview.BrowserProcessId(&mut browser_pid)?;
+        let browser_identity = live_browser_identity(browser_pid)
+            .filter(|identity| browser_watch.attach(*identity))
+            .ok_or_else(|| Error::from(windows::Win32::Foundation::E_ABORT))?;
         let document_gate = Rc::new(RefCell::new(super::document_gate::DocumentGate::default()));
         if private {
             // A runtime that ignored the controller options must never leave a private tab in the
@@ -5982,6 +6321,7 @@ unsafe fn configure_controller(
                     let Some(args) = args else {
                         return Ok(());
                     };
+                    crate::blocker::BlockerState::note_web_resource_request();
                     let request = args.Request()?;
                     let mut uri = PWSTR::null();
                     request.Uri(&mut uri)?;
@@ -6143,23 +6483,9 @@ unsafe fn configure_controller(
             })),&mut token);
             trace.result("interaction_focus_lost_registration",&result);
         }
-        if let Some(callback) = events.failed.as_ref() {
-            let failure_callback = callback.clone();
-            let render_callback = events.render_process_failed.clone();
+        if let Some(callback) = events.process_failed.as_ref() {
             webview.add_ProcessFailed(
-                &ProcessFailedEventHandler::create(Box::new(move |_sender, args| {
-                    let mut kind = COREWEBVIEW2_PROCESS_FAILED_KIND::default();
-                    let render_exited = args.is_some_and(|args| {
-                        args.ProcessFailedKind(&mut kind).is_ok()
-                            && kind == COREWEBVIEW2_PROCESS_FAILED_KIND_RENDER_PROCESS_EXITED
-                    });
-                    match render_callback.as_ref() {
-                        // A crashed page process is recoverable by reloading that tab.
-                        Some(render) if render_exited => render(tab_id),
-                        _ => failure_callback(Error::from(windows::Win32::Foundation::E_FAIL)),
-                    }
-                    Ok(())
-                })),
+                &content_failed_handler(tab_id, generation, browser_identity, browser_watch, lifetime, callback.clone()),
                 &mut token,
             )?;
         }
@@ -6579,24 +6905,59 @@ mod tests {
     }
 
     #[test]
-    fn a_pending_post_body_is_bound_and_cleared_in_the_engine() {
-        // The controller callback, close and shutdown are not unit-testable without WebView2, so
-        // these source checks keep a queued search body from reaching another address or outliving
-        // its tab.
-        let source = include_str!("webview2.rs");
-        let production = &source[..source.find("\n#[cfg(test)]\nmod tests {").expect("test module boundary")];
-        for needle in [
-            "take_pending_post(&mut core.borrow_mut().pending_post, tab_id, pending.as_ref())",
-            "state.pending_post.insert(tab, (url.clone(), body.to_owned()))",
-            "state.pending_post.clear();",
-        ] {
-            assert!(production.contains(needle), "missing in the engine: {needle}");
+    fn engine_recovery_closing_a_tab_revokes_its_controller_and_pending_post_only() {
+        let mut engine = engine_without_controllers();
+        let url = Url::parse("https://example.test/search").unwrap();
+        {
+            let mut state = engine.core.borrow_mut();
+            for (tab, generation) in [(TabId(1), 4), (TabId(2), 5)] {
+                state.controller_generations.insert(tab, generation);
+                state.pending.insert(tab, url.clone());
+                state.pending_post.insert(tab, (url.clone(), "q=owned".into()));
+            }
         }
-        assert_eq!(
-            production.matches("state.pending_post.remove(&tab_id);").count(),
-            2,
-            "a new navigation and a tab close each drop the waiting body"
-        );
+        EngineAdapter::close_tab(&mut engine, TabId(1)).unwrap();
+        assert_eq!(engine.controller_generation(TabId(1)), None);
+        assert_eq!(engine.controller_generation(TabId(2)), Some(5));
+        assert!(!engine.core.borrow().pending_post.contains_key(&TabId(1)));
+        assert!(engine.core.borrow().pending_post.contains_key(&TabId(2)));
+        EngineAdapter::close(&mut engine).unwrap();
+        assert!(engine.core.borrow().pending_post.is_empty());
+        assert_eq!(engine.controller_generation(TabId(2)), None);
+    }
+
+    #[test]
+    fn engine_recovery_distinguishes_fatal_renderer_and_automatic_process_recovery() {
+        for (kind, expected) in [
+            (COREWEBVIEW2_PROCESS_FAILED_KIND_BROWSER_PROCESS_EXITED, ProcessFailureKind::BrowserExited),
+            (COREWEBVIEW2_PROCESS_FAILED_KIND_RENDER_PROCESS_EXITED, ProcessFailureKind::RendererExited),
+            (COREWEBVIEW2_PROCESS_FAILED_KIND_RENDER_PROCESS_UNRESPONSIVE, ProcessFailureKind::RendererUnresponsive),
+            (COREWEBVIEW2_PROCESS_FAILED_KIND_FRAME_RENDER_PROCESS_EXITED, ProcessFailureKind::FrameRendererExited),
+            (COREWEBVIEW2_PROCESS_FAILED_KIND_GPU_PROCESS_EXITED, ProcessFailureKind::GpuExited),
+            (COREWEBVIEW2_PROCESS_FAILED_KIND_UTILITY_PROCESS_EXITED, ProcessFailureKind::UtilityExited),
+            (COREWEBVIEW2_PROCESS_FAILED_KIND(99), ProcessFailureKind::Other(99)),
+        ] {
+            assert_eq!(process_failure_kind(kind), expected);
+        }
+        assert_eq!(process_failure(TabId(1), 3, None).kind, ProcessFailureKind::Other(-1), "missing arguments must not default to browser loss");
+    }
+
+    #[test]
+    fn engine_recovery_only_a_live_controller_can_latch_shared_browser_loss() {
+        let lifetime = Cell::new(false);
+        let lost = Rc::new(Cell::new(false));
+        let watch = BrowserLossWatch::new(lost.clone(), None);
+        let identity = BrowserIdentity { pid: 1, created: 1 };
+        watch.attach(identity);
+        let delivered = RefCell::new(Vec::new());
+        let callback = |failure| { delivered.borrow_mut().push(failure); };
+        let failure = ProcessFailure { tab: TabId(1), controller_generation: 7, kind: ProcessFailureKind::BrowserExited, reason: None, exit_code: None };
+        watch.content_failed(identity, &lifetime, &callback, failure);
+        assert!(!lost.get() && delivered.borrow().is_empty());
+        lifetime.set(true);
+        watch.content_failed(identity, &lifetime, &callback, failure);
+        assert!(lost.get(), "latch before returning to any pending controller completion");
+        assert_eq!(*delivered.borrow(), [failure]);
     }
 
     /// Hooks for the ignored live probe (`extension_probe_live`). They live here, not beside the
@@ -8381,7 +8742,46 @@ mod tests {
         );
     }
 
-    fn engine_without_controllers() -> WebView2Engine {
+    #[test]
+    fn engine_recovery_closing_an_empty_engine_does_not_cancel_independent_downloads() {
+        let download = super::super::download::recovery_tests::Download::new(super::super::download::app_owner("independent-app"));
+        let mut engine = engine_without_controllers();
+        engine.close().unwrap();
+        assert!(!download.cancelled());
+        assert!(download.events.borrow().is_empty());
+        assert!(super::super::download::pause(download.key), "the independent operation remains actionable");
+    }
+
+    #[test]
+    fn engine_recovery_closing_content_interrupts_only_its_own_downloads() {
+        let owned = super::super::download::recovery_tests::Download::new(super::super::download::tab_owner(1));
+        let unrelated = super::super::download::recovery_tests::Download::new(super::super::download::tab_owner(99));
+        let webapp = super::super::download::recovery_tests::Download::new(super::super::download::app_owner("independent-app"));
+        let mut engine = engine_without_controllers();
+        engine.core.borrow_mut().tabs.insert(TabId(1), WebView2Tab {
+            #[cfg(feature = "experimental-engine-context-menu")]
+            context_menu_registration: None,
+            document_gate: Rc::new(RefCell::new(super::super::document_gate::DocumentGate::default())),
+            focus_trace: None, environment: None, controller: None, webview: None, allowed_file: None,
+            memory_target_api: None, visible: Rc::new(Cell::new(true)), applied_bounds: None,
+            spatial_id: Rc::new(RefCell::new(None)),
+        });
+        engine.close().unwrap();
+        assert!(owned.cancelled());
+        assert!(matches!(&owned.events.borrow()[..], [crate::downloads::DownloadEvent::State {
+            state: crate::downloads::OpState::Failed, got: 16, total: 64, can_resume: false, ..
+        }]));
+        for download in [&unrelated, &webapp] {
+            assert!(!download.cancelled());
+            assert!(download.events.borrow().is_empty());
+            assert!(super::super::download::pause(download.key));
+            assert!(super::super::download::resume(download.key));
+        }
+    }
+
+    pub(super) fn engine_without_controllers() -> WebView2Engine {
+        let browser_lost = Rc::new(Cell::new(false));
+        let browser_watch = Rc::new(BrowserLossWatch::new(browser_lost.clone(), None));
         let core = Rc::new(RefCell::new(EngineCore {
             parent: HWND::default(),
             bounds: RECT::default(),
@@ -8402,6 +8802,11 @@ mod tests {
             tabs: HashMap::new(),
             known_tabs: HashSet::from([TabId(1), TabId(2)]),
             creating: HashSet::new(),
+            controller_serial: 0,
+            controller_generations: HashMap::new(),
+            controller_lifetimes: HashMap::new(),
+            browser_lost,
+            browser_watch,
             prewarming: HashSet::new(),
             prewarm_waiting: None,
             waiting_controllers: VecDeque::new(),
@@ -8424,7 +8829,7 @@ mod tests {
             chrome_ui_scheme: false,
             extension_page: None,
         }));
-        WebView2Engine { core }
+        WebView2Engine { core, browser_exit_registration: None }
     }
 
     #[test]
@@ -8652,5 +9057,46 @@ mod tests {
         let _ = engine.suspend_hidden_tabs(30_000);
         // Active tab is not suspended:
         assert!(!core.borrow().suspended.contains(&TabId(1)));
+    }
+}
+
+#[cfg(test)]
+#[path = "../blocker/request_filter_tests.rs"]
+mod request_filter_tests;
+
+#[cfg(test)]
+mod browser_loss_tests;
+
+#[cfg(test)]
+mod waiting_controller_order_tests {
+    use super::*;
+
+    fn queue(ids: &[u64]) -> VecDeque<TabId> {
+        ids.iter().map(|id| TabId(*id as _)).collect()
+    }
+
+    #[test]
+    fn active_tab_is_created_before_older_background_requests() {
+        let mut q = queue(&[1, 2, 3]);
+        let next = take_next_waiting_controller(&mut q, Some(TabId(3 as _)), |_| true);
+        assert_eq!(next, Some(TabId(3 as _)));
+        assert_eq!(q, queue(&[1, 2]));
+    }
+
+    #[test]
+    fn falls_back_to_fifo_and_drops_stale_entries() {
+        let mut q = queue(&[1, 2, 3]);
+        let next = take_next_waiting_controller(&mut q, Some(TabId(9 as _)), |t| *t != TabId(1 as _));
+        assert_eq!(next, Some(TabId(2 as _)));
+        let next = take_next_waiting_controller(&mut q, None, |t| *t != TabId(3 as _));
+        assert_eq!(next, None);
+        assert!(q.is_empty());
+    }
+
+    #[test]
+    fn closed_active_tab_is_not_resurrected() {
+        let mut q = queue(&[1, 2]);
+        let next = take_next_waiting_controller(&mut q, Some(TabId(2 as _)), |t| *t != TabId(2 as _));
+        assert_eq!(next, Some(TabId(1 as _)));
     }
 }
