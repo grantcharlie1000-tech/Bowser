@@ -1,0 +1,65 @@
+name: Capture real Windows layout
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'benchmarks/scripts/capture-layout-ui.ps1'
+      - '.github/workflows/windows-layout-capture.yml'
+      - 'ui/src/**'
+      - 'ui/dist/**'
+      - 'src/**'
+permissions:
+  contents: read
+jobs:
+  capture:
+    runs-on: windows-latest
+    timeout-minutes: 35
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - run: git config --global core.autocrlf false
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Parse capture script
+        run: |
+          $tokens=$null; $errors=$null
+          [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $pwd 'benchmarks/scripts/capture-layout-ui.ps1'),[ref]$tokens,[ref]$errors)|Out-Null
+          if($errors.Count){$errors|Format-List;throw 'Capture script parse failure'}
+      - name: Build actual shipping HTML-chrome app
+        run: |
+          rustup toolchain install stable --profile minimal
+          if($LASTEXITCODE -ne 0){throw 'Rust install failed'}
+          cargo +stable build --locked --release --bin bowser --features html-chrome-default
+          if($LASTEXITCODE -ne 0){throw 'Native build failed'}
+      - name: Capture isolated real HWND surfaces and recording
+        run: ./benchmarks/scripts/capture-layout-ui.ps1
+      - name: Encode standard video when runner FFmpeg is available
+        if: always()
+        run: |
+          $out=Join-Path $env:RUNNER_TEMP 'bowser-layout-capture'
+          if(-not(Test-Path "$out/frames.json")){Write-Warning 'No captured frames';exit 0}
+          $ffmpeg=Get-Command ffmpeg -ErrorAction SilentlyContinue
+          if(-not $ffmpeg){'No FFmpeg. recording.html is PNG playback, NOT a video.'|Set-Content "$out/video-status.txt";exit 0}
+          $frames=@(Get-Content "$out/frames.json" -Raw|ConvertFrom-Json)
+          if($frames.Count -lt 2){'Insufficient frames.'|Set-Content "$out/video-status.txt";exit 0}
+          $concat=[Collections.Generic.List[string]]::new()
+          for($i=0;$i -lt $frames.Count;$i++){
+            $concat.Add("file '$($frames[$i].file)'")
+            if($i+1 -lt $frames.Count){$d=($frames[$i+1].ms-$frames[$i].ms)/1000.0}else{$d=0.2}
+            $concat.Add('duration '+$d.ToString('0.000',[Globalization.CultureInfo]::InvariantCulture))
+          }
+          $concat.Add("file '$($frames[-1].file)'")
+          $concat|Set-Content "$out/video-input.txt" -Encoding utf8
+          & $ffmpeg.Source -hide_banner -y -f concat -safe 0 -i "$out/video-input.txt" -vf 'fps=15,pad=ceil(iw/2)*2:ceil(ih/2)*2' -c:v libx264 -pix_fmt yuv420p "$out/real-bowser-layout.mp4" 2>&1|Tee-Object "$out/video-encode.log"
+          if($LASTEXITCODE -ne 0){'FFmpeg failed; HTML playback is NOT video.'|Set-Content "$out/video-status.txt";throw 'Video encode failed'}
+          'MP4 encoded from timestamped real-window pixels. Visual review required.'|Set-Content "$out/video-status.txt"
+      - name: Upload actual pixels and candid status
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: bowser-real-layout-${{ github.sha }}
+          path: ${{ runner.temp }}/bowser-layout-capture/
+          if-no-files-found: warn
+          retention-days: 14
