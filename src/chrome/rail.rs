@@ -794,7 +794,7 @@ pub fn rail_tooltip(key: RailKey, entries: &[RailEntry<'_>]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::chrome::layout::left_rail;
+    use crate::chrome::layout::{Metrics, LEFT_RAIL_WIDTH};
 
     const DPIS: [u32; 4] = [96, 120, 144, 192];
     /// Client heights from degenerate to tall, including ones too short for the bottom group.
@@ -846,7 +846,12 @@ mod tests {
     }
 
     fn pill(height: i32, dpi: u32) -> Rect {
-        left_rail(height, dpi)
+        // Exercise the legacy renderer independently of the intentionally rail-free window layout.
+        let m = Metrics::new(dpi);
+        let margin = m.px(Metrics::OUTER_MARGIN);
+        let height = height.max(0);
+        let top = m.px(Metrics::TOP_MARGIN).saturating_add(margin).min(height);
+        Rect::new(margin, top, margin + m.px(LEFT_RAIL_WIDTH), (height - margin).max(top))
     }
 
     #[test]

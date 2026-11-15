@@ -3925,6 +3925,33 @@ mod tests {
         paint_rail_decorated(surface, entries, dpi, hover, pressed, fades, open_panel, None, None, None, dirty);
     }
 
+    /// Explicit legacy-renderer fixture: production window layouts deliberately have no rail.
+    fn legacy_rail_layout(dpi: u32) -> Layout {
+        let m = Metrics::new(dpi);
+        let margin = m.px(Metrics::OUTER_MARGIN);
+        let inset = margin * 2 + m.px(layout::LEFT_RAIL_WIDTH);
+        let mut layout = layout::compute_in_frame(m.px(300) - inset, m.px(400), dpi, 0, 0, false);
+        // Keep other chrome out of the synthetic rail, just as the legacy host did.
+        for rect in [
+            &mut layout.strip, &mut layout.tab_row, &mut layout.tab_zone,
+            &mut layout.tab_menu_button, &mut layout.new_tab_button, &mut layout.caption_area,
+            &mut layout.back_button, &mut layout.forward_button, &mut layout.reload_button,
+            &mut layout.omnibox, &mut layout.main_menu_button, &mut layout.viewport,
+        ] {
+            *rect = rect.shifted_right(inset);
+        }
+        layout.tab_left += inset;
+        layout.tab_controls_right += inset;
+        layout.client = Rect::new(0, 0, m.px(300), m.px(400));
+        layout.rail = Rect::new(
+            margin,
+            m.px(Metrics::TOP_MARGIN) + margin,
+            margin + m.px(layout::LEFT_RAIL_WIDTH),
+            m.px(400) - margin,
+        );
+        layout
+    }
+
     fn paint_rail_decorated(
         surface: &mut ChromeSurface,
         entries: &[RailEntry<'_>],
@@ -3938,8 +3965,7 @@ mod tests {
         tooltip: Option<RailKey>,
         dirty: Rect,
     ) {
-        let m = Metrics::new(dpi);
-        let layout = layout::compute_in_frame(m.px(300), m.px(400), dpi, 0, 0, false);
+        let layout = legacy_rail_layout(dpi);
         let view = ChromeView {
             layout: &layout,
             palette: palette(Appearance::Light, false),
@@ -3998,8 +4024,7 @@ mod tests {
     }
 
     fn button_rect(entries: &[RailEntry<'_>], dpi: u32, key: RailKey) -> Rect {
-        let m = Metrics::new(dpi);
-        let layout = layout::compute_in_frame(m.px(300), m.px(400), dpi, 0, 0, false);
+        let layout = legacy_rail_layout(dpi);
         rail::geometry(layout.rail, entries, 0, dpi)
             .item(key)
             .expect("the key is placed")
@@ -4099,7 +4124,7 @@ mod tests {
         let active = paint_rail(&entries, 96, Hit::None, Hit::None, &[], None);
 
         let rect = button_rect(&entries, 96, key);
-        let bar_x = layout::left_rail(400, 96).left + Metrics::new(96).px(1) + 1;
+        let bar_x = legacy_rail_layout(96).rail.left + Metrics::new(96).px(1) + 1;
         let mid_y = rect.top + rect.height() / 2;
         assert_eq!(
             pixel_at(&active, bar_x, mid_y),
@@ -4138,7 +4163,7 @@ mod tests {
         fades: &[RailFade],
         now: Instant,
     ) {
-        let layout = layout::compute_in_frame(300, 400, 96, 0, 0, false);
+        let layout = legacy_rail_layout(96);
         let view = ChromeView {
             layout: &layout,
             palette: palette(Appearance::Light, false),
@@ -4295,7 +4320,7 @@ mod tests {
         entry.active = true;
         entry.accent = Some(Rgba::hex(0x2E9E5B, 0xFF));
         let button = button_rect(std::slice::from_ref(&entry), 96, key);
-        let bar_x = layout::left_rail(400, 96).left + Metrics::new(96).px(1) + 1;
+        let bar_x = legacy_rail_layout(96).rail.left + Metrics::new(96).px(1) + 1;
         let (bar_top, bar_bottom) = (button.top + 2, button.bottom - 2);
         let bar_rows = |surface: &ChromeSurface| {
             (bar_top..bar_bottom)
@@ -4380,7 +4405,7 @@ mod tests {
         let key = RailKey::Workspace(1);
         let entries = [rail_entry(key, RailIcon::Glyph(WorkspaceGlyph::Star))];
         let m = Metrics::new(96);
-        let layout = layout::compute_in_frame(m.px(300), m.px(400), 96, 0, 0, false);
+        let layout = legacy_rail_layout(96);
         let rect = button_rect(&entries, 96, key);
         let whole = Rect::new(0, 0, m.px(300), m.px(400));
         let mut base = native_surface(whole.right, whole.bottom, 96);
@@ -4411,7 +4436,7 @@ mod tests {
         let entries = [rail_entry(key, RailIcon::Clock)];
         let m = Metrics::new(144);
         let (width, height) = (m.px(300), m.px(400));
-        let layout = layout::compute_in_frame(width, height, 144, 0, 0, false);
+        let layout = legacy_rail_layout(144);
         let dirty = rail::geometry(layout.rail, &entries, 0, 144).dirty_for(&[key]);
         let rect = button_rect(&entries, 144, key);
         assert!(dirty.contains_rect(rect), "the dirty rect covers the whole button");
