@@ -410,11 +410,14 @@ function startToolbar(root: HTMLElement): void {
         latestSeq = -1;
         lastInputType = '';
         list = null; // --- omnibox suggest ---
+        // The reply to an earlier blur can land after Ctrl+L focused and selected the field; the new
+        // text must not drop that selection (typing would append to the old address).
+        const keepSelectAll = document.activeElement === input && input.value !== '' && input.selectionStart === 0 && input.selectionEnd === input.value.length;
         input.value = msg.text;
         shownText = msg.text;
         fullText = msg.full ?? '';
         edited = false;
-        if (msg.select && flags.select) input.select();
+        if ((msg.select && flags.select) || keepSelectAll) input.select();
         showDisplay();
         syncSiteIcon(view);
         break;

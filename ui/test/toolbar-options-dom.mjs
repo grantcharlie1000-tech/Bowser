@@ -37,7 +37,7 @@ class Node {
   constructor(tag, text = null) {
     this.tagName = tag; this.className = ''; this.attrs = new Map(); this.childList = []; this.parent = null; this.listeners = {};
     this.classList = new ClassList(this); this.dataset = {}; this.hidden = false; this.disabled = false; this.ownText = text; this.id = '';
-    this.value = ''; this.selectionStart = 0; this.selectionEnd = 0;
+    this._value = ''; this.selectionStart = 0; this.selectionEnd = 0;
     const props = new Map();
     this.style = { setProperty: (k, v) => props.set(k, String(v)), getPropertyValue: (k) => props.get(k) ?? '', removeProperty: (k) => props.delete(k) };
   }
@@ -66,6 +66,9 @@ class Node {
   querySelector(s) { return this.querySelectorAll(s)[0] ?? null; }
   focus() { if (document.activeElement === this) return; document.activeElement?.dispatch?.('blur'); document.activeElement = this; this.dispatch('focus'); }
   blur() { if (document.activeElement !== this) return; document.activeElement = null; this.dispatch('blur'); }
+  // A browser moves the caret to the end when script changes a text field's value.
+  get value() { return this._value; }
+  set value(v) { const next = String(v); if (next !== this._value) { this._value = next; this.selectionStart = this.selectionEnd = next.length; } }
   select() { this.selectionStart = 0; this.selectionEnd = this.value.length; }
   setSelectionRange(start, end) { this.selectionStart = start; this.selectionEnd = end; }
   contains(n) { return n === this || this.all().includes(n); }
@@ -242,6 +245,22 @@ test('show_zoom_indicator: the zoom chip shows at 125% only with the option on',
   assert.equal(view.zoom.hidden, true, 'never at 100%');
 });
 
+
+test('a late setText from an earlier blur keeps the address Ctrl+L selected', () => {
+  // Rust answers a blur with the tab address; when the blur raced a Ctrl+L focusOmnibox the answer
+  // arrives after the field was focused and selected, and replacing the text must not drop the selection.
+  omni.blur();
+  deliver(addr({ select: true }));
+  const text = { t: 'setText', text: '127.0.0.1/start', full: 'http://127.0.0.1:8080/start', select: false };
+  deliver(text);
+  deliver({ t: 'focusOmnibox', select: true });
+  assert.equal(document.activeElement, omni);
+  assert.deepEqual([omni.selectionStart, omni.selectionEnd], [0, omni.value.length], 'Ctrl+L selects the address');
+  deliver(text);
+  assert.equal(omni.value, text.text);
+  assert.deepEqual([omni.selectionStart, omni.selectionEnd], [0, omni.value.length], 'typing must still replace the address');
+  omni.blur();
+});
 
 test('native input handoff preserves edited text and UTF-16 selection without early focus', () => {
   omni.blur();
