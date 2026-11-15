@@ -13,6 +13,7 @@ $env:BOWSER_DATA_DIR=$null;$env:BOWSER_UI=$null;$env:BOWSER_UPDATE_URL=$null;$en
 New-Item -ItemType Directory -Path $env:LOCALAPPDATA|Out-Null
 function Wait-For([scriptblock]$test,[string]$name){$end=[DateTime]::UtcNow.AddSeconds(90);do{if(& $test){return};Start-Sleep -Milliseconds 200}while([DateTime]::UtcNow-lt$end);throw "Timed out: $name"}
 $requests=Join-Path $out 'requests.jsonl'
+if(Test-Path -LiteralPath $requests){throw 'Refusing preexisting fixture requests; fresh runtime evidence required'}
 $portFile=Join-Path $run 'port.txt'
 function Has([string]$marker){if(!(Test-Path $requests)){return $false};return [bool](@(Get-Content $requests|ConvertFrom-Json|Where-Object{$_.url-ceq$marker}).Count)}
 function Stop-Owned {if($script:app){$script:app.Refresh();if(!$script:app.HasExited){if(!$script:app.CloseMainWindow()){throw 'Owned window did not accept graceful close'};if(!$script:app.WaitForExit(30000)){throw 'Owned window did not exit gracefully'}};if($script:app.ExitCode-ne 0){throw "Owned app exit $($script:app.ExitCode)"};$script:app=$null}}
