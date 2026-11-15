@@ -48,20 +48,24 @@ try{
  $script:p=Start-Process $Exe -ArgumentList @('--data-dir',$profile) -PassThru
  for($i=0;$i -lt 120;$i++){$script:p.Refresh();$script:h=$script:p.MainWindowHandle;if($script:h -ne [IntPtr]::Zero){break};if($script:p.HasExited){throw 'Bowser exited without window'};Start-Sleep -Milliseconds 500}
  if($script:h -eq [IntPtr]::Zero){throw 'No native window in runner session'}
- [LC]::ShowWindow($script:h,9)|Out-Null;[LC]::MoveWindow($script:h,20,20,1200,760,$true)|Out-Null
+ [LC]::ShowWindow($script:h,9)|Out-Null
+ $work=[Windows.Forms.Screen]::PrimaryScreen.WorkingArea
+ $width=[Math]::Min(1200,$work.Width-40);$height=[Math]::Min(760,$work.Height-40)
+ if($width -lt 500 -or $height -lt 400){throw 'Runner desktop too small for useful capture'}
+ [LC]::MoveWindow($script:h,$work.Left+20,$work.Top+20,$width,$height,$true)|Out-Null
  Start-Sleep -Seconds 10
  [LC]::SetForegroundWindow($script:h)|Out-Null;Start-Sleep -Milliseconds 250
  $origin=[LC+POINT]::new();if(-not [LC]::ClientToScreen($script:h,[ref]$origin)){throw 'Cannot locate client origin'}
  $dpi=[LC]::GetDpiForWindow($script:h);$report.dpi=$dpi
  # Windowed sensor sits inside the8 logical-pixel resize grip.
  $sensorX=$origin.X+[int][Math]::Round(12*$dpi/96.0)
- [LC]::SetCursorPos($origin.X+800,$origin.Y+400)|Out-Null
+ [LC]::SetCursorPos($origin.X+[int]($width*0.8),$origin.Y+[int]($height*0.65))|Out-Null
  Record 'closed' 1000;Shot '01-vertical-closed.png'
  [LC]::SetCursorPos($sensorX,$origin.Y+250)|Out-Null
  Record 'edge-reveal' 2000;Shot '02-vertical-revealed.png'
  [LC]::SetCursorPos($origin.X+100,$origin.Y+300)|Out-Null
  Record 'inside-sidebar' 1000;Shot '03-pinned-selected-unselected.png'
- [LC]::SetCursorPos($origin.X+800,$origin.Y+400)|Out-Null
+ [LC]::SetCursorPos($origin.X+[int]($width*0.8),$origin.Y+[int]($height*0.65))|Out-Null
  Record 'leave-and-hide' 2000;Shot '04-vertical-hidden-again.png'
  $report.status='captured_pending_visual_review'
 }catch{$report.status='blocked';$report.error=$_.Exception.Message;throw}finally{
