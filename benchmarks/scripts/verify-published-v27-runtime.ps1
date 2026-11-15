@@ -8,6 +8,7 @@ public static class PublishedNative {
  [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h,out uint id);
  [DllImport("user32.dll",CharSet=CharSet.Unicode)] public static extern int GetClassName(IntPtr h,StringBuilder b,int n);
  [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h,int n);
+ [DllImport("user32.dll",EntryPoint="PostMessageW")] public static extern bool PostMessage(IntPtr h,uint m,IntPtr w,IntPtr l);
  public static IntPtr Find(uint pid){IntPtr found=IntPtr.Zero;EnumWindows((h,p)=>{uint owner;GetWindowThreadProcessId(h,out owner);var name=new StringBuilder(256);GetClassName(h,name,256);if(owner==pid&&name.ToString()=="BowserNativeWindow"){found=h;return false;}return true;},IntPtr.Zero);return found;}
 }
 "@
@@ -27,7 +28,7 @@ $requests=Join-Path $out 'requests.jsonl'
 if(Test-Path -LiteralPath $requests){throw 'Refusing preexisting fixture requests; fresh runtime evidence required'}
 $portFile=Join-Path $run 'port.txt'
 function Has([string]$marker){if(!(Test-Path $requests)){return $false};return [bool](@(Get-Content $requests|ConvertFrom-Json|Where-Object{$_.url-ceq$marker}).Count)}
-function Stop-Owned {if($script:app){$script:app.Refresh();if(!$script:app.HasExited){if(!$script:app.CloseMainWindow()){throw 'Owned window did not accept graceful close'};if(!$script:app.WaitForExit(30000)){throw 'Owned window did not exit gracefully'}};if($script:app.ExitCode-ne 0){throw "Owned app exit $($script:app.ExitCode)"};$script:app=$null}}
+function Stop-Owned {if($script:app){$script:app.Refresh();if(!$script:app.HasExited){if(![PublishedNative]::PostMessage([PublishedNative]::Find([uint32]$script:app.Id),0x0010,[IntPtr]::Zero,[IntPtr]::Zero)){throw 'Owned window did not accept graceful close'};if(!$script:app.WaitForExit(30000)){throw 'Owned window did not exit gracefully'}};if($script:app.ExitCode-ne 0){throw "Owned app exit $($script:app.ExitCode)"};$script:app=$null}}
 function Launch([string]$data,[string]$route){New-Item -ItemType Directory -Force -Path $data|Out-Null;$log=Join-Path $out ($route.Trim('/')+'.csv');$script:app=Start-Process -FilePath $script:exe -ArgumentList @('--dev','--data-dir',('"'+$data+'"'),'--diagnostic-log',('"'+$log+'"'),'--open-url',($script:base+$route)) -PassThru -WindowStyle Hidden;Wait-For {$script:app.Refresh();if($script:app.HasExited){throw 'App exited before fixture ready'};($h=[PublishedNative]::Find([uint32]$script:app.Id))-ne[IntPtr]::Zero} 'owned native window';[void][PublishedNative]::ShowWindow([PublishedNative]::Find([uint32]$script:app.Id),9);Start-Sleep -Milliseconds 300}
 try{
  foreach($version in @('0.0.26','0.0.27')){
