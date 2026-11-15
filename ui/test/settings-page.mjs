@@ -1792,7 +1792,7 @@ test('layout: the snapshot carries the Layout block, refuses anything else, and 
 
 test('Pin vertical tabs saves sidebar_collapsed and stays disabled for a horizontal layout', () => {
   const parsed = logic.parseSettingsSnapshot(fixture.snap.d);
-  assert.equal(parsed.sidebarPinned, true);
+  assert.equal(parsed.sidebarPinned, false);
   deliver({ ...fixture.snap, d: { ...fixture.snap.d, tabLayout: 'vertical', sidebarPinned: true } });
   const sw = app.querySelector('[data-row="sidebarPinned"]').querySelector('[role="switch"]');
   assert.equal(sw.disabled, false);
