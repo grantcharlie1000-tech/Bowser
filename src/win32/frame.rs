@@ -4,7 +4,7 @@ use super::glass::CaptionButtons;
 use crate::chrome::layout::Metrics;
 
 /// Logical width of the left, right, bottom and corner resize grips.
-const RESIZE_GRIP: i32 = 8;
+const RESIZE_GRIP: i32 = Metrics::EDGE_RESIZE_GRIP;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ChromeHit {
@@ -667,18 +667,18 @@ mod grip_and_gap_tests {
                         covered_edges[match hit { FrameHit::Left | FrameHit::TopLeft | FrameHit::BottomLeft => 0, FrameHit::Right | FrameHit::TopRight | FrameHit::BottomRight => 1, FrameHit::Top => 2, _ => 3 }] = true;
                     }
                 }
-                // The rail stands on the left edge. The page stands on the right, except a right-hand
-                // vertical sidebar: its floating island stops short of the resize band, so the parent
-                // still owns that edge and no grip has to cover a host there.
-                if tabs == TabLayout::VerticalRight {
-                    assert!(covered_edges[0], "{context}: {covered_edges:?} {grips:?}");
-                    let x = size.0 - edge / 2;
+                // Without the apps rail, a floating sidebar may leave either edge clear.
+                // A clear edge is resized by the parent; only host-covered pixels need
+                // raised grip windows (checked exhaustively above).
+                for x in [edge / 2, size.0 - edge / 2] {
                     let y = size.1 / 2;
-                    assert!(is_resize(frame_hit_test_with(POINT { x, y }, size, dpi, false, ChromeHit::None, thin)), "{context}: the clear right edge still resizes");
-                    assert!(!hosts.iter().any(|h| inside(h, x, y)), "{context}: the island stays out of the right grip");
-                } else {
-                    assert!(covered_edges[0] && covered_edges[1], "{context}: {covered_edges:?} {grips:?}");
+                    assert!(is_resize(frame_hit_test_with(POINT { x, y }, size, dpi,
+                        false, ChromeHit::None, thin)), "{context}: clear side still resizes");
+                    if hosts.iter().any(|h| inside(h, x, y)) {
+                        assert!(grips.iter().any(|g| inside(g, x, y)), "{context}: host-covered side needs grip");
+                    }
                 }
+                assert!(covered_edges.iter().any(|covered| *covered), "{context}: page must retain resize coverage");
                 assert!(edge_grip_rects(size, dpi, true, thin, &hosts).is_empty(), "maximised: no grips");
             }
         }

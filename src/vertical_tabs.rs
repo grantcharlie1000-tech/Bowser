@@ -107,21 +107,28 @@ impl SidebarLayout {
         let top = top.clamp(0, client_h);
         let bottom = bottom.clamp(top, client_h);
         let rim = if maximised { 0 } else { m.px(Metrics::RESIZE_RIM).min(client_w / 2) };
-        let available_width = (client_w - rail - rim).saturating_sub(1).max(0);
-        let floor = if requested_width <= COLLAPSED_WIDTH { COLLAPSED_WIDTH } else { MIN_WIDTH };
+        let collapsed = requested_width <= COLLAPSED_WIDTH;
+        // Raised native grip windows own the outer 8 logical pixels. Put the closed
+        // hover host immediately inside them, rather than underneath them.
+        let grip = if collapsed && !maximised { m.px(Metrics::EDGE_RESIZE_GRIP).min(client_w / 2) } else { 0 };
+        let left_edge = rail + grip;
+        let right_edge = client_w - rim.max(grip);
+        let available_width = (right_edge - left_edge).saturating_sub(1).max(0);
+        let floor = if collapsed { COLLAPSED_WIDTH } else { MIN_WIDTH };
         let min_width = m.px(floor).min(available_width);
         let max_width = m.px(MAX_WIDTH).min(available_width);
         let side_width = m.px(requested_width).clamp(min_width, max_width);
         let (left, right) = match side {
-            SidePanelPosition::Left => (rail, rail + side_width),
-            SidePanelPosition::Right => ((client_w - rim - side_width).max(rail), (client_w - rim).max(rail)),
+            SidePanelPosition::Left => (left_edge, left_edge + side_width),
+            SidePanelPosition::Right => ((right_edge - side_width).max(left_edge), right_edge.max(left_edge)),
         };
         let sidebar = Rect::new(left, top, right, bottom);
         let inset = island_inset(sidebar.width(), sidebar.height(), dpi);
         let header_height = m.px(HEADER_HEIGHT).min(bottom - top);
         let header = Rect::new(left, top, right, top + header_height);
         let rows = Rect::new(left, header.bottom, right, bottom);
-        let handle_width = m.px(RESIZE_HANDLE_WIDTH).max(1);
+        // A closed sidebar is a hover target, not a sidebar-width resize target.
+        let handle_width = if collapsed { 0 } else { m.px(RESIZE_HANDLE_WIDTH).max(1) };
         let handle = match side {
             SidePanelPosition::Left => Rect::new(right - handle_width, top, right, bottom),
             SidePanelPosition::Right => Rect::new(left, top, left + handle_width, bottom),
@@ -377,6 +384,28 @@ mod tests {
             assert!(sidebar.sidebar.left >= rail.right, "dpi={dpi}");
             assert_eq!(sidebar.handle.right, sidebar.sidebar.right, "dpi={dpi}");
             assert_eq!(sidebar.viewport.left, sidebar.sidebar.right, "dpi={dpi}");
+        }
+    }
+
+    #[test]
+    fn collapsed_hover_host_stays_inside_native_resize_grips() {
+        for dpi in [96, 120, 144, 192] {
+            for maximised in [false, true] {
+                for side in [SidePanelPosition::Left, SidePanelPosition::Right] {
+                    let layout = SidebarLayout::compute_in_frame_at(900, 700, dpi,
+                        COLLAPSED_WIDTH, maximised, side, 40, 680, TAB_ROW_HEIGHT);
+                    let host = crate::chrome_host::sidebar_bounds(&layout).expect("edge hover host");
+                    assert_eq!(host.right - host.left, Metrics::new(dpi).px(COLLAPSED_WIDTH));
+                    assert!(layout.handle.is_empty(), "closed sensor must not resize sidebar");
+                    let grips = crate::win32::frame::edge_grip_rects((900, 700), dpi,
+                        maximised, false, &[host]);
+                    assert!(grips.is_empty(), "native grip must not cover hover sensor dpi={dpi} side={side:?}");
+                    if !maximised {
+                        let grip = Metrics::new(dpi).px(Metrics::EDGE_RESIZE_GRIP);
+                        assert!(host.left >= grip && host.right <= 900 - grip);
+                    }
+                }
+            }
         }
     }
 

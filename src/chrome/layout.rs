@@ -106,6 +106,8 @@ impl Metrics {
     /// is not maximised. The page is a child window and wins every hit test over its own pixels, so
     /// without the rim there would be nowhere left to grab those three resize edges.
     pub const RESIZE_RIM: i32 = 4;
+    /// Full native resize hit band, wider than the painted page rim.
+    pub const EDGE_RESIZE_GRIP: i32 = 8;
     /// Clear space left of the caption buttons in the row that holds them. Nothing (no tab, no "+",
     /// no toolbar control, no HTML host) is laid out there, so it is always native caption: the
     /// window can be moved, double-clicked to maximise and dragged out of maximised from it however
@@ -4673,7 +4675,7 @@ mod tests {
                 let hide = AutoHide { top: true, sidebar: true };
                 let (full, _) = compute_arranged_auto_hide(arrangement, w, h, dpi, 5, 2, true, 260, true, 36, hide);
                 let context = format!("{tabs:?} dpi {dpi}");
-                assert!(!full.rail.is_empty(), "{context}: the rail is laid out before full screen takes it");
+                assert!(full.rail.is_empty(), "{context}: removed apps rail stays absent before fullscreen");
                 let full = without_rail(full, dpi, true);
                 assert!(full.rail.is_empty(), "{context}: {:?}", full.rail);
                 assert!(crate::chrome_host::rail_bounds(&full).is_none(), "{context}: no HTML rail host");
