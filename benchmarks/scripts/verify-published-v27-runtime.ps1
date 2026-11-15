@@ -1,5 +1,16 @@
 $ErrorActionPreference='Stop'
 Set-StrictMode -Version Latest
+Add-Type -TypeDefinition @"
+using System; using System.Text; using System.Runtime.InteropServices;
+public static class PublishedNative {
+ public delegate bool Callback(IntPtr h, IntPtr p);
+ [DllImport("user32.dll")] public static extern bool EnumWindows(Callback cb, IntPtr p);
+ [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h,out uint id);
+ [DllImport("user32.dll",CharSet=CharSet.Unicode)] public static extern int GetClassName(IntPtr h,StringBuilder b,int n);
+ [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h,int n);
+ public static IntPtr Find(uint pid){IntPtr found=IntPtr.Zero;EnumWindows((h,p)=>{uint owner;GetWindowThreadProcessId(h,out owner);var name=new StringBuilder(256);GetClassName(h,name,256);if(owner==pid&&name.ToString()=="BowserNativeWindow"){found=h;return false;}return true;},IntPtr.Zero);return found;}
+}
+"@
 $r='grantcharlie1000-tech/Bowser'
 $source='85f59101dab6f6e3a1b4e5043c33fbdb4c1de011'
 $run=Join-Path $env:RUNNER_TEMP ('published-v27-'+[guid]::NewGuid().ToString('N'))
@@ -17,7 +28,7 @@ if(Test-Path -LiteralPath $requests){throw 'Refusing preexisting fixture request
 $portFile=Join-Path $run 'port.txt'
 function Has([string]$marker){if(!(Test-Path $requests)){return $false};return [bool](@(Get-Content $requests|ConvertFrom-Json|Where-Object{$_.url-ceq$marker}).Count)}
 function Stop-Owned {if($script:app){$script:app.Refresh();if(!$script:app.HasExited){if(!$script:app.CloseMainWindow()){throw 'Owned window did not accept graceful close'};if(!$script:app.WaitForExit(30000)){throw 'Owned window did not exit gracefully'}};if($script:app.ExitCode-ne 0){throw "Owned app exit $($script:app.ExitCode)"};$script:app=$null}}
-function Launch([string]$data,[string]$route){New-Item -ItemType Directory -Force -Path $data|Out-Null;$log=Join-Path $out ($route.Trim('/')+'.csv');$script:app=Start-Process -FilePath $script:exe -ArgumentList @('--dev','--data-dir',('"'+$data+'"'),'--diagnostic-log',('"'+$log+'"'),'--open-url',($script:base+$route)) -PassThru -WindowStyle Hidden;Wait-For {$script:app.Refresh();if($script:app.HasExited){throw 'App exited before fixture ready'};$script:app.MainWindowHandle-ne[IntPtr]::Zero} 'owned native window'}
+function Launch([string]$data,[string]$route){New-Item -ItemType Directory -Force -Path $data|Out-Null;$log=Join-Path $out ($route.Trim('/')+'.csv');$script:app=Start-Process -FilePath $script:exe -ArgumentList @('--dev','--data-dir',('"'+$data+'"'),'--diagnostic-log',('"'+$log+'"'),'--open-url',($script:base+$route)) -PassThru -WindowStyle Hidden;Wait-For {$script:app.Refresh();if($script:app.HasExited){throw 'App exited before fixture ready'};($h=[PublishedNative]::Find([uint32]$script:app.Id))-ne[IntPtr]::Zero} 'owned native window';[void][PublishedNative]::ShowWindow([PublishedNative]::Find([uint32].Id),9);Start-Sleep -Milliseconds 300}
 try{
  foreach($version in @('0.0.26','0.0.27')){
   $folder=Join-Path $run $version;New-Item -ItemType Directory -Path $folder|Out-Null
