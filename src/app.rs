@@ -901,6 +901,14 @@ struct AppTab {
     // --- end tab options ---
 }
 
+fn first_tabs_by_id(tabs: &[AppTab]) -> HashMap<TabId, &AppTab> {
+    let mut by_id = HashMap::with_capacity(tabs.len());
+    for tab in tabs {
+        by_id.entry(tab.id).or_insert(tab);
+    }
+    by_id
+}
+
 impl AppTab {
     fn empty(id: TabId) -> Self {
         Self {
@@ -1515,11 +1523,12 @@ impl App {
         app.borrow_mut().workspaces_dirty = false;
         let (path, workspaces) = {
             let state = app.borrow();
+            let tabs = first_tabs_by_id(&state.tabs);
             let order = state
                 .tab_model
                 .iter()
                 .filter_map(|model| {
-                    let tab = state.tabs.iter().find(|tab| tab.id == model.id)?;
+                    let tab = tabs.get(&model.id)?;
                     let url = crate::private::snapshot_url(tab.private, tab.url.as_ref())?;
                     crate::session::persistable_url(url).map(|_| model.id)
                 })
@@ -5572,13 +5581,15 @@ impl App {
     fn session_snapshot(app: &AppRef) -> Option<crate::session::Session> {
         let state = app.borrow();
         let active = state.tab_model.index_of(state.tab_model.active())?;
+        let tabs = first_tabs_by_id(&state.tabs);
         let mut saved_indexes = HashMap::new();
         let mut saved_count = 0;
         for model in state.tab_model.iter() {
-            let url = state
-                .tabs
-                .iter()
-                .find(|tab| tab.id == model.id)
+            if saved_count == crate::session::MAX_TABS {
+                break;
+            }
+            let url = tabs
+                .get(&model.id)
                 .and_then(|tab| crate::private::snapshot_url(tab.private, tab.url.as_ref()));
             if url.is_some_and(|url| crate::session::persistable_url(url).is_some()) {
                 saved_indexes.insert(model.id, saved_count);
@@ -5587,7 +5598,7 @@ impl App {
         }
         let mut session = crate::session::Session::from_tabs(
             state.tab_model.iter().map(|model| {
-                let tab = state.tabs.iter().find(|tab| tab.id == model.id);
+                let tab = tabs.get(&model.id);
                 (
                     tab.and_then(|tab| crate::private::snapshot_url(tab.private, tab.url.as_ref())),
                     tab.map_or("", |tab| tab.title.as_str()),
@@ -5597,8 +5608,8 @@ impl App {
             active,
         )?;
         if let Some(mut split) = state.split_view {
-            // A pane whose tab is not saved (private, blank) leaves the saved layout; a pair that
-            // loses one is not saved at all, as before.
+            // A pane whose tab is not saved (private, blank, or beyond the cap) leaves the saved
+            // layout; a pair that loses one is not saved at all, as before.
             for tab in split.tabs().collect::<Vec<_>>() {
                 if saved_indexes.contains_key(&tab) || !split.contains(tab) {
                     continue;
@@ -5627,8 +5638,10 @@ impl App {
         }
         // --- tab options --- when each saved tab was last used, for "inactive days".
         for model in state.tab_model.iter() {
-            if let (Some(&saved), Some(tab)) = (saved_indexes.get(&model.id), state.tabs.iter().find(|tab| tab.id == model.id)) {
-                session.tabs[saved].used = tab.extra.last_used;
+            if let (Some(&saved), Some(tab)) = (saved_indexes.get(&model.id), tabs.get(&model.id))
+                && let Some(saved_tab) = session.tabs.get_mut(saved)
+            {
+                saved_tab.used = tab.extra.last_used;
             }
         }
         // --- end tab options ---
@@ -10964,6 +10977,283 @@ mod tests {
             rules_before,
             "no site rule was written for the private tab's site"
         );
+    }
+
+    #[test]
+    fn persistence_uses_model_order_and_first_engine_match() {
+        use crate::workspaces::{WorkspaceColour, WorkspaceIcon, WorkspaceSet};
+
+        let app = app_with_pending(rect(800, 600));
+        let path = std::env::temp_dir().join(format!(
+            "bowser-app-persistence-order-{}.txt",
+            std::process::id()
+        ));
+        let (first, pinned, private, private_only, home, other) = {
+            let mut state = app.borrow_mut();
+            let first = TabId(0);
+            let pinned = state.tab_model.add(false);
+            let missing = state.tab_model.add(false);
+            let private = state.tab_model.add(false);
+            let invalid = state.tab_model.add(false);
+            let private_only = state.tab_model.add(false);
+            for id in [pinned, missing, private, invalid] {
+                state.workspaces.add_tab(id).unwrap();
+            }
+            state.workspaces.select_tab(private).unwrap();
+            let home = state.workspaces.active_id();
+            state
+                .workspaces
+                .set_icon(home, WorkspaceIcon::Code)
+                .unwrap();
+            state
+                .workspaces
+                .set_colour(home, Some(WorkspaceColour::Teal))
+                .unwrap();
+            let other = state
+                .workspaces
+                .create("Only private", private_only)
+                .unwrap();
+            state.workspaces.switch_to(other).unwrap();
+            state.tab_model.set_pinned(pinned, true);
+            state.tab_model.select(first);
+
+            let mut first_tab = AppTab::empty(first);
+            first_tab.url = Some(url::Url::parse("https://example.test/first#fragment").unwrap());
+            first_tab.title = "First title".into();
+            first_tab.extra.last_used = 101;
+            let mut pinned_tab = AppTab::empty(pinned);
+            pinned_tab.url = Some(url::Url::parse("https://example.test/pinned").unwrap());
+            pinned_tab.title = "Pinned title".into();
+            pinned_tab.extra.last_used = 202;
+            let mut private_tab = AppTab::empty(private);
+            private_tab.private = true;
+            private_tab.url = Some(url::Url::parse("https://example.test/secret").unwrap());
+            let mut invalid_tab = AppTab::empty(invalid);
+            invalid_tab.url = Some(url::Url::parse("https://user:password@example.test/").unwrap());
+            let mut private_only_tab = AppTab::empty(private_only);
+            private_only_tab.private = true;
+            private_only_tab.url =
+                Some(url::Url::parse("https://example.test/private-only").unwrap());
+            let mut duplicate_first = AppTab::empty(first);
+            duplicate_first.url = Some(url::Url::parse("https://example.test/wrong").unwrap());
+            duplicate_first.title = "Wrong title".into();
+            duplicate_first.extra.last_used = 999;
+            let mut duplicate_private = AppTab::empty(private);
+            duplicate_private.url = Some(url::Url::parse("https://example.test/leak").unwrap());
+            state.tabs = vec![
+                private_only_tab,
+                invalid_tab,
+                private_tab,
+                first_tab,
+                pinned_tab,
+                duplicate_first,
+                duplicate_private,
+            ];
+            state.split_view = SplitView::new(pinned, first, Pane::Right);
+            state.workspaces_path = Some(path.clone());
+            (first, pinned, private, private_only, home, other)
+        };
+
+        let snapshot = App::session_snapshot(&app).unwrap();
+        assert_eq!(
+            snapshot.tabs,
+            vec![
+                crate::session::SessionTab {
+                    url: "https://example.test/pinned".into(),
+                    title: "Pinned title".into(),
+                    pinned: true,
+                    used: 202
+                },
+                crate::session::SessionTab {
+                    url: "https://example.test/first".into(),
+                    title: "First title".into(),
+                    pinned: false,
+                    used: 101
+                },
+            ]
+        );
+        assert_eq!(snapshot.active, 1);
+        assert_eq!(
+            snapshot.split,
+            Some(crate::session::SessionSplit {
+                left: 0,
+                right: 1,
+                focused_left: false,
+                ratio: 50,
+                ..Default::default()
+            })
+        );
+        let text = snapshot.serialize();
+        assert!(
+            !text.contains("secret")
+                && !text.contains("leak")
+                && !text.contains("password")
+                && !text.contains("wrong")
+        );
+
+        App::save_workspaces_now(&app);
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            text.lines()
+                .any(|line| line == format!("order={},{}", pinned.0, first.0)),
+            "{text}"
+        );
+        let saved = WorkspaceSet::parse(&text).unwrap();
+        assert_eq!(saved.active_id(), other);
+        assert_eq!(saved.get(home).unwrap().active_tab(), first);
+        assert!(saved.get(home).unwrap().tabs().contains(&first));
+        assert!(!saved.get(home).unwrap().tabs().contains(&private));
+        assert_eq!(saved.get(home).unwrap().icon(), WorkspaceIcon::Code);
+        assert_eq!(
+            saved.get(home).unwrap().colour(),
+            Some(WorkspaceColour::Teal)
+        );
+        assert_eq!(saved.get(other).unwrap().name(), "Only private");
+        assert_eq!(saved.get(other).unwrap().tabs(), &[private_only]);
+        // A later private duplicate must not override the first public state in a session.
+        app.borrow_mut().tabs.iter_mut()
+            .find(|tab| tab.id == first && tab.title == "Wrong title")
+            .unwrap().private = true;
+        assert_eq!(App::session_snapshot(&app).unwrap().tabs, snapshot.tabs);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn persistence_cap_counts_only_saved_tabs_and_preserves_split_indexes() {
+        let app = app_with_pending(rect(800, 600));
+        let path = std::env::temp_dir().join(format!(
+            "bowser-app-persistence-cap-{}.txt",
+            std::process::id()
+        ));
+        let (first, beyond_cap) = {
+            let mut state = app.borrow_mut();
+            state.tabs[0].url = Some(url::Url::parse("about:blank").unwrap());
+            let mut ids = Vec::new();
+            for index in 0..=crate::session::MAX_TABS {
+                let id = state.tab_model.add(false);
+                let mut tab = AppTab::empty(id);
+                tab.url = Some(url::Url::parse(&format!("https://example.test/{index}")).unwrap());
+                tab.extra.last_used = index as u64 + 100;
+                state.tabs.push(tab);
+                ids.push(id);
+            }
+            state.tabs.reverse();
+            let first = ids[0];
+            let beyond_cap = ids[crate::session::MAX_TABS];
+            state.tab_model.select(beyond_cap);
+            state.split_view = SplitView::new(first, beyond_cap, Pane::Right);
+            state.workspaces_path = Some(path.clone());
+            (first, beyond_cap)
+        };
+
+        let snapshot = App::session_snapshot(&app).unwrap();
+        assert_eq!(snapshot.tabs.len(), crate::session::MAX_TABS);
+        assert_eq!(snapshot.tabs[0].url, "https://example.test/0");
+        assert_eq!(
+            snapshot.tabs.last().unwrap().url,
+            format!("https://example.test/{}", crate::session::MAX_TABS - 1)
+        );
+        assert_eq!(snapshot.active, 0);
+        assert_eq!(snapshot.split, None);
+        assert_eq!(snapshot.tabs[0].used, 100);
+        assert_eq!(snapshot.tabs.last().unwrap().used, crate::session::MAX_TABS as u64 + 99);
+        assert_eq!(crate::session::Session::parse(&snapshot.serialize()).unwrap(), snapshot);
+
+        App::save_workspaces_now(&app);
+        let text = std::fs::read_to_string(&path).unwrap();
+        let order = text
+            .lines()
+            .find_map(|line| line.strip_prefix("order="))
+            .unwrap();
+        let ids: Vec<_> = order
+            .split(',')
+            .map(|id| id.parse::<u32>().unwrap())
+            .collect();
+        assert_eq!(ids.len(), crate::session::MAX_TABS);
+        assert_eq!(ids[0], first.0);
+        assert!(!ids.contains(&beyond_cap.0));
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn persistence_cap_keeps_the_surviving_split_layout_on_disk() {
+        use crate::split_view::Orientation;
+        let app = app_with_pending(rect(800, 600));
+        let ids = {
+            let mut state = app.borrow_mut();
+            state.tabs[0].url = Some(url::Url::parse("about:blank").unwrap());
+            let mut ids = Vec::new();
+            for index in 0..crate::session::MAX_TABS + 2 {
+                let id = state.tab_model.add(false);
+                let mut tab = AppTab::empty(id);
+                tab.url = Some(url::Url::parse(&format!("https://example.test/{index}")).unwrap());
+                tab.extra.last_used = index as u64 + 100;
+                state.tabs.push(tab);
+                ids.push(id);
+            }
+            state.tabs.reverse();
+            ids
+        };
+        let cap = crate::session::MAX_TABS;
+        // (lead indexes, trail indexes, focused pane, expected saved layout).
+        let cases = [
+            ([0, cap - 1], [Some(cap), None], Pane::LeftTrail, Some((0, cap - 1, true, false, 37, false))),
+            ([0, cap - 1], [Some(cap), Some(cap + 1)], Pane::RightTrail, Some((0, cap - 1, false, false, 37, false))),
+            ([cap, cap - 1], [Some(0), Some(cap + 1)], Pane::LeftTrail, Some((0, cap - 1, true, false, 37, false))),
+            ([cap, cap + 1], [Some(0), Some(cap - 1)], Pane::RightTrail, Some((0, cap - 1, false, false, 37, false))),
+            // A whole half is unsaved: the other half becomes a pair across its cross axis.
+            ([cap, 0], [None, Some(cap - 1)], Pane::RightTrail, Some((0, cap - 1, false, false, 63, true))),
+            // One trail survives: retain its cross ratio and trail focus.
+            ([0, cap - 1], [Some(1), Some(cap)], Pane::LeftTrail, Some((0, cap - 1, true, true, 37, false))),
+            // Pruning to just one saved pane must not leave an invalid in-memory split.
+            ([0, cap], [None, Some(cap + 1)], Pane::RightTrail, None),
+        ];
+        for orientation in [Orientation::SideBySide, Orientation::Stacked] {
+            for (leads, trails, focused, expected) in cases {
+                let mut split = SplitView::new(ids[leads[0]], ids[leads[1]], Pane::Left).unwrap()
+                    .with_orientation(orientation);
+                split.trail = trails.map(|index| index.map(|index| ids[index]));
+                split.focus(focused);
+                split.set_ratio(37);
+                split.set_cross_ratio(63);
+                {
+                    let mut state = app.borrow_mut();
+                    state.split_view = Some(split);
+                    state.tab_model.select(ids[cap - 1]);
+                }
+                let snapshot = App::session_snapshot(&app).unwrap();
+                let parsed = crate::session::Session::parse(&snapshot.serialize()).unwrap();
+                assert_eq!(parsed.tabs, snapshot.tabs);
+                assert_eq!(parsed.active, snapshot.active);
+                let saved_layout = snapshot.split.map(|mut layout| {
+                    if layout.trail == [None, None] {
+                        layout.cross_ratio = 50; // Pair format omits its unused cross ratio.
+                    }
+                    layout
+                });
+                assert_eq!(parsed.split, saved_layout, "layout must round trip: {split:?}");
+                assert_eq!(parsed.tabs.len(), cap);
+                assert_eq!(parsed.active, cap - 1);
+                for (index, tab) in parsed.tabs.iter().enumerate() {
+                    assert_eq!(tab.url, format!("https://example.test/{index}"));
+                    assert_eq!(tab.used, index as u64 + 100);
+                }
+                let expected = expected.map(|(left, right, focused_left, focused_trail, ratio, turned)| {
+                    crate::session::SessionSplit {
+                        left,
+                        right,
+                        focused_left,
+                        focused_trail,
+                        ratio,
+                        stacked: orientation.is_stacked() != turned,
+                        trail: if focused_trail { [Some(1), None] } else { [None, None] },
+                        // Pair serialization omits its unused cross ratio.
+                        cross_ratio: if focused_trail { 63 } else { 50 },
+                    }
+                });
+                assert_eq!(parsed.split, expected, "{split:?}");
+            }
+        }
     }
 
     #[test]
