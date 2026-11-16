@@ -2053,6 +2053,18 @@ export function startSettingsPage(root: HTMLElement): void {
     searching = hits !== null;
     setClass(page, 'is-searching', hits !== null);
     const shows = (id: string): boolean => hits === null || hits.has(id);
+    const hitAreas = new Set<Place['area']>();
+    const hitParts = new Set<Place['part']>();
+    const hitDisclosures = new Set<Disclosure>();
+    if (hits !== null) {
+      for (const id of hits) {
+        const place = places.get(id);
+        if (!place) continue;
+        hitAreas.add(place.area);
+        hitParts.add(place.part);
+        if (place.disclosure) hitDisclosures.add(place.disclosure);
+      }
+    }
     for (const node of rows.values()) {
       setHidden(node.root, !shows(node.spec.id));
       const labelText = node.label.textContent ?? '';
@@ -2066,21 +2078,19 @@ export function startSettingsPage(root: HTMLElement): void {
       if (opener.desc) marked(opener.desc, opener.desc.textContent ?? '');
     }
     setHidden(mediaResults, hits !== null && !hits.has('media'));
-    const seen = (place: Place | undefined, id: string): boolean => place !== undefined && shows(id);
     for (const d of disclosures) {
-      const any = [...places].some(([id, place]) => place.disclosure === d && seen(place, id));
+      const any = hitDisclosures.has(d);
       setHidden(d.root, hits !== null && !any);
       paintDisclosure(d, hits !== null ? any : openState.has(d.key));
     }
-    const shownIn = (test: (place: Place) => boolean): boolean => [...places].some(([id, place]) => test(place) && seen(place, id));
     for (const spec of AREAS) {
-      for (const key of spec.parts) setHidden(sectionNodes.get(key)!, hits !== null && !shownIn((place) => place.part === key));
-      const any = hits === null || shownIn((place) => place.area === spec.key);
+      for (const key of spec.parts) setHidden(sectionNodes.get(key)!, hits !== null && !hitParts.has(key));
+      const any = hits === null || hitAreas.has(spec.key);
       setHidden(areaNodes.get(spec.key)!, !any);
       const button = navButtons.get(spec.key);
       if (button) setClass(button, 'is-empty', !any);
     }
-    setHidden(laterNode, laterDisclosure.count === 0 || (hits !== null && !shownIn((place) => place.area === 'later')));
+    setHidden(laterNode, laterDisclosure.count === 0 || (hits !== null && !hitAreas.has('later')));
     const total = hits?.size ?? 0;
     setHidden(empty, hits === null || total > 0);
     setClass(page, 'is-nomatch', hits !== null && total === 0);

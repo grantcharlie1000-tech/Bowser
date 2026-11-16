@@ -5635,10 +5635,11 @@ impl App {
         }
         // --- tab options --- when each saved tab was last used, for "inactive days".
         for model in state.tab_model.iter() {
-            if let (Some(&saved), Some(tab)) = (saved_indexes.get(&model.id), tabs.get(&model.id)) {
-                if let Some(saved_tab) = session.tabs.get_mut(saved) {
-                    saved_tab.used = tab.extra.last_used;
-                }
+            // The index map also covers tabs beyond Session::from_tabs' saved-tab cap.
+            if let (Some(&saved), Some(tab)) = (saved_indexes.get(&model.id), tabs.get(&model.id))
+                && let Some(saved_tab) = session.tabs.get_mut(saved)
+            {
+                saved_tab.used = tab.extra.last_used;
             }
         }
         // --- end tab options ---
