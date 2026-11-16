@@ -11032,7 +11032,6 @@ mod tests {
             private_only_tab.url =
                 Some(url::Url::parse("https://example.test/private-only").unwrap());
             let mut duplicate_first = AppTab::empty(first);
-            duplicate_first.private = true;
             duplicate_first.url = Some(url::Url::parse("https://example.test/wrong").unwrap());
             duplicate_first.title = "Wrong title".into();
             duplicate_first.extra.last_used = 999;
@@ -11098,9 +11097,8 @@ mod tests {
         );
         let saved = WorkspaceSet::parse(&text).unwrap();
         assert_eq!(saved.active_id(), other);
-        // The workspace exclusion set includes every private engine entry, even a later duplicate.
-        assert_eq!(saved.get(home).unwrap().active_tab(), pinned);
-        assert!(!saved.get(home).unwrap().tabs().contains(&first));
+        assert_eq!(saved.get(home).unwrap().active_tab(), first);
+        assert!(saved.get(home).unwrap().tabs().contains(&first));
         assert!(!saved.get(home).unwrap().tabs().contains(&private));
         assert_eq!(saved.get(home).unwrap().icon(), WorkspaceIcon::Code);
         assert_eq!(
@@ -11109,6 +11107,11 @@ mod tests {
         );
         assert_eq!(saved.get(other).unwrap().name(), "Only private");
         assert_eq!(saved.get(other).unwrap().tabs(), &[private_only]);
+        // A later private duplicate must not override the first public state in a session.
+        app.borrow_mut().tabs.iter_mut()
+            .find(|tab| tab.id == first && tab.title == "Wrong title")
+            .unwrap().private = true;
+        assert_eq!(App::session_snapshot(&app).unwrap().tabs, snapshot.tabs);
         std::fs::remove_file(path).unwrap();
     }
 
