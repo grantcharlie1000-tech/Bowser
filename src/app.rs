@@ -5635,8 +5635,10 @@ impl App {
         }
         // --- tab options --- when each saved tab was last used, for "inactive days".
         for model in state.tab_model.iter() {
-            if let (Some(&saved), Some(tab)) = (saved_indexes.get(&model.id), state.tabs.iter().find(|tab| tab.id == model.id)) {
-                session.tabs[saved].used = tab.extra.last_used;
+            if let (Some(&saved), Some(tab)) = (saved_indexes.get(&model.id), tabs.get(&model.id)) {
+                if let Some(saved_tab) = session.tabs.get_mut(saved) {
+                    saved_tab.used = tab.extra.last_used;
+                }
             }
         }
         // --- end tab options ---
@@ -11015,9 +11017,11 @@ mod tests {
             let mut first_tab = AppTab::empty(first);
             first_tab.url = Some(url::Url::parse("https://example.test/first#fragment").unwrap());
             first_tab.title = "First title".into();
+            first_tab.extra.last_used = 101;
             let mut pinned_tab = AppTab::empty(pinned);
             pinned_tab.url = Some(url::Url::parse("https://example.test/pinned").unwrap());
             pinned_tab.title = "Pinned title".into();
+            pinned_tab.extra.last_used = 202;
             let mut private_tab = AppTab::empty(private);
             private_tab.private = true;
             private_tab.url = Some(url::Url::parse("https://example.test/secret").unwrap());
@@ -11031,6 +11035,7 @@ mod tests {
             duplicate_first.private = true;
             duplicate_first.url = Some(url::Url::parse("https://example.test/wrong").unwrap());
             duplicate_first.title = "Wrong title".into();
+            duplicate_first.extra.last_used = 999;
             let mut duplicate_private = AppTab::empty(private);
             duplicate_private.url = Some(url::Url::parse("https://example.test/leak").unwrap());
             state.tabs = vec![
@@ -11054,12 +11059,14 @@ mod tests {
                 crate::session::SessionTab {
                     url: "https://example.test/pinned".into(),
                     title: "Pinned title".into(),
-                    pinned: true
+                    pinned: true,
+                    used: 202
                 },
                 crate::session::SessionTab {
                     url: "https://example.test/first".into(),
                     title: "First title".into(),
-                    pinned: false
+                    pinned: false,
+                    used: 101
                 },
             ]
         );
@@ -11070,7 +11077,8 @@ mod tests {
                 left: 0,
                 right: 1,
                 focused_left: false,
-                ratio: 50
+                ratio: 50,
+                ..Default::default()
             })
         );
         let text = snapshot.serialize();
@@ -11145,7 +11153,8 @@ mod tests {
                 left: 0,
                 right: crate::session::MAX_TABS,
                 focused_left: false,
-                ratio: 50
+                ratio: 50,
+                ..Default::default()
             })
         );
         assert!(
