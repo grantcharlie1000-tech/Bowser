@@ -11081,7 +11081,7 @@ mod tests {
                 && !text.contains("wrong")
         );
 
-        App::save_workspaces(&app);
+        App::save_workspaces_now(&app);
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(
             text.lines()
@@ -11155,7 +11155,7 @@ mod tests {
                 .any(|line| line.starts_with("split "))
         );
 
-        App::save_workspaces(&app);
+        App::save_workspaces_now(&app);
         let text = std::fs::read_to_string(&path).unwrap();
         let order = text
             .lines()
