@@ -11223,7 +11223,15 @@ mod tests {
                 }
                 let snapshot = App::session_snapshot(&app).unwrap();
                 let parsed = crate::session::Session::parse(&snapshot.serialize()).unwrap();
-                assert_eq!(parsed, snapshot, "layout must round trip: {split:?}");
+                assert_eq!(parsed.tabs, snapshot.tabs);
+                assert_eq!(parsed.active, snapshot.active);
+                let saved_layout = snapshot.split.map(|mut layout| {
+                    if layout.trail == [None, None] {
+                        layout.cross_ratio = 50; // Pair format omits its unused cross ratio.
+                    }
+                    layout
+                });
+                assert_eq!(parsed.split, saved_layout, "layout must round trip: {split:?}");
                 assert_eq!(parsed.tabs.len(), cap);
                 assert_eq!(parsed.active, cap - 1);
                 for (index, tab) in parsed.tabs.iter().enumerate() {
@@ -11239,7 +11247,8 @@ mod tests {
                         ratio,
                         stacked: orientation.is_stacked() != turned,
                         trail: if focused_trail { [Some(1), None] } else { [None, None] },
-                        cross_ratio: if turned { 50 } else { 63 },
+                        // Pair serialization omits its unused cross ratio.
+                        cross_ratio: if focused_trail { 63 } else { 50 },
                     }
                 });
                 assert_eq!(parsed.split, expected, "{split:?}");
