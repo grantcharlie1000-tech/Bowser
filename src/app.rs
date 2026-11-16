@@ -5585,6 +5585,9 @@ impl App {
         let mut saved_indexes = HashMap::new();
         let mut saved_count = 0;
         for model in state.tab_model.iter() {
+            if saved_count == crate::session::MAX_TABS {
+                break;
+            }
             let url = tabs
                 .get(&model.id)
                 .and_then(|tab| crate::private::snapshot_url(tab.private, tab.url.as_ref()));
@@ -5605,8 +5608,8 @@ impl App {
             active,
         )?;
         if let Some(mut split) = state.split_view {
-            // A pane whose tab is not saved (private, blank) leaves the saved layout; a pair that
-            // loses one is not saved at all, as before.
+            // A pane whose tab is not saved (private, blank, or beyond the cap) leaves the saved
+            // layout; a pair that loses one is not saved at all, as before.
             for tab in split.tabs().collect::<Vec<_>>() {
                 if saved_indexes.contains_key(&tab) || !split.contains(tab) {
                     continue;
@@ -5635,7 +5638,6 @@ impl App {
         }
         // --- tab options --- when each saved tab was last used, for "inactive days".
         for model in state.tab_model.iter() {
-            // The index map also covers tabs beyond Session::from_tabs' saved-tab cap.
             if let (Some(&saved), Some(tab)) = (saved_indexes.get(&model.id), tabs.get(&model.id))
                 && let Some(saved_tab) = session.tabs.get_mut(saved)
             {
@@ -11131,6 +11133,7 @@ mod tests {
                 let id = state.tab_model.add(false);
                 let mut tab = AppTab::empty(id);
                 tab.url = Some(url::Url::parse(&format!("https://example.test/{index}")).unwrap());
+                tab.extra.last_used = index as u64 + 100;
                 state.tabs.push(tab);
                 ids.push(id);
             }
@@ -11151,22 +11154,10 @@ mod tests {
             format!("https://example.test/{}", crate::session::MAX_TABS - 1)
         );
         assert_eq!(snapshot.active, 0);
-        assert_eq!(
-            snapshot.split,
-            Some(crate::session::SessionSplit {
-                left: 0,
-                right: crate::session::MAX_TABS,
-                focused_left: false,
-                ratio: 50,
-                ..Default::default()
-            })
-        );
-        assert!(
-            !snapshot
-                .serialize()
-                .lines()
-                .any(|line| line.starts_with("split "))
-        );
+        assert_eq!(snapshot.split, None);
+        assert_eq!(snapshot.tabs[0].used, 100);
+        assert_eq!(snapshot.tabs.last().unwrap().used, crate::session::MAX_TABS as u64 + 99);
+        assert_eq!(crate::session::Session::parse(&snapshot.serialize()).unwrap(), snapshot);
 
         App::save_workspaces_now(&app);
         let text = std::fs::read_to_string(&path).unwrap();
@@ -11182,6 +11173,78 @@ mod tests {
         assert_eq!(ids[0], first.0);
         assert!(!ids.contains(&beyond_cap.0));
         std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn persistence_cap_keeps_the_surviving_split_layout_on_disk() {
+        use crate::split_view::Orientation;
+        let app = app_with_pending(rect(800, 600));
+        let ids = {
+            let mut state = app.borrow_mut();
+            state.tabs[0].url = Some(url::Url::parse("about:blank").unwrap());
+            let mut ids = Vec::new();
+            for index in 0..crate::session::MAX_TABS + 2 {
+                let id = state.tab_model.add(false);
+                let mut tab = AppTab::empty(id);
+                tab.url = Some(url::Url::parse(&format!("https://example.test/{index}")).unwrap());
+                tab.extra.last_used = index as u64 + 100;
+                state.tabs.push(tab);
+                ids.push(id);
+            }
+            state.tabs.reverse();
+            ids
+        };
+        let cap = crate::session::MAX_TABS;
+        // (lead indexes, trail indexes, focused pane, expected saved layout).
+        let cases = [
+            ([0, cap - 1], [Some(cap), None], Pane::LeftTrail, Some((0, cap - 1, true, false, 37, false))),
+            ([0, cap - 1], [Some(cap), Some(cap + 1)], Pane::RightTrail, Some((0, cap - 1, false, false, 37, false))),
+            ([cap, cap - 1], [Some(0), Some(cap + 1)], Pane::LeftTrail, Some((0, cap - 1, true, false, 37, false))),
+            ([cap, cap + 1], [Some(0), Some(cap - 1)], Pane::RightTrail, Some((0, cap - 1, false, false, 37, false))),
+            // A whole half is unsaved: the other half becomes a pair across its cross axis.
+            ([cap, 0], [None, Some(cap - 1)], Pane::RightTrail, Some((0, cap - 1, false, false, 63, true))),
+            // One trail survives: retain its cross ratio and trail focus.
+            ([0, cap - 1], [Some(1), Some(cap)], Pane::LeftTrail, Some((0, cap - 1, true, true, 37, false))),
+            // Pruning to just one saved pane must not leave an invalid in-memory split.
+            ([0, cap], [None, Some(cap + 1)], Pane::RightTrail, None),
+        ];
+        for orientation in [Orientation::SideBySide, Orientation::Stacked] {
+            for (leads, trails, focused, expected) in cases {
+                let mut split = SplitView::new(ids[leads[0]], ids[leads[1]], Pane::Left).unwrap()
+                    .with_orientation(orientation);
+                split.trail = trails.map(|index| index.map(|index| ids[index]));
+                split.focus(focused);
+                split.set_ratio(37);
+                split.set_cross_ratio(63);
+                {
+                    let mut state = app.borrow_mut();
+                    state.split_view = Some(split);
+                    state.tab_model.select(ids[cap - 1]);
+                }
+                let snapshot = App::session_snapshot(&app).unwrap();
+                let parsed = crate::session::Session::parse(&snapshot.serialize()).unwrap();
+                assert_eq!(parsed, snapshot, "layout must round trip: {split:?}");
+                assert_eq!(parsed.tabs.len(), cap);
+                assert_eq!(parsed.active, cap - 1);
+                for (index, tab) in parsed.tabs.iter().enumerate() {
+                    assert_eq!(tab.url, format!("https://example.test/{index}"));
+                    assert_eq!(tab.used, index as u64 + 100);
+                }
+                let expected = expected.map(|(left, right, focused_left, focused_trail, ratio, turned)| {
+                    crate::session::SessionSplit {
+                        left,
+                        right,
+                        focused_left,
+                        focused_trail,
+                        ratio,
+                        stacked: orientation.is_stacked() != turned,
+                        trail: if focused_trail { [Some(1), None] } else { [None, None] },
+                        cross_ratio: if turned { 50 } else { 63 },
+                    }
+                });
+                assert_eq!(parsed.split, expected, "{split:?}");
+            }
+        }
     }
 
     #[test]
