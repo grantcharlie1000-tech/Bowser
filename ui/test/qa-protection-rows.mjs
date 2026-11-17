@@ -50,3 +50,23 @@ for (const width of [480, 360]) {
     }
   });
 }
+
+test('the Period dropdown shows every range in full, inside the 480 px window', { skip, timeout: 120000 }, async () => {
+  const scenario = scenarios().find((s) => s.name === 'dialog-privacy-protection');
+  const o = await openScenario(browser, server.origin, scenario, { size: [480, 560] });
+  try {
+    const period = o.page.locator('[aria-label="Delete browsing data from"]');
+    await period.scrollIntoViewIfNeeded();
+    await period.click();
+    const r = await o.page.evaluate(() => {
+      const labels = [...document.querySelectorAll('[role="option"] .bw-menu-label')];
+      const list = labels[0]?.closest('[role="listbox"]')?.getBoundingClientRect();
+      return { names: labels.map((l) => l.textContent), cut: labels.filter((l) => l.scrollWidth > l.clientWidth + 1).map((l) => l.textContent), inside: list ? list.left >= 0 && list.right <= innerWidth : false };
+    });
+    assert.deepEqual(r.names, ['Past hour', 'Past day', 'Past week', 'Past 4 weeks', 'Everything']);
+    assert.deepEqual(r.cut, [], 'no range is truncated');
+    assert.ok(r.inside, 'the list stays inside the window');
+  } finally {
+    await o.context.close();
+  }
+});

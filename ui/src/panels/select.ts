@@ -91,7 +91,11 @@ export function selectField<T extends string>(config: SelectConfig<T>): SelectFi
     if (!list) return;
     const rect = button.getBoundingClientRect();
     list.style.setProperty('max-height', 'none');
-    const placement = placeList(rect, { width: window.innerWidth, height: window.innerHeight }, Math.min(list.scrollHeight, MAX_LIST_PX), 4, 8, config.minListWidth ?? 0);
+    // At least as wide as its longest option, so no choice is cut short when the button is narrow
+    // (the dashboard's Period list showed "Pas..." and "Everyth...").
+    list.style.setProperty('width', 'max-content');
+    const natural = Math.ceil(list.getBoundingClientRect().width);
+    const placement = placeList(rect, { width: window.innerWidth, height: window.innerHeight }, Math.min(list.scrollHeight, MAX_LIST_PX), 4, 8, Math.max(config.minListWidth ?? 0, natural));
     list.style.setProperty('top', `${placement.top}px`);
     list.style.setProperty('left', `${placement.left}px`);
     list.style.setProperty('width', `${placement.width}px`);
