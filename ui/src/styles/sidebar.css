@@ -575,3 +575,111 @@
   .side-group.leaving { animation-name: bw-fade-out; }
   .side-spin { animation-duration: 2400ms; }
 }
+
+/* ---- Zen sidebar ----
+   The column is one surface: Rust puts the toolbar (two rows) and the window buttons above this host
+   (chrome::layout::compute_zen_in_frame) on the window's own backdrop, so the tabs sit on it too,
+   with no card of their own. From the top: the pinned tabs as a grid of large tiles, the space header
+   (its name, a rule and Clear), New tab, then the tabs. A row dragged above the grid's edge pins its
+   tab and a tile dragged below it unpins (sidebar-logic.ts pinFlipIntent); the target lights up. */
+#app.sidebar {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+#app.sidebar > .side-pinned {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-auto-rows: 44px;
+  gap: 6px;
+  padding: var(--bw-space-1) var(--bw-space-2) var(--bw-space-2);
+  border-radius: 12px;
+  transition: background-color var(--bw-dur-fast) var(--bw-ease-fade);
+}
+
+#app.sidebar > .side-pinned .side-tab.pinned {
+  width: auto;
+  height: 44px;
+  border-radius: 10px;
+}
+
+/* Fills under :where(), so a picked or stack-target tile's tint still wins (U11). */
+:where(#app.sidebar > .side-pinned) .side-tab.pinned:not(.is-active) {
+  background-color: color-mix(in srgb, var(--bw-text) 7%, transparent);
+}
+
+:where(#app.sidebar > .side-pinned) .side-tab.pinned:not(.is-active):hover {
+  background-color: color-mix(in srgb, var(--bw-text) 11%, transparent);
+}
+
+:where(#app.sidebar > .side-pinned) .side-tab.pinned.is-active {
+  background-color: color-mix(in srgb, var(--bw-text) 16%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--bw-text) 14%, transparent);
+}
+
+#app.sidebar > .side-pinned .side-face,
+#app.sidebar > .side-pinned .side-fav {
+  width: 18px;
+  height: 18px;
+}
+
+/* The space header: the name only as wide as it is, then the rule to Clear. */
+.side-head .side-workspace { flex: 0 1 auto; }
+.side-head .side-workspace .side-workspace-name { color: var(--bw-text-dim); font-size: var(--bw-text-caption); }
+.side-head-rule {
+  flex: 1 1 auto;
+  min-width: var(--bw-space-2);
+  height: 1px;
+  background: var(--bw-hairline);
+}
+
+.side-clear {
+  flex: none;
+  height: var(--bw-side-row-h);
+  margin: 0;
+  padding: 0 var(--bw-space-1_5);
+  border: 0;
+  border-radius: var(--bw-r-tab);
+  background: transparent;
+  color: var(--bw-text-dim);
+  font: inherit;
+  font-size: var(--bw-text-caption);
+  cursor: default;
+  transition: background-color var(--bw-dur-fast) var(--bw-ease-fade), color var(--bw-dur-fast) var(--bw-ease-fade);
+}
+
+.side-clear:hover { background: var(--bw-hover); color: var(--bw-text); }
+.side-clear:active { background: var(--bw-island); }
+
+/* Rows a little roomier, with Zen's softer corners. */
+#app.sidebar .side-list .side-tab:not(.pinned) { border-radius: 8px; }
+
+/* Drop targets while a tab is held across the grid's edge. */
+#app.sidebar.pin-drop > .side-pinned,
+#app.sidebar.unpin-drop > .side-list {
+  background-color: color-mix(in srgb, var(--bw-accent) 12%, transparent);
+  outline: 1.5px dashed color-mix(in srgb, var(--bw-accent) 60%, transparent);
+  outline-offset: -2px;
+}
+
+#app.sidebar.unpin-drop > .side-list { border-radius: 10px; }
+
+/* No pinned tabs yet: the top of the column shows where a held row will pin. */
+#app.sidebar.pin-drop > .side-top:first-child::before {
+  display: grid;
+  place-items: center;
+  height: 44px;
+  margin-bottom: var(--bw-space-1);
+  border-radius: 10px;
+  background-color: color-mix(in srgb, var(--bw-accent) 12%, transparent);
+  outline: 1.5px dashed color-mix(in srgb, var(--bw-accent) 60%, transparent);
+  outline-offset: -2px;
+  color: var(--bw-text-dim);
+  font-size: var(--bw-text-caption);
+  content: "Pin tab";
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #app.sidebar > .side-pinned { transition: none; }
+}

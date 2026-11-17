@@ -187,6 +187,9 @@ pub fn toolbar_css_placement(layout: &Layout, dpi: u32) -> Option<(i32, i32, i32
 /// button (`0` or [`DL_BUTTON_SLOT`]). The pill keeps at least one pixel.
 pub fn toolbar_css_placement_with_slot(layout: &Layout, dpi: u32, slot: i32) -> Option<(i32, i32, i32)> {
     let bounds = toolbar_bounds(layout)?;
+    // --- zen sidebar --- the stacked toolbar's buttons are on the row above the address field, so
+    // they take nothing from it.
+    let slot = if layout.toolbar_in_sidebar { 0 } else { slot };
     Some((
         css_px_from_physical(layout.omnibox.left - bounds.left, dpi),
         (css_px_from_physical(layout.omnibox.width(), dpi) - slot.max(0)).max(1),
@@ -210,7 +213,12 @@ pub fn toolbar_pill_rect_with_slot(layout: &Layout, dpi: u32, slot: i32) -> Opti
     let (x, w, _) = toolbar_css_placement_with_slot(layout, dpi, slot)?;
     let scale = f64::from(Metrics::new(dpi).dpi()) / 96.0;
     let snap = |css: i32| (f64::from(css) * scale).round() as i32;
-    let top = (Metrics::STRIP_HEIGHT - Metrics::OMNIBOX_HEIGHT) / 2;
+    // --- zen sidebar --- the stacked toolbar's address field is on its second row.
+    let top = if layout.toolbar_in_sidebar {
+        css_px_from_physical(layout.omnibox.top - bounds.top, dpi)
+    } else {
+        (Metrics::STRIP_HEIGHT - Metrics::OMNIBOX_HEIGHT) / 2
+    };
     Some(RECT {
         left: bounds.left + snap(x),
         top: bounds.top + snap(top),
@@ -1014,17 +1022,9 @@ mod tests {
     }
 
     #[test]
-    fn rail_bounds_is_the_full_rail_pill() {
+    fn rail_bounds_is_none_now_the_rail_is_gone() {
         let layout = compute_in_frame(1200, 700, 96, 3, 0, false);
-        let bounds = rail_bounds(&layout).expect("wide window has a rail");
-        assert_eq!(bounds.left, layout.rail.left);
-        assert_eq!(bounds.top, layout.rail.top);
-        assert_eq!(bounds.right, layout.rail.right);
-        assert_eq!(bounds.bottom, layout.rail.bottom);
-        assert!(bounds.bottom > bounds.top && bounds.right > bounds.left);
-        let mut empty = layout.clone();
-        empty.rail = Rect::default();
-        assert!(rail_bounds(&empty).is_none());
+        assert!(rail_bounds(&layout).is_none());
     }
 
     #[test]

@@ -30,10 +30,10 @@ import { parseCommandsSnapshot } from './commands-logic';
 // --- end toolbars and feeds ---
 // --- layout (thread T6) --- the Layout block's presets, edges and values
 import {
-  BAR_POSITIONS, DEFAULT_LAYOUT_CONFIG, DEFAULT_UI_ZOOM, MAX_UI_ZOOM, MIN_UI_ZOOM, PRESETS, PRESET_LABELS, STATUS_BARS, STATUS_BAR_LABELS,
-  TAB_BAR_EDGES, TAB_BAR_EDGE_LABELS, TOP_TAB_STYLES, UI_DENSITIES, UI_ZOOM_STEP, applyLayoutConfig, parseLayoutConfig, parseUiZoom, presetConfig,
-  rememberOwnLayout, selectedTile, tabBarEdge, tabLayoutForEdge, uiZoomText, type BarPosition, type LayoutConfig, type Preset, type StatusBar,
-  type TabBarEdge, type UiDensity,
+  DEFAULT_LAYOUT_CONFIG, DEFAULT_UI_ZOOM, MAX_UI_ZOOM, MIN_UI_ZOOM, PRESETS, PRESET_LABELS, STATUS_BARS, STATUS_BAR_LABELS,
+  TOP_TAB_STYLES, UI_DENSITIES, UI_ZOOM_STEP, applyLayoutConfig, parseLayoutConfig, parseUiZoom, presetConfig,
+  rememberOwnLayout, selectedTile, tabBarEdge, uiZoomText, type LayoutConfig, type Preset, type StatusBar,
+  type UiDensity,
 } from './layout-logic';
 // --- end layout ---
 import { mountPageToolsSection } from './page-tools-section'; // --- page tools (T7) ---
@@ -41,10 +41,10 @@ import { browserProbes, drmText, runMediaCheck, verdictText, type MediaReport } 
 import { TAB_CARDS, TAB_CARD_TITLES, assignmentText, cardSpecs, clampNumber, numberLabel, textApplies, toggleApplies, type TabOptionSpec, type TabOptionValues } from './tab-options-logic';
 import {
   BOOKMARKS_BAR_MODES, EFFICIENCY_MODES, FONT_SIZES, MAX_SIDEBAR, MAX_UI_FONT, MAX_ZOOM, MIN_SIDEBAR, MIN_ZOOM,
-  ROWS, SIDE_PANEL_POSITIONS, TAB_LAYOUT_ARIA, TAB_LAYOUT_LABELS, THEME_MODES,
+  ROWS, TAB_LAYOUT_ARIA, TAB_LAYOUT_LABELS, THEME_MODES,
   addSite, draftOf, durationLabel, highlightRanges, isSection, matchRows, parseSettingsSnapshot, resultCountText,
   saveText, sleepOptions, translateTargetOptions, updateView, type BookmarksBarMode, type Draft, type EfficiencyMode, type FontSize, type RowSpec,
-  type SettingsSnapshot, type SidePanelPosition, type TabLayout, type ThemeMode, type TrackingPrevention,
+  type SettingsSnapshot, type TabLayout, type ThemeMode, type TrackingPrevention,
   AREAS, LATER_LABEL, LATER_TITLE, MORE_LABEL, PAGE_ROWS, RESTART_NOTE, areaOf, partTitle, rowTier, type AreaSpec,
   SETTINGS_VIEW_KEY, SIMPLE_ALL_LABEL, SIMPLE_MOVED, SIMPLE_TITLE, readSettingsView, simpleTabChoice, simpleThemeChoice, type SettingsView,
   AUTO_HIDE_BARS, AUTO_HIDE_BAR_LABELS, autoHideBarsList, autoHideBarsText, type AutoHideBar, // --- auto-hide (T11) ---
@@ -210,13 +210,15 @@ function layoutArt(config: TabLayout | LayoutConfig): SVGSVGElement {
     if (c.tabLayout === 'single-row' && addressTop) top.push('single');
     else if (c.tabLayout === 'horizontal' && addressTop) top.push('toolbar', 'tabs');
     else top.push('tabs', ...(addressTop ? ['toolbar' as Row] : []));
+  } else if ((edge === 'left' || edge === 'right') && c.addressBarVisible) {
+    // --- zen sidebar --- the address bar is in the sidebar and the page runs the full height.
   } else if (addressTop) {
-    top.push(...(c.showTitleBar && (edge === 'left' || edge === 'right') ? ['title' as Row] : []), 'toolbar');
+    top.push('toolbar');
   } else {
     top.push('title');
   }
   if (edge === 'bottom') bottom.push('tabs');
-  if (addressBottom) bottom.push('toolbar');
+  if (addressBottom && edge !== 'left' && edge !== 'right') bottom.push('toolbar'); // --- zen sidebar --- a sidebar holds it
   let y = 5;
   for (const row of top) {
     if (row === 'toolbar') toolbar(y); else if (row === 'tabs') tabs(5, y + 0.5, 3, 14); else if (row === 'single') singleRow(y); else titleRow(y);
@@ -233,8 +235,17 @@ function layoutArt(config: TabLayout | LayoutConfig): SVGSVGElement {
   let right = 67;
   if (edge === 'left' || edge === 'right') {
     const x = edge === 'left' ? 5 : 52;
+    // --- zen sidebar --- the window buttons, navigation and the address field top the column.
+    const zen = c.addressBarVisible;
+    if (zen) {
+      for (let i = 0; i < 3; i++) rect('sp-art-dot', x + 7 + i * 3, pageTop + 0.5, 2, 2, 1);
+      rect('sp-art-dot', x, pageTop + 4, 2.5, 2.5, 1.25);
+      rect('sp-art-dot', x + 3.5, pageTop + 4, 2.5, 2.5, 1.25);
+      rect('sp-art-pill', x, pageTop + 8, 15, 4.5, 2.25);
+    }
+    const listTop = zen ? pageTop + 15 : pageTop;
     for (let i = 0; i < 4; i++) {
-      const rowY = pageTop + i * 6.5;
+      const rowY = listTop + i * 6.5;
       if (rowY + 4.5 <= pageBottom) rect(i === 0 ? 'sp-art-tab is-on' : 'sp-art-tab', x, rowY, 15, 4.5, 1.5);
     }
     if (edge === 'left') left = 23; else right = 49;
@@ -519,8 +530,8 @@ export function startSettingsPage(root: HTMLElement): void {
   row(profileCard, 'import', textButton('Import', () => cmd({ a: 'import' }), { icon: 'download' }));
 
   // Appearance: the two big visual choices first, then the chrome, tabs and text.
-  // --- layout (thread T6) --- the Layout block: the presets as thumbnails and the three edges in
-  // view; the top style, sidebar width, the show/hide switches, the title row, the status bar, the
+  // --- layout (thread T6) --- the Layout block: the presets as thumbnails, which also decide where
+  // every bar sits; the top style, sidebar width, the show/hide switches, the title row, the status bar, the
   // density and the UI zoom behind More options (rowTier). Each pick saves the whole draft; a
   // configuration that is no preset is remembered as Saved (rememberOwnLayout).
   const layoutCard = card('appearance', 'Layout');
@@ -546,21 +557,6 @@ export function startSettingsPage(root: HTMLElement): void {
     savedTile.disabled = config === null || !readable;
     savedTile.setAttribute('aria-disabled', String(savedTile.disabled));
   };
-  const bars = el('div', 'sp-bars');
-  const barGroup = (label: string, control: Control<unknown>): void => {
-    const box = el('div', 'sp-bar');
-    const text = el('span', 'sp-bar-label');
-    text.textContent = label;
-    box.append(text, control.root);
-    bars.append(box);
-  };
-  const tabEdge = segmentedControl<TabBarEdge>('Tab bar', TAB_BAR_EDGES.map((key) => [key, TAB_BAR_EDGE_LABELS[key]] as const), (value) => change((d) => { d.tabLayout = tabLayoutForEdge(value, d.tabLayout); rememberOwnLayout(d); }));
-  const addressEdge = segmentedControl<BarPosition>('Address bar', BAR_POSITIONS.map((key) => [key, key === 'top' ? 'Top' : 'Bottom'] as const), (value) => change((d) => { d.layout.addressBarPosition = value; rememberOwnLayout(d); }));
-  const panelEdge = segmentedControl<SidePanelPosition>('Panels', SIDE_PANEL_POSITIONS.map((key) => [key, key === 'left' ? 'Left' : 'Right'] as const), (value) => change((d) => { d.sidePanelPosition = value; rememberOwnLayout(d); }));
-  barGroup('Tab bar', tabEdge);
-  barGroup('Address bar', addressEdge);
-  barGroup('Panels', panelEdge);
-  row(layoutCard, 'layoutBars', bars, { stack: true });
   const layout = radioGroup<TabLayout>('sp-tiles', 'Tab bar style at the top', TOP_TAB_STYLES.map((key) => [key, (button: HTMLButtonElement) => {
     button.className = 'sp-tile';
     const name = el('span', 'sp-tile-name');
@@ -695,8 +691,6 @@ export function startSettingsPage(root: HTMLElement): void {
     },
   });
   row(toolbarCard, 'toolbarButtons', toolbarEditor.root, { stack: true });
-  const showHome = switchControl((on) => change((d) => { d.showHomeButton = on; }));
-  row(toolbarCard, 'showHomeButton', showHome.root);
 
   // Address bar (--- settings slim --- in the Toolbar card it belongs to)
   const addressCard = toolbarCard;
@@ -1787,9 +1781,6 @@ export function startSettingsPage(root: HTMLElement): void {
     // --- layout (thread T6) ---
     presets.set(selectedTile(d));
     paintSavedTile(d.layout.saved, s.readable);
-    tabEdge.set(tabBarEdge(d.tabLayout));
-    addressEdge.set(d.layout.addressBarPosition);
-    panelEdge.set(d.sidePanelPosition);
     layout.set((TOP_TAB_STYLES as readonly string[]).includes(d.tabLayout) ? d.tabLayout : null);
     tabBarVisible.set(d.layout.tabBarVisible);
     addressBarVisible.set(d.layout.addressBarVisible);
@@ -1837,7 +1828,6 @@ export function startSettingsPage(root: HTMLElement): void {
     feedsRefreshSelect.button.toggleAttribute('disabled', !s.readable || s.guest);
     feedsOpen.disabled = !s.readable;
     // --- end toolbars and feeds ---
-    showHome.set(d.showHomeButton);
     centred.set(d.centredAddressBar);
     minimal.set(d.minimalUrl);
     loadProgress.set(d.showLoadProgress);
@@ -1897,9 +1887,9 @@ export function startSettingsPage(root: HTMLElement): void {
     banner.textContent = s.readable ? '' : 'Settings file could not be read.';
     for (const control of [
       layout, grouping, tracking, efficiency, sleep,
-      previewImages, previewMemory, mru, pinGroups, edgeDrop, vTabs, theme, showHome, centred, minimal, loadProgress, frameless, autoHideFullscreen,
+      previewImages, previewMemory, mru, pinGroups, edgeDrop, vTabs, theme, centred, minimal, loadProgress, frameless, autoHideFullscreen,
       rounded, bookmarksBarCtl, bookmarksGroups, fontSizeCtl, zoomIndicator, shiftRightClick, copyLink, blockYoutube,
-      presets, tabEdge, addressEdge, panelEdge, tabBarVisible, addressBarVisible, titleBar, statusBarCtl, densityCtl, compactMenus, // --- layout (thread T6) ---
+      presets, tabBarVisible, addressBarVisible, titleBar, statusBarCtl, densityCtl, compactMenus, // --- layout (thread T6) ---
       winAnimations, winRangeButtons, winFade, winScrollbars, winMonoIcons, panelClose, panelCounts, panelAutoClose, // --- window and panels (thread T9) ---
     ]) control.disable(!s.readable);
     paintSavedTile(d.layout.saved, s.readable); // --- layout (thread T6) --- after the group-wide disable

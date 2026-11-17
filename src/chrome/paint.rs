@@ -698,6 +698,12 @@ impl ChromeSurface {
                 dirty,
             );
         }
+        // --- zen sidebar --- an opaque palette (a revealed compact sidebar floats over the page) gives
+        // the whole column one solid backing; the HTML hosts are cleared out of it below.
+        if !view.palette.translucent && !self.auto_hidden_top && view.layout.toolbar_in_sidebar {
+            let bar = view.layout.title_bar;
+            self.fill_rect(Rect::new(bar.left, 0, bar.right, self.height), view.palette.window, dirty);
+        }
         self.paint_title_bar(view, dirty); // --- layout (thread T6) ---
         // Each HTML region is cleared here: the overlay sits above the HTML chrome's child window, so
         // the page shows through. The native paint of that region is then skipped.
@@ -2037,7 +2043,8 @@ impl ChromeSurface {
     /// `paint_caption` draws). Nothing when the arrangement has no title row.
     fn paint_title_bar(&mut self, view: &ChromeView<'_>, dirty: Rect) {
         let bar = view.layout.title_bar;
-        if bar.is_empty() || bar.intersect(dirty).is_empty() {
+        // --- zen sidebar --- the sidebar's title row is drag space and window buttons only.
+        if bar.is_empty() || bar.intersect(dirty).is_empty() || view.layout.toolbar_in_sidebar {
             return;
         }
         let m = view.layout.metrics;

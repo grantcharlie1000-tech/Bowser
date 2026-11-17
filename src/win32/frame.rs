@@ -134,6 +134,21 @@ pub fn frame_hit_test_with(
     chrome_hit: ChromeHit,
     thin_bottom: bool,
 ) -> FrameHit {
+    frame_hit_test_captions_at(point, client_size, client_size.0, dpi, maximised, chrome_hit, thin_bottom)
+}
+
+/// --- zen sidebar --- [`frame_hit_test_with`] with the window buttons ending at `caption_right`
+/// instead of the client's right edge: with Zen vertical tabs on the left they sit at the top of the
+/// sidebar column (`Layout::caption_area`).
+pub fn frame_hit_test_captions_at(
+    point: POINT,
+    client_size: (i32, i32),
+    caption_right: i32,
+    dpi: u32,
+    maximised: bool,
+    chrome_hit: ChromeHit,
+    thin_bottom: bool,
+) -> FrameHit {
     let m = Metrics::new(dpi);
     let (width, height) = (client_size.0.max(0), client_size.1.max(0));
     let (x, y) = (point.x, point.y);
@@ -170,7 +185,7 @@ pub fn frame_hit_test_with(
         // window like the one at the top; the caption buttons stay in the top strip.
         return if chrome_hit == ChromeHit::Drag { FrameHit::Caption } else { FrameHit::Client };
     }
-    let buttons = CaptionButtons::for_client_width(width, dpi);
+    let buttons = CaptionButtons::for_client_width(caption_right.clamp(0, width), dpi);
     // `.max(0)`: a 0-wide or 0-high client (a maximised window being minimised) must not make
     // `clamp` panic with max < min (R-22).
     let button_x = x.clamp(0, width.saturating_sub(1).max(0));

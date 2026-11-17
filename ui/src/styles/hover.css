@@ -86,37 +86,6 @@ body.bw-hover-body {
 
 /* ----- tab hover card ----- */
 
-.bw-card-markers {
-  display: flex;
-  gap: 6px;
-}
-
-.bw-card-marker,
-.bw-card-marker-next {
-  width: 26px;
-  height: 26px;
-  flex: none;
-  border-radius: 50%;
-}
-
-.bw-card-marker {
-  background: var(--hover-marker, var(--bw-accent)) !important;
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, #000 12%, transparent);
-}
-
-.bw-card-marker.is-selected {
-  box-shadow: 0 0 0 2px var(--bw-overlay), 0 0 0 4px var(--bw-text);
-}
-
-.bw-card-marker-next {
-  display: grid;
-  place-items: center;
-  /* Same circle as the markers it sits among. */
-  box-shadow: inset 0 0 0 1px var(--bw-pill-edge);
-  color: var(--bw-text-2);
-}
-
-.bw-card-marker-next:hover,
 .bw-card-row:hover,
 .bw-island-row:hover,
 .bw-island-close:hover {
@@ -621,16 +590,14 @@ body.bw-hover-body[data-hover-kind="suggest"] {
     outline-offset: -1px;
   }
 
-  /* Marker and group-colour swatches ARE their colour (each has an accessible name): keep it, or
+  /* Group-colour swatches ARE their colour (each has an accessible name): keep it, or
      every swatch is painted Canvas and the picker shows nothing to pick. The selected one and the
      focused name field draw their state with box-shadow, which forced colours drop: outline them. */
-  .bw-card-marker,
   .bw-island-swatch {
     forced-color-adjust: none;
     box-shadow: inset 0 0 0 1px CanvasText;
   }
 
-  .bw-card-marker.is-selected,
   .bw-island-swatch.is-selected,
   .bw-island-swatch.is-selected:hover {
     outline: 2px solid Highlight;

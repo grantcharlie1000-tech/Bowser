@@ -951,3 +951,38 @@ html[data-scheme="dark"] #app {
     transition: none;
   }
 }
+
+/* ---- Zen sidebar: the toolbar stacked at the top of the vertical tab sidebar ----
+   With the tabs in a sidebar, Rust lays the toolbar out in the sidebar column as two rows
+   (chrome::layout::compute_zen_in_frame): navigation and the action buttons with the main menu on the
+   first, the address field across the whole second row. The host is then about twice the toolbar's
+   height, which is what selects this layout; the row gap matches layout::ZEN_ROW_GAP. Rust still sends
+   pillx/menux, so the actions keep their place at the row's right end. */
+@media (min-height: 48px) {
+  #app {
+    height: 100vh;
+  }
+
+  #app .nav {
+    position: absolute;
+    top: 0;
+    left: 0;
+    height: var(--bw-toolbar-h);
+  }
+
+  #app.placed .actions {
+    top: 0;
+    height: var(--bw-toolbar-h);
+  }
+
+  #app.placed .pill,
+  #app .pill {
+    position: absolute;
+    top: calc(var(--bw-toolbar-h) + 4px + (var(--bw-toolbar-h) - var(--bw-pill-h)) / 2);
+    left: 0;
+    right: 0;
+    width: auto;
+    max-width: none;
+    margin: 0;
+  }
+}

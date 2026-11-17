@@ -50,7 +50,7 @@ use crate::{
 
 const CLASS_NAME: PCWSTR = w!("BowserTabCard");
 /// How long the pointer must rest on a tab before its card opens.
-pub(crate) const HOVER_DELAY_MS: u32 = 3000;
+pub(crate) const HOVER_DELAY_MS: u32 = 400;
 const HOVER_TIMER_BASE: usize = 0x10_000;
 /// One-shot leave check, re-armed only while the pointer is inside the card's square but off the card.
 const WATCH_TIMER: usize = 0x7002;
@@ -291,8 +291,8 @@ mod hover_generation_tests {
     use super::*;
 
     #[test]
-    fn preview_delay_is_three_seconds() {
-        assert_eq!(HOVER_DELAY_MS, 3000);
+    fn preview_delay_is_short() {
+        assert_eq!(HOVER_DELAY_MS, 400);
     }
 
     #[test]

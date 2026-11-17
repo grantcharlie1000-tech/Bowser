@@ -1304,6 +1304,10 @@ impl App {
             state.settings.sidebar_collapsed = collapsed;
             state.hwnd
         };
+        // --- zen sidebar --- unpinned is compact mode: the sidebar goes out of the layout (auto-hide).
+        if !hwnd.is_invalid() {
+            win32::auto_hide_sync(hwnd, app);
+        }
         let bounds = app.borrow_mut().latest_viewport_bounds();
         Self::resize_current(app, bounds);
         Self::post_tab_changed(hwnd, Self::active_tab_id(app));
@@ -1312,8 +1316,7 @@ impl App {
     pub fn set_sidebar_width(app: &AppRef, width: u16) {
         let hwnd = {
             let mut state = app.borrow_mut();
-            // Dragging the resize handle of a collapsed sidebar expands it again.
-            state.settings.sidebar_collapsed = false;
+            // --- zen sidebar --- resizing a revealed compact sidebar keeps it compact.
             state.settings.sidebar_width = width.clamp(
                 crate::settings::MIN_SIDEBAR_WIDTH,
                 crate::settings::MAX_SIDEBAR_WIDTH,

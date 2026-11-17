@@ -301,6 +301,11 @@ pub struct Layout {
     /// --- two-level stacks (T10b) --- the second tab row, under the tab row (the toolbar row in
     /// `SingleRow`): the tabs of the stack in use. Empty unless the arrangement asks for one.
     pub stack_row: Rect,
+    /// Zen-style vertical tabs: the toolbar is two rows (navigation and the main menu, then the
+    /// address field) at the top of the tab sidebar, under the sidebar's own title row with the
+    /// window buttons, and the page takes the whole height beside it. Set by
+    /// [`compute_arranged_in_frame`] for every shown sidebar with an address bar.
+    pub toolbar_in_sidebar: bool,
     tab_count: usize,
     inactive_tab_width: i32,
     active_tab_width: i32,
@@ -357,25 +362,16 @@ pub const fn bottom_chrome_height(variant: TabLayout, dpi: u32) -> i32 {
 /// and holds 22-pixel buttons with a 2-pixel margin either side, which fits the 16-pixel icons.
 pub const LEFT_RAIL_WIDTH: i32 = Metrics::OMNIBOX_HEIGHT;
 
-/// Physical pixels the left rail takes from the window edge, including the gaps either side of it.
-/// Everything else in the window, the chrome and the page viewport, starts at this x.
-pub fn left_rail_inset(dpi: u32) -> i32 {
-    let m = Metrics::new(dpi);
-    m.px(Metrics::OUTER_MARGIN) + m.px(LEFT_RAIL_WIDTH) + m.px(Metrics::OUTER_MARGIN)
+/// Physical pixels the left rail takes from the window edge. The rail has been removed for good:
+/// nothing is reserved, and the chrome and the page start at the window's own left edge (and rim).
+pub fn left_rail_inset(_dpi: u32) -> i32 {
+    0
 }
 
-/// The left rail for a client of `client_h` physical pixels: full height, inset by the outer margin.
-pub fn left_rail(client_h: i32, dpi: u32) -> Rect {
-    let m = Metrics::new(dpi);
-    let margin = m.px(Metrics::OUTER_MARGIN);
-    let top_margin = m.px(Metrics::TOP_MARGIN);
-    let height = client_h.max(0);
-    Rect::new(
-        margin,
-        top_margin.saturating_add(margin).min(height),
-        margin + m.px(LEFT_RAIL_WIDTH),
-        (height - margin).max(top_margin.saturating_add(margin).min(height)),
-    )
+/// The left rail: always empty. Bowser no longer has a rail (no setting brings it back), so the HTML
+/// rail host is never shown (`chrome_host::rail_bounds` is `None`) and nothing hit-tests as rail.
+pub fn left_rail(_client_h: i32, _dpi: u32) -> Rect {
+    Rect::default()
 }
 
 /// Computes the chrome for a window that has the left rail. The chrome is laid out in the space to
@@ -920,6 +916,7 @@ pub fn compute_for_with(
         bottom_chrome: if variant == TabLayout::TabsBottom { viewport.bottom } else { client_h },
         stack_row: Rect::default(), // --- two-level stacks (T10b) ---
         // --- end layout ---
+        toolbar_in_sidebar: false,
         tab_count,
         inactive_tab_width,
         active_tab_width,
@@ -1994,6 +1991,12 @@ pub fn compute_arranged_in_frame(
     use crate::vertical_tabs::SidebarLayout;
     let client_w = client_w.max(0);
     let client_h = client_h.max(0);
+    if let Some(side) = arrangement.sidebar_side().filter(|_| arrangement.address_bar_visible) {
+        let (layout, sidebar) = compute_zen_in_frame(
+            side, client_w, client_h, dpi, tab_count, active_index, maximised, sidebar_width, sidebar_row_height,
+        );
+        return (layout, Some(sidebar));
+    }
     let m = Metrics::new(dpi);
     let inset = left_rail_inset(dpi);
     let base = arrangement.base_variant();
@@ -2058,6 +2061,99 @@ pub fn compute_arranged_in_frame(
     (layout, sidebar)
 }
 // --- end layout ---
+
+// --- zen sidebar --- vertical tabs the way Zen lays them out: one column on the docked edge holds
+// the window buttons, the toolbar (two rows) and the tabs, and the page runs the full height of the
+// window beside it.
+
+/// Height (DIP) of the gap between the sidebar's stacked toolbar rows, and below them.
+pub const ZEN_ROW_GAP: i32 = 4;
+
+/// The Zen arrangement for a sidebar on `side`. The returned sidebar's island starts under the
+/// toolbar; its `sidebar` rect is the tab area only, and [`zen_column`] is the whole column.
+#[allow(clippy::too_many_arguments)]
+fn compute_zen_in_frame(
+    side: SidePanelPosition,
+    client_w: i32,
+    client_h: i32,
+    dpi: u32,
+    tab_count: usize,
+    active_index: usize,
+    maximised: bool,
+    sidebar_width: i32,
+    sidebar_row_height: i32,
+) -> (Layout, crate::vertical_tabs::SidebarLayout) {
+    use crate::vertical_tabs::{self, SidebarLayout};
+    let m = Metrics::new(dpi);
+    let rim = if maximised { 0 } else { m.px(Metrics::RESIZE_RIM).min(client_w / 2) };
+    // Every field starts from the plain vertical layout (no tab row, nothing in a row at the top),
+    // then the toolbar, the window buttons and the page are put where Zen has them.
+    let mut layout = compute_for_with(TabLayout::Vertical, client_w, client_h, dpi, tab_count, active_index, LayoutOptions { maximised, centred: false });
+    layout.client = Rect::new(0, 0, client_w, client_h);
+    layout.rail = Rect::default();
+    layout.toolbar_in_sidebar = true;
+    if side == SidePanelPosition::Right {
+        layout.variant = TabLayout::VerticalRight;
+    }
+    // The column: the sidebar's horizontal extent over the whole height.
+    let column = SidebarLayout::compute_in_frame_at(client_w, client_h, dpi, sidebar_width, maximised, side, 0, client_h, sidebar_row_height).sidebar;
+    let pad = m.px(vertical_tabs::ISLAND_INSET).min(column.width() / 4);
+    let row_h = m.px(Metrics::STRIP_HEIGHT);
+    let gap = m.px(ZEN_ROW_GAP);
+    // Title row: drag space and the window buttons at its right end.
+    let title_h = (m.px(Metrics::TOP_MARGIN) + row_h).min(client_h);
+    layout.title_bar = Rect::new(column.left, 0, column.right, title_h);
+    let caption_w = 3 * m.px(Metrics::CAPTION_BUTTON_WIDTH);
+    layout.caption_area = Rect::new((column.right - caption_w).max(column.left), 0, column.right, title_h);
+    // The toolbar: navigation and the main menu in the first row, the address field across the second.
+    let left = column.left + pad;
+    let right = (column.right - pad).max(left);
+    let top = title_h.min(client_h);
+    layout.strip = Rect::new(left, top, right, (top + 2 * row_h + gap).min(client_h));
+    let nav = m.px(Metrics::NAV_BUTTON_SIZE);
+    let nav_gap = m.px(Metrics::NAV_BUTTON_GAP);
+    let nav_top = top + (row_h - nav) / 2;
+    let button = |slot: i32| {
+        let x = left + slot * (nav + nav_gap);
+        Rect::new(x.min(right), nav_top, (x + nav).min(right), nav_top + nav)
+    };
+    layout.back_button = button(0);
+    layout.forward_button = button(1);
+    layout.reload_button = button(2);
+    let menu = m.px(Metrics::MENU_BUTTON_SIZE);
+    layout.main_menu_button = Rect::new((right - menu).max(left), nav_top, right, nav_top + menu);
+    let omni_h = m.px(Metrics::OMNIBOX_HEIGHT);
+    let omni_top = top + row_h + gap + (row_h - omni_h) / 2;
+    layout.omnibox = Rect::new(left, omni_top, right, omni_top + omni_h);
+    // The sidebar has its own "New tab" row.
+    layout.new_tab_button = Rect::default();
+    // The tabs: an island under the toolbar, down to the bottom edge.
+    let island_inset = m.px(vertical_tabs::ISLAND_INSET);
+    let tabs_top = (layout.strip.bottom + gap - island_inset).clamp(0, client_h);
+    let mut sidebar = SidebarLayout::compute_in_frame_at(client_w, client_h, dpi, sidebar_width, maximised, side, tabs_top, client_h, sidebar_row_height);
+    // The page: the whole height beside the column.
+    let (page_left, page_right) = match side {
+        SidePanelPosition::Left => (column.right, (client_w - rim).max(column.right)),
+        SidePanelPosition::Right => (rim.min(column.left), column.left),
+    };
+    let page_top = rim.min(client_h);
+    layout.viewport = Rect::new(page_left, page_top, page_right, (client_h - rim).max(page_top));
+    layout.top_chrome = layout.viewport.top;
+    layout.bottom_chrome = client_h;
+    sidebar.viewport = layout.viewport;
+    (layout, sidebar)
+}
+
+/// The whole Zen column (title row, toolbar and tabs) for a layout from [`compute_zen_in_frame`]:
+/// what slides away and comes back as one when the sidebar auto-hides. `None` for other layouts.
+pub fn zen_column(layout: &Layout, sidebar: Option<&crate::vertical_tabs::SidebarLayout>) -> Option<Rect> {
+    if !layout.toolbar_in_sidebar {
+        return None;
+    }
+    let sidebar = sidebar?;
+    Some(Rect::new(sidebar.sidebar.left, 0, sidebar.sidebar.right, sidebar.sidebar.bottom.max(layout.strip.bottom)))
+}
+// --- end zen sidebar ---
 
 pub fn reorder_target(layout: &Layout, dragged_index: usize, x: i32) -> usize {
     let count = layout.tab_count;
@@ -2270,6 +2366,13 @@ pub fn compute_arranged_auto_hide(
         return (layout, sidebar);
     }
     let hide = AutoHide { sidebar: hide.sidebar && arrangement.sidebar_side().is_some(), ..hide };
+    // --- zen sidebar --- the toolbar lives in the sidebar column and hides with it: nothing moves,
+    // the page just widens over the column, and there is no top band to take out.
+    if layout.toolbar_in_sidebar {
+        let hide = AutoHide { top: false, ..hide };
+        layout.viewport = auto_hide_arranged_viewport(layout.viewport, layout.client, arrangement, hide, dpi, maximised);
+        return (layout, sidebar);
+    }
     if hide.sidebar {
         let normal_viewport = layout.viewport;
         let (mut moved, _) = compute_arranged_in_frame(
@@ -2304,6 +2407,10 @@ pub fn auto_hide_overlay_arranged(
     sidebar_hidden: bool,
 ) -> AutoHideOverlay {
     let client = hidden.client;
+    // --- zen sidebar --- one overlay: the whole column, toolbar and window buttons included.
+    if let Some(column) = zen_column(shown, sidebar) {
+        return AutoHideOverlay { top: Rect::default(), sidebar: column, bottom: Rect::default() };
+    }
     let left = match (sidebar, arrangement.sidebar_side()) {
         (Some(sidebar), Some(SidePanelPosition::Left)) if !sidebar_hidden => sidebar.sidebar.right,
         _ => left_rail_inset(dpi),
@@ -2715,40 +2822,14 @@ mod tests {
     }
 
     #[test]
-    fn left_rail_is_a_full_height_pill_clear_of_the_chrome() {
+    fn there_is_no_left_rail_and_nothing_is_reserved_for_it() {
         for dpi in DPIS {
             for width in WIDTHS {
-                for tabs in [0, 1, 8, 40] {
-                    let l = compute_in_frame(width, HEIGHT, dpi, tabs, 0, false);
-                    let m = Metrics::new(dpi);
-                    let margin = m.px(Metrics::OUTER_MARGIN);
-                    let rail = l.rail;
-                    assert_eq!(rail.width(), m.px(LEFT_RAIL_WIDTH));
-                    assert_eq!((rail.left, rail.top), (margin, m.px(Metrics::TOP_MARGIN) + margin));
-                    assert_eq!(rail.bottom, HEIGHT - margin);
-
-                    let mut chrome = visible_controls(&l);
-                    chrome.extend([
-                        ("strip".to_owned(), l.strip),
-                        ("viewport".to_owned(), l.viewport),
-                        ("back".to_owned(), l.back_button),
-                        ("forward".to_owned(), l.forward_button),
-                        ("reload".to_owned(), l.reload_button),
-                        ("omnibox".to_owned(), l.omnibox),
-                        ("main menu".to_owned(), l.main_menu_button),
-                    ]);
-                    for (name, rect) in chrome {
-                        if rect.is_empty() {
-                            continue;
-                        }
-                        assert!(
-                            rect.left >= rail.right,
-                            "{name} {rect:?} starts left of the rail {rail:?}"
-                        );
-                    }
-                    assert_disjoint(&l);
-                    assert_inside_client(&l);
-                }
+                let l = compute_in_frame(width, HEIGHT, dpi, 3, 0, false);
+                assert!(l.rail.is_empty(), "dpi {dpi} width {width}");
+                assert_eq!(left_rail_inset(dpi), 0);
+                assert!(crate::chrome_host::rail_bounds(&l).is_none());
+                assert_eq!(l.back_button.left, Metrics::new(dpi).px(Metrics::NAV_LEFT_INSET), "the toolbar starts at the window edge");
             }
         }
     }
@@ -3081,110 +3162,6 @@ mod tests {
             Hit::RailBackground,
             "the rail is not chrome"
         );
-    }
-
-    #[test]
-    fn rail_buttons_take_hits_before_the_chrome_at_every_dpi() {
-        use crate::chrome::rail::{RailEntry, RailIcon};
-
-        let entries: Vec<RailEntry<'_>> = [RailKey::Home, RailKey::Workspace(9), RailKey::Menu]
-            .into_iter()
-            .map(|key| RailEntry {
-                key,
-                icon: RailIcon::Plus,
-                label: String::new(),
-                active: false,
-                dot: false,
-                accent: None,
-                favicon: None,
-                count: 0,
-                emoji: None,
-            })
-            .collect();
-        let view = RailView {
-            entries: &entries,
-            fades: &[],
-            open_panel: None,
-            scroll: 0,
-            drop_indicator: None,
-            focused: None,
-            tooltip: None,
-        };
-        for dpi in DPIS {
-            for width in [768, 1024] {
-                let l = compute_in_frame(width, HEIGHT, dpi, 2, 0, false);
-                let geo = rail::geometry(l.rail, &entries, 0, dpi);
-                for item in &geo.items {
-                    let shown = item.visible();
-                    let (x, y) = (
-                        shown.left + shown.width() / 2,
-                        shown.top + shown.height() / 2,
-                    );
-                    assert_eq!(
-                        hit_test_with_rail(&l, Some(&view), x, y),
-                        Hit::Rail(item.key),
-                        "centre of {:?} at dpi {dpi}, width {width}",
-                        item.key
-                    );
-                }
-                let first = geo.items[0].rect;
-                let between_first_two = first.bottom + 1;
-                let rail_x = l.rail.left + l.rail.width() / 2;
-                assert_eq!(
-                    hit_test_with_rail(&l, Some(&view), rail_x, between_first_two),
-                    Hit::RailBackground,
-                    "the gap between two buttons is the rail itself"
-                );
-                assert_eq!(
-                    hit_test(&l, rail_x, between_first_two),
-                    Hit::RailBackground,
-                    "without entries the whole rail is background"
-                );
-                assert_eq!(
-                    hit_test_with_rail(&l, Some(&view), l.viewport.left + 10, 200),
-                    Hit::Viewport,
-                    "the page starts right of the rail"
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn html_rail_region_gives_no_rail_hits() {
-        use crate::chrome::rail::{RailEntry, RailIcon, RailView};
-        let l = compute_in_frame(1024, 600, 96, 3, 0, false);
-        let entries: Vec<RailEntry<'_>> = [RailKey::Home, RailKey::Workspace(9), RailKey::Menu]
-            .into_iter()
-            .map(|key| RailEntry {
-                key,
-                icon: RailIcon::Plus,
-                label: String::new(),
-                active: false,
-                dot: false,
-                accent: None,
-                favicon: None,
-                count: 0,
-                emoji: None,
-            })
-            .collect();
-        let view = RailView {
-            entries: &entries,
-            fades: &[],
-            open_panel: None,
-            scroll: 0,
-            drop_indicator: None,
-            focused: None,
-            tooltip: None,
-        };
-        let geometry = rail::geometry(l.rail, &entries, 0, l.metrics.dpi());
-        let button = geometry.items[0].visible();
-        let (x, y) = ((button.left + button.right) / 2, (button.top + button.bottom) / 2);
-        assert_eq!(hit_test_with_rail(&l, Some(&view), x, y), Hit::Rail(RailKey::Home));
-        // While the HTML rail is active its whole region is the page's: no Rail or RailBackground.
-        assert_eq!(hit_test_native(&l, Some(&view), &[l.rail], x, y), Hit::None);
-        assert_eq!(hit_test_native(&l, Some(&view), &[l.rail], l.rail.left + 1, l.rail.top + 1), Hit::None);
-        // Outside the rail the native hit is unchanged.
-        assert_ne!(hit_test_native(&l, Some(&view), &[l.rail], l.rail.right + 4, y), Hit::None);
     }
 
     #[test]
@@ -4383,7 +4360,7 @@ mod tests {
         // The configuration in the report: a 1920 x 1079 maximised client at 96 DPI.
         let l = compute_in_frame_for_with(TabLayout::ToolbarTop, 1920, 1079, 96, 5, 0, LayoutOptions { maximised: true, centred: true });
         assert_eq!(l.viewport, Rect::new(30, 63, 1920, 1079));
-        assert_eq!(l.rail, Rect::new(2, 2, 28, 1077));
+        assert!(l.rail.is_empty());
     }
 
     // --- auto-hide (T11) ---
@@ -4690,7 +4667,6 @@ mod tests {
                 let hide = AutoHide { top: true, sidebar: true };
                 let (full, _) = compute_arranged_auto_hide(arrangement, w, h, dpi, 5, 2, true, 260, true, 36, hide);
                 let context = format!("{tabs:?} dpi {dpi}");
-                assert!(!full.rail.is_empty(), "{context}: the rail is laid out before full screen takes it");
                 let full = without_rail(full, dpi, true);
                 assert!(full.rail.is_empty(), "{context}: {:?}", full.rail);
                 assert!(crate::chrome_host::rail_bounds(&full).is_none(), "{context}: no HTML rail host");

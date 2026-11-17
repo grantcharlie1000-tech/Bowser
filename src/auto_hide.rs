@@ -53,6 +53,10 @@ impl Bars {
         self.0 & other.0 == other.0
     }
 
+    pub const fn intersects(self, other: Self) -> bool {
+        self.0 & other.0 != 0
+    }
+
     pub const fn is_empty(self) -> bool {
         self.0 == 0
     }
@@ -205,6 +209,17 @@ pub fn effective(master: bool, settings: &AutoHideSettings, fullscreen: Fullscre
     }
 }
 
+/// --- zen sidebar --- an unpinned vertical sidebar (`sidebar_collapsed`) is Zen's compact mode: the
+/// whole column (tabs and toolbar) is out of the layout and slides over the page from its edge, with
+/// or without the auto-hide master switch.
+pub fn with_compact_sidebar(effective: Effective, compact: bool) -> Effective {
+    if compact && effective.reveal {
+        Effective { hidden: effective.hidden.union(Bars::TABS), ..effective }
+    } else {
+        effective
+    }
+}
+
 /// Whether the left rail leaves the window with the bars: in full screen, whenever every bar hides
 /// there (always for a page element, for F11 when `auto_hide_fullscreen` is on). The auto-hide
 /// master switch alone never hides the rail.
@@ -245,8 +260,10 @@ pub fn panel_overlays(master: bool, hidden: Bars) -> bool {
 pub fn plan(hidden: Bars, layout: TabLayout) -> Plan {
     let vertical = layout.is_vertical();
     Plan {
-        top: hidden.contains(Bars::ADDRESS) || (!vertical && hidden.contains(Bars::TABS)),
-        sidebar: vertical && hidden.contains(Bars::TABS),
+        // --- zen sidebar --- with the tabs in a sidebar the toolbar is part of the sidebar's column
+        // (`chrome::layout::compute_zen_in_frame`), so hiding either one hides the column.
+        top: !vertical && hidden.intersects(Bars::ADDRESS.union(Bars::TABS)),
+        sidebar: vertical && hidden.intersects(Bars::ADDRESS.union(Bars::TABS)),
         panel: hidden.contains(Bars::PANEL),
         bookmarks: hidden.contains(Bars::BOOKMARKS),
     }
@@ -655,7 +672,7 @@ mod tests {
             assert!(!plan(all, layout).sidebar, "{layout:?}: no sidebar");
         }
         assert_eq!(plan(Bars::TABS, TabLayout::Vertical), Plan { sidebar: true, ..Plan::default() }, "vertical: tabs are the sidebar");
-        assert_eq!(plan(Bars::ADDRESS, TabLayout::Vertical), Plan { top: true, ..Plan::default() }, "vertical: address is the toolbar");
+        assert_eq!(plan(Bars::ADDRESS, TabLayout::Vertical), Plan { sidebar: true, ..Plan::default() }, "vertical: the toolbar is in the sidebar");
         assert_eq!(plan(Bars::BOOKMARKS, TabLayout::ToolbarTop), Plan { bookmarks: true, ..Plan::default() });
         assert_eq!(plan(Bars::PANEL, TabLayout::ToolbarTop), Plan { panel: true, ..Plan::default() });
         assert!(panel_overlays(true, DEFAULT_BARS), "frameless: the panel overlays even though it is not a default bar");
@@ -664,7 +681,7 @@ mod tests {
         assert!(!panel_overlays(false, Bars::NONE), "framed: an open panel keeps its column");
         assert!(panel_overlays(false, Bars::PANEL), "the panel bar still overlays when it is the bar that hides");
         assert!(panel_overlays(false, ALL_BARS), "full screen hides every bar, including the panel");
-        assert_eq!(plan(all, TabLayout::Vertical), Plan { top: true, sidebar: true, panel: true, bookmarks: true });
+        assert_eq!(plan(all, TabLayout::Vertical), Plan { top: false, sidebar: true, panel: true, bookmarks: true });
         assert_eq!(plan(Bars::TABS, TabLayout::Vertical).layout(), crate::chrome::layout::AutoHide { top: false, sidebar: true });
         assert!(plan(Bars::NONE, TabLayout::Vertical).layout().is_off());
     }
