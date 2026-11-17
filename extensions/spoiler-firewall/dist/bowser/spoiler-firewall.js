@@ -5009,7 +5009,7 @@ SFW.runtime = (function () {
               const fi = frameInfo(e);
               for (let i = 0; i < fi.texts.length; i++) add(fi.texts[i]);
               if (fi.sig) sig += fi.sig + "|";
-              if (fi.opaque) { media = true; (frames || (frames = [])).push(e); }
+              if (fi.opaque && !fi.readable) { media = true; (frames || (frames = [])).push(e); }
             }
             if (custom && tag.indexOf("-") > 0) {
               for (let i = 0; i < custom.length; i++) {
@@ -5082,8 +5082,10 @@ SFW.runtime = (function () {
       const sb = nGetAttr(e, "sandbox");
       const opaque = sb !== null && !hasToken(sb, "allow-scripts");
       let sig = "";
+      let readable = false; // the frame's whole text is in the parent's hands (srcdoc / data:text/html), so it is judged, not "unverifiable"
       const srcdoc = nGetAttr(e, "srcdoc");
       if (srcdoc !== null) {
+        readable = true;
         const t = srcdocText(srcdoc);
         if (t) aPush(texts, t);
         sig = "d" + fingerprint(srcdoc);
@@ -5092,13 +5094,13 @@ SFW.runtime = (function () {
         if (src) {
           sig = "s" + fingerprint(src);
           const dt = dataUrlHtml(src);
-          if (dt != null) { const t = srcdocText(dt); if (t) aPush(texts, t); }
+          if (dt != null) { readable = true; const t = srcdocText(dt); if (t) aPush(texts, t); }
           else { const sl = slugText(src); if (sl) aPush(texts, sl); }
         }
       }
       const nm = nGetAttr(e, "name");
       if (nm) aPush(texts, nm);
-      return { texts, opaque, sig: (opaque ? "o" : "") + sig };
+      return { texts, opaque, readable, sig: (opaque ? "o" : "") + sig };
     }
 
 
