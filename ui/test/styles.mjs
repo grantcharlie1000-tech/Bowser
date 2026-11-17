@@ -91,7 +91,11 @@ test('tab groups use one colour mark (a bar in the strip), and the island is ins
   assert.doesNotMatch(tabs, /\.gname|\.disclose/);
   assert.match(tabs, /flex-grow var\(--bw-dur-group\) var\(--bw-ease-group\)/);
   assert.match(tabs, /\.strip \.group::before \{[^}]*inset: 0;[^}]*background: color-mix\(in srgb, var\(--bw-text\) 8%, transparent\);/, 'an open island is one box: a wash behind its bar and tabs');
-  assert.match(tabs, /\.strip \.group\.collapsed::before/);
+  assert.match(tabs, /\.strip \.group\.collapsed:has\(\.tab:not\(\[hidden\]\)\)::before \{ content: none; \}/, 'folded around a tab, the tab is the box');
+  // The grey box wraps the bar: its corners are the bar's radius plus the inset, folded or open.
+  assert.match(tabs, /--gr: calc\(var\(--gb\) \/ 2 \+ var\(--gi\)\);/);
+  assert.match(tabs, /\.strip \.group::before \{[^}]*border-radius: var\(--gr\);/);
+  assert.doesNotMatch(tabs, /calc\(var\(--gb\) \* 2\)/, 'a fully folded island keeps the bar’s own size');
   assert.match(tabs, /\.strip \.group:not\(:has\(\.tab:not\(\[hidden\]\)\)\) \{[^}]*flex: 0 0 auto;/);
   assert.match(tokens, /--bw-float-fill:/);
   assert.match(side, /background: var\(--bw-float-fill\)/);

@@ -330,7 +330,10 @@
   --gi: 3px; /* how far the bar sits inside the island's box */
   --gp: 2px; /* the open box's padding around its tabs */
   --cw: 8px; /* the closing mark: two 3px slivers 2px apart */
-  --ci: 4px; /* how far the slivers sit inside the box */
+  --ci: var(--gi); /* the slivers sit as far inside the box as the bar */
+  /* The box's corners wrap the bar: its radius is the bar's (half its thickness) plus the inset, so
+     the grey keeps the same distance all round the pill. */
+  --gr: calc(var(--gb) / 2 + var(--gi));
   position: relative;
   isolation: isolate;
   display: flex;
@@ -356,7 +359,7 @@
   position: absolute;
   inset: 0;
   z-index: -1;
-  border-radius: var(--bw-r-tab);
+  border-radius: var(--gr);
   background: color-mix(in srgb, var(--bw-text) 8%, transparent);
   pointer-events: none;
 }
@@ -365,12 +368,11 @@
    (radius less the padding), so the selected tab's fill sits concentric in it. */
 .strip .group:not(.collapsed) .tab {
   height: calc(var(--bw-tab-h) - 2 * var(--gp));
-  border-radius: calc(var(--bw-r-tab) - var(--gp));
+  border-radius: calc(var(--gr) - var(--gp));
 }
 
-/* Folded, the wash goes: the box is the selected tab's own surface, or there is only the pill. */
-.strip .group.collapsed::before,
-.strip .group:not(:has(.tab:not([hidden])))::before { content: none; }
+/* Folded around the tab in use, the wash goes: the box is the selected tab's own surface. */
+.strip .group.collapsed:has(.tab:not([hidden]))::before { content: none; }
 .strip .group.collapsed { padding: 0; }
 
 /* The handle: a hit box of the tab's height holding the 6px bar, inset from the box's edge. */
@@ -431,7 +433,7 @@
 .strip .group .sliver {
   flex: none;
   width: 3px;
-  height: calc(var(--bw-tab-h) * 0.64);
+  height: calc(var(--bw-tab-h) - 2 * var(--gi)); /* the bar's height: both ends of the box match */
   border-radius: var(--bw-r-pill);
   background: color-mix(in srgb, var(--bw-text) 40%, transparent);
   transition: background-color var(--bw-dur-fast) var(--bw-ease-fade);
@@ -448,20 +450,21 @@
 .strip .group.collapsed[data-more="0"] .tab:not([hidden]) { padding-inline-end: var(--bw-space-0_5); }
 .strip.close-left .group.collapsed[data-more="0"] .tab:not([hidden]) { padding-inline-end: 7px; }
 
+/* That box takes the island's corners, wrapping the bar and the slivers like the open box does. */
+.strip .group.collapsed .tab:not([hidden]) { border-radius: var(--gr); }
+
 /* Inside that box the tab in use shows its close button only under the pointer or with focus. */
 .strip:not(.close-always) .group.collapsed .tab.active:not(:hover):not(:focus-within) .close { opacity: 0; }
 
-/* Every member hidden: the island is its handle and nothing else, a pill twice the bar's thickness
-   and of the tab's height that does not shrink or stretch, so it is never clipped into a sliver at
-   the end of the row. */
+/* Every member hidden: the island is its handle and nothing else. The bar keeps exactly its size and
+   sits in the island's grey box, inset the same on every side so the box's corners wrap it; the box
+   does not shrink or stretch, so it is never clipped into a sliver at the end of the row. */
 .strip .group:not(:has(.tab:not([hidden]))) {
   flex: 0 0 auto;
   min-width: max-content;
   gap: 0;
+  padding: 0 var(--gi) 0 0;
 }
-.strip .group:not(:has(.tab:not([hidden]))) .ball,
-.strip .group:not(:has(.tab:not([hidden]))) .ball .bar { width: calc(var(--gb) * 2); }
-.strip .group:not(:has(.tab:not([hidden]))) .ball .bar { height: var(--bw-tab-h); }
 
 /* ---- Tab options (Settings > Tabs): the strip classes tabs.ts sets from the host's `tabopts` ---- */
 
