@@ -248,6 +248,21 @@ test('forced colours (contrast themes): toggles, the checked segment, selection 
   assert.notEqual(r.spinRight, r.spinTop);
 });
 
+test('forced colours: the hover layer keeps its colour swatches and outlines the picked one and the focused field', { skip }, () => {
+  const r = measure(`<div id="app" class="bw-hover-root"><button id="sw" class="bw-island-swatch" style="--hover-swatch:#2f7d56"></button>
+    <button id="pick" class="bw-island-swatch is-selected" style="--hover-swatch:#b5525b"></button><button id="mk" class="bw-card-marker" style="--hover-marker:#4a6caf"></button></div>`, `
+    document.getAnimations().forEach(function (a) { if (a.effect.getComputedTiming().endTime !== Infinity) a.finish(); });
+    out.forced = matchMedia('(forced-colors: active)').matches;
+    out.swatch = cs('#sw').backgroundColor; out.marker = cs('#mk').backgroundColor;
+    out.pickOutline = cs('#pick').outlineStyle; out.plainOutline = cs('#sw').outlineStyle;
+  `, '', ['--force-high-contrast']);
+  assert.equal(r.forced, true);
+  assert.equal(r.swatch, 'rgb(47, 125, 86)', 'a group colour swatch keeps its colour (it was painted Canvas)');
+  assert.equal(r.marker, 'rgb(74, 108, 175)', 'a marker keeps its colour');
+  assert.equal(r.pickOutline, 'solid', 'the picked swatch is outlined (its box-shadow ring is dropped)');
+  assert.equal(r.plainOutline, 'none');
+});
+
 test('site info radio groups have one tab stop each and arrows, Home and End move it (WAI-ARIA radio group)', { skip }, async () => {
   const esbuild = await import('esbuild');
   const out = esbuild.buildSync({

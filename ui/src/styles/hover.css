@@ -620,5 +620,26 @@ body.bw-hover-body[data-hover-kind="suggest"] {
     outline: 1px solid Highlight;
     outline-offset: -1px;
   }
+
+  /* Marker and group-colour swatches ARE their colour (each has an accessible name): keep it, or
+     every swatch is painted Canvas and the picker shows nothing to pick. The selected one and the
+     focused name field draw their state with box-shadow, which forced colours drop: outline them. */
+  .bw-card-marker,
+  .bw-island-swatch {
+    forced-color-adjust: none;
+    box-shadow: inset 0 0 0 1px CanvasText;
+  }
+
+  .bw-card-marker.is-selected,
+  .bw-island-swatch.is-selected,
+  .bw-island-swatch.is-selected:hover {
+    outline: 2px solid Highlight;
+    outline-offset: 2px;
+  }
+
+  .bw-island-field:focus-within {
+    outline: 2px solid Highlight;
+    outline-offset: -2px;
+  }
 }
 /* --- end hover layer --- */
