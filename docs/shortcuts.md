@@ -24,10 +24,14 @@ settings page, Ctrl+F or `/` moves to its search box.
 | --- | --- | --- |
 | Ctrl+T | New tab, focus address | Bound |
 | Ctrl+W, Ctrl+F4 | Close tab | Bound |
+| Ctrl+Shift+T | Reopen the last closed tab | Bound |
+| Ctrl+N | New window | Bound |
+| F12, Ctrl+Shift+I | Developer tools | Bound |
+| Ctrl+F1 | Shortcut cheat sheet | Bound (registry only; not in `command_for`) |
 | Ctrl+Tab, Ctrl+PgDn / Ctrl+Shift+Tab, Ctrl+PgUp | Next / previous tab | Bound |
 | Ctrl+1..8, Ctrl+9 | Select tab N / last tab | Bound |
 | Ctrl+L, Alt+D, F6 | Focus address field | Bound |
-| F5, Ctrl+R, Refresh key | Reload | Bound |
+| F5, Ctrl+R, Refresh key | Reload | Bound. On a page whose renderer stopped responding it reloads the address as a plain GET in a fresh controller (nothing is resubmitted); F6 reaches that page's Wait / Reload bar |
 | Ctrl+F5, Ctrl+Shift+R | Hard reload | Bound |
 | Esc, Stop key | Stop loading | Bound (HTML omnibox keeps Esc to cancel edits) |
 | Alt+Left / Alt+Right, Back / Forward keys | History back / forward | Bound |
