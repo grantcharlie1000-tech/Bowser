@@ -2589,3 +2589,25 @@ test('with no accent chosen the swatch shows the theme accent, not black', () =>
   assert.equal(swatch.getAttribute('aria-label'), 'Accent colour');
   deliver(fixture.snap);
 });
+
+test('an invalid Homepage or Startup pages entry stays to correct but is marked invalid, and nothing is saved', () => {
+  deliver(fixture.snap);
+  const homepage = rowNode('startHomepage').querySelector('input');
+  const pages = rowNode('startupPages').querySelector('textarea');
+  for (const [field, typed] of [[homepage, 'ftp://x.example/'], [pages, 'not a url']]) {
+    sent.length = 0;
+    field.value = typed;
+    field.dispatch('change');
+    assert.equal(field.value, typed, 'the typing is kept to correct');
+    assert.equal(field.getAttribute('aria-invalid'), 'true', 'it does not look accepted');
+    assert.equal(sent.filter((m) => m.a === 'save').length, 0, 'nothing is saved');
+  }
+  homepage.value = 'example.com';
+  homepage.dispatch('change');
+  assert.equal(homepage.getAttribute('aria-invalid'), null, 'a valid address clears the mark');
+  assert.equal(homepage.value, 'https://example.com');
+  pages.value = 'https://a.example/';
+  pages.dispatch('change');
+  assert.equal(pages.getAttribute('aria-invalid'), null);
+  deliver(fixture.snap); // Bowser's answer settles the pending saves for the tests after this one.
+});
