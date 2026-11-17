@@ -9,7 +9,7 @@ import { wheelNotches } from './rail-logic'; // --- tab stacks and workspaces (T
 import { setTip } from './tooltip';
 import { el, icon, place, type IconName } from './dom';
 import { DRAG_ATTR } from './view';
-import { beforeId, dragScrollDelta, focusHeir, privateTabName } from './tabs-logic';
+import { beforeId, dragScrollDelta, focusHeir, privateTabName, revealKey } from './tabs-logic';
 // --- tab options ---
 import { clickSelection, loadMark, markedName, notifyLabel, pruneSelection, type LoadIndicatorChoice } from './tab-marks-logic';
 // --- end tab options ---
@@ -226,7 +226,8 @@ export function createSidebarRenderer(root: HTMLElement): {
   workspace(value: SidebarWorkspace): void;
   /** --- tab options --- `shown`: the sidebar is the layout in use, so it may redraw into the root. */
   options(value: TabOptsMsg, shown: boolean): void;
-  /** Drops the selection (the layout switched away, so it can no longer be seen). */
+  /** Drops the selection (the layout switched away, so it can no longer be seen); the next render
+   * reveals the active row again. */
   clearSelection(): void;
   /** Whether the sidebar is docked at the right of the window (the page is to its left). */
   side(right: boolean): void;
@@ -439,6 +440,8 @@ export function createSidebarRenderer(root: HTMLElement): {
     else settle(event.target);
   });
 
+  /** The active tab and place the list last scrolled into view (`revealKey`). */
+  let revealed = '';
   const render = (msg: TabsMsg, favs: ReadonlyMap<number, string>, workspace: SidebarWorkspace): void => {
     latest = msg;
     latestFavs = favs;
@@ -556,7 +559,13 @@ export function createSidebarRenderer(root: HTMLElement): {
       for (const row of entering) row.classList.add('bw-enter');
     }
     rendered = true;
-    reveal(activeRow);
+    // Only a newly selected or moved active tab is revealed: a background tab's title, favicon or
+    // progress update leaves the list where the user scrolled it.
+    const revealNow = revealKey(msg.items, msg.active);
+    if (revealNow !== revealed) {
+      revealed = revealNow;
+      reveal(activeRow);
+    }
     updateFades();
     // --- tab ghost --- the host has laid out the released row's slot: the ghost glides there.
     if (ghostLand !== null && ghostLand.session.landing && ghostLand.node.root.isConnected && ghostLand.node.root.style.transform === '') {
@@ -978,6 +987,7 @@ export function createSidebarRenderer(root: HTMLElement): {
     },
     clearSelection() {
       if (picked.length > 0) setPicked([]);
+      revealed = '';
     },
     side(right) {
       sideRight = right;

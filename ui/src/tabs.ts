@@ -33,6 +33,7 @@ import {
   privateTabName,
   pruneFavs,
   rememberFav,
+  revealKey,
   stepMoveBefore,
   scrollDeltaForWheel,
   ballOnly,
@@ -573,6 +574,8 @@ export function startTabs(strip: HTMLElement): HTMLElement {
     }
   };
 
+  /** The active tab and place the strip last scrolled into view (`revealKey`). */
+  let revealed = '';
   const render = (msg: TabsMsg): void => {
     // --- vertical sidebar (lane S) ---
     if (layoutMode === 'vertical') {
@@ -761,10 +764,16 @@ export function startTabs(strip: HTMLElement): HTMLElement {
       }
       refocus = 0;
     }
-    tabNodes.get(activeId)?.root.scrollIntoView({
-      block: 'nearest', inline: 'nearest',
-      behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth',
-    });
+    // Only a newly selected or moved active tab is revealed: a background tab's update leaves the
+    // strip where the user scrolled it.
+    const reveal = revealKey(msg.items, msg.active);
+    if (reveal !== revealed) {
+      revealed = reveal;
+      tabNodes.get(activeId)?.root.scrollIntoView({
+        block: 'nearest', inline: 'nearest',
+        behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth',
+      });
+    }
     updateEdges();
   };
 
@@ -1327,6 +1336,7 @@ export function startTabs(strip: HTMLElement): HTMLElement {
           setPicked([]);
           sidebar.clearSelection();
         }
+        if (msg.mode !== layoutMode) revealed = ''; // the other layout's view starts on the active tab
         layoutMode = msg.mode;
         stripAtBottom = msg.mode === 'horizontal' && msg.side === 'bottom';
         strip.classList.toggle('at-bottom', stripAtBottom);

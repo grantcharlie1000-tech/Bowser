@@ -288,3 +288,20 @@ test('tabs.ts: one landing flag, an honest shift and a single 167ms ease-out (no
   assert.match(css, /transition: transform var\(--bw-dur-base\) var\(--bw-ease-out\), box-shadow var\(--bw-dur-base\) var\(--bw-ease-out\);/);
   assert.doesNotMatch(css, /\.tab\.landing[^}]*transition/, 'landing adds no second transition');
 });
+
+test('a background tab update does not scroll the strip or sidebar back to the active tab', () => {
+  const items = [{ id: 1 }, { id: 2 }, { id: 3 }];
+  const key = logic.revealKey(items, 2);
+  // Title, favicon, progress or audio of another tab, or a tab opened after it: no reveal.
+  assert.equal(logic.revealKey([{ id: 1 }, { id: 2 }, { id: 3 }, { id: 4 }], 2), key);
+  // Selecting another tab, or moving the active one, reveals it again.
+  assert.notEqual(logic.revealKey(items, 3), key);
+  assert.notEqual(logic.revealKey([{ id: 2 }, { id: 1 }, { id: 3 }], 2), key);
+  // Both renderers gate their reveal on it, and a layout switch starts the new view on the active tab.
+  const ts = readFileSync(join(here, '..', 'src', 'tabs.ts'), 'utf8');
+  const sidebar = readFileSync(join(here, '..', 'src', 'sidebar.ts'), 'utf8');
+  assert.match(ts, /if \(reveal !== revealed\) \{\s*revealed = reveal;\s*tabNodes\.get\(activeId\)\?\.root\.scrollIntoView/);
+  assert.match(ts, /if \(msg\.mode !== layoutMode\) revealed = '';/);
+  assert.match(sidebar, /if \(revealNow !== revealed\) \{\s*revealed = revealNow;\s*reveal\(activeRow\);/);
+  assert.match(sidebar, /clearSelection\(\) \{\s*if \(picked\.length > 0\) setPicked\(\[\]\);\s*revealed = '';/);
+});
