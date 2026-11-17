@@ -116,7 +116,9 @@ falls back to the start page.
   address the user typed into that widget (re-validated as http(s) in the page and in Rust), with
   `sandbox="allow-scripts allow-forms"` (a unique origin: no cookies or storage, no same-origin access,
   no top navigation, popups, downloads or modals), `referrerpolicy="no-referrer"`, `allow=""` and
-  `loading="lazy"`. Two chrome-host rules had to change for it, both for the split host only:
+  `loading="lazy"`. Two chrome-host rules had to change for it, both for the split host only (the
+  shared `index.html` meta CSP carries the same `frame-src`, because the stricter of meta and header
+  wins; the header still sends `frame-src 'none'` to every other view):
   its document is served with `frame-src http: https:` (`assets::SPLIT_RESPONSE_HEADERS`; scripts,
   styles, images, connections, forms and objects stay as locked down as in every view), and a subframe
   of that host may navigate to an http(s) address (`assets::split_frame_may_navigate`; every other host,
