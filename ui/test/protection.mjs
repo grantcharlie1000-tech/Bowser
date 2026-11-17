@@ -369,7 +369,8 @@ test('an unreadable settings file disables every control and the Delete button',
 
 test('sites: saved choices are listed with their level and cookie choice; each change is one command', () => {
   const rows = protection.sites.querySelectorAll('.pg-row');
-  assert.deepEqual(rows.map((r) => r.querySelector('.pg-label').textContent).slice(0, 5), ['Add a site', 'This site', 'a.test', 'b.test', 'Skipped in settings']);
+  assert.deepEqual(rows.map((r) => r.querySelector('.pg-label').textContent).slice(0, 4), ['Add a site', 'a.test', 'b.test', 'Skipped in settings']);
+  assert.equal(rowOf(protection.sites, 'This site'), undefined, 'no row for the site you are on: Add a site is the one way in');
   assert.equal(rowOf(protection.sites, 'Skipped in settings').querySelector('.pg-desc').textContent, 'allowed.test');
   const a = rowOf(protection.sites, 'a.test');
   const [levelPick, cookiePick] = a.querySelectorAll('.bw-select-button');
@@ -386,9 +387,7 @@ test('sites: saved choices are listed with their level and cookie choice; each c
   assert.deepEqual(last(), { v: 1, t: 'priv', a: 'site-cookies', text: 'a.test', n: 0 });
   a.querySelectorAll('button').find((b) => b.getAttribute('aria-label') === 'Forget the choices for a.test').click();
   assert.deepEqual(last(), { v: 1, t: 'priv', a: 'site-remove', text: 'a.test' });
-  // The site you are on can be offered to the field.
-  button(protection.sites, 'Use example.com').click();
-  assert.equal(protection.sites.querySelector('input').value, 'example.com');
+  assert.equal(button(protection.sites, 'Use example.com'), undefined);
 });
 
 test('sites: a typed site is cleaned up first, and text that is not a site sends nothing', () => {
@@ -482,13 +481,18 @@ test('Delete browsing data: nothing is sent until the second click, and the summ
   assert.ok(button(root, 'Delete'), 'and it is Delete again afterwards');
 });
 
+const pickPeriod = (root, label) => {
+  root.querySelector('[aria-label="Delete browsing data from"]').click();
+  root.querySelectorAll('[role="option"]').find((o) => o.querySelector('.bw-menu-label').textContent === label).click();
+};
+
 test('Delete browsing data: changing the period or a kind withdraws the question; choosing nothing disables the button', () => {
   const root = protection.deleteData;
   const switchOf = (label) => root.querySelectorAll('.pg-row').find((row) => row.querySelector('.pg-label').textContent === label).querySelector('[role="switch"]');
   assert.deepEqual(root.querySelectorAll('.pg-row').map((r) => r.querySelector('.pg-label').textContent).slice(1, 8), ['History', 'Cookies', 'Storage', 'Cache', 'Sign-ins', 'Autofill', 'Site settings']);
   sent.length = 0;
   button(root, 'Delete').click();
-  radios({ root }).find((b) => b.textContent === 'Past week').click();
+  pickPeriod(root, 'Past week');
   assert.ok(button(root, 'Delete'), 'the period changed, so the question is withdrawn');
   button(root, 'Delete').click();
   switchOf('Cookies').click();
@@ -502,7 +506,7 @@ test('Delete browsing data: changing the period or a kind withdraws the question
   assert.equal(button(root, 'Delete').getAttribute('aria-label'), 'Choose what to delete');
   for (const label of ['History', 'Cookies', 'Storage', 'Cache']) switchOf(label).click();
   assert.equal(button(root, 'Delete').disabled, false);
-  radios({ root }).find((b) => b.textContent === 'Past day').click();
+  pickPeriod(root, 'Past day');
 });
 
 test('Delete browsing data: saved sign-ins need their own yes beside the confirmation, and the flag goes out with them only', () => {
