@@ -219,11 +219,12 @@ pub fn toolbar_pill_rect_with_slot(layout: &Layout, dpi: u32, slot: i32) -> Opti
     } else {
         (Metrics::STRIP_HEIGHT - Metrics::OMNIBOX_HEIGHT) / 2
     };
+    let height = if layout.toolbar_in_sidebar { crate::chrome::layout::ZEN_ADDRESS_HEIGHT } else { Metrics::OMNIBOX_HEIGHT };
     Some(RECT {
         left: bounds.left + snap(x),
         top: bounds.top + snap(top),
         right: bounds.left + snap(x + w),
-        bottom: bounds.top + snap(top + Metrics::OMNIBOX_HEIGHT),
+        bottom: bounds.top + snap(top + height),
     })
 }
 

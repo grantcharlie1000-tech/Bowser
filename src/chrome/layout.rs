@@ -2096,6 +2096,10 @@ pub fn compute_arranged_in_frame(
 
 /// Height (DIP) of the gap between the sidebar's stacked toolbar rows, and below them.
 pub const ZEN_ROW_GAP: i32 = 4;
+/// Height (DIP) of the stacked toolbar's address row and of the roomier address field in it. The
+/// toolbar page agrees (`toolbar.css`, "Zen sidebar").
+pub const ZEN_ADDRESS_ROW: i32 = 40;
+pub const ZEN_ADDRESS_HEIGHT: i32 = 34;
 
 /// The Zen arrangement for a sidebar on `side`. The returned sidebar's island starts under the
 /// toolbar; its `sidebar` rect is the tab area only, and [`zen_column`] is the whole column.
@@ -2137,7 +2141,8 @@ fn compute_zen_in_frame(
     let left = column.left + pad;
     let right = (column.right - pad).max(left);
     let top = title_h.min(client_h);
-    layout.strip = Rect::new(left, top, right, (top + 2 * row_h + gap).min(client_h));
+    let address_row = m.px(ZEN_ADDRESS_ROW);
+    layout.strip = Rect::new(left, top, right, (top + row_h + gap + address_row).min(client_h));
     let nav = m.px(Metrics::NAV_BUTTON_SIZE);
     let nav_gap = m.px(Metrics::NAV_BUTTON_GAP);
     let nav_top = top + (row_h - nav) / 2;
@@ -2150,8 +2155,8 @@ fn compute_zen_in_frame(
     layout.reload_button = button(2);
     let menu = m.px(Metrics::MENU_BUTTON_SIZE);
     layout.main_menu_button = Rect::new((right - menu).max(left), nav_top, right, nav_top + menu);
-    let omni_h = m.px(Metrics::OMNIBOX_HEIGHT);
-    let omni_top = top + row_h + gap + (row_h - omni_h) / 2;
+    let omni_h = m.px(ZEN_ADDRESS_HEIGHT);
+    let omni_top = top + row_h + gap + (address_row - omni_h) / 2;
     layout.omnibox = Rect::new(left, omni_top, right, omni_top + omni_h);
     // The sidebar has its own "New tab" row.
     layout.new_tab_button = Rect::default();

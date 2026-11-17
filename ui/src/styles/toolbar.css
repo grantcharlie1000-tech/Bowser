@@ -975,10 +975,16 @@ html[data-scheme="dark"] #app {
     height: var(--bw-toolbar-h);
   }
 
+  /* The address row is 40px with a 34px field (layout::ZEN_ADDRESS_ROW / ZEN_ADDRESS_HEIGHT). */
+  #app {
+    --bw-pill-h: 34px;
+  }
+
   #app.placed .pill,
   #app .pill {
     position: absolute;
-    top: calc(var(--bw-toolbar-h) + 4px + (var(--bw-toolbar-h) - var(--bw-pill-h)) / 2);
+    top: calc(var(--bw-toolbar-h) + 4px + (40px - var(--bw-pill-h)) / 2);
+    border-radius: 10px;
     left: 0;
     right: 0;
     width: auto;

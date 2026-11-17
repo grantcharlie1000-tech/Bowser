@@ -683,3 +683,33 @@
 @media (prefers-reduced-motion: reduce) {
   #app.sidebar > .side-pinned { transition: none; }
 }
+
+/* One gutter: Rust insets the host as far as the toolbar above it, so the grid, the header, New tab
+   and the rows run edge to edge inside it and every left edge lines up with the address field.
+   Rows are Zen's height, with the text a step larger. */
+#app.sidebar {
+  --bw-side-row-h: 36px;
+  font-size: var(--bw-text-omni);
+}
+
+#app.sidebar > .side-pinned { padding: var(--bw-space-1) 0 var(--bw-space-1); }
+#app.sidebar > .side-top { gap: 0; padding: var(--bw-space-1) 0 var(--bw-space-1); }
+#app.sidebar > .side-list { gap: 2px; padding: 0 0 var(--bw-space-2); }
+#app.sidebar .side-tab:not(.pinned),
+#app.sidebar .side-newtab { padding-inline: 10px var(--bw-space-1); font-size: var(--bw-text-omni); column-gap: 10px; gap: 10px; }
+
+/* The space header is a quiet label: the name, the rule, Clear and the pin button. The workspace glyph
+   and chevron show only on hover, when the name reads as the menu it opens. */
+#app.sidebar .side-head { height: 28px; padding-inline-start: 10px; }
+#app.sidebar .side-head .side-workspace { height: 24px; padding: 0 var(--bw-space-1); margin-inline-start: calc(-1 * var(--bw-space-1)); gap: var(--bw-space-1); }
+#app.sidebar .side-head .side-workspace-icon { display: none; }
+#app.sidebar .side-head .side-workspace-chevron { opacity: 0; transition: opacity var(--bw-dur-fast) var(--bw-ease-fade); }
+#app.sidebar .side-head .side-workspace:is(:hover, :focus-visible) .side-workspace-chevron { opacity: 1; }
+#app.sidebar .side-head .side-workspace .side-workspace-name { font-size: var(--bw-text-caption); font-weight: var(--bw-weight-strong); }
+#app.sidebar .side-head .side-collapse { width: 24px; height: 24px; opacity: .7; }
+#app.sidebar .side-head .side-collapse:hover { opacity: 1; }
+#app.sidebar .side-clear { height: 24px; font-size: var(--bw-text-caption); }
+
+@media (prefers-reduced-motion: reduce) {
+  #app.sidebar .side-head .side-workspace-chevron { transition: none; }
+}
