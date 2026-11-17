@@ -1,0 +1,1 @@
+{"name":"sfw-chrome-test","private":true,"type":"module","description":"Real-Chrome tests; installs playwright-core locally only.","dependencies":{"playwright-core":"^1.65.1"}}

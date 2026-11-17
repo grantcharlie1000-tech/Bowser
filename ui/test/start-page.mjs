@@ -691,6 +691,9 @@ test('widgets: the bookmarks widget picks a folder and a look, and shows titles 
 test('the webpage widget is a sandboxed frame for an http(s) address the user typed, and nothing else', () => {
   show(fixture.page);
   const card = () => root.querySelector('.sp-widget[data-kind="webpage"]');
+  // Spoiler protection is on by default: the widget waits for a click (see the paused-widget test), then loads.
+  const load = () => card().querySelectorAll('button').find((b) => b.textContent === 'Load')?.click();
+  load();
   const frame = card().querySelector('iframe');
   assert.ok(frame);
   assert.equal(frame.getAttribute('sandbox'), 'allow-scripts allow-forms', 'no same-origin, popups, top navigation, downloads or modals');
@@ -703,6 +706,8 @@ test('the webpage widget is a sandboxed frame for an http(s) address the user ty
   assert.equal(card().querySelector('iframe'), frame);
   const next = { ...fixture.page, d: { ...fixture.page.d, widgets: fixture.page.d.widgets.map((w) => (w.kind === 'webpage' ? { ...w, url: 'https://other.example/' } : w)) } };
   show(next);
+  assert.equal(card().querySelector('iframe'), null, 'a new address is paused again');
+  load();
   assert.notEqual(card().querySelector('iframe'), frame);
   assert.equal(card().querySelector('iframe').src, 'https://other.example/');
   // No address: no frame, an input to type one.
@@ -789,4 +794,21 @@ test('the page builds DOM with createElement and textContent only, and never cha
   assert.equal([...source.matchAll(/el\('iframe'/g)].length, 1);
   assert.match(source, /setAttribute\('sandbox', 'allow-scripts allow-forms'\)/);
   assert.doesNotMatch(source, /allow-same-origin|allow-top-navigation|allow-popups|allow-downloads|allow-modals/);
+});
+
+test('spoiler guard: while protection is on a web page widget is a placeholder until Load is clicked; off loads at once', () => {
+  const deliverSetting = (on) => { for (const cb of listeners.slice()) cb({ data: JSON.stringify({ v: 1, t: 'spoiler', on, mode: 'strict' }) }); };
+  show(fixture.page);
+  const card = () => root.querySelector('.sp-widget[data-kind="webpage"]');
+  // A fresh widget id so earlier approvals do not apply.
+  assert.ok(card().textContent.includes('Web page widget paused by spoiler protection') || card().querySelector('iframe'), 'paused or approved earlier');
+  deliverSetting(false);
+  assert.equal(card().querySelector('iframe').src, 'https://widget.example/clock', 'protection off: loads at once');
+  deliverSetting(true);
+  assert.equal(card().querySelector('iframe'), null, 'switched on: the frame is dropped and asks again');
+  assert.ok(card().textContent.includes('Web page widget paused by spoiler protection'));
+  const button = card().querySelectorAll('button').find((b) => b.textContent === 'Load');
+  assert.ok(button);
+  button.click();
+  assert.equal(card().querySelector('iframe').src, 'https://widget.example/clock', 'an explicit click loads it');
 });

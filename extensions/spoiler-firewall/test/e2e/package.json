@@ -1,0 +1,9 @@
+{
+  "name": "spoiler-firewall-e2e",
+  "private": true,
+  "type": "module",
+  "description": "Playwright e2e + zero-flash harness for Spoiler Firewall (devDependencies only; not shipped).",
+  "devDependencies": {
+    "playwright": "^1.65.1"
+  }
+}

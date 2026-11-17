@@ -165,6 +165,12 @@ pub fn snapshot_json(s: &Snapshot<'_>) -> String {
             }
         });
         // --- end theme options ---
+        out.bool("spoilerProtection", settings.spoiler.enabled);
+        out.string("spoilerMode", settings.spoiler.mode.key());
+        out.bool("spoilerReducedEffects", settings.spoiler.reduced_effects);
+        out.bool("spoilerOcr", settings.spoiler.ocr);
+        out.bool("spoilerFeed", settings.spoiler.feed);
+        out.string("spoilerFeedStatus", capped(&crate::spoiler_feed::summary(), 200));
         out.bool("autoUpdate", s.auto_update);
         out.bool("historyEnabled", s.history_enabled && !s.guest);
         out.bool("guest", s.guest);
@@ -494,6 +500,12 @@ pub fn apply_settings_text(settings: &mut Settings, text: &str) -> bool {
             // --- window and panels (thread T9) ---
             key if crate::window_prefs::KEYS.contains(&key) => { if settings.window.apply_strict(key, value).is_none() { return false; } }
             // --- end window and panels ---
+            // Spoiler Firewall: optional (an older page sends none), exact values when present.
+            "spoiler_protection" => settings.spoiler.enabled = match value { "true" => true, "false" => false, _ => return false },
+            "spoiler_mode" => { let Some(mode) = crate::spoiler::Mode::ALL.into_iter().find(|mode| mode.key() == value) else { return false; }; settings.spoiler.mode = mode; }
+            "spoiler_reduced_effects" => settings.spoiler.reduced_effects = match value { "true" => true, "false" => false, _ => return false },
+            "spoiler_ocr" => settings.spoiler.ocr = match value { "true" => true, "false" => false, _ => return false },
+            "spoiler_feed" => settings.spoiler.feed = match value { "true" => true, "false" => false, _ => return false },
             _ => return false,
         }
     }
@@ -606,6 +618,19 @@ mod tests {
         assert!(!apply_settings_text(&mut settings, &valid.replace("default_zoom=125", "default_zoom=501")), "above the maximum");
         assert!(!apply_settings_text(&mut settings, &valid.replace("frameless=true", "frameless=maybe")));
         assert!(!apply_settings_text(&mut settings, &format!("{valid}\nblock_youtube_video_ads=true")), "duplicate key");
+        // Spoiler Firewall keys are optional, exact when present, and never loosen on bad input.
+        assert!(settings.spoiler.enabled, "nothing above changed it");
+        assert!(apply_settings_text(&mut settings, &format!("{valid}\nspoiler_protection=false\nspoiler_mode=balanced\nspoiler_reduced_effects=true\nspoiler_ocr=false")));
+        assert!(!settings.spoiler.enabled);
+        assert!(!settings.spoiler.ocr);
+        assert_eq!(settings.spoiler.mode, crate::spoiler::Mode::Balanced);
+        assert!(settings.spoiler.reduced_effects);
+        assert!(apply_settings_text(&mut settings, &format!("{valid}\nspoiler_protection=true\nspoiler_mode=lockdown\nspoiler_reduced_effects=false")));
+        assert!(settings.spoiler.enabled);
+        for bad in ["spoiler_protection=off", "spoiler_protection=1", "spoiler_protection=", "spoiler_mode=Strict", "spoiler_mode=off", "spoiler_reduced_effects=yes", "spoiler_ocr=off", "spoiler_ocr=1"] {
+            assert!(!apply_settings_text(&mut Settings::default(), &format!("{valid}\n{bad}")), "{bad}");
+        }
+        assert!(!apply_settings_text(&mut settings, &format!("{valid}\nspoiler_mode=strict\nspoiler_mode=lockdown")), "duplicate key");
     }
 
     /// H3-3: the page sends the whole profile on every change, so with 500 allow-list sites and long

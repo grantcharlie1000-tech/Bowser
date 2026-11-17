@@ -1,0 +1,12 @@
+<!doctype html><html><head><meta charset="utf-8"><title>sw register</title><style>body{margin:8px;font:16px/1.3 Arial,sans-serif;background:#fff;color:#222}.sentinel{color:#ff00ff!important;font:700 22px/1.2 Arial!important;-webkit-text-fill-color:#ff00ff}.item{border:1px solid #ccc;border-radius:10px;padding:10px 12px;margin:8px 0;background:#fafafa}iframe{border:1px solid #999;display:block;margin:6px 0}</style></head><body><p id="s">registering</p><script>
+var target=new URLSearchParams(location.search).get('target')||'cached';
+(async function(){
+  try{
+    var reg=await navigator.serviceWorker.register('/bw/sw.js',{scope:'/bw/'});
+    await navigator.serviceWorker.ready;
+    if(!navigator.serviceWorker.controller){ await new Promise(function(r){navigator.serviceWorker.addEventListener('controllerchange',r,{once:true});setTimeout(r,4000);}); }
+    document.getElementById('s').textContent='ready controller='+!!navigator.serviceWorker.controller;
+  }catch(e){document.getElementById('s').textContent='sw error '+e;}
+  setTimeout(function(){location.href='/bw/bw-sw-'+target+'-doc.html';},300);
+})();
+</script></body></html>

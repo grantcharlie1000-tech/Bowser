@@ -1,0 +1,4 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><link rel="stylesheet" href="/pages/common.css"><title>churn</title></head><body><div id="list"></div><script>
+var list=document.getElementById('list');for(var i=0;i<40;i++){var r=document.createElement('div');r.className='row item';r.setAttribute('data-expect','clear');r.textContent='row '+i+' tick 0';list.appendChild(r);}
+var n=0;var spoilers=0;setInterval(function(){for(var k=0;k<20;k++){var r=list.children[(n*7+k)%40];n++;if(n%97===0&&spoilers<12){spoilers++;r.setAttribute('data-expect','shield');r.innerHTML='<span class="sentinel">GTA 6 spoiler '+spoilers+': the hero dies at the ending</span>';}else if(r.getAttribute('data-expect')!=='shield'){r.textContent='row tick '+n;}}},20);
+</script></body></html>

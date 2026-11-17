@@ -1,0 +1,4 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><link rel="stylesheet" href="/pages/common.css"><title>infinite scroll</title><style>.row{height:90px}</style></head><body><div id="list"></div><script>
+var list=document.getElementById('list');var page=0;function more(){for(var i=0;i<10;i++){var r=document.createElement('div');r.className='item row';var sp=(page*10+i)%7===3;r.setAttribute('data-expect',sp?'shield':'clear');r.innerHTML=sp?'<span class="sentinel">GTA 6 spoiler '+page+'.'+i+': the hero dies at the ending</span>':'Ordinary row '+page+'.'+i;list.appendChild(r);}page++;}
+more();window.addEventListener('scroll',function(){if(window.innerHeight+window.scrollY>document.body.scrollHeight-200&&page<12)more();});
+</script></body></html>

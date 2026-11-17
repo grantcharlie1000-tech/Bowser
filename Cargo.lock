@@ -21,6 +21,7 @@ dependencies = [
 name = "bowser"
 version = "0.0.29"
 dependencies = [
+ "ed25519-compact",
  "psl",
  "url",
  "webview2-com",
@@ -72,6 +73,12 @@ dependencies = [
  "quote",
  "syn 3.0.6",
 ]
+
+[[package]]
+name = "ed25519-compact"
+version = "2.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9547879431a90e352a35863a54416d92898a787b9af09e6ae2e09a96bd78be80"
 
 [[package]]
 name = "equivalent"

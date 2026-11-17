@@ -181,6 +181,8 @@ const WM_ENGINE_CONTEXT_MENU: u32 = windows::Win32::UI::WindowsAndMessaging::WM_
 const WM_HTML_RAIL_FAILED: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 0x7F;
 /// Posted by the "Check for updates" worker when its check ends; `wparam` is an `UPDATE_*` code.
 const WM_UPDATE_CHECKED: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 0x83;
+/// Posted by the term-update worker (`crate::spoiler_feed`) when a new verified feed is in force.
+const WM_SPOILER_FEED: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 0x88;
 const UPDATE_UP_TO_DATE: usize = 0;
 const UPDATE_STAGED: usize = 1;
 const UPDATE_UNVERIFIED: usize = 2;
@@ -2940,6 +2942,11 @@ unsafe extern "system" fn window_proc(
             WM_CREATE => {
                 if let Some(app) = app {
                     App::theme_window_created(app, hwnd); // --- theme options ---
+                    // A newly verified spoiler term update is applied to open tabs on the UI thread.
+                    let window = hwnd.0 as isize;
+                    crate::spoiler_feed::set_notifier(move || {
+                        super::post(HWND(window as *mut _), WM_SPOILER_FEED, WPARAM(0), LPARAM(0));
+                    });
                     let instance = HINSTANCE(GetModuleHandleW(None).unwrap_or_default().0);
                     let edit = match CreateWindowExW(
                         windows::Win32::UI::WindowsAndMessaging::WS_EX_TRANSPARENT,
@@ -4505,6 +4512,12 @@ unsafe extern "system" fn window_proc(
             WM_HTML_DEFERRED => {
                 if chrome_host::html_ui_enabled() {
                     run_deferred_html_command(hwnd);
+                }
+                LRESULT(0)
+            }
+            WM_SPOILER_FEED => {
+                if let Some(app) = app {
+                    App::apply_spoiler_feed(app);
                 }
                 LRESULT(0)
             }
@@ -8767,6 +8780,7 @@ fn show_extensions_menu(hwnd: HWND, _app: &AppRef) {
     const MANAGE: usize = 4;
     const INSTALL_CRX: usize = 5;
     const POPUP_BASE: usize = 3000;
+    const SPOILER: usize = 6;
     const MAX_LISTED: usize = extensions::MAX_INSTALLED;
 
     let Ok(profile) = crate::profile::active() else {
@@ -8779,7 +8793,28 @@ fn show_extensions_menu(hwnd: HWND, _app: &AppRef) {
             return;
         }
     };
-    let mut entries = Vec::with_capacity(records.len().saturating_mul(2) + 3);
+    let mut entries = Vec::with_capacity(records.len().saturating_mul(2) + 5);
+    // Built in, so never installed, removed or listed in the records file. Choosing it opens its
+    // setting (Privacy and security), where it is turned on or off.
+    let spoiler = crate::spoiler::current();
+    entries.push(Entry::Item(
+        Item::new(
+            SPOILER,
+            format!(
+                "{} \u{b7} built in ({})",
+                crate::spoiler::DISPLAY_NAME,
+                if spoiler.enabled {
+                    format!("on, {}", spoiler.mode.key())
+                } else {
+                    "off".to_owned()
+                }
+            ),
+            Icon::Grid,
+        )
+        .glyph("shield")
+        .checked(spoiler.enabled),
+    ));
+    entries.push(Entry::Separator);
     if records.is_empty() {
         entries.push(Entry::Item(
             Item::new(0, "No extensions installed", Icon::None).glyph("puzzle").disabled(),
@@ -8873,6 +8908,12 @@ fn show_extensions_menu(hwnd: HWND, _app: &AppRef) {
                 .find(|record| record.id == listed.id)
         };
         match command {
+            SPOILER => super::settings_page::open(
+                hwnd,
+                app,
+                Some(crate::internal_page::Section::Privacy),
+                false,
+            ),
             INSTALL => {
                 if let Err(error) = install_extension(hwnd, app, &profile) {
                     show_error_message(&error);

@@ -1,0 +1,7 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><link rel="stylesheet" href="/pages/common.css"><title>shadow</title></head><body><div id="host1"></div><div id="host2"></div>
+<div id="dsd" class="item" data-expect="shield"><template shadowrootmode="open"><div><span style="color:#ff00ff;font:700 22px Arial" class="sentinel">GTA 6 ending spoiler: hero dies (declarative open)</span></div></template></div>
+<script>
+var r=document.getElementById('host1').attachShadow({mode:'closed'});r.innerHTML='<div class="item" data-expect="shield"><span class="sentinel" style="color:#ff00ff;font:700 22px Arial">GTA 6 spoiler in a closed root: the hero dies at the ending</span></div><div>clean text in shadow</div>';
+var o=document.getElementById('host2').attachShadow({mode:'open'});o.innerHTML='<p data-expect="shield"><span class="sentinel" style="color:#ff00ff;font:700 22px Arial">GTA 6 ending spoiler in open root: hero dies</span></p>';
+setTimeout(function(){var h=document.createElement('div');document.body.appendChild(h);var rr=h.attachShadow({mode:'closed'});var n=document.createElement('p');n.innerHTML='<span class="sentinel" style="color:#ff00ff;font:700 22px Arial">GTA 6 spoiler late shadow: the hero dies at the ending</span>';rr.appendChild(n);},150);
+</script></body></html>

@@ -13,6 +13,8 @@ import { iconButton, textButton } from './panels/kit';
 import { tileLetter } from './panels/kit-logic';
 import { selectField, type SelectField } from './panels/select';
 import { tileTone } from './history-page-logic';
+import { onSpoilerConfig, activeSpoilerMode } from './spoiler-config'; // --- spoiler guard ---
+import { guardTitle, hostOnly } from './spoiler-guard'; // --- spoiler guard --- titles that came from pages (top sites, bookmarks, dials)
 import {
   MAX_NOTE, MAX_TITLE, MAX_URL, NOTE_SAVED, WIDGET_KINDS, WIDGET_LABELS, blockedText, columnsFor, dateParts, dialCountText, dropBefore, isWebAddress,
   normaliseAddress, textOn, tileWidth, titleState, widgetClasses,
@@ -62,6 +64,9 @@ export function buildStartPage(): {
   let noteSaveTimer = 0;
   /** Widget frames and note editors outlive snapshots, so a refresh never reloads a page or loses a caret. */
   const frames = new Map<number, { url: string; node: HTMLIFrameElement }>();
+  /** Spoiler guard: web page widgets the user chose to load (widget id to address) while protection is on. The start page is
+   *  a Bowser chrome document, which never gets the page engine, so a live page in it is paused until a click. */
+  const approvedFrames = new Map<number, string>();
   const editors = new Map<number, HTMLTextAreaElement>();
   const savedNotes = new Set<number>();
   /** The widget whose settings strip is open, if any. */
@@ -146,7 +151,7 @@ export function buildStartPage(): {
     face.classList.add('is-letter');
     face.dataset.tone = String(tileTone(dial.host || dial.title));
     const letter = el('span', 'sp-letter');
-    letter.textContent = tileLetter(dial.title || dial.host);
+    letter.textContent = tileLetter(guardTitle(dial.title) || dial.host);
     face.append(letter);
   }
 
@@ -471,7 +476,7 @@ export function buildStartPage(): {
   }
 
   function askRemove(dial: Dial): void {
-    const what = dial.kind === 'folder' ? `the folder “${dial.title}” and the ${dialCountText(dial.n)} in it` : `“${dial.title}”`;
+    const what = dial.kind === 'folder' ? `the folder “${dial.title}” and the ${dialCountText(dial.n)} in it` : `“${guardTitle(dial.title)}”`;
     confirm('Remove from speed dial', `Remove ${what}? Speed dials are bookmarks, so ${dial.kind === 'folder' ? 'they are' : 'it is'} deleted from Bookmarks too.`, 'Remove', () => { cmd({ a: 'remove', id: dial.id }); });
   }
 
@@ -480,9 +485,10 @@ export function buildStartPage(): {
     node.root.dataset.id = String(dial.id);
     node.root.dataset.kind = dial.kind;
     node.root.dataset.labels = titleState(settings.titles, dial.thumb);
-    const label = dial.kind === 'folder' ? `${dial.title}, folder, ${dialCountText(dial.n)}` : dial.title;
+    const dialTitle = guardTitle(dial.title);
+    const label = dial.kind === 'folder' ? `${dialTitle}, folder, ${dialCountText(dial.n)}` : dialTitle;
     node.open.setAttribute('aria-label', label);
-    node.title.textContent = dial.kind === 'folder' ? dial.title : dial.title || dial.host;
+    node.title.textContent = dial.kind === 'folder' ? dialTitle : dialTitle || dial.host;
     paintFace(node.face, { kind: dial.kind, title: dial.title, host: dial.host, id: dial.id, thumb: dial.thumb });
     node.root.classList.toggle('is-editable', editable);
     node.root.classList.toggle('has-thumb', dial.thumb);
@@ -902,7 +908,7 @@ export function buildStartPage(): {
           paintFace(face, { kind: 'link', title: site.title, host: site.host });
           const text = el('span', 'sp-row-text');
           const name = el('span', 'sp-row-title');
-          name.textContent = site.title.trim() === '' ? site.host : site.title;
+          name.textContent = site.title.trim() === '' ? site.host : guardTitle(site.title);
           name.dir = 'auto';
           const meta = el('span', 'sp-row-meta');
           meta.textContent = site.host;
@@ -927,7 +933,7 @@ export function buildStartPage(): {
           // Tiles show a chosen image when the bookmark has one; the list is titles and favicons.
           paintFace(face, widget.view === 'tiles' ? { kind: 'link', title: link.title, host: link.host, id: link.id, thumb: link.thumb } : { kind: 'link', title: link.title, host: link.host });
           const name = el('span', widget.view === 'tiles' ? 'sp-mini-title' : 'sp-row-title');
-          name.textContent = link.title;
+          name.textContent = guardTitle(link.title);
           name.dir = 'auto';
           if (widget.view === 'tiles') button.append(face, name);
           else {
@@ -937,7 +943,7 @@ export function buildStartPage(): {
             text.append(name, meta);
             button.append(face, text);
           }
-          button.setAttribute('aria-label', `${link.title}, ${link.host}`);
+          button.setAttribute('aria-label', `${guardTitle(link.title)}, ${link.host}`);
           button.addEventListener('click', (event) => open(link.url, event));
           item.append(button);
           if (configuring === widget.id && !s.guest && widget.view === 'tiles') {
@@ -1027,6 +1033,20 @@ export function buildStartPage(): {
         if (widget.url === '') {
           frames.delete(widget.id);
           body.append(note('Enter the address of a web page to show here.'));
+          break;
+        }
+        if (activeSpoilerMode() !== 'off' && approvedFrames.get(widget.id) !== widget.url) {
+          frames.delete(widget.id);
+          const hold = el('div', 'sp-frame-paused');
+          const message = el('p', 'sp-widget-note');
+          message.textContent = 'Web page widget paused by spoiler protection';
+          const load = textButton('Load', () => {
+            approvedFrames.set(widget.id, widget.url);
+            if (snap) paintWidgets(snap);
+          }, { subtle: true });
+          load.setAttribute('aria-label', `Load the web page widget (${widget.url === '' ? '' : hostOnly(widget.url)})`);
+          hold.append(message, load);
+          body.append(hold);
           break;
         }
         let entry = frames.get(widget.id);
@@ -1133,6 +1153,16 @@ export function buildStartPage(): {
     layout();
     if (s.ack === 'failed') say(s.error);
   }
+
+  // Protection switched on: a frame that was loaded goes away, and every widget asks again.
+  let lastMode = activeSpoilerMode();
+  onSpoilerConfig(() => {
+    const mode = activeSpoilerMode();
+    const turnedOn = lastMode === 'off' && mode !== 'off';
+    lastMode = mode;
+    if (turnedOn) { approvedFrames.clear(); frames.clear(); }
+    if (snap && snap.widgets.some((w) => w.kind === 'webpage')) paintWidgets(snap);
+  });
 
   const observer = new ResizeObserver(() => layout());
   observer.observe(column);

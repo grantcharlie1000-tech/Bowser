@@ -1,0 +1,5 @@
+body{font:16px/1.4 Arial,sans-serif;margin:16px;background:#fff;color:#222}
+.sentinel{color:#ff00ff!important;font:700 22px/1.3 Arial,Helvetica,sans-serif!important;-webkit-text-fill-color:#ff00ff}
+.item{border:1px solid #ccc;border-radius:10px;padding:10px 12px;margin:8px 0;background:#fafafa}
+.sbox{background:#ff00ff;width:120px;height:40px;display:inline-block}
+shreddit-post,shreddit-comment,shreddit-comment-tree,ytd-watch-flexy,ytd-watch-metadata,ytd-compact-video-renderer,ytd-video-renderer,ytd-comment-thread-renderer,ytd-comment-view-model,ytd-comments,ytd-search{display:block}

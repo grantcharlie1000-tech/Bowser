@@ -5,12 +5,18 @@
 // markup, and an item is opened by naming it (feed id and hash), never by an address from the page.
 import { sendPanel, type Inbound, type PanelFields } from '../protocol';
 import { el, icon } from '../dom';
+import { guardAddress, guardTitle, MASK_LABEL, rowRisky } from '../spoiler-guard'; // --- spoiler guard ---
 import {
   ageText, closePreviewCommand, feedLabel, importCommand, itemMeta, kindIcon, openCommand, parseFeedsSnapshot, playCommand, previewCommand,
   readAllCommand, readCommand, refreshCommand, refreshNote, selectCommand, subscribeCommand, unreadText, unsubscribeCommand, MAX_ADDRESS,
   type FeedRow, type FeedsCommand, type FeedsSnapshot, type ItemRow,
 } from './feeds-logic';
 import { emptyState, enter, iconButton, moveFocus, panelHeader, textButton } from './kit';
+
+/** A feed item is a page's own words: one that reads as a GTA VI spoiler shows the mask, not its title or summary. */
+function guardItem(title: string, summary: string): { title: string; summary: string } {
+  return rowRisky({ title, text: summary }) ? { title: MASK_LABEL, summary: '' } : { title, summary };
+}
 
 function emit(command: FeedsCommand | null): void {
   if (command) sendPanel('feed', command as PanelFields);
@@ -114,13 +120,13 @@ export function startFeedsPanel(root: HTMLElement): (message: Inbound) => void {
     const row = el('div', 'bw-row bw-focus-inset pn-row pf-feed');
     row.setAttribute('role', 'option');
     row.setAttribute('aria-selected', String(selected));
-    row.setAttribute('aria-label', feedLabel(feed));
+    row.setAttribute('aria-label', feedLabel({ ...feed, title: guardTitle(feed.title) }));
     row.tabIndex = 0;
     row.dataset.feed = String(feed.id);
     const lead = el('span', 'pn-lead');
     lead.append(icon(kindIcon(feed.kind)));
     const title = el('span', 'bw-row-title');
-    title.textContent = feed.title;
+    title.textContent = guardTitle(feed.title);
     title.dir = 'auto';
     const trail = el('span', 'pn-trail');
     const tools = el('span', 'pn-actions');
@@ -169,14 +175,15 @@ export function startFeedsPanel(root: HTMLElement): (message: Inbound) => void {
     if (!item.read) lead.append(el('span', 'pf-dot'));
     const text = el('span', 'bw-row-text pf-text');
     const title = el('span', 'bw-row-title pf-title');
-    title.textContent = item.title === '' ? '(no title)' : item.title;
+    const shown = guardItem(item.title, item.summary);
+    title.textContent = shown.title === '' ? '(no title)' : shown.title;
     title.dir = 'auto';
     const meta = el('span', 'bw-row-meta pf-meta');
     meta.textContent = itemMeta(item, now());
     text.append(title, meta);
-    if (item.summary !== '') {
+    if (shown.summary !== '') {
       const summary = el('span', 'pf-summary');
-      summary.textContent = item.summary;
+      summary.textContent = shown.summary;
       summary.dir = 'auto';
       text.append(summary);
     }
@@ -210,10 +217,10 @@ export function startFeedsPanel(root: HTMLElement): (message: Inbound) => void {
       lead.append(icon('feed'));
       const text = el('span', 'bw-row-text');
       const title = el('span', 'bw-row-title');
-      title.textContent = entry.title === '' ? entry.url : entry.title;
+      title.textContent = entry.title === '' ? guardAddress(entry.url) : guardTitle(entry.title);
       title.dir = 'auto';
       const meta = el('span', 'bw-row-meta');
-      meta.textContent = entry.url;
+      meta.textContent = guardAddress(entry.url);
       text.append(title, meta);
       const view = textButton('Preview', () => emit(previewCommand(entry.url)), { subtle: true });
       row.append(lead, text, view);
@@ -245,10 +252,10 @@ export function startFeedsPanel(root: HTMLElement): (message: Inbound) => void {
       lead.append(icon('feed'));
       const text = el('span', 'bw-row-text');
       const title = el('span', 'bw-row-title');
-      title.textContent = candidate.title === '' ? candidate.url : candidate.title;
+      title.textContent = candidate.title === '' ? guardAddress(candidate.url) : guardTitle(candidate.title);
       title.dir = 'auto';
       const meta = el('span', 'bw-row-meta');
-      meta.textContent = candidate.url;
+      meta.textContent = guardAddress(candidate.url);
       text.append(title, meta);
       row.append(lead, text, textButton('Preview', () => emit(previewCommand(candidate.url)), { subtle: true }));
       rows.push(row);
@@ -257,15 +264,16 @@ export function startFeedsPanel(root: HTMLElement): (message: Inbound) => void {
       const row = el('div', 'bw-row is-tall pn-row pf-peek-item');
       const text = el('span', 'bw-row-text pf-text');
       const title = el('span', 'bw-row-title pf-title');
-      title.textContent = item.title === '' ? '(no title)' : item.title;
+      const shown = guardItem(item.title, item.summary);
+      title.textContent = shown.title === '' ? '(no title)' : shown.title;
       title.dir = 'auto';
       const meta = el('span', 'bw-row-meta pf-meta');
       meta.textContent = ageText(item.published, now());
       text.append(title);
       if (meta.textContent !== '') text.append(meta);
-      if (item.summary !== '') {
+      if (shown.summary !== '') {
         const summary = el('span', 'pf-summary');
-        summary.textContent = item.summary;
+        summary.textContent = shown.summary;
         summary.dir = 'auto';
         text.append(summary);
       }

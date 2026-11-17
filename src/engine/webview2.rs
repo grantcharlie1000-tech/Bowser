@@ -37,6 +37,8 @@ use windows::{
 };
 use zeroize::{Zeroize, Zeroizing};
 
+mod ocr;
+
 use super::{
     BlockedChangedCallback, BrowsingDataKind, BrowsingDataRange, EngineAdapter, EngineEvents,
     MemoryTargetApply, MemoryUsageTarget, PermissionsHandle, TrackingPreventionLevel,
@@ -1592,6 +1594,183 @@ struct WebView2Tab {
     applied_bounds: Option<RECT>,
     /// The id of the spatial navigation script while it is added to this tab (page tools, T7).
     spatial_id: Rc<RefCell<Option<String>>>,
+    /// The Spoiler Firewall script registered for this tab's documents (see `crate::spoiler`).
+    spoiler: Rc<SpoilerScript>,
+    /// Native OCR for the Spoiler Firewall (`ocr.rs`): this tab's hooks, pump and cache access.
+    ocr: Rc<ocr::TabOcr>,
+    private: bool,
+}
+
+/// The Spoiler Firewall registration of one tab: the id WebView2 returned, an epoch that settles
+/// registrations that complete after a newer one was already requested, and the protective state
+/// (`failed`) a tab is in when the registration failed for good (see `crate::spoiler::injection_step`).
+#[derive(Default)]
+struct SpoilerScript {
+    id: RefCell<Option<String>>,
+    epoch: Cell<u64>,
+    /// The registration failed after its retry: Bowser's own page replaced the web page and every
+    /// navigation retries the registration first.
+    failed: Cell<bool>,
+    /// One-shot: Bowser is about to load its own protective page, which must pass the navigation policy.
+    own_page: Cell<bool>,
+    /// The last http(s) address a navigation started for (what the protective page offers to reload).
+    last_url: RefCell<Option<String>>,
+    /// Where to go once a retried registration succeeds.
+    resume: RefCell<Option<String>>,
+}
+
+/// (Re)registers the Spoiler Firewall script for new documents of one tab, from the current
+/// setting. Fire-and-forget like the login script: `configure_controller` runs inside the
+/// controller's creation callback, where waiting for a completion hangs. WebView2 applies calls in
+/// order, so the script is in place for the first navigation. The previous registration, if any, is
+/// removed; one still in flight is removed when it completes (its epoch is stale). Protection off
+/// registers nothing. A registration that fails asynchronously is retried once; if that fails too the
+/// tab is stopped and shows Bowser's protective page instead of an unprotected web page.
+unsafe fn install_spoiler_script(
+    webview: &ICoreWebView2,
+    slot: &Rc<SpoilerScript>,
+    private: bool,
+    ocr: &ocr::TabOcr,
+    log: Option<Rc<dyn Fn(&'static str)>>,
+) -> Result<()> {
+    unsafe {
+        let epoch = slot.epoch.get().wrapping_add(1);
+        slot.epoch.set(epoch);
+        if let Some(old) = slot.id.borrow_mut().take() {
+            let old = CoTaskMemPWSTR::from(old.as_str());
+            let _ = webview.RemoveScriptToExecuteOnDocumentCreated(*old.as_ref().as_pcwstr());
+        }
+        let credentials = ocr.credentials();
+        let Some(script) =
+            crate::spoiler::script_for(&crate::spoiler::current(), private, credentials.as_ref())
+        else {
+            // Protection is off: nothing to register, so a tab in the protective state is released.
+            resume_after_protection(webview, slot);
+            return Ok(());
+        };
+        register_spoiler_script(webview, slot, Rc::new(script), epoch, 0, log)
+    }
+}
+
+/// Leaves the protective state and goes where the user was headed, if anywhere.
+unsafe fn resume_after_protection(webview: &ICoreWebView2, slot: &SpoilerScript) {
+    unsafe {
+        if slot.failed.replace(false)
+            && let Some(url) = slot.resume.borrow_mut().take()
+        {
+            let url = CoTaskMemPWSTR::from(url.as_str());
+            let _ = webview.Navigate(*url.as_ref().as_pcwstr());
+        }
+    }
+}
+
+/// Stops the tab's navigation and loads Bowser's own protective page. Never waits.
+unsafe fn protect_tab(webview: &ICoreWebView2, slot: &SpoilerScript, log: Option<&Rc<dyn Fn(&'static str)>>) {
+    unsafe {
+        event(log, "spoiler_protection_failed");
+        slot.failed.set(true);
+        let last = slot.last_url.borrow().clone();
+        let _ = webview.Stop();
+        let page = crate::spoiler::protective_page_html(last.as_deref());
+        let page = CoTaskMemPWSTR::from(page.as_str());
+        slot.own_page.set(true);
+        if webview.NavigateToString(*page.as_ref().as_pcwstr()).is_err() {
+            let blank = CoTaskMemPWSTR::from("about:blank");
+            if webview.Navigate(*blank.as_ref().as_pcwstr()).is_err() {
+                slot.own_page.set(false);
+            }
+        }
+    }
+}
+
+unsafe fn register_spoiler_script(
+    webview: &ICoreWebView2,
+    slot: &Rc<SpoilerScript>,
+    script: Rc<String>,
+    epoch: u64,
+    attempt: u8,
+    log: Option<Rc<dyn Fn(&'static str)>>,
+) -> Result<()> {
+    unsafe {
+        let text = CoTaskMemPWSTR::from(script.as_str());
+        let done_slot = slot.clone();
+        let remover = webview.clone();
+        let retry_script = script.clone();
+        webview.AddScriptToExecuteOnDocumentCreated(
+            *text.as_ref().as_pcwstr(),
+            &AddScriptToExecuteOnDocumentCreatedCompletedHandler::create(Box::new(
+                move |status, id| {
+                    let registered = status.is_ok() && !id.is_empty();
+                    if done_slot.epoch.get() != epoch {
+                        if registered {
+                            let stale = CoTaskMemPWSTR::from(id.as_str());
+                            let _ = remover.RemoveScriptToExecuteOnDocumentCreated(
+                                *stale.as_ref().as_pcwstr(),
+                            );
+                        }
+                        return Ok(());
+                    }
+                    match crate::spoiler::injection_step(attempt, registered) {
+                        crate::spoiler::InjectionStep::Registered => {
+                            *done_slot.id.borrow_mut() = Some(id);
+                            resume_after_protection(&remover, &done_slot);
+                        }
+                        crate::spoiler::InjectionStep::Retry => {
+                            event(log.as_ref(), "spoiler_script_failed");
+                            if register_spoiler_script(
+                                &remover,
+                                &done_slot,
+                                retry_script.clone(),
+                                epoch,
+                                attempt + 1,
+                                log.clone(),
+                            )
+                            .is_err()
+                            {
+                                protect_tab(&remover, &done_slot, log.as_ref());
+                            }
+                        }
+                        crate::spoiler::InjectionStep::Protect => {
+                            event(log.as_ref(), "spoiler_script_failed");
+                            protect_tab(&remover, &done_slot, log.as_ref());
+                        }
+                    }
+                    Ok(())
+                },
+            )),
+        )
+    }
+}
+
+thread_local! {
+    /// Title deliveries waiting out `crate::spoiler::TITLE_HOLD_MS`, by timer id.
+    static TITLE_HOLDS: RefCell<HashMap<usize, Box<dyn FnOnce()>>> = RefCell::new(HashMap::new());
+}
+
+unsafe extern "system" fn title_hold_fired(_hwnd: HWND, _message: u32, timer: usize, _time: u32) {
+    let _ = unsafe { windows::Win32::UI::WindowsAndMessaging::KillTimer(None, timer) };
+    let job = TITLE_HOLDS.with(|holds| holds.borrow_mut().remove(&timer));
+    if let Some(job) = job {
+        job();
+    }
+}
+
+/// Runs `job` after the title hold, on this thread's message loop. When no timer can be had the job
+/// runs at once: a title is never lost.
+fn hold_title(job: Box<dyn FnOnce()>) {
+    let timer = unsafe {
+        windows::Win32::UI::WindowsAndMessaging::SetTimer(
+            None,
+            0,
+            crate::spoiler::TITLE_HOLD_MS,
+            Some(title_hold_fired),
+        )
+    };
+    if timer == 0 {
+        job();
+    } else {
+        TITLE_HOLDS.with(|holds| holds.borrow_mut().insert(timer, job));
+    }
 }
 
 pub struct WebView2Engine {
@@ -4828,6 +5007,28 @@ impl EngineAdapter for WebView2Engine {
         }
         Ok(())
     }
+    fn refresh_spoiler_scripts(&mut self) {
+        // Registration calls do not re-enter this engine, but hold no borrow across them anyway.
+        let tabs: Vec<_> = self
+            .core
+            .borrow()
+            .tabs
+            .values()
+            .filter_map(|tab| {
+                Some((tab.webview.clone()?, tab.spoiler.clone(), tab.private, tab.ocr.clone()))
+            })
+            .collect();
+        let log = self.core.borrow().events.policy_event.clone();
+        for (webview, slot, private, ocr) in tabs {
+            // Documents already showing get the held term update through the per-tab hook.
+            if crate::spoiler::current().enabled {
+                ocr.push_feed();
+            }
+            if unsafe { install_spoiler_script(&webview, &slot, private, &ocr, log.clone()) }.is_err() {
+                event(log.as_ref(), "spoiler_script_failed");
+            }
+        }
+    }
     fn force_background_memory_low(&mut self) -> usize {
         let mut state = self.core.borrow_mut();
         let visible = state.visible_tabs.clone();
@@ -5154,6 +5355,9 @@ impl EngineAdapter for WebView2Tab {
             // by the frame inset), so the next resize re-applies even unchanged bounds (L-1).
             self.applied_bounds = None;
         }
+        if visible {
+            self.ocr.kick();
+        }
         if visible
             && let Some(webview) = self.webview.as_ref()
             && let Ok(webview3) = webview.cast::<ICoreWebView2_3>()
@@ -5436,6 +5640,15 @@ unsafe fn configure_controller(
         }
         detail("configure_settings_finished", 0);
         detail("configure_look_started", 0);
+        // Spoiler Firewall: every tab (normal, private, guest, popups), outside the login gate
+        // above. A synchronous failure fails configuration, so no tab runs unprotected unnoticed.
+        let spoiler = Rc::new(SpoilerScript::default());
+        // Native OCR: its hooks go in first, so the script's config can carry the credentials. A
+        // failure leaves OCR off for this tab and never blocks the tab.
+        let visible_flag = Rc::new(Cell::new(visible));
+        let ocr = ocr::TabOcr::new(private, visible_flag.clone(), events.policy_event.clone());
+        ocr.install(&webview);
+        install_spoiler_script(&webview, &spoiler, private, &ocr, events.policy_event.clone())?;
         enable_smart_screen(&settings, events.policy_event.as_ref())?;
         start_website_look(&webview);
         // Page tools (T7): Ctrl+scroll zoom and spatial navigation, as Settings > Page tools has them.
@@ -5476,6 +5689,9 @@ unsafe fn configure_controller(
         let nav_blocker = blocker.clone();
         let nav_block_tab = block_tab.clone();
         let starting_document = document_gate.clone();
+        let spoiler_nav = spoiler.clone();
+        let spoiler_nav_ocr = ocr.clone();
+        let spoiler_nav_log = events.policy_event.clone();
         webview.add_NavigationStarting(
             &NavigationStartingEventHandler::create(Box::new(move |_sender, args| {
                 if args.is_none() { starting_document.borrow_mut().unreadable_event(); }
@@ -5493,6 +5709,28 @@ unsafe fn configure_controller(
                     if let Some(sender)=_sender.as_ref() {
                         super::app_context_menu_probe::reload::observe_navigation_start(
                             tab_id,sender.as_raw() as usize,id,&uri_value);
+                    }
+                    // Spoiler protection could not start in this tab: only Bowser's own protective page
+                    // may load. Anything else (a Reload, a typed address) retries the registration first
+                    // and resumes there once it holds; the page never loads unprotected.
+                    if spoiler_nav.failed.get() {
+                        let last = spoiler_nav.last_url.borrow().clone();
+                        match crate::spoiler::protective_navigation(spoiler_nav.own_page.replace(false), &uri_value, last.as_deref()) {
+                            crate::spoiler::ProtectiveNav::OwnPage => return Ok(()),
+                            crate::spoiler::ProtectiveNav::RetryAndResume(resume) => {
+                                let _ = args.SetCancel(true);
+                                *spoiler_nav.resume.borrow_mut() = resume;
+                                if let Some(sender) = _sender.as_ref()
+                                    && install_spoiler_script(sender, &spoiler_nav, private, &spoiler_nav_ocr, spoiler_nav_log.clone()).is_err()
+                                {
+                                    protect_tab(sender, &spoiler_nav, spoiler_nav_log.as_ref());
+                                }
+                                return Ok(());
+                            }
+                        }
+                    }
+                    if uri_value.starts_with("http://") || uri_value.starts_with("https://") {
+                        *spoiler_nav.last_url.borrow_mut() = Some(uri_value.clone());
                     }
                     let parsed = Url::parse(&uri_value).ok();
                     // A top-level navigation is not cancelled here. Cancelling a typed address or
@@ -5773,6 +6011,11 @@ unsafe fn configure_controller(
         let diagnostic_title_id = diagnostic_navigation_id;
         let page_ready = events.page_usable.clone();
         let title_changed = events.title_changed.clone();
+        // While Spoiler Firewall is on, a title reaches the tab strip, the window caption and
+        // history only after TITLE_HOLD_MS, read again at that moment, so the title the engine
+        // rewrites a risky one to ("Spoiler-protected page") is what shows, not the page's own. One
+        // hold at a time (a burst of changes is not starved): it delivers the latest title.
+        let title_hold_pending = Rc::new(Cell::new(false));
         webview.add_DocumentTitleChanged(
             &DocumentTitleChangedEventHandler::create(Box::new(move |sender, _| {
                 if let Some(sender) = sender {
@@ -5788,14 +6031,30 @@ unsafe fn configure_controller(
                         {
                             callback("diagnostic_fixture_ready", tab_id, diagnostic_title_id.get(), None, token);
                         }
-                        if let Some(callback) = title_changed.as_ref() {
-                            callback(tab_id, title_text.clone());
-                        }
                         if title_text.contains("BOWSER_BENCH_READY") {
                             if let Some(callback) = page_ready.as_ref() {
                                 callback(tab_id);
                             }
                         }
+                        let Some(callback) = title_changed.as_ref() else {
+                            return Ok(());
+                        };
+                        if !crate::spoiler::current().enabled {
+                            callback(tab_id, title_text);
+                            return Ok(());
+                        }
+                        if title_hold_pending.replace(true) {
+                            return Ok(());
+                        }
+                        let callback = callback.clone();
+                        let pending = title_hold_pending.clone();
+                        hold_title(Box::new(move || {
+                            pending.set(false);
+                            let mut latest = PWSTR::null();
+                            if sender.DocumentTitle(&mut latest).is_ok() {
+                                callback(tab_id, CoTaskMemPWSTR::from(latest).to_string());
+                            }
+                        }));
                     }
                 }
                 Ok(())
@@ -5821,6 +6080,26 @@ unsafe fn configure_controller(
         }
         // --- end auto-hide ---
 
+        // Web notifications show a page's title and body outside the page, where the engine cannot reach
+        // them. While Spoiler Firewall is on, Bowser takes every notification over (Handled) and shows
+        // nothing: there is no Rust classifier and no host-only toast, so suppression is the safe choice.
+        // With protection off the default WebView2 notification UI is untouched.
+        if let Ok(webview24) = webview.cast::<ICoreWebView2_24>() {
+            let notification_log = events.policy_event.clone();
+            let mut notification_token = 0i64;
+            let _ = webview24.add_NotificationReceived(
+                &webview2_com::NotificationReceivedEventHandler::create(Box::new(move |_sender, args| {
+                    if let Some(args) = args
+                        && crate::spoiler::current().enabled
+                    {
+                        let _ = args.SetHandled(true);
+                        event(notification_log.as_ref(), "spoiler_notification_suppressed");
+                    }
+                    Ok(())
+                })),
+                &mut notification_token,
+            );
+        }
         let policy_event = events.policy_event.clone();
         let permission_store = permissions.clone();
         let permission_denied = events.permission_denied.clone();
@@ -6515,9 +6794,12 @@ unsafe fn configure_controller(
             webview: Some(webview),
             allowed_file,
             memory_target_api: None,
-            visible: Rc::new(Cell::new(visible)),
+            visible: visible_flag,
             applied_bounds: Some(bounds),
             spatial_id,
+            spoiler,
+            ocr,
+            private,
         })
     }
 }
@@ -8780,6 +9062,9 @@ mod tests {
             focus_trace: None, environment: None, controller: None, webview: None, allowed_file: None,
             memory_target_api: None, visible: Rc::new(Cell::new(true)), applied_bounds: None,
             spatial_id: Rc::new(RefCell::new(None)),
+            spoiler: Rc::default(),
+            ocr: ocr::TabOcr::new(false, Rc::new(Cell::new(true)), None),
+            private: false,
         });
         engine.close().unwrap();
         assert!(owned.cancelled());
@@ -8913,6 +9198,9 @@ mod tests {
             environment: None, controller: None, webview: None, allowed_file: None,
             memory_target_api: None, visible: Rc::new(Cell::new(false)),
             applied_bounds: None, spatial_id: Rc::new(RefCell::new(None)),
+            spoiler: Rc::default(),
+            ocr: ocr::TabOcr::new(false, Rc::new(Cell::new(false)), None),
+            private: false,
         });
         assert!(state.automatic_suspend_current(id, hidden, &gate, proof));
         state.active_tab = Some(id);

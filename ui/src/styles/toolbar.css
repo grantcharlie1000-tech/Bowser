@@ -952,6 +952,11 @@ html[data-scheme="dark"] #app {
   }
 }
 
+/* Spoiler guard: the "· path hidden" note after a host-only address. */
+.u-hidden-note {
+  opacity: 0.75;
+}
+
 /* ---- Zen sidebar: the toolbar stacked at the top of the vertical tab sidebar ----
    With the tabs in a sidebar, Rust lays the toolbar out in the sidebar column as two rows
    (chrome::layout::compute_zen_in_frame): navigation and the action buttons with the main menu on the

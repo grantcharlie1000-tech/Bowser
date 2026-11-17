@@ -1,0 +1,1483 @@
+{
+ "lexicon": "2026.11.17-1",
+ "counts": {
+  "synthetic": 8875,
+  "real": 29107
+ },
+ "summary": {
+  "synthetic-positives": {
+   "lockdown": {
+    "pos": 5689,
+    "hit": 5689,
+    "neg": 0,
+    "fp": 0
+   },
+   "strict": {
+    "pos": 5689,
+    "hit": 5689,
+    "neg": 0,
+    "fp": 0
+   },
+   "balanced": {
+    "pos": 5489,
+    "hit": 5253,
+    "neg": 200,
+    "fp": 0
+   }
+  },
+  "synthetic-positives-heldout": {
+   "lockdown": {
+    "pos": 983,
+    "hit": 983,
+    "neg": 0,
+    "fp": 0
+   },
+   "strict": {
+    "pos": 983,
+    "hit": 983,
+    "neg": 0,
+    "fp": 0
+   },
+   "balanced": {
+    "pos": 930,
+    "hit": 870,
+    "neg": 53,
+    "fp": 0
+   }
+  },
+  "synthetic-positives-tuning": {
+   "lockdown": {
+    "pos": 4706,
+    "hit": 4706,
+    "neg": 0,
+    "fp": 0
+   },
+   "strict": {
+    "pos": 4706,
+    "hit": 4706,
+    "neg": 0,
+    "fp": 0
+   },
+   "balanced": {
+    "pos": 4559,
+    "hit": 4383,
+    "neg": 147,
+    "fp": 0
+   }
+  },
+  "synthetic-negatives": {
+   "lockdown": {
+    "pos": 378,
+    "hit": 378,
+    "neg": 2608,
+    "fp": 0
+   },
+   "strict": {
+    "pos": 120,
+    "hit": 120,
+    "neg": 3066,
+    "fp": 0
+   },
+   "balanced": {
+    "pos": 0,
+    "hit": 0,
+    "neg": 3186,
+    "fp": 0
+   }
+  },
+  "synthetic-negatives-heldout": {
+   "lockdown": {
+    "pos": 67,
+    "hit": 67,
+    "neg": 443,
+    "fp": 0
+   },
+   "strict": {
+    "pos": 29,
+    "hit": 29,
+    "neg": 510,
+    "fp": 0
+   },
+   "balanced": {
+    "pos": 0,
+    "hit": 0,
+    "neg": 539,
+    "fp": 0
+   }
+  },
+  "real-negatives": {
+   "lockdown": {
+    "pos": 18,
+    "hit": 18,
+    "neg": 29089,
+    "fp": 29
+   },
+   "strict": {
+    "pos": 18,
+    "hit": 18,
+    "neg": 29089,
+    "fp": 5
+   },
+   "balanced": {
+    "pos": 0,
+    "hit": 0,
+    "neg": 29089,
+    "fp": 3
+   }
+  },
+  "real-negatives-no-gta6-mention": {
+   "lockdown": {
+    "pos": 0,
+    "hit": 0,
+    "neg": 29089,
+    "fp": 29
+   },
+   "strict": {
+    "pos": 0,
+    "hit": 0,
+    "neg": 29089,
+    "fp": 5
+   },
+   "balanced": {
+    "pos": 0,
+    "hit": 0,
+    "neg": 29089,
+    "fp": 3
+   }
+  }
+ },
+ "byCategory": {
+  "pos:franchise-en": {
+   "lockdown": {
+    "pos": 2600,
+    "hit": 2600,
+    "neg": 0,
+    "fp": 0
+   },
+   "strict": {
+    "pos": 2600,
+    "hit": 2600,
+    "neg": 0,
+    "fp": 0
+   },
+   "balanced": {
+    "pos": 2600,
+    "hit": 2600,
+    "neg": 0,
+    "fp": 0
+   }
+  },
+  "pos:cipher": {
+   "lockdown": {
+    "pos": 240,
+    "hit": 240,
+    "neg": 0,
+    "fp": 0
+   },
+   "strict": {
+    "pos": 240,
+    "hit": 240,
+    "neg": 0,
+    "fp": 0
+   },
+   "balanced": {
+    "pos": 240,
+    "hit": 4,
+    "neg": 0,
+    "fp": 0
+   }
+  },
+  "pos:multilingual-ar": {
+   "lockdown": {
+    "pos": 66,
+    "hit": 66,
+    "neg": 0,
+    "fp": 0
+   },
+   "strict": {
+    "pos": 66,
+    "hit": 66,
+    "neg": 0,
+    "fp": 0
+   },
+   "balanced": {
+    "pos": 66,
+    "hit": 66,
+    "neg": 0,
+    "fp": 0
+   }
+  },
+  "pos:multilingual-pl": {
+   "lockdown": {
+    "pos": 63,
+    "hit": 63,
+    "neg": 0,
+    "fp": 0
+   },
+   "strict": {
+    "pos": 63,
+    "hit": 63,
+    "neg": 0,
+    "fp": 0
+   },
+   "balanced": {
+    "pos": 63,
+    "hit": 63,
+    "neg": 0,
+    "fp": 0
+   }
+  },
+  "pos:multilingual-tr": {
+   "lockdown": {
+    "pos": 69,
+    "hit": 69,
+    "neg": 0,
+    "fp": 0
+   },
+   "strict": {
+    "pos": 69,
+    "hit": 69,
+    "neg": 0,
+    "fp": 0
+   },
+   "balanced": {
+    "pos": 69,
+    "hit": 69,
+    "neg": 0,
+    "fp": 0
+   }
+  },
+  "pos:multilingual-ja": {
+   "lockdown": {
+    "pos": 75,
+    "hit": 75,
+    "neg": 0,
+    "fp": 0
+   },
+   "strict": {
+    "pos": 75,
+    "hit": 75,
+    "neg": 0,
+    "fp": 0
+   },
+   "balanced": {
+    "pos": 75,
+    "hit": 75,
+    "neg": 0,
+    "fp": 0
+   }
+  },
+  "pos:multilingual-de": {
+   "lockdown": {
+    "pos": 88,
+    "hit": 88,
+    "neg": 0,
+    "fp": 0
+   },
+   "strict": {
+    "pos": 88,
+    "hit": 88,
+    "neg": 0,
+    "fp": 0
+   },
+   "balanced": {
+    "pos": 88,
+    "hit": 88,
+    "neg": 0,
+    "fp": 0
+   }
+  },
+  "pos:multilingual-ko": {
+   "lockdown": {
+    "pos": 74,
+    "hit": 74,
+    "neg": 0,
+    "fp": 0
+   },
+   "strict": {
+    "pos": 74,
+    "hit": 74,
+    "neg": 0,
+    "fp": 0
+   },
+   "balanced": {
+    "pos": 74,
+    "hit": 74,
+    "neg": 0,
+    "fp": 0
+   }
+  },
+  "pos:multilingual-fr": {
+   "lockdown": {
+    "pos": 90,
+    "hit": 90,
+    "neg": 0,
+    "fp": 0
+   },
+   "strict": {
+    "pos": 90,
+    "hit": 90,
+    "neg": 0,
+    "fp": 0
+   },
+   "balanced": {
+    "pos": 90,
+    "hit": 90,
+    "neg": 0,
+    "fp": 0
+   }
+  },
+  "pos:multilingual-pt": {
+   "lockdown": {
+    "pos": 82,
+    "hit": 82,
+    "neg": 0,
+    "fp": 0
+   },
+   "strict": {
+    "pos": 82,
+    "hit": 82,
+    "neg": 0,
+    "fp": 0
+   },
+   "balanced": {
+    "pos": 82,
+    "hit": 82,
+    "neg": 0,
+    "fp": 0
+   }
+  },
+  "pos:multilingual-ru": {
+   "lockdown": {
+    "pos": 76,
+    "hit": 76,
+    "neg": 0,
+    "fp": 0
+   },
+   "strict": {
+    "pos": 76,
+    "hit": 76,
+    "neg": 0,
+    "fp": 0
+   },
+   "balanced": {
+    "pos": 76,
+    "hit": 76,
+    "neg": 0,
+    "fp": 0
+   }
+  },
+  "pos:multilingual-es": {
+   "lockdown": {
+    "pos": 89,
+    "hit": 89,
+    "neg": 0,
+    "fp": 0
+   },
+   "strict": {
+    "pos": 89,
+    "hit": 89,
+    "neg": 0,
+    "fp": 0
+   },
+   "balanced": {
+    "pos": 89,
+    "hit": 89,
+    "neg": 0,
+    "fp": 0
+   }
+  },
+  "pos:multilingual-zh": {
+   "lockdown": {
+    "pos": 57,
+    "hit": 57,
+    "neg": 0,
+    "fp": 0
+   },
+   "strict": {
+    "pos": 57,
+    "hit": 57,
+    "neg": 0,
+    "fp": 0
+   },
+   "balanced": {
+    "pos": 57,
+    "hit": 57,
+    "neg": 0,
+    "fp": 0
+   }
+  },
+  "pos:multilingual-it": {
+   "lockdown": {
+    "pos": 80,
+    "hit": 80,
+    "neg": 0,
+    "fp": 0
+   },
+   "strict": {
+    "pos": 80,
+    "hit": 80,
+    "neg": 0,
+    "fp": 0
+   },
+   "balanced": {
+    "pos": 80,
+    "hit": 80,
+    "neg": 0,
+    "fp": 0
+   }
+  },
+  "pos:multilingual-nl": {
+   "lockdown": {
+    "pos": 86,
+    "hit": 86,
+    "neg": 0,
+    "fp": 0
+   },
+   "strict": {
+    "pos": 86,
+    "hit": 86,
+    "neg": 0,
+    "fp": 0
+   },
+   "balanced": {
+    "pos": 86,
+    "hit": 86,
+    "neg": 0,
+    "fp": 0
+   }
+  },
+  "pos:multilingual-th": {
+   "lockdown": {
+    "pos": 65,
+    "hit": 65,
+    "neg": 0,
+    "fp": 0
+   },
+   "strict": {
+    "pos": 65,
+    "hit": 65,
+    "neg": 0,
+    "fp": 0
+   },
+   "balanced": {
+    "pos": 65,
+    "hit": 65,
+    "neg": 0,
+    "fp": 0
+   }
+  },
+  "pos:entity-cue": {
+   "lockdown": {
+    "pos": 1000,
+    "hit": 1000,
+    "neg": 0,
+    "fp": 0
+   },
+   "strict": {
+    "pos": 1000,
+    "hit": 1000,
+    "neg": 0,
+    "fp": 0
+   },
+   "balanced": {
+    "pos": 1000,
+    "hit": 1000,
+    "neg": 0,
+    "fp": 0
+   }
+  },
+  "pos:entity-mention": {
+   "lockdown": {
+    "pos": 200,
+    "hit": 200,
+    "neg": 0,
+    "fp": 0
+   },
+   "strict": {
+    "pos": 200,
+    "hit": 200,
+    "neg": 0,
+    "fp": 0
+   },
+   "balanced": {
+    "pos": 0,
+    "hit": 0,
+    "neg": 200,
+    "fp": 0
+   }
+  },
+  "pos:cold-shape-role": {
+   "lockdown": {
+    "pos": 7,
+    "hit": 7,
+    "neg": 0,
+    "fp": 0
+   },
+   "strict": {
+    "pos": 7,
+    "hit": 7,
+    "neg": 0,
+    "fp": 0
+   },
+   "balanced": {
+    "pos": 7,
+    "hit": 7,
+    "neg": 0,
+    "fp": 0
+   }
+  },
+  "pos:cold-shape-reply": {
+   "lockdown": {
+    "pos": 8,
+    "hit": 8,
+    "neg": 0,
+    "fp": 0
+   },
+   "strict": {
+    "pos": 8,
+    "hit": 8,
+    "neg": 0,
+    "fp": 0
+   },
+   "balanced": {
+    "pos": 8,
+    "hit": 8,
+    "neg": 0,
+    "fp": 0
+   }
+  },
+  "pos:cold-shape-game": {
+   "lockdown": {
+    "pos": 14,
+    "hit": 14,
+    "neg": 0,
+    "fp": 0
+   },
+   "strict": {
+    "pos": 14,
+    "hit": 14,
+    "neg": 0,
+    "fp": 0
+   },
+   "balanced": {
+    "pos": 14,
+    "hit": 14,
+    "neg": 0,
+    "fp": 0
+   }
+  },
+  "pos:cold-shape-launch": {
+   "lockdown": {
+    "pos": 6,
+    "hit": 6,
+    "neg": 0,
+    "fp": 0
+   },
+   "strict": {
+    "pos": 6,
+    "hit": 6,
+    "neg": 0,
+    "fp": 0
+   },
+   "balanced": {
+    "pos": 6,
+    "hit": 6,
+    "neg": 0,
+    "fp": 0
+   }
+  },
+  "pos:cold-shape-both": {
+   "lockdown": {
+    "pos": 10,
+    "hit": 10,
+    "neg": 0,
+    "fp": 0
+   },
+   "strict": {
+    "pos": 10,
+    "hit": 10,
+    "neg": 0,
+    "fp": 0
+   },
+   "balanced": {
+    "pos": 10,
+    "hit": 10,
+    "neg": 0,
+    "fp": 0
+   }
+  },
+  "pos:hot2-cue-only": {
+   "lockdown": {
+    "pos": 544,
+    "hit": 544,
+    "neg": 0,
+    "fp": 0
+   },
+   "strict": {
+    "pos": 544,
+    "hit": 544,
+    "neg": 0,
+    "fp": 0
+   },
+   "balanced": {
+    "pos": 544,
+    "hit": 544,
+    "neg": 0,
+    "fp": 0
+   }
+  },
+  "neg:other-media-spoilers": {
+   "lockdown": {
+    "pos": 0,
+    "hit": 0,
+    "neg": 492,
+    "fp": 0
+   },
+   "strict": {
+    "pos": 0,
+    "hit": 0,
+    "neg": 492,
+    "fp": 0
+   },
+   "balanced": {
+    "pos": 0,
+    "hit": 0,
+    "neg": 492,
+    "fp": 0
+   }
+  },
+  "neg:older-gta-games": {
+   "lockdown": {
+    "pos": 0,
+    "hit": 0,
+    "neg": 457,
+    "fp": 0
+   },
+   "strict": {
+    "pos": 0,
+    "hit": 0,
+    "neg": 457,
+    "fp": 0
+   },
+   "balanced": {
+    "pos": 0,
+    "hit": 0,
+    "neg": 457,
+    "fp": 0
+   }
+  },
+  "neg:jason-other": {
+   "lockdown": {
+    "pos": 0,
+    "hit": 0,
+    "neg": 360,
+    "fp": 0
+   },
+   "strict": {
+    "pos": 0,
+    "hit": 0,
+    "neg": 360,
+    "fp": 0
+   },
+   "balanced": {
+    "pos": 0,
+    "hit": 0,
+    "neg": 360,
+    "fp": 0
+   }
+  },
+  "neg:lucia-other": {
+   "lockdown": {
+    "pos": 0,
+    "hit": 0,
+    "neg": 300,
+    "fp": 0
+   },
+   "strict": {
+    "pos": 0,
+    "hit": 0,
+    "neg": 300,
+    "fp": 0
+   },
+   "balanced": {
+    "pos": 0,
+    "hit": 0,
+    "neg": 300,
+    "fp": 0
+   }
+  },
+  "neg:toronto-gta": {
+   "lockdown": {
+    "pos": 0,
+    "hit": 0,
+    "neg": 300,
+    "fp": 0
+   },
+   "strict": {
+    "pos": 0,
+    "hit": 0,
+    "neg": 300,
+    "fp": 0
+   },
+   "balanced": {
+    "pos": 0,
+    "hit": 0,
+    "neg": 300,
+    "fp": 0
+   }
+  },
+  "neg:rockstar-other": {
+   "lockdown": {
+    "pos": 0,
+    "hit": 0,
+    "neg": 200,
+    "fp": 0
+   },
+   "strict": {
+    "pos": 0,
+    "hit": 0,
+    "neg": 200,
+    "fp": 0
+   },
+   "balanced": {
+    "pos": 0,
+    "hit": 0,
+    "neg": 200,
+    "fp": 0
+   }
+  },
+  "neg:logistics-short": {
+   "lockdown": {
+    "pos": 258,
+    "hit": 258,
+    "neg": 0,
+    "fp": 0
+   },
+   "strict": {
+    "pos": 0,
+    "hit": 0,
+    "neg": 258,
+    "fp": 0
+   },
+   "balanced": {
+    "pos": 0,
+    "hit": 0,
+    "neg": 258,
+    "fp": 0
+   }
+  },
+  "neg:logistics-long": {
+   "lockdown": {
+    "pos": 120,
+    "hit": 120,
+    "neg": 0,
+    "fp": 0
+   },
+   "strict": {
+    "pos": 120,
+    "hit": 120,
+    "neg": 0,
+    "fp": 0
+   },
+   "balanced": {
+    "pos": 0,
+    "hit": 0,
+    "neg": 120,
+    "fp": 0
+   }
+  },
+  "neg:cold-ambiguous": {
+   "lockdown": {
+    "pos": 0,
+    "hit": 0,
+    "neg": 99,
+    "fp": 0
+   },
+   "strict": {
+    "pos": 0,
+    "hit": 0,
+    "neg": 99,
+    "fp": 0
+   },
+   "balanced": {
+    "pos": 0,
+    "hit": 0,
+    "neg": 99,
+    "fp": 0
+   }
+  },
+  "neg:other-media-ml": {
+   "lockdown": {
+    "pos": 0,
+    "hit": 0,
+    "neg": 0,
+    "fp": 0
+   },
+   "strict": {
+    "pos": 0,
+    "hit": 0,
+    "neg": 200,
+    "fp": 0
+   },
+   "balanced": {
+    "pos": 0,
+    "hit": 0,
+    "neg": 200,
+    "fp": 0
+   }
+  },
+  "neg:chatter": {
+   "lockdown": {
+    "pos": 0,
+    "hit": 0,
+    "neg": 400,
+    "fp": 0
+   },
+   "strict": {
+    "pos": 0,
+    "hit": 0,
+    "neg": 400,
+    "fp": 0
+   },
+   "balanced": {
+    "pos": 0,
+    "hit": 0,
+    "neg": 400,
+    "fp": 0
+   }
+  }
+ },
+ "byTransform": {
+  "zerowidth": {
+   "lockdown": {
+    "pos": 796,
+    "hit": 796,
+    "neg": 0,
+    "fp": 0
+   },
+   "strict": {
+    "pos": 796,
+    "hit": 796,
+    "neg": 0,
+    "fp": 0
+   },
+   "balanced": {
+    "pos": 759,
+    "hit": 759,
+    "neg": 37,
+    "fp": 0
+   }
+  },
+  "censor": {
+   "lockdown": {
+    "pos": 358,
+    "hit": 358,
+    "neg": 0,
+    "fp": 0
+   },
+   "strict": {
+    "pos": 358,
+    "hit": 358,
+    "neg": 0,
+    "fp": 0
+   },
+   "balanced": {
+    "pos": 358,
+    "hit": 358,
+    "neg": 0,
+    "fp": 0
+   }
+  },
+  "punct": {
+   "lockdown": {
+    "pos": 432,
+    "hit": 432,
+    "neg": 0,
+    "fp": 0
+   },
+   "strict": {
+    "pos": 432,
+    "hit": 432,
+    "neg": 0,
+    "fp": 0
+   },
+   "balanced": {
+    "pos": 432,
+    "hit": 432,
+    "neg": 0,
+    "fp": 0
+   }
+  },
+  "hashtag": {
+   "lockdown": {
+    "pos": 203,
+    "hit": 203,
+    "neg": 0,
+    "fp": 0
+   },
+   "strict": {
+    "pos": 203,
+    "hit": 203,
+    "neg": 0,
+    "fp": 0
+   },
+   "balanced": {
+    "pos": 203,
+    "hit": 203,
+    "neg": 0,
+    "fp": 0
+   }
+  },
+  "homoglyph": {
+   "lockdown": {
+    "pos": 505,
+    "hit": 505,
+    "neg": 0,
+    "fp": 0
+   },
+   "strict": {
+    "pos": 505,
+    "hit": 505,
+    "neg": 0,
+    "fp": 0
+   },
+   "balanced": {
+    "pos": 462,
+    "hit": 462,
+    "neg": 43,
+    "fp": 0
+   }
+  },
+  "spacing": {
+   "lockdown": {
+    "pos": 340,
+    "hit": 340,
+    "neg": 0,
+    "fp": 0
+   },
+   "strict": {
+    "pos": 340,
+    "hit": 340,
+    "neg": 0,
+    "fp": 0
+   },
+   "balanced": {
+    "pos": 309,
+    "hit": 309,
+    "neg": 31,
+    "fp": 0
+   }
+  },
+  "emoji": {
+   "lockdown": {
+    "pos": 192,
+    "hit": 192,
+    "neg": 0,
+    "fp": 0
+   },
+   "strict": {
+    "pos": 192,
+    "hit": 192,
+    "neg": 0,
+    "fp": 0
+   },
+   "balanced": {
+    "pos": 192,
+    "hit": 192,
+    "neg": 0,
+    "fp": 0
+   }
+  },
+  "mixed": {
+   "lockdown": {
+    "pos": 501,
+    "hit": 501,
+    "neg": 0,
+    "fp": 0
+   },
+   "strict": {
+    "pos": 501,
+    "hit": 501,
+    "neg": 0,
+    "fp": 0
+   },
+   "balanced": {
+    "pos": 458,
+    "hit": 458,
+    "neg": 43,
+    "fp": 0
+   }
+  },
+  "leet": {
+   "lockdown": {
+    "pos": 456,
+    "hit": 456,
+    "neg": 0,
+    "fp": 0
+   },
+   "strict": {
+    "pos": 456,
+    "hit": 456,
+    "neg": 0,
+    "fp": 0
+   },
+   "balanced": {
+    "pos": 456,
+    "hit": 456,
+    "neg": 0,
+    "fp": 0
+   }
+  },
+  "none": {
+   "lockdown": {
+    "pos": 1197,
+    "hit": 1197,
+    "neg": 0,
+    "fp": 0
+   },
+   "strict": {
+    "pos": 1197,
+    "hit": 1197,
+    "neg": 0,
+    "fp": 0
+   },
+   "balanced": {
+    "pos": 1151,
+    "hit": 1151,
+    "neg": 46,
+    "fp": 0
+   }
+  },
+  "camelHashtag": {
+   "lockdown": {
+    "pos": 139,
+    "hit": 139,
+    "neg": 0,
+    "fp": 0
+   },
+   "strict": {
+    "pos": 139,
+    "hit": 139,
+    "neg": 0,
+    "fp": 0
+   },
+   "balanced": {
+    "pos": 139,
+    "hit": 139,
+    "neg": 0,
+    "fp": 0
+   }
+  },
+  "regional": {
+   "lockdown": {
+    "pos": 169,
+    "hit": 169,
+    "neg": 0,
+    "fp": 0
+   },
+   "strict": {
+    "pos": 169,
+    "hit": 169,
+    "neg": 0,
+    "fp": 0
+   },
+   "balanced": {
+    "pos": 169,
+    "hit": 169,
+    "neg": 0,
+    "fp": 0
+   }
+  },
+  "reversed": {
+   "lockdown": {
+    "pos": 80,
+    "hit": 80,
+    "neg": 0,
+    "fp": 0
+   },
+   "strict": {
+    "pos": 80,
+    "hit": 80,
+    "neg": 0,
+    "fp": 0
+   },
+   "balanced": {
+    "pos": 80,
+    "hit": 0,
+    "neg": 0,
+    "fp": 0
+   }
+  },
+  "rot13": {
+   "lockdown": {
+    "pos": 80,
+    "hit": 80,
+    "neg": 0,
+    "fp": 0
+   },
+   "strict": {
+    "pos": 80,
+    "hit": 80,
+    "neg": 0,
+    "fp": 0
+   },
+   "balanced": {
+    "pos": 80,
+    "hit": 4,
+    "neg": 0,
+    "fp": 0
+   }
+  },
+  "reversedWords": {
+   "lockdown": {
+    "pos": 80,
+    "hit": 80,
+    "neg": 0,
+    "fp": 0
+   },
+   "strict": {
+    "pos": 80,
+    "hit": 80,
+    "neg": 0,
+    "fp": 0
+   },
+   "balanced": {
+    "pos": 80,
+    "hit": 0,
+    "neg": 0,
+    "fp": 0
+   }
+  },
+  "vowel": {
+   "lockdown": {
+    "pos": 63,
+    "hit": 63,
+    "neg": 0,
+    "fp": 0
+   },
+   "strict": {
+    "pos": 63,
+    "hit": 63,
+    "neg": 0,
+    "fp": 0
+   },
+   "balanced": {
+    "pos": 63,
+    "hit": 63,
+    "neg": 0,
+    "fp": 0
+   }
+  },
+  "typo": {
+   "lockdown": {
+    "pos": 98,
+    "hit": 98,
+    "neg": 0,
+    "fp": 0
+   },
+   "strict": {
+    "pos": 98,
+    "hit": 98,
+    "neg": 0,
+    "fp": 0
+   },
+   "balanced": {
+    "pos": 98,
+    "hit": 98,
+    "neg": 0,
+    "fp": 0
+   }
+  }
+ },
+ "realByCategory": {
+  "real-de:paragraph": {
+   "lockdown": {
+    "pos": 2,
+    "hit": 2,
+    "neg": 365,
+    "fp": 2
+   },
+   "strict": {
+    "pos": 2,
+    "hit": 2,
+    "neg": 365,
+    "fp": 0
+   },
+   "balanced": {
+    "pos": 0,
+    "hit": 0,
+    "neg": 365,
+    "fp": 0
+   }
+  },
+  "real-de:sentence": {
+   "lockdown": {
+    "pos": 2,
+    "hit": 2,
+    "neg": 1253,
+    "fp": 1
+   },
+   "strict": {
+    "pos": 2,
+    "hit": 2,
+    "neg": 1253,
+    "fp": 0
+   },
+   "balanced": {
+    "pos": 0,
+    "hit": 0,
+    "neg": 1253,
+    "fp": 0
+   }
+  },
+  "real-en:paragraph": {
+   "lockdown": {
+    "pos": 5,
+    "hit": 5,
+    "neg": 4397,
+    "fp": 15
+   },
+   "strict": {
+    "pos": 5,
+    "hit": 5,
+    "neg": 4397,
+    "fp": 1
+   },
+   "balanced": {
+    "pos": 0,
+    "hit": 0,
+    "neg": 4397,
+    "fp": 0
+   }
+  },
+  "real-en:sentence": {
+   "lockdown": {
+    "pos": 5,
+    "hit": 5,
+    "neg": 16427,
+    "fp": 8
+   },
+   "strict": {
+    "pos": 5,
+    "hit": 5,
+    "neg": 16427,
+    "fp": 1
+   },
+   "balanced": {
+    "pos": 0,
+    "hit": 0,
+    "neg": 16427,
+    "fp": 0
+   }
+  },
+  "real-es:paragraph": {
+   "lockdown": {
+    "pos": 1,
+    "hit": 1,
+    "neg": 484,
+    "fp": 2
+   },
+   "strict": {
+    "pos": 1,
+    "hit": 1,
+    "neg": 484,
+    "fp": 2
+   },
+   "balanced": {
+    "pos": 0,
+    "hit": 0,
+    "neg": 484,
+    "fp": 2
+   }
+  },
+  "real-es:sentence": {
+   "lockdown": {
+    "pos": 1,
+    "hit": 1,
+    "neg": 1406,
+    "fp": 1
+   },
+   "strict": {
+    "pos": 1,
+    "hit": 1,
+    "neg": 1406,
+    "fp": 1
+   },
+   "balanced": {
+    "pos": 0,
+    "hit": 0,
+    "neg": 1406,
+    "fp": 1
+   }
+  },
+  "real-fr:paragraph": {
+   "lockdown": {
+    "pos": 1,
+    "hit": 1,
+    "neg": 385,
+    "fp": 0
+   },
+   "strict": {
+    "pos": 1,
+    "hit": 1,
+    "neg": 385,
+    "fp": 0
+   },
+   "balanced": {
+    "pos": 0,
+    "hit": 0,
+    "neg": 385,
+    "fp": 0
+   }
+  },
+  "real-fr:sentence": {
+   "lockdown": {
+    "pos": 1,
+    "hit": 1,
+    "neg": 1271,
+    "fp": 0
+   },
+   "strict": {
+    "pos": 1,
+    "hit": 1,
+    "neg": 1271,
+    "fp": 0
+   },
+   "balanced": {
+    "pos": 0,
+    "hit": 0,
+    "neg": 1271,
+    "fp": 0
+   }
+  },
+  "real-ja:paragraph": {
+   "lockdown": {
+    "pos": 0,
+    "hit": 0,
+    "neg": 568,
+    "fp": 0
+   },
+   "strict": {
+    "pos": 0,
+    "hit": 0,
+    "neg": 568,
+    "fp": 0
+   },
+   "balanced": {
+    "pos": 0,
+    "hit": 0,
+    "neg": 568,
+    "fp": 0
+   }
+  },
+  "real-ja:sentence": {
+   "lockdown": {
+    "pos": 0,
+    "hit": 0,
+    "neg": 1291,
+    "fp": 0
+   },
+   "strict": {
+    "pos": 0,
+    "hit": 0,
+    "neg": 1291,
+    "fp": 0
+   },
+   "balanced": {
+    "pos": 0,
+    "hit": 0,
+    "neg": 1291,
+    "fp": 0
+   }
+  },
+  "real-ru:paragraph": {
+   "lockdown": {
+    "pos": 0,
+    "hit": 0,
+    "neg": 286,
+    "fp": 0
+   },
+   "strict": {
+    "pos": 0,
+    "hit": 0,
+    "neg": 286,
+    "fp": 0
+   },
+   "balanced": {
+    "pos": 0,
+    "hit": 0,
+    "neg": 286,
+    "fp": 0
+   }
+  },
+  "real-ru:sentence": {
+   "lockdown": {
+    "pos": 0,
+    "hit": 0,
+    "neg": 835,
+    "fp": 0
+   },
+   "strict": {
+    "pos": 0,
+    "hit": 0,
+    "neg": 835,
+    "fp": 0
+   },
+   "balanced": {
+    "pos": 0,
+    "hit": 0,
+    "neg": 835,
+    "fp": 0
+   }
+  },
+  "real-zh:paragraph": {
+   "lockdown": {
+    "pos": 0,
+    "hit": 0,
+    "neg": 40,
+    "fp": 0
+   },
+   "strict": {
+    "pos": 0,
+    "hit": 0,
+    "neg": 40,
+    "fp": 0
+   },
+   "balanced": {
+    "pos": 0,
+    "hit": 0,
+    "neg": 40,
+    "fp": 0
+   }
+  },
+  "real-zh:sentence": {
+   "lockdown": {
+    "pos": 0,
+    "hit": 0,
+    "neg": 81,
+    "fp": 0
+   },
+   "strict": {
+    "pos": 0,
+    "hit": 0,
+    "neg": 81,
+    "fp": 0
+   },
+   "balanced": {
+    "pos": 0,
+    "hit": 0,
+    "neg": 81,
+    "fp": 0
+   }
+  }
+ },
+ "timing": {
+  "calls": 37982,
+  "meanMs": 0.0777,
+  "p95Ms": 0.3033,
+  "p99Ms": 0.5863,
+  "maxMs": 17.409,
+  "prefilterRejectedPct": 66.09
+ }
+}

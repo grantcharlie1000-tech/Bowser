@@ -315,3 +315,23 @@ test('the script holds to its safety rules', () => {
   assert.match(SCRIPT, /'r2\|'/);
   assert.ok(SCRIPT.length < 13500, `script is ${SCRIPT.length} bytes`);
 });
+
+// ---- Spoiler Firewall: reader view never beats a shield ----
+const SHIELD_STYLE = '<style>[data-sfw~="shield"],[data-sfw~="shield"] *{visibility:hidden!important}</style>';
+const shieldedArticle = (edit) => edit(readFileSync(join(fixtures, 'article-semantic.html'), 'utf8').replace('</head>', () => `${SHIELD_STYLE}</head>`));
+
+test('reader: a shielded paragraph stays hidden in reader view while the rest is shown', { skip }, () => {
+  const html = shieldedArticle((text) => text.replace('<p class="byline">', () => '<p class="byline" data-sfw="shield">'));
+  const r = run('article-shielded-paragraph (generated)', { mode: 'reader', show: ['article#story h1', 'article#story p:not(.byline)'], hide: ['p.byline'] }, html);
+  assert.equal(parse(r.toggle).state, 'reader', r.toggle);
+  assert.equal(r.shown['article#story h1'], true);
+  assert.equal(r.shown['article#story p:not(.byline)'], true);
+  assert.equal(r.hidden['p.byline'], false, 'the shielded paragraph is not made visible by [data-bwr-k]');
+});
+
+test('reader: a shielded article container is not chosen and stays covered', { skip }, () => {
+  const html = shieldedArticle((text) => text.replace('<article id="story">', () => '<article id="story" data-sfw="shield">'));
+  const r = run('article-shielded-root (generated)', { mode: 'reader', show: [], hide: ['article#story', 'article#story p'] }, html);
+  assert.notEqual(r.root, 'article#story', 'reader does not pick the shielded unit as the article');
+  for (const [selector, visible] of Object.entries(r.hidden)) assert.ok(!visible, `${selector} stays hidden`);
+});

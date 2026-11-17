@@ -41,10 +41,10 @@ import { browserProbes, drmText, runMediaCheck, verdictText, type MediaReport } 
 import { TAB_CARDS, TAB_CARD_TITLES, assignmentText, cardSpecs, clampNumber, numberLabel, textApplies, toggleApplies, type TabOptionSpec, type TabOptionValues } from './tab-options-logic';
 import {
   BOOKMARKS_BAR_MODES, EFFICIENCY_MODES, FONT_SIZES, MAX_SIDEBAR, MAX_UI_FONT, MAX_ZOOM, MIN_SIDEBAR, MIN_ZOOM,
-  ROWS, TAB_LAYOUT_ARIA, TAB_LAYOUT_LABELS, THEME_MODES,
+  ROWS, SPOILER_LIMITS_NOTE, SPOILER_MODES, SPOILER_MODE_HINTS, SPOILER_MODE_LABELS, SPOILER_OFF_WARNING, TAB_LAYOUT_ARIA, TAB_LAYOUT_LABELS, THEME_MODES,
   addSite, draftOf, durationLabel, highlightRanges, isSection, matchRows, parseSettingsSnapshot, resultCountText,
   saveText, sleepOptions, translateTargetOptions, updateView, type BookmarksBarMode, type Draft, type EfficiencyMode, type FontSize, type RowSpec,
-  type SettingsSnapshot, type TabLayout, type ThemeMode, type TrackingPrevention,
+  type SettingsSnapshot, type SpoilerMode, type TabLayout, type ThemeMode, type TrackingPrevention,
   AREAS, LATER_LABEL, LATER_TITLE, MORE_LABEL, PAGE_ROWS, RESTART_NOTE, areaOf, partTitle, rowTier, type AreaSpec,
   SETTINGS_VIEW_KEY, SIMPLE_ALL_LABEL, SIMPLE_MOVED, SIMPLE_TITLE, readSettingsView, simpleTabChoice, simpleThemeChoice, type SettingsView,
   AUTO_HIDE_BARS, AUTO_HIDE_BAR_LABELS, autoHideBarsList, autoHideBarsText, type AutoHideBar, // --- auto-hide (T11) ---
@@ -1097,6 +1097,49 @@ export function startSettingsPage(root: HTMLElement): void {
   const allowRow = row(blockCard, 'allow', allowForm);
   allowRow.root.classList.add('is-wrap', 'is-tight');
   allowRow.root.append(allowList, allowError);
+
+  // Spoiler protection: built in and on by default (src/spoiler.rs). Turning it off takes a second,
+  // explicit step that says what it costs; the mode and the effects follow the switch. Rows are one
+  // line like every other: the longer wording is each control's accessible text and the row's tooltip.
+  const spoilerCard = card('privacy', 'Spoiler protection');
+  const spoilerSwitch = switchControl((on) => {
+    if (on) { offAsked = false; paintOffAsk(); change((d) => { d.spoilerProtection = true; }); return; }
+    spoilerSwitch.set(true);
+    offAsked = true;
+    paintOffAsk();
+    spoilerKeep.focus();
+  });
+  const spoilerRow = row(spoilerCard, 'spoilerProtection', spoilerSwitch.root);
+  let offAsked = false;
+  const offBox = el('div', 'sp-reset');
+  offBox.hidden = true;
+  const offWarning = el('p', 'sp-field-error');
+  offWarning.setAttribute('role', 'alert');
+  offWarning.textContent = SPOILER_OFF_WARNING;
+  const spoilerKeep = textButton('Keep protection on', () => { offAsked = false; paintOffAsk(); spoilerSwitch.root.focus(); });
+  const spoilerOff = textButton('Turn off protection', () => {
+    offAsked = false;
+    paintOffAsk();
+    spoilerSwitch.set(false);
+    change((d) => { d.spoilerProtection = false; });
+  }, { icon: 'warning' });
+  spoilerOff.classList.add('is-danger');
+  const paintOffAsk = (): void => { offBox.hidden = !offAsked; offWarning.hidden = !offAsked; };
+  offBox.append(spoilerKeep, spoilerOff);
+  paintOffAsk();
+  spoilerRow.root.classList.add('is-wrap', 'is-tight');
+  spoilerRow.root.append(offWarning, offBox);
+  const spoilerMode = segmentedControl<SpoilerMode>('How much to hide', SPOILER_MODES.map((mode) => [mode, SPOILER_MODE_LABELS[mode], `${SPOILER_MODE_LABELS[mode]}. ${SPOILER_MODE_HINTS[mode]}`] as const), (value) => change((d) => { d.spoilerMode = value; }));
+  row(spoilerCard, 'spoilerMode', spoilerMode.root);
+  const spoilerEffects = switchControl((on) => change((d) => { d.spoilerReducedEffects = on; }));
+  row(spoilerCard, 'spoilerReducedEffects', spoilerEffects.root);
+  const spoilerOcr = switchControl((on) => change((d) => { d.spoilerOcr = on; }));
+  row(spoilerCard, 'spoilerOcr', spoilerOcr.root);
+  const spoilerFeed = switchControl((on) => change((d) => { d.spoilerFeed = on; }));
+  const spoilerFeedRow = row(spoilerCard, 'spoilerFeed', spoilerFeed.root);
+  const spoilerNoteRow = row(spoilerCard, 'spoilerNote');
+  spoilerNoteRow.root.setAttribute('data-tip', SPOILER_LIMITS_NOTE);
+
   const trackCard = card('privacy', 'Tracking');
   const tracking = segmentedControl<TrackingPrevention>('Tracking prevention', [['balanced', 'Balanced'], ['strict', 'Strict']], (value) => change((d) => { d.trackingPrevention = value; }));
   row(trackCard, 'tracking', tracking.root);
@@ -1846,6 +1889,15 @@ export function startSettingsPage(root: HTMLElement): void {
     shiftRightClick.set(d.shiftRightClickContext);
     copyLink.set(d.ctrlShiftCCopyLink);
     blockYoutube.set(d.blockYoutubeVideoAds);
+    spoilerSwitch.set(d.spoilerProtection);
+    if (d.spoilerProtection === false && offAsked) { offAsked = false; paintOffAsk(); }
+    spoilerMode.set(d.spoilerMode);
+    spoilerEffects.set(d.spoilerReducedEffects);
+    spoilerOcr.set(d.spoilerOcr);
+    spoilerFeed.set(d.spoilerFeed);
+    // Rows are one line, so the update status is the row's tooltip.
+    if (s.spoilerFeedStatus) spoilerFeedRow.root.setAttribute('data-tip', s.spoilerFeedStatus);
+    else spoilerFeedRow.root.removeAttribute('data-tip');
     if (engineValue.dataset.source !== 'address') engineValue.textContent = searchEngineLabel(s.searchEngine);
     const isDefault = s.defaultBrowser === 'yes';
     defaultBrowserButton.disabled = isDefault;
@@ -1888,11 +1940,17 @@ export function startSettingsPage(root: HTMLElement): void {
     for (const control of [
       layout, grouping, tracking, efficiency, sleep,
       previewImages, previewMemory, mru, pinGroups, edgeDrop, vTabs, theme, centred, minimal, loadProgress, frameless, autoHideFullscreen,
-      rounded, bookmarksBarCtl, bookmarksGroups, fontSizeCtl, zoomIndicator, shiftRightClick, copyLink, blockYoutube,
+      rounded, bookmarksBarCtl, bookmarksGroups, fontSizeCtl, zoomIndicator, shiftRightClick, copyLink, blockYoutube, spoilerSwitch,
       presets, tabBarVisible, addressBarVisible, titleBar, statusBarCtl, densityCtl, compactMenus, // --- layout (thread T6) ---
       winAnimations, winRangeButtons, winFade, winScrollbars, winMonoIcons, panelClose, panelCounts, panelAutoClose, // --- window and panels (thread T9) ---
     ]) control.disable(!s.readable);
     paintSavedTile(d.layout.saved, s.readable); // --- layout (thread T6) --- after the group-wide disable
+    // The mode and the effects only matter while protection is on.
+    spoilerMode.disable(!s.readable || !d.spoilerProtection);
+    spoilerEffects.disable(!s.readable || !d.spoilerProtection);
+    spoilerOcr.disable(!s.readable || !d.spoilerProtection);
+    spoilerFeed.disable(!s.readable);
+    spoilerOff.disabled = !s.readable;
     downloadAsk.disable(!s.readable);
     translateOffer.disable(!s.readable);
     translateAuto.disable(!s.readable);

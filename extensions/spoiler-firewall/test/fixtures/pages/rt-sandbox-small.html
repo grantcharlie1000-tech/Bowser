@@ -1,0 +1,4 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><link rel="stylesheet" href="/pages/common.css"><title>sandboxed src frames (small, cold page)</title></head><body><p class="item" data-expect="clear">Parent page clean text.</p>
+<div class="item" id="wrap"><iframe id="f" sandbox src="{{ORIGIN_B}}/pages/rt-frame-clean.html" width="150" height="60"></iframe></div>
+<div class="item" id="pixel" data-expect="clear"><iframe id="px" sandbox src="{{ORIGIN_B}}/pages/rt-frame-clean.html" width="1" height="1" style="border:0"></iframe></div>
+<p class="item" data-expect="clear">More clean text after the frame.</p></body></html>

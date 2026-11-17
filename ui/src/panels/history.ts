@@ -1,9 +1,11 @@
 import { sendPanel, type Inbound, type SnapshotMsg } from '../protocol';
 import { el } from '../dom';
 import { historyClickOpensNewTab, historyOpenCommand } from './history-logic';
+import { guardRow, RevealedRows, rowKey, SHOW_LABEL } from '../spoiler-guard'; // --- spoiler guard ---
+import { onSpoilerConfig } from '../spoiler-config';
 import { emptyState, enter, faviconTile, iconButton, isFavUri, moveFocus, panelHeader, searchField, sectionHeader, textButton } from './kit';
 
-type Entry = { id: number; title: string; host: string; clock: string };
+type Entry = { id: number; title: string; host: string; clock: string; url?: string };
 type Day = { label: string; count: number };
 type Row = Entry | Day;
 const isEntry = (row: Row): row is Entry => 'id' in row;
@@ -16,6 +18,8 @@ export function startHistoryPanel(root: HTMLElement): (message: Inbound) => void
   let pendingFocus: number | null = null;
   let composing = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
+  /** Rows the user revealed in this panel (session only, never stored). */
+  const revealed = new RevealedRows(); // --- spoiler guard ---
 
   const header = panelHeader('History', 'Close history');
   const search = searchField('Search history');
@@ -79,10 +83,13 @@ export function startHistoryPanel(root: HTMLElement): (message: Inbound) => void
       const item = el('div', 'bw-row bw-focus-inset pn-row');
       item.setAttribute('role', 'option');
       item.dataset.id = String(row.id);
-      const name = row.title || row.host;
+      const key = rowKey(row.id, row.title, row.url ?? '');
+      const guarded = guardRow({ title: row.title, url: row.url ?? '' }, revealed.has(key));
+      const name = guarded.masked ? guarded.title : row.title || row.host;
       const title = el('span', 'pn-row-title');
       title.textContent = name;
-      title.setAttribute('data-tip', row.title && row.host ? `${row.title}\n${row.host}` : name);
+      if (guarded.masked) item.dataset.spoiler = 'hidden';
+      title.setAttribute('data-tip', guarded.masked ? row.host : row.title && row.host ? `${row.title}\n${row.host}` : name);
       const trail = el('span', 'pn-trail');
       const meta = el('span', 'pn-meta');
       const where = el('span', 'pn-meta-host');
@@ -91,6 +98,7 @@ export function startHistoryPanel(root: HTMLElement): (message: Inbound) => void
       when.textContent = row.clock;
       meta.append(where, when);
       const actions = el('span', 'pn-actions');
+      if (guarded.masked) actions.append(textButton(SHOW_LABEL, (event) => { event.stopPropagation(); revealed.add(key); render(); }, { subtle: true, aria: 'Show this hidden history entry' }));
       actions.append(
         iconButton('trash', `Remove ${name} from history`, (event) => { event.stopPropagation(); removeAndAdvance(row.id, 'remove'); }),
         iconButton('workspace-globe', `Remove all visits to ${row.host} from history`, (event) => { event.stopPropagation(); removeAndAdvance(row.id, 'removesite'); }),
@@ -157,7 +165,7 @@ export function startHistoryPanel(root: HTMLElement): (message: Inbound) => void
     rows = incoming.filter((value): value is Row => {
       if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
       const row = value as Record<string, unknown>;
-      if (typeof row.id === 'number') return Number.isSafeInteger(row.id) && row.id > 0 && row.id <= 0xffffffff && typeof row.title === 'string' && typeof row.host === 'string' && typeof row.clock === 'string';
+      if (typeof row.id === 'number') return Number.isSafeInteger(row.id) && row.id > 0 && row.id <= 0xffffffff && typeof row.title === 'string' && typeof row.host === 'string' && typeof row.clock === 'string' && (row.url === undefined || typeof row.url === 'string');
       return typeof row.label === 'string' && typeof row.count === 'number' && Number.isSafeInteger(row.count) && row.count >= 0;
     });
     const incomingFavs = message.d.favs;
@@ -168,5 +176,6 @@ export function startHistoryPanel(root: HTMLElement): (message: Inbound) => void
     render();
   };
   render();
+  onSpoilerConfig(render);
   return (message) => { if (message.t === 'snap') receive(message); };
 }

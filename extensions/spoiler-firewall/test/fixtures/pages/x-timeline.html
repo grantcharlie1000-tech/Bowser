@@ -1,0 +1,16 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Home / X</title><link rel="stylesheet" href="/pages/common.css">
+<style>article{display:block}[data-testid=cellInnerDiv]{padding:4px 0}[data-testid=trend]{padding:6px;border-bottom:1px solid #eee}</style></head>
+<body><div data-testid="primaryColumn"><div aria-label="Timeline: Your Home Timeline" id="tl">
+<div data-testid="cellInnerDiv"><article data-testid="tweet" class="item" data-expect="clear"><div data-testid="User-Name"><a href="/jess">Jess</a> <span>@jess</span></div><div data-testid="tweetText"><span>Lovely weather today, going for a long hike with the dog.</span></div><img src="/static/pic.svg" alt="Dog on a trail"></article></div>
+<div data-testid="cellInnerDiv"><article data-testid="tweet" class="item" data-expect="shield" id="spoiler1"><div data-testid="User-Name"><a href="/leak_account" data-hover="1">Leaker</a> <span>@leak_account</span></div><div data-testid="tweetText"><span class="sentinel">GTA 6 ending spo<!--SPLIT-->iler: the hero di<!--SPLIT-->es in the final mission</span></div><img src="/static/spoiler-gta6-ending-scene.svg" alt="screenshot"></article></div>
+<div data-testid="cellInnerDiv"><article data-testid="tweet" class="item" data-expect="clear"><div data-testid="User-Name"><a href="/chef">Chef</a></div><div data-testid="tweetText"><span>New video: five pasta tips that will change your dinner.</span></div></article></div>
+<div data-testid="cellInnerDiv"><article data-testid="tweet" class="item" data-expect="shield" id="spoiler2"><div data-testid="tweetText"><span class="sentinel">Grand Theft Auto VI leaked ending: the partner betrays everyone</span></div></article></div>
+<div data-testid="cellInnerDiv"><article data-testid="tweet" class="item" data-expect="clear"><div data-testid="tweetText"><span>Anyone else excited for the weekend? Coffee first.</span></div></article></div>
+</div></div>
+<div id="side"><div data-testid="trend" data-expect="clear">Trending: #Gardening</div><div data-testid="trend" data-expect="shield"><span class="sentinel">GTA 6 ending leak trending</span></div></div>
+<div id="typeahead" role="listbox"><div data-testid="typeaheadResult" role="option" data-expect="clear"><span>gardening tips</span></div><div data-testid="typeaheadResult" role="option" data-expect="shield"><span class="sentinel">gta 6 ending spoiler</span></div></div>
+<script src="/pages/common.js"></script>
+<script>
+setTimeout(function(){var tl=document.getElementById('tl');for(var i=0;i<4;i++){var c=FX.el('div',{'data-testid':'cellInnerDiv'});c.innerHTML='<article data-testid="tweet" class="item" data-expect="'+(i%2?'clear':'shield')+'"><div data-testid="tweetText"><span '+(i%2?'':'class="sentinel"')+'>'+(i%2?'Dynamic clean tweet number '+i:'GTA 6 spoiler dynamic '+i+': the hero dies at the ending')+'</span></div></article>';tl.appendChild(c);}},250);
+document.addEventListener('mouseover',function(e){var a=e.target.closest&&e.target.closest('a[data-hover]');if(a&&!window.__card){window.__card=true;setTimeout(function(){var d=document.createElement('div');d.id='hovercard';d.innerHTML='<span class="sentinel">hovercard GTA 6 spoiler ending: hero dies</span>';document.body.appendChild(d);},50);}},true);
+</script></body></html>

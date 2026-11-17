@@ -566,8 +566,11 @@ function buildDownloadButton(root: HTMLElement): DownloadButton {
  * Called on setText and blur only, never per keystroke. `flags` (the address bar options) can keep
  * `https://` visible (`full`) and emphasise only the base domain (`highlight`).
  */
-export function renderDisplay(view: View, text: string, flags?: Pick<AddrFlags, 'full' | 'highlight' | 'base'>): boolean {
-  const parts = splitUrl(text, flags?.full === true);
+export const PATH_HIDDEN_LABEL = ' · path hidden';
+
+export function renderDisplay(view: View, text: string, flags?: Pick<AddrFlags, 'full' | 'highlight' | 'base'>, pathHidden = false): boolean {
+  // A withheld path leaves a bare host (no scheme); it still gets the display form so the note can show.
+  const parts = splitUrl(pathHidden && !/^https?:\/\//i.test(text) ? `https://${text}` : text, flags?.full === true);
   if (!parts) {
     view.display.replaceChildren();
     return false;
@@ -589,6 +592,8 @@ export function renderDisplay(view: View, text: string, flags?: Pick<AddrFlags, 
     add('u-host', parts.host);
   }
   add('u-rest', parts.rest);
+  // Spoiler guard: the path was withheld from the unfocused address; focusing the field shows the whole address.
+  if (pathHidden) add('u-rest u-hidden-note', PATH_HIDDEN_LABEL);
   view.display.replaceChildren(...nodes);
   return true;
 }

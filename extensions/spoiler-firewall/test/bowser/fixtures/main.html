@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>GTA 6 ending: the lighthouse betrayal (synthetic test page)</title>
+</head>
+<body style="font:16px sans-serif;margin:0;padding:8px">
+<h2 id="top-text">GTA 6 ending: Lucia sells out the crew to a pelican at the lighthouse (synthetic test spoiler, top document)</h2>
+<p id="clean">Control paragraph with no franchise or spoiler words.</p>
+<div style="display:flex;gap:8px;flex-wrap:wrap">
+<!-- cross-origin: localhost vs 127.0.0.1 is a different site, so it is an out-of-process frame -->
+<iframe id="cross" width="360" height="110" src="http://localhost:18082/frame.html"></iframe>
+<iframe id="srcdoc" width="360" height="110" srcdoc="<body style='font:14px sans-serif'><p id='t'>GTA 6 ending: the pelican betrays Lucia (synthetic, srcdoc frame)</p></body>"></iframe>
+<iframe id="sandboxed" width="360" height="110" sandbox src="http://localhost:18082/frame.html?sandboxed=1"></iframe>
+<iframe id="blank" width="360" height="110" src="about:blank"></iframe>
+<iframe id="blob" width="360" height="110"></iframe>
+<iframe id="data" width="360" height="110" src="data:text/html,%3Cbody%20style%3D%22font%3A14px%20sans-serif%22%3E%3Cp%3EGTA%206%20ending%3A%20the%20pelican%20betrays%20Lucia%20(synthetic%2C%20data%3A%20frame)%3C%2Fp%3E%3C%2Fbody%3E"></iframe>
+</div>
+<script>
+// about:blank frame filled in by the parent after load, and a blob: frame.
+addEventListener('load', () => {
+  const blank = document.getElementById('blank').contentDocument;
+  blank.open();
+  blank.write("<body style='font:14px sans-serif'><p>GTA 6 ending: the pelican betrays Lucia (synthetic, about:blank frame)</p></body>");
+  blank.close();
+  const blob = new Blob(["<body style='font:14px sans-serif'><p>GTA 6 ending: the pelican betrays Lucia (synthetic, blob: frame)</p></body>"], { type: 'text/html' });
+  document.getElementById('blob').src = URL.createObjectURL(blob);
+});
+</script>
+</body>
+</html>

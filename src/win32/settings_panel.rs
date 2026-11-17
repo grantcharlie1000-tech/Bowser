@@ -1939,6 +1939,8 @@ fn save_form(hwnd: HWND) {
         // The GDI form has no controls for the theme options (the HTML settings page has them).
         themes: current.themes,
         window: current.window, // --- window and panels (thread T9) --- no GDI controls; the file's values are kept
+        // No controls for Spoiler Firewall in the GDI form: the file's values are kept.
+        spoiler: current.spoiler,
     };
     match settings::save(&path, &settings) {
         Ok(()) => {

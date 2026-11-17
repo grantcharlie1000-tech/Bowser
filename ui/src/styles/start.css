@@ -799,3 +799,15 @@
     grid-template-columns: minmax(0, 1fr);
   }
 }
+
+/* Spoiler guard: a web page widget waits for a click while protection is on. */
+#app.split-view.is-start .sp-frame-paused {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  gap: var(--bw-space-2);
+  padding: var(--bw-space-3);
+  border-radius: var(--bw-r-control);
+}

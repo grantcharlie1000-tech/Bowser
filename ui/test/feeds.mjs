@@ -211,3 +211,12 @@ test('a guest window offers no feeds, and an empty profile says how to start', (
   assert.equal(root.querySelector('.pf').classList.contains('is-busy'), true);
   assert.equal(root.querySelector('.pf-status').textContent, 'Refreshing 2 feeds…');
 });
+
+test('spoiler guard: an untitled feed offer shows the host, never a spoiler slug', () => {
+  const slug = 'https://news.example/gta6-ending-explained/feed.xml';
+  deliver({ d: { ...fixture.snap.d, page: [{ url: slug, title: '', subscribed: false }, { url: 'https://plain.example/blog/feed.xml', title: '', subscribed: false }] } });
+  const text = root.querySelector('.pf-page').querySelectorAll('span').map((n) => n.textContent).join('|');
+  assert.ok(!text.includes('gta6-ending'), 'no slug in the offer');
+  assert.ok(text.includes('news.example'), 'the host stays');
+  assert.ok(text.includes('https://plain.example/blog/feed.xml'), 'a clean address is untouched');
+});
