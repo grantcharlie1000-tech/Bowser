@@ -21,6 +21,11 @@
   padding-bottom: var(--bw-space-1);
 }
 
+/* Capped, the column scrolls; its rows must keep their height rather than shrink into each other. */
+.bw-siteinfo > * {
+  flex: none;
+}
+
 .bw-siteinfo-header {
   display: flex;
   align-items: center;
