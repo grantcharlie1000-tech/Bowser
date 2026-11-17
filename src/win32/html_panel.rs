@@ -714,6 +714,14 @@ fn run_command(runtime: &Rc<RefCell<Runtime>>, command: Command) {
             crate::win32::post(owner, crate::win32::WM_RAIL_CHANGED, WPARAM(0), LPARAM(0));
             send_current(runtime);
         }
+        // Icon buttons in the flyout carry data-tip; the anchor maps from the flyout's own window.
+        command @ (Command::Tip { .. } | Command::TipOff) => {
+            let target = runtime.try_borrow().ok().and_then(|state| state.host.clone().map(|host| (state.owner, state.window, host)));
+            if let Some((owner, window, host)) = target {
+                let dpi = unsafe { windows::Win32::UI::HiDpi::GetDpiForWindow(window) };
+                super::window::html_view_tip(owner, &host, dpi, command);
+            }
+        }
         _ => {}
     }
 }

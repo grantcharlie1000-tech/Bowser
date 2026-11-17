@@ -192,6 +192,12 @@ fn ensure_host(owner: HWND) {
                     queue(owner, action);
                 }
             }
+            command @ (Command::Tip { .. } | Command::TipOff) => {
+                if let Some(host) = with(owner, |rt| rt.host.clone()).flatten() {
+                    let dpi = unsafe { windows::Win32::UI::HiDpi::GetDpiForWindow(owner) };
+                    super::window::html_view_tip(owner, &host, dpi, command);
+                }
+            }
             _ => {}
         }
     });
