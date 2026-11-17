@@ -114,6 +114,13 @@ test('Escape closes one submenu level at a time, then dismisses the menu', () =>
   assert.deepEqual(logic.menuKey(nav, 'Escape', {}, 0), { kind: 'dismiss' });
 });
 
+test('a submenu opened near the bottom of the screen moves up to fit instead of being squeezed', () => {
+  assert.equal(logic.childTop(40, 120, 400), 40, 'room below: level with its row');
+  assert.equal(logic.childTop(336, 280, 386), 106, 'near the bottom: lifted so its last row is on screen');
+  assert.equal(logic.childTop(336, 500, 386), 0, 'taller than the window: from the parent top, and it scrolls');
+  assert.equal(logic.childTop(0, 50, 10), 0, 'never above the parent top');
+});
+
 test('at most the open page and its parent are on screen', () => {
   const deep = item(9, 'Deep', { submenu: [item(10, 'Leaf')] });
   const nav = logic.createNav([item(1, 'Top', { submenu: [item(2, 'Middle', { submenu: [deep] })] })]);

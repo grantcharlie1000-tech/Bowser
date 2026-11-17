@@ -277,6 +277,16 @@ export function flyoutSide(room: FlyoutRoom | null, need: number): { side: 'righ
   return { side, overlap: Math.min(need, need - Math.max(0, side === 'right' ? room.r : room.l)) };
 }
 
+/**
+ * Where a child card's top goes, in px below the parent card's top: level with the row that opened
+ * it (`rowTop`), lifted just enough that the whole card (`height`) fits above the window's bottom
+ * (`room` px below the parent's top), and never above the parent's top (the window starts there).
+ * A card taller than `room` starts at the parent's top and scrolls.
+ */
+export function childTop(rowTop: number, height: number, room: number): number {
+  return Math.max(0, Math.min(Math.round(rowTop), Math.floor(room - height)));
+}
+
 const EASE_KEYWORDS: Record<string, readonly [number, number, number, number]> = {
   ease: [0.25, 0.1, 0.25, 1],
   'ease-in': [0.42, 0, 1, 1],
