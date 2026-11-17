@@ -746,3 +746,19 @@ fn recovery_presentation_html_omnibox_draft_and_keyboard_pass_to_the_native_fiel
         assert_eq!(read_edit(edit), "half typed address");
     }
 }
+
+#[test]
+fn recovery_presentation_f6_reaches_a_failure_card_only_while_the_active_page_failed() {
+    let _profile = crate::profile::TestProfileGuard::isolated();
+    let f = Fixture::new();
+    crate::app::test_show_page(&f.app, TabId(0), "https://example.test/healthy");
+    sync_recovery_buttons(f.hwnd, &f.app);
+    assert!(!hang_prompt::focus(f.hwnd, &f.app), "a healthy page keeps F6 for itself");
+    App::tab_render_failed(&f.app, TabId(0));
+    sync_recovery_buttons(f.hwnd, &f.app);
+    assert!(hang_prompt::focus(f.hwnd, &f.app), "the failure card is the keyboard's way to Retry");
+    let other = App::new_tab(&f.app);
+    sync_recovery_buttons(f.hwnd, &f.app);
+    assert_eq!(App::active_tab_id(&f.app), other);
+    assert!(!hang_prompt::focus(f.hwnd, &f.app), "another tab's hidden card never takes the keyboard");
+}

@@ -7,8 +7,8 @@
 use super::*;
 use windows::core::PCWSTR;
 use windows::Win32::UI::{
-    Input::KeyboardAndMouse::{GetFocus, SetFocus, VK_DOWN, VK_ESCAPE, VK_LEFT, VK_RIGHT, VK_TAB, VK_UP},
-    WindowsAndMessaging::{BS_PUSHBUTTON, GetDlgCtrlID, SW_SHOWNA, WINDOW_EX_STYLE, WM_KEYDOWN, WM_SETFONT, WS_CLIPSIBLINGS, WS_TABSTOP},
+    Input::KeyboardAndMouse::{GetFocus, SetFocus, VK_DOWN, VK_ESCAPE, VK_LEFT, VK_RETURN, VK_RIGHT, VK_TAB, VK_UP},
+    WindowsAndMessaging::{BM_CLICK, BS_PUSHBUTTON, GetDlgCtrlID, SW_SHOWNA, WINDOW_EX_STYLE, WM_KEYDOWN, WM_SETFONT, WS_CLIPSIBLINGS, WS_TABSTOP},
 };
 
 pub(super) const WAIT_ID: usize = 0x6f40;
@@ -56,12 +56,18 @@ pub(super) fn choose(hwnd: HWND, app: &AppRef, index: usize, reload: bool) {
     }
 }
 
-/// F6 towards the page: a hung page cannot take the keyboard, so its visible prompt does.
+/// F6 towards the page: a hung or failed page cannot take the keyboard, so its visible Wait
+/// button or failure card does.
 pub(super) fn focus(hwnd: HWND, app: &AppRef) -> bool {
     let active = App::active_tab_id(app);
-    let Some(wait) = with_chrome(hwnd, |s| s.hang_prompts.iter().find(|prompt| prompt.tab == Some(active)).map(|prompt| prompt.wait)).flatten() else { return false; };
-    if wait.is_invalid() || !App::unresponsive_prompt(app, active) { return false; }
-    unsafe { let _ = SetFocus(Some(wait)); }
+    let target = with_chrome(hwnd, |s| {
+        let hang = s.hang_prompts.iter().find(|prompt| prompt.tab == Some(active)).map(|prompt| prompt.wait);
+        let card = s.recovery_buttons.iter().find(|(_, tab)| *tab == Some(active)).map(|(button, _)| *button);
+        hang.filter(|_| App::unresponsive_prompt(app, active))
+            .or(card.filter(|_| App::content_failure_message(app, active).is_some()))
+    }).flatten();
+    let Some(target) = target.filter(|target| !target.is_invalid()) else { return false; };
+    unsafe { let _ = SetFocus(Some(target)); }
     true
 }
 
@@ -73,9 +79,19 @@ fn create(class: PCWSTR, text: &str, style: WINDOW_STYLE, parent: HWND, id: usiz
     }
 }
 
+/// Keyboard for a native page-area button (a hang prompt choice or a failure card). Outside a
+/// dialog a BUTTON clicks only on Space; Enter must click it too.
+pub(super) fn install_keys(button: HWND) {
+    if !button.is_invalid() { unsafe { let _ = SetWindowSubclass(button, Some(button_keys), SUBCLASS_ID, 0); } }
+}
+
 unsafe extern "system" fn button_keys(button: HWND, msg: u32, w: WPARAM, l: LPARAM, _: usize, _: usize) -> LRESULT {
     if msg == WM_KEYDOWN {
         let key = w.0 as u16;
+        if key == VK_RETURN.0 {
+            unsafe { let _ = SendMessageW(button, BM_CLICK, None, None); }
+            return LRESULT(0);
+        }
         let parent = unsafe { GetParent(button) }.unwrap_or_default();
         let id = unsafe { GetDlgCtrlID(button) } as usize;
         if let Some((index, reload)) = command(id) {
@@ -132,7 +148,7 @@ pub(super) fn sync(hwnd: HWND, app: &AppRef) {
         for (slot, id, text) in [(&mut prompt.wait, WAIT_ID, crate::app::UNRESPONSIVE_WAIT), (&mut prompt.reload, RELOAD_ID, crate::app::UNRESPONSIVE_RELOAD)] {
             if slot.is_invalid() {
                 *slot = create(w!("BUTTON"), text, WS_TABSTOP | WINDOW_STYLE(BS_PUSHBUTTON as u32), hwnd, id + index).unwrap_or_default();
-                if !slot.is_invalid() { unsafe { let _ = SetWindowSubclass(*slot, Some(button_keys), SUBCLASS_ID, 0); } }
+                install_keys(*slot);
             }
         }
         if prompt.controls().iter().any(|control| control.is_invalid()) {

@@ -3199,8 +3199,16 @@ unsafe extern "system" fn window_proc(
             }
             WM_COMMAND if (RECOVERY_BUTTON_ID..RECOVERY_BUTTON_ID + 4).contains(&(wparam.0 & 0xffff)) && wparam.0 >> 16 == 0 => {
                 let index = (wparam.0 & 0xffff) - RECOVERY_BUTTON_ID;
-                let tab = with_chrome(hwnd, |s| s.recovery_buttons[index].1).flatten();
-                if let (Some(app), Some(tab)) = (app, tab) { App::retry_failed_tab(app, tab); }
+                let (button, tab) = with_chrome(hwnd, |s| s.recovery_buttons[index]).unwrap_or_default();
+                if let (Some(app), Some(tab)) = (app, tab) {
+                    let had_focus = !button.is_invalid() && windows::Win32::UI::Input::KeyboardAndMouse::GetFocus() == button;
+                    if App::retry_failed_tab(app, tab) && had_focus {
+                        // The card hides with the retry: the keyboard returns to the window, then the page.
+                        sync_recovery_buttons(hwnd, app);
+                        let _ = windows::Win32::UI::Input::KeyboardAndMouse::SetFocus(Some(hwnd));
+                        App::focus_page(app);
+                    }
+                }
                 LRESULT(0)
             }
             WM_SUBMIT => {
@@ -9787,6 +9795,7 @@ fn sync_recovery_buttons(hwnd: HWND, app: &AppRef) {
                     WS_CHILD | WS_TABSTOP | WINDOW_STYLE(BS_MULTILINE as u32), 0, 0, 1, 1,
                     Some(hwnd), Some(HMENU((RECOVERY_BUTTON_ID + index) as *mut _)), None, None) else { continue; };
                 button = created;
+                hang_prompt::install_keys(button);
             }
             let font = app.borrow().input_font;
             let _ = SendMessageW(button, windows::Win32::UI::WindowsAndMessaging::WM_SETFONT, Some(WPARAM(font.0 as usize)), Some(LPARAM(0)));
@@ -12874,7 +12883,7 @@ fn run_key_command(hwnd: HWND, app: &AppRef, cmd: Command, key: u32) {
                     edit_focused(hwnd) || omnibox_focused(hwnd),
                 ) =>
         {
-            // A hung page cannot take the keyboard; its Wait / Reload prompt does.
+            // A hung or failed page cannot take the keyboard; its prompt or failure card does.
             if !hang_prompt::focus(hwnd, app) { App::focus_page(app) }
         }
         Command::FocusOmnibox => focus_omni(hwnd, app, true),
