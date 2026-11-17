@@ -269,3 +269,107 @@ test('applyTheme turns fontScale into --bw-font-scale and ui_font into a quoted 
   const view = readFileSync(join(uiRoot, 'src', 'view.ts'), 'utf8');
   assert.doesNotMatch(view, /root\.style\.fontSize|root\.style\.fontFamily/, 'the old html font-size/family had no effect on the px tokens');
 });
+
+// ---- Shared status and page-material tokens ----
+
+/** WCAG relative luminance and contrast of #rrggbb colours; `mixRgb` is CSS color-mix in srgb. */
+const rgbOf = (hex) => [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16));
+const linear = (c) => { const v = c / 255; return v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; };
+const luminance = (rgb) => 0.2126 * linear(rgb[0]) + 0.7152 * linear(rgb[1]) + 0.0722 * linear(rgb[2]);
+const contrast = (a, b) => { const [x, y] = [luminance(a), luminance(b)].sort((p, q) => q - p); return (x + 0.05) / (y + 0.05); };
+const mixRgb = (top, share, bottom) => top.map((v, i) => v * share + bottom[i] * (1 - share));
+
+test('--bw-danger and --bw-warning are text-grade on the window, a card and a field in both schemes', () => {
+  const tokens = readFileSync(join(stylesDir, 'tokens.css'), 'utf8');
+  const theme = readFileSync(join(uiRoot, '..', 'src', 'theme.rs'), 'utf8');
+  // The opaque window colours Rust sends (the glass palettes share the RGB).
+  const window = (name) => {
+    const block = new RegExp(`const ${name}: Palette = Palette \\{[\\s\\S]*?window: Rgba::hex\\(0x([0-9A-F]{6})`).exec(theme);
+    assert.ok(block, name);
+    return rgbOf(`#${block[1]}`);
+  };
+  const root = /:root \{\s*\/\* Colour: themed by Rust[\s\S]*?\n {2}\}/.exec(tokens)?.[0] ?? '';
+  const light = /:root\[data-scheme="light"\] \{([^}]*)\}/.exec(tokens)?.[1] ?? '';
+  const value = (block, name) => new RegExp(`${name}: (#[0-9a-f]{6});`).exec(block)?.[1];
+  const white = [255, 255, 255];
+  const schemes = {
+    dark: { block: root, win: window('DARK_SOLID'), card: (w) => mixRgb(white, 0.04, w), field: (w) => mixRgb(white, 0.06, w) },
+    light: { block: light, win: window('LIGHT_SOLID'), card: (w) => mixRgb(white, 0.72, w), field: (w) => mixRgb(white, 0.8, w) },
+  };
+  assert.match(root, /--bw-card: color-mix\(in srgb, var\(--bw-text\) 4%, var\(--bw-window-opaque\)\);/);
+  assert.match(root, /--bw-field: color-mix\(in srgb, var\(--bw-text\) 6%, var\(--bw-window-opaque\)\);/);
+  assert.match(light, /--bw-card: color-mix\(in srgb, #fff 72%, var\(--bw-window-opaque\)\);/);
+  assert.match(light, /--bw-field: color-mix\(in srgb, #fff 80%, var\(--bw-window-opaque\)\);/);
+  for (const [scheme, s] of Object.entries(schemes)) {
+    for (const name of ['--bw-danger', '--bw-warning']) {
+      const hex = value(s.block, name);
+      assert.ok(hex, `${name} has a ${scheme} value`);
+      for (const [surface, bg] of [['window', s.win], ['card', s.card(s.win)], ['field', s.field(s.win)]]) {
+        const ratio = contrast(rgbOf(hex), bg);
+        assert.ok(ratio >= 4.5, `${name} ${hex} on the ${scheme} ${surface} is ${ratio.toFixed(2)}:1, under 4.5:1`);
+      }
+    }
+  }
+  // Why status must not borrow the group palette: its orange is under 3:1 on a dark card.
+  const group1 = rgbOf(/--bw-group-1: (#[0-9a-f]{6});/.exec(tokens)[1]);
+  assert.ok(contrast(group1, schemes.dark.card(schemes.dark.win)) < 3, 'the group palette is not text-grade on dark');
+});
+
+test('the page material tokens (card, field, tile, row hover, hit) are defined once for every bowser:// page', () => {
+  const tokens = readFileSync(join(stylesDir, 'tokens.css'), 'utf8');
+  for (const name of ['--bw-page', '--bw-card', '--bw-card-edge', '--bw-field', '--bw-field-edge', '--bw-tile', '--bw-row-hover', '--bw-row-press', '--bw-hit', '--bw-danger', '--bw-warning']) {
+    assert.match(tokens, new RegExp(`${name}: `), name);
+    assert.match(css, new RegExp(`${name}:`), `${name} reaches dist/app.css`);
+  }
+});
+
+test('shared components: disabled controls take no hover, show a disabled state, and an invalid field is marked', () => {
+  const source = readFileSync(join(stylesDir, 'components.css'), 'utf8');
+  // Hover washes and the knob grow skip disabled controls; :where keeps each rule's old specificity, so
+  // the checked segment still beats the hover wash.
+  assert.match(source, /\.bw-segmented > button:hover:where\(:not\(:disabled, \[aria-disabled="true"\]\)\) \{/);
+  assert.match(source, /\.bw-toggle:hover:where\(:not\(:disabled, \[aria-disabled="true"\]\)\)::after \{/);
+  assert.match(source, /\.bw-select-button:hover:where\(:not\(:disabled, \[aria-disabled="true"\]\)\) \{/);
+  assert.doesNotMatch(source, /\.bw-segmented > button:hover \{|\.bw-toggle:hover::after \{|\.bw-select-button:hover \{/);
+  assert.match(source, /\.bw-segmented > button:is\(:disabled, \[aria-disabled="true"\]\) \{\s*opacity: 0\.45;/);
+  assert.match(source, /\.bw-select-button:is\(:disabled, \[aria-disabled="true"\]\) \{\s*opacity: 0\.45;/);
+  assert.match(source, /\.bw-input\[aria-invalid="true"\] \{\s*border-color: var\(--bw-danger\);/);
+});
+
+test('forced colours: every component state drawn only with a fill or a shadow has a system-colour equivalent', () => {
+  const source = readFileSync(join(stylesDir, 'components.css'), 'utf8');
+  const block = /@media \(forced-colors: active\) \{([\s\S]*)\n\}/.exec(source)?.[1] ?? '';
+  assert.ok(block, 'components.css has a forced-colors block');
+  for (const [what, re] of [
+    ['toggle track', /\.bw-toggle \{[^}]*forced-color-adjust: none;[^}]*background: ButtonFace;/],
+    ['toggle knob', /\.bw-toggle::after \{\s*background: ButtonText;/],
+    ['toggle on', /\.bw-toggle\[aria-checked="true"\] \{[^}]*background: Highlight;/],
+    ['toggle on knob', /\.bw-toggle\[aria-checked="true"\]::after \{\s*background: HighlightText;/],
+    ['segment thumb', /\.bw-seg-thumb-face \{[^}]*background: Highlight;/],
+    ['checked segment', /\.bw-segmented:not\(\.is-thumb\) > button:is\(\[aria-checked="true"\][^{]*\{[^}]*background: Highlight;/],
+    ['field focus', /\.bw-input:focus-visible \{\s*outline: 2px solid Highlight;/],
+    ['selected rows and items', /\.bw-row:is\(\[aria-selected="true"\], \.is-selected\)[\s\S]*?outline: 1px solid Highlight;/],
+    ['disabled', /:is\(\.bw-button, \.bw-icon-btn[^{]*:is\(:disabled, \[aria-disabled="true"\]\) \{[^}]*color: GrayText;/],
+    ['spinner', /\.bw-spinner \{[^}]*border-top-color: Highlight;/],
+  ]) assert.match(block, re, what);
+  assert.match(css, /@media \(forced-colors:\s*active\)\{\.bw-toggle\{forced-color-adjust:none/, 'the built sheet has it');
+});
+
+test('status colours never borrow the group palette (2.84:1 on a dark card): warn/danger properties use a text-grade colour', () => {
+  for (const file of readdirSync(stylesDir).filter((f) => f.endsWith('.css') && f !== 'tokens.css')) {
+    const text = readFileSync(join(stylesDir, file), 'utf8');
+    for (const m of text.matchAll(/--[\w-]*(?:warn|danger)[\w-]*\s*:\s*([^;]+);/g)) {
+      assert.doesNotMatch(m[1], /--bw-group-/, `${file}: ${m[0].trim()}`);
+    }
+    for (const m of text.matchAll(/var\(--[\w-]*(?:warn|danger)[\w-]*\s*,\s*([^)]+)\)/g)) {
+      assert.doesNotMatch(m[1], /--bw-group-/, `${file}: fallback ${m[0]}`);
+    }
+  }
+});
+
+test('shared buttons honour [hidden]: their display never outranks it', () => {
+  const components = readFileSync(join(stylesDir, 'components.css'), 'utf8');
+  const rule = /:is\(([^)]*)\)\[hidden\]\s*\{\s*display:\s*none;\s*\}/.exec(components);
+  assert.ok(rule, 'components.css has the [hidden] rule for the shared buttons');
+  for (const name of ['.bw-button', '.bw-icon-btn', '.bw-select-button', '.bw-toggle']) assert.ok(rule[1].includes(name), name);
+});

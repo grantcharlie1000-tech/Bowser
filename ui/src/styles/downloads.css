@@ -16,19 +16,15 @@
 /* ---- The row (bubble and page) ---- */
 .dl-row {
   --dl-tone: var(--bw-text-2);
-  --dl-warn: #ff9a8b; /* proposed token: --bw-danger (dark) */
-  --dl-hover: color-mix(in srgb, var(--bw-text) 6%, transparent);
-  --dl-press: color-mix(in srgb, var(--bw-text) 10%, transparent);
+  --dl-warn: var(--bw-danger);
+  --dl-hover: var(--bw-row-hover);
+  --dl-press: var(--bw-row-press);
   --dl-track: color-mix(in srgb, var(--bw-text) 12%, transparent);
   --dl-tile: 32px;
   --dl-act: 28px;
   position: relative;
   border-radius: var(--bw-r-island);
   list-style: none;
-}
-
-:root[data-scheme="light"] .dl-row {
-  --dl-warn: #c42b1c; /* proposed token: --bw-danger (light) */
 }
 
 .dl-row[data-kind="image"] { --dl-tone: var(--bw-group-7); }
@@ -451,14 +447,14 @@
 
 /* ---- The page (bowser://downloads) ---- */
 #app.dp-root {
-  --dp-page: var(--bw-window-opaque);
-  --dp-card: color-mix(in srgb, var(--bw-text) 4%, var(--bw-window-opaque));
-  --dp-card-edge: var(--bw-hairline);
-  --dp-field: color-mix(in srgb, var(--bw-text) 6%, var(--bw-window-opaque));
-  --dp-field-edge: color-mix(in srgb, var(--bw-text) 12%, transparent);
-  --dp-tile: color-mix(in srgb, var(--bw-text) 7%, transparent);
-  --dp-hit: color-mix(in srgb, var(--bw-accent) 28%, transparent);
-  --dp-warn: var(--bw-group-1);
+  --dp-page: var(--bw-page);
+  --dp-card: var(--bw-card);
+  --dp-card-edge: var(--bw-card-edge);
+  --dp-field: var(--bw-field);
+  --dp-field-edge: var(--bw-field-edge);
+  --dp-tile: var(--bw-tile);
+  --dp-hit: var(--bw-hit);
+  --dp-warn: var(--bw-warning);
   --dp-col: 760px;
   --dp-gutter: var(--bw-space-6);
   --bw-icon-stroke: 1.5px;
@@ -470,11 +466,6 @@
   background: var(--dp-page);
   color: var(--bw-text);
   font: var(--bw-text-body) / var(--bw-leading-body) var(--bw-font);
-}
-
-:root[data-scheme="light"] #app.dp-root {
-  --dp-card: color-mix(in srgb, #fff 72%, var(--bw-window-opaque));
-  --dp-field: color-mix(in srgb, #fff 80%, var(--bw-window-opaque));
 }
 
 .dp [hidden] {

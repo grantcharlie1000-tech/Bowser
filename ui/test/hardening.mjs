@@ -88,9 +88,19 @@ test('the page meta CSP matches the header Rust serves, minus directives meta ca
   const meta = html.match(/<meta http-equiv="Content-Security-Policy" content="([^"]+)">/);
   assert.ok(meta, 'meta CSP present');
   const assets = readFileSync(join(uiRoot, '..', 'src', 'chrome_host', 'assets.rs'), 'utf8');
-  const header = assets.match(/Content-Security-Policy: ([^\\]+)\\r\\n/);
-  assert.ok(header, 'header CSP present');
-  assert.equal(meta[1], header[1]);
+  const csp = (name) => {
+    const block = assets.match(new RegExp(`pub const ${name}: &str = concat!\\(\\s*"Content-Security-Policy: ([^\\\\]+)\\\\r\\\\n`));
+    assert.ok(block, `${name} CSP present`);
+    return block[1];
+  };
+  const header = csp('RESPONSE_HEADERS');
+  const split = csp('SPLIT_RESPONSE_HEADERS');
+  // Every view shares index.html, and the stricter of the meta and the header wins. The meta therefore
+  // carries the split host's policy (the start page's sandboxed Webpage widget frames http(s)); the
+  // header keeps frame-src 'none' for every other view, and that is the only difference.
+  assert.equal(meta[1], split);
+  assert.ok(header.includes("frame-src 'none';"), 'every other view still refuses frames');
+  assert.equal(split.replace('frame-src https: http:;', "frame-src 'none';"), header);
   for (const directive of ['frame-ancestors', 'report-uri', 'sandbox']) {
     assert.ok(!meta[1].includes(directive), `${directive} is not valid in a meta CSP`);
   }

@@ -401,6 +401,8 @@ class Node {
 }
 const sent = [];
 const listeners = [];
+/** The page's own document key handlers (Ctrl+F and `/`), in the order it added them. */
+const pageKeys = [];
 const documentElement = new Node('html');
 const body = new Node('body');
 globalThis.document = {
@@ -408,7 +410,7 @@ globalThis.document = {
   createElement: (tag) => new Node(tag),
   createElementNS: (_ns, tag) => new Node(tag),
   createTextNode: (text) => new Node('#text', text),
-  addEventListener() {}, removeEventListener() {},
+  addEventListener(type, cb) { if (type === 'keydown') pageKeys.push(cb); }, removeEventListener() {},
 };
 globalThis.window = globalThis;
 Object.assign(globalThis, {
@@ -547,7 +549,15 @@ test('rows that do nothing yet say so; a group of only such rows says it once', 
   assert.equal(flagOf('autoHideBars'), null);
   assert.equal(flagOf('autoHideFullscreen'), null);
   assert.equal(flagOf('tabPreviewImages'), null, 'the tab preview rows act now: the hover card honours them');
-  assert.equal(flagOf('grouping'), null, 'restart notes are not shown');
+  // The two rows Rust applies only at the next start (App::apply_live_settings copies neither) say so,
+  // and the note is part of the control's description: Strict tracking prevention is not in force yet.
+  for (const id of ['grouping', 'tracking']) {
+    const flag = flagOf(id);
+    assert.ok(flag, `${id} carries the restart note`);
+    assert.equal(flag.textContent, logic.RESTART_NOTE);
+    const target = app.querySelector(`.sp-row[data-row="${id}"]`).querySelector('[role="switch"], [role="radiogroup"]');
+    assert.ok(target.getAttribute('aria-describedby').split(' ').includes(flag.id), `${id}: the note describes the control`);
+  }
   assert.equal(flagOf('blocker'), null, 'the blocking level applies at once');
   assert.equal(flagOf('centredAddressBar'), null);
   // The bookmarks bar rows (T2) and the shortcut rows (T4) act now: no note on any of them.
@@ -2455,7 +2465,9 @@ test('search DOM: Simple/All round trips restore group visibility and accessible
   let group = rowNode('searchDefault').parent;
   while (!group.classList.contains('sp-group')) group = group.parent;
   assert.equal(group.hidden, false);
-  assert.equal(group.querySelector('.sp-group-h').hidden, true, 'a single visible row needs no group heading');
+  // The part title of a merged area stays over one row: it is the only visible word saying the row is Search's.
+  assert.equal(group.querySelector('.sp-group-h').hidden, false, 'a merged area keeps its part title over one row');
+  assert.equal(group.querySelector('.sp-group-h').textContent, 'Search');
   searchFor('');
   assert.equal(app.querySelector('.sp-simple').hidden, false);
   view[1].click();
@@ -2506,4 +2518,96 @@ test('search DOM work: identical highlights avoid replacements and groups are re
   // Simple/All sync still sets simple, navigation and view-control state; those writes remain in scope of this counter.
   assert.ok(repeat.hiddenWrites <= 2, JSON.stringify(repeat));
   searchFor('');
+});
+
+// ---- UI/UX repair: keyboard, part titles, disclosure names, accent swatch ----
+
+test('`/` typed into a text field stays in it; elsewhere it jumps to the search', () => {
+  searchFor('');
+  const input = app.querySelector('.sp-search-input');
+  input.select = () => {};
+  const key = (target, init = {}) => {
+    let prevented = false;
+    for (const cb of pageKeys) cb({ key: '/', ctrlKey: false, shiftKey: false, altKey: false, metaKey: false, isComposing: false, target, preventDefault: () => { prevented = true; }, ...init });
+    return prevented;
+  };
+  // The startup pages list is a textarea of addresses: every "https://" in it has slashes.
+  const pages = app.querySelector('textarea.sp-pages');
+  assert.ok(pages, 'the startup pages field is a textarea');
+  pages.focus();
+  assert.equal(key(pages), false, 'the slash is typed, not swallowed');
+  assert.equal(document.activeElement, pages, 'focus stays in the field');
+  const homepage = rowNode('startHomepage').querySelector('input');
+  homepage.focus();
+  assert.equal(key(homepage), false);
+  assert.equal(document.activeElement, homepage);
+  assert.equal(key(pages, { isComposing: true }), false, 'an IME composition is left alone');
+  // Outside a field, `/` (and Ctrl+F anywhere) reach the search.
+  assert.equal(key(body), true);
+  assert.equal(document.activeElement, input);
+  homepage.focus();
+  assert.equal(key(homepage, { key: 'f', ctrlKey: true }), true);
+  assert.equal(document.activeElement, input);
+});
+
+test('merged areas show each part title, so terse rows keep their context', () => {
+  searchFor('');
+  const view = app.querySelector('.sp-view').querySelectorAll('[role="radio"]');
+  view[1].click();
+  const shownTitles = (key) => areaNode(key).querySelectorAll('section.sp-part').map((part) => part.querySelector('.sp-group-h'))
+    .filter((h) => h && !h.hidden && !h.parent.hidden).map((h) => h.textContent);
+  assert.deepEqual(shownTitles('profile'), ['Profile', 'Search', 'Start page', 'Downloads'], '"Folder" and "Ask where" sit under Downloads');
+  assert.deepEqual(shownTitles('about'), ['Updates'], 'the second part is named; the first repeats the area heading');
+  assert.ok(shownTitles('address').includes('Page tools'));
+  assert.ok(shownTitles('privacy').includes('Performance'));
+  // A part title that only repeats the area's own heading stays hidden.
+  assert.ok(!shownTitles('privacy').includes('Privacy'));
+  assert.ok(!shownTitles('tabs').includes('Tabs'));
+});
+
+test('every disclosure has its own accessible name', () => {
+  const buttons = app.querySelectorAll('.sp-more-btn');
+  const names = buttons.map((button) => button.getAttribute('aria-label'));
+  assert.ok(names.length > 3);
+  assert.equal(new Set(names).size, names.length, JSON.stringify(names));
+  assert.ok(names.includes('More Appearance settings'));
+  for (const button of buttons) assert.ok(button.getAttribute('aria-label').startsWith(button.textContent.trim()), 'the name starts with the visible word');
+});
+
+test('with no accent chosen the swatch shows the theme accent, not black', () => {
+  deliver({ ...fixture.snap, d: { ...fixture.snap.d, themeAccent: '' } });
+  const rust = JSON.parse(read(join(here, 'fixtures', 'rust-messages.json')));
+  documentElement.style.removeProperty ??= () => {};
+  documentElement.dataset ??= {};
+  body.classList ??= { toggle() {} };
+  deliver({ ...rust.state, theme: { ...rust.state.theme, focusBorder: '#3D7BF5' } });
+  const swatch = rowNode('themeAccent').querySelector('input');
+  assert.equal(swatch.value, '#3d7bf5');
+  assert.equal(swatch.getAttribute('aria-label'), 'Accent colour, theme default');
+  deliver({ ...fixture.snap, d: { ...fixture.snap.d, themeAccent: '#abcdef' } });
+  assert.equal(swatch.value, '#abcdef');
+  assert.equal(swatch.getAttribute('aria-label'), 'Accent colour');
+  deliver(fixture.snap);
+});
+
+test('an invalid Homepage or Startup pages entry stays to correct but is marked invalid, and nothing is saved', () => {
+  deliver(fixture.snap);
+  const homepage = rowNode('startHomepage').querySelector('input');
+  const pages = rowNode('startupPages').querySelector('textarea');
+  for (const [field, typed] of [[homepage, 'ftp://x.example/'], [pages, 'not a url']]) {
+    sent.length = 0;
+    field.value = typed;
+    field.dispatch('change');
+    assert.equal(field.value, typed, 'the typing is kept to correct');
+    assert.equal(field.getAttribute('aria-invalid'), 'true', 'it does not look accepted');
+    assert.equal(sent.filter((m) => m.a === 'save').length, 0, 'nothing is saved');
+  }
+  homepage.value = 'example.com';
+  homepage.dispatch('change');
+  assert.equal(homepage.getAttribute('aria-invalid'), null, 'a valid address clears the mark');
+  assert.equal(homepage.value, 'https://example.com');
+  pages.value = 'https://a.example/';
+  pages.dispatch('change');
+  assert.equal(pages.getAttribute('aria-invalid'), null);
+  deliver(fixture.snap); // Bowser's answer settles the pending saves for the tests after this one.
 });

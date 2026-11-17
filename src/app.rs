@@ -642,6 +642,8 @@ enum EngineNotice {
     Process(engine::ProcessFailure),
     BrowserLost(u32),
     ControllerFailed(TabId, u64, i32),
+    /// The tab's controller (by generation) answered a responsiveness probe.
+    Responsive(TabId, u64),
     CreationFailed(i32),
     OperationFailed(i32),
 }
@@ -671,6 +673,25 @@ impl EngineNotices {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ContentFailure { BrowserLost, RendererExited, Initialization }
+
+/// A renderer reported unresponsive for this controller. Nothing is discarded automatically:
+/// the prompt offers Wait (keep the document) or Reload (a fresh controller and a GET of the
+/// address; a submitted form is never sent again). It clears when the page answers again,
+/// navigates, fails or closes.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct Unresponsive {
+    controller_generation: u64,
+    /// When the user chose Wait. A later report after [`UNRESPONSIVE_WAIT_GRACE`] shows it again.
+    waited: Option<Instant>,
+}
+
+/// After Wait, repeated unresponsive reports for the same hang stay quiet for this long.
+const UNRESPONSIVE_WAIT_GRACE: Duration = Duration::from_secs(10);
+
+/// The prompt's visible and accessible text: the explanation, then the two choices.
+pub(crate) const UNRESPONSIVE_MESSAGE: &str = "This page isn't responding.";
+pub(crate) const UNRESPONSIVE_WAIT: &str = "Wait";
+pub(crate) const UNRESPONSIVE_RELOAD: &str = "Reload page";
 
 #[derive(Clone, Copy)]
 struct BrowserRecovery {
@@ -867,6 +888,9 @@ struct AppTab {
     controller_created: bool,
     failure: Option<ContentFailure>,
     recovery_started: Option<Instant>,
+    /// The live document's renderer stopped answering. The document is kept; the user chooses
+    /// Wait or an explicit GET Reload (see [`Unresponsive`]).
+    unresponsive: Option<Unresponsive>,
     muted: bool,
     hidden_since: Option<Instant>,
     suspended: bool,
@@ -926,6 +950,7 @@ impl AppTab {
             controller_created: false,
             failure: None,
             recovery_started: None,
+            unresponsive: None,
             muted: false,
             hidden_since: None,
             suspended: false,
@@ -3689,6 +3714,7 @@ impl App {
 
     pub fn reload(app: &AppRef) {
         if Self::retry_failed_tab(app, Self::active_tab_id(app)) { return; }
+        if Self::reload_unresponsive_tab(app, Self::active_tab_id(app)) { return; }
         // An internal page has no engine page: reloading it re-reads what it shows.
         if let Some(page) = Self::internal_page(app, Self::active_tab_id(app)) {
             let hwnd = app.borrow().hwnd;
@@ -3709,6 +3735,7 @@ impl App {
     /// Reloads the requested tab without selecting it first.
     pub fn reload_tab(app: &AppRef, id: TabId) {
         if Self::retry_failed_tab(app, id) { return; }
+        if Self::reload_unresponsive_tab(app, id) { return; }
         if id == Self::active_tab_id(app) {
             Self::reload(app);
         } else {
@@ -5556,6 +5583,7 @@ impl App {
         Self::sync_window_title(app);
         Self::submit_url(app, url, None);
         Self::load_eager_tabs(app); // --- tab options ---
+        if Self::restore_saved_favicons(app) > 0 { Self::post_tab_changed_kind(hwnd, app.borrow().tab_model.active(), false, false); } // --- tab options ---
     }
 
     /// Notes a tab-state change. Returns true when the caller should arm the one-shot save
@@ -5764,7 +5792,10 @@ impl App {
                         RendererExited => Self::tab_render_failed(app, failure.tab),
                         // A busy renderer can recover with its draft, media and history intact.
                         // Keep it alive; only an explicit user action may discard that document.
-                        RendererUnresponsive => { let _ = log.record("engine_unresponsive_document_retained"); }
+                        RendererUnresponsive => {
+                            let _ = log.record("engine_unresponsive_document_retained");
+                            Self::tab_became_unresponsive(app, failure.tab, failure.controller_generation, Instant::now());
+                        }
                         // GPU/utility processes restart themselves. Subframe/other exits leave the
                         // main document alive; do not reload it or disturb unrelated tabs.
                         GpuExited | UtilityExited | FrameRendererExited | Other(_) => { let _ = log.record("engine_process_recovery_not_required"); }
@@ -5777,6 +5808,9 @@ impl App {
                         let _ = app.borrow().log.record_detail_count("engine_controller_failed", u64::from(tab.0), code as u32 as u64);
                         Self::fail_content_tab(app, tab, ContentFailure::Initialization);
                     }
+                }
+                EngineNotice::Responsive(tab, controller_generation) => {
+                    Self::tab_became_responsive(app, tab, controller_generation);
                 }
                 EngineNotice::CreationFailed(code) => {
                     let _ = app.borrow().log.record_detail_count("engine_creation_failed", 0, code as u32 as u64);
@@ -5805,6 +5839,7 @@ impl App {
     fn clear_failed_content(tab: &mut AppTab, failure: ContentFailure) {
         tab.failure = Some(failure);
         tab.recovery_started = None;
+        tab.unresponsive = None;
         tab.controller_created = false;
         tab.page_usable = false;
         tab.loading = false;
@@ -5947,6 +5982,90 @@ impl App {
 
     pub(crate) fn content_failure_message(app: &AppRef, id: TabId) -> Option<&'static str> {
         app.borrow().tabs.iter().find(|tab| tab.id == id)?.failure.map(ContentFailure::message)
+    }
+
+    /// A renderer reported a hang for the tab's current controller. The document, its drafts and
+    /// history stay. The prompt appears unless the user chose Wait for this hang moments ago. The
+    /// first report starts one probe whose answer clears the prompt once the page responds again.
+    fn tab_became_unresponsive(app: &AppRef, id: TabId, controller_generation: u64, now: Instant) {
+        let (hwnd, probe, generation) = {
+            let mut state = app.borrow_mut();
+            if state.closing { return; }
+            let (hwnd, generation) = (state.hwnd, state.engine_generation);
+            let Some(tab) = state.tabs.iter_mut().find(|tab| tab.id == id) else { return; };
+            if tab.failure.is_some() || !tab.controller_created { return; }
+            let previous = tab.unresponsive.filter(|hang| hang.controller_generation == controller_generation);
+            if previous.is_some_and(|hang| hang.waited.is_some_and(|waited| now.saturating_duration_since(waited) < UNRESPONSIVE_WAIT_GRACE)) {
+                return;
+            }
+            tab.unresponsive = Some(Unresponsive { controller_generation, waited: None });
+            (hwnd, previous.is_none(), generation)
+        };
+        let _ = app.borrow().log.record("engine_unresponsive_prompt_shown");
+        if probe {
+            let answered = Self::responsive_callback(app, generation, id, controller_generation);
+            let _ = Self::with_engine(app, |engine| { engine.probe_responsive(id, answered); Ok(()) });
+        }
+        Self::post_tab_changed(hwnd, id);
+    }
+
+    /// The probe answer arrives from a WebView2 handler: queue it like any engine notice so it is
+    /// handled outside the handler and only for the engine generation that asked.
+    fn responsive_callback(app: &AppRef, generation: u64, id: TabId, controller_generation: u64) -> Box<dyn FnOnce()> {
+        let state = app.borrow();
+        let (queue, hwnd) = (state.engine_notices.clone(), state.hwnd);
+        Box::new(move || Self::enqueue_engine_notice(&queue, hwnd, generation, EngineNotice::Responsive(id, controller_generation)))
+    }
+
+    fn tab_became_responsive(app: &AppRef, id: TabId, controller_generation: u64) {
+        let hwnd = {
+            let mut state = app.borrow_mut();
+            let hwnd = state.hwnd;
+            let Some(tab) = state.tabs.iter_mut().find(|tab| tab.id == id) else { return; };
+            if tab.unresponsive.is_none_or(|hang| hang.controller_generation != controller_generation) { return; }
+            tab.unresponsive = None;
+            hwnd
+        };
+        let _ = app.borrow().log.record("engine_unresponsive_recovered");
+        Self::post_tab_changed(hwnd, id);
+    }
+
+    /// Whether the tab shows the "isn't responding" Wait / Reload prompt now.
+    pub(crate) fn unresponsive_prompt(app: &AppRef, id: TabId) -> bool {
+        app.borrow().tabs.iter().any(|tab| tab.id == id && tab.failure.is_none() && tab.controller_created
+            && tab.unresponsive.is_some_and(|hang| hang.waited.is_none()))
+    }
+
+    /// Wait: keep the document and hide the prompt. A later report shows it again.
+    pub(crate) fn wait_unresponsive_tab(app: &AppRef, id: TabId) -> bool {
+        let hwnd = {
+            let mut state = app.borrow_mut();
+            let hwnd = state.hwnd;
+            let Some(hang) = state.tabs.iter_mut().find(|tab| tab.id == id).and_then(|tab| tab.unresponsive.as_mut()) else { return false; };
+            if hang.waited.is_some() { return false; }
+            hang.waited = Some(Instant::now());
+            hwnd
+        };
+        let _ = app.borrow().log.record("engine_unresponsive_wait");
+        Self::post_tab_changed(hwnd, id);
+        true
+    }
+
+    /// Reload chosen for a hung page (the prompt's button, or Reload while it hangs). The hung
+    /// controller is closed and the address opens again as a GET in a fresh controller, exactly
+    /// as an explicit failure retry; a submitted form body is never sent again.
+    pub(crate) fn reload_unresponsive_tab(app: &AppRef, id: TabId) -> bool {
+        {
+            let mut state = app.borrow_mut();
+            if state.closing { return false; }
+            let App { tabs, pending_request_body, .. } = &mut *state;
+            let Some(tab) = tabs.iter_mut().find(|tab| tab.id == id && tab.failure.is_none() && tab.unresponsive.is_some()) else { return false; };
+            tab.unresponsive = None;
+            if pending_request_body.as_ref().is_some_and(|(owner, _, _)| *owner == id) { *pending_request_body = None; }
+        }
+        let _ = app.borrow().log.record("engine_unresponsive_reload");
+        Self::fail_content_tab(app, id, ContentFailure::Initialization);
+        Self::retry_failed_tab(app, id)
     }
 
     pub(crate) fn engine_recovery_tick(app: &AppRef, now: Instant) -> bool {
@@ -6904,6 +7023,7 @@ impl App {
                     };
                     if found {
                         Self::post_tab_changed_kind(app.borrow().hwnd, tab_id, false, false);
+                        Self::remember_tab_favicon(&app, tab_id); // --- tab options --- restored sleeping tabs
                         Self::note_favicon_colour(&app, tab_id); // --- theme options ---
                     }
                 }
@@ -7319,6 +7439,8 @@ impl App {
                     tab.recovery_started = (failure != ContentFailure::RendererExited || !engine_available).then(Instant::now);
                 }
                 tab.failure = None;
+                // A new document replaces the hung one; its prompt no longer applies.
+                tab.unresponsive = None;
                 tab.controller_created = tab_needs_controller(Some(url)) && tab.recovery_started.is_none();
                 tab.page_usable = false;
                 tab.loading = true;
@@ -7536,6 +7658,8 @@ impl App {
                 tab.page_usable = true;
                 tab.loading = false;
                 tab.load = LoadState::Loaded;
+                // A completed load proves the renderer is answering again.
+                tab.unresponsive = None;
             } else {
                 return;
             }
@@ -8512,6 +8636,12 @@ fn chrome_viewport_bounds_arranged(
 #[cfg(test)]
 pub(crate) fn test_app() -> AppRef {
     tests::app_with_pending(windows::Win32::Foundation::RECT { left: 0, top: 0, right: 800, bottom: 600 })
+}
+
+/// Tab `id`'s live page reports a hung renderer (for [`test_app`] outside this module).
+#[cfg(test)]
+pub(crate) fn test_report_unresponsive(app: &AppRef, id: TabId) {
+    App::tab_became_unresponsive(app, id, 0, Instant::now());
 }
 
 /// --- wave-1 fixes --- tab `id` shows `address`, as if it had loaded (for [`test_app`]).

@@ -116,6 +116,7 @@ function withFocus(container: HTMLElement, rebuild: () => void): void {
 }
 
 const focusKey = <E extends HTMLElement>(node: E, key: string): E => { node.dataset.focus = key; return node; };
+const RANGE_LABELS = Object.fromEntries(DELETE_RANGES) as Readonly<Record<DeleteRangeKey, string>>;
 
 export function mountProtection(options: ProtectionOptions): Protection {
   const send = options.send ?? ((fields: PanelFields): boolean => sendPanel('priv', fields));
@@ -205,12 +206,6 @@ export function mountProtection(options: ProtectionOptions): Protection {
       siteProblem = null;
       if (siteError !== '') { siteProblem = errorLine(siteError); block.body.append(siteProblem); }
 
-      if (data.current && !data.current.private) {
-        const here = data.current;
-        const fill = textButton(`Use ${here.host}`, () => { siteDraft = here.host; paintSites(); }, { subtle: true });
-        block.body.append(settingRow('This site', `${here.host}: ${LEVEL_LABELS[here.level].toLowerCase()}, notices ${here.cookies ? 'hidden' : 'shown'}`, fill));
-      }
-
       for (const row of data.sites) {
         const levelPick = selectControl<SiteLevel>(`Blocking on ${row.site}`, SITE_LEVELS, SITE_LEVEL_LABELS, (value) => command('site-level', { text: row.site, n: SITE_LEVEL_N[value] }));
         levelPick.set(row.level);
@@ -295,9 +290,13 @@ export function mountProtection(options: ProtectionOptions): Protection {
       deleteData.replaceChildren(block.root);
       if (!data) return;
       const withLogins = chosen.has('logins') && !data.guest;
-      const periodControl = segmented(DELETE_RANGES, range, (value) => { range = value; armed = false; paintDelete(); }, 'Delete browsing data from');
-      periodControl.classList.add('sp-seg');
-      block.body.append(settingRow('Period', null, periodControl));
+      // A dropdown like History's above: five ranges never fit a segmented row in the dashboard
+      // window, where they covered the label and lost "Everything" off the edge.
+      const period = selectControl<DeleteRangeKey>('Delete browsing data from', DELETE_RANGES.map(([key]) => key), RANGE_LABELS, (value) => { range = value; armed = false; paintDelete(); });
+      period.set(range);
+      const periodButton = period.root.querySelector<HTMLElement>('.bw-select-button');
+      if (periodButton) focusKey(periodButton, 'delete-period');
+      block.body.append(settingRow('Period', null, period.root));
       for (const kind of DELETE_KINDS) {
         const gone = kind.key === 'logins' && data.guest;
         const toggle = switchControl(kind.label, (on) => {

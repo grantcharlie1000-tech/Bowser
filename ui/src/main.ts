@@ -177,11 +177,6 @@ function startToolbar(root: HTMLElement): void {
 
   input.addEventListener('keydown', (ev) => {
     if (ev.isComposing || ev.keyCode === 229) return;
-    // Ctrl+Shift+V is the tab layout toggle (owned by Rust); never a plain-text paste.
-    if (ev.ctrlKey && ev.shiftKey && !ev.altKey && ev.code === 'KeyV') {
-      ev.preventDefault();
-      return;
-    }
     // --- omnibox suggest ---
     if ((ev.key === 'ArrowDown' || ev.key === 'ArrowUp') && !ev.altKey && !ev.ctrlKey && !ev.shiftKey && !ev.metaKey && list && !pending && list.seq === latestSeq) {
       ev.preventDefault();

@@ -147,6 +147,12 @@
   flex: none;
 }
 
+/* Turned off in the address settings: .bw-icon-btn's display would otherwise beat [hidden]. */
+.pill .tb-hist[hidden],
+.pill .tb-qr[hidden] {
+  display: none;
+}
+
 /* The address field is hidden: only its part of the pill (site button, field, typed history, QR) is
    not drawn; the search field and the page buttons stay. The field stays in place and focusable, so
    Ctrl+L brings it back until it loses focus. */

@@ -45,7 +45,7 @@ import {
   addSite, draftOf, durationLabel, highlightRanges, isSection, matchRows, parseSettingsSnapshot, resultCountText,
   saveText, sleepOptions, translateTargetOptions, updateView, type BookmarksBarMode, type Draft, type EfficiencyMode, type FontSize, type RowSpec,
   type SettingsSnapshot, type SidePanelPosition, type TabLayout, type ThemeMode, type TrackingPrevention,
-  AREAS, LATER_LABEL, LATER_TITLE, MORE_LABEL, PAGE_ROWS, areaOf, partTitle, rowTier, type AreaSpec,
+  AREAS, LATER_LABEL, LATER_TITLE, MORE_LABEL, PAGE_ROWS, RESTART_NOTE, areaOf, partTitle, rowTier, type AreaSpec,
   SETTINGS_VIEW_KEY, SIMPLE_ALL_LABEL, SIMPLE_MOVED, SIMPLE_TITLE, readSettingsView, simpleTabChoice, simpleThemeChoice, type SettingsView,
   AUTO_HIDE_BARS, AUTO_HIDE_BAR_LABELS, autoHideBarsList, autoHideBarsText, type AutoHideBar, // --- auto-hide (T11) ---
   addRuleText, removeRuleText, ruleExists, ruleSite as ruleSiteOf, type WorkspaceRules, // --- tab stacks (T10) ---
@@ -77,6 +77,13 @@ const NAV_ICONS: Readonly<Record<SettingsSection, IconName>> = {
   stacks: 'tab-group', // --- T10 --- (drawn in the Tabs and start page area, never in the nav on its own)
 };
 const reduceMotion = (): boolean => matchMedia('(prefers-reduced-motion: reduce)').matches;
+/** Whether a key press lands in a field that takes text (an input, a textarea, a select or an editable node). */
+export function isTyping(target: EventTarget | null): boolean {
+  const node = target as { tagName?: unknown; isContentEditable?: unknown } | null;
+  if (!node || typeof node.tagName !== 'string') return false;
+  const tag = node.tagName.toUpperCase();
+  return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || node.isContentEditable === true;
+}
 
 function cmd(fields: PanelFields): boolean {
   return sendPanel('set', fields);
@@ -451,6 +458,17 @@ export function startSettingsPage(root: HTMLElement): void {
       desc.textContent = spec.description;
       text.append(desc);
     }
+    // A change that waits for a restart says so (one quiet line), so a privacy choice such as Strict
+    // tracking prevention is never taken to be in force before it is.
+    let flag: HTMLElement | null = null;
+    if (spec.restart) {
+      flag = el('span', 'sp-flag');
+      flag.id = `sp-f-${id}`;
+      const note = el('span');
+      note.textContent = RESTART_NOTE;
+      flag.append(icon('reload', { size: 12, fine: true }), note);
+      text.append(flag);
+    }
     node.append(text);
     let target: HTMLElement | null = null;
     if (control) {
@@ -462,12 +480,13 @@ export function startSettingsPage(root: HTMLElement): void {
           if (spec.aria) target.setAttribute('aria-label', spec.aria);
           else target.setAttribute('aria-labelledby', label.id);
         }
-        if (desc && !target.hasAttribute('aria-describedby')) target.setAttribute('aria-describedby', desc.id);
+        const described = [desc?.id, flag?.id].filter((part): part is string => part !== undefined).join(' ');
+        if (described !== '' && !target.hasAttribute('aria-describedby')) target.setAttribute('aria-describedby', described);
       }
       node.append(wrap);
     }
     into.append(node);
-    const result = { spec, root: node, label, desc, card: into, flag: null, target };
+    const result = { spec, root: node, label, desc, card: into, flag, target };
     rows.set(id, result);
     return result;
   };
@@ -626,6 +645,13 @@ export function startSettingsPage(root: HTMLElement): void {
   accentInput.type = 'color';
   accentInput.setAttribute('aria-label', 'Accent colour');
   accentInput.addEventListener('change', () => change((d) => { d.themeAccent = accentInput.value.toLowerCase(); }));
+  /** The accent the chrome shows when none is chosen (the theme's focus colour), so the swatch is never a made-up black. */
+  let themeAccentShown = '';
+  const paintAccent = (chosen: string): void => {
+    const shown = chosen !== '' ? chosen : /^#[0-9a-f]{6}$/i.test(themeAccentShown) ? themeAccentShown.toLowerCase() : '#000000';
+    if (accentInput.value !== shown) accentInput.value = shown;
+    accentInput.setAttribute('aria-label', chosen === '' ? 'Accent colour, theme default' : 'Accent colour');
+  };
   const accentReset = textButton('Reset', () => change((d) => { d.theme = 'helium'; d.themeAccent = ''; }), { aria: 'Reset accent colour' });
   const accentWrap = el('div', 'sp-reset');
   accentWrap.append(accentInput, accentReset);
@@ -1392,12 +1418,14 @@ export function startSettingsPage(root: HTMLElement): void {
     setHidden(d.body, !open);
   };
   /** One disclosure row: a full-width button in a card, its body (groups of rows) below it. */
-  const disclosure = (key: string, label: string): Disclosure => {
+  const disclosure = (key: string, label: string, aria: string): Disclosure => {
     const root = el('div', 'sp-more');
     root.dataset.more = key;
     const button = el('button', 'sp-more-btn');
     button.type = 'button';
     button.id = `sp-more-b-${key}`;
+    // Every area has a "More" button: the accessible name says whose it is.
+    button.setAttribute('aria-label', aria);
     const text = el('span', 'sp-text');
     const name = el('span', 'sp-label');
     name.textContent = label;
@@ -1556,13 +1584,15 @@ export function startSettingsPage(root: HTMLElement): void {
     laterNode.setAttribute('aria-labelledby', heading.id);
     laterNode.append(heading);
   }
-  const laterDisclosure = disclosure('later', LATER_LABEL);
+  const laterDisclosure = disclosure('later', LATER_LABEL, `${LATER_LABEL} ${LATER_TITLE.toLowerCase()} settings`);
   laterNode.append(laterDisclosure.root);
 
   /** True for a part whose rows are drawn as one card under the part's title (the merged areas' second and third parts too). */
   const mergedArea = (area: AreaSpec): boolean => area.parts.length > 1;
   const coreCards = new Map<SettingsSection, HTMLElement>();
   const coreGroups = new Map<SettingsSection, HTMLElement>();
+  /** The part titles of merged areas: the headings that name a part, not a group of rows. */
+  const coreHeadings = new Set<HTMLElement>();
   const coreCard = (part: SettingsSection): HTMLElement => {
     const found = coreCards.get(part);
     if (found) return found;
@@ -1578,13 +1608,14 @@ export function startSettingsPage(root: HTMLElement): void {
     groups.push({ root: group, heading: h, card: node });
     coreCards.set(part, node);
     coreGroups.set(part, group);
+    coreHeadings.add(h);
     return node;
   };
 
   const arrange = (): void => {
     const moreOf = new Map<SettingsSection, Disclosure>();
     for (const area of AREAS) {
-      const d = disclosure(area.key, MORE_LABEL);
+      const d = disclosure(area.key, MORE_LABEL, `${MORE_LABEL} ${area.title} settings`);
       moreOf.set(area.key, d);
       areaNodes.get(area.key)!.append(d.root);
     }
@@ -1796,7 +1827,7 @@ export function startSettingsPage(root: HTMLElement): void {
     paintRules(s.workspaceRules); // --- tab stacks (T10) ---
     vTabs.set(d.ctrlSVerticalTabs);
     theme.set(d.theme);
-    accentInput.value = d.themeAccent !== '' ? d.themeAccent : '#000000';
+    paintAccent(d.themeAccent);
     // --- toolbars and feeds (thread T13) ---
     toolbarEditor.set({ address: itemsOf(d.toolbarButtons), tabs: itemsOf(s.bars.tabs), panel: itemsOf(s.bars.panel), commands: editorCommands });
     toolbarEditor.disable(!s.readable);
@@ -2039,8 +2070,11 @@ export function startSettingsPage(root: HTMLElement): void {
       if (!heading) continue;
       const section = ancestor(heading, 'sp-sec');
       const areaTitle = Array.from(section?.children ?? []).find((child) => child.classList.contains('sp-h'))?.textContent ?? '';
-      const partLabel = ancestor(heading, 'sp-part')?.getAttribute('aria-label') ?? '';
-      const redundant = visible <= 1 || (areaTitle !== '' && heading.textContent === areaTitle) || (partLabel !== '' && heading.textContent === partLabel);
+      // A merged area's part title ("Downloads", "Updates", "Page tools") is the only visible word that
+      // says what terse rows such as "Folder" or "Automatic" belong to, so it stays even over one row.
+      // (The part's aria-label is never shown, so it cannot make the title redundant.)
+      const partTitleHeading = coreHeadings.has(heading);
+      const redundant = (visible <= 1 && !partTitleHeading) || (areaTitle !== '' && heading.textContent === areaTitle);
       setHidden(heading, redundant);
       if (redundant) { if (group.card.hasAttribute('aria-labelledby')) group.card.removeAttribute('aria-labelledby'); }
       else if (heading.id && group.card.getAttribute('aria-labelledby') !== heading.id) group.card.setAttribute('aria-labelledby', heading.id);
@@ -2144,11 +2178,11 @@ export function startSettingsPage(root: HTMLElement): void {
     if (spec) cmd({ a: 'section', text: spec.section });
   });
   clear.addEventListener('click', () => { input.value = ''; query = ''; filter(); input.focus(); });
-  // Ctrl+F and / jump to the search field, as on Chrome's settings page.
+  // Ctrl+F and / jump to the search field, as on Chrome's settings page. A `/` typed into any text
+  // field (the startup pages list is a textarea of addresses) stays in that field.
   document.addEventListener('keydown', (event) => {
-    if (!store.root.hidden) return;
-    const typing = event.target instanceof HTMLInputElement;
-    if ((event.key === 'f' && event.ctrlKey && !event.shiftKey && !event.altKey) || (event.key === '/' && !typing)) {
+    if (!store.root.hidden || event.isComposing) return;
+    if ((event.key === 'f' && event.ctrlKey && !event.shiftKey && !event.altKey) || (event.key === '/' && !isTyping(event.target) && !event.ctrlKey && !event.altKey && !event.metaKey)) {
       event.preventDefault();
       input.focus();
       input.select();
@@ -2174,7 +2208,11 @@ export function startSettingsPage(root: HTMLElement): void {
   // ---- Bowser's messages ----
   let wanted: SettingsSection | '' | null = null;
   const receive = (message: Inbound): void => {
-    if (message.t === 'state') { applyTheme(message.theme, message.solid, message.dark, message.fontScale, message.uiFont, message.density, message.compactMenus, message.look); return; }
+    if (message.t === 'state') {
+      if (message.theme.focusBorder !== undefined) { themeAccentShown = message.theme.focusBorder; paintAccent(draft?.themeAccent ?? ''); }
+      applyTheme(message.theme, message.solid, message.dark, message.fontScale, message.uiFont, message.density, message.compactMenus, message.look);
+      return;
+    }
     if (message.t === 'settingsgo') {
       store.hide();
       page.hidden = false;

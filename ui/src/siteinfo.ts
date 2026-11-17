@@ -44,11 +44,54 @@ function button(className: string, label: string, focusKey: string): HTMLButtonE
   return node;
 }
 
+/** Keys that move between the options of a radio group, and the step each takes. */
+const RADIO_STEP: Readonly<Record<string, 1 | -1 | 'first' | 'last'>> = {
+  ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1, Home: 'first', End: 'last',
+};
+
+/** Puts the one tab stop of a radio group on `stop` (or, with none given, on its checked option or
+ * else its first enabled one), so Tab enters and leaves the group in one step. */
+function setRadioStop(group: HTMLElement, stop?: HTMLButtonElement): void {
+  const options = Array.from(group.querySelectorAll('button'));
+  const target = stop
+    ?? options.find((o) => o.getAttribute('aria-checked') === 'true' && !o.disabled)
+    ?? options.find((o) => !o.disabled);
+  for (const option of options) option.tabIndex = option === target ? 0 : -1;
+}
+
+/** The radio-group keyboard model (WAI-ARIA APG): one tab stop; the arrow keys (wrapping), Home and
+ * End move focus between the enabled options, and the tab stop follows focus. Space or Enter picks
+ * the focused option (a click), because a pick sends an act and waits for Rust's refreshed page. */
+function radioKeys(group: HTMLElement): void {
+  setRadioStop(group);
+  group.addEventListener('keydown', (event) => {
+    const step = RADIO_STEP[event.key];
+    if (step === undefined) return;
+    const options = Array.from(group.querySelectorAll('button')).filter((o) => !o.disabled);
+    if (options.length === 0) return;
+    event.preventDefault();
+    const last = options.length - 1;
+    const at = options.indexOf(document.activeElement as HTMLButtonElement);
+    const next = step === 'first' ? options[0]
+      : step === 'last' ? options[last]
+      : at < 0 ? options[step === 1 ? 0 : last]
+      : options[(at + step + options.length) % options.length];
+    if (!next) return;
+    setRadioStop(group, next);
+    next.focus();
+  });
+  group.addEventListener('focusin', (event) => {
+    if (event.target instanceof HTMLButtonElement && group.contains(event.target)) setRadioStop(group, event.target);
+  });
+}
+
 export function createSiteInfoView(root: HTMLElement): PageView {
   let message: SiteInfoMessage | null = null;
   let closed = true;
   let lastSize = '';
-  const page = el('div', 'popup-page bw-siteinfo');
+  // Rust clamps the popup to the work area; past that the page scrolls (bw-scroll) instead of hiding
+  // its last rows, and the reported height stays the content's own (scrollHeight, not the cap).
+  const page = el('div', 'popup-page bw-siteinfo bw-scroll');
   page.setAttribute('role', 'dialog');
   page.tabIndex = -1;
 
@@ -73,7 +116,7 @@ export function createSiteInfoView(root: HTMLElement): PageView {
     const tok = message.tok;
     requestAnimationFrame(() => {
       if (!message || message.tok !== tok || closed) return;
-      const height = Math.max(1, page.offsetHeight);
+      const height = Math.max(1, page.scrollHeight + page.offsetHeight - page.clientHeight);
       const key = `${tok}:${height}`;
       if (key === lastSize) return;
       lastSize = key;
@@ -141,14 +184,7 @@ export function createSiteInfoView(root: HTMLElement): PageView {
         });
         group.append(option);
       });
-      group.addEventListener('keydown', (event) => {
-        if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
-        event.preventDefault();
-        const options = Array.from(group.querySelectorAll('button'));
-        const at = options.indexOf(document.activeElement as HTMLButtonElement);
-        const next = options[(at + (event.key === 'ArrowRight' ? 1 : options.length - 1)) % options.length];
-        next?.focus();
-      });
+      radioKeys(group);
       nodes.push(row(PERMISSION_ICON[perm.k], perm.label, null, group, perm.k));
     }
 
@@ -183,14 +219,7 @@ export function createSiteInfoView(root: HTMLElement): PageView {
         });
         group.append(option);
       });
-      group.addEventListener('keydown', (event) => {
-        if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
-        event.preventDefault();
-        const options = Array.from(group.querySelectorAll('button'));
-        const at = options.indexOf(document.activeElement as HTMLButtonElement);
-        const next = options[(at + (event.key === 'ArrowRight' ? 1 : options.length - 1)) % options.length];
-        next?.focus();
-      });
+      radioKeys(group);
       levels = group;
     }
     const blockerRow = row('shield', 'Blocking', blockerText(msg.blocker, priv), levels, 'blocker');

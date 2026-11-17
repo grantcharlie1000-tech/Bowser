@@ -283,12 +283,16 @@
   transition: background-color var(--bw-dur-fast) var(--bw-ease-fade);
 }
 
-.bw-select-button:hover {
+.bw-select-button:hover:where(:not(:disabled, [aria-disabled="true"])) {
   background-image: linear-gradient(var(--bw-hover), var(--bw-hover));
 }
 
 .bw-select-button[aria-expanded="true"] {
   border-color: var(--bw-focus);
+}
+
+.bw-select-button:is(:disabled, [aria-disabled="true"]) {
+  opacity: 0.45;
 }
 
 .bw-select-button > svg {
@@ -485,8 +489,20 @@
   opacity: 0.5;
 }
 
+/* Invalid (aria-invalid, set with the error text that explains it): the edge turns the danger colour,
+   >= 3:1 against the field in both schemes. The focus ring stays the accent, inside it. */
+.bw-input[aria-invalid="true"] {
+  border-color: var(--bw-danger);
+}
+
 /* ---- Buttons: 28px, 4px radius. Default is secondary; `.is-primary` is accent-filled,
    `.is-subtle` is transparent until hovered. ---- */
+/* The shared buttons set a display, which beats the browser's [hidden] rule: keep `hidden` meaning hidden
+   (the Delete browsing data Cancel, typed-history and QR buttons showed while hidden). */
+:is(.bw-button, .bw-icon-btn, .bw-select-button, .bw-toggle)[hidden] {
+  display: none;
+}
+
 .bw-button {
   display: inline-flex;
   align-items: center;
@@ -563,7 +579,7 @@
     background-color var(--bw-dur-fast) var(--bw-ease-fade);
 }
 
-.bw-toggle:hover::after {
+.bw-toggle:hover:where(:not(:disabled, [aria-disabled="true"]))::after {
   transform: scale(1.17);
 }
 
@@ -577,7 +593,7 @@
   transform: translateX(20px);
 }
 
-.bw-toggle[aria-checked="true"]:hover::after {
+.bw-toggle[aria-checked="true"]:hover:where(:not(:disabled, [aria-disabled="true"]))::after {
   transform: translateX(20px) scale(1.17);
 }
 
@@ -613,7 +629,7 @@
   transition: background-color var(--bw-dur-fast) var(--bw-ease-fade);
 }
 
-.bw-segmented > button:hover {
+.bw-segmented > button:hover:where(:not(:disabled, [aria-disabled="true"])) {
   background: var(--bw-hover);
   color: var(--bw-text);
 }
@@ -622,6 +638,12 @@
   border-color: var(--bw-island-edge);
   background: var(--bw-island);
   color: var(--bw-text);
+}
+
+/* Disabled options (the site-info blocker levels while the blocker is unavailable): dimmed as
+   .bw-button is, and no hover wash, so they no longer look pickable. */
+.bw-segmented > button:is(:disabled, [aria-disabled="true"]) {
+  opacity: 0.45;
 }
 
 /* Sliding thumb (attachSegmentThumb). The pill is out of flow, so its width can morph without
@@ -928,3 +950,96 @@
   display: none;
 }
 /* --- end window and panels --- */
+
+/* ---- Forced colours (Windows contrast themes). The engine replaces every fill with Canvas and drops
+   box-shadow, so any state drawn only with a background or a shadow vanishes: the toggle's knob and
+   on-track, the checked segment, the field's focus ring, selected rows and menu items, the pressed
+   icon button and the spinner's turning arc. Each gets a system-colour equivalent here (the pattern
+   hover.css and store.css already use). ---- */
+@media (forced-colors: active) {
+  .bw-toggle {
+    forced-color-adjust: none;
+    border-color: ButtonText;
+    background: ButtonFace;
+  }
+
+  .bw-toggle::after {
+    background: ButtonText;
+  }
+
+  .bw-toggle[aria-checked="true"] {
+    border-color: Highlight;
+    background: Highlight;
+  }
+
+  .bw-toggle[aria-checked="true"]::after {
+    background: HighlightText;
+  }
+
+  .bw-toggle:is(:disabled, [aria-disabled="true"]),
+  .bw-toggle[aria-checked="true"]:is(:disabled, [aria-disabled="true"]) {
+    border-color: GrayText;
+    background: ButtonFace;
+    opacity: 1;
+  }
+
+  .bw-toggle:is(:disabled, [aria-disabled="true"])::after,
+  .bw-toggle[aria-checked="true"]:is(:disabled, [aria-disabled="true"])::after {
+    background: GrayText;
+  }
+
+  .bw-toggle:focus-visible {
+    outline-color: Highlight;
+    box-shadow: none;
+  }
+
+  .bw-segmented > button:is([aria-checked="true"], [aria-pressed="true"], [aria-selected="true"]),
+  .bw-segmented.is-thumb.is-placed > button:is([aria-checked="true"], [aria-pressed="true"], [aria-selected="true"]),
+  .bw-segmented.is-thumb.is-placed > button:is([aria-checked="true"], [aria-pressed="true"], [aria-selected="true"]):hover {
+    forced-color-adjust: none;
+    color: HighlightText;
+  }
+
+  .bw-segmented:not(.is-thumb) > button:is([aria-checked="true"], [aria-pressed="true"], [aria-selected="true"]),
+  .bw-segmented.is-thumb:not(.is-placed) > button:is([aria-checked="true"], [aria-pressed="true"], [aria-selected="true"]) {
+    border-color: Highlight;
+    background: Highlight;
+  }
+
+  .bw-seg-thumb-face {
+    forced-color-adjust: none;
+    border-color: Highlight;
+    background: Highlight;
+  }
+
+  .bw-input:focus-visible {
+    outline: 2px solid Highlight;
+    outline-offset: -2px;
+  }
+
+  .bw-input[aria-invalid="true"] {
+    border-width: 2px;
+  }
+
+  :is(
+      .bw-row:is([aria-selected="true"], .is-selected),
+      .bw-menu-item:is(.is-selected, .is-active, [aria-selected="true"]),
+      .bw-menu-item:hover:not(:disabled, [aria-disabled="true"]),
+      .bw-island:is(.is-active, [aria-selected="true"], [aria-current="page"]),
+      .bw-icon-btn:is([aria-pressed="true"], [aria-expanded="true"], .is-on)
+    ):not(:focus-visible) {
+    outline: 1px solid Highlight;
+    outline-offset: -1px;
+  }
+
+  :is(.bw-button, .bw-icon-btn, .bw-menu-item, .bw-select-button, .bw-segmented > button):is(:disabled, [aria-disabled="true"]) {
+    border-color: GrayText;
+    color: GrayText;
+  }
+
+  .bw-spinner {
+    forced-color-adjust: none;
+    border-color: GrayText;
+    border-top-color: Highlight;
+  }
+}

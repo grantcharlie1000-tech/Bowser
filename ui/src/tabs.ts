@@ -33,6 +33,7 @@ import {
   privateTabName,
   pruneFavs,
   rememberFav,
+  revealKey,
   stepMoveBefore,
   scrollDeltaForWheel,
   ballOnly,
@@ -573,6 +574,8 @@ export function startTabs(strip: HTMLElement): HTMLElement {
     }
   };
 
+  /** The active tab and place the strip last scrolled into view (`revealKey`). */
+  let revealed = '';
   const render = (msg: TabsMsg): void => {
     // --- vertical sidebar (lane S) ---
     if (layoutMode === 'vertical') {
@@ -761,10 +764,16 @@ export function startTabs(strip: HTMLElement): HTMLElement {
       }
       refocus = 0;
     }
-    tabNodes.get(activeId)?.root.scrollIntoView({
-      block: 'nearest', inline: 'nearest',
-      behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth',
-    });
+    // Only a newly selected or moved active tab is revealed: a background tab's update leaves the
+    // strip where the user scrolled it.
+    const reveal = revealKey(msg.items, msg.active);
+    if (reveal !== revealed) {
+      revealed = reveal;
+      tabNodes.get(activeId)?.root.scrollIntoView({
+        block: 'nearest', inline: 'nearest',
+        behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth',
+      });
+    }
     updateEdges();
   };
 
@@ -1273,10 +1282,12 @@ export function startTabs(strip: HTMLElement): HTMLElement {
     const at = list.findIndex((n) => n.id === id);
     if (at < 0) return;
     let next: number;
-    if (ev.ctrlKey && ev.shiftKey && (ev.key === 'ArrowLeft' || ev.key === 'ArrowRight')) {
+    if (ev.ctrlKey && ev.shiftKey && !ev.altKey && (ev.key === 'ArrowLeft' || ev.key === 'ArrowRight' || ev.key === 'PageUp' || ev.key === 'PageDown')) {
       // Keyboard reorder: one slot per press; focus follows the moved tab once the host reorders.
       // A collapsed group is one slot here too: before it means before its first member (U2).
-      const before = stepMoveBefore(list.map((n) => n.id), at, ev.key === 'ArrowLeft' ? -1 : 1, collapsedLeaders(id));
+      // Ctrl+Shift+Page Up/Down is the chord that reaches the strip: the host keeps Ctrl+Shift+Left/
+      // Right for the split panes (docs/shortcuts.md).
+      const before = stepMoveBefore(list.map((n) => n.id), at, ev.key === 'ArrowLeft' || ev.key === 'PageUp' ? -1 : 1, collapsedLeaders(id));
       ev.preventDefault();
       if (before !== null) {
         refocus = id;
@@ -1327,6 +1338,7 @@ export function startTabs(strip: HTMLElement): HTMLElement {
           setPicked([]);
           sidebar.clearSelection();
         }
+        if (msg.mode !== layoutMode) revealed = ''; // the other layout's view starts on the active tab
         layoutMode = msg.mode;
         stripAtBottom = msg.mode === 'horizontal' && msg.side === 'bottom';
         strip.classList.toggle('at-bottom', stripAtBottom);

@@ -305,6 +305,12 @@ fn ensure_host(owner: HWND) {
             }
             Command::Panel { kind: PanelType::Settings, f } => queue(owner, Queued::Settings(f)),
             Command::Panel { kind: PanelType::Privacy, f } => queue(owner, Queued::Privacy(f)),
+            command @ (Command::Tip { .. } | Command::TipOff) => {
+                if let Some(host) = with(owner, |rt| rt.host.clone()).flatten() {
+                    let dpi = unsafe { windows::Win32::UI::HiDpi::GetDpiForWindow(owner) };
+                    super::window::html_view_tip(owner, &host, dpi, command);
+                }
+            }
             _ => {}
         }
     });
@@ -751,10 +757,12 @@ fn run(owner: HWND, app: &AppRef, tab: TabId, action: Action) {
             answer(owner, crate::updater::set_auto_update(on).map_err(|error| format!("Automatic updates could not be changed: {error}")));
         }
         Action::History(on) => {
-            // A guest never saves history; the page shows the switch off and disabled.
-            let Ok(profile) = profile else { return };
+            // A guest never saves history; the page shows the switch off and disabled. Every path
+            // answers: the page holds its draft until an answer arrives, so a silent return would
+            // leave the change pending and let a later Save overwrite newer values.
+            let Ok(profile) = profile else { return answer(owner, Err("The profile is not ready.".into())) };
             if profile.is_guest() {
-                return;
+                return answer(owner, Err("A guest window never saves history.".into()));
             }
             answer(owner, profile.set_history_enabled(on).map_err(|error| format!("History could not be changed: {error}")));
         }
@@ -1059,6 +1067,7 @@ fn extensions_snapshot(owner: HWND) -> String {
                     ext::Entry {
                         manifest: folder.as_deref().and_then(extensions::installed_manifest),
                         popup: folder.as_deref().is_some_and(|folder| extensions::declares_page(folder, PageKind::Popup)),
+                        options: folder.as_deref().is_some_and(|folder| extensions::declares_page(folder, PageKind::Options)),
                         failure: extensions::load_failure(&record.id).unwrap_or_default(),
                         id: record.id,
                         name: record.name,

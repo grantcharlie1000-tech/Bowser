@@ -30,6 +30,8 @@ pub struct Entry {
     pub enabled: bool,
     /// The manifest names a popup page Bowser can open.
     pub popup: bool,
+    /// The manifest names an options page Bowser can open.
+    pub options: bool,
     /// Why it failed to load or change this session, or empty.
     pub failure: String,
     /// The manifest in Bowser's copy, or `None` when it could not be read.
@@ -103,6 +105,7 @@ fn write_entry(item: &mut super::json::Object<'_>, entry: &Entry) {
     item.string("version", &plain(&entry.version, MAX_VERSION_CHARS));
     item.bool("enabled", entry.enabled);
     item.bool("popup", entry.popup);
+    item.bool("options", entry.options);
     item.string("failure", plain(&entry.failure, MAX_FAILURE_CHARS).trim());
     item.bool("readable", manifest.is_some());
     item.bool("all", manifest.is_some_and(extensions::reaches_every_site));
@@ -216,6 +219,7 @@ mod tests {
             version: "1.2.3".into(),
             enabled: true,
             popup: true,
+            options: true,
             failure: String::new(),
             manifest: Some(manifest()),
         }
@@ -316,6 +320,7 @@ mod tests {
             version: "0.4".into(),
             enabled: false,
             popup: false,
+            options: false,
             failure: "Load failed: 0x80070002".into(),
             manifest: Some(Manifest {
                 name: "Tab Notes".into(),

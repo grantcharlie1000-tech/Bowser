@@ -160,6 +160,7 @@ export function startDownloadsPage(root: HTMLElement): void {
   const toastText = el('span', 'dp-toast-text');
   const undo = el('button', 'dp-toast-undo');
   undo.type = 'button';
+  undo.hidden = true; // not a Tab stop or announced until an undo toast shows it
   undo.textContent = 'Undo';
   undo.setAttribute('aria-keyshortcuts', 'Control+Z');
   toast.append(toastIcon, toastText, undo);

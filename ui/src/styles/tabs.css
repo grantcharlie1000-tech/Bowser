@@ -330,10 +330,11 @@
   gap: var(--bw-space-1);
   /* One flex item that weighs as much as its visible tabs (--gw, set from tabs.ts: 1 each, 1.5 for the
      active one). The basis is the label (--go) plus a gap per child, so what is left over is shared
-     like top-level tabs. min-width 0 lets the members shrink before a collapsed label is pushed
-     off the row; the label itself does not shrink (below). */
+     like top-level tabs. The group never gets narrower than its label plus its members' minimum
+     widths (min-width auto): in a crowded row it stops shrinking like a top-level tab does and the
+     strip scrolls, instead of collapsing under its own members so the next tabs draw over them. */
   flex: var(--gw, 1) 1 calc(var(--go, 0px) + var(--gn, 1) * var(--bw-space-1));
-  min-width: 0;
+  min-width: auto;
   height: var(--bw-tab-h);
   padding: 0;
   transition: flex-grow var(--bw-dur-group) var(--bw-ease-group), flex-basis var(--bw-dur-group) var(--bw-ease-group);

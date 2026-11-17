@@ -11,17 +11,17 @@
  */
 
 #app.hp-root {
-  --hp-page: var(--bw-window-opaque);
-  --hp-card: color-mix(in srgb, var(--bw-text) 4%, var(--bw-window-opaque));
-  --hp-card-edge: var(--bw-hairline);
-  --hp-field: color-mix(in srgb, var(--bw-text) 6%, var(--bw-window-opaque));
-  --hp-field-edge: color-mix(in srgb, var(--bw-text) 12%, transparent);
-  --hp-row-hover: color-mix(in srgb, var(--bw-text) 6%, transparent);
-  --hp-row-press: color-mix(in srgb, var(--bw-text) 10%, transparent);
-  --hp-tile: color-mix(in srgb, var(--bw-text) 7%, transparent);
-  --hp-hit: color-mix(in srgb, var(--bw-accent) 28%, transparent);
-  --hp-danger: var(--bw-group-0);
-  --hp-warn: var(--bw-group-1);
+  --hp-page: var(--bw-page);
+  --hp-card: var(--bw-card);
+  --hp-card-edge: var(--bw-card-edge);
+  --hp-field: var(--bw-field);
+  --hp-field-edge: var(--bw-field-edge);
+  --hp-row-hover: var(--bw-row-hover);
+  --hp-row-press: var(--bw-row-press);
+  --hp-tile: var(--bw-tile);
+  --hp-hit: var(--bw-hit);
+  --hp-danger: var(--bw-danger);
+  --hp-warn: var(--bw-warning);
   /* Content column and its gutter; the header's inner column matches it exactly. */
   --hp-col: 760px;
   --hp-gutter: var(--bw-space-6);
@@ -35,11 +35,6 @@
   background: var(--hp-page);
   color: var(--bw-text);
   font: var(--bw-text-body) / var(--bw-leading-body) var(--bw-font);
-}
-
-:root[data-scheme="light"] #app.hp-root {
-  --hp-card: color-mix(in srgb, #fff 72%, var(--bw-window-opaque));
-  --hp-field: color-mix(in srgb, #fff 80%, var(--bw-window-opaque));
 }
 
 /* `hidden` always wins over the display of the classes below. */

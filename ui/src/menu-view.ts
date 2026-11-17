@@ -1,7 +1,7 @@
 import { icon, type IconName } from './dom';
 import { isIconName } from './icons';
 import {
-  activateAt, childSlice, createNav, firstVisible, flyoutSide, footerVisible, hasFlyouts, hasLeadColumn, hasTrailColumn, innerPixels, menuKey, onFill,
+  activateAt, childSlice, childTop, createNav, firstVisible, flyoutSide, footerVisible, hasFlyouts, hasLeadColumn, hasTrailColumn, innerPixels, menuKey, onFill,
   slideShift, validMenuPayload, validRoom,
   type FlyoutRoom, type MenuBadge, type MenuMessage, type MenuNav, type MenuOutcome, type MenuPage,
 } from './menu-logic';
@@ -205,14 +205,19 @@ export function createMenuView(root: HTMLElement, now: () => number = () => perf
     });
   };
 
-  // Drops the child's column so its card's first row lines up with the parent row that opened it.
+  // Drops the child's column so its card's first row lines up with the parent row that opened it, but
+  // never so low that the card would run past the window's bottom (the work area's): a submenu opened
+  // from a row near the bottom of the screen moves up to show all of its rows, as far as the parent's
+  // top, instead of being squeezed into a scrolling sliver. Only a card taller than the window scrolls.
   const placeChild = (card: Flyout): void => {
     const row = host?.pane.querySelector<HTMLElement>('.html-menu-row.is-open');
     if (!host || !row) return;
     const style = getComputedStyle(card.pane);
     const pad = (Number.parseFloat(style.paddingTop) || 0) + (Number.parseFloat(style.borderTopWidth) || 0);
-    const y = Math.round(row.getBoundingClientRect().top - host.pane.getBoundingClientRect().top - pad);
-    card.wrap.style.setProperty('--menu-child-y', `${Math.max(0, y)}px`);
+    const y = Math.max(0, Math.round(row.getBoundingClientRect().top - host.pane.getBoundingClientRect().top - pad));
+    card.wrap.style.setProperty('--menu-child-y', '0px');
+    const height = card.pane.getBoundingClientRect().height;
+    card.wrap.style.setProperty('--menu-child-y', `${childTop(y, height, window.innerHeight - track.getBoundingClientRect().top)}px`);
   };
 
   // Picks the child's side from Rust's `room`: right when it fits, left when only that side has room,

@@ -59,6 +59,24 @@ test('pinned tiles drop on the nearest grid slot and neighbours step to the slot
   assert.equal(logic.pinnedBeforeId([11, 12], 2, 0), 0);
 });
 
+test('the keyboard moves a row or pinned tile one slot, as the drop there would', () => {
+  // Rows 1..4: Ctrl+Shift+Down on row 2 lands it after 3 (before 4); on the last row it stops.
+  assert.equal(logic.keyboardMoveBefore([1, 2, 3, 4], 1, 1, false, 0), 4);
+  assert.equal(logic.keyboardMoveBefore([1, 2, 3, 4], 2, 1, false, 0), 0, 'to the end: before nothing');
+  assert.equal(logic.keyboardMoveBefore([1, 2, 3, 4], 3, 1, false, 0), null);
+  assert.equal(logic.keyboardMoveBefore([1, 2, 3, 4], 1, -1, false, 0), 1);
+  assert.equal(logic.keyboardMoveBefore([1, 2, 3, 4], 0, -1, false, 0), null);
+  // A pinned tile moved last stays pinned-first: before the first unpinned tab.
+  assert.equal(logic.keyboardMoveBefore([11, 12], 0, 1, true, 30), 30);
+  assert.equal(logic.keyboardMoveBefore([11, 12], 1, -1, true, 30), 11);
+  // Only Ctrl+Shift with Up/Down or Page Up/Down; Alt or a missing modifier is not a move.
+  assert.equal(logic.keyboardMoveDir('ArrowDown', true, true, false), 1);
+  assert.equal(logic.keyboardMoveDir('PageUp', true, true, false), -1);
+  assert.equal(logic.keyboardMoveDir('ArrowDown', true, false, false), 0);
+  assert.equal(logic.keyboardMoveDir('ArrowDown', true, true, true), 0);
+  assert.equal(logic.keyboardMoveDir('ArrowLeft', true, true, false), 0);
+});
+
 test('scroll-into-view delta is zero for visible rows and minimal for clipped rows', () => {
   assert.equal(logic.scrollIntoViewDelta(20, 100, 40, 20), 0);
   assert.equal(logic.scrollIntoViewDelta(20, 100, 10, 20), -10);

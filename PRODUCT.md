@@ -9,7 +9,7 @@ product
 One person (the owner) and anyone they hand the laptop to, browsing on Windows 10/11, mostly on a
 16:9 laptop panel at 100-150% scaling. They live in the browser all day: research, chat apps, docs,
 video. They switch between a horizontal tab strip and a vertical sidebar, keep several workspaces,
-and expect keyboard-first control (Ctrl+L, Ctrl+T, Ctrl+Tab, Ctrl+Shift+V, Escape).
+and expect keyboard-first control (Ctrl+L, Ctrl+T, Ctrl+Tab, Ctrl+Shift+K, Escape).
 
 ## Product Purpose
 

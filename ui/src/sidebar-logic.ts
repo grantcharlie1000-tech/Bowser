@@ -101,6 +101,26 @@ export function pinnedBeforeId(others: readonly number[], destination: number, f
   return others[destination] ?? firstUnpinned;
 }
 
+/**
+ * The keyboard move of the row (or pinned tile) at `at` in `ids` one slot up (-1) or down (+1),
+ * as the `before` id a drop there would send; null at that end. Pinned tiles move among the tiles
+ * (landing last means before `firstUnpinned`), rows among the rows, exactly like a drag.
+ */
+export function keyboardMoveBefore(ids: readonly number[], at: number, dir: -1 | 1, pinned: boolean, firstUnpinned: number): number | null {
+  const destination = at + dir;
+  if (at < 0 || at >= ids.length || destination < 0 || destination >= ids.length) return null;
+  const others = ids.filter((_, i) => i !== at);
+  return pinned ? pinnedBeforeId(others, destination, firstUnpinned) : (others[destination] ?? 0);
+}
+
+/** The keyboard reorder chords: Ctrl+Shift with Up/Down or Page Up/Down; -1 up, +1 down, 0 none. */
+export function keyboardMoveDir(key: string, ctrl: boolean, shift: boolean, alt: boolean): -1 | 0 | 1 {
+  if (!ctrl || !shift || alt) return 0;
+  if (key === 'ArrowUp' || key === 'PageUp') return -1;
+  if (key === 'ArrowDown' || key === 'PageDown') return 1;
+  return 0;
+}
+
 /** Workspace glyph id from Rust ("g:code") to an icons.ts name; unknown ids get the generic workspace stack. */
 export function workspaceIconName(glyph: string): string {
   return /^g:(briefcase|home|code|book|cart|game|music|heart|star|bolt|globe|leaf)$/.test(glyph)

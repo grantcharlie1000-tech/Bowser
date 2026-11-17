@@ -13,7 +13,7 @@
 //       .bw-palette-section                section heading (sentence case)
 //       .bw-palette-row[role=option][aria-selected][data-id] > svg, .bw-palette-text >
 //           .bw-palette-label + .bw-palette-detail, .bw-palette-accel
-//     .bw-palette-empty                    "No matches"
+//     .bw-palette-empty[role=status]       "No matches" (the list is then role=presentation)
 // Page text reaches the DOM through textContent only.
 import { icon, type IconName } from './icons';
 import { sendPopupDismiss, sendPopupPick, sendPopupSize } from './protocol';
@@ -35,7 +35,7 @@ const SECTION_ICON: Readonly<Record<ResultType, IconName>> = {
   bookmark: 'bookmark',
   note: 'notes',
   history: 'clock',
-  calc: 'grid',
+  calc: 'calculator',
 };
 
 /** Leading visual of a row: the cached favicon for pages, else the command's or section's glyph. */
@@ -239,7 +239,11 @@ export function createPaletteView(root: HTMLElement): PageView {
         index += 1;
       }
     }
+    // With no results there is no list to point into: the box says so (collapsed), and the "No
+    // matches" status is not left inside an empty listbox, where a status has no place.
     if (nodes.length === 0) nodes.push(empty);
+    list.setAttribute('role', rows.length > 0 ? 'listbox' : 'presentation');
+    input.setAttribute('aria-expanded', String(rows.length > 0));
     list.replaceChildren(...nodes);
     markSelected();
     paintGhost();

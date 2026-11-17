@@ -946,3 +946,188 @@ fn engine_recovery_scoped_browser_events_from_retired_engine_or_shutdown_are_ine
     assert!(calls.borrow().is_empty());
     assert_eq!(app.borrow().engine_generation, 1);
 }
+
+// --- "page isn't responding" (RendererUnresponsive) ---
+// The engine boundary records what App asks of it and holds each responsiveness probe until the
+// test answers it, as a hung renderer would.
+type Probes = Rc<RefCell<Vec<Box<dyn FnOnce()>>>>;
+
+struct HangEngine {
+    calls: Rc<RefCell<Vec<String>>>,
+    probes: Probes,
+}
+
+impl EngineAdapter for HangEngine {
+    fn controller_generation(&self, _: TabId) -> Option<u64> { Some(7) }
+    fn navigate(&mut self, url: &url::Url) -> windows::core::Result<()> { self.calls.borrow_mut().push(format!("navigate:{url}")); Ok(()) }
+    fn navigate_tab(&mut self, tab: TabId, url: &url::Url) -> windows::core::Result<()> {
+        self.calls.borrow_mut().push(format!("navigate:{}:{url}", tab.0));
+        Ok(())
+    }
+    fn navigate_tab_post(&mut self, tab: TabId, url: &url::Url, body: &str) -> windows::core::Result<()> {
+        self.calls.borrow_mut().push(format!("post:{}:{url}:{body}", tab.0));
+        Ok(())
+    }
+    fn reload(&mut self) -> windows::core::Result<()> { self.calls.borrow_mut().push("reload".into()); Ok(()) }
+    fn reload_tab(&mut self, tab: TabId) -> windows::core::Result<()> { self.calls.borrow_mut().push(format!("reload:{}", tab.0)); Ok(()) }
+    fn close_tab(&mut self, tab: TabId) -> windows::core::Result<()> { self.calls.borrow_mut().push(format!("close:{}", tab.0)); Ok(()) }
+    fn probe_responsive(&mut self, tab: TabId, done: Box<dyn FnOnce()>) {
+        self.calls.borrow_mut().push(format!("probe:{}", tab.0));
+        self.probes.borrow_mut().push(done);
+    }
+    fn can_go_back(&self) -> bool { false }
+    fn go_back(&mut self) -> windows::core::Result<()> { Ok(()) }
+    fn can_go_forward(&self) -> bool { false }
+    fn go_forward(&mut self) -> windows::core::Result<()> { Ok(()) }
+    fn resize(&mut self, _: windows::Win32::Foundation::RECT) -> windows::core::Result<()> { Ok(()) }
+    fn set_memory_usage_target(&mut self, _: MemoryUsageTarget) -> windows::core::Result<MemoryTargetApply> { Ok(MemoryTargetApply::Applied) }
+    fn close(&mut self) -> windows::core::Result<()> { self.calls.borrow_mut().push("retired".into()); Ok(()) }
+}
+
+const HUNG_PAGE: &str = "https://example.test/hung-form-result";
+
+fn hung_app() -> (AppRef, TabId, Rc<RefCell<Vec<String>>>, Probes) {
+    let app = app_with_pending(rect(800, 600));
+    let active = App::active_tab_id(&app);
+    let (calls, probes): (Rc<RefCell<Vec<String>>>, Probes) = (Rc::default(), Rc::default());
+    {
+        let mut state = app.borrow_mut();
+        state.pending = None;
+        state.pending_tab = None;
+        state.initializing = false;
+        state.engine = Some(Box::new(HangEngine { calls: calls.clone(), probes: probes.clone() }));
+    }
+    test_show_page(&app, active, HUNG_PAGE);
+    {
+        let mut state = app.borrow_mut();
+        let tab = state.tabs.iter_mut().find(|tab| tab.id == active).unwrap();
+        tab.page_usable = true;
+        tab.loading = false;
+        tab.can_back = true;
+        tab.can_forward = true;
+    }
+    (app, active, calls, probes)
+}
+
+fn report_hang(app: &AppRef, tab: TabId) {
+    let generation = app.borrow().engine_generation;
+    App::process_failure_callback(app, generation)(failure(tab, engine::ProcessFailureKind::RendererUnresponsive));
+    App::process_engine_notices(app);
+}
+
+#[test]
+fn engine_recovery_unresponsive_renderer_offers_wait_and_reload_without_touching_the_document() {
+    let (app, active, calls, probes) = hung_app();
+    report_hang(&app, active);
+    assert!(App::unresponsive_prompt(&app, active), "a hang must give the user a visible choice");
+    assert!(App::content_failure_message(&app, active).is_none(), "a hang is not a failure card");
+    assert_eq!(*calls.borrow(), [format!("probe:{}", active.0)], "only a probe: no close, reload or navigation");
+    assert_eq!(probes.borrow().len(), 1);
+    let state = app.borrow();
+    let tab = state.tabs.iter().find(|tab| tab.id == active).unwrap();
+    assert!(tab.controller_created && tab.page_usable && tab.can_back && tab.can_forward);
+}
+
+#[test]
+fn engine_recovery_unresponsive_wait_keeps_the_document_and_a_later_report_asks_again() {
+    let (app, active, calls, probes) = hung_app();
+    report_hang(&app, active);
+    assert!(App::wait_unresponsive_tab(&app, active));
+    assert!(!App::unresponsive_prompt(&app, active));
+    assert!(!App::wait_unresponsive_tab(&app, active), "Wait applies once per showing");
+    // WebView2 may repeat its report for the same hang: Wait is respected for a short while.
+    report_hang(&app, active);
+    assert!(!App::unresponsive_prompt(&app, active));
+    App::tab_became_unresponsive(&app, active, 7, Instant::now() + UNRESPONSIVE_WAIT_GRACE + Duration::from_secs(1));
+    assert!(App::unresponsive_prompt(&app, active), "still hung after waiting: ask again");
+    assert_eq!(probes.borrow().len(), 1, "the first probe is still outstanding; no second one is queued");
+    assert!(!calls.borrow().iter().any(|call| call.starts_with("close:") || call.starts_with("navigate:") || call.starts_with("reload")));
+}
+
+#[test]
+fn engine_recovery_unresponsive_reload_is_explicit_get_in_a_fresh_controller_never_a_post() {
+    for through_reload_command in [false, true] {
+        let (app, active, calls, _) = hung_app();
+        let target = url::Url::parse(HUNG_PAGE).unwrap();
+        app.borrow_mut().pending_request_body = Some((active, target, "secret=submitted".into()));
+        report_hang(&app, active);
+        calls.borrow_mut().clear();
+        if through_reload_command {
+            // F5 / Ctrl+R / the toolbar's Reload on a hung tab take the same safe route.
+            App::reload_tab(&app, active);
+        } else {
+            assert!(App::reload_unresponsive_tab(&app, active));
+        }
+        assert_eq!(*calls.borrow(), [format!("close:{}", active.0), format!("navigate:{}:{HUNG_PAGE}", active.0)]);
+        assert!(app.borrow().pending_request_body.is_none(), "a submitted body must never be resent");
+        assert!(!App::unresponsive_prompt(&app, active));
+        assert!(App::content_failure_message(&app, active).is_none());
+        assert!(app.borrow().tabs.iter().any(|tab| tab.id == active && tab.recovery_started.is_some()),
+            "a fresh controller is bounded by the recovery timeout");
+        assert!(!App::reload_unresponsive_tab(&app, active), "nothing left to reload");
+    }
+}
+
+#[test]
+fn engine_recovery_unresponsive_prompt_clears_when_the_page_answers_navigates_fails_or_closes() {
+    // The probe answers: the renderer is back.
+    let (app, active, _, probes) = hung_app();
+    report_hang(&app, active);
+    // An answer for an older controller of the same tab is not evidence.
+    let generation = app.borrow().engine_generation;
+    App::responsive_callback(&app, generation, active, 6)();
+    App::process_engine_notices(&app);
+    assert!(App::unresponsive_prompt(&app, active));
+    let answer = probes.borrow_mut().pop().unwrap();
+    answer();
+    App::process_engine_notices(&app);
+    assert!(!App::unresponsive_prompt(&app, active));
+    assert!(app.borrow().tabs.iter().all(|tab| tab.unresponsive.is_none()));
+
+    // A navigation or completed load replaces the hung document.
+    let (app, active, _, _) = hung_app();
+    report_hang(&app, active);
+    App::navigate_tab(&app, active, &url::Url::parse("https://example.test/elsewhere").unwrap());
+    assert!(!App::unresponsive_prompt(&app, active));
+    test_show_page(&app, active, "https://example.test/elsewhere");
+    report_hang(&app, active);
+    App::tab_page_loaded(&app, active);
+    assert!(!App::unresponsive_prompt(&app, active));
+
+    // A renderer exit turns the hang into the ordinary failure card.
+    let (app, active, _, _) = hung_app();
+    report_hang(&app, active);
+    App::tab_render_failed(&app, active);
+    assert!(!App::unresponsive_prompt(&app, active));
+    assert_eq!(App::content_failure_message(&app, active), Some(ContentFailure::RendererExited.message()));
+    report_hang(&app, active);
+    assert!(!App::unresponsive_prompt(&app, active), "a failed tab shows only its failure card");
+
+    // A closed tab and a probe answering after it are inert.
+    let (app, _, _, probes) = hung_app();
+    let other = App::new_tab(&app);
+    test_show_page(&app, other, "https://example.test/other");
+    report_hang(&app, other);
+    assert!(App::unresponsive_prompt(&app, other));
+    assert!(App::close_tab(&app, other));
+    assert!(!App::unresponsive_prompt(&app, other));
+    let answer = probes.borrow_mut().pop();
+    if let Some(answer) = answer { answer(); }
+    App::process_engine_notices(&app);
+    assert!(!App::wait_unresponsive_tab(&app, other) && !App::reload_unresponsive_tab(&app, other));
+}
+
+#[test]
+fn engine_recovery_unresponsive_reports_from_a_retired_engine_or_during_close_are_inert() {
+    let (app, active, calls, _) = hung_app();
+    let old = App::process_failure_callback(&app, 0);
+    app.borrow_mut().engine_generation = 1;
+    old(failure(active, engine::ProcessFailureKind::RendererUnresponsive));
+    App::process_engine_notices(&app);
+    assert!(!App::unresponsive_prompt(&app, active));
+    app.borrow_mut().closing = true;
+    App::tab_became_unresponsive(&app, active, 7, Instant::now());
+    assert!(!App::unresponsive_prompt(&app, active));
+    assert!(!App::reload_unresponsive_tab(&app, active));
+    assert!(calls.borrow().is_empty());
+}

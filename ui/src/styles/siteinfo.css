@@ -10,7 +10,20 @@
   display: flex;
   flex-direction: column;
   width: 320px;
+  max-height: 100vh;
+}
+
+/* Taller than a short work area: the page scrolls rather than hiding Zoom, Reset and the footer
+   (.popup-page clips by default; this outranks it). */
+.popup-page.bw-siteinfo {
+  overflow-x: hidden;
+  overflow-y: auto;
   padding-bottom: var(--bw-space-1);
+}
+
+/* Capped, the column scrolls; its rows must keep their height rather than shrink into each other. */
+.bw-siteinfo > * {
+  flex: none;
 }
 
 .bw-siteinfo-header {

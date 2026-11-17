@@ -16,8 +16,9 @@ export interface PrivateRow {
 
 export const PRIVATE_PAGE_EYEBROW = 'Private tab';
 export const PRIVATE_PAGE_TITLE = 'You’re browsing privately';
-export const PRIVATE_PAGE_LEAD =
-  'Bowser doesn’t record your browsing in private tabs. Their cookies and site data stay in memory and are erased when you close your last private tab.';
+// One sentence (docs/design/private-tabs.md): what happens to cookies and site data is the first card's
+// "Cookies and site data" row, so the lead does not say it twice.
+export const PRIVATE_PAGE_LEAD = 'Bowser doesn’t record your browsing in private tabs.';
 
 export const PRIVATE_KEPT_TITLE = 'Bowser won’t keep';
 export const PRIVATE_NOT_KEPT: readonly PrivateRow[] = [

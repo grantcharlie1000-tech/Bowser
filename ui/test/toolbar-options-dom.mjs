@@ -275,3 +275,12 @@ test('native input handoff preserves edited text and UTF-16 selection without ea
   assert.deepEqual([omni.selectionStart, omni.selectionEnd], [6, 8]);
   omni.blur();
 });
+
+test('Ctrl+Shift+V pastes in the address field: Rust binds no layout toggle to it any more', () => {
+  const field = root.querySelector('input.omni');
+  for (const input of [field, searchInput]) {
+    let prevented = false;
+    input.dispatch('keydown', { key: 'V', code: 'KeyV', ctrlKey: true, shiftKey: true, altKey: false, metaKey: false, isComposing: false, keyCode: 86, preventDefault() { prevented = true; } });
+    assert.equal(prevented, false, input.className);
+  }
+});

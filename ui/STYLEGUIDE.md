@@ -100,6 +100,17 @@ Group palette: `--bw-group-0` ... `--bw-group-7` (tabs.ts / sidebar.ts map Rust'
 Private violet: `--bw-private` (#b9a2ff dark, #6440d0 light; text-grade on both), `--bw-private-soft`
 (chip wash), `--bw-private-edge` (outline). Only private surfaces use them; see
 docs/design/private-tabs.md.
+Status: `--bw-danger` (#ff9a8b dark, #c42b1c light) and `--bw-warning` (#e8a25f dark, #95511f
+light), text-grade (>= 4.5:1) on the window, card and field in both schemes. Status text and glyphs
+use these, never the group palette (group orange measured 2.84:1 on a dark card); `test/styles.mjs`
+fails a `*-warn` / `*-danger` property that reads `--bw-group-*`.
+Page material for full-page surfaces (settings, history, downloads, Store): `--bw-page`,
+`--bw-card`, `--bw-card-edge`, `--bw-field`, `--bw-field-edge`, `--bw-tile`, `--bw-row-hover`,
+`--bw-row-press`, `--bw-hit` (search-match highlight). A page's local `--sp-*` / `--hp-*` / `--dp-*`
+/ `--bs-*` names map to these rather than repeating the mixes.
+Forced colours: `components.css` carries `@media (forced-colors: active)` system-colour fallbacks for
+the shared components. A surface that shows state only with a fill or a `box-shadow` (which forced
+colours drop) adds its own fallback beside it.
 
 ### Type
 

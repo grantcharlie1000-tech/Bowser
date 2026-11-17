@@ -228,7 +228,9 @@ export function menuKey(nav: MenuNav, key: string, mods: KeyMods, now: number): 
       return isSelectable(entry) && entry.submenu ? activate(nav, page.selected) : NONE;
     }
     case 'ArrowLeft': case 'Backspace': return back(nav) ? PAGE : NONE;
-    case 'Escape': return { kind: 'dismiss' };
+    // Escape closes one level: an open submenu first (its parent row keeps the selection), and the
+    // menu itself only from the top page.
+    case 'Escape': return back(nav) ? PAGE : { kind: 'dismiss' };
     default: break;
   }
   if (key.length !== 1 || mods.ctrl || mods.alt || mods.meta) return NONE;
@@ -273,6 +275,16 @@ export function flyoutSide(room: FlyoutRoom | null, need: number): { side: 'righ
   if (room.l >= need) return { side: 'left', overlap: 0 };
   const side = room.r >= room.l ? 'right' : 'left';
   return { side, overlap: Math.min(need, need - Math.max(0, side === 'right' ? room.r : room.l)) };
+}
+
+/**
+ * Where a child card's top goes, in px below the parent card's top: level with the row that opened
+ * it (`rowTop`), lifted just enough that the whole card (`height`) fits above the window's bottom
+ * (`room` px below the parent's top), and never above the parent's top (the window starts there).
+ * A card taller than `room` starts at the parent's top and scrolls.
+ */
+export function childTop(rowTop: number, height: number, room: number): number {
+  return Math.max(0, Math.min(Math.round(rowTop), Math.floor(room - height)));
 }
 
 const EASE_KEYWORDS: Record<string, readonly [number, number, number, number]> = {

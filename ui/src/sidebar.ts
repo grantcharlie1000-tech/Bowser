@@ -9,12 +9,12 @@ import { wheelNotches } from './rail-logic'; // --- tab stacks and workspaces (T
 import { setTip } from './tooltip';
 import { el, icon, place, type IconName } from './dom';
 import { DRAG_ATTR } from './view';
-import { beforeId, dragScrollDelta, focusHeir, privateTabName } from './tabs-logic';
+import { beforeId, dragScrollDelta, focusHeir, privateTabName, revealKey } from './tabs-logic';
 // --- tab options ---
 import { clickSelection, loadMark, markedName, notifyLabel, pruneSelection, type LoadIndicatorChoice } from './tab-marks-logic';
 // --- end tab options ---
 import {
-  buildSidebarEntries, dropIndexVertical, nearestTile, pinnedBeforeId, railHoverAdvance, rovingTarget, scrollIntoViewDelta, tileShift,
+  buildSidebarEntries, dropIndexVertical, keyboardMoveBefore, keyboardMoveDir, nearestTile, pinnedBeforeId, railHoverAdvance, rovingTarget, scrollIntoViewDelta, tileShift,
   verticalSlotShift, workspaceIconName, type TilePoint,
 } from './sidebar-logic';
 // --- split view ---
@@ -144,7 +144,8 @@ export function syncTab(node: SidebarTabNode, item: TabItem, active: boolean, fa
     node.root.setAttribute('aria-label', privateTabName(marked));
     node.root.dataset.private = 'true';
   } else {
-    if (marked !== label) node.root.setAttribute('aria-label', marked);
+    // A pinned tile draws no title, so it always carries its name; a row's visible title names it.
+    if (marked !== label || item.pinned) node.root.setAttribute('aria-label', marked);
     else node.root.removeAttribute('aria-label');
     delete node.root.dataset.private;
   }
@@ -226,7 +227,8 @@ export function createSidebarRenderer(root: HTMLElement): {
   workspace(value: SidebarWorkspace): void;
   /** --- tab options --- `shown`: the sidebar is the layout in use, so it may redraw into the root. */
   options(value: TabOptsMsg, shown: boolean): void;
-  /** Drops the selection (the layout switched away, so it can no longer be seen). */
+  /** Drops the selection (the layout switched away, so it can no longer be seen); the next render
+   * reveals the active row again. */
   clearSelection(): void;
   /** Whether the sidebar is docked at the right of the window (the page is to its left). */
   side(right: boolean): void;
@@ -439,6 +441,10 @@ export function createSidebarRenderer(root: HTMLElement): {
     else settle(event.target);
   });
 
+  /** The active tab and place the list last scrolled into view (`revealKey`). */
+  let revealed = '';
+  /** The row a keyboard move was just sent for: it takes the keyboard back once the host reorders. */
+  let refocusRow = 0;
   const render = (msg: TabsMsg, favs: ReadonlyMap<number, string>, workspace: SidebarWorkspace): void => {
     latest = msg;
     latestFavs = favs;
@@ -542,7 +548,10 @@ export function createSidebarRenderer(root: HTMLElement): {
     const entering = rows.filter((row) => row.parentNode !== list && row !== separator && row !== empty && row !== pinGrid && !row.classList.contains('leaving'));
     for (const row of rows) if (!row.classList.contains('leaving')) row.classList.remove('leaving');
     // Roving tabindex: keep it where the user is, else on the active tab.
-    const heirRow = heir !== 0 ? tabs.get(heir)?.root : undefined;
+    // A row moved by the keyboard keeps the keyboard where it lands (re-placing it drops focus).
+    const movedRow = refocusRow !== 0 ? tabs.get(refocusRow)?.root : undefined;
+    refocusRow = 0;
+    const heirRow = (heir !== 0 ? tabs.get(heir)?.root : undefined) ?? movedRow;
     const focused = heirRow ?? (list.contains(document.activeElement) ? (document.activeElement as HTMLElement).closest<HTMLElement>('.side-tab, .side-group') : null);
     place(list, rows);
     place(root, [top, list]);
@@ -556,7 +565,14 @@ export function createSidebarRenderer(root: HTMLElement): {
       for (const row of entering) row.classList.add('bw-enter');
     }
     rendered = true;
-    reveal(activeRow);
+    // Only a newly selected or moved active tab is revealed: a background tab's title, favicon or
+    // progress update leaves the list where the user scrolled it.
+    const revealNow = revealKey(msg.items, msg.active);
+    if (revealNow !== revealed) {
+      revealed = revealNow;
+      reveal(activeRow);
+    }
+    if (movedRow?.isConnected) reveal(movedRow);
     updateFades();
     // --- tab ghost --- the host has laid out the released row's slot: the ghost glides there.
     if (ghostLand !== null && ghostLand.session.landing && ghostLand.node.root.isConnected && ghostLand.node.root.style.transform === '') {
@@ -888,6 +904,22 @@ export function createSidebarRenderer(root: HTMLElement): {
     const at = order.indexOf(row);
     if (at < 0) return;
     const isGroup = row.classList.contains('side-group');
+    // Keyboard reorder (the strip's Ctrl+Shift+Left/Right is the split-pane chord): Ctrl+Shift+Up/Down
+    // or Page Up/Down moves the row, or the pinned tile, one slot, as a drag would; focus follows it.
+    const dir = keyboardMoveDir(event.key, event.ctrlKey || event.metaKey, event.shiftKey, event.altKey);
+    if (dir !== 0) {
+      if (isGroup) return;
+      event.preventDefault();
+      const pinnedRow = row.classList.contains('pinned');
+      const ids = (pinnedRow ? pinTilesOf() : tabRowsOf()).map((element) => Number(element.dataset.id));
+      const id = Number(row.dataset.id);
+      const before = keyboardMoveBefore(ids, ids.indexOf(id), dir, pinnedRow, Number(tabRowsOf()[0]?.dataset.id ?? 0));
+      if (before !== null) {
+        refocusRow = id;
+        send({ v: 1, t: 'tabmove', id, before });
+      }
+      return;
+    }
     const expanded = row.getAttribute('aria-expanded') === 'true';
     const owner = !isGroup ? list.querySelector<HTMLElement>(`.side-group[data-key="${row.dataset.g ?? ''}"]`) : null;
     let next = at;
@@ -978,6 +1010,7 @@ export function createSidebarRenderer(root: HTMLElement): {
     },
     clearSelection() {
       if (picked.length > 0) setPicked([]);
+      revealed = '';
     },
     side(right) {
       sideRight = right;

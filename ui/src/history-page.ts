@@ -147,6 +147,7 @@ export function startHistoryPage(root: HTMLElement): void {
   const toastText = el('span', 'hp-toast-text');
   const undo = el('button', 'hp-toast-undo');
   undo.type = 'button';
+  undo.hidden = true; // not a Tab stop or announced until an undo toast shows it
   undo.textContent = 'Undo';
   undo.setAttribute('aria-keyshortcuts', 'Control+Z');
   toast.append(toastIcon, toastText, undo);

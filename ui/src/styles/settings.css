@@ -15,16 +15,16 @@
  */
 
 #app.sp-root {
-  --sp-page: var(--bw-window-opaque);
-  --sp-card: color-mix(in srgb, var(--bw-text) 4%, var(--bw-window-opaque));
-  --sp-card-edge: var(--bw-hairline);
+  --sp-page: var(--bw-page);
+  --sp-card: var(--bw-card);
+  --sp-card-edge: var(--bw-card-edge);
   --sp-rule: color-mix(in srgb, var(--bw-text) 7%, transparent);
-  --sp-field: color-mix(in srgb, var(--bw-text) 6%, var(--bw-window-opaque));
-  --sp-field-edge: color-mix(in srgb, var(--bw-text) 12%, transparent);
+  --sp-field: var(--bw-field);
+  --sp-field-edge: var(--bw-field-edge);
   --sp-well: color-mix(in srgb, var(--bw-text) 3%, transparent);
   --sp-nav-active: var(--bw-accent-soft);
-  --sp-hit: color-mix(in srgb, var(--bw-accent) 28%, transparent);
-  --sp-warn: var(--bw-group-1);
+  --sp-hit: var(--bw-hit);
+  --sp-warn: var(--bw-warning);
   --sp-side-w: 264px;
   --sp-row-x: var(--bw-space-4);
   --sp-gap-section: 56px;
@@ -42,8 +42,6 @@
 }
 
 :root[data-scheme="light"] #app.sp-root {
-  --sp-card: color-mix(in srgb, #fff 72%, var(--bw-window-opaque));
-  --sp-field: color-mix(in srgb, #fff 80%, var(--bw-window-opaque));
   --sp-rule: color-mix(in srgb, var(--bw-text) 8%, transparent);
 }
 

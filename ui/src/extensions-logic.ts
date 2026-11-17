@@ -40,6 +40,8 @@ export interface ExtensionItem {
   readonly enabled: boolean;
   /** The manifest names a popup Bowser can open. */
   readonly popup: boolean;
+  /** The manifest names an options page Bowser can open. */
+  readonly options: boolean;
   /** Why it failed to load or change this session, or ''. */
   readonly failure: string;
   /** Bowser's copy of the manifest could be read (otherwise every list is empty). */
@@ -60,7 +62,7 @@ export interface ExtensionsSnapshot {
 }
 
 const SNAPSHOT_KEYS = ['state', 'busy', 'ack', 'error', 'items'];
-const ITEM_KEYS = ['id', 'name', 'version', 'enabled', 'popup', 'failure', 'readable', 'all', ...DECLARATIONS.flatMap((key) => [key, `${key}N`])];
+const ITEM_KEYS = ['id', 'name', 'version', 'enabled', 'popup', 'options', 'failure', 'readable', 'all', ...DECLARATIONS.flatMap((key) => [key, `${key}N`])];
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -85,7 +87,7 @@ function parseItem(value: unknown): ExtensionItem | null {
   if (!isRecord(value) || !exactKeys(value, ITEM_KEYS)) return null;
   const v = value;
   if (!isExtensionId(v.id) || !isText(v.name, MAX_EXTENSION_NAME, false) || !isText(v.version, MAX_VERSION) || !isText(v.failure, MAX_FAILURE)) return null;
-  for (const key of ['enabled', 'popup', 'readable', 'all'] as const) if (typeof v[key] !== 'boolean') return null;
+  for (const key of ['enabled', 'popup', 'options', 'readable', 'all'] as const) if (typeof v[key] !== 'boolean') return null;
   const declared = {} as Record<Declaration, DeclaredList>;
   for (const key of DECLARATIONS) {
     const items = v[key];
@@ -96,7 +98,7 @@ function parseItem(value: unknown): ExtensionItem | null {
   }
   // An unreadable manifest declares nothing the page could show, and reaches nothing it knows of.
   if (v.readable === false && (v.all === true || DECLARATIONS.some((key) => declared[key].total > 0))) return null;
-  return { id: v.id, name: v.name, version: v.version, enabled: v.enabled as boolean, popup: v.popup as boolean, failure: v.failure, readable: v.readable as boolean, all: v.all as boolean, declared };
+  return { id: v.id, name: v.name, version: v.version, enabled: v.enabled as boolean, popup: v.popup as boolean, options: v.options as boolean, failure: v.failure, readable: v.readable as boolean, all: v.all as boolean, declared };
 }
 
 /** The `extensions` snapshot, strictly: every key, nothing else, ids unique. `null` when it is not one. */
@@ -158,6 +160,14 @@ export function declarationGroups(item: ExtensionItem): { readonly key: Declarat
     .filter((key) => item.declared[key].total > 0)
     .map((key) => ({ key, label: DECLARATION_LABELS[key], items: item.declared[key].items, more: item.declared[key].total - item.declared[key].items.length }));
 }
+
+/** On and loaded this session: only then does Bowser open its popup or options page. */
+export function running(item: ExtensionItem): boolean {
+  return item.enabled && item.failure === '';
+}
+
+/** Why "Check update" does nothing: Bowser refuses every update check until staged updates are verified. */
+export const UPDATES_UNAVAILABLE = 'Extension updates are not available in Bowser yet';
 
 /** The toggle's accessible name (the switch itself says on or off). */
 export function switchLabel(item: ExtensionItem): string {

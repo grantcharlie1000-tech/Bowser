@@ -146,6 +146,57 @@ pub fn store_favicon(host: &str, bytes: &[u8]) -> io::Result<String> {
     store_favicon_in(&favicon_dir()?, host, bytes)
 }
 
+/// Stores a tab's favicon for `host` in the active profile off the UI thread, so a sleeping tab
+/// restored after a restart can show it before its page loads again (`load_favicon_bytes`). The
+/// profile folder is resolved here, on the caller's thread; the write, rename and eviction scan run
+/// on one worker thread. Unchanged bytes cost nothing (`store_favicon_in` compares first). Nothing
+/// is stored while the profile's history is off. Callers decide tab privacy: a private tab's icon
+/// must never get here (`private::Store::Favicons`).
+pub fn remember_in_background(host: &str, bytes: Vec<u8>) {
+    if bytes.is_empty() || bytes.len() > MAX_FAVICON_FILE_BYTES || normalized_host(host).is_none() {
+        return;
+    }
+    // With history off, no new record of the sites visited is kept (icons already stored stay).
+    let Ok(profile) = crate::profile::active() else {
+        return;
+    };
+    if !profile.history_enabled() {
+        return;
+    }
+    let job = (profile.favicons_dir(), host.to_owned(), bytes);
+    // Tests store inline: the scoped test profile is thread-local, and the result is checked at once.
+    if cfg!(test) {
+        let _ = store_favicon_in(&job.0, &job.1, &job.2);
+        return;
+    }
+    type Job = (PathBuf, String, Vec<u8>);
+    static WORKER: std::sync::OnceLock<Option<std::sync::Mutex<std::sync::mpsc::Sender<Job>>>> =
+        std::sync::OnceLock::new();
+    let sender = WORKER.get_or_init(|| {
+        let (send, receive) = std::sync::mpsc::channel::<Job>();
+        std::thread::Builder::new()
+            .name("bowser-favicon-store".into())
+            .spawn(move || {
+                for (dir, host, bytes) in receive {
+                    let _ = store_favicon_in(&dir, &host, &bytes);
+                }
+            })
+            .ok()
+            .map(|_| std::sync::Mutex::new(send))
+    });
+    match sender {
+        Some(sender) => {
+            let _ = sender
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .send(job);
+        }
+        None => {
+            let _ = store_favicon_in(&job.0, &job.1, &job.2);
+        }
+    }
+}
+
 fn store_favicon_in(dir: &std::path::Path, host: &str, bytes: &[u8]) -> io::Result<String> {
     if bytes.is_empty() || bytes.len() > MAX_FAVICON_FILE_BYTES {
         return Err(io::Error::new(

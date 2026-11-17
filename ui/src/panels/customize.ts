@@ -23,6 +23,9 @@ const PRESETS = [
   ['Notion', 'https://www.notion.so/'],
 ] as const;
 
+/** The focus key of a workspace's or web app's trash button. */
+const removeKey = (kind: 'app' | 'workspace', id: number): string => `${kind === 'workspace' ? 'ws' : 'app'}-remove:${id}`;
+
 function h<K extends keyof HTMLElementTagNameMap>(tag: K, className?: string, text?: string): HTMLElementTagNameMap[K] {
   const node = document.createElement(tag);
   if (className) node.className = className;
@@ -149,7 +152,12 @@ export function startCustomizePanel(root: HTMLElement): (message: Inbound) => vo
     const fields = customizeCommand(a, payload);
     if (fields) sendPanel('cust', fields);
   }
-  function askDelete(target: DeleteTarget): void {
+  /**
+   * Shows (or, for null, hides) the confirmation bar. A fresh question gives the keyboard to Cancel,
+   * the safe answer, so Enter or Space right after the trash button never deletes; a snapshot that
+   * redraws an open question (`focus` false) leaves the keyboard where it is.
+   */
+  function askDelete(target: DeleteTarget, focus = true): void {
     deleting = target;
     confirm.replaceChildren();
     confirm.hidden = target === null;
@@ -159,12 +167,27 @@ export function startCustomizePanel(root: HTMLElement): (message: Inbound) => vo
     const yes = button(target.kind === 'workspace' ? 'Delete workspace' : 'Remove web app', () => {
       sendAction(target.kind === 'workspace' ? 'workspace-delete' : 'app-remove', { id: target.id });
       askDelete(null);
+      // The row goes away: the panel itself keeps the keyboard, so Escape and Tab still work.
+      root.focus({ preventScroll: true });
     }, 'is-primary');
-    const no = button('Cancel', () => askDelete(null));
+    const no = button('Cancel', () => cancelDelete());
     actions.append(no, yes);
     confirm.append(message, actions);
-    yes.focus();
+    if (focus) no.focus();
   }
+  /** Backs out of the question and returns the keyboard to the trash button that asked it. */
+  function cancelDelete(): void {
+    const target = deleting;
+    askDelete(null);
+    if (target) host.querySelector<HTMLElement>(`[data-fk="${removeKey(target.kind, target.id)}"]`)?.focus();
+  }
+  // Escape answers the question (Cancel) instead of closing the whole flyout.
+  confirm.addEventListener('keydown', (event) => {
+    if (event.key !== 'Escape' || deleting === null) return;
+    event.preventDefault();
+    event.stopPropagation();
+    cancelDelete();
+  });
   function iconField(workspace: CustomizeWorkspace): SelectField<typeof WORKSPACE_ICONS[number]> {
     return selectField({
       options: WORKSPACE_ICONS.map(name => ({ value: name, label: sentenceCase(name), lead: () => icon(`workspace-${name}` as IconName) })),
@@ -281,7 +304,9 @@ export function startCustomizePanel(root: HTMLElement): (message: Inbound) => vo
     for (const app of snapshot.apps) appRows.append(renderApp(app, appIds));
     if (snapshot.apps.length === 0) appRows.append(h('p', 'cust-empty', 'No web apps pinned yet. Add one below.'));
     clearData.disabled = snapshot.apps.length === 0;
-    if (deleting) askDelete(deleting);
+    // A question about a workspace or app that is gone is dropped; one still open is redrawn in place.
+    if (deleting && !(deleting.kind === 'workspace' ? snapshot.workspaces : snapshot.apps).some(item => item.id === deleting?.id)) askDelete(null);
+    if (deleting) askDelete(deleting, false);
     if (focused) host.querySelector<HTMLElement>(`[data-fk="${focused}"]`)?.focus();
   }
 
@@ -317,6 +342,7 @@ export function startCustomizePanel(root: HTMLElement): (message: Inbound) => vo
     edit.setAttribute('aria-expanded', String(editing));
     edit.dataset.fk = `ws-edit:${workspace.id}`;
     const remove = iconButton('trash', `Delete ${workspace.name}`, () => askDelete({ kind: 'workspace', id: workspace.id, label: workspace.name }));
+    remove.dataset.fk = removeKey('workspace', workspace.id);
     const { item, row } = itemRow(workspace.name, meta, lead, handle, [edit, remove]);
     wireHandle(handle, row, workspaceRows, ids, workspace.id, before => sendAction('workspace-move', { id: workspace.id, ...(before !== undefined ? { before } : {}) }), `ws-handle:${workspace.id}`);
     if (editing) {
@@ -344,6 +370,7 @@ export function startCustomizePanel(root: HTMLElement): (message: Inbound) => vo
     const edit = iconButton('edit', `Edit ${app.name}`, () => openComposer('app-edit', edit, { id: app.id }));
     edit.dataset.fk = `app-edit:${app.id}`;
     const remove = iconButton('trash', `Remove ${app.name}`, () => askDelete({ kind: 'app', id: app.id, label: app.name }));
+    remove.dataset.fk = removeKey('app', app.id);
     const { item, row } = itemRow(app.name, app.url, lead, handle, [edit, remove]);
     wireHandle(handle, row, appRows, ids, app.id, before => sendAction('app-move', { id: app.id, ...(before !== undefined ? { before } : {}) }), `app-handle:${app.id}`);
     return item;

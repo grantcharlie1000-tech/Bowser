@@ -93,14 +93,18 @@ export function mountStartSection(host: StartSectionHost): { apply(start: StartS
   homepage.addEventListener('change', () => {
     const text = homepage.value.trim();
     if (text === '') {
+      homepage.removeAttribute('aria-invalid');
       host.change((s) => { s.homepage = ''; });
       return;
     }
     const url = normaliseAddress(text);
     if (url === null) {
+      // Keep the typing to correct, but never let it look accepted: nothing was saved.
+      homepage.setAttribute('aria-invalid', 'true');
       host.toast('Enter an http or https address.', false);
       return;
     }
+    homepage.removeAttribute('aria-invalid');
     homepage.value = url;
     host.change((s) => { s.homepage = url; });
   });
@@ -134,9 +138,11 @@ export function mountStartSection(host: StartSectionHost): { apply(start: StartS
   pages.addEventListener('change', () => {
     const list = parsePageLines(pages.value);
     if (list === null) {
+      pages.setAttribute('aria-invalid', 'true');
       host.toast(`Use up to ${MAX_STARTUP_PAGES} http or https addresses, one per line.`, false);
       return;
     }
+    pages.removeAttribute('aria-invalid');
     pages.value = list.join('\n');
     host.change((s) => { s.startupPages = list; });
   });

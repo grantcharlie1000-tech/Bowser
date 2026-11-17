@@ -117,6 +117,7 @@ mod auto_hide;
 // --- look state (fix group B) --- the page and panel hosts' `state` (window/host_state.rs).
 mod host_state;
 mod surface_recovery;
+mod hang_prompt; // "page isn't responding": Wait / Reload
 pub(super) mod chrome_recovery;
 use chrome_recovery::document_command as html_document_command;
 // --- end look state ---
@@ -626,6 +627,9 @@ struct WindowChrome {
     html_input_handoff: bool,
     recovery_buttons: [(HWND, Option<crate::tabs::TabId>); 4],
     recovery_regions: [Option<Rect>; 4],
+    /// Each pane's "isn't responding" prompt and the area the overlay leaves clear for it.
+    hang_prompts: [hang_prompt::Prompt; 4],
+    hang_regions: [Option<Rect>; 4],
     /// The omnibox in the HTML toolbar has keyboard focus (from its `focus` messages).
     html_omnibox_focused: bool,
     /// The user has typed in the omnibox since it last took focus, so a page load must not move the
@@ -864,6 +868,8 @@ impl WindowChrome {
             html_input_handoff: false,
             recovery_buttons: [(HWND::default(), None); 4],
             recovery_regions: [None; 4],
+            hang_prompts: [hang_prompt::Prompt::default(); 4],
+            hang_regions: [None; 4],
             html_omnibox_focused: false,
             omnibox_edited: false,
             omnibox_claimed: false,
@@ -1445,6 +1451,13 @@ impl WindowChrome {
     }
     /// Moves the HTML chrome over the toolbar region and hides it when there is none. Also tells
     /// the surface to leave the region to the page.
+    /// Clears the HTML omnibox's focus. `Some` when it had the keyboard, carrying the address the
+    /// user typed there (if any) for the native field that replaces it.
+    fn take_html_omnibox(&mut self) -> Option<Option<String>> {
+        let focused = std::mem::take(&mut self.html_omnibox_focused);
+        focused.then(|| (self.omnibox_edited && !self.edit_text.is_empty()).then(|| self.edit_text.clone()))
+    }
+
     fn sync_html_bounds(&mut self) {
         let region = self.html_region();
         self.surface.set_html_toolbar(region.is_some());
@@ -3178,10 +3191,24 @@ unsafe extern "system" fn window_proc(
                 let _ = PostMessageW(Some(hwnd), WM_CLOSE, WPARAM(0), LPARAM(0));
                 LRESULT(0)
             }
+            WM_COMMAND if wparam.0 >> 16 == 0 && hang_prompt::command(wparam.0 & 0xffff).is_some() => {
+                if let (Some(app), Some((index, reload))) = (app, hang_prompt::command(wparam.0 & 0xffff)) {
+                    hang_prompt::choose(hwnd, app, index, reload);
+                }
+                LRESULT(0)
+            }
             WM_COMMAND if (RECOVERY_BUTTON_ID..RECOVERY_BUTTON_ID + 4).contains(&(wparam.0 & 0xffff)) && wparam.0 >> 16 == 0 => {
                 let index = (wparam.0 & 0xffff) - RECOVERY_BUTTON_ID;
-                let tab = with_chrome(hwnd, |s| s.recovery_buttons[index].1).flatten();
-                if let (Some(app), Some(tab)) = (app, tab) { App::retry_failed_tab(app, tab); }
+                let (button, tab) = with_chrome(hwnd, |s| s.recovery_buttons[index]).unwrap_or_default();
+                if let (Some(app), Some(tab)) = (app, tab) {
+                    let had_focus = !button.is_invalid() && windows::Win32::UI::Input::KeyboardAndMouse::GetFocus() == button;
+                    if App::retry_failed_tab(app, tab) && had_focus {
+                        // The card hides with the retry: the keyboard returns to the window, then the page.
+                        sync_recovery_buttons(hwnd, app);
+                        let _ = windows::Win32::UI::Input::KeyboardAndMouse::SetFocus(Some(hwnd));
+                        App::focus_page(app);
+                    }
+                }
                 LRESULT(0)
             }
             WM_SUBMIT => {
@@ -9688,24 +9715,44 @@ pub(crate) fn recover_native_chrome(hwnd: HWND, app: &AppRef) {
     chrome_recovery::discard(hwnd, None);
     page_fullscreen(hwnd, app, false);
     let edit = with_chrome(hwnd, |s| {
+        let omnibox = s.take_html_omnibox();
         s.html_failed = [true; 3];
         s.html_toolbar_active = false;
         s.html_page_ready = false;
         s.html_tabs_page_ready = false;
         s.html_rail_page_ready = false;
-        s.html_omnibox_focused = false;
         s.html_env_waiting = false;
         s.sync_html_bounds();
         s.sync_html_tabs_bounds();
         s.sync_html_rail_bounds();
-        s.edit
+        (s.edit, omnibox)
     });
-    if let Some(edit) = edit.filter(|edit| !edit.is_invalid()) {
-        unsafe { let _ = ShowWindow(edit, SW_SHOW); }
+    if let Some((edit, _)) = edit.as_ref().filter(|(edit, _)| !edit.is_invalid()) {
+        unsafe { let _ = ShowWindow(*edit, SW_SHOW); }
     }
     repaint(hwnd);
     sync_recovery_buttons(hwnd, app);
     close_html_chrome(hwnd);
+    if let Some((edit, omnibox)) = edit { hand_keyboard_to_native_edit(hwnd, edit, omnibox); }
+}
+
+/// The HTML toolbar just closed (its own failure, or browser loss). Its omnibox may have held the
+/// keyboard and a typed address, and closing a focused controller leaves the keyboard nowhere.
+/// The native address field keeps the draft and takes the keyboard if the omnibox had it, or if
+/// focus is now nowhere in this (foreground) window; a live page or other control keeps focus.
+fn hand_keyboard_to_native_edit(hwnd: HWND, edit: HWND, omnibox: Option<Option<String>>) {
+    use windows::Win32::UI::Input::KeyboardAndMouse::{GetFocus, SetFocus};
+    if edit.is_invalid() || window_closing(hwnd) { return; }
+    unsafe {
+        let focus = GetFocus();
+        let lost = focus.is_invalid() || !windows::Win32::UI::WindowsAndMessaging::IsWindow(Some(focus)).as_bool();
+        if (omnibox.is_none() && !lost) || GetForegroundWindow() != hwnd { return; }
+        let _ = SetFocus(Some(edit));
+        if let Some(Some(draft)) = omnibox {
+            let _ = SetWindowTextW(edit, &windows::core::HSTRING::from(draft));
+            let _ = SendMessageW(edit, EM_SETSEL, Some(WPARAM(usize::MAX)), Some(LPARAM(-1)));
+        }
+    }
 }
 
 const RECOVERY_BUTTON_ID: usize = 0x6f10;
@@ -9720,6 +9767,7 @@ pub(crate) fn arm_engine_recovery_timeout(hwnd: HWND) -> bool {
 /// They are created only for failed content and follow the existing single/split pane geometry.
 fn sync_recovery_buttons(hwnd: HWND, app: &AppRef) {
     if hwnd.is_invalid() || app.borrow().closing { return; }
+    hang_prompt::sync(hwnd, app);
     let mut shown = [None; 4];
     if let Some(split) = App::split_view(app) {
         if let Some(bounds) = split_rects(hwnd, None) {
@@ -9747,6 +9795,7 @@ fn sync_recovery_buttons(hwnd: HWND, app: &AppRef) {
                     WS_CHILD | WS_TABSTOP | WINDOW_STYLE(BS_MULTILINE as u32), 0, 0, 1, 1,
                     Some(hwnd), Some(HMENU((RECOVERY_BUTTON_ID + index) as *mut _)), None, None) else { continue; };
                 button = created;
+                hang_prompt::install_keys(button);
             }
             let font = app.borrow().input_font;
             let _ = SendMessageW(button, windows::Win32::UI::WindowsAndMessaging::WM_SETFONT, Some(WPARAM(font.0 as usize)), Some(LPARAM(0)));
@@ -10109,14 +10158,14 @@ fn html_failed(hwnd: HWND) {
         s.html_deferred.clear();
     });
     chrome_recovery::discard(hwnd, Some(0));
-    let Some((host, edit)) = with_chrome(hwnd, |s| {
+    let Some((host, edit, omnibox)) = with_chrome(hwnd, |s| {
+        let omnibox = s.take_html_omnibox();
         s.html_toolbar_active = false;
         s.html_failed[0] = true;
         s.html_state_building[0] = false;
         s.html_page_ready = false;
-        s.html_omnibox_focused = false;
         s.sync_html_bounds();
-        (s.html.take(), s.edit)
+        (s.html.take(), s.edit, omnibox)
     }) else {
         return;
     };
@@ -10129,6 +10178,7 @@ fn html_failed(hwnd: HWND) {
             let _ = ShowWindow(edit, SW_SHOW);
         }
     }
+    hand_keyboard_to_native_edit(hwnd, edit, omnibox);
     // The downloads page keeps following the list after the fallback, even when the toolbar never
     // became ready (initial_state installs the observer otherwise).
     if let Some(app) = app_of(hwnd) {
@@ -10755,6 +10805,23 @@ fn defer_html_command(hwnd: HWND, command: DeferredChromeCommand) {
 }
 
 // --- hover layer ---
+/// A `tip` / `tipoff` from a view that lives in its own window (a flyout, dialog, the bookmarks bar
+/// or a page over a tab): the anchor maps from that host's own bounds at `dpi`, not the toolbar's.
+/// The browser window `owner` keeps the one hover layer.
+pub(crate) fn html_view_tip(owner: HWND, host: &ChromeHost, dpi: u32, command: ChromeCommand) {
+    if owner.is_invalid() || window_closing(owner) { return; }
+    match command {
+        ChromeCommand::Tip { text, rect } => {
+            ensure_hover_layer(owner);
+            let Some(screen) = host.screen_bounds() else { return };
+            let scale = dpi.max(96) as f32 / 96.0;
+            super::html_hover::tip(owner, super::html_hover::anchor_to_screen(screen, scale, rect), &text, false);
+        }
+        ChromeCommand::TipOff => super::html_hover::tip_off(owner),
+        _ => {}
+    }
+}
+
 /// Routes a tooltip or tab-strip hover message to the HTML hover layer. The anchor is converted from
 /// the sending view's CSS pixels to screen pixels with that view's own host bounds; tab ids and group
 /// keys are checked against the live model (a ball counts only for a domain island).
@@ -12427,7 +12494,7 @@ fn paint_chrome(hwnd: HWND, app: Option<&AppRef>) {
                 }
                 // The layered popup is above every child HWND, even a child raised to HWND_TOP.
                 // Leave native recovery controls visible through the otherwise opaque empty pane.
-                for region in s.recovery_regions.into_iter().flatten() {
+                for region in s.recovery_regions.into_iter().chain(s.hang_regions).flatten() {
                     s.surface.clear_native_child(region, dirty);
                 }
                 let t1 = std::time::Instant::now();
@@ -12833,7 +12900,8 @@ fn run_key_command(hwnd: HWND, app: &AppRef, cmd: Command, key: u32) {
                     edit_focused(hwnd) || omnibox_focused(hwnd),
                 ) =>
         {
-            App::focus_page(app)
+            // A hung or failed page cannot take the keyboard; its prompt or failure card does.
+            if !hang_prompt::focus(hwnd, app) { App::focus_page(app) }
         }
         Command::FocusOmnibox => focus_omni(hwnd, app, true),
         Command::Reload => App::reload(app),
