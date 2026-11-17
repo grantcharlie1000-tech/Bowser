@@ -146,11 +146,16 @@ export function createDownloadsView(root: HTMLElement): PageView {
     const { added, removed } = diffIds(prevIds, ids);
     const announce: string[] = [];
 
+    // A row that leaves while it has the keyboard hands it to the row now in its place (or the one
+    // above it, or the footer), so arrows, Delete and Escape keep working instead of falling to body.
+    const focused = document.activeElement;
+    let refocus = -1;
     // Leaving rows come out of the flow at once (so the rest can glide up) and fade where they were.
     for (const id of removed) {
       const node = rows.get(id);
       rows.delete(id);
       if (!node) continue;
+      if (focused instanceof HTMLElement && node.root.contains(focused)) refocus = Math.max(0, ids.filter((kept) => prevIds.indexOf(kept) >= 0 && prevIds.indexOf(kept) < prevIds.indexOf(id)).length);
       if (animate) {
         const top = node.root.offsetTop;
         node.root.style.setProperty('--dl-top', `${top}px`);
@@ -180,6 +185,10 @@ export function createDownloadsView(root: HTMLElement): PageView {
       list.insertBefore(item, ref);
     }
     for (const ghost of ghosts) list.append(ghost);
+    if (refocus >= 0) {
+      const next = items.length > 0 ? rows.get(msg.items[Math.min(refocus, items.length - 1)]!.id)?.open : foot;
+      (next ?? page).focus({ preventScroll: true });
+    }
 
     const running = msg.active;
     sub.textContent = running > 0 ? (running === 1 ? '1 in progress' : `${running} in progress`) : '';

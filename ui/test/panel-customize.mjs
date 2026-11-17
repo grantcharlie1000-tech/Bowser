@@ -56,3 +56,59 @@ test('workspace swatches cover every colour and every sidebar section has a desc
   for (const key of logic.RAIL_KEYS) assert.ok(logic.RAIL_DESCRIPTIONS[key].length > 0);
   assert.equal(logic.sentenceCase('briefcase'), 'Briefcase');
 });
+
+// ---- the delete confirmation in a fake document ----
+
+test('a delete question gives the keyboard to Cancel; Escape and Cancel back out to the trash button', async () => {
+  const { FakeDocument, Node } = await import('./fake-dom.mjs');
+  const sent = [];
+  globalThis.document = new FakeDocument();
+  globalThis.window = globalThis;
+  Object.assign(globalThis, {
+    requestAnimationFrame: (cb) => { cb(); return 1; },
+    addEventListener() {}, removeEventListener() {},
+    chrome: { webview: { postMessage: (wire) => sent.push(JSON.parse(wire)), addEventListener() {} } },
+  });
+  globalThis.Element = Node;
+  globalThis.HTMLElement = Node;
+  const built = esbuild.buildSync({ entryPoints: [join(here, '..', 'src', 'panels', 'customize.ts')], bundle: true, format: 'esm', platform: 'neutral', write: false, logLevel: 'silent' });
+  const { startCustomizePanel } = await import(`data:text/javascript;base64,${Buffer.from(built.outputFiles[0].contents).toString('base64')}`);
+  const surface = new Node('div');
+  const receive = startCustomizePanel(surface);
+  const d = {
+    visible: { workspaces: true, apps: true, bookmarks: true, history: true },
+    workspaces: [{ id: 1, name: 'Work', icon: 'briefcase', colour: 'blue', active: true, tabs: 3 }, { id: 2, name: 'Home', icon: 'briefcase', colour: 'blue', active: false, tabs: 1 }],
+    apps: [],
+  };
+  receive({ t: 'snap', p: 'customize', d });
+  const trash = () => surface.querySelectorAll('button').find((b) => b.getAttribute('aria-label') === 'Delete Work');
+  const bar = () => surface.querySelector('.cust-confirm');
+  const named = (text) => bar().querySelectorAll('button').find((b) => b.textContent === text);
+  trash().click();
+  assert.equal(bar().hidden, false);
+  assert.equal(document.activeElement, named('Cancel'), 'Enter right after the trash button must not delete');
+  // A snapshot while the question is open redraws it without moving the keyboard.
+  trash().focus();
+  receive({ t: 'snap', p: 'customize', d });
+  assert.equal(bar().hidden, false);
+  assert.equal(document.activeElement?.getAttribute('aria-label'), 'Delete Work');
+  const escape = { key: 'Escape', stopPropagation() { this.stopped = true; } };
+  bar().dispatch('keydown', escape);
+  assert.equal(escape.defaultPrevented, true, 'the flyout host does not also close');
+  assert.equal(escape.stopped, true);
+  assert.equal(bar().hidden, true);
+  assert.equal(document.activeElement, trash(), 'back on the button that asked');
+  trash().click();
+  named('Cancel').click();
+  assert.equal(bar().hidden, true);
+  assert.equal(document.activeElement, trash());
+  trash().click();
+  sent.length = 0;
+  named('Delete workspace').click();
+  assert.deepEqual(sent, [{ v: 1, t: 'cust', a: 'workspace-delete', id: 1 }]);
+  assert.equal(document.activeElement, surface, 'the panel keeps the keyboard when the row goes');
+  // A question about a workspace that has gone is dropped.
+  trash().click();
+  receive({ t: 'snap', p: 'customize', d: { ...d, workspaces: [d.workspaces[1]] } });
+  assert.equal(bar().hidden, true);
+});

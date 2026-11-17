@@ -361,6 +361,21 @@ test('bubble: buttons and the footer send dlact; Escape dismisses', () => {
   assert.deepEqual(sent, [{ v: 1, t: 'dismiss', tok: 41 }]);
 });
 
+test('bubble: a row that leaves with the keyboard hands it to the row now in its place', () => {
+  bubble.show(fixture.bubble);
+  brow(6).querySelector('.dl-act[data-act="pause"]').focus(); // an action inside the row, not only its open button
+  bubble.show({ ...fixture.bubble, items: fixture.bubble.items.filter((e) => e.id !== 6) });
+  assert.equal(document.activeElement, brow(5).querySelector('.dl-open'), 'the next row takes it');
+  const last = fixture.bubble.items.at(-1).id;
+  brow(last).querySelector('.dl-open').focus();
+  bubble.show({ ...fixture.bubble, items: fixture.bubble.items.filter((e) => e.id !== 6 && e.id !== last) });
+  assert.equal(document.activeElement, brow(fixture.bubble.items.at(-2).id).querySelector('.dl-open'), 'the last row hands it up');
+  brow(7).querySelector('.dl-open').focus();
+  bubble.show({ ...fixture.bubble, items: [] });
+  assert.equal(document.activeElement, popupRoot.querySelector('.db-foot'), 'with no rows left, the footer');
+  flush();
+});
+
 test('bubble: an auto-opened bubble closes itself unless the pointer is on it', () => {
   sent.length = 0;
   timers = [];

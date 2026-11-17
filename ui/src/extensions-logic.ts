@@ -159,6 +159,14 @@ export function declarationGroups(item: ExtensionItem): { readonly key: Declarat
     .map((key) => ({ key, label: DECLARATION_LABELS[key], items: item.declared[key].items, more: item.declared[key].total - item.declared[key].items.length }));
 }
 
+/** On and loaded this session: only then does Bowser open its popup or options page. */
+export function running(item: ExtensionItem): boolean {
+  return item.enabled && item.failure === '';
+}
+
+/** Why "Check update" does nothing: Bowser refuses every update check until staged updates are verified. */
+export const UPDATES_UNAVAILABLE = 'Extension updates are not available in Bowser yet';
+
 /** The toggle's accessible name (the switch itself says on or off). */
 export function switchLabel(item: ExtensionItem): string {
   return `${item.name} on`;

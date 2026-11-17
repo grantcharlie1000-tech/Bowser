@@ -10,7 +10,7 @@ import { el, icon } from './dom';
 import { textButton } from './panels/kit';
 import { setTip } from './tooltip';
 import {
-  INSTALL_COMMAND, INSTALL_CRX_COMMAND, INSTALL_CRX_LABEL, ackToast, declarationGroups, parseExtensionsSnapshot, popupCommand, reachLine, reachText, removeCommand,
+  INSTALL_COMMAND, INSTALL_CRX_COMMAND, INSTALL_CRX_LABEL, UPDATES_UNAVAILABLE, ackToast, running, declarationGroups, parseExtensionsSnapshot, popupCommand, reachLine, reachText, removeCommand,
   setEnabledCommand, statusText, switchLabel, type ExtensionItem, type ExtensionsSnapshot,
 } from './extensions-logic';
 import { storeUrlCommand } from './store-logic';
@@ -183,18 +183,27 @@ export function mountExtensionsSection(options: ExtensionsSectionOptions): Exten
       actions.append(spin);
     } else {
       // A popup that failed to load this session is not running, so there is nothing to open.
-      if (item.enabled && item.popup && item.failure === '') {
+      if (running(item) && item.popup) {
         const popup = textButton('Open popup', () => { const fields = popupCommand(item.id); if (fields) options.send(fields); }, { subtle: true, aria: `Open ${item.name} popup` });
         popup.dataset.focus = `${item.id}:popup`;
         popup.disabled = held;
         actions.append(popup);
       }
-      for (const [action, label] of [['extoptions', 'Options'], ['extupdate', 'Check update']] as const) {
-        const button = textButton(label, () => options.send({ a: action, text: item.id }), { subtle: true, aria: `${label} for ${item.name}` });
-        button.dataset.focus = `${item.id}:${action}`;
-        button.disabled = held;
-        actions.append(button);
+      // Bowser refuses an options page for an extension that is off or not running, as it does a popup.
+      if (running(item)) {
+        const optionsButton = textButton('Options', () => options.send({ a: 'extoptions', text: item.id }), { subtle: true, aria: `Options for ${item.name}` });
+        optionsButton.dataset.focus = `${item.id}:extoptions`;
+        optionsButton.disabled = held;
+        actions.append(optionsButton);
       }
+      // Updates are not enabled yet (Bowser answers every check with a refusal): the button says so
+      // instead of looking like a working action. aria-disabled keeps it focusable, so the reason is
+      // reachable by keyboard and screen reader as well as by hover.
+      const update = textButton('Check update', () => {}, { subtle: true, aria: `Check update for ${item.name}: ${UPDATES_UNAVAILABLE}` });
+      update.dataset.focus = `${item.id}:extupdate`;
+      update.setAttribute('aria-disabled', 'true');
+      setTip(update, UPDATES_UNAVAILABLE);
+      actions.append(update);
       const remove = el('button', 'bw-icon-btn is-lg sp-ext-remove');
       remove.type = 'button';
       remove.dataset.focus = `${item.id}:remove`;
