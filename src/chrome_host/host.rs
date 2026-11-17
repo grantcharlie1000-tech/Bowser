@@ -2343,8 +2343,10 @@ mod tests {
         }
         for view in [View::Panel, View::Popup, View::Dialog, View::DialogNotes] {
             assert!(!view_accepts_command(view, &act), "{view:?}");
-            assert!(!view_accepts_command(view, &tip), "{view:?}");
+            // Panels and dialogs show tooltips (their buttons have them); a popup does not.
+            assert_eq!(view_accepts_command(view, &tip), view.shows_tooltips(), "{view:?}");
         }
+        assert!(!view_accepts_command(View::Popup, &tip));
         assert!(is_trusted_message(View::Hover, HOVER_START_URL, HOVER_START_URL));
         assert!(!is_trusted_message(View::Hover, POPUP_START_URL, HOVER_START_URL));
         assert!(!is_start_url(View::Hover, "bowser-ui://app/index.html?view=hover&x=1"));

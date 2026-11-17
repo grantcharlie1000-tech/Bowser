@@ -23,9 +23,6 @@ import { applyTheme } from './view';
 
 type Act = (fields: HoverActFields) => void;
 
-/** Marker names, in Rust's `tab_card::MARKERS` order. */
-const MARKER_NAMES = ['Heart', 'Flame', 'Bag', 'Palm', 'Eyes'] as const;
-
 function favicon(uri: string, className: string): HTMLElement {
   if (uri === '') {
     // No cached favicon: the family's globe glyph (never a bare bullet).
@@ -84,24 +81,6 @@ export function memoryText(mb: number): string {
 
 function renderCard(msg: HoverCardMsg, act: Act): HTMLElement {
   const card = el('div', 'bw-card');
-  const markers = el('div', 'bw-card-markers');
-  msg.markers.forEach((colour, index) => {
-    const button = el('button', 'bw-card-marker');
-    button.type = 'button';
-    button.setAttribute('aria-label', `${MARKER_NAMES[index] ?? 'Marker'} marker`);
-    button.setAttribute('aria-pressed', String(msg.marker === index));
-    button.classList.toggle('is-selected', msg.marker === index);
-    if (colour !== '') button.style.setProperty('--hover-marker', colour);
-    button.addEventListener('click', () => act({ a: 'marker', n: index }));
-    markers.append(button);
-  });
-  const next = el('button', 'bw-card-marker-next');
-  next.type = 'button';
-  next.setAttribute('aria-label', 'Next marker');
-  next.append(icon('plus'));
-  next.addEventListener('click', () => act({ a: 'next' }));
-  markers.append(next);
-
   const text = el('div', 'bw-card-text');
   const title = el('div', 'bw-card-title');
   title.dir = 'auto';
@@ -131,7 +110,7 @@ function renderCard(msg: HoverCardMsg, act: Act): HTMLElement {
   }
   const head = el('div', 'bw-card-head');
   head.append(favicon(msg.fav, 'bw-card-fav'), text);
-  card.append(markers, head);
+  card.append(head);
   // --- tab options --- "Show a thumbnail in tab previews".
   if (msg.thumb !== undefined) {
     const thumb = el('img', 'bw-card-thumb');

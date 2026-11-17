@@ -187,6 +187,9 @@ pub fn toolbar_css_placement(layout: &Layout, dpi: u32) -> Option<(i32, i32, i32
 /// button (`0` or [`DL_BUTTON_SLOT`]). The pill keeps at least one pixel.
 pub fn toolbar_css_placement_with_slot(layout: &Layout, dpi: u32, slot: i32) -> Option<(i32, i32, i32)> {
     let bounds = toolbar_bounds(layout)?;
+    // --- zen sidebar --- the stacked toolbar's buttons are on the row above the address field, so
+    // they take nothing from it.
+    let slot = if layout.toolbar_in_sidebar { 0 } else { slot };
     Some((
         css_px_from_physical(layout.omnibox.left - bounds.left, dpi),
         (css_px_from_physical(layout.omnibox.width(), dpi) - slot.max(0)).max(1),
@@ -210,12 +213,18 @@ pub fn toolbar_pill_rect_with_slot(layout: &Layout, dpi: u32, slot: i32) -> Opti
     let (x, w, _) = toolbar_css_placement_with_slot(layout, dpi, slot)?;
     let scale = f64::from(Metrics::new(dpi).dpi()) / 96.0;
     let snap = |css: i32| (f64::from(css) * scale).round() as i32;
-    let top = (Metrics::STRIP_HEIGHT - Metrics::OMNIBOX_HEIGHT) / 2;
+    // --- zen sidebar --- the stacked toolbar's address field is on its second row.
+    let top = if layout.toolbar_in_sidebar {
+        css_px_from_physical(layout.omnibox.top - bounds.top, dpi)
+    } else {
+        (Metrics::STRIP_HEIGHT - Metrics::OMNIBOX_HEIGHT) / 2
+    };
+    let height = if layout.toolbar_in_sidebar { crate::chrome::layout::ZEN_ADDRESS_HEIGHT } else { Metrics::OMNIBOX_HEIGHT };
     Some(RECT {
         left: bounds.left + snap(x),
         top: bounds.top + snap(top),
         right: bounds.left + snap(x + w),
-        bottom: bounds.top + snap(top + Metrics::OMNIBOX_HEIGHT),
+        bottom: bounds.top + snap(top + height),
     })
 }
 
@@ -669,7 +678,7 @@ mod tests {
             assert_ne!(narrow_toolbar.right, wide_toolbar.right, "resize updates toolbar bounds dpi={dpi}");
             assert_ne!(toolbar_css_placement(&narrow, dpi), toolbar_css_placement(&wide, dpi), "resize updates pill state dpi={dpi}");
             assert_eq!(tab_row_bounds(&wide).unwrap().top, wide.tab_row.top);
-            assert_eq!(rail_bounds(&wide).unwrap().top, wide.rail.top);
+            assert!(rail_bounds(&wide).is_none(), "no rail");
             let sidebar = crate::vertical_tabs::SidebarLayout::compute_in_frame(1600, 900, dpi, 260, true);
             assert_eq!(sidebar_bounds(&sidebar).unwrap().top, sidebar.island().top);
         }
@@ -834,36 +843,32 @@ mod tests {
 
     #[test]
     fn vertical_html_regions_match_native_geometry_without_overlaps_at_supported_dpis() {
+        use crate::chrome::layout::{Arrangement, Rect as LRect, compute_arranged_in_frame};
+        use crate::settings::TabLayout;
         for dpi in [96, 120, 144, 192] {
-            let width = 1600;
-            let height = 1000;
-            let (layout, native_sidebar) = crate::chrome::layout::compute_vertical_in_frame(width, height, dpi, 12, 0, false, 260);
-            let sidebar = crate::chrome::layout::Rect::from(sidebar_bounds(&native_sidebar).expect("sidebar"));
-            let toolbar = toolbar_bounds(&layout).expect("toolbar");
-            let toolbar = crate::chrome::layout::Rect::from(toolbar);
-            let rail = crate::chrome::layout::Rect::from(rail_bounds(&layout).expect("rail"));
-            let caption = layout.caption_area;
-            let new_tab = layout.new_tab_button;
-            assert!(tab_row_bounds(&layout).is_none(), "dpi={dpi}: vertical mode must not expose a horizontal row");
-            let disjoint = |a: crate::chrome::layout::Rect, b: crate::chrome::layout::Rect| {
-                a.right <= b.left || b.right <= a.left || a.bottom <= b.top || b.bottom <= a.top
-            };
-            for (name_a, a, name_b, b) in [
-                ("toolbar", toolbar, "sidebar", sidebar),
-                ("toolbar", toolbar, "rail", rail),
-                ("toolbar", toolbar, "caption", caption),
-                ("toolbar", toolbar, "new-tab", new_tab),
-                ("sidebar", sidebar, "rail", rail),
-                ("sidebar", sidebar, "caption", caption),
-                ("sidebar", sidebar, "new-tab", new_tab),
-                ("rail", rail, "caption", caption),
-                ("rail", rail, "new-tab", new_tab),
-                ("caption", caption, "new-tab", new_tab),
-            ] {
-                assert!(disjoint(a, b), "dpi={dpi}: {name_a} overlaps {name_b}: {a:?} vs {b:?}");
+            for tabs in [TabLayout::Vertical, TabLayout::VerticalRight] {
+                let arrangement = Arrangement { tabs, ..Arrangement::default() };
+                let (layout, native_sidebar) = compute_arranged_in_frame(arrangement, 1600, 1000, dpi, 12, 0, false, 260, true, 36);
+                let native_sidebar = native_sidebar.expect("a sidebar");
+                let sidebar = LRect::from(sidebar_bounds(&native_sidebar).expect("sidebar"));
+                let toolbar = LRect::from(toolbar_bounds(&layout).expect("toolbar"));
+                let caption = layout.caption_area;
+                assert!(tab_row_bounds(&layout).is_none(), "dpi={dpi}: vertical mode must not expose a horizontal row");
+                assert!(rail_bounds(&layout).is_none(), "dpi={dpi}: no rail");
+                assert!(layout.new_tab_button.is_empty(), "dpi={dpi}: the sidebar has its own New tab");
+                let disjoint = |a: LRect, b: LRect| a.right <= b.left || b.right <= a.left || a.bottom <= b.top || b.bottom <= a.top;
+                for (name_a, a, name_b, b) in [
+                    ("toolbar", toolbar, "sidebar", sidebar),
+                    ("toolbar", toolbar, "caption", caption),
+                    ("sidebar", sidebar, "caption", caption),
+                    ("toolbar", toolbar, "page", layout.viewport),
+                    ("sidebar", sidebar, "page", layout.viewport),
+                ] {
+                    assert!(disjoint(a, b), "{tabs:?} dpi={dpi}: {name_a} overlaps {name_b}: {a:?} vs {b:?}");
+                }
+                assert_eq!(sidebar.top, native_sidebar.island().top);
+                assert!(sidebar.top >= toolbar.bottom, "{tabs:?} dpi={dpi}: the tabs are under the toolbar");
             }
-            assert_eq!(sidebar.top, native_sidebar.island().top);
-            assert!(sidebar.left >= rail.right, "dpi={dpi}");
         }
     }
     // --- end vertical sidebar ---
@@ -1014,17 +1019,9 @@ mod tests {
     }
 
     #[test]
-    fn rail_bounds_is_the_full_rail_pill() {
+    fn rail_bounds_is_none_now_the_rail_is_gone() {
         let layout = compute_in_frame(1200, 700, 96, 3, 0, false);
-        let bounds = rail_bounds(&layout).expect("wide window has a rail");
-        assert_eq!(bounds.left, layout.rail.left);
-        assert_eq!(bounds.top, layout.rail.top);
-        assert_eq!(bounds.right, layout.rail.right);
-        assert_eq!(bounds.bottom, layout.rail.bottom);
-        assert!(bounds.bottom > bounds.top && bounds.right > bounds.left);
-        let mut empty = layout.clone();
-        empty.rail = Rect::default();
-        assert!(rail_bounds(&empty).is_none());
+        assert!(rail_bounds(&layout).is_none());
     }
 
     #[test]

@@ -1247,8 +1247,18 @@ impl WindowChrome {
     }
     /// The toolbar region the HTML chrome covers, in client pixels. `None` while it is inactive or
     /// the toolbar is too narrow for its region.
+    /// --- zen sidebar --- the auto-hide zone the toolbar belongs to: the sidebar's, when the toolbar
+    /// sits in the sidebar column, else the top band's.
+    /// --- zen sidebar --- where the window buttons end: the top of a Zen sidebar column holds them,
+    /// otherwise the client's right edge.
+    pub(super) fn caption_right(&self) -> i32 {
+        if self.layout.toolbar_in_sidebar && !self.layout.caption_area.is_empty() { self.layout.caption_area.right } else { self.client.0 }
+    }
+    pub(super) fn toolbar_zone(&self) -> crate::auto_hide::Zone {
+        if self.sidebar.is_some() && self.layout.toolbar_in_sidebar { crate::auto_hide::Zone::Sidebar } else { crate::auto_hide::Zone::Top }
+    }
     fn html_region(&self) -> Option<Rect> {
-        if !self.html_toolbar_active || !self.html.as_ref().is_some_and(ChromeHost::applied) || self.ah.visually_hidden(crate::auto_hide::Zone::Top) {
+        if !self.html_toolbar_active || !self.html.as_ref().is_some_and(ChromeHost::applied) || self.ah.visually_hidden(self.toolbar_zone()) {
             return None;
         }
         chrome_host::toolbar_bounds(&self.layout).map(Rect::from)
@@ -2065,6 +2075,9 @@ fn sync_html_host_bounds(hwnd: HWND) {
         let side_dx = s.ah.sidebar_shift();
         let mid = s.layout.client.height() / 2;
         let toolbar = chrome_host::toolbar_bounds(&s.layout).filter(|_| s.html_region().is_some()).map(|rect| {
+            if s.toolbar_zone() == crate::auto_hide::Zone::Sidebar {
+                return shift_rect(rect, side_dx, 0); // --- zen sidebar --- slides with the column
+            }
             let dy = if s.layout.toolbar_at_bottom() { bottom_dy } else { top_dy };
             shift_rect(rect, 0, dy)
         });
@@ -2766,9 +2779,11 @@ unsafe extern "system" fn window_proc(
                 );
                 // --- layout (thread T6) --- a row along the bottom edge keeps the bottom grip thin.
                 let thin_bottom = with_chrome(hwnd, |s| s.last_relayout.as_ref().is_some_and(|inputs| inputs.arrangement.thin_bottom_edge())).unwrap_or(false);
-                let hit = frame::frame_hit_test_with(
+                let caption_right = with_chrome(hwnd, |s| s.caption_right()).unwrap_or(r.right);
+                let hit = frame::frame_hit_test_captions_at(
                     p,
                     (r.right, r.bottom),
+                    caption_right,
                     dpi(hwnd),
                     auto_hide::zoomed_or_full(hwnd), // --- auto-hide (T11) --- no resize rim in full screen
                     if ih {
@@ -9532,21 +9547,21 @@ pub(super) fn caption_buttons_live(hwnd: HWND) -> bool {
     if auto_hide::fullscreen_of(hwnd) == crate::auto_hide::Fullscreen::Page {
         return false;
     }
-    with_chrome(hwnd, |s| !s.ah.visually_hidden(crate::auto_hide::Zone::Top)).unwrap_or(true)
+    with_chrome(hwnd, |s| !s.ah.visually_hidden(s.toolbar_zone())).unwrap_or(true)
 }
 
 /// `x`,`y` are parent-client pixels. True when that point is on a caption button as drawn,
 /// including while the top band is mid-slide (the visible part of the button, not the gap it left).
 pub(super) fn caption_point_is_button(hwnd: HWND, x: i32, y: i32) -> bool {
-    let Some((size, dpi_now, maximised, thin, dy)) = with_chrome(hwnd, |s| {
+    let Some((size, dpi_now, maximised, thin, dy, right)) = with_chrome(hwnd, |s| {
         let (dy, _) = s.ah.band_shift();
-        (s.client, s.dpi, s.layout.maximised, s.last_relayout.as_ref().is_some_and(|i| i.arrangement.thin_bottom_edge()), dy)
+        (s.client, s.dpi, s.layout.maximised, s.last_relayout.as_ref().is_some_and(|i| i.arrangement.thin_bottom_edge()), dy, s.caption_right())
     }) else {
         return false;
     };
     let point = POINT { x, y: y - dy };
     matches!(
-        frame::frame_hit_test_with(point, size, dpi_now, maximised || auto_hide::zoomed_or_full(hwnd), frame::ChromeHit::None, thin),
+        frame::frame_hit_test_captions_at(point, size, right, dpi_now, maximised || auto_hide::zoomed_or_full(hwnd), frame::ChromeHit::None, thin),
         frame::FrameHit::Minimize | frame::FrameHit::Maximize | frame::FrameHit::Close
     )
 }
@@ -12409,7 +12424,7 @@ fn paint_chrome(hwnd: HWND, app: Option<&AppRef>) {
                 );
                 // --- auto-hide (T11) --- the page's frame is drawn below a bar that floats over its top.
                 let sidebar_viewport = s.ah.paint_viewport(sidebar_viewport);
-                let dirty = if s.surface.set_auto_hidden_top(s.ah.visually_hidden(crate::auto_hide::Zone::Top)) {
+                let dirty = if s.surface.set_auto_hidden_top(s.ah.visually_hidden(s.toolbar_zone())) {
                     Rect::new(0, 0, s.client.0, s.client.1)
                 } else {
                     dirty

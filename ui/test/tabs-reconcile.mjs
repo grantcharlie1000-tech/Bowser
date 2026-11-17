@@ -316,8 +316,10 @@ test('a crowded strip never squeezes a group under its own members: the tabs aft
   const edge = [process.env.BOWSER_TEST_EDGE, 'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe', 'C:/Program Files/Microsoft/Edge/Application/msedge.exe']
     .find((path) => path && existsSync(path));
   if (!edge) { t.skip('Microsoft Edge is not installed'); return; }
+  // The strip's own markup (tabs.ts createGroup): a bar, the members, the closing mark. Five tabs and
+  // the bar need about 225px at their minimum widths, so a 180px row is crowded.
   const tab = (id) => `<div class="tab" id="${id}"><span class="ico"></span><span class="title">A tab</span></div>`;
-  const group = `<div class="group" id="g"><button class="ball"><span class="gname">Research</span><span class="disclose"></span></button>${tab('m1')}${tab('m2')}</div>`;
+  const group = `<div class="group" id="g" style="--gw:2;--gn:2;--go:9px"><button class="ball"><span class="bar"></span></button>${tab('m1')}${tab('m2')}<span class="cap"><span class="sliver"></span><span class="sliver"></span></span></div>`;
   const css = pathToFileURL(join(here, '..', 'dist', 'app.css')).href;
   const script = `window.addEventListener('load', function () {
     var box = function (s) { return document.querySelector(s).getBoundingClientRect(); }, app = document.getElementById('app');
@@ -327,7 +329,7 @@ test('a crowded strip never squeezes a group under its own members: the tabs aft
   const dir = mkdtempSync(join(tmpdir(), 'bowser-strip-test-'));
   try {
     const file = join(dir, 'page.html');
-    writeFileSync(file, `<!doctype html><html><head><meta charset="utf-8"><link rel="stylesheet" href="${css}"></head><body><div style="width:300px;height:30px"><div id="app" class="strip">${tab('a')}${group}${tab('b')}${tab('c')}${tab('d')}</div></div><script>${script}</script></body></html>`);
+    writeFileSync(file, `<!doctype html><html><head><meta charset="utf-8"><link rel="stylesheet" href="${css}"></head><body><div style="width:180px;height:30px"><div id="app" class="strip">${tab('a')}${group}${tab('b')}${tab('c')}${tab('d')}</div></div><script>${script}</script></body></html>`);
     mkdirSync(join(dir, 'profile'));
     const result = spawnSync(edge, ['--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check', '--allow-file-access-from-files',
       `--user-data-dir=${join(dir, 'profile')}`, '--window-size=1000,800', '--virtual-time-budget=3000', '--dump-dom', pathToFileURL(file).href],

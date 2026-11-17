@@ -66,7 +66,7 @@ body.bw-hover-body {
 }
 
 .bw-card { width: 260px; }
-.bw-island-menu { width: 260px; gap: 10px; padding: 12px; border-radius: var(--bw-r-float); }
+.bw-island-menu { width: 288px; gap: 10px; padding: 12px; border-radius: 12px; }
 
 .bw-card button,
 .bw-island-menu button {
@@ -86,40 +86,8 @@ body.bw-hover-body {
 
 /* ----- tab hover card ----- */
 
-.bw-card-markers {
-  display: flex;
-  gap: 6px;
-}
-
-.bw-card-marker,
-.bw-card-marker-next {
-  width: 26px;
-  height: 26px;
-  flex: none;
-  border-radius: 50%;
-}
-
-.bw-card-marker {
-  background: var(--hover-marker, var(--bw-accent)) !important;
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, #000 12%, transparent);
-}
-
-.bw-card-marker.is-selected {
-  box-shadow: 0 0 0 2px var(--bw-overlay), 0 0 0 4px var(--bw-text);
-}
-
-.bw-card-marker-next {
-  display: grid;
-  place-items: center;
-  /* Same circle as the markers it sits among. */
-  box-shadow: inset 0 0 0 1px var(--bw-pill-edge);
-  color: var(--bw-text-2);
-}
-
-.bw-card-marker-next:hover,
 .bw-card-row:hover,
-.bw-island-row:hover,
-.bw-island-close:hover {
+.bw-island-row:hover {
   background: var(--bw-hover) !important;
 }
 
@@ -268,14 +236,17 @@ body.bw-hover-body {
 
 /* ----- island menu ----- */
 
+/* The name field: a rounded rectangle outlined in the accent. The popup never activates on its own,
+   so the outline is drawn at rest as well: the field is what the menu is opened for. */
 .bw-island-field {
   position: relative;
   display: flex;
   align-items: center;
-  height: 32px;
-  border-radius: var(--bw-r-pill);
+  flex: none;
+  height: 36px;
+  border-radius: var(--bw-r-island);
   background: color-mix(in srgb, var(--bw-text) 6%, transparent);
-  box-shadow: inset 0 0 0 1px var(--bw-hairline);
+  box-shadow: inset 0 0 0 1.5px var(--bw-focus);
 }
 
 .bw-island-field:focus-within {
@@ -286,7 +257,7 @@ body.bw-hover-body {
   flex: 1;
   min-width: 0;
   height: 100%;
-  padding: 0 4px 0 10px;
+  padding: 0 4px 0 12px;
   border: 0;
   outline: 0;
   background: transparent;
@@ -302,61 +273,60 @@ body.bw-hover-body {
 .bw-island-clear {
   display: grid;
   place-items: center;
-  width: 18px;
-  height: 18px;
-  margin-right: 6px;
+  width: 20px;
+  height: 20px;
+  margin-right: 8px;
   flex: none;
-  border-radius: 50%;
+  border-radius: var(--bw-r-control);
   color: var(--bw-text-2) !important;
   transition: transform var(--bw-dur-fast) var(--bw-ease-out);
 }
 
-.bw-island-clear:hover { transform: scale(1.06); }
+.bw-island-clear:hover { transform: scale(1.06); color: var(--bw-text) !important; }
 .bw-island-clear:active { transform: scale(0.96); color: var(--bw-accent) !important; }
 .bw-island-field.is-empty .bw-island-clear { visibility: hidden; }
 
+/* One row of rounded squares spread over the menu's width. */
 .bw-island-swatches {
   display: flex;
   flex-wrap: nowrap;
   align-items: center;
   justify-content: space-between;
-  gap: var(--bw-space-1);
 }
 
 .bw-island-swatch {
-  width: 18px;
-  height: 18px;
+  width: 24px;
+  height: 24px;
   flex: none;
-  border-radius: 50%;
+  border-radius: var(--bw-r-row);
   background: var(--hover-swatch, var(--bw-accent)) !important;
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--bw-text) 22%, transparent);
 }
 
 .bw-island-swatch:hover {
-  box-shadow:
-    inset 0 0 0 1px color-mix(in srgb, var(--bw-text) 22%, transparent),
-    0 0 0 2px color-mix(in srgb, var(--bw-text) 18%, transparent);
+  box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--bw-text) 40%, transparent);
 }
 
+/* The chosen colour: a 2px ring in the text colour, a 2px gap, then the colour. The ring is drawn
+   inside the square, so it is a rounded square too and never touches its neighbours. */
 .bw-island-swatch.is-selected,
 .bw-island-swatch.is-selected:hover {
-  box-shadow: 0 0 0 2px var(--bw-window-opaque), 0 0 0 3px var(--bw-text);
+  box-shadow: inset 0 0 0 2px var(--bw-text), inset 0 0 0 4px var(--bw-window-opaque);
 }
 
-.bw-island-row:hover { background: var(--bw-hover); }
-
+/* The close action: a filled button of the menu's width. */
 .bw-island-close {
-  height: 28px;
+  flex: none;
+  height: 34px;
   width: 100%;
-  border-radius: var(--bw-r-pill);
-  background: transparent !important;
-  color: var(--bw-text-dim);
+  border-radius: var(--bw-r-island);
+  background: color-mix(in srgb, var(--bw-text) 9%, transparent) !important;
+  color: var(--bw-text) !important;
   text-align: center;
 }
 
 .bw-island-close:hover {
-  background: var(--bw-hover) !important;
-  color: var(--bw-text);
+  background: color-mix(in srgb, var(--bw-text) 15%, transparent) !important;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -621,16 +591,14 @@ body.bw-hover-body[data-hover-kind="suggest"] {
     outline-offset: -1px;
   }
 
-  /* Marker and group-colour swatches ARE their colour (each has an accessible name): keep it, or
+  /* Group-colour swatches ARE their colour (each has an accessible name): keep it, or
      every swatch is painted Canvas and the picker shows nothing to pick. The selected one and the
      focused name field draw their state with box-shadow, which forced colours drop: outline them. */
-  .bw-card-marker,
   .bw-island-swatch {
     forced-color-adjust: none;
     box-shadow: inset 0 0 0 1px CanvasText;
   }
 
-  .bw-card-marker.is-selected,
   .bw-island-swatch.is-selected,
   .bw-island-swatch.is-selected:hover {
     outline: 2px solid Highlight;

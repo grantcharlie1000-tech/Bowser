@@ -55,9 +55,9 @@ export function installTooltips(root: HTMLElement): void {
   window.addEventListener('blur', dismiss);
 }
 
-/** The tab (horizontal `.tab` or vertical `.side-tab`) or group ball under `node`, if any. */
+/** The tab (horizontal `.tab` or vertical `.side-tab`) or group ball (or a folded island's closing bar) under `node`, if any. */
 export function tabStripHoverTarget(node: Element): { kind: HoverTargetKind; id: number; element: HTMLElement } | null {
-  const ball = node.closest<HTMLElement>('.ball[data-key], .side-group-ball[data-key]');
+  const ball = node.closest<HTMLElement>('.ball[data-key], .cap[data-key], .side-group-ball[data-key]');
   if (ball) return { kind: 'ball', id: Number(ball.dataset.key), element: ball };
   // The close button belongs to its tab, so the card still opens over it.
   const tab = node.closest<HTMLElement>('.tab[data-id], .side-tab[data-id]');

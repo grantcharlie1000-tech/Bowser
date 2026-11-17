@@ -1304,6 +1304,10 @@ impl App {
             state.settings.sidebar_collapsed = collapsed;
             state.hwnd
         };
+        // --- zen sidebar --- unpinned is compact mode: the sidebar goes out of the layout (auto-hide).
+        if !hwnd.is_invalid() {
+            win32::auto_hide_sync(hwnd, app);
+        }
         let bounds = app.borrow_mut().latest_viewport_bounds();
         Self::resize_current(app, bounds);
         Self::post_tab_changed(hwnd, Self::active_tab_id(app));
@@ -1312,8 +1316,7 @@ impl App {
     pub fn set_sidebar_width(app: &AppRef, width: u16) {
         let hwnd = {
             let mut state = app.borrow_mut();
-            // Dragging the resize handle of a collapsed sidebar expands it again.
-            state.settings.sidebar_collapsed = false;
+            // --- zen sidebar --- resizing a revealed compact sidebar keeps it compact.
             state.settings.sidebar_width = width.clamp(
                 crate::settings::MIN_SIDEBAR_WIDTH,
                 crate::settings::MAX_SIDEBAR_WIDTH,
@@ -12158,9 +12161,6 @@ mod tests {
                         if matches!(tab_layout, crate::settings::TabLayout::ToolbarTop | crate::settings::TabLayout::TabsTop | crate::settings::TabLayout::SingleRow) {
                             let plain = layout::compute_in_frame_auto_hide(tab_layout, 1600, 1000, dpi, 3, 0, maximised, true, hide).viewport;
                             assert_eq!(window, plain, "{context}: the arranged geometry is the plain one");
-                        } else if tab_layout == crate::settings::TabLayout::Vertical {
-                            let plain = layout::compute_vertical_in_frame_auto_hide(1600, 1000, dpi, 3, 0, maximised, 260, true, hide).0.viewport;
-                            assert_eq!(window, plain, "{context}: the arranged geometry is the plain one");
                         }
                         assert_eq!((app.left, app.top, app.right, app.bottom), (window.left, window.top, window.right, window.bottom), "{context}");
                         if hide == AutoHide::OFF {
@@ -12184,11 +12184,12 @@ mod tests {
         use crate::chrome::layout::AutoHide;
         assert_eq!(layout_of(false, "tabs,address", Fullscreen::No, true), AutoHide::OFF);
         assert_eq!(layout_of(true, "tabs", Fullscreen::No, true), AutoHide { top: false, sidebar: true });
-        assert_eq!(layout_of(true, "address", Fullscreen::No, true), AutoHide { top: true, sidebar: false });
+        // --- zen sidebar --- the address bar is in the sidebar's column, so it hides the column.
+        assert_eq!(layout_of(true, "address", Fullscreen::No, true), AutoHide { top: false, sidebar: true });
         assert_eq!(layout_of(true, "bookmarks,panel", Fullscreen::No, true), AutoHide::OFF, "those two are not part of the page rectangle");
-        assert_eq!(layout_of(false, "", Fullscreen::Window, true), AutoHide { top: true, sidebar: true });
+        assert_eq!(layout_of(false, "", Fullscreen::Window, true), AutoHide { top: false, sidebar: true });
         assert_eq!(layout_of(false, "", Fullscreen::Window, false), AutoHide::OFF);
-        assert_eq!(layout_of(false, "", Fullscreen::Page, false), AutoHide { top: true, sidebar: true });
+        assert_eq!(layout_of(false, "", Fullscreen::Page, false), AutoHide { top: false, sidebar: true });
     }
     // --- end auto-hide ---
 
@@ -12244,16 +12245,18 @@ mod tests {
         for dpi in [96, 120, 144, 192] {
             for tab_layout in TabLayout::ALL {
                 let bounds = chrome_viewport_bounds(1600, 1000, dpi, 3, true, tab_layout, 260, 0);
-                assert_eq!(bounds.top, crate::chrome::layout::chrome_height(tab_layout, dpi), "dpi={dpi}, layout={tab_layout:?}");
+                // --- zen sidebar --- beside a sidebar the page runs the full height.
+                let top = if tab_layout.is_vertical() { 0 } else { crate::chrome::layout::chrome_height(tab_layout, dpi) };
+                assert_eq!(bounds.top, top, "dpi={dpi}, layout={tab_layout:?}");
                 if !tab_layout.is_vertical() {
                     let viewport = crate::chrome::layout::compute_in_frame_for(tab_layout, 1600, 1000, dpi, 3, 0, true).viewport;
                     assert_eq!((bounds.left, bounds.top, bounds.right, bounds.bottom), (viewport.left, viewport.top, viewport.right, viewport.bottom), "dpi={dpi}, layout={tab_layout:?}");
                 }
             }
-            // Single row and the sidebar layout give the page the 30 px a tab row would have taken.
+            // Single row gives the page the 30 px a tab row would have taken; a sidebar gives it all.
             let top = |layout| chrome_viewport_bounds(1600, 1000, dpi, 3, true, layout, 260, 0).top;
             assert!(top(TabLayout::SingleRow) < top(TabLayout::ToolbarTop), "dpi={dpi}");
-            assert_eq!(top(TabLayout::Vertical), top(TabLayout::SingleRow), "dpi={dpi}");
+            assert_eq!(top(TabLayout::Vertical), 0, "dpi={dpi}");
             assert_eq!(top(TabLayout::TabsTop), top(TabLayout::ToolbarTop), "dpi={dpi}");
         }
     }
