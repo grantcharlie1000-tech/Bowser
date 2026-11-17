@@ -12,8 +12,11 @@ fixed. The October ledger (`docs/design/defects.md`) was treated as history and 
 | Check | Result |
 | --- | --- |
 | `npm run typecheck`, `npm run lint` | pass |
-| `npm test` (no browser; browser-backed suites skip) | 670 pass, 38 skipped, 0 fail; second batch 72/72 |
-| `npm test` with `BOWSER_TEST_EDGE` = headless Chromium shell (Linux) | 707/708; second batch 72/72. The one failure, "reader view: font, size, line height and column width", also fails on unmodified main here: `ch` widths without Segoe UI. Not a product defect |
+| `npm test` (no browser; browser-backed suites skip) | 671 pass, 38 skipped, 0 fail; second batch 72/72 |
+| `npm test` with `BOWSER_TEST_EDGE` = headless Chromium shell (Linux) | 708/709; second batch 72/72. The one failure, "reader view: font, size, line height and column width", also fails on unmodified main here: `ch` widths without Segoe UI. Not a product defect |
+| `npm run qa` (new: `qa-siteinfo.mjs` + `qa-a11y.mjs`, Playwright; skips without it) | 647 pass, 0 fail, 25 todo (each todo is a tracked low-severity finding with an id, listed below) |
+| Visual capture (`ui/shots/qa-capture.mjs`): 54 scenarios x light/dark x 100/125/150/200% x standard/compact | 864 shots of main and of the repaired build, compared side by side. This comparison caught a site-information row overlap that the unit tests missed; it was fixed before commit |
+| Interaction latency (`benchmarks/scripts/qa-latency.mjs`, 60 runs, headless Chromium) | No change beyond noise. Medians, main to repaired: tab switch 5.0 to 5.7 ms, omnibox key 0.6 to 0.5 ms, menu rows 2.6 to 2.5 ms, settings toggle 1.2 to 1.2 ms. No performance improvement is claimed |
 | `ui/dist` + `dist.manifest` | regenerated; two consecutive builds byte-identical |
 | `cargo clippy --locked [--features html-chrome-default] --target x86_64-pc-windows-msvc -- -D warnings` | clean, both feature sets |
 | `cargo check --all-targets` (both feature sets, Windows target) | clean, no warnings; all new Rust tests compile |
@@ -63,9 +66,15 @@ Severity: H high, M medium, L low. "Compiled" means Rust tests compile but were 
 | A-6 | H | Shared components, forced colours | Toggle on/off, checked segment, focus ring, selection and spinner invisible under Windows contrast themes | `@media (forced-colors: active)` system-colour fallbacks | Browser test (`--force-high-contrast`) |
 | A-7 | M | Hover layer | Tab-marker and group-colour swatches all Canvas under forced colours | `forced-color-adjust: none` + contour; Highlight outline on the pick | Browser test |
 | A-8 | M | Site info | Each radio option was its own tab stop (about 15 Tabs for 5 permissions) | One roving tab stop per group; arrows, Home and End | Browser test |
+| F-13 | H | Privacy dashboard window | `dialog.ts` passed only `p === token`, dropping the `protection` snapshot Rust sends, so Blocking level, Website appearance and Private theme showed nothing selected and Cookie notices showed off while on | Accept `protection` in the privacy window | QA browser check (now an assertion) |
+| F-4 | H | Site information | The page asked for 657 CSS px; Rust clamps to the work area and nothing scrolled, so Zoom, Reset permissions and the footer were unreachable on short screens | The page scrolls when capped and rows keep their height; the reported size is still the content height | `qa-siteinfo.mjs` (fails on both the old and the first-attempt CSS) |
+| F-2 | H | Vertical sidebar | Pinned tiles had an empty accessible name (label removed; tiles draw no title) | Pinned rows always carry `aria-label` | QA browser check |
+| F-1 | M | Toolbar | Typed-history and QR buttons rendered while turned off: `.bw-icon-btn` display beat `[hidden]` | Shared buttons honour `[hidden]` (component rule) plus a pill rule | Style test + QA check |
+| F-18 | M | Privacy dashboard | The Delete browsing data "Cancel" showed when no deletion was armed (same `[hidden]` cause; exposed once F-13 let the section render) | Same component rule | QA check |
+| F-3 | M | History, downloads pages | Toast "Undo" was a Tab stop and announced while the toast was invisible | Hidden until an undo toast shows it | QA check |
 | L-6 | L | Docs | README offered v0.0.5 as the stable download (pin is v0.0.29); shortcuts table missing bound chords; PRODUCT.md listed the retired Ctrl+Shift+V | Corrected. The stable pin itself is unchanged | n/a |
 
-Total: 36 confirmed defects fixed (11 high, 21 medium, 4 low).
+Total: 42 confirmed defects fixed (14 high, 24 medium, 4 low).
 
 ## Re-verified: historical ledger rows already fixed on main
 
@@ -85,6 +94,20 @@ contract: every TypeScript command and action has a Rust parser and handler, and
   were not merged; only the defects they evidenced were fixed the Bowser way.
 
 ## Remaining issues (prioritised)
+
+QA findings still open (todo entries in `ui/test/qa-a11y.mjs`, all low severity):
+- F-6: letter favicon tiles in light mode, about 1.75:1.
+- F-7: Store's selected side-nav item in light mode, 3.88:1.
+- F-8: adjacent 20x20 pill buttons, below the WCAG 2.5.8 24x24 target size.
+- F-9: in the address and search fields, only the caret marks focus.
+- F-10: palette rows are unreachable when the work area is under 438 px.
+- F-11: the 20px-tall "What it declares" button.
+- F-12: split picker text measures 4.09:1, against an assumed backdrop.
+- F-14: the Presets radio group has nothing checked for the fixture layout; this may be intended.
+- F-15: a favicon that fails to decode shows no letter fallback.
+- F-16: the site-info blocker toggle's target size.
+- F-17 is a fixture gap, not a defect.
+
 
 1. **Needs a Windows run**: all Rust tests added here (`engine_recovery.rs`, `surface_recovery_tests.rs`,
    `tab_flow.rs`, `html_popup.rs`, `host.rs`, the extensions wire fixture). The hang bar also needs a
