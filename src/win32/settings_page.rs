@@ -1061,6 +1061,7 @@ fn extensions_snapshot(owner: HWND) -> String {
                     ext::Entry {
                         manifest: folder.as_deref().and_then(extensions::installed_manifest),
                         popup: folder.as_deref().is_some_and(|folder| extensions::declares_page(folder, PageKind::Popup)),
+                        options: folder.as_deref().is_some_and(|folder| extensions::declares_page(folder, PageKind::Options)),
                         failure: extensions::load_failure(&record.id).unwrap_or_default(),
                         id: record.id,
                         name: record.name,

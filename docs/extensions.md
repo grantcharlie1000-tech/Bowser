@@ -281,11 +281,14 @@ shim.
   Remove asks in the row first, then unloads it and deletes the copy (the page shows "Removing…"
   until the engine answers; one removal at a time). "Install unpacked…" opens Bowser's folder picker
   and the native confirmation that lists the declarations. "Install CRX file…" does the same for a
-  `.crx` file on disk (see "CRX file" below). "Open popup" opens the hosted popup. Bowser installs
+  `.crx` file on disk (see "CRX file" below). "Open popup" opens the hosted popup; "Options" opens
+  the hosted options page and is offered only for an extension that is on, loaded this session and
+  whose manifest declares an options page. "Check update" is shown disabled: extension updates are
+  not available in Bowser yet, and the button says so instead of sending a request that is refused. Bowser installs
   unpacked folders and `.crx` files the user picks, and offers verified Store downloads through
   `bowser://store`. See [Store catalogue and evidence](store-catalogue.md).
 - **Wire** (`src/chrome_host/extensions_page.rs`). Rust -> page:
-  `{v:1,t:"snap",p:"extensions",d:{state:"on"|"error",busy,ack,error,items:[{id,name,version,enabled,popup,failure,readable,all,sites,sitesN,scripts,scriptsN,perms,permsN,optional,optionalN}]}}`.
+  `{v:1,t:"snap",p:"extensions",d:{state:"on"|"error",busy,ack,error,items:[{id,name,version,enabled,popup,options,failure,readable,all,sites,sitesN,scripts,scriptsN,perms,permsN,optional,optionalN}]}}`.
   Page -> Rust, in the settings page's `set` family: `extension` (`text` id, `on`), `extremove`
   (`text` id), `extpopup` (`text` id), bare `extinstall` and bare `extinstallcrx`. An id must be `ext-` and 16 lowercase hex
   digits and is looked up in `extensions.txt` again before anything acts on it. Every command is

@@ -189,8 +189,9 @@ export function mountExtensionsSection(options: ExtensionsSectionOptions): Exten
         popup.disabled = held;
         actions.append(popup);
       }
-      // Bowser refuses an options page for an extension that is off or not running, as it does a popup.
-      if (running(item)) {
+      // Bowser refuses an options page for an extension that is off or not running, as it does a popup,
+      // and one whose manifest declares none ends in a refusal too, so neither is offered.
+      if (running(item) && item.options) {
         const optionsButton = textButton('Options', () => options.send({ a: 'extoptions', text: item.id }), { subtle: true, aria: `Options for ${item.name}` });
         optionsButton.dataset.focus = `${item.id}:extoptions`;
         optionsButton.disabled = held;

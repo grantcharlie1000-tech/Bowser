@@ -303,6 +303,8 @@ test('section: Options only for a running extension; Check update says updates a
   assert.equal(button(rowOf(OTHER), 'Options for Tab Notes'), undefined, 'off: Bowser would refuse, so it is not offered');
   receive({ ...fixture.snap, d: { ...fixture.snap.d, items: [{ ...fixture.snap.d.items[0], failure: 'Load failed' }, fixture.snap.d.items[1]] } });
   assert.equal(button(rowOf(ID), 'Options for Reader "<b>"'), undefined, 'on but not running: not offered either');
+  receive({ ...fixture.snap, d: { ...fixture.snap.d, items: [{ ...fixture.snap.d.items[0], options: false }, fixture.snap.d.items[1]] } });
+  assert.equal(button(rowOf(ID), 'Options for Reader "<b>"'), undefined, 'running but its manifest declares no options page: not offered');
   receive(fixture.snap);
   for (const id of [ID, OTHER]) {
     const update = rowOf(id).querySelectorAll('button').find((b) => b.textContent === 'Check update');
