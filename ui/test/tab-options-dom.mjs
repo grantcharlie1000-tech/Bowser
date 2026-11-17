@@ -734,17 +734,26 @@ test('a tab island is its bar and its tabs; folded it keeps the tab in use betwe
   deliver(tabsMsg([item(1, { pinned: true }), item(2), item(3)], 2));
 });
 
-test('tabs.css draws the island: a 6px bar, a 12px pill when folded away, a closing bar only around a shown tab', () => {
+test('tabs.css draws the island as one box: a wash when open, the selected tab’s surface when folded, a pill when folded away', () => {
   const css = readFileSync(new URL('../src/styles/tabs.css', import.meta.url), 'utf8');
-  assert.match(css, /\.strip \.group \{[^}]*--gb: 6px;/, 'the bar is 6px thick');
+  const folded = '\\.strip \\.group\\.collapsed:has\\(\\.tab:not\\(\\[hidden\\]\\)\\)';
+  assert.match(css, /\.strip \.group \{[^}]*--gb: 6px;[^}]*--gi: 3px;/, 'the bar is 6px thick and sits 3px inside the box');
+  assert.match(css, /\.strip \.ball \{[^}]*width: calc\(var\(--gi\) \+ var\(--gb\)\);/);
   assert.match(css, /\.strip \.ball \.bar,\s*\.strip \.group \.cap \{[^}]*width: var\(--gb\);[^}]*border-radius: var\(--bw-r-pill\);[^}]*background: var\(--gc/);
+  // Open: one wash behind the bar and all the tabs, with the tab radius; none while folded.
+  assert.match(css, /\.strip \.group::before \{[^}]*inset: 0;[^}]*border-radius: var\(--bw-r-tab\);/);
+  assert.match(css, /\.strip \.group\.collapsed::before,[^{]*\{ content: none; \}/);
+  // Folded around the tab in use: no gaps, both bars drawn over the tab's ends, a slimmer closing bar.
   assert.match(css, /\.strip \.group \.cap \{ display: none; \}/);
-  assert.match(css, /\.strip \.group\.collapsed:has\(\.tab:not\(\[hidden\]\)\) \.cap \{ display: block; \}/);
-  assert.match(css, /\.strip \.group:not\(:has\(\.tab:not\(\[hidden\]\)\)\) \.ball \.bar \{ width: calc\(var\(--gb\) \* 2\); \}/);
-  assert.match(css, /\.strip \.group:not\(:has\(\.tab:not\(\[hidden\]\)\)\) \.ball \.bar \{ height: var\(--bw-tab-h\); \}/, 'the pill is as tall as a tab');
-  assert.doesNotMatch(css, /\.strip \.group[^{,]*::before/, 'an open island’s tabs share no background');
-  // Between its two bars the tab in use hides its close button until it is hovered or focused.
+  assert.match(css, new RegExp(`${folded} \\{\\s*gap: 0;`));
+  assert.match(css, new RegExp(`${folded} \\.ball \\{[^}]*margin-inline-end: calc\\(-1 \\* \\(var\\(--gi\\) \\+ var\\(--gb\\)\\)\\);`));
+  assert.match(css, new RegExp(`${folded} \\.cap \\{[^}]*display: block;[^}]*width: 4px;[^}]*margin-inline: calc\\(-1 \\* \\(var\\(--gi\\) \\+ 4px\\)\\) var\\(--gi\\);`));
+  assert.match(css, /\.strip \.group\.collapsed \.tab:not\(\[hidden\]\) \{\s*padding-inline:/, 'the tab makes room for the bars');
+  // Inside that box the tab in use hides its close button until it is hovered or focused.
   assert.match(css, /\.strip:not\(\.close-always\) \.group\.collapsed \.tab\.active:not\(:hover\):not\(:focus-within\) \.close \{ opacity: 0; \}/);
+  // Folded away: a pill twice the bar's thickness, as tall as a tab.
+  assert.match(css, /\.strip \.group:not\(:has\(\.tab:not\(\[hidden\]\)\)\) \.ball \.bar \{ width: calc\(var\(--gb\) \* 2\); \}/);
+  assert.match(css, /\.strip \.group:not\(:has\(\.tab:not\(\[hidden\]\)\)\) \.ball \.bar \{ height: var\(--bw-tab-h\); \}/);
 });
 
 test('the island menu opens from either bar: the closing bar is a hover target like the handle', () => {

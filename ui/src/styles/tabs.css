@@ -321,14 +321,15 @@
 .strip .tab.pinned .audio,
 .strip .tab.pinned .marker { display: none; }
 
-/* ---- Tab islands (groups): a coloured bar, then the island's tabs, drawn as any other tabs. ----
-   Expanded: [bar][tab][tab]...   Folded around the tab in use: [bar][tab][bar]   Folded away: a pill.
-   Only the bar marks the island: its tabs share no background. Either bar is the handle: a click
-   folds or unfolds, resting on it opens the island menu. */
+/* ---- Tab islands (groups): one rounded box holding a coloured bar and the island's tabs. ----
+   Expanded: [ bar tab tab ... ] on a shared wash.   Folded around the tab in use: one box with the
+   selected tab's fill, [ bar  icon title  slim bar ].   Folded away: a pill in the island's colour.
+   Either bar is the handle: a click folds or unfolds, resting on it opens the island menu. */
 .strip .group {
   --gb: 6px; /* the bar's thickness */
-  --ge: 0px; /* room for the closing bar, only while folded around a tab */
+  --gi: 3px; /* how far a bar sits inside the island's box */
   position: relative;
+  isolation: isolate;
   display: flex;
   align-items: center;
   gap: var(--bw-space-1);
@@ -337,21 +338,37 @@
      like top-level tabs. The group never gets narrower than its handle plus its members' minimum
      widths (min-width auto): in a crowded row it stops shrinking like a top-level tab does and the
      strip scrolls, instead of collapsing under its own members so the next tabs draw over them. */
-  flex: var(--gw, 1) 1 calc(var(--go, 0px) + var(--gn, 1) * var(--bw-space-1) + var(--ge));
+  flex: var(--gw, 1) 1 calc(var(--go, 0px) + var(--gn, 1) * var(--bw-space-1));
   min-width: auto;
   height: var(--bw-tab-h);
   padding: 0;
   transition: flex-grow var(--bw-dur-group) var(--bw-ease-group), flex-basis var(--bw-dur-group) var(--bw-ease-group);
 }
 
-/* The handle: a hit box of the tab's height holding the 6px bar, which sits against the tabs. */
+/* The open island's box: one wash behind the bar and every tab, a step off the strip. The selected
+   tab keeps its own fill on top of it. */
+.strip .group::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: var(--bw-r-tab);
+  background: color-mix(in srgb, var(--bw-text) 8%, transparent);
+  pointer-events: none;
+}
+
+/* Folded, the wash goes: the box is the selected tab's own surface, or there is only the pill. */
+.strip .group.collapsed::before,
+.strip .group:not(:has(.tab:not([hidden])))::before { content: none; }
+
+/* The handle: a hit box of the tab's height holding the 6px bar, inset from the box's edge. */
 .strip .ball {
   display: flex;
   flex: none;
   align-items: center;
   justify-content: flex-end;
   align-self: stretch;
-  width: calc(var(--gb) + var(--bw-space-1));
+  width: calc(var(--gi) + var(--gb));
   margin: 0;
   padding: 0;
   border: 0;
@@ -364,7 +381,7 @@
 .strip .group .cap {
   flex: none;
   width: var(--gb);
-  height: calc(var(--bw-tab-h) - 2px);
+  height: calc(var(--bw-tab-h) - 2 * var(--gi));
   border-radius: var(--bw-r-pill);
   background: var(--gc, var(--bw-focus));
   transition: background-color var(--bw-dur-fast) var(--bw-ease-fade), width var(--bw-dur-group) var(--bw-ease-group);
@@ -375,12 +392,35 @@
   background: color-mix(in srgb, #fff 22%, var(--gc, var(--bw-focus)));
 }
 
-/* The closing bar: only while the island is folded around the tab in use. */
+/* Folded around the tab in use: the tab's selected surface is the island's box. Both bars are drawn
+   over its two ends (the tab makes room for them), so the three read as one piece. The closing bar
+   is slimmer and shorter than the handle. */
 .strip .group .cap { display: none; }
-.strip .group.collapsed:has(.tab:not([hidden])) { --ge: calc(var(--gb) + var(--bw-space-1)); }
-.strip .group.collapsed:has(.tab:not([hidden])) .cap { display: block; }
+.strip .group.collapsed:has(.tab:not([hidden])) {
+  gap: 0;
+  flex-basis: 0px;
+}
+.strip .group.collapsed:has(.tab:not([hidden])) .ball {
+  position: relative;
+  z-index: 1;
+  margin-inline-end: calc(-1 * (var(--gi) + var(--gb)));
+}
+.strip .group.collapsed:has(.tab:not([hidden])) .cap {
+  display: block;
+  position: relative;
+  z-index: 1;
+  width: 4px;
+  height: calc(var(--bw-tab-h) - 4 * var(--gi));
+  margin-inline: calc(-1 * (var(--gi) + 4px)) var(--gi);
+}
+.strip .group.collapsed .tab:not([hidden]) {
+  padding-inline: calc(var(--gi) + var(--gb) + 5px) calc(var(--gi) + 4px + var(--bw-space-0_5));
+}
+.strip.close-left .group.collapsed .tab:not([hidden]) {
+  padding-inline: calc(var(--gi) + var(--gb) + var(--bw-space-0_5)) calc(var(--gi) + 4px + 6px);
+}
 
-/* Between its two bars the tab in use shows its close button only under the pointer or with focus. */
+/* Inside that box the tab in use shows its close button only under the pointer or with focus. */
 .strip:not(.close-always) .group.collapsed .tab.active:not(:hover):not(:focus-within) .close { opacity: 0; }
 
 /* Every member hidden: the island is its handle and nothing else, a pill twice the bar's thickness
@@ -439,6 +479,7 @@
 .strip.flush .group .ball,
 .strip.flush .group .cap { align-self: center; }
 .strip.flush .group .ball { height: var(--bw-tab-h); }
+.strip.flush .group::before { border-top-left-radius: 0; border-top-right-radius: 0; }
 
 /* Marks: a hibernated tab's icon is dimmed, a tab unused for the threshold is faint, a selected tab is tinted. */
 .strip .tab.asleep .ico { opacity: 0.5; }
