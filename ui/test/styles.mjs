@@ -87,7 +87,7 @@ test('tab groups use one colour mark (a bar in the strip), and the island is ins
   assert.match(tokens, /--bw-group-0: #b5525b;/);
   assert.match(tokens, /--bw-dur-group: 0ms;/, 'reduced motion drops the fold');
   // The horizontal island is a bar in the group colour, never a named label or a member line.
-  assert.match(tabs, /\.strip \.ball \.bar,\s*\.strip \.group \.cap \{[^}]*background: var\(--gc, var\(--bw-focus\)\);/s);
+  assert.match(tabs, /\.strip \.ball \.bar \{[^}]*background: var\(--gc, var\(--bw-focus\)\);/s);
   assert.doesNotMatch(tabs, /\.gname|\.disclose/);
   assert.match(tabs, /flex-grow var\(--bw-dur-group\) var\(--bw-ease-group\)/);
   assert.match(tabs, /\.strip \.group::before \{[^}]*inset: 0;[^}]*background: color-mix\(in srgb, var\(--bw-text\) 8%, transparent\);/, 'an open island is one box: a wash behind its bar and tabs');

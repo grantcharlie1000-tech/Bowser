@@ -281,9 +281,11 @@ tabs; the island menu mirrors `island_menu.rs` (name field with clear button and
 In the horizontal strip a tab island is drawn as in Opera (`ui/src/tabs.ts`, `tabs.css`): one rounded
 box (a wash behind the whole island) holding a 6 px bar in the island's colour (`.ball`) and then its
 tabs. Folded while one of its tabs is in use, the box is that tab's selected surface, with the bar
-at its left end and a slimmer closing bar (`.cap`) at its right end, and the tab shows its close
-button only under the pointer; folded with the tab in use elsewhere, it is a 12 px pill alone. A click on a bar sends `group` `toggle`; resting on either bar sends `hover` `ball` (the
-island menu); the island's name is not shown in the strip. The menu (`hover.css`, 12 px corners, as
+at its left end and, at its right end, a grey sliver for each tab folded behind it (`.cap`, two at
+most), and the tab shows its close button only under the pointer; folded with the tab in use
+elsewhere, it is a 12 px pill alone. A click on the bar or the slivers sends `group` `toggle`;
+resting on either sends `hover` `ball` (the island menu); the island's name is not shown in the
+strip. The menu (`hover.css`, 12 px corners, as
 `ISLAND_RADIUS` in `html_hover.rs`) is an accent-outlined rectangular name field, a row of rounded
 square swatches, the member rows and a filled full-width close button.
 

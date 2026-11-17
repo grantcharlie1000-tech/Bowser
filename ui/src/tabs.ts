@@ -129,12 +129,14 @@ export function tickReloads(nodes: Iterable<TabNode>, now: number): void {
 interface GroupNode {
   readonly shell: HTMLDivElement;
   readonly ball: HTMLButtonElement;
-  /** The closing bar after a folded island's shown tab. */
+  /** The closing mark after a folded island's shown tab: a sliver per tab folded behind it. */
   readonly cap: HTMLSpanElement;
   label: string;
   color: string;
   weight: number;
   visible: number;
+  /** Slivers the closing mark shows (0 to 2). */
+  more: number;
   /** Observes the handle so the island's flex-basis can reserve its width (a bar, or a pill when folded away). */
   readonly watch: ResizeObserver;
 }
@@ -313,10 +315,12 @@ function createGroup(key: number): GroupNode {
   const bar = el('span', 'bar');
   bar.setAttribute('aria-hidden', 'true');
   ball.append(bar);
-  // The bar that closes a folded island after its one shown tab. A click unfolds, like the handle.
+  // The mark that closes a folded island after its one shown tab: a sliver for each tab folded behind
+  // it (two at most), like the edges of stacked cards. A click unfolds, like the handle.
   const cap = el('span', 'cap');
   cap.dataset.key = String(key);
   cap.setAttribute('aria-hidden', 'true');
+  cap.append(el('span', 'sliver'), el('span', 'sliver'));
   // The group is one flex item: `--go` (handle width) lets CSS give its tabs the same share of the
   // row as ungrouped tabs, `--gw` / `--gn` the summed weight and number of visible tabs.
   const watch = new ResizeObserver(() => {
@@ -324,7 +328,7 @@ function createGroup(key: number): GroupNode {
     if (shell.style.getPropertyValue('--go') !== w) shell.style.setProperty('--go', w);
   });
   watch.observe(ball);
-  return { shell, ball, cap, label: '', color: '', weight: -1, visible: -1, watch };
+  return { shell, ball, cap, label: '', color: '', weight: -1, visible: -1, more: -1, watch };
 }
 
 function syncGroup(g: GroupNode, e: GroupEntry, active: number, weightOf?: (id: number, fallback: number) => number): void {
@@ -354,6 +358,12 @@ function syncGroup(g: GroupNode, e: GroupEntry, active: number, weightOf?: (id: 
   if (g.visible !== e.visible) {
     g.visible = e.visible;
     g.shell.style.setProperty('--gn', String(e.visible));
+  }
+  // How many slivers the closing mark shows: one per tab folded away, two at most.
+  const more = Math.min(2, e.members.length - e.visible);
+  if (g.more !== more) {
+    g.more = more;
+    g.shell.dataset.more = String(more);
   }
 }
 
