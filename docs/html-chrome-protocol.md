@@ -127,7 +127,7 @@ Wire ids: a tab's wire id is `TabId + 1`, so `0` is never a tab (`tabmove.before
 |---|---|---|
 | `tab` | `a`: `select`/`close`/`menu`/`pin`/`mute`, `id` | tab actions (`menu` = Rust shows the native tab context menu at the cursor) |
 | `tabmove` | `id`, `before` (tab id, `0` = end of strip) | drag-reorder drop; Rust uses the same move/drop logic (including group join/leave rules) as native |
-| `group` | `a`: `toggle`/`menu`, `key` | group ball click (collapse/expand) or group menu |
+| `group` | `a`: `toggle`/`menu`, `key` | click on a tab island's bar (collapse/expand) or its menu (right click) |
 | `side` | `a`: `workspace`/`newtab` | open the native workspace switcher or create a tab in the current workspace |
 
 ### Rust -> JS additions
@@ -275,8 +275,14 @@ all favicons in one message share a 128 KiB budget. Colours are `""` (theme acce
 `is_safe_css_colour`. Every key is required and no other key is accepted. The card mirrors
 `tab_card.rs` (marker swatches and "+", title clamped to two lines, host, group rows with linked
 underline, "+N more") and adds the tab's favicon and a "Sleeping" badge for discarded or suspended
-tabs; the island menu mirrors `island_menu.rs` (name field with clear button and placeholder hint,
-swatches, member rows, "+N more", "Close Tab Island · N Tabs").
+tabs; the island menu mirrors `island_menu.rs` (name field with clear button and the placeholder
+"Tab island name", nine swatches, member rows, "+N more", "Close Tab Island · N Tabs").
+
+In the horizontal strip a tab island is drawn as in Opera (`ui/src/tabs.ts`, `tabs.css`): a 4 px bar
+in the island's colour (`.ball`), then its tabs on one shared wash. Folded while one of its tabs is
+in use, it is bar, that tab, closing bar (`.cap`); folded with the tab in use elsewhere, it is a
+12 px pill alone. A click on a bar sends `group` `toggle`; resting on the first bar sends `hover`
+`ball` (the island menu); the island's name is not shown in the strip.
 
 Markup uses stable class names (`.bw-tooltip`, `.bw-card`, `.bw-island-menu` and their `-*` parts);
 styles live in `ui/src/styles/hover.css` over the `--bw-*` design tokens with fallbacks to the

@@ -129,12 +129,13 @@ export function tickReloads(nodes: Iterable<TabNode>, now: number): void {
 interface GroupNode {
   readonly shell: HTMLDivElement;
   readonly ball: HTMLButtonElement;
-  readonly name: HTMLSpanElement;
+  /** The closing bar after a folded island's shown tab. */
+  readonly cap: HTMLSpanElement;
   label: string;
   color: string;
   weight: number;
   visible: number;
-  /** Observes the header chip so the island's flex-basis can reserve its (content-sized) width. */
+  /** Observes the handle so the island's flex-basis can reserve its width (a bar, or a pill when folded away). */
   readonly watch: ResizeObserver;
 }
 
@@ -304,35 +305,36 @@ function createGroup(key: number): GroupNode {
   const shell = el('div', 'group');
   shell.setAttribute('role', 'none');
   shell.dataset.key = String(key);
+  // The island's handle: a coloured bar before its tabs (a wider pill once every tab is folded away).
+  // A click folds or unfolds the island; resting on it opens the island menu.
   const ball = el('button', 'ball bw-focus-inset');
   ball.type = 'button';
   ball.dataset.key = String(key);
-  const dot = el('span', 'dot');
-  dot.setAttribute('aria-hidden', 'true');
-  const name = el('span', 'gname');
-  name.dir = 'auto';
-  const disclose = el('span', 'disclose');
-  disclose.setAttribute('aria-hidden', 'true');
-  disclose.append(icon('chevron-right', { size: 12, fine: true }));
-  ball.append(dot, name, disclose);
-  // The group is one flex item: `--go` (header chip width) lets CSS give its tabs the same share of the
+  const bar = el('span', 'bar');
+  bar.setAttribute('aria-hidden', 'true');
+  ball.append(bar);
+  // The bar that closes a folded island after its one shown tab. A click unfolds, like the handle.
+  const cap = el('span', 'cap');
+  cap.dataset.key = String(key);
+  cap.setAttribute('aria-hidden', 'true');
+  // The group is one flex item: `--go` (handle width) lets CSS give its tabs the same share of the
   // row as ungrouped tabs, `--gw` / `--gn` the summed weight and number of visible tabs.
   const watch = new ResizeObserver(() => {
     const w = `${ball.offsetWidth}px`;
     if (shell.style.getPropertyValue('--go') !== w) shell.style.setProperty('--go', w);
   });
   watch.observe(ball);
-  return { shell, ball, name, label: '', color: '', weight: -1, visible: -1, watch };
+  return { shell, ball, cap, label: '', color: '', weight: -1, visible: -1, watch };
 }
 
 function syncGroup(g: GroupNode, e: GroupEntry, active: number, weightOf?: (id: number, fallback: number) => number): void {
   const name = e.leader.gname;
-  const label = name !== undefined && name !== '' ? name : 'Tab group';
+  // The strip shows no name (the island menu and the tooltip do).
+  const label = name !== undefined && name !== '' ? name : 'Tab island';
   if (g.label !== label) {
     g.label = label;
     setTip(g.ball, label);
     g.ball.setAttribute('aria-label', label);
-    g.name.textContent = name !== undefined && name !== '' ? name : '';
   }
   const expanded = String(!e.collapsed);
   if (g.ball.getAttribute('aria-expanded') !== expanded) g.ball.setAttribute('aria-expanded', expanded);
@@ -709,6 +711,7 @@ export function startTabs(strip: HTMLElement): HTMLElement {
         n.root.hidden = hiddenForTab(true, e.collapsed, slot.item.id === activeId);
         nodes.push(n.root);
       }
+      nodes.push(g.cap);
       place(g.shell, nodes);
       top.push(g.shell);
     }
@@ -1086,7 +1089,7 @@ export function startTabs(strip: HTMLElement): HTMLElement {
     ignoreClick = false;
     if (ev.button !== 0 || drag !== null || !(ev.target instanceof Element)) return;
     if (!ev.target.closest('.close')) unlockWidths(); // --- tab options ---
-    if (ev.target.closest('.close, .audio, .ball, .closed-btn')) return;
+    if (ev.target.closest('.close, .audio, .ball, .cap, .closed-btn')) return;
     const tab = ev.target.closest<HTMLElement>('.tab');
     if (!tab) {
       if (ev.target instanceof HTMLElement && ev.target.hasAttribute(DRAG_ATTR)) send({ v: 1, t: 'drag' });
@@ -1185,7 +1188,7 @@ export function startTabs(strip: HTMLElement): HTMLElement {
   host.addEventListener('click', (ev) => {
     const t = ev.target;
     if (!(t instanceof Element)) return;
-    const ball = t.closest<HTMLElement>('.ball');
+    const ball = t.closest<HTMLElement>('.ball, .cap');
     if (ball) {
       send({ v: 1, t: 'group', a: 'toggle', key: Number(ball.dataset.key) });
       return;
@@ -1230,7 +1233,7 @@ export function startTabs(strip: HTMLElement): HTMLElement {
   host.addEventListener('contextmenu', (ev) => {
     const t = ev.target;
     if (!(t instanceof Element)) return;
-    const ball = t.closest<HTMLElement>('.ball');
+    const ball = t.closest<HTMLElement>('.ball, .cap');
     if (ball) {
       ev.preventDefault();
       send({ v: 1, t: 'group', a: 'menu', key: Number(ball.dataset.key) });
