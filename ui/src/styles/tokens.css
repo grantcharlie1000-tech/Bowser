@@ -71,6 +71,27 @@
     --bw-on-accent: #14181d; /* text on accent fills: Rust's dark accents are light colours */
     --bw-scrim: rgba(0, 0, 0, 0.4); /* behind modal dialogs */
 
+    /* Colour: status, fixed per scheme and independent of the accent. Text-grade on the window, the
+       page, a card and a field in both schemes (dark >= 6:1, light >= 5.2:1 on #20242C / #F4F6F8 and
+       the --bw-card / --bw-field mixes over them), so they may colour short text and glyphs; a wash
+       is the same colour mixed toward transparent (12-18%). Danger is for failures and destructive
+       actions, warning for "needs attention" (late update, field error, extension error). The group
+       palette is NOT text-grade on the dark window (about 2.8-3.2:1); never use it for status. */
+    --bw-danger: #ff9a8b;
+    --bw-warning: #e8a25f;
+
+    /* Colour: page material of the bowser:// pages (settings, history, downloads, Store). One set,
+       so a card, a field and a search hit read the same on every page. */
+    --bw-page: var(--bw-window-opaque); /* page background */
+    --bw-card: color-mix(in srgb, var(--bw-text) 4%, var(--bw-window-opaque)); /* grouped section */
+    --bw-card-edge: var(--bw-hairline);
+    --bw-field: color-mix(in srgb, var(--bw-text) 6%, var(--bw-window-opaque)); /* search / text field fill */
+    --bw-field-edge: color-mix(in srgb, var(--bw-text) 12%, transparent);
+    --bw-tile: color-mix(in srgb, var(--bw-text) 7%, transparent); /* icon tile behind a 16px glyph */
+    --bw-row-hover: color-mix(in srgb, var(--bw-text) 6%, transparent);
+    --bw-row-press: color-mix(in srgb, var(--bw-text) 10%, transparent);
+    --bw-hit: color-mix(in srgb, var(--bw-accent) 28%, transparent); /* search-match highlight */
+
     /* Colour: group palette (not themed; index 0-7 is the stored colour id, the same eight as
        theme::ISLAND_COLOURS). Muted enough to sit on a neutral strip, deep enough for white
        label text (each pair is at least 4.5:1). Chips, the group line and the colour picker
@@ -237,6 +258,10 @@
     --bw-focus-inner: #fff;
     --bw-on-accent: #fff;
     --bw-scrim: rgba(0, 0, 0, 0.3);
+    --bw-danger: #c42b1c;
+    --bw-warning: #95511f;
+    --bw-card: color-mix(in srgb, #fff 72%, var(--bw-window-opaque));
+    --bw-field: color-mix(in srgb, #fff 80%, var(--bw-window-opaque));
     /* Light glass sits on whatever the desktop shows, often a mid grey: dim text is ink at 86%, not
        the 62% placeholder, so inactive tabs and rail glyphs keep their contrast there. */
     --bw-text-dim: color-mix(in srgb, var(--bw-text) 86%, transparent);
@@ -286,6 +311,10 @@
     --color-glass: var(--bw-surface-glass);
     --color-overlay: var(--bw-overlay);
     --color-hairline: var(--bw-hairline);
+    --color-danger: var(--bw-danger);
+    --color-warning: var(--bw-warning);
+    --color-card: var(--bw-card);
+    --color-field: var(--bw-field);
     --color-transparent: transparent;
     --color-current: currentColor;
     --color-group-0: var(--bw-group-0);
