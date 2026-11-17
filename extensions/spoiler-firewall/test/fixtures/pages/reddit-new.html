@@ -1,0 +1,14 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><link rel="stylesheet" href="/pages/common.css"><title>Some post : r/pics</title></head><body>
+<main id="main-content"><shreddit-post post-title="Look at this sunset" subreddit-prefixed-name="r/pics" permalink="/r/pics/comments/abc/some_post/" class="item" data-expect="clear"><h1 slot="title">Look at this sunset</h1><div slot="text-body">Taken last night near the lake.</div><img src="/static/pic.svg" alt="Sunset"></shreddit-post>
+<shreddit-comment-tree id="tree">
+<shreddit-comment author="amy" depth="0" class="item" data-expect="clear"><template shadowrootmode="open"><div class="body">Beautiful colours, thanks for sharing!</div><slot name="children"></slot></template></shreddit-comment>
+<shreddit-comment author="bob" depth="0" class="item" data-expect="shield" id="dsd-spoiler"><template shadowrootmode="open"><div class="body"><span class="sentinel">GTA 6 ending spo<!--SPLIT-->iler: the hero dies in the final mission</span></div><slot name="children"></slot></template>
+  <shreddit-comment slot="children" author="cat" depth="1" class="item" data-expect="nested"><template shadowrootmode="open"><div class="body">I love the lake too.</div></template></shreddit-comment>
+</shreddit-comment>
+<shreddit-comment author="dan" depth="0" class="item" data-expect="clear" id="plain-light"><div>Light DOM comment: where was this taken?</div></shreddit-comment>
+</shreddit-comment-tree></main>
+<script src="/pages/common.js"></script>
+<script>
+// closed shadow root comment attached by script (needs the attachShadow hook)
+setTimeout(function(){var t=document.getElementById('tree');var c=document.createElement('shreddit-comment');c.setAttribute('author','eve');c.className='item';c.setAttribute('data-expect','shield');c.id='closed-spoiler';var r=c.attachShadow({mode:'closed'});var d=document.createElement('div');d.className='body';d.innerHTML='<span class="sentinel">Grand Theft Auto VI leaked ending: the partner betrays everyone</span>';r.appendChild(d);t.appendChild(c);},200);
+</script></body></html>

@@ -24,6 +24,8 @@ import { DEFAULT_ADDR, blurAddressText, clipboardText, searchTextAfterSearch, fo
 import { engineLabel, monogram } from './address-settings-logic';
 // --- end address bar, search and bookmarks ---
 import { moveSuggestSelection, suggestPreviewText } from './suggest-logic'; // --- omnibox suggest ---
+import './spoiler-config'; // --- spoiler guard --- (every view listens for the live setting)
+import { hostOnly, riskyUrl, rowRisky } from './spoiler-guard'; // --- spoiler guard ---
 import { applyMenuOpen, applyState, applyTheme, buildView, DRAG_ATTR, renderDisplay, syncSiteIcon } from './view';
 import { startTabs } from './tabs';
 import { startRail } from './rail';
@@ -183,7 +185,9 @@ function startToolbar(root: HTMLElement): void {
       listSel = moveSuggestSelection(listSel, list.items.length, ev.key);
       const row = list.items[listSel];
       if (!row) return;
-      input.value = suggestPreviewText(latestText, listSel, row.text);
+      // A row that reads as a spoiler never puts its text in the address field: the host, or what was typed.
+      const hidden = listSel > 0 && rowRisky({ title: row.title, text: row.text, url: row.url }, undefined, latestText);
+      input.value = hidden ? (row.k === 'search' ? latestText : hostOnly(row.url) || latestText) : suggestPreviewText(latestText, listSel, row.text);
       input.setSelectionRange(input.value.length, input.value.length);
       sendSuggestPreview(list.seq, listSel);
       return;
@@ -385,6 +389,8 @@ function startToolbar(root: HTMLElement): void {
     const end = input.value.length;
     if (input.selectionStart !== end || input.selectionEnd !== end) return;
     if (end + msg.suffix.length > MAX_TEXT) return;
+    // History-based completion must not spell out a spoiler address the user has not typed.
+    if (riskyUrl(input.value + msg.suffix)) return;
     input.setRangeText(msg.suffix, end, end, 'select');
   };
 

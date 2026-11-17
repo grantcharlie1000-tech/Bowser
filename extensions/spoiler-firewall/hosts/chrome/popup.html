@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Spoiler Firewall for GTA VI</title>
+  <link rel="stylesheet" href="ui.css">
+</head>
+<body class="popup">
+  <main class="wrap">
+    <div id="controls" class="wrap flush"></div>
+    <section class="card" id="page-card" aria-labelledby="page-label">
+      <div class="counter">
+        <span class="label" id="page-label">Shields on this page</span>
+        <span class="num" id="count" aria-live="polite">0</span>
+      </div>
+      <p class="note">A count only. The extension never shows or stores page text.</p>
+      <p class="notice" id="page-notice" role="status" hidden></p>
+    </section>
+    <footer class="links">
+      <a href="options.html" id="options-link" target="_blank" rel="noopener">What is protected and what is not</a>
+      <p class="disclaimer gap">Unofficial. Not affiliated with Rockstar Games or Take-Two.</p>
+    </footer>
+  </main>
+  <script src="feed-config.js"></script>
+  <script src="feed.js"></script>
+  <script src="common.js"></script>
+  <script src="popup.js"></script>
+</body>
+</html>

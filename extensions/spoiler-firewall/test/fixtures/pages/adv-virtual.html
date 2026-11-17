@@ -1,0 +1,7 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><link rel="stylesheet" href="/pages/common.css"><title>virtual list</title><style>#vp{height:360px;overflow:auto;border:1px solid #999}.cell{height:70px;box-sizing:border-box}</style></head><body><div id="vp"><div id="spacer" style="height:2800px;position:relative"></div></div><script>
+var data=[];for(var i=0;i<40;i++)data.push(i%5===2?'GTA 6 spoiler '+i+': the hero dies at the ending':'Plain item '+i);
+var sp=document.getElementById('spacer'),vp=document.getElementById('vp'),pool=[];
+for(var j=0;j<8;j++){var c=document.createElement('div');c.className='cell item';c.id='cell'+j;sp.appendChild(c);pool.push(c);}
+function render(){var first=Math.floor(vp.scrollTop/70);for(var j=0;j<8;j++){var idx=first+j,c=pool[j];c.style.position='absolute';c.style.top=(idx*70)+'px';c.style.left='0';c.style.right='0';var t=data[idx]||'';var isS=t.indexOf('GTA')===0;c.setAttribute('data-expect',isS?'shield':'clear');c.innerHTML=isS?'<span class="sentinel">'+t+'</span>':t;}}
+vp.addEventListener('scroll',render);render();
+</script></body></html>

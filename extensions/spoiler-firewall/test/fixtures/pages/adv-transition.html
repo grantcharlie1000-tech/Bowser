@@ -1,0 +1,3 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><link rel="stylesheet" href="/pages/common.css"><title>transition</title><style>.item{transition:all 1s;opacity:1}</style></head><body><div id="l"></div><script>
+setTimeout(function(){var l=document.getElementById('l');for(var i=0;i<4;i++){var d=document.createElement('div');d.className='item';var sp=i%2===0;d.setAttribute('data-expect',sp?'shield':'clear');d.innerHTML=sp?'<span class="sentinel">GTA 6 spoiler '+i+': the hero dies at the ending</span>':'clean '+i;l.appendChild(d);}},60);
+</script></body></html>

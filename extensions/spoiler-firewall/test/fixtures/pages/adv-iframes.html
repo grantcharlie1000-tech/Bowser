@@ -1,0 +1,5 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><link rel="stylesheet" href="/pages/common.css"><title>iframes</title></head><body><p class="item" data-expect="clear">Parent page clean text.</p>
+<iframe id="same" src="/pages/frame-inner.html" width="500" height="120"></iframe>
+<iframe id="srcdoc" width="500" height="120" srcdoc="<body><p style='color:#ff00ff;font:700 22px Arial' class='sentinel' data-expect='shield'>GTA 6 ending spoiler in srcdoc: the hero dies</p></body>"></iframe>
+<iframe id="cross" src="{{ORIGIN_B}}/pages/frame-inner.html" width="500" height="120"></iframe>
+</body></html>

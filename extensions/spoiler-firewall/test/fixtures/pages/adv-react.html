@@ -1,0 +1,5 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><link rel="stylesheet" href="/pages/common.css"><title>reconciler</title></head><body><div id="root"></div><script>
+var root=document.getElementById('root');var items=[];
+for(var i=0;i<4;i++){var d=document.createElement('div');d.className='item';var sp=i%2===0;d.setAttribute('data-expect',sp?'shield':'clear');d.setAttribute('data-vdom','1');d.innerHTML='<span data-vdom="1" '+(sp?'class="sentinel"':'')+'>'+(sp?'GTA 6 spoiler '+i+': the hero dies at the ending':'clean '+i)+'</span>';root.appendChild(d);items.push(d);}
+var renders=0;setInterval(function(){renders++;window.__renders=renders;items.forEach(function(d){Array.prototype.slice.call(d.childNodes).forEach(function(c){if(!(c.getAttribute&&c.getAttribute('data-vdom')))d.removeChild(c);});});},80);
+</script></body></html>

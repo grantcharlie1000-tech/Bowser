@@ -1,0 +1,18 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Home / X</title><link rel="stylesheet" href="/pages/common.css">
+<style>article{display:block;width:420px}.photo{width:320px;height:200px}.photo img{display:block;width:320px;height:200px}.gap{height:520px}</style></head>
+<body><div data-testid="primaryColumn"><div aria-label="Timeline: Your Home Timeline" id="tl"></div></div>
+<script>
+// cards are added by the test through addCard({id, text, src, extra}); `gap` pushes a card further down the page
+window.addCard = function (o) {
+  var c = document.createElement('div');
+  c.setAttribute('data-testid', 'cellInnerDiv');
+  var h = '<article data-testid="tweet" class="item" id="' + o.id + '"><div data-testid="tweetText"><span>' + (o.text || 'A photo.') + '</span></div>';
+  var img = '<img src="' + (o.src || '') + '" alt=""' + (o.attrs ? ' ' + o.attrs : '') + '>';
+  if (o.narrow) img = '<picture><source media="(max-width: 500px)" srcset="' + o.narrow + '">' + img + '</picture>'; // o.narrow: another file for narrow viewports
+  if (o.src) h += '<div data-testid="tweetPhoto" class="photo">' + img + '</div>';
+  c.innerHTML = h + '</article>';
+  if (o.gap) { var g = document.createElement('div'); g.className = 'gap'; document.getElementById('tl').appendChild(g); }
+  document.getElementById('tl').appendChild(c);
+  return c;
+};
+</script></body></html>

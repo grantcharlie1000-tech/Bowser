@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Spoiler Firewall for GTA VI: Settings</title>
+  <link rel="stylesheet" href="ui.css">
+</head>
+<body class="options">
+  <main class="page">
+    <header>
+      <h1>Spoiler Firewall for GTA VI</h1>
+      <p class="lead">Unofficial fan-made tool. It hides GTA VI spoilers on the pages you visit, using only your own browser.</p>
+    </header>
+
+    <section class="card welcome" id="welcome" aria-labelledby="welcome-title" hidden>
+      <h2 id="welcome-title">Reload your open tabs</h2>
+      <p>Protection starts on pages you open or reload from now on. Tabs that were already open before you installed this extension are not protected until you reload them.</p>
+      <p>Optional: the switch "Scan images for text" below also reads text inside pictures. It stays off until you allow it, runs only on your device, and uploads nothing.</p>
+    </section>
+
+    <div id="controls" class="wrap flush"></div>
+
+    <section class="card" aria-labelledby="protected-title">
+      <h2 id="protected-title">What is protected</h2>
+      <ul>
+        <li>Text on web pages, including posts, comments, search results, captions and image descriptions, is checked on your device. Matching items are covered with a click-to-reveal cover.</li>
+        <li>Pages that load more content as you scroll, and content inside embedded frames, are checked as they appear.</li>
+        <li>Revealing one item never reveals its neighbours, and reveals are forgotten when you leave the page.</li>
+        <li>If something goes wrong inside the extension, it covers the page instead of showing it.</li>
+      </ul>
+    </section>
+
+    <section class="card" aria-labelledby="limits-title">
+      <h2 id="limits-title">Limitations (please read)</h2>
+      <ul>
+        <li>Text inside images is only read when you switch on "Scan images for text". Without it, a screenshot or meme is covered only when the page text around it gives it away. With it, images are checked before they show on busy sites; pictures with no readable text, or with text in other languages than English, Spanish, French, German, Portuguese, Italian or Russian, cannot be judged.</li>
+        <li>Video and audio content is not listened to. Titles, descriptions and captions around a video are checked.</li>
+        <li>The browser's address bar, tab titles, history and notifications are outside what an extension can change.</li>
+        <li>Tabs open before installation are unprotected until reloaded. Browser pages and the Chrome Web Store cannot be protected.</li>
+        <li>In Incognito windows the extension runs only if you allow it on the extensions page.</li>
+        <li>No filter is perfect. It can miss unusual wording and can cover harmless content. Lockdown reduces misses at the cost of more covering.</li>
+      </ul>
+    </section>
+
+    <section class="card" aria-labelledby="privacy-title">
+      <h2 id="privacy-title">Privacy</h2>
+      <p>Everything runs locally and nothing is collected or uploaded. The extension stores only the settings above, the last downloaded spoiler term update, and a temporary per-tab counter that is cleared when the browser closes. About every 12 hours it downloads that update, a small word list signed by the maintainer; the request carries no cookies and no information about you or your browsing, and a list that fails its signature check is ignored. You can turn this off with "Download spoiler term updates". If you switch on image scanning, the extension itself downloads the pictures on the pages you visit, without cookies, to read them on your device; the text it finds is never stored or sent anywhere.</p>
+    </section>
+
+    <footer class="links">
+      <p class="disclaimer">Unofficial fan tool. Not affiliated with, endorsed by or sponsored by Rockstar Games or Take-Two Interactive. "GTA VI" is used only to describe what the extension filters.</p>
+    </footer>
+  </main>
+  <script src="feed-config.js"></script>
+  <script src="feed.js"></script>
+  <script src="common.js"></script>
+  <script src="options.js"></script>
+</body>
+</html>

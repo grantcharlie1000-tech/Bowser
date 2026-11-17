@@ -80,6 +80,13 @@ test('the Rust snapshots pass the strict snapshot contract and anything else is 
     { ...d, showZoomIndicator: 'yes' },
     { ...d, ctrlSVerticalTabs: 1 },
     { ...d, defaultBrowser: 'maybe' },
+    { ...d, spoilerProtection: 'on' },
+    { ...d, spoilerMode: 'off' },
+    { ...d, spoilerReducedEffects: 0 },
+    { ...d, spoilerOcr: 'on' },
+    { ...d, spoilerFeed: 'on' },
+    { ...d, spoilerFeedStatus: 5 },
+    { ...d, spoilerFeedStatus: 'x'.repeat(301) },
   ];
   for (const value of bad) assert.equal(logic.parseSettingsSnapshot(value), null, JSON.stringify(value).slice(0, 120));
   for (const key of Object.keys(d)) {
@@ -105,7 +112,7 @@ test('browser-customizability fields: parse, draftOf and save', () => {
     'theme', 'themeAccent', 'toolbarButtons', 'centredAddressBar', 'minimalUrl', 'showLoadProgress', 'frameless', 'autoHideBars', 'autoHideFullscreen',
     'roundedContentFrame', 'showHomeButton', 'bookmarksBar', 'bookmarksBarTabGroups', 'sidePanelPosition', 'tabPreviewImages', 'tabPreviewMemory', 'fontSize', 'uiFont',
     'defaultZoom', 'showZoomIndicator', 'newTabBesideActive', 'ctrlTabMru', 'shiftRightClickContext', 'ctrlShiftCCopyLink', 'ctrlSVerticalTabs',
-    'pinNewTabGroups', 'splitEdgeDrop', 'blockYoutubeVideoAds',
+    'pinNewTabGroups', 'splitEdgeDrop', 'blockYoutubeVideoAds', 'spoilerProtection', 'spoilerMode', 'spoilerReducedEffects', 'spoilerOcr', 'spoilerFeed',
   ]) {
     assert.deepEqual(draft[key], s[key], key);
   }
@@ -118,6 +125,7 @@ test('browser-customizability fields: parse, draftOf and save', () => {
     'bookmarks_bar_tab_groups=false', 'side_panel_position=left', 'tab_preview_images=true', 'tab_preview_memory=true', 'font_size=medium',
     'ui_font=', 'default_zoom=100', 'show_zoom_indicator=true', 'new_tab_beside_active=true', 'ctrl_tab_mru=true', 'shift_right_click_context=false',
     'ctrl_shift_c_copy_link=true', 'ctrl_s_vertical_tabs=false', 'pin_new_tab_groups=false', 'split_edge_drop=true', 'block_youtube_video_ads=true',
+    'spoiler_protection=true', 'spoiler_mode=strict', 'spoiler_reduced_effects=false', 'spoiler_ocr=true', 'spoiler_feed=true',
   ]) {
     const matches = text.split('\n').filter((l) => l === line);
     assert.equal(matches.length, 1, `${line} appears exactly once`);
@@ -136,6 +144,8 @@ test('browser-customizability fields: parse, draftOf and save', () => {
     { uiFont: 'x'.repeat(65) },
     { defaultZoom: 24 },
     { defaultZoom: 501 },
+    { spoilerMode: 'off' },
+    { spoilerMode: 'Strict' },
   ]) {
     assert.equal(logic.saveText({ ...draft, ...broken }), null, JSON.stringify(broken));
   }
@@ -228,7 +238,7 @@ test('sections match the Rust routes, in page order, and every row belongs to on
 test('save sends every profile setting exactly once in the order Rust expects', () => {
   const s = logic.parseSettingsSnapshot(fixture.snap.d);
   const draft = logic.draftOf(s);
-  assert.equal(logic.saveText(draft), 'tab_layout=horizontal\nsidebar_width=260\nsidebar_collapsed=false\nsleep_enabled=true\nsleep_after_secs=300\nblocker_enabled=true\nblocker_allow=example.com,news.example\nautomatic_tab_grouping=true\nefficiency_mode=auto\ntracking_prevention=balanced\nsearch_engine=optimised\ntheme=helium\ntheme_accent=\ntoolbar_buttons=back,forward,reload,site-info,split,reader,extensions,downloads\ncentred_address_bar=true\nminimal_url=true\nshow_load_progress=true\nframeless=false\nauto_hide_bars=tabs,address,bookmarks\nauto_hide_fullscreen=true\nrounded_content_frame=true\nshow_home_button=true\nbookmarks_bar=never\nbookmarks_bar_tab_groups=false\nside_panel_position=left\ntab_preview_images=true\ntab_preview_memory=true\nfont_size=medium\nui_font=\ndefault_zoom=100\nshow_zoom_indicator=true\nnew_tab_beside_active=true\nctrl_tab_mru=true\nshift_right_click_context=false\nctrl_shift_c_copy_link=true\nctrl_s_vertical_tabs=false\npin_new_tab_groups=false\nsplit_edge_drop=true\nblock_youtube_video_ads=true\nstart_group_reopen=last\nstart_titles=always\nstart_add_button=true\nstart_columns=6\nstart_thumb_size=3\nstart_drag_reorder=true\nhomepage=\nstartup=start_page\nstartup_pages=\nstart_widgets=false\nstart_widget_columns=2\nstart_widget_height=regular\nstart_widget_bg=translucent\nstart_widget_color=#1f2933\nstart_widget_drag=true\ntab_bar_visible=true\naddress_bar_position=top\naddress_bar_visible=true\nshow_title_bar=false\nstatus_bar=overlay\nui_density=regular\ncompact_menus=false\nui_zoom=100\nlayout_saved=\nanimations=true\nrange_buttons=false\nfade_background=false\nsimple_scrollbars=false\nmono_icons=false\npanel_close_button=true\npanel_folder_counts=true\npanel_auto_close=true');
+  assert.equal(logic.saveText(draft), 'tab_layout=horizontal\nsidebar_width=260\nsidebar_collapsed=false\nsleep_enabled=true\nsleep_after_secs=300\nblocker_enabled=true\nblocker_allow=example.com,news.example\nautomatic_tab_grouping=true\nefficiency_mode=auto\ntracking_prevention=balanced\nsearch_engine=optimised\ntheme=helium\ntheme_accent=\ntoolbar_buttons=back,forward,reload,site-info,split,reader,extensions,downloads\ncentred_address_bar=true\nminimal_url=true\nshow_load_progress=true\nframeless=false\nauto_hide_bars=tabs,address,bookmarks\nauto_hide_fullscreen=true\nrounded_content_frame=true\nshow_home_button=true\nbookmarks_bar=never\nbookmarks_bar_tab_groups=false\nside_panel_position=left\ntab_preview_images=true\ntab_preview_memory=true\nfont_size=medium\nui_font=\ndefault_zoom=100\nshow_zoom_indicator=true\nnew_tab_beside_active=true\nctrl_tab_mru=true\nshift_right_click_context=false\nctrl_shift_c_copy_link=true\nctrl_s_vertical_tabs=false\npin_new_tab_groups=false\nsplit_edge_drop=true\nblock_youtube_video_ads=true\nspoiler_protection=true\nspoiler_mode=strict\nspoiler_reduced_effects=false\nspoiler_ocr=true\nspoiler_feed=true\nstart_group_reopen=last\nstart_titles=always\nstart_add_button=true\nstart_columns=6\nstart_thumb_size=3\nstart_drag_reorder=true\nhomepage=\nstartup=start_page\nstartup_pages=\nstart_widgets=false\nstart_widget_columns=2\nstart_widget_height=regular\nstart_widget_bg=translucent\nstart_widget_color=#1f2933\nstart_widget_drag=true\ntab_bar_visible=true\naddress_bar_position=top\naddress_bar_visible=true\nshow_title_bar=false\nstatus_bar=overlay\nui_density=regular\ncompact_menus=false\nui_zoom=100\nlayout_saved=\nanimations=true\nrange_buttons=false\nfade_background=false\nsimple_scrollbars=false\nmono_icons=false\npanel_close_button=true\npanel_folder_counts=true\npanel_auto_close=true');
   const none = logic.saveText({ ...draft, searchEngine: null });
   assert.doesNotMatch(none, /search_engine/);
   assert.doesNotMatch(logic.saveText(draft), /auto_update|history|efficiencyActive/);
@@ -250,6 +260,8 @@ test('search matches every word across label, description, keywords and section;
   assert.ok(logic.matchRows('privacy cookies').has('dashboard'), 'section title plus keyword');
   assert.ok(logic.matchRows('netflix').has('media'));
   assert.ok(logic.matchRows('youtube').has('blockYoutubeVideoAds'));
+  assert.ok(logic.matchRows('gta').has('spoilerProtection'));
+  assert.ok(logic.matchRows('spoiler lockdown').has('spoilerMode'));
   assert.ok(logic.matchRows('frameless').has('frameless'));
   assert.ok(logic.matchRows('accent colour').has('themeAccent'));
   assert.ok(logic.matchRows('default browser').has('defaultBrowser'));

@@ -380,3 +380,9 @@ probes demonstrated genuine extension popups/options and extension APIs, but als
 that native `chrome.tabs/windows` does not yet correctly model Bowser tabs. Catalogue entries carry exact-version **Partial** or **Untested** evidence, not a global "supported" claim. Production staged updates remain disabled until stable
 identity/storage, increased-permission consent, and rollback have evidence. See
 [Store catalogue and evidence](store-catalogue.md) for reproducible runs and the acceptance gap.
+
+## Built-in: Spoiler Firewall for GTA VI
+
+The Ctrl+Shift+E menu lists "Spoiler Firewall for GTA VI - built in" first, with its on/off state. It is
+not an unpacked extension (no record, never removable); choosing it opens Settings at Privacy and security.
+See `docs/spoiler-firewall.md`.

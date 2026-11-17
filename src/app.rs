@@ -5173,6 +5173,13 @@ impl App {
         crate::omnibox::set_autocomplete(settings.address.autocomplete);
         // --- tab stacks (T10) --- the split view's tile look, read by its geometry.
         crate::stacks::set_tile_look(settings.tabs.tile_titles, settings.tabs.tile_tight);
+        // Before any tab exists, so the first document is protected by the saved setting.
+        crate::spoiler::publish(settings.spoiler);
+        // Signed spoiler term updates: the stored feed is loaded now (the first document already carries it); the
+        // download worker never runs in benchmark launches.
+        if let Some(dir) = profile.settings_file().parent() {
+            crate::spoiler_feed::start(dir, settings.spoiler.feed, options.benchmark_log.is_none());
+        }
         let provider =
             SearchProvider::from_config(settings.search_engine, &profile.search_provider_file());
         let user_data_dir = options
@@ -7889,6 +7896,7 @@ impl App {
         // The blocker, retention and website-look settings take effect without a restart.
         Self::apply_privacy_settings(app, settings);
         Self::apply_page_tools_settings(app, settings); // --- page tools (T7) ---
+        Self::apply_spoiler_settings(app, settings.spoiler);
         let (hwnd, edit) = {
             let mut state = app.borrow_mut();
             // --- wave-1 fixes --- the Downloads and Translation options the page saves through the app
@@ -8006,6 +8014,29 @@ impl App {
         Self::post_tab_changed(hwnd, active);
         win32::start_ui::settings_changed(hwnd); // --- start page --- a shown start page redraws with the new settings
         win32::panel_settings_changed(hwnd); // --- look state (fix group B) --- an open flyout follows too
+    }
+
+    /// Applies the Spoiler Firewall setting to documents loaded from now on: every live tab's
+    /// script registration is replaced. Pages already showing keep what they loaded with.
+    pub fn apply_spoiler_settings(app: &AppRef, settings: crate::spoiler::SpoilerSettings) {
+        crate::spoiler_feed::set_enabled(settings.feed);
+        if crate::spoiler::publish(settings) {
+            // The HTML chrome masks its own lists (suggestions, history) from this setting.
+            crate::chrome_host::host::broadcast_spoiler_config();
+            Self::with_engine(app, |engine| {
+                engine.refresh_spoiler_scripts();
+                Ok(())
+            });
+        }
+    }
+
+    /// A newly verified term update is in force: documents loaded from now on carry it, so every live
+    /// tab's script registration is replaced (pages already showing keep what they loaded with).
+    pub fn apply_spoiler_feed(app: &AppRef) {
+        Self::with_engine(app, |engine| {
+            engine.refresh_spoiler_scripts();
+            Ok(())
+        });
     }
 
     /// Applies a changed `efficiency_mode` setting without a restart.

@@ -1,0 +1,13 @@
+import { chromium } from "playwright";
+import { CHROMIUM, BASE_ARGS } from "./env.mjs";
+import { startServer } from "../fixtures/server.mjs";
+import { testBundle } from "./bundle.mjs";
+const srv = await startServer();
+import { FIXTURES, fixtureUrl } from "../fixtures/manifest.mjs";
+const browser = await chromium.launch({ headless: true, executablePath: CHROMIUM, args: BASE_ARGS });
+const ctx = await browser.newContext(); await ctx.addInitScript({ content: testBundle({}, process.argv[2]||"stub") });
+const page = await ctx.newPage();
+await page.goto(`http://${process.argv[5]||"forum.example.test"}:${srv.portA}${process.argv[3]||"/pages/forum.html"}`);
+await page.waitForTimeout(800);
+console.log(JSON.stringify(await page.evaluate(process.argv[4]||"(()=>{const a=[...document.querySelectorAll('article')];return a.map(x=>({e:x.dataset.expect,sh:x.getAttribute('data-sfw'),ex:window.__sfw.ctl.explain(x)}))})()"),null,1));
+await browser.close(); await srv.close();

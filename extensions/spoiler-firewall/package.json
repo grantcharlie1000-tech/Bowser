@@ -1,0 +1,15 @@
+{
+  "name": "spoiler-firewall",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Spoiler Firewall for GTA VI (unofficial): one detection engine shared by a Chrome MV3 extension and Bowser's built-in protection.",
+  "type": "module",
+  "scripts": {
+    "build": "node build/build.mjs",
+    "check": "node build/build.mjs --check",
+    "test": "node build/build.mjs && node --test \"test/unit/*.test.mjs\"",
+    "corpus": "node build/build.mjs && node test/corpus/run-corpus.mjs",
+    "e2e": "node build/build.mjs && node test/e2e/run-e2e.mjs",
+    "package": "node build/build.mjs && node build/validate.mjs && node build/package.mjs"
+  }
+}

@@ -1,0 +1,5 @@
+# Spoiler Firewall term-update feed: PRODUCTION public keys (Ed25519, raw 32 bytes, base64), one per line.
+# Both the Chrome extension (hosts/chrome/feed-config.js) and Bowser (src/spoiler_feed.rs) embed these;
+# a test asserts they match. A feed is accepted if ANY listed key verifies it, which is how a key is rotated:
+# ship a release trusting old+new, sign with new, later ship a release dropping old. See README.md.
+bbeYDKCBPf+bkGjnhDnJPXCkBh8oB7k4ejct5oonwNI=

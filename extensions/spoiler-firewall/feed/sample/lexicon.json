@@ -1,0 +1,10 @@
+{
+  "add": {
+    "entityStrong": ["sfw sample entity"],
+    "cueStrong": ["sfw sample cue"],
+    "entityWeak": ["sfw sample name"]
+  },
+  "raise": {
+    "sfw sample raised": "cueStrong"
+  }
+}

@@ -148,6 +148,12 @@
   outline-offset: -2px;
 }
 
+/* A history or bookmark row hidden by Spoiler Firewall: a quieter label (its Show button is in the row's actions). */
+.pn-row[data-spoiler="hidden"] .pn-row-title {
+  color: var(--bw-text-2);
+  font-style: italic;
+}
+
 .pn-row-title {
   flex: 1;
   min-width: 0;

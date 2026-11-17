@@ -8,6 +8,7 @@ import { dropCard, filterPick, moveSelection, pickHeading } from './split-logic'
 import { applyTheme } from './view';
 import { el, icon } from './dom';
 import { installTooltips } from './tooltip';
+import { guardTitle } from './spoiler-guard'; // --- spoiler guard ---
 import { buildPrivatePage } from './private-page';
 // --- start page ---
 // The start page is its own bundle (dist/start-page.js), fetched the first time a blank tab shows it, so
@@ -115,11 +116,11 @@ function buildPicker(root: HTMLElement): { show(msg: SplitPickMsg, first: boolea
     const meta = el('span', 'bw-row-meta');
     meta.dir = 'auto';
     if (row.kind === 'tab') {
-      name.textContent = row.tab.title;
+      name.textContent = guardTitle(row.tab.title);
       meta.textContent = row.tab.private ? `${row.tab.host} · Private` : row.tab.host;
       node.append(face(row.tab.fav, row.tab.private), text);
     } else {
-      name.textContent = row.page.title;
+      name.textContent = guardTitle(row.page.title);
       meta.textContent = row.page.host;
       const clock = el('span', 'sv-face');
       clock.setAttribute('aria-hidden', 'true');
@@ -224,11 +225,11 @@ function buildDrop(msg: SplitDropMsg): HTMLElement {
   label.textContent = words.label;
   const name = el('span', 'sv-drop-title');
   name.dir = 'auto';
-  name.textContent = msg.title;
+  name.textContent = guardTitle(msg.title);
   card.append(badge, label, name);
   zone.append(card);
   zone.setAttribute('role', 'status');
-  zone.setAttribute('aria-label', `${label.textContent}: ${msg.title}`);
+  zone.setAttribute('aria-label', `${label.textContent}: ${guardTitle(msg.title)}`);
   return zone;
 }
 

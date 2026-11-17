@@ -13,6 +13,7 @@ import { beforeId, dragScrollDelta, focusHeir, privateTabName, revealKey } from 
 // --- tab options ---
 import { clickSelection, loadMark, markedName, notifyLabel, pruneSelection, type LoadIndicatorChoice } from './tab-marks-logic';
 // --- end tab options ---
+import { guardTitle } from './spoiler-guard'; // --- spoiler guard ---
 import {
   buildSidebarEntries, dropIndexVertical, keyboardMoveBefore, keyboardMoveDir, nearestTile, pinnedBeforeId, railHoverAdvance, rovingTarget, scrollIntoViewDelta, tileShift,
   verticalSlotShift, workspaceIconName, type TilePoint,
@@ -128,7 +129,7 @@ function sideMark(node: SidebarTabNode, key: 'dot' | 'badge', on: boolean): HTML
 
 export function syncTab(node: SidebarTabNode, item: TabItem, active: boolean, favs: ReadonlyMap<number, string>, picked = false, indicator: LoadIndicatorChoice = 'spinner'): void {
   node.item = item;
-  const label = item.title || 'New tab';
+  const label = guardTitle(item.title) || 'New tab'; // --- spoiler guard ---
   node.title.textContent = label;
   // --- tab options ---
   sideMark(node, 'dot', item.unread === true);
@@ -157,7 +158,7 @@ export function syncTab(node: SidebarTabNode, item: TabItem, active: boolean, fa
   node.root.classList.toggle('muted', item.muted);
   node.root.classList.toggle('in-group', item.g > 0 && !item.pinned);
   node.mute.classList.toggle('on', item.muted);
-  const closeLabel = `Close ${item.title || 'tab'}`;
+  const closeLabel = `Close ${guardTitle(item.title) || 'tab'}`;
   setTip(node.close, closeLabel);
   node.close.setAttribute('aria-label', closeLabel);
   setFace(node, item.fav ? favs.get(item.id) : undefined, indicator);

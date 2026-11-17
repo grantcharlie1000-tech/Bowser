@@ -1,0 +1,3 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><link rel="stylesheet" href="/pages/common.css"><title>sandboxed srcdoc frame</title></head><body><p class="item" data-expect="clear">Parent page clean text.</p>
+<div class="item" id="wrap" data-expect="shield"><iframe id="f" sandbox srcdoc="&lt;style&gt;body{margin:0}.sentinel{color:#ff00ff;font:700 26px Arial}&lt;/style&gt;&lt;p class='sentinel'&gt;GTA 6 ending spoiler: the hero dies in the final mission&lt;/p&gt;" width="500" height="100"></iframe></div>
+<p class="item" data-expect="clear">More clean text after the frame.</p></body></html>

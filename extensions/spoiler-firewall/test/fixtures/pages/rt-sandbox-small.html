@@ -1,0 +1,3 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><link rel="stylesheet" href="/pages/common.css"><title>sandboxed src frame (small, cold page)</title></head><body><p class="item" data-expect="clear">Parent page clean text.</p>
+<div class="item" id="wrap" data-expect="clear"><iframe id="f" sandbox src="{{ORIGIN_B}}/pages/rt-frame-clean.html" width="150" height="60"></iframe></div>
+<p class="item" data-expect="clear">More clean text after the frame.</p></body></html>

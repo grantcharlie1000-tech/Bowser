@@ -7,6 +7,7 @@ import { onInbound, rectWire, send, sendAddr, type Inbound } from './protocol';
 import { applyTheme } from './view';
 import { el, icon } from './dom';
 import { faviconTile } from './panels/kit';
+import { guardRow, MASK_LABEL } from './spoiler-guard'; // --- spoiler guard ---
 import {
   contextFields, faceOf, fitCount, folderFields, groupContextFields, groupFields, openFields, overflowFields, parseBarSnapshot,
   type BarGroup, type BarItem, type BarSnapshot,
@@ -39,18 +40,21 @@ export function startBookmarkBar(root: HTMLElement): void {
     const button = el('button', `bm-item${item.kind === 'folder' ? ' is-folder' : ''}`);
     button.type = 'button';
     button.dataset.id = String(item.id);
-    button.setAttribute('aria-label', item.title !== '' ? item.title : item.url);
+    // A bookmark whose title or address reads as a spoiler shows the mask (src/spoiler-guard.ts); a click still opens it.
+    const hidden = item.kind !== 'folder' && guardRow({ title: item.title, url: item.url }, false).masked;
+    const name = hidden ? MASK_LABEL : item.title !== '' ? item.title : item.url;
+    button.setAttribute('aria-label', name);
     if (item.kind === 'folder') button.setAttribute('aria-haspopup', 'menu');
     if (face.icon === 'folder') button.append(icon('folder', { size: 14, fine: true, className: 'bm-glyph' }));
     else if (face.icon === 'bookmark') button.append(icon('bookmark', { size: 14, fine: true, className: 'bm-glyph' }));
     else if (face.icon === 'site') {
-      const tile = faviconTile(item.title !== '' ? item.title : item.url, item.fav !== '' ? item.fav : undefined);
+      const tile = faviconTile(name, item.fav !== '' ? item.fav : undefined);
       tile.classList.add('bm-fav');
       button.append(tile);
     }
     if (face.text) {
       const label = el('span', 'bm-label');
-      label.textContent = item.title !== '' ? item.title : item.url;
+      label.textContent = name;
       label.dir = 'auto';
       button.append(label);
     }

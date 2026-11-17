@@ -605,6 +605,14 @@ impl ChromeHost {
             let (id, parts) = s.document.as_mut().and_then(Session::finish).ok_or_else(|| fail("Incomplete chrome state"))?;
             (id, parts, s.webview.clone())
         };
+        // Persistent chrome (tabs, toolbar, rail) never says `ready`: the spoiler setting goes out ahead of
+        // its first state, so the tab strip and the address bar never render a title unmasked. The page
+        // ignores it outside its own listener (`ui/src/spoiler-config.ts`); the state handshake never sees it.
+        // Posted straight to the page, not through `post_json`: the state session would take it for state.
+        {
+            let message = wide(&spoiler_config_json(crate::spoiler::current()));
+            let _ = unsafe { webview.PostWebMessageAsJson(PCWSTR(message.as_ptr())) };
+        }
         for frame in id.frames(parts) {
             if !self.document_current(&id.document) { return Err(fail("Chrome document changed")); }
             let message = wide(&frame);
@@ -775,6 +783,19 @@ impl ChromeHost {
     // --- end auto-hide ---
 
     /// Sends one JSON message to the page and reports failure to the caller.
+    /// Posts a spoiler setting message straight to the page. Not through `post_json`: persistent chrome's
+    /// state session would take it for state (a part of the initial bundle, or a reason to refresh).
+    /// A page that has not loaded yet drops it and gets the setting at `ready` or with its initial state.
+    fn post_spoiler_config(&self, json: &str) {
+        let webview = {
+            let Ok(state) = self.state.try_borrow() else { return; };
+            if state.closed || !(state.is_current)() { return; }
+            state.webview.clone()
+        };
+        let message = wide(json);
+        let _ = unsafe { webview.PostWebMessageAsJson(PCWSTR(message.as_ptr())) };
+    }
+
     pub fn post_json(&self, json: &str) -> Result<()> {
         let webview = {
             let mut state = self.state.try_borrow_mut().map_err(|_| fail("Chrome host is busy"))?;
@@ -1057,7 +1078,32 @@ fn configure(
     setup.env.detail("chrome_configure_started", setup.view, host.state.borrow().diagnostic_id);
     prepare(&host, environment, setup, background_at_creation)?;
     setup.env.detail("chrome_configure_finished", setup.view, host.state.borrow().diagnostic_id);
+    LIVE_HOSTS.with(|hosts| {
+        let mut hosts = hosts.borrow_mut();
+        hosts.retain(|weak| weak.strong_count() > 0);
+        hosts.push(Rc::downgrade(&host.state));
+    });
     Ok(host)
+}
+
+thread_local! {
+    /// Every chrome host created on this (UI) thread, so a spoiler setting change can reach them all.
+    static LIVE_HOSTS: RefCell<Vec<Weak<RefCell<State>>>> = const { RefCell::new(Vec::new()) };
+}
+
+/// The message that tells a chrome view whether Spoiler Firewall masks its lists and in which mode
+/// (`ui/src/spoiler-config.ts`). Sent when a view says `ready` and whenever the setting changes.
+pub fn spoiler_config_json(settings: crate::spoiler::SpoilerSettings) -> String {
+    format!(r#"{{"v":1,"t":"spoiler","on":{},"mode":"{}"}}"#, settings.enabled, settings.mode.key())
+}
+
+/// Posts the live spoiler setting to every chrome view.
+pub fn broadcast_spoiler_config() {
+    let json = spoiler_config_json(crate::spoiler::current());
+    let targets: Vec<Rc<RefCell<State>>> = LIVE_HOSTS.with(|hosts| hosts.borrow().iter().filter_map(Weak::upgrade).collect());
+    for shared in targets {
+        ChromeHost { state: shared, focus_trace: None }.post_spoiler_config(&json);
+    }
 }
 
 /// Geometry, settings, handlers, then the first navigation. Handlers exist before navigation.
@@ -1473,6 +1519,10 @@ fn install_handlers(
                     }
                 }
                 if matches!(command, Command::Ready) {
+                    // The setting goes out before the first content, so a list never renders unmasked.
+                    if let Some(shared) = weak_bridge.upgrade() {
+                        ChromeHost { state: shared, focus_trace: None }.post_spoiler_config(&spoiler_config_json(crate::spoiler::current()));
+                    }
                     reveal(&weak_bridge);
                     if interaction.is_some() && view==View::Toolbar && !diagnostic_enabled.replace(true)
                         && let Some(state)=weak_bridge.upgrade()
@@ -1810,6 +1860,15 @@ mod tests {
     impl ChromeHost {
         /// Rust-only ignored diagnostics. Never a host object, message command or production API.
         pub(crate) fn probe_native_webview(&self) -> ICoreWebView2 { self.state.borrow().webview.clone() }
+    }
+
+    #[test]
+    fn spoiler_config_message_is_exact() {
+        use crate::spoiler::{Mode, SpoilerSettings};
+        let on = SpoilerSettings { enabled: true, mode: Mode::Balanced, ..SpoilerSettings::default() };
+        assert_eq!(spoiler_config_json(on), r#"{"v":1,"t":"spoiler","on":true,"mode":"balanced"}"#);
+        let off = SpoilerSettings { enabled: false, mode: Mode::Strict, ..SpoilerSettings::default() };
+        assert_eq!(spoiler_config_json(off), r#"{"v":1,"t":"spoiler","on":false,"mode":"strict"}"#);
     }
 
     #[test]
@@ -2343,7 +2402,8 @@ mod tests {
         }
         for view in [View::Panel, View::Popup, View::Dialog, View::DialogNotes] {
             assert!(!view_accepts_command(view, &act), "{view:?}");
-            assert!(!view_accepts_command(view, &tip), "{view:?}");
+            // Dialogs and panels show data-tip tooltips since eecc0443f, so they accept the request; the menu popup does not.
+            assert_eq!(view_accepts_command(view, &tip), view.shows_tooltips(), "{view:?}");
         }
         assert!(is_trusted_message(View::Hover, HOVER_START_URL, HOVER_START_URL));
         assert!(!is_trusted_message(View::Hover, POPUP_START_URL, HOVER_START_URL));

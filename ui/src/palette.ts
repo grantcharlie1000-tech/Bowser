@@ -17,6 +17,7 @@
 // Page text reaches the DOM through textContent only.
 import { icon, type IconName } from './icons';
 import { sendPopupDismiss, sendPopupPick, sendPopupSize } from './protocol';
+import { guardRow, RevealedRows, rowKey, SHOW_LABEL } from './spoiler-guard'; // --- spoiler guard ---
 import {
   CALC_ID, commandGlyph, completion, filterPalette, filterShortcuts, flatten, moveSelection, MAX_QUERY, nicknameMatch, rowLabel, validPalettePayload,
   type FilterOptions, type PaletteGroup, type PaletteItem, type PaletteMessage, type ResultType,
@@ -96,6 +97,7 @@ export function createPaletteView(root: HTMLElement): PageView {
   let lastSize = '';
   let ghost: string | null = null;
   let shiftTap = false;
+  const revealed = new RevealedRows(); // --- spoiler guard --- (session only, this palette view)
 
   const page = el('div', 'popup-page bw-palette');
   const search = el('div', 'bw-palette-search');
@@ -190,6 +192,61 @@ export function createPaletteView(root: HTMLElement): PageView {
     sendPopupPick(message.tok, item.id);
   };
 
+  /** One result row. Tab, bookmark and history rows that read as a spoiler (src/spoiler-guard.ts) show the mask and the host, with a Show button for this row. */
+  const buildRow = (item: PaletteItem, at: number): HTMLElement => {
+    const row = el('div', 'bw-palette-row');
+    row.id = `bw-palette-row-${at}`;
+    row.dataset.index = String(at);
+    row.dataset.id = String(item.id);
+    row.setAttribute('role', 'option');
+    const key = rowKey(item.s, item.id, item.label, item.detail);
+    const guarded = item.s === 'command'
+      ? null
+      : guardRow({ title: item.label, url: item.detail }, revealed.has(key));
+    const masked = guarded !== null && guarded.masked;
+    if (masked) row.dataset.spoiler = 'hidden';
+    const text = el('span', 'bw-palette-text');
+    const label = el('span', 'bw-palette-label');
+    label.textContent = masked ? guarded.title : rowLabel(item);
+    label.dir = 'auto';
+    text.append(label);
+    const detailText = masked ? guarded.url : item.detail;
+    if (detailText) {
+      const detail = el('span', 'bw-palette-detail');
+      detail.textContent = detailText;
+      detail.dir = 'auto';
+      text.append(detail);
+    }
+    row.append(leading(item), text);
+    if (masked) {
+      const show = el('button', 'bw-palette-show');
+      show.type = 'button';
+      show.tabIndex = -1;
+      show.textContent = SHOW_LABEL;
+      show.setAttribute('aria-label', 'Show this hidden result');
+      show.addEventListener('click', (event) => {
+        event.stopPropagation();
+        revealed.add(key);
+        row.replaceWith(buildRow(item, at));
+        markSelected();
+      });
+      row.append(show);
+    }
+    if (item.acc) {
+      const accel = el('span', 'bw-palette-accel');
+      accel.textContent = item.acc;
+      row.setAttribute('aria-keyshortcuts', item.acc);
+      row.append(accel);
+    }
+    row.addEventListener('mousemove', () => {
+      if (selected === at) return;
+      selected = at;
+      markSelected();
+    });
+    row.addEventListener('click', () => pick(at));
+    return row;
+  };
+
   function render(): void {
     if (!message) return;
     const groups: PaletteGroup[] = message.mode === 'shortcuts'
@@ -205,36 +262,7 @@ export function createPaletteView(root: HTMLElement): PageView {
       heading.textContent = group.label;
       nodes.push(heading);
       for (const item of group.items) {
-        const row = el('div', 'bw-palette-row');
-        const at = index;
-        row.id = `bw-palette-row-${at}`;
-        row.dataset.index = String(at);
-        row.dataset.id = String(item.id);
-        row.setAttribute('role', 'option');
-        const text = el('span', 'bw-palette-text');
-        const label = el('span', 'bw-palette-label');
-        label.textContent = rowLabel(item);
-        label.dir = 'auto';
-        text.append(label);
-        if (item.detail) {
-          const detail = el('span', 'bw-palette-detail');
-          detail.textContent = item.detail;
-          detail.dir = 'auto';
-          text.append(detail);
-        }
-        row.append(leading(item), text);
-        if (item.acc) {
-          const accel = el('span', 'bw-palette-accel');
-          accel.textContent = item.acc;
-          row.setAttribute('aria-keyshortcuts', item.acc);
-          row.append(accel);
-        }
-        row.addEventListener('mousemove', () => {
-          if (selected === at) return;
-          selected = at;
-          markSelected();
-        });
-        row.addEventListener('click', () => pick(at));
+        const row = buildRow(item, index);
         nodes.push(row);
         index += 1;
       }

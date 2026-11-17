@@ -1,0 +1,30 @@
+{
+  "ocr-meme-spoiler.png": {
+    "spoiler": true,
+    "says": "GTA 6 ENDING: JASON TAKES THE FALL FOR LUCIA"
+  },
+  "ocr-meme-leet.png": {
+    "spoiler": true,
+    "says": "GT4 6 3ND1NG SP01L3R: LU(1A D13S 4T TH3 D0CKS (leetspeak)"
+  },
+  "ocr-meme-cooking.png": {
+    "spoiler": false,
+    "says": "ME WAITING FOR THE PASTA TO BOIL"
+  },
+  "ocr-meme-cooking2.png": {
+    "spoiler": false,
+    "says": "WHEN THE OVEN BEEPS AND THE BREAD IS PERFECT"
+  },
+  "ocr-tweet-spoiler.png": {
+    "spoiler": true,
+    "says": "GTA 6 ending leaked: the hero dies in the final mission ..."
+  },
+  "ocr-tweet-clean.png": {
+    "spoiler": false,
+    "says": "Tomatoes are finally ripe ..."
+  },
+  "ocr-textfree.png": {
+    "spoiler": false,
+    "says": "(no text)"
+  }
+}

@@ -87,6 +87,20 @@ export const FONT_SIZES = ['small', 'medium', 'large'] as const;
 export type FontSize = typeof FONT_SIZES[number];
 export const DEFAULT_BROWSER_STATES = ['yes', 'no', 'unknown'] as const;
 export type DefaultBrowserState = typeof DEFAULT_BROWSER_STATES[number];
+/** Spoiler Firewall for GTA VI modes (`spoiler_mode`), loosest last. Strict is the default. */
+export const SPOILER_MODES = ['lockdown', 'strict', 'balanced'] as const;
+export type SpoilerMode = typeof SPOILER_MODES[number];
+export const SPOILER_MODE_LABELS: Readonly<Record<SpoilerMode, string>> = { lockdown: 'Lockdown', strict: 'Strict', balanced: 'Balanced' };
+/** One honest line per mode (mirrors `Mode::summary` in src/spoiler.rs). */
+export const SPOILER_MODE_HINTS: Readonly<Record<SpoilerMode, string>> = {
+  lockdown: 'Hides anything that mentions GTA VI and keeps its images and video hidden until you reveal them. Hides the most, including some harmless posts.',
+  strict: 'Hides anything that reads like a GTA VI spoiler, and media on sites where spoilers are common. Recommended.',
+  balanced: 'Hides clear spoilers only. A plain mention of the game, or a spoiler written in code words, can get through.',
+};
+/** The honest limits of the protection, kept as the limits row's tooltip (at most MAX_TIP characters) and accessible text; rows are one line. */
+export const SPOILER_LIMITS_NOTE = 'Applies to pages you open or reload from now on. It reads text, so a screenshot with no readable text or a spoiler in code words can get through. Not notifications or other apps. Unofficial; not affiliated with Rockstar Games or Take-Two.';
+/** What turning protection off costs, said before it happens. */
+export const SPOILER_OFF_WARNING = 'GTA VI spoilers will no longer be hidden on any page, including private tabs and guest windows. Pages already open are not changed.';
 export const MIN_ZOOM = 25;
 export const MAX_ZOOM = 500;
 export const MAX_UI_FONT = 64;
@@ -171,6 +185,16 @@ export interface SettingsSnapshot {
   pinNewTabGroups: boolean;
   splitEdgeDrop: boolean;
   blockYoutubeVideoAds: boolean;
+  /** Spoiler Firewall for GTA VI (built in, on and Strict by default). */
+  spoilerProtection: boolean;
+  spoilerMode: SpoilerMode;
+  spoilerReducedEffects: boolean;
+  /** `spoiler_ocr`: on-device text scan of images on high-risk sites (src/spoiler_ocr.rs). */
+  spoilerOcr: boolean;
+  /** `spoiler_feed`: download signed spoiler term updates (src/spoiler_feed.rs). An update already held stays in force when off. */
+  spoilerFeed: boolean;
+  /** Read-only: "Term list: built-in 2026.11.17-1 + update #3 (2026-11-18). ..." (never sent back in `save`). */
+  spoilerFeedStatus: string;
   /** Read-only from here on: state the page shows but never sends back in `save`. */
   efficiencyActive: boolean;
   /** Install-wide and applied at once, so never part of `save`. */
@@ -301,7 +325,8 @@ const KEYS = ['tabLayout', 'sidebarWidth', 'sidebarPinned', 'sleepEnabled', 'sle
   'theme', 'themeAccent', 'toolbarButtons', 'centredAddressBar', 'minimalUrl', 'showLoadProgress', 'frameless', 'autoHideBars', 'autoHideFullscreen', 'roundedContentFrame', 'showHomeButton',
   'bookmarksBar', 'bookmarksBarTabGroups', 'sidePanelPosition', 'tabPreviewImages', 'tabPreviewMemory', 'fontSize', 'uiFont', 'defaultZoom',
   'showZoomIndicator', 'newTabBesideActive', 'ctrlTabMru', 'shiftRightClickContext', 'ctrlShiftCCopyLink', 'ctrlSVerticalTabs', 'pinNewTabGroups',
-  'splitEdgeDrop', 'blockYoutubeVideoAds', 'defaultBrowser', 'downloadDir', 'downloadAsk',
+  'splitEdgeDrop', 'blockYoutubeVideoAds', 'spoilerProtection', 'spoilerMode', 'spoilerReducedEffects', 'spoilerOcr', 'spoilerFeed', 'spoilerFeedStatus',
+  'defaultBrowser', 'downloadDir', 'downloadAsk',
   'translateOffer', 'translateAuto', 'translateTarget', 'translateTargets', 'start', 'tabOptions', 'workspaceRules' /* --- tab stacks (T10) --- */,
   'layout' /* --- layout (thread T6) --- */, 'themeOptions', 'window' /* --- window and panels (thread T9) --- */,
   'bars' /* --- toolbars and feeds (thread T13) --- */];
@@ -362,6 +387,8 @@ export function parseSettingsSnapshot(value: unknown): SettingsSnapshot | null {
     'pinNewTabGroups', 'splitEdgeDrop', 'blockYoutubeVideoAds'] as const) {
     if (typeof v[key] !== 'boolean') return null;
   }
+  if (typeof v.spoilerProtection !== 'boolean' || !oneOf(v.spoilerMode, SPOILER_MODES) || typeof v.spoilerReducedEffects !== 'boolean' || typeof v.spoilerOcr !== 'boolean') return null;
+  if (typeof v.spoilerFeed !== 'boolean' || typeof v.spoilerFeedStatus !== 'string' || v.spoilerFeedStatus.length > 300) return null;
   if (!oneOf(v.defaultBrowser, DEFAULT_BROWSER_STATES)) return null;
   // A display path: no control characters (it is drawn as text, never used as one).
   if (!isStrUpTo(v.downloadDir, MAX_DOWNLOAD_DIR * 2) || /[\u0000-\u001f\u007f]/.test(v.downloadDir) || typeof v.downloadAsk !== 'boolean') return null;
@@ -424,6 +451,12 @@ export function parseSettingsSnapshot(value: unknown): SettingsSnapshot | null {
     pinNewTabGroups: v.pinNewTabGroups as boolean,
     splitEdgeDrop: v.splitEdgeDrop as boolean,
     blockYoutubeVideoAds: v.blockYoutubeVideoAds as boolean,
+    spoilerProtection: v.spoilerProtection,
+    spoilerMode: v.spoilerMode,
+    spoilerReducedEffects: v.spoilerReducedEffects,
+    spoilerOcr: v.spoilerOcr,
+    spoilerFeed: v.spoilerFeed,
+    spoilerFeedStatus: v.spoilerFeedStatus,
     efficiencyActive: v.efficiencyActive,
     autoUpdate: v.autoUpdate as boolean,
     historyEnabled: v.historyEnabled as boolean,
@@ -462,6 +495,7 @@ export type Draft = Pick<SettingsSnapshot,
   | 'frameless' | 'autoHideBars' | 'autoHideFullscreen' | 'roundedContentFrame' | 'showHomeButton' | 'bookmarksBar' | 'bookmarksBarTabGroups' | 'sidePanelPosition' | 'tabPreviewImages'
   | 'tabPreviewMemory' | 'fontSize' | 'uiFont' | 'defaultZoom' | 'showZoomIndicator' | 'newTabBesideActive' | 'ctrlTabMru' | 'shiftRightClickContext'
   | 'ctrlShiftCCopyLink' | 'ctrlSVerticalTabs' | 'pinNewTabGroups' | 'splitEdgeDrop' | 'blockYoutubeVideoAds' | 'start'
+  | 'spoilerProtection' | 'spoilerMode' | 'spoilerReducedEffects' | 'spoilerOcr' | 'spoilerFeed'
   | 'layout' // --- layout (thread T6) ---
   | 'window' // --- window and panels (thread T9) ---
 >;
@@ -472,14 +506,14 @@ export function draftOf(snapshot: SettingsSnapshot): Draft {
     trackingPrevention, theme, themeAccent, toolbarButtons, centredAddressBar, minimalUrl, showLoadProgress, frameless, autoHideBars, autoHideFullscreen, roundedContentFrame,
     showHomeButton, bookmarksBar, bookmarksBarTabGroups, sidePanelPosition, tabPreviewImages, tabPreviewMemory, fontSize, uiFont, defaultZoom,
     showZoomIndicator, newTabBesideActive, ctrlTabMru, shiftRightClickContext, ctrlShiftCCopyLink, ctrlSVerticalTabs, pinNewTabGroups, splitEdgeDrop,
-    blockYoutubeVideoAds, start, layout, window,
+    blockYoutubeVideoAds, spoilerProtection, spoilerMode, spoilerReducedEffects, spoilerOcr, spoilerFeed, start, layout, window,
   } = snapshot;
   return {
     tabLayout, sidebarWidth, sidebarPinned, sleepEnabled, sleepAfterSecs, blockerEnabled, blockerAllow: [...blockerAllow], searchEngine, automaticTabGrouping,
     efficiencyMode, trackingPrevention, theme, themeAccent, toolbarButtons, centredAddressBar, minimalUrl, showLoadProgress, frameless, autoHideBars, autoHideFullscreen,
     roundedContentFrame, showHomeButton, bookmarksBar, bookmarksBarTabGroups, sidePanelPosition, tabPreviewImages, tabPreviewMemory, fontSize, uiFont,
     defaultZoom, showZoomIndicator, newTabBesideActive, ctrlTabMru, shiftRightClickContext, ctrlShiftCCopyLink, ctrlSVerticalTabs, pinNewTabGroups,
-    splitEdgeDrop, blockYoutubeVideoAds, start: { ...start, startupPages: [...start.startupPages] },
+    splitEdgeDrop, blockYoutubeVideoAds, spoilerProtection, spoilerMode, spoilerReducedEffects, spoilerOcr, spoilerFeed, start: { ...start, startupPages: [...start.startupPages] },
     layout: { ...layout }, // --- layout (thread T6) ---
     window: { ...window }, // --- window and panels (thread T9) ---
   };
@@ -499,6 +533,7 @@ export function saveText(draft: Draft): string | null {
   if (!isAutoHideBarsText(draft.autoHideBars)) return null; // --- auto-hide (T11) ---
   if (!oneOf(draft.bookmarksBar, BOOKMARKS_BAR_MODES) || !oneOf(draft.sidePanelPosition, SIDE_PANEL_POSITIONS)) return null;
   if (!oneOf(draft.fontSize, FONT_SIZES) || !isUiFont(draft.uiFont) || !isIntBetween(draft.defaultZoom, MIN_ZOOM, MAX_ZOOM)) return null;
+  if (!oneOf(draft.spoilerMode, SPOILER_MODES)) return null;
   const lines = [
     `tab_layout=${draft.tabLayout}`,
     `sidebar_width=${draft.sidebarWidth}`,
@@ -541,6 +576,11 @@ export function saveText(draft: Draft): string | null {
     `pin_new_tab_groups=${draft.pinNewTabGroups}`,
     `split_edge_drop=${draft.splitEdgeDrop}`,
     `block_youtube_video_ads=${draft.blockYoutubeVideoAds}`,
+    `spoiler_protection=${draft.spoilerProtection}`,
+    `spoiler_mode=${draft.spoilerMode}`,
+    `spoiler_reduced_effects=${draft.spoilerReducedEffects}`,
+    `spoiler_ocr=${draft.spoilerOcr}`,
+    `spoiler_feed=${draft.spoilerFeed}`,
   );
   // --- start page --- the start page and startup settings ride in the same payload
   const startLines = startSaveLines(draft.start);
@@ -678,7 +718,7 @@ const CORE_ROWS: ReadonlySet<string> = new Set([
   'tabs_new_tab_page', 'tabs_new_tab_url',
   'tabs_stack_style', 'tabs_workspaces', // --- T10 ---
   'startupMode', 'startupPages', 'startHomepage',
-  'blocker', 'tracking', 'history',
+  'blocker', 'spoilerProtection', 'tracking', 'history',
   'efficiency', 'sleep',
   'addrAutocomplete', 'secHttps', 'searchDefault', 'bmNewTab',
   'kbEnabled',
@@ -836,6 +876,13 @@ export const ROWS: readonly RowSpec[] = [
   { id: 'blocker', section: 'privacy', label: 'Blocking', description: '', keywords: 'adblock ad blocker shield trackers ads none level block blocking Blocking None, trackers, or trackers and ads. A site can have its own level.' },
   { id: 'cookieNotices', section: 'privacy', label: 'Cookie notices', aria: 'Hide cookie notices', description: '', keywords: 'cookie warning banner consent gdpr popup annoyance i don’t care about cookies easylist Hide cookie notices Hides cookie-consent banners on pages, with or without blocking. A site can switch it off.' },
   { id: 'blockYoutubeVideoAds', section: 'privacy', label: 'YouTube ads', aria: 'Block YouTube video ads', description: '', keywords: 'youtube video ads block skip Block YouTube video ads Skips in-video ads on YouTube where the blocking level is Trackers and ads, and in private tabs. At Trackers or None, YouTube ads still play.' },
+  // Spoiler Firewall for GTA VI (src/spoiler.rs): one line each like every row; the longer wording is the control's aria text and the search keywords.
+  { id: 'spoilerProtection', section: 'privacy', label: 'GTA VI spoilers', aria: 'Hide GTA VI spoilers', description: '', keywords: 'spoiler spoilers gta 6 vi grand theft auto rockstar firewall protection shield hide block leak ending Hide GTA VI spoilers Spoiler Firewall for GTA VI is built in and on by default. It covers every tab, including private tabs and guest windows.' },
+  { id: 'spoilerMode', section: 'privacy', label: 'Hide', aria: 'How much to hide', description: '', keywords: 'spoiler mode lockdown strict balanced gta firewall level How much to hide' },
+  { id: 'spoilerReducedEffects', section: 'privacy', label: 'Simple covers', aria: 'Simpler spoiler covers', description: '', keywords: 'spoiler reduced effects motion blur animation performance accessibility gta Simpler spoiler covers Opaque covers with no blur or animation. Lighter on slow computers.' },
+  { id: 'spoilerOcr', section: 'privacy', label: 'Scan images', aria: 'Scan images for text on this device', description: '', keywords: 'spoiler ocr image text screenshot scan on-device gta Scan images for text Reads text in images on sites like X, Reddit and YouTube so a spoiler inside a screenshot is hidden too. Nothing leaves your computer. Needs a Windows OCR language; images in other formats may not be read.' },
+  { id: 'spoilerFeed', section: 'privacy', label: 'Term updates', aria: 'Download spoiler term updates', description: '', keywords: 'spoiler term updates feed word list download signed gta names missions Download spoiler term updates Fetches a small signed word list about every 12 hours so new names and missions are covered before Bowser itself updates. It sends no browsing data and can only add protection.' },
+  { id: 'spoilerNote', section: 'privacy', label: 'Spoiler limits', aria: SPOILER_LIMITS_NOTE, description: '', keywords: 'spoiler limits limitations images screenshots video notifications unofficial gta What spoiler protection cannot do ' + SPOILER_LIMITS_NOTE },
   { id: 'allow', section: 'privacy', label: 'Skipped sites', aria: 'Sites the blocker skips', description: '', keywords: 'allow list exceptions whitelist adblock Sites the blocker skips The blocker never blocks on these sites.' },
   { id: 'tracking', section: 'privacy', label: 'Tracking', aria: 'Tracking prevention', description: '', keywords: 'privacy cookies strict balanced fingerprinting Tracking prevention Balanced is the default. Strict blocks more trackers but can break some sites.', restart: true },
   { id: 'history', section: 'privacy', label: 'History', aria: 'Save history', description: '', keywords: 'history visits record browsing save Save history Pages you visit are listed in History and suggested in the address bar.' },

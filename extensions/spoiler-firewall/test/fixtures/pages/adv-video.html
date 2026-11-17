@@ -1,0 +1,4 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><link rel="stylesheet" href="/pages/common.css"><title>video</title></head><body>
+<article class="item" id="vcard" data-expect="shield"><span class="sentinel">GTA 6 ending spoiler clip: the hero dies in the final mission</span><br><video id="vid" autoplay muted loop playsinline width="160" height="90"></video></article>
+<article class="item" data-expect="clear"><span>Cute cat clip</span><br><video id="vid2" autoplay muted loop playsinline width="160" height="90"></video></article>
+<script>function mk(id,col){var c=document.createElement('canvas');c.width=160;c.height=90;var x=c.getContext('2d');x.fillStyle=col;x.fillRect(0,0,160,90);document.getElementById(id).srcObject=c.captureStream(5);}mk('vid','#ff00ff');mk('vid2','#00aa88');</script></body></html>

@@ -112,7 +112,14 @@ pub const TEMPLATE: &str = "# Bowser settings. Restart Bowser after editing.\r\n
     # tabs_keep_window=true\r\n\
     # (more tabs_* options: see Settings > Tabs)\r\n\
     # theme_schedule=system\r\n\
-    # (more theme_* options: see Settings > Appearance)\r\n";
+    # (more theme_* options: see Settings > Appearance)\r\n\
+    # Spoiler Firewall for GTA VI is built in and on by default. It hides GTA VI spoilers on web\r\n\
+    # pages, including private tabs. Protection turns off only for exactly off, false or 0.\r\n\
+    # spoiler_protection=on\r\n\
+    # spoiler_mode=strict\r\n\
+    # spoiler_reduced_effects=false\r\n\
+    # spoiler_ocr=on\r\n\
+    # spoiler_feed=on\r\n";
 /// Largest settings file that will be read; a larger file is ignored entirely. Holds every setting
 /// with each list at its cap (`a_profile_with_every_list_at_its_cap_fits_the_file`).
 pub const MAX_FILE_BYTES: usize = 64 * 1024;
@@ -611,6 +618,9 @@ pub struct Settings {
     // --- start page ---
     /// The start page, speed dials, dashboard widgets, homepage and startup (`src/start_page.rs`).
     pub start: crate::start_page::StartSettings,
+    /// `spoiler_protection`, `spoiler_mode`, `spoiler_reduced_effects`: the built-in Spoiler
+    /// Firewall for GTA VI (on and Strict by default). Applies to new documents at once.
+    pub spoiler: crate::spoiler::SpoilerSettings,
     // --- end start page ---
     // --- address bar, search and bookmarks (src/address_settings.rs) ---
     /// The address bar, drop-down, search field, scoped nickname and bookmark options. Stored as
@@ -715,6 +725,7 @@ impl Default for Settings {
             private_theme: PrivateTheme::Follow,
             auto_hide: crate::auto_hide::AutoHideSettings::default(),
             start: crate::start_page::StartSettings::default(),
+            spoiler: crate::spoiler::SpoilerSettings::default(),
             address: crate::address_settings::AddressSettings::default(),
             page_tools: crate::page_tools::PageTools::default(),
             tabs: crate::tab_options::TabOptions::default(),
@@ -1095,6 +1106,8 @@ impl Settings {
                     }
                 }
                 // --- end layout ---
+                // Spoiler Firewall (`spoiler_*`): its own parser, so a bad value never loosens the protection.
+                _ if settings.spoiler.apply(key, value) => {}
                 // --- start page --- (`start_*`, `homepage`, `startup`, `startup_pages`)
                 // Address bar, search and bookmark options (src/address_settings.rs) take what the start page does not.
                 _ => {
@@ -1303,6 +1316,7 @@ pub fn render_updated(existing: &str, settings: &Settings) -> String {
     let mut values = Vec::from(values);
     values.extend(settings.auto_hide.pairs().into_iter().map(|(key, value)| (key, Some(value)))); // --- auto-hide (T11) ---
     values.extend(settings.start.pairs().into_iter().map(|(key, value)| (key, Some(value))));
+    values.extend(settings.spoiler.lines().into_iter().map(|(key, value)| (key, Some(value))));
     // --- end start page ---
     let mut written = vec![false; values.len()];
     let mut out = String::with_capacity(existing.len() + 128);
@@ -1777,6 +1791,13 @@ mod tests {
             page_tools: crate::page_tools::PageTools::default(),
             tabs: crate::tab_options::TabOptions::default(),
             themes: crate::theme_custom::ThemeOptions::default(),
+            spoiler: crate::spoiler::SpoilerSettings {
+                enabled: false,
+                mode: crate::spoiler::Mode::Balanced,
+                reduced_effects: true,
+                ocr: false,
+                feed: false,
+            },
         }
     }
 
@@ -1855,6 +1876,39 @@ tabs_new_tab_url=javascript:1
         assert_eq!(hand.tabs.confirm_close.0, 0, "out of range keeps the default");
         assert_eq!(hand.tabs.new_tab_url.0, "", "a script address is never kept");
         assert_eq!(Settings::parse("").tabs, crate::tab_options::TabOptions::default());
+    }
+
+    #[test]
+    fn spoiler_protection_is_on_and_strict_unless_the_file_says_otherwise() {
+        use crate::spoiler::Mode;
+        assert!(Settings::default().spoiler.enabled);
+        assert_eq!(Settings::default().spoiler.mode, Mode::Strict);
+        assert_eq!(Settings::parse("").spoiler, Settings::default().spoiler);
+        assert!(Settings::parse(TEMPLATE).spoiler.enabled, "the commented template changes nothing");
+        assert!(TEMPLATE.contains("# spoiler_protection=on"));
+        let off = Settings::parse("spoiler_protection=off
+spoiler_mode=balanced
+spoiler_reduced_effects=true
+");
+        assert!(!off.spoiler.enabled);
+        assert_eq!(off.spoiler.mode, Mode::Balanced);
+        assert!(off.spoiler.reduced_effects);
+        assert!(Settings::parse("spoiler_protection=banana
+spoiler_mode=banana
+").spoiler.enabled);
+        // Saving keeps the lines, comments and unknown keys around them.
+        let saved = render_updated("# mine
+spoiler_protection = off
+foo=1
+", &Settings::default());
+        assert!(saved.contains("spoiler_protection=on
+") && saved.contains("spoiler_mode=strict
+"));
+        assert!(saved.starts_with("# mine
+") && saved.contains("foo=1
+"));
+        assert_eq!(saved.matches("spoiler_protection").count(), 1);
+        assert_eq!(Settings::parse(&saved).spoiler, Settings::default().spoiler);
     }
 
     #[test]
@@ -2084,7 +2138,8 @@ tabs_new_tab_url=javascript:1
              start_group_reopen=first\r\nstart_titles=auto\r\nstart_add_button=false\r\nstart_columns=9\r\nstart_thumb_size=5\r\n\
              start_drag_reorder=false\r\nhomepage=https://home.example/\r\nstartup=specific_pages\r\n\
              startup_pages=https://a.example/ https://b.example/\r\nstart_widgets=true\r\nstart_widget_columns=4\r\n\
-             start_widget_height=tall\r\nstart_widget_bg=custom\r\nstart_widget_color=#336699\r\nstart_widget_drag=false\r\n".to_owned()
+             start_widget_height=tall\r\nstart_widget_bg=custom\r\nstart_widget_color=#336699\r\nstart_widget_drag=false\r\n\
+             spoiler_protection=off\r\nspoiler_mode=balanced\r\nspoiler_reduced_effects=true\r\nspoiler_ocr=off\r\nspoiler_feed=off\r\n".to_owned()
                 // The address bar, search and bookmark options follow, one line each (address_settings.rs).
                 + &crate::address_settings::AddressSettings::default().render_into("", "\r\n")
                 + &crate::page_tools::PageTools::default().render_into("", "\r\n")

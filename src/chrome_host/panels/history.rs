@@ -42,6 +42,8 @@ pub(crate) fn snapshot_with(
                             row.uint("id", u64::from(entry_id(line)));
                             row.string("title", json::capped(&line.title, 48));
                             row.string("host", json::capped(&line.host, 64));
+                            // Not shown: the panel's spoiler guard classifies the address as well as the title.
+                            row.string("url", json::capped(&line.url, 200));
                             row.string("clock", &line.clock);
                         });
                     },
@@ -125,7 +127,7 @@ mod tests {
     #[test]
     fn snapshot_uses_the_native_day_groups_and_one_based_entry_ids() {
         let entries = vec![(0, "https://example.com/path".to_owned(), "Page".to_owned())];
-        assert_eq!(snapshot_with(&entries, "", 0, 0, |_| None), r#"{"v":1,"t":"snap","p":"history","d":{"rows":[{"label":"Today","count":1},{"id":2439783619,"title":"Page","host":"example.com","clock":"00:00"}],"query":"","favs":{}}}"#);
+        assert_eq!(snapshot_with(&entries, "", 0, 0, |_| None), r#"{"v":1,"t":"snap","p":"history","d":{"rows":[{"label":"Today","count":1},{"id":2439783619,"title":"Page","host":"example.com","url":"https://example.com/path","clock":"00:00"}],"query":"","favs":{}}}"#);
     }
 
     fn png(len: usize) -> Vec<u8> {

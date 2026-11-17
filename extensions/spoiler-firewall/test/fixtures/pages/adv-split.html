@@ -1,0 +1,6 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><link rel="stylesheet" href="/pages/common.css"><title>split</title></head><body>
+<p class="item" data-expect="shield" id="split1"><span class="sentinel"><span>GT</span><span>A </span><b>6</b> <i>end</i>ing spoi<u>ler</u>: the hero dies</span></p>
+<div class="item" data-expect="shield" id="split2"><div class="sentinel">GTA 6 spoiler</div><div class="sentinel">the hero dies at the ending</div></div>
+<p class="item" data-expect="clear">Nothing to see here, just lunch plans.</p>
+<script>setTimeout(function(){var p=document.createElement('p');p.className='item';p.setAttribute('data-expect','shield');var s=document.createElement('span');s.className='sentinel';p.appendChild(s);document.body.appendChild(p);var t=document.createTextNode('GTA 6 ');s.appendChild(t);setTimeout(function(){t.data+='ending spoiler: the hero dies';},30);},150);</script>
+</body></html>

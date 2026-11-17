@@ -3,6 +3,8 @@ import { el, icon } from '../dom';
 import { bookmarkActionCommand, bookmarkMoveCommand, validateBookmarkSnapshot, type BookmarkItem, type BookmarkSnapshot } from './bookmarks-logic';
 import { dropZone, type DropZone } from './kit-logic';
 import { emptyState, enter, faviconTile, iconButton, moveFocus, panelHeader, searchField, textButton } from './kit';
+import { guardRow, RevealedRows, rowKey, SHOW_LABEL } from '../spoiler-guard'; // --- spoiler guard ---
+import { onSpoilerConfig } from '../spoiler-config';
 
 function emit(command: ReturnType<typeof bookmarkActionCommand> | ReturnType<typeof bookmarkMoveCommand>): void {
   if (!command) return;
@@ -24,6 +26,8 @@ function field(label: string, value: string, type: 'text' | 'url' = 'text'): HTM
 export function startBookmarksPanel(root: HTMLElement): (message: Inbound) => void {
   let snapshot: BookmarkSnapshot | null = null;
   const expanded = new Set<number>();
+  /** Bookmarks the user revealed in this panel (session only, never stored). */
+  const revealed = new RevealedRows(); // --- spoiler guard ---
   let seeded = false;
   let selected: number | null = null;
   let composing = false;
@@ -166,7 +170,10 @@ export function startBookmarksPanel(root: HTMLElement): (message: Inbound) => vo
 
   const buildRow = (item: BookmarkItem, flat: boolean): HTMLElement => {
     const isFolder = item.kind === 'folder';
-    const name = item.title || (isFolder ? 'Untitled folder' : item.url ?? 'Untitled bookmark');
+    // A bookmark whose title or address reads as a spoiler shows the mask and the host (src/spoiler-guard.ts).
+    const key = rowKey(item.id, item.title, item.url ?? '');
+    const guarded = guardRow({ title: item.title, url: item.url ?? '' }, revealed.has(key));
+    const name = guarded.masked ? guarded.title : item.title || (isFolder ? 'Untitled folder' : item.url ?? 'Untitled bookmark');
     const row = el('div', 'bw-row bw-focus-inset pn-row');
     row.setAttribute('role', 'treeitem');
     row.dataset.id = String(item.id);
@@ -182,15 +189,17 @@ export function startBookmarksPanel(root: HTMLElement): (message: Inbound) => vo
       chevron.append(icon('chevron-right', { size: 12, fine: true }));
       chevron.addEventListener('click', (event) => { event.stopPropagation(); toggle(item.id); });
     }
-    const lead = isFolder ? (() => { const holder = el('span', 'pn-lead'); holder.append(icon('folder')); return holder; })() : faviconTile(item.title || item.url || '');
+    const lead = isFolder ? (() => { const holder = el('span', 'pn-lead'); holder.append(icon('folder')); return holder; })() : faviconTile(guarded.masked ? hostOf(item.url ?? '') : item.title || item.url || '');
     const title = el('span', 'pn-row-title');
     title.textContent = name;
-    title.setAttribute('data-tip', isFolder ? name : `${name}\n${item.url ?? ''}`);
+    title.setAttribute('data-tip', isFolder ? name : guarded.masked ? hostOf(item.url ?? '') : `${name}\n${item.url ?? ''}`);
+    if (guarded.masked) row.dataset.spoiler = 'hidden';
     const trail = el('span', 'pn-trail');
     const meta = el('span', 'pn-meta');
     meta.textContent = flat ? folderPath(item) : isFolder ? String(children(item.id).length) : hostOf(item.url ?? '');
     if (isFolder && !flat) meta.classList.add('pn-count'); // --- window and panels (thread T9) --- `panel_folder_counts` hides it (data-folder-counts)
     const actions = el('span', 'pn-actions');
+    if (guarded.masked) actions.append(textButton(SHOW_LABEL, (event) => { event.stopPropagation(); revealed.add(key); render(); }, { subtle: true, aria: 'Show this hidden bookmark' }));
     if (!isFolder) actions.append(iconButton('external', `Open ${name} in a new tab`, (event) => { event.stopPropagation(); emit(bookmarkActionCommand('newtab', item.id)); }));
     else if (children(item.id).some((child) => child.kind === 'link')) actions.append(iconButton('external', `Open everything in ${name} in new tabs`, (event) => { event.stopPropagation(); emit(bookmarkActionCommand('openall', item.id)); }));
     actions.append(
@@ -356,6 +365,7 @@ export function startBookmarksPanel(root: HTMLElement): (message: Inbound) => vo
     render();
   };
   render();
+  onSpoilerConfig(render);
   return (message) => { if (message.t === 'snap') receive(message); };
 }
 

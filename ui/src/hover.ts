@@ -16,10 +16,12 @@ import {
   type HoverIslandMsg,
   type HoverMsg,
   type HoverRowMsg,
+  type SuggestItem,
   type SuggestMsg,
 } from './protocol';
 import { suggestAction, suggestBadge, suggestEmphasis, suggestGlyph, suggestNeedle } from './suggest-logic'; // --- omnibox suggest ---
 import { applyTheme } from './view';
+import { guardRow, guardTitle, RevealedRows, rowKey, SHOW_LABEL } from './spoiler-guard'; // --- spoiler guard ---
 
 type Act = (fields: HoverActFields) => void;
 
@@ -54,7 +56,7 @@ function rowList(rows: readonly HoverRowMsg[], more: number, prefix: string, act
       button.classList.toggle('is-linked', row.linked);
       const title = el('span', `${prefix}-row-title`);
       title.dir = 'auto';
-      title.textContent = row.title;
+      title.textContent = guardTitle(row.title); // --- spoiler guard ---
       button.append(favicon(row.fav, `${prefix}-row-fav`), title);
       button.addEventListener('click', () => act({ a: 'row', n: index }));
       list.append(button);
@@ -73,7 +75,7 @@ function renderTooltip(text: string): HTMLElement {
   const tip = el('div', 'bw-tooltip');
   tip.setAttribute('role', 'tooltip');
   tip.dir = 'auto';
-  tip.textContent = text;
+  tip.textContent = guardTitle(text); // --- spoiler guard ---
   return tip;
 }
 
@@ -105,7 +107,7 @@ function renderCard(msg: HoverCardMsg, act: Act): HTMLElement {
   const text = el('div', 'bw-card-text');
   const title = el('div', 'bw-card-title');
   title.dir = 'auto';
-  title.textContent = msg.title;
+  title.textContent = guardTitle(msg.title); // --- spoiler guard ---
   text.append(title);
   if (msg.host !== '' || msg.sleeping || msg.mem !== undefined) {
     const meta = el('div', 'bw-card-meta');
@@ -169,12 +171,83 @@ function selectSuggestRow(list: HTMLElement, sel: number): void {
   list.style.setProperty('--suggest-sel', String(sel));
 }
 
+/** Rows the user revealed in this dropdown view (session only, never stored). */
+const revealedRows = new RevealedRows(); // --- spoiler guard ---
+
+/**
+ * One suggestion row. A row that reads as a spoiler (src/spoiler-guard.ts) keeps its place and its
+ * keyboard behaviour but shows the mask label and the host only, with a "Show" button that reveals
+ * this one row; picking it (click or Enter in the toolbar) still navigates.
+ */
+function buildSuggestRow(msg: SuggestMsg, item: SuggestItem, index: number, needle: string, list: HTMLElement): HTMLElement {
+  const key = rowKey(item.k, item.text, item.title, item.url);
+  const guarded = guardRow({ title: item.title, text: item.text, url: item.url }, revealedRows.has(key), undefined, msg.q);
+  const row = el('div', 'bw-suggest-row');
+  row.setAttribute('role', 'option');
+  row.dataset.kind = item.k;
+  if (guarded.masked) row.dataset.spoiler = 'hidden';
+  const lead = el('span', 'bw-suggest-lead');
+  lead.setAttribute('aria-hidden', 'true');
+  lead.append(item.fav !== '' ? favicon(item.fav, 'bw-suggest-fav') : icon(suggestGlyph(item.k)));
+  const text = el('span', 'bw-suggest-text');
+  if (guarded.masked) {
+    text.append(plainText('bw-suggest-title', guarded.title));
+    if (guarded.url !== '') text.append(plainText('bw-suggest-url', guarded.url));
+  } else {
+    const title = item.title !== '' ? item.title : item.text;
+    text.append(matchedText('bw-suggest-title', title, needle));
+    const badge = suggestBadge(item.k, item.fav !== '', item.bd === true);
+    if (badge) text.append(icon(badge.icon, { size: 12, fine: true, label: badge.label, className: 'bw-suggest-mark' }));
+    if (item.url !== '' && item.url !== title) text.append(matchedText('bw-suggest-url', item.url, needle));
+  }
+  row.append(lead, text);
+  if (guarded.masked) {
+    const show = el('button', 'bw-suggest-show');
+    show.type = 'button';
+    show.tabIndex = -1;
+    show.textContent = SHOW_LABEL;
+    show.setAttribute('aria-label', 'Show this hidden suggestion');
+    // Revealing is not picking: the press stays out of the row, and the keyboard stays in the omnibox.
+    show.addEventListener('pointerdown', (ev) => { ev.preventDefault(); ev.stopPropagation(); });
+    show.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      revealedRows.add(key);
+      const next = buildSuggestRow(msg, item, index, needle, list);
+      row.replaceWith(next);
+      selectSuggestRow(list, Number(list.style.getPropertyValue('--suggest-sel') || msg.sel));
+    });
+    row.append(show);
+  }
+  const action = suggestAction(item.k);
+  if (action !== '') {
+    const tag = el('span', 'bw-suggest-action');
+    tag.textContent = action;
+    row.append(tag);
+  }
+  // The Enter keycap, shown on the selected row only (decorative: the row is aria-selected).
+  const keycap = el('span', 'bw-suggest-key');
+  keycap.setAttribute('aria-hidden', 'true');
+  keycap.append(icon('enter', { size: 12, fine: true }));
+  row.append(keycap);
+  // A press must not move the keyboard away from the omnibox.
+  row.addEventListener('pointerdown', (ev) => { ev.preventDefault(); });
+  row.addEventListener('click', () => { sendSuggestPick(msg.seq, index); });
+  return row;
+}
+
+function plainText(className: string, text: string): HTMLElement {
+  const span = el('span', className);
+  span.dir = 'auto';
+  span.textContent = text;
+  return span;
+}
+
 /**
  * The omnibox dropdown: one row per suggestion. Rows never take focus; the toolbar keeps the
  * keyboard. Markup: .bw-suggest[role=listbox] > .bw-suggest-row[role=option][aria-selected]
  * [data-kind] > .bw-suggest-lead (favicon or glyph), .bw-suggest-text > .bw-suggest-title +
  * svg.bw-suggest-mark (a bookmark with a favicon) + .bw-suggest-url (title and address may each hold
- * one mark.bw-suggest-match), .bw-suggest-action, .bw-suggest-key; then one .bw-suggest-sel, the
+ * one mark.bw-suggest-match), .bw-suggest-show (a hidden spoiler row only), .bw-suggest-action, .bw-suggest-key; then one .bw-suggest-sel, the
  * selection indicator, after the rows.
  */
 function renderSuggest(msg: SuggestMsg): HTMLElement {
@@ -183,36 +256,7 @@ function renderSuggest(msg: SuggestMsg): HTMLElement {
   list.setAttribute('aria-label', 'Suggestions');
   list.style.width = `${msg.w}px`;
   const needle = suggestNeedle(msg.q);
-  msg.items.forEach((item, index) => {
-    const row = el('div', 'bw-suggest-row');
-    row.setAttribute('role', 'option');
-    row.dataset.kind = item.k;
-    const lead = el('span', 'bw-suggest-lead');
-    lead.setAttribute('aria-hidden', 'true');
-    lead.append(item.fav !== '' ? favicon(item.fav, 'bw-suggest-fav') : icon(suggestGlyph(item.k)));
-    const title = item.title !== '' ? item.title : item.text;
-    const text = el('span', 'bw-suggest-text');
-    text.append(matchedText('bw-suggest-title', title, needle));
-    const badge = suggestBadge(item.k, item.fav !== '', item.bd === true);
-    if (badge) text.append(icon(badge.icon, { size: 12, fine: true, label: badge.label, className: 'bw-suggest-mark' }));
-    if (item.url !== '' && item.url !== title) text.append(matchedText('bw-suggest-url', item.url, needle));
-    row.append(lead, text);
-    const action = suggestAction(item.k);
-    if (action !== '') {
-      const tag = el('span', 'bw-suggest-action');
-      tag.textContent = action;
-      row.append(tag);
-    }
-    // The Enter keycap, shown on the selected row only (decorative: the row is aria-selected).
-    const key = el('span', 'bw-suggest-key');
-    key.setAttribute('aria-hidden', 'true');
-    key.append(icon('enter', { size: 12, fine: true }));
-    row.append(key);
-    // A press must not move the keyboard away from the omnibox.
-    row.addEventListener('pointerdown', (ev) => { ev.preventDefault(); });
-    row.addEventListener('click', () => { sendSuggestPick(msg.seq, index); });
-    list.append(row);
-  });
+  msg.items.forEach((item, index) => { list.append(buildSuggestRow(msg, item, index, needle, list)); });
   const indicator = el('span', 'bw-suggest-sel');
   indicator.setAttribute('aria-hidden', 'true');
   list.append(indicator);

@@ -11,7 +11,7 @@ use std::{
 
 use url::Url;
 use webview2_com::{
-    CoTaskMemPWSTR, CoreWebView2EnvironmentOptions,
+    AddScriptToExecuteOnDocumentCreatedCompletedHandler, CoTaskMemPWSTR, CoreWebView2EnvironmentOptions,
     CreateCoreWebView2ControllerCompletedHandler, CreateCoreWebView2EnvironmentCompletedHandler,
     DocumentTitleChangedEventHandler, DownloadStartingEventHandler, FaviconChangedEventHandler,
     GetFaviconCompletedHandler, NavigationCompletedEventHandler, NavigationStartingEventHandler,
@@ -654,6 +654,16 @@ unsafe fn configure_web_app_controller(
         settings4.SetIsPasswordAutosaveEnabled(false)?;
         let settings6: ICoreWebView2Settings6 = settings.cast()?;
         settings6.SetIsGeneralAutofillEnabled(false)?;
+        // Spoiler Firewall also covers pinned web apps (they show arbitrary sites). Registered
+        // from the setting in force now and fire-and-forget; a changed setting reaches an app the
+        // next time its view is created.
+        if let Some(script) = crate::spoiler::script_for(&crate::spoiler::current(), false, None) {
+            let script = CoTaskMemPWSTR::from(script.as_str());
+            webview.AddScriptToExecuteOnDocumentCreated(
+                *script.as_ref().as_pcwstr(),
+                &AddScriptToExecuteOnDocumentCreatedCompletedHandler::create(Box::new(|_, _| Ok(()))),
+            )?;
+        }
     }
     let mut removers = HandlerRemovers::default();
     let mut token = 0;

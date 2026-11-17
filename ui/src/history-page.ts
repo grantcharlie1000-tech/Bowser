@@ -8,6 +8,8 @@ import { onInbound, send, sendPanel, type Inbound, type PanelFields } from './pr
 import { applyTheme } from './view';
 import { el, icon, place, type IconName } from './dom';
 import { textButton } from './panels/kit';
+import { guardRow, guardTitle, RevealedRows, rowKey, SHOW_LABEL } from './spoiler-guard'; // --- spoiler guard ---
+import { onSpoilerConfig } from './spoiler-config';
 import { tileLetter } from './panels/kit-logic';
 import {
   MAX_QUERY, addressParts, dayHeading, emptyView, focusAfterRemoval, matchRanges, moveIndex, opensNewTab,
@@ -51,6 +53,7 @@ interface RowNode {
   readonly host: HTMLElement;
   readonly rest: HTMLElement;
   readonly time: HTMLElement;
+  readonly show: HTMLButtonElement; // --- spoiler guard ---
   readonly newTab: HTMLButtonElement;
   readonly remove: HTMLButtonElement;
   entry: HistoryEntry;
@@ -78,6 +81,8 @@ export function startHistoryPage(root: HTMLElement): void {
   /** Where focus goes once the next snapshot lands (after a removal). */
   let pendingFocus: number | null | 'search' = null;
   let removedName = '';
+  /** Rows the user revealed on this page (session only, never stored). */
+  const revealed = new RevealedRows(); // --- spoiler guard ---
   /** Entry ids already shown, and the search they were shown for (see `glow` in render). */
   const seen = new Set<number>();
   let renderedQuery = '';
@@ -191,7 +196,7 @@ export function startHistoryPage(root: HTMLElement): void {
     if (!node) return;
     const inList = list.contains(document.activeElement);
     pendingFocus = inList ? focusAfterRemoval(order(), id) ?? 'search' : null;
-    removedName = rowName(node.entry);
+    removedName = guardTitle(rowName(node.entry));
     if (!reduceMotion()) node.root.classList.add('is-leaving');
     // Put back by Undo, it comes back with the glow of a new row.
     seen.delete(id);
@@ -203,10 +208,10 @@ export function startHistoryPage(root: HTMLElement): void {
     const previous = current === null ? undefined : rows.get(current);
     current = id;
     for (const node of previous ? [previous] : []) {
-      node.open.tabIndex = -1; node.newTab.tabIndex = -1; node.remove.tabIndex = -1;
+      node.open.tabIndex = -1; node.show.tabIndex = -1; node.newTab.tabIndex = -1; node.remove.tabIndex = -1;
     }
     const next = id === null ? undefined : rows.get(id);
-    if (next) { next.open.tabIndex = 0; next.newTab.tabIndex = 0; next.remove.tabIndex = 0; }
+    if (next) { next.open.tabIndex = 0; next.show.tabIndex = 0; next.newTab.tabIndex = 0; next.remove.tabIndex = 0; }
   };
 
   const makeRow = (entry: HistoryEntry): RowNode => {
@@ -235,15 +240,26 @@ export function startHistoryPage(root: HTMLElement): void {
     remove.tabIndex = -1;
     remove.setAttribute('aria-keyshortcuts', 'Delete');
     remove.append(icon('trash'));
-    acts.append(newTab, remove);
+    // A row hidden by Spoiler Firewall offers Show here (a button cannot sit inside the open button).
+    const show = el('button', 'hp-show');
+    show.type = 'button';
+    show.tabIndex = -1;
+    show.hidden = true;
+    show.textContent = SHOW_LABEL;
+    acts.append(show, newTab, remove);
     item.append(open, acts);
-    const node: RowNode = { root: item, open, lead, title, host, rest, time, newTab, remove, entry, fav: '\u0000' };
+    const node: RowNode = { root: item, open, lead, title, host, rest, time, show, newTab, remove, entry, fav: '\u0000' };
     const id = (): number => node.entry.id;
     open.addEventListener('click', (event) => { setCurrent(id()); openEntry(id(), opensNewTab(event)); });
     // A middle click opens a new tab (and never starts auto-scroll).
     open.addEventListener('mousedown', (event) => { if (event.button === 1) event.preventDefault(); });
     open.addEventListener('auxclick', (event) => { if (event.button === 1) { event.preventDefault(); setCurrent(id()); openEntry(id(), true); } });
     newTab.addEventListener('click', (event) => { event.stopPropagation(); setCurrent(id()); openEntry(id(), true); });
+    show.addEventListener('click', (event) => {
+      event.stopPropagation();
+      revealed.add(rowKey(node.entry.id, node.entry.title, node.entry.url));
+      if (snapshot) fillRow(node, node.entry, snapshot.favs, snapshot.query);
+    });
     remove.addEventListener('click', (event) => { event.stopPropagation(); removeEntry(id()); });
     // The glow (on ::after) outlasts the drop-in; the row is ordinary again once it has faded.
     item.addEventListener('animationend', (event) => { if (event.target === item && event.animationName === 'hp-glow') item.classList.remove('is-new'); });
@@ -252,11 +268,17 @@ export function startHistoryPage(root: HTMLElement): void {
 
   const fillRow = (node: RowNode, entry: HistoryEntry, favs: Readonly<Record<string, string>>, q: string): void => {
     node.entry = entry;
-    const name = rowName(entry);
-    marked(node.title, name, q);
-    const parts = addressParts(entry.url, entry.host);
-    marked(node.host, parts.host, q);
-    marked(node.rest, parts.rest, q);
+    // A title or address that reads as a spoiler shows the mask and the host only (src/spoiler-guard.ts).
+    const guarded = guardRow({ title: entry.title, url: entry.url }, revealed.has(rowKey(entry.id, entry.title, entry.url)));
+    const name = guarded.masked ? guarded.title : rowName(entry);
+    node.show.hidden = !guarded.masked;
+    if (guarded.masked) node.root.dataset.spoiler = 'hidden';
+    else delete node.root.dataset.spoiler;
+    const parts = guarded.masked ? { host: entry.host, rest: '' } : addressParts(entry.url, entry.host);
+    const hits = guarded.masked ? '' : q;
+    marked(node.title, name, hits);
+    marked(node.host, parts.host, hits);
+    marked(node.rest, parts.rest, hits);
     node.rest.hidden = parts.rest === '';
     if (node.time.textContent !== entry.clock) node.time.textContent = entry.clock;
     node.newTab.setAttribute('aria-label', `Open ${name} in a new tab`);
@@ -384,7 +406,7 @@ export function startHistoryPage(root: HTMLElement): void {
     pendingFocus = null;
     const stop = focusedRow && rows.has(focusedRow.entry.id) ? focusedRow.entry.id : typeof wantFocus === 'number' && rows.has(wantFocus) ? wantFocus : current !== null && rows.has(current) ? current : ids[0] ?? null;
     current = null;
-    for (const node of rows.values()) { node.open.tabIndex = -1; node.newTab.tabIndex = -1; node.remove.tabIndex = -1; }
+    for (const node of rows.values()) { node.open.tabIndex = -1; node.show.tabIndex = -1; node.newTab.tabIndex = -1; node.remove.tabIndex = -1; }
     setCurrent(stop);
     if (typeof wantFocus === 'number' && stop === wantFocus) rows.get(stop)?.open.focus({ preventScroll: false });
     else if (wantFocus === 'search' || (focusedRow && !rows.has(focusedRow.entry.id))) input.focus();
@@ -551,5 +573,7 @@ export function startHistoryPage(root: HTMLElement): void {
     }
   };
   onInbound(receive);
+  // The setting changed while the page is open: redraw the rows under it.
+  onSpoilerConfig(() => { if (snapshot) render(snapshot, false); });
   send({ v: 1, t: 'ready' });
 }

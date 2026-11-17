@@ -13,6 +13,7 @@ import { iconButton, textButton } from './panels/kit';
 import { tileLetter } from './panels/kit-logic';
 import { selectField, type SelectField } from './panels/select';
 import { tileTone } from './history-page-logic';
+import { guardTitle } from './spoiler-guard'; // --- spoiler guard --- titles that came from pages (top sites, bookmarks, dials)
 import {
   MAX_NOTE, MAX_TITLE, MAX_URL, NOTE_SAVED, WIDGET_KINDS, WIDGET_LABELS, blockedText, columnsFor, dateParts, dialCountText, dropBefore, isWebAddress,
   normaliseAddress, textOn, tileWidth, titleState, widgetClasses,
@@ -146,7 +147,7 @@ export function buildStartPage(): {
     face.classList.add('is-letter');
     face.dataset.tone = String(tileTone(dial.host || dial.title));
     const letter = el('span', 'sp-letter');
-    letter.textContent = tileLetter(dial.title || dial.host);
+    letter.textContent = tileLetter(guardTitle(dial.title) || dial.host);
     face.append(letter);
   }
 
@@ -471,7 +472,7 @@ export function buildStartPage(): {
   }
 
   function askRemove(dial: Dial): void {
-    const what = dial.kind === 'folder' ? `the folder “${dial.title}” and the ${dialCountText(dial.n)} in it` : `“${dial.title}”`;
+    const what = dial.kind === 'folder' ? `the folder “${dial.title}” and the ${dialCountText(dial.n)} in it` : `“${guardTitle(dial.title)}”`;
     confirm('Remove from speed dial', `Remove ${what}? Speed dials are bookmarks, so ${dial.kind === 'folder' ? 'they are' : 'it is'} deleted from Bookmarks too.`, 'Remove', () => { cmd({ a: 'remove', id: dial.id }); });
   }
 
@@ -480,9 +481,10 @@ export function buildStartPage(): {
     node.root.dataset.id = String(dial.id);
     node.root.dataset.kind = dial.kind;
     node.root.dataset.labels = titleState(settings.titles, dial.thumb);
-    const label = dial.kind === 'folder' ? `${dial.title}, folder, ${dialCountText(dial.n)}` : dial.title;
+    const dialTitle = guardTitle(dial.title);
+    const label = dial.kind === 'folder' ? `${dialTitle}, folder, ${dialCountText(dial.n)}` : dialTitle;
     node.open.setAttribute('aria-label', label);
-    node.title.textContent = dial.kind === 'folder' ? dial.title : dial.title || dial.host;
+    node.title.textContent = dial.kind === 'folder' ? dialTitle : dialTitle || dial.host;
     paintFace(node.face, { kind: dial.kind, title: dial.title, host: dial.host, id: dial.id, thumb: dial.thumb });
     node.root.classList.toggle('is-editable', editable);
     node.root.classList.toggle('has-thumb', dial.thumb);
@@ -902,7 +904,7 @@ export function buildStartPage(): {
           paintFace(face, { kind: 'link', title: site.title, host: site.host });
           const text = el('span', 'sp-row-text');
           const name = el('span', 'sp-row-title');
-          name.textContent = site.title.trim() === '' ? site.host : site.title;
+          name.textContent = site.title.trim() === '' ? site.host : guardTitle(site.title);
           name.dir = 'auto';
           const meta = el('span', 'sp-row-meta');
           meta.textContent = site.host;
@@ -927,7 +929,7 @@ export function buildStartPage(): {
           // Tiles show a chosen image when the bookmark has one; the list is titles and favicons.
           paintFace(face, widget.view === 'tiles' ? { kind: 'link', title: link.title, host: link.host, id: link.id, thumb: link.thumb } : { kind: 'link', title: link.title, host: link.host });
           const name = el('span', widget.view === 'tiles' ? 'sp-mini-title' : 'sp-row-title');
-          name.textContent = link.title;
+          name.textContent = guardTitle(link.title);
           name.dir = 'auto';
           if (widget.view === 'tiles') button.append(face, name);
           else {
@@ -937,7 +939,7 @@ export function buildStartPage(): {
             text.append(name, meta);
             button.append(face, text);
           }
-          button.setAttribute('aria-label', `${link.title}, ${link.host}`);
+          button.setAttribute('aria-label', `${guardTitle(link.title)}, ${link.host}`);
           button.addEventListener('click', (event) => open(link.url, event));
           item.append(button);
           if (configuring === widget.id && !s.guest && widget.view === 'tiles') {

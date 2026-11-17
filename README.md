@@ -105,6 +105,26 @@ The dashboard can clear cookies and site data, cache, or WebView2 browsing histo
 
 Hosted account management is not included. The main menu is short: new tabs, History, Downloads, bookmarking, workspaces, the site blocker, reader view, a More tools submenu (notes, command palette, saved sessions, extensions, Passwords & Passkeys) and Settings; profiles, import, the Privacy dashboard and updates are in Settings. It is an experimental browser and the benchmark report describes its observed behavior and limits.
 
+## Spoiler protection
+
+Spoiler Firewall for GTA VI is built in and **on by default**, in every tab: normal, private, guest and
+pop-ups, plus pinned web apps. It hides text, images and video that look like GTA VI spoilers behind a
+click-to-reveal cover, and replaces a risky page title with "Spoiler-protected page" in the tab strip and
+history. It is unofficial and not affiliated with Rockstar Games or Take-Two Interactive.
+
+- Turn it off or change it in Settings, Privacy and security, Spoiler protection (turning it off asks for
+  confirmation), or in `settings.txt`: `spoiler_protection=off` (only exactly `off`, `false` or `0` turns it
+  off; any other value keeps it on), `spoiler_mode=lockdown|strict|balanced` (default `strict`; anything
+  else means `strict`), `spoiler_reduced_effects=true`.
+- A change applies to pages opened or reloaded afterwards; open pages keep the script they loaded with.
+- Limits: it reads text and page details, so a screenshot with no readable text, code words, or a site that
+  blocks scripts can get through; the address bar still shows a URL slug; notifications and other apps are not
+  covered. Details and the verification matrix: `docs/spoiler-firewall.md`.
+- The engine lives in `extensions/spoiler-firewall`; Bowser embeds the committed bundle
+  `dist/bowser/spoiler-firewall.js`, so `cargo build` needs no Node. Before a release run
+  `node extensions/spoiler-firewall/build/build.mjs --check` (fails when the committed bundle is stale), and
+  `cargo test spoiler` (checks the embedded bundle has its single config placeholder).
+
 ## Private tabs
 
 Choose **New private tab** from the main menu, the command palette, or press **Ctrl+Shift+P** (this chord used to open the profile menu, which moved to **Ctrl+Shift+M**). A private tab belongs to the current window and workspace like any other tab, shows a private glyph on the tab and in the address pill, and is created InPrivate (`ICoreWebView2ControllerOptions.IsInPrivateModeEnabled`) in one shared, in-memory WebView2 profile named `BowserPrivate`. All private tabs of a window share that profile, so a site you sign in to in one private tab is signed in in the others; it is separate from the browsing profile and from Bowser's own chrome profile. Pages opened from a private tab (link and script popups that Bowser allows) are private too.

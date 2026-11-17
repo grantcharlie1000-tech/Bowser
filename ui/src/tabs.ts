@@ -5,6 +5,7 @@ import { send, sendClosedTabs, sendTabSelection, sendTabStack, sendTool, type Ta
 import { el, icon, place } from './dom';
 import { applyTheme, DRAG_ATTR } from './view';
 import { setTip } from './tooltip';
+import { guardTitle } from './spoiler-guard'; // --- spoiler guard ---
 // --- split view ---
 import { markPair } from './split-chrome';
 import { overPage, pairOrder, pairWeight, wirePoint } from './split-logic';
@@ -239,8 +240,10 @@ function mark(n: TabNode, key: 'bar' | 'ring' | 'dot' | 'badge' | 'rl', on: bool
 }
 
 export function updateTab(n: TabNode, item: TabItem, selected: boolean, uri: string, view: TabView = PLAIN_VIEW): void {
-  if (n.title.textContent !== item.title) n.title.textContent = item.title;
-  const label = item.title !== '' ? item.title : 'Tab';
+  // A title that reads as a GTA VI spoiler shows the engine's guard wording (src/spoiler-guard.ts).
+  const shown = guardTitle(item.title);
+  if (n.title.textContent !== shown) n.title.textContent = shown;
+  const label = shown !== '' ? shown : 'Tab';
   const base = item.private ? privateTabName(label) : label;
   const name = markedName(base, item.notify, item.unread, item.rl);
   if (n.root.getAttribute('aria-label') !== name) {

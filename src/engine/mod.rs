@@ -219,6 +219,10 @@ pub trait EngineAdapter {
     ) {
         done(false);
     }
+    /// Re-registers the Spoiler Firewall script in every live tab from `crate::spoiler::current()`,
+    /// so documents loaded from now on follow a changed setting. Pages already showing keep the
+    /// script they were loaded with until they reload.
+    fn refresh_spoiler_scripts(&mut self) {}
     /// Toggles Chromium's native video PiP for the selected tab, if supported by its runtime.
     fn toggle_picture_in_picture(&mut self, _tab: crate::tabs::TabId) {}
     /// Creates the active tab's controller without starting a navigation.

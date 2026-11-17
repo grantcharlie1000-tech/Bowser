@@ -1,0 +1,29 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Home / X</title><link rel="stylesheet" href="/pages/common.css">
+<style>article{display:block;width:430px}.photo{width:400px;height:250px}.photo img{display:block;width:400px;height:250px;object-fit:cover}</style></head>
+<body><div data-testid="primaryColumn"><div aria-label="Timeline: Your Home Timeline" id="tl"></div></div>
+<script>
+// ?img=<port of the cross-origin image host>  &set=a|b  &v=<cache buster>  &mode=blob|data  (blob/data: the picture is created in the page)
+var q = new URLSearchParams(location.search);
+// sets keep to two spoilers per page: three shielded items within 30 s make a feed "warm" (engine rule) and everything
+// with media is then shielded by policy, which would hide what the OCR verdicts alone do
+var SETS = {
+  a: ["ocr-meme-spoiler.png", "ocr-tweet-spoiler.png", "ocr-meme-cooking.png", "ocr-meme-cooking2.png", "ocr-tweet-clean.png", "ocr-textfree.png"],
+  b: ["ocr-meme-leet.png", "ocr-meme-cooking.png", "ocr-textfree.png"],
+};
+var names = SETS[q.get("set") || "a"];
+var tl = document.getElementById("tl");
+function add(name, src) {
+  var c = document.createElement("div");
+  c.setAttribute("data-testid", "cellInnerDiv");
+  c.innerHTML = '<article data-testid="tweet" class="item" data-fixture="' + name + '"><div data-testid="tweetText"><span>Posted a picture.</span></div><div data-testid="tweetPhoto" class="photo"><img alt=""></div></article>';
+  c.querySelector("img").src = src;
+  tl.appendChild(c);
+}
+if (q.get("mode") === "blob") {
+  fetch("/ocr-images/ocr-tweet-spoiler.png").then(function (r) { return r.blob(); }).then(function (b) { add("ocr-tweet-spoiler.png", URL.createObjectURL(b)); });
+} else if (q.get("mode") === "data") {
+  fetch("/ocr-images/ocr-tweet-spoiler.png").then(function (r) { return r.blob(); }).then(function (b) { var f = new FileReader(); f.onload = function () { add("ocr-tweet-spoiler.png", f.result); }; f.readAsDataURL(b); });
+} else {
+  names.forEach(function (n) { add(n, "http://img.cdn.test:" + q.get("img") + "/ocr-images/" + n + "?v=" + (q.get("v") || "0")); });
+}
+</script></body></html>
