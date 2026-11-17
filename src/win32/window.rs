@@ -117,6 +117,7 @@ mod auto_hide;
 // --- look state (fix group B) --- the page and panel hosts' `state` (window/host_state.rs).
 mod host_state;
 mod surface_recovery;
+mod hang_prompt; // "page isn't responding": Wait / Reload
 pub(super) mod chrome_recovery;
 use chrome_recovery::document_command as html_document_command;
 // --- end look state ---
@@ -626,6 +627,9 @@ struct WindowChrome {
     html_input_handoff: bool,
     recovery_buttons: [(HWND, Option<crate::tabs::TabId>); 4],
     recovery_regions: [Option<Rect>; 4],
+    /// Each pane's "isn't responding" prompt and the area the overlay leaves clear for it.
+    hang_prompts: [hang_prompt::Prompt; 4],
+    hang_regions: [Option<Rect>; 4],
     /// The omnibox in the HTML toolbar has keyboard focus (from its `focus` messages).
     html_omnibox_focused: bool,
     /// The user has typed in the omnibox since it last took focus, so a page load must not move the
@@ -864,6 +868,8 @@ impl WindowChrome {
             html_input_handoff: false,
             recovery_buttons: [(HWND::default(), None); 4],
             recovery_regions: [None; 4],
+            hang_prompts: [hang_prompt::Prompt::default(); 4],
+            hang_regions: [None; 4],
             html_omnibox_focused: false,
             omnibox_edited: false,
             omnibox_claimed: false,
@@ -3176,6 +3182,12 @@ unsafe extern "system" fn window_proc(
             }
             WM_COMMAND if wparam.0 >> 16 == 0 && (wparam.0 & 0xffff) == surface_recovery::CLOSE_ID => {
                 let _ = PostMessageW(Some(hwnd), WM_CLOSE, WPARAM(0), LPARAM(0));
+                LRESULT(0)
+            }
+            WM_COMMAND if wparam.0 >> 16 == 0 && hang_prompt::command(wparam.0 & 0xffff).is_some() => {
+                if let (Some(app), Some((index, reload))) = (app, hang_prompt::command(wparam.0 & 0xffff)) {
+                    hang_prompt::choose(hwnd, app, index, reload);
+                }
                 LRESULT(0)
             }
             WM_COMMAND if (RECOVERY_BUTTON_ID..RECOVERY_BUTTON_ID + 4).contains(&(wparam.0 & 0xffff)) && wparam.0 >> 16 == 0 => {
@@ -9720,6 +9732,7 @@ pub(crate) fn arm_engine_recovery_timeout(hwnd: HWND) -> bool {
 /// They are created only for failed content and follow the existing single/split pane geometry.
 fn sync_recovery_buttons(hwnd: HWND, app: &AppRef) {
     if hwnd.is_invalid() || app.borrow().closing { return; }
+    hang_prompt::sync(hwnd, app);
     let mut shown = [None; 4];
     if let Some(split) = App::split_view(app) {
         if let Some(bounds) = split_rects(hwnd, None) {
@@ -12427,7 +12440,7 @@ fn paint_chrome(hwnd: HWND, app: Option<&AppRef>) {
                 }
                 // The layered popup is above every child HWND, even a child raised to HWND_TOP.
                 // Leave native recovery controls visible through the otherwise opaque empty pane.
-                for region in s.recovery_regions.into_iter().flatten() {
+                for region in s.recovery_regions.into_iter().chain(s.hang_regions).flatten() {
                     s.surface.clear_native_child(region, dirty);
                 }
                 let t1 = std::time::Instant::now();
@@ -12833,7 +12846,8 @@ fn run_key_command(hwnd: HWND, app: &AppRef, cmd: Command, key: u32) {
                     edit_focused(hwnd) || omnibox_focused(hwnd),
                 ) =>
         {
-            App::focus_page(app)
+            // A hung page cannot take the keyboard; its Wait / Reload prompt does.
+            if !hang_prompt::focus(hwnd, app) { App::focus_page(app) }
         }
         Command::FocusOmnibox => focus_omni(hwnd, app, true),
         Command::Reload => App::reload(app),
