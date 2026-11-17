@@ -321,109 +321,89 @@
 .strip .tab.pinned .audio,
 .strip .tab.pinned .marker { display: none; }
 
-/* ---- Groups: one colour. A filled label, then a 2px line under the member tabs. No tint. ---- */
+/* ---- Tab islands (groups): a coloured bar, then the island's tabs on one shared wash. ----
+   Expanded: [bar][tab][tab]...   Folded around the tab in use: [bar][tab][bar]   Folded away: a pill.
+   The bar is the handle: a click folds or unfolds, resting on it opens the island menu. */
 .strip .group {
+  --ge: 0px; /* room for the closing bar, only while folded around a tab */
   position: relative;
   isolation: isolate;
   display: flex;
   align-items: center;
   gap: var(--bw-space-1);
   /* One flex item that weighs as much as its visible tabs (--gw, set from tabs.ts: 1 each, 1.5 for the
-     active one). The basis is the label (--go) plus a gap per child, so what is left over is shared
-     like top-level tabs. The group never gets narrower than its label plus its members' minimum
+     active one). The basis is the handle (--go) plus a gap per child, so what is left over is shared
+     like top-level tabs. The group never gets narrower than its handle plus its members' minimum
      widths (min-width auto): in a crowded row it stops shrinking like a top-level tab does and the
      strip scrolls, instead of collapsing under its own members so the next tabs draw over them. */
-  flex: var(--gw, 1) 1 calc(var(--go, 0px) + var(--gn, 1) * var(--bw-space-1));
+  flex: var(--gw, 1) 1 calc(var(--go, 0px) + var(--gn, 1) * var(--bw-space-1) + var(--ge));
   min-width: auto;
   height: var(--bw-tab-h);
   padding: 0;
   transition: flex-grow var(--bw-dur-group) var(--bw-ease-group), flex-basis var(--bw-dur-group) var(--bw-ease-group);
 }
 
-/* The line starts after the label (--go is the label's width) and runs under the member tabs only. */
+/* The shared wash behind an open island's tabs: it starts after the handle (--go is its width). */
 .strip .group::before {
   content: "";
   position: absolute;
-  left: calc(var(--go, 0px) + var(--bw-space-2));
-  right: var(--bw-space-2);
-  bottom: 0;
-  z-index: 1;
-  height: 2px;
-  border-radius: 1px;
-  background: var(--gc, var(--bw-focus));
+  inset: 0;
+  inset-inline-start: calc(var(--go, 0px) + var(--bw-space-1));
+  z-index: -1;
+  border-radius: var(--bw-r-tab);
+  background: color-mix(in srgb, var(--bw-text) 7%, transparent);
   pointer-events: none;
 }
 
-/* No second colour signal. The selector stays so a later wash cannot grow back in unnoticed. */
-.strip .group::after { content: none; }
+/* Folded, there is no wash: one tab between two bars, or the pill alone. */
+.strip .group.collapsed::before,
+.strip .group:not(:has(.tab:not([hidden])))::before { content: none; }
 
-/* Tabs along the bottom: the line sits on the top edge, toward the page. */
-.strip.at-bottom .group::before { top: 0; bottom: auto; }
-
-/* Group label: the colour is the pill, the name is white on it. The dot is not a second mark. */
+/* The handle: an 8px hit box of the tab's height holding the 4px bar, which sits against the tabs. */
 .strip .ball {
   display: flex;
   flex: none;
   align-items: center;
-  gap: var(--bw-space-1);
-  height: 18px;
-  min-width: 0;
-  max-width: 132px;
+  justify-content: flex-end;
+  align-self: stretch;
+  width: 8px;
   margin: 0;
-  padding: 0 var(--bw-space-2);
-  overflow: hidden;
+  padding: 0;
   border: 0;
   border-radius: var(--bw-r-pill);
-  background: var(--gc, var(--bw-focus));
-  color: #fff;
-  font: inherit;
-  font-weight: var(--bw-weight-strong);
+  background: none;
   cursor: default;
-  transition: background-color var(--bw-dur-fast) var(--bw-ease-fade);
 }
 
-.strip .ball:hover {
-  background: color-mix(in srgb, #fff 14%, var(--gc, var(--bw-focus)));
-  color: #fff;
-}
-
-.strip .ball .dot { display: none; }
-
-.strip .ball .gname {
-  min-width: 0;
-  max-width: 96px;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-}
-
-.strip .ball .gname:empty { display: none; }
-
-.strip .ball .disclose {
+.strip .ball .bar,
+.strip .group .cap {
   flex: none;
-  display: grid;
-  place-items: center;
-  width: 12px;
-  height: 12px;
-  opacity: 0.9;
+  width: 4px;
+  height: calc(var(--bw-tab-h) - 4px);
+  border-radius: var(--bw-r-pill);
+  background: var(--gc, var(--bw-focus));
+  transition: background-color var(--bw-dur-fast) var(--bw-ease-fade), width var(--bw-dur-group) var(--bw-ease-group);
 }
 
-.strip .ball[aria-expanded="true"] .disclose { transform: rotate(90deg); }
+.strip .ball:hover .bar,
+.strip .group .cap:hover {
+  background: color-mix(in srgb, #fff 22%, var(--gc, var(--bw-focus)));
+}
 
-/* Collapsed, the label stays this pill. Members fold away; the name does not. */
-.strip .group.collapsed .ball { max-width: 132px; }
+/* The closing bar: only while the island is folded around the tab in use. */
+.strip .group .cap { display: none; }
+.strip .group.collapsed:has(.tab:not([hidden])) { --ge: calc(4px + var(--bw-space-1)); }
+.strip .group.collapsed:has(.tab:not([hidden])) .cap { display: block; }
 
-/* Every member hidden: the group is the label and nothing else, and it does not shrink or stretch,
-   so the pill is never clipped into a sliver at the end of the row. */
-.strip .group.collapsed:not(:has(.tab:not([hidden]))) {
+/* Every member hidden: the island is its handle and nothing else, a 12px pill that does not shrink
+   or stretch, so it is never clipped into a sliver at the end of the row. */
+.strip .group:not(:has(.tab:not([hidden]))) {
   flex: 0 0 auto;
   min-width: max-content;
   gap: 0;
 }
-.strip .group.collapsed:not(:has(.tab:not([hidden])))::before,
-.strip .group.collapsed:not(:has(.tab:not([hidden])))::after {
-  content: none;
-}
+.strip .group:not(:has(.tab:not([hidden]))) .ball,
+.strip .group:not(:has(.tab:not([hidden]))) .ball .bar { width: 12px; }
 
 /* ---- Tab options (Settings > Tabs): the strip classes tabs.ts sets from the host's `tabopts` ---- */
 
@@ -464,9 +444,12 @@
   border-top-right-radius: 0;
 }
 /* A group is a box of the tab height that centres its tabs; flush, it grows with the row so its tabs
-   reach the top edge as well (U6). Its header chip stays centred. */
+   reach the top edge as well (U6). Its bars stay centred. */
 .strip.flush .group { height: auto; align-items: stretch; }
-.strip.flush .group .ball { align-self: center; }
+.strip.flush .group .ball,
+.strip.flush .group .cap { align-self: center; }
+.strip.flush .group .ball { height: var(--bw-tab-h); }
+.strip.flush .group::before { border-top-left-radius: 0; border-top-right-radius: 0; }
 
 /* Marks: a hibernated tab's icon is dimmed, a tab unused for the threshold is faint, a selected tab is tinted. */
 .strip .tab.asleep .ico { opacity: 0.5; }

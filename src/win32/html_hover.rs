@@ -694,7 +694,8 @@ fn island_content(app: &AppRef, tab: TabId) -> Option<Content> {
     let accent = theme::palette(glass::appearance(), true).tab_group_accent;
     let island = HoverIsland {
         name: model.name.clone().unwrap_or_default(),
-        hint: model.suggested_name.clone().unwrap_or_else(|| island_model::PLACEHOLDER.to_owned()),
+        // As in Opera, the empty field reads "Tab island name"; the strip tooltip carries the site.
+        hint: island_model::PLACEHOLDER.to_owned(),
         slot: island_model::swatch_slot(model.colour),
         swatches: std::iter::once(accent)
             .chain(ISLAND_COLOURS)

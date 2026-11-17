@@ -697,6 +697,52 @@ test('tabs with marks show them in the strip and a reload countdown ticks once a
   assert.equal(intervals.size, 0, 'the timer stops with the last countdown');
 });
 
+// ---- tab islands: a bar, the island's tabs, and a closing bar while folded around the tab in use ----
+
+test('a tab island is its bar and its tabs; folded it keeps the tab in use between two bars', () => {
+  const lead = (collapsed) => ({ gname: 'Docs', gcol: 2, gcollapsed: collapsed, gsize: 3 });
+  const island = (collapsed, active) => tabsMsg([item(1), item(2, { g: 9, gl: true, ...lead(collapsed) }), item(3, { g: 9 }), item(4, { g: 9 }), item(5)], active);
+  const shown = (shell) => shell.children.filter((c) => c.classList.contains('tab') && !c.hidden).map((c) => c.dataset.id);
+  deliver(opts({ stackRow: 'off' }));
+  deliver(island(false, 3));
+  const shell = stripRoot.querySelector('.group');
+  const ball = shell.querySelector('.ball');
+  const cap = shell.querySelector('.cap');
+  assert.deepEqual(shell.children.map((c) => c.className.split(' ')[0]), ['ball', 'tab', 'tab', 'tab', 'cap'], 'bar, tabs in order, closing bar');
+  assert.ok(ball.querySelector('.bar'), 'the handle is a bar');
+  assert.equal(ball.textContent, '', 'and shows no name');
+  assert.equal(ball.getAttribute('aria-label'), 'Docs');
+  assert.equal(ball.getAttribute('aria-expanded'), 'true');
+  assert.equal(shell.classList.contains('collapsed'), false);
+  assert.deepEqual(shown(shell), ['2', '3', '4']);
+  // A click on the bar asks Rust to fold the island; so does a click on the closing bar.
+  sent.length = 0;
+  ball.click();
+  cap.click();
+  assert.deepEqual(sent, [{ v: 1, t: 'group', a: 'toggle', key: 9 }, { v: 1, t: 'group', a: 'toggle', key: 9 }]);
+  // Folded around the tab in use: that tab alone, the closing bar after it.
+  deliver(island(true, 3));
+  assert.equal(shell.classList.contains('collapsed'), true);
+  assert.equal(ball.getAttribute('aria-expanded'), 'false');
+  assert.deepEqual(shown(shell), ['3']);
+  assert.equal(shell.children.at(-1), cap);
+  assert.equal(shell.style.getPropertyValue('--gn'), '1');
+  // Folded away (the tab in use is elsewhere): no tab is shown, the handle is the whole island.
+  deliver(island(true, 5));
+  assert.deepEqual(shown(shell), []);
+  assert.equal(shell.style.getPropertyValue('--gn'), '0');
+  deliver(tabsMsg([item(1, { pinned: true }), item(2), item(3)], 2));
+});
+
+test('tabs.css draws the island: a 4px bar, a 12px pill when folded away, a closing bar only around a shown tab', () => {
+  const css = readFileSync(new URL('../src/styles/tabs.css', import.meta.url), 'utf8');
+  assert.match(css, /\.strip \.ball \.bar,\s*\.strip \.group \.cap \{[^}]*width: 4px;[^}]*background: var\(--gc/);
+  assert.match(css, /\.strip \.group \.cap \{ display: none; \}/);
+  assert.match(css, /\.strip \.group\.collapsed:has\(\.tab:not\(\[hidden\]\)\) \.cap \{ display: block; \}/);
+  assert.match(css, /\.strip \.group:not\(:has\(\.tab:not\(\[hidden\]\)\)\) \.ball \.bar \{ width: 12px; \}/);
+  assert.match(css, /\.strip \.group\.collapsed::before,[^{]*\{ content: none; \}/, 'no shared wash while folded');
+});
+
 // ---- two-level stacks (T10b): the second row ----
 
 test('two-level stacks: the tab row shows the stack as its open ball and the second row shows its tabs', () => {
