@@ -194,3 +194,89 @@ test('font_size x ui_zoom (fontScale) scales chrome text and ui_font changes its
   assert.match(r.scaled['#chrome'].family, /^"?Consolas"?, "Segoe UI Variable"/, 'ui_font comes first, the stock stack after it');
   assert.deepEqual(r.back, r.defaults, 'back to the defaults: back to the stock face and sizes');
 });
+
+// ---- Shared component states (UI/UX repair) ----
+
+const CONTROLS = `<div id="app">
+  <button id="off" class="bw-toggle" role="switch" aria-checked="false"></button>
+  <button id="on" class="bw-toggle" role="switch" aria-checked="true"></button>
+  <div class="bw-segmented" role="radiogroup"><button id="s1" role="radio" aria-checked="true">A</button><button id="s2" role="radio" aria-checked="false" disabled>B</button></div>
+  <input id="ok" class="bw-input"><input id="bad" class="bw-input" aria-invalid="true">
+  <div id="row" class="bw-row is-selected">Row</div><div id="plain" class="bw-row">Row</div>
+  <span id="spin" class="bw-spinner"></span></div>`;
+const READ_CONTROLS = `
+  document.getAnimations().forEach(function (a) { if (a.effect.getComputedTiming().endTime !== Infinity) a.finish(); });
+  var bg = function (s, p) { return cs(s, p).backgroundColor; };
+  out.forced = matchMedia('(forced-colors: active)').matches;
+  out.offTrack = bg('#off'); out.offKnob = getComputedStyle($('#off'), '::after').backgroundColor;
+  out.onTrack = bg('#on'); out.onKnob = getComputedStyle($('#on'), '::after').backgroundColor;
+  out.checked = bg('#s1'); out.unchecked = bg('#s2'); out.disabledOpacity = cs('#s2').opacity;
+  out.okEdge = cs('#ok').borderTopColor; out.badEdge = cs('#bad').borderTopColor;
+  out.rowOutline = cs('#row').outlineStyle; out.plainOutline = cs('#plain').outlineStyle;
+  out.spinTop = cs('#spin').borderTopColor; out.spinRight = cs('#spin').borderRightColor;
+  var probe = document.createElement('i'); document.body.appendChild(probe);
+  probe.style.color = 'var(--bw-danger)'; out.danger = getComputedStyle(probe).color;
+  probe.style.color = 'Highlight'; out.highlight = getComputedStyle(probe).color;
+  probe.style.color = 'ButtonFace'; out.buttonFace = getComputedStyle(probe).color;`;
+
+test('an invalid field takes the danger edge and a disabled segment is dimmed, in both schemes', { skip }, () => {
+  for (const scheme of ['dark', 'light']) {
+    const r = measure(CONTROLS, `document.documentElement.setAttribute('data-scheme', '${scheme}'); ${READ_CONTROLS}`);
+    assert.equal(r.forced, false);
+    assert.equal(r.badEdge, r.danger, `${scheme}: aria-invalid paints the edge --bw-danger`);
+    assert.notEqual(r.okEdge, r.danger, `${scheme}: a valid field keeps the control edge`);
+    assert.equal(r.danger, scheme === 'dark' ? 'rgb(255, 154, 139)' : 'rgb(196, 43, 28)');
+    assert.equal(r.disabledOpacity, '0.45', `${scheme}: a disabled segment is dimmed like a disabled button`);
+  }
+});
+
+test('forced colours (contrast themes): toggles, the checked segment, selection and the spinner keep their state visible', { skip }, () => {
+  const r = measure(CONTROLS, READ_CONTROLS, '', ['--force-high-contrast']);
+  assert.equal(r.forced, true, 'the run is in forced-colours mode');
+  // Without the forced-colours rules the engine paints every fill Canvas: the knob vanished into the
+  // track and on/off differed only by the knob's (invisible) position.
+  assert.equal(r.offTrack, r.buttonFace, 'off: a ButtonFace track');
+  assert.notEqual(r.offKnob, r.offTrack, 'off: the knob is drawn against the track');
+  assert.equal(r.onTrack, r.highlight, 'on: a Highlight track');
+  assert.notEqual(r.onKnob, r.onTrack, 'on: the knob is drawn against the track');
+  assert.notEqual(r.onTrack, r.offTrack, 'on and off differ by more than the knob position');
+  assert.equal(r.checked, r.highlight, 'the checked segment is Highlight');
+  assert.notEqual(r.unchecked, r.highlight);
+  assert.equal(r.rowOutline, 'solid', 'a selected row is outlined');
+  assert.equal(r.plainOutline, 'none', 'an unselected row is not');
+  assert.equal(r.spinTop, r.highlight, 'the spinner keeps a visible turning arc');
+  assert.notEqual(r.spinRight, r.spinTop);
+});
+
+test('site info radio groups have one tab stop each and arrows, Home and End move it (WAI-ARIA radio group)', { skip }, async () => {
+  const esbuild = await import('esbuild');
+  const out = esbuild.buildSync({
+    stdin: { contents: "export { createSiteInfoView } from './siteinfo';", resolveDir: join(here, '..', 'src'), loader: 'ts' },
+    bundle: true, format: 'iife', globalName: 'BW', platform: 'browser', write: false, logLevel: 'silent',
+  });
+  const prelude = Buffer.from(out.outputFiles[0].contents).toString('utf8').replace(/<\/script/gi, String.raw`<\/script`);
+  const page = {
+    v: 1, t: 'siteinfo', tok: 9, kind: 'site-info', host: 'example.test', origin: 'https://example.test', security: 'secure', summary: 'Secure connection (HTTPS)',
+    perms: [{ id: 2, k: 'camera', label: 'Camera', state: 'block' }, { id: 3, k: 'mic', label: 'Microphone', state: 'allow' }],
+    cookies: { state: 'count', n: 2, clear: true }, blocker: { state: 'on', n: 3, level: 'trackers', notices: false }, tracking: 'balanced', zoom: 100, reset: false, blockedHere: false,
+  };
+  const r = measure('<div id="app"></div>', `
+    var view = BW.createSiteInfoView($('#app'));
+    out.shown = view.show(${JSON.stringify(page)});
+    var groups = Array.prototype.slice.call(document.querySelectorAll('[role="radiogroup"]'));
+    var stops = function (g) { return Array.prototype.map.call(g.querySelectorAll('[role="radio"]'), function (b) { return b.tabIndex; }); };
+    out.stops = groups.map(stops);
+    var key = function (g, k) { document.activeElement.dispatchEvent(new KeyboardEvent('keydown', { key: k, bubbles: true, cancelable: true })); return Array.prototype.indexOf.call(g.querySelectorAll('[role="radio"]'), document.activeElement); };
+    var cam = groups[0];
+    cam.querySelector('[tabindex="0"]').focus();
+    out.moves = [key(cam, 'ArrowRight'), key(cam, 'ArrowRight'), key(cam, 'ArrowDown'), key(cam, 'End'), key(cam, 'Home'), key(cam, 'ArrowLeft'), key(cam, 'ArrowUp')];
+    out.afterMoves = stops(cam);
+    out.tabbable = Array.prototype.filter.call(document.querySelectorAll('button'), function (b) { return b.tabIndex >= 0 && !b.disabled; }).length;
+  `, prelude);
+  assert.equal(r.shown, true);
+  assert.deepEqual(r.stops, [[-1, 0, -1], [0, -1, -1], [-1, 0, -1]], 'one stop per group: the checked option');
+  assert.deepEqual(r.moves, [2, 0, 1, 2, 0, 2, 1], 'arrows wrap; Home and End jump');
+  assert.deepEqual(r.afterMoves, [-1, 0, -1], 'the tab stop follows focus');
+  // Two permission groups + blocking levels = 3 stops, plus Clear, notices switch and Reset (disabled).
+  assert.equal(r.tabbable, 5, 'Tab visits each group once, not each option');
+});
