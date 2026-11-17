@@ -501,3 +501,33 @@ test('a search-field row picked with the mouse (sdone) clears the field unless s
   const main = readFileSync(join(here, '..', 'src', 'main.ts'), 'utf8');
   assert.match(main, /case 'sdone':[\s\S]{0,200}searchTextAfterSearch\(sfield\?\.keep/);
 });
+
+// ---- the bookmark dialog in a fake document ----
+
+test('the bookmark dialog saves once per Enter, never on an IME commit or for an earlier drawing', async () => {
+  const { FakeDocument, Node } = await import('./fake-dom.mjs');
+  globalThis.document = new FakeDocument();
+  Node.prototype.closest = function closest(s) { for (let n = this; n; n = n.parent) if (n.matches?.(s)) return n; return null; };
+  Object.assign(globalThis.window, { innerWidth: 400, innerHeight: 400, addEventListener() {}, removeEventListener() {} });
+  globalThis.HTMLElement = Node;
+  globalThis.HTMLInputElement = Node;
+  const { startAddressDialog } = await bundle('address-dialog.ts');
+  const root = new Node('div');
+  const show = startAddressDialog(root);
+  const snap = (url, name) => ({ t: 'snap', p: 'addressdlg', d: { kind: 'bookmark', url, existing: false, name, folder: 0, nickname: '', description: '', folders: [], error: '' } });
+  const saves = () => take().filter((m) => m.a === 'bmsave' || m.f?.a === 'bmsave' || JSON.stringify(m).includes('bmsave'));
+  take();
+  show(snap('https://a.example/', 'First'));
+  const first = root.querySelector('input');
+  first.dispatch('keydown', { key: 'Enter', isComposing: true });
+  assert.equal(saves().length, 0, 'Enter that commits an IME candidate does not save');
+  // A different bookmark drawn into the same page: Enter saves it alone, with its own fields.
+  show(snap('https://b.example/', 'Second'));
+  const second = root.querySelector('input');
+  assert.notEqual(second, first);
+  const event = second.dispatch('keydown', { key: 'Enter', isComposing: false });
+  assert.ok(event.defaultPrevented);
+  const sent = saves();
+  assert.equal(sent.length, 1, JSON.stringify(sent));
+  assert.match(JSON.stringify(sent[0]), /Second/);
+});

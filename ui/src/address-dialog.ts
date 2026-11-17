@@ -108,9 +108,13 @@ function drawBookmark(root: HTMLElement, b: BookmarkDialog): void {
   if (b.existing) actions.append(textButton('Remove', () => { sendAddr({ a: 'bmremove' }); }, { icon: 'trash', subtle: true }));
   actions.append(textButton('Cancel', () => { sendPanel('panel', { a: 'dismiss' }); }, { subtle: true }));
   root.replaceChildren(heading, address, field('Name', name), field('Folder', select.root), field('Nickname', nickname), field('Description', description), problem, actions);
-  root.addEventListener('keydown', (event) => {
-    if (event.key === 'Enter' && event.target instanceof HTMLInputElement) { event.preventDefault(); save(); }
-  });
+  // On this drawing's own fields: `root` outlives it, so a listener there would keep an older
+  // dialog's save (and its stale fields) running on every later Enter.
+  for (const field of [name, nickname]) {
+    field.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter' && !event.isComposing) { event.preventDefault(); save(); }
+    });
+  }
   name.focus();
   name.select();
 }
