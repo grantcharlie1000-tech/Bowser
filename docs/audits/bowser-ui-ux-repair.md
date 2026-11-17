@@ -72,9 +72,14 @@ Severity: H high, M medium, L low. "Compiled" means Rust tests compile but were 
 | F-1 | M | Toolbar | Typed-history and QR buttons rendered while turned off: `.bw-icon-btn` display beat `[hidden]` | Shared buttons honour `[hidden]` (component rule) plus a pill rule | Style test + QA check |
 | F-18 | M | Privacy dashboard | The Delete browsing data "Cancel" showed when no deletion was armed (same `[hidden]` cause; exposed once F-13 let the section render) | Same component rule | QA check |
 | F-3 | M | History, downloads pages | Toast "Undo" was a Tab stop and announced while the toast was invisible | Hidden until an undo toast shows it | QA check |
+| U-1 | M | Privacy dashboard, Site rules | Owner request: remove the "This site" row (and its "Use <host>" shortcut) | Removed; Add a site is the one way in | UI test |
+| U-2 | H | Privacy dashboard, Settings site/list pages | "Add a site" and "Add from address" forms were drawn over their labels: the form could not shrink, so the label column was squeezed and its text ran under the field (and past the row at 360 px) | The form takes the free space, its field shrinks first (picker and button keep their size), and it drops below the label when too narrow | `qa-protection-rows.mjs` at 480 and 360 px (fails on the earlier build) |
+| U-3 | M | Privacy dashboard rows | List descriptions and long site origins ran under their buttons and toggles | Descriptions, then labels, end in an ellipsis; the full text stays in the DOM | Same test |
+| U-4 | H | Privacy dashboard and Settings, Clear data | The five-range Period picker covered "Period" and lost "Everything" off the edge of the 480 px window | Period is a dropdown, like History above it | Same test |
+| U-5 | M | Every shared dropdown | Lists were only as wide as their button, so options were cut short ("Pas…", "Everyth…") | The list is at least as wide as its longest option, kept inside the window | Same test (fails without the fix) |
 | L-6 | L | Docs | README offered v0.0.5 as the stable download (pin is v0.0.29); shortcuts table missing bound chords; PRODUCT.md listed the retired Ctrl+Shift+V | Corrected. The stable pin itself is unchanged | n/a |
 
-Total: 42 confirmed defects fixed (14 high, 24 medium, 4 low).
+Total: 47 defects fixed (16 high, 27 medium, 4 low), including one owner-requested removal (U-1).
 
 ## Re-verified: historical ledger rows already fixed on main
 
