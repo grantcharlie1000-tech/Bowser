@@ -568,6 +568,8 @@ fn open(
         popup.pending_compose = None;
         popup.at = at;
         popup.shown = false;
+        // The last menu's cards (an open submenu) must not decide where this one's Escape goes.
+        popup.cards = None;
         popup.passive = passive;
         popup.context = context;
         (popup.dpi, popup.work) = monitor_data(at.monitor_point());
@@ -769,11 +771,10 @@ fn popup_accelerator(owner: HWND, accel: Accel) -> bool {
     if !accel.key_down || accel.vk != 0x1B {
         return false;
     }
-    // A composer plays its own 100 ms exit on Escape and then dismisses itself.
     let tok = POPUPS.with(|p| {
         p.borrow()
             .get(&(owner.0 as isize))
-            .filter(|p| p.dismiss.is_active() && p.on_compose.is_none())
+            .filter(|p| p.dismiss.is_active() && escape_closes_popup(p.on_compose.is_some(), p.cards))
             .map(|p| p.token)
     });
     if let Some(tok) = tok {
@@ -782,6 +783,13 @@ fn popup_accelerator(owner: HWND, accel: Accel) -> bool {
     } else {
         false
     }
+}
+/// Whether Escape closes the whole popup here, before its page sees the key. A composer plays its
+/// own 100 ms exit on Escape and then dismisses itself. While a menu shows a submenu card (the last
+/// `size` reported a child), Escape belongs to the page: it closes that submenu only and returns to
+/// the row that opened it, and the page dismisses the menu itself on an Escape at the top level.
+fn escape_closes_popup(composer: bool, cards: Option<MenuCards>) -> bool {
+    !composer && cards.is_none_or(|cards| cards.child_w == 0)
 }
 pub(super) fn valid_pick(owner: HWND, token: u32, id: u32) -> bool {
     POPUPS.with(|p| {
@@ -1692,6 +1700,16 @@ mod tests {
         assert!(picks.is_empty(), "a composer is closed by dismissing, never by picking");
         assert!(acts.is_empty());
         assert!(!json.contains("compose\""), "the handler is Rust state, not page data");
+    }
+
+    #[test]
+    fn escape_closes_one_submenu_in_the_page_and_the_whole_popup_otherwise() {
+        let parent_only = MenuCards { parent_x: 354, parent_y: 0, parent_w: 220, parent_h: 300, child_x: 0, child_y: 0, child_w: 0, child_h: 0 };
+        let with_child = MenuCards { child_x: 578, child_y: 40, child_w: 200, child_h: 120, ..parent_only };
+        assert!(escape_closes_popup(false, None), "a plain menu, palette or bubble closes on Escape");
+        assert!(escape_closes_popup(false, Some(parent_only)), "a menu with no submenu open closes");
+        assert!(!escape_closes_popup(false, Some(with_child)), "an open submenu takes Escape in the page");
+        assert!(!escape_closes_popup(true, None), "a composer plays its own exit");
     }
 
     #[test]

@@ -99,6 +99,21 @@ test('submenus open beside the parent with Right/Enter and close with Left/Backs
   assert.deepEqual(logic.menuKey(nav, 'Backspace', {}, 0), { kind: 'page' });
 });
 
+test('Escape closes one submenu level at a time, then dismisses the menu', () => {
+  const nav = logic.createNav([item(1, 'Plain'), item(2, 'More', { submenu: [item(3, 'Deeper', { submenu: [item(4, 'Leaf')] })] })]);
+  logic.menuKey(nav, 'ArrowDown', {}, 0);
+  logic.menuKey(nav, 'ArrowRight', {}, 0);
+  logic.menuKey(nav, 'ArrowRight', {}, 0);
+  assert.equal(nav.pages.length, 3);
+  assert.deepEqual(logic.menuKey(nav, 'Escape', {}, 0), { kind: 'page' });
+  assert.equal(nav.pages.length, 2);
+  assert.equal(logic.currentPage(nav).selected, 0, 'the row that opened the closed submenu stays selected');
+  assert.deepEqual(logic.menuKey(nav, 'Escape', {}, 0), { kind: 'page' });
+  assert.equal(nav.pages.length, 1);
+  assert.equal(logic.currentPage(nav).selected, 1);
+  assert.deepEqual(logic.menuKey(nav, 'Escape', {}, 0), { kind: 'dismiss' });
+});
+
 test('at most the open page and its parent are on screen', () => {
   const deep = item(9, 'Deep', { submenu: [item(10, 'Leaf')] });
   const nav = logic.createNav([item(1, 'Top', { submenu: [item(2, 'Middle', { submenu: [deep] })] })]);

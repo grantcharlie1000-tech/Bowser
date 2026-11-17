@@ -228,7 +228,9 @@ export function menuKey(nav: MenuNav, key: string, mods: KeyMods, now: number): 
       return isSelectable(entry) && entry.submenu ? activate(nav, page.selected) : NONE;
     }
     case 'ArrowLeft': case 'Backspace': return back(nav) ? PAGE : NONE;
-    case 'Escape': return { kind: 'dismiss' };
+    // Escape closes one level: an open submenu first (its parent row keeps the selection), and the
+    // menu itself only from the top page.
+    case 'Escape': return back(nav) ? PAGE : { kind: 'dismiss' };
     default: break;
   }
   if (key.length !== 1 || mods.ctrl || mods.alt || mods.meta) return NONE;
