@@ -678,3 +678,87 @@ fn emergency_edit_lease_rejects_closed_and_reused_window_owners() {
         assert!(request_edit_repaint(edit).is_empty());
     }
 }
+
+#[test]
+fn recovery_presentation_unresponsive_page_gets_a_native_wait_reload_bar_that_keeps_the_page() {
+    use windows::Win32::UI::Input::KeyboardAndMouse::{GetFocus, IsWindowEnabled, SetFocus};
+    let _profile = crate::profile::TestProfileGuard::isolated();
+    let f = Fixture::new();
+    crate::app::test_show_page(&f.app, TabId(0), "https://example.test/hung");
+    crate::app::test_report_unresponsive(&f.app, TabId(0));
+    sync_recovery_buttons(f.hwnd, &f.app);
+    let prompt = with_chrome(f.hwnd, |s| s.hang_prompts[0]).unwrap();
+    assert_eq!(prompt.tab, Some(TabId(0)));
+    assert!(with_chrome(f.hwnd, |s| s.recovery_buttons[0].1).unwrap().is_none(), "a hang is not a failure card");
+    for control in [prompt.label, prompt.wait, prompt.reload] {
+        assert_ne!(unsafe { GetWindowLongPtrW(control, GWL_STYLE) } as u32 & WS_VISIBLE.0, 0);
+    }
+    assert!(unsafe { IsWindowEnabled(prompt.wait) }.as_bool() && unsafe { IsWindowEnabled(prompt.reload) }.as_bool());
+    // Window text is each control's accessible name.
+    assert_eq!(read_edit(prompt.wait), crate::app::UNRESPONSIVE_WAIT);
+    assert_eq!(read_edit(prompt.reload), crate::app::UNRESPONSIVE_RELOAD);
+    assert_eq!(read_edit(prompt.label).trim(), crate::app::UNRESPONSIVE_MESSAGE);
+    assert_ne!(unsafe { GetFocus() }, prompt.wait, "showing the prompt never takes the keyboard");
+    let region = with_chrome(f.hwnd, |s| s.hang_regions[0]).unwrap().unwrap();
+    let viewport = split_viewport(f.hwnd).unwrap();
+    assert!(region.top >= viewport.top && region.bottom < viewport.bottom, "a bar at the top, not a card over the page");
+    f.paint();
+    let mut rect = RECT::default();
+    unsafe { GetWindowRect(prompt.reload, &mut rect).unwrap(); }
+    let mut point = POINT { x: (rect.left + rect.right) / 2, y: (rect.top + rect.bottom) / 2 };
+    unsafe { let _ = ScreenToClient(f.hwnd, &mut point); }
+    assert_eq!(pixel_alpha(f.hwnd, point.x, point.y), 0, "the layered overlay must expose the native bar");
+    // F6 towards the page reaches the prompt; Escape on a button chooses Wait and hides it.
+    assert!(hang_prompt::focus(f.hwnd, &f.app));
+    // The fixture's parent is never shown, so Windows may refuse it the keyboard; check the
+    // move between the two choices whenever focus did arrive.
+    if unsafe { GetFocus() } == prompt.wait {
+        unsafe { let _ = SendMessageW(prompt.wait, WM_KEYDOWN, Some(WPARAM(0x09)), Some(LPARAM(0))); }
+        assert_eq!(unsafe { GetFocus() }, prompt.reload, "Tab moves between the two choices");
+    }
+    unsafe { let _ = SendMessageW(prompt.reload, WM_KEYDOWN, Some(WPARAM(0x1b)), Some(LPARAM(0))); }
+    assert!(!App::unresponsive_prompt(&f.app, TabId(0)));
+    assert!(App::tab_has_controller(&f.app, TabId(0)), "Wait keeps the document");
+    assert_eq!(unsafe { GetWindowLongPtrW(prompt.wait, GWL_STYLE) } as u32 & WS_VISIBLE.0, 0);
+    assert_ne!(unsafe { GetFocus() }, prompt.reload, "focus never stays on a hidden button");
+    unsafe { let _ = SetFocus(None); }
+}
+
+#[test]
+fn recovery_presentation_html_omnibox_draft_and_keyboard_pass_to_the_native_field() {
+    let _profile = crate::profile::TestProfileGuard::isolated();
+    let f = Fixture::new();
+    with_chrome(f.hwnd, |s| {
+        assert_eq!(s.take_html_omnibox(), None, "an unfocused omnibox hands nothing over");
+        s.html_omnibox_focused = true;
+        assert_eq!(s.take_html_omnibox(), Some(None), "focus without typing keeps the shown address");
+        s.html_omnibox_focused = true;
+        s.omnibox_edited = true;
+        s.edit_text = "half typed address".into();
+    });
+    recover_native_chrome(f.hwnd, &f.app);
+    let edit = f.app.borrow().edit;
+    assert!(!with_chrome(f.hwnd, |s| s.html_omnibox_focused).unwrap());
+    assert_ne!(unsafe { GetWindowLongPtrW(edit, GWL_STYLE) } as u32 & WS_VISIBLE.0, 0);
+    // The never-shown fixture is normally not the foreground window, and the draft moves only with
+    // the keyboard, so it is checked only where the keyboard could move.
+    if unsafe { GetForegroundWindow() } == f.hwnd {
+        assert_eq!(read_edit(edit), "half typed address");
+    }
+}
+
+#[test]
+fn recovery_presentation_f6_reaches_a_failure_card_only_while_the_active_page_failed() {
+    let _profile = crate::profile::TestProfileGuard::isolated();
+    let f = Fixture::new();
+    crate::app::test_show_page(&f.app, TabId(0), "https://example.test/healthy");
+    sync_recovery_buttons(f.hwnd, &f.app);
+    assert!(!hang_prompt::focus(f.hwnd, &f.app), "a healthy page keeps F6 for itself");
+    App::tab_render_failed(&f.app, TabId(0));
+    sync_recovery_buttons(f.hwnd, &f.app);
+    assert!(hang_prompt::focus(f.hwnd, &f.app), "the failure card is the keyboard's way to Retry");
+    let other = App::new_tab(&f.app);
+    sync_recovery_buttons(f.hwnd, &f.app);
+    assert_eq!(App::active_tab_id(&f.app), other);
+    assert!(!hang_prompt::focus(f.hwnd, &f.app), "another tab's hidden card never takes the keyboard");
+}

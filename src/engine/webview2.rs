@@ -4696,6 +4696,21 @@ impl EngineAdapter for WebView2Engine {
         let _ = unsafe { environment.GetProcessExtendedInfos(&handler) };
     }
     // --- end tab options ---
+    fn probe_responsive(&mut self, tab_id: TabId, done: Box<dyn FnOnce()>) {
+        let webview = self.core.borrow().tabs.get(&tab_id).and_then(|tab| tab.webview.clone());
+        let Some(webview) = webview else { return; };
+        // A hung renderer queues the script; the completion arrives only once it runs again.
+        // The script reads nothing from the page and returns nothing.
+        let slot = std::cell::Cell::new(Some(done));
+        let handler = ExecuteScriptCompletedHandler::create(Box::new(move |status, _| {
+            let done = slot.take();
+            if status.is_ok() && let Some(done) = done { done(); }
+            Ok(())
+        }));
+        let script = CoTaskMemPWSTR::from("0");
+        let _ = unsafe { webview.ExecuteScript(*script.as_ref().as_pcwstr(), &handler) };
+    }
+
     fn check_sleep_blocked(&mut self, tab_id: TabId, done: Box<dyn FnOnce(bool)>) {
         // A download dies with its webview, so a tab that is downloading stays awake.
         if super::download::owner_downloading(super::download::tab_owner(tab_id.0)) {

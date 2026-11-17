@@ -246,8 +246,8 @@ the island menu after `island_menu::HOVER_DELAY_MS` on a domain island's ball; a
 
 | `t` | fields | from | meaning |
 |---|---|---|---|
-| `tip` | `text` (1-256 chars, not blank), `r` | toolbar, tabs, rail | show a tooltip under rectangle `r` |
-| `tipoff` | - | toolbar, tabs, rail | hide the tooltip |
+| `tip` | `text` (1-256 chars, not blank), `r` | toolbar, tabs, rail, bookmarks bar, panel, dialogs, settings page | show a tooltip under rectangle `r` (CSS pixels of the sending view; Rust maps it from that view's own window) |
+| `tipoff` | - | the same views | hide the tooltip |
 | `hover` | `k`: `tab`/`ball` with `id` (tab wire id / group key) and `r`; or `k`: `none` alone | tabs | pointer over a tab or ball, or neither |
 | `hact` | `tok`, `a`, `n`/`text` | hover | `a`: `marker` (`n` 0-4), `next`, `row` (`n` 0-63), `swatch` (`n` 0-31), `close`, `name` (`text` <= 64 chars), `focus`, `dismiss` |
 | `size` | `tok`, `w`, `h` | hover (and popup) | measured content size |

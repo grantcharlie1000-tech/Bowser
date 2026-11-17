@@ -210,6 +210,13 @@ pub enum View {
 }
 
 impl View {
+    /// The views whose pages show `data-tip` tooltips through the hover layer (`installTooltips` in
+    /// main.ts, panel.ts, dialog.ts and settings-page.ts; the bookmarks bar uses the same helper).
+    pub fn shows_tooltips(self) -> bool {
+        matches!(self, Self::Toolbar | Self::Tabs | Self::Rail | Self::BookmarkBar | Self::Panel | Self::Dialog | Self::DialogNotes
+            | Self::DialogPrivacy | Self::DialogRename | Self::DialogAddress | Self::DialogSessions | Self::DialogFeeds | Self::Settings)
+    }
+
     fn persistent(self) -> Option<ChromeView> { match self { Self::Toolbar => Some(ChromeView::Toolbar), Self::Tabs => Some(ChromeView::Tabs), Self::Rail => Some(ChromeView::Rail), _ => None } }
 
     pub fn start_url(self) -> &'static str {
@@ -1669,17 +1676,20 @@ fn view_accepts_command(view: View, command: &Command) -> bool {
         Command::ChromeApplied(id) | Command::ChromeFailed(id) => return view.persistent() == Some(id.view),
         Command::ChromeNavigating(_) => return false,
         Command::Ready => return view.persistent().is_none(),
+        // Every view whose page installs `data-tip` tooltips (ui/src/tooltip.ts) may ask for one;
+        // its owner maps the rectangle from that view's own window (`window::html_view_tip`).
+        Command::Tip { .. } | Command::TipOff => return view.shows_tooltips(),
         _ => {}
     }
     match view {
-        View::Toolbar => matches!(command, Command::Interaction{..} | Command::Tool { bar: ToolBar::Address, .. } | Command::DownloadsToggle { .. } | Command::ExtensionsButton { .. } | Command::Nav(_) | Command::Edit { .. } | Command::Submit(_) | Command::Escape | Command::Focus(_) | Command::Open(_) | Command::BeginDrag | Command::Caption(_) | Command::Tip { .. } | Command::TipOff | Command::SuggestPick { .. } | Command::SuggestPreview { .. } | Command::SuggestEnd | Command::Panel { kind: PanelType::Address, .. }),
-        View::Tabs => matches!(command, Command::Tool { bar: ToolBar::Tabs, .. } | Command::Tab { .. } | Command::TabMove { .. } | Command::TabSelection { .. } | Command::ClosedTabs | Command::Group { .. } | Command::Side(_) | Command::BeginDrag | Command::Caption(_) | Command::Tip { .. } | Command::TipOff | Command::Hover(_))
+        View::Toolbar => matches!(command, Command::Interaction{..} | Command::Tool { bar: ToolBar::Address, .. } | Command::DownloadsToggle { .. } | Command::ExtensionsButton { .. } | Command::Nav(_) | Command::Edit { .. } | Command::Submit(_) | Command::Escape | Command::Focus(_) | Command::Open(_) | Command::BeginDrag | Command::Caption(_) | Command::SuggestPick { .. } | Command::SuggestPreview { .. } | Command::SuggestEnd | Command::Panel { kind: PanelType::Address, .. }),
+        View::Tabs => matches!(command, Command::Tool { bar: ToolBar::Tabs, .. } | Command::Tab { .. } | Command::TabMove { .. } | Command::TabSelection { .. } | Command::ClosedTabs | Command::Group { .. } | Command::Side(_) | Command::BeginDrag | Command::Caption(_) | Command::Hover(_))
             // --- split view ---
             || matches!(command, Command::Split(SplitCommand::DragOver { .. } | SplitCommand::Drop { .. } | SplitCommand::DragEnd { .. }))
             // --- end split view ---
             || matches!(command, Command::TabDrag(_)) // --- tab ghost ---
             || matches!(command, Command::TabStack { .. } | Command::RailWheel { .. }), // --- tab stacks (T10): the sidebar's workspace header too ---
-        View::Rail => matches!(command, Command::Rail { .. } | Command::RailMove { .. } | Command::Tip { .. } | Command::TipOff | Command::RailWheel { .. }),
+        View::Rail => matches!(command, Command::Rail { .. } | Command::RailMove { .. } | Command::RailWheel { .. }),
         View::Panel => matches!(command, Command::Panel { kind: PanelType::Panel | PanelType::History | PanelType::Bookmarks | PanelType::Customize, .. } | Command::ComposerOpen { .. }),
         View::Popup => matches!(command, Command::PopupSize { .. } | Command::PopupPick { .. } | Command::PopupDismiss { .. } | Command::PopupAct { .. } | Command::PopupCompose { .. } | Command::DownloadsAct { .. }),
         View::Dialog => matches!(command, Command::Panel { kind: PanelType::Panel, .. }),
@@ -1687,7 +1697,7 @@ fn view_accepts_command(view: View, command: &Command) -> bool {
         View::DialogPrivacy => matches!(command, Command::Panel { kind: PanelType::Panel | PanelType::Privacy, .. }),
         View::DialogRename => matches!(command, Command::Panel { kind: PanelType::Panel | PanelType::Rename, .. }),
         View::DialogAddress => matches!(command, Command::Panel { kind: PanelType::Panel | PanelType::Address, .. }),
-        View::BookmarkBar => matches!(command, Command::Panel { kind: PanelType::Address, .. } | Command::Tip { .. } | Command::TipOff),
+        View::BookmarkBar => matches!(command, Command::Panel { kind: PanelType::Address, .. }),
         View::DialogSessions => matches!(command, Command::Panel { kind: PanelType::Panel | PanelType::Sessions, .. }),
         View::DialogFeeds => matches!(command, Command::Panel { kind: PanelType::Panel | PanelType::Feeds, .. }),
         View::Hover => matches!(command, Command::PopupSize { .. } | Command::HoverAct { .. } | Command::SuggestPick { .. }),
@@ -1724,6 +1734,19 @@ mod restoration_admission_tests {
         assert!(!view_accepts_command(View::Tabs, &submit));
         assert!(!view_accepts_command(View::Rail, &submit));
         assert!(!view_accepts_command(View::Settings, &submit));
+    }
+
+    #[test]
+    fn tooltip_requests_reach_every_view_that_installs_tooltips_and_no_other() {
+        let tip = parse_command(r#"{"v":1,"t":"tip","text":"Close","r":"1,2,3,4"}"#).unwrap();
+        let off = parse_command(r#"{"v":1,"t":"tipoff"}"#).unwrap();
+        for view in [View::Toolbar, View::Tabs, View::Rail, View::BookmarkBar, View::Panel, View::Dialog, View::DialogNotes,
+            View::DialogPrivacy, View::DialogRename, View::DialogAddress, View::DialogSessions, View::DialogFeeds, View::Settings] {
+            assert!(view_accepts_command(view, &tip) && view_accepts_command(view, &off), "{view:?} shows tooltips");
+        }
+        for view in [View::Popup, View::Hover, View::Split, View::HistoryPage, View::DownloadsPage] {
+            assert!(!view_accepts_command(view, &tip) && !view_accepts_command(view, &off), "{view:?} has no tooltips");
+        }
     }
 }
 

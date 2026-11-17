@@ -330,6 +330,10 @@ pub trait EngineAdapter {
     fn check_sleep_blocked(&mut self, _tab: crate::tabs::TabId, done: Box<dyn FnOnce(bool)>) {
         done(true);
     }
+    /// After an unresponsive report: `done` runs once the tab's current document runs a trivial
+    /// script again, which proves its renderer answers. It never runs for a failed request, a
+    /// closed controller or an engine that cannot ask, so silence never clears a hang prompt.
+    fn probe_responsive(&mut self, _tab: crate::tabs::TabId, _done: Box<dyn FnOnce()>) {}
     /// Suspends controllers that have been hidden for at least the supplied duration.
     fn suspend_hidden_tabs(&mut self, _hidden_for_ms: u64) -> windows::core::Result<()> {
         Ok(())
