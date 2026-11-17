@@ -201,3 +201,13 @@ test('the private violet is text-grade on both schemes', () => {
     }
   }
 });
+
+test('the lead is one sentence and the cookie promise is still made once, in its card', () => {
+  assert.equal(ui.PRIVATE_PAGE_LEAD.split(/(?<=[.!?])\s+/).length, 1, 'docs/design/private-tabs.md: one-sentence lead');
+  const cookies = ui.PRIVATE_NOT_KEPT.find((row) => row.label === 'Cookies and site data');
+  assert.ok(cookies && /memory/.test(cookies.text) && /last private tab/.test(cookies.text), 'what happens to cookies is still said');
+  // What private mode does not protect stays on the page.
+  assert.ok(ui.PRIVATE_STILL_SEEN.some((row) => /IP address/.test(row.text)));
+  assert.ok(ui.PRIVATE_STILL_SEEN.some((row) => /employer or school/.test(row.text)));
+  assert.match(ui.PRIVATE_SHARED_NOTE, /share one session/);
+});

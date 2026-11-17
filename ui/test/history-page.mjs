@@ -386,3 +386,14 @@ test('Clear browsing data, history off, guest and unreadable states', () => {
   deliver({ v: 1, t: 'snap', p: 'historypage', d: { ...fixture.snap.d, extra: true } });
   assert.equal(app.querySelector('.hp-empty-title').textContent, 'No history yet');
 });
+
+test('"History is off" names the switch Settings really shows', async () => {
+  const settings = await bundle('settings-page-logic.ts');
+  const row = settings.ROWS.find((r) => r.id === 'history');
+  const area = settings.areaOf(row.section);
+  const off = logic.emptyView({ state: 'off', query: '', days: [] });
+  assert.equal(off.kind, 'off');
+  // The button opens Settings at Privacy (history_page.rs Action::Settings); the words name that row and area.
+  assert.ok(off.body.includes(`Turn on ${row.label} in ${area.title} settings`), off.body);
+  assert.doesNotMatch(off.body, /Save browsing history/, 'no label that Settings does not show');
+});

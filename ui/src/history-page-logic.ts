@@ -205,7 +205,7 @@ export interface EmptyView { readonly kind: 'empty' | 'nomatch' | 'off' | 'guest
 export function emptyView(s: Pick<HistorySnapshot, 'state' | 'query' | 'days'>): EmptyView | null {
   switch (s.state) {
     case 'off':
-      return { kind: 'off', title: 'History is off', body: 'Bowser isn’t saving the pages you visit in this profile. Turn on “Save browsing history” in Settings to see them here.' };
+      return { kind: 'off', title: 'History is off', body: 'Bowser isn’t saving the pages you visit in this profile. Turn on History in Privacy settings to see them here.' };
     case 'guest':
       return { kind: 'guest', title: 'Guest windows never save history', body: 'Pages you visit in this guest window are forgotten when it closes. Nothing is written to disk.' };
     case 'error':
