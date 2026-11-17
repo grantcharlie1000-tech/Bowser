@@ -1282,10 +1282,12 @@ export function startTabs(strip: HTMLElement): HTMLElement {
     const at = list.findIndex((n) => n.id === id);
     if (at < 0) return;
     let next: number;
-    if (ev.ctrlKey && ev.shiftKey && (ev.key === 'ArrowLeft' || ev.key === 'ArrowRight')) {
+    if (ev.ctrlKey && ev.shiftKey && !ev.altKey && (ev.key === 'ArrowLeft' || ev.key === 'ArrowRight' || ev.key === 'PageUp' || ev.key === 'PageDown')) {
       // Keyboard reorder: one slot per press; focus follows the moved tab once the host reorders.
       // A collapsed group is one slot here too: before it means before its first member (U2).
-      const before = stepMoveBefore(list.map((n) => n.id), at, ev.key === 'ArrowLeft' ? -1 : 1, collapsedLeaders(id));
+      // Ctrl+Shift+Page Up/Down is the chord that reaches the strip: the host keeps Ctrl+Shift+Left/
+      // Right for the split panes (docs/shortcuts.md).
+      const before = stepMoveBefore(list.map((n) => n.id), at, ev.key === 'ArrowLeft' || ev.key === 'PageUp' ? -1 : 1, collapsedLeaders(id));
       ev.preventDefault();
       if (before !== null) {
         refocus = id;
