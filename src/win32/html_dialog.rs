@@ -312,9 +312,13 @@ pub(crate) fn close(parent: HWND) {
 }
 
 fn close_runtime(runtime: &Rc<RefCell<Runtime>>) {
-    let (parent, host) = runtime.try_borrow_mut().ok().map(|mut state| { state.closed = true; (state.parent, state.host.take()) }).unwrap_or((HWND::default(), None));
+    let (parent, owner, host) = runtime.try_borrow_mut().ok().map(|mut state| { state.closed = true; (state.parent, state.owner, state.host.take()) }).unwrap_or((HWND::default(), HWND::default(), None));
     RUNTIMES.with(|map| { map.borrow_mut().remove(&(parent.0 as isize)); });
-    if let Some(host) = host { host.close(); }
+    if let Some(host) = host {
+        // A tooltip this dialog asked for must not outlive it (its `tipoff` can no longer come).
+        if !owner.is_invalid() { super::html_hover::tip_off(owner); }
+        host.close();
+    }
 }
 
 fn handle(runtime: &Rc<RefCell<Runtime>>, command: Command) {
@@ -355,6 +359,16 @@ fn handle(runtime: &Rc<RefCell<Runtime>>, command: Command) {
         Command::Panel { kind: PanelType::Privacy, f } if runtime.borrow().kind == Kind::Privacy => handle_privacy(runtime, f),
         Command::Panel { kind: PanelType::Sessions, f } if runtime.borrow().kind == Kind::Sessions => handle_sessions(runtime, f),
         Command::Panel { kind: PanelType::Feeds, f } if runtime.borrow().kind == Kind::Feeds => handle_feeds(runtime, f),
+        // `data-tip` tooltips (dialog.ts installs them) show in the browser window's hover layer.
+        Command::Tip { .. } | Command::TipOff => {
+            let Ok(state) = runtime.try_borrow() else { return; };
+            let (owner, parent, host) = (state.owner, state.parent, state.host.clone());
+            drop(state);
+            if let Some(host) = host {
+                let dpi = unsafe { windows::Win32::UI::HiDpi::GetDpiForWindow(parent) };
+                super::window::html_view_tip(owner, &host, dpi, command);
+            }
+        }
         _ => {}
     }
 }

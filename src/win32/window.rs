@@ -10805,6 +10805,23 @@ fn defer_html_command(hwnd: HWND, command: DeferredChromeCommand) {
 }
 
 // --- hover layer ---
+/// A `tip` / `tipoff` from a view that lives in its own window (a flyout, dialog, the bookmarks bar
+/// or a page over a tab): the anchor maps from that host's own bounds at `dpi`, not the toolbar's.
+/// The browser window `owner` keeps the one hover layer.
+pub(crate) fn html_view_tip(owner: HWND, host: &ChromeHost, dpi: u32, command: ChromeCommand) {
+    if owner.is_invalid() || window_closing(owner) { return; }
+    match command {
+        ChromeCommand::Tip { text, rect } => {
+            ensure_hover_layer(owner);
+            let Some(screen) = host.screen_bounds() else { return };
+            let scale = dpi.max(96) as f32 / 96.0;
+            super::html_hover::tip(owner, super::html_hover::anchor_to_screen(screen, scale, rect), &text, false);
+        }
+        ChromeCommand::TipOff => super::html_hover::tip_off(owner),
+        _ => {}
+    }
+}
+
 /// Routes a tooltip or tab-strip hover message to the HTML hover layer. The anchor is converted from
 /// the sending view's CSS pixels to screen pixels with that view's own host bounds; tab ids and group
 /// keys are checked against the live model (a ball counts only for a domain island).
