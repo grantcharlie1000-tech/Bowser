@@ -180,6 +180,8 @@ test('the page lists tabs and commands for an empty search, and each section has
   assert.equal(view.show(message()), true);
   assert.deepEqual(headings(), ['Open tabs', 'Commands']);
   assert.deepEqual(labels(), ['Settings guide', 'Settings']);
+  assert.equal(page().querySelector('.bw-palette-list').getAttribute('role'), 'listbox');
+  assert.equal(input().getAttribute('aria-expanded'), 'true');
   assert.equal(rows()[1].querySelector('.bw-palette-accel').textContent, 'Ctrl+,');
   assert.equal(view.show({ ...message(), mode: 'nope' }), false, 'an invalid message changes nothing');
   assert.equal(rows().length, 2);
@@ -201,6 +203,8 @@ test('result types and their order, and the visible-result limit, come from the 
   type('milk');
   assert.deepEqual(labels(), [], 'hidden types do not show');
   assert.equal(page().querySelector('.bw-palette-empty').textContent, 'No matches');
+  assert.equal(page().querySelector('.bw-palette-list').getAttribute('role'), 'presentation', 'no empty listbox around the status');
+  assert.equal(input().getAttribute('aria-expanded'), 'false');
   const many = Array.from({ length: 20 }, (_, id) => ({ id, s: 'bookmark', label: `Page ${id}`, detail: '' }));
   view.show(message({ items: many, limit: 5 }));
   type('page');
