@@ -677,7 +677,7 @@ mod tests {
             assert_ne!(narrow_toolbar.right, wide_toolbar.right, "resize updates toolbar bounds dpi={dpi}");
             assert_ne!(toolbar_css_placement(&narrow, dpi), toolbar_css_placement(&wide, dpi), "resize updates pill state dpi={dpi}");
             assert_eq!(tab_row_bounds(&wide).unwrap().top, wide.tab_row.top);
-            assert_eq!(rail_bounds(&wide).unwrap().top, wide.rail.top);
+            assert!(rail_bounds(&wide).is_none(), "no rail");
             let sidebar = crate::vertical_tabs::SidebarLayout::compute_in_frame(1600, 900, dpi, 260, true);
             assert_eq!(sidebar_bounds(&sidebar).unwrap().top, sidebar.island().top);
         }
@@ -842,36 +842,32 @@ mod tests {
 
     #[test]
     fn vertical_html_regions_match_native_geometry_without_overlaps_at_supported_dpis() {
+        use crate::chrome::layout::{Arrangement, Rect as LRect, compute_arranged_in_frame};
+        use crate::settings::TabLayout;
         for dpi in [96, 120, 144, 192] {
-            let width = 1600;
-            let height = 1000;
-            let (layout, native_sidebar) = crate::chrome::layout::compute_vertical_in_frame(width, height, dpi, 12, 0, false, 260);
-            let sidebar = crate::chrome::layout::Rect::from(sidebar_bounds(&native_sidebar).expect("sidebar"));
-            let toolbar = toolbar_bounds(&layout).expect("toolbar");
-            let toolbar = crate::chrome::layout::Rect::from(toolbar);
-            let rail = crate::chrome::layout::Rect::from(rail_bounds(&layout).expect("rail"));
-            let caption = layout.caption_area;
-            let new_tab = layout.new_tab_button;
-            assert!(tab_row_bounds(&layout).is_none(), "dpi={dpi}: vertical mode must not expose a horizontal row");
-            let disjoint = |a: crate::chrome::layout::Rect, b: crate::chrome::layout::Rect| {
-                a.right <= b.left || b.right <= a.left || a.bottom <= b.top || b.bottom <= a.top
-            };
-            for (name_a, a, name_b, b) in [
-                ("toolbar", toolbar, "sidebar", sidebar),
-                ("toolbar", toolbar, "rail", rail),
-                ("toolbar", toolbar, "caption", caption),
-                ("toolbar", toolbar, "new-tab", new_tab),
-                ("sidebar", sidebar, "rail", rail),
-                ("sidebar", sidebar, "caption", caption),
-                ("sidebar", sidebar, "new-tab", new_tab),
-                ("rail", rail, "caption", caption),
-                ("rail", rail, "new-tab", new_tab),
-                ("caption", caption, "new-tab", new_tab),
-            ] {
-                assert!(disjoint(a, b), "dpi={dpi}: {name_a} overlaps {name_b}: {a:?} vs {b:?}");
+            for tabs in [TabLayout::Vertical, TabLayout::VerticalRight] {
+                let arrangement = Arrangement { tabs, ..Arrangement::default() };
+                let (layout, native_sidebar) = compute_arranged_in_frame(arrangement, 1600, 1000, dpi, 12, 0, false, 260, true, 36);
+                let native_sidebar = native_sidebar.expect("a sidebar");
+                let sidebar = LRect::from(sidebar_bounds(&native_sidebar).expect("sidebar"));
+                let toolbar = LRect::from(toolbar_bounds(&layout).expect("toolbar"));
+                let caption = layout.caption_area;
+                assert!(tab_row_bounds(&layout).is_none(), "dpi={dpi}: vertical mode must not expose a horizontal row");
+                assert!(rail_bounds(&layout).is_none(), "dpi={dpi}: no rail");
+                assert!(layout.new_tab_button.is_empty(), "dpi={dpi}: the sidebar has its own New tab");
+                let disjoint = |a: LRect, b: LRect| a.right <= b.left || b.right <= a.left || a.bottom <= b.top || b.bottom <= a.top;
+                for (name_a, a, name_b, b) in [
+                    ("toolbar", toolbar, "sidebar", sidebar),
+                    ("toolbar", toolbar, "caption", caption),
+                    ("sidebar", sidebar, "caption", caption),
+                    ("toolbar", toolbar, "page", layout.viewport),
+                    ("sidebar", sidebar, "page", layout.viewport),
+                ] {
+                    assert!(disjoint(a, b), "{tabs:?} dpi={dpi}: {name_a} overlaps {name_b}: {a:?} vs {b:?}");
+                }
+                assert_eq!(sidebar.top, native_sidebar.island().top);
+                assert!(sidebar.top >= toolbar.bottom, "{tabs:?} dpi={dpi}: the tabs are under the toolbar");
             }
-            assert_eq!(sidebar.top, native_sidebar.island().top);
-            assert!(sidebar.left >= rail.right, "dpi={dpi}");
         }
     }
     // --- end vertical sidebar ---

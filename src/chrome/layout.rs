@@ -374,6 +374,34 @@ pub fn left_rail(_client_h: i32, _dpi: u32) -> Rect {
     Rect::default()
 }
 
+/// The pill the removed rail used to occupy. Only the native rail painter's own tests still lay
+/// one out, so its drawing and hit geometry stay covered.
+#[cfg(test)]
+pub fn legacy_rail(client_h: i32, dpi: u32) -> Rect {
+    let m = Metrics::new(dpi);
+    let margin = m.px(Metrics::OUTER_MARGIN);
+    let top_margin = m.px(Metrics::TOP_MARGIN);
+    let height = client_h.max(0);
+    Rect::new(
+        margin,
+        top_margin.saturating_add(margin).min(height),
+        margin + m.px(LEFT_RAIL_WIDTH),
+        (height - margin).max(top_margin.saturating_add(margin).min(height)),
+    )
+}
+
+/// The window as it was laid out beside the removed rail: the chrome in the width to the right of
+/// [`legacy_rail`], moved there, with the rail in place. For the native rail painter's tests.
+#[cfg(test)]
+pub fn legacy_rail_frame(client_w: i32, client_h: i32, dpi: u32, tab_count: usize, active_index: usize, maximised: bool) -> Layout {
+    let m = Metrics::new(dpi);
+    let inset = m.px(Metrics::OUTER_MARGIN) + m.px(LEFT_RAIL_WIDTH) + m.px(Metrics::OUTER_MARGIN);
+    let mut layout = compute_for(TabLayout::ToolbarTop, client_w.max(0) - inset, client_h, dpi, tab_count, active_index, maximised).shifted_right(inset);
+    layout.client = Rect::new(0, 0, client_w.max(0), client_h.max(0));
+    layout.rail = legacy_rail(client_h, dpi);
+    layout
+}
+
 /// Computes the chrome for a window that has the left rail. The chrome is laid out in the space to
 /// the right of the rail and then moved there, so no toolbar, tab or viewport rect overlaps it.
 pub fn compute_in_frame(
@@ -2478,6 +2506,26 @@ mod tests {
         compute(width, HEIGHT, dpi, tabs, false)
     }
 
+    /// The geometry the window had while a 30 px rail stood at its left edge: laid out in the width
+    /// to the right of it, then moved there. The rail is gone; this keeps the hand-computed checks
+    /// of the toolbar and tab geometry below, which are the same apart from that offset.
+    fn framed_beside_old_rail(width: i32, height: i32, tabs: usize) -> Layout {
+        let mut l = compute_for(TabLayout::ToolbarTop, width - 30, height, 96, tabs, 0, false).shifted_right(30);
+        l.client = Rect::new(0, 0, width, height);
+        l
+    }
+
+    #[test]
+    fn the_window_lays_out_from_its_own_left_edge() {
+        for dpi in DPIS {
+            for width in WIDTHS {
+                let mut plain = compute_for(TabLayout::ToolbarTop, width, HEIGHT, dpi, 3, 0, false);
+                plain.client = Rect::new(0, 0, width, HEIGHT);
+                assert_eq!(compute_in_frame(width, HEIGHT, dpi, 3, 0, false), plain, "dpi {dpi} width {width}");
+            }
+        }
+    }
+
     /// Every rect of a visible control, labelled for failure messages.
     fn visible_controls(l: &Layout) -> Vec<(String, Rect)> {
         let mut out = Vec::new();
@@ -2668,9 +2716,8 @@ mod tests {
         // The left rail takes 30 px at 96 dpi (2 px margin, 26 px rail, 2 px margin). The chrome is
         // laid out in the 994 px to its right, so every toolbar rect is 30 px further right than it
         // would be without the rail.
-        let inset = left_rail_inset(96);
-        assert_eq!(inset, 30);
-        let l = compute_in_frame(1024, HEIGHT, 96, 1, 0, false);
+        let inset = 30;
+        let l = framed_beside_old_rail(1024, HEIGHT, 1);
 
         // The toolbar starts at the top edge (30 px tall); a 2 px gap separates it from the 28 px tab row.
         assert_eq!(l.strip, Rect::new(inset, 0, 1024, 30));
@@ -2709,8 +2756,6 @@ mod tests {
         assert_eq!(hit_test(&l, 856, 15), Hit::MainMenu);
         assert_eq!(hit_test(&l, 1008, 46), Hit::NewTab);
         assert_eq!(l.viewport, Rect::new(34, 63, 1020, 696));
-        assert_eq!(l.rail, Rect::new(2, 2, 28, 698));
-        assert_eq!(hit_test(&l, 22, 20), Hit::RailBackground);
     }
 
     #[test]
@@ -3099,7 +3144,7 @@ mod tests {
         // The active slot is visibly wider; all tab hits remain within their own island.
         // Window 1024 wide with the rail's 30 px inset. Chrome x positions are the old ones plus 30,
         // except the caption buttons, which sit at the window's right edge either way.
-        let l = compute_in_frame(1024, HEIGHT, 96, 3, 0, false);
+        let l = framed_beside_old_rail(1024, HEIGHT, 3);
 
         assert_eq!(hit_test(&l, 144, 48), Hit::Tab(0));
         assert_eq!(hit_test(&l, 544, 48), Hit::Tab(1));
@@ -3159,8 +3204,8 @@ mod tests {
         assert_eq!(hit_test(&l, -1, 10), Hit::None, "left of client");
         assert_eq!(
             hit_test(&l, 22, 20),
-            Hit::RailBackground,
-            "the rail is not chrome"
+            Hit::CaptionArea,
+            "left of the toolbar, where the rail was, drags the window"
         );
     }
 
@@ -4359,7 +4404,7 @@ mod tests {
         }
         // The configuration in the report: a 1920 x 1079 maximised client at 96 DPI.
         let l = compute_in_frame_for_with(TabLayout::ToolbarTop, 1920, 1079, 96, 5, 0, LayoutOptions { maximised: true, centred: true });
-        assert_eq!(l.viewport, Rect::new(30, 63, 1920, 1079));
+        assert_eq!(l.viewport, Rect::new(0, 63, 1920, 1079));
         assert!(l.rail.is_empty());
     }
 
@@ -4561,15 +4606,18 @@ mod tests {
                             let (arranged, _) = compute_arranged_auto_hide(arrangement, w, h, dpi, 5, 2, maximised, 260, true, 36, hide);
                             assert_eq!(arranged.viewport, plain.viewport, "{variant:?} {w}x{h} dpi {dpi} max {maximised} {hide:?}");
                         }
+                        // --- zen sidebar --- the column hides as one: nothing moves, the page widens over it.
                         let arrangement = Arrangement { tabs: TabLayout::Vertical, ..Arrangement::default() };
-                        let (plain, plain_sidebar) = compute_vertical_in_frame_auto_hide(w, h, dpi, 5, 2, maximised, 260, true, hide);
-                        let (arranged, sidebar) = compute_arranged_auto_hide(arrangement, w, h, dpi, 5, 2, maximised, 260, true, crate::layout_prefs::UiDensity::Regular.sidebar_row_height(), hide);
+                        let row = crate::layout_prefs::UiDensity::Regular.sidebar_row_height();
+                        let (shown, shown_sidebar) = compute_arranged_in_frame(arrangement, w, h, dpi, 5, 2, maximised, 260, true, row);
+                        let (arranged, sidebar) = compute_arranged_auto_hide(arrangement, w, h, dpi, 5, 2, maximised, 260, true, row, hide);
                         let context = format!("vertical {w}x{h} dpi {dpi} max {maximised} {hide:?}");
-                        assert_eq!(arranged.viewport, plain.viewport, "{context}");
-                        assert_eq!(sidebar.map(|s| s.sidebar), Some(plain_sidebar.sidebar), "{context}: the sidebar keeps its shown rectangle");
-                        if hide.sidebar {
-                            assert!(arranged.strip.left < compute_arranged_in_frame(arrangement, w, h, dpi, 5, 2, maximised, 260, true, crate::layout_prefs::UiDensity::Regular.sidebar_row_height()).0.strip.left, "{context}: the toolbar moved into the sidebar's place");
-                        }
+                        let rim = if maximised { 0 } else { Metrics::new(dpi).px(Metrics::RESIZE_RIM) };
+                        assert_eq!(sidebar.map(|s| s.sidebar), shown_sidebar.map(|s| s.sidebar), "{context}: the sidebar keeps its shown rectangle");
+                        assert_eq!(arranged.strip, shown.strip, "{context}: the toolbar stays in the column");
+                        assert_eq!(arranged.viewport.top, shown.viewport.top, "{context}: no top band to take out");
+                        let left = if hide.sidebar { rim } else { shown.viewport.left };
+                        assert_eq!(arranged.viewport.left, left, "{context}");
                     }
                 }
             }
@@ -4592,7 +4640,8 @@ mod tests {
                 assert_eq!((hidden.viewport.left, hidden.viewport.top, hidden.viewport.bottom), (shown.viewport.left, shown.viewport.top, shown.viewport.bottom));
                 assert_eq!(sidebar.map(|s| s.sidebar), shown_sidebar.map(|s| s.sidebar), "the sidebar keeps its shown rectangle");
                 let overlay = auto_hide_overlay_arranged(&shown, &hidden, sidebar.as_ref(), right, dpi, true);
-                assert_eq!(overlay.sidebar, shown_sidebar.map(|s| s.sidebar).unwrap_or_default());
+                assert_eq!(Some(overlay.sidebar), zen_column(&shown, shown_sidebar.as_ref()), "the whole column floats back");
+                assert!(overlay.top.is_empty());
                 assert!(overlay.bottom.is_empty());
                 for bottom in [
                     Arrangement { tabs: TabLayout::TabsBottom, ..Arrangement::default() },
@@ -4623,33 +4672,24 @@ mod tests {
     }
     // --- end layout + auto-hide ---
 
-    /// A title row asked for with the tabs on a side stays put while only the sidebar hides: the
-    /// toolbar keeps its place under it, and the revealed sidebar hangs under it as when shown.
+    /// --- zen sidebar --- hiding the sidebar takes the whole column (window buttons, toolbar and
+    /// tabs) out together, and the revealed overlay is that column.
     #[test]
-    fn hiding_the_sidebar_keeps_its_title_row_and_the_toolbar_under_it() {
+    fn hiding_a_zen_sidebar_hides_its_title_row_and_toolbar_with_it() {
         for dpi in DPIS {
             for maximised in [false, true] {
                 for tabs in [TabLayout::Vertical, TabLayout::VerticalRight] {
-                    let arrangement = Arrangement { tabs, title_bar: true, ..Arrangement::default() };
+                    let arrangement = Arrangement { tabs, ..Arrangement::default() };
                     let (shown, shown_sidebar) = compute_arranged_in_frame(arrangement, 1280, 720, dpi, 5, 2, maximised, 260, true, 36);
                     let hide = AutoHide { top: false, sidebar: true };
                     let (hidden, sidebar) = compute_arranged_auto_hide(arrangement, 1280, 720, dpi, 5, 2, maximised, 260, true, 36, hide);
                     let context = format!("{tabs:?} dpi {dpi} max {maximised}");
-                    assert!(!shown.title_bar.is_empty(), "{context}");
-                    assert_eq!(hidden.title_bar, shown.title_bar, "{context}: the title row stays");
-                    assert_eq!((hidden.strip.top, hidden.strip.bottom), (shown.strip.top, shown.strip.bottom), "{context}: the toolbar does not move up");
-                    assert_eq!(hidden.caption_area, shown.caption_area, "{context}");
-                    assert_eq!(hidden.top_chrome, shown.top_chrome, "{context}");
-                    let sidebar = sidebar.expect("the sidebar keeps its rectangle");
-                    assert_eq!(Some(sidebar.sidebar), shown_sidebar.map(|s| s.sidebar), "{context}");
-                    assert!(sidebar.sidebar.top >= hidden.title_bar.bottom, "{context}: the revealed sidebar is under the title row");
-                    let overlay = auto_hide_overlay_arranged(&shown, &hidden, Some(&sidebar), arrangement, dpi, true);
-                    assert!(overlay.sidebar.intersect(hidden.title_bar).is_empty(), "{context}: no overlap with the title row");
-                    // With the top chrome hidden too, the title row goes with it: the page starts at the top.
-                    let (both, _) = compute_arranged_auto_hide(arrangement, 1280, 720, dpi, 5, 2, maximised, 260, true, 36, AutoHide { top: true, sidebar: true });
-                    assert_eq!(both.viewport.top, auto_hide_top(dpi, maximised), "{context}");
-                    let overlay = auto_hide_overlay_arranged(&shown, &both, Some(&sidebar), arrangement, dpi, true);
-                    assert!(overlay.top.contains_rect(Rect::new(both.title_bar.left, both.title_bar.top, both.title_bar.right, both.title_bar.bottom)), "{context}: the title row reveals with the top chrome");
+                    assert_eq!((hidden.title_bar, hidden.strip, hidden.caption_area), (shown.title_bar, shown.strip, shown.caption_area), "{context}");
+                    let overlay = auto_hide_overlay_arranged(&shown, &hidden, sidebar.as_ref(), arrangement, dpi, true);
+                    for part in [shown.title_bar, shown.strip, shown_sidebar.expect("a sidebar").sidebar] {
+                        assert!(overlay.sidebar.contains_rect(part), "{context}: {part:?} floats with the column");
+                    }
+                    assert!(hidden.viewport.contains_rect(Rect::new(overlay.sidebar.left.max(hidden.viewport.left), hidden.viewport.top, overlay.sidebar.right.min(hidden.viewport.right), hidden.viewport.bottom)), "{context}: the page is under the column");
                 }
             }
         }
@@ -4719,10 +4759,59 @@ mod arrangement_tests {
             let plain = compute_in_frame_for_with(variant, 1400, 900, 96, 5, 1, LayoutOptions { maximised: false, centred: true });
             assert_eq!((layout.strip, layout.tab_row, layout.viewport), (plain.strip, plain.tab_row, plain.viewport), "{variant:?}");
         }
+        // --- zen sidebar --- tabs on a side put the toolbar in the sidebar's column.
         let (layout, sidebar) = arranged(Arrangement { tabs: TabLayout::Vertical, ..Default::default() }, 96);
-        let (plain, plain_sidebar) = compute_vertical_in_frame_with(1400, 900, 96, 5, 1, 260, LayoutOptions { maximised: false, centred: true });
-        assert_eq!((layout.strip, layout.viewport), (plain.strip, plain.viewport));
-        assert_eq!(sidebar.unwrap().sidebar, plain_sidebar.sidebar);
+        assert!(layout.toolbar_in_sidebar);
+        assert!(!layout.strip.is_empty() && layout.strip.right <= sidebar.unwrap().sidebar.right);
+        assert_eq!(layout.viewport.top, 4, "the page runs the full height, inside the rim");
+    }
+
+    /// --- zen sidebar --- one column holds the window buttons, the stacked toolbar and the tabs, on
+    /// either edge; the page takes the rest at full height.
+    #[test]
+    fn zen_sidebars_hold_the_window_buttons_the_toolbar_and_the_tabs_in_one_column() {
+        for dpi in DPIS {
+            let m = Metrics::new(dpi);
+            let rim = m.px(Metrics::RESIZE_RIM);
+            let row = m.px(Metrics::STRIP_HEIGHT);
+            for (tabs, side) in [(TabLayout::Vertical, SidePanelPosition::Left), (TabLayout::VerticalRight, SidePanelPosition::Right)] {
+                let context = format!("{tabs:?} dpi {dpi}");
+                let (layout, sidebar) = arranged(Arrangement { tabs, ..Default::default() }, dpi);
+                let sidebar = sidebar.expect("a sidebar");
+                let column = zen_column(&layout, Some(&sidebar)).expect("a zen column");
+                assert_eq!(sidebar.side, side, "{context}");
+                assert!(layout.toolbar_in_sidebar, "{context}");
+                assert_eq!(column.top, 0, "{context}");
+                assert_eq!((column.left, column.right), (sidebar.sidebar.left, sidebar.sidebar.right), "{context}");
+                assert_eq!(sidebar.sidebar.width(), m.px(260), "{context}");
+                // Title row with the window buttons at its right end.
+                assert_eq!(layout.title_bar, Rect::new(column.left, 0, column.right, row), "{context}");
+                assert_eq!(layout.caption_area.right, column.right, "{context}");
+                assert!(layout.title_bar.contains_rect(layout.caption_button(Hit::CaptionClose)), "{context}");
+                assert_eq!(hit(&layout, layout.caption_area.right - 5, row / 2), Hit::CaptionClose, "{context}");
+                // Two toolbar rows under it: navigation and the menu, then the address field.
+                assert_eq!(layout.strip.top, row, "{context}");
+                assert!(column.contains_rect(layout.strip), "{context}");
+                for control in [layout.back_button, layout.forward_button, layout.reload_button, layout.main_menu_button, layout.omnibox] {
+                    assert!(layout.strip.contains_rect(control), "{context}: {control:?}");
+                }
+                assert!(layout.omnibox.top >= layout.main_menu_button.bottom, "{context}: the address field is on the second row");
+                assert!(layout.new_tab_button.is_empty(), "{context}: the sidebar has its own New tab");
+                let bounds = crate::chrome_host::toolbar_bounds(&layout).expect("a toolbar host");
+                assert_eq!((bounds.left, bounds.top, bounds.right, bounds.bottom), (layout.strip.left, layout.strip.top, layout.strip.right, layout.strip.bottom), "{context}");
+                // The tabs under the toolbar, to the bottom edge.
+                assert!(sidebar.island().top >= layout.strip.bottom, "{context}");
+                assert_eq!(sidebar.sidebar.bottom, 900, "{context}");
+                // The page: full height beside the column.
+                assert_eq!((layout.viewport.top, layout.viewport.bottom), (rim, 900 - rim), "{context}");
+                match side {
+                    SidePanelPosition::Left => assert_eq!((layout.viewport.left, layout.viewport.right), (column.right, 1400 - rim), "{context}"),
+                    SidePanelPosition::Right => assert_eq!((layout.viewport.left, layout.viewport.right), (rim, column.left), "{context}"),
+                }
+                assert_eq!(layout.viewport, sidebar.viewport, "{context}");
+                assert!(column.intersect(layout.viewport).is_empty(), "{context}");
+            }
+        }
     }
 
     #[test]
@@ -4757,7 +4846,7 @@ mod arrangement_tests {
     }
 
     #[test]
-    fn a_right_sidebar_hangs_under_the_toolbar_at_the_window_edge_with_its_handle_inside() {
+    fn a_right_sidebar_sits_at_the_window_edge_with_its_handle_inside() {
         for dpi in DPIS {
             let m = Metrics::new(dpi);
             let rim = m.px(Metrics::RESIZE_RIM);
@@ -4766,15 +4855,14 @@ mod arrangement_tests {
             assert_eq!(sidebar.side, SidePanelPosition::Right);
             assert_eq!(sidebar.sidebar.right, 1400 - rim, "dpi {dpi}");
             assert_eq!(sidebar.sidebar.width(), m.px(260), "dpi {dpi}");
-            assert_eq!(sidebar.sidebar.top, layout.strip.bottom + m.px(Metrics::STRIP_GAP), "under the toolbar, dpi {dpi}");
+            assert!(sidebar.island().top >= layout.strip.bottom, "under the toolbar in its column, dpi {dpi}");
             assert_eq!(sidebar.handle.left, sidebar.sidebar.left, "the handle is on the inner edge, dpi {dpi}");
             assert_eq!(layout.viewport.right, sidebar.sidebar.left, "dpi {dpi}");
             assert_eq!(layout.viewport.left, left_rail_inset(dpi) + rim, "dpi {dpi}");
             assert_eq!(layout.viewport, sidebar.viewport);
             assert!(layout.tab_row.is_empty() && layout.tab(0).is_none(), "no row of tabs");
-            // The toolbar keeps the full width: the window buttons stay at the top right.
-            assert_eq!(layout.caption_area.right, 1400);
-            assert!(layout.main_menu_button.right <= layout.caption_area.left);
+            // The column is at the right edge, so the window buttons are at the top right.
+            assert_eq!(layout.caption_area.right, 1400 - rim);
             // The HTML sidebar host is the floating island, clear of the resize handle.
             let bounds = crate::chrome_host::sidebar_bounds(&sidebar).expect("a sidebar host");
             let island = sidebar.island();
@@ -4866,23 +4954,14 @@ mod arrangement_tests {
     }
 
     #[test]
-    fn the_title_row_sits_above_everything_with_the_window_buttons_in_it() {
+    fn a_title_row_asked_for_beside_a_zen_sidebar_is_its_own_title_row() {
+        // --- zen sidebar --- the column already has a title row with the window buttons; asking
+        // for one changes nothing, and the page keeps the full height.
         for dpi in DPIS {
-            let m = Metrics::new(dpi);
-            let strip_h = m.px(Metrics::STRIP_HEIGHT);
             for tabs in [TabLayout::Vertical, TabLayout::VerticalRight] {
-                let (layout, sidebar) = arranged(Arrangement { tabs, title_bar: true, ..Default::default() }, dpi);
-                let sidebar = sidebar.unwrap();
-                assert_eq!(layout.title_bar, Rect::new(left_rail_inset(dpi), 0, 1400, strip_h), "{tabs:?} dpi {dpi}");
-                assert_eq!(layout.strip.top, strip_h, "the toolbar moves down, {tabs:?} dpi {dpi}");
-                assert!(layout.strip.contains_rect(layout.omnibox));
-                assert!(layout.title_bar.contains_rect(layout.caption_button(Hit::CaptionClose)), "{tabs:?} dpi {dpi}");
-                assert_eq!(layout.viewport.top, layout.strip.bottom + m.px(Metrics::OUTER_MARGIN) + m.px(Metrics::VIEWPORT_GAP), "{tabs:?} dpi {dpi}");
-                assert_eq!(layout.top_chrome, layout.viewport.top);
-                assert!(sidebar.sidebar.top >= strip_h, "the sidebar starts under the title row, {tabs:?} dpi {dpi}");
-                assert_eq!(hit(&layout, layout.title_bar.left + 20, strip_h / 2), Hit::CaptionArea);
-                assert_eq!(hit(&layout, 1400 - 10, strip_h / 2), Hit::CaptionClose);
-                assert!(layout.drag_region_rects().iter().any(|rect| rect.top == 0 && rect.bottom == strip_h), "the title row drags the window");
+                let (asked, _) = arranged(Arrangement { tabs, title_bar: true, ..Default::default() }, dpi);
+                let (plain, _) = arranged(Arrangement { tabs, ..Default::default() }, dpi);
+                assert_eq!(asked, plain, "{tabs:?} dpi {dpi}");
             }
         }
         // Asked for with the tabs in a row, nothing changes: the toolbar row already holds the buttons.
@@ -4923,7 +5002,8 @@ mod arrangement_tests {
                 }
             }
             // Tabs on a side, along the bottom or hidden: a title row at the top holds the buttons.
-            for (tabs, tab_bar) in [(TabLayout::Vertical, true), (TabLayout::VerticalRight, true), (TabLayout::TabsBottom, true), (TabLayout::ToolbarTop, false)] {
+            // (Tabs on a side keep the address bar in their column: the Zen sidebar tests cover them.)
+            for (tabs, tab_bar) in [(TabLayout::TabsBottom, true), (TabLayout::ToolbarTop, false)] {
                 let arrangement = Arrangement { tabs, tab_bar, address_bar: BarPosition::Bottom, ..Default::default() };
                 assert!(arrangement.has_title_row(), "{tabs:?} {tab_bar}");
                 let (layout, sidebar) = arranged(arrangement, dpi);
@@ -4957,6 +5037,9 @@ mod arrangement_tests {
                 for tab_bar in [true, false] {
                     let arrangement = Arrangement { tabs, tab_bar, address_bar: BarPosition::Bottom, ..Default::default() };
                     let (layout, _) = arranged(arrangement, dpi);
+                    if layout.toolbar_in_sidebar {
+                        continue; // --- zen sidebar --- no toolbar along the bottom edge there
+                    }
                     let context = format!("{tabs:?} tab bar {tab_bar} dpi {dpi}");
                     let drags = layout.drag_region_rects();
                     for y in (0..layout.client.bottom).step_by(3) {
@@ -5046,9 +5129,13 @@ mod arrangement_tests {
                                     if let Some(sidebar) = sidebar {
                                         assert!(sidebar.sidebar.intersect(v).is_empty() || sidebar.sidebar.width() == 0, "{arrangement:?} {w}x{h} dpi {dpi}: sidebar over the page");
                                     }
-                                    // The window buttons are always at the top right, where the frame expects them.
+                                    // The window buttons are at the top right, where the frame expects them, or
+                                    // at the top of a Zen sidebar's column (`frame_hit_test_captions_at`).
                                     assert_eq!(layout.caption_area.top, 0);
-                                    assert_eq!(layout.caption_area.right, w);
+                                    match zen_column(&layout, sidebar.as_ref()) {
+                                        Some(column) => assert_eq!(layout.caption_area.right, column.right),
+                                        None => assert_eq!(layout.caption_area.right, w),
+                                    }
                                 }
                             }
                         }

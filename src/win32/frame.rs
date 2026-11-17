@@ -440,8 +440,10 @@ mod tests {
                         let rect = layout.caption_button(button);
                         let x = rect.left + rect.width() / 2;
                         let y = rect.top + rect.height() / 2;
+                        // --- zen sidebar --- the buttons top the sidebar column there.
+                        let right = if layout.toolbar_in_sidebar { layout.caption_area.right } else { size.0 };
                         assert_eq!(
-                            frame_hit_test(p(x, y), size, 96, true, ChromeHit::None),
+                            frame_hit_test_captions_at(p(x, y), size, right, 96, true, ChromeHit::None, false),
                             want,
                             "{context} {button:?} center ({x},{y})"
                         );
@@ -682,17 +684,17 @@ mod grip_and_gap_tests {
                         covered_edges[match hit { FrameHit::Left | FrameHit::TopLeft | FrameHit::BottomLeft => 0, FrameHit::Right | FrameHit::TopRight | FrameHit::BottomRight => 1, FrameHit::Top => 2, _ => 3 }] = true;
                     }
                 }
-                // The rail stands on the left edge. The page stands on the right, except a right-hand
-                // vertical sidebar: its floating island stops short of the resize band, so the parent
-                // still owns that edge and no grip has to cover a host there.
-                if tabs == TabLayout::VerticalRight {
-                    assert!(covered_edges[0], "{context}: {covered_edges:?} {grips:?}");
-                    let x = size.0 - edge / 2;
-                    let y = size.1 / 2;
-                    assert!(is_resize(frame_hit_test_with(POINT { x, y }, size, dpi, false, ChromeHit::None, thin)), "{context}: the clear right edge still resizes");
-                    assert!(!hosts.iter().any(|h| inside(h, x, y)), "{context}: the island stays out of the right grip");
-                } else {
-                    assert!(covered_edges[0] && covered_edges[1], "{context}: {covered_edges:?} {grips:?}");
+                // An edge a host reaches into is gripped; an edge no host reaches (the page or a Zen
+                // sidebar's island stops short of the band) is the parent's own and still resizes.
+                for (index, reaches, x) in [
+                    (0, hosts.iter().any(|h| h.left < edge), edge / 2),
+                    (1, hosts.iter().any(|h| h.right > size.0 - edge), size.0 - edge / 2),
+                ] {
+                    if reaches {
+                        assert!(covered_edges[index], "{context}: edge {index} {covered_edges:?} {grips:?}");
+                    } else {
+                        assert!(is_resize(frame_hit_test_with(POINT { x, y: size.1 / 2 }, size, dpi, false, ChromeHit::None, thin)), "{context}: the clear edge {index} still resizes");
+                    }
                 }
                 assert!(edge_grip_rects(size, dpi, true, thin, &hosts).is_empty(), "maximised: no grips");
             }
