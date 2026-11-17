@@ -90,7 +90,7 @@ test('tab groups use one colour mark (a bar in the strip), and the island is ins
   assert.match(tabs, /\.strip \.ball \.bar,\s*\.strip \.group \.cap \{[^}]*background: var\(--gc, var\(--bw-focus\)\);/s);
   assert.doesNotMatch(tabs, /\.gname|\.disclose/);
   assert.match(tabs, /flex-grow var\(--bw-dur-group\) var\(--bw-ease-group\)/);
-  assert.match(tabs, /\.strip \.group\.collapsed::before/);
+  assert.doesNotMatch(tabs, /\.strip \.group[^{,]*::before/, 'an island paints nothing behind its tabs: only the bar marks it');
   assert.match(tabs, /\.strip \.group:not\(:has\(\.tab:not\(\[hidden\]\)\)\) \{[^}]*flex: 0 0 auto;/);
   assert.match(tokens, /--bw-float-fill:/);
   assert.match(side, /background: var\(--bw-float-fill\)/);

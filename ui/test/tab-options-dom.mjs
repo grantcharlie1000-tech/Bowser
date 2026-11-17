@@ -734,13 +734,37 @@ test('a tab island is its bar and its tabs; folded it keeps the tab in use betwe
   deliver(tabsMsg([item(1, { pinned: true }), item(2), item(3)], 2));
 });
 
-test('tabs.css draws the island: a 4px bar, a 12px pill when folded away, a closing bar only around a shown tab', () => {
+test('tabs.css draws the island: a 6px bar, a 12px pill when folded away, a closing bar only around a shown tab', () => {
   const css = readFileSync(new URL('../src/styles/tabs.css', import.meta.url), 'utf8');
-  assert.match(css, /\.strip \.ball \.bar,\s*\.strip \.group \.cap \{[^}]*width: 4px;[^}]*background: var\(--gc/);
+  assert.match(css, /\.strip \.group \{[^}]*--gb: 6px;/, 'the bar is 6px thick');
+  assert.match(css, /\.strip \.ball \.bar,\s*\.strip \.group \.cap \{[^}]*width: var\(--gb\);[^}]*border-radius: var\(--bw-r-pill\);[^}]*background: var\(--gc/);
   assert.match(css, /\.strip \.group \.cap \{ display: none; \}/);
   assert.match(css, /\.strip \.group\.collapsed:has\(\.tab:not\(\[hidden\]\)\) \.cap \{ display: block; \}/);
-  assert.match(css, /\.strip \.group:not\(:has\(\.tab:not\(\[hidden\]\)\)\) \.ball \.bar \{ width: 12px; \}/);
-  assert.match(css, /\.strip \.group\.collapsed::before,[^{]*\{ content: none; \}/, 'no shared wash while folded');
+  assert.match(css, /\.strip \.group:not\(:has\(\.tab:not\(\[hidden\]\)\)\) \.ball \.bar \{ width: calc\(var\(--gb\) \* 2\); \}/);
+  assert.match(css, /\.strip \.group:not\(:has\(\.tab:not\(\[hidden\]\)\)\) \.ball \.bar \{ height: var\(--bw-tab-h\); \}/, 'the pill is as tall as a tab');
+  assert.doesNotMatch(css, /\.strip \.group[^{,]*::before/, 'an open island’s tabs share no background');
+  // Between its two bars the tab in use hides its close button until it is hovered or focused.
+  assert.match(css, /\.strip:not\(\.close-always\) \.group\.collapsed \.tab\.active:not\(:hover\):not\(:focus-within\) \.close \{ opacity: 0; \}/);
+});
+
+test('the island menu opens from either bar: the closing bar is a hover target like the handle', () => {
+  const src = readFileSync(new URL('../src/tooltip.ts', import.meta.url), 'utf8');
+  assert.match(src, /closest<HTMLElement>\('\.ball\[data-key\], \.cap\[data-key\], \.side-group-ball\[data-key\]'\);\s*if \(ball\) return \{ kind: 'ball'/);
+  deliver(tabsMsg([item(1), item(2, { g: 9, gl: true, gname: 'Docs', gcol: 2, gcollapsed: true, gsize: 2 }), item(3, { g: 9 })], 2));
+  assert.equal(stripRoot.querySelector('.cap').dataset.key, '9', 'the closing bar carries its island’s key');
+  deliver(tabsMsg([item(1, { pinned: true }), item(2), item(3)], 2));
+});
+
+test('hover.css draws the island menu: a rectangular accent-outlined field, square swatches, a filled close button', () => {
+  const css = readFileSync(new URL('../src/styles/hover.css', import.meta.url), 'utf8');
+  const rule = (sel) => new RegExp(`\\n${sel.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} \\{([^}]*)\\}`).exec(css)?.[1] ?? '';
+  assert.match(css, /\.bw-island-menu \{[^}]*border-radius: 12px;/);
+  assert.match(rule('.bw-island-field'), /height: 36px;[^]*border-radius: var\(--bw-r-island\);[^]*box-shadow: inset 0 0 0 1\.5px var\(--bw-focus\);/);
+  assert.match(rule('.bw-island-swatch'), /width: 24px;\s*height: 24px;[^]*border-radius: var\(--bw-r-row\);/);
+  assert.match(css, /\.bw-island-swatch\.is-selected:hover \{\s*box-shadow: inset 0 0 0 2px var\(--bw-text\), inset 0 0 0 4px var\(--bw-window-opaque\);/);
+  const close = rule('.bw-island-close');
+  assert.match(close, /height: 34px;[^]*border-radius: var\(--bw-r-island\);[^]*text-align: center;/);
+  assert.doesNotMatch(close, /background: transparent/, 'the close action is a filled button');
 });
 
 // ---- two-level stacks (T10b): the second row ----
