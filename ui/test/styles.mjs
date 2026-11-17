@@ -354,3 +354,15 @@ test('forced colours: every component state drawn only with a fill or a shadow h
   ]) assert.match(block, re, what);
   assert.match(css, /@media \(forced-colors:\s*active\)\{\.bw-toggle\{forced-color-adjust:none/, 'the built sheet has it');
 });
+
+test('status colours never borrow the group palette (2.84:1 on a dark card): warn/danger properties use a text-grade colour', () => {
+  for (const file of readdirSync(stylesDir).filter((f) => f.endsWith('.css') && f !== 'tokens.css')) {
+    const text = readFileSync(join(stylesDir, file), 'utf8');
+    for (const m of text.matchAll(/--[\w-]*(?:warn|danger)[\w-]*\s*:\s*([^;]+);/g)) {
+      assert.doesNotMatch(m[1], /--bw-group-/, `${file}: ${m[0].trim()}`);
+    }
+    for (const m of text.matchAll(/var\(--[\w-]*(?:warn|danger)[\w-]*\s*,\s*([^)]+)\)/g)) {
+      assert.doesNotMatch(m[1], /--bw-group-/, `${file}: fallback ${m[0]}`);
+    }
+  }
+});

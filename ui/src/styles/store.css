@@ -12,19 +12,17 @@
 #app.sp-root > .sp[hidden], .bs[hidden], .bs [hidden] { display: none; }
 .bs {
   --bs-col: 720px;
-  --bs-card: color-mix(in srgb, var(--bw-text) 4%, var(--bw-window-opaque));
-  --bs-tile: color-mix(in srgb, var(--bw-text) 7%, transparent);
-  --bs-edge: color-mix(in srgb, var(--bw-text) 12%, transparent);
+  --bs-card: var(--bw-card);
+  --bs-tile: var(--bw-tile);
+  --bs-edge: var(--bw-field-edge);
   --bs-track: color-mix(in srgb, var(--bw-text) 12%, transparent);
   --bs-run: color-mix(in srgb, var(--bw-text) 70%, transparent); /* neutral in-progress fill */
-  --bs-danger: #ff9a8b; /* proposed token: --bw-danger (dark), as downloads.css */
+  --bs-danger: var(--bw-danger);
   --bs-ok: #6dc27d; /* --bw-group-3 */
   --bs-mono: ui-monospace, "Cascadia Mono", Consolas, monospace;
   height: 100%; overflow: auto; padding: var(--bw-space-6); background: var(--bw-window-opaque); color: var(--bw-text); font: var(--bw-text-body)/var(--bw-leading-body) var(--bw-font);
 }
 :root[data-scheme="light"] .bs {
-  --bs-card: color-mix(in srgb, #fff 72%, var(--bw-window-opaque));
-  --bs-danger: #c42b1c; /* proposed token: --bw-danger (light) */
   --bs-ok: #0f7b0f;
 }
 .bs h1, .bs h2, .bs h3, .bs h4, .bs p { margin: 0; }
