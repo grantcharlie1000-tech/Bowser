@@ -52,6 +52,8 @@
   function bad(p) {
     var a = p, d = 0;
     for (; a && a !== D.body; a = a.parentElement, d++) {
+      // Spoiler Firewall: a paragraph inside a shielded unit never votes for the article, so a covered spoiler cannot pull its container in.
+      if (/(^| )shield( |$)/.test(at(a, 'data-sfw'))) return true;
       if (/^(NAV|ASIDE|FOOTER)$/.test(a.tagName) || /^(navigation|complementary|contentinfo|banner|search|dialog)$/.test(at(a, 'role')) || (d < 3 && NEG.test(key(a)))) return true;
     }
     return false;

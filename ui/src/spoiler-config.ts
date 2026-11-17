@@ -61,8 +61,56 @@ export function applySpoilerMessage(raw: unknown): boolean {
   return true;
 }
 
+// ---- term updates ----
+// The signed term update Bowser holds (the same lexicon object the page bundle gets) arrives as
+// `{"v":1,"t":"spoilerFeed","lexicon":{...}}`, at most 256 KB, to every view with the setting. The engine copy lives in
+// spoiler-guard.ts, which registers a handler here; the handler extends the engine and drops its caches, then the
+// config listeners run so masked surfaces re-render. A bundle loaded later in the document inherits the feed through
+// `window.__bowserSpoilerFeed`. The same feed (as JSON text) is applied once per module copy: Bowser re-sends it with
+// every setting broadcast.
+export const MAX_FEED_JSON = 262144;
+const SHARED_FEED = '__bowserSpoilerFeed';
+type FeedHandler = (lexicon: Record<string, unknown>) => void;
+const feedHandlers = new Set<FeedHandler>();
+let appliedFeed = '';
+const heldFeed = (): Record<string, unknown> | null => {
+  const found = typeof window === 'undefined' ? undefined : (window as unknown as Record<string, unknown>)[SHARED_FEED];
+  return typeof found === 'object' && found !== null && !Array.isArray(found) ? (found as Record<string, unknown>) : null;
+};
+
+/** Registers the engine-side handler for term updates; a feed already held by an earlier bundle is applied at once. */
+export function onSpoilerFeed(handler: FeedHandler): void {
+  feedHandlers.add(handler);
+  const held = heldFeed();
+  if (held) { try { appliedFeed = JSON.stringify(held); handler(held); } catch { /* the built-in list still protects */ } }
+}
+
+/** Applies a host `spoilerFeed` message if well formed and not seen before; anything else is ignored. */
+export function applySpoilerFeedMessage(raw: unknown): boolean {
+  let value = raw;
+  if (typeof value === 'string') {
+    if (value.length > MAX_FEED_JSON + 64) return false;
+    try { value = JSON.parse(value) as unknown; } catch { return false; }
+  }
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+  const msg = value as Record<string, unknown>;
+  if (msg.t !== 'spoilerFeed' || msg.v !== 1) return false;
+  if (!Object.keys(msg).every((key) => key === 'v' || key === 't' || key === 'lexicon')) return false;
+  const lexicon = msg.lexicon;
+  if (typeof lexicon !== 'object' || lexicon === null || Array.isArray(lexicon)) return false;
+  let text: string;
+  try { text = JSON.stringify(lexicon); } catch { return false; }
+  if (text.length > MAX_FEED_JSON) return false;
+  if (typeof window !== 'undefined') (window as unknown as Record<string, unknown>)[SHARED_FEED] = lexicon;
+  if (text === appliedFeed) return true;
+  appliedFeed = text;
+  for (const handler of Array.from(feedHandlers)) { try { handler(lexicon as Record<string, unknown>); } catch { /* ignore */ } }
+  for (const listener of Array.from(listeners)) listener();
+  return true;
+}
+
 // Every view imports this file, so one listener here covers views that read host messages through
 // `onInbound` and the ones (popup, settings page) that add their own listener. `parseInbound` ignores
 // the unknown type, so nothing else sees it.
-if (typeof window !== 'undefined') window.chrome?.webview?.addEventListener('message', (event) => { applySpoilerMessage(event.data); });
+if (typeof window !== 'undefined') window.chrome?.webview?.addEventListener('message', (event) => { applySpoilerMessage(event.data); applySpoilerFeedMessage(event.data); });
 // --- end spoiler guard ---

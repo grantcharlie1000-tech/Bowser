@@ -1,0 +1,4 @@
+<!doctype html><html><head><meta charset="utf-8"><title>data: frame</title><style>body{margin:8px;font:16px/1.3 Arial,sans-serif;background:#fff;color:#222}.sentinel{color:#ff00ff!important;font:700 22px/1.2 Arial!important;-webkit-text-fill-color:#ff00ff}.item{border:1px solid #ccc;border-radius:10px;padding:10px 12px;margin:8px 0;background:#fafafa}iframe{border:1px solid #999;display:block;margin:6px 0}</style></head><body><p class="item" data-expect="clear">Parent page clean text.</p><iframe id="f" width="560" height="90"></iframe><script>
+var h='<script src="{{ORIGIN}}/__probe.js?fx={{FX}}&label=data-frame"><\/script>'+"<style>body{margin:0}.sentinel{color:#ff00ff;font:700 22px Arial}</style><p class=\"sentinel\" data-expect=\"shield\">GTA 6 ending spoiler: the hero dies in the final mission (data:)</p>";
+document.getElementById('f').src='data:text/html;charset=utf-8,'+encodeURIComponent(h);
+</script></body></html>

@@ -5,7 +5,7 @@
 // markup, and an item is opened by naming it (feed id and hash), never by an address from the page.
 import { sendPanel, type Inbound, type PanelFields } from '../protocol';
 import { el, icon } from '../dom';
-import { guardTitle, MASK_LABEL, rowRisky } from '../spoiler-guard'; // --- spoiler guard ---
+import { guardAddress, guardTitle, MASK_LABEL, rowRisky } from '../spoiler-guard'; // --- spoiler guard ---
 import {
   ageText, closePreviewCommand, feedLabel, importCommand, itemMeta, kindIcon, openCommand, parseFeedsSnapshot, playCommand, previewCommand,
   readAllCommand, readCommand, refreshCommand, refreshNote, selectCommand, subscribeCommand, unreadText, unsubscribeCommand, MAX_ADDRESS,
@@ -217,10 +217,10 @@ export function startFeedsPanel(root: HTMLElement): (message: Inbound) => void {
       lead.append(icon('feed'));
       const text = el('span', 'bw-row-text');
       const title = el('span', 'bw-row-title');
-      title.textContent = entry.title === '' ? entry.url : guardTitle(entry.title);
+      title.textContent = entry.title === '' ? guardAddress(entry.url) : guardTitle(entry.title);
       title.dir = 'auto';
       const meta = el('span', 'bw-row-meta');
-      meta.textContent = entry.url;
+      meta.textContent = guardAddress(entry.url);
       text.append(title, meta);
       const view = textButton('Preview', () => emit(previewCommand(entry.url)), { subtle: true });
       row.append(lead, text, view);
@@ -252,10 +252,10 @@ export function startFeedsPanel(root: HTMLElement): (message: Inbound) => void {
       lead.append(icon('feed'));
       const text = el('span', 'bw-row-text');
       const title = el('span', 'bw-row-title');
-      title.textContent = candidate.title === '' ? candidate.url : guardTitle(candidate.title);
+      title.textContent = candidate.title === '' ? guardAddress(candidate.url) : guardTitle(candidate.title);
       title.dir = 'auto';
       const meta = el('span', 'bw-row-meta');
-      meta.textContent = candidate.url;
+      meta.textContent = guardAddress(candidate.url);
       text.append(title, meta);
       row.append(lead, text, textButton('Preview', () => emit(previewCommand(candidate.url)), { subtle: true }));
       rows.push(row);

@@ -208,6 +208,101 @@ SFW.adapters = (function () {
     media: ["[class*=imageWrapper]", "[class*=embedVideo]", "video", "img"], attrs: ["aria-label", "alt", "title"],
     hotUrl: classifyUrl,
   });
+  // ---- Image boards, forums, chat and press: where GTA VI leaks and recaps land --------------------------------
+  // Selector lists are best effort (drift degrades to the generic resolver). What matters is highRisk: media is held
+  // until it was checked, URLs and titles are classified cold, and the OCR allowlist (src/spoiler_ocr.rs, hosts/chrome)
+  // covers the same hosts. Top-level image documents (https://i.imgur.com/x.png) are handled by the runtime.
+  def({
+    id: "imgur", hosts: /(^|\.)imgur\.com$/i, highRisk: true,
+    item: ["div.Post", "div.post-container", "[class*=Gallery-Content]", "[class*=PostContent]", "div.Comment", "[class*=Comment-]", "div.post"],
+    thread: ["div.Gallery", "[class*=Gallery-Content]", "main"], context: ["h1", "[class*=Gallery-Title]", "input[type=search]"],
+    media: ["[class*=PostImage]", "[class*=imageContainer]", "video"], attrs: ["alt", "title", "aria-label"],
+    hotUrl: classifyUrl,
+  });
+  def({
+    id: "fourchan", hosts: /(^|\.)(4chan|4channel|4cdn)\.org$/i, highRisk: true,
+    item: [".postContainer", ".post", ".thread", ".catalog-thread", "div.thread", ".teaser", ".fileText"],
+    thread: [".thread", "#threads", "form[name=delform]"], context: ["#boardNavDesktop", ".subject", "title", "input[type=search]"],
+    media: [".fileThumb", ".file", "img", "video"], attrs: ["alt", "title"],
+    hotUrl: classifyUrl,
+  });
+  def({
+    id: "gtaforums", hosts: /(^|\.)gtaforums\.com$/i, highRisk: true,
+    item: ["article.cPost", "article[id^=elComment_]", ".ipsComment", "li.ipsDataItem", ".ipsStreamItem", "[data-commentid]", ".cTopic"],
+    thread: ["[data-controller='core.front.core.commentFeed']", ".cTopic", "main"], context: ["h1", ".ipsType_pageTitle", "input[type=search]"],
+    media: [".ipsImage", ".ipsAttachLink_image", "video", "img"], attrs: ["alt", "title", "aria-label"],
+    hotUrl: classifyUrl,
+  });
+  def({
+    id: "resetera", hosts: /(^|\.)resetera\.com$/i, highRisk: true,
+    item: ["article.message", ".message", "li.structItem", ".structItem", ".block-row", ".message-body"],
+    thread: [".block--messages", ".p-body-pageContent", "main"], context: ["h1.p-title-value", "h1", "input[name=keywords]"],
+    media: [".bbImage", ".bbMediaWrapper", "video", "img"], attrs: ["alt", "title", "aria-label"],
+    hotUrl: classifyUrl,
+  });
+  def({
+    id: "telegram", hosts: /(^|\.)(telegram\.org|t\.me)$/i, highRisk: true,
+    item: [".Message", ".message", ".bubble", ".ListItem", ".search-result", ".tgme_widget_message", "[class*=Message_]", "[role=listitem]"],
+    thread: ["#MiddleColumn", ".MessageList", "#column-center", "main"], context: ["h3.fullName", ".ChatInfo", "input[type=search]"],
+    media: [".media-inner", ".Photo", ".media-photo", ".media-video", "video", "img"], attrs: ["alt", "title", "aria-label"],
+    hotUrl: classifyUrl,
+  });
+  def({
+    id: "kick", hosts: /(^|\.)kick\.com$/i, highRisk: true,
+    item: ["[class*=chat-entry]", "[data-chat-entry]", "[class*=stream-card]", "[class*=video-card]", "[role=listitem]", "[role=option]", "article"],
+    thread: ["main", "#chatroom", "[class*=chatroom]"], context: ["h1", "[class*=stream-title]", "input[type=search]"],
+    media: ["video", "img", "[class*=thumbnail]"], attrs: ["alt", "title", "aria-label"],
+    hotUrl: classifyUrl,
+  });
+  def({
+    id: "tumblr", hosts: /(^|\.)tumblr\.com$/i, highRisk: true,
+    item: ["article", "[data-id]", "[role=article]", "div.post", ".post_container", "li.post", "[class*=post_]"],
+    thread: ["main", "#posts", "[data-testid=timeline]"], context: ["h1", "[data-testid=blog-title]", "input[type=search]"],
+    media: ["figure", "[data-testid=imageBlock]", "[class*=photo]", "video", "img"], attrs: ["alt", "title", "aria-label"],
+    hotUrl: classifyUrl,
+  });
+  def({
+    id: "steam", hosts: /(^|\.)(steamcommunity\.com|steamuserimages-a\.akamaihd\.net)$/i, highRisk: true,
+    item: [".apphub_Card", ".apphub_CardContentMain", ".commentthread_comment", ".workshopItem", ".review_box", ".profile_comment", ".newsPostBlock", ".discussion_topic", "[class*=Panel]"],
+    thread: [".apphub_background", ".commentthread_area", "#responsive_page_template_content", "main"], context: ["h1", ".apphub_AppName", ".workshopItemTitle", "input[name=text]"],
+    media: [".apphub_CardContentMain img", ".workshopItemPreviewImage", ".screenshot_img", ".earlyaccess_wishlist_img", "video", "img"], attrs: ["alt", "title", "aria-label"],
+    hotUrl: classifyUrl,
+  });
+  // The official site posts story trailers and recaps after launch.
+  def({
+    id: "rockstar", hosts: /(^|\.)rockstargames\.com$/i, highRisk: true,
+    item: ["article", "[class*=card]", "[class*=Card]", "section[class*=post]", "[class*=newswire]", "[class*=Newswire]", "[class*=post]"],
+    thread: ["main", "#main", "[class*=newswire]"], context: ["h1", "title"],
+    media: ["[class*=hero]", "[class*=Hero]", "[class*=poster]", "video", "img"], attrs: ["alt", "title", "aria-label"],
+    hotUrl: classifyUrl,
+  });
+  // Games press and guides: spoilers appear in headlines, recaps, comment threads and guide pages.
+  def({
+    id: "gamespress", hosts: /(^|\.)(ign|gamespot|kotaku|polygon|eurogamer|gamesradar|pcgamer|vg247|pushsquare|purexbox|gamefaqs|giantbomb|screenrant|dexerto|thegamer|gamerant|destructoid)\.(com|net)$/i, highRisk: true,
+    item: ["article", ".content-item", ".article-card", ".card", ".listingResult", ".river-item", "li.item", ".main-listing-item", ".post", ".message", ".comment", "[class*=card]"],
+    thread: ["article", "main", "#main"], context: ["h1", "title", "input[type=search]"],
+    media: ["figure", "picture", ".article-image", "[class*=thumbnail]", "video", "img"], attrs: ["alt", "title", "aria-label"],
+    hotUrl: classifyUrl,
+  });
+  // Fandom wikis: gta.fandom.com is the single biggest source of plot detail. Hot by URL for any page that names
+  // GTA VI; every other page of that wiki is at least warm.
+  def({
+    id: "fandom", hosts: /(^|\.)fandom\.com$/i, highRisk: true,
+    item: [".mw-parser-output p", ".mw-parser-output li", ".portable-infobox", ".page-content section", "article", ".WikiaArticle", ".category-page__member", ".mw-search-result", ".unified-search__result"],
+    thread: [".page-content", "#content", "main"], context: ["h1", ".page-header__title", "input[name=query]"],
+    media: [".portable-infobox img", ".thumb", ".image", "figure", "video", "img"], attrs: ["alt", "title", "aria-label"],
+    hotUrl: function (url) {
+      const u = parse(url);
+      let best = classifyUrl(url);
+      if (u && /(^|\.)gta\.fandom\.com$/i.test(u.hostname)) {
+        if (best < 1) best = 1;
+        let tail = u.pathname + u.hash;
+        try { tail = decodeURIComponent(tail); } catch (e) { /* keep the raw text */ }
+        if (/(^|[/_ -])(vi|gta ?6|gta ?vi|grand[_ ]theft[_ ]auto[_ ](vi|6))([/_ #?-]|$)/i.test(tail)) best = 2;
+      }
+      return best;
+    },
+  });
   // Mastodon: any host, detected from markup (see detect()).
   const MASTODON = {
     id: "mastodon", hosts: null, highRisk: true,

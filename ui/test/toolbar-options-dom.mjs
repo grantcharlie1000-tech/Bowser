@@ -284,3 +284,30 @@ test('Ctrl+Shift+V pastes in the address field: Rust binds no layout toggle to i
     assert.equal(prevented, false, input.className);
   }
 });
+
+test('spoiler guard: a risky page address shows the host only with a path-hidden note until focused', () => {
+  omni.blur();
+  deliver({ v: 1, t: 'spoiler', on: true, mode: 'strict' });
+  const full = 'https://www.reddit.com/r/GTA6/comments/abc/lucia_dies_in_the_ending/';
+  const display = () => root.querySelector('.omni-display');
+  const shown = () => display().childList.map((n) => n.textContent).join('');
+  deliver({ t: 'setText', text: 'www.reddit.com/r/GTA6/comments/abc/lucia_dies_in_the_ending/', full, select: false });
+  assert.equal(omni.value, 'www.reddit.com', 'unfocused: the host only');
+  assert.ok(shown().includes('www.reddit.com') && shown().includes('· path hidden'));
+  assert.ok(!shown().includes('lucia'), 'no slug in the displayed address');
+  omni.focus();
+  assert.equal(omni.value, full, 'focus shows the whole address (deliberate)');
+  omni.blur();
+  assert.equal(omni.value, 'www.reddit.com');
+  // A clean page is untouched.
+  deliver({ t: 'setText', text: 'example.org/recipes', full: 'https://example.org/recipes', select: false });
+  assert.equal(omni.value, 'example.org/recipes');
+  assert.ok(!shown().includes('path hidden'));
+  // Protection off: the full address is back at once; on again: hidden again.
+  deliver({ t: 'setText', text: 'www.reddit.com/r/GTA6/comments/abc/lucia_dies_in_the_ending/', full, select: false });
+  deliver({ v: 1, t: 'spoiler', on: false, mode: 'strict' });
+  assert.equal(omni.value, 'www.reddit.com/r/GTA6/comments/abc/lucia_dies_in_the_ending/');
+  deliver({ v: 1, t: 'spoiler', on: true, mode: 'strict' });
+  assert.equal(omni.value, 'www.reddit.com');
+  omni.blur();
+});

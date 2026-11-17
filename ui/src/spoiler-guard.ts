@@ -8,7 +8,7 @@
 // navigation stay as they are, and Enter on a masked row still navigates: the user chose it, and the
 // destination page is protected by the page engine.
 import SFW from './spoiler-engine.gen';
-import { activeSpoilerMode, type SpoilerMode } from './spoiler-config';
+import { activeSpoilerMode, onSpoilerFeed, type SpoilerMode } from './spoiler-config';
 
 export const MASK_LABEL = 'Spoiler hidden · GTA VI';
 /** What a masked tab title reads: the same words the page engine rewrites a risky document title to. */
@@ -19,6 +19,7 @@ type Mode = SpoilerMode | 'off';
 interface Result { readonly level: string; readonly flags: object }
 interface Engine {
   readonly classify: { text(text: string, ctx: { hot: number; source: string }): Result; url(url: string): Result };
+  readonly lexicon: { extend(feed: object): { ok: boolean } };
   readonly policy: { decide(result: Result, opts: { mode: SpoilerMode; hot: number; kind: string }): 'shield' | 'clear' | 'hold' };
 }
 const engine = SFW as unknown as Engine;
@@ -36,6 +37,12 @@ function remember(key: string, compute: () => boolean): boolean {
   cache.set(key, risky);
   return risky;
 }
+
+// A verified term update adds words to this view's engine copy; every cached verdict may now be stale.
+onSpoilerFeed((lexicon) => {
+  engine.lexicon.extend(lexicon);
+  cache.clear();
+});
 
 const decided = (result: Result, mode: SpoilerMode): boolean =>
   engine.policy.decide(result, { mode, hot: 0, kind: 'title' }) !== 'clear';
@@ -87,6 +94,11 @@ export function rowRisky(fields: GuardFields, mode: Mode = activeSpoilerMode(), 
 /** A tab or page title as the chrome shows it: the engine's guard wording when it is risky. */
 export function guardTitle(title: string, mode: Mode = activeSpoilerMode()): string {
   return riskyText(title, mode) ? TITLE_MASK : title;
+}
+
+/** An address as the chrome shows it as plain text: itself when clear, else its host only (never a slug). */
+export function guardAddress(url: string, mode: Mode = activeSpoilerMode()): string {
+  return riskyUrl(url, mode) ? hostOnly(url) || MASK_LABEL : url;
 }
 
 export interface GuardedRow {

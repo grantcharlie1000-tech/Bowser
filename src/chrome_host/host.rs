@@ -610,8 +610,7 @@ impl ChromeHost {
         // ignores it outside its own listener (`ui/src/spoiler-config.ts`); the state handshake never sees it.
         // Posted straight to the page, not through `post_json`: the state session would take it for state.
         {
-            let message = wide(&spoiler_config_json(crate::spoiler::current()));
-            let _ = unsafe { webview.PostWebMessageAsJson(PCWSTR(message.as_ptr())) };
+            post_spoiler_messages(&webview, &spoiler_config_json(crate::spoiler::current()));
         }
         for frame in id.frames(parts) {
             if !self.document_current(&id.document) { return Err(fail("Chrome document changed")); }
@@ -792,8 +791,7 @@ impl ChromeHost {
             if state.closed || !(state.is_current)() { return; }
             state.webview.clone()
         };
-        let message = wide(json);
-        let _ = unsafe { webview.PostWebMessageAsJson(PCWSTR(message.as_ptr())) };
+        post_spoiler_messages(&webview, json);
     }
 
     pub fn post_json(&self, json: &str) -> Result<()> {
@@ -1097,7 +1095,33 @@ pub fn spoiler_config_json(settings: crate::spoiler::SpoilerSettings) -> String 
     format!(r#"{{"v":1,"t":"spoiler","on":{},"mode":"{}"}}"#, settings.enabled, settings.mode.key())
 }
 
-/// Posts the live spoiler setting to every chrome view.
+/// The verified term update for the chrome views' own engine copy (SFW.lexicon.extend): the same
+/// lexicon object the page bundle gets (spoiler_feed::current_lexicon_json), or None when no
+/// feed is held. At most 256 KB, and only a balanced object with no raw line separators.
+pub fn spoiler_feed_json() -> Option<String> {
+    let lexicon = crate::spoiler_feed::current_lexicon_json()?;
+    spoiler_feed_message(&lexicon)
+}
+
+fn spoiler_feed_message(lexicon: &str) -> Option<String> {
+    if !crate::spoiler::is_embeddable_object(lexicon) {
+        return None;
+    }
+    let message = format!(r#"{{"v":1,"t":"spoilerFeed","lexicon":{lexicon}}}"#);
+    (message.len() <= 256 * 1024).then_some(message)
+}
+
+/// Posts the setting message, then the term update when one is held, straight to the page.
+fn post_spoiler_messages(webview: &ICoreWebView2, config_json: &str) {
+    let message = wide(config_json);
+    let _ = unsafe { webview.PostWebMessageAsJson(PCWSTR(message.as_ptr())) };
+    if let Some(feed) = spoiler_feed_json() {
+        let message = wide(&feed);
+        let _ = unsafe { webview.PostWebMessageAsJson(PCWSTR(message.as_ptr())) };
+    }
+}
+
+/// Posts the live spoiler setting (and term update) to every chrome view.
 pub fn broadcast_spoiler_config() {
     let json = spoiler_config_json(crate::spoiler::current());
     let targets: Vec<Rc<RefCell<State>>> = LIVE_HOSTS.with(|hosts| hosts.borrow().iter().filter_map(Weak::upgrade).collect());
@@ -1860,6 +1884,19 @@ mod tests {
     impl ChromeHost {
         /// Rust-only ignored diagnostics. Never a host object, message command or production API.
         pub(crate) fn probe_native_webview(&self) -> ICoreWebView2 { self.state.borrow().webview.clone() }
+    }
+
+    #[test]
+    fn spoiler_feed_message_is_exact_bounded_and_safe() {
+        assert_eq!(
+            spoiler_feed_message(r#"{"terms":["a"]}"#).as_deref(),
+            Some(r#"{"v":1,"t":"spoilerFeed","lexicon":{"terms":["a"]}}"#)
+        );
+        assert!(spoiler_feed_message("[1]").is_none());
+        assert!(spoiler_feed_message("{\"a\":\"x\ty\"}").is_none(), "a raw control character");
+        assert!(spoiler_feed_message("{\"a\":\"x\u{2028}y\"}").is_none(), "a raw line separator");
+        let big = format!("{{\"a\":\"{}\"}}", "x".repeat(256 * 1024));
+        assert!(spoiler_feed_message(&big).is_none());
     }
 
     #[test]

@@ -248,9 +248,12 @@ pub fn config_json_with_feed(
         json_string(version),
         private,
     );
-    match ocr.filter(|c| settings.enabled && settings.ocr && c.is_well_formed()) {
+    // The hook (a per-tab closure) exists whenever credentials do, even with OCR off: Bowser also uses it
+    // to push a new term update into pages already open. "ocr" says whether image requests are served.
+    match ocr.filter(|c| settings.enabled && c.is_well_formed()) {
         Some(c) => json.push_str(&format!(
-            ",\"ocr\":true,\"ocrHook\":{},\"ocrKey\":{}}}",
+            ",\"ocr\":{},\"ocrHook\":{},\"ocrKey\":{}}}",
+            settings.ocr,
             json_string(&c.hook),
             json_string(&c.key)
         )),
@@ -268,7 +271,7 @@ pub fn config_json_with_feed(
 /// A `{...}` text with no raw line separators or control characters and a balanced structure outside strings:
 /// a cheap last line of defence, since the object is pasted into script text. (`spoiler_feed` already
 /// produced it with `json_string`, so this only fails on a bug.)
-fn is_embeddable_object(text: &str) -> bool {
+pub(crate) fn is_embeddable_object(text: &str) -> bool {
     if !(text.starts_with('{') && text.ends_with('}')) || text.len() > 262_144 {
         return false;
     }
@@ -378,6 +381,162 @@ pub fn publish(settings: SpoilerSettings) -> bool {
     let previous = guard.unwrap_or_default();
     *guard = Some(settings);
     previous != settings
+}
+
+/// The host of an address in any display form ("https://a.b/c", "a.b/c", "www.a.b"), lower-cased, or
+/// `None` when no host-like text is found.
+pub fn host_of(address: &str) -> Option<String> {
+    let address = address.trim();
+    if address.is_empty() || address.contains(char::is_whitespace) {
+        return None;
+    }
+    let candidate = if address.contains("://") {
+        address.to_owned()
+    } else {
+        format!("https://{address}")
+    };
+    let url = url::Url::parse(&candidate).ok()?;
+    let host = url.host_str()?.trim_end_matches('.').to_ascii_lowercase();
+    (!host.is_empty()).then_some(host)
+}
+
+/// Whether a title is only an address: empty, equal to the page URL, or URL-shaped ("https://...",
+/// "www.x.y/path", "host.tld/path"). Such a title carries the slug the engine would have hidden.
+pub fn title_is_address(title: &str, url: Option<&str>) -> bool {
+    let title = title.trim();
+    if title.is_empty() {
+        return true;
+    }
+    if let Some(url) = url.map(str::trim).filter(|url| !url.is_empty()) {
+        let strip = |text: &str| {
+            text.trim_end_matches('/')
+                .trim_start_matches("https://")
+                .trim_start_matches("http://")
+                .to_ascii_lowercase()
+        };
+        if strip(title) == strip(url) {
+            return true;
+        }
+    }
+    if title.contains(char::is_whitespace) {
+        return false;
+    }
+    let lower = title.to_ascii_lowercase();
+    if lower.starts_with("http://") || lower.starts_with("https://") || lower.starts_with("www.") {
+        return true;
+    }
+    // "host.tld/path": no spaces, a dot in the part before the first slash, and a slash.
+    match title.split_once('/') {
+        Some((head, _)) => head.contains('.') && !head.starts_with('.') && !head.ends_with('.'),
+        None => false,
+    }
+}
+
+/// The title Bowser shows (tab strip, caption, taskbar, history) while protection is on: the page's own
+/// title (already rewritten by the engine when risky), except that an empty, URL-equal or URL-shaped title
+/// becomes the host only, so a URL slug never reaches those surfaces. With protection off the title is
+/// returned unchanged.
+pub fn protected_title(enabled: bool, title: &str, url: Option<&str>) -> String {
+    if !enabled || !title_is_address(title, url) {
+        return title.to_owned();
+    }
+    url.and_then(host_of)
+        .or_else(|| host_of(title))
+        .unwrap_or_default()
+}
+
+/// How many times a failed `AddScriptToExecuteOnDocumentCreated` is retried before the tab is put in
+/// the protective state.
+pub const INJECTION_RETRIES: u8 = 1;
+
+/// What to do when the asynchronous script registration of a tab completes.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum InjectionStep {
+    /// Registered: the tab is protected.
+    Registered,
+    /// Failed with attempts left: register again.
+    Retry,
+    /// Failed for good: stop the page and show the protective state. Never render unprotected.
+    Protect,
+}
+
+/// The state machine of one registration: `attempt` is 0 for the first try.
+pub fn injection_step(attempt: u8, succeeded: bool) -> InjectionStep {
+    match (succeeded, attempt < INJECTION_RETRIES) {
+        (true, _) => InjectionStep::Registered,
+        (false, true) => InjectionStep::Retry,
+        (false, false) => InjectionStep::Protect,
+    }
+}
+
+/// Where a tab goes next when a navigation starts while it is in the protective state.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ProtectiveNav {
+    /// The protective page itself, loaded by Bowser (once): let it through.
+    OwnPage,
+    /// Anything else: cancel it, register the script again and resume at this address afterwards.
+    RetryAndResume(Option<String>),
+}
+
+/// Decides a navigation while the tab is in the protective state. `own_page_pending` is the one-shot flag
+/// Bowser sets right before loading its own page; `target` is the requested address; `last` the address
+/// the tab was loading when protection failed (used when the protective page itself is reloaded).
+pub fn protective_navigation(
+    own_page_pending: bool,
+    target: &str,
+    last: Option<&str>,
+) -> ProtectiveNav {
+    if own_page_pending {
+        return ProtectiveNav::OwnPage;
+    }
+    let web = target.starts_with("http://") || target.starts_with("https://");
+    ProtectiveNav::RetryAndResume(if web {
+        Some(target.to_owned())
+    } else {
+        last.map(str::to_owned)
+    })
+}
+
+fn html_escape(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&#39;"),
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
+/// The Bowser-owned page shown in place of a page that could not be protected. It shows the host only
+/// (never a path) and a Reload link to the address the tab was loading (http(s) only), which retries the
+/// protection before loading anything. No script.
+pub fn protective_page_html(address: Option<&str>) -> String {
+    let host = address.and_then(host_of);
+    let link = address
+        .map(str::trim)
+        .filter(|a| a.starts_with("http://") || a.starts_with("https://"))
+        .map(html_escape);
+    let site = host
+        .map(|h| format!("<p class=\"site\">{}</p>", html_escape(&h)))
+        .unwrap_or_default();
+    let reload = link
+        .map(|href| format!("<a class=\"reload\" href=\"{href}\">Reload</a>"))
+        .unwrap_or_else(|| "<span class=\"hint\">Reload the tab to try again.</span>".to_owned());
+    format!(
+        "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><title>Spoiler protection</title>\
+<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\
+<style>html{{color-scheme:light dark}}body{{margin:0;min-height:100vh;display:grid;place-items:center;\
+font:15px/1.5 system-ui,Segoe UI,sans-serif;background:Canvas;color:CanvasText}}\
+main{{max-width:30rem;padding:2rem}}h1{{font-size:1.15rem;margin:0 0 .5rem}}.site{{opacity:.7;margin:.25rem 0 1rem}}\
+.reload{{display:inline-block;padding:.45rem 1rem;border-radius:.5rem;border:1px solid currentColor;color:inherit;text-decoration:none}}\
+.hint{{opacity:.7}}</style></head><body><main><h1>Spoiler protection could not start in this tab</h1>\
+{site}<p>This page was not shown, so nothing unprotected is on screen.</p>{reload}</main></body></html>"
+    )
 }
 
 /// Page titles are held this long before they reach the tab strip and history, so the engine's
@@ -537,6 +696,24 @@ mod tests {
         assert!(extend < start, "the feed must be applied before the engine starts");
     }
 
+    #[test]
+    fn the_host_script_takes_live_term_updates_through_the_per_tab_hook() {
+        // The hook object carries feed(key, json); it applies extend() and then the runtime's config-change path, which
+        // rescans when the lexicon version changed. Without the hook, a feed accepted while a page is open would wait for a reload.
+        assert!(BUNDLE.contains("feed: feed"), "the hook exposes feed");
+        assert!(BUNDLE.contains("onConfigChange: function (cb) { configCallback = cb; }"), "the runtime's config-change hook is kept");
+        assert!(BUNDLE.contains("configCallback(config)"), "a pushed feed triggers the rescan path");
+        assert!(BUNDLE.contains("appliedFeeds"), "the same feed is never applied twice");
+    }
+
+    #[test]
+    fn the_hook_exists_with_ocr_off_so_feeds_can_still_be_pushed() {
+        let off = SpoilerSettings { ocr: false, ..SpoilerSettings::default() };
+        let json = config_json(&off, "1.0.0", false, Some(&creds()));
+        assert!(json.contains(r#""ocr":false,"ocrHook":"__sfw_"#), "{json}");
+        assert!(json.contains("ocrKey"));
+    }
+
     fn creds() -> OcrCredentials {
         OcrCredentials {
             hook: format!("__sfw_{}", "ab".repeat(16)),
@@ -569,8 +746,10 @@ mod tests {
             )
         );
         let off = SpoilerSettings { ocr: false, ..on };
-        assert!(config_json(&off, "1.0.0", false, Some(&creds())).ends_with(r#""ocr":false}"#));
-        assert!(!config_json(&off, "1.0.0", false, Some(&creds())).contains("ocrHook"));
+        let off_json = config_json(&off, "1.0.0", false, Some(&creds()));
+        assert!(off_json.contains(r#""ocr":false,"ocrHook":"#));
+        let disabled = SpoilerSettings { enabled: false, ..on };
+        assert!(!config_json(&disabled, "1.0.0", false, Some(&creds())).contains("ocrHook"));
         let malformed = OcrCredentials { hook: "evil".into(), key: "k".into() };
         assert!(config_json(&on, "1.0.0", false, Some(&malformed)).ends_with(r#""ocr":false}"#));
     }
@@ -680,5 +859,53 @@ mod tests {
             assert_eq!(script.len(), BUNDLE.len() - PLACEHOLDER.len() + json.len());
             assert!(!script.contains('\u{2028}') || BUNDLE.contains('\u{2028}'));
         }
+    }
+
+    #[test]
+    fn address_shaped_titles_become_the_host_only_while_protected() {
+        let url = Some("https://www.example.com/gta6-ending-explained");
+        assert_eq!(protected_title(true, "", url), "www.example.com");
+        assert_eq!(protected_title(true, "https://www.example.com/gta6-ending-explained", url), "www.example.com");
+        assert_eq!(protected_title(true, "www.example.com/gta6-ending-explained", url), "www.example.com");
+        assert_eq!(protected_title(true, "example.org/some/slug", url), "www.example.com");
+        assert_eq!(protected_title(true, "Spoiler-protected page", url), "Spoiler-protected page");
+        assert_eq!(protected_title(true, "Weather today", url), "Weather today");
+        assert_eq!(protected_title(false, "https://x.test/a", Some("https://x.test/a")), "https://x.test/a");
+        assert_eq!(protected_title(true, "https://a.test/path", None), "a.test");
+        assert_eq!(protected_title(true, "v1.2 released", None), "v1.2 released");
+    }
+
+    #[test]
+    fn injection_state_machine_retries_once_then_protects() {
+        assert_eq!(injection_step(0, true), InjectionStep::Registered);
+        assert_eq!(injection_step(0, false), InjectionStep::Retry);
+        assert_eq!(injection_step(1, true), InjectionStep::Registered);
+        assert_eq!(injection_step(1, false), InjectionStep::Protect);
+        assert_eq!(injection_step(9, false), InjectionStep::Protect);
+    }
+
+    #[test]
+    fn protective_state_only_lets_its_own_page_through() {
+        assert_eq!(protective_navigation(true, "data:text/html;base64,AAA", None), ProtectiveNav::OwnPage);
+        assert_eq!(
+            protective_navigation(false, "https://a.test/x", Some("https://b.test/")),
+            ProtectiveNav::RetryAndResume(Some("https://a.test/x".into()))
+        );
+        assert_eq!(
+            protective_navigation(false, "data:text/html;base64,AAA", Some("https://b.test/")),
+            ProtectiveNav::RetryAndResume(Some("https://b.test/".into()))
+        );
+        assert_eq!(protective_navigation(false, "data:x", None), ProtectiveNav::RetryAndResume(None));
+    }
+
+    #[test]
+    fn protective_page_shows_host_only_escapes_and_has_no_script() {
+        let page = protective_page_html(Some("https://Example.com/a/b?q=\"><script>x</script>"));
+        assert!(page.contains("Spoiler protection could not start in this tab"));
+        assert!(page.contains("<p class=\"site\">example.com</p>"));
+        assert!(!page.contains("<script"));
+        assert!(page.contains("&quot;&gt;&lt;script&gt;"));
+        assert!(!protective_page_html(None).contains("href="));
+        assert!(!protective_page_html(Some("javascript:alert(1)")).contains("href="));
     }
 }

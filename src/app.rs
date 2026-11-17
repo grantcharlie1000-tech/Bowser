@@ -1687,9 +1687,15 @@ impl App {
                 .tabs
                 .iter()
                 .find(|tab| tab.id == active)
-                .map(|tab| tab.title.trim())
+                .map(|tab| {
+                    crate::spoiler::protected_title(
+                        crate::spoiler::current().enabled,
+                        tab.title.trim(),
+                        tab.url.as_ref().map(|url| url.as_str()),
+                    )
+                })
                 .filter(|title| !title.is_empty())
-                .unwrap_or("Bowser");
+                .unwrap_or_else(|| "Bowser".to_owned());
             let profile_suffix = crate::profile::active()
                 .map(|profile| profile.title_suffix())
                 .unwrap_or_default();
@@ -6780,6 +6786,11 @@ impl App {
                 if let Some(app) = title_events_app.upgrade().filter(|app| Self::engine_generation_current(app, generation)) {
                     if title.starts_with("BOWSER_PERF_READY_") && let Ok(s)=app.try_borrow(){let _=s.log.record_navigation("perf_title_changed",u64::from(tab_id.0),0,None,&title);}
                     let mut state = app.borrow_mut();
+                    // Spoiler protection: an empty, URL-equal or URL-shaped title shows the host only.
+                    let title = {
+                        let url = state.tabs.iter().find(|tab| tab.id == tab_id).and_then(|tab| tab.url.as_ref().map(|url| url.to_string()));
+                        crate::spoiler::protected_title(crate::spoiler::current().enabled, &title, url.as_deref())
+                    };
                     // --- tab options --- a count in the title ("(3) Inbox") is a notification.
                     let detect = state.settings.tabs.title_notifications;
                     let shown = state.tab_model.active() == tab_id;
@@ -8023,6 +8034,7 @@ impl App {
         if crate::spoiler::publish(settings) {
             // The HTML chrome masks its own lists (suggestions, history) from this setting.
             crate::chrome_host::host::broadcast_spoiler_config();
+            crate::engine::web_app::refresh_spoiler_scripts();
             Self::with_engine(app, |engine| {
                 engine.refresh_spoiler_scripts();
                 Ok(())
@@ -8033,6 +8045,9 @@ impl App {
     /// A newly verified term update is in force: documents loaded from now on carry it, so every live
     /// tab's script registration is replaced (pages already showing keep what they loaded with).
     pub fn apply_spoiler_feed(app: &AppRef) {
+        // The chrome views carry their own engine copy: hand them the same lexicon.
+        crate::chrome_host::host::broadcast_spoiler_config();
+        crate::engine::web_app::refresh_spoiler_scripts();
         Self::with_engine(app, |engine| {
             engine.refresh_spoiler_scripts();
             Ok(())

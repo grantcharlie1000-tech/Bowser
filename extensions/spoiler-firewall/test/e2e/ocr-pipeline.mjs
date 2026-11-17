@@ -38,7 +38,7 @@ async function test(name, fn) {
     console.log(`ok   ${name}`);
   } catch (e) {
     results.push({ name, ok: false, error: String(e && e.message).split("\n")[0].slice(0, 400) });
-    console.log(`FAIL ${name}: ${String(e && e.message).split("\n")[0].slice(0, 400)}`);
+    console.log(`FAIL ${name}: ${String(e && e.message).replace(/\s+/g, " ").slice(0, 700)}`);
   }
 }
 
@@ -173,7 +173,8 @@ for (const mode of ["strict", "lockdown", "balanced"]) {
       const counted = await ocrStats(page);
       const norm = status === "throw" ? "error" : status;
       assert.equal(counted[norm], 1, `${norm} counted: ${JSON.stringify(counted)}`);
-      const released = mode === "balanced" || (norm === "skipped" && mode !== "lockdown");
+      // skipped (animated / undecodable image) is held like unavailable and error: only Balanced releases it
+      const released = mode === "balanced";
       if (released) {
         assert.equal(s.ok, "ok", "released");
         assert.equal(s.variant, null, "no cover");
@@ -399,6 +400,69 @@ await test("background-image media (inline style) is gated and read too", async 
   const bg = await page.evaluate(async () => { await Promise.resolve(); await Promise.resolve(); return getComputedStyle(document.getElementById("b1bg")).backgroundImage; });
   assert.equal(bg, "none", "re-quarantined in the style mutation callback");
   await waitFor(page, () => document.getElementById("b1").getAttribute("data-sfw") === "shield");
+  await ctx.close();
+});
+
+
+// Top-level image documents (https://i.imgur.com/x.png opened directly) on a high-risk host: held until read, covered when spoiler.
+const docUrl = (host, path) => `http://${host}:${srv.portA}${path}`;
+async function openImageDocument(path, { ocr, mode = "strict" } = {}) {
+  const ctx = await instrumentedContext(bfBrowser, { config: { mode, ocr }, detection: "real", probe: true });
+  const page = await ctx.newPage();
+  await page.goto("about:blank");
+  const rec = new FrameRecorder(ctx, page);
+  await rec.start();
+  await page.goto(docUrl("i.imgur.com", path), { waitUntil: "load" });
+  return { ctx, page, rec };
+}
+const imgState = (page) => page.evaluate(() => {
+  const img = document.querySelector("img");
+  const S = window.__sfw.SFW.shield;
+  const covered = [img, img.parentElement, document.body, document.documentElement].some((e) => e && (e.getAttribute("data-sfw") || "").split(" ").includes("shield"));
+  const variants = [img, img.parentElement, document.body].map((e) => S.state(e).variant).filter(Boolean);
+  return { doc: document.contentType, onlyImg: [...document.body.children].filter((c) => c.localName !== "sfw-shield").length === 1, vis: getComputedStyle(img).visibility, ok: img.getAttribute("data-sfw-m"), covered, variants, req: window.__sfw.ctl.stats().ocr.requests };
+});
+
+await test("image document on a high-risk host: spoiler text in the image covers it, no unsafe frame", async () => {
+  const { ctx, page, rec } = await openImageDocument("/ocr-media/magenta-doc.png", { ocr: { delayMs: 120, rules: spoilerRules } });
+  await waitFor(page, () => window.__sfw.ctl.stats().ocr.ok >= 1);
+  await sleep(250);
+  await rec.waitFrames(10, 3000);
+  const s = await imgState(page);
+  assert.equal(s.doc, "image/png", "really an image document");
+  assert.equal(s.onlyImg, true);
+  assert.equal(s.req, 1, "the image was sent to OCR");
+  assert.equal(s.covered, true, "covered by a shield: " + JSON.stringify(s));
+  assert.equal(s.vis, "hidden");
+  await rec.stop();
+  const p = await probe(page);
+  await ctx.close();
+  assert.equal(rec.unsafe, 0, "pixel-unsafe frames: " + rec.unsafe + " of " + rec.shots);
+  assert.equal(p.unsafe + p.leak + p.taskUnsafe + p.taskLeak, 0, "DOM probe: " + JSON.stringify(p));
+});
+
+await test("image document on a high-risk host: clean text releases it after the read; held (never shown) until then", async () => {
+  const { ctx, page, rec } = await openImageDocument("/ocr-media/clean-doc.png", { ocr: { delayMs: 400, rules: [{ match: "clean", status: "ok", text: "dinner at home" }] } });
+  await waitFor(page, () => window.__sfw.ocr.pending.length >= 1 || window.__sfw.ctl.stats().ocr.requests >= 1);
+  const mid = await imgState(page);
+  assert.equal(mid.vis, "hidden", "held while the read is pending");
+  assert.equal(mid.ok, null);
+  await waitFor(page, () => document.querySelector("img").getAttribute("data-sfw-m") === "ok");
+  const after = await imgState(page);
+  assert.equal(after.vis, "visible");
+  assert.equal(after.covered, false);
+  await rec.stop();
+  await ctx.close();
+});
+
+await test("image document on a high-risk host: an unreadable image (skipped) stays covered in Strict", async () => {
+  const { ctx, page } = await openImageDocument("/ocr-media/clean-doc.png", { ocr: { delayMs: 60, rules: [{ match: "clean", status: "skipped" }] } });
+  await waitFor(page, () => window.__sfw.ctl.stats().ocr.skipped >= 1);
+  await sleep(250);
+  const s = await imgState(page);
+  assert.equal(s.vis, "hidden", JSON.stringify(s));
+  assert.equal(s.covered, true);
+  assert.ok(s.variants.includes("mediaerr"), "couldn't-check cover: " + JSON.stringify(s));
   await ctx.close();
 });
 

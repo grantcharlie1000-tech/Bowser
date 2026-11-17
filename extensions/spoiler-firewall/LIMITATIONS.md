@@ -39,7 +39,8 @@ they measure robustness to *forms* of spoilers, not knowledge of story content.
    - Chrome: opt-in (needs the `offscreen` permission); English, Spanish, French, German,
      Portuguese, Italian, Russian. Warm latency ~0.4–0.7 s/image on an unloaded machine, more under load.
    - Bowser: on by default via Windows.Media.Ocr; only languages with an installed Windows OCR
-     pack; WebP/AVIF need the Windows codecs; animated images are not read (treated as unverified).
+     pack; WebP/AVIF need the Windows codecs; animated images are not read (`skipped`): on high-risk hosts
+     they stay covered ("Couldn't check image") in Strict and Lockdown, released only in Balanced.
    - **No visual classifier.** A screenshot of the game with no readable text, in a thread with no
      GTA context, is not recognised. Lockdown keeps such media covered on high-risk sites; Strict
      releases text-free images in cold context after inspection. This is the largest residual risk.
@@ -57,10 +58,17 @@ they measure robustness to *forms* of spoilers, not knowledge of story content.
   links outside covered items; web notifications; history and omnibox suggestions. Chrome
   extensions cannot change these.
 - **Browser UI (Bowser):** titles are held 150 ms so the rewritten title is what reaches the tab
-  strip, window caption and history; suggestions, History, panels, palette and tab cards are masked
+  strip, window caption and history (an empty or URL-shaped title becomes the host only); the address
+  bar shows the host and "· path hidden" for a risky address until it is focused; web notifications are
+  suppressed while protection is on; suggestions, History, panels, palette and tab cards are masked
   by the same engine. Not covered: the native (non-HTML) fallback UI, native "recently closed"/jump
   lists, history titles recorded before this feature, bookmark edit forms.
 - **Tabs open before install (Chrome)** are unprotected until reloaded (no `scripting` permission).
+- **Bowser, script registration failure:** if the per-tab script cannot be registered (asynchronously reported), it is
+  retried once and then the tab shows Bowser's protective page instead of the web page; it is not verified live.
+- **Bowser, pages that never get the bundle:** the start page's web page widget is paused until a click while protection
+  is on; reader view cannot reveal a shielded unit. Documents open when a term update arrives are updated through the
+  per-tab hook (top frame and tracked frames); anything else gets it on its next load.
 - **Page scripts** can always tamper with a main-world script (Bowser) or remove the extension's
   covers (both). The threat model treats posters as adversaries, not the platforms themselves.
 

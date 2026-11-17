@@ -26,6 +26,7 @@ import { engineLabel, monogram } from './address-settings-logic';
 import { moveSuggestSelection, suggestPreviewText } from './suggest-logic'; // --- omnibox suggest ---
 import './spoiler-config'; // --- spoiler guard --- (every view listens for the live setting)
 import { hostOnly, riskyUrl, rowRisky } from './spoiler-guard'; // --- spoiler guard ---
+import { onSpoilerConfig } from './spoiler-config'; // --- spoiler guard ---
 import { applyMenuOpen, applyState, applyTheme, buildView, DRAG_ATTR, renderDisplay, syncSiteIcon } from './view';
 import { startTabs } from './tabs';
 import { startRail } from './rail';
@@ -322,8 +323,31 @@ function startToolbar(root: HTMLElement): void {
   // Unfocused, a URL shows host-emphasised (view.display); focused, the real input text shows.
   // Updated on setText and blur only, never while typing.
   const showDisplay = (): void => {
-    view.pill.classList.toggle('is-display', document.activeElement !== input && renderDisplay(view, input.value, flags));
+    view.pill.classList.toggle('is-display', document.activeElement !== input && renderDisplay(view, input.value, flags, hiddenPath));
   };
+
+  // --- spoiler guard --- The loaded page's address: unfocused, a risky one (a spoiler slug) shows the host only
+  // with a "· path hidden" note; focusing the field shows the whole address (deliberate: the user asked for it).
+  // Reuses the minimal_url pair (shownText unfocused, fullText focused). Re-run when the setting or a term update changes.
+  let pageShown = '';
+  let pageFull = '';
+  let hiddenPath = false;
+  const applyPathGuard = (): void => {
+    if (pageShown === '') { hiddenPath = false; return; }
+    if (edited) return;
+    const full = pageFull !== '' ? pageFull : pageShown;
+    const risky = riskyUrl(full);
+    const host = risky ? hostOnly(full) : '';
+    const was = hiddenPath;
+    hiddenPath = risky && host !== '' && host !== full;
+    shownText = hiddenPath ? host : pageShown;
+    fullText = hiddenPath ? full : pageFull;
+    // Only a change of state touches the field: a clean address keeps exactly what setText put there.
+    if (hiddenPath || was) input.value = document.activeElement === input ? (fullText !== '' ? fullText : shownText) : shownText;
+    showDisplay();
+  };
+  onSpoilerConfig(applyPathGuard);
+  // --- end spoiler guard ---
 
   // A click on the address selects all of it while it is still the untouched address, as in every
   // browser. The toolbar view keeps `document.activeElement` and `hasFocus()` after the keyboard has
@@ -417,7 +441,10 @@ function startToolbar(root: HTMLElement): void {
         input.value = msg.text;
         shownText = msg.text;
         fullText = msg.full ?? '';
+        pageShown = shownText;
+        pageFull = fullText;
         edited = false;
+        applyPathGuard(); // --- spoiler guard ---
         if ((msg.select && flags.select) || keepSelectAll) input.select();
         showDisplay();
         syncSiteIcon(view);

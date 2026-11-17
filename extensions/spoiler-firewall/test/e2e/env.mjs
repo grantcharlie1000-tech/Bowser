@@ -26,7 +26,7 @@ export const HEADLESS_SHELL = newest("chromium_headless_shell", join("chrome-hea
 
 export const HOSTS = [
   "x.com", "twitter.com", "www.reddit.com", "old.reddit.com", "www.youtube.com", "www.google.com", "www.bing.com", "duckduckgo.com",
-  "news.example.test", "blog.example.test", "forum.example.test", "frame.test", "other.test", "example.test",
+  "i.imgur.com", "imgur.com", "gta.fandom.com", "en.wikipedia.org", "www.ign.com", "news.example.test", "blog.example.test", "forum.example.test", "frame.test", "other.test", "example.test",
 ];
 export const RESOLVER_RULES = HOSTS.map((h) => `MAP ${h} 127.0.0.1`).join(", ");
 export const BASE_ARGS = ["--mute-audio", "--disable-gpu-vsync", `--host-resolver-rules=${RESOLVER_RULES}`, "--autoplay-policy=no-user-gesture-required", "--disable-features=PrivacySandboxSettings4"];

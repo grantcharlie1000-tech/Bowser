@@ -314,3 +314,42 @@ test('the dropdown masks risky rows (keeping their place), leaves clean rows, re
   deliver({ v: 1, t: 'spoiler', on: true, mode: 'strict' });
 });
 // --- end spoiler guard ---
+
+test('a term update from the host extends the UI engine, clears caches and re-renders masked surfaces', () => {
+  reset();
+  const row = { title: 'Zorblax Quillfeather dies in the final mission', url: 'example.com/news' };
+  const before = rowRisky(row);
+  assert.equal(before, false, 'unknown plot term: not masked before the update');
+  assert.equal(riskyText('xyzzyquill plugh ending explained'), false);
+  let renders = 0;
+  const off = guard.onSpoilerConfig(() => { renders++; });
+  const feed = { version: '2026.11.19-1', add: { franchise: ['zorblax quillfeather', 'xyzzyquill plugh'] } };
+  const accepted = guard.applySpoilerFeedMessage({ v: 1, t: 'spoilerFeed', lexicon: feed });
+  assert.equal(accepted, true);
+  assert.equal(renders, 1, 'masked surfaces re-render once');
+  assert.equal(rowRisky(row), true, 'the same row is masked after the update (stale verdict cache cleared)');
+  assert.equal(guardRow(row, false).masked, true);
+  assert.equal(riskyText('xyzzyquill plugh ending explained'), true);
+  // The same feed again (Bowser re-sends it with every setting broadcast) is a no-op.
+  assert.equal(guard.applySpoilerFeedMessage(JSON.stringify({ v: 1, t: 'spoilerFeed', lexicon: feed })), true);
+  assert.equal(renders, 1);
+  off();
+});
+
+test('feed messages are validated: shape, type, unknown members and size', () => {
+  assert.equal(guard.applySpoilerFeedMessage({ v: 1, t: 'spoilerFeed' }), false);
+  assert.equal(guard.applySpoilerFeedMessage({ v: 2, t: 'spoilerFeed', lexicon: {} }), false);
+  assert.equal(guard.applySpoilerFeedMessage({ v: 1, t: 'spoilerFeed', lexicon: [] }), false);
+  assert.equal(guard.applySpoilerFeedMessage({ v: 1, t: 'spoilerFeed', lexicon: {}, extra: 1 }), false);
+  assert.equal(guard.applySpoilerFeedMessage('not json'), false);
+  assert.equal(guard.applySpoilerFeedMessage({ v: 1, t: 'spoiler', on: true, mode: 'strict' }), false);
+  const big = { v: 1, t: 'spoilerFeed', lexicon: { pad: 'x'.repeat(guard.MAX_FEED_JSON) } };
+  assert.equal(guard.applySpoilerFeedMessage(big), false, 'over 256 KB is refused');
+  // The config message path is untouched by feed messages.
+  assert.equal(applySpoilerMessage({ v: 1, t: 'spoilerFeed', lexicon: {} }), false);
+});
+
+test('a bundle loaded later inherits the feed an earlier bundle received', async () => {
+  const late = await bundleSource("export * from './spoiler-guard.ts'; export * from './spoiler-config.ts'; export const tag = 9;");
+  assert.equal(late.riskyText('xyzzyquill plugh ending explained', 'strict'), true);
+});

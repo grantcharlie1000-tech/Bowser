@@ -74,9 +74,10 @@ await test("frames: src-only sandboxed frame: large on a cold page is covered in
   await ctx.close();
 });
 
-await test("frames: small sandboxed src frame on a cold page stays clear (strict); lockdown covers it", async () => {
+await test("frames: a small sandboxed src frame on a cold page is covered in strict (it can show text); a 1x1 pixel frame is not", async () => {
   const a = await open("example.test", "/pages/rt-sandbox-small.html");
-  assert.equal((await shieldState(a.page, "#wrap")).mode, "none", "150x60 frame, cold page, strict: no cover");
+  assert.equal((await shieldState(a.page, "#wrap")).variant, "frameerr", "150x60 frame, cold page, strict: covered (cannot be inspected)");
+  assert.equal((await shieldState(a.page, "#pixel")).mode, "none", "1x1 tracking-pixel frame stays clear");
   await a.ctx.close();
   const b = await open("example.test", "/pages/rt-sandbox-small.html", { config: { mode: "lockdown" } });
   assert.equal((await shieldState(b.page, "#wrap")).variant, "frameerr", "lockdown covers every unverifiable frame");

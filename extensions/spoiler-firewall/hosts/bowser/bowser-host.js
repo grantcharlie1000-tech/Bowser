@@ -18,6 +18,22 @@ const CONFIG = /*__SFW_CONFIG__*/null;
     const debug = !!config.debugReports;
     const noop = function () {};
 
+    // ---- live term update ----------------------------------------------------------------------------------
+    // A term update verified after this document loaded is pushed by Bowser through the per-tab hook (feed(key, json)):
+    // extend() (adds or raises only) and then the runtime's config-change path, which rescans when the lexicon version
+    // changed. The same feed (compared as normalised JSON) is never applied twice, so repeated pushes cannot fill the term cap.
+    const appliedFeeds = new Set();
+    let configCallback = null;
+    const normFeed = function (obj) { try { return JSON.stringify(obj); } catch (e) { return null; } };
+    const applyFeed = function (obj) {
+      const sig = normFeed(obj);
+      if (sig === null || appliedFeeds.has(sig)) return false;
+      appliedFeeds.add(sig);
+      try { SFW.lexicon.extend(obj); } catch (e) { return false; }
+      try { if (configCallback) configCallback(config); } catch (e) { /* the next mutation still classifies with the new terms */ }
+      return true;
+    };
+
     // ---- native OCR bridge ------------------------------------------------------------------------------
     // Bowser's native side pulls requests with ExecuteScript(window[hook].drain(key)) and pushes answers with
     // window[hook].deliver(key, json). The hook name and the key are per-tab random (128 bits each) and the key
@@ -27,7 +43,8 @@ const CONFIG = /*__SFW_CONFIG__*/null;
     const makeOcr = function () {
       const hook = config.ocrHook;
       const key = config.ocrKey;
-      if (config.ocr !== true || typeof hook !== "string" || typeof key !== "string") return null;
+      const ocrOn = config.ocr === true;
+      if (typeof hook !== "string" || typeof key !== "string") return null;
       if (!/^__sfw_[0-9a-f]{32}$/.test(hook) || !/^[0-9a-f]{32}$/.test(key)) return null;
       const MAX_PENDING = 256, MAX_DRAIN = 64, MAX_URL = 2048, MAX_TEXT = 4096, MAX_JSON = 262144, TIMEOUT_MS = 30000;
       const STATUSES = { ok: 1, unavailable: 1, error: 1, skipped: 1 };
@@ -108,11 +125,20 @@ const CONFIG = /*__SFW_CONFIG__*/null;
         }
       };
 
+      // Bowser pushes a term update here: a JSON text of at most 256 KB holding the feed's lexicon object.
+      const feed = function (k, json) {
+        if (k !== key || typeof json !== "string" || json.length > MAX_JSON) return;
+        let obj;
+        try { obj = parseJson(json); } catch (e) { return; }
+        if (!obj || typeof obj !== "object" || isArray(obj)) return;
+        applyFeed(obj);
+      };
+
       try {
-        const api = Object.freeze({ drain: drain, deliver: deliver });
+        const api = Object.freeze({ drain: drain, deliver: deliver, feed: feed });
         Object.defineProperty(win, hook, { value: api, enumerable: false, writable: false, configurable: false });
       } catch (e) { return null; } // a frozen window or a taken name: no hook, so no OCR
-      return Object.freeze({ request: request });
+      return ocrOn ? Object.freeze({ request: request }) : null; // hook only (feed pushes) when OCR is off
     };
     let ocr = null;
     try { ocr = makeOcr(); } catch (e) { ocr = null; }
@@ -121,7 +147,13 @@ const CONFIG = /*__SFW_CONFIG__*/null;
     // Signed term update (src/spoiler_feed.rs): the native side verified the Ed25519 signature and embedded only the
     // feed's `lexicon` object as config.feed. extend() can only add terms or raise a term's category, validates every
     // entry, and ignores anything malformed, so a missing, stale or odd value leaves the built-in list protecting.
-    try { if (config.feed && typeof config.feed === "object") SFW.lexicon.extend(config.feed); } catch (e) { /* built-in list only */ }
+    try {
+      if (config.feed && typeof config.feed === "object") {
+        const sig = normFeed(config.feed);
+        if (sig !== null) appliedFeeds.add(sig);
+        SFW.lexicon.extend(config.feed);
+      }
+    } catch (e) { /* built-in list only */ }
 
     try { SFW.hooks.install(win); } catch (e) { /* hooks are best effort */ }
     SFW.runtime.start({
@@ -130,7 +162,7 @@ const CONFIG = /*__SFW_CONFIG__*/null;
       configReady: null,
       ocr: ocr,
       report: debug ? function (code, n) { try { console.debug("[sfw]", String(code), n | 0); } catch (e) { /* ignore */ } } : noop,
-      onConfigChange: noop,
+      onConfigChange: function (cb) { configCallback = cb; },
       privileged: null,
       frameIsTop: win.top === win,
     });

@@ -28,8 +28,10 @@ SFW.runtime = (function () {
   const ENTITIES = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: " ", ndash: "-", mdash: "-", hellip: "...", rsquo: "'", lsquo: "'", ldquo: '"', rdquo: '"' };
   const CRUDE_WORDS = ["gta", "grand theft", "grandtheft", "vice city", "vicecity", "leonida", "rockstar"]; // crude hotness test, no RegExp
   const BIG_INSERT = 1500; // a callback that delivers more added nodes than this only covers them (O(1)) and continues in slices
-  const FRAME_MIN_W = 200; // an unverifiable embedded frame at least this large is covered on cold pages (strict)
-  const FRAME_MIN_H = 100;
+  // An unverifiable embedded frame (sandboxed without scripts: the engine cannot run inside it) is covered in Strict on
+  // cold pages too once it is large enough to show one line of text; only tracking-pixel sized frames stay clear.
+  const FRAME_MIN_W = 48;
+  const FRAME_MIN_H = 16;
   const TITLE_GUARD = "Spoiler-protected page";
   const LAUNCH = Date.UTC(2026, 10, 19);
   const MO_ATTRS = ["alt", "title", "aria-label", "aria-description", "placeholder", "href", "src", "srcset", "poster", "srcdoc", "sandbox", "data-sfw-sr", "data-sfw"];
@@ -404,6 +406,12 @@ SFW.runtime = (function () {
     const threadWait = new Map();
     const recent = new Set();
     const U = new WeakMap(); // unit -> {fp, cfp, dec, targets}
+    const NONTEXT_SEL = "img,video,picture,canvas,svg,iframe,embed,object,audio,[style*='background-image'],[style*='background:']"; // holdsNonText()
+    const BG_CHILDREN = 12; // hasBackgroundMedia(): direct children whose computed background-image is read
+    const bgMemo = new WeakMap(); // item -> {n: child count, v}
+    const ESCALATE_SEL = "article,[role=article],li,figure,blockquote,[role=listitem]"; // escalationTarget()
+    const ESC_MAX_CHILDREN = 8; // a card has few children; an article of paragraphs does not
+    const escalated = new Set(); // generic cards shielded whole because a block inside them is a spoiler
     const threads = new WeakMap(); // root -> {resolved, hot, first, shield, key}
     const seenRoots = new WeakSet();
     const rootList = new Set();
@@ -1420,7 +1428,57 @@ SFW.runtime = (function () {
       if (LISTISH.has(g.tagName) || nGetAttr(g, "role") === "listitem" || nGetAttr(g, "role") === "option") return true;
       if (g.children.length <= 2) return true;
       try { if (nQS(g, "img,video,picture,canvas,svg image")) return true; } catch (e) { /* ignore */ }
-      return false;
+      return hasBackgroundMedia(g);
+    }
+
+    // A picture drawn as a CSS background (common on social sites) is media too: an inline style anywhere in the item, or a
+    // computed background-image on one of its first direct children (bounded, and memoised per child count).
+    function hasBackgroundMedia(g) {
+      try { if (nQS(g, "[style*='background-image'],[style*='background:']")) return true; } catch (e) { /* ignore */ }
+      if (!nGetCS) return false;
+      const kids = g.children;
+      const memo = bgMemo.get(g);
+      if (memo && memo.n === kids.length) return memo.v;
+      let v = false;
+      for (let i = 0; i < kids.length && i < BG_CHILDREN && !v; i++) {
+        try { const bi = nGetCS(kids[i]).backgroundImage; v = !!bi && bi !== "none"; } catch (e) { /* ignore */ }
+      }
+      bgMemo.set(g, { n: kids.length, v });
+      return v;
+    }
+
+    // Escalation: a block that is shielded as a spoiler inside a small generic card (article / li / figure / blockquote /
+    // listitem within ITEM_TEXT_CAP) covers the whole card, so its siblings (pictures, links, embeds, captions) are covered
+    // too. Done in the same evaluate() pass (the ladder rounds), so there is no frame in between. A long article made of many
+    // paragraphs is above the cap and stays shielded per paragraph.
+    function escalationTarget(u) {
+      if (!adapter.generic || isOwn(u)) return null;
+      const p = parentOf(u);
+      if (!p || p.nodeType !== 1) return null;
+      const g = closestFlat(p, ESCALATE_SEL);
+      if (!g || g === u || g.tagName === "BODY" || g.tagName === "HTML" || nHasAttr(g, "data-sfw")) return null;
+      if (!coverWhole(g)) return null;
+      return g;
+    }
+    // A small item: few element children and little text. A long article is never covered whole, also not while it is
+    // still streaming in (it grows past these limits and the escalation is dropped).
+    function smallItem(g) {
+      return g.children.length <= ESC_MAX_CHILDREN && textLen(g, ITEM_TEXT_CAP) <= ITEM_TEXT_CAP;
+    }
+    // Something that is not a text block (a picture, video, embed, CSS background picture or a direct link): what a shielded
+    // block cannot cover on its own. An article made only of paragraphs keeps deciding paragraph by paragraph.
+    function holdsNonText(g) {
+      try { if (nQS(g, NONTEXT_SEL) || nQS(g, ":scope > a[href]")) return true; } catch (e) { /* ignore */ }
+      return hasBackgroundMedia(g);
+    }
+    // Cover the whole item: while the document is still loading, every small item holding a shielded block is covered (its
+    // pictures may not have been parsed yet, and zero-flash comes first); once loaded, only one that really holds something
+    // besides text blocks. onReadyState() re-decides the escalated items when loading ends, which releases the others.
+    function coverWhole(g) {
+      return smallItem(g) && (doc.readyState !== "complete" || holdsNonText(g));
+    }
+    function hasInnerShield(u) {
+      try { return !!nQS(u, "[data-sfw~='shield']:not(sfw-shield)"); } catch (e) { return false; }
     }
 
     // Text length with early exit: never walks more than ~cap characters of a huge ancestor (memoised for the slice).
@@ -1603,7 +1661,7 @@ SFW.runtime = (function () {
 
 
     // Layout-reading verdict for the unverifiable frames of one unit (the only synchronous layout read the frame rule makes).
-    // strict: any frame on a hot / high-risk page, on a cold generic page only a large one; lockdown: every one; balanced:
+    // strict: any frame on a hot / high-risk page, on a cold generic page any frame big enough to show text; lockdown: every one; balanced:
     // hot context only. Returns "shield" | "clear" | "cfg" (decision differs between modes while the config is loading).
     function frameVerdict(frames, hot) {
       const big = () => {
@@ -1735,6 +1793,17 @@ SFW.runtime = (function () {
     }
 
     function decide(u, generic) {
+      // A small card (article / li / figure ...) that holds a shielded block is covered whole, whether it was escalated to or is
+      // itself the unit: its own text excludes the nested shielded block, which would otherwise release the card around it.
+      if (escalated.has(u) || (adapter.generic && u.nodeType === 1 && !isOwn(u) && nMatches(u, ESCALATE_SEL))) {
+        if (hasInnerShield(u) && coverWhole(u) && !detectionBroken) {
+          const efp = "esc|" + cfg.mode + "|" + S.lexicon.version;
+          const ec = U.get(u);
+          if (ec && ec.fp === efp && ec.dec === "shield" && ec.targets.every((t) => S.shield.state(t).mode !== "none")) return { u, dec: "shield", same: true, fp: efp, cfp: efp, hot: Math.max(pageHot, 1), generic };
+          return { u, dec: "shield", fp: efp, cfp: efp, hot: Math.max(pageHot, 1), generic, nb: false, media: true, ocr: false, strong: false, warmOnly: false, frameErr: false };
+        }
+        escalated.delete(u);
+      }
       const deep = isDeep(u);
       const ex = extract(u, isOwn(u), deep);
       const text = ex.text;
@@ -1911,6 +1980,8 @@ SFW.runtime = (function () {
       for (const p of plans) {
         if (!p.generic || p.same) continue;
         if (p.dec === "shield") {
+          const g = p.fp.slice(0, 4) === "esc|" ? null : escalationTarget(p.u);
+          if (g) { escalated.add(g); aPush(next, g); }
           for (const sib of [p.u.previousElementSibling, p.u.nextElementSibling]) if (sib && sib.nodeType === 1 && !nHasAttr(sib, "data-sfw") && sibEligible(p.u, sib)) aPush(next, sib);
         } else if (p.dec === "clear" && !p.nb && hasShieldedNeighbor(p.u)) aPush(next, p.u);
       }
@@ -2334,7 +2405,10 @@ SFW.runtime = (function () {
       rec.st = "done";
       if (rec.obs) { rec.obs = false; try { if (ocrIO) ocrIO.unobserve(rec.m); if (ocrRO) ocrRO.unobserve(rec.m); } catch (e) { /* ignore */ } }
       const mode = cfg.mode;
-      const release = r.status === "ok" || (r.status === "skipped" ? mode !== "lockdown" : mode === "balanced");
+      // skipped = the host could not read it (animated, multi-frame, undecodable): Strict keeps it held with the "couldn't check
+      // image" cover like unavailable / error (it can carry text a still frame would show); only Balanced releases it.
+      // Local data:/blob: images the engine never asks about (r.local) follow the older rule: released unless Lockdown.
+      const release = r.status === "ok" || (r.status === "skipped" ? (r.local ? mode !== "lockdown" : mode === "balanced") : mode === "balanced");
       if (release) {
         unfailRec(rec);
         setOk(rec.m, !r.small);
@@ -2376,6 +2450,7 @@ SFW.runtime = (function () {
       if (!w || nHasAttr(w, "data-sfw")) return;
       try {
         nSetAttr(w, "data-sfw-mc", "");
+        S.shield.setTheme(w, S.shield.theme(w));
         if (nGetCS(w).position === "static") { nSetAttr(w, "data-sfw-mcpos", ""); rec.wrapPos = true; }
         rec.wrap = w;
       } catch (e) { /* ignore */ }
@@ -2385,7 +2460,7 @@ SFW.runtime = (function () {
       const w = rec.wrap;
       if (!w) return;
       rec.wrap = null;
-      try { nRemoveAttr(w, "data-sfw-mc"); if (rec.wrapPos) nRemoveAttr(w, "data-sfw-mcpos"); } catch (e) { /* ignore */ }
+      try { nRemoveAttr(w, "data-sfw-mc"); nRemoveAttr(w, "data-sfw-theme"); if (rec.wrapPos) nRemoveAttr(w, "data-sfw-mcpos"); } catch (e) { /* ignore */ }
       rec.wrapPos = false;
     }
 
@@ -2497,7 +2572,7 @@ SFW.runtime = (function () {
       if (w < OCR_MIN_W || h < OCR_MIN_H || (nw && nw < OCR_MIN_W) || (nh && nh < OCR_MIN_H)) { finishSmall(rec); return; }
       const c = cacheGet(rec.key);
       if (c) { stats.ocr.cacheHits++; rec.res = c; resolveRec(rec); return; }
-      if (!/^(?:https?|data|blob):/i.test(rec.url)) { rec.res = { status: "skipped" }; resolveRec(rec); return; }
+      if (!/^(?:https?|data|blob):/i.test(rec.url)) { rec.res = { status: "skipped", local: true }; resolveRec(rec); return; }
       rec.req = { width: Math.round(w), height: Math.round(h), naturalWidth: nw, naturalHeight: nh };
       showPending(rec);
       rec.st = "wait";
@@ -2701,6 +2776,7 @@ SFW.runtime = (function () {
           if (ti && doc.readyState === "complete") { ti.resolved = true; }
           if (doc.readyState === "complete") { threadWait.delete(r); for (const u of set) touch(u); }
         }
+        if (doc.readyState === "complete") for (const g of Array.from(escalated)) { if (g.isConnected) touch(g); else escalated.delete(g); }
         flushPending();
         runWork(now(), BUDGET_MS);
         try { if (mo) MO_TAKE(mo); } catch (e) { /* ignore */ }

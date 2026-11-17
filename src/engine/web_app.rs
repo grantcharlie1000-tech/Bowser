@@ -88,6 +88,94 @@ impl WebAppEvents {
     }
 }
 
+/// The Spoiler Firewall registration of one pinned web app view (the same rules as a tab, see
+/// `webview2::install_spoiler_script`): the id WebView2 returned and an epoch for stale completions.
+struct SpoilerReg {
+    webview: ICoreWebView2,
+    controller: ICoreWebView2Controller,
+    id: RefCell<Option<String>>,
+    epoch: Cell<u64>,
+}
+
+thread_local! {
+    /// Every live pinned web app view's registration, so a changed setting or term update reaches them.
+    static SPOILER_REGS: RefCell<Vec<std::rc::Weak<SpoilerReg>>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Replaces the Spoiler Firewall script of every live pinned web app view from the current setting
+/// (documents loaded from now on). Called from the settings and term-update paths on the UI thread.
+pub fn refresh_spoiler_scripts() {
+    let regs: Vec<Rc<SpoilerReg>> = SPOILER_REGS.with(|regs| {
+        let mut regs = regs.borrow_mut();
+        regs.retain(|reg| reg.strong_count() > 0);
+        regs.iter().filter_map(std::rc::Weak::upgrade).collect()
+    });
+    for reg in regs {
+        unsafe { install_spoiler(&reg) };
+    }
+}
+
+unsafe fn install_spoiler(reg: &Rc<SpoilerReg>) {
+    unsafe {
+        let epoch = reg.epoch.get().wrapping_add(1);
+        reg.epoch.set(epoch);
+        if let Some(old) = reg.id.borrow_mut().take() {
+            let old = CoTaskMemPWSTR::from(old.as_str());
+            let _ = reg.webview.RemoveScriptToExecuteOnDocumentCreated(*old.as_ref().as_pcwstr());
+        }
+        // Web apps have no OCR hooks; the engine runs text-only there.
+        let Some(script) = crate::spoiler::script_for(&crate::spoiler::current(), false, None) else {
+            // Protection off: a view hidden by a failed registration is shown again.
+            let _ = reg.controller.SetIsVisible(true);
+            return;
+        };
+        if register_spoiler(reg, Rc::new(script), epoch, 0).is_err() {
+            protect_view(reg);
+        }
+    }
+}
+
+/// A web app view whose protection could not start: stop it and hide it. Nothing unprotected shows.
+unsafe fn protect_view(reg: &SpoilerReg) {
+    unsafe {
+        let _ = reg.webview.Stop();
+        let _ = reg.controller.SetIsVisible(false);
+    }
+}
+
+unsafe fn register_spoiler(reg: &Rc<SpoilerReg>, script: Rc<String>, epoch: u64, attempt: u8) -> Result<()> {
+    unsafe {
+        let text = CoTaskMemPWSTR::from(script.as_str());
+        let done = reg.clone();
+        reg.webview.AddScriptToExecuteOnDocumentCreated(
+            *text.as_ref().as_pcwstr(),
+            &AddScriptToExecuteOnDocumentCreatedCompletedHandler::create(Box::new(move |status, id| {
+                let registered = status.is_ok() && !id.is_empty();
+                if done.epoch.get() != epoch {
+                    if registered {
+                        let stale = CoTaskMemPWSTR::from(id.as_str());
+                        let _ = done.webview.RemoveScriptToExecuteOnDocumentCreated(*stale.as_ref().as_pcwstr());
+                    }
+                    return Ok(());
+                }
+                match crate::spoiler::injection_step(attempt, registered) {
+                    crate::spoiler::InjectionStep::Registered => {
+                        *done.id.borrow_mut() = Some(id);
+                        let _ = done.controller.SetIsVisible(true);
+                    }
+                    crate::spoiler::InjectionStep::Retry => {
+                        if register_spoiler(&done, script.clone(), epoch, attempt + 1).is_err() {
+                            protect_view(&done);
+                        }
+                    }
+                    crate::spoiler::InjectionStep::Protect => protect_view(&done),
+                }
+                Ok(())
+            })),
+        )
+    }
+}
+
 struct WebAppView {
     lease: Lease,
     trace: Option<crate::performance::WebAppTrace>,
@@ -97,6 +185,8 @@ struct WebAppView {
     /// When the app was last hidden; `None` while it is visible.
     hidden_since: Option<Instant>,
     suspended: bool,
+    /// Keeps the Spoiler Firewall registration alive as long as the view.
+    _spoiler: Option<Rc<SpoilerReg>>,
 }
 
 struct HostState {
@@ -641,6 +731,7 @@ unsafe fn configure_web_app_controller(
     let WebAppConfiguration{events,trace,lease}=configuration;
     if !lease.is_live() { return Err(Error::from(windows::Win32::Foundation::E_ABORT)); }
     let webview = unsafe { controller.CoreWebView2()? };
+    let spoiler_reg: Option<Rc<SpoilerReg>>;
     unsafe {
         controller.SetBounds(bounds)?;
         controller.SetIsVisible(true)?;
@@ -657,13 +748,11 @@ unsafe fn configure_web_app_controller(
         // Spoiler Firewall also covers pinned web apps (they show arbitrary sites). Registered
         // from the setting in force now and fire-and-forget; a changed setting reaches an app the
         // next time its view is created.
-        if let Some(script) = crate::spoiler::script_for(&crate::spoiler::current(), false, None) {
-            let script = CoTaskMemPWSTR::from(script.as_str());
-            webview.AddScriptToExecuteOnDocumentCreated(
-                *script.as_ref().as_pcwstr(),
-                &AddScriptToExecuteOnDocumentCreatedCompletedHandler::create(Box::new(|_, _| Ok(()))),
-            )?;
-        }
+        // The registration exists even while protection is off, so turning it on reaches this view.
+        let reg = Rc::new(SpoilerReg { webview: webview.clone(), controller: controller.clone(), id: RefCell::new(None), epoch: Cell::new(0) });
+        install_spoiler(&reg);
+        SPOILER_REGS.with(|regs| regs.borrow_mut().push(Rc::downgrade(&reg)));
+        spoiler_reg = Some(reg);
     }
     let mut removers = HandlerRemovers::default();
     let mut token = 0;
@@ -827,7 +916,7 @@ unsafe fn configure_web_app_controller(
         let result=webview.Navigate(PCWSTR::from_raw(initial_url.as_ptr()));
         if let Some(trace)=&trace {trace.result("webapp_initial_navigate_result",&result);}
         result?;
-        Ok(WebAppView { controller, webview, trace, lease, remove_handlers: std::mem::take(&mut removers.0), hidden_since: None, suspended: false })
+        Ok(WebAppView { controller, webview, trace, lease, remove_handlers: std::mem::take(&mut removers.0), hidden_since: None, suspended: false, _spoiler: spoiler_reg })
     }
 }
 

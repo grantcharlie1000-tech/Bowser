@@ -18,12 +18,24 @@ Built in, on by default, unofficial. The detection engine is shared with the Chr
   with an epoch, so a changed setting removes the old script and adds a new one; a registration that completes
   after a newer request is removed when it completes. Setting off registers nothing (the native kill switch).
   A synchronous registration failure fails tab configuration, so no tab is silently unprotected.
+- **Asynchronous registration failure.** The completion handler decides with a pure state machine
+  (`spoiler::injection_step`): a failed registration is retried once; if that fails too, the tab enters a
+  protective state (`protect_tab`): the navigation is stopped and Bowser's own page
+  (`spoiler::protective_page_html`: "Spoiler protection could not start in this tab", host only, a Reload link, no
+  script) replaces the web page, and `spoiler_protection_failed` is logged. While the tab is in that state every
+  navigation (the Reload link, a typed address, the reload button) is cancelled, the registration is retried first and
+  the tab goes on to the requested address only once it holds (`spoiler::protective_navigation`). Nothing waits on the
+  completion (never on the UI thread). Honest limit: a failure that is reported after the first document already started
+  rendering can show that page for the moment it takes the completion to arrive before Bowser stops it; registrations
+  are ordered ahead of the first navigation, so in practice the first document is not loaded before the verdict.
 - Settings changes (settings page, native settings window, reset) go through `App::apply_live_settings`, which
   publishes the setting and calls `EngineAdapter::refresh_spoiler_scripts` on every live tab. Pages already
   showing keep the script they loaded with until they reload; the settings page says so.
 - Not injected: the HTML chrome views (separate chrome-host environment, never `configure_controller`) and
   internal pages (`bowser://settings` and friends have no content WebView2; the engine never sees `bowser:`).
-  Pinned web apps (side panels) are injected at creation from the setting then in force.
+  Pinned web apps (side panels) are injected at creation and re-registered like tabs whenever the setting or the term
+  update changes (`engine::web_app::refresh_spoiler_scripts`); a web app view whose registration fails after its retry is
+  stopped and hidden. They have no OCR hooks (text-only protection).
 - Pop-ups open as ordinary Bowser tabs through the same creation path.
 - Extensions list (Ctrl+Shift+E): a first entry "Spoiler Firewall for GTA VI - built in (on, strict)" with its
   on/off check; it has no record and no remove entry, and choosing it opens Settings, Privacy and security.
@@ -41,10 +53,10 @@ cache, worker, WinRT) and `src/engine/webview2/ocr.rs` (per-tab events and pump)
 **There is no web message channel** (`IsWebMessageEnabled` stays off for this feature and the login handler is
 untouched). Native *pulls* with `ExecuteScript`:
 
-1. The config JSON carries `"ocr":true,"ocrHook":"__sfw_<128-bit hex>","ocrKey":"<128-bit hex>"` (per tab; the
+1. The config JSON carries `"ocr":<bool>,"ocrHook":"__sfw_<128-bit hex>","ocrKey":"<128-bit hex>"` (the hook and key are present whenever protection is on and the hooks were installed, even with OCR off, because live term updates use the same hook; per tab; the
    hook is created before the script is registered and kept for the tab's life, so re-registration after a
    settings change keeps pages loaded earlier answerable). `bowser-host.js` defines that one property on
-   `window` (non-enumerable, non-writable, non-configurable, frozen `{drain, deliver}`) and implements the shared
+   `window` (non-enumerable, non-writable, non-configurable, frozen `{drain, deliver, feed}`) and implements the shared
    host contract `host.ocr = {request(req) -> Promise<{status:"ok",text}|{status:"unavailable"|"error"|"skipped"}>}`.
    Requests are absolute http(s) only (data:/blob: answer `unavailable` at once), capped at 256 pending, and
    settle `error` after 30 s (the runtime shows "Couldn't check image", never auto-reveals). Both hook calls take
@@ -73,7 +85,9 @@ untouched). Native *pulls* with `ExecuteScript`:
    characters, URLs of at most 2048 characters, http(s) only, no credentials) and anything else is dropped.
 5. A request is served only when the asking frame's site group and the image host's group are the same platform
    (x/twitter/twimg, reddit/redditmedia/redd.it, instagram/facebook/fbcdn/threads, tiktok, bsky.app,
-   youtube/ytimg, twitch/jtvnw, discord/discordapp), so Bowser is never a cross-origin image reader elsewhere.
+   youtube/ytimg, twitch/jtvnw, discord/discordapp, imgur, 4chan/4cdn, gtaforums, resetera, telegram, kick, tumblr,
+   steamcommunity + steamuserimages, rockstargames.com, games press (IGN, GameSpot, Kotaku, Polygon, Eurogamer, GamesRadar,
+   PC Gamer, VG247, Push Square, Pure Xbox, GameFAQs and their CDNs) and fandom/wikia), so Bowser is never a cross-origin image reader elsewhere.
    The frame's group comes from native navigation events, never from what the page says. A cached answer is
    delivered at once; an image still being scanned is delivered when done; an image not seen yet is held 2 s (its
    response normally precedes the request) and then answered `unavailable`. Deliveries are JSON inside a
@@ -90,7 +104,9 @@ logged (the policy log carries event names only). Everything stays on the machin
   that text is poor or empty.
 - WebP and AVIF decode only if Windows has the codec (AVIF needs the AV1 extension; WebP support depends on the
   Windows build). A failed decode is cached as `unavailable` for that URL. No heavier decoder is bundled.
-- Animated images are not scanned (`skipped`). Video frames are not scanned.
+- Animated images are not scanned (`skipped`). On a high-risk host in Strict and Lockdown a `skipped` image stays held
+  with the "Couldn't check image · Click to reveal" cover (only Balanced releases it; before, Strict released it).
+  Local `data:`/`blob:` images the engine never sends are the exception and keep the older rule. Video frames are not scanned.
 - A redirected image is cached under the URL the response event reports, which may differ from the `src` the page
   asks about; that request answers `unavailable` after the grace. Whether an image served from the browser's HTTP
   cache raises the response event is unverified (live check pending); if it does not, such an image answers
@@ -125,8 +141,12 @@ downloads the same file (`hosts/chrome/feed*.js`).
   `"feed":{...}` (re-serialised with the same U+2028/2029 escaping as every other string, size-checked, and dropped
   if it is not a balanced object). `bowser-host.js` calls `SFW.lexicon.extend(config.feed)` before
   `SFW.runtime.start`; `extend` only adds or raises, validates every term and ignores junk. A newly verified feed
-  posts `WM_SPOILER_FEED` to the main window, which re-registers the script in every live tab; pages already showing
-  keep what they loaded with, like any other setting. A typical feed adds a few hundred bytes to the per-tab script;
+  posts `WM_SPOILER_FEED` to the main window, which re-registers the script in every live tab and pinned web app, sends the
+  same lexicon to every chrome view (`docs/spoiler-firewall-ui.md`) and pushes it into documents that are already open:
+  `ExecuteScript` calls the per-tab hook's `feed(key, json)` in the top frame and every tracked child frame
+  (`TabOcr::push_feed`); the bundle runs `SFW.lexicon.extend` and the runtime's config-change path, which rescans when the
+  lexicon version changed. The same feed is never applied twice in one document. Pages that cannot be reached (no hooks,
+  a frame that is not tracked yet) pick the feed up on their next load. A typical feed adds a few hundred bytes to the per-tab script;
   the hard cap is 5000 terms (about 200 KB of JSON), only reachable by an unusually large feed.
 - **Setting.** `spoiler_feed=on|off` (default on; only off, false or 0 turn it off), settings page "Download spoiler
   term updates" under Privacy and security, with a read-only status line ("Term list: built-in 2026.11.17-1 +
@@ -143,8 +163,40 @@ further changes so a title that keeps changing is not starved); when it fires Bo
 delivers that. The bundle rewrites a risky `document.title` to "Spoiler-protected page" in the page, so the
 rewritten title is what reaches the strip and history. Best effort: a page whose engine has not rewritten the
 title within 150 ms shows its own title, and history first records the URL as the title for a page whose title
-has not arrived (the existing placeholder rule) and then the held title. The URL itself, including a slug, is
-still shown. The only cost is titles appearing 150 ms later while protection is on. Chrome cannot do this.
+has not arrived (the existing placeholder rule) and then the held title. An empty title, one equal to the page URL, or one that looks like a URL (`spoiler::protected_title`) is delivered as the
+host only (`example.com`), also in the window caption and taskbar text, so a slug never reaches them. The address bar is
+covered separately (`docs/spoiler-firewall-ui.md`). The only cost is titles appearing 150 ms later while protection is on.
+Chrome cannot do this.
+
+## Web notifications
+
+A page's notification shows its title and body outside the page, where the engine cannot reach them, and Bowser has no
+Rust classifier (the engine is not ported). While protection is on, every tab handles `NotificationReceived`
+(`ICoreWebView2_24`, available in webview2-com 0.39.1), marks it Handled and shows nothing (`spoiler_notification_suppressed`
+in the policy log); Bowser has no toast surface that could show a host-only line, so suppression is the whole behaviour. With
+protection off the default WebView2 notification UI is untouched. Notification permission prompts and stored allows
+are unchanged. Cost: while protection is on, web notifications from sites never appear.
+
+## Other surfaces closed in the audit
+
+- **Cards with pictures.** A small card (article, li, figure, blockquote, listitem: at most 8 element children and 1500
+  characters of text) that holds a shielded block is covered whole in the same evaluation pass, so a spoiler's picture
+  (an `img` or a CSS `background-image`), links and captions are covered with it; a generic card with an inline or
+  computed `background-image` counts as media. A long article of many paragraphs is still shielded per paragraph.
+- **Image documents.** A top-level image on a high-risk host (`https://i.imgur.com/x.png`) is held and read like any
+  other media of that host: the body is the unit, spoiler text covers it, a clean read releases it, an unreadable one stays
+  covered in Strict.
+- **More high-risk adapters:** imgur, 4chan, GTAForums, ResetEra, Telegram Web, Kick, Tumblr, Steam Community,
+  rockstargames.com, games press and guides (IGN, GameSpot, Kotaku, Polygon, Eurogamer, GamesRadar, PC Gamer, VG247,
+  Push Square, Pure Xbox, GameFAQs and similar) and Fandom wikis (`gta.fandom.com` is hot for pages naming GTA VI and
+  at least warm for every other page; Wikipedia's `/wiki/Grand_Theft_Auto_VI` is hot by the URL rules).
+- **Cover theme.** The cover follows the page: light on a light background, dark on a dark one (relative luminance of the
+  first non-transparent background behind the unit, else a single-scheme `color-scheme`, else the OS scheme), through
+  `data-sfw-theme` set while the cover is built, so there is no flip after the first paint.
+- **Reader view** no longer makes a shielded unit visible (`reader.css` does not apply its visibility rule to shielded
+  nodes, and `reader.js` ignores paragraphs inside shielded units when it picks the article).
+- **Start page web page widget** is paused behind "Web page widget paused by spoiler protection · Load" while protection
+  is on (see `docs/spoiler-firewall-ui.md`).
 
 ## Checks
 
@@ -179,5 +231,6 @@ substitution and frame coverage; the real engine still needs the same fixtures r
 ## Known limits
 
 Main-world script (a page can observe or tamper with it); images with no text; code words; sandboxed frames
-if the runtime withholds the script; notifications and other apps; URL slugs in the address bar; the native
+if the runtime withholds the script; other apps; the native
 (GDI) settings window has no spoiler controls (it keeps the saved values; use the settings page or settings.txt).
+A focused address bar shows the full URL on purpose.

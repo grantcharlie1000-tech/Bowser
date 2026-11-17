@@ -951,3 +951,8 @@ html[data-scheme="dark"] #app {
     transition: none;
   }
 }
+
+/* Spoiler guard: the "· path hidden" note after a host-only address. */
+.u-hidden-note {
+  opacity: 0.75;
+}

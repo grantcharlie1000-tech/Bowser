@@ -62,6 +62,18 @@ pub enum Group {
     YouTube,
     Twitch,
     Discord,
+    Imgur,
+    FourChan,
+    GtaForums,
+    ResetEra,
+    Telegram,
+    Kick,
+    Tumblr,
+    Steam,
+    Rockstar,
+    /// Games press and guides (IGN, GameSpot, Kotaku, ...): one group, because their image CDNs are shared.
+    Press,
+    Fandom,
 }
 
 const SITES: &[(Group, &[&str])] = &[
@@ -76,6 +88,25 @@ const SITES: &[(Group, &[&str])] = &[
     (Group::YouTube, &["youtube.com", "ytimg.com", "youtu.be"]),
     (Group::Twitch, &["twitch.tv", "jtvnw.net"]),
     (Group::Discord, &["discord.com", "discordapp.com", "discordapp.net"]),
+    (Group::Imgur, &["imgur.com"]),
+    (Group::FourChan, &["4chan.org", "4channel.org", "4cdn.org"]),
+    (Group::GtaForums, &["gtaforums.com"]),
+    (Group::ResetEra, &["resetera.com"]),
+    (Group::Telegram, &["telegram.org", "t.me", "telesco.pe", "cdn-telegram.org"]),
+    (Group::Kick, &["kick.com"]),
+    (Group::Tumblr, &["tumblr.com"]),
+    (Group::Steam, &["steamcommunity.com", "steamuserimages-a.akamaihd.net", "steamstatic.com"]),
+    (Group::Rockstar, &["rockstargames.com"]),
+    (
+        Group::Press,
+        &[
+            "ign.com", "ignimgs.com", "gamespot.com", "kotaku.com", "kinja-img.com", "polygon.com", "vox-cdn.com", "eurogamer.net",
+            "gamesradar.com", "pcgamer.com", "futurecdn.net", "vg247.com", "pushsquare.com", "purexbox.com", "gamefaqs.com",
+            "gamefaqs.gamespot.com", "nintendolife.com", "gamerant.com", "thegamer.com", "dexerto.com", "screenrant.com", "destructoid.com",
+            "giantbomb.com",
+        ],
+    ),
+    (Group::Fandom, &["fandom.com", "wikia.nocookie.net"]),
 ];
 
 /// The `WebResourceRequested` filter URIs (image context) under which listed platforms' image
@@ -376,6 +407,20 @@ pub fn delivery_scripts(creds: &OcrCredentials, items: &[Delivery]) -> Option<Ve
     }
     flush(&mut batch, &mut scripts);
     Some(scripts)
+}
+
+/// The script that hands a verified term update (the feed's lexicon object as JSON text) to the page's
+/// engine through the per-tab hook (`feed(key, json)`). `None` for malformed credentials or a lexicon
+/// that is not an embeddable object of at most 256 KB.
+pub fn feed_script(creds: &OcrCredentials, lexicon_json: &str) -> Option<String> {
+    (creds.is_well_formed() && crate::spoiler::is_embeddable_object(lexicon_json)).then(|| {
+        format!(
+            "(function(){{try{{var h=window[{}];if(h&&typeof h.feed===\"function\")h.feed({},{})}}catch(e){{}}}})()",
+            json_string(&creds.hook),
+            json_string(&creds.key),
+            json_string(lexicon_json),
+        )
+    })
 }
 
 /// The script that takes the page's pending requests.
@@ -753,11 +798,45 @@ mod tests {
         assert_eq!(group_for_host("static-cdn.jtvnw.net"), Some(Group::Twitch));
         assert_eq!(group_for_host("media.discordapp.net"), Some(Group::Discord));
         assert_eq!(group_for_host("www.tiktok.com."), Some(Group::TikTok), "trailing dot");
+        for (host, group) in [
+            ("imgur.com", Group::Imgur),
+            ("i.imgur.com", Group::Imgur),
+            ("boards.4chan.org", Group::FourChan),
+            ("i.4cdn.org", Group::FourChan),
+            ("www.gtaforums.com", Group::GtaForums),
+            ("www.resetera.com", Group::ResetEra),
+            ("web.telegram.org", Group::Telegram),
+            ("kick.com", Group::Kick),
+            ("files.kick.com", Group::Kick),
+            ("www.tumblr.com", Group::Tumblr),
+            ("64.media.tumblr.com", Group::Tumblr),
+            ("steamcommunity.com", Group::Steam),
+            ("steamuserimages-a.akamaihd.net", Group::Steam),
+            ("www.rockstargames.com", Group::Rockstar),
+            ("www.ign.com", Group::Press),
+            ("assets-prd.ignimgs.com", Group::Press),
+            ("www.gamespot.com", Group::Press),
+            ("kotaku.com", Group::Press),
+            ("www.polygon.com", Group::Press),
+            ("www.eurogamer.net", Group::Press),
+            ("www.gamesradar.com", Group::Press),
+            ("www.pcgamer.com", Group::Press),
+            ("www.vg247.com", Group::Press),
+            ("www.pushsquare.com", Group::Press),
+            ("www.purexbox.com", Group::Press),
+            ("gamefaqs.gamespot.com", Group::Press),
+            ("gta.fandom.com", Group::Fandom),
+            ("static.wikia.nocookie.net", Group::Fandom),
+        ] {
+            assert_eq!(group_for_host(host), Some(group), "{host}");
+        }
+        assert!(may_serve(group_for_host("i.imgur.com"), group_for_host("imgur.com")));
+        assert!(!may_serve(group_for_host("kick.com"), group_for_host("i.imgur.com")));
     }
 
     #[test]
     fn lookalike_hosts_are_not_grouped() {
-        for host in ["notx.com", "x.com.evil.example", "evilreddit.com", "twimg.com.example", "x.co", "", "com", "redd.it.attacker.net", "fbcdn.net.cn"] {
+        for host in ["notx.com", "x.com.evil.example", "evilreddit.com", "twimg.com.example", "x.co", "", "com", "redd.it.attacker.net", "fbcdn.net.cn", "notimgur.com", "imgur.com.evil.example", "fakegamespot.com", "kick.com.evil.example", "ign.com.attacker.net"] {
             assert_eq!(group_for_host(host), None, "{host}");
         }
     }
@@ -986,6 +1065,10 @@ mod tests {
         let bad = OcrCredentials { hook: "x\"];alert(1);//".into(), key: "k".into() };
         assert!(delivery_scripts(&bad, &[]).is_none());
         assert!(drain_script(&bad).is_none());
+        assert!(feed_script(&bad, "{}").is_none());
+        assert!(feed_script(&creds(), "[1]").is_none());
+        let feed = feed_script(&creds(), "{\"terms\":[\"a\\u2028\"]}").unwrap();
+        assert!(feed.contains("h.feed(") && feed.contains(&creds().key) && !feed.contains('\u{2028}'));
         let drain = drain_script(&creds()).unwrap();
         assert!(drain.contains("h.drain(") && drain.contains(&creds().hook));
         assert_eq!(delivery_scripts(&creds(), &[]).unwrap().len(), 0);

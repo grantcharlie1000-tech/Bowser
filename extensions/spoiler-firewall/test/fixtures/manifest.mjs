@@ -32,6 +32,7 @@ export const FIXTURES = [
   { id: "rt-sandbox-small", host: "example.test", url: "/pages/rt-sandbox-small.html", settle: 600 },
   { id: "rt-sandbox-hot", host: "example.test", url: "/pages/rt-sandbox-hot.html", settle: 600, hotUrl: true },
   { id: "rt-frame-scripts", host: "example.test", url: "/pages/rt-frame-scripts.html", settle: 800 },
+  { id: "adv-card", host: "example.test", url: "/pages/adv-card.html", chunk: { delay: 100, size: 60 }, settle: 600 },
   { id: "adv-react", host: "example.test", url: "/pages/adv-react.html", settle: 1500 },
 ];
 

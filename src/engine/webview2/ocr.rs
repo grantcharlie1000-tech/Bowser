@@ -598,6 +598,20 @@ impl TabOcr {
         self.top.pending.get() || self.frames.borrow().iter().any(|t| t.pending.get())
     }
 
+    /// Hands a newly verified term update to the engine of the document already showing: the top frame
+    /// and every tracked child frame, through the per-tab hook. Fire-and-forget; pages loaded later get
+    /// the feed from the registered script. No-op without hooks (OCR install failed) or without a feed.
+    pub(super) fn push_feed(self: &Rc<Self>) {
+        let Some(creds) = self.creds.borrow().clone() else { return };
+        let Some(lexicon) = crate::spoiler_feed::current_lexicon_json() else { return };
+        let Some(script) = ocr::feed_script(&creds, &lexicon) else { return };
+        let mut targets = vec![self.top.clone()];
+        targets.extend(self.frames.borrow().iter().cloned());
+        for target in targets {
+            self.execute(&target, &script, Box::new(|_| {}));
+        }
+    }
+
     /// Drains every frame that may hold requests.
     fn pump(self: &Rc<Self>) {
         let Some(creds) = self.creds.borrow().clone() else { return };

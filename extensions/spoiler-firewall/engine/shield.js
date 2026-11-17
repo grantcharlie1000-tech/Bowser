@@ -108,7 +108,85 @@ SFW.shield = (function () {
       add(e, cs.position === "static");
     };
     resolve(unit, 0);
+    for (const o of out) themeOf(o.el); // warm the theme cache in this read pass: the writes that follow reuse it
     return out;
+  }
+
+  // ---- cover theme: follow the page, not only the OS ---------------------------------------------------------
+  // The cover is light on a light page and dark on a dark one. The effective background behind a container is the first
+  // computed non-transparent background-color walking up from it (shadow hosts included); with none, the document's
+  // color-scheme if it names exactly one scheme; else "auto" (no attribute: the stylesheet's prefers-color-scheme default
+  // applies). Read in prepare() with the other layout reads and cached per ancestor (TTL), so a feed of cards walks each
+  // ancestor once. The result is the data-sfw-theme attribute on the overlay host (and on attribute-only covers), set
+  // while the cover is being built, before it is attached: the first paint already has it.
+  const NOWMS = (function () { try { const f = Date.now; return () => f.call(Date); } catch (e) { return () => 0; } })();
+  const themes = new WeakMap(); // element -> {t: "light"|"dark"|"auto", at}
+  const THEME_TTL = 2000;
+  const THEME_DEPTH = 48;
+
+  // "rgb(r, g, b)" / "rgba(r, g, b, a)" / "rgb(r g b / a)" -> {r, g, b, a} or null (anything else is treated as unknown).
+  function parseColor(text) {
+    const m = /^rgba?\(\s*([\d.]+)\s*[ ,]\s*([\d.]+)\s*[ ,]\s*([\d.]+)\s*(?:[,/]\s*([\d.]+)(%?)\s*)?\)$/.exec(String(text || "").trim());
+    if (!m) return null;
+    let a = m[4] === undefined ? 1 : parseFloat(m[4]);
+    if (m[5] === "%") a /= 100;
+    if (!(a >= 0 && a <= 1)) a = a > 1 ? 1 : 0;
+    return { r: +m[1], g: +m[2], b: +m[3], a };
+  }
+
+  function luminance(c) {
+    const f = (v) => { v /= 255; return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); };
+    return 0.2126 * f(c.r) + 0.7152 * f(c.g) + 0.0722 * f(c.b);
+  }
+
+  // Pure: the theme a computed background-color implies ("light" above 0.5 relative luminance), or null when it is
+  // transparent (alpha under 0.6) or unreadable.
+  function themeFromColor(text) {
+    const c = parseColor(text);
+    if (!c || c.a < 0.6) return null;
+    return luminance(c) > 0.5 ? "light" : "dark";
+  }
+
+  function themeFromScheme(text) {
+    const s = String(text || "").toLowerCase();
+    const dark = /\bdark\b/.test(s), light = /\blight\b/.test(s);
+    return dark && !light ? "dark" : light && !dark ? "light" : "auto";
+  }
+
+  function themeOf(start) {
+    try {
+      const doc = start.ownerDocument;
+      const win = doc && doc.defaultView;
+      if (!win) return "auto";
+      const t0 = NOWMS();
+      const trail = [];
+      let found = null;
+      let n = start;
+      for (let i = 0; n && n.nodeType === 1 && i < THEME_DEPTH; i++) {
+        const hit = themes.get(n);
+        if (hit && t0 - hit.at < THEME_TTL) { found = hit.t; break; }
+        trail.push(n);
+        let bg = "";
+        try { bg = win.getComputedStyle(n).backgroundColor; } catch (e) { /* ignore */ }
+        const t = themeFromColor(bg);
+        if (t) { found = t; break; }
+        const p = n.parentNode;
+        n = p && p.nodeType === 11 ? p.host : p;
+      }
+      if (found === null) {
+        let scheme = "";
+        try { scheme = win.getComputedStyle(doc.documentElement).colorScheme; } catch (e) { /* ignore */ }
+        found = themeFromScheme(scheme);
+      }
+      for (let i = 0; i < trail.length; i++) themes.set(trail[i], { t: found, at: t0 });
+      return found;
+    } catch (e) { return "auto"; }
+  }
+
+  // Sets or clears the theme attribute of node (an overlay host, an attribute-only container, a veil wrapper).
+  function setTheme(node, theme) {
+    if (theme === "light" || theme === "dark") nSet(node, "data-sfw-theme", theme);
+    else if (nHas(node, "data-sfw-theme")) nDel(node, "data-sfw-theme");
   }
 
   // ---- overlay ----------------------------------------------------------------------------------------------
@@ -158,9 +236,10 @@ SFW.shield = (function () {
     return cover;
   }
 
-  function createOverlay(doc, variant, kind) {
+  function createOverlay(doc, variant, kind, behind) {
     const host = doc.createElement("sfw-shield");
     host.setAttribute("data-s", "shielded");
+    if (behind) setTheme(host, themeOf(behind));
     if (kind) host.setAttribute("data-k", kind);
     const root = SFW.hooks.attachClosed(host);
     // the setter captured at load: a page that deleted ShadowRoot.prototype.adoptedStyleSheets afterwards cannot unstyle overlays
@@ -352,11 +431,13 @@ SFW.shield = (function () {
       dropHost(st);
       st.fb = true;
       nSet(container, "data-sfw-fb", fbOf(variant));
+      setTheme(container, themeOf(container));
     } else {
       nDel(container, "data-sfw-fb");
+      if (nHas(container, "data-sfw-theme")) nDel(container, "data-sfw-theme");
       st.fb = false;
       if (st.host) dropHost(st);
-      const o = createOverlay(doc, variant, null);
+      const o = createOverlay(doc, variant, null, container);
       st.host = o.host; st.root = o.root; st.cover = o.cover; st.hide = o.hide;
       armHost(st);
       wireHost(st);
@@ -385,6 +466,7 @@ SFW.shield = (function () {
     releaseMedia(st);
     if (st.fb || !st.host) {
       nDel(container, "data-sfw-fb");
+      if (nHas(container, "data-sfw-theme")) nDel(container, "data-sfw-theme");
       st.fb = false;
     } else {
       disarmHost(st);
@@ -410,7 +492,7 @@ SFW.shield = (function () {
     if (!st.host) {
       // overlay was lost while revealed: rebuild
       st.removals = Math.min(st.removals, MAX_REMOVALS - 1);
-      const o = createOverlay(container.ownerDocument, st.variant === "pending" ? "spoiler" : st.variant, null);
+      const o = createOverlay(container.ownerDocument, st.variant === "pending" ? "spoiler" : st.variant, null, container);
       st.host = o.host; st.root = o.root; st.cover = o.cover; st.hide = o.hide;
       wireHost(st);
       attachHost(st);
@@ -434,6 +516,7 @@ SFW.shield = (function () {
     if (st.mode === "shielded") resumeMedia(st); // never after a user reveal: that path keeps the media paused
     nDel(container, "data-sfw");
     nDel(container, "data-sfw-fb");
+    if (nHas(container, "data-sfw-theme")) nDel(container, "data-sfw-theme");
     if (st.pos) nDel(container, "data-sfw-pos");
     states.delete(container);
     shielded.delete(container);
@@ -523,7 +606,7 @@ SFW.shield = (function () {
     nSet(root, "data-sfw-hold", "1");
     try { for (const m of doc.querySelectorAll("video,audio")) { if (!m.paused) m.pause(); m.muted = true; } } catch (e) { /* ignore */ }
     if (st.host) dropHost(st);
-    const o = createOverlay(doc, st.variant === "error" ? "page" : "page", "page");
+    const o = createOverlay(doc, st.variant === "error" ? "page" : "page", "page", doc.body || root);
     st.host = o.host; st.root = o.root; st.cover = o.cover; st.hide = o.hide;
     st.hide.remove();
     armHost(st);
@@ -566,7 +649,7 @@ SFW.shield = (function () {
   function notice(doc) {
     const root = doc.documentElement || doc.body;
     if (!root) return null;
-    const o = createOverlay(doc, "notice", "notice");
+    const o = createOverlay(doc, "notice", "notice", doc.body || root);
     o.hide.remove();
     o.host.setAttribute("role", "status");
     o.host.setAttribute("data-s", "notice");
@@ -605,5 +688,6 @@ SFW.shield = (function () {
     TEXT, configure, prepare, apply, reveal, reblur, release, state, setFp, repair,
     ownerOfHost, shieldedAncestor, count, all, prune,
     applyPage, revealPage, releasePage, pageState, notice, emergencyCover, emergencyNotice, deepAll,
+    theme: themeOf, setTheme, themeFromColor, themeFromScheme,
   };
 })();

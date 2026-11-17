@@ -52,6 +52,10 @@ ${SHIELDED}[data-sfw-fb="pending"]::after{content:"Checking for GTA VI spoilers\
 ${SHIELDED}[data-sfw-fb="error"]::after{content:"Couldn\\2019 t verify this content \\00b7  Click to reveal"!important;letter-spacing:.02em!important;text-transform:none!important;color:#ffd27a!important;-webkit-text-fill-color:#ffd27a!important}
 ${SHIELDED}[data-sfw-fb="mediaerr"]::after{content:"Couldn\\2019 t check image \\00b7  Click to reveal"!important;letter-spacing:.02em!important;text-transform:none!important;color:#ffd27a!important;-webkit-text-fill-color:#ffd27a!important}
 ${SHIELDED}[data-sfw-fb="frameerr"]::after{content:"Embedded content couldn\\2019 t be checked \\00b7  Click to reveal"!important;letter-spacing:.02em!important;text-transform:none!important;color:#ffd27a!important;-webkit-text-fill-color:#ffd27a!important}
+/* attribute-only covers on a light page (the engine sets data-sfw-theme from the background behind the container) */
+${SHIELDED}[data-sfw-fb][data-sfw-theme="light"]::after{background:#f3f3f8!important;color:#c2182f!important;-webkit-text-fill-color:#c2182f!important;box-shadow:inset 0 0 0 2px rgba(194,24,47,.45)!important}
+${SHIELDED}[data-sfw-fb="pending"][data-sfw-theme="light"]::after{color:#3a3d4d!important;-webkit-text-fill-color:#3a3d4d!important;box-shadow:none!important}
+${SHIELDED}[data-sfw-fb="error"][data-sfw-theme="light"]::after,${SHIELDED}[data-sfw-fb="mediaerr"][data-sfw-theme="light"]::after,${SHIELDED}[data-sfw-fb="frameerr"][data-sfw-theme="light"]::after{color:#8a5a00!important;-webkit-text-fill-color:#8a5a00!important;box-shadow:inset 0 0 0 2px rgba(138,90,0,.4)!important}
 @media (forced-colors:active){
   ${SHIELDED}[data-sfw-fb]::after{background:Canvas!important;color:CanvasText!important;-webkit-text-fill-color:CanvasText!important;box-shadow:inset 0 0 0 2px CanvasText!important}
 }
@@ -86,6 +90,7 @@ html[data-sfw-page~="shield"]{overflow:hidden!important}
   font:600 12px/1.2 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif!important;letter-spacing:.02em!important;text-transform:none!important;
   animation:sfw-mc-in 220ms ease-out 350ms both!important;
 }
+[data-sfw-mc][data-sfw-theme="light"]::after{background:rgba(244,244,250,.72)!important;color:#2a2d3c!important;-webkit-text-fill-color:#2a2d3c!important}
 @keyframes sfw-mc-in{from{opacity:0}to{opacity:1}}
 [data-sfw-fade]{animation:sfw-media-in 180ms ease-out}
 @keyframes sfw-media-in{from{opacity:0}to{opacity:1}}
@@ -111,6 +116,15 @@ input[type="image"]:not([data-sfw-m="ok"]),[poster]:not([data-sfw-m="ok"]){visib
 @media (prefers-color-scheme:light){
   :host{--ink:#c2182f;--ink-soft:#8d1e2d;--fg:#1c1e29;--fg-soft:rgba(28,30,41,.74);--ring:#1a56db;
     --bg1:246,246,250;--bg2:233,229,240;--tint:150,110,190}
+}
+/* the page decides the theme (data-sfw-theme, set by the engine from the background behind the cover); the OS scheme above is only the first guess */
+:host([data-sfw-theme="dark"]){
+  --ink:#ff7a85;--ink-soft:#ffb3ba;--fg:#f4f2fa;--fg-soft:rgba(244,242,250,.78);--ring:#8ab4ff;
+  --bg1:17,18,26;--bg2:30,21,40;--tint:132,62,160;
+}
+:host([data-sfw-theme="light"]){
+  --ink:#c2182f;--ink-soft:#8d1e2d;--fg:#1c1e29;--fg-soft:rgba(28,30,41,.74);--ring:#1a56db;
+  --bg1:246,246,250;--bg2:233,229,240;--tint:150,110,190;
 }
 *{box-sizing:border-box;margin:0}
 .cover{
@@ -156,6 +170,9 @@ input[type="image"]:not([data-sfw-m="ok"]),[poster]:not([data-sfw-m="ok"]){visib
 /* error */
 .cover[data-v="error"],.cover[data-v="mediaerr"],.cover[data-v="frameerr"]{--ink:#ffc15e;--tint:200,140,40}
 .cover[data-v="error"] .stamp,.cover[data-v="mediaerr"] .stamp,.cover[data-v="frameerr"] .stamp{letter-spacing:.08em;text-indent:.08em;text-transform:none;font-size:clamp(12px,min(3.6cqw,9cqh),20px);transform:rotate(-2deg)}
+/* error ink stays readable on a light cover */
+:host([data-sfw-theme="light"]) .cover[data-v="error"],:host([data-sfw-theme="light"]) .cover[data-v="mediaerr"],:host([data-sfw-theme="light"]) .cover[data-v="frameerr"]{--ink:#8a5a00;--tint:230,170,60}
+@media (prefers-color-scheme:light){:host(:not([data-sfw-theme="dark"])) .cover[data-v="error"],:host(:not([data-sfw-theme="dark"])) .cover[data-v="mediaerr"],:host(:not([data-sfw-theme="dark"])) .cover[data-v="frameerr"]{--ink:#8a5a00;--tint:230,170,60}}
 /* page */
 .cover[data-v="page"]{--sfw-a:.985;cursor:default}
 .cover[data-v="page"] .card{gap:1.1em;max-width:min(92vw,520px)}

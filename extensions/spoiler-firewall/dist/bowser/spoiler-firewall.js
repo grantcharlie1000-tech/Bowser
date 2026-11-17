@@ -2191,6 +2191,101 @@ SFW.adapters = (function () {
     media: ["[class*=imageWrapper]", "[class*=embedVideo]", "video", "img"], attrs: ["aria-label", "alt", "title"],
     hotUrl: classifyUrl,
   });
+  // ---- Image boards, forums, chat and press: where GTA VI leaks and recaps land --------------------------------
+  // Selector lists are best effort (drift degrades to the generic resolver). What matters is highRisk: media is held
+  // until it was checked, URLs and titles are classified cold, and the OCR allowlist (src/spoiler_ocr.rs, hosts/chrome)
+  // covers the same hosts. Top-level image documents (https://i.imgur.com/x.png) are handled by the runtime.
+  def({
+    id: "imgur", hosts: /(^|\.)imgur\.com$/i, highRisk: true,
+    item: ["div.Post", "div.post-container", "[class*=Gallery-Content]", "[class*=PostContent]", "div.Comment", "[class*=Comment-]", "div.post"],
+    thread: ["div.Gallery", "[class*=Gallery-Content]", "main"], context: ["h1", "[class*=Gallery-Title]", "input[type=search]"],
+    media: ["[class*=PostImage]", "[class*=imageContainer]", "video"], attrs: ["alt", "title", "aria-label"],
+    hotUrl: classifyUrl,
+  });
+  def({
+    id: "fourchan", hosts: /(^|\.)(4chan|4channel|4cdn)\.org$/i, highRisk: true,
+    item: [".postContainer", ".post", ".thread", ".catalog-thread", "div.thread", ".teaser", ".fileText"],
+    thread: [".thread", "#threads", "form[name=delform]"], context: ["#boardNavDesktop", ".subject", "title", "input[type=search]"],
+    media: [".fileThumb", ".file", "img", "video"], attrs: ["alt", "title"],
+    hotUrl: classifyUrl,
+  });
+  def({
+    id: "gtaforums", hosts: /(^|\.)gtaforums\.com$/i, highRisk: true,
+    item: ["article.cPost", "article[id^=elComment_]", ".ipsComment", "li.ipsDataItem", ".ipsStreamItem", "[data-commentid]", ".cTopic"],
+    thread: ["[data-controller='core.front.core.commentFeed']", ".cTopic", "main"], context: ["h1", ".ipsType_pageTitle", "input[type=search]"],
+    media: [".ipsImage", ".ipsAttachLink_image", "video", "img"], attrs: ["alt", "title", "aria-label"],
+    hotUrl: classifyUrl,
+  });
+  def({
+    id: "resetera", hosts: /(^|\.)resetera\.com$/i, highRisk: true,
+    item: ["article.message", ".message", "li.structItem", ".structItem", ".block-row", ".message-body"],
+    thread: [".block--messages", ".p-body-pageContent", "main"], context: ["h1.p-title-value", "h1", "input[name=keywords]"],
+    media: [".bbImage", ".bbMediaWrapper", "video", "img"], attrs: ["alt", "title", "aria-label"],
+    hotUrl: classifyUrl,
+  });
+  def({
+    id: "telegram", hosts: /(^|\.)(telegram\.org|t\.me)$/i, highRisk: true,
+    item: [".Message", ".message", ".bubble", ".ListItem", ".search-result", ".tgme_widget_message", "[class*=Message_]", "[role=listitem]"],
+    thread: ["#MiddleColumn", ".MessageList", "#column-center", "main"], context: ["h3.fullName", ".ChatInfo", "input[type=search]"],
+    media: [".media-inner", ".Photo", ".media-photo", ".media-video", "video", "img"], attrs: ["alt", "title", "aria-label"],
+    hotUrl: classifyUrl,
+  });
+  def({
+    id: "kick", hosts: /(^|\.)kick\.com$/i, highRisk: true,
+    item: ["[class*=chat-entry]", "[data-chat-entry]", "[class*=stream-card]", "[class*=video-card]", "[role=listitem]", "[role=option]", "article"],
+    thread: ["main", "#chatroom", "[class*=chatroom]"], context: ["h1", "[class*=stream-title]", "input[type=search]"],
+    media: ["video", "img", "[class*=thumbnail]"], attrs: ["alt", "title", "aria-label"],
+    hotUrl: classifyUrl,
+  });
+  def({
+    id: "tumblr", hosts: /(^|\.)tumblr\.com$/i, highRisk: true,
+    item: ["article", "[data-id]", "[role=article]", "div.post", ".post_container", "li.post", "[class*=post_]"],
+    thread: ["main", "#posts", "[data-testid=timeline]"], context: ["h1", "[data-testid=blog-title]", "input[type=search]"],
+    media: ["figure", "[data-testid=imageBlock]", "[class*=photo]", "video", "img"], attrs: ["alt", "title", "aria-label"],
+    hotUrl: classifyUrl,
+  });
+  def({
+    id: "steam", hosts: /(^|\.)(steamcommunity\.com|steamuserimages-a\.akamaihd\.net)$/i, highRisk: true,
+    item: [".apphub_Card", ".apphub_CardContentMain", ".commentthread_comment", ".workshopItem", ".review_box", ".profile_comment", ".newsPostBlock", ".discussion_topic", "[class*=Panel]"],
+    thread: [".apphub_background", ".commentthread_area", "#responsive_page_template_content", "main"], context: ["h1", ".apphub_AppName", ".workshopItemTitle", "input[name=text]"],
+    media: [".apphub_CardContentMain img", ".workshopItemPreviewImage", ".screenshot_img", ".earlyaccess_wishlist_img", "video", "img"], attrs: ["alt", "title", "aria-label"],
+    hotUrl: classifyUrl,
+  });
+  // The official site posts story trailers and recaps after launch.
+  def({
+    id: "rockstar", hosts: /(^|\.)rockstargames\.com$/i, highRisk: true,
+    item: ["article", "[class*=card]", "[class*=Card]", "section[class*=post]", "[class*=newswire]", "[class*=Newswire]", "[class*=post]"],
+    thread: ["main", "#main", "[class*=newswire]"], context: ["h1", "title"],
+    media: ["[class*=hero]", "[class*=Hero]", "[class*=poster]", "video", "img"], attrs: ["alt", "title", "aria-label"],
+    hotUrl: classifyUrl,
+  });
+  // Games press and guides: spoilers appear in headlines, recaps, comment threads and guide pages.
+  def({
+    id: "gamespress", hosts: /(^|\.)(ign|gamespot|kotaku|polygon|eurogamer|gamesradar|pcgamer|vg247|pushsquare|purexbox|gamefaqs|giantbomb|screenrant|dexerto|thegamer|gamerant|destructoid)\.(com|net)$/i, highRisk: true,
+    item: ["article", ".content-item", ".article-card", ".card", ".listingResult", ".river-item", "li.item", ".main-listing-item", ".post", ".message", ".comment", "[class*=card]"],
+    thread: ["article", "main", "#main"], context: ["h1", "title", "input[type=search]"],
+    media: ["figure", "picture", ".article-image", "[class*=thumbnail]", "video", "img"], attrs: ["alt", "title", "aria-label"],
+    hotUrl: classifyUrl,
+  });
+  // Fandom wikis: gta.fandom.com is the single biggest source of plot detail. Hot by URL for any page that names
+  // GTA VI; every other page of that wiki is at least warm.
+  def({
+    id: "fandom", hosts: /(^|\.)fandom\.com$/i, highRisk: true,
+    item: [".mw-parser-output p", ".mw-parser-output li", ".portable-infobox", ".page-content section", "article", ".WikiaArticle", ".category-page__member", ".mw-search-result", ".unified-search__result"],
+    thread: [".page-content", "#content", "main"], context: ["h1", ".page-header__title", "input[name=query]"],
+    media: [".portable-infobox img", ".thumb", ".image", "figure", "video", "img"], attrs: ["alt", "title", "aria-label"],
+    hotUrl: function (url) {
+      const u = parse(url);
+      let best = classifyUrl(url);
+      if (u && /(^|\.)gta\.fandom\.com$/i.test(u.hostname)) {
+        if (best < 1) best = 1;
+        let tail = u.pathname + u.hash;
+        try { tail = decodeURIComponent(tail); } catch (e) { /* keep the raw text */ }
+        if (/(^|[/_ -])(vi|gta ?6|gta ?vi|grand[_ ]theft[_ ]auto[_ ](vi|6))([/_ #?-]|$)/i.test(tail)) best = 2;
+      }
+      return best;
+    },
+  });
   // Mastodon: any host, detected from markup (see detect()).
   const MASTODON = {
     id: "mastodon", hosts: null, highRisk: true,
@@ -2320,6 +2415,10 @@ ${SHIELDED}[data-sfw-fb="pending"]::after{content:"Checking for GTA VI spoilers\
 ${SHIELDED}[data-sfw-fb="error"]::after{content:"Couldn\\2019 t verify this content \\00b7  Click to reveal"!important;letter-spacing:.02em!important;text-transform:none!important;color:#ffd27a!important;-webkit-text-fill-color:#ffd27a!important}
 ${SHIELDED}[data-sfw-fb="mediaerr"]::after{content:"Couldn\\2019 t check image \\00b7  Click to reveal"!important;letter-spacing:.02em!important;text-transform:none!important;color:#ffd27a!important;-webkit-text-fill-color:#ffd27a!important}
 ${SHIELDED}[data-sfw-fb="frameerr"]::after{content:"Embedded content couldn\\2019 t be checked \\00b7  Click to reveal"!important;letter-spacing:.02em!important;text-transform:none!important;color:#ffd27a!important;-webkit-text-fill-color:#ffd27a!important}
+/* attribute-only covers on a light page (the engine sets data-sfw-theme from the background behind the container) */
+${SHIELDED}[data-sfw-fb][data-sfw-theme="light"]::after{background:#f3f3f8!important;color:#c2182f!important;-webkit-text-fill-color:#c2182f!important;box-shadow:inset 0 0 0 2px rgba(194,24,47,.45)!important}
+${SHIELDED}[data-sfw-fb="pending"][data-sfw-theme="light"]::after{color:#3a3d4d!important;-webkit-text-fill-color:#3a3d4d!important;box-shadow:none!important}
+${SHIELDED}[data-sfw-fb="error"][data-sfw-theme="light"]::after,${SHIELDED}[data-sfw-fb="mediaerr"][data-sfw-theme="light"]::after,${SHIELDED}[data-sfw-fb="frameerr"][data-sfw-theme="light"]::after{color:#8a5a00!important;-webkit-text-fill-color:#8a5a00!important;box-shadow:inset 0 0 0 2px rgba(138,90,0,.4)!important}
 @media (forced-colors:active){
   ${SHIELDED}[data-sfw-fb]::after{background:Canvas!important;color:CanvasText!important;-webkit-text-fill-color:CanvasText!important;box-shadow:inset 0 0 0 2px CanvasText!important}
 }
@@ -2354,6 +2453,7 @@ html[data-sfw-page~="shield"]{overflow:hidden!important}
   font:600 12px/1.2 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif!important;letter-spacing:.02em!important;text-transform:none!important;
   animation:sfw-mc-in 220ms ease-out 350ms both!important;
 }
+[data-sfw-mc][data-sfw-theme="light"]::after{background:rgba(244,244,250,.72)!important;color:#2a2d3c!important;-webkit-text-fill-color:#2a2d3c!important}
 @keyframes sfw-mc-in{from{opacity:0}to{opacity:1}}
 [data-sfw-fade]{animation:sfw-media-in 180ms ease-out}
 @keyframes sfw-media-in{from{opacity:0}to{opacity:1}}
@@ -2379,6 +2479,15 @@ input[type="image"]:not([data-sfw-m="ok"]),[poster]:not([data-sfw-m="ok"]){visib
 @media (prefers-color-scheme:light){
   :host{--ink:#c2182f;--ink-soft:#8d1e2d;--fg:#1c1e29;--fg-soft:rgba(28,30,41,.74);--ring:#1a56db;
     --bg1:246,246,250;--bg2:233,229,240;--tint:150,110,190}
+}
+/* the page decides the theme (data-sfw-theme, set by the engine from the background behind the cover); the OS scheme above is only the first guess */
+:host([data-sfw-theme="dark"]){
+  --ink:#ff7a85;--ink-soft:#ffb3ba;--fg:#f4f2fa;--fg-soft:rgba(244,242,250,.78);--ring:#8ab4ff;
+  --bg1:17,18,26;--bg2:30,21,40;--tint:132,62,160;
+}
+:host([data-sfw-theme="light"]){
+  --ink:#c2182f;--ink-soft:#8d1e2d;--fg:#1c1e29;--fg-soft:rgba(28,30,41,.74);--ring:#1a56db;
+  --bg1:246,246,250;--bg2:233,229,240;--tint:150,110,190;
 }
 *{box-sizing:border-box;margin:0}
 .cover{
@@ -2424,6 +2533,9 @@ input[type="image"]:not([data-sfw-m="ok"]),[poster]:not([data-sfw-m="ok"]){visib
 /* error */
 .cover[data-v="error"],.cover[data-v="mediaerr"],.cover[data-v="frameerr"]{--ink:#ffc15e;--tint:200,140,40}
 .cover[data-v="error"] .stamp,.cover[data-v="mediaerr"] .stamp,.cover[data-v="frameerr"] .stamp{letter-spacing:.08em;text-indent:.08em;text-transform:none;font-size:clamp(12px,min(3.6cqw,9cqh),20px);transform:rotate(-2deg)}
+/* error ink stays readable on a light cover */
+:host([data-sfw-theme="light"]) .cover[data-v="error"],:host([data-sfw-theme="light"]) .cover[data-v="mediaerr"],:host([data-sfw-theme="light"]) .cover[data-v="frameerr"]{--ink:#8a5a00;--tint:230,170,60}
+@media (prefers-color-scheme:light){:host(:not([data-sfw-theme="dark"])) .cover[data-v="error"],:host(:not([data-sfw-theme="dark"])) .cover[data-v="mediaerr"],:host(:not([data-sfw-theme="dark"])) .cover[data-v="frameerr"]{--ink:#8a5a00;--tint:230,170,60}}
 /* page */
 .cover[data-v="page"]{--sfw-a:.985;cursor:default}
 .cover[data-v="page"] .card{gap:1.1em;max-width:min(92vw,520px)}
@@ -2579,7 +2691,85 @@ SFW.shield = (function () {
       add(e, cs.position === "static");
     };
     resolve(unit, 0);
+    for (const o of out) themeOf(o.el); // warm the theme cache in this read pass: the writes that follow reuse it
     return out;
+  }
+
+  // ---- cover theme: follow the page, not only the OS ---------------------------------------------------------
+  // The cover is light on a light page and dark on a dark one. The effective background behind a container is the first
+  // computed non-transparent background-color walking up from it (shadow hosts included); with none, the document's
+  // color-scheme if it names exactly one scheme; else "auto" (no attribute: the stylesheet's prefers-color-scheme default
+  // applies). Read in prepare() with the other layout reads and cached per ancestor (TTL), so a feed of cards walks each
+  // ancestor once. The result is the data-sfw-theme attribute on the overlay host (and on attribute-only covers), set
+  // while the cover is being built, before it is attached: the first paint already has it.
+  const NOWMS = (function () { try { const f = Date.now; return () => f.call(Date); } catch (e) { return () => 0; } })();
+  const themes = new WeakMap(); // element -> {t: "light"|"dark"|"auto", at}
+  const THEME_TTL = 2000;
+  const THEME_DEPTH = 48;
+
+  // "rgb(r, g, b)" / "rgba(r, g, b, a)" / "rgb(r g b / a)" -> {r, g, b, a} or null (anything else is treated as unknown).
+  function parseColor(text) {
+    const m = /^rgba?\(\s*([\d.]+)\s*[ ,]\s*([\d.]+)\s*[ ,]\s*([\d.]+)\s*(?:[,/]\s*([\d.]+)(%?)\s*)?\)$/.exec(String(text || "").trim());
+    if (!m) return null;
+    let a = m[4] === undefined ? 1 : parseFloat(m[4]);
+    if (m[5] === "%") a /= 100;
+    if (!(a >= 0 && a <= 1)) a = a > 1 ? 1 : 0;
+    return { r: +m[1], g: +m[2], b: +m[3], a };
+  }
+
+  function luminance(c) {
+    const f = (v) => { v /= 255; return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); };
+    return 0.2126 * f(c.r) + 0.7152 * f(c.g) + 0.0722 * f(c.b);
+  }
+
+  // Pure: the theme a computed background-color implies ("light" above 0.5 relative luminance), or null when it is
+  // transparent (alpha under 0.6) or unreadable.
+  function themeFromColor(text) {
+    const c = parseColor(text);
+    if (!c || c.a < 0.6) return null;
+    return luminance(c) > 0.5 ? "light" : "dark";
+  }
+
+  function themeFromScheme(text) {
+    const s = String(text || "").toLowerCase();
+    const dark = /\bdark\b/.test(s), light = /\blight\b/.test(s);
+    return dark && !light ? "dark" : light && !dark ? "light" : "auto";
+  }
+
+  function themeOf(start) {
+    try {
+      const doc = start.ownerDocument;
+      const win = doc && doc.defaultView;
+      if (!win) return "auto";
+      const t0 = NOWMS();
+      const trail = [];
+      let found = null;
+      let n = start;
+      for (let i = 0; n && n.nodeType === 1 && i < THEME_DEPTH; i++) {
+        const hit = themes.get(n);
+        if (hit && t0 - hit.at < THEME_TTL) { found = hit.t; break; }
+        trail.push(n);
+        let bg = "";
+        try { bg = win.getComputedStyle(n).backgroundColor; } catch (e) { /* ignore */ }
+        const t = themeFromColor(bg);
+        if (t) { found = t; break; }
+        const p = n.parentNode;
+        n = p && p.nodeType === 11 ? p.host : p;
+      }
+      if (found === null) {
+        let scheme = "";
+        try { scheme = win.getComputedStyle(doc.documentElement).colorScheme; } catch (e) { /* ignore */ }
+        found = themeFromScheme(scheme);
+      }
+      for (let i = 0; i < trail.length; i++) themes.set(trail[i], { t: found, at: t0 });
+      return found;
+    } catch (e) { return "auto"; }
+  }
+
+  // Sets or clears the theme attribute of node (an overlay host, an attribute-only container, a veil wrapper).
+  function setTheme(node, theme) {
+    if (theme === "light" || theme === "dark") nSet(node, "data-sfw-theme", theme);
+    else if (nHas(node, "data-sfw-theme")) nDel(node, "data-sfw-theme");
   }
 
   // ---- overlay ----------------------------------------------------------------------------------------------
@@ -2629,9 +2819,10 @@ SFW.shield = (function () {
     return cover;
   }
 
-  function createOverlay(doc, variant, kind) {
+  function createOverlay(doc, variant, kind, behind) {
     const host = doc.createElement("sfw-shield");
     host.setAttribute("data-s", "shielded");
+    if (behind) setTheme(host, themeOf(behind));
     if (kind) host.setAttribute("data-k", kind);
     const root = SFW.hooks.attachClosed(host);
     // the setter captured at load: a page that deleted ShadowRoot.prototype.adoptedStyleSheets afterwards cannot unstyle overlays
@@ -2823,11 +3014,13 @@ SFW.shield = (function () {
       dropHost(st);
       st.fb = true;
       nSet(container, "data-sfw-fb", fbOf(variant));
+      setTheme(container, themeOf(container));
     } else {
       nDel(container, "data-sfw-fb");
+      if (nHas(container, "data-sfw-theme")) nDel(container, "data-sfw-theme");
       st.fb = false;
       if (st.host) dropHost(st);
-      const o = createOverlay(doc, variant, null);
+      const o = createOverlay(doc, variant, null, container);
       st.host = o.host; st.root = o.root; st.cover = o.cover; st.hide = o.hide;
       armHost(st);
       wireHost(st);
@@ -2856,6 +3049,7 @@ SFW.shield = (function () {
     releaseMedia(st);
     if (st.fb || !st.host) {
       nDel(container, "data-sfw-fb");
+      if (nHas(container, "data-sfw-theme")) nDel(container, "data-sfw-theme");
       st.fb = false;
     } else {
       disarmHost(st);
@@ -2881,7 +3075,7 @@ SFW.shield = (function () {
     if (!st.host) {
       // overlay was lost while revealed: rebuild
       st.removals = Math.min(st.removals, MAX_REMOVALS - 1);
-      const o = createOverlay(container.ownerDocument, st.variant === "pending" ? "spoiler" : st.variant, null);
+      const o = createOverlay(container.ownerDocument, st.variant === "pending" ? "spoiler" : st.variant, null, container);
       st.host = o.host; st.root = o.root; st.cover = o.cover; st.hide = o.hide;
       wireHost(st);
       attachHost(st);
@@ -2905,6 +3099,7 @@ SFW.shield = (function () {
     if (st.mode === "shielded") resumeMedia(st); // never after a user reveal: that path keeps the media paused
     nDel(container, "data-sfw");
     nDel(container, "data-sfw-fb");
+    if (nHas(container, "data-sfw-theme")) nDel(container, "data-sfw-theme");
     if (st.pos) nDel(container, "data-sfw-pos");
     states.delete(container);
     shielded.delete(container);
@@ -2994,7 +3189,7 @@ SFW.shield = (function () {
     nSet(root, "data-sfw-hold", "1");
     try { for (const m of doc.querySelectorAll("video,audio")) { if (!m.paused) m.pause(); m.muted = true; } } catch (e) { /* ignore */ }
     if (st.host) dropHost(st);
-    const o = createOverlay(doc, st.variant === "error" ? "page" : "page", "page");
+    const o = createOverlay(doc, st.variant === "error" ? "page" : "page", "page", doc.body || root);
     st.host = o.host; st.root = o.root; st.cover = o.cover; st.hide = o.hide;
     st.hide.remove();
     armHost(st);
@@ -3037,7 +3232,7 @@ SFW.shield = (function () {
   function notice(doc) {
     const root = doc.documentElement || doc.body;
     if (!root) return null;
-    const o = createOverlay(doc, "notice", "notice");
+    const o = createOverlay(doc, "notice", "notice", doc.body || root);
     o.hide.remove();
     o.host.setAttribute("role", "status");
     o.host.setAttribute("data-s", "notice");
@@ -3076,6 +3271,7 @@ SFW.shield = (function () {
     TEXT, configure, prepare, apply, reveal, reblur, release, state, setFp, repair,
     ownerOfHost, shieldedAncestor, count, all, prune,
     applyPage, revealPage, releasePage, pageState, notice, emergencyCover, emergencyNotice, deepAll,
+    theme: themeOf, setTheme, themeFromColor, themeFromScheme,
   };
 })();
 
@@ -3275,8 +3471,10 @@ SFW.runtime = (function () {
   const ENTITIES = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: " ", ndash: "-", mdash: "-", hellip: "...", rsquo: "'", lsquo: "'", ldquo: '"', rdquo: '"' };
   const CRUDE_WORDS = ["gta", "grand theft", "grandtheft", "vice city", "vicecity", "leonida", "rockstar"]; // crude hotness test, no RegExp
   const BIG_INSERT = 1500; // a callback that delivers more added nodes than this only covers them (O(1)) and continues in slices
-  const FRAME_MIN_W = 200; // an unverifiable embedded frame at least this large is covered on cold pages (strict)
-  const FRAME_MIN_H = 100;
+  // An unverifiable embedded frame (sandboxed without scripts: the engine cannot run inside it) is covered in Strict on
+  // cold pages too once it is large enough to show one line of text; only tracking-pixel sized frames stay clear.
+  const FRAME_MIN_W = 48;
+  const FRAME_MIN_H = 16;
   const TITLE_GUARD = "Spoiler-protected page";
   const LAUNCH = Date.UTC(2026, 10, 19);
   const MO_ATTRS = ["alt", "title", "aria-label", "aria-description", "placeholder", "href", "src", "srcset", "poster", "srcdoc", "sandbox", "data-sfw-sr", "data-sfw"];
@@ -3651,6 +3849,12 @@ SFW.runtime = (function () {
     const threadWait = new Map();
     const recent = new Set();
     const U = new WeakMap(); // unit -> {fp, cfp, dec, targets}
+    const NONTEXT_SEL = "img,video,picture,canvas,svg,iframe,embed,object,audio,[style*='background-image'],[style*='background:']"; // holdsNonText()
+    const BG_CHILDREN = 12; // hasBackgroundMedia(): direct children whose computed background-image is read
+    const bgMemo = new WeakMap(); // item -> {n: child count, v}
+    const ESCALATE_SEL = "article,[role=article],li,figure,blockquote,[role=listitem]"; // escalationTarget()
+    const ESC_MAX_CHILDREN = 8; // a card has few children; an article of paragraphs does not
+    const escalated = new Set(); // generic cards shielded whole because a block inside them is a spoiler
     const threads = new WeakMap(); // root -> {resolved, hot, first, shield, key}
     const seenRoots = new WeakSet();
     const rootList = new Set();
@@ -4667,7 +4871,57 @@ SFW.runtime = (function () {
       if (LISTISH.has(g.tagName) || nGetAttr(g, "role") === "listitem" || nGetAttr(g, "role") === "option") return true;
       if (g.children.length <= 2) return true;
       try { if (nQS(g, "img,video,picture,canvas,svg image")) return true; } catch (e) { /* ignore */ }
-      return false;
+      return hasBackgroundMedia(g);
+    }
+
+    // A picture drawn as a CSS background (common on social sites) is media too: an inline style anywhere in the item, or a
+    // computed background-image on one of its first direct children (bounded, and memoised per child count).
+    function hasBackgroundMedia(g) {
+      try { if (nQS(g, "[style*='background-image'],[style*='background:']")) return true; } catch (e) { /* ignore */ }
+      if (!nGetCS) return false;
+      const kids = g.children;
+      const memo = bgMemo.get(g);
+      if (memo && memo.n === kids.length) return memo.v;
+      let v = false;
+      for (let i = 0; i < kids.length && i < BG_CHILDREN && !v; i++) {
+        try { const bi = nGetCS(kids[i]).backgroundImage; v = !!bi && bi !== "none"; } catch (e) { /* ignore */ }
+      }
+      bgMemo.set(g, { n: kids.length, v });
+      return v;
+    }
+
+    // Escalation: a block that is shielded as a spoiler inside a small generic card (article / li / figure / blockquote /
+    // listitem within ITEM_TEXT_CAP) covers the whole card, so its siblings (pictures, links, embeds, captions) are covered
+    // too. Done in the same evaluate() pass (the ladder rounds), so there is no frame in between. A long article made of many
+    // paragraphs is above the cap and stays shielded per paragraph.
+    function escalationTarget(u) {
+      if (!adapter.generic || isOwn(u)) return null;
+      const p = parentOf(u);
+      if (!p || p.nodeType !== 1) return null;
+      const g = closestFlat(p, ESCALATE_SEL);
+      if (!g || g === u || g.tagName === "BODY" || g.tagName === "HTML" || nHasAttr(g, "data-sfw")) return null;
+      if (!coverWhole(g)) return null;
+      return g;
+    }
+    // A small item: few element children and little text. A long article is never covered whole, also not while it is
+    // still streaming in (it grows past these limits and the escalation is dropped).
+    function smallItem(g) {
+      return g.children.length <= ESC_MAX_CHILDREN && textLen(g, ITEM_TEXT_CAP) <= ITEM_TEXT_CAP;
+    }
+    // Something that is not a text block (a picture, video, embed, CSS background picture or a direct link): what a shielded
+    // block cannot cover on its own. An article made only of paragraphs keeps deciding paragraph by paragraph.
+    function holdsNonText(g) {
+      try { if (nQS(g, NONTEXT_SEL) || nQS(g, ":scope > a[href]")) return true; } catch (e) { /* ignore */ }
+      return hasBackgroundMedia(g);
+    }
+    // Cover the whole item: while the document is still loading, every small item holding a shielded block is covered (its
+    // pictures may not have been parsed yet, and zero-flash comes first); once loaded, only one that really holds something
+    // besides text blocks. onReadyState() re-decides the escalated items when loading ends, which releases the others.
+    function coverWhole(g) {
+      return smallItem(g) && (doc.readyState !== "complete" || holdsNonText(g));
+    }
+    function hasInnerShield(u) {
+      try { return !!nQS(u, "[data-sfw~='shield']:not(sfw-shield)"); } catch (e) { return false; }
     }
 
     // Text length with early exit: never walks more than ~cap characters of a huge ancestor (memoised for the slice).
@@ -4850,7 +5104,7 @@ SFW.runtime = (function () {
 
 
     // Layout-reading verdict for the unverifiable frames of one unit (the only synchronous layout read the frame rule makes).
-    // strict: any frame on a hot / high-risk page, on a cold generic page only a large one; lockdown: every one; balanced:
+    // strict: any frame on a hot / high-risk page, on a cold generic page any frame big enough to show text; lockdown: every one; balanced:
     // hot context only. Returns "shield" | "clear" | "cfg" (decision differs between modes while the config is loading).
     function frameVerdict(frames, hot) {
       const big = () => {
@@ -4982,6 +5236,17 @@ SFW.runtime = (function () {
     }
 
     function decide(u, generic) {
+      // A small card (article / li / figure ...) that holds a shielded block is covered whole, whether it was escalated to or is
+      // itself the unit: its own text excludes the nested shielded block, which would otherwise release the card around it.
+      if (escalated.has(u) || (adapter.generic && u.nodeType === 1 && !isOwn(u) && nMatches(u, ESCALATE_SEL))) {
+        if (hasInnerShield(u) && coverWhole(u) && !detectionBroken) {
+          const efp = "esc|" + cfg.mode + "|" + S.lexicon.version;
+          const ec = U.get(u);
+          if (ec && ec.fp === efp && ec.dec === "shield" && ec.targets.every((t) => S.shield.state(t).mode !== "none")) return { u, dec: "shield", same: true, fp: efp, cfp: efp, hot: Math.max(pageHot, 1), generic };
+          return { u, dec: "shield", fp: efp, cfp: efp, hot: Math.max(pageHot, 1), generic, nb: false, media: true, ocr: false, strong: false, warmOnly: false, frameErr: false };
+        }
+        escalated.delete(u);
+      }
       const deep = isDeep(u);
       const ex = extract(u, isOwn(u), deep);
       const text = ex.text;
@@ -5158,6 +5423,8 @@ SFW.runtime = (function () {
       for (const p of plans) {
         if (!p.generic || p.same) continue;
         if (p.dec === "shield") {
+          const g = p.fp.slice(0, 4) === "esc|" ? null : escalationTarget(p.u);
+          if (g) { escalated.add(g); aPush(next, g); }
           for (const sib of [p.u.previousElementSibling, p.u.nextElementSibling]) if (sib && sib.nodeType === 1 && !nHasAttr(sib, "data-sfw") && sibEligible(p.u, sib)) aPush(next, sib);
         } else if (p.dec === "clear" && !p.nb && hasShieldedNeighbor(p.u)) aPush(next, p.u);
       }
@@ -5581,7 +5848,10 @@ SFW.runtime = (function () {
       rec.st = "done";
       if (rec.obs) { rec.obs = false; try { if (ocrIO) ocrIO.unobserve(rec.m); if (ocrRO) ocrRO.unobserve(rec.m); } catch (e) { /* ignore */ } }
       const mode = cfg.mode;
-      const release = r.status === "ok" || (r.status === "skipped" ? mode !== "lockdown" : mode === "balanced");
+      // skipped = the host could not read it (animated, multi-frame, undecodable): Strict keeps it held with the "couldn't check
+      // image" cover like unavailable / error (it can carry text a still frame would show); only Balanced releases it.
+      // Local data:/blob: images the engine never asks about (r.local) follow the older rule: released unless Lockdown.
+      const release = r.status === "ok" || (r.status === "skipped" ? (r.local ? mode !== "lockdown" : mode === "balanced") : mode === "balanced");
       if (release) {
         unfailRec(rec);
         setOk(rec.m, !r.small);
@@ -5623,6 +5893,7 @@ SFW.runtime = (function () {
       if (!w || nHasAttr(w, "data-sfw")) return;
       try {
         nSetAttr(w, "data-sfw-mc", "");
+        S.shield.setTheme(w, S.shield.theme(w));
         if (nGetCS(w).position === "static") { nSetAttr(w, "data-sfw-mcpos", ""); rec.wrapPos = true; }
         rec.wrap = w;
       } catch (e) { /* ignore */ }
@@ -5632,7 +5903,7 @@ SFW.runtime = (function () {
       const w = rec.wrap;
       if (!w) return;
       rec.wrap = null;
-      try { nRemoveAttr(w, "data-sfw-mc"); if (rec.wrapPos) nRemoveAttr(w, "data-sfw-mcpos"); } catch (e) { /* ignore */ }
+      try { nRemoveAttr(w, "data-sfw-mc"); nRemoveAttr(w, "data-sfw-theme"); if (rec.wrapPos) nRemoveAttr(w, "data-sfw-mcpos"); } catch (e) { /* ignore */ }
       rec.wrapPos = false;
     }
 
@@ -5744,7 +6015,7 @@ SFW.runtime = (function () {
       if (w < OCR_MIN_W || h < OCR_MIN_H || (nw && nw < OCR_MIN_W) || (nh && nh < OCR_MIN_H)) { finishSmall(rec); return; }
       const c = cacheGet(rec.key);
       if (c) { stats.ocr.cacheHits++; rec.res = c; resolveRec(rec); return; }
-      if (!/^(?:https?|data|blob):/i.test(rec.url)) { rec.res = { status: "skipped" }; resolveRec(rec); return; }
+      if (!/^(?:https?|data|blob):/i.test(rec.url)) { rec.res = { status: "skipped", local: true }; resolveRec(rec); return; }
       rec.req = { width: Math.round(w), height: Math.round(h), naturalWidth: nw, naturalHeight: nh };
       showPending(rec);
       rec.st = "wait";
@@ -5948,6 +6219,7 @@ SFW.runtime = (function () {
           if (ti && doc.readyState === "complete") { ti.resolved = true; }
           if (doc.readyState === "complete") { threadWait.delete(r); for (const u of set) touch(u); }
         }
+        if (doc.readyState === "complete") for (const g of Array.from(escalated)) { if (g.isConnected) touch(g); else escalated.delete(g); }
         flushPending();
         runWork(now(), BUDGET_MS);
         try { if (mo) MO_TAKE(mo); } catch (e) { /* ignore */ }
@@ -6064,6 +6336,22 @@ const CONFIG = /*__SFW_CONFIG__*/null;
     const debug = !!config.debugReports;
     const noop = function () {};
 
+    // ---- live term update ----------------------------------------------------------------------------------
+    // A term update verified after this document loaded is pushed by Bowser through the per-tab hook (feed(key, json)):
+    // extend() (adds or raises only) and then the runtime's config-change path, which rescans when the lexicon version
+    // changed. The same feed (compared as normalised JSON) is never applied twice, so repeated pushes cannot fill the term cap.
+    const appliedFeeds = new Set();
+    let configCallback = null;
+    const normFeed = function (obj) { try { return JSON.stringify(obj); } catch (e) { return null; } };
+    const applyFeed = function (obj) {
+      const sig = normFeed(obj);
+      if (sig === null || appliedFeeds.has(sig)) return false;
+      appliedFeeds.add(sig);
+      try { SFW.lexicon.extend(obj); } catch (e) { return false; }
+      try { if (configCallback) configCallback(config); } catch (e) { /* the next mutation still classifies with the new terms */ }
+      return true;
+    };
+
     // ---- native OCR bridge ------------------------------------------------------------------------------
     // Bowser's native side pulls requests with ExecuteScript(window[hook].drain(key)) and pushes answers with
     // window[hook].deliver(key, json). The hook name and the key are per-tab random (128 bits each) and the key
@@ -6073,7 +6361,8 @@ const CONFIG = /*__SFW_CONFIG__*/null;
     const makeOcr = function () {
       const hook = config.ocrHook;
       const key = config.ocrKey;
-      if (config.ocr !== true || typeof hook !== "string" || typeof key !== "string") return null;
+      const ocrOn = config.ocr === true;
+      if (typeof hook !== "string" || typeof key !== "string") return null;
       if (!/^__sfw_[0-9a-f]{32}$/.test(hook) || !/^[0-9a-f]{32}$/.test(key)) return null;
       const MAX_PENDING = 256, MAX_DRAIN = 64, MAX_URL = 2048, MAX_TEXT = 4096, MAX_JSON = 262144, TIMEOUT_MS = 30000;
       const STATUSES = { ok: 1, unavailable: 1, error: 1, skipped: 1 };
@@ -6154,11 +6443,20 @@ const CONFIG = /*__SFW_CONFIG__*/null;
         }
       };
 
+      // Bowser pushes a term update here: a JSON text of at most 256 KB holding the feed's lexicon object.
+      const feed = function (k, json) {
+        if (k !== key || typeof json !== "string" || json.length > MAX_JSON) return;
+        let obj;
+        try { obj = parseJson(json); } catch (e) { return; }
+        if (!obj || typeof obj !== "object" || isArray(obj)) return;
+        applyFeed(obj);
+      };
+
       try {
-        const api = Object.freeze({ drain: drain, deliver: deliver });
+        const api = Object.freeze({ drain: drain, deliver: deliver, feed: feed });
         Object.defineProperty(win, hook, { value: api, enumerable: false, writable: false, configurable: false });
       } catch (e) { return null; } // a frozen window or a taken name: no hook, so no OCR
-      return Object.freeze({ request: request });
+      return ocrOn ? Object.freeze({ request: request }) : null; // hook only (feed pushes) when OCR is off
     };
     let ocr = null;
     try { ocr = makeOcr(); } catch (e) { ocr = null; }
@@ -6167,7 +6465,13 @@ const CONFIG = /*__SFW_CONFIG__*/null;
     // Signed term update (src/spoiler_feed.rs): the native side verified the Ed25519 signature and embedded only the
     // feed's `lexicon` object as config.feed. extend() can only add terms or raise a term's category, validates every
     // entry, and ignores anything malformed, so a missing, stale or odd value leaves the built-in list protecting.
-    try { if (config.feed && typeof config.feed === "object") SFW.lexicon.extend(config.feed); } catch (e) { /* built-in list only */ }
+    try {
+      if (config.feed && typeof config.feed === "object") {
+        const sig = normFeed(config.feed);
+        if (sig !== null) appliedFeeds.add(sig);
+        SFW.lexicon.extend(config.feed);
+      }
+    } catch (e) { /* built-in list only */ }
 
     try { SFW.hooks.install(win); } catch (e) { /* hooks are best effort */ }
     SFW.runtime.start({
@@ -6176,7 +6480,7 @@ const CONFIG = /*__SFW_CONFIG__*/null;
       configReady: null,
       ocr: ocr,
       report: debug ? function (code, n) { try { console.debug("[sfw]", String(code), n | 0); } catch (e) { /* ignore */ } } : noop,
-      onConfigChange: noop,
+      onConfigChange: function (cb) { configCallback = cb; },
       privileged: null,
       frameIsTop: win.top === win,
     });
