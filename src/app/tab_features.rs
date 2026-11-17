@@ -584,6 +584,62 @@ impl App {
 
     // ---- the hover card: thumbnails and memory ----
 
+    /// Keeps tab `id`'s favicon on disk under its page's host (off the UI thread), so the tab shows
+    /// it again when it is restored asleep after a restart. Only a normal tab on an http(s) page:
+    /// a private tab's icon is never written (`private::Store::Favicons`).
+    pub(super) fn remember_tab_favicon(app: &AppRef, id: TabId) {
+        let job = {
+            let state = app.borrow();
+            state.tabs.iter().find(|tab| tab.id == id).and_then(|tab| {
+                if !crate::private::may_persist(crate::private::Store::Favicons, tab.private, false) {
+                    return None;
+                }
+                let url = tab.url.as_ref().filter(|url| matches!(url.scheme(), "http" | "https"))?;
+                Some((url.host_str()?.to_owned(), tab.favicon.clone()?))
+            })
+        };
+        if let Some((host, bytes)) = job {
+            crate::favicon::remember_in_background(&host, bytes);
+        }
+    }
+
+    /// Gives every sleeping tab of a restored session that has no favicon the one its host last
+    /// had on disk, so restored tabs are recognisable before they are selected (they stay asleep:
+    /// nothing is loaded). Each host is read once. Returns how many tabs got an icon.
+    pub(super) fn restore_saved_favicons(app: &AppRef) -> usize {
+        let wanted: Vec<(TabId, String)> = app
+            .borrow()
+            .tabs
+            .iter()
+            .filter(|tab| tab.discarded && tab.favicon.is_none() && !tab.private)
+            .filter_map(|tab| {
+                let url = tab.url.as_ref().filter(|url| matches!(url.scheme(), "http" | "https"))?;
+                Some((tab.id, url.host_str()?.to_owned()))
+            })
+            .collect();
+        if wanted.is_empty() {
+            return 0;
+        }
+        let mut by_host: HashMap<String, Option<Vec<u8>>> = HashMap::new();
+        let mut state = app.borrow_mut();
+        let mut given = 0;
+        for (id, host) in wanted {
+            let bytes = by_host
+                .entry(host)
+                .or_insert_with_key(|host| crate::favicon::load_favicon_bytes(host).ok().flatten())
+                .clone();
+            let Some(bytes) = bytes else {
+                continue;
+            };
+            if let Some(tab) = state.tabs.iter_mut().find(|tab| tab.id == id && tab.favicon.is_none()) {
+                tab.favicon_key = Some(crate::favicon::key_for(&bytes));
+                tab.favicon = Some(bytes);
+                given += 1;
+            }
+        }
+        given
+    }
+
     /// The thumbnail the hover card shows for `id` (a JPEG), when thumbnails are on and one was captured.
     /// A private tab never has one.
     pub fn tab_thumbnail(app: &AppRef, id: TabId) -> Option<Vec<u8>> {

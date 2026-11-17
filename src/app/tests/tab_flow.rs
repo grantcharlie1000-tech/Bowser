@@ -759,6 +759,49 @@ fn restored_tabs_load_lazily_unless_the_options_say_otherwise() {
 }
 
 #[test]
+fn sleeping_tabs_restored_after_a_restart_show_their_site_icon_without_loading() {
+    let _profile = crate::profile::TestProfileGuard::isolated();
+    // First run: a normal tab and a private tab each report a favicon.
+    let (app, _shared) = fixture();
+    let ids = tabs(&app, 2);
+    page(&app, ids[0], "https://icon.example/a");
+    page(&app, ids[1], "https://secret.example/");
+    for (id, private) in [(ids[0], false), (ids[1], true)] {
+        let mut state = app.borrow_mut();
+        let tab = state.tabs.iter_mut().find(|tab| tab.id == id).unwrap();
+        tab.private = private;
+        tab.favicon = Some(b"icon-bytes".to_vec());
+        drop(state);
+        App::remember_tab_favicon(&app, id);
+    }
+    assert_eq!(crate::favicon::load_favicon_bytes("icon.example").unwrap().as_deref(), Some(&b"icon-bytes"[..]));
+    assert_eq!(crate::favicon::load_favicon_bytes("secret.example").unwrap(), None, "a private tab's icon never reaches disk");
+
+    // Second run: the session restores; only the active tab loads, yet the sleeping tab has its icon.
+    let (app, shared) = fixture();
+    let tab = |url: &str| crate::session::SessionTab { url: url.into(), title: "T".into(), pinned: false, used: 0 };
+    app.borrow_mut().pending_restore = Some(crate::session::Session {
+        tabs: vec![tab("https://active.example/"), tab("https://icon.example/b"), tab("https://secret.example/")],
+        active: 0,
+        split: None,
+    });
+    App::restore_pending_session(&app);
+    let state = app.borrow();
+    let order: Vec<TabId> = state.tab_model.iter().map(|model| model.id).collect();
+    let sleeping = state.tabs.iter().find(|tab| tab.id == order[1]).unwrap();
+    assert!(sleeping.discarded, "the restored tab stays asleep");
+    assert_eq!(sleeping.favicon.as_deref(), Some(&b"icon-bytes"[..]));
+    assert_eq!(sleeping.favicon_key, Some(crate::favicon::key_for(b"icon-bytes")));
+    assert!(state.tabs.iter().find(|tab| tab.id == order[2]).unwrap().favicon.is_none());
+    drop(state);
+    assert!(
+        !calls(&shared).iter().any(|call| call.contains("icon.example")),
+        "showing the icon loads nothing: {:?}",
+        calls(&shared)
+    );
+}
+
+#[test]
 fn eager_restored_tabs_load_once_the_engine_can() {
     let (app, shared) = fixture();
     let ids = tabs(&app, 2);
