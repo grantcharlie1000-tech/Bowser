@@ -296,6 +296,25 @@ test('section: loading, then the list; a labelled card, a row per extension, the
   assert.doesNotMatch(visibleText(), /\benforc|badge/i);
 });
 
+test('section: Options only for a running extension; Check update says updates are not available and sends nothing', () => {
+  sent.length = 0;
+  const reader = rowOf(ID);
+  assert.ok(button(reader, 'Options for Reader "<b>"'), 'on and loaded: its options page can open');
+  assert.equal(button(rowOf(OTHER), 'Options for Tab Notes'), undefined, 'off: Bowser would refuse, so it is not offered');
+  receive({ ...fixture.snap, d: { ...fixture.snap.d, items: [{ ...fixture.snap.d.items[0], failure: 'Load failed' }, fixture.snap.d.items[1]] } });
+  assert.equal(button(rowOf(ID), 'Options for Reader "<b>"'), undefined, 'on but not running: not offered either');
+  receive(fixture.snap);
+  for (const id of [ID, OTHER]) {
+    const update = rowOf(id).querySelectorAll('button').find((b) => b.textContent === 'Check update');
+    assert.ok(update);
+    assert.equal(update.getAttribute('aria-disabled'), 'true');
+    assert.match(update.getAttribute('aria-label'), /not available/);
+    assert.equal(update.getAttribute('data-tip'), logic.UPDATES_UNAVAILABLE);
+    update.click();
+  }
+  assert.deepEqual(sent, [], 'no update check is sent only to be refused');
+});
+
 test('section: Install CRX file… sits beside Install unpacked… with the same weight, and they hide together', () => {
   const head = section.root.querySelector('.sp-ext-head');
   const unpacked = button(head, 'Install unpacked…');
