@@ -794,7 +794,7 @@ pub fn rail_tooltip(key: RailKey, entries: &[RailEntry<'_>]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::chrome::layout::left_rail;
+    use crate::chrome::layout::legacy_rail as left_rail;
 
     const DPIS: [u32; 4] = [96, 120, 144, 192];
     /// Client heights from degenerate to tall, including ones too short for the bottom group.

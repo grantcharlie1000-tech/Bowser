@@ -712,7 +712,7 @@ export function moreCountText(count: number): string {
  */
 const CORE_ROWS: ReadonlySet<string> = new Set([
   'profile', 'import',
-  'layoutPreset', 'layoutBars' /* --- layout (thread T6): the presets and the three edges; the rest of the block is `more` --- */,
+  'layoutPreset' /* --- layout (thread T6): the presets decide where every bar sits; the rest of the block is `more` --- */,
   'theme', 'themeSchedule', 'themeAccent', 'websiteAppearance', 'bookmarksBar', 'fontSize', 'translateOffer',
   'feedsOpen', // --- toolbars and feeds (thread T13) ---
   'tabs_new_tab_page', 'tabs_new_tab_url',
@@ -785,10 +785,9 @@ export const ROWS: readonly RowSpec[] = [
   { id: 'import', section: 'profile', label: 'Import', aria: 'Import bookmarks', description: '', keywords: 'chrome edge firefox migrate transfer bookmarks import Import bookmarks Bring bookmarks over from another browser on this PC.' },
   // --- layout (thread T6) --- the Layout block: presets and the three edges in view, the rest behind More options.
   { id: 'layoutPreset', section: 'appearance', label: 'Presets', description: '', keywords: 'layout preset presets simple classic vertical left right bottom saved thumbnails arrangement tabs top side Presets A starting arrangement. Change any part of it and Bowser keeps yours as Saved.' },
-  { id: 'layoutBars', section: 'appearance', label: 'Bar positions', aria: 'Tab bar, address bar and panels', description: '', keywords: 'tab bar position top left right bottom address bar side panel dock helium edge title row window buttons Tab bar, address bar and panels Which edge each one sits on.' },
   { id: 'layout', section: 'appearance', label: 'Top style', aria: 'Tab bar style at the top', description: '', keywords: 'tabs toolbar horizontal single row top browser layout Tab bar style at the top How the tabs and the address bar share the top of the window.' },
   { id: 'sidebarWidth', section: 'appearance', label: 'Sidebar width', description: '', keywords: 'vertical tabs size wide narrow pixels Sidebar width Width of the tab sidebar in the vertical layouts.' },
-  { id: 'sidebarPinned', section: 'appearance', label: 'Pin sidebar', aria: 'Pin vertical tabs', description: '', keywords: 'vertical tabs pin sidebar hover expand overlay edge rail icons Pin vertical tabs Keeps vertical tabs open beside the page. Off, they are a narrow rail that opens on hover.' },
+  { id: 'sidebarPinned', section: 'appearance', label: 'Pin sidebar', aria: 'Pin vertical tabs', description: '', keywords: 'vertical tabs pin sidebar hover expand overlay edge compact zen auto hide retract Pin vertical tabs Keeps the sidebar, with the address bar in it, open beside the page. Off, it hides and the page fills the window; rest the pointer on the window’s edge to slide it back over the page.' },
   { id: 'tabBarVisible', section: 'appearance', label: 'Tab bar', aria: 'Show the tab bar', description: '', keywords: 'tab bar show hide tabs visible Show the tab bar Off, the tabs are reached with Ctrl+Tab, the tab list and Quick commands.' },
   { id: 'addressBarVisible', section: 'appearance', label: 'Address bar', aria: 'Show the address bar row', description: '', keywords: 'address bar show hide toolbar row visible ctrl l Show the address bar row The whole row: navigation, the address field and the menu. Off, Ctrl+L brings it back until the address field loses focus.' },
   { id: 'showTitleBar', section: 'appearance', label: 'Title bar', aria: 'Show the title bar when the tab bar is on a side', description: '', keywords: 'title bar window buttons caption vertical side page title Show the title bar when the tab bar is on a side A row above the address bar with the page title and the window buttons. With the address bar along the bottom, the row is always there.' },
@@ -807,7 +806,6 @@ export const ROWS: readonly RowSpec[] = [
   // --- end theme options ---
   // --- toolbars and feeds (thread T13) --- the editor for the three bars (a sub-page); it replaces the old checklist.
   { id: 'toolbarButtons', section: 'appearance', label: 'Toolbars', aria: 'Customise your toolbars', description: '', keywords: 'toolbar toolbars buttons customize customise address bar tab bar panel bar back forward reload bookmark new tab split reader site information downloads extensions command chain button add remove move reset Customise your toolbars Choose the buttons on the address bar, the tab bar and the panel bar, and put a command or a chain of commands on any of them.' },
-  { id: 'showHomeButton', section: 'appearance', label: 'Home button', aria: 'Show the Home button', description: '', keywords: 'home button toolbar rail sidebar Show the Home button Adds a Home button to the side rail, beside the tabs.' },
   { id: 'centredAddressBar', section: 'appearance', label: 'Centre address', aria: 'Centre the address bar', description: '', keywords: 'address bar centre centered position Centre the address bar Keeps the address bar centred in the toolbar.' },
   { id: 'minimalUrl', section: 'appearance', label: 'Short address', aria: 'Show a simplified address while unfocused', description: '', keywords: 'url simplified host domain minimal address bar focus Show a simplified address while unfocused Shows the page’s site and path, without the query or fragment, until you focus the address bar, then the full address.' },
   { id: 'showLoadProgress', section: 'appearance', label: 'Load progress', aria: 'Show a loading progress bar', description: '', keywords: 'progress loading bar indicator Show a loading progress bar A thin bar tracks page loads in the toolbar.' },
@@ -818,7 +816,7 @@ export const ROWS: readonly RowSpec[] = [
   // --- T10 --- drag and drop tiling, beside the other tiling options.
   { id: 'splitEdgeDrop', section: 'stacks', label: 'Edge split', aria: 'Drop a dragged tab on the window edge to split', description: '', keywords: 'split view drag drop edge tab tiling tile Allow dropping a dragged tab on the window edge to split Dragging a tab to the edge of the window opens it in a split view.' },
   { id: 'pinNewTabGroups', section: 'appearance', label: 'Pin groups', aria: 'Pin new tab groups to the bookmarks bar', description: '', keywords: 'pin tab groups bookmarks bar Pin new tab groups to the bookmarks bar A tab group formed from now on is pinned to the bookmarks bar. Needs “Show tab groups in the bookmarks bar”.' },
-  { id: 'ctrlSVerticalTabs', section: 'keyboard', label: 'Ctrl+S', aria: 'Ctrl+S collapses or expands the sidebar in the vertical layout', description: '', keywords: 'ctrl s sidebar collapse expand vertical layout shortcut Ctrl+S collapses or expands the sidebar in the vertical layout Only does anything in the vertical layout; otherwise Ctrl+S reaches the page as normal.' },
+  { id: 'ctrlSVerticalTabs', section: 'keyboard', label: 'Ctrl+S', aria: 'Ctrl+S collapses or expands the sidebar in the vertical layout', description: '', keywords: 'ctrl s sidebar collapse expand vertical layout shortcut Ctrl+S hides or pins the sidebar in the vertical layout Only does anything in the vertical layout; otherwise Ctrl+S reaches the page as normal.' },
   // --- window and panels (thread T9) --- each row below acts at once; all sit behind More options. Not here, on purpose:
   // "open settings in a tab" and "open popups in tabs" (Bowser already always does), "show title bar" (Layout's
   // title row), "reset toolbars" (the toolbar editor) and the Windows and Reading list panels (Bowser has neither).
@@ -842,7 +840,7 @@ export const ROWS: readonly RowSpec[] = [
   { id: 'bookmarksBar', section: 'appearance', label: 'Bookmarks bar', description: '', keywords: 'bookmarks bar show hide newtab always never Bookmarks bar When the bookmarks bar is shown.' },
   { id: 'bookmarksBarTabGroups', section: 'appearance', label: 'Groups on bar', aria: 'Show tab groups in the bookmarks bar', description: '', keywords: 'tab groups bookmarks bar islands Show tab groups in the bookmarks bar Tab groups pinned to the bar appear after the bookmarks. Select one to go to it.' },
   ...ADDRESS_ROWS.filter((row) => row.section === 'appearance'),
-  // --- layout (thread T6) --- the side panel's edge is the Panels choice of the "Tab bar, address bar and panels" row (layoutBars) above; it acts at once.
+  // --- layout (thread T6) --- the side panel's edge follows the layout preset above (opposite vertical tabs).
   { id: 'fontSize', section: 'appearance', label: 'Text size', description: '', keywords: 'font size small medium large text Text size The size of text on Bowser’s own pages.' },
   { id: 'uiFont', section: 'appearance', label: 'Font', aria: 'Customise fonts', description: '', keywords: 'font family typeface custom ui Customise fonts A font family to use instead of the system font.' },
   { id: 'defaultZoom', section: 'appearance', label: 'Page zoom', description: '', keywords: 'zoom default starting percent page Page zoom The zoom new pages start at.' },

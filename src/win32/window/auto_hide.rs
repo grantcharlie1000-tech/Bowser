@@ -317,7 +317,10 @@ fn set_panel_floats(hwnd: HWND, on: bool) {
 /// The bars that auto-hide now, from the app's settings and the window's full-screen state. The same
 /// answer the app uses to size a page before the window has laid itself out.
 pub(crate) fn effective_for(hwnd: HWND, settings: &crate::settings::Settings) -> rules::Effective {
-    rules::effective(settings.frameless, &settings.auto_hide, fullscreen_of(hwnd))
+    let effective = rules::effective(settings.frameless, &settings.auto_hide, fullscreen_of(hwnd));
+    // --- zen sidebar --- an unpinned sidebar is compact mode: out of the layout until the edge is hovered.
+    let compact = settings.sidebar_collapsed && settings.tab_layout.is_vertical() && settings.tab_bar_visible;
+    rules::with_compact_sidebar(effective, compact)
 }
 
 // ----- settings and layout -----
@@ -530,7 +533,7 @@ fn raise_all(hwnd: HWND) {
         if s.ah.hidden.is_empty() {
             return None;
         }
-        Some((s.html.clone().filter(|_| !s.ah.visually_hidden(Zone::Top)), s.html_tabs.clone().filter(|_| !(s.ah.visually_hidden(Zone::Top) && s.sidebar.is_none()) && !(s.sidebar.is_some() && s.ah.visually_hidden(Zone::Sidebar)))))
+        Some((s.html.clone().filter(|_| !s.ah.visually_hidden(s.toolbar_zone())), s.html_tabs.clone().filter(|_| !(s.ah.visually_hidden(Zone::Top) && s.sidebar.is_none()) && !(s.sidebar.is_some() && s.ah.visually_hidden(Zone::Sidebar)))))
     })
     .flatten();
     let Some((toolbar, tabs)) = hosts else {

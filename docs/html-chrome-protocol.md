@@ -127,7 +127,7 @@ Wire ids: a tab's wire id is `TabId + 1`, so `0` is never a tab (`tabmove.before
 |---|---|---|
 | `tab` | `a`: `select`/`close`/`menu`/`pin`/`mute`, `id` | tab actions (`menu` = Rust shows the native tab context menu at the cursor) |
 | `tabmove` | `id`, `before` (tab id, `0` = end of strip) | drag-reorder drop; Rust uses the same move/drop logic (including group join/leave rules) as native |
-| `group` | `a`: `toggle`/`menu`, `key` | group ball click (collapse/expand) or group menu |
+| `group` | `a`: `toggle`/`menu`, `key` | click on a tab island's bar (collapse/expand) or its menu (right click) |
 | `side` | `a`: `workspace`/`newtab` | open the native workspace switcher or create a tab in the current workspace |
 
 ### Rust -> JS additions
@@ -275,8 +275,19 @@ all favicons in one message share a 128 KiB budget. Colours are `""` (theme acce
 `is_safe_css_colour`. Every key is required and no other key is accepted. The card mirrors
 `tab_card.rs` (marker swatches and "+", title clamped to two lines, host, group rows with linked
 underline, "+N more") and adds the tab's favicon and a "Sleeping" badge for discarded or suspended
-tabs; the island menu mirrors `island_menu.rs` (name field with clear button and placeholder hint,
-swatches, member rows, "+N more", "Close Tab Island · N Tabs").
+tabs; the island menu mirrors `island_menu.rs` (name field with clear button and the placeholder
+"Tab island name", nine swatches, member rows, "+N more", "Close Tab Island · N Tabs").
+
+In the horizontal strip a tab island is drawn as in Opera (`ui/src/tabs.ts`, `tabs.css`): one rounded
+box (a wash behind the whole island) holding a 6 px bar in the island's colour (`.ball`) and then its
+tabs. Folded while one of its tabs is in use, the box is that tab's selected surface, with the bar
+at its left end and, at its right end, a grey sliver for each tab folded behind it (`.cap`, two at
+most), and the tab shows its close button only under the pointer; folded with the tab in use
+elsewhere, it is a 12 px pill alone. A click on the bar or the slivers sends `group` `toggle`;
+resting on either sends `hover` `ball` (the island menu); the island's name is not shown in the
+strip. The menu (`hover.css`, 12 px corners, as
+`ISLAND_RADIUS` in `html_hover.rs`) is an accent-outlined rectangular name field, a row of rounded
+square swatches, the member rows and a filled full-width close button.
 
 Markup uses stable class names (`.bw-tooltip`, `.bw-card`, `.bw-island-menu` and their `-*` parts);
 styles live in `ui/src/styles/hover.css` over the `--bw-*` design tokens with fallbacks to the

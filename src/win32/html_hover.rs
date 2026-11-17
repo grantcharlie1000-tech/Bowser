@@ -109,9 +109,11 @@ const MA_NOACTIVATE: isize = 3;
 const FALLBACK_DPI: u32 = 96;
 /// Logical gap between a tooltip and its anchor.
 const TIP_GAP: i32 = 6;
-/// Logical radius of the tooltip and of the card and island menu (design tokens: 4 and 8).
+/// Logical radius of the tooltip, of the card (design tokens: 4 and 8) and of the island menu
+/// (12, as `.bw-island-menu` in hover.css).
 const TIP_RADIUS: i32 = 4;
 const OVERLAY_RADIUS: i32 = 8;
+const ISLAND_RADIUS: i32 = 12;
 // --- omnibox suggest ---
 /// Logical radius of the dropdown's bottom corners: the omnibox pill's own (half its height, token
 /// --bw-r-omnibox), so the open surface is rounded alike at both ends.
@@ -694,7 +696,8 @@ fn island_content(app: &AppRef, tab: TabId) -> Option<Content> {
     let accent = theme::palette(glass::appearance(), true).tab_group_accent;
     let island = HoverIsland {
         name: model.name.clone().unwrap_or_default(),
-        hint: model.suggested_name.clone().unwrap_or_else(|| island_model::PLACEHOLDER.to_owned()),
+        // As in Opera, the empty field reads "Tab island name"; the strip tooltip carries the site.
+        hint: island_model::PLACEHOLDER.to_owned(),
         slot: island_model::swatch_slot(model.colour),
         swatches: std::iter::once(accent)
             .chain(ISLAND_COLOURS)
@@ -900,7 +903,8 @@ fn place(owner: HWND, tok: u32, w: u16, h: u16) {
         match kind {
             Kind::Tooltip => TIP_RADIUS,
             Kind::Suggest => SUGGEST_RADIUS,
-            Kind::Card | Kind::Island => OVERLAY_RADIUS,
+            Kind::Card => OVERLAY_RADIUS,
+            Kind::Island => ISLAND_RADIUS,
         },
         dpi,
     );

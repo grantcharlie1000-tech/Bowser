@@ -1517,14 +1517,13 @@ test('row descriptions match what the rows do', () => {
   assert.match(words('reset'), /Not changed: how long history is kept/);
   for (const reset of ['appearance', 'start page', 'address bar', 'search engines', 'downloads', 'translation']) assert.ok(words('reset').toLowerCase().includes(reset), reset);
   assert.match(words('blockYoutubeVideoAds'), /Trackers and ads/);
-  assert.match(words('showHomeButton'), /rail/);
+  assert.equal(row('showHomeButton'), undefined, 'the rail is gone, so is its Home button');
   assert.match(words('minimalUrl'), /path/);
   assert.match(words('forceDark'), /open tabs at once/);
   assert.match(words('qcNotesPanel'), /does not yet go to the picked note/);
-  // --- layout (thread T6) --- the side panel's edge is a choice of the Layout block's edges row and acts at once.
+  // --- layout (thread T6) --- bar edges come from the layout preset alone.
   assert.equal(row('sidePanelPosition'), undefined, 'no separate side panel row any more');
-  assert.match(row('layoutBars').aria, /panels/i);
-  assert.ok(!row('layoutBars').restart && !row('layoutBars').notYet, 'it applies without a restart and is live');
+  assert.equal(row('layoutBars'), undefined, 'bar positions follow the layout preset: no separate edges row');
   assert.match(words('statusBar'), /Bowser has no status bar of its own/);
   assert.match(words('addressBarVisible'), /Ctrl\+L/);
 });
@@ -1815,7 +1814,8 @@ test('layout: the snapshot carries the Layout block, refuses anything else, and 
   }
   // The side panel's edge stays the older key; the row that carried it alone is gone.
   assert.equal(logic.ROWS.find((row) => row.id === 'sidePanelPosition'), undefined);
-  for (const id of ['layoutPreset', 'layoutBars']) assert.equal(logic.rowTier(logic.ROWS.find((row) => row.id === id)), 'core', id);
+  assert.equal(logic.ROWS.find((row) => row.id === 'layoutBars'), undefined, 'bar positions follow the preset');
+  for (const id of ['layoutPreset']) assert.equal(logic.rowTier(logic.ROWS.find((row) => row.id === id)), 'core', id);
   for (const id of ['layout', 'sidebarWidth', 'sidebarPinned', 'tabBarVisible', 'addressBarVisible', 'showTitleBar', 'statusBar', 'uiDensity', 'compactMenus', 'uiZoom']) {
     assert.equal(logic.rowTier(logic.ROWS.find((row) => row.id === id)), 'more', id);
   }
@@ -1908,7 +1908,7 @@ test('layout: presets choose a configuration, the edges derive from the tab layo
   assert.equal(L.uiZoomText(110), '110%');
 });
 
-test('layout: the page shows the preset thumbnails and the three edges in view; each pick saves the whole draft', () => {
+test('layout: the page shows the preset thumbnails, which alone place the bars; each pick saves the whole draft', () => {
   deliver(fixture.snap);
   searchFor('');
   const presets = app.querySelector('.sp-tiles.is-presets');
@@ -1927,7 +1927,8 @@ test('layout: the page shows the preset thumbnails and the three edges in view; 
   assert.equal(saved.disabled, true, 'nothing saved yet');
   assert.equal(app.querySelectorAll('.sp-tile').length, 9, 'six presets plus the three top styles');
   // Both core rows sit in Appearance's main view, not behind More options.
-  for (const id of ['layoutPreset', 'layoutBars']) {
+  assert.equal(app.querySelector('.sp-bars'), null, 'no bar position controls');
+  for (const id of ['layoutPreset']) {
     assert.ok(areaNode('appearance').contains(rowNode(id)), id);
     assert.ok(!moreOf('appearance').contains(rowNode(id)), id);
   }
@@ -1948,32 +1949,8 @@ test('layout: the page shows the preset thumbnails and the three edges in view; 
   tiles[0].click();
   assert.match(sent[0].text, /^tab_layout=single-row\n/);
   assert.match(sent[0].text, /\nstatus_bar=hidden\n/, 'Simple hides the link overlay');
-  // The edges: tab bar right makes a right sidebar; with the panel still left that is the user's own arrangement, kept as Saved.
-  deliver({ ...fixture.snap, d: { ...fixture.snap.d, ack: 'saved' } });
-  const bars = rowNode('layoutBars');
-  const groups = bars.querySelectorAll('[role="radiogroup"]');
-  assert.deepEqual(groups.map((g) => g.getAttribute('aria-label')), ['Tab bar', 'Address bar', 'Panels']);
-  assert.deepEqual(groups[0].querySelectorAll('[role="radio"]').map((b) => b.textContent), ['Top', 'Left', 'Right', 'Bottom']);
-  assert.equal(groups[0].querySelector('[aria-checked="true"]').textContent, 'Top');
-  assert.equal(groups[2].querySelector('[aria-checked="true"]').textContent, 'Left');
-  assert.equal(app.querySelector('.sp-panel-edge-hint'), null);
-  sent.length = 0;
-  groups[0].querySelectorAll('[role="radio"]')[2].click();
-  assert.match(sent[0].text, /^tab_layout=vertical-right\n/);
+  // A Saved arrangement (written by an older build) still comes back through its tile.
   const own = 'tabs=vertical-right,tabbar=true,address=top,addressbar=true,panel=left,status=overlay,title=false';
-  assert.match(sent[0].text, new RegExp(`\\nlayout_saved=${own.replace(/[-,=]/g, '\\$&')}\\n`));
-  deliver({ ...fixture.snap, d: { ...fixture.snap.d, tabLayout: 'vertical-right', layout: { ...fixture.snap.d.layout, saved: own }, ack: 'saved' } });
-  assert.equal(saved.disabled, false, 'the Saved tile has something to bring back');
-  assert.equal(saved.getAttribute('aria-checked'), 'true');
-  assert.equal(groups[0].querySelector('[aria-checked="true"]').textContent, 'Right');
-  assert.equal(groups[2].querySelector('[aria-checked="true"]').textContent, 'Left', 'the Panels control keeps the saved edge');
-  assert.equal(rowNode('layout').querySelector('[aria-checked="true"]'), null, 'no top style while the tabs are on a side');
-  // Address bar bottom, panels right: one key each.
-  sent.length = 0;
-  groups[1].querySelectorAll('[role="radio"]')[1].click();
-  assert.match(sent[0].text, /\naddress_bar_position=bottom\n/);
-  groups[2].querySelectorAll('[role="radio"]')[1].click();
-  assert.match(sent[1].text, /\nside_panel_position=right\n/);
   // Back to a preset through the Saved tile and the top-style tiles.
   deliver({ ...fixture.snap, d: { ...fixture.snap.d, layout: { ...fixture.snap.d.layout, saved: own }, ack: 'saved' } });
   sent.length = 0;
@@ -2040,7 +2017,7 @@ test('layout: the rows behind More options each save their key; the UI zoom take
   expectSave(/\nui_zoom=100\n/);
   // An unreadable settings file locks the block too.
   deliver({ ...fixture.snap, d: { ...fixture.snap.d, readable: false } });
-  for (const control of [...rowNode('layoutPreset').querySelectorAll('.sp-tile'), ...rowNode('layoutBars').querySelectorAll('[role="radio"]'), sw('tabBarVisible'), range, value]) assert.equal(control.disabled, true);
+  for (const control of [...rowNode('layoutPreset').querySelectorAll('.sp-tile'), sw('tabBarVisible'), range, value]) assert.equal(control.disabled, true);
 });
 
 test('layout: the view applies the density and compact menus to the root for the row-height tokens', () => {

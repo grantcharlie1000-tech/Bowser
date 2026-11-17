@@ -747,13 +747,11 @@ impl Default for Settings {
 }
 
 impl Settings {
-    /// The sidebar width used for layout: the collapsed strip width, or the saved width.
+    /// The sidebar width used for layout: always the saved width. An unpinned (`sidebar_collapsed`)
+    /// sidebar is no longer a narrow strip: it keeps its width and auto-hides (Zen's compact mode,
+    /// `auto_hide::with_compact_sidebar`).
     pub fn effective_sidebar_width(&self) -> u16 {
-        if self.sidebar_collapsed {
-            COLLAPSED_SIDEBAR_WIDTH
-        } else {
-            self.sidebar_width
-        }
+        self.sidebar_width
     }
 }
 

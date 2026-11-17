@@ -15,7 +15,7 @@ import { clickSelection, loadMark, markedName, notifyLabel, pruneSelection, type
 // --- end tab options ---
 import { guardTitle } from './spoiler-guard'; // --- spoiler guard ---
 import {
-  buildSidebarEntries, dropIndexVertical, keyboardMoveBefore, keyboardMoveDir, nearestTile, pinnedBeforeId, railHoverAdvance, rovingTarget, scrollIntoViewDelta, tileShift,
+  buildSidebarEntries, dropIndexVertical, pinFlipIntent, keyboardMoveBefore, keyboardMoveDir, nearestTile, pinnedBeforeId, railHoverAdvance, rovingTarget, scrollIntoViewDelta, tileShift,
   verticalSlotShift, workspaceIconName, type TilePoint,
 } from './sidebar-logic';
 // --- split view ---
@@ -80,6 +80,8 @@ interface SidebarDrag {
   lastX: number;
   lastY: number;
   // --- end tab ghost ---
+  /** --- zen sidebar --- released now, the tab would cross between the pinned grid and the list. */
+  pinFlip: boolean;
 }
 export interface SidebarWorkspace {
   readonly name: string;
@@ -309,8 +311,17 @@ export function createSidebarRenderer(root: HTMLElement): {
   const collapse = el('button', 'side-collapse bw-focus-inset');
   collapse.type = 'button';
   collapse.append(icon('sidebar', { size: 16 }));
+  // --- zen sidebar --- the space header: its name (the workspace menu), a rule, and Clear, which
+  // closes every tab of the space that is not pinned.
+  const rule = el('span', 'side-head-rule');
+  rule.setAttribute('aria-hidden', 'true');
+  const clear = el('button', 'side-clear bw-focus-inset');
+  clear.type = 'button';
+  clear.textContent = 'Clear';
+  setTip(clear, 'Close the tabs that are not pinned');
+  clear.setAttribute('aria-label', 'Close the tabs that are not pinned');
   const head = el('div', 'side-head');
-  head.append(header, collapse);
+  head.append(header, rule, clear, collapse);
   const top = el('div', 'side-top');
   top.setAttribute(DRAG_ATTR, '');
   // --- toolbars and feeds (thread T13) --- the command buttons of the tab bar, as rows under Closed tabs.
@@ -339,8 +350,12 @@ export function createSidebarRenderer(root: HTMLElement): {
   const COLLAPSED_MAX_PX = 72;
   const OPEN_MIN_PX = 52;
   const hostOf = (node: HTMLElement): Node | null => node.parentElement ?? node.parentNode;
+  // --- zen sidebar --- the narrow icon strip is gone: an unpinned sidebar (`rail`) keeps its full
+  // width and Rust slides the whole column over the page from the window's edge (compact mode), so
+  // the page never sees the strip's hover flyout. `rail` now only names the pin button.
+  const ICON_STRIP = false as boolean;
   const placeNewTab = (): void => {
-    if (rail) {
+    if (ICON_STRIP && rail) {
       if (hostOf(add) !== root) root.append(add);
     } else if (hostOf(add) !== top) {
       top.insertBefore(add, closedRow);
@@ -348,12 +363,12 @@ export function createSidebarRenderer(root: HTMLElement): {
   };
   const focusInside = (): boolean => root.contains(document.activeElement);
   const paintRail = (): void => {
-    root.classList.toggle('is-rail', rail);
+    root.classList.toggle('is-rail', ICON_STRIP && rail);
     root.classList.toggle('is-right', sideRight);
     const narrow = root.clientWidth > 0 && root.clientWidth <= COLLAPSED_MAX_PX;
     root.classList.toggle('is-collapsed', narrow);
-    root.classList.toggle('is-open', rail && root.clientWidth > OPEN_MIN_PX);
-    const text = rail ? 'Pin sidebar' : 'Unpin sidebar';
+    root.classList.toggle('is-open', ICON_STRIP && rail && root.clientWidth > OPEN_MIN_PX);
+    const text = rail ? 'Keep the sidebar open' : 'Hide the sidebar until the pointer reaches the edge';
     if (collapse.getAttribute('aria-label') !== text) {
       collapse.setAttribute('aria-label', text);
       setTip(collapse, text);
@@ -372,13 +387,13 @@ export function createSidebarRenderer(root: HTMLElement): {
     }
   };
   const setHoverWant = (want: boolean, immediate: boolean): void => {
-    if (!rail) return;
+    if (!ICON_STRIP || !rail) return;
     if (hoverWant !== want) hoverDue = null;
     hoverWant = want;
     emitHover(performance.now(), immediate);
   };
   const releaseIfLeft = (inside: boolean): void => {
-    if (!rail || drag?.active || focusInside() || inside) return;
+    if (!ICON_STRIP || !rail || drag?.active || focusInside() || inside) return;
     setHoverWant(false, false);
   };
   new ResizeObserver(paintRail).observe(root);
@@ -417,7 +432,11 @@ export function createSidebarRenderer(root: HTMLElement): {
     }
   }).observe(root, { attributes: true, attributeFilter: ['class'] });
 
-  const rowsOf = (): HTMLElement[] => Array.from(list.querySelectorAll<HTMLElement>('.side-tab:not(.leaving), .side-group'));
+  // --- zen sidebar --- the pinned grid sits above the space header, outside the list: tiles first.
+  const rowsOf = (): HTMLElement[] => [
+    ...Array.from(pinGrid.querySelectorAll<HTMLElement>('.side-tab:not(.leaving)')),
+    ...Array.from(list.querySelectorAll<HTMLElement>('.side-tab:not(.leaving), .side-group')),
+  ];
   const tabRowsOf = (): HTMLElement[] => Array.from(list.querySelectorAll<HTMLElement>('.side-tab:not(.leaving):not(.pinned)'));
   const pinTilesOf = (): HTMLElement[] => Array.from(pinGrid.querySelectorAll<HTMLElement>('.side-tab:not(.leaving)'));
 
@@ -517,13 +536,12 @@ export function createSidebarRenderer(root: HTMLElement): {
         else rows.push(node.root);
       }
     });
-    if (pinned.length > 0) {
-      place(pinGrid, pinned);
-      rows.unshift(pinGrid);
-      if (rows.length > 1 && pinnedSeparator) rows.splice(1, 0, separator); // tabs_pinned_separator
-    }
+    // --- zen sidebar --- the pinned tabs are a grid of tiles at the very top, above the space header.
+    if (pinned.length > 0) place(pinGrid, pinned);
+    const lead: HTMLElement[] = pinned.length > 0 ? [pinGrid, ...(pinnedSeparator ? [separator] : [])] : []; // tabs_pinned_separator
     for (const key of groups.keys()) if (!keys.has(key)) groups.delete(key);
-    if (rows.length === 0) rows.push(empty);
+    if (rows.length === 0 && pinned.length === 0) rows.push(empty);
+    clear.hidden = !msg.items.some((item) => !item.pinned);
 
     // Rows that are about to leave the list fade out in place for 83ms instead of vanishing.
     const kept = new Set<Node>(rows);
@@ -553,9 +571,9 @@ export function createSidebarRenderer(root: HTMLElement): {
     const movedRow = refocusRow !== 0 ? tabs.get(refocusRow)?.root : undefined;
     refocusRow = 0;
     const heirRow = (heir !== 0 ? tabs.get(heir)?.root : undefined) ?? movedRow;
-    const focused = heirRow ?? (list.contains(document.activeElement) ? (document.activeElement as HTMLElement).closest<HTMLElement>('.side-tab, .side-group') : null);
+    const focused = heirRow ?? (list.contains(document.activeElement) || pinGrid.contains(document.activeElement) ? (document.activeElement as HTMLElement).closest<HTMLElement>('.side-tab, .side-group') : null);
     place(list, rows);
-    place(root, [top, list]);
+    place(root, [...lead, top, list]);
     placeNewTab();
     const activeRow = tabs.get(msg.active)?.root;
     const all = rowsOf();
@@ -680,6 +698,27 @@ export function createSidebarRenderer(root: HTMLElement): {
       if (!ghosted) current.node.root.style.transform = `translate(${dx}px, ${dy}px)`;
       return;
     }
+    // --- zen sidebar --- across the grid's edge the tab will pin (a row) or unpin (a tile): the
+    // others close the gap and the grid lights up as the target.
+    const pinBox = pinGrid.isConnected ? pinGrid.getBoundingClientRect() : null;
+    const firstRow = tabRowsOf().find((row) => row !== current.node.root);
+    const flip = pinFlipIntent(current.tiles !== null, current.lastY, pinBox ? pinBox.bottom : null, firstRow ? firstRow.getBoundingClientRect().top : null);
+    if (flip !== current.pinFlip) {
+      current.pinFlip = flip;
+      root.classList.toggle('pin-drop', flip && current.tiles === null);
+      root.classList.toggle('unpin-drop', flip && current.tiles !== null);
+    }
+    if (flip) {
+      current.destination = current.from;
+      const last = current.order.length - 1;
+      current.order.forEach((tab, index) => {
+        if (index === current.from) return;
+        if (current.tiles !== null) moveNode(tab, ...tileShift(current.tiles, index, current.from, last));
+        else moveNode(tab, 0, verticalSlotShift(current.centers, index, current.from, last));
+      });
+      if (!ghosted) current.node.root.style.transform = `translate(${dx}px, ${dy}px)`;
+      return;
+    }
     if (current.tiles !== null) {
       const tiles = current.tiles;
       const home = tiles[current.from] ?? [0, 0];
@@ -744,6 +783,7 @@ export function createSidebarRenderer(root: HTMLElement): {
     current.node.root.classList.remove('dragging');
     current.node.root.style.transform = '';
     list.classList.remove('is-dragging');
+    root.classList.remove('pin-drop', 'unpin-drop'); // --- zen sidebar ---
     for (const node of current.order) {
       node.shift = 0;
       node.root.style.transform = '';
@@ -758,7 +798,10 @@ export function createSidebarRenderer(root: HTMLElement): {
       root.classList.remove('split-out');
       sendSplit({ v: 1, t: 'split', a: commit ? 'drop' : 'end', id: current.node.item.id });
     } else // --- end split view ---
-    if (commit && current.destination !== current.from) {
+    if (commit && current.pinFlip) {
+      // --- zen sidebar --- dropped across the grid's edge: pin the row, or unpin the tile.
+      send({ v: 1, t: 'tab', a: 'pin', id: current.node.item.id });
+    } else if (commit && current.destination !== current.from) {
       const others = current.order.filter((node) => node !== current.node).map((node) => node.item.id);
       const before = current.tiles !== null
         ? pinnedBeforeId(others, current.destination, Number(tabRowsOf()[0]?.dataset.id ?? 0))
@@ -793,6 +836,11 @@ export function createSidebarRenderer(root: HTMLElement): {
     }
     if (event.target.closest('.side-collapse')) {
       sendSide('collapse');
+      return;
+    }
+    // --- zen sidebar --- Clear: every unpinned tab of the space, one close each.
+    if (event.target.closest('.side-clear')) {
+      for (const item of latest?.items ?? []) if (!item.pinned) send({ v: 1, t: 'tab', a: 'close', id: item.id });
       return;
     }
     // --- tab options ---
@@ -865,7 +913,7 @@ export function createSidebarRenderer(root: HTMLElement): {
     drag = {
       pointerId: event.pointerId, startX: event.clientX, startY: event.clientY, node, order, centers, tiles, from, active: false, destination: from,
       pointerType: event.pointerType, homeLeft: own?.left ?? 0, size: [own?.width ?? 0, own?.height ?? 0], phase: 'attached', ghost: null,
-      lastX: event.clientX, lastY: event.clientY,
+      lastX: event.clientX, lastY: event.clientY, pinFlip: false,
     };
     try { node.root.setPointerCapture(event.pointerId); } catch { /* window listeners still end the drag */ }
   });

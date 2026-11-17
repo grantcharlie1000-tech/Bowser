@@ -18,8 +18,9 @@ Behind More options: **Bars to hide** (`auto_hide_bars`: tabs, address, bookmark
   hook, no page script. While a reveal is pending or bars are shown a 50 ms tick checks the pointer; otherwise no timer runs.
 - Bars stay while the address bar has focus, a menu or popup is open, a tab or split divider is dragged, or the window is behind.
   Ctrl+L, Ctrl+T and the other address-bar focus paths reveal the bars first.
-- Horizontal layouts: the tab row and toolbar share the top edge, so choosing either hides both. Vertical: tabs = the sidebar
-  (left edge), address bar = the toolbar (top edge). The side panel, when chosen, opens over the page instead of shrinking it.
+- Horizontal layouts: the tab row and toolbar share the top edge, so choosing either hides both. Vertical: the toolbar sits
+  in the sidebar column (docs/design/zen-sidebar.md), so tabs or address bar hide the whole column from its edge. An unpinned
+  sidebar is always hidden this way (compact mode), with or without the master switch. The side panel, when chosen, opens over the page instead of shrinking it.
   The bookmarks bar rides with the top chrome, or has its own edge strip when the top chrome stays.
 - Not built (by decision): the status bar button and status bar hiding (T6 adds the bar; add a bit to `Bars` and a row to
   `BAR_TABLE`); mouse gestures (cancelled).

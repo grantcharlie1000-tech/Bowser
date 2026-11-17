@@ -697,6 +697,102 @@ test('tabs with marks show them in the strip and a reload countdown ticks once a
   assert.equal(intervals.size, 0, 'the timer stops with the last countdown');
 });
 
+// ---- tab islands: a bar, the island's tabs, and a closing bar while folded around the tab in use ----
+
+test('a tab island is its bar and its tabs; folded it keeps the tab in use between two bars', () => {
+  const lead = (collapsed) => ({ gname: 'Docs', gcol: 2, gcollapsed: collapsed, gsize: 3 });
+  const island = (collapsed, active) => tabsMsg([item(1), item(2, { g: 9, gl: true, ...lead(collapsed) }), item(3, { g: 9 }), item(4, { g: 9 }), item(5)], active);
+  const shown = (shell) => shell.children.filter((c) => c.classList.contains('tab') && !c.hidden).map((c) => c.dataset.id);
+  deliver(opts({ stackRow: 'off' }));
+  deliver(island(false, 3));
+  const shell = stripRoot.querySelector('.group');
+  const ball = shell.querySelector('.ball');
+  const cap = shell.querySelector('.cap');
+  assert.deepEqual(shell.children.map((c) => c.className.split(' ')[0]), ['ball', 'tab', 'tab', 'tab', 'cap'], 'bar, tabs in order, closing bar');
+  assert.ok(ball.querySelector('.bar'), 'the handle is a bar');
+  assert.equal(ball.textContent, '', 'and shows no name');
+  assert.equal(ball.getAttribute('aria-label'), 'Docs');
+  assert.equal(ball.getAttribute('aria-expanded'), 'true');
+  assert.equal(shell.classList.contains('collapsed'), false);
+  assert.deepEqual(shown(shell), ['2', '3', '4']);
+  // A click on the bar asks Rust to fold the island; so does a click on the closing bar.
+  sent.length = 0;
+  ball.click();
+  cap.click();
+  assert.deepEqual(sent, [{ v: 1, t: 'group', a: 'toggle', key: 9 }, { v: 1, t: 'group', a: 'toggle', key: 9 }]);
+  // Folded around the tab in use: that tab alone, the closing bar after it.
+  deliver(island(true, 3));
+  assert.equal(shell.classList.contains('collapsed'), true);
+  assert.equal(ball.getAttribute('aria-expanded'), 'false');
+  assert.deepEqual(shown(shell), ['3']);
+  assert.equal(shell.children.at(-1), cap);
+  assert.equal(shell.style.getPropertyValue('--gn'), '1');
+  // The closing mark is a sliver per tab folded behind the shown one, two at most.
+  assert.equal(cap.querySelectorAll('.sliver').length, 2);
+  assert.equal(shell.dataset.more, '2', 'two tabs are folded behind it');
+  deliver(tabsMsg([item(1), item(2, { g: 9, gl: true, ...lead(true), gsize: 2 }), item(3, { g: 9 }), item(5)], 3));
+  assert.equal(shell.dataset.more, '1', 'one hidden tab, one sliver');
+  deliver(tabsMsg([item(1), item(3, { g: 9, gl: true, ...lead(true), gsize: 1 }), item(5)], 3));
+  assert.equal(shell.dataset.more, '0', 'nothing is folded behind a lone tab');
+  // Folded away (the tab in use is elsewhere): no tab is shown, the handle is the whole island.
+  deliver(island(true, 5));
+  assert.deepEqual(shown(shell), []);
+  assert.equal(shell.style.getPropertyValue('--gn'), '0');
+  deliver(tabsMsg([item(1, { pinned: true }), item(2), item(3)], 2));
+});
+
+test('tabs.css draws the island as one box: a wash when open, the selected tab’s surface when folded, a pill when folded away', () => {
+  const css = readFileSync(new URL('../src/styles/tabs.css', import.meta.url), 'utf8');
+  const folded = '\\.strip \\.group\\.collapsed:has\\(\\.tab:not\\(\\[hidden\\]\\)\\)';
+  assert.match(css, /\.strip \.group \{[^}]*--gb: 6px;[^}]*--gi: 3px;[^}]*--gp: 2px;/, 'the bar is 6px thick and sits 3px inside the box; the box pads its tabs by 2px');
+  assert.match(css, /\.strip \.ball \{[^}]*width: calc\(var\(--gi\) \+ var\(--gb\)\);/);
+  assert.match(css, /\.strip \.ball \.bar \{[^}]*width: var\(--gb\);[^}]*border-radius: var\(--bw-r-pill\);[^}]*background: var\(--gc/);
+  // Open: one wash behind the bar and all the tabs. Its corners wrap the bar (the bar's radius plus
+  // the inset); its tabs are inset by the padding with the box's radius less it, so all are concentric.
+  assert.match(css, /--gr: calc\(var\(--gb\) \/ 2 \+ var\(--gi\)\);/);
+  assert.match(css, /\.strip \.group::before \{[^}]*inset: 0;[^}]*border-radius: var\(--gr\);/);
+  assert.match(css, /\.strip \.group:not\(\.collapsed\) \.tab \{\s*height: calc\(var\(--bw-tab-h\) - 2 \* var\(--gp\)\);\s*border-radius: calc\(var\(--gr\) - var\(--gp\)\);/);
+  assert.match(css, new RegExp(`${folded}::before \\{ content: none; \\}`));
+  assert.match(css, /\.strip \.group\.collapsed \.tab:not\(\[hidden\]\) \{ border-radius: var\(--gr\); \}/, 'folded, the tab is the box and takes its corners');
+  // Folded around the tab in use: no gaps, the bar and the closing mark drawn over the tab's ends.
+  assert.match(css, /\.strip \.group \.cap \{ display: none; \}/);
+  assert.match(css, new RegExp(`${folded} \\{\\s*gap: 0;`));
+  assert.match(css, new RegExp(`${folded} \\.ball \\{[^}]*margin-inline-end: calc\\(-1 \\* \\(var\\(--gi\\) \\+ var\\(--gb\\)\\)\\);`));
+  assert.match(css, new RegExp(`${folded} \\.cap \\{[^}]*display: flex;[^}]*gap: 2px;[^}]*margin-inline: calc\\(-1 \\* \\(var\\(--ci\\) \\+ var\\(--cw\\)\\)\\) var\\(--ci\\);`));
+  assert.match(css, /\.strip \.group\.collapsed \.tab:not\(\[hidden\]\) \{\s*padding-inline:/, 'the tab makes room for them');
+  // The closing mark is grey slivers (never the island's colour): two, one, or none.
+  const sliver = /\.strip \.group \.sliver \{([^}]*)\}/.exec(css)?.[1] ?? '';
+  assert.match(sliver, /width: 3px;[^]*height: calc\(var\(--bw-tab-h\) - 2 \* var\(--gi\)\);[^]*border-radius: var\(--bw-r-pill\);[^]*background: color-mix\(in srgb, var\(--bw-text\) 40%, transparent\);/);
+  assert.doesNotMatch(sliver, /--gc/);
+  assert.match(css, /\.strip \.group\[data-more="1"\] \.sliver \+ \.sliver \{ display: none; \}/);
+  assert.match(css, /\.strip \.group\[data-more="0"\] \.cap \{ display: none; \}/);
+  // Inside that box the tab in use hides its close button until it is hovered or focused.
+  assert.match(css, /\.strip:not\(\.close-always\) \.group\.collapsed \.tab\.active:not\(:hover\):not\(:focus-within\) \.close \{ opacity: 0; \}/);
+  // Folded away: the bar keeps exactly its size, in the grey box inset the same on every side.
+  assert.doesNotMatch(css, /calc\(var\(--gb\) \* 2\)/);
+  assert.match(css, /\.strip \.group:not\(:has\(\.tab:not\(\[hidden\]\)\)\) \{[^}]*padding: 0 var\(--gi\) 0 0;/);
+});
+
+test('the island menu opens from either bar: the closing bar is a hover target like the handle', () => {
+  const src = readFileSync(new URL('../src/tooltip.ts', import.meta.url), 'utf8');
+  assert.match(src, /closest<HTMLElement>\('\.ball\[data-key\], \.cap\[data-key\], \.side-group-ball\[data-key\]'\);\s*if \(ball\) return \{ kind: 'ball'/);
+  deliver(tabsMsg([item(1), item(2, { g: 9, gl: true, gname: 'Docs', gcol: 2, gcollapsed: true, gsize: 2 }), item(3, { g: 9 })], 2));
+  assert.equal(stripRoot.querySelector('.cap').dataset.key, '9', 'the closing bar carries its island’s key');
+  deliver(tabsMsg([item(1, { pinned: true }), item(2), item(3)], 2));
+});
+
+test('hover.css draws the island menu: a rectangular accent-outlined field, square swatches, a filled close button', () => {
+  const css = readFileSync(new URL('../src/styles/hover.css', import.meta.url), 'utf8');
+  const rule = (sel) => new RegExp(`\\n${sel.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} \\{([^}]*)\\}`).exec(css)?.[1] ?? '';
+  assert.match(css, /\.bw-island-menu \{[^}]*border-radius: 12px;/);
+  assert.match(rule('.bw-island-field'), /height: 36px;[^]*border-radius: var\(--bw-r-island\);[^]*box-shadow: inset 0 0 0 1\.5px var\(--bw-focus\);/);
+  assert.match(rule('.bw-island-swatch'), /width: 24px;\s*height: 24px;[^]*border-radius: var\(--bw-r-row\);/);
+  assert.match(css, /\.bw-island-swatch\.is-selected:hover \{\s*box-shadow: inset 0 0 0 2px var\(--bw-text\), inset 0 0 0 4px var\(--bw-window-opaque\);/);
+  const close = rule('.bw-island-close');
+  assert.match(close, /height: 34px;[^]*border-radius: var\(--bw-r-island\);[^]*text-align: center;/);
+  assert.doesNotMatch(close, /background: transparent/, 'the close action is a filled button');
+});
+
 // ---- two-level stacks (T10b): the second row ----
 
 test('two-level stacks: the tab row shows the stack as its open ball and the second row shows its tabs', () => {

@@ -162,3 +162,20 @@ export function railHoverAdvance(
 }
 
 export type { Entry };
+
+// --- zen sidebar --- dragging between the pinned grid and the list pins or unpins the tab.
+/** Pixels past the pinned grid's bottom edge a tile must be dragged before it leaves the grid. */
+export const UNPIN_MARGIN_PX = 12;
+/** Pixels above the zone's edge a row must reach before it joins the pinned grid. */
+export const PIN_MARGIN_PX = 4;
+
+/**
+ * Whether releasing the held tab at client `y` flips its pinned state. A tile (`tile`) unpins once it
+ * is dragged below the pinned grid (`pinBottom`). A list row pins once it is dragged above where the
+ * grid ends, or, with no pinned tabs yet, above the first list row (`firstRowTop`).
+ */
+export function pinFlipIntent(tile: boolean, y: number, pinBottom: number | null, firstRowTop: number | null): boolean {
+  if (tile) return pinBottom !== null && y > pinBottom + UNPIN_MARGIN_PX;
+  const edge = pinBottom ?? firstRowTop;
+  return edge !== null && y < edge - PIN_MARGIN_PX;
+}

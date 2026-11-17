@@ -365,12 +365,10 @@ pub fn hit_test(
 mod tests {
     use super::*;
     #[test]
-    fn sidebar_in_frame_sits_right_of_the_left_rail() {
+    fn sidebar_in_frame_starts_at_the_window_edge() {
         for dpi in [96, 144] {
             let sidebar = SidebarLayout::compute_in_frame(900, 700, dpi, 260, false);
-            let rail = layout::left_rail(700, dpi);
-            assert_eq!(sidebar.sidebar.left, layout::left_rail_inset(dpi));
-            assert!(sidebar.sidebar.left >= rail.right, "dpi={dpi}");
+            assert_eq!(sidebar.sidebar.left, 0, "dpi={dpi}: no rail to the left of it");
             assert_eq!(sidebar.handle.right, sidebar.sidebar.right, "dpi={dpi}");
             assert_eq!(sidebar.viewport.left, sidebar.sidebar.right, "dpi={dpi}");
         }
