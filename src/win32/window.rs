@@ -1451,6 +1451,13 @@ impl WindowChrome {
     }
     /// Moves the HTML chrome over the toolbar region and hides it when there is none. Also tells
     /// the surface to leave the region to the page.
+    /// Clears the HTML omnibox's focus. `Some` when it had the keyboard, carrying the address the
+    /// user typed there (if any) for the native field that replaces it.
+    fn take_html_omnibox(&mut self) -> Option<Option<String>> {
+        let focused = std::mem::take(&mut self.html_omnibox_focused);
+        focused.then(|| (self.omnibox_edited && !self.edit_text.is_empty()).then(|| self.edit_text.clone()))
+    }
+
     fn sync_html_bounds(&mut self) {
         let region = self.html_region();
         self.surface.set_html_toolbar(region.is_some());
@@ -9700,24 +9707,44 @@ pub(crate) fn recover_native_chrome(hwnd: HWND, app: &AppRef) {
     chrome_recovery::discard(hwnd, None);
     page_fullscreen(hwnd, app, false);
     let edit = with_chrome(hwnd, |s| {
+        let omnibox = s.take_html_omnibox();
         s.html_failed = [true; 3];
         s.html_toolbar_active = false;
         s.html_page_ready = false;
         s.html_tabs_page_ready = false;
         s.html_rail_page_ready = false;
-        s.html_omnibox_focused = false;
         s.html_env_waiting = false;
         s.sync_html_bounds();
         s.sync_html_tabs_bounds();
         s.sync_html_rail_bounds();
-        s.edit
+        (s.edit, omnibox)
     });
-    if let Some(edit) = edit.filter(|edit| !edit.is_invalid()) {
-        unsafe { let _ = ShowWindow(edit, SW_SHOW); }
+    if let Some((edit, _)) = edit.as_ref().filter(|(edit, _)| !edit.is_invalid()) {
+        unsafe { let _ = ShowWindow(*edit, SW_SHOW); }
     }
     repaint(hwnd);
     sync_recovery_buttons(hwnd, app);
     close_html_chrome(hwnd);
+    if let Some((edit, omnibox)) = edit { hand_keyboard_to_native_edit(hwnd, edit, omnibox); }
+}
+
+/// The HTML toolbar just closed (its own failure, or browser loss). Its omnibox may have held the
+/// keyboard and a typed address, and closing a focused controller leaves the keyboard nowhere.
+/// The native address field keeps the draft and takes the keyboard if the omnibox had it, or if
+/// focus is now nowhere in this (foreground) window; a live page or other control keeps focus.
+fn hand_keyboard_to_native_edit(hwnd: HWND, edit: HWND, omnibox: Option<Option<String>>) {
+    use windows::Win32::UI::Input::KeyboardAndMouse::{GetFocus, SetFocus};
+    if edit.is_invalid() || window_closing(hwnd) { return; }
+    unsafe {
+        let focus = GetFocus();
+        let lost = focus.is_invalid() || !windows::Win32::UI::WindowsAndMessaging::IsWindow(Some(focus)).as_bool();
+        if (omnibox.is_none() && !lost) || GetForegroundWindow() != hwnd { return; }
+        let _ = SetFocus(Some(edit));
+        if let Some(Some(draft)) = omnibox {
+            let _ = SetWindowTextW(edit, &windows::core::HSTRING::from(draft));
+            let _ = SendMessageW(edit, EM_SETSEL, Some(WPARAM(usize::MAX)), Some(LPARAM(-1)));
+        }
+    }
 }
 
 const RECOVERY_BUTTON_ID: usize = 0x6f10;
@@ -10122,14 +10149,14 @@ fn html_failed(hwnd: HWND) {
         s.html_deferred.clear();
     });
     chrome_recovery::discard(hwnd, Some(0));
-    let Some((host, edit)) = with_chrome(hwnd, |s| {
+    let Some((host, edit, omnibox)) = with_chrome(hwnd, |s| {
+        let omnibox = s.take_html_omnibox();
         s.html_toolbar_active = false;
         s.html_failed[0] = true;
         s.html_state_building[0] = false;
         s.html_page_ready = false;
-        s.html_omnibox_focused = false;
         s.sync_html_bounds();
-        (s.html.take(), s.edit)
+        (s.html.take(), s.edit, omnibox)
     }) else {
         return;
     };
@@ -10142,6 +10169,7 @@ fn html_failed(hwnd: HWND) {
             let _ = ShowWindow(edit, SW_SHOW);
         }
     }
+    hand_keyboard_to_native_edit(hwnd, edit, omnibox);
     // The downloads page keeps following the list after the fallback, even when the toolbar never
     // became ready (initial_state installs the observer otherwise).
     if let Some(app) = app_of(hwnd) {

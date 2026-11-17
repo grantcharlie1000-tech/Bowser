@@ -723,3 +723,26 @@ fn recovery_presentation_unresponsive_page_gets_a_native_wait_reload_bar_that_ke
     assert_ne!(unsafe { GetFocus() }, prompt.reload, "focus never stays on a hidden button");
     unsafe { let _ = SetFocus(None); }
 }
+
+#[test]
+fn recovery_presentation_html_omnibox_draft_and_keyboard_pass_to_the_native_field() {
+    let _profile = crate::profile::TestProfileGuard::isolated();
+    let f = Fixture::new();
+    with_chrome(f.hwnd, |s| {
+        assert_eq!(s.take_html_omnibox(), None, "an unfocused omnibox hands nothing over");
+        s.html_omnibox_focused = true;
+        assert_eq!(s.take_html_omnibox(), Some(None), "focus without typing keeps the shown address");
+        s.html_omnibox_focused = true;
+        s.omnibox_edited = true;
+        s.edit_text = "half typed address".into();
+    });
+    recover_native_chrome(f.hwnd, &f.app);
+    let edit = f.app.borrow().edit;
+    assert!(!with_chrome(f.hwnd, |s| s.html_omnibox_focused).unwrap());
+    assert_ne!(unsafe { GetWindowLongPtrW(edit, GWL_STYLE) } as u32 & WS_VISIBLE.0, 0);
+    // The never-shown fixture is normally not the foreground window, and the draft moves only with
+    // the keyboard, so it is checked only where the keyboard could move.
+    if unsafe { GetForegroundWindow() } == f.hwnd {
+        assert_eq!(read_edit(edit), "half typed address");
+    }
+}
