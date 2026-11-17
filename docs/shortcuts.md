@@ -16,7 +16,7 @@ editing chords stay with the field: Ctrl+A/C/X/Z, Ctrl+V (not Ctrl+Shift+V), Ctr
 Ctrl/Shift with Left/Right/Home/End/Backspace/Delete (except Ctrl+Shift+Delete).
 
 Ctrl+Shift+V is not a Bowser chord: the tab layout is chosen only in Settings > Appearance
-(`bowser://settings/appearance`). Settings has no shortcut of its own (Ctrl+, is Passwords and
+(`bowser://settings/appearance`), and in the address and search fields it pastes like Ctrl+V. Settings has no shortcut of its own (Ctrl+, is Passwords and
 passkeys); it opens from the main menu, the command palette or by typing `bowser://settings`. On the
 settings page, Ctrl+F or `/` moves to its search box.
 
@@ -25,6 +25,8 @@ settings page, Ctrl+F or `/` moves to its search box.
 | Ctrl+T | New tab, focus address | Bound |
 | Ctrl+W, Ctrl+F4 | Close tab | Bound |
 | Ctrl+Shift+T | Reopen the last closed tab | Bound |
+| Ctrl+Shift+PageUp / PageDown | Move the focused tab left / right (strip) or up / down (sidebar) | Handled by the tabs page while a tab has keyboard focus |
+| Ctrl+Shift+Up / Down | Move the focused sidebar row or pinned tile | Handled by the sidebar while a row has focus |
 | Ctrl+N | New window | Bound |
 | F12, Ctrl+Shift+I | Developer tools | Bound |
 | Ctrl+F1 | Shortcut cheat sheet | Bound (registry only; not in `command_for`) |

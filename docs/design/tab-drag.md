@@ -157,7 +157,10 @@ A polite live region (outside the reconciled strip DOM) announces each moment:
 - "X moved to position N of M."
 - "Move cancelled."
 
-Keyboard reordering (Ctrl+Shift+Left/Right) is unchanged.
+Keyboard reordering: Ctrl+Shift+PageUp/PageDown on a focused strip tab, and Ctrl+Shift+Up/Down or
+PageUp/PageDown on a focused sidebar row or pinned tile; each sends the same `tabmove` a drag does and
+focus follows the moved tab. (Ctrl+Shift+Left/Right is the split-pane focus chord, which the chrome
+claims before the tabs page sees it, so it does not reorder.)
 
 ## Protocol
 
