@@ -26,7 +26,7 @@ export function startDialog(root: HTMLElement): void {
   // --- end popup surfaces ---
   onInbound(message => {
     if (message.t === 'state') applyTheme(message.theme, message.solid, message.dark, message.fontScale, message.uiFont, message.density, message.compactMenus, message.look);
-    else if (message.t === 'snap' && (message.p === token || (token === 'address' && message.p === 'addressdlg'))) receive?.(message);
+    else if (message.t === 'snap' && (message.p === token || (token === 'address' && message.p === 'addressdlg') || (token === 'privacy' && message.p === 'protection'))) receive?.(message);
   });
   send({ v: 1, t: 'ready' });
 }

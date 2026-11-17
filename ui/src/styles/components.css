@@ -497,6 +497,12 @@
 
 /* ---- Buttons: 28px, 4px radius. Default is secondary; `.is-primary` is accent-filled,
    `.is-subtle` is transparent until hovered. ---- */
+/* The shared buttons set a display, which beats the browser's [hidden] rule: keep `hidden` meaning hidden
+   (the Delete browsing data Cancel, typed-history and QR buttons showed while hidden). */
+:is(.bw-button, .bw-icon-btn, .bw-select-button, .bw-toggle)[hidden] {
+  display: none;
+}
+
 .bw-button {
   display: inline-flex;
   align-items: center;

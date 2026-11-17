@@ -144,7 +144,8 @@ export function syncTab(node: SidebarTabNode, item: TabItem, active: boolean, fa
     node.root.setAttribute('aria-label', privateTabName(marked));
     node.root.dataset.private = 'true';
   } else {
-    if (marked !== label) node.root.setAttribute('aria-label', marked);
+    // A pinned tile draws no title, so it always carries its name; a row's visible title names it.
+    if (marked !== label || item.pinned) node.root.setAttribute('aria-label', marked);
     else node.root.removeAttribute('aria-label');
     delete node.root.dataset.private;
   }

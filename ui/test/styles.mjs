@@ -366,3 +366,10 @@ test('status colours never borrow the group palette (2.84:1 on a dark card): war
     }
   }
 });
+
+test('shared buttons honour [hidden]: their display never outranks it', () => {
+  const components = readFileSync(join(stylesDir, 'components.css'), 'utf8');
+  const rule = /:is\(([^)]*)\)\[hidden\]\s*\{\s*display:\s*none;\s*\}/.exec(components);
+  assert.ok(rule, 'components.css has the [hidden] rule for the shared buttons');
+  for (const name of ['.bw-button', '.bw-icon-btn', '.bw-select-button', '.bw-toggle']) assert.ok(rule[1].includes(name), name);
+});

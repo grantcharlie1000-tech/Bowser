@@ -89,7 +89,9 @@ export function createSiteInfoView(root: HTMLElement): PageView {
   let message: SiteInfoMessage | null = null;
   let closed = true;
   let lastSize = '';
-  const page = el('div', 'popup-page bw-siteinfo');
+  // Rust clamps the popup to the work area; past that the page scrolls (bw-scroll) instead of hiding
+  // its last rows, and the reported height stays the content's own (scrollHeight, not the cap).
+  const page = el('div', 'popup-page bw-siteinfo bw-scroll');
   page.setAttribute('role', 'dialog');
   page.tabIndex = -1;
 
@@ -114,7 +116,7 @@ export function createSiteInfoView(root: HTMLElement): PageView {
     const tok = message.tok;
     requestAnimationFrame(() => {
       if (!message || message.tok !== tok || closed) return;
-      const height = Math.max(1, page.offsetHeight);
+      const height = Math.max(1, page.scrollHeight + page.offsetHeight - page.clientHeight);
       const key = `${tok}:${height}`;
       if (key === lastSize) return;
       lastSize = key;

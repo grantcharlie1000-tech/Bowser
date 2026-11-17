@@ -37,18 +37,14 @@ const skip = !chromium ? 'Playwright Chromium is not available' : !existsSync(jo
  * name and the finding's text (selector, role, property ...). Remove an entry once its fix lands.
  */
 const KNOWN = [
-  { id: 'F-1', check: 'hidden', scenario: /^toolbar/, match: /\.tb-(hist|qr)\b/, note: 'typed-history and QR buttons render while hidden (.bw-icon-btn display beats [hidden]; address.css has no .tb-hist/.tb-qr[hidden] rule)' },
-  { id: 'F-1', check: 'targets', scenario: /^toolbar-(empty|focused)/, match: /\.tb-(hist|qr)\b/, note: 'follows from F-1: buttons that should be hidden are measured' },
-  { id: 'F-2', check: 'names', scenario: /^tabs-v-populated$/, match: /side-pinned.*side-tab/, note: 'pinned tile in the vertical sidebar has no accessible name (sidebar.ts removes aria-label; .side-title is not rendered on a tile)' },
-  { id: 'F-3', check: 'focus', scenario: /^(history|downloads)-page/, match: /(hp|dp)-toast-undo/, note: 'toast Undo button is a Tab stop while the toast is invisible (not hidden until the first toast)' },
-  { id: 'F-4', check: 'clip', scenario: /^siteinfo/, match: /bw-siteinfo/, note: 'site information is taller than a short work area and nothing scrolls: bottom rows unreachable once Rust clamps the popup' },
   { id: 'F-6', check: 'contrast', scenario: /^(panel-(history|bookmarks)|bookmark-bar)$/, match: /pn-favicon/, note: 'letter favicon tile in light scheme: white letter on a pale tile (~1.75:1)' },
   { id: 'F-7', check: 'contrast', scenario: /^store-/, match: /bs-nav > button/, note: 'store side navigation, selected item, light scheme 3.88:1' },
   { id: 'F-8', check: 'targets', scenario: /^toolbar/, match: /\.pill > button\.bw-icon-btn\.tb-(hist|qr|reader|translate|split)\b/, note: 'adjacent 20x20 pill buttons, under 24x24 without the spacing exception (WCAG 2.5.8)' },
   { id: 'F-9', check: 'focus', scenario: /^toolbar/, match: /omni-search-input|input\.omni\b/, note: 'address and search fields: only the caret marks keyboard focus (the pill lift is shared with every pill control)' },
   { id: 'F-10', check: 'clip', scenario: /^palette-populated$/, match: /bw-palette-row/, note: 'palette rows past a short work area are unreachable (no scroller inside the clamped popup)' },
   { id: 'F-11', check: 'targets', scenario: /^(settings-|store-)/, match: /sp-ext-toggle-details/, note: '"What it declares" is 20 px tall next to the row actions' },
-  { id: 'F-13', check: 'state', scenario: /^dialog-privacy/, match: /Blocking level|Website appearance|Private tab theme/, note: 'privacy dashboard window drops the protection snapshot (dialog.ts passes only p === token): blocking level, appearance and private theme show no value' },
+  { id: 'F-16', check: 'targets', scenario: /^siteinfo/, match: /bw-siteinfo-row > button\.bw-toggle/, note: 'site information: the 40x20 blocker toggle sits next to the blocking-level radios, under 24x24 without the spacing exception (WCAG 2.5.8)' },
+  { id: 'F-17', check: 'state', scenario: /^dialog-privacy$/, match: /Blocking level|Website appearance|Private tab theme/, note: 'fixture gap, not a defect: this scenario sends only the privacy snapshot, so the protection rows show their loading state (Rust sends both; dialog-privacy-protection covers the filled window)' },
   { id: 'F-14', check: 'state', scenario: /^(settings-(?!guest)|store-)/, match: /"Presets"/, note: 'layout Presets radiogroup has nothing checked for the Rust fixture layout (matches no preset and Saved is empty)' },
   { id: 'F-12', check: 'contrast', scenario: /^split-picker$/, match: /bw-row-meta/, note: 'split picker host text 4.09:1 in light over the window material (assumed backdrop)' },
 ];
