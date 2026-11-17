@@ -305,3 +305,40 @@ test('a background tab update does not scroll the strip or sidebar back to the a
   assert.match(sidebar, /if \(revealNow !== revealed\) \{\s*revealed = revealNow;\s*reveal\(activeRow\);/);
   assert.match(sidebar, /clearSelection\(\) \{\s*if \(picked\.length > 0\) setPicked\(\[\]\);\s*revealed = '';/);
 });
+
+// Measured for real in headless Edge against the built dist/app.css (skips without Edge), like
+// test/chrome-styles.mjs: a crowded row must not squeeze a group under its own members.
+test('a crowded strip never squeezes a group under its own members: the tabs after it do not overlap it', async (t) => {
+  const { spawnSync } = await import('node:child_process');
+  const { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { pathToFileURL } = await import('node:url');
+  const edge = [process.env.BOWSER_TEST_EDGE, 'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe', 'C:/Program Files/Microsoft/Edge/Application/msedge.exe']
+    .find((path) => path && existsSync(path));
+  if (!edge) { t.skip('Microsoft Edge is not installed'); return; }
+  const tab = (id) => `<div class="tab" id="${id}"><span class="ico"></span><span class="title">A tab</span></div>`;
+  const group = `<div class="group" id="g"><button class="ball"><span class="gname">Research</span><span class="disclose"></span></button>${tab('m1')}${tab('m2')}</div>`;
+  const css = pathToFileURL(join(here, '..', 'dist', 'app.css')).href;
+  const script = `window.addEventListener('load', function () {
+    var box = function (s) { return document.querySelector(s).getBoundingClientRect(); }, app = document.getElementById('app');
+    var out = { groupRight: box('#g').right, lastMember: box('#m2').right, next: box('#b').left, scrolls: app.scrollWidth > app.clientWidth };
+    var m = document.createElement('meta'); m.name = 'st-out'; m.content = encodeURIComponent(JSON.stringify(out)); document.head.appendChild(m);
+  });`;
+  const dir = mkdtempSync(join(tmpdir(), 'bowser-strip-test-'));
+  try {
+    const file = join(dir, 'page.html');
+    writeFileSync(file, `<!doctype html><html><head><meta charset="utf-8"><link rel="stylesheet" href="${css}"></head><body><div style="width:300px;height:30px"><div id="app" class="strip">${tab('a')}${group}${tab('b')}${tab('c')}${tab('d')}</div></div><script>${script}</script></body></html>`);
+    mkdirSync(join(dir, 'profile'));
+    const result = spawnSync(edge, ['--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check', '--allow-file-access-from-files',
+      `--user-data-dir=${join(dir, 'profile')}`, '--window-size=1000,800', '--virtual-time-budget=3000', '--dump-dom', pathToFileURL(file).href],
+    { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, timeout: 120000 });
+    const match = /name="st-out" content="([^"]*)"/.exec(result.stdout ?? '');
+    assert.ok(match, `no report (exit ${result.status}) ${String(result.stderr).slice(0, 300)}`);
+    const r = JSON.parse(decodeURIComponent(match[1]));
+    assert.ok(r.groupRight >= r.lastMember - 0.5, `the group holds its members (${r.groupRight} vs ${r.lastMember})`);
+    assert.ok(r.next >= r.lastMember, `the next tab starts after the group's last member (${r.next} vs ${r.lastMember})`);
+    assert.equal(r.scrolls, true, 'the row scrolls instead, as for ungrouped tabs');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
