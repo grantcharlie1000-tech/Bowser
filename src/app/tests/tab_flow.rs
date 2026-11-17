@@ -776,6 +776,14 @@ fn sleeping_tabs_restored_after_a_restart_show_their_site_icon_without_loading()
     }
     assert_eq!(crate::favicon::load_favicon_bytes("icon.example").unwrap().as_deref(), Some(&b"icon-bytes"[..]));
     assert_eq!(crate::favicon::load_favicon_bytes("secret.example").unwrap(), None, "a private tab's icon never reaches disk");
+    // With history off no new site is recorded.
+    let profile = crate::profile::active().unwrap();
+    profile.set_history_enabled(false).unwrap();
+    page(&app, ids[1], "https://unrecorded.example/");
+    app.borrow_mut().tabs.iter_mut().find(|tab| tab.id == ids[1]).unwrap().private = false;
+    App::remember_tab_favicon(&app, ids[1]);
+    assert_eq!(crate::favicon::load_favicon_bytes("unrecorded.example").unwrap(), None, "history off: nothing stored");
+    profile.set_history_enabled(true).unwrap();
 
     // Second run: the session restores; only the active tab loads, yet the sleeping tab has its icon.
     let (app, shared) = fixture();
