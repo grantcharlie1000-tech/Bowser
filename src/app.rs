@@ -5583,6 +5583,7 @@ impl App {
         Self::sync_window_title(app);
         Self::submit_url(app, url, None);
         Self::load_eager_tabs(app); // --- tab options ---
+        if Self::restore_saved_favicons(app) > 0 { Self::post_tab_changed_kind(hwnd, app.borrow().tab_model.active(), false, false); } // --- tab options ---
     }
 
     /// Notes a tab-state change. Returns true when the caller should arm the one-shot save
@@ -7022,6 +7023,7 @@ impl App {
                     };
                     if found {
                         Self::post_tab_changed_kind(app.borrow().hwnd, tab_id, false, false);
+                        Self::remember_tab_favicon(&app, tab_id); // --- tab options --- restored sleeping tabs
                         Self::note_favicon_colour(&app, tab_id); // --- theme options ---
                     }
                 }

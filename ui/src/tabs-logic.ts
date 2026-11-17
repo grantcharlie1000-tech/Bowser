@@ -34,6 +34,16 @@ export function hiddenForTab(grouped: boolean, collapsed: boolean, active: boole
   return grouped && collapsed && !active;
 }
 
+/**
+ * What decides whether a render scrolls the active tab into view: its id and its place in the
+ * order. A render that changes neither (a background tab's title, favicon, load progress or audio)
+ * must leave the strip or sidebar where the user scrolled it; selecting or moving the active tab
+ * reveals it again.
+ */
+export function revealKey(items: readonly Pick<TabItem, 'id'>[], active: number): string {
+  return `${active}:${items.findIndex((item) => item.id === active)}`;
+}
+
 export function scrollDeltaForWheel(deltaX: number, deltaY: number, shiftKey: boolean): number {
   return shiftKey && deltaX === 0 ? deltaY : deltaX;
 }
