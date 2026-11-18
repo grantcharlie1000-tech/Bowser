@@ -200,7 +200,12 @@ window is clipped to the cards, and the page moves that clip every frame while a
 Once placed, Rust posts `{v:1,t:"room",tok,l,r}`: CSS pixels of work area past the parent card's left
 and right edges (0 to 4000). The page opens a child card on the right when it fits there, on the left
 when only the left has room. Also `{v:1,t:"pick",tok,id}` (`tok` and `id` unsigned u32), and
-`{v:1,t:"dismiss",tok}` (`tok` unsigned u32). Toolbar, tab-strip and rail hosts reject all panel,
+`{v:1,t:"dismiss",tok}` (`tok` unsigned u32). A `menu` message's profile card
+(`header:{name,caption,avatar,accent,id?,action?}`, the main menu's) is decoration unless it has `id`
+(unsigned u32): then it is the menu's first item (`role=menuitem`, reached by Up from the first row and
+by Home, hovered and picked like a row) and `pick` may name its id, which shares the id space of the
+rows (a clash refuses the menu). `action` (at most 128 characters) is the card's `aria-description`;
+the main menu sends `Open profile settings` and opens `bowser://settings/profile` on the pick. Toolbar, tab-strip and rail hosts reject all panel,
 dialog and popup command families before dispatch. `ready` is accepted by every host.
 
 Rust -> JS additions are `{v:1,t:"panelshow",p:"history"}` (a 1–24 character lower-case ASCII panel

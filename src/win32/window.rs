@@ -6885,8 +6885,9 @@ impl ProfileMenu {
     }
 }
 
-/// The main menu's card: this window's profile, read from its own `profile.txt` only.
-fn main_menu_profile_header() -> ProfileHeader {
+/// The main menu's card: this window's profile, read from its own `profile.txt` only. The card is
+/// the menu's first item: choosing it reports `id` (the main menu opens the profile settings).
+fn main_menu_profile_header(id: usize) -> ProfileHeader {
     let (profile, metadata) = match crate::profile::active() {
         Ok(profile) => {
             let metadata = crate::profile::ProfileMetadata::load(&profile);
@@ -6900,6 +6901,8 @@ fn main_menu_profile_header() -> ProfileHeader {
         accent: metadata.accent_colour(),
         profile,
         caption: "Current profile".to_owned(),
+        id: Some(id),
+        action: "Open profile settings",
     }
 }
 
@@ -7034,7 +7037,8 @@ fn show_profile_notice(hwnd: HWND, message: &str) {
 }
 
 // --- popup surfaces (lane PP) ---
-/// The rail's "Delete workspace" confirmation, in the same menu form as the main menu's.
+/// The rail's "Delete workspace" confirmation, with the same rows as the main menu's Workspaces >
+/// Delete current workspace submenu.
 fn confirm_rail_workspace_delete(hwnd: HWND, point: POINT, id: crate::workspaces::WorkspaceId, name: &str) {
     let confirm = Menu {
         header: None,
@@ -7104,7 +7108,10 @@ fn show_profile_menu(hwnd: HWND) {
 const WORKSPACE_SELECT_BASE: usize = 6100;
 const WORKSPACE_CREATE: usize = 6300;
 const WORKSPACE_RENAME: usize = 6301;
+/// The "Delete current workspace" submenu row, and its confirmation rows beside it.
 const WORKSPACE_DELETE: usize = 6302;
+const WORKSPACE_DELETE_CONFIRM: usize = 6303;
+const WORKSPACE_DELETE_KEEP: usize = 6304;
 
 fn workspace_menu_entries(app: &AppRef) -> Vec<Entry> {
     let workspaces = App::workspaces(app);
@@ -7143,11 +7150,18 @@ fn workspace_menu_entries(app: &AppRef) -> Vec<Entry> {
         Icon::Person,
     )
     .glyph("edit")));
-    entries.push(Entry::Item(
-        Item::new(WORKSPACE_DELETE, "Delete current workspace…", Icon::Close)
-            .glyph("trash")
-            .disabled_if(workspaces.workspace_count() == 1),
-    ));
+    // The confirmation cascades beside the row, so the menu it came from stays on screen.
+    let delete = Item::new(WORKSPACE_DELETE, "Delete current workspace…", Icon::Close).glyph("trash");
+    entries.push(Entry::Item(if workspaces.workspace_count() == 1 {
+        delete.disabled()
+    } else {
+        delete.submenu_with(vec![
+            Entry::SectionHeader(format!("Delete {} and close its tabs?", workspaces.active().name())),
+            Entry::SectionHeader("This cannot be undone".to_owned()),
+            Entry::Item(Item::new(WORKSPACE_DELETE_CONFIRM, "Delete workspace", Icon::Close).glyph("trash")),
+            Entry::Item(Item::new(WORKSPACE_DELETE_KEEP, "Keep workspace", Icon::Person).glyph("workspace")),
+        ])
+    }));
     entries
 }
 
@@ -7213,26 +7227,12 @@ fn run_workspace_action(
                 rail_activate_at(hwnd, app, side_panel::PanelId::Customize, Some(RailKey::Customize));
             }
         }
-        WORKSPACE_DELETE => {
-            let confirm = Menu {
-                header: None,
-                entries: vec![
-                    Entry::SectionHeader(format!("Delete {} and close its tabs?", active.name())),
-                    Entry::Item(Item::new(1, "Delete workspace", Icon::Close).glyph("trash")),
-                    Entry::Item(Item::new(2, "Keep workspace", Icon::Person).glyph("workspace")),
-                ],
-                footer: "This cannot be undone".to_owned(),
-            };
-            let point = screen_point(hwnd, main_menu_anchor(hwnd));
-            let target = active.id();
-            menu::show(hwnd, point, menu::Placement::AboveLeft, confirm, "workspace-delete", move |app, chosen| {
-                if chosen.is_some_and(|chosen| chosen.id == 1)
-                    && App::workspaces(app).all().iter().any(|workspace| workspace.id() == target)
-                    && let Err(error) = App::delete_workspace(app, target)
-                {
-                    show_profile_notice(hwnd, &format!("Workspace could not be deleted: {error:?}"));
-                }
-            });
+        // Confirmed in the submenu beside "Delete current workspace…"; the workspace is the one that
+        // was current when the menu opened (checked above).
+        WORKSPACE_DELETE_CONFIRM => {
+            if let Err(error) = App::delete_workspace(app, active.id()) {
+                show_profile_notice(hwnd, &format!("Workspace could not be deleted: {error:?}"));
+            }
         }
         _ => {}
     }
@@ -7252,8 +7252,9 @@ fn open_another_window(private: bool) {
     }
 }
 
-/// Main menu from the three-dot button: tabs, profiles, extensions, passwords, blocker and
-/// settings. A custom panel in the chrome palette; the profile rows open as the themed native menu.
+/// Main menu from the three-dot button: tabs, extensions, passwords, blocker and settings. Its
+/// profile card is the first item and opens the profile settings. Every submenu cascades beside the
+/// row that opened it (the parent stays on screen); no row closes the menu to open another menu.
 fn show_main_menu(hwnd: HWND, app: &AppRef) {
     const NEW_TAB: usize = 5001;
     const EXTENSIONS: usize = 5002;
@@ -7261,7 +7262,8 @@ fn show_main_menu(hwnd: HWND, app: &AppRef) {
     const BLOCKER: usize = 5004;
     const SETTINGS: usize = 5005;
     const EXIT: usize = 5006;
-    const PROFILE: usize = 5007;
+    // The profile card at the top (a menu item, not a row): Settings > Profile.
+    const PROFILE_SETTINGS: usize = 5007;
     const NOTES: usize = 5010;
     const PALETTE: usize = 5011;
     const BOOKMARK: usize = 5012;
@@ -7302,7 +7304,7 @@ fn show_main_menu(hwnd: HWND, app: &AppRef) {
     const TRANSLATE_ALWAYS_SITE: usize = 5049;
     const TRANSLATE_NEVER_SITE: usize = 5050;
 
-    let header = main_menu_profile_header();
+    let header = main_menu_profile_header(PROFILE_SETTINGS);
     let recent: Vec<(String, String)> = App::recently_closed(app)
         .into_iter()
         .take(8)
@@ -7472,6 +7474,7 @@ fn show_main_menu(hwnd: HWND, app: &AppRef) {
     // Page tools and rarely used windows live one level down so the menu stays short. Settings
     // (the profile, import, privacy dashboard and update rows) is the page they moved to.
     let guest = crate::profile::active().is_ok_and(|profile| profile.is_guest());
+    let extensions = ExtensionsMenu::load();
     let mut more_tools = vec![
             Entry::Item(Item::new(NOTES, "Notes & Tasks…", Icon::Info).glyph("notes").shortcut("Ctrl+Shift+N")),
             Entry::Item(Item::new(PALETTE, "Command palette…", Icon::Grid).glyph("command").shortcut("Ctrl+Shift+K")),
@@ -7483,7 +7486,11 @@ fn show_main_menu(hwnd: HWND, app: &AppRef) {
                     .disabled_if(!readable),
             ),
             Entry::Separator,
-            Entry::Item(Item::new(EXTENSIONS, "Extensions…", Icon::Grid).glyph("puzzle").shortcut("Ctrl+Shift+E")),
+            // The Ctrl+Shift+E menu, cascading here instead of replacing this one.
+            extensions.as_ref().map_or_else(
+                |_| Entry::Item(Item::new(EXTENSIONS, "Extensions", Icon::Grid).glyph("puzzle").disabled()),
+                |extensions| Entry::Item(Item::new(EXTENSIONS, "Extensions", Icon::Grid).glyph("puzzle").submenu_with(extensions.entries())),
+            ),
             Entry::Item(Item::new(PASSWORDS, "Passwords & passkeys", Icon::Key).glyph("key").shortcut("Ctrl+,").disabled_if(guest)),
             Entry::Item(Item::new(DEVTOOLS, "Developer tools", Icon::Info).glyph("workspace-code").shortcut("F12")),
     ];
@@ -7526,9 +7533,6 @@ fn show_main_menu(hwnd: HWND, app: &AppRef) {
     if matches!(update_status, crate::updater::Status::Ready(_)) {
         entries.push(Entry::Item(Item::new(RESTART_TO_UPDATE, "Restart to update", Icon::Check).glyph("refresh")));
     }
-    entries.push(Entry::Item(
-        Item::new(PROFILE, "Profiles", Icon::Person).glyph("person").shortcut("Ctrl+Shift+M"),
-    ));
     entries.push(Entry::Item(
         Item::new(CUSTOMISE, "Customise", Icon::Grid).glyph("customize"),
     ));
@@ -7621,13 +7625,16 @@ fn show_main_menu(hwnd: HWND, app: &AppRef) {
             PALETTE => run_command_palette(hwnd, app),
             BOOKMARK => add_current_bookmark(hwnd, app),
             SESSIONS => super::sessions_panel::open(hwnd, app), // --- tab options --- the Sessions panel
-            WORKSPACES => show_workspaces_menu(hwnd, app),
             READER => run_reader(hwnd, app, crate::reader::Mode::Reader),
             CALM => run_reader(hwnd, app, crate::reader::Mode::Calm),
             TRANSLATE => run_translate(hwnd, app, TranslateAction::Toggle),
             TRANSLATE_ALWAYS_SITE => run_translate(hwnd, app, TranslateAction::Site(crate::site_prefs::SiteTranslate::Always)),
             TRANSLATE_NEVER_SITE => run_translate(hwnd, app, TranslateAction::Site(crate::site_prefs::SiteTranslate::Never)),
-            EXTENSIONS => show_extensions_menu(hwnd, app),
+            id if ExtensionsMenu::owns(id) => {
+                if let Ok(extensions) = &extensions {
+                    extensions.run(id, hwnd, app);
+                }
+            }
             DEVTOOLS => App::open_dev_tools(app),
             PASSWORDS => {
                 if let Err(error) = passwords_panel::open(hwnd) {
@@ -7648,9 +7655,14 @@ fn show_main_menu(hwnd: HWND, app: &AppRef) {
                     LPARAM(0),
                 );
             },
-            PROFILE => show_profile_menu(hwnd),
+            PROFILE_SETTINGS => super::settings_page::open(
+                hwnd,
+                app,
+                Some(crate::internal_page::Section::Profile),
+                false,
+            ),
             id if (WORKSPACE_SELECT_BASE..WORKSPACE_SELECT_BASE + 128).contains(&id)
-                || (WORKSPACE_CREATE..=WORKSPACE_DELETE).contains(&id) =>
+                || (WORKSPACE_CREATE..=WORKSPACE_DELETE_KEEP).contains(&id) =>
             {
                 run_workspace_action(hwnd, app, id, &built_workspaces, active_workspace, point)
             }
@@ -8700,177 +8712,193 @@ fn show_system_menu(hwnd: HWND, point: windows::Win32::Foundation::POINT) {
     // --- end popup host ---
 }
 
-/// Ctrl+Shift+E: themed menu for this profile's unpacked extensions.
-fn show_extensions_menu(hwnd: HWND, _app: &AppRef) {
-    use crate::extensions::{self, Record};
-    const INSTALL: usize = 1;
-    const TOGGLE_BASE: usize = 100;
-    const REMOVE_BASE: usize = 1000;
-    const REMOVE_MENU: usize = 2;
-    const POPUP_MENU: usize = 3;
-    const MANAGE: usize = 4;
-    const INSTALL_CRX: usize = 5;
-    const POPUP_BASE: usize = 3000;
-    const SPOILER: usize = 6;
-    const MAX_LISTED: usize = extensions::MAX_INSTALLED;
+/// This profile's extensions as a menu: the Ctrl+Shift+E menu, and the main menu's More tools >
+/// Extensions submenu, which cascades from its row. The ids sit in their own range so the rows can
+/// hang inside another menu without clashing with its ids.
+const EXTENSIONS_NONE: usize = 20_000;
+const EXTENSIONS_INSTALL: usize = 20_001;
+const EXTENSIONS_REMOVE_MENU: usize = 20_002;
+const EXTENSIONS_POPUP_MENU: usize = 20_003;
+const EXTENSIONS_MANAGE: usize = 20_004;
+const EXTENSIONS_INSTALL_CRX: usize = 20_005;
+const EXTENSIONS_SPOILER: usize = 20_006;
+const EXTENSIONS_TOGGLE_BASE: usize = 20_100;
+const EXTENSIONS_REMOVE_BASE: usize = 21_000;
+const EXTENSIONS_POPUP_BASE: usize = 23_000;
 
-    let Ok(profile) = crate::profile::active() else {
-        return;
-    };
-    let records: Vec<Record> = match extensions::read_records(&profile.extensions_file()) {
-        Ok(records) => records.into_iter().take(MAX_LISTED).collect(),
-        Err(error) => {
-            show_error_message(&format!("The extensions list could not be read. {error}"));
-            return;
+/// The records read when an extensions menu opens, so the rows built and the command run afterwards
+/// refer to the same list.
+struct ExtensionsMenu {
+    profile: crate::profile::Profile,
+    records: Vec<crate::extensions::Record>,
+}
+
+impl ExtensionsMenu {
+    /// `Err` holds a sentence to show; there is nothing to list without a profile.
+    fn load() -> Result<Self, String> {
+        let profile = crate::profile::active().map_err(|error| error.to_string())?;
+        let records = crate::extensions::read_records(&profile.extensions_file())
+            .map_err(|error| format!("The extensions list could not be read. {error}"))?
+            .into_iter()
+            .take(crate::extensions::MAX_INSTALLED)
+            .collect();
+        Ok(Self { profile, records })
+    }
+
+    /// Whether `id` is one of this menu's rows.
+    fn owns(id: usize) -> bool {
+        (EXTENSIONS_NONE..EXTENSIONS_POPUP_BASE + crate::extensions::MAX_INSTALLED).contains(&id)
+    }
+
+    fn entries(&self) -> Vec<Entry> {
+        use crate::extensions;
+        let records = &self.records;
+        let profile = &self.profile;
+        let mut entries = Vec::with_capacity(records.len().saturating_mul(2) + 5);
+        // Built in, so never installed, removed or listed in the records file. Choosing it opens its
+        // setting (Privacy and security), where it is turned on or off.
+        let spoiler = crate::spoiler::current();
+        entries.push(Entry::Item(
+            Item::new(
+                EXTENSIONS_SPOILER,
+                format!(
+                    "{} \u{b7} built in ({})",
+                    crate::spoiler::DISPLAY_NAME,
+                    if spoiler.enabled {
+                        format!("on, {}", spoiler.mode.key())
+                    } else {
+                        "off".to_owned()
+                    }
+                ),
+                Icon::Grid,
+            )
+            .glyph("shield")
+            .checked(spoiler.enabled),
+        ));
+        entries.push(Entry::Separator);
+        if records.is_empty() {
+            entries.push(Entry::Item(
+                Item::new(EXTENSIONS_NONE, "No extensions installed", Icon::None).glyph("puzzle").disabled(),
+            ));
         }
-    };
-    let mut entries = Vec::with_capacity(records.len().saturating_mul(2) + 5);
-    // Built in, so never installed, removed or listed in the records file. Choosing it opens its
-    // setting (Privacy and security), where it is turned on or off.
-    let spoiler = crate::spoiler::current();
-    entries.push(Entry::Item(
-        Item::new(
-            SPOILER,
-            format!(
-                "{} \u{b7} built in ({})",
-                crate::spoiler::DISPLAY_NAME,
-                if spoiler.enabled {
-                    format!("on, {}", spoiler.mode.key())
+        for (index, record) in records.iter().enumerate() {
+            let mut label = format!(
+                "{} {} ({})",
+                record.name,
+                record.version,
+                if record.enabled {
+                    "enabled"
                 } else {
-                    "off".to_owned()
+                    "disabled"
                 }
-            ),
-            Icon::Grid,
-        )
-        .glyph("shield")
-        .checked(spoiler.enabled),
-    ));
-    entries.push(Entry::Separator);
-    if records.is_empty() {
-        entries.push(Entry::Item(
-            Item::new(0, "No extensions installed", Icon::None).glyph("puzzle").disabled(),
-        ));
-    }
-    for (index, record) in records.iter().enumerate() {
-        let mut label = format!(
-            "{} {} ({})",
-            record.name,
-            record.version,
-            if record.enabled {
-                "enabled"
-            } else {
-                "disabled"
+            );
+            if let Some(reason) = extensions::load_failure(&record.id) {
+                label.push_str(&format!(" (failed: {reason})"));
             }
-        );
-        if let Some(reason) = extensions::load_failure(&record.id) {
-            label.push_str(&format!(" (failed: {reason})"));
+            entries.push(Entry::Item(
+                Item::new(EXTENSIONS_TOGGLE_BASE + index, label, Icon::Grid).glyph("puzzle").checked(record.enabled),
+            ));
         }
-        entries.push(Entry::Item(
-            Item::new(TOGGLE_BASE + index, label, Icon::Grid).glyph("puzzle").checked(record.enabled),
-        ));
+        let remove_entries: Vec<Entry> = records
+            .iter()
+            .enumerate()
+            .map(|(index, record)| {
+                Entry::Item(
+                    Item::new(EXTENSIONS_REMOVE_BASE + index, record.name.clone(), Icon::Close).glyph("puzzle"),
+                )
+            })
+            .collect();
+        entries.push(Entry::Separator);
+        // Only an enabled extension whose manifest names a popup is listed.
+        let popup_entries: Vec<Entry> = records
+            .iter()
+            .enumerate()
+            .filter(|(_, record)| {
+                record.enabled
+                    && extensions::folder_for(&profile.extensions_dir(), &record.id)
+                        .is_ok_and(|folder| extensions::declares_page(&folder, extensions::PageKind::Popup))
+            })
+            .map(|(index, record)| {
+                Entry::Item(
+                    Item::new(EXTENSIONS_POPUP_BASE + index, record.name.clone(), Icon::Grid).glyph("puzzle"),
+                )
+            })
+            .collect();
+        let popup = Item::new(EXTENSIONS_POPUP_MENU, "Open extension popup…", Icon::Grid).glyph("puzzle");
+        entries.push(Entry::Item(if popup_entries.is_empty() {
+            popup.disabled()
+        } else {
+            popup.submenu_with(popup_entries)
+        }));
+        let remove = Item::new(EXTENSIONS_REMOVE_MENU, "Remove extension…", Icon::Close).glyph("trash");
+        entries.push(Entry::Item(if records.is_empty() {
+            remove.disabled()
+        } else {
+            remove.submenu_with(remove_entries)
+        }));
+        entries.push(Entry::Separator);
+        entries.push(Entry::Item(Item::new(EXTENSIONS_MANAGE, "Manage extensions", Icon::Grid).glyph("gear")));
+        entries.push(Entry::Item(Item::new(
+            EXTENSIONS_INSTALL,
+            "Install unpacked extension…",
+            Icon::Plus,
+        )
+        .glyph("folder")));
+        entries.push(Entry::Item(Item::new(
+            EXTENSIONS_INSTALL_CRX,
+            "Install CRX file…",
+            Icon::Plus,
+        )
+        .glyph("puzzle")));
+        entries
     }
-    let remove_entries: Vec<Entry> = records
-        .iter()
-        .enumerate()
-        .map(|(index, record)| {
-            Entry::Item(
-                Item::new(REMOVE_BASE + index, record.name.clone(), Icon::Close).glyph("puzzle"),
-            )
-        })
-        .collect();
-    entries.push(Entry::Separator);
-    // Only an enabled extension whose manifest names a popup is listed.
-    let popup_entries: Vec<Entry> = records
-        .iter()
-        .enumerate()
-        .filter(|(_, record)| {
-            record.enabled
-                && extensions::folder_for(&profile.extensions_dir(), &record.id)
-                    .is_ok_and(|folder| extensions::declares_page(&folder, extensions::PageKind::Popup))
-        })
-        .map(|(index, record)| {
-            Entry::Item(
-                Item::new(POPUP_BASE + index, record.name.clone(), Icon::Grid).glyph("puzzle"),
-            )
-        })
-        .collect();
-    let popup = Item::new(POPUP_MENU, "Open extension popup…", Icon::Grid).glyph("puzzle");
-    entries.push(Entry::Item(if popup_entries.is_empty() {
-        popup.disabled()
-    } else {
-        popup.submenu_with(popup_entries)
-    }));
-    let remove = Item::new(REMOVE_MENU, "Remove extension…", Icon::Close).glyph("trash");
-    entries.push(Entry::Item(if records.is_empty() {
-        remove.disabled()
-    } else {
-        remove.submenu_with(remove_entries)
-    }));
-    entries.push(Entry::Separator);
-    entries.push(Entry::Item(Item::new(MANAGE, "Manage extensions", Icon::Grid).glyph("gear")));
-    entries.push(Entry::Item(Item::new(
-        INSTALL,
-        "Install unpacked extension…",
-        Icon::Plus,
-    )
-    .glyph("folder")));
-    entries.push(Entry::Item(Item::new(
-        INSTALL_CRX,
-        "Install CRX file…",
-        Icon::Plus,
-    )
-    .glyph("puzzle")));
 
-    // --- popup host (lane M) ---
-    let point = screen_point(hwnd, main_menu_anchor(hwnd));
-    let menu = Menu {
-        header: None,
-        entries,
-        footer: "Extensions".to_owned(),
-    };
-    menu::show(hwnd, point, menu::Placement::AboveLeft, menu, "extensions", move |app, chosen| {
-        let command = chosen.map_or(0, |chosen| chosen.id);
+    /// Runs the row `command` of [`Self::entries`].
+    fn run(&self, command: usize, hwnd: HWND, app: &AppRef) {
+        use crate::extensions;
+        const MAX_LISTED: usize = extensions::MAX_INSTALLED;
+        let profile = &self.profile;
         // Act on the record as it is now; one removed while the menu was open is skipped.
         let live = |index: usize| {
-            let listed = records.get(index)?;
+            let listed = self.records.get(index)?;
             extensions::read_records(&profile.extensions_file())
                 .ok()?
                 .into_iter()
                 .find(|record| record.id == listed.id)
         };
         match command {
-            SPOILER => super::settings_page::open(
+            EXTENSIONS_SPOILER => super::settings_page::open(
                 hwnd,
                 app,
                 Some(crate::internal_page::Section::Privacy),
                 false,
             ),
-            INSTALL => {
-                if let Err(error) = install_extension(hwnd, app, &profile) {
+            EXTENSIONS_INSTALL => {
+                if let Err(error) = install_extension(hwnd, app, profile) {
                     show_error_message(&error);
                 }
             }
-            INSTALL_CRX => {
-                if let Err(error) = install_extension_from_crx_file(hwnd, app, &profile) {
+            EXTENSIONS_INSTALL_CRX => {
+                if let Err(error) = install_extension_from_crx_file(hwnd, app, profile) {
                     show_error_message(&error);
                 }
             }
-            MANAGE => super::settings_page::open(hwnd, app, Some(crate::internal_page::Section::Extensions), false),
-            id if (TOGGLE_BASE..TOGGLE_BASE + MAX_LISTED).contains(&id) => {
-                if let Some(record) = live(id - TOGGLE_BASE) {
-                    if let Err(error) = set_extension_enabled(app, &profile, &record, !record.enabled) {
+            EXTENSIONS_MANAGE => super::settings_page::open(hwnd, app, Some(crate::internal_page::Section::Extensions), false),
+            id if (EXTENSIONS_TOGGLE_BASE..EXTENSIONS_TOGGLE_BASE + MAX_LISTED).contains(&id) => {
+                if let Some(record) = live(id - EXTENSIONS_TOGGLE_BASE) {
+                    if let Err(error) = set_extension_enabled(app, profile, &record, !record.enabled) {
                         show_error_message(&error);
                     }
                 }
             }
-            id if (REMOVE_BASE..REMOVE_BASE + MAX_LISTED).contains(&id) => {
-                if let Some(record) = live(id - REMOVE_BASE) {
+            id if (EXTENSIONS_REMOVE_BASE..EXTENSIONS_REMOVE_BASE + MAX_LISTED).contains(&id) => {
+                if let Some(record) = live(id - EXTENSIONS_REMOVE_BASE) {
                     let question = format!(
                         "Remove the extension \"{}\" from this profile? Its copied files will be deleted.",
                         record.name
                     );
                     if crate::win32::ask_yes_no(&question) {
-                        remove_extension(app, &profile, &record, |result| {
+                        remove_extension(app, profile, &record, |result| {
                             if let Err(error) = result {
                                 show_error_message(&error);
                             }
@@ -8878,12 +8906,39 @@ fn show_extensions_menu(hwnd: HWND, _app: &AppRef) {
                     }
                 }
             }
-            id if (POPUP_BASE..POPUP_BASE + MAX_LISTED).contains(&id) => {
-                if let Some(record) = live(id - POPUP_BASE).filter(|record| record.enabled) {
-                    open_extension_popup(app, &profile, &record);
+            id if (EXTENSIONS_POPUP_BASE..EXTENSIONS_POPUP_BASE + MAX_LISTED).contains(&id) => {
+                if let Some(record) = live(id - EXTENSIONS_POPUP_BASE).filter(|record| record.enabled) {
+                    open_extension_popup(app, profile, &record);
                 }
             }
             _ => {}
+        }
+    }
+}
+
+/// Ctrl+Shift+E: themed menu for this profile's unpacked extensions (the same rows as the main
+/// menu's More tools > Extensions submenu).
+fn show_extensions_menu(hwnd: HWND, _app: &AppRef) {
+    let extensions = match ExtensionsMenu::load() {
+        Ok(extensions) => extensions,
+        Err(error) => {
+            // No profile means no window to speak of; a list that cannot be read is said.
+            if crate::profile::active().is_ok() {
+                show_error_message(&error);
+            }
+            return;
+        }
+    };
+    // --- popup host (lane M) ---
+    let point = screen_point(hwnd, main_menu_anchor(hwnd));
+    let menu = Menu {
+        header: None,
+        entries: extensions.entries(),
+        footer: "Extensions".to_owned(),
+    };
+    menu::show(hwnd, point, menu::Placement::AboveLeft, menu, "extensions", move |app, chosen| {
+        if let Some(chosen) = chosen {
+            extensions.run(chosen.id, hwnd, app);
         }
     });
     // --- end popup host ---

@@ -565,6 +565,8 @@ fn panel(snapshot: &Snapshot) -> Menu {
             caption,
             avatar: "•".to_owned(),
             accent: crate::theme::Rgba::hex(0x2B5FA8, 255),
+            id: None,
+            action: "",
         }),
         entries,
         footer: if snapshot.private {

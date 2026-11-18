@@ -1,7 +1,7 @@
 export type MenuEntry =
   | { separator: true; label?: string }
   | { section: string }
-  | { id: number; label: string; enabled: boolean; checked: boolean; shortcut?: string; icon?: string; fav?: number; badge?: MenuBadge; submenu?: MenuEntry[]; currency?: MenuCurrency };
+  | { id: number; label: string; enabled: boolean; checked: boolean; shortcut?: string; icon?: string; fav?: number; badge?: MenuBadge; submenu?: MenuEntry[]; currency?: MenuCurrency; header?: true };
 
 export interface MenuCurrency { symbol: '£' | '$' | '€'; loading: boolean }
 
@@ -10,8 +10,12 @@ export interface MenuBadge { avatar: string; accent: string }
 
 export type MenuItem = Extract<MenuEntry, { id: number }>;
 
-/** Profile card above the main menu's list. `accent` is a `#rrggbb` colour. */
-export interface MenuHeader { name: string; caption: string; avatar: string; accent: string }
+/**
+ * Profile card above the main menu's list. `accent` is a `#rrggbb` colour. With an `id` the card is
+ * the menu's first item: pointer and keys reach it like a row and choosing it picks `id`. `action`
+ * says what choosing it does, for assistive technology (the card shows only the name and caption).
+ */
+export interface MenuHeader { name: string; caption: string; avatar: string; accent: string; id?: number; action?: string }
 
 export interface MenuMessage {
   t: 'menu';
@@ -159,8 +163,26 @@ const NONE: MenuOutcome = { kind: 'none' };
 const SELECT: MenuOutcome = { kind: 'select' };
 const PAGE: MenuOutcome = { kind: 'page' };
 
+/**
+ * The top page's rows: the message's entries, led by the profile card when it is an item (its `id`
+ * set). The card's entry carries `header: true`, which only this sets: validMenuPayload refuses the
+ * key on the wire, so no row Rust sends can pose as the card.
+ */
+export function navEntries(msg: MenuMessage): readonly MenuEntry[] {
+  const header = msg.header;
+  if (header?.id === undefined) return msg.entries;
+  return [{ id: header.id, label: header.name, enabled: true, checked: false, header: true }, ...msg.entries];
+}
+
+/** Whether `entry` is the profile card (navEntries), not a row of the list. */
+export function isHeaderEntry(entry: MenuEntry | undefined): boolean {
+  return !!entry && 'id' in entry && entry.header === true;
+}
+
 export function createNav(entries: readonly MenuEntry[]): MenuNav {
-  return { pages: [{ entries, label: '', selected: edgeMenu(entries, false) }], typed: '', typedAt: -Infinity };
+  // The menu opens on its first row, not on the profile card: Up or Home reaches the card.
+  const first = entries.findIndex(entry => isSelectable(entry) && !isHeaderEntry(entry));
+  return { pages: [{ entries, label: '', selected: first >= 0 ? first : edgeMenu(entries, false) }], typed: '', typedAt: -Infinity };
 }
 
 export function currentPage(nav: MenuNav): MenuPage {
@@ -381,9 +403,11 @@ function validCurrency(value: unknown): value is MenuCurrency {
 function validHeader(value: unknown): value is MenuHeader {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   const h = value as Record<string, unknown>;
-  return Object.keys(h).every(key => ['name', 'caption', 'avatar', 'accent'].includes(key)) &&
+  return Object.keys(h).every(key => ['name', 'caption', 'avatar', 'accent', 'id', 'action'].includes(key)) &&
+    (h.action === undefined || (typeof h.action === 'string' && h.action.length <= 128)) &&
     typeof h.name === 'string' && h.name.length <= 128 && typeof h.caption === 'string' && h.caption.length <= 128 &&
-    typeof h.avatar === 'string' && h.avatar.length <= 4 && typeof h.accent === 'string' && /^#[0-9a-f]{6}$/.test(h.accent);
+    typeof h.avatar === 'string' && h.avatar.length <= 4 && typeof h.accent === 'string' && /^#[0-9a-f]{6}$/.test(h.accent) &&
+    (h.id === undefined || (Number.isSafeInteger(h.id) && (h.id as number) >= 0 && (h.id as number) <= 0xffffffff));
 }
 
 export function validMenuPayload(value: unknown): value is MenuMessage {
