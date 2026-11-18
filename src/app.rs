@@ -11687,7 +11687,11 @@ mod tests {
             state.tabs[0].private = true;
         }
         set_addresses(&app, &[(only, "https://example.com/private-page")]);
-        assert!(App::session_snapshot(&app).is_none());
+        // Saved as an empty session (the tabs closed before are not brought back), and the private
+        // address never reaches it.
+        let snapshot = App::session_snapshot(&app).unwrap();
+        assert_eq!(snapshot, crate::session::Session::empty());
+        assert!(!snapshot.serialize().contains("private-page"));
     }
 
     #[test]
