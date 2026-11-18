@@ -2435,6 +2435,9 @@ sfw-shield{
 }
 sfw-shield[data-s="revealed"]{pointer-events:none!important;overflow:visible!important;contain:none!important}
 sfw-shield[data-k="page"]{position:fixed!important;border-radius:0!important}
+/* <body> itself shielded (text straight under it): its box can be 0 px tall (absolutely positioned app shells), so the
+   cover takes the viewport, never an invisible strip over a hidden page */
+body[data-sfw~="shield"] > sfw-shield{position:fixed!important;border-radius:0!important}
 sfw-shield[data-k="notice"]{position:fixed!important;inset:auto 14px 14px auto!important;width:auto!important;height:auto!important;
   border-radius:12px!important;container-type:normal!important;contain:none!important;overflow:visible!important}
 html[data-sfw-page~="shield"] > body,html[data-sfw-page~="shield"] > body *{visibility:hidden!important}
@@ -2524,7 +2527,11 @@ input[type="image"]:not([data-sfw-m="ok"]),[poster]:not([data-sfw-m="ok"]){visib
 @container (max-width:110px){.pill span{display:none}}
 @container (min-width:420px) and (min-height:240px){.stamp{font-size:clamp(24px,min(7cqw,15cqh),46px);border-width:5px}.sub{font-size:clamp(13px,2cqw,17px)}}
 
-/* pending */
+/* pending: a quiet, flat cover first; the "Checking" label fades in only if the check takes a while, so the many
+   checks that finish within a frame or two never flash a label */
+.cover[data-v="pending"]{background:rgba(var(--bg1),var(--sfw-a));-webkit-backdrop-filter:none;backdrop-filter:none}
+.cover[data-v="pending"] .card,.cover[data-v="pending"] .pill{animation:sfw-late 200ms ease-out 400ms both}
+@keyframes sfw-late{from{opacity:0}to{opacity:1}}
 .cover[data-v="pending"] .stamp{border-color:var(--fg-soft);color:var(--fg-soft);-webkit-text-fill-color:var(--fg-soft);transform:none;border-style:solid;border-width:2px;
   letter-spacing:.06em;text-indent:.06em;text-transform:none;font-weight:700;font-size:clamp(12px,min(3.4cqw,9cqh),18px);-webkit-mask-image:none;mask-image:none;box-shadow:none}
 .cover[data-v="pending"] .spin{display:inline-block;width:1.05em;height:1.05em;border-radius:50%;border:2px solid var(--fg-soft);border-top-color:transparent;
@@ -2565,6 +2572,7 @@ input[type="image"]:not([data-sfw-m="ok"]),[poster]:not([data-sfw-m="ok"]){visib
 @media (prefers-reduced-motion:reduce){
   :host{--sfw-bf:none;--sfw-dur:0ms;--sfw-a:.985}
   .cover,.hide{transition:none}.cover[data-v="pending"] .spin{animation:none}
+  .cover[data-v="pending"] .card,.cover[data-v="pending"] .pill{animation:none}
 }
 @media (prefers-reduced-transparency:reduce){:host{--sfw-bf:none;--sfw-a:.985}}
 @media (forced-colors:active){
@@ -2671,8 +2679,10 @@ SFW.shield = (function () {
       let cs;
       try { cs = win.getComputedStyle(e); } catch (x) { add(e, true); return; }
       const display = cs.display;
-      if ((VOID.has(e.tagName) || e.tagName === "svg") && e.parentElement && depth < 4) {
-        // replaced / void elements cannot host an overlay: use the parent box
+      const up = e.parentElement;
+      if ((VOID.has(e.tagName) || e.tagName === "svg") && up && depth < 4 && up.tagName !== "BODY" && up.tagName !== "HTML") {
+        // replaced / void elements cannot host an overlay: use the parent box (never <body> / <html>: hiding the page
+        // root for one element blanks the whole page, and a 0-height body leaves the cover invisible)
         resolve(e.parentElement, depth + 1);
         return;
       }
@@ -3493,7 +3503,8 @@ SFW.runtime = (function () {
   const OCR_MIN_W = 96; // rendered AND natural size must reach this, else the media is "small" and follows the v1 rule
   const OCR_MIN_H = 64;
   const OCR_MARGIN = "150% 150% 150% 150%"; // IntersectionObserver rootMargin: request OCR within ~1.5 viewports
-  const OCR_FLIGHT = 3; // concurrent host requests per frame
+  const OCR_FLIGHT = 3; // concurrent host requests per frame, unless the host says it can take more (host.ocr.flight)
+  const OCR_FLIGHT_MAX = 16;
   const OCR_WATCHDOG_MS = 60000; // the host must settle sooner (it enforces its own timeout); this only backs it up
   const OCR_ERR_TTL_MS = 20000; // unavailable/error results are cached briefly, then retried once
   const OCR_CACHE_MAX = 1500;
@@ -3807,6 +3818,7 @@ SFW.runtime = (function () {
     let sheetsOk = false;
     let opaqueRule = false;
     let pageHot = 0;
+    let pageWant = false; // the URL or title alone calls for protection (evalPage): the page is hot, its content masked item by item
     let lastHref = loc.href;
     let pageRevealedKey = null;
     let titleOriginal = null;
@@ -3836,6 +3848,9 @@ SFW.runtime = (function () {
     let chunkHead = 0;
     let expandCur = null; // resumable depth-first walk of the current root: {root, node}
     const unitQ = new Set(); // resolved units waiting for a decision
+    const freshUnits = new Set(); // units in unitQ whose content changed (new / edited text), not only re-checked
+    const structOnly = new Set(); // queued nodes touched only as the parent of added / removed children (touchStruct)
+    let noteFresh = true;
     const marks = new Set(); // elements carrying data-sfw-defer (region cover for work that did not fit in the budget)
     const longJobs = new Map(); // unit -> windowed classification in progress
     let overflow = false;
@@ -3854,7 +3869,16 @@ SFW.runtime = (function () {
     const bgMemo = new WeakMap(); // item -> {n: child count, v}
     const ESCALATE_SEL = "article,[role=article],li,figure,blockquote,[role=listitem]"; // escalationTarget()
     const ESC_MAX_CHILDREN = 8; // a card has few children; an article of paragraphs does not
+    // Declared up here, not next to their functions below: the first scan runs while startEngine is still being
+    // evaluated (a synchronous observer callback), and a const read before its line throws (temporal dead zone).
+    const SEARCH_NAMES = mkSet(["q", "query", "search", "search_query", "p", "keywords", "text", "s"]);
+    const SEARCH_UI = "[role=search],yt-searchbox,ytd-searchbox,form#search-form,form[action*=search],form[action*=results],[data-testid=SearchBox_Search_Input]";
+    const SEARCH_UI_TEXT_MAX = 400; // a search box carries little text; a page-wide <form action="/search.aspx"> is not one
     const escalated = new Set(); // generic cards shielded whole because a block inside them is a spoiler
+    // shield targets that give "local heat" to their siblings: spoiler verdicts on the unit's own content only. Pending,
+    // error and frame covers say nothing about the content, and a shield that itself came from neighbour heat must not
+    // pass it on (that chained across every sibling with an icon, up to whole page shells)
+    const heatSrc = new WeakSet();
     const threads = new WeakMap(); // root -> {resolved, hot, first, shield, key}
     const seenRoots = new WeakSet();
     const rootList = new Set();
@@ -4086,7 +4110,7 @@ SFW.runtime = (function () {
       failMo = null;
       for (const f of cleanups.splice(0)) { try { f(); } catch (e) { /* ignore */ } }
       ocrShutdown();
-      queue.clear(); unitQ.clear(); pendingSet.clear(); threadWait.clear(); repairSet.clear(); recent.clear(); chunks.length = 0; chunkHead = 0; expandCur = null; marks.clear(); longJobs.clear();
+      queue.clear(); unitQ.clear(); freshUnits.clear(); structOnly.clear(); pendingSet.clear(); threadWait.clear(); repairSet.clear(); recent.clear(); chunks.length = 0; chunkHead = 0; expandCur = null; marks.clear(); longJobs.clear();
       rootList.clear();
       doc = nd;
       booted = false;
@@ -4163,7 +4187,7 @@ SFW.runtime = (function () {
       }
       clearMarks();
       booted = false;
-      queue.clear(); unitQ.clear(); chunks.length = 0; chunkHead = 0; expandCur = null; longJobs.clear(); pendingSet.clear(); threadWait.clear();
+      queue.clear(); unitQ.clear(); freshUnits.clear(); structOnly.clear(); chunks.length = 0; chunkHead = 0; expandCur = null; longJobs.clear(); pendingSet.clear(); threadWait.clear();
     }
 
     function stop() {
@@ -4357,6 +4381,17 @@ SFW.runtime = (function () {
     function touch(n) {
       if (queue.size >= MAX_QUEUE) { overflow = true; return; }
       queue.add(n);
+      structOnly.delete(n);
+    }
+
+    // The parent of added / removed children: the children themselves are queued as new content (chunks), so the parent's
+    // own text did not change. A unit re-checked only for this, and judged clear before, needs no cover while it waits
+    // (a page that keeps re-rendering would otherwise blink every container it touches).
+    function touchStruct(n) {
+      if (queue.has(n)) return;
+      if (queue.size >= MAX_QUEUE) { overflow = true; return; }
+      queue.add(n);
+      structOnly.add(n);
     }
 
     // `cover`: the content is new to the engine, so whatever does not fit in a budget is hidden until it has been classified.
@@ -4427,7 +4462,7 @@ SFW.runtime = (function () {
       // 2. touched nodes (attributes / character data changed) not resolved yet
       if (queue.size) {
         if (queue.size > MARK_MAX) markEl(doc.documentElement);
-        else for (const n of queue) markEl(elOf(n));
+        else for (const n of queue) { if (!structOnly.has(n)) markEl(elOf(n)); } // a parent touched for its children: they are covered by step 1
         hit = true;
       }
       // 3. resolved units waiting for a decision: a few get their own cover, the rest are covered by region
@@ -4437,6 +4472,16 @@ SFW.runtime = (function () {
         const rest = [];
         for (const u of unitQ) {
           if (!u.isConnected || pendingSet.has(u) || underMark(u)) continue; // already hidden by a region marker: no per-slice DOM churn
+          // A page root is classified on its own text only (its blocks are units of their own), yet a cover over it hides the
+          // whole page: pages that keep appending to <body> flickered whole-page "Checking" covers for seconds. It is covered
+          // only while text sits directly in it.
+          if (isPageRoot(u)) {
+            if (hasDirectText(u)) markEl(u);
+            continue;
+          }
+          // judged clear before and re-checked only because children came or went (those are covered as new content of
+          // their own): it stays visible. App shells re-render constantly; covering them blinked whole regions.
+          if (!freshUnits.has(u)) { const prev = U.get(u); if (prev && prev.dec === "clear") continue; }
           if (k < PENDING_MAX) { k++; try { applyPlan({ u, dec: "pending", fp: "p", cfp: "p", hot: 0, budget: true }, [{ el: u, needPos: true }]); } catch (e) { markEl(u); } }
           else aPush(rest, u);
         }
@@ -4464,6 +4509,7 @@ SFW.runtime = (function () {
       const u = resolveUnitCached(el);
       if (u) {
         unitQ.add(u);
+        if (noteFresh) freshUnits.add(u);
         if (sliceOcr && isMediaEl(el)) mediaVer.set(u, (mediaVer.get(u) | 0) + 1);
       }
     }
@@ -4479,7 +4525,9 @@ SFW.runtime = (function () {
       let k = 0;
       for (const n of queue) {
         queue.delete(n);
+        noteFresh = !structOnly.delete(n);
         noteNode(n);
+        noteFresh = true;
         if ((++k & 31) === 0 && now() - t0 > budget) return false;
       }
       return true;
@@ -4488,6 +4536,10 @@ SFW.runtime = (function () {
     // Depth-first expansion of the queued subtree roots into units, resumable at any node. Stops when the budget is used up
     // or enough units are waiting for a decision.
     function expand(t0, budget) {
+      try { expandRun(t0, budget); } finally { noteFresh = true; }
+    }
+
+    function expandRun(t0, budget) {
       let steps = 0;
       for (;;) {
         if (!expandCur) {
@@ -4499,6 +4551,7 @@ SFW.runtime = (function () {
           expandCur = { root, node: root, cover: ch.cover, lastParent: null, started: false };
         }
         const ec = expandCur;
+        noteFresh = ec.cover !== false; // a rescan of content already on screen is not new content
         const root = ec.root;
         let cur = ec.node;
         const rootIsText = root.nodeType === 3;
@@ -4553,8 +4606,8 @@ SFW.runtime = (function () {
           addedBurst += add.length;
           if (add.length) pushList(t.nodeType === 11 && t.host ? t.host : t, add, true);
           if (t.nodeType === 9) titleDirty = true;
-          if (t.nodeType === 1) { touch(t); if (t.nodeName === "TITLE" || t === doc.head) titleDirty = true; }
-          else if (t.nodeType === 11 && t.host) touch(t.host);
+          if (t.nodeType === 1) { touchStruct(t); if (t.nodeName === "TITLE" || t === doc.head) titleDirty = true; }
+          else if (t.nodeType === 11 && t.host) touchStruct(t.host);
         }
       }
     }
@@ -4610,7 +4663,7 @@ SFW.runtime = (function () {
         if (detectionBroken && !isProtective()) continue;
         try { applyPlan({ u, dec: "error", fp: "e", cfp: "e", hot: 0 }, null); } catch (e) { /* ignore */ }
       }
-      queue.clear();
+      queue.clear(); structOnly.clear();
       unitQ.clear();
       try { coverLeft(); } catch (e) { /* ignore */ }
     }
@@ -4709,7 +4762,7 @@ SFW.runtime = (function () {
       doRepairs();
       if (overflow) {
         overflow = false;
-        queue.clear();
+        queue.clear(); structOnly.clear();
         chunks.length = 0; chunkHead = 0; expandCur = null;
         scanSubtree(doc.documentElement, true);
       }
@@ -4795,7 +4848,7 @@ SFW.runtime = (function () {
       // new content that was still waiting for its first look keeps its cover: the rescan that replaces it is covered too
       let hadCover = !!(expandCur && expandCur.cover) || queue.size > 0;
       for (let ci = chunkHead; ci < chunks.length && !hadCover; ci++) if (chunks[ci].cover && chunks[ci].i < chunks[ci].nodes.length) hadCover = true;
-      queue.clear();
+      queue.clear(); structOnly.clear();
       chunks.length = 0; chunkHead = 0; expandCur = null;
       scanSubtree(doc.documentElement, hadCover);
       for (const r of rootList) { if (r.host && r.host.isConnected) scanSubtree(r, hadCover); }
@@ -4834,6 +4887,53 @@ SFW.runtime = (function () {
       return null;
     }
 
+    function imageDoc() {
+      try { return /^image\//i.test(doc.contentType || ""); } catch (e) { return false; }
+    }
+
+    function isPageRoot(el) {
+      return !!el && (el.tagName === "BODY" || el.tagName === "HTML");
+    }
+
+    function isSearchField(e) {
+      try {
+        if (e.type === "search" || nGetAttr(e, "role") === "searchbox") return true;
+        if (SEARCH_NAMES.has(String(nGetAttr(e, "name") || "").toLowerCase())) return true;
+        if (adapter.context && nMatches(e, adapter.context)) return true;
+        return !!nClosest(e, "[role=search],form[action*=search],form[action*=results]");
+      } catch (x) { return false; }
+    }
+
+    // The site's own search box: what the user typed (and the site echoes back inside the box) is never masked. Suggestion
+    // rows are content and stay judged (they sit in a listbox, often inside the same component).
+    function smallSearchRoot(r) {
+      return !!r && textLen(r, SEARCH_UI_TEXT_MAX) <= SEARCH_UI_TEXT_MAX;
+    }
+    function isSearchUi(el) {
+      try { return smallSearchRoot(closestFlat(el, SEARCH_UI)) && !closestFlat(el, "[role=listbox],[role=option]"); } catch (e) { return false; }
+    }
+    function maybeSearchUiRoot(el) {
+      const tg = el.tagName;
+      return tg === "FORM" || tg === "YT-SEARCHBOX" || tg === "YTD-SEARCHBOX" || (el.hasAttribute("role") && nGetAttr(el, "role") === "search");
+    }
+
+    // Page chrome: what is not content. On a site with an adapter, content is its items (videos, posts, comments ...) and
+    // generic list / article items; everything else (app shell, navigation, toolbars) is chrome. Anywhere, a large container
+    // is chrome for its own text (its blocks are units of their own).
+    function isChrome(u, deep) {
+      if (isOwn(u) || imageDoc()) return false;
+      if (!deep) return true;
+      if (!adapter.own) return false;
+      return !(adapter.generic && nMatches(u, adapter.generic));
+    }
+
+    // Non-blank text nodes straight under el (bounded): what a page-root unit actually holds of its own.
+    function hasDirectText(el) {
+      let n = el.firstChild;
+      for (let i = 0; n && i < 2000; i++, n = n.nextSibling) if (n.nodeType === 3 && !isBlank(n.data)) return true;
+      return !!n; // too many children to look at: assume text
+    }
+
     function blockOf(el) {
       let n = el;
       while (n && n.nodeType === 1) {
@@ -4855,6 +4955,13 @@ SFW.runtime = (function () {
       }
       const b = blockOf(el);
       if (!b) return null;
+      // an element straight under <body> / <html> (an iframe, an inline span ...) is a unit of its own: the page root is
+      // a unit only for text sitting directly in it, so one element can never hide the whole page
+      if (isPageRoot(b) && el !== b && !imageDoc()) { // an image document (i.imgur.com/x.png) keeps <body> as its unit
+        let top = el;
+        for (let p = parentOf(top); p && p !== b && p.nodeType === 1; p = parentOf(top)) top = p;
+        return SKIP.has(top.tagName) ? null : top;
+      }
       if (adapter.generic) {
         const g = closestFlat(b, adapter.generic);
         if (g && useGenericItem(g)) return g;
@@ -5020,7 +5127,9 @@ SFW.runtime = (function () {
           } else if (tag === "iframe") {
             // no attributes at all: an unsandboxed, empty frame; nothing to read
           }
-          if ((tag === "input" || tag === "textarea") && e.value && e.type !== "password") add(e.value);
+          // the user's own query in a search box is not content: it still makes the page hot (context), but it must never
+          // mask the search bar itself, or a search for GTA VI leaves no way to search for something else
+          if ((tag === "input" || tag === "textarea") && e.value && e.type !== "password" && !isSearchField(e)) add(e.value);
           if (depth < 5) {
             const sr = rootOf(e);
             if (sr && e !== rootNode) walkRoot(sr, depth + 1);
@@ -5054,6 +5163,7 @@ SFW.runtime = (function () {
             else if (cur !== u) {
               if (nHasAttr(cur, "data-sfw") && !(mine && mine.has(cur))) skip = true; // nested shielded / revealed unit (not our own targets)
               else if (ownSel && nMatches(cur, ownSel)) skip = true; // nested unit: classified on its own
+              else if (maybeSearchUiRoot(cur) && nMatches(cur, SEARCH_UI) && smallSearchRoot(cur)) skip = true; // the search box: the user's own query
               else if (!deep && isBlockTag(tg)) skip = true;
             }
             if (!skip) handleEl(cur);
@@ -5106,8 +5216,7 @@ SFW.runtime = (function () {
 
 
     // Layout-reading verdict for the unverifiable frames of one unit (the only synchronous layout read the frame rule makes).
-    // strict: any frame on a hot / high-risk page, on a cold generic page any frame big enough to show text; lockdown: every one; balanced:
-    // hot context only. Returns "shield" | "clear" | "cfg" (decision differs between modes while the config is loading).
+    // Only frames big enough to show text count. strict: any such frame; lockdown: every such frame; balanced: hot context only. Returns "shield" | "clear" | "cfg" (decision differs between modes while the config is loading).
     function frameVerdict(frames, hot) {
       const big = () => {
         for (const f of frames) {
@@ -5115,12 +5224,13 @@ SFW.runtime = (function () {
         }
         return false;
       };
+      // a frame too small to show a line of text (tracking / ad / messaging frames are 0x0 or hidden) cannot leak anything:
+      // covering its block hid whole pages (a hidden about:blank frame straight under YouTube's <body>)
+      if (!big()) return "clear";
       const per = (mode) => {
         if (mode === "lockdown") return "shield";
         if (hot >= 1) return "shield";
-        if (mode === "balanced") return "clear";
-        if (adapter.highRisk) return "shield";
-        return big() ? "shield" : "clear";
+        return mode === "balanced" ? "clear" : "shield";
       };
       if (!configPending) return per(cfg.mode);
       const v = [per("lockdown"), per("strict"), per("balanced")];
@@ -5160,6 +5270,7 @@ SFW.runtime = (function () {
         }
       } catch (e) { /* ignore */ }
       if (ctx.trim() && S.classify.isHotText(ctx)) hot = 2;
+      if (pageWant) hot = 2; // the URL or title alone is a spoiler / mention (evalPage)
       const changed = hot !== pageHot;
       pageHot = hot;
       return changed;
@@ -5293,13 +5404,20 @@ SFW.runtime = (function () {
       let dec;
       let strong = false;
       let frameErr = false;
+      let nbText = false;
       if (detectionBroken) dec = "clear"; // the classifier does not work here (canary): page shield / notice already say so
       else if (!text.trim() && !ex.media) dec = "clear";
+      else if (!isOwn(u) && isSearchUi(u)) dec = "clear"; // the search box itself (see SEARCH_UI)
       else {
-        const cctx = { hot, source: "text", reply, launchWindow: !!(adapter.highRisk && launchWindow) };
+        // Page chrome (app shells, navigation, toolbars) is masked only for what its own words say: the page's heat and the
+        // "picture in hot context" rule are for content. Without this a hot page (a search for GTA VI) hid YouTube's whole app
+        // shell for a weak cue in its footer links, and its guide drawer for its icons.
+        const chrome = isChrome(u, deep);
+        const uHot = chrome ? 0 : hot;
+        const cctx = { hot: uHot, source: "text", reply: reply && !chrome, launchWindow: !!(adapter.highRisk && launchWindow) };
         // ocrDone is always true here: media is held by the OCR gate (gateMedia), not by the policy's "hold" verdict
-        const polMedia = ex.media && !warmOnly;
-        const opts = { mode: cfg.mode, hot, kind: !text.trim() && !warmOnly ? "media" : "item", hasMedia: polMedia, highRisk: adapter.highRisk, ocrDone: true };
+        const polMedia = ex.media && !warmOnly && !chrome;
+        const opts = { mode: cfg.mode, hot: uHot, kind: !text.trim() && !warmOnly && !chrome ? "media" : "item", hasMedia: polMedia, highRisk: adapter.highRisk, ocrDone: true };
         const oneWith = (t, cx, o) => {
           const res = S.classify.text(t, cx);
           let d = S.policy.decide(res, o);
@@ -5309,7 +5427,7 @@ SFW.runtime = (function () {
             const vals = [all.lockdown, all.strict, all.balanced];
             d = vals.some((v) => v !== vals[0]) ? "cfg" : vals[0];
           }
-          if (d === "hold") d = hot > 0 ? "shield" : "clear";
+          if (d === "hold") d = o.hot > 0 ? "shield" : "clear";
           return d;
         };
         const one = (t) => oneWith(t, cctx, opts);
@@ -5321,8 +5439,8 @@ SFW.runtime = (function () {
         if (ex.tight && dec !== "shield" && ex.tight.length <= WIN_CHARS * 2) { const d2 = one(ex.tight); if (d2 === "shield" || (d2 === "cfg" && dec === "clear")) dec = d2; }
         if (ocrTexts && dec !== "shield") {
           // the text found inside the images, on its own (source "ocr") and glued to the unit's own text
-          const octx = { hot, source: "ocr", reply, launchWindow: cctx.launchWindow };
-          const mopts = { mode: cfg.mode, hot, kind: "media", hasMedia: true, highRisk: adapter.highRisk, ocrDone: true };
+          const octx = { hot: uHot, source: "ocr", reply: cctx.reply, launchWindow: cctx.launchWindow };
+          const mopts = { mode: cfg.mode, hot: uHot, kind: "media", hasMedia: !chrome, highRisk: adapter.highRisk, ocrDone: true };
           let od = dec;
           for (const t of ocrTexts) {
             const d = oneWith(t, octx, mopts);
@@ -5333,15 +5451,19 @@ SFW.runtime = (function () {
           if (od === "shield" || od === "cfg") dec = od;
         }
         // frames the engine cannot look into: cover them where the context calls for it (see frameVerdict)
-        if (dec === "clear" && ex.frames) {
-          const fv = frameVerdict(ex.frames, hot);
+        if (dec === "clear" && ex.frames && !isPageRoot(u)) { // frames straight under <body> are units of their own
+          const fv = frameVerdict(ex.frames, uHot);
           if (fv === "shield") { dec = "shield"; frameErr = true; strong = false; }
           else if (fv === "cfg") dec = "cfg";
         }
         if (dec === "cfg") return { u, dec: "pending", cfgWait: true, fp, cfp, hot };
         if (dec !== "shield" && dec !== "clear" && dec !== "pending") dec = "shield";
+        // a neighbour-heat shield passes the heat on only when its words carry the spoiler, not merely a picture or an icon
+        if (nb && dec === "shield" && !frameErr && text.trim()) {
+          nbText = !ex.media || oneWith(text, cctx, Object.assign({}, opts, { hasMedia: false, kind: "item" })) === "shield";
+        }
       }
-      return { u, dec, fp, cfp, hot, generic, nb, media: ex.media, ocr: !!ocrTexts, strong: dec === "shield" && strong, warmOnly, frameErr };
+      return { u, dec, fp, cfp, hot, generic, nb, nbText, media: ex.media, ocr: !!ocrTexts, strong: dec === "shield" && strong, warmOnly, frameErr };
     }
 
     // Evaluate units: batched decisions first, then one layout-read pass, then the writes.
@@ -5382,7 +5504,7 @@ SFW.runtime = (function () {
       const plans = [];
       const next = [];
       for (const u of units) {
-        if (!u.isConnected) { pendingSet.delete(u); continue; }
+        if (!u.isConnected) { pendingSet.delete(u); freshUnits.delete(u); continue; }
         if (ctx.processed > 0 && now() - t0 > budget) { aPush(ctx.left, u); continue; }
         ctx.processed++;
         let plan;
@@ -5396,6 +5518,7 @@ SFW.runtime = (function () {
         }
         if (host.kind === "test" && stats.trace) { if (stats.trace.length < 400) stats.trace.push(u.localName + "[" + (u.textContent || "").trim().slice(0, 14) + "]:" + plan.dec + (plan.same ? ":same" : "") + ":h" + plan.hot + (plan.nb ? "n" : "") + (u.id ? "#" + u.id : "") + (plan.wait ? ":wait" : "") + (fromFrame ? ":raf" : "")); }
         if (fromFrame && !plan.same) ctx.changed++;
+        if (plan.dec !== "pending") freshUnits.delete(u);
         aPush(plans, plan);
         if (plan.more) aPush(ctx.left, u); // windowed classification unfinished: covered now, continued next slice
         if (plan.dec === "clear" && plan.generic && (!plan.same || fromFrame)) {
@@ -5440,7 +5563,7 @@ SFW.runtime = (function () {
 
     function hasShieldedNeighbor(u) {
       const a = u.previousElementSibling, b = u.nextElementSibling;
-      const hit = (e) => e && nGetAttr(e, "data-sfw") === "shield" && e.localName !== "sfw-shield";
+      const hit = (e) => e && heatSrc.has(e) && nGetAttr(e, "data-sfw") === "shield" && e.localName !== "sfw-shield";
       if (!(hit(a) || hit(b))) return false;
       return sibEligible(u, a || b);
     }
@@ -5461,7 +5584,8 @@ SFW.runtime = (function () {
       if (plan.same) return;
       pollChanged = true;
       if (plan.dec === "clear") {
-        if (c && c.targets) for (const t of c.targets) S.shield.release(t);
+        if (c && c.targets) for (const t of c.targets) { S.shield.release(t); heatSrc.delete(t); }
+        heatSrc.delete(u);
         if (S.shield.state(u).mode !== "none") S.shield.release(u);
         U.set(u, { fp: plan.fp, cfp: plan.cfp, dec: "clear", targets: [] });
         pendingSet.delete(u);
@@ -5483,9 +5607,11 @@ SFW.runtime = (function () {
       let targets = c && c.targets && c.targets.length && c.targets.every((t) => t.isConnected) ? c.targets.map((t) => ({ el: t, needPos: null })) : null;
       if (!targets) targets = prep || [{ el: u, needPos: true }];
       const els = [];
+      const givesHeat = variant === "spoiler" && (!plan.nb || !!plan.nbText);
       for (const t of targets) {
         const el = t.el;
         els.push(el);
+        if (givesHeat) heatSrc.add(el); else heatSrc.delete(el);
         const s = S.shield.state(el);
         if (s.mode === "revealed") {
           if (plan.dec === "shield" && s.revealedFp === plan.cfp) continue; // user revealed exactly this content
@@ -6069,7 +6195,10 @@ SFW.runtime = (function () {
       if (!booted || !ocrOn()) return;
       const h = ocrHost();
       if (!h) return; // host config still loading: ocrKick() resumes once it is there
-      while (ocrFlying < OCR_FLIGHT && ocrQueue.size) {
+      // A host with its own queue (Bowser's native worker) takes more at once: with only 3 in flight, each answer waits
+      // a full drain round trip before the next image is even asked for, and thumbnails stay held for seconds.
+      const fl = typeof h.flight === "number" && h.flight >= 1 ? Math.min(OCR_FLIGHT_MAX, h.flight | 0) : OCR_FLIGHT;
+      while (ocrFlying < fl && ocrQueue.size) {
         const rec = nextRec();
         if (!rec) break;
         ocrQueue.delete(rec);
@@ -6134,13 +6263,20 @@ SFW.runtime = (function () {
 
     function evalPage() {
       if (!booted) return;
+      // A risky URL or title makes the whole page hot: its content is masked item by item (hot context shields anything with
+      // a GTA / story signal, and its media). The page itself is never covered for it: a full-page cover also hid the site's
+      // own search box, navigation and buttons (a YouTube search for "gta 6" could not even be changed).
       const want = pageWants();
-      const href = loc.href;
-      if (want && pageRevealedKey !== href) {
-        if (!doc.documentElement) return; // applied as soon as <html> exists (MutationObserver sees it)
-        if (S.shield.pageState(doc) !== "shielded") S.shield.applyPage(doc, "page");
-      } else if (!want && S.shield.pageState(doc) === "shielded" && !coverShown) { // a failure cover is not the URL/title shield: it stays
-        S.shield.releasePage(doc);
+      if (want !== pageWant) {
+        pageWant = want;
+        if (recomputePageHot()) rescanAll(false);
+      }
+      // Item masking needs a working engine: with the MutationObserver unusable (rescan polling, not zero-flash) or the
+      // classifier broken, new content can paint before it is judged. Then a hot page fails closed with the page cover.
+      if (moMode === "poll" || detectionBroken) {
+        if (want && pageRevealedKey !== loc.href) {
+          if (doc.documentElement && S.shield.pageState(doc) !== "shielded") S.shield.applyPage(doc, "page");
+        } else if (!want && S.shield.pageState(doc) === "shielded" && !coverShown) S.shield.releasePage(doc);
       }
       guardTitle();
     }
@@ -6458,7 +6594,9 @@ const CONFIG = /*__SFW_CONFIG__*/null;
         const api = Object.freeze({ drain: drain, deliver: deliver, feed: feed });
         Object.defineProperty(win, hook, { value: api, enumerable: false, writable: false, configurable: false });
       } catch (e) { return null; } // a frozen window or a taken name: no hook, so no OCR
-      return ocrOn ? Object.freeze({ request: request }) : null; // hook only (feed pushes) when OCR is off
+      // flight: native keeps its own queue and drains up to MAX_DRAIN per round, so the runtime may keep 12 requests
+      // in flight per frame instead of its default 3.
+      return ocrOn ? Object.freeze({ request: request, flight: 12 }) : null; // hook only (feed pushes) when OCR is off
     };
     let ocr = null;
     try { ocr = makeOcr(); } catch (e) { ocr = null; }

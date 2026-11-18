@@ -65,11 +65,13 @@ untouched). Native *pulls* with `ExecuteScript`:
 2. A tab with protection and OCR on subscribes `WebResourceResponseReceived`. An image response (content type
    `image/*` except SVG, status 200, GET, Content-Length 256 bytes to 5 MB, or unknown and capped while reading)
    whose host is on the allowlist while the tab's top-level site is on it too is read with `GetContent` (the
-   IStream is copied on the UI thread) and queued for a worker. The response event needs a resource filter, so the tab
-   adds image filters for the listed platforms' hosts only (the blocker's own filters are narrow rule patterns, and a `*`
-   image filter would put every image request of every page on the UI thread). Native never
-   fetches anything.
-3. The worker (one thread, below-normal priority, MTA, queue of 64 jobs / 48 MB with the oldest dropped first,
+   IStream is copied on the UI thread) and queued for a worker. The response event needs no resource filter and never
+   holds a request, so the tab adds none: an image filter makes every matching request wait for Bowser's UI thread
+   (the blocker's `WebResourceRequested` handler), and with filters for YouTube, ytimg, twimg and the other listed hosts
+   that made the whole browser crawl. Only if a navigation to a listed site completes without one response event (a
+   runtime that raises it for filtered requests only) does the tab fall back to image filters for the listed hosts.
+   Native never fetches anything.
+3. The workers (one thread, two on a machine with 8 or more hardware threads, below-normal priority, sharing one queue; MTA, queue of 64 jobs / 48 MB with the oldest dropped first,
    jobs of a previous document dropped by a per-tab navigation epoch) decodes with `BitmapDecoder`, skips images
    under 96x64 and animated or multi-frame images (`skipped`), scales a short edge under 300 px up 2x, scales a
    width above the engine limit down, cuts very tall images into overlapping 4096 px bands (at most 8) and runs

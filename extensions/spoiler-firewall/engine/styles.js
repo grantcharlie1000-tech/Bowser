@@ -72,6 +72,9 @@ sfw-shield{
 }
 sfw-shield[data-s="revealed"]{pointer-events:none!important;overflow:visible!important;contain:none!important}
 sfw-shield[data-k="page"]{position:fixed!important;border-radius:0!important}
+/* <body> itself shielded (text straight under it): its box can be 0 px tall (absolutely positioned app shells), so the
+   cover takes the viewport, never an invisible strip over a hidden page */
+body[data-sfw~="shield"] > sfw-shield{position:fixed!important;border-radius:0!important}
 sfw-shield[data-k="notice"]{position:fixed!important;inset:auto 14px 14px auto!important;width:auto!important;height:auto!important;
   border-radius:12px!important;container-type:normal!important;contain:none!important;overflow:visible!important}
 html[data-sfw-page~="shield"] > body,html[data-sfw-page~="shield"] > body *{visibility:hidden!important}
@@ -161,7 +164,11 @@ input[type="image"]:not([data-sfw-m="ok"]),[poster]:not([data-sfw-m="ok"]){visib
 @container (max-width:110px){.pill span{display:none}}
 @container (min-width:420px) and (min-height:240px){.stamp{font-size:clamp(24px,min(7cqw,15cqh),46px);border-width:5px}.sub{font-size:clamp(13px,2cqw,17px)}}
 
-/* pending */
+/* pending: a quiet, flat cover first; the "Checking" label fades in only if the check takes a while, so the many
+   checks that finish within a frame or two never flash a label */
+.cover[data-v="pending"]{background:rgba(var(--bg1),var(--sfw-a));-webkit-backdrop-filter:none;backdrop-filter:none}
+.cover[data-v="pending"] .card,.cover[data-v="pending"] .pill{animation:sfw-late 200ms ease-out 400ms both}
+@keyframes sfw-late{from{opacity:0}to{opacity:1}}
 .cover[data-v="pending"] .stamp{border-color:var(--fg-soft);color:var(--fg-soft);-webkit-text-fill-color:var(--fg-soft);transform:none;border-style:solid;border-width:2px;
   letter-spacing:.06em;text-indent:.06em;text-transform:none;font-weight:700;font-size:clamp(12px,min(3.4cqw,9cqh),18px);-webkit-mask-image:none;mask-image:none;box-shadow:none}
 .cover[data-v="pending"] .spin{display:inline-block;width:1.05em;height:1.05em;border-radius:50%;border:2px solid var(--fg-soft);border-top-color:transparent;
@@ -202,6 +209,7 @@ input[type="image"]:not([data-sfw-m="ok"]),[poster]:not([data-sfw-m="ok"]){visib
 @media (prefers-reduced-motion:reduce){
   :host{--sfw-bf:none;--sfw-dur:0ms;--sfw-a:.985}
   .cover,.hide{transition:none}.cover[data-v="pending"] .spin{animation:none}
+  .cover[data-v="pending"] .card,.cover[data-v="pending"] .pill{animation:none}
 }
 @media (prefers-reduced-transparency:reduce){:host{--sfw-bf:none;--sfw-a:.985}}
 @media (forced-colors:active){
