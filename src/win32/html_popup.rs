@@ -1043,18 +1043,28 @@ fn popup_region(width: i32, height: i32, radius: i32, cards: Option<MenuCards>, 
     let Some(cards) = cards else {
         return full;
     };
-    let parent = card_device_rect(cards.parent_x, cards.parent_y, cards.parent_w, cards.parent_h, dpi, width, height);
-    let child = card_device_rect(cards.child_x, cards.child_y, cards.child_w, cards.child_h, dpi, width, height);
-    let region = match (parent, child) {
-        (Some(parent), Some(child)) => union_region(round_region(parent.left, parent.top, parent.right, parent.bottom, radius), round_region(child.left, child.top, child.right, child.bottom, radius)),
-        (Some(parent), None) => round_region(parent.left, parent.top, parent.right, parent.bottom, radius),
-        (None, Some(child)) => round_region(child.left, child.top, child.right, child.bottom, radius),
-        (None, None) => full,
+    let rects: Vec<RECT> = card_rects(cards)
+        .into_iter()
+        .filter_map(|(x, y, w, h)| card_device_rect(x, y, w, h, dpi, width, height))
+        .collect();
+    let Some((first, rest)) = rects.split_first() else {
+        return full;
     };
-    if !matches!((parent, child), (None, None)) && !full.is_invalid() {
+    if !full.is_invalid() {
         unsafe { let _ = DeleteObject(HGDIOBJ(full.0)); }
     }
-    region
+    rest.iter().fold(round_region(first.left, first.top, first.right, first.bottom, radius), |region, card| {
+        union_region(region, round_region(card.left, card.top, card.right, card.bottom, radius))
+    })
+}
+
+/// The cards a menu reported, parent first, in CSS pixels; a child card that is absent has width 0.
+fn card_rects(cards: MenuCards) -> [(u16, u16, u16, u16); 3] {
+    [
+        (cards.parent_x, cards.parent_y, cards.parent_w, cards.parent_h),
+        (cards.child_x, cards.child_y, cards.child_w, cards.child_h),
+        (cards.grand_x, cards.grand_y, cards.grand_w, cards.grand_h),
+    ]
 }
 
 /// Exclusive device-pixel edges of one card, clipped to the window. `None` when the card misses the window.
@@ -1586,7 +1596,7 @@ mod tests {
         let key = |r: RECT| (r.left, r.top, r.right, r.bottom);
         let work = RECT { left: 0, top: 0, right: 1920, bottom: 1040 };
         // The page: the parent card (280 x 600 CSS px) with 354 px of room on both sides (718 + 280 wide).
-        let parent_only = MenuCards { parent_x: 354, parent_y: 0, parent_w: 280, parent_h: 600, child_x: 0, child_y: 0, child_w: 0, child_h: 0 };
+        let parent_only = MenuCards { parent_x: 354, parent_y: 0, parent_w: 280, parent_h: 600, child_x: 0, child_y: 0, child_w: 0, child_h: 0, grand_x: 0, grand_y: 0, grand_w: 0, grand_h: 0 };
         let with_child = |x: u16, w: u16| MenuCards { child_x: x, child_y: 120, child_w: w, child_h: 200, ..parent_only };
         for dpi in [96, 120, 144, 192] {
             for (at, side) in [
@@ -1704,7 +1714,7 @@ mod tests {
 
     #[test]
     fn escape_closes_one_submenu_in_the_page_and_the_whole_popup_otherwise() {
-        let parent_only = MenuCards { parent_x: 354, parent_y: 0, parent_w: 220, parent_h: 300, child_x: 0, child_y: 0, child_w: 0, child_h: 0 };
+        let parent_only = MenuCards { parent_x: 354, parent_y: 0, parent_w: 220, parent_h: 300, child_x: 0, child_y: 0, child_w: 0, child_h: 0, grand_x: 0, grand_y: 0, grand_w: 0, grand_h: 0 };
         let with_child = MenuCards { child_x: 578, child_y: 40, child_w: 200, child_h: 120, ..parent_only };
         assert!(escape_closes_popup(false, None), "a plain menu, palette or bubble closes on Escape");
         assert!(escape_closes_popup(false, Some(parent_only)), "a menu with no submenu open closes");

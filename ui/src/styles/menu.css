@@ -62,11 +62,12 @@
   box-shadow: none;
 }
 
-/* Room for a child card on either side of the parent: the widest card (350px) and the gap. The page
+/* Room for two cascading child cards on either side of the parent (VISIBLE_PAGES - 1 in
+   menu-logic.ts): the widest card (350px) and the gap, twice. The page
    is as tall as the window, which Rust runs to the bottom of the work area, so a child dropped to a
    low row has room below it. */
 #app.html-menu.is-paned.has-flyouts {
-  --menu-reserve: calc(350px + var(--bw-space-1));
+  --menu-reserve: calc(2 * (350px + var(--bw-space-1)));
   height: 100vh;
   padding-inline: var(--menu-reserve);
 }
@@ -81,7 +82,9 @@
   min-height: 0;
 }
 
-/* A child card's column: the card at rest, beside the parent with the gap between them. It does not
+/* A child card's column: the card at rest, beside the parent with the gap between them. A deeper
+   card's column nests in the column of the card that opened it, so the same rule puts it beside that
+   card; menu-view.ts sets every custom property on each column so none is inherited from its opener. It does not
    take part in the page's size, so the window does not change when a submenu opens. Pulled over the
    parent by --menu-child-overlap only when neither side of the screen has room for it. */
 .html-menu-flyout {
@@ -91,7 +94,7 @@
   display: flex;
   flex-direction: column;
   width: max-content;
-  max-height: calc(100vh - var(--menu-child-y, 0px));
+  max-height: var(--menu-child-max, calc(100vh - var(--menu-child-y, 0px)));
 }
 
 .html-menu-flyout.is-left {
@@ -376,6 +379,17 @@
   transform: translateX(2px);
 }
 
+/* Submenus that open to the left (Rust's room, menu-view.ts .opens-left) point their chevrons left
+   and nudge them that way. */
+#app.html-menu.opens-left .html-menu-row[aria-haspopup="menu"] .html-menu-trail svg {
+  transform: scaleX(-1);
+}
+
+#app.html-menu.opens-left .html-menu-row[aria-haspopup="menu"].selected:not(:disabled) .html-menu-trail,
+#app.html-menu.opens-left .html-menu-row[aria-haspopup="menu"].is-open .html-menu-trail {
+  transform: translateX(-2px);
+}
+
 @media (prefers-reduced-motion: reduce) {
   .html-menu-row[aria-haspopup="menu"].selected:not(:disabled) .html-menu-trail {
     transform: none;
@@ -384,6 +398,13 @@
 
 @media (prefers-reduced-motion: reduce) {
   .html-menu-row[aria-haspopup="menu"].is-open .html-menu-trail {
+    transform: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #app.html-menu.opens-left .html-menu-row[aria-haspopup="menu"].selected:not(:disabled) .html-menu-trail,
+  #app.html-menu.opens-left .html-menu-row[aria-haspopup="menu"].is-open .html-menu-trail {
     transform: none;
   }
 }

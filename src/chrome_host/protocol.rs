@@ -318,6 +318,11 @@ pub struct MenuCards {
     pub child_y: u16,
     pub child_w: u16,
     pub child_h: u16,
+    /// A second child card, opened from the first one (all zero while there is none).
+    pub grand_x: u16,
+    pub grand_y: u16,
+    pub grand_w: u16,
+    pub grand_h: u16,
 }
 
 /// A validated message from the chrome page.
@@ -984,8 +989,9 @@ fn bool_field(fields: &[(String, Value)], name: &'static str) -> Result<bool, Pr
 }
 
 /// Menu card rectangles, packed as `c` so the message stays within `MAX_FIELDS`. Four
-/// comma-separated integers (parent x, y, w, h) while no child card shows, or eight (then child x, y,
-/// w, h). Widths and heights are at least 1; origins may be 0. Absent when the menu has no submenus.
+/// comma-separated integers (parent x, y, w, h) while no child card shows, eight with one child card
+/// (then child x, y, w, h), or twelve with a second child card cascading from the first. Widths and
+/// heights are at least 1; origins may be 0. Absent when the menu has no submenus.
 fn menu_cards(fields: &[(String, Value)]) -> Result<Option<MenuCards>, ProtocolError> {
     let Some(value) = field(fields, "c") else {
         return Ok(None);
@@ -994,12 +1000,12 @@ fn menu_cards(fields: &[(String, Value)]) -> Result<Option<MenuCards>, ProtocolE
         return Err(ProtocolError::WrongType("c"));
     };
     let count = raw.split(',').count();
-    if count != 4 && count != 8 {
+    if count != 4 && count != 8 && count != 12 {
         return Err(ProtocolError::InvalidValue("c"));
     }
     let mut parts = raw.split(',');
-    let mut values = [0u16; 8];
-    for (index, name) in ["px", "py", "pw", "ph", "cx", "cy", "cw", "ch"].into_iter().enumerate().take(count) {
+    let mut values = [0u16; 12];
+    for (index, name) in ["px", "py", "pw", "ph", "cx", "cy", "cw", "ch", "gx", "gy", "gw", "gh"].into_iter().enumerate().take(count) {
         let Some(part) = parts.next() else {
             return Err(ProtocolError::InvalidValue("c"));
         };
@@ -1007,7 +1013,7 @@ fn menu_cards(fields: &[(String, Value)]) -> Result<Option<MenuCards>, ProtocolE
             return Err(ProtocolError::InvalidValue("c"));
         }
         let value: u32 = part.parse().map_err(|_| ProtocolError::InvalidValue("c"))?;
-        let extent = matches!(name, "pw" | "ph" | "cw" | "ch");
+        let extent = matches!(name, "pw" | "ph" | "cw" | "ch" | "gw" | "gh");
         let ok = if extent { (1..=4000).contains(&value) } else { value <= 4000 };
         if !ok {
             return Err(ProtocolError::InvalidValue("c"));
@@ -1026,6 +1032,10 @@ fn menu_cards(fields: &[(String, Value)]) -> Result<Option<MenuCards>, ProtocolE
         child_y: values[5],
         child_w: values[6],
         child_h: values[7],
+        grand_x: values[8],
+        grand_y: values[9],
+        grand_w: values[10],
+        grand_h: values[11],
     }))
 }
 
@@ -2913,6 +2923,10 @@ mod tests {
                     child_y: 280,
                     child_w: 88,
                     child_h: 92,
+                    grand_x: 0,
+                    grand_y: 0,
+                    grand_w: 0,
+                    grand_h: 0,
                 }),
             }
         );
@@ -2938,6 +2952,10 @@ mod tests {
                     child_y: 0,
                     child_w: 0,
                     child_h: 0,
+                    grand_x: 0,
+                    grand_y: 0,
+                    grand_w: 0,
+                    grand_h: 0,
                 }),
             }
         );
@@ -2945,6 +2963,11 @@ mod tests {
         assert!(parse_command(r#"{"v":1,"t":"size","tok":1,"w":10,"h":10,"c":"0,0,10"}"#).is_err());
         assert!(parse_command(r#"{"v":1,"t":"size","tok":1,"w":10,"h":10,"c":"0,0,10,10,0,0"}"#).is_err());
         assert!(parse_command(r#"{"v":1,"t":"size","tok":1,"w":10,"h":10,"c":"0,0,10,10,0,0,10,10,1"}"#).is_err());
+        // A second child card cascading from the first: twelve integers, never more.
+        let Command::PopupSize { cards: Some(cards), .. } = ok(r#"{"v":1,"t":"size","tok":1,"w":2000,"h":600,"c":"708,0,280,500,350,40,354,200,0,80,300,160"}"#) else { panic!("cards") };
+        assert_eq!((cards.child_x, cards.child_w, cards.grand_x, cards.grand_y, cards.grand_w, cards.grand_h), (350, 354, 0, 80, 300, 160));
+        assert!(parse_command(r#"{"v":1,"t":"size","tok":1,"w":10,"h":10,"c":"0,0,10,10,0,0,10,10,0,0,0,10"}"#).is_err());
+        assert!(parse_command(r#"{"v":1,"t":"size","tok":1,"w":10,"h":10,"c":"0,0,10,10,0,0,10,10,0,0,10,10,0,0,10,10"}"#).is_err());
     }
 
     #[test]

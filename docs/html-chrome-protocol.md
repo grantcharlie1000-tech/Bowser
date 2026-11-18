@@ -189,11 +189,12 @@ accepts `hpage`.
 
 The popup host alone accepts `{v:1,t:"size",tok,w,h}` (`tok` unsigned u32; `w` and `h` whole CSS
 pixels from 1 to 4000). A menu that has submenus adds `c`: four comma-separated integers `px,py,pw,ph`
-(the parent card) while no child card shows, or eight, `px,py,pw,ph,cx,cy,cw,ch` (then the part of
-the child card that shows), CSS pixels; widths and heights 1 to 4000, origins 0 to 4000. Still six
+(the parent card) while no child card shows, eight, `px,py,pw,ph,cx,cy,cw,ch` (then the part of
+the child card that shows), or twelve, `...,gx,gy,gw,gh` (then the part of a second child card that
+cascades from the first: a submenu of a submenu opens beside it instead of replacing the parent), CSS pixels; widths and heights 1 to 4000, origins 0 to 4000. Still six
 keys at most. With `c`, Rust places the parent card (`pw`,`ph`) as if it were the whole menu (anchor,
 flip, work-area clamp) and the window around it: `w` wide, its top `py` above the parent's, running to
-the bottom of the work area (`html_popup.rs` `flyout_bounds`). The page keeps room for a child card on
+the bottom of the work area (`html_popup.rs` `flyout_bounds`). The page keeps room for two child cards on
 both sides of the parent, so `w` and the parent card never change while submenus open and close; the
 window is clipped to the cards, and the page moves that clip every frame while a child card slides.
 Once placed, Rust posts `{v:1,t:"room",tok,l,r}`: CSS pixels of work area past the parent card's left
