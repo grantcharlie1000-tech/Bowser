@@ -349,14 +349,28 @@ export function mountWelcome(host: WelcomeHost): Welcome {
   stagger(Array.from(engines.root.children) as HTMLElement[]);
   const privacyBody = blocking.root;
 
-  // Default browser: the Bowser logo as on the hero, with a check once Bowser is the default. The
-  // footer's primary button is the action ("Set as default"); once asked, or when Bowser already is,
-  // it is Continue.
-  const defaultArt = el('div', 'wl-default');
+  // Default browser: a Windows "Default apps" card for the three things a default browser opens.
+  // Each row's app flips from Edge to Bowser, one after another, once Bowser is (or was asked to be)
+  // the default. The footer's primary button is the action ("Set as default"), then Continue.
+  const defaultArt = el('div', 'wl-defaults');
   defaultArt.setAttribute('aria-hidden', 'true');
-  const badge = el('span', 'wl-default-badge');
-  badge.append(icon('check', { size: 14 }));
-  defaultArt.append(logoImg('bowser', 'wl-logo'), badge);
+  const appChip = (key: string, name: string, className: string): HTMLElement => {
+    const chip = el('span', `wl-def-app ${className}`);
+    const words = el('span');
+    words.textContent = name;
+    chip.append(logoImg(key, 'wl-def-logo'), words);
+    return chip;
+  };
+  ['.html', 'HTTP', 'HTTPS'].forEach((kind, index) => {
+    const row = el('div', 'wl-def-row');
+    row.style.setProperty('--wl-i', String(index));
+    const label = el('span', 'wl-def-kind');
+    label.textContent = kind;
+    const swap = el('span', 'wl-def-swap');
+    swap.append(appChip('edge', 'Edge', 'is-old'), appChip('bowser', 'Bowser', 'is-new'));
+    row.append(label, swap, icon('chevron-right', { size: 14 }));
+    defaultArt.append(row);
+  });
   const defaultBody = defaultArt;
   /** The Default step's primary button asks Windows instead of moving on. */
   const asksDefault = (): boolean => current === 'default' && !defaultAsked && snapshot?.defaultBrowser !== 'yes' && snapshot?.guest !== true;
@@ -417,7 +431,7 @@ export function mountWelcome(host: WelcomeHost): Welcome {
     back.hidden = !hasBack(current);
     skip.hidden = current === 'done' || current === 'hello';
     primaryText.textContent = current === 'hello' ? START_LABEL : current === 'done' ? FINISH_LABEL : asksDefault() ? DEFAULT_LABEL : CONTINUE_LABEL;
-    defaultArt.classList.toggle('is-set', snapshot?.defaultBrowser === 'yes');
+    defaultArt.classList.toggle('is-set', snapshot?.defaultBrowser === 'yes' || defaultAsked);
     secondary.lastChild!.textContent = current === 'hello' ? SKIP_SETUP_LABEL : current === 'done' ? SETTINGS_LABEL : NOT_NOW_LABEL;
     // A step with nothing to do (or nothing left to do) needs only Continue.
     const optional = current === 'import' || asksDefault();

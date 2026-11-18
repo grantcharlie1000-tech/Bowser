@@ -2866,6 +2866,8 @@ test('welcome: settingsgo welcome covers the page, and each step sends the same 
   primary().click();
   assert.deepEqual(sent.at(-1), { v: 1, t: 'set', a: 'setdefault' });
   assert.equal(wl.dataset.step, 'default', 'asking Windows does not move on');
+  assert.ok(wl.querySelector('.wl-defaults').classList.contains('is-set'), 'the rows flip to Bowser');
+  assert.equal(wl.querySelectorAll('.wl-def-row').length, 3);
   assert.match(primary().textContent, /^Continue/);
 
   primary().click();
@@ -2889,7 +2891,7 @@ test('welcome: settingsgo welcome covers the page, and each step sends the same 
   for (let i = 0; i < 5; i += 1) primary().click();
   assert.equal(wl.dataset.step, 'default');
   assert.match(primary().textContent, /^Continue/, 'already the default: nothing to ask');
-  assert.ok(wl.querySelector('.wl-default').classList.contains('is-set'), 'the check shows on Bowser');
+  assert.ok(wl.querySelector('.wl-defaults').classList.contains('is-set'), 'the rows show Bowser');
   assert.equal(wl.querySelector('.wl-note').textContent, 'Bowser is your default browser.');
   // Skip setup is the same as finishing.
   wl.querySelector('.wl-skip').click();

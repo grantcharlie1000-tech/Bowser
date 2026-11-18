@@ -3449,24 +3449,11 @@
   min-width: 0;
 }
 
-.wl:is([data-step="hello"], [data-step="done"], [data-step="default"]) .wl-stage {
+.wl:is([data-step="hello"], [data-step="done"]) .wl-stage {
   align-items: center;
   text-align: center;
 }
 
-.wl[data-step="default"] .wl-foot {
-  flex-direction: row-reverse;
-  justify-content: center;
-}
-
-.wl[data-step="default"] .wl-body {
-  order: -1;
-  margin: 0 0 24px;
-}
-
-.wl[data-step="default"] :is(.wl-spacer, .wl-back) {
-  display: none;
-}
 
 /* The Bowser logo: only on the hero and the last step, floating on a soft glow of its own blue. */
 .wl-mark {
@@ -4341,46 +4328,77 @@
   opacity: 0;
 }
 
-/* ---- Default's picture: the Bowser logo on its own glow, a check once it is the default ---- */
-.wl-default {
+/* ---- Default's picture: a Windows "Default apps" card ----
+ * One row per thing a default browser opens; the app on each flips from Edge to Bowser (a short
+ * slide and fade, one row after another) when the card is `.is-set`. */
+.wl-defaults {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--wl-line);
+  border-radius: 12px;
+  background: var(--wl-glass);
+  box-shadow: 0 18px 40px -26px rgb(0 0 0 / 0.55);
+}
+
+.wl-def-row {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  height: 56px;
+  padding: 0 16px;
+  color: var(--bw-text-2);
+}
+
+.wl-def-row + .wl-def-row {
+  border-top: 1px solid var(--wl-line);
+}
+
+.wl-def-kind {
+  color: var(--bw-text);
+  font-weight: var(--bw-weight-strong);
+  font-variant-numeric: tabular-nums;
+}
+
+.wl-def-swap {
   position: relative;
-  display: grid;
-  place-items: center;
-  width: 104px;
-  height: 104px;
-  margin: 0 auto;
+  display: block;
+  height: 32px;
+  overflow: hidden;
 }
 
-.wl-default::before {
-  content: "";
+.wl-def-app {
   position: absolute;
-  inset: 8px;
-  border-radius: 50%;
-  background: #1f6fe5;
-  opacity: 0.45;
-  filter: blur(26px);
-}
-
-.wl-default-badge {
-  position: absolute;
-  right: 4px;
-  bottom: 4px;
-  display: grid;
-  place-items: center;
-  width: 28px;
-  height: 28px;
-  border-radius: 50%;
-  background: #1f9d55;
-  box-shadow: 0 0 0 3px var(--sp-page);
-  color: #ffffff;
-  opacity: 0;
-  transform: scale(0.4);
+  inset: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--bw-text);
   transition:
-    opacity var(--bw-dur-fast) var(--bw-ease-fade),
-    transform 320ms var(--bw-ease-out);
+    opacity 260ms var(--bw-ease-fade),
+    transform 360ms var(--bw-ease-out);
+  transition-delay: calc(var(--wl-i, 0) * 140ms);
 }
 
-.wl-default.is-set .wl-default-badge {
+.wl-def-logo {
+  display: block;
+  width: 24px;
+  height: 24px;
+  object-fit: contain;
+}
+
+.wl-def-app.is-new {
+  opacity: 0;
+  transform: translate3d(0, 100%, 0);
+}
+
+.wl-defaults.is-set .wl-def-app.is-old {
+  opacity: 0;
+  transform: translate3d(0, -100%, 0);
+}
+
+.wl-defaults.is-set .wl-def-app.is-new {
   opacity: 1;
   transform: none;
 }
