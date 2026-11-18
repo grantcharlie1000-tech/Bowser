@@ -366,16 +366,11 @@ export interface ExtensionsButton {
 
 function buildExtensionsButton(root: HTMLElement): ExtensionsButton {
   const button = iconButton('Extensions', 'puzzle', 'tb-nav is-lg is-round tb-ext');
+  // On an extension's store listing the button becomes one compact pill: the puzzle and its label.
   const storeLabel = el('span', 'tb-ext-store-label');
   storeLabel.textContent = 'Add to Bowser';
-  const storeNote = el('span', 'tb-ext-store-note');
-  storeNote.id = 'bowser-store-install-note';
-  storeNote.textContent = 'Google installs into Chrome. Bowser support varies.';
-  const storeCopy = el('span', 'tb-ext-store-copy');
-  storeCopy.append(storeLabel, storeNote);
-  storeCopy.hidden = true;
   storeLabel.hidden = true;
-  button.append(storeCopy);
+  button.append(storeLabel);
   button.hidden = true;
   let outTimer = 0;
   button.addEventListener('animationend', (event) => {
@@ -388,9 +383,6 @@ function buildExtensionsButton(root: HTMLElement): ExtensionsButton {
       const text = extButtonText(msg);
       const store = msg.store === true;
       storeLabel.hidden = !store;
-      storeCopy.hidden = !store;
-      if (store) button.setAttribute('aria-describedby', storeNote.id);
-      else button.removeAttribute('aria-describedby');
       button.classList.toggle('is-store', store);
       root.classList.toggle('has-store-ext', store && msg.on);
       label(button, text.label, text.tip);

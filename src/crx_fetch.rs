@@ -76,12 +76,59 @@ const ID_LEN: usize = 32;
 const ERROR_BODY_BYTES: usize = 200;
 const CHROME_WEB_STORE_HOST: &str = "chromewebstore.google.com";
 const OLD_STORE_HOST: &str = "chrome.google.com";
+/// Microsoft Edge Add-ons: listings, and the update service its packages come from. It answers the
+/// same gupdate 2.0 protocol as Google's; its package URLs are plain HTTP, so a package from it is
+/// accepted only when its SHA-256 matches the hash the HTTPS manifest named (see [`Offer`]).
+const EDGE_ADDONS_HOST: &str = "microsoftedge.microsoft.com";
+const EDGE_UPDATE_HOST: &str = "edge.microsoft.com";
+const EDGE_UPDATE_PATH: &str = "/extensionwebstorebase/v1/crx";
+
+/// Which store an extension listing and its package come from. Both sign packages with the
+/// developer key the 32-character id is derived from, so the same CRX verifier applies to both.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum StoreSource {
+    Chrome,
+    Edge,
+}
+
+impl StoreSource {
+    /// The short tag the HTML page and the store commands use.
+    pub fn tag(self) -> &'static str {
+        match self {
+            Self::Chrome => "chrome",
+            Self::Edge => "edge",
+        }
+    }
+
+    pub fn from_tag(tag: &str) -> Option<Self> {
+        match tag {
+            "chrome" => Some(Self::Chrome),
+            "edge" => Some(Self::Edge),
+            _ => None,
+        }
+    }
+
+    /// The store's public listing for `id` (a validated id: callers pass one from [`parse_extension_id`]).
+    pub fn listing_url(self, id: &str) -> String {
+        match self {
+            Self::Chrome => format!("https://{CHROME_WEB_STORE_HOST}/detail/{id}"),
+            Self::Edge => format!("https://{EDGE_ADDONS_HOST}/addons/detail/{id}"),
+        }
+    }
+
+    fn endpoint(self) -> Endpoint {
+        match self {
+            Self::Chrome => Endpoint::production(),
+            Self::Edge => Endpoint::edge(),
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FetchError {
     /// Not exactly 32 characters of `a`-`p`.
     InvalidId,
-    /// Not a Chrome Web Store extension URL this module understands.
+    /// Not a Chrome Web Store or Edge Add-ons extension URL this module understands.
     InvalidStoreUrl(&'static str),
     /// `prodversion` is not one to four dot-separated digit groups.
     InvalidProdVersion,
@@ -101,6 +148,8 @@ pub enum FetchError {
     AppIdMismatch,
     /// The only package offered is `puff`, which this module cannot apply.
     PuffOnly,
+    /// The package's SHA-256 is not the one the update manifest named.
+    HashMismatch,
     Network(String),
     Verify(CrxError),
     Unpack(StampError),
@@ -110,7 +159,7 @@ impl fmt::Display for FetchError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::InvalidId => f.write_str("extension id must be 32 characters a-p"),
-            Self::InvalidStoreUrl(why) => write!(f, "not a Chrome Web Store extension URL: {why}"),
+            Self::InvalidStoreUrl(why) => write!(f, "not an extension store listing URL: {why}"),
             Self::InvalidProdVersion => f.write_str("runtime version is not dotted digits"),
             Self::Cancelled => f.write_str("download cancelled; nothing was installed"),
             Self::BadRedirect(why) => write!(f, "refused redirect: {why}"),
@@ -123,6 +172,7 @@ impl fmt::Display for FetchError {
             Self::PuffOnly => {
                 f.write_str("the store offers only a puff package, which Bowser cannot apply")
             }
+            Self::HashMismatch => f.write_str("the package does not match the hash the store named"),
             Self::Network(why) => write!(f, "network error: {why}"),
             Self::Verify(error) => write!(f, "CRX verification failed: {error}"),
             Self::Unpack(error) => write!(f, "unpack failed: {error}"),
@@ -193,6 +243,37 @@ pub fn parse_store_url(text: &str) -> Result<String, FetchError> {
         Some(OLD_STORE_HOST) => &["webstore", "detail"],
         _ => return Err(bad("not a Chrome Web Store host")),
     };
+    listing_id(&url, prefix)
+}
+
+/// Parses an Edge Add-ons listing, `https://microsoftedge.microsoft.com/addons/detail/[slug/]<id>`,
+/// with the same rules as [`parse_store_url`]: exact host, HTTPS, no port or credentials, a lowercase
+/// 32-character id last, and no second id-like run anywhere else.
+pub fn parse_edge_url(text: &str) -> Result<String, FetchError> {
+    let bad = FetchError::InvalidStoreUrl;
+    let url = Url::parse(text).map_err(|_| bad("not a URL"))?;
+    if url.scheme() != "https" {
+        return Err(bad("not https"));
+    }
+    if !url.username().is_empty() || url.password().is_some() || url.port().is_some() {
+        return Err(bad("credentials or port"));
+    }
+    if url.host_str() != Some(EDGE_ADDONS_HOST) {
+        return Err(bad("not the Edge Add-ons host"));
+    }
+    listing_id(&url, &["addons", "detail"])
+}
+
+/// A Chrome Web Store or Edge Add-ons listing: which store, and the extension id.
+pub fn parse_listing_url(text: &str) -> Result<(StoreSource, String), FetchError> {
+    parse_store_url(text)
+        .map(|id| (StoreSource::Chrome, id))
+        .or_else(|_| parse_edge_url(text).map(|id| (StoreSource::Edge, id)))
+}
+
+/// The id at the end of `url`'s path after `prefix`, with an optional slug before it.
+fn listing_id(url: &Url, prefix: &[&str]) -> Result<String, FetchError> {
+    let bad = FetchError::InvalidStoreUrl;
     let mut segments: Vec<&str> = url.path_segments().map_or_else(Vec::new, Iterator::collect);
     if segments.last() == Some(&"") {
         segments.pop();
@@ -248,6 +329,10 @@ struct Endpoint {
     secure: bool,
     host: String,
     port: u16,
+    path: &'static str,
+    /// The package (never the manifest) may be fetched over plain HTTP, because it is accepted only
+    /// when its SHA-256 matches the hash the HTTPS manifest named. Edge Add-ons serves packages so.
+    hashed_http_packages: bool,
 }
 
 impl Endpoint {
@@ -256,6 +341,18 @@ impl Endpoint {
             secure: true,
             host: UPDATE_HOST.to_owned(),
             port: 443,
+            path: UPDATE_PATH,
+            hashed_http_packages: false,
+        }
+    }
+
+    fn edge() -> Self {
+        Self {
+            secure: true,
+            host: EDGE_UPDATE_HOST.to_owned(),
+            port: 443,
+            path: EDGE_UPDATE_PATH,
+            hashed_http_packages: true,
         }
     }
 
@@ -265,7 +362,15 @@ impl Endpoint {
             secure: false,
             host: "127.0.0.1".to_owned(),
             port,
+            path: UPDATE_PATH,
+            hashed_http_packages: false,
         }
+    }
+
+    /// Whether a URL with `scheme` may be fetched: the endpoint's own scheme, or plain HTTP for a
+    /// package whose hash is checked (`hashed`) on an endpoint that serves packages so.
+    fn allows(&self, scheme: &str, hashed: bool) -> bool {
+        scheme == self.scheme() || (hashed && self.secure && self.hashed_http_packages && scheme == "http")
     }
 
     fn scheme(&self) -> &'static str {
@@ -308,10 +413,11 @@ fn request_url(
         return Err(FetchError::InvalidProdVersion);
     }
     let mut url = Url::parse(&format!(
-        "{}://{}:{}{UPDATE_PATH}",
+        "{}://{}:{}{}",
         endpoint.scheme(),
         endpoint.host,
-        endpoint.port
+        endpoint.port,
+        endpoint.path
     ))
     .map_err(|_| FetchError::Network("bad endpoint".into()))?;
     url.query_pairs_mut()
@@ -339,11 +445,11 @@ fn update_headers(id: &str, prodversion: &str) -> String {
 /// Resolves a redirect target. It must stay on the endpoint's scheme (HTTPS in production), carry no
 /// credentials and have a host. A plain-HTTP test endpoint also keeps the redirect on its own host,
 /// so a loopback test can never be sent to a real server.
-fn redirect_target(endpoint: &Endpoint, current: &Url, location: &str) -> Result<Url, FetchError> {
+fn redirect_target(endpoint: &Endpoint, current: &Url, location: &str, hashed: bool) -> Result<Url, FetchError> {
     let next = current
         .join(location)
         .map_err(|_| FetchError::BadRedirect("unparseable Location"))?;
-    if next.scheme() != endpoint.scheme() {
+    if !endpoint.allows(next.scheme(), hashed) {
         return Err(FetchError::BadRedirect("not the endpoint's scheme"));
     }
     if next.host_str().is_none_or(str::is_empty) {
@@ -504,9 +610,18 @@ fn transfer_cancellable(
     endpoint: &Endpoint, start: &Url, headers: Option<&str>, max_bytes: u64,
     cancelled: Option<&AtomicBool>, sink: &mut dyn FnMut(&[u8]),
 ) -> Result<(), FetchError> {
+    transfer_checked(endpoint, start, headers, max_bytes, cancelled, false, sink)
+}
+
+/// [`transfer_cancellable`], where `hashed` says the caller checks the body against a hash from the
+/// HTTPS manifest, so an endpoint that serves packages over plain HTTP may be followed there.
+fn transfer_checked(
+    endpoint: &Endpoint, start: &Url, headers: Option<&str>, max_bytes: u64,
+    cancelled: Option<&AtomicBool>, hashed: bool, sink: &mut dyn FnMut(&[u8]),
+) -> Result<(), FetchError> {
     let check_cancelled = || if cancelled.is_some_and(|flag| flag.load(Ordering::Acquire)) { Err(FetchError::Cancelled) } else { Ok(()) };
     check_cancelled()?;
-    if start.scheme() != endpoint.scheme() {
+    if !endpoint.allows(start.scheme(), hashed) {
         return Err(FetchError::BadRedirect("request is not for the endpoint"));
     }
     let agent = HSTRING::from(concat!("Bowser-CrxFetch/", env!("CARGO_PKG_VERSION")));
@@ -524,14 +639,14 @@ fn transfer_cancellable(
     // SAFETY: `session` is a live session handle.
     unsafe { WinHttpSetTimeouts(session.0, 10_000, 10_000, 30_000, 30_000) }
         .map_err(|e| net("timeouts", e))?;
-    let request_flags = if endpoint.secure {
-        WINHTTP_FLAG_SECURE
-    } else {
-        WINHTTP_OPEN_REQUEST_FLAGS(0)
-    };
     let mut url = start.clone();
     for _hop in 0..=MAX_REDIRECTS {
         check_cancelled()?;
+        let request_flags = if url.scheme() == "https" {
+            WINHTTP_FLAG_SECURE
+        } else {
+            WINHTTP_OPEN_REQUEST_FLAGS(0)
+        };
         let host = HSTRING::from(url.host_str().unwrap_or_default());
         let port = url.port_or_known_default().unwrap_or(endpoint.port);
         let object = HSTRING::from(&url[Position::BeforePath..Position::AfterQuery]);
@@ -579,7 +694,7 @@ fn transfer_cancellable(
         }
         match http_status {
             301 | 302 | 303 | 307 | 308 => {
-                url = redirect_target(endpoint, &url, &location(request.0)?)?;
+                url = redirect_target(endpoint, &url, &location(request.0)?, hashed)?;
                 continue;
             }
             200 => {}
@@ -630,10 +745,25 @@ fn transfer_cancellable(
 // Update manifest
 // ---------------------------------------------------------------------------------------------
 
-/// What the manifest offers: where the CRX is.
+/// What the manifest offers: where the CRX is, and the SHA-256 the manifest named for it (both
+/// stores send `hash_sha256`). A package is refused when it does not match a named hash, and a
+/// plain-HTTP codebase is accepted only with one.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Offer {
     codebase: Url,
+    sha256: Option<[u8; 32]>,
+}
+
+/// 64 hexadecimal digits, either case.
+fn parse_sha256(text: &str) -> Option<[u8; 32]> {
+    if text.len() != 64 || !text.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    let mut out = [0u8; 32];
+    for (index, byte) in out.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(&text[index * 2..index * 2 + 2], 16).ok()?;
+    }
+    Some(out)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -808,12 +938,12 @@ fn printable(text: &str) -> String {
 
 /// Validates the `codebase` URL against the endpoint's rules: the endpoint's scheme (HTTPS in
 /// production), a host, no credentials, and on a plain-HTTP test endpoint that same host only.
-fn codebase_url(endpoint: &Endpoint, text: &str) -> Result<Url, FetchError> {
+fn codebase_url(endpoint: &Endpoint, text: &str, hashed: bool) -> Result<Url, FetchError> {
     if text.is_empty() {
         return Err(manifest_error("empty codebase"));
     }
     let url = Url::parse(text).map_err(|_| manifest_error("codebase is not a URL"))?;
-    if url.scheme() != endpoint.scheme() {
+    if !endpoint.allows(url.scheme(), hashed) {
         return Err(manifest_error("codebase is not https"));
     }
     if url.host_str().is_none_or(str::is_empty) {
@@ -830,7 +960,7 @@ fn codebase_url(endpoint: &Endpoint, text: &str) -> Result<Url, FetchError> {
 
 /// Reads an update manifest for `id`, as `safe_manifest_parser.cc` does but for three things only:
 /// `<app appid status>` and `<updatecheck status codebase format>` inside a `<gupdate>` 2.0 root.
-/// The version, hash, size and the rest are ignored: the CRX is accepted on its signature and id.
+/// `hash_sha256` is kept (the package must match it); the version, size and the rest are ignored.
 fn parse_update_manifest(endpoint: &Endpoint, xml: &[u8], id: &str) -> Result<Offer, FetchError> {
     let xml = std::str::from_utf8(xml).map_err(|_| manifest_error("not UTF-8"))?;
     let xml = xml.strip_prefix('\u{feff}').unwrap_or(xml);
@@ -895,7 +1025,11 @@ fn parse_update_manifest(endpoint: &Endpoint, xml: &[u8], id: &str) -> Result<Of
             return Err(manifest_error(&format!("updatecheck status {}", printable(other))));
         }
     }
-    let codebase = codebase_url(endpoint, check.attr("codebase").unwrap_or_default())?;
+    let sha256 = match check.attr("hash_sha256") {
+        None | Some("") => None,
+        Some(text) => Some(parse_sha256(text).ok_or_else(|| manifest_error("hash_sha256 is not 64 hex digits"))?),
+    };
+    let codebase = codebase_url(endpoint, check.attr("codebase").unwrap_or_default(), sha256.is_some())?;
     // Chromium's parser has no notion of `puff`; a package is called puff here when the check names
     // that format without `crx3`, or the codebase file is a `.puff`.
     let formats = check.attr("format").unwrap_or_default().to_ascii_lowercase();
@@ -904,7 +1038,7 @@ fn parse_update_manifest(endpoint: &Endpoint, xml: &[u8], id: &str) -> Result<Of
     if puff_path || (names("puff") && !names("crx3")) {
         return Err(FetchError::PuffOnly);
     }
-    Ok(Offer { codebase })
+    Ok(Offer { codebase, sha256 })
 }
 
 /// GETs the update manifest for `id`. Any status but 200 is a [`FetchError::Http`], 204 included.
@@ -970,7 +1104,17 @@ fn download_from_cancellable(
     endpoint: &Endpoint, id: &str, prodversion: &str, max_bytes: u64, cancelled: Option<&AtomicBool>,
 ) -> Result<Vec<u8>, FetchError> {
     let offer = fetch_offer_cancellable(endpoint, id, prodversion, cancelled)?;
-    download_bytes_cancellable(endpoint, &offer.codebase, max_bytes, cancelled)
+    let Some(expected) = offer.sha256 else {
+        return download_bytes_cancellable(endpoint, &offer.codebase, max_bytes, cancelled);
+    };
+    let mut bytes = Vec::new();
+    transfer_checked(endpoint, &offer.codebase, None, max_bytes, cancelled, true, &mut |chunk| {
+        bytes.extend_from_slice(chunk)
+    })?;
+    if crx::sha256(&bytes) != Some(expected) {
+        return Err(FetchError::HashMismatch);
+    }
+    Ok(bytes)
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -985,8 +1129,8 @@ pub fn download_crx(id: &str, prodversion: &str) -> Result<Vec<u8>, FetchError> 
 
 /// Cancellable download only. Callers must still run the existing CRX verifier/unpacker before
 /// using these untrusted bytes; Store retains the authenticated original for a future updater.
-pub(crate) fn download_crx_cancellable(id: &str, prodversion: &str, cancelled: &AtomicBool) -> Result<Vec<u8>, FetchError> {
-    download_from_cancellable(&Endpoint::production(), id, prodversion, MAX_DOWNLOAD_BYTES, Some(cancelled))
+pub(crate) fn download_crx_cancellable(source: StoreSource, id: &str, prodversion: &str, cancelled: &AtomicBool) -> Result<Vec<u8>, FetchError> {
+    download_from_cancellable(&source.endpoint(), id, prodversion, MAX_DOWNLOAD_BYTES, Some(cancelled))
 }
 
 /// Verifies `crx` for `id` and unpacks it, stamped with its developer key, into `dest`: a folder the
@@ -1262,12 +1406,12 @@ mod tests {
             "https://",
             "javascript:alert(1)",
         ] {
-            assert!(redirect_target(&endpoint, &current, location).is_err(), "{location}");
+            assert!(redirect_target(&endpoint, &current, location, false).is_err(), "{location}");
         }
         // Like `updater.rs`: any HTTPS host is followed. The CRX is accepted on its signature and id.
-        let next = redirect_target(&endpoint, &current, "https://clients2.googleusercontent.com/crx/blobs/x").unwrap();
+        let next = redirect_target(&endpoint, &current, "https://clients2.googleusercontent.com/crx/blobs/x", false).unwrap();
         assert_eq!(next.host_str(), Some("clients2.googleusercontent.com"));
-        let relative = redirect_target(&endpoint, &current, "/other?a=1").unwrap();
+        let relative = redirect_target(&endpoint, &current, "/other?a=1", false).unwrap();
         assert_eq!(relative.host_str(), Some("clients2.google.com"));
     }
 
@@ -1282,10 +1426,10 @@ mod tests {
             "http://example.com/",
             "http://127.0.0.2:4242/",
         ] {
-            assert!(redirect_target(&endpoint, &current, location).is_err(), "{location}");
+            assert!(redirect_target(&endpoint, &current, location, false).is_err(), "{location}");
         }
-        assert!(redirect_target(&endpoint, &current, "http://127.0.0.1:4242/next").is_ok());
-        assert!(redirect_target(&endpoint, &current, "/next").is_ok());
+        assert!(redirect_target(&endpoint, &current, "http://127.0.0.1:4242/next", false).is_ok());
+        assert!(redirect_target(&endpoint, &current, "/next", false).is_ok());
     }
 
     #[test]
@@ -1328,13 +1472,85 @@ mod tests {
             Err(FetchError::BadRedirect(_))
         ));
         assert!(matches!(
-            codebase_url(&test, "https://clients2.google.com/crx"),
+            codebase_url(&test, "https://clients2.google.com/crx", false),
             Err(FetchError::Manifest(_))
         ));
         assert!(matches!(
-            codebase_url(&test, "http://clients2.google.com/crx"),
+            codebase_url(&test, "http://clients2.google.com/crx", true),
             Err(FetchError::Manifest(_))
         ));
+    }
+
+    // ---- Edge Add-ons -----------------------------------------------------------------------
+
+    #[test]
+    fn edge_listing_parser_accepts_only_exact_edge_detail_pages() {
+        for text in [
+            format!("https://microsoftedge.microsoft.com/addons/detail/ublock-origin/{ID}"),
+            format!("https://microsoftedge.microsoft.com/addons/detail/{ID}"),
+            format!("https://microsoftedge.microsoft.com/addons/detail/ublock-origin/{ID}?hl=en-GB"),
+        ] {
+            assert_eq!(parse_edge_url(&text).as_deref(), Ok(ID), "{text}");
+            assert_eq!(parse_listing_url(&text), Ok((StoreSource::Edge, ID.to_owned())), "{text}");
+        }
+        for text in [
+            "https://microsoftedge.microsoft.com/addons/Microsoft-Edge-Extensions-Home".to_owned(),
+            "https://microsoftedge.microsoft.com/addons/category/Productivity".to_owned(),
+            "https://microsoftedge.microsoft.com/addons/search/ublock".to_owned(),
+            format!("http://microsoftedge.microsoft.com/addons/detail/x/{ID}"),
+            format!("https://microsoftedge.microsoft.com:8443/addons/detail/x/{ID}"),
+            format!("https://evil.example/addons/detail/x/{ID}"),
+            format!("https://microsoftedge.microsoft.com.evil.example/addons/detail/x/{ID}"),
+            format!("https://microsoftedge.microsoft.com/detail/x/{ID}"),
+            format!("https://microsoftedge.microsoft.com/addons/detail/x/{ID}?id={OTHER_ID}"),
+            format!("https://microsoftedge.microsoft.com/addons/detail/{OTHER_ID}/{ID}"),
+        ] {
+            assert!(parse_edge_url(&text).is_err(), "{text}");
+            assert!(parse_listing_url(&text).is_err(), "{text}");
+        }
+        // A Chrome Web Store listing is the Chrome source, and the Store host never parses as Edge.
+        let chrome = format!("https://chromewebstore.google.com/detail/x/{ID}");
+        assert_eq!(parse_listing_url(&chrome), Ok((StoreSource::Chrome, ID.to_owned())));
+        assert!(parse_edge_url(&chrome).is_err());
+        assert_eq!(StoreSource::Edge.listing_url(ID), format!("https://microsoftedge.microsoft.com/addons/detail/{ID}"));
+        assert_eq!(StoreSource::from_tag("edge"), Some(StoreSource::Edge));
+        assert_eq!(StoreSource::from_tag(StoreSource::Chrome.tag()), Some(StoreSource::Chrome));
+        assert_eq!(StoreSource::from_tag("Edge"), None);
+    }
+
+    #[test]
+    fn edge_asks_its_own_update_service_with_the_same_protocol() {
+        let url = request_url(&Endpoint::edge(), ID, PRODVERSION).unwrap();
+        assert_eq!(url.scheme(), "https");
+        assert_eq!(url.host_str(), Some("edge.microsoft.com"));
+        assert_eq!(url.path(), "/extensionwebstorebase/v1/crx");
+        assert!(url.query().unwrap().contains("prod=chromiumcrx"));
+        assert_eq!(request_url(&Endpoint::production(), ID, PRODVERSION).unwrap().host_str(), Some("clients2.google.com"));
+    }
+
+    #[test]
+    fn a_plain_http_package_is_accepted_only_from_edge_and_only_with_a_named_hash() {
+        const HASH: &str = "F27D8F7B618B81294374CC3CE5502DB3B1B860CCDDC48613D7ED5E18FCA30768";
+        let http = "http://msedgeextensions.f.tlu.dl.delivery.mp.microsoft.com/filestreamingservice/files/x?P1=1";
+        let edge = Endpoint::edge();
+        let with_hash = manifest_with(&format!("appid=\"{ID}\" status=\"ok\""), &format!("codebase=\"{http}\" hash_sha256=\"{HASH}\" status=\"ok\" version=\"1\""));
+        let offer = parse_update_manifest(&edge, with_hash.as_bytes(), ID).unwrap();
+        assert_eq!(offer.codebase.scheme(), "http");
+        assert_eq!(offer.sha256.unwrap()[..2], [0xf2, 0x7d]);
+        let without = manifest_with(&format!("appid=\"{ID}\" status=\"ok\""), &format!("codebase=\"{http}\" status=\"ok\" version=\"1\""));
+        assert!(matches!(parse_update_manifest(&edge, without.as_bytes(), ID), Err(FetchError::Manifest(_))));
+        // Google's service never gets a plain-HTTP package, hash or not.
+        assert!(matches!(parse_update_manifest(&Endpoint::production(), with_hash.as_bytes(), ID), Err(FetchError::Manifest(_))));
+        // A malformed hash refuses the manifest instead of being ignored.
+        let bad = manifest_with(&format!("appid=\"{ID}\" status=\"ok\""), &format!("codebase=\"{CODEBASE}\" hash_sha256=\"00\" status=\"ok\""));
+        assert!(matches!(parse_update_manifest(&Endpoint::production(), bad.as_bytes(), ID), Err(FetchError::Manifest(_))));
+        // Redirects of a hashed package may use plain HTTP on Edge only; the manifest request never may.
+        let current = Url::parse(http).unwrap();
+        assert!(redirect_target(&edge, &current, "http://cdn.example/x", true).is_ok());
+        assert!(redirect_target(&edge, &current, "http://cdn.example/x", false).is_err());
+        assert!(redirect_target(&Endpoint::production(), &current, "http://cdn.example/x", true).is_err());
+        assert_eq!(parse_sha256(&HASH.to_ascii_lowercase()), parse_sha256(HASH));
+        assert!(parse_sha256(&HASH[1..]).is_none());
     }
 
     // ---- update manifest -------------------------------------------------------------------
@@ -1351,7 +1567,7 @@ mod tests {
     fn good_manifest(id: &str, codebase: &str) -> String {
         manifest_with(
             &format!("appid=\"{id}\" cohort=\"1:\" cohortname=\"Stable\" status=\"ok\""),
-            &format!("codebase=\"{codebase}\" fp=\"1.abc\" hash_sha256=\"00\" size=\"123\" status=\"ok\" version=\"1.2\""),
+            &format!("codebase=\"{codebase}\" fp=\"1.abc\" size=\"123\" status=\"ok\" version=\"1.2\""),
         )
     }
 

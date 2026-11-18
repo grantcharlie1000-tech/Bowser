@@ -217,10 +217,12 @@ export function scenarios() {
   add({ name: 'bookmark-bar', surface: 'bar', owner: 'B', query: 'view=bar', size: { standard: [1280, 30], compact: [760, 30] }, messages: (sc) => [stateMessage(sc), address.bar] });
 
   // Popup pages (?view=popup): menus, palette, site information, downloads bubble.
-  const popup = (name, owner, msg, act = null) => add({ name, surface: 'popup', owner, query: 'view=popup', fit: true, act,
-    size: { standard: [1280, 900], compact: [1280, 420] }, messages: (sc) => [stateMessage(sc), msg] });
+  const popup = (name, owner, msg, act = null, extra = []) => add({ name, surface: 'popup', owner, query: 'view=popup', fit: true, act,
+    size: { standard: [1280, 900], compact: [1280, 420] }, messages: (sc) => [stateMessage(sc), msg, ...extra] });
   popup('menu-main', 'D', mainMenu);
-  popup('menu-main-submenu', 'D', mainMenu, 'openSubmenu');
+  // The main menu hangs from the button at the window's right edge: Rust's `room` says its
+  // submenus open to the left (html_popup.rs flyout_room).
+  popup('menu-main-submenu', 'D', mainMenu, 'openSubmenu', [{ v: 1, t: 'room', tok: mainMenu.tok, l: 1000, r: 0 }]);
   popup('menu-tab', 'D', tabMenu);
   popup('palette-populated', 'D', popupPages.palette);
   popup('palette-empty', 'D', { ...popupPages.palette, items: [] });

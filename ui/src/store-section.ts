@@ -1,38 +1,26 @@
-// Built-in store uses the trusted settings bridge. No frame, external assets or URL navigation.
+// Bowser's extension installation page (bowser://store over ?view=settings). It shows one card while
+// a package is in flight: which extension, what it can do, and Add or Cancel. Otherwise it is the
+// installed-extensions manager. Uses the trusted settings bridge; no frame, external assets or
+// URL navigation. Discovery is the stores' own websites (Add to Bowser in the toolbar).
 import { el, icon } from './dom';
 import { textButton } from './panels/kit';
 import { mountExtensionsSection, type ExtensionsSectionOptions } from './extensions-section';
 import type { PanelFields, SnapshotMsg } from './protocol';
-import { filterCatalogue, isStoreId, parseStoreSnapshot, PERMISSION_GROUPS, storeBusy, storeDisplayName, storeFailure, storeInstallCommand, storeProgress, storeRequestCommand, storeRetryCommand, storeStatus, storeSteps, type StoreEntry, type StoreProgress, type StoreSnapshot, type StoreStepView } from './store-logic';
+import {
+  isStoreId, parseStoreSnapshot, PERMISSION_GROUPS, STORE_SOURCES, storeAccess, storeBusy, storeDisplayName, storeFailure, storeListingCommand, storeProgress,
+  storeRequestCommand, storeRetryCommand, storeStatus, type StoreProgress, type StoreSnapshot,
+} from './store-logic';
 
 export function mountStoreSection(options: ExtensionsSectionOptions): { readonly root: HTMLElement; receive(message: SnapshotMsg): boolean | null; hide(): void } {
   const root = el('div', 'bs bw-scroll');
   root.hidden = true;
   let snapshot: StoreSnapshot | null = null;
-  let view: 'discover' | 'categories' | 'installed' = 'discover';
-  let category = '';
-  let selected = '';
   let pending = false;
   let invalid = false;
   let requested = ''; // the ID of a request sent but not yet answered, for the card's identity row
   const header = el('header', 'bs-header');
-  const brand = el('div', 'bs-brand tw:flex tw:items-center tw:gap-3');
-  const tile = el('span', 'bs-brand-icon'); tile.append(icon('puzzle', { size: 24 }));
-  const title = el('h1'); title.textContent = 'Extension installation'; title.tabIndex = -1; brand.append(tile, title);
-  header.append(brand, textButton('Extension settings', () => options.send({ a: 'section', text: 'extensions' }), { icon: 'gear' }));
-  const layout = el('div', 'bs-layout');
-  const side = el('aside', 'bs-side');
-  const nav = el('nav', 'bs-nav'); nav.setAttribute('aria-label', 'Store sections');
-  const navButtons = new Map<string, HTMLButtonElement>();
-  for (const [key, label, glyph] of [['discover', 'Discover', 'glint'], ['categories', 'Categories', 'grid'], ['installed', 'Installed', 'puzzle']] as const) {
-    const button = textButton(label, () => { view = key; selected = ''; category = ''; render(); }, { icon: glyph });
-    navButtons.set(key, button); nav.append(button);
-  }
-  const browse = textButton('Web Store', () => options.send({ a: 'storebrowse' }), { icon: 'external', aria: 'Chrome Web Store' });
-  side.append(nav, browse);
-  const main = el('main', 'bs-main'); main.setAttribute('aria-label', 'Extension catalogue');
-  const search = el('input', 'bw-input bs-search'); search.type = 'search'; search.placeholder = 'Search extensions'; search.setAttribute('aria-label', 'Search extensions'); search.maxLength = 128;
-  const body = el('div', 'bs-body');
+  const title = el('h1'); title.textContent = 'Extensions'; title.tabIndex = -1;
+  header.append(title, textButton('Settings', () => options.send({ a: 'section', text: 'extensions' }), { icon: 'gear', subtle: true, aria: 'Extension settings' }));
   const status = el('section', 'bs-status'); status.setAttribute('aria-label', 'Extension installation');
   // Two persistent live regions: the card itself is rebuilt on every snapshot (progress ticks too),
   // so it is not live; these say each new state once, errors assertively.
@@ -42,66 +30,13 @@ export function mountStoreSection(options: ExtensionsSectionOptions): { readonly
   const installed = mountExtensionsSection({ ...options, idPrefix: 'bs', toast: (text, ok) => { feedback.textContent = text; feedback.hidden = false; feedback.setAttribute('role', ok ? 'status' : 'alert'); } });
   delete installed.root.dataset.row; // Store management is not a second searchable Settings row.
   installed.root.classList.add('bs-installed');
-  main.append(search, feedback, live, alertLive, status, body, installed.root);
-  layout.append(side, main); root.append(header, layout);
-  search.addEventListener('input', () => { selected = ''; renderBody(); });
-  root.addEventListener('keydown', (event) => {
-    if (event.key === 'f' && event.ctrlKey && !event.altKey && !event.shiftKey) { event.preventDefault(); if (snapshot && snapshot.phase !== 'idle') return; view = 'discover'; selected = ''; renderBody(); search.focus(); search.select(); }
-  });
-  const sendInstall = (id: string): void => {
-    const command = storeInstallCommand(id);
-    if (!command || pending || (snapshot && storeBusy(snapshot.phase))) return;
-    if (options.send(command)) { pending = true; requested = id; render(); }
-  };
-  const paragraph = (value: string, cls = 'bs-muted'): HTMLElement => { const p = el('p', cls); p.textContent = value; return p; };
-  const badge = (entry: StoreEntry): HTMLElement => { const b = el('span', 'bs-badge'); b.textContent = entry.compatibility ? entry.compatibility[0]!.toUpperCase() + entry.compatibility.slice(1) : 'Untested'; return b; };
-  const installButton = (entry: StoreEntry): HTMLButtonElement => {
-    const button = textButton('Get extension', () => sendInstall(entry.id), { primary: true, icon: 'download', aria: `Get ${entry.name}` });
-    button.dataset.focus = `get-${entry.id}`;
-    button.disabled = invalid || pending || !!(snapshot && storeBusy(snapshot.phase)); return button;
-  };
-  const detail = (entry: StoreEntry): HTMLElement => {
-    const section = el('section', 'bs-detail'); section.setAttribute('aria-label', entry.name);
-    const back = textButton('Back to catalogue', () => { selected = ''; renderBody(); root.querySelector<HTMLElement>(`[data-focus="details-${entry.id}"]`)?.focus(); }, { icon: 'back' });
-    const h = el('h2'); h.textContent = entry.name; h.tabIndex = -1;
-    const intro = el('div', 'bs-detail-head'); intro.append(h, badge(entry), installButton(entry));
-    const facts = el('dl', 'bs-facts');
-    for (const [label, value] of [['Publisher', entry.publisher], ['Category', entry.category], ['Package source', entry.source], ['Publisher website', entry.homepage], ['Provenance', entry.provenance], ['Catalogue checked', entry.checked], ['Compatibility', entry.compatibilityNote || 'Untested. No version-specific compatibility result is available.']] as const) {
-      const dt = el('dt'); dt.textContent = label; const dd = el('dd'); dd.textContent = value || 'Not provided'; facts.append(dt, dd);
-    }
-    const sources = el('div', 'bs-source-actions');
-    sources.append(textButton('View original listing', () => options.send({ a: 'storelisting', text: entry.id }), { icon: 'external' }), textButton('Publisher website', () => options.send({ a: 'storesource', text: entry.id }), { icon: 'external' }));
-    section.append(back, intro, sources, paragraph(entry.description, 'bs-description'), facts);
-    return section;
-  };
-  function renderBody(): void {
-    const reviewing = !!snapshot && snapshot.phase !== 'idle';
-    installed.root.hidden = view !== 'installed'; search.hidden = reviewing || view === 'installed'; body.hidden = reviewing || view === 'installed'; side.hidden = reviewing;
-    for (const [key, button] of navButtons) { if (key === view) button.setAttribute('aria-current', 'page'); else button.removeAttribute('aria-current'); }
-    if (reviewing || view === 'installed') return;
-    if (invalid) { body.replaceChildren(paragraph('The store response could not be read. Refresh the page to try again.')); return; }
-    if (!snapshot) { body.replaceChildren(paragraph('Loading the extension catalogue…')); return; }
-    const chosen = snapshot.catalogue.find((entry) => entry.id === selected);
-    if (chosen) { body.replaceChildren(detail(chosen)); return; }
-    const categories = el('div', 'bs-categories'); categories.setAttribute('aria-label', 'Filter by category');
-    if (view === 'categories') for (const [index, name] of ['', ...new Set(snapshot.catalogue.map((entry) => entry.category))].entries()) {
-      const button = textButton(name || 'All extensions', () => { category = name; renderBody(); root.querySelector<HTMLElement>(`[data-category="${index}"]`)?.focus(); }); button.dataset.category = String(index); button.setAttribute('aria-pressed', String(category === name)); categories.append(button);
-    }
-    const items = filterCatalogue(snapshot.catalogue, search.value, category);
-    const grid = el('div', 'bs-grid');
-    for (const entry of items) {
-      const card = el('article', 'bs-card');
-      const glyph = el('span', 'bs-card-icon'); glyph.append(icon('puzzle', { size: 24 }));
-      const title = el('h3'); const open = textButton(entry.name, () => { selected = entry.id; renderBody(); body.querySelector<HTMLElement>('h2')?.focus(); }, { subtle: true }); open.dataset.focus = `details-${entry.id}`; title.append(open);
-      const meta = paragraph(`${entry.publisher} · ${entry.category}`);
-      const foot = el('div', 'bs-card-foot'); foot.append(badge(entry), installButton(entry));
-      card.append(glyph, title, meta, paragraph(entry.description, 'bs-card-description'), foot); grid.append(card);
-    }
-    if (items.length === 0) grid.append(paragraph('No extensions match. Try another search or category.'));
-    body.replaceChildren(categories, grid);
-  }
-  // ---- The installation card: which package, the four steps, the state, then its actions ----
-  const STEP_WORDS = { done: 'done', current: 'in progress', failed: 'failed', todo: 'not started' } as const;
+  const main = el('main', 'bs-main');
+  main.append(feedback, live, alertLive, status, installed.root);
+  root.append(header, main);
+
+  const paragraph = (value: string, cls: string): HTMLElement => { const p = el('p', cls); p.textContent = value; return p; };
+
+  // ---- The card: which package, its state, then its actions ----
   let brokenIcon = ''; // an icon that failed to decode: the card is rebuilt per snapshot, so don't retry it
   /** The package's own icon once Rust has read it from the package (review onwards), else the puzzle. */
   const identityTile = (src: string): HTMLElement => {
@@ -115,170 +50,159 @@ export function mountStoreSection(options: ExtensionsSectionOptions): { readonly
     img.src = src;
     tile.classList.add('has-image'); tile.append(img); return tile;
   };
-  const identity = (s: Pick<StoreSnapshot, 'name' | 'version' | 'extensionId' | 'catalogue'> & { readonly icon?: string }): HTMLElement => {
-    const row = el('div', 'bs-ident');
-    const tile = identityTile(s.icon ?? '');
-    const text = el('div', 'bs-ident-text');
-    const name = el('p', 'bs-ident-name'); name.textContent = storeDisplayName(s as StoreSnapshot);
-    const meta = el('p', 'bs-ident-meta');
-    if (s.version) { const version = el('span'); version.textContent = `Version ${s.version}`; meta.append(version); }
-    if (isStoreId(s.extensionId)) { const id = el('span', 'bs-ident-id'); id.textContent = `ID ${s.extensionId}`; meta.append(id); }
-    text.append(name, meta); row.append(tile, text); return row;
+  /** The tile and the state heading (the focus target after a step changes), with an optional line under it. */
+  const head = (s: Pick<StoreSnapshot, 'icon'> | null, text: string, line = '', tone?: 'ok' | 'error', below?: HTMLElement): HTMLElement => {
+    const box = el('div', 'bs-head');
+    if (s) box.append(identityTile(s.icon));
+    else if (tone) { const mark = el('span', 'bs-head-mark'); mark.dataset.tone = tone; mark.append(icon(tone === 'ok' ? 'check' : 'warning', { size: 20 })); box.append(mark); }
+    const words = el('div', 'bs-head-text');
+    const heading = el('h2', 'bs-status-title'); heading.tabIndex = -1; heading.textContent = text;
+    words.append(heading);
+    if (line) words.append(paragraph(line, 'bs-head-body'));
+    box.append(words);
+    // A bar and its control continue the same row, out to the card's edge.
+    if (below) box.append(below);
+    if (s && tone) { const mark = el('span', 'bs-head-badge'); mark.dataset.tone = tone; mark.append(icon(tone === 'ok' ? 'check' : 'warning', { size: 16 })); box.append(mark); }
+    return box;
   };
-  const stepper = (steps: readonly StoreStepView[]): HTMLElement => {
-    const list = el('ol', 'bs-steps'); list.setAttribute('aria-label', 'Installation steps');
-    for (const [index, step] of steps.entries()) {
-      const item = el('li', 'bs-step'); item.dataset.state = step.state;
-      if (step.state === 'current' || step.state === 'failed') item.setAttribute('aria-current', 'step');
-      const mark = el('span', 'bs-step-mark');
-      if (step.state === 'done') mark.append(icon('check', { size: 12, fine: true }));
-      else if (step.state === 'failed') mark.append(icon('close', { size: 12, fine: true }));
-      else mark.textContent = String(index + 1);
-      const label = el('span', 'bs-step-label'); label.textContent = step.label;
-      const said = el('span', 'tw:sr-only'); said.textContent = `, ${STEP_WORDS[step.state]}`;
-      item.append(mark, label, said); list.append(item);
-    }
-    return list;
-  };
-  const progressBar = (p: StoreProgress): HTMLElement => {
+  /** A short bar with its control (Cancel) on the same row, under the name. */
+  const progressBar = (p: StoreProgress, control?: HTMLElement): HTMLElement => {
     const wrap = el('div', 'bs-progress');
+    const row = el('div', 'bs-progress-row');
     const bar = el('div', `bs-bar ${p.kind === 'determinate' ? 'is-determinate' : 'is-indeterminate'}`);
     bar.setAttribute('role', 'progressbar'); bar.setAttribute('aria-label', p.label);
-    bar.append(el('span', 'bs-bar-fill')); wrap.append(bar);
+    bar.append(el('span', 'bs-bar-fill')); row.append(bar);
+    if (control) row.append(control);
+    wrap.append(row);
     if (p.kind === 'determinate') {
       const percent = Math.round(p.value * 100);
       bar.setAttribute('aria-valuemin', '0'); bar.setAttribute('aria-valuemax', '100'); bar.setAttribute('aria-valuenow', String(percent)); bar.setAttribute('aria-valuetext', p.text);
       bar.style.setProperty('--bs-f', String(p.value));
-      wrap.append(paragraph(`${p.text} · ${percent}%`, 'bs-progress-text'));
     }
     return wrap;
   };
-  /** The state heading (focus target after a step changes) with its explanation, and an optional glyph. */
-  const head = (text: string, explain: string, tone?: 'ok' | 'error' | 'quiet'): HTMLElement => {
-    const box = el('div', 'bs-head');
-    if (tone) {
-      const mark = el('span', 'bs-head-mark'); mark.dataset.tone = tone;
-      mark.append(icon(tone === 'ok' ? 'check' : tone === 'error' ? 'warning' : 'info', { size: 20 }));
-      box.append(mark);
-    }
-    const words = el('div', 'bs-head-text');
-    const heading = el('h2', 'bs-status-title'); heading.tabIndex = -1; heading.textContent = text;
-    words.append(heading);
-    if (explain) words.append(paragraph(explain, 'bs-head-body'));
-    box.append(words); return box;
+  /** A download that failed: the bar turns red and breaks in two around an exclamation mark. */
+  const failedBar = (control?: HTMLElement): HTMLElement => {
+    const wrap = el('div', 'bs-progress');
+    const row = el('div', 'bs-progress-row');
+    const bar = el('div', 'bs-bar is-failed');
+    bar.setAttribute('role', 'img'); bar.setAttribute('aria-label', 'Download failed');
+    const mark = el('span', 'bs-bar-break'); mark.textContent = '!';
+    bar.append(el('span', 'bs-bar-half'), mark, el('span', 'bs-bar-half'));
+    row.append(bar);
+    if (control) row.append(control);
+    wrap.append(row);
+    return wrap;
   };
-  const action = (label: string, key: string, run: () => void, opts: { primary?: boolean; icon?: 'external'; aria?: string } = {}): HTMLButtonElement => {
+  const action = (label: string, key: string, run: () => void, opts: { primary?: boolean; subtle?: boolean; icon?: 'external'; aria?: string } = {}): HTMLButtonElement => {
     const button = textButton(label, run, opts); button.dataset.focus = key; return button;
   };
-  const browseButton = (): HTMLButtonElement => action('Web Store', 'browse', () => options.send({ a: 'storebrowse' }), { icon: 'external', aria: 'Open Chrome Web Store' });
   const retry = (command: PanelFields): void => {
     if (pending || !options.send(command)) return;
-    pending = true; requested = command.text ?? ''; render();
+    pending = true; requested = (command.text ?? '').replace(/^edge:/, ''); render();
   };
-  let techOpen = false;
-  const technical = (detail: string): HTMLElement => {
-    const box = el('details', 'bs-tech'); box.open = techOpen;
-    box.addEventListener('toggle', () => { techOpen = box.open; });
-    const summary = el('summary'); summary.textContent = 'Technical details'; summary.dataset.focus = 'tech';
-    const text = el('p', 'bs-tech-text'); text.textContent = detail;
-    box.append(summary, text); return box;
+  // Folded sections keep their state across the re-renders a snapshot causes.
+  const folded = { details: false, tech: false };
+  const fold = (key: keyof typeof folded, label: string, cls: string, ...content: HTMLElement[]): HTMLElement => {
+    const box = el('details', cls); box.open = folded[key];
+    box.addEventListener('toggle', () => { folded[key] = box.open; });
+    const summary = el('summary'); summary.textContent = label; summary.dataset.focus = key;
+    box.append(summary, ...content); return box;
   };
+  /** What it can do, in plain words, then every declared list in full under Details. */
   const review = (s: StoreSnapshot): HTMLElement[] => {
-    const listing = s.catalogue.find((entry) => entry.id === s.extensionId);
-    const about = el('section', 'bs-section'); about.setAttribute('aria-labelledby', 'bs-about-h');
-    const aboutHead = el('h3', 'bw-section-header'); aboutHead.id = 'bs-about-h'; aboutHead.textContent = 'About this package';
-    const facts = el('dl', 'bs-facts bs-review-facts');
-    for (const [label, value] of [
-      ['Store / signing ID', s.extensionId],
-      ['Package version', s.version],
-      ['Publisher', listing ? `${listing.publisher} (catalogue attribution, not independently verified for this package)` : 'Unknown. Not independently verified.'],
-      ['Package source', `https://chromewebstore.google.com/detail/${s.extensionId}`],
-      ['Provenance', listing ? 'Curated listing metadata, not a verified publisher assertion.' : 'Requested from a validated Chrome Web Store listing. Not part of the curated Bowser catalogue.'],
-      ['Compatibility', 'Untested for this resolved package version. Installation alone does not establish compatibility.'],
-    ] as const) {
+    const { lines, later } = storeAccess(s);
+    const can = el('div', 'bs-access');
+    if (lines.length) {
+      const list = el('ul', 'bs-access-list'); list.setAttribute('aria-label', 'It can');
+      for (const line of lines) { const item = el('li'); item.textContent = line; list.append(item); }
+      can.append(list);
+    } else can.append(paragraph('It needs no special access.', 'bs-access-none'));
+    if (later) can.append(paragraph('It may ask for more access later.', 'bs-access-note'));
+    const facts = el('dl', 'bs-facts');
+    const fact = (label: string, value: HTMLElement | string): void => {
       const term = el('dt'); term.textContent = label;
-      const valueText = el('dd'); valueText.textContent = value; facts.append(term, valueText);
-    }
-    const source = action('View package source', 'source', () => options.send({ a: 'storelisting', text: s.extensionId }), { icon: 'external' });
-    about.append(aboutHead, facts, source);
-    const access = el('section', 'bs-section'); access.setAttribute('aria-labelledby', 'bs-access-h');
-    const accessHead = el('h3', 'bw-section-header'); accessHead.id = 'bs-access-h'; accessHead.textContent = 'What it can access';
-    const groups = el('div', 'bs-permissions');
-    const missing: string[] = [];
+      const data = el('dd'); if (typeof value === 'string') data.textContent = value; else data.append(value);
+      facts.append(term, data);
+    };
+    const listing = action(STORE_SOURCES[s.source], 'listing', () => { const command = storeListingCommand(s.extensionId, s.source); if (command) options.send(command); }, { subtle: true, icon: 'external', aria: `Open its ${STORE_SOURCES[s.source]} page` });
+    fact('From', listing);
+    fact('Version', s.version);
+    fact('ID', s.extensionId);
     for (const [key, label] of PERMISSION_GROUPS) {
       const values = s[key];
-      if (values.length === 0) { missing.push(label); continue; }
-      const group = el('div', 'bs-perm'); group.dataset.group = key;
-      const name = el('h4', 'bs-perm-name'); name.textContent = label;
-      const count = el('span', 'bs-perm-count'); count.textContent = String(values.length); name.append(count);
-      const list = el('ul', key === 'permissions' || key === 'optionalPermissions' ? 'bs-chips' : key === 'contentScriptDeclarations' ? 'bs-code' : 'bs-list');
+      if (values.length === 0) continue;
+      const list = el('ul', key === 'contentScriptDeclarations' ? 'bs-code' : 'bs-chips');
       for (const value of values) { const item = el('li'); item.textContent = value; list.append(item); }
-      group.append(name, list);
-      if (key === 'contentScriptDeclarations') group.append(paragraph('Complete static declarations preserve exclusions, file order, frame access, execution world and timing. Documented defaults for omitted fields are shown explicitly, not a guarantee of WebView2 behavior. Unrecognized fields are preserved without assuming their effect. Runtime injection may also use the declared extension APIs.'));
-      groups.append(group);
+      fact(label, list);
     }
-    if (missing.length === PERMISSION_GROUPS.length) groups.append(paragraph('This package declares no permissions, site access or content scripts.', 'bs-perm-none'));
-    else if (missing.length) groups.append(paragraph(`None declared: ${missing.join(' · ')}`, 'bs-perm-none'));
-    access.append(accessHead, groups);
-    return [access, about];
+    return [can, fold('details', 'Details', 'bs-more', facts)];
   };
   const fill = (s: StoreSnapshot): { readonly said: string; readonly alert: boolean } => {
     const failure = s.phase === 'error' ? storeFailure(s.error) : null;
     status.dataset.phase = s.phase;
-    const packageIcon = s.phase === 'review' || s.phase === 'installing' || s.phase === 'ready' ? s.icon : '';
-    if (!failure || failure.identity) status.append(identity({ ...s, icon: packageIcon }));
-    const steps = storeSteps(s);
-    if (steps.length) status.append(stepper(steps));
+    // The package's icon only once Rust has verified the package (review onwards).
+    const own = { icon: s.phase === 'review' || s.phase === 'installing' || s.phase === 'ready' ? s.icon : '' };
     const actions = el('div', 'bs-actions');
     const cancel = (): HTMLButtonElement => {
-      const button = action('Cancel installation', 'cancel', () => {
+      const button = action('Cancel', 'cancel', () => {
         const command = storeRequestCommand('storecancel', s.requestId);
         if (command && options.send(command)) { pending = true; render(); }
-      }); button.disabled = pending; return button;
+      }, { aria: 'Cancel installation' }); button.disabled = pending; return button;
     };
     const again = storeRetryCommand(s);
     const retryButton = (primary: boolean): HTMLButtonElement => {
       const button = action('Try again', 'retry', () => { if (again) retry(again); }, { primary }); button.disabled = pending; return button;
     };
+    const manage = (): HTMLButtonElement => action('Manage extensions', 'manage', () => options.send({ a: 'section', text: 'extensions' }));
+    const name = storeDisplayName(s);
     switch (s.phase) {
-      case 'downloading':
-        status.append(head(storeStatus(s), 'Bowser checks the package’s signature and contents before it shows you what the extension can access.'), progressBar(storeProgress(s)!));
-        if (s.requestId) actions.append(cancel());
+      case 'downloading': {
+        // The byte count, when Rust sends one, goes on the status line: the row stays one row.
+        const progress = storeProgress(s)!;
+        const line = progress.kind === 'determinate' ? `${storeStatus(s)} ${progress.text}` : storeStatus(s);
+        status.append(head(own, name, line, undefined, progressBar(progress, s.requestId ? cancel() : undefined)));
         break;
+      }
       case 'review': {
-        status.append(head(storeStatus(s), 'Required access is granted whenever the extension is on, and Bowser cannot narrow it. Optional declarations are shown separately and are not a promise of enforcement.'), ...review(s));
-        const approve = action(`Install ${s.name} ${s.version}`, 'approve', () => {
+        status.append(head(own, storeStatus(s), `Version ${s.version}`), ...review(s));
+        const approve = action('Add extension', 'approve', () => {
           const command = storeRequestCommand('storeapprove', s.requestId);
           if (command && !pending && options.send(command)) { pending = true; render(); }
-        }, { primary: true }); approve.disabled = pending;
+        }, { primary: true, aria: `Add ${name} ${s.version}` }); approve.disabled = pending;
         actions.append(approve);
         if (s.requestId) actions.append(cancel());
         actions.classList.add('is-sticky');
         break;
       }
       case 'installing':
-        status.append(head(storeStatus(s), `Adding ${storeDisplayName(s)} to this profile.`), progressBar(storeProgress(s)!));
+        status.append(head(own, name, storeStatus(s), undefined, progressBar(storeProgress(s)!)));
         break;
       case 'ready':
-        status.append(head(storeStatus(s), s.restart ? 'Restart Bowser to finish loading it. It does not run until then.' : 'Find it in Installed, where you can turn it off, check its access or remove it.', 'ok'));
-        actions.append(action('Manage installed extensions', 'manage', () => { view = 'installed'; selected = ''; render(); }), browseButton());
+        status.append(head(own, storeStatus(s), s.restart ? 'Restart Bowser to start it.' : '', 'ok'));
+        actions.append(manage());
         break;
       case 'error':
-        status.append(head(failure!.title, failure!.body, 'error'));
-        if (failure!.detail) status.append(technical(failure!.detail));
-        if (again) actions.append(retryButton(failure!.retry === 'suggest'));
-        if (failure!.manage) actions.append(action('Manage installed extensions', 'manage', () => { view = 'installed'; selected = ''; render(); }));
-        actions.append(browseButton());
+        if (failure!.download) {
+          // The download (or its check) failed: the bar breaks, and Try again takes Cancel's place.
+          status.append(head(own, failure!.title, failure!.body, undefined, failedBar(again ? retryButton(failure!.retry === 'suggest') : undefined)));
+        } else {
+          status.append(head(failure!.identity ? own : null, failure!.title, failure!.body, 'error'));
+          if (again) actions.append(retryButton(failure!.retry === 'suggest'));
+        }
+        if (failure!.detail) status.append(fold('tech', 'Details', 'bs-tech', paragraph(failure!.detail, 'bs-tech-text')));
+        if (failure!.manage) actions.append(manage());
         break;
       case 'cancelled':
-        status.append(head(storeStatus(s), 'Nothing was installed. You can start again whenever you like.', 'quiet'));
+        status.append(head(own, name, storeStatus(s)));
         if (again) actions.append(retryButton(false));
-        actions.append(browseButton());
         break;
       case 'idle': break;
     }
     if (actions.childElementCount) status.append(actions);
-    const said = s.phase === 'error' ? `${failure!.title}. ${failure!.body}` : s.phase === 'ready' && s.restart ? `${storeStatus(s)}. Restart Bowser to finish loading it.` : storeStatus(s);
+    const said = s.phase === 'error' ? [failure!.title, failure!.body].filter(Boolean).join('. ')
+      : s.phase === 'ready' && s.restart ? `${storeStatus(s)}. Restart Bowser to start it.`
+      : s.phase === 'downloading' || s.phase === 'installing' || s.phase === 'cancelled' ? `${name}: ${storeStatus(s)}` : storeStatus(s);
     return { said, alert: s.phase === 'error' };
   };
   const announce = (said: string, alert: boolean): void => {
@@ -295,38 +219,34 @@ export function mountStoreSection(options: ExtensionsSectionOptions): { readonly
     status.hidden = !invalid && !pending && !reviewing;
     if (invalid) {
       status.dataset.phase = 'error';
-      status.append(head('The store response could not be read', 'Refresh the page to try again.', 'error'));
-      announce('The store response could not be read. Refresh the page to try again.', true);
+      status.append(head(null, 'Something went wrong', 'Reload the page to try again.', 'error'));
+      announce('Something went wrong. Reload the page to try again.', true);
     } else if (pending && (!snapshot || !storeBusy(snapshot.phase))) {
       status.dataset.phase = 'downloading';
-      if (isStoreId(requested)) status.append(identity({ name: '', version: '', extensionId: requested, catalogue: snapshot?.catalogue ?? [] }));
-      status.append(head('Requesting the extension package…', ''), progressBar({ kind: 'indeterminate', label: 'Download progress' }));
-      announce('Requesting the extension package…', false);
+      const known = isStoreId(requested) ? snapshot?.catalogue.find((entry) => entry.id === requested)?.name ?? '' : '';
+      status.append(head({ icon: '' }, known || 'Getting the extension', known ? 'Getting it…' : '', undefined, progressBar({ kind: 'indeterminate', label: 'Download progress' })));
+      announce('Getting the extension…', false);
     } else if (snapshot && reviewing) {
       const { said, alert } = fill(snapshot);
       announce(said, alert);
     } else announce('', false);
-    renderBody();
-    // Production entrypoints browse Google's original site. The internal host is only review /
-    // management; never present the old curated cards behind an active installation request.
-    layout.classList.toggle('is-review', reviewing);
-    root.classList.toggle('is-install', reviewing);
-    side.hidden = reviewing;
-    if (reviewing) { search.hidden = true; body.hidden = true; }
+    installed.root.hidden = reviewing || pending || invalid;
+    root.classList.toggle('is-install', installed.root.hidden);
     if (focusKey) root.querySelector<HTMLElement>(`[data-focus="${focusKey}"]`)?.focus();
-    // The control that had focus went with the old state (Cancel, Install, Try again): keep the
-    // keyboard on the card by moving to its new heading rather than dropping to the document.
+    // The control that had focus went with the old state (Cancel, Add, Try again): keep the keyboard
+    // on the card by moving to its new heading rather than dropping to the document.
     if (hadFocus && !root.contains(document.activeElement)) (status.hidden ? title : status.querySelector<HTMLElement>('h2') ?? title).focus();
   }
   render();
-  return { root, hide: () => { root.hidden = true; snapshot = null; brokenIcon = ''; pending = false; invalid = false; requested = ''; techOpen = false; status.replaceChildren(); live.textContent = ''; alertLive.textContent = ''; }, receive: (message) => {
+  return { root, hide: () => { root.hidden = true; snapshot = null; brokenIcon = ''; pending = false; invalid = false; requested = ''; folded.details = false; folded.tech = false; status.replaceChildren(); live.textContent = ''; alertLive.textContent = ''; }, receive: (message) => {
     if (message.p === 'extensions') { installed.receive(message); return null; }
     if (message.p !== 'store') return null;
     const parsed = parseStoreSnapshot(message.d);
     if (!parsed) { invalid = true; snapshot = null; pending = false; render(); return null; }
     const entering = root.hidden && parsed.shown;
     const reviewing = parsed.shown && parsed.phase === 'review' && (snapshot?.phase !== 'review' || snapshot.requestId !== parsed.requestId);
-    if (parsed.phase !== 'error') techOpen = false;
+    if (parsed.phase !== 'error') folded.tech = false;
+    if (reviewing) folded.details = false;
     invalid = false; snapshot = parsed; pending = false; requested = ''; root.hidden = !parsed.shown; render(); if (reviewing) status.querySelector<HTMLElement>('h2')?.focus(); else if (entering) title.focus(); return parsed.shown;
   } };
 }

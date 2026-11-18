@@ -283,10 +283,11 @@ shim.
   and the native confirmation that lists the declarations. "Install CRX file…" does the same for a
   `.crx` file on disk (see "CRX file" below). "Open popup" opens the hosted popup; "Options" opens
   the hosted options page and is offered only for an extension that is on, loaded this session and
-  whose manifest declares an options page. "Check update" is shown disabled: extension updates are
-  not available in Bowser yet, and the button says so instead of sending a request that is refused. Bowser installs
-  unpacked folders and `.crx` files the user picks, and offers verified Store downloads through
-  `bowser://store`. See [Store catalogue and evidence](store-catalogue.md).
+  whose manifest declares an options page. There is no update button: extension updates are not
+  available yet, and a button that only refuses is not shown. The section's head opens Edge Add-ons
+  and the Chrome Web Store; "Load unpacked" and "Install .crx" sit quietly under the list. Bowser
+  installs unpacked folders and `.crx` files the user picks, and verified store downloads through
+  Add to Bowser. See [Store catalogue and evidence](store-catalogue.md).
 - **Wire** (`src/chrome_host/extensions_page.rs`). Rust -> page:
   `{v:1,t:"snap",p:"extensions",d:{state:"on"|"error",busy,ack,error,items:[{id,name,version,enabled,popup,options,failure,readable,all,sites,sitesN,scripts,scriptsN,perms,permsN,optional,optionalN}]}}`.
   Page -> Rust, in the settings page's `set` family: `extension` (`text` id, `on`), `extremove`

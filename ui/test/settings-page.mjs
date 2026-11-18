@@ -2197,7 +2197,7 @@ test('built-in Store and Settings share the trusted host without page navigation
   assert.equal(app.querySelector('.bs').hidden, false);
   assert.equal(app.querySelectorAll('iframe').length, 0);
   sent.length = 0;
-  app.querySelector('.bs').querySelectorAll('button').find((b) => b.textContent === 'Extension settings').click();
+  app.querySelector('.bs').querySelectorAll('button').find((b) => b.getAttribute('aria-label') === 'Extension settings').click();
   assert.deepEqual(sent, [{ v: 1, t: 'set', a: 'section', text: 'extensions' }]);
   deliver({ v: 1, t: 'settingsgo', s: 'extensions' });
   assert.equal(app.querySelector('.sp').hidden, false);
@@ -2234,8 +2234,12 @@ test('simple settings is the calm default, and All settings is one switch away',
   assert.equal(app.querySelector('.sp-nav').hidden, true);
   for (const area of logic.AREAS) assert.equal(areaNode(area.key).hidden, true, area.key);
   assert.deepEqual(app.querySelector('.sp-simple').querySelectorAll('.sp-label').map((node) => node.textContent), [
-    'Search engine', 'Homepage', 'Startup', 'Theme', 'Accent', 'Tabs', 'Import', 'Clear data', 'Extensions', 'Default browser',
+    'Profile', 'Search engine', 'Homepage', 'Startup', 'Theme', 'Accent', 'Tabs', 'Import', 'Clear data', 'Extensions', 'Default browser',
   ]);
+  // --- profiles --- this window's profile, one click from the manager.
+  const simpleProfile = app.querySelector('[data-simple="simpleProfile"]');
+  assert.equal(simpleProfile.querySelector('.sp-simple-profile-name').textContent, fixture.snap.d.profile);
+  assert.ok(simpleProfile.querySelectorAll('button').find((b) => b.getAttribute('aria-label') === 'Manage profiles'));
   const engineRow = app.querySelector('.sp-row[data-row="searchDefault"]');
   assert.ok(app.querySelector('.sp-simple').contains(engineRow));
   assert.equal(engineRow.querySelector('.sp-engine-value').textContent, 'DuckDuckGo');
@@ -2552,4 +2556,117 @@ test('an invalid Homepage or Startup pages entry stays to correct but is marked 
   pages.dispatch('change');
   assert.equal(pages.getAttribute('aria-invalid'), null);
   deliver(fixture.snap); // Bowser's answer settles the pending saves for the tests after this one.
+});
+
+// --- profiles --- the profile manager on bowser://settings/profile.
+test('profiles: the snapshot list is strict, names are checked like Rust, and commands are plain text', () => {
+  const good = fixture.snap.d.profiles;
+  const parsed = logic.parseProfiles(good);
+  assert.deepEqual(parsed.list.map((p) => [p.id, p.name, p.current]), [['default', 'Personal', false], ['Work', 'Work "<b>"', true]]);
+  assert.deepEqual(parsed.accents.length, 5);
+  const row = good.list[0];
+  const withList = (list) => ({ ...good, list });
+  for (const bad of [
+    null, [], { ...good, extra: 1 }, withList([{ ...row, extra: 1 }]), withList([{ ...row, id: '../x' }]), withList([{ ...row, id: 'Default' }, row]),
+    withList([good.list[1], { ...good.list[1], id: 'work', current: false }]),
+    withList([{ ...row, name: '' }]), withList([{ ...row, name: ' padded' }]), withList([{ ...row, name: 'x'.repeat(33) }]), withList([{ ...row, name: 'evil\u202etxt' }]),
+    withList([{ ...row, colour: 'red' }]), withList([{ ...row, avatar: 'cat' }]), withList([{ ...row, accent: 'pink' }]), withList([{ ...row, glyph: '' }]),
+    withList([{ ...row, current: true }, good.list[1]]),
+    { ...good, avatars: ['W'] }, { ...good, accents: ['red', 'red', 'red', 'red', 'red'] },
+    withList([row]), // previews without a current profile
+    { ...good, avatars: [], accents: [] }, // a current profile without previews
+  ]) assert.equal(logic.parseProfiles(bad), null, JSON.stringify(bad));
+  assert.deepEqual(logic.parseProfiles({ list: [row], avatars: [], accents: [] })?.list.length, 1, 'a guest window: no previews');
+  assert.equal(logic.parseSettingsSnapshot({ ...fixture.snap.d, profiles: undefined }), null, 'the snapshot needs it');
+  const list = parsed.list;
+  assert.equal(logic.profileNameError('', list), 'Enter a name.');
+  assert.equal(logic.profileNameError('x'.repeat(33), list), 'Use at most 32 characters.');
+  assert.equal(logic.profileNameError('😀'.repeat(32), list), '', 'characters, not UTF-16 units');
+  assert.equal(logic.profileNameError('a\nb', list), 'Names cannot contain control characters.');
+  assert.equal(logic.profileNameError('evil\u202etxt', list), 'Names cannot contain invisible characters.');
+  assert.equal(logic.profileNameError('personal', list), 'Another profile already uses that name.');
+  assert.equal(logic.profileNameError('Personal', list, 'default'), '', 'its own name');
+  assert.equal(logic.profileNameError('  Kids & school ', list), '');
+  assert.equal(logic.profileText.create('  Kids '), 'new\tKids');
+  assert.equal(logic.profileText.rename('Work', ' Office '), 'rename\tWork\tOffice');
+  assert.equal(logic.profileText.look('default', 'moon', 'rose'), 'look\tdefault\tmoon\trose');
+  assert.equal(logic.profileText.remove('Work'), 'delete\tWork');
+});
+
+test('profiles: the manager lists each profile, opens others, adds, renames in place and asks before deleting', async () => {
+  deliver(fixture.snap);
+  const row = rowNode('profiles');
+  const items = row.querySelectorAll('.sp-profile');
+  assert.deepEqual(items.map((item) => item.dataset.profile), ['default', 'Work']);
+  assert.deepEqual(items.map((item) => item.querySelector('.sp-profile-name').textContent), ['Personal', 'Work "<b>"']);
+  assert.equal(items[1].getAttribute('aria-current'), 'true');
+  const button = (scope, label) => scope.querySelectorAll('button').find((b) => b.getAttribute('aria-label') === label || b.textContent.trim() === label);
+  assert.equal(button(items[1], 'Open Work "<b>"'), undefined, 'the current profile has no Open');
+  assert.equal(button(items[0], 'Delete Personal'), undefined, 'the default profile is never deleted');
+  assert.equal(button(items[1], 'Delete Work "<b>"'), undefined, 'nor the one this window runs');
+  sent.length = 0;
+  button(items[0], 'Open Personal').click();
+  assert.deepEqual(sent, [{ v: 1, t: 'set', a: 'profile', text: 'open\tdefault' }]);
+
+  // Add: refused names say why and send nothing.
+  const input = row.querySelector('.sp-profile-add').querySelector('.sp-allow-input');
+  const add = button(row.querySelector('.sp-profile-add'), 'Add profile');
+  const error = row.querySelectorAll('.sp-field-error').at(-1);
+  sent.length = 0;
+  input.value = 'PERSONAL';
+  add.click();
+  assert.deepEqual(sent, []);
+  assert.equal(error.textContent, 'Another profile already uses that name.');
+  input.value = '  Kids ';
+  add.click();
+  assert.deepEqual(sent, [{ v: 1, t: 'set', a: 'profile', text: 'new\tKids' }]);
+  assert.equal(input.value, '');
+
+  // The current profile's look: one radio per avatar and per colour.
+  const look = row.querySelector('.sp-profile-look');
+  assert.equal(look.hidden, false);
+  const radios = look.querySelectorAll('[role="radio"]');
+  assert.equal(radios.length, 10);
+  assert.deepEqual(radios.filter((r) => r.getAttribute('aria-checked') === 'true').map((r) => r.getAttribute('aria-label')), ['Star', 'Teal']);
+  sent.length = 0;
+  radios.find((r) => r.getAttribute('aria-label') === 'Rose').click();
+  assert.deepEqual(sent, [{ v: 1, t: 'set', a: 'profile', text: 'look\tWork\tstar\trose' }]);
+
+  // Rename happens in the row.
+  button(row.querySelectorAll('.sp-profile')[0], 'Rename Personal').click();
+  const rename = row.querySelector('.sp-profile-rename');
+  assert.ok(rename);
+  rename.value = 'Home';
+  sent.length = 0;
+  button(row.querySelectorAll('.sp-profile')[0], 'Save').click();
+  assert.deepEqual(sent, [{ v: 1, t: 'set', a: 'profile', text: 'rename\tdefault\tHome' }]);
+  assert.equal(row.querySelector('.sp-profile-rename'), null, 'the row closes');
+
+  // Delete asks first, in the page; Keep is the focused answer.
+  const profiles = fixture.snap.d.profiles;
+  const other = { ...fixture.snap, d: { ...fixture.snap.d, ack: 'none', profiles: { ...profiles, list: [...profiles.list, { id: 'Kids', name: 'Kids', glyph: 'K', colour: '#6542a5', avatar: 'initial', accent: 'violet', current: false }] } } };
+  deliver(other);
+  const kids = () => row.querySelectorAll('.sp-profile').find((item) => item.dataset.profile === 'Kids');
+  sent.length = 0;
+  button(kids(), 'Delete Kids').click();
+  assert.deepEqual(sent, [], 'nothing is deleted on the first click');
+  assert.ok(kids().classList.contains('is-asking'));
+  await Promise.resolve();
+  assert.equal(document.activeElement, button(kids(), 'Keep'));
+  button(kids(), 'Keep').click();
+  assert.deepEqual(sent, []);
+  button(kids(), 'Delete Kids').click();
+  button(kids(), 'Delete').click();
+  assert.deepEqual(sent, [{ v: 1, t: 'set', a: 'profile', text: 'delete\tKids' }]);
+  deliver(fixture.snap);
+});
+
+test('profiles: a guest window lists the profiles to open but changes none of them', () => {
+  const guest = { ...fixture.guest, d: { ...fixture.guest.d, profiles: { list: fixture.guest.d.profiles.list.map((p) => ({ ...p, current: false })), avatars: [], accents: [] } } };
+  deliver(guest);
+  const row = rowNode('profiles');
+  assert.equal(row.querySelector('.sp-profile-look').hidden, true);
+  assert.equal(row.querySelectorAll('.sp-profile-act').length, 0, 'no rename, shortcut or delete');
+  assert.deepEqual(row.querySelectorAll('button').map((b) => b.getAttribute('aria-label')).filter((label) => label?.startsWith('Open ')), ['Open Personal', 'Open Work "<b>"']);
+  deliver(fixture.snap);
 });

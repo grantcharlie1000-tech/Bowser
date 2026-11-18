@@ -166,8 +166,6 @@ export function running(item: ExtensionItem): boolean {
   return item.enabled && item.failure === '';
 }
 
-/** Why "Check update" does nothing: Bowser refuses every update check until staged updates are verified. */
-export const UPDATES_UNAVAILABLE = 'Extension updates are not available in Bowser yet';
 
 /** The toggle's accessible name (the switch itself says on or off). */
 export function switchLabel(item: ExtensionItem): string {
@@ -214,7 +212,7 @@ export const EMPTY_DETAIL = 'Install an unpacked extension by choosing the folde
 
 /** The button's accessible name and tooltip: the extension's own name when it is the only one. */
 export function extButtonText(msg: Pick<ExtButtonMsg, 'n' | 'name' | 'store'>): { readonly label: string; readonly tip: string; readonly menu: boolean } {
-  if (msg.store) return { label: 'Add to Bowser', tip: 'Google’s installer is for Chrome. Bowser verifies the package and asks you to review permissions before installation. Extension compatibility varies.', menu: false };
+  if (msg.store) return { label: 'Add to Bowser', tip: 'Add this extension to Bowser', menu: false };
   if (msg.n === 1 && msg.name !== '') return { label: `Open ${msg.name}`, tip: msg.name, menu: false };
   return { label: 'Extensions', tip: `Extensions (${msg.n})`, menu: true };
 }

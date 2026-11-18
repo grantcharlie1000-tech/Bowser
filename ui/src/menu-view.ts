@@ -1,8 +1,8 @@
 import { icon, type IconName } from './dom';
 import { isIconName } from './icons';
 import {
-  activateAt, childSlice, childTop, createNav, firstVisible, flyoutSide, footerVisible, hasFlyouts, hasLeadColumn, hasTrailColumn, innerPixels, menuKey, onFill,
-  slideShift, validMenuPayload, validRoom,
+  activateAt, cascadeSide, childSlice, childTop, createNav, firstVisible, flyoutSide, footerVisible, hasFlyouts, hasLeadColumn, hasTrailColumn, innerPixels, menuKey, onFill,
+  MAX_CARD, slideShift, validMenuPayload, validRoom,
   type FlyoutRoom, type MenuBadge, type MenuMessage, type MenuNav, type MenuOutcome, type MenuPage,
 } from './menu-logic';
 import { sendPopupAct, sendPopupDismiss, sendPopupPick, sendPopupSize, type PopupCards } from './protocol';
@@ -14,6 +14,8 @@ import { sendPopupAct, sendPopupDismiss, sendPopupPick, sendPopupSize, type Popu
 //   .html-menu-flyout[.is-left][.is-sliding][.is-leaving][.is-retired]   a child card's column beside the
 //       parent (--menu-child-y, --menu-child-x, --menu-child-overlap)
 //   .html-menu-flyout > .html-menu-pane.is-child       the child card; it slides inside its column
+//   .html-menu-flyout > .html-menu-flyout              a deeper card's column, nested beside the card that opened it
+//   #app.html-menu.opens-left                           submenus open to the left: chevrons point left
 //   .html-menu-header > .html-menu-avatar, .html-menu-name, .html-menu-caption   main menu card (level 0)
 //   .html-menu-list.bw-scroll                          the scrolling part (header and footer stay pinned)
 //   .html-menu-section                                 non-interactive heading
@@ -26,14 +28,16 @@ import { sendPopupAct, sendPopupDismiss, sendPopupPick, sendPopupSize, type Popu
 //   .html-menu-footer                                  muted note under the list (level 0)
 // `--menu-accent` / `--menu-on-accent` on the header and badges carry the accent and its text colour.
 //
-// A submenu opens beside the row that opened it; at most two cards are on screen, and each card is only
-// as tall as its own rows. The parent card never moves. A menu with submenus is laid out once with
-// --menu-reserve of room on both sides of the parent, and the window is that whole page from the
-// start (html_popup.rs flyout_bounds anchors the parent card, not the window), clipped to the parent.
+// A submenu opens beside the row that opened it, and a submenu of a submenu opens beside that one: the
+// cards cascade (up to VISIBLE_PAGES of them), and each card is only as tall as its own rows. The
+// parent card never moves. A menu with submenus is laid out once with --menu-reserve of room on both
+// sides of the parent, and the window is that whole page from the start (html_popup.rs flyout_bounds anchors the parent card, not the window), clipped to the parent.
 // Opening a submenu only changes the clip, never the window. The child card slides out from behind the
 // parent's edge: its column clips it, so it shows only past that edge. It opens to the right when the
 // work area has room there (Rust's `room` message), to the left when only that side has room, and when
-// neither has, on the roomier side over the parent's edge without a slide.
+// neither has, on the roomier side over the parent's edge without a slide. A deeper card keeps going the
+// way the chain goes (beside the card that opened it, nested in that card's column) and is pulled over
+// that card only when the work area runs out. Submenu chevrons and the Left/Right keys follow the side.
 //
 // The clip follows the child every frame, and a pixel inside the clip that the page leaves transparent
 // is not see-through on Windows 10 (it shows white). So the clip only ever holds what is painted: while
@@ -61,11 +65,15 @@ const KEEP_FRAMES = 3;
 /** A rectangle in CSS pixels of the page. */
 interface Box { x: number; y: number; w: number; h: number }
 
-/** The child card on screen: its page, column and card, the side it opened on, and how far it slides. */
+/** A child card on screen: its page, column and card, the side it opened on, and how far it slides. */
 interface Flyout {
   page: MenuPage;
   wrap: HTMLElement;
   pane: HTMLElement;
+  /** The card it hangs beside: the parent card or the child card before it. */
+  opener: HTMLElement;
+  /** How far it is from its place right now (0 at rest): the clip shows only what is past its column's edge. */
+  shift: number;
   side: 'right' | 'left';
   /** The gap plus the card's width: the slide's length, from wholly behind the parent's edge to rest. */
   travel: number;
@@ -112,10 +120,12 @@ export function createMenuView(root: HTMLElement, now: () => number = () => perf
   // Set once a pick or dismissal is sent, so a double click or key repeat sends nothing more.
   let closed = true;
   // The parent card's box, the parent card (built once and kept while it is the parent, so its scroll
-  // position survives a submenu opening beside it) and the child card on screen.
+  // position survives a submenu opening beside it) and the child cards on screen, outermost first.
   let track: HTMLElement = document.createElement('div');
   let host: { page: MenuPage; pane: HTMLElement } | null = null;
-  let flyout: Flyout | null = null;
+  let flyouts: Flyout[] = [];
+  // A card sliding back behind its opener after it closed: still in the clip until it is hidden.
+  let going: Flyout | null = null;
   // Rust's `room` for this menu (null until it arrives), and the parent card and page as laid out,
   // measured with no height cap: what `size` reports every time, so Rust places the parent the same way.
   let room: FlyoutRoom | null = null;
@@ -123,7 +133,11 @@ export function createMenuView(root: HTMLElement, now: () => number = () => perf
   // Voids the frame loop of a slide that was finished or replaced.
   let epoch = 0;
 
-  const cards = (): Array<{ page: MenuPage; pane: HTMLElement }> => [host, flyout].filter((card) => card !== null);
+  const cards = (): Array<{ page: MenuPage; pane: HTMLElement }> => [...(host ? [host] : []), ...flyouts];
+
+  // The side submenus open on: left when Rust's room says a card does not fit on the right. Chevrons
+  // point that way and Left/Right swap so the key that opens a submenu points at it.
+  const opensLeft = (): boolean => flyoutSide(room, MAX_CARD).side === 'left';
 
   // Focus stays on the menu root; the selected row is exposed with aria-activedescendant, so no
   // row takes a focus ring and every key reaches one listener.
@@ -165,10 +179,21 @@ export function createMenuView(root: HTMLElement, now: () => number = () => perf
     root.style.removeProperty('height');
   };
 
-  // Reports the size and, for a menu with submenus, the parent card and the part of the child card
-  // that shows (`child`), which is the window's clip. The size never changes while submenus open and
-  // close, so Rust only moves the clip.
-  const publish = (child: Box | null): void => {
+  // The part of a child card that shows while it is `card.shift` px from its place: its column, less
+  // what is still behind the edge of the card it hangs beside. Null when none of it shows.
+  const childBox = (card: Flyout): Box | null => {
+    const origin = root.getBoundingClientRect();
+    const column = card.wrap.getBoundingClientRect();
+    const slice = childSlice(column.left - origin.left, column.width, card.shift, card.side);
+    if (!slice || slice.x < 0) return null;
+    const rows = innerPixels(0, column.top - origin.top, 1, column.height);
+    return { x: slice.x, y: Math.max(0, rows.y), w: slice.w, h: rows.h };
+  };
+
+  // Reports the size and, for a menu with submenus, the parent card and the part of each child card
+  // that shows, which is the window's clip. The size never changes while submenus open and close, so
+  // Rust only moves the clip. `except` is a card already cut out of the clip (it is leaving).
+  const publish = (except: Flyout | null = null): void => {
     if (!message || !natural) return;
     const width = Math.min(4000, Math.max(1, Math.ceil(natural.width)));
     const height = Math.min(4000, Math.max(1, Math.ceil(natural.height)));
@@ -176,20 +201,9 @@ export function createMenuView(root: HTMLElement, now: () => number = () => perf
       sendPopupSize(message.tok, width, height);
       return;
     }
-    const shape: PopupCards = { px: natural.x, py: natural.y, pw: natural.w, ph: natural.h };
-    if (child) Object.assign(shape, { cx: child.x, cy: child.y, cw: child.w, ch: child.h });
+    const children = [...flyouts, ...(going ? [going] : [])].filter((card) => card !== except).map(childBox).filter((box) => box !== null);
+    const shape: PopupCards = { px: natural.x, py: natural.y, pw: natural.w, ph: natural.h, children };
     sendPopupSize(message.tok, width, height, shape);
-  };
-
-  // The part of the child card that shows while it is `shift` px from its place: its column, less what
-  // is still behind the parent's edge. Null when none of it shows.
-  const childBox = (card: Flyout, shift: number): Box | null => {
-    const origin = root.getBoundingClientRect();
-    const column = card.wrap.getBoundingClientRect();
-    const slice = childSlice(column.left - origin.left, column.width, shift, card.side);
-    if (!slice || slice.x < 0) return null;
-    const rows = innerPixels(0, column.top - origin.top, 1, column.height);
-    return { x: slice.x, y: Math.max(0, rows.y), w: slice.w, h: rows.h };
   };
 
   // Measures the natural size and reports it (the parent card alone: a menu opens with no submenu).
@@ -199,40 +213,53 @@ export function createMenuView(root: HTMLElement, now: () => number = () => perf
     requestAnimationFrame(() => {
       if (!message || message.tok !== tok) return;
       measureNatural();
-      publish(null);
+      publish();
       // The enter motion starts when the size is reported, which is when the window is shown.
       root.classList.add('is-entering');
     });
   };
 
-  // Drops the child's column so its card's first row lines up with the parent row that opened it, but
-  // never so low that the card would run past the window's bottom (the work area's): a submenu opened
-  // from a row near the bottom of the screen moves up to show all of its rows, as far as the parent's
-  // top, instead of being squeezed into a scrolling sliver. Only a card taller than the window scrolls.
+  // Drops the child's column so its card's first row lines up with the row that opened it, but never
+  // so low that the card would run past the window's bottom (the work area's): a submenu opened from a
+  // row near the bottom of the screen moves up to show all of its rows, as far as the parent's top,
+  // instead of being squeezed into a scrolling sliver. Only a card taller than the window scrolls.
   const placeChild = (card: Flyout): void => {
-    const row = host?.pane.querySelector<HTMLElement>('.html-menu-row.is-open');
+    const row = card.opener.querySelector<HTMLElement>('.html-menu-row.is-open');
     if (!host || !row) return;
     const style = getComputedStyle(card.pane);
     const pad = (Number.parseFloat(style.paddingTop) || 0) + (Number.parseFloat(style.borderTopWidth) || 0);
-    const y = Math.max(0, Math.round(row.getBoundingClientRect().top - host.pane.getBoundingClientRect().top - pad));
+    const opener = card.opener.getBoundingClientRect();
+    const trackTop = track.getBoundingClientRect().top;
+    // The column hangs off the opener's column, so its top is measured from the opener's top; the
+    // window's bottom is measured from the parent card's.
+    const offset = opener.top - trackTop;
+    const y = Math.round(row.getBoundingClientRect().top - opener.top - pad);
     card.wrap.style.setProperty('--menu-child-y', '0px');
+    card.wrap.style.setProperty('--menu-child-max', `${window.innerHeight}px`);
     const height = card.pane.getBoundingClientRect().height;
-    card.wrap.style.setProperty('--menu-child-y', `${childTop(y, height, window.innerHeight - track.getBoundingClientRect().top)}px`);
+    const top = childTop(Math.max(0, y + offset), height, window.innerHeight - trackTop);
+    card.wrap.style.setProperty('--menu-child-y', `${top - offset}px`);
+    card.wrap.style.setProperty('--menu-child-max', `${Math.max(0, Math.floor(window.innerHeight - trackTop - top))}px`);
   };
 
   // Picks the child's side from Rust's `room`: right when it fits, left when only that side has room,
-  // else over the parent's edge on the roomier side.
-  const placeSide = (card: Flyout): void => {
+  // else over the opener's edge on the roomier side. A deeper card keeps the chain's side and is pulled
+  // over the card before it only by what the work area lacks.
+  const placeSide = (card: Flyout, before: Flyout | null): void => {
     if (!host) return;
     card.wrap.classList.remove('is-left');
-    card.wrap.style.removeProperty('--menu-child-overlap');
-    const need = Math.ceil(card.wrap.getBoundingClientRect().right - host.pane.getBoundingClientRect().right);
-    const { side, overlap } = flyoutSide(room, need);
+    card.wrap.style.setProperty('--menu-child-overlap', '0px');
+    const need = Math.ceil(card.wrap.getBoundingClientRect().right - card.opener.getBoundingClientRect().right);
+    const parent = host.pane.getBoundingClientRect();
+    const opener = card.opener.getBoundingClientRect();
+    const left = room ? Math.max(0, room.l - Math.max(0, parent.left - opener.left)) : 0;
+    const right = room ? Math.max(0, room.r - Math.max(0, opener.right - parent.right)) : 0;
+    const { side, overlap } = before ? cascadeSide(before.side, { l: left, r: right }, need) : flyoutSide(room, need);
     card.side = side;
     card.travel = Math.max(0, need);
     card.overlap = overlap;
     card.wrap.classList.toggle('is-left', side === 'left');
-    if (overlap > 0) card.wrap.style.setProperty('--menu-child-overlap', `${overlap}px`);
+    card.wrap.style.setProperty('--menu-child-overlap', `${overlap}px`);
   };
 
   // Puts the child card in its place at once. The clip takes it a frame later, after it is painted.
@@ -243,9 +270,10 @@ export function createMenuView(root: HTMLElement, now: () => number = () => perf
     void card.pane.offsetWidth;
     card.wrap.classList.remove('is-snap');
     card.resting = true;
+    card.shift = 0;
     const mine = ++epoch;
     requestAnimationFrame(() => {
-      if (mine === epoch && flyout === card) publish(childBox(card, 0));
+      if (mine === epoch && flyouts.includes(card)) publish();
     });
   };
 
@@ -276,7 +304,8 @@ export function createMenuView(root: HTMLElement, now: () => number = () => perf
       const live = motion !== undefined && motion.playState !== 'finished';
       const time = live ? motion.currentTime : null;
       const elapsed = typeof time === 'number' ? time + bias : Number.POSITIVE_INFINITY;
-      publish(childBox(card, slideShift(card.travel, live ? duration : 0, timing, elapsed, entering)));
+      card.shift = slideShift(card.travel, live ? duration : 0, timing, elapsed, entering);
+      publish();
       if (!live) {
         done();
         return;
@@ -442,26 +471,33 @@ export function createMenuView(root: HTMLElement, now: () => number = () => perf
     return pane;
   };
 
-  // Builds the child card for `page` in its own column beside the parent, behind the parent's edge.
+  // Builds the child card for `page` in its own column beside the card that opened it (the parent card,
+  // or the child card before it, whose column it nests in), behind that card's edge.
   const mountChild = (page: MenuPage): Flyout | null => {
     if (!nav || !host) return null;
+    const before = flyouts.at(-1) ?? null;
+    // A card opened from one still sliding out puts that one in its place first: its moving column
+    // clips everything in it, the new card too.
+    if (before && !before.resting) rest(before);
+    // A card still sliding back from an earlier close is cut now: the clip holds the cards on screen.
+    if (going) { retire(going.wrap); going = null; }
     const pane = buildPane(page, nav.pages.indexOf(page), false);
     pane.classList.add('is-child');
     const wrap = document.createElement('div');
     wrap.className = 'html-menu-flyout';
     wrap.setAttribute('role', 'presentation');
     wrap.append(pane);
-    track.append(wrap);
-    const card: Flyout = { page, wrap, pane, side: 'right', travel: 0, overlap: 0, resting: false };
-    flyout = card;
+    (before ? before.wrap : track).append(wrap);
+    const card: Flyout = { page, wrap, pane, opener: before ? before.pane : host.pane, shift: 0, side: 'right', travel: 0, overlap: 0, resting: false };
+    flyouts.push(card);
     markSelected();
     placeChild(card);
-    placeSide(card);
+    placeSide(card, before);
     return card;
   };
 
-  // A submenu opened: its card slides out from behind the parent. A card pulled over the parent (no
-  // room on either side) is put in its place without a slide.
+  // A submenu opened: its card slides out from behind the card that opened it. A card pulled over
+  // its opener (no room on either side) is put in its place without a slide.
   const enter = (page: MenuPage): void => {
     const card = mountChild(page);
     if (!card) return;
@@ -472,26 +508,37 @@ export function createMenuView(root: HTMLElement, now: () => number = () => perf
     });
   };
 
-  // The child card closes. A resting card slides back behind the parent; one still moving, or one
-  // replaced by another submenu, is cut out of the clip at once.
-  const leave = (card: Flyout, cut: boolean): void => {
-    flyout = null;
+  // Child cards close from `index` on (deepest first). A lone resting card slides back behind its
+  // opener; anything else (several at once, one still moving, one replaced by another submenu) is cut
+  // out of the clip at once. A nested card goes with the column it hangs in.
+  const leave = (index: number, cut: boolean): void => {
+    const closing = flyouts.slice(index);
+    if (closing.length === 0) return;
+    flyouts = flyouts.slice(0, index);
     epoch += 1;
-    if (!cut && card.resting && card.overlap === 0) {
-      slide(card, false, () => retire(card.wrap));
+    if (going) { retire(going.wrap); going = null; }
+    const card = closing[0]!;
+    if (!cut && closing.length === 1 && card.resting && card.overlap === 0) {
+      going = card;
+      slide(card, false, () => {
+        if (going === card) going = null;
+        retire(card.wrap);
+      });
       return;
     }
-    publish(null);
+    publish();
     retire(card.wrap);
   };
 
-  // Builds the parent card (and the child card at rest, when one is open) from the pages on screen.
-  // Used when a menu is shown and when the parent itself changes (a third level pushes the parent off).
+  // Builds the parent card (and its child cards at rest) from the pages on screen. Used when a menu is
+  // shown and when the parent itself changes (a level past VISIBLE_PAGES pushes the parent off).
   const rebuild = (first: boolean): void => {
     if (!nav) return;
     epoch += 1;
-    if (flyout) retire(flyout.wrap);
-    flyout = null;
+    if (going) retire(going.wrap);
+    going = null;
+    if (flyouts[0]) retire(flyouts[0].wrap);
+    flyouts = [];
     host?.pane.remove();
     const start = firstVisible(nav);
     const top = nav.pages[start]!;
@@ -502,29 +549,30 @@ export function createMenuView(root: HTMLElement, now: () => number = () => perf
     markSelected();
     if (first) return;
     measureNatural();
-    publish(null);
-    const child = nav.pages.length - start > 1 ? nav.pages[nav.pages.length - 1]! : null;
-    const card = child ? mountChild(child) : null;
-    if (card) rest(card);
+    publish();
+    for (const page of nav.pages.slice(start + 1)) {
+      const card = mountChild(page);
+      if (card) rest(card);
+    }
   };
 
   const pagesChanged = (): void => {
     if (!nav) return;
     const start = firstVisible(nav);
     const top = nav.pages[start]!;
-    const child = nav.pages.length - start > 1 ? nav.pages[nav.pages.length - 1]! : null;
+    const wanted = nav.pages.slice(start + 1);
     root.dataset.page = String(nav.pages.length - 1);
     if (!host || host.page !== top) {
       rebuild(false);
       return;
     }
-    if (flyout?.page === child) {
-      markSelected();
-      return;
-    }
-    if (flyout) leave(flyout, child !== null);
+    // Cards that are still wanted stay where they are; the first one that differs closes with all
+    // the cards past it, and the new pages open beside the last card that stayed.
+    let keep = 0;
+    while (keep < flyouts.length && keep < wanted.length && flyouts[keep]!.page === wanted[keep]) keep += 1;
+    if (keep < flyouts.length) leave(keep, keep < wanted.length);
     markSelected();
-    if (child) enter(child);
+    for (const page of wanted.slice(keep)) enter(page);
   };
 
   const finish = (outcome: MenuOutcome): void => {
@@ -542,7 +590,9 @@ export function createMenuView(root: HTMLElement, now: () => number = () => perf
   root.addEventListener('keydown', (event: KeyboardEvent) => {
     if (!nav || closed) return;
     root.dataset.input = 'key';
-    const outcome = menuKey(nav, event.key, { ctrl: event.ctrlKey, alt: event.altKey, meta: event.metaKey, shift: event.shiftKey }, now());
+    // When submenus open to the left, Left opens one and Right goes back: the key points at the card.
+    const key = opensLeft() && (event.key === 'ArrowLeft' || event.key === 'ArrowRight') ? (event.key === 'ArrowLeft' ? 'ArrowRight' : 'ArrowLeft') : event.key;
+    const outcome = menuKey(nav, key, { ctrl: event.ctrlKey, alt: event.altKey, meta: event.metaKey, shift: event.shiftKey }, now());
     // Keep every key inside the menu: no page scrolling, no focus leaving, no button activation.
     if (event.key.length === 1 || outcome.kind !== 'none' || ['Tab', 'Enter', ' ', 'Home', 'End', 'PageUp', 'PageDown', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Backspace', 'Escape'].includes(event.key)) {
       event.preventDefault();
@@ -579,7 +629,8 @@ export function createMenuView(root: HTMLElement, now: () => number = () => perf
       nav = createNav(raw.entries);
       closed = false;
       host = null;
-      flyout = null;
+      flyouts = [];
+      going = null;
       room = null;
       natural = null;
       root.className = 'html-menu is-paned bw-menu-surface';
@@ -600,6 +651,8 @@ export function createMenuView(root: HTMLElement, now: () => number = () => perf
     room(raw: unknown): boolean {
       if (!validRoom(raw) || !message || raw.tok !== message.tok) return false;
       room = { l: raw.l, r: raw.r };
+      // Chevrons point at the side the submenus open on.
+      root.classList.toggle('opens-left', opensLeft());
       return true;
     },
   };
