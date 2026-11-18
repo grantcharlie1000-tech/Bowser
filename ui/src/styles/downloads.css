@@ -196,7 +196,7 @@
     transform var(--bw-dur-base) var(--bw-ease-in);
 }
 
-.dl-row:is([data-state="active"], [data-state="paused"]) .dl-bar {
+.dl-row:is([data-state="active"], [data-state="review"], [data-state="paused"]) .dl-bar {
   opacity: 1;
   transform: none;
   transition:
@@ -216,6 +216,10 @@
   transition:
     transform var(--bw-dur-slow) linear,
     background-color var(--bw-dur-fast) var(--bw-ease-fade);
+}
+
+.dl-row[data-state="review"] .dl-fill {
+  background: var(--dl-warn);
 }
 
 .dl-row[data-state="paused"] .dl-fill {
@@ -547,11 +551,11 @@
   padding-inline-end: var(--bw-space-3);
 }
 
-.dp .dl-row:is([data-state="active"], [data-state="paused"], [data-state="failed"], [data-state="cancelled"], [data-state="missing"]) > .dl-open {
+.dp .dl-row:is([data-state="active"], [data-state="review"], [data-state="paused"], [data-state="failed"], [data-state="cancelled"], [data-state="missing"]) > .dl-open {
   padding-inline-end: calc(var(--dl-primary, 1) * var(--dl-act) + var(--bw-space-3));
 }
 
-.dp .dl-row:is([data-state="active"], [data-state="paused"], [data-state="failed"], [data-state="cancelled"], [data-state="missing"]) .dl-time,
+.dp .dl-row:is([data-state="active"], [data-state="review"], [data-state="paused"], [data-state="failed"], [data-state="cancelled"], [data-state="missing"]) .dl-time,
 .dp .dl-row:is(:hover, :focus-within) .dl-time {
   opacity: 0;
 }

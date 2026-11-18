@@ -73,7 +73,7 @@ and say so in the report.
   name: string <= 200 chars (file name only, no path),
   host: string <= 120 (source host, e.g. "example.com"),
   url: string <= 200 (source http(s) URL, truncated by Rust),
-  state: "active" | "paused" | "done" | "failed" | "cancelled" | "missing",
+  state: "active" | "review" | "paused" | "done" | "failed" | "cancelled" | "missing",
   got: integer bytes received so far (>= 0),
   total: integer bytes, -1 when unknown,
   eta: integer seconds left, -1 when unknown,
@@ -83,6 +83,17 @@ and say so in the report.
   clock: "HH:MM" (local time it finished, or started while active),
   icon: "" | "data:image/png;base64,..." <= 22 KiB (the file's picture, see below) }
 ```
+
+`review` is an active download that has every byte but is held by Windows SmartScreen (an unsigned,
+rarely downloaded program, such as Bowser.exe itself, is flagged "not commonly downloaded"). WebView2
+keeps such a file in progress at 100% until the user chooses Keep or Delete, and that choice exists only
+in WebView2's own downloads flyout, which Bowser keeps closed (`SetHandled(true)`); the operation has no
+state that says it is waiting. So `engine::download` takes a download that has all its announced bytes
+and is still in progress 2 s later as held, reports `DownloadEvent::Review`, and the row reads "Windows
+SmartScreen is checking this file" with a Review button (`n` 11, `dpage` `review`). Review brings the
+download's tab to the front and opens that webview's flyout (`OpenDefaultDownloadDialog`); Keep reports
+`Completed`, Delete `Cancelled`. A download of unknown size cannot be told from a stall and never reads
+`review`.
 
 `missing` is a finished download whose file no longer exists. The page derives the file-type glyph
 from the extension of `name` (image, video, audio, archive, document, code, program, other).
@@ -126,9 +137,9 @@ accepts only a base64 PNG `data:` URL (`ICON_RE`); it is the one `src` the downl
   `{v:1,t:"dlact",tok,id,n}`: `id` is an entry id from the last items (or `0` for list-level
   actions) and `n` is the action: `0` pause, `1` resume, `2` cancel, `3` open file, `4` show in folder,
   `5` remove from list, `6` copy link, `7` retry, `8` open the downloads page (id 0), `9` open the
-  downloads folder (id 0), `10` clear all (id 0, page only). Rust checks `tok`, that `id` is a live entry
-  (or 0 for 8-10) and that the action is legal for the entry's state, then acts from the deferred queue.
-  Actions that leave the list in place do not close the bubble; open/show/page close it.
+  downloads folder (id 0), `10` clear all (id 0, page only), `11` review a file SmartScreen holds. Rust checks `tok`, that `id` is a live entry
+  (or 0 for 8-10, a live entry for 0-7 and 11) and that the action is legal for the entry's state, then acts from the deferred queue.
+  Actions that leave the list in place do not close the bubble; open/show/page/review close it.
 
 ### Page (`?view=downloads`, `View::DownloadsPage`)
 
@@ -266,7 +277,7 @@ reads `missing`. Search matches name and URL, case-insensitively.
 finishes while the bubble is open is unseen again until the close). After the close with nothing active
 `Toolbar.on` is false, which hides the button.
 
-**Actions.** `crate::downloads::Action::from_code(n)` maps `dlact.n` (0..=10); the page's `dpage` actions
+**Actions.** `crate::downloads::Action::from_code(n)` maps `dlact.n` (0..=11); the page's `dpage` actions
 map to the same enum. `App::download_act(app, id, action) -> DownloadFollowup`: the list checks the id
 and that the action is legal for the entry's state, then Rust does pause/resume/cancel (engine), open
 file, show in folder and open folder itself, on the recorded path only (only if still a regular file; a

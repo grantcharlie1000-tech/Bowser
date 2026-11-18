@@ -269,6 +269,7 @@ test('file kinds come from the extension; names elide in the middle and keep the
 test('row actions by state, and what is legal', () => {
   const row = (state, extra = {}) => ({ state, resume: false, url: 'https://x.example/f', ...extra });
   assert.deepEqual(logic.actionsFor(row('active')), { primary: ['pause', 'cancel'], secondary: ['copy'] });
+  assert.deepEqual(logic.actionsFor(row('review')), { primary: ['review', 'cancel'], secondary: ['copy'] });
   assert.deepEqual(logic.actionsFor(row('paused')), { primary: ['resume', 'cancel'], secondary: ['copy'] });
   assert.deepEqual(logic.actionsFor(row('done')), { primary: ['show'], secondary: ['copy', 'remove'] });
   assert.deepEqual(logic.actionsFor(row('failed', { resume: true })), { primary: ['resume'], secondary: ['copy', 'remove'] });
@@ -282,8 +283,10 @@ test('row actions by state, and what is legal', () => {
   assert.equal(logic.canAct(row('missing'), 'open'), false);
   assert.equal(logic.canAct(row('active'), 'remove'), false);
   assert.equal(logic.canAct(row('done', { url: '' }), 'copy'), false);
-  assert.deepEqual(['active', 'paused', 'done', 'failed', 'cancelled', 'missing'].map(logic.removable), [false, false, true, true, true, true]);
-  assert.deepEqual(logic.ACTION_CODE, { pause: 0, resume: 1, cancel: 2, open: 3, show: 4, remove: 5, copy: 6, retry: 7 });
+  assert.equal(logic.canAct(row('review'), 'pause'), false, 'nothing is moving');
+  assert.equal(logic.canAct(row('active'), 'review'), false);
+  assert.deepEqual(['active', 'review', 'paused', 'done', 'failed', 'cancelled', 'missing'].map(logic.removable), [false, false, false, true, true, true, true]);
+  assert.deepEqual(logic.ACTION_CODE, { pause: 0, resume: 1, cancel: 2, open: 3, show: 4, remove: 5, copy: 6, retry: 7, review: 11 });
   assert.deepEqual(logic.LIST_ACTION, { page: 8, folder: 9, clear: 10 });
 });
 
@@ -452,4 +455,17 @@ test('finished downloads read right whatever total the engine ended with', () =>
   assert.equal(logic.statusText(at({ got: 2048, total: -1 })), '2.0 KB • Done');
   assert.equal(logic.statusText(at({ got: 2048, total: 2048 })), '2.0 KB • Done');
   assert.equal(logic.fraction(at({})), null, 'finished rows have no bar');
+});
+
+test('a download Windows SmartScreen holds says so, keeps a full warning bar and offers Review', () => {
+  const held = { state: 'review', got: 9_800_000, total: 9_800_000, eta: -1, bps: 0, err: '' };
+  for (const where of ['bubble', 'page']) assert.match(logic.statusText(held, where), /SmartScreen.*Review/);
+  assert.equal(logic.statusTone('review'), 'warn');
+  assert.equal(logic.fraction(held), 1);
+  assert.equal(logic.hasBar('review'), true);
+  assert.equal(logic.ACTION_LABEL.review, 'Review');
+  assert.match(logic.announceText({ name: 'Bowser.exe', state: 'review', err: '' }), /Bowser\.exe needs review/);
+  const page = logic.parseDownloadsSnapshot(rust.page.d);
+  const row = page.days.flatMap((d) => d.entries).find((e) => e.state === 'review');
+  assert.ok(row && row.name === 'Bowser.exe' && row.bps === 0 && row.eta === -1, JSON.stringify(row));
 });
