@@ -3,7 +3,7 @@
  * Built by ui/src/tabs.ts (the same page switches to the vertical sidebar, see sidebar.css).
  * Geometry is hand-tuned to the 26px omnibox pill: islands are --bw-tab-h tall with --bw-r-tab
  * corners and sit 4px apart. Tabs fill the row and subdivide as more are added; the active tab
- * is 1.5x an inactive one (the strip scrolls only below the minimum width); pinned tabs are 32px icon tiles. Motion is transform/opacity only: new tabs
+ * is 1.5x an inactive one (the strip scrolls only below the minimum width); pinned tabs are square icon tiles. Motion is transform/opacity only: new tabs
  * scale in, closed tabs fade as a ghost, moved tabs slide (FLIP) and the dragged tab lifts.
  */
 
@@ -300,7 +300,8 @@
    padding), so 52px here is a tab of about 63px. The active tab keeps its title (min-width above),
    and the row stays full. */
 @container (max-width: 51.9px) {
-  .strip .tab:not(.active) .ico {
+  /* A pinned tile has no padding and centres its icon itself (below), so it is left out. */
+  .strip .tab:not(.active, .pinned) .ico {
     margin-inline: auto;
     translate: -2.5px 0; /* the tab's padding is 7px / 2px: centre the icon in the box instead */
   }
@@ -311,16 +312,21 @@
 /* ---- Pinned: a 32px icon tile at the start of the strip ----
    Selecting a pinned tab never makes it bigger: the tile keeps its size, and its selection (and hover
    wash) is the same inset pill a selected tab gets inside an open group, the group box's padding
-   (2px) in from the row's height with the matching corner radius. */
+   (2px) in from the row's height with the matching corner radius. The tile is square, its icon
+   centred in it. */
 .strip .tab.pinned,
 .strip .tab.pinned.active {
-  flex: 0 0 32px;
+  --pin-size: calc(var(--bw-tab-h) - 2 * 2px);
+  flex: 0 0 var(--pin-size);
+  width: var(--pin-size);
   min-width: 0;
+  height: var(--pin-size);
   padding: 0;
   justify-content: center;
-  height: calc(var(--bw-tab-h) - 2 * 2px);
   border-radius: 4px; /* a group box's --gr (6px) less its --gp (2px) */
 }
+
+.strip .tab.pinned .ico { margin: 0; }
 
 /* Pinned tiles always carry an outline, selected or not, so they read as a set apart from the
    tabs after them. The [data-scheme] form outranks the light scheme's transparent border on
