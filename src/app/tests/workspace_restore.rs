@@ -281,3 +281,55 @@ fn selecting_a_tab_of_another_workspace_tells_the_rail() {
     assert_eq!(app.borrow().workspaces.active().id(), home);
     assert!(rail_change_posted(), "the rail still marks the old workspace");
 }
+
+/// A second window of the profile (Ctrl+N, "Move tab to new window") cannot claim the session while
+/// the first holds it. It writes neither `session.txt` nor `workspaces.txt` while the first is open;
+/// closed last, it saves its own tabs, which the next start restores, and keeps the workspaces.
+#[test]
+fn a_second_window_closed_last_saves_its_tabs_and_never_overwrites_the_first() {
+    let dir = temp_dir("second-window");
+    let path = dir.join(crate::workspaces::FILE_NAME);
+    // The first window: its session and its workspaces, "Research" included.
+    let mut saved = WorkspaceSet::new("Default", TabId(0));
+    saved.create("Research", TabId(1)).unwrap();
+    saved.set_session_order(&[TabId(0), TabId(1)]);
+    saved.save(&path).unwrap();
+    let (mut first, _) = crate::session::SessionStore::open(&dir).unwrap();
+    first.begin_run(None);
+    first.save(&session(&["https://first.example/", "https://research.example/"])).unwrap();
+    let session_before = std::fs::read(dir.join(crate::session::FILE_NAME)).unwrap();
+    let workspaces_before = std::fs::read(&path).unwrap();
+    let second_window = |address: &str| {
+        let app = app_with_pending(rect(800, 600));
+        app.borrow_mut().workspaces_path = Some(path.clone());
+        assert!(!app.borrow_mut().init_session(&dir), "the first window holds the session");
+        let id = App::active_tab_id(&app);
+        page(&app, id, address);
+        let _ = App::create_workspace(&app, "Second only");
+        App::session_save_now(&app);
+        app
+    };
+    let early = second_window("https://early.example/");
+    let last = second_window("https://last.example/");
+    // Closed while the first window is open: nothing of the first window's is touched.
+    App::session_finish(&early);
+    assert_eq!(std::fs::read(dir.join(crate::session::FILE_NAME)).unwrap(), session_before);
+    assert_eq!(std::fs::read(&path).unwrap(), workspaces_before);
+    // The first window closes, then the remaining second window: its tabs are the saved session.
+    first.finish(None);
+    App::session_finish(&last);
+    assert!(!dir.join(crate::session::LOCK_NAME).exists(), "a clean close leaves no crash marker");
+    let (store, offer) = crate::session::SessionStore::open_with(&dir, true).unwrap();
+    let offer = offer.expect("continue where you left off restores the window closed last");
+    assert!(!offer.ask);
+    let urls: Vec<&str> = offer.session.tabs.iter().map(|tab| tab.url.as_str()).collect();
+    assert_eq!(urls, ["https://last.example/"]);
+    // The profile's workspaces stay; only the pairing with the first window's tabs is dropped.
+    let workspaces = WorkspaceSet::load(&path).unwrap().unwrap();
+    let kept: Vec<&str> = workspaces.all().iter().map(|w| w.name()).collect();
+    assert_eq!(kept, ["Default", "Research"]);
+    assert!(!std::fs::read_to_string(&path).unwrap().contains("order="));
+    drop(store);
+    drop((early, last));
+    let _ = std::fs::remove_dir_all(dir);
+}
