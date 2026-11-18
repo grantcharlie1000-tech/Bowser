@@ -446,15 +446,23 @@ startSettingsPage(app);
 const deliver = (msg) => { for (const cb of listeners) cb({ data: JSON.stringify(msg) }); };
 deliver(fixture.snap);
 
+const areaNode0 = (key) => app.querySelector(`section[data-area="${key}"]`);
 test('the page renders landmarks, every section and row, and labelled controls', () => {
   assert.deepEqual(sent[0], { v: 1, t: 'ready' });
   assert.ok(app.querySelector('nav')?.getAttribute('aria-label'), 'nav landmark');
   assert.equal(app.querySelector('main')?.getAttribute('aria-label'), 'Settings');
   assert.ok(app.querySelector('[role="search"]'));
-  // --- settings slim --- twelve areas in the nav, each holding the Rust sections it merges, then
-  // "Not active yet" and one sub-page per big editor.
+  // --- settings structure --- one nav item per area, each area drawn as its groups (shown, or behind
+  // its More under the same title), then "Inactive" and one sub-page per big editor.
   assert.equal(app.querySelectorAll('.sp-nav-item').length, logic.AREAS.length);
-  assert.equal(app.querySelectorAll('section.sp-part').length, 18); // every Rust section is still a part, grouped into fewer areas
+  assert.equal(app.querySelectorAll('section.sp-part').length, 0, 'the staging parts are never drawn');
+  const drawn = app.querySelectorAll('.sp-group[data-group]').filter((g) => !g.dataset.group.startsWith('simple-'));
+  assert.deepEqual([...new Set(drawn.map((g) => g.dataset.group))].sort(), logic.AREAS.flatMap((a) => a.groups.map((g) => g.key)).sort(), 'every group is drawn');
+  for (const area of logic.AREAS) {
+    const shown = areaNode0(area.key).children.filter((c) => c.classList.contains('sp-group')).map((g) => g.dataset.group);
+    const order = area.groups.map((g) => g.key).filter((key) => shown.includes(key));
+    assert.deepEqual(shown, order, `${area.key}: shown groups in table order`);
+  }
   assert.deepEqual(app.querySelectorAll('section[data-area]').map((s) => s.dataset.area), [...logic.AREAS.map((a) => a.key), 'later']);
   assert.deepEqual(app.querySelectorAll('section.sp-page').map((s) => s.dataset.page).sort(), Object.keys(logic.PAGE_ROWS).sort());
   for (const section of app.querySelectorAll('section')) assert.ok(section.getAttribute('aria-labelledby') || section.getAttribute('aria-label'));
@@ -762,7 +770,8 @@ test('the Extensions section is part of the page: its snapshot fills the block a
   const extensions = JSON.parse(readFileSync(join(here, 'fixtures', 'extensions-messages.json'), 'utf8'));
   const block = app.querySelector('.sp-ext');
   assert.equal(block.dataset.row, 'extensions');
-  assert.equal(block.parent, app.querySelector('section[data-section="extensions"]'));
+  // The block stands in for the card under the Extensions group (whose heading the area title makes redundant).
+  assert.equal(block.parent, app.querySelector('.sp-group[data-group="extensions"]'));
   assert.ok(block.querySelector('.sp-ext-state.is-loading'), 'loading until Bowser answers');
   deliver(extensions.snap);
   assert.equal(block.querySelectorAll('.sp-ext-item').length, 2);
@@ -810,7 +819,7 @@ const press = (init) => captureHandlers.at(-1)({ key: '', code: '', ctrlKey: fal
 test('Keyboard and Quick commands are two sections whose controls land where Rust put them', () => {
   assert.ok(keyboard() && quick());
   assert.deepEqual(app.querySelectorAll('.sp-nav-item').map((b) => b.dataset.section), logic.AREAS.map((area) => area.key));
-  assert.deepEqual(keyboard().querySelectorAll('section.sp-part').map((s) => s.dataset.section), ['keyboard', 'commands']);
+  assert.deepEqual(keyboard().children.filter((c) => c.classList.contains('sp-group')).map((g) => g.dataset.group), ['keyboard', 'keys', 'commands']);
   assert.equal(kbPage().querySelector('.sp-kb').dataset.row, 'kbEditor');
   assert.equal(chainsPage().querySelector('.sp-chains').dataset.row, 'chains');
   deliver(commandsSnap());
@@ -1087,8 +1096,8 @@ test('the new rows join the page search and the Keyboard and Quick commands bloc
   assert.equal(chainsPage().querySelector('.sp-chains').hidden, false);
   assert.equal(app.querySelector('[data-opens="chains"]').hidden, false, 'the row that opens the chains is the hit');
   assert.equal(kbPage().querySelector('.sp-kb').hidden, true);
-  assert.equal(app.querySelector('section[data-section="keyboard"]').hidden, true, 'a part with no match is hidden');
-  assert.equal(app.querySelector('section[data-section="commands"]').hidden, false);
+  assert.equal(app.querySelector('.sp-group[data-group="keyboard"]').hidden, true, 'a group with no match is hidden');
+  assert.equal(app.querySelector('.sp-group[data-group="commands"]').hidden, false);
   search.value = '';
   search.dispatch('input');
   assert.equal(kbPage().querySelector('.sp-kb').hidden, false);
@@ -1110,12 +1119,14 @@ test('the Start page section: the snapshot parses, every row exists once and the
   assert.ok(s, 'the Rust snapshot carries the start object');
   assert.equal(s.start.columns, 6);
   assert.equal(s.start.startup, 'start_page');
+  // The start page's own rows sit in Tabs > Start page; the startup rows in General > On startup.
   const ids = logic.ROWS.filter((row) => row.section === 'startpage').map((row) => row.id);
   assert.deepEqual(ids, [
-    'startGroupReopen', 'startTitles', 'startAddButton', 'startColumns', 'startThumbSize', 'startDragReorder', 'startHomepage', 'startupMode',
-    'startupPages', 'startWidgets', 'startWidgetColumns', 'startWidgetHeight', 'startWidgetBg', 'startWidgetColor', 'startWidgetDrag',
+    'startGroupReopen', 'startTitles', 'startAddButton', 'startColumns', 'startThumbSize', 'startDragReorder',
+    'startWidgets', 'startWidgetColumns', 'startWidgetHeight', 'startWidgetBg', 'startWidgetColor', 'startWidgetDrag',
   ]);
-  for (const row of logic.ROWS.filter((r) => r.section === 'startpage')) {
+  assert.deepEqual(['startHomepage', 'startupMode', 'startupPages'].map((id) => logic.placementOf(id, 'startpage').group.key), ['startup', 'startup', 'startup']);
+  for (const row of logic.ROWS.filter((r) => r.section === 'startpage' || r.id.startsWith('startup') || r.id === 'startHomepage')) {
     assert.ok(!row.notYet, `${row.id} acts, so it carries no "no effect yet" note`);
     assert.ok(!row.restart, `${row.id} applies at once`);
   }
@@ -1390,8 +1401,9 @@ test('Search field, scoped nicknames and bookmark rows send their own keys; bar 
   rowOf('bmBarPosition').querySelectorAll('[role="radio"]')[1].click();
   assert.deepEqual(sent.pop(), { v: 1, t: 'set', a: 'addrset', text: 'bm_bar_position=bottom' });
   const headingOf = (id) => rowOf(id).parent.parent.querySelector('.sp-group-h').textContent;
-  assert.equal(headingOf('bmBarDisplay'), headingOf('bookmarksBar'), 'under the page\'s own Bookmarks bar heading');
-  assert.equal(headingOf('bmBarDisplay'), 'Bookmarks');
+  assert.equal(headingOf('bmBarDisplay'), 'Bookmarks bar', 'the bar\'s own options share one group');
+  assert.equal(headingOf('bmBarFolder'), 'Bookmarks bar');
+  assert.equal(headingOf('bookmarksBar'), 'Toolbar', 'whether the bar shows sits with the rest of the toolbar');
   assert.equal(rowOf('bmBarFolder').querySelector('.bw-select-button') !== null, true);
   assert.equal(rowOf('searchDefault').querySelector('.bw-select-value').textContent, 'DuckDuckGo', 'the default engine is DuckDuckGo, stored as optimised');
   // A bad snapshot is dropped and leaves the page as it was.
@@ -1411,17 +1423,20 @@ test('integrated page: eighteen sections in order, no duplicate rows or keys, an
   // Tabs > New tab position owns now; it is gone from the page (the key stays in the save text).
   assert.equal(logic.ROWS.find((r) => r.id === 'newTabBesideActive'), undefined);
   assert.equal(app.querySelector('.sp-row[data-row="newTabBesideActive"]'), null);
-  // The Ctrl+Tab order and the tab previews sit in Tabs > Tab bar, after T1's own rows.
+  // The tab previews sit in Tabs > Tab bar, after T1's own rows; the Ctrl+Tab order sits with the other
+  // chord switches in Shortcuts > Keys and clicks.
   const tabsSection = app.querySelector('section[data-area="tabs"]');
-  for (const id of ['ctrlTabMru', 'tabPreviewImages', 'tabPreviewMemory']) {
+  for (const id of ['tabPreviewImages', 'tabPreviewMemory']) {
     assert.equal(logic.ROWS.find((r) => r.id === id).section, 'tabs', id);
     assert.ok(tabsSection.querySelector(`.sp-row[data-row="${id}"]`), `${id} is drawn in Tabs`);
   }
+  assert.equal(logic.ROWS.find((r) => r.id === 'ctrlTabMru').section, 'keyboard');
+  assert.ok(app.querySelector('.sp-group[data-group="keys"]').contains(app.querySelector('.sp-row[data-row="ctrlTabMru"]')));
   // Each still saves its own key through the whole-draft save.
   deliver(fixture.snap);
   for (const [id, key] of [['ctrlTabMru', 'ctrl_tab_mru'], ['tabPreviewImages', 'tab_preview_images'], ['tabPreviewMemory', 'tab_preview_memory']]) {
     sent.length = 0;
-    tabsSection.querySelector(`.sp-row[data-row="${id}"]`).querySelector('[role="switch"]').click();
+    app.querySelector(`.sp-row[data-row="${id}"]`).querySelector('[role="switch"]').click();
     assert.equal(sent[0].a, 'save', id);
     assert.match(sent[0].text, new RegExp(`\\n${key}=false\\n`), id);
     deliver(fixture.snap);
@@ -1493,7 +1508,7 @@ test('slim: each area shows a short core list and puts the rest behind one close
     const inArea = logic.ROWS.filter((row) => area.parts.includes(row.section) && tierOf(row.id) !== 'later');
     const core = inArea.filter((row) => tierOf(row.id) === 'core' || tierOf(row.id) === 'page');
     const more = inArea.filter((row) => tierOf(row.id) === 'more');
-    assert.ok(core.length > 0 && core.length <= 10, `${area.key}: ${core.length} rows in its main view`);
+    assert.ok(core.length > 0 && core.length <= 12, `${area.key}: ${core.length} rows in its main view`);
     for (const row of core) {
       const drawn = tierOf(row.id) === 'page' ? app.querySelector(`[data-opens="${row.id}"]`) : rowNode(row.id);
       assert.ok(node.contains(drawn), `${row.id} is in ${area.key}`);
@@ -1618,22 +1633,45 @@ test('slim: every editor opens on its own sub-page from one row, and Back, a nav
   assert.deepEqual(sent, [{ v: 1, t: 'set', a: 'engine', text: 'remove\tbing' }]);
 });
 
-test('slim: a deep link to a merged section lands in its area; areas name their parts', () => {
+test('structure: a deep link lands on its group, every row is placed once, and new rows join their section', () => {
   sent.length = 0;
   deliver({ v: 1, t: 'settingsgo', s: 'search' });
   assert.deepEqual(sent, []);
-  assert.equal(app.querySelector('.sp-nav-item[aria-current="true"]').dataset.section, 'profile');
+  assert.equal(app.querySelector('.sp-nav-item[aria-current="true"]').dataset.section, 'profile', 'search lives in General');
   deliver({ v: 1, t: 'settingsgo', s: 'startpage' });
-  assert.equal(app.querySelector('.sp-nav-item[aria-current="true"]').dataset.section, 'profile');
+  assert.equal(app.querySelector('.sp-nav-item[aria-current="true"]').dataset.section, 'tabs', 'the start page\'s options live in Tabs');
   deliver({ v: 1, t: 'settingsgo', s: 'performance' });
-  assert.equal(app.querySelector('.sp-nav-item[aria-current="true"]').dataset.section, 'privacy');
-  for (const section of logic.SETTINGS_SECTIONS) assert.ok(logic.areaOf(section).parts.includes(section), section);
+  assert.equal(app.querySelector('.sp-nav-item[aria-current="true"]').dataset.section, 'performance', 'Performance is System, not Privacy');
+  deliver({ v: 1, t: 'settingsgo', s: 'media' });
+  assert.equal(app.querySelector('.sp-nav-item[aria-current="true"]').dataset.section, 'performance');
+  for (const section of logic.SETTINGS_SECTIONS) {
+    assert.ok(logic.areaOf(section).parts.includes(section), section);
+    // Every section a deep link can name has a group to land on, unless it is an area's own key.
+    if (logic.areaOf(section).key !== section) assert.ok(logic.anchorGroup(section), section);
+  }
   assert.deepEqual(logic.AREAS.flatMap((a) => a.parts).sort(), [...logic.SETTINGS_SECTIONS].sort(), 'every Rust section is in exactly one area');
-  // A merged area draws each part's core rows as one card under the part's own title.
-  const parts = areaNode('address').querySelectorAll('section.sp-part').map((p) => p.querySelector('.sp-group-h').textContent);
-  assert.deepEqual(parts, ['Address', 'Bookmarks', 'Page tools']);
-  const general = areaNode('profile').querySelectorAll('section.sp-part').map((p) => p.querySelector('.sp-group-h').textContent);
-  assert.deepEqual(general, ['Profile', 'Search', 'Start page', 'Downloads']);
+  // The table places every row exactly once, and a group's rows share its section.
+  const listed = logic.AREAS.flatMap((a) => a.groups.flatMap((g) => g.rows));
+  assert.equal(new Set(listed).size, listed.length, 'no row is listed twice');
+  assert.deepEqual([...listed].sort(), logic.ROWS.map((r) => r.id).sort(), 'every row is listed, and nothing else');
+  const keys = logic.AREAS.flatMap((a) => a.groups.map((g) => g.key));
+  assert.equal(new Set(keys).size, keys.length, 'group keys are unique');
+  for (const area of logic.AREAS) {
+    for (const group of area.groups) {
+      assert.ok(area.parts.includes(group.section), `${group.key} uses a section of ${area.key}`);
+      for (const id of group.rows) assert.equal(logic.ROWS.find((r) => r.id === id).section, group.section, id);
+    }
+  }
+  // A row nobody listed (a new one) joins the first group of the section it was born in.
+  assert.equal(logic.placementOf('someNewSearchRow', 'search').group.key, 'search');
+  assert.equal(logic.placementOf('someNewTabRow', 'stacks').group.key, 'groups');
+  // The shown groups' headings, in order.
+  const shown = (key) => areaNode(key).children.filter((c) => c.classList.contains('sp-group') && !c.hidden).map((g) => g.querySelector('.sp-group-h').textContent);
+  searchFor('');
+  assert.deepEqual(shown('profile'), ['Profiles', 'On startup', 'Search engine', 'Downloads', 'Default browser']);
+  assert.deepEqual(shown('address'), ['Address bar', 'Bookmarks', 'Translation', 'Screenshots', 'Feeds']);
+  assert.deepEqual(shown('performance'), ['Performance', 'Media']);
+  assert.deepEqual(shown('about'), ['Updates', 'About Bowser']);
 });
 
 test('slim: a row nobody placed defaults to More options, so new rows never lengthen the main view', () => {
@@ -1648,30 +1686,28 @@ test('slim: a row nobody placed defaults to More options, so new rows never leng
 
 // ---- tab stacks, tiling and workspaces (T10) ----
 
-test('groups: one small block in Tabs and start page holding only the group switch; workspaces and tiles are Tabs rows', () => {
+test('groups: Tabs > Groups and workspaces holds the group switch, workspaces and the rules; tiling is behind More', () => {
   deliver(fixture.snap);
   searchFor('');
   const tabsArea = areaNode('tabs');
-  const part = tabsArea.querySelector('section.sp-part[data-section="stacks"]');
-  assert.ok(part, 'a part of Tabs and start page, not an area of its own');
+  const group = tabsArea.querySelector('.sp-group[data-group="groups"]');
+  assert.ok(group, 'a group of Tabs, not an area of its own');
+  assert.equal(group.dataset.section, 'stacks', 'bowser://settings/stacks lands here');
   assert.equal(app.querySelectorAll('.sp-nav-item').filter((b) => b.dataset.section === 'stacks').length, 0, 'no nav item of its own');
-  assert.equal(part.querySelector('.sp-group-h').textContent, 'Groups');
-  const core = part.querySelectorAll('.sp-row').map((row) => row.dataset.row).filter((id) => id !== undefined);
-  assert.deepEqual(core, ['grouping'], 'the Groups part is the one group switch');
+  assert.equal(group.querySelector('.sp-group-h').textContent, 'Groups and workspaces');
+  const shownRows = group.querySelectorAll('.sp-row').map((row) => row.dataset.row ?? `opens:${row.dataset.opens}`);
+  assert.deepEqual(shownRows, ['grouping', 'tabs_workspaces', 'opens:workspaceRules']);
   // Groups have one look and one setting: none of the retired group options is drawn.
   for (const id of ['tabs_stack_style', 'tabs_stack_open_in_current', 'tabs_stack_drag', 'tabs_stack_drop_delay', 'tabs_stack_editor', 'tabs_stack_compact_row']) {
     assert.equal(app.querySelector(`.sp-row[data-row="${id}"]`), null, `${id} is gone`);
   }
-  // Workspaces and tiles are tab options, drawn in the Tabs part.
-  assert.ok(tabsArea.querySelector('section.sp-part[data-section="tabs"]').contains(rowNode('tabs_workspaces')), 'workspaces is a core Tabs row');
-  assert.ok(app.querySelector('[data-opens="workspaceRules"]'), 'the rules editor opens from one row');
   const more = moreOf('tabs');
   for (const id of ['tabs_tile_titles', 'tabs_tile_tight', 'tabs_workspace_scroll', 'tabs_workspace_counts', 'splitEdgeDrop']) {
     assert.ok(more.contains(rowNode(id)), `${id} is behind More options`);
-    assert.equal(logic.ROWS.find((r) => r.id === id).section, 'tabs', id);
+    assert.equal(logic.ROWS.find((r) => r.id === id).section, 'stacks', id);
   }
-  const headings = more.querySelectorAll('.sp-group-h').map((h) => h.textContent);
-  assert.ok(headings.includes('Workspaces and tiles'), 'under the card\'s own heading behind More options');
+  const folded = more.querySelector('.sp-group[data-group="groups"]');
+  assert.equal(folded.querySelector('.sp-group-h').textContent, 'Groups and workspaces', 'the same title behind More');
   // The group switch is saved with the page's draft.
   sent.length = 0;
   rowNode('grouping').querySelector('[role="switch"]').click();
@@ -2217,7 +2253,13 @@ test('simple settings is the calm default, and All settings is one switch away',
   assert.equal(logic.simpleTabChoice('left'), 'side');
   assert.equal(logic.simpleTabChoice('right'), 'side');
   assert.equal(logic.simpleTabChoice('bottom'), null);
-  assert.deepEqual([...logic.SIMPLE_MOVED], ['searchDefault', 'startHomepage', 'startupMode', 'themeAccent', 'import', 'deleteData', 'defaultBrowser']);
+  // Simple is a curated subset of All settings' own rows: every id is a row the page draws.
+  assert.deepEqual([...logic.SIMPLE_MOVED], logic.SIMPLE_GROUPS.flatMap((g) => g.rows));
+  for (const id of logic.SIMPLE_MOVED) assert.ok(logic.ROWS.some((r) => r.id === id), `${id} is a row of All settings`);
+  for (const id of ['searchDefault', 'startupMode', 'themeMode', 'themeAccent', 'tabPosition', 'toolbarButtons', 'fontSize', 'defaultZoom', 'blocker', 'deleteData', 'profile', 'downloadDir', 'defaultBrowser', 'autoUpdate', 'updateStatus']) {
+    assert.ok(logic.SIMPLE_MOVED.includes(id), `${id} is in Simple`);
+  }
+  assert.ok(logic.SIMPLE_MOVED.length <= 18, 'Simple stays short');
 
   deliver(fixture.snap);
   searchFor('');
@@ -2233,12 +2275,18 @@ test('simple settings is the calm default, and All settings is one switch away',
   assert.equal(app.querySelector('.sp-simple').hidden, false);
   assert.equal(app.querySelector('.sp-nav').hidden, true);
   for (const area of logic.AREAS) assert.equal(areaNode(area.key).hidden, true, area.key);
-  assert.deepEqual(app.querySelector('.sp-simple').querySelectorAll('.sp-label').map((node) => node.textContent), [
-    'Profile', 'Search engine', 'Homepage', 'Startup', 'Theme', 'Accent', 'Tabs', 'Import', 'Clear data', 'Extensions', 'Default browser',
-  ]);
+  // Four titled groups, each holding the very rows All settings draws (moved, not copied).
+  const simple = app.querySelector('.sp-simple');
+  assert.deepEqual(simple.querySelectorAll('.sp-group-h').map((h) => h.textContent), logic.SIMPLE_GROUPS.map((g) => g.title));
+  for (const spec of logic.SIMPLE_GROUPS) {
+    const card = simple.querySelector(`.sp-group[data-simple="${spec.key}"]`).querySelector('.sp-card');
+    assert.deepEqual(card.children.map((n) => n.dataset.row ?? n.dataset.opens), spec.rows, spec.key);
+    for (const id of spec.rows) assert.equal(app.querySelectorAll(`[data-row="${id}"], [data-opens="${id}"]`).filter((n) => n.dataset.opens === id || !app.querySelector(`[data-opens="${id}"]`)).length, 1, `${id} is drawn once`);
+  }
   // --- profiles --- this window's profile, one click from the manager.
-  const simpleProfile = app.querySelector('[data-simple="simpleProfile"]');
-  assert.equal(simpleProfile.querySelector('.sp-simple-profile-name').textContent, fixture.snap.d.profile);
+  const simpleProfile = rowNode('profile');
+  assert.ok(simple.contains(simpleProfile));
+  assert.equal(simpleProfile.querySelector('.sp-label').textContent, fixture.snap.d.profile);
   assert.ok(simpleProfile.querySelectorAll('button').find((b) => b.getAttribute('aria-label') === 'Manage profiles'));
   const engineRow = app.querySelector('.sp-row[data-row="searchDefault"]');
   assert.ok(app.querySelector('.sp-simple').contains(engineRow));
@@ -2250,14 +2298,14 @@ test('simple settings is the calm default, and All settings is one switch away',
   assert.equal(browserRow.querySelector('button').textContent, 'Default');
   assert.equal(browserRow.querySelector('button').disabled, true);
   assert.equal(app.querySelector('.sp-show-all').textContent, logic.SIMPLE_ALL_LABEL);
-  const themeButtons = app.querySelector('[data-simple="simpleTheme"]').querySelectorAll('[role="radio"]');
+  const themeButtons = rowNode('themeMode').querySelectorAll('[role="radio"]');
   assert.deepEqual([...themeButtons].map((button) => button.textContent), ['Light', 'Dark', 'System']);
   assert.equal(themeButtons[2].getAttribute('aria-checked'), 'true', 'the fixture follows Windows');
   sent.length = 0;
   themeButtons[1].click();
   assert.deepEqual(sent.map((message) => message.text), ['theme_schedule=none', 'theme_look=dark']);
   sent.length = 0;
-  const tabButtons = app.querySelector('[data-simple="simpleTabs"]').querySelectorAll('[role="radio"]');
+  const tabButtons = rowNode('tabPosition').querySelectorAll('[role="radio"]');
   assert.deepEqual([...tabButtons].map((button) => button.textContent), ['Top', 'Side']);
   tabButtons[1].click();
   assert.equal(sent.length, 1);
@@ -2279,8 +2327,25 @@ test('simple settings is the calm default, and All settings is one switch away',
   assert.ok(areaNode('profile').contains(rowNode('searchDefault')), 'the search row is back in General');
   assert.ok(areaNode('appearance').contains(rowNode('themeAccent')));
   assert.ok(areaNode('privacy').contains(app.querySelector('[data-opens="deleteData"]')));
-  assert.ok(areaNode('about').contains(rowNode('defaultBrowser')));
+  assert.ok(areaNode('profile').contains(rowNode('defaultBrowser')), 'Default browser is in General');
+  assert.ok(app.querySelector('.sp-group[data-group="theme"]').contains(rowNode('themeMode')), 'Mode is back in Appearance > Theme');
+  assert.ok(app.querySelector('.sp-group[data-group="tabBar"]').contains(rowNode('tabPosition')), 'Tab position is back in Tabs > Tab bar');
+  assert.ok(app.querySelector('.sp-group[data-group="profiles"]').contains(rowNode('profile')));
   deliver(fixture.snap);
+});
+
+test('simple: Manage on the profile row opens All settings at Profiles', () => {
+  deliver(fixture.snap);
+  searchFor('');
+  app.querySelector('.sp-view').querySelectorAll('[role="radio"]')[0].click();
+  assert.equal(app.querySelector('.sp-simple').hidden, false);
+  sent.length = 0;
+  rowNode('profile').querySelectorAll('button').find((b) => b.getAttribute('aria-label') === 'Manage profiles').click();
+  assert.equal(stored.get('bowser.settings.view'), 'all');
+  assert.equal(app.querySelector('.sp-simple').hidden, true);
+  assert.equal(app.querySelector('.sp-nav-item[aria-current="true"]').dataset.section, 'profile');
+  assert.ok(app.querySelector('.sp-group[data-group="profiles"]').contains(rowNode('profiles')));
+  assert.deepEqual(sent, [{ v: 1, t: 'set', a: 'section', text: 'profile' }]);
 });
 
 test('settings rows render a single line of text', () => {
@@ -2411,9 +2476,9 @@ test('search DOM: Simple/All round trips restore group visibility and accessible
   let group = rowNode('searchDefault').parent;
   while (!group.classList.contains('sp-group')) group = group.parent;
   assert.equal(group.hidden, false);
-  // The part title of a merged area stays over one row: it is the only visible word saying the row is Search's.
-  assert.equal(group.querySelector('.sp-group-h').hidden, false, 'a merged area keeps its part title over one row');
-  assert.equal(group.querySelector('.sp-group-h').textContent, 'Search');
+  // A group keeps its heading over one row: it is the only visible word saying what the row belongs to.
+  assert.equal(group.querySelector('.sp-group-h').hidden, false, 'a group keeps its heading over one row');
+  assert.equal(group.querySelector('.sp-group-h').textContent, 'Search engine');
   searchFor('');
   assert.equal(app.querySelector('.sp-simple').hidden, false);
   view[1].click();
@@ -2496,19 +2561,19 @@ test('`/` typed into a text field stays in it; elsewhere it jumps to the search'
   assert.equal(document.activeElement, input);
 });
 
-test('merged areas show each part title, so terse rows keep their context', () => {
+test('every group shows its heading, so terse rows keep their context', () => {
   searchFor('');
   const view = app.querySelector('.sp-view').querySelectorAll('[role="radio"]');
   view[1].click();
-  const shownTitles = (key) => areaNode(key).querySelectorAll('section.sp-part').map((part) => part.querySelector('.sp-group-h'))
-    .filter((h) => h && !h.hidden && !h.parent.hidden).map((h) => h.textContent);
-  assert.deepEqual(shownTitles('profile'), ['Profile', 'Search', 'Start page', 'Downloads'], '"Folder" and "Ask where" sit under Downloads');
-  assert.deepEqual(shownTitles('about'), ['Updates'], 'the second part is named; the first repeats the area heading');
-  assert.ok(shownTitles('address').includes('Page tools'));
-  assert.ok(shownTitles('privacy').includes('Performance'));
-  // A part title that only repeats the area's own heading stays hidden.
-  assert.ok(!shownTitles('privacy').includes('Privacy'));
-  assert.ok(!shownTitles('tabs').includes('Tabs'));
+  const shownTitles = (key) => areaNode(key).children.filter((c) => c.classList.contains('sp-group') && !c.hidden)
+    .map((g) => g.querySelector('.sp-group-h')).filter((h) => h && !h.hidden).map((h) => h.textContent);
+  assert.ok(shownTitles('profile').includes('Downloads'), '"Download folder" and "Ask where" sit under Downloads');
+  assert.deepEqual(shownTitles('about'), ['Updates', 'About Bowser']);
+  assert.ok(shownTitles('address').includes('Screenshots'), '"Folder" sits under Screenshots');
+  assert.ok(shownTitles('performance').includes('Performance'));
+  assert.ok(shownTitles('tabs').includes('Tab bar'), 'a one-row group keeps its heading');
+  // A heading that only repeats the area's own title stays hidden.
+  assert.deepEqual(shownTitles('extensions'), []);
 });
 
 test('every disclosure has its own accessible name', () => {

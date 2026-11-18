@@ -51,16 +51,24 @@ test('a change is one key and value, and a value Rust would refuse never leaves 
   assert.equal(logic.setFields('dd_max_results', 3), null, 'not this section\'s key');
 });
 
-test('Page tools is one short block: a few core rows and the rest behind More options', () => {
-  const rows = page.ROWS.filter((row) => row.section === 'pagetools');
-  assert.deepEqual(rows.map((row) => row.id).sort(), logic.PAGE_TOOLS_ROWS.map((row) => row.id).sort());
+test('Page tools: the screenshot folder in view, the tuning behind More, the zoom rows beside page zoom', () => {
+  const ids = logic.PAGE_TOOLS_ROWS.map((row) => row.id);
+  const rows = page.ROWS.filter((row) => ids.includes(row.id));
+  assert.equal(rows.length, ids.length, 'every page tools row is on the page');
   const core = rows.filter((row) => page.rowTier(row) === 'core').map((row) => row.id);
-  assert.deepEqual(core.sort(), ['ptCaptureDir', 'ptCaptureName', 'ptSpatial', 'ptWheelZoom', 'ptZoomScope']);
+  assert.deepEqual(core.sort(), ['ptCaptureDir']);
   assert.ok(rows.filter((row) => page.rowTier(row) === 'more').length >= 8);
   assert.equal(rows.filter((row) => page.rowTier(row) === 'later').length, 0, 'no row is a dead toggle');
   const browsing = page.AREAS.find((area) => area.parts.includes('pagetools'));
   assert.equal(browsing?.key, 'address');
   assert.equal(browsing?.nav, 'Browsing');
+  // Zoom scope and wheel zoom are zoom settings: they sit with Page zoom in Appearance > Text and zoom.
+  for (const id of ['ptZoomScope', 'ptWheelZoom']) {
+    const placed = page.placementOf(id, 'pagetools');
+    assert.equal(placed.area.key, 'appearance', id);
+    assert.equal(placed.group.key, 'text', id);
+  }
+  assert.equal(page.placementOf('ptCaptureDir', 'pagetools').group.title, 'Screenshots');
 });
 
 // ---- headless Edge ----

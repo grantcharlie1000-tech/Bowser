@@ -44,8 +44,8 @@ import {
   addSite, draftOf, durationLabel, highlightRanges, isSection, matchRows, parseSettingsSnapshot, resultCountText,
   saveText, sleepOptions, translateTargetOptions, updateView, type BookmarksBarMode, type Draft, type EfficiencyMode, type FontSize, type RowSpec,
   type SettingsSnapshot, type SpoilerMode, type TabLayout, type ThemeMode, type TrackingPrevention,
-  AREAS, LATER_LABEL, LATER_TITLE, MORE_LABEL, PAGE_ROWS, RESTART_NOTE, areaOf, partTitle, rowTier, type AreaSpec,
-  SETTINGS_VIEW_KEY, SIMPLE_ALL_LABEL, SIMPLE_MOVED, SIMPLE_TITLE, readSettingsView, simpleTabChoice, simpleThemeChoice, type SettingsView,
+  AREAS, LATER_LABEL, LATER_TITLE, MORE_LABEL, PAGE_ROWS, RESTART_NOTE, anchorGroup, areaOf, placementOf, rowTier, type AreaSpec,
+  SETTINGS_VIEW_KEY, SIMPLE_ALL_LABEL, SIMPLE_GROUPS, SIMPLE_TITLE, readSettingsView, simpleTabChoice, simpleThemeChoice, type SettingsView,
   AUTO_HIDE_BARS, AUTO_HIDE_BAR_LABELS, autoHideBarsList, autoHideBarsText, type AutoHideBar, // --- auto-hide (T11) ---
   addRuleText, removeRuleText, ruleExists, ruleSite as ruleSiteOf, type WorkspaceRules, // --- tab stacks (T10) ---
 } from './settings-page-logic';
@@ -220,7 +220,7 @@ interface RowNode {
   readonly target: HTMLElement | null;
 }
 /** A group: its heading (outside the card) and the card that holds its rows. */
-interface Group { readonly root: HTMLElement; readonly heading: HTMLElement | null; readonly card: HTMLElement }
+interface Group { readonly root: HTMLElement; readonly heading: HTMLElement | null; card: HTMLElement }
 
 export function startSettingsPage(root: HTMLElement): void {
   root.classList.add('sp-root');
@@ -340,8 +340,10 @@ export function startSettingsPage(root: HTMLElement): void {
   const groups: Group[] = [];
   let cardSeq = 0;
 
-  // --- settings slim --- one section per area (its heading, lead and nav item), holding one part per
-  // Rust section; the rows are built into the parts, then `arrange` sorts them into place.
+  // --- settings structure --- one section per area (its heading, lead and nav item). Each part of the
+  // page builds its rows into a staging part per Rust section (never shown); `arrange` then moves every
+  // row into its group (AREAS in settings-page-logic.ts), so where a row is built and where it is drawn
+  // are independent.
   const areaNodes = new Map<SettingsSection, HTMLElement>();
   for (const spec of AREAS) {
     const area = el('section', 'sp-sec');
@@ -361,9 +363,6 @@ export function startSettingsPage(root: HTMLElement): void {
     for (const key of spec.parts) {
       const part = el('section', 'sp-part');
       part.dataset.section = key;
-      if (key === spec.key) part.setAttribute('aria-labelledby', heading.id);
-      else part.setAttribute('aria-label', partTitle(key));
-      area.append(part);
       sectionNodes.set(key, part);
     }
 
@@ -481,6 +480,13 @@ export function startSettingsPage(root: HTMLElement): void {
   const profileRow = row(profileCard, 'profile', avatar);
   profileRow.root.classList.add('is-profile');
   profileRow.root.prepend(profileRow.root.lastElementChild ?? avatar);
+  // In Simple the profile row carries the way to the profile manager (All settings > Profiles). All
+  // settings draws the manager right under it, so there the button stays hidden (settings.css).
+  const profileManage = textButton('Manage', () => { prefer = 'all'; sectionHold = false; writeView('all'); go('profile', false, true); }, { aria: 'Manage profiles' });
+  profileManage.classList.add('sp-profile-manage');
+  const profileManageWrap = el('div', 'sp-ctl sp-profile-manage-wrap');
+  profileManageWrap.append(profileManage);
+  profileRow.root.append(profileManageWrap);
   // --- profiles --- the manager: every profile, the current one's look, and a form that adds one.
   const profilesView = mountProfiles({
     send: (text, answered) => {
@@ -634,6 +640,12 @@ export function startSettingsPage(root: HTMLElement): void {
     action: (name) => { if (cmd({ a: name }) && name === 'themereset') pending += 1; },
   });
   // --- end theme options ---
+  // Light, dark or follow Windows (Simple shows this same row). Timed schedules stay in Schedule behind More.
+  const themeMode = segmentedControl<'light' | 'dark' | 'system'>('Mode', [['light', 'Light'], ['dark', 'Dark'], ['system', 'System']], (value) => {
+    if (value === 'system') sendThemeOption('theme_schedule', 'system');
+    else { sendThemeOption('theme_schedule', 'none'); sendThemeOption('theme_look', value); }
+  });
+  row(themeCard, 'themeMode', themeMode.root);
 
   // Website appearance and the private tab theme (thread T3). --- settings slim --- they join the
   // Theme card, so the core view is one card of colour choices.
@@ -983,6 +995,14 @@ export function startSettingsPage(root: HTMLElement): void {
     rulesList.hidden = value.rules.length === 0;
   };
   // --- end tab stacks ---
+  // Tabs on top or down the side (Simple shows this same row): the Classic or Vertical left preset, as
+  // Appearance > Layout would set it. Tabs along the bottom are neither, so neither shows selected.
+  const tabPosition = segmentedControl<'top' | 'side'>('Tab position', [['top', 'Top'], ['side', 'Side']], (value) => change((d) => {
+    const edge = tabBarEdge(d.tabLayout);
+    if (value === 'side') { if (edge === 'left' || edge === 'right') return; applyLayoutConfig(d, presetConfig('vertical-left')); }
+    else if (edge !== 'top') applyLayoutConfig(d, presetConfig('classic'));
+  }));
+  row(card('tabs', 'Tab bar'), 'tabPosition', tabPosition.root);
   for (const cardKey of TAB_CARDS) {
     // --- T10 --- the stacks card is its own part of the Tabs and start page area. Groups come first,
     // as a card holding their one switch.
@@ -1237,23 +1257,8 @@ export function startSettingsPage(root: HTMLElement): void {
   sectionNodes.get('commands')?.append(...commandSections.commands);
   for (const found of commandSections.rows) rows.set(found.spec.id, { ...found, flag: null, target: null });
   groups.push(...commandSections.groups);
-  // --- settings slim --- the shortcut switches that lived in Appearance, beside the other keyboard options.
-  const shortcutsCard = el('div', 'sp-card');
-  {
-    const group = el('div', 'sp-group');
-    const heading = el('h3', 'sp-group-h');
-    heading.id = `sp-card-${++cardSeq}`;
-    heading.textContent = 'Shortcuts';
-    shortcutsCard.setAttribute('role', 'group');
-    shortcutsCard.setAttribute('aria-labelledby', heading.id);
-    group.append(heading, shortcutsCard);
-    // After the Keyboard options and websites, before the shortcut list.
-    const kb = sectionNodes.get('keyboard')!;
-    const editorBlock = kb.querySelector('.sp-kb');
-    if (editorBlock) editorBlock.replaceWith(group); else kb.append(group);
-    if (editorBlock) group.after(editorBlock);
-    groups.push({ root: group, heading, card: shortcutsCard });
-  }
+  // The chord switches (Shortcuts > Keys and clicks; `arrange` puts Ctrl+Tab order beside them).
+  const shortcutsCard = card('keyboard', 'Keys and clicks');
   row(shortcutsCard, 'shiftRightClickContext', shiftRightClick.root);
   row(shortcutsCard, 'ctrlShiftCCopyLink', copyLink.root);
   row(shortcutsCard, 'ctrlSVerticalTabs', vTabs.root);
@@ -1329,13 +1334,13 @@ export function startSettingsPage(root: HTMLElement): void {
     });
   };
   mediaStatus.textContent = '';
-  // The check runs once, the first time the Media card comes into view.
-  new IntersectionObserver((entries, observer) => {
+  // The check runs once, the first time the Media card comes into view (observed once `arrange` has placed it).
+  const mediaObserver = new IntersectionObserver((entries, observer) => {
     if (entries.some((entry) => entry.isIntersecting) && snapshot) {
       observer.disconnect();
       if (!mediaStarted) checkMedia();
     }
-  }, { root: main }).observe(mediaCard);
+  }, { root: main });
 
   // Extensions: a block of its own, like the Privacy dashboard. Rust sends its `extensions` snapshots to
   // this page and takes its extension commands in the `set` family; search treats it as one row.
@@ -1393,15 +1398,15 @@ export function startSettingsPage(root: HTMLElement): void {
   const defaultBrowserRow = row(defaultBrowserCard, 'defaultBrowser', defaultBrowserButton);
   defaultBrowserRow.root.classList.add('is-tight');
 
-  // ---- --- settings slim --- arranging the rows: core, "More options", sub-pages, "Not active yet" ----
+  // ---- --- settings structure --- arranging the rows: groups, More, sub-pages, "Inactive" ----
 
   interface Disclosure {
     readonly key: string; readonly root: HTMLElement; readonly button: HTMLButtonElement; readonly body: HTMLElement;
-    readonly groups: Map<string, HTMLElement>; count: number;
+    readonly groups: Map<string, Group>; count: number;
   }
-  /** Where each row ended up: its area, the part it shows in (null inside a disclosure), its disclosure, or its sub-page. */
-  interface Place { readonly area: string; readonly part: SettingsSection | null; readonly disclosure: Disclosure | null; readonly page: boolean }
-  interface Opener { readonly id: string; readonly root: HTMLElement; readonly label: HTMLElement; readonly desc: HTMLElement | null; readonly button: HTMLButtonElement; readonly part: SettingsSection }
+  /** Where each row ended up: its area, its group, its disclosure (null when shown), or its sub-page. */
+  interface Place { readonly area: string; readonly group: string; readonly disclosure: Disclosure | null; readonly page: boolean }
+  interface Opener { readonly id: string; readonly root: HTMLElement; readonly label: HTMLElement; readonly desc: HTMLElement | null; readonly button: HTMLButtonElement }
   interface SubPage { readonly id: string; readonly root: HTMLElement; readonly heading: HTMLElement; readonly area: AreaSpec }
   const places = new Map<string, Place>();
   const openers = new Map<string, Opener>();
@@ -1458,28 +1463,29 @@ export function startSettingsPage(root: HTMLElement): void {
     disclosures.push(d);
     return d;
   };
-  /** The card for `heading` (a row's old group) inside a disclosure, made on first use. */
-  const disclosureCard = (d: Disclosure, groupKey: string, heading: string): HTMLElement => {
-    const found = d.groups.get(groupKey);
-    if (found) return found;
-    const group = el('div', 'sp-group');
+  /** A group: its sub-heading over one card, appended to `into`. The same shape in every part of the page. */
+  const makeGroup = (into: HTMLElement, key: string, title: string, section?: SettingsSection): Group => {
+    const root = el('div', 'sp-group');
+    root.dataset.group = key;
+    if (section) root.dataset.section = section;
+    const h = el('h3', 'sp-group-h');
+    h.id = `sp-card-${++cardSeq}`;
+    h.textContent = title;
     const node = el('div', 'sp-card');
     node.setAttribute('role', 'group');
-    let h: HTMLElement | null = null;
-    if (heading !== '') {
-      h = el('h3', 'sp-group-h');
-      h.id = `sp-card-${++cardSeq}`;
-      h.textContent = heading;
-      node.setAttribute('aria-labelledby', h.id);
-      group.append(h);
-    }
-    group.append(node);
-    d.body.append(group);
-    groups.push({ root: group, heading: h, card: node });
-    d.groups.set(groupKey, node);
-    return node;
+    node.setAttribute('aria-labelledby', h.id);
+    root.append(h, node);
+    into.append(root);
+    return { root, heading: h, card: node };
   };
-  const groupOfCard = (cardNode: HTMLElement): Group | undefined => groups.find((g) => g.card === cardNode);
+  /** The group `key` inside a disclosure, made on first use (in the order rows arrive, which is page order). */
+  const disclosureGroup = (d: Disclosure, key: string, title: string, section?: SettingsSection): Group => {
+    const found = d.groups.get(key);
+    if (found) return found;
+    const made = makeGroup(d.body, key, title, section);
+    d.groups.set(key, made);
+    return made;
+  };
 
   // Sub-pages: the big editors, each on a page of its own with a way back.
   const closePage = (refocus: boolean): void => {
@@ -1534,7 +1540,7 @@ export function startSettingsPage(root: HTMLElement): void {
     const wrap = el('div', 'sp-ctl');
     wrap.append(button);
     node.append(text, wrap);
-    const made = { id, root: node, label, desc, button, part: spec.section };
+    const made = { id, root: node, label, desc, button };
     openers.set(id, made);
     return made;
   };
@@ -1589,147 +1595,101 @@ export function startSettingsPage(root: HTMLElement): void {
   const laterDisclosure = disclosure('later', LATER_LABEL, `${LATER_LABEL} ${LATER_TITLE.toLowerCase()} settings`);
   laterNode.append(laterDisclosure.root);
 
-  /** True for a part whose rows are drawn as one card under the part's title (the merged areas' second and third parts too). */
-  const mergedArea = (area: AreaSpec): boolean => area.parts.length > 1;
-  const coreCards = new Map<SettingsSection, HTMLElement>();
-  const coreGroups = new Map<SettingsSection, HTMLElement>();
-  /** The part titles of merged areas: the headings that name a part, not a group of rows. */
-  const coreHeadings = new Set<HTMLElement>();
-  const coreCard = (part: SettingsSection): HTMLElement => {
-    const found = coreCards.get(part);
-    if (found) return found;
-    const group = el('div', 'sp-group');
-    const h = el('h3', 'sp-group-h');
-    h.id = `sp-card-${++cardSeq}`;
-    h.textContent = partTitle(part);
-    const node = el('div', 'sp-card');
-    node.setAttribute('role', 'group');
-    node.setAttribute('aria-labelledby', h.id);
-    group.append(h, node);
-    sectionNodes.get(part)!.prepend(group);
-    groups.push({ root: group, heading: h, card: node });
-    coreCards.set(part, node);
-    coreGroups.set(part, group);
-    coreHeadings.add(h);
-    return node;
-  };
+  /** The groups drawn in each area (shown rows), by group key; empty ones are dropped after arranging. */
+  const shownGroups = new Map<string, Group>();
+  /** Each area's More disclosure. */
+  const moreOf = new Map<SettingsSection, Disclosure>();
+  /** Content that travels with a row (the media report under the Media check). */
+  const companions = new Map<string, readonly HTMLElement[]>([['media', [mediaResults]]]);
 
   const arrange = (): void => {
-    const moreOf = new Map<SettingsSection, Disclosure>();
     for (const area of AREAS) {
+      const node = areaNodes.get(area.key)!;
+      for (const spec of area.groups) shownGroups.set(spec.key, makeGroup(node, spec.key, spec.title, spec.section));
       const d = disclosure(area.key, MORE_LABEL, `${MORE_LABEL} ${area.title} settings`);
       moreOf.set(area.key, d);
-      areaNodes.get(area.key)!.append(d.root);
+      node.append(d.root);
     }
-    // Page order, so every list keeps the order the rows were built in.
-    const ordered = Array.from(column.querySelectorAll<HTMLElement>('[data-row]')).map((node) => rows.get(node.dataset.row ?? '')).filter((node): node is RowNode => node !== undefined);
+    // Page order: the area, then the group, then the row's place in its group's list. A row no group
+    // lists (a new one) follows the listed rows of its group, in the order it was built.
+    const rank = (node: RowNode, built: number): readonly number[] => {
+      const { area, group } = placementOf(node.spec.id, node.spec.section);
+      const at = group.rows.indexOf(node.spec.id);
+      return [AREAS.indexOf(area), area.groups.indexOf(group), at < 0 ? group.rows.length + built : at];
+    };
+    const ordered = [...rows.values()]
+      .map((node, built) => ({ node, rank: rank(node, built) }))
+      .sort((a, b) => a.rank[0]! - b.rank[0]! || a.rank[1]! - b.rank[1]! || a.rank[2]! - b.rank[2]!)
+      .map(({ node }) => node);
+    const put = (node: RowNode, into: Group): void => {
+      if (node.root.classList.contains('sp-row')) { into.card.append(node.root, ...(companions.get(node.spec.id) ?? [])); return; }
+      // A block (the extensions list) is its own surface: it takes the card's place under the heading.
+      into.card.replaceWith(node.root);
+      into.card = node.root;
+    };
     for (const node of ordered) {
       const spec = node.spec;
-      const area = areaOf(spec.section);
+      const { area, group } = placementOf(spec.id, spec.section);
       const tier = rowTier(spec);
-      const inCard = node.card !== node.root;
-      const heading = inCard ? groupOfCard(node.card)?.heading?.textContent ?? '' : '';
       if (tier === 'core') {
-        if (mergedArea(area)) coreCard(spec.section).append(node.root);
-        places.set(spec.id, { area: area.key, part: spec.section, disclosure: null, page: false });
+        put(node, shownGroups.get(group.key)!);
+        places.set(spec.id, { area: area.key, group: group.key, disclosure: null, page: false });
       } else if (tier === 'page') {
-        const opener = openerRow(spec.id, spec);
-        const after = PAGE_ROWS[spec.id]?.after;
-        const anchor = after === undefined ? null : openers.get(after)?.root ?? rows.get(after)?.root ?? null;
-        // The editor itself moves to its sub-page below.
-        if (anchor) {
-          anchor.after(opener.root);
-        } else if (mergedArea(area)) {
-          coreCard(spec.section).append(opener.root);
-        } else if (inCard) {
-          node.root.replaceWith(opener.root);
-        } else {
-          const group = el('div', 'sp-group');
-          const box = el('div', 'sp-card');
-          group.append(box);
-          node.root.replaceWith(group);
-          box.append(opener.root);
-          groups.push({ root: group, heading: null, card: box });
-        }
+        // The opening row sits in the group; the editor itself moves to its sub-page.
+        shownGroups.get(group.key)!.card.append(openerRow(spec.id, spec).root);
         subPage(node, area);
-        places.set(spec.id, { area: area.key, part: spec.section, disclosure: null, page: true });
+        places.set(spec.id, { area: area.key, group: group.key, disclosure: null, page: true });
       } else {
-        const d = tier === 'later' ? laterDisclosure : moreOf.get(area.key)!;
-        if (inCard) disclosureCard(d, tier === 'later' ? area.key : `${spec.section}|${heading}`, tier === 'later' ? area.title : heading).append(node.root);
-        else d.body.append(node.root);
+        const later = tier === 'later';
+        const d = later ? laterDisclosure : moreOf.get(area.key)!;
+        put(node, later ? disclosureGroup(d, area.key, area.title) : disclosureGroup(d, group.key, group.title, group.section));
         d.count += 1;
-        places.set(spec.id, { area: tier === 'later' ? 'later' : area.key, part: null, disclosure: d, page: false });
+        places.set(spec.id, { area: later ? 'later' : area.key, group: group.key, disclosure: d, page: false });
       }
+    }
+    // A group with nothing shown lives only in More; an area with nothing folded has no More.
+    for (const [key, made] of shownGroups) {
+      if (made.card.childElementCount > 0 || made.card.dataset.row !== undefined) continue;
+      made.root.remove();
+      shownGroups.delete(key);
     }
     for (const d of disclosures) {
       if (d.count === 0) d.root.remove();
     }
-    // A note that belongs to a row follows it: "shortcuts are off" sits under the Keyboard shortcuts switch.
-    const offNote = sectionNodes.get('keyboard')?.querySelector('.sp-cmd-note');
-    if (offNote) coreGroups.get('keyboard')?.append(offNote);
+    // The staging parts are spent: from here on the page knows only its drawn groups.
+    groups.length = 0;
+    groups.push(...shownGroups.values(), ...disclosures.flatMap((d) => [...d.groups.values()]));
     if (laterDisclosure.count === 0) laterNode.hidden = true;
     column.append(laterNode, ...[...subPages.values()].map((sub) => sub.root), empty);
+    const mediaRow = rows.get('media')?.root;
+    const mediaHome = mediaRow ? groups.find((g) => g.card.contains(mediaRow))?.card : undefined;
+    if (mediaHome) mediaObserver.observe(mediaHome);
   };
   arrange();
 
-  // ---- Simple settings: one calm page of the rows people actually change, plus three friendly controls ----
+  // ---- Simple settings: the rows people change, lifted out of All settings into four short groups ----
+  // The nodes move (a marker keeps each one's place in All settings), so every control and what it
+  // does lives in one place. SIMPLE_GROUPS in settings-page-logic.ts says which rows and in what order.
   const simpleNode = el('section', 'sp-sec sp-simple');
   const simpleHeading = el('h2', 'sp-h');
   simpleHeading.id = 'sp-h-simple';
   simpleHeading.tabIndex = -1;
   simpleHeading.textContent = SIMPLE_TITLE;
   simpleNode.setAttribute('aria-labelledby', simpleHeading.id);
-  const simpleCard = el('div', 'sp-card');
-  simpleCard.setAttribute('role', 'group');
-  simpleCard.setAttribute('aria-label', 'Simple settings');
-  const simpleTheme = segmentedControl<'light' | 'dark' | 'system'>('Theme', [['light', 'Light'], ['dark', 'Dark'], ['system', 'System']], (value) => {
-    if (value === 'system') sendThemeOption('theme_schedule', 'system');
-    else { sendThemeOption('theme_schedule', 'none'); sendThemeOption('theme_look', value); }
+  simpleNode.append(simpleHeading);
+  const simpleGroups = SIMPLE_GROUPS.map((spec) => {
+    const made = makeGroup(simpleNode, `simple-${spec.key}`, spec.title);
+    made.root.dataset.simple = spec.key;
+    return { spec, group: made };
   });
-  const simpleTabs = segmentedControl<'top' | 'side'>('Tabs', [['top', 'Top'], ['side', 'Side']], (value) => change((d) => {
-    const edge = tabBarEdge(d.tabLayout);
-    if (value === 'side') { if (edge === 'left' || edge === 'right') return; applyLayoutConfig(d, presetConfig('vertical-left')); }
-    else if (edge !== 'top') applyLayoutConfig(d, presetConfig('classic'));
-  }));
-  const simpleExtensions = textButton('Manage', () => { prefer = 'all'; sectionHold = false; writeView('all'); go('extensions', true, true); });
-  // --- profiles --- this window's profile, and the way to the profile manager.
-  const simpleProfile = el('div', 'sp-simple-profile');
-  const simpleProfileDisc = el('span', 'sp-profile-avatar');
-  simpleProfileDisc.setAttribute('aria-hidden', 'true');
-  const simpleProfileName = el('span', 'sp-simple-profile-name');
-  simpleProfileName.dir = 'auto';
-  const simpleProfiles = textButton('Manage', () => { prefer = 'all'; sectionHold = false; writeView('all'); go('profile', true, true); }, { aria: 'Manage profiles' });
-  simpleProfile.append(simpleProfileDisc, simpleProfileName, simpleProfiles);
+  groups.push(...simpleGroups.map(({ group }) => group));
   const showAll = textButton(SIMPLE_ALL_LABEL, () => chooseView('all'), { primary: true });
   showAll.classList.add('sp-show-all');
-  const simpleRow = (id: string, label: string, control: HTMLElement): HTMLElement => {
-    const node = el('div', 'sp-row');
-    node.dataset.simple = id;
-    const text = el('div', 'sp-text');
-    const labelNode = el('span', 'sp-label');
-    labelNode.id = `sp-l-${id}`;
-    labelNode.textContent = label;
-    text.append(labelNode);
-    if (!control.hasAttribute('aria-label') && !control.hasAttribute('aria-labelledby')) control.setAttribute('aria-labelledby', labelNode.id);
-    const wrap = el('div', 'sp-ctl');
-    wrap.append(control);
-    node.append(text, wrap);
-    return node;
-  };
-  const themeSlot = simpleRow('simpleTheme', 'Theme', simpleTheme.root);
-  const tabsSlot = simpleRow('simpleTabs', 'Tabs', simpleTabs.root);
-  const extensionsSlot = simpleRow('simpleExtensions', 'Extensions', simpleExtensions);
-  const profileSlot = simpleRow('simpleProfile', 'Profile', simpleProfile);
-  const simpleExtras = new Map<string, HTMLElement>([['simpleProfile', profileSlot], ['simpleTheme', themeSlot], ['simpleTabs', tabsSlot], ['simpleExtensions', extensionsSlot]]);
-  const simpleOrder = ['simpleProfile', 'searchDefault', 'startHomepage', 'startupMode', 'simpleTheme', 'themeAccent', 'simpleTabs', 'import', 'deleteData', 'simpleExtensions', 'defaultBrowser'];
-  const simpleSlots: ReadonlyArray<{ readonly id: string; readonly moved: boolean; readonly el?: HTMLElement }> = simpleOrder.map((id) => {
-    const extra = simpleExtras.get(id);
-    return extra ? { id, moved: false, el: extra } : { id, moved: (SIMPLE_MOVED as readonly string[]).includes(id) };
-  });
-  simpleNode.append(simpleHeading, simpleCard, showAll);
+  simpleNode.append(showAll);
   column.append(simpleNode);
   const parks = new Map<string, HTMLElement>();
-  const movedNode = (id: string): HTMLElement | null => id === 'deleteData' ? openers.get(id)?.root ?? null : rows.get(id)?.root ?? null;
+  /** The node Simple shows for a row: the row itself, or the row that opens its sub-page. */
+  const movedNode = (id: string): HTMLElement | null => openers.get(id)?.root ?? rows.get(id)?.root ?? null;
   const park = (id: string, node: HTMLElement): void => {
     if (parks.has(id)) return;
     const marker = el('span', 'sp-park');
@@ -1756,21 +1716,22 @@ export function startSettingsPage(root: HTMLElement): void {
     // The switch matches the page on screen: search results and a deep link show All until Simple is chosen again.
     viewCtl.set(on ? 'simple' : 'all');
     if (on) {
-      for (const slot of simpleSlots) {
-        const node = slot.moved ? movedNode(slot.id) : slot.el ?? null;
-        if (!node) continue;
-        if (slot.moved) park(slot.id, node);
-        simpleCard.append(node);
+      for (const { spec, group } of simpleGroups) {
+        for (const id of spec.rows) {
+          const node = movedNode(id);
+          if (!node) continue;
+          park(id, node);
+          group.card.append(node);
+        }
       }
       for (const node of areaNodes.values()) node.hidden = true;
       laterNode.hidden = true;
       empty.hidden = true;
       nav.hidden = true;
     } else {
-      for (const slot of simpleSlots) {
-        if (!slot.moved || !parks.has(slot.id)) continue;
-        const node = movedNode(slot.id);
-        if (node) unpark(slot.id, node);
+      for (const id of [...parks.keys()]) {
+        const node = movedNode(id);
+        if (node) unpark(id, node);
       }
       nav.hidden = false;
     }
@@ -1908,8 +1869,7 @@ export function startSettingsPage(root: HTMLElement): void {
     version.textContent = `Bowser ${s.version}`;
     avatar.textContent = s.avatar;
     paintDisc(avatar, s.profiles.list.find((p) => p.current)?.colour ?? '');
-    paintDisc(simpleProfileDisc, s.profiles.list.find((p) => p.current)?.colour ?? '', s.avatar);
-    simpleProfileName.textContent = s.profile;
+    profileManage.disabled = !s.readable;
     profileRow.label.textContent = s.profile;
     profilesView.paint(s.profiles, s.guest);
     banner.hidden = s.readable;
@@ -1941,11 +1901,10 @@ export function startSettingsPage(root: HTMLElement): void {
     uiFont.disabled = !s.readable;
     zoomInput.disabled = !s.readable;
     startSection.apply(d.start, s.readable); // --- start page ---
-    simpleTheme.set(simpleThemeChoice(String(s.themeOptions.theme_schedule), String(s.themeOptions.theme_look)));
-    simpleTheme.disable(!s.readable);
-    simpleTabs.set(simpleTabChoice(tabBarEdge(d.tabLayout)));
-    simpleTabs.disable(!s.readable);
-    simpleExtensions.disabled = false;
+    themeMode.set(simpleThemeChoice(String(s.themeOptions.theme_schedule), String(s.themeOptions.theme_look)));
+    themeMode.disable(!s.readable);
+    tabPosition.set(simpleTabChoice(tabBarEdge(d.tabLayout)));
+    tabPosition.disable(!s.readable);
     lockLater(); // --- settings slim ---
     // A snapshot during a search (a change just saved) keeps the results where the reader is.
     if (query !== '') filter(false);
@@ -1967,10 +1926,24 @@ export function startSettingsPage(root: HTMLElement): void {
     if (page.classList.contains('is-narrow')) button?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
   };
 
+  /**
+   * Where a deep link to `key` lands: the area for its own key, else the first group of that section.
+   * A group that lives only behind More opens it, so the link still lands on what it names.
+   */
+  const anchorNode = (key: SettingsSection): HTMLElement | undefined => {
+    const area = areaOf(key);
+    const spec = key === area.key ? null : anchorGroup(key);
+    if (!spec) return areaNodes.get(area.key);
+    const shown = shownGroups.get(spec.key);
+    if (shown && !shown.root.hidden) return shown.root;
+    const d = moreOf.get(area.key);
+    const folded = d?.groups.get(spec.key);
+    if (d && folded) { paintDisclosure(d, true); return folded.root; }
+    return areaNodes.get(area.key);
+  };
   /** The destination is relative to main, including the browser's end-of-page clamp. */
   const sectionTop = (key: SettingsSection | ''): number => {
-    const area = key === '' ? null : areaOf(key);
-    const target = key === '' || area === null ? null : key === area.key ? areaNodes.get(area.key) : sectionNodes.get(key);
+    const target = key === '' ? null : anchorNode(key);
     return Math.max(0, Math.min(target ? target.offsetTop - 8 : 0, Math.max(0, main.scrollHeight - main.clientHeight)));
   };
   // Keep the chosen section at its destination when late snapshots, media results or the host's
@@ -1995,8 +1968,8 @@ export function startSettingsPage(root: HTMLElement): void {
     const layout = new ResizeObserver(alignPinnedSection);
     layout.observe(main);
     layout.observe(column);
-    // Opposing size changes can leave a column or merged area unchanged but move its target.
-    for (const node of new Set([...areaNodes.values(), ...sectionNodes.values()])) layout.observe(node);
+    // Opposing size changes can leave a column or an area unchanged but move a group inside it.
+    for (const node of new Set([...areaNodes.values(), ...[...shownGroups.values()].map((made) => made.root)])) layout.observe(node);
   }
 
   /** Shows `key`; `tell` reports it to Bowser (the tab's address follows), `smooth` animates. */
@@ -2089,22 +2062,20 @@ export function startSettingsPage(root: HTMLElement): void {
     }
     return null;
   };
+  /** A group shows while any row in it shows; its heading shows unless it only repeats the section title. */
   const paintGroups = (): void => {
     for (const group of groups) {
-      let visible = 0;
-      for (const node of Array.from(group.card.children)) {
-        if (node instanceof HTMLElement && node.classList.contains('sp-row') && !node.hidden && ++visible === 2) break;
-      }
-      setHidden(group.root, visible === 0);
+      // A block drawn in place of the card (the extensions list) is one row of its own.
+      const visible = group.card.dataset.row !== undefined
+        ? !group.card.hidden
+        : Array.from(group.card.children).some((node) => node instanceof HTMLElement && node.classList.contains('sp-row') && !node.hidden);
+      setHidden(group.root, !visible);
       const heading = group.heading;
       if (!heading) continue;
       const section = ancestor(heading, 'sp-sec');
       const areaTitle = Array.from(section?.children ?? []).find((child) => child.classList.contains('sp-h'))?.textContent ?? '';
-      // A merged area's part title ("Downloads", "Updates", "Page tools") is the only visible word that
-      // says what terse rows such as "Folder" or "Automatic" belong to, so it stays even over one row.
-      // (The part's aria-label is never shown, so it cannot make the title redundant.)
-      const partTitleHeading = coreHeadings.has(heading);
-      const redundant = (visible <= 1 && !partTitleHeading) || (areaTitle !== '' && heading.textContent === areaTitle);
+      // Every group keeps its heading, over one row or ten, so a row always says what it belongs to.
+      const redundant = areaTitle !== '' && heading.textContent === areaTitle;
       setHidden(heading, redundant);
       if (redundant) { if (group.card.hasAttribute('aria-labelledby')) group.card.removeAttribute('aria-labelledby'); }
       else if (heading.id && group.card.getAttribute('aria-labelledby') !== heading.id) group.card.setAttribute('aria-labelledby', heading.id);
@@ -2119,14 +2090,12 @@ export function startSettingsPage(root: HTMLElement): void {
     setClass(page, 'is-searching', hits !== null);
     const shows = (id: string): boolean => hits === null || hits.has(id);
     const hitAreas = new Set<Place['area']>();
-    const hitParts = new Set<Place['part']>();
     const hitDisclosures = new Set<Disclosure>();
     if (hits !== null) {
       for (const id of hits) {
         const place = places.get(id);
         if (!place) continue;
         hitAreas.add(place.area);
-        hitParts.add(place.part);
         if (place.disclosure) hitDisclosures.add(place.disclosure);
       }
     }
@@ -2149,7 +2118,6 @@ export function startSettingsPage(root: HTMLElement): void {
       paintDisclosure(d, hits !== null ? any : openState.has(d.key));
     }
     for (const spec of AREAS) {
-      for (const key of spec.parts) setHidden(sectionNodes.get(key)!, hits !== null && !hitParts.has(key));
       const any = hits === null || hitAreas.has(spec.key);
       setHidden(areaNodes.get(spec.key)!, !any);
       const button = navButtons.get(spec.key);

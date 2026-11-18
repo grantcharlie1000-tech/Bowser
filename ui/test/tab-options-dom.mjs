@@ -165,17 +165,18 @@ deliver(settingsFixture.snap);
 const rowOf = (key) => page.querySelector(`.sp-row[data-row="${key}"]`);
 
 test('the Tabs section lists every option in cards, each with its own control and a plain label', () => {
-  // --- settings slim --- Tabs is the first part of the Tabs and start page area; its core rows sit in
-  // one Tabs card and every other option keeps its card heading behind the area's More options.
+  // --- settings structure --- the Tabs area's groups (docs/design/settings-structure.md): the everyday
+  // rows in view, the rest behind the area's More under the same group titles.
   const section = page.querySelector('section[data-area="tabs"]');
   assert.ok(section, 'a Tabs area');
   assert.equal(section.querySelector('h2').textContent, 'Tabs');
-  assert.ok(section.querySelector('section[data-section="tabs"]'), 'with a Tabs part');
+  assert.ok(section.querySelector('.sp-group[data-section="tabs"]'), 'with a Tabs group a deep link lands on');
   const cards = section.querySelector('.sp-more').querySelectorAll('.sp-group-h').map((h) => h.textContent);
-  for (const card of options.TAB_CARDS) assert.ok(cards.includes(options.TAB_CARD_TITLES[card]), card);
+  for (const title of ['Tab bar', 'New tabs', 'Groups and workspaces', 'Closing', 'Pinned and restored', 'Selecting and audio']) assert.ok(cards.includes(title), title);
   for (const spec of options.TAB_OPTIONS) {
     const row = rowOf(spec.key);
     assert.ok(row, spec.key);
+    assert.ok(section.contains(row), `${spec.key} is in Tabs`);
     assert.equal(row.querySelector('.sp-label').textContent, spec.label, spec.key);
     assert.equal(row.querySelector('.sp-desc'), spec.description === '' ? null : row.querySelector('.sp-desc'), spec.key);
     assert.equal(row.querySelector('.sp-flag'), null, `${spec.key} acts now: no "no effect yet" note`);

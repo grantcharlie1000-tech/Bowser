@@ -88,8 +88,10 @@ test('the rows cover every option once, are searchable, and only the schedule is
   }
   assert.deepEqual(options.THEME_ROWS.map((row) => row.id), [...options.THEME_ROW_IDS]);
   const tiers = Object.fromEntries(options.THEME_ROWS.map((row) => [row.id, logic.rowTier(logic.ROWS.find((r) => r.id === row.id))]));
-  assert.deepEqual(Object.entries(tiers).filter(([, tier]) => tier === 'core').map(([id]) => id), ['themeSchedule'], 'light or dark is the one theme row in the main view');
-  assert.ok(Object.entries(tiers).filter(([id]) => id !== 'themeSchedule').every(([, tier]) => tier === 'more'), JSON.stringify(tiers));
+  // Light, dark or system is the page's own Mode row (themeMode); the schedule and the rest are tuning.
+  assert.ok(Object.values(tiers).every((tier) => tier === 'more'), JSON.stringify(tiers));
+  assert.equal(logic.rowTier(logic.ROWS.find((r) => r.id === 'themeMode')), 'core');
+  assert.ok(logic.matchRows('dark mode').has('themeMode'));
   assert.ok(logic.matchRows('night').has('themeSchedule'));
   assert.ok(logic.matchRows('saturation').has('themeSaturation'));
   assert.ok(logic.matchRows('export theme').has('themeFile'));
@@ -256,16 +258,12 @@ test('the theme rows are drawn once each, labelled, with their own control', () 
   assert.deepEqual(rowNode('themeFile').querySelectorAll('button').map((b) => b.textContent).filter((t) => t !== 'Cancel'), ['Export…', 'Import…', 'Reset']);
 });
 
-test('every theme row sits behind More options; the main view keeps its ten rows', () => {
-  // --- final --- the schedule joined Appearance's main view on its own branch; with the layout
-  // presets and the auto-hide switch merged, Appearance keeps the ten core rows PR #34 had.
-  for (const id of options.THEME_ROW_IDS) {
-    if (id === 'themeSchedule') assert.ok(!more.contains(rowNode(id)), 'light or dark stays in the main view');
-    else assert.ok(more.contains(rowNode(id)), `${id} is behind More options`);
-  }
+test('every theme row sits behind More options; the main view keeps a short Theme group', () => {
+  // Mode (light, dark or system) is the everyday choice; the schedule and the editor are tuning.
+  for (const id of options.THEME_ROW_IDS) assert.ok(more.contains(rowNode(id)), `${id} is behind More options`);
   const core = areaNode.querySelectorAll('.sp-row').filter((row) => !more.contains(row)).map((row) => row.dataset.row).filter((id) => typeof id === 'string');
-  assert.deepEqual(core.filter((id) => id.startsWith('theme')), ['theme', 'themeAccent', 'themeSchedule']);
-  assert.ok(core.length <= 10, `${core.length} core rows in Appearance`);
+  assert.deepEqual(core.filter((id) => id.startsWith('theme')), ['themeMode', 'themeAccent', 'theme']);
+  assert.ok(core.length <= 12, `${core.length} core rows in Appearance`);
   // Search finds a hidden row and opens the disclosure it is in.
   searchFor('saturation');
   assert.equal(rowNode('themeSaturation').hidden, false);

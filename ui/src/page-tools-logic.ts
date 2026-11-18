@@ -107,4 +107,4 @@ export const PAGE_TOOLS_ROWS: readonly RowSpec[] = [
 ];
 
 /** The rows a person changes often enough to see without opening "More options". */
-export const PAGE_TOOLS_CORE: readonly string[] = ['ptCaptureDir', 'ptCaptureName', 'ptSpatial', 'ptZoomScope', 'ptWheelZoom'];
+export const PAGE_TOOLS_CORE: readonly string[] = ['ptCaptureDir'];

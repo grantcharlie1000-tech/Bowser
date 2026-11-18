@@ -152,18 +152,21 @@ switch, the search field, the section list with a sliding indicator) and a conte
 the label.
 
 Settings opens on **Simple**: the section list is hidden and the sidebar becomes a short header
-(title, search, and the Simple / All settings switch) over one page with search engine, homepage,
-what opens on startup, light / dark / system theme, accent colour, tabs on top or down the side,
-import bookmarks, clear browsing data, extensions, and the default browser, plus **Show all settings**.
+(title, search, and the Simple / All settings switch) over four short groups (Startup and search,
+Appearance, Privacy, Your browser) plus **All settings**. Simple draws the very rows All settings
+draws (their nodes move in while Simple is on), so a control and what it does live in one place.
 The choice of Simple or All is remembered in the page (local storage), not in settings.txt.
 
-**All settings** groups the same rows into nine sections, in this order: General (profile, search,
-start page, downloads), Appearance, Tabs (tabs and tab groups), Privacy (privacy and performance),
-Browsing (address bar, bookmarks, page tools), Shortcuts (keyboard and Quick commands), Extensions,
-Media, About (updates and about). Rarely changed rows stay behind More options inside each section.
-No setting is removed, and the settings.txt keys are unchanged.
+**All settings** has nine sections: General, Appearance, Tabs, Privacy and security, Browsing,
+Shortcuts, Extensions, System, About. Each is a list of groups (a sub-heading over one card); rows
+people change are shown, tuning rows sit behind the section's **More** under the same group titles.
+The full table, what moved where and why, and Simple's rows are in
+[settings-structure.md](settings-structure.md); the table that drives the page is `AREAS` and
+`SIMPLE_GROUPS` in `ui/src/settings-page-logic.ts`. No setting is removed, and the settings.txt keys
+are unchanged.
 
-Sections (only settings Bowser really has):
+Rust sections (deep-link keys; each lands on the first group of its section, see settings-structure.md).
+The table below is what each section's rows are, not where the page draws them:
 
 | Path | Title | Cards and rows |
 |---|---|---|
@@ -178,9 +181,11 @@ Sections (only settings Bowser really has):
 | `about` | About Bowser | version, Open settings file, Reset settings (in-page confirm; history, the update switch and bookmarks are not touched), Default browser (status, "Make Bowser the default browser") |
 
 Hierarchy is three steps: the section title (Subtitle 20/28), a group heading above its card (Body
-Strong 14/20), and the rows inside the card. Space separates them (56px between sections, 24px
-between groups, an inset hairline between rows), so a card reads as one object rather than a
-stack of strips. Each row: label, one-line description, control (switch, segmented, select,
+Strong 14/20 in the secondary text colour), and the rows inside the card. Space separates them,
+always as a margin on the element below: 16px from a section title to its first group, 8px from a
+group heading to its card, 24px between groups, 56px between sections, an inset hairline between
+rows, so a card reads as one object rather than a stack of strips. Every group keeps its heading,
+over one row or many, unless it only repeats the section title (Extensions). Each row: label, one-line description, control (switch, segmented, select,
 slider, button). Under the description, a row may carry one quiet note with its own 12px glyph,
 never a badge: "Applies after restart" (`restart` in `ROWS`) or "Has no effect yet. Bowser keeps
 your choice for when it does." (`notYet`) for a setting that is saved but not acted on: frameless,
@@ -226,7 +231,7 @@ Transform and opacity only, every animation finite, nothing in native paint.
 |---|---|---|---|---|
 | Page rises 8px and fades in | first show of a tab | 167ms out | compositor | 83ms fade |
 | Nav indicator slides to the section | active section changes | 250ms move | one element, transform | jumps |
-| Section scroll | nav click, search jump | native smooth scroll | compositor | instant |
+| Section scroll | nav click, search jump | native smooth scroll from the current position (never via the top); a jump that swaps the page (leaving search, a sub-page or Simple) is instant | compositor | instant |
 | Jump target card glow | after a search jump | 900ms fade of a wash layer | opacity | none |
 | Switch knob | toggle | 167ms move | transform | instant |
 | Layout tile press | click | 83ms scale 0.98 | transform | none |
