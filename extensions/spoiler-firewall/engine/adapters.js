@@ -4,8 +4,13 @@
 //   item     selector list of units (adapter selectors merged with the generic fallback)
 //   own      adapter-specific item selectors only (priority when resolving a unit)
 //   thread   selector for the thread / conversation root whose context defines hotness for everything inside
-//   context  selectors (searched inside the thread root, else document-wide) whose text/value defines hotness:
-//            subreddit name, video title, search box value ...
+//   context  PAGE-LEVEL selectors whose text/value defines hotness for the whole page: search box value, page or
+//            channel heading, subreddit name. Never a selector that matches every post of a feed: one post that names
+//            the game must not turn every other post on the page into a suspect.
+//   threadContext  selectors searched inside a thread root (defaults to context): the thread's own title / caption
+//   threadFirst    the thread root's first adapter item is its head (the post being replied to) and defines the
+//            thread's hotness. Only for real thread pages (threadUrl) or per-post roots: on a feed, the "first item"
+//            of <main> is just whichever post happens to be on top.
 //   media    media selector (adapter specific + generic)
 //   attrs    extra attribute names whose text is part of a unit's text (custom-element data attributes)
 //   hotUrl   0 cold | 1 warm | 2 hot, from the URL alone (query / path slug / subreddit) via SFW.classify
@@ -59,7 +64,7 @@ SFW.adapters = (function () {
     id: "x", threadUrl: /\/status\/\d+/, hosts: /(^|\.)(x|twitter)\.com$/i, highRisk: true,
     item: ["article[data-testid=tweet]", "[data-testid=cellInnerDiv]", "[data-testid=typeaheadResult]", "[data-testid=trend]", "[data-testid=UserCell]", "[data-testid='card.wrapper']", "[data-testid=conversation]", "[data-testid=DMDrawer] [role=listitem]", "[role=listbox] [role=option]"],
     thread: ["[aria-label^='Timeline: Conversation']", "[data-testid=primaryColumn] section[role=region]"],
-    context: ["[data-testid=SearchBox_Search_Input]", "[data-testid=tweetText]"],
+    context: ["[data-testid=SearchBox_Search_Input]"], threadFirst: true,
     media: ["[data-testid=tweetPhoto]", "[data-testid=videoPlayer]", "[data-testid='card.layoutLarge.media']", "[data-testid='card.layoutSmall.media']"],
     attrs: [],
     hotUrl: classifyUrl,
@@ -70,7 +75,8 @@ SFW.adapters = (function () {
     item: ["shreddit-post", "shreddit-comment", "faceplate-tracker", "search-telemetry-tracker", "reddit-search-large", "shreddit-search-suggestion",
       ".thing", "div.search-result", "li.search-result", "li[role=presentation]", "[data-testid=post-container]", "[data-testid=comment]", "div.Comment", "div.Post"],
     thread: ["shreddit-post", "div.thing.link", "#siteTable > .thing", "[data-testid=post-container]", "main"],
-    context: ["shreddit-post[post-title]", "shreddit-subreddit-header", "h1", "[data-testid=subreddit-name]", "#header-bottom-left .redditname", "input[name=q]", "faceplate-search-input"],
+    context: ["shreddit-subreddit-header", "[data-testid=subreddit-name]", "#header-bottom-left .redditname", "input[name=q]", "faceplate-search-input"],
+    threadContext: ["shreddit-post[post-title]", "h1"], threadFirst: true,
     media: ["shreddit-player", "shreddit-aspect-ratio", "gallery-carousel", "[slot=post-media-container]", "a.thumbnail", "img.preview"],
     attrs: ["post-title", "subreddit-prefixed-name", "subreddit-name", "permalink", "content-href", "author", "aria-label", "title", "alt"],
     hotUrl: redditHot,
@@ -82,7 +88,7 @@ SFW.adapters = (function () {
       "ytd-grid-video-renderer", "ytd-channel-renderer", "ytd-shelf-renderer", "ytm-shorts-lockup-view-model", "yt-lockup-view-model", "ytd-watch-metadata", "ytd-watch-info-text", "#movie_player", "ytd-player",
       ".ytp-caption-window-container", ".captions-text", "ytd-engagement-panel-section-list-renderer", "li.sbsb_c", "[role=option]", "ytd-notification-renderer"],
     thread: ["ytd-watch-flexy", "ytd-watch-grid", "ytd-search", "ytd-browse"],
-    context: ["ytd-watch-metadata h1", "h1.ytd-watch-metadata", "#title h1", "ytd-watch-metadata #description", "#description-inner", "input#search", "input[name=search_query]", "yt-searchbox input", "ytd-channel-name"],
+    context: ["ytd-watch-metadata h1", "h1.ytd-watch-metadata", "#title h1", "ytd-watch-metadata #description", "#description-inner", "input#search", "input[name=search_query]", "yt-searchbox input", "ytd-watch-metadata ytd-channel-name"],
     media: ["ytd-thumbnail", "yt-image", "yt-img-shadow", "#movie_player", ".ytp-cued-thumbnail-overlay-image"],
     attrs: ["title", "aria-label", "alt"],
     hotUrl: classifyUrl,
@@ -156,8 +162,9 @@ SFW.adapters = (function () {
   def({
     id: "tiktok", hosts: /(^|\.)tiktok\.com$/i, highRisk: true,
     item: ["[data-e2e=recommend-list-item-container]", "[data-e2e=search-card-item]", "[data-e2e=search_top-item]", "[data-e2e=user-post-item]", "[data-e2e^=comment-level]", "[data-e2e=comment-item]", "[data-e2e=search-user-container]", "div[class*=DivItemContainer]", "div[class*=DivCommentItemContainer]", "[data-e2e=browse-video-desc]", "[data-e2e=video-desc]"],
-    thread: ["[data-e2e=browse-video]", "[data-e2e=video-detail]", "[data-e2e=search-card-list]"],
-    context: ["[data-e2e=browse-video-desc]", "[data-e2e=video-desc]", "input[type=search]", "input[data-e2e=search-user-input]"],
+    thread: ["[data-e2e=browse-video]", "[data-e2e=video-detail]"],
+    context: ["[data-e2e=browse-video-desc]", "input[type=search]", "input[data-e2e=search-user-input]"],
+    threadContext: ["[data-e2e=browse-video-desc]", "[data-e2e=video-desc]"],
     media: ["video", "img", "[data-e2e=video-player]"], attrs: ["aria-label", "alt", "title"],
     hotUrl: classifyUrl,
   });
@@ -172,20 +179,21 @@ SFW.adapters = (function () {
   def({
     id: "facebook", hosts: /(^|\.)(facebook\.com|fb\.com|fb\.watch)$/i, highRisk: true,
     item: ["[role=article]", "div[role=feed] > div", "div[data-pagelet^=FeedUnit]", "div[data-pagelet*=Feed]", "div[aria-posinset]", "[role=listitem]", "li[role=presentation]", "[role=option]", "a[href*='/watch/?v=']", "a[href*='/reel/']"],
-    thread: ["[role=article]", "div[role=main]"],
-    context: ["input[type=search]", "div[data-ad-preview=message]", "h1"],
+    thread: ["[role=article]"],
+    context: ["input[type=search]", "h1"],
+    threadContext: ["div[data-ad-preview=message]", "h1"],
     media: ["video", "img", "div[data-visualcompletion=media-vc-image]"], attrs: ["aria-label", "alt", "title"],
     hotUrl: classifyUrl,
   });
   def({
-    id: "threads", hosts: /(^|\.)threads\.(net|com)$/i, highRisk: true,
+    id: "threads", threadUrl: /\/post\//, threadFirst: true, hosts: /(^|\.)threads\.(net|com)$/i, highRisk: true,
     item: ["div[data-pressable-container=true]", "[data-pagelet^=threads_post]", "article", "div[role=listitem]", "a[href*='/post/']"],
     thread: ["div[role=main]", "main"], context: ["input[type=search]", "h1"],
     media: ["video", "img"], attrs: ["alt", "aria-label", "title"],
     hotUrl: classifyUrl,
   });
   def({
-    id: "bluesky", hosts: /(^|\.)bsky\.(app|social)$/i, highRisk: true,
+    id: "bluesky", threadUrl: /\/post\//, threadFirst: true, hosts: /(^|\.)bsky\.(app|social)$/i, highRisk: true,
     item: ["[data-testid^=feedItem-by-]", "[data-testid^=postThreadItem-by-]", "[data-testid^=searchResult]", "[data-testid=searchAutoCompleteResult]", "[data-testid^=profileCard]", "[data-testid=postText]", "[role=link][aria-label*=post]"],
     thread: ["[data-testid=postThreadScreen]", "[data-testid=searchScreen]", "main"],
     context: ["input[type=search]", "[data-testid=searchTextInput]"],
@@ -213,28 +221,28 @@ SFW.adapters = (function () {
   // until it was checked, URLs and titles are classified cold, and the OCR allowlist (src/spoiler_ocr.rs, hosts/chrome)
   // covers the same hosts. Top-level image documents (https://i.imgur.com/x.png) are handled by the runtime.
   def({
-    id: "imgur", hosts: /(^|\.)imgur\.com$/i, highRisk: true,
+    id: "imgur", threadUrl: /^\/(gallery|a|t)\//, threadFirst: true, hosts: /(^|\.)imgur\.com$/i, highRisk: true,
     item: ["div.Post", "div.post-container", "[class*=Gallery-Content]", "[class*=PostContent]", "div.Comment", "[class*=Comment-]", "div.post"],
     thread: ["div.Gallery", "[class*=Gallery-Content]", "main"], context: ["h1", "[class*=Gallery-Title]", "input[type=search]"],
     media: ["[class*=PostImage]", "[class*=imageContainer]", "video"], attrs: ["alt", "title", "aria-label"],
     hotUrl: classifyUrl,
   });
   def({
-    id: "fourchan", hosts: /(^|\.)(4chan|4channel|4cdn)\.org$/i, highRisk: true,
+    id: "fourchan", threadFirst: true, hosts: /(^|\.)(4chan|4channel|4cdn)\.org$/i, highRisk: true,
     item: [".postContainer", ".post", ".thread", ".catalog-thread", "div.thread", ".teaser", ".fileText"],
     thread: [".thread", "#threads", "form[name=delform]"], context: ["#boardNavDesktop", ".subject", "title", "input[type=search]"],
     media: [".fileThumb", ".file", "img", "video"], attrs: ["alt", "title"],
     hotUrl: classifyUrl,
   });
   def({
-    id: "gtaforums", hosts: /(^|\.)gtaforums\.com$/i, highRisk: true,
+    id: "gtaforums", threadUrl: /\/topic\//, threadFirst: true, hosts: /(^|\.)gtaforums\.com$/i, highRisk: true,
     item: ["article.cPost", "article[id^=elComment_]", ".ipsComment", "li.ipsDataItem", ".ipsStreamItem", "[data-commentid]", ".cTopic"],
     thread: ["[data-controller='core.front.core.commentFeed']", ".cTopic", "main"], context: ["h1", ".ipsType_pageTitle", "input[type=search]"],
     media: [".ipsImage", ".ipsAttachLink_image", "video", "img"], attrs: ["alt", "title", "aria-label"],
     hotUrl: classifyUrl,
   });
   def({
-    id: "resetera", hosts: /(^|\.)resetera\.com$/i, highRisk: true,
+    id: "resetera", threadUrl: /\/threads\//, threadFirst: true, hosts: /(^|\.)resetera\.com$/i, highRisk: true,
     item: ["article.message", ".message", "li.structItem", ".structItem", ".block-row", ".message-body"],
     thread: [".block--messages", ".p-body-pageContent", "main"], context: ["h1.p-title-value", "h1", "input[name=keywords]"],
     media: [".bbImage", ".bbMediaWrapper", "video", "img"], attrs: ["alt", "title", "aria-label"],
@@ -250,12 +258,12 @@ SFW.adapters = (function () {
   def({
     id: "kick", hosts: /(^|\.)kick\.com$/i, highRisk: true,
     item: ["[class*=chat-entry]", "[data-chat-entry]", "[class*=stream-card]", "[class*=video-card]", "[role=listitem]", "[role=option]", "article"],
-    thread: ["main", "#chatroom", "[class*=chatroom]"], context: ["h1", "[class*=stream-title]", "input[type=search]"],
+    thread: ["main", "#chatroom", "[class*=chatroom]"], context: ["h1", "input[type=search]"],
     media: ["video", "img", "[class*=thumbnail]"], attrs: ["alt", "title", "aria-label"],
     hotUrl: classifyUrl,
   });
   def({
-    id: "tumblr", hosts: /(^|\.)tumblr\.com$/i, highRisk: true,
+    id: "tumblr", threadUrl: /\/post\//, threadFirst: true, hosts: /(^|\.)tumblr\.com$/i, highRisk: true,
     item: ["article", "[data-id]", "[role=article]", "div.post", ".post_container", "li.post", "[class*=post_]"],
     thread: ["main", "#posts", "[data-testid=timeline]"], context: ["h1", "[data-testid=blog-title]", "input[type=search]"],
     media: ["figure", "[data-testid=imageBlock]", "[class*=photo]", "video", "img"], attrs: ["alt", "title", "aria-label"],
@@ -340,6 +348,8 @@ SFW.adapters = (function () {
       item: join(item),
       thread: join(valid(def.thread, doc)),
       context: join(valid(def.context, doc)),
+      threadContext: join(valid(def.threadContext || def.context, doc)),
+      threadFirst: !!def.threadFirst,
       media: join(valid(def.media.concat(GENERIC_MEDIA), doc)),
       attrs: def.attrs || [],
       hotUrl: def.hotUrl,

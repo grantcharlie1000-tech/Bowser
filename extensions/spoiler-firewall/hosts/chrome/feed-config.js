@@ -13,7 +13,7 @@
 var SFWFeedConfig = {
   FEED_URL: "https://raw.githubusercontent.com/grantcharlie1000-tech/Bowser/main/extensions/spoiler-firewall/feed/published/feed.json",
   PUBLIC_KEYS: ["bbeYDKCBPf+bkGjnhDnJPXCkBh8oB7k4ejct5oonwNI="],
-  BUILTIN_VERSION: "2026.11.17-1",
+  BUILTIN_VERSION: "2026.11.18-1",
   CHECK_EVERY_MINUTES: 720,
   FETCH_TIMEOUT_MS: 10000,
 };

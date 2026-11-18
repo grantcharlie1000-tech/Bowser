@@ -23,7 +23,11 @@ SFW.policy = (function () {
     const flagged = lvl !== "none";
     const anyCue = f.cue || f.cueWeak;
 
-    if (hasMedia && (hot >= 1 || flagged)) return "shield";
+    // Media in GTA context, or next to words that point at GTA VI, is covered. In Strict / Balanced a "risk" level alone
+    // (one common first name like Jason / Raul / Brian, or a bare "spoiler alert" about something else) is not GTA
+    // evidence: it covered every photo post that named a Jason. Lockdown keeps covering on any flag.
+    if (hasMedia && hot >= 1) return "shield";
+    if (hasMedia && flagged && (mode === "lockdown" || lvl === "spoiler" || lvl === "mention" || f.franchise || f.entity)) return "shield";
     // text beyond the classifier's per-call cap/time budget was not looked at: budget overrun fails closed (DESIGN 4.5)
     if (result.truncated === true) return "shield";
 

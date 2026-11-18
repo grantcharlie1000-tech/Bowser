@@ -1,0 +1,14 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Home / X</title><link rel="stylesheet" href="/pages/common.css">
+<style>article{display:block;padding:6px;border-bottom:1px solid #eee}</style></head>
+<body><div data-testid="primaryColumn"><div aria-label="Timeline: Your Home Timeline" id="tl">
+<!-- Counters that tick in place (likes, relative times, video clocks) are not re-classified; a number that completes a
+     franchise name in place ("GTA 5" -> "GTA 6") still is. -->
+<div data-testid="cellInnerDiv"><article data-testid="tweet" class="item" data-expect="clear"><div data-testid="tweetText"><span>Lovely weather today, going for a long hike with the dog.</span></div><time id="t1">5h</time><button id="like1" aria-label="12 Likes. Like"><span id="c1">12</span></button></article></div>
+<div data-testid="cellInnerDiv"><article data-testid="tweet" class="item" data-expect="shield" id="digit"><div data-testid="tweetText"><span class="sentinel">GTA <span id="num">5</span> is still the game I play the most with my friends every weekend</span></div></article></div>
+</div></div>
+<script src="/pages/common.js"></script>
+<script>
+var n = 12;
+setInterval(function(){ n++; document.getElementById('c1').firstChild.nodeValue = String(n); document.getElementById('like1').setAttribute('aria-label', n + ' Likes. Like'); document.getElementById('t1').textContent = (n % 23) + 'h'; }, 50);
+setTimeout(function(){ document.getElementById('num').firstChild.nodeValue = '6'; }, 300);
+</script></body></html>

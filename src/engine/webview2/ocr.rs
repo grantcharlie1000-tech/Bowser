@@ -62,6 +62,8 @@ fn after(ms: u32, job: Box<dyn FnOnce()>) {
 struct Hub {
     /// Index 0 is the profile's cache, 1 the private tabs' (cleared when the last private tab goes).
     caches: [ocr::Lru; 2],
+    /// Bodies read but not scanned yet, same split (see `ocr::Parked`).
+    parked: [ocr::Parked; 2],
     worker: Option<ocr::Worker>,
     worker_failed: bool,
     tickets: HashMap<u64, (usize, Key)>,
@@ -74,6 +76,7 @@ impl Hub {
     fn new() -> Self {
         Self {
             caches: [ocr::Lru::new(ocr::LRU_CAPACITY), ocr::Lru::new(ocr::LRU_CAPACITY)],
+            parked: [ocr::Parked::new(), ocr::Parked::new()],
             worker: None,
             worker_failed: false,
             tickets: HashMap::new(),
@@ -94,6 +97,31 @@ fn cache_put(private: bool, key: Key, entry: Entry) {
 
 fn cache_remove(private: bool, key: &Key) {
     HUB.with(|hub| hub.borrow_mut().caches[usize::from(private)].remove(key));
+}
+
+/// Keeps a body unscanned until a page asks about it. Bodies pushed out by the caps are forgotten, so
+/// a later request for one of them waits for a fresh sighting like any unseen image.
+fn park(private: bool, key: Key, body: Vec<u8>) {
+    HUB.with(|hub| {
+        let mut hub = hub.borrow_mut();
+        let index = usize::from(private);
+        let dropped = hub.parked[index].put(key.clone(), body);
+        let kept = !dropped.contains(&key);
+        for old in dropped {
+            if hub.caches[index].get(&old) == Some(Entry::Parked) {
+                hub.caches[index].remove(&old);
+            }
+        }
+        if kept {
+            hub.caches[index].insert(key, Entry::Parked);
+        } else {
+            hub.caches[index].remove(&key);
+        }
+    });
+}
+
+fn take_parked(private: bool, key: &Key) -> Option<Vec<u8>> {
+    HUB.with(|hub| hub.borrow_mut().parked[usize::from(private)].take(key))
 }
 
 /// Hands a body to the worker. On any failure the entry is settled `Unavailable` at once.
@@ -236,6 +264,7 @@ impl Drop for TabOcr {
                     let others = hub.tabs.iter().filter_map(|tab| tab.upgrade()).any(|tab| tab.private);
                     if !others {
                         hub.caches[1].clear();
+                        hub.parked[1].clear();
                     }
                 }
             });
@@ -539,9 +568,15 @@ impl TabOcr {
             let Some(url) = ocr::normalize_url(&raw) else { return Ok(()) };
             let Some(host_group) = ocr::group_for_url(&url) else { return Ok(()) };
             let _ = host_group; // any listed image host: the serve check compares groups per frame
+            let small = ocr::known_small(&url);
             let key: Key = (top, url);
             // Seen already (pending, scanned, or settled): nothing to read.
             if cache_get(self.private, &key).is_some() {
+                return Ok(());
+            }
+            // Avatars and emoji are below the scan size by construction: not worth copying out of the browser.
+            if small {
+                cache_put(self.private, key, Entry::done(Status::Skipped, ""));
                 return Ok(());
             }
             let mut method = PWSTR::null();
@@ -583,8 +618,15 @@ impl TabOcr {
                 let bytes = if status.is_ok() { stream.and_then(read_image_stream) } else { None };
                 let settled_key = key.clone();
                 match bytes {
+                    // Scanned now only if the page already asked about it; otherwise it waits, unscanned, for a
+                    // request (most images of a feed are never asked about: OCR on every image response kept a
+                    // core busy for as long as a feed was scrolled).
                     Some(bytes) if epoch.load(Ordering::Relaxed) == queued_at => {
-                        submit(private, key.clone(), bytes, epoch.clone(), queued_at);
+                        if weak.upgrade().is_some_and(|tab| tab.wants(&key)) {
+                            submit(private, key.clone(), bytes, epoch.clone(), queued_at);
+                        } else {
+                            park(private, key.clone(), bytes);
+                        }
                     }
                     Some(_) => cache_remove(private, &settled_key),
                     None => cache_put(private, settled_key, Entry::done(Status::Skipped, "")),
@@ -744,7 +786,11 @@ impl TabOcr {
                 continue;
             }
             let key: Key = (top, url);
-            match cache_get(self.private, &key) {
+            let entry = cache_get(self.private, &key);
+            if entry == Some(Entry::Parked) {
+                self.scan_parked(&key);
+            }
+            match entry {
                 Some(Entry::Done { status, text }) => now_answers.push(Delivery { id: item.id, status, text }),
                 // Pending, or not seen yet (its response may still be on its way): hold it.
                 pending => {
@@ -775,6 +821,23 @@ impl TabOcr {
 
     // ---- waiting requests ----
 
+    /// A held request names this image.
+    fn wants(&self, key: &Key) -> bool {
+        self.waiters.borrow().iter().any(|waiter| &waiter.key == key)
+    }
+
+    /// A parked body was asked about: scan it now.
+    fn scan_parked(&self, key: &Key) {
+        match take_parked(self.private, key) {
+            Some(body) => {
+                cache_put(self.private, key.clone(), Entry::Pending);
+                submit(self.private, key.clone(), body, self.epoch.clone(), self.epoch.load(Ordering::Relaxed));
+            }
+            // Pushed out of the store meanwhile: forget it, a fresh sighting reads it again.
+            None => cache_remove(self.private, key),
+        }
+    }
+
     fn arm_waiters(self: &Rc<Self>) {
         if self.waiters.borrow().is_empty() || self.waiter_timer.replace(true) {
             return;
@@ -795,6 +858,16 @@ impl TabOcr {
     pub(super) fn tick_waiters(self: &Rc<Self>) {
         let now = Instant::now();
         let mut ready: HashMap<u32, Vec<Delivery>> = HashMap::new();
+        let parked: Vec<Key> = self
+            .waiters
+            .borrow()
+            .iter()
+            .filter(|waiter| cache_get(self.private, &waiter.key) == Some(Entry::Parked))
+            .map(|waiter| waiter.key.clone())
+            .collect();
+        for key in parked {
+            self.scan_parked(&key);
+        }
         self.waiters.borrow_mut().retain(|waiter| {
             let entry = cache_get(self.private, &waiter.key);
             let delivery = match entry {

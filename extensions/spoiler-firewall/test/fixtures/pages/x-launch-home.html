@@ -1,0 +1,23 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Home / X</title><link rel="stylesheet" href="/pages/common.css">
+<style>article{display:block;padding:6px;border-bottom:1px solid #eee}</style></head>
+<body><div data-testid="primaryColumn"><div aria-label="Timeline: Your Home Timeline" id="tl">
+<!-- Launch week: a home timeline with several GTA VI posts in a row ("warm" feed). Ordinary posts that use everyday words
+     ("dying", "the end", "story", "final") or name a common first name next to a photo stay visible; real spoilers that
+     name no franchise (a distinctive character name, the setting) are still covered. -->
+<div data-testid="cellInnerDiv"><article data-testid="tweet" class="item" data-expect="shield"><div data-testid="tweetText"><span class="sentinel">GTA 6 is out in a few hours, who is staying up?</span></div></article></div>
+<div data-testid="cellInnerDiv"><article data-testid="tweet" class="item" data-expect="shield"><div data-testid="tweetText"><span class="sentinel">my ps5 is ready for GTA VI, cleared the whole weekend for it and told my boss I'm sick</span></div></article></div>
+<div data-testid="cellInnerDiv"><article data-testid="tweet" class="item" data-expect="shield"><div data-testid="tweetText"><span class="sentinel">GTA6 is all the whole office talks about since monday morning</span></div></article></div>
+<div data-testid="cellInnerDiv"><article data-testid="tweet" class="item" data-expect="shield"><div data-testid="tweetText"><span class="sentinel">Grand Theft Auto VI tonight, nobody in my group chat is sleeping</span></div></article></div>
+</div></div>
+<script src="/pages/common.js"></script>
+<script>
+// after the feed is warm: ordinary posts and two unnamed spoilers arrive
+setTimeout(function(){var tl=document.getElementById('tl');var rows=[
+ ['clear','i\'m dying 😂 this is the end of an era, what a story',''],
+ ['clear','final exams done, last one was brutal but I survived',''],
+ ['clear','Mural by Jason Mann on Short Vine Street, created 2025','<div data-testid="tweetPhoto"><img src="/static/pic.svg" alt="Image" width="300" height="200"></div>'],
+ ['clear','Raul scores in the final minute! what a finish','<div data-testid="tweetPhoto"><img src="/static/pic.svg" alt="Image" width="300" height="200"></div>'],
+ ['shield','Lucia dies 😭😭 I was not ready',''],
+ ['shield','the Vice City ending got me crying',''],
+];rows.forEach(function(r){var c=FX.el('div',{'data-testid':'cellInnerDiv'});c.innerHTML='<article data-testid="tweet" class="item" data-expect="'+r[0]+'"><div data-testid="tweetText"><span'+(r[0]==='shield'?' class="sentinel"':'')+'>'+r[1]+'</span></div>'+r[2]+'</article>';tl.appendChild(c);});},400);
+</script></body></html>

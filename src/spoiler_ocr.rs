@@ -35,6 +35,9 @@ pub const MAX_TEXT_UNITS: usize = 4096;
 /// One `ExecuteScript` delivery stays under this many bytes.
 pub const MAX_DELIVERY_BYTES: usize = 192 * 1024;
 pub const LRU_CAPACITY: usize = 2000;
+/// Image bodies kept in memory, unscanned, until the page asks about them (see `Parked`).
+pub const PARKED_BYTES: usize = 64 * 1024 * 1024;
+pub const PARKED_CAPACITY: usize = 600;
 /// Jobs waiting for the worker, and the bytes they hold between them.
 pub const QUEUE_CAPACITY: usize = 64;
 pub const QUEUE_BYTES: usize = 48 * 1024 * 1024;
@@ -199,6 +202,26 @@ pub fn normalize_url(raw: &str) -> Option<String> {
     (text.len() <= MAX_URL_LEN).then_some(text)
 }
 
+/// Image URLs that are below the scan size by construction (X avatars in their small variants, emoji
+/// and hashflags): their bodies are never read, and a request for one is answered `Skipped` at once,
+/// the same answer a decode would give.
+pub fn known_small(url: &str) -> bool {
+    let Ok(parsed) = url::Url::parse(url) else { return false };
+    let host = parsed.host_str().unwrap_or("");
+    let path = parsed.path();
+    if host == "pbs.twimg.com" || host == "abs.twimg.com" {
+        if path.starts_with("/emoji/") || path.starts_with("/hashflags/") {
+            return true;
+        }
+        if path.starts_with("/profile_images/") {
+            let stem = path.rsplit('/').next().unwrap_or("");
+            let stem = stem.split('.').next().unwrap_or(stem);
+            return stem.ends_with("_normal") || stem.ends_with("_mini") || stem.ends_with("_bigger");
+        }
+    }
+    false
+}
+
 // ---- results and cache ----
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -224,6 +247,8 @@ impl Status {
 pub enum Entry {
     /// Seen and being fetched or scanned.
     Pending,
+    /// Read and kept in memory (`Parked`), not scanned: nothing has asked about it yet.
+    Parked,
     Done { status: Status, text: String },
 }
 
@@ -235,6 +260,77 @@ impl Entry {
 
 /// (top-level site group, image URL).
 pub type Key = (Group, String);
+
+/// Image bodies that were read from responses but not scanned. OCR is the expensive part (decode,
+/// scale, up to three recognition passes); most images a feed loads are never asked about, because
+/// the page only asks for media near the viewport whose post is not already decided by its words.
+/// So bodies wait here and are scanned only when a request names them. Oldest first out, bounded in
+/// count and bytes.
+pub struct Parked {
+    tick: u64,
+    bytes: usize,
+    map: HashMap<Key, (u64, Vec<u8>)>,
+    order: BTreeMap<u64, Key>,
+}
+
+impl Default for Parked {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Parked {
+    pub fn new() -> Self {
+        Self { tick: 0, bytes: 0, map: HashMap::new(), order: BTreeMap::new() }
+    }
+
+    pub fn len(&self) -> usize {
+        self.map.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.map.is_empty()
+    }
+
+    pub fn bytes(&self) -> usize {
+        self.bytes
+    }
+
+    /// Keeps a body. Returns the keys dropped (oldest first) to stay within the caps.
+    pub fn put(&mut self, key: Key, body: Vec<u8>) -> Vec<Key> {
+        let _ = self.take(&key);
+        if body.len() > PARKED_BYTES {
+            return vec![key];
+        }
+        self.tick += 1;
+        self.bytes += body.len();
+        self.order.insert(self.tick, key.clone());
+        self.map.insert(key, (self.tick, body));
+        let mut dropped = Vec::new();
+        while self.map.len() > PARKED_CAPACITY || self.bytes > PARKED_BYTES {
+            let Some((_, old)) = self.order.pop_first() else { break };
+            if let Some((_, body)) = self.map.remove(&old) {
+                self.bytes -= body.len();
+            }
+            dropped.push(old);
+        }
+        dropped
+    }
+
+    /// Removes and returns a body.
+    pub fn take(&mut self, key: &Key) -> Option<Vec<u8>> {
+        let (tick, body) = self.map.remove(key)?;
+        self.order.remove(&tick);
+        self.bytes -= body.len();
+        Some(body)
+    }
+
+    pub fn clear(&mut self) {
+        self.map.clear();
+        self.order.clear();
+        self.bytes = 0;
+    }
+}
 
 /// Least-recently-used map. Lookups and inserts refresh an entry.
 pub struct Lru {
@@ -915,6 +1011,38 @@ mod tests {
 
     fn key(n: usize) -> Key {
         (Group::X, format!("https://pbs.twimg.com/{n}.jpg"))
+    }
+
+    #[test]
+    fn small_avatar_and_emoji_urls_are_known_small() {
+        assert!(known_small("https://pbs.twimg.com/profile_images/123/abc_normal.jpg"));
+        assert!(known_small("https://pbs.twimg.com/profile_images/123/abc_bigger.png"));
+        assert!(known_small("https://abs.twimg.com/emoji/v2/svg/1f602.svg"));
+        assert!(known_small("https://abs.twimg.com/hashflags/x/y.png"));
+        assert!(!known_small("https://pbs.twimg.com/profile_images/123/abc_400x400.jpg"));
+        assert!(!known_small("https://pbs.twimg.com/profile_images/123/abc.jpg"));
+        assert!(!known_small("https://pbs.twimg.com/media/abc_normal?format=jpg"));
+        assert!(!known_small("https://example.com/profile_images/abc_normal.jpg"));
+    }
+
+    #[test]
+    fn parked_bodies_are_taken_once_and_stay_within_the_caps() {
+        let mut parked = Parked::new();
+        assert!(parked.put(key(1), vec![0; 10]).is_empty());
+        assert_eq!(parked.bytes(), 10);
+        assert_eq!(parked.take(&key(1)), Some(vec![0; 10]));
+        assert_eq!(parked.take(&key(1)), None);
+        assert_eq!(parked.bytes(), 0);
+        for n in 0..PARKED_CAPACITY + 3 {
+            parked.put(key(n), vec![1]);
+        }
+        assert_eq!(parked.len(), PARKED_CAPACITY);
+        assert!(parked.take(&key(0)).is_none(), "the oldest bodies leave first");
+        assert!(parked.take(&key(PARKED_CAPACITY + 2)).is_some());
+        let dropped = parked.put(key(9999), vec![0; PARKED_BYTES]);
+        assert!(!dropped.is_empty());
+        assert!(parked.bytes() <= PARKED_BYTES);
+        assert_eq!(parked.put(key(7777), vec![0; PARKED_BYTES + 1]), vec![key(7777)], "a body over the cap is not kept");
     }
 
     #[test]

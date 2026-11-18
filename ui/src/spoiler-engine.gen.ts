@@ -465,7 +465,7 @@ SFW.normalize = (function () {
 //   anti           "no spoilers"-style phrases that cancel the overlapping spoiler cue
 //   shapeVerb/shapeEnd   cold-context spoiler-shaped sentence parts
 SFW.lexicon = (function () {
-  const VERSION = "2026.11.17-1";
+  const VERSION = "2026.11.18-1";
   const L = (s) => s.split("|");
 
   // ---------------------------------------------------------------- franchise
@@ -541,7 +541,9 @@ SFW.lexicon = (function () {
       "\u30b8\u30a7\u30a4\u30bd\u30f3|\u30eb\u30b7\u30a2|\u6770\u68ee|\u5091\u68ee|\u9732\u897f\u4e9a|\u9732\u897f\u4e9e|\u5362\u897f\u4e9a|\u76e7\u897f\u4e9e|\u9732\u897f\u5a05|\uc81c\uc774\uc2a8|\ub8e8\uc2dc\uc544|\u062c\u064a\u0633\u0648\u0646|\u0644\u0648\u0633\u064a\u0627|\u0e40\u0e08\u0e2a\u0e31\u0e19|\u0e25\u0e39\u0e40\u0e0b\u0e35\u0e22"
   );
   // low-information names: only anchors when the context is already warm
-  const WEAK_NAME_LOW = L("cal|raul|brian");
+  const WEAK_NAME_LOW = L("cal|raul|brian|boobie");
+  // rare enough that "<name> + a story cue" in the launch window points at the game (Jason is everyone's colleague)
+  const WEAK_NAME_DISTINCT = L("lucia|duval|dre'quan|dre quan|\u043b\u044e\u0441\u0438\u044f|\u043b\u044e\u0441\u0438\u0438|\u043b\u044e\u0441\u0438\u044e|\u043b\u044e\u0441\u0438\u0435\u0439|\u043b\u0443\u0441\u0438\u044f|\u30eb\u30b7\u30a2|\u9732\u897f\u4e9a|\u9732\u897f\u4e9e|\u5362\u897f\u4e9a|\u76e7\u897f\u4e9e|\u9732\u897f\u5a05|\ub8e8\uc2dc\uc544|\u0644\u0648\u0633\u064a\u0627|\u0e25\u0e39\u0e40\u0e0b\u0e35\u0e22");
   const WEAK_ORG = L("gta|grand theft auto|gta online|rockstar|rockstar games|rockstar north|take two|take two interactive|take-two");
   const WEAK_PLACE = L("vice city|ambrosia|\u043b\u0435\u043e\u043d\u0438\u0434\u0430");
   const WEAK_ROLE = L(
@@ -628,7 +630,7 @@ SFW.lexicon = (function () {
   );
   const SHAPE_VERB_X = L(
     // en: gerunds, nouns, idioms
-    "dying|death|deaths|dead|doesnt survive|doesnt make it|didnt survive|didnt make it|wont survive|wont make it|cant survive|doesn't survive|doesn't make it|didn't survive|didn't make it|won't survive|won't make it|can't survive|gets killed off|killed off|kill off|kills off|" +
+    "dying|death|deaths|doesnt survive|doesnt make it|didnt survive|didnt make it|wont survive|wont make it|cant survive|doesn't survive|doesn't make it|didn't survive|didn't make it|won't survive|won't make it|can't survive|gets killed off|killed off|kill off|kills off|" +
       "betrayal|betraying|betrays|being the mole|is the mole|was the mole|being the rat|was the rat|being the traitor|was the traitor|is the snitch|" +
       "surviving|survival|working with the cops|working with the feds|has been dead|been dead the whole|is revealed as|revealed as the|is the real|gets betrayed|got betrayed|" +
       "was working with|is working with|turns out to be|turned out to be|ends up dead|ends up dying|is secretly|was secretly|" +
@@ -679,7 +681,7 @@ SFW.lexicon = (function () {
       "assassins creed|call of duty|half life|uncharted|fire emblem|octopath|baldurs gate|dragon age|the sims|minecraft|pokemon|hollow knight|starfield|" +
       "saints row|watch dogs|just cause|sleeping dogs|payday|borderlands|diablo|overwatch|" +
       "opera|donizetti|verdi|puccini|medea|argonauts|greek myth|shakespeare|season finale|series finale|netflix|hbo|disney|marvel|dc comics|" +
-      "friday the 13th|freddy vs jason|nightmare on elm|slasher|the sopranos|breaking bad|game of thrones|stranger things|squid game|yellowjackets|oppenheimer|" +
+      "friday the 13th|freddy vs jason|family guy|american dad|the simpsons|south park|bobs burgers|rick and morty|the office|grey s anatomy|greys anatomy|the walking dead|nightmare on elm|slasher|the sopranos|breaking bad|game of thrones|stranger things|squid game|yellowjackets|oppenheimer|" +
       "telenovela|novela|pelicula|filme|film|movie|horrorfilm|horrorfilms|sitcom|tv show|anime|manga|\u6620\u753b|13\u65e5\u306e\u91d1\u66dc\u65e5|\u7535\u5f71|\u96fb\u5f71|\uc601\ud654|\u0444\u0438\u043b\u044c\u043c|\u0444\u0438\u043b\u044c\u043c\u0435|\u0441\u0435\u0440\u0438\u0430\u043b|" +
       "the warriors|manhunt|max payne|la noire|midnight club|album|singer|song|concert|energy drink|restaurant|chef|" +
       "rockstar energy|rockstar records"
@@ -1065,14 +1067,14 @@ SFW.lexicon = (function () {
     // weak entities
     function weak(list, kind, hotOnly) {
       for (const s of list) {
-        const t = add(s, "weak", { kind: kind, low: hotOnly.has(s) });
+        const t = add(s, "weak", { kind: kind, low: hotOnly.has(s), distinct: (kind === "name" || kind === "place") && distinctSet.has(s) });
         if (!t) continue;
         weakKeys.add(t.c);
         rankSets.entityWeak.add(t.c);
         anchorOf(t, hotOnly.has(s));
       }
     }
-    const lowSet = new Set(WEAK_NAME_LOW), noneSet = new Set();
+    const lowSet = new Set(WEAK_NAME_LOW), noneSet = new Set(), distinctSet = new Set(WEAK_NAME_DISTINCT.concat(["vice city", "\u043b\u0435\u043e\u043d\u0438\u0434\u0430"]));
     weak(WEAK_NAME.concat(EXT.entityWeak), "name", lowSet);
     weak(WEAK_ORG, "org", noneSet);
     weak(WEAK_PLACE, "place", noneSet);
@@ -1440,12 +1442,12 @@ SFW.classify = (function () {
   function newAcc() {
     return {
       F: false, E: false, C: false, c: false, M: false, S: false, G: false, L: false, L2: false, LS: false, Cn: false,
-      names: new Set(), Wn: false, Wo: false, Wp: false, Wr: false, roleCore: false,
+      names: new Set(), Wn: false, Wo: false, Wp: false, Wr: false, Wd: false, Wpd: false, roleCore: false,
       shapeCore: false, shapeG: false, shapeRole: false, shapeGen: false, shapeId: false, Wrock: false,
     };
   }
   function merge(a, b) {
-    for (const k of ["F", "E", "C", "c", "M", "S", "G", "L", "L2", "LS", "Cn", "Wn", "Wo", "Wp", "Wr", "roleCore", "shapeCore", "shapeG", "shapeRole", "shapeGen", "shapeId", "Wrock"]) if (b[k]) a[k] = true;
+    for (const k of ["F", "E", "C", "c", "M", "S", "G", "L", "L2", "LS", "Cn", "Wn", "Wo", "Wp", "Wr", "Wd", "Wpd", "roleCore", "shapeCore", "shapeG", "shapeRole", "shapeGen", "shapeId", "Wrock"]) if (b[k]) a[k] = true;
     for (const x of b.names) a.names.add(x);
   }
 
@@ -1508,7 +1510,7 @@ SFW.classify = (function () {
       const k = h.t.kind;
       if (k === "name") { A.Wn = true; A.names.add(h.t.c); }
       else if (k === "org") { A.Wo = true; if (ORG_OK[h.t.c] === 1 && !v.s.startsWith("online", h.e)) A.Wrock = true; }
-      else if (k === "place") A.Wp = true;
+      else if (k === "place") { A.Wp = true; if (h.t.distinct) A.Wpd = true; }
       else if (k === "role") {
         A.Wr = true;
         if (h.t.c === "femaleprotag" || h.t.c === "femaleprotagonist") A.roleCore = true;
@@ -1609,6 +1611,20 @@ SFW.classify = (function () {
         }
       }
     }
+    // "<distinctive name> dies / 's death / betrays": the verb straight after the name (a surname in between, as in
+    // "Lucia Santos betrayed investors", is a real person in the news)
+    if (sverbs.length && liveWeak.length) {
+      dn: for (let a = 0; a < liveWeak.length; a++) {
+        const nm = liveWeak[a];
+        if (!nm.t.distinct || nm.t.kind !== "name") continue;
+        for (let b = 0; b < sverbs.length; b++) {
+          const vb = sverbs[b];
+          if (v.sid[vb.s] !== v.sid[nm.s] || vb.s < nm.e) continue;
+          const gap = v.s.slice(nm.e, vb.s);
+          if (gap.length <= 3 && /^(?:[^a-z0-9]*s?[^a-z0-9]*)$/.test(gap)) { A.Wd = true; break dn; }
+        }
+      }
+    }
     // "<name> is the rat/traitor/..." (identity reveal) with a live weak name in the same sentence
     if (sidents.length && liveWeak.length) {
       id: for (let a = 0; a < liveWeak.length; a++) {
@@ -1680,6 +1696,12 @@ SFW.classify = (function () {
     if (A.Wrock && A.L && (A.Cn || A.L2 || st.launchLike)) up(0.92); // "GTA/Rockstar/R* leak: the ending", in any context
     if (st.launchLike && A.L && A.Wr) up(0.92);
     if (st.launchLike && A.LS && A.Wn) up(0.92); // "Lucia ... spoiler" in the launch window
+    if (st.launchLike && A.Wrock && (A.Wn || A.Wr) && A.Cn) up(0.92); // "R* really killed off Jason"
+    // a distinctive name (Lucia, Duval) straight before a death / betrayal verb in the launch window ("Lucia dies \ud83d\ude2d")
+    if (st.launchLike && A.Wd) up(0.6);
+    // the game's setting with a story cue or a game-register word in the launch window ("Vice City ending", "the last
+    // mission in Vice City"); the bare place name stays weak (the Miami Heat's "Vice City" jerseys, the old game)
+    if (st.launchLike && A.Wpd && (A.C || A.G)) up(0.6);
     // unnamed "<someone> dies ... final mission/at the end" with a game-register word
     if (A.shapeGen) {
       if (st.launchLike) { up(0.92); shape = true; } else up(0.5);
@@ -1932,7 +1954,11 @@ SFW.policy = (function () {
     const flagged = lvl !== "none";
     const anyCue = f.cue || f.cueWeak;
 
-    if (hasMedia && (hot >= 1 || flagged)) return "shield";
+    // Media in GTA context, or next to words that point at GTA VI, is covered. In Strict / Balanced a "risk" level alone
+    // (one common first name like Jason / Raul / Brian, or a bare "spoiler alert" about something else) is not GTA
+    // evidence: it covered every photo post that named a Jason. Lockdown keeps covering on any flag.
+    if (hasMedia && hot >= 1) return "shield";
+    if (hasMedia && flagged && (mode === "lockdown" || lvl === "spoiler" || lvl === "mention" || f.franchise || f.entity)) return "shield";
     // text beyond the classifier's per-call cap/time budget was not looked at: budget overrun fails closed (DESIGN 4.5)
     if (result.truncated === true) return "shield";
 
