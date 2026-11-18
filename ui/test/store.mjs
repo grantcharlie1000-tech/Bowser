@@ -233,11 +233,27 @@ test('error card: title, one line, folded native detail, and a working retry', (
   assert.equal(card.querySelector('.bs-tech').querySelector('.bs-tech-text').textContent, VERIFY_CAP);
   assert.equal(card.querySelector('.bs-tech').open, false);
   assert.ok(card.querySelector('.bs-ident-icon'), 'the package tile stays');
+  // The bar breaks: two red halves around an exclamation mark, Try again on the same row.
+  const broken = card.querySelector('.bs-bar.is-failed');
+  assert.equal(broken.querySelectorAll('.bs-bar-half').length, 2);
+  assert.equal(broken.querySelector('.bs-bar-break').textContent, '!');
+  assert.equal(broken.getAttribute('aria-label'), 'Download failed');
+  assert.equal(btn(card, 'Try again').parent, broken.parent, 'Try again sits beside the bar');
   assert.equal(store.root.querySelector('[role="alert"]').textContent.startsWith('The package didn’t pass'), true, 'errors are announced assertively');
   btn(card, 'Try again').click();
   assert.deepEqual(store.sent.at(-1), { a: 'storeinstall', text: id });
   assert.equal(store.root.querySelector('.bs-status').querySelector('h2').textContent, entry.name, 'the pending card still names the package');
   assert.equal(store.root.querySelector('[role="alert"]').textContent, '', 'the error announcement is withdrawn');
+});
+
+test('only a failed download breaks the bar; other failures keep their mark and action row', () => {
+  const store = mount();
+  store.receive(message(snap({ phase: 'error', requestId: 'e-2', name: entry.name, error: 'Package download failed: offline. This is not a runtime compatibility verdict.' })));
+  assert.equal(store.root.querySelector('h2').textContent, 'Download failed');
+  assert.ok(store.root.querySelector('.bs-bar.is-failed'));
+  store.receive(message(snap({ phase: 'error', requestId: 'e-3', name: entry.name, error: 'No extension was installed.' })));
+  assert.equal(store.root.querySelector('.bs-bar.is-failed'), null);
+  assert.ok(btn(store.root.querySelector('.bs-actions'), 'Try again'));
 });
 
 test('an error raised before a request started shows neither the stale package nor a retry', () => {
@@ -260,6 +276,8 @@ test('in-progress card: neutral bar, secondary cancel, status announced once', (
   assert.equal(bar.getAttribute('aria-valuenow'), null, 'unknown progress is indeterminate');
   const cancel = btn(store.root, 'Cancel');
   assert.equal(cancel.classList.contains('is-primary'), false);
+  assert.equal(cancel.parent, bar.parent, 'Cancel sits on the same row as the bar');
+  assert.equal(store.root.querySelector('.bs-actions'), null, 'no separate action row while downloading');
   cancel.focus();
   store.receive(message(snap({ phase: 'downloading', requestId: 'd-1', name: entry.name, stage: 'download', received: 512 * 1024, total: 1024 * 1024 })));
   bar = store.root.querySelector('[role="progressbar"]');

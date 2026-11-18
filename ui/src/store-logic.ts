@@ -177,16 +177,18 @@ export interface StoreFailure {
   readonly identity: boolean;
   /** Offer the installed-extensions list (the package is already there). */
   readonly manage: boolean;
+  /** The download, or the check of what it downloaded, failed: the card shows the broken bar. */
+  readonly download: boolean;
 }
 
 /** Plain-language reading of the native error text. Rust sends free text, so this matches its known
  *  messages (src/store.rs, src/win32/store.rs) and falls back to showing the text as it is. */
 export function storeFailure(error: string): StoreFailure {
-  const f = (title: string, body: string, retry: StoreFailure['retry'], identity = true, detail = error, manage = false): StoreFailure => ({ title, body, detail, retry, identity, manage });
-  if (/^Package download failed:/.test(error)) return f('Couldn’t download the extension', 'Check your connection and try again.', 'suggest');
+  const f = (title: string, body: string, retry: StoreFailure['retry'], identity = true, detail = error, manage = false, download = false): StoreFailure => ({ title, body, detail, retry, identity, manage, download });
+  if (/^Package download failed:/.test(error)) return f('Download failed', 'Check your connection and try again.', 'suggest', true, error, false, true);
   if (/^Package verification failed:|^The package verified, but it could not be unpacked/.test(error)) {
     const cap = /larger than the per-file cap|more than the size cap|ratio/.test(error);
-    return f('The package didn’t pass Bowser’s checks', cap ? 'A file in it is larger than Bowser allows.' : 'Try again to download a fresh copy.', cap ? 'offer' : 'suggest');
+    return f('The package didn’t pass Bowser’s checks', cap ? 'A file in it is larger than Bowser allows.' : 'Try again to download a fresh copy.', cap ? 'offer' : 'suggest', true, error, false, true);
   }
   if (/already installed/.test(error)) return f('Already added', '', 'none', true, '', true);
   if (/too large (?:for Bowser )?to (?:display|show) safely/.test(error)) return f('Too much to review', 'It declares more access than Bowser can show, so it wasn’t added.', 'none');

@@ -51,7 +51,7 @@ export function mountStoreSection(options: ExtensionsSectionOptions): { readonly
     tile.classList.add('has-image'); tile.append(img); return tile;
   };
   /** The tile and the state heading (the focus target after a step changes), with an optional line under it. */
-  const head = (s: Pick<StoreSnapshot, 'icon'> | null, text: string, line = '', tone?: 'ok' | 'error'): HTMLElement => {
+  const head = (s: Pick<StoreSnapshot, 'icon'> | null, text: string, line = '', tone?: 'ok' | 'error', below?: HTMLElement): HTMLElement => {
     const box = el('div', 'bs-head');
     if (s) box.append(identityTile(s.icon));
     else if (tone) { const mark = el('span', 'bs-head-mark'); mark.dataset.tone = tone; mark.append(icon(tone === 'ok' ? 'check' : 'warning', { size: 20 })); box.append(mark); }
@@ -59,21 +59,39 @@ export function mountStoreSection(options: ExtensionsSectionOptions): { readonly
     const heading = el('h2', 'bs-status-title'); heading.tabIndex = -1; heading.textContent = text;
     words.append(heading);
     if (line) words.append(paragraph(line, 'bs-head-body'));
+    if (below) words.append(below);
     box.append(words);
     if (s && tone) { const mark = el('span', 'bs-head-badge'); mark.dataset.tone = tone; mark.append(icon(tone === 'ok' ? 'check' : 'warning', { size: 16 })); box.append(mark); }
     return box;
   };
-  const progressBar = (p: StoreProgress): HTMLElement => {
+  /** A short bar with its control (Cancel) on the same row, under the name. */
+  const progressBar = (p: StoreProgress, control?: HTMLElement): HTMLElement => {
     const wrap = el('div', 'bs-progress');
+    const row = el('div', 'bs-progress-row');
     const bar = el('div', `bs-bar ${p.kind === 'determinate' ? 'is-determinate' : 'is-indeterminate'}`);
     bar.setAttribute('role', 'progressbar'); bar.setAttribute('aria-label', p.label);
-    bar.append(el('span', 'bs-bar-fill')); wrap.append(bar);
+    bar.append(el('span', 'bs-bar-fill')); row.append(bar);
+    if (control) row.append(control);
+    wrap.append(row);
     if (p.kind === 'determinate') {
       const percent = Math.round(p.value * 100);
       bar.setAttribute('aria-valuemin', '0'); bar.setAttribute('aria-valuemax', '100'); bar.setAttribute('aria-valuenow', String(percent)); bar.setAttribute('aria-valuetext', p.text);
       bar.style.setProperty('--bs-f', String(p.value));
       wrap.append(paragraph(p.text, 'bs-progress-text'));
     }
+    return wrap;
+  };
+  /** A download that failed: the bar turns red and breaks in two around an exclamation mark. */
+  const failedBar = (control?: HTMLElement): HTMLElement => {
+    const wrap = el('div', 'bs-progress');
+    const row = el('div', 'bs-progress-row');
+    const bar = el('div', 'bs-bar is-failed');
+    bar.setAttribute('role', 'img'); bar.setAttribute('aria-label', 'Download failed');
+    const mark = el('span', 'bs-bar-break'); mark.textContent = '!';
+    bar.append(el('span', 'bs-bar-half'), mark, el('span', 'bs-bar-half'));
+    row.append(bar);
+    if (control) row.append(control);
+    wrap.append(row);
     return wrap;
   };
   const action = (label: string, key: string, run: () => void, opts: { primary?: boolean; subtle?: boolean; icon?: 'external'; aria?: string } = {}): HTMLButtonElement => {
@@ -140,8 +158,7 @@ export function mountStoreSection(options: ExtensionsSectionOptions): { readonly
     const name = storeDisplayName(s);
     switch (s.phase) {
       case 'downloading':
-        status.append(head(own, name, storeStatus(s)), progressBar(storeProgress(s)!));
-        if (s.requestId) actions.append(cancel());
+        status.append(head(own, name, storeStatus(s), undefined, progressBar(storeProgress(s)!, s.requestId ? cancel() : undefined)));
         break;
       case 'review': {
         status.append(head(own, storeStatus(s), `Version ${s.version}`), ...review(s));
@@ -155,16 +172,21 @@ export function mountStoreSection(options: ExtensionsSectionOptions): { readonly
         break;
       }
       case 'installing':
-        status.append(head(own, name, storeStatus(s)), progressBar(storeProgress(s)!));
+        status.append(head(own, name, storeStatus(s), undefined, progressBar(storeProgress(s)!)));
         break;
       case 'ready':
         status.append(head(own, storeStatus(s), s.restart ? 'Restart Bowser to start it.' : '', 'ok'));
         actions.append(manage());
         break;
       case 'error':
-        status.append(head(failure!.identity ? own : null, failure!.title, failure!.body, 'error'));
+        if (failure!.download) {
+          // The download (or its check) failed: the bar breaks, and Try again takes Cancel's place.
+          status.append(head(own, failure!.title, failure!.body, undefined, failedBar(again ? retryButton(failure!.retry === 'suggest') : undefined)));
+        } else {
+          status.append(head(failure!.identity ? own : null, failure!.title, failure!.body, 'error'));
+          if (again) actions.append(retryButton(failure!.retry === 'suggest'));
+        }
         if (failure!.detail) status.append(fold('tech', 'Details', 'bs-tech', paragraph(failure!.detail, 'bs-tech-text')));
-        if (again) actions.append(retryButton(failure!.retry === 'suggest'));
         if (failure!.manage) actions.append(manage());
         break;
       case 'cancelled':
@@ -198,7 +220,7 @@ export function mountStoreSection(options: ExtensionsSectionOptions): { readonly
     } else if (pending && (!snapshot || !storeBusy(snapshot.phase))) {
       status.dataset.phase = 'downloading';
       const known = isStoreId(requested) ? snapshot?.catalogue.find((entry) => entry.id === requested)?.name ?? '' : '';
-      status.append(head({ icon: '' }, known || 'Getting the extension', known ? 'Getting it…' : ''), progressBar({ kind: 'indeterminate', label: 'Download progress' }));
+      status.append(head({ icon: '' }, known || 'Getting the extension', known ? 'Getting it…' : '', undefined, progressBar({ kind: 'indeterminate', label: 'Download progress' })));
       announce('Getting the extension…', false);
     } else if (snapshot && reviewing) {
       const { said, alert } = fill(snapshot);

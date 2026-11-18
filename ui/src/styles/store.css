@@ -56,17 +56,32 @@
 .bs .bs-status-title { font-size: var(--bw-text-subtitle); line-height: var(--bw-leading-subtitle); font-weight: var(--bw-weight-strong); overflow-wrap: anywhere; text-wrap: balance; }
 .bs-head-body { color: var(--bw-text-2); overflow-wrap: anywhere; text-wrap: pretty; }
 
-/* Progress: determinate only with real byte counts */
-.bs-progress { display: flex; flex-direction: column; gap: var(--bw-space-2); }
-.bs-bar { position: relative; height: 4px; overflow: hidden; border-radius: var(--bw-r-pill); background: var(--bs-track); }
+/* Progress: a short bar under the name with its control (Cancel, Try again) on the same row.
+   Determinate only with real byte counts. */
+.bs-head:has(.bs-progress) { align-items: flex-start; }
+.bs-head:has(.bs-progress) > .bs-head-text { flex: 1 1 auto; }
+.bs-progress { display: flex; flex-direction: column; gap: var(--bw-space-1); margin-top: var(--bw-space-2); }
+.bs-progress-row { display: flex; align-items: center; gap: var(--bw-space-3); min-height: 28px; }
+.bs-progress-row > .bw-button { flex: none; min-height: 28px; height: 28px; }
+.bs-bar { position: relative; flex: 0 1 220px; min-width: 96px; height: 4px; overflow: hidden; border-radius: var(--bw-r-pill); background: var(--bs-track); }
 .bs-bar-fill { position: absolute; inset: 0; border-radius: inherit; background: var(--bs-run); transform-origin: 0 50%; }
 /* 250ms linear: the bar glides between updates, as the downloads bar does. */
 .bs-bar.is-determinate .bs-bar-fill { transform: scaleX(var(--bs-f, 0)); transition: transform var(--bw-dur-slow) linear; }
 .bs-bar.is-indeterminate .bs-bar-fill { right: auto; width: 34%; transform: translateX(-100%); animation: bs-sweep 1100ms linear infinite; }
 @keyframes bs-sweep { to { transform: translateX(300%); } }
 .bs-progress-text { color: var(--bw-text-2); font-size: var(--bw-text-caption); line-height: var(--bw-leading-caption); font-variant-numeric: tabular-nums; }
+/* Failed: the bar turns red and breaks in two, the halves easing apart around an exclamation mark. */
+.bs-bar.is-failed { display: flex; align-items: center; gap: var(--bw-space-1); height: 16px; overflow: visible; background: none; }
+.bs-bar-half { flex: 1 1 0; height: 4px; border-radius: var(--bw-r-pill); background: var(--bs-danger); }
+.bs-bar-half:first-child { animation: bs-break-left var(--bw-dur-base) var(--bw-ease-out) both; }
+.bs-bar-half:last-child { animation: bs-break-right var(--bw-dur-base) var(--bw-ease-out) both; }
+.bs-bar-break { display: grid; place-items: center; flex: none; width: 16px; height: 16px; border-radius: 50%; background: var(--bs-danger); color: var(--bw-window-opaque); font: var(--bw-weight-strong) 11px/1 var(--bw-font); animation: bs-break-mark var(--bw-dur-base) var(--bw-ease-out) both; }
+@keyframes bs-break-left { from { transform: translateX(10px); } }
+@keyframes bs-break-right { from { transform: translateX(-10px); } }
+@keyframes bs-break-mark { from { transform: scale(0.4); opacity: 0; } }
 @media (prefers-reduced-motion: reduce) {
   .bs-bar.is-indeterminate .bs-bar-fill { right: 0; width: auto; transform: none; animation: none; opacity: 0.4; }
+  .bs-bar-half, .bs-bar-break { animation: none; }
 }
 
 /* What it can do: short lines, the most far-reaching first */
@@ -111,5 +126,7 @@
 @media (forced-colors: active) {
   .bs-status, .bs-head-mark, .bs-head-badge, .bs-bar { border: 1px solid CanvasText; }
   .bs-bar-fill { forced-color-adjust: none; background: Highlight; }
+  .bs-bar.is-failed { border: 0; }
+  .bs-bar-half, .bs-bar-break { forced-color-adjust: none; background: Mark; color: MarkText; }
   .bs-access-list li::before { forced-color-adjust: none; background: CanvasText; }
 }

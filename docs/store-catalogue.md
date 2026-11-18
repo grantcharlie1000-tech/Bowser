@@ -6,12 +6,31 @@ Bowser does not clone it, frame it, scrape its artwork or give it a host bridge.
 in WebView2 remains a Windows acceptance gate, not an assumption.
 
 Bowser's own **Add to Bowser** control is outside the website and is offered only for a validated,
-committed current top-level listing. It revalidates the active nonprivate, nonloading tab at click
-time. It opens Bowser's trusted resolved-package/permission review; website script cannot install.
-Installed management remains in Extensions settings. The older native catalogue code is retained
-only as part of the internal review surface during this transition, not the default discovery UI.
-The four curated entries in `src/store.rs` remain provenance/test metadata, without invented ratings,
-review counts, installation counts, search API or guarantee of Chrome compatibility.
+committed current top-level listing: an extension's detail page on the Chrome Web Store
+(`chromewebstore.google.com/detail/...`) or on Edge Add-ons
+(`microsoftedge.microsoft.com/addons/detail/...`), never a store's home, search or category pages.
+It is one compact toolbar pill (puzzle and "Add to Bowser"). The listing is re-checked whenever the
+active tab's address changes, so a store's in-page navigation shows or hides it at once. It
+revalidates the active nonprivate, nonloading tab at click time and opens Bowser's trusted
+installation card; website script cannot install. Installed management remains in Extensions
+settings. The four curated entries in `src/store.rs` remain provenance/test metadata only; the
+installation page no longer shows a catalogue.
+
+**Edge Add-ons.** WebView2 is Microsoft Edge's engine, so extensions built for Edge are a natural
+fit. Edge's update service (`edge.microsoft.com/extensionwebstorebase/v1/crx`) answers the same
+gupdate 2.0 protocol as Google's, and its CRX3 packages carry the developer proof that derives the
+listing's ID (plus Microsoft's publisher proof), so the same verifier applies. Edge serves the
+package itself over plain HTTP: Bowser accepts that only for the Edge endpoint and only when the
+package's SHA-256 matches the `hash_sha256` from the HTTPS manifest. Bowser checks that hash for
+either store whenever the manifest names one.
+
+**The installation card.** The extension's icon and name, "Add <name>?", what it can do in a few
+plain lines (Chromium's install warnings: all sites, named sites, history, downloads and so on;
+permissions Chromium does not warn about say nothing), "It may ask for more access later" when it
+declares optional access, and every declared list in full under a folded Details with its store,
+version and ID. While it downloads, a short bar sits under the name with Cancel on the same row. A
+failed download turns the bar red and breaks it in two around an exclamation mark, with Try again
+where Cancel was. Errors are a title and one short line; the native message is under Details.
 
 ## Provenance and refresh
 
@@ -147,7 +166,7 @@ control does not establish selection grants, actual Bitwarden menus/autofill, if
 
 ### Bowser-owned installer guidance
 
-The validated listing action is a labeled Add to Bowser control in Bowser’s toolbar, not in Google’s document. Its visible note explains that Google installs into Chrome and Bowser support varies. Google’s original Chrome-only notice is neither hidden nor rewritten. Bowser still revalidates the exact successful top-level listing at click time, verifies the signed package and opens its independent permission review; the label does not promise extension compatibility.
+The validated listing action is a labeled Add to Bowser control in Bowser’s toolbar, not in the store’s document. The store’s own notices are neither hidden nor rewritten. Bowser still revalidates the exact successful top-level listing at click time, verifies the signed package and opens its independent permission review; the label does not promise extension compatibility.
 
 Current visual acceptance is limited to the default 100% UI font scale. The two-line installer copy still requires an adaptive layout at enlarged supported font scales: the fixed-height toolbar cannot fit both scaled lines at 200%. This remains an unreleased UX blocker, not a verified supported-scale result. The native journey requires the exact source-bound Button and finite visible bounds inside the trusted toolbar. Dedicated screenshots require independent visual review; accessible names alone do not prove that the copy is readable.
 
