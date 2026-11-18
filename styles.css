@@ -284,11 +284,10 @@ kbd {
 .tour-bar { position: absolute; inset: 0; z-index: -1; }
 .tour-bar i { display: block; height: 100%; background: var(--wash-strong); transform: scaleX(0); transform-origin: left; }
 .tour-tab:not(.is-on) .tour-bar i { transform: scaleX(0) !important; }
+.tour > .shot { margin-top: 32px; }
 .tour-pause { flex: none; width: 42px; height: 42px; background: var(--sunk); color: var(--ink); }
-.tour-desc { display: grid; max-width: 640px; margin: 20px auto 32px; text-align: center; }
 .scene-text { grid-area: 1 / 1; visibility: hidden; opacity: 0; transition: opacity 0.3s, visibility 0.3s; }
 .scene-text.is-on { visibility: visible; opacity: 1; }
-.tour-desc .scene-text { font-size: 18px; line-height: 1.5; color: var(--muted); }
 
 /* ---------- Compare ---------- */
 .cmp { display: grid; cursor: ew-resize; user-select: none; }
@@ -414,7 +413,6 @@ kbd {
   .shot { border-radius: 14px; }
   .tour-row { justify-content: flex-start; }
   .sec-head p, .cta-band > p { font-size: 17px; }
-  .tour-desc .scene-text { font-size: 16.5px; }
   .cmp-tag { bottom: 8px; font-size: 12px; padding: 5px 9px; }
   .cmp-tag-off { left: 8px; }
   .cmp-tag-on { right: 8px; }
