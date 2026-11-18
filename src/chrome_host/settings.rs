@@ -984,7 +984,7 @@ mod tests {
     #[test]
     fn workspace_rules_ride_in_the_snapshot_and_their_commands_carry_a_plain_site() {
         let json = snapshot_json(&sample(&Settings::default()));
-        assert!(json.contains(r#""workspaceRules":{"rules":[{"site":"example.org","workspace":"Work"}],"workspaces":["Default","Work"]},"layout":{"#), "{json}");
+        assert!(json.contains(r#""workspaceRules":{"rules":[{"site":"example.org","workspace":"Work"}],"workspaces":["Default","Work"]},"profiles":{"#), "{json}");
         let mut rule = fields("wsrule");
         rule.text = Some("add\thttps://www.News.example.com/x\tReading".into());
         assert_eq!(map_command(&rule), Some(Action::WorkspaceRuleAdd { site: "news.example.com".into(), workspace: "Reading".into() }));
