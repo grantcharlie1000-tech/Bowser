@@ -27,6 +27,7 @@ SFW.runtime = (function () {
   const VISIT_MAX = 30000; // element/text nodes visited per unit at most (a unit with more is pathological; its nested blocks are units too)
   const ENTITIES = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: " ", ndash: "-", mdash: "-", hellip: "...", rsquo: "'", lsquo: "'", ldquo: '"', rdquo: '"' };
   const CRUDE_WORDS = ["gta", "grand theft", "grandtheft", "vice city", "vicecity", "leonida", "rockstar"]; // crude hotness test, no RegExp
+  const RAF_WATCH_MS = 2000; // rAF safety pass keeps running this long after load / a big insertion (DESIGN §5.1 step 3)
   const BIG_INSERT = 1500; // a callback that delivers more added nodes than this only covers them (O(1)) and continues in slices
   // An unverifiable embedded frame (sandboxed without scripts: the engine cannot run inside it) is covered in Strict on
   // cold pages too once it is large enough to show one line of text; only tracking-pixel sized frames stay clear.
@@ -46,6 +47,10 @@ SFW.runtime = (function () {
   const MEDIA_TAGS = mkSet(["IMG", "VIDEO", "PICTURE", "CANVAS", "OBJECT", "EMBED"]);
   const LISTISH = mkSet(["LI", "TR", "DD", "DT", "BLOCKQUOTE", "FIGURE"]);
   const ATTR_TEXT = ["alt", "title", "aria-label", "aria-description", "placeholder"];
+  // inert() (handleRecords): elements whose arrival or removal can change what a unit says even when empty
+  const INERT_DENY = mkSet(["a", "area", "iframe", "frame", "frameset", "input", "textarea", "select", "option", "button", "image", "svg", "math", "slot", "template", "source", "track", "audio", "br", "wbr", "html", "head", "body", "title", "meta", "link", "base"]);
+  const INERT_ATTR_DENY = ["alt", "title", "aria-label", "aria-description", "placeholder", "href", "src", "srcset", "data-src", "poster", "srcdoc", "sandbox", "value", "data-sfw", "data-sfw-sr", "data-sfw-hold", "data-sfw-defer"];
+  const HTML_NS = "http://www.w3.org/1999/xhtml";
   // media OCR (host.ocr contract, DESIGN §5.3)
   const OCR_MIN_W = 96; // rendered AND natural size must reach this, else the media is "small" and follows the v1 rule
   const OCR_MIN_H = 64;
@@ -414,6 +419,7 @@ SFW.runtime = (function () {
     const unitQ = new Set(); // resolved units waiting for a decision
     const freshUnits = new Set(); // units in unitQ whose content changed (new / edited text), not only re-checked
     const structOnly = new Set(); // queued nodes touched only as the parent of added / removed children (touchStruct)
+    const inertSeen = new WeakSet(); // elements that arrived inert and have had no record since (handleRecords, inert())
     let noteFresh = true;
     const marks = new Set(); // elements carrying data-sfw-defer (region cover for work that did not fit in the budget)
     const longJobs = new Map(); // unit -> windowed classification in progress
@@ -427,6 +433,7 @@ SFW.runtime = (function () {
     const pendingSet = new Set();
     const threadWait = new Map();
     const recent = new Set();
+    let rafWatchUntil = 0; // the rAF re-check of touched units runs while loading and until this time (2 s after load / a big insertion)
     const U = new WeakMap(); // unit -> {fp, cfp, dec, targets}
     const NONTEXT_SEL = "img,video,picture,canvas,svg,iframe,embed,object,audio,[style*='background-image'],[style*='background:']"; // holdsNonText()
     const BG_CHILDREN = 12; // hasBackgroundMedia(): direct children whose computed background-image is read
@@ -766,7 +773,7 @@ SFW.runtime = (function () {
         errors: stats.errors, maxBatchMs: stats.maxBatchMs, meanBatchMs: stats.batches ? stats.totalMs / stats.batches : 0,
         p95BatchMs: s.length ? s[Math.min(s.length - 1, Math.floor(s.length * 0.95))] : 0,
         trace: stats.trace || null, slow: stats.slow || null, firstShieldAt: stats.firstShieldAt, lastError: stats.lastError || null, rafCaught: stats.rafCaught, rafChecks: stats.rafChecks, records: stats.records,
-        charDataRecords: stats.charDataRecords, counterSkips: stats.counterSkips | 0, roots: stats.roots, repairs: stats.repairs, fallbacks: stats.fallbacks,
+        charDataRecords: stats.charDataRecords, counterSkips: stats.counterSkips | 0, inertSkips: stats.inertSkips | 0, roots: stats.roots, repairs: stats.repairs, fallbacks: stats.fallbacks,
         pageHot, adapter: adapter && adapter.id, urlChanges: stats.urlChanges, titleGuarded: titleOriginal != null,
         pageShield: S.shield.pageState(doc), mode: cfg.mode, warm, moMode, detectionBroken, marks: marks.size, workLeft: workLeft(),
         ocr: Object.assign({}, stats.ocr, { on: lastOcrOn, live: liveRecs.size, queued: ocrQueue.size, flight: ocrFlying, cached: ocrCache.size, failed: failRecs.size }), ocrLog: stats.ocrLog || null,
@@ -1147,11 +1154,43 @@ SFW.runtime = (function () {
       else if (nHasAttr(el, "style") && sliceOcr && /background-image/i.test(nGetAttr(el, "style"))) noteNode(el);
     }
 
+    // Inert elements: no child nodes, no attribute extract() reads, not media / a frame / a form field / a custom element,
+    // no shadow root. Adding or removing one cannot change any unit's text, media or frames, yet games and animations
+    // add and remove hundreds a second (bullets, particles, ripples, cursors), and each one re-read the whole parent
+    // container twice (callback + frame). A removal counts as inert only for an element that was inert when it arrived
+    // and has had no record since (`inertSeen`): the removed node's state now says nothing about what it held while
+    // attached (a page could remove a text-bearing element and empty it in the same task).
+    function inert(n) {
+      if (!n || n.nodeType !== 1 || n.firstChild) return false;
+      const ln = n.localName;
+      if (!ln || ln.indexOf("-") > 0 || INERT_DENY.has(ln) || MEDIA_TAGS.has(n.tagName)) return false;
+      if (n.namespaceURI && n.namespaceURI !== HTML_NS) return false; // svg / math: images and text of their own
+      if (rootOf(n)) return false;
+      if (n.hasAttributes()) {
+        for (let i = 0; i < INERT_ATTR_DENY.length; i++) if (nHasAttr(n, INERT_ATTR_DENY[i])) return false;
+        if (nHasAttr(n, "style") && /background|content|url\(/i.test(nGetAttr(n, "style") || "")) return false;
+        if (!adapter) return false;
+        if (adapter.media && nMatches(n, adapter.media)) return false;
+        if (adapter.own && nMatches(n, adapter.own)) return false;
+        if (adapter.attrs) for (let i = 0; i < adapter.attrs.length; i++) if (nHasAttr(n, adapter.attrs[i])) return false;
+      }
+      return true;
+    }
+    function inertList(list, added) {
+      for (let k = 0; k < list.length; k++) {
+        const n = list[k];
+        if (added) { if (!inert(n)) return false; inertSeen.add(n); }
+        else if (!inertSeen.has(n) || !inert(n)) return false;
+      }
+      return true;
+    }
+
     function handleRecords(records) {
       stats.records += records.length;
       for (let i = 0; i < records.length; i++) {
         const r = records[i];
         const t = r.target;
+        inertSeen.delete(t); // anything recorded on an element ends its inert status for good
         if (r.type === "attributes") {
           const a = r.attributeName;
           if (a === "data-sfw") { repairSet.add(t); continue; }
@@ -1168,6 +1207,8 @@ SFW.runtime = (function () {
           const add0 = r.addedNodes;
           // a text node swapped for another that differs only in its numbers (textContent = "13 Likes")
           if (rem.length === 1 && add0.length === 1 && rem[0].nodeType === 3 && add0[0].nodeType === 3 && t.nodeType === 1 && t.nodeName !== "TITLE" && counterTick(rem[0].data, add0[0].data, nearText(add0[0]))) { stats.counterSkips = (stats.counterSkips | 0) + 1; continue; }
+          // only inert elements came or went (see inert()): nothing any unit says has changed
+          if ((t.nodeType === 1 || (t.nodeType === 11 && t.host)) && t !== doc.head && t.nodeName !== "TITLE" && (rem.length || add0.length) && inertList(add0, true) && inertList(rem, false)) { stats.inertSkips = (stats.inertSkips | 0) + 1; continue; }
           for (let k = 0; k < rem.length; k++) {
             if (rem[k].localName === "sfw-shield") repairSet.add(t.nodeType === 11 ? t.host : t);
           }
@@ -1202,6 +1243,7 @@ SFW.runtime = (function () {
         addedBurst = 0;
         handleRecords(records);
         heavy = addedBurst > BIG_INSERT;
+        if (heavy) rafWatchUntil = now() + RAF_WATCH_MS;
         if (failShown && !coverShown && !isProtective()) checkHotContent(); // protection is down on a page judged cold: look at what just arrived
         if (stats.trace) stats.trace.push("BATCH " + records.map((r) => r.type[0] + ":" + r.target.nodeName + ":" + (r.addedNodes ? r.addedNodes.length : 0) + (r.attributeName ? ":" + r.attributeName : "")).join(",") + " rec=" + records.length + " q=" + queue.size + " rs=" + doc.readyState);
         // a huge insertion: cover it (region marker, O(1)) and leave the classification to continuation slices, so the callback
@@ -2142,7 +2184,10 @@ SFW.runtime = (function () {
         }
       }
       stats.units += plans.length;
-      if (!fromFrame) { if (recent.size > 5000) recent.clear(); for (const p of plans) recent.add(p.u); }
+      // the rAF safety pass is for parser appends (DESIGN §5.1 step 3): while loading and for 2 s after load or a large
+      // insertion. After that every change arrives as a record; re-checking every touched unit on the next frame only
+      // doubled the cost of pages that change every frame (games, animations, live tickers).
+      if (!fromFrame && (doc.readyState !== "complete" || now() < rafWatchUntil)) { if (recent.size > 5000) recent.clear(); for (const p of plans) recent.add(p.u); }
       // siblings of units that just became shielded are re-evaluated with local heat (same round budget)
       for (const p of plans) {
         if (!p.generic || p.same) continue;
@@ -2957,6 +3002,7 @@ SFW.runtime = (function () {
           if (ti && doc.readyState === "complete") { ti.resolved = true; }
           if (doc.readyState === "complete") { threadWait.delete(r); for (const u of set) touch(u); }
         }
+        if (doc.readyState === "complete") rafWatchUntil = now() + RAF_WATCH_MS;
         if (doc.readyState === "complete") for (const g of Array.from(escalated)) { if (g.isConnected) touch(g); else escalated.delete(g); }
         flushPending();
         runWork(now(), BUDGET_MS);

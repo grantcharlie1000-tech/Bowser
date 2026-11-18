@@ -469,3 +469,32 @@ changes override earlier sections where they conflict.
 - v1.1: OCR (Bowser Windows.Media.Ocr first, Chrome Tesseract offscreen), lexicon feed, perceptual-hash
   blocklist, reply/author warmth.
 - Chrome Web Store: a text-first build submitted under a descriptive name with no Rockstar assets.
+
+## 11. Everyday-browsing cost (2026-11-18)
+
+Measured with the Bowser bundle in headless Chromium at 4x CPU throttling (a mid-range laptop), against the same page with
+protection off.
+
+- **Lexicon snapshot.** `compile()` ran in every document and every frame before the first text could be judged; cold
+  (no JIT yet) it was ~30 ms of main-thread work per document at full speed, ~140 ms at 4x, so a page with ten ad or
+  embed frames paid it eleven times (load 0.25 s -> 1.8 s). The build now runs `compile()` once and embeds the encoded
+  result after `lexicon.js` (`build/build.mjs` `withSnapshot`, `lexicon.encodeSnapshot` / `setSnapshot`). The page revives
+  it (same terms, same key order, inserted in the same order into fresh tries, same Sets and RegExp sources): ~10 ms per
+  document at full speed, ~40 ms at 4x. It is used only for this exact `VERSION` with no feed terms, and only after the
+  page's own normaliser reproduces the snapshot's sample keys (one per non-ASCII Unicode block in the lexicon), so ICU or
+  Unicode differences between Node and the browser fall back to compiling. A feed (`extend`) or any revive failure
+  compiles from the word lists as before. `test/unit/lexicon-snapshot.test.mjs` asserts the revived lexicon is deeply
+  identical to a fresh compile and that both give the same result for every corpus text.
+- **Inert elements.** Adding or removing an element with no child nodes, none of the attributes `extract()` reads, no
+  shadow root, and that is not media, a frame, a form field, a link, an SVG/MathML element or a custom element, cannot
+  change what any unit says. Such records no longer re-queue the parent (`touchStruct`), which re-read the whole
+  container. A removal counts only for an element that was inert when it arrived and has had no record since
+  (`inertSeen`), because a removed node's present state says nothing about what it held while attached.
+- **rAF safety pass window.** §5.1 step 3 limits the re-check of touched units on the next frame to loading and 2 s after
+  a large insertion; the implementation ran it after every batch forever, doubling the cost of pages that change every
+  frame (animations, tickers, games). It now runs while `readyState !== "complete"` and for 2 s after load or a
+  `BIG_INSERT` batch.
+
+Still open: a container whose own text really changes every frame (text pop-ups appearing and disappearing inside one
+small block) is re-read in full each time; `extract()` walks every descendant of a deep unit. An incremental extract
+would be the next step if that shows up on real sites.
