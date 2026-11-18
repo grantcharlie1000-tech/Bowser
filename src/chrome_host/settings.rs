@@ -361,6 +361,7 @@ fn start_snapshot(start: &crate::start_page::StartSettings, out: &mut super::jso
     out.string("widgetBg", start.widget_bg.key());
     out.string("widgetColor", &start.widget_color);
     out.bool("widgetDrag", start.widget_drag);
+    out.bool("dials", start.dials);
 }
 // --- end start page ---
 
@@ -428,7 +429,15 @@ pub enum Action {
     /// "Customise": the toolbar customiser docked beside the page (opens or closes it).
     OpenToolbar,
     // --- end toolbars and feeds ---
+    /// The welcome's Import step: one browser by its key (`win32::import_panel::BROWSERS`).
+    ImportFrom(&'static str),
+    /// The welcome's last step ("Start browsing", docs/design/welcome.md): a new tab takes the
+    /// welcome tab's place.
+    WelcomeDone,
 }
+
+/// The browsers `importfrom` names (`win32::import_panel::BROWSERS` has the same keys, in this order).
+pub const IMPORT_BROWSERS: [&str; 7] = ["chrome", "edge", "brave", "firefox", "opera", "vivaldi", "helium"];
 
 /// Maps `{t:"set",a,...}` to an [`Action`]: each action with exactly its own fields, nothing else.
 pub fn map_command(f: &PanelFields) -> Option<Action> {
@@ -514,6 +523,11 @@ pub fn map_command(f: &PanelFields) -> Option<Action> {
         "refresh" if bare => Action::Refresh,
         "setdefault" if bare => Action::SetDefault,
         "downloadfolder" if bare => Action::DownloadFolder,
+        "welcomedone" if bare => Action::WelcomeDone,
+        "importfrom" if text_only => {
+            let text = f.text.as_deref()?;
+            Action::ImportFrom(IMPORT_BROWSERS.into_iter().find(|key| *key == text)?)
+        }
         _ => return None,
     })
 }
@@ -853,11 +867,21 @@ mod tests {
         folder.text = None;
         folder.on = Some(true);
         assert_eq!(map_command(&folder), None);
+        let mut from = fields("importfrom");
+        assert_eq!(map_command(&from), None, "a browser is named");
+        for key in IMPORT_BROWSERS {
+            from.text = Some(key.into());
+            assert_eq!(map_command(&from), Some(Action::ImportFrom(key)));
+        }
+        for bad in ["Chrome", "Opera", "arc", "", "C:\\Users"] {
+            from.text = Some(bad.into());
+            assert_eq!(map_command(&from), None, "{bad}");
+        }
         let mut section = fields("section");
         section.text = Some("downloads".into());
         assert_eq!(map_command(&section), Some(Action::Section(Some(Section::Downloads))));
 
-        for (name, action) in [("reset", Action::Reset), ("openfile", Action::OpenFile), ("checkupdates", Action::CheckUpdates), ("restartupdate", Action::RestartUpdate), ("privacy", Action::Privacy), ("import", Action::Import), ("refresh", Action::Refresh), ("setdefault", Action::SetDefault)] {
+        for (name, action) in [("reset", Action::Reset), ("openfile", Action::OpenFile), ("checkupdates", Action::CheckUpdates), ("restartupdate", Action::RestartUpdate), ("privacy", Action::Privacy), ("import", Action::Import), ("refresh", Action::Refresh), ("setdefault", Action::SetDefault), ("welcomedone", Action::WelcomeDone)] {
             assert_eq!(map_command(&fields(name)), Some(action), "{name}");
             let mut with_on = fields(name);
             with_on.on = Some(true);
@@ -1032,7 +1056,7 @@ mod tests {
         settings.translate_auto = true;
         let json = snapshot_json(&sample(&settings));
         assert!(json.contains(r#""translateAuto":true,"translateTarget":"fr""#), "{json}");
-        assert!(json.contains(r##""widgetColor":"#1f2933","widgetDrag":true},"workspaceRules":{"##), "{json}");
+        assert!(json.contains(r##""widgetColor":"#1f2933","widgetDrag":true,"dials":false},"workspaceRules":{"##), "{json}");
         // --- layout (thread T6) --- the Layout block's object closes the snapshot.
         assert!(json.contains(r##"]},"layout":{"tabBarVisible":true,"##), "{json}"); // --- T10 --- after the workspace rules
         // --- window and panels (thread T9) --- the Window object follows the layout.

@@ -39,10 +39,13 @@ fn settings_round_trip_through_the_flat_keys() {
         ("start_widget_bg", "custom"),
         ("start_widget_color", "#aabbcc"),
         ("start_widget_drag", "false"),
+        ("start_dials", "true"),
     ] {
         assert!(settings.parse_key(key, value), "{key}");
     }
     assert_eq!(settings.columns, 9);
+    assert!(settings.dials, "start_dials turns the speed dials on");
+    assert!(!StartSettings::default().dials, "a new tab is blank by default");
     assert_eq!(settings.startup_pages, ["https://a.example/", "https://b.example/x"]);
     let pairs = settings.pairs();
     assert_eq!(pairs.iter().map(|(k, _)| *k).collect::<Vec<_>>(), SETTING_KEYS);

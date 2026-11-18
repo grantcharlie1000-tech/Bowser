@@ -54,3 +54,5 @@ writeFileSync(join(distDir, 'app.css'), `${css.css.replace(/\r\n/g, '\n').trimEn
 console.log(`  dist/app.css  ${(Buffer.byteLength(css.css) / 1024).toFixed(1)}kb`);
 
 copyFileSync(join(srcDir, 'index.html'), join(distDir, 'index.html'));
+// The Bowser logo the welcome's hero shows (icons/bowser.png at 192px; docs/design/welcome.md).
+copyFileSync(join(srcDir, 'assets', 'bowser-logo.png'), join(distDir, 'bowser-logo.png'));

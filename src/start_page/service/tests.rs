@@ -283,7 +283,7 @@ fn display_settings_change_the_snapshot_the_page_draws_from() {
         ..StartSettings::default()
     };
     let page = json(&paths, &tuned, shown);
-    assert!(page.contains(r##""settings":{"columns":4,"thumbSize":5,"titles":"auto","addButton":false,"dragReorder":false,"widgets":true,"widgetColumns":3,"widgetHeight":"tall","widgetBg":"custom","widgetColor":"#336699","widgetDrag":false}"##), "{page}");
+    assert!(page.contains(r##""settings":{"columns":4,"thumbSize":5,"titles":"auto","addButton":false,"dragReorder":false,"widgets":true,"widgetColumns":3,"widgetHeight":"tall","widgetBg":"custom","widgetColor":"#336699","widgetDrag":false,"dials":false}"##), "{page}");
     let plain = json(&paths, &StartSettings::default(), shown);
     assert!(plain.contains(r#""columns":6,"thumbSize":3,"titles":"always","addButton":true,"dragReorder":true,"widgets":false,"#), "{plain}");
     assert!(plain.contains(r#""widgets":[]"#), "widgets off sends none: {plain}");

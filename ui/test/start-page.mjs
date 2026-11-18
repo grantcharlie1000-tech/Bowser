@@ -83,10 +83,11 @@ test('the Rust snapshots pass the bridge and the strict page parser, and anythin
 test('the start settings object: strict parse, and the save lines are the keys Rust owns', () => {
   const s = {
     groupReopen: 'last', titles: 'always', addButton: true, columns: 6, thumbSize: 3, dragReorder: true, homepage: '', startup: 'start_page',
-    startupPages: [], widgets: false, widgetColumns: 2, widgetHeight: 'regular', widgetBg: 'translucent', widgetColor: '#1f2933', widgetDrag: true,
+    startupPages: [], widgets: false, widgetColumns: 2, widgetHeight: 'regular', widgetBg: 'translucent', widgetColor: '#1f2933', widgetDrag: true, dials: false,
   };
   assert.deepEqual(logic.parseStartSettings(s), s);
-  assert.equal(logic.startSaveLines(s).length, 15);
+  assert.equal(logic.startSaveLines(s).length, 16);
+  assert.ok(logic.startSaveLines(s).includes('start_dials=false'), 'a new tab is blank by default');
   assert.ok(logic.startSaveLines(s).includes('startup_pages='));
   assert.ok(logic.startSaveLines({ ...s, startupPages: ['https://a.example/', 'https://b.example/'] }).includes('startup_pages=https://a.example/ https://b.example/'));
   for (const bad of [{ ...s, columns: 13 }, { ...s, homepage: 'ftp://x' }, { ...s, startup: 'x' }, { ...s, extra: 1 }]) {

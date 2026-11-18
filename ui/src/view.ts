@@ -329,18 +329,19 @@ export function applyBar(view: View, state: Pick<StateMsg, 'items' | 'tools' | '
       }
     }
     for (const id of [...bar.tools.keys()]) if (!live.has(id)) bar.tools.delete(id);
+    // Off the list, Downloads is not pinned but still shows while a download needs it (Rust's `dlbtn.on`),
+    // next to the menu like Chrome's.
+    if (!bar.has.has('downloads')) right.push(view.downloads.button);
     const storeAction = view.extensions.button.classList.contains('is-store');
     if (storeAction && !right.includes(view.extensions.button)) right.push(view.extensions.button);
     view.actions.replaceChildren(...right, view.menu);
-    // Downloads and extensions that are off the bar never show, and never take room.
+    // Extensions that are off the bar never show, and never take room. Downloads shows when Rust says
+    // so (`dlbtn.on`: all the time when pinned, otherwise while a download needs it).
     if (root) {
-      root.classList.toggle('bar-no-dl', !bar.has.has('downloads'));
       root.classList.toggle('bar-no-ext', !bar.has.has('extensions'));
-      if (!bar.has.has('downloads')) root.classList.remove('has-dl');
       if (!bar.has.has('extensions') && !storeAction) root.classList.remove('has-ext');
       if (storeAction && !view.extensions.button.hidden) root.classList.add('has-ext');
     }
-    if (!bar.has.has('downloads')) view.downloads.button.hidden = true;
     if (!bar.has.has('extensions') && !storeAction) view.extensions.button.hidden = true;
   }
   root?.style.setProperty('--tb-extra', `${state.extra ?? 0}px`);
@@ -497,7 +498,6 @@ function buildDownloadButton(root: HTMLElement): DownloadButton {
   const show = (on: boolean): void => {
     window.clearTimeout(outTimer);
     if (on) {
-      if (root.classList.contains('bar-no-dl')) return; // taken off the bar (docs/toolbars.md)
       button.classList.remove('is-out');
       if (button.hidden) {
         button.hidden = false;

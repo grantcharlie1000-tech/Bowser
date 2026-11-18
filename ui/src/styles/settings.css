@@ -64,6 +64,12 @@
   height: 100%;
 }
 
+/* `display: grid` above beats the browser's own [hidden] rule: without this the page stayed drawn
+   (and in the accessibility tree) under the store and the welcome that hide it. */
+.sp[hidden] {
+  display: none;
+}
+
 /* ---- Sidebar: brand, search, sections ---- */
 .sp-side {
   display: flex;
@@ -3351,5 +3357,1499 @@
 
   .pw-meter-seg::after {
     background: CanvasText;
+  }
+}
+
+/* ---- Welcome (bowser://settings/welcome, ui/src/welcome.ts, docs/design/welcome.md) ----
+ * The first-run flow, drawn over the settings page while the tab is on the welcome section.
+ * Hello and Done are a centred hero; the steps between put the question on the left and a live
+ * preview of a Bowser window on the right that follows every pick (Zen's and Dia's onboarding).
+ * The background is the page's own colour. Motion is transform and opacity only, and none under
+ * reduced motion. */
+.wl {
+  --wl-pick: var(--bw-accent);
+  --wl-ink: color-mix(in srgb, var(--bw-text) 8%, transparent);
+  --wl-line: color-mix(in srgb, var(--bw-text) 10%, transparent);
+  --wl-glass: color-mix(in srgb, var(--sp-card) 72%, transparent);
+  position: fixed;
+  inset: 0;
+  z-index: 2;
+  display: grid;
+  grid-template-rows: auto 1fr;
+  overflow: auto;
+  background: var(--sp-page);
+  color: var(--bw-text);
+  font: var(--bw-text-body) / var(--bw-leading-body) var(--bw-font);
+}
+
+.wl[hidden] {
+  display: none;
+}
+
+/* ---- top bar ---- */
+.wl-top {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 56px;
+  padding: var(--bw-space-3) var(--bw-space-6) 0;
+}
+
+.wl-dots {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.wl-dot {
+  width: 28px;
+  height: 4px;
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--bw-text) 14%, transparent);
+  transition: background-color var(--bw-dur-base) var(--bw-ease-fade);
+}
+
+.wl-dot.is-done,
+.wl-dot[aria-current="step"] {
+  background: var(--wl-pick);
+}
+
+.wl[data-step="hello"] .wl-dots,
+.wl[data-step="done"] .wl-dots {
+  opacity: 0;
+}
+
+/* ---- the two columns ---- */
+.wl-main {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 440px) minmax(0, 560px);
+  align-items: center;
+  justify-content: center;
+  gap: 72px;
+  padding: var(--bw-space-6) 48px 48px;
+}
+
+.wl[data-step="hello"] .wl-main,
+.wl[data-step="done"] .wl-main {
+  grid-template-columns: minmax(0, 620px);
+}
+
+/* The preview window belongs to the Look step; the other steps are one centred column. */
+.wl:not([data-step="look"]) .wl-main {
+  grid-template-columns: minmax(0, 480px);
+}
+
+.wl:not([data-step="look"]) .wl-pv {
+  display: none;
+}
+
+.wl-stage {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  min-width: 0;
+}
+
+.wl:is([data-step="hello"], [data-step="done"]) .wl-stage {
+  align-items: center;
+  text-align: center;
+}
+
+
+/* The Bowser logo: only on the hero and the last step, floating on a soft glow of its own blue. */
+.wl-mark {
+  position: relative;
+  display: none;
+  place-items: center;
+  width: 104px;
+  height: 104px;
+  margin-bottom: 24px;
+}
+
+.wl-mark::before {
+  content: "";
+  position: absolute;
+  inset: 8px;
+  border-radius: 50%;
+  background: #1f6fe5;
+  opacity: 0.45;
+  filter: blur(26px);
+}
+
+.wl-logo {
+  position: relative;
+  display: block;
+  width: 96px;
+  height: 96px;
+  user-select: none;
+}
+
+.wl[data-step="hello"] .wl-mark,
+.wl[data-step="done"] .wl-mark {
+  display: grid;
+}
+
+.wl[data-step="done"] .wl-mark {
+  width: 80px;
+  height: 80px;
+}
+
+.wl[data-step="done"] .wl-logo {
+  width: 72px;
+  height: 72px;
+}
+
+.wl-count {
+  margin: 0 0 var(--bw-space-2);
+  color: var(--wl-pick);
+  font-size: var(--bw-text-caption);
+  line-height: var(--bw-leading-caption);
+  font-weight: var(--bw-weight-strong);
+  font-variant-numeric: tabular-nums;
+}
+
+.wl[data-step="hello"] .wl-count,
+.wl[data-step="done"] .wl-count {
+  display: none;
+}
+
+.wl-title {
+  margin: 0;
+  font-size: calc(32px * var(--bw-font-scale));
+  line-height: calc(40px * var(--bw-font-scale));
+  font-weight: 650;
+  letter-spacing: -0.02em;
+  outline: none;
+  text-wrap: balance;
+}
+
+.wl[data-step="hello"] .wl-title {
+  font-size: calc(52px * var(--bw-font-scale));
+  line-height: calc(60px * var(--bw-font-scale));
+  letter-spacing: -0.035em;
+}
+
+.wl[data-step="done"] .wl-title {
+  font-size: calc(40px * var(--bw-font-scale));
+  line-height: calc(48px * var(--bw-font-scale));
+  letter-spacing: -0.03em;
+}
+
+.wl-lead {
+  max-width: 46ch;
+  margin: var(--bw-space-3) 0 0;
+  color: var(--bw-text-2);
+  font-size: calc(15px * var(--bw-font-scale));
+  line-height: calc(23px * var(--bw-font-scale));
+  text-wrap: pretty;
+}
+
+.wl[data-step="hello"] .wl-lead {
+  font-size: calc(17px * var(--bw-font-scale));
+  line-height: calc(26px * var(--bw-font-scale));
+}
+
+.wl-body {
+  width: 100%;
+  margin-top: 28px;
+}
+
+.wl-stack {
+  display: flex;
+  flex-direction: column;
+}
+
+.wl-label {
+  margin: var(--bw-space-6) 0 var(--bw-space-2);
+  color: var(--bw-text-2);
+  font-size: var(--bw-text-caption);
+  line-height: var(--bw-leading-caption);
+  font-weight: var(--bw-weight-strong);
+}
+
+.wl-stack > .wl-label:first-child {
+  margin-top: 0;
+}
+
+/* ---- choice tiles ---- */
+:where(#app.sp-root) .wl-tiles {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--bw-space-3);
+}
+
+:where(#app.sp-root) .wl-tiles.is-three {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.wl-tile {
+  position: relative;
+  padding: 12px 12px 14px;
+  border-color: var(--wl-line);
+  border-radius: 16px;
+  background: var(--wl-glass);
+  box-shadow: 0 1px 2px rgb(0 0 0 / 0.06);
+}
+
+.wl-tile:hover {
+  border-color: color-mix(in srgb, var(--bw-text) 22%, transparent);
+  background: var(--wl-glass);
+}
+
+.wl-tile[aria-checked="true"] {
+  border-color: var(--wl-pick);
+  background: color-mix(in srgb, var(--wl-pick) 8%, var(--wl-glass));
+  box-shadow: 0 0 0 1px var(--wl-pick), 0 10px 30px -14px color-mix(in srgb, var(--wl-pick) 70%, transparent);
+}
+
+.wl-tile .sp-art {
+  margin-bottom: 10px;
+}
+
+.wl-tile-hint {
+  color: var(--bw-text-2);
+}
+
+.wl-tick {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--wl-pick);
+  color: #ffffff;
+  opacity: 0;
+  transform: scale(0.6);
+  transition:
+    opacity var(--bw-dur-fast) var(--bw-ease-fade),
+    transform var(--bw-dur-fast) var(--bw-ease-out);
+}
+
+.wl-tile[aria-checked="true"] .wl-tick {
+  opacity: 1;
+  transform: none;
+}
+
+/* Rows: an icon on the left, the words beside it (privacy choices). */
+:where(#app.sp-root) .wl-tiles.is-rows .wl-tile {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  column-gap: 12px;
+  align-items: center;
+  padding: 12px 36px 12px 12px;
+}
+
+.wl-tiles.is-rows .wl-glyph {
+  margin: 0;
+}
+
+.wl-tiles.is-rows .wl-tick {
+  top: 50%;
+  margin-top: -10px;
+}
+
+.wl-glyph {
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  margin-bottom: var(--bw-space-2);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--bw-text) 7%, transparent);
+  color: var(--bw-text-2);
+}
+
+.wl-tile[aria-checked="true"] .wl-glyph {
+  background: color-mix(in srgb, var(--wl-pick) 18%, transparent);
+  color: var(--wl-pick);
+}
+
+/* The look tiles' picture: a tiny window in fixed light and dark colours (they show what each look
+ * is, whatever the current one). System is split down the middle. */
+.wl-look {
+  position: relative;
+  display: block;
+  width: 100%;
+  aspect-ratio: 72 / 46;
+  margin-bottom: 10px;
+  overflow: hidden;
+  border: 1px solid rgb(0 0 0 / 0.12);
+  border-radius: 8px;
+  background: #eceef2;
+}
+
+.wl-look.is-dark {
+  border-color: rgb(255 255 255 / 0.1);
+  background: #1b1c20;
+}
+
+.wl-look.is-system {
+  background: linear-gradient(90deg, #eceef2 50%, #1b1c20 50%);
+}
+
+.wl-look-bar {
+  position: absolute;
+  inset: 7px 12px auto;
+  height: 6px;
+  border-radius: 3px;
+  background: rgb(0 0 0 / 0.12);
+}
+
+.wl-look-page {
+  position: absolute;
+  inset: 20px 6px 6px;
+  border-radius: 4px;
+  background: #ffffff;
+  box-shadow: 0 1px 2px rgb(0 0 0 / 0.08);
+}
+
+.wl-look.is-dark .wl-look-bar {
+  background: rgb(255 255 255 / 0.16);
+}
+
+.wl-look.is-dark .wl-look-page {
+  background: #2a2b31;
+}
+
+.wl-look.is-system .wl-look-page {
+  background: linear-gradient(90deg, #ffffff 50%, #2a2b31 50%);
+}
+
+/* ---- accent swatches ---- */
+.wl-swatches {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.wl-swatch {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  box-shadow: 0 0 0 2px transparent;
+  cursor: default;
+  transition: transform var(--bw-dur-fast) var(--bw-ease-out);
+}
+
+.wl-swatch-dot {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: var(--wl-swatch, var(--bw-accent));
+  box-shadow: inset 0 0 0 1px rgb(0 0 0 / 0.14), inset 0 1px 0 rgb(255 255 255 / 0.3);
+}
+
+.wl-swatch.is-auto .wl-swatch-dot {
+  background: conic-gradient(from 90deg, #2f7cf6, #7c5cff, #e0457b, #d9822b, #0f9d8a, #2f7cf6);
+}
+
+.wl-swatch:hover {
+  transform: scale(1.08);
+}
+
+.wl-swatch[aria-checked="true"] {
+  box-shadow: 0 0 0 2px var(--wl-pick);
+}
+
+.wl-swatch:disabled {
+  opacity: 0.5;
+}
+
+/* ---- buttons ---- */
+.wl .bw-button {
+  height: 36px;
+  padding: 0 16px;
+  border-radius: 999px;
+  font-size: calc(14px * var(--bw-font-scale));
+}
+
+.wl .bw-button.wl-primary {
+  height: 40px;
+  padding: 0 18px 0 22px;
+  font-weight: var(--bw-weight-strong);
+  background: var(--wl-pick);
+  box-shadow: 0 8px 24px -10px color-mix(in srgb, var(--wl-pick) 80%, transparent);
+}
+
+.wl[data-step="hello"] .bw-button.wl-primary {
+  height: 46px;
+  padding: 0 22px 0 28px;
+  font-size: calc(15px * var(--bw-font-scale));
+}
+
+.wl-arrow {
+  transition: transform var(--bw-dur-fast) var(--bw-ease-out);
+}
+
+.wl .wl-primary:hover .wl-arrow {
+  transform: translateX(2px);
+}
+
+.wl .bw-button.wl-action {
+  height: 44px;
+  padding: 0 20px;
+  border-color: var(--wl-line);
+  background: var(--wl-glass);
+  font-weight: var(--bw-weight-strong);
+}
+
+.wl-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--bw-space-2);
+}
+
+.wl-note {
+  margin: var(--bw-space-3) 0 0;
+  color: var(--bw-text-2);
+  font-size: var(--bw-text-caption);
+  line-height: var(--bw-leading-caption);
+}
+
+.wl-note.is-warn {
+  color: var(--bw-warning);
+}
+
+.wl-note[hidden] {
+  display: none;
+}
+
+.wl-foot {
+  display: flex;
+  align-items: center;
+  gap: var(--bw-space-2);
+  width: 100%;
+  margin-top: 40px;
+}
+
+.wl-spacer {
+  flex: 1;
+}
+
+.wl-back {
+  margin-left: -12px;
+}
+
+.wl[data-step="hello"] .wl-foot,
+.wl[data-step="done"] .wl-foot {
+  flex-direction: row-reverse;
+  justify-content: center;
+}
+
+.wl[data-step="hello"] .wl-spacer,
+.wl[data-step="done"] .wl-spacer {
+  display: none;
+}
+
+/* ---- keyboard shortcuts (Done) ---- */
+.wl-keys {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--bw-space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  text-align: start;
+}
+
+.wl-key {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--bw-space-3);
+  min-height: 44px;
+  padding: 6px 8px 6px 14px;
+  border: 1px solid var(--wl-line);
+  border-radius: 12px;
+  background: var(--wl-glass);
+}
+
+.wl-key-label {
+  color: var(--bw-text);
+}
+
+.wl-combo {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  white-space: nowrap;
+}
+
+.wl-kbd {
+  min-width: 24px;
+  padding: 2px 7px;
+  border: 1px solid var(--wl-line);
+  border-bottom-width: 2px;
+  border-radius: 6px;
+  background: var(--sp-page);
+  color: var(--bw-text-2);
+  font: var(--bw-weight-strong) var(--bw-text-caption) / var(--bw-leading-caption) var(--bw-font);
+  text-align: center;
+}
+
+.wl-plus {
+  display: none;
+}
+
+/* ---- the mock window (big preview and tile pictures) ----
+ * Bowser's chrome to scale: every size is in container units of the mock's own width, so the big
+ * preview and a 200px tile picture are the same drawing. The strip and toolbar are as slim as
+ * Bowser's own (about 2% and 2.6% of the window's width). Light or dark follows the welcome's
+ * `data-look` (System follows the page), the accent follows `--wl-pick`. Nothing here animates. */
+.wl-pv,
+.wl-mini {
+  --pv-frame: #eceef2;
+  --pv-page: #ffffff;
+  --pv-ink: rgb(0 0 0 / 0.13);
+  --pv-ink-2: rgb(0 0 0 / 0.06);
+  --pv-edge: rgb(0 0 0 / 0.1);
+  display: block;
+  min-width: 0;
+  container-type: inline-size;
+}
+
+:root:not([data-scheme="light"]) .wl:not([data-look="light"]) :is(.wl-pv, .wl-mini),
+.wl[data-look="dark"] :is(.wl-pv, .wl-mini) {
+  --pv-frame: #1b1c20;
+  --pv-page: #26272c;
+  --pv-ink: rgb(255 255 255 / 0.16);
+  --pv-ink-2: rgb(255 255 255 / 0.07);
+  --pv-edge: rgb(255 255 255 / 0.1);
+}
+
+.wl-pv-win {
+  display: flex;
+  flex-direction: column;
+  aspect-ratio: 16 / 10;
+  overflow: hidden;
+  border: 1px solid var(--pv-edge);
+  border-radius: 2.2cqw;
+  background: var(--pv-frame);
+  transition:
+    background-color var(--bw-dur-base) var(--bw-ease-fade),
+    border-color var(--bw-dur-base) var(--bw-ease-fade);
+}
+
+.wl-pv .wl-pv-win {
+  box-shadow: 0 40px 80px -36px rgb(0 0 0 / 0.5), 0 0 0 1px rgb(0 0 0 / 0.03);
+}
+
+.wl-mini {
+  /* A size container has no width of its own: it takes the tile's. */
+  align-self: stretch;
+  width: 100%;
+  margin-bottom: 10px;
+}
+
+.wl-mini .wl-pv-win {
+  border-radius: 3cqw;
+}
+
+/* The tab strip: small rounded islands, the current one lifted, then the caption buttons. */
+.wl-pv-strip {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 0.6cqw;
+  height: 3.6cqw;
+  padding: 0 1.2cqw;
+}
+
+.wl-pv-tab {
+  display: block;
+  width: 12cqw;
+  height: 2.3cqw;
+  border-radius: 0.8cqw;
+  background: var(--pv-ink-2);
+}
+
+.wl-pv-tab.is-on {
+  background: var(--pv-page);
+}
+
+.wl-pv-caption {
+  display: block;
+  width: 7cqw;
+  height: 0.9cqw;
+  margin-left: auto;
+  background:
+    linear-gradient(var(--pv-ink), var(--pv-ink)) 0 50% / 1.1cqw 0.18cqw no-repeat,
+    linear-gradient(var(--pv-ink), var(--pv-ink)) 2.9cqw 0 / 0.9cqw 0.9cqw no-repeat,
+    linear-gradient(var(--pv-frame), var(--pv-frame)) 3.08cqw 0.18cqw / 0.54cqw 0.54cqw no-repeat,
+    linear-gradient(45deg, transparent 44%, var(--pv-ink) 44%, var(--pv-ink) 56%, transparent 56%) 5.9cqw 0 / 0.9cqw 0.9cqw no-repeat,
+    linear-gradient(-45deg, transparent 44%, var(--pv-ink) 44%, var(--pv-ink) 56%, transparent 56%) 5.9cqw 0 / 0.9cqw 0.9cqw no-repeat;
+}
+
+/* The toolbar: back, forward and reload, the centred address pill, the tools. */
+.wl-pv-bar {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 1cqw;
+  height: 3.6cqw;
+  padding: 0 1.2cqw;
+}
+
+.wl-pv-nav,
+.wl-pv-tools {
+  display: block;
+  width: 5.6cqw;
+  height: 1.2cqw;
+  background:
+    radial-gradient(circle 0.6cqw at 0.6cqw 50%, var(--pv-ink) 98%, transparent),
+    radial-gradient(circle 0.6cqw at 2.8cqw 50%, var(--pv-ink) 98%, transparent),
+    radial-gradient(circle 0.6cqw at 5cqw 50%, var(--pv-ink) 98%, transparent);
+}
+
+.wl-pv-pill {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 0.8cqw;
+  height: 2.5cqw;
+  margin: 0 12%;
+  padding: 0 1.2cqw;
+  border-radius: 1.25cqw;
+  background: var(--pv-page);
+}
+
+.wl-pv-shield {
+  display: block;
+  width: 1.1cqw;
+  height: 1.1cqw;
+  border-radius: 50%;
+  background: var(--wl-pick);
+}
+
+.wl-pv-url {
+  display: block;
+  width: 30%;
+  height: 0.7cqw;
+  margin: 0 auto;
+  border-radius: 0.35cqw;
+  background: var(--pv-ink);
+}
+
+.wl-pv-body {
+  display: flex;
+  flex: 1;
+  gap: 1cqw;
+  min-height: 0;
+  padding: 0 1cqw 1cqw;
+}
+
+/* Tabs down the side: the list holds the window's own controls and the address, then the tabs. */
+.wl-pv-side {
+  display: none;
+  flex: none;
+  flex-direction: column;
+  gap: 0.8cqw;
+  width: 22cqw;
+  padding: 0.4cqw 0.2cqw;
+}
+
+.wl-pv-pill.is-side {
+  flex: none;
+  margin: 0 0 0.6cqw;
+}
+
+.wl-pv-row {
+  display: block;
+  height: 2.6cqw;
+  border-radius: 0.8cqw;
+  background: var(--pv-ink-2);
+}
+
+.wl-pv-row.is-on {
+  background: var(--pv-page);
+}
+
+:is(.wl-pv, .wl-mini)[data-tabs="side"] .wl-pv-side {
+  display: flex;
+}
+
+:is(.wl-pv, .wl-mini)[data-tabs="side"] .wl-pv-bar {
+  display: none;
+}
+
+:is(.wl-pv, .wl-mini)[data-tabs="side"] .wl-pv-tab {
+  display: none;
+}
+
+:is(.wl-pv, .wl-mini)[data-tabs="side"] .wl-pv-strip {
+  height: 2.6cqw;
+}
+
+.wl-pv-page {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 1.4cqw;
+  min-width: 0;
+  padding: 3cqw;
+  border-radius: 1.4cqw;
+  background: var(--pv-page);
+}
+
+.wl-pv-hero {
+  display: block;
+  height: 26%;
+  border-radius: 1.2cqw;
+  background: linear-gradient(120deg, color-mix(in srgb, var(--wl-pick) 70%, transparent), color-mix(in srgb, var(--wl-pick) 25%, #8b5cf6));
+}
+
+.wl-pv-line {
+  display: block;
+  width: 70%;
+  height: 1.1cqw;
+  border-radius: 0.55cqw;
+  background: var(--pv-ink);
+}
+
+.wl-pv-line.is-wide {
+  width: 88%;
+  height: 1.8cqw;
+}
+
+.wl-pv-line.is-short {
+  width: 45%;
+}
+
+.wl-pv-cards {
+  display: grid;
+  flex: 1;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 1.2cqw;
+}
+
+.wl-pv-card {
+  display: block;
+  border-radius: 1.2cqw;
+  background: var(--pv-ink-2);
+}
+
+/* ---- logo tiles (Import's browsers, Search's engines) ----
+ * Square-ish cards with the logo large in the middle and the name under it. Behind the logo, a
+ * soft glow in the brand's own colour (`--wl-brand`, brand-marks.ts) fades in on hover and stays
+ * on the picked one, which also gets a ring in that colour and the tick. */
+.wl-logos {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.wl-logo-tile {
+  --wl-brand: var(--wl-pick);
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  margin: 0;
+  padding: 18px 8px 14px;
+  overflow: hidden;
+  border: 1px solid var(--wl-line);
+  border-radius: 18px;
+  background: var(--wl-glass);
+  color: var(--bw-text);
+  font: inherit;
+  cursor: default;
+}
+
+.wl-logo-tile[hidden] {
+  display: none;
+}
+
+.wl-logo-glow {
+  position: absolute;
+  inset: -20% -20% 30%;
+  background: radial-gradient(closest-side, color-mix(in srgb, var(--wl-brand) 30%, transparent), transparent);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 220ms var(--bw-ease-fade);
+}
+
+.wl-logo-tile:hover:not(:disabled) .wl-logo-glow,
+.wl-logo-tile:is([aria-checked="true"], [aria-pressed="true"]) .wl-logo-glow {
+  opacity: 1;
+}
+
+.wl-logo-tile:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--wl-brand) 40%, var(--wl-line));
+}
+
+.wl-logo-tile:is([aria-checked="true"], [aria-pressed="true"]) {
+  border-color: var(--wl-brand);
+  box-shadow: 0 0 0 1px var(--wl-brand), 0 12px 32px -18px var(--wl-brand);
+}
+
+.wl-logo-tile:disabled {
+  opacity: 0.5;
+}
+
+.wl-logo-well {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+}
+
+.wl-brand {
+  display: block;
+  width: 40px;
+  height: 40px;
+  object-fit: contain;
+  user-select: none;
+  filter: drop-shadow(0 4px 10px rgb(0 0 0 / 0.18));
+}
+
+.wl-file-glyph {
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--bw-text) 8%, transparent);
+  color: var(--bw-text-2);
+}
+
+.wl-logo-name {
+  position: relative;
+  max-width: 100%;
+  overflow: hidden;
+  font-size: var(--bw-text-caption);
+  line-height: var(--bw-leading-caption);
+  font-weight: var(--bw-weight-strong);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wl-logo-tile .wl-tick {
+  top: 8px;
+  right: 8px;
+  background: var(--wl-brand);
+}
+
+.wl-logo-tile:is([aria-checked="true"], [aria-pressed="true"]) .wl-tick {
+  opacity: 1;
+  transform: none;
+}
+
+/* Search's engines: round app icons in one row. */
+.wl-logos.is-engines .wl-logo-tile {
+  padding: 16px 8px 12px;
+  border-radius: 20px;
+}
+
+/* ---- Import's transfer picture: [the browser] · · · [Bowser] ---- */
+.wl-transfer {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  margin-bottom: 24px;
+}
+
+.wl-transfer-slot {
+  display: grid;
+  place-items: center;
+  width: 72px;
+  height: 72px;
+  border: 1px solid var(--wl-line);
+  border-radius: 22px;
+  background: var(--wl-glass);
+  box-shadow: 0 16px 36px -22px rgb(0 0 0 / 0.5);
+}
+
+.wl-transfer-logo {
+  display: block;
+  width: 44px;
+  height: 44px;
+  object-fit: contain;
+  user-select: none;
+}
+
+.wl-fan {
+  position: relative;
+  width: 48px;
+  height: 40px;
+}
+
+.wl-fan-logo {
+  position: absolute;
+  top: 6px;
+  width: 28px;
+  height: 28px;
+  object-fit: contain;
+  filter: drop-shadow(0 2px 4px rgb(0 0 0 / 0.25));
+}
+
+.wl-fan-logo:nth-child(1) {
+  left: 0;
+  transform: rotate(-12deg);
+}
+
+.wl-fan-logo:nth-child(2) {
+  left: 10px;
+  z-index: 1;
+  transform: translateY(-4px);
+}
+
+.wl-fan-logo:nth-child(3) {
+  left: 20px;
+  transform: rotate(12deg);
+}
+
+.wl-transfer-line {
+  position: relative;
+  width: 96px;
+  height: 2px;
+  border-radius: 1px;
+  background: repeating-linear-gradient(90deg, color-mix(in srgb, var(--bw-text) 28%, transparent) 0 6px, transparent 6px 12px);
+}
+
+.wl-transfer-dot {
+  position: absolute;
+  top: -2px;
+  left: 0;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--wl-pick);
+  opacity: 0;
+}
+
+/* ---- Default's picture: a Windows "Default apps" card ----
+ * One row per thing a default browser opens; the app on each flips from Edge to Bowser (a short
+ * slide and fade, one row after another) when the card is `.is-set`. */
+.wl-defaults {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--wl-line);
+  border-radius: 12px;
+  background: var(--wl-glass);
+  box-shadow: 0 18px 40px -26px rgb(0 0 0 / 0.55);
+}
+
+.wl-def-row {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  height: 56px;
+  padding: 0 16px;
+  color: var(--bw-text-2);
+}
+
+.wl-def-row + .wl-def-row {
+  border-top: 1px solid var(--wl-line);
+}
+
+.wl-def-kind {
+  color: var(--bw-text);
+  font-weight: var(--bw-weight-strong);
+  font-variant-numeric: tabular-nums;
+}
+
+.wl-def-swap {
+  position: relative;
+  display: block;
+  height: 32px;
+  overflow: hidden;
+}
+
+.wl-def-app {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--bw-text);
+  transition:
+    opacity 260ms var(--bw-ease-fade),
+    transform 360ms var(--bw-ease-out);
+  transition-delay: calc(var(--wl-i, 0) * 140ms);
+}
+
+.wl-def-logo {
+  display: block;
+  width: 24px;
+  height: 24px;
+  object-fit: contain;
+}
+
+.wl-def-app.is-new {
+  opacity: 0;
+  transform: translate3d(0, 100%, 0);
+}
+
+.wl-defaults.is-set .wl-def-app.is-old {
+  opacity: 0;
+  transform: translate3d(0, -100%, 0);
+}
+
+.wl-defaults.is-set .wl-def-app.is-new {
+  opacity: 1;
+  transform: none;
+}
+
+/* ---- Search's preview bar ---- */
+.wl-searchbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  height: 52px;
+  margin-bottom: 20px;
+  padding: 0 10px 0 16px;
+  border: 1px solid var(--wl-line);
+  border-radius: 26px;
+  background: var(--wl-glass);
+  box-shadow: 0 18px 40px -24px rgb(0 0 0 / 0.55);
+}
+
+.wl-searchbar-logo {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  color: var(--bw-text-2);
+}
+
+.wl-searchbar-logo .wl-brand {
+  width: 22px;
+  height: 22px;
+  filter: none;
+}
+
+.wl-searchbar-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--bw-text-2);
+  font-size: calc(15px * var(--bw-font-scale));
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ---- Yes / No answers (Ad blocking) ---- */
+.wl-choices {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.wl-choice {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-height: 56px;
+  margin: 0;
+  padding: 0 18px;
+  border: 1px solid var(--wl-line);
+  border-radius: 14px;
+  background: var(--wl-glass);
+  color: var(--bw-text-2);
+  font: inherit;
+  font-size: calc(15px * var(--bw-font-scale));
+  text-align: start;
+  cursor: default;
+}
+
+.wl-choice strong {
+  color: var(--bw-text);
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.wl-choice:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--bw-text) 22%, transparent);
+}
+
+.wl-choice[aria-checked="true"] {
+  border-color: var(--wl-pick);
+  background: color-mix(in srgb, var(--wl-pick) 8%, var(--wl-glass));
+  color: var(--bw-text);
+  box-shadow: 0 0 0 1px var(--wl-pick), 0 10px 30px -16px color-mix(in srgb, var(--wl-pick) 70%, transparent);
+}
+
+.wl-choice[aria-checked="true"] strong {
+  color: var(--wl-pick);
+}
+
+.wl-choice:disabled {
+  opacity: 0.5;
+}
+
+.wl-radio {
+  position: relative;
+  flex: none;
+  width: 20px;
+  height: 20px;
+  border: 1.5px solid color-mix(in srgb, var(--bw-text) 45%, transparent);
+  border-radius: 50%;
+  transition: border-color var(--bw-dur-fast) var(--bw-ease-fade);
+}
+
+.wl-radio::after {
+  content: "";
+  position: absolute;
+  inset: 3px;
+  border-radius: 50%;
+  background: var(--wl-pick);
+  opacity: 0;
+  transform: scale(0.3);
+  transition:
+    opacity var(--bw-dur-fast) var(--bw-ease-fade),
+    transform 260ms var(--bw-ease-out);
+}
+
+.wl-choice[aria-checked="true"] .wl-radio {
+  border-color: var(--wl-pick);
+}
+
+.wl-choice[aria-checked="true"] .wl-radio::after {
+  opacity: 1;
+  transform: none;
+}
+
+
+
+
+/* ---- micro-animations ----
+ * Every entrance is transform and opacity only, short, and staggered by `--wl-i` (welcome.ts): the
+ * step's mark, count, title and lead, then each tile or key, then the footer. A step reached with
+ * Back slides in from the left. Presses scale down a touch, hovers lift, a pick pops its tick. None
+ * of it runs under reduced motion, and none of it touches the mock window. */
+@keyframes wl-in {
+  from {
+    opacity: 0;
+    transform: translate3d(0, 10px, 0) scale(0.985);
+  }
+}
+
+@keyframes wl-in-next {
+  from {
+    transform: translate3d(28px, 0, 0);
+  }
+}
+
+@keyframes wl-in-back {
+  from {
+    transform: translate3d(-28px, 0, 0);
+  }
+}
+
+@keyframes wl-pop {
+  0% {
+    opacity: 0;
+    transform: scale(0.4);
+  }
+
+  60% {
+    opacity: 1;
+    transform: scale(1.18);
+  }
+
+  100% {
+    transform: scale(1);
+  }
+}
+
+@keyframes wl-mark-in {
+  0% {
+    opacity: 0;
+    transform: translate3d(0, 14px, 0) scale(0.7) rotate(-8deg);
+  }
+
+  70% {
+    opacity: 1;
+    transform: translate3d(0, -2px, 0) scale(1.04) rotate(1deg);
+  }
+
+  100% {
+    transform: none;
+  }
+}
+
+@keyframes wl-flow {
+  0% {
+    opacity: 0;
+    transform: translate3d(0, 0, 0);
+  }
+
+  20%,
+  80% {
+    opacity: 1;
+  }
+
+  100% {
+    opacity: 0;
+    transform: translate3d(90px, 0, 0);
+  }
+}
+
+@keyframes wl-ring {
+  from {
+    transform: scale(0.8);
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .wl-stage.is-in {
+    animation: wl-in-next 420ms var(--bw-ease-out) both;
+  }
+
+  .wl-stage.is-in.is-back {
+    animation-name: wl-in-back;
+  }
+
+  .wl-stage.is-in > :is(.wl-count, .wl-title, .wl-lead, .wl-note, .wl-foot),
+  .wl-stage.is-in .wl-body > * > *,
+  .wl-stage.is-in .wl-body > :is(.wl-keys, .sp-tiles) > * {
+    animation: wl-in 380ms var(--bw-ease-out) both;
+    animation-delay: calc(var(--wl-i, 0) * 45ms + 40ms);
+  }
+
+  .wl-stage.is-in > .wl-mark {
+    animation: wl-mark-in 620ms var(--bw-ease-spring, var(--bw-ease-out)) both;
+  }
+
+  .wl-stage.is-in .wl-logos > * {
+    animation: wl-in 380ms var(--bw-ease-out) both;
+    animation-delay: calc(var(--wl-i, 0) * 35ms + 180ms);
+  }
+
+  .wl-logo-tile {
+    transition:
+      transform 220ms var(--bw-ease-out),
+      border-color var(--bw-dur-fast) var(--bw-ease-fade);
+  }
+
+  .wl-logo-tile:hover:not(:disabled) {
+    transform: translate3d(0, -3px, 0);
+  }
+
+  .wl-logo-tile:active:not(:disabled) {
+    transform: scale(0.96);
+    transition-duration: 90ms;
+  }
+
+  .wl-logo-tile .wl-brand,
+  .wl-file-glyph {
+    transition: transform 260ms var(--bw-ease-out);
+  }
+
+  .wl-logo-tile:hover:not(:disabled) .wl-brand,
+  .wl-logo-tile:hover:not(:disabled) .wl-file-glyph {
+    transform: scale(1.08) rotate(-3deg);
+  }
+
+  .wl-logo-tile:is([aria-checked="true"], [aria-pressed="true"]) .wl-tick {
+    animation: wl-pop 360ms var(--bw-ease-out) both;
+  }
+
+  .wl-transfer-slot.is-pop,
+  .wl-searchbar-logo.is-pop {
+    animation: wl-pop 420ms var(--bw-ease-out) both;
+  }
+
+  .wl-transfer.is-moving .wl-transfer-dot {
+    animation: wl-flow 900ms var(--bw-ease-move) 3 both;
+  }
+
+  .wl-transfer.is-moving .wl-transfer-dot:nth-child(2) {
+    animation-delay: 300ms;
+  }
+
+  .wl-transfer.is-moving .wl-transfer-dot:nth-child(3) {
+    animation-delay: 600ms;
+  }
+
+  .wl-stage.is-in .wl-body > * > * {
+    animation: wl-in 380ms var(--bw-ease-out) both;
+    animation-delay: calc(var(--wl-i, 0) * 45ms + 40ms);
+  }
+
+  .wl-stage.is-in .wl-body > .wl-choices > * {
+    animation: wl-in 380ms var(--bw-ease-out) both;
+    animation-delay: calc(var(--wl-i, 0) * 60ms + 60ms);
+  }
+
+  .wl-choice {
+    transition:
+      transform 200ms var(--bw-ease-out),
+      border-color var(--bw-dur-fast) var(--bw-ease-fade),
+      background-color var(--bw-dur-fast) var(--bw-ease-fade),
+      color var(--bw-dur-fast) var(--bw-ease-fade);
+  }
+
+  .wl-choice:hover:not(:disabled) {
+    transform: translate3d(2px, 0, 0);
+  }
+
+  .wl-choice:active:not(:disabled) {
+    transform: scale(0.985);
+    transition-duration: 80ms;
+  }
+
+  /* Progress: the current segment fills from the left. */
+  .wl-dot {
+    position: relative;
+    overflow: hidden;
+  }
+
+  .wl-dot::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    background: var(--wl-pick);
+    transform: scaleX(0);
+    transform-origin: left center;
+    transition: transform 420ms var(--bw-ease-out);
+  }
+
+  .wl-dot.is-done::after,
+  .wl-dot[aria-current="step"]::after {
+    transform: scaleX(1);
+  }
+
+  .wl-dot.is-done,
+  .wl-dot[aria-current="step"] {
+    background: color-mix(in srgb, var(--bw-text) 14%, transparent);
+  }
+
+  /* Tiles lift on hover and give on press; the picked one's tick pops in. */
+  .wl-tile {
+    transition:
+      transform 220ms var(--bw-ease-out),
+      border-color var(--bw-dur-fast) var(--bw-ease-fade),
+      background-color var(--bw-dur-fast) var(--bw-ease-fade);
+  }
+
+  .wl-tile:hover:not(:disabled) {
+    transform: translate3d(0, -2px, 0);
+  }
+
+  .wl-tile:active:not(:disabled) {
+    transform: scale(0.97);
+    transition-duration: 90ms;
+  }
+
+  .wl-tile[aria-checked="true"] .wl-tick,
+  .wl-browser[aria-pressed="true"] .wl-tick {
+    animation: wl-pop 360ms var(--bw-ease-out) both;
+  }
+
+  .wl-tile[aria-checked="true"] .wl-glyph,
+  .wl-browser[aria-pressed="true"] .wl-glyph {
+    animation: wl-ring 300ms var(--bw-ease-out) both;
+  }
+
+  /* Swatches: a hover grows the dot, a pick pops the ring. */
+  .wl-swatch:active:not(:disabled) {
+    transform: scale(0.9);
+    transition-duration: 90ms;
+  }
+
+  .wl-swatch[aria-checked="true"] {
+    animation: wl-ring 280ms var(--bw-ease-out) both;
+  }
+
+  /* Buttons: a small lift on hover, a give on press, the arrow leans forward. */
+  .wl .bw-button {
+    transition:
+      transform 180ms var(--bw-ease-out),
+      background-color var(--bw-dur-fast) var(--bw-ease-fade),
+      color var(--bw-dur-fast) var(--bw-ease-fade);
+  }
+
+  .wl .bw-button.wl-primary:hover {
+    transform: translate3d(0, -1px, 0);
+  }
+
+  .wl .bw-button:active:not(:disabled) {
+    transform: scale(0.96);
+    transition-duration: 80ms;
+  }
+
+  .wl .wl-primary:hover .wl-arrow {
+    transform: translate3d(3px, 0, 0);
+  }
+
+  .wl-key {
+    transition: transform 200ms var(--bw-ease-out), border-color var(--bw-dur-fast) var(--bw-ease-fade);
+  }
+
+  .wl-key:hover {
+    transform: translate3d(0, -1px, 0);
+    border-color: color-mix(in srgb, var(--bw-text) 20%, transparent);
+  }
+}
+
+/* Narrow windows: one column, the preview above the question, smaller hero. */
+@media (max-width: 980px) {
+  .wl-main {
+    grid-template-columns: minmax(0, 560px);
+    gap: var(--bw-space-6);
+    padding: var(--bw-space-4) var(--bw-space-6) var(--bw-space-6);
+  }
+
+  .wl-pv {
+    order: -1;
+    max-width: 420px;
+  }
+}
+
+@media (max-width: 560px) {
+  .wl-top,
+  .wl-main {
+    padding-inline: var(--bw-space-4);
+  }
+
+  .wl-pv {
+    display: none;
+  }
+
+  .wl[data-step="hello"] .wl-title {
+    font-size: calc(38px * var(--bw-font-scale));
+    line-height: calc(44px * var(--bw-font-scale));
+  }
+
+  :where(#app.sp-root) .wl-tiles,
+  .wl-logos,
+  .wl-keys {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  /* The three looks are small pictures: they stay side by side. */
+  :where(#app.sp-root) .wl-tiles.is-three {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: var(--bw-space-2);
+  }
+}
+
+@media (forced-colors: active) {
+  .wl-dot[aria-current="step"],
+  .wl-swatch[aria-checked="true"] {
+    outline: 2px solid Highlight;
   }
 }

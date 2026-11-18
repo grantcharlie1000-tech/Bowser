@@ -223,6 +223,9 @@ pub struct StartSettings {
     pub widget_color: String,
     /// `start_widget_drag` (default true): widgets can be dragged to rearrange.
     pub widget_drag: bool,
+    /// `start_dials` (default false): the speed dials (their groups, tiles and "Add a group") on a
+    /// new tab. Off, a new tab is blank apart from the widgets, when those are on.
+    pub dials: bool,
 }
 
 impl Default for StartSettings {
@@ -243,12 +246,13 @@ impl Default for StartSettings {
             widget_bg: WidgetBackground::Translucent,
             widget_color: "#1f2933".to_owned(),
             widget_drag: true,
+            dials: false,
         }
     }
 }
 
 /// Every key [`StartSettings`] owns, in the order [`StartSettings::pairs`] writes them.
-pub const SETTING_KEYS: [&str; 15] = [
+pub const SETTING_KEYS: [&str; 16] = [
     "start_group_reopen",
     "start_titles",
     "start_add_button",
@@ -264,6 +268,7 @@ pub const SETTING_KEYS: [&str; 15] = [
     "start_widget_bg",
     "start_widget_color",
     "start_widget_drag",
+    "start_dials",
 ];
 
 fn flag(value: &str) -> Option<bool> {
@@ -365,6 +370,11 @@ impl StartSettings {
                     self.widgets = on;
                 }
             }
+            "start_dials" => {
+                if let Some(on) = flag(value) {
+                    self.dials = on;
+                }
+            }
             "start_widget_columns" => {
                 if let Ok(n) = value.trim().parse::<u8>() {
                     self.widget_columns = n.clamp(MIN_WIDGET_COLUMNS, MAX_WIDGET_COLUMNS);
@@ -414,6 +424,7 @@ impl StartSettings {
             "start_widget_bg" => self.widget_bg = WidgetBackground::parse(value).filter(|m| m.key() == value)?,
             "start_widget_color" => self.widget_color = parse_color(value).filter(|c| c == value)?,
             "start_widget_drag" => self.widget_drag = strict_flag(value)?,
+            "start_dials" => self.dials = strict_flag(value)?,
             _ => return None,
         }
         Some(true)
@@ -437,6 +448,7 @@ impl StartSettings {
             ("start_widget_bg", self.widget_bg.key().to_owned()),
             ("start_widget_color", self.widget_color.clone()),
             ("start_widget_drag", flag_text(self.widget_drag).to_owned()),
+            ("start_dials", flag_text(self.dials).to_owned()),
         ]
     }
 

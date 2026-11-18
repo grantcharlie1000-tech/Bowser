@@ -36,7 +36,7 @@ const FIREFOX: usize = 5;
 pub fn open(owner: HWND) -> windows::core::Result<()> {
     let profiles = import::detect_browser_profiles();
     let browser_summary = if profiles.is_empty() {
-        "No Chrome, Edge, Brave or Firefox profiles were detected.".to_owned()
+        "No Chrome, Edge, Brave, Opera, Vivaldi, Helium or Firefox profiles were detected.".to_owned()
     } else {
         format!(
             "Detected {} browser profile(s). Select a bookmarks export to preview.",
@@ -85,11 +85,72 @@ pub fn open(owner: HWND) -> windows::core::Result<()> {
     }
 }
 
+/// The browsers the welcome's Import step offers (docs/design/welcome.md): the wire key, the name the
+/// importer finds them under (`import::detect_browser_profiles`), in the order tried, and the name to show.
+pub(crate) const BROWSERS: [(&str, &[&str], &str); 7] = [
+    ("chrome", &["Chrome"], "Chrome"),
+    ("edge", &["Edge"], "Edge"),
+    ("brave", &["Brave"], "Brave"),
+    ("firefox", &["Firefox"], "Firefox"),
+    ("opera", &["Opera", "Opera GX"], "Opera"),
+    ("vivaldi", &["Vivaldi"], "Vivaldi"),
+    ("helium", &["Helium"], "Helium"),
+];
+
+/// One click from the welcome: imports `browser`'s bookmarks (and, for Chromium browsers, its
+/// search setting) straight from the profile this PC has, through the same preview and confirm as
+/// the panel. The Default profile goes first. `Err` carries what the welcome shows in its own page
+/// when there is nothing to import (a native popup over the page lost to the page's focus).
+pub(crate) fn import_from(owner: HWND, browser: &str) -> Result<(), String> {
+    let Some(&(_, found_as, name)) = BROWSERS.iter().find(|(key, _, _)| *key == browser) else { return Ok(()) };
+    // What the welcome's import found, for --diagnostic-log (no paths or names: only the outcome).
+    let note = |event: &str| {
+        if let Some(app) = super::window::app_of(owner) && let Ok(state) = app.try_borrow() {
+            let _ = state.log.record(event);
+        }
+    };
+    let nothing = || format!("No {name} bookmarks were found on this PC.");
+    if browser == "firefox" {
+        let any = import::detect_browser_profiles()
+            .into_iter()
+            .any(|profile| profile.browser == "Firefox" && import::firefox::newest_backup(&profile.root).is_some());
+        if !any {
+            note("welcome_import_none");
+            return Err(nothing());
+        }
+        note("welcome_import_found");
+        return import_firefox_backup(owner).map_err(|error| format!("Browser import could not be opened: {error}"));
+    }
+    let mut profiles: Vec<_> = import::detect_browser_profiles()
+        .into_iter()
+        .filter_map(|profile| {
+            let rank = found_as.iter().position(|as_name| *as_name == profile.browser)?;
+            profile.bookmarks.map(|path| (rank, profile.name, path))
+        })
+        .collect();
+    // The first name tried (Opera before Opera GX), then each one's Default profile.
+    profiles.sort_by_key(|(rank, profile, _)| (*rank, profile != "Default"));
+    match profiles.into_iter().next() {
+        Some((_, _, path)) => {
+            note("welcome_import_found");
+            import_bookmark_path(owner, path).map_err(|error| format!("Browser import could not be opened: {error}"))
+        }
+        None => {
+            note("welcome_import_none");
+            Err(nothing())
+        }
+    }
+}
+
 fn import_bookmark_file(owner: HWND) -> windows::core::Result<()> {
     show_stage(owner, "Step 1 of 5 - Detecting source data");
     let Some(path) = pick_file(owner) else {
         return Ok(());
     };
+    import_bookmark_path(owner, path)
+}
+
+fn import_bookmark_path(owner: HWND, path: PathBuf) -> windows::core::Result<()> {
     show_stage(owner, "Step 2 of 5 - Reading bookmarks");
     let (bookmarks, skipped) = match store::read_bookmark_file(&path) {
         Ok(bookmarks) => bookmarks,
@@ -325,5 +386,17 @@ fn anchor(owner: HWND) -> windows::Win32::Foundation::POINT {
     windows::Win32::Foundation::POINT {
         x: rect.right - 24,
         y: rect.top + 72,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::BROWSERS;
+
+    #[test]
+    fn the_welcome_browsers_are_the_keys_the_settings_wire_accepts_in_its_order() {
+        let keys: Vec<&str> = BROWSERS.iter().map(|(key, _, _)| *key).collect();
+        assert_eq!(keys, crate::chrome_host::settings::IMPORT_BROWSERS);
+        assert!(BROWSERS.iter().all(|(_, found_as, name)| !found_as.is_empty() && !name.is_empty()));
     }
 }
