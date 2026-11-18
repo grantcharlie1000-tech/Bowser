@@ -827,18 +827,15 @@ impl ChromeSurface {
     }
 
     /// --- floating zen sidebar --- the strip along the window's top edge that holds a floating column's
-    /// window buttons: the window colour made opaque, a hairline at its foot and a soft shadow falling
-    /// on the page below it. The buttons are painted on it afterwards.
+    /// window buttons: the window colour made opaque and a hairline at its foot (it pushes the page
+    /// down, so no shadow falls on it). The buttons are painted on it afterwards.
     fn paint_float_band(&mut self, view: &ChromeView<'_>, dirty: Rect) {
         let band = view.layout.float_band;
         if band.is_empty() || band.bottom <= 0 {
             return;
         }
-        let m = view.layout.metrics;
         let palette = view.palette;
-        let (width, height, stride) = (self.width, self.height, self.stride());
-        let shadow = FloatShadow { blur: m.px(10) as f32, dy: 0, alpha: 0.18 };
-        raster_soft_shadow(self.dib.pixels_mut(), width, height, stride, band, 0.0, shadow, dirty);
+        // No shadow: the strip pushes the page down while it is out, so nothing lies under it.
         self.fill_rect(band, Rgba { a: 255, ..palette.window }, dirty);
         let edge = Rgba { a: 255, ..mix(Rgba { a: 255, ..palette.window }, Rgba { a: 255, ..palette.tab_text_active }, 0.16) };
         self.fill_rect(Rect::new(band.left, band.bottom - 1, band.right, band.bottom), edge, dirty);

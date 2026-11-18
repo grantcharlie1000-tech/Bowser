@@ -1129,6 +1129,9 @@ impl WindowChrome {
     }
     fn relayout(&mut self, request: RelayoutRequest<'_>) {
         let RelayoutRequest { w, h, dpi, active, maximised, arrangement, density, sidebar_width, centred_address_bar, font_scale, ui_font } = request;
+        // What the chrome looked like before, to tell a change of design (tabs moved to a side, a bar
+        // hidden or floated) from a plain resize or a sidebar drag.
+        let before = (self.last_relayout.as_ref().map(|inputs| inputs.arrangement), self.ah.plan, self.layout.float_island.is_empty(), self.layout.float_band.is_empty());
         self.client = (w, h);
         self.dpi = dpi.max(96);
         self.last_relayout = Some(RelayoutInputs {
@@ -1156,12 +1159,22 @@ impl WindowChrome {
         // the page widens over them (`layout::compute_arranged_auto_hide`), and the layout with
         // every bar shown says where a revealed bar floats.
         let plan = crate::auto_hide::plan_for(self.ah.hidden, arrangement.tabs, arrangement.tab_bar); // A hidden tab bar hides nothing
-        let hide = plan.layout();
+        // A revealed bar takes its own place in the layout and pushes the page aside, as if it were
+        // never hidden; it leaves the layout again when it hides (`auto_hide::apply_shown`).
+        let revealed = self.ah.machine.shown();
+        let mut hide = plan.layout();
+        if revealed.contains(crate::auto_hide::Zone::Sidebar) { hide.sidebar = false; }
+        if revealed.contains(crate::auto_hide::Zone::Top) { hide.top = false; }
         let (layout, sidebar) = layout::compute_arranged_auto_hide(
             arrangement, w, h, self.dpi, self.slots.len().max(1), i, maximised,
             i32::from(sidebar_width), centred_address_bar, density.sidebar_row_height(), hide,
         );
-        let layout = if self.ah.rail_hidden { layout::without_rail(layout, self.dpi, maximised) } else { layout };
+        let mut layout = if self.ah.rail_hidden { layout::without_rail(layout, self.dpi, maximised) } else { layout };
+        // --- floating zen sidebar --- the window buttons' strip along the top edge pushes the page
+        // down while it is out, like any revealed bar.
+        if revealed.contains(crate::auto_hide::Zone::Top) && !layout.float_band.is_empty() {
+            layout.viewport.top = layout.viewport.top.max(layout.float_band.bottom).min(layout.viewport.bottom);
+        }
         let shown = if hide.is_off() {
             None
         } else {
@@ -1232,6 +1245,13 @@ impl WindowChrome {
         self.sync_html_bounds();
         self.sync_html_tabs_bounds();
         self.sync_html_rail_bounds();
+        // The overlay keeps every pixel it is not told to repaint, so a new design (tabs from the top to a
+        // side and back, a bar hidden or floated) repaints all of it; otherwise the old chrome's pieces
+        // stay on screen wherever the new one draws nothing.
+        let after = (Some(arrangement), self.ah.plan, self.layout.float_island.is_empty(), self.layout.float_band.is_empty());
+        if before != after || was_vertical != self.sidebar.is_some() {
+            self.surface_recovery.full_repaint = true;
+        }
         if self.surface_recovery.can_draw() {
             match self.surface.try_resize(w, h, self.dpi) {
                 Ok(repaint) => self.surface_recovery.full_repaint |= repaint,
@@ -13933,7 +13953,7 @@ mod tests {
     /// Each bar of "Bars to hide" changes the window's layout the way the plan says, and revealing a
     /// bar never moves the page.
     #[test]
-    fn hiding_the_bars_widens_the_page_and_a_reveal_leaves_it_where_it_is() {
+    fn hiding_the_bars_widens_the_page_and_a_reveal_pushes_it_back() {
         use crate::auto_hide::{Bars, Zone, Zones};
         let tab_layout = crate::settings::TabLayout::ToolbarTop;
         let mut shown = WindowChrome::new(1280, 720, 96, HWND::default());
@@ -13948,12 +13968,10 @@ mod tests {
         assert_eq!((s.layout.viewport.left, s.layout.viewport.right, s.layout.viewport.bottom), (normal.left, normal.right, normal.bottom));
         assert!(s.ah.top_hidden());
         assert_eq!(s.ah.overlay.top.bottom, normal.top, "the bars float exactly where they sit when shown");
-        let hidden_viewport = s.layout.viewport;
-
-        // A reveal changes what is drawn, never the page's rectangle.
+        // A revealed bar takes its own place and pushes the page aside; hidden again, the page widens.
         assert!(s.ah.machine.reveal(Zones::NONE.with(Zone::Top), 0));
         relaid(&mut s, 96, false, tab_layout);
-        assert_eq!(s.layout.viewport, hidden_viewport, "no relayout of the page when a bar appears");
+        assert_eq!(s.layout.viewport, normal, "a revealed bar pushes the page to where it sits with the bar shown");
         assert!(!s.ah.top_hidden());
         assert_eq!(s.ah.paint_viewport(s.layout.viewport).top, normal.top, "the page's frame is drawn below the floating bars");
 

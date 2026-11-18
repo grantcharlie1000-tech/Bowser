@@ -22,11 +22,16 @@ The page takes the rest of the window at full height. There is no left rail any 
 **Pin sidebar** off (`sidebar_collapsed=true`, also Ctrl+S and the sidebar's pin button) is compact mode:
 `auto_hide::with_compact_sidebar` adds the tabs to the hidden bars, so the whole column (window buttons,
 toolbar and tabs) leaves the layout and the page fills the window. Resting the pointer on the docked edge
-slides the column back over the page without resizing it; it hides again 500 ms after the pointer leaves,
-and stays while the address field has focus or a menu is open. This is the T11 auto-hide machinery
+brings the column back docked, in its pinned place: it pushes the page aside (the page is laid out again
+beside it) rather than floating over it. It hides again 500 ms after the pointer leaves, and stays while
+the address field has focus or a menu is open. This is the T11 auto-hide machinery
 (`docs/design/t11-auto-hide.md`) with the toolbar in the sidebar zone (`WindowChrome::toolbar_zone`).
 
 ## The floating card
+
+> Superseded for reveals: a revealed column now docks and pushes the page (see Compact mode above), so
+> the card below is no longer shown. The top-edge strip with the window buttons stays, and pushes the
+> page down while it is out (no shadow). The geometry is kept because the hidden layout still computes it.
 
 A hidden column comes back as one floating card over the page, the way Zen's compact mode looks, in
 Bowser's own colours. Unpinned is the default for a new profile (`sidebar_collapsed=true`), so vertical
