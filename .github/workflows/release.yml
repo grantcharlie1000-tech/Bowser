@@ -693,7 +693,7 @@ jobs:
           function Get-TagReleases {
             $found = @()
             for ($page = 1; $page -le 50; $page++) {
-              $batch = @(Invoke-RestMethod -Uri "$api/releases?per_page=100&page=$page" -Headers $headers)
+              $batch = Invoke-RestMethod -Uri "$api/releases?per_page=100&page=$page" -Headers $headers
               $found += @($batch | Where-Object { $_.tag_name -ceq $tag })
               if ($batch.Count -lt 100) { return ,$found }
             }
