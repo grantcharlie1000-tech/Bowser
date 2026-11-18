@@ -51,14 +51,21 @@ enum Phase {
     Failed,
 }
 
+/// Complete bundles resent because state changed while the page was applying the previous one.
+/// A slow machine can take longer to apply a bundle than the state stays still during startup
+/// (extensions, downloads, window activation), so an unbounded resend never converges. After this
+/// many resends the last applied bundle is revealed and the newer state follows as live updates.
+pub(crate) const MAX_STATE_REFRESHES: u8 = 2;
+
 #[derive(Debug)]
-pub(crate) struct Session { view: ChromeView, epoch: u64, revision: u32, phase: Phase }
+pub(crate) struct Session { view: ChromeView, epoch: u64, revision: u32, refreshes: u8, phase: Phase }
 impl Session {
-    pub(crate) fn new(view: ChromeView) -> Self { Self { view, epoch: 0, revision: 0, phase: Phase::Waiting } }
+    pub(crate) fn new(view: ChromeView) -> Self { Self { view, epoch: 0, revision: 0, refreshes: 0, phase: Phase::Waiting } }
     pub(crate) fn navigate(&mut self) -> Option<u64> {
         if matches!(self.phase, Phase::Failed) { return None; }
         let Some(epoch) = self.epoch.checked_add(1) else { self.fail(); return None; };
         self.epoch = epoch;
+        self.refreshes = 0;
         self.phase = Phase::Waiting;
         Some(self.epoch)
     }
@@ -81,6 +88,7 @@ impl Session {
         let document = match &self.phase { Phase::Ready(d) => d.clone(), Phase::Applied { id, .. } => id.document.clone(), _ => return None };
         let revision = self.revision.checked_add(1).and_then(Revision::new)?;
         self.revision = revision.get();
+        if matches!(self.phase, Phase::Applied { .. }) { self.refreshes = self.refreshes.saturating_add(1); }
         let id = StateIdentity { view: self.view, document, revision };
         self.phase = Phase::Collecting { id: id.clone(), parts: Vec::new(), bytes: 0 };
         Some(id)
@@ -109,8 +117,15 @@ impl Session {
         self.phase = Phase::Applied { id: id.clone(), dirty: *dirty };
         true
     }
-    pub(crate) fn needs_refresh(&self, id: &StateIdentity) -> bool { matches!(&self.phase, Phase::Applied { id: current, dirty: true } if current == id) }
-    pub(crate) fn can_reveal(&self, id: &StateIdentity) -> bool { matches!(&self.phase, Phase::Applied { id: current, dirty: false } if current == id) }
+    pub(crate) fn needs_refresh(&self, id: &StateIdentity) -> bool {
+        self.stale(id) && self.refreshes < MAX_STATE_REFRESHES
+    }
+    /// The applied bundle is current, but state changed while it was being applied.
+    pub(crate) fn stale(&self, id: &StateIdentity) -> bool { matches!(&self.phase, Phase::Applied { id: current, dirty: true } if current == id) }
+    /// Clean, or stale once the resend budget is spent: the caller then resends state live.
+    pub(crate) fn can_reveal(&self, id: &StateIdentity) -> bool {
+        matches!(&self.phase, Phase::Applied { id: current, dirty } if current == id && (!*dirty || self.refreshes >= MAX_STATE_REFRESHES))
+    }
     pub(crate) fn revealed(&mut self, id: &StateIdentity) -> bool {
         if !self.can_reveal(id) { return false; }
         self.phase = Phase::Live(id.clone()); true
@@ -204,6 +219,48 @@ mod tests {
         assert!(!s.acknowledge(&id));
         assert!(s.acknowledge(&newer));
         assert!(s.revealed(&newer));
+    }
+    #[test]
+    fn continuous_state_churn_stops_resending_and_reveals_after_the_budget() {
+        let (mut s, mut id) = pending(ChromeView::Toolbar);
+        for _ in 0..MAX_STATE_REFRESHES {
+            assert_eq!(s.capture("changed while applying"), Some(false));
+            assert!(s.acknowledge(&id));
+            assert!(s.stale(&id));
+            assert!(s.needs_refresh(&id));
+            assert!(!s.can_reveal(&id));
+            id = s.begin().unwrap();
+            assert_eq!(s.capture("complete current state"), Some(true));
+            s.finish().unwrap();
+        }
+        assert_eq!(s.capture("still changing"), Some(false));
+        assert!(s.acknowledge(&id));
+        assert!(s.stale(&id));
+        assert!(!s.needs_refresh(&id), "the resend budget is spent");
+        assert!(s.can_reveal(&id));
+        assert!(s.revealed(&id));
+        assert!(s.live());
+        assert_eq!(s.capture("live update"), None, "newer state is delivered live after the reveal");
+    }
+    #[test]
+    fn a_new_document_gets_a_fresh_resend_budget() {
+        let (mut s, mut id) = pending(ChromeView::Tabs);
+        for _ in 0..MAX_STATE_REFRESHES {
+            assert_eq!(s.capture("changed while applying"), Some(false));
+            assert!(s.acknowledge(&id));
+            id = s.begin().unwrap();
+            assert_eq!(s.capture("complete current state"), Some(true));
+            s.finish().unwrap();
+        }
+        let epoch = s.navigate().unwrap();
+        assert!(s.ready(epoch, token(9)));
+        let id = s.begin().unwrap();
+        assert_eq!(s.capture("state"), Some(true));
+        s.finish().unwrap();
+        assert_eq!(s.capture("changed while applying"), Some(false));
+        assert!(s.acknowledge(&id));
+        assert!(s.needs_refresh(&id));
+        assert!(!s.can_reveal(&id));
     }
     #[test]
     fn empty_or_oversize_initial_transactions_never_wait_for_an_ack() {

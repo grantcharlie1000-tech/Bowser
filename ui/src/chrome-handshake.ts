@@ -130,12 +130,13 @@ export function chromeReceiver(options: {
 }
 
 /** Flush real reconciliation, load fonts and decode the images it installed before yielding a
- * render opportunity. This acknowledges applied state, never compositor presentation. */
+ * render opportunity. This acknowledges applied state, never compositor presentation. An image that
+ * cannot be decoded (a damaged favicon) is settled too: it must not keep the whole view native. */
 export async function settleChrome(root: HTMLElement, flush: () => void): Promise<void> {
   flush();
   root.getBoundingClientRect();
   await document.fonts.ready;
-  await Promise.all(Array.from(root.querySelectorAll('img')).filter((img) => !!img.getAttribute('src')).map((img) => img.decode()));
+  await Promise.all(Array.from(root.querySelectorAll('img')).filter((img) => !!img.getAttribute('src')).map((img) => img.decode().catch(() => undefined)));
   root.getBoundingClientRect();
   await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
 }
