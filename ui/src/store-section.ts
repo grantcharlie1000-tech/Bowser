@@ -59,8 +59,9 @@ export function mountStoreSection(options: ExtensionsSectionOptions): { readonly
     const heading = el('h2', 'bs-status-title'); heading.tabIndex = -1; heading.textContent = text;
     words.append(heading);
     if (line) words.append(paragraph(line, 'bs-head-body'));
-    if (below) words.append(below);
     box.append(words);
+    // A bar and its control continue the same row, out to the card's edge.
+    if (below) box.append(below);
     if (s && tone) { const mark = el('span', 'bs-head-badge'); mark.dataset.tone = tone; mark.append(icon(tone === 'ok' ? 'check' : 'warning', { size: 16 })); box.append(mark); }
     return box;
   };
@@ -77,7 +78,6 @@ export function mountStoreSection(options: ExtensionsSectionOptions): { readonly
       const percent = Math.round(p.value * 100);
       bar.setAttribute('aria-valuemin', '0'); bar.setAttribute('aria-valuemax', '100'); bar.setAttribute('aria-valuenow', String(percent)); bar.setAttribute('aria-valuetext', p.text);
       bar.style.setProperty('--bs-f', String(p.value));
-      wrap.append(paragraph(p.text, 'bs-progress-text'));
     }
     return wrap;
   };
@@ -157,9 +157,13 @@ export function mountStoreSection(options: ExtensionsSectionOptions): { readonly
     const manage = (): HTMLButtonElement => action('Manage extensions', 'manage', () => options.send({ a: 'section', text: 'extensions' }));
     const name = storeDisplayName(s);
     switch (s.phase) {
-      case 'downloading':
-        status.append(head(own, name, storeStatus(s), undefined, progressBar(storeProgress(s)!, s.requestId ? cancel() : undefined)));
+      case 'downloading': {
+        // The byte count, when Rust sends one, goes on the status line: the row stays one row.
+        const progress = storeProgress(s)!;
+        const line = progress.kind === 'determinate' ? `${storeStatus(s)} ${progress.text}` : storeStatus(s);
+        status.append(head(own, name, line, undefined, progressBar(progress, s.requestId ? cancel() : undefined)));
         break;
+      }
       case 'review': {
         status.append(head(own, storeStatus(s), `Version ${s.version}`), ...review(s));
         const approve = action('Add extension', 'approve', () => {

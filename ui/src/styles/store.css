@@ -56,20 +56,23 @@
 .bs .bs-status-title { font-size: var(--bw-text-subtitle); line-height: var(--bw-leading-subtitle); font-weight: var(--bw-weight-strong); overflow-wrap: anywhere; text-wrap: balance; }
 .bs-head-body { color: var(--bw-text-2); overflow-wrap: anywhere; text-wrap: pretty; }
 
-/* Progress: a short bar under the name with its control (Cancel, Try again) on the same row.
-   Determinate only with real byte counts. */
-.bs-head:has(.bs-progress) { align-items: flex-start; }
-.bs-head:has(.bs-progress) > .bs-head-text { flex: 1 1 auto; }
-.bs-progress { display: flex; flex-direction: column; gap: var(--bw-space-1); margin-top: var(--bw-space-2); }
-.bs-progress-row { display: flex; align-items: center; gap: var(--bw-space-3); min-height: 28px; }
+/* Progress: one row, edge to edge. The tile, the name and its state, then the bar stretching to
+   its control (Cancel, Try again) at the card's right edge. Determinate only with real byte counts,
+   which go on the state line. */
+.bs-status:has(.bs-head > .bs-progress) { gap: var(--bw-space-3); padding: var(--bw-space-4); }
+.bs-head:has(> .bs-progress) { gap: var(--bw-space-3); }
+.bs-head:has(> .bs-progress) > .bs-head-text { flex: 0 1 auto; }
+.bs .bs-head:has(> .bs-progress) .bs-status-title { font-size: var(--bw-text-body); line-height: var(--bw-leading-body); }
+.bs-head:has(> .bs-progress) .bs-head-body { font-size: var(--bw-text-caption); line-height: var(--bw-leading-caption); }
+.bs-progress { display: flex; flex: 1 1 0; min-width: 0; }
+.bs-progress-row { display: flex; flex: 1 1 auto; align-items: center; gap: var(--bw-space-3); min-width: 0; min-height: 28px; }
 .bs-progress-row > .bw-button { flex: none; min-height: 28px; height: 28px; }
-.bs-bar { position: relative; flex: 0 1 220px; min-width: 96px; height: 4px; overflow: hidden; border-radius: var(--bw-r-pill); background: var(--bs-track); }
+.bs-bar { position: relative; flex: 1 1 auto; min-width: 72px; height: 4px; overflow: hidden; border-radius: var(--bw-r-pill); background: var(--bs-track); }
 .bs-bar-fill { position: absolute; inset: 0; border-radius: inherit; background: var(--bs-run); transform-origin: 0 50%; }
 /* 250ms linear: the bar glides between updates, as the downloads bar does. */
 .bs-bar.is-determinate .bs-bar-fill { transform: scaleX(var(--bs-f, 0)); transition: transform var(--bw-dur-slow) linear; }
 .bs-bar.is-indeterminate .bs-bar-fill { right: auto; width: 34%; transform: translateX(-100%); animation: bs-sweep 1100ms linear infinite; }
 @keyframes bs-sweep { to { transform: translateX(300%); } }
-.bs-progress-text { color: var(--bw-text-2); font-size: var(--bw-text-caption); line-height: var(--bw-leading-caption); font-variant-numeric: tabular-nums; }
 /* Failed: the bar turns red and breaks in two, the halves easing apart around an exclamation mark. */
 .bs-bar.is-failed { display: flex; align-items: center; gap: var(--bw-space-1); height: 16px; overflow: visible; background: none; }
 .bs-bar-half { flex: 1 1 0; height: 4px; border-radius: var(--bw-r-pill); background: var(--bs-danger); }
@@ -118,6 +121,10 @@
 .bs-installed .sp-ext-installs { flex-wrap: wrap; }
 @media (max-width: 640px) {
   .bs { padding: var(--bw-space-4); }
+  /* Too narrow for one row: the bar and its control take a row of their own under the name. */
+  .bs-head:has(> .bs-progress) { flex-wrap: wrap; }
+  .bs-head:has(> .bs-progress) > .bs-head-text { flex: 1 1 0; max-width: none; }
+  .bs-head > .bs-progress { flex-basis: 100%; }
   .bs-status { padding: var(--bw-space-4); }
   .bs-actions.is-sticky { bottom: calc(-1 * var(--bw-space-4)); margin: 0 calc(-1 * var(--bw-space-4)) calc(-1 * var(--bw-space-4)); padding: var(--bw-space-3) var(--bw-space-4) var(--bw-space-4); }
   .bs-facts { grid-template-columns: minmax(0, 1fr); row-gap: var(--bw-space-0_5); }
