@@ -711,10 +711,25 @@ SFW.runtime = (function () {
       SHEET_REPLACE(shieldSheet, S.styles.SHIELD_CSS);
       if (adapter.highRisk) {
         quarSheet = new SHEET_CTOR();
-        SHEET_REPLACE(quarSheet, S.styles.QUARANTINE_CSS);
+        SHEET_REPLACE(quarSheet, quarantineCss());
       }
       adoptInto(doc);
       sheetsOk = true;
+    }
+
+    // Profile pictures (adapter.avatars) are left out of the quarantine. Only when the combined selector parses: a rule the
+    // engine rejected would be dropped from the sheet without a word, and every image on the page would show unchecked.
+    function quarantineCss() {
+      const av = adapter.avatars;
+      if (av) {
+        try { doc.createDocumentFragment().querySelector("img" + S.styles.avatarNot(av)); return S.styles.quarantine(av); } catch (e) { /* keep them held */ }
+      }
+      return S.styles.QUARANTINE_CSS;
+    }
+
+    function isAvatar(m) {
+      if (!adapter.avatars) return false;
+      try { return nMatches(m, adapter.avatars); } catch (e) { return false; }
     }
 
     function adoptInto(target) {
@@ -2478,6 +2493,7 @@ SFW.runtime = (function () {
       const plain = [];
       for (const m of list) {
         if (m.localName === "sfw-shield") continue;
+        if (isAvatar(m)) continue; // profile pictures are never held, checked or covered on their own
         const d = mediaDesc(m);
         if (!d && m.localName !== "img") { plain.push(m); continue; }
         let rec = mrec.get(m);

@@ -84,7 +84,7 @@ html[data-sfw-page~="shield"]{overflow:hidden!important}
   // Media quarantine for high-risk hosts: hidden until the owning unit has been classified clear in a cold context.
   // While the OCR gate checks an image (host.ocr), a media-only wrapper gets a quiet "Checking image" veil (it fades in
   // after 350 ms, so a fast result never shows it); the media itself stays hidden by the rules below either way.
-  const QUARANTINE_CSS = `
+  const QUARANTINE_HEAD = `
 [data-sfw-mcpos]{position:relative!important}
 [data-sfw-mc]::after{
   content:"Checking image\\2026"!important;position:absolute!important;inset:0!important;z-index:2147483645!important;
@@ -99,11 +99,25 @@ html[data-sfw-page~="shield"]{overflow:hidden!important}
 @keyframes sfw-media-in{from{opacity:0}to{opacity:1}}
 @media (prefers-reduced-motion:reduce){[data-sfw-mc]::after{animation:none!important}[data-sfw-fade]{animation:none}}
 @media (forced-colors:active){[data-sfw-mc]::after{background:Canvas!important;color:CanvasText!important;-webkit-text-fill-color:CanvasText!important}}
-img:not([data-sfw-m="ok"]),picture:not([data-sfw-m="ok"]),video:not([data-sfw-m="ok"]),canvas:not([data-sfw-m="ok"]),
-object:not([data-sfw-m="ok"]),embed:not([data-sfw-m="ok"]),svg image:not([data-sfw-m="ok"]),
-input[type="image"]:not([data-sfw-m="ok"]),[poster]:not([data-sfw-m="ok"]){visibility:hidden!important}
-[style*="background-image"]:not([data-sfw-m="ok"]),[style*="background:"]:not([data-sfw-m="ok"]){background-image:none!important}
 `;
+  const QUARANTINE_CSS = QUARANTINE_HEAD + QUARANTINE_RULES("");
+
+  // The hiding rules on their own. `not` is an extra :not(...) every hidden element must also satisfy: the adapter's
+  // profile pictures (quarantine(avatars) below), which are never held.
+  function QUARANTINE_RULES(not) {
+    const k = ':not([data-sfw-m="ok"])' + not;
+    return `img${k},picture${k},video${k},canvas${k},
+object${k},embed${k},svg image${k},
+input[type="image"]${k},[poster]${k}{visibility:hidden!important}
+[style*="background-image"]${k},[style*="background:"]${k}{background-image:none!important}
+`;
+  }
+
+  // QUARANTINE_CSS with the given selector list (already validated one by one) left out of the quarantine. The caller
+  // checks the combined selector parses (avatarNot) before using it: a rule with a selector the engine rejects is dropped
+  // silently, and a dropped hiding rule would release every image on the page.
+  function avatarNot(sel) { return sel ? ":not(" + sel + ")" : ""; }
+  function quarantine(sel) { return QUARANTINE_HEAD + QUARANTINE_RULES(avatarNot(sel)); }
 
   // Rules toggled at runtime through CSSOM insertRule/deleteRule on the page sheet.
   const OPAQUE_RULE = "sfw-shield{--sfw-bf:none!important;--sfw-a:.985!important}";
@@ -222,5 +236,5 @@ input[type="image"]:not([data-sfw-m="ok"]),[poster]:not([data-sfw-m="ok"]){visib
 }
 `;
 
-  return { PAGE_CSS, QUARANTINE_CSS, SHIELD_CSS, OPAQUE_RULE, REDUCED_RULE };
+  return { PAGE_CSS, QUARANTINE_CSS, SHIELD_CSS, OPAQUE_RULE, REDUCED_RULE, quarantine, avatarNot };
 })();
