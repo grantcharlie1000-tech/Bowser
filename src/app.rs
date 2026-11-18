@@ -780,6 +780,12 @@ pub struct App {
     /// keys that differ from this (`settings::merge_changed`), so it never reverts a newer file value.
     settings_synced: crate::settings::Settings,
     session: Option<crate::session::SessionWriter>,
+    /// A window of a tracked profile that could not claim the session when it started, because
+    /// another Bowser window of the profile held it (`--new-window`): the session folder and the
+    /// workspace file. Such a window writes neither file while it runs. If it is the last window
+    /// of the profile to close, it claims the session then and saves its own tabs
+    /// ([`App::session_finish`]), so the window closed last is the one that comes back.
+    session_unclaimed: Option<(PathBuf, Option<PathBuf>)>,
     session_save_pending: bool,
     last_session_snapshot: Option<crate::session::Session>,
     pending_restore: Option<crate::session::Session>,
@@ -5361,6 +5367,7 @@ impl App {
             settings: crate::settings::Settings::default(),
             settings_synced: crate::settings::Settings::default(),
             session: None,
+            session_unclaimed: None,
             session_save_pending: false,
             last_session_snapshot: None,
             pending_restore: None,
@@ -5391,14 +5398,20 @@ impl App {
     /// Returns `false` when the session could not be opened because another Bowser holds it.
     /// The caller then must not open a window that rebuilds the saved tabs.
     fn init_session(&mut self, dir: &std::path::Path) -> bool {
-        // --- start page --- "continue where you left off": a clean exit's tabs come back too, unless the
-        // launch carries an address of its own.
-        let restore_clean = self.settings.start.startup == crate::start_page::Startup::LastSession && self.initial_url.is_none();
+        // --- start page --- "continue where you left off": a clean exit's tabs come back too. A launch
+        // that carries an address (a link opened while Bowser was closed) restores them as well and
+        // opens the address in a tab of its own (`restore_pending_session`). Skipping the restore
+        // there lost the tabs for good: this run's first save replaced `session.txt`.
+        let restore_clean = self.settings.start.startup == crate::start_page::Startup::LastSession;
         // --- end start page ---
         // Claim the marker before reading workspaces. A launch that loses the claim leaves every
         // session file untouched.
         let Some((mut store, offer)) = crate::session::SessionStore::open_with(dir, restore_clean) else {
-            return false; // another Bowser is running; leave its files alone
+            // Another Bowser window has this profile; leave its files alone. This window's own
+            // workspace set is not the profile's, so it must not replace `workspaces.txt` either.
+            let workspaces_path = self.workspaces_path.take();
+            self.session_unclaimed = Some((dir.to_owned(), workspaces_path));
+            return false;
         };
         let workspace_path = self
             .workspaces_path
@@ -5563,10 +5576,29 @@ impl App {
             return;
         };
         let _ = app.borrow().log.record("session_restored");
-        win32::set_input_text(app.borrow().edit, url.as_str());
-        Self::post_tab_changed(hwnd, app.borrow().tab_model.active());
-        Self::sync_window_title(app);
-        Self::submit_url(app, url, None);
+        if app.borrow().initial_url.is_some() {
+            // The launch carries an address (a link opened while Bowser was closed): the restored
+            // tabs all stay, the one that was shown goes back to sleep like the others, and the
+            // address gets a new tab, which `submit_initial_url` then loads. Loading the address
+            // in the restored tab would replace that page.
+            {
+                let mut state = app.borrow_mut();
+                let shown = state.tab_model.active();
+                let eager = !state.settings.tabs.lazy_restore;
+                if let Some(tab) = state.tabs.iter_mut().find(|tab| tab.id == shown) {
+                    tab.discarded = true;
+                }
+                if eager {
+                    state.tab_state.eager.push(shown);
+                }
+            }
+            Self::spawn_tab(app, false, None);
+        } else {
+            win32::set_input_text(app.borrow().edit, url.as_str());
+            Self::post_tab_changed(hwnd, app.borrow().tab_model.active());
+            Self::sync_window_title(app);
+            Self::submit_url(app, url, None);
+        }
         Self::load_eager_tabs(app); // --- tab options ---
         if Self::restore_saved_favicons(app) > 0 { Self::post_tab_changed_kind(hwnd, app.borrow().tab_model.active(), false, false); } // --- tab options ---
     }
@@ -5700,8 +5732,38 @@ impl App {
         let store = app.borrow_mut().session.take();
         if let Some(store) = store {
             store.finish(snapshot);
+        } else {
+            Self::claim_session_at_close(app, snapshot.as_ref());
         }
         Self::save_workspaces_now(app);
+    }
+
+    /// A window that never held the session (see `session_unclaimed`) is closing. When the window
+    /// that held it has already closed, this is the profile's last window: its tabs become the saved
+    /// session, as the tabs of the window closed last do in other browsers. Without this, a second
+    /// window (Ctrl+N, "Move tab to new window") closed last lost every tab it had. While the other
+    /// window is still open its claim fails and nothing is written.
+    fn claim_session_at_close(app: &AppRef, snapshot: Option<&crate::session::Session>) {
+        let Some((dir, workspaces_path)) = app.borrow_mut().session_unclaimed.take() else {
+            return;
+        };
+        let Some(snapshot) = snapshot else {
+            return; // nothing worth saving: the last saved session stays
+        };
+        let Some((mut store, _)) = crate::session::SessionStore::open(&dir) else {
+            return; // the window that holds the session is still open
+        };
+        // `finish` saves (the replaced snapshot is kept as `session.prev`) and removes the marker.
+        store.finish(Some(snapshot));
+        // The workspace file still pairs the other window's tabs with its `order=`. This window's
+        // workspaces were never loaded, so keep the profile's workspaces and drop that pairing: the
+        // restored tabs then all join the active workspace instead of landing in others by position.
+        if let Some(path) = workspaces_path
+            && let Ok(Some(mut workspaces)) = crate::workspaces::WorkspaceSet::load(&path)
+        {
+            workspaces.set_session_order(&[]);
+            let _ = workspaces.save(&path);
+        }
     }
 
     fn enqueue_engine_notice(queue: &Rc<RefCell<EngineNotices>>, hwnd: HWND, generation: u64, notice: EngineNotice) {
@@ -11595,6 +11657,7 @@ mod tests {
             },
             settings_synced: crate::settings::Settings::default(),
             session: None,
+            session_unclaimed: None,
             session_save_pending: false,
             last_session_snapshot: None,
             pending_restore: None,

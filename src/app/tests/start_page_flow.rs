@@ -87,3 +87,48 @@ fn the_launch_target_is_a_restored_session_a_command_line_address_or_a_benchmark
     app.borrow_mut().pending_restore = Some(crate::session::Session { tabs: Vec::new(), active: 0, split: None });
     assert!(App::launch_has_target(&app));
 }
+
+/// "Continue where you left off" with a launch that carries an address (a link opened while Bowser
+/// was closed): the saved tabs come back, the address opens in a tab of its own and is shown, and the
+/// next save keeps them all. Skipping the restore here used to replace `session.txt` with the link.
+#[test]
+fn a_link_launch_restores_the_last_session_and_opens_the_link_beside_it() {
+    let dir = std::env::temp_dir().join(format!("bowser-start-link-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let tab = |url: &str| crate::session::SessionTab { url: url.into(), title: "T".into(), pinned: false, used: 0 };
+    {
+        let (mut store, _) = crate::session::SessionStore::open(&dir).unwrap();
+        store.begin_run(None);
+        store
+            .save(&crate::session::Session { tabs: vec![tab("https://a.example/"), tab("https://b.example/")], active: 1, split: None })
+            .unwrap();
+        store.finish(None);
+    }
+    let app = app_with(StartSettings { startup: Startup::LastSession, ..StartSettings::default() });
+    app.borrow_mut().initial_url = Some(url::Url::parse("https://link.example/").unwrap());
+    assert!(app.borrow_mut().init_session(&dir));
+    assert!(app.borrow().pending_restore.is_some(), "the address does not skip the restore");
+    // What the window does at startup (`win32::window::run`).
+    let decided = App::launch_has_target(&app);
+    App::restore_pending_session(&app);
+    App::submit_initial_url(&app);
+    App::apply_startup_plan(&app, decided);
+    let mut opened: Vec<String> = urls(&app).into_iter().flatten().collect();
+    opened.sort();
+    assert_eq!(opened, ["https://a.example/", "https://b.example/", "https://link.example/"]);
+    assert_eq!(active_url(&app).as_deref(), Some("https://link.example/"), "the link is the page shown");
+    {
+        let state = app.borrow();
+        for tab in state.tabs.iter().filter(|tab| tab.url.as_ref().is_some_and(|url| url.as_str() != "https://link.example/")) {
+            assert!(tab.discarded, "{:?} stays asleep until selected", tab.url);
+        }
+    }
+    App::session_finish(&app);
+    let text = std::fs::read_to_string(dir.join(crate::session::FILE_NAME)).unwrap();
+    let saved = crate::session::Session::parse(&text).unwrap();
+    let mut saved: Vec<&str> = saved.tabs.iter().map(|tab| tab.url.as_str()).collect();
+    saved.sort();
+    assert_eq!(saved, ["https://a.example/", "https://b.example/", "https://link.example/"]);
+    drop(app);
+    let _ = std::fs::remove_dir_all(dir);
+}

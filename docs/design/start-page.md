@@ -91,8 +91,15 @@ file (a value that does not parse is ignored; numbers are clamped).
 Startup: `start_page` leaves the first tab blank; `homepage` and `specific_pages` navigate it (one tab per
 page, the first shown) unless the launch already has a target (a restored crash session, a command-line
 address or a benchmark URL); `last_session` restores a clean exit's tabs without the crash prompt
-(`SessionStore::open_with`), also unless the launch carries an address. An empty homepage or page list
-falls back to the start page.
+(`SessionStore::open_with`). A launch that carries an address (a link opened while Bowser is closed)
+restores them too and opens the address in a new tab after them; the restored tab that was shown stays
+asleep until selected (`App::restore_pending_session`). The same holds for an accepted crash restore. An
+empty homepage or page list falls back to the start page.
+
+Which window's tabs are saved: the window that started first holds the profile's session. A second
+window of the profile (Ctrl+N, Move tab to new window, `--new-window`) writes neither `session.txt` nor
+`workspaces.txt` while it runs; if it is the last window of the profile to close, it saves its own tabs
+then (`App::session_finish`), so the window closed last is the one that comes back.
 
 ## Performance: a new tab must not wait on this
 
