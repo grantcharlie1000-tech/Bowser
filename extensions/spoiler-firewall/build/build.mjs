@@ -40,7 +40,21 @@ function read(rel) {
 
 export function engineSource() {
   const parts = ENGINE_ORDER.map((file) => `// ---- engine/${file} ----\n${read(join("engine", file))}`);
-  return parts.join("\n");
+  return withSnapshot(parts.join("\n"));
+}
+
+// The compiled lexicon, computed here once instead of in every document (engine/lexicon.js, "build-time snapshot"):
+// the engine is evaluated in this process, compile() runs, and its encoded result is embedded right after lexicon.js.
+// The page revives it only if its own normaliser reproduces the snapshot's sample keys; otherwise it compiles as before.
+const SNAPSHOT_AFTER = "// ---- engine/lexicon.js ----\n";
+function withSnapshot(engine) {
+  const SFW = new Function(`return ${closure(engine, "return SFW;")};`)();
+  const text = SFW.lexicon.encodeSnapshot();
+  const at = engine.indexOf(SNAPSHOT_AFTER);
+  const next = engine.indexOf("\n// ---- engine/", at + SNAPSHOT_AFTER.length);
+  if (at < 0 || next < 0) throw new Error("engine fragment markers not found for the lexicon snapshot");
+  const fragment = `\n// ---- generated: lexicon snapshot (build/build.mjs) ----\nSFW.lexicon.setSnapshot(${JSON.stringify(text)});`;
+  return engine.slice(0, next) + fragment + engine.slice(next);
 }
 
 // Every emitted script is pure ASCII: each non-ASCII UTF-16 code unit becomes a \uXXXX escape.

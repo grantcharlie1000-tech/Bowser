@@ -926,9 +926,147 @@ SFW.lexicon = (function () {
     return s.replace(/(^|\s)([a-z])([a-z]*)/g, (m, sp, a, rest) => sp + a + rest.replace(/[aeiou]/g, ""));
   }
 
+  // ---------------------------------------------------------------- build-time snapshot
+  // compile() runs in every document and every frame before the first text can be judged, and cold (no JIT yet) it was
+  // ~30 ms of main-thread work per document on a fast PC, ~120 ms on a slow laptop: most of the engine's cost on pages that
+  // never mention the game. build/build.mjs runs compile() once, encodes the result (encodeSnapshot) and embeds it after this
+  // file (setSnapshot). In the page, compile() revives the snapshot instead: the same terms, inserted in the same order into
+  // fresh tries, the same Sets and the same RegExp sources. It is used only for the built-in vocabulary (no feed terms) of
+  // this exact VERSION, and only after the page's own normaliser reproduced the snapshot's sample keys (Unicode / ICU drift
+  // between Node and the browser falls back to compiling). Any failure falls back to compiling, never to fewer terms.
+  const SNAP_FORMAT = 1;
+  let snapText = null;
+  let fromSnap = false; // the cached compiled lexicon came from the snapshot (tests, diagnostics)
+  // the last compile()'s bookkeeping for encodeSnapshot: { lex, order: terms in add() order, rr: Set of terms in trieRR }.
+  // A plain variable, not a WeakMap: nothing here may touch WeakMap / WeakSet while the bundle loads (a page that broke
+  // them before the engine must still get the runtime's fail-closed path, not a bundle that throws).
+  let lastMeta = null;
+
+  function setSnapshot(text) {
+    snapText = typeof text === "string" ? text : null;
+  }
+
+  function snapshotSamples() {
+    // raw lexicon strings whose key depends on the normaliser's Unicode tables (non-ASCII), plus a few plain ones
+    const out = [];
+    const seen = new Set();
+    const pushAll = (v) => {
+      if (typeof v === "string") { if (!seen.has(v)) { seen.add(v); out.push(v); } } else if (Array.isArray(v)) v.forEach(pushAll);
+      else if (v && typeof v === "object") Object.keys(v).forEach((k) => pushAll(v[k]));
+    };
+    pushAll(DATA);
+    const wide = out.filter((s) => /[^\x00-\x7f]/.test(s));
+    const pick = [];
+    const blocks = new Set();
+    for (const s of wide) { const b = s.codePointAt(s.search(/[^\x00-\x7f]/)) >> 6; if (!blocks.has(b)) { blocks.add(b); pick.push(s); } }
+    for (let i = 0; pick.length < 40 && i < wide.length; i += 7) if (pick.indexOf(wide[i]) < 0) pick.push(wide[i]);
+    return pick.concat(["grand theft auto 6", "Vice City", "g t a v i"]);
+  }
+
+  function encodeSnapshot() {
+    const saved = compiledCache;
+    compiledCache = null;
+    let lex;
+    const savedSnap = snapText;
+    snapText = null;
+    try { lex = compile(); } finally { snapText = savedSnap; }
+    compiledCache = saved || lex;
+    if (extCount) throw new Error("snapshot of an extended lexicon");
+    const meta = lastMeta && lastMeta.lex === lex ? lastMeta : null;
+    if (!meta) throw new Error("snapshot: compile bookkeeping missing");
+    // Row: [shape, c, offs (0 for [0], else "a,b"), flags (bit 0: in trieRR; bit i+1: i-th boolean of the shape), ...rest].
+    // A shape holds the key order, cat, kind, which keys are booleans and which are "rest" (kills -> kill table index, near).
+    const shapes = [], shapeIx = new Map(), kills = [], killIx = new Map(), terms = [];
+    const FIXED = { c: 1, n: 1, offs: 1, cat: 1, kind: 1 };
+    for (const t of meta.order) {
+      const keys = Object.keys(t);
+      if (t.n !== t.c.length || typeof t.kind !== "string" || typeof t.cat !== "string") throw new Error("snapshot: unexpected term " + t.c);
+      const bools = [], rest = [];
+      for (const k of keys) {
+        if (FIXED[k]) continue;
+        const v = t[k];
+        if (typeof v === "boolean") bools.push(k);
+        else if (k === "kills" && v instanceof Set) rest.push(k);
+        else if (k === "near" && typeof v === "number" && isFinite(v)) rest.push(k);
+        else throw new Error("snapshot: cannot encode term field " + k);
+      }
+      const sk = keys.join(",") + "|" + t.cat + "|" + t.kind + "|" + bools.join(",") + "|" + rest.join(",");
+      if (!shapeIx.has(sk)) { shapeIx.set(sk, shapes.length); shapes.push({ k: keys, cat: t.cat, kind: t.kind, b: bools, r: rest }); }
+      let flags = meta.rr.has(t) ? 1 : 0;
+      for (let i = 0; i < bools.length; i++) if (t[bools[i]]) flags |= 2 << i;
+      const offs = t.offs.length === 1 && t.offs[0] === 0 ? 0 : t.offs.join(",");
+      const row = [shapeIx.get(sk), t.c, offs, flags];
+      for (const k of rest) {
+        if (k === "near") { row.push(t.near); continue; }
+        const arr = Array.from(t.kills);
+        const kk = JSON.stringify(arr);
+        if (!killIx.has(kk)) { killIx.set(kk, kills.length); kills.push(arr); }
+        row.push(killIx.get(kk));
+      }
+      terms.push(row);
+    }
+    const sets = (o) => { const r = {}; for (const k of Object.keys(o)) r[k] = Array.from(o[k]); return r; };
+    const N = SFW.normalize;
+    return JSON.stringify({
+      f: SNAP_FORMAT, v: VERSION,
+      check: snapshotSamples().map((s) => { const tm = N.term(s); return [s, tm.c, tm.offs.join(","), !!tm.sub]; }),
+      shapes, kills, terms,
+      fuzzy: lex.fuzzy, unitSet: Array.from(lex.unitSet), stopSet: Array.from(lex.stopSet), rankSets: sets(lex.rankSets),
+      anchorBase: lex.anchorBase.source, anchorHot: lex.anchorHot.source, anchorRR: lex.anchorRR.source, anchorTypo: lex.anchorTypo.source,
+      hasRR: lex.hasRR,
+    });
+  }
+
+  function revive(text) {
+    const s = JSON.parse(text);
+    if (!s || s.f !== SNAP_FORMAT || s.v !== VERSION) return null;
+    const N = SFW.normalize;
+    for (const [raw, c, offs, sub] of s.check) {
+      const tm = N.term(raw);
+      if (tm.c !== c || tm.offs.join(",") !== offs || !!tm.sub !== sub) return null;
+    }
+    const killSets = s.kills.map((a) => new Set(a)); // read-only (classify only calls has())
+    const trieTok = newNode(), trieSub = newNode(), trieRR = newNode();
+    const byCat = {};
+    const ZERO = [0];
+    for (const row of s.terms) {
+      const sh = s.shapes[row[0]];
+      const c = row[1], flags = row[3];
+      const vals = { c: c, n: c.length, offs: row[2] === 0 ? ZERO.slice() : row[2].split(",").map(Number), cat: sh.cat, kind: sh.kind };
+      for (let i = 0; i < sh.b.length; i++) vals[sh.b[i]] = (flags & (2 << i)) !== 0;
+      for (let i = 0; i < sh.r.length; i++) vals[sh.r[i]] = sh.r[i] === "kills" ? killSets[row[4 + i]] : row[4 + i];
+      const t = {};
+      for (let i = 0; i < sh.k.length; i++) t[sh.k[i]] = vals[sh.k[i]]; // same key order as compile() (same object shape)
+      (byCat[t.cat] || (byCat[t.cat] = [])).push(t);
+      insert(t.sub ? trieSub : trieTok, t);
+      if (flags & 1) insert(trieRR, t);
+    }
+    const rankSets = {};
+    for (const k of Object.keys(s.rankSets)) rankSets[k] = new Set(s.rankSets[k]);
+    return {
+      version: api.version,
+      trieTok, trieSub, trieRR,
+      byCat, fuzzy: s.fuzzy, unitSet: new Set(s.unitSet), stopSet: new Set(s.stopSet), rankSets,
+      anchorBase: new RegExp(s.anchorBase),
+      anchorHot: new RegExp(s.anchorHot),
+      anchorRR: new RegExp(s.anchorRR),
+      anchorTypo: new RegExp(s.anchorTypo),
+      hasRR: s.hasRR,
+    };
+  }
+
   function compile() {
     if (compiledCache) return compiledCache;
+    if (snapText && !extCount) {
+      let c = null;
+      try { c = revive(snapText); } catch (e) { c = null; }
+      if (c) { compiledCache = c; fromSnap = true; return c; }
+      snapText = null; // unusable here: compile from the word lists (now and after any later feed)
+    }
+    fromSnap = false;
     const N = SFW.normalize;
+    const order = [];
+    const rr = new Set();
     const trieTok = newNode(), trieSub = newNode(), trieRR = newNode();
     const byCat = {};
     const rankSets = { entityWeak: new Set(), entityStrong: new Set(), franchise: new Set(), cueWeak: new Set(), cueStrong: new Set(), marker: new Set() };
@@ -953,6 +1091,7 @@ SFW.lexicon = (function () {
       seen[key] = 1;
       (byCat[cat] || (byCat[cat] = [])).push(t);
       insert(t.sub ? trieSub : trieTok, t);
+      order.push(t);
       return t;
     }
     function anchorOf(t, hot) {
@@ -985,7 +1124,7 @@ SFW.lexicon = (function () {
       rankSets.franchise.add(t.c);
       // soft nicknames that contain gta / grand theft auto / vice city are reached through those anchors ("upcoming" is no anchor)
       if (!(soft && /gta|grand theft|vice city/.test(str))) anchorOf(t, false);
-      if (!ctxOnly && !t.sub) { insert(trieRR, t); rrAnchor(t); }
+      if (!ctxOnly && !t.sub) { insert(trieRR, t); rr.add(t); rrAnchor(t); }
     }
     function all(list) { return list.concat(); }
 
@@ -1041,6 +1180,7 @@ SFW.lexicon = (function () {
       anchorOf(t, false);
       if (!t.sub) {
         insert(trieRR, t);
+        rr.add(t);
         rrAnchor(t);
         if (t.n >= 7 && t.offs.length >= 1 && /^[a-z]+$/.test(t.c)) {
           const d = t.n >= 11 ? 2 : 1;
@@ -1174,6 +1314,7 @@ SFW.lexicon = (function () {
       anchorTypo: anchorsTypo.length ? anchorRegex(anchorsTypo) : /(?!)/,
       hasRR: anchorsRR.length > 0,
     };
+    lastMeta = { lex: compiledCache, order, rr };
     return compiledCache;
   }
 
@@ -1183,6 +1324,9 @@ SFW.lexicon = (function () {
     compile,
     compiled: compile,
     extend,
+    encodeSnapshot,
+    setSnapshot,
+    fromSnapshot: () => fromSnap,
     limits: LIMITS,
   };
   return api;
