@@ -52,6 +52,10 @@ def summary_of(body):
     if not body or body.startswith('Verified Windows HTML-chrome build'):
         return ''
     para = body.replace('\r', '').strip().split('\n\n')[0].strip()
+    # GitHub's generated notes ("## What's Changed", a "* ... by @... in https://..." list) and any
+    # other Markdown heading or list are not a summary: the pull requests are listed under it anyway.
+    if re.match(r'(#|[*-] )', para):
+        return ''
     para = re.sub(r'\s*Built (with|from) .*$', '', para)
     return para
 
