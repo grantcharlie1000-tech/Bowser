@@ -9,6 +9,7 @@ import { applyTheme } from './view';
 import { el, icon, type IconName } from './dom';
 import { attachSegmentThumb } from './segment-thumb';
 import { installTooltips } from './tooltip';
+import { glyphTile } from './settings-tiles';
 import { selectField, type SelectField } from './panels/select';
 import { radioGroup, textButton, type PageSection } from './panels/kit';
 import { mountPrivacyDashboard } from './panels/privacy';
@@ -78,6 +79,21 @@ const NAV_ICONS: Readonly<Record<SettingsSection, IconName>> = {
   passwords: 'key',
   stacks: 'tab-group', // --- T10 --- (drawn in the Tabs and start page area, never in the nav on its own)
 };
+/** Each group's glyph, beside its title (settings.css, "Group cards"). */
+const GROUP_ICONS: Readonly<Record<string, IconName>> = {
+  profiles: 'person', startup: 'enter', search: 'search', searchField: 'address-bar', searchScopes: 'grid',
+  downloads: 'folder-download', defaultBrowser: 'globe',
+  theme: 'droplet', layout: 'sidebar', toolbar: 'customize', text: 'zoom-in', bookmarksBar: 'bookmark', window: 'window', panels: 'app-tile',
+  tabBar: 'tab-switch', newTabs: 'plus', groups: 'tab-group', startPage: 'home', closing: 'close', pinned: 'pin', selecting: 'volume',
+  blocking: 'block', history: 'clock', siteData: 'cookie', security: 'lock', spoilers: 'eye',
+  passwords: 'key',
+  address: 'address-bar', suggestions: 'search', bookmarks: 'bookmark', translate: 'translate', capture: 'capture', reader: 'reader', pageTools: 'pip', feeds: 'bell',
+  keyboard: 'keyboard', keys: 'command', commands: 'quick-commands',
+  extensions: 'puzzle',
+  performance: 'workspace-bolt', media: 'play',
+  updates: 'download', about: 'info',
+  'simple-start': 'search', 'simple-look': 'droplet', 'simple-privacy': 'shield', 'simple-browser': 'person',
+};
 const reduceMotion = (): boolean => matchMedia('(prefers-reduced-motion: reduce)').matches;
 /** Whether a key press lands in a field that takes text (an input, a textarea, a select or an editable node). */
 export function isTyping(target: EventTarget | null): boolean {
@@ -125,43 +141,110 @@ export function segmentedControl<T extends string>(label: string, options: Reado
 }
 
 /**
- * A schematic of a browser layout: window frame, toolbar, tab row or sidebar, page. Takes the tab
+ * A small picture of a Bowser window in a layout: window buttons, toolbar, tab row or sidebar, page. Takes the tab
  * layout alone (the "style at the top" tiles) or a whole configuration (the preset tiles, thread
  * T6): tabs on any edge or hidden, the address bar on top or along the bottom or hidden, and the
  * title row that holds the window buttons when neither is at the top.
  */
 function layoutArt(config: TabLayout | LayoutConfig): SVGSVGElement {
   const c: LayoutConfig = typeof config === 'string' ? { ...DEFAULT_LAYOUT_CONFIG, tabLayout: config } : config;
+  // Drawn from Bowser's own chrome (toolbar.css, tabs.css, sidebar.css): tab islands with a favicon
+  // and a title, the selected one a raised neutral island; back and forward in a small pill, the
+  // address pill in the middle and the search pill at the right; the window buttons on the top row;
+  // in a vertical layout the sidebar holds the address field, the pinned tiles and the tab rows; the
+  // page is a rounded frame with content in it. Units: a 144 x 92 window.
+  const W = 144;
+  const H = 92;
   const svg = document.createElementNS(SVG_NS, 'svg');
-  svg.setAttribute('viewBox', '0 0 72 46');
+  svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
   svg.setAttribute('class', 'sp-art');
   svg.setAttribute('aria-hidden', 'true');
   const rect = (cls: string, x: number, y: number, w: number, h: number, r = 1.5): void => {
+    if (w <= 0 || h <= 0) return;
     const node = document.createElementNS(SVG_NS, 'rect');
     for (const [k, v] of [['x', x], ['y', y], ['width', w], ['height', h], ['rx', r]] as const) node.setAttribute(k, String(v));
     node.setAttribute('class', cls);
     svg.append(node);
   };
-  rect('sp-art-frame', 1, 1, 70, 44, 5);
-  const tabs = (x: number, y: number, n: number, w: number): void => {
-    for (let i = 0; i < n; i++) rect(i === 0 ? 'sp-art-tab is-on' : 'sp-art-tab', x + i * (w + 2), y, w, 4.5, 1.5);
+  const ROW = 13;
+  /** Minimise, maximise, close: three short marks at the right end of the top row. */
+  const captions = (y: number): void => {
+    for (let i = 0; i < 3; i++) rect('sp-art-mark', W - 25 + i * 7, y + 6, 4, 1.2, 0.6);
   };
-  const toolbar = (y: number): void => {
-    rect('sp-art-dot', 5, y + 1.25, 3, 3, 1.5);
-    rect('sp-art-dot', 10, y + 1.25, 3, 3, 1.5);
-    rect('sp-art-pill', 16, y, 40, 5.5, 2.75);
+  /** One tab: an island (the selected one raised) holding a favicon and a title. */
+  const tab = (x: number, y: number, w: number, on: boolean): void => {
+    rect(on ? 'sp-art-island is-on' : 'sp-art-island', x, y, w, 9, 3);
+    rect('sp-art-fav', x + 3, y + 2.5, 4, 4, 1);
+    rect('sp-art-line', x + 9, y + 3.75, Math.max(w - 14, 2), 1.5, 0.75);
   };
-  const singleRow = (y: number): void => {
-    rect('sp-art-dot', 5, y + 1.25, 3, 3, 1.5); rect('sp-art-pill', 10, y, 22, 5.5, 2.75); tabs(35, y + 0.5, 3, 9.3);
+  const tabRow = (x: number, y: number, right: number): void => {
+    const n = 3;
+    const w = Math.min(32, (right - x - (n - 1) * 2) / n);
+    for (let i = 0; i < n; i++) tab(x + i * (w + 2), y + 2, w, i === 1);
   };
-  // The title row: the window buttons alone, at the right end.
-  const titleRow = (y: number): void => {
-    for (let i = 0; i < 3; i++) rect('sp-art-dot', 56 + i * 4, y + 1.25, 2.5, 2.5, 1.25);
+  /** Back and forward, the address pill (a lock and the address), the search pill. */
+  const toolbar = (y: number, right: number): void => {
+    rect('sp-art-pill', 5, y + 2, 17, 9, 4.5);
+    rect('sp-art-mark', 8.5, y + 6, 3.5, 1.2, 0.6);
+    rect('sp-art-mark', 15, y + 6, 3.5, 1.2, 0.6);
+    const search = 22;
+    const start = 28;
+    const end = right - search - 6;
+    const width = Math.min(66, end - start);
+    const x = start + (end - start - width) / 2;
+    rect('sp-art-pill', x, y + 2, width, 9, 4.5);
+    rect('sp-art-fav', x + 4, y + 5, 3, 3, 1);
+    rect('sp-art-line', x + 10, y + 5.75, Math.min(30, width - 16), 1.5, 0.75);
+    rect('sp-art-pill', right - search, y + 2, search - 2, 9, 4.5);
   };
+  /** Simple: one row with navigation, a shorter address pill and the tabs. */
+  const singleRow = (y: number, right: number): void => {
+    rect('sp-art-pill', 5, y + 2, 17, 9, 4.5);
+    rect('sp-art-pill', 25, y + 2, 30, 9, 4.5);
+    rect('sp-art-fav', 29, y + 5, 3, 3, 1);
+    rect('sp-art-line', 35, y + 5.75, 14, 1.5, 0.75);
+    tabRow(59, y, right);
+  };
+  /** The page: a rounded frame with a heading, a few lines of text and a picture. */
+  const pageArea = (x: number, y: number, w: number, h: number): void => {
+    rect('sp-art-page', x, y, w, h, 4);
+    if (w < 30 || h < 20) return;
+    const pad = 7;
+    const text = Math.min(w * 0.55, 60);
+    rect('sp-art-head', x + pad, y + pad, text * 0.7, 3, 1.5);
+    for (let i = 0; i < 3 && y + pad + 9 + i * 5 + 2 < y + h - pad; i++) rect('sp-art-text', x + pad, y + pad + 9 + i * 5, text * (i === 2 ? 0.6 : 1), 1.5, 0.75);
+    const pic = Math.min(w - text - pad * 3, 34);
+    if (pic > 12) rect('sp-art-pic', x + w - pad - pic, y + pad, pic, Math.min(h - pad * 2, pic * 0.7), 2.5);
+  };
+  /** A vertical sidebar: (with the address bar) navigation and the address field, then pinned tiles and tab rows. */
+  const sidebar = (x: number, top: number, bottom: number, zen: boolean): void => {
+    const w = 38;
+    let y = top + 2;
+    if (zen) {
+      rect('sp-art-mark', x + 2, y + 2, 3.5, 1.2, 0.6);
+      rect('sp-art-mark', x + 8, y + 2, 3.5, 1.2, 0.6);
+      y += 6;
+      rect('sp-art-pill', x, y, w, 9, 4.5);
+      rect('sp-art-fav', x + 4, y + 3, 3, 3, 1);
+      rect('sp-art-line', x + 10, y + 3.75, 18, 1.5, 0.75);
+      y += 13;
+    }
+    for (let i = 0; i < 3; i++) rect('sp-art-island', x + i * 13, y, 11, 9, 3);
+    for (let i = 0; i < 3; i++) rect('sp-art-fav', x + i * 13 + 3.5, y + 2.5, 4, 4, 1);
+    y += 14;
+    for (let i = 0; y + 9 <= bottom; i++, y += 11) {
+      if (i === 1) rect('sp-art-island is-on', x, y, w, 9, 3);
+      rect('sp-art-fav', x + 3, y + 2.5, 4, 4, 1);
+      rect('sp-art-line', x + 10, y + 3.75, i % 2 ? 20 : 24, 1.5, 0.75);
+    }
+  };
+
   const edge = c.tabBarVisible ? tabBarEdge(c.tabLayout) : null;
   const addressTop = c.addressBarVisible && c.addressBarPosition === 'top';
   const addressBottom = c.addressBarVisible && c.addressBarPosition === 'bottom';
-  // The rows at the top, then the rows along the bottom, each 8.5 units of the 36 inside the frame.
+  const side = edge === 'left' || edge === 'right';
+  // --- zen sidebar --- a vertical layout's sidebar holds the address bar, and the page runs the full height.
+  const zen = side && c.addressBarVisible;
   type Row = 'toolbar' | 'tabs' | 'single' | 'title';
   const top: Row[] = [];
   const bottom: Row[] = [];
@@ -169,47 +252,36 @@ function layoutArt(config: TabLayout | LayoutConfig): SVGSVGElement {
     if (c.tabLayout === 'single-row' && addressTop) top.push('single');
     else if (c.tabLayout === 'horizontal' && addressTop) top.push('toolbar', 'tabs');
     else top.push('tabs', ...(addressTop ? ['toolbar' as Row] : []));
-  } else if ((edge === 'left' || edge === 'right') && c.addressBarVisible) {
-    // --- zen sidebar --- the address bar is in the sidebar and the page runs the full height.
+  } else if (zen) {
+    top.push('title');
   } else if (addressTop) {
     top.push('toolbar');
   } else {
     top.push('title');
   }
   if (edge === 'bottom') bottom.push('tabs');
-  if (addressBottom && edge !== 'left' && edge !== 'right') bottom.push('toolbar'); // --- zen sidebar --- a sidebar holds it
-  let y = 5;
-  for (const row of top) {
-    if (row === 'toolbar') toolbar(y); else if (row === 'tabs') tabs(5, y + 0.5, 3, 14); else if (row === 'single') singleRow(y); else titleRow(y);
-    y += 8.5;
-  }
-  let floor = 41;
-  for (const row of bottom.reverse()) {
-    floor -= 8.5;
-    if (row === 'toolbar') toolbar(floor + 3); else tabs(5, floor + 3.5, 3, 14);
-  }
-  const pageTop = y;
-  const pageBottom = floor;
+  if (addressBottom && !side) bottom.push('toolbar');
+  const draw = (row: Row, y: number, first: boolean): void => {
+    const right = first ? W - 30 : W - 5;
+    if (first) captions(y);
+    if (row === 'toolbar') toolbar(y, right);
+    else if (row === 'tabs') tabRow(5, y, right);
+    else if (row === 'single') singleRow(y, right);
+  };
+  let y = 2;
+  top.forEach((row, i) => { draw(row, y, i === 0); y += row === 'title' ? 11 : ROW; });
+  let floor = H - 2;
+  for (const row of [...bottom].reverse()) { floor -= ROW; draw(row, floor, false); }
+  const pageTop = y + 1;
+  const pageBottom = floor - 2;
   let left = 5;
-  let right = 67;
-  if (edge === 'left' || edge === 'right') {
-    const x = edge === 'left' ? 5 : 52;
-    // --- zen sidebar --- the window buttons, navigation and the address field top the column.
-    const zen = c.addressBarVisible;
-    if (zen) {
-      for (let i = 0; i < 3; i++) rect('sp-art-dot', x + 7 + i * 3, pageTop + 0.5, 2, 2, 1);
-      rect('sp-art-dot', x, pageTop + 4, 2.5, 2.5, 1.25);
-      rect('sp-art-dot', x + 3.5, pageTop + 4, 2.5, 2.5, 1.25);
-      rect('sp-art-pill', x, pageTop + 8, 15, 4.5, 2.25);
-    }
-    const listTop = zen ? pageTop + 15 : pageTop;
-    for (let i = 0; i < 4; i++) {
-      const rowY = listTop + i * 6.5;
-      if (rowY + 4.5 <= pageBottom) rect(i === 0 ? 'sp-art-tab is-on' : 'sp-art-tab', x, rowY, 15, 4.5, 1.5);
-    }
-    if (edge === 'left') left = 23; else right = 49;
+  let right = W - 5;
+  if (side) {
+    const width = 38;
+    if (edge === 'left') { sidebar(5, pageTop - 1, pageBottom, zen); left = 5 + width + 4; }
+    else { sidebar(W - 5 - width, pageTop - 1, pageBottom, zen); right = W - 5 - width - 4; }
   }
-  rect('sp-art-page', left, pageTop, Math.max(right - left, 1), Math.max(pageBottom - pageTop, 1), 2.5);
+  pageArea(left, pageTop, right - left, pageBottom - pageTop);
   return svg;
 }
 
@@ -293,7 +365,20 @@ export function startSettingsPage(root: HTMLElement): void {
   empty.hidden = true;
   const emptyText = el('p');
   empty.append(icon('search', { size: 24 }), emptyText);
-  column.append(banner);
+  // The nudge at the top (Simple and All, never in search results or on a sub-page), as Zen does it:
+  // one line and one button, only while Bowser is known not to be the default browser. The Default
+  // browser row stays the control that search finds.
+  const hero = el('section', 'sp-hero');
+  hero.setAttribute('aria-labelledby', 'sp-hero-title');
+  const heroTitle = el('p', 'sp-hero-title');
+  heroTitle.id = 'sp-hero-title';
+  heroTitle.textContent = 'Psst, Bowser isn\u2019t your default.';
+  const heroAction = textButton('Make default', () => cmd({ a: 'setdefault' }), { primary: true, aria: 'Make Bowser the default browser' });
+  heroAction.classList.add('sp-hero-action');
+  hero.append(heroTitle, heroAction);
+  const paintHero = (state: SettingsSnapshot['defaultBrowser']): void => { hero.hidden = state !== 'no'; };
+  paintHero('unknown');
+  column.append(banner, hero);
   main.append(column);
 
   const count = el('p', 'sp-sr');
@@ -353,7 +438,7 @@ export function startSettingsPage(root: HTMLElement): void {
     area.dataset.area = spec.key;
     const heading = el('h2', 'sp-h');
     heading.id = `sp-h-${spec.key}`;
-    heading.textContent = spec.title;
+    heading.append(glyphTile(NAV_ICONS[spec.key], 'sp-h-tile', 18), document.createTextNode(spec.title));
     area.setAttribute('aria-labelledby', heading.id);
     area.append(heading);
     if (spec.lead !== '') {
@@ -1478,7 +1563,9 @@ export function startSettingsPage(root: HTMLElement): void {
     if (section) root.dataset.section = section;
     const h = el('h3', 'sp-group-h');
     h.id = `sp-card-${++cardSeq}`;
-    h.textContent = title;
+    const glyph = GROUP_ICONS[key] ?? (section ? NAV_ICONS[section] : undefined);
+    if (glyph) h.append(glyphTile(glyph, 'sp-g-tile', 14));
+    h.append(document.createTextNode(title));
     const node = el('div', 'sp-card');
     node.setAttribute('role', 'group');
     node.setAttribute('aria-labelledby', h.id);
@@ -1843,6 +1930,7 @@ export function startSettingsPage(root: HTMLElement): void {
     else spoilerFeedRow.root.removeAttribute('data-tip');
     if (engineValue.dataset.source !== 'address') engineValue.textContent = searchEngineLabel(s.searchEngine);
     const isDefault = s.defaultBrowser === 'yes';
+    paintHero(s.defaultBrowser);
     defaultBrowserButton.disabled = isDefault;
     defaultBrowserButton.lastChild!.textContent = isDefault ? 'Default' : 'Make default';
     defaultBrowserButton.setAttribute('aria-label', isDefault ? 'Bowser is the default browser' : 'Make Bowser the default browser');

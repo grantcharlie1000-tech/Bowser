@@ -284,7 +284,8 @@ impl Preset {
             Self::Classic => LayoutConfig { tab_layout: TabLayout::TabsTop, ..base },
             Self::VerticalLeft => LayoutConfig { tab_layout: TabLayout::Vertical, side_panel_position: SidePanelPosition::Left, ..base },
             Self::VerticalRight => LayoutConfig { tab_layout: TabLayout::VerticalRight, side_panel_position: SidePanelPosition::Right, ..base },
-            Self::Bottom => LayoutConfig { tab_layout: TabLayout::TabsBottom, ..base },
+            // Tabs and the address bar both along the bottom edge.
+            Self::Bottom => LayoutConfig { tab_layout: TabLayout::TabsBottom, address_bar_position: BarPosition::Bottom, ..base },
         }
     }
 
@@ -385,5 +386,6 @@ mod tests {
         assert_eq!(settings.sleep_after_secs, 999, "a preset touches layout keys only");
         assert_eq!(Preset::Simple.config().status_bar, StatusBar::Hidden);
         assert_eq!(Preset::Bottom.config().tab_layout, TabLayout::TabsBottom);
+        assert_eq!(Preset::Bottom.config().address_bar_position, BarPosition::Bottom);
     }
 }

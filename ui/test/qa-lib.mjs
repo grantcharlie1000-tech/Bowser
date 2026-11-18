@@ -146,6 +146,21 @@ const HELPERS = `(() => {
     for (let n = el; n && n.nodeType === 1; n = n.parentElement) { const s = getComputedStyle(n); if (s.display === 'none' || s.visibility === 'hidden' || s.visibility === 'collapse') return false; if (parseFloat(s.opacity) < 0.02) return false; }
     return true;
   };
+  // Whether any part of 'el' shows through every ancestor that clips its overflow (hidden, auto,
+  // scroll, clip). A control scrolled out of a scroll container still has a box and passes
+  // 'visible', but nobody can see or click it there, so the target-size check must not measure it
+  // against what is on screen (it once paired a switch scrolled above the settings page's content
+  // with the fixed header's Simple / All switch). Used by probeTargets only.
+  const unclipped = (el) => {
+    const r = el.getBoundingClientRect();
+    for (let n = el.parentElement; n && n.nodeType === 1 && n !== document.documentElement; n = n.parentElement) {
+      const s = getComputedStyle(n);
+      if (!/(hidden|auto|scroll|clip)/.test(s.overflowX + ' ' + s.overflowY)) continue;
+      const q = n.getBoundingClientRect();
+      if (r.right <= q.left || r.left >= q.right || r.bottom <= q.top || r.top >= q.bottom) return false;
+    }
+    return true;
+  };
   const opacity = (el) => { let o = 1; for (let n = el; n && n.nodeType === 1; n = n.parentElement) o *= parseFloat(getComputedStyle(n).opacity); return o; };
   const sel = (el) => {
     if (!el || el.nodeType !== 1) return String(el);
@@ -177,7 +192,7 @@ const HELPERS = `(() => {
     return { color: acc };
   };
   const INTERACTIVE = 'button, a[href], input:not([type=hidden]), select, textarea, summary, [role=button], [role=link], [role=menuitem], [role=menuitemcheckbox], [role=menuitemradio], [role=switch], [role=tab], [role=checkbox], [role=radio], [role=option], [role=slider], [role=combobox], [role=treeitem], [tabindex]:not([tabindex="-1"])';
-  window.__qaH = { rgba, over, ratio, visible, opacity, sel, background, INTERACTIVE };
+  window.__qaH = { rgba, over, ratio, visible, unclipped, opacity, sel, background, INTERACTIVE };
 })();`;
 
 /** Duplicate ids among all elements. */
@@ -256,10 +271,13 @@ function probeContrast() {
   return out;
 }
 
-/** WCAG 2.2 2.5.8 target size (24x24 CSS px) with the spacing exception. Inline links are exempt. */
+/**
+ * WCAG 2.2 2.5.8 target size (24x24 CSS px) with the spacing exception. Inline links are exempt.
+ * Only targets someone can reach are measured: a control scrolled out of its scroll container is not.
+ */
 function probeTargets() {
   const H = window.__qaH;
-  const targets = Array.from(document.querySelectorAll(H.INTERACTIVE)).filter((el) => H.visible(el) && !el.matches(':disabled') && el.getAttribute('aria-disabled') !== 'true' && !el.matches('input[type=text], input[type=search], input:not([type]), textarea'));
+  const targets = Array.from(document.querySelectorAll(H.INTERACTIVE)).filter((el) => H.visible(el) && H.unclipped(el) && !el.matches(':disabled') && el.getAttribute('aria-disabled') !== 'true' && !el.matches('input[type=text], input[type=search], input:not([type]), textarea'));
   // Nested interactive elements: measure the outermost.
   const outer = targets.filter((el) => !targets.some((o) => o !== el && o.contains(el) && !o.matches('[role=listbox], [role=menu], [role=tablist], [role=tree], [role=grid]') && o.matches('button, a[href], [role=button], [role=link], [role=menuitem], [role=tab], [role=option], [role=treeitem]')));
   const boxes = outer.map((el) => ({ el, r: el.getBoundingClientRect() }));
