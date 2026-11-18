@@ -1096,8 +1096,17 @@
   flex-direction: column;
   gap: var(--bw-space-3);
   min-height: 0;
-  padding: 0 var(--bw-space-3) var(--bw-space-3);
+  padding: 0 var(--bw-space-3);
   overflow-y: auto;
+}
+
+/* The space between the last card and the footer's line, as content rather than the scroller's bottom padding
+   (which a scrolling flex column can drop): with the column's gap it is exactly the footer's top padding, so
+   the line sits centred between the last card and Reset to default. */
+.tbp-body::after {
+  content: "";
+  flex: none;
+  height: 0;
 }
 
 .tbp-switch {
