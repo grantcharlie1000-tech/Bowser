@@ -937,7 +937,10 @@ SFW.lexicon = (function () {
   const SNAP_FORMAT = 1;
   let snapText = null;
   let fromSnap = false; // the cached compiled lexicon came from the snapshot (tests, diagnostics)
-  const compileMeta = new WeakMap(); // compiled object -> { order: terms in add() order, rr: Set of terms in trieRR }
+  // the last compile()'s bookkeeping for encodeSnapshot: { lex, order: terms in add() order, rr: Set of terms in trieRR }.
+  // A plain variable, not a WeakMap: nothing here may touch WeakMap / WeakSet while the bundle loads (a page that broke
+  // them before the engine must still get the runtime's fail-closed path, not a bundle that throws).
+  let lastMeta = null;
 
   function setSnapshot(text) {
     snapText = typeof text === "string" ? text : null;
@@ -969,7 +972,8 @@ SFW.lexicon = (function () {
     try { lex = compile(); } finally { snapText = savedSnap; }
     compiledCache = saved || lex;
     if (extCount) throw new Error("snapshot of an extended lexicon");
-    const meta = compileMeta.get(lex);
+    const meta = lastMeta && lastMeta.lex === lex ? lastMeta : null;
+    if (!meta) throw new Error("snapshot: compile bookkeeping missing");
     // Row: [shape, c, offs (0 for [0], else "a,b"), flags (bit 0: in trieRR; bit i+1: i-th boolean of the shape), ...rest].
     // A shape holds the key order, cat, kind, which keys are booleans and which are "rest" (kills -> kill table index, near).
     const shapes = [], shapeIx = new Map(), kills = [], killIx = new Map(), terms = [];
@@ -1310,7 +1314,7 @@ SFW.lexicon = (function () {
       anchorTypo: anchorsTypo.length ? anchorRegex(anchorsTypo) : /(?!)/,
       hasRR: anchorsRR.length > 0,
     };
-    compileMeta.set(compiledCache, { order, rr });
+    lastMeta = { lex: compiledCache, order, rr };
     return compiledCache;
   }
 
@@ -4066,7 +4070,10 @@ SFW.runtime = (function () {
     const unitQ = new Set(); // resolved units waiting for a decision
     const freshUnits = new Set(); // units in unitQ whose content changed (new / edited text), not only re-checked
     const structOnly = new Set(); // queued nodes touched only as the parent of added / removed children (touchStruct)
-    const inertSeen = new WeakSet(); // elements that arrived inert and have had no record since (handleRecords, inert())
+    // elements that arrived inert and have had no record since (handleRecords, inert()). null when the page broke WeakSet:
+    // then nothing is skipped (an optimisation must never stop the engine from starting)
+    let inertSeen = null;
+    try { inertSeen = typeof WeakSet === "function" ? new WeakSet() : null; } catch (e) { inertSeen = null; }
     let noteFresh = true;
     const marks = new Set(); // elements carrying data-sfw-defer (region cover for work that did not fit in the budget)
     const longJobs = new Map(); // unit -> windowed classification in progress
@@ -4824,6 +4831,7 @@ SFW.runtime = (function () {
       return true;
     }
     function inertList(list, added) {
+      if (!inertSeen) return false;
       for (let k = 0; k < list.length; k++) {
         const n = list[k];
         if (added) { if (!inert(n)) return false; inertSeen.add(n); }
@@ -4837,7 +4845,7 @@ SFW.runtime = (function () {
       for (let i = 0; i < records.length; i++) {
         const r = records[i];
         const t = r.target;
-        inertSeen.delete(t); // anything recorded on an element ends its inert status for good
+        if (inertSeen) inertSeen.delete(t); // anything recorded on an element ends its inert status for good
         if (r.type === "attributes") {
           const a = r.attributeName;
           if (a === "data-sfw") { repairSet.add(t); continue; }

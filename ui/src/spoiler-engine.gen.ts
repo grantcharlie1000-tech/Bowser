@@ -937,7 +937,10 @@ SFW.lexicon = (function () {
   const SNAP_FORMAT = 1;
   let snapText = null;
   let fromSnap = false; // the cached compiled lexicon came from the snapshot (tests, diagnostics)
-  const compileMeta = new WeakMap(); // compiled object -> { order: terms in add() order, rr: Set of terms in trieRR }
+  // the last compile()'s bookkeeping for encodeSnapshot: { lex, order: terms in add() order, rr: Set of terms in trieRR }.
+  // A plain variable, not a WeakMap: nothing here may touch WeakMap / WeakSet while the bundle loads (a page that broke
+  // them before the engine must still get the runtime's fail-closed path, not a bundle that throws).
+  let lastMeta = null;
 
   function setSnapshot(text) {
     snapText = typeof text === "string" ? text : null;
@@ -969,7 +972,8 @@ SFW.lexicon = (function () {
     try { lex = compile(); } finally { snapText = savedSnap; }
     compiledCache = saved || lex;
     if (extCount) throw new Error("snapshot of an extended lexicon");
-    const meta = compileMeta.get(lex);
+    const meta = lastMeta && lastMeta.lex === lex ? lastMeta : null;
+    if (!meta) throw new Error("snapshot: compile bookkeeping missing");
     // Row: [shape, c, offs (0 for [0], else "a,b"), flags (bit 0: in trieRR; bit i+1: i-th boolean of the shape), ...rest].
     // A shape holds the key order, cat, kind, which keys are booleans and which are "rest" (kills -> kill table index, near).
     const shapes = [], shapeIx = new Map(), kills = [], killIx = new Map(), terms = [];
@@ -1310,7 +1314,7 @@ SFW.lexicon = (function () {
       anchorTypo: anchorsTypo.length ? anchorRegex(anchorsTypo) : /(?!)/,
       hasRR: anchorsRR.length > 0,
     };
-    compileMeta.set(compiledCache, { order, rr });
+    lastMeta = { lex: compiledCache, order, rr };
     return compiledCache;
   }
 
