@@ -1543,6 +1543,9 @@ impl BlockerState {
             if let Some(ads) = self.matcher.cosmetic_css_for_host(page_host) {
                 css.push_str(&ads);
             }
+            if youtube::is_youtube_host(page_host) {
+                css.push_str(youtube::CSS);
+            }
             if x_promoted::is_x_host(page_host) {
                 css.push_str(x_promoted::CSS);
             }
@@ -2815,6 +2818,8 @@ mod tests {
             // The player, its API and everything it needs to keep playing.
             YOUTUBE_WATCH,
             YOUTUBE_PLAYER,
+            "https://www.youtube.com/youtubei/v1/player",
+            "https://www.youtube.com/youtubei/v1/get_watch?prettyPrint=false",
             "https://www.youtube.com/youtubei/v1/next?prettyPrint=false",
             "https://www.youtube.com/youtubei/v1/player/heartbeat?alt=json",
             "https://www.youtube.com/youtubei/v1/att/get?prettyPrint=false",
@@ -2890,6 +2895,17 @@ mod tests {
             .expect("YouTube cosmetic rules");
         assert!(css.contains("#masthead-ad{display:none!important}"));
         assert!(css.contains("#player-ads{display:none!important}"));
+        // The feed, search and sidebar ad cards, which the list grammar cannot name.
+        assert!(css.contains(youtube::CSS));
+        for host in ["m.youtube.com", "www.youtube-nocookie.com"] {
+            assert!(builtin().cosmetic_css_for_host(host).is_some_and(|css| css.contains(youtube::CSS)), "{host}");
+        }
+        // Not elsewhere, and not where the site is not at the "trackers and ads" level.
+        assert!(builtin().cosmetic_css_for_host("news.example").is_none_or(|css| !css.contains(youtube::CSS)));
+        let mut s = builtin();
+        assert_eq!(s.toggle_site(YOUTUBE), SiteToggle::Allowed);
+        assert!(s.cosmetic_css_for_host(YOUTUBE).is_none_or(|css| !css.contains(youtube::CSS)));
+        assert!(s.cosmetic_css_for_host_private(YOUTUBE).is_some_and(|css| css.contains(youtube::CSS)));
     }
 
     #[test]
@@ -2913,6 +2929,13 @@ mod tests {
             s.player_ads_rewrite_gated(YOUTUBE_WATCH, "news.example", false, true),
             Some(WatchPage)
         );
+        // In-app navigation to a video: the bare player endpoint and get_watch.
+        for url in [
+            "https://www.youtube.com/youtubei/v1/player",
+            "https://www.youtube.com/youtubei/v1/get_watch?prettyPrint=false",
+        ] {
+            assert_eq!(s.player_ads_rewrite_gated(url, YOUTUBE, false, true), Some(Json), "{url}");
+        }
         let elsewhere = "https://news.example/youtubei/v1/player";
         assert_eq!(
             s.player_ads_rewrite_gated(elsewhere, YOUTUBE, false, true),

@@ -4,7 +4,8 @@
 // reports which timeline cells are display:none.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
+import { createServer } from 'node:http';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -122,4 +123,62 @@ test('removing the cosmetic style stops the script and unmarks every cell', { sk
   assert.equal(r.afterOff.late, false);
   assert.equal(r.marked, 0);
   assert.ok(!r.flag);
+});
+
+// The timeline data path in a real browser: X's GraphQL responses come from a local server and are read through
+// XMLHttpRequest (text and json, one request already sent before the script ran) and fetch (text and json).
+test('promoted entries are dropped from GraphQL timeline responses read through XHR and fetch', { skip }, async () => {
+  const entry = (entryId, promoted) => ({ entryId, sortIndex: '1', content: { entryType: 'TimelineTimelineItem', itemContent: { itemType: 'TimelineTweet', tweet_results: { result: { rest_id: entryId } }, ...(promoted ? { promotedMetadata: { impressionId: 'x' } } : {}) } } });
+  const timeline = JSON.stringify({ data: { home: { home_timeline_urt: { instructions: [{ type: 'TimelineAddEntries', entries: [
+    entry('tweet-1'), entry('promoted-tweet-2-ab', true), entry('tweet-3', true), entry('tweet-4'),
+  ] }] } } } });
+  const page = `<!doctype html><html><body><div id="tl"></div><script>
+    var out = { errors: [] };
+    var ids = function (d) { return d.data.home.home_timeline_urt.instructions[0].entries.map(function (e) { return e.entryId; }).join(','); };
+    var api = '/i/api/graphql/abc/HomeTimeline';
+    function xhr(type) { return new Promise(function (resolve) { var r = new XMLHttpRequest(); r.open('GET', api); r.responseType = type; r.onload = function () { resolve(type === 'json' ? r.response : JSON.parse(r.responseText)); }; r.send(); }); }
+    // Sent before the script runs, like a request X starts before ContentLoading's script lands.
+    var early = new XMLHttpRequest(); early.open('GET', api); early.send();
+    try {
+      var s = document.createElement('style'); s.id = 'bowser-cosmetic'; s.textContent = ${JSON.stringify(CSS)}; document.documentElement.appendChild(s);
+      ${SCRIPT.trim()};
+      Promise.all([
+        new Promise(function (r) { if (early.readyState === 4) r(JSON.parse(early.responseText)); else early.onload = function () { r(JSON.parse(early.responseText)); }; }),
+        xhr(''), xhr('json'),
+        fetch(api).then(function (r) { return r.json(); }),
+        fetch(api).then(function (r) { return r.text(); }).then(JSON.parse),
+        fetch('/other.json').then(function (r) { return r.json(); }),
+      ]).then(function (all) { out.ids = all.map(ids); out.removed = window.__bowserXPromotedNet.stats.removed; finish(); },
+        function (e) { out.errors.push(String(e)); finish(); });
+    } catch (e) { out.errors.push(String(e && e.stack || e)); finish(); }
+    function finish() { var m = document.createElement('meta'); m.name = 'out'; m.content = encodeURIComponent(JSON.stringify(out)); document.head.appendChild(m); }
+  </script></body></html>`;
+  const server = createServer((req, res) => {
+    res.writeHead(200, { 'content-type': req.url === '/' ? 'text/html' : 'application/json' });
+    res.end(req.url === '/' ? page : timeline);
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const tmp = mkdtempSync(join(tmpdir(), 'bowser-x-test-'));
+  try {
+    const profile = join(tmp, 'profile');
+    mkdirSync(profile);
+    // Asynchronous: this process serves the page while the browser loads it.
+    const child = spawn(EDGE, [
+      '--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check',
+      `--user-data-dir=${profile}`, '--virtual-time-budget=6000', '--dump-dom', `http://127.0.0.1:${server.address().port}/`,
+    ]);
+    let stdout = '';
+    child.stdout.on('data', (chunk) => { stdout += chunk; });
+    await new Promise((resolve) => child.on('close', resolve));
+    const match = /name="out" content="([^"]*)"/.exec(stdout);
+    assert.ok(match, 'no report');
+    const report = JSON.parse(decodeURIComponent(match[1]));
+    assert.deepEqual(report.errors, []);
+    const kept = 'tweet-1,tweet-4';
+    assert.deepEqual(report.ids, [kept, kept, kept, kept, kept, 'tweet-1,promoted-tweet-2-ab,tweet-3,tweet-4']);
+    assert.equal(report.removed, 10);
+  } finally {
+    server.close();
+    rmSync(tmp, { recursive: true, force: true });
+  }
 });

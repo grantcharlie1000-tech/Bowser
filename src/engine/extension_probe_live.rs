@@ -58,6 +58,20 @@ fn pump_until(timeout: Duration, ready: impl FnMut() -> bool) -> bool {
     super::native_probe_pump::until(timeout,ready)
 }
 
+/// The session's WebView2 browser process ID and a wait-only handle to it. The handle is `None`
+/// when the process cannot be opened, so the caller still has the native exited event to go on.
+fn browser_process(session: &Session) -> (u32, Option<windows::Win32::Foundation::HANDLE>) {
+    use windows::Win32::System::Threading::{OpenProcess, PROCESS_SYNCHRONIZE};
+    let mut pid = 0;
+    if let Some(view) = session.engine.probe_document_webview(TabId(1)) { let _ = unsafe { view.BrowserProcessId(&mut pid) }; }
+    let handle = (pid != 0 && pid != std::process::id()).then(|| unsafe { OpenProcess(PROCESS_SYNCHRONIZE, false, pid) }.ok()).flatten();
+    (pid, handle)
+}
+
+fn process_exited(handle: &windows::Win32::Foundation::HANDLE) -> bool {
+    unsafe { windows::Win32::System::Threading::WaitForSingleObject(*handle, 0) == windows::Win32::Foundation::WAIT_OBJECT_0 }
+}
+
 /// Serves one HTML page and records every beacon request path.
 fn serve_loopback(listener: TcpListener, beacons: Arc<Mutex<Vec<String>>>, stop: Arc<AtomicBool>) {
     listener.set_nonblocking(true).unwrap();
@@ -1499,9 +1513,21 @@ fn live_probe_fail_closed_environment() {
         assert!(initial.wait_for_add(&profile, &id).1.is_none()); assert!(initial.wait_for_worker_reply(&loopback));
         // Microsoft requires browser-process exit before reopening a folder with a changed
         // AreBrowserExtensionsEnabled value. Object drop alone is not that native boundary.
+        // The exited event is raised only after every runtime process in the group (including
+        // the extension service worker's) has gone, which can take well over 30 s on a CI
+        // runner. Also hold the browser process itself, so its real exit is observed directly
+        // and a failure says which boundary was never reached.
+        let browser = browser_process(&initial);
         let (environment, token, exited) = initial.engine.probe_browser_exit_observer().unwrap();
-        initial.close(); drop(loopback);
-        assert!(pump_until(Duration::from_secs(30), || exited.get()), "consented profile browser did not actually exit before changing environment options");
+        let closing = Instant::now(); initial.close(); drop(loopback);
+        let mut process_exit = None;
+        let settled = pump_until(Duration::from_secs(120), || {
+            if process_exit.is_none() && browser.1.as_ref().is_some_and(process_exited) { process_exit = Some(closing.elapsed()); }
+            exited.get() || process_exit.is_some_and(|at| closing.elapsed() >= at + Duration::from_secs(5))
+        });
+        println!("FAIL_CLOSED_ENV damage={damage} browser_pid={} exit_event={} process_exit_after={process_exit:?} waited={:?}", browser.0, exited.get(), closing.elapsed());
+        assert!(settled, "consented profile browser did not actually exit before changing environment options (browser_pid={}, process_exit_after={process_exit:?}, exit_event={})", browser.0, exited.get());
+        if let Some(handle) = browser.1 { unsafe { let _ = windows::Win32::Foundation::CloseHandle(handle); } }
         unsafe { environment.remove_BrowserProcessExited(token).unwrap(); } drop(environment);
         let map = profile.join("extension_ids.txt"); let records = profile.join("extensions.txt");
         match damage {

@@ -8053,8 +8053,14 @@ mod tests {
             fetch_enable_params(responses),
             concat!(
                 r#"{"patterns":["#,
+                r#"{"urlPattern":"*://*.youtube.com/youtubei/v1/player","requestStage":"Response"},"#,
                 r#"{"urlPattern":"*://*.youtube.com/youtubei/v1/player\\?*","requestStage":"Response"},"#,
+                r#"{"urlPattern":"*://*.youtube.com/youtubei/v1/get_watch","requestStage":"Response"},"#,
+                r#"{"urlPattern":"*://*.youtube.com/youtubei/v1/get_watch\\?*","requestStage":"Response"},"#,
+                r#"{"urlPattern":"*://*.youtube-nocookie.com/youtubei/v1/player","requestStage":"Response"},"#,
                 r#"{"urlPattern":"*://*.youtube-nocookie.com/youtubei/v1/player\\?*","requestStage":"Response"},"#,
+                r#"{"urlPattern":"*://*.youtube-nocookie.com/youtubei/v1/get_watch","requestStage":"Response"},"#,
+                r#"{"urlPattern":"*://*.youtube-nocookie.com/youtubei/v1/get_watch\\?*","requestStage":"Response"},"#,
                 r#"{"urlPattern":"*://*.youtube.com/watch\\?*","resourceType":"Document","requestStage":"Response"}]}"#,
             )
         );

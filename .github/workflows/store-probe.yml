@@ -54,11 +54,13 @@ jobs:
           python ./benchmarks/test-native-extension-address-source.py
           if ($LASTEXITCODE -ne 0) { throw 'Resource address source contracts failed.' }
       - name: Install official Rust toolchain
-        run: rustup toolchain install stable --profile minimal
+        # Pinned: Cargo 1.100 moved unit-test executables out of target/debug/deps, where
+        # this workflow and the probe scripts' identity guards expect them.
+        run: rustup toolchain install 1.99.1 --profile minimal
       - name: Probe current MV3 listings using detected WebView2 runtime
         run: |
           $env:BOWSER_EXTENSION_TRACE = '1'
-          cargo +stable test --locked --lib live_current_mv3_store_downloads -- --ignored --nocapture --test-threads=1 2>&1 | Tee-Object store-download-probe.log
+          cargo +1.99.1 test --locked --lib live_current_mv3_store_downloads -- --ignored --nocapture --test-threads=1 2>&1 | Tee-Object store-download-probe.log
           if ($LASTEXITCODE -ne 0) { throw 'Store diagnostic test failed.' }
       - name: Load real signed packages in disposable extension-enabled profiles
         id: real_packages
@@ -101,7 +103,7 @@ jobs:
       - name: Measure actual native zero versus four extension profiles without benchmark mode
         if: ${{ !cancelled() && steps.real_packages.outcome == 'success' && env.BOWSER_EXTENSION_MEASURE_ROOT != '' }}
         run: |
-          cargo +stable build --release --locked --bin bowser --features html-chrome-default
+          cargo +1.99.1 build --release --locked --bin bowser --features html-chrome-default
           if ($LASTEXITCODE -ne 0) { throw 'Release executable for actual extension measurement failed to build.' }
           ./benchmarks/scripts/measure-native-extensions.ps1 -ProfilesRoot $env:BOWSER_EXTENSION_MEASURE_ROOT
       - name: Remove only the disposable package measurement copies
@@ -151,11 +153,13 @@ jobs:
         with:
           persist-credentials: false
       - name: Install official Rust toolchain
-        run: rustup toolchain install stable --profile minimal
+        # Pinned: Cargo 1.100 moved unit-test executables out of target/debug/deps, where
+        # this workflow and the probe scripts' identity guards expect them.
+        run: rustup toolchain install 1.99.1 --profile minimal
       - name: Build independent native safety executable without marketplace or resource dependencies
         id: native_build
         run: |
-          cargo +stable test --locked --lib --no-run
+          cargo +1.99.1 test --locked --lib --no-run
           if ($LASTEXITCODE -ne 0) { throw 'Native safety executable failed to build.' }
       - name: Record read-only runner prerequisites using the native helper host
         id: native_fixture_policy
@@ -402,33 +406,33 @@ jobs:
         id: experimental_menu_build
         if: ${{ !cancelled() && steps.native_build.outcome == 'success' }}
         run: |
-          cargo +stable test --locked --lib --features html-chrome-default,experimental-engine-context-menu engine::webview2::engine_menu::tests -- --nocapture --test-threads=1 2>&1 | Tee-Object store-real-app-menu-unit.log
+          cargo +1.99.1 test --locked --lib --features html-chrome-default,experimental-engine-context-menu engine::webview2::engine_menu::tests -- --nocapture --test-threads=1 2>&1 | Tee-Object store-real-app-menu-unit.log
           if ($LASTEXITCODE -ne 0) { throw 'Experimental engine-menu model failed to compile or test.' }
-          cargo +stable test --locked --lib --features html-chrome-default,experimental-engine-context-menu engine::native_probe_pump::tests -- --nocapture --test-threads=1 2>&1 | Tee-Object -Append store-real-app-menu-unit.log
+          cargo +1.99.1 test --locked --lib --features html-chrome-default,experimental-engine-context-menu engine::native_probe_pump::tests -- --nocapture --test-threads=1 2>&1 | Tee-Object -Append store-real-app-menu-unit.log
           if ($LASTEXITCODE -ne 0) { throw 'Native probe deadline and callback checkpoint regressions failed.' }
           powershell -NoProfile -File benchmarks/scripts/test-native-menu-membership.ps1
           if ($LASTEXITCODE -ne 0) { throw 'Private native-menu membership adversarial regressions failed.' }
-          cargo +stable test --locked --lib --features html-chrome-default,experimental-engine-context-menu engine::native_menu_membership::tests -- --nocapture --test-threads=1 2>&1 | Tee-Object -Append store-real-app-menu-unit.log
+          cargo +1.99.1 test --locked --lib --features html-chrome-default,experimental-engine-context-menu engine::native_menu_membership::tests -- --nocapture --test-threads=1 2>&1 | Tee-Object -Append store-real-app-menu-unit.log
           if ($LASTEXITCODE -ne 0) { throw 'Private native-menu membership request framing regressions failed.' }
-          cargo +stable test --locked --lib --features html-chrome-default,experimental-engine-context-menu engine::webview2::menu_inventory::tests -- --nocapture --test-threads=1 2>&1 | Tee-Object -Append store-real-app-menu-unit.log
+          cargo +1.99.1 test --locked --lib --features html-chrome-default,experimental-engine-context-menu engine::webview2::menu_inventory::tests -- --nocapture --test-threads=1 2>&1 | Tee-Object -Append store-real-app-menu-unit.log
           if ($LASTEXITCODE -ne 0) { throw 'Experimental strict native inventory tests failed.' }
-          cargo +stable test --locked --lib --features html-chrome-default,experimental-engine-context-menu engine::webview2::owned_context_menu::tests -- --nocapture --test-threads=1 2>&1 | Tee-Object -Append store-real-app-menu-unit.log
+          cargo +1.99.1 test --locked --lib --features html-chrome-default,experimental-engine-context-menu engine::webview2::owned_context_menu::tests -- --nocapture --test-threads=1 2>&1 | Tee-Object -Append store-real-app-menu-unit.log
           if ($LASTEXITCODE -ne 0) { throw 'Experimental owner/request fence tests failed.' }
-          cargo +stable test --locked --lib --features html-chrome-default,experimental-engine-context-menu the_main_window_private_messages_are_unique -- --nocapture --test-threads=1 2>&1 | Tee-Object -Append store-real-app-menu-unit.log
+          cargo +1.99.1 test --locked --lib --features html-chrome-default,experimental-engine-context-menu the_main_window_private_messages_are_unique -- --nocapture --test-threads=1 2>&1 | Tee-Object -Append store-real-app-menu-unit.log
           if ($LASTEXITCODE -ne 0) { throw 'Experimental main-window message collision guard failed.' }
-          cargo +stable test --locked --lib --features html-chrome-default,experimental-engine-context-menu the_main_window_timer_ids_are_unique_and_outside_hover_ranges -- --nocapture --test-threads=1 2>&1 | Tee-Object -Append store-real-app-menu-unit.log
+          cargo +1.99.1 test --locked --lib --features html-chrome-default,experimental-engine-context-menu the_main_window_timer_ids_are_unique_and_outside_hover_ranges -- --nocapture --test-threads=1 2>&1 | Tee-Object -Append store-real-app-menu-unit.log
           if ($LASTEXITCODE -ne 0) { throw 'Experimental main-window timer collision guard failed.' }
-          cargo +stable test --locked --lib --features html-chrome-default,experimental-engine-context-menu engine::app_host_menu_probe::live::host_probe_selection_uses_native_name_or_inserted_role_not_command_range -- --exact --nocapture --test-threads=1 2>&1 | Tee-Object -Append store-real-app-menu-unit.log
+          cargo +1.99.1 test --locked --lib --features html-chrome-default,experimental-engine-context-menu engine::app_host_menu_probe::live::host_probe_selection_uses_native_name_or_inserted_role_not_command_range -- --exact --nocapture --test-threads=1 2>&1 | Tee-Object -Append store-real-app-menu-unit.log
           if ($LASTEXITCODE -ne 0) { throw 'Separate host-lane read-only selection diagnostic failed.' }
-          cargo +stable test --locked --lib --features html-chrome-default,experimental-engine-context-menu engine::app_host_menu_probe::live::loopback_effect_ack_waits_for_fragmented_request -- --exact --nocapture --test-threads=1 2>&1 | Tee-Object -Append store-real-app-menu-unit.log
+          cargo +1.99.1 test --locked --lib --features html-chrome-default,experimental-engine-context-menu engine::app_host_menu_probe::live::loopback_effect_ack_waits_for_fragmented_request -- --exact --nocapture --test-threads=1 2>&1 | Tee-Object -Append store-real-app-menu-unit.log
           if ($LASTEXITCODE -ne 0) { throw 'Fragmented real TCP fixture acknowledgment regression failed.' }
-          cargo +stable test --locked --lib --features html-chrome-default,experimental-engine-context-menu engine::app_host_menu_probe::live::loopback_rejects_oversize_headers_without_recording_an_effect -- --exact --nocapture --test-threads=1 2>&1 | Tee-Object -Append store-real-app-menu-unit.log
+          cargo +1.99.1 test --locked --lib --features html-chrome-default,experimental-engine-context-menu engine::app_host_menu_probe::live::loopback_rejects_oversize_headers_without_recording_an_effect -- --exact --nocapture --test-threads=1 2>&1 | Tee-Object -Append store-real-app-menu-unit.log
           if ($LASTEXITCODE -ne 0) { throw 'Oversize real TCP fixture refusal regression failed.' }
-          cargo +stable test --locked --lib --features html-chrome-default,experimental-engine-context-menu engine::app_host_menu_probe::live::effect_failure_classification_never_includes_unknown_contents -- --exact --nocapture --test-threads=1 2>&1 | Tee-Object -Append store-real-app-menu-unit.log
+          cargo +1.99.1 test --locked --lib --features html-chrome-default,experimental-engine-context-menu engine::app_host_menu_probe::live::effect_failure_classification_never_includes_unknown_contents -- --exact --nocapture --test-threads=1 2>&1 | Tee-Object -Append store-real-app-menu-unit.log
           if ($LASTEXITCODE -ne 0) { throw 'Bounded source-effect failure classification regression failed.' }
-          cargo +stable test --locked --lib --features html-chrome-default,experimental-engine-context-menu engine::app_host_menu_probe::live::note_fixture_uses_existing_localhost_origin_without_relaxing_ip_refusal -- --exact --nocapture --test-threads=1 2>&1 | Tee-Object -Append store-real-app-menu-unit.log
+          cargo +1.99.1 test --locked --lib --features html-chrome-default,experimental-engine-context-menu engine::app_host_menu_probe::live::note_fixture_uses_existing_localhost_origin_without_relaxing_ip_refusal -- --exact --nocapture --test-threads=1 2>&1 | Tee-Object -Append store-real-app-menu-unit.log
           if ($LASTEXITCODE -ne 0) { throw 'Controlled localhost fixture and preserved IP-origin refusal regression failed.' }
-          cargo +stable test --locked --lib --features html-chrome-default,experimental-engine-context-menu engine::app_context_menu_probe::app_loopback_ -- --nocapture --test-threads=1 2>&1 | Tee-Object -Append store-real-app-menu-unit.log
+          cargo +1.99.1 test --locked --lib --features html-chrome-default,experimental-engine-context-menu engine::app_context_menu_probe::app_loopback_ -- --nocapture --test-threads=1 2>&1 | Tee-Object -Append store-real-app-menu-unit.log
           if ($LASTEXITCODE -ne 0) { throw 'Real App fixture delayed/fragmented TCP header regressions failed.' }
 
       - name: Probe default-off native engine menu in actual HTML Bowser App
@@ -436,7 +440,7 @@ jobs:
         run: |
           $env:BOWSER_EXTENSION_TRACE = '1'
           $env:BOWSER_APP_MENU_PROBE_CONSENT = 'probe-custom-context-menu'
-          cargo +stable test --locked --lib --features html-chrome-default,experimental-engine-context-menu engine::app_context_menu_probe::live_probe_real_app_context_menu -- --exact --ignored --nocapture --test-threads=1 2>&1 | Tee-Object store-real-app-context-menu.log
+          cargo +1.99.1 test --locked --lib --features html-chrome-default,experimental-engine-context-menu engine::app_context_menu_probe::live_probe_real_app_context_menu -- --exact --ignored --nocapture --test-threads=1 2>&1 | Tee-Object store-real-app-context-menu.log
           if ($LASTEXITCODE -ne 0) { throw 'Actual App native-menu cancellation/selection unavailable or failed; no activation.' }
       - name: Probe independent actual App in-modal same-URL Reload refusal
         if: ${{ !cancelled() && steps.experimental_menu_build.outcome == 'success' }}
@@ -444,7 +448,7 @@ jobs:
           $env:BOWSER_EXTENSION_TRACE = '1'
           $env:BOWSER_APP_MENU_RELOAD_PROBE_CONSENT = 'probe-custom-context-menu-reload-no-further-input'
           # Separate exact process/profile. One right-click, then no Escape/selection/rescue input.
-          cargo +stable test --locked --lib --features html-chrome-default,experimental-engine-context-menu engine::app_context_menu_probe::reload::live_probe_real_app_context_menu_same_url_reload -- --exact --ignored --nocapture --test-threads=1 2>&1 | Tee-Object store-real-app-context-menu-reload.log
+          cargo +1.99.1 test --locked --lib --features html-chrome-default,experimental-engine-context-menu engine::app_context_menu_probe::reload::live_probe_real_app_context_menu_same_url_reload -- --exact --ignored --nocapture --test-threads=1 2>&1 | Tee-Object store-real-app-context-menu-reload.log
           if ($LASTEXITCODE -ne 0) { throw 'Actual App same-URL in-modal Reload refusal unavailable or failed; no spontaneous cancellation acceptance and no activation.' }
       - name: Save independent actual App Reload refusal evidence
         if: always()
@@ -463,7 +467,7 @@ jobs:
         run: |
           $env:BOWSER_APP_HOST_MENU_PROBE_CONSENT = 'disposable-app-host-menu-synthetic-clipboard'
           # Do not read, back up, or clear the runner clipboard. Non-empty/locked means fail closed.
-          cargo +stable test --locked --lib --features html-chrome-default,experimental-engine-context-menu engine::app_host_menu_probe::live::live_probe_real_app_host_context_menu -- --exact --ignored --nocapture --test-threads=1 2>&1 | Tee-Object store-real-app-host-context-menu.log
+          cargo +1.99.1 test --locked --lib --features html-chrome-default,experimental-engine-context-menu engine::app_host_menu_probe::live::live_probe_real_app_host_context_menu -- --exact --ignored --nocapture --test-threads=1 2>&1 | Tee-Object store-real-app-host-context-menu.log
           if ($LASTEXITCODE -ne 0) { throw 'Separate actual App native/host regression unavailable or failed; no activation.' }
       - name: Probe independent actual App host-only Insert note and Split
         if: ${{ !cancelled() && steps.experimental_menu_build.outcome == 'success' }}
@@ -471,7 +475,7 @@ jobs:
           $env:BOWSER_APP_HOST_NOTE_SPLIT_PROBE_CONSENT = 'disposable-app-host-menu-note-split-no-clipboard'
           # A separate exact libtest process creates its own ordinary profile and evidence directory.
           # Run even after the original Copy/Paste gate fails; do not continue-on-error or mask it.
-          cargo +stable test --locked --lib --features html-chrome-default,experimental-engine-context-menu engine::app_host_menu_probe::live::note_split::live_probe_real_app_host_note_split_context_menu -- --exact --ignored --nocapture --test-threads=1 2>&1 | Tee-Object store-real-app-host-note-split-context-menu.log
+          cargo +1.99.1 test --locked --lib --features html-chrome-default,experimental-engine-context-menu engine::app_host_menu_probe::live::note_split::live_probe_real_app_host_note_split_context_menu -- --exact --ignored --nocapture --test-threads=1 2>&1 | Tee-Object store-real-app-host-note-split-context-menu.log
           if ($LASTEXITCODE -ne 0) { throw 'Independent actual App host-only note/Split regression unavailable or failed; original Copy/Paste gate remains required.' }
       - name: Save independent host-only note Split evidence
         if: always()
@@ -572,12 +576,14 @@ jobs:
           [void][scriptblock]::Create((Get-Content benchmarks/scripts/probe-native-extension-command.ps1 -Raw))
           [void][scriptblock]::Create((Get-Content benchmarks/scripts/measure-native-extensions.ps1 -Raw))
       - name: Install official Rust toolchain
-        run: rustup toolchain install stable --profile minimal
+        # Pinned: Cargo 1.100 moved unit-test executables out of target/debug/deps, where
+        # this workflow and the probe scripts' identity guards expect them.
+        run: rustup toolchain install 1.99.1 --profile minimal
       - name: Check read-only record observers permit atomic replacement
         run: ./benchmarks/scripts/test-native-store-record-reader.ps1
       - name: Build exact native HTML-default debug executable
         run: |
-          cargo +stable build --locked --bin bowser --features html-chrome-default
+          cargo +1.99.1 build --locked --bin bowser --features html-chrome-default
           if ($LASTEXITCODE -ne 0) { throw 'Native Store debug build failed.' }
       - name: Exercise actual native Store consent lifecycle through Windows accessibility
         run: ./benchmarks/scripts/probe-native-store.ps1 -InstallJourney
