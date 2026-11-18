@@ -838,15 +838,18 @@ test('tabs.css draws the island as one box: a wash when open, the selected tabâ€
   assert.match(css, /\.strip \.group:not\(\.collapsed\) \.tab \{\s*height: calc\(var\(--bw-tab-h\) - 2 \* var\(--gp\)\);\s*border-radius: calc\(var\(--gr\) - var\(--gp\)\);/);
   assert.match(css, new RegExp(`${folded}::before \\{ content: none; \\}`));
   assert.match(css, /\.strip \.group\.collapsed \.tab:not\(\[hidden\]\) \{ border-radius: var\(--gr\); \}/, 'folded, the tab is the box and takes its corners');
-  // Folded around the tab in use: no gaps, the bar and the closing mark drawn over the tab's ends.
+  // Folded around the tab in use: no gaps, the bar drawn over the tab's left end, the closing mark
+  // peeking out 2px past its right end.
   assert.match(css, /\.strip \.group \.cap \{ display: none; \}/);
   assert.match(css, new RegExp(`${folded} \\{\\s*gap: 0;`));
   assert.match(css, new RegExp(`${folded} \\.ball \\{[^}]*margin-inline-end: calc\\(-1 \\* \\(var\\(--gi\\) \\+ var\\(--gb\\)\\)\\);`));
-  assert.match(css, new RegExp(`${folded} \\.cap \\{[^}]*display: flex;[^}]*gap: 2px;[^}]*margin-inline: calc\\(-1 \\* \\(var\\(--ci\\) \\+ var\\(--cw\\)\\)\\) var\\(--ci\\);`));
+  assert.match(css, new RegExp(`${folded} \\.cap \\{[^}]*display: flex;[^}]*gap: 2px;[^}]*margin-inline-start: 2px;`));
   assert.match(css, /\.strip \.group\.collapsed \.tab:not\(\[hidden\]\) \{\s*padding-inline:/, 'the tab makes room for them');
-  // The closing mark is grey slivers (never the island's colour): two, one, or none.
+  // The closing mark is slivers of the tab's own surface (never the island's colour), each a step
+  // shorter like stacked cards: two, one, or none.
   const sliver = /\.strip \.group \.sliver \{([^}]*)\}/.exec(css)?.[1] ?? '';
-  assert.match(sliver, /width: 3px;[^]*height: calc\(var\(--bw-tab-h\) - 2 \* var\(--gi\)\);[^]*border-radius: var\(--bw-r-pill\);[^]*background: color-mix\(in srgb, var\(--bw-text\) 40%, transparent\);/);
+  assert.match(sliver, /width: 4px;[^]*height: calc\(var\(--bw-tab-h\) - 4px\);[^]*border-radius: var\(--bw-r-pill\);[^]*background: var\(--bw-tab-raised\);/);
+  assert.match(css, /\.strip \.group \.sliver \+ \.sliver \{ height: calc\(var\(--bw-tab-h\) - 8px\); \}/);
   assert.doesNotMatch(sliver, /--gc/);
   assert.match(css, /\.strip \.group\[data-more="1"\] \.sliver \+ \.sliver \{ display: none; \}/);
   assert.match(css, /\.strip \.group\[data-more="0"\] \.cap \{ display: none; \}/);
