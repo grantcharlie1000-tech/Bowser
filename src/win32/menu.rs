@@ -299,12 +299,18 @@ pub(crate) enum Entry {
 }
 
 /// Profile card drawn above the list: avatar initial, profile name and a muted caption.
+///
+/// With an `id` the card is itself a menu item, the first one: pointer and keys reach it like a
+/// row, and choosing it reports `id` as the pick (the main menu opens the profile settings).
+/// `action` says what choosing it does, for assistive technology in the HTML popup.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ProfileHeader {
     pub profile: String,
     pub caption: String,
     pub avatar: String,
     pub accent: Rgba,
+    pub id: Option<usize>,
+    pub action: &'static str,
 }
 
 /// Everything the popup shows. Only the main ⋮ menu sets `header`; every other popup leaves it
@@ -410,6 +416,41 @@ pub(crate) fn step(entries: &[Entry], from: Option<usize>, forward: bool) -> Opt
     })
 }
 
+/// Where the keyboard is in a popup whose profile card is a menu item: on the card, on an entry,
+/// or nowhere yet.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Focus {
+    Header,
+    Row(usize),
+    Nothing,
+}
+
+/// [`step`] with the profile card as the first item when `header` is set: Down from the last row
+/// and Up from the first wrap through the card, and with nothing selected Down starts on the card.
+pub(crate) fn step_focus(entries: &[Entry], header: bool, from: Focus, forward: bool) -> Focus {
+    let row = |index: Option<usize>| index.map_or(Focus::Nothing, Focus::Row);
+    if !header {
+        let from = match from {
+            Focus::Row(index) => Some(index),
+            Focus::Header | Focus::Nothing => None,
+        };
+        return row(step(entries, from, forward));
+    }
+    match from {
+        Focus::Header => match step(entries, None, forward) {
+            Some(index) => Focus::Row(index),
+            None => Focus::Header,
+        },
+        Focus::Nothing if forward => Focus::Header,
+        Focus::Nothing => step(entries, None, false).map_or(Focus::Header, Focus::Row),
+        Focus::Row(index) => match step(entries, Some(index), forward) {
+            // Past either end of the list is the card.
+            Some(next) if (forward && next > index) || (!forward && next < index) => Focus::Row(next),
+            _ => Focus::Header,
+        },
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Row {
     rect: RECT,
@@ -492,6 +533,11 @@ impl Layout {
             list_bottom,
             max_scroll: (content_bottom - list_bottom).max(0),
         }
+    }
+
+    /// Whether the point is on the profile card (which is a menu item only when it has an id).
+    fn on_header(&self, x: i32, y: i32) -> bool {
+        self.header.bottom > self.header.top && contains(self.header, x, y)
     }
 
     /// Entry index of the selectable row under the point, if any.
@@ -594,6 +640,13 @@ struct State {
     icon_motion: Vec<Cell<RowMotion>>,
     /// Entry under the pointer or chosen with the arrow keys.
     current: Cell<Option<usize>>,
+    /// The profile card is under the pointer or chosen with the arrow keys (only when it has an id;
+    /// `current` is then `None`).
+    header_hot: Cell<bool>,
+    /// The left button went down on the profile card.
+    header_pressed: Cell<bool>,
+    /// The profile card was chosen: its id is the pick.
+    header_chosen: Cell<bool>,
     scroll: Cell<i32>,
     /// Entry the left button went down on, so only a matching release activates.
     pressed: Cell<Option<usize>>,
@@ -610,6 +663,41 @@ struct State {
 }
 
 impl State {
+    /// The profile card's command, when the card is a menu item.
+    fn header_id(&self) -> Option<usize> {
+        self.menu.header.as_ref().and_then(|header| header.id)
+    }
+
+    fn focus(&self) -> Focus {
+        if self.header_hot.get() {
+            Focus::Header
+        } else {
+            self.current.get().map_or(Focus::Nothing, Focus::Row)
+        }
+    }
+
+    /// Moves the highlight; `reveal` scrolls an entry the keys reached into view. True when it changed.
+    fn set_focus(&self, focus: Focus, reveal: bool) -> bool {
+        if focus == self.focus() {
+            return false;
+        }
+        self.header_hot.set(focus == Focus::Header);
+        self.current.set(match focus {
+            Focus::Row(index) => Some(index),
+            Focus::Header | Focus::Nothing => None,
+        });
+        if reveal && let Focus::Row(index) = focus {
+            self.scroll.set(self.layout.ensure_visible(index, self.scroll.get()));
+        }
+        true
+    }
+
+    /// The profile card was chosen: the whole chain closes with its id as the pick.
+    fn choose_header(&self) {
+        self.header_chosen.set(true);
+        self.done.set(true);
+    }
+
     fn activate(&self, index: usize) {
         if matches!(&self.menu.entries[index], Entry::Item(item) if item.currency.is_some()) {
             crate::currency::cycle();
@@ -781,6 +869,9 @@ fn track_placed(
         rich_bitmaps,
         icon_motion,
         current: Cell::new(initial_item),
+        header_hot: Cell::new(false),
+        header_pressed: Cell::new(false),
+        header_chosen: Cell::new(false),
         scroll: Cell::new(0),
         pressed: Cell::new(None),
         chosen: Cell::new(None),
@@ -924,6 +1015,11 @@ fn flyout_request(state: &State, origin: POINT) -> Option<(Menu, RECT)> {
 
 /// The result of a popup whose loop has ended: the chosen command, or dismissal when none was chosen.
 fn chosen_result(state: &State, origin: POINT) -> MenuResult {
+    if state.header_chosen.get()
+        && let Some(id) = state.header_id()
+    {
+        return MenuResult::Chosen(Chosen { id, row: offset(state.layout.header, origin) });
+    }
     let chosen = state.chosen.get().and_then(|index| {
         let row = state.layout.rows.iter().find(|row| row.entry == index)?;
         match &state.menu.entries[index] {
@@ -1201,9 +1297,12 @@ unsafe extern "system" fn menu_proc(
             WM_MOUSEMOVE => {
                 if let Some(state) = state(hwnd) {
                     let (x, y) = point(lparam);
-                    let hover = state.layout.entry_at(x, y, state.scroll.get());
-                    if hover != state.current.get() {
-                        state.current.set(hover);
+                    let hover = if state.header_id().is_some() && state.layout.on_header(x, y) {
+                        Focus::Header
+                    } else {
+                        state.layout.entry_at(x, y, state.scroll.get()).map_or(Focus::Nothing, Focus::Row)
+                    };
+                    if state.set_focus(hover, false) {
                         invalidate(hwnd);
                     }
                 }
@@ -1216,6 +1315,9 @@ unsafe extern "system" fn menu_proc(
                         state
                             .pressed
                             .set(state.layout.entry_at(x, y, state.scroll.get()));
+                        state
+                            .header_pressed
+                            .set(state.header_id().is_some() && state.layout.on_header(x, y));
                         invalidate(hwnd);
                     } else {
                         dismiss_outside(hwnd, state, x, y);
@@ -1227,13 +1329,16 @@ unsafe extern "system" fn menu_proc(
                 if let Some(state) = state(hwnd) {
                     let (x, y) = point(lparam);
                     let released = state.layout.entry_at(x, y, state.scroll.get());
-                    if state.layout.inside(x, y)
+                    if state.header_pressed.get() && state.layout.on_header(x, y) {
+                        state.choose_header();
+                    } else if state.layout.inside(x, y)
                         && released == state.pressed.get()
                         && let Some(index) = released
                     {
                         state.activate(index);
                     }
                     state.pressed.set(None);
+                    state.header_pressed.set(false);
                     invalidate(hwnd);
                 }
                 LRESULT(0)
@@ -1272,29 +1377,23 @@ unsafe extern "system" fn menu_proc(
                         state.back.set(state.is_submenu);
                         state.done.set(true);
                     } else if is(VK_DOWN) || is(VK_UP) {
-                        let next = step(&state.menu.entries, state.current.get(), is(VK_DOWN));
-                        if next != state.current.get() {
-                            state.current.set(next);
-                            if let Some(index) = next {
-                                state
-                                    .scroll
-                                    .set(state.layout.ensure_visible(index, state.scroll.get()));
-                            }
+                        let header = state.header_id().is_some();
+                        let next = step_focus(&state.menu.entries, header, state.focus(), is(VK_DOWN));
+                        if state.set_focus(next, true) {
                             invalidate(hwnd);
                         }
                     } else if is(VK_HOME) || is(VK_END) {
-                        let next = step(&state.menu.entries, None, is(VK_HOME));
-                        if next != state.current.get() {
-                            state.current.set(next);
-                            if let Some(index) = next {
-                                state
-                                    .scroll
-                                    .set(state.layout.ensure_visible(index, state.scroll.get()));
-                            }
+                        // Home goes to the first item (the profile card when it is one), End to the last.
+                        let header = state.header_id().is_some();
+                        let next = step_focus(&state.menu.entries, header, Focus::Nothing, is(VK_HOME));
+                        if state.set_focus(next, true) {
                             invalidate(hwnd);
                         }
                     } else if is(VK_RETURN) || is(VK_SPACE) {
-                        if let Some(index) = state.current.get() {
+                        if state.header_hot.get() && state.header_id().is_some() {
+                            state.choose_header();
+                            invalidate(hwnd);
+                        } else if let Some(index) = state.current.get() {
                             state.activate(index);
                             invalidate(hwnd);
                         }
@@ -1416,6 +1515,12 @@ unsafe fn draw(dc: HDC, hwnd: HWND, client: &RECT, dpi: u32, state: &State) {
         // main menu sets it.
         if let Some(card) = &state.menu.header {
             let header = state.layout.header;
+            // A card that is a menu item takes the rows' hover and press fills.
+            if card.id.is_some() && state.header_hot.get() {
+                let fill = if state.header_pressed.get() { palette.tab_active } else { palette.tab_hover };
+                let inner = rect(header.left + s(PAD), header.top + s(PAD), header.right - s(PAD), header.bottom - s(PAD));
+                smooth::fill_round_rect(dc, inner, s(ROW_RADIUS), fill);
+            }
             let avatar_top = (header.top + header.bottom - s(AVATAR)) / 2;
             let avatar = rect(
                 header.left + s(PAD + 8),
@@ -2040,6 +2145,8 @@ mod tests {
                 caption: "Current profile".to_owned(),
                 avatar: "D".to_owned(),
                 accent: theme::Rgba::hex(0x4C83D5, 255),
+                id: Some(77),
+                action: "Open profile settings",
             }),
             entries,
             footer: "Bowser test".to_owned(),
@@ -2132,6 +2239,39 @@ mod tests {
         ];
         assert_eq!(step(&entries, None, true), Some(2));
         assert_eq!(step(&entries, Some(2), true), Some(2));
+    }
+
+    #[test]
+    fn a_profile_card_with_an_id_is_the_first_item_for_the_keys() {
+        // sample(): 0 enabled, 1 separator, 2 disabled, 3 enabled.
+        let entries = sample();
+        // With nothing selected Down starts on the card and Up on the last row.
+        assert_eq!(step_focus(&entries, true, Focus::Nothing, true), Focus::Header);
+        assert_eq!(step_focus(&entries, true, Focus::Nothing, false), Focus::Row(3));
+        // The card sits between the last row and the first, both ways.
+        assert_eq!(step_focus(&entries, true, Focus::Header, true), Focus::Row(0));
+        assert_eq!(step_focus(&entries, true, Focus::Row(0), true), Focus::Row(3));
+        assert_eq!(step_focus(&entries, true, Focus::Row(3), true), Focus::Header);
+        assert_eq!(step_focus(&entries, true, Focus::Header, false), Focus::Row(3));
+        assert_eq!(step_focus(&entries, true, Focus::Row(0), false), Focus::Header);
+        // Without a card the rows wrap as before.
+        assert_eq!(step_focus(&entries, false, Focus::Row(3), true), Focus::Row(0));
+        assert_eq!(step_focus(&entries, false, Focus::Nothing, true), Focus::Row(0));
+        // A lone row and the card take turns; a menu with no rows keeps the card.
+        let lone = vec![item(5, true)];
+        assert_eq!(step_focus(&lone, true, Focus::Row(0), true), Focus::Header);
+        assert_eq!(step_focus(&lone, true, Focus::Row(0), false), Focus::Header);
+        assert_eq!(step_focus(&[], true, Focus::Header, true), Focus::Header);
+    }
+
+    #[test]
+    fn the_profile_card_is_hit_only_inside_its_own_band() {
+        let layout = Layout::new(&main_menu(sample()), 96, 700);
+        assert!(layout.on_header(layout.header.left + 5, layout.header.top + 5));
+        let first = layout.rows[0].rect;
+        assert!(!layout.on_header(first.left + 5, first.top + 5));
+        let plain = Layout::new(&menu(sample()), 96, 700);
+        assert!(!plain.on_header(5, 0));
     }
 
     #[test]

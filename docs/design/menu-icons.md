@@ -10,7 +10,10 @@ Geometry: 28px rows (the 32px component height would scroll the 15-row main menu
 work areas), 4px radius, 12px icon gap, 8px overlay radius, min 200 / max 360px, opaque overlay.
 
 ## Main menu (`main`)
-The menu is short on purpose: what you do on every page, and nothing you set once. Profile card (header) |
+The menu is short on purpose: what you do on every page, and nothing you set once. Profile card (header;
+the menu's first item: Up from New tab or Home reaches it, Enter, Space or a click opens Settings >
+Profile, `bowser://settings/profile`, so there is no separate Profiles row; Ctrl+Shift+M and the
+palette's Profiles command still open the profile menu) |
 New tab `plus` | New window `window` | New private tab `private` | New private window `private-window`
 (the window frame and title bar of `window` wearing the filled shades of `private`, so it reads as a
 private window and stays apart from the hat of `private` and the bare shades of `glasses`; opens a
@@ -20,14 +23,20 @@ while a private tab is open) | History `history` (opens `bowser://history`) | Do
 `workspace` (submenu) | Block ads & trackers `shield` (check) | Reader view `reader` (check; a capital A beside text lines over a full-width line, so it
 stays apart from the page-shaped `notes` and the book `workspace-book`) | More tools
 `more` (submenu: Notes & Tasks `notes`, Command palette `command`, Saved sessions `folder`, Hide
-distractions `eye`, Extensions `puzzle`, Passwords & passkeys `key`) | Restart to update `refresh` (only
+distractions `eye`, Extensions `puzzle` (submenu: the Ctrl+Shift+E rows below, cascading beside More
+tools), Passwords & passkeys `key`) | Restart to update `refresh` (only
 once a build is downloaded) | Settings `gear` (opens `bowser://settings` in a tab; the gear turns one
 tooth while the row is selected, docs/design/settings-page.md) | Exit `close`. Moved to Settings: the
 profile list (Manage profiles), Import from another browser, the Privacy dashboard, Check for updates and
 Update automatically. Passwords stay in the native menu: `chrome_host/guard.rs` keeps that word out of
 the HTML chrome.
 
-## Profile (`profiles`, also the main menu's Profile page)
+Every child menu of the main menu cascades: it opens beside the row that opened it and the parent
+stays on screen (Right or Enter opens it, Left or Esc closes one level; the keys swap when submenus
+open to the left). No row closes the menu to open another menu in its place: the Extensions rows and
+the workspace delete confirmation are submenus, not menus of their own.
+
+## Profile (`profiles`, Ctrl+Shift+M and the palette's Profiles command)
 Profile rows: avatar badge (disc with the profile's accent), check on the current one | Guest window
 `external` | New profile `plus` | Choose avatar `person` (submenu, check on current) | Choose accent
 colour `droplet` (submenu, colour swatch badges) | Delete profile section rows `trash` | Rename
@@ -36,8 +45,8 @@ Close `close`.
 
 ## Workspaces (`workspaces`, main menu Workspaces page)
 Each workspace: its own glyph `workspace-briefcase|home|code|book|cart|game|music|heart|star|bolt|globe|leaf`
-(check on active) | New workspace `plus` | Rename current `edit` | Delete current `trash`.
-Delete confirmation: Delete `trash`, Keep `workspace`.
+(check on active) | New workspace `plus` | Rename current `edit` | Delete current `trash` (submenu: the
+confirmation, Delete `trash`, Keep `workspace`, under the question and "This cannot be undone").
 
 ## Rail workspace (`rail-ws:*`)
 Rename `edit` | Change icon `workspace` (submenu of the twelve workspace glyphs) | Change colour
@@ -76,8 +85,9 @@ check on the stored choice) | Cookies `cookie` | Clear cookies `trash` | Blocker
 Tracking prevention `eye` | Reset permissions `reset`.
 
 ## Extensions (`extensions`)
-Each extension `puzzle` (check = enabled) | Remove extension `trash` (submenu rows `puzzle`) | Install
-unpacked extension `folder`.
+Ctrl+Shift+E, and the main menu's More tools > Extensions submenu (the same rows). Each extension
+`puzzle` (check = enabled) | Open extension popup `puzzle` (submenu rows `puzzle`) | Remove extension
+`trash` (submenu rows `puzzle`) | Manage extensions `gear` | Install unpacked extension `folder`.
 
 ## Saved sessions (`sessions`)
 Save current tabs `plus` | each session `folder` (submenu: Restore N tabs `reset`, Delete session `trash`).

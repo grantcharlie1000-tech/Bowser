@@ -101,7 +101,7 @@ const railEmpty = { v: 1, t: 'rail', items: [railItem('home', 'home', 'Home', { 
 let nextId = 100;
 const it = (label, icon, extra = {}) => ({ id: nextId++, label, enabled: true, checked: false, ...(icon ? { icon } : {}), ...extra });
 const mainMenu = { v: 1, t: 'menu', tok: 11, kind: 'main',
-  header: { name: 'Alex', caption: 'Current profile', avatar: 'A', accent: '#0067c0' },
+  header: { name: 'Alex', caption: 'Current profile', avatar: 'A', accent: '#0067c0', id: 99, action: 'Open profile settings' },
   entries: [
     it('New tab', 'new-tab', { shortcut: 'Ctrl+T' }),
     it('New window', 'window', { shortcut: 'Ctrl+N' }),
@@ -115,7 +115,7 @@ const mainMenu = { v: 1, t: 'menu', tok: 11, kind: 'main',
     it('Block ads & trackers', 'shield', { checked: true, shortcut: 'Ctrl+Shift+B' }),
     it('Reader view', 'reader', { shortcut: 'Ctrl+Alt+R', enabled: false }),
     it('Translate to English', 'translate', { enabled: false }),
-    it('More tools', 'more', { submenu: [it('Notes & Tasks…', 'notes', { shortcut: 'Ctrl+Shift+N' }), it('Command palette…', 'command', { shortcut: 'Ctrl+Shift+K' }), it('Saved sessions…', 'folder'), { separator: true }, it('Extensions…', 'puzzle', { shortcut: 'Ctrl+Shift+E' }), it('Developer tools', 'workspace-code', { shortcut: 'F12' })] }),
+    it('More tools', 'more', { submenu: [it('Notes & Tasks…', 'notes', { shortcut: 'Ctrl+Shift+N' }), it('Command palette…', 'command', { shortcut: 'Ctrl+Shift+K' }), it('Saved sessions…', 'folder'), { separator: true }, it('Extensions', 'puzzle', { submenu: [it('Manage extensions', 'gear'), it('Install unpacked extension…', 'folder')] }), it('Developer tools', 'workspace-code', { shortcut: 'F12' })] }),
     { separator: true },
     it('Zoom · 110%', 'zoom-in', { submenu: [it('Zoom in', 'zoom-in', { shortcut: 'Ctrl++' }), it('Zoom out', 'zoom-out', { shortcut: 'Ctrl+−' }), it('Reset zoom', 'reset', { shortcut: 'Ctrl+0' })] }),
     it('Delete browsing data…', 'trash', { shortcut: 'Ctrl+Shift+Del' }),

@@ -191,7 +191,74 @@ test('payload accepts the main menu header and footer and rejects bad ones', () 
   assert.equal(logic.validMenuPayload({ ...msg, entries: [item(1, 'x', { icon: 'javascript' })] }), false);
 });
 
+test('a profile card with an id is the first item: reached by Up and Home, picked with Enter, never the opening row', () => {
+  const header = { name: 'Charlie Grant', caption: 'Current profile', avatar: 'C', accent: '#3366ff', id: 5007, action: 'Open profile settings' };
+  const msg = { v: 1, t: 'menu', tok: 4, kind: 'main', header, entries: [item(1, 'New tab'), { separator: true }, item(2, 'Exit')] };
+  assert.equal(logic.validMenuPayload(msg), true);
+  assert.equal(logic.validMenuPayload({ ...msg, header: { ...header, id: -1 } }), false);
+  assert.equal(logic.validMenuPayload({ ...msg, header: { ...header, id: '5007' } }), false);
+  assert.equal(logic.validMenuPayload({ ...msg, header: { ...header, action: 'x'.repeat(129) } }), false);
+  // Only navEntries makes the card's entry: a row on the wire cannot claim to be it.
+  assert.equal(logic.validMenuPayload({ ...msg, entries: [item(1, 'New tab', { header: true })] }), false);
+
+  const entries = logic.navEntries(msg);
+  assert.equal(entries.length, 4);
+  assert.deepEqual(entries[0], { id: 5007, label: 'Charlie Grant', enabled: true, checked: false, header: true });
+  assert.equal(logic.isHeaderEntry(entries[0]), true);
+  assert.equal(logic.isHeaderEntry(entries[1]), false);
+  // A card without an id stays decoration.
+  assert.equal(logic.navEntries({ ...msg, header: { ...header, id: undefined } }), msg.entries);
+
+  const nav = logic.createNav(entries);
+  assert.equal(logic.currentPage(nav).selected, 1, 'the menu opens on its first row');
+  assert.deepEqual(logic.menuKey(nav, 'ArrowUp', {}, 0), { kind: 'select' });
+  assert.equal(logic.currentPage(nav).selected, 0, 'Up from the first row reaches the card');
+  assert.deepEqual(logic.menuKey(nav, 'Enter', {}, 0), { kind: 'pick', id: 5007 });
+  const keys = logic.createNav(entries);
+  logic.menuKey(keys, 'End', {}, 0);
+  logic.menuKey(keys, 'Home', {}, 0);
+  assert.equal(logic.currentPage(keys).selected, 0, 'Home reaches the card');
+  assert.deepEqual(logic.menuKey(keys, ' ', {}, 0), { kind: 'pick', id: 5007 });
+  logic.menuKey(keys, 'ArrowDown', {}, 0);
+  assert.equal(logic.currentPage(keys).selected, 1);
+  assert.deepEqual(logic.activateAt(logic.createNav(entries), 0, 0), { kind: 'pick', id: 5007 }, 'a click on the card picks it');
+});
+
+test('the menu view draws the card as a real menu item in its pinned band', () => {
+  const view = readFileSync(join(here, '..', 'src', 'menu-view.ts'), 'utf8');
+  assert.match(view, /nav = createNav\(navEntries\(raw\)\);/);
+  assert.match(view, /row\.className = 'html-menu-row html-menu-profile';\s*row\.setAttribute\('role', 'menuitem'\);/);
+  assert.match(view, /if \(card\.action\) row\.setAttribute\('aria-description', card\.action\);/);
+  assert.match(view, /wire\(row, true, index\);/, 'hover and click work as on any row');
+  assert.match(view, /if \(isHeaderEntry\(entry\)\) return;/, 'the card is not repeated in the list');
+  assert.match(view, /if \(list\?\.contains\(row\)\) reveal\(list, row\);/, 'selecting the card never scrolls the list');
+  const css = readFileSync(join(here, '..', 'src', 'styles', 'menu.css'), 'utf8');
+  assert.match(css, /\.html-menu-row\.html-menu-profile \{[^}]*display: grid;/);
+});
+
 const repo = join(here, '..', '..');
+
+test('the main menu: the profile card opens Settings > Profile, no extra profile row, and every child menu cascades', () => {
+  const rust = readFileSync(join(repo, 'src', 'win32', 'window.rs'), 'utf8');
+  const start = rust.indexOf('fn show_main_menu(');
+  const body = rust.slice(start, rust.indexOf('\n}\n', start));
+  assert.match(body, /main_menu_profile_header\(PROFILE_SETTINGS\)/);
+  assert.match(body, /PROFILE_SETTINGS => super::settings_page::open\(\s*hwnd,\s*app,\s*Some\(crate::internal_page::Section::Profile\),/);
+  assert.ok(!/"Profiles"|show_profile_menu/.test(body), 'the Profiles row is gone (Ctrl+Shift+M and the palette keep the command)');
+  // No row closes this menu to open another menu in its place: submenus are submenu_with rows.
+  for (const opener of ['show_extensions_menu', 'show_workspaces_menu', 'show_profile_menu', 'menu::show(']) {
+    assert.equal(body.split(opener).length - 1, opener === 'menu::show(' ? 1 : 0, `${opener} in the main menu`);
+  }
+  assert.match(body, /Item::new\(EXTENSIONS, "Extensions", Icon::Grid\)\.glyph\("puzzle"\)\.submenu_with\(extensions\.entries\(\)\)/);
+  // The workspace delete confirmation cascades from its row instead of replacing the menu.
+  const entries = rust.slice(rust.indexOf('fn workspace_menu_entries('), rust.indexOf('fn workspace_menu_snapshot('));
+  assert.match(entries, /delete\.submenu_with\(vec!\[/);
+  const action = rust.slice(rust.indexOf('fn run_workspace_action('), rust.indexOf('fn open_another_window('));
+  assert.ok(action.length > 0 && !action.includes('menu::show('), 'a workspace pick opens no menu of its own');
+  // The profiles command itself stays in the registry.
+  const registry = readFileSync(join(repo, 'src', 'commands', 'registry.rs'), 'utf8');
+  assert.match(registry, /def\("profiles", "Profiles"/);
+});
 
 test('MENU_ICONS is exactly the icon family and every Rust glyph is in it', () => {
   const gen = readFileSync(join(here, '..', 'src', 'icons.gen.ts'), 'utf8');

@@ -1,7 +1,7 @@
 import { icon, type IconName } from './dom';
 import { isIconName } from './icons';
 import {
-  activateAt, cascadeSide, childSlice, childTop, createNav, firstVisible, flyoutSide, footerVisible, hasFlyouts, hasLeadColumn, hasTrailColumn, innerPixels, menuKey, onFill,
+  activateAt, cascadeSide, childSlice, childTop, createNav, firstVisible, flyoutSide, footerVisible, hasFlyouts, hasLeadColumn, hasTrailColumn, innerPixels, isHeaderEntry, menuKey, navEntries, onFill,
   MAX_CARD, slideShift, validMenuPayload, validRoom,
   type FlyoutRoom, type MenuBadge, type MenuMessage, type MenuNav, type MenuOutcome, type MenuPage,
 } from './menu-logic';
@@ -17,6 +17,9 @@ import { sendPopupAct, sendPopupDismiss, sendPopupPick, sendPopupSize, type Popu
 //   .html-menu-flyout > .html-menu-flyout              a deeper card's column, nested beside the card that opened it
 //   #app.html-menu.opens-left                           submenus open to the left: chevrons point left
 //   .html-menu-header > .html-menu-avatar, .html-menu-name, .html-menu-caption   main menu card (level 0)
+//   .html-menu-header.is-action > .html-menu-row.html-menu-profile[role=menuitem][data-index=0]
+//       > .html-menu-avatar, .html-menu-name, .html-menu-caption   the card as the menu's first item
+//       (its `id` set): selected, hovered and picked like any row
 //   .html-menu-list.bw-scroll                          the scrolling part (header and footer stay pinned)
 //   .html-menu-section                                 non-interactive heading
 //   .html-menu-separator[role=separator]
@@ -158,7 +161,9 @@ export function createMenuView(root: HTMLElement, now: () => number = () => perf
         if (row.hasAttribute('aria-haspopup')) row.setAttribute('aria-expanded', String(open));
         if (on) {
           root.setAttribute('aria-activedescendant', row.id);
-          reveal(pane.querySelector('.html-menu-list'), row);
+          // The profile card is pinned above the list: selecting it never scrolls the list.
+          const list = pane.querySelector('.html-menu-list');
+          if (list?.contains(row)) reveal(list, row);
         }
       }
     }
@@ -345,23 +350,62 @@ export function createMenuView(root: HTMLElement, now: () => number = () => perf
     const lead = hasLeadColumn(page.entries);
     const trail = hasTrailColumn(page.entries);
 
+    // Hover moves the open page's selection; a primary-button release on a row of a page on screen
+    // runs it. Mouse up, not click: a press that started outside the menu (the right click that
+    // opened it) must not pick, and keyboard Space/Enter are handled on keydown.
+    const wire = (row: HTMLElement, enabled: boolean, index: number): void => {
+      row.addEventListener('mousemove', () => {
+        root.dataset.input = 'pointer';
+        // Only the open page follows the pointer; the parent's rows tint on hover in CSS.
+        if (!nav || !enabled || nav.pages[nav.pages.length - 1] !== page || page.selected === index) return;
+        page.selected = index;
+        markSelected();
+      });
+      row.addEventListener('mouseup', (event) => {
+        if (event.button !== 0 || !nav || nav.pages[level] !== page) return;
+        finish(activateAt(nav, level, index));
+      });
+    };
+
     if (top && msg?.header) {
+      const card = msg.header;
       const header = document.createElement('div');
       header.className = 'html-menu-header';
-      header.setAttribute('aria-hidden', 'true');
-      const avatar = disc('html-menu-avatar', { avatar: msg.header.avatar, accent: msg.header.accent });
+      const avatar = disc('html-menu-avatar', { avatar: card.avatar, accent: card.accent });
       const name = document.createElement('span');
       name.className = 'html-menu-name';
-      name.textContent = msg.header.name;
+      name.textContent = card.name;
       const caption = document.createElement('span');
       caption.className = 'html-menu-caption';
-      caption.textContent = msg.header.caption;
-      header.append(avatar, name, caption);
+      caption.textContent = card.caption;
+      // With an id the card is the first item (navEntries put it at index 0): a row in its own band.
+      const index = page.entries.findIndex(isHeaderEntry);
+      if (index >= 0) {
+        header.classList.add('is-action');
+        header.setAttribute('role', 'presentation');
+        const row = document.createElement('button');
+        row.type = 'button';
+        row.tabIndex = -1;
+        row.className = 'html-menu-row html-menu-profile';
+        row.setAttribute('role', 'menuitem');
+        row.setAttribute('aria-label', `${card.name}, ${card.caption}`);
+        if (card.action) row.setAttribute('aria-description', card.action);
+        row.id = `html-menu-row-${level}-${index}`;
+        row.dataset.index = String(index);
+        row.dataset.id = String(card.id);
+        row.append(avatar, name, caption);
+        wire(row, true, index);
+        header.append(row);
+      } else {
+        header.setAttribute('aria-hidden', 'true');
+        header.append(avatar, name, caption);
+      }
       pane.append(header);
     }
 
     const list: HTMLElement[] = [];
     page.entries.forEach((entry, index) => {
+      if (isHeaderEntry(entry)) return;
       if ('section' in entry) {
         const heading = document.createElement('div');
         heading.className = 'html-menu-section';
@@ -440,19 +484,7 @@ export function createMenuView(root: HTMLElement, now: () => number = () => perf
         else if (entry.submenu) slot.append(icon('chevron-right'));
         row.append(slot);
       }
-      row.addEventListener('mousemove', () => {
-        root.dataset.input = 'pointer';
-        // Only the open page follows the pointer; the parent's rows tint on hover in CSS.
-        if (!nav || !entry.enabled || nav.pages[nav.pages.length - 1] !== page || page.selected === index) return;
-        page.selected = index;
-        markSelected();
-      });
-      // Mouse up, not click: a press that started outside the menu (the right click that opened it)
-      // must not pick, and keyboard Space/Enter are handled on keydown.
-      row.addEventListener('mouseup', (event) => {
-        if (event.button !== 0 || !nav || nav.pages[level] !== page) return;
-        finish(activateAt(nav, level, index));
-      });
+      wire(row, entry.enabled, index);
       list.push(row);
     });
     const scroller = document.createElement('div');
@@ -626,7 +658,7 @@ export function createMenuView(root: HTMLElement, now: () => number = () => perf
       }
       epoch += 1;
       message = raw;
-      nav = createNav(raw.entries);
+      nav = createNav(navEntries(raw));
       closed = false;
       host = null;
       flyouts = [];
