@@ -724,6 +724,106 @@ test('a tab island is its bar and its tabs; folded it keeps the tab in use betwe
   deliver(tabsMsg([item(1, { pinned: true }), item(2), item(3)], 2));
 });
 
+test('an island picked up by its handle moves whole: one group move, the release is no click, Escape and the keyboard', () => {
+  const lead = { gname: 'Docs', gcol: 2, gcollapsed: false, gsize: 2 };
+  const base = tabsMsg([item(1, { pinned: true }), item(2), item(3, { g: 9, gl: true, ...lead }), item(4, { g: 9 }), item(5), item(6)], 2);
+  deliver(base);
+  const shell = stripRoot.querySelector('.group');
+  const ball = shell.querySelector('.ball');
+  // Home boxes along the row: pinned 1, tab 2, the island (3 4), tab 5, tab 6; 4px apart.
+  const lay = () => {
+    const boxes = new Map([[tabNode(1), [0, 40]], [tabNode(2), [44, 120]], [shell, [168, 244]], [tabNode(5), [416, 120]], [tabNode(6), [540, 120]]]);
+    for (const [node, [left, width]] of boxes) {
+      node.offsetWidth = width;
+      node.getBoundingClientRect = () => ({ left, top: 0, right: left + width, bottom: 26, width, height: 26 });
+    }
+  };
+  lay();
+  const wide = stripRoot.offsetWidth;
+  stripRoot.offsetWidth = 2000; // no edge scrolling
+  const at = (x) => ({ button: 0, pointerId: 7, pointerType: 'mouse', clientX: x, clientY: 10 });
+  const escape = () => { for (const cb of pageListeners.window.keydown ?? []) cb({ key: 'Escape', preventDefault() {}, stopPropagation() {} }); };
+  try {
+    // A press with less than the drag threshold of travel is a click: the island folds, as before.
+    sent.length = 0;
+    ball.dispatch('pointerdown', at(170));
+    ball.dispatch('pointermove', at(172));
+    ball.dispatch('pointerup', at(172));
+    ball.click();
+    assert.deepEqual(sent, [{ v: 1, t: 'group', a: 'toggle', key: 9 }]);
+    assert.equal(shell.classList.contains('dragging'), false);
+
+    // Dragged right until its right edge passes tab 5's centre: the island rides the pointer, tab 5
+    // slides left by the island's width plus the gap, and the release sends one move before tab 6.
+    sent.length = 0;
+    ball.dispatch('pointerdown', at(170));
+    ball.dispatch('pointermove', at(180));
+    assert.equal(shell.classList.contains('dragging'), true);
+    assert.equal(stripRoot.classList.contains('group-dragging'), true, 'the grabbing cursor');
+    ball.dispatch('pointermove', at(270));
+    assert.equal(shell.style.transform, 'translateX(100px)');
+    assert.equal(tabNode(5).style.transform, 'translateX(-248px)');
+    assert.equal(tabNode(6).style.transform, '', 'tab 6 is not passed');
+    assert.equal(tabNode(3).style.transform, '', 'the members ride inside the island');
+    ball.dispatch('pointerup', at(270));
+    ball.click();
+    assert.deepEqual(sent, [{ v: 1, t: 'group', a: 'move', key: 9, before: 6 }], 'one move, and the release folds nothing');
+    assert.equal(shell.classList.contains('landing'), true, 'raised until it lands');
+    assert.equal(stripRoot.classList.contains('group-dragging'), false);
+    // The host's reorder arrives: the island and its tabs settle (no transform left behind).
+    deliver(tabsMsg([item(1, { pinned: true }), item(2), item(5), item(3, { g: 9, gl: true, ...lead }), item(4, { g: 9 }), item(6)], 2));
+    assert.equal(shell.style.transform, '');
+    assert.equal(tabNode(5).style.transform, '');
+    deliver(base);
+    lay();
+
+    // Dragged far left: it stops at the pinned tabs and lands in front of tab 2, never among them.
+    sent.length = 0;
+    ball.dispatch('pointerdown', at(170));
+    ball.dispatch('pointermove', at(-400));
+    assert.equal(shell.style.transform, 'translateX(-124px)', 'clamped at the first unpinned tab');
+    ball.dispatch('pointerup', at(-400));
+    assert.deepEqual(sent, [{ v: 1, t: 'group', a: 'move', key: 9, before: 2 }]);
+    deliver(base);
+    lay();
+
+    // Escape puts it back: nothing is sent, and the next click folds again.
+    sent.length = 0;
+    ball.dispatch('pointerdown', at(170));
+    ball.dispatch('pointermove', at(400));
+    escape();
+    assert.equal(shell.classList.contains('dragging'), false);
+    ball.dispatch('pointerup', at(400));
+    assert.deepEqual(sent, []);
+    assert.equal(shell.style.transform, '', 'eased home');
+
+    // Keyboard: the tab move chord on the focused handle moves the island one slot.
+    sent.length = 0;
+    ball.dispatch('keydown', { key: 'PageDown', ctrlKey: true, shiftKey: true, target: ball });
+    ball.dispatch('keydown', { key: 'ArrowLeft', ctrlKey: true, shiftKey: true, target: ball });
+    ball.dispatch('keydown', { key: 'ArrowLeft', ctrlKey: true, shiftKey: false, target: ball });
+    assert.deepEqual(sent, [{ v: 1, t: 'group', a: 'move', key: 9, before: 6 }, { v: 1, t: 'group', a: 'move', key: 9, before: 2 }]);
+    // The protocol helper refuses what Rust would reject.
+    assert.equal(protocol.sendGroupMove(0, 2), false);
+    assert.equal(protocol.sendGroupMove(9, -1), false);
+    assert.equal(protocol.sendGroupMove(9, 1.5), false);
+
+    // The vertical sidebar: the same chord (Up/Down there) on a group's header moves the whole group.
+    deliver({ v: 1, t: 'layout', mode: 'vertical' });
+    deliver(base);
+    const header = stripRoot.querySelector('.side-group[data-key="9"]');
+    assert.ok(header, 'a group header');
+    sent.length = 0;
+    header.dispatch('keydown', { key: 'ArrowDown', ctrlKey: true, shiftKey: true, target: header });
+    header.dispatch('keydown', { key: 'PageUp', ctrlKey: true, shiftKey: true, target: header });
+    assert.deepEqual(sent, [{ v: 1, t: 'group', a: 'move', key: 9, before: 6 }, { v: 1, t: 'group', a: 'move', key: 9, before: 2 }]);
+    deliver({ v: 1, t: 'layout', mode: 'horizontal' });
+  } finally {
+    stripRoot.offsetWidth = wide;
+    deliver(tabsMsg([item(1, { pinned: true }), item(2), item(3)], 2));
+  }
+});
+
 test('tabs.css draws the island as one box: a wash when open, the selected tab’s surface when folded, a pill when folded away', () => {
   const css = readFileSync(new URL('../src/styles/tabs.css', import.meta.url), 'utf8');
   const folded = '\\.strip \\.group\\.collapsed:has\\(\\.tab:not\\(\\[hidden\\]\\)\\)';

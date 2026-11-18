@@ -11156,7 +11156,7 @@ fn html_tab_move(hwnd: HWND, raw: u32, before: u32) {
 }
 
 /// A group command from the strip. Like the native ball: a click toggles the group's collapse and a
-/// menu request opens its island menu.
+/// menu request opens its island menu; a drag of the handle moves the whole island.
 fn html_group_action(hwnd: HWND, action: GroupAction, key: u32) {
     let Some(app) = app_of(hwnd) else { return };
     let Some(group) =
@@ -11176,6 +11176,19 @@ fn html_group_action(hwnd: HWND, action: GroupAction, key: u32) {
                 return;
             };
             defer_html_command(hwnd, DeferredChromeCommand::IslandMenu { id: group.tab, x, y });
+        }
+        // The handle was dragged (or moved by the keyboard): the whole island moves in front of
+        // `before` (`0` = the end of the strip). An unknown `before` is ignored, like `tabmove`'s.
+        GroupAction::Move { before } => {
+            let anchor = if before == 0 {
+                None
+            } else {
+                let Some(tab) = chrome_host::tab_from_wire(before, &App::tab_ids(&app)) else {
+                    return;
+                };
+                Some(tab)
+            };
+            let _ = App::move_island(&app, group.tab, anchor);
         }
     }
 }

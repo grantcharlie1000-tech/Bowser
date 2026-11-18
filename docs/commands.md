@@ -147,7 +147,9 @@ links, move to a workspace or a new window, unstack).
 
 Tab groups have one look (islands) and one setting: Settings > Groups > "Group tabs automatically", which
 applies at once. Tabs from one site share a group; an opener link no longer forms a group of its own. Drag a tab
-between two members of a group, or hold it over a member and let go, to add it to that group. The older stack
+between two members of a group, or hold it over a member and let go, to add it to that group. Drag a group by its
+coloured bar (or a folded group by its pill) to move the whole group, or press Ctrl+Shift+Left/Right (Page Up/Down)
+on the focused bar; it lands before or after another group, never inside one. The older stack
 style (Compact, Accordion, Two-level, Off), "Join group", "Drag to group", "Group delay", "Name on create" and
 "Compact row" options are retired: they keep their defaults (`tab_options::RETIRED_KEYS`) and a value left in
 `settings.txt` is ignored.

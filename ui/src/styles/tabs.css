@@ -369,7 +369,12 @@
   min-width: auto;
   height: var(--bw-tab-h);
   padding: 0 var(--gp) 0 0;
-  transition: flex-grow var(--bw-dur-group) var(--bw-ease-group), flex-basis var(--bw-dur-group) var(--bw-ease-group);
+  /* transform: the whole island slides (FLIP, or out of the way of an island being dragged). */
+  transition:
+    flex-grow var(--bw-dur-group) var(--bw-ease-group),
+    flex-basis var(--bw-dur-group) var(--bw-ease-group),
+    transform var(--bw-dur-base) var(--bw-ease-out),
+    box-shadow var(--bw-dur-base) var(--bw-ease-out);
 }
 
 /* The open island's box: one wash behind the bar and every tab, a step off the strip, with a tab's
@@ -408,7 +413,7 @@
   border: 0;
   border-radius: var(--bw-r-pill);
   background: none;
-  cursor: default;
+  cursor: grab; /* the handle also picks the whole island up (tabs.ts group drag) */
 }
 
 .strip .ball .bar {
@@ -460,6 +465,7 @@
 }
 .strip .group[data-more="1"] .sliver + .sliver { display: none; }
 .strip .group .cap:hover .sliver { background: color-mix(in srgb, var(--bw-text) 62%, transparent); }
+.strip .group .cap { cursor: grab; }
 
 .strip .group.collapsed .tab:not([hidden]) {
   padding-inline: calc(var(--gi) + var(--gb) + 5px) calc(var(--ci) + var(--cw) + var(--bw-space-0_5));
@@ -485,6 +491,28 @@
   gap: 0;
   padding: 0 var(--gi) 0 0;
 }
+
+/* ---- Moving a whole island by its handle (tabs.ts group drag) ----
+   The island follows the pointer along the row as one raised piece: its box turns opaque (the same
+   wash over the window colour) with the flyout shadow, like a held tab. The tabs and islands it passes
+   slide aside by transform; nothing changes size. Released, it keeps its place above its neighbours
+   until it lands. While it is held, its own transform follows the pointer with no transition. */
+.strip.group-dragging,
+.strip.group-dragging * { cursor: grabbing; }
+.strip.settle .group,
+.strip .group.dragging {
+  transition:
+    flex-grow var(--bw-dur-group) var(--bw-ease-group),
+    flex-basis var(--bw-dur-group) var(--bw-ease-group),
+    box-shadow var(--bw-dur-base) var(--bw-ease-out);
+}
+.strip .group.dragging,
+.strip .group.landing {
+  z-index: 5;
+  border-radius: var(--gr);
+}
+.strip .group.dragging { box-shadow: var(--bw-sh-flyout); }
+.strip .group.dragging::before { background: color-mix(in srgb, var(--bw-text) 8%, var(--bw-window)); }
 
 /* ---- Tab options (Settings > Tabs): the strip classes tabs.ts sets from the host's `tabopts` ---- */
 
@@ -652,6 +680,7 @@
 
 @media (prefers-reduced-motion: reduce) {
   .strip .tab.dragging,
-  .strip .tab.landing { box-shadow: var(--bw-sh-tip); }
+  .strip .tab.landing,
+  .strip .group.dragging { box-shadow: var(--bw-sh-tip); }
 }
 

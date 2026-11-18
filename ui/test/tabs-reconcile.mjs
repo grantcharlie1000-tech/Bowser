@@ -266,6 +266,57 @@ test('drop FLIP: a dragged tab travels from the release point to its slot, never
   assert.notEqual(invert, buggyInvert);
 });
 
+test('group drag: units skip pinned tabs and name a group by its first member, hidden ones included', () => {
+  const items = [
+    tab(1, { pinned: true }),
+    tab(2),
+    tab(3, { g: 9, gl: true, gname: 'Docs', gcol: 2, gcollapsed: true, gsize: 3 }),
+    tab(4, { g: 9 }),
+    tab(5, { g: 9 }),
+    tab(6),
+  ];
+  // Folded around tab 4 (active): the unit still names tab 3, the island's first member.
+  assert.deepEqual(logic.groupUnits(buildEntries(items, 4)), [{ key: 0, first: 2 }, { key: 9, first: 3 }, { key: 0, first: 6 }]);
+});
+
+test('group drag: the block passes a unit once its leading edge crosses that unit\'s centre', () => {
+  const { blockDropIndex, clampBlock } = logic;
+  // Units: a [0,100] c50, the group [104,304] c204, b [308,408] c358.
+  const centers = [50, 204, 358];
+  assert.equal(blockDropIndex(centers, 1, 104, 304), 1, 'home');
+  assert.equal(blockDropIndex(centers, 1, 104 + 50, 304 + 50), 1, 'right edge 354 short of b');
+  assert.equal(blockDropIndex(centers, 1, 104 + 60, 304 + 60), 2, 'right edge past b: a wide group need not travel its own width');
+  assert.equal(blockDropIndex(centers, 1, 104 - 50, 304 - 50), 1, 'left edge 54 still right of a');
+  assert.equal(blockDropIndex(centers, 1, 104 - 60, 304 - 60), 0, 'left edge past a');
+  // The block stays within the row of units.
+  const lefts = [0, 104, 308];
+  const widths = [100, 200, 100];
+  assert.equal(clampBlock(-500, lefts, widths, 1), -104);
+  assert.equal(clampBlock(500, lefts, widths, 1), 104);
+  assert.equal(clampBlock(30, lefts, widths, 1), 30);
+});
+
+test('group drag: before ids for a drop and for the keyboard chord', () => {
+  const { groupMoveBefore, groupStepBefore, moveChordDir } = logic;
+  const firsts = [2, 3, 6, 7];
+  assert.equal(groupMoveBefore(firsts, 1, 1), null, 'the same slot sends nothing');
+  assert.equal(groupMoveBefore(firsts, 1, 0), 2);
+  assert.equal(groupMoveBefore(firsts, 1, 2), 7, 'after 6 means in front of 7');
+  assert.equal(groupMoveBefore(firsts, 1, 3), 0, 'the end');
+  assert.equal(groupMoveBefore(firsts, 1, 4), null);
+  assert.equal(groupStepBefore(firsts, 1, -1), 2);
+  assert.equal(groupStepBefore(firsts, 1, 1), 7);
+  assert.equal(groupStepBefore(firsts, 0, -1), null, 'already first');
+  assert.equal(groupStepBefore(firsts, 3, 1), null, 'already last');
+  assert.equal(groupStepBefore(firsts, 2, 1), 0);
+  assert.equal(moveChordDir('PageUp', true, true, false), -1);
+  assert.equal(moveChordDir('ArrowRight', true, true, false), 1);
+  assert.equal(moveChordDir('ArrowRight', true, false, false), 0);
+  assert.equal(moveChordDir('ArrowRight', true, true, true), 0);
+  assert.equal(moveChordDir('Home', true, true, false), 0);
+  assert.match(logic.groupDragAnnouncement('drop', 'Docs', 2, 4), /Group Docs moved to position 2 of 4/);
+});
+
 test('drop FLIP: a leftward drag and a neighbour close up by their own displacement', () => {
   // Tab c at 200 dragged 150 left to 50 and dropped before a; reordered to c a b: c's slot is 0.
   assert.equal(flipInvert(landingFirst(200, -150), 0), 50);
@@ -280,7 +331,7 @@ test('tabs.ts: one landing flag, an honest shift and a single 167ms ease-out (no
   assert.match(ts, /let landing: Landing \| null/);
   assert.match(ts, /d\.node\.shift = d\.dx;/, 'the dragged tab tracks its transform in shift');
   assert.match(ts, /n\.root\.style\.transform === ''/, 'setShift(n, 0) clears the dragged tab even when shift was 0');
-  assert.match(ts, /landingPhase\(landing\?\.signature \?\? null, nextSignature\)/, 'a stale render never touches transforms');
+  assert.match(ts, /landingPhase\(landing\?\.signature \?\? groupLanding\?\.signature \?\? null, nextSignature\)/, 'a stale render never touches transforms (a dropped tab or a dropped island)');
   assert.match(ts, /classList\.add\('landing'\);\s*d\.node\.root\.classList\.remove\('dragging'\);/, '.dragging hands over to .landing, never both dropped');
   assert.match(ts, /scale\(\$\{LIFT_SCALE\}\)/, 'the lift rides inside the landing transform');
   assert.match(ts, /ev\.propertyName === 'transform'/);

@@ -259,6 +259,62 @@ impl App {
         stacks::tile_targets(&selected, &Self::stack_members(app, active))
     }
 
+    /// Moves the whole island (stack) `id` is in so it sits in front of tab `before` (`None`: the end
+    /// of the strip): its handle was dragged, or moved by the keyboard. Every member moves, in its own
+    /// order, and stays in the island; a drop inside another island lands in front of it and one among
+    /// the pinned tabs after them (`stacks::island_move_anchor`). Like a single tab's move this is a
+    /// reorder, not an organisation step, so Undo tab organisation has nothing to undo. Returns
+    /// whether anything moved.
+    pub fn move_island(app: &AppRef, id: TabId, before: Option<TabId>) -> bool {
+        let (island, slots) = {
+            let state = app.borrow();
+            let Some(island) = state.domain_island_of(id) else {
+                return false;
+            };
+            let inputs = state.group_inputs();
+            let keys = tab_groups::group_keys(&inputs, &state.group_preferences);
+            let slots: Vec<stacks::StripSlot> = tab_groups::strip_order(&inputs, &keys)
+                .into_iter()
+                .map(|(tab, key)| stacks::StripSlot {
+                    id: tab,
+                    island: key.map(|TabGroupKey::Domain(domain)| domain),
+                    pinned: inputs.iter().any(|input| input.id == tab && input.pinned),
+                })
+                .collect();
+            (island, slots)
+        };
+        let Some(anchor) = stacks::island_move_anchor(&slots, &island, before) else {
+            return false;
+        };
+        let members: Vec<TabId> = slots
+            .iter()
+            .filter(|slot| !slot.pinned && slot.island.as_ref() == Some(&island))
+            .map(|slot| slot.id)
+            .collect();
+        // Each member in turn goes right in front of the anchor (or to the end), so the block arrives
+        // whole and in order. `move_tab` takes the index the tab has once moved.
+        let mut moved = false;
+        for member in members {
+            let ids = Self::tab_ids(app);
+            let Some(from) = ids.iter().position(|tab| *tab == member) else {
+                continue;
+            };
+            let to = match anchor {
+                stacks::IslandAnchor::End => ids.len() - 1,
+                stacks::IslandAnchor::Before(target) => {
+                    let Some(at) = ids.iter().position(|tab| *tab == target) else {
+                        return moved;
+                    };
+                    if from < at { at - 1 } else { at }
+                }
+            };
+            if to != from && Self::move_tab(app, member, to) {
+                moved = true;
+            }
+        }
+        moved
+    }
+
     /// Moves `tabs` to workspace `target`. A workspace keeps one tab at least, so when every tab of
     /// the workspace in front would leave, a new tab is opened there first. With `follow`, the window
     /// switches to `target` and shows the first moved tab; otherwise it stays, and a moved tab that was

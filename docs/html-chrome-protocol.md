@@ -128,6 +128,7 @@ Wire ids: a tab's wire id is `TabId + 1`, so `0` is never a tab (`tabmove.before
 | `tab` | `a`: `select`/`close`/`menu`/`pin`/`mute`, `id` | tab actions (`menu` = Rust shows the native tab context menu at the cursor) |
 | `tabmove` | `id`, `before` (tab id, `0` = end of strip) | drag-reorder drop; Rust uses the same move/drop logic (including group join/leave rules) as native |
 | `group` | `a`: `toggle`/`menu`, `key` | click on a tab island's bar (collapse/expand) or its menu (right click) |
+| `group` | `a`: `move`, `key`, `before` (tab id, `0` = end of strip) | the island's bar (or folded pill / closing mark) was dragged, or Ctrl+Shift+Left/Right / Page Up/Down pressed on it (Up/Down on a sidebar group header): every member moves as one block in front of `before`, keeping its order and group (`App::move_island`). A `before` inside another island lands in front of that island; one among the pinned tabs lands after them; a no-op or unknown `before` is ignored. `before` is required with `move` and refused with `toggle`/`menu`. A reorder, not an organisation step (no Undo tab organisation entry, like `tabmove`) |
 | `side` | `a`: `workspace`/`newtab` | open the native workspace switcher or create a tab in the current workspace |
 
 ### Rust -> JS additions
