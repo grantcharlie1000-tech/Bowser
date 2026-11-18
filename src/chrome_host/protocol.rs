@@ -2074,7 +2074,7 @@ pub fn favicon_data_uri(png: &[u8]) -> Option<String> {
 }
 
 // --- hover layer ---
-/// Most member rows in one card or island message (the island menu draws twelve, the card eight).
+/// Most member rows in one island message (the island menu draws twelve).
 pub const MAX_HOVER_ROWS: usize = 12;
 /// Most swatch colours in one island message.
 pub const MAX_HOVER_SWATCHES: usize = 32;
@@ -2087,13 +2087,11 @@ pub fn favicon_uri(png: &[u8]) -> Option<String> {
     png_is_sendable(png).then(|| format!("data:image/png;base64,{}", base64_encode(png)))
 }
 
-/// One member row of the hover card or the island menu.
+/// One member row of the island menu.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct HoverRow {
     pub title: String,
     pub active: bool,
-    /// Card only: joined to the hovered tab by an opener link.
-    pub linked: bool,
     /// Favicon PNG bytes; sent only when they pass the `fav` gate and the message budget.
     pub png: Option<Vec<u8>>,
 }
@@ -2110,9 +2108,6 @@ pub struct HoverCard {
     /// The tab's page was discarded or suspended to save memory.
     pub sleeping: bool,
     pub png: Option<Vec<u8>>,
-    pub rows: Vec<HoverRow>,
-    /// Rows the card does not draw.
-    pub more: usize,
     // --- tab options --- Settings > Appearance: "Show a thumbnail in tab previews" and "Show memory use".
     /// A JPEG thumbnail of the page (`crate::thumbnail`), sent only when it is small enough.
     pub thumb: Option<Vec<u8>>,
@@ -2147,7 +2142,6 @@ fn write_hover_rows(out: &mut super::json::Object<'_>, rows: &[HoverRow], budget
             items.object(|item| {
                 item.string("title", truncate_chars(&row.title, MAX_TAB_TITLE_CHARS));
                 item.bool("active", row.active);
-                item.bool("linked", row.linked);
                 item.string("fav", &budgeted_uri(row.png.as_deref(), budget));
             });
         }
@@ -2175,11 +2169,10 @@ pub fn tooltip_json(tok: u32, text: &str) -> String {
     })
 }
 
-/// `{"v":1,"t":"hover","tok":..,"kind":"card",...}`. Rows are capped at `MAX_HOVER_ROWS`; rows over
-/// the cap are added to `more`. Unsafe marker colours are sent as `""`.
+/// `{"v":1,"t":"hover","tok":..,"kind":"card",...}`: the hovered tab alone. Unsafe marker colours
+/// are sent as `""`.
 pub fn card_json(tok: u32, card: &HoverCard) -> String {
     let mut budget = MAX_HOVER_FAV_TEXT;
-    let hidden = card.rows.len().saturating_sub(MAX_HOVER_ROWS);
     super::json::Json::object(|out| {
         out.int("v", 1);
         out.string("t", "hover");
@@ -2195,8 +2188,6 @@ pub fn card_json(tok: u32, card: &HoverCard) -> String {
         });
         out.bool("sleeping", card.sleeping);
         out.string("fav", &budgeted_uri(card.png.as_deref(), &mut budget));
-        write_hover_rows(out, &card.rows, &mut budget);
-        out.uint("more", (card.more + hidden) as u64);
         // --- tab options --- only what is there, so a card without them reads as before.
         if let Some(uri) = card.thumb.as_deref().and_then(crate::thumbnail::data_uri) {
             out.string("thumb", &uri);
@@ -4949,7 +4940,7 @@ mod tests {
         assert!(!tooltip.contains('<'), "{tooltip}");
         assert_eq!(hover_hide_json(), r#"{"v":1,"t":"hoverhide"}"#);
         let rows: Vec<HoverRow> = (0..MAX_HOVER_ROWS + 3)
-            .map(|i| HoverRow { title: format!("t{i}"), active: i == 0, linked: false, png: None })
+            .map(|i| HoverRow { title: format!("t{i}"), active: i == 0, png: None })
             .collect();
         let card = card_json(9, &HoverCard {
             title: "x".repeat(400),
@@ -4958,16 +4949,12 @@ mod tests {
             markers: vec!["#fff".into(), "url(x)".into()],
             sleeping: true,
             png: Some(vec![1, 2, 3]),
-            rows: rows.clone(),
-            more: 1,
             ..HoverCard::default() // --- tab options ---
         });
         assert!(card.contains(&format!("\"title\":\"{}\"", "x".repeat(MAX_TAB_TITLE_CHARS))));
         assert!(card.contains("\"marker\":-1"));
         assert!(card.contains("\"markers\":[\"#fff\",\"\"]"));
-        assert!(card.contains("\"fav\":\"\",\"rows\""));
-        assert!(card.contains("\"more\":4"));
-        assert_eq!(card.matches("\"linked\"").count(), MAX_HOVER_ROWS);
+        assert!(card.ends_with("\"fav\":\"\"}"), "the card lists no other tabs: {card}");
         let island = island_json(2, &HoverIsland {
             name: "n".repeat(100),
             hint: "Docs".into(),
@@ -5008,8 +4995,6 @@ mod tests {
             markers: vec!["#e5484d".into(), "#f76b15".into(), "#ffc53d".into(), "#30a46c".into(), "#0090ff".into()],
             sleeping: false,
             png: None,
-            rows: vec![HoverRow { title: "Other".into(), active: true, linked: true, png: None }],
-            more: 0,
             ..HoverCard::default() // --- tab options ---
         });
         let island = island_json(8, &HoverIsland {
@@ -5017,7 +5002,7 @@ mod tests {
             hint: "Example".into(),
             slot: 0,
             swatches: vec!["#0090ff".into(), "#e5484d".into()],
-            rows: vec![HoverRow { title: "Docs".into(), active: false, linked: false, png: None }],
+            rows: vec![HoverRow { title: "Docs".into(), active: false, png: None }],
             more: 0,
             close: "Close Tab Island · 1 Tab".into(),
         });
@@ -5266,7 +5251,7 @@ mod tests {
         let full = HoverCard { thumb: Some(jpeg.clone()), memory_mb: Some(412), ..plain.clone() };
         let json = card_json(3, &full);
         assert!(json.contains(r#""thumb":"data:image/jpeg;base64,/9gBAgME/9k=""#), "{json}");
-        assert!(json.ends_with(r#""more":0,"thumb":"data:image/jpeg;base64,/9gBAgME/9k=","mem":412}"#), "{json}");
+        assert!(json.ends_with(r#""fav":"","thumb":"data:image/jpeg;base64,/9gBAgME/9k=","mem":412}"#), "{json}");
         // Not a JPEG, or too big: no thumbnail rather than a broken one.
         let png = HoverCard { thumb: Some(vec![0x89, b'P', b'N', b'G']), ..plain.clone() };
         assert!(!card_json(3, &png).contains("thumb"));
@@ -5276,7 +5261,7 @@ mod tests {
         assert!(!card_json(3, &HoverCard { thumb: Some(big), ..plain.clone() }).contains("thumb"));
         assert!(card_json(3, &HoverCard { memory_mb: Some(10_000_000), ..plain.clone() }).contains(r#""mem":99999"#), "memory is capped");
         assert!(!card_json(3, &plain).contains("preview"));
-        assert!(card_json(3, &HoverCard { preview: true, ..plain }).ends_with(r#""more":0,"preview":true}"#));
+        assert!(card_json(3, &HoverCard { preview: true, ..plain }).ends_with(r#""fav":"","preview":true}"#));
     }
 
     #[test]

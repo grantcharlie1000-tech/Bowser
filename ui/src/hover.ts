@@ -2,7 +2,7 @@
 // The hover view (?view=hover): tooltips, the tab hover card and the island menu, drawn in the
 // no-activate hover popup. Rust posts content with a token; the view renders it, measures it and
 // replies with its size. Page text is written with textContent only; favicons are validated data:
-// URIs. Stable class names: .bw-tooltip, .bw-card, .bw-island-menu.
+// URIs. Stable class names: .bw-tooltip, .bw-card, .bw-island-menu. The card lists no other tabs.
 import { el, icon } from './dom';
 import {
   MAX_ISLAND_NAME,
@@ -40,7 +40,9 @@ function favicon(uri: string, className: string): HTMLElement {
   return img;
 }
 
-function rowList(rows: readonly HoverRowMsg[], more: number, prefix: string, act: Act): HTMLElement[] {
+/** The island menu's member rows and its "+N more" line. */
+function rowList(rows: readonly HoverRowMsg[], more: number, act: Act): HTMLElement[] {
+  const prefix = 'bw-island';
   const out: HTMLElement[] = [];
   if (rows.length > 0) {
     const list = el('div', `${prefix}-rows`);
@@ -50,7 +52,6 @@ function rowList(rows: readonly HoverRowMsg[], more: number, prefix: string, act
       button.type = 'button';
       button.setAttribute('role', 'listitem');
       button.classList.toggle('is-active', row.active);
-      button.classList.toggle('is-linked', row.linked);
       const title = el('span', `${prefix}-row-title`);
       title.dir = 'auto';
       title.textContent = guardTitle(row.title); // --- spoiler guard ---
@@ -347,7 +348,7 @@ function fillIsland(view: IslandView, msg: HoverIslandMsg, act: Act, keepDraft: 
   close.type = 'button';
   close.textContent = msg.close;
   close.addEventListener('click', () => act({ a: 'close' }));
-  view.menu.append(swatches, ...rowList(msg.rows, msg.more, 'bw-island', act), close);
+  view.menu.append(swatches, ...rowList(msg.rows, msg.more, act), close);
 }
 
 /** Builds the hover view into `root` and wires it to the host. */

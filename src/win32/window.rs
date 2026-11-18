@@ -731,11 +731,10 @@ struct WindowChrome {
     exit_flushed: bool,
 }
 
-/// Where a group command from the tab strip goes: a tab of the group, and what the group allows.
+/// Where a group command from the tab strip goes: a tab of the group, and whether it is folded.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct HtmlGroup {
     tab: TabId,
-    collapsible: bool,
     collapsed: bool,
 }
 
@@ -10847,7 +10846,6 @@ fn html_hover_command(hwnd: HWND, view: View, command: ChromeCommand) {
                     .map(|tab| (super::html_hover::Kind::Card, tab, rect)),
                 chrome_host::protocol::HoverTarget::Ball { key, rect } => with_chrome(hwnd, |s| s.html_tabs_groups.get(&key).copied())
                     .flatten()
-                    .filter(|group| group.collapsible)
                     .map(|group| (super::html_hover::Kind::Island, group.tab, rect)),
                 chrome_host::protocol::HoverTarget::None => None,
             };
@@ -11155,9 +11153,8 @@ fn html_tab_move(hwnd: HWND, raw: u32, before: u32) {
     let _ = App::drop_tab(&app, moved, index);
 }
 
-/// A group command from the strip. Like the native ball: a domain group toggles its collapse and
-/// opens its island menu; an opener group has nothing to collapse, so its ball selects the tab and
-/// its menu is the tab menu.
+/// A group command from the strip. Like the native ball: a click toggles the group's collapse and a
+/// menu request opens its island menu.
 fn html_group_action(hwnd: HWND, action: GroupAction, key: u32) {
     let Some(app) = app_of(hwnd) else { return };
     let Some(group) =
@@ -11166,11 +11163,8 @@ fn html_group_action(hwnd: HWND, action: GroupAction, key: u32) {
         return;
     };
     match action {
-        GroupAction::Toggle if group.collapsible => {
-            let _ = App::set_tab_group_collapsed(&app, group.tab, !group.collapsed);
-        }
         GroupAction::Toggle => {
-            let _ = App::select_tab(&app, group.tab);
+            let _ = App::set_tab_group_collapsed(&app, group.tab, !group.collapsed);
         }
         GroupAction::Menu if system_menu_requested(&app) => {
             defer_html_command(hwnd, DeferredChromeCommand::SystemMenu);
@@ -11179,13 +11173,7 @@ fn html_group_action(hwnd: HWND, action: GroupAction, key: u32) {
             let Some((x, y)) = cursor_client_point(hwnd) else {
                 return;
             };
-            let id = group.tab;
-            let menu = if group.collapsible {
-                DeferredChromeCommand::IslandMenu { id, x, y }
-            } else {
-                DeferredChromeCommand::TabMenu { id, x, y }
-            };
-            defer_html_command(hwnd, menu);
+            defer_html_command(hwnd, DeferredChromeCommand::IslandMenu { id: group.tab, x, y });
         }
     }
 }
@@ -11511,7 +11499,6 @@ fn html_tabs_sync(hwnd: HWND) {
                 chrome_host::group_wire_key(&group.key),
                 HtmlGroup {
                     tab: row.id,
-                    collapsible: group.collapsible,
                     collapsed: group.collapsed,
                 },
             ))

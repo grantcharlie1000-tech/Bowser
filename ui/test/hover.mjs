@@ -36,7 +36,7 @@ test('Rust hover fixture parses as tooltip, card, island and hide', () => {
   assert.equal(card?.kind, 'card');
   assert.equal(card.marker, 2);
   assert.equal(card.markers.length, 5);
-  assert.deepEqual(card.rows, [{ title: 'Other', active: true, linked: true, fav: '' }]);
+  assert.equal('rows' in card, false, 'the card lists no other tabs');
   const island = parseInbound(fixture.island);
   assert.equal(island?.kind, 'island');
   assert.equal(island.hint, 'Example');
@@ -58,10 +58,12 @@ test('malformed hover content is rejected', () => {
     { ...card, marker: 5 },
     { ...card, markers: ['url(x)'] },
     { ...card, fav: 'data:image/gif;base64,AAAA' },
-    { ...card, rows: Array.from({ length: 13 }, () => card.rows[0]) },
-    { ...card, rows: [{ ...card.rows[0], extra: true }] },
-    { ...card, rows: [{ title: 'x', active: true, linked: false }] },
-    { ...card, more: -1 },
+    { ...card, rows: [] },
+    { ...card, more: 0 },
+    { ...island, rows: Array.from({ length: 13 }, () => island.rows[0]) },
+    { ...island, rows: [{ ...island.rows[0], extra: true }] },
+    { ...island, rows: [{ title: 'x', active: true, linked: false, fav: '' }] },
+    { ...island, more: -1 },
     { ...card, preview: false },
     { ...card, preview: 1 },
     (() => { const { sleeping, ...rest } = card; return rest; })(),

@@ -168,7 +168,6 @@ export type HoverActFields =
 export interface HoverRowMsg {
   readonly title: string;
   readonly active: boolean;
-  readonly linked: boolean;
   /** PNG data: URI, or '' for the placeholder dot. */
   readonly fav: string;
 }
@@ -185,8 +184,6 @@ export interface HoverCardMsg {
   readonly markers: readonly string[];
   readonly sleeping: boolean;
   readonly fav: string;
-  readonly rows: readonly HoverRowMsg[];
-  readonly more: number;
   // --- tab options --- sent only when "Show a thumbnail in tab previews" / "Show memory use" are on and known.
   /** A small JPEG of the page as a data: URI. */
   readonly thumb?: string;
@@ -972,15 +969,15 @@ export function sendSuggestEnd(): boolean {
 }
 // --- end omnibox suggest ---
 
-const HOVER_ROW_KEYS = ['title', 'active', 'linked', 'fav'];
+const HOVER_ROW_KEYS = ['title', 'active', 'fav'];
 function parseHoverRows(v: unknown): HoverRowMsg[] | null {
   if (!Array.isArray(v) || v.length > MAX_HOVER_ROWS) return null;
   const rows: HoverRowMsg[] = [];
   for (const row of v) {
     if (!isRecord(row) || !hasOnlyKeys(row, HOVER_ROW_KEYS) || !hasAllKeys(row, HOVER_ROW_KEYS)) return null;
-    const { title, active, linked, fav } = row;
-    if (!isStr(title, MAX_TITLE) || !isBool(active) || !isBool(linked) || (fav !== '' && !isFavUri(fav))) return null;
-    rows.push({ title, active, linked, fav: fav as string });
+    const { title, active, fav } = row;
+    if (!isStr(title, MAX_TITLE) || !isBool(active) || (fav !== '' && !isFavUri(fav))) return null;
+    rows.push({ title, active, fav: fav as string });
   }
   return rows;
 }
@@ -994,7 +991,7 @@ function parseColours(v: unknown, max: number): string[] | null {
   return out;
 }
 const TOOLTIP_KEYS = ['v', 't', 'tok', 'kind', 'text'];
-const CARD_KEYS = ['v', 't', 'tok', 'kind', 'title', 'host', 'marker', 'markers', 'sleeping', 'fav', 'rows', 'more'];
+const CARD_KEYS = ['v', 't', 'tok', 'kind', 'title', 'host', 'marker', 'markers', 'sleeping', 'fav'];
 /** Longest thumbnail data: URI Rust sends (36,000 bytes of JPEG as base64). */
 export const MAX_THUMB_URI = 48 * 1024;
 const THUMB_PREFIX = 'data:image/jpeg;base64,';
@@ -1015,13 +1012,12 @@ export function parseHoverMsg(raw: Record<string, unknown>): HoverMsg | null {
     case 'card': {
       if (!hasOnlyKeys(raw, [...CARD_KEYS, 'thumb', 'mem', 'preview']) || !hasAllKeys(raw, CARD_KEYS)) return null;
       if (('thumb' in raw && !isThumbUri(raw.thumb)) || ('mem' in raw && !isInt(raw.mem, 0, 99999)) || ('preview' in raw && raw.preview !== true)) return null; // --- tab options ---
-      const { title, host, marker, sleeping, fav, more } = raw;
+      const { title, host, marker, sleeping, fav } = raw;
       const markers = parseColours(raw.markers, HOVER_MARKERS);
-      const rows = parseHoverRows(raw.rows);
       if (!isStr(title, MAX_TITLE) || !isStr(host, MAX_HOVER_HOST) || !isInt(marker, -1, HOVER_MARKERS - 1)) return null;
-      if (!isBool(sleeping) || (fav !== '' && !isFavUri(fav)) || !isInt(more, 0, MAX_ID) || !markers || !rows) return null;
+      if (!isBool(sleeping) || (fav !== '' && !isFavUri(fav)) || !markers) return null;
       return {
-        t: 'hover', tok, kind: 'card', title, host, marker, markers, sleeping, fav: fav as string, rows, more,
+        t: 'hover', tok, kind: 'card', title, host, marker, markers, sleeping, fav: fav as string,
         ...(typeof raw.thumb === 'string' ? { thumb: raw.thumb } : {}), // --- tab options ---
         ...(typeof raw.mem === 'number' ? { mem: raw.mem } : {}),
         ...(raw.preview === true ? { preview: true } : {}),

@@ -5,7 +5,7 @@
 //! Pure Rust. Nothing here touches windows, WebViews, timers, or files. The app keeps the state and
 //! applies these rules whenever it projects its tab strip, so nothing in this module runs on its own.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, VecDeque};
 
 use crate::tab_groups::{DomainKey, GroupMode, GroupPreferences, TabGroupInput, TabGroupKey};
 use crate::tabs::TabId;
@@ -16,10 +16,10 @@ pub const UNDO_LIMIT: usize = 32;
 /// A tab's manual placement. Automatic grouping always respects it.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum Membership {
-    /// Placed by the automatic rules: its own registrable domain and any opener link.
+    /// Placed by the automatic rules: its own registrable domain.
     #[default]
     Automatic,
-    /// Dragged into the group for this domain. Overrides the tab's own domain and opener link.
+    /// Dragged into the group for this domain. Overrides the tab's own domain.
     Joined(DomainKey),
     /// Dragged out of its group. The automatic rules never regroup it.
     Ungrouped,
@@ -35,10 +35,10 @@ pub struct Snapshot {
 /// Applies manual placement and the automatic-grouping switch to the projection inputs.
 ///
 /// - A `Joined` tab takes the joined domain and is marked manual, so it keeps the group formed even
-///   below the mode's threshold. Its opener link no longer applies.
-/// - An `Ungrouped` tab loses its domain and opener link, and no automatic edge reaches it.
-/// - With `automatic` off, `Auto`-mode domains and opener links form nothing new. Explicit `Always`
-///   groups and manual members are not automatic, so they still apply.
+///   below the mode's threshold.
+/// - An `Ungrouped` tab loses its domain, so no automatic group reaches it.
+/// - With `automatic` off, `Auto`-mode domains form nothing new. Explicit `Always` groups and manual
+///   members are not automatic, so they still apply.
 /// - Pinned tabs are left alone, because grouping already excludes them.
 pub fn apply_membership(
     inputs: &mut [TabGroupInput],
@@ -46,44 +46,24 @@ pub fn apply_membership(
     preferences: &GroupPreferences,
     automatic: bool,
 ) {
-    let membership_of = |id: TabId| memberships.get(&id).cloned().unwrap_or_default();
-    // An opener edge only counts when the parent is placed automatically, so a manually placed
-    // parent never pulls its children into an opener group.
-    let automatic_ids: HashSet<TabId> = inputs
-        .iter()
-        .filter(|input| membership_of(input.id) == Membership::Automatic)
-        .map(|input| input.id)
-        .collect();
     for input in inputs.iter_mut() {
         if input.pinned {
             continue;
         }
-        match membership_of(input.id) {
+        match memberships.get(&input.id).cloned().unwrap_or_default() {
             Membership::Joined(domain) => {
                 input.domain = Some(domain);
-                input.opener = None;
                 input.manual = true;
             }
-            Membership::Ungrouped => {
-                input.domain = None;
-                input.opener = None;
-            }
+            Membership::Ungrouped => input.domain = None,
             Membership::Automatic => {
-                if !automatic {
-                    input.opener = None;
-                    if input
+                if !automatic
+                    && input
                         .domain
                         .as_ref()
                         .is_some_and(|domain| preferences.mode(domain) == GroupMode::Auto)
-                    {
-                        input.domain = None;
-                    }
-                }
-                if input
-                    .opener
-                    .is_some_and(|opener| !automatic_ids.contains(&opener))
                 {
-                    input.opener = None;
+                    input.domain = None;
                 }
             }
         }
@@ -266,14 +246,13 @@ mod tests {
         DomainKey::parse(domain).unwrap()
     }
 
-    fn input(id: u32, domain: Option<&str>, opener: Option<u32>, pinned: bool) -> TabGroupInput {
+    fn input(id: u32, domain: Option<&str>, pinned: bool) -> TabGroupInput {
         TabGroupInput {
             id: TabId(id),
             domain: domain.map(|host| {
                 DomainKey::from_url(&Url::parse(&format!("https://{host}/")).unwrap()).unwrap()
             }),
             pinned,
-            opener: opener.map(TabId),
             manual: false,
         }
     }
@@ -286,10 +265,10 @@ mod tests {
     fn a_drop_reads_its_neighbours_in_strip_order_not_model_order() {
         // Model: x1, n1, x2, n2. The strip draws the x.com group as one run: x1 x2 n1 n2.
         let tabs = [
-            input(1, Some("x.com"), None, false),
-            input(2, None, None, false),
-            input(3, Some("x.com"), None, false),
-            input(4, None, None, false),
+            input(1, Some("x.com"), false),
+            input(2, None, false),
+            input(3, Some("x.com"), false),
+            input(4, None, false),
         ];
         let keys = crate::tab_groups::group_keys(&tabs, &GroupPreferences::default());
         let order = crate::tab_groups::strip_order(&tabs, &keys);
@@ -316,61 +295,45 @@ mod tests {
     }
 
     #[test]
-    fn joined_tab_takes_the_joined_domain_and_loses_its_opener() {
+    fn joined_tab_takes_the_joined_domain() {
         let mut tabs = [
-            input(1, Some("alpha.example.com"), None, false),
-            input(2, Some("beta.example.net"), Some(1), false),
+            input(1, Some("alpha.example.com"), false),
+            input(2, Some("beta.example.net"), false),
         ];
         let memberships = placed(&[(2, Membership::Joined(key("example.com")))]);
 
         apply_membership(&mut tabs, &memberships, &GroupPreferences::default(), true);
 
         assert_eq!(tabs[1].domain, Some(key("example.com")));
-        assert_eq!(tabs[1].opener, None);
         assert!(tabs[1].manual);
         assert!(!tabs[0].manual);
     }
 
     #[test]
-    fn ungrouped_tab_loses_its_domain_and_no_opener_edge_reaches_it() {
+    fn ungrouped_tab_loses_its_domain() {
         let mut tabs = [
-            input(1, Some("alpha.example.com"), None, false),
-            input(2, Some("alpha.example.com"), Some(1), false),
+            input(1, Some("alpha.example.com"), false),
+            input(2, Some("alpha.example.com"), false),
         ];
         let memberships = placed(&[(2, Membership::Ungrouped)]);
 
         apply_membership(&mut tabs, &memberships, &GroupPreferences::default(), true);
 
         assert_eq!(tabs[1].domain, None);
-        assert_eq!(tabs[1].opener, None);
         assert_eq!(tabs[0].domain, Some(key("example.com")));
     }
 
     #[test]
-    fn child_of_a_manually_placed_parent_does_not_join_the_opener_group() {
-        let mut tabs = [
-            input(1, Some("alpha.example.com"), None, false),
-            input(2, Some("beta.example.net"), Some(1), false),
-        ];
-        let memberships = placed(&[(1, Membership::Ungrouped)]);
-
-        apply_membership(&mut tabs, &memberships, &GroupPreferences::default(), true);
-
-        assert_eq!(tabs[1].opener, None);
-    }
-
-    #[test]
-    fn automation_off_stops_auto_domains_and_openers_but_keeps_explicit_groups() {
+    fn automation_off_stops_auto_domains_but_keeps_explicit_groups() {
         let mut preferences = GroupPreferences::default();
         preferences
             .set_mode(&key("example.net"), GroupMode::Always)
             .unwrap();
         let mut tabs = [
-            input(1, Some("alpha.example.com"), None, false),
-            input(2, Some("alpha.example.com"), None, false),
-            input(3, Some("beta.example.net"), None, false),
-            input(4, Some("beta.example.net"), None, false),
-            input(5, Some("gamma.example.org"), Some(1), false),
+            input(1, Some("alpha.example.com"), false),
+            input(2, Some("alpha.example.com"), false),
+            input(3, Some("beta.example.net"), false),
+            input(4, Some("beta.example.net"), false),
         ];
 
         apply_membership(&mut tabs, &HashMap::new(), &preferences, false);
@@ -382,12 +345,11 @@ mod tests {
             Some(key("example.net")),
             "always mode stays"
         );
-        assert_eq!(tabs[4].opener, None, "no new opener group");
     }
 
     #[test]
     fn automation_off_keeps_manually_joined_members() {
-        let mut tabs = [input(1, Some("alpha.example.com"), None, false)];
+        let mut tabs = [input(1, Some("alpha.example.com"), false)];
         let memberships = placed(&[(1, Membership::Joined(key("example.com")))]);
 
         apply_membership(&mut tabs, &memberships, &GroupPreferences::default(), false);
@@ -398,7 +360,7 @@ mod tests {
 
     #[test]
     fn pinned_tabs_are_left_unchanged_by_placement() {
-        let mut tabs = [input(1, Some("alpha.example.com"), None, true)];
+        let mut tabs = [input(1, Some("alpha.example.com"), true)];
         let memberships = placed(&[(1, Membership::Ungrouped)]);
 
         apply_membership(&mut tabs, &memberships, &GroupPreferences::default(), false);
@@ -458,15 +420,6 @@ mod tests {
                 Some(&domain_key("example.com")),
                 Some(&domain_key("example.net")),
             ),
-            None
-        );
-    }
-
-    #[test]
-    fn dropping_inside_an_opener_group_keeps_the_tab_in_it() {
-        let opener = TabGroupKey::Opener(TabId(7));
-        assert_eq!(
-            drop_membership(Some(&opener), Some(&opener), Some(&opener)),
             None
         );
     }

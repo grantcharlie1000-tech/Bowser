@@ -267,14 +267,13 @@ fn live_groups(app: &AppRef) -> Vec<(String, Vec<TabId>)> {
     let mut seen: Vec<TabGroupKey> = Vec::new();
     let mut out = Vec::new();
     for key in keys.iter().flatten() {
-        if let TabGroupKey::Domain(domain) = key {
-            if seen.contains(key) {
-                continue;
-            }
-            seen.push(key.clone());
-            let members: Vec<TabId> = tab_groups::group_members(&keys, key).into_iter().filter_map(|index| inputs.get(index).map(|input| input.id)).collect();
-            out.push((domain.as_str().to_owned(), members));
+        let TabGroupKey::Domain(domain) = key;
+        if seen.contains(key) {
+            continue;
         }
+        seen.push(key.clone());
+        let members: Vec<TabId> = tab_groups::group_members(&keys, key).into_iter().filter_map(|index| inputs.get(index).map(|input| input.id)).collect();
+        out.push((domain.as_str().to_owned(), members));
     }
     out
 }

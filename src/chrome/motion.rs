@@ -830,7 +830,7 @@ mod tests {
     #[test]
     fn group_morphs_use_the_shared_timer_dirty_bounds_and_reduced_motion() {
         let start = Instant::now();
-        let key = TabGroupKey::Opener(TabId(9));
+        let key = TabGroupKey::Domain(crate::tab_groups::DomainKey::parse("example.com").expect("domain"));
         let expanded = GroupSpec {
             key: key.clone(),
             state: GroupState::Expanded,

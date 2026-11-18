@@ -136,7 +136,7 @@ pub(crate) enum Kind {
 enum Content {
     /// `beside`: placed to the right of the anchor (the rail) rather than under it.
     Tooltip { text: String, beside: bool },
-    Card { tab: TabId, rows: Vec<TabId>, model: HoverCard },
+    Card { tab: TabId, model: HoverCard },
     Island { tab: TabId, rows: Vec<TabId>, model: HoverIsland },
     // --- omnibox suggest ---
     /// `seq` is the omnibox edit the rows answer; `width` is the dropdown width in CSS pixels;
@@ -671,7 +671,7 @@ fn png_of(app: &AppRef, tab: TabId) -> Option<Vec<u8>> {
 }
 
 fn card_content(app: &AppRef, tab: TabId) -> Option<Content> {
-    let (model, _) = App::tab_card_model(app, tab)?;
+    let model = App::tab_card_model(app, tab)?;
     let sleeping = App::tab_sleeping(app, tab);
     let card = HoverCard {
         title: model.title.clone(),
@@ -680,9 +680,6 @@ fn card_content(app: &AppRef, tab: TabId) -> Option<Content> {
         markers: MARKER_COLOURS.iter().map(|c| chrome_host::css_colour(*c)).collect(),
         sleeping,
         png: png_of(app, tab),
-        // The card is the hovered tab alone: its group's other tabs are never listed under it.
-        rows: Vec::new(),
-        more: 0,
         // --- tab options ---
         // A sleeping tab has no live page, so it shows no picture of one; an awake tab shows its
         // latest capture.
@@ -691,7 +688,7 @@ fn card_content(app: &AppRef, tab: TabId) -> Option<Content> {
         preview: !sleeping && App::tab_preview_frame(app, tab),
         // --- end tab options ---
     };
-    Some(Content::Card { tab, rows: Vec::new(), model: card })
+    Some(Content::Card { tab, model: card })
 }
 
 fn island_content(app: &AppRef, tab: TabId) -> Option<Content> {
@@ -714,7 +711,6 @@ fn island_content(app: &AppRef, tab: TabId) -> Option<Content> {
             .map(|(row, id)| HoverRow {
                 title: row.title.clone(),
                 active: row.active,
-                linked: false,
                 png: png_of(app, *id),
             })
             .collect(),
@@ -1231,10 +1227,7 @@ fn run_action(owner: HWND) {
             App::set_tab_marker(&app, tab, tab_card::next_marker(current));
             refresh(owner, &app, Kind::Card, tab, anchor);
         }
-        (
-            Some(Content::Card { rows, .. } | Content::Island { rows, .. }),
-            HoverAction::Row(index),
-        ) => {
+        (Some(Content::Island { rows, .. }), HoverAction::Row(index)) => {
             if let Some(&row) = rows.get(usize::from(index))
                 && App::tab_ids(&app).contains(&row)
             {

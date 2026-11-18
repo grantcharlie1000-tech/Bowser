@@ -430,7 +430,6 @@ mod tests {
                 DomainKey::from_url(&Url::parse(&format!("https://{host}/")).unwrap()).unwrap()
             }),
             pinned: false,
-            opener: None,
             manual: true,
         };
         let inputs = [

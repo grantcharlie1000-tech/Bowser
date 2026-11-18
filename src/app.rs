@@ -10,7 +10,7 @@ use std::{
 use crate::{
     chrome::{
         island_menu::{IslandModel, IslandRow},
-        tab_card::{self, CardModel, CardRow, Marker, TabCardInput},
+        tab_card::{self, CardModel, Marker, TabCardInput},
     },
     tab_groups::{self, TabGroupKey},
     tab_organisation::{self, InFlightDomains, Membership, Snapshot, UndoStack},
@@ -317,43 +317,6 @@ fn set_entry<K: Eq + Hash>(map: &mut HashMap<K, Marker>, key: K, marker: Option<
         Some(marker) => map.insert(key, marker) != Some(marker),
         None => map.remove(&key).is_some(),
     }
-}
-
-/// One tab as the hover card reads it.
-struct CardTab<'a> {
-    id: TabId,
-    title: &'a str,
-    opener: Option<TabId>,
-    has_favicon: bool,
-}
-
-/// Rows of a hover card: every other tab in the hovered tab's group, in model order. Empty when the
-/// hovered tab is in no group. A row is linked when one of the two tabs opened the other.
-fn card_rows(
-    tabs: &[CardTab],
-    keys: &[Option<TabGroupKey>],
-    hovered: usize,
-    active: usize,
-) -> Vec<CardRow> {
-    let Some(key) = keys.get(hovered).and_then(Option::as_ref) else {
-        return Vec::new();
-    };
-    let hovered_tab = &tabs[hovered];
-    tabs.iter()
-        .enumerate()
-        .filter(|(index, _)| *index != hovered && keys[*index].as_ref() == Some(key))
-        .map(|(index, tab)| CardRow {
-            tab_index: index,
-            title: if tab.title.trim().is_empty() {
-                tab_card::NEW_TAB_TITLE.to_owned()
-            } else {
-                tab.title.to_owned()
-            },
-            favicon_present: tab.has_favicon,
-            active: index == active,
-            linked: tab.opener == Some(hovered_tab.id) || hovered_tab.opener == Some(tab.id),
-        })
-        .collect()
 }
 
 const MEMORY_PRESSURE_LOAD_PERCENT: u32 = 85;
@@ -2779,7 +2742,7 @@ impl App {
 
     /// Inputs for the group projection: the active workspace's tabs, in the order the strip shows
     /// them. A workspace is its own world, so a tab in another workspace never counts toward a
-    /// group here, never joins one, and never lends an opener edge to one.
+    /// group here and never joins one.
     fn group_inputs(&self) -> Vec<tab_groups::TabGroupInput> {
         let mut all: HashMap<TabId, tab_groups::TabGroupInput> = self
             .all_group_inputs()
@@ -2811,10 +2774,6 @@ impl App {
                     id: tab.id,
                     domain: self.in_flight_domains.domain_for(tab.id, committed),
                     pinned: tab.pinned,
-                    // Groups are by site only. An opener link (a tab opened from another page, or a
-                    // new tab placed beside the one it came from) would take a tab out of its site's
-                    // group and pair it with an unrelated page, such as an x.com tab with a New tab.
-                    opener: None,
                     manual: false,
                 }
             })
@@ -2830,7 +2789,6 @@ impl App {
         for input in &mut inputs {
             if self.mirror(input.id).is_some_and(|tab| tab.private) {
                 input.domain = None;
-                input.opener = None;
                 input.manual = false;
             }
         }
@@ -2882,13 +2840,10 @@ impl App {
     }
 
     /// Group identity of one tab under the current projection, or `None` when it is in no group.
-    /// Registrable domain of the domain island `id` belongs to. `None` when the tab is in no
-    /// group or only in an opener group, since names, colours and collapse are per domain.
+    /// Registrable domain of the island `id` belongs to. `None` when the tab is in no group.
     fn domain_island_of(&self, id: TabId) -> Option<tab_groups::DomainKey> {
-        match self.group_key_of(id)? {
-            TabGroupKey::Domain(key) => Some(key),
-            TabGroupKey::Opener(_) => None,
-        }
+        let TabGroupKey::Domain(key) = self.group_key_of(id)?;
+        Some(key)
     }
 
     fn group_key_of(&self, id: TabId) -> Option<TabGroupKey> {
@@ -2977,30 +2932,12 @@ impl App {
             .collect()
     }
 
-    /// Hover card for a tab, with the tab ids of its rows in the same order as `model.rows`.
-    /// `None` when the tab is not open.
-    pub fn tab_card_model(app: &AppRef, id: TabId) -> Option<(CardModel, Vec<TabId>)> {
+    /// Hover card for a tab: its title, site and marker. `None` when the tab is not open.
+    pub fn tab_card_model(app: &AppRef, id: TabId) -> Option<CardModel> {
         let state = app.borrow();
         let inputs = state.group_inputs();
         let keys = tab_groups::group_keys(&inputs, &state.group_preferences);
         let hovered = inputs.iter().position(|input| input.id == id)?;
-        let active = inputs
-            .iter()
-            .position(|input| input.id == state.tab_model.active())
-            .unwrap_or(0);
-        let card_tabs: Vec<CardTab> = inputs
-            .iter()
-            .map(|input| {
-                let mirror = state.mirror(input.id);
-                CardTab {
-                    id: input.id,
-                    title: mirror.map_or("", |tab| tab.title.as_str()),
-                    opener: input.opener,
-                    has_favicon: mirror.is_some_and(|tab| tab.favicon_key.is_some()),
-                }
-            })
-            .collect();
-        let rows = card_rows(&card_tabs, &keys, hovered, active);
         let hovered_mirror = state.mirror(id);
         let marker = resolve_marker(
             keys[hovered].as_ref(),
@@ -3008,19 +2945,14 @@ impl App {
             &state.group_markers,
             &state.tab_markers,
         );
-        let model = tab_card::build(
-            &TabCardInput {
-                title: hovered_mirror.map_or_else(String::new, |tab| tab.title.clone()),
-                domain: hovered_mirror
-                    .and_then(|tab| tab.url.as_ref())
-                    .and_then(|url| url.host_str())
-                    .map(str::to_owned),
-                marker,
-            },
-            &rows,
-        );
-        let row_ids = rows.iter().map(|row| card_tabs[row.tab_index].id).collect();
-        Some((model, row_ids))
+        Some(tab_card::build(&TabCardInput {
+            title: hovered_mirror.map_or_else(String::new, |tab| tab.title.clone()),
+            domain: hovered_mirror
+                .and_then(|tab| tab.url.as_ref())
+                .and_then(|url| url.host_str())
+                .map(str::to_owned),
+            marker,
+        }))
     }
 
     pub fn tab_count(app: &AppRef) -> usize {
@@ -11156,7 +11088,7 @@ mod tests {
         assert!(tab_domain(&app, first).is_some());
         let inputs = App::tab_group_inputs(&app);
         let private_input = inputs.iter().find(|input| input.id == secret).unwrap();
-        assert!(private_input.domain.is_none() && private_input.opener.is_none());
+        assert!(private_input.domain.is_none() && !private_input.manual);
         // Site grouping choices are refused for a private tab.
         let rules_before = app.borrow().group_preferences.serialize();
         assert!(!App::set_tab_group_mode(
@@ -12576,84 +12508,5 @@ mod tab_marker_tests {
         assert!(set_entry(&mut map, TabId(1), None));
         assert!(!set_entry(&mut map, TabId(1), None));
         assert!(map.is_empty());
-    }
-
-    fn card_tab(id: u32, title: &str, opener: Option<u32>, favicon: bool) -> CardTab<'_> {
-        CardTab {
-            id: TabId(id),
-            title,
-            opener: opener.map(TabId),
-            has_favicon: favicon,
-        }
-    }
-
-    #[test]
-    fn card_rows_list_only_other_members_of_the_hovered_group() {
-        let tabs = [
-            card_tab(1, "Alpha one", None, true),
-            card_tab(2, "Beta", None, false),
-            card_tab(3, "Alpha two", None, true),
-            card_tab(4, "Alpha three", None, false),
-        ];
-        let keys = [
-            Some(group("alpha.example")),
-            None,
-            Some(group("alpha.example")),
-            Some(group("alpha.example")),
-        ];
-
-        let rows = card_rows(&tabs, &keys, 0, 1);
-
-        assert_eq!(
-            rows.iter().map(|row| row.tab_index).collect::<Vec<_>>(),
-            [2, 3]
-        );
-        assert_eq!(rows[0].title, "Alpha two");
-        assert!(rows[0].favicon_present);
-        assert!(!rows[1].favicon_present);
-        assert!(rows.iter().all(|row| !row.active && !row.linked));
-    }
-
-    #[test]
-    fn card_rows_are_empty_for_a_tab_in_no_group() {
-        let tabs = [
-            card_tab(1, "Solo", None, true),
-            card_tab(2, "Other", None, true),
-        ];
-        let keys = [None, None];
-        assert!(card_rows(&tabs, &keys, 0, 0).is_empty());
-    }
-
-    #[test]
-    fn card_rows_mark_the_active_tab_and_opener_links() {
-        let tabs = [
-            card_tab(10, "Parent", None, true),
-            card_tab(11, "Child", Some(10), true),
-            card_tab(12, "Unrelated sibling", None, true),
-        ];
-        let key = Some(TabGroupKey::Opener(TabId(10)));
-        let keys = [key.clone(), key.clone(), key];
-
-        let rows = card_rows(&tabs, &keys, 0, 2);
-
-        assert_eq!(
-            rows.iter().map(|row| row.tab_index).collect::<Vec<_>>(),
-            [1, 2]
-        );
-        assert!(rows[0].linked, "child was opened by the hovered tab");
-        assert!(rows[0].linked && !rows[0].active);
-        assert!(rows[1].active);
-        assert!(!rows[1].linked);
-    }
-
-    #[test]
-    fn card_rows_name_blank_titles_as_new_tab() {
-        let tabs = [
-            card_tab(1, "Hovered", None, true),
-            card_tab(2, "  ", None, false),
-        ];
-        let keys = [Some(group("gamma.example")), Some(group("gamma.example"))];
-        let rows = card_rows(&tabs, &keys, 0, 0);
-        assert_eq!(rows[0].title, tab_card::NEW_TAB_TITLE);
     }
 }
