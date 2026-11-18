@@ -60,8 +60,8 @@ const item = (id, extra = {}) => ({
 });
 const OPTS = {
   t: 'tabopts', closeLeft: false, closeAlways: false, scroll: false, minWidth: 0, indicator: 'spinner', wheel: false, separator: false,
-  alignClose: false, selection: true, selectionActive: true, removeSpacing: false, maximised: false, closed: 0, stackDrag: false,
-  stackDelay: 0, stackRow: false, closedButton: false, tools: [],
+  alignClose: false, selection: true, selectionActive: true, removeSpacing: false, maximised: false, closed: 0,
+  closedButton: false, tools: [],
 };
 const withStyle = (node) => {
   if (!node.style.removeProperty) node.style.removeProperty = () => {};

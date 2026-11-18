@@ -60,9 +60,6 @@ const MA_NOACTIVATE: isize = 3;
 const WM_MOUSELEAVE: u32 = 0x02A3;
 /// Logical width of the marker ring drawn around the marker on the card.
 const RING_WIDTH: i32 = 2;
-/// Logical diameter of the favicon placeholder dot on a member row.
-const ROW_DOT: i32 = 7;
-const ROW_GAP: i32 = 6;
 
 #[derive(Default)]
 struct State {
@@ -106,7 +103,6 @@ struct Open {
     /// The tab and gap and card, in screen coordinates. The card stays open while the pointer is in it.
     square: RECT,
     model: CardModel,
-    rows: Vec<TabId>,
     /// Layout in card-client coordinates.
     layout: CardLayout,
 }
@@ -317,7 +313,7 @@ mod hover_generation_tests {
 /// Opens the card for `tab`, or moves and refreshes it when it is already open. Nothing is
 /// activated: the window is shown with `SW_SHOWNOACTIVATE`.
 fn show(main: HWND, app: &AppRef, tab: TabId, anchor: Rect) {
-    let Some((model, rows)) = App::tab_card_model(app, tab) else {
+    let Some(model) = App::tab_card_model(app, tab) else {
         close();
         return;
     };
@@ -326,7 +322,7 @@ fn show(main: HWND, app: &AppRef, tab: TabId, anchor: Rect) {
         let _ = GetClientRect(main, &mut client);
         GetDpiForWindow(main).max(96)
     };
-    let layout = tab_card::layout(anchor, client.right, dpi, rows.len());
+    let layout = tab_card::layout(anchor, client.right, dpi);
     let card = layout.card;
     let mut origin = POINT::default();
     unsafe {
@@ -378,7 +374,6 @@ fn show(main: HWND, app: &AppRef, tab: TabId, anchor: Rect) {
         screen,
         square,
         model,
-        rows,
         layout: localise(&layout, card.left, card.top),
     };
     STATE.with(|state| state.borrow_mut().open = Some(open));
@@ -446,9 +441,6 @@ fn localise(layout: &CardLayout, dx: i32, dy: i32) -> CardLayout {
         new_marker: shift(layout.new_marker),
         title: shift(layout.title),
         domain: shift(layout.domain),
-        rows: layout.rows.iter().copied().map(shift).collect(),
-        hidden_rows: layout.hidden_rows,
-        more: layout.more.map(shift),
     }
 }
 
@@ -517,11 +509,10 @@ fn click(hwnd: HWND, x: i32, y: i32) {
         Some((
             open.main,
             open.tab,
-            open.rows.clone(),
             tab_card::hit_test(&open.layout, x, y),
         ))
     });
-    let Some((main, tab, rows, hit)) = target else {
+    let Some((main, tab, hit)) = target else {
         return;
     };
     let app = unsafe {
@@ -540,12 +531,6 @@ fn click(hwnd: HWND, x: i32, y: i32) {
         CardHit::NewMarker => {
             let current = App::tab_marker(&app, tab);
             App::set_tab_marker(&app, tab, tab_card::next_marker(current));
-        }
-        CardHit::Row(index) => {
-            if let Some(&row) = rows.get(index) {
-                dismiss(main);
-                App::select_tab(&app, row);
-            }
         }
         CardHit::None => {}
     }
@@ -715,70 +700,6 @@ unsafe fn draw(dc: HDC, hwnd: HWND, open: &Open) {
             );
         }
 
-        let dot = m.px(ROW_DOT).max(3);
-        let gap = m.px(ROW_GAP);
-        for (index, row_rect) in layout.rows.iter().enumerate() {
-            let Some(row) = open.model.rows.get(index) else {
-                continue;
-            };
-            let rect = to_rect(*row_rect);
-            let centre = (rect.top + rect.bottom) / 2;
-            let favicon = RECT {
-                left: rect.left,
-                top: centre - dot / 2,
-                right: rect.left + dot,
-                bottom: centre - dot / 2 + dot,
-            };
-            let dot_colour = if row.favicon_present {
-                palette.tab_text_inactive
-            } else {
-                palette.tab_active_border
-            };
-            fill_ellipse(dc, favicon, dot_colour);
-
-            let text = RECT {
-                left: favicon.right + gap,
-                top: rect.top,
-                right: rect.right,
-                bottom: rect.bottom,
-            };
-            let colour = if row.active {
-                palette.tab_text_active
-            } else {
-                palette.tab_text_inactive
-            };
-            draw_text(
-                dc,
-                text,
-                &row.title,
-                colour,
-                DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX,
-            );
-            if row.linked {
-                let underline = m.px(2).max(1);
-                draw_line(
-                    dc,
-                    text.left,
-                    rect.bottom - underline,
-                    text.right,
-                    rect.bottom - underline,
-                    palette.tab_group_accent,
-                    underline,
-                );
-            }
-        }
-
-        if let Some(more) = layout.more {
-            let text = format!("+{} more", layout.hidden_rows);
-            draw_text(
-                dc,
-                to_rect(more),
-                &text,
-                palette.tab_text_inactive,
-                DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
-            );
-        }
-
         SelectObject(dc, old_font);
         let _ = DeleteObject(font.into());
     }
@@ -794,18 +715,6 @@ unsafe fn stroke_ellipse(dc: HDC, rect: RECT, colour: Rgba, width: i32) {
 
 unsafe fn stroke_round_rect(dc: HDC, rect: RECT, radius: i32, colour: Rgba, width: i32) {
     unsafe { smooth::stroke_round_rect(dc, rect, radius, colour, width) }
-}
-
-unsafe fn draw_line(dc: HDC, x0: i32, y0: i32, x1: i32, y1: i32, colour: Rgba, width: i32) {
-    unsafe {
-        smooth::stroke_line(
-            dc,
-            POINT { x: x0, y: y0 },
-            POINT { x: x1, y: y1 },
-            colour,
-            width,
-        )
-    }
 }
 
 unsafe fn draw_text(dc: HDC, bounds: RECT, text: &str, colour: Rgba, format: DRAW_TEXT_FORMAT) {

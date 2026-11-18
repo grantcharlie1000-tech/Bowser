@@ -141,17 +141,6 @@ choice! {
     /// What closing a pinned tab does.
     PinnedClose { Close = "close", Keep = "keep", Minimise = "minimise" }
 }
-// --- tab stacks, tiling and workspaces (T10) ---
-choice! {
-    /// How tab stacks (Bowser's site islands) show in the tab bar: side by side with a collapse
-    /// control of their own (`islands`, as before), every stack folded to its ball and the tab in use
-    /// (`compact`), only the stack in use unfolded (`accordion`), or no stacks at all (`off`).
-    /// `two-level` (T10b) folds every stack to its ball in the tab row and shows the tabs of the
-    /// stack in use in a second row under it (`stacks::stack_row`); with the tab bar on a side it
-    /// draws the sidebar's usual stacks.
-    StackStyle { Islands = "islands", Compact = "compact", Accordion = "accordion", TwoLevel = "two-level", Off = "off" }
-}
-// --- end tab stacks, tiling and workspaces ---
 
 macro_rules! tab_options {
     ($($(#[$doc:meta])* $field:ident: $ty:ty = $default:expr, $key:literal;)*) => {
@@ -252,15 +241,6 @@ tab_options! {
     /// Restored pinned tabs load at once even when the others wait.
     load_pinned: bool = false, "tabs_load_pinned";
     // --- tab stacks, tiling and workspaces (T10; src/stacks.rs) ---
-    stack_style: StackStyle = StackStyle::Islands, "tabs_stack_style";
-    /// A new tab opened while a stacked tab is in front joins that stack.
-    stack_open_in_current: bool = false, "tabs_stack_open_in_current";
-    /// Making a stack by hand (a drop, or a Stack command) opens its editor (name and colour).
-    stack_editor: bool = false, "tabs_stack_editor";
-    /// Holding a dragged tab over another tab stacks the two.
-    stack_drag: bool = true, "tabs_stack_drag";
-    /// How long the dragged tab must rest over the other before a drop stacks, in milliseconds.
-    stack_drop_delay: Bounded<0, 2000> = Bounded(400), "tabs_stack_drop_delay";
     /// Each tile of a split view carries a title bar with its page's title.
     tile_titles: bool = false, "tabs_tile_titles";
     /// Tiles meet with a hairline instead of the usual gap.
@@ -273,10 +253,6 @@ tab_options! {
     workspace_counts: bool = false, "tabs_workspace_counts";
     /// Part of "New tab position: as stack with related" (see [`NewTabPosition`]).
     new_tab_stack: bool = false, "tabs_new_tab_stack";
-    // --- two-level stacks (T10b) ---
-    /// Two-level stacks: the second row is the smaller one (`chrome::layout::StackRow::Compact`).
-    stack_compact_row: bool = false, "tabs_stack_compact_row";
-    // --- end two-level stacks ---
     // --- end tab stacks, tiling and workspaces ---
 }
 
@@ -353,6 +329,18 @@ pub fn apply_assignment(settings: &mut crate::settings::Settings, text: &str) ->
 /// Stored keys the page never sees on their own: they are parts of the position.
 const HIDDEN_KEYS: [&str; 2] = ["tabs_new_tab_related", "tabs_new_tab_stack"];
 
+/// Group options Bowser no longer has. Tab groups have one look (islands) and one setting, "Group tabs
+/// automatically" (`automatic_tab_grouping`). A line left for one of these in an older `settings.txt`
+/// is not an option any more: reading ignores it and the next save drops it.
+pub const RETIRED_KEYS: [&str; 6] = [
+    "tabs_stack_style",
+    "tabs_stack_open_in_current",
+    "tabs_stack_editor",
+    "tabs_stack_drag",
+    "tabs_stack_drop_delay",
+    "tabs_stack_compact_row",
+];
+
 /// The snapshot's wire values: every stored option plus the virtual position.
 pub fn snapshot_entries(settings: &crate::settings::Settings) -> Vec<(&'static str, Value)> {
     let mut entries = settings.tabs.entries();
@@ -380,11 +368,12 @@ pub fn render_into(text: &str, options: &TabOptions, newline: &str) -> String {
     let mut written = vec![false; pairs.len()];
     let mut out = String::with_capacity(text.len() + 64);
     for line in text.lines() {
-        let slot = if line.trim_start().starts_with('#') {
-            None
-        } else {
-            line.split_once('=').and_then(|(key, _)| pairs.iter().position(|(name, _)| *name == key.trim()))
-        };
+        let key = line.split_once('=').map(|(key, _)| key.trim()).filter(|_| !line.trim_start().starts_with('#'));
+        // A retired option's line goes with the next save.
+        if key.is_some_and(|key| RETIRED_KEYS.contains(&key)) {
+            continue;
+        }
+        let slot = key.and_then(|key| pairs.iter().position(|(name, _)| *name == key));
         match slot {
             Some(index) if written[index] => {}
             Some(index) => {
@@ -671,19 +660,17 @@ mod tests {
         assert!(!apply_assignment(&mut settings, "tabs_new_tab_stack=true"), "the flags are set through the position only");
         assert!(apply_assignment(&mut settings, "tabs_new_tab_position=active"));
         // --- end tab stacks ---
-        // --- two-level stacks (T10b) --- the page's two words reach the settings and the snapshot.
-        assert!(apply_assignment(&mut settings, "tabs_stack_style=two-level"));
-        assert_eq!(settings.tabs.stack_style, StackStyle::TwoLevel);
-        assert!(apply_assignment(&mut settings, "tabs_stack_compact_row=true"));
-        assert!(settings.tabs.stack_compact_row);
-        assert!(snapshot_entries(&settings).contains(&("tabs_stack_compact_row", Value::Bool(true))));
-        assert!(snapshot_entries(&settings).contains(&("tabs_stack_style", Value::Text("two-level".into()))));
-        assert!(!apply_assignment(&mut settings, "tabs_stack_style=two_level"), "only the exact word");
-        let text = render_into("", &settings.tabs, "\n");
-        assert!(text.contains("tabs_stack_style=two-level\n") && text.contains("tabs_stack_compact_row=true\n"), "{text}");
-        settings.tabs.stack_style = StackStyle::Islands;
-        settings.tabs.stack_compact_row = false;
-        // --- end two-level stacks ---
+        // The retired group options are gone: unknown to the page and the file, and dropped on save.
+        for key in RETIRED_KEYS {
+            assert!(!snapshot_entries(&settings).iter().any(|(name, _)| *name == key), "{key} is not shown");
+            assert!(!apply_assignment(&mut settings, &format!("{key}=true")), "{key} is refused");
+        }
+        let mut options = TabOptions::default();
+        read_file_line(&mut options, "tabs_stack_style", "off");
+        assert_eq!(options, TabOptions::default());
+        let text = render_into("# kept\ntabs_stack_style=two-level\ntabs_stack_drag=false\ntabs_keep_window=false\n", &settings.tabs, "\n");
+        assert!(!text.contains("tabs_stack"), "retired lines are dropped: {text}");
+        assert!(text.starts_with("# kept\n"), "{text}");
         assert!(!apply_assignment(&mut settings, "tabs_new_tab_position"));
         assert!(!apply_assignment(&mut settings, "tabs_unknown=true"));
         assert!(apply_assignment(&mut settings, "tabs_double_click=close"));

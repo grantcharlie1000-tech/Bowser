@@ -145,13 +145,12 @@ organisation (Ctrl+Shift+Z) undoes a whole command in one step. The tab menu's "
 same and the per-stack actions (name and colour, pin, hibernate, tile, save as a session, bookmark all, copy all
 links, move to a workspace or a new window, unstack).
 
-The stack style (Settings > Tab stacks, tiling and workspaces > Tab stacks) also has **Two-level** (T10b): the
-tab row shows every stack as its ball, and while the tab in use is in a stack its tabs fill a second row under
-the tab row (`chrome::layout::StackRow`, laid out through `Arrangement`, so the page, the HTML strip host and the
-native strip agree). "Compact second row" (behind More options; only with Two-level) makes that row 22 instead of
-28 DIP. With the tab bar at the bottom the second row is still under the tab row; with the tab bar on a side the
-sidebar shows stacks as before and no row is reserved. A ball click from outside the stack brings back the
-member used last, as Compact and Accordion do. No command is added.
+Tab groups have one look (islands) and one setting: Settings > Groups > "Group tabs automatically", which
+applies at once. Tabs from one site share a group; an opener link no longer forms a group of its own. Drag a tab
+between two members of a group, or hold it over a member and let go, to add it to that group. The older stack
+style (Compact, Accordion, Two-level, Off), "Join group", "Drag to group", "Group delay", "Name on create" and
+"Compact row" options are retired: they keep their defaults (`tab_options::RETIRED_KEYS`) and a value left in
+`settings.txt` is ignored.
 
 ## Command chains
 

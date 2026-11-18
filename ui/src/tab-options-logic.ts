@@ -16,8 +16,6 @@ interface Base {
 export interface ToggleSpec extends Base {
   readonly kind: 'toggle';
   readonly default: boolean;
-  /** --- two-level stacks (T10b) --- the choice option this switch only matters for, and its value. */
-  readonly when?: readonly [key: string, value: string];
 }
 export interface ChoiceSpec extends Base {
   readonly kind: 'choice';
@@ -53,7 +51,7 @@ export const TAB_CARD_TITLES: Readonly<Record<TabCardKey, string>> = {
   audio: 'Audio',
   pinned: 'Pinned',
   restore: 'Restore',
-  stacks: 'Groups', // --- T10 --- the part title; tiling and workspaces stay in the row text.
+  stacks: 'Workspaces and tiles', // --- T10 --- a card of the Tabs part; the Groups part holds only the group switch.
 };
 
 const toggle = (key: string, card: TabCardKey, def: boolean, label: string, description: string, keywords: string): ToggleSpec =>
@@ -119,23 +117,15 @@ export const TAB_OPTIONS: readonly TabOptionSpec[] = [
   toggle('tabs_lazy_restore', 'restore', true, 'Lazy restore', '', 'lazy load restored tabs session restore Load restored tabs when first selected Off loads every tab at once when Bowser reopens them.'),
   toggle('tabs_load_pinned', 'restore', false, 'Load pinned', '', 'always load pinned tabs restore Always load pinned tabs Pinned tabs load as soon as Bowser reopens them, even when the others wait.'),
 
-  // --- tab stacks, tiling and workspaces (T10; src/stacks.rs) --- a stack is a site island.
-  choice('tabs_stack_style', 'stacks', 'islands', [['islands', 'Islands'], ['compact', 'Compact'], ['accordion', 'Accordion'], ['two-level', 'Two-level'], ['off', 'Off']], 'Groups',
-    '',
-    'tab stacks stacking islands groups compact accordion two level second row fold off Tab groups How grouped tabs are drawn: side by side, compact, accordion, on a second row, or off.'),
+  // --- tab stacks, tiling and workspaces (T10; src/stacks.rs) --- a stack is a site island. Groups have one
+  // look and one setting ("Group tabs automatically", a settings row of its own); the old stack style,
+  // join, drag, delay, editor and compact-row options are retired (src/tab_options.rs RETIRED_KEYS).
   toggle('tabs_workspaces', 'stacks', true, 'Workspaces', '',
     'workspaces enable disable rail switcher Workspaces Shows workspaces in the rail, the sidebar, the menu and Quick commands. Off hides them; their tabs wait until you turn them back on.'),
-  toggle('tabs_stack_open_in_current', 'stacks', false, 'Join group', '', 'open new tab current stack join Open new tabs in the current stack A new tab opened while a stacked tab is in front joins that stack.'),
-  toggle('tabs_stack_drag', 'stacks', true, 'Drag to group', '', 'stack drag drop tab onto another Stack tabs by dragging one onto another Hold a dragged tab over the middle of another tab, then let go, to stack the two.'),
-  number('tabs_stack_drop_delay', 'stacks', 400, 0, 2000, 'ms', 'Group delay', '', 'stacking drop delay milliseconds hold wait Stacking delay How long a dragged tab rests over another before a drop stacks them.', 'At once'),
-  toggle('tabs_stack_editor', 'stacks', false, 'Name on create', '', 'stack editor name colour rename auto open Open the stack editor when a stack is made Making a stack by dragging or with a Stack command opens its name and colour.'),
   toggle('tabs_tile_titles', 'stacks', false, 'Tile titles', '', 'tile title bar split view tiling header Show a title bar on each tile Tiled tabs in a split view each show their page’s title above the page.'),
   toggle('tabs_tile_tight', 'stacks', false, 'Tight tiles', '', 'tile gap space spacing tight split view tiling Remove the space around tiles Tiles meet with a hairline instead of the usual gap.'),
-  toggle('tabs_workspace_scroll', 'stacks', false, 'Wheel switch', '', 'switch workspaces scroll wheel mouse rail Switch workspaces by scrolling The mouse wheel over the workspaces in the rail or the sidebar switches to the next or previous one.'),
+  toggle('tabs_workspace_scroll', 'stacks', false, 'Workspace wheel', '', 'switch workspaces scroll wheel mouse rail Switch workspaces by scrolling The mouse wheel over the workspaces in the rail or the sidebar switches to the next or previous one.'),
   toggle('tabs_workspace_counts', 'stacks', false, 'Tab counts', '', 'workspace tab count number badge Show tab counts on workspaces Each workspace in the rail and the workspace menu shows how many tabs it holds.'),
-  // --- two-level stacks (T10b) --- only two-level stacks have a second row to make smaller.
-  { ...toggle('tabs_stack_compact_row', 'stacks', false, 'Compact row', '',
-    'two level stacks second row compact small smaller Compact second row Two-level stacks: the row with the tabs of the stack you are in is smaller.'), when: ['tabs_stack_style', 'two-level'] },
   // --- end tab stacks, tiling and workspaces ---
 ];
 
@@ -183,10 +173,6 @@ export function textApplies(spec: TextSpec, values: TabOptionValues): boolean {
   return values[spec.when[0]] === spec.when[1];
 }
 
-/** --- two-level stacks (T10b) --- whether a switch applies now ("Compact second row" only with two-level stacks). */
-export function toggleApplies(spec: ToggleSpec, values: TabOptionValues): boolean {
-  return spec.when === undefined || values[spec.when[0]] === spec.when[1];
-}
 
 /** The words next to a number: "Never ask", "Off", "3 tabs", "120 px". */
 export function numberLabel(spec: NumberSpec, value: number): string {
@@ -202,9 +188,10 @@ export function clampNumber(spec: NumberSpec, typed: number): number {
 }
 
 /** Row specs for the page's search index and its row builder (the settings page lists ROWS in this order). */
-export function tabOptionRows(): ReadonlyArray<{ id: string; section: 'tabs' | 'stacks'; label: string; description: string; keywords: string }> {
-  // --- T10 --- the stacks card is its own settings section (Tabs and start page > Tab stacks, tiling and workspaces).
-  return TAB_OPTIONS.map((spec) => ({ id: spec.key, section: spec.card === 'stacks' ? 'stacks' as const : 'tabs' as const, label: spec.label, description: spec.description, keywords: spec.keywords }));
+export function tabOptionRows(): ReadonlyArray<{ id: string; section: 'tabs'; label: string; description: string; keywords: string }> {
+  // Every tab option is in the Tabs part, workspaces and tiles included: the Groups part is the one
+  // "Group tabs automatically" switch (settings-page-logic.ts ROWS).
+  return TAB_OPTIONS.map((spec) => ({ id: spec.key, section: 'tabs' as const, label: spec.label, description: spec.description, keywords: spec.keywords }));
 }
 
 /** The card a spec belongs in, with the specs of that card in page order. */

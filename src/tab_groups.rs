@@ -236,21 +236,6 @@ impl From<io::Error> for PreferencesError {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct GroupPreferences {
     entries: BTreeMap<DomainKey, Entry>,
-    /// --- tab stacks (T10) --- how the stack style folds islands for display. Never saved: only the
-    /// copy the strip draws from carries anything but [`CollapseRule::Stored`].
-    collapse_rule: CollapseRule,
-}
-
-/// Which islands show folded. The stored flag is the user's own collapse ("Islands"); the other two
-/// are the stack styles of `src/stacks.rs`, which fold islands whatever the stored flag says.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub enum CollapseRule {
-    #[default]
-    Stored,
-    /// Every island folded ("Compact").
-    All,
-    /// Every island folded but the one holding the tab in use, if any ("Accordion").
-    AllBut(Option<DomainKey>),
 }
 
 impl GroupPreferences {
@@ -259,21 +244,7 @@ impl GroupPreferences {
     }
 
     pub fn is_collapsed(&self, key: &DomainKey) -> bool {
-        match &self.collapse_rule {
-            CollapseRule::Stored => self.entries.get(key).is_some_and(|e| e.collapsed),
-            CollapseRule::All => true,
-            CollapseRule::AllBut(open) => open.as_ref() != Some(key),
-        }
-    }
-
-    /// --- tab stacks (T10) --- these preferences as a stack style shows them (`src/stacks.rs`).
-    pub fn with_collapse_rule(&self, rule: CollapseRule) -> Self {
-        Self { entries: self.entries.clone(), collapse_rule: rule }
-    }
-
-    /// The rule these preferences fold islands by.
-    pub fn collapse_rule(&self) -> &CollapseRule {
-        &self.collapse_rule
+        self.entries.get(key).is_some_and(|e| e.collapsed)
     }
 
     /// The island's name, when the user has set one.
@@ -546,20 +517,16 @@ pub struct TabGroupInput {
     pub id: TabId,
     pub domain: Option<DomainKey>,
     pub pinned: bool,
-    /// Immediate opener, when this tab was created from a page's new-window request.
-    pub opener: Option<TabId>,
     /// Placed into this domain's group by the user. Such a member keeps the group formed even when
     /// it is below the mode's threshold, unless the domain is `Never`.
     pub manual: bool,
 }
 
-/// Identity of a projected tab group.
+/// Identity of a projected tab group. Tabs group by site only.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum TabGroupKey {
     /// Group formed by tabs sharing a registrable domain.
     Domain(DomainKey),
-    /// Group formed by a tab and tabs opened from it, keyed by the smallest tab id in the group.
-    Opener(TabId),
 }
 
 /// One visible island in the strip. A group's members are emitted as one contiguous run at its
@@ -572,7 +539,7 @@ pub struct StripSlot {
     pub tab_index: usize,
     /// Present when this island participates in a group.
     pub domain: Option<DomainKey>,
-    /// Present when this island participates in either a domain or opener group.
+    /// Present when this island participates in a group.
     pub group_key: Option<TabGroupKey>,
     /// Number of unpinned group members, including this tab where applicable.
     pub group_size: usize,
@@ -594,9 +561,8 @@ pub fn project_strip(
     active_index: usize,
     preferences: &GroupPreferences,
 ) -> Vec<StripSlot> {
-    let groups = opener_groups(tabs)
+    let groups = domain_groups(tabs, preferences)
         .into_iter()
-        .chain(domain_groups(tabs, preferences))
         .collect::<BTreeMap<_, _>>();
     let mut group_for_index = vec![None; tabs.len()];
     for (key, indices) in &groups {
@@ -627,10 +593,8 @@ pub fn project_strip(
         }
         let mut group_members = groups[group_key].clone();
         group_members.sort_unstable();
-        let domain = match group_key {
-            TabGroupKey::Domain(domain) => Some(domain.clone()),
-            TabGroupKey::Opener(_) => None,
-        };
+        let TabGroupKey::Domain(domain) = group_key;
+        let domain = Some(domain.clone());
         let collapsed = domain
             .as_ref()
             .is_some_and(|domain| preferences.is_collapsed(domain));
@@ -680,10 +644,7 @@ pub fn group_keys(
     preferences: &GroupPreferences,
 ) -> Vec<Option<TabGroupKey>> {
     let mut keys = vec![None; tabs.len()];
-    for (key, indices) in opener_groups(tabs)
-        .into_iter()
-        .chain(domain_groups(tabs, preferences))
-    {
+    for (key, indices) in domain_groups(tabs, preferences) {
         for index in indices {
             keys[index] = Some(key.clone());
         }
@@ -701,6 +662,28 @@ pub fn group_members(keys: &[Option<TabGroupKey>], key: &TabGroupKey) -> Vec<usi
         .collect()
 }
 
+/// The tabs in the order the strip draws them, each with its group key: a group's members as one
+/// run at its first member's place, as [`project_strip`] lays an open group out. `keys` is
+/// [`group_keys`] of `tabs`. This is the order a drop slot is seen in, which can differ from the model
+/// order when a group's members are not next to each other in the model.
+pub fn strip_order(tabs: &[TabGroupInput], keys: &[Option<TabGroupKey>]) -> Vec<(TabId, Option<TabGroupKey>)> {
+    let mut emitted = std::collections::BTreeSet::new();
+    let mut order = Vec::with_capacity(tabs.len());
+    for (index, tab) in tabs.iter().enumerate() {
+        match keys.get(index).and_then(Option::as_ref) {
+            None => order.push((tab.id, None)),
+            Some(key) => {
+                if emitted.insert(key.clone()) {
+                    for member in group_members(keys, key) {
+                        order.push((tabs[member].id, Some(key.clone())));
+                    }
+                }
+            }
+        }
+    }
+    order
+}
+
 /// Domains of the unpinned tabs in `tabs`. A pinned tab never joins a group, so a domain held only by
 /// pinned tabs is not live for [`GroupPreferences::release_unused_always`].
 pub fn live_domains(tabs: &[TabGroupInput]) -> std::collections::BTreeSet<DomainKey> {
@@ -710,61 +693,14 @@ pub fn live_domains(tabs: &[TabGroupInput]) -> std::collections::BTreeSet<Domain
         .collect()
 }
 
-/// Connected components of unpinned tabs linked by opener edges. Only edges between two
-/// unpinned, present tabs count, so a pinned tab never joins and a closed opener forms no edge.
-/// A component of at least two tabs is a group keyed by its smallest tab id.
-fn opener_groups(tabs: &[TabGroupInput]) -> Vec<(TabGroupKey, Vec<usize>)> {
-    let positions = tabs
-        .iter()
-        .enumerate()
-        .map(|(index, tab)| (tab.id, index))
-        .collect::<BTreeMap<_, _>>();
-    let mut parent = (0..tabs.len()).collect::<Vec<_>>();
-    for (index, tab) in tabs.iter().enumerate() {
-        if tab.pinned {
-            continue;
-        }
-        let Some(opener) = tab.opener.and_then(|id| positions.get(&id).copied()) else {
-            continue;
-        };
-        if !tabs[opener].pinned {
-            union_roots(&mut parent, index, opener);
-        }
-    }
-
-    let mut components = BTreeMap::<usize, Vec<usize>>::new();
-    for index in (0..tabs.len()).filter(|&index| !tabs[index].pinned) {
-        let root = find_root(&mut parent, index);
-        components.entry(root).or_default().push(index);
-    }
-    components
-        .into_values()
-        .filter(|members| members.len() >= 2)
-        .map(|members| {
-            let key = members
-                .iter()
-                .map(|&index| tabs[index].id)
-                .min()
-                .expect("opener group has members");
-            (TabGroupKey::Opener(key), members)
-        })
-        .collect()
-}
-
-/// Domain groups over unpinned tabs that are not already in an opener group. Each domain's
-/// members must satisfy its group mode.
+/// Domain groups over unpinned tabs. Each domain's members must satisfy its group mode.
 fn domain_groups(
     tabs: &[TabGroupInput],
     preferences: &GroupPreferences,
 ) -> Vec<(TabGroupKey, Vec<usize>)> {
-    let opener_grouped = opener_groups(tabs)
-        .into_iter()
-        .flat_map(|(_, members)| members)
-        .collect::<std::collections::BTreeSet<_>>();
     let mut members = BTreeMap::<DomainKey, Vec<usize>>::new();
     for (index, tab) in tabs.iter().enumerate() {
         if !tab.pinned
-            && !opener_grouped.contains(&index)
             && let Some(domain) = &tab.domain
         {
             members.entry(domain.clone()).or_default().push(index);
@@ -779,21 +715,6 @@ fn domain_groups(
         })
         .map(|(domain, indices)| (TabGroupKey::Domain(domain), indices))
         .collect()
-}
-
-fn find_root(parent: &mut [usize], index: usize) -> usize {
-    if parent[index] != index {
-        parent[index] = find_root(parent, parent[index]);
-    }
-    parent[index]
-}
-
-fn union_roots(parent: &mut [usize], left: usize, right: usize) {
-    let left_root = find_root(parent, left);
-    let right_root = find_root(parent, right);
-    if left_root != right_root {
-        parent[right_root] = left_root;
-    }
 }
 
 #[cfg(test)]
@@ -827,19 +748,17 @@ mod tests {
                 DomainKey::from_url(&Url::parse(&format!("https://{host}/")).unwrap()).unwrap()
             }),
             pinned,
-            opener: None,
             manual: false,
         }
     }
 
-    fn linked_input(id: u32, domain: &str, opener: Option<u32>, pinned: bool) -> TabGroupInput {
+    fn linked_input(id: u32, domain: &str, pinned: bool) -> TabGroupInput {
         TabGroupInput {
             id: crate::tabs::TabId(id),
             domain: Some(
                 DomainKey::from_url(&Url::parse(&format!("https://{domain}/")).unwrap()).unwrap(),
             ),
             pinned,
-            opener: opener.map(crate::tabs::TabId),
             manual: false,
         }
     }
@@ -925,60 +844,11 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_click_child_groups_with_parent_across_domains() {
+    fn tabs_group_only_when_they_share_a_domain() {
         let tabs = [
-            linked_input(10, "parent.example", None, false),
-            linked_input(11, "child.other", Some(10), false),
-        ];
-
-        let slots = project_strip(&tabs, 1, &GroupPreferences::default());
-
-        assert_eq!(
-            slots.iter().map(|slot| slot.tab_index).collect::<Vec<_>>(),
-            [0, 1]
-        );
-        assert!(slots[0].group_control);
-        assert!(!slots[1].group_control);
-        assert_eq!(
-            slots[0].group_key,
-            Some(TabGroupKey::Opener(crate::tabs::TabId(10)))
-        );
-        assert_eq!(slots[1].group_key, slots[0].group_key);
-    }
-
-    #[test]
-    fn unrelated_different_domain_tab_does_not_join_opener_group() {
-        let tabs = [
-            linked_input(10, "parent.example", None, false),
-            linked_input(11, "child.other", Some(10), false),
-            linked_input(12, "unrelated.third", None, false),
-        ];
-
-        let slots = project_strip(&tabs, 1, &GroupPreferences::default());
-
-        assert_eq!(slots.len(), 3);
-        assert_eq!(slots[2].tab_index, 2);
-        assert_eq!(slots[2].group_key, None);
-    }
-
-    #[test]
-    fn child_with_cleared_opener_after_parent_close_is_ungrouped_across_domains() {
-        let tabs = [linked_input(11, "child.other", None, false)];
-
-        let slots = project_strip(&tabs, 0, &GroupPreferences::default());
-
-        assert_eq!(slots.len(), 1);
-        assert_eq!(slots[0].group_key, None);
-        assert!(!slots[0].group_control);
-    }
-
-    #[test]
-    fn children_of_closed_opener_keep_a_group_only_when_they_share_a_domain() {
-        // Parent was closed, so its children no longer have an opener link.
-        let tabs = [
-            linked_input(11, "shared.other", None, false),
-            linked_input(12, "shared.other", None, false),
-            linked_input(13, "lonely.third", None, false),
+            linked_input(11, "shared.other", false),
+            linked_input(12, "shared.other", false),
+            linked_input(13, "lonely.third", false),
         ];
 
         let slots = project_strip(&tabs, 0, &GroupPreferences::default());
@@ -990,11 +860,11 @@ mod tests {
     }
 
     #[test]
-    fn pinned_opener_and_child_never_join() {
+    fn pinned_tabs_never_join() {
         let tabs = [
-            linked_input(10, "parent.example", None, true),
-            linked_input(11, "child.other", Some(10), false),
-            linked_input(12, "parent.example", Some(10), true),
+            linked_input(10, "parent.example", true),
+            linked_input(11, "child.other", false),
+            linked_input(12, "parent.example", true),
         ];
 
         let slots = project_strip(&tabs, 1, &GroupPreferences::default());
@@ -1045,34 +915,13 @@ mod tests {
     }
 
     #[test]
-    fn opener_child_is_projected_directly_after_its_parent_across_domains() {
-        let tabs = [
-            linked_input(10, "chatgpt.com", None, false),
-            linked_input(11, "beta.example.net", None, false),
-            linked_input(12, "claude.ai", Some(10), false),
-        ];
-
-        let slots = project_strip(&tabs, 0, &GroupPreferences::default());
-
-        assert_eq!(
-            slots.iter().map(|slot| slot.tab_index).collect::<Vec<_>>(),
-            [0, 2, 1]
-        );
-        assert!(slots[0].group_control);
-        assert!(!slots[1].group_control);
-        assert_eq!(slots[0].group_key, slots[1].group_key);
-        assert_eq!(slots[0].group_size, 2);
-        assert_eq!(slots[2].group_key, None);
-    }
-
-    #[test]
     fn group_keys_match_the_strip_slots_they_project_to() {
         let tabs = [
             input(Some("alpha.example.com"), false),
             input(Some("beta.example.net"), false),
             input(Some("alpha.example.com"), false),
-            linked_input(13, "parent.example", None, false),
-            linked_input(14, "child.other", Some(13), false),
+            linked_input(13, "parent.example", false),
+            linked_input(14, "child.other", false),
             input(None, false),
         ];
         let preferences = GroupPreferences::default();
@@ -1084,7 +933,7 @@ mod tests {
         assert_eq!(keys[5], None);
         assert_eq!(keys[0], keys[2]);
         assert!(keys[0].is_some());
-        assert_eq!(keys[3], keys[4]);
+        assert_eq!((keys[3].clone(), keys[4].clone()), (None, None), "a page and one opened from it on another site do not group");
         for slot in &slots {
             assert_eq!(
                 keys[slot.tab_index], slot.group_key,
@@ -1099,7 +948,7 @@ mod tests {
         let tabs = [
             input(Some("alpha.example.com"), true),
             input(Some("alpha.example.com"), true),
-            linked_input(20, "solo.example", None, false),
+            linked_input(20, "solo.example", false),
         ];
 
         let keys = group_keys(&tabs, &GroupPreferences::default());
@@ -1253,21 +1102,6 @@ mod tests {
                 assert_eq!(mode.forms_group(members), *expected, "{mode:?} {members}");
             }
         }
-    }
-
-    /// --- tab stacks (T10) --- a stack style folds islands for display only: never saved.
-    #[test]
-    fn a_collapse_rule_folds_islands_without_reaching_the_file() {
-        let mut prefs = GroupPreferences::default();
-        prefs.set_collapsed(&key("a.com"), true).unwrap();
-        let all = prefs.with_collapse_rule(CollapseRule::All);
-        assert!(all.is_collapsed(&key("b.com")) && all.is_collapsed(&key("a.com")));
-        let open = prefs.with_collapse_rule(CollapseRule::AllBut(Some(key("a.com"))));
-        assert!(!open.is_collapsed(&key("a.com")) && open.is_collapsed(&key("b.com")), "the stored flag gives way to the rule");
-        assert_eq!(all.serialize(), prefs.serialize(), "the rule is not part of the file");
-        assert_eq!(*all.collapse_rule(), CollapseRule::All);
-        assert_ne!(all, prefs, "a ruled copy differs, so the strip draws it again");
-        assert!(prefs.with_collapse_rule(CollapseRule::Stored).is_collapsed(&key("a.com")));
     }
 
     #[test]
@@ -1540,7 +1374,7 @@ mod tests {
             Some(alpha.clone()),
         ];
         assert_eq!(group_members(&keys, &alpha), [0, 3]);
-        assert!(group_members(&keys, &TabGroupKey::Opener(crate::tabs::TabId(9))).is_empty());
+        assert!(group_members(&keys, &TabGroupKey::Domain(key("example.org"))).is_empty());
     }
 
     #[test]

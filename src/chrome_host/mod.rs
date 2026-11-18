@@ -254,15 +254,11 @@ pub fn tab_row_bounds(layout: &Layout) -> Option<RECT> {
     if right <= row.left {
         return None;
     }
-    // --- two-level stacks (T10b) --- the strip page draws the second tab row too: the host grows
-    // down (tabs at the top) or up (tabs at the bottom) over it and the gap between the rows.
-    let stack = layout.stack_row;
-    let (top, bottom) = if stack.is_empty() { (row.top, row.bottom) } else { (row.top.min(stack.top), row.bottom.max(stack.bottom)) };
     Some(RECT {
         left: row.left,
-        top,
+        top: row.top,
         right,
-        bottom,
+        bottom: row.bottom,
     })
 }
 
@@ -309,10 +305,8 @@ pub fn drop_index(ids: &[TabId], moved: TabId, before: u32) -> Option<usize> {
 /// Stable, non-zero wire key for a group: FNV-1a of a canonical name for the group. The same group
 /// always gets the same key. A hash that lands on `0` is sent as `1`.
 pub fn group_wire_key(key: &TabGroupKey) -> u32 {
-    let name = match key {
-        TabGroupKey::Domain(domain) => format!("d:{}", domain.as_str()),
-        TabGroupKey::Opener(id) => format!("o:{}", id.0),
-    };
+    let TabGroupKey::Domain(domain) = key;
+    let name = format!("d:{}", domain.as_str());
     let mut hash: u32 = 0x811c_9dc5;
     for byte in name.bytes() {
         hash ^= u32::from(byte);
@@ -335,29 +329,18 @@ pub struct RowGroup {
     /// Colour id; `None` for the theme accent.
     pub colour: Option<u8>,
     pub collapsed: bool,
-    /// Only domain groups collapse and get the island menu; opener groups behave like plain tabs.
-    pub collapsible: bool,
 }
 
-/// Group state for a key: domain groups carry their name, colour and collapse state.
+/// Group state for a key: its name, colour and collapse state.
 pub fn row_group(key: &TabGroupKey, preferences: &GroupPreferences) -> RowGroup {
-    match key {
-        TabGroupKey::Domain(domain) => RowGroup {
-            key: key.clone(),
-            name: preferences
-                .name(domain)
-                .map_or_else(|| domain.as_str().to_owned(), str::to_owned),
-            colour: preferences.colour(domain),
-            collapsed: preferences.is_collapsed(domain),
-            collapsible: true,
-        },
-        TabGroupKey::Opener(_) => RowGroup {
-            key: key.clone(),
-            name: String::new(),
-            colour: None,
-            collapsed: false,
-            collapsible: false,
-        },
+    let TabGroupKey::Domain(domain) = key;
+    RowGroup {
+        key: key.clone(),
+        name: preferences
+            .name(domain)
+            .map_or_else(|| domain.as_str().to_owned(), str::to_owned),
+        colour: preferences.colour(domain),
+        collapsed: preferences.is_collapsed(domain),
     }
 }
 
@@ -914,8 +897,7 @@ mod tests {
         let keys = [
             domain("https://example.com/"),
             domain("https://example.org/"),
-            TabGroupKey::Opener(TabId(7)),
-            TabGroupKey::Opener(TabId(8)),
+            domain("https://example.net/"),
         ];
         for key in &keys {
             let wire = group_wire_key(key);
@@ -961,7 +943,6 @@ mod tests {
             name: "Example".to_owned(),
             colour: Some(3),
             collapsed: true,
-            collapsible: true,
         };
         let row = |id: u32, group: Option<RowGroup>, pinned: bool| TabRow {
             id: TabId(id),

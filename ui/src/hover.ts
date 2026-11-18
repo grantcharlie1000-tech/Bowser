@@ -2,7 +2,7 @@
 // The hover view (?view=hover): tooltips, the tab hover card and the island menu, drawn in the
 // no-activate hover popup. Rust posts content with a token; the view renders it, measures it and
 // replies with its size. Page text is written with textContent only; favicons are validated data:
-// URIs. Stable class names: .bw-tooltip, .bw-card, .bw-island-menu.
+// URIs. Stable class names: .bw-tooltip, .bw-card, .bw-island-menu. The card lists no other tabs.
 import { el, icon } from './dom';
 import {
   MAX_ISLAND_NAME,
@@ -40,7 +40,9 @@ function favicon(uri: string, className: string): HTMLElement {
   return img;
 }
 
-function rowList(rows: readonly HoverRowMsg[], more: number, prefix: string, act: Act): HTMLElement[] {
+/** The island menu's member rows and its "+N more" line. */
+function rowList(rows: readonly HoverRowMsg[], more: number, act: Act): HTMLElement[] {
+  const prefix = 'bw-island';
   const out: HTMLElement[] = [];
   if (rows.length > 0) {
     const list = el('div', `${prefix}-rows`);
@@ -50,7 +52,6 @@ function rowList(rows: readonly HoverRowMsg[], more: number, prefix: string, act
       button.type = 'button';
       button.setAttribute('role', 'listitem');
       button.classList.toggle('is-active', row.active);
-      button.classList.toggle('is-linked', row.linked);
       const title = el('span', `${prefix}-row-title`);
       title.dir = 'auto';
       title.textContent = guardTitle(row.title); // --- spoiler guard ---
@@ -81,7 +82,7 @@ export function memoryText(mb: number): string {
   return mb >= 1000 ? `${(mb / 1024).toFixed(1)} GB` : `${mb} MB`;
 }
 
-function renderCard(msg: HoverCardMsg, act: Act): HTMLElement {
+function renderCard(msg: HoverCardMsg): HTMLElement {
   const card = el('div', 'bw-card');
   const text = el('div', 'bw-card-text');
   const title = el('div', 'bw-card-title');
@@ -113,16 +114,24 @@ function renderCard(msg: HoverCardMsg, act: Act): HTMLElement {
   const head = el('div', 'bw-card-head');
   head.append(favicon(msg.fav, 'bw-card-fav'), text);
   card.append(head);
-  // --- tab options --- "Show a thumbnail in tab previews".
-  if (msg.thumb !== undefined) {
-    const thumb = el('img', 'bw-card-thumb');
-    thumb.alt = '';
-    thumb.draggable = false;
-    thumb.src = msg.thumb;
-    card.append(thumb);
+  // --- tab options --- "Show a thumbnail in tab previews": an awake tab always has a preview (its
+  // capture, or a placeholder with its icon until it has been on screen); a sleeping tab never has one.
+  if (!msg.sleeping) {
+    if (msg.thumb !== undefined) {
+      const thumb = el('img', 'bw-card-thumb');
+      thumb.alt = '';
+      thumb.draggable = false;
+      thumb.src = msg.thumb;
+      card.append(thumb);
+    } else if (msg.preview === true) {
+      const frame = el('div', 'bw-card-thumb is-placeholder');
+      frame.setAttribute('aria-hidden', 'true');
+      frame.append(favicon(msg.fav, 'bw-card-thumb-fav'));
+      card.append(frame);
+    }
   }
   // --- end tab options ---
-  card.append(...rowList(msg.rows, msg.more, 'bw-card', act));
+  // The card describes the hovered tab only: no rows of other tabs (they read as stray links).
   return card;
 }
 
@@ -339,7 +348,7 @@ function fillIsland(view: IslandView, msg: HoverIslandMsg, act: Act, keepDraft: 
   close.type = 'button';
   close.textContent = msg.close;
   close.addEventListener('click', () => act({ a: 'close' }));
-  view.menu.append(swatches, ...rowList(msg.rows, msg.more, 'bw-island', act), close);
+  view.menu.append(swatches, ...rowList(msg.rows, msg.more, act), close);
 }
 
 /** Builds the hover view into `root` and wires it to the host. */
@@ -364,7 +373,7 @@ export function startHover(root: HTMLElement): void {
       content = island.menu;
     } else {
       island = null;
-      content = msg.kind === 'tooltip' ? renderTooltip(msg.text) : renderCard(msg, act);
+      content = msg.kind === 'tooltip' ? renderTooltip(msg.text) : renderCard(msg);
     }
     document.body.dataset.hoverKind = msg.kind;
     if (root.firstElementChild !== content || root.childElementCount !== 1) root.replaceChildren(content);

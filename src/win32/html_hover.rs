@@ -136,7 +136,7 @@ pub(crate) enum Kind {
 enum Content {
     /// `beside`: placed to the right of the anchor (the rail) rather than under it.
     Tooltip { text: String, beside: bool },
-    Card { tab: TabId, rows: Vec<TabId>, model: HoverCard },
+    Card { tab: TabId, model: HoverCard },
     Island { tab: TabId, rows: Vec<TabId>, model: HoverIsland },
     // --- omnibox suggest ---
     /// `seq` is the omnibox edit the rows answer; `width` is the dropdown width in CSS pixels;
@@ -540,6 +540,16 @@ pub(crate) fn hover(owner: HWND, target: Option<(Kind, TabId, RECT)>) {
     let Some(target) = target else {
         return;
     };
+    // --- tab options --- The pointer is on the tab strip, so a switch may follow: refresh the shown
+    // tab's preview while it is still on screen (a hidden page cannot be captured). Rate-limited by
+    // `capture_thumbnail`, and a no-op while previews are off.
+    if target.kind == Kind::Card
+        && let Some(app) = app_of(owner)
+    {
+        let active = App::active_tab_id(&app);
+        App::capture_thumbnail(&app, active);
+    }
+    // --- end tab options ---
     // Back on the trigger of what is already shown: keep it.
     let shown = with_layer(owner, |layer| match &layer.content {
         Some(Content::Card { tab, .. }) => target.kind == Kind::Card && *tab == target.tab,
@@ -661,34 +671,24 @@ fn png_of(app: &AppRef, tab: TabId) -> Option<Vec<u8>> {
 }
 
 fn card_content(app: &AppRef, tab: TabId) -> Option<Content> {
-    let (model, rows) = App::tab_card_model(app, tab)?;
+    let model = App::tab_card_model(app, tab)?;
+    let sleeping = App::tab_sleeping(app, tab);
     let card = HoverCard {
         title: model.title.clone(),
         host: model.domain.clone().unwrap_or_default(),
         marker: model.marker.map(|marker| marker.id()),
         markers: MARKER_COLOURS.iter().map(|c| chrome_host::css_colour(*c)).collect(),
-        sleeping: App::tab_sleeping(app, tab),
+        sleeping,
         png: png_of(app, tab),
-        rows: model
-            .rows
-            .iter()
-            .zip(&rows)
-            .take(tab_card::MAX_ROWS)
-            .map(|(row, id)| HoverRow {
-                title: row.title.clone(),
-                active: row.active,
-                linked: row.linked,
-                png: png_of(app, *id),
-            })
-            .collect(),
-        more: model.rows.len().saturating_sub(tab_card::MAX_ROWS),
         // --- tab options ---
-        thumb: App::tab_thumbnail(app, tab),
-        memory_mb: App::tab_memory_mb(app, tab),
+        // A sleeping tab has no live page, so it shows no picture of one; an awake tab shows its
+        // latest capture.
+        thumb: if sleeping { None } else { App::tab_thumbnail(app, tab) },
+        memory_mb: if sleeping { None } else { App::tab_memory_mb(app, tab) },
+        preview: !sleeping && App::tab_preview_frame(app, tab),
         // --- end tab options ---
     };
-    let rows = rows.into_iter().take(tab_card::MAX_ROWS).collect();
-    Some(Content::Card { tab, rows, model: card })
+    Some(Content::Card { tab, model: card })
 }
 
 fn island_content(app: &AppRef, tab: TabId) -> Option<Content> {
@@ -711,7 +711,6 @@ fn island_content(app: &AppRef, tab: TabId) -> Option<Content> {
             .map(|(row, id)| HoverRow {
                 title: row.title.clone(),
                 active: row.active,
-                linked: false,
                 png: png_of(app, *id),
             })
             .collect(),
@@ -1228,10 +1227,7 @@ fn run_action(owner: HWND) {
             App::set_tab_marker(&app, tab, tab_card::next_marker(current));
             refresh(owner, &app, Kind::Card, tab, anchor);
         }
-        (
-            Some(Content::Card { rows, .. } | Content::Island { rows, .. }),
-            HoverAction::Row(index),
-        ) => {
+        (Some(Content::Island { rows, .. }), HoverAction::Row(index)) => {
             if let Some(&row) = rows.get(usize::from(index))
                 && App::tab_ids(&app).contains(&row)
             {

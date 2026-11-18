@@ -1913,12 +1913,6 @@ pub struct StripOptions {
     pub maximised: bool,
     /// Tabs in the closed-tabs list; `0` hides the Closed tabs button.
     pub closed: u32,
-    /// --- tab stacks (T10) --- a held tab resting over another for `stack_delay` ms stacks on drop.
-    pub stack_drag: bool,
-    pub stack_delay: u32,
-    /// --- two-level stacks (T10b) --- the second tab row the host laid out: `off`, `regular` or
-    /// `compact` (`chrome::layout::StackRow::key`). The strip draws the stack in use there.
-    pub stack_row: &'static str,
     // --- toolbars and feeds (thread T13) ---
     /// `toolbar_tabs` lists `closed-tabs`: the Closed tabs button may show at all.
     pub closed_button: bool,
@@ -1943,9 +1937,6 @@ impl Default for StripOptions {
             remove_spacing: false,
             maximised: false,
             closed: 0,
-            stack_drag: true,
-            stack_delay: 400,
-            stack_row: "off",
             closed_button: true,
             tools: Vec::new(),
         }
@@ -1970,10 +1961,6 @@ pub fn tabopts_json(options: &StripOptions) -> String {
         out.bool("removeSpacing", options.remove_spacing);
         out.bool("maximised", options.maximised);
         out.uint("closed", u64::from(options.closed.min(99)));
-        out.bool("stackDrag", options.stack_drag); // --- tab stacks (T10) ---
-        out.uint("stackDelay", u64::from(options.stack_delay.min(2000)));
-        // --- two-level stacks (T10b) --- only the three words the strip knows.
-        out.string("stackRow", if matches!(options.stack_row, "regular" | "compact") { options.stack_row } else { "off" });
         // --- toolbars and feeds (thread T13) ---
         out.bool("closedButton", options.closed_button);
         out.array("tools", |list| {
@@ -2087,7 +2074,7 @@ pub fn favicon_data_uri(png: &[u8]) -> Option<String> {
 }
 
 // --- hover layer ---
-/// Most member rows in one card or island message (the island menu draws twelve, the card eight).
+/// Most member rows in one island message (the island menu draws twelve).
 pub const MAX_HOVER_ROWS: usize = 12;
 /// Most swatch colours in one island message.
 pub const MAX_HOVER_SWATCHES: usize = 32;
@@ -2100,13 +2087,11 @@ pub fn favicon_uri(png: &[u8]) -> Option<String> {
     png_is_sendable(png).then(|| format!("data:image/png;base64,{}", base64_encode(png)))
 }
 
-/// One member row of the hover card or the island menu.
+/// One member row of the island menu.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct HoverRow {
     pub title: String,
     pub active: bool,
-    /// Card only: joined to the hovered tab by an opener link.
-    pub linked: bool,
     /// Favicon PNG bytes; sent only when they pass the `fav` gate and the message budget.
     pub png: Option<Vec<u8>>,
 }
@@ -2123,14 +2108,14 @@ pub struct HoverCard {
     /// The tab's page was discarded or suspended to save memory.
     pub sleeping: bool,
     pub png: Option<Vec<u8>>,
-    pub rows: Vec<HoverRow>,
-    /// Rows the card does not draw.
-    pub more: usize,
     // --- tab options --- Settings > Appearance: "Show a thumbnail in tab previews" and "Show memory use".
     /// A JPEG thumbnail of the page (`crate::thumbnail`), sent only when it is small enough.
     pub thumb: Option<Vec<u8>>,
     /// Memory of the tab's page process in megabytes.
     pub memory_mb: Option<u32>,
+    /// The card has a preview frame: previews are on and the tab is awake. Without a `thumb` (an awake
+    /// tab that has not been on screen since its page loaded) the page draws a placeholder in it.
+    pub preview: bool,
     // --- end tab options ---
 }
 
@@ -2157,7 +2142,6 @@ fn write_hover_rows(out: &mut super::json::Object<'_>, rows: &[HoverRow], budget
             items.object(|item| {
                 item.string("title", truncate_chars(&row.title, MAX_TAB_TITLE_CHARS));
                 item.bool("active", row.active);
-                item.bool("linked", row.linked);
                 item.string("fav", &budgeted_uri(row.png.as_deref(), budget));
             });
         }
@@ -2185,11 +2169,10 @@ pub fn tooltip_json(tok: u32, text: &str) -> String {
     })
 }
 
-/// `{"v":1,"t":"hover","tok":..,"kind":"card",...}`. Rows are capped at `MAX_HOVER_ROWS`; rows over
-/// the cap are added to `more`. Unsafe marker colours are sent as `""`.
+/// `{"v":1,"t":"hover","tok":..,"kind":"card",...}`: the hovered tab alone. Unsafe marker colours
+/// are sent as `""`.
 pub fn card_json(tok: u32, card: &HoverCard) -> String {
     let mut budget = MAX_HOVER_FAV_TEXT;
-    let hidden = card.rows.len().saturating_sub(MAX_HOVER_ROWS);
     super::json::Json::object(|out| {
         out.int("v", 1);
         out.string("t", "hover");
@@ -2205,14 +2188,15 @@ pub fn card_json(tok: u32, card: &HoverCard) -> String {
         });
         out.bool("sleeping", card.sleeping);
         out.string("fav", &budgeted_uri(card.png.as_deref(), &mut budget));
-        write_hover_rows(out, &card.rows, &mut budget);
-        out.uint("more", (card.more + hidden) as u64);
         // --- tab options --- only what is there, so a card without them reads as before.
         if let Some(uri) = card.thumb.as_deref().and_then(crate::thumbnail::data_uri) {
             out.string("thumb", &uri);
         }
         if let Some(memory) = card.memory_mb {
             out.uint("mem", u64::from(memory.min(99_999)));
+        }
+        if card.preview {
+            out.bool("preview", true);
         }
         // --- end tab options ---
     })
@@ -4956,7 +4940,7 @@ mod tests {
         assert!(!tooltip.contains('<'), "{tooltip}");
         assert_eq!(hover_hide_json(), r#"{"v":1,"t":"hoverhide"}"#);
         let rows: Vec<HoverRow> = (0..MAX_HOVER_ROWS + 3)
-            .map(|i| HoverRow { title: format!("t{i}"), active: i == 0, linked: false, png: None })
+            .map(|i| HoverRow { title: format!("t{i}"), active: i == 0, png: None })
             .collect();
         let card = card_json(9, &HoverCard {
             title: "x".repeat(400),
@@ -4965,16 +4949,12 @@ mod tests {
             markers: vec!["#fff".into(), "url(x)".into()],
             sleeping: true,
             png: Some(vec![1, 2, 3]),
-            rows: rows.clone(),
-            more: 1,
             ..HoverCard::default() // --- tab options ---
         });
         assert!(card.contains(&format!("\"title\":\"{}\"", "x".repeat(MAX_TAB_TITLE_CHARS))));
         assert!(card.contains("\"marker\":-1"));
         assert!(card.contains("\"markers\":[\"#fff\",\"\"]"));
-        assert!(card.contains("\"fav\":\"\",\"rows\""));
-        assert!(card.contains("\"more\":4"));
-        assert_eq!(card.matches("\"linked\"").count(), MAX_HOVER_ROWS);
+        assert!(card.ends_with("\"fav\":\"\"}"), "the card lists no other tabs: {card}");
         let island = island_json(2, &HoverIsland {
             name: "n".repeat(100),
             hint: "Docs".into(),
@@ -5015,8 +4995,6 @@ mod tests {
             markers: vec!["#e5484d".into(), "#f76b15".into(), "#ffc53d".into(), "#30a46c".into(), "#0090ff".into()],
             sleeping: false,
             png: None,
-            rows: vec![HoverRow { title: "Other".into(), active: true, linked: true, png: None }],
-            more: 0,
             ..HoverCard::default() // --- tab options ---
         });
         let island = island_json(8, &HoverIsland {
@@ -5024,7 +5002,7 @@ mod tests {
             hint: "Example".into(),
             slot: 0,
             swatches: vec!["#0090ff".into(), "#e5484d".into()],
-            rows: vec![HoverRow { title: "Docs".into(), active: false, linked: false, png: None }],
+            rows: vec![HoverRow { title: "Docs".into(), active: false, png: None }],
             more: 0,
             close: "Close Tab Island · 1 Tab".into(),
         });
@@ -5239,13 +5217,8 @@ mod tests {
         let json = tabopts_json(&StripOptions::default());
         assert_eq!(
             json,
-            r#"{"v":1,"t":"tabopts","closeLeft":false,"closeAlways":false,"scroll":false,"minWidth":0,"indicator":"spinner","wheel":false,"separator":false,"alignClose":false,"selection":true,"selectionActive":true,"removeSpacing":false,"maximised":false,"closed":0,"stackDrag":true,"stackDelay":400,"stackRow":"off","closedButton":true,"tools":[]}"#
+            r#"{"v":1,"t":"tabopts","closeLeft":false,"closeAlways":false,"scroll":false,"minWidth":0,"indicator":"spinner","wheel":false,"separator":false,"alignClose":false,"selection":true,"selectionActive":true,"removeSpacing":false,"maximised":false,"closed":0,"closedButton":true,"tools":[]}"#
         );
-        // --- tab stacks (T10) --- the delay is capped like the setting.
-        assert!(tabopts_json(&StripOptions { stack_drag: false, stack_delay: 9_000, ..StripOptions::default() }).contains(r#""stackDrag":false,"stackDelay":2000,"stackRow":"off","#));
-        // --- two-level stacks (T10b) --- the second row's word, and nothing the strip does not know.
-        assert!(tabopts_json(&StripOptions { stack_row: "compact", ..StripOptions::default() }).contains(r#""stackRow":"compact","#));
-        assert!(tabopts_json(&StripOptions { stack_row: "huge", ..StripOptions::default() }).contains(r#""stackRow":"off","#));
         let set = StripOptions { close_left: true, min_width: 900, indicator: "bar", closed: 500, maximised: true, ..StripOptions::default() };
         let json = tabopts_json(&set);
         assert!(json.contains(r#""closeLeft":true"#) && json.contains(r#""minWidth":400"#) && json.contains(r#""indicator":"bar""#) && json.contains(r#""closed":99"#), "{json}");
@@ -5259,7 +5232,7 @@ mod tests {
         marked.marks = TabMarks { unread: true, notify: 3, asleep: true, progress: Some(45), reload: Some(30), idle: true };
         let mut bar = plain_tab(3, "Loading");
         bar.marks = TabMarks { progress: Some(75), ..TabMarks::default() };
-        let options = StripOptions { close_left: true, close_always: true, scroll: true, min_width: 180, indicator: "bar", wheel: true, separator: true, align_close: true, selection: true, selection_active: false, remove_spacing: true, maximised: true, closed: 4, stack_drag: false, stack_delay: 250, stack_row: "regular", closed_button: true, tools: vec![ToolButton { item: "cmd:new-tab".to_owned(), label: "New tab".to_owned(), index: 1 }] };
+        let options = StripOptions { close_left: true, close_always: true, scroll: true, min_width: 180, indicator: "bar", wheel: true, separator: true, align_close: true, selection: true, selection_active: false, remove_spacing: true, maximised: true, closed: 4, closed_button: true, tools: vec![ToolButton { item: "cmd:new-tab".to_owned(), label: "New tab".to_owned(), index: 1 }] };
         let content = format!("{{\"tabs\":{},\"opts\":{},\"defaults\":{}}}\n", tabs_json(2, &[plain, marked, bar]), tabopts_json(&options), tabopts_json(&StripOptions::default()));
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/test/fixtures/tab-options-messages.json");
         if std::env::var_os("BOWSER_WRITE_FIXTURES").is_some_and(|value| value == "1") {
@@ -5278,7 +5251,7 @@ mod tests {
         let full = HoverCard { thumb: Some(jpeg.clone()), memory_mb: Some(412), ..plain.clone() };
         let json = card_json(3, &full);
         assert!(json.contains(r#""thumb":"data:image/jpeg;base64,/9gBAgME/9k=""#), "{json}");
-        assert!(json.ends_with(r#""more":0,"thumb":"data:image/jpeg;base64,/9gBAgME/9k=","mem":412}"#), "{json}");
+        assert!(json.ends_with(r#""fav":"","thumb":"data:image/jpeg;base64,/9gBAgME/9k=","mem":412}"#), "{json}");
         // Not a JPEG, or too big: no thumbnail rather than a broken one.
         let png = HoverCard { thumb: Some(vec![0x89, b'P', b'N', b'G']), ..plain.clone() };
         assert!(!card_json(3, &png).contains("thumb"));
@@ -5286,7 +5259,9 @@ mod tests {
         big.resize(crate::thumbnail::MAX_THUMB_BYTES + 10, 0);
         big.extend([0xFF, 0xD9]);
         assert!(!card_json(3, &HoverCard { thumb: Some(big), ..plain.clone() }).contains("thumb"));
-        assert!(card_json(3, &HoverCard { memory_mb: Some(10_000_000), ..plain }).contains(r#""mem":99999"#), "memory is capped");
+        assert!(card_json(3, &HoverCard { memory_mb: Some(10_000_000), ..plain.clone() }).contains(r#""mem":99999"#), "memory is capped");
+        assert!(!card_json(3, &plain).contains("preview"));
+        assert!(card_json(3, &HoverCard { preview: true, ..plain }).ends_with(r#""fav":"","preview":true}"#));
     }
 
     #[test]

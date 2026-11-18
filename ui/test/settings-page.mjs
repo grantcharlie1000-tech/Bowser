@@ -223,7 +223,8 @@ test('sections match the Rust routes, in page order, and every row belongs to on
   const restart = logic.ROWS.filter((row) => row.restart).map((row) => row.id).sort();
   // The blocking level and the sites it skips apply at once (App::apply_live_settings reaches the blocker).
   // The side panel position is read each time a panel opens (side_panel.rs), so it needs no restart.
-  assert.deepEqual(restart, ['grouping', 'tracking']);
+  // Automatic grouping regroups the strip at once (apply_live_settings copies it).
+  assert.deepEqual(restart, ['tracking']);
   // Rows Bowser saves but does not act on yet say so in plain words, never "Applies after restart".
   // --- toolbars and feeds (thread T13) --- the toolbar editor acts on the HTML toolbar, tab strip and rail, so only
   // the frameless window is left that saves a choice and does nothing.
@@ -561,9 +562,10 @@ test('rows that do nothing yet say so; a group of only such rows says it once', 
   assert.equal(flagOf('autoHideBars'), null);
   assert.equal(flagOf('autoHideFullscreen'), null);
   assert.equal(flagOf('tabPreviewImages'), null, 'the tab preview rows act now: the hover card honours them');
-  // The two rows Rust applies only at the next start (App::apply_live_settings copies neither) say so,
+  // The row Rust applies only at the next start (App::apply_live_settings does not copy it) says so,
   // and the note is part of the control's description: Strict tracking prevention is not in force yet.
-  for (const id of ['grouping', 'tracking']) {
+  assert.equal(flagOf('grouping'), null, 'automatic grouping applies at once');
+  for (const id of ['tracking']) {
     const flag = flagOf(id);
     assert.ok(flag, `${id} carries the restart note`);
     assert.equal(flag.textContent, logic.RESTART_NOTE);
@@ -1698,7 +1700,7 @@ test('slim: a row nobody placed defaults to More options, so new rows never leng
 
 // ---- tab stacks, tiling and workspaces (T10) ----
 
-test('stacks: one small block in Tabs and start page, two core rows, the rest behind More options, each row sends its own tabopt', () => {
+test('groups: one small block in Tabs and start page holding only the group switch; workspaces and tiles are Tabs rows', () => {
   deliver(fixture.snap);
   searchFor('');
   const tabsArea = areaNode('tabs');
@@ -1707,31 +1709,34 @@ test('stacks: one small block in Tabs and start page, two core rows, the rest be
   assert.equal(app.querySelectorAll('.sp-nav-item').filter((b) => b.dataset.section === 'stacks').length, 0, 'no nav item of its own');
   assert.equal(part.querySelector('.sp-group-h').textContent, 'Groups');
   const core = part.querySelectorAll('.sp-row').map((row) => row.dataset.row).filter((id) => id !== undefined);
-  assert.deepEqual(core.filter((id) => id === 'tabs_stack_style' || id === 'tabs_workspaces'), ['tabs_stack_style', 'tabs_workspaces']);
+  assert.deepEqual(core, ['grouping'], 'the Groups part is the one group switch');
+  // Groups have one look and one setting: none of the retired group options is drawn.
+  for (const id of ['tabs_stack_style', 'tabs_stack_open_in_current', 'tabs_stack_drag', 'tabs_stack_drop_delay', 'tabs_stack_editor', 'tabs_stack_compact_row']) {
+    assert.equal(app.querySelector(`.sp-row[data-row="${id}"]`), null, `${id} is gone`);
+  }
+  // Workspaces and tiles are tab options, drawn in the Tabs part.
+  assert.ok(tabsArea.querySelector('section.sp-part[data-section="tabs"]').contains(rowNode('tabs_workspaces')), 'workspaces is a core Tabs row');
   assert.ok(app.querySelector('[data-opens="workspaceRules"]'), 'the rules editor opens from one row');
   const more = moreOf('tabs');
-  for (const id of ['tabs_stack_open_in_current', 'tabs_stack_drag', 'tabs_stack_drop_delay', 'tabs_stack_editor', 'tabs_tile_titles', 'tabs_tile_tight', 'tabs_workspace_scroll', 'tabs_workspace_counts', 'splitEdgeDrop']) {
+  for (const id of ['tabs_tile_titles', 'tabs_tile_tight', 'tabs_workspace_scroll', 'tabs_workspace_counts', 'splitEdgeDrop']) {
     assert.ok(more.contains(rowNode(id)), `${id} is behind More options`);
-    assert.equal(logic.ROWS.find((r) => r.id === id).section, 'stacks', id);
+    assert.equal(logic.ROWS.find((r) => r.id === id).section, 'tabs', id);
   }
   const headings = more.querySelectorAll('.sp-group-h').map((h) => h.textContent);
-  assert.ok(headings.includes('Groups'), 'under the block\'s own heading behind More options');
-  // Every row acts: each switch, the style and the delay send exactly one tabopt.
+  assert.ok(headings.includes('Workspaces and tiles'), 'under the card\'s own heading behind More options');
+  // The group switch is saved with the page's draft.
   sent.length = 0;
-  rowNode('tabs_stack_style').querySelectorAll('[role="radio"]')[1].click();
-  assert.deepEqual(sent.pop(), { v: 1, t: 'set', a: 'tabopt', text: 'tabs_stack_style=compact' });
-  for (const id of ['tabs_workspaces', 'tabs_stack_open_in_current', 'tabs_stack_drag', 'tabs_stack_editor', 'tabs_tile_titles', 'tabs_tile_tight', 'tabs_workspace_scroll', 'tabs_workspace_counts']) {
+  rowNode('grouping').querySelector('[role="switch"]').click();
+  assert.equal(sent[0].a, 'save');
+  assert.match(sent[0].text, /\nautomatic_tab_grouping=false\n/);
+  deliver(fixture.snap);
+  // Every other row acts: each switch sends exactly one tabopt.
+  for (const id of ['tabs_workspaces', 'tabs_tile_titles', 'tabs_tile_tight', 'tabs_workspace_scroll', 'tabs_workspace_counts']) {
     sent.length = 0;
     rowNode(id).querySelector('[role="switch"]').click();
     assert.equal(sent.length, 1, id);
     assert.match(sent[0].text, new RegExp(`^${id}=(true|false)$`), id);
   }
-  sent.length = 0;
-  const delay = rowNode('tabs_stack_drop_delay').querySelector('input');
-  delay.value = '9000';
-  delay.dispatch('change');
-  delay.dispatch('blur');
-  assert.deepEqual(sent.pop(), { v: 1, t: 'set', a: 'tabopt', text: 'tabs_stack_drop_delay=2000' }, 'clamped to what Rust takes');
   // Drag and drop tiling is the older switch, still saved with the page's draft.
   sent.length = 0;
   rowNode('splitEdgeDrop').querySelector('[role="switch"]').click();

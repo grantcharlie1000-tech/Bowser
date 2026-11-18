@@ -285,9 +285,11 @@ test('the stack drop reaches Rust as tabstack with two different tab ids', () =>
 test('tabs.ts holds the strip still over a stack target and sends tabstack only once the delay has run', () => {
   const src = readFileSync(join(here, '..', 'src', 'tabs.ts'), 'utf8');
   assert.match(src, /if \(d\.stackOn !== null\) return;/, 'no reorder while over a target');
-  assert.match(src, /window\.setTimeout\(arm, ui\.stackDelay\)/, 'the delay comes from the strip options');
+  assert.match(src, /window\.setTimeout\(arm, STACK_DROP_DELAY_MS\)/, 'the delay is Rust\'s fixed one');
+  const rust = readFileSync(join(here, '..', '..', 'src', 'stacks.rs'), 'utf8');
+  const delay = /export const STACK_DROP_DELAY_MS = (\d+);/.exec(src)?.[1];
+  assert.ok(delay && rust.includes(`pub const STACK_DROP_DELAY_MS: u32 = ${delay};`), 'the page and Rust wait as long');
   assert.match(src, /const stackOnto = commit && d\.stackArmed && !splitOut \? d\.stackOn : null;/);
-  assert.match(src, /ui\.stackDrag/, 'the option gates it');
   const css = readFileSync(join(here, '..', 'src', 'styles', 'tabs.css'), 'utf8');
   assert.match(css, /\.strip(?::not\(#bw-no-id\))? \.tab\.stack-target::before \{/);
 });

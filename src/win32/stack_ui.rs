@@ -26,14 +26,10 @@ pub(crate) fn run_stack_site(cx: &Context) {
 }
 
 pub(crate) fn run_stack_all_by_site(cx: &Context) {
-    let (count, target) = App::stack_all_by_site_for_editor(cx.app);
-    match count {
+    match App::stack_all_by_site(cx.app) {
         0 => toast(cx.hwnd, "No site has two tabs to stack"),
         1 => toast(cx.hwnd, "1 stack made"),
         count => toast(cx.hwnd, &format!("{count} stacks made")),
-    }
-    if let Some(id) = target {
-        stack_made(cx.hwnd, cx.app, id);
     }
 }
 
@@ -75,19 +71,10 @@ pub(crate) fn run_previous_workspace(cx: &Context) {
     }
 }
 
-/// "Stack tabs of this site" for `id`, then the editor when the option asks for it.
+/// "Stack tabs of this site" for `id`.
 fn stack_site(hwnd: HWND, app: &AppRef, id: TabId) {
     if App::stack_site(app, id) == 0 {
         toast(hwnd, "There is no other tab of this site to stack with");
-        return;
-    }
-    stack_made(hwnd, app, id);
-}
-
-/// A stack was made by hand: "Open the stack editor when a stack is made" opens its editor.
-pub(super) fn stack_made(hwnd: HWND, app: &AppRef, id: TabId) {
-    if App::tab_options(app).stack_editor {
-        super::window::open_stack_editor(hwnd, app, id);
     }
 }
 
@@ -135,7 +122,7 @@ const MAX_WORKSPACE_ROWS: usize = 0x70;
 /// The tab menu's stack rows for `id`: what can be done with its stack, or how to make one. None
 /// while stacks are off or for a private tab (which never stacks).
 pub(super) fn tab_menu_entries(app: &AppRef, id: TabId) -> Vec<Entry> {
-    if !crate::stacks::stacks_on(App::stack_style(app)) || App::tab_private(app, id) || App::tab_pinned(app, id) {
+    if App::tab_private(app, id) || App::tab_pinned(app, id) {
         return Vec::new();
     }
     let members = App::stack_members(app, id);
@@ -188,9 +175,7 @@ pub(super) fn tab_menu_pick(hwnd: HWND, app: &AppRef, id: TabId, command: usize)
     match command {
         STACK_SITE => stack_site(hwnd, app, id),
         STACK_ALL => {
-            if let (_, Some(target)) = App::stack_all_by_site_for_editor(app) {
-                stack_made(hwnd, app, target);
-            }
+            let _ = App::stack_all_by_site(app);
         }
         STACK_EDIT => super::window::open_stack_editor(hwnd, app, id),
         STACK_PIN => {

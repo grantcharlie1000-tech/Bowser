@@ -4,59 +4,9 @@
 //! workspace set that `app.rs` already keeps.
 
 use super::*;
-use crate::stacks::{self, BallClick, StackInput, TileMode};
-use crate::tab_options::StackStyle;
+use crate::stacks::{self, StackInput, TileMode};
 
 impl App {
-    /// The stack style in force (Settings > Tab stacks, tiling and workspaces).
-    pub fn stack_style(app: &AppRef) -> StackStyle {
-        app.borrow().settings.tabs.stack_style
-    }
-
-    /// The group preferences as the strip draws them: the stored ones, folded the way the stack style
-    /// says (`stacks::collapse_rule`).
-    pub(super) fn styled_group_preferences(&self) -> crate::tab_groups::GroupPreferences {
-        let style = self.settings.tabs.stack_style;
-        let open = if style == StackStyle::Accordion { self.domain_island_of(self.tab_model.active()) } else { None };
-        self.group_preferences.with_collapse_rule(stacks::collapse_rule(style, open))
-    }
-
-    // --- two-level stacks (T10b) ---
-    /// The second tab row two-level stacks want now (`stacks::stack_row`): only with that style and
-    /// the tab in use in a stack. Any other style returns at once, without projecting the islands.
-    pub(crate) fn stack_row(&self) -> crate::chrome::layout::StackRow {
-        let options = &self.settings.tabs;
-        if options.stack_style != StackStyle::TwoLevel {
-            return crate::chrome::layout::StackRow::None;
-        }
-        let in_stack = self.domain_island_of(self.tab_model.active()).is_some();
-        stacks::stack_row(options.stack_style, options.stack_compact_row, in_stack)
-    }
-
-    /// The tabs the second row shows: the members of the stack the tab in use is in, in strip
-    /// order, while two-level stacks lay that row out. Empty otherwise.
-    pub fn stack_row_tabs(app: &AppRef) -> Vec<TabId> {
-        let active = {
-            let state = app.borrow();
-            if state.stack_row() == crate::chrome::layout::StackRow::None {
-                return Vec::new();
-            }
-            state.tab_model.active()
-        };
-        Self::stack_members_of_active(app, active)
-    }
-
-    fn stack_members_of_active(app: &AppRef, active: TabId) -> Vec<TabId> {
-        let state = app.borrow();
-        let Some(key) = state.domain_island_of(active) else {
-            return Vec::new();
-        };
-        let inputs = state.group_inputs();
-        let keys = tab_groups::group_keys(&inputs, &state.group_preferences);
-        tab_groups::group_members(&keys, &TabGroupKey::Domain(key)).into_iter().map(|index| inputs[index].id).collect()
-    }
-    // --- end two-level stacks ---
-
     /// The members of the stack `id` is in, in strip order; empty when it is in none.
     pub fn stack_members(app: &AppRef, id: TabId) -> Vec<TabId> {
         Self::island_menu(app, id).map(|(_, ids)| ids).unwrap_or_default()
@@ -67,29 +17,6 @@ impl App {
         let state = app.borrow();
         let key = state.domain_island_of(id)?;
         Some(state.group_preferences.name(&key).map_or_else(|| tab_organisation::suggested_name(&key), str::to_owned))
-    }
-
-    /// A click on the ball of the stack `member` is in. Under Islands the ball folds the island;
-    /// Compact and Accordion fold by themselves, so the click selects a member instead
-    /// (`stacks::ball_click`). Returns whether anything changed.
-    pub fn stack_ball(app: &AppRef, member: TabId) -> bool {
-        let (style, members, active, recent) = {
-            let state = app.borrow();
-            let members = match state.domain_island_of(member) {
-                Some(key) => {
-                    let inputs = state.group_inputs();
-                    let keys = tab_groups::group_keys(&inputs, &state.group_preferences);
-                    tab_groups::group_members(&keys, &TabGroupKey::Domain(key)).into_iter().map(|index| inputs[index].id).collect()
-                }
-                None => Vec::new(),
-            };
-            (state.settings.tabs.stack_style, members, state.tab_model.active(), state.tab_mru.clone())
-        };
-        match stacks::ball_click(style, &members, active, &recent) {
-            BallClick::Toggle => false,
-            BallClick::Select(tab) => Self::select_tab(app, tab),
-            BallClick::Nothing => false,
-        }
     }
 
     /// The active workspace's tabs as the stacking commands see them, in strip order.
@@ -141,9 +68,6 @@ impl App {
     pub fn stack_site(app: &AppRef, id: TabId) -> usize {
         let (changed, count) = {
             let mut state = app.borrow_mut();
-            if !stacks::stacks_on(state.settings.tabs.stack_style) {
-                return 0;
-            }
             let inputs = state.stack_inputs();
             let Some(domain) = inputs.iter().find(|tab| tab.id == id).and_then(|tab| tab.domain.clone()) else {
                 return 0;
@@ -162,9 +86,6 @@ impl App {
     pub fn stack_all_by_site(app: &AppRef) -> usize {
         let (changed, count) = {
             let mut state = app.borrow_mut();
-            if !stacks::stacks_on(state.settings.tabs.stack_style) {
-                return 0;
-            }
             let plan = stacks::sites_to_stack(&state.stack_inputs());
             let before = state.organisation_snapshot();
             let mut changed = false;
@@ -182,22 +103,6 @@ impl App {
         };
         Self::after_stack_change(app, changed);
         count
-    }
-
-    /// [`Self::stack_all_by_site`], plus the tab whose stack "Open the stack editor when a stack is
-    /// made" opens: the tab in front when it is now in a stack, else the first tab of any stack.
-    /// The tab is `None` when no stack was made.
-    pub fn stack_all_by_site_for_editor(app: &AppRef) -> (usize, Option<TabId>) {
-        let count = Self::stack_all_by_site(app);
-        if count == 0 {
-            return (0, None);
-        }
-        let active = Self::active_tab_id(app);
-        if !Self::stack_members(app, active).is_empty() {
-            return (count, Some(active));
-        }
-        let first = Self::tab_ids(app).into_iter().find(|id| !Self::stack_members(app, *id).is_empty());
-        (count, first)
     }
 
     /// "Unstack": every tab of `id`'s stack leaves it and stays out of automatic grouping.
@@ -221,17 +126,13 @@ impl App {
 
     /// A tab dragged onto `target` and held there ("Stack tabs by dragging one onto another"): both
     /// join `target`'s stack, or a new stack of `target`'s site, and the dragged tab moves next to it.
-    /// Refused when the option is off, stacks are off, or either tab is pinned, private or has no site.
+    /// Refused when either tab is pinned, private or has no site.
     pub fn stack_onto(app: &AppRef, dragged: TabId, target: TabId) -> bool {
         if dragged == target {
             return false;
         }
         let changed = {
             let mut state = app.borrow_mut();
-            let options = &state.settings.tabs;
-            if !options.stack_drag || !stacks::stacks_on(options.stack_style) {
-                return false;
-            }
             let inputs = state.stack_inputs();
             let usable = |id: TabId| inputs.iter().find(|tab| tab.id == id).filter(|tab| !tab.pinned && !tab.private);
             let (Some(_), Some(target_input)) = (usable(dragged), usable(target)) else {
@@ -247,32 +148,27 @@ impl App {
         true
     }
 
-    /// "Open new tabs in the current stack" and "New tab position: as stack with related": a new tab
-    /// joins the stack of `anchor` (the tab in front, or the tab that opened it). With `own_site`, a
-    /// tab not yet in a stack starts one of its own site. Whether the new tab joined.
-    pub(super) fn join_new_tab_to_stack(app: &AppRef, new: TabId, anchor: TabId, own_site: bool) -> bool {
+    /// "New tab position: as stack with related": a new tab joins the stack of `anchor` (the tab that
+    /// opened it), or starts one of `anchor`'s site with it. Whether the new tab joined.
+    fn join_new_tab_to_stack(app: &AppRef, new: TabId, anchor: TabId) -> bool {
         let changed = {
             let mut state = app.borrow_mut();
-            if !stacks::stacks_on(state.settings.tabs.stack_style) || new == anchor {
+            if new == anchor {
                 return false;
             }
             let private = |id: TabId| state.mirror(id).is_none_or(|tab| tab.private);
             if private(new) || private(anchor) || state.tab_model.get(anchor).is_none_or(|tab| tab.pinned) {
                 return false;
             }
-            let island = state.domain_island_of(anchor);
-            let domain = match island {
-                Some(domain) => domain,
-                None if own_site => match state
+            let island = state.domain_island_of(anchor).or_else(|| {
+                state
                     .mirror(anchor)
                     .and_then(|tab| tab.url.as_ref())
                     .filter(|url| !tab_groups::is_search_results(url))
                     .and_then(tab_groups::DomainKey::from_url)
-                {
-                    Some(domain) => domain,
-                    None => return false,
-                },
-                None => return false,
+            });
+            let Some(domain) = island else {
+                return false;
             };
             state.join_stack(&[anchor, new], &domain)
         };
@@ -280,20 +176,11 @@ impl App {
         changed
     }
 
-    /// The stack options a freshly opened tab follows: `user` for Ctrl+T and the new tab button,
-    /// else a tab a page opened from `opener`.
-    pub(super) fn stack_new_tab(app: &AppRef, new: TabId, previous: TabId, opener: Option<TabId>) {
-        let (in_current, as_stack) = {
-            let state = app.borrow();
-            (state.settings.tabs.stack_open_in_current, crate::tab_options::position_of(&state.settings) == crate::tab_options::NewTabPosition::Stack)
-        };
+    /// "New tab position: as stack with related": a tab a page opened from `opener` joins its stack.
+    pub(super) fn stack_new_tab(app: &AppRef, new: TabId, opener: Option<TabId>) {
+        let as_stack = crate::tab_options::position_of(&app.borrow().settings) == crate::tab_options::NewTabPosition::Stack;
         if let Some(opener) = opener.filter(|_| as_stack) {
-            if Self::join_new_tab_to_stack(app, new, opener, true) {
-                return;
-            }
-        }
-        if in_current {
-            let _ = Self::join_new_tab_to_stack(app, new, previous, false);
+            let _ = Self::join_new_tab_to_stack(app, new, opener);
         }
     }
 
