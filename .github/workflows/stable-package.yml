@@ -9,6 +9,9 @@ on:
   pull_request:
     branches: [main]
     paths: [stable/release.json]
+  # release.yml's pin job dispatches this on the pin branch it creates (its
+  # GITHUB_TOKEN events cannot trigger pull_request). mark-latest stays push-only.
+  workflow_dispatch:
 
 permissions:
   contents: read

@@ -8,16 +8,21 @@ permissions:
   contents: read
 
 jobs:
-  # A pull request whose only change is stable/release.json (the stable pin PR)
-  # changes no code, UI or build input except what the Rust test
-  # the_shown_version_follows_the_pinned_release reads, so that test's rules and
-  # the PIN_REVISION agreement are checked here instead of rebuilding Bowser.
-  # Anything else, any doubt, and every workflow_dispatch runs the full verification.
+  # Two kinds of change skip the Windows build here; everything else, and any
+  # doubt, runs the full verification.
+  # - pin: the only change is stable/release.json (the stable pin PR, opened by
+  #   a person or by release.yml's pin job, which dispatches this workflow on its
+  #   branch). The rules of the Rust test the_shown_version_follows_the_pinned_release,
+  #   the PIN_REVISION agreement and the allow-list are checked instead.
+  # - bump: the tree is byte-identical to running the base branch's own
+  #   `tools/release.py bump X.Y.Z`. Merging it starts release.yml, which runs
+  #   the full Windows verification on that exact commit before publishing.
   changes:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
       heavy: ${{ steps.diff.outputs.heavy }}
+      kind: ${{ steps.diff.outputs.kind }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -30,19 +35,40 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
         run: |
           set -uo pipefail
-          heavy=true
-          if [ "$EVENT_NAME" = pull_request ] && [ "$(git rev-list --parents -n 1 HEAD | wc -w)" = 3 ]; then
-            # On pull_request, HEAD is the test merge commit; HEAD^1 is the base.
-            if raw="$(git diff --raw --no-renames --no-abbrev HEAD^1 HEAD)"; then
-              echo "$raw"
-              if [ "$(printf '%s\n' "$raw" | grep -c .)" = 1 ] && printf '%s\n' "$raw" | grep -Eq '^:100644 100644 [0-9a-f]{40} [0-9a-f]{40} M'$'\t''stable/release\.json$'; then
-                heavy=false
+          kind=full
+          pin_only() {
+            local raw
+            raw="$(git diff --raw --no-renames --no-abbrev "$1" "$2")" || return 1
+            echo "$raw"
+            [ "$(printf '%s\n' "$raw" | grep -c .)" = 1 ] &&
+              printf '%s\n' "$raw" | grep -Eq '^:100644 100644 [0-9a-f]{40} [0-9a-f]{40} M'$'\t''stable/release\.json$'
+          }
+          parents="$(git rev-list --parents -n 1 HEAD | wc -w)"
+          if [ "$EVENT_NAME" = pull_request ] && [ "$parents" = 3 ]; then
+            # HEAD is the test merge commit; HEAD^1 is the base it merges into.
+            if pin_only HEAD^1 HEAD; then
+              kind=pin
+            elif [ -f tools/release.py ] && git cat-file -e HEAD^1:tools/release.py 2>/dev/null; then
+              version="$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml","rb"))["package"]["version"])')" || version=
+              base="$RUNNER_TEMP/base"
+              if [ -n "$version" ] && git worktree add -q --detach "$base" HEAD^1 &&
+                python3 "$base/tools/release.py" bump "$version" &&
+                git -C "$base" add -A && [ "$(git -C "$base" write-tree)" = "$(git rev-parse 'HEAD^{tree}')" ]; then
+                kind=bump
               fi
             fi
+          elif [ "$EVENT_NAME" = workflow_dispatch ] && [ "$GITHUB_REF" != refs/heads/main ] && [ "$parents" = 2 ]; then
+            # A pin branch: one commit directly on top of main's current head.
+            main="$(git ls-remote origin refs/heads/main | cut -f1)" || main=
+            if [ -n "$main" ] && [ "$(git rev-parse HEAD^1)" = "$main" ] && pin_only HEAD^1 HEAD; then
+              kind=pin
+            fi
           fi
-          echo "heavy=$heavy" | tee -a "$GITHUB_OUTPUT"
+          heavy=true
+          [ "$kind" != full ] && heavy=false
+          printf 'kind=%s\nheavy=%s\n' "$kind" "$heavy" | tee -a "$GITHUB_OUTPUT"
       - name: Check the pin against the source it is merged into
-        if: steps.diff.outputs.heavy == 'false'
+        if: steps.diff.outputs.kind == 'pin'
         run: python3 tools/release.py check-pin
 
   rust:
@@ -238,7 +264,7 @@ jobs:
 
   # Keeps the check name "verify" that branch protection may require. It passes
   # only when every heavy job succeeded, or when the change was classified as a
-  # pin-only PR, its pin checks passed and the heavy jobs were skipped.
+  # light change (pin or exact bump), its checks passed and the heavy jobs were skipped.
   verify:
     needs: [changes, rust, ui, build]
     if: always()
@@ -250,6 +276,7 @@ jobs:
         env:
           CHANGES: ${{ needs.changes.result }}
           HEAVY: ${{ needs.changes.outputs.heavy }}
+          KIND: ${{ needs.changes.outputs.kind }}
           RUST: ${{ needs.rust.result }}
           UI: ${{ needs.ui.result }}
           BUILD: ${{ needs.build.result }}
@@ -257,7 +284,7 @@ jobs:
           echo "changes=$CHANGES heavy=$HEAVY rust=$RUST ui=$UI build=$BUILD"
           if [ "$CHANGES" != success ]; then echo 'Change classification failed.' >&2; exit 1; fi
           if [ "$HEAVY" = false ] && [ "$RUST" = skipped ] && [ "$UI" = skipped ] && [ "$BUILD" = skipped ]; then
-            echo 'Pin-only change: pin checks passed; Windows build not needed.'; exit 0
+            echo "Light change ($KIND) passed its checks; release.yml runs the full Windows verification before any publish."; exit 0
           fi
           if [ "$HEAVY" = true ] && [ "$RUST" = success ] && [ "$UI" = success ] && [ "$BUILD" = success ]; then exit 0; fi
           echo 'Windows verification did not pass.' >&2; exit 1
