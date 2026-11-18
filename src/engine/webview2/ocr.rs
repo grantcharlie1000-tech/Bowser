@@ -50,7 +50,7 @@ unsafe extern "system" fn timer_fired(_hwnd: HWND, _message: u32, timer: usize, 
 
 /// Runs `job` once, `ms` from now, on this thread's message loop. When no timer can be had the job
 /// is dropped: every caller re-arms itself from the next trigger.
-fn after(ms: u32, job: Box<dyn FnOnce()>) {
+pub(in crate::engine) fn after(ms: u32, job: Box<dyn FnOnce()>) {
     let timer = unsafe { windows::Win32::UI::WindowsAndMessaging::SetTimer(None, 0, ms, Some(timer_fired)) };
     if timer != 0 {
         let _ = TIMERS.try_with(|timers| timers.borrow_mut().insert(timer, job));

@@ -37,7 +37,7 @@ use windows::{
 };
 use zeroize::{Zeroize, Zeroizing};
 
-mod ocr;
+pub(super) mod ocr;
 
 use super::{
     BlockedChangedCallback, BrowsingDataKind, BrowsingDataRange, EngineAdapter, EngineEvents,
@@ -6249,9 +6249,9 @@ unsafe fn configure_controller(
         };
         let webview4: ICoreWebView2_4 = webview.cast()?;
         webview4.add_DownloadStarting(
-            &DownloadStartingEventHandler::create(Box::new(move |_sender, args| {
+            &DownloadStartingEventHandler::create(Box::new(move |sender, args| {
                 if let Some(args) = args {
-                    super::download::handle_starting(&args, &download_source, &download_hooks);
+                    super::download::handle_starting(&args, &download_source, &download_hooks, sender.as_ref());
                 }
                 Ok(())
             })),
@@ -7650,7 +7650,7 @@ mod tests {
             "Store::SignInCapture, private, false",
             ".filter(|_| !private)",
             // Downloads: private tabs are cancelled inside the shared handler, which gets the flag.
-            "super::download::handle_starting(&args, &download_source, &download_hooks)",
+            "super::download::handle_starting(&args, &download_source, &download_hooks, sender.as_ref())",
             "owner: super::download::tab_owner(tab_id.0),",
             // Fails closed without a private blocker.
             "state.private_blocker.is_none()",

@@ -27,7 +27,10 @@ pub(crate) use webview2::{engine_menu_continue, engine_menu_owner_destroyed, eng
 
 /// Pause, resume and cancel act on the operation the `Started` event named; they work for tab and
 /// web app downloads alike (see `download`).
-pub use download::{cancel as cancel_download, pause as pause_download, resume as resume_download};
+pub use download::{
+    cancel as cancel_download, owner_of as download_owner, pause as pause_download, resume as resume_download,
+    review as review_download,
+};
 
 use windows::Win32::Foundation::RECT;
 

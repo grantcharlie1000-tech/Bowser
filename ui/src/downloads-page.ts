@@ -23,6 +23,7 @@ const SEARCH_DELAY = 90;
 /** `dpage` action per row action (docs/design/downloads.md "Page"). */
 const PAGE_ACTION: Readonly<Record<DlAction, string>> = {
   pause: 'pause', resume: 'resume', cancel: 'cancel', open: 'open', show: 'show', remove: 'remove', copy: 'copy', retry: 'retry',
+  review: 'review',
 };
 
 function cmd(fields: PanelFields): boolean {

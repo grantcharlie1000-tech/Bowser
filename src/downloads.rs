@@ -11,7 +11,7 @@
 //! local offset (`win32::history_local_offset()`).
 //!
 //! - Engine -> manager: [`DownloadManager::on_event`] with a [`DownloadEvent`] (`Started`,
-//!   `Progress`, `State`). Returns the [`Change`] (`None`, `Progress` = bytes moved only,
+//!   `Progress`, `State`, `Review`). Returns the [`Change`] (`None`, `Progress` = bytes moved only,
 //!   `State` = anything the list shows differently). `App` does this for the bridge.
 //! - Change signal: [`DownloadManager::revision`] grows on every mutation; `App` also calls the
 //!   observer set with `App::set_downloads_observer` with the [`Change`] after each one.
@@ -84,6 +84,9 @@ pub enum DownloadEvent {
     Progress { key: u64, got: u64, total: i64 },
     /// The operation changed state. `err` is a short reason for `Failed`, else empty.
     State { key: u64, state: OpState, got: u64, total: i64, err: String, can_resume: bool },
+    /// Every byte arrived but the operation is still in progress: Windows SmartScreen flagged the file
+    /// and holds it until the user keeps or deletes it in WebView2's own flyout (`engine::download`).
+    Review { key: u64 },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -286,23 +289,38 @@ pub struct DownloadEntry {
     pub op: Option<u64>,
     /// Finished or failed since the bubble was last seen. Not persisted.
     pub unseen: bool,
+    /// Active, every byte in, and held by a SmartScreen verdict only the user can give (shown as
+    /// state `review`, with a Review button). Cleared by the next state change. Not persisted.
+    pub review: bool,
     speed: Speed,
 }
 
 impl DownloadEntry {
     /// Bytes per second now (0 unless active).
     pub fn bps(&self) -> u64 {
-        if self.state == State::Active { self.speed.bps.max(0.0) as u64 } else { 0 }
+        if self.moving() { self.speed.bps.max(0.0) as u64 } else { 0 }
     }
 
     /// Seconds left (-1 when unknown or not active).
     pub fn eta(&self) -> i64 {
-        if self.state == State::Active { eta_secs(self.got, self.total, self.bps()) } else { -1 }
+        if self.moving() { eta_secs(self.got, self.total, self.bps()) } else { -1 }
     }
 
-    /// The state the page shows: a finished download whose file is gone reads `missing`.
+    /// Active and not waiting for a review: bytes may still be moving.
+    fn moving(&self) -> bool {
+        self.state == State::Active && !self.review
+    }
+
+    /// The state the page shows: a finished download whose file is gone reads `missing`, an active
+    /// one waiting for the user's SmartScreen verdict reads `review`.
     pub fn state_key(&self) -> &'static str {
-        if self.state == State::Done && self.missing { "missing" } else { self.state.key() }
+        if self.state == State::Done && self.missing {
+            "missing"
+        } else if self.state == State::Active && self.review {
+            "review"
+        } else {
+            self.state.key()
+        }
     }
 
     /// The source host without a leading `www.`; empty when there is no http(s) source.
@@ -575,6 +593,8 @@ pub enum Action {
     OpenPage,
     OpenFolder,
     ClearAll,
+    /// Open WebView2's own downloads flyout, where a file SmartScreen holds is kept or deleted.
+    Review,
 }
 
 impl Action {
@@ -591,6 +611,7 @@ impl Action {
             8 => Self::OpenPage,
             9 => Self::OpenFolder,
             10 => Self::ClearAll,
+            11 => Self::Review,
             _ => return None,
         })
     }
@@ -622,6 +643,8 @@ pub enum Outcome {
     CopyLink(String),
     /// Open this recorded http(s) URL in a new tab.
     Retry(String),
+    /// Bring operation `key`'s webview to the front and open its downloads flyout.
+    Review { key: u64 },
 }
 
 /// The answer to the page's last change, sent once with the snapshot that follows it.
@@ -840,6 +863,7 @@ impl DownloadManager {
             DownloadEvent::State { key, state, got, total, err, can_resume } => {
                 self.state_changed(key, state, got, total, &err, can_resume, now_ms)
             }
+            DownloadEvent::Review { key } => self.needs_review(key),
         };
         if change != Change::None {
             self.touch();
@@ -884,6 +908,7 @@ impl DownloadManager {
             resume: false,
             op: Some(key),
             unseen: false,
+            review: false,
             speed,
         });
         self.burst = self.burst.wrapping_add(1);
@@ -904,6 +929,17 @@ impl DownloadManager {
         if was == (entry.got, entry.total) { Change::None } else { Change::Progress }
     }
 
+    /// The engine found operation `key` holding every byte for a SmartScreen verdict.
+    fn needs_review(&mut self, key: u64) -> Change {
+        let Some(at) = self.index_of_key(key) else { return Change::None };
+        let entry = &mut self.entries[at];
+        if entry.state != State::Active || entry.review {
+            return Change::None;
+        }
+        entry.review = true;
+        Change::State
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn state_changed(
         &mut self,
@@ -919,6 +955,7 @@ impl DownloadManager {
         let entry = &mut self.entries[at];
         entry.got = got;
         entry.total = total.max(-1);
+        entry.review = false;
         let now = now_ms / 1000;
         match state {
             OpState::InProgress => {
@@ -1206,6 +1243,7 @@ impl DownloadManager {
                     && !is_store_placeholder_url(&entry.url)
             }
             Action::Cancel => entry.state.in_progress() && entry.op.is_some(),
+            Action::Review => entry.state == State::Active && entry.review && entry.op.is_some(),
             Action::Open | Action::Show => entry.state == State::Done && !entry.missing,
             Action::Remove => !entry.state.in_progress(),
             Action::CopyLink => has_url,
@@ -1245,6 +1283,7 @@ impl DownloadManager {
             }
             Action::CopyLink => Outcome::CopyLink(entry.url),
             Action::Retry => retry_target(&entry.url).map_or(Outcome::Rejected, Outcome::Retry),
+            Action::Review => Outcome::Review { key },
             Action::OpenPage | Action::OpenFolder | Action::ClearAll => Outcome::Rejected,
         }
     }
@@ -1594,6 +1633,7 @@ fn parse_as(text: &str, interrupt_running: bool) -> (Vec<DownloadEntry>, u32) {
             resume: false,
             op: None,
             unseen: false,
+            review: false,
             speed: Speed::default(),
         });
     }

@@ -74,7 +74,7 @@ impl Download {
         let key = NEXT_KEY.with(|next| { let key = next.get(); next.set(key + 1); key });
         let events = Rc::new(RefCell::new(Vec::new()));
         let observed = events.clone();
-        OPS.with(|ops| ops.borrow_mut().insert(key, Tracked { op, owner, event: Rc::new(move |event| observed.borrow_mut().push(event)) }));
+        OPS.with(|ops| ops.borrow_mut().insert(key, Tracked { op, owner, event: Rc::new(move |event| observed.borrow_mut().push(event)), webview: None, review_armed: false }));
         Self { key, state, events }
     }
     pub(crate) fn cancelled(&self) -> bool { self.state.cancelled.get() }

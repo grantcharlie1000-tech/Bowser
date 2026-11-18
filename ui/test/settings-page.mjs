@@ -1893,6 +1893,29 @@ test('Pin vertical tabs saves sidebar_collapsed and stays disabled for a horizon
   assert.equal(app.querySelector('[data-row="sidebarPinned"]').querySelector('[role="switch"]').disabled, true);
 });
 
+test('a vertical preset shows the floating vertical tabs: it unpins a sidebar a profile saved pinned', () => {
+  const L = layoutLogic;
+  assert.equal(L.presetSidebarPinned('vertical-left'), false);
+  assert.equal(L.presetSidebarPinned('vertical-right'), false);
+  for (const other of ['simple', 'classic', 'bottom', 'saved']) assert.equal(L.presetSidebarPinned(other), null, other);
+  // A profile saved before unpinned became the default: horizontal tabs, sidebar_collapsed=false.
+  deliver({ ...fixture.snap, d: { ...fixture.snap.d, sidebarPinned: true } });
+  searchFor('');
+  const tiles = app.querySelector('.sp-tiles.is-presets').querySelectorAll('.sp-tile');
+  for (const at of [2, 3]) {
+    deliver({ ...fixture.snap, d: { ...fixture.snap.d, sidebarPinned: true } });
+    sent.length = 0;
+    tiles[at].click();
+    assert.equal(sent.length, 1, tiles[at].dataset.preset);
+    assert.match(sent[0].text, /^tab_layout=vertical(-right)?\n/);
+    assert.match(sent[0].text, /\nsidebar_collapsed=true\n/, `${tiles[at].dataset.preset} unpins`);
+  }
+  deliver({ ...fixture.snap, d: { ...fixture.snap.d, sidebarPinned: true } });
+  sent.length = 0;
+  tiles[1].click();
+  assert.match(sent[0].text, /\nsidebar_collapsed=false\n/, 'other presets leave the pin alone');
+});
+
 test('layout: presets choose a configuration, the edges derive from the tab layout, and the user’s own arrangement is kept as Saved', () => {
   const L = layoutLogic;
   assert.deepEqual([...L.PRESETS], ['simple', 'classic', 'vertical-left', 'vertical-right', 'bottom']);

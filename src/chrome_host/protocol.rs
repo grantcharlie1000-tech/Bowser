@@ -33,8 +33,8 @@ pub const MESSAGE_BURST: u32 = 60;
 pub const POPUP_COMMAND_INTERVAL: Duration = Duration::from_millis(250);
 /// Largest choice an `act` message may carry (a segmented control has at most this many + 1 options).
 pub const MAX_ACT_CHOICE: u8 = 7;
-/// Largest `dlact.n`: 0-7 act on an entry, 8-10 on the list (`downloads::Action::from_code`).
-pub const MAX_DLACT: u8 = 10;
+/// Largest `dlact.n`: 0-7 and 11 act on an entry, 8-10 on the list (`downloads::Action::from_code`).
+pub const MAX_DLACT: u8 = 11;
 /// Theme keys Rust may send to the page. Anything else is dropped.
 pub const THEME_TOKENS: [&str; 10] = [
     "bg",
@@ -1506,8 +1506,8 @@ fn build_command(fields: &[(String, Value)]) -> Result<Command, ProtocolError> {
             let n = uint_field(fields, "n")?;
             if n > u32::from(MAX_DLACT) { return Err(ProtocolError::InvalidValue("n")); }
             let id = uint_field(fields, "id")?;
-            // Entry actions name an entry; list actions name none.
-            if (n < 8) != (id > 0) { return Err(ProtocolError::InvalidValue("id")); }
+            // Entry actions (0-7, 11) name an entry; list actions (8-10) name none.
+            if (8..=10).contains(&n) == (id > 0) { return Err(ProtocolError::InvalidValue("id")); }
             Command::DownloadsAct { tok: uint_field(fields, "tok")?, id, n: n as u8 }
         }
         "compose" => {
@@ -3163,8 +3163,8 @@ mod tests {
         ] {
             assert!(parse_command(raw).is_err(), "{raw}");
         }
-        // The bubble: entry actions 0..=7 name an entry, list actions 8..=10 name none.
-        for n in 0..=7u8 {
+        // The bubble: entry actions 0..=7 and 11 name an entry, list actions 8..=10 name none.
+        for n in (0..=7u8).chain([11]) {
             assert_eq!(
                 ok(&format!(r#"{{"v":1,"t":"dlact","tok":4,"id":9,"n":{n}}}"#)),
                 Command::DownloadsAct { tok: 4, id: 9, n },
@@ -3184,6 +3184,7 @@ mod tests {
             r#"{"v":1,"t":"dlact","tok":4,"id":0,"n":3}"#,
             r#"{"v":1,"t":"dlact","tok":4,"id":9,"n":8}"#,
             r#"{"v":1,"t":"dlact","tok":4,"id":0,"n":11}"#,
+            r#"{"v":1,"t":"dlact","tok":4,"id":9,"n":12}"#,
             r#"{"v":1,"t":"dlact","tok":4,"id":9,"n":-1}"#,
             r#"{"v":1,"t":"dlact","tok":4,"id":9,"n":1.5}"#,
             r#"{"v":1,"t":"dlact","tok":4,"id":9}"#,

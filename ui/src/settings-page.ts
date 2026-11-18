@@ -31,7 +31,7 @@ import { REFRESH_CHOICES, feedAssignment, refreshLabel, type RefreshChoice } fro
 // --- layout (thread T6) --- the Layout block's presets, edges and values
 import {
   DEFAULT_LAYOUT_CONFIG, DEFAULT_UI_ZOOM, MAX_UI_ZOOM, MIN_UI_ZOOM, PRESETS, PRESET_LABELS, STATUS_BARS, STATUS_BAR_LABELS,
-  TOP_TAB_STYLES, UI_DENSITIES, UI_ZOOM_STEP, applyLayoutConfig, parseLayoutConfig, parseUiZoom, presetConfig,
+  TOP_TAB_STYLES, UI_DENSITIES, UI_ZOOM_STEP, applyLayoutConfig, parseLayoutConfig, parseUiZoom, presetConfig, presetSidebarPinned,
   rememberOwnLayout, selectedTile, tabBarEdge, uiZoomText, type LayoutConfig, type Preset, type StatusBar,
   type UiDensity,
 } from './layout-logic';
@@ -609,6 +609,8 @@ export function startSettingsPage(root: HTMLElement): void {
   const presets = radioGroup<Preset | 'saved'>('sp-tiles is-presets', 'Presets', [...PRESETS, 'saved' as const].map((key) => [key, presetTile(key)] as const), (value) => change((d) => {
     const config = value === 'saved' ? parseLayoutConfig(d.layout.saved) : presetConfig(value);
     if (config) applyLayoutConfig(d, config);
+    const pinned = presetSidebarPinned(value);
+    if (config && pinned !== null) d.sidebarPinned = pinned;
   }));
   row(layoutCard, 'layoutPreset', presets.root, { stack: true });
   /** The Saved tile shows the saved arrangement, or stays dimmed until there is one. */
@@ -1090,7 +1092,11 @@ export function startSettingsPage(root: HTMLElement): void {
   // Appearance > Layout would set it. Tabs along the bottom are neither, so neither shows selected.
   const tabPosition = segmentedControl<'top' | 'side'>('Tab position', [['top', 'Top'], ['side', 'Side']], (value) => change((d) => {
     const edge = tabBarEdge(d.tabLayout);
-    if (value === 'side') { if (edge === 'left' || edge === 'right') return; applyLayoutConfig(d, presetConfig('vertical-left')); }
+    if (value === 'side') {
+      if (edge === 'left' || edge === 'right') return;
+      applyLayoutConfig(d, presetConfig('vertical-left'));
+      d.sidebarPinned = presetSidebarPinned('vertical-left') ?? d.sidebarPinned;
+    }
     else if (edge !== 'top') applyLayoutConfig(d, presetConfig('classic'));
   }));
   row(card('tabs', 'Tab bar'), 'tabPosition', tabPosition.root);

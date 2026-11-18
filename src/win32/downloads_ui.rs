@@ -88,7 +88,7 @@ fn leaves_bubble(action: Action, followup: &DownloadFollowup) -> bool {
     if matches!(followup, DownloadFollowup::Rejected | DownloadFollowup::Failed) {
         return false;
     }
-    matches!(action, Action::Open | Action::Show | Action::OpenPage | Action::OpenFolder | Action::Retry)
+    matches!(action, Action::Open | Action::Show | Action::OpenPage | Action::OpenFolder | Action::Retry | Action::Review)
 }
 
 /// Starts listening to the downloads list (once) and sends the toolbar page the button's current

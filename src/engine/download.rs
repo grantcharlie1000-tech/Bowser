@@ -7,6 +7,13 @@
 //! `State` change). `pause`, `resume` and `cancel` act on the kept operation by the key the
 //! `Started` event carried. Private tabs and a missing hook still cancel, exactly as before.
 //!
+//! A file Windows SmartScreen flags (an unsigned, rarely downloaded program such as Bowser.exe
+//! itself) receives every byte and then stays `IN_PROGRESS` until someone chooses Keep or Delete.
+//! That choice lives only in WebView2's own downloads flyout, which `SetHandled(true)` keeps closed,
+//! and the operation exposes no "waiting for a verdict" state. So a download that has all its bytes
+//! and is still in progress [`REVIEW_GRACE_MS`] later is reported as `Review`, and [`review`] opens
+//! the flyout of the webview it came from, where the user can keep or delete it.
+//!
 //! Everything here runs on the UI thread, so the operations live in a thread-local registry shared
 //! by tab webviews and web app panels (one `ICoreWebView2DownloadOperation` per key). The pure parts
 //! (throttle, state and reason mapping) are unit-tested; the COM calls and the Save dialog cannot be
@@ -25,13 +32,16 @@ use webview2_com::{
 };
 use windows::{
     Win32::Foundation::HWND,
-    core::{BOOL, HSTRING, PWSTR, Result},
+    core::{BOOL, HSTRING, Interface, PWSTR, Result},
 };
 
 use crate::downloads::{DownloadEvent, DownloadPlan, DownloadRequest, OpState};
 
 /// Progress is reported at most this often per download; state changes are never held back.
 const PROGRESS_INTERVAL: Duration = Duration::from_millis(250);
+/// How long a download may sit at 100% before it is taken to be waiting for a SmartScreen verdict.
+/// A normal download finishes (rename, Mark of the Web) well within this.
+const REVIEW_GRACE_MS: u32 = 2000;
 
 pub type EventHook = Rc<dyn Fn(DownloadEvent)>;
 pub type PlanHook = Rc<dyn Fn(&DownloadRequest) -> DownloadPlan>;
@@ -69,6 +79,11 @@ struct Tracked {
     op: ICoreWebView2DownloadOperation,
     owner: u64,
     event: EventHook,
+    /// The webview the download came from (the `DownloadStarting` sender, never captured by its own
+    /// handler): its flyout is where a flagged file is kept or deleted. Let go with the operation.
+    webview: Option<ICoreWebView2>,
+    /// All bytes are in and a review check is pending or was reported (see [`arm_review`]).
+    review_armed: bool,
 }
 
 thread_local! {
@@ -90,7 +105,13 @@ fn cancel_start(args: &ICoreWebView2DownloadStartingEventArgs, hooks: &DownloadH
 }
 
 /// The `DownloadStarting` handler body for every non-chrome webview.
-pub fn handle_starting(args: &ICoreWebView2DownloadStartingEventArgs, source: &Source, hooks: &DownloadHooks) {
+/// `webview` is the event's sender: the webview whose flyout can keep or delete a flagged file.
+pub fn handle_starting(
+    args: &ICoreWebView2DownloadStartingEventArgs,
+    source: &Source,
+    hooks: &DownloadHooks,
+    webview: Option<&ICoreWebView2>,
+) {
     let (Some(event), Some(plan)) = (hooks.event.clone(), hooks.plan.clone()) else {
         return cancel_start(args, hooks);
     };
@@ -107,12 +128,12 @@ pub fn handle_starting(args: &ICoreWebView2DownloadStartingEventArgs, source: &S
     }
     match plan(&request) {
         DownloadPlan::Cancel => cancel_start(args, hooks),
-        DownloadPlan::Save { path } => begin(args, &op, &path, &request, source, event, hooks),
+        DownloadPlan::Save { path } => begin(args, &op, &path, &request, source, webview, event, hooks),
         DownloadPlan::Ask { dir, name } => {
             if DIALOG_OPEN.get() {
                 // One dialog at a time: the second download takes the default folder.
                 match crate::downloads::unique_path(&dir, &name, &|p| p.exists()) {
-                    Some(path) => begin(args, &op, &path, &request, source, event, hooks),
+                    Some(path) => begin(args, &op, &path, &request, source, webview, event, hooks),
                     None => cancel_start(args, hooks),
                 }
                 return;
@@ -125,7 +146,7 @@ pub fn handle_starting(args: &ICoreWebView2DownloadStartingEventArgs, source: &S
             let chosen = crate::download_shell::save_dialog(source.parent, &dir, &name);
             DIALOG_OPEN.set(false);
             match chosen {
-                Some(path) => begin(args, &op, &path, &request, source, event, hooks),
+                Some(path) => begin(args, &op, &path, &request, source, webview, event, hooks),
                 None => {
                     // Cancelling the dialog cancels the download and records nothing.
                     let _ = unsafe { args.SetCancel(true) };
@@ -180,12 +201,14 @@ fn read_bytes(op: &ICoreWebView2DownloadOperation) -> (u64, i64) {
     (got.max(0) as u64, total.max(-1))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn begin(
     args: &ICoreWebView2DownloadStartingEventArgs,
     op: &ICoreWebView2DownloadOperation,
     path: &std::path::Path,
     request: &DownloadRequest,
     source: &Source,
+    webview: Option<&ICoreWebView2>,
     event: EventHook,
     hooks: &DownloadHooks,
 ) {
@@ -204,10 +227,14 @@ fn begin(
         Box::new(move |sender: Option<ICoreWebView2DownloadOperation>, _: Option<windows::core::IUnknown>| {
             if let Some(op) = sender
                 && is_tracked(key)
-                && throttle.borrow_mut().ready(Instant::now())
             {
                 let (got, total) = read_bytes(&op);
-                event(DownloadEvent::Progress { key, got, total });
+                if complete(got, total) {
+                    arm_review(key);
+                }
+                if throttle.borrow_mut().ready(Instant::now()) {
+                    event(DownloadEvent::Progress { key, got, total });
+                }
             }
             Ok(())
         })
@@ -233,13 +260,57 @@ fn begin(
     if registered.is_err() {
         return cancel_start(args, hooks);
     }
-    OPS.with(|ops| ops.borrow_mut().insert(key, Tracked { op: op.clone(), owner: source.owner, event: event.clone() }));
+    let tracked = Tracked { op: op.clone(), owner: source.owner, event: event.clone(), webview: webview.cloned(), review_armed: false };
+    OPS.with(|ops| ops.borrow_mut().insert(key, tracked));
     log(hooks, "download_started");
     event(DownloadEvent::Started { key, url: request.url.clone(), path: path.to_path_buf(), total: request.total });
 }
 
 fn is_tracked(key: u64) -> bool {
     OPS.with(|ops| ops.borrow().contains_key(&key))
+}
+
+/// Every announced byte has arrived (an unknown size never counts: it cannot be told from a stall).
+fn complete(got: u64, total: i64) -> bool {
+    total > 0 && got >= total as u64
+}
+
+/// All bytes are in: look again in [`REVIEW_GRACE_MS`]. Armed once per download.
+fn arm_review(key: u64) {
+    let arm = OPS.with(|ops| {
+        ops.borrow_mut().get_mut(&key).is_some_and(|tracked| !std::mem::replace(&mut tracked.review_armed, true))
+    });
+    if arm {
+        super::webview2::ocr::after(REVIEW_GRACE_MS, Box::new(move || check_review(key)));
+    }
+}
+
+/// Still in progress with every byte in, [`REVIEW_GRACE_MS`] after the last one: the file is waiting
+/// for a SmartScreen verdict. Reports the final bytes (the throttle may have held them back) and
+/// `Review`. A download that finished, failed or was paused meanwhile was reported by its own
+/// state change and is left alone.
+fn check_review(key: u64) {
+    // COM getters and the event hook can reenter: no registry borrow spans them.
+    let Some((op, event)) = OPS.with(|ops| ops.borrow().get(&key).map(|t| (t.op.clone(), t.event.clone()))) else {
+        return;
+    };
+    let mut state = COREWEBVIEW2_DOWNLOAD_STATE_COMPLETED;
+    if unsafe { op.State(&mut state) }.is_err() || state != COREWEBVIEW2_DOWNLOAD_STATE_IN_PROGRESS {
+        return;
+    }
+    let (got, total) = read_bytes(&op);
+    if !complete(got, total) {
+        OPS.with(|ops| {
+            if let Some(tracked) = ops.borrow_mut().get_mut(&key) {
+                tracked.review_armed = false;
+            }
+        });
+        return;
+    }
+    event(DownloadEvent::Progress { key, got, total });
+    if is_tracked(key) {
+        event(DownloadEvent::Review { key });
+    }
 }
 
 fn on_state_changed(key: u64, op: &ICoreWebView2DownloadOperation, event: &EventHook) {
@@ -360,6 +431,23 @@ pub fn resume(key: u64) -> bool {
 /// Cancels operation `key` (the engine then reports `Cancelled`).
 pub fn cancel(key: u64) -> bool {
     with_op(key, |op| unsafe { op.Cancel() })
+}
+
+/// Opens WebView2's own downloads flyout over the webview operation `key` came from, where a file
+/// SmartScreen flagged is kept or deleted (the operation then reports `Completed` or `Cancelled`).
+/// The caller brings that webview's tab to the front first.
+pub fn review(key: u64) -> bool {
+    let webview = OPS.with(|ops| ops.borrow().get(&key).and_then(|t| t.webview.clone()));
+    let Some(webview9) = webview.and_then(|w| w.cast::<ICoreWebView2_9>().ok()) else { return false };
+    unsafe {
+        let _ = webview9.SetDefaultDownloadDialogCornerAlignment(COREWEBVIEW2_DEFAULT_DOWNLOAD_DIALOG_CORNER_ALIGNMENT_TOP_RIGHT);
+        webview9.OpenDefaultDownloadDialog().is_ok()
+    }
+}
+
+/// The owner (see [`tab_owner`], [`app_owner`]) of operation `key`, while it is kept.
+pub fn owner_of(key: u64) -> Option<u64> {
+    OPS.with(|ops| ops.borrow().get(&key).map(|t| t.owner))
 }
 
 /// Cancels and forgets operations the list no longer shows (a removed resumable failure).
