@@ -8,6 +8,7 @@
 // in Bowser, which clears the clipboard after 30 seconds.
 import { el, icon, type IconName } from './dom';
 import { iconButton, textButton } from './panels/kit';
+import { glyphTile } from './settings-tiles';
 import type { PanelFields, SnapshotMsg } from './protocol';
 import {
   ADDRESS_KEYS, ADDRESS_LABELS, DEFAULT_GENERATOR, GENERATOR_MAX, GENERATOR_MIN, PROVIDERS, STRENGTH_LABELS, ackToast, cardBrand, cardExpired,
@@ -30,13 +31,18 @@ export interface PasswordsSection {
 const REVEAL_MS = 30_000;
 const reduceMotion = (): boolean => matchMedia('(prefers-reduced-motion: reduce)').matches;
 
+/** Each group's glyph, beside its title (settings.css, "Group cards"). */
+const GROUP_GLYPHS: Readonly<Record<string, IconName>> = { saved: 'key', gen: 'reload', move: 'swap', addr: 'location', cards: 'lock', prefs: 'password-fill' };
+
 /** A group: heading (with optional tools on the right) above a card. */
 function group(title: string, id: string): { root: HTMLElement; head: HTMLElement; tools: HTMLElement; card: HTMLElement } {
   const root = el('div', 'sp-group pw-group');
   const head = el('div', 'pw-head');
   const h = el('h3', 'sp-group-h');
   h.id = `pw-h-${id}`;
-  h.textContent = title;
+  const glyph = GROUP_GLYPHS[id];
+  if (glyph) h.append(glyphTile(glyph, 'sp-g-tile', 14));
+  h.append(document.createTextNode(title));
   const tools = el('div', 'pw-tools');
   head.append(h, tools);
   const card = el('div', 'sp-card pw-card');

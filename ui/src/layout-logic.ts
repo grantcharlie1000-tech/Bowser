@@ -218,7 +218,7 @@ export const PRESET_HINTS: Readonly<Record<Preset | 'saved', string>> = {
   classic: 'Tabs above the address bar.',
   'vertical-left': 'Tabs on the left, panels on the right.',
   'vertical-right': 'Tabs on the right, panels on the left.',
-  bottom: 'Tabs along the bottom edge.',
+  bottom: 'Tabs and the address bar along the bottom edge.',
   saved: 'Your own arrangement, kept up to date.',
 };
 
@@ -229,7 +229,7 @@ export function presetConfig(preset: Preset): LayoutConfig {
     case 'classic': return { ...DEFAULT_LAYOUT_CONFIG, tabLayout: 'tabs-top' };
     case 'vertical-left': return { ...DEFAULT_LAYOUT_CONFIG, tabLayout: 'vertical', sidePanelPosition: 'left' };
     case 'vertical-right': return { ...DEFAULT_LAYOUT_CONFIG, tabLayout: 'vertical-right', sidePanelPosition: 'right' };
-    case 'bottom': return { ...DEFAULT_LAYOUT_CONFIG, tabLayout: 'bottom' };
+    case 'bottom': return { ...DEFAULT_LAYOUT_CONFIG, tabLayout: 'bottom', addressBarPosition: 'bottom' };
   }
 }
 

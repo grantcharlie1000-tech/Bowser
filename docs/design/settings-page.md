@@ -180,13 +180,22 @@ The table below is what each section's rows are, not where the page draws them:
 | `updates` | Updates | Update automatically, status card with Check for updates or Restart to update |
 | `about` | About Bowser | version, Open settings file, Reset settings (in-page confirm; history, the update switch and bookmarks are not touched), Default browser (status, "Make Bowser the default browser") |
 
-Hierarchy is three steps: the section title (Subtitle 20/28), a group heading above its card (Body
-Strong 14/20 in the secondary text colour), and the rows inside the card. Space separates them,
-always as a margin on the element below: 16px from a section title to its first group, 8px from a
-group heading to its card, 24px between groups, 56px between sections, an inset hairline between
-rows, so a card reads as one object rather than a stack of strips. Every group keeps its heading,
-over one row or many, unless it only repeats the section title (Extensions). Each row: label, one-line description, control (switch, segmented, select,
-slider, button). Under the description, a row may carry one quiet note with its own 12px glyph,
+Hierarchy is three steps: the section title beside its glyph (Subtitle 20/28), a group card whose
+title sits inside it beside a small glyph (Body Strong 14/20, as Zen's Account and Sync cards do),
+and the rows inside the card. Glyphs are plain, in the text colour, with no tile behind them. Space separates them, always as a margin on the
+element below: 16px from a section title to its first card, 16px between cards, 48px between
+sections, an inset hairline between rows, so a card reads as one object rather than a stack of
+strips. Each group's glyph is `GROUP_ICONS` in `settings-page.ts`. **More** is a quiet button under the
+cards, not another card. The nav has a divider before Extensions, System and About.
+
+While Bowser is known not to be the default browser, a one-line nudge opens both Simple and All
+(never search results or a sub-page), as Zen's does: "Psst, Bowser isn't your default." and **Make
+default**, nothing more. While it shows, the Default browser row it stands for is not drawn a second
+time (it is still the row a search finds). The glyph helper is `ui/src/settings-tiles.ts`. Every group keeps its heading,
+over one row or many, unless it only repeats the section title (Extensions). Each row: label and control (switch, segmented, select, slider, button). A row's
+one-line description is not drawn when the row has a control: it stays in the accessibility tree
+(the control is still described by it) and search still matches it, but the label carries the page.
+A row with no control keeps its line, since there the line is the content. Under the description, a row may carry one quiet note with its own 12px glyph,
 never a badge: "Applies after restart" (`restart` in `ROWS`) or "Has no effect yet. Bowser keeps
 your choice for when it does." (`notYet`) for a setting that is saved but not acted on: frameless,
 the bookmarks bar pair, the tab preview pair, and, until their Rust wiring lands,
@@ -222,6 +231,9 @@ Only `--bw-*` tokens (`ui/src/styles/tokens.css`) and local `--sp-*` values deri
 | `--sp-card-edge` | `--bw-hairline` | card border |
 | `--sp-nav-active` | `--bw-accent-soft` | nav indicator wash |
 | `--sp-mark` | text-grade `<mark>` wash, accent 28% | search hits |
+| `--sp-r-card` | 12px | cards and every box inside them: the page also points `--bw-r-control`, `-row`, `-island` and `-overlay` at it, so buttons, fields, menus and segmented controls match the cards (switches stay capsules) |
+| `--sp-card-shadow` | two soft black shadows (lighter in light) | cards |
+| `--sp-glow` | accent 12% | the page's top-right wash |
 
 ## Motion
 
@@ -252,3 +264,17 @@ from the same geometry.
 
 Behind More options in Appearance: Window gains Use animation, Buttons instead of sliders, Fade colours in background windows, Simple scrollbars, Monochrome settings icons and a Reset; a Panels card holds the close button, folder counters, floating-panel auto-close and a Reset. All are in the `window` snapshot object (src/window_prefs.rs) and reach the chrome as the `look` object of `state`. Per-web-panel options (zoom, mute, reload every 1-30 minutes, open in tab/window/private tab, title-count mark, own width, restore removed) live on the web app's rail right-click menu and in `panel_prefs.txt`, not on this page. Not added: open settings in a tab, popups in tabs (Bowser always does both), show title bar (Layout's title row), reset toolbars (toolbar editor), Windows and Reading list panels (none exist), show panel toggle (rail buttons are the toggles).
 
+
+## Shortcut bindings (Shortcuts > Bindings)
+
+Built by `ui/src/commands-section.ts`, laid out as Zen's shortcut list. Each category is a card of
+its own with a chevron and its name; it opens and closes (the first is open at first, every category
+opens while the filter has text, and a closed one keeps its rows hidden so search still finds them).
+Inside, the commands are an inset list with full-width rules. A row is the command's name, then its
+shortcut in a fixed-width field (several are listed with commas and fade out at the field's end), a
+pencil and a cross. The pencil records a new shortcut in place of the old ones: Bowser is asked to
+add the new chord, and once it has (a `saved` answer that lists it) the old chords are removed one by
+one, so a refusal or a conflict the user cancels leaves the old shortcut in place. The cross clears
+the command (disabled when it has none, so the column lines up). Adding a second shortcut and browser
+priority sit before the field and show on hover or focus; Restore shows while the command is off its
+defaults; with several shortcuts each gets its own small cross on hover or focus.

@@ -3,12 +3,13 @@
  * Built by ui/src/settings-page.ts; words and the row index in ui/src/settings-page-logic.ts.
  * Spec: docs/design/settings-page.md.
  *
- * Hierarchy is three steps and nothing else: a section title (20/28), a group heading that sits
- * above its card (14/20 strong, secondary colour), and the rows inside the card (14/20 label, 12/16
- * description). Space does the separating, always as a margin on the element below: 16px from a
- * section title to its first group, 8px from a group heading to its card, 24px between groups,
- * 56px between sections, inset hairlines between rows (docs/design/settings-structure.md).
- * The accent marks state only (current section, selected option, a switch that is on).
+ * Hierarchy is three steps and nothing else: a section title with its glyph (20/28), a group
+ * card whose title sits inside it beside a small glyph (14/20 strong), and the rows inside
+ * the card (14/20 label, 12/16 description). Space does the separating, always as a margin on the
+ * element below: 16px from a section title to its first card, 16px between cards, 48px between
+ * sections, inset hairlines between rows (docs/design/settings-structure.md).
+ * The accent marks state only (current section, selected option, a switch that is on). Section
+ * titles and group titles carry a plain glyph in the text colour (settings-tiles.ts), no tile.
  *
  * Colour: the theme's own window, text, hairline and accent tokens (tokens.css), plus the local
  * --sp-* surfaces below, all derived from them, so the page follows light, dark and the accent.
@@ -28,11 +29,21 @@
   --sp-hit: var(--bw-hit);
   --sp-warn: var(--bw-warning);
   --sp-side-w: 264px;
+  --sp-side: color-mix(in srgb, var(--bw-text) 2.5%, var(--sp-page));
   --sp-row-x: var(--bw-space-4);
-  --sp-gap-section: 56px;
+  --sp-gap-section: 48px;
   --sp-gap-title: var(--bw-space-4);
-  --sp-gap-group: var(--bw-space-6);
+  --sp-gap-group: var(--bw-space-4);
   --sp-gap-heading: var(--bw-space-2);
+  /* One corner radius for the page: cards and every box inside them (buttons, fields, menus, rows,
+     segmented controls) share it, so nested shapes match. Switches stay capsules. */
+  --sp-r-card: var(--bw-space-3);
+  --bw-r-control: var(--sp-r-card);
+  --bw-r-row: var(--sp-r-card);
+  --bw-r-island: var(--sp-r-card);
+  --bw-r-overlay: var(--sp-r-card);
+  --sp-card-shadow: 0 1px 2px color-mix(in srgb, #000 16%, transparent), 0 8px 24px -12px color-mix(in srgb, #000 30%, transparent);
+  --sp-glow: color-mix(in srgb, var(--bw-accent) 12%, transparent);
   /* The family stroke (the toolbar's #app default thins it for the caption glyphs). */
   --bw-icon-stroke: 1.5px;
   display: block;
@@ -40,13 +51,36 @@
   height: 100vh;
   overflow: hidden;
   padding: 0;
-  background: var(--sp-page);
+  /* A soft wash of the accent from the top right, still behind everything (no motion, no cost). */
+  background:
+    radial-gradient(1100px 480px at 78% -12%, var(--sp-glow), transparent 70%),
+    var(--sp-page);
   color: var(--bw-text);
   font: var(--bw-text-body) / var(--bw-leading-body) var(--bw-font);
 }
 
 :root[data-scheme="light"] #app.sp-root {
   --sp-rule: color-mix(in srgb, var(--bw-text) 8%, transparent);
+  --sp-card-shadow: 0 1px 2px color-mix(in srgb, #000 6%, transparent), 0 8px 24px -14px color-mix(in srgb, #000 18%, transparent);
+}
+
+/* Section and group glyphs: plain, in the text colour, no tile behind them (as Zen draws them). */
+.sp-h-tile,
+.sp-g-tile {
+  display: inline-grid;
+  flex: none;
+  place-items: center;
+  color: var(--bw-text);
+}
+
+.sp-h-tile {
+  width: 24px;
+  height: 24px;
+}
+
+.sp-g-tile {
+  width: 18px;
+  height: 18px;
 }
 
 .sp ::selection {
@@ -76,7 +110,9 @@
   flex-direction: column;
   gap: var(--bw-space-4);
   min-height: 0;
-  padding: var(--bw-space-6) var(--bw-space-3) var(--bw-space-4) var(--bw-space-6);
+  padding: var(--bw-space-6) var(--bw-space-4) var(--bw-space-4) var(--bw-space-6);
+  border-inline-end: 1px solid var(--sp-card-edge);
+  background: var(--sp-side);
 }
 
 .sp-brand {
@@ -254,6 +290,13 @@
   color: var(--bw-accent);
 }
 
+/* Zen-style divider: the everyday areas, then the add-ons and the system ones. */
+.sp-nav-list > li:has(> .sp-nav-item[data-section="extensions"]) {
+  margin-top: var(--bw-space-2);
+  padding-top: var(--bw-space-2);
+  border-top: 1px solid var(--sp-card-edge);
+}
+
 .sp-nav-item:focus-visible {
   outline: 2px solid var(--bw-focus);
   outline-offset: -2px;
@@ -292,6 +335,9 @@
 }
 
 .sp-h {
+  display: flex;
+  align-items: center;
+  gap: var(--bw-space-3);
   margin: 0 0 var(--sp-gap-title);
   font-size: var(--bw-text-subtitle);
   line-height: var(--bw-leading-subtitle);
@@ -321,18 +367,27 @@
   margin-top: var(--sp-gap-group);
 }
 
-.sp-more-btn {
+/* More is not another card: a quiet pill under the cards, so the shown settings read as the page. */
+.sp-card.sp-more-card {
   display: flex;
-  align-items: center;
-  gap: var(--bw-space-6);
-  width: 100%;
-  min-height: 56px;
-  margin: 0;
-  padding: var(--bw-space-3) var(--sp-row-x);
+  justify-content: center;
   border: 0;
-  border-radius: inherit;
   background: transparent;
-  color: var(--bw-text);
+  box-shadow: none;
+}
+
+.sp-more-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--bw-space-1_5);
+  width: auto;
+  min-height: 32px;
+  margin: 0;
+  padding: 0 var(--bw-space-3) 0 var(--bw-space-4);
+  border: 1px solid var(--sp-card-edge);
+  border-radius: var(--bw-r-row);
+  background: color-mix(in srgb, var(--sp-card) 70%, transparent);
+  color: var(--bw-text-2);
   font: var(--bw-text-body) / var(--bw-leading-body) var(--bw-font);
   text-align: start;
   cursor: default;
@@ -340,7 +395,14 @@
 }
 
 .sp-more-btn:hover {
-  background: color-mix(in srgb, var(--bw-text) 4%, transparent);
+  background: var(--sp-card);
+  color: var(--bw-text);
+}
+
+.sp-more-btn .sp-label {
+  font-size: var(--bw-text-caption);
+  line-height: var(--bw-leading-caption);
+  font-weight: var(--bw-weight-strong);
 }
 
 .sp-more-btn:focus-visible {
@@ -351,8 +413,8 @@
 
 .sp-more-chev {
   flex: none;
-  margin-inline-start: auto;
-  color: var(--bw-text-2);
+  margin-inline-start: 0;
+  color: currentColor;
   transition: transform var(--bw-dur-fast) var(--bw-ease-move);
 }
 
@@ -403,6 +465,9 @@
 }
 
 .sp-group-h {
+  display: flex;
+  align-items: center;
+  gap: var(--bw-space-2);
   margin: 0 0 var(--sp-gap-heading);
   padding-inline-start: var(--bw-space-0_5);
   color: var(--bw-text-2);
@@ -415,8 +480,47 @@
 .sp-card {
   position: relative;
   border: 1px solid var(--sp-card-edge);
-  border-radius: var(--bw-r-island);
+  border-radius: var(--sp-r-card);
   background: var(--sp-card);
+  box-shadow: var(--sp-card-shadow);
+}
+
+/* ---- Group cards: the title sits inside the card, beside its tile (Zen's Account / Sync cards) ----
+   The group is the surface; its card of rows is flat inside it. A block that replaced the card (the
+   extensions list, passwords) keeps its own surface and its heading stays above it. */
+.sp-group:has(> .sp-card) {
+  position: relative;
+  border: 1px solid var(--sp-card-edge);
+  border-radius: var(--sp-r-card);
+  background: var(--sp-card);
+  box-shadow: var(--sp-card-shadow);
+}
+
+.sp-group:has(> .sp-card) > .sp-card {
+  border: 0;
+  border-radius: 0 0 var(--sp-r-card) var(--sp-r-card);
+  background: transparent;
+  box-shadow: none;
+}
+
+.sp-group:has(> .sp-card) > .sp-card:only-child {
+  border-radius: inherit;
+}
+
+.sp-group:has(> .sp-card) > .sp-group-h {
+  gap: var(--bw-space-3);
+  margin: 0;
+  padding: var(--bw-space-3) var(--sp-row-x) var(--bw-space-1);
+  color: var(--bw-text);
+}
+
+.sp-group:has(> .sp-card) > .sp-group-note {
+  padding-inline: var(--sp-row-x);
+}
+
+/* The title's tile already sets the card apart: the first row needs no extra air above it. */
+.sp-group:has(> .sp-group-h:not([hidden])) > .sp-card > :where(.sp-row):first-child {
+  padding-top: var(--bw-space-2);
 }
 
 /* Sub-headings inside a card (the media report). */
@@ -453,7 +557,7 @@
   display: flex;
   align-items: center;
   gap: var(--bw-space-6);
-  min-height: 56px;
+  min-height: 52px;
   padding: var(--bw-space-3) var(--sp-row-x);
 }
 
@@ -860,26 +964,41 @@
 .sp-tile {
   display: flex;
   flex-direction: column;
-  align-items: flex-start;
-  gap: 2px;
+  align-items: stretch;
+  gap: var(--bw-space-2);
   min-width: 0;
   margin: 0;
-  padding: var(--bw-space-2) var(--bw-space-2) var(--bw-space-3);
-  border: 1px solid var(--sp-card-edge);
-  border-radius: var(--bw-r-island);
+  padding: 0;
+  border: 0;
+  border-radius: var(--sp-r-card);
   background: transparent;
-  color: var(--bw-text);
-  font: var(--bw-text-caption) / var(--bw-leading-caption) var(--bw-font);
-  text-align: start;
+  color: var(--bw-text-2);
+  font: var(--bw-text-body) / var(--bw-leading-body) var(--bw-font);
+  text-align: center;
   cursor: default;
   transition:
-    background-color var(--bw-dur-fast) var(--bw-ease-fade),
-    border-color var(--bw-dur-fast) var(--bw-ease-fade),
+    color var(--bw-dur-fast) var(--bw-ease-fade),
     transform var(--bw-dur-fast) var(--bw-ease-out);
 }
 
+/* The preview is the tile: one rounded shape at the page's radius, no box around it. */
+.sp-art {
+  display: block;
+  width: 100%;
+  height: auto;
+  overflow: hidden;
+  border-radius: var(--sp-r-card);
+  background: var(--sp-field);
+  box-shadow: inset 0 0 0 1px var(--sp-field-edge);
+  transition: background-color var(--bw-dur-fast) var(--bw-ease-fade);
+}
+
 .sp-tile:hover {
-  background: color-mix(in srgb, var(--bw-text) 5%, transparent);
+  color: var(--bw-text);
+}
+
+.sp-tile:hover .sp-art {
+  background: color-mix(in srgb, var(--bw-text) 9%, var(--sp-page));
 }
 
 .sp-tile:active {
@@ -887,56 +1006,66 @@
 }
 
 .sp-tile[aria-checked="true"] {
-  border-color: var(--bw-accent);
-  background: color-mix(in srgb, var(--bw-accent) 9%, transparent);
-  box-shadow: inset 0 0 0 1px var(--bw-accent);
+  color: var(--bw-text);
+}
+
+.sp-tile[aria-checked="true"] .sp-art {
+  box-shadow: inset 0 0 0 2px var(--bw-accent);
 }
 
 .sp-tile:disabled {
   opacity: 0.5;
 }
 
-.sp-art {
-  display: block;
-  width: 100%;
-  height: auto;
-  margin-bottom: var(--bw-space-2);
-  overflow: visible;
+/* The drawing's parts, in the chrome's own neutrals (no accent: the chosen tile's ring is the only colour). */
+.sp-art-island {
+  fill: color-mix(in srgb, var(--bw-text) 7%, transparent);
 }
 
-.sp-art-frame {
-  fill: color-mix(in srgb, var(--bw-text) 5%, transparent);
-  stroke: color-mix(in srgb, var(--bw-text) 28%, transparent);
+.sp-art-island.is-on {
+  fill: color-mix(in srgb, var(--bw-text) 22%, transparent);
+}
+
+.sp-art-pill {
+  fill: color-mix(in srgb, var(--bw-text) 12%, transparent);
+}
+
+.sp-art-fav {
+  fill: color-mix(in srgb, var(--bw-text) 55%, transparent);
+}
+
+.sp-art-line,
+.sp-art-mark {
+  fill: color-mix(in srgb, var(--bw-text) 38%, transparent);
+}
+
+.sp-art-page {
+  fill: color-mix(in srgb, var(--bw-text) 9%, var(--sp-page));
+  stroke: color-mix(in srgb, var(--bw-text) 10%, transparent);
   stroke-width: 1;
   vector-effect: non-scaling-stroke;
 }
 
-.sp-art-dot,
-.sp-art-tab {
-  fill: color-mix(in srgb, var(--bw-text) 24%, transparent);
+.sp-art-head {
+  fill: color-mix(in srgb, var(--bw-text) 34%, transparent);
 }
 
-.sp-art-pill {
-  fill: color-mix(in srgb, var(--bw-text) 14%, transparent);
+.sp-art-text {
+  fill: color-mix(in srgb, var(--bw-text) 18%, transparent);
 }
 
-.sp-art-tab.is-on {
-  fill: var(--bw-accent);
-}
-
-.sp-art-page {
-  fill: color-mix(in srgb, var(--bw-text) 7%, transparent);
-}
-
-.sp-tile[aria-checked="true"] .sp-art-frame {
-  stroke: var(--bw-accent);
+.sp-art-pic {
+  fill: color-mix(in srgb, var(--bw-text) 13%, transparent);
 }
 
 .sp-tile-name {
   font-size: var(--bw-text-body);
   line-height: var(--bw-leading-body);
-  font-weight: var(--bw-weight-strong);
   white-space: nowrap;
+}
+
+.sp-tile[aria-checked="true"] .sp-tile-name {
+  font-weight: var(--bw-weight-strong);
 }
 
 .sp-tile-hint {
@@ -1088,6 +1217,15 @@
   height: 28px;
   padding: 0 var(--bw-space-3);
   font-size: var(--bw-text-body);
+}
+
+.sp .bw-segmented,
+.sp .bw-segmented.is-thumb {
+  border-radius: var(--sp-r-card);
+}
+
+.sp .bw-segmented.is-thumb > :is(button, .bw-seg-thumb) {
+  border-radius: calc(var(--sp-r-card) - var(--bw-seg-inset, 2px));
 }
 
 .sp .bw-segmented {
@@ -1342,8 +1480,8 @@
 }
 
 .sp-simple .sp-row {
-  min-height: 64px;
-  padding-block: 14px;
+  min-height: 56px;
+  padding-block: var(--bw-space-3);
 }
 
 /* The engine's name stands in for the menu only until the engine list arrives; then the menu is the control, in Simple too. */
@@ -1368,7 +1506,6 @@
 
 .sp-simple .sp-label {
   font-size: var(--bw-text-body);
-  font-weight: var(--bw-weight-strong);
 }
 
 .sp-simple .bw-segmented > button {
@@ -1385,11 +1522,13 @@
   min-height: 36px;
 }
 
-.sp-show-all {
-  width: 100%;
+.sp .sp-show-all {
+  display: flex;
+  width: max-content;
   justify-content: center;
-  min-height: 44px;
-  margin-top: var(--bw-space-4);
+  min-height: 36px;
+  margin: var(--bw-space-6) auto 0;
+  padding-inline: var(--bw-space-6);
 }
 
 /* Simple is one page: the sidebar becomes a short header, and the section list stays hidden. */
@@ -1400,21 +1539,28 @@
 
 .sp.is-simple .sp-side {
   display: grid;
-  grid-template-columns: auto minmax(220px, 420px);
-  justify-content: start;
+  grid-template-columns: auto minmax(200px, 460px) auto;
+  justify-content: space-between;
   align-items: center;
-  gap: var(--bw-space-3) var(--bw-space-4);
-  padding: var(--bw-space-4) var(--bw-space-6) var(--bw-space-4);
+  gap: var(--bw-space-3) var(--bw-space-6);
+  padding: var(--bw-space-3) var(--bw-space-6);
+  border-inline-end: 0;
   border-bottom: 1px solid var(--sp-card-edge);
+  background: color-mix(in srgb, var(--sp-side) 80%, transparent);
 }
 
 .sp.is-simple .sp-brand { grid-column: 1; grid-row: 1; }
 .sp.is-simple .sp-search { grid-column: 2; grid-row: 1; }
 
 .sp.is-simple .sp-view {
-  grid-column: 1 / -1;
-  grid-row: 2;
-  max-width: 420px;
+  grid-column: 3;
+  grid-row: 1;
+  width: 240px;
+}
+
+@media (max-width: 720px) {
+  .sp.is-simple .sp-side { grid-template-columns: auto minmax(0, 1fr); }
+  .sp.is-simple .sp-view { grid-column: 1 / -1; grid-row: 2; width: auto; max-width: 420px; }
 }
 
 .sp.is-simple > .sp-main { grid-row: 2; min-height: 0; }
@@ -2104,30 +2250,91 @@
 }
 
 .sp-kb-cat + .sp-kb-cat {
-  margin-top: var(--bw-space-4);
+  margin-top: var(--bw-space-3);
+}
+
+/* A category is a card of its own (as Zen's Edit and Sidebar cards): a chevron and its name, then,
+   while open, its commands as an inset list. */
+.sp-kb-cat {
+  border: 1px solid var(--sp-card-edge);
+  border-radius: var(--sp-r-card);
+  background: var(--sp-card);
+  box-shadow: var(--sp-card-shadow);
 }
 
 .sp-kb-cat > .sp-card-h {
-  margin: 0 0 var(--bw-space-1_5);
-  padding-inline-start: var(--bw-space-0_5);
+  margin: 0;
+  padding: 0;
+  color: var(--bw-text);
+  font-size: var(--bw-text-body);
+  line-height: var(--bw-leading-body);
+}
+
+.sp-kb-cat-btn {
+  display: flex;
+  align-items: center;
+  gap: var(--bw-space-3);
+  width: 100%;
+  min-height: 52px;
+  margin: 0;
+  padding: 0 var(--sp-row-x);
+  border: 0;
+  border-radius: var(--sp-r-card);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-weight: var(--bw-weight-strong);
+  text-align: start;
+  cursor: default;
+  transition: background-color var(--bw-dur-fast) var(--bw-ease-fade);
+}
+
+.sp-kb-cat-btn:hover {
+  background: color-mix(in srgb, var(--bw-text) 4%, transparent);
+}
+
+.sp-kb-cat-btn:focus-visible {
+  outline: 2px solid var(--bw-focus);
+  outline-offset: -2px;
+  box-shadow: inset 0 0 0 3px var(--bw-focus-inner);
+}
+
+.sp-kb-cat-chev {
+  flex: none;
+  color: var(--bw-text-2);
+  transform: rotate(-90deg);
+  transition: transform var(--bw-dur-fast) var(--bw-ease-move);
+}
+
+.sp-kb-cat.is-open .sp-kb-cat-chev {
+  transform: none;
+}
+
+.sp-kb-cat-body {
+  padding: 0 var(--sp-row-x) var(--sp-row-x);
+}
+
+/* The inset list: its own hairline box, the field's colour a step darker than the card. */
+.sp .sp-kb-box {
+  border: 1px solid var(--sp-field-edge);
+  border-radius: var(--sp-r-card);
+  background: color-mix(in srgb, var(--bw-text) 1.5%, var(--sp-page));
+  box-shadow: none;
 }
 
 .sp-kb-row {
   position: relative;
   display: flex;
-  flex-wrap: nowrap;
+  flex-wrap: wrap;
   align-items: center;
-  gap: var(--bw-space-2) var(--bw-space-4);
-  padding: var(--bw-space-3) var(--sp-row-x);
+  gap: var(--bw-space-2);
+  min-height: 56px;
+  padding: var(--bw-space-2) var(--bw-space-3) var(--bw-space-2) var(--sp-row-x);
 }
 
-.sp-kb-row + .sp-kb-row::before {
-  content: "";
-  position: absolute;
-  top: 0;
-  inset-inline: var(--sp-row-x);
-  height: 1px;
-  background: var(--sp-rule);
+/* Full-width rules between rows, as in the reference list. */
+.sp-kb-row + .sp-kb-row {
+  border-top: 1px solid var(--sp-field-edge);
 }
 
 .sp-kb-name {
@@ -2135,47 +2342,92 @@
   min-width: 0;
 }
 
+/* The shortcut, shown in a field: one fixed column, so every row's pencil and cross line up. */
 .sp-kb-keylist {
   display: flex;
-  flex: 0 1 auto;
-  max-width: 100%;
-  flex-wrap: wrap;
+  flex: none;
+  flex-wrap: nowrap;
   align-items: center;
-  justify-content: flex-end;
-  gap: var(--bw-space-1_5);
+  width: 180px;
+  height: 32px;
+  overflow: hidden;
+  padding: 0 var(--bw-space-1) 0 var(--bw-space-3);
+  border: 1px solid var(--sp-field-edge);
+  border-radius: var(--sp-r-card);
+  background: var(--sp-field);
+}
+
+.sp-kb-keylist.is-capturing {
+  border-color: var(--bw-accent);
+  box-shadow: inset 0 0 0 1px var(--bw-accent);
 }
 
 .sp-kb-none {
   color: var(--bw-text-2);
-  font-size: var(--bw-text-caption);
-  line-height: var(--bw-leading-caption);
 }
 
-.sp-kb-chip,
-.sp-kb-capture {
+.sp-kb-chip {
   display: inline-flex;
+  flex: none;
   align-items: center;
-  gap: var(--bw-space-1);
-  height: 28px;
-  padding: 0 var(--bw-space-1) 0 var(--bw-space-3);
-  border: 1px solid var(--sp-field-edge);
-  border-radius: var(--bw-r-pill);
-  background: var(--sp-field);
+}
+
+.sp-kb-chip > .sp-kb-chip-remove {
+  margin-inline-start: 2px;
+}
+
+/* Several shortcuts: commas between them, each with a small cross of its own. */
+.sp-kb-chip:not(:last-child)::after {
+  content: ",";
+  color: var(--bw-text-2);
 }
 
 .sp-kb-keys {
   font: inherit;
-  font-size: var(--bw-text-caption);
+  font-size: var(--bw-text-body);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
 
-.sp-kb-capture {
-  border-style: dashed;
-  border-color: var(--bw-accent);
+.sp-kb-chip-remove {
+  display: none;
+  width: 16px;
+  height: 16px;
   color: var(--bw-text-2);
-  font-size: var(--bw-text-caption);
+}
+
+/* Each shortcut's own cross shows while the row is in use (pointer or keyboard), so a field at rest
+   reads as plain text; display, not opacity, so a resting field keeps its room for the text. */
+.sp-kb-row:is(:hover, :focus-within) .sp-kb-chip-remove {
+  display: inline-grid;
+}
+
+/* The text's own clip: longer than the field, it fades out at its end rather than being cut mid-letter. */
+.sp-kb-clip {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: var(--bw-space-1);
+  min-width: 0;
+  overflow: hidden;
+}
+
+.sp-kb-keylist:not(.is-capturing) > .sp-kb-clip {
+  mask-image: linear-gradient(to left, transparent 0, #000 16px);
+}
+
+.sp-kb-capture {
+  overflow: hidden;
+  color: var(--bw-text-2);
+  text-overflow: ellipsis;
+  white-space: nowrap;
   outline: none;
+}
+
+.sp .sp-kb-row > :is(.sp-kb-edit, .sp-kb-clear) {
+  flex: none;
+  width: 28px;
+  height: 28px;
 }
 
 .sp-kb-rowtools {
@@ -2189,8 +2441,19 @@
   display: none;
 }
 
-.sp-kb-priority:not([aria-pressed="true"]) {
-  opacity: 0.55;
+/* Adding a second shortcut and browser priority wait for the pointer or the keyboard; Restore always
+   shows (it says the command is off its defaults). Opacity only, so they keep their place and focus. */
+.sp-kb-rowtools > :is(.sp-kb-add, .sp-kb-priority) {
+  opacity: 0;
+  transition: opacity var(--bw-dur-fast) var(--bw-ease-fade);
+}
+
+.sp-kb-row:is(:hover, :focus-within) > .sp-kb-rowtools > :is(.sp-kb-add, .sp-kb-priority) {
+  opacity: 1;
+}
+
+.sp-kb-row:is(:hover, :focus-within) > .sp-kb-rowtools > .sp-kb-priority:not([aria-pressed="true"]) {
+  opacity: 0.6;
 }
 
 .sp-kb-conflict {
@@ -2536,6 +2799,8 @@
 }
 
 .pw-tile.is-icon {
+  width: 20px;
+  background: none;
   color: var(--bw-text-2);
 }
 
@@ -3358,6 +3623,88 @@
   .pw-meter-seg::after {
     background: CanvasText;
   }
+}
+
+/* ---- Default-browser nudge (settings-page.ts `hero`), as Zen does it: one line, one button ----
+   Only while Bowser is known not to be the default; never in search results or on a sub-page. While
+   it shows, the Default browser row it stands for is not drawn a second time (search still finds it). */
+.sp-hero {
+  display: flex;
+  align-items: center;
+  gap: var(--bw-space-3);
+  min-height: 56px;
+  margin: 0 0 var(--bw-space-6);
+  padding: var(--bw-space-2) var(--bw-space-2) var(--bw-space-2) var(--sp-row-x);
+  border: 1px solid color-mix(in srgb, var(--bw-accent) 30%, var(--sp-card-edge));
+  border-radius: var(--sp-r-card);
+  background: linear-gradient(100deg, color-mix(in srgb, var(--bw-accent) 12%, var(--sp-card)), var(--sp-card) 70%);
+  box-shadow: var(--sp-card-shadow);
+}
+
+.sp-hero-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+  font-weight: var(--bw-weight-strong);
+}
+
+.sp .sp-hero-action {
+  flex: none;
+  min-height: 32px;
+  padding-inline: var(--bw-space-4);
+}
+
+.sp.is-searching .sp-hero,
+.sp.is-sub .sp-hero {
+  display: none;
+}
+
+.sp:has(.sp-hero:not([hidden])):not(.is-searching, .is-sub) .sp-group[data-group="defaultBrowser"],
+.sp.is-simple:has(.sp-hero:not([hidden])) .sp-row[data-row="defaultBrowser"] {
+  display: none;
+}
+
+@media (forced-colors: active) {
+  .sp-group:has(> .sp-card),
+  .sp-hero {
+    border-color: CanvasText;
+  }
+}
+
+/* Groups that build their own header row (passwords, extensions): the same inset as a group title. */
+.sp-group:has(> .sp-card) > :is(.pw-head, .sp-ext-head) {
+  align-items: center;
+  margin: 0;
+  padding: var(--bw-space-3) var(--sp-row-x) var(--bw-space-1);
+}
+
+.sp-group:has(> .sp-card) > :is(.pw-head, .sp-ext-head) > .sp-group-h {
+  gap: var(--bw-space-3);
+  margin: 0;
+  padding: 0;
+  color: var(--bw-text);
+}
+
+.sp-group:has(> .sp-card) > .pw-head > .pw-tools {
+  margin-bottom: 0;
+}
+
+.sp-group:has(> .sp-card) > .sp-ext-local {
+  padding: 0 var(--sp-row-x) var(--bw-space-3);
+}
+
+/* Labels carry the page; a setting's explanatory line is for assistive tech and search, not the eye
+   (the label, the control and the section say enough). It stays in the accessibility tree: the
+   control is still described by it, and search still matches it. Lines that carry data (a chain's
+   steps, an extension's details, a path, a status) are other elements and stay visible, and a row
+   with no control (Fill from the keyboard) keeps its line, because there the line is the content. */
+:where(#app.sp-root) :is(.sp-row[data-row], .sp-row[data-opens], .sp-row.pw-pref):has(> .sp-ctl) > .sp-text > .sp-desc:not(.sp-path) {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
 }
 
 /* ---- Welcome (bowser://settings/welcome, ui/src/welcome.ts, docs/design/welcome.md) ----

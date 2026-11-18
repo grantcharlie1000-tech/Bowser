@@ -8,6 +8,7 @@
 // confirmation that lists what the manifest declares.
 import { el, icon } from './dom';
 import { textButton } from './panels/kit';
+import { glyphTile } from './settings-tiles';
 import { setTip } from './tooltip';
 import {
   INSTALL_COMMAND, INSTALL_CRX_COMMAND, INSTALL_CRX_LABEL, ackToast, running, declarationGroups, parseExtensionsSnapshot, popupCommand, reachLine, reachText, removeCommand,
@@ -48,7 +49,7 @@ export function mountExtensionsSection(options: ExtensionsSectionOptions): Exten
   const head = el('div', 'sp-ext-head');
   const heading = el('h3', 'sp-group-h');
   heading.id = `${prefix}-ext-h`;
-  heading.textContent = 'Installed';
+  heading.append(glyphTile('puzzle', 'sp-g-tile', 14), document.createTextNode('Installed'));
   // Getting extensions: the stores' own sites, where Add to Bowser appears on each extension's page.
   const installs = el('div', 'sp-ext-installs');
   installs.append(
