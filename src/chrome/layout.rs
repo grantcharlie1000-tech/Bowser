@@ -297,6 +297,15 @@ pub struct Layout {
     /// window buttons, and the page takes the whole height beside it. Set by
     /// [`compute_arranged_in_frame`] for every shown sidebar with an address bar.
     pub toolbar_in_sidebar: bool,
+    /// --- floating zen sidebar --- the floating card a hidden Zen column comes back as: the column
+    /// inset by [`ZEN_FLOAT_MARGIN`] on every side, with the window buttons, the toolbar and the tabs
+    /// inside it. Set by [`compute_arranged_auto_hide`] while the column is out of the layout; empty
+    /// otherwise (and then nothing floats).
+    pub float_island: Rect,
+    /// --- floating zen sidebar --- the strip along the window's top edge that holds the window
+    /// buttons (at its right end) and drag space while the column floats: a second reveal, from the
+    /// very top edge. `title_bar` and `caption_area` are in it. Empty when nothing floats.
+    pub float_band: Rect,
     tab_count: usize,
     inactive_tab_width: i32,
     active_tab_width: i32,
@@ -935,6 +944,8 @@ pub fn compute_for_with(
         bottom_chrome: if variant == TabLayout::TabsBottom { viewport.bottom } else { client_h },
         // --- end layout ---
         toolbar_in_sidebar: false,
+        float_island: Rect::default(),
+        float_band: Rect::default(),
         tab_count,
         inactive_tab_width,
         active_tab_width,
@@ -1810,6 +1821,42 @@ impl Layout {
     /// Slides the chrome bands for an auto-hide reveal without moving the page.
     /// `top_dy` negative pulls the top band up (hide); `bottom_dy` positive pushes the bottom band down.
     /// The viewport and the full-height rail stay where they are.
+    /// --- floating zen sidebar --- this layout with the floating card and what is painted in it (the
+    /// toolbar's rows) moved `dx` across, where a slide has the column now. Unchanged when nothing floats.
+    pub fn shift_float_column(mut self, dx: i32) -> Self {
+        if dx == 0 || self.float_island.is_empty() {
+            return self;
+        }
+        for rect in [
+            &mut self.float_island,
+            &mut self.strip,
+            &mut self.back_button,
+            &mut self.forward_button,
+            &mut self.reload_button,
+            &mut self.main_menu_button,
+            &mut self.omnibox,
+        ] {
+            if !rect.is_empty() {
+                *rect = rect.translated(dx, 0);
+            }
+        }
+        self
+    }
+
+    /// --- floating zen sidebar --- this layout with the top-edge strip (the window buttons and the
+    /// drag space) moved `dy` down, where its slide has it now. Unchanged when nothing floats.
+    pub fn shift_float_band(mut self, dy: i32) -> Self {
+        if dy == 0 || self.float_band.is_empty() {
+            return self;
+        }
+        for rect in [&mut self.float_band, &mut self.title_bar, &mut self.caption_area] {
+            if !rect.is_empty() {
+                *rect = rect.translated(0, dy);
+            }
+        }
+        self
+    }
+
     pub fn shift_overlay_bands(mut self, top_dy: i32, bottom_dy: i32) -> Self {
         if top_dy == 0 && bottom_dy == 0 {
             return self;
@@ -1952,6 +1999,100 @@ pub const ZEN_ROW_GAP: i32 = 4;
 /// toolbar page agrees (`toolbar.css`, "Zen sidebar").
 pub const ZEN_ADDRESS_ROW: i32 = 40;
 pub const ZEN_ADDRESS_HEIGHT: i32 = 34;
+
+// --- floating zen sidebar --- compact mode (an unpinned sidebar, or auto-hide taking the tabs or the
+// address bar out) brings the column back as one floating card over the page, the way Zen's compact
+// mode does: a gap of page all round it, rounded corners, a hairline edge and a soft shadow.
+
+/// Page left visible (DIP) round a floating column's card: between it and the page's edges (inside
+/// the window's resize rim, so the gap is always page, never window frame) and on its inner side.
+pub const ZEN_FLOAT_MARGIN: i32 = 6;
+/// Padding (DIP) between the floating card's edge and everything inside it.
+pub const ZEN_FLOAT_PAD: i32 = 6;
+/// Corner radius (DIP) of the floating card. The hosts inside it sit [`ZEN_FLOAT_PAD`] in from its edge,
+/// so their square corners stay inside this curve (that needs at least 0.3 r).
+pub const ZEN_FLOAT_RADIUS: i32 = 10;
+
+/// Turns the Zen column of `layout` and `sidebar` (as [`compute_zen_in_frame`] laid them out, with
+/// `layout.viewport` already widened over the column) into the floating card, as Zen's compact mode
+/// floats its sidebar: the card keeps [`ZEN_FLOAT_MARGIN`] of page between itself and the page's top,
+/// bottom and outer edges and on its inner side. Inside it, [`ZEN_FLOAT_PAD`] from its edge: the
+/// address field at the top, the tabs, and the navigation row (back, forward, reload, the actions and
+/// the main menu) along the bottom. The toolbar host spans the whole content (its page puts the
+/// address row at its top and the navigation row at its bottom when it is that tall) and the tabs
+/// host lies over its middle. The title row and the window buttons leave the column for
+/// `float_band`, a strip along the window's top edge with its own reveal. Nothing outside the column
+/// changes. Too small a column is left as it is.
+fn float_zen_column(layout: &mut Layout, sidebar: &mut crate::vertical_tabs::SidebarLayout, dpi: u32) {
+    let m = Metrics::new(dpi);
+    let column = Rect::new(sidebar.sidebar.left, 0, sidebar.sidebar.right, sidebar.sidebar.bottom.max(layout.strip.bottom));
+    if column.is_empty() || layout.strip.is_empty() {
+        return;
+    }
+    let page = layout.viewport;
+    let gap = m.px(ZEN_FLOAT_MARGIN).min(column.width() / 8).max(0);
+    let pad = m.px(ZEN_FLOAT_PAD).min(column.width() / 8).max(0);
+    let (left, right) = match sidebar.side {
+        SidePanelPosition::Left => (column.left.max(page.left) + gap, column.right - gap),
+        SidePanelPosition::Right => (column.left + gap, column.right.min(page.right) - gap),
+    };
+    let top = column.top.max(page.top) + gap;
+    let bottom = column.bottom.min(page.bottom) - gap;
+    let row_h = m.px(Metrics::STRIP_HEIGHT);
+    let address_row = m.px(ZEN_ADDRESS_ROW);
+    let row_gap = m.px(ZEN_ROW_GAP);
+    if right - left <= 4 * pad || bottom - top <= address_row + row_h + 4 * row_gap + 2 * pad + m.px(crate::vertical_tabs::HEADER_HEIGHT) {
+        return;
+    }
+    let card = Rect::new(left, top, right, bottom);
+    let content = Rect::new(left + pad, top + pad, right - pad, bottom - pad);
+    // The address field across the top row.
+    if !layout.omnibox.is_empty() {
+        let omni_h = layout.omnibox.height();
+        let omni_top = content.top + (address_row - omni_h) / 2;
+        layout.omnibox = Rect::new(content.left, omni_top, content.right, omni_top + omni_h);
+    }
+    // The navigation row along the bottom: the buttons keep their slots from the left edge, the
+    // main menu its place at the right end.
+    let nav_row_top = content.bottom - row_h;
+    let (dl, dr) = (content.left - layout.strip.left, content.right - layout.strip.right);
+    for (rect, dx) in [
+        (&mut layout.back_button, dl),
+        (&mut layout.forward_button, dl),
+        (&mut layout.reload_button, dl),
+        (&mut layout.main_menu_button, dr),
+    ] {
+        if !rect.is_empty() {
+            let dy = nav_row_top - layout.strip.top;
+            *rect = rect.translated(dx, dy);
+        }
+    }
+    layout.strip = content;
+    // The window buttons and drag space: a strip along the window's top edge, the buttons at its end.
+    let title_h = (m.px(Metrics::TOP_MARGIN) + row_h).min(layout.client.height());
+    let band = Rect::new(layout.client.left, 0, layout.client.right, title_h);
+    layout.title_bar = band;
+    if !layout.caption_area.is_empty() {
+        let width = layout.caption_area.width().min(band.width());
+        layout.caption_area = Rect::new(band.right - width, band.top, band.right, band.bottom);
+    }
+    // The tabs host (`SidebarLayout::island`, the slot inset by `inset`) between the two rows; the
+    // slot is that grown back out.
+    let host = Rect::new(content.left, content.top + address_row + row_gap, content.right, nav_row_top - row_gap);
+    let inset = sidebar.island_inset();
+    let slot = Rect::new(host.left - inset, host.top - inset, host.right + inset, host.bottom + inset);
+    let header_height = sidebar.header.height().min(slot.height());
+    let handle_width = sidebar.handle.width();
+    sidebar.sidebar = slot;
+    sidebar.header = Rect::new(slot.left, slot.top, slot.right, slot.top + header_height);
+    sidebar.rows = Rect::new(slot.left, sidebar.header.bottom, slot.right, slot.bottom);
+    sidebar.handle = match sidebar.side {
+        SidePanelPosition::Left => Rect::new(slot.right - handle_width, slot.top, slot.right, slot.bottom),
+        SidePanelPosition::Right => Rect::new(slot.left, slot.top, slot.left + handle_width, slot.bottom),
+    };
+    layout.float_island = card;
+    layout.float_band = band;
+}
 
 /// The Zen arrangement for a sidebar on `side`. The returned sidebar's island starts under the
 /// toolbar; its `sidebar` rect is the tab area only, and [`zen_column`] is the whole column.
@@ -2256,6 +2397,13 @@ pub fn compute_arranged_auto_hide(
     if layout.toolbar_in_sidebar {
         let hide = AutoHide { top: false, ..hide };
         layout.viewport = auto_hide_arranged_viewport(layout.viewport, layout.client, arrangement, hide, dpi, maximised);
+        // --- floating zen sidebar --- out of the layout, the column comes back as a floating card.
+        let mut sidebar = sidebar;
+        if hide.sidebar {
+            if let Some(sidebar) = sidebar.as_mut() {
+                float_zen_column(&mut layout, sidebar, dpi);
+            }
+        }
         return (layout, sidebar);
     }
     if hide.sidebar {
@@ -2294,7 +2442,15 @@ pub fn auto_hide_overlay_arranged(
     let client = hidden.client;
     // --- zen sidebar --- one overlay: the whole column, toolbar and window buttons included.
     if let Some(column) = zen_column(shown, sidebar) {
-        return AutoHideOverlay { top: Rect::default(), sidebar: column, bottom: Rect::default() };
+        // --- floating zen sidebar --- a floating card's slot is not the docked column: the overlay
+        // (what slides, and where the pointer keeps it up) stays the whole docked column.
+        let column = if hidden.float_island.is_empty() || shown.title_bar.is_empty() {
+            column
+        } else {
+            Rect::new(shown.title_bar.left, 0, shown.title_bar.right, column.bottom.max(hidden.float_island.bottom).max(client.bottom))
+        };
+        // The window buttons' strip has its own reveal from the top edge.
+        return AutoHideOverlay { top: hidden.float_band, sidebar: column, bottom: Rect::default() };
     }
     let left = match (sidebar, arrangement.sidebar_side()) {
         (Some(sidebar), Some(SidePanelPosition::Left)) if !sidebar_hidden => sidebar.sidebar.right,
@@ -4468,8 +4624,14 @@ mod tests {
                         let (arranged, sidebar) = compute_arranged_auto_hide(arrangement, w, h, dpi, 5, 2, maximised, 260, true, row, hide);
                         let context = format!("vertical {w}x{h} dpi {dpi} max {maximised} {hide:?}");
                         let rim = if maximised { 0 } else { Metrics::new(dpi).px(Metrics::RESIZE_RIM) };
-                        assert_eq!(sidebar.map(|s| s.sidebar), shown_sidebar.map(|s| s.sidebar), "{context}: the sidebar keeps its shown rectangle");
-                        assert_eq!(arranged.strip, shown.strip, "{context}: the toolbar stays in the column");
+                        if hide.sidebar {
+                            // --- floating zen sidebar --- the column comes back as a floating card.
+                            assert_floats(&shown, shown_sidebar.as_ref(), &arranged, sidebar.as_ref(), dpi, &context);
+                        } else {
+                            assert_eq!(sidebar.map(|s| s.sidebar), shown_sidebar.map(|s| s.sidebar), "{context}: the sidebar keeps its shown rectangle");
+                            assert_eq!(arranged.strip, shown.strip, "{context}: the toolbar stays in the column");
+                            assert!(arranged.float_island.is_empty(), "{context}: nothing floats");
+                        }
                         assert_eq!(arranged.viewport.top, shown.viewport.top, "{context}: no top band to take out");
                         let left = if hide.sidebar { rim } else { shown.viewport.left };
                         assert_eq!(arranged.viewport.left, left, "{context}");
@@ -4493,10 +4655,10 @@ mod tests {
                 let (hidden, sidebar) = compute_arranged_auto_hide(right, w, h, dpi, 5, 2, maximised, 260, true, 36, hide);
                 assert_eq!(hidden.viewport.right, w - rim, "right sidebar hidden: the page runs to the window's edge (dpi {dpi} max {maximised})");
                 assert_eq!((hidden.viewport.left, hidden.viewport.top, hidden.viewport.bottom), (shown.viewport.left, shown.viewport.top, shown.viewport.bottom));
-                assert_eq!(sidebar.map(|s| s.sidebar), shown_sidebar.map(|s| s.sidebar), "the sidebar keeps its shown rectangle");
+                assert_floats(&shown, shown_sidebar.as_ref(), &hidden, sidebar.as_ref(), dpi, &format!("right sidebar dpi {dpi} max {maximised}"));
                 let overlay = auto_hide_overlay_arranged(&shown, &hidden, sidebar.as_ref(), right, dpi, true);
                 assert_eq!(Some(overlay.sidebar), zen_column(&shown, shown_sidebar.as_ref()), "the whole column floats back");
-                assert!(overlay.top.is_empty());
+                assert_eq!(overlay.top, hidden.float_band, "the window buttons' strip comes from the top edge");
                 assert!(overlay.bottom.is_empty());
                 for bottom in [
                     Arrangement { tabs: TabLayout::TabsBottom, ..Arrangement::default() },
@@ -4539,12 +4701,132 @@ mod tests {
                     let hide = AutoHide { top: false, sidebar: true };
                     let (hidden, sidebar) = compute_arranged_auto_hide(arrangement, 1280, 720, dpi, 5, 2, maximised, 260, true, 36, hide);
                     let context = format!("{tabs:?} dpi {dpi} max {maximised}");
-                    assert_eq!((hidden.title_bar, hidden.strip, hidden.caption_area), (shown.title_bar, shown.strip, shown.caption_area), "{context}");
+                    assert_floats(&shown, shown_sidebar.as_ref(), &hidden, sidebar.as_ref(), dpi, &context);
                     let overlay = auto_hide_overlay_arranged(&shown, &hidden, sidebar.as_ref(), arrangement, dpi, true);
-                    for part in [shown.title_bar, shown.strip, shown_sidebar.expect("a sidebar").sidebar] {
+                    let floated = sidebar.expect("a sidebar");
+                    for part in [shown.title_bar, shown.strip, shown_sidebar.expect("a sidebar").sidebar, hidden.strip, floated.sidebar, hidden.float_island] {
                         assert!(overlay.sidebar.contains_rect(part), "{context}: {part:?} floats with the column");
                     }
+                    // --- floating zen sidebar --- the window buttons come back from the top edge on their own.
+                    assert_eq!(overlay.top, hidden.float_band, "{context}");
+                    assert!(overlay.top.contains_rect(hidden.caption_area) && overlay.top.contains_rect(hidden.title_bar), "{context}");
                     assert!(hidden.viewport.contains_rect(Rect::new(overlay.sidebar.left.max(hidden.viewport.left), hidden.viewport.top, overlay.sidebar.right.min(hidden.viewport.right), hidden.viewport.bottom)), "{context}: the page is under the column");
+                }
+            }
+        }
+    }
+
+    /// --- floating zen sidebar --- what a hidden Zen column floats back as, against the docked column
+    /// (`shown`, `shown_sidebar`): one card with [`ZEN_FLOAT_MARGIN`] of page between it and the page's
+    /// edges and on its inner side (never the window's frame), holding the title row, the window
+    /// buttons, the toolbar and the tabs [`ZEN_FLOAT_PAD`] in from its edge, far enough that its
+    /// rounded corners never cut a host's square corner; the toolbar keeps its rows and spans the
+    /// content width; the tabs run from under it to the bottom padding.
+    fn assert_floats(
+        shown: &Layout,
+        shown_sidebar: Option<&crate::vertical_tabs::SidebarLayout>,
+        hidden: &Layout,
+        sidebar: Option<&crate::vertical_tabs::SidebarLayout>,
+        dpi: u32,
+        context: &str,
+    ) {
+        let m = Metrics::new(dpi);
+        let (shown_sidebar, sidebar) = (shown_sidebar.expect("a sidebar"), sidebar.expect("a sidebar"));
+        let column = zen_column(shown, Some(shown_sidebar)).expect("a zen column");
+        let card = hidden.float_island;
+        assert!(!card.is_empty(), "{context}: the column floats");
+        let (gap, pad) = (m.px(ZEN_FLOAT_MARGIN), m.px(ZEN_FLOAT_PAD));
+        let page = hidden.viewport;
+        assert!(page.contains_rect(card), "{context}: the card {card:?} floats over the page {page:?}");
+        assert!(column.contains_rect(card), "{context}: the card stays in the docked column");
+        assert_eq!((card.top - page.top, page.bottom - card.bottom), (gap, gap), "{context}: page above and below the card");
+        match shown_sidebar.side {
+            SidePanelPosition::Left => {
+                assert_eq!(card.left - page.left, gap, "{context}: page between the card and the window's edge");
+                assert_eq!(column.right - card.right, gap, "{context}: page on the card's inner side");
+            }
+            SidePanelPosition::Right => {
+                assert_eq!(page.right - card.right, gap, "{context}: page between the card and the window's edge");
+                assert_eq!(card.left - column.left, gap, "{context}: page on the card's inner side");
+            }
+        }
+        let content = Rect::new(card.left + pad, card.top + pad, card.right - pad, card.bottom - pad);
+        // The toolbar host spans the content: the address field across its top row, the navigation
+        // row (buttons from the left, the main menu at the right) along its bottom.
+        assert_eq!(hidden.strip, content, "{context}: the toolbar host spans the card's content");
+        let address_row = m.px(ZEN_ADDRESS_ROW);
+        assert_eq!((hidden.omnibox.left, hidden.omnibox.right), (content.left, content.right), "{context}: the address field spans the content");
+        assert_eq!(hidden.omnibox.height(), shown.omnibox.height(), "{context}");
+        assert_eq!(hidden.omnibox.top - content.top, (address_row - hidden.omnibox.height()) / 2, "{context}: the address field is centred in the top row");
+        let row_h = m.px(Metrics::STRIP_HEIGHT);
+        let nav_row = Rect::new(content.left, content.bottom - row_h, content.right, content.bottom);
+        let dy = nav_row.top - shown.strip.top;
+        let (dl, dr) = (content.left - shown.strip.left, content.right - shown.strip.right);
+        for (name, now, was, dx) in [
+            ("back", hidden.back_button, shown.back_button, dl),
+            ("forward", hidden.forward_button, shown.forward_button, dl),
+            ("reload", hidden.reload_button, shown.reload_button, dl),
+            ("menu", hidden.main_menu_button, shown.main_menu_button, dr),
+        ] {
+            assert_eq!(now, was.translated(dx, dy), "{context}: {name} in the bottom row");
+            assert!(nav_row.contains_rect(now), "{context}: {name} {now:?} is in the bottom row {nav_row:?}");
+        }
+        // The window buttons and the drag space: a strip along the window's top edge, buttons at its end.
+        let band = hidden.float_band;
+        assert_eq!(band, Rect::new(hidden.client.left, 0, hidden.client.right, shown.title_bar.height()), "{context}: the top-edge strip");
+        assert_eq!(hidden.title_bar, band, "{context}: the strip is the drag space");
+        assert_eq!((hidden.caption_area.width(), hidden.caption_area.height()), (shown.caption_area.width(), shown.caption_area.height()), "{context}: the window buttons keep their size");
+        assert_eq!((hidden.caption_area.top, hidden.caption_area.right), (0, hidden.client.right), "{context}: the window buttons at the strip's end");
+        let toolbar = crate::chrome_host::toolbar_bounds(hidden).map(Rect::from).expect("a toolbar host");
+        let tabs = crate::chrome_host::sidebar_bounds(sidebar).map(Rect::from).expect("a tabs host");
+        assert_eq!(toolbar, content, "{context}: the toolbar host is the content");
+        let row_gap = m.px(ZEN_ROW_GAP);
+        assert_eq!(tabs, Rect::new(content.left, content.top + address_row + row_gap, content.right, nav_row.top - row_gap), "{context}: the tabs host between the two rows");
+        assert!(hidden.omnibox.bottom <= tabs.top && tabs.bottom <= nav_row.top, "{context}: neither row is under the tabs host");
+        // A square corner at `inset` from both of the card's edges lies inside a curve of radius r
+        // when (r - inset) * sqrt(2) <= r, so every host keeps at least 0.3 r from the card's edge.
+        let keep = (m.px(ZEN_FLOAT_RADIUS) as f32 * (1.0 - std::f32::consts::FRAC_1_SQRT_2)).ceil() as i32;
+        assert!(pad >= keep, "{context}: the padding clears the corners");
+        assert!(content.contains_rect(tabs), "{context}");
+        let _ = shown_sidebar;
+    }
+
+    /// --- floating zen sidebar --- only an auto-hidden Zen column floats, and the card follows a slide.
+    #[test]
+    fn only_a_hidden_zen_column_floats_and_the_card_slides_with_it() {
+        for dpi in DPIS {
+            for maximised in [false, true] {
+                for tabs in [TabLayout::Vertical, TabLayout::VerticalRight] {
+                    let arrangement = Arrangement { tabs, ..Arrangement::default() };
+                    let (docked, _) = compute_arranged_in_frame(arrangement, 1280, 720, dpi, 5, 2, maximised, 260, true, 36);
+                    assert!(docked.float_island.is_empty(), "a docked column is not a card");
+                    let (top_only, _) = compute_arranged_auto_hide(arrangement, 1280, 720, dpi, 5, 2, maximised, 260, true, 36, AutoHide { top: true, sidebar: false });
+                    assert!(top_only.float_island.is_empty(), "nothing at the top hides a Zen column");
+                    let (floating, _) = compute_arranged_auto_hide(arrangement, 1280, 720, dpi, 5, 2, maximised, 260, true, 36, AutoHide { top: false, sidebar: true });
+                    let card = floating.float_island;
+                    assert!(!card.is_empty());
+                    assert_eq!(floating.shift_float_column(0), floating, "no slide, no change");
+                    let moved = floating.shift_float_column(-40);
+                    for (now, was) in [(moved.float_island, card), (moved.strip, floating.strip), (moved.omnibox, floating.omnibox), (moved.back_button, floating.back_button), (moved.main_menu_button, floating.main_menu_button)] {
+                        assert_eq!(now, was.translated(-40, 0));
+                    }
+                    assert_eq!((moved.float_band, moved.caption_area, moved.title_bar), (floating.float_band, floating.caption_area, floating.title_bar), "the window buttons' strip does not slide with the card");
+                    assert_eq!(moved.viewport, floating.viewport, "the page stays where it is");
+                    assert_eq!(docked.shift_float_column(-40), docked, "a docked column never moves with a slide");
+                    // The top-edge strip slides on its own, from the top.
+                    assert!(!floating.float_band.is_empty());
+                    let down = floating.shift_float_band(-12);
+                    for (now, was) in [(down.float_band, floating.float_band), (down.caption_area, floating.caption_area), (down.title_bar, floating.title_bar)] {
+                        assert_eq!(now, was.translated(0, -12));
+                    }
+                    assert_eq!((down.float_island, down.strip, down.omnibox), (floating.float_island, floating.strip, floating.omnibox), "the card does not slide with the strip");
+                    assert_eq!(docked.shift_float_band(-12), docked);
+                }
+                // The plain layouts never float.
+                for tabs in HORIZONTAL_FAMILY {
+                    let arrangement = Arrangement { tabs, ..Arrangement::default() };
+                    let (layout, _) = compute_arranged_auto_hide(arrangement, 1280, 720, dpi, 5, 2, maximised, 260, true, 36, AutoHide { top: true, sidebar: true });
+                    assert!(layout.float_island.is_empty(), "{tabs:?}");
                 }
             }
         }
@@ -4780,7 +5062,12 @@ mod arrangement_tests {
                 AutoHide { top: false, sidebar: true },
             );
             let hidden_island = hidden_sidebar.expect("the island keeps its slot").island();
-            assert_eq!(hidden_island, island, "{tabs:?}: hiding the slot does not move the island");
+            // --- floating zen sidebar --- out of the layout, the column comes back as a floating card:
+            // the island moves into it, and the card stays inside the column the slot had.
+            let card = hidden.float_island;
+            assert!(!card.is_empty() && card.contains_rect(hidden_island), "{tabs:?}: the island {hidden_island:?} is inside the floating card {card:?}");
+            assert!(island.left.min(sidebar.sidebar.left) <= card.left && card.right <= island.right.max(sidebar.sidebar.right), "{tabs:?}: the card stays in the tab column");
+            assert!(card.intersect(panel).is_empty(), "{tabs:?}: the card does not meet the docked panel");
             let wide = hidden.viewport;
             let wide_panel = match live {
                 SidePanelPosition::Left => Rect::new(wide.left, wide.top, wide.left + PANEL, wide.bottom),

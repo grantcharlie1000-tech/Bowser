@@ -243,7 +243,9 @@ pub struct PanelFields {
 /// strip along the bottom), where a tab is dragged left or up onto the page.
 /// `rail` is the unpinned vertical strip: icons until the pointer rests on it, then a flyout over the page.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum LayoutMode { Vertical { right: bool, rail: bool }, Horizontal { bottom: bool } }
+/// How the tabs view is laid out. `float` (vertical only): the sidebar is the tabs part of a floating
+/// card (an auto-hidden Zen column), so the page drops its own island look and lets the card show.
+pub enum LayoutMode { Vertical { right: bool, rail: bool, float: bool }, Horizontal { bottom: bool } }
 pub fn layout_needs_sync(cached: Option<LayoutMode>, current: LayoutMode) -> bool {
     cached != Some(current)
 }
@@ -1584,11 +1586,13 @@ pub fn flyout_json(caret: i32) -> String {
 
 pub fn layout_json(mode: LayoutMode) -> String {
     match mode {
-        LayoutMode::Vertical { right, rail } => {
+        LayoutMode::Vertical { right, rail, float } => {
             let side = if right { ",\"side\":\"right\"" } else { "" };
             // Absent unless the strip is the unpinned rail, so older fixtures keep their bytes.
             let rail = if rail { ",\"rail\":true" } else { "" };
-            format!("{{\"v\":1,\"t\":\"layout\",\"mode\":\"vertical\"{side}{rail}}}")
+            // --- floating zen sidebar --- absent unless the column floats, likewise.
+            let float = if float { ",\"float\":true" } else { "" };
+            format!("{{\"v\":1,\"t\":\"layout\",\"mode\":\"vertical\"{side}{rail}{float}}}")
         }
         LayoutMode::Horizontal { bottom } => {
             let side = if bottom { ",\"side\":\"bottom\"" } else { "" };
@@ -2805,7 +2809,7 @@ mod tests {
             set_text_json("https://example.test/😀", false),
             completion_json(9, ".test/"),
             panelshow_json("history").expect("panel token"),
-            layout_json(LayoutMode::Vertical { right: false, rail: false }),
+            layout_json(LayoutMode::Vertical { right: false, rail: false, float: false }),
             snap,
         );
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -2823,7 +2827,7 @@ mod tests {
     fn sidebar_messages_match_own_committed_fixture() {
         let content = format!(
             "{{\"layoutVertical\":{},\"layoutHorizontal\":{},\"workspace\":{}}}\n",
-            layout_json(LayoutMode::Vertical { right: false, rail: false }),
+            layout_json(LayoutMode::Vertical { right: false, rail: false, float: false }),
             layout_json(LayoutMode::Horizontal { bottom: false }),
             workspace_json("Work & Play", "g:code").expect("workspace glyph"),
         );
@@ -2839,9 +2843,9 @@ mod tests {
 
     #[test]
     fn layout_sync_is_required_after_mode_changes_and_host_ready() {
-        assert!(layout_needs_sync(None, LayoutMode::Vertical { right: false, rail: false }));
-        assert!(layout_needs_sync(Some(LayoutMode::Horizontal { bottom: false }), LayoutMode::Vertical { right: false, rail: false }));
-        assert!(!layout_needs_sync(Some(LayoutMode::Vertical { right: false, rail: false }), LayoutMode::Vertical { right: false, rail: false }));
+        assert!(layout_needs_sync(None, LayoutMode::Vertical { right: false, rail: false, float: false }));
+        assert!(layout_needs_sync(Some(LayoutMode::Horizontal { bottom: false }), LayoutMode::Vertical { right: false, rail: false, float: false }));
+        assert!(!layout_needs_sync(Some(LayoutMode::Vertical { right: false, rail: false, float: false }), LayoutMode::Vertical { right: false, rail: false, float: false }));
     }
 
     #[test]
@@ -2925,15 +2929,19 @@ mod tests {
         assert_eq!(flyout_json(22), r#"{"v":1,"t":"flyout","caret":22}"#);
         assert_eq!(flyout_json(-1), r#"{"v":1,"t":"flyout","caret":-1}"#);
         assert_eq!(flyout_json(MAX_FLYOUT_CARET + 1), r#"{"v":1,"t":"flyout","caret":-1}"#);
-        assert_eq!(layout_json(LayoutMode::Vertical { right: false, rail: false }), r#"{"v":1,"t":"layout","mode":"vertical"}"#);
+        assert_eq!(layout_json(LayoutMode::Vertical { right: false, rail: false, float: false }), r#"{"v":1,"t":"layout","mode":"vertical"}"#);
         assert_eq!(layout_json(LayoutMode::Horizontal { bottom: false }), r#"{"v":1,"t":"layout","mode":"horizontal"}"#);
         // The far side rides only when the tabs are there, so the near-side shape is unchanged.
-        assert_eq!(layout_json(LayoutMode::Vertical { right: true, rail: false }), r#"{"v":1,"t":"layout","mode":"vertical","side":"right"}"#);
+        assert_eq!(layout_json(LayoutMode::Vertical { right: true, rail: false, float: false }), r#"{"v":1,"t":"layout","mode":"vertical","side":"right"}"#);
         assert_eq!(layout_json(LayoutMode::Horizontal { bottom: true }), r#"{"v":1,"t":"layout","mode":"horizontal","side":"bottom"}"#);
-        assert_eq!(layout_json(LayoutMode::Vertical { right: false, rail: true }), r#"{"v":1,"t":"layout","mode":"vertical","rail":true}"#);
-        assert_eq!(layout_json(LayoutMode::Vertical { right: true, rail: true }), r#"{"v":1,"t":"layout","mode":"vertical","side":"right","rail":true}"#);
-        assert!(layout_needs_sync(Some(LayoutMode::Vertical { right: false, rail: false }), LayoutMode::Vertical { right: true, rail: false }));
-        assert!(layout_needs_sync(Some(LayoutMode::Vertical { right: false, rail: false }), LayoutMode::Vertical { right: false, rail: true }));
+        assert_eq!(layout_json(LayoutMode::Vertical { right: false, rail: true, float: false }), r#"{"v":1,"t":"layout","mode":"vertical","rail":true}"#);
+        assert_eq!(layout_json(LayoutMode::Vertical { right: true, rail: true, float: false }), r#"{"v":1,"t":"layout","mode":"vertical","side":"right","rail":true}"#);
+        assert!(layout_needs_sync(Some(LayoutMode::Vertical { right: false, rail: false, float: false }), LayoutMode::Vertical { right: true, rail: false, float: false }));
+        assert!(layout_needs_sync(Some(LayoutMode::Vertical { right: false, rail: false, float: false }), LayoutMode::Vertical { right: false, rail: true, float: false }));
+        // --- floating zen sidebar --- the card flag rides last, and a change of it is sent again.
+        assert_eq!(layout_json(LayoutMode::Vertical { right: false, rail: true, float: true }), r#"{"v":1,"t":"layout","mode":"vertical","rail":true,"float":true}"#);
+        assert_eq!(layout_json(LayoutMode::Vertical { right: true, rail: false, float: true }), r#"{"v":1,"t":"layout","mode":"vertical","side":"right","float":true}"#);
+        assert!(layout_needs_sync(Some(LayoutMode::Vertical { right: false, rail: true, float: false }), LayoutMode::Vertical { right: false, rail: true, float: true }));
         // --- vertical sidebar (lane S) ---
         assert_eq!(workspace_json("Work & Play", "g:code").as_deref(), Some(r#"{"v":1,"t":"workspace","name":"Work & Play","icon":"g:code"}"#));
         assert_eq!(workspace_json("Work", "javascript:alert(1)"), None);

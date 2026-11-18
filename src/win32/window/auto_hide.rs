@@ -16,7 +16,7 @@ use std::sync::OnceLock;
 
 use windows::Win32::Foundation::{HANDLE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
-    BeginPaint, EndPaint, GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITOR_DEFAULTTONULL, MONITORINFO, MonitorFromPoint,
+    BeginPaint, CreateRoundRectRgn, DeleteObject, EndPaint, SetWindowRgn, GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITOR_DEFAULTTONULL, MONITORINFO, MonitorFromPoint,
     MonitorFromWindow, PAINTSTRUCT, ScreenToClient,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{TME_LEAVE, TRACKMOUSEEVENT, TrackMouseEvent};
@@ -109,6 +109,12 @@ pub(super) struct Runtime {
     /// Slide progress for the floating bars. Settled while idle, so no frame timer runs.
     pub slide: rules::ChromeMotion,
     sensors: Vec<(Zone, HWND)>,
+    /// --- floating zen sidebar --- the window under a floating column's card (see [`sync_catcher`]),
+    /// made the first time the card shows, and the card size its rounded region was cut for.
+    catcher: Option<HWND>,
+    catcher_size: (i32, i32),
+    /// The catcher under the top-edge strip with the window buttons, made the first time it shows.
+    band_catcher: Option<HWND>,
     timer: bool,
     slide_timer: bool,
     ticks: u32,
@@ -257,7 +263,9 @@ impl Runtime {
             || s.drag.is_some()
             || s.vertical_drag.is_some()
             || s.split_dragging
-            || !s.foreground
+            // --- floating zen sidebar --- the floating card answers to the pointer alone: one revealed
+            // over a window in the background still goes when the pointer leaves it.
+            || (!s.foreground && s.layout.float_island.is_empty())
             || super::html_popup::is_active(hwnd)
             || super::super::menu::is_tracking()
             || super::super::island_menu::is_open()
@@ -537,9 +545,12 @@ fn raise_all(hwnd: HWND) {
     })
     .flatten();
     let Some((toolbar, tabs)) = hosts else {
+        sync_catcher(hwnd);
         sync_sensors(hwnd);
         return;
     };
+    // The card's catcher goes on top first, so the HTML views raised next end up above it.
+    sync_catcher(hwnd);
     if let Some(host) = toolbar {
         host.raise_to_top();
     }
@@ -555,6 +566,212 @@ pub(super) fn after_layout(hwnd: HWND) {
     let idle = with_chrome(hwnd, |s| s.ah.hidden.is_empty() && s.ah.sensors.is_empty()).unwrap_or(true);
     if !idle {
         raise_all(hwnd);
+    } else {
+        sync_catcher(hwnd); // a card that stopped floating takes its catcher down
+    }
+}
+
+// ----- the floating card's catcher (floating zen sidebar) -----
+
+const CATCHER_CLASS: PCWSTR = w!("BowserFloatCatcher");
+
+/// Where the floating card is now (its rest place moved by the slide), while it is on screen.
+fn catcher_rect(s: &WindowChrome) -> Option<LRect> {
+    let island = s.layout.float_island;
+    if island.is_empty() || s.sidebar.is_none() || s.ah.visually_hidden(Zone::Sidebar) {
+        return None;
+    }
+    Some(island.translated(s.ah.sidebar_shift(), 0))
+}
+
+/// Where the top-edge strip with the window buttons is now, while it is on screen.
+fn band_catcher_rect(s: &WindowChrome) -> Option<LRect> {
+    let band = s.layout.float_band;
+    if band.is_empty() || s.ah.visually_hidden(Zone::Top) {
+        return None;
+    }
+    Some(band.translated(0, s.ah.band_shift().0))
+}
+
+/// Puts a plain child window under each floating surface (the column's card and the top-edge strip
+/// with the window buttons), above the page and below the HTML views: the overlay paints them, but
+/// it lets every click through, so without these a press on their own surface (the card's padding,
+/// the strip's drag space) would land in the page beneath. A catcher takes those presses: the
+/// strip drags and double-click maximises the window like a caption, the window buttons fall through
+/// to the frame (`HTTRANSPARENT`, as `caption_pass` does), and the rest does nothing. The card's is
+/// cut to its rounded corners a pixel inside the curve, so the page shows round it. Both fill with
+/// the window colour, which is what the overlay paints over them anyway. Each is made when its
+/// surface first shows and hidden whenever it is not shown. The strip's goes on top first, so the
+/// card's (painted over the strip) ends above it.
+fn sync_catcher(hwnd: HWND) {
+    let Some((band, card, band_window, card_window, radius, last)) = with_chrome(hwnd, |s| {
+        let radius = Metrics::new(s.dpi).px(crate::chrome::layout::ZEN_FLOAT_RADIUS);
+        (band_catcher_rect(s), catcher_rect(s), s.ah.band_catcher, s.ah.catcher, radius, s.ah.catcher_size)
+    }) else {
+        return;
+    };
+    for (want, existing, rounded) in [(band, band_window, false), (card, card_window, true)] {
+        let Some(rect) = want else {
+            if let Some(window) = existing {
+                unsafe {
+                    let _ = ShowWindow(window, SW_HIDE);
+                }
+            }
+            continue;
+        };
+        let Some(window) = existing.or_else(|| catcher_window(hwnd, rounded)) else { continue };
+        let (w, h) = (rect.width().max(1), rect.height().max(1));
+        unsafe {
+            let _ = SetWindowPos(window, Some(HWND_TOP), rect.left, rect.top, w, h, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+            if rounded && last != (w, h) {
+                let d = (radius * 2).min(w).min(h).max(0);
+                let region = CreateRoundRectRgn(1, 1, w, h, d, d);
+                if !region.is_invalid() && SetWindowRgn(window, Some(region), true) == 0 {
+                    let _ = DeleteObject(region.into());
+                }
+                let _ = with_chrome(hwnd, |s| s.ah.catcher_size = (w, h));
+            }
+        }
+    }
+}
+
+/// Makes a catcher window: the card's when `card`, else the top-edge strip's.
+fn catcher_window(owner: HWND, card: bool) -> Option<HWND> {
+    thread_local! { static DONE: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) }; }
+    let instance: Option<windows::Win32::Foundation::HINSTANCE> =
+        unsafe { windows::Win32::System::LibraryLoader::GetModuleHandleW(None) }.ok().map(|m| m.into());
+    let registered = DONE.with(|done| {
+        if let Some(ok) = done.get() {
+            return ok;
+        }
+        let class = WNDCLASSW {
+            style: CS_DBLCLKS,
+            lpfnWndProc: Some(catcher_proc),
+            hInstance: instance.unwrap_or_default(),
+            lpszClassName: CATCHER_CLASS,
+            ..Default::default()
+        };
+        let ok = unsafe { RegisterClassW(&class) } != 0;
+        done.set(Some(ok));
+        ok
+    });
+    if !registered {
+        return None;
+    }
+    let window = unsafe {
+        CreateWindowExW(Default::default(), CATCHER_CLASS, w!(""), WS_CHILD | WS_CLIPSIBLINGS, 0, 0, 1, 1, Some(owner), None, instance, None)
+    }
+    .ok()?;
+    let _ = with_chrome(owner, |s| {
+        if card {
+            s.ah.catcher = Some(window);
+            s.ah.catcher_size = (0, 0);
+        } else {
+            s.ah.band_catcher = Some(window);
+        }
+    });
+    Some(window)
+}
+
+/// The catcher's point `lp` (its own client pixels) in its parent's client pixels, with the parent.
+fn catcher_point(hwnd: HWND, lp: LPARAM) -> Option<(HWND, POINT)> {
+    let parent = unsafe { GetParent(hwnd) }.ok()?;
+    let mut point = POINT { x: (lp.0 & 0xFFFF) as i16 as i32, y: ((lp.0 >> 16) & 0xFFFF) as i16 as i32 };
+    unsafe {
+        if !windows::Win32::Graphics::Gdi::ClientToScreen(hwnd, &mut point).as_bool() || !ScreenToClient(parent, &mut point).as_bool() {
+            return None;
+        }
+    }
+    Some((parent, point))
+}
+
+/// The point is in the top-edge strip's drag space, as the strip sits now.
+fn on_title_row(parent: HWND, point: POINT) -> bool {
+    with_chrome(parent, |s| {
+        let bar = s.layout.title_bar;
+        !bar.is_empty() && !s.layout.float_band.is_empty() && !s.ah.visually_hidden(Zone::Top) && bar.translated(0, s.ah.band_shift().0).contains(point.x, point.y)
+    })
+    .unwrap_or(false)
+}
+
+/// Sends a caption mouse message for the parent's client `point` to the parent, as if the title row
+/// were its own caption.
+fn send_caption(parent: HWND, msg: u32, point: POINT) {
+    let mut screen = point;
+    unsafe {
+        if windows::Win32::Graphics::Gdi::ClientToScreen(parent, &mut screen).as_bool() {
+            let lp = ((screen.y as u16 as u32) << 16 | screen.x as u16 as u32) as isize;
+            let _ = windows::Win32::UI::WindowsAndMessaging::SendMessageW(
+                parent,
+                msg,
+                Some(WPARAM(windows::Win32::UI::WindowsAndMessaging::HTCAPTION as usize)),
+                Some(LPARAM(lp)),
+            );
+        }
+    }
+}
+
+unsafe extern "system" fn catcher_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        HTCLIENT, HTTRANSPARENT, WM_LBUTTONDBLCLK, WM_LBUTTONDOWN, WM_NCHITTEST, WM_NCLBUTTONDBLCLK, WM_NCLBUTTONDOWN,
+    };
+    unsafe {
+        match msg {
+            WM_NCHITTEST => {
+                // The window buttons painted on the card answer through the frame (Snap Layouts too).
+                if let Ok(parent) = GetParent(hwnd) {
+                    let mut point = super::super::frame::point_from_lparam(lp);
+                    if ScreenToClient(parent, &mut point).as_bool()
+                        && super::caption_buttons_live(parent)
+                        && super::caption_point_is_button(parent, point.x, point.y)
+                    {
+                        return LRESULT(HTTRANSPARENT as isize);
+                    }
+                }
+                LRESULT(HTCLIENT as isize)
+            }
+            WM_LBUTTONDOWN => {
+                if let Some((parent, point)) = catcher_point(hwnd, lp) {
+                    if on_title_row(parent, point) {
+                        let _ = windows::Win32::UI::Input::KeyboardAndMouse::ReleaseCapture();
+                        send_caption(parent, WM_NCLBUTTONDOWN, point);
+                    }
+                }
+                LRESULT(0)
+            }
+            WM_LBUTTONDBLCLK => {
+                if let Some((parent, point)) = catcher_point(hwnd, lp) {
+                    if on_title_row(parent, point) {
+                        send_caption(parent, WM_NCLBUTTONDBLCLK, point);
+                    }
+                }
+                LRESULT(0)
+            }
+            WM_MOUSEACTIVATE => LRESULT(3), // MA_NOACTIVATE
+            WM_SETCURSOR => {
+                if let Ok(arrow) = LoadCursorW(None, IDC_ARROW) {
+                    SetCursor(Some(arrow));
+                }
+                LRESULT(1)
+            }
+            WM_ERASEBKGND => LRESULT(1),
+            WM_PAINT => {
+                let mut ps = PAINTSTRUCT::default();
+                let dc = BeginPaint(hwnd, &mut ps);
+                if let Ok(parent) = GetParent(hwnd) {
+                    let fill = chrome_palette(parent).window;
+                    let colour = windows::Win32::Foundation::COLORREF(u32::from(fill.r) | u32::from(fill.g) << 8 | u32::from(fill.b) << 16);
+                    let brush = windows::Win32::Graphics::Gdi::CreateSolidBrush(colour);
+                    if !brush.is_invalid() {
+                        let _ = windows::Win32::Graphics::Gdi::FillRect(dc, &ps.rcPaint, brush);
+                        let _ = DeleteObject(brush.into());
+                    }
+                }
+                let _ = EndPaint(hwnd, &ps);
+                LRESULT(0)
+            }
+            _ => DefWindowProcW(hwnd, msg, wp, lp),
+        }
     }
 }
 

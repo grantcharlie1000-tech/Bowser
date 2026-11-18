@@ -210,7 +210,10 @@ the main menu sends `Open profile settings` and opens `bowser://settings/profile
 dialog and popup command families before dispatch. `ready` is accepted by every host.
 
 Rust -> JS additions are `{v:1,t:"panelshow",p:"history"}` (a 1–24 character lower-case ASCII panel
-token), `{v:1,t:"layout",mode:"vertical"|"horizontal"}`, and snapshots shaped as
+token), `{v:1,t:"layout",mode:"vertical"|"horizontal"}` (optional `side:"right"|"bottom"`, the
+far side for that mode; for `vertical` only, `rail:true` when the sidebar is unpinned and
+`float:true` when it is the tabs part of the floating card an auto-hidden Zen column comes back as,
+which drops the sidebar page's own island look; each is absent rather than `false`), and snapshots shaped as
 `{v:1,t:"snap",p:"history",d:{...}}`. The UI accepts panel tokens `history`, `bookmarks`,
 `customize`, `notes`, `settings` and `privacy`; a snapshot's `d` is an object whose nested JSON
 values have at most eight levels, 128 keys per object, 4096 keys overall and 4096 items per array.

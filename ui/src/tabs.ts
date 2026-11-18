@@ -1606,6 +1606,7 @@ export function startTabs(strip: HTMLElement): void {
         strip.classList.toggle('at-bottom', stripAtBottom);
         sidebar.side(msg.mode === 'vertical' && msg.side === 'right');
         sidebar.rail(msg.mode === 'vertical' && msg.rail === true);
+        sidebar.float(msg.mode === 'vertical' && msg.float === true); // --- floating zen sidebar ---
         if (latest) {
           dirty = true;
           schedule();

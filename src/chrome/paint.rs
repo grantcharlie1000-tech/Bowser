@@ -114,6 +114,9 @@ pub struct SidebarPaintView<'a> {
     pub scroll: i32,
     pub hover_row: Option<usize>,
     pub html_sidebar: bool,
+    /// --- floating zen sidebar --- the column floats as a card over the page: the card is painted
+    /// with the toolbar (`Layout::float_island`), so no resize handle is drawn over the page here.
+    pub floating: bool,
 }
 
 /// A complete read-only snapshot of the chrome state for one paint.
@@ -184,6 +187,8 @@ pub struct ChromeSurface {
     /// Auto-hide has taken the top chrome out of the window (and not brought it back): the toolbar,
     /// tab row, captions and the chrome backdrop are not painted, and the page owns the space.
     auto_hidden_top: bool,
+    /// --- floating zen sidebar --- the top-edge strip with the window buttons is out of sight.
+    float_band_hidden: bool,
     // --- split view ---
     /// How the divider grip is drawn, and the empty side's pane when no HTML surface covers it.
     split_grip: SplitGrip,
@@ -316,6 +321,7 @@ impl ChromeSurface {
             page_regions: None,
             empty_viewport: None,
             auto_hidden_top: false,
+            float_band_hidden: true,
             split_grip: SplitGrip::Idle,
             split_grip_divider: None,
             split_empty: [None; 4],
@@ -433,6 +439,12 @@ impl ChromeSurface {
 
     /// Tells the painter whether auto-hide has the top chrome out of the window. Returns whether that
     /// changed, so the caller repaints everything.
+    /// --- floating zen sidebar --- whether the top-edge strip (window buttons, drag space) is out of
+    /// sight. True when it changed.
+    pub fn set_float_band_hidden(&mut self, hidden: bool) -> bool {
+        std::mem::replace(&mut self.float_band_hidden, hidden) != hidden
+    }
+
     pub fn set_auto_hidden_top(&mut self, hidden: bool) -> bool {
         std::mem::replace(&mut self.auto_hidden_top, hidden) != hidden
     }
@@ -533,7 +545,7 @@ impl ChromeSurface {
         if self.dib.bits.is_null() {
             return;
         }
-        let SidebarPaintView { layout, rows, workspace, active, scroll, hover_row, html_sidebar } = view;
+        let SidebarPaintView { layout, rows, workspace, active, scroll, hover_row, html_sidebar, floating } = view;
         let clip = layout.sidebar.intersect(dirty);
         if clip.is_empty() {
             return;
@@ -542,17 +554,28 @@ impl ChromeSurface {
         // --- vertical sidebar (lane S) ---
         // Waiting for the HTML sidebar: the plain window colour, not the native list.
         if self.html_pending[1] {
-            self.fill_rect(layout.sidebar, palette.window, dirty);
-            self.fill_rect(layout.handle, palette.hairline, dirty);
+            // A floating card already carries the window colour under the host's place.
+            if !floating {
+                self.fill_rect(layout.sidebar, palette.window, dirty);
+                self.fill_rect(layout.handle, palette.hairline, dirty);
+            }
             return;
         }
         if html_sidebar {
-            self.fill_rect(layout.handle, palette.hairline, dirty);
+            if !floating {
+                self.fill_rect(layout.handle, palette.hairline, dirty);
+            }
+            // The overlay sits above the HTML tabs host: an opaque backing painted under the column
+            // (a solid palette, the floating card) is cleared from the host's rectangle so it shows.
+            self.clear_html_region(crate::chrome_host::sidebar_bounds(layout).map(Rect::from), dirty);
             return;
         }
         // --- end vertical sidebar ---
-        self.fill_rect(layout.sidebar, palette.window, dirty);
-        self.fill_rect(layout.handle, palette.hairline, dirty);
+        // A floating card already has the window colour (and no resize handle over the page).
+        if !floating {
+            self.fill_rect(layout.sidebar, palette.window, dirty);
+            self.fill_rect(layout.handle, palette.hairline, dirty);
+        }
         self.draw_text(
             workspace,
             Rect::new(
@@ -715,9 +738,24 @@ impl ChromeSurface {
                 dirty,
             );
         }
-        // --- zen sidebar --- an opaque palette (a revealed compact sidebar floats over the page) gives
-        // the whole column one solid backing; the HTML hosts are cleared out of it below.
-        if !view.palette.translucent && !self.auto_hidden_top && view.layout.toolbar_in_sidebar {
+        // --- floating zen sidebar --- a hidden Zen column comes back as one card over the page: its
+        // shadow, its fill and its edge, with the HTML hosts cleared out of it below. The card floats
+        // over the page, so the page's own frame and an empty tab's surface are painted first, under
+        // it, instead of over everything at the end.
+        let float_layout = !view.layout.float_island.is_empty();
+        let band = float_layout && !view.layout.float_band.is_empty() && !self.float_band_hidden;
+        if float_layout {
+            self.paint_page_boundary(view, dirty);
+            self.paint_empty_viewport(view, dirty);
+            if band {
+                self.paint_float_band(view, dirty);
+            }
+            if !self.auto_hidden_top {
+                self.paint_float_island(view, dirty);
+            }
+        } else if !view.palette.translucent && !self.auto_hidden_top && view.layout.toolbar_in_sidebar {
+            // --- zen sidebar --- an opaque palette under a docked column gives it one solid backing;
+            // the HTML hosts are cleared out of it below.
             let bar = view.layout.title_bar;
             self.fill_rect(Rect::new(bar.left, 0, bar.right, self.height), view.palette.window, dirty);
         }
@@ -747,13 +785,62 @@ impl ChromeSurface {
                 self.paint_main_menu(view, dirty);
                 self.paint_nav(view, dirty);
             }
-            self.paint_caption(view, dirty);
+            if !float_layout {
+                self.paint_caption(view, dirty);
+            }
             if !self.html_toolbar && !self.html_pending[0] {
                 self.paint_omnibox(view, dirty);
             }
         }
-        self.paint_page_boundary(view, dirty);
-        self.paint_empty_viewport(view, dirty);
+        // The window buttons of a floating column ride in the top-edge strip, over the card.
+        if band {
+            self.paint_caption(view, dirty);
+        }
+        if !float_layout {
+            self.paint_page_boundary(view, dirty);
+            self.paint_empty_viewport(view, dirty);
+        }
+    }
+
+    /// --- floating zen sidebar --- the card a hidden Zen column floats back as (Zen's compact mode):
+    /// a soft two-layer shadow lifting it off the page (a wide key shadow dropped below, a tight
+    /// ambient edge), the window colour made opaque inside rounded corners, and a hairline edge a
+    /// little off that colour. The page shows through everywhere else, the margin round it included.
+    fn paint_float_island(&mut self, view: &ChromeView<'_>, dirty: Rect) {
+        let island = view.layout.float_island;
+        if island.is_empty() {
+            return;
+        }
+        let m = view.layout.metrics;
+        let palette = view.palette;
+        let radius = m.px(crate::chrome::layout::ZEN_FLOAT_RADIUS).min(island.width() / 2).min(island.height() / 2).max(0);
+        let (width, height, stride) = (self.width, self.height, self.stride());
+        let key = FloatShadow { blur: m.px(18) as f32, dy: m.px(6), alpha: 0.30 };
+        let ambient = FloatShadow { blur: m.px(3) as f32, dy: 0, alpha: 0.22 };
+        for shadow in [key, ambient] {
+            raster_soft_shadow(self.dib.pixels_mut(), width, height, stride, island, radius as f32, shadow, dirty);
+        }
+        self.round(island, radius, Rgba { a: 255, ..palette.window }, dirty);
+        let edge = Rgba { a: 255, ..mix(Rgba { a: 255, ..palette.window }, Rgba { a: 255, ..palette.tab_text_active }, 0.16) };
+        self.border(island, radius, 1.0, edge, dirty);
+    }
+
+    /// --- floating zen sidebar --- the strip along the window's top edge that holds a floating column's
+    /// window buttons: the window colour made opaque, a hairline at its foot and a soft shadow falling
+    /// on the page below it. The buttons are painted on it afterwards.
+    fn paint_float_band(&mut self, view: &ChromeView<'_>, dirty: Rect) {
+        let band = view.layout.float_band;
+        if band.is_empty() || band.bottom <= 0 {
+            return;
+        }
+        let m = view.layout.metrics;
+        let palette = view.palette;
+        let (width, height, stride) = (self.width, self.height, self.stride());
+        let shadow = FloatShadow { blur: m.px(10) as f32, dy: 0, alpha: 0.18 };
+        raster_soft_shadow(self.dib.pixels_mut(), width, height, stride, band, 0.0, shadow, dirty);
+        self.fill_rect(band, Rgba { a: 255, ..palette.window }, dirty);
+        let edge = Rgba { a: 255, ..mix(Rgba { a: 255, ..palette.window }, Rgba { a: 255, ..palette.tab_text_active }, 0.16) };
+        self.fill_rect(Rect::new(band.left, band.bottom - 1, band.right, band.bottom), edge, dirty);
     }
 
     /// The new-tab surface, in the whole viewport or in one split-view pane.
@@ -2851,6 +2938,56 @@ fn raster_rounded_rect(
     }
 }
 
+/// --- floating zen sidebar --- one layer of a card's drop shadow: how far it spreads, how far it
+/// falls below the card, and its darkest alpha (0 to 1) at the card's edge.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct FloatShadow {
+    blur: f32,
+    dy: i32,
+    alpha: f32,
+}
+
+/// Darkens the pixels round `rect` (a rounded rectangle of `radius`, moved down by `shadow.dy`) with a
+/// black that fades from `shadow.alpha` at its edge to nothing `shadow.blur` pixels out, on a smooth
+/// quadratic falloff, so the card reads as lifted rather than outlined. Pixels inside the shape are
+/// left alone: the card is painted over them. Pure apart from the pixels it is given.
+#[allow(clippy::too_many_arguments)]
+fn raster_soft_shadow(
+    pixels: &mut [u8],
+    width: i32,
+    height: i32,
+    stride: usize,
+    rect: Rect,
+    radius: f32,
+    shadow: FloatShadow,
+    dirty: Rect,
+) {
+    let usable = |v: f32| v.is_finite() && v > 0.0;
+    if rect.is_empty() || width <= 0 || height <= 0 || !usable(shadow.blur) || !usable(shadow.alpha) {
+        return;
+    }
+    let shape = rect.translated(0, shadow.dy);
+    let spread = shadow.blur.ceil() as i32 + 1;
+    let bounds = Rect::new(shape.left - spread, shape.top - spread, shape.right + spread, shape.bottom + spread)
+        .intersect(dirty)
+        .intersect(Rect::new(0, 0, width, height));
+    let peak = shadow.alpha.clamp(0.0, 1.0);
+    for y in bounds.top..bounds.bottom {
+        for x in bounds.left..bounds.right {
+            let d = rounded_distance(x as f32 + 0.5, y as f32 + 0.5, shape, radius);
+            if d <= 0.0 {
+                continue;
+            }
+            let fade = (1.0 - d / shadow.blur).clamp(0.0, 1.0);
+            let a = (peak * fade * fade * 255.0 + 0.5) as u8;
+            if a > 0 {
+                let i = y as usize * stride + x as usize * 4;
+                blend_pixel(&mut pixels[i..i + 4], Rgba { r: 0, g: 0, b: 0, a }, 255);
+            }
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn raster_round_border(
     pixels: &mut [u8],
@@ -4184,6 +4321,82 @@ mod tests {
     fn pixel_at(surface: &ChromeSurface, x: i32, y: i32) -> [u8; 4] {
         let i = y as usize * surface.stride() + x as usize * 4;
         surface.pixels()[i..i + 4].try_into().expect("four bytes")
+    }
+
+    /// --- floating zen sidebar --- a hidden Zen column, revealed, is one opaque card over the page:
+    /// the window colour inside its rounded edge, a soft shadow falling off round it (darker below,
+    /// where the key shadow drops), the page untouched beyond that, and the HTML hosts left clear.
+    #[test]
+    fn a_floating_zen_column_paints_one_card_with_a_soft_shadow_and_clear_hosts() {
+        use crate::chrome::layout::{AutoHide, Arrangement, compute_arranged_auto_hide};
+        use crate::settings::TabLayout;
+        for (side, dpi) in [(TabLayout::Vertical, 96), (TabLayout::VerticalRight, 144)] {
+            let (w, h) = (1200, 800);
+            let arrangement = Arrangement { tabs: side, ..Arrangement::default() };
+            let (layout, sidebar) = compute_arranged_auto_hide(arrangement, w, h, dpi, 3, 0, false, 260, true, 36, AutoHide { top: false, sidebar: true });
+            let sidebar = sidebar.expect("a sidebar");
+            let card = layout.float_island;
+            assert!(!card.is_empty());
+            let palette = palette(Appearance::Dark, true);
+            let tabs: [TabView<'_>; 0] = [];
+            let view = test_view(&layout, &tabs, palette, omnibox("", (0, 0), ""));
+            let mut s = native_surface(w, h, dpi);
+            s.set_html_toolbar(true);
+            s.set_auto_hidden_top(false);
+            let dirty = Rect::new(0, 0, w, h);
+            s.paint(&view, dirty);
+            s.paint_vertical_sidebar(SidebarPaintView { layout: &sidebar, rows: &[], workspace: "", active: crate::tabs::TabId(0), scroll: 0, hover_row: None, html_sidebar: true, floating: true }, dirty, palette);
+            let context = format!("{side:?} dpi {dpi}");
+            // The card's surface between the hosts (the padding below the tabs) is the opaque window colour.
+            let tabs_host = Rect::from(crate::chrome_host::sidebar_bounds(&sidebar).expect("a tabs host"));
+            let toolbar = Rect::from(crate::chrome_host::toolbar_bounds(&layout).expect("a toolbar host"));
+            let (mx, my) = ((card.left + card.right) / 2, card.bottom - 3); // the card's bottom padding
+            let fill = palette.window;
+            assert_eq!(pixel_at(&s, mx, my), [fill.b, fill.g, fill.r, 255], "{context}: the card's own surface");
+            // The hosts show through.
+            for host in [tabs_host, toolbar] {
+                let (x, y) = ((host.left + host.right) / 2, (host.top + host.bottom) / 2);
+                assert_eq!(alpha_at(&s, x, y), 0, "{context}: {host:?} is left to its HTML view");
+            }
+            // Just outside the card's edge: a shadow, never opaque; far past it: the page untouched.
+            let below = alpha_at(&s, mx, card.bottom + 1);
+            let beside = if side == TabLayout::Vertical { alpha_at(&s, card.right + 1, (card.top + card.bottom) / 2) } else { alpha_at(&s, card.left - 2, (card.top + card.bottom) / 2) };
+            assert!(below > 0 && below < 255, "{context}: shadow under the card ({below})");
+            assert!(beside > 0 && beside < 255, "{context}: shadow beside the card ({beside})");
+            let far_x = if side == TabLayout::Vertical { card.right + 80 } else { card.left - 80 };
+            assert_eq!(alpha_at(&s, far_x, (card.top + card.bottom) / 2), 0, "{context}: the page beyond the shadow");
+            // The rounded corner leaves the very corner pixel to the page (and its shadow), not the fill.
+            assert!(alpha_at(&s, card.left, card.top) < 255, "{context}: the top-left corner is rounded");
+            assert!(alpha_at(&s, card.right - 1, card.bottom - 1) < 255, "{context}: the bottom-right corner is rounded");
+            // A tab with no page fills the viewport with its own surface: the card stays on top of it,
+            // hosts still clear, and the card's edge still drawn over that surface.
+            let _ = s.set_empty_viewport(Some(layout.viewport));
+            s.paint(&view, dirty);
+            s.paint_vertical_sidebar(SidebarPaintView { layout: &sidebar, rows: &[], workspace: "", active: crate::tabs::TabId(0), scroll: 0, hover_row: None, html_sidebar: true, floating: true }, dirty, palette);
+            for host in [tabs_host, toolbar] {
+                let (x, y) = ((host.left + host.right) / 2, (host.top + host.bottom) / 2);
+                assert_eq!(alpha_at(&s, x, y), 0, "{context}: {host:?} is clear over an empty tab");
+            }
+            assert_eq!(pixel_at(&s, mx, my), [fill.b, fill.g, fill.r, 255], "{context}: the card over an empty tab");
+            // The top-edge strip with the window buttons: nothing of it while it is out of sight; once
+            // out, opaque along the top edge with the buttons' glyphs at its end and a shadow below it.
+            let _ = s.set_empty_viewport(None);
+            let band = layout.float_band;
+            assert!(!band.is_empty());
+            // Away from the card and its shadow, below the window's top rim.
+            let (probe_x, probe_y) = (w / 2, (band.top + band.bottom) / 2);
+            assert!(probe_y >= layout.top_chrome);
+            s.paint(&view, dirty);
+            assert_eq!(alpha_at(&s, probe_x, probe_y), 0, "{context}: no strip while it is hidden");
+            assert!(s.set_float_band_hidden(false));
+            s.paint(&view, dirty);
+            assert_eq!(pixel_at(&s, probe_x, probe_y), [fill.b, fill.g, fill.r, 255], "{context}: the strip's surface");
+            let under = alpha_at(&s, probe_x, band.bottom + 1);
+            assert!(under > 0 && under < 255, "{context}: a soft shadow under the strip ({under})");
+            let close = layout.caption_button(Hit::CaptionClose);
+            let glyph = (close.left..close.right).any(|x| (close.top..close.bottom).any(|y| pixel_at(&s, x, y) != [fill.b, fill.g, fill.r, 255]));
+            assert!(glyph, "{context}: the close button's glyph is drawn on the strip");
+        }
     }
 
     #[test]

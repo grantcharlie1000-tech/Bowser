@@ -259,6 +259,11 @@ impl SidebarLayout {
             .clamp(0, self.max_scroll)
     }
 
+    /// Physical pixels [`Self::island`] is inset from the slot on every side.
+    pub fn island_inset(&self) -> i32 {
+        self.inset
+    }
+
     /// The floating panel inside the slot. The HTML tabs host uses this, not the full slot.
     pub fn island(&self) -> Rect {
         inset_rect(self.sidebar, self.inset)
