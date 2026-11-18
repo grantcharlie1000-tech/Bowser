@@ -1094,3 +1094,26 @@ html[data-scheme="dark"] #app {
     margin: 0;
   }
 }
+
+/* ---- Floating zen sidebar: the address field at the top of the card, navigation along its bottom ----
+   An auto-hidden Zen column comes back as a floating card (chrome::layout::float_zen_column). The
+   toolbar host then spans the card's whole content and the tabs host lies over its middle, so this
+   page shows only its two ends: the address row (40px, a 34px field) at the top, and the navigation
+   row (back, forward, reload, the actions and the main menu) along the bottom. Only a host that tall
+   selects it; the docked column's toolbar is two rows, under 48 + 112px. */
+@media (min-height: 160px) {
+  #app .nav {
+    top: auto;
+    bottom: 0;
+  }
+
+  #app.placed .actions {
+    top: auto;
+    bottom: 0;
+  }
+
+  #app.placed .pill,
+  #app .pill {
+    top: calc((40px - var(--bw-pill-h)) / 2);
+  }
+}

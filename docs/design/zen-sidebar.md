@@ -37,27 +37,34 @@ between the two.
 - Geometry (`chrome::layout::float_zen_column`, applied by `compute_arranged_auto_hide` whenever the Zen
   column is out of the layout): the card (`Layout::float_island`) keeps `ZEN_FLOAT_MARGIN` (6 DIP) of
   page between itself and the page's top, bottom and outer edges (inside the window's resize rim, so the
-  gap is always page, never window frame) and on its inner side. Everything in it sits `ZEN_FLOAT_PAD`
-  (6 DIP) in from its edge, which is inside its `ZEN_FLOAT_RADIUS` (10 DIP) corners: a square host
-  corner that far in is always inside the curve. The title row (drag space and the window buttons at
-  its end) comes first, the toolbar keeps its two rows across the content width, and the tabs run from
-  a row gap under it to the bottom padding. The page never moves; what slides (and keeps the card up
-  while the pointer is on it) is still the whole docked column.
-- Paint (`ChromeSurface::paint_float_island`, on the click-through layered overlay that already sits
-  above every child window): a two-layer shadow (a wide key shadow dropped 6 DIP, a tight ambient
-  edge), the solid window colour inside anti-aliased rounded corners, and a hairline edge 16% of the way
-  to the text colour. The toolbar and tabs hosts are cleared out of it so their HTML views show; their
-  backdrop is the same solid colour, so the card reads as one surface. The sidebar page drops its own
-  island (`.is-float`, from `float:true` on the `layout` message).
-- Motion: the card, the window buttons and both hosts slide in from the docked edge together over
-  220 ms (ease-out in, ease-in out; `auto_hide::SLIDE_MS`), with the painted layout moved by the same
-  offset (`Layout::shift_float_column`). The 150 ms reveal dwell and 500 ms hide delay are unchanged.
-- Clicks: the overlay lets clicks through, so a plain child window under the card (the catcher,
-  `win32/window/auto_hide.rs`, cut to the card's rounded corners) takes presses on the card's own
-  surface instead of the page under it: the title row drags and double-click maximises like a caption,
-  and the window buttons fall through to the frame's hit test, which tests them where the card has
-  them (`WindowChrome::floating_caption`).
-- It goes when the pointer leaves it, even with Bowser in the background; it stays while the address
+  gap is always page, never window frame) and on its inner side. Inside it, `ZEN_FLOAT_PAD` (6 DIP) from
+  its edge (inside its `ZEN_FLOAT_RADIUS` 10 DIP corners): the address field across the top row, the
+  tabs, and the navigation row (back, forward, reload, the actions and the main menu) along the bottom.
+  The toolbar host spans the whole content and its page puts the address row at its top and the
+  navigation row at its bottom when it is that tall (`toolbar.css`, "Floating zen sidebar"); the tabs
+  host lies over its middle (raised after it). The main menu opens from the button's top, so it flips
+  above the bottom row. The page never moves.
+- The window buttons and the drag space leave the card for a strip along the window's top edge
+  (`Layout::float_band`, with `title_bar` and `caption_area` in it): a second reveal, the auto-hide top
+  zone, from its own sensor on the very top edge. It slides down on its own (`Layout::shift_float_band`)
+  and hides when the pointer leaves it; the card does not come with it, nor it with the card. A hidden
+  bookmarks bar rides with it, hanging under it.
+- Paint (on the click-through layered overlay that already sits above every child window): the card
+  (`ChromeSurface::paint_float_island`) is a two-layer shadow (a wide key shadow dropped 6 DIP, a tight
+  ambient edge), the solid window colour inside anti-aliased rounded corners, and a hairline edge 16% of
+  the way to the text colour; the strip (`paint_float_band`) is the solid window colour with that
+  hairline at its foot and a soft shadow on the page below, the window buttons drawn on it. The HTML
+  hosts are cleared out of the card; their backdrop is the same solid colour, so it reads as one surface.
+  The sidebar page drops its own island (`.is-float`, from `float:true` on the `layout` message).
+- Motion: the card and both hosts slide in from the docked edge together over 220 ms (ease-out in,
+  ease-in out; `auto_hide::SLIDE_MS`), the strip from the top the same way. The 150 ms reveal dwell and
+  500 ms hide delay are unchanged.
+- Clicks: the overlay lets clicks through, so a plain child window under the card and one under the strip
+  (the catchers, `win32/window/auto_hide.rs`; the card's cut to its rounded corners) take presses on their
+  own surface instead of the page under them: the strip drags and double-click maximises like a caption,
+  and the window buttons fall through to the frame's hit test, which tests them where the strip has them
+  (`WindowChrome::floating_caption`).
+- Each goes when the pointer leaves it, even with Bowser in the background; they stay while the address
   field has focus, a menu or popup is open or a tab is being dragged.
 
 ## The sidebar

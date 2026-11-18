@@ -113,6 +113,8 @@ pub(super) struct Runtime {
     /// made the first time the card shows, and the card size its rounded region was cut for.
     catcher: Option<HWND>,
     catcher_size: (i32, i32),
+    /// The catcher under the top-edge strip with the window buttons, made the first time it shows.
+    band_catcher: Option<HWND>,
     timer: bool,
     slide_timer: bool,
     ticks: u32,
@@ -582,45 +584,59 @@ fn catcher_rect(s: &WindowChrome) -> Option<LRect> {
     Some(island.translated(s.ah.sidebar_shift(), 0))
 }
 
-/// Puts a plain child window under a floating column's card, above the page and below the HTML
-/// views: the overlay paints the card, but it lets every click through, so without this a press on
-/// the card's own surface (its padding, the gaps between the views, the title row) would land in the
-/// page beneath. The catcher takes those presses: the title row drags and double-click maximises the
-/// window like a caption, the window buttons fall through to the frame (`HTTRANSPARENT`, as
-/// `caption_pass` does), and the rest does nothing. It is cut to the card's rounded corners a pixel
-/// inside the curve, so the page shows round it, and fills with the window colour, which is what the
-/// overlay paints over it anyway. Made when the card first shows; hidden whenever it is not shown.
+/// Where the top-edge strip with the window buttons is now, while it is on screen.
+fn band_catcher_rect(s: &WindowChrome) -> Option<LRect> {
+    let band = s.layout.float_band;
+    if band.is_empty() || s.ah.visually_hidden(Zone::Top) {
+        return None;
+    }
+    Some(band.translated(0, s.ah.band_shift().0))
+}
+
+/// Puts a plain child window under each floating surface (the column's card and the top-edge strip
+/// with the window buttons), above the page and below the HTML views: the overlay paints them, but
+/// it lets every click through, so without these a press on their own surface (the card's padding,
+/// the strip's drag space) would land in the page beneath. A catcher takes those presses: the
+/// strip drags and double-click maximises the window like a caption, the window buttons fall through
+/// to the frame (`HTTRANSPARENT`, as `caption_pass` does), and the rest does nothing. The card's is
+/// cut to its rounded corners a pixel inside the curve, so the page shows round it. Both fill with
+/// the window colour, which is what the overlay paints over them anyway. Each is made when its
+/// surface first shows and hidden whenever it is not shown. The strip's goes on top first, so the
+/// card's (painted over the strip) ends above it.
 fn sync_catcher(hwnd: HWND) {
-    let Some((want, existing, radius, last)) = with_chrome(hwnd, |s| {
+    let Some((band, card, band_window, card_window, radius, last)) = with_chrome(hwnd, |s| {
         let radius = Metrics::new(s.dpi).px(crate::chrome::layout::ZEN_FLOAT_RADIUS);
-        (catcher_rect(s), s.ah.catcher, radius, s.ah.catcher_size)
+        (band_catcher_rect(s), catcher_rect(s), s.ah.band_catcher, s.ah.catcher, radius, s.ah.catcher_size)
     }) else {
         return;
     };
-    let Some(rect) = want else {
-        if let Some(window) = existing {
-            unsafe {
-                let _ = ShowWindow(window, SW_HIDE);
+    for (want, existing, rounded) in [(band, band_window, false), (card, card_window, true)] {
+        let Some(rect) = want else {
+            if let Some(window) = existing {
+                unsafe {
+                    let _ = ShowWindow(window, SW_HIDE);
+                }
             }
-        }
-        return;
-    };
-    let Some(window) = existing.or_else(|| catcher_window(hwnd)) else { return };
-    let (w, h) = (rect.width().max(1), rect.height().max(1));
-    unsafe {
-        let _ = SetWindowPos(window, Some(HWND_TOP), rect.left, rect.top, w, h, SWP_NOACTIVATE | SWP_SHOWWINDOW);
-        if last != (w, h) {
-            let d = (radius * 2).min(w).min(h).max(0);
-            let region = CreateRoundRectRgn(1, 1, w, h, d, d);
-            if !region.is_invalid() && SetWindowRgn(window, Some(region), true) == 0 {
-                let _ = DeleteObject(region.into());
+            continue;
+        };
+        let Some(window) = existing.or_else(|| catcher_window(hwnd, rounded)) else { continue };
+        let (w, h) = (rect.width().max(1), rect.height().max(1));
+        unsafe {
+            let _ = SetWindowPos(window, Some(HWND_TOP), rect.left, rect.top, w, h, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+            if rounded && last != (w, h) {
+                let d = (radius * 2).min(w).min(h).max(0);
+                let region = CreateRoundRectRgn(1, 1, w, h, d, d);
+                if !region.is_invalid() && SetWindowRgn(window, Some(region), true) == 0 {
+                    let _ = DeleteObject(region.into());
+                }
+                let _ = with_chrome(hwnd, |s| s.ah.catcher_size = (w, h));
             }
-            let _ = with_chrome(hwnd, |s| s.ah.catcher_size = (w, h));
         }
     }
 }
 
-fn catcher_window(owner: HWND) -> Option<HWND> {
+/// Makes a catcher window: the card's when `card`, else the top-edge strip's.
+fn catcher_window(owner: HWND, card: bool) -> Option<HWND> {
     thread_local! { static DONE: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) }; }
     let instance: Option<windows::Win32::Foundation::HINSTANCE> =
         unsafe { windows::Win32::System::LibraryLoader::GetModuleHandleW(None) }.ok().map(|m| m.into());
@@ -647,8 +663,12 @@ fn catcher_window(owner: HWND) -> Option<HWND> {
     }
     .ok()?;
     let _ = with_chrome(owner, |s| {
-        s.ah.catcher = Some(window);
-        s.ah.catcher_size = (0, 0);
+        if card {
+            s.ah.catcher = Some(window);
+            s.ah.catcher_size = (0, 0);
+        } else {
+            s.ah.band_catcher = Some(window);
+        }
     });
     Some(window)
 }
@@ -665,11 +685,11 @@ fn catcher_point(hwnd: HWND, lp: LPARAM) -> Option<(HWND, POINT)> {
     Some((parent, point))
 }
 
-/// The point is in the card's title row (drag space), as the card sits now.
+/// The point is in the top-edge strip's drag space, as the strip sits now.
 fn on_title_row(parent: HWND, point: POINT) -> bool {
     with_chrome(parent, |s| {
         let bar = s.layout.title_bar;
-        !bar.is_empty() && !s.layout.float_island.is_empty() && bar.translated(s.ah.sidebar_shift(), 0).contains(point.x, point.y)
+        !bar.is_empty() && !s.layout.float_band.is_empty() && !s.ah.visually_hidden(Zone::Top) && bar.translated(0, s.ah.band_shift().0).contains(point.x, point.y)
     })
     .unwrap_or(false)
 }
