@@ -132,7 +132,8 @@ function isUiFont(value: unknown): value is string {
 const UPDATE_STATES = ['unavailable', 'checking', 'ready', 'idle'] as const;
 const LAST_CHECKS = ['none', 'uptodate', 'failed', 'other'] as const;
 const CHECK_RESULTS = ['none', 'staged', 'uptodate', 'unverified', 'busy', 'unavailable', 'failed'] as const;
-const ACKS = ['none', 'saved', 'failed'] as const;
+/** `note`: done, and `error` holds a sentence to say about it (an import's outcome). */
+const ACKS = ['none', 'saved', 'failed', 'note'] as const;
 export type UpdateState = typeof UPDATE_STATES[number];
 export type LastCheck = typeof LAST_CHECKS[number];
 export type CheckResult = typeof CHECK_RESULTS[number];
@@ -953,7 +954,7 @@ const TABS_SECTION_ROWS: readonly RowSpec[] = (() => {
 const BUILT_ROWS: readonly RowSpec[] = [
   { id: 'profile', section: 'profile', label: 'Profile', aria: 'This profile', description: '', keywords: 'account person name avatar guest you and bowser profile This profile Settings on this page apply to this profile only.' },
   { id: 'profiles', section: 'profile', label: 'Profiles', aria: 'Profiles', description: '', keywords: 'switch new add create guest delete remove rename name avatar colour color shortcut desktop taskbar work personal sign-ins Manage profiles Switch, create, rename or delete profiles. Each profile keeps its own sign-ins, history, bookmarks and settings, and gets its own taskbar button.' },
-  { id: 'import', section: 'profile', label: 'Import', aria: 'Import bookmarks', description: '', keywords: 'chrome edge firefox migrate transfer bookmarks import Import bookmarks Bring bookmarks over from another browser on this PC.' },
+  { id: 'import', section: 'profile', label: 'Import', aria: 'Import bookmarks or passwords from a file', description: '', keywords: 'chrome edge firefox migrate transfer bookmarks passwords csv html import Import bookmarks Bring bookmarks or passwords over from a file another browser exported.' },
   // --- layout (thread T6) --- the Layout block: presets and the three edges in view, the rest behind More options.
   { id: 'layoutPreset', section: 'appearance', label: 'Presets', description: '', keywords: 'layout preset presets simple classic vertical left right bottom saved thumbnails arrangement tabs top side Presets A starting arrangement. Change any part of it and Bowser keeps yours as Saved.' },
   { id: 'layout', section: 'appearance', label: 'Top style', aria: 'Tab bar style at the top', description: '', keywords: 'tabs toolbar horizontal single row top browser layout Tab bar style at the top How the tabs and the address bar share the top of the window.' },

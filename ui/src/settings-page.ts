@@ -586,7 +586,7 @@ export function startSettingsPage(root: HTMLElement): void {
   const profilesRow = row(profileCard, 'profiles', undefined, { stack: true });
   profilesRow.root.classList.add('is-profiles');
   profilesRow.root.append(...profilesView.parts);
-  row(profileCard, 'import', textButton('Import', () => cmd({ a: 'import' }), { icon: 'download' }));
+  row(profileCard, 'import', textButton('Choose file…', () => cmd({ a: 'import' }), { icon: 'download' }));
 
   // Appearance: the two big visual choices first, then the chrome, tabs and text.
   // --- layout (thread T6) --- the Layout block: the presets as thumbnails, which also decide where
@@ -2371,10 +2371,12 @@ export function startSettingsPage(root: HTMLElement): void {
     if (parsed.ack !== 'none') {
       // Bowser runs queued commands together and answers once: this snapshot is the saved state.
       pending = 0;
-      const text = parsed.ack === 'saved' ? 'Saved' : parsed.error !== '' ? parsed.error : 'Settings could not be saved.';
-      // Over the welcome the toast is hidden with the page: a failure is said on the welcome instead.
-      if (welcome.shown) { if (parsed.ack !== 'saved') welcome.say(text, false); }
-      else showToast(text, parsed.ack === 'saved');
+      const ok = parsed.ack === 'saved' || parsed.ack === 'note';
+      const text = parsed.ack === 'saved' ? 'Saved' : parsed.error !== '' ? parsed.error : ok ? 'Done' : 'Settings could not be saved.';
+      // Over the welcome the toast is hidden with the page: an import's outcome or a failure is said
+      // on the welcome instead.
+      if (welcome.shown) { if (parsed.ack !== 'saved') welcome.say(text, ok); }
+      else showToast(text, ok);
     }
     snapshot = parsed;
     apply(parsed);

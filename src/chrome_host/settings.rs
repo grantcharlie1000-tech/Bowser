@@ -40,6 +40,8 @@ pub enum Ack {
     None,
     Saved,
     Failed,
+    /// Done, and `error` holds a sentence to say about it (an import's outcome), not a failure.
+    Note,
 }
 
 impl Ack {
@@ -48,6 +50,7 @@ impl Ack {
             Self::None => "none",
             Self::Saved => "saved",
             Self::Failed => "failed",
+            Self::Note => "note",
         }
     }
 }

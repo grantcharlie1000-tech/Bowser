@@ -151,19 +151,27 @@ pub fn open_notes_dialog(owner: HWND) -> Option<PathBuf> {
 /// when cancelled or it could not be shown. The path comes back absolute; what is in the file is
 /// for the caller to check.
 pub fn open_dialog(owner: HWND, title: &str, kind: &str, ext: &str) -> Option<PathBuf> {
+    open_dialog_filters(owner, title, &[(kind, &format!("*.{ext}")), ("All files", "*.*")])
+}
+
+/// The Open dialog with its own file-type list: `(name, patterns)` pairs, patterns separated by
+/// `;` (a bare name such as `Bookmarks` matches that file name). The first is selected. `None` when
+/// cancelled.
+pub fn open_dialog_filters(owner: HWND, title: &str, filters: &[(&str, &str)]) -> Option<PathBuf> {
     unsafe {
         let dialog: IFileOpenDialog = CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER).ok()?;
         dialog.SetOptions(FOS_FILEMUSTEXIST | FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST | FOS_NOCHANGEDIR).ok()?;
         dialog.SetTitle(&HSTRING::from(title)).ok()?;
         // Kept alive until Show returns: the dialog reads the specs while it runs.
-        let name = HSTRING::from(kind);
-        let spec = HSTRING::from(format!("*.{ext}"));
-        let filters = [
-            COMDLG_FILTERSPEC { pszName: PCWSTR(name.as_ptr()), pszSpec: PCWSTR(spec.as_ptr()) },
-            COMDLG_FILTERSPEC { pszName: w!("All files"), pszSpec: w!("*.*") },
-        ];
-        let _ = dialog.SetFileTypes(&filters);
-        let _ = dialog.SetFileTypeIndex(1);
+        let strings: Vec<(HSTRING, HSTRING)> = filters.iter().map(|(name, spec)| (HSTRING::from(*name), HSTRING::from(*spec))).collect();
+        let specs: Vec<COMDLG_FILTERSPEC> = strings
+            .iter()
+            .map(|(name, spec)| COMDLG_FILTERSPEC { pszName: PCWSTR(name.as_ptr()), pszSpec: PCWSTR(spec.as_ptr()) })
+            .collect();
+        if !specs.is_empty() {
+            let _ = dialog.SetFileTypes(&specs);
+            let _ = dialog.SetFileTypeIndex(1);
+        }
         dialog.Show(Some(owner)).ok()?;
         chosen_path(&dialog)
     }
