@@ -173,6 +173,12 @@ test('a picked or stack-target tab shows its tint and ring over every wash, in b
   }
 });
 
+test('pinned tiles always carry an outline, in both schemes, selected or not', () => {
+  const tabs = readFileSync(join(stylesDir, 'tabs.css'), 'utf8');
+  assert.match(tabs, /:root\[data-scheme\] \.strip \.tab\.pinned:not\(\[data-private="true"\]\) \{\s*border-color: color-mix\(in srgb, var\(--bw-text\) 24%, transparent\);/);
+  assert.doesNotMatch(tabs, /\.tab\.pinned\.active[^{]*\{[^}]*border-color: transparent/, 'selection does not drop the outline');
+});
+
 test('the tab strip is one row: no second row of two-level stacks is left in the styles', () => {
   const tokens = readFileSync(join(stylesDir, 'tokens.css'), 'utf8');
   const tabs = readFileSync(join(stylesDir, 'tabs.css'), 'utf8');

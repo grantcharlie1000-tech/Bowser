@@ -322,6 +322,14 @@
   border-radius: 4px; /* a group box's --gr (6px) less its --gp (2px) */
 }
 
+/* Pinned tiles always carry an outline, selected or not, so they read as a set apart from the
+   tabs after them. The [data-scheme] form outranks the light scheme's transparent border on
+   unselected tabs; a private pinned tab keeps its own violet edge. */
+:root .strip .tab.pinned:not([data-private="true"]),
+:root[data-scheme] .strip .tab.pinned:not([data-private="true"]) {
+  border-color: color-mix(in srgb, var(--bw-text) 24%, transparent);
+}
+
 .strip .tab.pinned .title,
 .strip .tab.pinned .close,
 .strip .tab.pinned .audio,
