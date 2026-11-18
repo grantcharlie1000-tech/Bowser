@@ -1,5 +1,37 @@
 [
  {
+  "tag": "v0.0.37",
+  "date": "2026-11-18",
+  "prs": [
+   [
+    166,
+    "Pin Stable to v0.0.36"
+   ],
+   [
+    164,
+    "Install a downloaded Bowser.exe where the updater keeps it"
+   ],
+   [
+    168,
+    "Sign release builds so SmartScreen stops blocking Bowser.exe"
+   ],
+   [
+    167,
+    "Spoiler firewall: never hold profile pictures"
+   ],
+   [
+    171,
+    "Settings: Vertical presets show the floating vertical tabs"
+   ],
+   [
+    173,
+    "Bump Bowser to 0.0.37"
+   ]
+  ],
+  "body": "Verified Windows HTML-chrome build from 1c466e0f5f1c0c2502358b8585ed083a53746830. Stable rollout is controlled separately by stable/release.json.",
+  "exe": true
+ },
+ {
   "tag": "v0.0.36",
   "date": "2026-11-18",
   "prs": [
