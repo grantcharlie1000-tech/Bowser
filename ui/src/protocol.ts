@@ -530,7 +530,9 @@ export const MAX_FLYOUT_CARET = 4000;
 // --- end rail flyouts ---
 /** `side` is the far side the tabs sit on (`right` for a vertical sidebar, `bottom` for a strip); absent, the near one.
  *  `rail` is the unpinned vertical strip: icons until the pointer rests on it. */
-export interface LayoutMsg { readonly t: 'layout'; readonly mode: 'vertical' | 'horizontal'; readonly side?: 'right' | 'bottom'; readonly rail?: true }
+/** `float` (vertical only): the sidebar is the tabs part of a floating card (an auto-hidden Zen column
+ * that comes back over the page), so it drops its own island look. Absent otherwise. */
+export interface LayoutMsg { readonly t: 'layout'; readonly mode: 'vertical' | 'horizontal'; readonly side?: 'right' | 'bottom'; readonly rail?: true; readonly float?: true }
 // --- tab options ---
 export const LOAD_INDICATORS = ['spinner', 'bar', 'favicon', 'none'] as const;
 export type LoadIndicator = typeof LOAD_INDICATORS[number];
@@ -1200,13 +1202,15 @@ export function parseInbound(data: unknown): Inbound | null {
     }
     // --- end rail flyouts ---
     case 'layout': {
-      if (!hasOnlyKeys(raw, ['v', 't', 'mode', 'side', 'rail']) || raw.v !== 1 || !isOneOf(raw.mode, ['vertical', 'horizontal'] as const)) return null;
+      if (!hasOnlyKeys(raw, ['v', 't', 'mode', 'side', 'rail', 'float']) || raw.v !== 1 || !isOneOf(raw.mode, ['vertical', 'horizontal'] as const)) return null;
       if ('rail' in raw && (raw.rail !== true || raw.mode !== 'vertical')) return null;
+      if ('float' in raw && (raw.float !== true || raw.mode !== 'vertical')) return null;
       const rail = raw.rail === true ? { rail: true as const } : {};
-      if (raw.side === undefined) return { t: 'layout', mode: raw.mode, ...rail };
+      const float = raw.float === true ? { float: true as const } : {};
+      if (raw.side === undefined) return { t: 'layout', mode: raw.mode, ...rail, ...float };
       const far = raw.mode === 'vertical' ? 'right' : 'bottom';
       if (raw.side !== far) return null;
-      return { t: 'layout', mode: raw.mode, side: far, ...rail };
+      return { t: 'layout', mode: raw.mode, side: far, ...rail, ...float };
     }
     // --- vertical sidebar (lane S) ---
     case 'workspace': {

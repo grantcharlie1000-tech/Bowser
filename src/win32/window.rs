@@ -1240,6 +1240,15 @@ impl WindowChrome {
     pub(super) fn caption_right(&self) -> i32 {
         if self.layout.toolbar_in_sidebar && !self.layout.caption_area.is_empty() { self.layout.caption_area.right } else { self.client.0 }
     }
+    /// --- floating zen sidebar --- the window buttons' rectangle and how far below the window's top
+    /// edge they sit, while the column floats as a card (they come down into it). `None` otherwise:
+    /// then they sit in the top strip as the frame hit test assumes.
+    pub(super) fn floating_caption(&self) -> Option<(Rect, i32)> {
+        if self.layout.float_island.is_empty() || self.layout.caption_area.is_empty() {
+            return None;
+        }
+        Some((self.layout.caption_area, self.layout.caption_area.top.max(0)))
+    }
     pub(super) fn toolbar_zone(&self) -> crate::auto_hide::Zone {
         if self.sidebar.is_some() && self.layout.toolbar_in_sidebar { crate::auto_hide::Zone::Sidebar } else { crate::auto_hide::Zone::Top }
     }
@@ -2770,8 +2779,17 @@ unsafe extern "system" fn window_proc(
                 // --- layout (thread T6) --- a row along the bottom edge keeps the bottom grip thin.
                 let thin_bottom = with_chrome(hwnd, |s| s.last_relayout.as_ref().is_some_and(|inputs| inputs.arrangement.thin_bottom_edge())).unwrap_or(false);
                 let caption_right = with_chrome(hwnd, |s| s.caption_right()).unwrap_or(r.right);
+                // --- floating zen sidebar --- the window buttons came down into the floating card:
+                // a point on them is tested where the top strip has them, and a point in the strip
+                // above them is not a button.
+                let floating = with_chrome(hwnd, |s| s.floating_caption()).flatten();
+                let (p_test, off_buttons) = match floating {
+                    Some((area, drop)) if area.contains(p.x, p.y) => (POINT { x: p.x, y: p.y - drop }, false),
+                    Some(_) => (p, true),
+                    None => (p, false),
+                };
                 let hit = frame::frame_hit_test_captions_at(
-                    p,
+                    p_test,
                     (r.right, r.bottom),
                     caption_right,
                     dpi(hwnd),
@@ -2785,6 +2803,10 @@ unsafe extern "system" fn window_proc(
                     },
                     thin_bottom,
                 );
+                let hit = match hit {
+                    frame::FrameHit::Minimize | frame::FrameHit::Maximize | frame::FrameHit::Close if off_buttons => frame::FrameHit::Client,
+                    hit => hit,
+                };
                 // W-3: a full-screen window has no caption to drag or double-click.
                 let full = auto_hide::fullscreen_of(hwnd) != crate::auto_hide::Fullscreen::No;
                 let hit = if full { frame::in_fullscreen(hit) } else { hit };
@@ -9610,13 +9632,20 @@ pub(super) fn caption_buttons_live(hwnd: HWND) -> bool {
 /// `x`,`y` are parent-client pixels. True when that point is on a caption button as drawn,
 /// including while the top band is mid-slide (the visible part of the button, not the gap it left).
 pub(super) fn caption_point_is_button(hwnd: HWND, x: i32, y: i32) -> bool {
-    let Some((size, dpi_now, maximised, thin, dy, right)) = with_chrome(hwnd, |s| {
+    let Some((size, dpi_now, maximised, thin, dy, right, floating)) = with_chrome(hwnd, |s| {
         let (dy, _) = s.ah.band_shift();
-        (s.client, s.dpi, s.layout.maximised, s.last_relayout.as_ref().is_some_and(|i| i.arrangement.thin_bottom_edge()), dy, s.caption_right())
+        // --- floating zen sidebar --- the buttons sit in the floating card, `drop` below the top
+        // edge and `sidebar_shift` across while it slides.
+        let floating = s.floating_caption().map(|(area, drop)| (area.translated(s.ah.sidebar_shift(), 0), drop, s.ah.sidebar_shift()));
+        (s.client, s.dpi, s.layout.maximised, s.last_relayout.as_ref().is_some_and(|i| i.arrangement.thin_bottom_edge()), dy, s.caption_right(), floating)
     }) else {
         return false;
     };
-    let point = POINT { x, y: y - dy };
+    let point = match floating {
+        Some((area, drop, dx)) if area.contains(x, y) => POINT { x: x - dx, y: y - drop },
+        Some(_) => return false,
+        None => POINT { x, y: y - dy },
+    };
     matches!(
         frame::frame_hit_test_captions_at(point, size, right, dpi_now, maximised || auto_hide::zoomed_or_full(hwnd), frame::ChromeHit::None, thin),
         frame::FrameHit::Minimize | frame::FrameHit::Maximize | frame::FrameHit::Close
@@ -11458,6 +11487,8 @@ fn html_tabs_sync(hwnd: HWND) {
             chrome_host::protocol::LayoutMode::Vertical {
                 right: tab_layout == crate::settings::TabLayout::VerticalRight,
                 rail,
+                // --- floating zen sidebar --- the column comes back as a card: the strip has no island of its own.
+                float: !s.layout.float_island.is_empty(),
             }
         } else {
             chrome_host::protocol::LayoutMode::Horizontal { bottom: tab_layout == crate::settings::TabLayout::TabsBottom }
@@ -12394,7 +12425,8 @@ fn paint_chrome(hwnd: HWND, app: Option<&AppRef>) {
                     .map_or("", |c| c.completed_suffix.as_str());
                 let text = &s.edit_text;
                 let (top_dy, bottom_dy) = s.ah.band_shift();
-                let paint_layout = s.layout.shift_overlay_bands(top_dy, bottom_dy);
+                // --- floating zen sidebar --- the card and what is painted in it follow the slide.
+                let paint_layout = s.layout.shift_overlay_bands(top_dy, bottom_dy).shift_float_column(s.ah.sidebar_shift());
                 let l = &paint_layout;
                 let p = s.palette;
                 let views = &s.views;
@@ -12455,7 +12487,8 @@ fn paint_chrome(hwnd: HWND, app: Option<&AppRef>) {
                     sidebar_viewport.bottom,
                 );
                 // --- auto-hide (T11) --- the page's frame is drawn below a bar that floats over its top.
-                let sidebar_viewport = s.ah.paint_viewport(sidebar_viewport);
+                // --- floating zen sidebar --- a floating card leaves the page its whole frame.
+                let sidebar_viewport = if s.layout.float_island.is_empty() { s.ah.paint_viewport(sidebar_viewport) } else { sidebar_viewport };
                 let dirty = if s.surface.set_auto_hidden_top(s.ah.visually_hidden(s.toolbar_zone())) {
                     Rect::new(0, 0, s.client.0, s.client.1)
                 } else {
@@ -12515,7 +12548,7 @@ fn paint_chrome(hwnd: HWND, app: Option<&AppRef>) {
                         sidebar.rows = sidebar.rows.translated(dx, 0);
                         sidebar.handle = sidebar.handle.translated(dx, 0);
                     }
-                    s.surface.paint_vertical_sidebar(crate::chrome::paint::SidebarPaintView { layout: &sidebar, rows: &s.sidebar_rows, workspace: &s.paint_prefs.workspace_name, active, scroll: s.sidebar_scroll, hover_row: s.sidebar_hover_row, html_sidebar: s.html_tab_region().is_some() }, dirty, p);
+                    s.surface.paint_vertical_sidebar(crate::chrome::paint::SidebarPaintView { layout: &sidebar, rows: &s.sidebar_rows, workspace: &s.paint_prefs.workspace_name, active, scroll: s.sidebar_scroll, hover_row: s.sidebar_hover_row, html_sidebar: s.html_tab_region().is_some(), floating: !s.layout.float_island.is_empty() }, dirty, p);
                 }
                 // --- split view --- the native strip's half, or the HTML card's fallback rectangle
                 let native_drop = s.split_drop.map(|zone| {

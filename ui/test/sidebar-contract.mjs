@@ -33,6 +33,11 @@ test('layout names the far side the tabs sit on, and only a side that fits the m
   assert.deepEqual(parseInbound('{"v":1,"t":"layout","mode":"vertical","side":"right","rail":true}'), { t: 'layout', mode: 'vertical', side: 'right', rail: true });
   assert.equal(parseInbound('{"v":1,"t":"layout","mode":"vertical","rail":false}'), null);
   assert.equal(parseInbound('{"v":1,"t":"layout","mode":"horizontal","rail":true}'), null);
+  // --- floating zen sidebar --- the card flag: vertical only, true only.
+  assert.deepEqual(parseInbound('{"v":1,"t":"layout","mode":"vertical","rail":true,"float":true}'), { t: 'layout', mode: 'vertical', rail: true, float: true });
+  assert.deepEqual(parseInbound('{"v":1,"t":"layout","mode":"vertical","side":"right","float":true}'), { t: 'layout', mode: 'vertical', side: 'right', float: true });
+  assert.equal(parseInbound('{"v":1,"t":"layout","mode":"horizontal","float":true}'), null);
+  assert.equal(parseInbound('{"v":1,"t":"layout","mode":"vertical","float":false}'), null);
 });
 
 test('workspace sidebar metadata rejects extra, unsafe, and malformed fields', () => {

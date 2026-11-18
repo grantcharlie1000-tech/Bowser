@@ -23,6 +23,17 @@
     inset 0 0 0 1px color-mix(in srgb, var(--bw-text) 8%, transparent);
 }
 
+/* --- floating zen sidebar --- an auto-hidden Zen column comes back over the page as one card (Rust
+   paints it on the chrome overlay: the window colour, rounded corners, a hairline edge and a soft
+   shadow, with this host inside it). The card is the island here, so the host's own one would read
+   as a second card inside it: no fill (the host's backdrop is the card's colour), no edge, no corners. */
+#app.sidebar.is-float {
+  border-color: transparent;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
 .sidebar [hidden] { display: none !important; }
 
 /* ---- Fixed top: workspace switcher + new tab ---- */

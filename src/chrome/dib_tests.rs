@@ -130,7 +130,7 @@ fn sidebar_is_safe_without_an_initial_allocation() {
     );
     surface.paint_vertical_sidebar(SidebarPaintView {
         layout: &sidebar, rows: &[], workspace: "Work", active: crate::tabs::TabId(1),
-        scroll: 0, hover_row: None, html_sidebar: false,
+        scroll: 0, hover_row: None, html_sidebar: false, floating: false,
     }, Rect::new(0, 0, 640, 400), crate::theme::palette(crate::theme::Appearance::Dark, false));
     assert!(surface.pixels().is_empty());
     surface.resize(640, 400, 96);

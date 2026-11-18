@@ -238,6 +238,9 @@ export function createSidebarRenderer(root: HTMLElement): {
   side(right: boolean): void;
   /** Unpinned vertical tabs: a narrow icon rail that opens over the page on hover. */
   rail(on: boolean): void;
+  /** --- floating zen sidebar --- the sidebar is the tabs part of a floating card (an auto-hidden
+   * Zen column back over the page): the card is the island, so the sidebar drops its own. */
+  float(on: boolean): void;
 } {
   let sideRight = false;
   let rail = false;
@@ -1078,6 +1081,9 @@ export function createSidebarRenderer(root: HTMLElement): {
     side(right) {
       sideRight = right;
       root.classList.toggle('is-right', right);
+    },
+    float(on) {
+      root.classList.toggle('is-float', on);
     },
     rail(on) {
       if (rail === on) {

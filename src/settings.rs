@@ -489,8 +489,10 @@ pub struct Settings {
     pub tab_layout: TabLayout,
     /// Sidebar width in logical 96 DPI pixels.
     pub sidebar_width: u16,
-    /// Vertical sidebar collapsed to an icons-only strip. `sidebar_width` is kept so the
-    /// expanded width survives a collapse.
+    /// Vertical sidebar unpinned: Zen's compact mode, out of the layout until the pointer reaches the
+    /// docked edge, then back over the page as a floating card. `sidebar_width` is kept so the
+    /// pinned width survives. On by default (--- floating zen sidebar ---): vertical tabs stay out of
+    /// the way until asked for; a saved `sidebar_collapsed=false` keeps a pinned sidebar.
     pub sidebar_collapsed: bool,
     /// Opera-style rail panel width in logical 96 DPI pixels.
     pub side_panel_width: u16,
@@ -673,7 +675,7 @@ impl Default for Settings {
         Self {
             tab_layout: TabLayout::ToolbarTop,
             sidebar_width: DEFAULT_SIDEBAR_WIDTH,
-            sidebar_collapsed: false,
+            sidebar_collapsed: true,
             side_panel_width: DEFAULT_SIDE_PANEL_WIDTH,
             sleep_enabled: true,
             sleep_after_secs: DEFAULT_SLEEP_AFTER_SECS,
@@ -1686,9 +1688,11 @@ mod tests {
 
     #[test]
     fn sidebar_collapsed_round_trips_and_keeps_the_expanded_width() {
-        assert!(!Settings::default().sidebar_collapsed);
+        // --- floating zen sidebar --- unpinned (compact) unless a profile saved it pinned.
+        assert!(Settings::default().sidebar_collapsed);
         assert!(Settings::parse("sidebar_collapsed=true").sidebar_collapsed);
-        assert!(!Settings::parse("sidebar_collapsed=banana").sidebar_collapsed);
+        assert!(!Settings::parse("sidebar_collapsed=false").sidebar_collapsed);
+        assert!(Settings::parse("sidebar_collapsed=banana").sidebar_collapsed, "an unreadable value keeps the default");
         let mut settings = Settings::parse("sidebar_width=300
 ");
         settings.sidebar_collapsed = true;
