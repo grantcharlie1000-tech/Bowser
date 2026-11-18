@@ -1035,13 +1035,11 @@ fn workspace_message(error: crate::workspaces::WorkspaceError) -> &'static str {
     }
 }
 
-/// The name the Profile row shows: the listed name, `Default` for the default profile, and a plain
-/// word for a guest window.
+/// The name the Profile row shows: the profile's display name, and a plain word for a guest window.
 fn profile_label(profile: Option<&Profile>) -> String {
     match profile {
         Some(p) if p.is_guest() => "Guest (not saved)".to_owned(),
-        Some(p) if p.listed_name() == profile::DEFAULT_NAME => "Default".to_owned(),
-        Some(p) => p.listed_name().to_owned(),
+        Some(p) => p.display_name(),
         None => "Unknown".to_owned(),
     }
 }

@@ -10,13 +10,14 @@ import { el, icon, type IconName } from './dom';
 import { attachSegmentThumb } from './segment-thumb';
 import { installTooltips } from './tooltip';
 import { selectField, type SelectField } from './panels/select';
-import { textButton, type PageSection } from './panels/kit';
+import { radioGroup, textButton, type PageSection } from './panels/kit';
 import { mountPrivacyDashboard } from './panels/privacy';
 import { mountProtection } from './panels/protection'; // blocking, history and website appearance (thread T3)
 import { mountExtensionsSection } from './extensions-section';
 import { mountStoreSection } from './store-section';
 import { mountCommandsSections } from './commands-section';
 import { mountStartSection } from './settings-start'; // --- start page ---
+import { mountProfiles, paintDisc } from './settings-profiles'; // --- profiles ---
 import { mountThemeRows } from './settings-themes'; // --- theme options ---
 import { themeAssignment, type ThemeOptionValue } from './theme-options-logic'; // --- theme options ---
 import { mountAddressSections } from './address-section'; // --- address bar, search and bookmarks ---
@@ -107,49 +108,6 @@ export function switchControl(onChange: (on: boolean) => void): Control<boolean>
     root: button,
     set: (on) => button.setAttribute('aria-checked', String(on)),
     disable: (off) => { button.disabled = off; button.setAttribute('aria-disabled', String(off)); },
-  };
-}
-
-/** Radio group with roving tabindex and arrow keys; `items` build each option's face. */
-function radioGroup<T extends string>(className: string, label: string, items: ReadonlyArray<readonly [T, (button: HTMLButtonElement) => void]>, onSelect: (value: T) => void): Control<T | null> {
-  const group = el('div', className);
-  group.setAttribute('role', 'radiogroup');
-  group.setAttribute('aria-label', label);
-  const buttons: Array<[T, HTMLButtonElement]> = [];
-  const paint = (value: T | null): void => {
-    buttons.forEach(([key, button], index) => {
-      const on = key === value;
-      button.setAttribute('aria-checked', String(on));
-      button.tabIndex = on || (value === null && index === 0) ? 0 : -1;
-    });
-  };
-  for (const [value, face] of items) {
-    const button = el('button');
-    button.type = 'button';
-    button.setAttribute('role', 'radio');
-    face(button);
-    button.addEventListener('click', () => {
-      if (button.getAttribute('aria-checked') === 'true') return;
-      paint(value);
-      onSelect(value);
-    });
-    buttons.push([value, button]);
-    group.append(button);
-  }
-  group.addEventListener('keydown', (event) => {
-    const step = event.key === 'ArrowLeft' || event.key === 'ArrowUp' ? -1 : event.key === 'ArrowRight' || event.key === 'ArrowDown' ? 1 : 0;
-    if (step === 0) return;
-    event.preventDefault();
-    const index = buttons.findIndex(([, button]) => button === document.activeElement);
-    const next = buttons[(index + step + buttons.length) % buttons.length]?.[1];
-    next?.focus();
-    next?.click();
-  });
-  paint(null);
-  return {
-    root: group,
-    set: paint,
-    disable: (off) => buttons.forEach(([, button]) => { button.disabled = off; }),
   };
 }
 
@@ -525,8 +483,17 @@ export function startSettingsPage(root: HTMLElement): void {
   const profileRow = row(profileCard, 'profile', avatar);
   profileRow.root.classList.add('is-profile');
   profileRow.root.prepend(profileRow.root.lastElementChild ?? avatar);
-  const manage = textButton('Manage', () => cmd({ a: 'profiles' }), { icon: 'person', aria: 'Manage profiles' });
-  row(profileCard, 'profiles', manage);
+  // --- profiles --- the manager: every profile, the current one's look, and a form that adds one.
+  const profilesView = mountProfiles({
+    send: (text, answered) => {
+      const sent = cmd({ a: 'profile', text });
+      if (sent && answered) pending += 1;
+      return sent;
+    },
+  });
+  const profilesRow = row(profileCard, 'profiles', undefined, { stack: true });
+  profilesRow.root.classList.add('is-profiles');
+  profilesRow.root.append(...profilesView.parts);
   row(profileCard, 'import', textButton('Import', () => cmd({ a: 'import' }), { icon: 'download' }));
 
   // Appearance: the two big visual choices first, then the chrome, tabs and text.
@@ -1725,6 +1692,14 @@ export function startSettingsPage(root: HTMLElement): void {
     else if (edge !== 'top') applyLayoutConfig(d, presetConfig('classic'));
   }));
   const simpleExtensions = textButton('Manage', () => { prefer = 'all'; sectionHold = false; writeView('all'); go('extensions', true, true); });
+  // --- profiles --- this window's profile, and the way to the profile manager.
+  const simpleProfile = el('div', 'sp-simple-profile');
+  const simpleProfileDisc = el('span', 'sp-profile-avatar');
+  simpleProfileDisc.setAttribute('aria-hidden', 'true');
+  const simpleProfileName = el('span', 'sp-simple-profile-name');
+  simpleProfileName.dir = 'auto';
+  const simpleProfiles = textButton('Manage', () => { prefer = 'all'; sectionHold = false; writeView('all'); go('profile', true, true); }, { aria: 'Manage profiles' });
+  simpleProfile.append(simpleProfileDisc, simpleProfileName, simpleProfiles);
   const showAll = textButton(SIMPLE_ALL_LABEL, () => chooseView('all'), { primary: true });
   showAll.classList.add('sp-show-all');
   const simpleRow = (id: string, label: string, control: HTMLElement): HTMLElement => {
@@ -1744,8 +1719,9 @@ export function startSettingsPage(root: HTMLElement): void {
   const themeSlot = simpleRow('simpleTheme', 'Theme', simpleTheme.root);
   const tabsSlot = simpleRow('simpleTabs', 'Tabs', simpleTabs.root);
   const extensionsSlot = simpleRow('simpleExtensions', 'Extensions', simpleExtensions);
-  const simpleExtras = new Map<string, HTMLElement>([['simpleTheme', themeSlot], ['simpleTabs', tabsSlot], ['simpleExtensions', extensionsSlot]]);
-  const simpleOrder = ['searchDefault', 'startHomepage', 'startupMode', 'simpleTheme', 'themeAccent', 'simpleTabs', 'import', 'deleteData', 'simpleExtensions', 'defaultBrowser'];
+  const profileSlot = simpleRow('simpleProfile', 'Profile', simpleProfile);
+  const simpleExtras = new Map<string, HTMLElement>([['simpleProfile', profileSlot], ['simpleTheme', themeSlot], ['simpleTabs', tabsSlot], ['simpleExtensions', extensionsSlot]]);
+  const simpleOrder = ['simpleProfile', 'searchDefault', 'startHomepage', 'startupMode', 'simpleTheme', 'themeAccent', 'simpleTabs', 'import', 'deleteData', 'simpleExtensions', 'defaultBrowser'];
   const simpleSlots: ReadonlyArray<{ readonly id: string; readonly moved: boolean; readonly el?: HTMLElement }> = simpleOrder.map((id) => {
     const extra = simpleExtras.get(id);
     return extra ? { id, moved: false, el: extra } : { id, moved: (SIMPLE_MOVED as readonly string[]).includes(id) };
@@ -1931,8 +1907,11 @@ export function startSettingsPage(root: HTMLElement): void {
     updateAction.classList.toggle('is-primary', view.action === 'restart');
     version.textContent = `Bowser ${s.version}`;
     avatar.textContent = s.avatar;
-    profileRow.label.textContent = s.guest ? 'Guest' : s.profile === '' ? 'Default' : s.profile;
-    manage.disabled = false;
+    paintDisc(avatar, s.profiles.list.find((p) => p.current)?.colour ?? '');
+    paintDisc(simpleProfileDisc, s.profiles.list.find((p) => p.current)?.colour ?? '', s.avatar);
+    simpleProfileName.textContent = s.profile;
+    profileRow.label.textContent = s.profile;
+    profilesView.paint(s.profiles, s.guest);
     banner.hidden = s.readable;
     banner.textContent = s.readable ? '' : 'Settings file could not be read.';
     for (const control of [

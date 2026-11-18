@@ -227,7 +227,8 @@ impl LaunchOptions {
                     options.benchmark_memory_pressure = true;
                 }
                 "--profile" => {
-                    crate::profile::validate_name(&value).map_err(|error| error.to_string())?;
+                    // `default` names the default profile explicitly (shortcuts, "Open link in").
+                    crate::profile::validate_listed_name(&value).map_err(|error| error.to_string())?;
                     if options.profile.replace(value).is_some() {
                         return Err("Duplicate profile argument".into());
                     }
@@ -938,7 +939,14 @@ mod tests {
                 .profile
                 .is_none()
         );
-        for bad in ["..", "a/b", "CON", "default", "x y"] {
+        assert_eq!(
+            LaunchOptions::parse_from(args(&["--profile", "default"]), Path::new("missing"))
+                .unwrap()
+                .profile
+                .as_deref(),
+            Some("default")
+        );
+        for bad in ["..", "a/b", "CON", "Default", "x y"] {
             assert!(
                 LaunchOptions::parse_from(args(&["--profile", bad]), Path::new("missing")).is_err(),
                 "{bad}"

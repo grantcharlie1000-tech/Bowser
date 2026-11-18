@@ -592,6 +592,13 @@ pub struct EngineEvents {
     /// "Open link in split view" was picked on an http(s) link in this tab's page context menu.
     pub open_in_split: Option<std::rc::Rc<dyn Fn(crate::tabs::TabId, url::Url)>>,
     // --- end split view ---
+    // --- profiles ---
+    /// The profiles other than this window's a link can be opened in, as (listed id, display
+    /// name). Empty adds nothing to the menu. Never asked for a private tab.
+    pub link_profiles: Option<LinkProfilesFn>,
+    /// "Open link in profile" was picked: the listed profile id and the http(s) link.
+    pub open_in_profile: Option<std::rc::Rc<dyn Fn(String, url::Url)>>,
+    // --- end profiles ---
     // --- address bar, search and bookmarks ---
     /// The page context menu is about to open on a selection or an image: the labels of the search
     /// items to add (none for nothing to add).
@@ -606,6 +613,9 @@ pub struct EngineEvents {
     pub context_note_pick: Option<std::rc::Rc<dyn Fn(crate::tabs::TabId, u64)>>,
     // --- end page tools ---
 }
+
+/// Lists the profiles a link can be opened in, as (listed id, display name).
+pub type LinkProfilesFn = std::rc::Rc<dyn Fn() -> Vec<(String, String)>>;
 
 /// Asks for the labels of the search items a page context menu gets.
 pub type ContextSearchLabelsFn = std::rc::Rc<dyn Fn(crate::tabs::TabId, &ContextSearchInfo) -> ContextSearchLabels>;

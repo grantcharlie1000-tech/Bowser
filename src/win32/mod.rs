@@ -51,6 +51,7 @@ mod passwords_panel;
 pub(crate) mod privacy_panel;
 mod protection; // blocking, cookie notices, history retention, website appearance (thread T3)
 mod profile_rename;
+mod profile_shortcut; // desktop shortcuts that open one profile
 mod settings_page;
 mod store;
 mod history_page; // bowser://history (docs/design/history-page.md)
