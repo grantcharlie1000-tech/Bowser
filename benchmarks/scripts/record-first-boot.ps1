@@ -140,13 +140,16 @@ function EnsureFg { for ($i = 0; $i -lt 8; $i++) { if (IsFg) { return $true }; [
 $root = $null
 $welcome = $null
 function Root { if (-not $script:root) { $script:root = [System.Windows.Automation.AutomationElement]::FromHandle($h) }; return $script:root }
-# The welcome's own region ("Welcome to Bowser", the largest element with that name: the tab has it too),
-# so a button is never taken from anything else in the window.
+# The welcome's own region ("Welcome to Bowser"). The tab in the strip has that name too, and appears
+# first, so only a large element counts (the page region), and nothing is kept until one is found.
 function Welcome {
-  if ($script:welcome) { try { $null = $script:welcome.Current.BoundingRectangle; return $script:welcome } catch { $script:welcome = $null } }
+  if ($script:welcome) { try { $r = $script:welcome.Current.BoundingRectangle; if ($r.Width -gt 300) { return $script:welcome } } catch { } ; $script:welcome = $null }
   $best = $null; $area = 0
   foreach ($el in (Root).FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition)) {
-    if ($el.Current.Name -eq 'Welcome to Bowser') { $r = $el.Current.BoundingRectangle; if ($r.Width * $r.Height -gt $area) { $area = $r.Width * $r.Height; $best = $el } }
+    if ($el.Current.Name -eq 'Welcome to Bowser') {
+      $r = $el.Current.BoundingRectangle
+      if ($r.Width -gt 300 -and $r.Height -gt 300 -and $r.Width * $r.Height -gt $area) { $area = $r.Width * $r.Height; $best = $el }
+    }
   }
   $script:welcome = $best
   return $best
