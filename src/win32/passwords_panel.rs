@@ -6,7 +6,6 @@
 
 use std::{
     cell::{Cell, RefCell},
-    collections::HashSet,
     ffi::c_void,
     path::{Path, PathBuf},
 };
@@ -77,15 +76,6 @@ thread_local! {
     static OPEN: Cell<isize> = const { Cell::new(0) };
     static CLASS_REGISTERED: Cell<bool> = const { Cell::new(false) };
     static CLIPBOARD_GUARD: RefCell<Option<Zeroizing<Vec<u16>>>> = const { RefCell::new(None) };
-    static SAVE_PROMPT_ACTIVE: Cell<bool> = const { Cell::new(false) };
-    static SAVE_PROMPT_DECLINED_ORIGINS: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
-}
-
-struct SavePromptGuard;
-impl Drop for SavePromptGuard {
-    fn drop(&mut self) {
-        SAVE_PROMPT_ACTIVE.with(|active| active.set(false));
-    }
 }
 
 struct Panel {
@@ -821,7 +811,7 @@ pub(crate) fn clear_password_clipboard_timer(owner: HWND) {
     }
 }
 
-fn copy_password(hwnd: HWND, password: &str) -> bool {
+pub(crate) fn copy_password(hwnd: HWND, password: &str) -> bool {
     if password.contains('\0') {
         return false;
     }
@@ -1789,167 +1779,6 @@ fn confirm_delete_entry(hwnd: HWND, entry: &CredentialSummary) -> bool {
         },
     )
     .is_some_and(|chosen| chosen.id == 1)
-}
-
-/// Offers a user-initiated fill for the active tab's exact current origin.
-pub(crate) fn offer_fill(hwnd: HWND, app: &crate::app::AppRef) {
-    use crate::win32::menu::{Entry, Icon, Item, Menu};
-
-    let Some((tab_id, url)) = crate::app::App::active_site(app) else {
-        return;
-    };
-    let Some(origin) = passwords::secure_origin(url.as_str()) else {
-        return;
-    };
-    let Ok(vault) = PasswordStore::open_default() else {
-        return;
-    };
-    let credentials = vault.get_for_origin(&origin);
-    if credentials.is_empty() {
-        return;
-    }
-    let Some(anchor) = menu_anchor(hwnd) else {
-        return;
-    };
-    let mut entries = vec![Entry::SectionHeader("Choose a saved login".to_owned())];
-    entries.extend(credentials.iter().enumerate().map(|(index, entry)| {
-        Entry::Item(Item::new(
-            index + 1,
-            format!("{} — {}", entry.host, entry.username),
-            Icon::Key,
-        ))
-    }));
-    let Some(chosen) = crate::win32::menu::track(
-        hwnd,
-        anchor,
-        Menu {
-            header: None,
-            entries,
-            footer: "Bowser fills only this page's matching origin after your choice".to_owned(),
-        },
-    ) else {
-        return;
-    };
-    let Some(entry) = credentials.get(chosen.id.saturating_sub(1)) else {
-        return;
-    };
-    let Ok(password) = vault.reveal(entry.id) else {
-        return;
-    };
-    let script = passwords::password_fill_script(&origin, &entry.username, &password);
-    let _ = crate::app::App::execute_script_for_origin(app, tab_id, &origin, &script);
-}
-
-/// Handles only validated, top-frame submissions for the currently selected tab.
-pub(crate) fn handle_login_message(
-    hwnd: HWND,
-    app: &crate::app::AppRef,
-    tab_id: crate::tabs::TabId,
-    mut message: passwords::LoginMessage,
-) {
-    if message.kind != passwords::LoginMessageKind::Submitted
-        || crate::app::App::active_tab_id(app) != tab_id
-    {
-        return;
-    }
-    let Some(current_url) = crate::app::App::tab_committed_url(app, tab_id) else {
-        return;
-    };
-    if passwords::secure_origin(current_url.as_str()).as_deref() != Some(message.origin.as_str()) {
-        return;
-    }
-    let (Some(username), Some(password)) = (message.username.take(), message.password.take())
-    else {
-        return;
-    };
-    let Ok(vault) = PasswordStore::open_default() else {
-        return;
-    };
-    if vault.is_never_for_site(&message.origin) {
-        return;
-    }
-    if SAVE_PROMPT_DECLINED_ORIGINS.with(|origins| origins.borrow().contains(&message.origin)) {
-        return;
-    }
-    let matched = vault.match_login(&message.origin, &username, &password);
-    if matches!(matched, passwords::LoginMatch::Unchanged(_)) {
-        return;
-    }
-    if SAVE_PROMPT_ACTIVE.with(|active| active.replace(true)) {
-        return;
-    }
-    let _prompt_guard = SavePromptGuard;
-    let Some(choice) = save_prompt(hwnd, &message.origin, &username, matched) else {
-        return;
-    };
-    match choice {
-        2 => {
-            let Ok(mut vault) = PasswordStore::open_default() else {
-                return;
-            };
-            match vault.match_login(&message.origin, &username, &password) {
-                passwords::LoginMatch::Missing => {
-                    let _ = vault.add(&message.origin, &username, &password);
-                }
-                passwords::LoginMatch::Changed(id) => {
-                    let _ = vault.update(id, &message.origin, &username, &password);
-                }
-                passwords::LoginMatch::Unchanged(_) => {}
-            }
-        }
-        1 => {
-            SAVE_PROMPT_DECLINED_ORIGINS.with(|origins| {
-                origins.borrow_mut().insert(message.origin.clone());
-            });
-        }
-        3 => {
-            if let Ok(mut vault) = PasswordStore::open_default() {
-                let _ = vault.mark_never_for_site(&message.origin, true);
-            }
-        }
-        _ => {}
-    }
-}
-
-fn save_prompt(
-    hwnd: HWND,
-    origin: &str,
-    username: &str,
-    matched: passwords::LoginMatch,
-) -> Option<usize> {
-    use crate::win32::menu::{Entry, Icon, Item, Menu};
-
-    let anchor = menu_anchor(hwnd)?;
-    let update = matches!(matched, passwords::LoginMatch::Changed(_));
-    let footer = match matched {
-        passwords::LoginMatch::Changed(_) => "Save replaces the password for this username",
-        _ => "The password stays in this profile's encrypted vault",
-    };
-    crate::win32::menu::track_with_default(
-        hwnd,
-        anchor,
-        Menu {
-            header: None,
-            entries: vec![
-                Entry::SectionHeader(passwords::save_prompt_header(update, origin, username)),
-                Entry::Item(Item::new(1, "Not now", Icon::Close)),
-                Entry::Item(Item::new(2, "Save", Icon::Key)),
-                Entry::Item(Item::new(3, "Never for this site", Icon::Shield)),
-            ],
-            footer: footer.to_owned(),
-        },
-        Some(1),
-    )
-    .map(|chosen| chosen.id)
-}
-
-fn menu_anchor(hwnd: HWND) -> Option<POINT> {
-    let mut window = RECT::default();
-    unsafe { GetWindowRect(hwnd, &mut window) }.ok()?;
-    Some(POINT {
-        x: window.right - 24,
-        y: window.top + 72,
-    })
 }
 
 /// Shows the system open dialog filtered to the chosen source's extension. Returns `None` when

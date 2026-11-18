@@ -3972,6 +3972,31 @@ impl App {
             })
     }
 
+    /// The screen point just under a field the active tab's page reported at CSS pixels
+    /// (`x`, `y`) with height `h` (the autofill menu's anchor). `None` when `tab` is not the active
+    /// single-page tab (split view panes have their own bounds), so callers fall back to the
+    /// toolbar anchor. The point is clamped to the page area, so a page cannot place Bowser's menu
+    /// over the toolbar or outside the window.
+    pub fn page_field_anchor(app: &AppRef, tab: TabId, x: i32, y: i32, h: i32) -> Option<windows::Win32::Foundation::POINT> {
+        if Self::active_tab_id(app) != tab || app.try_borrow().ok()?.split_bounds.is_some() {
+            return None;
+        }
+        let zoom = f64::from(Self::active_zoom_percent(app)) / 100.0;
+        let (hwnd, bounds) = {
+            let mut state = app.try_borrow_mut().ok()?;
+            let bounds = state.latest_viewport_bounds();
+            (state.hwnd, bounds)
+        };
+        let dpi = f64::from(unsafe { windows::Win32::UI::HiDpi::GetDpiForWindow(hwnd) }.max(96)) / 96.0;
+        let scale = zoom * dpi;
+        let to_px = |css: i32| (f64::from(css) * scale).round() as i32;
+        let mut point = windows::Win32::Foundation::POINT {
+            x: (bounds.left + to_px(x)).clamp(bounds.left, bounds.right.max(bounds.left)),
+            y: (bounds.top + to_px(y.saturating_add(h)) + 2).clamp(bounds.top, bounds.bottom.max(bounds.top)),
+        };
+        unsafe { windows::Win32::Graphics::Gdi::ClientToScreen(hwnd, &mut point) }.as_bool().then_some(point)
+    }
+
     /// The active tab and its committed page address, when it has one.
     pub fn active_site(app: &AppRef) -> Option<(TabId, url::Url)> {
         let state = app.borrow();

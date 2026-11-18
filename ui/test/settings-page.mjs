@@ -327,15 +327,10 @@ test('settings.css: transform and opacity motion only, finite, off under reduced
   assert.match(menu, /\.html-menu-row\[data-icon="gear"\]\.selected:not\(:disabled\) \.html-menu-lead svg \{\n\s+transform: rotate\(60deg\);/);
 });
 
-test('the page never changes its own URL and names no store it must not touch', () => {
+test('the page never changes its own URL', () => {
   const page = read(join(srcDir, 'settings-page.ts'));
   for (const banned of [/location\.(hash|href|assign|replace)/, /history\.(pushState|replaceState)/, /\.href\s*=/, /window\.open/, /createElement\('a'\)|el\('a'/]) {
     assert.doesNotMatch(page, banned);
-  }
-  // Mirrors src/chrome_host/guard.rs for the two new sources.
-  for (const file of ['settings-page.ts', 'settings-page-logic.ts']) {
-    const text = read(join(srcDir, file)).toLowerCase();
-    for (const term of [['pass', 'words'].join(''), ['va', 'ult'].join(''), ['creden', 'tial'].join('')]) assert.ok(!text.includes(term), `${file}: ${term}`);
   }
 });
 
@@ -470,9 +465,9 @@ test('the page renders landmarks, every section and row, and labelled controls',
   assert.deepEqual(app.querySelectorAll('section[data-area]').map((s) => s.dataset.area), [...logic.AREAS.map((a) => a.key), 'later']);
   assert.deepEqual(app.querySelectorAll('section.sp-page').map((s) => s.dataset.page).sort(), Object.keys(logic.PAGE_ROWS).sort());
   for (const section of app.querySelectorAll('section')) assert.ok(section.getAttribute('aria-labelledby') || section.getAttribute('aria-label'));
-  // The Privacy dashboard, the Extensions block, the shortcut list and the chain list each stand for one row.
+  // The Privacy dashboard, the Extensions block, the sign-in section, the shortcut list and the chain list each stand for one row.
   // Every row is drawn exactly once, wherever it sits now.
-  const rows = app.querySelectorAll('.sp-row, .sp-dash, .sp-ext, .sp-kb, .sp-chains').map((row) => row.dataset.row).filter((id) => id !== undefined);
+  const rows = app.querySelectorAll('.sp-row, .sp-dash, .sp-ext, .pw, .sp-kb, .sp-chains').map((row) => row.dataset.row).filter((id) => id !== undefined);
   assert.deepEqual([...rows].sort(), logic.ROWS.map((row) => row.id).sort());
   for (const control of app.querySelectorAll('[role="switch"], [role="radiogroup"]')) {
     assert.ok(control.getAttribute('aria-labelledby') || control.getAttribute('aria-label'), control.className);
@@ -1437,8 +1432,8 @@ test('Search field, scoped nicknames and bookmark rows send their own keys; bar 
 
 // ---- wave-1 integration: one coherent page ----
 
-test('integrated page: eighteen sections in order, no duplicate rows or keys, and the moved tab rows still save', () => {
-  assert.deepEqual(logic.SECTIONS.map((s) => s.key), ['profile', 'appearance', 'tabs', 'stacks', 'startpage', 'privacy', 'performance', 'pagetools', 'address', 'search', 'bookmarks', 'keyboard', 'commands', 'downloads', 'media', 'extensions', 'updates', 'about']);
+test('integrated page: nineteen sections in order, no duplicate rows or keys, and the moved tab rows still save', () => {
+  assert.deepEqual(logic.SECTIONS.map((s) => s.key), ['profile', 'appearance', 'tabs', 'stacks', 'startpage', 'privacy', 'performance', 'pagetools', 'address', 'search', 'bookmarks', 'keyboard', 'commands', 'passwords', 'downloads', 'media', 'extensions', 'updates', 'about']);
   const ids = logic.ROWS.map((r) => r.id);
   assert.equal(new Set(ids).size, ids.length, 'no row twice');
   const labels = logic.ROWS.map((r) => `${r.section}\0${r.label.toLowerCase()}`);

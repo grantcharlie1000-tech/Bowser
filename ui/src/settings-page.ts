@@ -36,6 +36,7 @@ import {
 } from './layout-logic';
 // --- end layout ---
 import { mountPageToolsSection } from './page-tools-section'; // --- page tools (T7) ---
+import { mountPasswordsSection } from './passwords-section';
 import { browserProbes, drmText, runMediaCheck, verdictText, type MediaReport } from './panels/media-logic';
 import { TAB_CARDS, TAB_CARD_TITLES, assignmentText, cardSpecs, clampNumber, numberLabel, textApplies, type TabOptionSpec, type TabOptionValues } from './tab-options-logic';
 import {
@@ -73,6 +74,7 @@ const NAV_ICONS: Readonly<Record<SettingsSection, IconName>> = {
   startpage: 'home', // --- start page ---
   address: 'address-bar', bookmarks: 'bookmark', // --- wave-1 integration ---
   pagetools: 'image', // --- page tools (T7) ---
+  passwords: 'key',
   stacks: 'tab-group', // --- T10 --- (drawn in the Tabs and start page area, never in the nav on its own)
 };
 const reduceMotion = (): boolean => matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -1346,6 +1348,11 @@ export function startSettingsPage(root: HTMLElement): void {
   // this page and takes its extension commands in the `set` family; search treats it as one row.
   const extensions = mountExtensionsSection({ send: cmd, toast: (text, ok) => showToast(text, ok) });
   sectionNodes.get('extensions')?.append(extensions.root);
+  // Passwords and autofill (src/passwords-section.ts): a block of its own with its `passwords` snapshot.
+  const passwordsSection = mountPasswordsSection({ send: cmd, toast: (text, ok) => showToast(text, ok), switchControl });
+  sectionNodes.get('passwords')?.append(passwordsSection.root);
+  const passwordsSpec = ROWS.find((r) => r.id === 'passwords')!;
+  rows.set('passwords', { spec: passwordsSpec, root: passwordsSection.root, label: el('span'), desc: null, card: passwordsSection.root, flag: null, target: null });
   const store = mountStoreSection({ send: cmd, toast: (text, ok) => showToast(text, ok) });
   root.append(store.root);
   const extensionsSpec = ROWS.find((r) => r.id === 'extensions')!;
@@ -2229,6 +2236,7 @@ export function startSettingsPage(root: HTMLElement): void {
     }
     if (message.t === 'snap' && message.p === 'extensions') { extensions.receive(message); store.receive(message); return; }
     if (message.t === 'snap' && message.p === 'pagetools') { pageToolsSection.receive(message); return; } // --- page tools (T7) ---
+    if (message.t === 'snap' && message.p === 'passwords') { passwordsSection.receive(message); return; }
     if (message.t === 'snap' && message.p === 'commands') {
       commandSections.receive(message);
       return;

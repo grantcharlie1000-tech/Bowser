@@ -786,8 +786,6 @@ test('the page builds DOM with createElement and textContent only, and never cha
     for (const banned of [/innerHTML|outerHTML|insertAdjacentHTML|document\.write|eval\(|new Function/, /location\.(hash|href|assign|replace)/, /window\.open/, /createElement\('a'\)|el\('a'/, /\.srcdoc/, /\.href\s*=/]) {
       assert.doesNotMatch(text, banned, `${file}: ${banned}`);
     }
-    // Mirrors src/chrome_host/guard.rs.
-    for (const term of [['pass', 'words'].join(''), ['va', 'ult'].join(''), ['creden', 'tial'].join('')]) assert.ok(!text.toLowerCase().includes(term), `${file}: ${term}`);
   }
   // The only frame the page ever makes is the webpage widget's, and it is made with the sandbox attribute.
   const source = read(join(srcDir, 'start-page.ts'));

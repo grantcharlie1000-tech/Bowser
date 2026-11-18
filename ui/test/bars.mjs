@@ -177,7 +177,7 @@ test('every built-in command a bar can carry has a glyph of its own, drawn from 
   const ids = [...registry.matchAll(/\bdef\("([a-z0-9-]+)"/g)].map((m) => m[1]).filter((id) => !/^select-/.test(id));
   assert.ok(ids.length > 50, 'the registry was read');
   const family = new Set([...read(join(srcDir, 'icons.gen.ts')).match(/ICON_NAMES[^=]*=\s*\[([^\]]*)\]/s)[1].matchAll(/"([^"]+)"/g)].map((m) => m[1]));
-  // A command the chrome sources may not name (src/chrome_host/guard.rs) gets its icon from Rust instead, sent
+  // A command whose glyph Rust chooses gets its icon from Rust instead, sent
   // with the button as `g` (`toolbar_prefs::command_glyph`).
   const prefs = read(join(root, 'src', 'toolbar_prefs.rs'));
   const fromRust = new Map([...prefs.match(/pub fn command_glyph[\s\S]*?\n}\n/)[0].matchAll(/"([a-z0-9-]+)" => Some\("([a-z0-9-]+)"\)/g)].map((m) => [m[1], m[2]]));
