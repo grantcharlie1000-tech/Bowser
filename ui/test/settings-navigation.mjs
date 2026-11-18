@@ -157,7 +157,7 @@ function harness({ ready = true, snapshot = true, reduced = false, view = 'all' 
       resolveMedia({ supported: true, smooth: true, powerEfficient: false });
       // Flush Promise.all/settle/runMediaCheck and the real paintMedia continuation.
       await new Promise((resolve) => setImmediate(resolve));
-      assert.equal(app.querySelector('.sp-media-status').textContent, 'Check complete');
+      assert.equal(app.querySelector('.sp-media-status').textContent, '', 'a finished check leaves only its results');
       assert.equal(app.querySelectorAll('.sp-media-item').length, 6);
     },
   };
