@@ -1692,6 +1692,14 @@ export function startSettingsPage(root: HTMLElement): void {
     else if (edge !== 'top') applyLayoutConfig(d, presetConfig('classic'));
   }));
   const simpleExtensions = textButton('Manage', () => { prefer = 'all'; sectionHold = false; writeView('all'); go('extensions', true, true); });
+  // --- profiles --- this window's profile, and the way to the profile manager.
+  const simpleProfile = el('div', 'sp-simple-profile');
+  const simpleProfileDisc = el('span', 'sp-profile-avatar');
+  simpleProfileDisc.setAttribute('aria-hidden', 'true');
+  const simpleProfileName = el('span', 'sp-simple-profile-name');
+  simpleProfileName.dir = 'auto';
+  const simpleProfiles = textButton('Manage', () => { prefer = 'all'; sectionHold = false; writeView('all'); go('profile', true, true); }, { aria: 'Manage profiles' });
+  simpleProfile.append(simpleProfileDisc, simpleProfileName, simpleProfiles);
   const showAll = textButton(SIMPLE_ALL_LABEL, () => chooseView('all'), { primary: true });
   showAll.classList.add('sp-show-all');
   const simpleRow = (id: string, label: string, control: HTMLElement): HTMLElement => {
@@ -1711,8 +1719,9 @@ export function startSettingsPage(root: HTMLElement): void {
   const themeSlot = simpleRow('simpleTheme', 'Theme', simpleTheme.root);
   const tabsSlot = simpleRow('simpleTabs', 'Tabs', simpleTabs.root);
   const extensionsSlot = simpleRow('simpleExtensions', 'Extensions', simpleExtensions);
-  const simpleExtras = new Map<string, HTMLElement>([['simpleTheme', themeSlot], ['simpleTabs', tabsSlot], ['simpleExtensions', extensionsSlot]]);
-  const simpleOrder = ['searchDefault', 'startHomepage', 'startupMode', 'simpleTheme', 'themeAccent', 'simpleTabs', 'import', 'deleteData', 'simpleExtensions', 'defaultBrowser'];
+  const profileSlot = simpleRow('simpleProfile', 'Profile', simpleProfile);
+  const simpleExtras = new Map<string, HTMLElement>([['simpleProfile', profileSlot], ['simpleTheme', themeSlot], ['simpleTabs', tabsSlot], ['simpleExtensions', extensionsSlot]]);
+  const simpleOrder = ['simpleProfile', 'searchDefault', 'startHomepage', 'startupMode', 'simpleTheme', 'themeAccent', 'simpleTabs', 'import', 'deleteData', 'simpleExtensions', 'defaultBrowser'];
   const simpleSlots: ReadonlyArray<{ readonly id: string; readonly moved: boolean; readonly el?: HTMLElement }> = simpleOrder.map((id) => {
     const extra = simpleExtras.get(id);
     return extra ? { id, moved: false, el: extra } : { id, moved: (SIMPLE_MOVED as readonly string[]).includes(id) };
@@ -1899,6 +1908,8 @@ export function startSettingsPage(root: HTMLElement): void {
     version.textContent = `Bowser ${s.version}`;
     avatar.textContent = s.avatar;
     paintDisc(avatar, s.profiles.list.find((p) => p.current)?.colour ?? '');
+    paintDisc(simpleProfileDisc, s.profiles.list.find((p) => p.current)?.colour ?? '', s.avatar);
+    simpleProfileName.textContent = s.profile;
     profileRow.label.textContent = s.profile;
     profilesView.paint(s.profiles, s.guest);
     banner.hidden = s.readable;

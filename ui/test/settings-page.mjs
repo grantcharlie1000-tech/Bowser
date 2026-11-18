@@ -2286,8 +2286,12 @@ test('simple settings is the calm default, and All settings is one switch away',
   assert.equal(app.querySelector('.sp-nav').hidden, true);
   for (const area of logic.AREAS) assert.equal(areaNode(area.key).hidden, true, area.key);
   assert.deepEqual(app.querySelector('.sp-simple').querySelectorAll('.sp-label').map((node) => node.textContent), [
-    'Search engine', 'Homepage', 'Startup', 'Theme', 'Accent', 'Tabs', 'Import', 'Clear data', 'Extensions', 'Default browser',
+    'Profile', 'Search engine', 'Homepage', 'Startup', 'Theme', 'Accent', 'Tabs', 'Import', 'Clear data', 'Extensions', 'Default browser',
   ]);
+  // --- profiles --- this window's profile, one click from the manager.
+  const simpleProfile = app.querySelector('[data-simple="simpleProfile"]');
+  assert.equal(simpleProfile.querySelector('.sp-simple-profile-name').textContent, fixture.snap.d.profile);
+  assert.ok(simpleProfile.querySelectorAll('button').find((b) => b.getAttribute('aria-label') === 'Manage profiles'));
   const engineRow = app.querySelector('.sp-row[data-row="searchDefault"]');
   assert.ok(app.querySelector('.sp-simple').contains(engineRow));
   assert.equal(engineRow.querySelector('.sp-engine-value').textContent, 'DuckDuckGo');

@@ -810,6 +810,27 @@
   flex-wrap: wrap;
 }
 
+/* The Simple page's Profile row: avatar, name, then Manage. */
+.sp-simple-profile {
+  display: flex;
+  align-items: center;
+  gap: var(--bw-space-2);
+  min-width: 0;
+}
+
+.sp-simple-profile .sp-profile-avatar {
+  width: 28px;
+  height: 28px;
+}
+
+.sp-simple-profile-name {
+  overflow: hidden;
+  max-width: 220px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: var(--bw-weight-strong);
+}
+
 @media (prefers-reduced-motion: no-preference) {
   .sp-profile-choice {
     transition: border-color 120ms ease;
