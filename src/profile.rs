@@ -1155,7 +1155,7 @@ pub fn open_url_in(profile: &Profile, url: &url::Url) -> bool {
         && profile_command(profile, false, [url]).is_some_and(|mut command| command.spawn().is_ok())
 }
 
-/// --- tab stacks (T10) --- "Move the stack to a new window": a new Bowser process for `profile`
+/// --- tab stacks (T10) --- "Move the group to a new window": a new Bowser process for `profile`
 /// with one tab per address (the first shown, the rest asleep). Addresses a new window cannot take
 /// are left out; false when none is left or the process did not start.
 pub fn spawn_window_with_urls(profile: &Profile, urls: &[url::Url]) -> bool {

@@ -43,7 +43,7 @@ export interface AddressValues {
   sec_always_https: boolean; sec_strip_js: boolean; sec_highlight_base: boolean; domain_expansion_suffix: string;
   search_field: SearchFieldMode; search_show_nickname: boolean; search_new_tab: boolean; search_show_icon: boolean; search_in_address: boolean;
   search_keep_engine: boolean; search_keep_text: boolean; search_selection_background: boolean; search_suggest_address: boolean;
-  search_suggest_field: boolean; search_last_engine: string;
+  search_suggest_field: boolean; search_suggestions: boolean; search_last_engine: string;
   nick_bookmarks: string; nick_history: string; nick_tabs: string;
   bm_open_new_tab: boolean; bm_panel_single_click: boolean; bm_confirm_open: number; bm_fetch_metadata: boolean; bm_always_dialog: boolean;
   bm_bar_folder: number; bm_bar_position: BarPosition; bm_bar_display: BarDisplay; bar_groups: string;
@@ -55,7 +55,7 @@ const BOOL_KEYS = [
   'dd_show_while_typing', 'dd_always_badge', 'dd_typed_history', 'dd_typed_include_searches', 'dd_history_button', 'dd_prioritise_bookmarks', 'dd_prioritise_direct',
   'sec_always_https', 'sec_strip_js', 'sec_highlight_base', 'search_show_nickname', 'search_new_tab', 'search_show_icon', 'search_in_address',
   'search_keep_engine', 'search_keep_text', 'search_selection_background', 'search_suggest_address', 'search_suggest_field',
-  'bm_open_new_tab', 'bm_panel_single_click', 'bm_fetch_metadata', 'bm_always_dialog',
+  'search_suggestions', 'bm_open_new_tab', 'bm_panel_single_click', 'bm_fetch_metadata', 'bm_always_dialog',
 ] as const;
 const TEXT_KEYS = ['dd_sources', 'domain_expansion_suffix', 'search_last_engine', 'nick_bookmarks', 'nick_history', 'nick_tabs', 'bar_groups'] as const;
 const INT_KEYS = ['dd_max_results', 'bm_confirm_open', 'bm_bar_folder'] as const;
@@ -305,6 +305,9 @@ export function monogram(name: string): string {
 
 // ---- rows (the nav search index) ----
 
+/** The privacy trade-off of `search_suggestions`, shown under its row. */
+export const SEARCH_SUGGESTIONS_NOTE = 'Sends what you type to your search engine before you press Enter. Never in private windows.';
+
 const S = (id: string, section: RowSpec['section'], label: string, description: string, keywords: string): RowSpec => ({ id, section, label, description, keywords });
 
 export const ADDRESS_ROWS: readonly RowSpec[] = [
@@ -329,6 +332,8 @@ export const ADDRESS_ROWS: readonly RowSpec[] = [
   S('addrExpansion', 'address', 'Expansion', '', 'domain expansion ctrl enter suffix com www Domain expansion Ctrl+Enter turns one word into www.word.suffix. Empty turns it off.'),
   S('engines', 'search', 'Engines', '', 'search engines add edit remove reorder nickname url suggest post image restore defaults Search engines Add, edit, order and remove the engines the address bar and the search field use.'),
   S('searchDefault', 'search', 'Search engine', '', 'default engine optimised google duckduckgo bing search address bar Search engine DuckDuckGo, with no sponsored results. Type img before a query for images.'),
+  // The one row with a sub-line: turning it on sends typing to the engine, so the row says so.
+  S('searchSuggestions', 'search', 'Search suggestions', SEARCH_SUGGESTIONS_NOTE, 'search suggestions autocomplete autofill predictions google engine network privacy typing as you type Show search suggestions'),
   S('searchPrivate', 'search', 'Private search', '', 'private window search engine incognito Private window search engine Used in private tabs. Default means the engine above.'),
   S('searchImage', 'search', 'Image search', '', 'image search engine reverse picture Image search engine Used by “Search for this image” on a picture.'),
   S('searchField', 'search', 'Search field', '', 'search field toolbar button text box Search field A separate field beside the address field, as a text field or a button.'),

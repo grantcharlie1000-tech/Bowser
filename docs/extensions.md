@@ -230,7 +230,8 @@ host; the toolbar button and the management section are described under Managing
   it uses the grant up; any other address, or the same one again (so a reload), is cancelled. Frames
   may be `about:blank`, `about:srcdoc` or a page of the same extension; nothing else. This is not a
   scheme unblock: tabs keep refusing every extension scheme (see Navigation policy).
-- **Menu.** The Ctrl+Shift+E menu has "Open extension popup…", a submenu listing enabled extensions
+- **Menu.** The Ctrl+Shift+E menu (also the main menu's More tools > Extensions submenu, which cascades
+  beside More tools) has "Open extension popup…", a submenu listing enabled extensions
   whose manifest names a popup (disabled when none does). An options page can be opened by the
   engine call but has no menu entry yet. A refusal is shown in a message box and is not recorded as
   a load failure.

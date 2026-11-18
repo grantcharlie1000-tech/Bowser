@@ -267,3 +267,92 @@ export function pruneFavs(favs: Map<number, string>, live: ReadonlySet<number>):
     if (!live.has(id)) favs.delete(id);
   }
 }
+
+// ----- moving a whole group by its handle -----
+
+/**
+ * One top-level unit a group can be dragged among: an unpinned tab (`key` 0) or a whole group. `first`
+ * is the tab a move in front of the unit names: the tab itself, or the group's first member (hidden
+ * ones included, so a folded group is still one slot).
+ */
+export interface StripUnit {
+  readonly key: number;
+  readonly first: number;
+}
+
+/** The units after the pinned tabs, in strip order (pinned tabs never move with or past a group). */
+export function groupUnits(entries: readonly Entry[]): StripUnit[] {
+  const units: StripUnit[] = [];
+  for (const e of entries) {
+    if (e.kind === 'tab') {
+      if (!e.slot.item.pinned) units.push({ key: 0, first: e.slot.item.id });
+      continue;
+    }
+    const first = e.members[0]?.item.id;
+    if (first !== undefined) units.push({ key: e.key, first });
+  }
+  return units;
+}
+
+/**
+ * Slot the dragged block takes among units whose home centres are `centers` (the block's own at
+ * `from`), from where the block is drawn now (`left`, `right`): a unit after it is passed once the
+ * block's right edge crosses that unit's centre, a unit before it once the left edge does. Edges
+ * rather than the pointer, so a wide group grabbed by its bar at the left end moves right as readily
+ * as left.
+ */
+export function blockDropIndex(centers: readonly number[], from: number, left: number, right: number): number {
+  let dest = 0;
+  centers.forEach((c, i) => {
+    if (i === from) return;
+    if (i < from ? left > c : right > c) dest += 1;
+  });
+  return dest;
+}
+
+/**
+ * Travel (px) that keeps a block at `from` within the row of units (`lefts`, `widths`): it never
+ * slides over the pinned tabs or past the last unit.
+ */
+export function clampBlock(dx: number, lefts: readonly number[], widths: readonly number[], from: number): number {
+  const n = lefts.length;
+  const home = lefts[from];
+  const width = widths[from];
+  const start = lefts[0];
+  const endLeft = lefts[n - 1];
+  const endWidth = widths[n - 1];
+  if (home === undefined || width === undefined || start === undefined || endLeft === undefined || endWidth === undefined) return 0;
+  return Math.min(Math.max(dx, start - home), endLeft + endWidth - (home + width));
+}
+
+/**
+ * `before` id for the group at `from` dropped at slot `dest` among units whose first tabs are
+ * `firsts`: the first tab of the unit it lands in front of, 0 for the end; null when it stays.
+ */
+export function groupMoveBefore(firsts: readonly number[], from: number, dest: number): number | null {
+  if (from < 0 || from >= firsts.length || dest === from || dest < 0 || dest >= firsts.length) return null;
+  const others = firsts.filter((_, i) => i !== from);
+  return others[dest] ?? 0;
+}
+
+/** `before` id for moving the group at `at` one unit left (-1) or right (+1) by the keyboard; null at that end. */
+export function groupStepBefore(firsts: readonly number[], at: number, dir: -1 | 1): number | null {
+  return groupMoveBefore(firsts, at, at + dir);
+}
+
+/** The strip's keyboard move chord (Ctrl+Shift+Left/Right or Page Up/Down): -1 or +1, 0 for any other key. */
+export function moveChordDir(key: string, ctrl: boolean, shift: boolean, alt: boolean): -1 | 0 | 1 {
+  if (!ctrl || !shift || alt) return 0;
+  if (key === 'ArrowLeft' || key === 'PageUp') return -1;
+  if (key === 'ArrowRight' || key === 'PageDown') return 1;
+  return 0;
+}
+
+/** Screen-reader text for each moment of a group drag (`name` is the group's label). */
+export function groupDragAnnouncement(kind: 'lift' | 'drop' | 'cancel', name: string, position = 0, count = 0): string {
+  switch (kind) {
+    case 'lift': return `Picked up group ${name}. Move to reorder, Escape to cancel.`;
+    case 'drop': return count > 0 ? `Group ${name} moved to position ${position} of ${count}.` : `Group ${name} dropped.`;
+    case 'cancel': return `Move cancelled. Group ${name} returned to its place.`;
+  }
+}

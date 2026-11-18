@@ -204,6 +204,9 @@ pub enum GroupAction {
     /// Collapse or expand the group.
     Toggle,
     Menu,
+    /// The group's handle was dragged (or moved by the keyboard) as one block: every member moves in
+    /// front of tab `before` (a wire id, `0` = the end of the strip), keeping its order and group.
+    Move { before: u32 },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -377,7 +380,7 @@ pub enum Command {
     /// Drag-reorder drop: move tab `id` before tab `before` (`0` = end of strip).
     TabMove { id: u32, before: u32 },
     // --- tab stacks (T10) ---
-    /// The held tab `id` was dropped on tab `onto` after resting over it ("Stack tabs by dragging one
+    /// The held tab `id` was dropped on tab `onto` after resting over it ("Group tabs by dragging one
     /// onto another"): Rust stacks the two.
     TabStack { id: u32, onto: u32 },
     /// The wheel turned over the rail's workspaces: `d` notches, down positive ("Switch workspaces
@@ -1226,7 +1229,8 @@ fn build_command(fields: &[(String, Value)]) -> Result<Command, ProtocolError> {
         "tabsel" => &["ids"],
         "closedtabs" => &[],
         // --- end tab options ---
-        "group" => &["a", "key"],
+        // `before` only with `a: "move"` (a whole group dragged by its handle).
+        "group" => &["a", "key", "before"],
         // --- vertical sidebar (lane S) ---
         "side" => &["a", "on"],
         // --- end vertical sidebar ---
@@ -1234,7 +1238,7 @@ fn build_command(fields: &[(String, Value)]) -> Result<Command, ProtocolError> {
         "rail" => &["a", "k", "r"],
         "railmove" => &["k", "before"],
         // `a` is required; at most three more fields fit beside `v` and `t`.
-        "panel" | "hist" | "bm" | "cust" | "notes" | "set" | "priv" | "ren" | "hpage" | "dpage" | "spage" | "addr" | "sess" | "feed" =>
+        "panel" | "hist" | "bm" | "cust" | "notes" | "set" | "priv" | "ren" | "hpage" | "dpage" | "spage" | "addr" | "sess" | "feed" | "tbar" =>
             &["a", "id", "parent", "before", "n", "on", "text", "url"],
         "size" => &["tok", "w", "h", "c"],
         "pick" => &["tok", "id"],
@@ -1358,14 +1362,24 @@ fn build_command(fields: &[(String, Value)]) -> Result<Command, ProtocolError> {
             Command::RailWheel { d }
         }
         // --- end tab stacks ---
-        "group" => Command::Group {
-            action: match str_field(fields, "a")? {
+        "group" => {
+            let a = str_field(fields, "a")?;
+            if !matches!(a, "toggle" | "menu" | "move") {
+                return Err(ProtocolError::InvalidValue("a"));
+            }
+            // Exactly the fields each action takes: `before` with `move`, never with the others.
+            let wants_before = a == "move";
+            if field(fields, "before").is_some() != wants_before {
+                return Err(if wants_before { ProtocolError::MissingField("before") } else { ProtocolError::UnknownKey("before".to_owned()) });
+            }
+            let key = uint_field(fields, "key")?;
+            let action = match a {
                 "toggle" => GroupAction::Toggle,
                 "menu" => GroupAction::Menu,
-                _ => return Err(ProtocolError::InvalidValue("a")),
-            },
-            key: uint_field(fields, "key")?,
-        },
+                _ => GroupAction::Move { before: uint_field(fields, "before")? },
+            };
+            Command::Group { action, key }
+        }
         // --- vertical sidebar (lane S) ---
         "side" => Command::Side(match str_field(fields, "a")? {
             "hover" => SideAction::Hover(bool_field(fields, "on")?),
@@ -4225,6 +4239,37 @@ mod tests {
     }
 
     #[test]
+    fn parses_a_group_move_with_exactly_its_fields() {
+        assert_eq!(
+            ok(r#"{"v":1,"t":"group","a":"move","key":4,"before":9}"#),
+            Command::Group { action: GroupAction::Move { before: 9 }, key: 4 }
+        );
+        // `0` is the end of the strip, as for `tabmove`.
+        assert_eq!(
+            ok(r#"{"before":0,"key":4294967295,"a":"move","t":"group","v":1}"#),
+            Command::Group { action: GroupAction::Move { before: 0 }, key: u32::MAX }
+        );
+        assert_eq!(err(r#"{"v":1,"t":"group","a":"move","key":4}"#), ProtocolError::MissingField("before"));
+        for raw in [
+            r#"{"v":1,"t":"group","a":"toggle","key":4,"before":9}"#,
+            r#"{"v":1,"t":"group","a":"menu","key":4,"before":0}"#,
+        ] {
+            assert_eq!(err(raw), ProtocolError::UnknownKey("before".to_string()), "{raw}");
+        }
+        assert_eq!(err(r#"{"v":1,"t":"group","a":"move","key":4,"before":-1}"#), ProtocolError::InvalidValue("before"));
+        assert_eq!(err(r#"{"v":1,"t":"group","a":"move","key":4,"before":"9"}"#), ProtocolError::WrongType("before"));
+        assert_eq!(err(r#"{"v":1,"t":"group","a":"move","key":4,"before":4294967296}"#), ProtocolError::InvalidValue("before"));
+        assert_eq!(err(r#"{"v":1,"t":"group","a":"move","before":9}"#), ProtocolError::MissingField("key"));
+        assert_eq!(err(r#"{"v":1,"t":"group","a":"move","key":4,"before":9,"id":3}"#), ProtocolError::UnknownKey("id".to_string()));
+        assert_eq!(err(r#"{"v":1,"t":"group","a":"move","key":4,"before":9,"before":3}"#), ProtocolError::DuplicateKey("before".to_string()));
+        // Moving a group opens nothing: it is not rate-limited with the menus.
+        assert!(!is_popup_command(&Command::Group { action: GroupAction::Move { before: 1 }, key: 4 }));
+        // It arrives wrapped like every tab strip command, and only the tab strip may send it.
+        let wrapped = parse_command(r#"{"v":1,"t":"chromeAction","view":"tabs","doc":"0123456789abcdef0123456789abcdef","text":"{\"v\":1,\"t\":\"group\",\"a\":\"move\",\"key\":4,\"before\":9}"}"#).unwrap();
+        assert!(matches!(wrapped, Command::ChromeAction { ref command, .. } if **command == Command::Group { action: GroupAction::Move { before: 9 }, key: 4 }));
+    }
+
+    #[test]
     fn group_rejects_bad_action_key_and_extra_keys() {
         for raw in [
             r#"{"v":1,"t":"group","a":"select","key":4}"#,
@@ -5392,6 +5437,23 @@ mod toolbar_wire_tests {
         let panel = parse_command(r#"{"v":1,"t":"feed","a":"refresh"}"#).unwrap();
         assert!(matches!(panel, Command::Panel { kind: PanelType::Feeds, .. }));
         assert!(parse_command(r#"{"v":1,"t":"feed","a":"preview","text":"https://a.example/","extra":1}"#).is_err());
+    }
+
+    /// The exact bytes `ui/src/panels/toolbar.ts` posts for one switch. The `tbar` family once had its
+    /// parse arm but no entry in the allowed-keys table, so every customiser command was dropped as an
+    /// unknown type and no switch did anything.
+    #[test]
+    fn the_toolbar_customisers_commands_parse() {
+        for (raw, text) in [
+            (r#"{"v":1,"t":"tbar","a":"set","text":"toolbar_buttons=back,forward,reload,reader,site-info,split"}"#, "toolbar_buttons=back,forward,reload,reader,site-info,split"),
+            (r#"{"v":1,"t":"tbar","a":"set","text":"toolbar_tabs=closed-tabs,cmd:history"}"#, "toolbar_tabs=closed-tabs,cmd:history"),
+            (r#"{"v":1,"t":"tbar","a":"set","text":"toolbar_buttons="}"#, "toolbar_buttons="),
+        ] {
+            let Command::Panel { kind: PanelType::Toolbar, f } = parse_command(raw).unwrap_or_else(|error| panic!("{raw}: {error:?}")) else { panic!("{raw}") };
+            assert_eq!((f.a.as_str(), f.text.as_deref()), ("set", Some(text)));
+        }
+        assert!(parse_command(r#"{"v":1,"t":"tbar"}"#).is_err(), "an action is required");
+        assert!(parse_command(r#"{"v":1,"t":"tbar","a":"set","text":"toolbar_buttons=back","extra":1}"#).is_err());
     }
 
     #[test]

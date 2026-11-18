@@ -1108,12 +1108,23 @@ fn union_region(base: HRGN, extra: HRGN) -> HRGN {
 fn menu_json(tok: u32, kind: &str, menu: &Menu, ids: &mut HashSet<u32>) -> Option<String> {
     let mut count = 0;
     let mut seen = HashSet::new();
+    // A profile card with an id is a menu item: its id is unique like a row's and can be picked.
+    let header_id = match menu.header.as_ref().and_then(|header| header.id) {
+        Some(id) => Some(u32::try_from(id).ok()?),
+        None => None,
+    };
+    if let Some(id) = header_id {
+        seen.insert(id);
+    }
     if kind.is_empty()
         || kind.encode_utf16().count() > 32
         || menu.entries.len() > MAX_ITEMS
         || !validate_entries(&menu.entries, 0, &mut count, &mut seen, ids)
     {
         return None;
+    }
+    if let Some(id) = header_id {
+        ids.insert(id);
     }
     let mut favs = FavTable::default();
     Some(Json::object(|out| {
@@ -1131,6 +1142,12 @@ fn menu_json(tok: u32, kind: &str, menu: &Menu, ids: &mut HashSet<u32>) -> Optio
                     "accent",
                     &format!("#{:02x}{:02x}{:02x}", accent.r, accent.g, accent.b),
                 );
+                if let Some(id) = header_id {
+                    out.uint("id", u64::from(id));
+                    if !header.action.is_empty() {
+                        out.string("action", cap16(header.action, MAX_LABEL));
+                    }
+                }
             });
         }
         if !menu.footer.is_empty() {
@@ -1803,6 +1820,8 @@ mod tests {
                 caption: "Current profile".into(),
                 avatar: "W".into(),
                 accent: crate::theme::Rgba { r: 0x33, g: 0x66, b: 0xff, a: 255 },
+                id: None,
+                action: "Ignored without an id",
             }),
             entries: vec![
                 Entry::SectionHeader(long.clone()),
@@ -1816,6 +1835,29 @@ mod tests {
         assert!(!json.contains('😀'));
         assert_eq!(cap16(&long, MAX_LABEL).encode_utf16().count(), MAX_LABEL);
         assert_eq!(cap16("a😀", 2), "a", "a surrogate pair is never split");
+    }
+
+    #[test]
+    fn a_profile_card_with_an_id_is_a_pickable_item_with_a_unique_id() {
+        let card = |id| crate::win32::menu::ProfileHeader {
+            profile: "Work".into(),
+            caption: "Current profile".into(),
+            avatar: "W".into(),
+            accent: crate::theme::Rgba { r: 0x33, g: 0x66, b: 0xff, a: 255 },
+            id: Some(id),
+            action: "Open profile settings",
+        };
+        let menu = |id| Menu {
+            header: Some(card(id)),
+            entries: vec![Entry::Item(crate::win32::menu::Item::new(1, "One", Icon::None))],
+            footer: String::new(),
+        };
+        let mut ids = HashSet::new();
+        let json = menu_json(2, "main", &menu(9), &mut ids).expect("a card with its own id is sent");
+        assert!(json.contains("\"accent\":\"#3366ff\",\"id\":9,\"action\":\"Open profile settings\"}"), "{json}");
+        assert!(ids.contains(&9) && ids.contains(&1), "the card's id is a valid pick");
+        // The card shares the id space of the rows: a clash refuses the menu, as a repeated row id does.
+        assert!(menu_json(2, "main", &menu(1), &mut HashSet::new()).is_none());
     }
 
     #[test]

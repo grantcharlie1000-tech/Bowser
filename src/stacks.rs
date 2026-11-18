@@ -30,7 +30,7 @@ fn stackable(tab: &StackInput) -> bool {
     !tab.pinned && !tab.private && tab.domain.is_some()
 }
 
-/// "Stack tabs of this site": the tabs that join `domain`'s stack, in strip order. Pinned and
+/// "Group tabs of this site": the tabs that join `domain`'s stack, in strip order. Pinned and
 /// private tabs never stack.
 pub fn site_members(tabs: &[StackInput], domain: &DomainKey) -> Vec<TabId> {
     tabs.iter()
@@ -39,7 +39,7 @@ pub fn site_members(tabs: &[StackInput], domain: &DomainKey) -> Vec<TabId> {
         .collect()
 }
 
-/// "Stack all tabs by site": one stack per site that has two tabs or more, sites in the order their
+/// "Group all tabs by site": one stack per site that has two tabs or more, sites in the order their
 /// first tab appears.
 pub fn sites_to_stack(tabs: &[StackInput]) -> Vec<(DomainKey, Vec<TabId>)> {
     let mut first_seen: Vec<DomainKey> = Vec::new();
@@ -73,6 +73,67 @@ pub fn drop_stacks(rested_ms: u64) -> bool {
 pub fn over_middle(left: i32, right: i32, x: i32) -> bool {
     let quarter = (right - left) / 4;
     right > left && x >= left + quarter && x < right - quarter
+}
+
+// ----- moving a whole island -----
+
+/// One tab of the active workspace in the order the strip draws it (`tab_groups::strip_order`): an
+/// island's members as one run at its first member's place.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StripSlot {
+    pub id: TabId,
+    /// The island the tab is drawn in; `None` for an ungrouped (or pinned) tab.
+    pub island: Option<DomainKey>,
+    pub pinned: bool,
+}
+
+/// Where a moved island goes: in front of a tab (which stays where it is), or to the end of the strip.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum IslandAnchor {
+    Before(TabId),
+    End,
+}
+
+/// Where island `island` lands when its handle is dropped (or moved by the keyboard) before tab
+/// `before` (`None`: the end of the strip), with every member moving as one block in its own order.
+/// An island never lands inside another: a `before` in the middle of another island means in front of
+/// that island. Pinned tabs stay first, so a `before` among them means in front of the first unpinned
+/// tab. `None` when the island is not in `strip`, `before` is unknown or one of its own members, or the
+/// block would end up exactly where it is.
+pub fn island_move_anchor(strip: &[StripSlot], island: &DomainKey, before: Option<TabId>) -> Option<IslandAnchor> {
+    let member = |slot: &StripSlot| !slot.pinned && slot.island.as_ref() == Some(island);
+    if !strip.iter().any(member) {
+        return None;
+    }
+    let others: Vec<&StripSlot> = strip.iter().filter(|slot| !member(slot)).collect();
+    // Index among `others` the block goes in front of (`others.len()` = the end).
+    let mut at = match before {
+        None => others.len(),
+        Some(id) => {
+            let slot = strip.iter().find(|slot| slot.id == id)?;
+            if member(slot) {
+                return None;
+            }
+            others.iter().position(|other| other.id == id)?
+        }
+    };
+    // Not among the pinned tabs: after the last of them.
+    let first_unpinned = others.iter().position(|slot| !slot.pinned).unwrap_or(others.len());
+    at = at.max(first_unpinned);
+    // Not inside another island: back to that island's first member.
+    if let Some(key) = others.get(at).and_then(|slot| slot.island.as_ref()).filter(|_| !others[at].pinned) {
+        while at > 0 && others[at - 1].island.as_ref() == Some(key) && !others[at - 1].pinned {
+            at -= 1;
+        }
+    }
+    // Unchanged when the block already sits, in one piece, right in front of that place.
+    let mut after: Vec<TabId> = others.iter().map(|slot| slot.id).collect();
+    let block: Vec<TabId> = strip.iter().filter(|slot| member(slot)).map(|slot| slot.id).collect();
+    after.splice(at..at, block);
+    if after.iter().copied().eq(strip.iter().map(|slot| slot.id)) {
+        return None;
+    }
+    Some(others.get(at).map_or(IslandAnchor::End, |slot| IslandAnchor::Before(slot.id)))
 }
 
 // ----- tiling -----
@@ -278,5 +339,63 @@ mod tests {
         assert_eq!(workspace_scroll_target(&order, WorkspaceId(7), 1), None);
         assert_eq!(tab_count_label(1), "1 tab");
         assert_eq!(tab_count_label(12), "12 tabs");
+    }
+
+    // ----- moving a whole island -----
+
+    /// A strip from a compact spec: `p` pinned, `-` ungrouped, a letter an island (`a` = a.com).
+    fn strip(spec: &[(u32, char)]) -> Vec<StripSlot> {
+        spec.iter()
+            .map(|&(id, c)| StripSlot {
+                id: TabId(id),
+                island: c.is_ascii_lowercase().then(|| key(&format!("{c}.com"))).filter(|_| c != 'p'),
+                pinned: c == 'p',
+            })
+            .collect()
+    }
+
+    #[test]
+    fn an_island_moves_as_one_block_in_front_of_a_tab_or_to_the_end() {
+        // 1 pinned, 2 ungrouped, island a = 3 4 5, 6 ungrouped, island b = 7 8, 9 ungrouped.
+        let s = strip(&[(1, 'p'), (2, '-'), (3, 'a'), (4, 'a'), (5, 'a'), (6, '-'), (7, 'b'), (8, 'b'), (9, '-')]);
+        let a = key("a.com");
+        assert_eq!(island_move_anchor(&s, &a, Some(TabId(2))), Some(IslandAnchor::Before(TabId(2))));
+        assert_eq!(island_move_anchor(&s, &a, Some(TabId(9))), Some(IslandAnchor::Before(TabId(9))));
+        assert_eq!(island_move_anchor(&s, &a, None), Some(IslandAnchor::End));
+        // In front of another island's first member: before that island.
+        assert_eq!(island_move_anchor(&s, &a, Some(TabId(7))), Some(IslandAnchor::Before(TabId(7))));
+    }
+
+    #[test]
+    fn an_island_never_lands_inside_another_or_among_pinned_tabs() {
+        let s = strip(&[(1, 'p'), (2, 'p'), (3, 'b'), (4, 'b'), (5, 'b'), (6, '-'), (7, 'a'), (8, 'a')]);
+        let a = key("a.com");
+        // Between b's members: in front of b.
+        assert_eq!(island_move_anchor(&s, &a, Some(TabId(4))), Some(IslandAnchor::Before(TabId(3))));
+        assert_eq!(island_move_anchor(&s, &a, Some(TabId(5))), Some(IslandAnchor::Before(TabId(3))));
+        // Among the pinned tabs: in front of the first unpinned tab.
+        assert_eq!(island_move_anchor(&s, &a, Some(TabId(1))), Some(IslandAnchor::Before(TabId(3))));
+        assert_eq!(island_move_anchor(&s, &a, Some(TabId(2))), Some(IslandAnchor::Before(TabId(3))));
+        // Only pinned tabs besides the island: after them is where it is already.
+        let lone = strip(&[(1, 'p'), (7, 'a'), (8, 'a')]);
+        assert_eq!(island_move_anchor(&lone, &a, Some(TabId(1))), None);
+        assert_eq!(island_move_anchor(&lone, &a, None), None);
+    }
+
+    #[test]
+    fn an_island_move_that_changes_nothing_or_names_no_known_tab_is_refused() {
+        let s = strip(&[(2, '-'), (3, 'a'), (4, 'a'), (6, '-'), (7, 'b')]);
+        let a = key("a.com");
+        // Already in front of 6, and its own members are no anchor.
+        assert_eq!(island_move_anchor(&s, &a, Some(TabId(6))), None);
+        assert_eq!(island_move_anchor(&s, &a, Some(TabId(3))), None);
+        assert_eq!(island_move_anchor(&s, &a, Some(TabId(4))), None);
+        // An unknown tab, or an island that is not on the strip.
+        assert_eq!(island_move_anchor(&s, &a, Some(TabId(42))), None);
+        assert_eq!(island_move_anchor(&s, &key("c.com"), Some(TabId(2))), None);
+        // At the end already; in front of the first tab is a move.
+        let last = strip(&[(2, '-'), (3, 'a'), (4, 'a')]);
+        assert_eq!(island_move_anchor(&last, &a, None), None);
+        assert_eq!(island_move_anchor(&last, &a, Some(TabId(2))), Some(IslandAnchor::Before(TabId(2))));
     }
 }

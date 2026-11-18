@@ -128,6 +128,7 @@ Wire ids: a tab's wire id is `TabId + 1`, so `0` is never a tab (`tabmove.before
 | `tab` | `a`: `select`/`close`/`menu`/`pin`/`mute`, `id` | tab actions (`menu` = Rust shows the native tab context menu at the cursor) |
 | `tabmove` | `id`, `before` (tab id, `0` = end of strip) | drag-reorder drop; Rust uses the same move/drop logic (including group join/leave rules) as native |
 | `group` | `a`: `toggle`/`menu`, `key` | click on a tab island's bar (collapse/expand) or its menu (right click) |
+| `group` | `a`: `move`, `key`, `before` (tab id, `0` = end of strip) | the island's bar (or folded pill / closing mark) was dragged, or Ctrl+Shift+Left/Right / Page Up/Down pressed on it (Up/Down on a sidebar group header): every member moves as one block in front of `before`, keeping its order and group (`App::move_island`). A `before` inside another island lands in front of that island; one among the pinned tabs lands after them; a no-op or unknown `before` is ignored. `before` is required with `move` and refused with `toggle`/`menu`. A reorder, not an organisation step (no Undo tab organisation entry, like `tabmove`) |
 | `side` | `a`: `workspace`/`newtab` | open the native workspace switcher or create a tab in the current workspace |
 
 ### Rust -> JS additions
@@ -200,7 +201,12 @@ window is clipped to the cards, and the page moves that clip every frame while a
 Once placed, Rust posts `{v:1,t:"room",tok,l,r}`: CSS pixels of work area past the parent card's left
 and right edges (0 to 4000). The page opens a child card on the right when it fits there, on the left
 when only the left has room. Also `{v:1,t:"pick",tok,id}` (`tok` and `id` unsigned u32), and
-`{v:1,t:"dismiss",tok}` (`tok` unsigned u32). Toolbar, tab-strip and rail hosts reject all panel,
+`{v:1,t:"dismiss",tok}` (`tok` unsigned u32). A `menu` message's profile card
+(`header:{name,caption,avatar,accent,id?,action?}`, the main menu's) is decoration unless it has `id`
+(unsigned u32): then it is the menu's first item (`role=menuitem`, reached by Up from the first row and
+by Home, hovered and picked like a row) and `pick` may name its id, which shares the id space of the
+rows (a clash refuses the menu). `action` (at most 128 characters) is the card's `aria-description`;
+the main menu sends `Open profile settings` and opens `bowser://settings/profile` on the pick. Toolbar, tab-strip and rail hosts reject all panel,
 dialog and popup command families before dispatch. `ready` is accepted by every host.
 
 Rust -> JS additions are `{v:1,t:"panelshow",p:"history"}` (a 1–24 character lower-case ASCII panel
@@ -504,13 +510,13 @@ state's `solid` is `false`: the page paints its own opaque surface.
 Behaviour is in docs/design/split-view.md. Builders: `src/chrome_host/split.rs`; parsers:
 `ui/src/split-protocol.ts`, tested against `ui/test/fixtures/split-messages.json`, which Rust's own
 test writes. Tab ids are wire ids (`TabId + 1`). A pair has a *first* and a *second* slot (`l`,
-`r`): left and right side by side, top and bottom when stacked.
+`r`): left and right side by side, top and bottom in a top-and-bottom pair.
 
 | Direction | Message | Meaning |
 |---|---|---|
-| Rust -> toolbar, tabs | `{v:1,t:"pair",l,r,f,shown,o}` | exactly these keys. `l`, `r`: the first and second tab, both `0` with no pair (then `shown` is `false`); `f`: `l` or `r`, the focused slot; `shown`: one of the pair is the active tab; `o`: `h` side by side or `v` stacked (required; added with stacked split) |
+| Rust -> toolbar, tabs | `{v:1,t:"pair",l,r,f,shown,o}` | exactly these keys. `l`, `r`: the first and second tab, both `0` with no pair (then `shown` is `false`); `f`: `l` or `r`, the focused slot; `shown`: one of the pair is the active tab; `o`: `h` side by side or `v` top and bottom (required; added with the top-and-bottom split) |
 | Rust -> toolbar, tabs | `{v:1,t:"pair",l,r,f,shown,o,panes,fp}` | a layout of three or four panes (a pair never carries `panes`, so its message is unchanged). `l`, `r`, `f`, `shown`, `o` as above for the two halves' lead tabs and the primary split; `panes`: 3 or 4 `{id,at}` in tree order (the strip's capsule order), distinct ids including `l` and `r`, whose places tile the page exactly once; `at` is `l`/`r`/`t`/`b` for a whole half or `tl`/`tr`/`bl`/`br` for a quarter; `fp`: the focused pane's `at` |
-| Rust -> split | `{v:1,t:"splitpick",side,tabs,closed}` | the empty side; `side` is the place it covers: `l`, `r`, `t` or `b` (`t`/`b` only for a stacked pair), or a quarter `tl`, `tr`, `bl`, `br` in a layout of three or four panes. `tabs` <= 100 `{id,title,host,fav,private}`, `closed` <= 8 `{n,title,host}` |
+| Rust -> split | `{v:1,t:"splitpick",side,tabs,closed}` | the empty side; `side` is the place it covers: `l`, `r`, `t` or `b` (`t`/`b` only for a top-and-bottom pair), or a quarter `tl`, `tr`, `bl`, `br` in a layout of three or four panes. `tabs` <= 100 `{id,title,host,fav,private}`, `closed` <= 8 `{n,title,host}` |
 | Rust -> split | `{v:1,t:"splitdrop",side,title}` | the drop-zone card while a tab is dragged over the page; `side` is where the tab would open: a half `l`, `r`, `t`, `b` or (corner drops over a shown split) a quarter `tl`, `tr`, `bl`, `br`. Rust sizes the host to exactly the pane the tab will get in the planned layout (`split_view::drop_target_rect`); the drag messages from the strip (`over` with `x`,`y`, `drop`, `end`) are unchanged |
 | Rust -> split | `{v:1,t:"splithide"}` / `{v:1,t:"privatepage",id,n}` | clear; the private landing (docs/design/private-tabs.md) |
 | tabs -> Rust | `{v:1,t:"split",a:"over",id,x,y}` | the dragged tab `id` is off the strip (below it) or off the vertical sidebar (right of it); `x`, `y` integers 0 to 16384, CSS px in the tabs view (clamped by the page). Rust maps the point to the page and picks the edge zone (`split_view::drop_zone`). At most one per animation frame |
@@ -701,5 +707,10 @@ Toolbar: `submit` (`text`, `n` 0 plain, 1 new tab for Alt/Shift+Enter, 2 domain 
 
 The bookmarks bar takes its row from `Layout.viewport` in `window::relayout` (`bookmark_bar::reserved_viewport`),
 so the page, split panes and side panels end where the bar begins and `--bw-toolbar-h` is untouched. Search
-suggestions are fetched only for an engine nickname typed in the address field, or in the search field, from
-the engine's own suggestions address through `translate::net::get_https`; never in a private tab.
+suggestions are fetched for an engine nickname typed in the address field, in the search field, and, with
+`search_suggestions` on (off by default), for plain typing in the address field from the default engine
+(`address_suggest::remote_query` decides what may be sent: never an address, a `bowser:` page, a nickname or
+anything in a private tab). They come from the engine's own suggestions address through one worker thread's
+`translate::net::HttpsSession` (150 ms debounce, newest request wins), and plain-typing answers are listed as
+`search` rows below the local rows (at most five, at most half the list). A late answer redraws the list only
+while it is still open.

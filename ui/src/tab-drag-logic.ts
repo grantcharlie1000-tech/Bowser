@@ -157,8 +157,8 @@ export function stackCandidate(lefts: readonly number[], widths: readonly number
   return -1;
 }
 
-/** Screen-reader text once a dragged tab is marked to stack. */
+/** Screen-reader text once a dragged tab is marked to join another's group. */
 export function stackAnnouncement(title: string): string {
-  return `Release to stack with ${title !== '' ? title : 'this tab'}.`;
+  return `Release to group with ${title !== '' ? title : 'this tab'}.`;
 }
 // --- end tab stacks ---

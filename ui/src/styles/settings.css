@@ -4,9 +4,11 @@
  * Spec: docs/design/settings-page.md.
  *
  * Hierarchy is three steps and nothing else: a section title (20/28), a group heading that sits
- * above its card (14/20 strong), and the rows inside the card (14/20 label, 12/16 description).
- * Space does the separating: 56px between sections, 24px between groups, inset hairlines between
- * rows. The accent marks state only (current section, selected option, a switch that is on).
+ * above its card (14/20 strong, secondary colour), and the rows inside the card (14/20 label, 12/16
+ * description). Space does the separating, always as a margin on the element below: 16px from a
+ * section title to its first group, 8px from a group heading to its card, 24px between groups,
+ * 56px between sections, inset hairlines between rows (docs/design/settings-structure.md).
+ * The accent marks state only (current section, selected option, a switch that is on).
  *
  * Colour: the theme's own window, text, hairline and accent tokens (tokens.css), plus the local
  * --sp-* surfaces below, all derived from them, so the page follows light, dark and the accent.
@@ -28,7 +30,9 @@
   --sp-side-w: 264px;
   --sp-row-x: var(--bw-space-4);
   --sp-gap-section: 56px;
+  --sp-gap-title: var(--bw-space-4);
   --sp-gap-group: var(--bw-space-6);
+  --sp-gap-heading: var(--bw-space-2);
   /* The family stroke (the toolbar's #app default thins it for the caption glyphs). */
   --bw-icon-stroke: 1.5px;
   display: block;
@@ -282,7 +286,7 @@
 }
 
 .sp-h {
-  margin: 0;
+  margin: 0 0 var(--sp-gap-title);
   font-size: var(--bw-text-subtitle);
   line-height: var(--bw-leading-subtitle);
   font-weight: var(--bw-weight-strong);
@@ -291,17 +295,12 @@
   outline: none;
 }
 
-/* The column's own 720px is the limit, so the longest lead (Extensions) stays on one line. */
+/* The column's own 720px is the limit, so a lead stays on one line. It sits close under its title. */
 .sp-lead {
-  margin: var(--bw-space-1) 0 var(--bw-space-6);
+  margin: calc(var(--sp-gap-title) * -1 + var(--bw-space-1)) 0 var(--sp-gap-title);
   color: var(--bw-text-2);
   font-size: var(--bw-text-body);
   line-height: var(--bw-leading-body);
-}
-
-/* Extensions: the Installed card sits right under its lead, there is no long list to introduce. */
-.sp-sec[data-area="extensions"] > .sp-lead {
-  margin-bottom: var(--bw-space-2);
 }
 
 /* ---- settings slim: parts, "More options", sub-pages ----
@@ -398,9 +397,9 @@
 }
 
 .sp-group-h {
-  margin: 0 0 var(--bw-space-2);
+  margin: 0 0 var(--sp-gap-heading);
   padding-inline-start: var(--bw-space-0_5);
-  color: var(--bw-text);
+  color: var(--bw-text-2);
   font-size: var(--bw-text-body);
   line-height: var(--bw-leading-body);
   font-weight: var(--bw-weight-strong);
@@ -500,6 +499,14 @@
   line-height: var(--bw-leading-caption);
   white-space: nowrap;
 }
+
+/* Search suggestions is the one row with a sub-line (what turning it on sends): under the label, wrapping. */
+.sp-row[data-row="searchSuggestions"] > .sp-text {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0;
+}
+.sp-row[data-row="searchSuggestions"] .sp-desc { white-space: normal; }
 
 /* The download location stays on the label's line. */
 .sp-path {
@@ -1333,10 +1340,25 @@
   padding-block: 14px;
 }
 
-/* Simple shows the current engine as a value. All settings keeps the menu. */
+/* The engine's name stands in for the menu only until the engine list arrives; then the menu is the control, in Simple too. */
 .sp-engine-value { display: none; }
-.sp.is-simple .sp-row[data-row="searchDefault"] > .sp-ctl > .sp-select-host { display: none; }
-.sp.is-simple .sp-engine-value { display: inline; }
+.sp-row[data-row="searchDefault"] .sp-select-host:empty + .sp-engine-value { display: inline; }
+
+/* Simple: the startup pages field only while "Specific pages" is chosen (All settings shows it, disabled). */
+.sp.is-simple .sp-row[data-row="startupPages"]:has(textarea:disabled) { display: none; }
+
+/* The profile row's Manage opens All settings at Profiles; All settings draws the manager right under it. */
+:where(#app.sp-root) .sp-row.is-profile > .sp-profile-manage-wrap {
+  margin-inline-start: auto;
+}
+
+.sp:not(.is-simple) .sp-profile-manage-wrap { display: none; }
+
+.sp-simple .sp-avatar {
+  width: 40px;
+  height: 40px;
+  font-size: 17px;
+}
 
 .sp-simple .sp-label {
   font-size: var(--bw-text-body);

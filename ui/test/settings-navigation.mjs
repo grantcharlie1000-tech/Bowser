@@ -92,23 +92,25 @@ function harness({ ready = true, snapshot = true, reduced = false, view = 'all' 
   const area = (key) => areas.find((node) => node.dataset.area === key);
   const extra = new Map();
   const partExtra = new Map();
+  /** An area's shown groups (the ones a deep link can land on), in page order. */
+  const groupsOf = (node) => node.children.filter((child) => child.classList?.contains('sp-group'));
   const height = (node) => {
     if (node.hidden) return 0;
-    if (node.dataset.area === 'media') {
+    if (node.dataset.area === 'performance') { // System: Performance, then the Media check and its late report
       const results = app.querySelector('.sp-media');
       return 160 + results.querySelectorAll('.sp-media-item').length * 80 + (results.querySelector('.sp-hints')?.children.length ?? 0) * 70;
     }
-    const partGrowth = node.querySelectorAll('section.sp-part').reduce((sum, part) => sum + (partExtra.get(part.dataset.section) ?? 0), 0);
+    const partGrowth = groupsOf(node).reduce((sum, part) => sum + (partExtra.get(part.dataset.group) ?? 0), 0);
     return 300 + (extra.get(node.dataset.area) ?? 0) + partGrowth;
   };
   const top = (node) => 40 + areas.slice(0, areas.indexOf(node)).reduce((sum, prior) => sum + height(prior), 0);
   for (const node of areas) {
     Object.defineProperty(node, 'offsetTop', { configurable: true, get: () => ready ? top(node) : 0 });
     Object.defineProperty(node, 'offsetHeight', { configurable: true, get: () => ready ? height(node) : 0 });
-    const parts = node.querySelectorAll('section.sp-part');
+    const parts = groupsOf(node);
     for (const [index, part] of parts.entries()) {
-      Object.defineProperty(part, 'offsetTop', { configurable: true, get: () => ready ? top(node) + 60 + parts.slice(0, index).reduce((sum, prior) => sum + 70 + (partExtra.get(prior.dataset.section) ?? 0), 0) : 0 });
-      Object.defineProperty(part, 'offsetHeight', { configurable: true, get: () => ready ? 70 + (partExtra.get(part.dataset.section) ?? 0) : 0 });
+      Object.defineProperty(part, 'offsetTop', { configurable: true, get: () => ready ? top(node) + 60 + parts.slice(0, index).reduce((sum, prior) => sum + 70 + (partExtra.get(prior.dataset.group) ?? 0), 0) : 0 });
+      Object.defineProperty(part, 'offsetHeight', { configurable: true, get: () => ready ? 70 + (partExtra.get(part.dataset.group) ?? 0) : 0 });
     }
   }
   Object.defineProperty(main, 'scrollHeight', { get: () => ready ? 160 + areas.reduce((sum, node) => sum + height(node), 0) : 0 });
@@ -143,6 +145,7 @@ function harness({ ready = true, snapshot = true, reduced = false, view = 'all' 
     target: (key) => Math.max(0, Math.min(area(key).offsetTop - 8, main.scrollHeight - main.clientHeight)),
     visible: () => popup.getBoundingClientRect().top >= 0 && popup.getBoundingClientRect().bottom <= main.clientHeight,
     grow: (key, delta) => extra.set(key, (extra.get(key) ?? 0) + delta),
+    /** Grows the shown group `key` (its `data-group`). */
     growPart: (key, delta) => partExtra.set(key, (partExtra.get(key) ?? 0) + delta),
     showHost: () => { ready = true; main.clientHeight = 640; },
     startMedia: () => {
@@ -238,9 +241,9 @@ test('latest navigation wins queued layout and pre-navigation scroll-spy callbac
   assert.equal(h.main.scrollTop, 0, 'the empty key is a pinned top navigation, not no target');
 });
 
-test('merged subsection geometry and opposing area size changes keep the precise target', () => {
+test('group geometry and opposing area size changes keep the precise target', () => {
   const h = harness(); h.go('search'); h.flush();
-  const part = h.app.querySelector('section.sp-part[data-section="search"]');
+  const part = h.app.querySelector('.sp-group[data-section="search"]');
   assert.equal(h.current(), 'profile', 'search lives in General');
   assert.equal(h.main.scrollTop, part.offsetTop - 8);
   const height = h.main.scrollHeight;
@@ -249,13 +252,13 @@ test('merged subsection geometry and opposing area size changes keep the precise
   assert.equal(h.main.scrollTop, part.offsetTop - 8, 'area observation catches an unchanged total column size');
 });
 
-test('opposing subsection size changes inside one merged area retain the exact deep-link target', () => {
+test('opposing group size changes inside one area retain the exact deep-link target', () => {
   const h = harness(); h.go('search'); h.flush();
-  const target = h.app.querySelector('section.sp-part[data-section="search"]');
+  const target = h.app.querySelector('.sp-group[data-section="search"]');
   const areaHeight = h.area('profile').offsetHeight;
   const columnHeight = h.main.scrollHeight;
   const oldTop = h.main.scrollTop;
-  h.growPart('profile', 40); h.growPart('startpage', -40);
+  h.growPart('profiles', 40); h.growPart('downloads', -40); // one group above the target, one below
   assert.equal(h.area('profile').offsetHeight, areaHeight);
   assert.equal(h.main.scrollHeight, columnHeight);
   assert.equal(target.offsetTop - 8, oldTop + 40, 'only the retained subsection destination moves');
@@ -331,4 +334,33 @@ for (const snapshot of [true, false]) test(`Extensions deep link leaves Simple s
   assert.ok(h.visible());
   h.go(''); h.flush();
   assert.equal(h.app.querySelector('.sp-simple').hidden, false, 'top restores the saved Simple preference');
+});
+
+test('a nav click scrolls from where the reader is straight to the section, never via the top', () => {
+  for (const reduced of [false, true]) {
+    const h = harness({ reduced });
+    h.go('privacy'); h.flush();
+    const from = h.main.scrollTop;
+    assert.ok(from > 0, 'the reader is part way down the page');
+    // Record every direct write to the scroll position from here on.
+    const writes = [];
+    let value = from;
+    Object.defineProperty(h.main, 'scrollTop', { configurable: true, get: () => value, set: (next) => { writes.push(next); value = next; } });
+    h.app.querySelector('.sp-nav-item[data-section="extensions"]').click();
+    const call = h.main.scrollCalls.at(-1);
+    assert.equal(call.top, h.target('extensions'));
+    assert.equal(call.behavior, reduced ? 'auto' : 'smooth', 'smooth, or instant under reduced motion');
+    assert.ok(!writes.includes(0), `nothing jumps to the top first (reduced: ${reduced})`);
+    if (!reduced) assert.deepEqual(writes, [], 'the smooth scroll starts from the current position');
+    assert.equal(h.current(), 'extensions', 'the nav highlight moves to the target at once');
+  }
+});
+
+test('a snapshot that lands during a search keeps the results where the reader is', () => {
+  const h = harness();
+  const input = h.app.querySelector('.sp-search-input');
+  input.value = 'tab'; input.dispatch('input');
+  h.main.scrollTop = 120;
+  h.deliver({ ...fixture.snap, d: { ...fixture.snap.d, ack: 'saved' } });
+  assert.equal(h.main.scrollTop, 120);
 });

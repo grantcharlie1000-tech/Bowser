@@ -942,7 +942,7 @@ fn side_words(orientation: Orientation) -> SideWords {
     match orientation {
         Orientation::SideBySide => SideWords {
             swap: "Swap sides",
-            turn: "Stack top and bottom",
+            turn: "Show top and bottom",
             turn_glyph: "split-stacked",
             close_first: "Close left tab",
             close_second: "Close right tab",
@@ -1026,7 +1026,7 @@ fn layout_entries(view: split_view::SplitView, divider: Option<Divider>) -> Vec<
     entries
 }
 
-/// The split menu at `anchor` (screen). A pair: Separate views, Swap sides, Stack top and bottom
+/// The split menu at `anchor` (screen). A pair: Separate views, Swap sides, Show top and bottom
 /// (or Show side by side), Close left/top tab, Close right/bottom tab. A larger layout:
 /// [`layout_entries`] for `divider`. Each pick re-checks that the same layout is still shown.
 pub(crate) fn show_menu(owner: HWND, app: &AppRef, anchor: POINT, placement: menu::Placement, kind: &str, divider: Option<Divider>) {
@@ -1230,7 +1230,7 @@ mod tests {
         };
         assert_eq!(
             labels(Orientation::SideBySide),
-            ["Separate views", "Swap sides", "Stack top and bottom", "Close left tab", "Close right tab"]
+            ["Separate views", "Swap sides", "Show top and bottom", "Close left tab", "Close right tab"]
         );
         assert_eq!(
             labels(Orientation::Stacked),

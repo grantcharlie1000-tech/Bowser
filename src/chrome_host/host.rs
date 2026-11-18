@@ -1767,6 +1767,7 @@ fn view_accepts_command(view: View, command: &Command) -> bool {
     }
     match view {
         View::Toolbar => matches!(command, Command::Interaction{..} | Command::Tool { bar: ToolBar::Address, .. } | Command::DownloadsToggle { .. } | Command::ExtensionsButton { .. } | Command::Nav(_) | Command::Edit { .. } | Command::Submit(_) | Command::Escape | Command::Focus(_) | Command::Open(_) | Command::BeginDrag | Command::Caption(_) | Command::SuggestPick { .. } | Command::SuggestPreview { .. } | Command::SuggestEnd | Command::Panel { kind: PanelType::Address, .. }),
+        // `Group { .. }`: toggle, menu, and move (a whole group dragged by its handle).
         View::Tabs => matches!(command, Command::Tool { bar: ToolBar::Tabs, .. } | Command::Tab { .. } | Command::TabMove { .. } | Command::TabSelection { .. } | Command::ClosedTabs | Command::Group { .. } | Command::Side(_) | Command::BeginDrag | Command::Caption(_) | Command::Hover(_))
             // --- split view ---
             || matches!(command, Command::Split(SplitCommand::DragOver { .. } | SplitCommand::Drop { .. } | SplitCommand::DragEnd { .. }))
@@ -1819,6 +1820,18 @@ mod restoration_admission_tests {
         assert!(!view_accepts_command(View::Tabs, &submit));
         assert!(!view_accepts_command(View::Rail, &submit));
         assert!(!view_accepts_command(View::Settings, &submit));
+    }
+
+    #[test]
+    fn only_the_tab_strip_moves_a_whole_group() {
+        // `Command::Group { .. }` in the Tabs arm covers toggle, menu and move (a dragged group handle).
+        let moved = parse_command(r#"{"v":1,"t":"chromeAction","view":"tabs","doc":"0123456789abcdef0123456789abcdef","text":"{\"v\":1,\"t\":\"group\",\"a\":\"move\",\"key\":7,\"before\":0}"}"#).unwrap();
+        assert!(view_accepts_command(View::Tabs, &moved));
+        let bare = parse_command(r#"{"v":1,"t":"group","a":"move","key":7,"before":3}"#).unwrap();
+        assert!(view_accepts_command(View::Tabs, &bare));
+        for other in [View::Toolbar, View::Rail, View::Panel, View::Popup, View::Hover, View::Split, View::Settings] {
+            assert!(!view_accepts_command(other, &bare), "{other:?}");
+        }
     }
 
     #[test]
@@ -2746,6 +2759,20 @@ mod toolbar_view_tests {
         // The address bar's feed button is the toolbar's own `open` command.
         assert!(view_accepts_command(View::Toolbar, &parse_command(r#"{"v":1,"t":"open","a":"feeds"}"#).unwrap()));
         assert!(!view_accepts_command(View::Tabs, &parse_command(r#"{"v":1,"t":"open","a":"feeds"}"#).unwrap()));
+    }
+
+    #[test]
+    fn the_toolbar_customiser_takes_its_own_family_and_the_dismiss_and_nothing_else() {
+        let set = parse_command(r#"{"v":1,"t":"tbar","a":"set","text":"toolbar_buttons=back,forward,reload"}"#).unwrap();
+        let dismiss = parse_command(r#"{"v":1,"t":"panel","a":"dismiss"}"#).unwrap();
+        assert!(view_accepts_command(View::DialogToolbar, &set));
+        assert!(view_accepts_command(View::DialogToolbar, &dismiss));
+        for foreign in [r#"{"v":1,"t":"feed","a":"refresh"}"#, r#"{"v":1,"t":"set","a":"reset"}"#, r#"{"v":1,"t":"nav","a":"back"}"#] {
+            assert!(!view_accepts_command(View::DialogToolbar, &parse_command(foreign).unwrap()), "{foreign}");
+        }
+        for view in [View::Toolbar, View::Tabs, View::Rail, View::Panel, View::Popup, View::Dialog, View::DialogNotes, View::DialogSessions, View::DialogFeeds, View::Settings] {
+            assert!(!view_accepts_command(view, &set), "{view:?} accepted the tbar family");
+        }
     }
 }
 // --- end toolbars and feeds ---

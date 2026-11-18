@@ -4,13 +4,13 @@
 //   #app.sidebar (role=none)
 //     .side-top      workspace switcher row + new-tab row (never scrolls)
 //     .side-list     role=tree scroller: group headers, tab rows, pinned separator, empty state
-import { send, sendClosedTabs, sendRailWheel, sendSide, sendSideHover, sendTabSelection, sendTool, type TabItem, type TabOptsMsg, type TabsMsg } from './protocol';
+import { send, sendClosedTabs, sendGroupMove, sendRailWheel, sendSide, sendSideHover, sendTabSelection, sendTool, type TabItem, type TabOptsMsg, type TabsMsg } from './protocol';
 import { wheelNotches } from './rail-logic'; // --- tab stacks and workspaces (T10) ---
 import { setTip } from './tooltip';
 import { el, icon, place, type IconName } from './dom';
 import { itemIcon } from './bars-logic'; // --- toolbars and feeds (thread T13) ---
 import { DRAG_ATTR } from './view';
-import { beforeId, dragScrollDelta, focusHeir, privateTabName, revealKey } from './tabs-logic';
+import { beforeId, buildEntries, dragScrollDelta, focusHeir, groupStepBefore, groupUnits, privateTabName, revealKey } from './tabs-logic';
 // --- tab options ---
 import { clickSelection, loadMark, markedName, notifyLabel, pruneSelection, type LoadIndicatorChoice } from './tab-marks-logic';
 // --- end tab options ---
@@ -466,6 +466,8 @@ export function createSidebarRenderer(root: HTMLElement): {
   let revealed = '';
   /** The row a keyboard move was just sent for: it takes the keyboard back once the host reorders. */
   let refocusRow = 0;
+  /** Likewise for a group header moved by the keyboard (its key). */
+  let refocusGroupKey = 0;
   const render = (msg: TabsMsg, favs: ReadonlyMap<number, string>, workspace: SidebarWorkspace): void => {
     latest = msg;
     latestFavs = favs;
@@ -569,8 +571,9 @@ export function createSidebarRenderer(root: HTMLElement): {
     for (const row of rows) if (!row.classList.contains('leaving')) row.classList.remove('leaving');
     // Roving tabindex: keep it where the user is, else on the active tab.
     // A row moved by the keyboard keeps the keyboard where it lands (re-placing it drops focus).
-    const movedRow = refocusRow !== 0 ? tabs.get(refocusRow)?.root : undefined;
+    const movedRow = refocusRow !== 0 ? tabs.get(refocusRow)?.root : refocusGroupKey !== 0 ? groups.get(refocusGroupKey)?.root : undefined;
     refocusRow = 0;
+    refocusGroupKey = 0;
     const heirRow = (heir !== 0 ? tabs.get(heir)?.root : undefined) ?? movedRow;
     const focused = heirRow ?? (list.contains(document.activeElement) || pinGrid.contains(document.activeElement) ? (document.activeElement as HTMLElement).closest<HTMLElement>('.side-tab, .side-group') : null);
     place(list, rows);
@@ -958,7 +961,17 @@ export function createSidebarRenderer(root: HTMLElement): {
     // or Page Up/Down moves the row, or the pinned tile, one slot, as a drag would; focus follows it.
     const dir = keyboardMoveDir(event.key, event.ctrlKey || event.metaKey, event.shiftKey, event.altKey);
     if (dir !== 0) {
-      if (isGroup) return;
+      if (isGroup) {
+        // --- group drag --- on a group's header the chord moves the whole group one slot, members and
+        // all, as the strip's handle does (Rust lands it before or after another group, never inside).
+        event.preventDefault();
+        if (!latest) return;
+        const key = Number(row.dataset.key);
+        const units = groupUnits(buildEntries(latest.items, latest.active));
+        const before = groupStepBefore(units.map((unit) => unit.first), units.findIndex((unit) => unit.key === key), dir);
+        if (before !== null && sendGroupMove(key, before)) refocusGroupKey = key;
+        return;
+      }
       event.preventDefault();
       const pinnedRow = row.classList.contains('pinned');
       const ids = (pinnedRow ? pinTilesOf() : tabRowsOf()).map((element) => Number(element.dataset.id));

@@ -97,6 +97,7 @@ export function mountAddressSections(host: AddressHost): AddressSection {
 
   const chooseCard = host.card('search', 'Which engine');
   const defaultSelect = engineSelect(host, chooseCard, 'searchDefault', 'Default search engine', false, (id) => host.send(engineFields({ op: 'default', id }) ?? { a: 'engine', text: '' }));
+  toggle(chooseCard, 'searchSuggestions', 'search_suggestions');
   const privateSelect = engineSelect(host, chooseCard, 'searchPrivate', 'Private window search engine', true, (id) => host.send(engineFields({ op: 'private', id }) ?? { a: 'engine', text: '' }));
   const imageSelect = engineSelect(host, chooseCard, 'searchImage', 'Image search engine', false, (id) => host.send(engineFields({ op: 'image', id }) ?? { a: 'engine', text: '' }));
   painters.push((s) => {

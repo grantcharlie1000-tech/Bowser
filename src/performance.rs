@@ -36,7 +36,7 @@ pub struct LaunchOptions {
     pub profile: Option<String>,
     /// `--open-url <url>`: initial address for a newly opened window.
     pub open_url: Option<Url>,
-    /// --- tab stacks (T10) --- a repeated `--open-url` ("Move the stack to a new window"): the
+    /// --- tab stacks (T10) --- a repeated `--open-url` ("Move the group to a new window"): the
     /// addresses after the first, opened as further tabs, at most [`MAX_OPEN_URLS`] in all.
     pub more_urls: Vec<Url>,
     /// `--guest`: a fresh, disposable browser data directory with no profile identity.
@@ -1085,7 +1085,7 @@ mod tests {
         );
     }
 
-    /// --- tab stacks (T10) --- "Move the stack to a new window" passes every page of the stack.
+    /// --- tab stacks (T10) --- "Move the group to a new window" passes every page of the stack.
     #[test]
     fn a_new_window_takes_several_initial_urls_up_to_the_limit() {
         let options = LaunchOptions::parse_from(

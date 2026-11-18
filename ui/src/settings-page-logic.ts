@@ -687,7 +687,7 @@ export const SECTIONS: readonly SectionSpec[] = [
   { key: 'appearance', title: 'Appearance', nav: 'Appearance', lead: '' },
   { key: 'tabs', title: 'Tabs', nav: 'Tabs', lead: '', aliases: 'workspaces tiling tiles split' },
   // --- T10 ---
-  { key: 'stacks', title: 'Groups', nav: 'Groups', lead: '', aliases: 'tab groups grouping stacking islands automatic' },
+  { key: 'stacks', title: 'Groups', nav: 'Groups', lead: '', aliases: 'tab groups grouping islands automatic stack stacks stacking' },
   { key: 'startpage', title: 'Start page', nav: 'Start page', lead: '' },
   { key: 'privacy', title: 'Privacy', nav: 'Privacy', lead: '', aliases: 'privacy and security' },
   { key: 'performance', title: 'Performance', nav: 'Performance', lead: '' },
@@ -725,13 +725,26 @@ export interface RowSpec {
   readonly tier?: RowTier;
 }
 
-// --- settings slim --- the page shows a short core list per area. The long tail of each area sits
-// behind one "More options" disclosure, the big editors open as sub-pages from one row, and the rows
-// that do nothing yet sit in "Not active yet" at the end. Rust's sixteen section keys stay (deep links,
-// `settingsgo`); an area groups one or more of them under one heading and one nav item.
+// --- settings structure (docs/design/settings-structure.md) --- the page is a list of areas (one nav
+// item and one title each), every area a list of groups (one sub-heading over one card). A row is
+// listed in exactly one group; its tier decides whether it shows or sits behind the area's More, where
+// it keeps the same group title. The big editors open as sub-pages from one row, and rows that do
+// nothing yet sit in "Inactive" at the end. Rust's section keys stay (deep links, `settingsgo`): each
+// group names the section a deep link to it uses.
 
-/** `core`: always shown. `more`: behind the area's "More options". `page`: its own sub-page, opened from a row. `later`: "Not active yet". */
+/** `core`: always shown. `more`: behind the area's More. `page`: its own sub-page, opened from a row. `later`: "Inactive". */
 export type RowTier = 'core' | 'more' | 'page' | 'later';
+
+/** One sub-heading over one card of rows. */
+export interface GroupSpec {
+  /** Stable id (the DOM's `data-group`). */
+  readonly key: string;
+  readonly title: string;
+  /** The Rust section of the group's rows: a deep link to it lands on the first such group. */
+  readonly section: SettingsSection;
+  /** Row ids in page order; each shows or sits behind More by its tier. */
+  readonly rows: readonly string[];
+}
 
 export interface AreaSpec {
   readonly key: SettingsSection;
@@ -739,31 +752,80 @@ export interface AreaSpec {
   readonly nav: string;
   readonly lead: string;
   readonly aliases?: string;
-  /** The Rust sections drawn in this area, in order; the first is the area's own key. */
+  /** The Rust sections drawn in this area; the first is the area's own key. */
   readonly parts: readonly SettingsSection[];
+  readonly groups: readonly GroupSpec[];
 }
 
 const sectionSpec = (key: SettingsSection): SectionSpec => SECTIONS.find((spec) => spec.key === key)!;
-const single = (key: SettingsSection): AreaSpec => {
-  const spec = sectionSpec(key);
-  return { key, title: spec.title, nav: spec.nav, lead: spec.lead, parts: [key] };
-};
+const group = (key: string, title: string, section: SettingsSection, rows: readonly string[]): GroupSpec => ({ key, title, section, rows });
 
 /**
- * The page's areas, in nav order. Fewer headings than Rust's section keys: everyday choices first,
- * then how Bowser looks, tabs, privacy, browsing, shortcuts, extensions, and about.
- * A deep link to any Rust section still lands in the area that contains it.
+ * The page's areas, in nav order: everyday choices first, then how Bowser looks, tabs, privacy,
+ * browsing, shortcuts, extensions, the system and about. A deep link to any Rust section still lands
+ * in the area that contains it. A row no group lists joins the first group of its own section.
  */
 export const AREAS: readonly AreaSpec[] = [
-  { key: 'profile', title: 'General', nav: 'General', lead: '', parts: ['profile', 'search', 'startpage', 'downloads'] },
-  { key: 'appearance', title: 'Appearance', nav: 'Appearance', lead: '', parts: ['appearance'] },
-  { key: 'tabs', title: 'Tabs', nav: 'Tabs', lead: '', parts: ['tabs', 'stacks'] },
-  { key: 'privacy', title: 'Privacy', nav: 'Privacy', lead: '', parts: ['privacy', 'performance'] },
-  { key: 'address', title: 'Browsing', nav: 'Browsing', lead: '', parts: ['address', 'bookmarks', 'pagetools'] },
-  { key: 'keyboard', title: 'Shortcuts', nav: 'Shortcuts', lead: '', aliases: 'keyboard shortcuts quick commands', parts: ['keyboard', 'commands'] },
-  single('extensions'),
-  single('media'),
-  { key: 'about', title: 'About', nav: 'About', lead: '', parts: ['updates', 'about'] },
+  { key: 'profile', title: 'General', nav: 'General', lead: '', aliases: 'you and bowser startup search engine downloads default browser', parts: ['profile', 'search', 'downloads'], groups: [
+    group('profiles', 'Profiles', 'profile', ['profile', 'profiles', 'import']),
+    group('startup', 'On startup', 'profile', ['startupMode', 'startupPages', 'startHomepage']),
+    group('search', 'Search engine', 'search', ['searchDefault', 'searchSuggestions', 'engines', 'searchPrivate', 'searchImage', 'searchInAddress', 'searchSuggestAddress', 'searchNewTab', 'searchSelection']),
+    group('searchField', 'Search field', 'search', ['searchField', 'searchNickname', 'searchIcon', 'searchKeepEngine', 'searchKeepText', 'searchSuggestField']),
+    group('searchScopes', 'Search scopes', 'search', ['nickBookmarks', 'nickHistory', 'nickTabs']),
+    group('downloads', 'Downloads', 'downloads', ['downloadDir', 'downloadAsk']),
+    group('defaultBrowser', 'Default browser', 'profile', ['defaultBrowser']),
+  ] },
+  { key: 'appearance', title: 'Appearance', nav: 'Appearance', lead: '', parts: ['appearance'], groups: [
+    group('theme', 'Theme', 'appearance', ['themeMode', 'themeAccent', 'theme', 'websiteAppearance', 'themeSchedule', 'themeLook', 'themeTimes', 'themeColours', 'themeColouring', 'themeAccentPage', 'themeSaturation', 'themeContrast', 'themeFile', 'forceDark', 'privateTheme']),
+    group('layout', 'Layout', 'appearance', ['layoutPreset', 'layout', 'sidebarWidth', 'sidebarPinned', 'tabBarVisible', 'addressBarVisible', 'showTitleBar', 'statusBar', 'uiDensity', 'compactMenus']),
+    group('toolbar', 'Toolbar', 'appearance', ['toolbarButtons', 'centredAddressBar', 'minimalUrl', 'bookmarksBar', 'showLoadProgress', 'addrFull', 'addrShow', 'addrQr']),
+    group('text', 'Text and zoom', 'appearance', ['fontSize', 'defaultZoom', 'uiFont', 'uiZoom', 'showZoomIndicator', 'ptZoomScope', 'ptWheelZoom']),
+    group('bookmarksBar', 'Bookmarks bar', 'appearance', ['bookmarksBarTabGroups', 'bmBarFolder', 'bmBarPosition', 'bmBarDisplay', 'pinNewTabGroups']),
+    group('window', 'Window', 'appearance', ['roundedContentFrame', 'frameless', 'autoHideBars', 'autoHideFullscreen', 'winAnimations', 'winRangeButtons', 'winFade', 'winScrollbars', 'winMonoIcons', 'winReset']),
+    group('panels', 'Panels', 'appearance', ['panelCloseButton', 'panelFolderCounts', 'panelAutoClose', 'panelReset']),
+  ] },
+  { key: 'tabs', title: 'Tabs', nav: 'Tabs', lead: '', aliases: 'workspaces tiling tiles split groups start page speed dial', parts: ['tabs', 'stacks', 'startpage'], groups: [
+    group('tabBar', 'Tab bar', 'tabs', ['tabPosition', 'tabs_scroll', 'tabs_wheel_switch', 'tabs_remove_spacing_maximised', 'tabs_active_min_width', 'tabs_load_indicator', 'tabs_minimise_active', 'tabs_title_notifications', 'tabs_unread_indicator', 'tabs_dim_hibernated', 'tabs_inactive_days', 'tabPreviewImages', 'tabPreviewMemory']),
+    group('newTabs', 'New tabs', 'tabs', ['tabs_new_tab_page', 'tabs_new_tab_url', 'tabs_new_tab_position', 'tabs_link_background', 'tabs_duplicate_position', 'tabs_focus_page']),
+    group('groups', 'Groups and workspaces', 'stacks', ['grouping', 'tabs_workspaces', 'workspaceRules', 'splitEdgeDrop', 'tabs_tile_titles', 'tabs_tile_tight', 'tabs_workspace_scroll', 'tabs_workspace_counts']),
+    group('startPage', 'Start page', 'startpage', ['startTitles', 'startThumbSize', 'startWidgets', 'startGroupReopen', 'startAddButton', 'startColumns', 'startDragReorder', 'startWidgetColumns', 'startWidgetHeight', 'startWidgetBg', 'startWidgetColor', 'startWidgetDrag']),
+    group('closing', 'Closing', 'tabs', ['tabs_close_related', 'tabs_close_activation', 'tabs_align_close_button', 'tabs_keep_window', 'tabs_confirm_close', 'tabs_double_click', 'tabs_close_left', 'tabs_close_always']),
+    group('pinned', 'Pinned and restored', 'tabs', ['tabs_pinned_close', 'tabs_pinned_separator', 'tabs_pinned_restrict', 'tabs_load_pinned', 'tabs_lazy_restore']),
+    group('selecting', 'Selecting and audio', 'tabs', ['tabs_selection', 'tabs_selection_active', 'tabs_mute_mode']),
+  ] },
+  { key: 'privacy', title: 'Privacy and security', nav: 'Privacy', lead: '', aliases: 'privacy and security', parts: ['privacy'], groups: [
+    group('blocking', 'Blocking', 'privacy', ['blocker', 'cookieNotices', 'blockYoutubeVideoAds', 'blockLists', 'allow']),
+    group('history', 'History and tracking', 'privacy', ['history', 'historyRetention', 'tracking']),
+    group('siteData', 'Site data', 'privacy', ['deleteData', 'siteRules', 'dashboard']),
+    group('security', 'Security', 'privacy', ['secHttps', 'secBase', 'secJs']),
+    group('spoilers', 'Spoiler protection', 'privacy', ['spoilerProtection', 'spoilerMode', 'spoilerReducedEffects', 'spoilerOcr', 'spoilerFeed', 'spoilerNote']),
+  ] },
+  { key: 'address', title: 'Browsing', nav: 'Browsing', lead: '', aliases: 'address bar bookmarks page tools translate reader screenshots feeds', parts: ['address', 'bookmarks', 'pagetools'], groups: [
+    group('address', 'Address bar', 'address', ['addrAutocomplete', 'addrSelect', 'addrEncoded', 'addrExpansion']),
+    group('suggestions', 'Address bar suggestions', 'address', ['ddTyping', 'ddBadge', 'ddTypedHistory', 'ddTypedSearches', 'ddHistoryButton', 'ddMax', 'ddPriorityBookmarks', 'ddPriorityDirect', 'ddSources']),
+    group('bookmarks', 'Bookmarks', 'bookmarks', ['bmNewTab', 'bmSingleClick', 'bmConfirm', 'bmMetadata', 'bmDialog']),
+    group('translate', 'Translation', 'pagetools', ['translateOffer', 'translateAuto', 'translateTarget']),
+    group('capture', 'Screenshots', 'pagetools', ['ptCaptureDir', 'ptCaptureName', 'ptCaptureFormat']),
+    group('reader', 'Reader view', 'pagetools', ['ptReaderFont', 'ptReaderSize', 'ptReaderLine', 'ptReaderWidth', 'ptReaderTheme', 'ptReaderVertical', 'ptReaderIcon', 'ptReaderTime']),
+    group('pageTools', 'Page tools', 'pagetools', ['ptPip', 'ptSpatial']),
+    group('feeds', 'Feeds', 'address', ['feedsOpen', 'feedsDetect', 'feedsRefresh']),
+  ] },
+  { key: 'keyboard', title: 'Shortcuts', nav: 'Shortcuts', lead: '', aliases: 'keyboard shortcuts quick commands', parts: ['keyboard', 'commands'], groups: [
+    group('keyboard', 'Keyboard', 'keyboard', ['kbEnabled', 'kbEditor', 'kbSingleKey', 'kbAltMenu', 'kbFocusCycling', 'kbSites']),
+    group('keys', 'Keys and clicks', 'keyboard', ['ctrlTabMru', 'ctrlSVerticalTabs', 'ctrlShiftCCopyLink', 'shiftRightClickContext']),
+    group('commands', 'Quick commands', 'commands', ['chains', 'qcTypes', 'qcMax', 'qcKeepLast', 'qcNewTab', 'qcNotesPanel', 'qcNickname']),
+  ] },
+  { key: 'extensions', title: 'Extensions', nav: 'Extensions', lead: '', parts: ['extensions'], groups: [
+    group('extensions', 'Extensions', 'extensions', ['extensions']),
+  ] },
+  { key: 'performance', title: 'System', nav: 'System', lead: '', aliases: 'performance memory battery media playback', parts: ['performance', 'media'], groups: [
+    group('performance', 'Performance', 'performance', ['efficiency', 'sleep', 'sleepAfter']),
+    group('media', 'Media', 'media', ['media']),
+  ] },
+  { key: 'about', title: 'About', nav: 'About', lead: '', parts: ['updates', 'about'], groups: [
+    group('updates', 'Updates', 'updates', ['autoUpdate', 'updateStatus']),
+    group('about', 'About Bowser', 'about', ['version', 'file', 'reset']),
+  ] },
 ];
 
 /** The area a Rust section is drawn in. */
@@ -771,9 +833,30 @@ export function areaOf(section: SettingsSection): AreaSpec {
   return AREAS.find((area) => area.parts.includes(section)) ?? AREAS[0]!;
 }
 
-/** The title of a part inside a merged area (the old section's own title). */
+/** The title of a Rust section (its old heading; search keywords and aria labels still use it). */
 export function partTitle(section: SettingsSection): string {
   return sectionSpec(section).title;
+}
+
+/** Where a row is drawn: its area and group. */
+export interface Placement { readonly area: AreaSpec; readonly group: GroupSpec }
+const LISTED = new Map<string, Placement>();
+for (const area of AREAS) for (const spec of area.groups) for (const id of spec.rows) LISTED.set(id, { area, group: spec });
+
+/**
+ * The area and group of row `id` (born in Rust section `section`). A row no group lists joins the
+ * first group of its own section, so a new row needs no entry here to be drawn and found.
+ */
+export function placementOf(id: string, section: SettingsSection): Placement {
+  const listed = LISTED.get(id);
+  if (listed) return listed;
+  const area = areaOf(section);
+  return { area, group: area.groups.find((spec) => spec.section === section) ?? area.groups[0]! };
+}
+
+/** The group a deep link to `section` scrolls to: the first group of that section. */
+export function anchorGroup(section: SettingsSection): GroupSpec | null {
+  return areaOf(section).groups.find((spec) => spec.section === section) ?? null;
 }
 
 export const MORE_LABEL = 'More';
@@ -788,24 +871,29 @@ export function moreCountText(count: number): string {
 
 /**
  * Rows a person changes often enough to see without opening anything. Every other row is `more`.
- * Each area keeps at most ten of these, counting the rows that open a sub-page.
- * Light or dark sits in the main Appearance view; the rest of the theme editor stays behind More options.
- * Default page zoom, the feed list, private-window search and the finer tab rules are behind More options.
+ * Light, dark or system sits in the main Appearance view; the schedule and the rest of the theme
+ * editor stay behind More. Fine tab rules, search field options and page tool tuning are behind More.
  */
 const CORE_ROWS: ReadonlySet<string> = new Set([
   'profile', 'profiles', 'import',
-  'layoutPreset' /* --- layout (thread T6): the presets decide where every bar sits; the rest of the block is `more` --- */,
-  'theme', 'themeSchedule', 'themeAccent', 'websiteAppearance', 'bookmarksBar', 'fontSize', 'translateOffer',
-  'feedsOpen', 'toolbarButtons', // --- toolbars and feeds (thread T13) ---
-  'tabs_new_tab_page', 'tabs_new_tab_url',
-  'grouping', 'tabs_workspaces', // --- T10 ---
   'startupMode', 'startupPages', 'startHomepage',
-  'blocker', 'spoilerProtection', 'tracking', 'history',
-  'efficiency', 'sleep',
-  'addrAutocomplete', 'secHttps', 'searchDefault', 'bmNewTab',
-  'kbEnabled',
+  'searchDefault',
+  'searchSuggestions',
+  'downloadDir', 'downloadAsk', 'defaultBrowser',
+  'themeMode', 'themeAccent', 'theme', 'websiteAppearance',
+  'layoutPreset' /* --- layout (thread T6): the presets decide where every bar sits; the rest of the block is `more` --- */,
+  'toolbarButtons', 'centredAddressBar', 'minimalUrl', 'bookmarksBar', // --- toolbars and feeds (thread T13) ---
+  'fontSize', 'defaultZoom',
+  'tabPosition', 'tabs_new_tab_page', 'tabs_new_tab_url', 'tabs_new_tab_position',
+  'grouping', 'tabs_workspaces', // --- T10 ---
+  'startTitles', 'startThumbSize', 'startWidgets',
+  'blocker', 'cookieNotices', 'blockYoutubeVideoAds', 'history', 'historyRetention', 'tracking', 'secHttps', 'spoilerProtection',
+  'addrAutocomplete', 'bmNewTab', 'translateOffer', 'feedsOpen',
   ...PAGE_TOOLS_CORE, // --- page tools (T7) ---
-  'downloadDir', 'downloadAsk', 'media', 'extensions', 'autoUpdate', 'updateStatus', 'version', 'file', 'reset', 'defaultBrowser',
+  'kbEnabled', 'ctrlTabMru', 'ctrlSVerticalTabs', 'ctrlShiftCCopyLink', 'shiftRightClickContext',
+  'extensions',
+  'efficiency', 'sleep', 'sleepAfter', 'media',
+  'autoUpdate', 'updateStatus', 'version', 'file', 'reset',
 ]);
 
 export interface PageSpec {
@@ -813,17 +901,15 @@ export interface PageSpec {
   readonly button: string;
   /** Accessible name when the button is a single word. */
   readonly aria: string;
-  /** Put the opening row after this row (or opening row) instead of where the editor was. */
-  readonly after?: string;
 }
 
-/** The big editors and blocks that open as sub-pages, each from one row. */
+/** The big editors and blocks that open as sub-pages, each from one row (where its group lists it). */
 export const PAGE_ROWS: Readonly<Record<string, PageSpec>> = {
   engines: { button: 'Edit', aria: 'Edit search engines' },
-  siteRules: { button: 'Edit', aria: 'Edit sites', after: 'history' },
-  blockLists: { button: 'Edit', aria: 'Edit lists', after: 'siteRules' },
-  deleteData: { button: 'Clear', aria: 'Clear browsing data', after: 'blockLists' },
-  dashboard: { button: 'Open', aria: 'Open dashboard', after: 'deleteData' },
+  siteRules: { button: 'Edit', aria: 'Edit sites' },
+  blockLists: { button: 'Edit', aria: 'Edit lists' },
+  deleteData: { button: 'Clear', aria: 'Clear browsing data' },
+  dashboard: { button: 'Open', aria: 'Open dashboard' },
   kbEditor: { button: 'Edit', aria: 'Edit shortcuts' },
   chains: { button: 'Edit', aria: 'Edit chains' },
   workspaceRules: { button: 'Edit', aria: 'Edit rules' }, // --- T10 ---
@@ -836,7 +922,7 @@ export function rowTier(row: RowSpec): RowTier {
   if (Object.hasOwn(PAGE_ROWS, row.id)) return 'page';
   return CORE_ROWS.has(row.id) ? 'core' : 'more';
 }
-// --- end settings slim ---
+// --- end settings structure ---
 
 /** The note under a row whose change waits for a restart. */
 export const RESTART_NOTE = 'Applies after restart';
@@ -859,8 +945,8 @@ const TABS_SECTION_ROWS: readonly RowSpec[] = (() => {
 })();
 // --- end wave-1 integration ---
 
-/** Every row the page draws, in page order. The view builds a control per id. */
-export const ROWS: readonly RowSpec[] = [
+/** The rows as each part of the page builds them (`section` is where the row was born). The view builds a control per id. */
+const BUILT_ROWS: readonly RowSpec[] = [
   { id: 'profile', section: 'profile', label: 'Profile', aria: 'This profile', description: '', keywords: 'account person name avatar guest you and bowser profile This profile Settings on this page apply to this profile only.' },
   { id: 'profiles', section: 'profile', label: 'Profiles', aria: 'Profiles', description: '', keywords: 'switch new add create guest delete remove rename name avatar colour color shortcut desktop taskbar work personal sign-ins Manage profiles Switch, create, rename or delete profiles. Each profile keeps its own sign-ins, history, bookmarks and settings, and gets its own taskbar button.' },
   { id: 'import', section: 'profile', label: 'Import', aria: 'Import bookmarks', description: '', keywords: 'chrome edge firefox migrate transfer bookmarks import Import bookmarks Bring bookmarks over from another browser on this PC.' },
@@ -877,6 +963,9 @@ export const ROWS: readonly RowSpec[] = [
   { id: 'compactMenus', section: 'appearance', label: 'Compact menus', aria: 'Compact menu layout', description: '', keywords: 'compact menus dense rows menu layout Compact menu layout Shorter rows in Bowser’s menus.' },
   { id: 'uiZoom', section: 'appearance', label: 'UI zoom', aria: 'User interface zoom', description: '', keywords: 'ui zoom scale interface size percent slider text User interface zoom Scales the text of Bowser’s bars, panels and pages, on top of the font size. Select the value to type one.' },
   // --- end layout ---
+  // Light, dark or follow Windows: the everyday choice. It writes the same `theme_schedule` and `theme_look` keys as
+  // the Schedule and Look rows behind More (those add the timed schedule).
+  { id: 'themeMode', section: 'appearance', label: 'Mode', aria: 'Light, dark or system', description: '', keywords: 'theme mode light dark system night day appearance colour color scheme follow windows dark mode light mode Mode' },
   { id: 'theme', section: 'appearance', label: 'Palette', aria: 'Colour palette', description: '', keywords: 'dark light colour scheme helium system prefer system colour windows accent palette theme Colour palette Bowser’s own colours, or your Windows accent colour.' },
   { id: 'themeAccent', section: 'appearance', label: 'Accent', aria: 'Accent colour', description: '', keywords: 'colour accent override custom theme reset Accent colour A colour for buttons and highlights. Reset uses the default.' },
   { id: 'websiteAppearance', section: 'appearance', label: 'Websites', description: '', keywords: 'dark light auto mode prefers color scheme websites page theme appearance Websites Ask sites for a light page, a dark page, or the same as Windows.' },
@@ -934,6 +1023,8 @@ export const ROWS: readonly RowSpec[] = [
   { id: 'ctrlShiftCCopyLink', section: 'keyboard', label: 'Ctrl+Shift+C', aria: 'Ctrl+Shift+C copies the address', description: '', keywords: 'ctrl shift c copy link address shortcut Ctrl+Shift+C copies the address Ctrl+Shift+C copies the current page’s address.' },
   // The Tabs section's rows come from its own table (tab-options-logic.ts).
   ...TABS_SECTION_ROWS,
+  // Tabs on top or down the side: the same layout presets as Appearance > Layout (Classic, Vertical left).
+  { id: 'tabPosition', section: 'tabs', label: 'Tab position', aria: 'Tabs on top or down the side', description: '', keywords: 'vertical tabs horizontal tab bar side sidebar top left layout position strip Tab position' },
   // --- tab stacks, tiling and workspaces (T10) ---
   { id: 'workspaceRules', section: 'tabs', label: 'Rules', aria: 'Workspace rules', description: '', keywords: 'workspace rules sites open automatically named workspace domain Workspace rules Sites that open in a workspace of their own: a link, an address or a bookmark of the site moves its tab there.' },
   // --- start page --- (docs/design/start-page.md)
@@ -992,17 +1083,26 @@ export const ROWS: readonly RowSpec[] = [
   { id: 'qcNickname', section: 'commands', label: 'Nicknames', aria: 'Open a bookmark when its nickname is typed', description: '', keywords: 'quick commands palette bookmark nickname automatic open match keyword Open a bookmark when its nickname is typed Typing a bookmark’s whole nickname in Quick commands opens it at once, without pressing Enter. Give a bookmark a nickname in its bookmark dialog.' },
   { id: 'chains', section: 'commands', label: 'Chains', aria: 'Command chains', description: '', keywords: 'command chains macro sequence delay milliseconds test clone create edit delete automation Command chains Run several commands one after another, with a delay in milliseconds before each. Run a chain from Quick commands, give it a shortcut in Keyboard, or test it here.' },
   // --- end keyboard and quick commands ---
-  { id: 'downloadDir', section: 'downloads', label: 'Folder', aria: 'Download folder', description: '', keywords: 'download folder directory save path where change location Download folder' },
+  { id: 'downloadDir', section: 'downloads', label: 'Download folder', description: '', keywords: 'download folder directory save path where change location Download folder' },
   { id: 'downloadAsk', section: 'downloads', label: 'Ask where', aria: 'Ask where to save each file', description: '', keywords: 'save as prompt dialog ask where download location before downloading Ask where to save each file Off, files go straight to the folder above.' },
   { id: 'media', section: 'media', label: 'Playback', aria: 'Media support', description: '', keywords: 'video codec h264 vp9 av1 hevc widevine playready drm netflix hardware decode Media support Runs on this device only and sends nothing.' },
   { id: 'extensions', section: 'extensions', label: 'Extensions', description: '', keywords: 'extension add-on addon plugin unpacked crx file manifest permissions popup install remove uninstall disable enable installed Extensions Turn extensions on or off, or remove one.' },
-  { id: 'autoUpdate', section: 'updates', label: 'Automatic', aria: 'Update automatically', description: '', keywords: 'auto update upgrade version Update automatically Checks in the background and installs the update the next time Bowser starts. Applies to every profile.' },
+  { id: 'autoUpdate', section: 'updates', label: 'Automatic updates', aria: 'Update automatically', description: '', keywords: 'auto update upgrade version Update automatically Checks in the background and installs the update the next time Bowser starts. Applies to every profile.' },
   { id: 'updateStatus', section: 'updates', label: 'Status', aria: 'Bowser updates', description: '', keywords: 'check for updates restart version upgrade Bowser updates' },
   { id: 'version', section: 'about', label: 'Version', description: '', keywords: 'about build release Version' },
   { id: 'file', section: 'about', label: 'Settings file', description: '', keywords: 'settings.txt advanced edit text shortcuts engines history workspace blocker updates Settings file Most settings are saved in this profile’s settings.txt, which you can also edit by hand. Kept in their own files: shortcuts and command chains, search engines, the history switch, workspace rules, and blocker rules and lists. Automatic updates are shared by all profiles.' },
   { id: 'reset', section: 'about', label: 'Reset', aria: 'Reset settings', description: '', keywords: 'defaults restore Restores defaults factory start over tracking prevention Reset settings Puts layout, appearance, toolbars, tabs, start page, address bar, search engines, bookmarks bar, page tools, feeds, blocking and website appearance, performance, downloads and translation back to their defaults. Tracking prevention goes back to its default the next time Bowser starts. Not changed: how long history is kept, your history and bookmarks, the Keyboard section and Quick commands, extensions, site permissions and updates.' },
   { id: 'defaultBrowser', section: 'about', label: 'Default browser', description: '', keywords: 'default browser make bowser windows handler http https web links Default browser Open links from other apps in Bowser.' },
 ];
+
+/**
+ * Every row the page draws. A row's `section` is the section of the group it is drawn in, so a search
+ * jump reports (and a reload returns to) the part of the page the row is really in.
+ */
+export const ROWS: readonly RowSpec[] = BUILT_ROWS.map((row) => {
+  const section = placementOf(row.id, row.section).group.section;
+  return section === row.section ? row : { ...row, section };
+});
 
 /** Lower-case, accent-free, single-spaced text for matching. */
 export function fold(text: string): string {
@@ -1035,8 +1135,22 @@ export function readSettingsView(raw: string | null): SettingsView {
   return raw === 'all' ? 'all' : 'simple';
 }
 
-/** Existing rows the simple page lifts out of All settings, in the order it shows them. */
-export const SIMPLE_MOVED: readonly string[] = ['searchDefault', 'startHomepage', 'startupMode', 'themeAccent', 'import', 'deleteData', 'defaultBrowser'];
+/** A titled group of the Simple page: rows of All settings, lifted out while Simple shows. */
+export interface SimpleGroupSpec { readonly key: string; readonly title: string; readonly rows: readonly string[] }
+
+/**
+ * Simple: the settings an everyday person changes, as the same rows All settings draws (the nodes
+ * move, so a control and what it does live in one place), in four short groups.
+ */
+export const SIMPLE_GROUPS: readonly SimpleGroupSpec[] = [
+  { key: 'start', title: 'Startup and search', rows: ['startupMode', 'startupPages', 'startHomepage', 'searchDefault', 'searchSuggestions'] },
+  { key: 'look', title: 'Appearance', rows: ['themeMode', 'themeAccent', 'tabPosition', 'toolbarButtons', 'fontSize', 'defaultZoom'] },
+  { key: 'privacy', title: 'Privacy', rows: ['blocker', 'deleteData'] },
+  { key: 'browser', title: 'Your browser', rows: ['profile', 'import', 'downloadDir', 'defaultBrowser', 'autoUpdate', 'updateStatus'] },
+];
+
+/** Every row the simple page lifts out of All settings, in the order it shows them. */
+export const SIMPLE_MOVED: readonly string[] = SIMPLE_GROUPS.flatMap((spec) => spec.rows);
 
 export const SIMPLE_TITLE = 'Settings';
 export const SIMPLE_LEAD = '';

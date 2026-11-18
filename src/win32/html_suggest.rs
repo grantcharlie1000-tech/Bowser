@@ -80,7 +80,8 @@ pub(crate) struct Env<'a> {
     pub settings: &'a crate::address_settings::AddressSettings,
     pub engines: &'a crate::search_engines::EngineStore,
     pub typed_history: &'a crate::address_suggest::TypedHistory,
-    /// Suggestions the nickname's engine answered for the current query.
+    /// Suggestions an engine answered for the current query: the nickname's engine after a nickname,
+    /// else the default engine for plain typing with "Search suggestions" on.
     pub engine_suggestions: &'a [String],
     pub private: bool,
 }

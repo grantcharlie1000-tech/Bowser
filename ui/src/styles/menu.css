@@ -167,6 +167,24 @@
   border-bottom: 1px solid var(--bw-hairline);
 }
 
+/* The main menu's card as its first item (it opens the profile settings). The band keeps the hairline
+   under it; the row inside takes the rows' hover, selection, focus ring and press dip (the
+   .html-menu-row rules below), laid out as the card. */
+.html-menu-header.is-action {
+  display: block;
+  padding: 0 0 var(--bw-space-1);
+}
+
+.html-menu-row.html-menu-profile {
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr);
+  grid-template-rows: auto auto;
+  column-gap: var(--bw-space-3);
+  align-items: center;
+  padding: var(--bw-space-2);
+  border-radius: var(--bw-r-row);
+}
+
 .html-menu-avatar {
   grid-row: 1 / span 2;
   display: grid;

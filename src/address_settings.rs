@@ -210,6 +210,10 @@ pub struct AddressSettings {
     pub suggest_in_address: bool,
     /// `search_suggest_field`: engine suggestions in the search field.
     pub suggest_in_field: bool,
+    /// `search_suggestions`: what is typed in the address field (no nickname) is sent to the default
+    /// engine's suggestions address and its answers are listed under the local rows. Off by default:
+    /// with it off nothing typed there leaves the computer before Enter.
+    pub search_suggestions: bool,
     /// `search_last_engine`: the id of the engine last chosen in the search field.
     pub last_engine: String,
     /// `nick_bookmarks`, `nick_history`, `nick_tabs`: scoped nickname words (without `@`); empty
@@ -270,6 +274,7 @@ impl Default for AddressSettings {
             selection_background: false,
             suggest_in_address: true,
             suggest_in_field: true,
+            search_suggestions: false,
             last_engine: String::new(),
             nick_bookmarks: "bookmarks".to_owned(),
             nick_history: "history".to_owned(),
@@ -326,6 +331,7 @@ pub const KEYS: &[(&str, Kind)] = &[
     ("search_selection_background", Kind::Bool),
     ("search_suggest_address", Kind::Bool),
     ("search_suggest_field", Kind::Bool),
+    ("search_suggestions", Kind::Bool),
     ("search_last_engine", Kind::Text),
     ("nick_bookmarks", Kind::Text),
     ("nick_history", Kind::Text),
@@ -470,6 +476,7 @@ impl AddressSettings {
             "search_selection_background" => flag(&mut self.selection_background),
             "search_suggest_address" => flag(&mut self.suggest_in_address),
             "search_suggest_field" => flag(&mut self.suggest_in_field),
+            "search_suggestions" => flag(&mut self.search_suggestions),
             "search_last_engine" => {
                 if valid_engine_id(value) {
                     self.last_engine = value.to_owned();
@@ -582,6 +589,7 @@ impl AddressSettings {
             "search_selection_background" => flag(self.selection_background),
             "search_suggest_address" => flag(self.suggest_in_address),
             "search_suggest_field" => flag(self.suggest_in_field),
+            "search_suggestions" => flag(self.search_suggestions),
             "search_last_engine" => Some(self.last_engine.clone()),
             "nick_bookmarks" => Some(self.nick_bookmarks.clone()),
             "nick_history" => Some(self.nick_history.clone()),
@@ -854,6 +862,20 @@ mod tests {
             }
         }
         assert_eq!(parsed, settings);
+    }
+
+    /// Search suggestions send typing to the engine, so they stay off until chosen.
+    #[test]
+    fn search_suggestions_are_off_by_default_and_read_from_the_file() {
+        let defaults = AddressSettings::default();
+        assert!(!defaults.search_suggestions);
+        assert_eq!(defaults.get("search_suggestions").as_deref(), Some("false"));
+        assert!(read_lines(&[("search_suggestions", "true")]).search_suggestions);
+        assert!(!read_lines(&[("search_suggestions", "maybe")]).search_suggestions, "a bad value keeps the default");
+        let mut settings = AddressSettings::default();
+        assert!(!settings.set("search_suggestions", "sometimes"));
+        assert!(settings.set("search_suggestions", "on"));
+        assert!(settings.search_suggestions);
     }
 
     #[test]

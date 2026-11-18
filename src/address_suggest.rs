@@ -3,13 +3,14 @@
 //!
 //! Pure: no Win32, no disk (the typed history has its own load and save) and no network. The
 //! suggestions an engine answers with are fetched elsewhere and handed in, already parsed with
-//! [`parse_suggestions`].
+//! [`parse_suggestions`]. Which typed text may be sent for them at all is [`remote_query`].
 
 use std::{fs, io, path::Path};
 
 use url::Url;
 
 use crate::{
+    address_input::{self, Destination, Outcome},
     address_settings::{AddressSettings, Scope, Source},
     calc,
     omnibox::{self, Completion, History, SuggestKind, SuggestSource, Suggestion},
@@ -182,6 +183,96 @@ pub fn parse_suggestions(body: &str, limit: usize) -> Vec<String> {
     out
 }
 
+/// The text of an engine's answer. UTF-8 when it is valid; otherwise Latin-1, the one other charset
+/// an engine answers in (Google's `client=firefox` answer can be ISO-8859-1 for some locales), so an
+/// accented suggestion is read rather than turned into U+FFFD.
+pub fn decode_answer(body: Vec<u8>) -> String {
+    String::from_utf8(body).unwrap_or_else(|error| error.into_bytes().iter().map(|&byte| char::from(byte)).collect())
+}
+
+// ----- search suggestions for plain typing (`search_suggestions`) -----
+
+/// Most rows the default engine's suggestions add to the drop-down.
+pub const REMOTE_LIMIT: usize = 5;
+/// Longer typed text is never sent for suggestions.
+pub const MAX_REMOTE_QUERY_CHARS: usize = 200;
+
+/// Text that is, or is on its way to being, an address, a path or an internal page: never sent. A
+/// single word with a dot, slash, colon, backslash or `@` (`github.co`, `localhost:80`, `C:\x`,
+/// `a@b`), anything with `://`, and anything that starts with `bowser:`.
+fn looks_like_address(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    lower.contains("://")
+        || lower.starts_with("bowser:")
+        || (!text.contains(char::is_whitespace) && text.contains(['.', '/', ':', '\\', '@']))
+}
+
+/// Whether submitting `text` from the address field (a normal tab) searches the default engine for
+/// exactly `text`: not an address, a scoped or engine nickname, an image search or a refusal (as when
+/// searching from the address field is off). Picking a search row submits its text this way, so
+/// only such text may be a row.
+fn is_plain_search(text: &str, settings: &AddressSettings, engines: &EngineStore) -> bool {
+    match address_input::resolve(text, settings, engines, address_input::Options::default()) {
+        Outcome::Open { destination: Destination::Search { query, engine, .. }, .. } => query == text && engine == engines.effective(false).id,
+        _ => false,
+    }
+}
+
+/// The engine and the text to ask for suggestions while `typed` is in the address field with no
+/// engine nickname, or `None` when nothing may be sent: the option is off, the "Suggestions" source
+/// is off, the tab is private, the text is empty, long, address-like or not a plain search, or the
+/// default engine has no suggestions address (such as an engine made from `search-provider.txt`).
+pub fn remote_query<'e, 't>(typed: &'t str, settings: &AddressSettings, engines: &'e EngineStore, private: bool) -> Option<(&'e Engine, &'t str)> {
+    if !settings.search_suggestions || private || !settings.has_source(Source::Search) {
+        return None;
+    }
+    let text = typed.trim();
+    if text.is_empty() || text.chars().count() > MAX_REMOTE_QUERY_CHARS || text.chars().any(char::is_control) || looks_like_address(text) {
+        return None;
+    }
+    let engine = engines.effective(false);
+    if engine.suggest.is_empty() || !is_plain_search(text, settings, engines) {
+        return None;
+    }
+    Some((engine, text))
+}
+
+/// While the answer for `query` is on its way: the suggestions answered for an earlier `previous`
+/// query that `query` extends, kept only where they still start with `query` (so the list does not
+/// empty and refill on every keystroke). Nothing when `query` does not extend `previous`.
+pub fn carry_over(previous: &str, suggestions: &[String], query: &str) -> Vec<String> {
+    let (previous, query_lower) = (previous.to_lowercase(), query.to_lowercase());
+    if previous.is_empty() || query_lower.len() <= previous.len() || !query_lower.starts_with(&previous) {
+        return Vec::new();
+    }
+    suggestions.iter().filter(|text| text.to_lowercase().starts_with(&query_lower) && text.as_str() != query).cloned().collect()
+}
+
+/// The search rows for the default engine's suggestions under plain typing: each a search for
+/// exactly its text, at most [`REMOTE_LIMIT`], none that repeats the typed text or a search row
+/// already listed.
+fn remote_rows(ctx: &Context<'_>, listed: &[Suggestion]) -> Vec<Suggestion> {
+    let typed = ctx.typed.trim();
+    if remote_query(typed, ctx.settings, ctx.engines, ctx.private).is_none() {
+        return Vec::new();
+    }
+    let typed_lower = typed.to_lowercase();
+    let mut rows: Vec<Suggestion> = Vec::new();
+    for text in ctx.engine_suggestions {
+        let text = text.trim();
+        let repeats = text.to_lowercase() == typed_lower
+            || listed.iter().chain(rows.iter()).any(|row| row.kind == SuggestKind::Search && row.target.eq_ignore_ascii_case(text));
+        if text.is_empty() || repeats || !is_plain_search(text, ctx.settings, ctx.engines) {
+            continue;
+        }
+        rows.push(search_row(text, text, ""));
+        if rows.len() >= REMOTE_LIMIT {
+            break;
+        }
+    }
+    rows
+}
+
 // ----- composing the rows -----
 
 /// Everything the rows depend on.
@@ -196,7 +287,8 @@ pub struct Context<'a> {
     pub typed_history: &'a TypedHistory,
     pub engines: &'a EngineStore,
     pub settings: &'a AddressSettings,
-    /// Suggestions the nickname's engine answered for the current query (see [`Context::nickname`]).
+    /// Suggestions an engine answered for the current query: the nickname's engine after a nickname
+    /// (see [`Context::nickname`]), else the default engine when [`remote_query`] allows plain typing.
     pub engine_suggestions: &'a [String],
     pub private: bool,
 }
@@ -475,7 +567,12 @@ pub fn compose(ctx: &Context<'_>) -> Vec<Suggestion> {
         }
     }
     rows.extend(kept);
-    rows.truncate(max);
+    // The default engine's suggestions come last, below every local row, and may take up to half
+    // the list: the local rows give way to them only that far.
+    let remote = if ctx.nickname().is_none() { remote_rows(ctx, &rows) } else { Vec::new() };
+    rows.truncate(max - remote.len().min(max / 2));
+    let room = max - rows.len();
+    rows.extend(remote.into_iter().take(room));
     rows
 }
 
@@ -522,6 +619,7 @@ mod tests {
         engines: EngineStore,
         settings: AddressSettings,
         suggestions: Vec<String>,
+        private: bool,
     }
 
     impl Fixture {
@@ -541,6 +639,7 @@ mod tests {
                 engines: EngineStore::default(),
                 settings: AddressSettings::default(),
                 suggestions: Vec::new(),
+                private: false,
             }
         }
 
@@ -564,7 +663,7 @@ mod tests {
                 engines: &self.engines,
                 settings: &self.settings,
                 engine_suggestions: &self.suggestions,
-                private: false,
+                private: self.private,
             };
             compose(&ctx)
         }
@@ -829,5 +928,161 @@ mod tests {
         settings.set("dd_typed_include_searches", "true");
         settings.set("dd_max_results", "1");
         assert_eq!(typed_rows(&history, &settings).len(), 1);
+    }
+
+    // ----- search suggestions for plain typing -----
+
+    fn on() -> AddressSettings {
+        AddressSettings { search_suggestions: true, ..AddressSettings::default() }
+    }
+
+    #[test]
+    fn plain_typing_is_sent_only_with_the_option_on_and_never_in_private() {
+        let engines = EngineStore::default();
+        assert!(remote_query("rust", &AddressSettings::default(), &engines, false).is_none(), "off by default");
+        let (engine, query) = remote_query("  rust lang ", &on(), &engines, false).unwrap();
+        assert_eq!((engine.id.as_str(), query), ("optimised", "rust lang"), "the default engine, the trimmed text");
+        assert!(remote_query("rust", &on(), &engines, true).is_none(), "never from a private tab");
+        let mut no_source = on();
+        assert!(no_source.set("dd_sources", "direct,bookmarks,history"));
+        assert!(remote_query("rust", &no_source, &engines, false).is_none(), "the Suggestions source is off");
+        let mut no_search = on();
+        no_search.search_in_address = false;
+        assert!(remote_query("rust", &no_search, &engines, false).is_none(), "the address field does not search");
+        assert!(remote_query(&"a".repeat(MAX_REMOTE_QUERY_CHARS + 1), &on(), &engines, false).is_none(), "too long");
+        assert!(remote_query(&"a".repeat(MAX_REMOTE_QUERY_CHARS), &on(), &engines, false).is_some());
+    }
+
+    #[test]
+    fn addresses_internal_pages_nicknames_and_empty_text_are_never_sent() {
+        let engines = EngineStore::default();
+        for typed in [
+            "", "   ", "github.com", "github.co", "news.example/today", "https://example.com/a b", "http://x", "bowser://settings",
+            "bowser:", "BOWSER://history", "bowser: settings", "localhost:8080", "C:\\Users\\me", "me@example", "192.168.0.1",
+            "g rust", "ddg rust", "@history rust", "@bookmarks", "img cats", "javascript:alert(1)", "about:blank", "a\u{7}b", "localhost",
+        ] {
+            assert!(remote_query(typed, &on(), &engines, false).is_none(), "{typed:?} was sent");
+        }
+        for typed in ["rust", "weather in paris", "Note: buy milk", "what is 2+2", "intranet"] {
+            assert!(remote_query(typed, &on(), &engines, false).is_some(), "{typed:?} was not sent");
+        }
+    }
+
+    #[test]
+    fn the_effective_engine_decides_where_suggestions_come_from() {
+        let mut engines = EngineStore::default();
+        for (id, host) in [("google", "suggestqueries.google.com"), ("duckduckgo", "duckduckgo.com"), ("bing", "api.bing.com")] {
+            engines.set_default(id).unwrap();
+            let (engine, query) = remote_query("rust", &on(), &engines, false).unwrap();
+            assert_eq!(engine.id, id);
+            assert_eq!(engine.suggest_url(query).unwrap().host_str(), Some(host), "{id}");
+        }
+        // A private-window engine never matters: private tabs send nothing.
+        engines.set_private("google").unwrap();
+        assert!(remote_query("rust", &on(), &engines, true).is_none());
+        // `search-provider.txt` makes an engine with no suggestions address: nothing is sent.
+        let legacy = EngineStore::load(Path::new("missing-dir-for-search-suggestion-test"), None, Some("https://search.example/?q={query}"));
+        assert_eq!(legacy.effective(false).id, "custom");
+        assert!(remote_query("rust", &on(), &legacy, false).is_none());
+    }
+
+    #[test]
+    fn suggestion_addresses_encode_the_query_as_one_value() {
+        let engines = EngineStore::default();
+        let url = |id: &str, query: &str| engines.find(id).unwrap().suggest_url(query).unwrap().to_string();
+        assert_eq!(url("google", "a b&c=d#e"), "https://suggestqueries.google.com/complete/search?client=firefox&q=a%20b%26c%3Dd%23e");
+        assert_eq!(url("duckduckgo", "caf\u{e9} +1"), "https://duckduckgo.com/ac/?q=caf%C3%A9%20%2B1&type=list");
+        assert_eq!(url("bing", "100%"), "https://api.bing.com/osjson.aspx?query=100%25");
+    }
+
+    #[test]
+    fn engine_answers_from_the_three_providers_parse() {
+        // Google (client=firefox), DuckDuckGo (type=list) and Bing (osjson) all answer `[query, [..]]`.
+        let google = r#"["rust",["rust","rust game","rust lang","rustup"],[],{"google:suggestsubtypes":[[512]]}]"#;
+        assert_eq!(parse_suggestions(google, REMOTE_LIMIT), ["rust", "rust game", "rust lang", "rustup"]);
+        assert_eq!(parse_suggestions(r#"["rust",["rust","rust lang"]]"#, REMOTE_LIMIT), ["rust", "rust lang"]);
+        assert!(parse_suggestions(r#"["rust",[]]"#, REMOTE_LIMIT).is_empty());
+        let long = format!(r#"["q",["{}","ok"]]"#, "x".repeat(201));
+        assert_eq!(parse_suggestions(&long, REMOTE_LIMIT), ["ok"], "an over-long suggestion is dropped");
+        let many = format!("[\"q\",[{}]]", (0..20).map(|n| format!("\"q{n}\"")).collect::<Vec<_>>().join(","));
+        assert_eq!(parse_suggestions(&many, REMOTE_LIMIT).len(), REMOTE_LIMIT);
+        for hostile in ["", "null", "<html>", r#"{"q":["a"]}"#, r#"["q","a"]"#, r#"["q",[1,2]]"#] {
+            assert!(parse_suggestions(hostile, REMOTE_LIMIT).is_empty(), "{hostile}");
+        }
+    }
+
+    fn texts(rows: &[Suggestion]) -> Vec<&str> {
+        rows.iter().map(|row| row.title.as_str()).collect()
+    }
+
+    #[test]
+    fn engine_suggestions_come_below_the_local_rows_as_searches() {
+        let mut fixture = Fixture::new();
+        fixture.settings = on();
+        fixture.suggestions = ["Rust", "rust lang", "g rust", "rust-lang.org", "img rust", "rustup", "rust lang", "rust game", "rust book", "rust 2024", "rust x"]
+            .map(str::to_owned)
+            .to_vec();
+        let rows = fixture.rows("rust");
+        assert_eq!(rows[0].kind, SuggestKind::Search, "the default row is first");
+        let first_remote = rows.iter().skip(1).position(|row| row.kind == SuggestKind::Search).map(|at| at + 1).unwrap();
+        assert!(first_remote > 1, "local rows come first: {:?}", texts(&rows));
+        assert!(rows[1..first_remote].iter().all(|row| row.kind != SuggestKind::Search));
+        let remote = &rows[first_remote..];
+        assert!(remote.iter().all(|row| row.kind == SuggestKind::Search && row.target == row.title && row.text == row.title && row.url.is_empty()));
+        // The typed text again, a nickname, an address, an image search and a repeat are left out.
+        assert_eq!(texts(remote), ["rust lang", "rustup", "rust game", "rust book", "rust 2024"][..remote.len()]);
+        assert!(rows.len() <= usize::from(fixture.settings.max_results));
+        assert!(remote.len() >= 4, "they take up to half the list: {:?}", texts(&rows));
+
+        // With room to spare they fill it, up to the limit.
+        fixture.settings.max_results = 20;
+        let rows = fixture.rows("rust");
+        let remote: Vec<&Suggestion> = rows.iter().skip(1).filter(|row| row.kind == SuggestKind::Search).collect();
+        assert_eq!(remote.len(), REMOTE_LIMIT);
+        assert_eq!(rows.last().unwrap().title, "rust 2024");
+
+        // A short list keeps the default row and gives the suggestions at most half.
+        fixture.settings.max_results = 1;
+        assert_eq!(kinds(&fixture.rows("rust")), [SuggestKind::Search]);
+        fixture.settings.max_results = 4;
+        let rows = fixture.rows("rust");
+        assert_eq!(rows.len(), 4);
+        assert_eq!(texts(&rows[2..]), ["rust lang", "rustup"]);
+    }
+
+    #[test]
+    fn engine_suggestions_are_not_listed_when_they_may_not_be_asked_for() {
+        let mut fixture = Fixture::new();
+        fixture.suggestions = vec!["rust lang".to_owned()];
+        let local = fixture.rows("rust");
+        assert!(texts(&local).iter().all(|text| *text != "rust lang"), "off: never listed");
+        fixture.settings = on();
+        fixture.private = true;
+        assert_eq!(fixture.rows("rust"), local, "private: never listed");
+        fixture.private = false;
+        assert!(texts(&fixture.rows("rust")).contains(&"rust lang"));
+        assert!(!texts(&fixture.rows("rust-lang.org")).contains(&"rust lang"), "address-like text lists none");
+        // A search row already listed (a typed search) is not repeated.
+        fixture.typed.record("rust lang", true);
+        let rows = fixture.rows("rust");
+        assert_eq!(rows.iter().filter(|row| row.target.eq_ignore_ascii_case("rust lang")).count(), 1);
+    }
+
+    #[test]
+    fn answers_are_read_as_utf8_or_else_latin1() {
+        assert_eq!(decode_answer("[\"caf\u{e9}\",[\"caf\u{e9} au lait\"]]".as_bytes().to_vec()), "[\"caf\u{e9}\",[\"caf\u{e9} au lait\"]]");
+        let latin1 = b"[\"caf\xe9\",[\"caf\xe9 au lait\"]]".to_vec();
+        assert_eq!(parse_suggestions(&decode_answer(latin1), REMOTE_LIMIT), ["caf\u{e9} au lait"]);
+    }
+
+    #[test]
+    fn earlier_answers_carry_over_only_while_they_still_match() {
+        let earlier: Vec<String> = ["rust lang", "Rustup", "rust", "ruby"].map(str::to_owned).to_vec();
+        assert_eq!(carry_over("ru", &earlier, "rust"), ["rust lang", "Rustup"]);
+        assert_eq!(carry_over("RU", &earlier, "rus"), ["rust lang", "Rustup", "rust"]);
+        assert!(carry_over("rust", &earlier, "rust").is_empty(), "the same query is the answer itself, not a carry-over");
+        assert!(carry_over("rust", &earlier, "rus").is_empty(), "deleting does not carry over");
+        assert!(carry_over("go", &earlier, "rust").is_empty(), "another query does not carry over");
+        assert!(carry_over("", &earlier, "rust").is_empty());
     }
 }

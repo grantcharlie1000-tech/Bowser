@@ -250,7 +250,7 @@ test('session: never shown ends silently; touch gets none; a new drag abandons t
   assert.equal(sent.length, before);
 });
 
-// --- tab stacks (T10) --- "Stack tabs by dragging one onto another".
+// --- tab stacks (T10) --- "Group tabs by dragging one onto another".
 test('a held tab over the middle half of another tab is a stack target; near the edges it reorders', () => {
   const { stackCandidate, stackAnnouncement } = logic;
   const lefts = [0, 100, 200];
@@ -261,8 +261,8 @@ test('a held tab over the middle half of another tab is a stack target; near the
   assert.equal(stackCandidate(lefts, widths, 0, 175), -1);
   assert.equal(stackCandidate(lefts, widths, 0, 50), -1, 'never the held tab itself');
   assert.equal(stackCandidate(lefts, [100, 0, 100], 0, 150), -1, 'a tab with no width is no target');
-  assert.equal(stackAnnouncement('Mail'), 'Release to stack with Mail.');
-  assert.equal(stackAnnouncement(''), 'Release to stack with this tab.');
+  assert.equal(stackAnnouncement('Mail'), 'Release to group with Mail.');
+  assert.equal(stackAnnouncement(''), 'Release to group with this tab.');
 });
 
 test('the stack drop reaches Rust as tabstack with two different tab ids', () => {

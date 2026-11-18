@@ -30,7 +30,7 @@ function sharedCases() {
   for (const line of read(join(here, 'fixtures', 'palette-cases.txt')).split('\n')) {
     if (line.startsWith('#') || line.trim() === '') continue;
     const parts = line.split('\t');
-    if (parts[0] === 'item') items.push({ id: items.length, s: parts[1], label: parts[2], detail: parts[3], action: parts[4] });
+    if (parts[0] === 'item') items.push({ id: items.length, s: parts[1], label: parts[2], detail: parts[3], action: parts[4], ...(parts[5] ? { a: parts[5] } : {}) });
     else if (parts[0] === 'case') cases.push({ query: parts[1], types: parts[2], limit: Number(parts[3]), expected: parts[4] ? parts[4].split('|') : [] });
   }
   return { items, cases };
