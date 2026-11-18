@@ -744,7 +744,7 @@ export function mountPasswordsSection(options: PasswordsSectionOptions): Passwor
   const sl = el('span', 'sp-label');
   sl.textContent = 'Fill from the keyboard';
   const sd = el('span', 'sp-desc');
-  sd.textContent = 'In a sign-in, address or card field, press Alt+Down or select the small button inside the field';
+  sd.textContent = 'Press Alt+Down or select the small button inside the field';
   shortcutText.append(sl, sd);
   shortcut.append(shortcutTile, shortcutText);
   prefsGroup.card.append(shortcut);
