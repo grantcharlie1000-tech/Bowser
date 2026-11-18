@@ -958,26 +958,41 @@
 .sp-tile {
   display: flex;
   flex-direction: column;
-  align-items: flex-start;
-  gap: 2px;
+  align-items: stretch;
+  gap: var(--bw-space-2);
   min-width: 0;
   margin: 0;
-  padding: var(--bw-space-2) var(--bw-space-2) var(--bw-space-3);
-  border: 1px solid var(--sp-card-edge);
-  border-radius: var(--bw-r-island);
+  padding: 0;
+  border: 0;
+  border-radius: var(--sp-r-card);
   background: transparent;
-  color: var(--bw-text);
-  font: var(--bw-text-caption) / var(--bw-leading-caption) var(--bw-font);
-  text-align: start;
+  color: var(--bw-text-2);
+  font: var(--bw-text-body) / var(--bw-leading-body) var(--bw-font);
+  text-align: center;
   cursor: default;
   transition:
-    background-color var(--bw-dur-fast) var(--bw-ease-fade),
-    border-color var(--bw-dur-fast) var(--bw-ease-fade),
+    color var(--bw-dur-fast) var(--bw-ease-fade),
     transform var(--bw-dur-fast) var(--bw-ease-out);
 }
 
+/* The preview is the tile: one rounded shape at the page's radius, no box around it. */
+.sp-art {
+  display: block;
+  width: 100%;
+  height: auto;
+  overflow: hidden;
+  border-radius: var(--sp-r-card);
+  background: var(--sp-field);
+  box-shadow: inset 0 0 0 1px var(--sp-field-edge);
+  transition: background-color var(--bw-dur-fast) var(--bw-ease-fade);
+}
+
 .sp-tile:hover {
-  background: color-mix(in srgb, var(--bw-text) 5%, transparent);
+  color: var(--bw-text);
+}
+
+.sp-tile:hover .sp-art {
+  background: color-mix(in srgb, var(--bw-text) 9%, var(--sp-page));
 }
 
 .sp-tile:active {
@@ -985,37 +1000,29 @@
 }
 
 .sp-tile[aria-checked="true"] {
-  border-color: var(--bw-accent);
-  background: color-mix(in srgb, var(--bw-accent) 9%, transparent);
-  box-shadow: inset 0 0 0 1px var(--bw-accent);
+  color: var(--bw-text);
+}
+
+.sp-tile[aria-checked="true"] .sp-art {
+  box-shadow: inset 0 0 0 2px var(--bw-accent);
 }
 
 .sp-tile:disabled {
   opacity: 0.5;
 }
 
-.sp-art {
-  display: block;
-  width: 100%;
-  height: auto;
-  margin-bottom: var(--bw-space-2);
-  overflow: visible;
-}
-
+/* The drawn window frame would be a second outline inside the tile's own: the tile's edge is the frame. */
 .sp-art-frame {
-  fill: color-mix(in srgb, var(--bw-text) 5%, transparent);
-  stroke: color-mix(in srgb, var(--bw-text) 28%, transparent);
-  stroke-width: 1;
-  vector-effect: non-scaling-stroke;
+  display: none;
 }
 
 .sp-art-dot,
 .sp-art-tab {
-  fill: color-mix(in srgb, var(--bw-text) 24%, transparent);
+  fill: color-mix(in srgb, var(--bw-text) 26%, transparent);
 }
 
 .sp-art-pill {
-  fill: color-mix(in srgb, var(--bw-text) 14%, transparent);
+  fill: color-mix(in srgb, var(--bw-text) 16%, transparent);
 }
 
 .sp-art-tab.is-on {
@@ -1023,18 +1030,17 @@
 }
 
 .sp-art-page {
-  fill: color-mix(in srgb, var(--bw-text) 7%, transparent);
-}
-
-.sp-tile[aria-checked="true"] .sp-art-frame {
-  stroke: var(--bw-accent);
+  fill: color-mix(in srgb, var(--bw-text) 8%, transparent);
 }
 
 .sp-tile-name {
   font-size: var(--bw-text-body);
   line-height: var(--bw-leading-body);
-  font-weight: var(--bw-weight-strong);
   white-space: nowrap;
+}
+
+.sp-tile[aria-checked="true"] .sp-tile-name {
+  font-weight: var(--bw-weight-strong);
 }
 
 .sp-tile-hint {
@@ -3550,7 +3556,7 @@
    control is still described by it, and search still matches it. Lines that carry data (a chain's
    steps, an extension's details, a path, a status) are other elements and stay visible, and a row
    with no control (Fill from the keyboard) keeps its line, because there the line is the content. */
-:where(#app.sp-root) :is(.sp-row[data-row], .sp-row[data-opens], .sp-row.pw-pref):has(> .sp-ctl) > .sp-text > .sp-desc {
+:where(#app.sp-root) :is(.sp-row[data-row], .sp-row[data-opens], .sp-row.pw-pref):has(> .sp-ctl) > .sp-text > .sp-desc:not(.sp-path) {
   position: absolute;
   width: 1px;
   height: 1px;
