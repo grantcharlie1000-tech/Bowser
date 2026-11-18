@@ -7,8 +7,9 @@ name: Release guarded Bowser
 # an ancestor) passes the gate quietly and skips every other job.
 # The release identity is read from the source, never typed here: version from
 # Cargo.toml/Cargo.lock, revision from src/updater.rs PIN_REVISION, tag "v"+version.
-# The gate, three parallel Windows verification jobs (Rust, UI, build+smoke) and
-# the verdict job must all pass on that exact commit before the publish job,
+# The gate, five parallel Windows verification jobs (two Rust, two UI shards,
+# UI reproducibility, build+smoke) and the verdict job must all pass on that
+# exact commit before the publish job,
 # which is the only job with write permission, can run. dry_run=true runs
 # everything except publish. stable/release.json on main is never edited
 # here; after publication the pin job opens the stable pin PR for a human to
@@ -152,9 +153,9 @@ jobs:
 
           # mark-latest only promotes exact allow-listed entries; catch an omission now,
           # not after the pin is merged.
-          entry = f"@{{ tag = '{TAG}'; version = '{VERSION}'; revision = {REVISION} }}"
-          if entry not in pathlib.Path('.github/workflows/stable-package.yml').read_text():
-              not_ready.append(f'stable-package.yml mark-latest allow-list lacks {entry} (run tools/release.py bump)')
+          entry = {'tag': TAG, 'version': VERSION, 'revision': REVISION}
+          if entry not in json.loads(pathlib.Path('stable/allowlist.json').read_text()):
+              not_ready.append(f'stable/allowlist.json lacks {entry} (run tools/release.py bump)')
 
           tag_target = None
           ref = api(f'git/ref/tags/{TAG}')
@@ -209,7 +210,7 @@ jobs:
   # The three verification jobs run in parallel on separate runners from the
   # same exact commit. Only the build job's executable is published; it is
   # rebuilt, smoked and hashed on one runner and bound to its smoke report.
-  rust:
+  rust-native:
     needs: gate
     if: needs.gate.result == 'success' && needs.gate.outputs.skip == 'false'
     runs-on: windows-latest
@@ -247,7 +248,7 @@ jobs:
       - name: Install official Rust toolchain
         id: toolchain
         run: |
-          rustup toolchain install stable --profile minimal --component clippy
+          rustup toolchain install stable --profile minimal
           if ($LASTEXITCODE -ne 0) { throw 'Rust installation failed.' }
           $rustc = rustc +stable --version
           if ($LASTEXITCODE -ne 0) { throw 'rustc unavailable.' }
@@ -264,16 +265,142 @@ jobs:
           path: ${{ runner.temp }}/bowser-theme-tests/
           if-no-files-found: warn
           retention-days: 14
-      - name: Windows tests and Clippy
+      - name: Native-default Windows tests
         run: |
           cargo +stable test --locked
           if ($LASTEXITCODE -ne 0) { throw 'Native-default Rust tests failed.' }
+
+  rust-html:
+    needs: gate
+    if: needs.gate.result == 'success' && needs.gate.outputs.skip == 'false'
+    runs-on: windows-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    outputs:
+      rustc: ${{ steps.toolchain.outputs.rustc }}
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      BOWSER_UPDATE_URL: ''
+      BOWSER_UPDATE_PUBKEY: ''
+      RELEASE_COMMIT: ${{ needs.gate.outputs.commit }}
+    steps:
+      - name: Preserve fingerprinted source bytes
+        run: git config --global core.autocrlf false
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Require exact clean source
+        run: |
+          $source = git rev-parse HEAD
+          if ($LASTEXITCODE -ne 0 -or $source.Trim() -cne $env:GITHUB_SHA -or $source.Trim() -cne $env:RELEASE_COMMIT) { throw 'Wrong source SHA.' }
+          $dirty = git status --porcelain
+          if ($LASTEXITCODE -ne 0 -or $dirty) { throw 'Source tree is not clean.' }
+      - name: Install official Rust toolchain
+        id: toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --component clippy
+          if ($LASTEXITCODE -ne 0) { throw 'Rust installation failed.' }
+          $rustc = rustc +stable --version
+          if ($LASTEXITCODE -ne 0) { throw 'rustc unavailable.' }
+          "rustc=$rustc" | Out-File $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          $rustc
+      - name: HTML-default Windows tests and Clippy
+        run: |
           cargo +stable test --locked --features html-chrome-default
           if ($LASTEXITCODE -ne 0) { throw 'HTML-default Rust tests failed.' }
           cargo +stable clippy --locked --features html-chrome-default -- -D warnings
           if ($LASTEXITCODE -ne 0) { throw 'Clippy failed.' }
 
   ui:
+    needs: gate
+    if: needs.gate.result == 'success' && needs.gate.outputs.skip == 'false'
+    runs-on: windows-latest
+    timeout-minutes: 45
+    strategy:
+      matrix:
+        shard: [1, 2]
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      RELEASE_COMMIT: ${{ needs.gate.outputs.commit }}
+    steps:
+      - name: Preserve fingerprinted source bytes
+        run: git config --global core.autocrlf false
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Require exact clean source
+        run: |
+          $source = git rev-parse HEAD
+          if ($LASTEXITCODE -ne 0 -or $source.Trim() -cne $env:GITHUB_SHA -or $source.Trim() -cne $env:RELEASE_COMMIT) { throw 'Wrong source SHA.' }
+          $dirty = git status --porcelain
+          if ($LASTEXITCODE -ne 0 -or $dirty) { throw 'Source tree is not clean.' }
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+      - name: Locked UI install
+        working-directory: ui
+        run: |
+          npm ci --no-audit --no-fund
+          if ($LASTEXITCODE -ne 0) { throw 'npm ci failed.' }
+      - name: Typecheck and lint UI
+        if: matrix.shard == 1
+        working-directory: ui
+        run: |
+          npm run typecheck
+          if ($LASTEXITCODE -ne 0) { throw 'UI typecheck failed.' }
+          npm run lint
+          if ($LASTEXITCODE -ne 0) { throw 'UI lint failed.' }
+      - name: Require Edge for browser-backed regression tests
+        run: |
+          $edge = @(
+            'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe',
+            'C:/Program Files/Microsoft/Edge/Application/msedge.exe'
+          ) | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $edge) { throw 'Edge is required; browser-backed tests must not skip.' }
+          "BOWSER_TEST_EDGE=$edge" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+      - name: Check isolated CJK reader baseline (unchanged budget)
+        if: matrix.shard == 2
+        working-directory: ui
+        run: |
+          node --test --test-concurrency=1 --test-name-pattern="reader: article-cjk.html" test/reader.mjs
+          if ($LASTEXITCODE -ne 0) { throw 'CJK reader baseline failed.' }
+      - name: Test UI suite (this shard of the files in package.json's test script)
+        working-directory: ui
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          # Each `node --test ...` command in the test script runs with --test-shard,
+          # so the two shards together run every listed file exactly once.
+          $script = node -p "require('./package.json').scripts.test"
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot read the UI test script.' }
+          foreach ($cmd in ($script -split ' && ')) {
+            $words = @($cmd.Trim() -split '\s+')
+            if ($words.Count -lt 3 -or $words[0] -cne 'node' -or $words[1] -cne '--test' -or @($words | Where-Object { $_ -cnotmatch '^[A-Za-z0-9_./=-]+$' }).Count) { throw "Unexpected UI test command: $cmd" }
+            & node --test "--test-shard=$($env:SHARD)/2" @($words[2..($words.Count - 1)])
+            if ($LASTEXITCODE -ne 0) { throw 'UI tests failed.' }
+          }
+      - name: Test shipped Shield extension
+        if: matrix.shard == 2
+        run: |
+          node --test extensions/bowser-shield/test/run-tests.js
+          if ($LASTEXITCODE -ne 0) { throw 'Shield tests failed.' }
+
+
+  ui-repro:
+    # The shipped executable embeds the committed ui/dist (build.rs refuses a dist
+    # that differs from ui/dist.manifest); this job proves that committed UI is
+    # rebuilt byte for byte from the same commit.
     needs: gate
     if: needs.gate.result == 'success' && needs.gate.outputs.skip == 'false'
     runs-on: windows-latest
@@ -303,37 +430,19 @@ jobs:
           node-version: '22'
           cache: npm
           cache-dependency-path: ui/package-lock.json
-      - name: Locked UI install, typecheck and lint
+      - name: Locked UI install and rebuild
         working-directory: ui
         run: |
           npm ci --no-audit --no-fund
           if ($LASTEXITCODE -ne 0) { throw 'npm ci failed.' }
-          npm run typecheck
-          if ($LASTEXITCODE -ne 0) { throw 'UI typecheck failed.' }
-          npm run lint
-          if ($LASTEXITCODE -ne 0) { throw 'UI lint failed.' }
-      - name: Require Edge for browser-backed regression tests
+          npm run build
+          if ($LASTEXITCODE -ne 0) { throw 'UI build failed.' }
+      - name: Require byte-reproducible committed UI
         run: |
-          $edge = @(
-            'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe',
-            'C:/Program Files/Microsoft/Edge/Application/msedge.exe'
-          ) | Where-Object { Test-Path $_ } | Select-Object -First 1
-          if (-not $edge) { throw 'Edge is required; browser-backed tests must not skip.' }
-          "BOWSER_TEST_EDGE=$edge" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
-      - name: Check isolated CJK reader baseline (unchanged budget)
-        working-directory: ui
-        run: |
-          node --test --test-concurrency=1 --test-name-pattern="reader: article-cjk.html" test/reader.mjs
-          if ($LASTEXITCODE -ne 0) { throw 'CJK reader baseline failed.' }
-      - name: Test complete UI suite
-        working-directory: ui
-        run: |
-          npm test
-          if ($LASTEXITCODE -ne 0) { throw 'UI tests failed.' }
-      - name: Test shipped Shield extension
-        run: |
-          node --test extensions/bowser-shield/test/run-tests.js
-          if ($LASTEXITCODE -ne 0) { throw 'Shield tests failed.' }
+          git diff --exit-code -- ui/src/icons.gen.ts ui/dist ui/dist.manifest
+          if ($LASTEXITCODE -ne 0) { throw 'Rebuilt UI differs from committed assets.' }
+          $dirty = git status --porcelain
+          if ($LASTEXITCODE -ne 0 -or $dirty) { throw 'Build changed the source tree.' }
 
   build:
     needs: gate
@@ -394,24 +503,10 @@ jobs:
           if ($revision.Count -ne 1) { throw 'Expected exactly one PIN_REVISION.' }
           if ($package.version -cne $env:RELEASE_VERSION -or $revision[0].Groups[1].Value -cne $env:RELEASE_REVISION) { throw 'Cargo version or PIN_REVISION differs from the gate.' }
           "Cargo $($package.version); PIN_REVISION $($revision[0].Groups[1].Value)"
+      # Node only runs the smoke test's local fixture server; no npm install here.
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '22'
-          cache: npm
-          cache-dependency-path: ui/package-lock.json
-      - name: Locked UI install and rebuild
-        working-directory: ui
-        run: |
-          npm ci --no-audit --no-fund
-          if ($LASTEXITCODE -ne 0) { throw 'npm ci failed.' }
-          npm run build
-          if ($LASTEXITCODE -ne 0) { throw 'UI build failed.' }
-      - name: Require byte-reproducible committed UI
-        run: |
-          git diff --exit-code -- ui/src/icons.gen.ts ui/dist ui/dist.manifest
-          if ($LASTEXITCODE -ne 0) { throw 'Rebuilt UI differs from committed assets.' }
-          $dirty = git status --porcelain
-          if ($LASTEXITCODE -ne 0 -or $dirty) { throw 'Build changed the source tree.' }
       - name: Build production HTML chrome executable
         run: |
           cargo +stable build --release --locked --bin bowser --features html-chrome-default
@@ -476,7 +571,7 @@ jobs:
           retention-days: 30
 
   verdict:
-    needs: [gate, rust, ui, build]
+    needs: [gate, rust-native, rust-html, ui, ui-repro, build]
     if: always() && needs.gate.result == 'success' && needs.gate.outputs.skip == 'false'
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -485,23 +580,24 @@ jobs:
       - name: Require every verification job and one Rust toolchain
         shell: bash
         env:
-          RUST_RESULT: ${{ needs.rust.result }}
-          UI_RESULT: ${{ needs.ui.result }}
-          BUILD_RESULT: ${{ needs.build.result }}
-          RUST_RUSTC: ${{ needs.rust.outputs.rustc }}
+          RESULTS: >-
+            ${{ needs.rust-native.result }} ${{ needs.rust-html.result }} ${{ needs.ui.result }}
+            ${{ needs.ui-repro.result }} ${{ needs.build.result }}
+          NATIVE_RUSTC: ${{ needs.rust-native.outputs.rustc }}
+          HTML_RUSTC: ${{ needs.rust-html.outputs.rustc }}
           BUILD_RUSTC: ${{ needs.build.outputs.rustc }}
           GATE_READY: ${{ needs.gate.outputs.ready }}
           DRY_RUN: ${{ needs.gate.outputs.dry_run }}
           TAG: ${{ needs.gate.outputs.tag }}
         run: |
           set -euo pipefail
-          echo "rust=$RUST_RESULT ui=$UI_RESULT build=$BUILD_RESULT"
-          echo "rustc (tests): $RUST_RUSTC"
-          echo "rustc (build): $BUILD_RUSTC"
-          if [ "$RUST_RESULT" != success ] || [ "$UI_RESULT" != success ] || [ "$BUILD_RESULT" != success ]; then
-            echo "A verification job did not succeed." >&2; exit 1
-          fi
-          if [ -z "$RUST_RUSTC" ] || [ "$RUST_RUSTC" != "$BUILD_RUSTC" ]; then
+          echo "rust-native rust-html ui ui-repro build: $RESULTS"
+          printf 'rustc: native=%s html=%s build=%s\n' "$NATIVE_RUSTC" "$HTML_RUSTC" "$BUILD_RUSTC"
+          for r in $RESULTS; do
+            if [ "$r" != success ]; then echo "A verification job did not succeed." >&2; exit 1; fi
+          done
+          if [ "$(echo $RESULTS | wc -w)" != 5 ]; then echo "Unexpected job results." >&2; exit 1; fi
+          if [ -z "$BUILD_RUSTC" ] || [ "$NATIVE_RUSTC" != "$BUILD_RUSTC" ] || [ "$HTML_RUSTC" != "$BUILD_RUSTC" ]; then
             echo "Tests and the release build used different Rust toolchains; redispatch." >&2; exit 1
           fi
           if [ "$DRY_RUN" = true ]; then
@@ -513,7 +609,7 @@ jobs:
           fi
 
   publish:
-    needs: [gate, rust, ui, build, verdict]
+    needs: [gate, rust-native, rust-html, ui, ui-repro, build, verdict]
     if: >-
       needs.gate.result == 'success' && needs.build.result == 'success' &&
       needs.verdict.result == 'success' &&
@@ -521,7 +617,8 @@ jobs:
       needs.gate.outputs.dry_run == 'false' && needs.gate.outputs.skip == 'false' &&
       github.repository == 'grantcharlie1000-tech/Bowser' &&
       (github.event_name == 'workflow_dispatch' || github.event_name == 'push') && github.ref == 'refs/heads/main'
-    runs-on: windows-latest
+    # PowerShell on Linux: the publisher only hashes files and calls the REST API.
+    runs-on: ubuntu-latest
     timeout-minutes: 20
     # Only this main-only, non-dry-run job receives the ephemeral release
     # permission. It runs no repository scripts, builds, dependencies or
