@@ -116,6 +116,17 @@ pub fn command_of(item: &str) -> Option<&str> {
     }
 }
 
+/// The icon a command's button shows, when Rust is the one to name it (sent as `g` with the button and in the
+/// toolbar customiser's command list). The page holds the glyph of every other command by id
+/// (`ui/src/bars-logic.ts` `COMMAND_ICONS`); the chrome sources may not spell out the secrets store
+/// (`chrome_host::guard`), so its command's icon comes from here.
+pub fn command_glyph(command: &str) -> Option<&'static str> {
+    match command {
+        "passwords" => Some("key"),
+        _ => None,
+    }
+}
+
 /// Parses a bar's list: each item one of the bar's fixed ids or a command button, no repeats, at most
 /// [`MAX_ITEMS`] items and [`MAX_COMMAND_ITEMS`] command buttons, and (for the address bar) at most
 /// [`MAX_RIGHT_STATIC`] buttons that share the end of the bar with the menu. `None` for anything else.
@@ -340,6 +351,19 @@ mod tests {
             assert_eq!(zone_of(id), Zone::Right);
         }
         assert_eq!(right_static(&list("back,bookmark,downloads,extensions,cmd:new-tab,newtab")), 3);
+    }
+
+    #[test]
+    fn rust_names_the_icon_of_the_command_the_chrome_cannot_name_and_every_name_is_a_real_icon() {
+        assert_eq!(command_glyph("passwords"), Some("key"));
+        assert_eq!(command_glyph("new-tab"), None, "the page has the others");
+        let family = include_str!("../ui/src/icons.gen.ts");
+        for command in crate::commands::registry::BUILTINS.iter().map(|def| def.id) {
+            if let Some(glyph) = command_glyph(command) {
+                assert!(crate::chrome_host::protocol::glyph_ok(glyph), "{command}: {glyph}");
+                assert!(family.contains(&format!("\"{glyph}\"")), "{command}: {glyph} is not in the icon family");
+            }
+        }
     }
 
     #[test]

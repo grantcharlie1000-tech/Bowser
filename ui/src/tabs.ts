@@ -432,7 +432,7 @@ export function startTabs(strip: HTMLElement): void {
   let toolSig = '';
   const toolButtons: HTMLButtonElement[] = [];
   const syncTools = (): void => {
-    const sig = ui.tools.map((tool) => `${tool.k}|${tool.i}|${tool.l}`).join('\n');
+    const sig = ui.tools.map((tool) => `${tool.k}|${tool.i}|${tool.l}|${tool.g ?? ''}`).join('\n');
     if (sig === toolSig) return;
     toolSig = sig;
     toolButtons.length = 0;
@@ -440,7 +440,7 @@ export function startTabs(strip: HTMLElement): void {
       const button = el('button', 'closed-btn tab-tool bw-icon-btn');
       button.type = 'button';
       button.setAttribute('aria-label', tool.l);
-      button.append(icon(itemIcon(tool.k) as IconName));
+      button.append(icon(itemIcon(tool.k, tool.g) as IconName));
       setTip(button, tool.l);
       button.addEventListener('click', () => { sendTool('tabs', tool.k, tool.i); });
       toolButtons.push(button);

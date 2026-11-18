@@ -11270,7 +11270,7 @@ fn tool_buttons(items: &[String]) -> Vec<chrome_host::protocol::ToolButton> {
         .filter_map(|(index, item)| {
             let id = crate::toolbar_prefs::command_of(item)?;
             let entry = entries.iter().find(|entry| entry.id == id)?;
-            Some(chrome_host::protocol::ToolButton { item: item.clone(), label: entry.label.clone(), index: index as u8 })
+            Some(chrome_host::protocol::ToolButton { item: item.clone(), label: entry.label.clone(), index: index as u8, glyph: crate::toolbar_prefs::command_glyph(id) })
         })
         .collect()
 }

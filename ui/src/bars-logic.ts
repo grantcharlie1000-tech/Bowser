@@ -3,6 +3,8 @@
 // list again and refuses what does not parse): ids, zones, limits, and the edits the toolbar editor makes.
 // No DOM here; test/bars.mjs covers all of it.
 
+import { ICON_NAMES } from './icons.gen';
+
 export type BarId = 'address' | 'tabs' | 'panel';
 export const BAR_IDS: readonly BarId[] = ['address', 'tabs', 'panel'];
 /** The settings.txt key of each bar's list. */
@@ -195,8 +197,12 @@ export const COMMAND_ICONS: Readonly<Record<string, string>> = {
   feeds: 'feed', 'subscribe-feed': 'bell',
 };
 
-/** The glyph of any bar item: a fixed button's own, a command's, `chain` for a command chain, `command` for a command Bowser no longer has. */
-export function itemIcon(id: string): string {
+/**
+ * The glyph of any bar item: the one Rust named for it (`glyph`, when it is an icon of the family), else a fixed
+ * button's own, a command's, `chain` for a command chain, `command` for a command Bowser no longer has.
+ */
+export function itemIcon(id: string, glyph?: string): string {
+  if (glyph !== undefined && (ICON_NAMES as readonly string[]).includes(glyph)) return glyph;
   if (id.startsWith('chain:')) return 'chain';
   if (id.startsWith('cmd:')) return COMMAND_ICONS[id.slice(4)] ?? 'command';
   return ITEM_ICONS[id] ?? 'command';

@@ -177,10 +177,18 @@ test('every built-in command a bar can carry has a glyph of its own, drawn from 
   const ids = [...registry.matchAll(/\bdef\("([a-z0-9-]+)"/g)].map((m) => m[1]).filter((id) => !/^select-/.test(id));
   assert.ok(ids.length > 50, 'the registry was read');
   const family = new Set([...read(join(srcDir, 'icons.gen.ts')).match(/ICON_NAMES[^=]*=\s*\[([^\]]*)\]/s)[1].matchAll(/"([^"]+)"/g)].map((m) => m[1]));
-  // The secrets store's command is the one command the chrome sources may not name (src/chrome_host/guard.rs), so
-  // the map cannot list it and its button keeps the generic glyph.
-  const unnamed = new Set([['pass', 'words'].join('')]);
-  for (const id of ids.filter((other) => !unnamed.has(other))) {
+  // A command the chrome sources may not name (src/chrome_host/guard.rs) gets its icon from Rust instead, sent
+  // with the button as `g` (`toolbar_prefs::command_glyph`).
+  const prefs = read(join(root, 'src', 'toolbar_prefs.rs'));
+  const fromRust = new Map([...prefs.match(/pub fn command_glyph[\s\S]*?\n}\n/)[0].matchAll(/"([a-z0-9-]+)" => Some\("([a-z0-9-]+)"\)/g)].map((m) => [m[1], m[2]]));
+  assert.ok(fromRust.size >= 1, 'command_glyph was read');
+  for (const id of ids) {
+    const glyph = fromRust.get(id);
+    if (glyph !== undefined) {
+      assert.ok(family.has(glyph), `${id}: Rust names ${glyph}, which is not an icon`);
+      assert.equal(bars.itemIcon(`cmd:${id}`, glyph), glyph);
+      continue;
+    }
     assert.ok(bars.COMMAND_ICONS[id] !== undefined, `cmd:${id} has no glyph in COMMAND_ICONS`);
     assert.notEqual(bars.itemIcon(`cmd:${id}`), 'command', `cmd:${id} falls back to the generic glyph`);
   }
@@ -189,6 +197,16 @@ test('every built-in command a bar can carry has a glyph of its own, drawn from 
   assert.equal(bars.itemIcon('chain:3'), 'chain');
   assert.equal(bars.itemIcon('cmd:no-such'), 'command');
   assert.equal(bars.itemIcon('downloads'), 'download');
+  // An icon Rust names wins; a name that is not an icon is ignored.
+  assert.equal(bars.itemIcon('cmd:no-such', 'key'), 'key');
+  assert.equal(bars.itemIcon('cmd:new-tab', 'no-such-icon'), 'new-tab');
+});
+
+test('a command button may carry the icon Rust names (`g`), and only a well-formed one', () => {
+  const withTools = (tools) => parse({ items: 'back,cmd:x', tools, extra: 0, feeds: 0 });
+  assert.deepEqual(withTools([{ k: 'cmd:x', l: 'X', i: 1, g: 'key' }])?.tools, [{ k: 'cmd:x', l: 'X', i: 1, g: 'key' }]);
+  assert.deepEqual(withTools([{ k: 'cmd:x', l: 'X', i: 1 }])?.tools, [{ k: 'cmd:x', l: 'X', i: 1 }]);
+  for (const g of ['Key', 'a b', '', 'x'.repeat(33), 7]) assert.equal(withTools([{ k: 'cmd:x', l: 'X', i: 1, g }]), null, String(g));
 });
 
 test('the editor offers only the bars that can show buttons', () => {

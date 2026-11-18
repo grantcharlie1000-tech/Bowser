@@ -329,7 +329,7 @@ export function createSidebarRenderer(root: HTMLElement): {
   const toolRows = el('div', 'side-tools');
   let toolSig = '';
   const syncTools = (tools: TabOptsMsg['tools']): void => {
-    const sig = tools.map((tool) => `${tool.k}|${tool.i}|${tool.l}`).join('\n');
+    const sig = tools.map((tool) => `${tool.k}|${tool.i}|${tool.l}|${tool.g ?? ''}`).join('\n');
     if (sig === toolSig) return;
     toolSig = sig;
     const rows = tools.map((tool) => {
@@ -338,7 +338,7 @@ export function createSidebarRenderer(root: HTMLElement): {
       setTip(row, tool.l);
       const label = el('span', 'side-tool-label');
       label.textContent = tool.l;
-      row.append(icon(itemIcon(tool.k) as IconName, { size: 16 }), label);
+      row.append(icon(itemIcon(tool.k, tool.g) as IconName, { size: 16 }), label);
       row.addEventListener('click', () => { sendTool('tabs', tool.k, tool.i); });
       return row;
     });

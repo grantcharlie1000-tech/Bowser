@@ -269,7 +269,9 @@ export interface StateMsg {
   readonly theme: Theme;
 }
 /** A command button on a bar: its item id (`cmd:new-tab`, `chain:2`) and the name it shows. */
-export interface ToolButtonMsg { readonly k: string; readonly l: string; readonly i: number }
+/** `g`: the icon Rust names for the button (`toolbar_prefs::command_glyph`), when it does. */
+export interface ToolButtonMsg { readonly k: string; readonly l: string; readonly i: number; readonly g?: string }
+const GLYPH_RE = /^[a-z0-9-]{1,32}$/;
 /** Most command buttons on one bar (Rust `MAX_COMMAND_ITEMS`). */
 export const MAX_TOOLS = 4;
 const TOOL_ITEM_RE = /^[a-z0-9:-]{1,64}$/;
@@ -277,8 +279,9 @@ function parseTools(value: unknown): ToolButtonMsg[] | null {
   if (!Array.isArray(value) || value.length > MAX_TOOLS) return null;
   const out: ToolButtonMsg[] = [];
   for (const row of value) {
-    if (!isRecord(row) || !hasOnlyKeys(row, ['k', 'l', 'i']) || typeof row.k !== 'string' || !TOOL_ITEM_RE.test(row.k) || !isStr(row.l, 64) || !isInt(row.i, 0, 13)) return null;
-    out.push({ k: row.k, l: row.l, i: row.i });
+    if (!isRecord(row) || !hasOnlyKeys(row, ['k', 'l', 'i', 'g']) || typeof row.k !== 'string' || !TOOL_ITEM_RE.test(row.k) || !isStr(row.l, 64) || !isInt(row.i, 0, 13)) return null;
+    if ('g' in row && (typeof row.g !== 'string' || !GLYPH_RE.test(row.g))) return null;
+    out.push(typeof row.g === 'string' ? { k: row.k, l: row.l, i: row.i, g: row.g } : { k: row.k, l: row.l, i: row.i });
   }
   return out;
 }

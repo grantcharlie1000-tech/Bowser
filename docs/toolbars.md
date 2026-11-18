@@ -22,7 +22,9 @@ the `WM_TIMER` handler in `window.rs`), and a content's HTML child keeps its ful
 (`side_panel::child_rect`) instead of being re-laid out each frame.
 
 Every item has its own glyph: the bar's own buttons (`ITEM_ICONS`) and every built-in command (`COMMAND_ICONS`, by
-command id; `test/bars.mjs` fails when a command has none). A chain shows the `chain` glyph. The toolbar, the tab
+command id; `test/bars.mjs` fails when a command has none). A chain shows the `chain` glyph. A command the chrome
+sources may not name (the secrets store, `chrome_host::guard`) gets its icon from Rust instead: `toolbar_prefs::command_glyph`
+names it, and it travels with the button as `g` (and as `glyph` in the customiser's command list). The toolbar, the tab
 strip, the vertical sidebar's rows, the editor and its picker all draw the same one.
 
 Reader, Downloads, Extensions and Closed tabs appear only when they have something to show.

@@ -175,6 +175,9 @@ pub(crate) fn snapshot_json(app: &AppRef) -> Option<String> {
                     item.string("id", &entry.id);
                     item.string("label", &entry.label);
                     item.bool("chain", chain);
+                    if let Some(glyph) = crate::toolbar_prefs::command_glyph(&entry.id) {
+                        item.string("glyph", glyph);
+                    }
                 });
             }
         });

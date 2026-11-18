@@ -134,3 +134,17 @@ test('Reset to default sends the default list, and is off while the bar already 
   reset.click();
   assert.deepEqual(lastSet(), { v: 1, t: 'tbar', a: 'set', text: 'toolbar_buttons=back,forward,reload,site-info,split,reader,extensions,downloads' });
 });
+
+test('a command whose icon Rust names shows that icon, on and off', () => {
+  const withGlyph = { t: 'snap', p: 'toolbar', d: { address: 'back', tabs: 'closed-tabs', commands: [...commands, { id: 'secret-store', label: 'Secrets', chain: false, glyph: 'key' }] } };
+  const glyphOf = (id) => root.querySelectorAll('.tbp-row').find((row) => row.dataset.item === id).querySelector('.tbp-glyph').children[0];
+  receive(withGlyph);
+  const off = glyphOf('cmd:secret-store');
+  receive({ ...withGlyph, d: { ...withGlyph.d, address: 'back,cmd:secret-store' } });
+  const on = glyphOf('cmd:secret-store');
+  // icon() draws the family's shapes for the name; compare with a command that has no icon of its own.
+  const generic = glyphOf('cmd:new-tab');
+  assert.notDeepEqual(off.children.map((c) => c.tagName + JSON.stringify([...c.attrs])), generic.children.map((c) => c.tagName + JSON.stringify([...c.attrs])));
+  assert.deepEqual(on.children.map((c) => c.tagName + JSON.stringify([...c.attrs])), off.children.map((c) => c.tagName + JSON.stringify([...c.attrs])));
+  assert.equal(mod.parseToolbarSnapshot({ ...withGlyph.d, commands: [{ id: 'x', label: 'X', chain: false, glyph: 'Bad Name' }] }), null);
+});

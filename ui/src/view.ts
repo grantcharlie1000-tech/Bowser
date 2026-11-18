@@ -265,7 +265,7 @@ export function buildView(root: HTMLElement): View {
 // button is always the last one. Nothing here moves the field: Rust reserves the room (`extra`).
 
 function toolButton(tool: ToolButtonMsg): HTMLButtonElement {
-  const button = iconButton(tool.l, itemIcon(tool.k) as IconName, 'tb-nav is-lg is-round tb-extra tb-tool');
+  const button = iconButton(tool.l, itemIcon(tool.k, tool.g) as IconName, 'tb-nav is-lg is-round tb-extra tb-tool');
   button.addEventListener('click', () => { sendTool('address', tool.k, tool.i); });
   return button;
 }
@@ -275,7 +275,7 @@ export function applyBar(view: View, state: Pick<StateMsg, 'items' | 'tools' | '
   const root = document.getElementById('app');
   const items = state.items === undefined ? DEFAULT_ADDRESS : itemsOf(state.items);
   const tools = state.tools ?? [];
-  const sig = `${items.join(',')}|${tools.map((tool) => `${tool.k}:${tool.i}:${tool.l}`).join(';')}`;
+  const sig = `${items.join(',')}|${tools.map((tool) => `${tool.k}:${tool.i}:${tool.l}:${tool.g ?? ''}`).join(';')}`;
   const bar = view.bar;
   if (sig !== bar.sig) {
     bar.sig = sig;

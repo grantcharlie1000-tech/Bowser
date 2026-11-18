@@ -21,7 +21,8 @@ import {
   DEFAULTS, MAX_COMMAND_ITEMS, type BarId,
 } from '../bars-logic';
 
-interface Command { readonly id: string; readonly label: string; readonly chain: boolean }
+/** `glyph`: the icon Rust names for the command (`toolbar_prefs::command_glyph`), when it does. */
+interface Command { readonly id: string; readonly label: string; readonly chain: boolean; readonly glyph?: string }
 interface Snapshot { readonly address: readonly string[]; readonly tabs: readonly string[]; readonly commands: readonly Command[] }
 
 type Bar = Extract<BarId, 'address' | 'tabs'>;
@@ -50,9 +51,10 @@ export function parseToolbarSnapshot(d: unknown): Snapshot | null {
   const commands: Command[] = [];
   for (const row of raw.commands.slice(0, 512)) {
     if (typeof row !== 'object' || row === null) return null;
-    const { id, label, chain } = row as Record<string, unknown>;
+    const { id, label, chain, glyph } = row as Record<string, unknown>;
     if (typeof id !== 'string' || typeof label !== 'string' || typeof chain !== 'boolean' || id.length > 64 || label.length > 128) return null;
-    commands.push({ id, label, chain });
+    if (glyph !== undefined && (typeof glyph !== 'string' || !/^[a-z0-9-]{1,32}$/.test(glyph))) return null;
+    commands.push(typeof glyph === 'string' ? { id, label, chain, glyph } : { id, label, chain });
   }
   return { address: itemsOf(raw.address), tabs: itemsOf(raw.tabs), commands };
 }
@@ -77,6 +79,8 @@ export function startToolbarPanel(root: HTMLElement): (message: Inbound) => void
   let filter = '';
   let refocus: string | null = null;
   let entered = false;
+  /** The icons Rust named, by item id (from the snapshot's commands). */
+  let glyphs = new Map<string, string>();
 
   const shell = el('section', 'pn tbp');
   shell.setAttribute('aria-label', 'Customise toolbar');
@@ -196,7 +200,7 @@ export function startToolbarPanel(root: HTMLElement): (message: Inbound) => void
     }
     const glyph = el('span', 'tbp-glyph');
     glyph.setAttribute('aria-hidden', 'true');
-    glyph.append(icon(itemIcon(id) as IconName));
+    glyph.append(icon(itemIcon(id, glyphs.get(id)) as IconName));
     const text = el('span', 'tbp-text');
     const name = el('span', 'tbp-label');
     name.textContent = label;
@@ -332,6 +336,7 @@ export function startToolbarPanel(root: HTMLElement): (message: Inbound) => void
     const next = parseToolbarSnapshot(message.d);
     if (!next) return;
     snapshot = next;
+    glyphs = new Map(next.commands.filter((command) => command.glyph !== undefined).map((command) => [itemOf(command), command.glyph as string] as const));
     lists.address = [...next.address];
     lists.tabs = [...next.tabs];
     paint({});
