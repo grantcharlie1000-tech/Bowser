@@ -423,6 +423,11 @@
         groups[k].forEach(function (s, i) { s.classList.toggle("is-on", i === index); });
       });
       if (index === cycle) setFrame(0);
+      /* Keep the active tab in view when the tab row scrolls (phones). */
+      var row = items[index].parentElement;
+      if (row.scrollWidth > row.clientWidth + 1) {
+        row.scrollTo({ left: items[index].offsetLeft - 24, behavior: reduce ? "auto" : "smooth" });
+      }
     }
     items.forEach(function (it, i) {
       it.addEventListener("click", function () { show(i); });

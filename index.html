@@ -129,43 +129,29 @@
 
   <!-- Feature tour -->
   <section class="tour wrap" id="features" data-switch data-autoplay>
-    <div class="tour-copy">
-      <div class="sec-head is-left">
-        <h2>Fits the way <em>you work</em></h2>
-        <p>Keyboard first, tidy by default, and arranged the way you like it.</p>
-      </div>
-      <div class="tour-list" role="tablist" aria-label="Features">
-        <button type="button" class="tour-item is-on" role="tab" aria-selected="true" data-switch-item data-duration="8000">
-          <b>Four layouts</b>
-          <span>Vertical tabs, tabs above the toolbar, toolbar above the tabs, or a single row. Pick one in Settings, Appearance.</span>
-          <i class="tour-bar"><i></i></i>
-        </button>
-        <button type="button" class="tour-item" role="tab" aria-selected="false" data-switch-item data-duration="7000">
-          <b>Split view</b>
-          <span>Drag a tab to either half of the page, or press <kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>\</kbd>, to read two pages side by side.</span>
-          <i class="tour-bar"><i></i></i>
-        </button>
-        <button type="button" class="tour-item" role="tab" aria-selected="false" data-switch-item data-duration="7000">
-          <b>Command palette</b>
-          <span>Press <kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>K</kbd> to search open tabs, bookmarks, history and every browser command as you type.</span>
-          <i class="tour-bar"><i></i></i>
-        </button>
-        <button type="button" class="tour-item" role="tab" aria-selected="false" data-switch-item data-duration="7000">
-          <b>Private tabs</b>
-          <span>A private tab always blocks, runs strict tracking prevention, and keeps its cookies in memory until the last private tab closes.</span>
-          <i class="tour-bar"><i></i></i>
-        </button>
-        <button type="button" class="tour-item" role="tab" aria-selected="false" data-switch-item data-duration="7000">
-          <b>Chrome extensions</b>
-          <span>Point Bowser at an unpacked extension folder and it runs. Manifest V2 and V3 both load.</span>
-          <i class="tour-bar"><i></i></i>
-        </button>
+    <div class="sec-head">
+      <h2>Fits the way <em>you work</em></h2>
+      <p>Keyboard first, tidy by default, and arranged the way you like it.</p>
+    </div>
+    <div class="tour-row">
+      <div class="tour-tabs" role="tablist" aria-label="Features">
+        <button type="button" class="tour-tab is-on" role="tab" aria-selected="true" data-switch-item data-duration="8000"><i class="tour-bar"><i></i></i><span>Four layouts</span></button>
+        <button type="button" class="tour-tab" role="tab" aria-selected="false" data-switch-item data-duration="7000"><i class="tour-bar"><i></i></i><span>Split view</span></button>
+        <button type="button" class="tour-tab" role="tab" aria-selected="false" data-switch-item data-duration="7000"><i class="tour-bar"><i></i></i><span>Command palette</span></button>
+        <button type="button" class="tour-tab" role="tab" aria-selected="false" data-switch-item data-duration="7000"><i class="tour-bar"><i></i></i><span>Private tabs</span></button>
+        <button type="button" class="tour-tab" role="tab" aria-selected="false" data-switch-item data-duration="7000"><i class="tour-bar"><i></i></i><span>Chrome extensions</span></button>
       </div>
       <button type="button" class="tour-pause icon-btn" aria-pressed="false" aria-label="Pause the feature tour">
         <svg class="i-pause" width="14" height="14" aria-hidden="true"><use href="#i-pause"/></svg>
         <svg class="i-play" width="14" height="14" aria-hidden="true"><use href="#i-play"/></svg>
-        <span>Pause</span>
       </button>
+    </div>
+    <div class="tour-desc" aria-live="polite">
+      <p class="scene-text is-on" data-switch-scene>Vertical tabs, tabs above the toolbar, toolbar above the tabs, or a single row. Pick one in Settings, Appearance.</p>
+      <p class="scene-text" data-switch-scene>Drag a tab to either half of the page, or press <kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>\</kbd>, to read two pages side by side.</p>
+      <p class="scene-text" data-switch-scene>Press <kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>K</kbd> to search open tabs, bookmarks, history and every browser command as you type.</p>
+      <p class="scene-text" data-switch-scene>A private tab always blocks, runs strict tracking prevention, and keeps its cookies in memory until the last private tab closes.</p>
+      <p class="scene-text" data-switch-scene>Point Bowser at an unpacked extension folder and it runs. Manifest V2 and V3 both load.</p>
     </div>
     <div class="plate plate-tour">
       <div class="scene is-on" data-switch-scene role="img" aria-label="A Bowser window changing between its four layouts: vertical tabs, tabs above the toolbar, toolbar above the tabs, and a single row.">
