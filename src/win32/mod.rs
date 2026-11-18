@@ -30,6 +30,7 @@ mod page_tools_ui; // capture and notes-from-the-page commands (thread T7)
 // --- tab options --- the Sessions panel.
 mod sessions_panel;
 mod feeds_panel; // the Feeds panel's host side and its fetch workers (thread T13)
+mod toolbar_panel; // the toolbar customiser docked beside the page (thread T13)
 // --- end tab options ---
 mod panel_bookmarks;
 mod panel_customize;

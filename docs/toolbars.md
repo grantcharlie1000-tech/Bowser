@@ -1,10 +1,25 @@
 # Toolbars
 
-Settings > Appearance > Toolbars edits one bar at a time (Address bar | Tab bar): a live preview of the bar, the
-list of its buttons (move up, move down and remove come up on hover or focus; an arrow that cannot move a button is
-left out), one-click chips for the bar's own buttons that are off it, and a picker for any command or chain. Each
-change is the whole new list and acts at once. Rules: `src/toolbar_prefs.rs` (Rust authority) and
-`ui/src/bars-logic.ts`; the editor is `ui/src/toolbar-editor.ts`.
+Settings > Appearance > **Customise your toolbar** opens the toolbar customiser docked beside the page
+(`src/win32/toolbar_panel.rs`, `ui/src/panels/toolbar.ts`), so the bar it edits stays in view and changes as each
+switch moves. **Reset to default** on the same row puts both bars back.
+
+The customiser is a side panel content (`PanelId::Toolbar`): the side panel host owns its width, its open and close
+animation and the page's narrower rectangle, and the content's one child window holds the HTML page
+(`?view=dialog&p=toolbar`, `View::DialogToolbar`) through `html_dialog`'s host, like Feeds and Notes. The child is
+made once per window and kept, so reopening shows it at once with a fresh snapshot. It sends `tbar` `set` with the
+whole new list of one bar (`toolbar_buttons=...` or `toolbar_tabs=...`, checked by `apply_assignment` like every
+other writer), and `panel` `dismiss` (its close button, Esc) closes the panel.
+
+The page: an Address bar | Tab bar switch, then one row per button with a switch, grouped by where it sits. Buttons
+that are on lead their group in bar order and can be dragged by their grip, or moved with Alt+Up / Alt+Down;
+buttons that are off follow. Commands that are off are listed last with a filter and an "n of 4" count. A switch that
+cannot come on (a limit below) shakes and says why. Rows glide to their new place on every change; none of the
+motion runs under reduced motion.
+
+While a docked side panel opens or closes, the page follows its edge on every frame (`side_panel::docked_motion`,
+the `WM_TIMER` handler in `window.rs`), and a content's HTML child keeps its full width and rides the moving edge
+(`side_panel::child_rect`) instead of being re-laid out each frame.
 
 Every item has its own glyph: the bar's own buttons (`ITEM_ICONS`) and every built-in command (`COMMAND_ICONS`, by
 command id; `test/bars.mjs` fails when a command has none). A chain shows the `chain` glyph. The toolbar, the tab

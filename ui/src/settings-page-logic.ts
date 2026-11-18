@@ -714,7 +714,7 @@ const CORE_ROWS: ReadonlySet<string> = new Set([
   'profile', 'import',
   'layoutPreset' /* --- layout (thread T6): the presets decide where every bar sits; the rest of the block is `more` --- */,
   'theme', 'themeSchedule', 'themeAccent', 'websiteAppearance', 'bookmarksBar', 'fontSize', 'translateOffer',
-  'feedsOpen', // --- toolbars and feeds (thread T13) ---
+  'feedsOpen', 'toolbarButtons', // --- toolbars and feeds (thread T13) ---
   'tabs_new_tab_page', 'tabs_new_tab_url',
   'grouping', 'tabs_workspaces', // --- T10 ---
   'startupMode', 'startupPages', 'startHomepage',
@@ -742,7 +742,6 @@ export const PAGE_ROWS: Readonly<Record<string, PageSpec>> = {
   blockLists: { button: 'Edit', aria: 'Edit lists', after: 'siteRules' },
   deleteData: { button: 'Clear', aria: 'Clear browsing data', after: 'blockLists' },
   dashboard: { button: 'Open', aria: 'Open dashboard', after: 'deleteData' },
-  toolbarButtons: { button: 'Edit', aria: 'Edit toolbars' }, // --- toolbars and feeds (thread T13) ---
   kbEditor: { button: 'Edit', aria: 'Edit shortcuts' },
   chains: { button: 'Edit', aria: 'Edit chains' },
   workspaceRules: { button: 'Edit', aria: 'Edit rules' }, // --- T10 ---
@@ -805,7 +804,7 @@ export const ROWS: readonly RowSpec[] = [
   ...THEME_ROWS,
   // --- end theme options ---
   // --- toolbars and feeds (thread T13) --- the editor for the three bars (a sub-page); it replaces the old checklist.
-  { id: 'toolbarButtons', section: 'appearance', label: 'Toolbars', aria: 'Customise your toolbars', description: '', keywords: 'toolbar toolbars buttons customize customise address bar tab bar back forward reload bookmark new tab split reader site information downloads extensions closed tabs command chain button add remove move reset preview Customise your toolbars Choose the buttons on the address bar and the tab bar, and put a command or a chain of commands on either.' },
+  { id: 'toolbarButtons', section: 'appearance', label: 'Customise your toolbar', aria: 'Customise your toolbar', description: '', keywords: 'toolbar toolbars buttons customize customise address bar tab bar back forward reload bookmark new tab split reader site information downloads extensions closed tabs command chain button add remove move reset preview Customise your toolbars Choose the buttons on the address bar and the tab bar, and put a command or a chain of commands on either.' },
   { id: 'centredAddressBar', section: 'appearance', label: 'Centre address', aria: 'Centre the address bar', description: '', keywords: 'address bar centre centered position Centre the address bar Keeps the address bar centred in the toolbar.' },
   { id: 'minimalUrl', section: 'appearance', label: 'Short address', aria: 'Show a simplified address while unfocused', description: '', keywords: 'url simplified host domain minimal address bar focus Show a simplified address while unfocused Shows the page’s site and path, without the query or fragment, until you focus the address bar, then the full address.' },
   { id: 'showLoadProgress', section: 'appearance', label: 'Load progress', aria: 'Show a loading progress bar', description: '', keywords: 'progress loading bar indicator Show a loading progress bar A thin bar tracks page loads in the toolbar.' },

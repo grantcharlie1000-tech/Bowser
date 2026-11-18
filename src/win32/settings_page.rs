@@ -837,6 +837,7 @@ fn run(owner: HWND, app: &AppRef, tab: TabId, action: Action) {
         // --- toolbars and feeds (thread T13) ---
         Action::BarOption(text) => answer(owner, App::set_bar_option(app, &text)),
         Action::OpenFeeds => super::window::open_feeds_panel(owner, app),
+        Action::OpenToolbar => super::toolbar_panel::toggle(owner, app),
         // --- end toolbars and feeds ---
         Action::DownloadFolder => {
             // The native folder picker, parented to the window; Bowser keeps the choice itself, so the

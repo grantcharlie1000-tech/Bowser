@@ -195,7 +195,7 @@ pub enum RailAction {
 pub enum ComposerMode { WorkspaceNew, AppAdd, AppEdit }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PanelType { Panel, History, Bookmarks, Customize, Notes, Settings, Privacy, Rename, HistoryPage, DownloadsPage, StartPage, Address, Sessions, Feeds }
+pub enum PanelType { Panel, History, Bookmarks, Customize, Notes, Settings, Privacy, Rename, HistoryPage, DownloadsPage, StartPage, Address, Sessions, Feeds, Toolbar }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PanelFields {
@@ -1385,7 +1385,7 @@ fn build_command(fields: &[(String, Value)]) -> Result<Command, ProtocolError> {
             };
             Command::RailMove { key, before }
         }
-        "panel" | "hist" | "bm" | "cust" | "notes" | "set" | "priv" | "ren" | "hpage" | "dpage" | "spage" | "addr" | "sess" | "feed" => {
+        "panel" | "hist" | "bm" | "cust" | "notes" | "set" | "priv" | "ren" | "hpage" | "dpage" | "spage" | "addr" | "sess" | "feed" | "tbar" => {
             let a = str_field(fields, "a")?;
             if !panel_action(a) { return Err(ProtocolError::InvalidValue("a")); }
             let kind = match kind {
@@ -1405,6 +1405,8 @@ fn build_command(fields: &[(String, Value)]) -> Result<Command, ProtocolError> {
                 "sess" => PanelType::Sessions,
                 // The Feeds panel (docs/feeds.md).
                 "feed" => PanelType::Feeds,
+                // The docked toolbar customiser (docs/toolbars.md).
+                "tbar" => PanelType::Toolbar,
                 _ => PanelType::Privacy,
             };
             let on = match field(fields, "on") {

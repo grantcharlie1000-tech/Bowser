@@ -2599,6 +2599,7 @@ pub fn run(app: App) -> windows::core::Result<()> {
         super::panel_bookmarks::register(&app);
         super::panel_history::register(&app);
         super::panel_customize::register(&app);
+        super::toolbar_panel::register(&app); // --- toolbars and feeds (thread T13) ---
         let _ = glass::apply(hwnd);
         app.borrow_mut().hwnd = hwnd;
         super::set_blocker_wake(hwnd); // --- latency (fix E) --- blocker lists built off-thread
@@ -4728,6 +4729,12 @@ unsafe extern "system" fn window_proc(
             }
             WM_TIMER if wparam.0 == side_panel::TIMER_ID => {
                 let running = side_panel::timer(hwnd);
+                // A docked panel's page follows its edge on every frame. It used to be re-bounded only
+                // when the timer stopped: opening, the panel slid over the page and the page then jumped
+                // aside; closing, a gap opened beside the shrinking panel before the page snapped back.
+                if running && side_panel::docked_motion(hwnd) && let Some(app) = app {
+                    apply_sidebar_bounds(hwnd, app);
+                }
                 if !running {
                     let _ = KillTimer(Some(hwnd), side_panel::TIMER_ID);
                     if let Some(app) = app { apply_sidebar_bounds(hwnd, app); }
@@ -10761,7 +10768,7 @@ fn html_window_command(hwnd: HWND, command: ChromeCommand, view: View) {
         View::Toolbar => s.html_region(),
         View::Tabs => s.html_tab_region(),
         View::Rail => s.html_rail_region(),
-        View::Panel | View::Popup | View::Dialog | View::DialogNotes | View::DialogPrivacy | View::DialogRename | View::DialogAddress | View::BookmarkBar | View::DialogSessions | View::DialogFeeds | View::Hover | View::Split | View::Settings | View::HistoryPage | View::DownloadsPage => None,
+        View::Panel | View::Popup | View::Dialog | View::DialogNotes | View::DialogPrivacy | View::DialogRename | View::DialogAddress | View::BookmarkBar | View::DialogSessions | View::DialogFeeds | View::DialogToolbar | View::Hover | View::Split | View::Settings | View::HistoryPage | View::DownloadsPage => None,
     })
     .flatten();
     let Some(region) = region else {
@@ -11564,7 +11571,8 @@ fn open_rail_panel(hwnd: HWND) -> Option<RailKey> {
         Some(side_panel::PanelId::History) => Some(RailKey::History),
         Some(side_panel::PanelId::Customize | side_panel::PanelId::Menu) => Some(RailKey::Customize),
         Some(side_panel::PanelId::WebApp(id)) => Some(RailKey::App(id)),
-        None => None,
+        // --- toolbars and feeds (thread T13) --- the toolbar customiser has no rail button.
+        Some(side_panel::PanelId::Toolbar) | None => None,
     }
 }
 
