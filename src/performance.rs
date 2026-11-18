@@ -227,7 +227,8 @@ impl LaunchOptions {
                     options.benchmark_memory_pressure = true;
                 }
                 "--profile" => {
-                    crate::profile::validate_name(&value).map_err(|error| error.to_string())?;
+                    // `default` names the default profile explicitly (shortcuts, "Open link in").
+                    crate::profile::validate_listed_name(&value).map_err(|error| error.to_string())?;
                     if options.profile.replace(value).is_some() {
                         return Err("Duplicate profile argument".into());
                     }
@@ -671,7 +672,7 @@ fn ensure_benchmark_profile(path: &Path) -> Result<(), String> {
 }
 
 fn valid_focus_view(view: &str) -> bool {
-    matches!(view,"content"|"toolbar"|"tabs"|"rail"|"panel"|"popup"|"dialog"|"dialog_notes"|"dialog_privacy"|"dialog_rename"|"dialog_address"|"bookmark_bar"|"dialog_sessions"|"dialog_feeds"|"hover"|"split"|"settings"|"history"|"downloads")
+    matches!(view,"content"|"toolbar"|"tabs"|"rail"|"panel"|"popup"|"dialog"|"dialog_notes"|"dialog_privacy"|"dialog_rename"|"dialog_address"|"bookmark_bar"|"dialog_sessions"|"dialog_feeds"|"dialog_toolbar"|"hover"|"split"|"settings"|"history"|"downloads")
 }
 /// Explicit opt-in only. Holds no App, controller or host reference, so passive callbacks cannot
 /// introduce a controller/host reference cycle or borrow application state.
@@ -938,7 +939,14 @@ mod tests {
                 .profile
                 .is_none()
         );
-        for bad in ["..", "a/b", "CON", "default", "x y"] {
+        assert_eq!(
+            LaunchOptions::parse_from(args(&["--profile", "default"]), Path::new("missing"))
+                .unwrap()
+                .profile
+                .as_deref(),
+            Some("default")
+        );
+        for bad in ["..", "a/b", "CON", "Default", "x y"] {
             assert!(
                 LaunchOptions::parse_from(args(&["--profile", bad]), Path::new("missing")).is_err(),
                 "{bad}"

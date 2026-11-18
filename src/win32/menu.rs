@@ -336,6 +336,53 @@ fn selectable(entry: &Entry) -> bool {
     matches!(entry, Entry::Item(item) if item.enabled)
 }
 
+/// `entries` with every row that cannot be used right now left out instead of greyed: disabled items go
+/// (in flyouts too), a flyout left with nothing to pick goes with them, and the separators and section
+/// headers are tidied so no group is empty and no line sits at either end or next to another line.
+pub(crate) fn only_available(entries: Vec<Entry>) -> Vec<Entry> {
+    let kept: Vec<Entry> = entries
+        .into_iter()
+        .filter_map(|entry| match entry {
+            Entry::Item(item) if !item.enabled => None,
+            Entry::Item(mut item) => {
+                if let Some(children) = item.submenu_entries.take() {
+                    let children = only_available(children);
+                    if !children.iter().any(|child| matches!(child, Entry::Item(_))) {
+                        return None;
+                    }
+                    item.submenu_entries = Some(children);
+                }
+                Some(Entry::Item(item))
+            }
+            other => Some(other),
+        })
+        .collect();
+    let mut out: Vec<Entry> = Vec::with_capacity(kept.len());
+    for (index, entry) in kept.iter().enumerate() {
+        match entry {
+            Entry::Separator => {
+                let after_item = matches!(out.last(), Some(Entry::Item(_)));
+                let item_follows = kept[index + 1..].iter().any(|next| matches!(next, Entry::Item(_)));
+                if after_item && item_follows {
+                    out.push(Entry::Separator);
+                }
+            }
+            Entry::SectionHeader(_) => {
+                // A header heads at least one item before the next line or the end.
+                let heads = kept[index + 1..].iter().take_while(|next| !matches!(next, Entry::Separator | Entry::SectionHeader(_))).any(|next| matches!(next, Entry::Item(_)));
+                if heads {
+                    out.push(entry.clone());
+                }
+            }
+            Entry::Item(_) => out.push(entry.clone()),
+        }
+    }
+    while matches!(out.last(), Some(Entry::Separator | Entry::SectionHeader(_))) {
+        out.pop();
+    }
+    out
+}
+
 fn initial_item_index(entries: &[Entry], item_id: Option<usize>) -> Option<usize> {
     item_id.and_then(|id| {
         entries
@@ -1934,6 +1981,46 @@ mod tests {
     fn item(id: usize, enabled: bool) -> Entry {
         let item = Item::new(id, format!("Item {id}"), Icon::None);
         Entry::Item(if enabled { item } else { item.disabled() })
+    }
+
+    fn ids(entries: &[Entry]) -> Vec<Option<usize>> {
+        entries.iter().map(|entry| if let Entry::Item(item) = entry { Some(item.id) } else { None }).collect()
+    }
+
+    #[test]
+    fn only_available_drops_disabled_rows_and_tidies_the_lines() {
+        let entries = vec![
+            item(1, true),
+            Entry::Separator,
+            item(2, false),
+            item(3, false),
+            Entry::Separator,
+            item(4, true),
+            item(5, false),
+            Entry::Separator,
+            Entry::Separator,
+            item(6, true),
+            Entry::Separator,
+            item(7, false),
+        ];
+        // The group of two greyed rows goes with its line, doubled lines merge, and no line ends the menu.
+        assert_eq!(ids(&only_available(entries)), vec![Some(1), None, Some(4), None, Some(6)]);
+        assert!(only_available(vec![Entry::Separator, item(1, false), Entry::Separator]).is_empty());
+        assert_eq!(ids(&only_available(vec![Entry::Separator, item(1, true), Entry::Separator])), vec![Some(1)]);
+    }
+
+    #[test]
+    fn only_available_prunes_flyouts_and_their_headers() {
+        let flyout = |children: Vec<Entry>| Entry::Item(Item::new(10, "Flyout", Icon::None).submenu_with(children));
+        // A flyout with nothing left to pick goes; one with a usable row stays, without its greyed rows.
+        assert_eq!(ids(&only_available(vec![item(1, true), flyout(vec![item(2, false)])])), vec![Some(1)]);
+        let kept = only_available(vec![flyout(vec![item(2, false), item(3, true)])]);
+        let Some(Entry::Item(parent)) = kept.first() else { panic!("flyout kept") };
+        assert_eq!(ids(parent.submenu_entries.as_deref().unwrap_or_default()), vec![Some(3)]);
+        // A section header with nothing under it goes too.
+        let headed = only_available(vec![Entry::SectionHeader("A".into()), item(1, false), Entry::Separator, Entry::SectionHeader("B".into()), item(2, true)]);
+        assert_eq!(headed.len(), 2);
+        assert!(matches!(&headed[0], Entry::SectionHeader(title) if title == "B"));
     }
 
     /// A popup as every caller other than the main menu builds it: no profile header.

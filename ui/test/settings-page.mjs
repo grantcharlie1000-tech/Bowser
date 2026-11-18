@@ -555,8 +555,8 @@ test('Translation: two switches and a language select, each its own command, app
 
 test('rows that do nothing yet say so; a group of only such rows says it once', () => {
   const flagOf = (id) => app.querySelector(`.sp-row[data-row="${id}"]`).querySelector('.sp-flag');
-  // --- final --- the toolbar editor (T13) acts now: its opening row carries no note, and no row is "not yet".
-  assert.equal(app.querySelector('[data-opens="toolbarButtons"]').querySelector('.sp-flag'), null);
+  // --- final --- the toolbar row (T13) acts now: it carries no note, and no row is "not yet".
+  assert.equal(app.querySelector('.sp-row[data-row="toolbarButtons"]').querySelector('.sp-flag'), null);
   assert.equal(logic.ROWS.filter((row) => row.notYet).length, 0, 'every row acts');
   assert.equal(flagOf('frameless'), null, 'auto-hide acts now: no note');
   assert.equal(flagOf('autoHideBars'), null);
@@ -632,89 +632,35 @@ test('a guest cannot switch history on', () => {
   assert.deepEqual(sent, []);
 });
 
-// --- toolbars and feeds (thread T13) --- the toolbar editor: the three bars' lists as rows, each change saved as the
-// whole new list (the address bar's through Save, the other two through `baropt`), reset per bar, locked when the
-// file cannot be read. The HTML toolbar, strip and rail drawing them is tested in test/bars.mjs.
-const editorRows = (bar) => app.querySelector(`section.sp-tbe-bar[data-bar="${bar}"]`).querySelectorAll('.sp-tb-item').filter((row) => row.dataset.item !== undefined);
-const editorButton = (row, name) => row.querySelectorAll('button').find((b) => b.getAttribute('aria-label')?.startsWith(name));
-const barReset = (bar) => app.querySelector(`section.sp-tbe-bar[data-bar="${bar}"]`).querySelector('.sp-tbe-head').querySelector('button');
+// --- toolbars and feeds (thread T13) --- the toolbar is customised in a panel docked beside the page
+// (panels/toolbar.ts, tested in test/toolbar-panel.mjs); the settings page has the row that opens it and a
+// reset of both bars.
+const toolbarRow = () => app.querySelector('.sp-row[data-row="toolbarButtons"]');
+const toolbarButton = (name) => toolbarRow().querySelectorAll('button').find((b) => b.getAttribute('aria-label') === name);
 const toolbarSave = () => sent.filter((m) => m.a === 'save').map((m) => /\ntoolbar_buttons=([^\n]*)\n/.exec(m.text)?.[1]);
-const commandsFixture0 = JSON.parse(readFileSync(join(here, 'fixtures', 'commands-snapshot.json'), 'utf8'));
 
-test('the toolbar editor opens from one row, lists each bar and is no longer in "Not active yet"', () => {
+test('Customise your toolbar is one row that opens the docked customiser', () => {
   deliver(fixture.snap);
   assert.equal(logic.ROWS.find((row) => row.id === 'toolbarButtons').notYet, undefined);
-  assert.equal(logic.rowTier(logic.ROWS.find((row) => row.id === 'toolbarButtons')), 'page');
-  assert.equal(app.querySelector('[data-opens="toolbarButtons"]').querySelector('.bw-button').textContent, 'Edit');
-  assert.equal(app.querySelector('[data-opens="toolbarButtons"]').querySelector('.bw-button').getAttribute('aria-label'), 'Edit toolbars');
-  assert.ok(!app.querySelector('section[data-area="later"]').contains(app.querySelector('.sp-row[data-row="toolbarButtons"]')));
-  assert.deepEqual(editorRows('address').map((row) => row.dataset.item), ['back', 'forward', 'reload', 'site-info', 'split', 'reader', 'extensions', 'downloads']);
-  assert.deepEqual(editorRows('tabs').map((row) => row.dataset.item), ['closed-tabs']);
-  assert.deepEqual(editorRows('panel').map((row) => row.dataset.item), []);
-  const headings = app.querySelectorAll('.sp-tbe-title').map((h) => h.textContent);
-  assert.deepEqual(headings, ['Address bar', 'Tab bar', 'Panel bar'], 'there is no status bar to edit');
+  assert.equal(logic.rowTier(logic.ROWS.find((row) => row.id === 'toolbarButtons')), 'core', 'shown in the simple view, not a sub-page');
+  assert.equal(app.querySelector('[data-opens="toolbarButtons"]'), null);
+  assert.equal(toolbarRow().querySelector('.sp-label').textContent, 'Customise your toolbar');
+  assert.equal(app.querySelector('.sp-tbe'), null, 'the old in-page editor is gone');
+  sent.length = 0;
+  toolbarButton('Customise your toolbar').click();
+  assert.deepEqual(sent, [{ v: 1, t: 'set', a: 'opentoolbar' }]);
 });
 
-test('moving, removing and resetting an address bar button each save the whole list', () => {
+test('Reset to default puts both bars back, and is off while they already are', () => {
   deliver(fixture.snap);
+  assert.equal(toolbarButton('Reset the toolbar to its default buttons').disabled, true);
+  deliver({ ...fixture.snap, d: { ...fixture.snap.d, toolbarButtons: 'back,newtab,cmd:new-tab', bars: { ...fixture.snap.d.bars, tabs: 'cmd:new-tab' } } });
   sent.length = 0;
-  // Move Forward up past Back: back and forward swap.
-  editorButton(editorRows('address')[1], 'Move Forward up').click();
-  assert.deepEqual(toolbarSave(), ['forward,back,reload,site-info,split,reader,extensions,downloads']);
-  deliver(fixture.snap);
-  sent.length = 0;
-  // Remove Reload.
-  editorButton(editorRows('address')[2], 'Remove Reload').click();
-  assert.deepEqual(toolbarSave(), ['back,forward,site-info,split,reader,extensions,downloads']);
-  deliver(fixture.snap);
-  sent.length = 0;
-  // The first button of a zone cannot move up, the last cannot move down, and a button never crosses into another zone.
-  assert.equal(editorButton(editorRows('address')[0], 'Move Back up').disabled, true);
-  assert.equal(editorButton(editorRows('address')[2], 'Move Reload and stop down').disabled, true, 'reload is the last before the address field');
-  assert.equal(editorButton(editorRows('address')[3], 'Move Site information up').disabled, true, 'site information is the first inside the field');
-  // Reset returns the default list (here it already is the default, so the button is off).
-  assert.equal(barReset('address').disabled, true);
-  deliver({ ...fixture.snap, d: { ...fixture.snap.d, toolbarButtons: 'back,newtab,cmd:new-tab' } });
-  sent.length = 0;
-  assert.equal(barReset('address').disabled, false);
-  barReset('address').click();
+  const reset = toolbarButton('Reset the toolbar to its default buttons');
+  assert.equal(reset.disabled, false);
+  reset.click();
   assert.deepEqual(toolbarSave(), ['back,forward,reload,site-info,split,reader,extensions,downloads']);
-  deliver(fixture.snap);
-});
-
-test('the tab bar and panel bar lists are their own baropt commands, never part of save', () => {
-  deliver(fixture.snap);
-  sent.length = 0;
-  editorButton(editorRows('tabs')[0], 'Remove Closed tabs').click();
-  assert.deepEqual(sent, [{ v: 1, t: 'set', a: 'baropt', text: 'toolbar_tabs=' }]);
-  assert.ok(!sent.some((m) => m.a === 'save'));
-  deliver({ ...fixture.snap, d: { ...fixture.snap.d, bars: { ...fixture.snap.d.bars, tabs: 'cmd:new-tab,closed-tabs', panel: 'feeds,chain:2' } } });
-  assert.deepEqual(editorRows('tabs').map((row) => row.dataset.item), ['cmd:new-tab', 'closed-tabs']);
-  assert.deepEqual(editorRows('panel').map((row) => row.dataset.item), ['feeds', 'chain:2']);
-  sent.length = 0;
-  editorButton(editorRows('tabs')[1], 'Move Closed tabs up').click();
-  editorButton(editorRows('panel')[0], 'Move Feeds down').click();
-  assert.deepEqual(sent, [
-    { v: 1, t: 'set', a: 'baropt', text: 'toolbar_tabs=closed-tabs,cmd:new-tab' },
-    { v: 1, t: 'set', a: 'baropt', text: 'toolbar_panel=chain:2,feeds' },
-  ]);
-  sent.length = 0;
-  barReset('panel').click();
-  barReset('tabs').click();
-  assert.deepEqual(sent, [
-    { v: 1, t: 'set', a: 'baropt', text: 'toolbar_panel=' },
-    { v: 1, t: 'set', a: 'baropt', text: 'toolbar_tabs=closed-tabs' },
-  ]);
-  deliver(fixture.snap);
-});
-
-test('command buttons take the name of their command once the commands arrive', () => {
-  deliver(fixture.snap);
-  deliver({ v: 1, t: 'snap', p: 'commands', d: JSON.parse(JSON.stringify(commandsFixture0.d)) });
-  deliver({ ...fixture.snap, d: { ...fixture.snap.d, bars: { ...fixture.snap.d.bars, tabs: 'cmd:new-tab,cmd:no-such' } } });
-  const names = editorRows('tabs').map((row) => row.querySelector('.sp-label').textContent);
-  assert.equal(names[0], 'New tab');
-  assert.equal(names[1], 'no such', 'a command Rust does not list is named from its id');
+  assert.ok(sent.some((m) => m.a === 'baropt' && m.text === 'toolbar_tabs=closed-tabs'));
   deliver(fixture.snap);
 });
 
@@ -774,7 +720,9 @@ test('default browser status reflects the snapshot and the button sends a bare s
 test('an unreadable settings file disables the new controls too, except the setdefault button', () => {
   deliver({ ...fixture.snap, d: { ...fixture.snap.d, readable: false } });
   // --- toolbars and feeds (thread T13) --- the toolbar editor and the feed rows lock too.
-  for (const button of app.querySelector('.sp-tbe').querySelectorAll('button')) assert.equal(button.disabled, true, button.getAttribute('aria-label') ?? button.textContent);
+  for (const button of app.querySelector('.sp-row[data-row="toolbarButtons"]').querySelectorAll('button')) {
+    assert.equal(button.disabled, true, button.getAttribute('aria-label') ?? button.textContent);
+  }
   assert.equal(app.querySelector('.sp-row[data-row="feedsDetect"]').querySelector('[role="switch"]').disabled, true);
   assert.equal(app.querySelector('.sp-row[data-row="feedsRefresh"]').querySelector('button').disabled, true);
   const themeRow = app.querySelector('.sp-row[data-row="themeAccent"]');
@@ -1600,12 +1548,12 @@ test('slim: the search finds rows behind a closed disclosure and opens it; clear
   searchFor('');
   assert.equal(button.getAttribute('aria-expanded'), 'true', 'a row used from the search stays in view');
   button.click();
-  // --- final --- nothing waits in "Not active yet" any more: the toolbar editor (T13) is a sub-page whose
-  // opening row the search finds in Appearance, and the section itself stays hidden.
-  searchFor('customise your toolbars');
+  // --- final --- nothing waits in "Not active yet" any more: the toolbar row (T13) is found in Appearance,
+  // and the section itself stays hidden.
+  searchFor('customise your toolbar');
   assert.equal(areaNode('later').hidden, true);
-  assert.equal(app.querySelector('[data-opens="toolbarButtons"]').hidden, false);
-  assert.equal(areaNode('appearance').hidden, false, 'the opening row is in Appearance');
+  assert.equal(app.querySelector('.sp-row[data-row="toolbarButtons"]').hidden, false);
+  assert.equal(areaNode('appearance').hidden, false, 'the row is in Appearance');
   searchFor('');
   assert.equal(areaNode('later').hidden, true);
 });
@@ -2286,8 +2234,12 @@ test('simple settings is the calm default, and All settings is one switch away',
   assert.equal(app.querySelector('.sp-nav').hidden, true);
   for (const area of logic.AREAS) assert.equal(areaNode(area.key).hidden, true, area.key);
   assert.deepEqual(app.querySelector('.sp-simple').querySelectorAll('.sp-label').map((node) => node.textContent), [
-    'Search engine', 'Homepage', 'Startup', 'Theme', 'Accent', 'Tabs', 'Import', 'Clear data', 'Extensions', 'Default browser',
+    'Profile', 'Search engine', 'Homepage', 'Startup', 'Theme', 'Accent', 'Tabs', 'Import', 'Clear data', 'Extensions', 'Default browser',
   ]);
+  // --- profiles --- this window's profile, one click from the manager.
+  const simpleProfile = app.querySelector('[data-simple="simpleProfile"]');
+  assert.equal(simpleProfile.querySelector('.sp-simple-profile-name').textContent, fixture.snap.d.profile);
+  assert.ok(simpleProfile.querySelectorAll('button').find((b) => b.getAttribute('aria-label') === 'Manage profiles'));
   const engineRow = app.querySelector('.sp-row[data-row="searchDefault"]');
   assert.ok(app.querySelector('.sp-simple').contains(engineRow));
   assert.equal(engineRow.querySelector('.sp-engine-value').textContent, 'DuckDuckGo');
@@ -2604,4 +2556,117 @@ test('an invalid Homepage or Startup pages entry stays to correct but is marked 
   pages.dispatch('change');
   assert.equal(pages.getAttribute('aria-invalid'), null);
   deliver(fixture.snap); // Bowser's answer settles the pending saves for the tests after this one.
+});
+
+// --- profiles --- the profile manager on bowser://settings/profile.
+test('profiles: the snapshot list is strict, names are checked like Rust, and commands are plain text', () => {
+  const good = fixture.snap.d.profiles;
+  const parsed = logic.parseProfiles(good);
+  assert.deepEqual(parsed.list.map((p) => [p.id, p.name, p.current]), [['default', 'Personal', false], ['Work', 'Work "<b>"', true]]);
+  assert.deepEqual(parsed.accents.length, 5);
+  const row = good.list[0];
+  const withList = (list) => ({ ...good, list });
+  for (const bad of [
+    null, [], { ...good, extra: 1 }, withList([{ ...row, extra: 1 }]), withList([{ ...row, id: '../x' }]), withList([{ ...row, id: 'Default' }, row]),
+    withList([good.list[1], { ...good.list[1], id: 'work', current: false }]),
+    withList([{ ...row, name: '' }]), withList([{ ...row, name: ' padded' }]), withList([{ ...row, name: 'x'.repeat(33) }]), withList([{ ...row, name: 'evil\u202etxt' }]),
+    withList([{ ...row, colour: 'red' }]), withList([{ ...row, avatar: 'cat' }]), withList([{ ...row, accent: 'pink' }]), withList([{ ...row, glyph: '' }]),
+    withList([{ ...row, current: true }, good.list[1]]),
+    { ...good, avatars: ['W'] }, { ...good, accents: ['red', 'red', 'red', 'red', 'red'] },
+    withList([row]), // previews without a current profile
+    { ...good, avatars: [], accents: [] }, // a current profile without previews
+  ]) assert.equal(logic.parseProfiles(bad), null, JSON.stringify(bad));
+  assert.deepEqual(logic.parseProfiles({ list: [row], avatars: [], accents: [] })?.list.length, 1, 'a guest window: no previews');
+  assert.equal(logic.parseSettingsSnapshot({ ...fixture.snap.d, profiles: undefined }), null, 'the snapshot needs it');
+  const list = parsed.list;
+  assert.equal(logic.profileNameError('', list), 'Enter a name.');
+  assert.equal(logic.profileNameError('x'.repeat(33), list), 'Use at most 32 characters.');
+  assert.equal(logic.profileNameError('😀'.repeat(32), list), '', 'characters, not UTF-16 units');
+  assert.equal(logic.profileNameError('a\nb', list), 'Names cannot contain control characters.');
+  assert.equal(logic.profileNameError('evil\u202etxt', list), 'Names cannot contain invisible characters.');
+  assert.equal(logic.profileNameError('personal', list), 'Another profile already uses that name.');
+  assert.equal(logic.profileNameError('Personal', list, 'default'), '', 'its own name');
+  assert.equal(logic.profileNameError('  Kids & school ', list), '');
+  assert.equal(logic.profileText.create('  Kids '), 'new\tKids');
+  assert.equal(logic.profileText.rename('Work', ' Office '), 'rename\tWork\tOffice');
+  assert.equal(logic.profileText.look('default', 'moon', 'rose'), 'look\tdefault\tmoon\trose');
+  assert.equal(logic.profileText.remove('Work'), 'delete\tWork');
+});
+
+test('profiles: the manager lists each profile, opens others, adds, renames in place and asks before deleting', async () => {
+  deliver(fixture.snap);
+  const row = rowNode('profiles');
+  const items = row.querySelectorAll('.sp-profile');
+  assert.deepEqual(items.map((item) => item.dataset.profile), ['default', 'Work']);
+  assert.deepEqual(items.map((item) => item.querySelector('.sp-profile-name').textContent), ['Personal', 'Work "<b>"']);
+  assert.equal(items[1].getAttribute('aria-current'), 'true');
+  const button = (scope, label) => scope.querySelectorAll('button').find((b) => b.getAttribute('aria-label') === label || b.textContent.trim() === label);
+  assert.equal(button(items[1], 'Open Work "<b>"'), undefined, 'the current profile has no Open');
+  assert.equal(button(items[0], 'Delete Personal'), undefined, 'the default profile is never deleted');
+  assert.equal(button(items[1], 'Delete Work "<b>"'), undefined, 'nor the one this window runs');
+  sent.length = 0;
+  button(items[0], 'Open Personal').click();
+  assert.deepEqual(sent, [{ v: 1, t: 'set', a: 'profile', text: 'open\tdefault' }]);
+
+  // Add: refused names say why and send nothing.
+  const input = row.querySelector('.sp-profile-add').querySelector('.sp-allow-input');
+  const add = button(row.querySelector('.sp-profile-add'), 'Add profile');
+  const error = row.querySelectorAll('.sp-field-error').at(-1);
+  sent.length = 0;
+  input.value = 'PERSONAL';
+  add.click();
+  assert.deepEqual(sent, []);
+  assert.equal(error.textContent, 'Another profile already uses that name.');
+  input.value = '  Kids ';
+  add.click();
+  assert.deepEqual(sent, [{ v: 1, t: 'set', a: 'profile', text: 'new\tKids' }]);
+  assert.equal(input.value, '');
+
+  // The current profile's look: one radio per avatar and per colour.
+  const look = row.querySelector('.sp-profile-look');
+  assert.equal(look.hidden, false);
+  const radios = look.querySelectorAll('[role="radio"]');
+  assert.equal(radios.length, 10);
+  assert.deepEqual(radios.filter((r) => r.getAttribute('aria-checked') === 'true').map((r) => r.getAttribute('aria-label')), ['Star', 'Teal']);
+  sent.length = 0;
+  radios.find((r) => r.getAttribute('aria-label') === 'Rose').click();
+  assert.deepEqual(sent, [{ v: 1, t: 'set', a: 'profile', text: 'look\tWork\tstar\trose' }]);
+
+  // Rename happens in the row.
+  button(row.querySelectorAll('.sp-profile')[0], 'Rename Personal').click();
+  const rename = row.querySelector('.sp-profile-rename');
+  assert.ok(rename);
+  rename.value = 'Home';
+  sent.length = 0;
+  button(row.querySelectorAll('.sp-profile')[0], 'Save').click();
+  assert.deepEqual(sent, [{ v: 1, t: 'set', a: 'profile', text: 'rename\tdefault\tHome' }]);
+  assert.equal(row.querySelector('.sp-profile-rename'), null, 'the row closes');
+
+  // Delete asks first, in the page; Keep is the focused answer.
+  const profiles = fixture.snap.d.profiles;
+  const other = { ...fixture.snap, d: { ...fixture.snap.d, ack: 'none', profiles: { ...profiles, list: [...profiles.list, { id: 'Kids', name: 'Kids', glyph: 'K', colour: '#6542a5', avatar: 'initial', accent: 'violet', current: false }] } } };
+  deliver(other);
+  const kids = () => row.querySelectorAll('.sp-profile').find((item) => item.dataset.profile === 'Kids');
+  sent.length = 0;
+  button(kids(), 'Delete Kids').click();
+  assert.deepEqual(sent, [], 'nothing is deleted on the first click');
+  assert.ok(kids().classList.contains('is-asking'));
+  await Promise.resolve();
+  assert.equal(document.activeElement, button(kids(), 'Keep'));
+  button(kids(), 'Keep').click();
+  assert.deepEqual(sent, []);
+  button(kids(), 'Delete Kids').click();
+  button(kids(), 'Delete').click();
+  assert.deepEqual(sent, [{ v: 1, t: 'set', a: 'profile', text: 'delete\tKids' }]);
+  deliver(fixture.snap);
+});
+
+test('profiles: a guest window lists the profiles to open but changes none of them', () => {
+  const guest = { ...fixture.guest, d: { ...fixture.guest.d, profiles: { list: fixture.guest.d.profiles.list.map((p) => ({ ...p, current: false })), avatars: [], accents: [] } } };
+  deliver(guest);
+  const row = rowNode('profiles');
+  assert.equal(row.querySelector('.sp-profile-look').hidden, true);
+  assert.equal(row.querySelectorAll('.sp-profile-act').length, 0, 'no rename, shortcut or delete');
+  assert.deepEqual(row.querySelectorAll('button').map((b) => b.getAttribute('aria-label')).filter((label) => label?.startsWith('Open ')), ['Open Personal', 'Open Work "<b>"']);
+  deliver(fixture.snap);
 });

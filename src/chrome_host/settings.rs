@@ -89,6 +89,90 @@ pub struct Snapshot<'a> {
     /// the workspaces a rule can name, in rail order.
     pub workspace_rules: Vec<(String, String)>,
     pub workspace_names: Vec<String>,
+    /// --- profiles --- every listed profile for the profile manager, `default` first.
+    pub profiles: ProfileList,
+}
+
+/// The profile manager's list, and how this window's profile looks with each avatar and colour.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ProfileList {
+    pub rows: Vec<ProfileRow>,
+    /// One glyph per `crate::profile::AVATARS` entry, in order; empty in a guest window.
+    pub avatars: Vec<String>,
+    /// One `#rrggbb` per `crate::profile::ACCENTS` entry, in order; empty in a guest window.
+    pub accents: Vec<String>,
+}
+
+/// One row of the settings page's profile manager.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProfileRow {
+    /// The listed id: `default` or the folder name.
+    pub id: String,
+    pub name: String,
+    /// The avatar as shown (one glyph) and its colour as `#rrggbb`.
+    pub glyph: String,
+    pub colour: String,
+    /// The avatar and accent keys (`crate::profile::AVATARS` / `ACCENTS`).
+    pub avatar: String,
+    pub accent: String,
+    /// The profile this window runs.
+    pub current: bool,
+}
+
+/// What a `profile` command asks for. Ids and names are checked here; whether the profile exists
+/// is checked when it runs.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ProfileCommand {
+    /// Open the profile's window (start it, or bring up the one already open).
+    Open(String),
+    /// Create a profile with this display name and open it.
+    New(String),
+    Rename { id: String, name: String },
+    Look { id: String, avatar: String, accent: String },
+    Shortcut(String),
+    /// Delete a closed profile; the page has already asked.
+    Delete(String),
+    Guest,
+}
+
+impl ProfileCommand {
+    /// Whether the page waits for an answer ("Saved" or what went wrong). Opening a window or
+    /// writing a shortcut changes nothing the page shows, so only a failure is reported.
+    pub fn answers(&self) -> bool {
+        matches!(self, Self::New(_) | Self::Rename { .. } | Self::Look { .. } | Self::Delete(_))
+    }
+}
+
+/// Longest `profile` command text: a verb, an id and a 32-character name in UTF-8.
+const MAX_PROFILE_COMMAND: usize = 200;
+
+fn profile_id(text: &str) -> Option<String> {
+    crate::profile::validate_listed_name(text).is_ok().then(|| text.to_owned())
+}
+
+/// Parses `open<TAB>id`, `new<TAB>name`, `rename<TAB>id<TAB>name`, `look<TAB>id<TAB>avatar<TAB>accent`,
+/// `shortcut<TAB>id`, `delete<TAB>id` or `guest`.
+pub fn parse_profile_command(text: &str) -> Option<ProfileCommand> {
+    if text.len() > MAX_PROFILE_COMMAND {
+        return None;
+    }
+    let parts: Vec<&str> = text.split('\t').collect();
+    let name = |text: &str| crate::profile::validate_display_name(text).ok();
+    Some(match parts.as_slice() {
+        ["open", id] => ProfileCommand::Open(profile_id(id)?),
+        ["new", display] => ProfileCommand::New(name(display)?),
+        ["rename", id, display] => ProfileCommand::Rename { id: profile_id(id)?, name: name(display)? },
+        ["look", id, avatar, accent] => {
+            if !crate::profile::AVATARS.contains(avatar) || !crate::profile::ACCENTS.contains(accent) {
+                return None;
+            }
+            ProfileCommand::Look { id: profile_id(id)?, avatar: (*avatar).to_owned(), accent: (*accent).to_owned() }
+        }
+        ["shortcut", id] => ProfileCommand::Shortcut(profile_id(id)?),
+        ["delete", id] if *id != crate::profile::DEFAULT_NAME => ProfileCommand::Delete(profile_id(id)?),
+        ["guest"] => ProfileCommand::Guest,
+        _ => return None,
+    })
 }
 
 /// --- tab stacks (T10) --- longest `wsrule` text: a host, a tab, a workspace name and its verb.
@@ -207,6 +291,25 @@ pub fn snapshot_json(s: &Snapshot<'_>) -> String {
             rules.array("workspaces", |items| for name in s.workspace_names.iter().take(128) { items.string(capped(name, 128)); });
         });
         // --- end tab stacks ---
+        // --- profiles --- the profile manager's list.
+        out.object("profiles", |profiles| {
+            profiles.array("list", |items| {
+                for row in s.profiles.rows.iter().take(crate::profile::MAX_LISTED) {
+                    items.object(|o| {
+                        o.string("id", &row.id);
+                        o.string("name", capped(&row.name, MAX_PROFILE_CHARS));
+                        o.string("glyph", capped(&row.glyph, MAX_AVATAR_CHARS));
+                        o.string("colour", &row.colour);
+                        o.string("avatar", &row.avatar);
+                        o.string("accent", &row.accent);
+                        o.bool("current", row.current);
+                    });
+                }
+            });
+            profiles.array("avatars", |items| for glyph in &s.profiles.avatars { items.string(capped(glyph, MAX_AVATAR_CHARS)); });
+            profiles.array("accents", |items| for colour in &s.profiles.accents { items.string(colour); });
+        });
+        // --- end profiles ---
         // --- layout (thread T6) --- one object: the Layout block's options (src/layout_prefs.rs)
         out.object("layout", |layout| {
             layout.bool("tabBarVisible", settings.tab_bar_visible);
@@ -277,7 +380,8 @@ pub enum Action {
     CheckUpdates,
     RestartUpdate,
     Privacy,
-    Profiles,
+    /// --- profiles --- one change from the profile manager.
+    Profile(ProfileCommand),
     Import,
     /// The page wants a fresh snapshot (it regained focus).
     Refresh,
@@ -321,6 +425,8 @@ pub enum Action {
     BarOption(String),
     /// "Open Feeds": the Feeds panel.
     OpenFeeds,
+    /// "Customise": the toolbar customiser docked beside the page (opens or closes it).
+    OpenToolbar,
     // --- end toolbars and feeds ---
 }
 
@@ -396,13 +502,14 @@ pub fn map_command(f: &PanelFields) -> Option<Action> {
             Action::BarOption(text.to_owned())
         }
         "openfeeds" if bare => Action::OpenFeeds,
+        "opentoolbar" if bare => Action::OpenToolbar,
         // --- end toolbars and feeds ---
         "reset" if bare => Action::Reset,
         "openfile" if bare => Action::OpenFile,
         "checkupdates" if bare => Action::CheckUpdates,
         "restartupdate" if bare => Action::RestartUpdate,
         "privacy" if bare => Action::Privacy,
-        "profiles" if bare => Action::Profiles,
+        "profile" if text_only => Action::Profile(parse_profile_command(f.text.as_deref()?)?),
         "import" if bare => Action::Import,
         "refresh" if bare => Action::Refresh,
         "setdefault" if bare => Action::SetDefault,
@@ -674,6 +781,7 @@ mod tests {
             settings: &back, readable: true, custom_search: false, efficiency_active: false, auto_update: true, history_enabled: true, guest: false,
             profile: "Default", avatar: "", version: "1.0.0", update: "idle", update_version: "", last_check: "none", check_result: "none",
             ack: Ack::Saved, error: "", default_browser: "unknown", download_dir: "", download_ask: false, workspace_rules: Vec::new(), workspace_names: Vec::new(),
+            profiles: ProfileList::default(),
         };
         assert!(snapshot_json(&snap).len() <= MAX_SNAPSHOT_BYTES);
         let _ = std::fs::remove_dir_all(&dir);
@@ -749,7 +857,7 @@ mod tests {
         section.text = Some("downloads".into());
         assert_eq!(map_command(&section), Some(Action::Section(Some(Section::Downloads))));
 
-        for (name, action) in [("reset", Action::Reset), ("openfile", Action::OpenFile), ("checkupdates", Action::CheckUpdates), ("restartupdate", Action::RestartUpdate), ("privacy", Action::Privacy), ("profiles", Action::Profiles), ("import", Action::Import), ("refresh", Action::Refresh), ("setdefault", Action::SetDefault)] {
+        for (name, action) in [("reset", Action::Reset), ("openfile", Action::OpenFile), ("checkupdates", Action::CheckUpdates), ("restartupdate", Action::RestartUpdate), ("privacy", Action::Privacy), ("import", Action::Import), ("refresh", Action::Refresh), ("setdefault", Action::SetDefault)] {
             assert_eq!(map_command(&fields(name)), Some(action), "{name}");
             let mut with_on = fields(name);
             with_on.on = Some(true);
@@ -831,14 +939,55 @@ mod tests {
             download_ask: false,
             workspace_rules: vec![("example.org".into(), "Work".into())],
             workspace_names: vec!["Default".into(), "Work".into()],
+            profiles: ProfileList {
+                rows: vec![
+                    ProfileRow { id: "default".into(), name: "Personal".into(), glyph: "P".into(), colour: "#2b5fa8".into(), avatar: "initial".into(), accent: "blue".into(), current: false },
+                    ProfileRow { id: "Work".into(), name: "Work \"<b>\"".into(), glyph: "\u{2726}".into(), colour: "#176d62".into(), avatar: "star".into(), accent: "teal".into(), current: true },
+                ],
+                avatars: vec!["W".into(), "\u{2767}".into(), "\u{2726}".into(), "\u{2248}".into(), "\u{263e}".into()],
+                accents: vec!["#2b5fa8".into(), "#6542a5".into(), "#176d62".into(), "#945700".into(), "#a33f5a".into()],
+            },
         }
+    }
+
+    /// --- profiles --- the profile manager's list and its one command.
+    #[test]
+    fn profiles_ride_in_the_snapshot_and_profile_commands_are_checked() {
+        let json = snapshot_json(&sample(&Settings::default()));
+        assert!(json.contains(r##""profiles":{"list":[{"id":"default","name":"Personal","glyph":"P","colour":"#2b5fa8","avatar":"initial","accent":"blue","current":false},"##), "{json}");
+        let mut command = fields("profile");
+        let cases = [
+            ("open\tdefault", ProfileCommand::Open("default".into())),
+            ("open\tWork-1", ProfileCommand::Open("Work-1".into())),
+            ("new\t  Kids & school ", ProfileCommand::New("Kids & school".into())),
+            ("rename\tdefault\tCafé", ProfileCommand::Rename { id: "default".into(), name: "Café".into() }),
+            ("look\tWork\tmoon\trose", ProfileCommand::Look { id: "Work".into(), avatar: "moon".into(), accent: "rose".into() }),
+            ("shortcut\tWork", ProfileCommand::Shortcut("Work".into())),
+            ("delete\tWork", ProfileCommand::Delete("Work".into())),
+            ("guest", ProfileCommand::Guest),
+        ];
+        for (text, want) in cases {
+            command.text = Some(text.into());
+            assert_eq!(map_command(&command), Some(Action::Profile(want)), "{text:?}");
+        }
+        let long = format!("new\t{}", "x".repeat(33));
+        for bad in [
+            "open", "open\t..\\x", "open\tDefault", "open\tCON", "new\t", "new\t   ", long.as_str(), "rename\tWork",
+            "look\tWork\tmoon", "look\tWork\tbogus\trose", "look\tWork\tmoon\tpink", "delete\tdefault", "guest\tx", "wipe\tWork",
+            "new\tline\u{1}",
+        ] {
+            command.text = Some(bad.into());
+            assert_eq!(map_command(&command), None, "{bad:?}");
+        }
+        command.text = None;
+        assert_eq!(map_command(&command), None);
     }
 
     /// --- tab stacks (T10) --- the workspace rules editor's list and its two commands.
     #[test]
     fn workspace_rules_ride_in_the_snapshot_and_their_commands_carry_a_plain_site() {
         let json = snapshot_json(&sample(&Settings::default()));
-        assert!(json.contains(r#""workspaceRules":{"rules":[{"site":"example.org","workspace":"Work"}],"workspaces":["Default","Work"]},"layout":{"#), "{json}");
+        assert!(json.contains(r#""workspaceRules":{"rules":[{"site":"example.org","workspace":"Work"}],"workspaces":["Default","Work"]},"profiles":{"#), "{json}");
         let mut rule = fields("wsrule");
         rule.text = Some("add\thttps://www.News.example.com/x\tReading".into());
         assert_eq!(map_command(&rule), Some(Action::WorkspaceRuleAdd { site: "news.example.com".into(), workspace: "Reading".into() }));
@@ -1103,6 +1252,8 @@ block_youtube_video_ads=true".to_owned();
         assert_eq!(map_command(&fields("baropt")), None);
         assert_eq!(map_command(&fields("openfeeds")), Some(Action::OpenFeeds));
         assert_eq!(map_command(&PanelFields { text: Some("x".into()), ..fields("openfeeds") }), None);
+        assert_eq!(map_command(&fields("opentoolbar")), Some(Action::OpenToolbar));
+        assert_eq!(map_command(&PanelFields { text: Some("x".into()), ..fields("opentoolbar") }), None);
     }
 
     #[test]

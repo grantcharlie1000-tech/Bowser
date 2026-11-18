@@ -175,6 +175,52 @@ export function settingRow(label: string, description: string | null, control?: 
   return row;
 }
 
+/** A radio group the caller repaints in place: `set` moves the choice, `disable` turns it off. */
+export interface RadioGroup<T> { readonly root: HTMLElement; set(value: T | null): void; disable(off: boolean): void }
+
+/** Radio group with roving tabindex and arrow keys; `items` build each option's face. */
+export function radioGroup<T extends string>(className: string, label: string, items: ReadonlyArray<readonly [T, (button: HTMLButtonElement) => void]>, onSelect: (value: T) => void): RadioGroup<T> {
+  const group = el('div', className);
+  group.setAttribute('role', 'radiogroup');
+  group.setAttribute('aria-label', label);
+  const buttons: Array<[T, HTMLButtonElement]> = [];
+  const paint = (value: T | null): void => {
+    buttons.forEach(([key, button], index) => {
+      const on = key === value;
+      button.setAttribute('aria-checked', String(on));
+      button.tabIndex = on || (value === null && index === 0) ? 0 : -1;
+    });
+  };
+  for (const [value, face] of items) {
+    const button = el('button');
+    button.type = 'button';
+    button.setAttribute('role', 'radio');
+    face(button);
+    button.addEventListener('click', () => {
+      if (button.getAttribute('aria-checked') === 'true') return;
+      paint(value);
+      onSelect(value);
+    });
+    buttons.push([value, button]);
+    group.append(button);
+  }
+  group.addEventListener('keydown', (event) => {
+    const step = event.key === 'ArrowLeft' || event.key === 'ArrowUp' ? -1 : event.key === 'ArrowRight' || event.key === 'ArrowDown' ? 1 : 0;
+    if (step === 0) return;
+    event.preventDefault();
+    const index = buttons.findIndex(([, button]) => button === document.activeElement);
+    const next = buttons[(index + step + buttons.length) % buttons.length]?.[1];
+    next?.focus();
+    next?.click();
+  });
+  paint(null);
+  return {
+    root: group,
+    set: paint,
+    disable: (off) => buttons.forEach(([, button]) => { button.disabled = off; }),
+  };
+}
+
 /** Radio-style segmented control with roving tabindex and arrow keys. */
 export function segmented<T extends string>(options: ReadonlyArray<readonly [T, string]>, current: T | null, onSelect: (value: T) => void, label: string): HTMLElement {
   const group = el('div', 'bw-segmented');

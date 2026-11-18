@@ -118,7 +118,7 @@ pub(crate) fn gather(
     Snapshot {
         profile: profile.map_or_else(
             || "Bowser".to_owned(),
-            |profile| profile.listed_name().to_owned(),
+            crate::profile::Profile::display_name,
         ),
         guest: profile.is_some_and(crate::profile::Profile::is_guest),
         stats,

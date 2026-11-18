@@ -30,6 +30,7 @@ mod page_tools_ui; // capture and notes-from-the-page commands (thread T7)
 // --- tab options --- the Sessions panel.
 mod sessions_panel;
 mod feeds_panel; // the Feeds panel's host side and its fetch workers (thread T13)
+mod toolbar_panel; // the toolbar customiser docked beside the page (thread T13)
 // --- end tab options ---
 mod panel_bookmarks;
 mod panel_customize;
@@ -51,6 +52,7 @@ mod passwords_panel;
 pub(crate) mod privacy_panel;
 mod protection; // blocking, cookie notices, history retention, website appearance (thread T3)
 mod profile_rename;
+mod profile_shortcut; // desktop shortcuts that open one profile
 mod settings_page;
 mod store;
 mod history_page; // bowser://history (docs/design/history-page.md)

@@ -1,0 +1,154 @@
+name: Prepare Bowser release
+
+# One click starts a release: Actions > Prepare Bowser release > Run workflow
+# (or: gh workflow run prepare-release.yml --ref main -f version=next).
+# It runs main's own tools/release.py bump, puts the result on
+# release/bump-vX.Y.Z as one commit on main's head, starts windows-verify on it
+# (which recognises an exact bump and passes in about a minute) and opens the
+# PR. A person merges it; that push to main starts release.yml, which verifies
+# everything on the merged commit before publishing and then opens the pin PR.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: New version X.Y.Z, or "next" for the next patch version.
+        required: true
+        type: string
+        default: next
+
+permissions:
+  contents: read
+
+concurrency:
+  group: bowser-prepare-release
+  cancel-in-progress: false
+
+jobs:
+  bump:
+    if: github.repository == 'grantcharlie1000-tech/Bowser' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.bump.outputs.version }}
+      base: ${{ steps.bump.outputs.base }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Run main's release.py bump and keep exactly its four files
+        id: bump
+        shell: bash
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          if ! [[ "$INPUT_VERSION" =~ ^(next|[0-9]+\.[0-9]+\.[0-9]+)$ ]]; then echo "Invalid version: $INPUT_VERSION" >&2; exit 1; fi
+          python3 tools/release.py bump "$INPUT_VERSION"
+          changed="$(git diff --name-only | sort | tr '\n' ' ')"
+          if [ "$changed" != "Cargo.lock Cargo.toml src/updater.rs stable/allowlist.json " ]; then
+            echo "Unexpected bump changes: $changed" >&2; exit 1
+          fi
+          version="$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml","rb"))["package"]["version"])')"
+          mkdir -p "$RUNNER_TEMP/bump/src" "$RUNNER_TEMP/bump/stable"
+          for f in Cargo.lock Cargo.toml src/updater.rs stable/allowlist.json; do cp "$f" "$RUNNER_TEMP/bump/$f"; done
+          printf 'version=%s\nbase=%s\n' "$version" "$GITHUB_SHA" | tee -a "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: bump-${{ steps.bump.outputs.version }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/bump/
+          if-no-files-found: error
+          retention-days: 7
+
+  # Runs no repository code. Commits exactly the four bumped files on top of the
+  # commit they were computed from, starts the PR check and opens the PR. It
+  # never merges: a person's merge is what starts release.yml.
+  open:
+    needs: bump
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+      pull-requests: write
+      actions: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: bump-${{ needs.bump.outputs.version }}-${{ github.run_id }}
+          path: bump
+      - name: Commit the bump on a branch, start its check, open the PR
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.bump.outputs.version }}
+          BASE: ${{ needs.bump.outputs.base }}
+        run: |
+          python3 - <<'PY'
+          import base64, json, os, pathlib, re, urllib.error, urllib.request
+
+          REPO = 'grantcharlie1000-tech/Bowser'
+          FILES = ['Cargo.lock', 'Cargo.toml', 'src/updater.rs', 'stable/allowlist.json']
+          env = os.environ
+          version, base = env['VERSION'], env['BASE']
+          if not re.fullmatch(r'\d+\.\d+\.\d+', version) or not re.fullmatch(r'[0-9a-f]{40}', base):
+              raise SystemExit('invalid version or base')
+          root = pathlib.Path('bump')
+          found = sorted(str(p.relative_to(root)).replace('\\', '/') for p in root.rglob('*') if p.is_file())
+          if found != FILES:
+              raise SystemExit(f'unexpected artifact files {found}')
+          for name in FILES:
+              if (root / name).stat().st_size > 4 * 1024 * 1024:
+                  raise SystemExit(f'{name} is unexpectedly large')
+
+          def call(method, path, body=None):
+              req = urllib.request.Request(
+                  f'https://api.github.com/repos/{REPO}/{path}', method=method,
+                  data=None if body is None else json.dumps(body).encode(),
+                  headers={'Authorization': f"Bearer {env['GH_TOKEN']}", 'Accept': 'application/vnd.github+json',
+                           'X-GitHub-Api-Version': '2022-11-28', 'Content-Type': 'application/json'})
+              try:
+                  with urllib.request.urlopen(req, timeout=120) as resp:
+                      data = resp.read()
+                      return resp.status, (json.loads(data) if data else None)
+              except urllib.error.HTTPError as err:
+                  return err.code, None
+
+          status, commit = call('GET', f'git/commits/{base}')
+          if status != 200:
+              raise SystemExit('cannot read the base commit')
+          tree = []
+          for name in FILES:
+              status, blob = call('POST', 'git/blobs', {'content': base64.b64encode((root / name).read_bytes()).decode(), 'encoding': 'base64'})
+              if status != 201:
+                  raise SystemExit(f'blob for {name} failed ({status})')
+              tree.append({'path': name, 'mode': '100644', 'type': 'blob', 'sha': blob['sha']})
+          status, new_tree = call('POST', 'git/trees', {'base_tree': commit['tree']['sha'], 'tree': tree})
+          if status != 201:
+              raise SystemExit(f'tree failed ({status})')
+          status, new_commit = call('POST', 'git/commits', {
+              'message': f'Bump Bowser to {version} for release\n\nMade by tools/release.py bump in the prepare-release workflow.',
+              'tree': new_tree['sha'], 'parents': [base]})
+          if status != 201:
+              raise SystemExit(f'commit failed ({status})')
+          branch = f'release/bump-v{version}'
+          status, _ = call('POST', 'git/refs', {'ref': f'refs/heads/{branch}', 'sha': new_commit['sha']})
+          if status != 201:
+              raise SystemExit(f'branch {branch} could not be created ({status}); it may already exist. Inspect it, never force')
+          status, _ = call('POST', 'actions/workflows/windows-verify.yml/dispatches', {'ref': branch})
+          if status != 204:
+              raise SystemExit(f'could not start windows-verify on {branch} ({status})')
+          body = (f'Bumps Bowser to **{version}**: Cargo.toml, Cargo.lock, PIN_REVISION and the '
+                  'stable/allowlist.json entry, exactly as `tools/release.py bump` makes them.\n\n'
+                  'Merging starts `release.yml`, which runs the full Windows verification on the merged '
+                  'commit, publishes the release and opens the stable pin PR. Merge freeze until the pin PR is merged.')
+          status, pr = call('POST', 'pulls', {'title': f'Bump Bowser to {version}', 'head': branch, 'base': 'main', 'body': body})
+          with open(env['GITHUB_STEP_SUMMARY'], 'a') as out:
+              if status == 201:
+                  out.write(f"## Version-bump PR opened: {pr['html_url']}\n\nMerge it when its check passes.\n")
+              else:
+                  out.write(f'## Bump branch `{branch}` is ready; open the PR by hand\n\n'
+                            f'https://github.com/{REPO}/compare/main...{branch}?expand=1\n\n'
+                            f'(Creating it from Actions returned {status}; enable "Allow GitHub Actions to create '
+                            'and approve pull requests" in Settings > Actions to have it opened automatically.)\n')
+          print(f'bump branch {branch} at {new_commit["sha"]}; PR status {status}')
+          PY

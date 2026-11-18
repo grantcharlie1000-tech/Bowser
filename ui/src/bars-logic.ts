@@ -3,6 +3,8 @@
 // list again and refuses what does not parse): ids, zones, limits, and the edits the toolbar editor makes.
 // No DOM here; test/bars.mjs covers all of it.
 
+import { ICON_NAMES } from './icons.gen';
+
 export type BarId = 'address' | 'tabs' | 'panel';
 export const BAR_IDS: readonly BarId[] = ['address', 'tabs', 'panel'];
 /** The settings.txt key of each bar's list. */
@@ -147,6 +149,9 @@ export const ITEM_LABELS: Readonly<Record<string, { readonly label: string; read
   feeds: { label: 'Feeds', hint: '' },
 };
 
+/** The bars the editor offers. The panel bar was the left rail's, and Bowser no longer has a rail, so its buttons could never show. */
+export const EDITABLE_BARS: readonly BarId[] = ['address', 'tabs'];
+
 /** The tooltip and name of a command button when Rust has not sent one (a command that no longer exists). */
 export function itemLabel(id: string, names: ReadonlyMap<string, string>): string {
   return ITEM_LABELS[id]?.label ?? names.get(id) ?? (id.startsWith('chain:') ? `Chain ${id.slice(6)}` : id.replace(/^cmd:/, '').replace(/-/g, ' '));
@@ -157,4 +162,49 @@ export const ITEM_ICONS: Readonly<Record<string, string>> = {
   back: 'back', forward: 'forward', reload: 'reload', 'site-info': 'info', split: 'split', reader: 'reader', bookmark: 'bookmark',
   newtab: 'plus', downloads: 'download', extensions: 'puzzle', 'closed-tabs': 'tab-restore', feeds: 'feed',
 };
+
+/**
+ * The glyph of every built-in command a bar can carry (`cmd:<id>`), by command id (src/commands/registry.rs),
+ * so a command button looks like what it does on the toolbar, the tab strip, the sidebar, the rail and in the
+ * editor. test/bars.mjs fails when a command offered as a button has no entry here. A capture's copy and note
+ * variants share their capture's glyph: the same picture, sent somewhere else.
+ */
+export const COMMAND_ICONS: Readonly<Record<string, string>> = {
+  'new-tab': 'new-tab', 'new-private-tab': 'private', 'close-tab': 'tab-close', 'close-private-tabs': 'glasses',
+  settings: 'gear', 'toggle-notes': 'notes', profiles: 'person',
+  'save-session': 'save', sessions: 'folder', 'save-all-session': 'archive', 'open-session': 'folder-open',
+  'add-bookmark': 'bookmark', 'bookmarks-panel': 'heart',
+  reload: 'reload', 'hard-reload': 'reload-hard', stop: 'close-others', back: 'back', forward: 'forward',
+  extensions: 'puzzle', reader: 'reader', calm: 'droplet', translate: 'translate',
+  'next-tab': 'tab-switch', 'prev-tab': 'swap', 'reopen-tab': 'tab-restore', 'new-window': 'window', 'copy-link': 'link',
+  'toggle-sidebar': 'sidebar', 'toggle-fullscreen': 'caption-maximize', 'focus-address-bar': 'search', 'fill-password': 'password-fill',
+  'privacy-dashboard': 'shield', 'toggle-blocker': 'block', 'cycle-blocking-level': 'customize', 'delete-browsing-data': 'trash',
+  'undo-tab-organisation': 'reset', 'picture-in-picture': 'pip',
+  'toggle-split': 'split', 'focus-split-left': 'split-left', 'focus-split-right': 'split-right', 'close-split-pane': 'unsplit',
+  'focus-split-up': 'split-top', 'focus-split-down': 'split-bottom',
+  'tile-vertical': 'split', 'tile-horizontal': 'split-stacked', 'tile-grid': 'grid', untile: 'caption-restore',
+  'command-palette': 'quick-commands', history: 'clock', downloads: 'download',
+  'zoom-in': 'zoom-in', 'zoom-out': 'zoom-out', 'zoom-reset': 'zoom-reset',
+  devtools: 'workspace-code', 'shortcuts-cheat-sheet': 'file-text', 'toggle-site-shortcuts': 'globe', 'keyboard-settings': 'keyboard',
+  'closed-tabs': 'tab-restore', 'periodic-reload': 'timer', 'stop-all-reloads': 'pause',
+  'qr-code': 'qr-code', 'toggle-address-bar': 'address-bar', 'toggle-auto-hide': 'eye',
+  'capture-visible': 'capture', 'capture-full': 'capture-full', 'capture-selection': 'capture-selection',
+  'capture-visible-copy': 'capture', 'capture-full-copy': 'capture-full', 'capture-selection-copy': 'capture-selection',
+  'capture-visible-note': 'capture', 'capture-full-note': 'capture-full', 'capture-selection-note': 'capture-selection',
+  'note-from-selection': 'note-add', 'note-append-selection': 'edit',
+  'stack-site-tabs': 'tab-group', 'stack-tabs-by-site': 'workspace', unstack: 'unstack',
+  'next-workspace': 'chevron-right', 'previous-workspace': 'chevron-left',
+  feeds: 'feed', 'subscribe-feed': 'bell',
+};
+
+/**
+ * The glyph of any bar item: the one Rust named for it (`glyph`, when it is an icon of the family), else a fixed
+ * button's own, a command's, `chain` for a command chain, `command` for a command Bowser no longer has.
+ */
+export function itemIcon(id: string, glyph?: string): string {
+  if (glyph !== undefined && (ICON_NAMES as readonly string[]).includes(glyph)) return glyph;
+  if (id.startsWith('chain:')) return 'chain';
+  if (id.startsWith('cmd:')) return COMMAND_ICONS[id.slice(4)] ?? 'command';
+  return ITEM_ICONS[id] ?? 'command';
+}
 // --- end toolbars and feeds ---

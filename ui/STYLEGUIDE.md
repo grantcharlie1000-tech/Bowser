@@ -216,14 +216,14 @@ status.append(icon('warning', { label: 'Not secure' })); // role="img" + aria-la
 - Strokes use `vector-effect: non-scaling-stroke`, so a 14px and a 16px glyph have the same weight
   at every DPI (1.5px = 1.5/1.875/2.25/3 device px at 100/125/150/200%). Shapes keep antialiasing
   (`shape-rendering: geometricPrecision`); never use `crispEdges` (it breaks diagonals and curves).
-- Glyphs (118): address-bar, app-tile, archive, back, bell, bookmark, calculator, calendar, camera, caption-maximize, caption-minimize,
-  caption-restore, cast, check, chevron-down/left/right/up, clock, close, close-others, command, cookie, copy,
+- Glyphs (130): address-bar, app-tile, archive, back, bell, block, bookmark, calculator, calendar, camera, capture, capture-full,
+  capture-selection, caption-maximize, caption-minimize, caption-restore, cast, chain, check, chevron-down/left/right/up, clock, close, close-others, command, cookie, copy,
   customize, download, droplet, edit, enter, external, eye, file, file-text, flame, folder, folder-download, folder-open,
-  forward, gear, glasses, glint, grid, grip, heart, home, image, info, key, link, location, lock, menu, menu-dots,
-  mic, more-horizontal, more-vertical, mute, notes, package, pause, person, pin, pip, play, plus, print, private,
-  private-window, puzzle, qr-code, quick-commands, reader, reload, reset, save, search, share, shield, sidebar, split,
-  split-bottom, split-bottom-left, split-bottom-right, split-left, split-right, split-stacked, split-top, split-top-left, split-top-right, swap, tab-group, tab-restore, tab-switch, translate, trash, unlock, unsplit, video, volume, warning, window, workspace, workspace-add, workspace-{bolt, book,
-  briefcase, cart, code, game, globe, heart, home, leaf, music, star}, zoom-in, zoom-out.
+  forward, gear, glasses, glint, grid, grip, heart, home, image, info, key, keyboard, link, location, lock, menu, menu-dots,
+  mic, more-horizontal, more-vertical, mute, note-add, notes, package, password-fill, pause, person, pin, pip, play, plus, print, private,
+  private-window, puzzle, qr-code, quick-commands, reader, reload, reload-hard, reset, save, search, share, shield, sidebar, split,
+  split-bottom, split-bottom-left, split-bottom-right, split-left, split-right, split-stacked, split-top, split-top-left, split-top-right, swap, tab-group, tab-restore, tab-switch, timer, translate, trash, unlock, unsplit, unstack, video, volume, warning, window, workspace, workspace-add, workspace-{bolt, book,
+  briefcase, cart, code, game, globe, heart, home, leaf, music, star}, zoom-in, zoom-out, zoom-reset.
 - Aliases (21): arrow-left/right, caption-close, dots, extensions, find, globe, history, more,
   new-tab, palette, pencil, picture-in-picture, profile, refresh, settings, sidebar-toggle,
   split-view, star, stop, tab-close.
