@@ -4899,6 +4899,31 @@ SFW.runtime = (function () {
       } catch (x) { return false; }
     }
 
+    // The site's own search box: what the user typed (and the site echoes back inside the box) is never masked. Suggestion
+    // rows are content and stay judged (they sit in a listbox, often inside the same component).
+    const SEARCH_UI = "[role=search],yt-searchbox,ytd-searchbox,form#search-form,form[action*=search],form[action*=results],[data-testid=SearchBox_Search_Input]";
+    const SEARCH_UI_TEXT_MAX = 400; // a search box carries little text; a page-wide <form action="/search.aspx"> is not one
+    function smallSearchRoot(r) {
+      return !!r && textLen(r, SEARCH_UI_TEXT_MAX) <= SEARCH_UI_TEXT_MAX;
+    }
+    function isSearchUi(el) {
+      try { return smallSearchRoot(closestFlat(el, SEARCH_UI)) && !closestFlat(el, "[role=listbox],[role=option]"); } catch (e) { return false; }
+    }
+    function maybeSearchUiRoot(el) {
+      const tg = el.tagName;
+      return tg === "FORM" || tg === "YT-SEARCHBOX" || tg === "YTD-SEARCHBOX" || (el.hasAttribute("role") && nGetAttr(el, "role") === "search");
+    }
+
+    // Page chrome: what is not content. On a site with an adapter, content is its items (videos, posts, comments ...) and
+    // generic list / article items; everything else (app shell, navigation, toolbars) is chrome. Anywhere, a large container
+    // is chrome for its own text (its blocks are units of their own).
+    function isChrome(u, deep) {
+      if (isOwn(u) || imageDoc()) return false;
+      if (!deep) return true;
+      if (!adapter.own) return false;
+      return !(adapter.generic && nMatches(u, adapter.generic));
+    }
+
     // Non-blank text nodes straight under el (bounded): what a page-root unit actually holds of its own.
     function hasDirectText(el) {
       let n = el.firstChild;
@@ -5135,6 +5160,7 @@ SFW.runtime = (function () {
             else if (cur !== u) {
               if (nHasAttr(cur, "data-sfw") && !(mine && mine.has(cur))) skip = true; // nested shielded / revealed unit (not our own targets)
               else if (ownSel && nMatches(cur, ownSel)) skip = true; // nested unit: classified on its own
+              else if (maybeSearchUiRoot(cur) && nMatches(cur, SEARCH_UI) && smallSearchRoot(cur)) skip = true; // the search box: the user's own query
               else if (!deep && isBlockTag(tg)) skip = true;
             }
             if (!skip) handleEl(cur);
@@ -5378,11 +5404,17 @@ SFW.runtime = (function () {
       let nbText = false;
       if (detectionBroken) dec = "clear"; // the classifier does not work here (canary): page shield / notice already say so
       else if (!text.trim() && !ex.media) dec = "clear";
+      else if (!isOwn(u) && isSearchUi(u)) dec = "clear"; // the search box itself (see SEARCH_UI)
       else {
-        const cctx = { hot, source: "text", reply, launchWindow: !!(adapter.highRisk && launchWindow) };
+        // Page chrome (app shells, navigation, toolbars) is masked only for what its own words say: the page's heat and the
+        // "picture in hot context" rule are for content. Without this a hot page (a search for GTA VI) hid YouTube's whole app
+        // shell for a weak cue in its footer links, and its guide drawer for its icons.
+        const chrome = isChrome(u, deep);
+        const uHot = chrome ? 0 : hot;
+        const cctx = { hot: uHot, source: "text", reply: reply && !chrome, launchWindow: !!(adapter.highRisk && launchWindow) };
         // ocrDone is always true here: media is held by the OCR gate (gateMedia), not by the policy's "hold" verdict
-        const polMedia = ex.media && !warmOnly;
-        const opts = { mode: cfg.mode, hot, kind: !text.trim() && !warmOnly ? "media" : "item", hasMedia: polMedia, highRisk: adapter.highRisk, ocrDone: true };
+        const polMedia = ex.media && !warmOnly && !chrome;
+        const opts = { mode: cfg.mode, hot: uHot, kind: !text.trim() && !warmOnly && !chrome ? "media" : "item", hasMedia: polMedia, highRisk: adapter.highRisk, ocrDone: true };
         const oneWith = (t, cx, o) => {
           const res = S.classify.text(t, cx);
           let d = S.policy.decide(res, o);
@@ -5392,7 +5424,7 @@ SFW.runtime = (function () {
             const vals = [all.lockdown, all.strict, all.balanced];
             d = vals.some((v) => v !== vals[0]) ? "cfg" : vals[0];
           }
-          if (d === "hold") d = hot > 0 ? "shield" : "clear";
+          if (d === "hold") d = o.hot > 0 ? "shield" : "clear";
           return d;
         };
         const one = (t) => oneWith(t, cctx, opts);
@@ -5404,8 +5436,8 @@ SFW.runtime = (function () {
         if (ex.tight && dec !== "shield" && ex.tight.length <= WIN_CHARS * 2) { const d2 = one(ex.tight); if (d2 === "shield" || (d2 === "cfg" && dec === "clear")) dec = d2; }
         if (ocrTexts && dec !== "shield") {
           // the text found inside the images, on its own (source "ocr") and glued to the unit's own text
-          const octx = { hot, source: "ocr", reply, launchWindow: cctx.launchWindow };
-          const mopts = { mode: cfg.mode, hot, kind: "media", hasMedia: true, highRisk: adapter.highRisk, ocrDone: true };
+          const octx = { hot: uHot, source: "ocr", reply: cctx.reply, launchWindow: cctx.launchWindow };
+          const mopts = { mode: cfg.mode, hot: uHot, kind: "media", hasMedia: !chrome, highRisk: adapter.highRisk, ocrDone: true };
           let od = dec;
           for (const t of ocrTexts) {
             const d = oneWith(t, octx, mopts);
@@ -5417,7 +5449,7 @@ SFW.runtime = (function () {
         }
         // frames the engine cannot look into: cover them where the context calls for it (see frameVerdict)
         if (dec === "clear" && ex.frames && !isPageRoot(u)) { // frames straight under <body> are units of their own
-          const fv = frameVerdict(ex.frames, hot);
+          const fv = frameVerdict(ex.frames, uHot);
           if (fv === "shield") { dec = "shield"; frameErr = true; strong = false; }
           else if (fv === "cfg") dec = "cfg";
         }
