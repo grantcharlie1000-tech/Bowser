@@ -1,8 +1,8 @@
 {
-    "version": "0.0.31",
-    "revision": 32,
+    "version": "0.0.32",
+    "revision": 33,
     "commit": "141015a35b6bce3b15f3d7a651ab0ad04892c885",
-    "tag": "v0.0.31",
+    "tag": "v0.0.32",
     "repository": "grantcharlie1000-tech/Bowser",
     "asset": "Bowser.exe",
     "sha256": "3e17a49f2dabec3aae5eadd7aa7c373e9359ad438e808e31aa9ebc30b24a5ab1",
