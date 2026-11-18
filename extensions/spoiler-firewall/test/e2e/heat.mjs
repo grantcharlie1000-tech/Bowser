@@ -30,6 +30,19 @@ async function run(name, host, path, settle) {
 await run("X conversation with one GTA joke reply", "x.com", "/someone/status/1234567890", 800);
 await run("X launch-week home timeline (warm feed)", "x.com", "/launch/home", 1400);
 
+await run("X counters ticking in place; a digit that completes the franchise name in place", "x.com", "/counters/home", 1200);
+{
+  // the counter ticks were skipped, not re-classified each time
+  const ctx = await instrumentedContext(browser, { config: { mode: "strict" }, detection: "real", probe: false });
+  const p = await ctx.newPage();
+  await p.goto(`http://x.com:${srv.portA}/counters/home`, { waitUntil: "load" });
+  await sleep(1200);
+  const st = await p.evaluate(() => window.__sfw.ctl.stats());
+  await ctx.close();
+  try { assert.ok(st.counterSkips >= 20, `counter ticks skipped: ${st.counterSkips}`); console.log(`ok   counter ticks skipped without re-classification: ${st.counterSkips}`); }
+  catch (e) { failed++; console.log(`FAIL ${e.message}`); }
+}
+
 await browser.close();
 srv.close?.();
 console.log(failed ? `\n${failed} heat case(s) FAILED` : "\nall heat cases passed");

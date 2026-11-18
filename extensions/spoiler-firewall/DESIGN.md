@@ -259,6 +259,12 @@ also made its whole X conversation hot (the context selector matched every tweet
 covered for its post's words only at mention level or with a strong franchise / entity signal; a bare "risk"
 (one common first name, a "spoiler alert" about something else) is not GTA evidence. Lockdown is unchanged.
 
+Counter ticks (revision 3): a text node or a text attribute whose value changes only in its numbers ("12 Likes" ->
+"13 Likes", "5h" -> "6h", "0:31" -> "0:32", also a text node swapped for such a value) does not re-classify its post. Feeds
+tick these many times a second, and each tick re-read and re-classified the whole post. Posters cannot change text in
+place; only the site's script can. A change next to franchise words (gta, grand theft, vice city, leonida, rockstar, гта
+in the value or its parent / grandparent text) still takes the full path, so "GTA 5" -> "GTA 6" in place is re-judged.
+
 ---
 
 ## 5. Runtime (`SFW.runtime`)

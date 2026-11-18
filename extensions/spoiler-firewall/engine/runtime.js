@@ -281,6 +281,22 @@ SFW.runtime = (function () {
     return PERF_NOW ? PERF_NOW() : DATE_NOW();
   }
 
+  // A value that changed only in its numbers: a like / view / reply counter, a relative time, a video clock ("12 Likes" ->
+  // "13 Likes", "5h" -> "6h", "0:31" -> "0:32"). Feeds tick these many times a second and every tick used to re-read and
+  // re-classify the whole post. Posters cannot change a text in place (only the site's own script can), and the guard
+  // in counterTick() keeps any number that could complete a franchise name ("GTA 5" -> "GTA 6") on the full path.
+  const COUNTER_MAX = 80;
+  const DIGITS = /\d+(?:[.,:]\d+)*/g;
+  function counterOnly(a, b) {
+    if (typeof a !== "string" || typeof b !== "string" || a === b) return false;
+    if (a.length > COUNTER_MAX || b.length > COUNTER_MAX) return false;
+    const ma = a.replace(DIGITS, "#"), mb = b.replace(DIGITS, "#");
+    return ma === mb && nIndexOf(mb, "#") >= 0;
+  }
+  function counterTick(a, b, context) {
+    return counterOnly(a, b) && !crudeHot(b) && !crudeHot(context) && nIndexOf(String(context || "").toLowerCase(), "\u0433\u0442\u0430") < 0;
+  }
+
   // ---- start -------------------------------------------------------------------------------------------------
   // start() never throws into the page. If even the engine's own state cannot be built (a page replaced Map / WeakMap /
   // MutationObserver with something broken before us) the last resort is a visible notice, upgraded to a cover as soon as the
@@ -511,7 +527,7 @@ SFW.runtime = (function () {
       lastOcrOn = ocrOn();
       // start-up canary: a classifier or observer that a page patched into uselessness must be noticed now, not trusted
       runCanary();
-      const opts = { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: MO_ATTRS };
+      const opts = { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: MO_ATTRS, attributeOldValue: true, characterDataOldValue: true };
       ctrl.opts = opts;
       if (moMode === "mo") {
         mo = new MO_CTOR(onMutations);
@@ -749,7 +765,7 @@ SFW.runtime = (function () {
         errors: stats.errors, maxBatchMs: stats.maxBatchMs, meanBatchMs: stats.batches ? stats.totalMs / stats.batches : 0,
         p95BatchMs: s.length ? s[Math.min(s.length - 1, Math.floor(s.length * 0.95))] : 0,
         trace: stats.trace || null, slow: stats.slow || null, firstShieldAt: stats.firstShieldAt, lastError: stats.lastError || null, rafCaught: stats.rafCaught, rafChecks: stats.rafChecks, records: stats.records,
-        charDataRecords: stats.charDataRecords, roots: stats.roots, repairs: stats.repairs, fallbacks: stats.fallbacks,
+        charDataRecords: stats.charDataRecords, counterSkips: stats.counterSkips | 0, roots: stats.roots, repairs: stats.repairs, fallbacks: stats.fallbacks,
         pageHot, adapter: adapter && adapter.id, urlChanges: stats.urlChanges, titleGuarded: titleOriginal != null,
         pageShield: S.shield.pageState(doc), mode: cfg.mode, warm, moMode, detectionBroken, marks: marks.size, workLeft: workLeft(),
         ocr: Object.assign({}, stats.ocr, { on: lastOcrOn, live: liveRecs.size, queued: ocrQueue.size, flight: ocrFlying, cached: ocrCache.size, failed: failRecs.size }), ocrLog: stats.ocrLog || null,
@@ -1139,13 +1155,18 @@ SFW.runtime = (function () {
           const a = r.attributeName;
           if (a === "data-sfw") { repairSet.add(t); continue; }
           if (a === "data-sfw-sr") { discoverRoot(t); touch(t); continue; }
+          if (a !== "href" && a !== "src" && a !== "srcset" && a !== "poster" && a !== "srcdoc" && a !== "sandbox" && counterTick(r.oldValue, nGetAttr(t, a), "")) { stats.counterSkips = (stats.counterSkips | 0) + 1; continue; }
           touch(t);
         } else if (r.type === "characterData") {
           stats.charDataRecords++;
-          touch(t);
           if (!titleDirty && t.parentNode && t.parentNode.nodeName === "TITLE") titleDirty = true;
+          if (counterTick(r.oldValue, t.data, nearText(t))) { stats.counterSkips = (stats.counterSkips | 0) + 1; continue; }
+          touch(t);
         } else {
           const rem = r.removedNodes;
+          const add0 = r.addedNodes;
+          // a text node swapped for another that differs only in its numbers (textContent = "13 Likes")
+          if (rem.length === 1 && add0.length === 1 && rem[0].nodeType === 3 && add0[0].nodeType === 3 && t.nodeType === 1 && t.nodeName !== "TITLE" && counterTick(rem[0].data, add0[0].data, nearText(add0[0]))) { stats.counterSkips = (stats.counterSkips | 0) + 1; continue; }
           for (let k = 0; k < rem.length; k++) {
             if (rem[k].localName === "sfw-shield") repairSet.add(t.nodeType === 11 ? t.host : t);
           }
@@ -1157,6 +1178,16 @@ SFW.runtime = (function () {
           else if (t.nodeType === 11 && t.host) touchStruct(t.host);
         }
       }
+    }
+
+    // the text around a changed text node (its parent and grandparent, capped): what a number could combine with
+    function nearText(n) {
+      try {
+        const p = n.parentNode;
+        const g = p && p.parentNode && p.parentNode.nodeType === 1 ? p.parentNode : p;
+        const t = g && g.textContent;
+        return t ? (t.length > 400 ? nSlice(t, 0, 400) : t) : "";
+      } catch (e) { return "gta"; } // unreadable: never skip
     }
 
     // ---- MutationObserver entry ------------------------------------------------------------------------------
