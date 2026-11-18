@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Builds the Bowser site: wraps each src/<page>.html in tools/layout.html and writes <page>.html
 at the root. releases.html is generated from tools/releases.json (refresh it with
-`python3 tools/build.py --refresh-releases`, which needs the gh CLI).
+`python3 tools/build.py --refresh-releases`, which needs the gh CLI), and the download page
+reads tools/stable.json, a copy of the repository's stable/release.json. On GitHub both are
+refreshed after every release by .github/workflows/site-release-notes.yml on main.
 Run from anywhere: python3 tools/build.py"""
 import html, json, os, re, subprocess, sys
 
@@ -25,7 +27,10 @@ PROCESS = re.compile(r'^(pin |promote |prepare |bump |release:|recover v|add the
 
 
 def refresh_releases():
-    rel = json.loads(subprocess.run(['gh', 'api', f'repos/{REPO}/releases?per_page=100'], capture_output=True, text=True, check=True).stdout)
+    pages = json.loads(subprocess.run(['gh', 'api', '--paginate', '--slurp', f'repos/{REPO}/releases?per_page=100'],
+                                      capture_output=True, text=True, check=True).stdout)
+    # Newest first. Drafts are visible to a token that can write releases; they are not released yet.
+    rel = [r for page in pages for r in page if not r.get('draft')]
     out = []
     for i, r in enumerate(rel):
         prs = []
