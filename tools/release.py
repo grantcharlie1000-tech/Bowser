@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Release helpers for moving the Bowser stable pin. Standard library only.
 
-  python tools/release.py bump 0.0.32
+  python tools/release.py bump 0.0.32      (or: bump next)
       Version-bump PR edits: Cargo.toml, the bowser entry in Cargo.lock,
       PIN_REVISION (+1) in src/updater.rs, and the exact mark-latest allow-list
-      entry in .github/workflows/stable-package.yml.
+      entry in stable/allowlist.json. Touches no workflow file, so the
+      prepare-release workflow can run it too.
 
   python tools/release.py pin v0.0.32
       Stable pin PR edit: downloads the published Bowser.exe and
@@ -29,7 +30,8 @@ REPO = 'grantcharlie1000-tech/Bowser'
 ASSET = 'Bowser.exe'
 PIN_FIELDS = ['version', 'revision', 'commit', 'tag', 'repository', 'asset', 'sha256', 'bytes']
 REVISION_RE = re.compile(r'^const PIN_REVISION: u32 = (\d+);$', re.M)
-ALLOW_RE = re.compile(r"^( +)@\{ tag = 'v(\d+\.\d+\.\d+)'; version = '\2'; revision = (\d+) \}$", re.M)
+ALLOWLIST = 'stable/allowlist.json'
+BUMP_FILES = ['Cargo.lock', 'Cargo.toml', 'src/updater.rs', ALLOWLIST]
 
 
 def fail(message):
@@ -69,6 +71,21 @@ def pin_revision():
     return int(found[0])
 
 
+def read_allowlist():
+    entries = json.loads(read(ALLOWLIST))
+    if not isinstance(entries, list) or not all(isinstance(e, dict) and list(e) == ['tag', 'version', 'revision'] for e in entries):
+        fail(f'{ALLOWLIST} must be a list of {{tag, version, revision}} objects')
+    return entries
+
+
+def render_allowlist(entries):
+    return '[\n' + ',\n'.join('    ' + json.dumps(e) for e in entries) + '\n]\n'
+
+
+def allowed(tag, version, revision):
+    return {'tag': tag, 'version': version, 'revision': revision} in read_allowlist()
+
+
 def render_pin(pin):
     return json.dumps({k: pin[k] for k in PIN_FIELDS}, indent=4) + '\n'
 
@@ -103,9 +120,10 @@ def check_pin():
         problems.append(f'Cargo.lock bowser {lock_versions()} != Cargo.toml {cargo_version()}')
     if pin['revision'] != pin_revision():
         problems.append(f'pin revision {pin["revision"]} != PIN_REVISION {pin_revision()} in src/updater.rs')
-    entry = f"@{{ tag = '{pin['tag']}'; version = '{pin['version']}'; revision = {pin['revision']} }}"
-    if entry not in read('.github/workflows/stable-package.yml'):
-        problems.append(f'stable-package.yml mark-latest allow-list lacks {entry}')
+    if not allowed(pin['tag'], pin['version'], pin['revision']):
+        problems.append(f"{ALLOWLIST} lacks {pin['tag']} revision {pin['revision']}")
+    if read(ALLOWLIST) != render_allowlist(read_allowlist()):
+        problems.append(f'{ALLOWLIST} must keep one entry per line, four-space indent and a final newline')
     if problems:
         fail('pin check failed:\n  - ' + '\n  - '.join(problems))
     print(f"stable/release.json {pin['tag']} revision {pin['revision']} agrees with the source.")
@@ -113,10 +131,17 @@ def check_pin():
 
 def bump(new_version):
     old_version = cargo_version()
+    if new_version == 'next':
+        major, minor, patch = vtuple(old_version)
+        new_version = f'{major}.{minor}.{patch + 1}'
     if vtuple(new_version) <= vtuple(old_version):
         fail(f'{new_version} is not above Cargo.toml {old_version}')
     old_revision = pin_revision()
     new_revision = old_revision + 1
+    entries = read_allowlist()
+    entry = {'tag': f'v{new_version}', 'version': new_version, 'revision': new_revision}
+    if entry in entries:
+        fail(f'{ALLOWLIST} already has v{new_version}')
 
     cargo = read('Cargo.toml')
     cargo = re.sub(r'(?ms)(^\[package\]\n.*?^version = ")[^"]+(")', rf'\g<1>{new_version}\g<2>', cargo, count=1)
@@ -130,23 +155,7 @@ def bump(new_version):
     updater = REVISION_RE.sub(f'const PIN_REVISION: u32 = {new_revision};', read('src/updater.rs'), count=1)
     write('src/updater.rs', updater)
 
-    workflow = read('.github/workflows/stable-package.yml')
-    entries = list(ALLOW_RE.finditer(workflow))
-    if not entries:
-        fail('no mark-latest allow-list entries found in stable-package.yml')
-    last = entries[-1]
-    if not workflow[last.end():].startswith('\n'):
-        fail('unexpected allow-list layout')
-    indent = last.group(1)
-    line = f"{indent}@{{ tag = 'v{new_version}'; version = '{new_version}'; revision = {new_revision} }}"
-    if line.strip() in workflow:
-        fail(f'allow-list already has {line.strip()}')
-    workflow = workflow[:last.end()] + ',\n' + line + workflow[last.end():]
-    old_msg = f'v{last.group(2)} revision {last.group(3)}).'
-    if workflow.count(old_msg) != 1:
-        fail('could not find the allow-list error message to extend')
-    workflow = workflow.replace(old_msg, f'v{last.group(2)} revision {last.group(3)}, v{new_version} revision {new_revision}).')
-    write('.github/workflows/stable-package.yml', workflow)
+    write(ALLOWLIST, render_allowlist(entries + [entry]))
     print(f'Bumped {old_version} -> {new_version}, PIN_REVISION {old_revision} -> {new_revision}, allow-listed v{new_version}.')
     print('Now refresh Cargo.lock offline if needed and run: cargo test --locked --lib updater::')
 

@@ -1,7 +1,8 @@
 # Releasing Bowser and moving the stable pin
 
-A release needs one command and two clicks: run `tools/release.py bump`, merge
-the version-bump PR, then merge the stable pin PR that the release opens. Every
+A release takes three clicks. Run the **Prepare Bowser release** workflow,
+merge the version-bump PR it opens, then merge the stable pin PR that the
+release opens. Every
 release uses `.github/workflows/release.yml`. The version, pin revision and tag
 are read from the source. Production changes only when a person merges the
 `stable/release.json` PR.
@@ -10,12 +11,14 @@ Use `$R = 'grantcharlie1000-tech/Bowser'` and `X.Y.Z` for the new version below.
 
 | Step | Who | What runs | Expected time (estimate) |
 | --- | --- | --- | --- |
-| 1. Version-bump PR | you: run `bump`, open the PR, merge | `windows-verify` `bump` check | ~1 min |
-| 2. Release | automatic on merge | `release.yml`: gate, three parallel Windows jobs, publish, pin | ~8 min |
+| 1. Version-bump PR | you: run Prepare, then merge | `prepare-release.yml`, then the `windows-verify` `bump` check | ~1.5 min |
+| 2. Release | automatic on merge | `release.yml`: gate, five parallel Windows jobs, publish, pin | ~6.5 min |
 | 3. Stable pin PR | opened automatically; you merge | `windows-verify` pin check, `stable-package` | ~1 min |
 | After merge | automatic | `stable-package` push verification and `mark-latest` | ~1 min |
 
 Before this, v0.0.31 took about 88 minutes of serial CI and about six manual steps.
+The release run is now bounded by its fat-LTO release compile (about 4.5 min).
+Going lower would mean changing the shipped binary's build profile.
 
 ## 0. Preconditions
 
@@ -27,15 +30,21 @@ Before this, v0.0.31 took about 88 minutes of serial CI and about six manual ste
 
 ## 1. Version-bump PR
 
+Actions > **Prepare Bowser release** > Run workflow on `main` (version `next`
+or `X.Y.Z`), or:
+
 ```powershell
-python tools/release.py bump X.Y.Z
-cargo test --locked --lib updater::
+gh workflow run prepare-release.yml --repo $R --ref main -f version=next
 ```
 
-The script changes exactly `Cargo.toml`, the bowser entry in `Cargo.lock`,
-`PIN_REVISION` in `src/updater.rs` (+1), and the exact `{tag, version, revision}`
-entry in the `mark-latest` allow-list of `.github/workflows/stable-package.yml`.
-Commit only those changes and open the PR.
+It runs main's own `tools/release.py bump`. That changes exactly `Cargo.toml`,
+the bowser entry in `Cargo.lock`, `PIN_REVISION` in `src/updater.rs` (+1), and
+the exact `{tag, version, revision}` entry in `stable/allowlist.json`, the
+`mark-latest` allow-list. It commits those four files as one commit on main's
+head on `release/bump-vX.Y.Z`, starts `windows-verify` there and opens the PR.
+If Actions may not open PRs, the run summary links to the branch. Locally,
+`python tools/release.py bump X.Y.Z` makes the same change for a PR you open
+yourself.
 
 `windows-verify` runs the base branch's own `tools/release.py bump X.Y.Z` and
 requires the result to match the PR tree byte for byte. If it matches, the
@@ -58,11 +67,13 @@ The gate (about 10 s) decides:
   Cargo.toml and Cargo.lock disagree, `PIN_REVISION` is not above the live pin,
   the allow-list entry is missing, or the tag points at another commit.
 - **Releasable.** Three Windows jobs run in parallel on the commit:
-  - `rust`: native theme check, both feature sets of `cargo test`, and Clippy.
-  - `ui`: typecheck, lint, the CJK baseline, the full UI suite, and Shield.
-  - `build`: reproducible UI rebuild, release build and native smoke, then it records the build metadata.
+  - `rust-native`: the native theme check and native-default `cargo test`.
+  - `rust-html`: HTML-default `cargo test` and Clippy.
+  - `ui` (two shards): typecheck, lint, the CJK baseline, Shield, and the UI suite split with `--test-shard`.
+  - `ui-repro`: rebuilds the UI and requires the committed `ui/dist`, `ui/dist.manifest` and `icons.gen.ts` to match byte for byte.
+  - `build`: compiles from the committed `ui/dist` (`build.rs` refuses a dist that differs from its manifest), runs the native smoke test and records the build metadata. It installs no npm packages.
 
-  `verdict` requires all three to pass and the same `rustc` in tests and build.
+  `verdict` requires all five jobs to pass and the same `rustc` in both Rust jobs and the build.
   `publish`, the only job allowed to write releases, creates a draft. It
   uploads the files, downloads them back by asset id and verifies them, then
   publishes with `make_latest=false`.
@@ -91,7 +102,7 @@ Review the PR the pin job opened. Its only change is `stable/release.json`, so
 `windows-verify` skips the Windows build. It runs `tools/release.py check-pin`
 instead, which checks the rules of the Rust test
 `the_shown_version_follows_the_pinned_release`, that the revision equals
-`PIN_REVISION`, and the allow-list entry. `stable-package` installs the public
+`PIN_REVISION`, and the entry in `stable/allowlist.json`. `stable-package` installs the public
 package in isolation. Merge by hand when both pass. The workflow never merges
 or enables auto-merge: a merge by the workflow token would not start the push
 verification.
