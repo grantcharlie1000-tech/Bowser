@@ -8,7 +8,46 @@ permissions:
   contents: read
 
 jobs:
-  verify:
+  # A pull request whose only change is stable/release.json (the stable pin PR)
+  # changes no code, UI or build input except what the Rust test
+  # the_shown_version_follows_the_pinned_release reads, so that test's rules and
+  # the PIN_REVISION agreement are checked here instead of rebuilding Bowser.
+  # Anything else, any doubt, and every workflow_dispatch runs the full verification.
+  changes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      heavy: ${{ steps.diff.outputs.heavy }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      - name: Classify the change (fail closed to full verification)
+        id: diff
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -uo pipefail
+          heavy=true
+          if [ "$EVENT_NAME" = pull_request ] && [ "$(git rev-list --parents -n 1 HEAD | wc -w)" = 3 ]; then
+            # On pull_request, HEAD is the test merge commit; HEAD^1 is the base.
+            if raw="$(git diff --raw --no-renames --no-abbrev HEAD^1 HEAD)"; then
+              echo "$raw"
+              if [ "$(printf '%s\n' "$raw" | grep -c .)" = 1 ] && printf '%s\n' "$raw" | grep -Eq '^:100644 100644 [0-9a-f]{40} [0-9a-f]{40} M'$'\t''stable/release\.json$'; then
+                heavy=false
+              fi
+            fi
+          fi
+          echo "heavy=$heavy" | tee -a "$GITHUB_OUTPUT"
+      - name: Check the pin against the source it is merged into
+        if: steps.diff.outputs.heavy == 'false'
+        run: python3 tools/release.py check-pin
+
+  rust:
+    needs: changes
+    if: needs.changes.outputs.heavy == 'true'
     runs-on: windows-latest
     timeout-minutes: 45
     defaults:
@@ -20,11 +59,11 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
-      - name: Parse native smoke script before running checks
+      - name: Parse native theme script before running checks
         run: |
           $tokens = $null
           $parseErrors = $null
-          foreach ($script in @('verify-release-candidate.ps1', 'test-native-theme-flow.ps1')) {
+          foreach ($script in @('test-native-theme-flow.ps1')) {
             [System.Management.Automation.Language.Parser]::ParseFile(
               (Join-Path $pwd "benchmarks/scripts/$script"),
               [ref]$tokens, [ref]$parseErrors) | Out-Null
@@ -55,6 +94,21 @@ jobs:
         run: cargo +stable test --locked --features html-chrome-default
       - name: Check Windows source with Clippy
         run: cargo +stable clippy --locked --features html-chrome-default -- -D warnings
+
+  ui:
+    needs: changes
+    if: needs.changes.outputs.heavy == 'true'
+    runs-on: windows-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Preserve fingerprinted source bytes
+        run: git config --global core.autocrlf false
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '22'
@@ -86,6 +140,45 @@ jobs:
         run: npm test
       - name: Test shipped Shield extension
         run: node --test extensions/bowser-shield/test/run-tests.js
+
+  build:
+    needs: changes
+    if: needs.changes.outputs.heavy == 'true'
+    runs-on: windows-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Preserve fingerprinted source bytes
+        run: git config --global core.autocrlf false
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Parse native smoke script before running checks
+        run: |
+          $tokens = $null
+          $parseErrors = $null
+          foreach ($script in @('verify-release-candidate.ps1')) {
+            [System.Management.Automation.Language.Parser]::ParseFile(
+              (Join-Path $pwd "benchmarks/scripts/$script"),
+              [ref]$tokens, [ref]$parseErrors) | Out-Null
+            if ($parseErrors.Count -gt 0) { $parseErrors | Format-List; throw "$script does not parse." }
+          }
+      - name: Install official Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal
+          if ($LASTEXITCODE -ne 0) { throw 'Rust toolchain installation failed.' }
+          rustc +stable --version
+          cargo +stable --version
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+      - name: Install locked UI dependencies
+        working-directory: ui
+        run: npm ci --no-audit --no-fund
       - name: Rebuild embedded UI
         working-directory: ui
         run: npm run build
@@ -142,3 +235,29 @@ jobs:
           path: release-candidate/
           if-no-files-found: error
           retention-days: 14
+
+  # Keeps the check name "verify" that branch protection may require. It passes
+  # only when every heavy job succeeded, or when the change was classified as a
+  # pin-only PR, its pin checks passed and the heavy jobs were skipped.
+  verify:
+    needs: [changes, rust, ui, build]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require full verification or a checked pin-only change
+        shell: bash
+        env:
+          CHANGES: ${{ needs.changes.result }}
+          HEAVY: ${{ needs.changes.outputs.heavy }}
+          RUST: ${{ needs.rust.result }}
+          UI: ${{ needs.ui.result }}
+          BUILD: ${{ needs.build.result }}
+        run: |
+          echo "changes=$CHANGES heavy=$HEAVY rust=$RUST ui=$UI build=$BUILD"
+          if [ "$CHANGES" != success ]; then echo 'Change classification failed.' >&2; exit 1; fi
+          if [ "$HEAVY" = false ] && [ "$RUST" = skipped ] && [ "$UI" = skipped ] && [ "$BUILD" = skipped ]; then
+            echo 'Pin-only change: pin checks passed; Windows build not needed.'; exit 0
+          fi
+          if [ "$HEAVY" = true ] && [ "$RUST" = success ] && [ "$UI" = success ] && [ "$BUILD" = success ]; then exit 0; fi
+          echo 'Windows verification did not pass.' >&2; exit 1

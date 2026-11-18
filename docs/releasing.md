@@ -1,113 +1,111 @@
-# Releasing Bowser v0.0.26 (pin revision 27)
+# Releasing Bowser and moving the stable pin
 
-This release ships selected-price currency conversion and the current main fixes. Use the
-existing guarded process: `.github/workflows/release-v0.0.26.yml` builds,
-checks, hashes, uploads and publishes on a GitHub-hosted Windows runner.
-It is `workflow_dispatch` only; pushes and PRs cannot publish it.
-Production changes only through a separate, human-merged `stable/release.json`
-PR after the published bytes are independently verified.
+One release takes three short steps and two human merges. Every release uses
+the same workflow, `.github/workflows/release.yml`; the version, pin revision
+and tag are read from the source, so there is no per-release workflow to write.
+Production changes only when a human merges the `stable/release.json` PR.
 
-Use `$R = 'grantcharlie1000-tech/Bowser'` in the commands below.
+Use `$R = 'grantcharlie1000-tech/Bowser'` and `X.Y.Z` for the new version below.
+
+| Step | What runs | Expected time (estimate) |
+| --- | --- | --- |
+| 1. Version-bump PR | `windows-verify` (Rust, UI and build jobs in parallel) | ~10 min |
+| 2. Release dispatch | `release.yml` gate, three parallel Windows jobs, publish | ~12 min |
+| 3. Stable pin PR | `windows-verify` pin-only check, `stable-package` | ~1 min |
+| After merge | `stable-package` push verification and `mark-latest` | ~1 min |
+
+Before this, v0.0.31 took about 88 minutes of serial CI: a full Windows run on
+the pin PR, a separate `windows-verify` dispatch on main, a mandatory dry run,
+and a 17-minute single-job release run.
 
 ## 0. Preconditions
 
-- The selected-price currency conversion PR is merged and its Windows checks passed.
-- Merge this release-tooling PR separately before the version-bump PR.
-- Merge freeze: nothing else merges from the version-bump PR until the stable
-  pin PR is merged. This release must include only the verified current main,
-  the currency conversion feature, and its release tooling/identity/pin changes.
-- No v0.0.26 release or tag exists, including drafts. v0.0.25 is already published and must remain unchanged. Inspect both:
-  `gh api repos/$R/releases --paginate --jq '.[]|select(.tag_name=="v0.0.26")|{id,draft}'`
-  and `gh api repos/$R/git/ref/tags/v0.0.26` (expected 404).
-- Main's stable pin is v0.0.24, revision 25. Never overwrite v0.0.24.
+- The features going into the release are merged to main and their Windows checks passed.
+- Merge freeze from the version-bump merge until the pin PR is merged.
+- No `vX.Y.Z` release, draft or tag exists:
+  `gh api repos/$R/releases --paginate --jq '.[]|select(.tag_name=="vX.Y.Z")|{id,draft}'`
+  and `gh api repos/$R/git/ref/tags/vX.Y.Z` (expected 404).
 
 ## 1. Version-bump PR
 
-Change exactly `Cargo.toml` and the bowser entry in `Cargo.lock` to version
-`0.0.26`, and `src/updater.rs` to `const PIN_REVISION: u32 = 27;`.
-Do not change the stable pin. Run `cargo test --locked --lib updater::`,
-wait for the PR's `windows-verify` checks to pass, and merge with a merge
-commit. That exact main commit is `<BUILD_SHA>`.
+```powershell
+python tools/release.py bump X.Y.Z
+cargo test --locked --lib updater::
+```
 
-## 2. Verify the exact main commit
+The script changes exactly `Cargo.toml`, the bowser entry in `Cargo.lock`,
+`PIN_REVISION` in `src/updater.rs` (+1), and adds the one exact
+`{tag, version, revision}` entry to the `mark-latest` allow-list in
+`.github/workflows/stable-package.yml`. Do not change the stable pin. Open the
+PR, wait for `windows-verify`, and merge with a merge commit. That main commit
+is `<BUILD_SHA>`.
 
-`windows-verify` does not run on pushes. The release gate requires success
-on exactly `<BUILD_SHA>`:
+## 2. Release
 
 ```powershell
-gh workflow run windows-verify.yml --repo $R --ref main
-gh run list --repo $R --workflow windows-verify.yml --event workflow_dispatch --limit 1 --json databaseId,headSha
+gh workflow run release.yml --repo $R --ref main -f commit=<BUILD_SHA> -f dry_run=false
 gh run watch <RUN_ID> --repo $R --exit-status
 ```
 
-Confirm `headSha` equals `<BUILD_SHA>` and main has not moved.
+The gate (about 10 s) refuses to publish unless: the commit is main's head and
+clean; Cargo.toml and Cargo.lock agree; the version and `PIN_REVISION` are both
+above the live pin; the allow-list entry exists; and no tag points elsewhere.
+Three Windows jobs then run in parallel on that exact commit:
 
-## 3. Dry run, then publication
+- `rust`: native theme check, both feature sets of `cargo test`, and Clippy.
+- `ui`: typecheck, lint, the CJK baseline, the full UI suite, and Shield.
+- `build`: reproducible UI rebuild, release build and native smoke, then it records the build metadata.
 
-```powershell
-gh workflow run release-v0.0.26.yml --repo $R --ref main -f commit=<BUILD_SHA> -f dry_run=true
-gh run watch <RUN_ID> --repo $R --exit-status
-```
+The `verdict` job requires all three to pass and the same `rustc` in tests and
+build. Only then does `publish` run. It is the only job with write permission.
+It creates a draft, uploads the files, downloads them back by asset id and
+verifies them, then publishes with `make_latest=false`. The run summary prints
+the pin values.
 
-The dry run repeats all Windows/Rust/UI/Shield/reproducibility gates,
-builds the shipping HTML-default executable, and smokes that exact file in
-an isolated profile. The native smoke requires page fullscreen without the
-removed notice, Esc exit and restored bounds. Nothing is published.
-The gate and the final dry-run verdict must both say the commit is releasable.
+You do not need a separate `windows-verify` dispatch on main or a dry run first:
+the release jobs are a superset of `windows-verify` on the exact commit. Use
+`-f dry_run=true` only when you want a check without publishing.
 
-Only after that success, dispatch the same workflow on the same main commit
-with `-f dry_run=false`. It repeats verification and uses the existing
-main-only publisher. It creates a draft by release id, uploads Bowser.exe and
-build-metadata.json, downloads both by asset id, checks their bytes/hash and
-provenance, then publishes with `make_latest=false`. The stable pin stays put.
+A failed run is dispatched again, never partially re-run: the publisher
+requires the candidate's run id and attempt to be its own. If the run fails
+after the publish job has started, inspect the remote state first. Existing
+drafts stop publication. Never delete, replace, retag or blindly retry them.
 
-A failed/uncertain publication must be inspected before any retry. Existing
-drafts stop publication; never delete, replace, retag or blindly retry them.
-A failure before the publish job creates no release and can be freshly
-dispatched after its cause is fixed.
+## 3. Stable pin PR: the production switch
 
-## 4. Independent artifact verification
-
-Download both assets independently:
+On a branch from main:
 
 ```powershell
-$d = "$env:TEMP\bowser-v0.0.26-check"
-New-Item -ItemType Directory -Force $d | Out-Null
-gh release download v0.0.26 --repo $R --pattern Bowser.exe --pattern build-metadata.json --dir $d
-(Get-FileHash "$d\Bowser.exe" -Algorithm SHA256).Hash.ToLower()
-(Get-Item "$d\Bowser.exe").Length
-gh api repos/$R/git/ref/tags/v0.0.26 --jq .object
+python tools/release.py pin vX.Y.Z
 ```
 
-Require the hash, bytes, metadata version/revision/source/run and tag commit
-to agree with the publication run. Verify clean-profile, upgraded-copy and
-link-launch behavior against the downloaded executable using isolated data;
-never use the owner's real profile for tests.
+This downloads the published `Bowser.exe` and `build-metadata.json` itself and
+hashes the executable. It requires the metadata to agree with the hash, the
+byte length, the tag, the version, `PIN_REVISION` and the build commit. Then
+it rewrites only `stable/release.json`, keeping the field order and four-space
+indent. Commit that one file and open the PR.
 
-## 5. Stable pin PR: the production switch
+Because only `stable/release.json` changed, `windows-verify` skips the Windows
+build. Its `changes` job runs `tools/release.py check-pin` instead, which applies
+the rules of the Rust test `the_shown_version_follows_the_pinned_release` plus
+revision == `PIN_REVISION` and the allow-list entry. A PR that touches any other
+file gets the full Windows run. `stable-package` installs the public package in
+isolation. Merge when both pass.
 
-Change only `stable/release.json`, preserving its order and four-space indent:
-version `0.0.26`, revision `27`, commit `<BUILD_SHA>`, tag `v0.0.26`, repository
-`grantcharlie1000-tech/Bowser`, asset `Bowser.exe`, and the independently
-verified sha256 and byte length. Check that revision 27 equals PIN_REVISION.
-Wait for `stable-package` and all required Windows checks, then merge.
-The push verification must pass; `mark-latest` then promotes only the exact
-v0.0.26/revision-27 allow-list entry after rechecking the public bytes and pin.
-Verify the raw main manifest and the public latest-download route afterward.
-Artifact publication alone is not a stable rollout or an installed update.
+After the merge, the push run of `stable-package` verifies the package again.
+Its `mark-latest` job then promotes only the exact allow-listed release, after
+rechecking the public bytes and the pin, and verifies the public
+latest-download route. Publishing the files alone is not a stable rollout.
 
-## 6. Rollback
+## Rollback
 
-The updater will not downgrade a user already running v0.0.26. Use a newly
-built and verified fix-forward release with a higher version and pin revision.
-Its immutable metadata, stable pin and exact latest allow-list entry must agree.
+The updater will not downgrade a user who is already running vX.Y.Z. To roll
+back, release a fix-forward build with a higher version and pin revision. The
+metadata contract requires the release metadata revision to equal the pin
+revision, so you cannot re-point the pin at an older artifact with a new
+revision. Any emergency rollback needs a separately designed and reviewed
+procedure. Never delete or retag a published release.
 
-The current verification contract requires the release metadata revision to
-equal the stable pin revision. The immutable v0.0.24 artifact records revision
-25, so pointing at it with revision 27 would fail verification and is not a
-supported rollback. Never alter published metadata or bypass the identity gates.
-Any emergency rollback needs a separately designed and reviewed procedure.
-Never delete or retag v0.0.24, v0.0.25 or v0.0.26.
-
-Leave all older one-time release and recovery workflows unchanged and do not
-dispatch them again. See `docs/release-cloud-v0.0.19.md` for historical recovery.
+The older per-version `release-v0.0.*.yml` workflows and the recovery workflows
+are historical. Leave them unchanged and do not dispatch them again. See
+`docs/release-cloud-v0.0.19.md` for historical recovery.
