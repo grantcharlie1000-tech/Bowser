@@ -861,8 +861,8 @@ unsafe fn configure_web_app_controller(
         let webview4: ICoreWebView2_4 = webview.cast()?;
         let download_hooks = super::download::DownloadHooks { event: events.download_event.clone(), plan: events.download_plan.clone(), policy: events.policy_event.clone() };
         let download_source = super::download::Source { owner: super::download::app_owner(app_id), parent, private: false };
-        webview4.add_DownloadStarting(&DownloadStartingEventHandler::create(Box::new(move |_sender, args| {
-            if let Some(args) = args { super::download::handle_starting(&args, &download_source, &download_hooks); }
+        webview4.add_DownloadStarting(&DownloadStartingEventHandler::create(Box::new(move |sender, args| {
+            if let Some(args) = args { super::download::handle_starting(&args, &download_source, &download_hooks, sender.as_ref()); }
             Ok(())
         })), &mut token)?;
         let download_webview = webview.clone(); let download_token = token;

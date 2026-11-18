@@ -23,6 +23,7 @@ export const KIND_ICON: Readonly<Record<FileKind, IconName>> = {
 };
 export const ACTION_ICON: Readonly<Record<DlAction, IconName>> = {
   pause: 'pause', resume: 'play', cancel: 'close', open: 'external', show: 'folder-open', remove: 'close', copy: 'link', retry: 'reload',
+  review: 'shield',
 };
 
 export type Where = 'bubble' | 'page';

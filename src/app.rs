@@ -4562,6 +4562,16 @@ impl App {
             Outcome::CopyLink(url) => crate::downloads::copy_link_text(&url)
                 .map_or(DownloadFollowup::Rejected, DownloadFollowup::CopyText),
             Outcome::Retry(url) => DownloadFollowup::OpenTab(url),
+            Outcome::Review { key } => {
+                // The flyout hangs from the webview the download came from: show its tab first
+                // (a web app panel's owner key is never a tab's).
+                if let Some(owner) = engine::download_owner(key)
+                    && let Ok(tab) = u32::try_from(owner)
+                {
+                    Self::select_tab(app, TabId(tab));
+                }
+                if engine::review_download(key) { DownloadFollowup::None } else { DownloadFollowup::Failed }
+            }
         }
     }
 

@@ -14,7 +14,7 @@ use crate::downloads::{Action as Row, MAX_QUERY_CHARS};
 pub enum Action {
     /// The search text changed (debounced by the page); `""` shows everything.
     Search(String),
-    /// A row action on entry `id` (open, show in folder, remove, pause, resume, cancel, retry, copy).
+    /// A row action on entry `id` (open, show in folder, remove, pause, resume, cancel, retry, copy, review).
     Row { id: u32, action: Row },
     /// A list action: open the downloads folder, or clear every finished entry (the page asks first).
     List(Row),
@@ -52,6 +52,7 @@ pub fn map_command(f: &PanelFields) -> Option<Action> {
         "cancel" if id_only => row(Row::Cancel)?,
         "retry" if id_only => row(Row::Retry)?,
         "copy" if id_only => row(Row::CopyLink)?,
+        "review" if id_only => row(Row::Review)?,
         "folder" if bare => Action::List(Row::OpenFolder),
         "clear" if bare => Action::List(Row::ClearAll),
         "undo" if bare => Action::Undo,
@@ -94,6 +95,7 @@ mod tests {
             ("cancel", Row::Cancel),
             ("retry", Row::Retry),
             ("copy", Row::CopyLink),
+            ("review", Row::Review),
         ] {
             let mut command = fields(name);
             assert_eq!(map_command(&command), None, "{name} needs an id");

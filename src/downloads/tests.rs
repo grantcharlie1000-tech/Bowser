@@ -696,11 +696,11 @@ fn over_long_queries_are_cut() {
 #[test]
 fn action_codes_match_the_wire() {
     use Action::*;
-    let all = [Pause, Resume, Cancel, Open, Show, Remove, CopyLink, Retry, OpenPage, OpenFolder, ClearAll];
+    let all = [Pause, Resume, Cancel, Open, Show, Remove, CopyLink, Retry, OpenPage, OpenFolder, ClearAll, Review];
     for (n, action) in all.into_iter().enumerate() {
         assert_eq!(Action::from_code(n as u8), Some(action));
     }
-    assert_eq!(Action::from_code(11), None);
+    assert_eq!(Action::from_code(12), None);
     assert_eq!(Action::from_code(255), None);
 }
 
@@ -1227,6 +1227,10 @@ fn fixture_list() -> DownloadManager {
     start(&mut m, 6, "gone.txt", 10, NOON_MS - 10_800_000);
     finish(&mut m, 6, 10, 10, NOON_MS - 10_790_000);
     m.refresh_missing(&|p| !p.ends_with("gone.txt"));
+    // Every byte in, held by SmartScreen until the user keeps or deletes it.
+    start(&mut m, 7, "Bowser.exe", 9_800_000, NOON_MS - 20_000);
+    progress(&mut m, 7, 9_800_000, 9_800_000, NOON_MS - 5_000);
+    m.on_event(DownloadEvent::Review { key: 7 }, NOON_MS - 3_000);
     m
 }
 
@@ -1481,4 +1485,46 @@ fn a_normal_crx_download_is_unchanged() {
     let id = start_url(&mut m, 1, url, 1_000);
     fail(&mut m, 1, "Blocked", false, 2_000);
     assert_eq!(m.act(id, Action::Retry), Outcome::Retry(url.into()));
+}
+
+// --- SmartScreen review ---
+
+#[test]
+fn a_download_held_for_a_smartscreen_verdict_reads_review_and_offers_the_flyout() {
+    let mut m = DownloadManager::in_memory(false);
+    let id = start(&mut m, 7, "Bowser.exe", 100, 1_000);
+    progress(&mut m, 7, 100, 100, 1_500);
+    assert!(!m.allowed(id, Action::Review), "only once the engine says it is held");
+    assert_eq!(m.on_event(DownloadEvent::Review { key: 7 }, 4_000), Change::State);
+    let entry = m.get(id).unwrap();
+    assert_eq!(entry.state, State::Active, "still running for the list, the engine and the close prompt");
+    assert_eq!(entry.state_key(), "review");
+    assert_eq!((entry.bps(), entry.eta()), (0, -1), "nothing is moving");
+    let json = m.entry_json(id, time()).unwrap();
+    assert!(json.contains(r#""state":"review""#) && json.contains(r#""bps":0"#), "{json}");
+    assert!(m.allowed(id, Action::Review) && m.allowed(id, Action::Cancel));
+    assert!(!m.allowed(id, Action::Remove), "still in progress");
+    assert_eq!(m.act(id, Action::Review), Outcome::Review { key: 7 });
+    assert_eq!(m.on_event(DownloadEvent::Review { key: 7 }, 5_000), Change::None, "reported once");
+
+    // Keep: the engine reports Completed; Delete: Cancelled. Either ends the review.
+    finish(&mut m, 7, 100, 100, 6_000);
+    let entry = m.get(id).unwrap();
+    assert_eq!((entry.state_key(), entry.review), ("done", false));
+    assert!(!m.allowed(id, Action::Review));
+    let deleted = start(&mut m, 8, "Other.exe", 100, 1_000);
+    m.on_event(DownloadEvent::Review { key: 8 }, 4_000);
+    set_state(&mut m, 8, OpState::Cancelled, 5_000);
+    assert_eq!(m.get(deleted).unwrap().state_key(), "cancelled");
+}
+
+#[test]
+fn a_review_report_for_a_download_that_is_not_running_changes_nothing() {
+    let mut m = DownloadManager::in_memory(false);
+    let id = start(&mut m, 9, "a.exe", 100, 1_000);
+    set_state(&mut m, 9, OpState::Paused, 2_000);
+    assert_eq!(m.on_event(DownloadEvent::Review { key: 9 }, 3_000), Change::None);
+    assert_eq!(m.get(id).unwrap().state_key(), "paused");
+    assert_eq!(m.on_event(DownloadEvent::Review { key: 404 }, 3_000), Change::None, "unknown key");
+    assert_eq!(m.act(id, Action::Review), Outcome::Rejected);
 }

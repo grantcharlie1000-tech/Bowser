@@ -9,7 +9,8 @@ export { matchRanges };
 
 // ---- Wire: the entry object ----
 
-export const DL_STATES = ['active', 'paused', 'done', 'failed', 'cancelled', 'missing'] as const;
+/** `review`: every byte is in, but Windows SmartScreen holds the file until the user keeps or deletes it. */
+export const DL_STATES = ['active', 'review', 'paused', 'done', 'failed', 'cancelled', 'missing'] as const;
 export type DlState = typeof DL_STATES[number];
 
 export interface DlEntry {
@@ -250,6 +251,7 @@ export function statusText(entry: Pick<DlEntry, 'state' | 'got' | 'total' | 'eta
       const speed = where === 'page' ? formatSpeed(entry.bps) : '';
       return speed ? `${speed}${SEP}${text}` : text;
     }
+    case 'review': return 'Windows SmartScreen is checking this file. Review to keep it';
     case 'paused': return `Paused, ${progressText(entry.got, entry.total)}`;
     case 'done': {
       // A finished file is what arrived unless a real size says otherwise: a total of 0 or -1 only
@@ -265,7 +267,7 @@ export function statusText(entry: Pick<DlEntry, 'state' | 'got' | 'total' | 'eta
 
 /** How the status line is coloured: failures are warm, gone or cancelled files are quiet. */
 export function statusTone(state: DlState): 'normal' | 'warn' | 'quiet' {
-  return state === 'failed' ? 'warn' : state === 'cancelled' || state === 'missing' ? 'quiet' : 'normal';
+  return state === 'failed' || state === 'review' ? 'warn' : state === 'cancelled' || state === 'missing' ? 'quiet' : 'normal';
 }
 
 /**
@@ -273,14 +275,15 @@ export function statusTone(state: DlState): 'normal' | 'warn' | 'quiet' {
  * an unknown total of -1, or 0 while the download is still running, which is not "100%").
  */
 export function fraction(entry: Pick<DlEntry, 'state' | 'got' | 'total'>): number | null {
+  if (entry.state === 'review') return 1;
   if (entry.state !== 'active' && entry.state !== 'paused') return null;
   if (!hasKnownTotal(entry.total)) return null;
   return Math.max(0, Math.min(1, entry.got / entry.total));
 }
 
-/** Whether a row carries a progress bar (active or paused). */
+/** Whether a row carries a progress bar (active, held for review, or paused). */
 export function hasBar(state: DlState): boolean {
-  return state === 'active' || state === 'paused';
+  return state === 'active' || state === 'review' || state === 'paused';
 }
 
 // ---- Files ----
@@ -333,15 +336,16 @@ export function fileKind(name: string): FileKind {
 
 // ---- Actions ----
 
-export const DL_ACTIONS = ['pause', 'resume', 'cancel', 'open', 'show', 'remove', 'copy', 'retry'] as const;
+export const DL_ACTIONS = ['pause', 'resume', 'cancel', 'open', 'show', 'remove', 'copy', 'retry', 'review'] as const;
 export type DlAction = typeof DL_ACTIONS[number];
 /** `dlact` `n` per row action (docs/design/downloads.md). */
-export const ACTION_CODE: Readonly<Record<DlAction, number>> = { pause: 0, resume: 1, cancel: 2, open: 3, show: 4, remove: 5, copy: 6, retry: 7 };
+export const ACTION_CODE: Readonly<Record<DlAction, number>> = { pause: 0, resume: 1, cancel: 2, open: 3, show: 4, remove: 5, copy: 6, retry: 7, review: 11 };
 /** `dlact` `n` for list-level actions, always with id 0. */
 export const LIST_ACTION = { page: 8, folder: 9, clear: 10 } as const;
 
 export const ACTION_LABEL: Readonly<Record<DlAction, string>> = {
   pause: 'Pause', resume: 'Resume', cancel: 'Cancel', open: 'Open', show: 'Show in folder', remove: 'Remove from list', copy: 'Copy link', retry: 'Retry',
+  review: 'Review',
 };
 
 /**
@@ -355,6 +359,8 @@ export function actionsFor(entry: Pick<DlEntry, 'state' | 'resume' | 'url'>): { 
   const copy: DlAction[] = linked ? ['copy'] : [];
   switch (entry.state) {
     case 'active': return { primary: ['pause', 'cancel'], secondary: copy };
+    // Keep or Delete happens in WebView2's own flyout; Cancel deletes it from here too.
+    case 'review': return { primary: ['review', 'cancel'], secondary: copy };
     case 'paused': return { primary: ['resume', 'cancel'], secondary: copy };
     case 'done': return { primary: ['show'], secondary: [...copy, 'remove'] };
     case 'failed':
@@ -538,6 +544,7 @@ export function announceText(entry: Pick<DlEntry, 'name' | 'state' | 'err'>): st
     case 'paused': return `${entry.name} paused`;
     case 'missing': return `${entry.name} was moved or deleted`;
     case 'active': return `${entry.name} downloading`;
+    case 'review': return `${entry.name} needs review: Windows SmartScreen is checking it`;
   }
 }
 
