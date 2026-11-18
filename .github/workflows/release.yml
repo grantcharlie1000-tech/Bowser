@@ -515,6 +515,41 @@ jobs:
         run: |
           cargo +stable build --release --locked --bin bowser --features html-chrome-default
           if ($LASTEXITCODE -ne 0) { throw 'Release build failed.' }
+      # Authenticode signing, so Windows SmartScreen does not block the first launch of a
+      # download as an "unrecognised app" (docs/code-signing.md). Signing happens before the
+      # smoke test, so the hash the smoke report and the publisher check is the signed file's.
+      # Runs only once the repository variable AZURE_SIGNING_ACCOUNT is set; until then the
+      # release is built unsigned, as before, and the next step says so.
+      - name: Sign executable with Azure Artifact Signing
+        if: vars.AZURE_SIGNING_ACCOUNT != ''
+        uses: azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
+        with:
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+          endpoint: ${{ vars.AZURE_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ vars.AZURE_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ vars.AZURE_SIGNING_PROFILE }}
+          files: ${{ github.workspace }}\target\release\bowser.exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+          description: Bowser
+          description-url: https://github.com/grantcharlie1000-tech/Bowser
+      - name: Require a trusted signature when signing is configured
+        env:
+          SIGNING_CONFIGURED: ${{ vars.AZURE_SIGNING_ACCOUNT != '' }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $signature = Get-AuthenticodeSignature target/release/bowser.exe
+          if ($env:SIGNING_CONFIGURED -ceq 'true') {
+            if ($signature.Status -ne 'Valid') { throw "Bowser.exe signature is $($signature.Status): $($signature.StatusMessage)" }
+            if (-not $signature.TimeStamperCertificate) { throw 'Bowser.exe signature has no timestamp; it would stop validating when the signing certificate expires.' }
+            "Signed by $($signature.SignerCertificate.Subject)"
+          } else {
+            if ($signature.Status -ne 'NotSigned') { throw "Unexpected signature state $($signature.Status) on an unsigned build." }
+            '::warning title=Unsigned release::Bowser.exe is not code-signed, so SmartScreen will warn on first launch. Set up signing: docs/code-signing.md'
+          }
       - name: Smoke actual executable with isolated profile and local fixture
         run: |
           pwsh -NoProfile -File benchmarks/scripts/verify-release-candidate.ps1 -Out "$env:RUNNER_TEMP/bowser-release-smoke"
@@ -547,6 +582,7 @@ jobs:
             run_attempt = $env:GITHUB_RUN_ATTEMPT
             rustc = $rust
             smoke_passed = $true
+            authenticode = [string](Get-AuthenticodeSignature $file.FullName).Status
             built_at_utc = (Get-Date).ToUniversalTime().ToString('o')
           }
           $metadata | ConvertTo-Json | Set-Content -Encoding utf8 release-candidate/build-metadata.json
@@ -555,7 +591,7 @@ jobs:
             "## Built $label"
             ''
             "- commit ``$env:GITHUB_SHA``; Cargo $($env:RELEASE_VERSION); PIN_REVISION $($env:RELEASE_REVISION)"
-            "- Bowser.exe sha256 ``$hash``; bytes $($file.Length)"
+            "- Bowser.exe sha256 ``$hash``; bytes $($file.Length); Authenticode $($metadata.authenticode)"
           ) | Out-File $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
       - name: Save immutable tested candidate
         id: candidate

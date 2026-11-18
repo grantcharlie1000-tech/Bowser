@@ -36,4 +36,4 @@
    ```
    Compute `SHA-256(body)` over the exact body bytes (including the final newline), sign it with ECDSA P-256 as a 64-byte r||s (IEEE P1363) signature, and append `signature=<128 hex>` as the final line. With OpenSSL the default DER signature must be converted to r||s. A small signing script is not included yet; verify it end to end against a test key before the first release.
 
-Not yet done: a signing/publishing script; Authenticode signing of releases. Only `bowser.exe` is replaced by the swap, so any other file shipped alongside it (such as a changed `bowser.manifest`) must be handled by the installer.
+Not yet done: a signing/publishing script for the manifest channel. Authenticode signing of releases is done in `release.yml` once it is configured (see `docs/code-signing.md`). Only `bowser.exe` is replaced by the swap, so any other file shipped alongside it (such as a changed `bowser.manifest`) must be handled by the installer.

@@ -72,7 +72,7 @@ The gate (about 10 s) decides:
   - `rust-html`: HTML-default `cargo test` and Clippy.
   - `ui` (two shards): typecheck, lint, the CJK baseline, Shield, and the UI suite split with `--test-shard`.
   - `ui-repro`: rebuilds the UI and requires the committed `ui/dist`, `ui/dist.manifest` and `icons.gen.ts` to match byte for byte.
-  - `build`: compiles from the committed `ui/dist` (`build.rs` refuses a dist that differs from its manifest), runs the native smoke test and records the build metadata. It installs no npm packages.
+  - `build`: compiles from the committed `ui/dist` (`build.rs` refuses a dist that differs from its manifest), Authenticode-signs `Bowser.exe` when signing is configured (`docs/code-signing.md`; without it Windows SmartScreen warns on first launch), runs the native smoke test and records the build metadata. It installs no npm packages.
 
   `verdict` requires all five jobs to pass and the same `rustc` in both Rust jobs and the build.
   `publish`, the only job allowed to write releases, creates a draft. It
