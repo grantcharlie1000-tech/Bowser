@@ -1,0 +1,97 @@
+<main id="top">
+  <section class="page-head wrap">
+    <h1>Privacy</h1>
+    <p>What Bowser blocks, what it keeps on your PC, and exactly what it sends, and to whom.</p>
+  </section>
+
+  <section class="compare wrap" id="blocker">
+    <div class="sec-head">
+      <h2>Ads and trackers, blocked</h2>
+      <p>Bowser's blocker stops ads and trackers before they reach the page. It is on from the first launch, and it is the same code you can read on GitHub.</p>
+    </div>
+    <div class="shot cmp" data-compare style="--x: 50%">
+      <div class="cmp-layer cmp-on"><img class="shot-img is-light" src="img/shots/ads-off-light.webp" alt="The article in Bowser, with no ads on the page." decoding="async"><img class="shot-img is-dark" src="img/shots/ads-off-dark.webp" alt="The article in Bowser, with no ads on the page." decoding="async"></div>
+      <div class="cmp-layer cmp-off" aria-hidden="true"><img class="shot-img is-light" src="img/shots/ads-on-light.webp" alt="" decoding="async"><img class="shot-img is-dark" src="img/shots/ads-on-dark.webp" alt="" decoding="async"></div>
+      <span class="cmp-tag cmp-tag-off">Blocker off</span>
+      <span class="cmp-tag cmp-tag-on">Bowser</span>
+      <span class="cmp-line" aria-hidden="true"><span class="cmp-knob"><svg width="18" height="18" viewBox="0 0 24 24"><path d="m9 7-5 5 5 5m6-10 5 5-5 5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></span></span>
+      <input class="cmp-range" type="range" id="compare-range" min="0" max="100" value="50" step="0.5" aria-label="Compare the page with ads and in Bowser. Lower values show more of Bowser.">
+    </div>
+    <ul class="points">
+      <li><b>On from the first launch.</b> There is nothing to install or set up.</li>
+      <li><b>A switch per site.</b> Open Site information from the padlock and turn blocking off for one site. Every other site stays blocked.</li>
+      <li><b>Your own list, if you want one.</b> Put a filters.txt in your Bowser profile and it becomes your list.</li>
+      <li><b>No lists fetched behind your back.</b> Bowser never downloads filter lists by itself, so what it blocks is what you can read.</li>
+    </ul>
+  </section>
+
+  <section class="tour wrap" id="private">
+    <div class="sec-head">
+      <h2>Private tabs keep nothing</h2>
+      <p>Open one with <kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>P</kbd>. It sits with your other tabs, and leaves no trace when it closes.</p>
+    </div>
+    <div class="shot"><img class="shot-img is-light" src="img/shots/private-light.webp" alt="A Bowser private tab explaining what private browsing keeps and doesn't keep." loading="lazy" decoding="async"><img class="shot-img is-dark" src="img/shots/private-dark.webp" alt="A Bowser private tab explaining what private browsing keeps and doesn't keep." loading="lazy" decoding="async"></div>
+    <div class="ledger">
+      <div>
+        <h3>Never kept</h3>
+        <ul>
+          <li>Pages you visit, in history or address-bar suggestions</li>
+          <li>Cookies, site data and cache, which live in memory until the last private tab closes</li>
+          <li>Private tabs in restored sessions, workspaces or tab islands</li>
+          <li>Permissions: every request from a private tab is blocked</li>
+          <li>Blocked-request counts in the Privacy dashboard</li>
+        </ul>
+      </div>
+      <div>
+        <h3>Always on</h3>
+        <ul>
+          <li>The ad and tracker blocker, whatever the site switch says</li>
+          <li>Strict tracking prevention</li>
+          <li>A bookmark is the one thing kept, and only when you add it</li>
+        </ul>
+        <p class="ledger-note">Private tabs stop Bowser keeping a record on your PC. They don't hide you from the sites you visit, your network or your employer.</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="tour wrap" id="permissions">
+    <div class="sec-head">
+      <h2>Permissions start at no</h2>
+      <p>Bowser never asks. Camera, microphone, location, notifications and pop-ups stay blocked until you allow a site from Site information.</p>
+    </div>
+    <div class="shot"><img class="shot-img is-light" src="img/shots/privacy-light.webp" alt="Bowser's site information popup, showing blocked permissions, cookies and requests blocked on the page." loading="lazy" decoding="async"><img class="shot-img is-dark" src="img/shots/privacy-dark.webp" alt="Bowser's site information popup, showing blocked permissions, cookies and requests blocked on the page." loading="lazy" decoding="async"></div>
+  </section>
+
+  <section class="doc wrap" id="network">
+    <div class="sec-head">
+      <h2>Everything Bowser sends</h2>
+      <p>Bowser has no servers, no account and no telemetry. These are the only places your browser talks to, and why.</p>
+    </div>
+    <div class="table-wrap">
+      <table class="sends">
+        <thead><tr><th scope="col">Who</th><th scope="col">What they receive</th><th scope="col">When</th></tr></thead>
+        <tbody>
+          <tr><th scope="row">The sites you visit</th><td>Ordinary page requests, minus the ads and trackers Bowser blocks</td><td>When you open a page</td></tr>
+          <tr><th scope="row">Your search engine</th><td>What you search for</td><td>When you press Enter on a search</td></tr>
+          <tr><th scope="row">Your search engine's suggestion service</th><td>What you type in the address bar</td><td>Only if you turn on search suggestions. Never from a private tab</td></tr>
+          <tr><th scope="row">Google Translate</th><td>The text of the page</td><td>Only when you translate. A private tab asks first, every time</td></tr>
+          <tr><th scope="row">Microsoft Defender SmartScreen</th><td>Addresses you visit, to check them against known bad sites</td><td>Where Windows has it switched on</td></tr>
+          <tr><th scope="row">GitHub</th><td>A request for the current stable version</td><td>About a minute after Bowser starts, then at most once an hour. Turn it off in Settings, Updates</td></tr>
+          <tr><th scope="row">Bowser</th><td>Nothing</td><td>Never</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="doc wrap" id="local">
+    <div class="sec-head">
+      <h2>What stays on your PC</h2>
+      <p>Your history, bookmarks, settings, notes, sessions and passwords live in <code>%LOCALAPPDATA%\Bowser</code>, one folder per profile.</p>
+    </div>
+    <ul class="points">
+      <li><b>Passwords are encrypted</b> with Windows' own data protection for your user account.</li>
+      <li><b>Clear what you like</b> from the Privacy dashboard: cookies and site data, cache or history, for a time range you pick. Press <kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>Del</kbd>.</li>
+      <li><b>History can be off</b> for a whole profile.</li>
+    </ul>
+  </section>
+</main>

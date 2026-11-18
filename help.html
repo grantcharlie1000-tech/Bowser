@@ -1,0 +1,229 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Help — Bowser</title>
+<meta name="description" content="Keyboard shortcuts, answers to common questions, and fixes for common problems with Bowser.">
+<meta name="color-scheme" content="light dark">
+<link rel="icon" type="image/png" href="img/bowser-icon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400..700&family=JetBrains+Mono:wght@500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css">
+<script>try{var t=localStorage.getItem("bowser-theme");if(t)document.documentElement.setAttribute("data-theme",t)}catch(e){}</script>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <linearGradient id="bone-disc" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#3b97ff"/>
+      <stop offset="1" stop-color="#1462dc"/>
+    </linearGradient>
+    <symbol id="bone" viewBox="0 0 100 100">
+      <circle cx="50" cy="50" r="48" fill="url(#bone-disc)"/>
+      <g fill="none" stroke-linecap="round">
+        <path d="M28 60.5Q50 38 72 60.5" stroke="#dde5f4" stroke-width="15"/>
+        <path d="M28 39.5Q50 62 72 39.5" stroke="#fff" stroke-width="15"/>
+      </g>
+    </symbol>
+    <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 4v11m0 0 4.5-4.5M12 15l-4.5-4.5M5 19.5h14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M5 12h14m-5.5-5.5L19 12l-5.5 5.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-code" viewBox="0 0 24 24"><path d="m8.5 7.5-5 4.5 5 4.5m7-9 5 4.5-5 4.5M13.5 5l-3 14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-out" viewBox="0 0 24 24"><path d="M14 5h5v5m0-5-8 8M18 14v4a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-chev" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-moon" viewBox="0 0 24 24"><path d="M19.5 14.5A7.5 7.5 0 0 1 9.5 4.5a7.5 7.5 0 1 0 10 10Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></symbol>
+    <symbol id="i-sun" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 3v2m0 14v2M3 12h2m14 0h2M5.6 5.6 7 7m10 10 1.4 1.4M5.6 18.4 7 17M17 7l1.4-1.4"/></g></symbol>
+    <symbol id="i-github" viewBox="0 0 24 24"><path fill="currentColor" d="M12 2.5a9.5 9.5 0 0 0-3 18.5c.5.1.6-.2.6-.5v-1.7c-2.6.6-3.2-1.2-3.2-1.2-.4-1.1-1-1.4-1-1.4-.9-.6 0-.6 0-.6 1 .1 1.5 1 1.5 1 .9 1.5 2.3 1 2.8.8.1-.6.4-1 .6-1.3-2.1-.2-4.3-1-4.3-4.7 0-1 .4-1.9 1-2.6-.1-.2-.4-1.2.1-2.5 0 0 .8-.3 2.6 1a9 9 0 0 1 4.8 0c1.8-1.3 2.6-1 2.6-1 .5 1.3.2 2.3.1 2.5.6.7 1 1.6 1 2.6 0 3.7-2.2 4.5-4.3 4.7.3.3.6.9.6 1.8v2.6c0 .3.2.6.7.5A9.5 9.5 0 0 0 12 2.5Z"/></symbol>
+    <symbol id="i-pause" viewBox="0 0 24 24"><rect x="6.5" y="5" width="3.6" height="14" rx="1.4" fill="currentColor"/><rect x="13.9" y="5" width="3.6" height="14" rx="1.4" fill="currentColor"/></symbol>
+    <symbol id="i-play" viewBox="0 0 24 24"><path d="M8 5.8v12.4a1 1 0 0 0 1.5.9l10-6.2a1 1 0 0 0 0-1.8l-10-6.2A1 1 0 0 0 8 5.8Z" fill="currentColor"/></symbol>
+    <symbol id="i-copy" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><rect x="8.5" y="8.5" width="11" height="11" rx="2.2"/><path d="M15.5 8.5V6.7a2.2 2.2 0 0 0-2.2-2.2H6.7a2.2 2.2 0 0 0-2.2 2.2v6.6a2.2 2.2 0 0 0 2.2 2.2h1.8"/></g></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="m6.5 12.5 3.5 3.5 7.5-8" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+  </defs>
+</svg>
+
+<header class="nav">
+  <div class="nav-in">
+    <a class="brand" href="./" aria-label="Bowser home"><svg width="28" height="28" aria-hidden="true"><use href="#bone"/></svg><span>Bowser</span></a>
+    <nav class="nav-links" id="site-menu" aria-label="Site">
+      <a href="features.html">Features</a>
+      <a href="privacy.html">Privacy</a>
+      <a href="releases.html">Release notes</a>
+      <a href="help.html" aria-current="page">Help</a>
+    </nav>
+    <div class="nav-end">
+      <button type="button" class="icon-btn" id="theme-toggle" aria-label="Switch to dark theme">
+        <svg class="i-moon" width="20" height="20" aria-hidden="true"><use href="#i-moon"/></svg>
+        <svg class="i-sun" width="20" height="20" aria-hidden="true"><use href="#i-sun"/></svg>
+      </button>
+      <a class="icon-btn" href="https://github.com/grantcharlie1000-tech/Bowser" aria-label="Bowser on GitHub"><svg width="20" height="20" aria-hidden="true"><use href="#i-github"/></svg></a>
+      <button type="button" class="icon-btn nav-menu-btn" aria-expanded="false" aria-controls="site-menu" aria-label="Menu"><svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
+      <a class="btn btn-ink btn-sm" href="download.html">Download<svg width="16" height="16" aria-hidden="true"><use href="#i-arrow"/></svg></a>
+    </div>
+  </div>
+</header>
+
+<main id="top">
+  <section class="page-head wrap">
+    <h1>Help</h1>
+    <p>Keyboard shortcuts, answers to common questions, and fixes for the usual problems.</p>
+    <nav class="page-jump" aria-label="On this page"><a class="btn btn-soft btn-sm" href="#shortcuts">Shortcuts</a><a class="btn btn-soft btn-sm" href="#faq">Questions</a><a class="btn btn-soft btn-sm" href="#fixes">Fixes</a></nav>
+  </section>
+
+  <section class="spec wrap" id="shortcuts" aria-label="Keyboard shortcuts">
+    <div class="sec-head"><h2>Keyboard shortcuts</h2></div>
+    <div class="spec-group">
+      <h2>Tabs</h2>
+      <dl>
+        <div><dt>New tab</dt><dd class="keys"><kbd>Ctrl</kbd><kbd>T</kbd></dd></div>
+        <div><dt>New private tab</dt><dd class="keys"><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>P</kbd></dd></div>
+        <div><dt>Close tab</dt><dd class="keys"><kbd>Ctrl</kbd><kbd>W</kbd></dd></div>
+        <div><dt>Next tab</dt><dd class="keys"><kbd>Ctrl</kbd><kbd>Tab</kbd></dd></div>
+        <div><dt>Previous tab</dt><dd class="keys"><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>Tab</kbd></dd></div>
+        <div><dt>Go to tab 1 to 8</dt><dd class="keys"><kbd>Ctrl</kbd><kbd>1</kbd> to <kbd>Ctrl</kbd><kbd>8</kbd></dd></div>
+        <div><dt>Go to the last tab</dt><dd class="keys"><kbd>Ctrl</kbd><kbd>9</kbd></dd></div>
+        <div><dt>Undo tab organisation</dt><dd class="keys"><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>Z</kbd></dd></div>
+      </dl>
+    </div>
+    <div class="spec-group">
+      <h2>Pages</h2>
+      <dl>
+        <div><dt>Focus the address bar</dt><dd class="keys"><kbd>Ctrl</kbd><kbd>L</kbd></dd></div>
+        <div><dt>Back</dt><dd class="keys"><kbd>Alt</kbd><kbd>←</kbd></dd></div>
+        <div><dt>Forward</dt><dd class="keys"><kbd>Alt</kbd><kbd>→</kbd></dd></div>
+        <div><dt>Reload</dt><dd class="keys"><kbd>F5</kbd></dd></div>
+        <div><dt>Hard reload</dt><dd class="keys"><kbd>Ctrl</kbd><kbd>F5</kbd></dd></div>
+        <div><dt>Stop loading</dt><dd class="keys"><kbd>Esc</kbd></dd></div>
+        <div><dt>Reader view</dt><dd class="keys"><kbd>Ctrl</kbd><kbd>Alt</kbd><kbd>R</kbd></dd></div>
+        <div><dt>Picture in picture</dt><dd class="keys"><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>Y</kbd></dd></div>
+        <div><dt>Zoom in, out, reset</dt><dd class="keys"><kbd>Ctrl</kbd><kbd>+</kbd> <kbd>Ctrl</kbd><kbd>−</kbd> <kbd>Ctrl</kbd><kbd>0</kbd></dd></div>
+      </dl>
+    </div>
+    <div class="spec-group">
+      <h2>Split view</h2>
+      <dl>
+        <div><dt>Turn split view on or off</dt><dd class="keys"><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>\</kbd></dd></div>
+        <div><dt>Focus the left or right pane</dt><dd class="keys"><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>←</kbd> <kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>→</kbd></dd></div>
+        <div><dt>Close the focused pane</dt><dd class="keys"><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>W</kbd></dd></div>
+      </dl>
+    </div>
+    <div class="spec-group">
+      <h2>Bowser</h2>
+      <dl>
+        <div><dt>Command palette</dt><dd class="keys"><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>K</kbd></dd></div>
+        <div><dt>Add bookmark</dt><dd class="keys"><kbd>Ctrl</kbd><kbd>D</kbd></dd></div>
+        <div><dt>History</dt><dd class="keys"><kbd>Ctrl</kbd><kbd>H</kbd></dd></div>
+        <div><dt>Downloads</dt><dd class="keys"><kbd>Ctrl</kbd><kbd>J</kbd></dd></div>
+        <div><dt>Notes and tasks</dt><dd class="keys"><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>N</kbd></dd></div>
+        <div><dt>Passwords and passkeys</dt><dd class="keys"><kbd>Ctrl</kbd><kbd>,</kbd></dd></div>
+        <div><dt>Fill a saved password</dt><dd class="keys"><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>L</kbd></dd></div>
+        <div><dt>Extensions</dt><dd class="keys"><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>E</kbd></dd></div>
+        <div><dt>Privacy dashboard</dt><dd class="keys"><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>Del</kbd></dd></div>
+        <div><dt>Switch profile</dt><dd class="keys"><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>M</kbd></dd></div>
+      </dl>
+    </div>
+  </section>
+
+  <section class="faq wrap" id="faq">
+    <div class="sec-head"><h2>Questions, answered</h2></div>
+    <div class="faq-list">
+      <details>
+        <summary>Is ad blocking on when I install it?<svg width="18" height="18" aria-hidden="true"><use href="#i-chev"/></svg></summary>
+        <p>Yes. Ads and trackers are blocked from the first launch. There is nothing to install or set up.</p>
+      </details>
+      <details>
+        <summary>Can I turn blocking off for one site?<svg width="18" height="18" aria-hidden="true"><use href="#i-chev"/></svg></summary>
+        <p>Yes. The Privacy panel has a blocker switch for the site you are on. Every other site stays blocked, and private tabs always block.</p>
+      </details>
+      <details>
+        <summary>Can I use my own filter list?<svg width="18" height="18" aria-hidden="true"><use href="#i-chev"/></svg></summary>
+        <p>Yes. Put a filters.txt in your Bowser profile and it becomes your list. Bowser does not fetch filter lists by itself.</p>
+      </details>
+      <details>
+        <summary>Which Chrome extensions work?<svg width="18" height="18" aria-hidden="true"><use href="#i-chev"/></svg></summary>
+        <p>Install them from the Chrome Web Store or Edge Add-ons, from a .crx file, or from an unpacked folder. WebView2 runs only part of Chrome&rsquo;s extension system, so a few extensions won&rsquo;t work. Extensions don&rsquo;t run in private tabs.</p>
+      </details>
+      <details>
+        <summary>What do I need to run it?<svg width="18" height="18" aria-hidden="true"><use href="#i-chev"/></svg></summary>
+        <p>64-bit Windows 10 or 11 with the Evergreen <a href="https://developer.microsoft.com/en-us/microsoft-edge/webview2/#download-section">WebView2 Runtime</a>. Current Microsoft Edge already includes it, and Microsoft keeps it patched.</p>
+      </details>
+      <details>
+        <summary>Why does Windows warn me when I open it?<svg width="18" height="18" aria-hidden="true"><use href="#i-chev"/></svg></summary>
+        <p>The build is not Authenticode-signed yet. SmartScreen may ask you to choose More info, then Run anyway. Each release lists its SHA-256 so you can check the file first.</p>
+      </details>
+      <details>
+        <summary>Does Bowser collect my data?<svg width="18" height="18" aria-hidden="true"><use href="#i-chev"/></svg></summary>
+        <p>Bowser has no hosted backend and no first-party telemetry. WebView2's Microsoft Defender SmartScreen checks are on where Windows allows them, and those may send visited addresses to Microsoft.</p>
+      </details>
+      <details>
+        <summary>How does it update?<svg width="18" height="18" aria-hidden="true"><use href="#i-chev"/></svg></summary>
+        <p>After Bowser has been open for about a minute it checks the release pinned in the repository, then at most once an hour. A new build is downloaded only when its SHA-256 matches, and installs the next time you start Bowser. You can turn automatic updates off in Settings, Updates.</p>
+      </details>
+      <details>
+        <summary>What is the spoiler shield?<svg width="18" height="18" aria-hidden="true"><use href="#i-chev"/></svg></summary>
+        <p>Bowser ships with a GTA VI spoiler firewall, on by default. It hides text, images and video that look like spoilers behind a click-to-reveal cover. Turn it off in Settings, Privacy and security. It is unofficial and not affiliated with Rockstar Games.</p>
+      </details>
+      <details>
+        <summary>How do I change the search engine?<svg width="18" height="18" aria-hidden="true"><use href="#i-chev"/></svg></summary>
+        <p>Open Settings, Search engine, and pick Google or DuckDuckGo. The change applies to your next search, with no restart.</p>
+      </details>
+      <details>
+        <summary>Where is my data?<svg width="18" height="18" aria-hidden="true"><use href="#i-chev"/></svg></summary>
+        <p>In <code>%LOCALAPPDATA%\Bowser</code>, with one folder per profile. Updating or reinstalling Bowser keeps it.</p>
+      </details>
+      <details>
+        <summary>How do I reset Bowser&rsquo;s settings?<svg width="18" height="18" aria-hidden="true"><use href="#i-chev"/></svg></summary>
+        <p>Open Settings, About Bowser, and choose Reset settings. Your bookmarks, history and passwords stay.</p>
+      </details>
+      <details>
+        <summary>How do I uninstall it?<svg width="18" height="18" aria-hidden="true"><use href="#i-chev"/></svg></summary>
+        <p>Run <code>Uninstall-Bowser.ps1</code> from the repository. It removes the program and its shortcuts and keeps your browser data in <code>%LOCALAPPDATA%\Bowser</code>, which you can delete yourself.</p>
+      </details>
+    </div>
+  </section>
+
+  <section class="doc wrap" id="fixes">
+    <div class="sec-head"><h2>When something goes wrong</h2></div>
+    <dl class="fixes">
+      <div><dt>Bowser says the WebView2 Runtime is missing</dt><dd>Install the Evergreen WebView2 Runtime from <a href="https://developer.microsoft.com/en-us/microsoft-edge/webview2/#download-section">Microsoft</a>, then open Bowser again.</dd></div>
+      <div><dt>A site looks broken or won&rsquo;t load something</dt><dd>Open Site information from the padlock and turn blocking off for that site. If that fixes it, tell us the site in an issue so the list can be corrected.</dd></div>
+      <div><dt>A site can&rsquo;t use the camera, microphone or location</dt><dd>Permissions start blocked. Allow the one it needs in Site information, from the padlock.</dd></div>
+      <div><dt>Windows won&rsquo;t open the download</dt><dd>On the SmartScreen box choose More info, then Run anyway. Compare the file&rsquo;s SHA-256 with the one on the <a href="download.html">download page</a> if you want to be sure it&rsquo;s the real one.</dd></div>
+      <div><dt>A page shows a spoiler cover you didn&rsquo;t expect</dt><dd>Click the cover to reveal it, or turn the spoiler shield off in Settings, Privacy and security.</dd></div>
+      <div><dt>Something else</dt><dd><a href="https://github.com/grantcharlie1000-tech/Bowser/issues">Open an issue on GitHub</a> with what you did and what you saw.</dd></div>
+    </dl>
+  </section>
+</main>
+
+<footer class="foot">
+  <div class="foot-in">
+    <div class="foot-lead">
+      <p class="foot-word">Bowser</p>
+      <p class="foot-tag">Stupidly light. Stupidly fast. And the ads are gone.</p>
+      <a class="btn btn-white btn-sm" href="download.html">Download<svg width="16" height="16" aria-hidden="true"><use href="#i-arrow"/></svg></a>
+    </div>
+    <nav class="foot-cols" aria-label="Footer">
+      <div>
+        <p class="foot-h">Bowser</p>
+        <a href="features.html">Features</a>
+        <a href="privacy.html">Privacy</a>
+        <a href="releases.html">Release notes</a>
+      </div>
+      <div>
+        <p class="foot-h">Get started</p>
+        <a href="download.html">Download</a>
+        <a href="help.html">Help</a>
+        <a href="help.html#shortcuts">Keyboard shortcuts</a>
+      </div>
+      <div>
+        <p class="foot-h">Source</p>
+        <a href="https://github.com/grantcharlie1000-tech/Bowser">GitHub</a>
+        <a href="https://github.com/grantcharlie1000-tech/Bowser/issues">Report an issue</a>
+        <a href="https://github.com/grantcharlie1000-tech/Bowser#build-and-run">Build from source</a>
+      </div>
+    </nav>
+  </div>
+</footer>
+<script src="app.js"></script>
+</body>
+</html>

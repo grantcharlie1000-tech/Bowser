@@ -1,0 +1,692 @@
+[
+ {
+  "tag": "v0.0.34",
+  "date": "2026-11-18",
+  "prs": [
+   [
+    140,
+    "Fix YouTube and X.com ad-blockers"
+   ],
+   [
+    147,
+    "Pin Stable to v0.0.33"
+   ],
+   [
+    148,
+    "Spoiler Firewall: fix false positives, catch more spoilers, cut OCR and engine load"
+   ],
+   [
+    149,
+    "Toolbar customiser, session restore, menus, settings regroup, search suggestions, group drag"
+   ],
+   [
+    151,
+    "Draw folded group slivers as stacked cards behind the tab"
+   ],
+   [
+    150,
+    "Overhaul password saving and add form autofill"
+   ],
+   [
+    152,
+    "Bump Bowser to 0.0.34"
+   ]
+  ],
+  "body": "Verified Windows HTML-chrome build from 5428c016602a4cd4d66eaa6ee2612fae104e854c. Stable rollout is controlled separately by stable/release.json.",
+  "exe": true
+ },
+ {
+  "tag": "v0.0.33",
+  "date": "2026-11-18",
+  "prs": [
+   [
+    145,
+    "Fix release publisher tag lookup"
+   ],
+   [
+    146,
+    "Bump Bowser to 0.0.33"
+   ]
+  ],
+  "body": "Verified Windows HTML-chrome build from c73a3ac3a7eb0a08b542dcee27582f4d44f95faa. Stable rollout is controlled separately by stable/release.json.",
+  "exe": true
+ },
+ {
+  "tag": "v0.0.32",
+  "date": "2026-11-18",
+  "prs": [
+   [
+    137,
+    "Make profiles useful: names, profile manager, taskbar identity, shortcuts, open link in profile"
+   ],
+   [
+    138,
+    "Promote verified v0.0.31 to stable"
+   ],
+   [
+    141,
+    "Cut the stable pin process from ~88 to ~25 minutes of CI"
+   ],
+   [
+    139,
+    "Docked toolbar customiser, per-command icons, tab menu and side panel page fixes"
+   ],
+   [
+    142,
+    "Automate the release and pin PR: two clicks, ~10 minutes of CI"
+   ],
+   [
+    143,
+    "Three-click releases; release run bounded by the release compile"
+   ],
+   [
+    144,
+    "Bump Bowser to 0.0.32 for release"
+   ]
+  ],
+  "body": "## What's Changed\r\n* Make profiles useful: names, profile manager, taskbar identity, shortcuts, open link in profile by @grantcharlie1000-tech in https://github.com/grantcharlie1000-tech/Bowser/pull/137\r\n* Promote verified v0.0.31 to stable by @grantcharlie1000-tech in https://github.com/grantcharlie1000-tech/Bowser/pull/138\r\n* Cut the stable pin process from ~88 to ~25 minutes of CI by @grantcharlie1000-tech in https://github.com/grantcharlie1000-tech/Bowser/pull/141\r\n* Docked toolbar customiser, per-command icons, tab menu and side panel page fixes by @grantcharlie1000-tech in https://github.com/grantcharlie1000-tech/Bowser/pull/139\r\n* Automate the release and pin PR: two clicks, ~10 minutes of CI by @grantcharlie1000-tech in https://github.com/grantcharlie1000-tech/Bowser/pull/142\r\n* Three-click releases; release run bounded by the release compile by @grantcharlie1000-tech in https://github.com/grantcharlie1000-tech/Bowser/pull/143\r\n* Bump Bowser to 0.0.32 for release by @grantcharlie1000-tech in https://github.com/grantcharlie1000-tech/Bowser/pull/144\r\n\r\n\r\n**Full Changelog**: https://github.com/grantcharlie1000-tech/Bowser/compare/v0.0.31...v0.0.32",
+  "exe": false
+ },
+ {
+  "tag": "v0.0.31",
+  "date": "2026-11-18",
+  "prs": [
+   [
+    132,
+    "Promote verified v0.0.30 spoiler firewall release to stable"
+   ],
+   [
+    134,
+    "Keep the HTML chrome from getting stuck on the native fallback on slow machines"
+   ],
+   [
+    133,
+    "fix(spoiler): stop the firewall blacking out YouTube and covering whole pages"
+   ],
+   [
+    135,
+    "Extensions cleanup, Edge Add-ons, cascading menus"
+   ],
+   [
+    136,
+    "Prepare guarded v0.0.31 release"
+   ]
+  ],
+  "body": "Verified Windows HTML-chrome build from 141015a35b6bce3b15f3d7a651ab0ad04892c885. Stable rollout is controlled separately by stable/release.json.",
+  "exe": true
+ },
+ {
+  "tag": "v0.0.30",
+  "date": "2026-11-17",
+  "prs": [
+   [
+    127,
+    "Promote verified v0.0.29 performance improvements to stable"
+   ],
+   [
+    128,
+    "UI/UX repair: 47 verified defects fixed across chrome, settings, menus and native recovery"
+   ],
+   [
+    129,
+    "Zen-style vertical tabs, Opera-style tab islands, rail and bar positions removed"
+   ],
+   [
+    130,
+    "Built-in Spoiler Firewall for GTA VI (default on) + Chrome extension"
+   ],
+   [
+    131,
+    "Prepare guarded v0.0.30 spoiler firewall release"
+   ]
+  ],
+  "body": "Verified Windows HTML-chrome build from f9841742f44ed44483ef7cae167db0a3e61640c2. Stable rollout is controlled separately by stable/release.json.",
+  "exe": true
+ },
+ {
+  "tag": "v0.0.29",
+  "date": "2026-11-16",
+  "prs": [
+   [
+    125,
+    "Reduce repeated settings-search and session-save work"
+   ],
+   [
+    126,
+    "Prepare guarded v0.0.29 settings and persistence release"
+   ]
+  ],
+  "body": "Verified Windows HTML-chrome build from 09615186eccc489f13c29e04cffc3b62ceb1d935. Stable rollout is controlled separately by stable/release.json.",
+  "exe": true
+ },
+ {
+  "tag": "v0.0.28",
+  "date": "2026-11-16",
+  "prs": [
+   [
+    121,
+    "Promote verified v0.0.27 background-media release to stable"
+   ],
+   [
+    122,
+    "Recover from WebView2 browser loss and cut idle/startup delays"
+   ],
+   [
+    123,
+    "Prepare guarded v0.0.28 recovery and latency release"
+   ]
+  ],
+  "body": "Verified Windows HTML-chrome build from f34d2f7be6df5dbfeaddfcf30995168a246b57af. Stable rollout is controlled separately by stable/release.json.",
+  "exe": true
+ },
+ {
+  "tag": "v0.0.27",
+  "date": "2026-11-15",
+  "prs": [
+   [
+    117,
+    "Promote verified v0.0.26 to stable"
+   ],
+   [
+    118,
+    "Protect background media before automatic tab suspension"
+   ],
+   [
+    120,
+    "Prepare guarded v0.0.27 background-media release"
+   ]
+  ],
+  "body": "Verified Windows HTML-chrome build from 85f59101dab6f6e3a1b4e5043c33fbdb4c1de011. Stable rollout is controlled separately by stable/release.json.",
+  "exe": true
+ },
+ {
+  "tag": "v0.0.26",
+  "date": "2026-11-10",
+  "prs": [
+   [
+    115,
+    "Show selected-price conversions in Bowser's standard menu"
+   ],
+   [
+    116,
+    "Prepare v0.0.26 release identity"
+   ]
+  ],
+  "body": "Verified Windows HTML-chrome build from fc3f6f24d3c5cc72c0c59f247a47d48d859966ed. Stable rollout is controlled separately by stable/release.json.",
+  "exe": true
+ },
+ {
+  "tag": "v0.0.25",
+  "date": "2026-11-07",
+  "prs": [
+   [
+    110,
+    "release: promote v0.0.24 stable update"
+   ],
+   [
+    112,
+    "Prepare guarded Bowser v0.0.25 release tooling"
+   ]
+  ],
+  "body": "Verified Windows HTML-chrome build from bbef197520cafe787a1ac7e24b77f86d03c2cec0. Stable rollout is controlled separately by stable/release.json.",
+  "exe": true
+ },
+ {
+  "tag": "v0.0.24",
+  "date": "2026-11-01",
+  "prs": [
+   [
+    93,
+    "Fix Chrome Web Store installs: unpack cap, dead placeholder download, install page"
+   ],
+   [
+    94,
+    "Prepare guarded Bowser v0.0.24 release tooling"
+   ],
+   [
+    95,
+    "Prepare Bowser v0.0.24 release identity"
+   ]
+  ],
+  "body": "Verified Windows HTML-chrome build from 645c922706ce9ae8b76c48b3b1cd05cafa59a4e6. Stable rollout is controlled separately by stable/release.json.",
+  "exe": true
+ },
+ {
+  "tag": "v0.0.23",
+  "date": "2026-10-23",
+  "prs": [
+   [
+    87,
+    "Pin stable to Bowser v0.0.22 (revision 23)"
+   ]
+  ],
+  "body": "Verified Windows HTML-chrome build from 6173ea5b8c7e18aa94238732d61b1126a8a625ce. Stable rollout is controlled separately by stable/release.json.",
+  "exe": true
+ },
+ {
+  "tag": "v0.0.22",
+  "date": "2026-10-23",
+  "prs": [
+   [
+    83,
+    "Pin stable to Bowser v0.0.21 (revision 22)"
+   ],
+   [
+    84,
+    "Add \"Erase site data\" to the tab context menu"
+   ],
+   [
+    85,
+    "Add the v0.0.22 release workflow and allow v0.0.22 to become latest"
+   ],
+   [
+    86,
+    "Prepare Bowser v0.0.22 release identity"
+   ]
+  ],
+  "body": "Verified Windows HTML-chrome build from 5ee87578415e1c9b1784ca25891a5eca3706c44d. Stable rollout is controlled separately by stable/release.json.",
+  "exe": true
+ },
+ {
+  "tag": "v0.0.21",
+  "date": "2026-10-20",
+  "prs": [
+   [
+    75,
+    "Pin stable to Bowser v0.0.20 (revision 21)."
+   ],
+   [
+    73,
+    "Never save bookmark details, shortcuts or tasks over a file that was not read (R-4, R-5, R-7)"
+   ],
+   [
+    76,
+    "Warm the CJK reader timing check before holding it to its 1500 ms budget"
+   ],
+   [
+    74,
+    "Stop UI-thread file writes on read-only paths (R-6, R-11, R-12) and unbounded leftovers (R-18, R-19, R-21)"
+   ],
+   [
+    77,
+    "Fix remaining robustness rows: UI-thread fsyncs, size caps, orphan thumbnails, hit-test panic (R-8, R-9, R-10, R-13, R-14, R-17, R-20, R-22)"
+   ],
+   [
+    78,
+    "Fix blocker, web-panel, capture, updater, import, feed, sidebar and password-id leftovers"
+   ],
+   [
+    79,
+    "Fix the remaining tab and tab-UI bugs (T5, T6, T8, U1, U2, U5, U6, U8-U11)"
+   ],
+   [
+    80,
+    "Fix the remaining window and omnibox S3 bugs (W-3, W-6, system menu, NCCALCSIZE, grips, split restore, OB-8, OB-11, OB-12)"
+   ],
+   [
+    81,
+    "Add the v0.0.21 release workflow and latest allow-list entry"
+   ],
+   [
+    82,
+    "Prepare Bowser v0.0.21 release identity"
+   ]
+  ],
+  "body": "Verified Windows HTML-chrome build from 035b72214d8ce07eef4a2fa86fb2cd99fb1f60a4. Stable rollout is controlled separately by stable/release.json.",
+  "exe": true
+ },
+ {
+  "tag": "v0.0.20",
+  "date": "2026-10-20",
+  "prs": [
+   [
+    51,
+    "Recover missing customisation fixes after v0.0.19"
+   ],
+   [
+    52,
+    "Keep a picked accent as chosen (v0.0.19 desaturated colours)"
+   ],
+   [
+    50,
+    "Measure production performance and attribute native controller costs"
+   ],
+   [
+    53,
+    "Stop bookmark and settings saves from losing or misreporting data"
+   ],
+   [
+    54,
+    "Search bare numbers and word-colon queries; run held page toggles once (OB-3/4/5)"
+   ],
+   [
+    56,
+    "Fix the notes panel use-after-free and window-follow bugs"
+   ],
+   [
+    57,
+    "Keep the window movable and its top edge resizable over the HTML chrome"
+   ],
+   [
+    60,
+    "Fix page-tools bugs: zoomed capture crop, menu mojibake, private default zoom, IP registrable domain, silent reader"
+   ],
+   [
+    61,
+    "Fix default-browser link launches, update trial, shared downloads list and script hazards"
+   ],
+   [
+    59,
+    "Run the measurement baseline job on pull requests only for its branch"
+   ],
+   [
+    55,
+    "Keep workspaces across restarts; fix pinned-move, split drag sides and selection sync"
+   ],
+   [
+    58,
+    "Keep private split views private, drop deleted history from suggestions, apply filter rules to open tabs"
+   ],
+   [
+    62,
+    "Make surface-modules Edge smoke test robust (timeout + EPERM)"
+   ],
+   [
+    63,
+    "Keep bookmarks in one store (OB-1, OB-2, P-02, P-03)"
+   ],
+   [
+    64,
+    "Fix flaky password bias test"
+   ],
+   [
+    49,
+    "Build native Bowser Store and verify extension compatibility"
+   ],
+   [
+    65,
+    "Add guarded v0.0.20 release tooling"
+   ],
+   [
+    66,
+    "Stop links injecting launch flags; harden download names and the save prompt (SEC-2/3/4)"
+   ],
+   [
+    67,
+    "Keep settings size limits consistent so big allow lists still save (H3-3)"
+   ],
+   [
+    69,
+    "Never read settings, tasks or sessions as empty and then save over them (R-1, R-2, R-3)"
+   ],
+   [
+    70,
+    "Open local files from the command line; never self-update a local build (L-2, L-4)"
+   ],
+   [
+    71,
+    "Fix window layout after minimise, rail in full screen, and thin resize edges (L-1, L-3, L-5)"
+   ],
+   [
+    72,
+    "Prepare Bowser v0.0.20 release identity (Cargo 0.0.20, PIN_REVISION 21)."
+   ]
+  ],
+  "body": "Verified Windows HTML-chrome build from d637f8fe2a4dee4e5b025c813c5952fca8672053. Stable rollout is controlled separately by stable/release.json.",
+  "exe": true
+ },
+ {
+  "tag": "v0.0.19",
+  "date": "2026-10-17",
+  "prs": [
+   [
+    25,
+    "Pin Stable to the v0.0.18 tab-lift and four-pane split build"
+   ],
+   [
+    45,
+    "Recover UI fixes and verify Windows release candidate"
+   ],
+   [
+    46,
+    "Prepare Bowser v0.0.19 release identity"
+   ]
+  ],
+  "body": "Verified Windows HTML-chrome build from ad5dd58066d12d6b772e7534baef41ab9d26bef1. Stable rollout is controlled separately by stable/release.json.",
+  "exe": true
+ },
+ {
+  "tag": "v0.0.18",
+  "date": "2026-10-16",
+  "prs": [
+   [
+    22,
+    "Pin Stable to the v0.0.17 agent interface build."
+   ],
+   [
+    23,
+    "Translate pages with Google Translate; remove the on-device engine"
+   ],
+   [
+    24,
+    "Lift tabs while dragging, split into up to four panes, fix downloads (v0.0.18)"
+   ]
+  ],
+  "body": "Tab pick-up with a lifted ghost tab, stacked and four-pane split view, top-bar downloads fix, submenu slide, private-window icon, and the in-app version now follows the release.",
+  "exe": true
+ },
+ {
+  "tag": "v0.0.17",
+  "date": "2026-10-15",
+  "prs": [
+   [
+    19,
+    "Pin Stable to the v0.0.16 compact Extensions build"
+   ],
+   [
+    20,
+    "Translate pages on this device without a paid API"
+   ],
+   [
+    21,
+    "Add an opt-in localhost interface so agents can read a page as text and drive it with page scripts."
+   ]
+  ],
+  "body": "Stable build of the agent interface. The human browser is unchanged unless --agent is passed.",
+  "exe": true
+ },
+ {
+  "tag": "v0.0.16",
+  "date": "2026-10-14",
+  "prs": [
+   [
+    17,
+    "Pin Stable to the v0.0.15 lighter chrome build"
+   ],
+   [
+    18,
+    "Compact the Extensions empty state"
+   ]
+  ],
+  "body": "The Extensions page's empty state is a compact row instead of a tall centred block.\n\nBuilt from 21c064f7 with the HTML chrome enabled.",
+  "exe": true
+ },
+ {
+  "tag": "v0.0.15",
+  "date": "2026-10-14",
+  "prs": [
+   [
+    15,
+    "Pin Stable to the v0.0.14 extension build"
+   ],
+   [
+    16,
+    "Cut hidden chrome work off the path to a usable window"
+   ]
+  ],
+  "body": "The hidden menu waits until the toolbar is ready, and switching tabs no longer waits on a fade or a save.\n\nBuilt from cb7edba2 with the HTML chrome enabled.\n",
+  "exe": true
+ },
+ {
+  "tag": "v0.0.14",
+  "date": "2026-10-14",
+  "prs": [
+   [
+    13,
+    "Pin Stable to the v0.0.13 tab-strip build"
+   ],
+   [
+    14,
+    "Let people run Chrome extensions they already have."
+   ]
+  ],
+  "body": "Let people run a Chrome extension they already have, from an unpacked folder or a .crx file.\n\nBuilt from 31b4250b with the HTML chrome enabled.",
+  "exe": true
+ },
+ {
+  "tag": "v0.0.13",
+  "date": "2026-10-14",
+  "prs": [
+   [
+    11,
+    "Stop repeating paint, request, and startup work"
+   ],
+   [
+    12,
+    "fix(chrome): keep tabs visible while HTML strip loads"
+   ]
+  ],
+  "body": "Keep the native tab row on screen until the HTML tab strip is ready.\n\nBuilt from bdaa26c5 with the HTML chrome enabled.\n",
+  "exe": true
+ },
+ {
+  "tag": "v0.0.12",
+  "date": "2026-10-14",
+  "prs": [],
+  "body": "Less work while painting, loading pages, and starting up. Built with the HTML chrome enabled. Includes the download shelf from the same branch.\n\n- Chrome is redrawn when something changed, instead of rebuilding the HTML UI on every paint.\n- Ordinary blocked addresses are stopped in the network layer. The UI thread only sees the requests that still need a custom rule.\n- The password vault stays closed until a login event. History, bookmarks, and session files are reread only when they change, and a visit is written once.\n- Settings, history, and the split view are loaded when opened and released after they have been hidden. The Shield panel loads when its shortcut is used.\n- YouTube player-ad stripping runs only on YouTube. Closing Windows or signing out flushes the last history and session write.\n- Downloads can be opened from the toolbar and with Ctrl+J.\n",
+  "exe": true
+ },
+ {
+  "tag": "v0.0.11",
+  "date": "2026-10-14",
+  "prs": [],
+  "body": "Uses less CPU, disk, and memory while idle, minimized, or opening the sidebar. Built with the HTML chrome enabled. Includes the v0.0.10 menu build.\n\n- Page visits no longer rewrite the history file on the UI thread. A visit from the last moment before exit is still saved.\n- Unchanged workspace and privacy files are not rewritten. Favicon files and the YouTube ad setting are reread only when they change.\n- Minimizing hides the open pages so they stop drawing, and restoring shows them before the window lays out. The active tab is not suspended just because the window was minimized.\n- A hidden sidebar web app drops to the low memory target. The idle memory check stops once the page is already in that state.\n- The sidebar resizes the page once, at the end of the animation, instead of on every frame.\n",
+  "exe": true
+ },
+ {
+  "tag": "v0.0.10",
+  "date": "2026-10-14",
+  "prs": [],
+  "body": "Submenus keep the menu opaque while the cards slide, so no white shows where the parent card was. Built with the HTML chrome enabled. Includes the v0.0.9 settings build.",
+  "exe": true
+ },
+ {
+  "tag": "v0.0.9",
+  "date": "2026-10-14",
+  "prs": [],
+  "body": "The Privacy dashboard now lives inside Settings (Privacy and security) instead of its own window; Ctrl+Shift+Delete and the History page's Clear browsing data open it there. Toolbar reset sits in the card corner, and the blocker allow-list field and Make-default-browser button sit inline with their text. Clearing browsing data from Settings now works. Built with the HTML chrome enabled. Includes the v0.0.8 submenu build.",
+  "exe": true
+ },
+ {
+  "tag": "v0.0.8",
+  "date": "2026-10-14",
+  "prs": [],
+  "body": "Submenus sit beside the row that opened them. Each child menu is its own card, only as tall as its buttons, and the parent eases aside. Built with the HTML chrome enabled. Includes the v0.0.7 customizability build.\n",
+  "exe": true
+ },
+ {
+  "tag": "v0.0.7",
+  "date": "2026-10-14",
+  "prs": [
+   [
+    9,
+    "Rework the browser UI (layouts, Settings and History pages, omnibox, private tabs)"
+   ],
+   [
+    10,
+    "Pin Stable to the v0.0.6 UI rework build"
+   ]
+  ],
+  "body": "Browser customizability, docked Developer tools, and sidebar web apps. Settings that have a surface take effect. The main menu keeps its parent beside a submenu. Developer tools dock on the right of the window. A sidebar web app shows the page without the extra toolbar. Built with the HTML chrome enabled. Includes the v0.0.6 UI rework.",
+  "exe": true
+ },
+ {
+  "tag": "v0.0.6",
+  "date": "2026-10-14",
+  "prs": [
+   [
+    7,
+    "Rebuild the release with the HTML chrome enabled (pin revision 6)"
+   ],
+   [
+    8,
+    "Pin Stable to the v0.0.5 HTML-chrome build"
+   ]
+  ],
+  "body": "UI rework: four selectable browser layouts, Settings and History as pages (bowser://settings, bowser://history), a shorter main menu with a More tools submenu, omnibox rework, incognito UI rework, working history recording, a three-dot menu button, a new reader view icon, and no flash of the old native toolbar at startup. Built with the HTML chrome enabled. Includes the v0.0.5 ad-block changes.",
+  "exe": true
+ },
+ {
+  "tag": "v0.0.5",
+  "date": "2026-10-14",
+  "prs": [
+   [
+    5,
+    "Close the ad-block coverage gaps (host probes, exact-URL rules)"
+   ],
+   [
+    6,
+    "Pin Stable to the v0.0.4 ad-block build"
+   ]
+  ],
+  "body": "Rebuild of v0.0.4 with the HTML chrome enabled (v0.0.4 shipped the old native UI by mistake). Same ad-block changes as v0.0.4.",
+  "exe": true
+ },
+ {
+  "tag": "v0.0.4",
+  "date": "2026-10-13",
+  "prs": [
+   [
+    4,
+    "Pin Stable to the v0.0.3 ad-block build"
+   ]
+  ],
+  "body": "Closes the remaining ad-block coverage gaps: ad, tracker and video-ad hosts that a page probes are now rejected in the page renderer, including the roots of hosts that also carry real traffic, which stay usable. YouTube player ad placements are still removed, and video bytes are not proxied or reduced in quality.\n\nInstalled copies follow `stable/release.json` on main. This asset is that pin: revision 5, SHA-256 `dfb2fedd2bdccab283122ab6f84d85ff63e53b3638a4eacaff8126551aab8010`, 5809664 bytes. The cargo version stays 0.0.1.",
+  "exe": true
+ },
+ {
+  "tag": "v0.0.3",
+  "date": "2026-10-13",
+  "prs": [
+   [
+    2,
+    "Pin the stable release to the Shield build"
+   ],
+   [
+    3,
+    "Block listed hosts in the renderer and strip YouTube player ads"
+   ]
+  ],
+  "body": "Listed ad hosts are blocked in the page renderer, and YouTube player responses have their ad placements removed. Video bytes are not proxied or reduced in quality.\n\nInstalled copies follow `stable/release.json` on main. This asset is that pin: revision 4, SHA-256 `5f890f5f66876cfd8e342d82d10b944d9579cf44a645e2a461fba16c09fd8eff`, 5794816 bytes. The cargo version stays 0.0.1.\n",
+  "exe": true
+ },
+ {
+  "tag": "v0.0.2",
+  "date": "2026-10-13",
+  "prs": [
+   [
+    1,
+    "Add Bowser Shield as the browser's own ad blocker"
+   ]
+  ],
+  "body": "Bowser Shield is built into the browser. The WebView2 request hook blocks ads and trackers with Bowser's own rules, and cosmetic rules are injected at the start of each page.\n\nInstalled copies follow `stable/release.json` on main. This asset is that pin: revision 3, SHA-256 `5baa4e5f1c5408bb483518d8cd2b91967b075f6c5fd361d651225abfe59d13da`.\n",
+  "exe": true
+ },
+ {
+  "tag": "v0.0.1",
+  "date": "2026-10-13",
+  "prs": [],
+  "body": "Bowser 0.0.1 for 64-bit Windows 10 and 11.\n\nDownload **Bowser.exe** and open it. This build checks `stable/release.json` on GitHub after it has stayed open for about a minute, then at most once an hour. When that pin names a different file with a matching SHA-256, Bowser downloads it and switches on the next start. A build that fails to stay open is rolled back. Browser data stays in `%LOCALAPPDATA%\\Bowser`.\n\nIf you already downloaded an older Bowser.exe, download this file once, or run `Open-Bowser.cmd` from a clone. After that, the app keeps itself on the pinned build.\n\n`Open-Bowser.cmd` installs this same file and adds Desktop and Start Menu shortcuts. It does not compile the source tree. Dev Bowser (`Dev-Bowser.cmd`) is a script in the repository for working on the source. It is not part of this download.\n\nThe [Evergreen WebView2 Runtime](https://developer.microsoft.com/en-us/microsoft-edge/webview2/#download-section) is required. Current Microsoft Edge already includes it.\n\nThis executable is not Authenticode-signed. SmartScreen may ask for More info, then Run anyway.\n\nSHA-256: `0326223f54433f2c34e12a1f161bb789d0810fde940a21c6231c75c82820ac39`\n\n",
+  "exe": true
+ }
+]

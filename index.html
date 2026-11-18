@@ -2,15 +2,16 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Bowser — stupidly light, stupidly fast, and no ads</title>
-<meta name="description" content="Bowser is an open-source browser for 64-bit Windows. Stupidly lightweight, stupidly fast, private, and every ad is gone. It runs your Chrome extensions from their folders.">
-<meta name="color-scheme" content="light">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Bowser — the small, fast browser for Windows</title>
+<meta name="description" content="Bowser is a small, open-source browser for 64-bit Windows. It blocks ads and trackers from the first launch, keeps private tabs private, and runs your Chrome extensions.">
+<meta name="color-scheme" content="light dark">
 <link rel="icon" type="image/png" href="img/bowser-icon.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400..700&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400..700&family=JetBrains+Mono:wght@500&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="styles.css">
+<script>try{var t=localStorage.getItem("bowser-theme");if(t)document.documentElement.setAttribute("data-theme",t)}catch(e){}</script>
 </head>
 <body>
 <svg width="0" height="0" style="position:absolute" aria-hidden="true">
@@ -27,224 +28,214 @@
       </g>
     </symbol>
     <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 4v11m0 0 4.5-4.5M12 15l-4.5-4.5M5 19.5h14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M5 12h14m-5.5-5.5L19 12l-5.5 5.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
     <symbol id="i-code" viewBox="0 0 24 24"><path d="m8.5 7.5-5 4.5 5 4.5m7-9 5 4.5-5 4.5M13.5 5l-3 14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
     <symbol id="i-out" viewBox="0 0 24 24"><path d="M14 5h5v5m0-5-8 8M18 14v4a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
     <symbol id="i-chev" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
-    <symbol id="i-check" viewBox="0 0 24 24"><path d="m6.5 12.5 3.5 3.5 7.5-8" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-moon" viewBox="0 0 24 24"><path d="M19.5 14.5A7.5 7.5 0 0 1 9.5 4.5a7.5 7.5 0 1 0 10 10Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></symbol>
+    <symbol id="i-sun" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 3v2m0 14v2M3 12h2m14 0h2M5.6 5.6 7 7m10 10 1.4 1.4M5.6 18.4 7 17M17 7l1.4-1.4"/></g></symbol>
+    <symbol id="i-github" viewBox="0 0 24 24"><path fill="currentColor" d="M12 2.5a9.5 9.5 0 0 0-3 18.5c.5.1.6-.2.6-.5v-1.7c-2.6.6-3.2-1.2-3.2-1.2-.4-1.1-1-1.4-1-1.4-.9-.6 0-.6 0-.6 1 .1 1.5 1 1.5 1 .9 1.5 2.3 1 2.8.8.1-.6.4-1 .6-1.3-2.1-.2-4.3-1-4.3-4.7 0-1 .4-1.9 1-2.6-.1-.2-.4-1.2.1-2.5 0 0 .8-.3 2.6 1a9 9 0 0 1 4.8 0c1.8-1.3 2.6-1 2.6-1 .5 1.3.2 2.3.1 2.5.6.7 1 1.6 1 2.6 0 3.7-2.2 4.5-4.3 4.7.3.3.6.9.6 1.8v2.6c0 .3.2.6.7.5A9.5 9.5 0 0 0 12 2.5Z"/></symbol>
+    <symbol id="i-pause" viewBox="0 0 24 24"><rect x="6.5" y="5" width="3.6" height="14" rx="1.4" fill="currentColor"/><rect x="13.9" y="5" width="3.6" height="14" rx="1.4" fill="currentColor"/></symbol>
+    <symbol id="i-play" viewBox="0 0 24 24"><path d="M8 5.8v12.4a1 1 0 0 0 1.5.9l10-6.2a1 1 0 0 0 0-1.8l-10-6.2A1 1 0 0 0 8 5.8Z" fill="currentColor"/></symbol>
+    <symbol id="i-copy" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><rect x="8.5" y="8.5" width="11" height="11" rx="2.2"/><path d="M15.5 8.5V6.7a2.2 2.2 0 0 0-2.2-2.2H6.7a2.2 2.2 0 0 0-2.2 2.2v6.6a2.2 2.2 0 0 0 2.2 2.2h1.8"/></g></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="m6.5 12.5 3.5 3.5 7.5-8" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
   </defs>
 </svg>
 
-<header class="bar">
-  <div class="bar-in">
-    <a class="mark" href="#top" aria-label="Bowser, back to top"><svg width="30" height="30"><use href="#bone"/></svg></a>
-    <nav class="bar-links" aria-label="Page">
-      <a href="#features">Features</a>
-      <a href="#compare">Compare</a>
-      <a href="#source">Open source</a>
-      <a href="https://github.com/grantcharlie1000-tech/Bowser">GitHub <svg width="15" height="15"><use href="#i-out"/></svg></a>
+<header class="nav">
+  <div class="nav-in">
+    <a class="brand" href="./" aria-label="Bowser home"><svg width="28" height="28" aria-hidden="true"><use href="#bone"/></svg><span>Bowser</span></a>
+    <nav class="nav-links" id="site-menu" aria-label="Site">
+      <a href="features.html">Features</a>
+      <a href="privacy.html">Privacy</a>
+      <a href="releases.html">Release notes</a>
+      <a href="help.html">Help</a>
     </nav>
-    <a class="button primary thin" href="https://github.com/grantcharlie1000-tech/Bowser/releases/latest/download/Bowser.exe" download="Bowser.exe"><svg width="18" height="18"><use href="#i-download"/></svg>Download</a>
+    <div class="nav-end">
+      <button type="button" class="icon-btn" id="theme-toggle" aria-label="Switch to dark theme">
+        <svg class="i-moon" width="20" height="20" aria-hidden="true"><use href="#i-moon"/></svg>
+        <svg class="i-sun" width="20" height="20" aria-hidden="true"><use href="#i-sun"/></svg>
+      </button>
+      <a class="icon-btn" href="https://github.com/grantcharlie1000-tech/Bowser" aria-label="Bowser on GitHub"><svg width="20" height="20" aria-hidden="true"><use href="#i-github"/></svg></a>
+      <button type="button" class="icon-btn nav-menu-btn" aria-expanded="false" aria-controls="site-menu" aria-label="Menu"><svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
+      <a class="btn btn-ink btn-sm" href="download.html">Download<svg width="16" height="16" aria-hidden="true"><use href="#i-arrow"/></svg></a>
+    </div>
   </div>
 </header>
 
 <main id="top">
-  <section class="hero">
-    <div class="hero-bands" aria-hidden="true"></div>
-    <div class="wrap hero-copy">
-      <h1>Stupidly light. Stupidly fast.<br><span>And the ads are gone.</span></h1>
-      <p class="lede">Bowser is an open-source browser for 64-bit Windows. It blocks every ad and tracker from the first launch, keeps private tabs private, and runs your Chrome extensions.</p>
-      <div class="hero-actions">
-        <a class="button primary" href="https://github.com/grantcharlie1000-tech/Bowser/releases/latest/download/Bowser.exe" download="Bowser.exe"><svg width="18" height="18"><use href="#i-download"/></svg>Download for Windows</a>
-        <a class="button soft" href="https://github.com/grantcharlie1000-tech/Bowser"><svg width="18" height="18"><use href="#i-code"/></svg>Read the source</a>
+  <section class="hero wrap">
+    <svg class="hero-mark" width="64" height="64" aria-hidden="true"><use href="#bone"/></svg>
+    <h1>The small, fast browser for Windows</h1>
+    <p class="hero-lede">Bowser is open source, blocks ads and trackers from the first launch, keeps private tabs private, and runs your Chrome extensions.</p>
+    <div class="hero-actions">
+      <a class="btn btn-blue btn-lg" href="https://github.com/grantcharlie1000-tech/Bowser/releases/latest/download/Bowser.exe" download="Bowser.exe"><svg width="20" height="20" aria-hidden="true"><use href="#i-download"/></svg>Download for Windows</a>
+      <a class="btn btn-soft btn-lg" href="https://github.com/grantcharlie1000-tech/Bowser"><svg width="20" height="20" aria-hidden="true"><use href="#i-github"/></svg>View on GitHub</a>
+    </div>
+    <ul class="hero-meta" aria-label="At a glance">
+      <li>Windows 10 and 11, 64-bit</li>
+      <li>About 10 MB</li>
+      <li>Free and open source</li>
+    </ul>
+    <div class="shot shot-hero">
+      <img class="shot-img is-light" src="img/shots/hero-light.webp" alt="Bowser on Windows with four tabs open and an article in the active tab." decoding="async"><img class="shot-img is-dark" src="img/shots/hero-dark.webp" alt="Bowser on Windows with four tabs open and an article in the active tab." decoding="async">
+    </div>
+  </section>
+
+  <section class="compare wrap" id="blocker">
+    <div class="sec-head">
+      <h2>The same page, without the ads</h2>
+      <p>Bowser stops ads and trackers before they reach the page. Blocking is on from the first launch, with a switch per site when you need one.</p>
+    </div>
+    <div class="shot cmp" data-compare style="--x: 50%">
+      <div class="cmp-layer cmp-on"><img class="shot-img is-light" src="img/shots/ads-off-light.webp" alt="The article in Bowser, with no ads on the page." loading="lazy" decoding="async"><img class="shot-img is-dark" src="img/shots/ads-off-dark.webp" alt="The article in Bowser, with no ads on the page." loading="lazy" decoding="async"></div>
+      <div class="cmp-layer cmp-off" aria-hidden="true"><img class="shot-img is-light" src="img/shots/ads-on-light.webp" alt="" loading="lazy" decoding="async"><img class="shot-img is-dark" src="img/shots/ads-on-dark.webp" alt="" loading="lazy" decoding="async"></div>
+      <span class="cmp-tag cmp-tag-off">Blocker off</span>
+      <span class="cmp-tag cmp-tag-on">Bowser</span>
+      <span class="cmp-line" aria-hidden="true"><span class="cmp-knob"><svg width="18" height="18" viewBox="0 0 24 24"><path d="m9 7-5 5 5 5m6-10 5 5-5 5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></span></span>
+      <input class="cmp-range" type="range" id="compare-range" min="0" max="100" value="50" step="0.5" aria-label="Compare the page with ads and in Bowser. Lower values show more of Bowser.">
+    </div>
+  </section>
+
+  <section class="tour wrap" id="features" data-switch data-autoplay>
+    <div class="sec-head">
+      <h2>Fits the way you work</h2>
+      <p>Keyboard first, tidy by default, and arranged the way you like it.</p>
+    </div>
+    <div class="tour-row">
+      <div class="tour-tabs" role="tablist" aria-label="Features">
+        <button type="button" class="tour-tab is-on" role="tab" aria-selected="true" data-switch-item data-duration="9000"><i class="tour-bar"><i></i></i><span>Four layouts</span></button>
+        <button type="button" class="tour-tab" role="tab" aria-selected="false" data-switch-item data-duration="7000"><i class="tour-bar"><i></i></i><span>Split view</span></button>
+        <button type="button" class="tour-tab" role="tab" aria-selected="false" data-switch-item data-duration="7000"><i class="tour-bar"><i></i></i><span>Command palette</span></button>
+        <button type="button" class="tour-tab" role="tab" aria-selected="false" data-switch-item data-duration="7000"><i class="tour-bar"><i></i></i><span>Private tabs</span></button>
+        <button type="button" class="tour-tab" role="tab" aria-selected="false" data-switch-item data-duration="7000"><i class="tour-bar"><i></i></i><span>Chrome extensions</span></button>
+      </div>
+      <button type="button" class="tour-pause icon-btn" aria-pressed="false" aria-label="Pause">
+        <svg class="i-pause" width="14" height="14" aria-hidden="true"><use href="#i-pause"/></svg>
+        <svg class="i-play" width="14" height="14" aria-hidden="true"><use href="#i-play"/></svg>
+      </button>
+    </div>
+    <div class="shot shot-stack">
+      <div class="scene is-on" data-switch-scene><div class="frame is-on" data-frame><img class="shot-img is-light" src="img/shots/layout-horizontal-light.webp" alt="Bowser with the toolbar above the tabs, the default layout." loading="lazy" decoding="async"><img class="shot-img is-dark" src="img/shots/layout-horizontal-dark.webp" alt="Bowser with the toolbar above the tabs, the default layout." loading="lazy" decoding="async"></div><div class="frame" data-frame><img class="shot-img is-light" src="img/shots/layout-tabs-top-light.webp" alt="Bowser with the tabs above the toolbar." loading="lazy" decoding="async"><img class="shot-img is-dark" src="img/shots/layout-tabs-top-dark.webp" alt="Bowser with the tabs above the toolbar." loading="lazy" decoding="async"></div><div class="frame" data-frame><img class="shot-img is-light" src="img/shots/layout-single-row-light.webp" alt="Bowser with the address bar and tabs in a single row." loading="lazy" decoding="async"><img class="shot-img is-dark" src="img/shots/layout-single-row-dark.webp" alt="Bowser with the address bar and tabs in a single row." loading="lazy" decoding="async"></div><div class="frame" data-frame><img class="shot-img is-light" src="img/shots/layout-vertical-light.webp" alt="Bowser with vertical tabs in a floating sidebar card." loading="lazy" decoding="async"><img class="shot-img is-dark" src="img/shots/layout-vertical-dark.webp" alt="Bowser with vertical tabs in a floating sidebar card." loading="lazy" decoding="async"></div></div>
+      <div class="scene" data-switch-scene><div class="frame is-on"><img class="shot-img is-light" src="img/shots/split-light.webp" alt="Bowser in split view, with an article on the left and a second page on the right." loading="lazy" decoding="async"><img class="shot-img is-dark" src="img/shots/split-dark.webp" alt="Bowser in split view, with an article on the left and a second page on the right." loading="lazy" decoding="async"></div></div>
+      <div class="scene" data-switch-scene><div class="frame is-on"><img class="shot-img is-light" src="img/shots/palette-light.webp" alt="Bowser's command palette open over a page, with a search typed." loading="lazy" decoding="async"><img class="shot-img is-dark" src="img/shots/palette-dark.webp" alt="Bowser's command palette open over a page, with a search typed." loading="lazy" decoding="async"></div></div>
+      <div class="scene" data-switch-scene><div class="frame is-on"><img class="shot-img is-light" src="img/shots/private-light.webp" alt="A Bowser private tab showing what private browsing keeps and doesn't keep." loading="lazy" decoding="async"><img class="shot-img is-dark" src="img/shots/private-dark.webp" alt="A Bowser private tab showing what private browsing keeps and doesn't keep." loading="lazy" decoding="async"></div></div>
+      <div class="scene" data-switch-scene><div class="frame is-on"><img class="shot-img is-light" src="img/shots/extensions-light.webp" alt="Bowser's extensions menu open from the toolbar, listing installed extensions." loading="lazy" decoding="async"><img class="shot-img is-dark" src="img/shots/extensions-dark.webp" alt="Bowser's extensions menu open from the toolbar, listing installed extensions." loading="lazy" decoding="async"></div></div>
+    </div>
+  </section>
+
+  <section class="tour wrap" id="details" data-switch>
+    <div class="sec-head">
+      <h2>Everything in its place</h2>
+      <p>The pages you use every day are part of Bowser, and they look like it.</p>
+    </div>
+    <div class="tour-row">
+      <div class="tour-tabs" role="tablist" aria-label="Built-in pages">
+        <button type="button" class="tour-tab is-on" role="tab" aria-selected="true" data-switch-item data-duration="7000"><i class="tour-bar"><i></i></i><span>Start page</span></button>
+        <button type="button" class="tour-tab" role="tab" aria-selected="false" data-switch-item data-duration="7000"><i class="tour-bar"><i></i></i><span>Site permissions</span></button>
+        <button type="button" class="tour-tab" role="tab" aria-selected="false" data-switch-item data-duration="7000"><i class="tour-bar"><i></i></i><span>History</span></button>
+      </div>
+    </div>
+    <div class="shot shot-stack">
+      <div class="scene is-on" data-switch-scene><div class="frame is-on"><img class="shot-img is-light" src="img/shots/start-light.webp" alt="Bowser's start page on a new tab." loading="lazy" decoding="async"><img class="shot-img is-dark" src="img/shots/start-dark.webp" alt="Bowser's start page on a new tab." loading="lazy" decoding="async"></div></div>
+      <div class="scene" data-switch-scene><div class="frame is-on"><img class="shot-img is-light" src="img/shots/privacy-light.webp" alt="Bowser's site information popup, showing blocked permissions, cookies and requests blocked on the page." loading="lazy" decoding="async"><img class="shot-img is-dark" src="img/shots/privacy-dark.webp" alt="Bowser's site information popup, showing blocked permissions, cookies and requests blocked on the page." loading="lazy" decoding="async"></div></div>
+      <div class="scene" data-switch-scene><div class="frame is-on"><img class="shot-img is-light" src="img/shots/history-light.webp" alt="Bowser's history page, with visits grouped by day." loading="lazy" decoding="async"><img class="shot-img is-dark" src="img/shots/history-dark.webp" alt="Bowser's history page, with visits grouped by day." loading="lazy" decoding="async"></div></div>
+    </div>
+  </section>
+
+  <section class="tour values wrap" id="open" data-switch>
+    <div class="sec-head">
+      <h2>What Bowser stands for</h2>
+      <p>A browser sees everything you do online. These are the promises that come with this one.</p>
+    </div>
+    <div class="tour-row">
+      <div class="tour-tabs" role="tablist" aria-label="Values">
+        <button type="button" class="tour-tab is-on" role="tab" aria-selected="true" data-switch-item><span>Open source</span></button>
+        <button type="button" class="tour-tab" role="tab" aria-selected="false" data-switch-item><span>No telemetry</span></button>
+        <button type="button" class="tour-tab" role="tab" aria-selected="false" data-switch-item><span>Small and native</span></button>
+      </div>
+    </div>
+    <div class="values-body">
+      <div class="scene-text is-on" data-switch-scene>
+        <p>The whole browser is public on GitHub: the blocker and its built-in list, private tabs, extensions, the updater. Bowser never fetches filter lists by itself, so what it blocks is what you can read.</p>
+        <a class="btn btn-soft" href="https://github.com/grantcharlie1000-tech/Bowser"><svg width="18" height="18" aria-hidden="true"><use href="#i-github"/></svg>Browse the repository</a>
+      </div>
+      <div class="scene-text" data-switch-scene>
+        <p>Bowser has no hosted backend and sends no first-party telemetry. History, bookmarks, notes and the password vault stay in your profile folder on your PC.</p>
+        <a class="btn btn-soft" href="https://github.com/grantcharlie1000-tech/Bowser#search-and-local-data">Where your data lives<svg width="16" height="16" aria-hidden="true"><use href="#i-arrow"/></svg></a>
+      </div>
+      <div class="scene-text" data-switch-scene>
+        <p>One native window, written in Rust, on the WebView2 runtime that Windows already shares and Microsoft keeps patched. The download is about 10 MB.</p>
+        <a class="btn btn-soft" href="https://github.com/grantcharlie1000-tech/Bowser#build-and-run">Build it yourself<svg width="16" height="16" aria-hidden="true"><use href="#i-arrow"/></svg></a>
       </div>
     </div>
   </section>
 
-  <section class="wrap highlights" id="highlights" data-highlights>
-    <div class="hl-copy">
-      <div class="hl-panels">
-        <article class="hl-panel is-on" data-panel data-duration="10000">
-          <h2>Watch the ads go</h2>
-          <p>Bowser stops ads and trackers before they reach the page. The article loads. The ads never do.</p>
-          <ul class="hl-facts" aria-label="How blocking works">
-            <li>On from the first launch</li>
-            <li>A per-site switch in the Privacy panel</li>
-            <li>Your own filters.txt, if you want one</li>
-          </ul>
-        </article>
-        <article class="hl-panel" data-panel data-duration="8000">
-          <h2>Private tabs stay private</h2>
-          <p>A private tab always blocks, with strict tracking prevention. Browsing there is not recorded.</p>
-          <p>Its cookies live in memory and are gone when the last private tab closes.</p>
-        </article>
-        <article class="hl-panel" data-panel data-duration="8000">
-          <h2>Bring your Chrome extensions</h2>
-          <p>Point Bowser at an unpacked extension folder and it runs. Manifest V2 and V3 both load.</p>
-          <p class="hl-note">Installs from the Chrome Web Store are not supported.</p>
-        </article>
-        <article class="hl-panel" data-panel data-duration="6400">
-          <h2>Four layouts, no ads in any</h2>
-          <p>Put the tabs where you want them. The blocker comes along.</p>
-          <ol class="hl-legend" aria-label="Layouts">
-            <li data-legend>Vertical tabs</li>
-            <li data-legend>Tabs above the toolbar</li>
-            <li data-legend>Toolbar above the tabs</li>
-            <li data-legend>Single row</li>
-          </ol>
-        </article>
-      </div>
-      <div class="hl-pager" role="group" aria-label="Highlight pagination">
-        <div class="hl-dots">
-          <button type="button" class="hl-dot is-on" aria-label="Show ads disappearing" aria-current="true"><span></span></button>
-          <button type="button" class="hl-dot" aria-label="Show private tabs"><span></span></button>
-          <button type="button" class="hl-dot" aria-label="Show Chrome extensions"><span></span></button>
-          <button type="button" class="hl-dot" aria-label="Show layouts"><span></span></button>
-        </div>
-        <button type="button" class="hl-pause" aria-pressed="false" aria-label="Pause highlights">
-          <svg class="i-pause" width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="5" width="4" height="14" rx="1.5" fill="currentColor"/><rect x="14" y="5" width="4" height="14" rx="1.5" fill="currentColor"/></svg>
-          <svg class="i-play" width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5.8v12.4a1 1 0 0 0 1.5.9l10-6.2a1 1 0 0 0 0-1.8l-10-6.2A1 1 0 0 0 8 5.8Z" fill="currentColor"/></svg>
-        </button>
-      </div>
-    </div>
-
-    <div class="plate hl-stage" aria-live="off">
-      <div class="scene is-on" data-scene role="img" aria-label="A Bowser window with Block ads and trackers switched on in the main menu. The ads on the page give way to Ad blocked marks.">
-        <div class="frame is-on is-close"><div data-bw='{"layout":"tabs-above","page":"ads","menu":true,"reveal":true,"tab":1}'></div></div>
-      </div>
-      <div class="scene" data-scene role="img" aria-label="A Bowser private tab. Ads and trackers blocked, with strict tracking prevention. Browsing not recorded. Cookies in memory until the last private tab closes.">
-        <div class="frame is-on"><div data-bw='{"layout":"toolbar-above","page":"private","private":true}'></div></div>
-      </div>
-      <div class="scene" data-scene role="img" aria-label="Bowser's extensions menu, listing extensions loaded from unpacked folders, with a button to load another folder.">
-        <div class="frame is-on is-close"><div data-bw='{"layout":"tabs-above","page":"article","extensions":true,"tab":1}'></div></div>
-      </div>
-      <div class="scene" data-scene role="img" aria-label="A Bowser window with ads blocked, changing between its four layouts: vertical tabs, tabs above the toolbar, toolbar above the tabs, and a single row.">
-        <div class="frame is-on" data-frame><div data-bw='{"layout":"vertical","page":"ads","tab":1}'></div></div>
-        <div class="frame" data-frame><div data-bw='{"layout":"tabs-above","page":"ads","tab":1}'></div></div>
-        <div class="frame" data-frame><div data-bw='{"layout":"toolbar-above","page":"ads","tab":1}'></div></div>
-        <div class="frame" data-frame><div data-bw='{"layout":"single","page":"ads","tab":1}'></div></div>
-      </div>
+  <section class="cta wrap">
+    <div class="cta-band">
+      <svg class="cta-mark" width="64" height="64" aria-hidden="true"><use href="#bone"/></svg>
+      <h2>Ready when you are</h2>
+      <p>Download Bowser, import your bookmarks, and give it a week.</p>
+      <a class="btn btn-blue btn-lg" href="https://github.com/grantcharlie1000-tech/Bowser/releases/latest/download/Bowser.exe" download="Bowser.exe"><svg width="20" height="20" aria-hidden="true"><use href="#i-download"/></svg>Download for Windows</a>
+      <p class="cta-note">Needs the WebView2 Runtime, which current Microsoft Edge already includes. <a href="download.html">Requirements and install steps</a></p>
     </div>
   </section>
 
-  <section class="wrap rail-sec" id="features">
-    <h2 class="sec-title">Six things Bowser does</h2>
-    <ol class="rail">
-      <li>
-        <span class="rail-n">01</span>
-        <h3>Stupidly lightweight</h3>
-        <p>Bowser draws pages with the WebView2 runtime Windows already shares, so it doesn’t bring an engine of its own.</p>
-      </li>
-      <li>
-        <span class="rail-n">02</span>
-        <h3>Stupidly fast</h3>
-        <p>Pages arrive without their ads and trackers, so there’s less to load before you can read.</p>
-      </li>
-      <li>
-        <span class="rail-n">03</span>
-        <h3>Private</h3>
-        <p>Private tabs always block, run strict tracking prevention, and keep cookies only in memory.</p>
-      </li>
-      <li class="is-lead">
-        <span class="rail-n">04</span>
-        <h3>All ads are gone</h3>
-        <p>Blocking is on from the first launch. Nothing to install, nothing to set up.</p>
-      </li>
-      <li>
-        <span class="rail-n">05</span>
-        <h3>Open source</h3>
-        <p>Every line is public on GitHub, the blocker included. Read it before you run it.</p>
-      </li>
-      <li>
-        <span class="rail-n">06</span>
-        <h3>Chrome extensions</h3>
-        <p>Bowser runs your Chrome extensions from their unpacked folders, Manifest V2 or V3.</p>
-      </li>
-    </ol>
-  </section>
-
-  <section class="wrap compare" id="compare">
-    <div class="compare-copy">
-      <h2>Lighter than Safari and Helium. Tougher on ads.</h2>
-      <p>Put the three side by side. Bowser is the lighter browser, and its ad blocking is the stronger one.</p>
-    </div>
-    <div class="compare-grid" role="table" aria-label="Bowser compared with Safari and Helium">
-      <div class="cmp-col" role="rowgroup">
-        <div class="cmp-name" role="columnheader">Safari</div>
-        <div class="cmp-cell" role="cell"><span class="cmp-k">Weight</span><span class="cmp-v">Heavier</span></div>
-        <div class="cmp-cell" role="cell"><span class="cmp-k">Ad blocking</span><span class="cmp-v">Weaker</span></div>
-      </div>
-      <div class="cmp-col" role="rowgroup">
-        <div class="cmp-name" role="columnheader">Helium</div>
-        <div class="cmp-cell" role="cell"><span class="cmp-k">Weight</span><span class="cmp-v">Heavier</span></div>
-        <div class="cmp-cell" role="cell"><span class="cmp-k">Ad blocking</span><span class="cmp-v">Weaker</span></div>
-      </div>
-      <div class="cmp-col is-us" role="rowgroup">
-        <div class="cmp-name" role="columnheader"><svg width="24" height="24" aria-hidden="true"><use href="#bone"/></svg>Bowser</div>
-        <div class="cmp-cell" role="cell"><span class="cmp-k">Weight</span><span class="cmp-v"><svg width="16" height="16" aria-hidden="true"><use href="#i-check"/></svg>Lighter</span></div>
-        <div class="cmp-cell" role="cell"><span class="cmp-k">Ad blocking</span><span class="cmp-v"><svg width="16" height="16" aria-hidden="true"><use href="#i-check"/></svg>Stronger</span></div>
-      </div>
-    </div>
-  </section>
-
-  <section class="wrap row" id="source">
-    <div class="plate row-plate plate-b" role="img" aria-label="A Bowser window open on the src folder of the public Bowser repository.">
-      <div class="frame is-on"><div data-bw='{"layout":"vertical","page":"source","tab":0}'></div></div>
-    </div>
-    <div class="row-copy">
-      <h2>Open source, all of it</h2>
-      <p>The whole browser is public on GitHub: the blocker, its built-in list, private tabs, extensions. Bowser never fetches filter lists by itself, so what it blocks is what you can read.</p>
-      <div class="row-actions">
-        <a class="button primary thin" href="https://github.com/grantcharlie1000-tech/Bowser"><svg width="18" height="18"><use href="#i-code"/></svg>Read the source</a>
-        <a class="button soft thin" href="https://github.com/grantcharlie1000-tech/Bowser/releases/latest"><svg width="18" height="18"><use href="#i-download"/></svg>Latest release</a>
-      </div>
-    </div>
-  </section>
-
-  <section class="close">
-    <svg class="close-mark" width="96" height="96" aria-hidden="true"><use href="#bone"/></svg>
-    <h2>Lighter, faster, and no ads</h2>
-    <p>Open source, for 64-bit Windows. Bring your Chrome extensions.</p>
-    <a class="button primary thin" href="https://github.com/grantcharlie1000-tech/Bowser/releases/latest/download/Bowser.exe" download="Bowser.exe"><svg width="18" height="18"><use href="#i-download"/></svg>Download for Windows</a>
-  </section>
-
-  <section class="faq" id="faq">
-    <p class="faq-title">A few details</p>
+  <!-- FAQ -->
+  <section class="faq wrap" id="faq">
+    <div class="sec-head"><h2>Questions, answered</h2></div>
     <div class="faq-list">
       <details>
-        <summary>Is blocking on when I install it?<svg width="18" height="18"><use href="#i-chev"/></svg></summary>
-        <p>Yes. Ads and trackers are blocked from the first launch.</p>
+        <summary>Is ad blocking on when I install it?<svg width="18" height="18" aria-hidden="true"><use href="#i-chev"/></svg></summary>
+        <p>Yes. Ads and trackers are blocked from the first launch. There is nothing to install or set up.</p>
       </details>
       <details>
-        <summary>Can I turn it off for one site?<svg width="18" height="18"><use href="#i-chev"/></svg></summary>
-        <p>Yes. The Privacy panel has a blocker switch for the site you’re on. Every other site stays blocked.</p>
+        <summary>Which Chrome extensions work?<svg width="18" height="18" aria-hidden="true"><use href="#i-chev"/></svg></summary>
+        <p>Install them from the Chrome Web Store or Edge Add-ons, from a .crx file, or from an unpacked folder. WebView2 runs only part of Chrome&rsquo;s extension system, so a few extensions won&rsquo;t work. Extensions don&rsquo;t run in private tabs.</p>
       </details>
       <details>
-        <summary>Can I use my own filter list?<svg width="18" height="18"><use href="#i-chev"/></svg></summary>
-        <p>Yes. Put a filters.txt in your Bowser profile and it becomes your own list. Bowser doesn’t fetch filter lists by itself.</p>
+        <summary>What do I need to run it?<svg width="18" height="18" aria-hidden="true"><use href="#i-chev"/></svg></summary>
+        <p>64-bit Windows 10 or 11 with the Evergreen <a href="https://developer.microsoft.com/en-us/microsoft-edge/webview2/#download-section">WebView2 Runtime</a>. Current Microsoft Edge already includes it, and Microsoft keeps it patched.</p>
       </details>
       <details>
-        <summary>Which Chrome extensions work?<svg width="18" height="18"><use href="#i-chev"/></svg></summary>
-        <p>Bowser loads unpacked extension folders with manifest version 2 or 3. Installs from the Chrome Web Store are not supported.</p>
+        <summary>Why does Windows warn me when I open it?<svg width="18" height="18" aria-hidden="true"><use href="#i-chev"/></svg></summary>
+        <p>The build is not Authenticode-signed yet. SmartScreen may ask you to choose More info, then Run anyway. Each release lists its SHA-256 so you can check the file first.</p>
       </details>
       <details>
-        <summary>What does it run on?<svg width="18" height="18"><use href="#i-chev"/></svg></summary>
-        <p>64-bit Windows. Bowser draws pages with the shared WebView2 runtime.</p>
-      </details>
-      <details>
-        <summary>Where is the source?<svg width="18" height="18"><use href="#i-chev"/></svg></summary>
-        <p>On <a href="https://github.com/grantcharlie1000-tech/Bowser">GitHub</a>. The repository is public, and every release is on the <a href="https://github.com/grantcharlie1000-tech/Bowser/releases/latest">releases page</a>.</p>
+        <summary>Does Bowser collect my data?<svg width="18" height="18" aria-hidden="true"><use href="#i-chev"/></svg></summary>
+        <p>Bowser has no hosted backend and no first-party telemetry. WebView2's Microsoft Defender SmartScreen checks are on where Windows allows them, and those may send visited addresses to Microsoft.</p>
       </details>
     </div>
+    <p class="faq-more"><a class="btn btn-soft" href="help.html">More answers in Help<svg width="16" height="16" aria-hidden="true"><use href="#i-arrow"/></svg></a></p>
   </section>
 </main>
 
 <footer class="foot">
   <div class="foot-in">
-    <a class="mark" href="#top" aria-label="Back to top"><svg width="22" height="22"><use href="#bone"/></svg></a>
-    <span>Bowser</span>
-    <nav aria-label="Footer">
-      <a href="https://github.com/grantcharlie1000-tech/Bowser">Source</a>
-      <a href="https://github.com/grantcharlie1000-tech/Bowser/releases/latest">Releases</a>
+    <div class="foot-lead">
+      <p class="foot-word">Bowser</p>
+      <p class="foot-tag">Stupidly light. Stupidly fast. And the ads are gone.</p>
+      <a class="btn btn-white btn-sm" href="download.html">Download<svg width="16" height="16" aria-hidden="true"><use href="#i-arrow"/></svg></a>
+    </div>
+    <nav class="foot-cols" aria-label="Footer">
+      <div>
+        <p class="foot-h">Bowser</p>
+        <a href="features.html">Features</a>
+        <a href="privacy.html">Privacy</a>
+        <a href="releases.html">Release notes</a>
+      </div>
+      <div>
+        <p class="foot-h">Get started</p>
+        <a href="download.html">Download</a>
+        <a href="help.html">Help</a>
+        <a href="help.html#shortcuts">Keyboard shortcuts</a>
+      </div>
+      <div>
+        <p class="foot-h">Source</p>
+        <a href="https://github.com/grantcharlie1000-tech/Bowser">GitHub</a>
+        <a href="https://github.com/grantcharlie1000-tech/Bowser/issues">Report an issue</a>
+        <a href="https://github.com/grantcharlie1000-tech/Bowser#build-and-run">Build from source</a>
+      </div>
     </nav>
   </div>
 </footer>
