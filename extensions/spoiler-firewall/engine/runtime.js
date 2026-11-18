@@ -364,6 +364,7 @@ SFW.runtime = (function () {
     let sheetsOk = false;
     let opaqueRule = false;
     let pageHot = 0;
+    let pageWant = false; // the URL or title alone calls for protection (evalPage): the page is hot, its content masked item by item
     let lastHref = loc.href;
     let pageRevealedKey = null;
     let titleOriginal = null;
@@ -393,6 +394,9 @@ SFW.runtime = (function () {
     let chunkHead = 0;
     let expandCur = null; // resumable depth-first walk of the current root: {root, node}
     const unitQ = new Set(); // resolved units waiting for a decision
+    const freshUnits = new Set(); // units in unitQ whose content changed (new / edited text), not only re-checked
+    const structOnly = new Set(); // queued nodes touched only as the parent of added / removed children (touchStruct)
+    let noteFresh = true;
     const marks = new Set(); // elements carrying data-sfw-defer (region cover for work that did not fit in the budget)
     const longJobs = new Map(); // unit -> windowed classification in progress
     let overflow = false;
@@ -412,6 +416,10 @@ SFW.runtime = (function () {
     const ESCALATE_SEL = "article,[role=article],li,figure,blockquote,[role=listitem]"; // escalationTarget()
     const ESC_MAX_CHILDREN = 8; // a card has few children; an article of paragraphs does not
     const escalated = new Set(); // generic cards shielded whole because a block inside them is a spoiler
+    // shield targets that give "local heat" to their siblings: spoiler verdicts on the unit's own content only. Pending,
+    // error and frame covers say nothing about the content, and a shield that itself came from neighbour heat must not
+    // pass it on (that chained across every sibling with an icon, up to whole page shells)
+    const heatSrc = new WeakSet();
     const threads = new WeakMap(); // root -> {resolved, hot, first, shield, key}
     const seenRoots = new WeakSet();
     const rootList = new Set();
@@ -643,7 +651,7 @@ SFW.runtime = (function () {
       failMo = null;
       for (const f of cleanups.splice(0)) { try { f(); } catch (e) { /* ignore */ } }
       ocrShutdown();
-      queue.clear(); unitQ.clear(); pendingSet.clear(); threadWait.clear(); repairSet.clear(); recent.clear(); chunks.length = 0; chunkHead = 0; expandCur = null; marks.clear(); longJobs.clear();
+      queue.clear(); unitQ.clear(); freshUnits.clear(); structOnly.clear(); pendingSet.clear(); threadWait.clear(); repairSet.clear(); recent.clear(); chunks.length = 0; chunkHead = 0; expandCur = null; marks.clear(); longJobs.clear();
       rootList.clear();
       doc = nd;
       booted = false;
@@ -720,7 +728,7 @@ SFW.runtime = (function () {
       }
       clearMarks();
       booted = false;
-      queue.clear(); unitQ.clear(); chunks.length = 0; chunkHead = 0; expandCur = null; longJobs.clear(); pendingSet.clear(); threadWait.clear();
+      queue.clear(); unitQ.clear(); freshUnits.clear(); structOnly.clear(); chunks.length = 0; chunkHead = 0; expandCur = null; longJobs.clear(); pendingSet.clear(); threadWait.clear();
     }
 
     function stop() {
@@ -914,6 +922,17 @@ SFW.runtime = (function () {
     function touch(n) {
       if (queue.size >= MAX_QUEUE) { overflow = true; return; }
       queue.add(n);
+      structOnly.delete(n);
+    }
+
+    // The parent of added / removed children: the children themselves are queued as new content (chunks), so the parent's
+    // own text did not change. A unit re-checked only for this, and judged clear before, needs no cover while it waits
+    // (a page that keeps re-rendering would otherwise blink every container it touches).
+    function touchStruct(n) {
+      if (queue.has(n)) return;
+      if (queue.size >= MAX_QUEUE) { overflow = true; return; }
+      queue.add(n);
+      structOnly.add(n);
     }
 
     // `cover`: the content is new to the engine, so whatever does not fit in a budget is hidden until it has been classified.
@@ -984,7 +1003,7 @@ SFW.runtime = (function () {
       // 2. touched nodes (attributes / character data changed) not resolved yet
       if (queue.size) {
         if (queue.size > MARK_MAX) markEl(doc.documentElement);
-        else for (const n of queue) markEl(elOf(n));
+        else for (const n of queue) { if (!structOnly.has(n)) markEl(elOf(n)); } // a parent touched for its children: they are covered by step 1
         hit = true;
       }
       // 3. resolved units waiting for a decision: a few get their own cover, the rest are covered by region
@@ -994,6 +1013,16 @@ SFW.runtime = (function () {
         const rest = [];
         for (const u of unitQ) {
           if (!u.isConnected || pendingSet.has(u) || underMark(u)) continue; // already hidden by a region marker: no per-slice DOM churn
+          // A page root is classified on its own text only (its blocks are units of their own), yet a cover over it hides the
+          // whole page: pages that keep appending to <body> flickered whole-page "Checking" covers for seconds. It is covered
+          // only while text sits directly in it.
+          if (isPageRoot(u)) {
+            if (hasDirectText(u)) markEl(u);
+            continue;
+          }
+          // judged clear before and re-checked only because children came or went (those are covered as new content of
+          // their own): it stays visible. App shells re-render constantly; covering them blinked whole regions.
+          if (!freshUnits.has(u)) { const prev = U.get(u); if (prev && prev.dec === "clear") continue; }
           if (k < PENDING_MAX) { k++; try { applyPlan({ u, dec: "pending", fp: "p", cfp: "p", hot: 0, budget: true }, [{ el: u, needPos: true }]); } catch (e) { markEl(u); } }
           else aPush(rest, u);
         }
@@ -1021,6 +1050,7 @@ SFW.runtime = (function () {
       const u = resolveUnitCached(el);
       if (u) {
         unitQ.add(u);
+        if (noteFresh) freshUnits.add(u);
         if (sliceOcr && isMediaEl(el)) mediaVer.set(u, (mediaVer.get(u) | 0) + 1);
       }
     }
@@ -1036,7 +1066,9 @@ SFW.runtime = (function () {
       let k = 0;
       for (const n of queue) {
         queue.delete(n);
+        noteFresh = !structOnly.delete(n);
         noteNode(n);
+        noteFresh = true;
         if ((++k & 31) === 0 && now() - t0 > budget) return false;
       }
       return true;
@@ -1045,6 +1077,10 @@ SFW.runtime = (function () {
     // Depth-first expansion of the queued subtree roots into units, resumable at any node. Stops when the budget is used up
     // or enough units are waiting for a decision.
     function expand(t0, budget) {
+      try { expandRun(t0, budget); } finally { noteFresh = true; }
+    }
+
+    function expandRun(t0, budget) {
       let steps = 0;
       for (;;) {
         if (!expandCur) {
@@ -1056,6 +1092,7 @@ SFW.runtime = (function () {
           expandCur = { root, node: root, cover: ch.cover, lastParent: null, started: false };
         }
         const ec = expandCur;
+        noteFresh = ec.cover !== false; // a rescan of content already on screen is not new content
         const root = ec.root;
         let cur = ec.node;
         const rootIsText = root.nodeType === 3;
@@ -1110,8 +1147,8 @@ SFW.runtime = (function () {
           addedBurst += add.length;
           if (add.length) pushList(t.nodeType === 11 && t.host ? t.host : t, add, true);
           if (t.nodeType === 9) titleDirty = true;
-          if (t.nodeType === 1) { touch(t); if (t.nodeName === "TITLE" || t === doc.head) titleDirty = true; }
-          else if (t.nodeType === 11 && t.host) touch(t.host);
+          if (t.nodeType === 1) { touchStruct(t); if (t.nodeName === "TITLE" || t === doc.head) titleDirty = true; }
+          else if (t.nodeType === 11 && t.host) touchStruct(t.host);
         }
       }
     }
@@ -1167,7 +1204,7 @@ SFW.runtime = (function () {
         if (detectionBroken && !isProtective()) continue;
         try { applyPlan({ u, dec: "error", fp: "e", cfp: "e", hot: 0 }, null); } catch (e) { /* ignore */ }
       }
-      queue.clear();
+      queue.clear(); structOnly.clear();
       unitQ.clear();
       try { coverLeft(); } catch (e) { /* ignore */ }
     }
@@ -1266,7 +1303,7 @@ SFW.runtime = (function () {
       doRepairs();
       if (overflow) {
         overflow = false;
-        queue.clear();
+        queue.clear(); structOnly.clear();
         chunks.length = 0; chunkHead = 0; expandCur = null;
         scanSubtree(doc.documentElement, true);
       }
@@ -1352,7 +1389,7 @@ SFW.runtime = (function () {
       // new content that was still waiting for its first look keeps its cover: the rescan that replaces it is covered too
       let hadCover = !!(expandCur && expandCur.cover) || queue.size > 0;
       for (let ci = chunkHead; ci < chunks.length && !hadCover; ci++) if (chunks[ci].cover && chunks[ci].i < chunks[ci].nodes.length) hadCover = true;
-      queue.clear();
+      queue.clear(); structOnly.clear();
       chunks.length = 0; chunkHead = 0; expandCur = null;
       scanSubtree(doc.documentElement, hadCover);
       for (const r of rootList) { if (r.host && r.host.isConnected) scanSubtree(r, hadCover); }
@@ -1391,6 +1428,31 @@ SFW.runtime = (function () {
       return null;
     }
 
+    function imageDoc() {
+      try { return /^image\//i.test(doc.contentType || ""); } catch (e) { return false; }
+    }
+
+    function isPageRoot(el) {
+      return !!el && (el.tagName === "BODY" || el.tagName === "HTML");
+    }
+
+    const SEARCH_NAMES = mkSet(["q", "query", "search", "search_query", "p", "keywords", "text", "s"]);
+    function isSearchField(e) {
+      try {
+        if (e.type === "search" || nGetAttr(e, "role") === "searchbox") return true;
+        if (SEARCH_NAMES.has(String(nGetAttr(e, "name") || "").toLowerCase())) return true;
+        if (adapter.context && nMatches(e, adapter.context)) return true;
+        return !!nClosest(e, "[role=search],form[action*=search],form[action*=results]");
+      } catch (x) { return false; }
+    }
+
+    // Non-blank text nodes straight under el (bounded): what a page-root unit actually holds of its own.
+    function hasDirectText(el) {
+      let n = el.firstChild;
+      for (let i = 0; n && i < 2000; i++, n = n.nextSibling) if (n.nodeType === 3 && !isBlank(n.data)) return true;
+      return !!n; // too many children to look at: assume text
+    }
+
     function blockOf(el) {
       let n = el;
       while (n && n.nodeType === 1) {
@@ -1412,6 +1474,13 @@ SFW.runtime = (function () {
       }
       const b = blockOf(el);
       if (!b) return null;
+      // an element straight under <body> / <html> (an iframe, an inline span ...) is a unit of its own: the page root is
+      // a unit only for text sitting directly in it, so one element can never hide the whole page
+      if (isPageRoot(b) && el !== b && !imageDoc()) { // an image document (i.imgur.com/x.png) keeps <body> as its unit
+        let top = el;
+        for (let p = parentOf(top); p && p !== b && p.nodeType === 1; p = parentOf(top)) top = p;
+        return SKIP.has(top.tagName) ? null : top;
+      }
       if (adapter.generic) {
         const g = closestFlat(b, adapter.generic);
         if (g && useGenericItem(g)) return g;
@@ -1577,7 +1646,9 @@ SFW.runtime = (function () {
           } else if (tag === "iframe") {
             // no attributes at all: an unsandboxed, empty frame; nothing to read
           }
-          if ((tag === "input" || tag === "textarea") && e.value && e.type !== "password") add(e.value);
+          // the user's own query in a search box is not content: it still makes the page hot (context), but it must never
+          // mask the search bar itself, or a search for GTA VI leaves no way to search for something else
+          if ((tag === "input" || tag === "textarea") && e.value && e.type !== "password" && !isSearchField(e)) add(e.value);
           if (depth < 5) {
             const sr = rootOf(e);
             if (sr && e !== rootNode) walkRoot(sr, depth + 1);
@@ -1663,8 +1734,7 @@ SFW.runtime = (function () {
 
 
     // Layout-reading verdict for the unverifiable frames of one unit (the only synchronous layout read the frame rule makes).
-    // strict: any frame on a hot / high-risk page, on a cold generic page any frame big enough to show text; lockdown: every one; balanced:
-    // hot context only. Returns "shield" | "clear" | "cfg" (decision differs between modes while the config is loading).
+    // Only frames big enough to show text count. strict: any such frame; lockdown: every such frame; balanced: hot context only. Returns "shield" | "clear" | "cfg" (decision differs between modes while the config is loading).
     function frameVerdict(frames, hot) {
       const big = () => {
         for (const f of frames) {
@@ -1672,12 +1742,13 @@ SFW.runtime = (function () {
         }
         return false;
       };
+      // a frame too small to show a line of text (tracking / ad / messaging frames are 0x0 or hidden) cannot leak anything:
+      // covering its block hid whole pages (a hidden about:blank frame straight under YouTube's <body>)
+      if (!big()) return "clear";
       const per = (mode) => {
         if (mode === "lockdown") return "shield";
         if (hot >= 1) return "shield";
-        if (mode === "balanced") return "clear";
-        if (adapter.highRisk) return "shield";
-        return big() ? "shield" : "clear";
+        return mode === "balanced" ? "clear" : "shield";
       };
       if (!configPending) return per(cfg.mode);
       const v = [per("lockdown"), per("strict"), per("balanced")];
@@ -1717,6 +1788,7 @@ SFW.runtime = (function () {
         }
       } catch (e) { /* ignore */ }
       if (ctx.trim() && S.classify.isHotText(ctx)) hot = 2;
+      if (pageWant) hot = 2; // the URL or title alone is a spoiler / mention (evalPage)
       const changed = hot !== pageHot;
       pageHot = hot;
       return changed;
@@ -1850,6 +1922,7 @@ SFW.runtime = (function () {
       let dec;
       let strong = false;
       let frameErr = false;
+      let nbText = false;
       if (detectionBroken) dec = "clear"; // the classifier does not work here (canary): page shield / notice already say so
       else if (!text.trim() && !ex.media) dec = "clear";
       else {
@@ -1890,15 +1963,19 @@ SFW.runtime = (function () {
           if (od === "shield" || od === "cfg") dec = od;
         }
         // frames the engine cannot look into: cover them where the context calls for it (see frameVerdict)
-        if (dec === "clear" && ex.frames) {
+        if (dec === "clear" && ex.frames && !isPageRoot(u)) { // frames straight under <body> are units of their own
           const fv = frameVerdict(ex.frames, hot);
           if (fv === "shield") { dec = "shield"; frameErr = true; strong = false; }
           else if (fv === "cfg") dec = "cfg";
         }
         if (dec === "cfg") return { u, dec: "pending", cfgWait: true, fp, cfp, hot };
         if (dec !== "shield" && dec !== "clear" && dec !== "pending") dec = "shield";
+        // a neighbour-heat shield passes the heat on only when its words carry the spoiler, not merely a picture or an icon
+        if (nb && dec === "shield" && !frameErr && text.trim()) {
+          nbText = !ex.media || oneWith(text, cctx, Object.assign({}, opts, { hasMedia: false, kind: "item" })) === "shield";
+        }
       }
-      return { u, dec, fp, cfp, hot, generic, nb, media: ex.media, ocr: !!ocrTexts, strong: dec === "shield" && strong, warmOnly, frameErr };
+      return { u, dec, fp, cfp, hot, generic, nb, nbText, media: ex.media, ocr: !!ocrTexts, strong: dec === "shield" && strong, warmOnly, frameErr };
     }
 
     // Evaluate units: batched decisions first, then one layout-read pass, then the writes.
@@ -1939,7 +2016,7 @@ SFW.runtime = (function () {
       const plans = [];
       const next = [];
       for (const u of units) {
-        if (!u.isConnected) { pendingSet.delete(u); continue; }
+        if (!u.isConnected) { pendingSet.delete(u); freshUnits.delete(u); continue; }
         if (ctx.processed > 0 && now() - t0 > budget) { aPush(ctx.left, u); continue; }
         ctx.processed++;
         let plan;
@@ -1953,6 +2030,7 @@ SFW.runtime = (function () {
         }
         if (host.kind === "test" && stats.trace) { if (stats.trace.length < 400) stats.trace.push(u.localName + "[" + (u.textContent || "").trim().slice(0, 14) + "]:" + plan.dec + (plan.same ? ":same" : "") + ":h" + plan.hot + (plan.nb ? "n" : "") + (u.id ? "#" + u.id : "") + (plan.wait ? ":wait" : "") + (fromFrame ? ":raf" : "")); }
         if (fromFrame && !plan.same) ctx.changed++;
+        if (plan.dec !== "pending") freshUnits.delete(u);
         aPush(plans, plan);
         if (plan.more) aPush(ctx.left, u); // windowed classification unfinished: covered now, continued next slice
         if (plan.dec === "clear" && plan.generic && (!plan.same || fromFrame)) {
@@ -1997,7 +2075,7 @@ SFW.runtime = (function () {
 
     function hasShieldedNeighbor(u) {
       const a = u.previousElementSibling, b = u.nextElementSibling;
-      const hit = (e) => e && nGetAttr(e, "data-sfw") === "shield" && e.localName !== "sfw-shield";
+      const hit = (e) => e && heatSrc.has(e) && nGetAttr(e, "data-sfw") === "shield" && e.localName !== "sfw-shield";
       if (!(hit(a) || hit(b))) return false;
       return sibEligible(u, a || b);
     }
@@ -2018,7 +2096,8 @@ SFW.runtime = (function () {
       if (plan.same) return;
       pollChanged = true;
       if (plan.dec === "clear") {
-        if (c && c.targets) for (const t of c.targets) S.shield.release(t);
+        if (c && c.targets) for (const t of c.targets) { S.shield.release(t); heatSrc.delete(t); }
+        heatSrc.delete(u);
         if (S.shield.state(u).mode !== "none") S.shield.release(u);
         U.set(u, { fp: plan.fp, cfp: plan.cfp, dec: "clear", targets: [] });
         pendingSet.delete(u);
@@ -2040,9 +2119,11 @@ SFW.runtime = (function () {
       let targets = c && c.targets && c.targets.length && c.targets.every((t) => t.isConnected) ? c.targets.map((t) => ({ el: t, needPos: null })) : null;
       if (!targets) targets = prep || [{ el: u, needPos: true }];
       const els = [];
+      const givesHeat = variant === "spoiler" && (!plan.nb || !!plan.nbText);
       for (const t of targets) {
         const el = t.el;
         els.push(el);
+        if (givesHeat) heatSrc.add(el); else heatSrc.delete(el);
         const s = S.shield.state(el);
         if (s.mode === "revealed") {
           if (plan.dec === "shield" && s.revealedFp === plan.cfp) continue; // user revealed exactly this content
@@ -2691,13 +2772,13 @@ SFW.runtime = (function () {
 
     function evalPage() {
       if (!booted) return;
+      // A risky URL or title makes the whole page hot: its content is masked item by item (hot context shields anything with
+      // a GTA / story signal, and its media). The page itself is never covered for it: a full-page cover also hid the site's
+      // own search box, navigation and buttons (a YouTube search for "gta 6" could not even be changed).
       const want = pageWants();
-      const href = loc.href;
-      if (want && pageRevealedKey !== href) {
-        if (!doc.documentElement) return; // applied as soon as <html> exists (MutationObserver sees it)
-        if (S.shield.pageState(doc) !== "shielded") S.shield.applyPage(doc, "page");
-      } else if (!want && S.shield.pageState(doc) === "shielded" && !coverShown) { // a failure cover is not the URL/title shield: it stays
-        S.shield.releasePage(doc);
+      if (want !== pageWant) {
+        pageWant = want;
+        if (recomputePageHot()) rescanAll(false);
       }
       guardTitle();
     }

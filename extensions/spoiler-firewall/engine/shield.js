@@ -88,8 +88,10 @@ SFW.shield = (function () {
       let cs;
       try { cs = win.getComputedStyle(e); } catch (x) { add(e, true); return; }
       const display = cs.display;
-      if ((VOID.has(e.tagName) || e.tagName === "svg") && e.parentElement && depth < 4) {
-        // replaced / void elements cannot host an overlay: use the parent box
+      const up = e.parentElement;
+      if ((VOID.has(e.tagName) || e.tagName === "svg") && up && depth < 4 && up.tagName !== "BODY" && up.tagName !== "HTML") {
+        // replaced / void elements cannot host an overlay: use the parent box (never <body> / <html>: hiding the page
+        // root for one element blanks the whole page, and a 0-height body leaves the cover invisible)
         resolve(e.parentElement, depth + 1);
         return;
       }
