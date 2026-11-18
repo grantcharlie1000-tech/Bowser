@@ -227,7 +227,12 @@ export function mountCommandsSections(options: CommandsSectionsOptions): Command
 
   /** The command waiting for a key press, and a chord waiting for the user to say "reassign". */
   let capturing: string | null = null;
-  let pending: { id: string; chord: string } | null = null;
+  /** The pencil replaces: the chords to remove once Bowser has taken the new one (null when adding). */
+  let capturingReplaces: readonly string[] | null = null;
+  let pending: { id: string; chord: string; replaces: readonly string[] | null } | null = null;
+  /** Which categories are open (the first one at first); every category opens while filtering. */
+  const openCategories = new Set<string>();
+  let categoriesSeeded = false;
   /** Bowser said the chord is another command's: its chord and that command's name. */
   let conflict: { chord: string; label: string } | null = null;
   let editorQuery = '';
@@ -241,18 +246,30 @@ export function mountCommandsSections(options: CommandsSectionsOptions): Command
     event.preventDefault();
     event.stopPropagation();
     const id = capturing;
+    const replaces = capturingReplaces;
     capturing = null;
+    capturingReplaces = null;
     document.removeEventListener('keydown', onCaptureKey, true);
     send(captureModeCommand(false));
     if (result.kind === 'chord') {
-      pending = { id, chord: result.chord };
+      pending = { id, chord: result.chord, replaces: replaces?.filter((chord) => chord !== result.chord) ?? null };
       send(assignCommand(id, result.chord, false));
     }
+    paintEditor();
+  };
+  const startCapture = (command: CommandInfo, replace: boolean): void => {
+    stopCapture();
+    pending = null;
+    capturing = command.id;
+    capturingReplaces = replace ? command.chords : null;
+    document.addEventListener('keydown', onCaptureKey, true);
+    send(captureModeCommand(true));
     paintEditor();
   };
   const stopCapture = (): void => {
     if (capturing === null) return;
     capturing = null;
+    capturingReplaces = null;
     document.removeEventListener('keydown', onCaptureKey, true);
     send(captureModeCommand(false));
     paintEditor();
@@ -265,16 +282,23 @@ export function mountCommandsSections(options: CommandsSectionsOptions): Command
     const text = el('kbd', 'sp-kb-keys');
     text.textContent = chord;
     text.dir = 'ltr';
+    node.append(text);
+    // One shortcut: the row's clear button removes it. Several: each can go on its own.
+    if (command.chords.length < 2) return node;
     const remove = el('button', 'bw-icon-btn sp-kb-chip-remove');
     remove.type = 'button';
     remove.setAttribute('aria-label', `Remove ${chord} from ${command.label}`);
     remove.setAttribute('data-tip', 'Remove');
     remove.append(icon('close', { size: 12, fine: true }));
     remove.addEventListener('click', () => { touched(command.id, removeChordCommand(command.id, chord)); });
-    node.append(text, remove);
+    node.append(remove);
     return node;
   };
 
+  // A row (as Zen's shortcut list): the command's name, then its shortcut in a field, a pencil that
+  // records a new one in its place and a cross that clears it. Adding a second shortcut and browser
+  // priority sit before the field; they show on hover or focus (priority also while it is on), and
+  // Restore shows while the command is off its defaults.
   const commandRow = (command: CommandInfo): HTMLElement => {
     const item = el('div', 'sp-kb-row');
     item.dataset.command = command.id;
@@ -282,47 +306,18 @@ export function mountCommandsSections(options: CommandsSectionsOptions): Command
     const label = el('span', 'sp-label');
     label.textContent = command.label;
     name.append(label);
-    const keys = el('div', 'sp-kb-keylist');
-    if (command.chords.length === 0) {
-      const none = el('span', 'sp-kb-none');
-      none.textContent = 'No shortcut';
-      keys.append(none);
-    }
-    for (const chord of command.chords) keys.append(chip(command, chord));
-    if (capturing === command.id) {
-      const box = el('span', 'sp-kb-capture');
-      box.tabIndex = 0;
-      box.setAttribute('role', 'status');
-      box.textContent = 'Press the new shortcut…';
-      const cancel = el('button', 'bw-icon-btn');
-      cancel.type = 'button';
-      cancel.setAttribute('aria-label', 'Cancel');
-      cancel.setAttribute('data-tip', 'Cancel');
-      cancel.append(icon('close', { size: 12, fine: true }));
-      cancel.addEventListener('click', stopCapture);
-      box.append(cancel);
-      keys.append(box);
-      queueMicrotask(() => box.focus({ preventScroll: true }));
-    } else {
+    const tools = el('div', 'sp-kb-rowtools');
+    if (capturing !== command.id) {
       const add = el('button', 'bw-icon-btn sp-kb-add');
       add.type = 'button';
       add.disabled = command.chords.length >= 6;
       add.setAttribute('aria-label', `Add a shortcut to ${command.label}`);
-      add.setAttribute('data-tip', 'Add a shortcut');
+      add.setAttribute('data-tip', 'Add another shortcut');
       add.append(icon('plus', { size: 12, fine: true }));
-      add.addEventListener('click', () => {
-        stopCapture();
-        pending = null;
-        capturing = command.id;
-        document.addEventListener('keydown', onCaptureKey, true);
-        send(captureModeCommand(true));
-        paintEditor();
-      });
-      keys.append(add);
+      add.addEventListener('click', () => startCapture(command, false));
+      tools.append(add);
     }
-    const tools = el('div', 'sp-kb-rowtools');
-    if (command.chords.length > 0) tools.append(iconButton('trash', `Clear the shortcuts of ${command.label}`, () => { touched(command.id, clearCommand(command.id)); }));
-    if (command.changed) tools.append(iconButton('reset', `Restore the default shortcuts of ${command.label}`, () => { touched(command.id, restoreCommand(command.id)); }));
+    if (command.changed) tools.append(iconButton('reset', `Restore the default shortcuts of ${command.label}`, () => { touched(command.id, restoreCommand(command.id)); }, 'sp-kb-restore'));
     if (!command.chain) {
       // Browser priority: on a site that prioritises its own shortcuts, this command still works.
       const priority = iconButton('shield', `Browser priority for ${command.label}`, () => { touched(command.id, priorityCommand(command.id, !command.priority)); }, 'sp-kb-priority');
@@ -330,7 +325,33 @@ export function mountCommandsSections(options: CommandsSectionsOptions): Command
       priority.setAttribute('data-tip', command.priority ? 'Browser priority: still works on sites that use their own shortcuts' : 'Not browser priority: a site that uses its own shortcuts gets this key');
       tools.append(priority);
     }
-    item.append(name, keys, tools);
+    const keys = el('div', 'sp-kb-keylist');
+    if (command.chords.length > 1) keys.setAttribute('data-tip', command.chords.join(', '));
+    // The text sits in a clip of its own, so a long list fades out without fading the field's edge.
+    const field = keys;
+    const clip = el('span', 'sp-kb-clip');
+    if (capturing === command.id) {
+      field.classList.add('is-capturing');
+      const box = el('span', 'sp-kb-capture');
+      box.tabIndex = 0;
+      box.setAttribute('role', 'status');
+      box.textContent = 'Press the new shortcut…';
+      clip.append(box);
+      queueMicrotask(() => box.focus({ preventScroll: true }));
+    } else if (command.chords.length === 0) {
+      const none = el('span', 'sp-kb-none');
+      none.textContent = 'No shortcut';
+      clip.append(none);
+    } else {
+      for (const chord of command.chords) clip.append(chip(command, chord));
+    }
+    field.append(clip);
+    const edit = capturing === command.id
+      ? iconButton('close', 'Cancel', stopCapture, 'sp-kb-edit')
+      : iconButton('edit', `Change the shortcut of ${command.label}`, () => startCapture(command, true), 'sp-kb-edit');
+    const clearAll = iconButton('close', `Clear the shortcuts of ${command.label}`, () => { touched(command.id, clearCommand(command.id)); }, 'sp-kb-clear');
+    clearAll.disabled = command.chords.length === 0 || capturing === command.id;
+    item.append(name, tools, keys, edit, clearAll);
     if (conflict && pending?.id === command.id && conflict.chord === pending.chord) {
       const warning = el('div', 'sp-kb-conflict');
       warning.setAttribute('role', 'alert');
@@ -338,7 +359,7 @@ export function mountCommandsSections(options: CommandsSectionsOptions): Command
       message.textContent = conflictText({ conflictChord: conflict.chord, conflictLabel: conflict.label });
       const take = textButton('Reassign', () => {
         const taking = pending;
-        pending = null;
+        conflict = null;
         if (taking) send(assignCommand(taking.id, taking.chord, true));
         paintEditor();
       }, { primary: true });
@@ -363,13 +384,38 @@ export function mountCommandsSections(options: CommandsSectionsOptions): Command
       editorList.replaceChildren(empty);
       return;
     }
-    editorList.replaceChildren(...grouped.map((entry) => {
+    if (!categoriesSeeded && grouped[0]) { openCategories.add(grouped[0].category); categoriesSeeded = true; }
+    const filtering = editorQuery.trim() !== '';
+    editorList.replaceChildren(...grouped.map((entry, index) => {
+      // A category is a card of its own that opens and closes (as Zen's Edit / Sidebar cards); its
+      // commands are an inset list inside it. Closed ones keep their rows, hidden, so search finds them.
       const box = el('section', 'sp-kb-cat');
       const heading = el('h4', 'sp-card-h');
-      heading.textContent = entry.category;
-      const card = el('div', 'sp-card');
+      const toggle = el('button', 'sp-kb-cat-btn');
+      toggle.type = 'button';
+      toggle.id = `sp-kb-cat-${index}`;
+      const body = el('div', 'sp-kb-cat-body');
+      body.id = `sp-kb-cat-body-${index}`;
+      body.setAttribute('role', 'region');
+      body.setAttribute('aria-labelledby', toggle.id);
+      toggle.setAttribute('aria-controls', body.id);
+      toggle.append(icon('chevron-down', { size: 16, className: 'sp-kb-cat-chev' }), document.createTextNode(entry.category));
+      heading.append(toggle);
+      const card = el('div', 'sp-card sp-kb-box');
       for (const command of entry.commands) card.append(commandRow(command));
-      box.append(heading, card);
+      body.append(card);
+      const paintOpen = (open: boolean): void => {
+        toggle.setAttribute('aria-expanded', String(open));
+        box.classList.toggle('is-open', open);
+        body.hidden = !open;
+      };
+      paintOpen(filtering || openCategories.has(entry.category) || entry.commands.some((command) => command.id === capturing || command.id === pending?.id));
+      toggle.addEventListener('click', () => {
+        const open = toggle.getAttribute('aria-expanded') !== 'true';
+        if (open) openCategories.add(entry.category); else openCategories.delete(entry.category);
+        paintOpen(open);
+      });
+      box.append(heading, body);
       return box;
     }));
     // The button that was clicked is gone with the old list: keep the keyboard on that command's row.
@@ -643,7 +689,16 @@ export function mountCommandsSections(options: CommandsSectionsOptions): Command
       else if (saving && s.ack === 'failed') { saving = false; draftError$ = s.error; paintEditorCard(); }
     }
     if (s.ack === 'conflict') conflict = { chord: s.conflictChord, label: s.conflictLabel };
-    else if (s.ack === 'saved' || s.ack === 'failed') { conflict = null; pending = null; }
+    else if (s.ack === 'saved' || s.ack === 'failed') {
+      // The pencil's new shortcut is in: the ones it replaces go now (one command each, run in order).
+      const done = pending;
+      if (s.ack === 'saved' && done?.replaces) {
+        const now = s.commands.find((command) => command.id === done.id);
+        if (now?.chords.includes(done.chord)) for (const chord of done.replaces) if (now.chords.includes(chord)) send(removeChordCommand(done.id, chord));
+      }
+      conflict = null;
+      pending = null;
+    }
     paintEditor();
   };
 

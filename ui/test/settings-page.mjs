@@ -861,7 +861,8 @@ test('the shortcut list: chips, remove one, clear, restore, browser priority, fi
   tool(closeTab, 'Restore the default shortcuts of Close tab').click();
   assert.deepEqual(sent.pop(), { v: 1, t: 'set', a: 'kbrestore', text: 'close-tab' });
   assert.equal(tool(kbRow('reload'), 'Restore the default shortcuts of Reload'), undefined, 'a command on its defaults has nothing to restore');
-  assert.equal(tool(kbRow('new-private-tab'), 'Clear the shortcuts of New private tab'), undefined, 'a command with no shortcut has nothing to clear');
+  assert.equal(tool(kbRow('new-private-tab'), 'Clear the shortcuts of New private tab').disabled, true, 'a command with no shortcut has nothing to clear (the cross stays, so the column lines up)');
+  assert.equal(kbRow('new-tab').querySelector('.sp-kb-chip-remove'), null, 'one shortcut: the row\'s cross clears it, the chip has none');
   // Browser priority: the shield shows the command's current flag and a click sends the opposite one.
   const shield = tool(kbRow('history'), 'Browser priority for History');
   assert.equal(shield.getAttribute('aria-pressed'), 'true');
@@ -894,6 +895,52 @@ test('the shortcut list: chips, remove one, clear, restore, browser priority, fi
   assert.equal(restoreAll.textContent, 'Restores defaults');
   restoreAll.click();
   assert.deepEqual(sent, [{ v: 1, t: 'set', a: 'kbrestoreall' }]);
+});
+
+test('the shortcut list: categories are cards that open and close; the first is open; filtering opens them all', () => {
+  deliver(commandsSnap());
+  const cats = () => kbPage().querySelectorAll('.sp-kb-cat');
+  const isOpen = (cat) => cat.querySelector('.sp-kb-cat-btn').getAttribute('aria-expanded') === 'true';
+  assert.ok(cats().length > 1);
+  assert.deepEqual(cats().map(isOpen), cats().map((_, i) => i === 0), 'the first category starts open');
+  assert.ok(cats().every((cat) => cat.querySelectorAll('.sp-kb-row').length > 0), 'closed categories keep their rows, so search finds them');
+  const second = cats()[1];
+  second.querySelector('.sp-kb-cat-btn').click();
+  assert.equal(isOpen(second), true);
+  assert.equal(second.querySelector('.sp-kb-cat-body').hidden, false);
+  deliver(commandsSnap());
+  assert.equal(isOpen(cats()[1]), true, 'a category stays open across snapshots');
+  cats()[1].querySelector('.sp-kb-cat-btn').click();
+  assert.equal(cats()[1].querySelector('.sp-kb-cat-body').hidden, true);
+  const filter = kbPage().querySelector('.sp-kb-filter');
+  filter.value = 'tab';
+  filter.dispatch('input');
+  assert.ok(cats().every(isOpen), 'filtering opens every category with a match');
+  filter.value = '';
+  filter.dispatch('input');
+});
+
+test('the pencil records a new shortcut in place of the old ones; the old ones go once Bowser takes it', () => {
+  deliver(commandsSnap());
+  sent.length = 0;
+  const pencil = kbRow('close-tab').querySelectorAll('button').find((b) => b.getAttribute('aria-label') === 'Change the shortcut of Close tab');
+  pencil.click();
+  assert.ok(kbRow('close-tab').querySelector('.sp-kb-capture'), 'the field asks for a key press');
+  press({ key: 'q', code: 'KeyQ', ctrlKey: true, altKey: true });
+  assert.deepEqual(sent.pop(), { v: 1, t: 'set', a: 'kbassign', text: 'close-tab\tCtrl+Alt+Q', on: false });
+  sent.length = 0;
+  const closeTab = commandsFixture.d.commands.find((c) => c.id === 'close-tab');
+  const now = commandsFixture.d.commands.map((c) => c.id === 'close-tab' ? { ...c, chords: [...closeTab.chords, 'Ctrl+Alt+Q'], changed: true } : c);
+  deliver(commandsSnap({ ack: 'saved', commands: now }));
+  assert.deepEqual(sent, closeTab.chords.map((chord) => ({ v: 1, t: 'set', a: 'kbremove', text: `close-tab\t${chord}` })), 'every old shortcut is removed, in order');
+  // A refusal changes nothing: the old shortcuts stay.
+  sent.length = 0;
+  kbRow('reload').querySelectorAll('button').find((b) => b.getAttribute('aria-label') === 'Change the shortcut of Reload').click();
+  press({ key: 'c', code: 'KeyC', ctrlKey: true });
+  sent.length = 0;
+  deliver(commandsSnap({ ack: 'failed', error: 'That shortcut is kept for editing and Windows.' }));
+  assert.deepEqual(sent, [], 'nothing is removed when the new shortcut was refused');
+  deliver(commandsSnap());
 });
 
 test('adding a shortcut waits for the keys, cancels on Escape, and offers to reassign a taken chord', () => {

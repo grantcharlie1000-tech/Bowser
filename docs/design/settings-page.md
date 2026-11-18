@@ -264,3 +264,17 @@ from the same geometry.
 
 Behind More options in Appearance: Window gains Use animation, Buttons instead of sliders, Fade colours in background windows, Simple scrollbars, Monochrome settings icons and a Reset; a Panels card holds the close button, folder counters, floating-panel auto-close and a Reset. All are in the `window` snapshot object (src/window_prefs.rs) and reach the chrome as the `look` object of `state`. Per-web-panel options (zoom, mute, reload every 1-30 minutes, open in tab/window/private tab, title-count mark, own width, restore removed) live on the web app's rail right-click menu and in `panel_prefs.txt`, not on this page. Not added: open settings in a tab, popups in tabs (Bowser always does both), show title bar (Layout's title row), reset toolbars (toolbar editor), Windows and Reading list panels (none exist), show panel toggle (rail buttons are the toggles).
 
+
+## Shortcut bindings (Shortcuts > Bindings)
+
+Built by `ui/src/commands-section.ts`, laid out as Zen's shortcut list. Each category is a card of
+its own with a chevron and its name; it opens and closes (the first is open at first, every category
+opens while the filter has text, and a closed one keeps its rows hidden so search still finds them).
+Inside, the commands are an inset list with full-width rules. A row is the command's name, then its
+shortcut in a fixed-width field (several are listed with commas and fade out at the field's end), a
+pencil and a cross. The pencil records a new shortcut in place of the old ones: Bowser is asked to
+add the new chord, and once it has (a `saved` answer that lists it) the old chords are removed one by
+one, so a refusal or a conflict the user cancels leaves the old shortcut in place. The cross clears
+the command (disabled when it has none, so the column lines up). Adding a second shortcut and browser
+priority sit before the field and show on hover or focus; Restore shows while the command is off its
+defaults; with several shortcuts each gets its own small cross on hover or focus.

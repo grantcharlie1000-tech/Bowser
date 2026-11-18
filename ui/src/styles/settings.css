@@ -2244,30 +2244,91 @@
 }
 
 .sp-kb-cat + .sp-kb-cat {
-  margin-top: var(--bw-space-4);
+  margin-top: var(--bw-space-3);
+}
+
+/* A category is a card of its own (as Zen's Edit and Sidebar cards): a chevron and its name, then,
+   while open, its commands as an inset list. */
+.sp-kb-cat {
+  border: 1px solid var(--sp-card-edge);
+  border-radius: var(--sp-r-card);
+  background: var(--sp-card);
+  box-shadow: var(--sp-card-shadow);
 }
 
 .sp-kb-cat > .sp-card-h {
-  margin: 0 0 var(--bw-space-1_5);
-  padding-inline-start: var(--bw-space-0_5);
+  margin: 0;
+  padding: 0;
+  color: var(--bw-text);
+  font-size: var(--bw-text-body);
+  line-height: var(--bw-leading-body);
+}
+
+.sp-kb-cat-btn {
+  display: flex;
+  align-items: center;
+  gap: var(--bw-space-3);
+  width: 100%;
+  min-height: 52px;
+  margin: 0;
+  padding: 0 var(--sp-row-x);
+  border: 0;
+  border-radius: var(--sp-r-card);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-weight: var(--bw-weight-strong);
+  text-align: start;
+  cursor: default;
+  transition: background-color var(--bw-dur-fast) var(--bw-ease-fade);
+}
+
+.sp-kb-cat-btn:hover {
+  background: color-mix(in srgb, var(--bw-text) 4%, transparent);
+}
+
+.sp-kb-cat-btn:focus-visible {
+  outline: 2px solid var(--bw-focus);
+  outline-offset: -2px;
+  box-shadow: inset 0 0 0 3px var(--bw-focus-inner);
+}
+
+.sp-kb-cat-chev {
+  flex: none;
+  color: var(--bw-text-2);
+  transform: rotate(-90deg);
+  transition: transform var(--bw-dur-fast) var(--bw-ease-move);
+}
+
+.sp-kb-cat.is-open .sp-kb-cat-chev {
+  transform: none;
+}
+
+.sp-kb-cat-body {
+  padding: 0 var(--sp-row-x) var(--sp-row-x);
+}
+
+/* The inset list: its own hairline box, the field's colour a step darker than the card. */
+.sp .sp-kb-box {
+  border: 1px solid var(--sp-field-edge);
+  border-radius: var(--sp-r-card);
+  background: color-mix(in srgb, var(--bw-text) 1.5%, var(--sp-page));
+  box-shadow: none;
 }
 
 .sp-kb-row {
   position: relative;
   display: flex;
-  flex-wrap: nowrap;
+  flex-wrap: wrap;
   align-items: center;
-  gap: var(--bw-space-2) var(--bw-space-4);
-  padding: var(--bw-space-3) var(--sp-row-x);
+  gap: var(--bw-space-2);
+  min-height: 56px;
+  padding: var(--bw-space-2) var(--bw-space-3) var(--bw-space-2) var(--sp-row-x);
 }
 
-.sp-kb-row + .sp-kb-row::before {
-  content: "";
-  position: absolute;
-  top: 0;
-  inset-inline: var(--sp-row-x);
-  height: 1px;
-  background: var(--sp-rule);
+/* Full-width rules between rows, as in the reference list. */
+.sp-kb-row + .sp-kb-row {
+  border-top: 1px solid var(--sp-field-edge);
 }
 
 .sp-kb-name {
@@ -2275,47 +2336,92 @@
   min-width: 0;
 }
 
+/* The shortcut, shown in a field: one fixed column, so every row's pencil and cross line up. */
 .sp-kb-keylist {
   display: flex;
-  flex: 0 1 auto;
-  max-width: 100%;
-  flex-wrap: wrap;
+  flex: none;
+  flex-wrap: nowrap;
   align-items: center;
-  justify-content: flex-end;
-  gap: var(--bw-space-1_5);
+  width: 180px;
+  height: 32px;
+  overflow: hidden;
+  padding: 0 var(--bw-space-1) 0 var(--bw-space-3);
+  border: 1px solid var(--sp-field-edge);
+  border-radius: var(--sp-r-card);
+  background: var(--sp-field);
+}
+
+.sp-kb-keylist.is-capturing {
+  border-color: var(--bw-accent);
+  box-shadow: inset 0 0 0 1px var(--bw-accent);
 }
 
 .sp-kb-none {
   color: var(--bw-text-2);
-  font-size: var(--bw-text-caption);
-  line-height: var(--bw-leading-caption);
 }
 
-.sp-kb-chip,
-.sp-kb-capture {
+.sp-kb-chip {
   display: inline-flex;
+  flex: none;
   align-items: center;
-  gap: var(--bw-space-1);
-  height: 28px;
-  padding: 0 var(--bw-space-1) 0 var(--bw-space-3);
-  border: 1px solid var(--sp-field-edge);
-  border-radius: var(--bw-r-pill);
-  background: var(--sp-field);
+}
+
+.sp-kb-chip > .sp-kb-chip-remove {
+  margin-inline-start: 2px;
+}
+
+/* Several shortcuts: commas between them, each with a small cross of its own. */
+.sp-kb-chip:not(:last-child)::after {
+  content: ",";
+  color: var(--bw-text-2);
 }
 
 .sp-kb-keys {
   font: inherit;
-  font-size: var(--bw-text-caption);
+  font-size: var(--bw-text-body);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
 
-.sp-kb-capture {
-  border-style: dashed;
-  border-color: var(--bw-accent);
+.sp-kb-chip-remove {
+  display: none;
+  width: 16px;
+  height: 16px;
   color: var(--bw-text-2);
-  font-size: var(--bw-text-caption);
+}
+
+/* Each shortcut's own cross shows while the row is in use (pointer or keyboard), so a field at rest
+   reads as plain text; display, not opacity, so a resting field keeps its room for the text. */
+.sp-kb-row:is(:hover, :focus-within) .sp-kb-chip-remove {
+  display: inline-grid;
+}
+
+/* The text's own clip: longer than the field, it fades out at its end rather than being cut mid-letter. */
+.sp-kb-clip {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: var(--bw-space-1);
+  min-width: 0;
+  overflow: hidden;
+}
+
+.sp-kb-keylist:not(.is-capturing) > .sp-kb-clip {
+  mask-image: linear-gradient(to left, transparent 0, #000 16px);
+}
+
+.sp-kb-capture {
+  overflow: hidden;
+  color: var(--bw-text-2);
+  text-overflow: ellipsis;
+  white-space: nowrap;
   outline: none;
+}
+
+.sp .sp-kb-row > :is(.sp-kb-edit, .sp-kb-clear) {
+  flex: none;
+  width: 28px;
+  height: 28px;
 }
 
 .sp-kb-rowtools {
@@ -2329,8 +2435,19 @@
   display: none;
 }
 
-.sp-kb-priority:not([aria-pressed="true"]) {
-  opacity: 0.55;
+/* Adding a second shortcut and browser priority wait for the pointer or the keyboard; Restore always
+   shows (it says the command is off its defaults). Opacity only, so they keep their place and focus. */
+.sp-kb-rowtools > :is(.sp-kb-add, .sp-kb-priority) {
+  opacity: 0;
+  transition: opacity var(--bw-dur-fast) var(--bw-ease-fade);
+}
+
+.sp-kb-row:is(:hover, :focus-within) > .sp-kb-rowtools > :is(.sp-kb-add, .sp-kb-priority) {
+  opacity: 1;
+}
+
+.sp-kb-row:is(:hover, :focus-within) > .sp-kb-rowtools > .sp-kb-priority:not([aria-pressed="true"]) {
+  opacity: 0.6;
 }
 
 .sp-kb-conflict {
