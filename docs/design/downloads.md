@@ -80,11 +80,24 @@ and say so in the report.
   bps: integer bytes per second now (0 when not active),
   err: string <= 60 ("" unless failed; short reason text),
   resume: bool (engine can resume it),
-  clock: "HH:MM" (local time it finished, or started while active) }
+  clock: "HH:MM" (local time it finished, or started while active),
+  icon: "" | "data:image/png;base64,..." <= 22 KiB (the file's picture, see below) }
 ```
 
 `missing` is a finished download whose file no longer exists. The page derives the file-type glyph
 from the extension of `name` (image, video, audio, archive, document, code, program, other).
+
+### File icon
+
+`icon` is the picture Windows shows for the file in Explorer (`src/file_icon.rs`, `SHGetFileInfoW`
+then a PNG through WIC). A finished program, shortcut or icon file (`.exe`, `.lnk`, `.ico`, `.scr`,
+`.cpl`) shows its own icon, read from the file; anything else, a program still downloading and a
+program whose file is gone show the icon of their type (the app that opens `.pdf`, `.zip`, ...),
+looked up by extension without touching the disk. Lookups are cached (128 icons, failures
+included) and made only for the rows a message carries. The page sends icons for its newest
+`PAGE_ICON_ROWS` (60) rows and drops them all before it would leave a row out of the snapshot.
+`""` (no icon, or one that does not decode) shows the file-type glyph on its tone. The chrome
+accepts only a base64 PNG `data:` URL (`ICON_RE`); it is the one `src` the downloads views set.
 
 ### Toolbar button: Rust -> toolbar host
 

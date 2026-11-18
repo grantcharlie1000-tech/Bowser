@@ -55,6 +55,11 @@ const MAX_NAME_JSON: usize = 200;
 const MAX_HOST_JSON: usize = 120;
 const MAX_URL_JSON: usize = 200;
 const MAX_ERR_CHARS: usize = 60;
+/// Longest file icon sent (a PNG `data:` URL of at most `file_icon::MAX_ICON_BYTES`).
+const MAX_ICON_JSON: usize = 22 * 1024;
+/// The downloads page sends icons for this many rows (the newest); older rows show the file-kind glyph,
+/// so icons never push rows out of [`MAX_SNAPSHOT_BYTES`].
+pub const PAGE_ICON_ROWS: usize = 60;
 /// Longest source URL kept (longer ones are not recorded: they could not be fetched again anyway).
 const MAX_URL_BYTES: usize = 2048;
 /// Longest search the page sends.
@@ -707,6 +712,10 @@ pub struct DownloadManager {
     dropped: HashSet<u32>,
     /// A save failed after opening the file. Keep the backing path so the next change can retry.
     save_failed: bool,
+    /// Where a row's file icon comes from (`crate::file_icon::load` in Bowser, None in tests: the chrome
+    /// then draws its file-kind glyph), and the icons already looked up.
+    icon_source: Option<crate::file_icon::IconSource>,
+    icons: std::cell::RefCell<crate::file_icon::IconCache>,
 }
 
 impl DownloadManager {
@@ -730,7 +739,25 @@ impl DownloadManager {
             synced: HashSet::new(),
             dropped: HashSet::new(),
             save_failed: false,
+            icon_source: default_icon_source(),
+            icons: std::cell::RefCell::new(crate::file_icon::IconCache::default()),
         }
+    }
+
+    /// Sets where file icons come from (None: no icons, the chrome draws its glyphs). Forgets the cached ones.
+    pub fn set_icon_source(&mut self, source: Option<crate::file_icon::IconSource>) {
+        self.icon_source = source;
+        self.icons = std::cell::RefCell::new(crate::file_icon::IconCache::default());
+        self.touch();
+    }
+
+    /// The `data:` URL of the picture of an entry's file, or "" when there is none.
+    fn icon_of(&self, entry: &DownloadEntry) -> String {
+        let Some(source) = self.icon_source else { return String::new() };
+        let complete = entry.state == State::Done && !entry.missing;
+        let key = crate::file_icon::key_for(&entry.path, complete);
+        let Ok(mut icons) = self.icons.try_borrow_mut() else { return String::new() };
+        icons.get(&key, source).unwrap_or_default()
     }
 
     /// Loads the profile's list. A missing file is an empty list; a file that exists but cannot be
@@ -804,7 +831,11 @@ impl DownloadManager {
 
     pub fn on_event(&mut self, event: DownloadEvent, now_ms: u64) -> Change {
         let change = match event {
-            DownloadEvent::Started { key, url, path, total } => self.started(key, &url, path, total, now_ms),
+            DownloadEvent::Started { key, url, path, total } => {
+                // a new file at a path that had one before (deleted, then downloaded again) has its own icon
+                self.icons.get_mut().forget(&crate::file_icon::IconKey::File(path.clone()));
+                self.started(key, &url, path, total, now_ms)
+            }
             DownloadEvent::Progress { key, got, total } => self.progress(key, got, total, now_ms),
             DownloadEvent::State { key, state, got, total, err, can_resume } => {
                 self.state_changed(key, state, got, total, &err, can_resume, now_ms)
@@ -1059,7 +1090,7 @@ impl DownloadManager {
             o.bool("auto", auto);
             o.array("items", |a| {
                 for entry in &rows {
-                    a.object(|o| write_entry(o, entry, time.offset_secs));
+                    a.object(|o| write_entry(o, entry, time.offset_secs, &self.icon_of(entry)));
                 }
             });
             o.uint("more", more as u64);
@@ -1075,16 +1106,19 @@ impl DownloadManager {
         let found = if self.list_state() == ListState::Error { Vec::new() } else { self.search(query) };
         let query = capped(query, MAX_QUERY_CHARS);
         let mut shown = found.len();
+        let mut icon_rows = PAGE_ICON_ROWS;
         loop {
-            let json = self.page_json(&found[..shown], found.len() - shown, query, ack, time);
+            let json = self.page_json(&found[..shown], found.len() - shown, query, ack, time, icon_rows);
             if json.len() + 1024 <= MAX_SNAPSHOT_BYTES || shown == 0 {
                 return json;
             }
-            shown = shown * 3 / 4;
+            // icons go first: rows are only left out when the page is too large without them
+            if icon_rows > 0 { icon_rows = 0; } else { shown = shown * 3 / 4; }
         }
     }
 
-    fn page_json(&self, rows: &[&DownloadEntry], more: usize, query: &str, ack: Ack, time: Time) -> String {
+    fn page_json(&self, rows: &[&DownloadEntry], more: usize, query: &str, ack: Ack, time: Time, icon_rows: usize) -> String {
+        let mut index = 0usize;
         let today = day_of(time.now, time.offset_secs);
         let mut days: Vec<(i64, Vec<&DownloadEntry>)> = Vec::new();
         for entry in rows {
@@ -1109,7 +1143,9 @@ impl DownloadManager {
                             o.uint("count", list.len() as u64);
                         });
                         for entry in list {
-                            a.object(|o| write_entry(o, entry, time.offset_secs));
+                            let icon = if index < icon_rows { self.icon_of(entry) } else { String::new() };
+                            index += 1;
+                            a.object(|o| write_entry(o, entry, time.offset_secs, &icon));
                         }
                     }
                 });
@@ -1123,7 +1159,7 @@ impl DownloadManager {
 
     /// One entry as the wire object (docs/design/downloads.md "Entry object").
     pub fn entry_json(&self, id: u32, time: Time) -> Option<String> {
-        self.get(id).map(|entry| Json::object(|o| write_entry(o, entry, time.offset_secs)))
+        self.get(id).map(|entry| Json::object(|o| write_entry(o, entry, time.offset_secs, &self.icon_of(entry))))
     }
 
     // --- files that went away ---
@@ -1375,7 +1411,19 @@ fn interrupt(entry: &mut DownloadEntry, now_ms: u64) {
     entry.unseen = true;
 }
 
-fn write_entry(o: &mut Object<'_>, entry: &DownloadEntry, offset_secs: i64) {
+/// Bowser looks file icons up through the shell; unit tests never do (their JSON is exact).
+fn default_icon_source() -> Option<crate::file_icon::IconSource> {
+    #[cfg(all(windows, not(test)))]
+    {
+        Some(crate::file_icon::load)
+    }
+    #[cfg(not(all(windows, not(test))))]
+    {
+        None
+    }
+}
+
+fn write_entry(o: &mut Object<'_>, entry: &DownloadEntry, offset_secs: i64, icon: &str) {
     o.uint("id", u64::from(entry.id));
     o.string("name", capped(&entry.name, MAX_NAME_JSON));
     o.string("host", capped(&entry.host(), MAX_HOST_JSON));
@@ -1388,6 +1436,8 @@ fn write_entry(o: &mut Object<'_>, entry: &DownloadEntry, offset_secs: i64) {
     o.string("err", if entry.state == State::Failed { capped(&entry.err, MAX_ERR_CHARS) } else { "" });
     o.bool("resume", entry.resume);
     o.string("clock", &clock_label(entry.clock_secs(), offset_secs));
+    // a PNG data: URL of the file's picture, or "" (file_icon checks the size; this is a last guard)
+    o.string("icon", if icon.len() <= MAX_ICON_JSON { icon } else { "" });
 }
 
 fn clock_label(secs: u64, offset_secs: i64) -> String {

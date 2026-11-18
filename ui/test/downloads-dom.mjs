@@ -214,6 +214,43 @@ test('page: live progress patches rows in place, never rebuilding them', () => {
   deliver(fixture.snap);
 });
 
+test('page: a file with its own picture shows it, the rest their kind glyph; the tile swaps in place', () => {
+  const tileOf = (row) => row.querySelector('.dl-tile');
+  // the scenarios give Setup.exe (3), the pdfs and the zip a picture; keynote.mp4 (6) has none
+  const icon = fixture.snap.d.rows.find((r) => r.id === 3).icon;
+  assert.match(icon, /^data:image\/png;base64,/);
+  const exe = rowById(3).querySelector('.dl-tile');
+  assert.ok(exe.classList.contains('has-icon'));
+  const img = exe.querySelector('img.dl-file-icon');
+  assert.ok(img, 'the picture is shown');
+  assert.equal(img.src, icon);
+  assert.equal(img.alt, '', 'decorative: the name says what the file is');
+  assert.equal(exe.querySelector('svg'), null);
+  const mp4 = rowById(6).querySelector('.dl-tile');
+  assert.ok(!mp4.classList.contains('has-icon'));
+  assert.equal(mp4.querySelector('img'), null);
+  assert.ok(mp4.querySelector('svg'), 'the kind glyph');
+  // the picture goes away: the same row shows the glyph
+  const row = rowById(3);
+  deliver({ ...fixture.snap, d: { ...fixture.snap.d, rows: fixture.snap.d.rows.map((r) => (r.id === 3 ? { ...r, icon: '' } : r)) } });
+  assert.equal(rowById(3), row, 'patched, not rebuilt');
+  assert.equal(tileOf(row).querySelector('img'), null);
+  assert.ok(tileOf(row).querySelector('svg'));
+  assert.ok(!tileOf(row).classList.contains('has-icon'));
+  // it comes back; a re-post with the same picture does not rebuild the tile
+  deliver(fixture.snap);
+  const again = tileOf(row).querySelector('img.dl-file-icon');
+  assert.ok(again);
+  deliver(fixture.snap);
+  assert.equal(tileOf(row).querySelector('img.dl-file-icon'), again);
+  // a picture that does not decode gives way to the glyph
+  again.dispatch('error');
+  assert.equal(tileOf(row).querySelector('img'), null);
+  assert.ok(tileOf(row).querySelector('svg'));
+  deliver({ ...fixture.snap, d: { ...fixture.snap.d, rows: fixture.snap.d.rows.filter((r) => r.id !== 3) } });
+  deliver(fixture.snap);
+});
+
 test('page: keys move, Enter opens, Delete removes, the toast offers Undo', () => {
   const pdf = rowById(4).querySelector('.dl-open');
   pdf.focus();

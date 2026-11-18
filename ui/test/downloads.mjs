@@ -103,6 +103,14 @@ test('the entry object is exact: every key, nothing more, closed values', () => 
     { ...good, err: 'Network error' }, // only a failed entry has a reason
     { ...good, state: 'done', bps: 5 }, // only an active entry moves bytes
     { ...good, err: 'x'.repeat(121), state: 'failed', bps: 0 },
+    // the file icon is a PNG data: URL or nothing: never an address, another type, script or markup
+    { ...good, icon: 'https://example.com/icon.png' },
+    { ...good, icon: 'data:image/svg+xml;base64,PHN2Zz4=' },
+    { ...good, icon: 'data:text/html;base64,PGI+' },
+    { ...good, icon: 'javascript:alert(1)' },
+    { ...good, icon: 'data:image/png;base64,AAAA" onerror="x' },
+    { ...good, icon: `data:image/png;base64,${'A'.repeat(logic.MAX_ICON_UNITS)}` },
+    { ...good, icon: null },
   ];
   for (const value of bad) assert.equal(logic.parseEntry(value), null, JSON.stringify(value).slice(0, 140));
   for (const key of logic.ENTRY_KEYS) {
@@ -394,7 +402,12 @@ test('toolbar.css: the button keeps transform/opacity motion, with the one docum
 test('sources: text only, no links or navigation, and each surface sends only its own commands', () => {
   const files = ['downloads-logic.ts', 'downloads-view.ts', 'downloads-bubble.ts', 'downloads-page.ts'];
   for (const file of files) {
-    const text = read(join(srcDir, file));
+    let text = read(join(srcDir, file));
+    if (file === 'downloads-view.ts') {
+      // the one picture a row loads: the file icon, a PNG data: URL that parseEntry has already checked
+      assert.equal(text.match(/\.src\s*=/g).length, 1, 'only the file icon sets a src');
+      text = text.replace('img.src = src;', '');
+    }
     for (const banned of [/innerHTML|insertAdjacentHTML|outerHTML/, /location\.(hash|href|assign|replace)/, /history\.(pushState|replaceState)/, /window\.open/, /createElement\('a'\)|el\('a'/, /\.src\s*=/]) {
       assert.doesNotMatch(text, banned, `${file}: ${banned}`);
     }
