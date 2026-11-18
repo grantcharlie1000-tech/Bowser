@@ -332,3 +332,32 @@ for (const snapshot of [true, false]) test(`Extensions deep link leaves Simple s
   h.go(''); h.flush();
   assert.equal(h.app.querySelector('.sp-simple').hidden, false, 'top restores the saved Simple preference');
 });
+
+test('a nav click scrolls from where the reader is straight to the section, never via the top', () => {
+  for (const reduced of [false, true]) {
+    const h = harness({ reduced });
+    h.go('privacy'); h.flush();
+    const from = h.main.scrollTop;
+    assert.ok(from > 0, 'the reader is part way down the page');
+    // Record every direct write to the scroll position from here on.
+    const writes = [];
+    let value = from;
+    Object.defineProperty(h.main, 'scrollTop', { configurable: true, get: () => value, set: (next) => { writes.push(next); value = next; } });
+    h.app.querySelector('.sp-nav-item[data-section="extensions"]').click();
+    const call = h.main.scrollCalls.at(-1);
+    assert.equal(call.top, h.target('extensions'));
+    assert.equal(call.behavior, reduced ? 'auto' : 'smooth', 'smooth, or instant under reduced motion');
+    assert.ok(!writes.includes(0), `nothing jumps to the top first (reduced: ${reduced})`);
+    if (!reduced) assert.deepEqual(writes, [], 'the smooth scroll starts from the current position');
+    assert.equal(h.current(), 'extensions', 'the nav highlight moves to the target at once');
+  }
+});
+
+test('a snapshot that lands during a search keeps the results where the reader is', () => {
+  const h = harness();
+  const input = h.app.querySelector('.sp-search-input');
+  input.value = 'tab'; input.dispatch('input');
+  h.main.scrollTop = 120;
+  h.deliver({ ...fixture.snap, d: { ...fixture.snap.d, ack: 'saved' } });
+  assert.equal(h.main.scrollTop, 120);
+});

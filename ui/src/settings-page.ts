@@ -1947,7 +1947,8 @@ export function startSettingsPage(root: HTMLElement): void {
     simpleTabs.disable(!s.readable);
     simpleExtensions.disabled = false;
     lockLater(); // --- settings slim ---
-    if (query !== '') filter();
+    // A snapshot during a search (a change just saved) keeps the results where the reader is.
+    if (query !== '') filter(false);
   };
 
   // ---- navigation: scroll position, active area, indicator ----
@@ -2000,11 +2001,15 @@ export function startSettingsPage(root: HTMLElement): void {
 
   /** Shows `key`; `tell` reports it to Bowser (the tab's address follows), `smooth` animates. */
   const go = (key: SettingsSection | '', smooth: boolean, tell: boolean): void => {
+    // Scrolling from where the reader is only makes sense while the same page stays on screen. Leaving
+    // search results, a sub-page or Simple swaps the page under the scroll position, so that jump is instant.
+    const samePage = query === '' && openPage === null && !simpleOn();
     sectionHold = key !== '' && prefer === 'simple';
     closePage(false);
     if (query !== '') { input.value = ''; query = ''; }
-    // Reconcile Simple/All and reveal the destination before measuring its position.
-    filter();
+    // Reconcile Simple/All and reveal the destination before measuring its position. The scroll
+    // position is kept: a nav click scrolls from here straight to the section, never via the top.
+    filter(false);
     const area = key === '' ? AREAS[0]! : areaOf(key);
     current = area.key;
     // The chosen area stays current even when the page cannot scroll it to the top (the last
@@ -2012,7 +2017,7 @@ export function startSettingsPage(root: HTMLElement): void {
     const top = sectionTop(key);
     pinned = { key, top };
     paintNav();
-    main.scrollTo({ top, behavior: smooth && !reduceMotion() ? 'smooth' : 'auto' });
+    main.scrollTo({ top, behavior: smooth && samePage && !reduceMotion() ? 'smooth' : 'auto' });
     alignPinnedSection();
     if (tell) cmd({ a: 'section', text: key });
     if (area.key === 'media' && !mediaStarted) checkMedia();
@@ -2105,7 +2110,8 @@ export function startSettingsPage(root: HTMLElement): void {
       else if (heading.id && group.card.getAttribute('aria-labelledby') !== heading.id) group.card.setAttribute('aria-labelledby', heading.id);
     }
   };
-  function filter(): void {
+  /** Shows the rows the search finds. `fromTop` starts the results at the top (a new query or view). */
+  function filter(fromTop = true): void {
     unpinSection();
     if (query !== '') closePage(false);
     const hits = matchRows(query);
@@ -2158,7 +2164,7 @@ export function startSettingsPage(root: HTMLElement): void {
     const resultCount = hits === null ? '' : resultCountText(total, query);
     if (count.textContent !== resultCount) count.textContent = resultCount;
     setHidden(clear, query === '');
-    main.scrollTop = 0;
+    if (fromTop) main.scrollTop = 0;
     if (hits !== null) {
       const first = AREAS.find((spec) => !areaNodes.get(spec.key)?.hidden);
       if (first && first.key !== current) { current = first.key; paintNav(); }
