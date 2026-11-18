@@ -20,6 +20,8 @@ export const REWRITES = {
   "/launch/home": "/pages/x-launch-home.html",
   "/counters/home": "/pages/x-counters.html",
   "/someone/status/1234567890": "/pages/x-conversation.html",
+  "/leaker/status/2222": "/pages/x-spoiler-head.html",
+  "/fan/status/3333": "/pages/x-spoiler-reply.html",
   "/r/pics/comments/abc/some_post/": "/pages/reddit-new.html",
   "/r/pics/": "/pages/reddit-old.html",
   "/watch": "/pages/youtube-watch.html",

@@ -2022,6 +2022,9 @@ SFW.policy = (function () {
 //            of <main> is just whichever post happens to be on top.
 //   media    media selector (adapter specific + generic)
 //   attrs    extra attribute names whose text is part of a unit's text (custom-element data attributes)
+//   mediaIgnore  images that do not make a unit a picture post: profile pictures and emoji images that every post of the
+//            site carries. Without it every post on X "has media", and media in any GTA context (a spoiler post opened as
+//            the thread head, a spoiler reply's own page) is covered: one spoiler covered every post on the page.
 //   hotUrl   0 cold | 1 warm | 2 hot, from the URL alone (query / path slug / subreddit) via SFW.classify
 // Selector drift degrades to the generic resolver: `own` simply stops matching and `generic` keeps applying.
 SFW.adapters = (function () {
@@ -2076,6 +2079,8 @@ SFW.adapters = (function () {
     context: ["[data-testid=SearchBox_Search_Input]"], threadFirst: true,
     media: ["[data-testid=tweetPhoto]", "[data-testid=videoPlayer]", "[data-testid='card.layoutLarge.media']", "[data-testid='card.layoutSmall.media']"],
     attrs: [],
+    mediaIgnore: ["[data-testid=Tweet-User-Avatar] *", "[data-testid^=UserAvatar-Container] *", "img[src*='/profile_images/']", "[style*='/profile_images/']",
+      "img[src*='/emoji/']", "img[src*='/hashflags/']"],
     hotUrl: classifyUrl,
   });
   // ---- Reddit (shreddit, sh.reddit, old.reddit) ---------------------------------------------------------------
@@ -2361,6 +2366,7 @@ SFW.adapters = (function () {
       threadFirst: !!def.threadFirst,
       media: join(valid(def.media.concat(GENERIC_MEDIA), doc)),
       attrs: def.attrs || [],
+      mediaIgnore: join(valid(def.mediaIgnore || [], doc)),
       hotUrl: def.hotUrl,
     };
   }
@@ -5157,6 +5163,7 @@ SFW.runtime = (function () {
       let frames = null; // embedded frames the engine cannot look into (sandboxed without allow-scripts)
       let sig = "";
       const mediaSel = adapter.media || "";
+      const noMediaSel = adapter.mediaIgnore || ""; // profile pictures / emoji images: present in every post, not a picture post
       const ownSel = adapter.own || ""; // nested adapter items are units of their own (never part of a container's text)
       const prev = U.get(u);
       const mine = prev && prev.targets && prev.targets.length ? mkSet(prev.targets) : null;
@@ -5167,9 +5174,9 @@ SFW.runtime = (function () {
         const n = rootNode.nodeType === 1 ? rootNode : null;
         const handleEl = (e) => {
           const tag = e.localName;
-          if (!media && (MEDIA_TAGS.has(e.tagName) || tag === "image" || (mediaSel && nMatches(e, mediaSel)))) media = true;
+          if (!media && (MEDIA_TAGS.has(e.tagName) || tag === "image" || (mediaSel && nMatches(e, mediaSel))) && !(noMediaSel && nMatches(e, noMediaSel))) media = true;
           if (e.hasAttributes()) {
-            if (!media && wantBg && nHasAttr(e, "style") && /background-image/i.test(nGetAttr(e, "style"))) media = true;
+            if (!media && wantBg && nHasAttr(e, "style") && /background-image/i.test(nGetAttr(e, "style")) && !(noMediaSel && nMatches(e, noMediaSel))) media = true;
             for (let i = 0; i < ATTR_TEXT.length; i++) {
               const v = nGetAttr(e, ATTR_TEXT[i]);
               if (v) add(v);

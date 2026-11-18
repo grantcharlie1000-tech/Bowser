@@ -1668,6 +1668,7 @@ SFW.runtime = (function () {
       let frames = null; // embedded frames the engine cannot look into (sandboxed without allow-scripts)
       let sig = "";
       const mediaSel = adapter.media || "";
+      const noMediaSel = adapter.mediaIgnore || ""; // profile pictures / emoji images: present in every post, not a picture post
       const ownSel = adapter.own || ""; // nested adapter items are units of their own (never part of a container's text)
       const prev = U.get(u);
       const mine = prev && prev.targets && prev.targets.length ? mkSet(prev.targets) : null;
@@ -1678,9 +1679,9 @@ SFW.runtime = (function () {
         const n = rootNode.nodeType === 1 ? rootNode : null;
         const handleEl = (e) => {
           const tag = e.localName;
-          if (!media && (MEDIA_TAGS.has(e.tagName) || tag === "image" || (mediaSel && nMatches(e, mediaSel)))) media = true;
+          if (!media && (MEDIA_TAGS.has(e.tagName) || tag === "image" || (mediaSel && nMatches(e, mediaSel))) && !(noMediaSel && nMatches(e, noMediaSel))) media = true;
           if (e.hasAttributes()) {
-            if (!media && wantBg && nHasAttr(e, "style") && /background-image/i.test(nGetAttr(e, "style"))) media = true;
+            if (!media && wantBg && nHasAttr(e, "style") && /background-image/i.test(nGetAttr(e, "style")) && !(noMediaSel && nMatches(e, noMediaSel))) media = true;
             for (let i = 0; i < ATTR_TEXT.length; i++) {
               const v = nGetAttr(e, ATTR_TEXT[i]);
               if (v) add(v);
