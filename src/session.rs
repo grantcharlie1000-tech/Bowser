@@ -12,6 +12,11 @@
 //! * `session.crashed-<unix>` - a copy of the snapshot taken by the crash-loop guard. Never
 //!   overwritten; only the newest [`MAX_CRASHED_KEPT`] are kept. A legacy `session.crashed` is left
 //!   alone.
+//! * `session-windows\<id>\` - the same three kinds of file for each further window of the profile
+//!   (a window opened with Ctrl+N or "Move tab to new window" is a process of its own). Its tabs
+//!   are saved there while it runs; the folder is removed when the person closes that window while
+//!   another window of the profile stays open. A folder left by a crash, a power cut or a Windows
+//!   shutdown is reopened as a window at the next start ([`stale_slots`]).
 //! * `running.lock`    - created when the session is opened, removed on clean exit. Its presence
 //!   at the next open means the previous run ended unexpectedly. It holds the number of
 //!   consecutive crashed runs and is kept open with no sharing from the moment the session is
@@ -61,6 +66,11 @@ pub const SAVE_DEBOUNCE_MS: u32 = 1_000;
 /// selected, so a page that crashes Bowser cannot crash it again on its own. A copy of the snapshot
 /// is also kept as `session.crashed-<unix>`.
 pub const CRASH_LOOP_LIMIT: u32 = 2;
+
+/// Folder, inside the session folder, with one sub-folder per further window ("slot").
+pub const WINDOWS_DIR: &str = "session-windows";
+/// At most this many further windows are reopened at a start.
+pub const MAX_WINDOW_SLOTS: usize = 16;
 
 const HEADER_V1: &str = "bowser-session 1";
 const HEADER: &str = "bowser-session 2";
@@ -529,6 +539,8 @@ pub struct SessionStore {
 enum SessionCommand {
     Save(Session),
     Finish(Option<Session>),
+    /// The window's tabs were closed on purpose: release the marker and remove the slot folder.
+    Discard,
 }
 
 /// Serializes session snapshots on a worker so durability writes never block the UI thread.
@@ -552,6 +564,10 @@ impl SessionWriter {
                             store.finish(snapshot.as_ref());
                             return;
                         }
+                        SessionCommand::Discard => {
+                            store.discard();
+                            return;
+                        }
                     }
                 }
                 store.finish(None);
@@ -572,6 +588,14 @@ impl SessionWriter {
             let _ = worker.join();
         }
     }
+
+    /// See [`SessionStore::discard`]. Only for a further window's slot.
+    pub fn discard(mut self) {
+        let _ = self.sender.send(SessionCommand::Discard);
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
+    }
 }
 
 impl Drop for SessionWriter {
@@ -581,6 +605,71 @@ impl Drop for SessionWriter {
             let _ = worker.join();
         }
     }
+}
+
+/// A slot id as [`new_slot_id`] makes it: lowercase hex and `-`, so it can never leave
+/// [`WINDOWS_DIR`] when joined to a path.
+pub fn valid_slot_id(id: &str) -> bool {
+    (1..=40).contains(&id.len()) && id.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b) || b == b'-')
+}
+
+/// A new, unique slot id: the time in milliseconds (zero-padded, so ids sort oldest first) and
+/// the process id.
+pub fn new_slot_id() -> String {
+    let millis = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis());
+    format!("{millis:012x}-{:x}", std::process::id())
+}
+
+/// The folder of the further window `id`.
+pub fn slot_dir(dir: &Path, id: &str) -> PathBuf {
+    dir.join(WINDOWS_DIR).join(id)
+}
+
+fn slot_ids(dir: &Path) -> Vec<String> {
+    let Ok(entries) = fs::read_dir(dir.join(WINDOWS_DIR)) else {
+        return Vec::new();
+    };
+    let mut ids: Vec<String> = entries
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .filter(|id| valid_slot_id(id))
+        .collect();
+    ids.sort();
+    ids
+}
+
+/// Further windows of the profile that are open now (their slot's marker is held), other than
+/// `except`.
+pub fn live_slots(dir: &Path, except: Option<&str>) -> Vec<String> {
+    slot_ids(dir)
+        .into_iter()
+        .filter(|id| Some(id.as_str()) != except)
+        .filter(|id| lock_state(&slot_dir(dir, id)) == LockState::HeldByLiveInstance)
+        .collect()
+}
+
+/// Further windows that were open when Bowser last stopped without their being closed (a crash,
+/// a power cut, a Windows shutdown), oldest first: their slot has saved tabs and no live window
+/// holds it. A slot with a leftover marker but no saved tabs (a window that crashed before its
+/// first save) is removed.
+pub fn stale_slots(dir: &Path) -> Vec<String> {
+    slot_ids(dir)
+        .into_iter()
+        .filter(|id| {
+            let slot = slot_dir(dir, id);
+            if lock_state(&slot) == LockState::HeldByLiveInstance {
+                return false;
+            }
+            let saved = slot.join(FILE_NAME).exists() || slot.join(PREV_NAME).exists();
+            if !saved && slot.join(LOCK_NAME).exists() {
+                let _ = fs::remove_dir_all(&slot);
+            }
+            saved
+        })
+        .collect()
 }
 
 /// Copies `session.txt` to a new `session.crashed-<unix>` name (never overwriting an existing
@@ -811,6 +900,19 @@ impl SessionStore {
         }
         if self.lock.take().is_some() {
             let _ = fs::remove_file(self.dir.join(LOCK_NAME));
+        }
+    }
+}
+
+impl SessionStore {
+    /// A further window was closed on purpose: its slot folder (saved tabs, backup, marker) is
+    /// removed, so it is not reopened. Only for a slot made by [`slot_dir`]: on any other folder it
+    /// just releases the marker like a crash would, and removes nothing.
+    pub fn discard(&mut self) {
+        self.lock.take();
+        self.began = true;
+        if self.dir.parent().and_then(Path::file_name).is_some_and(|name| name == WINDOWS_DIR) {
+            let _ = fs::remove_dir_all(&self.dir);
         }
     }
 }
@@ -1312,6 +1414,69 @@ mod tests {
         let offer = offer.unwrap();
         assert!(!offer.safe);
         assert_eq!(offer.session, changed);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn slot_ids_are_safe_path_components() {
+        let id = new_slot_id();
+        assert!(valid_slot_id(&id), "{id}");
+        for bad in ["", "..", "a/b", "a\\b", "C:", "ABC", "x", &"a".repeat(41)] {
+            assert!(!valid_slot_id(bad), "{bad}");
+        }
+    }
+
+    #[test]
+    fn a_further_window_left_open_is_reopened_and_one_closed_on_purpose_is_not() {
+        let dir = temp_dir("slots");
+        let (ended, crashed, closed, empty) = ("0000000001-1", "0000000002-2", "0000000003-3", "0000000004-4");
+        // Shut down with Windows: saved and released.
+        let (mut store, _) = SessionStore::open(&slot_dir(&dir, ended)).unwrap();
+        store.begin_run(None);
+        store.finish(Some(&sample()));
+        // Crashed: saved, marker left behind.
+        {
+            let (mut store, _) = SessionStore::open(&slot_dir(&dir, crashed)).unwrap();
+            store.begin_run(None);
+            store.save(&sample()).unwrap();
+        }
+        // Closed on purpose.
+        let (mut store, _) = SessionStore::open(&slot_dir(&dir, closed)).unwrap();
+        store.begin_run(None);
+        store.save(&sample()).unwrap();
+        store.discard();
+        assert!(!slot_dir(&dir, closed).exists());
+        // Crashed before its first save: nothing to reopen, and the folder is tidied away.
+        {
+            let (mut store, _) = SessionStore::open(&slot_dir(&dir, empty)).unwrap();
+            store.begin_run(None);
+        }
+        // A window that is still open is neither stale nor reopened.
+        let live = "0000000005-5";
+        let (mut open, _) = SessionStore::open(&slot_dir(&dir, live)).unwrap();
+        open.begin_run(None);
+        open.save(&sample()).unwrap();
+        assert_eq!(live_slots(&dir, None), [live]);
+        assert!(live_slots(&dir, Some(live)).is_empty());
+
+        assert_eq!(stale_slots(&dir), [ended, crashed]);
+        assert!(!slot_dir(&dir, empty).exists());
+        for id in [ended, crashed] {
+            let (_, offer) = SessionStore::open(&slot_dir(&dir, id)).unwrap();
+            assert_eq!(offer.expect("its tabs come back").session, sample(), "{id}");
+        }
+        open.finish(None);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn discard_never_removes_the_main_session_folder() {
+        let dir = temp_dir("discard-main");
+        let (mut store, _) = SessionStore::open(&dir).unwrap();
+        store.begin_run(None);
+        store.save(&sample()).unwrap();
+        store.discard();
+        assert!(dir.join(FILE_NAME).exists());
         let _ = fs::remove_dir_all(&dir);
     }
 
