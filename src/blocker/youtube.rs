@@ -2,14 +2,21 @@
 //!
 //! YouTube serves its ads from its own domain and decides when to play them from members of the
 //! player response, so no request rule can stop a pre-roll without also stopping the video. The
-//! engine pauses that one response at the DevTools `Fetch` Response stage (see
-//! [`RESPONSE_PATTERNS`]) and fulfills it with [`strip_player_ads`]'s output: the same response
-//! minus the top-level [`PLAYER_AD_KEYS`] members. Every other member is copied byte for byte, so
-//! `streamingData` (formats, adaptiveFormats, itags) and the quality the player picks from it are
-//! exactly what the server sent. Video and audio bytes come from googlevideo.com; they are never
-//! paused, rewritten or proxied.
+//! engine pauses those responses at the DevTools `Fetch` Response stage (see
+//! [`RESPONSE_PATTERNS`]) and fulfills them with [`strip_player_ads`]'s output: the same response
+//! minus the [`PLAYER_AD_KEYS`] members of the player response. Every other member is copied byte
+//! for byte, so `streamingData` (formats, adaptiveFormats, itags) and the quality the player picks
+//! from it are exactly what the server sent. Video and audio bytes come from googlevideo.com; they
+//! are never paused, rewritten or proxied.
 //!
-//! The ad beacons and ad-break requests themselves are ordinary rules in `src/blocklist.txt`.
+//! The player response reaches the page three ways, and all three are stripped:
+//! * the first watch page inlines it as `ytInitialPlayerResponse` in the HTML;
+//! * `/youtubei/v1/player` returns it as the whole body, with or without a query string;
+//! * `/youtubei/v1/get_watch`, which the site uses for in-app navigation to a video, returns it as
+//!   a `playerResponse` member, of the body or of each element of a body that is an array.
+//!
+//! The ad beacons and ad-break requests themselves are ordinary rules in `src/blocklist.txt`, and
+//! the ad cards in the home feed, search results, Shorts and watch sidebar are hidden by [`CSS`].
 
 use super::json;
 
@@ -25,7 +32,8 @@ pub const PLAYER_AD_KEYS: [&str; 4] = [
 /// Where a player response sits in a response body.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PlayerPayload {
-    /// `/youtubei/v1/player`: the body is the player response object.
+    /// `/youtubei/v1/player` or `/youtubei/v1/get_watch`: a JSON body that is the player response
+    /// object, an object holding it as `playerResponse`, or an array of such objects.
     Json,
     /// A `/watch` page: the player response is the inline `ytInitialPlayerResponse` object.
     WatchPage,
@@ -41,9 +49,29 @@ pub struct ResponsePattern {
 /// The responses the engine pauses for [`strip_player_ads`]. In these patterns `*` is any run,
 /// an unescaped `?` is any one character and `\?` is a literal `?`. They only narrow what pauses:
 /// [`player_payload`] makes the exact host and path check, and anything else continues untouched.
-pub const RESPONSE_PATTERNS: [ResponsePattern; 3] = [
+///
+/// Each endpoint is listed twice, bare and with a query string, because YouTube sends both: a
+/// pattern ending in `\?*` alone never matches `/youtubei/v1/player` with no query, and a pattern
+/// ending in `player*` would also pause every `/player/heartbeat` of a live stream.
+pub const RESPONSE_PATTERNS: [ResponsePattern; 9] = [
+    ResponsePattern {
+        url_pattern: "*://*.youtube.com/youtubei/v1/player",
+        resource_type: None,
+    },
     ResponsePattern {
         url_pattern: "*://*.youtube.com/youtubei/v1/player\\?*",
+        resource_type: None,
+    },
+    ResponsePattern {
+        url_pattern: "*://*.youtube.com/youtubei/v1/get_watch",
+        resource_type: None,
+    },
+    ResponsePattern {
+        url_pattern: "*://*.youtube.com/youtubei/v1/get_watch\\?*",
+        resource_type: None,
+    },
+    ResponsePattern {
+        url_pattern: "*://*.youtube-nocookie.com/youtubei/v1/player",
         resource_type: None,
     },
     ResponsePattern {
@@ -51,10 +79,46 @@ pub const RESPONSE_PATTERNS: [ResponsePattern; 3] = [
         resource_type: None,
     },
     ResponsePattern {
+        url_pattern: "*://*.youtube-nocookie.com/youtubei/v1/get_watch",
+        resource_type: None,
+    },
+    ResponsePattern {
+        url_pattern: "*://*.youtube-nocookie.com/youtubei/v1/get_watch\\?*",
+        resource_type: None,
+    },
+    ResponsePattern {
         url_pattern: "*://*.youtube.com/watch\\?*",
         resource_type: Some("Document"),
     },
 ];
+
+/// The cosmetic rules for YouTube pages: the ad cards YouTube puts in the home feed, search
+/// results, Shorts and the watch sidebar, the masthead and companion ads, and the in-player overlay
+/// ads. They arrive in ordinary `/browse`, `/search` and `/next` responses beside real videos, so
+/// no request rule can drop them, and the list grammar (`.class` / `#id` only) cannot name them.
+/// Each selector is its own rule, so one an engine cannot parse costs only itself.
+pub const CSS: &str = concat!(
+    "ytd-ad-slot-renderer{display:none!important}",
+    "ytd-rich-item-renderer:has(> #content > ytd-ad-slot-renderer){display:none!important}",
+    "ytd-in-feed-ad-layout-renderer{display:none!important}",
+    "ytd-display-ad-renderer{display:none!important}",
+    "ytd-promoted-sparkles-web-renderer{display:none!important}",
+    "ytd-promoted-sparkles-text-search-renderer{display:none!important}",
+    "ytd-promoted-video-renderer{display:none!important}",
+    "ytd-compact-promoted-video-renderer{display:none!important}",
+    "ytd-search-pyv-renderer{display:none!important}",
+    "ytd-companion-slot-renderer{display:none!important}",
+    "ytd-action-companion-ad-renderer{display:none!important}",
+    "ytd-player-legacy-desktop-watch-ads-renderer{display:none!important}",
+    "ytd-engagement-panel-section-list-renderer[target-id=engagement-panel-ads]{display:none!important}",
+    "#masthead-ad{display:none!important}",
+    "#player-ads{display:none!important}",
+    ".ytp-ad-overlay-container{display:none!important}",
+    ".ytd-shorts:has(> .ytd-reel-video-renderer > ytd-ad-slot-renderer){display:none!important}",
+    "ytm-promoted-sparkles-web-renderer{display:none!important}",
+    "ytm-companion-ad-renderer{display:none!important}",
+    "ad-slot-renderer{display:none!important}",
+);
 
 /// `youtube.com` / `youtube-nocookie.com` or one of their subdomains, by exact suffix.
 fn site_host<'a>(host: &str, sites: &[&'a str]) -> Option<&'a str> {
@@ -76,7 +140,7 @@ pub fn player_payload(url: &str) -> Option<PlayerPayload> {
     let (host, path) = super::split_url(url)?;
     let site = site_host(&host, &["youtube.com", "youtube-nocookie.com"])?;
     match path.split('?').next().unwrap_or(path) {
-        "/youtubei/v1/player" => Some(PlayerPayload::Json),
+        "/youtubei/v1/player" | "/youtubei/v1/get_watch" => Some(PlayerPayload::Json),
         "/watch" if site == "youtube.com" => Some(PlayerPayload::WatchPage),
         _ => None,
     }
@@ -142,23 +206,80 @@ fn is_ad_key(key: &str) -> bool {
     PLAYER_AD_KEYS.contains(&key)
 }
 
-/// The object whose `{` is at `start` with its top-level ad members left out, and the index just
-/// past the original object. `None` when it has no ad member or cannot be read.
-fn without_ad_members(text: &str, start: usize) -> Option<(String, usize)> {
+/// The member of a `get_watch` response object (and of each element of one that is an array)
+/// that holds the player response.
+const NESTED_PLAYER_RESPONSE: &str = "playerResponse";
+
+/// The object whose `{` is at `start` with its top-level ad members left out, and, when `nested`
+/// is set, with the ad members of its `playerResponse` member object left out too; and the index
+/// just past the original object. `None` when there was nothing to leave out or it cannot be read.
+fn without_ad_members(text: &str, start: usize, nested: bool) -> Option<(String, usize)> {
     let (members, end) = json::object_members(text, start)?;
-    if !members.iter().any(|member| is_ad_key(member.key)) {
-        return None;
-    }
     let mut object = String::with_capacity(end - start);
+    let mut changed = false;
     object.push('{');
-    for member in members.iter().filter(|member| !is_ad_key(member.key)) {
+    for member in &members {
+        if is_ad_key(member.key) {
+            changed = true;
+            continue;
+        }
+        let value_start = member.span.end - member.value.len();
+        let inner = (nested && member.key == NESTED_PLAYER_RESPONSE)
+            .then(|| without_ad_members(text, value_start, false))
+            .flatten();
         if object.len() > 1 {
             object.push(',');
         }
-        object.push_str(&text[member.span.clone()]);
+        match inner {
+            Some((stripped, _)) => {
+                changed = true;
+                object.push_str(&text[member.span.start..value_start]);
+                object.push_str(&stripped);
+            }
+            None => object.push_str(&text[member.span.clone()]),
+        }
     }
     object.push('}');
-    Some((object, end))
+    changed.then_some((object, end))
+}
+
+/// A JSON response body that is one object, or one array of values, with the player response's
+/// ad members left out wherever [`without_ad_members`] finds them: the body itself
+/// (`/youtubei/v1/player`), its `playerResponse` member, or the same in each element of an array
+/// (`/youtubei/v1/get_watch`). `None` when nothing changed or the body cannot be read.
+fn strip_json_body(body: &str) -> Option<String> {
+    let body = body.trim_matches([' ', '\t', '\n', '\r']);
+    match body.as_bytes().first()? {
+        b'{' => {
+            let (object, end) = without_ad_members(body, 0, true)?;
+            (end == body.len()).then_some(object)
+        }
+        b'[' => {
+            let elements = json::array_elements(body)?;
+            let mut changed = false;
+            let mut array = String::with_capacity(body.len());
+            array.push('[');
+            for (index, element) in elements.iter().enumerate() {
+                if index > 0 {
+                    array.push(',');
+                }
+                let stripped = element
+                    .starts_with('{')
+                    .then(|| without_ad_members(element, 0, true))
+                    .flatten();
+                match stripped {
+                    Some((object, _)) => {
+                        changed = true;
+                        array.push_str(&object);
+                    }
+                    None => array.push_str(element),
+                }
+            }
+            array.push(']');
+            changed.then_some(array)
+        }
+        _ => None,
+    }
 }
 
 const INLINE_PLAYER_RESPONSE: &str = "ytInitialPlayerResponse";
@@ -181,7 +302,7 @@ fn strip_watch_page(html: &str) -> Option<String> {
             continue;
         }
         let open = json::skip_ws(bytes, equals + 1);
-        let Some((object, end)) = without_ad_members(html, open) else {
+        let Some((object, end)) = without_ad_members(html, open, false) else {
             continue;
         };
         out.push_str(&html[copied..open]);
@@ -200,11 +321,7 @@ fn strip_watch_page(html: &str) -> Option<String> {
 /// is: no ad member was present, or the body is not a player response this can read.
 pub fn strip_player_ads(body: &str, payload: PlayerPayload) -> Option<String> {
     match payload {
-        PlayerPayload::Json => {
-            let start = json::skip_ws(body.as_bytes(), 0);
-            let (object, end) = without_ad_members(body, start)?;
-            body[end..].trim().is_empty().then_some(object)
-        }
+        PlayerPayload::Json => strip_json_body(body),
         PlayerPayload::WatchPage => strip_watch_page(body),
     }
 }
@@ -247,7 +364,10 @@ mod tests {
             ")]}'\n{\"adPlacements\":[]}",
             "{\"adPlacements\":[}",
             "{\"adPlacements\":[]} {}",
-            "[{\"adPlacements\":[]}]",
+            "[{\"adPlacements\":[]}] []",
+            "[{\"adPlacements\":[]},]",
+            "[{\"x\":1},{\"playerResponse\":{\"playabilityStatus\":{}}}]",
+            "\"adPlacements\"",
         ] {
             assert_eq!(
                 strip_player_ads(body, PlayerPayload::Json),
@@ -314,6 +434,10 @@ mod tests {
             ),
             (
                 "https://music.youtube.com/youtubei/v1/player",
+                PlayerPayload::Json,
+            ),
+            (
+                "https://www.youtube.com/youtubei/v1/get_watch?prettyPrint=false",
                 PlayerPayload::Json,
             ),
             (
@@ -423,7 +547,132 @@ mod tests {
     #[test]
     fn response_patterns_escape_the_query_mark() {
         for pattern in &RESPONSE_PATTERNS {
-            assert!(pattern.url_pattern.contains("\\?*"), "{pattern:?}");
+            let bytes = pattern.url_pattern.as_bytes();
+            for (index, byte) in bytes.iter().enumerate() {
+                if *byte == b'?' {
+                    assert_eq!(index.checked_sub(1).map(|i| bytes[i]), Some(b'\\'), "{pattern:?}");
+                }
+            }
+        }
+    }
+
+    /// DevTools `Fetch.RequestPattern.urlPattern` matching: `*` is any run, `?` any one
+    /// character, and a backslash makes the next character literal.
+    fn devtools_pattern_matches(pattern: &[u8], url: &[u8]) -> bool {
+        match pattern.split_first() {
+            None => url.is_empty(),
+            Some((b'*', rest)) => (0..=url.len()).any(|skip| devtools_pattern_matches(rest, &url[skip..])),
+            Some((b'?', rest)) => !url.is_empty() && devtools_pattern_matches(rest, &url[1..]),
+            Some((b'\\', rest)) if !rest.is_empty() => {
+                url.first() == Some(&rest[0]) && devtools_pattern_matches(&rest[1..], &url[1..])
+            }
+            Some((byte, rest)) => url.first() == Some(byte) && devtools_pattern_matches(rest, &url[1..]),
+        }
+    }
+
+    fn paused(url: &str, resource_type: &str) -> bool {
+        RESPONSE_PATTERNS.iter().any(|pattern| {
+            pattern.resource_type.is_none_or(|kind| kind == resource_type)
+                && devtools_pattern_matches(pattern.url_pattern.as_bytes(), url.as_bytes())
+        })
+    }
+
+    #[test]
+    fn every_player_response_the_rewrite_accepts_is_actually_paused() {
+        // The XHR/fetch player responses, as the desktop, mobile, music and embedded players send
+        // them: with a query string and without one. A pattern that missed any of these let that
+        // response through with its full ad schedule.
+        for url in [
+            "https://www.youtube.com/youtubei/v1/player?prettyPrint=false",
+            "https://www.youtube.com/youtubei/v1/player",
+            "https://m.youtube.com/youtubei/v1/player?key=x",
+            "https://music.youtube.com/youtubei/v1/player",
+            "https://www.youtube.com/youtubei/v1/get_watch?prettyPrint=false",
+            "https://www.youtube.com/youtubei/v1/get_watch",
+            "https://m.youtube.com/youtubei/v1/get_watch?prettyPrint=false",
+            "https://www.youtube-nocookie.com/youtubei/v1/player?prettyPrint=false",
+            "https://www.youtube-nocookie.com/youtubei/v1/player",
+        ] {
+            assert_eq!(player_payload(url), Some(PlayerPayload::Json), "{url}");
+            assert!(paused(url, "Fetch"), "{url} is never paused");
+            assert!(paused(url, "XHR"), "{url} is never paused");
+        }
+        for url in [
+            "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+            "https://m.youtube.com/watch?v=dQw4w9WgXcQ&list=PL1",
+        ] {
+            assert_eq!(player_payload(url), Some(PlayerPayload::WatchPage), "{url}");
+            assert!(paused(url, "Document"), "{url} is never paused");
+            assert!(!paused(url, "Fetch"), "{url} only pauses as a document");
+        }
+        // Live-stream heartbeats, the next/browse feeds and the video bytes never wait.
+        for url in [
+            "https://www.youtube.com/youtubei/v1/player/heartbeat?alt=json",
+            "https://www.youtube.com/youtubei/v1/player/ad_break",
+            "https://www.youtube.com/youtubei/v1/next?prettyPrint=false",
+            "https://www.youtube.com/youtubei/v1/browse?prettyPrint=false",
+            "https://www.youtube.com/youtubei/v1/get_watch_later",
+            "https://rr1---sn-x.googlevideo.com/videoplayback?itag=137",
+            "https://news.example/youtubei/v1/player?x",
+        ] {
+            assert!(!paused(url, "Fetch"), "{url}");
+        }
+    }
+
+    #[test]
+    fn get_watch_loses_the_ad_schedule_of_its_player_response() {
+        let player = player_response();
+        let stripped_player = strip_player_ads(&player, PlayerPayload::Json).unwrap();
+        let next = r#"{"responseContext":{},"contents":{"twoColumnWatchNextResults":{"adSlots":"next, left alone"}}}"#;
+        // The array shape: one element per response, the player response nested.
+        let array = format!("[{{\"playerResponse\":{player}}},\n {{\"response\":{next}}}]\n");
+        assert_eq!(
+            strip_player_ads(&array, PlayerPayload::Json),
+            Some(format!("[{{\"playerResponse\":{stripped_player}}},{{\"response\":{next}}}]"))
+        );
+        // The object shape, with ad members of its own as well.
+        let object = format!("{{\"adSlots\":[],\"playerResponse\" : {player},\"response\":{next}}}");
+        assert_eq!(
+            strip_player_ads(&object, PlayerPayload::Json),
+            Some(format!("{{\"playerResponse\" : {stripped_player},\"response\":{next}}}"))
+        );
+        // A plain player response is unchanged by the nested handling.
+        assert_eq!(
+            strip_player_ads(&player, PlayerPayload::Json),
+            Some(stripped_player.clone())
+        );
+        // Only one level: a playerResponse inside the player response is not the schedule.
+        let deeper = r#"{"x":{"playerResponse":{"adSlots":[]}}}"#;
+        assert_eq!(strip_player_ads(deeper, PlayerPayload::Json), None);
+        // Nothing to strip anywhere, or a non-object playerResponse: left alone.
+        let clean = format!(r#"[{{"playerResponse":{{"playabilityStatus":{{"status":"OK"}},{STREAMING}}}}},{{"response":{next}}}]"#);
+        assert_eq!(strip_player_ads(&clean, PlayerPayload::Json), None);
+        assert_eq!(strip_player_ads(r#"{"playerResponse":null}"#, PlayerPayload::Json), None);
+        // The result is still one well-formed array of the same length.
+        let stripped = strip_player_ads(&array, PlayerPayload::Json).unwrap();
+        let elements = json::array_elements(&stripped).expect("still one JSON array");
+        assert_eq!(elements.len(), 2);
+        let first = json::whole_object(elements[0]).unwrap();
+        let inner = json::whole_object(json::field(&first, "playerResponse").unwrap()).unwrap();
+        for key in PLAYER_AD_KEYS {
+            assert_eq!(json::field(&inner, key), None, "{key}");
+        }
+        assert!(stripped.contains(STREAMING));
+    }
+
+    #[test]
+    fn the_cosmetic_rules_are_one_rule_per_selector() {
+        let rules: Vec<&str> = CSS.split_inclusive('}').collect();
+        assert!(rules.len() > 10);
+        for rule in &rules {
+            let (selector, body) = rule.split_once('{').expect("a rule");
+            assert_eq!(body, "display:none!important}", "{rule}");
+            assert!(!selector.is_empty() && !selector.contains(',') && !selector.contains('{'), "{rule}");
+            assert!(!selector.contains(['"', '\'', '\\', '<']), "{rule}");
+            assert_eq!(selector.matches('(').count(), selector.matches(')').count(), "{rule}");
+        }
+        for needed in ["ytd-ad-slot-renderer{", "#masthead-ad{", "#player-ads{", "ytd-in-feed-ad-layout-renderer{"] {
+            assert!(CSS.contains(needed), "{needed}");
         }
     }
 }
