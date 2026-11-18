@@ -308,12 +308,18 @@
   .strip .tab:not(.active) .marker { display: none; }
 }
 
-/* ---- Pinned: a 32px icon tile at the start of the strip ---- */
-.strip .tab.pinned {
+/* ---- Pinned: a 32px icon tile at the start of the strip ----
+   Selecting a pinned tab never makes it bigger: the tile keeps its size, and its selection (and hover
+   wash) is the same inset pill a selected tab gets inside an open group, the group box's padding
+   (2px) in from the row's height with the matching corner radius. */
+.strip .tab.pinned,
+.strip .tab.pinned.active {
   flex: 0 0 32px;
   min-width: 0;
   padding: 0;
   justify-content: center;
+  height: calc(var(--bw-tab-h) - 2 * 2px);
+  border-radius: 4px; /* a group box's --gr (6px) less its --gp (2px) */
 }
 
 .strip .tab.pinned .title,

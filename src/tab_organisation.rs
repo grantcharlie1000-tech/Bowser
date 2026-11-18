@@ -113,6 +113,21 @@ pub fn drop_membership(
     }
 }
 
+/// Group keys on either side of a drop slot, in strip order. `order` is the strip as it was drawn
+/// before the drop ([`crate::tab_groups::strip_order`]) without the dragged tab; `before` is the tab
+/// the dragged one lands in front of, `None` for the end of the strip (or a tab no longer there).
+pub fn strip_neighbours(
+    order: &[(TabId, Option<TabGroupKey>)],
+    before: Option<TabId>,
+) -> (Option<&TabGroupKey>, Option<&TabGroupKey>) {
+    let slot = before
+        .and_then(|before| order.iter().position(|(id, _)| *id == before))
+        .unwrap_or(order.len());
+    let left = slot.checked_sub(1).and_then(|left| order.get(left)).and_then(|(_, key)| key.as_ref());
+    let right = order.get(slot).and_then(|(_, key)| key.as_ref());
+    (left, right)
+}
+
 /// Domains of tabs whose navigation is in flight. While one is, the tab keeps the domain it had
 /// before the navigation began, so redirects and loading never regroup it. The committed domain
 /// applies once the navigation finishes.
@@ -265,6 +280,32 @@ mod tests {
 
     fn domain_key(domain: &str) -> TabGroupKey {
         TabGroupKey::Domain(key(domain))
+    }
+
+    #[test]
+    fn a_drop_reads_its_neighbours_in_strip_order_not_model_order() {
+        // Model: x1, n1, x2, n2. The strip draws the x.com group as one run: x1 x2 n1 n2.
+        let tabs = [
+            input(1, Some("x.com"), None, false),
+            input(2, None, None, false),
+            input(3, Some("x.com"), None, false),
+            input(4, None, None, false),
+        ];
+        let keys = crate::tab_groups::group_keys(&tabs, &GroupPreferences::default());
+        let order = crate::tab_groups::strip_order(&tabs, &keys);
+        assert_eq!(order.iter().map(|(id, _)| id.0).collect::<Vec<_>>(), [1, 3, 2, 4]);
+        // n2 dragged between x1 and x2 on screen (in front of x2): both sides are the group, so it joins.
+        let others: Vec<_> = order.into_iter().filter(|(id, _)| *id != TabId(4)).collect();
+        let (left, right) = strip_neighbours(&others, Some(TabId(3)));
+        assert_eq!((left, right), (Some(&domain_key("x.com")), Some(&domain_key("x.com"))));
+        assert_eq!(drop_membership(None, left, right), Some(Membership::Joined(key("x.com"))));
+        // In front of n1 (after the group's last member): only one side is the group, so no join.
+        let (left, right) = strip_neighbours(&others, Some(TabId(2)));
+        assert_eq!((left, right), (Some(&domain_key("x.com")), None));
+        assert_eq!(drop_membership(None, left, right), None);
+        // The end of the strip, and a tab that is gone, read as the end.
+        assert_eq!(strip_neighbours(&others, None), (None, None));
+        assert_eq!(strip_neighbours(&others, Some(TabId(99))), (None, None));
     }
 
     fn placed(entries: &[(u32, Membership)]) -> HashMap<TabId, Membership> {

@@ -2552,23 +2552,37 @@ impl App {
     /// Moves a dragged tab to model index `to_index`, then places it: a tab dropped between two
     /// members of a domain group joins that group, and a grouped tab dropped elsewhere leaves it.
     /// Returns whether the tab moved.
+    ///
+    /// The neighbours are read in the order the strip showed before the drop, not model order: the
+    /// strip draws a group as one run at its first member's place, so between two members on screen
+    /// the model can hold unrelated tabs, and a drop there must still join the group.
     pub fn drop_tab(app: &AppRef, id: TabId, to_index: usize) -> bool {
-        let current = app.borrow().group_key_of(id);
+        let (current, order, before) = {
+            let state = app.borrow();
+            let inputs = state.group_inputs();
+            let keys = tab_groups::group_keys(&inputs, &state.group_preferences);
+            let current = inputs
+                .iter()
+                .position(|input| input.id == id)
+                .and_then(|index| keys.get(index).cloned().flatten());
+            let order: Vec<_> = tab_groups::strip_order(&inputs, &keys)
+                .into_iter()
+                .filter(|(tab, _)| *tab != id)
+                .collect();
+            // `to_index` is the tab's index once moved, so the tab it lands in front of is the one at
+            // that index among the others (`chrome_host::drop_index`).
+            let before = inputs
+                .iter()
+                .map(|input| input.id)
+                .filter(|tab| *tab != id)
+                .nth(to_index);
+            (current, order, before)
+        };
         if !Self::move_tab(app, id, to_index) {
             return false;
         }
         let placement = {
-            let state = app.borrow();
-            let inputs = state.group_inputs();
-            let Some(index) = inputs.iter().position(|input| input.id == id) else {
-                return true;
-            };
-            let keys = tab_groups::group_keys(&inputs, &state.group_preferences);
-            let left = index
-                .checked_sub(1)
-                .and_then(|left| keys.get(left))
-                .and_then(Option::as_ref);
-            let right = keys.get(index + 1).and_then(Option::as_ref);
+            let (left, right) = tab_organisation::strip_neighbours(&order, before);
             tab_organisation::drop_membership(current.as_ref(), left, right)
         };
         if let Some(placement) = placement {
@@ -10415,6 +10429,25 @@ mod tests {
         );
         // The first and third tabs still share a site, so their own group is untouched.
         assert!(App::tab_is_grouped(&app, first));
+    }
+
+    #[test]
+    fn dropping_between_two_group_members_on_screen_joins_even_when_the_model_holds_others_between() {
+        let app = app_with_pending(rect(800, 600));
+        let x1 = App::active_tab_id(&app);
+        let n1 = App::new_tab(&app);
+        let x2 = App::new_tab(&app);
+        let n2 = App::new_tab(&app);
+        // Model: x1, n1, x2, n2. The strip shows [x1 x2] n1 n2: the x.com group is one run.
+        set_addresses(&app, &[(x1, "https://x.com/home"), (n1, "https://one.example.net/"), (x2, "https://x.com/search?q=a"), (n2, "https://two.example.org/")]);
+        assert!(App::tab_is_grouped(&app, x1) && App::tab_is_grouped(&app, x2));
+        assert!(!App::tab_is_grouped(&app, n2));
+        // The page drops n2 in front of x2, between the two members it sees.
+        let index = crate::chrome_host::drop_index(&App::tab_ids(&app), n2, x2.0 + 1).expect("a move");
+        assert!(App::drop_tab(&app, n2, index));
+        assert!(App::tab_is_grouped(&app, n2), "the tab joins the group it was dropped into");
+        assert_eq!(tab_domain(&app, n2).as_deref(), Some("x.com"));
+        assert!(!App::tab_is_grouped(&app, n1));
     }
 
     #[test]

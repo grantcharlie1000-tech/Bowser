@@ -701,6 +701,28 @@ pub fn group_members(keys: &[Option<TabGroupKey>], key: &TabGroupKey) -> Vec<usi
         .collect()
 }
 
+/// The tabs in the order the strip draws them, each with its group key: a group's members as one
+/// run at its first member's place, as [`project_strip`] lays an open group out. `keys` is
+/// [`group_keys`] of `tabs`. This is the order a drop slot is seen in, which can differ from the model
+/// order when a group's members are not next to each other in the model.
+pub fn strip_order(tabs: &[TabGroupInput], keys: &[Option<TabGroupKey>]) -> Vec<(TabId, Option<TabGroupKey>)> {
+    let mut emitted = std::collections::BTreeSet::new();
+    let mut order = Vec::with_capacity(tabs.len());
+    for (index, tab) in tabs.iter().enumerate() {
+        match keys.get(index).and_then(Option::as_ref) {
+            None => order.push((tab.id, None)),
+            Some(key) => {
+                if emitted.insert(key.clone()) {
+                    for member in group_members(keys, key) {
+                        order.push((tabs[member].id, Some(key.clone())));
+                    }
+                }
+            }
+        }
+    }
+    order
+}
+
 /// Domains of the unpinned tabs in `tabs`. A pinned tab never joins a group, so a domain held only by
 /// pinned tabs is not live for [`GroupPreferences::release_unused_always`].
 pub fn live_domains(tabs: &[TabGroupInput]) -> std::collections::BTreeSet<DomainKey> {
