@@ -38,7 +38,7 @@ pub enum Slot {
     Empty,
     /// Byte-for-byte this build.
     Same,
-    /// Another build. `None` when it carries no readable version (builds before 0.0.36 have none).
+    /// Another build. `None` when it carries no readable version (older builds have none).
     Other(Option<Version>),
 }
 
