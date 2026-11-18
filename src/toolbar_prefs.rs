@@ -116,6 +116,17 @@ pub fn command_of(item: &str) -> Option<&str> {
     }
 }
 
+/// The icon a command's button shows, when Rust is the one to name it (sent as `g` with the button and in the
+/// toolbar customiser's command list). The page holds the glyph of every other command by id
+/// (`ui/src/bars-logic.ts` `COMMAND_ICONS`); the chrome sources may not spell out the secrets store
+/// (`chrome_host::guard`), so its command's icon comes from here.
+pub fn command_glyph(command: &str) -> Option<&'static str> {
+    match command {
+        "passwords" => Some("key"),
+        _ => None,
+    }
+}
+
 /// Parses a bar's list: each item one of the bar's fixed ids or a command button, no repeats, at most
 /// [`MAX_ITEMS`] items and [`MAX_COMMAND_ITEMS`] command buttons, and (for the address bar) at most
 /// [`MAX_RIGHT_STATIC`] buttons that share the end of the bar with the menu. `None` for anything else.
@@ -201,6 +212,31 @@ pub fn address_has(settings: &Settings, id: &str) -> bool {
 /// gap each, the same as the Downloads and Extensions slots.
 pub fn right_static_px(settings: &Settings) -> i32 {
     right_static(&settings.toolbar_buttons) as i32 * crate::chrome_host::EXT_BUTTON_SLOT
+}
+
+/// CSS px of the navigation room (back, forward, reload) that the address bar's list leaves empty, which the
+/// address field takes instead (`chrome_host::toolbar_css_placement_with_room`). The layout always keeps room
+/// for all three: back and forward in one capsule, a gap, then reload. A list without some of them frees
+/// their width (and a gap per group gone); a list without any frees the whole block and the gap after it, so
+/// the field starts at the toolbar's edge. Negative when the buttons need more than the layout keeps (three
+/// separate groups): the field gives that room up instead of sitting under them.
+pub fn left_free_px(list: &[String]) -> i32 {
+    use crate::chrome::layout::Metrics;
+    let reserved = 3 * Metrics::NAV_BUTTON_SIZE + Metrics::NAV_BUTTON_GAP;
+    let left: Vec<&str> = list.iter().map(String::as_str).filter(|id| zone_of(id) == Zone::Left).collect();
+    if left.is_empty() {
+        return reserved + Metrics::ISLAND_GAP;
+    }
+    // Back and forward next to each other share one capsule: one group, no gap between them.
+    let mut groups = 0;
+    let mut at = 0;
+    while at < left.len() {
+        let paired = matches!((left[at], left.get(at + 1).copied()), ("back", Some("forward")) | ("forward", Some("back")));
+        at += if paired { 2 } else { 1 };
+        groups += 1;
+    }
+    let used = left.len() as i32 * Metrics::NAV_BUTTON_SIZE + (groups - 1) * Metrics::NAV_BUTTON_GAP;
+    reserved - used
 }
 
 /// Applies one `key=value` change of the Toolbars and Feeds options (the settings page's `baropt`
@@ -315,6 +351,32 @@ mod tests {
             assert_eq!(zone_of(id), Zone::Right);
         }
         assert_eq!(right_static(&list("back,bookmark,downloads,extensions,cmd:new-tab,newtab")), 3);
+    }
+
+    #[test]
+    fn rust_names_the_icon_of_the_command_the_chrome_cannot_name_and_every_name_is_a_real_icon() {
+        assert_eq!(command_glyph("passwords"), Some("key"));
+        assert_eq!(command_glyph("new-tab"), None, "the page has the others");
+        let family = include_str!("../ui/src/icons.gen.ts");
+        for command in crate::commands::registry::BUILTINS.iter().map(|def| def.id) {
+            if let Some(glyph) = command_glyph(command) {
+                assert!(crate::chrome_host::protocol::glyph_ok(glyph), "{command}: {glyph}");
+                assert!(family.contains(&format!("\"{glyph}\"")), "{command}: {glyph} is not in the icon family");
+            }
+        }
+    }
+
+    #[test]
+    fn the_address_field_takes_the_room_of_the_navigation_buttons_that_are_off_the_bar() {
+        // Back + forward capsule (56), a 3 px gap, reload (28): 87 px kept in the layout.
+        assert_eq!(left_free_px(&list("back,forward,reload,site-info")), 0, "the default frees nothing");
+        assert_eq!(left_free_px(&list("forward,back,reload")), 0, "the capsule works in either order");
+        assert_eq!(left_free_px(&list("back,forward,site-info")), 31, "reload and its gap");
+        assert_eq!(left_free_px(&list("reload")), 59, "the capsule and its gap");
+        assert_eq!(left_free_px(&list("back,reload")), 28, "forward only");
+        assert_eq!(left_free_px(&list("back,reload,forward")), -3, "three groups need two gaps, 3 px more than the layout keeps: the field gives them up");
+        assert_eq!(left_free_px(&list("site-info,bookmark")), 90, "none of them: the block and the gap after it");
+        assert_eq!(left_free_px(&[]), 90);
     }
 
     #[test]

@@ -1,6 +1,6 @@
 // Builds the toolbar DOM and applies state/theme messages to it.
 import { MAX_TEXT, THEME_TOKENS, sendTool, type DlButtonMsg, type ExtButtonMsg, type ReaderPill, type Security, type StateMsg, type Theme, type ThemeToken, type ToolButtonMsg, type TranslatePill } from './protocol';
-import { DEFAULT_ADDRESS, itemsOf, zoneOf } from './bars-logic'; // --- toolbars and feeds (thread T13) ---
+import { DEFAULT_ADDRESS, itemIcon, itemsOf, zoneOf } from './bars-logic'; // --- toolbars and feeds (thread T13) ---
 import { el, icon, type IconName } from './dom';
 import { setTip } from './tooltip';
 import { isZoomed, zoomChipLabel, zoomChipTip, zoomText } from './zoom-logic';
@@ -150,8 +150,8 @@ export function splitUrl(text: string, keepHttps = false): UrlParts | null {
 }
 
 export function buildView(root: HTMLElement): View {
-  const back = iconButton('Back', 'back', 'tb-nav is-lg is-round', 'Back (Alt+Left)');
-  const forward = iconButton('Forward', 'forward', 'tb-nav is-lg is-round', 'Forward (Alt+Right)');
+  const back = iconButton('Back', 'back', 'tb-nav tb-back is-lg is-round', 'Back (Alt+Left)');
+  const forward = iconButton('Forward', 'forward', 'tb-nav tb-forward is-lg is-round', 'Forward (Alt+Right)');
   const reload = iconButton('Reload', 'reload', 'tb-nav is-lg is-round', 'Reload (Ctrl+R)');
   const site = iconButton('Site information', 'info', 'tb-site bw-focus-inset is-round');
   const split = iconButton('Split view', 'split', 'tb-split bw-focus-inset is-round');
@@ -265,7 +265,7 @@ export function buildView(root: HTMLElement): View {
 // button is always the last one. Nothing here moves the field: Rust reserves the room (`extra`).
 
 function toolButton(tool: ToolButtonMsg): HTMLButtonElement {
-  const button = iconButton(tool.l, 'command', 'tb-nav is-lg is-round tb-extra tb-tool');
+  const button = iconButton(tool.l, itemIcon(tool.k, tool.g) as IconName, 'tb-nav is-lg is-round tb-extra tb-tool');
   button.addEventListener('click', () => { sendTool('address', tool.k, tool.i); });
   return button;
 }
@@ -275,7 +275,7 @@ export function applyBar(view: View, state: Pick<StateMsg, 'items' | 'tools' | '
   const root = document.getElementById('app');
   const items = state.items === undefined ? DEFAULT_ADDRESS : itemsOf(state.items);
   const tools = state.tools ?? [];
-  const sig = `${items.join(',')}|${tools.map((tool) => `${tool.k}:${tool.i}:${tool.l}`).join(';')}`;
+  const sig = `${items.join(',')}|${tools.map((tool) => `${tool.k}:${tool.i}:${tool.l}:${tool.g ?? ''}`).join(';')}`;
   const bar = view.bar;
   if (sig !== bar.sig) {
     bar.sig = sig;

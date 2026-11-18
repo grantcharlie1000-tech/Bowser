@@ -9,9 +9,9 @@ use windows::{
         UI::{
             HiDpi::GetDpiForWindow,
             WindowsAndMessaging::{
-                CreateWindowExW, DefWindowProcW, DestroyWindow, GetClientRect, IDC_ARROW, IsWindow, LoadCursorW,
+                CreateWindowExW, DefWindowProcW, DestroyWindow, GetClientRect, GetParent, IDC_ARROW, IsWindow, LoadCursorW,
                 RegisterClassW, SW_SHOW, SetForegroundWindow, ShowWindow, WM_CLOSE, WM_ERASEBKGND, WM_NCDESTROY,
-                WM_SIZE, WNDCLASSW, WS_CLIPCHILDREN, WS_POPUP,
+                WM_SIZE, WM_TIMER, WNDCLASSW, WS_CHILD, WS_CLIPCHILDREN, WS_POPUP,
             },
         },
     },
@@ -25,11 +25,11 @@ use crate::{
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Kind { Notes, Privacy, Rename, Sessions, Feeds }
+pub(crate) enum Kind { Notes, Privacy, Rename, Sessions, Feeds, Toolbar }
 impl Kind {
-    fn view(self) -> View { match self { Self::Notes => View::DialogNotes, Self::Privacy => View::DialogPrivacy, Self::Rename => View::DialogRename, Self::Sessions => View::DialogSessions, Self::Feeds => View::DialogFeeds } }
-    fn token(self) -> &'static str { match self { Self::Notes => "notes", Self::Privacy => "privacy", Self::Rename => "rename", Self::Sessions => "sessions", Self::Feeds => "feeds" } }
-    fn title(self) -> &'static str { match self { Self::Notes => "Notes and Tasks", Self::Privacy => "Privacy dashboard", Self::Rename => "Name prompt", Self::Sessions => "Sessions", Self::Feeds => "Feeds" } }
+    fn view(self) -> View { match self { Self::Notes => View::DialogNotes, Self::Privacy => View::DialogPrivacy, Self::Rename => View::DialogRename, Self::Sessions => View::DialogSessions, Self::Feeds => View::DialogFeeds, Self::Toolbar => View::DialogToolbar } }
+    fn token(self) -> &'static str { match self { Self::Notes => "notes", Self::Privacy => "privacy", Self::Rename => "rename", Self::Sessions => "sessions", Self::Feeds => "feeds", Self::Toolbar => "toolbar" } }
+    fn title(self) -> &'static str { match self { Self::Notes => "Notes and Tasks", Self::Privacy => "Privacy dashboard", Self::Rename => "Name prompt", Self::Sessions => "Sessions", Self::Feeds => "Feeds", Self::Toolbar => "Toolbar" } }
 }
 
 struct Runtime { app: AppRef, owner: HWND, parent: HWND, kind: Kind, host: Option<ChromeHost>, ready: bool, closed: bool }
@@ -115,12 +115,16 @@ unsafe extern "system" fn dialog_proc(hwnd: HWND, message: u32, wparam: WPARAM, 
             WM_SIZE => { resize(hwnd); LRESULT(0) }
             // A feed worker left an answer (thread T13).
             m if m == super::feeds_panel::WM_FEEDS_DONE => { feeds_done(hwnd); LRESULT(0) }
+            // --- toolbars and feeds (thread T13) --- the docked toolbar customiser's child window.
+            m if m == super::toolbar_panel::WM_TOOLBAR_RETIRED => { if let Ok(owner) = GetParent(hwnd).and_then(|host| GetParent(host)) { super::toolbar_panel::retired(hwnd, owner); } LRESULT(0) }
+            WM_TIMER if wparam.0 == super::toolbar_panel::HIDE_TIMER => { if let Ok(owner) = GetParent(hwnd).and_then(|host| GetParent(host)) { super::toolbar_panel::hide_timer(hwnd, owner); } LRESULT(0) }
             WM_CLOSE => { let _ = DestroyWindow(hwnd); LRESULT(0) }
             WM_NCDESTROY => {
                 close(hwnd);
                 PRIVACY.with(|slot| if slot.get() == hwnd.0 as isize { slot.set(0); });
                 SESSIONS.with(|slot| if slot.get() == hwnd.0 as isize { slot.set(0); });
                 FEEDS.with(|slot| if slot.get() == hwnd.0 as isize { slot.set(0); super::feeds_panel::detached(hwnd); });
+                super::toolbar_panel::forget(hwnd);
                 DefWindowProcW(hwnd, message, wparam, lparam)
             }
             _ => DefWindowProcW(hwnd, message, wparam, lparam),
@@ -148,6 +152,30 @@ fn create_window(owner: HWND, title: &str, width_dip: i32, height_dip: i32) -> O
         let round: i32 = 2;
         let _ = DwmSetWindowAttribute(hwnd, 33, (&round as *const i32).cast(), 4);
         Some(hwnd)
+    }
+}
+
+/// A child window of the side panel host `parent` for a docked HTML page (the toolbar customiser). Same class
+/// as the dialogs, so it fills its background, resizes its page and releases it on destruction like they do.
+pub(crate) fn create_child(parent: HWND) -> Option<HWND> {
+    unsafe {
+        let instance = HINSTANCE(GetModuleHandleW(None).ok()?.0);
+        if !CLASS_READY.with(Cell::get) {
+            let class = WNDCLASSW { lpfnWndProc: Some(dialog_proc), hInstance: instance, hCursor: LoadCursorW(None, IDC_ARROW).ok()?, lpszClassName: DIALOG_CLASS, ..Default::default() };
+            if RegisterClassW(&class) == 0 { return None; }
+            CLASS_READY.with(|ready| ready.set(true));
+        }
+        CreateWindowExW(Default::default(), DIALOG_CLASS, w!(""), WS_CHILD | WS_CLIPCHILDREN, 0, 0, 1, 1, Some(parent), None, Some(instance), None).ok()
+    }
+}
+
+/// Sends the dialog page in `window` a fresh snapshot.
+pub(crate) fn refresh(window: HWND) { send_to(window); }
+
+/// Gives the keyboard to the dialog page in `window`.
+pub(crate) fn focus(window: HWND) {
+    if let Some(host) = RUNTIMES.with(|map| map.borrow().get(&(window.0 as isize)).cloned()).and_then(|runtime| runtime.try_borrow().ok().and_then(|state| state.host.clone())) {
+        let _ = host.focus();
     }
 }
 
@@ -192,6 +220,10 @@ pub(crate) fn attach(app: &AppRef, owner: HWND, parent: HWND, env: ChromeEnv, ki
             if let Ok(mut runtime) = state.try_borrow_mut() {
                 if runtime.closed { host.close(); return; }
                 runtime.host = Some(host.clone());
+                // The window may have been resized while the controller was being created (the docked
+                // customiser's child starts at 1x1 and is sized by the side panel straight away): a resize
+                // then found no host, so the bounds are applied again now.
+                let _ = host.set_bounds(bounds_of(runtime.kind, runtime.parent));
                 let _ = host.set_visible(true);
                 let _ = host.focus();
             } else { host.close(); }
@@ -349,6 +381,13 @@ fn handle(runtime: &Rc<RefCell<Runtime>>, command: Command) {
         }
         Command::Panel { kind: PanelType::Rename, f } if runtime.borrow().kind == Kind::Rename => handle_rename(runtime, f),
         // --- end popup surfaces ---
+        // --- toolbars and feeds (thread T13) --- the docked customiser is a side panel, not a window of its own:
+        // its close button and Esc close the panel (the child window stays for the next open).
+        Command::Panel { kind: PanelType::Panel, f } if empty_fields(&f, false) && f.a == "dismiss" && runtime.borrow().kind == Kind::Toolbar => {
+            let owner = runtime.borrow().owner;
+            super::side_panel::close_content(owner, super::side_panel::PanelId::Toolbar);
+        }
+        Command::Panel { kind: PanelType::Toolbar, f } if runtime.borrow().kind == Kind::Toolbar => handle_toolbar(runtime, f),
         Command::Panel { kind: PanelType::Panel, f } if empty_fields(&f, false) && f.a == "dismiss" => {
             // Every HTML dialog owns its window, so the close button and Esc destroy it; the
             // window's destruction then releases the host.
@@ -378,13 +417,32 @@ fn send_current(runtime: &Rc<RefCell<Runtime>>) {
     let Some(host) = host.filter(|_| ready) else { return; };
     let _ = host.post_json(&super::window::html_panel_state(owner));
     if let Some(message) = protocol::panelshow_json(kind.token()) { let _ = host.post_json(&message); }
-    let snapshot = match kind { Kind::Notes => notes_snapshot(), Kind::Privacy => privacy_snapshot(runtime), Kind::Rename => rename_snapshot(runtime), Kind::Sessions => sessions_snapshot(runtime), Kind::Feeds => feeds_snapshot(runtime) };
+    let snapshot = match kind { Kind::Notes => notes_snapshot(), Kind::Privacy => privacy_snapshot(runtime), Kind::Rename => rename_snapshot(runtime), Kind::Sessions => sessions_snapshot(runtime), Kind::Feeds => feeds_snapshot(runtime), Kind::Toolbar => toolbar_snapshot(runtime) };
     if let Some(snapshot) = snapshot { let _ = host.post_json(&snapshot); }
     if kind == Kind::Privacy {
         let app = runtime.try_borrow().ok().map(|state| state.app.clone());
         if let Some(snapshot) = app.and_then(|app| protection_snapshot_json(&app)) { let _ = host.post_json(&snapshot); }
     }
 }
+
+// --- toolbars and feeds (thread T13) ---
+fn toolbar_snapshot(runtime: &Rc<RefCell<Runtime>>) -> Option<String> {
+    let app = runtime.try_borrow().ok()?.app.clone();
+    super::toolbar_panel::snapshot_json(&app)
+}
+
+/// One `tbar` command from the docked customiser; the page gets a fresh snapshot either way, so a refused
+/// change springs back. A failed save is shown as a toast in the window.
+fn handle_toolbar(runtime: &Rc<RefCell<Runtime>>, f: PanelFields) {
+    let (app, owner) = match runtime.try_borrow() { Ok(state) => (state.app.clone(), state.owner), Err(_) => return };
+    if let Some(action) = super::toolbar_panel::action_of(&f)
+        && let Err(message) = super::toolbar_panel::handle(&app, owner, action)
+    {
+        super::window::show_toast(owner, &message, "Toolbar");
+    }
+    send_current(runtime);
+}
+// --- end toolbars and feeds ---
 
 fn privacy_snapshot(runtime: &Rc<RefCell<Runtime>>) -> Option<String> {
     let app = runtime.try_borrow().ok()?.app.clone();

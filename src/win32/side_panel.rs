@@ -47,11 +47,11 @@ const HEADER_DIP: i32 = 48;
 const RESIZE_DIP: i32 = 6;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub enum PanelId { Bookmarks, History, Customize, Menu, WebApp(u32) }
+pub enum PanelId { Bookmarks, History, Customize, Menu, Toolbar, WebApp(u32) }
 
 impl PanelId {
     fn title(self) -> String {
-        match self { Self::Bookmarks => "Bookmarks".into(), Self::History => "History".into(), Self::Customize => "Customize".into(), Self::Menu => "Menu".into(), Self::WebApp(id) => format!("Web app {id}") }
+        match self { Self::Bookmarks => "Bookmarks".into(), Self::History => "History".into(), Self::Customize => "Customize".into(), Self::Menu => "Menu".into(), Self::Toolbar => "Toolbar".into(), Self::WebApp(id) => format!("Web app {id}") }
     }
 }
 
@@ -162,6 +162,16 @@ pub fn active_id(owner: HWND) -> Option<PanelId> {
 
 pub fn active_width_px(owner: HWND) -> i32 {
     HOSTS.with(|hosts| unsafe { hosts.borrow().get(&(owner.0 as isize)).copied().map_or(0, |raw| host(HWND(raw as *mut c_void)).map_or(0, |h| h.width)) })
+}
+
+/// Whether a docked panel is changing width right now, so the page beside it must follow frame by frame.
+/// A floating (frameless) panel slides over the page and never moves it.
+pub fn docked_motion(owner: HWND) -> bool {
+    HOSTS.with(|hosts| unsafe {
+        hosts.borrow().get(&(owner.0 as isize)).copied().is_some_and(|raw| {
+            host(HWND(raw as *mut c_void)).is_some_and(|h| !h.floats && h.animation.as_ref().is_some_and(|animation| !animation.slide))
+        })
+    })
 }
 
 pub fn active_position(owner: HWND) -> SidePanelPosition {
@@ -333,10 +343,7 @@ pub fn sync(owner: HWND, viewport: RECT, window_dpi: u32) {
             }
         }
         place_panel(hwnd, state, window_dpi);
-        if let Some(child) = state.content.as_ref().and_then(|c| c.wants_native_child()) {
-            let header = scale(HEADER_DIP, window_dpi);
-            let _ = SetWindowPos(child, None, scale(12, window_dpi), header, (state.width-scale(24, window_dpi)).max(0), (viewport.bottom-viewport.top-header).max(0), SWP_NOZORDER | SWP_NOACTIVATE);
-        }
+        place_child(state, window_dpi);
         let width = state.width.max(0);
         if let Some(content) = state.content.as_mut() {
             content.on_bounds_changed(RECT {
@@ -429,6 +436,8 @@ pub fn timer(owner: HWND) -> bool {
             state.animation = None;
         }
         place_panel(hwnd, state, dpi(owner));
+        // A content that draws its own page slides with the moving edge on every frame (see `child_rect`).
+        place_child(state, dpi(owner));
         if state.width == 0 && state.id.is_none() { let _ = ShowWindow(hwnd, SW_HIDE); }
         let _ = InvalidateRect(Some(hwnd), None, false);
         (state.animation.is_some() && animation_running(elapsed)) || !state.retired.is_empty()
@@ -481,6 +490,39 @@ fn release_motion(owner: HWND, hwnd: HWND, state: &mut SidePanelHost, arm: bool)
     if !state.floats {
         note_resized(owner);
     }
+}
+
+/// Moves the current content's native child to [`child_rect`] for the host's present width.
+fn place_child(state: &SidePanelHost, window_dpi: u32) {
+    let Some(child) = state.content.as_ref().and_then(|c| c.wants_native_child()) else { return };
+    let span = match &state.animation {
+        Some(animation) if !animation.slide => animation.from.max(animation.to),
+        _ => state.width,
+    };
+    let height = (state.client.bottom - state.client.top).max(0);
+    let rect = child_rect(state.header, state.width.max(0), span, height, state.position, window_dpi);
+    unsafe {
+        let _ = SetWindowPos(child, None, rect.left, rect.top, (rect.right - rect.left).max(0), (rect.bottom - rect.top).max(0), SWP_NOZORDER | SWP_NOACTIVATE);
+    }
+}
+
+/// Where a content's native child sits in a host `width` px wide and `height` px tall. Under the native
+/// title row it keeps a 12 px margin and follows the width (an EDIT control reflows cheaply). A content that
+/// draws its own header (an HTML page) fills the host but keeps `span`, the widest the host gets during the
+/// current open or close, so the page is never re-laid out mid-animation: it rides the moving edge instead
+/// (left-docked, its right edge stays on the host's right edge and its left part is clipped; right-docked,
+/// the host's left edge is the moving one and the page's left edge stays on it). Pure.
+fn child_rect(native_header: bool, width: i32, span: i32, height: i32, position: SidePanelPosition, dpi: u32) -> RECT {
+    if native_header {
+        let header = scale(HEADER_DIP, dpi);
+        return RECT { left: scale(12, dpi), top: header, right: scale(12, dpi) + (width - scale(24, dpi)).max(0), bottom: header + (height - header).max(0) };
+    }
+    let span = span.max(width).max(0);
+    let left = match position {
+        SidePanelPosition::Left => width - span,
+        SidePanelPosition::Right => 0,
+    };
+    RECT { left, top: 0, right: left + span, bottom: height.max(0) }
 }
 
 fn note_resized(owner: HWND) {
@@ -775,6 +817,20 @@ fn colorref(c: theme::Rgba) -> windows::Win32::Foundation::COLORREF { windows::W
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_html_child_rides_the_moving_edge_at_its_full_width() {
+        // Opening a left-docked 340 px panel: a quarter in, the page is 340 wide and only its right part shows.
+        assert_eq!(child_rect(false, 85, 340, 600, SidePanelPosition::Left, 96), RECT { left: -255, top: 0, right: 85, bottom: 600 });
+        // At rest it fills the host exactly.
+        assert_eq!(child_rect(false, 340, 340, 600, SidePanelPosition::Left, 96), RECT { left: 0, top: 0, right: 340, bottom: 600 });
+        // Closing keeps the width it had (the span is the animation's widest), so nothing re-lays out.
+        assert_eq!(child_rect(false, 10, 340, 600, SidePanelPosition::Left, 96).right - child_rect(false, 10, 340, 600, SidePanelPosition::Left, 96).left, 340);
+        // Right-docked, the host's left edge moves and the page stays on it.
+        assert_eq!(child_rect(false, 85, 340, 600, SidePanelPosition::Right, 96), RECT { left: 0, top: 0, right: 340, bottom: 600 });
+        // A content with the native title row keeps the old margins, scaled (the width is already in pixels).
+        assert_eq!(child_rect(true, 340, 340, 600, SidePanelPosition::Left, 192), RECT { left: 24, top: 96, right: 24 + 340 - 48, bottom: 600 });
+    }
 
     /// W-6: from a widened web-app panel to Bookmarks (or History) the host goes back to the shared
     /// width, because the width rule sees the web app as the panel being left.

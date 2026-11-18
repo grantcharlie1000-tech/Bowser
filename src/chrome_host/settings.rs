@@ -425,6 +425,8 @@ pub enum Action {
     BarOption(String),
     /// "Open Feeds": the Feeds panel.
     OpenFeeds,
+    /// "Customise": the toolbar customiser docked beside the page (opens or closes it).
+    OpenToolbar,
     // --- end toolbars and feeds ---
 }
 
@@ -500,6 +502,7 @@ pub fn map_command(f: &PanelFields) -> Option<Action> {
             Action::BarOption(text.to_owned())
         }
         "openfeeds" if bare => Action::OpenFeeds,
+        "opentoolbar" if bare => Action::OpenToolbar,
         // --- end toolbars and feeds ---
         "reset" if bare => Action::Reset,
         "openfile" if bare => Action::OpenFile,
@@ -1249,6 +1252,8 @@ block_youtube_video_ads=true".to_owned();
         assert_eq!(map_command(&fields("baropt")), None);
         assert_eq!(map_command(&fields("openfeeds")), Some(Action::OpenFeeds));
         assert_eq!(map_command(&PanelFields { text: Some("x".into()), ..fields("openfeeds") }), None);
+        assert_eq!(map_command(&fields("opentoolbar")), Some(Action::OpenToolbar));
+        assert_eq!(map_command(&PanelFields { text: Some("x".into()), ..fields("opentoolbar") }), None);
     }
 
     #[test]

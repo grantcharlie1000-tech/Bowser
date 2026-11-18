@@ -1072,3 +1072,289 @@
 .pg-row {
   flex-wrap: nowrap;
 }
+
+/* ---- Toolbar customiser (panels/toolbar.ts; docked beside the page by src/win32/toolbar_panel.rs) ----
+   One column: the bar switch, a card of the bar's own buttons grouped by where they sit, a card of
+   commands with a filter, and Reset to default pinned at the bottom. A row is grip, glyph, name (and when
+   it appears, for buttons that only show on demand) and a switch; the whole row toggles. Buttons that are
+   on lead their group in bar order and can be dragged by the grip (or moved with Alt+Up / Alt+Down).
+   Motion is transform and opacity only, and none of it runs under reduced motion:
+     glide     rows move to their new place over 167ms (panels/toolbar.ts, Web Animations)
+     pop       a glyph whose button just came on scales in with a small overshoot (250ms)
+     drag      the held row follows the pointer with a lift; its neighbours make room (167ms)
+     refused   a switch that cannot come on shakes twice (250ms)
+     reset     the reset glyph turns once (250ms)
+     enter     the two cards settle in when the page first fills (250ms, 40ms apart) */
+.tbp {
+  --tbp-card: color-mix(in srgb, var(--bw-text) 4%, transparent);
+  --tbp-row-hover: color-mix(in srgb, var(--bw-text) 6%, transparent);
+}
+
+.tbp-body {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: var(--bw-space-3);
+  min-height: 0;
+  padding: 0 var(--bw-space-3);
+  overflow-y: auto;
+}
+
+/* The space between the last card and the footer's line, as content rather than the scroller's bottom padding
+   (which a scrolling flex column can drop): with the column's gap it is exactly the footer's top padding, so
+   the line sits centred between the last card and Reset to default. */
+.tbp-body::after {
+  content: "";
+  flex: none;
+  height: 0;
+}
+
+.tbp-switch {
+  display: flex;
+  flex: none;
+}
+
+.tbp-switch > button {
+  flex: 1 1 0;
+}
+
+.tbp-card {
+  flex: none;
+  padding: var(--bw-space-1) 0;
+  border: 1px solid var(--bw-hairline);
+  border-radius: var(--bw-r-island);
+  background: var(--tbp-card);
+}
+
+.tbp-section + .tbp-section {
+  margin-top: var(--bw-space-1);
+  padding-top: var(--bw-space-1);
+  border-top: 1px solid var(--bw-hairline);
+}
+
+.tbp-group-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--bw-space-2);
+  padding-inline-end: var(--bw-space-3);
+}
+
+.tbp-group {
+  margin: 0;
+  padding: var(--bw-space-2) var(--bw-space-3) var(--bw-space-1);
+  color: var(--bw-text-2);
+  font-size: var(--bw-text-caption);
+  line-height: var(--bw-leading-caption);
+  font-weight: var(--bw-weight-strong);
+}
+
+.tbp-count {
+  color: var(--bw-text-2);
+  font-size: var(--bw-text-caption);
+  line-height: var(--bw-leading-caption);
+}
+
+.tbp-count.is-full {
+  color: var(--bw-warning);
+}
+
+.tbp-filter {
+  margin: var(--bw-space-1) var(--bw-space-3) var(--bw-space-1);
+}
+
+.tbp-list {
+  display: flex;
+  flex-direction: column;
+  padding: 0 var(--bw-space-1);
+}
+
+.tbp-row {
+  position: relative;
+  display: grid;
+  grid-template-columns: 12px 28px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--bw-space-2);
+  min-height: 36px;
+  padding: var(--bw-space-0_5) var(--bw-space-2) var(--bw-space-0_5) var(--bw-space-1);
+  border-radius: var(--bw-r-row);
+  transition:
+    background-color var(--bw-dur-fast) var(--bw-ease-fade),
+    transform var(--bw-dur-base) var(--bw-ease-move);
+}
+
+.tbp-row:hover {
+  background: var(--tbp-row-hover);
+}
+
+.tbp-grip {
+  display: grid;
+  place-items: center;
+  height: 28px;
+  color: var(--bw-text-2);
+  opacity: 0;
+  cursor: grab;
+  touch-action: none;
+  transition: opacity var(--bw-dur-fast) var(--bw-ease-fade);
+}
+
+.tbp-row:is(:hover, :focus-within) > .tbp-grip:not(:empty) {
+  opacity: 1;
+}
+
+.tbp-glyph {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  color: var(--bw-text-2);
+  transition: color var(--bw-dur-fast) var(--bw-ease-fade);
+}
+
+/* A button that is on has its glyph at full strength; one that is off is quieter. No tile behind it. */
+.tbp-row.is-on > .tbp-glyph {
+  color: var(--bw-text);
+}
+
+.tbp-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.tbp-label {
+  overflow: hidden;
+  font-size: var(--bw-text-body);
+  line-height: var(--bw-leading-body);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tbp-none {
+  margin: 0;
+  padding: var(--bw-space-2) var(--bw-space-3);
+  color: var(--bw-text-2);
+  font-size: var(--bw-text-caption);
+  line-height: var(--bw-leading-caption);
+}
+
+/* Dragging: the held row follows the pointer above its neighbours, which slide aside to make room. */
+.tbp-row.is-dragging {
+  z-index: 2;
+  background: var(--bw-overlay);
+  box-shadow: var(--bw-sh-flyout);
+  transform: translateY(var(--tbp-drag, 0px)) scale(1.02);
+  transition: background-color var(--bw-dur-fast) var(--bw-ease-fade);
+}
+
+.tbp-row.is-dragging > .tbp-grip {
+  opacity: 1;
+  cursor: grabbing;
+}
+
+.tbp-row.is-shifted {
+  transform: translateY(var(--tbp-shift, 0px));
+}
+
+.tbp-foot {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  gap: var(--bw-space-2);
+  padding: var(--bw-space-3);
+  border-top: 1px solid var(--bw-hairline);
+}
+
+.tbp-reset {
+  justify-content: center;
+  width: 100%;
+  height: 36px;
+  gap: var(--bw-space-2);
+}
+
+.tbp-reset-glyph {
+  display: inline-grid;
+  place-items: center;
+}
+
+.tbp-reset-glyph > svg {
+  width: var(--bw-icon);
+  height: var(--bw-icon);
+}
+
+.tbp-note {
+  margin: 0;
+  color: var(--bw-warning);
+  font-size: var(--bw-text-caption);
+  line-height: var(--bw-leading-caption);
+}
+
+.tbp-note:empty {
+  display: none;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .tbp-glyph.is-popped {
+    animation: tbp-pop var(--bw-dur-slow) var(--bw-ease-spring);
+  }
+
+  .tbp-toggle.is-refused {
+    animation: tbp-shake var(--bw-dur-slow) var(--bw-ease-out);
+  }
+
+  .tbp-reset-glyph.is-turning {
+    animation: tbp-turn var(--bw-dur-slow) var(--bw-ease-out);
+  }
+
+  .tbp-body.is-entering > .tbp-card {
+    animation: tbp-enter var(--bw-dur-slow) var(--bw-ease-out) both;
+  }
+
+  .tbp-body.is-entering > .tbp-card + .tbp-card {
+    animation-delay: 40ms;
+  }
+
+  .tbp-card.is-swapping {
+    animation: tbp-swap var(--bw-dur-base) var(--bw-ease-out);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tbp-row,
+  .tbp-row.is-shifted {
+    transform: none;
+  }
+}
+
+@keyframes tbp-pop {
+  from { transform: scale(0.6); }
+  to { transform: scale(1); }
+}
+
+@keyframes tbp-shake {
+  0%, 100% { transform: none; }
+  25% { transform: translateX(-3px); }
+  50% { transform: translateX(3px); }
+  75% { transform: translateX(-2px); }
+}
+
+@keyframes tbp-turn {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(-360deg); }
+}
+
+@keyframes tbp-enter {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: none; }
+}
+
+@keyframes tbp-swap {
+  from { opacity: 0.4; transform: translateX(6px); }
+  to { opacity: 1; transform: none; }
+}
+
+@media (forced-colors: active) {
+  .tbp-row.is-dragging {
+    outline: 2px solid Highlight;
+  }
+}

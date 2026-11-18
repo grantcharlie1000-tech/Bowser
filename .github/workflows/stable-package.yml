@@ -9,6 +9,9 @@ on:
   pull_request:
     branches: [main]
     paths: [stable/release.json]
+  # release.yml's pin job dispatches this on the pin branch it creates (its
+  # GITHUB_TOKEN events cannot trigger pull_request). mark-latest stays push-only.
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -120,25 +123,13 @@ jobs:
           $source = (git rev-parse HEAD).Trim()
           if ($LASTEXITCODE -ne 0 -or $source -cne $env:GITHUB_SHA -or $source -cne $env:VERIFIED_CHECKOUT) { throw 'Publisher checkout differs from the verified pin checkout.' }
           $pin = Get-Content stable/release.json -Raw | ConvertFrom-Json
-          # Explicit allow-list of verified releases that may be promoted to latest.
-          # Add one exact {tag, version, revision} entry per release; never a pattern.
-          $allowedLatest = @(
-            @{ tag = 'v0.0.19'; version = '0.0.19'; revision = 20 },
-            @{ tag = 'v0.0.20'; version = '0.0.20'; revision = 21 },
-            @{ tag = 'v0.0.21'; version = '0.0.21'; revision = 22 },
-            @{ tag = 'v0.0.22'; version = '0.0.22'; revision = 23 },
-            @{ tag = 'v0.0.23'; version = '0.0.23'; revision = 24 },
-            @{ tag = 'v0.0.24'; version = '0.0.24'; revision = 25 },
-            @{ tag = 'v0.0.25'; version = '0.0.25'; revision = 26 },
-            @{ tag = 'v0.0.26'; version = '0.0.26'; revision = 27 },
-            @{ tag = 'v0.0.27'; version = '0.0.27'; revision = 28 },
-            @{ tag = 'v0.0.28'; version = '0.0.28'; revision = 29 },
-            @{ tag = 'v0.0.29'; version = '0.0.29'; revision = 30 },
-            @{ tag = 'v0.0.30'; version = '0.0.30'; revision = 31 },
-            @{ tag = 'v0.0.31'; version = '0.0.31'; revision = 32 }
-          )
+          # Explicit allow-list of verified releases that may be promoted to latest,
+          # read from this exact verified commit: one exact {tag, version, revision}
+          # entry per release (tools/release.py bump adds it), never a pattern.
+          $allowedLatest = @(Get-Content stable/allowlist.json -Raw | ConvertFrom-Json)
+          if ($allowedLatest.Count -lt 1) { throw 'stable/allowlist.json is empty or unreadable.' }
           $allowed = @($allowedLatest | Where-Object { $pin.tag -ceq $_.tag -and $pin.version -ceq $_.version -and $pin.revision -eq $_.revision })
-          if ($pin.repository -cne $repo -or $allowed.Count -ne 1 -or $pin.asset -cne 'Bowser.exe') { throw 'Latest promotion is restricted to the allow-listed verified releases (v0.0.19 revision 20, v0.0.20 revision 21, v0.0.21 revision 22, v0.0.22 revision 23, v0.0.23 revision 24, v0.0.24 revision 25, v0.0.25 revision 26, v0.0.26 revision 27, v0.0.27 revision 28, v0.0.28 revision 29, v0.0.29 revision 30, v0.0.30 revision 31, v0.0.31 revision 32).' }
+          if ($pin.repository -cne $repo -or $allowed.Count -ne 1 -or $pin.asset -cne 'Bowser.exe') { throw 'Latest promotion is restricted to the exact releases listed in stable/allowlist.json.' }
           if ($pin.tag -cne $env:VERIFIED_TAG -or $pin.commit -cne $env:VERIFIED_SOURCE -or $pin.sha256 -cne $env:VERIFIED_SHA256 -or [string]$pin.bytes -cne $env:VERIFIED_BYTES -or [string]$pin.revision -cne $env:VERIFIED_REVISION) { throw 'Pin differs from successful isolated-install verification.' }
           if ($pin.commit -cnotmatch '^[0-9a-f]{40}$' -or $pin.sha256 -cnotmatch '^[0-9a-f]{64}$' -or $pin.bytes -lt 512 -or $pin.bytes -gt 536870912) { throw 'Invalid pinned package identity.' }
           $headers = @{ Accept = 'application/vnd.github+json'; 'X-GitHub-Api-Version' = '2022-11-28'; 'User-Agent' = 'Bowser-stable-latest-verification' }

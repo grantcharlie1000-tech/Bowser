@@ -37,7 +37,7 @@ use windows::{
 use super::{
     assets::{
         self, Asset, DIALOG_START_URL, HOVER_START_URL, NOTES_DIALOG_START_URL, PANEL_START_URL, POPUP_START_URL,
-        PRIVACY_DIALOG_START_URL, RAIL_START_URL, RENAME_DIALOG_START_URL, ADDRESS_DIALOG_START_URL, BOOKMARK_BAR_START_URL, RESPONSE_HEADERS, SCHEME, SESSIONS_DIALOG_START_URL, FEEDS_DIALOG_START_URL,
+        PRIVACY_DIALOG_START_URL, RAIL_START_URL, RENAME_DIALOG_START_URL, ADDRESS_DIALOG_START_URL, BOOKMARK_BAR_START_URL, RESPONSE_HEADERS, SCHEME, SESSIONS_DIALOG_START_URL, FEEDS_DIALOG_START_URL, TOOLBAR_DIALOG_START_URL,
         SETTINGS_START_URL, START_URL, TABS_START_URL, HISTORY_PAGE_START_URL, DOWNLOADS_PAGE_START_URL,
     },
     protocol::{
@@ -192,6 +192,9 @@ pub enum View {
     DialogSessions,
     /// The Feeds panel: subscriptions, items, preview, OPML import (src/win32/feeds_panel.rs).
     DialogFeeds,
+    /// The toolbar customiser docked beside the page (src/win32/toolbar_panel.rs): the address bar's and
+    /// the tab bar's buttons as switches. Sends only `panel` (dismiss) and `tbar`.
+    DialogToolbar,
     /// The no-activate hover layer: tooltips, the tab hover card and the island menu.
     Hover,
     // --- split view ---
@@ -214,7 +217,7 @@ impl View {
     /// main.ts, panel.ts, dialog.ts and settings-page.ts; the bookmarks bar uses the same helper).
     pub fn shows_tooltips(self) -> bool {
         matches!(self, Self::Toolbar | Self::Tabs | Self::Rail | Self::BookmarkBar | Self::Panel | Self::Dialog | Self::DialogNotes
-            | Self::DialogPrivacy | Self::DialogRename | Self::DialogAddress | Self::DialogSessions | Self::DialogFeeds | Self::Settings)
+            | Self::DialogPrivacy | Self::DialogRename | Self::DialogAddress | Self::DialogSessions | Self::DialogFeeds | Self::DialogToolbar | Self::Settings)
     }
 
     fn persistent(self) -> Option<ChromeView> { match self { Self::Toolbar => Some(ChromeView::Toolbar), Self::Tabs => Some(ChromeView::Tabs), Self::Rail => Some(ChromeView::Rail), _ => None } }
@@ -234,6 +237,7 @@ impl View {
             Self::BookmarkBar => BOOKMARK_BAR_START_URL,
             Self::DialogSessions => SESSIONS_DIALOG_START_URL,
             Self::DialogFeeds => FEEDS_DIALOG_START_URL,
+            Self::DialogToolbar => TOOLBAR_DIALOG_START_URL,
             Self::Hover => HOVER_START_URL,
             Self::Split => SPLIT_START_URL,
             Self::Settings => SETTINGS_START_URL,
@@ -317,7 +321,7 @@ impl View {
             Self::DialogNotes => "dialog_notes", Self::DialogPrivacy => "dialog_privacy",
             Self::DialogRename => "dialog_rename", Self::DialogAddress => "dialog_address",
             Self::BookmarkBar => "bookmark_bar", Self::DialogSessions => "dialog_sessions",
-            Self::DialogFeeds => "dialog_feeds", Self::Hover => "hover", Self::Split => "split",
+            Self::DialogFeeds => "dialog_feeds", Self::DialogToolbar => "dialog_toolbar", Self::Hover => "hover", Self::Split => "split",
             Self::Settings => "settings", Self::HistoryPage => "history", Self::DownloadsPage => "downloads",
         }
     }
@@ -327,7 +331,7 @@ impl View {
 fn diagnostic_frame_view(source: &str) -> Option<&'static str> {
     [View::Toolbar, View::Tabs, View::Rail, View::Panel, View::Popup, View::Dialog,
      View::DialogNotes, View::DialogPrivacy, View::DialogRename, View::DialogAddress,
-     View::BookmarkBar, View::DialogSessions, View::DialogFeeds, View::Hover, View::Split,
+     View::BookmarkBar, View::DialogSessions, View::DialogFeeds, View::DialogToolbar, View::Hover, View::Split,
      View::Settings, View::HistoryPage, View::DownloadsPage]
         .into_iter().find(|view| view.start_url() == source).map(View::diagnostic_name)
 }
@@ -1780,6 +1784,7 @@ fn view_accepts_command(view: View, command: &Command) -> bool {
         View::BookmarkBar => matches!(command, Command::Panel { kind: PanelType::Address, .. }),
         View::DialogSessions => matches!(command, Command::Panel { kind: PanelType::Panel | PanelType::Sessions, .. }),
         View::DialogFeeds => matches!(command, Command::Panel { kind: PanelType::Panel | PanelType::Feeds, .. }),
+        View::DialogToolbar => matches!(command, Command::Panel { kind: PanelType::Panel | PanelType::Toolbar, .. }),
         View::Hover => matches!(command, Command::PopupSize { .. } | Command::HoverAct { .. } | Command::SuggestPick { .. }),
         // --- split view ---
         View::Split => matches!(command, Command::Split(SplitCommand::Pick { .. } | SplitCommand::Reopen { .. } | SplitCommand::Go(_) | SplitCommand::Close | SplitCommand::Focus | SplitCommand::ClosePrivate))
@@ -1821,7 +1826,7 @@ mod restoration_admission_tests {
         let tip = parse_command(r#"{"v":1,"t":"tip","text":"Close","r":"1,2,3,4"}"#).unwrap();
         let off = parse_command(r#"{"v":1,"t":"tipoff"}"#).unwrap();
         for view in [View::Toolbar, View::Tabs, View::Rail, View::BookmarkBar, View::Panel, View::Dialog, View::DialogNotes,
-            View::DialogPrivacy, View::DialogRename, View::DialogAddress, View::DialogSessions, View::DialogFeeds, View::Settings] {
+            View::DialogPrivacy, View::DialogRename, View::DialogAddress, View::DialogSessions, View::DialogFeeds, View::DialogToolbar, View::Settings] {
             assert!(view_accepts_command(view, &tip) && view_accepts_command(view, &off), "{view:?} shows tooltips");
         }
         for view in [View::Popup, View::Hover, View::Split, View::HistoryPage, View::DownloadsPage] {

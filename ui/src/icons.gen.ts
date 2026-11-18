@@ -9,6 +9,7 @@ const SHAPES = {
   "archive": [["rect",{"height":"4.5","rx":"1.25","width":"17","x":"3.5","y":"4.5"}],["path",{"d":"M5 9v8.5a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V9M10 12.75h4"}]],
   "back": [["path",{"d":"M20 12H4m6-6-6 6 6 6"}]],
   "bell": [["path",{"d":"m5 17 1.5-2v-5a5.5 5.5 0 0 1 11 0v5l1.5 2H5ZM10 20l1 1h2l1-1"}]],
+  "block": [["circle",{"cx":"12","cy":"12","r":"9"}],["path",{"d":"m5.6 5.6 12.8 12.8"}]],
   "bookmark": [["path",{"d":"M6 5a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v15.5l-6-4.5-6 4.5z"}]],
   "calculator": [["rect",{"height":"18","rx":"2","width":"14","x":"5","y":"3"}],["path",{"d":"M8 7h8M8 12h.01M12 12h.01M16 12h.01M8 16h.01M12 16h.01M16 16h.01"}]],
   "calendar": [["rect",{"height":"15.5","rx":"2","width":"17","x":"3.5","y":"5"}],["path",{"d":"M3.5 10h17M8 3v4M16 3v4"}],["rect",{"fill":"currentColor","height":"3.5","rx":"0.75","stroke":"none","width":"3.5","x":"7","y":"13"}]],
@@ -16,7 +17,11 @@ const SHAPES = {
   "caption-maximize": [["rect",{"height":"16","rx":"2","width":"16","x":"4","y":"4"}]],
   "caption-minimize": [["path",{"d":"M4 12h16"}]],
   "caption-restore": [["path",{"d":"M7 7h12a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2V7ZM4 17V5a2 2 0 0 1 2-2h12"}]],
+  "capture": [["path",{"d":"M3 8V5a2 2 0 0 1 2-2h3M16 3h3a2 2 0 0 1 2 2v3M21 16v3a2 2 0 0 1-2 2h-3M8 21H5a2 2 0 0 1-2-2v-3"}],["circle",{"cx":"12","cy":"12","r":"3.5"}]],
+  "capture-full": [["path",{"d":"M3 8V5a2 2 0 0 1 2-2h3M16 3h3a2 2 0 0 1 2 2v3M21 16v3a2 2 0 0 1-2 2h-3M8 21H5a2 2 0 0 1-2-2v-3"}],["rect",{"height":"11","rx":"1","width":"7","x":"8.5","y":"6.5"}]],
+  "capture-selection": [["path",{"d":"M3 6V5a2 2 0 0 1 2-2h1M10 3h4M18 3h1a2 2 0 0 1 2 2v1M21 10v4M21 18v1a2 2 0 0 1-2 2h-1M14 21h-4M6 21H5a2 2 0 0 1-2-2v-1M3 14v-4"}]],
   "cast": [["path",{"d":"M3 8V6a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-6"}],["path",{"d":"M3 12a8 8 0 0 1 7 7"}],["path",{"d":"M3 16a4 4 0 0 1 3.5 3.5"}],["line",{"x1":"3","x2":"3.01","y1":"20","y2":"20"}]],
+  "chain": [["rect",{"height":"8","rx":"2","width":"8","x":"3","y":"3"}],["rect",{"height":"8","rx":"2","width":"8","x":"13","y":"13"}],["path",{"d":"M7 11v4a2 2 0 0 0 2 2h4"}],["path",{"d":"m11 15 2 2-2 2"}]],
   "check": [["path",{"d":"m4 12 5.5 5.5L20 6.5"}]],
   "chevron-down": [["path",{"d":"M4.125 8.06 12 15.94l7.875-7.88"}]],
   "chevron-left": [["path",{"d":"M14.25 4.125 6.375 12l7.875 7.875"}]],
@@ -53,6 +58,7 @@ const SHAPES = {
   "image": [["rect",{"height":"15","rx":"2","width":"17","x":"3.5","y":"4.5"}],["circle",{"cx":"9","cy":"9.5","r":"1.5"}],["path",{"d":"M20.5 15l-3.3-3.3a1.4 1.4 0 0 0-2 0L7.5 19.5"}]],
   "info": [["circle",{"cx":"12","cy":"12","r":"9"}],["circle",{"cx":"12","cy":"7","fill":"currentColor","r":"1","stroke":"none"}],["path",{"d":"M12 11v6"}]],
   "key": [["circle",{"cx":"7.5","cy":"11","r":"4"}],["path",{"d":"M11.5 11H21v3M17 11v3"}]],
+  "keyboard": [["rect",{"height":"14","rx":"2","width":"20","x":"2","y":"5"}],["path",{"d":"M8 15h8"}],["circle",{"cx":"6","cy":"9","fill":"currentColor","r":".75","stroke":"none"}],["circle",{"cx":"10","cy":"9","fill":"currentColor","r":".75","stroke":"none"}],["circle",{"cx":"14","cy":"9","fill":"currentColor","r":".75","stroke":"none"}],["circle",{"cx":"18","cy":"9","fill":"currentColor","r":".75","stroke":"none"}],["circle",{"cx":"6","cy":"12","fill":"currentColor","r":".75","stroke":"none"}],["circle",{"cx":"18","cy":"12","fill":"currentColor","r":".75","stroke":"none"}]],
   "link": [["path",{"d":"M10 14a4 4 0 0 0 5.66 0l3-3a4 4 0 0 0-5.66-5.66l-1 1M14 10a4 4 0 0 0-5.66 0l-3 3a4 4 0 0 0 5.66 5.66l1-1"}]],
   "location": [["path",{"d":"M5 10a7 7 0 0 1 14 0l-7 11z"}],["circle",{"cx":"12","cy":"10","r":"2.5"}]],
   "lock": [["rect",{"height":"11","rx":"2","width":"16","x":"4","y":"10"}],["path",{"d":"M7 10V7.5a5 5 0 0 1 10 0V10"}]],
@@ -62,8 +68,10 @@ const SHAPES = {
   "more-horizontal": [["circle",{"cx":"5.5","cy":"12","fill":"currentColor","r":"1.6","stroke":"none"}],["circle",{"cx":"12","cy":"12","fill":"currentColor","r":"1.6","stroke":"none"}],["circle",{"cx":"18.5","cy":"12","fill":"currentColor","r":"1.6","stroke":"none"}]],
   "more-vertical": [["circle",{"cx":"12","cy":"5.5","fill":"currentColor","r":"1.6","stroke":"none"}],["circle",{"cx":"12","cy":"12","fill":"currentColor","r":"1.6","stroke":"none"}],["circle",{"cx":"12","cy":"18.5","fill":"currentColor","r":"1.6","stroke":"none"}]],
   "mute": [["path",{"d":"M4 9.5h3.5L12 5.5v13l-4.5-4H4z"}],["path",{"d":"M16 9.5l5 5M21 9.5l-5 5"}]],
+  "note-add": [["path",{"d":"M19 12V5a2 2 0 0 0-2-2H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h5"}],["path",{"d":"M9 8h6M9 12h3M18 15v6M15 18h6"}]],
   "notes": [["rect",{"height":"18","rx":"2","width":"14","x":"5","y":"3"}],["path",{"d":"M9 8h6M9 12h6M9 16h3"}]],
   "package": [["path",{"d":"M12 3.25l7.5 4.2v9.1L12 20.75l-7.5-4.2v-9.1z"}],["path",{"d":"M4.75 7.6L12 11.75l7.25-4.15M12 11.75v8.75"}]],
+  "password-fill": [["rect",{"height":"10","rx":"2","width":"20","x":"2","y":"7"}],["circle",{"cx":"7","cy":"12","fill":"currentColor","r":"1.25","stroke":"none"}],["circle",{"cx":"12","cy":"12","fill":"currentColor","r":"1.25","stroke":"none"}],["path",{"d":"M16 14.5h3"}]],
   "pause": [["path",{"d":"M8.75 5.75v12.5M15.25 5.75v12.5"}]],
   "person": [["circle",{"cx":"12","cy":"7","r":"3.5"}],["path",{"d":"M4.5 20v-2a7.5 7.5 0 0 1 15 0v2"}]],
   "pin": [["path",{"d":"M9 3.5h6M10 3.5v6l-3 4h10l-3-4v-6M12 13.5v7"}]],
@@ -78,6 +86,7 @@ const SHAPES = {
   "quick-commands": [["rect",{"height":"14","rx":"2","width":"18","x":"3","y":"5"}],["path",{"d":"m7 9.75 2.5 2.25L7 14.25M12 14.25h5"}]],
   "reader": [["path",{"d":"M3.25 15 7.75 4l4.5 11M4.68 11.5h6.14"}],["path",{"d":"M15.75 5h5M15.75 10h5M15.75 15h5M3.25 20h17.5"}]],
   "reload": [["path",{"d":"M20 12A8 8 0 1 1 19 8M19 3v5h-5"}]],
+  "reload-hard": [["path",{"d":"M20 12A8 8 0 1 1 19 8M19 3v5h-5"}],["circle",{"cx":"12","cy":"12","fill":"currentColor","r":"2.25","stroke":"none"}]],
   "reset": [["path",{"d":"M4 12a8 8 0 1 0 1-4M5 3v5h5"}]],
   "save": [["path",{"d":"M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"}],["polyline",{"points":"17 21 17 13 7 13 7 21"}],["polyline",{"points":"7 3 7 8 15 8"}]],
   "search": [["circle",{"cx":"10.5","cy":"10.5","r":"6.5"}],["path",{"d":"m15.5 15.5 5 5"}]],
@@ -98,10 +107,12 @@ const SHAPES = {
   "tab-group": [["rect",{"height":"11","rx":"2","width":"18","x":"3","y":"9"}],["path",{"d":"M5 9V6.5a2 2 0 0 1 2-2h2.5a2 2 0 0 1 2 2V9M13 9V6.5a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2V9"}]],
   "tab-restore": [["rect",{"height":"15","rx":"2","width":"18","x":"3","y":"4.5"}],["path",{"d":"M3 9h18M11 11.25 8.75 13.5 11 15.75M8.75 13.5h4.5a2.5 2.5 0 0 1 2.5 2.5v1.25"}]],
   "tab-switch": [["rect",{"height":"15","rx":"2","width":"18","x":"3","y":"4.5"}],["path",{"d":"M3 9h18M8.5 14.25h6.5M12.75 12 15 14.25l-2.25 2.25"}]],
+  "timer": [["circle",{"cx":"12","cy":"13.5","r":"7.5"}],["path",{"d":"M12 13.5V10M9.5 2.5h5M12 2.5V6M19 6l1.5-1.5"}]],
   "translate": [["path",{"d":"M3.75 4.75h9.5v7h-4l-2.5 2.5v-2.5h-3z"}],["path",{"d":"M10.75 10.75h9.5v7h-3v2.5l-2.5-2.5h-4z"}]],
   "trash": [["path",{"d":"M4 6.5h16M9.5 6.5v-2h5v2M6 6.5l1 12.5a1.5 1.5 0 0 0 1.5 1.5h7a1.5 1.5 0 0 0 1.5-1.5l1-12.5M10 10.5v6M14 10.5v6"}]],
   "unlock": [["rect",{"height":"11","rx":"2","width":"16","x":"4","y":"10"}],["path",{"d":"M7 10V7.5a5 5 0 0 1 7.5-4.33"}]],
   "unsplit": [["rect",{"height":"14","rx":"2","width":"18","x":"3","y":"5"}],["path",{"d":"M12 5v4M12 15v4M9.5 12h-3M8 10.5 6.5 12 8 13.5M14.5 12h3M16 10.5l1.5 1.5-1.5 1.5"}]],
+  "unstack": [["rect",{"height":"8","rx":"2","width":"10","x":"3","y":"3"}],["rect",{"height":"8","rx":"2","width":"10","x":"11","y":"13"}],["path",{"d":"M15 7h4M5 17h4"}]],
   "video": [["rect",{"height":"14","rx":"2","width":"17","x":"3.5","y":"5"}],["path",{"d":"M10.25 9.4v5.2a.7.7 0 0 0 1.06.6l4.2-2.6a.7.7 0 0 0 0-1.2l-4.2-2.6a.7.7 0 0 0-1.06.6z"}]],
   "volume": [["path",{"d":"M4 9.5h3.5L12 5.5v13l-4.5-4H4z"}],["path",{"d":"M15.5 9a4 4 0 0 1 0 6M18 6.5a7.5 7.5 0 0 1 0 11"}]],
   "warning": [["path",{"d":"M12 3 21 20H3zM12 9v5"}],["circle",{"cx":"12","cy":"17.5","fill":"currentColor","r":"1","stroke":"none"}]],
@@ -122,6 +133,7 @@ const SHAPES = {
   "workspace-star": [["path",{"d":"M12 3.4L14.53 9.42L21.04 9.96L16.09 14.23L17.58 20.59L12 17.2L6.42 20.59L7.91 14.23L2.96 9.96L9.47 9.42Z"}]],
   "zoom-in": [["circle",{"cx":"10.5","cy":"10.5","r":"6.5"}],["path",{"d":"m15.5 15.5 5 5M8 10.5h5M10.5 8v5"}]],
   "zoom-out": [["circle",{"cx":"10.5","cy":"10.5","r":"6.5"}],["path",{"d":"m15.5 15.5 5 5M8 10.5h5"}]],
+  "zoom-reset": [["circle",{"cx":"10.5","cy":"10.5","r":"6.5"}],["path",{"d":"m15.5 15.5 5 5"}],["rect",{"height":"5","rx":"1","width":"5","x":"8","y":"8"}]],
 } as const satisfies Record<string, readonly IconShape[]>;
 
 /** Semantic aliases: each maps to a drawn icon above. */
@@ -154,4 +166,4 @@ export type IconName = DrawnIconName | keyof typeof ALIASES;
 
 export const ICON_SHAPES: Readonly<Record<DrawnIconName, readonly IconShape[]>> = SHAPES;
 export const ICON_ALIASES: Readonly<Record<keyof typeof ALIASES, DrawnIconName>> = ALIASES;
-export const ICON_NAMES: readonly IconName[] = ["address-bar","app-tile","archive","arrow-left","arrow-right","back","bell","bookmark","calculator","calendar","camera","caption-close","caption-maximize","caption-minimize","caption-restore","cast","check","chevron-down","chevron-left","chevron-right","chevron-up","clock","close","close-others","command","cookie","copy","customize","dots","download","droplet","edit","enter","extensions","external","eye","feed","file","file-text","find","flame","folder","folder-download","folder-open","forward","gear","glasses","glint","globe","grid","grip","heart","history","home","image","info","key","link","location","lock","menu","menu-dots","mic","more","more-horizontal","more-vertical","mute","new-tab","notes","package","palette","pause","pencil","person","picture-in-picture","pin","pip","play","plus","print","private","private-window","profile","puzzle","qr-code","quick-commands","reader","refresh","reload","reset","save","search","settings","share","shield","sidebar","sidebar-toggle","split","split-bottom","split-bottom-left","split-bottom-right","split-left","split-right","split-stacked","split-top","split-top-left","split-top-right","split-view","star","stop","swap","tab-close","tab-group","tab-restore","tab-switch","translate","trash","unlock","unsplit","video","volume","warning","window","workspace","workspace-add","workspace-bolt","workspace-book","workspace-briefcase","workspace-cart","workspace-code","workspace-game","workspace-globe","workspace-heart","workspace-home","workspace-leaf","workspace-music","workspace-star","zoom-in","zoom-out"];
+export const ICON_NAMES: readonly IconName[] = ["address-bar","app-tile","archive","arrow-left","arrow-right","back","bell","block","bookmark","calculator","calendar","camera","caption-close","caption-maximize","caption-minimize","caption-restore","capture","capture-full","capture-selection","cast","chain","check","chevron-down","chevron-left","chevron-right","chevron-up","clock","close","close-others","command","cookie","copy","customize","dots","download","droplet","edit","enter","extensions","external","eye","feed","file","file-text","find","flame","folder","folder-download","folder-open","forward","gear","glasses","glint","globe","grid","grip","heart","history","home","image","info","key","keyboard","link","location","lock","menu","menu-dots","mic","more","more-horizontal","more-vertical","mute","new-tab","note-add","notes","package","palette","password-fill","pause","pencil","person","picture-in-picture","pin","pip","play","plus","print","private","private-window","profile","puzzle","qr-code","quick-commands","reader","refresh","reload","reload-hard","reset","save","search","settings","share","shield","sidebar","sidebar-toggle","split","split-bottom","split-bottom-left","split-bottom-right","split-left","split-right","split-stacked","split-top","split-top-left","split-top-right","split-view","star","stop","swap","tab-close","tab-group","tab-restore","tab-switch","timer","translate","trash","unlock","unsplit","unstack","video","volume","warning","window","workspace","workspace-add","workspace-bolt","workspace-book","workspace-briefcase","workspace-cart","workspace-code","workspace-game","workspace-globe","workspace-heart","workspace-home","workspace-leaf","workspace-music","workspace-star","zoom-in","zoom-out","zoom-reset"];

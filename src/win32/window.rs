@@ -656,6 +656,8 @@ struct WindowChrome {
     html_dl_allowed: bool,
     html_ext_allowed: bool,
     html_bar_extra: i32,
+    /// CSS px of navigation room the address bar's list leaves empty; the pill grows left over it.
+    html_bar_lead: i32,
     // --- end toolbars and feeds ---
     html_tabs_last_state: Option<String>,
     html_rail_last_state: Option<String>,
@@ -881,6 +883,7 @@ impl WindowChrome {
             html_dl_allowed: true,
             html_ext_allowed: true,
             html_bar_extra: 0,
+            html_bar_lead: 0,
             html_tabs_last_state: None,
             html_rail_last_state: None,
             html_state_generation: [0; 3],
@@ -2594,6 +2597,7 @@ pub fn run(app: App) -> windows::core::Result<()> {
         super::panel_bookmarks::register(&app);
         super::panel_history::register(&app);
         super::panel_customize::register(&app);
+        super::toolbar_panel::register(&app); // --- toolbars and feeds (thread T13) ---
         let _ = glass::apply(hwnd);
         app.borrow_mut().hwnd = hwnd;
         super::set_blocker_wake(hwnd); // --- latency (fix E) --- blocker lists built off-thread
@@ -4726,6 +4730,12 @@ unsafe extern "system" fn window_proc(
             }
             WM_TIMER if wparam.0 == side_panel::TIMER_ID => {
                 let running = side_panel::timer(hwnd);
+                // A docked panel's page follows its edge on every frame. It used to be re-bounded only
+                // when the timer stopped: opening, the panel slid over the page and the page then jumped
+                // aside; closing, a gap opened beside the shrinking panel before the page snapped back.
+                if running && side_panel::docked_motion(hwnd) && let Some(app) = app {
+                    apply_sidebar_bounds(hwnd, app);
+                }
                 if !running {
                     let _ = KillTimer(Some(hwnd), side_panel::TIMER_ID);
                     if let Some(app) = app { apply_sidebar_bounds(hwnd, app); }
@@ -6556,7 +6566,8 @@ fn show_tab_context_menu(hwnd: HWND, app: &AppRef, id: TabId, x: i32, y: i32, pi
     let kind = format!("tab:{}", id.0);
     let menu = Menu {
         header: None,
-        entries,
+        // Rows that cannot be used for this tab right now are left out rather than greyed.
+        entries: menu::only_available(entries),
         footer: "Actions for this tab".to_owned(),
     };
     menu::show(hwnd, point, menu::Placement::BelowLeft, menu, &kind, move |app, chosen| {
@@ -9881,15 +9892,17 @@ fn html_sync(hwnd: HWND) {
     let settings = App::settings(&app);
     // --- toolbars and feeds (thread T13) --- the address bar's own list decides which buttons take room.
     let bar_extra = crate::toolbar_prefs::right_static_px(&settings);
+    let bar_lead = crate::toolbar_prefs::left_free_px(&settings.toolbar_buttons);
     let (dl_allowed, ext_allowed) = (crate::toolbar_prefs::address_has(&settings, "downloads"), crate::toolbar_prefs::address_has(&settings, "extensions"));
     let _ = with_chrome(hwnd, |s| {
         s.html_bar_extra = bar_extra;
+        s.html_bar_lead = bar_lead;
         s.html_dl_allowed = dl_allowed;
         s.html_ext_allowed = ext_allowed;
     });
     // --- end toolbars and feeds ---
     let slot = with_chrome(hwnd, |s| s.toolbar_slot()).unwrap_or(0);
-    let (pillx, pillw, menux) = chrome_host::toolbar_css_placement_with_slot(&layout, dpi, slot).unwrap_or_default();
+    let (pillx, pillw, menux) = chrome_host::toolbar_css_placement_with_room(&layout, dpi, slot, bar_lead).unwrap_or_default();
     // While a private tab is shown, the chrome takes its own light or dark look when the private
     // theme asks for one (thread T3); otherwise it follows the normal appearance.
     let system_look = glass::appearance();
@@ -10744,7 +10757,7 @@ fn html_window_command(hwnd: HWND, command: ChromeCommand, view: View) {
         View::Toolbar => s.html_region(),
         View::Tabs => s.html_tab_region(),
         View::Rail => s.html_rail_region(),
-        View::Panel | View::Popup | View::Dialog | View::DialogNotes | View::DialogPrivacy | View::DialogRename | View::DialogAddress | View::BookmarkBar | View::DialogSessions | View::DialogFeeds | View::Hover | View::Split | View::Settings | View::HistoryPage | View::DownloadsPage => None,
+        View::Panel | View::Popup | View::Dialog | View::DialogNotes | View::DialogPrivacy | View::DialogRename | View::DialogAddress | View::BookmarkBar | View::DialogSessions | View::DialogFeeds | View::DialogToolbar | View::Hover | View::Split | View::Settings | View::HistoryPage | View::DownloadsPage => None,
     })
     .flatten();
     let Some(region) = region else {
@@ -11257,7 +11270,7 @@ fn tool_buttons(items: &[String]) -> Vec<chrome_host::protocol::ToolButton> {
         .filter_map(|(index, item)| {
             let id = crate::toolbar_prefs::command_of(item)?;
             let entry = entries.iter().find(|entry| entry.id == id)?;
-            Some(chrome_host::protocol::ToolButton { item: item.clone(), label: entry.label.clone(), index: index as u8 })
+            Some(chrome_host::protocol::ToolButton { item: item.clone(), label: entry.label.clone(), index: index as u8, glyph: crate::toolbar_prefs::command_glyph(id) })
         })
         .collect()
 }
@@ -11547,7 +11560,8 @@ fn open_rail_panel(hwnd: HWND) -> Option<RailKey> {
         Some(side_panel::PanelId::History) => Some(RailKey::History),
         Some(side_panel::PanelId::Customize | side_panel::PanelId::Menu) => Some(RailKey::Customize),
         Some(side_panel::PanelId::WebApp(id)) => Some(RailKey::App(id)),
-        None => None,
+        // --- toolbars and feeds (thread T13) --- the toolbar customiser has no rail button.
+        Some(side_panel::PanelId::Toolbar) | None => None,
     }
 }
 
@@ -11922,7 +11936,7 @@ fn html_suggest_show(hwnd: HWND, app: &AppRef, seq: u32, text: &str, rows: Vec<s
     // page paints, and attaches to that pill's device-pixel edges (see html_hover::place).
     let Some((anchor, width)) = with_chrome(hwnd, |s| {
         let omnibox = s.layout.omnibox;
-        let pill = chrome_host::toolbar_pill_rect_with_slot(&s.layout, s.dpi, s.toolbar_slot()).unwrap_or(RECT {
+        let pill = chrome_host::toolbar_pill_rect_with_room(&s.layout, s.dpi, s.toolbar_slot(), s.html_bar_lead).unwrap_or(RECT {
             left: omnibox.left,
             top: omnibox.top,
             right: omnibox.right,
@@ -11931,7 +11945,7 @@ fn html_suggest_show(hwnd: HWND, app: &AppRef, seq: u32, text: &str, rows: Vec<s
         let mut origin = windows::Win32::Foundation::POINT { x: pill.left, y: pill.top };
         unsafe { let _ = ClientToScreen(hwnd, &mut origin); }
         let (w, h) = (pill.right - pill.left, pill.bottom - pill.top);
-        let css = chrome_host::toolbar_css_placement_with_slot(&s.layout, s.dpi, s.toolbar_slot())
+        let css = chrome_host::toolbar_css_placement_with_room(&s.layout, s.dpi, s.toolbar_slot(), s.html_bar_lead)
             .map_or_else(|| chrome_host::css_px_from_physical(w, s.dpi), |(_, pill_w, _)| pill_w);
         (RECT { left: origin.x, top: origin.y, right: origin.x + w, bottom: origin.y + h }, css.max(1) as u32)
     }) else {
