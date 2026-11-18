@@ -3172,8 +3172,18 @@
   display: flex;
   flex: 1;
   flex-direction: column;
+  align-items: flex-start;
   gap: 2px;
   min-width: 0;
+}
+
+/* These rows explain a choice, so their text wraps instead of running off the card. */
+.pw-pref .sp-label,
+.pw-pref .sp-desc {
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  text-align: start;
 }
 
 .pw-never {
