@@ -52,6 +52,9 @@ export function parsePageLines(text: string): string[] | null {
 export function mountStartSection(host: StartSectionHost): { apply(start: StartSettings, readable: boolean): void } {
   // Speed dials
   const dials = host.card('startpage', 'Dials');
+  // Off by default: a new tab is blank until speed dials are turned on here.
+  const dialsOn = host.switchControl((on) => host.change((s) => { s.dials = on; }));
+  host.row(dials, 'startDials', dialsOn.root);
   const reopen = host.segmentedControl<GroupReopen>('Open the start page on', GROUP_REOPEN.map((key) => [key, GROUP_REOPEN_LABELS[key], GROUP_REOPEN_ARIA[key]] as const), (value) => host.change((s) => { s.groupReopen = value; }));
   host.row(dials, 'startGroupReopen', reopen.root);
   const titles = host.segmentedControl<TitleMode>('Show titles', (['always', 'auto', 'never'] as const).map((key) => [key, TITLE_LABELS[key], TITLE_ARIA[key]] as const), (value) => host.change((s) => { s.titles = value; }));
@@ -168,6 +171,7 @@ export function mountStartSection(host: StartSectionHost): { apply(start: StartS
 
   return {
     apply(start, readable): void {
+      dialsOn.set(start.dials);
       reopen.set(start.groupReopen);
       titles.set(start.titles);
       addButton.set(start.addButton);
@@ -183,7 +187,7 @@ export function mountStartSection(host: StartSectionHost): { apply(start: StartS
       wbg.set(start.widgetBg);
       wcolor.value = start.widgetColor;
       wdrag.set(start.widgetDrag);
-      for (const control of [reopen, titles, addButton, size, drag, widgetsOn]) control.disable(!readable);
+      for (const control of [dialsOn, reopen, titles, addButton, size, drag, widgetsOn]) control.disable(!readable);
       homepage.disabled = !readable;
       columnsSelect?.button.toggleAttribute('disabled', !readable);
       startupSelect?.button.toggleAttribute('disabled', !readable);

@@ -17,6 +17,8 @@ pub const SCHEME: &str = "bowser";
 pub const SETTINGS_HOST: &str = "settings";
 /// Title of a settings tab (strip, window title, session).
 pub const SETTINGS_TITLE: &str = "Settings";
+/// Title of the first-run welcome tab (`bowser://settings/welcome`).
+pub const WELCOME_TITLE: &str = "Welcome to Bowser";
 /// The settings gear as a 32px PNG favicon (icons/settings-favicon.png, drawn from
 /// icons/menu/gear.svg in a slate that reads on dark and light strips).
 pub const SETTINGS_FAVICON: &[u8] = include_bytes!("../icons/settings-favicon.png");
@@ -66,10 +68,13 @@ pub enum Section {
     Extensions,
     Updates,
     About,
+    /// The first-run welcome (`bowser://settings/welcome`, docs/design/welcome.md): drawn by the
+    /// settings page as a full-page flow over its sections, never listed in its navigation.
+    Welcome,
 }
 
 impl Section {
-    pub const ALL: [Self; 19] = [
+    pub const ALL: [Self; 20] = [
         Self::Profile,
         Self::Appearance,
         Self::Tabs,
@@ -89,6 +94,7 @@ impl Section {
         Self::Extensions,
         Self::Updates,
         Self::About,
+        Self::Welcome,
     ];
 
     /// The path segment and wire key (`bowser://settings/<key>`, `settingsgo.s`).
@@ -113,6 +119,7 @@ impl Section {
             Self::Extensions => "extensions",
             Self::Updates => "updates",
             Self::About => "about",
+            Self::Welcome => "welcome",
         }
     }
 
@@ -154,6 +161,7 @@ impl InternalPage {
 
     pub fn title(self) -> &'static str {
         match self {
+            Self::Settings(Some(Section::Welcome)) => WELCOME_TITLE,
             Self::Settings(_) => SETTINGS_TITLE,
             Self::History => HISTORY_TITLE,
             Self::Downloads => DOWNLOADS_TITLE,
@@ -303,8 +311,19 @@ mod tests {
             assert_eq!(parse(&page.url()), Some(page));
             assert_eq!(Section::from_key(section.key()), Some(section));
         }
-        assert_eq!(Section::ALL.len(), 19, "page tools (T7), stacks (T10) and passwords joined the sixteen");
+        assert_eq!(Section::ALL.len(), 20, "page tools (T7), stacks (T10), passwords and the welcome joined the sixteen");
         assert_eq!(parse_input("bowser://settings/downloads"), Some(InternalPage::Settings(Some(Section::Downloads))));
+    }
+
+    #[test]
+    fn the_welcome_is_a_settings_route_with_its_own_title() {
+        let welcome = InternalPage::Settings(Some(Section::Welcome));
+        assert_eq!(parse_input("bowser://settings/welcome"), Some(welcome));
+        assert_eq!(welcome.url().as_str(), "bowser://settings/welcome");
+        assert!(persistable(&welcome.url()), "a restored session reopens it");
+        assert_eq!(welcome.title(), "Welcome to Bowser");
+        assert_eq!(InternalPage::Settings(Some(Section::About)).title(), "Settings");
+        assert!(welcome.same_page(InternalPage::Settings(None)), "it reuses the settings tab");
     }
 
     #[test]

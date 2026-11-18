@@ -169,13 +169,14 @@ pub fn css_px_from_physical(physical: i32, dpi: u32) -> i32 {
 }
 
 /// CSS px the toolbar reserves for the download button while it shows (docs/design/downloads.md): the
-/// 28 px button and a 4 px gap. The pill gives up exactly this much width, so the page's actions group
+/// 28 px button, edge to edge with its neighbours (the hover discs never overlap; a looser 32 px pitch
+/// spread the bar's icons out). The pill gives up exactly this much width, so the page's actions group
 /// moves left by the same amount and the menu button never moves. The toolbar page agrees (`.has-dl`).
-pub const DL_BUTTON_SLOT: i32 = 32;
+pub const DL_BUTTON_SLOT: i32 = 28;
 
 /// CSS px the toolbar reserves for the extensions button (docs/extensions.md), left of the download
-/// button's slot: the same 28 px button and 4 px gap. The toolbar page agrees (`.has-ext`).
-pub const EXT_BUTTON_SLOT: i32 = 32;
+/// button's slot: the same 28 px button, no gap. The toolbar page agrees (`.has-ext`).
+pub const EXT_BUTTON_SLOT: i32 = 28;
 
 /// Pill x, pill width and menu x in CSS px relative to the HTML toolbar host's left edge.
 pub fn toolbar_css_placement(layout: &Layout, dpi: u32) -> Option<(i32, i32, i32)> {
@@ -630,7 +631,7 @@ mod tests {
 
     #[test]
     fn the_download_button_slot_comes_out_of_the_pill_and_nothing_else() {
-        assert_eq!(DL_BUTTON_SLOT, 32);
+        assert_eq!(DL_BUTTON_SLOT, 28);
         for dpi in [96, 120, 144, 192] {
             for width in [760, 1100, 1600] {
                 let layout = compute_in_frame(width, 800, dpi, 3, 0, false);

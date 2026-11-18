@@ -789,7 +789,7 @@ export const AREAS: readonly AreaSpec[] = [
     group('tabBar', 'Tab bar', 'tabs', ['tabPosition', 'tabs_scroll', 'tabs_wheel_switch', 'tabs_remove_spacing_maximised', 'tabs_active_min_width', 'tabs_load_indicator', 'tabs_minimise_active', 'tabs_title_notifications', 'tabs_unread_indicator', 'tabs_dim_hibernated', 'tabs_inactive_days', 'tabPreviewImages', 'tabPreviewMemory']),
     group('newTabs', 'New tabs', 'tabs', ['tabs_new_tab_page', 'tabs_new_tab_url', 'tabs_new_tab_position', 'tabs_link_background', 'tabs_duplicate_position', 'tabs_focus_page']),
     group('groups', 'Groups and workspaces', 'stacks', ['grouping', 'tabs_workspaces', 'workspaceRules', 'splitEdgeDrop', 'tabs_tile_titles', 'tabs_tile_tight', 'tabs_workspace_scroll', 'tabs_workspace_counts']),
-    group('startPage', 'Start page', 'startpage', ['startTitles', 'startThumbSize', 'startWidgets', 'startGroupReopen', 'startAddButton', 'startColumns', 'startDragReorder', 'startWidgetColumns', 'startWidgetHeight', 'startWidgetBg', 'startWidgetColor', 'startWidgetDrag']),
+    group('startPage', 'Start page', 'startpage', ['startDials', 'startTitles', 'startThumbSize', 'startWidgets', 'startGroupReopen', 'startAddButton', 'startColumns', 'startDragReorder', 'startWidgetColumns', 'startWidgetHeight', 'startWidgetBg', 'startWidgetColor', 'startWidgetDrag']),
     group('closing', 'Closing', 'tabs', ['tabs_close_related', 'tabs_close_activation', 'tabs_align_close_button', 'tabs_keep_window', 'tabs_confirm_close', 'tabs_double_click', 'tabs_close_left', 'tabs_close_always']),
     group('pinned', 'Pinned and restored', 'tabs', ['tabs_pinned_close', 'tabs_pinned_separator', 'tabs_pinned_restrict', 'tabs_load_pinned', 'tabs_lazy_restore']),
     group('selecting', 'Selecting and audio', 'tabs', ['tabs_selection', 'tabs_selection_active', 'tabs_mute_mode']),
@@ -890,7 +890,7 @@ const CORE_ROWS: ReadonlySet<string> = new Set([
   'fontSize', 'defaultZoom',
   'tabPosition', 'tabs_new_tab_page', 'tabs_new_tab_url', 'tabs_new_tab_position',
   'grouping', 'tabs_workspaces', // --- T10 ---
-  'startTitles', 'startThumbSize', 'startWidgets',
+  'startDials', 'startTitles', 'startThumbSize', 'startWidgets',
   'blocker', 'cookieNotices', 'blockYoutubeVideoAds', 'history', 'historyRetention', 'tracking', 'secHttps', 'spoilerProtection',
   'addrAutocomplete', 'bmNewTab', 'translateOffer', 'feedsOpen',
   ...PAGE_TOOLS_CORE, // --- page tools (T7) ---
@@ -1034,6 +1034,7 @@ const BUILT_ROWS: readonly RowSpec[] = [
   // --- start page --- (docs/design/start-page.md)
   { id: 'startGroupReopen', section: 'startpage', label: 'Start group', aria: 'Open the start page on', description: '', keywords: 'speed dial group last first new tab start page reopen Open the start page on Which speed dial group a new tab shows first.' },
   { id: 'startTitles', section: 'startpage', label: 'Titles', aria: 'Show titles', description: '', keywords: 'speed dial titles names always never needed labels Show titles When a speed dial shows its name. When needed shows it under tiles without a chosen image, and on hover for the rest.' },
+  { id: 'startDials', section: 'startpage', label: 'Speed dials', aria: 'Show speed dials on new tabs', description: '', keywords: 'speed dials new tab blank start page groups sites pinned Show speed dials on new tabs Off, a new tab is blank.' },
   { id: 'startAddButton', section: 'startpage', label: 'Add button', aria: 'Show the add button', description: '', keywords: 'speed dial add button plus tile new site Show the add button A tile at the end of each group for adding a site.' },
   { id: 'startColumns', section: 'startpage', label: 'Columns', aria: 'Maximum columns', description: '', keywords: 'speed dial columns row grid width Maximum columns The most speed dials in a row. Fewer show when the window is narrow.' },
   { id: 'startThumbSize', section: 'startpage', label: 'Tile size', description: '', keywords: 'speed dial thumbnail size tiny small medium large huge tiles Tile size How large each speed dial tile is.' },

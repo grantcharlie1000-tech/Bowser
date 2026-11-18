@@ -43,7 +43,7 @@ pub const TEMPLATE: &str = "# Bowser settings. Restart Bowser after editing.\r\n
     # tracking_prevention=balanced\r\n\
     # theme=helium\r\n\
     # theme_accent=\r\n\
-    # toolbar_buttons=back,forward,reload,site-info,split,reader,extensions,downloads\r\n\
+    # toolbar_buttons=back,forward,reload,site-info,split,reader,extensions\r\n\
     # centred_address_bar=true\r\n\
     # minimal_url=true\r\n\
     # show_load_progress=true\r\n\
@@ -107,6 +107,7 @@ pub const TEMPLATE: &str = "# Bowser settings. Restart Bowser after editing.\r\n
     # start_widget_bg=translucent\r\n\
     # start_widget_color=#1f2933\r\n\
     # start_widget_drag=true\r\n\
+    # start_dials=false\r\n\
     # tabs_new_tab_page=start\r\n\
     # tabs_close_activation=right\r\n\
     # tabs_keep_window=true\r\n\
@@ -1784,6 +1785,7 @@ mod tests {
                 widget_bg: crate::start_page::WidgetBackground::Custom,
                 widget_color: "#336699".to_owned(),
                 widget_drag: false,
+                dials: true,
             },
             address: crate::address_settings::AddressSettings::default(),
             page_tools: crate::page_tools::PageTools::default(),
@@ -2136,7 +2138,7 @@ foo=1
              start_group_reopen=first\r\nstart_titles=auto\r\nstart_add_button=false\r\nstart_columns=9\r\nstart_thumb_size=5\r\n\
              start_drag_reorder=false\r\nhomepage=https://home.example/\r\nstartup=specific_pages\r\n\
              startup_pages=https://a.example/ https://b.example/\r\nstart_widgets=true\r\nstart_widget_columns=4\r\n\
-             start_widget_height=tall\r\nstart_widget_bg=custom\r\nstart_widget_color=#336699\r\nstart_widget_drag=false\r\n\
+             start_widget_height=tall\r\nstart_widget_bg=custom\r\nstart_widget_color=#336699\r\nstart_widget_drag=false\r\nstart_dials=true\r\n\
              spoiler_protection=off\r\nspoiler_mode=balanced\r\nspoiler_reduced_effects=true\r\nspoiler_ocr=off\r\nspoiler_feed=off\r\n".to_owned()
                 // The address bar, search and bookmark options follow, one line each (address_settings.rs).
                 + &crate::address_settings::AddressSettings::default().render_into("", "\r\n")

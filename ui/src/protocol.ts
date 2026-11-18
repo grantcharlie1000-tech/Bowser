@@ -613,7 +613,9 @@ export interface WorkspaceMsg {
 export const SETTINGS_SECTIONS = ['profile', 'appearance', 'tabs', 'stacks', 'startpage', 'privacy', 'performance', 'pagetools', 'address', 'search', 'bookmarks', 'keyboard', 'commands', 'passwords', 'downloads', 'media', 'extensions', 'updates', 'about'] as const;
 export type SettingsSection = typeof SETTINGS_SECTIONS[number];
 /** Show `s` on the settings page (`''` is the top). Sent when Bowser navigates the tab, never as an echo. */
-export interface SettingsGoMsg { readonly t: 'settingsgo'; readonly s: SettingsSection | '' }
+/** `welcome` is the first-run flow (docs/design/welcome.md): a route of the settings page, not one of its sections. */
+export const WELCOME_ROUTE = 'welcome';
+export interface SettingsGoMsg { readonly t: 'settingsgo'; readonly s: SettingsSection | '' | typeof WELCOME_ROUTE }
 // --- end settings page ---
 export type SnapshotValue = string | number | boolean | null | readonly SnapshotValue[] | { readonly [key: string]: SnapshotValue };
 export interface SnapshotMsg { readonly t: 'snap'; readonly p: PanelToken; readonly d: { readonly [key: string]: SnapshotValue } }
@@ -1263,7 +1265,7 @@ export function parseInbound(data: unknown): Inbound | null {
       return parseTabGhost(raw);
     // --- settings page ---
     case 'settingsgo': {
-      if (!hasOnlyKeys(raw, ['v', 't', 's']) || raw.v !== 1 || !(raw.s === '' || isOneOf(raw.s, SETTINGS_SECTIONS))) return null;
+      if (!hasOnlyKeys(raw, ['v', 't', 's']) || raw.v !== 1 || !(raw.s === '' || raw.s === WELCOME_ROUTE || isOneOf(raw.s, SETTINGS_SECTIONS))) return null;
       return { t: 'settingsgo', s: raw.s };
     }
     // --- end settings page ---

@@ -912,6 +912,17 @@ fn run(owner: HWND, app: &AppRef, tab: TabId, action: Action) {
                 Err(message) => answer(owner, Err(message)),
             }
         }
+        Action::ImportFrom(browser) => {
+            // Nothing to import (or the importer could not open) is said in the page itself.
+            if let Err(message) = super::import_panel::import_from(owner, browser) {
+                answer(owner, Err(message));
+            }
+        }
+        Action::WelcomeDone => {
+            // The new tab opens (and is shown) first, so closing the welcome never closes the window.
+            let _ = App::new_tab(app);
+            let _ = App::close_tab(app, tab);
+        }
         Action::SetDefault => {
             let Some(exe) = crate::default_browser::current_exe() else {
                 return answer(owner, Err("Bowser's own program path could not be found.".into()));

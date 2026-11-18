@@ -2,7 +2,7 @@
 //! in what order. Three lists in `settings.txt`, each a comma-separated list of item ids:
 //!
 //! ```text
-//! toolbar_buttons=back,forward,reload,site-info,split,reader,extensions,downloads   (the address bar)
+//! toolbar_buttons=back,forward,reload,site-info,split,reader,extensions             (the address bar)
 //! toolbar_tabs=closed-tabs                                                           (the tab bar)
 //! toolbar_panel=                                                                     (the panel bar)
 //! feeds_detect=true
@@ -32,7 +32,9 @@ pub enum Bar {
 pub const ADDRESS_ITEMS: [&str; 10] =
     ["back", "forward", "reload", "site-info", "split", "reader", "bookmark", "newtab", "downloads", "extensions"];
 /// What the address bar shows until the user changes it: today's look (bookmark and new tab are added by choice).
-pub const DEFAULT_ADDRESS: [&str; 8] = ["back", "forward", "reload", "site-info", "split", "reader", "extensions", "downloads"];
+/// Downloads is not in it: on the list it is pinned (always shown); off the list it still appears, the
+/// way Chrome's does, while a download is running or a finished one has not been looked at.
+pub const DEFAULT_ADDRESS: [&str; 7] = ["back", "forward", "reload", "site-info", "split", "reader", "extensions"];
 /// The list an older Bowser saved when the toolbar editor did nothing. It is read as the default,
 /// so nobody who never touched the row gets two new buttons.
 pub const LEGACY_DEFAULT_ADDRESS: [&str; 8] = ["back", "forward", "reload", "site-info", "bookmark", "newtab", "split", "reader"];
@@ -194,11 +196,12 @@ pub fn zone_of(id: &str) -> Zone {
 
 /// Most buttons that take room from the address field at the end of the bar (everything in the right
 /// zone except the two that only appear when there is something to show). The field keeps its width
-/// for the rest: five 32 px slots leave a field of a usable size at the narrowest window.
+/// for the rest: five 28 px slots leave a field of a usable size at the narrowest window.
 pub const MAX_RIGHT_STATIC: usize = 5;
 
 /// Items in the right zone that take their place whether or not anything is going on: everything
-/// there except Downloads and Extensions, which appear (and take room) only when they have something to show.
+/// there except Downloads and Extensions, whose slot Rust reserves only while they show (Downloads
+/// shows all the time when it is pinned, `downloads_ui`, and Extensions when an extension has a popup).
 pub fn right_static(list: &[String]) -> usize {
     list.iter().filter(|id| zone_of(id) == Zone::Right && !matches!(id.as_str(), "downloads" | "extensions")).count()
 }
@@ -208,8 +211,8 @@ pub fn address_has(settings: &Settings, id: &str) -> bool {
     settings.toolbar_buttons.iter().any(|item| item == id)
 }
 
-/// CSS px the right zone's always-there buttons take from the address field: a 28 px button and a 4 px
-/// gap each, the same as the Downloads and Extensions slots.
+/// CSS px the right zone's always-there buttons take from the address field: a 28 px button each, edge
+/// to edge, the same as the Downloads and Extensions slots.
 pub fn right_static_px(settings: &Settings) -> i32 {
     right_static(&settings.toolbar_buttons) as i32 * crate::chrome_host::EXT_BUTTON_SLOT
 }
@@ -308,10 +311,12 @@ mod tests {
         // A different choice, even a smaller one, is kept as it is.
         assert_eq!(parse_list(Bar::Address, "back,bookmark,newtab"), Some(list("back,bookmark,newtab")));
         assert!(!Bar::Address.default_list().contains(&"bookmark".to_owned()) && !Bar::Address.default_list().contains(&"newtab".to_owned()));
-        // Every button the HTML toolbar has today is in the default.
-        for id in ["back", "forward", "reload", "site-info", "split", "reader", "downloads", "extensions"] {
+        // Every button the HTML toolbar has today is in the default, except Downloads: it shows by
+        // itself while a download needs it, and the list only pins it.
+        for id in ["back", "forward", "reload", "site-info", "split", "reader", "extensions"] {
             assert!(Bar::Address.default_list().contains(&id.to_owned()), "{id}");
         }
+        assert!(!Bar::Address.default_list().contains(&"downloads".to_owned()));
     }
 
     #[test]
@@ -411,7 +416,7 @@ mod tests {
         assert_eq!(right_static_px(&defaults), 0, "today's address bar reserves nothing extra");
         let mut more = defaults.clone();
         more.toolbar_buttons = list("back,bookmark,newtab");
-        assert_eq!(right_static_px(&more), 64);
+        assert_eq!(right_static_px(&more), 56, "two 28 px slots");
         for bar in Bar::ALL {
             assert!(OPTION_KEYS.contains(&bar.key()));
         }

@@ -123,7 +123,7 @@ fn a_session_save_keeps_the_workspace_order_in_step() {
     let path = dir.join(crate::workspaces::FILE_NAME);
     let app = app_with_pending(rect(800, 600));
     {
-        let (store, _) = crate::session::SessionStore::open_with(&dir, false).unwrap();
+        let (store, _) = crate::session::SessionStore::open(&dir).unwrap();
         let mut state = app.borrow_mut();
         state.workspaces_path = Some(path.clone());
         state.session = crate::session::SessionWriter::new(store).ok();
@@ -319,9 +319,9 @@ fn a_second_window_closed_last_saves_its_tabs_and_never_overwrites_the_first() {
     first.finish(None);
     App::session_finish(&last);
     assert!(!dir.join(crate::session::LOCK_NAME).exists(), "a clean close leaves no crash marker");
-    let (store, offer) = crate::session::SessionStore::open_with(&dir, true).unwrap();
-    let offer = offer.expect("continue where you left off restores the window closed last");
-    assert!(!offer.ask);
+    let (store, offer) = crate::session::SessionStore::open(&dir).unwrap();
+    let offer = offer.expect("the next start restores the window closed last");
+    assert!(!offer.safe);
     let urls: Vec<&str> = offer.session.tabs.iter().map(|tab| tab.url.as_str()).collect();
     assert_eq!(urls, ["https://last.example/"]);
     // The profile's workspaces stay; only the pairing with the first window's tabs is dropped.
@@ -331,5 +331,114 @@ fn a_second_window_closed_last_saves_its_tabs_and_never_overwrites_the_first() {
     assert!(!std::fs::read_to_string(&path).unwrap().contains("order="));
     drop(store);
     drop((early, last));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// A further window (`--new-window`) of a profile whose first window is open, showing `address`
+/// and saved once.
+fn further_window(dir: &std::path::Path, address: &str) -> AppRef {
+    let app = app_with_pending(rect(800, 600));
+    app.borrow_mut().launch_new_window = true;
+    assert!(!app.borrow_mut().init_session(dir), "the first window holds the main session");
+    assert!(app.borrow().window_slot.is_some(), "a further window gets a slot of its own");
+    let id = App::active_tab_id(&app);
+    page(&app, id, address);
+    App::session_save_now(&app);
+    app
+}
+
+fn pending_urls(app: &AppRef) -> Vec<String> {
+    app.borrow().pending_restore.as_ref().map_or_else(Vec::new, |session| session.tabs.iter().map(|tab| tab.url.clone()).collect())
+}
+
+fn main_window(dir: &std::path::Path, address: &str) -> AppRef {
+    let app = app_with_pending(rect(800, 600));
+    assert!(app.borrow_mut().init_session(dir));
+    let id = App::active_tab_id(&app);
+    page(&app, id, address);
+    App::session_save_now(&app);
+    app
+}
+
+/// Windows ends the session with three windows open, one of which the person had closed first:
+/// the two left open both come back, each as its own window, and the closed one does not.
+#[test]
+fn every_window_left_open_comes_back_and_a_window_closed_on_purpose_does_not() {
+    let dir = temp_dir("windows");
+    let main = main_window(&dir, "https://main.example/");
+    let kept = further_window(&dir, "https://kept.example/");
+    let closed = further_window(&dir, "https://closed.example/");
+    let kept_slot = kept.borrow().window_slot.clone().unwrap();
+    let closed_slot = closed.borrow().window_slot.clone().unwrap();
+    App::session_finish(&closed);
+    assert!(!crate::session::slot_dir(&dir, &closed_slot).exists(), "closed on purpose: forgotten");
+    // Restart, shutdown or sign-out: the order the windows close in does not matter.
+    App::session_finish_at_end_session(&main);
+    App::session_finish_at_end_session(&kept);
+    drop((main, kept, closed));
+
+    let next = app_with_pending(rect(800, 600));
+    assert!(next.borrow_mut().init_session(&dir));
+    assert_eq!(pending_urls(&next), ["https://main.example/"]);
+    assert_eq!(next.borrow().stale_window_slots, std::slice::from_ref(&kept_slot), "the other window is reopened");
+    // What `reopen_other_windows` starts: `--new-window --restore-window <slot>`.
+    let reopened = app_with_pending(rect(800, 600));
+    reopened.borrow_mut().launch_new_window = true;
+    reopened.borrow_mut().launch_restore_window = Some(kept_slot.clone());
+    assert!(!reopened.borrow_mut().init_session(&dir));
+    assert_eq!(reopened.borrow().window_slot.as_deref(), Some(kept_slot.as_str()));
+    assert_eq!(pending_urls(&reopened), ["https://kept.example/"]);
+    // A second process for the same slot gets nothing, so it opens no window.
+    let twice = app_with_pending(rect(800, 600));
+    twice.borrow_mut().launch_new_window = true;
+    twice.borrow_mut().launch_restore_window = Some(kept_slot);
+    assert!(!twice.borrow_mut().init_session(&dir));
+    assert!(twice.borrow().window_slot.is_none());
+    App::session_finish(&reopened);
+    App::session_finish(&next);
+    drop((next, reopened, twice));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// The main window is closed while a further window stays open, and that window then stops
+/// without being closed (a crash, a power cut): the next start shows the further window's tabs in
+/// the first window, and the main window's tabs, closed on purpose, stay closed.
+#[test]
+fn a_further_window_left_open_is_restored_into_the_first_window_when_nothing_else_is() {
+    let dir = temp_dir("adopt");
+    let main = main_window(&dir, "https://main.example/");
+    let other = further_window(&dir, "https://other.example/");
+    let slot = other.borrow().window_slot.clone().unwrap();
+    App::session_finish(&main);
+    App::session_finish_at_end_session(&other);
+    drop((main, other));
+
+    let next = app_with_pending(rect(800, 600));
+    assert!(next.borrow_mut().init_session(&dir));
+    assert_eq!(pending_urls(&next), ["https://other.example/"]);
+    assert!(next.borrow().stale_window_slots.is_empty());
+    assert!(!crate::session::slot_dir(&dir, &slot).exists(), "the slot is now the main session");
+    let saved = crate::session::Session::parse(&std::fs::read_to_string(dir.join(crate::session::FILE_NAME)).unwrap()).unwrap();
+    assert_eq!(saved.tabs[0].url, "https://other.example/", "written before the slot was removed");
+    App::session_finish(&next);
+    drop(next);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// A further window closed last (the main window was closed first) is the session that comes back,
+/// and leaves no slot behind.
+#[test]
+fn a_further_window_closed_last_becomes_the_saved_session() {
+    let dir = temp_dir("closed-last");
+    let main = main_window(&dir, "https://main.example/");
+    let other = further_window(&dir, "https://other.example/");
+    let slot = other.borrow().window_slot.clone().unwrap();
+    App::session_finish(&main);
+    App::session_finish(&other);
+    drop((main, other));
+    assert!(!crate::session::slot_dir(&dir, &slot).exists());
+    let (_, offer) = crate::session::SessionStore::open(&dir).unwrap();
+    let urls: Vec<String> = offer.unwrap().session.tabs.into_iter().map(|tab| tab.url).collect();
+    assert_eq!(urls, ["https://other.example/"]);
     let _ = std::fs::remove_dir_all(dir);
 }
