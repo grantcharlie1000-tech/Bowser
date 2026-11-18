@@ -1432,6 +1432,22 @@
   gap: var(--bw-space-2);
 }
 
+/* ---- Back up and restore: password fields, then the button ---- */
+.sp-backup {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--bw-space-2);
+}
+
+.sp-backup-password {
+  flex: 1 1 160px;
+  min-width: 0;
+  max-width: 240px;
+  border-color: var(--sp-field-edge);
+  background: var(--sp-field);
+}
+
 /* ---- Theme accent swatch ---- */
 .sp-color {
   width: 36px;

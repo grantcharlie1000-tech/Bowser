@@ -2418,9 +2418,10 @@ test('simple: Manage on the profile row opens All settings at Profiles', () => {
 });
 
 test('settings rows render a single line of text', () => {
-  // Only Search suggestions carries a sub-line: it says what turning it on sends, and to whom.
+  // Only rows that must say what leaves Bowser or what is replaced carry a sub-line: Search suggestions
+  // (what turning it on sends, and to whom) and the backup file (what it holds; what a restore replaces).
   const described = logic.ROWS.filter((row) => row.description !== '').map((row) => row.id);
-  assert.deepEqual(described, ['searchSuggestions']);
+  assert.deepEqual(described, ['searchSuggestions', 'backupExport', 'backupImport']);
   deliver(fixture.snap);
   const nodeOf = (id) => app.querySelector(`[data-opens="${id}"]`) ?? app.querySelector(`.sp-row[data-row="${id}"]`);
   for (const id of ['reset', 'deleteData', 'winReset', 'panelReset']) {
@@ -2977,4 +2978,54 @@ test('welcome: the Search step offers the built-in engines the list still has an
   radios.find((tile) => tile.dataset.engine === 'google').click();
   assert.deepEqual(sentHere.at(-1), { a: 'engine', text: 'default\tgoogle' });
   assert.equal(w.ENGINE_CHOICES.length, 4);
+});
+
+test('Back up and restore: passwords are checked, sent once with the command and cleared from the page', () => {
+  assert.equal(logic.backupPasswordProblem('seven77', 'seven77'), 'Use a password of at least 8 characters.');
+  assert.equal(logic.backupPasswordProblem('correct horse', 'correct house'), 'The two passwords are different.');
+  assert.equal(logic.backupPasswordProblem('x'.repeat(1025), 'x'.repeat(1025)), 'That password is too long.');
+  assert.equal(logic.backupPasswordProblem('correct horse', 'correct horse'), null);
+  assert.ok(logic.AREAS.find((a) => a.key === 'about').groups.some((g) => g.key === 'backup'));
+  assert.ok(logic.matchRows('backup').has('backupExport') && logic.matchRows('restore').has('backupImport'));
+  deliver(fixture.snap);
+  searchFor('');
+  const exportRow = rowNode('backupExport');
+  const [password, repeat] = exportRow.querySelectorAll('input');
+  assert.equal(password.type, 'password');
+  assert.equal(repeat.type, 'password');
+  const exportButton = exportRow.querySelector('button');
+  sent.length = 0;
+  password.value = 'short';
+  repeat.value = 'short';
+  exportButton.click();
+  assert.equal(sent.length, 0, 'a short password is refused in the page');
+  assert.equal(app.querySelector('.sp-toast').textContent, 'Use a password of at least 8 characters.');
+  password.value = 'correct horse';
+  repeat.value = 'correct house';
+  exportButton.click();
+  assert.equal(sent.length, 0);
+  assert.equal(app.querySelector('.sp-toast').textContent, 'The two passwords are different.');
+  repeat.value = 'correct horse';
+  exportButton.click();
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].a, 'backupexport');
+  assert.equal(sent[0].text, 'correct horse');
+  assert.equal(password.value + repeat.value, '', 'nothing secret stays in the page');
+  deliver({ ...fixture.snap, d: { ...fixture.snap.d, ack: 'saved' } });
+  assert.equal(app.querySelector('.sp-toast').textContent, 'Backup saved');
+  deliver({ ...fixture.snap, d: { ...fixture.snap.d, ack: 'saved' } });
+  assert.equal(app.querySelector('.sp-toast').textContent, 'Saved', 'only the answer to the export says so');
+
+  const importRow = rowNode('backupImport');
+  const importPassword = importRow.querySelector('input');
+  const importButton = importRow.querySelector('button');
+  sent.length = 0;
+  importButton.click();
+  assert.equal(sent.length, 0, 'an empty password is refused in the page');
+  importPassword.value = 'old7';
+  importButton.click();
+  assert.deepEqual([sent[0].a, sent[0].text], ['backupimport', 'old7'], 'an old backup’s password is whatever it was');
+  assert.equal(importPassword.value, '');
+  deliver({ ...fixture.snap, d: { ...fixture.snap.d, ack: 'failed', error: 'The password is wrong, or the file is damaged.' } });
+  assert.equal(app.querySelector('.sp-toast').textContent, 'The password is wrong, or the file is damaged.');
 });

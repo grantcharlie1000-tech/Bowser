@@ -401,6 +401,25 @@ pub trait EngineAdapter {
     ) {
         done(Err("This browser engine cannot read cookies.".to_owned()));
     }
+    /// Every cookie of the profile `tab` belongs to, for a backup (`crate::backup`). `done` may run
+    /// later.
+    fn export_cookies(
+        &mut self,
+        _tab: crate::tabs::TabId,
+        done: Box<dyn FnOnce(Result<Vec<crate::backup::CookieRecord>, String>)>,
+    ) {
+        done(Err("This browser engine cannot read cookies.".to_owned()));
+    }
+    /// Adds (or replaces) `cookies` in the profile `tab` belongs to, when restoring a backup, and
+    /// reports how many were set. `done` may run later.
+    fn import_cookies(
+        &mut self,
+        _tab: crate::tabs::TabId,
+        _cookies: Vec<crate::backup::CookieRecord>,
+        done: Box<dyn FnOnce(Result<usize, String>)>,
+    ) {
+        done(Err("This browser engine cannot set cookies.".to_owned()));
+    }
     /// Deletes the cookies the browser would send to `url` from one tab and reports how many were
     /// removed. `done` may run later.
     fn clear_site_cookies(

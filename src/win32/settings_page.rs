@@ -882,6 +882,8 @@ fn run(owner: HWND, app: &AppRef, tab: TabId, action: Action) {
             Err(message) => answer(owner, Err(message)),
         },
         // --- end theme options ---
+        Action::BackupExport(password) => backup_export(owner, app, password),
+        Action::BackupImport(password) => backup_import(owner, app, password),
         // --- tab stacks (T10) --- workspace rules.
         Action::WorkspaceRuleAdd { site, workspace } => {
             let mut rules = App::workspace_rules(app);
@@ -930,6 +932,47 @@ fn run(owner: HWND, app: &AppRef, tab: TabId, action: Action) {
             answer(owner, crate::default_browser::make_default(&exe));
         }
     }
+}
+
+// --- back up and restore --- the file is picked in Windows' own dialog; the page never names a path.
+
+/// "Export browsing data": the save dialog, then the backup (`App::backup_export`), whose answer
+/// may come later (the cookies). Cancelling the dialog says nothing.
+fn backup_export(owner: HWND, app: &AppRef, password: crate::backup::BackupPassword) {
+    let dir = crate::download_shell::default_downloads_dir().unwrap_or_default();
+    let (now, offset) = (crate::win32::history_now_secs(), crate::win32::history_local_offset());
+    let day = (now as i64 + offset).div_euclid(86_400);
+    let name = crate::backup::default_file_name(&crate::win32::history_civil_date(day));
+    let Some(path) = crate::download_shell::save_dialog(owner, &dir, &name) else {
+        let _ = with(owner, |rt| rt.dirty = true);
+        return;
+    };
+    let raw = owner.0 as isize;
+    App::backup_export(app, path, password, Box::new(move |result| {
+        let owner = HWND(raw as *mut _);
+        answer(owner, result.map(|_| ()));
+        super::window::split_ui_invalidate(owner);
+    }));
+}
+
+/// "Import browsing data": the open dialog, then the restore (`App::backup_import`). On success
+/// Bowser restarts, and the closing process puts the staged files in place (`main`).
+fn backup_import(owner: HWND, app: &AppRef, password: crate::backup::BackupPassword) {
+    let Some(path) = crate::download_shell::open_dialog(owner, "Choose a Bowser backup", "Bowser backups", crate::backup::EXTENSION) else {
+        let _ = with(owner, |rt| rt.dirty = true);
+        return;
+    };
+    let raw = owner.0 as isize;
+    App::backup_import(app, &path, password, Box::new(move |result| {
+        let owner = HWND(raw as *mut _);
+        match result {
+            Ok(_) => super::window::restart_to_update_from_page(owner),
+            Err(message) => {
+                answer(owner, Err(message));
+                super::window::split_ui_invalidate(owner);
+            }
+        }
+    }));
 }
 
 // --- theme options --- the theme file: the person picks the file in Windows' own dialog; the page never

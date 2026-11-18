@@ -101,6 +101,16 @@ fn main() -> ExitCode {
             let _ = fs::remove_dir_all(dir);
         }
     } else if result.is_ok() && bowser::updater::restart_requested() {
+        // A restored backup (src/backup): its files replace the profile's now, after this process has
+        // written everything it keeps in memory, so none of that lands over them.
+        if let Ok(profile) = bowser::profile::active() {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |elapsed| elapsed.as_secs());
+            if let Err(error) = bowser::backup::apply_pending_restore(profile.root(), now) {
+                show_error(&format!("Part of the backup could not be restored: {error}"));
+            }
+        }
         // "Restart to update", once this process has let go of COM and its profile. The new
         // process installs the staged build as it starts.
         let _ = bowser::updater::relaunch_for_restart();

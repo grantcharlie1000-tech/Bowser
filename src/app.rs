@@ -960,6 +960,7 @@ pub use page_translate::Notice as TranslateNotice;
 mod feed_features; // toolbar and feed options at work (thread T13)
 pub(crate) use feed_features::MAX_FEED_ANSWER_BYTES;
 mod privacy; // privacy, history and website appearance (thread T3)
+mod backup; // back up and restore: the export file and the restore (docs/design/backup.md)
 pub use privacy::DeleteReport;
 // --- tab options --- tab behaviour that follows the settings page's Tabs section.
 mod tab_features;

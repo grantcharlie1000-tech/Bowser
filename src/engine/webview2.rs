@@ -4203,6 +4203,38 @@ impl EngineAdapter for WebView2Engine {
         }
     }
 
+    fn export_cookies(
+        &mut self,
+        tab: TabId,
+        done: Box<dyn FnOnce(std::result::Result<Vec<crate::backup::CookieRecord>, String>)>,
+    ) {
+        match cookie_manager(&self.core, tab) {
+            // An empty URI lists every cookie of the profile.
+            Ok(manager) => get_cookies(
+                &manager,
+                "",
+                Box::new(move |result| done(result.map(|cookies| cookies.iter().filter_map(cookie_record).collect()))),
+            ),
+            Err(error) => done(Err(error)),
+        }
+    }
+
+    fn import_cookies(
+        &mut self,
+        tab: TabId,
+        cookies: Vec<crate::backup::CookieRecord>,
+        done: Box<dyn FnOnce(std::result::Result<usize, String>)>,
+    ) {
+        match cookie_manager(&self.core, tab) {
+            Ok(manager) => {
+                // A cookie the runtime refuses (a malformed domain) is skipped, not fatal.
+                let set = cookies.iter().filter(|cookie| add_cookie(&manager, cookie).is_ok()).count();
+                done(Ok(set))
+            }
+            Err(error) => done(Err(error)),
+        }
+    }
+
     fn clear_site_cookies(
         &mut self,
         tab: TabId,
@@ -6968,6 +7000,62 @@ type CookieDone = Box<dyn FnOnce(CookieResult)>;
 
 /// Lists the cookies the browser would send to `url`. The callback runs on the UI thread later.
 fn list_cookies(manager: &ICoreWebView2CookieManager, url: &url::Url, done: CookieDone) {
+    get_cookies(manager, url.as_str(), done);
+}
+
+/// One cookie as a backup keeps it, or `None` when the runtime would not say what it is.
+fn cookie_record(cookie: &ICoreWebView2Cookie) -> Option<crate::backup::CookieRecord> {
+    let text = |read: &dyn Fn(*mut PWSTR) -> Result<()>| -> Option<String> {
+        let mut raw = PWSTR::null();
+        read(&mut raw).ok()?;
+        Some(if raw.is_null() { String::new() } else { CoTaskMemPWSTR::from(raw).to_string() })
+    };
+    let flag = |read: &dyn Fn(*mut BOOL) -> Result<()>| -> Option<bool> {
+        let mut value = BOOL::default();
+        read(&mut value).ok()?;
+        Some(value.as_bool())
+    };
+    unsafe {
+        let mut expires = -1.0f64;
+        cookie.Expires(&mut expires).ok()?;
+        let mut same_site = COREWEBVIEW2_COOKIE_SAME_SITE_KIND_LAX;
+        cookie.SameSite(&mut same_site).ok()?;
+        Some(crate::backup::CookieRecord {
+            name: text(&|out| cookie.Name(out))?,
+            value: text(&|out| cookie.Value(out))?,
+            domain: text(&|out| cookie.Domain(out))?,
+            path: text(&|out| cookie.Path(out))?,
+            expires,
+            http_only: flag(&|out| cookie.IsHttpOnly(out))?,
+            secure: flag(&|out| cookie.IsSecure(out))?,
+            same_site: same_site.0,
+            session: flag(&|out| cookie.IsSession(out))?,
+        })
+    }
+}
+
+/// Creates `record` in the profile (replacing a cookie of the same name, domain and path). A session
+/// cookie keeps the runtime's default expiry (-1: until the browser closes).
+fn add_cookie(manager: &ICoreWebView2CookieManager, record: &crate::backup::CookieRecord) -> Result<()> {
+    unsafe {
+        let cookie = manager.CreateCookie(
+            &HSTRING::from(record.name.as_str()),
+            &HSTRING::from(record.value.as_str()),
+            &HSTRING::from(record.domain.as_str()),
+            &HSTRING::from(record.path.as_str()),
+        )?;
+        if !record.session {
+            cookie.SetExpires(record.expires)?;
+        }
+        cookie.SetIsHttpOnly(record.http_only)?;
+        cookie.SetIsSecure(record.secure)?;
+        cookie.SetSameSite(COREWEBVIEW2_COOKIE_SAME_SITE_KIND(record.same_site))?;
+        manager.AddOrUpdateCookie(&cookie)
+    }
+}
+
+/// `GetCookies` for `uri` (empty: every cookie of the profile). The callback runs on the UI thread later.
+fn get_cookies(manager: &ICoreWebView2CookieManager, uri: &str, done: CookieDone) {
     let slot: Rc<RefCell<Option<CookieDone>>> = Rc::new(RefCell::new(Some(done)));
     let completion = slot.clone();
     let handler = GetCookiesCompletedHandler::create(Box::new(move |status, list| {
@@ -6982,7 +7070,7 @@ fn list_cookies(manager: &ICoreWebView2CookieManager, url: &url::Url, done: Cook
         }
         Ok(())
     }));
-    let uri = HSTRING::from(url.as_str());
+    let uri = HSTRING::from(uri);
     if let Err(error) = unsafe { manager.GetCookies(&uri, &handler) } {
         let done = slot.borrow_mut().take();
         if let Some(done) = done {
