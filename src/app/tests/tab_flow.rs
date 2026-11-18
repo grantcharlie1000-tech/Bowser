@@ -758,6 +758,55 @@ fn restored_tabs_load_lazily_unless_the_options_say_otherwise() {
     assert_eq!(eager.len(), 2, "lazy loading off: every tab but the active one loads at once");
 }
 
+/// After a crash loop the tabs still come back, but none loads: a page that crashed Bowser twice
+/// is not reopened by itself. A blank tab is shown and every saved tab waits to be selected.
+#[test]
+fn a_crash_loop_restores_every_tab_asleep_and_loads_none() {
+    let (app, shared) = fixture();
+    set(&app, |tabs| {
+        tabs.lazy_restore = false;
+        tabs.load_pinned = true;
+    });
+    let tab = |url: &str, pinned: bool| crate::session::SessionTab { url: url.into(), title: "T".into(), pinned, used: 0 };
+    {
+        let mut state = app.borrow_mut();
+        state.pending_restore = Some(crate::session::Session {
+            tabs: vec![tab("https://pinned.example/", true), tab("https://crashy.example/", false), tab("https://other.example/", false)],
+            active: 1,
+            split: None,
+        });
+        state.pending_restore_safe = true;
+    }
+    shared.borrow_mut().calls.clear();
+    App::restore_pending_session(&app);
+    App::load_eager_tabs(&app);
+    let state = app.borrow();
+    assert!(!state.pending_restore_safe);
+    assert!(state.tab_state.eager.is_empty(), "safe mode loads nothing eagerly");
+    let restored: Vec<_> = state.tabs.iter().filter(|tab| tab.url.is_some()).collect();
+    assert_eq!(restored.len(), 3, "every saved tab is back");
+    assert!(restored.iter().all(|tab| tab.discarded), "and asleep");
+    let shown = state.tabs.iter().find(|tab| tab.id == state.tab_model.active()).unwrap();
+    assert!(shown.url.is_none(), "a blank tab is shown");
+    drop(state);
+    assert!(!calls(&shared).iter().any(|call| call.starts_with("navigate")), "{:?}", calls(&shared));
+}
+
+/// Closing every tab is saved as an empty session (the last tab leaves a blank one behind), so the
+/// tabs that were closed on purpose do not come back at the next start.
+#[test]
+fn closing_every_tab_saves_an_empty_session() {
+    let (app, _shared) = fixture();
+    let ids = tabs(&app, 2);
+    page(&app, ids[0], "https://a.example/");
+    page(&app, ids[1], "https://b.example/");
+    assert_eq!(App::session_snapshot(&app).unwrap().tabs.len(), 2);
+    for id in ids {
+        App::close_tab(&app, id);
+    }
+    assert_eq!(App::session_snapshot(&app), Some(crate::session::Session::empty()));
+}
+
 #[test]
 fn sleeping_tabs_restored_after_a_restart_show_their_site_icon_without_loading() {
     let _profile = crate::profile::TestProfileGuard::isolated();

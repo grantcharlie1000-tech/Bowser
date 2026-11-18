@@ -1,10 +1,17 @@
-//! Crash recovery: a small, versioned snapshot of the open tabs plus a "running" marker.
+//! Tab persistence: a small, versioned snapshot of the open tabs plus a "running" marker.
+//!
+//! The open tabs survive everything except the person closing them: a normal close, a Windows
+//! restart or sign-out, an update, a crash, a power cut, and a crash loop all bring them back on the
+//! next start, without asking. Closing every tab is recorded as an empty session, so tabs that were
+//! closed on purpose do not come back.
 //!
 //! Files in `%LOCALAPPDATA%\Bowser`:
 //! * `session.txt`     - latest snapshot (atomic temp + rename, size capped).
-//! * `session.prev`    - the snapshot that existed when this run first saved (one-step backup).
-//! * `session.crashed-<unix>` - a snapshot set aside by the crash-loop guard. Never overwritten;
-//!   only the newest [`MAX_CRASHED_KEPT`] are kept. A legacy `session.crashed` is left alone.
+//! * `session.prev`    - the snapshot that existed when this run first saved (one-step backup). It is
+//!   read when `session.txt` is missing or damaged.
+//! * `session.crashed-<unix>` - a copy of the snapshot taken by the crash-loop guard. Never
+//!   overwritten; only the newest [`MAX_CRASHED_KEPT`] are kept. A legacy `session.crashed` is left
+//!   alone.
 //! * `running.lock`    - created when the session is opened, removed on clean exit. Its presence
 //!   at the next open means the previous run ended unexpectedly. It holds the number of
 //!   consecutive crashed runs and is kept open with no sharing from the moment the session is
@@ -35,12 +42,9 @@ pub const CRASHED_NAME: &str = "session.crashed";
 pub const CRASHED_PREFIX: &str = "session.crashed-";
 pub const MAX_CRASHED_KEPT: usize = 3;
 pub const LOCK_NAME: &str = "running.lock";
-/// Left by "Restart to update" just before a clean close, so the next start reopens the saved
-/// tabs without asking, as if the browser had not closed.
+/// Left by "Restart to update" just before a clean close. Every start now restores the saved tabs,
+/// so the marker no longer changes anything; it is still removed when the session is opened.
 pub const RESTART_NAME: &str = "restart.marker";
-/// An older restart marker is ignored, so a relaunch that failed does not restore tabs on some
-/// later, ordinary start.
-const RESTART_MARKER_SECS: u64 = 120;
 /// Room for every snapshot `Session::from_tabs` can build: [`MAX_TABS`] tabs with addresses of
 /// [`MAX_URL_BYTES`] and titles of [`MAX_TITLE_CHARS`] four-byte characters come to about 963 KiB.
 /// At 512 KiB such a session was silently never written (R-9).
@@ -48,10 +52,14 @@ pub const MAX_FILE_BYTES: usize = 1024 * 1024;
 pub const MAX_TABS: usize = 200;
 pub const MAX_URL_BYTES: usize = 4096;
 pub const MAX_TITLE_CHARS: usize = 200;
-/// Minimum time between two writes, enforced by the one-shot timer in the window procedure.
-pub const SAVE_DEBOUNCE_MS: u32 = 5_000;
+/// Minimum time between two writes, enforced by the one-shot timer in the window procedure. A crash
+/// or power cut loses at most this much tab activity. Writes run on [`SessionWriter`]'s thread and
+/// an unchanged snapshot is never written, so a short interval costs the UI thread nothing.
+pub const SAVE_DEBOUNCE_MS: u32 = 1_000;
 /// This many crashed runs in a row (the original and a run that restored its session) make the
-/// next start fresh, with the snapshot set aside as `session.crashed`.
+/// next start restore the tabs in safe mode: every tab comes back asleep and none loads until it is
+/// selected, so a page that crashes Bowser cannot crash it again on its own. A copy of the snapshot
+/// is also kept as `session.crashed-<unix>`.
 pub const CRASH_LOOP_LIMIT: u32 = 2;
 
 const HEADER_V1: &str = "bowser-session 1";
@@ -137,6 +145,12 @@ pub fn persistable_url(url: &Url) -> Option<String> {
 }
 
 impl Session {
+    /// No tabs worth keeping (every tab was closed, or only New Tab pages are open). Saved so the
+    /// next start does not bring back tabs that were closed on purpose.
+    pub fn empty() -> Self {
+        Self { tabs: Vec::new(), active: 0, split: None }
+    }
+
     /// Builds a snapshot from `(url, title, pinned)` in strip order. Tabs without a persistable
     /// URL are dropped. `active` indexes the input; if the active tab was dropped the first
     /// remaining tab is active. `None` when nothing is worth saving.
@@ -344,6 +358,23 @@ impl Session {
     }
 }
 
+/// Reads a session file's text. `Ok(None)` is a valid file that records no tabs (every tab was
+/// closed on purpose); `Err` is a damaged file (wrong header, oversized, or tab lines of which none
+/// could be read), for which the caller falls back to the backup.
+fn parse_file(text: &str) -> Result<Option<Session>, ()> {
+    if text.len() > MAX_FILE_BYTES {
+        return Err(());
+    }
+    let header = text.lines().next().ok_or(())?;
+    if header != HEADER && header != HEADER_V1 {
+        return Err(());
+    }
+    if !text.lines().any(|line| line.starts_with("tab\t")) {
+        return Ok(None);
+    }
+    Session::parse(text).map(Some).ok_or(())
+}
+
 fn unescape(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut chars = text.chars();
@@ -463,30 +494,21 @@ fn parse_lock(text: &str) -> u32 {
         .unwrap_or(0)
 }
 
+/// The tabs to bring back at this start. Always restored, never asked about.
 #[derive(Debug)]
 pub struct Offer {
     pub session: Session,
+    /// Crashed runs in a row, including the one this restores from (0 after a clean exit).
     pub consecutive: u32,
-    /// False after "Restart to update": the tabs come back without the crash prompt.
-    pub ask: bool,
+    /// A crash loop: restore every tab asleep and load none of them, so a page that crashes
+    /// Bowser is not reopened automatically.
+    pub safe: bool,
 }
 
 /// Records that this profile is closing only to restart. The clean close still saves the tabs.
 pub fn mark_restart(dir: &Path) -> io::Result<()> {
     fs::create_dir_all(dir)?;
     fs::write(dir.join(RESTART_NAME), crate::permissions::now_secs().to_string())
-}
-
-/// Removes the restart marker and says whether it was recent enough to act on.
-fn take_restart_marker(dir: &Path) -> bool {
-    let path = dir.join(RESTART_NAME);
-    let Ok(text) = fs::read_to_string(&path) else {
-        return false;
-    };
-    let _ = fs::remove_file(&path);
-    text.trim()
-        .parse::<u64>()
-        .is_ok_and(|stamp| crate::permissions::now_secs().saturating_sub(stamp) <= RESTART_MARKER_SECS)
 }
 
 pub struct SessionStore {
@@ -561,9 +583,10 @@ impl Drop for SessionWriter {
     }
 }
 
-/// Moves `session.txt` to a new `session.crashed-<unix>` name (never overwriting an existing
-/// file), then keeps only the newest [`MAX_CRASHED_KEPT`] set-aside snapshots.
-fn set_aside_crashed(dir: &Path) {
+/// Copies `session.txt` to a new `session.crashed-<unix>` name (never overwriting an existing
+/// file), then keeps only the newest [`MAX_CRASHED_KEPT`] copies. `session.txt` itself stays, so the
+/// tabs are still restored.
+fn keep_crashed_copy(dir: &Path) {
     let path = dir.join(FILE_NAME);
     if !path.exists() {
         return;
@@ -585,15 +608,10 @@ fn set_aside_crashed(dir: &Path) {
             .open(&target)
         {
             Ok(file) => {
-                // Drop the placeholder before moving the snapshot onto it. Holding that handle,
-                // or holding `running.lock`, makes the replace fail on some systems.
+                // Drop the placeholder before copying the snapshot onto it.
                 drop(file);
-                if fs::rename(&path, &target).is_err() {
-                    if fs::copy(&path, &target).is_ok() {
-                        let _ = fs::remove_file(&path);
-                    } else {
-                        let _ = fs::remove_file(&target);
-                    }
+                if fs::copy(&path, &target).is_err() {
+                    let _ = fs::remove_file(&target);
                 }
                 break;
             }
@@ -635,21 +653,15 @@ fn prune_crashed(dir: &Path) {
 }
 
 impl SessionStore {
-    /// Inspects the previous run. `None` when another live Bowser holds the lock: this process
-    /// then neither restores nor writes session files.
-    pub fn open(dir: &Path) -> Option<(Self, Option<Offer>)> {
-        Self::open_with(dir, false)
-    }
-
-    /// [`open`](Self::open), and with `restore_clean` the tabs of a run that ended cleanly come back
-    /// too, without asking (the start page settings' "continue where you left off"). A crash is offered
-    /// as always.
+    /// Inspects the previous run and returns the tabs to restore: those of a clean exit, of a crash,
+    /// and (in safe mode) of a crash loop alike. The offer is `None` only when there is nothing to
+    /// restore (first run, or every tab was closed).
     ///
     /// The running marker is taken exclusively here, before any restore decision is returned, so two
     /// launches cannot both read the same snapshot and both rebuild it. `None` means another live
     /// Bowser already holds the marker: the caller must not restore, rewrite, or open a second
     /// session.
-    pub fn open_with(dir: &Path, restore_clean: bool) -> Option<(Self, Option<Offer>)> {
+    pub fn open(dir: &Path) -> Option<(Self, Option<Offer>)> {
         fs::create_dir_all(dir).ok()?;
         let path = dir.join(LOCK_NAME);
         let existed = path.is_file();
@@ -676,45 +688,37 @@ impl SessionStore {
             created_lock: !existed,
             began: false,
         };
-        let restart = take_restart_marker(dir);
-        let offer = match decide_start(prior) {
-            StartDecision::Clean if restart || restore_clean => store.read_session().map(|session| Offer {
-                session,
-                consecutive: 0,
-                ask: false,
-            }),
-            StartDecision::Clean => None,
-            StartDecision::OfferRestore { consecutive } => {
-                store.read_session().map(|session| Offer {
-                    session,
-                    consecutive,
-                    ask: true,
-                })
-            }
+        // Every start restores now, so the "Restart to update" marker only needs clearing.
+        let _ = fs::remove_file(dir.join(RESTART_NAME));
+        let (consecutive, safe) = match decide_start(prior) {
+            StartDecision::Clean => (0, false),
+            StartDecision::OfferRestore { consecutive } => (consecutive, false),
             StartDecision::CrashLoop => {
-                // Set aside, never overwrite; a bad or missing file is simply left alone.
-                set_aside_crashed(dir);
-                None
+                // Keep a copy, never overwrite; a bad or missing file is simply left alone.
+                keep_crashed_copy(dir);
+                (prior.unwrap_or(0).saturating_add(1), true)
             }
         };
+        let offer = store.read_session().map(|session| Offer { session, consecutive, safe });
         Some((store, offer))
     }
 
+    /// The saved tabs: `session.txt`, or `session.prev` when that is missing or damaged. A valid
+    /// file that records no tabs gives `None` without consulting the backup, so tabs that were
+    /// closed on purpose stay closed.
     fn read_session(&self) -> Option<Session> {
-        let mut bytes = Vec::new();
-        File::open(self.dir.join(FILE_NAME))
-            .ok()?
-            .take(MAX_FILE_BYTES as u64 + 1)
-            .read_to_end(&mut bytes)
-            .ok()?;
-        Session::parse(&String::from_utf8(bytes).ok()?)
+        let read = |name: &str| -> Result<Option<Session>, ()> {
+            let mut bytes = Vec::new();
+            File::open(self.dir.join(name))
+                .and_then(|file| file.take(MAX_FILE_BYTES as u64 + 1).read_to_end(&mut bytes))
+                .map_err(|_| ())?;
+            parse_file(&String::from_utf8(bytes).map_err(|_| ())?)
+        };
+        read(FILE_NAME).or_else(|()| read(PREV_NAME)).ok().flatten()
     }
 
-    /// Creates the running marker. `restored` carries the crash count when the user accepted a
-    /// restore; otherwise the count restarts at zero.
-    /// Records the crash count for this run in the marker [`open_with`](Self::open_with) already
-    /// holds. `restored` carries the count when the user accepted a restore; otherwise the count
-    /// restarts at zero. The same handle is rewritten, so the exclusive claim is never dropped
+    /// Records the crash count for this run in the marker [`open`](Self::open) already holds.
+    /// `restored` carries the count when tabs were restored; otherwise the count restarts at zero. The same handle is rewritten, so the exclusive claim is never dropped
     /// between the decision and the running window.
     pub fn begin_run(&mut self, restored: Option<&Offer>) {
         let count = restored.map_or(0, |offer| offer.consecutive);
@@ -799,7 +803,8 @@ impl SessionStore {
         written
     }
 
-    /// Clean exit: final save (if there is anything to save), then remove the running marker.
+    /// Clean exit: final save (if there is anything to save; an empty session records that every
+    /// tab was closed), then remove the running marker.
     pub fn finish(&mut self, session: Option<&Session>) {
         if let Some(session) = session {
             let _ = self.save(session);
@@ -898,7 +903,7 @@ mod tests {
         let offer = Offer {
             session: sample(),
             consecutive: 2,
-            ask: true,
+            safe: false,
         };
         store.begin_run(Some(&offer));
         assert_eq!(store.lock_count, 2);
@@ -1190,7 +1195,10 @@ mod tests {
         store.finish(Some(&sample()));
         assert!(!dir.join(LOCK_NAME).exists());
         let (_, offer) = SessionStore::open(&dir).unwrap();
-        assert!(offer.is_none(), "a clean exit is not offered for restore");
+        let offer = offer.expect("a clean exit's tabs come back");
+        assert_eq!(offer.session, sample());
+        assert_eq!(offer.consecutive, 0);
+        assert!(!offer.safe);
         assert_eq!(
             Session::parse(&fs::read_to_string(dir.join(FILE_NAME)).unwrap()),
             Some(sample())
@@ -1199,32 +1207,56 @@ mod tests {
     }
 
     #[test]
-    fn continue_where_you_left_off_restores_a_clean_exit_without_asking_and_only_when_asked_to() {
+    fn tabs_survive_every_clean_restart_until_they_are_closed() {
         let dir = temp_dir("restore-clean");
-        let (mut store, _) = SessionStore::open(&dir).unwrap();
-        store.begin_run(None);
-        let snapshot = Session {
-            tabs: vec![SessionTab { url: "https://a.test/".to_owned(), title: "A".to_owned(), pinned: false, used: 0 }],
-            active: 0,
-            split: None,
-        };
-        store.finish(Some(&snapshot));
+        for _ in 0..3 {
+            let (mut store, offer) = SessionStore::open(&dir).unwrap();
+            store.begin_run(offer.as_ref());
+            store.finish(Some(&offer.map_or_else(sample, |offer| offer.session)));
+            drop(store);
+            let (_, offer) = SessionStore::open(&dir).unwrap();
+            assert_eq!(offer.expect("restored after a clean exit").session, sample());
+        }
+        // Every tab closed on purpose: recorded as an empty session, which brings nothing back and
+        // does not fall back to the older snapshot in `session.prev`.
+        let (mut store, offer) = SessionStore::open(&dir).unwrap();
+        store.begin_run(offer.as_ref());
+        store.finish(Some(&Session::empty()));
         drop(store);
-        // The default start: a clean exit is not restored.
-        let (store, offer) = SessionStore::open_with(&dir, false).unwrap();
-        assert!(offer.is_none());
-        drop(store);
-        // "Continue where you left off": the tabs come back, with no question.
-        let (_, offer) = SessionStore::open_with(&dir, true).unwrap();
-        let offer = offer.expect("the last session is offered");
-        assert!(!offer.ask, "a clean exit is restored without the crash prompt");
-        assert_eq!(offer.session.tabs.len(), 1);
-        assert_eq!(offer.session.tabs[0].url, "https://a.test/");
+        assert!(dir.join(PREV_NAME).exists());
+        let (_, offer) = SessionStore::open(&dir).unwrap();
+        assert!(offer.is_none(), "closed tabs stay closed");
         let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn restart_marker_restores_a_clean_exit_once_without_asking() {
+    fn a_damaged_session_file_falls_back_to_the_backup() {
+        let dir = temp_dir("fallback");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join(PREV_NAME), sample().serialize()).unwrap();
+        for damaged in [&b"\x00\x01not a session"[..], b"", b"bowser-session 2\ntab\t9\tnot a url\tX\n", &[0xff, 0xfe, 0x00]] {
+            fs::write(dir.join(FILE_NAME), damaged).unwrap();
+            let (_, offer) = SessionStore::open(&dir).unwrap();
+            assert_eq!(offer.expect("the backup is restored").session, sample(), "{damaged:?}");
+        }
+        fs::remove_file(dir.join(FILE_NAME)).unwrap();
+        let (_, offer) = SessionStore::open(&dir).unwrap();
+        assert_eq!(offer.expect("a missing file falls back too").session, sample());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn parse_file_tells_an_empty_session_from_a_damaged_one() {
+        assert_eq!(parse_file(&Session::empty().serialize()), Ok(None));
+        assert_eq!(parse_file("bowser-session 1\nactive 0\n"), Ok(None));
+        assert_eq!(parse_file(&sample().serialize()), Ok(Some(sample())));
+        assert_eq!(parse_file(""), Err(()));
+        assert_eq!(parse_file("garbage\n"), Err(()));
+        assert_eq!(parse_file("bowser-session 2\ntab\tbroken\n"), Err(()));
+    }
+
+    #[test]
+    fn restart_marker_is_cleared_and_tabs_come_back_on_every_start() {
         let dir = temp_dir("restart");
         let (mut store, _) = SessionStore::open(&dir).unwrap();
         store.begin_run(None);
@@ -1232,24 +1264,18 @@ mod tests {
         store.finish(Some(&sample()));
         let (mut store, offer) = SessionStore::open(&dir).unwrap();
         let offer = offer.expect("a restart reopens the saved tabs");
-        assert!(!offer.ask);
         assert_eq!(offer.consecutive, 0);
         assert_eq!(offer.session, sample());
-        assert!(!dir.join(RESTART_NAME).exists(), "the marker is used once");
+        assert!(!dir.join(RESTART_NAME).exists(), "the marker is cleared");
         store.begin_run(Some(&offer));
         store.finish(Some(&sample()));
         let (_, offer) = SessionStore::open(&dir).unwrap();
-        assert!(offer.is_none(), "the next ordinary start is clean");
-        // A stale marker, from a relaunch that never happened, is dropped without restoring.
-        fs::write(dir.join(RESTART_NAME), "1").unwrap();
-        let (_, offer) = SessionStore::open(&dir).unwrap();
-        assert!(offer.is_none());
-        assert!(!dir.join(RESTART_NAME).exists());
+        assert!(offer.is_some(), "an ordinary start restores as well");
         let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn crash_is_offered_once_and_a_second_crash_sets_the_file_aside() {
+    fn a_crash_restores_without_asking_and_a_crash_loop_restores_in_safe_mode() {
         let dir = temp_dir("crash");
         {
             let (mut store, _) = SessionStore::open(&dir).unwrap();
@@ -1258,24 +1284,39 @@ mod tests {
             // Crash: no finish; the handle is closed but the lock file remains.
         }
         let (mut store, offer) = SessionStore::open(&dir).unwrap();
-        let offer = offer.expect("crash offers a restore");
-        assert!(offer.ask, "a crash restore is confirmed by the user");
+        let offer = offer.expect("a crash restores the tabs");
+        assert!(!offer.safe);
         assert_eq!(offer.consecutive, 1);
         assert_eq!(offer.session, sample());
         store.begin_run(Some(&offer));
-        drop(store); // crashes again
+        drop(store); // crashes again, before any save
 
+        for round in 0..3 {
+            let (mut store, offer) = SessionStore::open(&dir).unwrap();
+            let offer = offer.unwrap_or_else(|| panic!("round {round}: a crash loop still restores the tabs"));
+            assert!(offer.safe, "round {round}: in safe mode");
+            assert_eq!(offer.session, sample());
+            assert!(dir.join(FILE_NAME).exists(), "the snapshot stays in place");
+            assert!(!crashed_files(&dir).is_empty(), "a copy is kept");
+            store.begin_run(Some(&offer));
+            drop(store); // and crashes yet again
+        }
+        // A run in safe mode that saves clears the streak: the next crash is an ordinary one.
         let (mut store, offer) = SessionStore::open(&dir).unwrap();
-        assert!(offer.is_none(), "crash loop starts fresh");
-        assert_eq!(crashed_files(&dir).len(), 1);
-        assert!(!dir.join(FILE_NAME).exists());
-        store.begin_run(None);
-        store.finish(None);
+        store.begin_run(offer.as_ref());
+        let mut changed = sample();
+        changed.active = 0;
+        store.save(&changed).unwrap();
+        drop(store);
+        let (_, offer) = SessionStore::open(&dir).unwrap();
+        let offer = offer.unwrap();
+        assert!(!offer.safe);
+        assert_eq!(offer.session, changed);
         let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn declining_a_restore_resets_the_crash_count() {
+    fn a_run_that_restores_nothing_resets_the_crash_count() {
         let dir = temp_dir("decline");
         {
             let (mut store, _) = SessionStore::open(&dir).unwrap();
@@ -1285,13 +1326,11 @@ mod tests {
         {
             let (mut store, offer) = SessionStore::open(&dir).unwrap();
             assert!(offer.is_some());
-            store.begin_run(None); // user said no
+            store.begin_run(None);
         }
         let (_, offer) = SessionStore::open(&dir).unwrap();
-        assert!(
-            offer.is_some(),
-            "still offered: only one crashed run in a row"
-        );
+        let offer = offer.expect("still restored");
+        assert!(!offer.safe, "only one crashed run in a row");
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -1355,7 +1394,7 @@ mod tests {
             // Pre-existing name for the same second must not be overwritten.
             fs::write(dir.join(format!("{CRASHED_PREFIX}9999999999")), "keep").unwrap();
             let (mut store, offer) = SessionStore::open(&dir).unwrap();
-            assert!(offer.is_none(), "round {round} is a crash loop");
+            assert!(offer.is_some_and(|offer| offer.safe), "round {round} is a crash loop");
             store.finish(None);
         }
         assert_eq!(
@@ -1410,7 +1449,7 @@ mod tests {
     }
 
     #[test]
-    fn corrupt_session_with_a_crash_is_not_offered_and_is_left_in_place() {
+    fn corrupt_session_without_a_backup_is_not_offered_and_is_left_in_place() {
         let dir = temp_dir("corrupt");
         fs::create_dir_all(&dir).unwrap();
         fs::write(dir.join(FILE_NAME), "\u{0}\u{1}not a session").unwrap();
@@ -1527,7 +1566,7 @@ mod tests {
         first.save(&sample()).unwrap();
         let before = fs::read(dir.join(FILE_NAME)).unwrap();
         assert!(
-            SessionStore::open_with(&dir, true).is_none(),
+            SessionStore::open(&dir).is_none(),
             "continue-where-you-left-off must not run in the second process"
         );
         assert_eq!(

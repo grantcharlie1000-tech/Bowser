@@ -123,7 +123,7 @@ fn a_session_save_keeps_the_workspace_order_in_step() {
     let path = dir.join(crate::workspaces::FILE_NAME);
     let app = app_with_pending(rect(800, 600));
     {
-        let (store, _) = crate::session::SessionStore::open_with(&dir, false).unwrap();
+        let (store, _) = crate::session::SessionStore::open(&dir).unwrap();
         let mut state = app.borrow_mut();
         state.workspaces_path = Some(path.clone());
         state.session = crate::session::SessionWriter::new(store).ok();
@@ -319,9 +319,9 @@ fn a_second_window_closed_last_saves_its_tabs_and_never_overwrites_the_first() {
     first.finish(None);
     App::session_finish(&last);
     assert!(!dir.join(crate::session::LOCK_NAME).exists(), "a clean close leaves no crash marker");
-    let (store, offer) = crate::session::SessionStore::open_with(&dir, true).unwrap();
-    let offer = offer.expect("continue where you left off restores the window closed last");
-    assert!(!offer.ask);
+    let (store, offer) = crate::session::SessionStore::open(&dir).unwrap();
+    let offer = offer.expect("the next start restores the window closed last");
+    assert!(!offer.safe);
     let urls: Vec<&str> = offer.session.tabs.iter().map(|tab| tab.url.as_str()).collect();
     assert_eq!(urls, ["https://last.example/"]);
     // The profile's workspaces stay; only the pairing with the first window's tabs is dropped.

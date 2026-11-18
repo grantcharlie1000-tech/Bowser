@@ -789,6 +789,9 @@ pub struct App {
     session_save_pending: bool,
     last_session_snapshot: Option<crate::session::Session>,
     pending_restore: Option<crate::session::Session>,
+    /// The pending restore follows a crash loop: every restored tab stays asleep (none loads until
+    /// it is selected) and a blank tab is shown instead.
+    pending_restore_safe: bool,
     /// Addresses a later process handed this window. Held until startup has finished restoring
     /// or opening its own launch address, so they are applied once and are not wiped by restore.
     external_urls: Vec<url::Url>,
@@ -5396,6 +5399,7 @@ impl App {
             session_save_pending: false,
             last_session_snapshot: None,
             pending_restore: None,
+            pending_restore_safe: false,
             external_urls: Vec::new(),
             external_ready: false,
             privacy_stats: None,
@@ -5419,19 +5423,17 @@ impl App {
         }
     }
 
-    /// Opens the crash-recovery state and, after a crash, asks whether to restore.
+    /// Opens the session and queues the saved tabs for restore. They come back after every kind of
+    /// exit (a normal close, a Windows restart, an update, a crash) without asking: tabs stay open
+    /// until the person closes them. A launch that carries an address (a link opened while Bowser
+    /// was closed) restores them as well and opens the address in a tab of its own
+    /// (`restore_pending_session`).
     /// Returns `false` when the session could not be opened because another Bowser holds it.
     /// The caller then must not open a window that rebuilds the saved tabs.
     fn init_session(&mut self, dir: &std::path::Path) -> bool {
-        // --- start page --- "continue where you left off": a clean exit's tabs come back too. A launch
-        // that carries an address (a link opened while Bowser was closed) restores them as well and
-        // opens the address in a tab of its own (`restore_pending_session`). Skipping the restore
-        // there lost the tabs for good: this run's first save replaced `session.txt`.
-        let restore_clean = self.settings.start.startup == crate::start_page::Startup::LastSession;
-        // --- end start page ---
         // Claim the marker before reading workspaces. A launch that loses the claim leaves every
         // session file untouched.
-        let Some((mut store, offer)) = crate::session::SessionStore::open_with(dir, restore_clean) else {
+        let Some((mut store, offer)) = crate::session::SessionStore::open(dir) else {
             // Another Bowser window has this profile; leave its files alone. This window's own
             // workspace set is not the profile's, so it must not replace `workspaces.txt` either.
             let workspaces_path = self.workspaces_path.take();
@@ -5445,20 +5447,9 @@ impl App {
         if let Ok(Some(workspaces)) = crate::workspaces::WorkspaceSet::load(&workspace_path) {
             self.workspaces = workspaces;
         }
-        let accepted = offer.filter(|offer| {
-            !offer.ask
-                || win32::ask_yes_no(&format!(
-                    "Bowser did not close properly last time. Restore your {} open tab{}?",
-                    offer.session.tabs.len(),
-                    if offer.session.tabs.len() == 1 {
-                        ""
-                    } else {
-                        "s"
-                    }
-                ))
-        });
-        store.begin_run(accepted.as_ref());
-        self.pending_restore = accepted.map(|offer| offer.session);
+        store.begin_run(offer.as_ref());
+        self.pending_restore_safe = offer.as_ref().is_some_and(|offer| offer.safe);
+        self.pending_restore = offer.map(|offer| offer.session);
         if self.pending_restore.is_none() {
             // Nothing restored: the file's tab ids are the last run's, so every workspace keeps its
             // name, icon and colour on a fresh blank tab, and this run's first tab stays in the
@@ -5475,11 +5466,17 @@ impl App {
         true
     }
 
-    /// Rebuilds the tab strip from an accepted crash snapshot. Only the active tab loads now;
-    /// the others are created asleep and load when selected. A bad entry never aborts the rest.
+    /// Rebuilds the tab strip from the saved session. Only the active tab loads now; the others are
+    /// created asleep and load when selected. After a crash loop (safe mode) none loads: the saved
+    /// tabs all stay asleep and a blank tab is shown. A bad entry never aborts the rest.
     pub fn restore_pending_session(app: &AppRef) {
-        let Some(session) = app.borrow_mut().pending_restore.take() else {
-            return;
+        let (session, safe) = {
+            let mut state = app.borrow_mut();
+            let safe = std::mem::take(&mut state.pending_restore_safe);
+            let Some(session) = state.pending_restore.take() else {
+                return;
+            };
+            (session, safe)
         };
         let mut active_url = None;
         let mut restored_ids = Vec::with_capacity(session.tabs.len());
@@ -5525,7 +5522,10 @@ impl App {
                 App::note_pinned_site(&mut state, id, saved.pinned, Some(&url)); // --- tab options ---
                 restored_ids.push(Some(id));
                 // --- tab options --- "Load restored tabs when first selected" / "Always load pinned tabs".
-                if (!state.settings.tabs.lazy_restore || (state.settings.tabs.load_pinned && saved.pinned)) && index != session.active {
+                if !safe
+                    && (!state.settings.tabs.lazy_restore || (state.settings.tabs.load_pinned && saved.pinned))
+                    && index != session.active
+                {
                     state.tab_state.eager.push(id);
                 }
                 // --- end tab options ---
@@ -5601,7 +5601,18 @@ impl App {
             return;
         };
         let _ = app.borrow().log.record("session_restored");
-        if app.borrow().initial_url.is_some() {
+        if safe {
+            // Safe mode after a crash loop: the tab that was shown goes back to sleep like the
+            // others and a blank tab is shown, so nothing that may have crashed Bowser loads by itself.
+            {
+                let mut state = app.borrow_mut();
+                let shown = state.tab_model.active();
+                if let Some(tab) = state.tabs.iter_mut().find(|tab| tab.id == shown) {
+                    tab.discarded = true;
+                }
+            }
+            Self::spawn_tab(app, false, None);
+        } else if app.borrow().initial_url.is_some() {
             // The launch carries an address (a link opened while Bowser was closed): the restored
             // tabs all stay, the one that was shown goes back to sleep like the others, and the
             // address gets a new tab, which `submit_initial_url` then loads. Loading the address
@@ -5666,7 +5677,9 @@ impl App {
                 saved_count += 1;
             }
         }
-        let mut session = crate::session::Session::from_tabs(
+        // Nothing worth keeping (every tab closed, only New Tab pages left) is saved as an empty
+        // session, so the next start does not bring back the tabs that were closed.
+        let Some(mut session) = crate::session::Session::from_tabs(
             state.tab_model.iter().map(|model| {
                 let tab = tabs.get(&model.id);
                 (
@@ -5676,7 +5689,9 @@ impl App {
                 )
             }),
             active,
-        )?;
+        ) else {
+            return Some(crate::session::Session::empty());
+        };
         if let Some(mut split) = state.split_view {
             // A pane whose tab is not saved (private, blank, or beyond the cap) leaves the saved
             // layout; a pair that loses one is not saved at all, as before.
@@ -5720,7 +5735,9 @@ impl App {
 
     /// The debounce timer fired: write the snapshot if anything changed.
     pub fn session_save_now(app: &AppRef) {
-        let snapshot = Self::session_snapshot(app);
+        // Until the saved tabs are back in the strip, the strip is not the session: writing it would
+        // replace the tabs that are about to be restored.
+        let snapshot = if app.borrow().pending_restore.is_some() { None } else { Self::session_snapshot(app) };
         let mut state = app.borrow_mut();
         if state.session.is_none() {
             let dirty = std::mem::take(&mut state.workspaces_dirty);
@@ -5751,9 +5768,10 @@ impl App {
         }
     }
 
-    /// Clean exit: final snapshot and removal of the running marker.
+    /// Clean exit: final snapshot and removal of the running marker. A window that closes before
+    /// its saved tabs were restored leaves the saved session as it is.
     pub fn session_finish(app: &AppRef) {
-        let snapshot = Self::session_snapshot(app);
+        let snapshot = if app.borrow().pending_restore.is_some() { None } else { Self::session_snapshot(app) };
         let store = app.borrow_mut().session.take();
         if let Some(store) = store {
             store.finish(snapshot);
@@ -5772,7 +5790,7 @@ impl App {
         let Some((dir, workspaces_path)) = app.borrow_mut().session_unclaimed.take() else {
             return;
         };
-        let Some(snapshot) = snapshot else {
+        let Some(snapshot) = snapshot.filter(|snapshot| !snapshot.tabs.is_empty()) else {
             return; // nothing worth saving: the last saved session stays
         };
         let Some((mut store, _)) = crate::session::SessionStore::open(&dir) else {
@@ -11686,6 +11704,7 @@ mod tests {
             session_save_pending: false,
             last_session_snapshot: None,
             pending_restore: None,
+            pending_restore_safe: false,
             external_urls: Vec::new(),
             external_ready: false,
             privacy_stats: None,
