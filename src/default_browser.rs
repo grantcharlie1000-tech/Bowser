@@ -133,13 +133,31 @@ pub fn launch_advanced_association_ui() -> windows::core::Result<()> {
     }
 }
 
-/// Registers Bowser, then opens the Windows defaults UI. One user-facing error message on failure,
-/// matching the settings page's existing ack/error wire.
+/// Windows Settings' Default apps page, opened on Bowser's own entry (Windows 11 reads
+/// `registeredAppUser`: the `RegisteredApplications` value name `register_hkcu` writes, under HKCU).
+/// Windows 10 ignores the query and shows the Default apps page, where Web browser is listed.
+const DEFAULT_APPS_PAGE: PCWSTR = w!("ms-settings:defaultapps?registeredAppUser=Bowser");
+
+/// Registers Bowser, then takes the user to Windows' Default apps settings for it, where one click
+/// makes it the default. `LaunchAdvancedAssociationUI` alone is not enough: on Windows 10 and 11 it
+/// returns success without showing anything, so it is only the fallback when Settings cannot open.
+/// One user-facing error message on failure, matching the settings page's existing ack/error wire.
 pub fn make_default(exe: &Path) -> Result<(), String> {
     register_hkcu(exe)
         .map_err(|error| format!("Bowser could not be registered as a browser: {error}"))?;
+    if open_default_apps_settings() {
+        return Ok(());
+    }
     launch_advanced_association_ui()
-        .map_err(|error| format!("Windows' default apps dialog could not be opened: {error}"))
+        .map_err(|error| format!("Windows' default apps settings could not be opened: {error}"))
+}
+
+/// Opens Windows Settings at Bowser's Default apps page. False when the shell refused.
+fn open_default_apps_settings() -> bool {
+    use windows::Win32::UI::{Shell::ShellExecuteW, WindowsAndMessaging::SW_SHOWNORMAL};
+    // ShellExecuteW reports failure with a value of 32 or less.
+    let result = unsafe { ShellExecuteW(None, w!("open"), DEFAULT_APPS_PAGE, None, None, SW_SHOWNORMAL) };
+    (result.0 as isize) > 32
 }
 
 /// Reads the `UserChoice` Windows has recorded for the `http` URL association, for the settings

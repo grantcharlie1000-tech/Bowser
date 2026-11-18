@@ -111,6 +111,8 @@ impl Lifetimes {
         let (Some(until), Some(started)) = (self.deadlines[index], self.started[index]) else { return; };
         self.deadlines[index] = Some((now + READY_TIMEOUT).min(started + READY_LIMIT).max(until));
     }
+    /// An attempt to start `index` is under way and its deadline will end it if it stalls.
+    pub(super) fn armed(&self, index: usize) -> bool { self.deadlines[index].is_some() }
     pub(super) fn ready(&mut self, index: usize) { self.deadlines[index] = None; self.started[index] = None; }
     pub(super) fn revoke(&mut self, index: usize) {
         self.owners[index].revoke();

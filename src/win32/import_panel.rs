@@ -97,12 +97,14 @@ pub(crate) const BROWSERS: [(&str, &[&str], &str); 7] = [
     ("helium", &["Helium"], "Helium"),
 ];
 
-/// One click from the welcome: imports `browser`'s bookmarks (and, for Chromium browsers, its
-/// search setting) straight from the profile this PC has, through the same preview and confirm as
-/// the panel. The Default profile goes first. `Err` carries what the welcome shows in its own page
-/// when there is nothing to import (a native popup over the page lost to the page's focus).
-pub(crate) fn import_from(owner: HWND, browser: &str) -> Result<(), String> {
-    let Some(&(_, found_as, name)) = BROWSERS.iter().find(|(key, _, _)| *key == browser) else { return Ok(()) };
+/// One click on the welcome's Import step: imports `browser`'s bookmarks (and, for Chromium
+/// browsers, its search setting) straight from the profile this PC has, with no native menu or
+/// window: picking the browser is the consent, and the welcome says the outcome in its own status
+/// line. The Default profile goes first. `Ok` and `Err` carry that sentence.
+pub(crate) fn import_from(owner: HWND, browser: &str) -> Result<String, String> {
+    let Some(&(_, found_as, name)) = BROWSERS.iter().find(|(key, _, _)| *key == browser) else {
+        return Err("That browser is not one Bowser imports from.".into());
+    };
     // What the welcome's import found, for --diagnostic-log (no paths or names: only the outcome).
     let note = |event: &str| {
         if let Some(app) = super::window::app_of(owner) && let Ok(state) = app.try_borrow() {
@@ -111,15 +113,19 @@ pub(crate) fn import_from(owner: HWND, browser: &str) -> Result<(), String> {
     };
     let nothing = || format!("No {name} bookmarks were found on this PC.");
     if browser == "firefox" {
-        let any = import::detect_browser_profiles()
+        // The newest automatic backup across this PC's Firefox profiles.
+        let newest = import::detect_browser_profiles()
             .into_iter()
-            .any(|profile| profile.browser == "Firefox" && import::firefox::newest_backup(&profile.root).is_some());
-        if !any {
+            .filter(|profile| profile.browser == "Firefox")
+            .filter_map(|profile| import::firefox::newest_backup(&profile.root))
+            .max_by_key(|path| std::fs::metadata(path).and_then(|meta| meta.modified()).ok());
+        let Some(path) = newest else {
             note("welcome_import_none");
             return Err(nothing());
-        }
+        };
         note("welcome_import_found");
-        return import_firefox_backup(owner).map_err(|error| format!("Browser import could not be opened: {error}"));
+        let (bookmarks, skipped) = import::firefox::read_backup(&path)?;
+        return write_bookmarks(bookmarks, skipped, None, false, name);
     }
     let mut profiles: Vec<_> = import::detect_browser_profiles()
         .into_iter()
@@ -130,16 +136,111 @@ pub(crate) fn import_from(owner: HWND, browser: &str) -> Result<(), String> {
         .collect();
     // The first name tried (Opera before Opera GX), then each one's Default profile.
     profiles.sort_by_key(|(rank, profile, _)| (*rank, profile != "Default"));
-    match profiles.into_iter().next() {
-        Some((_, _, path)) => {
-            note("welcome_import_found");
-            import_bookmark_path(owner, path).map_err(|error| format!("Browser import could not be opened: {error}"))
+    let Some((_, _, path)) = profiles.into_iter().next() else {
+        note("welcome_import_none");
+        return Err(nothing());
+    };
+    note("welcome_import_found");
+    import_bookmark_path_quietly(&path, name)
+}
+
+/// The File tile (and Settings' Import button): Windows' own file dialog for a bookmarks file
+/// (Chromium `Bookmarks` or Netscape HTML, as every browser exports) or a password CSV export,
+/// imported with no native menu or window. `Ok(None)` when the dialog was cancelled; otherwise
+/// the sentence the page shows.
+pub(crate) fn import_file(owner: HWND) -> Result<Option<String>, String> {
+    let Some(path) = crate::download_shell::open_dialog_filters(
+        owner,
+        "Choose a bookmarks file or a password export",
+        &[("Bookmarks or passwords", "*.html;*.htm;Bookmarks;*.json;*.csv"), ("All files", "*.*")],
+    ) else {
+        return Ok(None);
+    };
+    let is_csv = path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("csv"));
+    if is_csv { import_passwords_quietly(&path) } else { import_bookmark_path_quietly(&path, "that file") }.map(Some)
+}
+
+fn import_bookmark_path_quietly(path: &std::path::Path, from: &str) -> Result<String, String> {
+    let (bookmarks, skipped) = store::read_bookmark_file(path)?;
+    let (search_engine, unsupported_setting) = path
+        .parent()
+        .map(|parent| parent.join("Preferences"))
+        .and_then(|preferences| std::fs::read_to_string(preferences).ok())
+        .map_or((None, false), |text| import::chromium::parse_search_preference(&text));
+    write_bookmarks(bookmarks, skipped, search_engine, unsupported_setting, from)
+}
+
+fn plural(count: usize, one: &str, many: &str) -> String {
+    format!("{count} {}", if count == 1 { one } else { many })
+}
+
+/// De-duplicates against the active profile, writes what is new, applies a supported search
+/// setting, and says what happened in one or two short sentences.
+fn write_bookmarks(
+    bookmarks: Vec<import::Bookmark>,
+    skipped: usize,
+    search_engine: Option<SearchEngine>,
+    unsupported_setting: bool,
+    from: &str,
+) -> Result<String, String> {
+    let active = profile::active().map_err(|_| "Bowser could not find the active profile.".to_owned())?;
+    let existing = store::existing_bookmarks(&active.bookmarks_file());
+    let found = bookmarks.len();
+    let (new, duplicates) = import::dedupe_bookmarks(bookmarks, &existing);
+    let mut text = if new.is_empty() {
+        if found == 0 {
+            format!("No bookmarks were found in {from}.")
+        } else if duplicates > 0 {
+            format!("Your bookmarks from {from} are already in Bowser.")
+        } else {
+            format!("None of the bookmarks in {from} could be imported.")
         }
-        None => {
-            note("welcome_import_none");
-            Err(nothing())
+    } else {
+        let summary = store::import_bookmarks(&active.bookmarks_file(), new)
+            .map_err(|error| format!("Bowser could not save the bookmarks: {error}"))?;
+        if summary.imported > 0 {
+            // The bar, panel and suggestions re-read the tree.
+            super::window::post_to_every_window(super::WM_RAIL_CHANGED);
+        }
+        let mut text = format!("Imported {} from {from}.", plural(summary.imported, "bookmark", "bookmarks"));
+        if summary.failed > 0 {
+            text.push_str(&format!(" {} could not be added.", summary.failed));
+        }
+        text
+    };
+    let _ = (skipped, unsupported_setting); // Unsafe or unsupported entries are left out quietly.
+    if let Some(engine) = search_engine {
+        let mut updated = settings::Settings::load(&active.settings_file());
+        updated.search_engine = Some(engine);
+        if settings::save(&active.settings_file(), &updated).is_ok() {
+            text.push_str(&format!(" Search now uses {}.", engine.label()));
         }
     }
+    Ok(text)
+}
+
+/// A password CSV export (from a browser or password manager): previewed and committed in one go,
+/// since choosing the file is the consent. Only counts and fixed sentences leave here.
+fn import_passwords_quietly(path: &std::path::Path) -> Result<String, String> {
+    use super::passwords_import::{ImportError, commit_plan, preview_file};
+    let previewed = preview_file(path).map_err(|error| match error {
+        ImportError::VaultUnavailable => "Saved passwords could not be opened for this profile.".to_owned(),
+        ImportError::Unreadable => "That file is not a password export Bowser can read. Export a CSV from your password manager or browser, then choose it here.".to_owned(),
+    })?;
+    let counts = previewed.counts;
+    if counts.imported == 0 {
+        return Ok(if counts.duplicates + counts.conflicts > 0 {
+            "These passwords are already saved in Bowser.".to_owned()
+        } else {
+            "No passwords were found in that file.".to_owned()
+        });
+    }
+    let outcome = commit_plan(previewed.plan).map_err(|_| "Saved passwords could not be written. Nothing was imported.".to_owned())?;
+    let mut text = format!("Imported {}.", plural(outcome.succeeded, "password", "passwords"));
+    if outcome.failed > 0 {
+        text.push_str(&format!(" {} could not be read.", outcome.failed));
+    }
+    Ok(text)
 }
 
 fn import_bookmark_file(owner: HWND) -> windows::core::Result<()> {

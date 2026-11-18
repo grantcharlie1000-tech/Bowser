@@ -654,25 +654,6 @@
   padding-inline-start: var(--bw-space-0_5);
 }
 
-.sp-badge {
-  display: inline-flex;
-  align-items: center;
-  height: 18px;
-  margin: 0;
-  padding: 0 var(--bw-space-2);
-  border-radius: var(--bw-r-pill);
-  background: var(--bw-accent-soft);
-  color: var(--bw-text);
-  font-size: 11px;
-  line-height: 18px;
-}
-
-.sp-label-line {
-  display: flex;
-  align-items: center;
-  gap: var(--bw-space-2);
-}
-
 .sp-ctl {
   display: flex;
   flex: none;
@@ -1365,7 +1346,18 @@
 }
 
 .sp-media {
-  padding: 0 var(--sp-row-x) var(--bw-space-4);
+  position: relative;
+  padding: 0 var(--sp-row-x) var(--bw-space-3);
+}
+
+/* One inset rule under the Playback row, like the rule between ordinary rows. */
+.sp-media::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  inset-inline: var(--sp-row-x);
+  height: 1px;
+  background: var(--sp-rule);
 }
 
 .sp-media:empty {
@@ -1373,13 +1365,15 @@
 }
 
 .sp-media-group {
-  margin-top: var(--bw-space-2);
-  padding-top: var(--bw-space-3);
-  border-top: 1px solid var(--sp-rule);
+  padding-top: var(--bw-space-4);
 }
 
-.sp-media-group .sp-card-h {
-  padding-bottom: var(--bw-space-1);
+.sp-media-h {
+  margin: 0 0 var(--bw-space-1);
+  color: var(--bw-text-2);
+  font-size: var(--bw-text-caption);
+  line-height: var(--bw-leading-caption);
+  font-weight: var(--bw-weight-strong);
 }
 
 .sp-media-list {
@@ -1391,12 +1385,23 @@
 .sp-media-item {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: var(--bw-space-3);
-  padding: var(--bw-space-2) 0;
+  min-height: 40px;
 }
 
 .sp-media-item + .sp-media-item {
   border-top: 1px solid var(--sp-rule);
+}
+
+/* Plain text, not a tinted capsule: what works reads in full colour, the rest steps back. */
+.sp-media-value {
+  color: var(--bw-text-2);
+  white-space: nowrap;
+}
+
+.sp-media-value:is(.is-hardware, .is-available) {
+  color: var(--bw-text);
 }
 
 .sp-pill {
@@ -1406,15 +1411,6 @@
   background: color-mix(in srgb, var(--bw-text) 8%, transparent);
   font-size: var(--bw-text-caption);
   line-height: var(--bw-leading-caption);
-}
-
-.sp-pill:is(.is-hardware, .is-available) {
-  background: var(--bw-accent-soft);
-}
-
-.sp-pill.is-unsupported,
-.sp-pill.is-unavailable {
-  color: var(--bw-text-2);
 }
 
 .sp-hints {

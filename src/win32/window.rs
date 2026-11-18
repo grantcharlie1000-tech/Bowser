@@ -619,6 +619,10 @@ struct WindowChrome {
     /// A chrome view failed for good, so its region is painted natively instead of waiting for it
     /// (toolbar, tab strip, rail).
     html_failed: [bool; 3],
+    /// Until when a view whose host has not started yet may keep waiting for its HTML page instead
+    /// of showing the native controls. Covers the engine environment's startup, which no
+    /// `chrome_recovery` deadline watches; once the hosts begin, those deadlines take over.
+    html_wait_until: Option<Instant>,
     chrome_lifetimes: chrome_recovery::Lifetimes,
     html_state_building: [bool; 3],
     html_initial_native_input: Option<chrome_recovery::NativeInput>,
@@ -771,7 +775,6 @@ impl WindowChrome {
     fn new(width: i32, height: i32, dpi: u32, overlay: HWND) -> Self {
         let mut surface = ChromeSurface::new(width, height, dpi);
         let _ = surface.set_rail_snap(!animations_enabled(), Instant::now());
-        for view in 0..3 { surface.set_html_pending(view, false); }
         let mut recovery = surface_recovery::Recovery::new();
         if let Some(error) = surface.allocation_error() {
             recovery.fail(surface_recovery::Fault::Storage(error));
@@ -861,6 +864,7 @@ impl WindowChrome {
             html_page_ready: false,
             html_toolbar_active: false,
             html_failed: [false; 3],
+            html_wait_until: chrome_host::html_ui_enabled().then(|| Instant::now() + HTML_WAIT_LIMIT),
             chrome_lifetimes: chrome_recovery::Lifetimes::new(),
             html_state_building: [false; 3],
             html_initial_native_input: None,
@@ -1125,6 +1129,9 @@ impl WindowChrome {
     }
     fn relayout(&mut self, request: RelayoutRequest<'_>) {
         let RelayoutRequest { w, h, dpi, active, maximised, arrangement, density, sidebar_width, centred_address_bar, font_scale, ui_font } = request;
+        // What the chrome looked like before, to tell a change of design (tabs moved to a side, a bar
+        // hidden or floated) from a plain resize or a sidebar drag.
+        let before = (self.last_relayout.as_ref().map(|inputs| inputs.arrangement), self.ah.plan, self.layout.float_island.is_empty(), self.layout.float_band.is_empty());
         self.client = (w, h);
         self.dpi = dpi.max(96);
         self.last_relayout = Some(RelayoutInputs {
@@ -1152,12 +1159,22 @@ impl WindowChrome {
         // the page widens over them (`layout::compute_arranged_auto_hide`), and the layout with
         // every bar shown says where a revealed bar floats.
         let plan = crate::auto_hide::plan_for(self.ah.hidden, arrangement.tabs, arrangement.tab_bar); // A hidden tab bar hides nothing
-        let hide = plan.layout();
+        // A revealed bar takes its own place in the layout and pushes the page aside, as if it were
+        // never hidden; it leaves the layout again when it hides (`auto_hide::apply_shown`).
+        let revealed = self.ah.machine.shown();
+        let mut hide = plan.layout();
+        if revealed.contains(crate::auto_hide::Zone::Sidebar) { hide.sidebar = false; }
+        if revealed.contains(crate::auto_hide::Zone::Top) { hide.top = false; }
         let (layout, sidebar) = layout::compute_arranged_auto_hide(
             arrangement, w, h, self.dpi, self.slots.len().max(1), i, maximised,
             i32::from(sidebar_width), centred_address_bar, density.sidebar_row_height(), hide,
         );
-        let layout = if self.ah.rail_hidden { layout::without_rail(layout, self.dpi, maximised) } else { layout };
+        let mut layout = if self.ah.rail_hidden { layout::without_rail(layout, self.dpi, maximised) } else { layout };
+        // --- floating zen sidebar --- the window buttons' strip along the top edge pushes the page
+        // down while it is out, like any revealed bar.
+        if revealed.contains(crate::auto_hide::Zone::Top) && !layout.float_band.is_empty() {
+            layout.viewport.top = layout.viewport.top.max(layout.float_band.bottom).min(layout.viewport.bottom);
+        }
         let shown = if hide.is_off() {
             None
         } else {
@@ -1228,6 +1245,13 @@ impl WindowChrome {
         self.sync_html_bounds();
         self.sync_html_tabs_bounds();
         self.sync_html_rail_bounds();
+        // The overlay keeps every pixel it is not told to repaint, so a new design (tabs from the top to a
+        // side and back, a bar hidden or floated) repaints all of it; otherwise the old chrome's pieces
+        // stay on screen wherever the new one draws nothing.
+        let after = (Some(arrangement), self.ah.plan, self.layout.float_island.is_empty(), self.layout.float_band.is_empty());
+        if before != after || was_vertical != self.sidebar.is_some() {
+            self.surface_recovery.full_repaint = true;
+        }
         if self.surface_recovery.can_draw() {
             match self.surface.try_resize(w, h, self.dpi) {
                 Ok(repaint) => self.surface_recovery.full_repaint |= repaint,
@@ -1445,14 +1469,38 @@ impl WindowChrome {
     fn sync_html_rail_bounds(&mut self) {
         let region = self.html_rail_region();
         self.surface.set_html_rail(region.is_some());
-        self.surface.set_html_pending(2, false);
+        let waiting = self.html_waiting(2);
+        self.surface.set_html_pending(2, waiting);
+    }
+    /// The toolbar, tab row or rail (`index` 0, 1, 2) is still waiting for its HTML page: the HTML
+    /// chrome is on, that view has not failed and its page is not up yet. Its region then shows
+    /// only the window colour and takes no native clicks or hovers, so a starting window never
+    /// shows the native design (its tabs, address field, buttons or hover card) for the moment the
+    /// HTML chrome takes to load. A view that fails, or stalls past its `chrome_recovery` deadline
+    /// (or `HTML_WAIT_LIMIT` before its host starts), falls back to the native controls.
+    fn html_waiting(&self, index: usize) -> bool {
+        if !chrome_host::html_ui_enabled() || self.html_failed[index] {
+            return false;
+        }
+        let (live, hidden) = match index {
+            0 => (self.html_region().is_some(), self.ah.visually_hidden(self.toolbar_zone())),
+            1 => (
+                self.html_tab_region().is_some(),
+                if self.sidebar.is_some() { self.ah.sidebar_hidden() } else { self.ah.top_hidden() },
+            ),
+            _ => (self.html_rail_region().is_some(), false),
+        };
+        !live
+            && !hidden
+            && (self.chrome_lifetimes.armed(index) || self.html_wait_until.is_some_and(|until| Instant::now() < until))
     }
     /// Moves the HTML tab strip over the tab row and hides it when there is none. Also tells the
     /// surface to leave the row to the page.
     fn sync_html_tabs_bounds(&mut self) {
         let region = self.html_tab_region();
         self.surface.set_html_tabs(region.is_some());
-        self.surface.set_html_pending(1, false);
+        let waiting = self.html_waiting(1);
+        self.surface.set_html_pending(1, waiting);
     }
     /// CSS px the toolbar page's buttons beside the pill (downloads, extensions) take from it.
     fn toolbar_slot(&self) -> i32 {
@@ -1471,7 +1519,8 @@ impl WindowChrome {
     fn sync_html_bounds(&mut self) {
         let region = self.html_region();
         self.surface.set_html_toolbar(region.is_some());
-        self.surface.set_html_pending(0, false); // --- auto-hide (T11) ---
+        let waiting = self.html_waiting(0);
+        self.surface.set_html_pending(0, waiting);
     }
     /// The tab under the pointer, by identity, so its emphasis follows it across reorders.
     fn hovered_tab(&self) -> Option<TabId> {
@@ -4419,8 +4468,21 @@ unsafe extern "system" fn window_proc(
             // Only an HTML chrome run starts or fails these; in native mode they do nothing.
             WM_HTML_CHROME_START => {
                 if chrome_host::html_ui_enabled() {
+                    if let Some(until) = with_chrome(hwnd, |s| s.html_wait_until).flatten() {
+                        let left = until.saturating_duration_since(Instant::now()).as_millis().clamp(1, u32::MAX as u128) as u32;
+                        if SetTimer(Some(hwnd), HTML_WAIT_TIMER, left, None) == 0 {
+                            // No timer: never risk plain chrome with nothing to end it.
+                            let _ = with_chrome(hwnd, |s| s.html_wait_until = None);
+                        }
+                    }
                     start_html_chrome(hwnd);
                 }
+                LRESULT(0)
+            }
+            WM_TIMER if wparam.0 == HTML_WAIT_TIMER => {
+                let _ = KillTimer(Some(hwnd), HTML_WAIT_TIMER);
+                let _ = with_chrome(hwnd, |s| s.html_wait_until = None);
+                repaint(hwnd);
                 LRESULT(0)
             }
             chrome_recovery::INPUT_RELEASED => {
@@ -5005,6 +5067,25 @@ unsafe extern "system" fn window_proc(
     }
 }
 fn hit(hwnd: HWND, x: i32, y: i32) -> Hit {
+    let found = native_hit(hwnd, x, y);
+    let waiting = with_chrome(hwnd, |s| [s.html_waiting(0), s.html_waiting(1), s.html_waiting(2)]).unwrap_or([false; 3]);
+    inert_while_waiting(found, waiting)
+}
+/// A native control whose region is still waiting for its HTML page is not drawn
+/// (`WindowChrome::html_waiting`), so it must not answer clicks or hovers either (a hover would
+/// open the native tab card over plain chrome). A tab in the horizontal row becomes the empty
+/// strip, which drags the window like the rest of the title bar; anything else becomes nothing.
+fn inert_while_waiting(found: Hit, waiting: [bool; 3]) -> Hit {
+    let view = match found {
+        Hit::Back | Hit::Forward | Hit::Reload | Hit::Omnibox | Hit::SiteInfo | Hit::Split | Hit::MainMenu => 0,
+        Hit::Tab(_) | Hit::TabClose(_) | Hit::GroupBall(_) => return if waiting[1] { Hit::CaptionArea } else { found },
+        Hit::SidebarWorkspace | Hit::SidebarNewTab | Hit::SidebarGroup(_) | Hit::SidebarTab(_) | Hit::SidebarTabClose(_) => 1,
+        Hit::Rail(_) | Hit::RailBackground => 2,
+        _ => return found,
+    };
+    if waiting[view] { Hit::None } else { found }
+}
+fn native_hit(hwnd: HWND, x: i32, y: i32) -> Hit {
     with_chrome(hwnd, |s| {
         if s.layout.rail.contains(x, y) {
             let rail = RailView { entries: &s.rail_view, fades: &[], open_panel: None, scroll: s.rail_scroll, drop_indicator: None, focused: None, tooltip: None };
@@ -9868,6 +9949,12 @@ fn hand_keyboard_to_native_edit(hwnd: HWND, edit: HWND, omnibox: Option<Option<S
 
 const RECOVERY_BUTTON_ID: usize = 0x6f10;
 const ENGINE_RECOVERY_TIMER: usize = 0x5f1;
+/// Repaints once `HTML_WAIT_LIMIT` has passed, so a view still waiting for a host that never
+/// started shows its native controls.
+const HTML_WAIT_TIMER: usize = 0x5f4;
+/// How long a starting window shows plain chrome while the engine environment for its HTML chrome
+/// starts (the same span `chrome_recovery` gives each step of a host's start).
+const HTML_WAIT_LIMIT: Duration = Duration::from_secs(15);
 
 pub(crate) fn arm_engine_recovery_timeout(hwnd: HWND) -> bool {
     if hwnd.is_invalid() { return false; }
@@ -13399,6 +13486,27 @@ mod tests {
         }
     }
 
+    /// Native controls under chrome still waiting for its HTML page are not drawn, so they take no
+    /// clicks or hovers (no native tab card): tabs become title-bar drag space, the rest nothing.
+    /// Window buttons and the page always answer.
+    #[test]
+    fn native_controls_are_inert_while_their_html_view_is_waiting() {
+        let none = [false; 3];
+        for (found, view) in [(Hit::Omnibox, 0), (Hit::Back, 0), (Hit::MainMenu, 0), (Hit::SidebarTab(1), 1), (Hit::RailBackground, 2)] {
+            let mut waiting = none;
+            waiting[view] = true;
+            assert_eq!(inert_while_waiting(found, waiting), Hit::None, "{found:?}");
+            assert_eq!(inert_while_waiting(found, none), found, "{found:?} once its view is live or failed");
+        }
+        for found in [Hit::Tab(0), Hit::TabClose(2), Hit::GroupBall(1)] {
+            assert_eq!(inert_while_waiting(found, [false, true, false]), Hit::CaptionArea, "{found:?}");
+            assert_eq!(inert_while_waiting(found, [true, false, true]), found, "{found:?}");
+        }
+        for found in [Hit::CaptionClose, Hit::CaptionMaximize, Hit::CaptionMinimize, Hit::CaptionArea, Hit::NewTab, Hit::Viewport, Hit::SidebarResize] {
+            assert_eq!(inert_while_waiting(found, [true; 3]), found, "{found:?}");
+        }
+    }
+
     /// Timers are scoped to the main HWND, not to each feature's module. Dispatch order must
     /// never redirect auto-hide to themes, split bounds to statistics, or reader probes to panels.
     #[test]
@@ -13407,6 +13515,7 @@ mod tests {
             ENGINE_RECOVERY_TIMER,
             surface_recovery::TIMER,
             chrome_recovery::TIMER,
+            HTML_WAIT_TIMER,
             #[cfg(feature = "experimental-engine-context-menu")]
             crate::engine::ENGINE_MENU_TIMER,
             #[cfg(feature = "experimental-engine-context-menu")]
@@ -13844,7 +13953,7 @@ mod tests {
     /// Each bar of "Bars to hide" changes the window's layout the way the plan says, and revealing a
     /// bar never moves the page.
     #[test]
-    fn hiding_the_bars_widens_the_page_and_a_reveal_leaves_it_where_it_is() {
+    fn hiding_the_bars_widens_the_page_and_a_reveal_pushes_it_back() {
         use crate::auto_hide::{Bars, Zone, Zones};
         let tab_layout = crate::settings::TabLayout::ToolbarTop;
         let mut shown = WindowChrome::new(1280, 720, 96, HWND::default());
@@ -13859,12 +13968,10 @@ mod tests {
         assert_eq!((s.layout.viewport.left, s.layout.viewport.right, s.layout.viewport.bottom), (normal.left, normal.right, normal.bottom));
         assert!(s.ah.top_hidden());
         assert_eq!(s.ah.overlay.top.bottom, normal.top, "the bars float exactly where they sit when shown");
-        let hidden_viewport = s.layout.viewport;
-
-        // A reveal changes what is drawn, never the page's rectangle.
+        // A revealed bar takes its own place and pushes the page aside; hidden again, the page widens.
         assert!(s.ah.machine.reveal(Zones::NONE.with(Zone::Top), 0));
         relaid(&mut s, 96, false, tab_layout);
-        assert_eq!(s.layout.viewport, hidden_viewport, "no relayout of the page when a bar appears");
+        assert_eq!(s.layout.viewport, normal, "a revealed bar pushes the page to where it sits with the bar shown");
         assert!(!s.ah.top_hidden());
         assert_eq!(s.ah.paint_viewport(s.layout.viewport).top, normal.top, "the page's frame is drawn below the floating bars");
 

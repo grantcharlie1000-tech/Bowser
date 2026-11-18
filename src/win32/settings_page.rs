@@ -464,6 +464,8 @@ pub(crate) fn sync(owner: HWND, app: &AppRef) {
             rt.pw_due = true;
         });
         let (address_ack, address_error) = with(owner, |rt| (rt.ack, rt.error.clone())).unwrap_or((Ack::None, String::new()));
+        // An import's sentence is the settings page's to say; the other sections just see it saved.
+        let (address_ack, address_error) = if address_ack == Ack::Note { (Ack::Saved, String::new()) } else { (address_ack, address_error) };
         let settings = refresh_settings.insert(RefreshSettings::read(crate::profile::active().ok()));
         let snapshot = snapshot(owner, app, settings);
         // An answer is always delivered, even when the values did not change (a second identical
@@ -697,6 +699,17 @@ fn profile_rows(current: Option<&crate::profile::Profile>) -> wire::ProfileList 
 }
 
 /// Records how a change went; the next snapshot reports it.
+/// Answers with a sentence for the page to say whatever the outcome (an import): `Ok` is shown as
+/// done, `Err` as a problem.
+fn tell(owner: HWND, result: Result<String, String>) {
+    let _ = with(owner, |rt| {
+        rt.dirty = true;
+        let (ack, text) = match result { Ok(text) => (Ack::Note, text), Err(text) => (Ack::Failed, text) };
+        rt.ack = ack;
+        rt.error = text;
+    });
+}
+
 fn answer(owner: HWND, result: Result<(), String>) {
     let _ = with(owner, |rt| {
         rt.dirty = true;
@@ -849,11 +862,12 @@ fn run(owner: HWND, app: &AppRef, tab: TabId, action: Action) {
                 result => answer(owner, result),
             }
         }
-        Action::Import => {
-            if let Err(error) = super::import_panel::open(owner) {
-                super::show_error_message(&format!("Browser import could not be opened: {error}"));
-            }
-        }
+        Action::Import => match super::import_panel::import_file(owner) {
+            Ok(Some(text)) => tell(owner, Ok(text)),
+            // Cancelled: nothing to say, but the page stops waiting.
+            Ok(None) => { let _ = with(owner, |rt| rt.dirty = true); }
+            Err(text) => tell(owner, Err(text)),
+        },
         Action::Refresh => {
             let _ = with(owner, |rt| rt.dirty = true);
         }
@@ -912,12 +926,8 @@ fn run(owner: HWND, app: &AppRef, tab: TabId, action: Action) {
                 Err(message) => answer(owner, Err(message)),
             }
         }
-        Action::ImportFrom(browser) => {
-            // Nothing to import (or the importer could not open) is said in the page itself.
-            if let Err(message) = super::import_panel::import_from(owner, browser) {
-                answer(owner, Err(message));
-            }
-        }
+        // What the import did, or why it could not, is said in the page itself.
+        Action::ImportFrom(browser) => tell(owner, super::import_panel::import_from(owner, browser)),
         Action::WelcomeDone => {
             // The new tab opens (and is shown) first, so closing the welcome never closes the window.
             let _ = App::new_tab(app);
@@ -1028,7 +1038,7 @@ fn address_snapshot(refresh: &RefreshSettings, ack: Ack, error: &str) -> String 
         guest: profile.as_ref().is_some_and(|profile| profile.is_guest()),
         ack: match ack {
             Ack::None => address_wire::Ack::None,
-            Ack::Saved => address_wire::Ack::Saved,
+            Ack::Saved | Ack::Note => address_wire::Ack::Saved,
             Ack::Failed => address_wire::Ack::Failed,
         },
         error,
@@ -1099,7 +1109,7 @@ fn pagetools_snapshot(refresh: &RefreshSettings, ack: Ack, error: &str) -> Strin
         refresh.profile.as_ref().is_some_and(|profile| profile.is_guest()),
         match ack {
             Ack::None => pt_wire::Ack::None,
-            Ack::Saved => pt_wire::Ack::Saved,
+            Ack::Saved | Ack::Note => pt_wire::Ack::Saved,
             Ack::Failed => pt_wire::Ack::Failed,
         },
         error,
