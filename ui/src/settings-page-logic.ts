@@ -687,7 +687,7 @@ export const SECTIONS: readonly SectionSpec[] = [
   { key: 'appearance', title: 'Appearance', nav: 'Appearance', lead: '' },
   { key: 'tabs', title: 'Tabs', nav: 'Tabs', lead: '', aliases: 'workspaces tiling tiles split' },
   // --- T10 ---
-  { key: 'stacks', title: 'Groups', nav: 'Groups', lead: '', aliases: 'tab groups grouping stacking islands automatic' },
+  { key: 'stacks', title: 'Groups', nav: 'Groups', lead: '', aliases: 'tab groups grouping islands automatic stack stacks stacking' },
   { key: 'startpage', title: 'Start page', nav: 'Start page', lead: '' },
   { key: 'privacy', title: 'Privacy', nav: 'Privacy', lead: '', aliases: 'privacy and security' },
   { key: 'performance', title: 'Performance', nav: 'Performance', lead: '' },

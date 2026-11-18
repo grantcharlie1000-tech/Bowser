@@ -251,7 +251,7 @@ tab_options! {
     workspace_scroll: bool = false, "tabs_workspace_scroll";
     /// Each workspace button carries the number of tabs in it.
     workspace_counts: bool = false, "tabs_workspace_counts";
-    /// Part of "New tab position: as stack with related" (see [`NewTabPosition`]).
+    /// Part of "New tab position: grouped with related" (see [`NewTabPosition`]).
     new_tab_stack: bool = false, "tabs_new_tab_stack";
     // --- end tab stacks, tiling and workspaces ---
 }
@@ -259,7 +259,7 @@ tab_options! {
 // ---- virtual options: shown by the page, stored in the older settings they belong to ----
 
 /// Where a new tab opens, the choices the page offers. Stored as `new_tab_beside_active` plus
-/// `tabs_new_tab_related`, and `tabs_new_tab_stack` for "as stack with related".
+/// `tabs_new_tab_related`, and `tabs_new_tab_stack` for "grouped with related".
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum NewTabPosition {
     Related,
@@ -292,7 +292,7 @@ pub fn new_tab_position(beside_active: bool, related: bool) -> NewTabPosition {
     }
 }
 
-/// The position all three stored settings add up to: "as stack with related" is related placement
+/// The position all three stored settings add up to: "grouped with related" is related placement
 /// with the stack flag.
 pub fn position_of(settings: &crate::settings::Settings) -> NewTabPosition {
     match new_tab_position(settings.new_tab_beside_active, settings.tabs.new_tab_related) {
@@ -649,7 +649,7 @@ mod tests {
         assert!(!settings.tabs.new_tab_related);
         assert!(apply_assignment(&mut settings, "tabs_new_tab_position=active"));
         assert!(settings.new_tab_beside_active && !settings.tabs.new_tab_related);
-        // --- tab stacks (T10) --- "as stack with related" is related placement plus the stack flag.
+        // --- tab stacks (T10) --- "grouped with related" is related placement plus the stack flag.
         assert!(apply_assignment(&mut settings, "tabs_new_tab_position=stack"));
         assert!(settings.new_tab_beside_active && settings.tabs.new_tab_related && settings.tabs.new_tab_stack);
         assert_eq!(position_of(&settings), NewTabPosition::Stack);

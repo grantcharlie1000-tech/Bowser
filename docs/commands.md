@@ -120,16 +120,18 @@ Y), Esc, Alt+F4, Shift+F10 and Ctrl+Alt with a typing key (AltGr) cannot be assi
 - **Include English search terms**: Bowser's interface is English only; there is no other language to add
   English terms to.
 
-## Tab stacks, tiling and workspaces (T10)
+## Tab groups, tiling and workspaces (T10)
 
 Registry rows in `src/commands/registry.rs` (handlers in `src/win32/stack_ui.rs`), so each is in Quick Commands,
-the keyboard editor, the cheat sheet and chains:
+the keyboard editor, the cheat sheet and chains. The ids keep the word "stack" from these commands' old names,
+because shortcuts, toolbar buttons and chains store them; Quick Commands and the cheat sheet still find the three
+group commands when "stack" is typed (`registry::search_words`), though the word is never shown:
 
 | Id | Label | Default |
 | --- | --- | --- |
-| `stack-site-tabs` | Stack tabs of this site | |
-| `stack-tabs-by-site` | Stack all tabs by site | |
-| `unstack` | Unstack | |
+| `stack-site-tabs` | Group tabs of this site | |
+| `stack-tabs-by-site` | Group all tabs by site | |
+| `unstack` | Ungroup | |
 | `tile-vertical` | Tile vertically | Ctrl+F9 |
 | `tile-horizontal` | Tile horizontally | Ctrl+F8 |
 | `tile-grid` | Tile in a grid | Ctrl+F7 |
@@ -138,18 +140,19 @@ the keyboard editor, the cheat sheet and chains:
 | `previous-workspace` | Previous workspace | |
 
 The three tilings are browser priority (they keep working on a site that prioritises its own shortcuts). They
-tile the selected tabs (Ctrl or Shift click) when two or more are selected, otherwise the stack of the tab in
-front, at most four (the split view's panes); with neither they say so. A stack is a site island
-(`src/tab_groups.rs`): the commands place tabs with the island machinery's manual membership, so Undo tab
-organisation (Ctrl+Shift+Z) undoes a whole command in one step. The tab menu's "Tab stack" submenu offers the
-same and the per-stack actions (name and colour, pin, hibernate, tile, save as a session, bookmark all, copy all
-links, move to a workspace or a new window, unstack).
+tile the selected tabs (Ctrl or Shift click) when two or more are selected, otherwise the group of the tab in
+front, at most four (the split view's panes); with neither they say so. A group is a site island
+(`src/tab_groups.rs`; the code calls it a stack, `src/stacks.rs`): the commands place tabs with the island machinery's manual membership, so Undo tab
+organisation (Ctrl+Shift+Z) undoes a whole command in one step. The tab menu's "Tab group" submenu offers the
+same and the per-group actions (name and colour, pin, hibernate, tile, save as a session, bookmark all, copy all
+links, move to a workspace or a new window, ungroup), then the site's standing choice (always, automatically or
+never group this site).
 
 Tab groups have one look (islands) and one setting: Settings > Groups > "Group tabs automatically", which
 applies at once. Tabs from one site share a group; an opener link no longer forms a group of its own. Drag a tab
 between two members of a group, or hold it over a member and let go, to add it to that group. Drag a group by its
 coloured bar (or a folded group by its pill) to move the whole group, or press Ctrl+Shift+Left/Right (Page Up/Down)
-on the focused bar; it lands before or after another group, never inside one. The older stack
+on the focused bar; it lands before or after another group, never inside one. The older group
 style (Compact, Accordion, Two-level, Off), "Join group", "Drag to group", "Group delay", "Name on create" and
 "Compact row" options are retired: they keep their defaults (`tab_options::RETIRED_KEYS`) and a value left in
 `settings.txt` is ignored.

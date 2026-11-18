@@ -259,6 +259,10 @@ test('search matches every word across label, description, keywords and section;
   assert.deepEqual([...logic.matchRows('duckduckgo')], ['searchDefault']);
   assert.ok(logic.matchRows('TAB layout').has('layout'));
   assert.ok(logic.matchRows('privacy cookies').has('dashboard'), 'section title plus keyword');
+  // Tab groups were called stacks: the old word still finds them, though no row shows it.
+  const stack = logic.matchRows('stack');
+  assert.ok(stack.has('grouping') && stack.has('tabs_new_tab_position'), [...stack].join(' '));
+  for (const row of logic.ROWS) assert.doesNotMatch(`${row.label} ${row.aria ?? ''} ${row.description}`, /stack/i, row.id);
   assert.ok(logic.matchRows('netflix').has('media'));
   assert.ok(logic.matchRows('youtube').has('blockYoutubeVideoAds'));
   assert.ok(logic.matchRows('gta').has('spoilerProtection'));

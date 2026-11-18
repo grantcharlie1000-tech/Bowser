@@ -63,7 +63,7 @@ impl App {
         }
     }
 
-    /// "Stack tabs of this site": every tab of `id`'s site in this workspace joins one stack.
+    /// "Group tabs of this site": every tab of `id`'s site in this workspace joins one stack.
     /// Returns how many tabs the stack holds (0 when there were not two to stack).
     pub fn stack_site(app: &AppRef, id: TabId) -> usize {
         let (changed, count) = {
@@ -82,7 +82,7 @@ impl App {
         count
     }
 
-    /// "Stack all tabs by site": one stack per site with two tabs or more. Returns how many stacks.
+    /// "Group all tabs by site": one stack per site with two tabs or more. Returns how many stacks.
     pub fn stack_all_by_site(app: &AppRef) -> usize {
         let (changed, count) = {
             let mut state = app.borrow_mut();
@@ -105,7 +105,7 @@ impl App {
         count
     }
 
-    /// "Unstack": every tab of `id`'s stack leaves it and stays out of automatic grouping.
+    /// "Ungroup": every tab of `id`'s stack leaves it and stays out of automatic grouping.
     pub fn unstack(app: &AppRef, id: TabId) -> bool {
         let members = Self::stack_members(app, id);
         if members.is_empty() {
@@ -124,7 +124,7 @@ impl App {
         changed
     }
 
-    /// A tab dragged onto `target` and held there ("Stack tabs by dragging one onto another"): both
+    /// A tab dragged onto `target` and held there ("Group tabs by dragging one onto another"): both
     /// join `target`'s stack, or a new stack of `target`'s site, and the dragged tab moves next to it.
     /// Refused when either tab is pinned, private or has no site.
     pub fn stack_onto(app: &AppRef, dragged: TabId, target: TabId) -> bool {
@@ -148,7 +148,7 @@ impl App {
         true
     }
 
-    /// "New tab position: as stack with related": a new tab joins the stack of `anchor` (the tab that
+    /// "New tab position: grouped with related": a new tab joins the stack of `anchor` (the tab that
     /// opened it), or starts one of `anchor`'s site with it. Whether the new tab joined.
     fn join_new_tab_to_stack(app: &AppRef, new: TabId, anchor: TabId) -> bool {
         let changed = {
@@ -176,7 +176,7 @@ impl App {
         changed
     }
 
-    /// "New tab position: as stack with related": a tab a page opened from `opener` joins its stack.
+    /// "New tab position: grouped with related": a tab a page opened from `opener` joins its stack.
     pub(super) fn stack_new_tab(app: &AppRef, new: TabId, opener: Option<TabId>) {
         let as_stack = crate::tab_options::position_of(&app.borrow().settings) == crate::tab_options::NewTabPosition::Stack;
         if let Some(opener) = opener.filter(|_| as_stack) {
@@ -184,12 +184,12 @@ impl App {
         }
     }
 
-    /// "Pin all tabs in the stack". Pinned tabs never stack, so the stack ends. Returns how many.
+    /// "Pin all tabs in the group". Pinned tabs never stack, so the stack ends. Returns how many.
     pub fn pin_stack(app: &AppRef, id: TabId) -> usize {
         Self::stack_members(app, id).into_iter().filter(|member| Self::set_tab_pinned(app, *member, true)).count()
     }
 
-    /// "Hibernate the stack": every member but the tab in front sleeps. Returns how many were asked.
+    /// "Hibernate the group": every member but the tab in front sleeps. Returns how many were asked.
     pub fn hibernate_stack(app: &AppRef, id: TabId) -> usize {
         let active = Self::active_tab_id(app);
         Self::stack_members(app, id)
@@ -219,7 +219,7 @@ impl App {
         if !crate::productivity::profile_allows_productivity(&profile) {
             return Err("A guest window does not keep bookmarks.".to_owned());
         }
-        let folder = Self::stack_name(app, id).ok_or_else(|| "This tab is not in a stack.".to_owned())?;
+        let folder = Self::stack_name(app, id).ok_or_else(|| "This tab is not in a group.".to_owned())?;
         let mut count = 0;
         for member in Self::stack_members(app, id) {
             let Some(url) = Self::tab_committed_url(app, member).filter(|url| matches!(url.scheme(), "http" | "https")) else {

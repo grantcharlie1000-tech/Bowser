@@ -120,6 +120,16 @@ const fn def(
     CommandDef { id, label, detail, category, defaults, palette, gate: None, handler, priority: false }
 }
 
+/// Words a command is also found by in Quick Commands and the shortcuts list, never shown. The tab
+/// group commands keep answering to "stack", the name they had before (their ids still say it).
+pub fn search_words(id: &str) -> Option<&'static str> {
+    match id {
+        "stack-site-tabs" | "stack-tabs-by-site" => Some("stack stacking"),
+        "unstack" => Some("unstack stack"),
+        _ => None,
+    }
+}
+
 const fn gated(mut command: CommandDef, gate: Gate) -> CommandDef {
     command.gate = Some(gate);
     command
@@ -180,8 +190,8 @@ pub static BUILTINS: &[CommandDef] = &[
     def("toggle-split", "Toggle split view", "Show two tabs side by side, or go back to one", C::Windows, &["Ctrl+Shift+\\"], Cmd, Key(Command::ToggleSplit)),
     def("focus-split-left", "Focus the left split pane", "Move to the pane on the left", C::Windows, &["Ctrl+Shift+Left"], Cmd, Key(Command::FocusSplitLeft)),
     def("focus-split-right", "Focus the right split pane", "Move to the pane on the right", C::Windows, &["Ctrl+Shift+Right"], Cmd, Key(Command::FocusSplitRight)),
-    gated(def("focus-split-up", "Focus the pane above", "Move to the pane above in a stacked split", C::Windows, &["Ctrl+Shift+Up"], Cmd, Key(Command::FocusSplitUp)), Gate::StackedSplit),
-    gated(def("focus-split-down", "Focus the pane below", "Move to the pane below in a stacked split", C::Windows, &["Ctrl+Shift+Down"], Cmd, Key(Command::FocusSplitDown)), Gate::StackedSplit),
+    gated(def("focus-split-up", "Focus the pane above", "Move to the pane above in a top-and-bottom split", C::Windows, &["Ctrl+Shift+Up"], Cmd, Key(Command::FocusSplitUp)), Gate::StackedSplit),
+    gated(def("focus-split-down", "Focus the pane below", "Move to the pane below in a top-and-bottom split", C::Windows, &["Ctrl+Shift+Down"], Cmd, Key(Command::FocusSplitDown)), Gate::StackedSplit),
     def("close-split-pane", "Close the split pane", "Close the focused pane of the split", C::Windows, &["Ctrl+Shift+W"], Cmd, Key(Command::CloseSplitPane)),
     def("command-palette", "Quick commands", "Search tabs, bookmarks, history, notes and commands", C::Tools, &["Ctrl+Shift+K"], Hidden, Key(Command::ShowCommandPalette)),
     def("history", "History", "Open the history page", C::Panels, &["Ctrl+H"], Cmd, Key(Command::ShowHistory)),
@@ -231,12 +241,12 @@ pub static BUILTINS: &[CommandDef] = &[
     browser(def("toggle-fullscreen", "Full screen", "Fill the screen with the page; the bars come back when the pointer rests at the edge", C::Windows, &["F11"], Cmd, Run(crate::win32::run_toggle_fullscreen))),
     // --- end auto-hide ---
     // --- tab stacks, tiling and workspaces (T10; win32/stack_ui.rs) ---
-    def("stack-site-tabs", "Stack tabs of this site", "Put every tab of this site in one stack", C::Tabs, &[], Cmd, Run(crate::win32::run_stack_site)),
-    def("stack-tabs-by-site", "Stack all tabs by site", "One stack for each site with two tabs or more", C::Tabs, &[], Cmd, Run(crate::win32::run_stack_all_by_site)),
-    def("unstack", "Unstack", "Take the tabs of this stack out of it", C::Tabs, &[], Cmd, Run(crate::win32::run_unstack)),
-    browser(def("tile-vertical", "Tile vertically", "Show the selected tabs, or this stack, side by side", C::Windows, &["Ctrl+F9"], Cmd, Run(crate::win32::run_tile_vertical))),
-    browser(def("tile-horizontal", "Tile horizontally", "Show the selected tabs, or this stack, one above another", C::Windows, &["Ctrl+F8"], Cmd, Run(crate::win32::run_tile_horizontal))),
-    browser(def("tile-grid", "Tile in a grid", "Show the selected tabs, or this stack, two by two", C::Windows, &["Ctrl+F7"], Cmd, Run(crate::win32::run_tile_grid))),
+    def("stack-site-tabs", "Group tabs of this site", "Put every tab of this site in one group", C::Tabs, &[], Cmd, Run(crate::win32::run_stack_site)),
+    def("stack-tabs-by-site", "Group all tabs by site", "One group for each site with two tabs or more", C::Tabs, &[], Cmd, Run(crate::win32::run_stack_all_by_site)),
+    def("unstack", "Ungroup", "Take the tabs out of this group", C::Tabs, &[], Cmd, Run(crate::win32::run_unstack)),
+    browser(def("tile-vertical", "Tile vertically", "Show the selected tabs, or this group, side by side", C::Windows, &["Ctrl+F9"], Cmd, Run(crate::win32::run_tile_vertical))),
+    browser(def("tile-horizontal", "Tile horizontally", "Show the selected tabs, or this group, one above another", C::Windows, &["Ctrl+F8"], Cmd, Run(crate::win32::run_tile_horizontal))),
+    browser(def("tile-grid", "Tile in a grid", "Show the selected tabs, or this group, two by two", C::Windows, &["Ctrl+F7"], Cmd, Run(crate::win32::run_tile_grid))),
     def("untile", "Untile", "Show the tiled tabs one at a time again", C::Windows, &[], Cmd, Run(crate::win32::run_untile)),
     def("next-workspace", "Next workspace", "Switch to the workspace below this one in the rail", C::Windows, &[], Cmd, Run(crate::win32::run_next_workspace)),
     def("previous-workspace", "Previous workspace", "Switch to the workspace above this one in the rail", C::Windows, &[], Cmd, Run(crate::win32::run_previous_workspace)),

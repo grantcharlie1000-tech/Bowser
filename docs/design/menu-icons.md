@@ -54,8 +54,12 @@ Rename `edit` | Change icon `workspace` (submenu of the twelve workspace glyphs)
 Rail web app (`rail-app:*`): Open `app-tile` | Edit `edit` | Remove `trash`.
 
 ## Tab context (`tab:*`)
-New tab to the right `plus` | New private tab `private` | New split view `split` | Add tab to group `tab-group` (submenu, check on
-the standing mode, no icons) | Collapse/Expand group `chevron-up`/`chevron-down` | Remove from group
+New tab to the right `plus` | New private tab `private` | New split view `split` | Tab group `tab-group` (submenu: Group tabs of this
+site / Group all tabs by site `tab-group`, or for a grouped tab Name and colour… `edit`, Pin all tabs in the
+group `pin`, Hibernate the group `clock`, Tile the group `split`, Save the group as a session… `save`, Bookmark
+all tabs in the group `bookmark`, Copy all links `link`, Move the group to workspace `workspace`, Move the group
+to a new window `window`, Ungroup `caption-minimize`; then Always / automatically / Never group this site, check
+on the standing mode, no icons) | Collapse/Expand group `chevron-up`/`chevron-down` | Remove from group
 `caption-minimize` (a dash) | Undo tab organisation `reset` | Copy URL `link` | Reload `reload` |
 Duplicate tab `copy` | Pin tab `pin` (check) | Mute tab `mute` / Unmute tab `volume` | Mute/Unmute site
 `workspace-globe` | Hibernate tab `clock` | Move tab to new window `external` | Picture in picture `pip` |
@@ -64,8 +68,8 @@ Close tab `close` | Close other tabs `trash` | Close tabs to the left `back` | C
 
 ## Split (`split`, `split-divider`)
 Toolbar split button and divider grip (docs/design/split-view.md): Separate views `unsplit` | Swap
-sides `swap` | Stack top and bottom `split-stacked` | Close left tab `split-left` | Close right tab
-`split-right`. A stacked pair reads Swap top and bottom `swap` | Show side by side `split` | Close
+sides `swap` | Show top and bottom `split-stacked` | Close left tab `split-left` | Close right tab
+`split-right`. A top-and-bottom pair reads Swap top and bottom `swap` | Show side by side `split` | Close
 top tab `split-top` | Close bottom tab `split-bottom`. `split-stacked`, `split-top` and
 `split-bottom` are `split` turned on its side: two full-width 17 x 6.75 frames, 2.5 apart, the
 focused one carrying the same 0.75-radius fill inset 2 units as `split-left` / `split-right`.

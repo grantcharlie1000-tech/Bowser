@@ -203,10 +203,10 @@ test('a switch, a choice, a number and the address each send one tabopt command 
   assert.deepEqual(radios.map((r) => r.getAttribute('aria-checked')), ['true', 'false', 'false']);
   radios[2].click();
   assert.deepEqual(sent.splice(0), [{ v: 1, t: 'set', a: 'tabopt', text: 'tabs_close_activation=recent' }]);
-  // New tab position: the three positions, no stack.
+  // New tab position: the three positions and grouped with related.
   const position = rowOf('tabs_new_tab_position').querySelectorAll('[role="radio"]');
-  assert.deepEqual(position.map((r) => r.textContent), ['Related', 'Active', 'Last', 'Stack']); // --- T10 ---
-  assert.deepEqual(position.map((r) => r.getAttribute('aria-label')), ['After related', 'After active', 'As last', 'As stack with related']);
+  assert.deepEqual(position.map((r) => r.textContent), ['Related', 'Active', 'Last', 'Group']); // --- T10 ---
+  assert.deepEqual(position.map((r) => r.getAttribute('aria-label')), ['After related', 'After active', 'As last', 'Grouped with related']);
   position[0].click();
   assert.deepEqual(sent.splice(0), [{ v: 1, t: 'set', a: 'tabopt', text: 'tabs_new_tab_position=related' }]);
   // Number: typed, clamped, sent once it settles (here: on leaving the field); one tab is not a bulk close.

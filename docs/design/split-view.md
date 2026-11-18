@@ -42,7 +42,7 @@ Behaviour summary:
 - **Toolbar.** Back, forward, reload, the address bar, Translate, Print and zoom act on the active
   page only; the split icon in the toolbar shows which side is active (left/right half filled).
 - **Menus.** Toolbar split icon and tab menu: Separate views, Close left view, Close right view,
-  Reverse views (plus stacked/side-by-side in newer builds). Per-page chip: Separate views, Close
+  Reverse views (plus top-and-bottom/side-by-side in newer builds). Per-page chip: Separate views, Close
   this view, Reverse views.
 - **Closing.** Closing either tab of the pair ends the split; the other tab stays as a normal tab.
   Separate views keeps both tabs.
@@ -54,7 +54,7 @@ Behaviour summary:
 - `SplitView { left, right, focused, ratio, orientation }` is the pair. `orientation` is
   `Orientation::SideBySide` (left | right, the default) or `Orientation::Stacked` (top over bottom).
   The slots keep their names in both: `left` / `Pane::Left` is the *first* pane (left, or top when
-  stacked), `right` / `Pane::Right` the *second* (right, or bottom); `ratio` is the first pane's
+  top and bottom), `right` / `Pane::Right` the *second* (right, or bottom); `ratio` is the first pane's
   share of the split axis (width, or height). This kept every caller of the pair unchanged; only
   geometry, wording and the wire's edge names look at the orientation. `turn()` switches the
   orientation (first stays first, focus and ratio stay). New pure helpers: `separate()`
@@ -89,7 +89,7 @@ Behaviour summary:
 - A small in-memory ring of recently closed tabs (http(s) only, never private tabs, 8 entries,
   never written to disk) feeds the empty side's "Recently closed" list.
 - Crash recovery saves the shown pair as `split <first> <second> <focused-first 0|1> <ratio>`; a
-  stacked pair appends a fifth field `v`. A side-by-side pair keeps the four-field line older builds
+  top-and-bottom pair appends a fifth field `v`. A side-by-side pair keeps the four-field line older builds
   read, and every older file (no fifth field) restores side by side; any other fifth field drops the
   pair (`session.rs`, `stacked_split_round_trips_and_older_split_lines_restore_side_by_side`).
   A layout of three or four panes appends four more fields, `split L R F ratio <h|v> <trail1|->
@@ -107,22 +107,22 @@ Behaviour summary:
 | Page corner radius | 9 DIP, both panes, all four corners | `--bw-r-tab` (same as a single page) |
 | Active pane edge | 2 DIP accent ring inside the rounded edge | `--bw-accent` (`omnibox_focus_border`) |
 | Inactive pane edge | 1 DIP hairline | `--bw-border` (`omnibox_border`) |
-| Grip | 4 x 32 DIP pill centred in the gap; lying flat (32 x 4) in a stacked pair's gap | `--bw-r-pill`; idle text 22% (`--bw-pill-edge`), hover text 60%, drag accent |
+| Grip | 4 x 32 DIP pill centred in the gap; lying flat (32 x 4) in a top-and-bottom pair's gap | `--bw-r-pill`; idle text 22% (`--bw-pill-edge`), hover text 60%, drag accent |
 | Minimum pane width | 240 DIP; below 2 x 240 + 8 the split collapses to the focused pane | |
-| Minimum pane height (stacked) | 160 DIP (`MIN_PANE_HEIGHT_DIP`); below 2 x 160 + 8 the same collapse | |
+| Minimum pane height (top and bottom) | 160 DIP (`MIN_PANE_HEIGHT_DIP`); below 2 x 160 + 8 the same collapse | |
 | Ratio | 20-80% of the split axis, stored per pair, saved with crash recovery | |
 | Three or four panes | the primary gap runs the full length; each divided half has its own cross gap at the shared cross ratio (20-80%); every pane keeps 240 x 160 DIP | `split_view::geometry`, `layout::split_panes` |
 | Collapse (too small) | the page cannot hold two panes along the primary axis: only the focused pane shows (as a pair); a divided half cannot hold two cells across: that half shows its focused cell, else its lead, and the other is hidden. Nothing leaves the layout; everything returns when the window grows | `small_pages_collapse_without_dropping_tabs` |
 | Grips | one 4 x 32 pill per divider; a divided layout's primary gap gets one pill on each side of the crossing, and the crossing itself a 6 DIP square (drag moves both dividers, `IDC_SIZEALL`) | `paint_split_grips` |
-| Stacked layout | two full-width pages one above the other, the 8 DIP gap between them; every corner, edge and accent rule as side by side | `layout::split_pane_layout_stacked` |
-| Divider cursor | `IDC_SIZEWE` side by side, `IDC_SIZENS` stacked | |
+| Top-and-bottom layout | two full-width pages one above the other, the 8 DIP gap between them; every corner, edge and accent rule as side by side | `layout::split_pane_layout_stacked` |
+| Divider cursor | `IDC_SIZEWE` side by side, `IDC_SIZENS` top and bottom | |
 
 The edges, gap and grip are drawn by the existing layered chrome overlay, which sits above the
 WebView2 child windows and is transparent to input, so nothing covers or delays page input. The
 gap itself is the main window's client area, so hit-testing it needs no extra window. A page that
 swallows its own clicks still reports focus through WebView2 `GotFocus`, which focuses its pane.
 
-Divider input: drag resizes along the split axis (x side by side, y stacked; bounds are applied at
+Divider input: drag resizes along the split axis (x side by side, y top and bottom; bounds are applied at
 most once per animation frame); a click on the grip without moving opens the divider menu; a
 right-click anywhere on the divider opens the same menu; double-click restores 50/50 (kept from
 Bowser 1.x and documented; Chrome swaps instead). With three or four panes every gap is a divider
@@ -132,9 +132,9 @@ once. Hover lights only the held divider's grips; double-click resets the divide
 pointer (both at the crossing).
 
 Divider menu (HTML popup menu, `menu::show`), anchored right of a side-by-side gap or below a
-stacked one: Separate views (`unsplit`), Swap sides (`swap`), Stack top and bottom
+top-and-bottom one: Separate views (`unsplit`), Swap sides (`swap`), Show top and bottom
 (`split-stacked`), separator, Close left tab (`split-left`), Close right tab (`split-right`). A
-stacked pair reads Swap top and bottom, Show side by side (`split`), Close top tab (`split-top`),
+top-and-bottom pair reads Swap top and bottom, Show side by side (`split`), Close top tab (`split-top`),
 Close bottom tab (`split-bottom`). The tab menu's Swap sides follows the same wording.
 
 With three or four panes the menu is generalised: Separate views, the divider's Swap (the primary
@@ -142,7 +142,7 @@ divider, the crossing and the toolbar button: Swap left and right / Swap top and
 the halves; a cross divider: swap the two cells of that half), separator, then Close *place* tab
 for each pane beside that divider (every pane for the primary divider, the crossing and the
 toolbar; the half's two cells for a cross divider), named and drawn by place: Close top-left tab
-(`split-top-left`), Close right tab (`split-right`) and so on. Turning (Stack top and bottom) stays a
+(`split-top-left`), Close right tab (`split-right`) and so on. Turning (Show top and bottom) stays a
 pair-only entry.
 
 ### 2.3 HTML surfaces
@@ -213,7 +213,7 @@ Open on the right, ...
 | no split, A shown | any corner | the nearest edge's half (pair), as before |
 | pair A \| B | top-left / bottom-left | [X / A \| B] or [A / X \| B] (3 panes) |
 | pair A \| B | top-right / bottom-right | [A \| X / B] or [A \| B / X] |
-| stacked A / B | a corner | that row divided: [X A / B], [A X / B], [A / X B], [A / B X] |
+| top-and-bottom A / B | a corner | that row divided: [X A / B], [A X / B], [A / X B], [A / B X] |
 | T [A / C \| B] | top-right / bottom-right | 2 x 2 (4 panes) |
 | T [A / C \| B] | top-left | X replaces A; A becomes a normal tab |
 | 2 x 2 | a corner | X replaces that pane's tab |
@@ -223,7 +223,7 @@ Open on the right, ...
 *What a drop does (`split_view::plan_drop`).* One rule: the dragged tab takes the zone's half and
 its partner the other half, in the zone's orientation. No pair: the partner is the shown tab
 (dragging the shown tab itself gives it an empty side). A shown pair and one of its halves: the
-partner is the other half, so dragging a half re-arranges the pair (swap, or turn it stacked or
+partner is the other half, so dragging a half re-arranges the pair (swap, or turn it top and bottom or
 side by side); dropping a half where it already is shows no zone. A shown pair and an outside tab:
 the partner is the focused half (unless that is the empty side, then the other half) and the
 remaining half leaves the pair, staying open as a normal tab, or closing when it was the empty
@@ -241,18 +241,18 @@ one (same group and pin state for display) and the two tabs render as one joined
 | Shown pair | both halves get the island fill; the focused half keeps the active styling |
 | Width | shown pair: each half flex 1.25 (pair 2.5, the widest unit); parked pair: each half 0.7 (pair 1.4, narrower than the active tab's 1.5) |
 | Sidebar | the two rows join vertically into one capsule (inner corners 3px, seam hairline) |
-| A11y | each half stays a `role="tab"`; its description is "Left side of split view" / "Right side of split view", or "Top side ..." / "Bottom side ..." for a stacked pair (`pair` carries `o`), plus ", focused" on the focused half of a shown pair |
-| Stacked pair | the same joined capsule (the strip shows the pair, not its geometry) |
+| A11y | each half stays a `role="tab"`; its description is "Left side of split view" / "Right side of split view", or "Top side ..." / "Bottom side ..." for a top-and-bottom pair (`pair` carries `o`), plus ", focused" on the focused half of a shown pair |
+| Top-and-bottom pair | the same joined capsule (the strip shows the pair, not its geometry) |
 | Three or four panes | one joined capsule of every pane's tab in tree order (`pairOrder`); `data-split` `l` (first), `m` (middle: inner corners both sides) and `r` (last); shown panes flex 1 each, parked 0.7; descriptions name the place: "Top-left pane of split view", "Right pane of split view", ", focused" |
 
 **Toolbar button.** `aria-pressed` follows the shown split; the glyph shows the focused side
-(`split-left` / `split-right`, or `split-top` / `split-bottom` when stacked, otherwise `split`). In
+(`split-left` / `split-right`, or `split-top` / `split-bottom` when top and bottom, otherwise `split`). In
 a layout of three or four panes it shows the focused pane's place: a quarter (`split-top-left`,
 `split-top-right`, `split-bottom-left`, `split-bottom-right`, new glyphs) or a half.
 Click: not split, open a split with an empty right side; split, open the split menu (as the
 divider menu).
 
-**Empty side, stacked.** The picker covers whichever pane is empty (top or bottom) and its heading
+**Empty side, top and bottom.** The picker covers whichever pane is empty (top or bottom) and its heading
 names it: "Choose a tab for the top side" / "... bottom side".
 
 **Empty pane in a larger layout.** There is still one picker host per window: it covers the first
@@ -268,12 +268,12 @@ which only arises in odd sequences, keeps the overlay's opaque fill until the fi
 | Tab menu on the active tab: "Add tab to new split view" | Active tab left, empty side right |
 | Tab menu on a tab of the pair | "Separate views", "Swap sides" |
 | Link context menu: "Open link in split view" | New tab with the link beside the current tab |
-| Drag a tab below the strip (or right of the vertical sidebar) onto the left, right, top or bottom half of the page | Dragged tab on that half, its partner on the other (see Drop-zone preview); top and bottom make a stacked pair |
-| Divider grip / right-click / toolbar split menu: Stack top and bottom, Show side by side | Turns the shown pair |
+| Drag a tab below the strip (or right of the vertical sidebar) onto the left, right, top or bottom half of the page | Dragged tab on that half, its partner on the other (see Drop-zone preview); top and bottom make a pair, one page above the other |
+| Divider grip / right-click / toolbar split menu: Show top and bottom, Show side by side | Turns the shown pair |
 | Divider grip / right-click | Divider menu |
 
 Keyboard: Ctrl+Shift+\ toggle, Ctrl+Shift+Left/Right focus a side (the first / second pane in
-either orientation), Ctrl+Shift+Up/Down focus the top / bottom pane (bound only while a stacked
+either orientation), Ctrl+Shift+Up/Down focus the top / bottom pane (bound only while a top-and-bottom
 split is shown, so pages keep the chords otherwise), Ctrl+Shift+W close the focused side's tab.
 With three or four panes the arrows move to the geometric neighbour (`SplitView::neighbour`; from a
 whole half the top or left neighbour wins; nothing at the page's edge), Up/Down are bound whenever
@@ -306,8 +306,8 @@ Ctrl+Shift+Left/Right, or selecting either half in the strip.
 - Contrast: titles `--bw-text` (>= 4.5:1, guaranteed by `theme.rs`), meta `--bw-text-2`; the
   active pane accent edge is >= 3:1 against the window colour (accent tokens are validated).
 - Keyboard: everything in section 2.4 has a keyboard path (shortcuts, the toolbar button via Tab,
-  the tab menu via Shift+F10 on a focused tab, the picker fully). A stacked pair, which a drag
-  creates, is also reachable from the split menu (Stack top and bottom).
+  the tab menu via Shift+F10 on a focused tab, the picker fully). A top-and-bottom pair, which a drag
+  creates, is also reachable from the split menu (Show top and bottom).
 - The drop card is a `role="status"` region named after its label and the tab title ("Open at the
   top: Docs").
 
@@ -319,7 +319,7 @@ Ctrl+Shift+Left/Right, or selecting either half in the strip.
   grip and the toolbar button carry the menu instead).
 - More than one layout per window, more than four panes, three columns or rows, and independent
   (unaligned) cross dividers in a 2 x 2; the "pin split button" setting, and the setting that
-  disables drag-to-split. (Stacked split and up to four panes shipped; see section 3.)
+  disables drag-to-split. (Top-and-bottom split and up to four panes shipped; see section 3.)
 - Dropping relative to one pane (Chrome-style per-pane edges): the zones are the page's four
   halves and four corners.
 - The native (GDI) strip's own drag stays pair-only (edges only, no corners); the tab menu's "New
@@ -333,14 +333,14 @@ Ctrl+Shift+Left/Right, or selecting either half in the strip.
 
 ## 3. Changelog
 
-- **Stacked split and drag anywhere (October 2026).** A tab can be dragged onto any edge of the
-  page, left, right, top or bottom, to split that way; top and bottom make a stacked pair (two
+- **Top-and-bottom split and drag anywhere (October 2026).** A tab can be dragged onto any edge of the
+  page, left, right, top or bottom, to split that way; top and bottom make a pair, one page above the other (two
   full-width pages, 160 DIP minimum height, horizontal gap and grip, `IDC_SIZENS`). Drags out of
   the vertical sidebar now split too. The zone rule, the drop rule and the four-edge card are in
-  section 2.3; the model (`Orientation`, first/second slots) in 2.1; Stack top and bottom / Show
-  side by side in the split menus; Ctrl+Shift+Up/Down while stacked; `pair` gains `o`,
+  section 2.3; the model (`Orientation`, first/second slots) in 2.1; Show top and bottom / Show
+  side by side in the split menus; Ctrl+Shift+Up/Down while top and bottom; `pair` gains `o`,
   `splitpick` / `splitdrop` gain sides `t` and `b` (docs/html-chrome-protocol.md, "Split view");
-  crash recovery appends `v` for a stacked pair and reads every older line as side by side. New
+  crash recovery appends `v` for a top-and-bottom pair and reads every older line as side by side. New
   glyphs `split-stacked`, `split-top`, `split-bottom`. Layout and zone logic are unit-tested; the
   native drag, overlay and WebView2 placement still need a supervised real-app pass.
 - **Four panes from the corners (October 2026).** Dragging a tab onto a corner of a shown split

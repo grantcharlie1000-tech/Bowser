@@ -30,7 +30,7 @@ fn stackable(tab: &StackInput) -> bool {
     !tab.pinned && !tab.private && tab.domain.is_some()
 }
 
-/// "Stack tabs of this site": the tabs that join `domain`'s stack, in strip order. Pinned and
+/// "Group tabs of this site": the tabs that join `domain`'s stack, in strip order. Pinned and
 /// private tabs never stack.
 pub fn site_members(tabs: &[StackInput], domain: &DomainKey) -> Vec<TabId> {
     tabs.iter()
@@ -39,7 +39,7 @@ pub fn site_members(tabs: &[StackInput], domain: &DomainKey) -> Vec<TabId> {
         .collect()
 }
 
-/// "Stack all tabs by site": one stack per site that has two tabs or more, sites in the order their
+/// "Group all tabs by site": one stack per site that has two tabs or more, sites in the order their
 /// first tab appears.
 pub fn sites_to_stack(tabs: &[StackInput]) -> Vec<(DomainKey, Vec<TabId>)> {
     let mut first_seen: Vec<DomainKey> = Vec::new();

@@ -585,7 +585,7 @@ struct WindowChrome {
     caption_from_nc: bool,
     drag: Option<(TabId, usize)>,
     /// --- tab stacks (T10) --- the slot the held tab rests over the middle of, and since when
-    /// ("Stack tabs by dragging one onto another" in the native strip).
+    /// ("Group tabs by dragging one onto another" in the native strip).
     stack_hover: Option<(usize, Instant)>,
     split_drag_companion: Option<TabId>,
     split_drop: Option<crate::split_view::DropZone>,
@@ -6406,39 +6406,47 @@ fn show_tab_context_menu(hwnd: HWND, app: &AppRef, id: TabId, x: i32, y: i32, pi
     entries.extend(super::split_ui::tab_menu_entries(app, id));
     entries.push(Entry::Separator);
     // --- end split view ---
-    entries.extend(super::stack_ui::tab_menu_entries(app, id)); // --- tab stacks (T10) ---
+    // One "Tab group" submenu: what can be done with this tab's group (or how to make one, from
+    // stack_ui.rs, T10), then the site's standing grouping choice.
+    let mut group_rows = super::stack_ui::tab_menu_entries(app, id);
     if let Some(key) = &key {
         // The site's standing mode is marked with a check, as the other choice lists do.
         let mode = App::tab_group_preferences(app).mode(key);
         let mode_icon = |_: bool| Icon::None;
-        entries.push(Entry::Item(
-            Item::new(GROUP, "Add tab to group", Icon::Grid).glyph("tab-group").submenu_with(vec![
-                Entry::Item(
-                    Item::new(
-                        GROUP_NEW,
-                        "Always group this site",
-                        mode_icon(mode == tab_groups::GroupMode::Always),
-                    )
-                    .checked(mode == tab_groups::GroupMode::Always),
-                ),
-                Entry::Item(
-                    Item::new(
-                        GROUP_AUTO,
-                        "Group this site automatically",
-                        mode_icon(mode == tab_groups::GroupMode::Auto),
-                    )
-                    .checked(mode == tab_groups::GroupMode::Auto),
-                ),
-                Entry::Item(
-                    Item::new(
-                        GROUP_NEVER,
-                        "Never group this site",
-                        mode_icon(mode == tab_groups::GroupMode::Never),
-                    )
-                    .checked(mode == tab_groups::GroupMode::Never),
-                ),
-            ]),
-        ));
+        if !group_rows.is_empty() {
+            group_rows.push(Entry::Separator);
+        }
+        group_rows.extend([
+            Entry::Item(
+                Item::new(
+                    GROUP_NEW,
+                    "Always group this site",
+                    mode_icon(mode == tab_groups::GroupMode::Always),
+                )
+                .checked(mode == tab_groups::GroupMode::Always),
+            ),
+            Entry::Item(
+                Item::new(
+                    GROUP_AUTO,
+                    "Group this site automatically",
+                    mode_icon(mode == tab_groups::GroupMode::Auto),
+                )
+                .checked(mode == tab_groups::GroupMode::Auto),
+            ),
+            Entry::Item(
+                Item::new(
+                    GROUP_NEVER,
+                    "Never group this site",
+                    mode_icon(mode == tab_groups::GroupMode::Never),
+                )
+                .checked(mode == tab_groups::GroupMode::Never),
+            ),
+        ]);
+    }
+    if !group_rows.is_empty() {
+        entries.push(Entry::Item(Item::new(GROUP, "Tab group", Icon::Grid).glyph("tab-group").submenu_with(group_rows)));
+    }
+    if let Some(key) = &key {
         (has_group, collapsed) = with_chrome(hwnd, |state| {
             state
                 .slots

@@ -1,6 +1,6 @@
-//! Tab stacks, tiling and workspaces in the window (T10): the registry commands (stack, unstack,
-//! the three tilings, untile, next and previous workspace) and the tab menu's "Tab stack" rows. The
-//! rules are in `crate::stacks` and `app/stacks.rs`; the stack editor is the island menu
+//! Tab groups ("stacks" in the code), tiling and workspaces in the window (T10): the registry
+//! commands (group, ungroup, the three tilings, untile, next and previous workspace) and the tab
+//! menu's "Tab group" rows. The rules are in `crate::stacks` and `app/stacks.rs`; the group editor is the island menu
 //! (`island_menu.rs`, its name, colour and member rows), opened through `window::open_stack_editor`.
 
 use windows::Win32::Foundation::HWND;
@@ -13,7 +13,7 @@ use crate::{
     tabs::TabId,
 };
 
-const TITLE: &str = "Tab stacks";
+const TITLE: &str = "Tab groups";
 
 fn toast(hwnd: HWND, message: &str) {
     super::window::show_toast(hwnd, message, TITLE);
@@ -27,15 +27,15 @@ pub(crate) fn run_stack_site(cx: &Context) {
 
 pub(crate) fn run_stack_all_by_site(cx: &Context) {
     match App::stack_all_by_site(cx.app) {
-        0 => toast(cx.hwnd, "No site has two tabs to stack"),
-        1 => toast(cx.hwnd, "1 stack made"),
-        count => toast(cx.hwnd, &format!("{count} stacks made")),
+        0 => toast(cx.hwnd, "No site has two tabs to group"),
+        1 => toast(cx.hwnd, "1 group made"),
+        count => toast(cx.hwnd, &format!("{count} groups made")),
     }
 }
 
 pub(crate) fn run_unstack(cx: &Context) {
     if !App::unstack(cx.app, App::active_tab_id(cx.app)) {
-        toast(cx.hwnd, "This tab is not in a stack");
+        toast(cx.hwnd, "This tab is not in a group");
     }
 }
 
@@ -71,10 +71,10 @@ pub(crate) fn run_previous_workspace(cx: &Context) {
     }
 }
 
-/// "Stack tabs of this site" for `id`.
+/// "Group tabs of this site" for `id`.
 fn stack_site(hwnd: HWND, app: &AppRef, id: TabId) {
     if App::stack_site(app, id) == 0 {
-        toast(hwnd, "There is no other tab of this site to stack with");
+        toast(hwnd, "There is no other tab of this site to group with");
     }
 }
 
@@ -82,7 +82,7 @@ fn stack_site(hwnd: HWND, app: &AppRef, id: TabId) {
 fn tile(hwnd: HWND, app: &AppRef, mode: TileMode) {
     let tabs = App::tile_targets(app);
     if tabs.len() < 2 {
-        super::window::show_toast(hwnd, "Select two to four tabs, or use a stack, to tile them", "Tiling");
+        super::window::show_toast(hwnd, "Select two to four tabs, or use a group, to tile them", "Tiling");
         return;
     }
     tile_tabs(hwnd, app, &tabs, mode);
@@ -100,9 +100,8 @@ pub(super) fn tile_tabs(hwnd: HWND, app: &AppRef, tabs: &[TabId], mode: TileMode
     opened
 }
 
-// ----- the tab menu's "Tab stack" rows -----
+// ----- the tab menu's "Tab group" rows -----
 
-const STACK_PARENT: usize = 0x5600;
 const STACK_SITE: usize = 0x5601;
 const STACK_ALL: usize = 0x5602;
 const STACK_EDIT: usize = 0x5603;
@@ -115,12 +114,13 @@ const STACK_COPY: usize = 0x5609;
 const STACK_WINDOW: usize = 0x560A;
 const STACK_UNSTACK: usize = 0x560B;
 const STACK_WORKSPACE: usize = 0x560C;
-/// "Move the stack to workspace" rows: this plus the workspace's place in the rail.
+/// "Move the group to workspace" rows: this plus the workspace's place in the rail.
 const STACK_WORKSPACE_BASE: usize = 0x5680;
 const MAX_WORKSPACE_ROWS: usize = 0x70;
 
-/// The tab menu's stack rows for `id`: what can be done with its stack, or how to make one. None
-/// while stacks are off or for a private tab (which never stacks).
+/// The tab menu's "Tab group" rows for `id` (window.rs puts them in that submenu, above the site's
+/// grouping choices): what can be done with its group, or how to make one. None for a private or
+/// pinned tab (which never joins a group).
 pub(super) fn tab_menu_entries(app: &AppRef, id: TabId) -> Vec<Entry> {
     if App::tab_private(app, id) || App::tab_pinned(app, id) {
         return Vec::new();
@@ -133,12 +133,10 @@ pub(super) fn tab_menu_entries(app: &AppRef, id: TabId) -> Vec<Entry> {
                 *other != id && !App::tab_pinned(app, *other) && App::tab_committed_url(app, *other).and_then(|url| crate::tab_groups::DomainKey::from_url(&url)).as_ref() == Some(key)
             }).count() > 0
         });
-        return vec![Entry::Item(
-            Item::new(STACK_PARENT, "Tab stack", Icon::Grid).glyph("tab-group").submenu_with(vec![
-                Entry::Item(Item::new(STACK_SITE, "Stack tabs of this site", Icon::None).glyph("tab-group").disabled_if(!same_site)),
-                Entry::Item(Item::new(STACK_ALL, "Stack all tabs by site", Icon::None).glyph("tab-group")),
-            ]),
-        )];
+        return vec![
+            Entry::Item(Item::new(STACK_SITE, "Group tabs of this site", Icon::None).glyph("tab-group").disabled_if(!same_site)),
+            Entry::Item(Item::new(STACK_ALL, "Group all tabs by site", Icon::None).glyph("tab-group")),
+        ];
     }
     let workspaces: Vec<Entry> = App::workspace_entries(app)
         .into_iter()
@@ -152,22 +150,22 @@ pub(super) fn tab_menu_entries(app: &AppRef, id: TabId) -> Vec<Entry> {
     let tiles = members.len() >= 2;
     let mut rows = vec![
         Entry::Item(Item::new(STACK_EDIT, "Name and colour…", Icon::None).glyph("edit")),
-        Entry::Item(Item::new(STACK_PIN, "Pin all tabs in the stack", Icon::None).glyph("pin")),
-        Entry::Item(Item::new(STACK_HIBERNATE, "Hibernate the stack", Icon::None).glyph("clock").disabled_if(members.len() < 2)),
-        Entry::Item(Item::new(STACK_TILE, "Tile the stack", Icon::None).glyph("split").disabled_if(!tiles)),
+        Entry::Item(Item::new(STACK_PIN, "Pin all tabs in the group", Icon::None).glyph("pin")),
+        Entry::Item(Item::new(STACK_HIBERNATE, "Hibernate the group", Icon::None).glyph("clock").disabled_if(members.len() < 2)),
+        Entry::Item(Item::new(STACK_TILE, "Tile the group", Icon::None).glyph("split").disabled_if(!tiles)),
         Entry::Separator,
-        Entry::Item(Item::new(STACK_SESSION, "Save the stack as a session…", Icon::None).glyph("save").disabled_if(!web)),
-        Entry::Item(Item::new(STACK_BOOKMARK, "Bookmark all tabs in the stack", Icon::None).glyph("bookmark").disabled_if(!web)),
+        Entry::Item(Item::new(STACK_SESSION, "Save the group as a session…", Icon::None).glyph("save").disabled_if(!web)),
+        Entry::Item(Item::new(STACK_BOOKMARK, "Bookmark all tabs in the group", Icon::None).glyph("bookmark").disabled_if(!web)),
         Entry::Item(Item::new(STACK_COPY, "Copy all links", Icon::None).glyph("link").disabled_if(!web)),
         Entry::Separator,
     ];
     if has_workspaces {
-        rows.push(Entry::Item(Item::new(STACK_WORKSPACE, "Move the stack to workspace", Icon::None).glyph("workspace").submenu_with(workspaces)));
+        rows.push(Entry::Item(Item::new(STACK_WORKSPACE, "Move the group to workspace", Icon::None).glyph("workspace").submenu_with(workspaces)));
     }
-    rows.push(Entry::Item(Item::new(STACK_WINDOW, "Move the stack to a new window", Icon::None).glyph("window").disabled_if(!web)));
+    rows.push(Entry::Item(Item::new(STACK_WINDOW, "Move the group to a new window", Icon::None).glyph("window").disabled_if(!web)));
     rows.push(Entry::Separator);
-    rows.push(Entry::Item(Item::new(STACK_UNSTACK, "Unstack", Icon::None).glyph("caption-minimize")));
-    vec![Entry::Item(Item::new(STACK_PARENT, "Tab stack", Icon::Grid).glyph("tab-group").submenu_with(rows))]
+    rows.push(Entry::Item(Item::new(STACK_UNSTACK, "Ungroup", Icon::None).glyph("caption-minimize")));
+    rows
 }
 
 /// Runs a row of [`tab_menu_entries`]. False for any other row.
@@ -191,7 +189,7 @@ pub(super) fn tab_menu_pick(hwnd: HWND, app: &AppRef, id: TabId, command: usize)
         }
         STACK_SESSION => {
             let name = App::stack_name(app, id).unwrap_or_default();
-            let Some(name) = super::profile_rename::prompt(hwnd, &name, "Save the stack as a session", "Save") else {
+            let Some(name) = super::profile_rename::prompt(hwnd, &name, "Save the group as a session", "Save") else {
                 return true;
             };
             if let Err(message) = App::save_session(app, &name, &App::stack_members(app, id)) {
@@ -205,7 +203,7 @@ pub(super) fn tab_menu_pick(hwnd: HWND, app: &AppRef, id: TabId, command: usize)
         STACK_COPY => {
             let text = App::stack_links_text(app, id);
             if text.is_empty() || !super::window::copy_text_to_clipboard(hwnd, &text) {
-                super::show_error_message("Bowser could not copy the stack's links.");
+                super::show_error_message("Bowser could not copy the group's links.");
             }
         }
         STACK_WINDOW => {
@@ -218,7 +216,7 @@ pub(super) fn tab_menu_pick(hwnd: HWND, app: &AppRef, id: TabId, command: usize)
                     }
                 }
             } else {
-                super::show_error_message("Bowser could not open the stack in a new window.");
+                super::show_error_message("Bowser could not open the group in a new window.");
             }
         }
         STACK_UNSTACK => {
@@ -244,7 +242,7 @@ mod tests {
     fn the_stack_rows_never_take_an_id_another_tab_menu_row_uses() {
         // The tab menu's own ids (window.rs), the split rows (0x5100..), the tab options rows
         // (0x5200..) and the closed tabs list (0x52FF..0x5300+).
-        for id in [STACK_PARENT, STACK_SITE, STACK_UNSTACK, STACK_WORKSPACE, STACK_WORKSPACE_BASE, STACK_WORKSPACE_BASE + MAX_WORKSPACE_ROWS - 1] {
+        for id in [STACK_SITE, STACK_UNSTACK, STACK_WORKSPACE, STACK_WORKSPACE_BASE, STACK_WORKSPACE_BASE + MAX_WORKSPACE_ROWS - 1] {
             assert!((0x5600..0x5700).contains(&id), "{id:#x}");
         }
     }

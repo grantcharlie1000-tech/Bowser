@@ -1,7 +1,7 @@
 //! Quick Commands search, in Rust: filter prefixes, the calculator row, result types and their order,
 //! the visible-result limit. The HTML palette does the same in `ui/src/palette-logic.ts` (the page
 //! filters as you type); this is the native fallback's search and the reference both are tested
-//! against (`ui/test/fixtures/palette-cases.json`).
+//! against (`ui/test/fixtures/palette-cases.txt`).
 
 use super::{
     calc,
@@ -87,6 +87,12 @@ pub fn score(label: &str, detail: &str, needle: &str) -> Option<i32> {
     subsequence_gap(needle, &detail).map(|gap| 250 - gap.min(200) as i32)
 }
 
+/// Score of a row that only its hidden search words match ([`super::registry::search_words`]): a
+/// word starting with the needle ranks below every match in what the row shows.
+pub fn words_score(words: &str, needle: &str) -> Option<i32> {
+    words.split_whitespace().any(|word| word.starts_with(needle)).then_some(40)
+}
+
 /// The rows for `query`, in display order. Empty text lists the first rows of each enabled type;
 /// typed text lists the best `palette_max_results` matches, grouped by type (where the best match
 /// of each group ranks while the order is the default, else in the user's order), with a
@@ -111,7 +117,11 @@ pub fn search(items: &[Item], query: &str, options: &Options) -> Vec<Item> {
         .iter()
         .enumerate()
         .filter(|(_, item)| allowed(item.kind))
-        .filter_map(|(index, item)| score(&item.label, &item.detail, &needle).map(|s| (index, s, item)))
+        .filter_map(|(index, item)| {
+            score(&item.label, &item.detail, &needle)
+                .or_else(|| super::registry::search_words(&item.action).and_then(|words| words_score(words, &needle)))
+                .map(|s| (index, s, item))
+        })
         .collect();
     ranked.sort_by(|(ia, sa, a), (ib, sb, b)| {
         sb.cmp(sa)
@@ -175,12 +185,16 @@ mod tests {
         for line in text.lines().filter(|l| !l.starts_with('#') && !l.trim().is_empty()) {
             let parts: Vec<&str> = line.split('\t').collect();
             match parts[0] {
-                "item" => items.push(Item {
-                    kind: ResultType::parse(parts[1]).expect("kind"),
-                    label: parts[2].into(),
-                    detail: parts[3].into(),
-                    action: parts[4].into(),
-                }),
+                "item" => {
+                    // An optional sixth column: the row's hidden search words, as the registry gives them.
+                    assert_eq!(parts.get(5).copied(), crate::commands::registry::search_words(parts[4]), "{line}");
+                    items.push(Item {
+                        kind: ResultType::parse(parts[1]).expect("kind"),
+                        label: parts[2].into(),
+                        detail: parts[3].into(),
+                        action: parts[4].into(),
+                    });
+                }
                 "case" => {
                     let mut options = Options::default();
                     if parts[2] != "*" {

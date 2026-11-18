@@ -12,7 +12,7 @@ pub(super) fn placement(settings: &crate::settings::Settings) -> Placement {
     match tab_options::new_tab_position(settings.new_tab_beside_active, settings.tabs.new_tab_related) {
         tab_options::NewTabPosition::Last => Placement::Last,
         tab_options::NewTabPosition::Active => Placement::AfterActive,
-        // "As stack with related" (T10) places like related; the stack is joined afterwards.
+        // "Grouped with related" (T10) places like related; the stack is joined afterwards.
         tab_options::NewTabPosition::Related | tab_options::NewTabPosition::Stack => Placement::AfterRelated,
     }
 }

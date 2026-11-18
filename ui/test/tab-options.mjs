@@ -61,7 +61,7 @@ test('the choices the page offers are exactly the words Rust parses', () => {
     assert.deepEqual(spec.choices.map(([value]) => value).sort(), [...choices.get(name)].sort(), key);
   }
   const position = options.TAB_OPTIONS.find((s) => s.key === options.POSITION_KEY);
-  // --- tab stacks (T10) --- "as stack with related" is offered now that stacks exist (T1's waiting choice).
+  // --- tab stacks (T10) --- "grouped with related" (stored as `stack`) is offered now that groups exist (T1's waiting choice).
   assert.deepEqual(position.choices.map(([value]) => value), ['related', 'active', 'last', 'stack']);
 });
 

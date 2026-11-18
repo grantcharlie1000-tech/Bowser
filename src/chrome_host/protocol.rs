@@ -380,7 +380,7 @@ pub enum Command {
     /// Drag-reorder drop: move tab `id` before tab `before` (`0` = end of strip).
     TabMove { id: u32, before: u32 },
     // --- tab stacks (T10) ---
-    /// The held tab `id` was dropped on tab `onto` after resting over it ("Stack tabs by dragging one
+    /// The held tab `id` was dropped on tab `onto` after resting over it ("Group tabs by dragging one
     /// onto another"): Rust stacks the two.
     TabStack { id: u32, onto: u32 },
     /// The wheel turned over the rail's workspaces: `d` notches, down positive ("Switch workspaces

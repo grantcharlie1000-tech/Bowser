@@ -108,6 +108,8 @@ impl PaletteData {
 
 /// Longest nickname sent with a bookmark row (T2's dialog caps nicknames at 24 characters).
 pub(crate) const HTML_MAX_NICK: usize = 24;
+/// A command's hidden search words (palette-logic.ts MAX_PALETTE_WORDS).
+pub(crate) const HTML_MAX_WORDS: usize = 64;
 
 fn tab_count(count: usize) -> String {
     format!("{count} tab{}", if count == 1 { "" } else { "s" })
@@ -702,6 +704,9 @@ pub(crate) struct HtmlItem {
     /// A bookmark row's nickname: typing it matches the row first, and opens it when
     /// `palette_open_nickname` is on.
     pub nick: Option<String>,
+    /// A command's hidden search words (`registry::search_words`): it is found by them, they never
+    /// show. Written as `a`.
+    pub words: Option<&'static str>,
 }
 
 fn cap_utf16(text: &str, max: usize) -> String {
@@ -744,6 +749,7 @@ pub(crate) fn html_items_with_favicons(
         fav: None,
         group: None,
         nick: None,
+        words: None,
     };
     let mut fixed = Vec::new();
     for kind in &options.palette_types {
@@ -768,7 +774,9 @@ pub(crate) fn html_items_with_favicons(
                 let wanted = if *kind == ResultType::Action { PaletteKind::Action } else { PaletteKind::Command };
                 for command in data.commands.iter().filter(|c| c.kind == wanted) {
                     let section = if *kind == ResultType::Action { "action" } else { "command" };
-                    fixed.push(row(section, &command.label, &command.detail, command.accel.as_deref().map(|a| cap_utf16(a, HTML_MAX_ACCEL)), command.id.clone()));
+                    let mut item = row(section, &command.label, &command.detail, command.accel.as_deref().map(|a| cap_utf16(a, HTML_MAX_ACCEL)), command.id.clone());
+                    item.words = crate::commands::registry::search_words(&command.id).filter(|words| words.len() <= HTML_MAX_WORDS);
+                    fixed.push(item);
                 }
             }
             ResultType::Bookmark | ResultType::Note | ResultType::History | ResultType::Calc => {}
@@ -920,6 +928,9 @@ fn write_items(out: &mut crate::chrome_host::json::Object<'_>, rows: &[HtmlItem]
                 if let Some(nick) = &item.nick {
                     row.string("k", nick);
                 }
+                if let Some(words) = item.words {
+                    row.string("a", words);
+                }
             });
         }
     });
@@ -946,6 +957,7 @@ pub(crate) fn shortcuts_items(live: &crate::commands::Live) -> Vec<HtmlItem> {
                 fav: None,
                 group: Some(category.label()),
                 nick: None,
+                words: crate::commands::registry::search_words(&entry.id).filter(|words| words.len() <= HTML_MAX_WORDS),
             });
         }
     }

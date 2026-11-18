@@ -23,6 +23,8 @@ export interface PaletteItem {
   readonly g?: string;
   /** A bookmark row's nickname (T2's bookmark dialog). */
   readonly k?: string;
+  /** A command row's hidden search words (Rust `registry::search_words`): found by them, never shown. */
+  readonly a?: string;
 }
 
 export interface PaletteMessage {
@@ -73,6 +75,8 @@ export const MAX_PALETTE_ACCEL = 96;
 export const MAX_PALETTE_GROUP = 64;
 /** command_palette.rs HTML_MAX_NICK. */
 export const MAX_PALETTE_NICK = 24;
+/** command_palette.rs HTML_MAX_WORDS: a command's hidden search words. */
+export const MAX_PALETTE_WORDS = 64;
 export const MAX_QUERY = 256;
 /** Rows shown for a typed query unless the setting says otherwise (src/commands/store.rs DEFAULT_RESULTS). */
 export const MAX_RESULTS = 12;
@@ -84,7 +88,7 @@ export const EMPTY_QUERY_LIMIT: Readonly<Record<ResultType, number>> = {
 };
 
 const MAX_ID = 0xffffffff;
-const ITEM_KEYS = ['id', 's', 'label', 'detail', 'acc', 'fav', 'g', 'k'];
+const ITEM_KEYS = ['id', 's', 'label', 'detail', 'acc', 'fav', 'g', 'k', 'a'];
 const MESSAGE_KEYS = ['v', 't', 'tok', 'kind', 'placeholder', 'items', 'mode', 'types', 'ranked', 'limit', 'keep', 'autonick'];
 /** Same gate as the other favicon fields (protocol.ts MAX_FAV_URI): a small PNG data: URI. */
 const FAV_PREFIX = 'data:image/png;base64,';
@@ -122,6 +126,8 @@ export function validPalettePayload(raw: unknown): raw is PaletteMessage {
     if (item.g !== undefined && !isStr(item.g, MAX_PALETTE_GROUP)) return false;
     // Only a bookmark has a nickname, and an empty one is never sent.
     if (item.k !== undefined && !(item.s === 'bookmark' && isStr(item.k, MAX_PALETTE_NICK) && item.k.trim() !== '')) return false;
+    // Only a command or an action has search words.
+    if (item.a !== undefined && !((item.s === 'command' || item.s === 'action') && isStr(item.a, MAX_PALETTE_WORDS))) return false;
     if (item.fav !== undefined && !(isStr(item.fav, MAX_FAV) && item.fav.startsWith(FAV_PREFIX) && /^[A-Za-z0-9+/=]*$/.test(item.fav.slice(FAV_PREFIX.length)))) return false;
   }
   return true;
@@ -160,6 +166,8 @@ export function scoreItem(item: PaletteItem, needle: string): number {
   if (inLabel >= 0) return 500 - Math.min(inLabel, 400);
   const inDetail = subsequenceGap(needle, detail);
   if (inDetail >= 0) return 250 - Math.min(inDetail, 200);
+  // Hidden search words rank below every match in what the row shows.
+  if (item.a !== undefined && item.a.split(/\s+/).some(word => word.startsWith(needle))) return 40;
   return -1;
 }
 
@@ -243,13 +251,13 @@ export function filterPalette(items: readonly PaletteItem[], query: string, opti
 
 /**
  * The cheat sheet's rows for `query`, grouped by their `g` heading in the order Rust sent them. Every
- * word of the query must appear in a row's label, group, description or shortcuts.
+ * word of the query must appear in a row's label, group, description, shortcuts or hidden search words.
  */
 export function filterShortcuts(items: readonly PaletteItem[], query: string): PaletteGroup[] {
   const words = query.trim().toLocaleLowerCase().slice(0, MAX_QUERY).split(/\s+/).filter(Boolean);
   const groups: { section: ResultType; label: string; items: PaletteItem[] }[] = [];
   for (const item of items) {
-    const hay = `${item.label} ${item.g ?? ''} ${item.detail} ${item.acc ?? ''}`.toLocaleLowerCase();
+    const hay = `${item.label} ${item.g ?? ''} ${item.detail} ${item.acc ?? ''} ${item.a ?? ''}`.toLocaleLowerCase();
     if (!words.every(word => hay.includes(word))) continue;
     const label = item.g ?? SECTION_LABEL[item.s];
     let group = groups.find(g => g.label === label);

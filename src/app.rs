@@ -3470,7 +3470,7 @@ impl App {
         }
     }
 
-    /// Side by side becomes stacked and back ("Stack top and bottom" / "Show side by side").
+    /// Side by side becomes stacked and back ("Show top and bottom" / "Show side by side").
     pub fn turn_split(app: &AppRef, bounds: Option<SplitBounds>) -> bool {
         let Some(mut split) = app.borrow().split_view else {
             return false;
