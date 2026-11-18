@@ -104,6 +104,8 @@ export type Command =
   | { v: 1; t: 'closedtabs' }
   // --- end tab options ---
   | { v: 1; t: 'group'; a: GroupAction; key: number }
+  // A whole group dragged by its handle (or moved by the keyboard): in front of tab `before`, 0 = the end.
+  | { v: 1; t: 'group'; a: 'move'; key: number; before: number }
   // --- vertical sidebar (lane S) ---
   | { v: 1; t: 'side'; a: 'workspace' | 'newtab' | 'collapse' }
   | { v: 1; t: 'side'; a: 'hover'; on: boolean }
@@ -579,6 +581,14 @@ export function sendRailWheel(d: number): boolean {
   return Number.isInteger(d) && d !== 0 && Math.abs(d) <= MAX_RAIL_WHEEL && send({ v: 1, t: 'railwheel', d });
 }
 // --- end tab stacks ---
+/**
+ * Moves the whole group `key` in front of tab `before` (0 = the end of the strip) as one block, its
+ * members keeping their order and group. Rust lands it before a group it names the inside of, and
+ * after the pinned tabs. False for an id that is not a wire id or a group key.
+ */
+export function sendGroupMove(key: number, before: number): boolean {
+  return isInt(key, 1, MAX_ID) && isInt(before, 0, MAX_ID) && send({ v: 1, t: 'group', a: 'move', key, before });
+}
 // --- toolbars and feeds (thread T13) ---
 /** A command button of the address bar or the tab bar: Rust runs it only if `item` is at `index` in that bar's list. */
 export function sendTool(bar: 'address' | 'tabs', item: string, index: number): boolean {

@@ -1,7 +1,7 @@
 import { onChromeInbound } from './chrome-handshake';
 // Tab strip view (?view=tabs): keyed reconciliation of the tab list, favicons, groups, pointer and keyboard input.
 // Page-controlled text is written with textContent only; favicons are data: URIs set as img.src.
-import { send, sendClosedTabs, sendTabSelection, sendTabStack, sendTool, type TabAction, type TabItem, type TabOptsMsg, type TabsMsg } from './protocol';
+import { send, sendClosedTabs, sendGroupMove, sendTabSelection, sendTabStack, sendTool, type TabAction, type TabItem, type TabOptsMsg, type TabsMsg } from './protocol';
 import { el, icon, place, type IconName } from './dom';
 import { itemIcon } from './bars-logic'; // --- toolbars and feeds (thread T13) ---
 import { applyTheme, DRAG_ATTR } from './view';
@@ -41,6 +41,9 @@ import {
   type Entry,
   type GroupEntry,
 } from './tabs-logic';
+// --- group drag --- a whole island picked up by its handle.
+import { blockDropIndex, clampBlock, groupDragAnnouncement, groupMoveBefore, groupStepBefore, groupUnits, moveChordDir } from './tabs-logic';
+// --- end group drag ---
 // --- tab options (Settings > Tabs) ---
 import {
   clickSelection, loadMark, lockedWidth, markedName, notifyLabel, pruneSelection, reloadLabel, reloadRemaining, stepTab, stripClasses, wheelSteps,
@@ -137,7 +140,49 @@ interface GroupNode {
   more: number;
   /** Observes the handle so the island's flex-basis can reserve its width (a bar, or a pill when folded away). */
   readonly watch: ResizeObserver;
+  /** Horizontal offset of the whole island (px): a group drag moves it, or opens a gap with it. */
+  shift: number;
 }
+
+// --- group drag ---
+/** One top-level unit of the strip while a group is held: an unpinned tab or a whole island. */
+interface DragUnit {
+  readonly el: HTMLElement;
+  /** The tab a move in front of this unit names (an island's first member). */
+  readonly first: number;
+  readonly tab?: TabNode;
+  readonly group?: GroupNode;
+}
+
+/** A press on an island's handle (bar, folded pill or closing mark): a click, or a drag of the whole island. */
+interface GroupDrag {
+  readonly pointerId: number;
+  readonly key: number;
+  readonly group: GroupNode;
+  /** The handle pressed; it holds the pointer capture. */
+  readonly handle: HTMLElement;
+  readonly startX: number;
+  readonly startY: number;
+  readonly startScroll: number;
+  /** Unpinned tabs and islands in strip order when the press began; the island at `from`. */
+  readonly units: readonly DragUnit[];
+  readonly from: number;
+  centers: readonly number[];
+  lefts: readonly number[];
+  readonly widths: readonly number[];
+  active: boolean;
+  dest: number;
+  lastX: number;
+}
+
+/** A dropped island on its way to its slot (as `Landing` for a tab). */
+interface GroupLanding {
+  readonly group: GroupNode;
+  readonly signature: string;
+  timer: number;
+  off: (() => void) | null;
+}
+// --- end group drag ---
 
 interface Drag {
   readonly pointerId: number;
@@ -328,7 +373,7 @@ function createGroup(key: number): GroupNode {
     if (shell.style.getPropertyValue('--go') !== w) shell.style.setProperty('--go', w);
   });
   watch.observe(ball);
-  return { shell, ball, cap, label: '', color: '', weight: -1, visible: -1, more: -1, watch };
+  return { shell, ball, cap, label: '', color: '', weight: -1, visible: -1, more: -1, watch, shift: 0 };
 }
 
 function syncGroup(g: GroupNode, e: GroupEntry, active: number, weightOf?: (id: number, fallback: number) => number): void {
@@ -374,6 +419,13 @@ function setShift(n: TabNode, px: number): void {
   n.root.style.transform = px === 0 ? '' : `translateX(${px}px)`;
 }
 
+/** Moves a whole island by `px` (0 clears it), as setShift does for one tab. */
+function setShellShift(g: GroupNode, px: number): void {
+  if (g.shift === px && (px !== 0 || g.shell.style.transform === '')) return;
+  g.shift = px;
+  g.shell.style.transform = px === 0 ? '' : `translateX(${px}px)`;
+}
+
 /** Builds the tab strip into `strip` (the #app element) and wires it to the host. */
 export function startTabs(strip: HTMLElement): void {
   // --- vertical sidebar (lane S) ---
@@ -410,6 +462,14 @@ export function startTabs(strip: HTMLElement): void {
    * the dropped tab keeps its lift and its place above its neighbours while it lands.
    */
   let landing: Landing | null = null;
+  // --- group drag --- the island held by its handle, the one landing after a drop, and the click a
+  // drag swallows (the handle's click folds the island).
+  let groupDrag: GroupDrag | null = null;
+  let groupLanding: GroupLanding | null = null;
+  let groupIgnoreClick = false;
+  /** Island whose handle takes focus back after the next render (keyboard move). */
+  let refocusGroup = 0;
+  // --- end group drag ---
   const reduced = (): boolean => matchMedia('(prefers-reduced-motion: reduce)').matches;
   // --- tab options ---
   let ui: TabOptsMsg = DEFAULT_OPTS;
@@ -503,7 +563,7 @@ export function startTabs(strip: HTMLElement): void {
   const flush = (): void => {
     frame = 0;
     const msg = latest;
-    if (drag?.active || !dirty || msg === null) return;
+    if (drag?.active || groupDrag?.active || !dirty || msg === null) return;
     dirty = false;
     render({ ...msg, items: pairOrder(msg.items, pair) }); // --- split view ---
     markPair(strip, pair); // --- split view ---
@@ -586,26 +646,35 @@ export function startTabs(strip: HTMLElement): void {
     // FLIP "first": where every visible tab is now (drag transforms included), measured only when
     // the arrangement is about to change.
     const nextSignature = layoutSignature(entries);
-    const phase = landingPhase(landing?.signature ?? null, nextSignature);
+    const phase = landingPhase(landing?.signature ?? groupLanding?.signature ?? null, nextSignature);
     // A stale render (the layout the drop left) updates content only: no transform is touched.
     const changed = nextSignature !== signature && phase !== 'stale';
     const animate = rendered && !reduced() && tabNodes.size <= FLIP_MAX_TABS && changed;
     const before = new Map<TabNode, number>();
     const ghosts: HTMLElement[] = [];
     const landed = phase === 'reorder' ? landing : null;
+    // --- group drag --- islands slide as one piece too: each shell is inverted, and its tabs only by
+    // their own move inside it.
+    const landedGroup = phase === 'reorder' ? groupLanding : null;
+    const shellsBefore = new Map<GroupNode, number>();
     if (animate) {
       for (const n of tabNodes.values()) {
         if (n.root.isConnected && !n.root.hidden) before.set(n, n.root.getBoundingClientRect().left);
+      }
+      for (const g of groups.values()) {
+        if (g.shell.isConnected) shellsBefore.set(g, g.shell.getBoundingClientRect().left);
       }
       strip.classList.add('settle');
       // The dropped tab still carries its drag offset: its "first" is home + offset, not a scaled rect.
       const held = landed !== null && landed.node.shift !== 0 ? landed.node : null;
       const prev = held ? held.shift : 0;
       for (const n of tabNodes.values()) setShift(n, 0);
+      for (const g of groups.values()) setShellShift(g, 0);
       if (held && before.has(held)) before.set(held, landingFirst(held.root.getBoundingClientRect().left, prev));
-    } else if (landed !== null) {
+    } else if (landed !== null || landedGroup !== null) {
       strip.classList.add('settle');
       for (const n of tabNodes.values()) setShift(n, 0);
+      for (const g of groups.values()) setShellShift(g, 0);
       void strip.offsetWidth;
       strip.classList.remove('settle');
     }
@@ -692,9 +761,26 @@ export function startTabs(strip: HTMLElement): void {
     if (animate) {
       // FLIP "last, invert, play": jump each moved tab back to where it was, then release.
       let moved = false;
+      // Every "last" is read before any invert is written, so a tab's own move excludes its island's.
+      const lastLeft = new Map<TabNode, number>();
+      for (const n of before.keys()) {
+        if (n.root.isConnected && !n.root.hidden && !n.root.classList.contains('ghost')) lastLeft.set(n, n.root.getBoundingClientRect().left);
+      }
+      const shellDx = new Map<Element, number>();
+      for (const [g, left] of shellsBefore) {
+        if (!g.shell.isConnected) continue;
+        const dx = flipInvert(left, g.shell.getBoundingClientRect().left);
+        if (Math.abs(dx) >= 0.5) shellDx.set(g.shell, dx);
+      }
+      for (const [shell, dx] of shellDx) {
+        (shell as HTMLElement).style.transform = `translateX(${dx}px)`;
+        moved = true;
+      }
       for (const [n, left] of before) {
-        if (!n.root.isConnected || n.root.hidden || n.root.classList.contains('ghost')) continue;
-        const dx = flipInvert(left, n.root.getBoundingClientRect().left);
+        const last = lastLeft.get(n);
+        if (last === undefined) continue;
+        const parent = n.root.parentElement;
+        const dx = flipInvert(left, last) - (parent ? shellDx.get(parent) ?? 0 : 0);
         const lifted = n === landed?.node;
         if (Math.abs(dx) < 0.5 && !lifted) continue;
         // The dropped tab keeps its lift through the invert, so the scale eases to 1 as it arrives.
@@ -704,10 +790,15 @@ export function startTabs(strip: HTMLElement): void {
       if (moved) void strip.offsetWidth;
       strip.classList.remove('settle');
       for (const n of before.keys()) if (n.root.style.transform !== '') n.root.style.transform = '';
+      for (const shell of shellDx.keys()) (shell as HTMLElement).style.transform = '';
     }
     if (landed !== null) {
       if (animate) landTransition(landed.node);
       else endLanding();
+    }
+    if (landedGroup !== null) {
+      if (animate && landedGroup.group.shell.isConnected) landGroupTransition(landedGroup);
+      else endGroupLanding();
     }
     if (phase !== 'stale') signature = nextSignature;
     rendered = true;
@@ -719,6 +810,11 @@ export function startTabs(strip: HTMLElement): void {
         node.root.focus({ preventScroll: true });
       }
       refocus = 0;
+    }
+    // --- group drag --- the moved island's handle keeps the keyboard.
+    if (refocusGroup !== 0) {
+      groups.get(refocusGroup)?.ball.focus({ preventScroll: true });
+      refocusGroup = 0;
     }
     // Only a newly selected or moved active tab is revealed: a background tab's update leaves the
     // strip where the user scrolled it.
@@ -799,9 +895,201 @@ export function startTabs(strip: HTMLElement): void {
   const snapHome = (): void => {
     strip.classList.add('settle');
     for (const n of tabNodes.values()) setShift(n, 0);
+    for (const g of groups.values()) setShellShift(g, 0); // --- group drag ---
     void strip.offsetWidth;
     strip.classList.remove('settle');
     endLanding();
+    endGroupLanding(); // --- group drag ---
+  };
+
+  // ----- group drag: a whole island picked up by its handle -----
+
+  /** Drops `.landing` from the island that was dropped; it is home. */
+  const endGroupLanding = (): void => {
+    const l = groupLanding;
+    if (!l) return;
+    groupLanding = null;
+    clearTimeout(l.timer);
+    l.off?.();
+    l.group.shell.classList.remove('landing');
+  };
+
+  /** Keeps the dropped island raised until its own transform transition ends. */
+  const landGroupTransition = (l: GroupLanding): void => {
+    if (groupLanding !== l) return;
+    clearTimeout(l.timer);
+    l.off?.();
+    const shell = l.group.shell;
+    const done = (): void => {
+      if (groupLanding === l) endGroupLanding();
+    };
+    const onEnd = (ev: TransitionEvent): void => {
+      if (ev.target === shell && ev.propertyName === 'transform') done();
+    };
+    shell.addEventListener('transitionend', onEnd);
+    l.off = () => shell.removeEventListener('transitionend', onEnd);
+    l.timer = window.setTimeout(done, LAND_FALLBACK_MS);
+  };
+
+  /** One ease back to where the island was picked up (refused move, Escape, a drop on its own slot). */
+  const landGroupHome = (): void => {
+    const l = groupLanding;
+    if (!l) return;
+    if (!reduced() && tabNodes.size <= FLIP_MAX_TABS) {
+      for (const n of tabNodes.values()) setShift(n, 0);
+      for (const g of groups.values()) setShellShift(g, 0);
+      landGroupTransition(l);
+      return;
+    }
+    snapHome();
+  };
+
+  /** The strip's unpinned tabs and islands in order, as a group drag moves among them. */
+  const dragUnits = (): DragUnit[] => {
+    const firstOf = new Map<number, number>();
+    if (latest) for (const u of groupUnits(buildEntries(latest.items, latest.active))) if (u.key !== 0) firstOf.set(u.key, u.first);
+    const units: DragUnit[] = [];
+    for (const child of Array.from(strip.children)) {
+      if (!(child instanceof HTMLElement)) continue;
+      if (child.classList.contains('group')) {
+        const key = Number(child.dataset.key);
+        const group = groups.get(key);
+        const first = firstOf.get(key);
+        if (group && first !== undefined) units.push({ el: child, first, group });
+      } else if (child.classList.contains('tab') && !child.classList.contains('pinned') && !child.classList.contains('ghost') && !child.hidden) {
+        const tab = tabNodes.get(Number(child.dataset.id));
+        if (tab) units.push({ el: child, first: tab.id, tab });
+      }
+    }
+    return units;
+  };
+
+  const unitShift = (u: DragUnit): number => u.tab?.shift ?? u.group?.shift ?? 0;
+  const setUnitShift = (u: DragUnit, px: number): void => {
+    if (u.tab) setShift(u.tab, px);
+    else if (u.group) setShellShift(u.group, px);
+  };
+
+  /** Home (unshifted) centres, left edges and widths of `units`. */
+  const measureUnits = (units: readonly DragUnit[]): { centers: number[]; lefts: number[]; widths: number[] } => {
+    const centers: number[] = [];
+    const lefts: number[] = [];
+    const widths: number[] = [];
+    for (const u of units) {
+      const r = u.el.getBoundingClientRect();
+      const width = u.el.offsetWidth || r.width;
+      const left = r.left - unitShift(u);
+      lefts.push(left);
+      widths.push(width);
+      centers.push(left + width / 2);
+    }
+    return { centers, lefts, widths };
+  };
+
+  const onGroupDragKey = (ev: KeyboardEvent): void => {
+    if (ev.key !== 'Escape') return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    endGroupDrag(false);
+  };
+
+  /** A press on an island's handle: nothing moves until the pointer travels DRAG_START_PX (else it is a click). */
+  const pressGroup = (ev: PointerEvent, handle: HTMLElement): void => {
+    if (layoutMode !== 'horizontal') return;
+    const key = Number(handle.dataset.key);
+    const group = groups.get(key);
+    if (!group) return;
+    const units = dragUnits();
+    const from = units.findIndex((u) => u.group === group);
+    if (from < 0) return;
+    ghostLand?.session.abandon(); // --- tab ghost ---
+    if (landing !== null || groupLanding !== null) snapHome();
+    const home = measureUnits(units);
+    groupDrag = {
+      pointerId: ev.pointerId, key, group, handle, startX: ev.clientX, startY: ev.clientY, startScroll: strip.scrollLeft,
+      units, from, centers: home.centers, lefts: home.lefts, widths: home.widths, active: false, dest: from, lastX: ev.clientX,
+    };
+    try { handle.setPointerCapture(ev.pointerId); } catch { /* window listeners still end the drag */ }
+  };
+
+  /**
+   * Lays the strip out for the held island at the last pointer x: the island follows the pointer
+   * along the row of unpinned units (never over the pinned tabs), and the units it passes slide aside
+   * by its width. Group drags stay on the strip: no ghost, no tearing off, no split drop.
+   */
+  const layoutGroupDrag = (d: GroupDrag): void => {
+    const box = strip.getBoundingClientRect();
+    const edgeDelta = dragScrollDelta(d.lastX, box.left, box.right);
+    if (edgeDelta !== 0) {
+      const was = strip.scrollLeft;
+      strip.scrollLeft += edgeDelta;
+      if (strip.scrollLeft !== was) {
+        updateEdges();
+        const home = measureUnits(d.units);
+        d.centers = home.centers;
+        d.lefts = home.lefts;
+      }
+    }
+    const dx = clampBlock(d.lastX - d.startX + strip.scrollLeft - d.startScroll, d.lefts, d.widths, d.from);
+    setShellShift(d.group, dx);
+    const left = (d.lefts[d.from] ?? 0) + dx;
+    d.dest = blockDropIndex(d.centers, d.from, left, left + (d.widths[d.from] ?? 0));
+    const shifts = gapShifts(d.lefts, d.widths, stripGap(), d.from, d.dest, false);
+    d.units.forEach((u, i) => {
+      if (i !== d.from) setUnitShift(u, shifts[i] ?? 0);
+    });
+  };
+
+  /** Pointer travel on a held handle; true when the event belonged to it. */
+  const moveGroup = (ev: PointerEvent): boolean => {
+    const d = groupDrag;
+    if (!d || ev.pointerId !== d.pointerId) return false;
+    if (!d.active) {
+      if (Math.abs(ev.clientX - d.startX) < DRAG_START_PX && Math.abs(ev.clientY - d.startY) < DRAG_START_PX) return true;
+      d.active = true;
+      d.group.shell.classList.add('dragging');
+      strip.classList.add('group-dragging');
+      window.addEventListener('keydown', onGroupDragKey, true);
+      announce(groupDragAnnouncement('lift', d.group.label));
+    }
+    d.lastX = ev.clientX;
+    layoutGroupDrag(d);
+    return true;
+  };
+
+  /**
+   * The handle was released (or the drag cancelled). A drop on another slot sends one `group` move for
+   * the whole island; the island stays where it was let go until the host's reorder arrives (one
+   * FLIP from there to its slot) or, refused, eases home.
+   */
+  const endGroupDrag = (commit: boolean): void => {
+    const d = groupDrag;
+    if (!d) return;
+    groupDrag = null;
+    window.removeEventListener('keydown', onGroupDragKey, true);
+    try { if (d.handle.hasPointerCapture(d.pointerId)) d.handle.releasePointerCapture(d.pointerId); } catch { /* capture may already be lost */ }
+    if (!d.active) return;
+    // The click that follows the release must not fold the island.
+    groupIgnoreClick = true;
+    window.setTimeout(() => { groupIgnoreClick = false; }, 0);
+    strip.classList.remove('group-dragging');
+    d.group.shell.classList.add('landing');
+    d.group.shell.classList.remove('dragging');
+    endGroupLanding();
+    const l: GroupLanding = { group: d.group, signature, timer: 0, off: null };
+    groupLanding = l;
+    const before = commit ? groupMoveBefore(d.units.map((u) => u.first), d.from, d.dest) : null;
+    if (before !== null && sendGroupMove(d.key, before)) {
+      announce(groupDragAnnouncement('drop', d.group.label, d.dest + 1, d.units.length));
+      l.timer = window.setTimeout(() => {
+        if (groupLanding === l) landGroupHome();
+      }, REFUSE_MS);
+      schedule();
+      return;
+    }
+    announce(groupDragAnnouncement(commit ? 'drop' : 'cancel', d.group.label));
+    landGroupHome();
+    schedule();
   };
 
   // ----- tab ghost (docs/design/tab-drag.md) -----
@@ -1039,9 +1327,17 @@ export function startTabs(strip: HTMLElement): void {
 
   const onPointerDown = (ev: PointerEvent): void => {
     ignoreClick = false;
-    if (ev.button !== 0 || drag !== null || !(ev.target instanceof Element)) return;
+    groupIgnoreClick = false; // --- group drag ---
+    if (ev.button !== 0 || drag !== null || groupDrag !== null || !(ev.target instanceof Element)) return;
     if (!ev.target.closest('.close')) unlockWidths(); // --- tab options ---
-    if (ev.target.closest('.close, .audio, .ball, .cap, .closed-btn')) return;
+    // --- group drag --- the island's handle (its bar, folded pill or closing mark) can pick it up whole.
+    const handle = ev.target.closest<HTMLElement>('.ball, .cap');
+    if (handle) {
+      pressGroup(ev, handle);
+      return;
+    }
+    // --- end group drag ---
+    if (ev.target.closest('.close, .audio, .closed-btn')) return;
     const tab = ev.target.closest<HTMLElement>('.tab');
     if (!tab) {
       if (ev.target instanceof HTMLElement && ev.target.hasAttribute(DRAG_ATTR)) send({ v: 1, t: 'drag' });
@@ -1067,6 +1363,7 @@ export function startTabs(strip: HTMLElement): void {
   };
 
   const onPointerMove = (ev: PointerEvent): void => {
+    if (moveGroup(ev)) return; // --- group drag ---
     const d = drag;
     if (!d || ev.pointerId !== d.pointerId) return;
     if (!d.active) {
@@ -1091,6 +1388,11 @@ export function startTabs(strip: HTMLElement): void {
   };
 
   const onPointerEnd = (ev: PointerEvent, commit: boolean): void => {
+    // --- group drag ---
+    if (groupDrag !== null && ev.pointerId === groupDrag.pointerId) {
+      endGroupDrag(commit);
+      return;
+    }
     const d = drag;
     if (d && ev.pointerId === d.pointerId) endDrag(commit);
   };
@@ -1104,7 +1406,7 @@ export function startTabs(strip: HTMLElement): void {
   strip.addEventListener('lostpointercapture', (ev) => onPointerEnd(ev, false));
   window.addEventListener('pointerup', (ev) => onPointerEnd(ev, true));
   window.addEventListener('pointercancel', (ev) => onPointerEnd(ev, false));
-  window.addEventListener('blur', () => endDrag(false));
+  window.addEventListener('blur', () => { endDrag(false); endGroupDrag(false); });
   strip.addEventListener('scroll', updateEdges, { passive: true });
   // The wheel steps among the strip's shown tabs.
   const wheelSwitch = (ev: WheelEvent, order: readonly TabNode[]): void => {
@@ -1133,6 +1435,11 @@ export function startTabs(strip: HTMLElement): void {
     if (!(t instanceof Element)) return;
     const ball = t.closest<HTMLElement>('.ball, .cap');
     if (ball) {
+      // --- group drag --- the release of a drag is not a click on the handle.
+      if (groupIgnoreClick) {
+        groupIgnoreClick = false;
+        return;
+      }
       send({ v: 1, t: 'group', a: 'toggle', key: Number(ball.dataset.key) });
       return;
     }
@@ -1216,6 +1523,19 @@ export function startTabs(strip: HTMLElement): void {
     // --- tab options --- Escape drops the selection.
     if (ev.key === 'Escape' && picked.length > 0) { ev.preventDefault(); setPicked([]); return; }
     // --- end tab options ---
+    // --- group drag --- the tab move chord on an island's handle moves the whole island one slot.
+    const handle = t.closest<HTMLElement>('.ball');
+    if (handle && layoutMode === 'horizontal') {
+      const dir = moveChordDir(ev.key, ev.ctrlKey, ev.shiftKey, ev.altKey);
+      if (dir === 0) return;
+      ev.preventDefault();
+      const key = Number(handle.dataset.key);
+      const units = dragUnits();
+      const before = groupStepBefore(units.map((u) => u.first), units.findIndex((u) => u.group?.shell.dataset.key === String(key)), dir);
+      if (before !== null && sendGroupMove(key, before)) refocusGroup = key;
+      return;
+    }
+    // --- end group drag ---
     const tab = t.closest<HTMLElement>('.tab');
     if (!tab) return;
     // Enter/Space on the close or mute button activates that button (click), not the tab.

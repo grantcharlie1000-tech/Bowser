@@ -168,6 +168,23 @@ See docs/html-chrome-protocol.md, "Tab drag ghost". Page to Rust is `tabdrag`
 (`start` / `move` / `end`). Rust to page is `tabghost` (`shown` / `land` / `gone`). Messages stay
 within the six-field cap by packing `r` = "w,h,gx,gy,c" and `p` = "x,y".
 
+## Moving a whole island
+
+The island's coloured bar (and a folded island's pill or closing mark) is a handle: a press that
+travels `DRAG_START_PX` picks up the whole island (`tabs.ts` group drag), a shorter one stays a click
+(fold / unfold), and right click still opens the island menu. The island slides along the strip as one
+raised block (opaque wash, flyout shadow, `grabbing` cursor), clamped between the first unpinned tab and
+the end; the tabs and islands it passes slide aside by its width (transform only). It passes a unit once
+its leading edge crosses that unit's centre (`blockDropIndex`), so it can only land between units, never
+inside another island. The release sends one `group` `move` (docs/html-chrome-protocol.md); the island
+holds its place until the host's reorder arrives and then makes one FLIP to its slot (islands are
+inverted as a whole, their tabs only by their own move), or eases home after `REFUSE_MS`. Escape
+cancels. There is no native ghost: an island never leaves the strip, so it is not torn off into a
+window or dropped into a split. Ctrl+Shift+Left/Right (or Page Up/Down) on the focused bar moves it one
+slot, as for a tab. Under reduced motion the island still follows the pointer, and nothing else
+animates. In the vertical sidebar only the keyboard chord moves a group (Ctrl+Shift+Up/Down on its
+header); dragging a group header there is not built.
+
 ## Future: drag out into a new window
 
 Not built. The pieces are ready for it:
