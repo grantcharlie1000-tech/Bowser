@@ -15,6 +15,7 @@ Use `$R = 'grantcharlie1000-tech/Bowser'` and `X.Y.Z` for the new version below.
 | 2. Release | automatic on merge | `release.yml`: gate, five parallel Windows jobs, publish, pin | ~6.5 min |
 | 3. Stable pin PR | opened automatically; you merge | `windows-verify` pin check, `stable-package` | ~1 min |
 | After merge | automatic | `stable-package` push verification and `mark-latest` | ~1 min |
+| Website | automatic after steps 2 and 3 | `site-release-notes.yml`: release notes and download page on `gh-pages` | ~1 min |
 
 Before this, v0.0.31 took about 88 minutes of serial CI and about six manual steps.
 The release run is now bounded by its fat-LTO release compile (about 4.5 min).
@@ -115,6 +116,24 @@ latest-download route. Publishing the files alone is not a stable rollout.
 To pin by hand instead (for example, if the pin job failed), run
 `python tools/release.py pin vX.Y.Z` on a branch from main. It does the same
 download and hash checks. Commit the one changed file and open the PR.
+
+## 4. Website (automatic)
+
+The website on `gh-pages` follows releases by itself. `site-release-notes.yml` runs when
+**Release guarded Bowser** or **Verify stable package** finishes successfully, so it runs once
+after step 2 and again after the pin PR is merged. It checks out `gh-pages` and copies main's
+`stable/release.json` to `tools/stable.json`. Then it runs `python3 tools/build.py --refresh-releases`, which:
+
+- rebuilds `releases.html` from the published releases and the pull requests merged between each
+  tag (version bumps, pins and other release-machinery PRs are left out), with the pinned release
+  marked Stable;
+- fills the download page's version, size, date and SHA-256 from the pin.
+
+It commits to `gh-pages` only when a page changed, then asks GitHub Pages to publish. Nothing
+to do by hand. A good pull request title is the release note, so title PRs for people,
+not for the diff. To rerun it, use Actions > **Update website release notes** > Run workflow,
+or `gh workflow run site-release-notes.yml --repo $R --ref main`. To preview locally, run the
+same command in a `gh-pages` checkout.
 
 ## Rollback
 
