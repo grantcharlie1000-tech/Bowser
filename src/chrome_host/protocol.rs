@@ -2131,6 +2131,9 @@ pub struct HoverCard {
     pub thumb: Option<Vec<u8>>,
     /// Memory of the tab's page process in megabytes.
     pub memory_mb: Option<u32>,
+    /// The card has a preview frame: previews are on and the tab is awake. Without a `thumb` (an awake
+    /// tab that has not been on screen since its page loaded) the page draws a placeholder in it.
+    pub preview: bool,
     // --- end tab options ---
 }
 
@@ -2213,6 +2216,9 @@ pub fn card_json(tok: u32, card: &HoverCard) -> String {
         }
         if let Some(memory) = card.memory_mb {
             out.uint("mem", u64::from(memory.min(99_999)));
+        }
+        if card.preview {
+            out.bool("preview", true);
         }
         // --- end tab options ---
     })
@@ -5286,7 +5292,9 @@ mod tests {
         big.resize(crate::thumbnail::MAX_THUMB_BYTES + 10, 0);
         big.extend([0xFF, 0xD9]);
         assert!(!card_json(3, &HoverCard { thumb: Some(big), ..plain.clone() }).contains("thumb"));
-        assert!(card_json(3, &HoverCard { memory_mb: Some(10_000_000), ..plain }).contains(r#""mem":99999"#), "memory is capped");
+        assert!(card_json(3, &HoverCard { memory_mb: Some(10_000_000), ..plain.clone() }).contains(r#""mem":99999"#), "memory is capped");
+        assert!(!card_json(3, &plain).contains("preview"));
+        assert!(card_json(3, &HoverCard { preview: true, ..plain }).ends_with(r#""more":0,"preview":true}"#));
     }
 
     #[test]

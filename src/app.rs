@@ -1066,7 +1066,7 @@ fn extension_records(
 /// holds their startup value. Without this, any later save (a Tabs option, a sidebar drag, the
 /// translate or download settings) put the old value back in the file.
 fn keep_file_owned_keys(settings: &mut crate::settings::Settings, file: &crate::settings::Settings) {
-    settings.automatic_tab_grouping = file.automatic_tab_grouping;
+    // `automatic_tab_grouping` is live (`apply_live_settings`), so memory holds it.
     settings.tracking_prevention = file.tracking_prevention;
     settings.block_youtube_video_ads = file.block_youtube_video_ads;
     // --- layout (thread T6) --- `side_panel_position` is live now (`apply_live_settings`), so memory holds it.
@@ -2820,7 +2820,10 @@ impl App {
                     id: tab.id,
                     domain: self.in_flight_domains.domain_for(tab.id, committed),
                     pinned: tab.pinned,
-                    opener: tab.opener,
+                    // Groups are by site only. An opener link (a tab opened from another page, or a
+                    // new tab placed beside the one it came from) would take a tab out of its site's
+                    // group and pair it with an unrelated page, such as an x.com tab with a New tab.
+                    opener: None,
                     manual: false,
                 }
             })
@@ -7950,6 +7953,8 @@ impl App {
             state.settings.ctrl_s_vertical_tabs = settings.ctrl_s_vertical_tabs;
             state.settings.split_edge_drop = settings.split_edge_drop;
             state.settings.pin_new_tab_groups = settings.pin_new_tab_groups;
+            // The one group setting: the strip regroups (or ungroups) at once, below.
+            state.settings.automatic_tab_grouping = settings.automatic_tab_grouping;
             state.settings.start = settings.start.clone(); // --- start page ---
             // --- auto-hide (T11) --- the master switch and its two rows take effect at once.
             state.settings.frameless = settings.frameless;

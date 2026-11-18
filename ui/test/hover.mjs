@@ -62,6 +62,8 @@ test('malformed hover content is rejected', () => {
     { ...card, rows: [{ ...card.rows[0], extra: true }] },
     { ...card, rows: [{ title: 'x', active: true, linked: false }] },
     { ...card, more: -1 },
+    { ...card, preview: false },
+    { ...card, preview: 1 },
     (() => { const { sleeping, ...rest } = card; return rest; })(),
     { ...island, slot: 2 },
     { ...island, name: 'n'.repeat(65) },

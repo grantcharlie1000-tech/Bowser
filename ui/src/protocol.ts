@@ -192,6 +192,8 @@ export interface HoverCardMsg {
   readonly thumb?: string;
   /** Memory of the tab's page process in megabytes. */
   readonly mem?: number;
+  /** Previews are on and the tab is awake: a preview frame shows, a placeholder when there is no thumb. */
+  readonly preview?: boolean;
   // --- end tab options ---
 }
 export interface HoverIslandMsg {
@@ -1018,8 +1020,8 @@ export function parseHoverMsg(raw: Record<string, unknown>): HoverMsg | null {
       return { t: 'hover', tok, kind: 'tooltip', text: raw.text };
     }
     case 'card': {
-      if (!hasOnlyKeys(raw, [...CARD_KEYS, 'thumb', 'mem']) || !hasAllKeys(raw, CARD_KEYS)) return null;
-      if (('thumb' in raw && !isThumbUri(raw.thumb)) || ('mem' in raw && !isInt(raw.mem, 0, 99999))) return null; // --- tab options ---
+      if (!hasOnlyKeys(raw, [...CARD_KEYS, 'thumb', 'mem', 'preview']) || !hasAllKeys(raw, CARD_KEYS)) return null;
+      if (('thumb' in raw && !isThumbUri(raw.thumb)) || ('mem' in raw && !isInt(raw.mem, 0, 99999)) || ('preview' in raw && raw.preview !== true)) return null; // --- tab options ---
       const { title, host, marker, sleeping, fav, more } = raw;
       const markers = parseColours(raw.markers, HOVER_MARKERS);
       const rows = parseHoverRows(raw.rows);
@@ -1029,6 +1031,7 @@ export function parseHoverMsg(raw: Record<string, unknown>): HoverMsg | null {
         t: 'hover', tok, kind: 'card', title, host, marker, markers, sleeping, fav: fav as string, rows, more,
         ...(typeof raw.thumb === 'string' ? { thumb: raw.thumb } : {}), // --- tab options ---
         ...(typeof raw.mem === 'number' ? { mem: raw.mem } : {}),
+        ...(raw.preview === true ? { preview: true } : {}),
       };
     }
     case 'island': {

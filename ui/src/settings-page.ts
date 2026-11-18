@@ -701,18 +701,16 @@ export function startSettingsPage(root: HTMLElement): void {
   const loadProgress = switchControl((on) => change((d) => { d.showLoadProgress = on; }));
   row(addressCard, 'showLoadProgress', loadProgress.root);
 
-  // Tab groups and split view. The new-tab position, Ctrl+Tab order and tab preview rows live in the
-  // Tabs section (wave-1 integration), which also owns `new_tab_beside_active` through its position row.
-  const tabsCard = card('appearance', 'Groups');
+  // Tab groups: one switch, drawn first in the Groups section (below). The new-tab position, Ctrl+Tab
+  // order and tab preview rows live in the Tabs section (wave-1 integration), which also owns
+  // `new_tab_beside_active` through its position row.
   const grouping = switchControl((on) => change((d) => { d.automaticTabGrouping = on; }));
-  row(tabsCard, 'grouping', grouping.root);
   const mru = switchControl((on) => change((d) => { d.ctrlTabMru = on; }));
   // --- T10 --- drawn in Tab stacks, tiling and workspaces, beside the other tiling options.
   const edgeDrop = switchControl((on) => change((d) => { d.splitEdgeDrop = on; }));
   const previewImages = switchControl((on) => change((d) => { d.tabPreviewImages = on; }));
   const previewMemory = switchControl((on) => change((d) => { d.tabPreviewMemory = on; }));
   const pinGroups = switchControl((on) => change((d) => { d.pinNewTabGroups = on; }));
-  row(tabsCard, 'pinNewTabGroups', pinGroups.root);
   const vTabs = switchControl((on) => change((d) => { d.ctrlSVerticalTabs = on; }));
 
   // Window
@@ -789,6 +787,7 @@ export function startSettingsPage(root: HTMLElement): void {
   row(bookmarksCard, 'bookmarksBar', bookmarksBarCtl.root);
   const bookmarksGroups = switchControl((on) => change((d) => { d.bookmarksBarTabGroups = on; }));
   row(bookmarksCard, 'bookmarksBarTabGroups', bookmarksGroups.root);
+  row(bookmarksCard, 'pinNewTabGroups', pinGroups.root);
 
   // --- layout (thread T6) --- the side panel's edge is the Panels choice of the Layout block above.
 
@@ -1021,8 +1020,10 @@ export function startSettingsPage(root: HTMLElement): void {
   };
   // --- end tab stacks ---
   for (const cardKey of TAB_CARDS) {
-    // --- T10 --- the stacks card is its own part of the Tabs and start page area.
-    const tabCard = card(cardKey === 'stacks' ? 'stacks' : 'tabs', TAB_CARD_TITLES[cardKey]);
+    // --- T10 --- the stacks card is its own part of the Tabs and start page area. Groups come first,
+    // as a card holding their one switch.
+    if (cardKey === 'stacks') row(card('stacks', 'Groups'), 'grouping', grouping.root);
+    const tabCard = card('tabs', TAB_CARD_TITLES[cardKey]);
     for (const spec of cardSpecs(cardKey)) row(tabCard, spec.key, buildTabControl(spec));
     if (cardKey === 'stacks') {
       row(tabCard, 'splitEdgeDrop', edgeDrop.root);

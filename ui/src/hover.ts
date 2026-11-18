@@ -81,7 +81,7 @@ export function memoryText(mb: number): string {
   return mb >= 1000 ? `${(mb / 1024).toFixed(1)} GB` : `${mb} MB`;
 }
 
-function renderCard(msg: HoverCardMsg, act: Act): HTMLElement {
+function renderCard(msg: HoverCardMsg): HTMLElement {
   const card = el('div', 'bw-card');
   const text = el('div', 'bw-card-text');
   const title = el('div', 'bw-card-title');
@@ -113,16 +113,24 @@ function renderCard(msg: HoverCardMsg, act: Act): HTMLElement {
   const head = el('div', 'bw-card-head');
   head.append(favicon(msg.fav, 'bw-card-fav'), text);
   card.append(head);
-  // --- tab options --- "Show a thumbnail in tab previews".
-  if (msg.thumb !== undefined) {
-    const thumb = el('img', 'bw-card-thumb');
-    thumb.alt = '';
-    thumb.draggable = false;
-    thumb.src = msg.thumb;
-    card.append(thumb);
+  // --- tab options --- "Show a thumbnail in tab previews": an awake tab always has a preview (its
+  // capture, or a placeholder with its icon until it has been on screen); a sleeping tab never has one.
+  if (!msg.sleeping) {
+    if (msg.thumb !== undefined) {
+      const thumb = el('img', 'bw-card-thumb');
+      thumb.alt = '';
+      thumb.draggable = false;
+      thumb.src = msg.thumb;
+      card.append(thumb);
+    } else if (msg.preview === true) {
+      const frame = el('div', 'bw-card-thumb is-placeholder');
+      frame.setAttribute('aria-hidden', 'true');
+      frame.append(favicon(msg.fav, 'bw-card-thumb-fav'));
+      card.append(frame);
+    }
   }
   // --- end tab options ---
-  card.append(...rowList(msg.rows, msg.more, 'bw-card', act));
+  // The card describes the hovered tab only: no rows of other tabs (they read as stray links).
   return card;
 }
 
@@ -364,7 +372,7 @@ export function startHover(root: HTMLElement): void {
       content = island.menu;
     } else {
       island = null;
-      content = msg.kind === 'tooltip' ? renderTooltip(msg.text) : renderCard(msg, act);
+      content = msg.kind === 'tooltip' ? renderTooltip(msg.text) : renderCard(msg);
     }
     document.body.dataset.hoverKind = msg.kind;
     if (root.firstElementChild !== content || root.childElementCount !== 1) root.replaceChildren(content);

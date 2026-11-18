@@ -650,6 +650,13 @@ impl App {
         state.tab_state.thumbs.get(&id).cloned()
     }
 
+    /// Whether the hover card for `id` has a preview frame: thumbnails are on and the tab is not
+    /// private. (The caller leaves sleeping tabs out.)
+    pub fn tab_preview_frame(app: &AppRef, id: TabId) -> bool {
+        let state = app.borrow();
+        state.settings.tab_preview_images && state.tabs.iter().any(|tab| tab.id == id && !tab.private)
+    }
+
     /// The memory the hover card shows for `id` in whole megabytes, when memory use is on and was measured.
     pub fn tab_memory_mb(app: &AppRef, id: TabId) -> Option<u32> {
         let state = app.borrow();

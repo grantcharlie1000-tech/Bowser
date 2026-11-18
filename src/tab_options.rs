@@ -343,8 +343,8 @@ pub fn apply_assignment(settings: &mut crate::settings::Settings, text: &str) ->
         settings.tabs.new_tab_stack = position == NewTabPosition::Stack;
         return true;
     }
-    // The flags behind the position are set only through it.
-    if HIDDEN_KEYS.contains(&key) {
+    // The flags behind the position are set only through it, and the retired group options not at all.
+    if HIDDEN_KEYS.contains(&key) || RETIRED_KEYS.contains(&key) {
         return false;
     }
     settings.tabs.set(key, value)
@@ -353,17 +353,34 @@ pub fn apply_assignment(settings: &mut crate::settings::Settings, text: &str) ->
 /// Stored keys the page never sees on their own: they are parts of the position.
 const HIDDEN_KEYS: [&str; 2] = ["tabs_new_tab_related", "tabs_new_tab_stack"];
 
+/// Group options that are no longer choices. Tab groups have one look (islands) and one setting,
+/// "Group tabs automatically" (`automatic_tab_grouping`); dragging a tab onto another always groups
+/// them after the default delay, a new group opens no editor, and a new tab does not join the group
+/// in front. These keep their defaults: the page never sees them, an assignment is refused, and a
+/// value left in an older `settings.txt` is ignored (and written back as the default).
+pub const RETIRED_KEYS: [&str; 6] = [
+    "tabs_stack_style",
+    "tabs_stack_open_in_current",
+    "tabs_stack_editor",
+    "tabs_stack_drag",
+    "tabs_stack_drop_delay",
+    "tabs_stack_compact_row",
+];
+
 /// The snapshot's wire values: every stored option plus the virtual position.
 pub fn snapshot_entries(settings: &crate::settings::Settings) -> Vec<(&'static str, Value)> {
     let mut entries = settings.tabs.entries();
-    // The page sees the related and stack flags only as part of the position.
-    entries.retain(|(key, _)| !HIDDEN_KEYS.contains(key));
+    // The page sees the related and stack flags only as part of the position, and no retired option.
+    entries.retain(|(key, _)| !HIDDEN_KEYS.contains(key) && !RETIRED_KEYS.contains(key));
     entries.push((POSITION_KEY, Value::Text(position_of(settings).key().to_owned())));
     entries
 }
 
 /// Reads `tabs_*` lines of `settings.txt`. A value the option refuses leaves the default.
 pub fn read_file_line(options: &mut TabOptions, key: &str, value: &str) {
+    if RETIRED_KEYS.contains(&key) {
+        return;
+    }
     // The file folds case like its other keys (`Recent`, `TRUE`); an address keeps its own.
     if !options.set(key, value) {
         options.set(key, &value.to_ascii_lowercase());
@@ -671,19 +688,22 @@ mod tests {
         assert!(!apply_assignment(&mut settings, "tabs_new_tab_stack=true"), "the flags are set through the position only");
         assert!(apply_assignment(&mut settings, "tabs_new_tab_position=active"));
         // --- end tab stacks ---
-        // --- two-level stacks (T10b) --- the page's two words reach the settings and the snapshot.
-        assert!(apply_assignment(&mut settings, "tabs_stack_style=two-level"));
-        assert_eq!(settings.tabs.stack_style, StackStyle::TwoLevel);
-        assert!(apply_assignment(&mut settings, "tabs_stack_compact_row=true"));
-        assert!(settings.tabs.stack_compact_row);
-        assert!(snapshot_entries(&settings).contains(&("tabs_stack_compact_row", Value::Bool(true))));
-        assert!(snapshot_entries(&settings).contains(&("tabs_stack_style", Value::Text("two-level".into()))));
-        assert!(!apply_assignment(&mut settings, "tabs_stack_style=two_level"), "only the exact word");
-        let text = render_into("", &settings.tabs, "\n");
-        assert!(text.contains("tabs_stack_style=two-level\n") && text.contains("tabs_stack_compact_row=true\n"), "{text}");
-        settings.tabs.stack_style = StackStyle::Islands;
-        settings.tabs.stack_compact_row = false;
-        // --- end two-level stacks ---
+        // The retired group options are not choices: refused from the page, absent from the
+        // snapshot, ignored in the file.
+        for key in RETIRED_KEYS {
+            assert!(!snapshot_entries(&settings).iter().any(|(name, _)| *name == key), "{key} is not shown");
+        }
+        assert!(!apply_assignment(&mut settings, "tabs_stack_style=two-level"));
+        assert!(!apply_assignment(&mut settings, "tabs_stack_drag=false"));
+        assert_eq!(settings.tabs.stack_style, StackStyle::Islands);
+        assert!(settings.tabs.stack_drag);
+        let mut options = TabOptions::default();
+        read_file_line(&mut options, "tabs_stack_style", "off");
+        read_file_line(&mut options, "tabs_stack_editor", "true");
+        assert_eq!(options.stack_style, StackStyle::Islands);
+        assert!(!options.stack_editor);
+        let text = render_into("tabs_stack_style=two-level\n", &settings.tabs, "\n");
+        assert!(text.contains("tabs_stack_style=islands\n"), "an old choice is written back as the default: {text}");
         assert!(!apply_assignment(&mut settings, "tabs_new_tab_position"));
         assert!(!apply_assignment(&mut settings, "tabs_unknown=true"));
         assert!(apply_assignment(&mut settings, "tabs_double_click=close"));

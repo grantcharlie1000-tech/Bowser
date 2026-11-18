@@ -295,28 +295,12 @@ test('the next snapshot is the truth: it moves every control, and the address fo
   assert.equal(rowOf('tabs_keep_window').querySelector('[role="switch"]').disabled, false);
 });
 
-// --- two-level stacks (T10b) ---
-test('two-level is a choice of the Tab stacks row, and its compact option waits behind More options until it is picked', () => {
-  const style = rowOf('tabs_stack_style');
-  const radios = style.querySelectorAll('[role="radio"]');
-  assert.deepEqual(radios.map((r) => r.textContent), ['Islands', 'Compact', 'Accordion', 'Two-level', 'Off'], 'one more value, not a new row');
-  sent.length = 0;
-  radios[3].click();
-  assert.deepEqual(sent.splice(0), [{ v: 1, t: 'set', a: 'tabopt', text: 'tabs_stack_style=two-level' }]);
-  const compact = rowOf('tabs_stack_compact_row');
-  assert.ok(compact.closest('.sp-more'), 'behind the area’s More options');
-  assert.equal(compact.querySelector('.sp-label').textContent, 'Compact row');
-  const sw = compact.querySelector('[role="switch"]');
-  assert.equal(sw.disabled, true, 'Islands: there is no second row to make smaller');
-  const values = { ...settingsFixture.snap.d.tabOptions, tabs_stack_style: 'two-level' };
-  deliver({ ...settingsFixture.snap, d: { ...settingsFixture.snap.d, tabOptions: values } });
-  assert.equal(sw.disabled, false, 'two-level: the option acts');
-  sw.click();
-  assert.deepEqual(sent.splice(0), [{ v: 1, t: 'set', a: 'tabopt', text: 'tabs_stack_compact_row=true' }]);
-  deliver({ ...settingsFixture.snap, d: { ...settingsFixture.snap.d, readable: false, tabOptions: values } });
-  assert.equal(sw.disabled, true, 'an unreadable settings file disables it too');
-  deliver(settingsFixture.snap);
-  assert.equal(sw.disabled, true);
+// Groups have one look and one setting: no style, join, drag, delay, editor or compact-row rows.
+test('the group options are one switch; the retired stack options are not drawn', () => {
+  for (const key of ['tabs_stack_style', 'tabs_stack_open_in_current', 'tabs_stack_editor', 'tabs_stack_drag', 'tabs_stack_drop_delay', 'tabs_stack_compact_row']) {
+    assert.equal(page.querySelector(`.sp-row[data-row="${key}"]`), null, key);
+  }
+  assert.ok(page.querySelector('.sp-row[data-row="grouping"]'), 'Group tabs automatically');
 });
 
 test('search finds the tab options by the words people use', () => {

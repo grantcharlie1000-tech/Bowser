@@ -603,9 +603,9 @@ export interface SectionSpec { readonly key: SettingsSection; readonly title: st
 export const SECTIONS: readonly SectionSpec[] = [
   { key: 'profile', title: 'Profile', nav: 'Profile', lead: '' },
   { key: 'appearance', title: 'Appearance', nav: 'Appearance', lead: '' },
-  { key: 'tabs', title: 'Tabs', nav: 'Tabs', lead: '' },
+  { key: 'tabs', title: 'Tabs', nav: 'Tabs', lead: '', aliases: 'workspaces tiling tiles split' },
   // --- T10 ---
-  { key: 'stacks', title: 'Groups', nav: 'Groups', lead: '', aliases: 'tab groups stacking tiling workspaces' },
+  { key: 'stacks', title: 'Groups', nav: 'Groups', lead: '', aliases: 'tab groups grouping stacking islands automatic' },
   { key: 'startpage', title: 'Start page', nav: 'Start page', lead: '' },
   { key: 'privacy', title: 'Privacy', nav: 'Privacy', lead: '', aliases: 'privacy and security' },
   { key: 'performance', title: 'Performance', nav: 'Performance', lead: '' },
@@ -716,7 +716,7 @@ const CORE_ROWS: ReadonlySet<string> = new Set([
   'theme', 'themeSchedule', 'themeAccent', 'websiteAppearance', 'bookmarksBar', 'fontSize', 'translateOffer',
   'feedsOpen', // --- toolbars and feeds (thread T13) ---
   'tabs_new_tab_page', 'tabs_new_tab_url',
-  'tabs_stack_style', 'tabs_workspaces', // --- T10 ---
+  'grouping', 'tabs_workspaces', // --- T10 ---
   'startupMode', 'startupPages', 'startHomepage',
   'blocker', 'spoilerProtection', 'tracking', 'history',
   'efficiency', 'sleep',
@@ -809,12 +809,13 @@ export const ROWS: readonly RowSpec[] = [
   { id: 'centredAddressBar', section: 'appearance', label: 'Centre address', aria: 'Centre the address bar', description: '', keywords: 'address bar centre centered position Centre the address bar Keeps the address bar centred in the toolbar.' },
   { id: 'minimalUrl', section: 'appearance', label: 'Short address', aria: 'Show a simplified address while unfocused', description: '', keywords: 'url simplified host domain minimal address bar focus Show a simplified address while unfocused Shows the page’s site and path, without the query or fragment, until you focus the address bar, then the full address.' },
   { id: 'showLoadProgress', section: 'appearance', label: 'Load progress', aria: 'Show a loading progress bar', description: '', keywords: 'progress loading bar indicator Show a loading progress bar A thin bar tracks page loads in the toolbar.' },
-  { id: 'grouping', section: 'appearance', label: 'Group by site', aria: 'Group tabs by site', description: '', keywords: 'automatic tab groups islands domain Group tabs by site Tabs from one site share an island. Groups you make by hand stay.', restart: true },
+  // The one group setting: groups have a single look, so there is nothing else to choose. Applies at once.
+  { id: 'grouping', section: 'stacks', label: 'Auto group', aria: 'Group tabs automatically', description: '', keywords: 'automatic auto tab groups grouping islands stacks site domain sort Group tabs automatically Tabs from one site share a group. Drag a tab into a group to add it by hand.' },
   // --- wave-1 integration --- "Open new tabs next to the active tab" is Tabs > New tab position (the
   // same `new_tab_beside_active` key), and the Ctrl+Tab order and tab previews sit in Tabs > Tab bar
   // (TABS_SECTION_ROWS below).
   // --- T10 --- drag and drop tiling, beside the other tiling options.
-  { id: 'splitEdgeDrop', section: 'stacks', label: 'Edge split', aria: 'Drop a dragged tab on the window edge to split', description: '', keywords: 'split view drag drop edge tab tiling tile Allow dropping a dragged tab on the window edge to split Dragging a tab to the edge of the window opens it in a split view.' },
+  { id: 'splitEdgeDrop', section: 'tabs', label: 'Edge split', aria: 'Drop a dragged tab on the window edge to split', description: '', keywords: 'split view drag drop edge tab tiling tile Allow dropping a dragged tab on the window edge to split Dragging a tab to the edge of the window opens it in a split view.' },
   { id: 'pinNewTabGroups', section: 'appearance', label: 'Pin groups', aria: 'Pin new tab groups to the bookmarks bar', description: '', keywords: 'pin tab groups bookmarks bar Pin new tab groups to the bookmarks bar A tab group formed from now on is pinned to the bookmarks bar. Needs “Show tab groups in the bookmarks bar”.' },
   { id: 'ctrlSVerticalTabs', section: 'keyboard', label: 'Ctrl+S', aria: 'Ctrl+S collapses or expands the sidebar in the vertical layout', description: '', keywords: 'ctrl s sidebar collapse expand vertical layout shortcut Ctrl+S hides or pins the sidebar in the vertical layout Only does anything in the vertical layout; otherwise Ctrl+S reaches the page as normal.' },
   // --- window and panels (thread T9) --- each row below acts at once; all sit behind More options. Not here, on purpose:
@@ -853,7 +854,7 @@ export const ROWS: readonly RowSpec[] = [
   // The Tabs section's rows come from its own table (tab-options-logic.ts).
   ...TABS_SECTION_ROWS,
   // --- tab stacks, tiling and workspaces (T10) ---
-  { id: 'workspaceRules', section: 'stacks', label: 'Rules', aria: 'Workspace rules', description: '', keywords: 'workspace rules sites open automatically named workspace domain Workspace rules Sites that open in a workspace of their own: a link, an address or a bookmark of the site moves its tab there.' },
+  { id: 'workspaceRules', section: 'tabs', label: 'Rules', aria: 'Workspace rules', description: '', keywords: 'workspace rules sites open automatically named workspace domain Workspace rules Sites that open in a workspace of their own: a link, an address or a bookmark of the site moves its tab there.' },
   // --- start page --- (docs/design/start-page.md)
   { id: 'startGroupReopen', section: 'startpage', label: 'Start group', aria: 'Open the start page on', description: '', keywords: 'speed dial group last first new tab start page reopen Open the start page on Which speed dial group a new tab shows first.' },
   { id: 'startTitles', section: 'startpage', label: 'Titles', aria: 'Show titles', description: '', keywords: 'speed dial titles names always never needed labels Show titles When a speed dial shows its name. When needed shows it under tiles without a chosen image, and on hover for the rest.' },

@@ -143,6 +143,8 @@ body.bw-hover-body {
   align-items: center;
   gap: 6px;
   min-width: 0;
+  height: 16px;
+  line-height: 16px;
   color: var(--bw-text-2);
 }
 
@@ -151,15 +153,21 @@ body.bw-hover-body {
   text-overflow: ellipsis;
   white-space: nowrap;
   unicode-bidi: isolate;
+  line-height: 16px;
 }
 
+/* The badges ("Sleeping", memory) share the host's 16px line box and are centred in it, so the pill
+   sits on the same line as the address rather than riding its smaller font's baseline. */
 .bw-card-badge {
+  display: inline-flex;
+  align-items: center;
   flex: none;
+  height: 16px;
   padding: 0 6px;
   border-radius: 999px;
   background: var(--bw-hover);
   font-size: 11px;
-  line-height: 16px;
+  line-height: 1;
 }
 
 /* A thumbnail of the page under the title (Settings > Appearance > "Show a thumbnail in tab previews"). */
@@ -172,6 +180,25 @@ body.bw-hover-body {
   background: var(--bw-hover);
   object-fit: cover;
   object-position: top;
+}
+
+/* An awake tab with no capture yet: the same frame, its icon in the middle. */
+.bw-card-thumb.is-placeholder {
+  display: grid;
+  place-items: center;
+}
+
+.bw-card-thumb-fav {
+  width: 32px;
+  height: 32px;
+  object-fit: contain;
+  opacity: 0.85;
+}
+
+.bw-card-thumb-fav.is-empty {
+  display: grid;
+  place-items: center;
+  color: var(--bw-text-2);
 }
 
 .bw-card-memory { font-variant-numeric: tabular-nums; }
