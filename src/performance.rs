@@ -44,6 +44,9 @@ pub struct LaunchOptions {
     /// `--new-window`: a window started on purpose for a profile that is already open. Skips the
     /// single-instance refusal; see `session::decide_launch`.
     pub new_window: bool,
+    /// `--restore-window <id>` (with `--new-window`): reopen the further window whose tabs were saved
+    /// in that slot (`session::slot_dir`). Started by the profile's first window at startup.
+    pub restore_window: Option<String>,
     /// `--dev`: a working copy. Its data lives in `%LOCALAPPDATA%\Bowser-Dev` and it never
     /// reads or updates the installed browser's profile.
     pub dev: bool,
@@ -233,6 +236,14 @@ impl LaunchOptions {
                         return Err("Duplicate profile argument".into());
                     }
                 }
+                "--restore-window" => {
+                    if !crate::session::valid_slot_id(&value) {
+                        return Err("Invalid window to restore".into());
+                    }
+                    if options.restore_window.replace(value).is_some() {
+                        return Err("Duplicate restore window argument".into());
+                    }
+                }
                 "--open-url" => {
                     let url =
                         Url::parse(&value).map_err(|error| format!("Invalid URL: {error}"))?;
@@ -409,6 +420,9 @@ impl LaunchOptions {
             }
             ensure_benchmark_profile(profile)?;
         }
+        if options.restore_window.is_some() && (!options.new_window || options.open_url.is_some()) {
+            return Err("--restore-window needs --new-window and no address".into());
+        }
         if options.agent
             && let (Some(dir), Some(local)) = (options.data_dir.as_ref(), local_app_data)
         {
@@ -504,6 +518,7 @@ pub fn takes_value(flag: &str) -> bool {
             | "--benchmark-memory-pressure"
             | "--profile"
             | "--open-url"
+            | "--restore-window"
             | "--agent-bind"
             | "--agent-port"
             | "--agent-call"
@@ -990,6 +1005,24 @@ mod tests {
             .is_err()
         );
     }
+    #[test]
+    fn restore_window_needs_new_window_and_a_safe_slot_id() {
+        let options = LaunchOptions::parse_from(
+            args(&["--new-window", "--profile", "Work", "--restore-window", "0193a4b5c6d7-1f2c"]),
+            Path::new("missing"),
+        )
+        .unwrap();
+        assert_eq!(options.restore_window.as_deref(), Some("0193a4b5c6d7-1f2c"));
+        for bad in [
+            &["--restore-window", "0193a4b5c6d7-1f2c"][..],
+            &["--new-window", "--restore-window", "..\\..\\x"],
+            &["--new-window", "--restore-window", "abc", "--restore-window", "abc"],
+            &["--new-window", "--restore-window", "abc", "--open-url", "https://a.example/"],
+        ] {
+            assert!(LaunchOptions::parse_from(args(bad), Path::new("missing")).is_err(), "{bad:?}");
+        }
+    }
+
     #[test]
     fn new_window_flag_is_standalone_and_duplicate_is_rejected() {
         let plain = LaunchOptions::parse_from(Vec::<String>::new(), Path::new("missing")).unwrap();

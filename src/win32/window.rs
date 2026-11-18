@@ -651,9 +651,10 @@ struct WindowChrome {
     html_ext_last: Option<String>,
     html_ext_rect: Option<chrome_host::protocol::HoverRect>,
     // --- toolbars and feeds (thread T13) --- what the address bar's list (`toolbar_buttons`) does to the
-    // toolbar's slots: whether Downloads and Extensions may take theirs, and the room the always-there
-    // buttons at the end of the bar take (set by `html_sync`, read by `toolbar_slot`).
-    html_dl_allowed: bool,
+    // toolbar's slots: whether Downloads is pinned and Extensions may take its slot, and the room the
+    // always-there buttons at the end of the bar take (set by `html_sync`, read by `toolbar_slot`).
+    // Downloads takes its slot whenever its button shows (pinned, or a download needs it).
+    html_dl_pinned: bool,
     html_ext_allowed: bool,
     html_bar_extra: i32,
     /// CSS px of navigation room the address bar's list leaves empty; the pill grows left over it.
@@ -880,7 +881,7 @@ impl WindowChrome {
             html_extensions_private: false,
             html_ext_last: None,
             html_ext_rect: None,
-            html_dl_allowed: true,
+            html_dl_pinned: false,
             html_ext_allowed: true,
             html_bar_extra: 0,
             html_bar_lead: 0,
@@ -1442,7 +1443,7 @@ impl WindowChrome {
     /// CSS px the toolbar page's buttons beside the pill (downloads, extensions) take from it.
     fn toolbar_slot(&self) -> i32 {
         // --- toolbars and feeds (thread T13) --- a button taken off the bar gives its room back.
-        (if self.html_dl_allowed { self.html_dl_slot } else { 0 }) + (if self.html_ext_allowed || self.html_ext_slot == STORE_BUTTON_SLOT { self.html_ext_slot } else { 0 }) + self.html_bar_extra
+        self.html_dl_slot + (if self.html_ext_allowed || self.html_ext_slot == STORE_BUTTON_SLOT { self.html_ext_slot } else { 0 }) + self.html_bar_extra
     }
     /// Moves the HTML chrome over the toolbar region and hides it when there is none. Also tells
     /// the surface to leave the region to the page.
@@ -1988,8 +1989,9 @@ fn track_idle_pages(hwnd: HWND) {
 
 /// What a clean exit writes, once per window: the privacy counters when they changed since their
 /// last save (their debounce timer is still pending), queued history visits, and the final session
-/// snapshot, which also removes the running marker. Shared by `WM_CLOSE` and `WM_ENDSESSION`.
-fn flush_for_exit(hwnd: HWND, app: &AppRef) {
+/// snapshot, which also removes the running marker. Shared by `WM_CLOSE` and `WM_ENDSESSION`
+/// (`ending`: every window keeps its tabs, see `App::session_finish_at_end_session`).
+fn flush_for_exit(hwnd: HWND, app: &AppRef, ending: bool) {
     if with_chrome(hwnd, |s| std::mem::replace(&mut s.exit_flushed, true)).unwrap_or(false) {
         return;
     }
@@ -2001,7 +2003,11 @@ fn flush_for_exit(hwnd: HWND, app: &AppRef) {
     crate::background_write::flush();
     // A session-only history ends with the session (thread T3).
     crate::history_retention::finish_at_exit();
-    App::session_finish(app);
+    if ending {
+        App::session_finish_at_end_session(app);
+    } else {
+        App::session_finish(app);
+    }
 }
 
 /// Asks for the hover layer the first time a view needs it (a tooltip, card, island or the omnibox
@@ -2639,6 +2645,8 @@ pub fn run(app: App) -> windows::core::Result<()> {
         App::apply_startup_plan(&app, launch_decided); // --- start page --- homepage or specific pages
         // A link that arrived while the window was being created opens now, after restore.
         App::release_external_urls(&app);
+        // Further windows left open when Bowser last stopped come back as windows of their own.
+        App::reopen_other_windows(&app);
         // Restored and initial tabs exist now, so a standing rule for a site with no open tab is stale.
         App::release_unused_site_rules(&app);
         let benchmark_url = app.borrow_mut().benchmark_url.take();
@@ -2864,7 +2872,7 @@ unsafe extern "system" fn window_proc(
                 if wparam.0 != 0
                     && let Some(app) = app.filter(|app| app.try_borrow_mut().is_ok())
                 {
-                    flush_for_exit(hwnd, app);
+                    flush_for_exit(hwnd, app, true);
                 }
                 LRESULT(0)
             }
@@ -4550,7 +4558,10 @@ unsafe extern "system" fn window_proc(
             WM_TIMER if wparam.0 == super::WM_IMPORT_OFFER_TIMER => {
                 let _ = KillTimer(Some(hwnd), super::WM_IMPORT_OFFER_TIMER);
                 if let Some(app) = app {
-                    if !App::active_tab_is_usable(app) {
+                    // A blank new tab (the start page) never loads a web page, so it never becomes
+                    // "usable": it is ready as it is. Without this the first-run welcome waited forever.
+                    let ready = App::active_tab_is_usable(app) || App::tab_is_blank(app, App::active_tab_id(app));
+                    if !ready {
                         let _ = SetTimer(Some(hwnd), super::WM_IMPORT_OFFER_TIMER, 500, None);
                         return LRESULT(0);
                     }
@@ -4558,7 +4569,17 @@ unsafe extern "system" fn window_proc(
                     return LRESULT(0);
                 }
                 if let Ok(profile) = profile::active() {
-                    if profile.import_offer_pending() {
+                    if profile.import_offer_pending() && chrome_host::html_ui_enabled() && let Some(app) = app {
+                        // First run with the HTML chrome: the welcome (docs/design/welcome.md) takes the
+                        // blank first tab, and only a blank one: a first launch that opens a page (a
+                        // link from another app, --open-url) keeps that page in front, and the welcome
+                        // waits for the next launch. It offers the import itself, so showing it answers
+                        // the offer.
+                        if App::tab_is_blank(app, App::active_tab_id(app)) {
+                            let _ = profile.remember_import_offer_choice();
+                            super::open_settings_page(hwnd, app, Some(crate::internal_page::Section::Welcome), true);
+                        }
+                    } else if profile.import_offer_pending() {
                         // --- popup host (lane M) ---
                         let anchor = screen_point(hwnd, main_menu_anchor(hwnd));
                         menu::show(hwnd, anchor, menu::Placement::AboveLeft, Menu {
@@ -4887,7 +4908,7 @@ unsafe extern "system" fn window_proc(
                 if let Some(app) = app {
                     App::release_chrome_environment(app);
                     // One write per file that changed: the privacy counters only with a save pending.
-                    flush_for_exit(hwnd, app);
+                    flush_for_exit(hwnd, app, false);
                     let (mut engine, log) = {
                         let mut s = app.borrow_mut();
                         (s.engine.take(), s.log.clone())
@@ -9950,13 +9971,19 @@ fn html_sync(hwnd: HWND) {
     // --- toolbars and feeds (thread T13) --- the address bar's own list decides which buttons take room.
     let bar_extra = crate::toolbar_prefs::right_static_px(&settings);
     let bar_lead = crate::toolbar_prefs::left_free_px(&settings.toolbar_buttons);
-    let (dl_allowed, ext_allowed) = (crate::toolbar_prefs::address_has(&settings, "downloads"), crate::toolbar_prefs::address_has(&settings, "extensions"));
-    let _ = with_chrome(hwnd, |s| {
+    let (dl_pinned, ext_allowed) = (crate::toolbar_prefs::address_has(&settings, "downloads"), crate::toolbar_prefs::address_has(&settings, "extensions"));
+    let pin_moved = with_chrome(hwnd, |s| {
         s.html_bar_extra = bar_extra;
         s.html_bar_lead = bar_lead;
-        s.html_dl_allowed = dl_allowed;
         s.html_ext_allowed = ext_allowed;
-    });
+        std::mem::replace(&mut s.html_dl_pinned, dl_pinned) != dl_pinned
+    })
+    .unwrap_or(false);
+    if pin_moved {
+        // Pinning or unpinning Downloads shows or hides its button at once, not at the next download.
+        // Re-enters `html_sync` only when the slot moves, and by then the pin is already recorded.
+        super::downloads_ui::refresh(hwnd, &app);
+    }
     // --- end toolbars and feeds ---
     let slot = with_chrome(hwnd, |s| s.toolbar_slot()).unwrap_or(0);
     let (pillx, pillw, menux) = chrome_host::toolbar_css_placement_with_room(&layout, dpi, slot, bar_lead).unwrap_or_default();

@@ -1,0 +1,79 @@
+name: Record first boot
+
+# Builds Bowser, starts it on a fresh profile on a hosted Windows runner and records the first-run
+# welcome being clicked through (benchmarks/scripts/record-first-boot.ps1), then makes an MP4.
+# Evidence only: nothing here gates a merge.
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - 'claude/**'
+    paths:
+      - '.github/workflows/first-boot-recording.yml'
+      - 'benchmarks/scripts/record-first-boot.ps1'
+      - 'ui/src/welcome.ts'
+      - 'ui/src/welcome-logic.ts'
+
+permissions:
+  contents: read
+
+jobs:
+  record:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Preserve source bytes
+        run: git config --global core.autocrlf false
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Install official Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal
+          if ($LASTEXITCODE -ne 0) { throw 'Rust installation failed.' }
+      - name: Build Bowser (HTML chrome, release, as shipped)
+        run: |
+          cargo +stable build --locked --release --features html-chrome-default
+          if ($LASTEXITCODE -ne 0) { throw 'Build failed.' }
+      - name: Record the first boot
+        timeout-minutes: 10
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File benchmarks/scripts/record-first-boot.ps1 -Exe target/release/bowser.exe -Out "$env:RUNNER_TEMP/first-boot"
+      - name: Keep the frames
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: first-boot-frames
+          path: ${{ runner.temp }}/first-boot
+          if-no-files-found: warn
+          retention-days: 7
+
+  video:
+    needs: record
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: first-boot-frames
+          path: first-boot
+      - name: Make the video
+        run: |
+          set -euo pipefail
+          sudo apt-get install -y -qq ffmpeg >/dev/null 2>&1 || true
+          ls first-boot/frames | head -3
+          ffmpeg -loglevel error -y -framerate 12 -i first-boot/frames/f%05d.jpg -vf "scale=trunc(iw/2)*2:trunc(ih/2)*2" -c:v libx264 -preset slow -crf 20 -pix_fmt yuv420p -movflags +faststart first-boot.mp4
+          cp first-boot/record.log record.log || true
+          cp first-boot/bowser-diagnostic.log bowser-diagnostic.log || true
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: first-boot-video
+          path: |
+            first-boot.mp4
+            record.log
+            bowser-diagnostic.log
+          retention-days: 14

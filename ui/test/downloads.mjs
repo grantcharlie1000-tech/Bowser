@@ -309,7 +309,7 @@ test('the toolbar ring: aggregate, offset, mode, words', () => {
   assert.equal(logic.buttonLabel({ state: 'done', n: 0, pct: -1 }), 'Downloads, download finished');
   assert.equal(logic.buttonTip({ state: 'active', n: 1, pct: 45 }), 'Downloading, 45%');
   assert.equal(logic.buttonTip({ state: 'failed', n: 0, pct: -1 }), 'Download failed');
-  assert.equal(logic.DL_BUTTON_SLOT, 32);
+  assert.equal(logic.DL_BUTTON_SLOT, 28);
 });
 
 test('live patching: what changed, how the list moves, and the send gate', () => {
@@ -395,7 +395,7 @@ test('toolbar.css: the button keeps transform/opacity motion, with the one docum
   const infinite = [...block.matchAll(/animation:\s*([\w-]+)[^;]*infinite/g)].map((m) => m[1]);
   assert.deepEqual(infinite, ['tb-dl-spin'], 'only the sweep loops, and only while data-ring is sweep');
   assert.match(block, /\.tb-dl\[data-ring="sweep"\] \.tb-dl-spin \{\s*animation: tb-dl-spin/);
-  assert.match(block, /#app\.placed\.has-dl \.actions \{\s*left: calc\(var\(--menu-x\) - 32px\);/, 'DL_BUTTON_SLOT');
+  assert.match(block, /#app\.placed\.has-dl \.actions \{\s*left: calc\(var\(--menu-x\) - 28px\);/, 'DL_BUTTON_SLOT');
   assert.match(block, /@media \(prefers-reduced-motion: reduce\)/);
 });
 

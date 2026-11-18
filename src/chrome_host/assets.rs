@@ -39,6 +39,7 @@ pub const SPLIT_START_URL: &str = "bowser-ui://app/index.html?view=split";
 const HTML: &str = "text/html;charset=utf-8";
 const JS: &str = "text/javascript;charset=utf-8";
 const CSS: &str = "text/css;charset=utf-8";
+const PNG: &str = "image/png";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Asset {
@@ -116,6 +117,11 @@ pub fn lookup(path: &str) -> Option<Asset> {
         "start-page.js" => Some(Asset {
             bytes: include_bytes!("../../ui/dist/start-page.js"),
             mime: JS,
+        }),
+        // The Bowser logo on the welcome's hero (docs/design/welcome.md).
+        "bowser-logo.png" => Some(Asset {
+            bytes: include_bytes!("../../ui/dist/bowser-logo.png"),
+            mime: PNG,
         }),
         _ => None,
     }

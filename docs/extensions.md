@@ -302,7 +302,7 @@ shim.
   shown", "Try again").
 - **Toolbar button.** Left of the download button's slot, shown only while an enabled extension
   whose manifest names a popup has not failed to load this session. Rust reserves
-  `EXT_BUTTON_SLOT` (32 CSS px) beside the pill and sends `{v:1,t:"extbtn",on,n,name}`; a click
+  `EXT_BUTTON_SLOT` (28 CSS px) beside the pill and sends `{v:1,t:"extbtn",on,n,name}`; a click
   sends `{v:1,t:"ext",a:"open",text:"x,y,w,h"}`. With one such extension the click opens its popup
   and the tooltip is its name; with several, a menu of their names hangs from the button with
   "Manage extensions" under it. The glyph is Bowser's puzzle; there is no badge, action icon or

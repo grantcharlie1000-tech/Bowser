@@ -27,11 +27,13 @@ sources may not name (the secrets store, `chrome_host::guard`) gets its icon fro
 names it, and it travels with the button as `g` (and as `glyph` in the customiser's command list). The toolbar, the tab
 strip, the vertical sidebar's rows, the editor and its picker all draw the same one.
 
-Reader, Downloads, Extensions and Closed tabs appear only when they have something to show.
+Reader, Extensions and Closed tabs appear only when they have something to show. Downloads on the list is pinned: it
+shows all the time and opens the downloads bubble even when it is empty. Off the list it still appears, as Chrome's
+does, while a download is running or a finished one has not been looked at.
 
 | Bar | Key | Buttons |
 |---|---|---|
-| Address bar | `toolbar_buttons` | back, forward, reload (before the field), site-info, split, reader (inside it), bookmark, newtab, extensions, downloads (after it); the menu button is always last |
+| Address bar | `toolbar_buttons` | back, forward, reload (before the field), site-info, split, reader (inside it), bookmark, newtab, extensions, downloads (after it; not in the default list); the menu button is always last |
 | Tab bar | `toolbar_tabs` | closed-tabs (at the end of the strip, or a row in the sidebar) |
 | Panel bar | `toolbar_panel` | feeds (after Bookmarks and History on the rail). **Not offered in the editor:** the rail was removed, so nothing on this list can show. The setting is still read and kept. |
 
@@ -40,9 +42,10 @@ at most 4 per bar, run through `win32::window::run_registered` like Quick Comman
 only if the item is at the sent place of that bar's list.
 
 Defaults are today's look; the old default list (`...,bookmark,newtab,...`, which did nothing) is read as the new
-default so nobody gets two new buttons. Downloads and Extensions still appear only when there is something to show;
-taking them off the list removes them and gives their room back. Always-there buttons at the end of the address bar
-(bookmark, new tab, command buttons, at most 5) take 32 px each from the address field (`right_static_px`; the toolbar
+default so nobody gets two new buttons. Extensions still appears only when there is something to show; taking it off
+the list removes it and gives its room back. Downloads takes its 28 px slot whenever its button shows (pinned, or a
+download needs it; `downloads_ui::button`). Always-there buttons at the end of the address bar
+(bookmark, new tab, command buttons, at most 5) take 28 px each (buttons edge to edge) from the address field (`right_static_px`; the toolbar
 page moves the group by `--tb-extra`). Back, forward and reload work the other way: the layout keeps room for all
 three, and whatever the list leaves empty goes to the address field, which grows left over it and keeps its right
 end (`left_free_px`, `chrome_host::toolbar_css_placement_with_room`). With none of them, the field starts at the

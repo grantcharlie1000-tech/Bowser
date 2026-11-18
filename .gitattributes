@@ -1,4 +1,5 @@
 ui/test/fixtures/*.json text eol=lf
 ui/dist/** text eol=lf
+ui/dist/*.png binary
 ui/dist.manifest text eol=lf
 ui/src/index.html text eol=lf

@@ -12,7 +12,8 @@ export const BAR_KEYS: Readonly<Record<BarId, string>> = { address: 'toolbar_but
 export const BAR_TITLES: Readonly<Record<BarId, string>> = { address: 'Address bar', tabs: 'Tab bar', panel: 'Panel bar' };
 
 export const ADDRESS_ITEMS = ['back', 'forward', 'reload', 'site-info', 'split', 'reader', 'bookmark', 'newtab', 'downloads', 'extensions'] as const;
-export const DEFAULT_ADDRESS: readonly string[] = ['back', 'forward', 'reload', 'site-info', 'split', 'reader', 'extensions', 'downloads'];
+/** Downloads is not in it: on the list it is pinned (always shown); off it, it shows while a download needs it. */
+export const DEFAULT_ADDRESS: readonly string[] = ['back', 'forward', 'reload', 'site-info', 'split', 'reader', 'extensions'];
 export const TAB_ITEMS = ['closed-tabs'] as const;
 export const PANEL_ITEMS = ['feeds'] as const;
 export const FIXED_ITEMS: Readonly<Record<BarId, readonly string[]>> = { address: ADDRESS_ITEMS, tabs: TAB_ITEMS, panel: PANEL_ITEMS };
@@ -22,8 +23,8 @@ export const DEFAULTS: Readonly<Record<BarId, readonly string[]>> = { address: D
 export const MAX_ITEMS = 14;
 export const MAX_COMMAND_ITEMS = 4;
 export const MAX_RIGHT_STATIC = 5;
-/** CSS px one always-there button at the end of the address bar takes (a 28 px button and a 4 px gap). */
-export const SLOT_PX = 32;
+/** CSS px one always-there button at the end of the address bar takes (a 28 px button, edge to edge). */
+export const SLOT_PX = 28;
 
 export type Zone = 'left' | 'pill' | 'right';
 
@@ -143,7 +144,7 @@ export const ITEM_LABELS: Readonly<Record<string, { readonly label: string; read
   reader: { label: 'Reader view', hint: 'Shown on pages that can be read as an article.' },
   bookmark: { label: 'Bookmark this page', hint: '' },
   newtab: { label: 'New tab', hint: '' },
-  downloads: { label: 'Downloads', hint: 'Shown once a download has started.' },
+  downloads: { label: 'Downloads', hint: 'Always on the bar. Off, it shows while a download is running.' },
   extensions: { label: 'Extensions', hint: 'Shown when an installed extension has a popup.' },
   'closed-tabs': { label: 'Closed tabs', hint: 'Shown once a tab has been closed.' },
   feeds: { label: 'Feeds', hint: '' },

@@ -55,6 +55,11 @@
   gap: var(--bw-space-4);
 }
 
+/* Speed dials off (the default, `start_dials`): the display above must not beat [hidden]. */
+#app.split-view.is-start .sp-dials[hidden] {
+  display: none;
+}
+
 #app.split-view.is-start .sp-groups {
   display: flex;
   align-items: center;

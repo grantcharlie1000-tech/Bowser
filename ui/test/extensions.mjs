@@ -497,15 +497,15 @@ test('toolbar: a click sends only the button’s rectangle; the slot matches Rus
   assert.ok(protocol.sendExtensionsButton(ext.getBoundingClientRect()));
   assert.deepEqual(sent, [{ v: 1, t: 'ext', a: 'open', text: '768,1,28,28' }]);
   const css = read(join(srcDir, 'styles', 'toolbar.css'));
-  assert.match(css, /#app\.placed\.has-ext \.actions \{\s*left: calc\(var\(--menu-x\) - 32px\);/, 'EXT_BUTTON_SLOT');
-  assert.match(css, /#app\.placed\.has-ext\.has-dl \.actions \{\s*left: calc\(var\(--menu-x\) - 64px\);/, 'both slots');
+  assert.match(css, /#app\.placed\.has-ext \.actions \{\s*left: calc\(var\(--menu-x\) - 28px\);/, 'EXT_BUTTON_SLOT');
+  assert.match(css, /#app\.placed\.has-ext\.has-dl \.actions \{\s*left: calc\(var\(--menu-x\) - 56px\);/, 'both slots');
   const rust = read(join(here, '..', '..', 'src', 'chrome_host', 'mod.rs'));
-  assert.match(rust, /pub const EXT_BUTTON_SLOT: i32 = 32;/);
+  assert.match(rust, /pub const EXT_BUTTON_SLOT: i32 = 28;/);
   // Add to Bowser is one compact pill: 128px and its 4px margin, the slot Rust reserves for it.
   const window = read(join(here, '..', '..', 'src', 'win32', 'window.rs'));
   assert.match(window, /const STORE_BUTTON_SLOT: i32 = 132;/);
   assert.match(css, /#app\.placed\.has-ext\.has-store-ext \.actions \{ left: calc\(var\(--menu-x\) - 132px\); \}/);
-  assert.match(css, /#app\.placed\.has-ext\.has-store-ext\.has-dl \.actions \{ left: calc\(var\(--menu-x\) - 164px\); \}/);
+  assert.match(css, /#app\.placed\.has-ext\.has-store-ext\.has-dl \.actions \{ left: calc\(var\(--menu-x\) - 160px\); \}/);
   assert.match(css, /\.tb-ext\.is-store \{[^}]*width: 128px;/);
   const main = read(join(srcDir, 'main.ts'));
   assert.match(main, /view\.extensions\.button\.addEventListener\('click', \(\) => \{ sendExtensionsButton\(view\.extensions\.button\.getBoundingClientRect\(\)\); \}\);/);
