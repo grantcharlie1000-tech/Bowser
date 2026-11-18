@@ -2,86 +2,17 @@
 //! Settings > Tabs and start page > Tab stacks, tiling and workspaces.
 //!
 //! A *stack* is one of Bowser's site islands (`tab_groups`): the same projection, preferences, names
-//! and colours, so there is no second grouping system. The stack style only changes how islands are
-//! folded for display ([`collapse_rule`]) or switches them off; stacking by hand places tabs with the
-//! island machinery's own manual membership (`tab_organisation::Membership::Joined`). *Tiling* is the
+//! and colours, so there is no second grouping system. Islands have one look; stacking by hand places
+//! tabs with the island machinery's own manual membership (`tab_organisation::Membership::Joined`). *Tiling* is the
 //! split view (`split_view`, up to four panes): [`tile_layout`] turns a list of tabs into one of its
 //! layouts. Nothing here touches windows, WebViews, timers or files.
 
 use std::collections::BTreeMap;
 
 use crate::split_view::{Bounds, Orientation, SplitView};
-use crate::tab_groups::{CollapseRule, DomainKey};
-use crate::tab_options::StackStyle;
+use crate::tab_groups::DomainKey;
 use crate::tabs::TabId;
 use crate::workspaces::WorkspaceId;
-
-// ----- stack style -----
-
-/// How the stack style folds islands, given the island that holds the tab in use.
-pub fn collapse_rule(style: StackStyle, active_island: Option<DomainKey>) -> CollapseRule {
-    match style {
-        StackStyle::Islands | StackStyle::Off => CollapseRule::Stored,
-        // --- two-level stacks (T10b) --- every stack is its ball in the tab row; the second row
-        // shows the tabs of the one in use.
-        StackStyle::Compact | StackStyle::TwoLevel => CollapseRule::All,
-        StackStyle::Accordion => CollapseRule::AllBut(active_island),
-    }
-}
-
-// --- two-level stacks (T10b) ---
-/// The second tab row the window lays out: one only for two-level stacks while the tab in use is in
-/// a stack (`active_in_stack`), compact when "Compact second row" is on. Every other style, and a
-/// tab in no stack, reserve nothing. (`Arrangement::with_stack_row` drops it again for sidebars.)
-pub fn stack_row(style: StackStyle, compact: bool, active_in_stack: bool) -> crate::chrome::layout::StackRow {
-    use crate::chrome::layout::StackRow;
-    match (style, active_in_stack) {
-        (StackStyle::TwoLevel, true) if compact => StackRow::Compact,
-        (StackStyle::TwoLevel, true) => StackRow::Regular,
-        _ => StackRow::None,
-    }
-}
-// --- end two-level stacks ---
-
-/// Whether any stack forms at all.
-pub fn stacks_on(style: StackStyle) -> bool {
-    style != StackStyle::Off
-}
-
-/// What a click on a stack's ball does.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum BallClick {
-    /// Islands: the ball folds and unfolds the island (the stored collapse flag).
-    Toggle,
-    /// Compact and Accordion fold by themselves: the click goes to this member instead.
-    Select(TabId),
-    /// Nothing to do (the stack in use under Accordion is already open).
-    Nothing,
-}
-
-/// The ball of a stack with `members` (strip order) was clicked while `active` is in front.
-/// `recent` lists tabs most recently used last, as the app keeps them (`tab_mru`).
-///
-/// - From outside the stack, Compact and Accordion bring back the member used last.
-/// - Inside a Compact stack the click steps to the next member, so every member can be reached
-///   from its ball alone; an open Accordion stack has nothing to unfold, and neither has the
-///   two-level stack in use (its tabs are the second row).
-pub fn ball_click(style: StackStyle, members: &[TabId], active: TabId, recent: &[TabId]) -> BallClick {
-    if style == StackStyle::Islands || style == StackStyle::Off {
-        return BallClick::Toggle;
-    }
-    if members.is_empty() {
-        return BallClick::Nothing;
-    }
-    if let Some(at) = members.iter().position(|member| *member == active) {
-        return match style {
-            StackStyle::Compact if members.len() > 1 => BallClick::Select(members[(at + 1) % members.len()]),
-            _ => BallClick::Nothing,
-        };
-    }
-    let last_used = recent.iter().rev().copied().find(|tab| members.contains(tab));
-    BallClick::Select(last_used.unwrap_or(members[0]))
-}
 
 // ----- stacking by site -----
 
@@ -129,9 +60,12 @@ pub fn sites_to_stack(tabs: &[StackInput]) -> Vec<(DomainKey, Vec<TabId>)> {
         .collect()
 }
 
+/// How long (ms) a dragged tab must rest over the middle of another before a release stacks the two.
+pub const STACK_DROP_DELAY_MS: u32 = 400;
+
 /// Whether a dragged tab that has rested over another for `rested_ms` stacks with it on release.
-pub fn drop_stacks(enabled: bool, rested_ms: u64, delay_ms: u32) -> bool {
-    enabled && rested_ms >= u64::from(delay_ms)
+pub fn drop_stacks(rested_ms: u64) -> bool {
+    rested_ms >= u64::from(STACK_DROP_DELAY_MS)
 }
 
 /// The middle half of a tab: a dragged tab resting there means "stack", nearer the edges it means
@@ -263,41 +197,6 @@ mod tests {
     }
 
     #[test]
-    fn each_style_folds_islands_its_own_way() {
-        assert_eq!(collapse_rule(StackStyle::Islands, Some(key("a.com"))), CollapseRule::Stored, "islands keep the user's own collapse");
-        assert_eq!(collapse_rule(StackStyle::Compact, None), CollapseRule::All);
-        assert_eq!(collapse_rule(StackStyle::Accordion, Some(key("a.com"))), CollapseRule::AllBut(Some(key("a.com"))));
-        assert!(stacks_on(StackStyle::Compact) && !stacks_on(StackStyle::Off));
-    }
-
-    #[test]
-    fn a_ball_click_goes_to_a_member_when_the_style_folds_by_itself() {
-        let members = ids(&[2, 3, 4]);
-        assert_eq!(ball_click(StackStyle::Islands, &members, TabId(1), &[]), BallClick::Toggle);
-        assert_eq!(ball_click(StackStyle::Compact, &members, TabId(1), &ids(&[3, 1])), BallClick::Select(TabId(3)), "the member used last");
-        assert_eq!(ball_click(StackStyle::Accordion, &members, TabId(1), &[]), BallClick::Select(TabId(2)), "none used yet: the first");
-        assert_eq!(ball_click(StackStyle::Compact, &members, TabId(4), &[]), BallClick::Select(TabId(2)), "inside compact: the next member, round");
-        assert_eq!(ball_click(StackStyle::Accordion, &members, TabId(3), &[]), BallClick::Nothing, "the open accordion stack");
-        assert_eq!(ball_click(StackStyle::Compact, &[], TabId(1), &[]), BallClick::Nothing);
-    }
-
-    // --- two-level stacks (T10b) ---
-    #[test]
-    fn two_level_folds_every_stack_to_its_ball_and_opens_the_one_in_use_in_a_second_row() {
-        use crate::chrome::layout::StackRow;
-        assert_eq!(collapse_rule(StackStyle::TwoLevel, Some(key("a.com"))), CollapseRule::All, "the tab row shows balls only");
-        assert!(stacks_on(StackStyle::TwoLevel));
-        let members = ids(&[2, 3, 4]);
-        assert_eq!(ball_click(StackStyle::TwoLevel,&members, TabId(1), &ids(&[4, 1])), BallClick::Select(TabId(4)), "from outside: the member used last");
-        assert_eq!(ball_click(StackStyle::TwoLevel, &members, TabId(3), &[]), BallClick::Nothing, "inside: its tabs are the second row already");
-        assert_eq!(stack_row(StackStyle::TwoLevel, false, true), StackRow::Regular);
-        assert_eq!(stack_row(StackStyle::TwoLevel, true, true), StackRow::Compact, "Compact second row");
-        assert_eq!(stack_row(StackStyle::TwoLevel, true, false), StackRow::None, "a tab in no stack: no row");
-        assert_eq!(stack_row(StackStyle::Compact, true, true), StackRow::None, "the option belongs to two-level only");
-        assert_eq!(StackStyle::TwoLevel.key(), "two-level");
-    }
-
-    #[test]
     fn stacking_by_site_takes_unpinned_public_tabs_with_a_site() {
         let mut pinned = tab(5, Some("a.com"));
         pinned.pinned = true;
@@ -309,11 +208,9 @@ mod tests {
     }
 
     #[test]
-    fn a_drop_stacks_only_after_the_delay_and_only_when_allowed() {
-        assert!(!drop_stacks(true, 399, 400));
-        assert!(drop_stacks(true, 400, 400));
-        assert!(drop_stacks(true, 0, 0), "a delay of 0 stacks at once");
-        assert!(!drop_stacks(false, 5_000, 0), "off never stacks");
+    fn a_drop_stacks_only_after_the_delay() {
+        assert!(!drop_stacks(399));
+        assert!(drop_stacks(400));
         assert!(over_middle(0, 100, 50) && over_middle(0, 100, 25) && !over_middle(0, 100, 24) && !over_middle(0, 100, 75));
         assert!(!over_middle(10, 10, 10));
     }

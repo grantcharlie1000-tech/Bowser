@@ -307,7 +307,7 @@ fn text_recovery_html_takeover_does_not_remain_failed_for_an_unneeded_mask() {
     let view = ChromeView {
         layout: &layout,
         palette: crate::theme::palette(crate::theme::Appearance::Dark, false),
-        tabs: &[], active: 0, stack_tabs: &[], stack_active: None,
+        tabs: &[], active: 0,
         hover: Hit::None, pressed: Hit::None, caption_maximised: false,
         can_back: false, can_forward: false,
         omnibox: OmniboxView {
@@ -344,7 +344,7 @@ fn text_recovery_keeps_a_skipped_label_observable_for_the_frame() {
     let view = ChromeView {
         layout: &layout,
         palette: crate::theme::palette(crate::theme::Appearance::Dark, false),
-        tabs: &[], active: 0, stack_tabs: &[], stack_active: None,
+        tabs: &[], active: 0,
         hover: Hit::None, pressed: Hit::None, caption_maximised: false,
         can_back: false, can_forward: false,
         omnibox: OmniboxView {

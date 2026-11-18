@@ -16,8 +16,6 @@ interface Base {
 export interface ToggleSpec extends Base {
   readonly kind: 'toggle';
   readonly default: boolean;
-  /** --- two-level stacks (T10b) --- the choice option this switch only matters for, and its value. */
-  readonly when?: readonly [key: string, value: string];
 }
 export interface ChoiceSpec extends Base {
   readonly kind: 'choice';
@@ -175,10 +173,6 @@ export function textApplies(spec: TextSpec, values: TabOptionValues): boolean {
   return values[spec.when[0]] === spec.when[1];
 }
 
-/** --- two-level stacks (T10b) --- whether a switch applies now ("Compact second row" only with two-level stacks). */
-export function toggleApplies(spec: ToggleSpec, values: TabOptionValues): boolean {
-  return spec.when === undefined || values[spec.when[0]] === spec.when[1];
-}
 
 /** The words next to a number: "Never ask", "Off", "3 tabs", "120 px". */
 export function numberLabel(spec: NumberSpec, value: number): string {

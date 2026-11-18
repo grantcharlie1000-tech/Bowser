@@ -253,15 +253,9 @@ test('the strip options message is whole or refused', () => {
   const opts = parseInbound(JSON.stringify(stripFixture.opts));
   assert.deepEqual(opts, {
     t: 'tabopts', closeLeft: true, closeAlways: true, scroll: true, minWidth: 180, indicator: 'bar', wheel: true, separator: true, alignClose: true,
-    selection: true, selectionActive: false, removeSpacing: true, maximised: true, closed: 4, stackDrag: false, stackDelay: 250,
-    stackRow: 'regular', // --- two-level stacks (T10b) ---
+    selection: true, selectionActive: false, removeSpacing: true, maximised: true, closed: 4,
     closedButton: true, tools: [{ k: 'cmd:new-tab', l: 'New tab', i: 1 }], // --- toolbars and feeds (thread T13) ---
   });
-  assert.equal(parseInbound(JSON.stringify(stripFixture.defaults)).stackRow, 'off', 'no second row unless Rust laid one out');
-  assert.equal(parseInbound(JSON.stringify({ ...stripFixture.opts, stackRow: 'compact' })).stackRow, 'compact');
-  // --- tab stacks (T10) --- stacking by drag is on by default, after Rust's 400 ms.
-  assert.equal(parseInbound(JSON.stringify(stripFixture.defaults)).stackDrag, true);
-  assert.equal(parseInbound(JSON.stringify(stripFixture.defaults)).stackDelay, 400);
   const defaults = parseInbound(JSON.stringify(stripFixture.defaults));
   assert.equal(defaults.indicator, 'spinner');
   assert.equal(defaults.selection, true);
@@ -273,7 +267,7 @@ test('the strip options message is whole or refused', () => {
     delete missing[key];
     assert.equal(parseInbound(JSON.stringify(missing)), null, `missing ${key}`);
   }
-  for (const bad of [{ indicator: 'ring' }, { minWidth: 401 }, { closed: 100 }, { closeLeft: 1 }, { wheel: 'yes' }, { extra: 1 }, { stackDelay: 2001 }, { stackDrag: 1 }, { stackRow: 'tall' }, { stackRow: true }]) {
+  for (const bad of [{ indicator: 'ring' }, { minWidth: 401 }, { closed: 100 }, { closeLeft: 1 }, { wheel: 'yes' }, { extra: 1 }, { stackDrag: true }, { stackRow: 'off' }]) {
     assert.equal(parseInbound(JSON.stringify({ ...raw, ...bad })), null, JSON.stringify(bad));
   }
 });

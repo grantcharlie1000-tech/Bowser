@@ -125,9 +125,7 @@ impl App {
     /// A new tab from the user's hand (Ctrl+T, the new tab button): the new tab page decides what
     /// it opens.
     pub fn open_new_tab(app: &AppRef) -> TabId {
-        let previous = Self::active_tab_id(app);
         let id = Self::new_tab(app);
-        Self::stack_new_tab(app, id, previous, None); // --- tab stacks (T10) ---
         let target = {
             let state = app.borrow();
             // "Homepage" opens the start page settings' homepage (one key set: T5's `homepage`).
@@ -148,13 +146,13 @@ impl App {
             // --- tab stacks (T10) --- a site with a workspace rule opens there (the window stays);
             // otherwise the tab may join its opener's stack.
             if !Self::apply_workspace_rule(app, id, &url, false) {
-                Self::stack_new_tab(app, id, source, Some(source));
+                Self::stack_new_tab(app, id, Some(source));
             }
             Self::navigate_tab(app, id, &url);
         } else {
             let child = Self::spawn_tab(app, private, Some(source));
             let _ = app.borrow_mut().tab_model.set_opener(child, source);
-            Self::stack_new_tab(app, child, source, Some(source)); // --- tab stacks (T10) ---
+            Self::stack_new_tab(app, child, Some(source)); // --- tab stacks (T10) ---
             Self::submit_url(app, url, None);
         }
     }

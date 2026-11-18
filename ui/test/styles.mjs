@@ -173,23 +173,11 @@ test('a picked or stack-target tab shows its tint and ring over every wash, in b
   }
 });
 
-// --- two-level stacks (T10b) ---
-test('the two rows of two-level stacks are the heights the native layout reserves', () => {
+test('the tab strip is one row: no second row of two-level stacks is left in the styles', () => {
   const tokens = readFileSync(join(stylesDir, 'tokens.css'), 'utf8');
-  const layout = readFileSync(join(uiRoot, '..', 'src', 'chrome', 'layout.rs'), 'utf8');
-  const rust = (name) => Number(new RegExp(`pub const ${name}: i32 = (\\d+);`).exec(layout)?.[1]);
-  assert.equal(rust('STRIP_HEIGHT'), 30, 'the toolbar row is still --bw-toolbar-h');
-  assert.match(tokens, new RegExp(`--bw-tab-row-h: ${rust('TAB_ROW_HEIGHT')}px;`), 'the tab row: Metrics::TAB_ROW_HEIGHT');
-  assert.match(layout, /pub const STACK_ROW_HEIGHT: i32 = Self::TAB_ROW_HEIGHT;/);
-  assert.match(tokens, /--bw-stack-row-h: var\(--bw-tab-row-h\);/, 'the second row: Metrics::STACK_ROW_HEIGHT');
-  assert.match(tokens, new RegExp(`--bw-stack-row-compact-h: ${rust('STACK_ROW_COMPACT_HEIGHT')}px;`), 'compact: Metrics::STACK_ROW_COMPACT_HEIGHT');
   const tabs = readFileSync(join(stylesDir, 'tabs.css'), 'utf8');
-  assert.match(tabs, /body\[data-stack-row\] #app\.strip \{[^}]*height: var\(--bw-tab-row-h\);/, 'with a second row the tab row keeps its own height');
-  assert.match(tabs, /\.stack-row\.strip \{[^}]*height: var\(--bw-stack-row-h\);/);
-  assert.match(tabs, /\.stack-row\.strip\[data-size="compact"\] \{[^}]*--bw-tab-h: calc\(var\(--bw-stack-row-compact-h\) - 2px\);[^}]*height: var\(--bw-stack-row-compact-h\);/s);
-  assert.match(tabs, /\.stack-row\.strip\[hidden\] \{ display: none; \}/);
-  // The row's tabs are the strip's own islands (`.strip .tab`), so no rule of its own styles a tab.
-  assert.doesNotMatch(tabs, /\.stack-row[^{]*\.tab/, 'no second-row tab styles');
+  assert.doesNotMatch(tokens, /--bw-stack-row|--bw-tab-row-h/);
+  assert.doesNotMatch(tabs, /stack-row/);
 });
 
 test('toggles: on-state is accent with an on-accent knob; every interactive control has a focus ring', () => {

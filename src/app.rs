@@ -1257,13 +1257,7 @@ impl App {
     // --- layout (thread T6) ---
     /// How the chrome is arranged, from the layout settings (the window folds in its Ctrl+L reveal).
     pub fn arrangement(app: &AppRef) -> crate::chrome::layout::Arrangement {
-        app.borrow().arranged() // --- two-level stacks (T10b) ---
-    }
-
-    /// --- two-level stacks (T10b) --- the layout settings plus the second tab row two-level
-    /// stacks want now: the one arrangement the window and the page bounds both lay out.
-    fn arranged(&self) -> crate::chrome::layout::Arrangement {
-        crate::chrome::layout::Arrangement::from_settings(&self.settings).with_stack_row(self.stack_row())
+        crate::chrome::layout::Arrangement::from_settings(&app.borrow().settings)
     }
     // --- end layout ---
 
@@ -2477,10 +2471,9 @@ impl App {
         })
     }
 
-    /// The group preferences the strip, the sidebar and the bookmarks bar draw from: folded the way
-    /// the stack style says (--- tab stacks (T10) ---, `stacks::collapse_rule`).
+    /// The group preferences the strip, the sidebar and the bookmarks bar draw from.
     pub fn tab_group_preferences(app: &AppRef) -> crate::tab_groups::GroupPreferences {
-        app.borrow().styled_group_preferences()
+        app.borrow().group_preferences.clone()
     }
 
     /// Projection inputs for the tab strip, in model order, with manual placement applied.
@@ -2518,11 +2511,6 @@ impl App {
     }
 
     pub fn set_tab_group_collapsed(app: &AppRef, id: TabId, collapsed: bool) -> bool {
-        // --- tab stacks (T10) --- Compact and Accordion fold stacks by themselves: a click on the
-        // ball goes to a member instead of storing a collapse.
-        if !matches!(Self::stack_style(app), crate::tab_options::StackStyle::Islands | crate::tab_options::StackStyle::Off) {
-            return Self::stack_ball(app, id);
-        }
         let (hwnd, active, changed) = {
             let mut state = app.borrow_mut();
             if state.mirror(id).is_some_and(|tab| tab.private) {
@@ -2730,8 +2718,7 @@ impl App {
     fn expand_group_for_tab(app: &AppRef, id: TabId) -> bool {
         let (hwnd, active, changed) = {
             let mut state = app.borrow_mut();
-            // --- tab stacks (T10) --- only Islands keeps a stored collapse to undo.
-            if state.tab_model.active() == id || state.settings.tabs.stack_style != crate::tab_options::StackStyle::Islands {
+            if state.tab_model.active() == id {
                 return false;
             }
             let Some(url) = state.tab_model.get(id).and_then(|tab| tab.url.as_deref()) else {
@@ -2799,23 +2786,13 @@ impl App {
             .into_iter()
             .map(|input| (input.id, input))
             .collect();
-        let mut inputs: Vec<tab_groups::TabGroupInput> = self
+        self
             .workspaces
             .active()
             .tabs()
             .iter()
             .filter_map(|id| all.remove(id))
-            .collect();
-        // --- tab stacks (T10) --- "Tab stacks: Off": nothing forms a stack. Only this view of the
-        // inputs: the site rules (which span workspaces) still see every tab's site.
-        if !crate::stacks::stacks_on(self.settings.tabs.stack_style) {
-            for input in &mut inputs {
-                input.domain = None;
-                input.opener = None;
-                input.manual = false;
-            }
-        }
-        inputs
+            .collect()
     }
 
     /// Inputs for every tab of every workspace, in model order, from the same state the strip
@@ -8554,8 +8531,7 @@ impl App {
         // --- layout (thread T6) --- the whole arrangement, with a hidden address bar shown while
         // Ctrl+L has it revealed, and the docked panel on the edge it is actually on (none of its
         // width when auto-hide floats it over the page).
-        let arrangement = self
-            .arranged() // --- two-level stacks (T10b) ---
+        let arrangement = crate::chrome::layout::Arrangement::from_settings(&self.settings)
             .with_address_bar_revealed(crate::win32::address_bar_revealed(self.hwnd));
         // Frameless, a chosen panel bar, and full screen: an open panel covers the page.
         let overlays = crate::auto_hide::panel_overlays(self.settings.frameless, hidden);

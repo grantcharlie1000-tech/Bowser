@@ -551,11 +551,6 @@ export interface TabOptsMsg {
   readonly maximised: boolean;
   /** Tabs in the closed-tabs list; 0 hides the Closed tabs button. */
   readonly closed: number;
-  /** --- tab stacks (T10) --- a held tab resting over another for `stackDelay` ms stacks on drop. */
-  readonly stackDrag: boolean;
-  readonly stackDelay: number;
-  /** --- two-level stacks (T10b) --- the second tab row Rust laid out (`chrome::layout::StackRow`). */
-  readonly stackRow: StackRowSize;
   // --- toolbars and feeds (thread T13) ---
   /** `toolbar_tabs` lists `closed-tabs`: the Closed tabs button may show at all. */
   readonly closedButton: boolean;
@@ -563,8 +558,6 @@ export interface TabOptsMsg {
   readonly tools: readonly ToolButtonMsg[];
   // --- end toolbars and feeds ---
 }
-export const STACK_ROWS = ['off', 'regular', 'compact'] as const;
-export type StackRowSize = typeof STACK_ROWS[number];
 export const MAX_SELECTION = 512;
 /** The strip's selection, as the comma list Rust parses. False when the ids are not tab ids. */
 export function sendTabSelection(ids: readonly number[]): boolean {
@@ -1376,15 +1369,14 @@ export function parseInbound(data: unknown): Inbound | null {
     }
     // --- tab options ---
     case 'tabopts': {
-      const keys = ['v', 't', 'closeLeft', 'closeAlways', 'scroll', 'minWidth', 'indicator', 'wheel', 'separator', 'alignClose', 'selection', 'selectionActive', 'removeSpacing', 'maximised', 'closed', 'stackDrag', 'stackDelay', 'stackRow', 'closedButton', 'tools'];
+      const keys = ['v', 't', 'closeLeft', 'closeAlways', 'scroll', 'minWidth', 'indicator', 'wheel', 'separator', 'alignClose', 'selection', 'selectionActive', 'removeSpacing', 'maximised', 'closed', 'closedButton', 'tools'];
       if (!hasOnlyKeys(raw, keys) || !hasAllKeys(raw, keys) || raw.v !== 1) return null;
-      const { closeLeft, closeAlways, scroll, minWidth, indicator, wheel, separator, alignClose, selection, selectionActive, removeSpacing, maximised, closed, stackDrag, stackDelay, stackRow, closedButton } = raw;
-      if (![closeLeft, closeAlways, scroll, wheel, separator, alignClose, selection, selectionActive, removeSpacing, maximised, stackDrag, closedButton].every(isBool)) return null;
-      if (!isInt(minWidth, 0, 400) || !isOneOf(indicator, LOAD_INDICATORS) || !isInt(closed, 0, 99) || !isInt(stackDelay, 0, 2000)) return null;
-      if (!isOneOf(stackRow, STACK_ROWS)) return null; // --- two-level stacks (T10b) ---
+      const { closeLeft, closeAlways, scroll, minWidth, indicator, wheel, separator, alignClose, selection, selectionActive, removeSpacing, maximised, closed, closedButton } = raw;
+      if (![closeLeft, closeAlways, scroll, wheel, separator, alignClose, selection, selectionActive, removeSpacing, maximised, closedButton].every(isBool)) return null;
+      if (!isInt(minWidth, 0, 400) || !isOneOf(indicator, LOAD_INDICATORS) || !isInt(closed, 0, 99)) return null;
       const tools = parseTools(raw.tools); // --- toolbars and feeds (thread T13) ---
       if (tools === null) return null;
-      return { t: 'tabopts', closeLeft, closeAlways, scroll, minWidth, indicator, wheel, separator, alignClose, selection, selectionActive, removeSpacing, maximised, closed, stackDrag, stackDelay, stackRow, closedButton, tools } as TabOptsMsg;
+      return { t: 'tabopts', closeLeft, closeAlways, scroll, minWidth, indicator, wheel, separator, alignClose, selection, selectionActive, removeSpacing, maximised, closed, closedButton, tools } as TabOptsMsg;
     }
     // --- end tab options ---
     case 'fav': {
