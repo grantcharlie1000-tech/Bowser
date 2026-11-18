@@ -24,10 +24,8 @@ import { mountAddressSections } from './address-section'; // --- address bar, se
 import { searchEngineLabel } from './address-settings-logic';
 import { WINDOW_APPEARANCE_KEYS, WINDOW_PANEL_KEYS, resetWindowGroup, stepValue, windowGroupIsDefault } from './window-logic'; // --- window and panels (thread T9) ---
 // --- toolbars and feeds (thread T13) ---
-import { mountToolbarEditor, type EditorCommand } from './toolbar-editor';
-import { BAR_KEYS, itemsOf, itemsText, type BarId } from './bars-logic';
+import { BAR_KEYS, DEFAULTS, itemsText } from './bars-logic';
 import { REFRESH_CHOICES, feedAssignment, refreshLabel, type RefreshChoice } from './feeds-settings-logic';
-import { parseCommandsSnapshot } from './commands-logic';
 // --- end toolbars and feeds ---
 // --- layout (thread T6) --- the Layout block's presets, edges and values
 import {
@@ -643,21 +641,23 @@ export function startSettingsPage(root: HTMLElement): void {
   row(themeCard, 'forceDark', protection.forceDark.root);
   row(themeCard, 'privateTheme', protection.privateTheme.root);
 
-  // Toolbars (thread T13): the editor for the address bar, the tab bar and the panel bar, on a sub-page of its own.
+  // Toolbars (thread T13): the editor for the address bar and the tab bar (the panel bar was the removed rail's).
   // The address bar's list is part of the page's Save (`toolbar_buttons`); the other two bars are each a `baropt` command.
   const toolbarCard = card('appearance', 'Toolbar');
   const sendBarOption = (text: string | null): void => {
     if (text === null) { showToast('That value is not allowed.', false); return; }
     if (cmd({ a: 'baropt', text })) pending += 1;
   };
-  let editorCommands: readonly EditorCommand[] = [];
-  const toolbarEditor = mountToolbarEditor({
-    onChange: (bar: BarId, items: string[]) => {
-      if (bar === 'address') change((d) => { d.toolbarButtons = itemsText(items); });
-      else sendBarOption(`${BAR_KEYS[bar]}=${itemsText(items)}`);
-    },
-  });
-  row(toolbarCard, 'toolbarButtons', toolbarEditor.root, { stack: true });
+  // Customise opens (or closes) the customiser docked beside the page, so the bar it edits stays in view;
+  // Reset to default puts both bars back at once.
+  const toolbarControls = el('div', 'sp-ctl-pair');
+  const toolbarOpen = textButton('Customise', () => cmd({ a: 'opentoolbar' }), { icon: 'customize', aria: 'Customise your toolbar' });
+  const toolbarReset = textButton('Reset to default', () => {
+    change((d) => { d.toolbarButtons = itemsText(DEFAULTS.address); });
+    sendBarOption(`${BAR_KEYS.tabs}=${itemsText(DEFAULTS.tabs)}`);
+  }, { aria: 'Reset the toolbar to its default buttons' });
+  toolbarControls.append(toolbarOpen, toolbarReset);
+  row(toolbarCard, 'toolbarButtons', toolbarControls);
 
   // Address bar (--- settings slim --- in the Toolbar card it belongs to)
   const addressCard = toolbarCard;
@@ -1837,8 +1837,8 @@ export function startSettingsPage(root: HTMLElement): void {
     theme.set(d.theme);
     paintAccent(d.themeAccent);
     // --- toolbars and feeds (thread T13) ---
-    toolbarEditor.set({ address: itemsOf(d.toolbarButtons), tabs: itemsOf(s.bars.tabs), panel: itemsOf(s.bars.panel), commands: editorCommands });
-    toolbarEditor.disable(!s.readable);
+    toolbarOpen.disabled = !s.readable;
+    toolbarReset.disabled = !s.readable || (d.toolbarButtons === itemsText(DEFAULTS.address) && s.bars.tabs === itemsText(DEFAULTS.tabs));
     feedsDetect.set(s.bars.feedsDetect);
     feedsDetect.disable(!s.readable || s.guest);
     feedsRefreshSelect.set(String(s.bars.feedsRefresh));
@@ -2257,15 +2257,6 @@ export function startSettingsPage(root: HTMLElement): void {
     if (message.t === 'snap' && message.p === 'pagetools') { pageToolsSection.receive(message); return; } // --- page tools (T7) ---
     if (message.t === 'snap' && message.p === 'commands') {
       commandSections.receive(message);
-      // --- toolbars and feeds (thread T13) --- the editor offers every command and chain, and names the command buttons.
-      const known = parseCommandsSnapshot(message.d);
-      if (known && snapshot) {
-        editorCommands = [...known.commands.map((c) => ({ id: c.id, label: c.label, chain: c.chain }))];
-        toolbarEditor.set({ address: itemsOf(draft?.toolbarButtons ?? snapshot.toolbarButtons), tabs: itemsOf(snapshot.bars.tabs), panel: itemsOf(snapshot.bars.panel), commands: editorCommands });
-        toolbarEditor.disable(!snapshot.readable);
-      } else if (known) {
-        editorCommands = [...known.commands.map((c) => ({ id: c.id, label: c.label, chain: c.chain }))];
-      }
       return;
     }
     if (message.t === 'snap' && message.p === 'address') { addressSections.receive(message); return; } // --- address bar, search and bookmarks ---

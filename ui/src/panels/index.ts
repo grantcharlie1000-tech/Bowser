@@ -6,6 +6,7 @@ import { startNotesPanel } from './notes';
 import { startPrivacyPanel } from './privacy';
 import { startSessionsPanel } from './sessions';
 import { startFeedsPanel } from './feeds'; // --- toolbars and feeds (thread T13) ---
+import { startToolbarPanel } from './toolbar'; // --- toolbars and feeds (thread T13) ---
 
 export type PanelRenderer = (root: HTMLElement) => (message: Inbound) => void;
 export const panels: Partial<Record<PanelToken, PanelRenderer>> = {
@@ -16,4 +17,5 @@ export const panels: Partial<Record<PanelToken, PanelRenderer>> = {
   privacy: startPrivacyPanel,
   sessions: startSessionsPanel,
   feeds: startFeedsPanel,
+  toolbar: startToolbarPanel,
 };

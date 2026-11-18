@@ -89,6 +89,9 @@ pub struct ToolButton {
     pub item: String,
     pub label: String,
     pub index: u8,
+    /// The icon the button shows, when Rust names it (`toolbar_prefs::command_glyph`); sent as `g`. Without
+    /// one the page picks the command's glyph itself.
+    pub glyph: Option<&'static str>,
 }
 
 /// How the toolbar page lays out its buttons (`crate::toolbar_prefs`, docs/toolbars.md). `items` is
@@ -112,7 +115,12 @@ fn tool_item_ok(item: &str) -> bool {
     !item.is_empty() && item.chars().count() <= MAX_TOOL_ITEM_CHARS && item.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'-' | b':'))
 }
 
-/// `[{"k":item,"l":label},...]`.
+/// An icon name the page can look up: lowercase words joined by hyphens, as in `ui/src/icons.gen.ts`.
+pub fn glyph_ok(glyph: &str) -> bool {
+    !glyph.is_empty() && glyph.len() <= 32 && glyph.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+}
+
+/// `[{"k":item,"l":label,"i":index,"g":glyph?},...]`.
 fn tools_json(tools: &[ToolButton]) -> String {
     let mut out = String::from("[");
     for (index, tool) in tools.iter().take(crate::toolbar_prefs::MAX_COMMAND_ITEMS).enumerate() {
@@ -120,14 +128,33 @@ fn tools_json(tools: &[ToolButton]) -> String {
             out.push(',');
         }
         out.push_str(&format!(
-            "{{\"k\":{},\"l\":{},\"i\":{}}}",
+            "{{\"k\":{},\"l\":{},\"i\":{}",
             json_string(truncate_utf16(&tool.item, MAX_TOOL_ITEM_CHARS)),
             json_string(truncate_utf16(&tool.label, MAX_TOOL_LABEL_CHARS)),
             tool.index
         ));
+        if let Some(glyph) = tool.glyph.filter(|glyph| glyph_ok(glyph)) {
+            out.push_str(&format!(",\"g\":{}", json_string(glyph)));
+        }
+        out.push('}');
     }
     out.push(']');
     out
+}
+
+#[cfg(test)]
+mod tool_glyph_tests {
+    use super::*;
+
+    #[test]
+    fn a_command_button_carries_the_icon_rust_names_and_only_a_well_formed_one() {
+        let tool = |glyph| ToolButton { item: "cmd:x".to_owned(), label: "X".to_owned(), index: 3, glyph };
+        assert_eq!(tools_json(&[tool(None)]), r#"[{"k":"cmd:x","l":"X","i":3}]"#, "no icon named: the page picks one");
+        assert_eq!(tools_json(&[tool(Some("key"))]), r#"[{"k":"cmd:x","l":"X","i":3,"g":"key"}]"#);
+        assert_eq!(tools_json(&[tool(Some("Bad Name"))]), r#"[{"k":"cmd:x","l":"X","i":3}]"#, "a malformed name is never sent");
+        let options = StripOptions { tools: vec![tool(Some("key"))], ..StripOptions::default() };
+        assert!(tabopts_json(&options).contains(r#""tools":[{"k":"cmd:x","l":"X","i":3,"g":"key"}]"#));
+    }
 }
 // --- end toolbars and feeds ---
 
@@ -195,7 +222,7 @@ pub enum RailAction {
 pub enum ComposerMode { WorkspaceNew, AppAdd, AppEdit }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PanelType { Panel, History, Bookmarks, Customize, Notes, Settings, Privacy, Rename, HistoryPage, DownloadsPage, StartPage, Address, Sessions, Feeds }
+pub enum PanelType { Panel, History, Bookmarks, Customize, Notes, Settings, Privacy, Rename, HistoryPage, DownloadsPage, StartPage, Address, Sessions, Feeds, Toolbar }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PanelFields {
@@ -1395,7 +1422,7 @@ fn build_command(fields: &[(String, Value)]) -> Result<Command, ProtocolError> {
             };
             Command::RailMove { key, before }
         }
-        "panel" | "hist" | "bm" | "cust" | "notes" | "set" | "priv" | "ren" | "hpage" | "dpage" | "spage" | "addr" | "sess" | "feed" => {
+        "panel" | "hist" | "bm" | "cust" | "notes" | "set" | "priv" | "ren" | "hpage" | "dpage" | "spage" | "addr" | "sess" | "feed" | "tbar" => {
             let a = str_field(fields, "a")?;
             if !panel_action(a) { return Err(ProtocolError::InvalidValue("a")); }
             let kind = match kind {
@@ -1415,6 +1442,8 @@ fn build_command(fields: &[(String, Value)]) -> Result<Command, ProtocolError> {
                 "sess" => PanelType::Sessions,
                 // The Feeds panel (docs/feeds.md).
                 "feed" => PanelType::Feeds,
+                // The docked toolbar customiser (docs/toolbars.md).
+                "tbar" => PanelType::Toolbar,
                 _ => PanelType::Privacy,
             };
             let on = match field(fields, "on") {
@@ -1979,6 +2008,9 @@ pub fn tabopts_json(options: &StripOptions) -> String {
                     o.string("k", truncate_utf16(&tool.item, MAX_TOOL_ITEM_CHARS));
                     o.string("l", truncate_utf16(&tool.label, MAX_TOOL_LABEL_CHARS));
                     o.uint("i", u64::from(tool.index));
+                    if let Some(glyph) = tool.glyph.filter(|glyph| glyph_ok(glyph)) {
+                        o.string("g", glyph);
+                    }
                 });
             }
         });
@@ -3790,7 +3822,7 @@ mod tests {
             look: crate::window_prefs::Look::default(), // --- window and panels (thread T9) ---
             bar: BarItems {
                 items: Some("back,reload,cmd:new-tab".to_owned()),
-                tools: vec![ToolButton { item: "cmd:new-tab".to_owned(), label: "New tab".to_owned(), index: 2 }],
+                tools: vec![ToolButton { item: "cmd:new-tab".to_owned(), label: "New tab".to_owned(), index: 2, glyph: None }],
                 extra: 32,
                 feeds: 2,
             },
@@ -5255,7 +5287,7 @@ mod tests {
         marked.marks = TabMarks { unread: true, notify: 3, asleep: true, progress: Some(45), reload: Some(30), idle: true };
         let mut bar = plain_tab(3, "Loading");
         bar.marks = TabMarks { progress: Some(75), ..TabMarks::default() };
-        let options = StripOptions { close_left: true, close_always: true, scroll: true, min_width: 180, indicator: "bar", wheel: true, separator: true, align_close: true, selection: true, selection_active: false, remove_spacing: true, maximised: true, closed: 4, closed_button: true, tools: vec![ToolButton { item: "cmd:new-tab".to_owned(), label: "New tab".to_owned(), index: 1 }] };
+        let options = StripOptions { close_left: true, close_always: true, scroll: true, min_width: 180, indicator: "bar", wheel: true, separator: true, align_close: true, selection: true, selection_active: false, remove_spacing: true, maximised: true, closed: 4, closed_button: true, tools: vec![ToolButton { item: "cmd:new-tab".to_owned(), label: "New tab".to_owned(), index: 1, glyph: None }] };
         let content = format!("{{\"tabs\":{},\"opts\":{},\"defaults\":{}}}\n", tabs_json(2, &[plain, marked, bar]), tabopts_json(&options), tabopts_json(&StripOptions::default()));
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/test/fixtures/tab-options-messages.json");
         if std::env::var_os("BOWSER_WRITE_FIXTURES").is_some_and(|value| value == "1") {

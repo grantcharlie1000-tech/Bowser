@@ -197,6 +197,16 @@ pub fn toolbar_css_placement_with_slot(layout: &Layout, dpi: u32, slot: i32) -> 
     ))
 }
 
+/// [`toolbar_css_placement_with_slot`] with `lead` CSS px handed back to the pill at its left end: the room
+/// of the navigation buttons that are off the address bar's list (`toolbar_prefs::left_free_px`). The pill
+/// grows left over that room and keeps its right end, so the main menu stays put; it never goes past the
+/// toolbar's own left edge (a negative `lead` narrows it from the left instead, keeping at least a pixel). The stacked (zen) toolbar has its navigation on another row, so it gains nothing.
+pub fn toolbar_css_placement_with_room(layout: &Layout, dpi: u32, slot: i32, lead: i32) -> Option<(i32, i32, i32)> {
+    let (x, w, menu) = toolbar_css_placement_with_slot(layout, dpi, slot)?;
+    let lead = if layout.toolbar_in_sidebar { 0 } else { lead.clamp(1 - w, x.max(0)) };
+    Some((x - lead, w + lead, menu))
+}
+
 /// Client-relative physical pixels of the omnibox pill as the HTML toolbar paints it: the CSS
 /// placement above, on the pill's CSS row (centred in the toolbar row), with each edge scaled and
 /// rounded to a device pixel the way Blink snaps box edges. The suggestion dropdown attaches to this
@@ -208,9 +218,15 @@ pub fn toolbar_pill_rect(layout: &Layout, dpi: u32) -> Option<RECT> {
 
 /// [`toolbar_pill_rect`] for a toolbar whose pill gave `slot` CSS px to the download button.
 pub fn toolbar_pill_rect_with_slot(layout: &Layout, dpi: u32, slot: i32) -> Option<RECT> {
+    toolbar_pill_rect_with_room(layout, dpi, slot, 0)
+}
+
+/// [`toolbar_pill_rect_with_slot`] for a pill that also took `lead` CSS px of navigation room at its left
+/// ([`toolbar_css_placement_with_room`]).
+pub fn toolbar_pill_rect_with_room(layout: &Layout, dpi: u32, slot: i32, lead: i32) -> Option<RECT> {
     use crate::chrome::layout::Metrics;
     let bounds = toolbar_bounds(layout)?;
-    let (x, w, _) = toolbar_css_placement_with_slot(layout, dpi, slot)?;
+    let (x, w, _) = toolbar_css_placement_with_room(layout, dpi, slot, lead)?;
     let scale = f64::from(Metrics::new(dpi).dpi()) / 96.0;
     let snap = |css: i32| (f64::from(css) * scale).round() as i32;
     // --- zen sidebar --- the stacked toolbar's address field is on its second row.
@@ -574,6 +590,24 @@ mod tests {
         assert_eq!(bounds.top, layout.strip.top);
         assert_eq!(bounds.bottom, layout.strip.bottom);
         assert!(bounds.right > bounds.left);
+    }
+
+    #[test]
+    fn the_pill_grows_left_over_navigation_room_and_keeps_its_right_end() {
+        for dpi in [96, 120, 144, 192] {
+            let layout = compute_in_frame(1000, 700, dpi, 3, 0, false);
+            let (x, w, menu) = toolbar_css_placement_with_slot(&layout, dpi, 0).expect("toolbar");
+            assert_eq!(toolbar_css_placement_with_room(&layout, dpi, 0, 0), Some((x, w, menu)));
+            let (gx, gw, gmenu) = toolbar_css_placement_with_room(&layout, dpi, 0, 31).expect("grown");
+            assert_eq!((gx, gw, gmenu), (x - 31, w + 31, menu), "dpi {dpi}: same right end, same menu");
+            // Never past the toolbar's left edge, and a negative lead narrows it from the left.
+            assert_eq!(toolbar_css_placement_with_room(&layout, dpi, 0, 10_000).map(|(gx, gw, _)| (gx, gx + gw)), Some((0, x + w)));
+            assert_eq!(toolbar_css_placement_with_room(&layout, dpi, 0, -3).map(|(gx, gw, _)| (gx, gw)), Some((x + 3, w - 3)));
+            // The suggestion list attaches to the same, wider pill.
+            let pill = toolbar_pill_rect_with_room(&layout, dpi, 0, 31).expect("pill");
+            let plain = toolbar_pill_rect_with_slot(&layout, dpi, 0).expect("pill");
+            assert!(pill.left < plain.left && pill.right == plain.right, "dpi {dpi}");
+        }
     }
 
     #[test]

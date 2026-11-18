@@ -672,7 +672,7 @@ fn ensure_benchmark_profile(path: &Path) -> Result<(), String> {
 }
 
 fn valid_focus_view(view: &str) -> bool {
-    matches!(view,"content"|"toolbar"|"tabs"|"rail"|"panel"|"popup"|"dialog"|"dialog_notes"|"dialog_privacy"|"dialog_rename"|"dialog_address"|"bookmark_bar"|"dialog_sessions"|"dialog_feeds"|"hover"|"split"|"settings"|"history"|"downloads")
+    matches!(view,"content"|"toolbar"|"tabs"|"rail"|"panel"|"popup"|"dialog"|"dialog_notes"|"dialog_privacy"|"dialog_rename"|"dialog_address"|"bookmark_bar"|"dialog_sessions"|"dialog_feeds"|"dialog_toolbar"|"hover"|"split"|"settings"|"history"|"downloads")
 }
 /// Explicit opt-in only. Holds no App, controller or host reference, so passive callbacks cannot
 /// introduce a controller/host reference cycle or borrow application state.

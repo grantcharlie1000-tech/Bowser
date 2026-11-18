@@ -52,8 +52,8 @@ export type Security = 'secure' | 'notsecure' | 'certproblem' | 'internal' | 'un
 export type TabAction = 'select' | 'close' | 'menu' | 'pin' | 'mute' | 'dblclick';
 export type GroupAction = 'toggle' | 'menu';
 export type RailAction = 'click' | 'menu' | 'hover';
-export type PanelKind = 'panel' | 'hist' | 'bm' | 'cust' | 'notes' | 'set' | 'priv' | 'ren' | 'hpage' | 'dpage' | 'spage' | 'addr' | 'sess' | 'feed';
-export type PanelToken = 'history' | 'bookmarks' | 'customize' | 'notes' | 'settings' | 'privacy' | 'rename' | 'historypage' | 'downloadspage' | 'extensions' | 'commands' | 'protection' | 'startpage' | 'address' | 'addressdlg' | 'bookmarkbar' | 'sessions' | 'pagetools' | 'feeds' | 'store';
+export type PanelKind = 'panel' | 'hist' | 'bm' | 'cust' | 'notes' | 'set' | 'priv' | 'ren' | 'hpage' | 'dpage' | 'spage' | 'addr' | 'sess' | 'feed' | 'tbar';
+export type PanelToken = 'history' | 'bookmarks' | 'customize' | 'notes' | 'settings' | 'privacy' | 'rename' | 'historypage' | 'downloadspage' | 'extensions' | 'commands' | 'protection' | 'startpage' | 'address' | 'addressdlg' | 'bookmarkbar' | 'sessions' | 'pagetools' | 'feeds' | 'store' | 'toolbar';
 export interface PanelFields {
   a: string;
   id?: number;
@@ -269,7 +269,9 @@ export interface StateMsg {
   readonly theme: Theme;
 }
 /** A command button on a bar: its item id (`cmd:new-tab`, `chain:2`) and the name it shows. */
-export interface ToolButtonMsg { readonly k: string; readonly l: string; readonly i: number }
+/** `g`: the icon Rust names for the button (`toolbar_prefs::command_glyph`), when it does. */
+export interface ToolButtonMsg { readonly k: string; readonly l: string; readonly i: number; readonly g?: string }
+const GLYPH_RE = /^[a-z0-9-]{1,32}$/;
 /** Most command buttons on one bar (Rust `MAX_COMMAND_ITEMS`). */
 export const MAX_TOOLS = 4;
 const TOOL_ITEM_RE = /^[a-z0-9:-]{1,64}$/;
@@ -277,8 +279,9 @@ function parseTools(value: unknown): ToolButtonMsg[] | null {
   if (!Array.isArray(value) || value.length > MAX_TOOLS) return null;
   const out: ToolButtonMsg[] = [];
   for (const row of value) {
-    if (!isRecord(row) || !hasOnlyKeys(row, ['k', 'l', 'i']) || typeof row.k !== 'string' || !TOOL_ITEM_RE.test(row.k) || !isStr(row.l, 64) || !isInt(row.i, 0, 13)) return null;
-    out.push({ k: row.k, l: row.l, i: row.i });
+    if (!isRecord(row) || !hasOnlyKeys(row, ['k', 'l', 'i', 'g']) || typeof row.k !== 'string' || !TOOL_ITEM_RE.test(row.k) || !isStr(row.l, 64) || !isInt(row.i, 0, 13)) return null;
+    if ('g' in row && (typeof row.g !== 'string' || !GLYPH_RE.test(row.g))) return null;
+    out.push(typeof row.g === 'string' ? { k: row.k, l: row.l, i: row.i, g: row.g } : { k: row.k, l: row.l, i: row.i });
   }
   return out;
 }
@@ -701,7 +704,7 @@ function hasAllKeys(v: Record<string, unknown>, keys: readonly string[]): boolea
 const READER_PILL: readonly ReaderPill[] = ['none', 'available', 'on'];
 const TRANSLATE_PILL: readonly TranslatePill[] = ['none', 'available', 'on'];
 const SECURITY: readonly Security[] = ['secure', 'notsecure', 'certproblem', 'internal', 'unknown', 'none'];
-const PANEL_TOKENS: readonly PanelToken[] = ['history', 'bookmarks', 'customize', 'notes', 'settings', 'privacy', 'rename', 'historypage', 'downloadspage', 'extensions', 'commands', 'protection', 'startpage', 'address', 'addressdlg', 'bookmarkbar', 'sessions', 'pagetools', 'feeds', 'store'];
+const PANEL_TOKENS: readonly PanelToken[] = ['history', 'bookmarks', 'customize', 'notes', 'settings', 'privacy', 'rename', 'historypage', 'downloadspage', 'extensions', 'commands', 'protection', 'startpage', 'address', 'addressdlg', 'bookmarkbar', 'sessions', 'pagetools', 'feeds', 'store', 'toolbar'];
 /** Lower-case words joined by single hyphens (`workspace-create`), at most 24 characters. */
 const PANEL_ACTION_RE = /^(?=.{1,24}$)[a-z]+(?:-[a-z]+)*$/;
 const MAX_SNAPSHOT_DEPTH = 8;

@@ -555,8 +555,8 @@ test('Translation: two switches and a language select, each its own command, app
 
 test('rows that do nothing yet say so; a group of only such rows says it once', () => {
   const flagOf = (id) => app.querySelector(`.sp-row[data-row="${id}"]`).querySelector('.sp-flag');
-  // --- final --- the toolbar editor (T13) acts now: its opening row carries no note, and no row is "not yet".
-  assert.equal(app.querySelector('[data-opens="toolbarButtons"]').querySelector('.sp-flag'), null);
+  // --- final --- the toolbar row (T13) acts now: it carries no note, and no row is "not yet".
+  assert.equal(app.querySelector('.sp-row[data-row="toolbarButtons"]').querySelector('.sp-flag'), null);
   assert.equal(logic.ROWS.filter((row) => row.notYet).length, 0, 'every row acts');
   assert.equal(flagOf('frameless'), null, 'auto-hide acts now: no note');
   assert.equal(flagOf('autoHideBars'), null);
@@ -632,89 +632,35 @@ test('a guest cannot switch history on', () => {
   assert.deepEqual(sent, []);
 });
 
-// --- toolbars and feeds (thread T13) --- the toolbar editor: the three bars' lists as rows, each change saved as the
-// whole new list (the address bar's through Save, the other two through `baropt`), reset per bar, locked when the
-// file cannot be read. The HTML toolbar, strip and rail drawing them is tested in test/bars.mjs.
-const editorRows = (bar) => app.querySelector(`section.sp-tbe-bar[data-bar="${bar}"]`).querySelectorAll('.sp-tb-item').filter((row) => row.dataset.item !== undefined);
-const editorButton = (row, name) => row.querySelectorAll('button').find((b) => b.getAttribute('aria-label')?.startsWith(name));
-const barReset = (bar) => app.querySelector(`section.sp-tbe-bar[data-bar="${bar}"]`).querySelector('.sp-tbe-head').querySelector('button');
+// --- toolbars and feeds (thread T13) --- the toolbar is customised in a panel docked beside the page
+// (panels/toolbar.ts, tested in test/toolbar-panel.mjs); the settings page has the row that opens it and a
+// reset of both bars.
+const toolbarRow = () => app.querySelector('.sp-row[data-row="toolbarButtons"]');
+const toolbarButton = (name) => toolbarRow().querySelectorAll('button').find((b) => b.getAttribute('aria-label') === name);
 const toolbarSave = () => sent.filter((m) => m.a === 'save').map((m) => /\ntoolbar_buttons=([^\n]*)\n/.exec(m.text)?.[1]);
-const commandsFixture0 = JSON.parse(readFileSync(join(here, 'fixtures', 'commands-snapshot.json'), 'utf8'));
 
-test('the toolbar editor opens from one row, lists each bar and is no longer in "Not active yet"', () => {
+test('Customise your toolbar is one row that opens the docked customiser', () => {
   deliver(fixture.snap);
   assert.equal(logic.ROWS.find((row) => row.id === 'toolbarButtons').notYet, undefined);
-  assert.equal(logic.rowTier(logic.ROWS.find((row) => row.id === 'toolbarButtons')), 'page');
-  assert.equal(app.querySelector('[data-opens="toolbarButtons"]').querySelector('.bw-button').textContent, 'Edit');
-  assert.equal(app.querySelector('[data-opens="toolbarButtons"]').querySelector('.bw-button').getAttribute('aria-label'), 'Edit toolbars');
-  assert.ok(!app.querySelector('section[data-area="later"]').contains(app.querySelector('.sp-row[data-row="toolbarButtons"]')));
-  assert.deepEqual(editorRows('address').map((row) => row.dataset.item), ['back', 'forward', 'reload', 'site-info', 'split', 'reader', 'extensions', 'downloads']);
-  assert.deepEqual(editorRows('tabs').map((row) => row.dataset.item), ['closed-tabs']);
-  assert.deepEqual(editorRows('panel').map((row) => row.dataset.item), []);
-  const headings = app.querySelectorAll('.sp-tbe-title').map((h) => h.textContent);
-  assert.deepEqual(headings, ['Address bar', 'Tab bar', 'Panel bar'], 'there is no status bar to edit');
+  assert.equal(logic.rowTier(logic.ROWS.find((row) => row.id === 'toolbarButtons')), 'core', 'shown in the simple view, not a sub-page');
+  assert.equal(app.querySelector('[data-opens="toolbarButtons"]'), null);
+  assert.equal(toolbarRow().querySelector('.sp-label').textContent, 'Customise your toolbar');
+  assert.equal(app.querySelector('.sp-tbe'), null, 'the old in-page editor is gone');
+  sent.length = 0;
+  toolbarButton('Customise your toolbar').click();
+  assert.deepEqual(sent, [{ v: 1, t: 'set', a: 'opentoolbar' }]);
 });
 
-test('moving, removing and resetting an address bar button each save the whole list', () => {
+test('Reset to default puts both bars back, and is off while they already are', () => {
   deliver(fixture.snap);
+  assert.equal(toolbarButton('Reset the toolbar to its default buttons').disabled, true);
+  deliver({ ...fixture.snap, d: { ...fixture.snap.d, toolbarButtons: 'back,newtab,cmd:new-tab', bars: { ...fixture.snap.d.bars, tabs: 'cmd:new-tab' } } });
   sent.length = 0;
-  // Move Forward up past Back: back and forward swap.
-  editorButton(editorRows('address')[1], 'Move Forward up').click();
-  assert.deepEqual(toolbarSave(), ['forward,back,reload,site-info,split,reader,extensions,downloads']);
-  deliver(fixture.snap);
-  sent.length = 0;
-  // Remove Reload.
-  editorButton(editorRows('address')[2], 'Remove Reload').click();
-  assert.deepEqual(toolbarSave(), ['back,forward,site-info,split,reader,extensions,downloads']);
-  deliver(fixture.snap);
-  sent.length = 0;
-  // The first button of a zone cannot move up, the last cannot move down, and a button never crosses into another zone.
-  assert.equal(editorButton(editorRows('address')[0], 'Move Back up').disabled, true);
-  assert.equal(editorButton(editorRows('address')[2], 'Move Reload and stop down').disabled, true, 'reload is the last before the address field');
-  assert.equal(editorButton(editorRows('address')[3], 'Move Site information up').disabled, true, 'site information is the first inside the field');
-  // Reset returns the default list (here it already is the default, so the button is off).
-  assert.equal(barReset('address').disabled, true);
-  deliver({ ...fixture.snap, d: { ...fixture.snap.d, toolbarButtons: 'back,newtab,cmd:new-tab' } });
-  sent.length = 0;
-  assert.equal(barReset('address').disabled, false);
-  barReset('address').click();
+  const reset = toolbarButton('Reset the toolbar to its default buttons');
+  assert.equal(reset.disabled, false);
+  reset.click();
   assert.deepEqual(toolbarSave(), ['back,forward,reload,site-info,split,reader,extensions,downloads']);
-  deliver(fixture.snap);
-});
-
-test('the tab bar and panel bar lists are their own baropt commands, never part of save', () => {
-  deliver(fixture.snap);
-  sent.length = 0;
-  editorButton(editorRows('tabs')[0], 'Remove Closed tabs').click();
-  assert.deepEqual(sent, [{ v: 1, t: 'set', a: 'baropt', text: 'toolbar_tabs=' }]);
-  assert.ok(!sent.some((m) => m.a === 'save'));
-  deliver({ ...fixture.snap, d: { ...fixture.snap.d, bars: { ...fixture.snap.d.bars, tabs: 'cmd:new-tab,closed-tabs', panel: 'feeds,chain:2' } } });
-  assert.deepEqual(editorRows('tabs').map((row) => row.dataset.item), ['cmd:new-tab', 'closed-tabs']);
-  assert.deepEqual(editorRows('panel').map((row) => row.dataset.item), ['feeds', 'chain:2']);
-  sent.length = 0;
-  editorButton(editorRows('tabs')[1], 'Move Closed tabs up').click();
-  editorButton(editorRows('panel')[0], 'Move Feeds down').click();
-  assert.deepEqual(sent, [
-    { v: 1, t: 'set', a: 'baropt', text: 'toolbar_tabs=closed-tabs,cmd:new-tab' },
-    { v: 1, t: 'set', a: 'baropt', text: 'toolbar_panel=chain:2,feeds' },
-  ]);
-  sent.length = 0;
-  barReset('panel').click();
-  barReset('tabs').click();
-  assert.deepEqual(sent, [
-    { v: 1, t: 'set', a: 'baropt', text: 'toolbar_panel=' },
-    { v: 1, t: 'set', a: 'baropt', text: 'toolbar_tabs=closed-tabs' },
-  ]);
-  deliver(fixture.snap);
-});
-
-test('command buttons take the name of their command once the commands arrive', () => {
-  deliver(fixture.snap);
-  deliver({ v: 1, t: 'snap', p: 'commands', d: JSON.parse(JSON.stringify(commandsFixture0.d)) });
-  deliver({ ...fixture.snap, d: { ...fixture.snap.d, bars: { ...fixture.snap.d.bars, tabs: 'cmd:new-tab,cmd:no-such' } } });
-  const names = editorRows('tabs').map((row) => row.querySelector('.sp-label').textContent);
-  assert.equal(names[0], 'New tab');
-  assert.equal(names[1], 'no such', 'a command Rust does not list is named from its id');
+  assert.ok(sent.some((m) => m.a === 'baropt' && m.text === 'toolbar_tabs=closed-tabs'));
   deliver(fixture.snap);
 });
 
@@ -774,7 +720,9 @@ test('default browser status reflects the snapshot and the button sends a bare s
 test('an unreadable settings file disables the new controls too, except the setdefault button', () => {
   deliver({ ...fixture.snap, d: { ...fixture.snap.d, readable: false } });
   // --- toolbars and feeds (thread T13) --- the toolbar editor and the feed rows lock too.
-  for (const button of app.querySelector('.sp-tbe').querySelectorAll('button')) assert.equal(button.disabled, true, button.getAttribute('aria-label') ?? button.textContent);
+  for (const button of app.querySelector('.sp-row[data-row="toolbarButtons"]').querySelectorAll('button')) {
+    assert.equal(button.disabled, true, button.getAttribute('aria-label') ?? button.textContent);
+  }
   assert.equal(app.querySelector('.sp-row[data-row="feedsDetect"]').querySelector('[role="switch"]').disabled, true);
   assert.equal(app.querySelector('.sp-row[data-row="feedsRefresh"]').querySelector('button').disabled, true);
   const themeRow = app.querySelector('.sp-row[data-row="themeAccent"]');
@@ -1600,12 +1548,12 @@ test('slim: the search finds rows behind a closed disclosure and opens it; clear
   searchFor('');
   assert.equal(button.getAttribute('aria-expanded'), 'true', 'a row used from the search stays in view');
   button.click();
-  // --- final --- nothing waits in "Not active yet" any more: the toolbar editor (T13) is a sub-page whose
-  // opening row the search finds in Appearance, and the section itself stays hidden.
-  searchFor('customise your toolbars');
+  // --- final --- nothing waits in "Not active yet" any more: the toolbar row (T13) is found in Appearance,
+  // and the section itself stays hidden.
+  searchFor('customise your toolbar');
   assert.equal(areaNode('later').hidden, true);
-  assert.equal(app.querySelector('[data-opens="toolbarButtons"]').hidden, false);
-  assert.equal(areaNode('appearance').hidden, false, 'the opening row is in Appearance');
+  assert.equal(app.querySelector('.sp-row[data-row="toolbarButtons"]').hidden, false);
+  assert.equal(areaNode('appearance').hidden, false, 'the row is in Appearance');
   searchFor('');
   assert.equal(areaNode('later').hidden, true);
 });

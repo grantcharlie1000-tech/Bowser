@@ -45,12 +45,88 @@ html[data-scheme="dark"] #app {
 
 /* Back and forward share one rounded container, as in the native chrome. */
 .nav-group {
+  position: relative;
   display: flex;
   align-items: center;
   flex: none;
   height: var(--bw-nav-h);
   border-radius: var(--bw-r-pill);
   background: var(--bw-fill);
+}
+
+/* A hairline between the two halves. Each button is one half of the capsule, so its hover and press
+   wash is a half-pill that stops square at this line instead of a circle floating inside the group.
+   The line sits above the washes (z-index) so it stays put while either half lights up. */
+.nav-group::after {
+  content: "";
+  position: absolute;
+  z-index: 1;
+  top: var(--bw-space-1_5);
+  bottom: var(--bw-space-1_5);
+  left: 50%;
+  width: 1px;
+  translate: -50% 0;
+  background: var(--bw-pill-edge);
+  pointer-events: none;
+}
+
+.nav-group > .bw-icon-btn.is-round:first-child {
+  border-radius: var(--bw-r-pill) 0 0 var(--bw-r-pill);
+}
+
+.nav-group > .bw-icon-btn.is-round:last-child {
+  border-radius: 0 var(--bw-r-pill) var(--bw-r-pill) 0;
+}
+
+/* The group already sits on the control fill, which is the hover colour in the light theme, so the halves
+   take a wash of the text colour instead: visible on both schemes, firmer on press. */
+.nav-group > .bw-icon-btn:hover:not(:disabled, [aria-disabled="true"]) {
+  background-color: color-mix(in srgb, var(--bw-text) 9%, transparent);
+}
+
+/* A half-pill that shrank on press would pull away from the line, so the glyph takes the press instead. */
+.nav-group > .bw-icon-btn:active:not(:disabled, [aria-disabled="true"]) {
+  background-color: color-mix(in srgb, var(--bw-text) 15%, transparent);
+  transform: none;
+}
+
+.nav-group > .bw-icon-btn > svg {
+  transition: transform var(--bw-dur-fast) var(--bw-ease-out);
+}
+
+.nav-group > .bw-icon-btn:active:not(:disabled, [aria-disabled="true"]) > svg {
+  transform: scale(0.9);
+}
+
+/* Micro motion: the arrow leans a pixel the way it would take you, and springs back on leave. */
+@media (prefers-reduced-motion: no-preference) {
+  .nav-group > .bw-icon-btn > svg {
+    transition: transform var(--bw-dur-base) var(--bw-ease-spring);
+  }
+
+  .nav-group > .tb-back:hover:not(:disabled, [aria-disabled="true"]) > svg {
+    transform: translateX(-1px);
+  }
+
+  .nav-group > .tb-forward:hover:not(:disabled, [aria-disabled="true"]) > svg {
+    transform: translateX(1px);
+  }
+
+  .nav-group > .tb-back:active:not(:disabled, [aria-disabled="true"]) > svg {
+    transform: translateX(-1px) scale(0.9);
+    transition-duration: var(--bw-dur-fast);
+  }
+
+  .nav-group > .tb-forward:active:not(:disabled, [aria-disabled="true"]) > svg {
+    transform: translateX(1px) scale(0.9);
+    transition-duration: var(--bw-dur-fast);
+  }
+}
+
+@media (forced-colors: active) {
+  .nav-group::after {
+    background: CanvasText;
+  }
 }
 
 /* ---- Main menu button: three dots (menu-dots, view.ts .tb-menu) ----
