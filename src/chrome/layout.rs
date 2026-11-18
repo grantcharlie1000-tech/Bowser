@@ -5062,7 +5062,12 @@ mod arrangement_tests {
                 AutoHide { top: false, sidebar: true },
             );
             let hidden_island = hidden_sidebar.expect("the island keeps its slot").island();
-            assert_eq!(hidden_island, island, "{tabs:?}: hiding the slot does not move the island");
+            // --- floating zen sidebar --- out of the layout, the column comes back as a floating card:
+            // the island moves into it, and the card stays inside the column the slot had.
+            let card = hidden.float_island;
+            assert!(!card.is_empty() && card.contains_rect(hidden_island), "{tabs:?}: the island {hidden_island:?} is inside the floating card {card:?}");
+            assert!(island.left.min(sidebar.sidebar.left) <= card.left && card.right <= island.right.max(sidebar.sidebar.right), "{tabs:?}: the card stays in the tab column");
+            assert!(card.intersect(panel).is_empty(), "{tabs:?}: the card does not meet the docked panel");
             let wide = hidden.viewport;
             let wide_panel = match live {
                 SidePanelPosition::Left => Rect::new(wide.left, wide.top, wide.left + PANEL, wide.bottom),
