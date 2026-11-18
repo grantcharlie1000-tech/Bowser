@@ -1286,7 +1286,7 @@ fn tell_toolbar_closed(owner: HWND, seq: u32) {
     super::window::html_toolbar_post(owner, &protocol::suggest_json(0, seq, 0, 0, "", &[]));
 }
 
-fn suggest_shown(owner: HWND) -> bool {
+pub(crate) fn suggest_shown(owner: HWND) -> bool {
     with_layer(owner, |layer| matches!(layer.content, Some(Content::Suggest { .. }))) == Some(true)
 }
 

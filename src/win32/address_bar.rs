@@ -1,6 +1,7 @@
 //! The window's side of the address bar options: what the toolbar's address field and search field are
 //! told, what they ask for, the drop-down rows under the options, and the engine suggestions that
-//! arrive late from the network (only after an engine nickname or in the search field).
+//! arrive late from the network (after an engine nickname, in the search field, or for plain typing
+//! with "Search suggestions" on; see `address_suggest::remote_query` for what may be sent).
 //!
 //! Every function runs on the UI thread except the suggestion fetch, which runs on one persistent
 //! worker thread (latest request wins) and hands its answer back through a queue and `WM_ADDRESS_SUGGEST`.
@@ -36,7 +37,7 @@ pub(crate) const WM_ADDRESS_SUGGEST: u32 = windows::Win32::UI::WindowsAndMessagi
 /// Most suggestions one answer keeps.
 const MAX_ANSWERS: usize = 8;
 /// A suggestion request waits this long for the next keystroke before it is sent.
-const DEBOUNCE: Duration = Duration::from_millis(160);
+const DEBOUNCE: Duration = Duration::from_millis(150);
 
 /// What a window's open drop-down answers, so a late engine answer can refresh it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -116,7 +117,7 @@ fn worker() {
     let mut session = crate::translate::net::HttpsSession::default();
     while let Some(Job { url, wanted, raw, .. }) = next_job(&PENDING, DEBOUNCE) {
         let Ok(body) = session.get(&url, 64 * 1024) else { continue };
-        let suggestions = address_suggest::parse_suggestions(&String::from_utf8_lossy(&body), MAX_ANSWERS);
+        let suggestions = address_suggest::parse_suggestions(&address_suggest::decode_answer(body), MAX_ANSWERS);
         if let Ok(mut inbox) = INBOX.lock() {
             if inbox.len() < 8 {
                 inbox.push(Answer { key: wanted, suggestions });
@@ -217,25 +218,42 @@ pub(super) fn list_on_typing(app: &AppRef) -> bool {
 }
 
 /// The suggestions an engine answered for `query`, now if they are in hand; otherwise they are asked
-/// for (after a short wait for more typing) and `suggestions_ready` runs when they arrive.
+/// for (after a short wait for more typing) and `suggestions_ready` runs when they arrive. Until then
+/// the answer to an earlier query that `query` extends stands in, kept only where it still matches.
 fn engine_suggestions(hwnd: HWND, engine: &Engine, query: &str, allowed: bool) -> Vec<String> {
     if !allowed || query.trim().is_empty() || engine.suggest.is_empty() {
         return Vec::new();
     }
     let wanted = (engine.id.clone(), query.trim().to_owned());
-    if let Some(hit) = CACHE.with(|cache| Some(cache.borrow()).filter(|cache| cache.key == wanted).map(|cache| cache.suggestions.clone())) {
+    let (hit, carried) = CACHE.with(|cache| {
+        let cache = cache.borrow();
+        if cache.key == wanted {
+            (Some(cache.suggestions.clone()), Vec::new())
+        } else if cache.key.0 == wanted.0 {
+            (None, address_suggest::carry_over(&cache.key.1, &cache.suggestions, &wanted.1))
+        } else {
+            (None, Vec::new())
+        }
+    });
+    if let Some(hit) = hit {
         return hit;
     }
     let Some(url) = engine.suggest_url(query.trim()) else { return Vec::new() };
     submit(Job { at: Instant::now(), url, wanted, raw: key(hwnd) });
-    Vec::new()
+    carried
 }
 
-/// Engine suggestions arrived: keep them, and redraw the list they belong to.
+/// Engine suggestions arrived: keep them, and redraw the list they belong to while it is still on
+/// screen (an answer that lands after Enter, Escape or a click away never opens the list again). The
+/// rows are worked out again for the field's current text, so an answer for older text only shows
+/// where it still matches.
 pub(super) fn suggestions_ready(hwnd: HWND) {
     let answers: Vec<Answer> = INBOX.lock().map(|mut inbox| std::mem::take(&mut *inbox)).unwrap_or_default();
     for answer in answers {
         CACHE.with(|cache| *cache.borrow_mut() = Cache { key: answer.key.clone(), suggestions: answer.suggestions });
+    }
+    if !super::html_hover::suggest_shown(hwnd) {
+        return;
     }
     let listed = LISTED.with(|listed| listed.borrow().get(&key(hwnd)).cloned());
     match listed {
@@ -277,12 +295,17 @@ pub(super) fn rows(
     let private = App::active_tab_private(app);
     let typed = crate::address_runtime::typed();
     let marks = html_suggest::marks();
-    // Engine suggestions only follow a nickname, only with the source on, and never in a private tab.
+    // Engine suggestions follow a nickname, or plain typing with "Search suggestions" on; only with the
+    // source on, and never in a private tab.
     let suggestions = match engines.split_nickname(text) {
         Some((engine, query)) if address.suggest_in_address && address.has_source(crate::address_settings::Source::Search) && !private => {
             engine_suggestions(hwnd, engine, query, true)
         }
-        _ => Vec::new(),
+        Some(_) => Vec::new(),
+        None => match address_suggest::remote_query(text, address, &engines, private) {
+            Some((engine, query)) => engine_suggestions(hwnd, engine, query, true),
+            None => Vec::new(),
+        },
     };
     LISTED.with(|listed| listed.borrow_mut().insert(key(hwnd), Listed::Address { seq, text: text.to_owned() }));
     let env = html_suggest::Env { settings: address, engines: &engines, typed_history: &typed, engine_suggestions: &suggestions, private };

@@ -769,7 +769,7 @@ export const AREAS: readonly AreaSpec[] = [
   { key: 'profile', title: 'General', nav: 'General', lead: '', aliases: 'you and bowser startup search engine downloads default browser', parts: ['profile', 'search', 'downloads'], groups: [
     group('profiles', 'Profiles', 'profile', ['profile', 'profiles', 'import']),
     group('startup', 'On startup', 'profile', ['startupMode', 'startupPages', 'startHomepage']),
-    group('search', 'Search engine', 'search', ['searchDefault', 'engines', 'searchPrivate', 'searchImage', 'searchInAddress', 'searchSuggestAddress', 'searchNewTab', 'searchSelection']),
+    group('search', 'Search engine', 'search', ['searchDefault', 'searchSuggestions', 'engines', 'searchPrivate', 'searchImage', 'searchInAddress', 'searchSuggestAddress', 'searchNewTab', 'searchSelection']),
     group('searchField', 'Search field', 'search', ['searchField', 'searchNickname', 'searchIcon', 'searchKeepEngine', 'searchKeepText', 'searchSuggestField']),
     group('searchScopes', 'Search scopes', 'search', ['nickBookmarks', 'nickHistory', 'nickTabs']),
     group('downloads', 'Downloads', 'downloads', ['downloadDir', 'downloadAsk']),
@@ -878,6 +878,7 @@ const CORE_ROWS: ReadonlySet<string> = new Set([
   'profile', 'profiles', 'import',
   'startupMode', 'startupPages', 'startHomepage',
   'searchDefault',
+  'searchSuggestions',
   'downloadDir', 'downloadAsk', 'defaultBrowser',
   'themeMode', 'themeAccent', 'theme', 'websiteAppearance',
   'layoutPreset' /* --- layout (thread T6): the presets decide where every bar sits; the rest of the block is `more` --- */,
@@ -1142,7 +1143,7 @@ export interface SimpleGroupSpec { readonly key: string; readonly title: string;
  * move, so a control and what it does live in one place), in four short groups.
  */
 export const SIMPLE_GROUPS: readonly SimpleGroupSpec[] = [
-  { key: 'start', title: 'Startup and search', rows: ['startupMode', 'startupPages', 'startHomepage', 'searchDefault'] },
+  { key: 'start', title: 'Startup and search', rows: ['startupMode', 'startupPages', 'startHomepage', 'searchDefault', 'searchSuggestions'] },
   { key: 'look', title: 'Appearance', rows: ['themeMode', 'themeAccent', 'tabPosition', 'toolbarButtons', 'fontSize', 'defaultZoom'] },
   { key: 'privacy', title: 'Privacy', rows: ['blocker', 'deleteData'] },
   { key: 'browser', title: 'Your browser', rows: ['profile', 'import', 'downloadDir', 'defaultBrowser', 'autoUpdate', 'updateStatus'] },

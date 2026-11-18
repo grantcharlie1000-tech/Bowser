@@ -28,7 +28,7 @@ Build from this directory:
 
 Use `Open-Bowser.cmd` to install or refresh the stable app. Use `Dev-Bowser.cmd` while changing this tree. Building with `cargo build --release --locked` produces `target\release\bowser.exe` and does not replace the installed Bowser or its profile.
 
-The window starts empty with the input focused. Enter a web address or search phrase. Alt+Left and Alt+Right navigate history. The engine starts when you begin typing, while no network request is sent until you press Enter.
+The window starts empty with the input focused. Enter a web address or search phrase. Alt+Left and Alt+Right navigate history. The engine starts when you begin typing, while no network request is sent until you press Enter, unless search suggestions are turned on (see [Search and local data](#search-and-local-data)).
 
 The shared WebView2 runtime is required but is not bundled into Bowser. Runtime availability is checked and failures are shown as native error messages. Microsoft manages Evergreen security updates.
 
@@ -41,6 +41,8 @@ Nothing changes on upgrade. A profile with no saved choice keeps its previous be
     https://www.google.com/search?q={query}
 
 Missing or invalid configuration uses the default. Search text is percent encoded as one query value, so spaces, `&`, `#`, `+`, `%` and non-ASCII text are sent exactly as typed. Explicit HTTP(S) addresses and bare hostnames are accepted and never searched; unsupported schemes and embedded URL credentials are rejected.
+
+**Search suggestions** are off by default. Turn them on with Search suggestions in Settings, next to the search engine (`search_suggestions=true` in `settings.txt`). While they are on, text you type in the address field is sent to the default engine's suggestions address after a short pause (Google: `suggestqueries.google.com`, DuckDuckGo and the default engine: `duckduckgo.com/ac`, Bing: `api.bing.com`), and up to five of its answers are listed under your history and bookmark matches; picking one searches for it. Nothing is sent from a private tab or window, for text that looks like an address or a path, for `bowser://` pages, for an engine nickname or `@` scope, or for empty text, and an engine with no suggestions address (such as one made from `search-provider.txt`) is never asked. The request carries no cookies. Suggestions after an engine nickname (`g rust`) and in the separate search field have their own switches in the Search section.
 
 Browser cookies/cache remain in %LOCALAPPDATA%\Bowser\WebView2, isolated from Edge's profile. Bowser has no hosted backend or first-party telemetry. WebView2's [Microsoft Defender SmartScreen reputation checking](https://learn.microsoft.com/en-us/microsoft-edge/webview2/concepts/data-privacy) is enabled where allowed by Windows settings; reputation checks may send visited URLs to Microsoft's service. Websites and the selected search provider receive normal network requests when used.
 
