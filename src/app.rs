@@ -789,6 +789,21 @@ pub struct App {
     session_save_pending: bool,
     last_session_snapshot: Option<crate::session::Session>,
     pending_restore: Option<crate::session::Session>,
+    /// The pending restore follows a crash loop: every restored tab stays asleep (none loads until
+    /// it is selected) and a blank tab is shown instead.
+    pending_restore_safe: bool,
+    /// The profile's session folder, once `init_session` has run.
+    session_root: Option<PathBuf>,
+    /// `--new-window`: this process is a further window of a profile that may already be open.
+    launch_new_window: bool,
+    /// `--restore-window <id>`: this further window reopens the tabs saved in that slot.
+    launch_restore_window: Option<String>,
+    /// This window is a further window whose tabs are saved in this slot
+    /// (`session::slot_dir`); `session` then writes there.
+    window_slot: Option<String>,
+    /// Slots of further windows left open when Bowser last stopped, reopened as windows of their
+    /// own once this window is up (`reopen_other_windows`).
+    stale_window_slots: Vec<String>,
     /// Addresses a later process handed this window. Held until startup has finished restoring
     /// or opening its own launch address, so they are applied once and are not wiped by restore.
     external_urls: Vec<url::Url>,
@@ -5137,6 +5152,7 @@ impl App {
             .chain(options.more_urls.iter().cloned())
             .collect();
         let new_window = options.new_window;
+        let restore_window = options.restore_window.clone();
         let tracked = options.benchmark_url.is_none() && options.user_data_dir.is_none();
         let session_dir = profile.session_dir();
         let lock = crate::session::lock_state(&session_dir);
@@ -5286,7 +5302,15 @@ impl App {
                 &profile.privacy_stats_file(),
             ));
         }
-        if track_session && !app.init_session(&session_dir) && !new_window {
+        app.launch_new_window = new_window;
+        app.launch_restore_window = restore_window.clone();
+        let started = track_session && app.init_session(&session_dir);
+        if restore_window.is_some() && !started && app.window_slot.is_none() {
+            // Started to reopen a window that another process has already reopened, or that has
+            // nothing left to show: no window.
+            return Ok(());
+        }
+        if track_session && !started && !new_window {
             // Another launch took the marker while this one was still starting. Hand an address
             // over; do not open a window that would rebuild the same session.
             if !launch_urls.is_empty()
@@ -5409,6 +5433,12 @@ impl App {
             session_save_pending: false,
             last_session_snapshot: None,
             pending_restore: None,
+            pending_restore_safe: false,
+            session_root: None,
+            launch_new_window: false,
+            launch_restore_window: None,
+            window_slot: None,
+            stale_window_slots: Vec::new(),
             external_urls: Vec::new(),
             external_ready: false,
             privacy_stats: None,
@@ -5432,25 +5462,51 @@ impl App {
         }
     }
 
-    /// Opens the crash-recovery state and, after a crash, asks whether to restore.
+    /// Opens the session and queues the saved tabs for restore. They come back after every kind of
+    /// exit (a normal close, a Windows restart, an update, a crash) without asking: tabs stay open
+    /// until the person closes them. A launch that carries an address (a link opened while Bowser
+    /// was closed) restores them as well and opens the address in a tab of its own
+    /// (`restore_pending_session`).
     /// Returns `false` when the session could not be opened because another Bowser holds it.
     /// The caller then must not open a window that rebuilds the saved tabs.
     fn init_session(&mut self, dir: &std::path::Path) -> bool {
-        // --- start page --- "continue where you left off": a clean exit's tabs come back too. A launch
-        // that carries an address (a link opened while Bowser was closed) restores them as well and
-        // opens the address in a tab of its own (`restore_pending_session`). Skipping the restore
-        // there lost the tabs for good: this run's first save replaced `session.txt`.
-        let restore_clean = self.settings.start.startup == crate::start_page::Startup::LastSession;
-        // --- end start page ---
         // Claim the marker before reading workspaces. A launch that loses the claim leaves every
         // session file untouched.
-        let Some((mut store, offer)) = crate::session::SessionStore::open_with(dir, restore_clean) else {
+        self.session_root = Some(dir.to_owned());
+        let Some((mut store, mut offer)) = crate::session::SessionStore::open(dir) else {
             // Another Bowser window has this profile; leave its files alone. This window's own
             // workspace set is not the profile's, so it must not replace `workspaces.txt` either.
             let workspaces_path = self.workspaces_path.take();
             self.session_unclaimed = Some((dir.to_owned(), workspaces_path));
+            if self.launch_new_window {
+                self.open_window_slot(dir);
+            }
             return false;
         };
+        // Further windows left open when Bowser stopped (a crash, a power cut, a Windows shutdown).
+        // With nothing of its own to restore, this window takes the oldest one's tabs; the others
+        // are reopened as windows of their own once this one is up.
+        let mut stale = crate::session::stale_slots(dir);
+        if offer.is_none() {
+            while !stale.is_empty() && offer.is_none() {
+                let id = stale.remove(0);
+                let Some((mut slot, slot_offer)) = crate::session::SessionStore::open(&crate::session::slot_dir(dir, &id)) else {
+                    continue;
+                };
+                match slot_offer {
+                    // Written into this window's file before the slot goes, so a crash in between
+                    // loses nothing.
+                    Some(slot_offer) if store.save(&slot_offer.session).is_ok() => {
+                        slot.discard();
+                        offer = Some(slot_offer);
+                    }
+                    Some(_) => {}
+                    None => slot.discard(),
+                }
+            }
+        }
+        stale.truncate(crate::session::MAX_WINDOW_SLOTS);
+        self.stale_window_slots = stale;
         let workspace_path = self
             .workspaces_path
             .clone()
@@ -5458,20 +5514,9 @@ impl App {
         if let Ok(Some(workspaces)) = crate::workspaces::WorkspaceSet::load(&workspace_path) {
             self.workspaces = workspaces;
         }
-        let accepted = offer.filter(|offer| {
-            !offer.ask
-                || win32::ask_yes_no(&format!(
-                    "Bowser did not close properly last time. Restore your {} open tab{}?",
-                    offer.session.tabs.len(),
-                    if offer.session.tabs.len() == 1 {
-                        ""
-                    } else {
-                        "s"
-                    }
-                ))
-        });
-        store.begin_run(accepted.as_ref());
-        self.pending_restore = accepted.map(|offer| offer.session);
+        store.begin_run(offer.as_ref());
+        self.pending_restore_safe = offer.as_ref().is_some_and(|offer| offer.safe);
+        self.pending_restore = offer.map(|offer| offer.session);
         if self.pending_restore.is_none() {
             // Nothing restored: the file's tab ids are the last run's, so every workspace keeps its
             // name, icon and colour on a fresh blank tab, and this run's first tab stays in the
@@ -5488,11 +5533,67 @@ impl App {
         true
     }
 
-    /// Rebuilds the tab strip from an accepted crash snapshot. Only the active tab loads now;
-    /// the others are created asleep and load when selected. A bad entry never aborts the rest.
-    pub fn restore_pending_session(app: &AppRef) {
-        let Some(session) = app.borrow_mut().pending_restore.take() else {
+    /// A further window (`--new-window`) keeps its tabs in a slot of its own: a new one, or with
+    /// `--restore-window` the slot it was started to reopen. A slot another process already holds,
+    /// or one with nothing to restore, leaves `window_slot` empty (the caller then does not open a
+    /// window for a `--restore-window` launch).
+    fn open_window_slot(&mut self, dir: &std::path::Path) {
+        let reopening = self.launch_restore_window.clone().filter(|id| crate::session::valid_slot_id(id));
+        if self.launch_restore_window.is_some() && reopening.is_none() {
             return;
+        }
+        let id = reopening.clone().unwrap_or_else(crate::session::new_slot_id);
+        let Some((mut store, offer)) = crate::session::SessionStore::open(&crate::session::slot_dir(dir, &id)) else {
+            return;
+        };
+        if reopening.is_some() && offer.is_none() {
+            store.discard();
+            return;
+        }
+        store.begin_run(offer.as_ref());
+        self.pending_restore_safe = offer.as_ref().is_some_and(|offer| offer.safe);
+        self.pending_restore = offer.map(|offer| offer.session);
+        self.session = crate::session::SessionWriter::new(store).ok();
+        self.window_slot = Some(id);
+    }
+
+    /// Reopens, each as a window of its own, the further windows that were left open when Bowser
+    /// last stopped. Called once this window is up, so they never delay it.
+    pub fn reopen_other_windows(app: &AppRef) {
+        let slots = std::mem::take(&mut app.borrow_mut().stale_window_slots);
+        if slots.is_empty() {
+            return;
+        }
+        let Ok(profile) = crate::profile::active() else {
+            return;
+        };
+        for id in slots {
+            let _ = crate::profile::spawn_restored_window(&profile, &id);
+        }
+    }
+
+    /// The person closed this window.
+    pub fn session_finish(app: &AppRef) {
+        Self::finish_session(app, false);
+    }
+
+    /// Windows is signing out, restarting or shutting down: every window keeps its tabs, whatever
+    /// order the windows close in.
+    pub fn session_finish_at_end_session(app: &AppRef) {
+        Self::finish_session(app, true);
+    }
+
+    /// Rebuilds the tab strip from the saved session. Only the active tab loads now; the others are
+    /// created asleep and load when selected. After a crash loop (safe mode) none loads: the saved
+    /// tabs all stay asleep and a blank tab is shown. A bad entry never aborts the rest.
+    pub fn restore_pending_session(app: &AppRef) {
+        let (session, safe) = {
+            let mut state = app.borrow_mut();
+            let safe = std::mem::take(&mut state.pending_restore_safe);
+            let Some(session) = state.pending_restore.take() else {
+                return;
+            };
+            (session, safe)
         };
         let mut active_url = None;
         let mut restored_ids = Vec::with_capacity(session.tabs.len());
@@ -5538,7 +5639,10 @@ impl App {
                 App::note_pinned_site(&mut state, id, saved.pinned, Some(&url)); // --- tab options ---
                 restored_ids.push(Some(id));
                 // --- tab options --- "Load restored tabs when first selected" / "Always load pinned tabs".
-                if (!state.settings.tabs.lazy_restore || (state.settings.tabs.load_pinned && saved.pinned)) && index != session.active {
+                if !safe
+                    && (!state.settings.tabs.lazy_restore || (state.settings.tabs.load_pinned && saved.pinned))
+                    && index != session.active
+                {
                     state.tab_state.eager.push(id);
                 }
                 // --- end tab options ---
@@ -5614,7 +5718,18 @@ impl App {
             return;
         };
         let _ = app.borrow().log.record("session_restored");
-        if app.borrow().initial_url.is_some() {
+        if safe {
+            // Safe mode after a crash loop: the tab that was shown goes back to sleep like the
+            // others and a blank tab is shown, so nothing that may have crashed Bowser loads by itself.
+            {
+                let mut state = app.borrow_mut();
+                let shown = state.tab_model.active();
+                if let Some(tab) = state.tabs.iter_mut().find(|tab| tab.id == shown) {
+                    tab.discarded = true;
+                }
+            }
+            Self::spawn_tab(app, false, None);
+        } else if app.borrow().initial_url.is_some() {
             // The launch carries an address (a link opened while Bowser was closed): the restored
             // tabs all stay, the one that was shown goes back to sleep like the others, and the
             // address gets a new tab, which `submit_initial_url` then loads. Loading the address
@@ -5679,7 +5794,9 @@ impl App {
                 saved_count += 1;
             }
         }
-        let mut session = crate::session::Session::from_tabs(
+        // Nothing worth keeping (every tab closed, only New Tab pages left) is saved as an empty
+        // session, so the next start does not bring back the tabs that were closed.
+        let Some(mut session) = crate::session::Session::from_tabs(
             state.tab_model.iter().map(|model| {
                 let tab = tabs.get(&model.id);
                 (
@@ -5689,7 +5806,9 @@ impl App {
                 )
             }),
             active,
-        )?;
+        ) else {
+            return Some(crate::session::Session::empty());
+        };
         if let Some(mut split) = state.split_view {
             // A pane whose tab is not saved (private, blank, or beyond the cap) leaves the saved
             // layout; a pair that loses one is not saved at all, as before.
@@ -5733,7 +5852,9 @@ impl App {
 
     /// The debounce timer fired: write the snapshot if anything changed.
     pub fn session_save_now(app: &AppRef) {
-        let snapshot = Self::session_snapshot(app);
+        // Until the saved tabs are back in the strip, the strip is not the session: writing it would
+        // replace the tabs that are about to be restored.
+        let snapshot = if app.borrow().pending_restore.is_some() { None } else { Self::session_snapshot(app) };
         let mut state = app.borrow_mut();
         if state.session.is_none() {
             let dirty = std::mem::take(&mut state.workspaces_dirty);
@@ -5764,14 +5885,48 @@ impl App {
         }
     }
 
-    /// Clean exit: final snapshot and removal of the running marker.
-    pub fn session_finish(app: &AppRef) {
-        let snapshot = Self::session_snapshot(app);
-        let store = app.borrow_mut().session.take();
-        if let Some(store) = store {
-            store.finish(snapshot);
-        } else {
-            Self::claim_session_at_close(app, snapshot.as_ref());
+    /// Clean exit: final snapshot and removal of the running marker. A window that closes before
+    /// its saved tabs were restored leaves the saved session as it is.
+    ///
+    /// Several windows: a window the person closes while another window of the profile stays open
+    /// takes its tabs with it, as in other browsers; the window closed last is the one that comes
+    /// back. When Windows ends the session (`ending`), or after a crash, every window comes back.
+    fn finish_session(app: &AppRef, ending: bool) {
+        let snapshot = if app.borrow().pending_restore.is_some() { None } else { Self::session_snapshot(app) };
+        let (store, slot, root) = {
+            let mut state = app.borrow_mut();
+            (state.session.take(), state.window_slot.take(), state.session_root.clone())
+        };
+        match (store, slot) {
+            // A further window.
+            (Some(store), Some(slot)) => {
+                if ending {
+                    store.finish(snapshot);
+                } else {
+                    let others = root.as_deref().is_some_and(|root| !crate::session::live_slots(root, Some(&slot)).is_empty());
+                    if !others {
+                        // Perhaps the profile's last window: its tabs become the saved session.
+                        Self::claim_session_at_close(app, snapshot.as_ref());
+                    }
+                    store.discard();
+                }
+            }
+            // The profile's main window.
+            (Some(store), None) => {
+                let others = !ending && root.as_deref().is_some_and(|root| !crate::session::live_slots(root, None).is_empty());
+                if others && snapshot.is_some() {
+                    // Closed while further windows stay open: these tabs were closed on purpose. The
+                    // window of those closed last becomes the saved session.
+                    store.finish(Some(crate::session::Session::empty()));
+                } else {
+                    store.finish(snapshot);
+                }
+            }
+            (None, _) => {
+                if !ending {
+                    Self::claim_session_at_close(app, snapshot.as_ref());
+                }
+            }
         }
         Self::save_workspaces_now(app);
     }
@@ -5785,12 +5940,20 @@ impl App {
         let Some((dir, workspaces_path)) = app.borrow_mut().session_unclaimed.take() else {
             return;
         };
-        let Some(snapshot) = snapshot else {
+        let Some(snapshot) = snapshot.filter(|snapshot| !snapshot.tabs.is_empty()) else {
             return; // nothing worth saving: the last saved session stays
         };
-        let Some((mut store, _)) = crate::session::SessionStore::open(&dir) else {
+        let Some((mut store, offer)) = crate::session::SessionStore::open(&dir) else {
             return; // the window that holds the session is still open
         };
+        // The main window crashed while this one stayed open: its tabs move to a slot of their own
+        // (reopened as a window at the next start) instead of being replaced by this window's.
+        if let Some(offer) = offer.filter(|offer| offer.consecutive > 0)
+            && let Some((mut slot, _)) = crate::session::SessionStore::open(&crate::session::slot_dir(&dir, &crate::session::new_slot_id()))
+        {
+            slot.begin_run(None);
+            slot.finish(Some(&offer.session));
+        }
         // `finish` saves (the replaced snapshot is kept as `session.prev`) and removes the marker.
         store.finish(Some(snapshot));
         // The workspace file still pairs the other window's tabs with its `order=`. This window's
@@ -11537,7 +11700,11 @@ mod tests {
             state.tabs[0].private = true;
         }
         set_addresses(&app, &[(only, "https://example.com/private-page")]);
-        assert!(App::session_snapshot(&app).is_none());
+        // Saved as an empty session (the tabs closed before are not brought back), and the private
+        // address never reaches it.
+        let snapshot = App::session_snapshot(&app).unwrap();
+        assert_eq!(snapshot, crate::session::Session::empty());
+        assert!(!snapshot.serialize().contains("private-page"));
     }
 
     #[test]
@@ -11699,6 +11866,12 @@ mod tests {
             session_save_pending: false,
             last_session_snapshot: None,
             pending_restore: None,
+            pending_restore_safe: false,
+            session_root: None,
+            launch_new_window: false,
+            launch_restore_window: None,
+            window_slot: None,
+            stale_window_slots: Vec::new(),
             external_urls: Vec::new(),
             external_ready: false,
             privacy_stats: None,

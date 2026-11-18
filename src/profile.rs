@@ -1135,6 +1135,13 @@ fn profile_command<'a>(
     Some(command)
 }
 
+/// Reopens a further window of `profile` that was left open when Bowser last stopped: a new
+/// process that restores the tabs saved in slot `id` (`--restore-window`).
+pub fn spawn_restored_window(profile: &Profile, id: &str) -> bool {
+    crate::session::valid_slot_id(id)
+        && profile_command(profile, true, []).is_some_and(|mut command| command.arg("--restore-window").arg(id).spawn().is_ok())
+}
+
 /// Addresses a new window can be given on the command line. The launch parser accepts only
 /// these; anything else makes the new process exit before a window exists.
 pub fn can_open_in_new_window(url: &url::Url) -> bool {

@@ -1989,8 +1989,9 @@ fn track_idle_pages(hwnd: HWND) {
 
 /// What a clean exit writes, once per window: the privacy counters when they changed since their
 /// last save (their debounce timer is still pending), queued history visits, and the final session
-/// snapshot, which also removes the running marker. Shared by `WM_CLOSE` and `WM_ENDSESSION`.
-fn flush_for_exit(hwnd: HWND, app: &AppRef) {
+/// snapshot, which also removes the running marker. Shared by `WM_CLOSE` and `WM_ENDSESSION`
+/// (`ending`: every window keeps its tabs, see `App::session_finish_at_end_session`).
+fn flush_for_exit(hwnd: HWND, app: &AppRef, ending: bool) {
     if with_chrome(hwnd, |s| std::mem::replace(&mut s.exit_flushed, true)).unwrap_or(false) {
         return;
     }
@@ -2002,7 +2003,11 @@ fn flush_for_exit(hwnd: HWND, app: &AppRef) {
     crate::background_write::flush();
     // A session-only history ends with the session (thread T3).
     crate::history_retention::finish_at_exit();
-    App::session_finish(app);
+    if ending {
+        App::session_finish_at_end_session(app);
+    } else {
+        App::session_finish(app);
+    }
 }
 
 /// Asks for the hover layer the first time a view needs it (a tooltip, card, island or the omnibox
@@ -2640,6 +2645,8 @@ pub fn run(app: App) -> windows::core::Result<()> {
         App::apply_startup_plan(&app, launch_decided); // --- start page --- homepage or specific pages
         // A link that arrived while the window was being created opens now, after restore.
         App::release_external_urls(&app);
+        // Further windows left open when Bowser last stopped come back as windows of their own.
+        App::reopen_other_windows(&app);
         // Restored and initial tabs exist now, so a standing rule for a site with no open tab is stale.
         App::release_unused_site_rules(&app);
         let benchmark_url = app.borrow_mut().benchmark_url.take();
@@ -2865,7 +2872,7 @@ unsafe extern "system" fn window_proc(
                 if wparam.0 != 0
                     && let Some(app) = app.filter(|app| app.try_borrow_mut().is_ok())
                 {
-                    flush_for_exit(hwnd, app);
+                    flush_for_exit(hwnd, app, true);
                 }
                 LRESULT(0)
             }
@@ -4901,7 +4908,7 @@ unsafe extern "system" fn window_proc(
                 if let Some(app) = app {
                     App::release_chrome_environment(app);
                     // One write per file that changed: the privacy counters only with a save pending.
-                    flush_for_exit(hwnd, app);
+                    flush_for_exit(hwnd, app, false);
                     let (mut engine, log) = {
                         let mut s = app.borrow_mut();
                         (s.engine.take(), s.log.clone())

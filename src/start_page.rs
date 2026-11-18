@@ -484,8 +484,9 @@ pub enum StartupPlan {
 
 /// The first-window plan. `launch_has_target` is true when a command-line address, a benchmark URL or a
 /// restored session already decided what the window shows: then the setting stays out of the way.
-/// `last_session` is handled where the session is opened (`SessionStore::open_with`), so here it is the
-/// start page, which is what an empty or unrestorable session shows.
+/// The saved tabs are restored on every start (`SessionStore::open`), whatever this setting says, so
+/// the setting only decides what a window with nothing to restore shows. `last_session` is then the
+/// start page, which is what an empty session shows.
 pub fn startup_plan(settings: &StartSettings, launch_has_target: bool) -> StartupPlan {
     if launch_has_target {
         return StartupPlan::ShowStartPage;
