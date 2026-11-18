@@ -25,18 +25,22 @@ const review = { phase:'review', requestId:'qa-1', name:entry.name, version:'1.2
 const sendSnap = patch => store.receive({t:'snap',p:'store',d:{...base,...patch}});
 const store = mountStoreSection({send: fields => { results.commands.push(fields); return true; }, toast:()=>{}});
 document.querySelector('#app').append(store.root);
-const button = text => Array.from(store.root.querySelectorAll('button')).find(x=>x.textContent===text);
+const button = text => Array.from(store.root.querySelectorAll('button')).find(x=>x.textContent===text || x.getAttribute('aria-label')===text);
 try {
   sendSnap({});
-  expect(document.activeElement.textContent==='Extension installation','store entry focus');
-  button('Get extension').click();
-  expect(results.commands.length===1 && results.commands[0].a==='storeinstall','request before consent');
+  expect(document.activeElement.textContent==='Extensions','store entry focus');
+  expect(!store.root.querySelector('.bs-grid') && !store.root.querySelector('.bs-search'),'no catalogue: discovery is the stores themselves');
+  // Add to Bowser in the toolbar starts the native request; the page only shows its progress.
   sendSnap({phase:'downloading',requestId:'qa-1'});
+  expect(button('Cancel installation'),'cancel offered while downloading');
   sendSnap(review);
-  expect(results.commands.length===1,'review never auto-approves');
-  expect(store.root.textContent.includes('permission-19'),'review never truncates');
-  button('Install Reading companion 1.2.3').click();
-  expect(results.commands[1].a==='storeapprove' && results.commands[1].text==='qa-1','approval bound to request');
+  expect(results.commands.length===0,'review never auto-approves');
+  const details=store.root.querySelector('.bs-more');
+  expect(details && !details.open,'details are folded');
+  for(const value of ['permission-19','<all_urls>','https://optional.example/*','reader.js']) expect(details.textContent.includes(value),'review never truncates: '+value);
+  expect(store.root.querySelector('.bs-access-list').textContent.includes('Read and change all your data on all websites'),'plain-language access');
+  button('Add Reading companion 1.2.3').click();
+  expect(results.commands[0].a==='storeapprove' && results.commands[0].text==='qa-1','approval bound to request');
   sendSnap({phase:'installing',requestId:'qa-1'});
   sendSnap({phase:'ready',restart:true});
   expect(store.root.textContent.includes('Restart Bowser'),'restart notice');
@@ -46,22 +50,28 @@ try {
   sendSnap({phase:'cancelled'});
   sendSnap(review);
   store.receive({t:'snap',p:'store',d:{...base,phase:'review',permissions:[42]}});
-  button('Discover').click();
-  expect(!button('Install Reading companion 1.2.3'),'invalid replacement removes approval');
+  expect(!button('Add Reading companion 1.2.3'),'invalid replacement removes approval');
   const query=new URLSearchParams(location.search);
   document.documentElement.dataset.scheme=query.get('theme') || 'dark';
   const phase=query.get('phase');
-  sendSnap(phase==='review'?review:phase==='ready'?{phase:'ready',restart:true}:phase==='error'?{phase:'error',error:'Package signature could not be verified. No extension was installed.'}:{});
-  if(phase==='detail') button('Reading companion').click();
-  if(phase==='categories') button('Categories').click();
-  if(phase==='review') {
-    const layout=store.root.querySelector('.bs-layout'),main=store.root.querySelector('.bs-main'),status=store.root.querySelector('.bs-status');
-    expect(layout.classList.contains('is-review'),'review-only layout class');
-    expect(main.getBoundingClientRect().width>=layout.getBoundingClientRect().width-1,'review uses full available layout width');
+  const download='Package download failed: the store answered HTTP status 503. This is not a runtime compatibility verdict.';
+  sendSnap(phase==='review'?review:phase==='ready'?{phase:'ready',name:entry.name,restart:true}:phase==='error'?{phase:'error',requestId:'qa-3',name:entry.name,error:'No extension was installed.'}:phase==='error-download'?{phase:'error',requestId:'qa-4',name:entry.name,error:download}:phase==='downloading'?{phase:'downloading',requestId:'qa-5',name:entry.name,stage:'download',received:1468006,total:3355443}:{});
+  const status=store.root.querySelector('.bs-status');
+  if(phase!=='idle') {
+    const main=store.root.querySelector('.bs-main');
+    expect(status.getBoundingClientRect().width<=main.getBoundingClientRect().width+1,'card stays inside the column');
     for(const control of status.querySelectorAll('button')) {
       const r=control.getBoundingClientRect(),s=status.getBoundingClientRect();
-      expect(r.left>=s.left && r.right<=s.right+1,'review action remains inside consent panel');
+      if(r.width) expect(r.left>=s.left && r.right<=s.right+1,'card action remains inside the card');
     }
+  }
+  if(phase==='downloading' || phase==='error-download') {
+    const row=status.querySelector('.bs-progress-row'),bar=row.querySelector('.bs-bar'),control=row.querySelector('button');
+    const s=status.getBoundingClientRect(),tile=status.querySelector('.bs-ident-icon').getBoundingClientRect();
+    expect(Math.abs(bar.getBoundingClientRect().left-tile.left)<=1,'bar starts at the same left edge as the tile');
+    expect(control && control.getBoundingClientRect().top<bar.getBoundingClientRect().bottom && control.getBoundingClientRect().bottom>bar.getBoundingClientRect().top,'control on the bar row');
+    expect(s.right-control.getBoundingClientRect().right<=24,'control reaches the card edge');
+    if(phase==='error-download') expect(bar.classList.contains('is-failed') && bar.querySelector('.bs-bar-break').textContent==='!','failed download breaks the bar');
   }
   expect(document.documentElement.scrollWidth<=innerWidth,'no horizontal page overflow');
   for(const element of store.root.querySelectorAll('button,input')) {
@@ -72,7 +82,7 @@ const report=document.createElement('meta');report.name='bowser-store-report';re
 `;
   buildSync({ stdin: { contents: driver, resolveDir: here, sourcefile: 'store-browser-driver.ts', loader: 'ts' }, bundle: true, format: 'iife', outfile: join(work, 'driver.js') });
   writeFileSync(join(work, 'index.html'), '<!doctype html><html data-scheme="dark"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src \'none\'; script-src \'self\'; style-src \'self\'; img-src \'none\'"><link rel="stylesheet" href="app.css"></head><body><div id="app" class="sp-root"></div><script src="driver.js"></script></body></html>');
-  const scenarios = [['desktop-dark','dark','discover',1280,900], ['desktop-light','light','discover',1280,900], ['mobile-light','light','discover',480,900], ['detail-light','light','detail',1280,900], ['categories-dark','dark','categories',1280,900], ['review-dark','dark','review',1280,1100], ['review-mobile-light','light','review',480,1100], ['ready-light','light','ready',1280,900], ['error-dark','dark','error',1280,900]];
+  const scenarios = [['idle-dark','dark','idle',1280,900], ['idle-light','light','idle',1280,900], ['downloading-dark','dark','downloading',1280,900], ['downloading-mobile-light','light','downloading',480,900], ['review-dark','dark','review',1280,1100], ['review-mobile-light','light','review',480,1100], ['ready-light','light','ready',1280,900], ['error-dark','dark','error',1280,900], ['error-download-light','light','error-download',1280,900]];
   for (const [name, theme, phase, width, height] of scenarios) {
     const page = pathToFileURL(join(work, 'index.html')); page.search = new URLSearchParams({theme,phase}).toString();
     const screenshot = resolve(output, `${name}.png`);

@@ -679,6 +679,11 @@ fn signed_digest(signed_header_data: &[u8], archive: &[u8]) -> Result<[u8; 32], 
 
 pub(crate) use cng::Sha256 as PackageSha256;
 
+/// SHA-256 of `data` (Windows CNG), or `None` when the provider is unavailable.
+pub fn sha256(data: &[u8]) -> Option<[u8; 32]> {
+    cng::sha256(data)
+}
+
 mod cng {
     use std::{ffi::c_void, ptr::null_mut};
 

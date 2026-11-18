@@ -53,7 +53,7 @@ shots.push({ name: 'toolbar-extensions-menu-dark', view: 'popup', scn: 'menu', w
 shots.push({ name: 'settings-extensions-list-dark@1.5x', view: 'settings', scn: 'details', w: 1280, h: 900, scheme: 'dark', dpr: 1.5 });
 
 const only = process.argv[3] ? new RegExp(process.argv[3]) : null;
-const edge = 'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe';
+const edge = process.env.SHOT_BROWSER ?? 'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe';
 const profile = join(work, 'edge-profile');
 for (const s of shots.filter((shot) => !only || only.test(shot.name))) {
   const url = `${origin}/shots/extensions.html?view=${s.view}&scn=${s.scn}&scheme=${s.scheme}&w=${s.w}`;
@@ -61,7 +61,7 @@ for (const s of shots.filter((shot) => !only || only.test(shot.name))) {
   // Async: the server above must keep answering while Edge loads the page.
   const status = await new Promise((done) => {
     const child = spawn(edge, [
-      '--headless=new', '--disable-gpu', '--hide-scrollbars', '--no-first-run', '--no-default-browser-check', '--disable-extensions',
+      '--headless=new', ...(process.platform === 'win32' ? [] : ['--no-sandbox']), '--disable-gpu', '--hide-scrollbars', '--no-first-run', '--no-default-browser-check', '--disable-extensions',
       `--user-data-dir=${profile}`, `--force-device-scale-factor=${s.dpr ?? 1}`, `--window-size=${s.w},${s.h}`,
       '--virtual-time-budget=4000', `--screenshot=${file}`, url,
     ], { stdio: 'ignore' });

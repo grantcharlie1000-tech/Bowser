@@ -121,7 +121,7 @@ test('a submenu opened near the bottom of the screen moves up to fit instead of 
   assert.equal(logic.childTop(0, 50, 10), 0, 'never above the parent top');
 });
 
-test('at most the open page and its parent are on screen', () => {
+test('submenus cascade: the parent and two submenus are on screen, a fourth level pushes the parent off', () => {
   const deep = item(9, 'Deep', { submenu: [item(10, 'Leaf')] });
   const nav = logic.createNav([item(1, 'Top', { submenu: [item(2, 'Middle', { submenu: [deep] })] })]);
   assert.equal(logic.firstVisible(nav), 0);
@@ -131,7 +131,10 @@ test('at most the open page and its parent are on screen', () => {
   logic.menuKey(nav, 'Enter', {}, 0);
   logic.menuKey(nav, 'Enter', {}, 0);
   assert.equal(nav.pages.length, 4);
-  assert.equal(logic.firstVisible(nav), 2, 'older pages slide out of view');
+  assert.equal(logic.firstVisible(nav), 1, 'only the oldest page slides out of view');
+  logic.menuKey(nav, 'Escape', {}, 0);
+  assert.equal(nav.pages.length, 3);
+  assert.equal(logic.firstVisible(nav), 0, 'a submenu of a submenu opens beside it: nothing is cleared');
 });
 
 test('a row of the parent page works while its submenu is open', () => {
@@ -315,13 +318,13 @@ test('a submenu card slides out from behind the parent, which never moves: one t
   assert.match(column, /position: absolute;/);
   assert.match(column, /top: var\(--menu-child-y, 0px\);/);
   assert.match(column, /left: calc\(100% \+ var\(--bw-space-1\) - var\(--menu-child-overlap, 0px\)\);/);
-  assert.match(column, /max-height: calc\(100vh - var\(--menu-child-y, 0px\)\);/);
+  assert.match(column, /max-height: var\(--menu-child-max, calc\(100vh - var\(--menu-child-y, 0px\)\)\);/);
   assert.match(rule('.html-menu-flyout.is-left'), /right: calc\(100% \+ var\(--bw-space-1\) - var\(--menu-child-overlap, 0px\)\);\s*left: auto;/);
   assert.match(rule('.html-menu-flyout.is-sliding'), /overflow: hidden;/);
   assert.ok(!/overflow/.test(column), 'the resting column does not clip the card');
   // The room kept on both sides fits the widest card plus the gap.
   const reserve = rule('#app.html-menu.is-paned.has-flyouts');
-  assert.match(reserve, /--menu-reserve: calc\(350px \+ var\(--bw-space-1\)\);/);
+  assert.match(reserve, /--menu-reserve: calc\(2 \* \(350px \+ var\(--bw-space-1\)\)\);/, 'two cascading cards');
   assert.match(reserve, /padding-inline: var\(--menu-reserve\);/);
   assert.match(reserve, /height: 100vh;/);
   assert.match(pane, /max-width: 350px;/);
@@ -350,6 +353,11 @@ test('a child card opens right when it fits, left when only the left has room, e
   assert.deepEqual(logic.flyoutSide({ l: 200, r: 250 }, 284), { side: 'right', overlap: 34 });
   assert.deepEqual(logic.flyoutSide({ l: 250, r: 200 }, 284), { side: 'left', overlap: 34 });
   assert.deepEqual(logic.flyoutSide({ l: 0, r: 0 }, 284), { side: 'right', overlap: 284 });
+  // A deeper card keeps the chain's side, flips only when that side is out of room, else overlaps.
+  assert.deepEqual(logic.cascadeSide('left', { l: 600, r: 0 }, 354), { side: 'left', overlap: 0 });
+  assert.deepEqual(logic.cascadeSide('left', { l: 100, r: 900 }, 354), { side: 'right', overlap: 0 });
+  assert.deepEqual(logic.cascadeSide('left', { l: 100, r: 50 }, 354), { side: 'left', overlap: 254 });
+  assert.deepEqual(logic.cascadeSide('right', { l: 0, r: 354 }, 354), { side: 'right', overlap: 0 });
   // Rust's room message.
   assert.equal(logic.validRoom({ v: 1, t: 'room', tok: 3, l: 880, r: 120 }), true);
   assert.equal(logic.validRoom({ v: 1, t: 'room', tok: 3, l: -1, r: 120 }), false);
@@ -426,8 +434,8 @@ test('the menu view moves only the child card and the clip, never the window or 
   assert.match(view, /const bias = entering \? -SLIDE_LAG_MS : SLIDE_LEAD_MS;/);
   assert.match(view, /if \(entering\) requestAnimationFrame\(frame\);\s*else frame\(\);/, 'clip after the card coming out, before it going back');
   // A card that leaves is cut out of the clip before it stops being painted.
-  assert.match(view, /publish\(null\);\s*retire\(card\.wrap\);/);
-  assert.match(view, /slide\(card, false, \(\) => retire\(card\.wrap\)\)/);
+  assert.match(view, /publish\(\);\s*retire\(card\.wrap\);/);
+  assert.match(view, /slide\(card, false, \(\) => \{\s*if \(going === card\) going = null;\s*retire\(card\.wrap\);/);
   assert.match(view, /const KEEP_FRAMES = 3;/);
   assert.match(view, /const SLIDE_LAG_MS = 25;/);
   assert.match(view, /const SLIDE_LEAD_MS = 50;/);

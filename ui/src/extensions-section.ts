@@ -10,10 +10,9 @@ import { el, icon } from './dom';
 import { textButton } from './panels/kit';
 import { setTip } from './tooltip';
 import {
-  INSTALL_COMMAND, INSTALL_CRX_COMMAND, INSTALL_CRX_LABEL, UPDATES_UNAVAILABLE, ackToast, running, declarationGroups, parseExtensionsSnapshot, popupCommand, reachLine, reachText, removeCommand,
+  INSTALL_COMMAND, INSTALL_CRX_COMMAND, INSTALL_CRX_LABEL, ackToast, running, declarationGroups, parseExtensionsSnapshot, popupCommand, reachLine, reachText, removeCommand,
   setEnabledCommand, statusText, switchLabel, type ExtensionItem, type ExtensionsSnapshot,
 } from './extensions-logic';
-import { storeUrlCommand } from './store-logic';
 import type { PanelFields, SnapshotMsg } from './protocol';
 
 export interface ExtensionsSectionOptions {
@@ -50,31 +49,26 @@ export function mountExtensionsSection(options: ExtensionsSectionOptions): Exten
   const heading = el('h3', 'sp-group-h');
   heading.id = `${prefix}-ext-h`;
   heading.textContent = 'Installed';
-  const install = textButton('Unpacked', () => sendInstall(), { icon: 'folder', aria: 'Install unpacked…' });
+  // Getting extensions: the stores' own sites, where Add to Bowser appears on each extension's page.
+  const installs = el('div', 'sp-ext-installs');
+  installs.append(
+    textButton('Edge Add-ons', () => options.send({ a: 'storebrowse', text: 'edge' }), { icon: 'external', aria: 'Open Edge Add-ons' }),
+    textButton('Chrome Web Store', () => options.send({ a: 'storeopen' }), { icon: 'external', aria: 'Open Chrome Web Store' }),
+  );
+  head.append(heading, installs);
+  // From this computer (developers): quiet, under the list.
+  const install = textButton('Load unpacked', () => sendInstall(), { icon: 'folder', subtle: true, aria: 'Install unpacked…' });
   install.classList.add('sp-ext-install');
   const installCrx = crxButton();
   installCrx.classList.add('sp-ext-install-crx');
-  const installs = el('div', 'sp-ext-installs');
-  installs.append(textButton('Web Store', () => options.send({ a: 'storeopen' }), { icon: 'puzzle', primary: true, aria: 'Open Chrome Web Store' }), install, installCrx);
-  head.append(heading, installs);
+  const local = el('div', 'sp-ext-local');
+  local.append(install, installCrx);
   const box = el('div', 'sp-card sp-ext-card');
   box.setAttribute('role', 'group');
   box.setAttribute('aria-labelledby', heading.id);
   box.setAttribute('aria-busy', 'true');
-  group.append(head, box);
-  const fromLink = el('details', 'sp-ext-link');
-  const linkSummary = el('summary'); linkSummary.textContent = 'Store link';
-  const linkLabel = el('label'); linkLabel.textContent = 'Listing URL'; linkLabel.htmlFor = `${prefix}-ext-url`;
-  const linkInput = el('input', 'bw-input'); linkInput.id = `${prefix}-ext-url`; linkInput.type = 'url'; linkInput.maxLength = 2048; linkInput.placeholder = '';
-  linkInput.setAttribute('aria-label', 'Chrome Web Store listing URL');
-  const linkError = el('p', 'sp-desc'); linkError.hidden = true; linkError.setAttribute('role', 'alert');
-  const linkInstall = textButton('Review', () => {
-    const fields = storeUrlCommand(linkInput.value);
-    if (!fields) { linkError.hidden = false; linkError.textContent = 'Enter a listing URL'; linkInput.focus(); return; }
-    linkError.hidden = true; sendInstall(fields);
-  }, { aria: 'Review extension' });
-  fromLink.append(linkSummary, linkLabel, linkInput, linkInstall, linkError);
-  root.append(group, fromLink);
+  group.append(head, box, local);
+  root.append(group);
 
   const sendInstall = (command: PanelFields = INSTALL_COMMAND): void => {
     if (installing) return;
@@ -82,7 +76,7 @@ export function mountExtensionsSection(options: ExtensionsSectionOptions): Exten
   };
   /** A file on disk, not a store: the tip says so. Same weight as the folder button next to it. */
   function crxButton(): HTMLButtonElement {
-    return textButton('Install CRX', () => sendInstall(INSTALL_CRX_COMMAND), { icon: 'puzzle', aria: INSTALL_CRX_LABEL });
+    return textButton('Install .crx', () => sendInstall(INSTALL_CRX_COMMAND), { icon: 'puzzle', subtle: true, aria: INSTALL_CRX_LABEL });
   }
 
   /** The message in the card when there is no list to show: loading, unreadable, invalid or empty. */
@@ -197,14 +191,6 @@ export function mountExtensionsSection(options: ExtensionsSectionOptions): Exten
         optionsButton.disabled = held;
         actions.append(optionsButton);
       }
-      // Updates are not enabled yet (Bowser answers every check with a refusal): the button says so
-      // instead of looking like a working action. aria-disabled keeps it focusable, so the reason is
-      // reachable by keyboard and screen reader as well as by hover.
-      const update = textButton('Check update', () => {}, { subtle: true, aria: `Check update for ${item.name}: ${UPDATES_UNAVAILABLE}` });
-      update.dataset.focus = `${item.id}:extupdate`;
-      update.setAttribute('aria-disabled', 'true');
-      setTip(update, UPDATES_UNAVAILABLE);
-      actions.append(update);
       const remove = el('button', 'bw-icon-btn is-lg sp-ext-remove');
       remove.type = 'button';
       remove.dataset.focus = `${item.id}:remove`;
@@ -274,10 +260,8 @@ export function mountExtensionsSection(options: ExtensionsSectionOptions): Exten
     const active = document.activeElement as HTMLElement | null;
     const keep = focusKey ?? (active && root.contains(active) ? active.dataset.focus : undefined);
     // The empty state has its own, larger install button; an unreadable list has nothing to add to.
-    install.hidden = !snapshot || invalid || snapshot.state !== 'on' || snapshot.items.length === 0;
+    local.hidden = !snapshot || invalid || snapshot.state === 'error';
     install.disabled = installing;
-    linkInstall.disabled = installing; linkInput.disabled = installing;
-    installCrx.hidden = install.hidden;
     installCrx.disabled = installing;
     box.setAttribute('aria-busy', String(!snapshot && !invalid));
     if (invalid) {
@@ -289,15 +273,7 @@ export function mountExtensionsSection(options: ExtensionsSectionOptions): Exten
       retry.dataset.focus = 'retry';
       box.replaceChildren(stateBlock('error', 'Extensions could not be read', snapshot.error, retry));
     } else if (snapshot.items.length === 0) {
-      const choose = textButton('Folder', () => sendInstall(), { icon: 'folder', aria: 'Choose folder…' });
-      choose.dataset.focus = 'choose';
-      choose.disabled = installing;
-      const chooseCrx = crxButton();
-      chooseCrx.dataset.focus = 'choose-crx';
-      chooseCrx.disabled = installing;
-      const choices = el('div', 'sp-ext-state-actions');
-      choices.append(choose, chooseCrx);
-      box.replaceChildren(stateBlock('empty', 'None', '', choices));
+      box.replaceChildren(stateBlock('empty', 'No extensions yet', ''));
     } else {
       const busy = snapshot.busy;
       box.replaceChildren(...snapshot.items.map((item) => itemRow(item, busy)));
