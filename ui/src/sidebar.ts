@@ -8,6 +8,7 @@ import { send, sendClosedTabs, sendRailWheel, sendSide, sendSideHover, sendTabSe
 import { wheelNotches } from './rail-logic'; // --- tab stacks and workspaces (T10) ---
 import { setTip } from './tooltip';
 import { el, icon, place, type IconName } from './dom';
+import { itemIcon } from './bars-logic'; // --- toolbars and feeds (thread T13) ---
 import { DRAG_ATTR } from './view';
 import { beforeId, dragScrollDelta, focusHeir, privateTabName, revealKey } from './tabs-logic';
 // --- tab options ---
@@ -337,7 +338,7 @@ export function createSidebarRenderer(root: HTMLElement): {
       setTip(row, tool.l);
       const label = el('span', 'side-tool-label');
       label.textContent = tool.l;
-      row.append(icon('command', { size: 16 }), label);
+      row.append(icon(itemIcon(tool.k) as IconName, { size: 16 }), label);
       row.addEventListener('click', () => { sendTool('tabs', tool.k, tool.i); });
       return row;
     });

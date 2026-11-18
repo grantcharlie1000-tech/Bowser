@@ -203,6 +203,31 @@ pub fn right_static_px(settings: &Settings) -> i32 {
     right_static(&settings.toolbar_buttons) as i32 * crate::chrome_host::EXT_BUTTON_SLOT
 }
 
+/// CSS px of the navigation room (back, forward, reload) that the address bar's list leaves empty, which the
+/// address field takes instead (`chrome_host::toolbar_css_placement_with_room`). The layout always keeps room
+/// for all three: back and forward in one capsule, a gap, then reload. A list without some of them frees
+/// their width (and a gap per group gone); a list without any frees the whole block and the gap after it, so
+/// the field starts at the toolbar's edge. Negative when the buttons need more than the layout keeps (three
+/// separate groups): the field gives that room up instead of sitting under them.
+pub fn left_free_px(list: &[String]) -> i32 {
+    use crate::chrome::layout::Metrics;
+    let reserved = 3 * Metrics::NAV_BUTTON_SIZE + Metrics::NAV_BUTTON_GAP;
+    let left: Vec<&str> = list.iter().map(String::as_str).filter(|id| zone_of(id) == Zone::Left).collect();
+    if left.is_empty() {
+        return reserved + Metrics::ISLAND_GAP;
+    }
+    // Back and forward next to each other share one capsule: one group, no gap between them.
+    let mut groups = 0;
+    let mut at = 0;
+    while at < left.len() {
+        let paired = matches!((left[at], left.get(at + 1).copied()), ("back", Some("forward")) | ("forward", Some("back")));
+        at += if paired { 2 } else { 1 };
+        groups += 1;
+    }
+    let used = left.len() as i32 * Metrics::NAV_BUTTON_SIZE + (groups - 1) * Metrics::NAV_BUTTON_GAP;
+    reserved - used
+}
+
 /// Applies one `key=value` change of the Toolbars and Feeds options (the settings page's `baropt`
 /// command), checking the key and the value. `false` and nothing changed otherwise.
 pub fn apply_assignment(settings: &mut Settings, text: &str) -> bool {
@@ -315,6 +340,19 @@ mod tests {
             assert_eq!(zone_of(id), Zone::Right);
         }
         assert_eq!(right_static(&list("back,bookmark,downloads,extensions,cmd:new-tab,newtab")), 3);
+    }
+
+    #[test]
+    fn the_address_field_takes_the_room_of_the_navigation_buttons_that_are_off_the_bar() {
+        // Back + forward capsule (56), a 3 px gap, reload (28): 87 px kept in the layout.
+        assert_eq!(left_free_px(&list("back,forward,reload,site-info")), 0, "the default frees nothing");
+        assert_eq!(left_free_px(&list("forward,back,reload")), 0, "the capsule works in either order");
+        assert_eq!(left_free_px(&list("back,forward,site-info")), 31, "reload and its gap");
+        assert_eq!(left_free_px(&list("reload")), 59, "the capsule and its gap");
+        assert_eq!(left_free_px(&list("back,reload")), 28, "forward only");
+        assert_eq!(left_free_px(&list("back,reload,forward")), -3, "three groups need two gaps, 3 px more than the layout keeps: the field gives them up");
+        assert_eq!(left_free_px(&list("site-info,bookmark")), 90, "none of them: the block and the gap after it");
+        assert_eq!(left_free_px(&[]), 90);
     }
 
     #[test]

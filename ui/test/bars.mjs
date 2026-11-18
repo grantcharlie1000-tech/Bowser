@@ -171,3 +171,24 @@ test('the rail knows the panel bar’s extra buttons: key grammar and the feed g
   const rustProtocol = read(join(root, 'src', 'chrome_host', 'protocol.rs'));
   assert.match(rustProtocol, /strip_prefix\("tool:"\)/);
 });
+
+test('every built-in command a bar can carry has a glyph of its own, drawn from the icon family', () => {
+  const registry = read(join(root, 'src', 'commands', 'registry.rs'));
+  const ids = [...registry.matchAll(/\bdef\("([a-z0-9-]+)"/g)].map((m) => m[1]).filter((id) => !/^select-/.test(id));
+  assert.ok(ids.length > 50, 'the registry was read');
+  const family = new Set([...read(join(srcDir, 'icons.gen.ts')).match(/ICON_NAMES[^=]*=\s*\[([^\]]*)\]/s)[1].matchAll(/"([^"]+)"/g)].map((m) => m[1]));
+  for (const id of ids) {
+    assert.ok(bars.COMMAND_ICONS[id] !== undefined, `cmd:${id} has no glyph in COMMAND_ICONS`);
+    assert.notEqual(bars.itemIcon(`cmd:${id}`), 'command', `cmd:${id} falls back to the generic glyph`);
+  }
+  for (const [id, name] of Object.entries(bars.COMMAND_ICONS)) assert.ok(family.has(name), `${id}: ${name} is not an icon`);
+  for (const [id, name] of Object.entries(bars.ITEM_ICONS)) assert.ok(family.has(name), `${id}: ${name} is not an icon`);
+  assert.equal(bars.itemIcon('chain:3'), 'chain');
+  assert.equal(bars.itemIcon('cmd:no-such'), 'command');
+  assert.equal(bars.itemIcon('downloads'), 'download');
+});
+
+test('the editor offers only the bars that can show buttons, and names what appears only on demand', () => {
+  assert.deepEqual([...bars.EDITABLE_BARS], ['address', 'tabs']);
+  for (const id of Object.keys(bars.SHOWS_WHEN)) assert.ok([...bars.ADDRESS_ITEMS, ...bars.TAB_ITEMS].includes(id), id);
+});

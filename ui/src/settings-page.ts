@@ -676,7 +676,7 @@ export function startSettingsPage(root: HTMLElement): void {
   row(themeCard, 'forceDark', protection.forceDark.root);
   row(themeCard, 'privateTheme', protection.privateTheme.root);
 
-  // Toolbars (thread T13): the editor for the address bar, the tab bar and the panel bar, on a sub-page of its own.
+  // Toolbars (thread T13): the editor for the address bar and the tab bar (the panel bar was the removed rail's).
   // The address bar's list is part of the page's Save (`toolbar_buttons`); the other two bars are each a `baropt` command.
   const toolbarCard = card('appearance', 'Toolbar');
   const sendBarOption = (text: string | null): void => {

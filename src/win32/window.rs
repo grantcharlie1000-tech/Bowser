@@ -656,6 +656,8 @@ struct WindowChrome {
     html_dl_allowed: bool,
     html_ext_allowed: bool,
     html_bar_extra: i32,
+    /// CSS px of navigation room the address bar's list leaves empty; the pill grows left over it.
+    html_bar_lead: i32,
     // --- end toolbars and feeds ---
     html_tabs_last_state: Option<String>,
     html_rail_last_state: Option<String>,
@@ -881,6 +883,7 @@ impl WindowChrome {
             html_dl_allowed: true,
             html_ext_allowed: true,
             html_bar_extra: 0,
+            html_bar_lead: 0,
             html_tabs_last_state: None,
             html_rail_last_state: None,
             html_state_generation: [0; 3],
@@ -6555,7 +6558,8 @@ fn show_tab_context_menu(hwnd: HWND, app: &AppRef, id: TabId, x: i32, y: i32, pi
     let kind = format!("tab:{}", id.0);
     let menu = Menu {
         header: None,
-        entries,
+        // Rows that cannot be used for this tab right now are left out rather than greyed.
+        entries: menu::only_available(entries),
         footer: "Actions for this tab".to_owned(),
     };
     menu::show(hwnd, point, menu::Placement::BelowLeft, menu, &kind, move |app, chosen| {
@@ -9892,15 +9896,17 @@ fn html_sync(hwnd: HWND) {
     let settings = App::settings(&app);
     // --- toolbars and feeds (thread T13) --- the address bar's own list decides which buttons take room.
     let bar_extra = crate::toolbar_prefs::right_static_px(&settings);
+    let bar_lead = crate::toolbar_prefs::left_free_px(&settings.toolbar_buttons);
     let (dl_allowed, ext_allowed) = (crate::toolbar_prefs::address_has(&settings, "downloads"), crate::toolbar_prefs::address_has(&settings, "extensions"));
     let _ = with_chrome(hwnd, |s| {
         s.html_bar_extra = bar_extra;
+        s.html_bar_lead = bar_lead;
         s.html_dl_allowed = dl_allowed;
         s.html_ext_allowed = ext_allowed;
     });
     // --- end toolbars and feeds ---
     let slot = with_chrome(hwnd, |s| s.toolbar_slot()).unwrap_or(0);
-    let (pillx, pillw, menux) = chrome_host::toolbar_css_placement_with_slot(&layout, dpi, slot).unwrap_or_default();
+    let (pillx, pillw, menux) = chrome_host::toolbar_css_placement_with_room(&layout, dpi, slot, bar_lead).unwrap_or_default();
     // While a private tab is shown, the chrome takes its own light or dark look when the private
     // theme asks for one (thread T3); otherwise it follows the normal appearance.
     let system_look = glass::appearance();
@@ -11933,7 +11939,7 @@ fn html_suggest_show(hwnd: HWND, app: &AppRef, seq: u32, text: &str, rows: Vec<s
     // page paints, and attaches to that pill's device-pixel edges (see html_hover::place).
     let Some((anchor, width)) = with_chrome(hwnd, |s| {
         let omnibox = s.layout.omnibox;
-        let pill = chrome_host::toolbar_pill_rect_with_slot(&s.layout, s.dpi, s.toolbar_slot()).unwrap_or(RECT {
+        let pill = chrome_host::toolbar_pill_rect_with_room(&s.layout, s.dpi, s.toolbar_slot(), s.html_bar_lead).unwrap_or(RECT {
             left: omnibox.left,
             top: omnibox.top,
             right: omnibox.right,
@@ -11942,7 +11948,7 @@ fn html_suggest_show(hwnd: HWND, app: &AppRef, seq: u32, text: &str, rows: Vec<s
         let mut origin = windows::Win32::Foundation::POINT { x: pill.left, y: pill.top };
         unsafe { let _ = ClientToScreen(hwnd, &mut origin); }
         let (w, h) = (pill.right - pill.left, pill.bottom - pill.top);
-        let css = chrome_host::toolbar_css_placement_with_slot(&s.layout, s.dpi, s.toolbar_slot())
+        let css = chrome_host::toolbar_css_placement_with_room(&s.layout, s.dpi, s.toolbar_slot(), s.html_bar_lead)
             .map_or_else(|| chrome_host::css_px_from_physical(w, s.dpi), |(_, pill_w, _)| pill_w);
         (RECT { left: origin.x, top: origin.y, right: origin.x + w, bottom: origin.y + h }, css.max(1) as u32)
     }) else {

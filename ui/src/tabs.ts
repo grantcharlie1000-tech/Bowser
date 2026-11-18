@@ -2,7 +2,8 @@ import { onChromeInbound } from './chrome-handshake';
 // Tab strip view (?view=tabs): keyed reconciliation of the tab list, favicons, groups, pointer and keyboard input.
 // Page-controlled text is written with textContent only; favicons are data: URIs set as img.src.
 import { send, sendClosedTabs, sendTabSelection, sendTabStack, sendTool, type TabAction, type TabItem, type TabOptsMsg, type TabsMsg } from './protocol';
-import { el, icon, place } from './dom';
+import { el, icon, place, type IconName } from './dom';
+import { itemIcon } from './bars-logic'; // --- toolbars and feeds (thread T13) ---
 import { applyTheme, DRAG_ATTR } from './view';
 import { setTip } from './tooltip';
 import { guardTitle } from './spoiler-guard'; // --- spoiler guard ---
@@ -439,7 +440,7 @@ export function startTabs(strip: HTMLElement): void {
       const button = el('button', 'closed-btn tab-tool bw-icon-btn');
       button.type = 'button';
       button.setAttribute('aria-label', tool.l);
-      button.append(icon('command'));
+      button.append(icon(itemIcon(tool.k) as IconName));
       setTip(button, tool.l);
       button.addEventListener('click', () => { sendTool('tabs', tool.k, tool.i); });
       toolButtons.push(button);

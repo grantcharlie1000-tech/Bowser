@@ -29,6 +29,8 @@ export interface MenuMessage {
  * drift, and when a Rust `.glyph("...")` is not in the family).
  */
 export const MENU_ICONS: readonly string[] = [
+  // The toolbar command glyphs (bars-logic.ts COMMAND_ICONS).
+  'block', 'capture', 'capture-full', 'capture-selection', 'chain', 'keyboard', 'note-add', 'password-fill', 'reload-hard', 'timer', 'unstack', 'zoom-reset',
   'address-bar', 'app-tile', 'archive', 'arrow-left', 'arrow-right', 'back', 'bell', 'bookmark', 'calculator', 'calendar', 'camera', 'caption-close', 'caption-maximize',
   'caption-minimize', 'caption-restore', 'cast', 'check', 'chevron-down', 'chevron-left', 'chevron-right', 'chevron-up', 'clock',
   'close', 'close-others', 'command', 'cookie', 'copy', 'customize', 'dots', 'download', 'droplet', 'edit', 'enter', 'extensions', 'external', 'eye', 'feed',

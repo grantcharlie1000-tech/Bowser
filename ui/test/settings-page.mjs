@@ -632,30 +632,51 @@ test('a guest cannot switch history on', () => {
   assert.deepEqual(sent, []);
 });
 
-// --- toolbars and feeds (thread T13) --- the toolbar editor: the three bars' lists as rows, each change saved as the
-// whole new list (the address bar's through Save, the other two through `baropt`), reset per bar, locked when the
-// file cannot be read. The HTML toolbar, strip and rail drawing them is tested in test/bars.mjs.
-const editorRows = (bar) => app.querySelector(`section.sp-tbe-bar[data-bar="${bar}"]`).querySelectorAll('.sp-tb-item').filter((row) => row.dataset.item !== undefined);
+// --- toolbars and feeds (thread T13) --- the toolbar editor: one bar at a time (Address bar | Tab bar), its list as rows,
+// each change saved as the whole new list (the address bar's through Save, the tab bar's through `baropt`), reset per bar,
+// locked when the file cannot be read. The panel bar belonged to the removed rail and is not offered. The HTML toolbar
+// and strip drawing the lists are tested in test/bars-dom.mjs.
+const editor = () => app.querySelector('.sp-tbe');
+const pickBar = (bar) => editor().querySelector('.sp-tbe-switch').querySelectorAll('button').find((b) => b.textContent === (bar === 'address' ? 'Address bar' : 'Tab bar')).click();
+const editorRows = (bar) => { pickBar(bar); return editor().querySelector('.sp-tbe-card').querySelectorAll('.sp-tb-item').filter((row) => row.dataset.item !== undefined); };
 const editorButton = (row, name) => row.querySelectorAll('button').find((b) => b.getAttribute('aria-label')?.startsWith(name));
-const barReset = (bar) => app.querySelector(`section.sp-tbe-bar[data-bar="${bar}"]`).querySelector('.sp-tbe-head').querySelector('button');
+const barReset = (bar) => { pickBar(bar); return editor().querySelector('.sp-tbe-head').querySelectorAll('button').at(-1); };
+const editorChip = (bar, name) => { pickBar(bar); return editor().querySelector('.sp-tbe-chips').querySelectorAll('button').find((b) => b.getAttribute('aria-label')?.startsWith(`Add ${name} `)); };
 const toolbarSave = () => sent.filter((m) => m.a === 'save').map((m) => /\ntoolbar_buttons=([^\n]*)\n/.exec(m.text)?.[1]);
 const commandsFixture0 = JSON.parse(readFileSync(join(here, 'fixtures', 'commands-snapshot.json'), 'utf8'));
 
-test('the toolbar editor opens from one row, lists each bar and is no longer in "Not active yet"', () => {
+test('the toolbar editor opens from one row, edits the address bar and the tab bar, and is no longer in "Not active yet"', () => {
   deliver(fixture.snap);
   assert.equal(logic.ROWS.find((row) => row.id === 'toolbarButtons').notYet, undefined);
   assert.equal(logic.rowTier(logic.ROWS.find((row) => row.id === 'toolbarButtons')), 'page');
   assert.equal(app.querySelector('[data-opens="toolbarButtons"]').querySelector('.bw-button').textContent, 'Edit');
   assert.equal(app.querySelector('[data-opens="toolbarButtons"]').querySelector('.bw-button').getAttribute('aria-label'), 'Edit toolbars');
   assert.ok(!app.querySelector('section[data-area="later"]').contains(app.querySelector('.sp-row[data-row="toolbarButtons"]')));
+  const bars = editor().querySelector('.sp-tbe-switch').querySelectorAll('button').map((b) => b.textContent);
+  assert.deepEqual(bars, ['Address bar', 'Tab bar'], 'no status bar, and no panel bar now the rail is gone');
   assert.deepEqual(editorRows('address').map((row) => row.dataset.item), ['back', 'forward', 'reload', 'site-info', 'split', 'reader', 'extensions', 'downloads']);
   assert.deepEqual(editorRows('tabs').map((row) => row.dataset.item), ['closed-tabs']);
-  assert.deepEqual(editorRows('panel').map((row) => row.dataset.item), []);
-  const headings = app.querySelectorAll('.sp-tbe-title').map((h) => h.textContent);
-  assert.deepEqual(headings, ['Address bar', 'Tab bar', 'Panel bar'], 'there is no status bar to edit');
+  pickBar('address');
 });
 
-test('moving, removing and resetting an address bar button each save the whole list', () => {
+test('a button that only shows when it has something to show says so, in the list and in the preview', () => {
+  deliver(fixture.snap);
+  const rows = editorRows('address');
+  const hint = (id) => rows.find((row) => row.dataset.item === id).querySelector('.sp-tb-hint')?.textContent ?? null;
+  assert.equal(hint('downloads'), 'Appears once a download starts');
+  assert.equal(hint('reader'), 'Appears on pages that can be read as an article');
+  assert.equal(hint('back'), null);
+  const preview = editor().querySelector('.sp-tbe-preview');
+  assert.equal(preview.getAttribute('aria-hidden'), 'true');
+  const shown = preview.querySelectorAll('.sp-tbp-btn').filter((node) => node.dataset.item !== undefined);
+  assert.deepEqual(shown.map((node) => node.dataset.item), ['back', 'forward', 'reload', 'site-info', 'split', 'reader', 'extensions', 'downloads'], 'the preview draws the bar in its real order');
+  assert.ok(shown.find((node) => node.dataset.item === 'downloads').classList.contains('is-conditional'));
+  assert.ok(!shown.find((node) => node.dataset.item === 'back').classList.contains('is-conditional'));
+  assert.equal(editorRows('tabs')[0].querySelector('.sp-tb-hint').textContent, 'Appears once a tab has been closed');
+  pickBar('address');
+});
+
+test('moving, removing, adding and resetting an address bar button each save the whole list', () => {
   deliver(fixture.snap);
   sent.length = 0;
   // Move Forward up past Back: back and forward swap.
@@ -668,10 +689,18 @@ test('moving, removing and resetting an address bar button each save the whole l
   assert.deepEqual(toolbarSave(), ['back,forward,site-info,split,reader,extensions,downloads']);
   deliver(fixture.snap);
   sent.length = 0;
-  // The first button of a zone cannot move up, the last cannot move down, and a button never crosses into another zone.
-  assert.equal(editorButton(editorRows('address')[0], 'Move Back up').disabled, true);
-  assert.equal(editorButton(editorRows('address')[2], 'Move Reload and stop down').disabled, true, 'reload is the last before the address field');
-  assert.equal(editorButton(editorRows('address')[3], 'Move Site information up').disabled, true, 'site information is the first inside the field');
+  // An arrow that cannot move a button is left out: the first of a zone has no up, the last no down, and a
+  // button never crosses into another zone.
+  assert.equal(editorButton(editorRows('address')[0], 'Move Back up').hidden, true);
+  assert.equal(editorButton(editorRows('address')[0], 'Move Back down').hidden, false);
+  assert.equal(editorButton(editorRows('address')[2], 'Move Reload and stop down').hidden, true, 'reload is the last before the address field');
+  assert.equal(editorButton(editorRows('address')[3], 'Move Site information up').hidden, true, 'site information is the first inside the field');
+  // A chip adds a built-in button at the end of its place; the ones already on the bar have no chip.
+  assert.equal(editorChip('address', 'Back'), undefined);
+  editorChip('address', 'Bookmark this page').click();
+  assert.deepEqual(toolbarSave(), ['back,forward,reload,site-info,split,reader,extensions,downloads,bookmark']);
+  deliver(fixture.snap);
+  sent.length = 0;
   // Reset returns the default list (here it already is the default, so the button is off).
   assert.equal(barReset('address').disabled, true);
   deliver({ ...fixture.snap, d: { ...fixture.snap.d, toolbarButtons: 'back,newtab,cmd:new-tab' } });
@@ -682,7 +711,7 @@ test('moving, removing and resetting an address bar button each save the whole l
   deliver(fixture.snap);
 });
 
-test('the tab bar and panel bar lists are their own baropt commands, never part of save', () => {
+test('the tab bar list is its own baropt command, never part of save', () => {
   deliver(fixture.snap);
   sent.length = 0;
   editorButton(editorRows('tabs')[0], 'Remove Closed tabs').click();
@@ -690,22 +719,14 @@ test('the tab bar and panel bar lists are their own baropt commands, never part 
   assert.ok(!sent.some((m) => m.a === 'save'));
   deliver({ ...fixture.snap, d: { ...fixture.snap.d, bars: { ...fixture.snap.d.bars, tabs: 'cmd:new-tab,closed-tabs', panel: 'feeds,chain:2' } } });
   assert.deepEqual(editorRows('tabs').map((row) => row.dataset.item), ['cmd:new-tab', 'closed-tabs']);
-  assert.deepEqual(editorRows('panel').map((row) => row.dataset.item), ['feeds', 'chain:2']);
   sent.length = 0;
   editorButton(editorRows('tabs')[1], 'Move Closed tabs up').click();
-  editorButton(editorRows('panel')[0], 'Move Feeds down').click();
-  assert.deepEqual(sent, [
-    { v: 1, t: 'set', a: 'baropt', text: 'toolbar_tabs=closed-tabs,cmd:new-tab' },
-    { v: 1, t: 'set', a: 'baropt', text: 'toolbar_panel=chain:2,feeds' },
-  ]);
+  assert.deepEqual(sent, [{ v: 1, t: 'set', a: 'baropt', text: 'toolbar_tabs=closed-tabs,cmd:new-tab' }]);
   sent.length = 0;
-  barReset('panel').click();
   barReset('tabs').click();
-  assert.deepEqual(sent, [
-    { v: 1, t: 'set', a: 'baropt', text: 'toolbar_panel=' },
-    { v: 1, t: 'set', a: 'baropt', text: 'toolbar_tabs=closed-tabs' },
-  ]);
+  assert.deepEqual(sent, [{ v: 1, t: 'set', a: 'baropt', text: 'toolbar_tabs=closed-tabs' }]);
   deliver(fixture.snap);
+  pickBar('address');
 });
 
 test('command buttons take the name of their command once the commands arrive', () => {
@@ -716,6 +737,7 @@ test('command buttons take the name of their command once the commands arrive', 
   assert.equal(names[0], 'New tab');
   assert.equal(names[1], 'no such', 'a command Rust does not list is named from its id');
   deliver(fixture.snap);
+  pickBar('address');
 });
 
 test('the feed rows: open the panel, the address bar button and when Feeds fetches', () => {
@@ -774,7 +796,10 @@ test('default browser status reflects the snapshot and the button sends a bare s
 test('an unreadable settings file disables the new controls too, except the setdefault button', () => {
   deliver({ ...fixture.snap, d: { ...fixture.snap.d, readable: false } });
   // --- toolbars and feeds (thread T13) --- the toolbar editor and the feed rows lock too.
-  for (const button of app.querySelector('.sp-tbe').querySelectorAll('button')) assert.equal(button.disabled, true, button.getAttribute('aria-label') ?? button.textContent);
+  // Choosing which bar to look at changes nothing, so the bar switch stays usable.
+  for (const button of app.querySelector('.sp-tbe').querySelectorAll('button').filter((b) => b.getAttribute('role') !== 'radio')) {
+    assert.equal(button.disabled || button.hasAttribute('disabled'), true, button.getAttribute('aria-label') ?? button.textContent);
+  }
   assert.equal(app.querySelector('.sp-row[data-row="feedsDetect"]').querySelector('[role="switch"]').disabled, true);
   assert.equal(app.querySelector('.sp-row[data-row="feedsRefresh"]').querySelector('button').disabled, true);
   const themeRow = app.querySelector('.sp-row[data-row="themeAccent"]');
