@@ -624,6 +624,12 @@ impl ChromeHost {
         self.state.try_borrow().ok().is_some_and(|s| s.document.as_ref().is_some_and(|d| d.needs_refresh(id)))
     }
 
+    /// The applied bundle is revealable but older than the current state (the resend budget is
+    /// spent); the caller resends that view's state live after the reveal.
+    pub(crate) fn applied_stale(&self, id: &StateIdentity) -> bool {
+        self.state.try_borrow().ok().is_some_and(|s| s.document.as_ref().is_some_and(|d| d.stale(id)))
+    }
+
     pub(crate) fn applied_identity(&self) -> Option<StateIdentity> {
         self.state.try_borrow().ok()?.document.as_ref()?.applied_identity()
     }
